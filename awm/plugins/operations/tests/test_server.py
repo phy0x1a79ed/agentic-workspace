@@ -5,10 +5,10 @@ import time
 
 from fastapi.testclient import TestClient
 
-from awm.operations import cli
+from awm.operations import cli, door
 from awm.operations.approver.chain import passkey_challenge
-from awm.operations.hub_adapter import control_socket
 from awm.operations.approver.server import create_app
+from awm.operations.home import Home
 
 from conftest import enrol
 
@@ -58,11 +58,12 @@ def test_http_flow_and_headers(env):
     assert signed_get(client, dev, "/api/twofa").json()["devices"] == [{"name": "phone"}]
 
 
-async def test_control_socket_prints_an_enrol_link(env, tmp_path, monkeypatch, capsys):
-    ap, _, _ = env
-    monkeypatch.setenv("AWM_APPROVER_DIR", str(tmp_path))
-    server = await control_socket(ap, tmp_path / "control.sock")
-    assert (tmp_path / "control.sock").stat().st_mode & 0o077 == 0
+async def test_the_door_socket_prints_an_enrol_link_for_its_own_user(env, tmp_path, monkeypatch,
+                                                                       capsys):
+    ap, store, _ = env
+    monkeypatch.setenv("AWM_OPERATIONS_DOOR_SOCKET", str(tmp_path / "door.sock"))
+    server = await door.serve(Home(store, ap), door.socket_path())
+    assert (tmp_path / "door.sock").stat().st_mode & 0o007 == 0
     rc = await asyncio.to_thread(cli.main, ["enrol-link"])
     server.close()
     url = capsys.readouterr().out.strip()

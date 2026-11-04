@@ -27,7 +27,7 @@ def record_note_id(task_id: str) -> str:
 
 def ensure_root(api: TriliumTool, parent: str = "root") -> None:
     if api.note(ROOT_ID) is None:
-        api.create_note(parent, ROOT_ID, "Swarm", "render", labels={"swarmBoard": ""})
+        api.create_note(parent, "Swarm", "render", note_id=ROOT_ID, labels={"swarmBoard": ""})
     else:
         api.update(ROOT_ID, labels={"swarmBoard": ""})
 
@@ -35,7 +35,7 @@ def ensure_root(api: TriliumTool, parent: str = "root") -> None:
 def _upsert_code(api: TriliumTool, parent: str, note_id: str, title: str, mime: str,
                  text: str) -> None:
     if api.note(note_id) is None:
-        api.create_note(parent, note_id, title, "code", text, mime=mime)
+        api.create_note(parent, title, "code", text, note_id=note_id, mime=mime)
     else:
         api.update(note_id, title=title, mime=mime, content=text)
 

@@ -82,6 +82,8 @@ class Home:
                                                args["title"], args["body"])
                 return {"note_id": note}
             if verb == "order_pull":
+                if node and args.setdefault("node", node) != node:
+                    raise ValueError(f"{node} pulls only its own orders, not {args['node']}'s")
                 return await a.order_pull(args["node"], args.get("kinds"),
                                           float(args.get("wait_s", 0)))
         except (QueueError, KeyError, TypeError) as exc:

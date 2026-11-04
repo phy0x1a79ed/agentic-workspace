@@ -290,6 +290,10 @@ API_MANIFEST: dict[str, Any] = {
                 "Operator only."
             ),
             "params": [
+                {"name": "note_id", "type": "string",
+                 "description": "A fixed id for the note, 4 to 128 of "
+                                "[A-Za-z0-9_], so a re-run finds it again. "
+                                "Default: Trilium picks one."},
                 {"name": "title", "type": "string", "required": True,
                  "description": "The note's title."},
                 {"name": "content", "type": "string",
@@ -593,6 +597,82 @@ def _operator_only(as_: str | None, verb: str) -> None:
             f"run `awm trilium {verb}` on the host")
 
 
+#: The note and attribute verbs the operations home's board writer may call
+#: from across its door (fleet.md R87 item 3, queue.md R66).
+WRITER_VERBS = frozenset({
+    "note_get", "note_children", "note_search", "note_create", "note_update",
+    "note_upsert", "note_delete", "attrs_get", "attr_set", "attr_delete"})
+WRITER_ROOTS_ENV = "AWM_TRILIUM_WRITER_ROOTS"
+#: The Swarm board's root note, which operations' `board.ROOT_ID` names.
+DEFAULT_WRITER_ROOTS = "awmSwarmBoard"
+#: How many notes one ancestry walk reads before it gives up and refuses.
+_WALK_MAX = 256
+
+
+def _writer_roots() -> frozenset[str]:
+    raw = os.environ.get(WRITER_ROOTS_ENV, DEFAULT_WRITER_ROOTS)
+    return frozenset(r.strip() for r in raw.split(",") if r.strip() and r.strip() != "root")
+
+
+def _is_writer(as_: str | None) -> bool:
+    """Whether ``as_`` is the operations home node, as its door stamps it."""
+    home = os.environ.get("AWM_OPERATIONS_HOME", "alcor").strip().lower()
+    stamp = (as_ or "").strip().lower()
+    return bool(home) and stamp.startswith("peer:") \
+        and stamp[len("peer:"):].split(".")[0] == home
+
+
+def _inside(c: Any, note_id: str, roots: frozenset[str],
+            parents: list[str] | None = None) -> bool:
+    """Whether any branch of ``note_id`` leads up to one of ``roots``.
+
+    A missing start note raises the client's own not-found error, so the
+    writer's existence check reads the same answer it would on the host.
+    """
+    if note_id in roots:
+        return True
+    frontier = list(parents if parents is not None
+                    else c.note(note_id).get("parentNoteIds") or [])
+    seen = {note_id}
+    while frontier and len(seen) < _WALK_MAX:
+        n = frontier.pop()
+        if n in roots:
+            return True
+        if n in seen or n in ("root", "none", ""):
+            continue
+        seen.add(n)
+        frontier.extend(c.note(n).get("parentNoteIds") or [])
+    return False
+
+
+def _note_caller(as_: str | None, verb: str) -> bool:
+    """`_operator_only` for the note verbs, which also admits the board writer.
+
+    Returns True for the writer, whose call must then pass `_writer_inside`.
+    """
+    if as_ is not None and not (verb in WRITER_VERBS and _is_writer(as_)):
+        _operator_only(as_, verb)
+    return as_ is not None
+
+
+async def _writer_inside(verb: str, *note_ids: str) -> None:
+    """Refuse the writer's call unless every note it names sits under a root that
+    this host's ``AWM_TRILIUM_WRITER_ROOTS`` lists. The caller's word never sets
+    the subtree."""
+    roots = _writer_roots()
+    if not roots:
+        raise PermissionError(f"{verb}: this vault names no writer subtree")
+
+    def _check() -> None:
+        c = etapi.client()
+        for note_id in note_ids:
+            if not _inside(c, note_id, roots):
+                raise PermissionError(
+                    f"{verb} on {note_id} refused: the board writer acts only "
+                    f"under {', '.join(sorted(roots))}")
+    await asyncio.to_thread(_check)
+
+
 async def _agent_gate(args: dict, verb: str, *note_ids: str) -> None:
     """Refuse a session's write to a note that is not labelled for agents.
 
@@ -744,8 +824,11 @@ async def _h_export(args: dict, as_: str | None = None) -> dict:
 
 
 async def _h_note_upsert(args: dict, as_: str | None = None) -> dict:
-    _operator_only(as_, "note_upsert")
-    await _agent_gate(args, "note_upsert", (args.get("parent") or "").strip() or "root")
+    writer = _note_caller(as_, "note_upsert")
+    parent = (args.get("parent") or "").strip() or "root"
+    if writer:
+        await _writer_inside("note_upsert", parent)
+    await _agent_gate(args, "note_upsert", parent)
     title = (args.get("title") or "").strip()
     if not title:
         raise ValueError("title is required, and is matched exactly")
@@ -754,8 +837,7 @@ async def _h_note_upsert(args: dict, as_: str | None = None) -> dict:
         raise ValueError("content is required")
     return await asyncio.to_thread(
         etapi.client().upsert_note,
-        parent_note_id=(args.get("parent") or "").strip() or "root",
-        title=title, content=str(content),
+        parent_note_id=parent, title=title, content=str(content),
         type=(args.get("type") or "").strip() or "text")
 
 
@@ -801,8 +883,10 @@ def _note_id(args: dict, key: str = "note_id", default: str | None = None) -> st
 
 
 async def _h_note_get(args: dict, as_: str | None = None) -> dict:
-    _operator_only(as_, "note_get")
+    writer = _note_caller(as_, "note_get")
     note_id = _note_id(args)
+    if writer:
+        await _writer_inside("note_get", note_id)
     want_content = args.get("content", True) is not False
 
     def _read() -> dict:
@@ -816,8 +900,10 @@ async def _h_note_get(args: dict, as_: str | None = None) -> dict:
 
 
 async def _h_note_children(args: dict, as_: str | None = None) -> dict:
-    _operator_only(as_, "note_children")
+    writer = _note_caller(as_, "note_children")
     note_id = _note_id(args, default="root")
+    if writer:
+        await _writer_inside("note_children", note_id)
 
     def _read() -> dict:
         kids = etapi.client().children(note_id)
@@ -832,7 +918,7 @@ async def _h_note_children(args: dict, as_: str | None = None) -> dict:
 
 
 async def _h_note_search(args: dict, as_: str | None = None) -> dict:
-    _operator_only(as_, "note_search")
+    writer = _note_caller(as_, "note_search")
     query = (args.get("query") or "").strip()
     if not query:
         raise ValueError("query is required")
@@ -841,6 +927,8 @@ async def _h_note_search(args: dict, as_: str | None = None) -> dict:
         "fastSearch": args.get("fast", True) is not False,
     }
     ancestor = (args.get("ancestor") or "").strip()
+    if writer and ancestor:
+        await _writer_inside("note_search", ancestor)
     if ancestor:
         params["ancestorNoteId"] = ancestor
     # Trilium's search context appends "not archived" to every expression, and
@@ -848,12 +936,27 @@ async def _h_note_search(args: dict, as_: str | None = None) -> dict:
     # from a caller that owns notes inside it. Off by default, as upstream.
     if args.get("archived") is True:
         params["includeArchivedNotes"] = True
-    return await asyncio.to_thread(etapi.client().search, query, **params)
+
+    def _search() -> dict:
+        c = etapi.client()
+        out = c.search(query, **params)
+        if writer and not ancestor:
+            roots = _writer_roots()
+            out["results"] = [n for n in out.get("results") or []
+                              if _inside(c, n.get("noteId", ""), roots,
+                                         n.get("parentNoteIds") or [])]
+        return out
+    return await asyncio.to_thread(_search)
 
 
 async def _h_note_create(args: dict, as_: str | None = None) -> dict:
-    _operator_only(as_, "note_create")
-    await _agent_gate(args, "note_create", (args.get("parent") or "").strip() or "root")
+    writer = _note_caller(as_, "note_create")
+    parent = (args.get("parent") or "").strip() or "root"
+    wanted_id = (args.get("note_id") or "").strip() or None
+    # The writer may make a root of its own subtree, wherever it goes.
+    if writer and wanted_id not in _writer_roots():
+        await _writer_inside("note_create", parent)
+    await _agent_gate(args, "note_create", parent)
     title = (args.get("title") or "").strip()
     if not title:
         raise ValueError("title is required")
@@ -863,10 +966,10 @@ async def _h_note_create(args: dict, as_: str | None = None) -> dict:
     def _write() -> dict:
         c = etapi.client()
         made = c.create_note(
-            parent_note_id=(args.get("parent") or "").strip() or "root",
+            parent_note_id=parent,
             title=title, type=(args.get("type") or "").strip() or "text",
             content=str(args.get("content") or ""),
-            mime=(args.get("mime") or "").strip() or None)
+            mime=(args.get("mime") or "").strip() or None, note_id=wanted_id)
         note_id = made["note"]["noteId"]
         # A second call each, because ETAPI's create-note whitelist takes no
         # attributes. Doing it here is the point of the verb: every caller
@@ -881,8 +984,10 @@ async def _h_note_create(args: dict, as_: str | None = None) -> dict:
 
 
 async def _h_note_update(args: dict, as_: str | None = None) -> dict:
-    _operator_only(as_, "note_update")
+    writer = _note_caller(as_, "note_update")
     note_id = _note_id(args)
+    if writer:
+        await _writer_inside("note_update", note_id)
     await _agent_gate(args, "note_update", note_id)
     fields = {k: args[k] for k in ("title", "type", "mime")
               if args.get(k) not in (None, "")}
@@ -956,8 +1061,10 @@ async def _h_note_place(args: dict, as_: str | None = None) -> dict:
 
 
 async def _h_note_delete(args: dict, as_: str | None = None) -> dict:
-    _operator_only(as_, "note_delete")
+    writer = _note_caller(as_, "note_delete")
     note_id = _note_id(args)
+    if writer:
+        await _writer_inside("note_delete", note_id)
     await _agent_gate(args, "note_delete", note_id)
     if note_id == "root":
         raise ValueError(
@@ -990,8 +1097,10 @@ async def _h_note_clone(args: dict, as_: str | None = None) -> dict:
 
 
 async def _h_attrs_get(args: dict, as_: str | None = None) -> dict:
-    _operator_only(as_, "attrs_get")
+    writer = _note_caller(as_, "attrs_get")
     note_id = _note_id(args)
+    if writer:
+        await _writer_inside("attrs_get", note_id)
 
     def _read() -> dict:
         attrs = etapi.client().attributes(note_id)
@@ -1005,8 +1114,10 @@ async def _h_attrs_get(args: dict, as_: str | None = None) -> dict:
 
 
 async def _h_attr_set(args: dict, as_: str | None = None) -> dict:
-    _operator_only(as_, "attr_set")
+    writer = _note_caller(as_, "attr_set")
     note_id = _note_id(args)
+    if writer:
+        await _writer_inside("attr_set", note_id)
     await _agent_gate(args, "attr_set", note_id)
     name = (args.get("name") or "").strip().lstrip("#~")
     if not name:
@@ -1019,8 +1130,10 @@ async def _h_attr_set(args: dict, as_: str | None = None) -> dict:
 
 
 async def _h_attr_delete(args: dict, as_: str | None = None) -> dict:
-    _operator_only(as_, "attr_delete")
+    writer = _note_caller(as_, "attr_delete")
     note_id = _note_id(args)
+    if writer:
+        await _writer_inside("attr_delete", note_id)
     await _agent_gate(args, "attr_delete", note_id)
     name = (args.get("name") or "").strip().lstrip("#~")
     if not name:

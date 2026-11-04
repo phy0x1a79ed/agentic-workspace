@@ -74,33 +74,6 @@ def build_home(s: dict[str, Any]):
     return Home(store, ap, writer), writer
 
 
-async def control_socket(ap, path: Path) -> asyncio.AbstractServer:
-    """Local commands for an operator on alcor: ``enrol_link`` (R85). The socket is 0600."""
-    async def serve(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
-        try:
-            req = json.loads(await reader.readline() or b"{}")
-            if req.get("cmd") == "enrol_link":
-                out: Any = ap.enrol_link(int(req.get("minutes", 15)))
-                out.pop("token", None)
-            elif req.get("cmd") == "devices":
-                out = ap.devices()
-            else:
-                out = {"error": "commands: enrol_link, devices"}
-        except Exception as exc:  # report every failure back to the operator
-            out = {"error": str(exc)}
-        writer.write(json.dumps(out).encode() + b"\n")
-        await writer.drain()
-        writer.close()
-
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.unlink(missing_ok=True)
-    old = os.umask(0o177)
-    try:
-        return await asyncio.start_unix_server(serve, path=str(path))
-    finally:
-        os.umask(old)
-
-
 def operator_dm():
     """``dm(text)`` to Tony's direct message channel, or one that reports there is none."""
     from awm.config import operator_dm as target
@@ -250,7 +223,6 @@ async def start_home(home, writer, s: dict[str, Any], bg: list[asyncio.Task]) ->
 
     bg.append(asyncio.create_task(sweep_loop()))
     bg.append(asyncio.create_task(writer.run_forever()))
-    await control_socket(home.approver, s["dir"] / "control.sock")
     await door.serve(home, door.socket_path())
 
 

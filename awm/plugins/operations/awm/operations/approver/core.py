@@ -26,6 +26,7 @@ from urllib.parse import urlparse
 
 from verify_grant import b64u, canon, unb64u
 
+from awm.operations.api import PAYLOADS as API_PAYLOADS
 from awm.operations.approver import passkeys
 from awm.operations.approver.chain import (MESSAGE_FIELDS, fresh_head, next_head, passkey_challenge,
                                 unlock_challenge)
@@ -45,8 +46,9 @@ LOGIN_GRANT_S = 60
 WINDOW_MAX_MIN = 12 * 60
 MINUTES_MIN, MINUTES_MAX = 15, 1440
 
-REQUEST_KINDS = ("admin_ssh", "trust_raise", "invite", "browser_signin", "vault_hold",
-                 "device_enrol", "plugin_commits")
+#: What a relay may ask for, and device_enrol, which only enrol_ask opens.
+PAYLOADS = {**API_PAYLOADS, "device_enrol": ("name",)}
+REQUEST_KINDS = tuple(PAYLOADS)
 NODE_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 REQUEST_ID_RE = re.compile(r"^q[A-Za-z0-9_-]{12}$")
 COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
@@ -570,11 +572,7 @@ class Approver:
     # -- approval requests (fleet.md R97) ---------------------------------------------------
 
     def _check_payload(self, kind: str, node: str | None, payload: dict) -> None:
-        need = {"admin_ssh": ("pubkey", "nodes"), "trust_raise": ("session_id", "from", "to"),
-                "invite": ("perm", "reason", "holder_pubkey"), "browser_signin": ("seat", "site"),
-                "vault_hold": (), "device_enrol": ("name",),
-                "plugin_commits": ("change", "plugins")}[kind]
-        missing = [k for k in need if k not in payload]
+        missing = [k for k in PAYLOADS[kind] if k not in payload]
         if missing:
             raise ApproverError("bad_request", f"{kind} payload lacks {missing}")
         if kind == "admin_ssh":

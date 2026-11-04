@@ -8,6 +8,9 @@ service key that alcor's ``authorized_keys`` locks to one command:
 That command reads one JSON call from stdin, hands it to the operations service on a
 local unix socket and prints the answer. The key names the node, so a node cannot speak
 for another. The door does not depend on mizar or on the gateway.
+
+The same socket takes the operator's commands (``awm-operations enrol-link``, R85),
+but only from a process running as the service's own user.
 """
 
 from __future__ import annotations
@@ -16,6 +19,8 @@ import asyncio
 import json
 import logging
 import os
+import socket
+import struct
 import sys
 from pathlib import Path
 from typing import Any
@@ -34,14 +39,44 @@ def socket_path() -> Path:
                                Path.home() / ".awm" / "operations" / "door.sock"))
 
 
+OPERATOR_COMMANDS = ("enrol_link", "devices")
+
+
+def _peer_uid(writer: asyncio.StreamWriter) -> int | None:
+    sock = writer.get_extra_info("socket")
+    try:
+        creds = sock.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i"))
+    except (AttributeError, OSError):
+        return None
+    return struct.unpack("3i", creds)[1]
+
+
+def operator_command(home: Home, req: dict[str, Any]) -> Any:
+    """One local command from an operator on alcor (R85)."""
+    if req.get("cmd") == "enrol_link":
+        out = home.approver.enrol_link(int(req.get("minutes", 15)))
+        out.pop("token", None)
+        return out
+    if req.get("cmd") == "devices":
+        return home.approver.devices()
+    return {"error": f"commands: {', '.join(OPERATOR_COMMANDS)}"}
+
+
 async def serve(home: Home, path: Path) -> asyncio.AbstractServer:
-    """The service side: one call per connection, ``{node, verb, args}`` in, ``{ok, …}`` out."""
+    """The service side: one call per connection, ``{node, verb, args}`` in, ``{ok, …}`` out.
+
+    A ``{cmd}`` line is an operator command, refused unless the peer runs as this user.
+    """
     async def one(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         try:
             req = json.loads(await reader.readline() or b"{}")
-            result = await home.call(str(req.get("verb", "")), req.get("args") or {},
-                                     node=req.get("node"))
-            out: dict[str, Any] = {"ok": True, "result": result}
+            if "cmd" in req:
+                out: Any = (operator_command(home, req) if _peer_uid(writer) == os.getuid()
+                            else {"error": "operator commands run as the service's own user"})
+            else:
+                result = await home.call(str(req.get("verb", "")), req.get("args") or {},
+                                         node=req.get("node"))
+                out = {"ok": True, "result": result}
         except ValueError as exc:
             out = {"ok": False, "refused": True, "error": str(exc)}
         except Exception as exc:  # an internal fault is replayable, not a refusal
@@ -71,8 +106,6 @@ def forced_command(node: str, path: Path | None = None) -> int:
     if verb not in Home.VERBS:
         print(json.dumps({"ok": False, "refused": True, "error": f"the door does not take {verb!r}"}))
         return 0
-    import socket
-
     with socket.socket(socket.AF_UNIX) as s:
         s.settimeout(TIMEOUT_S)
         s.connect(str(path or socket_path()))

@@ -16,6 +16,15 @@ SID = _p("session_id", desc="An R9 session id (cc + hex) or a Claude session UUI
          "the calling session.")
 TID = _p("task_id", required=True, desc="The 8-character task id.")
 RID = _p("request_id", required=True)
+#: The payload fields each request kind needs. The approver checks against this table.
+PAYLOADS: dict[str, tuple[str, ...]] = {
+    "admin_ssh": ("pubkey", "nodes"), "trust_raise": ("session_id", "from", "to"),
+    "invite": ("perm", "reason", "holder_pubkey"), "browser_signin": ("seat", "site"),
+    "vault_hold": (), "plugin_commits": ("change", "plugins")}
+PAYLOAD_HELP = "; ".join(f"{k} {{{', '.join(v)}}}" for k, v in PAYLOADS.items()) + (
+    ". plugin_commits.plugins is [{plugin, commit, source?, from?}]: an install, or a move "
+    "from one commit to another (install.md R116 item 2). One request approves every plugin "
+    "commit of the change.")
 SHOWN = [_p("name", desc="The session's name, for the board."),
          _p("rc_url", desc="The session's Remote Control link, for the board.")]
 
@@ -62,15 +71,10 @@ VERBS: list[dict[str, Any]] = [
     {"name": "approval_request", "effect": "write",
      "description": "Ask Tony to approve an action on his passkey panel. Opens a Needs-you card "
      "and returns request_id and task_id. Expires after 24 h. Only your session can cancel it.",
-     "params": [_p("kind", required=True, desc="admin_ssh, trust_raise, invite, browser_signin, "
-                   "vault_hold or plugin_commits."),
+     "params": [_p("kind", required=True, desc=", ".join(PAYLOADS) + "."),
                 _p("node"), _p("reason", required=True),
                 _p("minutes", "integer", desc="Grant length, 15 to 1440. Default 15."),
-                _p("payload", "object", desc="admin_ssh {pubkey, nodes}; trust_raise {session_id, "
-                   "from, to}; invite {perm, reason, holder_pubkey}; browser_signin {seat, site}; "
-                   "vault_hold {}; plugin_commits {change, plugins: [{plugin, commit, source?, "
-                   "from?}]}: an install, or a move from one commit to another (install.md R116 "
-                   "item 2). One request approves every plugin commit of the change.")]},
+                _p("payload", "object", desc=PAYLOAD_HELP)]},
     {"name": "approval_get", "effect": "read",
      "description": "A request's status, with its grant and ssh certificate once approved.",
      "params": [RID]},

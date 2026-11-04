@@ -13,13 +13,13 @@ import json
 import os
 import socket
 import sys
-from pathlib import Path
 
 
 def _control(req: dict) -> dict:
-    d = Path(os.environ.get("AWM_APPROVER_DIR", Path.home() / ".awm" / "approver"))
+    from awm.operations.door import socket_path
+
     with socket.socket(socket.AF_UNIX) as s:
-        s.connect(str(d / "control.sock"))
+        s.connect(str(socket_path()))
         s.sendall(json.dumps(req).encode() + b"\n")
         return json.loads(s.makefile().readline())
 
@@ -32,7 +32,7 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("devices", help="list enrolled devices")
     b = sub.add_parser("board-install", help="upsert the board page notes on deneb's vault")
     b.add_argument("--approver-origin",
-                   default=os.environ.get("AWM_APPROVER_ORIGIN", "https://approve.tony-xy-liu.com"))
+                   default=os.environ.get("AWM_APPROVER_ORIGIN", "https://auth.tony-xy-liu.com"))
     b.add_argument("--parent", default=os.environ.get("AWM_TRILIUM_BOARD_PARENT", "root"))
     b.add_argument("--peer", default=os.environ.get("AWM_BOARD_PEER", "deneb"))
     d = sub.add_parser("door", help="the singleton door's locked command; reads one call on stdin")

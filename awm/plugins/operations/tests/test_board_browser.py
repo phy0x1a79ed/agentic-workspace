@@ -5,8 +5,13 @@ Needs a running Trilium: ``AWM_TEST_TRILIUM="URL TOKEN"`` from tests/trilium-up.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import os
+import sys
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -14,12 +19,12 @@ from awm.operations.approver.core import Approver, Config
 from awm.operations.approver.server import create_app
 from awm.operations import board
 from awm.operations.board import card_note_id
+from awm.operations.relay import Refused
 from awm.operations.trilium import TriliumTool
 from awm.operations.store import Store
 from awm.operations.writer import Writer
 
 from conftest import FakeTools
-from etapi_tool import EtapiTool
 from test_panel_browser import Server, chromium_env, free_port, wait_for
 
 playwright = pytest.importorskip("playwright.sync_api")
@@ -35,14 +40,40 @@ def trilium():
     return url, token
 
 
+class VaultTool:
+    """The real ``trilium`` tool's handlers against the test vault, called as alcor's writer.
+
+    The handlers send no credential, because the vault's own login is off on deneb.
+    The test container keeps its login, so its token rides on every request.
+    """
+
+    def __init__(self, url: str, token: str, monkeypatch: pytest.MonkeyPatch) -> None:
+        sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "services" / "trilium"))
+        from awm import config
+        from awm.trilium import etapi, hub_adapter
+
+        self.handlers, self.errors = hub_adapter.HANDLERS, (etapi.EtapiError, PermissionError)
+        request = etapi.httpx.request
+        monkeypatch.setattr(config, "VAULT_URL", url.rstrip("/"))
+        monkeypatch.setattr(etapi.httpx, "request", lambda method, u, headers=None, **kw: request(
+            method, u, headers={**(headers or {}), "Authorization": token}, **kw))
+
+    def call_sync(self, verb: str, args: dict[str, Any], **_: Any) -> Any:
+        coro = self.handlers[verb](dict(args), "peer:alcor")
+        try:  # on its own thread: Playwright's sync API holds this one's loop
+            with ThreadPoolExecutor(1) as pool:
+                return pool.submit(asyncio.run, coro).result()
+        except self.errors as exc:
+            raise Refused(str(exc)) from None
+
+
 @pytest.fixture
-def stack(tmp_path, keys, trilium):
+def stack(tmp_path, keys, trilium, monkeypatch):
     url, token = trilium
     port = free_port()
     origin = f"http://localhost:{port}"
     store = Store(tmp_path / "queue.db")
-    http = EtapiTool(url, token)
-    api = TriliumTool(tool=http)
+    api = TriliumTool(tool=VaultTool(url, token, monkeypatch))
     writer = Writer(store, api)
     store.body_reader = writer.read_body
     ap = Approver(tmp_path / "approver.db", keys, Config(origin=origin, allowed_orders={"spawn": ["*"]}),
@@ -51,7 +82,6 @@ def stack(tmp_path, keys, trilium):
     board.install(api, origin)  # also refreshes the page notes from board/
     yield ap, store, writer, srv, origin, url
     srv.stop()
-    http.close()
 
 
 def test_board_in_trilium(stack):
