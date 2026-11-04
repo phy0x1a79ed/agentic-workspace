@@ -440,13 +440,19 @@ FUNCTIONS: list[dict[str, Any]] = [{'name': 'message_self',
   'tool': 'reflection_resume_other',
   'description': 'Bring back a waiting job that `start_other` created, under the same '
                  'job id and with its own conversation (`claude respawn`), and re-pin '
-                 'it if it was pinned. A resume by hand clears the job\'s wait. Refuses '
-                 'a running job, a removed job, a job whose transcript is gone, and a '
-                 'job that `start_other` did not create.',
+                 'it if it was pinned. A retired session, whose job is gone, comes back '
+                 'in a new job from its transcript under the same session id '
+                 '(sessions.md R10). A resume by hand clears the job\'s wait. Refuses '
+                 'a running job, a session whose transcript is gone, and a job that '
+                 '`start_other` did not create.',
   'params': [{'name': 'job',
               'type': 'string',
               'required': True,
-              'description': 'The job id `start_other` returned.'}],
+              'description': 'The job id `start_other` returned, or the session id of '
+                             'a retired session.'},
+             {'name': 'prompt',
+              'type': 'string',
+              'description': 'The first message the resumed session gets.'}],
   'timeout': 90,
   'effect': 'write'},
  {'name': 'adopt_other',

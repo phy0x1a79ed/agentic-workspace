@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import os
 import time
 
@@ -1679,6 +1680,69 @@ def test_an_unpinned_job_resumes_unpinned(home, respawned, monkeypatch):
 def test_resume_refuses_a_job_cx_did_not_start(home, respawned):
     out = resume({"job": CHILD_JOB})
     assert not out["ok"] and "not started by" in out["reason"] and not respawned
+
+
+@pytest.fixture
+def relaunched(home, monkeypatch):
+    """A launcher that registers a new job for a resume from the transcript."""
+    from awm.cch import lifecycle
+    from awm.claudedaemon import roster
+
+    calls: list[dict] = []
+
+    async def fake(**kw):
+        calls.append(kw)
+        home.add("feedface", kw["name"], os.getppid(), cwd=str(kw["cwd"]))
+        return next(s for s in roster.load(kw["roster_path"], kw["jobs_dir"])
+                    if s.short == "feedface")
+
+    monkeypatch.setattr(lifecycle.launch, "launch", fake)
+    return calls
+
+
+RETIRED = "0e380e38-0e38-0e38-0e38-0e380e380e38"
+
+
+def retired_transcript(home, monkeypatch, cwd):
+    transcripts = home.root / "transcripts"
+    monkeypatch.setenv("AWM_CX_TRANSCRIPTS", str(transcripts))
+    slug = transcripts / re.sub(r"[^A-Za-z0-9]", "-", str(cwd))
+    slug.mkdir(parents=True, exist_ok=True)
+    (slug / f"{RETIRED}.jsonl").write_text(
+        json.dumps({"type": "user", "cwd": str(cwd)}) + "\n"
+        + json.dumps({"type": "user", "cwd": "/somewhere/it/moved"}) + "\n")
+
+
+def test_a_retired_session_resumes_from_its_transcript_in_a_new_job(home, relaunched, monkeypatch):
+    cwd = home.projects / "awm" / "demo"
+    retired_transcript(home, monkeypatch, cwd)
+    out = resume({"job": RETIRED, "prompt": "carry on"})
+    assert out["ok"] and out["from_transcript"] and out["job"] == "feedface"
+    assert out["session_id"] == "cc" + RETIRED.replace("-", "")
+    call = relaunched[0]
+    assert f"--resume={RETIRED}" in call["flags"] and call["cwd"] == str(cwd)
+    assert call["prompt"] == "carry on" and call["name"] == "resumed-0e380e38"
+    from awm.cch import lifecycle
+
+    assert lifecycle.read_lineage("feedface")["session_id"] == RETIRED
+
+
+def test_a_removed_job_with_a_kept_lineage_resumes_from_the_transcript(home, relaunched, monkeypatch):
+    cwd = home.projects / "awm" / "demo"
+    retired_transcript(home, monkeypatch, cwd)
+    lineage(CHILD_JOB, name="redux/worker", session_id=RETIRED, remote_control="redux-worker",
+            brief_text="You are a worker session.")
+    out = resume({"job": CHILD_JOB})
+    assert out["ok"] and out["name"] == "redux/worker"
+    flags = relaunched[0]["flags"]
+    assert "--remote-control=redux-worker" in flags
+    assert "--append-system-prompt=You are a worker session." in flags
+
+
+def test_a_retired_session_with_no_transcript_is_refused(home, relaunched, monkeypatch):
+    monkeypatch.setenv("AWM_CX_TRANSCRIPTS", str(home.root / "transcripts"))
+    out = resume({"job": RETIRED})
+    assert not out["ok"] and "no transcript" in out["reason"] and not relaunched
 
 
 def test_resume_refuses_a_removed_job(home, respawned, monkeypatch):

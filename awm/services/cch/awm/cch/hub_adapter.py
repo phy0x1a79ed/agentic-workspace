@@ -136,7 +136,8 @@ API_MANIFEST: dict[str, Any] = {
         _verb("stop", "Stop a session and remove its job. With keep, the job "
             "stays and a resume brings it back: only a wait keeps it.", _TARGET + [
                 _p("keep", "boolean"), _p("confirm", "boolean")], timeout=30),
-        _verb("resume", "Bring back a stopped session from its transcript.",
+        _verb("resume", "Bring back a stopped session, or a retired one in a new job, "
+            "from its transcript.",
             _TARGET + [_p("prompt"), _p("adopt_lineage", "boolean",
                        "Resume a job that start did not create.")], timeout=90),
         _verb("set", "Set a session's model, effort, name or folder.", _TARGET + [
@@ -612,6 +613,60 @@ async def _revive_pinned(args: dict) -> dict:
     return {"ok": not failed, "revived": revived, "live": still, "failed": failed}
 
 
+BOOT_ID = "/proc/sys/kernel/random/boot_id"
+REVIVE_TRIES = 10
+REVIVE_WAIT_S = 30.0
+_revive_task: Optional[asyncio.Task] = None
+
+
+def _boot_mark() -> "os.PathLike[str]":
+    return config.state_dir() / "pinned-revived-boot"
+
+
+def _first_start_this_boot() -> bool:
+    """Whether cch starts for the first time since the host booted, recording that it has.
+
+    No mark yet is a first install, not a reboot: it records the boot and revives nothing.
+    """
+    try:
+        with open(BOOT_ID) as fp:
+            boot = fp.read().strip()
+    except OSError:
+        return False
+    mark = _boot_mark()
+    try:
+        before = mark.read_text().strip()
+    except OSError:
+        before = None
+    try:
+        mark.parent.mkdir(parents=True, exist_ok=True)
+        mark.write_text(boot)
+    except OSError as exc:
+        log.warning("cch: could not record the boot: %s", exc)
+        return False
+    return before is not None and before != boot
+
+
+async def _revive_after_boot() -> None:
+    """Bring back the pinned jobs a host reboot ended, once the daemon is up (fleet.md R139)."""
+    if not await asyncio.to_thread(_first_start_this_boot):
+        return
+    for _ in range(REVIVE_TRIES):
+        try:
+            await lifecycle.ensure_daemon("revived")
+        except lifecycle.Refused as exc:
+            log.info("cch: waiting for the daemon to revive pinned jobs: %s", exc)
+            await asyncio.sleep(REVIVE_WAIT_S)
+            continue
+        out = await _revive_pinned({})
+        log.info("cch: after the reboot, revived %s, still live %s, failed %s",
+                 out["revived"], out["live"], out["failed"])
+        if out["ok"]:
+            return
+        await asyncio.sleep(REVIVE_WAIT_S)
+    log.error("cch: pinned jobs not all revived after the reboot")
+
+
 def _pending(args: dict) -> dict:
     now = int(time.time() * 1000)
     return {"ok": True, "pending": [
@@ -679,9 +734,11 @@ def _replay() -> None:
 
 
 def _on_start() -> None:
+    global _revive_task
     _replay()
     keep_adapter._on_start()
     cx_adapter._on_start()
+    _revive_task = asyncio.get_running_loop().create_task(_revive_after_boot())
 
 
 async def main() -> None:

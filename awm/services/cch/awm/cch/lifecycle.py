@@ -82,6 +82,7 @@ _MODEL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._\[\]:-]*$")
 _MODE = sessionmode.MODE_PATTERN
 _RC_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 _JOB = sessionmode.JOB_PATTERN
+_UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 #: A task id (sessions.md R58): the first 8 characters of a urlsafe base64 UUID.
 _TASK_ID = re.compile(r"^[A-Za-z0-9_-]{8}$")
 TASK_ROLES = ("main", "worker")
@@ -304,7 +305,9 @@ async def _start(args: dict[str, Any], as_: str | None) -> dict[str, Any]:
             # is adopted the declared mode applies to it by name.
             raise Refused(f"the session did not start: {exc}") from exc
         try:
-            _write_lineage(session.short, {**record, "job": session.short})
+            _write_lineage(session.short, {**record, "job": session.short,
+                                           "session_id": session.session_id,
+                                           "brief_text": spec.get("brief_text")})
         except OSError as exc:
             raise Refused(f"started {session.short} but could not record it "
                           f"({exc}); the pending record keeps its mode") from exc
@@ -1005,10 +1008,15 @@ async def resume(args: dict[str, Any], as_: str | None = None) -> dict[str, Any]
 async def _resume(args: dict[str, Any], as_: str | None) -> dict[str, Any]:
     reason = station_refusal() or caller_refusal(as_)
     job = args.get("job")
-    if not reason and (not isinstance(job, str) or not _JOB.match(job)):
-        reason = "job must be a job id"
+    if not reason and (not isinstance(job, str) or not (_JOB.match(job) or _UUID.match(job))):
+        reason = "job must be a job id or a session id"
     if reason:
         raise Refused(reason)
+    if _UUID.match(job):
+        found = _job_of_session(job)
+        if found is None:
+            return await _resume_retired(job, None, args)
+        job = found
     rec = read_lineage(job)
     if rec is None:
         raise Refused(f"job {job} was not started by reflection start_other, so it "
@@ -1018,6 +1026,8 @@ async def _resume(args: dict[str, Any], as_: str | None) -> dict[str, Any]:
         raise Refused(reason)
     state = _read_json(config.jobs_dir() / job / "state.json")
     if not state:
+        if isinstance(rec.get("session_id"), str):
+            return await _resume_retired(rec["session_id"], rec, args)
         raise Refused(f"job {job} has no state record; it was removed")
     session_id = state.get("sessionId")
     if not isinstance(session_id, str) or not _transcript_exists(session_id):
@@ -1038,6 +1048,101 @@ async def _resume(args: dict[str, Any], as_: str | None) -> dict[str, Any]:
             "project": rec.get("project"), "scope": rec.get("scope"),
             "attach": f"claude attach {job}", "pinned": pinned,
             **await _started_link(job, bool(rec.get("remote_control")))}
+
+
+def _job_of_session(session_id: str) -> str | None:
+    """The job that still holds ``session_id``: in its state record, else in its lineage."""
+    try:
+        for state in config.jobs_dir().glob("*/state.json"):
+            if _read_json(state).get("sessionId") == session_id:
+                return state.parent.name
+    except OSError:
+        pass
+    for job, rec in _lineage_records().items():
+        if rec.get("session_id") == session_id:
+            return job
+    return None
+
+
+def _transcript_cwd(path: Path) -> str | None:
+    """Where the session last worked, among the folders its transcript's directory names.
+
+    Claude Code files a transcript under a slug of the folder the session started
+    in, and `--resume` looks there. A later folder whose slug differs, after a
+    move, would not find the transcript, so the folder that matches wins.
+    """
+    last, matching = None, None
+    try:
+        with path.open(encoding="utf-8") as fp:
+            for line in fp:
+                try:
+                    cwd = json.loads(line).get("cwd")
+                except (ValueError, AttributeError):
+                    continue
+                if isinstance(cwd, str) and cwd:
+                    last = cwd
+                    if re.sub(r"[^A-Za-z0-9]", "-", cwd) == path.parent.name:
+                        matching = cwd
+    except OSError:
+        return None
+    return matching or last
+
+
+async def _resume_retired(session_id: str, rec: dict[str, Any] | None,
+                          args: dict[str, Any]) -> dict[str, Any]:
+    """Start a new job from a retired session's transcript, under the same session id (sessions.md R10).
+
+    The job is gone, so `claude --bg --resume` continues the conversation in a
+    new job. The lineage record, while it lasts, gives the name, the mode and
+    the brief back.
+    """
+    rec = rec or {}
+    reason = _caller_refusal_for(args.get("_caller_pid"), rec, "resume")
+    if reason:
+        raise Refused(reason)
+    transcript = next(iter(sorted(config.transcripts_dir().glob(f"*/{session_id}.jsonl"),
+                                  key=lambda p: p.stat().st_mtime, reverse=True)), None)
+    if transcript is None:
+        raise Refused(f"session {session_id} has no transcript left to resume")
+    cwd = _transcript_cwd(transcript)
+    if not cwd or not os.path.isdir(cwd):
+        raise Refused(f"session {session_id} worked in {cwd or 'a folder its transcript does not name'}, "
+                      "which is not on this node any more")
+    name = args.get("name") or rec.get("name") or f"resumed-{session_id[:8]}"
+    spec = _parse({"name": name, "project": rec.get("project"), "scope": rec.get("scope"),
+                   "model": rec.get("model"), "mode": rec.get("mode"),
+                   "remote_control": rec.get("remote_control") or None, "brief": False})
+    spec["brief_text"] = rec.get("brief_text")
+    await ensure_daemon("resumed")
+    async with _START_LOCK:
+        if _name_taken(spec["name"]):
+            raise Refused(f"a live session is already named {spec['name']!r}")
+        try:
+            session = await launch.launch(
+                cwd=cwd, name=spec["name"], flags=[*build_flags(spec), f"--resume={session_id}"],
+                env={}, prompt=args.get("prompt") or None, claude=config.claude_bin(),
+                unit_prefix="awm-cx-resume", roster_path=config.roster_path(),
+                jobs_dir=config.jobs_dir(),
+                accept=lambda s: spec["name"] in (s.seed_name, s.name))
+        except launch.Refused as exc:
+            raise Refused(str(exc)) from exc
+        except (TimeoutError, OSError) as exc:
+            raise Refused(f"the session did not resume: {exc}") from exc
+        project, scope = _project_scope(cwd)
+        if project is None:
+            project, scope = rec.get("project"), rec.get("scope")
+        _write_lineage(session.short, {
+            **{k: v for k, v in rec.items() if k != "job"}, "job": session.short,
+            "name": spec["name"], "cwd": cwd, "project": project, "scope": scope,
+            "remote_control": spec["remote_control"], "session_id": session_id,
+            "resumed_from": rec.get("job"), "started_at": _iso(time.time()),
+            "started_epoch": time.time(), "pinned": False})
+    log.info("cx: resumed retired session %s as %s in %s", session_id, session.short, cwd)
+    return {"ok": True, "job": session.short, "session_id": ids.to_r9(session_id),
+            "name": spec["name"], "node": node_name(), "project": project, "scope": scope,
+            "cwd": cwd, "attach": f"claude attach {session.short}", "pinned": False,
+            "from_transcript": True,
+            **await _started_link(session.short, bool(spec["remote_control"]))}
 
 
 def _transcript_exists(session_id: str) -> bool:
