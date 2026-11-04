@@ -37,7 +37,7 @@ def _post(report: dict) -> None:
     lines += [f"- removed {r['project']}/{r['scope']} (restore: scope create on branch {r['branch']})" for r in removed]
     lines += [f"- held {h['project']}/{h['scope']}: {h['why']}" for h in held]
     try:
-        gatewayclient.call_sync("reporting", "ops_post", {
+        gatewayclient.call_sync("operations", "ops_post", {
             "kind": "scope-hygiene", "node": node_name(),
             "title": f"Scope hygiene: {len(removed)} removed, {len(held)} held",
             "body": "\n".join(lines)}, timeout=60)

@@ -1,7 +1,6 @@
 [plugin]
 name = "journal"
 version = "0.1.0"
-trust = "own"
 
 [[service]]
 name = "journal"
@@ -25,3 +24,15 @@ platform = ["linux"]
 [[needs.tool]]
 name = "scope"
 major = 1
+verbs = ["resolve"]
+
+[[needs.tool]]
+name = "search"
+major = 1
+verbs = ["query"]
+
+[[needs.tool]]
+name = "reflection"
+major = 1
+verbs = ["start_other", "session_of"]
+

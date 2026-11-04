@@ -146,9 +146,7 @@ async def _tell_operator(text: str) -> None:
         log.warning("keep: no operator DM on this node; %s", text)
         return
     account, channel = target
-    await gatewayclient.call_maybe_peer(
-        gatewayclient.peer_env("AWM_SOCIAL_PEER"), "social", "send",
-        {"account": account, "channel": channel, "text": text})
+    await gatewayclient.call("social", "send", {"account": account, "channel": channel, "text": text}, peer=gatewayclient.peer_env("AWM_SOCIAL_PEER"))
 
 
 async def memory_tick(now: float | None = None) -> None:

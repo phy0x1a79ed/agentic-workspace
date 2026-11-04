@@ -117,7 +117,7 @@ def _no_live_gateway(monkeypatch):
     async def _refuse(*_a, **_kw):
         raise RuntimeError("test tried to reach the live gateway")
 
-    monkeypatch.setattr(ssh_service.gatewayclient, "call_maybe_peer", _refuse)
+    monkeypatch.setattr(ssh_service.gatewayclient, "call", lambda tool, verb, args=None, *, peer=None, **kw: (_refuse)(peer, tool, verb, args, **kw))
     monkeypatch.setattr(ssh_service.gatewayclient, "call", _refuse)
 
 
@@ -717,8 +717,8 @@ class TestStateMachine:
             return await _fake_call(service, verb, args, **kw)
 
         monkeypatch.setattr(ssh_service.gatewayclient, "call", _fake_call)
-        monkeypatch.setattr(ssh_service.gatewayclient, "call_maybe_peer",
-                            _fake_maybe_peer)
+        monkeypatch.setattr(ssh_service.gatewayclient, "call",
+                            lambda tool, verb, args=None, *, peer=None, **kw: (_fake_maybe_peer)(peer, tool, verb, args, **kw))
         monkeypatch.setattr(ssh_service.asyncio, "create_subprocess_exec", _spawn)
         monkeypatch.setattr(svc, "_check_master", _true)    # master appears at once
 
@@ -1322,7 +1322,7 @@ class TestApproveObservability:
         async def _boom(*_a, **_kw):
             raise RuntimeError("discord is down")
 
-        monkeypatch.setattr(ssh_service.gatewayclient, "call_maybe_peer", _boom)
+        monkeypatch.setattr(ssh_service.gatewayclient, "call", lambda tool, verb, args=None, *, peer=None, **kw: (_boom)(peer, tool, verb, args, **kw))
         await svc._on_approve_event({
             "command": "approve", "device": cfg.twofa_device,
             "account": "discord-bot", "channel_id": "123",
@@ -1337,7 +1337,7 @@ class TestApproveObservability:
             sent.append((service, fn, args))
             return {"ok": True}
 
-        monkeypatch.setattr(ssh_service.gatewayclient, "call_maybe_peer", _capture)
+        monkeypatch.setattr(ssh_service.gatewayclient, "call", lambda tool, verb, args=None, *, peer=None, **kw: (_capture)(peer, tool, verb, args, **kw))
         svc = SSHService()
         cfg = resolve_host("fir")
         await svc._on_approve_event({
@@ -1360,7 +1360,7 @@ class TestApproveObservability:
             sent.append(a)
             return {"ok": True}
 
-        monkeypatch.setattr(ssh_service.gatewayclient, "call_maybe_peer", _capture)
+        monkeypatch.setattr(ssh_service.gatewayclient, "call", lambda tool, verb, args=None, *, peer=None, **kw: (_capture)(peer, tool, verb, args, **kw))
         svc = SSHService()
         await svc._on_approve_event({"command": "something-else"})
         assert sent == []
@@ -1397,7 +1397,7 @@ class TestReceiveTest:
                                   "nonce": args["nonce"]})
             return {"ok": True}
 
-        monkeypatch.setattr(ssh_service.gatewayclient, "call_maybe_peer", _emit)
+        monkeypatch.setattr(ssh_service.gatewayclient, "call", lambda tool, verb, args=None, *, peer=None, **kw: (_emit)(peer, tool, verb, args, **kw))
         svc._approve_sub = object()   # a listener exists
         result = await svc.receive_test(timeout=2.0)
         assert result["received"] is True
@@ -1412,8 +1412,8 @@ class TestReceiveTest:
         async def _emit_into_the_void(*_a, **_kw):
             return {"ok": True}
 
-        monkeypatch.setattr(ssh_service.gatewayclient, "call_maybe_peer",
-                            _emit_into_the_void)
+        monkeypatch.setattr(ssh_service.gatewayclient, "call",
+                            lambda tool, verb, args=None, *, peer=None, **kw: (_emit_into_the_void)(peer, tool, verb, args, **kw))
         svc._approve_sub = object()
         with pytest.raises(RuntimeError, match="DEAF"):
             await svc.receive_test(timeout=0.2)
@@ -1427,8 +1427,8 @@ class TestReceiveTest:
         async def _no_such_verb(*_a, **_kw):
             raise RuntimeError("unknown function emit_probe")
 
-        monkeypatch.setattr(ssh_service.gatewayclient, "call_maybe_peer",
-                            _no_such_verb)
+        monkeypatch.setattr(ssh_service.gatewayclient, "call",
+                            lambda tool, verb, args=None, *, peer=None, **kw: (_no_such_verb)(peer, tool, verb, args, **kw))
         svc._approve_sub = object()
         with pytest.raises(RuntimeError) as exc:
             await svc.receive_test(timeout=0.2)
@@ -1456,7 +1456,7 @@ class TestActiveSignalUnlock:
                 return reachability if reachability is not None else {}
             return {}
 
-        monkeypatch.setattr(ssh_service.gatewayclient, "call_maybe_peer", _call)
+        monkeypatch.setattr(ssh_service.gatewayclient, "call", lambda tool, verb, args=None, *, peer=None, **kw: (_call)(peer, tool, verb, args, **kw))
         return calls
 
     async def test_timeout_while_the_approver_was_dead_is_self_attributed(
@@ -1758,7 +1758,7 @@ class TestArbiterAttribution:
             return _Lease()
 
         monkeypatch.setattr(ssh_service.gatewayclient,
-                            "acquire_lease_maybe_peer", _acquire)
+                            "acquire_lease", lambda service, host, *, peer=None, **kw: (_acquire)(peer, service, host, **kw))
         svc = SSHService()
         await svc._connect_via_arbiter_peer(resolve_host("fir"), "mira")
         assert seen["node"] == ssh_service._NODE_NAME
@@ -1969,7 +1969,7 @@ class TestNothingWasSpent:
                 return {} if seen is None else {"transactions_seen": seen}
             return {}
 
-        monkeypatch.setattr(ssh_service.gatewayclient, "call_maybe_peer", _call)
+        monkeypatch.setattr(ssh_service.gatewayclient, "call", lambda tool, verb, args=None, *, peer=None, **kw: (_call)(peer, tool, verb, args, **kw))
 
     async def _saw_nothing(self, monkeypatch, *, armed, now):
         svc = SSHService()
@@ -2003,7 +2003,7 @@ class TestNothingWasSpent:
         async def _boom(*a, **k):
             raise RuntimeError("2fa unreachable")
 
-        monkeypatch.setattr(ssh_service.gatewayclient, "call_maybe_peer", _boom)
+        monkeypatch.setattr(ssh_service.gatewayclient, "call", lambda tool, verb, args=None, *, peer=None, **kw: (_boom)(peer, tool, verb, args, **kw))
         svc = SSHService()
         rec = ssh_service._AttemptRecord(spawned=True, twofa_seen_at_arm=7)
         assert await svc._duo_saw_nothing(resolve_host("fir"), rec) is False
@@ -2036,7 +2036,7 @@ class TestNothingWasSpent:
             rec.twofa_seen_at_arm = 4
             raise ssh_service._AttemptFailed("no master")
 
-        monkeypatch.setattr(ssh_service.gatewayclient, "call_maybe_peer", _call)
+        monkeypatch.setattr(ssh_service.gatewayclient, "call", lambda tool, verb, args=None, *, peer=None, **kw: (_call)(peer, tool, verb, args, **kw))
         monkeypatch.setattr(svc, "_check_master", _false)
         monkeypatch.setattr(svc, "_attempt_master", _hang_after_spawn)
 
@@ -2123,8 +2123,8 @@ class TestDependenciesBeforeTheLogin:
             spawned.append(a)
             raise AssertionError("no push may fire without the approver")
 
-        monkeypatch.setattr(ssh_service.gatewayclient, "call_maybe_peer",
-                            _mira_restarting)
+        monkeypatch.setattr(ssh_service.gatewayclient, "call",
+                            lambda tool, verb, args=None, *, peer=None, **kw: (_mira_restarting)(peer, tool, verb, args, **kw))
         monkeypatch.setattr(ssh_service.asyncio, "create_subprocess_exec", _spawn)
         monkeypatch.setattr(svc, "_check_master", _false)
 
@@ -2141,7 +2141,7 @@ class TestDependenciesBeforeTheLogin:
             raise ConnectionError("Connect call failed")
 
         monkeypatch.setattr(ssh_service.gatewayclient,
-                            "acquire_lease_maybe_peer", _down)
+                            "acquire_lease", lambda service, host, *, peer=None, **kw: (_down)(peer, service, host, **kw))
         result = await SSHService()._connect_via_arbiter_peer(
             resolve_host("sockeye"), "mira")
 

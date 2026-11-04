@@ -74,28 +74,6 @@ def bound_caller(as_: str | None) -> Iterator[None]:
         _CALLER_AS.reset(token)
 
 
-def is_peer_stamp(as_: str | None) -> bool:
-    """Whether ``as_`` is a peer identity: the legacy bare ``peer`` or ``peer:<anything>``.
-
-    Case and surrounding space are ignored, so a malformed stamp fails closed."""
-    if not isinstance(as_, str):
-        return False
-    stamp = as_.strip().lower()
-    return stamp == "peer" or stamp.startswith("peer:")
-
-
-def _book_writer_only(verb: str) -> None:
-    """Refuse a peer-book write that arrived under a peer identity.
-
-    Only this node changes its own book, so the refusal holds for every peer,
-    whatever its edges. No stamp (the local CLI) and a non-peer stamp
-    (a placed agent, an operator session) pass."""
-    if is_peer_stamp(_CALLER_AS.get()):
-        raise PermissionError(
-            f"peer {verb} changes this node's peer book: run it on this node, "
-            "not through an edge")
-
-
 # ---------------------------------------------------------------------------
 # Local handlers — run in-process on the gateway. Lazy imports inside each so
 # this module stays import-cheap and free of catalog/registry import cycles.
@@ -681,114 +659,11 @@ async def _op_services_reap(req: ReapRequest) -> dict[str, Any]:
     return await reap_orphans(dry_run=req.dry_run)
 
 
-# ---------------------------------------------------------------------------
-# Peer directory — the federation address book. The gateway is a resolver, never
-# a relay: these ops manage a name→(edge URL, ssh alias) book; a cross-peer call
-# resolves the address here then talks to the peer's edge directly.
-# ---------------------------------------------------------------------------
-
-
-class PeerJoinRequest(BaseModel):
-    """Body for ``peer join`` — record a peer node in the address book."""
-
-    name: str
-    edge_url: str
-    ssh_alias: str | None = None
-    public_key: str | None = None
-
-
-class PeerSetRequest(BaseModel):
-    """Body for ``peer set`` — change a recorded peer's pinned key."""
-
-    name: str
-    public_key: str | None = None
-
-
-def _op_peer_join(req: PeerJoinRequest) -> dict[str, Any]:
-    """Record (or update) a peer: name → HTTPS edge URL + ssh alias + pinned key.
-
-    Local to this node's book. Run it on both nodes to make the relationship
-    mutual (each side records the other) — the gateway never syncs peers.
-    """
-    _book_writer_only("join")
-    from awm.gateway import peers
-
-    return {"peer": peers.add(
-        req.name, req.edge_url, req.ssh_alias, public_key=req.public_key)}
-
-
-def _op_peer_add(req: PeerJoinRequest) -> dict[str, Any]:
-    """Same as ``peer join``, under its own verb name in the refusal."""
-    _book_writer_only("add")
-    return _op_peer_join(req)
-
-
-def _op_peer_set(req: PeerSetRequest) -> dict[str, Any]:
-    """Pin a recorded peer's public key and recompute its fingerprint."""
-    _book_writer_only("set")
-    from awm.gateway import peers
-
-    return {"peer": peers.update(req.name, public_key=req.public_key)}
-
-
-def _op_peer_list() -> dict[str, Any]:
-    """List every recorded peer with its full record."""
-    from awm.gateway import peers
-
-    return {"peers": peers.list_all()}
-
-
-def _op_peer_resolve(name: str) -> dict[str, Any]:
-    """Resolve one peer name to its full record (edge URL, ssh alias, key). 404 if unknown.
-
-    Pure directory lookup — it returns an address and never proxies. Callers use
-    the address to reach the peer's edge directly.
-    """
-    from awm.gateway import peers
-
-    entry = peers.resolve(name)
-    if entry is None:
-        raise FileNotFoundError(f"unknown peer: {name}")
-    return {"peer": entry}
-
-
-def _peer_key_params() -> list[Param]:
-    return [
-        Param(name="public_key", type="string", required=False, cli_type="option",
-              description="Peer's ed25519 public key, base64 of the raw 32 bytes."),
-    ]
-
-
-def _peer_join_params() -> list[Param]:
-    return [
-        Param(name="name", type="string", required=True, cli_type="argument",
-              description="Peer node name (single token; the value of peer= "
-                          "in a domain call)."),
-        Param(name="edge_url", type="string", required=True, cli_type="argument",
-              description="Peer HTTPS edge URL (bare host:port → https://)."),
-        Param(name="ssh_alias", type="string", required=False, cli_type="option",
-              description="ssh host for the $AWM_PEER_CRED fetch (default: name)."),
-        *_peer_key_params(),
-    ]
-
-
-def _op_peer_forget(name: str) -> dict[str, Any]:
-    """Remove a peer from this node's book."""
-    _book_writer_only("forget")
-    from awm.gateway import peers
-
-    entry = peers.remove(name)
-    if entry is None:
-        raise FileNotFoundError(f"unknown peer: {name}")
-    return {"forgot": entry}
-
-
 async def _op_peer_providers(tool: str | None = None, refresh: bool = False,
                              verbs: bool = False) -> dict[str, Any]:
     """Which fleet nodes can serve an MCP tool, and which one it defaults to.
 
-    The companion of the address book: ``peer_resolve`` says *where a node is*,
-    this says *what a node can do*. It answers from the same resolution
+    It answers from the same resolution
     that fills each MCP tool's ``peer`` enum, so ``awm peer providers`` and what an
     agent sees can never disagree.
 
@@ -1056,93 +931,6 @@ GATEWAY_OPERATIONS: list[Operation] = [
         surfaces=_CLI_HTTP,
         effect="write",
     ),
-    # --- peer directory (federation address book) -------------------------
-    Operation(
-        name="operations_peer_join",
-        tool="operations", verb="peer_join",
-        description="Record a peer node (name → HTTPS edge URL + ssh alias, plus "
-                    "public key) in this node's address book. Who may call whom "
-                    "comes from the fleet edge list, not the book.",
-        service_func=_op_peer_join,
-        http_method="POST", http_path="/peers",
-        cli_group="peer", cli_command="join",
-        output=JsonOutput(),
-        request_model=PeerJoinRequest,
-        params=_peer_join_params(),
-        surfaces=_CLI_HTTP,
-        effect="write",
-    ),
-    Operation(
-        name="operations_peer_add",
-        tool="operations", verb="peer_add",
-        description="Record a peer node in this node's address book (same as "
-                    "peer_join).",
-        service_func=_op_peer_add,
-        http_method="POST", http_path="/peers/add",
-        cli_group="peer", cli_command="add",
-        output=JsonOutput(),
-        request_model=PeerJoinRequest,
-        params=_peer_join_params(),
-        surfaces=_CLI_HTTP,
-        effect="write",
-    ),
-    Operation(
-        name="operations_peer_set",
-        tool="operations", verb="peer_set",
-        description="Pin a recorded peer's public key and compute its fingerprint.",
-        service_func=_op_peer_set,
-        http_method="POST", http_path="/peers/set",
-        cli_group="peer", cli_command="set",
-        output=JsonOutput(),
-        request_model=PeerSetRequest,
-        params=[
-            Param(name="name", type="string", required=True, cli_type="argument",
-                  description="Peer node name to update."),
-            *_peer_key_params(),
-        ],
-        surfaces=_CLI_HTTP,
-        effect="write",
-    ),
-    Operation(
-        name="operations_peer_list",
-        tool="operations", verb="peer_list",
-        description="List recorded peers with every record field (edge URL, "
-                    "ssh alias, key fingerprint).",
-        service_func=_op_peer_list,
-        http_method="GET", http_path="/peers",
-        cli_group="peer", cli_command="list",
-        output=JsonOutput(), surfaces=_CLI,
-        effect="read",
-    ),
-    Operation(
-        name="operations_peer_resolve",
-        tool="operations", verb="peer_resolve",
-        description="Resolve a peer name to its full record (directory lookup "
-                    "only; never proxies).",
-        service_func=_op_peer_resolve,
-        http_method="GET", http_path="/peers/{name}",
-        cli_group="peer", cli_command="resolve",
-        output=JsonOutput(),
-        params=[Param(name="name", type="string", required=True,
-                      location="path", cli_type="argument",
-                      description="Peer node name to resolve.")],
-        surfaces=_CLI,
-        effect="read",
-    ),
-    Operation(
-        name="operations_peer_forget",
-        tool="operations", verb="peer_forget",
-        description="Remove a peer from this node's address book.",
-        service_func=_op_peer_forget,
-        http_method="DELETE", http_path="/peers/{name}",
-        cli_group="peer", cli_command="forget",
-        effect="write",
-        output=JsonOutput(),
-        params=[Param(name="name", type="string", required=True,
-                      location="path", cli_type="argument",
-                      description="Peer node name to forget.")],
-        surfaces=_CLI_HTTP,
-    ),
     Operation(
         name="awm_providers",
         tool="awm", verb="providers",
@@ -1150,9 +938,6 @@ GATEWAY_OPERATIONS: list[Operation] = [
                     "which one it goes to by default (omit the tool for the "
                     "whole fleet map).",
         service_func=_op_peer_providers,
-        # Not ``/peers/providers``: ``GET /peers/{name}`` is registered ahead of
-        # it and would swallow "providers" as a peer name. The ``-`` segment says
-        # "no particular peer" and keeps the route order-independent.
         http_method="GET", http_path="/peers/-/providers",
         cli_group="peer", cli_command="providers",
         output=JsonOutput(),

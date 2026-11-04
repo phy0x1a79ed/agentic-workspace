@@ -179,7 +179,7 @@ class Archive:
         totals = {"documents": 0, "changed": 0, "skipped": 0, "indexed": 0}
         while True:
             args: dict[str, Any] = {"limit": PAGE, **({"cursor": cursor} if cursor else {})}
-            page = await self.gateway.call(source.service, source.export, args, EXPORT_TIMEOUT_S)
+            page = await self.gateway.call(source.tool, source.export, args, EXPORT_TIMEOUT_S)
             if not (isinstance(page, dict) and isinstance(page.get("documents"), list)
                     and isinstance(page.get("done"), bool)):
                 raise ValueError("export returned a page without documents and done")
@@ -303,7 +303,7 @@ class Archive:
         source = self.sources.get(name)
         if source is None or not source.get:
             raise ValueError(f"{name!r} is a live source that reads no document whole")
-        raw = await asyncio.wait_for(self.gateway.call(source.service, source.get, {"id": doc_id}, LIVE_TIMEOUT_S),
+        raw = await asyncio.wait_for(self.gateway.call(source.tool, source.get, {"id": doc_id}, LIVE_TIMEOUT_S),
                                      timeout=LIVE_TIMEOUT_S + 1.0)
         doc = raw.get("document") if isinstance(raw, dict) else None
         if not isinstance(doc, dict):
@@ -372,7 +372,7 @@ class Archive:
         args = {"query": q.text, "limit": q.limit, **q.raw}
         try:
             raw = await asyncio.wait_for(
-                self.gateway.call(source.service, source.query, args, LIVE_TIMEOUT_S),
+                self.gateway.call(source.tool, source.query, args, LIVE_TIMEOUT_S),
                 timeout=LIVE_TIMEOUT_S + 1.0)
             found = _live_sections(source.name, raw, self.origin(), q.limit, q.hidden)
         except (asyncio.TimeoutError, TimeoutError):

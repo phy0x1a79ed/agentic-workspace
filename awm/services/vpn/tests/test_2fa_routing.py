@@ -28,7 +28,7 @@ def routed(monkeypatch):
         calls.append((peer, service, fn, args))
         return {"ok": True}
 
-    monkeypatch.setattr(gc, "call_sync_maybe_peer", _fake)
+    monkeypatch.setattr(gc, "call_sync", lambda tool, verb, args=None, *, peer=None, **kw: (_fake)(peer, tool, verb, args, **kw))
     return container, gc, calls
 
 
@@ -68,36 +68,9 @@ class TestArmRouting:
         import awm.gatewayclient as gc
 
         def _boom(peer, service, fn, args=None, **kw):
-            raise gc.PeerError("ssh refused")
+            raise gc.GatewayCallError(502, "ssh refused")
 
         monkeypatch.setattr(gc, "peer_env", lambda var: "mira")
-        monkeypatch.setattr(gc, "call_sync_maybe_peer", _boom)
+        monkeypatch.setattr(gc, "call_sync", lambda tool, verb, args=None, *, peer=None, **kw: (_boom)(peer, tool, verb, args, **kw))
 
         assert container.arm_2fa_burst("cwl") is False
-
-
-class TestSelectorTwin:
-    """The sync twin must branch identically to the async one."""
-
-    def test_falsy_peer_goes_local(self, monkeypatch):
-        import awm.gatewayclient as gc
-        seen: list[str] = []
-        monkeypatch.setattr(gc, "call_sync",
-                            lambda *a, **k: seen.append("local") or {"l": 1})
-        monkeypatch.setattr(gc, "call_peer_sync",
-                            lambda *a, **k: seen.append("peer") or {"p": 1})
-
-        assert gc.call_sync_maybe_peer(None, "2fa", "burst", {}) == {"l": 1}
-        assert gc.call_sync_maybe_peer("", "2fa", "burst", {}) == {"l": 1}
-        assert seen == ["local", "local"]
-
-    def test_named_peer_goes_remote(self, monkeypatch):
-        import awm.gatewayclient as gc
-        seen: list[str] = []
-        monkeypatch.setattr(gc, "call_sync",
-                            lambda *a, **k: seen.append("local") or {"l": 1})
-        monkeypatch.setattr(gc, "call_peer_sync",
-                            lambda *a, **k: seen.append("peer") or {"p": 1})
-
-        assert gc.call_sync_maybe_peer("mira", "2fa", "burst", {}) == {"p": 1}
-        assert seen == ["peer"]

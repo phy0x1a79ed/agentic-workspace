@@ -42,21 +42,19 @@ def provisional_name(name: str, tag_id: str) -> str:
 # ---------------------------------------------------------------------------
 
 def peers() -> list[str]:
-    """The nodes this node keeps the vocabulary in step with: the book peers it holds an edge to."""
+    """The nodes this node keeps the vocabulary in step with: those it holds an edge to."""
     try:
-        from awm.config import edges, peerbook
-        me = edges.here()
-        return [r["name"] for r in peerbook.list_records()
-                if r["name"] != me and edges.reaches(me, r["name"])]
-    except Exception as exc:  # noqa: BLE001 — no peer book means a node alone
+        from awm.config import edges
+        return edges.reachable_from(edges.here())
+    except Exception as exc:  # noqa: BLE001 — no edge list means a node alone
         log.info("no peers to sync tags with: %s", exc)
         return []
 
 
 def _send(peer: str, tags: list[dict]) -> None:
     try:
-        from awm.gatewayclient import call_peer_sync
-        call_peer_sync(peer, "journal", "tag_receive", {"tags": tags}, timeout=15.0)
+        from awm.gatewayclient import call_sync
+        call_sync("journal", "tag_receive", {"tags": tags}, peer=peer, timeout=15.0)
     except Exception as exc:  # noqa: BLE001 — the next pull heals it
         log.info("tag sync to %s failed, the next pull heals it: %s", peer, exc)
 
@@ -252,8 +250,8 @@ def dispatch_open() -> list[dict]:
 def pull(fetch: Callable[[str], list[dict]] | None = None) -> dict:
     """Merge every peer's vocabulary into this node's; returns the counts per peer."""
     def _fetch(peer: str) -> list[dict]:
-        from awm.gatewayclient import call_peer_sync
-        return (call_peer_sync(peer, "journal", "tag_list", {}, timeout=15.0) or {}).get("tags", [])
+        from awm.gatewayclient import call_sync
+        return (call_sync("journal", "tag_list", {}, peer=peer, timeout=15.0) or {}).get("tags", [])
     fetch = fetch or _fetch
     out = {}
     for peer in peers():

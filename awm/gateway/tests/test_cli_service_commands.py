@@ -9,6 +9,7 @@ render contract.
 """
 
 from __future__ import annotations
+import os
 
 import inspect
 
@@ -198,7 +199,8 @@ def test_dispatch_posts_name_and_args_to_invoke(capsys):
     from awm.gateway import mcp_http
     assert calls == [("POST", "/invoke", {
         "json": {"name": "scope_create", "args": {"project": "demo", "scope": "s1"}},
-        "timeout": mcp_http.read_timeout()})]
+        "timeout": mcp_http.read_timeout(),
+        "headers": {"X-Awm-Caller-Pid": str(os.getpid())}})]
     assert mcp_http.read_timeout() > 3600.0
     # The `result` string is JSON → pretty-printed.
     out = capsys.readouterr().out
@@ -251,19 +253,17 @@ def _run_channel_cli(monkeypatch, tmp_path, recorded_pid: int | None) -> list:
 
 def test_a_channel_cli_call_names_the_agent_session_it_runs_under(monkeypatch, tmp_path):
     """An agent sends long scripts through `awm channel write` from its Bash tool.
-    That call must reach channel as the same session its MCP calls come from, or
-    the channel it holds refuses it as somebody else's."""
-    import os
-
+    The CLI names its own pid, and the gateway walks it to the session, so the call
+    reaches channel as the session its MCP calls come from, at that session's level."""
     calls = _run_channel_cli(monkeypatch, tmp_path, recorded_pid=os.getppid())
 
-    assert calls[0]["headers"] == {"X-Awm-Caller-Pid": str(os.getppid())}
+    assert calls[0]["headers"] == {"X-Awm-Caller-Pid": str(os.getpid())}
 
 
-def test_a_channel_cli_call_from_a_plain_terminal_names_nobody(monkeypatch, tmp_path):
+def test_a_cli_call_from_a_plain_terminal_names_its_own_pid_too(monkeypatch, tmp_path):
     calls = _run_channel_cli(monkeypatch, tmp_path, recorded_pid=None)
 
-    assert "headers" not in calls[0]
+    assert calls[0]["headers"] == {"X-Awm-Caller-Pid": str(os.getpid())}
 
 
 _OBJECT_TOOL = [{

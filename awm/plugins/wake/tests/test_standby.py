@@ -140,25 +140,30 @@ async def test_watchdog_nags_once_when_up_but_never_released(alcor_cfg, store, g
 
 async def test_boot_revives_then_releases_partner(cfg):
     revived = {"revived": ["c20d4fcd"], "live": [], "failed": []}
-    gw = FakeGateway({(REFLECTION, "revive_pinned"): revived,
-                      (WAKE, "standby_release"): {"ok": True, "held": True}})
+    gw = FakeGateway({("harness-cc", "revive_pinned"): revived,
+                      (WAKE, "standby_release"): {"ok": True, "held": True}}, harness="harness-cc")
     out = await boot.run(cfg, gw)
-    assert gw.calls[0][:2] == (REFLECTION, "revive_pinned")
+    assert gw.calls[0][:2] == ("harness-cc", "revive_pinned")
     assert gw.calls[1] == (WAKE, "standby_release",
                            {"down": "mizar", "report": {"node": "mizar", "revive": revived}},
                            "alcor")
     assert out["release"] == {"ok": True, "held": True}
 
 
-async def test_boot_uses_the_harness_provider_when_the_gateway_names_one(cfg):
-    gw = FakeGateway(harness="harness-cc")
-    await boot.run(cfg, gw)
-    assert gw.calls[0][:2] == ("harness-cc", "revive_pinned")
+async def test_boot_fails_and_still_releases_when_the_gateway_names_no_harness(cfg):
+    gw = FakeGateway(up=lambda n: True)
+
+    async def sleep(s):
+        pass
+
+    out = await boot.run(cfg, gw, revive_tries=2, sleep=sleep)
+    assert "names no harness provider" in out["error"]
+    assert gw.verbs() == ["standby_release"]
 
 
 async def test_boot_waits_for_gateway_and_releases_even_on_failure(cfg):
-    gw = FakeGateway({(REFLECTION, "revive_pinned"): CallError("unknown verb")},
-                     up=lambda n: True)
+    gw = FakeGateway({("harness-cc", "revive_pinned"): CallError("unknown verb")},
+                     up=lambda n: True, harness="harness-cc")
     slept = []
 
     async def sleep(s):
@@ -199,7 +204,7 @@ def test_manifest_names_its_tool_and_needs():
     assert "placement" not in m, "awm names no host (fleet.md R140)"
     assert m["tool"][0]["name"] == "wake" and m["tool"][0]["major"] == 1
     assert "uuid" not in m["tool"][0]
-    assert {"name": "reflection", "major": 1} in m["needs"]["tool"]
-    assert {"name": "harness", "major": 1} in m["needs"]["contract"]
+    assert {"name": "reflection", "major": 1, "verbs": ["start_other", "message"]} in m["needs"]["tool"]
+    assert {"name": "harness", "major": 1, "verbs": ["revive_pinned"]} in m["needs"]["contract"]
     from awm.wake.hub_adapter import API_MANIFEST
     assert all(f["tool"] == "wake_" + f["name"] for f in API_MANIFEST["functions"])

@@ -160,8 +160,7 @@ def arm_2fa_burst(device: str) -> bool:
 
     peer = gatewayclient.peer_env("AWM_TWOFA_PEER")
     try:
-        gatewayclient.call_sync_maybe_peer(
-            peer, "2fa", "burst", {"device": device}, timeout=15)
+        gatewayclient.call_sync("2fa", "burst", {"device": device}, peer=peer, timeout=15)
     except Exception as exc:  # noqa: BLE001 — arming is best-effort by contract
         log.warning("2fa burst arm failed (device=%r, owner=%s): %s",
                     device, peer or "local", exc)

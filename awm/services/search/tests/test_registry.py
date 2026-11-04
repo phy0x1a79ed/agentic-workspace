@@ -22,10 +22,15 @@ def test_a_ready_service_with_a_table_becomes_a_source():
     assert (src.service, src.mode, src.export, src.topic, src.error) == ("journal", "index", "export", "posts", "")
 
 
-def test_the_internal_name_is_found_behind_the_published_one():
+def test_a_source_is_called_by_its_published_tool_and_verb():
     e = entry("journal", [index_table("journals", "journal")])
     e["api"]["functions"] = [{"name": "dump", "tool": "journal_export"}]
-    assert registry.parse([e])[0]["journals"].export == "dump"
+    src = registry.parse([e])[0]["journals"]
+    assert (src.tool, src.export) == ("journal", "export")
+    e["api"]["functions"] = [{"name": "export", "tool": "papers_export"}]
+    e["archive"] = [{"name": "journals", "mode": "index", "export": "export"}]
+    src = registry.parse([e])[0]["journals"]
+    assert (src.tool, src.export) == ("papers", "export"), "an internal name finds its published verb"
 
 
 def test_a_service_that_is_not_ready_is_not_running():

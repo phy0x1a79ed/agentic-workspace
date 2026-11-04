@@ -20,7 +20,7 @@ CLAIM = {"kind": "bg", "job": "2eb61302", "name": "opal desk"}
 def sessions(monkeypatch):
     """reflection knows one session, at pid 4242."""
     rec = {"ok": True, "session_id": "cc" + "5" * 32, "hosting": "background",
-           "job": "2eb61302", "name": "opal desk"}
+           "job": "2eb61302", "name": "opal desk", "trust": "trusted"}
     monkeypatch.setattr(mcp_caller, "_cache", {})
     monkeypatch.setattr(mcp_caller, "_ask_reflection",
                         lambda pid: rec if pid == 4242 else {"ok": True, "known": False})

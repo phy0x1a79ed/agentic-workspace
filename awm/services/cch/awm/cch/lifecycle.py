@@ -166,7 +166,7 @@ async def ensure_daemon(action: str, timeout: float = ENSURE_TIMEOUT_S) -> None:
         return
     detail = ""
     try:
-        out = await gatewayclient.call("cch", "daemon_ensure", {"timeout": timeout},
+        out = await gatewayclient.call("harness-cc", "daemon_ensure", {"timeout": timeout},
                                        timeout=timeout + 15)
         if isinstance(out, dict) and not out.get("ok"):
             detail = f" ({out.get('action') or 'down'}: {out.get('reason') or out.get('error') or ''})"
@@ -390,7 +390,7 @@ def ensure_lobby() -> Path:
 async def _tag_scope(spec: dict[str, Any]) -> str | None:
     """Set the scope's tags; a failure is reported, never a reason not to start."""
     try:
-        await gatewayclient.call("scopes", "scope_tag",
+        await gatewayclient.call("scope", "tag",
                                  {"project": spec["project"], "scope": spec["scope"],
                                   "tags": spec["tags"]})
     except Exception as exc:  # noqa: BLE001 — any failure is reported
@@ -663,7 +663,7 @@ async def _resolve_worktree(project: str, scope: str) -> Path:
 
 
 async def create_scope(project: str, scope: str) -> None:
-    await gatewayclient.call("scopes", "scope_create",
+    await gatewayclient.call("scope", "create",
                              {"project": project, "scope": scope},
                              timeout=SCOPE_CREATE_TIMEOUT_S)
 

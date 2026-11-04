@@ -5,12 +5,11 @@ this node in the fleet edge list (``awm.config.edges``). Such a caller gets the
 whole surface; any other node, and the legacy bare ``peer`` that names no node,
 is refused exactly like an unknown tool. An absent identity is not affected. The edge list
 comes from the autouse ``fleet_edges`` fixture: ``mira`` has an edge both ways,
-``hub`` is in the peer book but has no edge.
+``hub`` is a node with no edge to this one.
 """
 
 from __future__ import annotations
 
-import json
 from types import SimpleNamespace
 
 import pytest
@@ -54,17 +53,13 @@ def _rec(name, *fns):
 
 @pytest.fixture()
 def world(awm_workspace, monkeypatch):
-    """kb (search: read, add: write); ``hub`` and ``mira`` both in the book."""
+    """kb (search: read, add: write)."""
     awm_dir = awm_workspace["awm_dir"]
     stub = _StubRegistry([_rec("kb", _fn("search", "read"), _fn("add", "write"))])
     monkeypatch.setattr(catalog, "get_registry", lambda: stub)
     ch = _FakeChannel()
     monkeypatch.setattr(catalog.rpc, "get_control", lambda sid: ch)
     monkeypatch.setattr(peer_catalog, "_snapshot", {})
-    path = awm_dir / "state" / "peers.json"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({"hub": {"edge_url": "https://hub:12100"},
-                                "mira": {"edge_url": "https://mira:12100"}}))
     return ch
 
 
@@ -187,31 +182,11 @@ async def test_the_svc_sockets_close_a_node_without_an_edge_before_accepting(wor
 # ---------------------------------------------------------------------------
 
 
-async def test_the_sweep_reads_only_book_peers_this_node_has_an_edge_to(world, monkeypatch):
+async def test_the_sweep_lists_each_edge_peer_as_waiting_for_the_rust_gateway(world):
     import asyncio
 
-    read = []
-
-    async def fetch(entry):
-        read.append(entry["name"])
-        return {}
-
-    monkeypatch.setattr(peer_catalog, "_fetch_peer", fetch)
-    monkeypatch.setattr(peer_catalog, "_sweep_lock", None)
-    await asyncio.wait_for(peer_catalog.sweep(), 5)
-    assert read == ["mira"]
-
-
-async def test_one_peer_that_never_answers_cannot_hold_the_sweep(world, monkeypatch):
-    import asyncio
-
-    async def hang(entry):
-        await asyncio.sleep(60)
-
-    monkeypatch.setattr(peer_catalog, "_fetch_peer", hang)
-    monkeypatch.setattr(peer_catalog, "_PEER_FETCH_TIMEOUT_S", 0.05)
-    monkeypatch.setattr(peer_catalog, "_sweep_lock", None)
-    monkeypatch.setattr(peer_catalog, "_swept_at", 0.0)
     snap = await asyncio.wait_for(peer_catalog.sweep(), 5)
+    assert "mira" in snap and "hub" not in snap
     assert snap["mira"]["reachable"] is False
-    assert "TimeoutError" in snap["mira"]["error"]
+    assert "Rust gateway" in snap["mira"]["error"]
+

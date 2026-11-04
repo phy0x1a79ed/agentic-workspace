@@ -819,8 +819,7 @@ class SSHService:
         send the verdict (a clean release) — a drop mid-attempt trips the arbiter
         LOCKED on its own."""
         try:
-            lease = await gatewayclient.acquire_lease_maybe_peer(
-                slot_peer, "ssh", cfg.host, node=_NODE_NAME)
+            lease = await gatewayclient.acquire_lease("ssh", cfg.host, peer=slot_peer, node=_NODE_NAME)
         except Exception as e:  # noqa: BLE001 — arbiter unreachable → FAIL CLOSED
             # Closed, but not held: 'unavailable' means an operator must
             # /approve, and nothing here needs one — only the peer to come back.
@@ -1094,12 +1093,11 @@ class SSHService:
             # breaker. That was the original overlapping-login failure.
             twofa_peer = gatewayclient.peer_env(_TWOFA_PEER_ENV)
             try:
-                armed = await gatewayclient.call_maybe_peer(
-                    twofa_peer, "2fa", "burst", {
+                armed = await gatewayclient.call("2fa", "burst", {
                         "device": cfg.twofa_device,
                         "window": 120,
                         "count": 1,
-                    })
+                    }, peer=twofa_peer)
             except Exception as exc:  # noqa: BLE001 — named for the caller
                 # Without an armed approver the push would wait on a phone
                 # nobody is holding, and time out as a failed MFA attempt.
@@ -1324,8 +1322,7 @@ class SSHService:
         def _stream():
             # peer selector read per connection, so a re-home takes effect on
             # the next reconnect without a restart.
-            return gatewayclient.subscribe_maybe_peer(
-                gatewayclient.peer_env(_SOCIAL_PEER_ENV), "social", "command")
+            return gatewayclient.subscribe("social", "command", peer=gatewayclient.peer_env(_SOCIAL_PEER_ENV))
 
         self._approve_sub = gatewayclient.SupervisedSubscription(
             "ssh/social.command", _stream, self._on_approve_event,
@@ -1398,10 +1395,7 @@ class SSHService:
         if not account or not channel:
             return
         try:
-            await gatewayclient.call_maybe_peer(
-                gatewayclient.peer_env(_SOCIAL_PEER_ENV),
-                "social", "send",
-                {"account": account, "channel": str(channel), "text": text})
+            await gatewayclient.call("social", "send", {"account": account, "channel": str(channel), "text": text}, peer=gatewayclient.peer_env(_SOCIAL_PEER_ENV))
         except Exception as exc:  # noqa: BLE001 — a receipt is not the window
             log.warning("ssh: /approve acknowledgement failed (the window is "
                         "open regardless): %s", exc)
@@ -1546,9 +1540,7 @@ class SSHService:
         if not cfg.twofa_device or rec.twofa_seen_at_arm is None:
             return False
         try:
-            info = await gatewayclient.call_maybe_peer(
-                gatewayclient.peer_env(_TWOFA_PEER_ENV),
-                "2fa", "status", {"device": cfg.twofa_device})
+            info = await gatewayclient.call("2fa", "status", {"device": cfg.twofa_device}, peer=gatewayclient.peer_env(_TWOFA_PEER_ENV))
         except Exception as exc:  # noqa: BLE001 — cannot ask ⇒ cannot assert
             log.info("ssh: cannot check Duo activity for %s (2fa unreachable: "
                      "%s) — holding", cfg.host, exc)
@@ -1657,9 +1649,7 @@ class SSHService:
         if "exceeded" not in blob or "s" not in blob:
             return _CAUSE_EXTERNAL          # not the timeout shape
         try:
-            info = await gatewayclient.call_maybe_peer(
-                gatewayclient.peer_env(_TWOFA_PEER_ENV),
-                "2fa", "ping", {"device": cfg.twofa_device})
+            info = await gatewayclient.call("2fa", "ping", {"device": cfg.twofa_device}, peer=gatewayclient.peer_env(_TWOFA_PEER_ENV))
         except Exception as exc:  # noqa: BLE001 — cannot ask ⇒ cannot attribute
             log.info("ssh: cannot attribute %s's failure (2fa unreachable: %s) "
                      "— holding as external", cfg.host, exc)
@@ -1690,9 +1680,7 @@ class SSHService:
         if not cfg.twofa_device:
             return False
         try:
-            res = await gatewayclient.call_maybe_peer(
-                gatewayclient.peer_env(_TWOFA_PEER_ENV),
-                "2fa", "ping", {"device": cfg.twofa_device})
+            res = await gatewayclient.call("2fa", "ping", {"device": cfg.twofa_device}, peer=gatewayclient.peer_env(_TWOFA_PEER_ENV))
         except Exception as exc:  # noqa: BLE001
             log.info("ssh: %s stays held — could not verify the approver: %s",
                      cfg.host, exc)
@@ -1747,13 +1735,11 @@ class SSHService:
             raise RuntimeError(
                 "this node has no operator DM: set AWM_OPERATOR_DM_CHANNEL")
         account, channel = target
-        return await gatewayclient.call_maybe_peer(
-            gatewayclient.peer_env(_SOCIAL_PEER_ENV),
-            "social", "send", {
+        return await gatewayclient.call("social", "send", {
                 "account": account,
                 "channel": channel,
                 "text": text,
-            })
+            }, peer=gatewayclient.peer_env(_SOCIAL_PEER_ENV))
 
     async def _alert(self, text: str) -> None:
         """Post to the operator's Discord DM. Never raises into connect."""
@@ -1816,8 +1802,7 @@ class SSHService:
             # Emit failures must NOT read as "you are deaf" — an un-upgraded
             # peer that lacks emit_probe is a different fault entirely.
             try:
-                await gatewayclient.call_maybe_peer(
-                    peer, "social", "emit_probe", {"nonce": nonce})
+                await gatewayclient.call("social", "emit_probe", {"nonce": nonce}, peer=peer)
             except Exception as exc:  # noqa: BLE001
                 raise RuntimeError(
                     f"ssh: could not ask social@{peer or 'local'} to emit a "

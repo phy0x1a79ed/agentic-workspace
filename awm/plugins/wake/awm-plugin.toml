@@ -3,7 +3,6 @@
 [plugin]
 name = "wake"
 version = "0.1.0"
-trust = "own"
 
 [[service]]
 name = "wake"
@@ -21,12 +20,14 @@ tier = "on"
 secrets = []
 network = ["udp:9 broadcast", "tcp:22 lan"]
 
-# reflection: start_other, message, and revive_pinned under today's gateway.
 [[needs.tool]]
 name = "reflection"
 major = 1
+verbs = ["start_other", "message"]
 
 # A harness plugin serves revive_pinned (harness-contract.md).
 [[needs.contract]]
 name = "harness"
 major = 1
+verbs = ["revive_pinned"]
+

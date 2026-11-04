@@ -16,7 +16,7 @@ from collections.abc import Callable
 from typing import Any
 
 from awm.wake import config as wake_config
-from awm.wake.gateway import REFLECTION, WAKE, CallError, Gateway
+from awm.wake.gateway import WAKE, CallError, Gateway
 
 log = logging.getLogger("awm.wake.boot")
 
@@ -32,13 +32,13 @@ async def run(cfg: wake_config.WakeConfig, gw: Gateway, *, gateway_wait_s: float
             return {**report, "release": await _release(cfg, gw, report)}
         await sleep(5)
 
-    # The redux gateway serves revive_pinned on the harness provider. Today's
-    # gateway serves it as a hidden reflection verb.
-    harness = await gw.harness() or REFLECTION
     revived: Any = None
     error = None
     for attempt in range(revive_tries):
+        harness = await gw.harness()
         try:
+            if harness is None:
+                raise CallError("the gateway names no harness provider")
             revived = await gw.call(harness, "revive_pinned", {})
             error = None
             break

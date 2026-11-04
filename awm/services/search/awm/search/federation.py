@@ -13,7 +13,6 @@ from typing import Any
 
 from awm import config
 from awm.config import edges
-from awm.config.peertoken import node_label
 from awm.search.query import FLEET
 
 from awm.search import hits as hitshape
@@ -28,15 +27,15 @@ MAX_REPLY_BYTES = 2 * 1024 * 1024
 
 
 class Peers:
-    """The peer book and the call to a peer; tests stand in for both."""
+    """The nodes this node holds an edge to, and the call to one; tests stand in for both."""
 
     def records(self) -> list[dict[str, Any]]:
-        here = node_label(config.node_name())
-        return [r for r in config.list_records() if node_label(r["name"]) != here]
+        return [{"name": n} for n in edges.reachable_from(edges.here())]
 
     async def invoke(self, peer: str, name: str, args: dict[str, Any], timeout: float) -> Any:
-        from awm.gatewayclient import invoke_peer
-        return await invoke_peer(peer, name, args, timeout=timeout)
+        from awm import gatewayclient
+        tool, verb = name.split("_", 1)
+        return await gatewayclient.call(tool, verb, args, peer=peer, timeout=timeout)
 
 
 @dataclass

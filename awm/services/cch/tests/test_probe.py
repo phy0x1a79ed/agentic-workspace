@@ -20,11 +20,11 @@ def here(monkeypatch):
 
 def test_a_node_that_lists_answers_and_no_rows_travel(monkeypatch, here):
     async def call_peer(node, service, fn, args, timeout):
-        assert (node, service, fn) == ("altair", "cch", "list")
+        assert (node, service, fn) == ("altair", "harness-cc", "list")
         assert timeout < 30
         return {"sessions": [{"job": "secret"}], "daemon": {"state": "up"}}
 
-    monkeypatch.setattr(probe.gatewayclient, "call_peer", call_peer)
+    monkeypatch.setattr(probe.gatewayclient, "call", lambda tool, verb, args=None, *, peer=None, **kw: (call_peer)(peer, tool, verb, args, **kw))
     out = run(probe.probe("altair"))
     assert out == {"ok": True, "node": "altair", "from": "deneb",
                    "answers": True, "daemon": "up"}
@@ -34,7 +34,7 @@ def test_a_node_that_does_not_answer(monkeypatch, here):
     async def call_peer(*a, **k):
         raise TimeoutError("timed out")
 
-    monkeypatch.setattr(probe.gatewayclient, "call_peer", call_peer)
+    monkeypatch.setattr(probe.gatewayclient, "call", lambda tool, verb, args=None, *, peer=None, **kw: (call_peer)(peer, tool, verb, args, **kw))
     out = run(probe.probe("altair"))
     assert out["answers"] is False and "timed out" in out["reason"]
 
@@ -43,7 +43,7 @@ def test_a_refused_list_does_not_count_as_an_answer(monkeypatch, here):
     async def call_peer(*a, **k):
         return {"ok": False, "reason": "nope"}
 
-    monkeypatch.setattr(probe.gatewayclient, "call_peer", call_peer)
+    monkeypatch.setattr(probe.gatewayclient, "call", lambda tool, verb, args=None, *, peer=None, **kw: (call_peer)(peer, tool, verb, args, **kw))
     assert run(probe.probe("altair"))["answers"] is False
 
 

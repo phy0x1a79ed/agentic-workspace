@@ -7,7 +7,7 @@ use awm_proto::manifest::{
     parse_implements, LegacyServiceToml, Manifest, NeedTool, Needs, PluginMeta, ServiceDecl, ToolDecl,
     LEGACY_RUN, LEGACY_SERVICE_TOML,
 };
-use awm_proto::{valid_tool_name, Tier, Trust, MANIFEST_FILE};
+use awm_proto::{valid_tool_name, Tier, MANIFEST_FILE};
 use serde::Serialize;
 
 #[derive(Debug, Clone, Serialize)]
@@ -17,7 +17,6 @@ pub struct Plugin {
     pub dir: PathBuf,
     pub core: bool,
     pub legacy: bool,
-    pub trust: Trust,
     pub refresh: Option<String>,
     pub services: Vec<ServiceSpec>,
     pub tools: Vec<ToolSpec>,
@@ -38,6 +37,9 @@ pub struct ServiceSpec {
     pub tools: Vec<String>,
     /// The plugin's `needs.secrets`: the only secrets its processes get (R116 item 1).
     pub secrets: Vec<String>,
+    /// Whether the egress proxy holds the service to its plugin's `needs.network`. A legacy
+    /// folder declares nothing, so it is not held.
+    pub egress_guarded: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -241,7 +243,7 @@ fn read_folder(dir: &Path) -> Option<Result<(Manifest, bool), String>> {
     };
     let tool = legacy.tool.clone().unwrap_or_else(|| name.clone());
     let manifest = Manifest {
-        plugin: PluginMeta { name: name.clone(), version: "0.0.0".into(), trust: Trust::Own, refresh: None },
+        plugin: PluginMeta { name: name.clone(), version: "0.0.0".into(), refresh: None },
         placement: Default::default(),
         service: vec![ServiceDecl {
             name: name.clone(),
@@ -283,6 +285,10 @@ fn build_plugin(cand: &Candidate, input: &LoadInput, warnings: &mut Vec<String>)
         return Err(format!("plugin name {name:?} must be letters, digits and hyphens"));
     }
 
+    if let Some(bad) = m.needs.network.iter().find_map(|e| awm_proto::NetworkEntry::parse(e).err()) {
+        return Err(format!("needs {bad}"));
+    }
+
     if !m.needs.platform.is_empty() && !m.needs.platform.iter().any(|p| p == std::env::consts::OS) {
         return Err(format!("needs platform {:?}, this node is {}", m.needs.platform, std::env::consts::OS));
     }
@@ -306,6 +312,7 @@ fn build_plugin(cand: &Candidate, input: &LoadInput, warnings: &mut Vec<String>)
             enabled,
             tools: vec![],
             secrets: m.needs.secrets.clone(),
+            egress_guarded: !cand.legacy,
         });
     }
 
@@ -361,7 +368,6 @@ fn build_plugin(cand: &Candidate, input: &LoadInput, warnings: &mut Vec<String>)
         dir: cand.dir.clone(),
         core: cand.core,
         legacy: cand.legacy,
-        trust: m.plugin.trust,
         refresh: m.plugin.refresh.clone(),
         services,
         tools,
@@ -421,7 +427,7 @@ fn claim(
         if !own.insert(&t.name) {
             return Err(format!("tool {:?} is declared twice", t.name));
         }
-        if reserved.contains(t.name.as_str()) && !(p.core && p.trust == Trust::Own) {
+        if reserved.contains(t.name.as_str()) && !p.core {
             return Err(format!("tool {:?} is reserved for core plugins", t.name));
         }
         // Legacy folders share a tool as today (cx, keep and reflection all publish
@@ -488,7 +494,8 @@ pub fn providers(index: &[Provider], contract: &str, major: u32) -> Vec<Owner> {
 
 /// A needed tool must exist at its major (R117 item 3). A contract may have no provider.
 fn check_needs(needs: &Needs, index: &[Provider]) -> Result<(), String> {
-    for NeedTool { name, major } in &needs.tool {
+    for NeedTool { name, major, verbs } in &needs.tool {
+        check_verbs("tool", name, verbs)?;
         let Some(o) = owner(index, name) else {
             return Err(format!("needs tool {name:?}, which no plugin serves"));
         };
@@ -496,12 +503,24 @@ fn check_needs(needs: &Needs, index: &[Provider]) -> Result<(), String> {
             return Err(format!("needs tool {name:?} at major {major}, plugin {:?} serves major {}", o.plugin, o.major));
         }
     }
-    for NeedTool { name, .. } in &needs.contract {
+    for NeedTool { name, verbs, .. } in &needs.contract {
         if !valid_tool_name(name) {
             return Err(format!("needs contract {name:?}, which is not a valid name"));
         }
+        check_verbs("contract", name, verbs)?;
     }
     Ok(())
+}
+
+/// A need lists the verbs the plugin calls, since the gateway refuses every other (R116 item 3).
+fn check_verbs(kind: &str, name: &str, verbs: &[String]) -> Result<(), String> {
+    if verbs.is_empty() {
+        return Err(format!("needs {kind} {name:?} but lists no verbs"));
+    }
+    match verbs.iter().find(|v| !awm_proto::valid_verb_name(v)) {
+        Some(bad) => Err(format!("needs {kind} {name:?}: {bad:?} is not a verb name")),
+        None => Ok(()),
+    }
 }
 
 #[cfg(test)]
@@ -559,12 +578,15 @@ mod tests {
         plugin(&core, "provider",
             "[plugin]\nname='provider'\n[[service]]\nname='provider'\n[[tool]]\nname='prov'\nmajor=2\nimplements=['harness@1']\n");
         plugin(&core, "dependent",
-            "[plugin]\nname='dependent'\n[[service]]\nname='dependent'\n[[needs.tool]]\nname='prov'\nmajor=2\n[[needs.contract]]\nname='harness'\nmajor=1\n");
+            "[plugin]\nname='dependent'\n[[service]]\nname='dependent'\n[[needs.tool]]\nname='prov'\nmajor=2\nverbs=['get']\n[[needs.contract]]\nname='harness'\nmajor=1\nverbs=['send']\n");
         plugin(&other, "journal", "[plugin]\nname='journal'\n");
         plugin(&other, "dup-name", "[plugin]\nname='dup-name'\n[[service]]\nname='dup-name'\n[[tool]]\nname='prov'\n");
         plugin(&other, "takes-2fa", "[plugin]\nname='takes-2fa'\n[[service]]\nname='takes-2fa'\n[[tool]]\nname='2fa'\n");
-        plugin(&other, "missing", "[plugin]\nname='missing'\n[[needs.tool]]\nname='nobody-serves'\n");
-        plugin(&other, "wrong-major", "[plugin]\nname='wrong-major'\n[[needs.tool]]\nname='prov'\nmajor=1\n");
+        plugin(&other, "missing", "[plugin]\nname='missing'\n[[needs.tool]]\nname='nobody-serves'\nverbs=['get']\n");
+        plugin(&other, "no-verbs", "[plugin]\nname='no-verbs'\n[[needs.tool]]\nname='prov'\nmajor=2\n");
+        plugin(&other, "bad-verb", "[plugin]\nname='bad-verb'\n[[needs.contract]]\nname='harness'\nverbs=['send-it']\n");
+        plugin(&other, "bad-host", "[plugin]\nname='bad-host'\n[needs]\nnetwork=['https://x.org']\n");
+        plugin(&other, "wrong-major", "[plugin]\nname='wrong-major'\n[[needs.tool]]\nname='prov'\nmajor=1\nverbs=['get']\n");
         plugin(&other, "escape", "[plugin]\nname='escape'\n[[service]]\nname='escape'\npath='..'\n");
         plugin(&other, "elsewhere", "[plugin]\nname='elsewhere'\n[placement]\nnodes=['showtime']\n");
         plugin(&other, "bad-implements", "[plugin]\nname='bad-implements'\n[[service]]\nname='bad-implements'\n[[tool]]\nname='bi'\nimplements=['harness']\n");
@@ -588,6 +610,9 @@ mod tests {
         assert!(refused["takes-2fa"].contains("reserved"));
         assert!(refused["missing"].contains("\"nobody-serves\""));
         assert!(refused["wrong-major"].contains("major 1"));
+        assert!(refused["no-verbs"].contains("lists no verbs"));
+        assert!(refused["bad-verb"].contains("\"send-it\" is not a verb name"));
+        assert!(refused["bad-host"].contains("network entry \"https://x.org\""), "{}", refused["bad-host"]);
         assert!(refused["escape"].contains("leaves the plugin folder"));
         assert!(refused["bad-implements"].contains("<contract>@<major>"));
         assert!(refused.contains_key("bad-toml"));
@@ -617,7 +642,7 @@ mod tests {
         let t = tempfile::tempdir().unwrap();
         let (core, other) = (t.path().join("core"), t.path().join("other"));
         fs::create_dir_all(&core).unwrap();
-        plugin(&other, "b", "[plugin]\nname='b'\n[[needs.tool]]\nname='far'\n");
+        plugin(&other, "b", "[plugin]\nname='b'\n[[needs.tool]]\nname='far'\nverbs=['get']\n");
         let peers = BTreeMap::from([(
             "altair".to_string(),
             vec![RemoteTool { name: "far".into(), major: 1, plugin: "farp".into(), implements: vec!["harness@1".into()] }],
@@ -634,8 +659,8 @@ mod tests {
         let t = tempfile::tempdir().unwrap();
         let (core, other) = (t.path().join("core"), t.path().join("other"));
         fs::create_dir_all(&core).unwrap();
-        plugin(&other, "a", "[plugin]\nname='a'\n[[service]]\nname='a'\n[[tool]]\nname='a'\n[[needs.tool]]\nname='gone'\n");
-        plugin(&other, "b", "[plugin]\nname='b'\n[[needs.tool]]\nname='a'\n");
+        plugin(&other, "a", "[plugin]\nname='a'\n[[service]]\nname='a'\n[[tool]]\nname='a'\n[[needs.tool]]\nname='gone'\nverbs=['get']\n");
+        plugin(&other, "b", "[plugin]\nname='b'\n[[needs.tool]]\nname='a'\nverbs=['get']\n");
         let r = run(&core, &other, "mizar");
         assert!(r.plugins.is_empty());
         assert_eq!(r.refused.len(), 2);

@@ -382,8 +382,8 @@ async def _h_accounts(args: dict) -> dict:
 
     by_name = {a["name"]: a for a in out}
     try:
-        remote = await gatewayclient.call_peer(peer, "social", "accounts", {})
-    except (gatewayclient.PeerError, gatewayclient.GatewayCallError) as exc:
+        remote = await gatewayclient.call("social", "accounts", {}, peer=peer)
+    except gatewayclient.GatewayCallError as exc:
         log.warning("could not list peer %s accounts: %s", peer, exc)
         return {"accounts": out, "peer": peer, "peer_error": str(exc)}
 
@@ -522,7 +522,7 @@ def _keeper_forwarding(fn: str, handler: Any) -> Any:
 
         peer = gatewayclient.peer_env(_SOCIAL_PEER_ENV)
         if _keeper is None and peer:
-            return await gatewayclient.call_peer(peer, "social", fn, args)
+            return await gatewayclient.call("social", fn, args, peer=peer)
         return await handler(args)
 
     _wrapped.__name__ = getattr(handler, "__name__", f"_h_{fn}")
@@ -860,7 +860,7 @@ API_MANIFEST: dict[str, Any] = {
                            "`ack_ref`, from a slash command's event, replaces that "
                            "command's acknowledgement while the platform still "
                            "allows it, and sends a new message otherwise. "
-                           "`file` uploads a file from the calling node, such as "
+                           "`file` uploads a file from the node social runs on, such as "
                            "a plan's .md, with `text` as its message; `text` is "
                            "optional with a file. `files` attaches inline text "
                            "files, each {filename, text}. Discord and Slack take "
@@ -876,8 +876,7 @@ API_MANIFEST: dict[str, Any] = {
                 {"name": "text", "type": "string", "required": False},
                 {"name": "thread", "type": "string", "required": False},
                 {"name": "ack_ref", "type": "string", "required": False},
-                {"name": "file", "type": "string", "required": False,
-                 "file": "in"},
+                {"name": "file", "type": "string", "required": False},
                 {"name": "files", "type": "array", "required": False},
                 {"name": "quiet", "type": "boolean", "required": False},
             ],
@@ -1033,11 +1032,10 @@ API_MANIFEST: dict[str, Any] = {
             "effect": "write",
             "tool": "social_download_attachments",
             "description": "Download a message's attachments to a system temp dir "
-                           "(outside the awm workspace) on the calling node. "
+                           "(outside the awm workspace) on the node social runs on. "
                            "Re-fetches the message live, returns the absolute "
                            "file paths + metadata. "
                            "`idx` optionally selects a single attachment.",
-            "returns_files": True,
             "timeout": 300,
             "params": [
                 {"name": "account", "type": "string", "required": True},
@@ -1180,7 +1178,7 @@ API_MANIFEST: dict[str, Any] = {
             "effect": "write",
             "tool": "social_bucket_get",
             "description": "Download a file from a bucket to a system temp dir "
-                           "(outside the awm workspace) on the calling node and "
+                           "(outside the awm workspace) on the node social runs on and "
                            "return its absolute path + metadata. Any size; it "
                            "streams in chunks. Google-native docs are exported "
                            "(Docs→pdf, Sheets→csv). A folder downloads as a "
@@ -1189,7 +1187,6 @@ API_MANIFEST: dict[str, Any] = {
                            "10000). Files that fail are listed in `failures` "
                            "and the rest still download. `version` (a label from "
                            "bucket_versions) reads an older version of a file.",
-            "returns_files": True,
             "timeout": 3600,
             "params": [
                 {"name": "bucket", "type": "string", "required": True},
@@ -1202,8 +1199,8 @@ API_MANIFEST: dict[str, Any] = {
             "name": "bucket_put",
             "effect": "write",
             "tool": "social_bucket_put",
-            "description": "Upload a local file (`src` = a path on the calling "
-                           "node; it travels with the call) to `path` in a "
+            "description": "Upload a file (`src` = a path on the node social "
+                           "runs on) to `path` in a "
                            "bucket, creating or overwriting it. Any size; it "
                            "streams in chunks. A local folder uploads as the "
                            "folder `path`, its tree inside it; files that fail "
@@ -1215,8 +1212,7 @@ API_MANIFEST: dict[str, Any] = {
             "params": [
                 {"name": "bucket", "type": "string", "required": True},
                 {"name": "path", "type": "string", "required": True},
-                {"name": "src", "type": "string", "required": True,
-                 "file": "in"},
+                {"name": "src", "type": "string", "required": True},
                 {"name": "mime", "type": "string", "required": False},
                 {"name": "parents", "type": "boolean", "required": False},
             ],
@@ -1441,9 +1437,8 @@ def _forwarding(fn: str, handler: Any, outbound: Any = None) -> Any:
         account = (args or {}).get("account")
         if peer and account and account not in _connectors:
             try:
-                return await gatewayclient.call_peer(
-                    peer, "social", fn, outbound(args) if outbound else args)
-            except gatewayclient.PeerError as exc:
+                return await gatewayclient.call("social", fn, outbound(args) if outbound else args, peer=peer)
+            except gatewayclient.GatewayCallError as exc:
                 # Distinguish "couldn't reach the owner" from "the owner said
                 # no" — they have completely different fixes, and a merged
                 # message sends the next incident down the wrong path.
@@ -1476,8 +1471,8 @@ def _seat_forwarding(fn: str, handler: Any) -> Any:
             if isinstance(pid, int):
                 fwd["_caller_session"] = seats.session_claim(pid)
             try:
-                return await gatewayclient.call_peer(peer, "social", fn, fwd)
-            except gatewayclient.PeerError as exc:
+                return await gatewayclient.call("social", fn, fwd, peer=peer)
+            except gatewayclient.GatewayCallError as exc:
                 raise RuntimeError(
                     f"account {account!r} is a fleet singleton owned by peer "
                     f"{peer!r}, which could not be reached: {exc}") from exc

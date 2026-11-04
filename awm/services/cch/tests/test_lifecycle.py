@@ -379,7 +379,7 @@ def test_tags_go_on_the_scope_and_into_the_lineage(home, launched, monkeypatch):
     calls = _scope_calls(monkeypatch)
     out = start({**BASE, "tags": "lab, ana"})
     assert out["ok"] and "warning" not in out
-    assert calls == [("scopes", "scope_tag",
+    assert calls == [("scope", "tag",
                       {"project": "awm", "scope": "demo", "tags": ["lab", "ana"]})]
     assert lifecycle.read_lineage(CHILD_JOB)["tags"] == ["lab", "ana"]
 
@@ -1788,7 +1788,7 @@ def test_resume_without_a_daemon_asks_keep_and_says_daemon_down(home, respawned,
     home.set_workers({}, supervisor=2**22 + 12345)
     out = resume({"job": CHILD_JOB})
     assert out["ok"] is False and out["code"] == "daemon_down" and not respawned
-    assert keep_calls.calls[0][:2] == ("cch", "daemon_ensure")
+    assert keep_calls.calls[0][:2] == ("harness-cc", "daemon_ensure")
 
 
 def test_resume_goes_ahead_once_keep_brings_the_daemon_up(home, respawned, monkeypatch,

@@ -113,22 +113,6 @@ def fleet_edges(tmp_path_factory, monkeypatch):
     return path
 
 
-@pytest.fixture()
-def edge_peers(tmp_path, monkeypatch):
-    """A peer book listing :data:`EDGE_PEERS`. The provider directory keeps only
-    book peers this node holds an edge to, so a snapshot naming a peer the book
-    lacks reads as empty."""
-    import json
-
-    import awm.config.peerbook as peerbook
-
-    path = tmp_path / "edge-peers.json"
-    path.write_text(json.dumps({
-        name: {"edge_url": f"https://{name}:12100"} for name in EDGE_PEERS}))
-    monkeypatch.setattr(peerbook, "peers_file", lambda: path)
-    return path
-
-
 @pytest.fixture(autouse=True)
 def _isolated_usage_tally(tmp_path, monkeypatch):
     """Keep the dispatch tally off the real workspace: tests dispatch freely."""

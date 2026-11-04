@@ -6,7 +6,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock, RwLock, Weak};
 use std::time::{Duration, Instant};
 
-use awm_proto::{CallContext, Lane, Surface, Tier, UsageEvent};
+use awm_proto::manifest::NeedTool;
+use awm_proto::{CallContext, Lane, Surface, Tier, UsageEvent, MANIFEST_FILE};
 use serde_json::{json, Value};
 
 use crate::config::Config;
@@ -26,7 +27,7 @@ const NATIVE_VERBS: [(&str, &str); 8] = [
     ("usage", "Usage per plugin and surface over the last `days` days (default 60)."),
     ("table", "The live name table: each tool's owner plugin and node, and each contract's providers."),
     ("reload", "Read the plugin roots and the install config again. Starts added plugins, restarts changed ones and stops removed ones, with no gateway restart."),
-    ("install", "Install or update plugins from `sources` (a list) or `source`: each a plugin folder. All of them load as one change, or none does."),
+    ("install", "Install or update plugins from `sources` (a list) or `source`: each a plugin folder or git:<url>@<commit>. All of them load as one change, or none does. A git change asks for Tony's passkey approval first; run it again with `approval`=<request_id> once approved."),
     ("uninstall", "Remove an installed plugin by `name` and stop its services."),
 ];
 const DEFAULT_CALL_TIMEOUT_S: f64 = 120.0;
@@ -50,8 +51,8 @@ pub struct Gateway {
     /// reflection's `session_of` answers by pid, with when they were fetched.
     sessions: std::sync::Mutex<HashMap<u32, (Instant, Value)>>,
     installing: tokio::sync::Mutex<()>,
-    /// Passes a change whose source needs approval (R116 item 2).
-    pub approver: Box<dyn crate::install::Approver>,
+    /// Each guarded plugin's egress proxy port (R116 item 1).
+    pub egress: crate::egress::Egress,
     me: Weak<Gateway>,
 }
 
@@ -146,9 +147,13 @@ impl Gateway {
             reloading: tokio::sync::Mutex::new(()),
             sessions: std::sync::Mutex::new(HashMap::new()),
             installing: tokio::sync::Mutex::new(()),
-            approver: Box::new(crate::install::NoPasskeyYet),
+            egress: Default::default(),
             me: me.clone(),
         }))
+    }
+
+    pub fn weak(&self) -> Weak<Gateway> {
+        self.me.clone()
     }
 
     pub fn stopping(&self) -> bool {
@@ -164,6 +169,28 @@ impl Gateway {
     }
 
     /// The plugin a service belongs to. A service the loader does not know is its own plugin.
+    /// The file holding the token `service` proves itself with: its external config's, else
+    /// the one the supervisor minted for its spawn. None when it has neither.
+    pub fn token_file_of(&self, service: &str) -> Option<PathBuf> {
+        match self.cfg.external(service) {
+            Some(external) => external.token_file.clone(),
+            None => Some(crate::supervisor::service_token_path(&self.state, service)).filter(|p| p.exists()),
+        }
+    }
+
+    /// The registered service whose token is `token`, if any.
+    pub fn service_of_token(&self, token: &str) -> Option<String> {
+        let token = token.trim();
+        if token.is_empty() {
+            return None;
+        }
+        self.hub.services().into_iter().map(|s| s.name).find(|name| {
+            self.token_file_of(name)
+                .and_then(|p| std::fs::read_to_string(p).ok())
+                .is_some_and(|expected| !expected.trim().is_empty() && expected.trim() == token)
+        })
+    }
+
     pub fn plugin_of_service(&self, service: &str) -> String {
         self.read_load()
             .plugins
@@ -281,11 +308,10 @@ impl Gateway {
             }
         }
         let caller = awm_proto::Caller { node: self.node.clone(), lane: Lane::Service, ..Default::default() };
-        let answer = self
-            .hub
-            .call(crate::caller::LOOKUP_SERVICE, crate::caller::LOOKUP_FN, json!({"pid": pid}), None, &caller, Duration::from_secs(5))
-            .await
-            .ok()?;
+        // reflection may still be starting: wait for it as a call to its tool would.
+        let (service, verb) = self.wait_for_verb(crate::caller::LOOKUP_TOOL, crate::caller::LOOKUP_VERB).await.ok()?;
+        let answer =
+            self.hub.call(&service, &verb.function, json!({"pid": pid}), None, &caller, Duration::from_secs(5)).await.ok()?;
         let answer = match answer {
             Value::String(s) => serde_json::from_str(&s).unwrap_or(Value::String(s)),
             v => v,
@@ -296,9 +322,30 @@ impl Gateway {
         Some(answer)
     }
 
-    /// Fetch each source, pass the change through the approver, and load it as one change.
-    /// A plugin the loader refuses rolls the whole change back.
-    pub async fn install(&self, sources: &[String]) -> Result<Value, ApiError> {
+    /// Walk from `pid` up its ancestors to the nearest session a harness claims (`caller.rs`).
+    pub async fn resolve_caller(&self, pid: u32) -> crate::caller::Lookup {
+        use crate::caller::Lookup;
+        let mut first_mode = None;
+        let mut at = Some(pid);
+        for hop in 0..crate::caller::MAX_HOPS {
+            let Some(p) = at.filter(|p| *p > 1) else { break };
+            let Some(answer) = self.session_of(p).await.filter(Value::is_object) else { return Lookup::Failed };
+            if answer.get("known").and_then(Value::as_bool) == Some(true) {
+                return Lookup::Session(answer);
+            }
+            if hop == 0 {
+                first_mode = answer.get("mode").and_then(Value::as_str).map(str::to_string);
+            }
+            at = crate::caller::ppid_of(p);
+        }
+        Lookup::NoOwner { mode: first_mode }
+    }
+
+    /// Fetch each source and load them as one change. A plugin the loader refuses rolls the
+    /// whole change back. A change from a git source loads only on Tony's passkey approval of
+    /// its commits (R116 item 2): without `approval` the install asks for one and loads nothing;
+    /// with the request id, it loads once the grant names exactly the change's commits.
+    pub async fn install(&self, sources: &[String], approval: Option<&str>) -> Result<Value, ApiError> {
         use crate::install::{installed_root, source_of, Pending, Pin, Pins};
         if sources.is_empty() {
             return Err(ApiError::new(400, "install needs `source` or `sources`"));
@@ -314,7 +361,13 @@ impl Gateway {
         for (i, raw) in sources.iter().enumerate() {
             let source = source_of(raw).map_err(|e| ApiError::new(400, e))?;
             let dest = stage.join(i.to_string());
-            let got = source.fetch(&dest).map_err(|e| {
+            let (source, got) = tokio::task::spawn_blocking(move || {
+                let got = source.fetch(&dest).map(|f| (dest, f));
+                (source, got)
+            })
+            .await
+            .map_err(|e| ApiError::new(500, e.to_string()))?;
+            let (dest, got) = got.map_err(|e| {
                 cleanup(&stage);
                 ApiError::new(400, e)
             })?;
@@ -330,13 +383,20 @@ impl Gateway {
             fetched.push((dest, got, source.spec()));
         }
         if needs_approval {
+            let pins = Pins::load(&self.state);
             let change: Vec<Pending> = fetched
                 .iter()
-                .map(|(_, f, spec)| Pending { name: f.name.clone(), source: spec.clone(), commit: f.commit.clone() })
+                .map(|(_, f, spec)| Pending {
+                    plugin: f.name.clone(),
+                    source: spec.clone(),
+                    commit: f.commit.clone().unwrap_or_default(),
+                    from: pins.plugin.iter().find(|p| p.name == f.name).and_then(|p| p.commit.clone()).filter(|c| f.commit.as_ref() != Some(c)),
+                })
                 .collect();
-            if let Err(e) = self.approver.approve(&change) {
+            let approved = self.approve(&change, approval).await;
+            if !matches!(approved, Ok(None)) {
                 cleanup(&stage);
-                return Err(ApiError::new(403, e));
+                return approved.map(|asked| asked.unwrap_or_default());
             }
         }
         let mut moved = Vec::new();
@@ -375,6 +435,39 @@ impl Gateway {
         }
         pins.save(&self.state).map_err(|e| ApiError::new(500, e.to_string()))?;
         Ok(json!({"installed": moved.iter().map(|(n, ..)| n).collect::<Vec<_>>(), "reload": report}))
+    }
+
+    /// `Ok(None)` when `approval` approves `change`. Without one, file a `plugin_commits`
+    /// request and answer what to do next.
+    async fn approve(&self, change: &[crate::install::Pending], approval: Option<&str>) -> Result<Option<Value>, ApiError> {
+        use crate::install::{check_grant, commits_of, grant_key, request_payload, APPROVER_TOOL, COMMITS_KIND};
+        let key = grant_key(&self.cfg.secrets_path(&self.state), &self.cfg.env).map_err(|e| ApiError::new(403, e))?;
+        let ctx = CallContext { plugin: Some(NATIVE_TOOL.into()), ..CallContext::local(self.node.clone(), Surface::Plugin) };
+        let call = |verb: &'static str, args: Value| {
+            let ctx = &ctx;
+            async move {
+                // Boxed: install is itself a verb of the native tool, so this call recurses.
+                let text = Box::pin(self.invoke(APPROVER_TOOL, json!({"verb": verb, "args": args}), ctx)).await.map_err(|e| {
+                    ApiError::new(e.status, format!("{APPROVER_TOOL} {verb}: {}", e.detail.as_str().map_or_else(|| e.detail.to_string(), str::to_string)))
+                })?;
+                Ok::<Value, ApiError>(serde_json::from_str(&text).unwrap_or(Value::String(text)))
+            }
+        };
+        let Some(request_id) = approval else {
+            let names: Vec<&str> = change.iter().map(|p| p.plugin.as_str()).collect();
+            let asked = call("approval_request", json!({
+                "kind": COMMITS_KIND, "node": self.node, "reason": format!("install {} on {}", names.join(", "), self.node),
+                "payload": request_payload(change)})).await?;
+            let id = asked.get("request_id").cloned().unwrap_or(Value::Null);
+            return Ok(Some(json!({
+                "installed": [], "approval": asked, "commits": commits_of(change),
+                "next": format!("Approve request {} on the passkey panel, then run the same install again with approval={}",
+                                id.as_str().unwrap_or("?"), id.as_str().unwrap_or("<request_id>")),
+            })));
+        };
+        let answer = call("approval_get", json!({"request_id": request_id})).await?;
+        check_grant(change, &answer, &key, &self.node, chrono::Utc::now().timestamp()).map_err(|e| ApiError::new(403, format!("request {request_id}: {e}")))?;
+        Ok(None)
     }
 
     /// Remove an installed plugin: its folder, its pin and its services.
@@ -624,7 +717,7 @@ impl Gateway {
         match verb {
             "table" => Ok(self.table_view()),
             "reload" | "install" | "uninstall" => {
-                if ctx.caller.lane != Lane::Local || ctx.caller.trust.as_deref().is_some_and(|t| t != crate::caller::DEFAULT_TRUST) {
+                if ctx.caller.lane != Lane::Local || ctx.caller.trust.as_deref() != Some(crate::caller::TRUSTED) {
                     return Err(ApiError::new(403, format!("{verb} takes a trusted caller on this node")));
                 }
                 match verb {
@@ -636,7 +729,7 @@ impl Gateway {
                             .map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect())
                             .unwrap_or_default();
                         sources.extend(args.get("source").and_then(Value::as_str).map(str::to_string));
-                        self.install(&sources).await
+                        self.install(&sources, args.get("approval").and_then(Value::as_str)).await
                     }
                     _ => {
                         let name = args.get("name").and_then(Value::as_str).unwrap_or_default();
@@ -740,6 +833,16 @@ impl Gateway {
         }
         // A tool no local plugin serves runs where the name table says it lives (R117 item 3).
         let peer = peer.or_else(|| if tools.contains_key(&tool) { None } else { self.owner(&tool).and_then(|o| o.peer) });
+        // A restricted session may not run a verb on another node, named or by the table.
+        let remote = peer.as_deref().filter(|p| *p != "local" && *p != self.node);
+        if let Some(why) = crate::modes::refusal(ctx.mode.as_deref(), &tool, &verb, remote) {
+            tracing::info!("mode gate: refused {tool}.{verb}: {why}");
+            return Err(ApiError::new(403, why));
+        }
+        if let Some(why) = ctx.plugin.as_deref().and_then(|p| self.undeclared(p, &tool, &verb)) {
+            tracing::info!("needs guard: refused {tool}.{verb}: {why}");
+            return Err(ApiError::new(403, why));
+        }
         if let Some(peer) = peer.filter(|p| p != "local" && *p != self.node) {
             let envelope = json!({"verb": verb, "args": inner});
             return Ok(self.peers.invoke(&peer, &tool, envelope, ctx).await?);
@@ -749,6 +852,29 @@ impl Gateway {
         let result = self.invoke_local(&tool, &verb, inner, ctx, &tools).await;
         self.record_call(&tools, &tool, &verb, ctx, result.is_ok(), started);
         result
+    }
+
+    /// Why `plugin` may not call `tool`'s `verb`, or None when it may (R116 item 3). A plugin
+    /// may call its own tools, and each tool or contract provider its manifest's needs list
+    /// with that verb. A plugin with no manifest, or one this node does not load, is not held.
+    pub fn undeclared(&self, plugin: &str, tool: &str, verb: &str) -> Option<String> {
+        let load = self.read_load();
+        let p = load.plugins.iter().find(|p| p.name == plugin && !p.legacy)?;
+        if p.tools.iter().any(|t| t.name == tool) {
+            return None;
+        }
+        let lists = |n: &NeedTool| verb == DESCRIBE || n.verbs.iter().any(|v| v == verb);
+        if p.needs.tool.iter().any(|n| n.name == tool && lists(n)) {
+            return None;
+        }
+        let contracts: Vec<NeedTool> = p.needs.contract.iter().filter(|n| lists(n)).cloned().collect();
+        drop(load);
+        if contracts.iter().any(|n| self.providers(&n.name, n.major).iter().any(|o| o.name == tool)) {
+            return None;
+        }
+        Some(format!(
+            "plugin {plugin:?} does not list {tool}.{verb} in its {MANIFEST_FILE}; add the verb to its [[needs.tool]] or [[needs.contract]]"
+        ))
     }
 
     fn record_call(&self, tools: &BTreeMap<String, ToolEntry>, tool: &str, verb: &str, ctx: &CallContext, ok: bool, started: Instant) {
@@ -769,14 +895,29 @@ impl Gateway {
             return Ok(Some(h));
         }
         let ctx = CallContext { plugin: Some(NATIVE_TOOL.into()), ..CallContext::local(self.node.clone(), Surface::Plugin) };
-        let envelope = json!({"verb": crate::isolated::PROVIDER_VERB, "args": {"token": token}});
-        let text = self.invoke(crate::isolated::PROVIDER_TOOL, envelope, &ctx).await?;
-        let answer: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
-        let holder = Holder::from_answer(&answer);
-        if let Some(h) = &holder {
-            self.tokens.put(token, h.clone());
+        let (contract, major) = crate::isolated::HARNESS_CONTRACT;
+        let harness: Vec<String> = self.providers(contract, major).into_iter().map(|o| o.name).collect();
+        let local: Vec<&String> = harness.iter().filter(|h| self.owner(h).is_some_and(|o| o.peer.is_none())).collect();
+        if local.is_empty() {
+            return Err(ApiError::new(503, format!("no {contract}@{major} plugin runs on this node")));
         }
-        Ok(holder)
+        let mut failed = None;
+        for tool in local {
+            let envelope = json!({"verb": crate::isolated::PROVIDER_VERB, "args": {"token": token}});
+            match self.invoke(tool, envelope, &ctx).await {
+                Ok(text) => {
+                    let answer: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
+                    if let Some(h) = Holder::from_answer(&answer) {
+                        let h = Holder { harness: harness.clone(), ..h };
+                        self.tokens.put(token, h.clone());
+                        return Ok(Some(h));
+                    }
+                }
+                Err(e) => failed = Some(e),
+            }
+        }
+        // A harness that could not answer may hold the token: that is no answer, not "unknown".
+        failed.map_or(Ok(None), Err)
     }
 
     /// A call from an isolated session: its whitelist, this node only, its own scope.
@@ -800,6 +941,7 @@ impl Gateway {
             as_: None,
             surface: Surface::Mcp,
             plugin: None,
+            mode: None,
         };
         if verb == DESCRIBE {
             let allowed: Vec<String> = holder.tools.get(tool).into_iter().flatten().filter(|v| holder.may(tool, v)).cloned().collect();
@@ -865,25 +1007,6 @@ impl Gateway {
             .call(&service, &found.function, inner, ctx.as_.as_deref(), &ctx.caller, Duration::from_secs_f64(timeout))
             .await?;
         Ok(render(&value))
-    }
-
-    /// `POST /svc/<service>/fn/<fn>`, the door today's Python services call each other through.
-    pub async fn call_function(&self, service: &str, function: &str, args: Value, ctx: &CallContext) -> Result<Value, ApiError> {
-        let started = Instant::now();
-        let mut args = args;
-        crate::caller::stamp(&mut args, &ctx.caller);
-        let result = self
-            .hub
-            .call(service, function, args, ctx.as_.as_deref(), &ctx.caller, Duration::from_secs_f64(DEFAULT_CALL_TIMEOUT_S))
-            .await
-            .map_err(ApiError::from);
-        let mut ev = UsageEvent::new(self.plugin_of_service(service), Surface::Plugin);
-        ev.tool = Some(service.to_string());
-        ev.verb = Some(function.to_string());
-        ev.ok = Some(result.is_ok());
-        ev.ms = Some(started.elapsed().as_millis() as u64);
-        self.usage.record(ev);
-        result
     }
 }
 
