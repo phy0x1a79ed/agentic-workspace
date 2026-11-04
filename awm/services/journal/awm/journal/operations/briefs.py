@@ -9,8 +9,8 @@ WRITE_GUIDE = (
     "two sentences, such as \"for <the work this scope holds>\". Name the scope's role: "
     "what its branch is for, the part of the project it works on, or whom it serves. "
     "When the work lives in a narrower part of the repo than the whole, give that path "
-    "relative to the worktree. Do not describe the project, the goal, the plan or what "
-    "done looks like. The repo's docs, AGENTS.md, the goal and the journal hold those. "
+    "relative to the worktree. Do not describe the project, the plan or what done "
+    "looks like. The repo's docs, AGENTS.md and the journal hold those. "
     "This is not a log. Change the brief only when the scope's role changes. A brief "
     "over 400 characters is refused."
 )
