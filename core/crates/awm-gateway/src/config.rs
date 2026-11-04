@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
 
 pub const CONFIG_FILE: &str = "config.toml";
 pub const DEFAULT_LISTEN: &str = "127.0.0.1:7819";
+/// The awm tree's plugin roots, below its `awm/` folder. Every in-tree plugin is in one of them.
+pub const TREE_ROOTS: [&str; 2] = ["services", "plugins"];
 pub const DEFAULT_RESERVED: [&str; 6] = ["awm", "auth", "2fa", "approver", "queue-store", "journal"];
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -25,7 +27,8 @@ pub struct Config {
     /// The workspace services see as `AWM_WORKSPACE`.
     #[serde(default)]
     pub workspace: Option<PathBuf>,
-    /// Core plugin roots, in order. Only these may hold reserved tool names.
+    /// Core plugin roots, in order. Only these may hold reserved tool names. Default: the awm
+    /// tree's own roots under the workspace, `awm/services` and `awm/plugins` ([`TREE_ROOTS`]).
     #[serde(default)]
     pub core_roots: Vec<PathBuf>,
     /// Further plugin roots, after the core roots.
@@ -151,6 +154,19 @@ impl Config {
             .unwrap_or_else(|| state.join("edges.yml"))
     }
 
+    /// The workspace: the config's, else the parent of the state dir, `<workspace>/.awm`.
+    pub fn workspace_dir(&self, state: &Path) -> PathBuf {
+        self.workspace.clone().unwrap_or_else(|| state.parent().map(Path::to_path_buf).unwrap_or_default())
+    }
+
+    /// The core roots the loader scans: the config's, else the tree's own under the workspace.
+    pub fn core_root_dirs(&self, state: &Path) -> Vec<PathBuf> {
+        if !self.core_roots.is_empty() {
+            return self.core_roots.clone();
+        }
+        tree_roots(&self.workspace_dir(state).join("awm"))
+    }
+
     /// The reserved list plus the singleton tools of the edges file.
     pub fn reserved_names(&self, state: &Path) -> Vec<String> {
         let mut names = self.reserved.clone();
@@ -165,6 +181,11 @@ impl Config {
         names.dedup();
         names
     }
+}
+
+/// The plugin roots of the awm tree at `awm`.
+pub fn tree_roots(awm: &Path) -> Vec<PathBuf> {
+    TREE_ROOTS.iter().map(|r| awm.join(r)).collect()
 }
 
 fn singleton_tools(path: &Path) -> anyhow::Result<Vec<String>> {
@@ -195,6 +216,17 @@ pub fn hostname() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_core_roots_default_to_the_tree_under_the_workspace() {
+        let none: Config = toml::from_str("").unwrap();
+        let state = Path::new("/w/.awm");
+        assert_eq!(none.core_root_dirs(state), vec![PathBuf::from("/w/awm/services"), PathBuf::from("/w/awm/plugins")]);
+        let named: Config = toml::from_str("workspace = \"/x\"\ncore_roots = [\"/r\"]").unwrap();
+        assert_eq!(named.core_root_dirs(state), vec![PathBuf::from("/r")]);
+        let ws: Config = toml::from_str("workspace = \"/x\"").unwrap();
+        assert_eq!(ws.core_root_dirs(state)[0], PathBuf::from("/x/awm/services"));
+    }
 
     #[test]
     fn defaults_and_singletons() {

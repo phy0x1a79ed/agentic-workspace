@@ -836,7 +836,8 @@ fn bootstrap_writes_a_config_the_gateway_accepts() {
     let cfg: Value = toml::from_str::<toml::Value>(&std::fs::read_to_string(state.join("config.toml")).unwrap())
         .map(|v| serde_json::to_value(v).unwrap())
         .unwrap();
-    assert_eq!(cfg["core_roots"][0], repo.join("awm/services").display().to_string());
+    assert_eq!(cfg["workspace"], repo.display().to_string());
+    assert!(cfg.get("core_roots").is_none(), "the core roots default to the tree's own: {cfg}");
 
     let (ok, out) = run(&["--awm-root", repo.to_str().unwrap()]);
     assert!(ok && out.contains("kept"), "a second bootstrap must keep the config: {out}");

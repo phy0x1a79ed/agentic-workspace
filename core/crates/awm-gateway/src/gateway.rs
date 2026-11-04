@@ -144,7 +144,7 @@ impl Gateway {
         let state = state.canonicalize()?;
         std::fs::create_dir_all(crate::install::installed_root(&state))?;
         let node = cfg.node_name();
-        let workspace = cfg.workspace.clone().unwrap_or_else(|| state.parent().map(Path::to_path_buf).unwrap_or_default());
+        let workspace = cfg.workspace_dir(&state);
         let peer_tools = fetch_peer_tools(&state, peers.as_ref()).await;
         let load = load_plugins(&state, &cfg, &peer_tools);
         for r in &load.refused {
@@ -802,8 +802,7 @@ impl Gateway {
 
     /// `<workspace>/projects`. The workspace defaults to the parent of the state dir, `<workspace>/.awm`.
     pub fn projects_dir(&self) -> PathBuf {
-        let ws = self.cfg.workspace.clone().unwrap_or_else(|| self.state.parent().map(Path::to_path_buf).unwrap_or_default());
-        ws.join("projects")
+        self.cfg.workspace_dir(&self.state).join("projects")
     }
 
     pub fn status(&self) -> Value {
@@ -1207,11 +1206,12 @@ fn load_plugins(state: &Path, cfg: &Config, peer_tools: &BTreeMap<String, Vec<Re
         .unwrap_or_default();
     let reserved = cfg.reserved_names(state);
     let wants = |p: &str| cfg.wants(p);
+    let core_roots = cfg.core_root_dirs(state);
     let mut plugin_roots = cfg.plugin_roots.clone();
     plugin_roots.push(crate::install::installed_root(state));
     loader::load(&loader::LoadInput {
         wants: &wants,
-        core_roots: &cfg.core_roots,
+        core_roots: &core_roots,
         plugin_roots: &plugin_roots,
         profiles: &cfg.profiles,
         reserved: &reserved,

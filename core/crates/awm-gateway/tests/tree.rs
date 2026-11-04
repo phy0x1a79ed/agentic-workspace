@@ -9,7 +9,7 @@ use awm_gateway::loader::{load, LoadInput};
 #[test]
 fn every_plugin_of_the_tree_loads() {
     let awm = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../awm");
-    let roots = [awm.join("services"), awm.join("plugins")];
+    let roots = awm_gateway::config::tree_roots(&awm);
     let profiles = ["claude-science", "gamebot"].map(String::from);
     let reserved: Vec<String> = awm_gateway::config::DEFAULT_RESERVED.iter().map(|s| s.to_string()).collect();
     let got = load(&LoadInput {

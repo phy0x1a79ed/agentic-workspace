@@ -45,9 +45,8 @@ pub fn run(args: Args) -> anyhow::Result<i32> {
 
 fn default_config(root: &std::path::Path) -> anyhow::Result<String> {
     let root = root.canonicalize()?;
-    let awm = root.join("awm");
+    // The core roots default to the tree's own under the workspace (`Config::core_root_dirs`).
     let cfg = toml::toml! {
-        core_roots = [(awm.join("services").display().to_string()), (awm.join("plugins").display().to_string())]
         workspace = (root.display().to_string())
     };
     Ok(toml::to_string_pretty(&cfg)?)
