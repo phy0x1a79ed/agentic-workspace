@@ -45,7 +45,12 @@ RARE_BUDGET = 50_000
 #: literal's word lookup and the AND leg's scan in id order. Cold, a posting list costs about a random read per
 #: page, so past this the AND leg is the champion lists' intersection alone.
 READ_BUDGET = 150_000
-#: Both budgets grow this many times on a base of 64 KB pages, as kb's build writes it: vacuumed, each posting
+#: The passages, summed over its trigrams, that a schema-4 base's trigram lookup may read posting lists for. Its
+#: rounds add trigrams rarest first and stop at this sum: a sparse AND reads every list whole, about a second per
+#: ten million passages cold, and at ten times today's base the commonest trigrams of a sentence sum to a
+#: billion. Past it, the passages found are a looser superset, checked whole as before.
+TRIGRAM_BUDGET = 600_000
+#: The three budgets grow this many times on a base of 64 KB pages, as kb's build writes it: vacuumed, each posting
 #: list lies in ascending pages and the kernel reads ahead. On altair, cold, an AND over 3M postings took 1.2 s
 #: there and 66 s on 4 KB pages.
 BIG_PAGE_BUDGET = 64
@@ -696,8 +701,9 @@ def _literal_rows(conn: sqlite3.Connection, needle: str) -> list[sqlite3.Row]:
     with two whole words inside is looked up first as an AND of its rarest words within
     :data:`READ_BUDGET`, and those words within the literal's span of each other: a phrase would read the
     position list of every word in it, common ones included, and cold that costs tens of seconds. Else, or when that leaves :data:`CANDIDATES` passages or more, it is
-    looked up by its trigrams, the two rarest, the :data:`PROBE_GRAMS` rarest, twice as many, then all. The passages
-    found are read concurrently, at most :data:`CANDIDATES` of them.
+    looked up by its trigrams, the two rarest, the :data:`PROBE_GRAMS` rarest, twice as many, then all, each round
+    cut to the rarest that fit :data:`TRIGRAM_BUDGET`. The passages found are read concurrently, at most
+    :data:`CANDIDATES` of them.
 
     On an older store, a short literal is a LIKE, which the trigram index narrows to the passages holding all
     its trigrams and SQLite then checks on the text; a longer one with two whole words inside is looked up as
@@ -715,7 +721,7 @@ def _literal_rows(conn: sqlite3.Connection, needle: str) -> list[sqlite3.Row]:
         df = document_frequency(conn, terms(phrase))
         if df and min(df.values()) == 0:
             return []
-        rare_budget, read_budget = _budgets(conn)
+        rare_budget, read_budget, _ = _budgets(conn)
         rare, spent = [], 0
         for w in sorted(df, key=df.__getitem__):
             if rare and spent + df[w] > read_budget:
@@ -737,10 +743,14 @@ def _literal_rows(conn: sqlite3.Connection, needle: str) -> list[sqlite3.Row]:
     if len(df) < len(grams):
         return [] if wild else conn.execute(*like).fetchall()
     ordered = sorted(grams, key=df.__getitem__)
-    rounds = (2, PROBE_GRAMS, 2 * PROBE_GRAMS, len(ordered)) if counted else (PROBE_GRAMS, 2 * PROBE_GRAMS)
+    if counted:
+        afford = _affordable(ordered, df, _budgets(conn)[2])
+        rounds = tuple(sorted({min(c, afford) for c in (2, PROBE_GRAMS, 2 * PROBE_GRAMS, len(ordered))}))
+    else:
+        rounds = (PROBE_GRAMS, 2 * PROBE_GRAMS)
     for count in rounds:
         ids = _trigram_ids(conn, ordered[:count])
-        if len(ids) < CANDIDATES or count >= len(ordered):
+        if len(ids) < CANDIDATES or count >= min(len(ordered), rounds[-1]):
             break
     if counted:
         return _read_ids(conn, ids)
@@ -758,10 +768,20 @@ def _near(words: list[str], phrase: str) -> str:
     return f"NEAR({quoted}, {span})" if len(words) > 1 else quoted
 
 
-def _budgets(conn: sqlite3.Connection) -> tuple[int, int]:
-    """:data:`RARE_BUDGET` and :data:`READ_BUDGET` for ``conn``'s store, by its page size."""
+def _budgets(conn: sqlite3.Connection) -> tuple[int, int, int]:
+    """:data:`RARE_BUDGET`, :data:`READ_BUDGET` and :data:`TRIGRAM_BUDGET` for ``conn``'s store, by its page size."""
     scale = BIG_PAGE_BUDGET if conn.execute("PRAGMA page_size").fetchone()[0] >= 65536 else 1
-    return RARE_BUDGET * scale, READ_BUDGET * scale
+    return RARE_BUDGET * scale, READ_BUDGET * scale, TRIGRAM_BUDGET * scale
+
+
+def _affordable(ordered: list[str], df: dict[str, int], budget: int) -> int:
+    """How many of the trigrams ``ordered``, rarest first, fit ``budget``; never fewer than two."""
+    spent = 0
+    for n, gram in enumerate(ordered):
+        spent += df[gram]
+        if spent > budget:
+            return max(n, min(2, len(ordered)))
+    return len(ordered)
 
 
 def _read_ids(conn: sqlite3.Connection, ids: list[int]) -> list[sqlite3.Row]:
