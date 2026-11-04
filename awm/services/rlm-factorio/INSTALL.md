@@ -117,10 +117,10 @@ while the wait runs on.
 
 ## Run
 
-You never start the service by hand. The gateway discovers any folder under
-`awm/services/` holding a `run.sh`, starts it with `bash run.sh`, and injects
-`AWM_HUB_URL`, `AWM_SERVICE_NAME` and `AWM_SERVICE_ID`. There is no auth — the
-registration handshake carries no token.
+You never start the service by hand. The gateway reads `awm-plugin.toml`,
+starts the service with `bash run.sh`, and sets `AWM_HUB_URL`, `AWM_SERVICE_NAME`
+and `AWM_HUB_TOKEN_FILE`. The adapter names itself to the gateway with the token
+in that file.
 
 The service ships `profiles = ["gamebot"]`, so a gateway without that profile
 skips it at bootstrap.

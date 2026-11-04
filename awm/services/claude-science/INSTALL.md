@@ -341,13 +341,12 @@ governs it. Nothing in this fleet can consume it as a *connector*, but it is a
 working MCP-over-HTTP endpoint for awm — usable by any MCP client that is not
 this workbench.
 
-**The allowlist is a security control.** awm has no read-only credential, and a
-caller of this bridge carries no session mode — anything on the loopback bus can
-call `ssh`, `social` and gateway control, and the mode gate for
-`cx`-started sessions documents itself as *not* a trust boundary. So the bridge ships an
-explicit `{domain: verbs}` list, enforced on `tools/call` and not merely on
-`tools/list` (hiding a tool is not refusing it). It defaults to read/query verbs
-of `scope`, `journal`, `search` and `dvc`. Widen it in `CLAUDE_SCIENCE_MCP_ALLOW`, deliberately, and add each verb to the manifest's `[[needs.tool]]`: the bridge calls with the service token, so the gateway refuses a verb the plugin did not declare.
+**The allowlist is a security control.** A caller of this bridge carries no
+session mode. It calls with this plugin's service token, so the gateway admits
+every verb the manifest's `[[needs.tool]]` lists. The bridge ships an explicit
+`{domain: verbs}` list, enforced on `tools/call` and not merely on `tools/list`
+(hiding a tool is not refusing it). It defaults to read/query verbs of `scope`,
+`journal`, `search` and `dvc`. Widen it in `CLAUDE_SCIENCE_MCP_ALLOW`, deliberately, and add each verb to the manifest's `[[needs.tool]]`: the bridge calls with the service token, so the gateway refuses a verb the plugin did not declare.
 
 ## Host file access
 
