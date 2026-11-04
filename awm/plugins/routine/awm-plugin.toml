@@ -37,4 +37,4 @@ verbs = ["post"]
 
 [needs]
 secrets = []
-network = []
+network = ["github.com", "api.github.com", "*.githubusercontent.com"]

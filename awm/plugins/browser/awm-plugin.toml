@@ -17,6 +17,9 @@ major = 1
 service = "browser"
 tier = "on"
 
+[needs]
+network = ["*"]
+
 [[needs.tool]]   # operations: the approver, for captcha and sign-in requests (R102 item 7, R145)
 name = "operations"
 major = 2

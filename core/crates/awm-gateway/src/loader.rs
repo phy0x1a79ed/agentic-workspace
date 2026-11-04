@@ -37,6 +37,9 @@ pub struct ServiceSpec {
     pub tools: Vec<String>,
     /// The plugin's `needs.secrets`: the only secrets its processes get (R116 item 1).
     pub secrets: Vec<String>,
+    /// Whether the egress proxy holds the service to its plugin's `needs.network`. A legacy
+    /// folder declares nothing, so it is not held.
+    pub egress_guarded: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -282,6 +285,10 @@ fn build_plugin(cand: &Candidate, input: &LoadInput, warnings: &mut Vec<String>)
         return Err(format!("plugin name {name:?} must be letters, digits and hyphens"));
     }
 
+    if let Some(bad) = m.needs.network.iter().find_map(|e| awm_proto::NetworkEntry::parse(e).err()) {
+        return Err(format!("needs {bad}"));
+    }
+
     if !m.needs.platform.is_empty() && !m.needs.platform.iter().any(|p| p == std::env::consts::OS) {
         return Err(format!("needs platform {:?}, this node is {}", m.needs.platform, std::env::consts::OS));
     }
@@ -305,6 +312,7 @@ fn build_plugin(cand: &Candidate, input: &LoadInput, warnings: &mut Vec<String>)
             enabled,
             tools: vec![],
             secrets: m.needs.secrets.clone(),
+            egress_guarded: !cand.legacy,
         });
     }
 
@@ -577,6 +585,7 @@ mod tests {
         plugin(&other, "missing", "[plugin]\nname='missing'\n[[needs.tool]]\nname='nobody-serves'\nverbs=['get']\n");
         plugin(&other, "no-verbs", "[plugin]\nname='no-verbs'\n[[needs.tool]]\nname='prov'\nmajor=2\n");
         plugin(&other, "bad-verb", "[plugin]\nname='bad-verb'\n[[needs.contract]]\nname='harness'\nverbs=['send-it']\n");
+        plugin(&other, "bad-host", "[plugin]\nname='bad-host'\n[needs]\nnetwork=['https://x.org']\n");
         plugin(&other, "wrong-major", "[plugin]\nname='wrong-major'\n[[needs.tool]]\nname='prov'\nmajor=1\nverbs=['get']\n");
         plugin(&other, "escape", "[plugin]\nname='escape'\n[[service]]\nname='escape'\npath='..'\n");
         plugin(&other, "elsewhere", "[plugin]\nname='elsewhere'\n[placement]\nnodes=['showtime']\n");
@@ -603,6 +612,7 @@ mod tests {
         assert!(refused["wrong-major"].contains("major 1"));
         assert!(refused["no-verbs"].contains("lists no verbs"));
         assert!(refused["bad-verb"].contains("\"send-it\" is not a verb name"));
+        assert!(refused["bad-host"].contains("network entry \"https://x.org\""), "{}", refused["bad-host"]);
         assert!(refused["escape"].contains("leaves the plugin folder"));
         assert!(refused["bad-implements"].contains("<contract>@<major>"));
         assert!(refused.contains_key("bad-toml"));

@@ -16,7 +16,7 @@ tier = "on"
 
 [needs]
 secrets = ["AWM_TETHER_ISSUE_TOKEN"]
-network = ["nexus.tony-xy-liu.com", "github.com"]
+network = ["nexus.tony-xy-liu.com", "github.com", "*.githubusercontent.com"]
 platform = ["linux"]
 
 # reflection: `message` pushes each line into the holder's prompt, and its cx

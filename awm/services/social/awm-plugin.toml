@@ -12,7 +12,7 @@ tier = "on"
 
 [needs]
 secrets = []
-network = []
+network = ["slack.com", "*.slack.com", "*.slack-edge.com", "discord.com", "*.discord.com", "*.discord.gg", "*.discordapp.com", "*.discordapp.net", "imap.gmail.com:993", "smtp.gmail.com:465", "www.googleapis.com", "oauth2.googleapis.com", "172.16.0.24:7822", "tcp:22 mira, the creds_cmd"]
 platform = ["linux"]
 
 [[needs.tool]]

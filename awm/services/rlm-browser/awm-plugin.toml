@@ -14,7 +14,7 @@ tier = "on"
 
 [needs]
 secrets = []
-network = []
+network = ["*"]
 platform = ["linux"]
 
 [[needs.tool]]

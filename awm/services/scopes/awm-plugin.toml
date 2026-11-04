@@ -12,7 +12,7 @@ tier = "on"
 
 [needs]
 secrets = []
-network = []
+network = ["github.com", "api.github.com", "*.githubusercontent.com", "tcp:22 github.com, git over ssh"]
 platform = ["linux"]
 
 [[needs.tool]]

@@ -51,6 +51,8 @@ pub struct Gateway {
     /// reflection's `session_of` answers by pid, with when they were fetched.
     sessions: std::sync::Mutex<HashMap<u32, (Instant, Value)>>,
     installing: tokio::sync::Mutex<()>,
+    /// Each guarded plugin's egress proxy port (R116 item 1).
+    pub egress: crate::egress::Egress,
     me: Weak<Gateway>,
 }
 
@@ -145,8 +147,13 @@ impl Gateway {
             reloading: tokio::sync::Mutex::new(()),
             sessions: std::sync::Mutex::new(HashMap::new()),
             installing: tokio::sync::Mutex::new(()),
+            egress: Default::default(),
             me: me.clone(),
         }))
+    }
+
+    pub fn weak(&self) -> Weak<Gateway> {
+        self.me.clone()
     }
 
     pub fn stopping(&self) -> bool {

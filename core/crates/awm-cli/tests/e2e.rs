@@ -72,6 +72,7 @@ dir = "ui"
 
 [needs]
 secrets = ["FAKE_SECRET"]
+network = ["egress-ok.invalid"]
 "#,
     );
     write(&core.join("fake/run.sh"), &format!("exec '{}'\n", fake.display()));
@@ -396,6 +397,24 @@ fn gateway_end_to_end() {
     assert_eq!(env_of("fake", "OTHER_SECRET"), "null");
     assert_eq!(env_of("caller", "FAKE_SECRET"), "null", "a plugin got a secret it does not declare");
     assert_eq!(env_of("fake", "GATEWAY_ONLY_SECRET"), "null", "the gateway's own environment leaked into a service");
+
+    // A plugin reaches only the hosts its needs.network lists, through its own egress proxy.
+    let proxy = env_of("fake", "HTTPS_PROXY");
+    assert!(proxy.starts_with("http://127.0.0.1:"), "a guarded plugin has no proxy: {proxy}");
+    assert!(env_of("fake", "NO_PROXY").contains("127.0.0.1"));
+    let connect = |target: &str| -> String {
+        use std::io::{Read, Write};
+        let mut s = std::net::TcpStream::connect(proxy.trim_start_matches("http://")).unwrap();
+        write!(s, "CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n\r\n").unwrap();
+        let mut out = String::new();
+        let _ = s.read_to_string(&mut out);
+        out
+    };
+    let refused = connect("example.org:443");
+    assert!(refused.starts_with("HTTP/1.1 403") && refused.contains("add \"example.org\" to network"), "{refused}");
+    let listed = connect("egress-ok.invalid:443");
+    assert!(listed.starts_with("HTTP/1.1 502"), "a listed host must pass the guard and fail only on DNS: {listed}");
+    assert!(connect("egress-ok.invalid:8443").starts_with("HTTP/1.1 403"), "a listed host allows only 80 and 443");
 
     // A plugin calls the tool it needs by its name, looked up at call time.
     let owner: Value = http().get(format!("{url}/hub/tool/fake")).send().unwrap().json().unwrap();

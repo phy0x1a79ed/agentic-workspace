@@ -15,7 +15,7 @@ name = "trilium"
 
 [needs]
 secrets = []
-network = []
+network = ["tcp:22 the sync hub and the backup host"]
 platform = ["linux"]
 
 [[needs.tool]]

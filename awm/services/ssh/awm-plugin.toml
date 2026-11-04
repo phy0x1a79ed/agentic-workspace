@@ -12,7 +12,7 @@ tier = "on"
 
 [needs]
 secrets = []
-network = []
+network = ["tcp:22 the hosts of ~/.ssh/config"]
 platform = ["linux"]
 
 [[needs.tool]]

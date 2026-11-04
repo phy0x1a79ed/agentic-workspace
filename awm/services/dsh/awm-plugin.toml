@@ -21,7 +21,7 @@ name = "dsh"
 
 [needs]
 secrets = []
-network = []
+network = ["openrouter.ai", "github.com", "api.github.com"]
 platform = ["linux"]
 
 [[needs.tool]]

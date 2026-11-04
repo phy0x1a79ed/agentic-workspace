@@ -12,5 +12,5 @@ tier = "on"
 
 [needs]
 secrets = []
-network = []
+network = ["*.globus.org"]
 platform = ["linux"]

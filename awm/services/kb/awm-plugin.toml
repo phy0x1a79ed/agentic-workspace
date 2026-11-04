@@ -24,7 +24,7 @@ tier = "off"
 
 [needs]
 secrets = []
-network = []
+network = ["huggingface.co", "*.huggingface.co", "*.hf.co"]
 platform = ["linux"]
 
 [[needs.tool]]
