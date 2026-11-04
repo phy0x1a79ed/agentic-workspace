@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from awm.scopes.dao import ScopesDAO
-from awm.scopes.identity import now_ms
+from awm.persistence.timestamps import now_ms
 
 log = logging.getLogger("awm.scopes.claims")
 

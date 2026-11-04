@@ -16,7 +16,7 @@ from typing import Any, Iterable
 from awm.gatewayclient import ids
 from awm.journal import builtin_tags
 from awm.journal.dao import JournalDAO
-from awm.journal.refs import now_ms
+from awm.persistence.timestamps import now_ms
 
 MAX_REASON = 200
 

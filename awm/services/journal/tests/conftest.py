@@ -54,7 +54,7 @@ class FakeSearch:
             raise self.error
         import re
         from awm.journal.dao import JournalDAO
-        from awm.journal.refs import iso_to_ms
+        from awm.persistence.timestamps import iso_to_ms
         from awm.journal.search_index import INDEXED_PARAMS, INDEXED_SQL, thread_text
         words = set(re.findall(r"\w+", args["query"].lower()))
         sql, params = "SELECT * FROM scope_posts WHERE body != ''" + INDEXED_SQL, list(INDEXED_PARAMS)

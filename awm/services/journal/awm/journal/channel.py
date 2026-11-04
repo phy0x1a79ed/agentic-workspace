@@ -31,7 +31,8 @@ from typing import Any, Iterable
 from awm.config import privacy
 from awm.journal import builtin_tags, owners, search_index, tags as tagmod
 from awm.journal.dao import JournalDAO
-from awm.journal.refs import SYSTEM_REF, ms_to_iso, now_ms, iso_to_ms
+from awm.journal.refs import SYSTEM_REF
+from awm.persistence.timestamps import iso_to_ms, ms_to_iso, now_ms
 
 
 # ---------------------------------------------------------------------------

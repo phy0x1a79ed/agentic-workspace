@@ -17,7 +17,7 @@ from typing import Any, Iterable
 from awm.journal.dao import JournalDAO
 from awm.journal.builtin_tags import (BRIEF, JOURNAL, KIND_TAGS, KIND_TO_TAG, MESSAGE,
                                       MIGRATED_PREFIX, PRECEDENT)
-from awm.journal.refs import ms_to_iso, now_ms
+from awm.persistence.timestamps import ms_to_iso, now_ms
 
 _TAG_TO_KIND = {v: k for k, v in KIND_TO_TAG.items()}
 #: Set when a post is made, never after (fleet.md R107 item 6).

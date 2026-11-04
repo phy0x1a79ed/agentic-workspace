@@ -72,7 +72,7 @@ class TestWriteSideNormalization:
 
 class TestReadSideResilience:
     def _insert_double_encoded(self, conn, project, scope):
-        from awm.journal.refs import now_ms
+        from awm.persistence.timestamps import now_ms
         inner = {"title": "Project setup with dev and factorio scopes",
                  "outcome": "success", "skill_path": "awm/debrief.md"}
         from tests.conftest import insert_post

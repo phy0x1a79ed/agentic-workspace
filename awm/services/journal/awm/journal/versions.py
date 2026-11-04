@@ -14,7 +14,7 @@ import re
 from awm.journal import builtin_tags, channel, search_index
 from awm.journal import tags as tagmod
 from awm.journal.dao import JournalDAO
-from awm.journal.refs import ms_to_iso, now_ms
+from awm.persistence.timestamps import ms_to_iso, now_ms
 
 ADDENDUM_RE = re.compile(r"^\s*(?:#+\s*)?(addendum|correction|erratum|update)\b[^\n]*?\(?\b([0-9a-f]{8})(?:[0-9a-f-]{0,28})\b",
                          re.IGNORECASE)
