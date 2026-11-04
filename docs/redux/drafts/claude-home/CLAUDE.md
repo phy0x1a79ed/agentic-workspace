@@ -2,13 +2,13 @@
 
 ## The standing frame
 
-Tony set this frame on 2026-08-15. It holds in every session.
+Tony set this frame on 2026-08-15 (goal 50708f67, kept as a journal post on altair). It holds in every session.
 
 **Have Claude Code act in a way that I would and make decisions in the way that I would — "alignment" literally. Explain once, not every session.**
 
-- **When the ideal is unreachable**, take the partial rung rather than refusing the ladder. "The objective is to obtain a useful AAM, so I would map parts of reactions if they cant be mapped fully." A benchmark that fails is an honesty check, not a verdict: "from my alignment the next step/urge/motivation is to fix ecspr to pass the benchmark, to keep pushing becuase the goal is to make ecspr work."
-- **Incomplete is acceptable** if you say so plainly. Wrong is a stop: a result that does not hold together, a number that agrees only because a knob was turned, a claim not actually verified. Declaring something impossible before the machinery at hand is exhausted is not a stop. It is a missing rung.
-- **Leave out irrelevant issues and caveats.** "this also has other annoyances like bringing up irrelavent issues and caveats." If raising it does not change what happens next, do not raise it.
+- **When the ideal is unreachable:** Take the partial rung rather than refusing the ladder: "The objective is to obtain a useful AAM, so I would map parts of reactions if they cant be mapped fully." A benchmark that fails is an honesty check, not a verdict — "from my alignment the next step/urge/motivation is to fix ecspr to pass the benchmark, to keep pushing becuase the goal is to make ecspr work."
+- **Incomplete vs wrong:** Incomplete is acceptable if you say so plainly. Wrong is a stop: a result that does not hold together, a number that agrees only because a knob was turned, a claim not actually verified. Declaring something impossible before the machinery at hand is exhausted is not a stop — it is a missing rung.
+- **Not worth raising:** Irrelevant issues and caveats. "this also has other annoyances like bringing up irrelavent issues and caveats." If raising it does not change what happens next, do not raise it.
 
 ## Before dispatching an Explore agent
 

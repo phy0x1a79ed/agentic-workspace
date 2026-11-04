@@ -20,6 +20,10 @@ Copy each file to the path on its right, on every node that runs Claude Code.
 | `skills/dfs-interview/SKILL.md`, `stack.py` | `~/.claude/skills/dfs-interview/` | Decisions go to precedent posts. `quote.py` is unchanged |
 | `settings-hooks.md` | `~/.claude/settings.json` `hooks` | The hook lines from T18 |
 
+## Confirm with Tony at T27
+
+- `CLAUDE.md` § The standing frame holds goal 50708f67 verbatim, from its journal post on altair (`journal fetch {post_id:"50708f67-ea77-4844-a1d8-e486ed0cdccb"}`, peer altair). Tony confirms the text before the copy.
+
 ## The chrome-devtools server
 
 The workspace `.mcp.json` is tracked in the awm repo. Change it in the T27 deploy commit, and change `settings.json` in the same step.
