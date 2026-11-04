@@ -8,7 +8,7 @@ pub mod wire;
 pub use manifest::{Manifest, Tier, MANIFEST_FILE};
 pub use network::NetworkEntry;
 pub use usage::{Surface, UsageEvent};
-pub use wire::{CallContext, Caller, Lane};
+pub use wire::{CallContext, Caller, Lane, WsMsg};
 
 /// A tool name is letters, digits and hyphens, starting with a letter or digit.
 pub fn valid_tool_name(name: &str) -> bool {

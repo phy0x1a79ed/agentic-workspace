@@ -33,6 +33,8 @@ pub struct ServiceSpec {
     pub tools: Vec<String>,
     /// The plugin's `needs.secrets`: the only secrets its processes get (R116 item 1).
     pub secrets: Vec<String>,
+    /// The service's `[[service.archive]]` tables, for the search plugin's sources.
+    pub archive: Vec<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -95,7 +97,6 @@ pub struct LoadInput<'a> {
     pub wants: &'a dyn Fn(&str) -> bool,
     pub core_roots: &'a [PathBuf],
     pub plugin_roots: &'a [PathBuf],
-    pub page_roots: &'a [PathBuf],
     pub profiles: &'a [String],
     pub reserved: &'a [String],
     /// `{service: enabled}` from `<state>/enabled.json`.
@@ -270,6 +271,7 @@ fn build_plugin(cand: &Candidate, input: &LoadInput, warnings: &mut Vec<String>)
             enabled,
             tools: vec![],
             secrets: m.needs.secrets.clone(),
+            archive: s.archive.iter().filter_map(|t| serde_json::to_value(t).ok()).collect(),
         });
     }
 
@@ -309,14 +311,16 @@ fn build_plugin(cand: &Candidate, input: &LoadInput, warnings: &mut Vec<String>)
 
     let mut pages = Vec::new();
     for p in &m.page {
-        let dir = match &p.dir {
-            Some(rel) => Some(inside(&cand.dir, rel)?),
-            None => find_page(input.page_roots, &p.name),
-        };
-        match dir {
-            Some(dir) => pages.push(PageSpec { name: p.name.clone(), dir, entry: p.entry.clone() }),
-            None => warnings.push(format!("plugin {name}: page {:?} has no built bundle; not served", p.name)),
+        let rel = p.dir.clone().unwrap_or_else(|| format!("pages/{}/dist", p.name));
+        if Path::new(&rel).is_absolute() || Path::new(&rel).components().any(|c| c == std::path::Component::ParentDir) {
+            return Err(format!("page {:?}: {rel:?} leaves the plugin folder", p.name));
         }
+        // A page that is not built yet leaves the rest of its plugin running.
+        if !cand.dir.join(&rel).join(&p.entry).is_file() {
+            warnings.push(format!("plugin {name}: page {:?} has no built bundle at {rel}; not served", p.name));
+            continue;
+        }
+        pages.push(PageSpec { name: p.name.clone(), dir: inside(&cand.dir, &rel)?, entry: p.entry.clone() });
     }
 
     Ok(Plugin {
@@ -363,13 +367,6 @@ fn stamp(dir: &Path) -> String {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     walk(dir, &mut h);
     format!("{:016x}", h.finish())
-}
-
-fn find_page(roots: &[PathBuf], name: &str) -> Option<PathBuf> {
-    roots
-        .iter()
-        .flat_map(|r| [r.join(name).join("dist"), r.join(name)])
-        .find(|d| d.join("index.html").is_file())
 }
 
 fn claim(
@@ -501,7 +498,6 @@ mod tests {
             wants: &wants,
             core_roots: &[core.to_path_buf()],
             plugin_roots: &[other.to_path_buf()],
-            page_roots: &[],
             profiles: &["gamebot".to_string()],
             reserved: &reserved,
             enabled: &enabled,

@@ -31,9 +31,6 @@ pub struct Config {
     /// Further plugin roots, after the core roots.
     #[serde(default)]
     pub plugin_roots: Vec<PathBuf>,
-    /// Where a page with no `dir` is found by name, as `<root>/<name>/dist`.
-    #[serde(default)]
-    pub page_roots: Vec<PathBuf>,
     /// Gateway profiles that a service's `profiles` match against.
     #[serde(default)]
     pub profiles: Vec<String>,

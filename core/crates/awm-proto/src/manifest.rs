@@ -97,6 +97,7 @@ fn one() -> u32 {
 #[serde(deny_unknown_fields)]
 pub struct PageDecl {
     pub name: String,
+    /// The built bundle, relative to the plugin folder. Default `pages/<name>/dist`.
     #[serde(default)]
     pub dir: Option<String>,
     #[serde(default = "default_entry")]
