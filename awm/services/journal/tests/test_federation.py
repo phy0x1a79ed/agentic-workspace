@@ -60,15 +60,14 @@ def test_the_senders_claimed_author_is_kept_in_meta(journal_workspace):
 
 def test_a_post_records_the_session_behind_the_stamped_pid(journal_workspace, monkeypatch):
     from awm.journal.operations import posts
-    monkeypatch.setattr(posts.roster, "session_by_pid",
-                        lambda pid: {"sessionId": "sess-9"} if pid == 42 else None)
+    r9 = "cc123456789abcdef0123456789abcdef0"
+    monkeypatch.setattr(posts.caller, "session_of",
+                        lambda pid: {"session_id": r9} if pid == 42 else None)
     args = {"project": "awm", "scope": "dev", "author": "agent:awm/dev", "body": "x",
-            "kind": "journal", "meta": {"title": "t", "session": "forged"}}
-    assert posts._handle_post({**args, "_caller_pid": 42})["post"]["meta"] == {
-        "title": "t", "session": "sess-9"}
+            "kind": "journal", "meta": {"title": "t"}}
+    assert posts._handle_post({**args, "_caller_pid": 42})["post"]["meta"] == {"title": "t", "session": r9}
     assert posts._handle_post({**args, "_caller_pid": 7})["post"]["meta"] == {"title": "t"}
-    assert posts._handle_post({**args, "meta": None, "_caller_pid": 42})["post"]["meta"] == {
-        "session": "sess-9"}
+    assert posts._handle_post({**args, "meta": None, "_caller_pid": 42})["post"]["meta"] == {"session": r9}
 
 
 def test_claimed_author_does_not_mutate_the_callers_meta(journal_workspace):
@@ -129,7 +128,7 @@ def test_a_journal_fetch_reads_newest_first_and_messages_oldest_first(journal_wo
     assert bodies(kind="message") == ["first", "second"]
 
 
-@pytest.mark.parametrize("kind", ["message", "goal", "system"])
+@pytest.mark.parametrize("kind", ["message", "brief"])
 def test_a_foreign_fetch_of_another_kind_is_refused(journal_workspace, peer_book, kind):
     with pytest.raises(PermissionError):
         _fetch("peer:capella", kind=kind)
@@ -156,32 +155,6 @@ def test_a_foreign_search_sees_journals_only(journal_workspace, peer_book):
     assert [p["kind"] for p in posts] == ["journal"]
 
 
-def test_goal_reads_are_refused_to_foreign_callers_only(journal_workspace, peer_book):
-    from awm.journal.operations.goals import _handle_goal_history, _handle_goal_read, _handle_goal_set
-    goal = _handle_goal_set({"objective": "secret aim", "author": "user:tony", "level": "scope",
-                             "project": "awm", "scope": "dev"})["goal"]
-    with pytest.raises(PermissionError):
-        _handle_goal_read({"project": "awm", "scope": "dev"}, "peer:capella")
-    with pytest.raises(PermissionError):
-        _handle_goal_history({"goal_id": goal["id"]}, "peer:stranger")
-    assert _handle_goal_read({"project": "awm", "scope": "dev"}, "peer:orion")["total"] == 1
-    assert _handle_goal_read({"project": "awm", "scope": "dev"}, None)["total"] == 1
-    assert _handle_goal_history({"goal_id": goal["id"]})["total"] == 1
-
-
-def test_goal_writes_carry_the_peer_origin(journal_workspace):
-    from awm.journal.operations.goals import _handle_goal_retire, _handle_goal_set
-    made = _handle_goal_set({"objective": "ship it", "author": "user:mallory", "level": "scope",
-                             "project": "awm", "scope": "dev"}, "peer:capella")["goal"]
-    assert made["author"] == "peer:capella"
-    local = _handle_goal_set({"objective": "own goal", "author": "user:tony", "level": "scope",
-                              "project": "awm", "scope": "dev"})["goal"]
-    assert local["author"] == "user:tony"
-    tomb = _handle_goal_retire({"goal_id": made["id"], "author": "user:mallory"},
-                               "peer:shaula")["tombstone"]
-    assert tomb["author"] == "peer:shaula"
-
-
 # ---------------------------------------------------------------------------
 # Every verb declares an effect; journal-bearing reads declare the category
 # ---------------------------------------------------------------------------
@@ -197,7 +170,8 @@ def test_every_journal_verb_declares_an_effect():
     assert missing == []
 
 
-READS = {"fetch", "goal_read", "goal_history", "export"}
+READS = {"fetch", "inbox", "reads", "render", "brief_read",
+         "brief_history", "tag_list", "lineage", "export"}
 
 
 def test_only_the_known_reads_are_reads():
@@ -210,16 +184,10 @@ def test_the_fetch_verb_carries_the_journals_category_and_nothing_else_does():
     assert categorised == {"fetch": "journals"}
 
 
-def test_goal_reads_carry_no_category():
-    """No grant reaches a goal read, so a foreign peer's tool list never shows one."""
-    fns = _functions()
-    for name in ("goal_read", "goal_history"):
-        assert fns[name]["effect"] == "read"
-        assert fns[name].get("category") is None
-
-
 def test_every_published_tool_is_journal_prefixed_and_hidden_verbs_leave_mcp():
     for name, fn in _functions().items():
         assert fn["tool"] == f"journal_{name}"
     hidden = {n for n, f in _functions().items() if f.get("surfaces") == ["cli", "http"]}
-    assert hidden == {"export", "reindex"}
+    assert hidden == {"export", "reindex", "note_read", "precedent_import", "session_parent",
+                      "lineage_import"}
+    assert _functions()["tag_receive"]["surfaces"] == ["http"]

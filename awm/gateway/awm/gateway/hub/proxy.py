@@ -103,8 +103,8 @@ def _forwards_body(request: Request) -> bool:
     headers is present; the method says nothing (bodyless POST and GET-with-body
     both exist in the wild). Handing httpx a stream for a request that framed no
     body makes it invent ``Transfer-Encoding: chunked`` and append a zero-length
-    chunk terminator. An upstream that never reads request bodies — the drawio
-    view listener is a stdlib ``ThreadingHTTPServer`` doing exactly that — then
+    chunk terminator. An upstream that never reads request bodies, such as a
+    stdlib ``ThreadingHTTPServer``, then
     parses that terminator as the next request line, answers ``400`` and drops
     the connection, which the hub's pooled client has already handed to somebody
     else. It surfaces as an intermittent gateway ``500``.
@@ -372,7 +372,8 @@ async def proxy_service_http(
         return JSONResponse(_NOT_FOUND, status_code=404)
     if stamp is not None and (args is None or isinstance(args, dict)):
         stamped = {} if args is None else args
-        stamp(fn, stamped)
+        # The stamp may ask reflection about the caller through this gateway.
+        await asyncio.to_thread(stamp, fn, stamped)
         args = stamped if (stamped or args is not None) else None
     if spec.get("no_response"):
         ch.notify(fn, args, as_=as_)

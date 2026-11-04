@@ -303,6 +303,41 @@ the breaker. The keeper waits, resumes, or starts a new agent:
    health. Attempts back off 1, 2, 5 and 10 min. A broken seat holds for 6 h,
    or until `social keep_reset seat=<name>`.
 
+**CAUTION** A node that does not answer the keeper is not down by that alone.
+The keeper's own node can lose its network while the seats' nodes stay up. The
+home network resets daily at about 09:31Z, and mira used to report every
+remote seat down for those minutes. Name witnesses off the keeper's network in
+`social.toml`:
+
+    [keeper]
+    witness = ["deneb", "altair"]
+
+On a failed `cx list` the keeper asks each witness in order, never the node
+itself, to run `awm reflection probe-other --node <node>`:
+
+- The witness cannot reach the node either: the node is down. The outage and
+  the alert follow as below.
+- The witness reaches the node, or no witness answers: the keeper lost
+  contact. It opens no outage and sends no alert. On return the seat gets one
+  catch-up line when messages arrived meanwhile.
+- The witness answers but cannot probe, such as an older cx: the keeper's own
+  view decides.
+
+Name two witnesses, so that the seats on each witness have the other. With no
+`[keeper]` table the keeper's own view decides. `social keepers` shows a seat's
+`contact_lost_since`.
+
+Each tick first checks that the keeper's own box reaches the internet: any of
+the `online` targets accepts a TCP connection. A box that reaches none holds
+every seat in lost contact, restarts nothing and sends no alert, so a dropped
+home link raises no seat alarm. Alerts it held go out once the box is back.
+
+    [keeper]
+    online = ["1.1.1.1:443", "8.8.8.8:443", "9.9.9.9:443"]   # the default; [] turns it off
+
+Each node's keeper keeps only the seats on its own node, so social runs on
+every node that hosts a seat.
+
 Each outage writes a restart record: the cause, when the seat went down and
 came back, and how many messages arrived meanwhile. A daemon cause comes from
 cx's `daemon` block. The agent's first line after it comes back is that

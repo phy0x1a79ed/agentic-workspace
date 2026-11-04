@@ -599,6 +599,63 @@ def load_seats(path: Path | None = None) -> list[SeatConfig]:
     return seats
 
 
+#: Where the keeper looks for its own box's internet: public anycast resolvers
+#: on ports they always serve. Any one that accepts a connection counts.
+ONLINE_TARGETS = ("1.1.1.1:443", "8.8.8.8:443", "9.9.9.9:443")
+
+
+@dataclass(frozen=True)
+class KeeperConfig:
+    """The ``[keeper]`` table."""
+
+    #: The nodes the keeper asks, in order, before it calls a seat's node down.
+    witness: tuple[str, ...] = ()
+    #: ``host:port`` targets for the box's own internet check. Empty turns it off.
+    online: tuple[str, ...] = ONLINE_TARGETS
+
+
+def load_keeper(path: Path | None = None) -> KeeperConfig:
+    """The ``[keeper]`` table of social.toml, or its defaults.
+
+    ``witness = ["deneb", "altair"]``: the keeper's own node can lose its network
+    while the seats' nodes stay up, so a node that does not answer is down only
+    when a witness elsewhere cannot reach it either. Name nodes off the keeper's
+    network, and at least two, since the keeper never asks a node about itself.
+    """
+    path = path if path is not None else _config_file()
+    if not path.exists():
+        return KeeperConfig()
+    try:
+        with open(path, "rb") as f:
+            data = tomllib.load(f)
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        raise SocialConfigError(f"could not parse {path}: {exc}") from exc
+    table = data.get("keeper")
+    if table is None:
+        return KeeperConfig()
+    if not isinstance(table, dict) or set(table) - {"witness", "online"}:
+        raise SocialConfigError(f"{path}: [keeper] takes only witness and online")
+    witness = _names(table.get("witness", []), f"{path}: [keeper].witness must be a list of node names")
+    online = _names(table.get("online", list(ONLINE_TARGETS)),
+                    f"{path}: [keeper].online must be a list of host:port targets")
+    if any(not t.rpartition(":")[2].isdigit() or not t.rpartition(":")[0] for t in online):
+        raise SocialConfigError(f"{path}: [keeper].online must be a list of host:port targets")
+    return KeeperConfig(witness=witness, online=online)
+
+
+def _names(value: object, error: str) -> tuple[str, ...]:
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, list) or not all(isinstance(v, str) and v.strip() for v in value):
+        raise SocialConfigError(error)
+    return tuple(dict.fromkeys(v.strip() for v in value))
+
+
+def load_witnesses(path: Path | None = None) -> list[str]:
+    """The ``[keeper]`` witnesses, in the order the keeper asks them."""
+    return list(load_keeper(path).witness)
+
+
 _SEAT_KEYS = {"account", "channel", "channels", "except", "node", "scope", "brief",
               "model", "effort", "compact_at", "alert_after"}
 

@@ -1,7 +1,7 @@
 """The allowlist is the only boundary between the workbench and all of awm.
 
 awm has no per-caller mode and no read-only credential: whatever can reach the
-loopback bus can call `ssh`, `compute`, `social`, gateway control and the agent
+loopback bus can call `ssh`, `social`, gateway control and the agent
 write verbs. This bridge hands a tool surface to a model running in another
 product, so the list of what it may call is a security control, and these tests
 are what stop it eroding — particularly the distinction between *hiding* a tool
@@ -70,7 +70,7 @@ def test_a_malformed_tool_name_is_rejected_before_anything_else():
 
 def test_the_default_allowlist_excludes_the_dangerous_domains():
     """A regression guard on the list itself, so widening it is deliberate."""
-    for domain in ("ssh", "vpn", "2fa", "social", "agent", "orch", "compute",
+    for domain in ("ssh", "vpn", "2fa", "social", "agent", "orch",
                    "services", "gateway", "auth", "reflection"):
         assert domain not in mcp_bridge.DEFAULT_ALLOWLIST, domain
 
@@ -80,11 +80,7 @@ def test_the_default_allowlist_is_the_post_plan_read_surface():
         "scope": ("search", "resolve"),
         "journal": ("fetch",),
         "search": ("query", "get"),
-        "drawio": ("list", "info", "read", "cells", "export", "url",
-                   "view_url"),
-        "graphify": ("find", "refs", "query", "path", "affected"),
         "dvc": ("coverage", "scope_status"),
-        "precedence": ("search",),
     }
 
 

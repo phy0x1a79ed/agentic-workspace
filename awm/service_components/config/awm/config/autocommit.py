@@ -1,11 +1,10 @@
 """Commit a service's writes into a user's worktree, and pin figures with DVC.
 
-A per-user store (notes, drawio, …) lives as a subdirectory of the user's
-scope worktree. After a flush the service calls :func:`commit_subdir` for its
-own subdirectory only — never ``git add -A`` at the root, which would sweep
-another service's half-written files into this commit. The commit carries the
-same ``Author-Handle:`` trailer the drawio store uses, so history stays
-attributable after the user branches are merged.
+A per-user store lives as a subdirectory of the user's scope worktree. After a
+flush the service calls :func:`commit_subdir` for its own subdirectory only — never ``git add -A`` at the root, which would sweep
+another service's half-written files into this commit. The commit carries an
+``Author-Handle:`` trailer, so history stays attributable after the user
+branches are merged.
 
 :func:`pin_chunk` is the DVC half: when a chunk changed since its ``.dvc``
 pin, re-add and commit the pin. Nothing pushes; the cache is local.

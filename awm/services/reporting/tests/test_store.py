@@ -198,4 +198,4 @@ def test_a_v5_database_becomes_the_intake_queue(tmp_path):
     assert "sessions" not in tables and {"watchers", "waits"} <= tables
     assert not columns & {"body", "priority", "reply_to", "thread_open", "announced_at"}
     assert {"card_id", "fed_state", "agent", "agent_link", "tags", "auto_blocked"} <= task_columns
-    assert store.SCHEMA_VERSION == 9
+    assert store.SCHEMA_VERSION == 10

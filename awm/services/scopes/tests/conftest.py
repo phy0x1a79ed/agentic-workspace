@@ -31,8 +31,6 @@ def stub_journal_service(monkeypatch):
         assert service == "journal", (service, fn)
         if fn == "render":
             return {"content": f"# Project History: {args['project']}\n"}
-        if fn == "goal_read":
-            return {"goals": [], "total": 0}
         return {}
 
     monkeypatch.setattr("awm.gatewayclient.call_sync", call_sync)

@@ -43,7 +43,9 @@ def test_export_is_hidden_and_the_posts_feed_is_gone():
                    for p in by_name["recall"]["params"])
 
 
-def test_service_toml_declares_the_kb_archive_source():
-    toml = tomllib.loads((Path(hub_adapter.__file__).parents[2] / "service.toml").read_text())
-    assert toml["tool"] == "kb" and toml["tier"] == "off"
-    assert toml["archive"] == [{"name": "kb", "mode": "index", "export": "kb_export"}]
+def test_the_plugin_manifest_declares_the_kb_archive_source():
+    toml = tomllib.loads((Path(hub_adapter.__file__).parents[2] / "awm-plugin.toml").read_text())
+    [tool] = toml["tool"]
+    assert tool["name"] == "kb" and tool["tier"] == "off"
+    [service] = toml["service"]
+    assert service["archive"] == [{"name": "kb", "mode": "index", "export": "kb_export"}]

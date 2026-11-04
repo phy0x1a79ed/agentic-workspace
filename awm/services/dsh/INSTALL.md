@@ -91,17 +91,6 @@ opencode's `~/.local/share/opencode/auth.json` at spawn. The key stays in the on
 file that already owns it and never reaches a settings file, a git object, or
 this service's state.
 
-**The harness is on `compute`'s PROTECTED list.** The gateway inherits the
-session id of whichever agent's shell started it, so everything it spawns is
-attributable to that agent and therefore reapable. A long-lived node process
-that is idle until it streams is exactly the shape of a victim. Only the harness
-itself is listed. What it spawns to do work is work.
-
-CAUTION: the entry matches the launcher path
-`deepseek-harness/…/apps/cli/lib/bin.js`, because nothing on the command line is
-called `dsh` any more. Changing how `harness.py` spawns the child without
-changing that pattern makes the harness reapable again, and nothing reports it.
-
 ## Tracked configuration
 
 `config/` holds the hand-authored `$DSH_HOME` content, so both nodes run one

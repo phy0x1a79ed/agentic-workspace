@@ -94,13 +94,17 @@ def test_repair_rejects_missing_worktree(scopes_workspace):
         scopes.repair_scope("p1", "nope")
 
 
-def test_repair_rejects_worktree_without_context(scopes_workspace, split_brain_scope):
+def test_repair_rejects_a_folder_that_is_no_worktree(scopes_workspace, split_brain_scope):
     from awm.scopes import scopes
 
-    # Delete .awm/context.md so the on-disk evidence is incomplete.
-    (split_brain_scope["worktree"] / ".awm" / "context.md").unlink()
+    git = split_brain_scope["worktree"] / ".git"
+    if git.is_dir():
+        import shutil
+        shutil.rmtree(git)
+    elif git.exists():
+        git.unlink()
 
-    with pytest.raises(FileNotFoundError, match="context.md"):
+    with pytest.raises(FileNotFoundError, match="not a git worktree"):
         scopes.repair_scope(split_brain_scope["project"], split_brain_scope["scope"])
 
 

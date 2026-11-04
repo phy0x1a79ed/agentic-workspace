@@ -12,7 +12,7 @@ may be reached or started, which stays with each caller. `cx`, `reflection`,
 
 What stayed in `reflection` is the part that is that service's whole point:
 resolving a caller to exactly one session and refusing anything it cannot
-identify. See `awm.reflection.session_target`.
+identify. See `awm.cch.session_target`.
 """
 
 from awm.claudedaemon.lane import DaemonLane

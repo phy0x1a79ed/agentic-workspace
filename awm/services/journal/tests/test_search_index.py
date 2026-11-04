@@ -38,16 +38,16 @@ def test_filters_apply_before_ranking(journal_workspace):
 
 def test_system_posts_fall_back_to_substring(journal_workspace):
     from awm.journal import channel
-    channel.post("awm", "dev", author="system", kind="system", body="worktree healed")
-    posts, _, _ = channel.search(query="healed", kind="system")
+    channel.post("awm", "dev", author="system", kind="brief", body="worktree healed")
+    posts, _, _ = channel.search(query="healed", kind="brief")
     assert [p.body for p in posts] == ["worktree healed"]
 
 
 def test_reindex_backfills_and_prunes(journal_workspace, journal_conn):
     from awm.journal import search_index
-    journal_conn.execute(
-        "INSERT INTO scope_posts (id, owner_project, owner_scope, author, kind, body, meta, ts)"
-        " VALUES ('seeded', 'proj-a', 'scope-1', 'system', 'journal', 'imported from state.db', '{}', 1)")
+    from tests.conftest import insert_post
+    insert_post(journal_conn, "seeded", "proj-a", "scope-1", "system", "journal",
+                "imported from state.db", "{}", 1)
     journal_conn.commit()
     counts = search_index.run_reindex(dry_run=True)
     assert counts["post"]["missing"] == 1

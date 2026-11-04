@@ -42,7 +42,7 @@ from fastapi import (
 )
 from pydantic import BaseModel, Field, model_validator
 
-from awm.gateway import surface
+from awm.gateway import surface, usage_log
 from awm.gateway.hub import discovery, rpc
 from awm.gateway.hub.lease import LeaseAlreadyHeld, get_lease_manager
 from awm.gateway.hub.registry import (
@@ -143,6 +143,32 @@ class RegisterResponse(BaseModel):
     lease_ws_path: str
 
 
+@router.get("/table")
+async def name_table() -> list[dict]:
+    """This node's tools, by name (plugin-contract.md § The name table)."""
+    return discovery.name_table()
+
+
+@router.get("/tool/{name}")
+async def tool_owner(name: str) -> dict:
+    """The plugin that owns a tool name, looked up now."""
+    for row in discovery.name_table():
+        if row["name"] == name:
+            return {k: row[k] for k in ("name", "major", "plugin", "peer")}
+    raise HTTPException(status_code=404, detail=f"no plugin serves tool {name!r}")
+
+
+@router.get("/contract/{contract}")
+async def contract_providers(contract: str) -> list[dict]:
+    """Every provider of ``<name>@<major>`` (a bare name means major 1), looked up now."""
+    name, _, major = contract.partition("@")
+    if major and not major.isdigit():
+        raise HTTPException(status_code=400, detail=f"bad major in {contract!r}")
+    want = f"{name}@{major or 1}"
+    return [{k: row[k] for k in ("name", "major", "plugin", "peer")}
+            for row in discovery.name_table() if want in row["implements"]]
+
+
 @router.post("/register", response_model=RegisterResponse)
 async def register(req: RegisterRequest) -> RegisterResponse:
     registry = get_registry()
@@ -235,7 +261,7 @@ class ServiceRegisterRequest(BaseModel):
                                       "the prefix (last connect wins).")
     origin: str | None = Field(None,
                                description="Human 'who' label for an overlay "
-                                           "(e.g. 'stt-shadow @ web-stt'), used "
+                                           "(e.g. 'mic-shadow @ web-mic'), used "
                                            "as the evictor identity in the notice "
                                            "sent to an overlay this one evicts.")
 
@@ -541,9 +567,21 @@ def _route_inbound(ch: "rpc.ControlChannel", service_id: str,
         ch.handle_session_frame(env)
     elif kind == "session.close":
         ch.handle_session_close(env)
+    elif kind == "usage":
+        _record_usage(service_id, env)
     else:
         log.debug("ignored inbound envelope kind=%s on service %s",
-                  kind, rec.name)
+                  kind, service_id)
+
+
+def _record_usage(service_id: str, env: dict[str, Any]) -> None:
+    """A background run the service reports. The plugin is the service itself,
+    never a name the frame claims."""
+    rec = get_registry().get_by_id(service_id)
+    if rec is None:
+        return
+    usage_log.append({"plugin": rec.name, "surface": "background",
+                      **{k: env.get(k) for k in ("name", "ok", "ms")}})
 
 
 @router.websocket("/service/bridge/{service_id}/{bridge_id}")
@@ -611,7 +649,7 @@ class ShadowRegisterRequest(BaseModel):
                                     "exist for this prefix.")
     origin: str | None = Field(None,
                                description="Human 'who' label for this overlay "
-                                           "(e.g. 'shadow:stt:web-stt'), used as "
+                                           "(e.g. 'shadow:mic:web-mic'), used as "
                                            "the evictor identity in the notice "
                                            "sent to an overlay this one evicts.")
     page: dict = Field(...,

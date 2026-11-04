@@ -30,10 +30,9 @@ def test_every_function_publishes_a_science_tool_over_its_short_name():
         assert fn["tool"] == f"science_{fn['name']}", fn
 
 
-def test_service_toml_declares_the_tool_and_tier():
-    toml = tomllib.loads((Path(__file__).parents[1] / "service.toml").read_text())
-    assert toml["tool"] == "science"
-    assert toml["tier"] == "on"
+def test_the_plugin_manifest_declares_the_tool_and_tier():
+    toml = tomllib.loads((Path(__file__).parents[1] / "awm-plugin.toml").read_text())
+    assert [(t["name"], t["tier"]) for t in toml["tool"]] == [("science", "on")]
 
 
 def test_only_the_daemon_verbs_are_hidden_from_mcp():

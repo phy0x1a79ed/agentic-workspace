@@ -1,4 +1,4 @@
-"""Scopes-side channel tests: the legacy seed fold, the schema migration, and the history hand-off."""
+"""Scopes-side channel tests: the legacy seed fold and the schema migration."""
 from __future__ import annotations
 
 import sqlite3
@@ -118,22 +118,3 @@ class TestSchemaMigrationV3:
             "AND name='idx_agents_parent'"
         ).fetchone() is None
         db.close()
-
-
-class TestHistoryHandoff:
-    def test_history_is_rendered_by_the_journal(self, scopes_workspace, monkeypatch):
-        from awm.scopes import scopes as sc
-        from awm.scopes.identity import ensure_agent
-        sent = {}
-
-        def fake_call_sync(service, fn, args=None, **kw):
-            sent.update(service=service, fn=fn, args=args)
-            return {"content": "rendered"}
-
-        monkeypatch.setattr("awm.gatewayclient.call_sync", fake_call_sync)
-        sc._ensure_project_row("awm")
-        ensure_agent("awm", "sib-allocated", status="allocated")
-        assert sc._generate_history_md("awm", "mine") == "rendered"
-        assert (sent["service"], sent["fn"]) == ("journal", "render")
-        assert "siblings" not in sent["args"]
-        assert sent["args"]["write"] is False

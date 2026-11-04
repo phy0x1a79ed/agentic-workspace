@@ -1,0 +1,17 @@
+[plugin]
+name = "dev"
+version = "0.1.0"
+trust = "own"
+
+[[service]]
+name = "dev"
+
+[[tool]]
+name = "dev"
+major = 1
+tier = "off"
+
+[needs]
+secrets = []
+network = []
+platform = ["linux"]

@@ -97,8 +97,7 @@ def test_the_published_renames_are_in_the_table():
     expected = {
         ("reflection_send", "reflection_message_self"),
         ("cx_start", "reflection_start_other"), ("cx_list", "reflection_list_other"),
-        ("cx_stop", "reflection_stop_other"), ("cx_claim", "reflection_claim_other"),
-        ("cx_seed", "reflection_seed_other"), ("cx_remove", "reflection_remove_other"),
+        ("cx_stop", "reflection_stop_other"),
         ("board_post", "operations_board_post"), ("board_list", "operations_board_list"),
         ("board_party_add", "operations_party_add"),
         ("board_party_list", "operations_party_list"),
@@ -109,7 +108,7 @@ def test_the_published_renames_are_in_the_table():
         ("reporting_board_ensure", "operations_board_ensure"),
         ("reporting_request_human_user", "operations_request_human"),
         ("reporting_request_human_review", "operations_request_human"),
-        ("scope_post", "journal_post"), ("scope_goal_history", "journal_goal_history"),
+        ("scope_post", "journal_post"),
         ("scope_subscribe", "journal_subscribe"),
         ("scope_data_mount", "dvc_mount"), ("scope_data_gc", "dvc_gc"),
         ("scope_data_status", "dvc_scope_status"),
@@ -123,7 +122,6 @@ def test_the_published_renames_are_in_the_table():
         ("auth_node_key", "awm_node_key"), ("auth_status", "awm_auth_status"),
         ("rlm_browser_acquire", "browser_acquire"),
         ("rlm_factorio_world_new", "factorio_world_new"),
-        ("penpot_plugins_status", "penpot-plugins_status"),
     }
     assert expected <= pairs
 
@@ -172,7 +170,7 @@ def _tree_published():
 
 def test_every_row_this_branch_owns_lands_on_a_name_the_tree_publishes():
     published = _tree_published()
-    owned = {"awm", "browser", "factorio", "penpot-plugins"}
+    owned = {"awm", "browser", "factorio"}
     missing = [a.flat_new for a in aliases.ALIASES
                if a.new_tool in owned or a.flat_new.startswith("operations_peer_")
                if a.flat_new not in published]

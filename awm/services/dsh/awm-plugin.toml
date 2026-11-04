@@ -1,0 +1,30 @@
+[plugin]
+name = "dsh"
+version = "0.2.0"
+trust = "own"
+
+[[service]]
+name = "dsh"
+
+[[tool]]
+name = "dsh"
+major = 1
+tier = "off"
+
+[[tool]]
+name = "harness-ds"
+major = 1
+tier = "off"
+implements = ["harness@1"]
+
+[[page]]
+name = "dsh"
+
+[needs]
+secrets = []
+network = []
+platform = ["linux"]
+
+[[needs.tool]]
+name = "reflection"   # dsh sends it harness_event
+major = 1

@@ -27,7 +27,7 @@ def _domestic_peers() -> list[str]:
 def _list_sessions(peer: str) -> list[dict[str, Any]]:
     from awm import gatewayclient
 
-    reply = gatewayclient.call_peer_sync(peer, "cx", "list", {},
+    reply = gatewayclient.call_peer_sync(peer, "reflection", "list_other", {},
                                          timeout=_PEER_TIMEOUT_S)
     rows = reply.get("sessions") if isinstance(reply, dict) else None
     return [r for r in rows or [] if isinstance(r, dict)]

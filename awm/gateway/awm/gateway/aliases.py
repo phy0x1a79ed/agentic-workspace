@@ -65,7 +65,7 @@ def _rows() -> list[Alias]:
                           old_flat, dict(rename or {})))
 
     add("reflection", "send", "reflection", "message_self")
-    for verb in ("start", "list", "stop", "claim", "seed", "remove"):
+    for verb in ("start", "list", "stop"):
         add("cx", verb, "reflection", f"{verb}_other")
 
     for verb in ("post", "claim", "complete", "fail", "get", "list"):
@@ -82,8 +82,7 @@ def _rows() -> list[Alias]:
     add("reporting", "request_human_user", "operations", "request_human", {"kind": "blocked"})
     add("reporting", "request_human_review", "operations", "request_human", {"kind": "review"})
 
-    for verb in ("post", "fetch", "subscribe", "unsubscribe",
-                 "goal_set", "goal_retire", "goal_read", "goal_history"):
+    for verb in ("post", "fetch", "subscribe", "unsubscribe"):
         add("scope", verb, "journal", verb)
     add("scope", "data_mount", "dvc", "mount")
     add("scope", "data_gc", "dvc", "gc")
@@ -99,7 +98,6 @@ def _rows() -> list[Alias]:
 
     for verb in ("status", "restart"):
         add("gateway", verb, "awm", verb, old_flat=f"awm_{verb}")
-    add("gateway", "mcp-sync", "awm", "mcp_sync", old_flat="awm_mcp_sync")
     add("gateway", "list", "awm", "registry_list")
     add("gateway", "deregister", "awm", "registry_deregister")
     for verb in ("list", "start", "stop", "restart", "enable", "disable", "reap"):
@@ -112,8 +110,7 @@ def _rows() -> list[Alias]:
 
     for verb in ("password", "peer_credential", "verify", "edge_material", "node_key",
                  "sign_peer_token", "rotate", "user_add", "user_passwd", "user_disable",
-                 "user_list", "penpot_record", "penpot_session", "penpot_rotate",
-                 "penpot_list"):
+                 "user_list"):
         add("auth", verb, "awm", verb)
     add("auth", "status", "awm", "auth_status")
 
@@ -127,7 +124,6 @@ def _rows() -> list[Alias]:
                  "blueprint_capture", "scan", "load", "move", "stop", "teleport",
                  "respawn", "mine", "craft", "build", "insert", "take", "research"):
         add("rlm", f"factorio_{verb}", "factorio", verb)
-    add("penpot", "plugins_status", "penpot-plugins", "status")
     return rows
 
 

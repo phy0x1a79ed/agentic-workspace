@@ -1,0 +1,13 @@
+[package]
+name = "awm-mcp"
+description = "The awm MCP proxy: a stdio MCP server that forwards to the gateway."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+reqwest.workspace = true
+libc.workspace = true

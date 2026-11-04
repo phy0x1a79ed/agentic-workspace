@@ -2,7 +2,7 @@
 
 ## Purpose & Contents
 
-This file orients any agent working in this workspace. Claude Code loads it into every session under the workspace root, and OpenCode loads it through each scope's `mcp-opencode.json`. Every line costs every session. It holds only what an agent needs on any turn in any project: where it is, what to run at startup, how to find the tool surface, and the rules whose violation loses work.
+This file orients any agent working in this workspace. Claude Code loads it into every session under the workspace root. Every line costs every session. It holds only what an agent needs on any turn in any project: where it is, what to run at startup, how to find the tool surface, and the rules whose violation loses work.
 
 Read the companion files by path when a task needs them:
 
@@ -22,8 +22,6 @@ projects/<project>/
   .bare/                  # bare git repo
   <scope>/                # git worktree and your cwd. <scope> may nest
     .awm/                 # gitignored
-      context.md          # this scope's brief
-      history.md          # generated session log
       data -> ../data     # compat symlink. The real data/ is repo content
     data/                 # versioned data, see § Data
 ```
@@ -35,19 +33,14 @@ Find projects and scopes live. A list in a doc goes stale within days.
 
 ## Startup ritual
 
-Run this at session start. Run it again any time to refresh.
+Run this at session start. Run it again any time to refresh. The harness gives you the scope brief, what this scope is for, when you enter a scope. `journal(verb="brief_read")` shows it again.
 
-1. Run `journal(verb="render", args={project:<p>, scope:<s>})`. It renders `.awm/history.md` from the journal.
-2. Read `.awm/context.md`. It states why this scope exists.
-3. Read `.awm/history.md`.
-4. Run `journal(verb="fetch", args={scope:<s>, kind:"message"})` for messages addressed to you.
-5. Run `journal(verb="goal_read", args={project:<p>, scope:<s>})` for the goal in force. Read it again before you propose a deliverable. The `goal-alignment` skill sets or revises it.
-
-Never edit `.awm/history.md` by hand. Use the `journal` verbs.
+1. Run `journal(verb="render", args={project:<p>, scope:<s>})`. It returns the scope's latest journal entries, then its project's.
+2. Run `journal(verb="inbox", args={project:<p>, scope:<s>})` for the messages your scope has not read, one line each. Read one in full with `journal(verb="fetch", args={post_id:<id>})`. Run `journal(verb="ack", args={project:<p>, scope:<s>, through:<ack_through>})` once you have read them, so the next session starts after them.
 
 ## MCP tools
 
-The `awm-mcp` server is registered in `<workspace>/.mcp.json`. Its surface comes live from the running feature services: sixteen top-level tools, such as `scope`, `journal`, `search` and `awm`. Call each with `{ "verb": "<name>", "args": { … } }`.
+The `awm-mcp` server is registered in `<workspace>/.mcp.json`. Its surface comes live from the running feature services: one top-level tool per domain, such as `scope`, `journal`, `search` and `awm`. Call each with `{ "verb": "<name>", "args": { … } }`.
 
 Discover the catalog. Do not memorize it.
 
@@ -57,11 +50,10 @@ Discover the catalog. Do not memorize it.
 
 Check for a tool before you hand a task to the user. Sending a message, approving a login, capturing audio and restarting a VPN each look like human jobs, and each has a domain. A restricted session's mode limits which verbs it may call, and the server rejects the rest.
 
-Five tools change how you work:
+Four tools change how you work:
 
 - `search` — one ranked search over journals, precedence decisions, papers and other archives, on this node and its peers. Query it before you ask what the swarm already knows. Read a whole hit with `get`.
-- `graphify` — an AST graph of the awm source tree. Query it before you start an Explore agent on "where is X, what calls Y, what does changing Z affect" in awm. It indexes the deployed tree. Use Explore for uncommitted code and for other projects.
-- `precedence` — an archive of past user decisions on preferences. Search it before you ask the user a preference question. Add to it when the user makes or overrides such a decision.
+- `journal` precedents — past user decisions on preferences, as journal posts tagged `precedent`. Search them before you ask the user a preference question. Post one when the user makes or overrides such a decision.
 - `reflection` — acts on your own session. `reflection(verb="compact", args={followup:"<next task>"})` queues a compaction after this turn, then sends the follow-up prompt. A full context is a seam to cross, not a reason to stop.
 - `operations` — keeps your task on Tony's Swarm board. When you need Tony in a background session, call `operations(verb="request_human", args={kind:"blocked", reason:<why>})` instead of `AskUserQuestion`, because nobody watches that terminal. Call it with `kind:"review"` when the work is ready to look at.
 

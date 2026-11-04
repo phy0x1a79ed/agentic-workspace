@@ -269,7 +269,7 @@ def test_a_device_token_is_not_forwarded_over_a_websocket(monkeypatch):
     c, _ = _edge(_gate([entry]))
     try:
         try:
-            with c.websocket_connect("/svc/drawio/emit/t",
+            with c.websocket_connect("/svc/journal/emit/t",
                                      headers={"Authorization": f"Bearer {token}"}):
                 pass
         except Exception:  # noqa: BLE001 — the refusal is the path under test

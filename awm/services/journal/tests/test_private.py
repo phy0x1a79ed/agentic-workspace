@@ -1,4 +1,4 @@
-"""Private marks: a peer caller sees no post, goal or render of a marked project or scope."""
+"""Private marks: a peer caller sees no post or render of a marked project or scope."""
 
 from __future__ import annotations
 
@@ -12,18 +12,12 @@ LOCALS = [None, "user:tony", "agent:awm/dev"]
 
 @pytest.fixture()
 def seeded(journal_workspace):
-    from awm.journal import channel, goals
+    from awm.journal import channel
     ids = {}
     for project, scope in [("avatar", "Avatar"), ("avatar", "Avatar/dev"), ("awm", "dev"),
                            ("awm", "secret"), ("awm", "secret/sub")]:
         ids[(project, scope)] = channel.post(project, scope, author=f"agent:{project}/{scope}",
                                              kind="journal", body=f"entry {project} {scope}").id
-    ids["goal:avatar"] = goals.set_goal(objective="avatar goal", author="user:tony",
-                                        level="project", project="avatar").id
-    ids["goal:avatar-scope"] = goals.set_goal(objective="avatar scope goal", author="user:tony",
-                                              level="scope", project="avatar", scope="Avatar").id
-    ids["goal:workspace"] = goals.set_goal(objective="workspace goal", author="user:tony",
-                                           level="workspace").id
     return ids
 
 
@@ -35,8 +29,9 @@ def legacy(seeded, journal_conn):
             ("legacy-other", "task:awm", "dev", "entry legacy awm")]
     for i, (pid, project, scope, body) in enumerate(rows):
         journal_conn.execute(
-            "INSERT INTO scope_posts (id, owner_project, owner_scope, author, kind, body, meta, ts)"
-            " VALUES (?, ?, ?, 'system', 'journal', ?, '{}', ?)", (pid, project, scope, body, i + 1))
+            "INSERT INTO scope_posts (id, owner_project, owner_scope, author, body, meta, ts)"
+            " VALUES (?, ?, ?, 'system', ?, '{}', ?)", (pid, project, scope, body, i + 1))
+        journal_conn.execute("INSERT INTO post_tags VALUES (?, 'builtin:journal')", (pid,))
     journal_conn.commit()
     return seeded
 
@@ -94,32 +89,6 @@ def test_an_unmark_restores_the_peer_view(marked):
     assert len(_owners(_fetch("peer", kind="journal"))) == 5
 
 
-def test_a_peer_goal_read_drops_marked_channels(marked):
-    from awm.journal.operations.goals import _handle_goal_read
-    peer = _handle_goal_read({"project": "avatar", "scope": "Avatar"}, "peer")
-    assert [g["objective"] for g in peer["goals"]] == ["workspace goal"]
-    assert "avatar goal" not in peer["rendered"]
-    local = _handle_goal_read({"project": "avatar", "scope": "Avatar"}, None)
-    assert len(local["goals"]) == 3
-
-
-def test_a_peer_naming_a_marked_goal_meets_no_goal(marked):
-    from awm.journal import goals
-    from awm.journal.operations.goals import (
-        _handle_goal_history, _handle_goal_retire, _handle_goal_set)
-    gid = marked["goal:avatar"]
-    with pytest.raises(goals.GoalError, match="no goal"):
-        _handle_goal_history({"goal_id": gid}, "peer")
-    with pytest.raises(goals.GoalError, match="no goal"):
-        _handle_goal_retire({"goal_id": gid, "author": "user:x"}, "peer")
-    with pytest.raises(goals.GoalError, match="no goal"):
-        _handle_goal_set({"objective": "x", "author": "user:x", "supersedes": gid}, "peer")
-    with pytest.raises(ValueError, match="no scope"):
-        _handle_goal_set({"objective": "x", "author": "user:x", "level": "project",
-                          "project": "avatar"}, "peer")
-    assert _handle_goal_history({"goal_id": gid}, None)["total"] == 1
-
-
 def test_a_peer_cannot_post_or_subscribe_to_a_marked_scope(marked):
     from awm.journal.operations.posts import _handle_post, _handle_subscribe
     with pytest.raises(ValueError, match="no scope"):
@@ -130,30 +99,26 @@ def test_a_peer_cannot_post_or_subscribe_to_a_marked_scope(marked):
                          "body": "b"}, None)["post"]["project"] == "avatar"
 
 
-def test_a_peer_render_omits_marked_siblings_and_keeps_the_file_whole(marked, journal_workspace):
+def test_a_peer_render_omits_marked_siblings(marked, journal_workspace):
     from awm.journal.operations.render import _handle_render
     out = _handle_render({"project": "awm", "scope": "dev"}, "peer")
     assert "secret" not in out["content"] and "entry awm dev" in out["content"]
-    stored = (journal_workspace["projects_dir"] / "awm" / "dev" / ".awm" / "history.md").read_text()
-    assert "entry awm secret" in stored
-    assert "entry awm secret" in _handle_render({"project": "awm", "scope": "dev",
-                                                 "write": False}, None)["content"]
+    assert "entry awm secret" in _handle_render({"project": "awm", "scope": "dev"}, None)["content"]
 
 
-def test_a_peer_render_of_a_marked_scope_is_empty_and_never_written(marked, journal_workspace):
+def test_a_peer_render_of_a_marked_scope_is_empty(marked, journal_workspace):
     from awm.journal.operations.render import _handle_render
     out = _handle_render({"project": "avatar", "scope": "Avatar"}, "peer")
     assert "entry avatar" not in out["content"] and "No journal entries yet" in out["content"]
-    assert not (journal_workspace["projects_dir"] / "avatar" / "Avatar" / ".awm").exists()
 
 
 def test_a_peer_export_drops_marked_documents_and_ids(marked):
     from awm.journal.operations.render import _handle_export
     peer, local = _handle_export({}, "peer:altair"), _handle_export({}, None)
-    assert _owners(peer["documents"]) == {("awm", "dev"), ("", "workspace")}
+    assert _owners(peer["documents"]) == {("awm", "dev")}
     assert marked[("avatar", "Avatar")] not in peer["ids"]
     assert marked[("avatar", "Avatar")] in local["ids"]
-    assert len(local["documents"]) == 8
+    assert len(local["documents"]) == 5
 
 
 @pytest.mark.parametrize("as_", PEERS)

@@ -59,8 +59,8 @@ class TestCreateProjectClone:
 
         # .awm/ scaffolded exactly like a scope.
         awm_dir = worktree / ".awm"
-        assert (awm_dir / "context.md").exists()
-        assert (awm_dir / "history.md").exists()
+        assert not (awm_dir / "context.md").exists()
+        assert not (awm_dir / "history.md").exists()
         assert (awm_dir / "data").is_symlink()
         assert not (awm_dir / "skills").exists()
 
@@ -97,7 +97,7 @@ class TestCreateProjectFresh:
         log = _git(bare, "log", "--format=%s", "main").stdout.strip()
         assert log == "Initial commit for freshproj"
         worktree = projects_dir / "freshproj" / "main"
-        assert (worktree / ".awm" / "context.md").exists()
+        assert not (worktree / ".awm" / "context.md").exists()
 
 
 class TestCloneBare:

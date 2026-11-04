@@ -173,7 +173,7 @@ A node can mark a project or one scope of it private. Run `scope private project
 
 Run `awm/scripts/privacy-probe.sh <peer> <project> --expect visible|hidden` from another node to prove a mark. Run it once with `visible` before marking, because the hidden run compares counts against that baseline.
 
-**CAUTION** A mark is visibility hygiene, not a security boundary. Text that mentions the project from another project's records stays visible, and so do untagged precedence decisions, kb papers and Trilium notes. A domestic peer can still start a session here, or drive the browser at this node's own `/files`, and that session reads with a local stamp. A closed node (§ Authentication) refuses that session too.
+**CAUTION** A mark is visibility hygiene, not a security boundary. Text that mentions the project from another project's records stays visible, and so do precedent posts with no tag naming the project, kb papers and Trilium notes. A domestic peer can still start a session here, or drive the browser at this node's own `/files`, and that session reads with a local stamp. A closed node (§ Authentication) refuses that session too.
 
 ## Federated search
 
@@ -528,7 +528,7 @@ WS** to `ssh@<arbiter>` and the OPEN socket *is* the lease (ZooKeeper-ephemeral 
 etcd-keepalive style): held for exactly as long as the connection is alive, so a
 live socket is proof of work in progress and a dead requester frees (or trips) its
 slot the instant its socket drops. This reuses the gateway's existing
-direct-session mechanism (which the `tts` and `stt` audio bridges also use) and
+direct-session mechanism (which the `mic` audio bridge also uses) and
 the edge's catch-all peer WS proxy — **no gateway or edge change**. The
 client helpers `acquire_lease` / `acquire_lease_peer` / `acquire_lease_maybe_peer`
 are the direct-session analogue of `call_peer` / `subscribe_peer`.
@@ -710,8 +710,9 @@ unit symlink reports enabled-but-bad and cannot be started.
 
 ## Not done
 
-**Cross-node data sync.** Each node owns its own `notes` / `writing` / `drawio` /
-`precedence` / `scopes` databases and nothing reconciles them — replication is
-deliberately out of scope (see the top of this file). So "my notes" means "this
-node's notes"; reach across explicitly with the `peer` argument when you need to. Worth
-designing before a second node becomes a real writing surface.
+**Cross-node data sync.** Each node owns its own journal and `scopes`
+databases and nothing reconciles them. Replication is deliberately out of scope
+(see the top of this file). Reach across explicitly with the `peer` argument when
+you need to. The journal's tag vocabulary is the one exception: each add or edit
+goes to every domestic peer, and a name clash between two nodes blocks journal
+reads between them until the newer tag is renamed (`awm/journal/tagsync.py`).

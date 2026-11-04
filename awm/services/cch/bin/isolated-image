@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Build the isolated-session image on this node's rootless Docker (fleet.md R109).
+set -euo pipefail
+here="$(cd "$(dirname "$0")/.." && pwd)"
+tag="${AWM_ISOLATED_IMAGE:-awm-isolated:1}"
+export DOCKER_HOST="${AWM_ISOLATED_DOCKER_HOST:-unix:///run/user/$(id -u)/docker.sock}"
+case "$DOCKER_HOST" in
+    unix:///var/run/docker.sock|unix:///run/docker.sock)
+        echo "isolated-image: $DOCKER_HOST is the rootful daemon; use rootless Docker" >&2
+        exit 2 ;;
+esac
+docker info --format '{{.SecurityOptions}}' | grep -q rootless || {
+    echo "isolated-image: $DOCKER_HOST is not a rootless daemon" >&2
+    exit 2
+}
+exec docker build -t "$tag" "$here/isolated"

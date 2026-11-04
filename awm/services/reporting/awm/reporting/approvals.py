@@ -104,9 +104,9 @@ async def run_approve(name: str, bundles: Path, approved_by: str) -> tuple[int, 
 
 
 def _send_line(job: str, text: str) -> None:
-    from awm.claudedaemon.job import send_line
+    from awm.gatewayclient.sessions import tell
 
-    send_line(job, text)
+    tell(job, text)
 
 
 class Approvals:

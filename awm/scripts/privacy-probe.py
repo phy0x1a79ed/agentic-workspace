@@ -40,7 +40,7 @@ FREE_TEXT = {"title", "snippet", "text", "body", "content", "rendered", "descrip
              "modified_sample", "untracked_sample", "claimed_author", "context",
              "question", "decision", "fallback", "stop_line", "noise", "cmdline"}
 # Search sources whose documents carry no project field, so no mark can hide them.
-OUT_OF_SCOPE_SOURCES = {"precedence", "kb", "writing", "notes", "trilium"}
+OUT_OF_SCOPE_SOURCES = {"kb", "trilium"}
 SVC_NOT_FOUND = {"error": "not found"}
 TIMEOUT = httpx.Timeout(120.0, connect=10.0)
 
@@ -418,8 +418,8 @@ class Probe:
                 f"{len(posts)} posts of {name}"
         self.check_control("fetch", f"0.4 control journal fetch project={name}", fetch)
         self.check_control("render", f"0.5 control journal render {name}/{c['scope']}", lambda: (
-            "content" in self.peer_call("journal", "render", {"project": name, "scope": c["scope"],
-                                                              "write": False}), "rendered"))
+            "content" in self.peer_call("journal", "render", {"project": name, "scope": c["scope"]}),
+            "rendered"))
 
         def files() -> tuple[bool, str]:
             got = self.peer_file(c["file"])
@@ -536,10 +536,6 @@ class Probe:
         out = self.peer_call("journal", "fetch", {"limit": 500, **args})
         return self.own_rows(out.get("posts", []), "posts")
 
-    def journal_goals(self) -> tuple[bool, Any, str]:
-        out = self.peer_call("journal", "goal_read", {})
-        return self.own_rows(out.get("goals", []), "goals")
-
     def journal_export(self) -> tuple[bool, Any, str]:
         docs: list[dict] = []
         cursor = None
@@ -557,10 +553,10 @@ class Probe:
 
     def journal_render(self) -> tuple[bool, Any, str]:
         out = self.peer_call("journal", "render", {"project": self.project,
-                                                    "scope": self.facts["scope"], "write": False})
+                                                    "scope": self.facts["scope"]})
         content = out.get("content", "")
         seen = bool(re.search(r"^\*\*\[[0-9a-f-]{36}\]", content, re.M))
-        return seen, {k: v for k, v in out.items() if k not in ("content", "path")}, \
+        return seen, {k: v for k, v in out.items() if k != "content"}, \
             f"{'entries' if seen else 'no entries'} in the render"
 
     def dvc_coverage(self) -> tuple[bool, Any, str]:
@@ -588,14 +584,19 @@ class Probe:
         else:
             self.check(f"{label} {path}", lambda: self.static_file(path), control="files")
 
-    def precedence(self) -> tuple[bool, Any, str]:
+    def precedents(self) -> tuple[bool, Any, str]:
         found: dict[str, dict] = {}
-        for args in ({"keyword": f'"{self.project}"', "k": 50}, {"tag": [self.project], "k": 50}):
-            for row in self.peer_call("precedence", "search", args).get("results", []):
+        for args in ({"tags": "precedent", "query": self.project, "limit": 50},
+                     {"tags": "precedent", "limit": 50}):
+            try:
+                rows = self.peer_call("journal", "fetch", args).get("posts", [])
+            except Refused:
+                rows = []
+            for row in rows:
                 found[row["id"]] = row
         rows = list(found.values())
         tagged = [r for r in rows if self.project.lower() in (t.lower() for t in r.get("tags") or [])]
-        return bool(tagged), rows, f"{len(tagged)} of {len(rows)} decisions tagged {self.project}"
+        return bool(tagged), rows, f"{len(tagged)} of {len(rows)} precedents tagged {self.project}"
 
     def cx_list(self) -> tuple[bool, Any, str]:
         return self.own_rows(self.peer_call("reflection", "list_other", {}).get("sessions", []),
@@ -622,12 +623,6 @@ class Probe:
         base = self.facts["baseline_counts"]
         grown = [k for k in counts if counts[k] >= base[k]]
         return bool(grown), {}, f"journals {counts} against the visible baseline {base}"
-
-    def compute_decisions(self) -> tuple[bool, Any, str]:
-        rows = self.peer_flat("compute_decisions", {"limit": 1000}).get("decisions", [])
-        own = [r for r in rows if self.path_mentioned(r.get("cmdline")) or self.under_project(r.get("cwd"))
-               or self.under_project((r.get("detail") or {}).get("cwd"))]
-        return bool(own), rows, f"{len(own)} of {len(rows)} decisions under {self.project_dir}"
 
     def posts_topic(self) -> tuple[bool, Any, str]:
         token = uuid.uuid4().hex[:12]
@@ -709,7 +704,6 @@ class Probe:
                    control="render")
         self.check(f"4.4 journal fetch query={self.project} (no project)",
                    lambda: self.journal_fetch(query=self.project, limit=100), may_be_vacuous=True)
-        self.check("4.5 journal goal_read (no project)", self.journal_goals, may_be_vacuous=True)
         self.check("4.6 journal export", self.journal_export)
         self.check("5 dvc coverage", self.dvc_coverage)
         self.check(f"6 /files{self.facts['file']}", lambda: self.static_file(self.facts["file"]),
@@ -720,7 +714,7 @@ class Probe:
             self.skip("7 journal/posts subscription", "pass --post to post on the peer")
         self.outside_file("8.1 /files journal db", "journal_db")
         self.outside_file("8.2 /files transcript", "transcript_file")
-        self.check(f"9 precedence search {self.project}", self.precedence, may_be_vacuous=True)
+        self.check(f"9 precedent posts tagged {self.project}", self.precedents, may_be_vacuous=True)
         self.check("10 reflection list_other", self.cx_list, may_be_vacuous=True)
         self.check(f"11 transcripts search {self.project}", self.transcripts_direct,
                    may_be_vacuous=True)
@@ -730,7 +724,6 @@ class Probe:
                                                       "run --expect visible first")
         else:
             self.check("12 search sources/status journals count", self.archive_counts)
-        self.check("13 compute decisions", self.compute_decisions, may_be_vacuous=True)
         tail = f" ({self.warnings} warnings)" if self.warnings else ""
         if self.skipped:
             print(f"OK ({len(self.skipped)} skipped: {', '.join(self.skipped)}) "

@@ -25,7 +25,7 @@ set -uo pipefail
 WS="$(git -C "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" rev-parse --show-toplevel)"
 cd "$WS"
 
-COMP="$WS/awm/service_components/config:$WS/awm/service_components/persistence:$WS/awm/service_components/gatewayclient:$WS/awm/service_components/claudedaemon:$WS/awm/service_components/kept"
+COMP="$WS/awm/service_components/config:$WS/awm/service_components/persistence:$WS/awm/service_components/gatewayclient:$WS/awm/service_components/claudedaemon:$WS/awm/service_components/kept:$WS/awm/service_components/usage"
 
 # dist name -> "<source-root-dir>::<test-dir>"
 declare -A DISTS=(
@@ -34,14 +34,12 @@ declare -A DISTS=(
   [config]="$WS/awm/service_components/config::$WS/awm/service_components/config/tests"
   [persistence]="$WS/awm/service_components/persistence::$WS/awm/service_components/persistence/tests"
   [telemetry]="$WS/awm/service_components/telemetry::$WS/awm/service_components/telemetry/tests"
+  [usage]="$WS/awm/service_components/usage::$WS/awm/service_components/usage/tests"
   [claudedaemon]="$WS/awm/service_components/claudedaemon::$WS/awm/service_components/claudedaemon/tests"
   [kept]="$WS/awm/service_components/kept::$WS/awm/service_components/kept/tests"
-  [keep]="$WS/awm/services/keep::$WS/awm/services/keep/tests"
   [scopes]="$WS/awm/services/scopes:$WS/awm/services/dvc::$WS/awm/services/scopes/tests"
   [journal]="$WS/awm/services/journal::$WS/awm/services/journal/tests"
   [search]="$WS/awm/services/search::$WS/awm/services/search/tests"
-  [writing]="$WS/awm/services/writing::$WS/awm/services/writing/tests"
-  [precedence]="$WS/awm/services/precedence::$WS/awm/services/precedence/tests"
   [events]="$WS/awm/services/events::$WS/awm/services/events/tests"
   [social]="$WS/awm/services/social::$WS/awm/services/social/tests"
   [2fa]="$WS/awm/services/2fa::$WS/awm/services/2fa/tests"
@@ -50,28 +48,17 @@ declare -A DISTS=(
   [httpsfront]="$WS/awm/services/httpsfront::$WS/awm/services/httpsfront/tests"
   [rlm-browser]="$WS/awm/services/rlm-browser::$WS/awm/services/rlm-browser/tests"
   [rlm-factorio]="$WS/awm/services/rlm-factorio::$WS/awm/services/rlm-factorio/tests"
-  [graphify]="$WS/awm/services/graphify::$WS/awm/services/graphify/tests"
-  [stt]="$WS/awm/services/stt::$WS/awm/services/stt/awm/stt/tests"
-  [tts]="$WS/awm/services/tts::$WS/awm/services/tts/awm/tts/tests"
   [fileviewer]="$WS/awm/services/fileviewer::$WS/awm/services/fileviewer/tests"
-  [drawio]="$WS/awm/services/drawio::$WS/awm/services/drawio/tests"
-  [notes]="$WS/awm/services/notes::$WS/awm/services/notes/tests"
-  [virtmic]="$WS/awm/services/virtmic::$WS/awm/services/virtmic/tests"
   [mic]="$WS/awm/services/mic::$WS/awm/services/mic/tests"
   [vpn]="$WS/awm/services/vpn::$WS/awm/services/vpn/tests"
-  [compute]="$WS/awm/services/compute::$WS/awm/services/compute/tests"
   [reflection]="$WS/awm/services/reflection::$WS/awm/services/reflection/tests"
   [dvc]="$WS/awm/services/dvc::$WS/awm/services/dvc/tests"
   [claude-science]="$WS/awm/services/claude-science::$WS/awm/services/claude-science/tests"
   [dsh]="$WS/awm/services/dsh::$WS/awm/services/dsh/tests"
   [engcyc]="$WS/awm/services/engcyc::$WS/awm/services/engcyc/tests"
-  [hermes]="$WS/awm/services/hermes::$WS/awm/services/hermes/tests"
   [trilium]="$WS/awm/services/trilium::$WS/awm/services/trilium/tests"
   [zotero]="$WS/awm/services/zotero::$WS/awm/services/zotero/tests"
-  [penpot]="$WS/awm/services/penpot::$WS/awm/services/penpot/tests"
-  [penpot-view]="$WS/awm/services/penpot-view::$WS/awm/services/penpot-view/tests"
-  [penpot-plugins]="$WS/awm/services/penpot-plugins::$WS/awm/services/penpot-plugins/tests"
-  [cx]="$WS/awm/services/cx::$WS/awm/services/cx/tests"
+  [cch]="$WS/awm/services/cch::$WS/awm/services/cch/tests"
   [dev]="$WS/awm/services/dev::$WS/awm/services/dev/tests"
   [tether]="$WS/awm/services/tether::$WS/awm/services/tether/tests"
   [kb]="$WS/awm/services/kb::$WS/awm/services/kb/tests"
@@ -82,7 +69,7 @@ declare -A DISTS=(
 )
 
 # Stable run order.
-ORDER=(gateway gatewayclient config persistence telemetry claudedaemon kept scopes journal search writing events precedence social 2fa ssh auth httpsfront rlm-browser rlm-factorio graphify stt tts fileviewer drawio notes virtmic mic vpn compute reflection dvc claude-science dsh engcyc hermes trilium zotero penpot penpot-view penpot-plugins cx keep dev tether kb board reporting reporting-hooks transcripts)
+ORDER=(gateway gatewayclient config persistence telemetry usage claudedaemon kept scopes journal search events social 2fa ssh auth httpsfront rlm-browser rlm-factorio fileviewer mic vpn reflection dvc claude-science dsh engcyc trilium zotero cch dev tether kb board reporting reporting-hooks transcripts)
 
 # Allow selecting a subset on the command line.
 if [ "$#" -gt 0 ]; then

@@ -4,13 +4,13 @@ A "scope" is represented by a row in the ``agents`` table
 (status ∈ allocated|active|retired) within the scopes service's own DB.
 All SQL goes through ScopesDAO.
 
-A scope IS the channel, held by the journal service: history.md is rendered
-there from the scope's journal posts (``journal_render``), and the vagrant
-session helper subscribes the user to the scope's channel.
+A scope IS the channel, held by the journal service, and the vagrant session
+helper subscribes the user to the scope's channel.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import shutil
@@ -330,7 +330,7 @@ def _cleanup_worktree(bare_dir: Path, worktree_dir: Path,
         pending = [ln for ln in (st.stdout or "").splitlines() if ln.strip()]
         if pending:
             guard = {"result": "dirty", "path": str(worktree_dir),
-                     "pending": len(pending), "sample": pending[:5]}
+                     "pending": len(pending), "sample": pending[:5], "paths": pending}
             if not force:
                 raise RuntimeError(
                     f"Refusing to remove {worktree_dir}: {len(pending)} uncommitted "
@@ -355,24 +355,66 @@ def _cleanup_worktree(bare_dir: Path, worktree_dir: Path,
     return guard
 
 
-def _default_context(project: str, scope: str) -> str:
-    return (
-        f"# {project}/{scope}\n\n"
-        f"## Startup\n\n"
-        f"1. `journal(verb=\"render\", args={{project:\"{project}\", scope:\"{scope}\"}})`\n"
-        f"2. Read `.awm/history.md` — session history, open issues, resolved items.\n"
-        f"3. `journal(verb=\"fetch\", args={{scope:\"{scope}\", kind:\"message\"}})`\n\n"
-        f"## This scope\n\n"
-        f"_Why this scope exists._\n\n"
-        f"## Working here\n\n"
-        f"The current directory is the git worktree. Data is at `data/`. Do not edit "
-        f"`.awm/history.md` — use the `journal` verbs.\n\n"
-        f"Workspace rules — data versioning, environments, the git model — are in "
-        f"the workspace `AGENTS.md` and are not repeated here.\n\n"
-        f"## Debrief\n\n"
-        f"Run the `debrief` skill when the work is done. When a plan drives the work, "
-        f"its last task is the debrief.\n"
-    )
+def _dvc_drift(worktree_dir: Path) -> list[str]:
+    """Data pins whose files changed since their last ``dvc add`` (scopes.md R44 item 3).
+
+    Their bytes are in no cache yet, so a delete would lose them. An uncommitted
+    pin shows to git as untracked, and the uncommitted-change check catches it.
+    Ignored files lose nothing that matters and never block a delete.
+    """
+    if not data_dvc.is_dvc_repo(worktree_dir) or not data_dvc.chunk_pins(worktree_dir):
+        return []
+    if not data_dvc.dvc_available():
+        return ["dvc is not installed, so pinned data cannot be checked"]
+    r = data_dvc._dvc(worktree_dir, "status", "--json", timeout=None)
+    if r.returncode != 0:
+        return [f"dvc status failed: {data_dvc._out(r)[:200]}"]
+    try:
+        changed = json.loads(r.stdout or "{}")
+    except ValueError:
+        return [f"dvc status answered {r.stdout[:200]!r}"]
+    return sorted(changed) if isinstance(changed, dict) else []
+
+
+def _unique_commits(bare_dir: Path, branch: str) -> list[str]:
+    """Commits on ``branch`` that no other branch or remote ref holds (R44 item 4)."""
+    if _ref_sha(bare_dir, f"refs/heads/{branch}") is None:
+        return []
+    refs = run_git(["git", "-C", str(bare_dir), "for-each-ref", "--format=%(refname)", "refs/heads", "refs/remotes"])
+    others = [ref for ref in (refs.stdout or "").split() if ref != f"refs/heads/{branch}"]
+    r = run_git(["git", "-C", str(bare_dir), "rev-list", "--oneline", f"refs/heads/{branch}", "--not", *others])
+    return [ln for ln in (r.stdout or "").splitlines() if ln.strip()] if r.returncode == 0 else []
+
+
+def _removal_guard(bare_dir: Path, worktree_dir: Path, project: str, scope: str, branch: str,
+                   force: bool, *, branch_goes: bool) -> dict:
+    """The R44 checks that run before a scope's worktree goes.
+
+    A live session's claim blocks the removal always. Pinned data changed since
+    its last ``dvc add`` blocks it unless ``force`` is set. Commits no other ref
+    holds block it only when the branch goes too, because a kept branch keeps
+    them. A forced removal lists each one. Uncommitted files are checked by
+    :func:`_cleanup_worktree`.
+    """
+    from awm.scopes import claims
+
+    holder = claims.live_holder(project, scope)
+    if holder is not None:
+        raise RuntimeError(f"Refusing to remove {project}/{scope}: live session {holder['session_id']} "
+                           f"holds it. force does not override a live session (scopes.md R44).")
+    drift = _dvc_drift(worktree_dir) if worktree_dir.is_dir() else []
+    commits = _unique_commits(bare_dir, branch) if branch_goes else []
+    blockers = []
+    if drift:
+        blockers.append(f"{len(drift)} data pin(s) changed since their last `dvc add` "
+                        f"({', '.join(drift[:3])})")
+    if commits:
+        blockers.append(f"{len(commits)} commit(s) on {branch} that no other branch or remote holds "
+                        f"({', '.join(c.split()[0] for c in commits[:3])})")
+    if blockers and not force:
+        raise RuntimeError(f"Refusing to remove {worktree_dir}: " + "; ".join(blockers)
+                           + ". Save them, or pass force=true to discard them.")
+    return {"dvc_drift": drift, "commits": commits}
 
 
 def _ensure_project_row(project: str, *, conn=None) -> str:
@@ -390,15 +432,6 @@ def _row_to_info(row) -> ScopeInfo:
         repo_path=row["worktree"],
         session=row["session"] or 1,
     )
-
-
-def _generate_history_md(project: str, scope: str) -> str:
-    """The scope's ``history.md`` text, rendered by the journal service."""
-    from awm.gatewayclient import call_sync
-
-    reply = call_sync("journal", "render",
-                      {"project": project, "scope": scope, "write": False}, timeout=60.0)
-    return reply["content"]
 
 
 def ensure_vagrant_repo() -> Path:
@@ -501,27 +534,6 @@ def ensure_vagrant_session(user_as: str) -> tuple[str, str]:
 _CONTEXT_IMPORT_LINE = "@.awm/context.md"
 
 
-def _write_scope_opencode_config(awm_dir: Path) -> None:
-    import json
-    out: dict
-    workspace_cfg = WORKSPACE_ROOT / ".awm" / "mcp-opencode.json"
-    if workspace_cfg.is_file():
-        try:
-            out = json.loads(workspace_cfg.read_text())
-        except (OSError, json.JSONDecodeError):
-            out = {"$schema": "https://opencode.ai/config.json", "mcp": {}}
-    else:
-        out = {"$schema": "https://opencode.ai/config.json", "mcp": {}}
-    instructions: list[str] = []
-    workspace_md = WORKSPACE_ROOT / "AGENTS.md"
-    if workspace_md.is_file():
-        instructions.append(str(workspace_md))
-    instructions.append(".awm/context.md")
-    out["instructions"] = instructions
-    awm_dir.mkdir(parents=True, exist_ok=True)
-    (awm_dir / "mcp-opencode.json").write_text(json.dumps(out, indent=2) + "\n")
-
-
 def _is_tracked(worktree_dir: Path, path: str) -> bool:
     res = subprocess.run(
         ["git", "-C", str(worktree_dir), "ls-files", "--error-unmatch", path],
@@ -546,11 +558,15 @@ def _strip_context_import(text: str) -> tuple[str, bool]:
     return new, True
 
 
+# Files the scaffold once wrote and nothing reads now (scopes.md R142). A
+# hand-written context.md stays until the deploy sweep turns it into a brief.
+STALE_AWM_FILES = ("history.md", "mcp-opencode.json")
+
+
 def _heal_worktree(worktree_dir: Path, *, project: str, scope: str, dry_run: bool) -> dict:
     actions: dict[str, str | None] = {
         "import_line": None, "agents_md": None,
-        "claude_md": None, "context_md": None,
-        "opencode_config": None, "data": None, "skills_link": None,
+        "claude_md": None, "data": None, "skills_link": None, "stale_files": None,
     }
 
     agents_path = worktree_dir / "AGENTS.md"
@@ -594,50 +610,18 @@ def _heal_worktree(worktree_dir: Path, *, project: str, scope: str, dry_run: boo
         if not dry_run:
             skills_link.unlink()
 
-    context_path = awm_dir / "context.md"
-    if not context_path.exists():
-        actions["context_md"] = "created"
-        if not dry_run:
-            awm_dir.mkdir(parents=True, exist_ok=True)
-            context_path.write_text(_default_context(project, scope))
-
-    opencode_cfg = awm_dir / "mcp-opencode.json"
-    existing = opencode_cfg.read_text() if opencode_cfg.is_file() else None
-    if not dry_run:
-        awm_dir.mkdir(parents=True, exist_ok=True)
-        _write_scope_opencode_config(awm_dir)
-        new = opencode_cfg.read_text()
-        if existing is None:
-            actions["opencode_config"] = "created"
-        elif new != existing:
-            actions["opencode_config"] = "rewritten"
-    else:
-        import json as _json
-        workspace_cfg = WORKSPACE_ROOT / ".awm" / "mcp-opencode.json"
-        if workspace_cfg.is_file():
-            try:
-                preview = _json.loads(workspace_cfg.read_text())
-            except (OSError, _json.JSONDecodeError):
-                preview = {"$schema": "https://opencode.ai/config.json", "mcp": {}}
-        else:
-            preview = {"$schema": "https://opencode.ai/config.json", "mcp": {}}
-        instr: list[str] = []
-        wsmd = WORKSPACE_ROOT / "AGENTS.md"
-        if wsmd.is_file():
-            instr.append(str(wsmd))
-        instr.append(".awm/context.md")
-        preview["instructions"] = instr
-        would = _json.dumps(preview, indent=2) + "\n"
-        if existing is None:
-            actions["opencode_config"] = "would-create"
-        elif would != existing:
-            actions["opencode_config"] = "would-rewrite"
-
     # Data view. Idempotent by construction, which is what makes heal the
     # migration path for scopes that pre-date this layer: one still on the
     # legacy shared symlink is brought to whatever its checkout now says the
     # first time heal runs over it.
     actions["data"] = _heal_data(awm_dir, project=project, scope=scope, dry_run=dry_run)
+
+    stale = [awm_dir / name for name in STALE_AWM_FILES if (awm_dir / name).is_file()]
+    if stale:
+        actions["stale_files"] = "deleted:" + ",".join(p.name for p in stale)
+        if not dry_run:
+            for p in stale:
+                p.unlink()
 
     return actions
 
@@ -808,7 +792,6 @@ def audit_worktrees(project: str | None = None) -> dict:
             unregistered.append({
                 "project": name, "scope": scope.as_posix(), "worktree": str(path),
                 "branch": branch,
-                "context_md": (path / ".awm" / "context.md").is_file(),
             })
     return {"unregistered": unregistered, "orphaned_rows": orphaned, "errors": errors}
 
@@ -851,16 +834,15 @@ def _scaffold_awm_dir(
     repo_dir: Path,
     *,
     branch: str,
-    context: str | None = None,
     is_vagrant: bool = False,
-) -> str:
+) -> None:
     """Scaffold a worktree's ``.awm/`` metadata + agents DB row.
 
     Shared by :func:`create_scope` and :func:`create_project` so a project's
     initial default-branch worktree gets the exact same treatment as any
     scope. Idempotent: symlinks are unlink-before-relink and the agents row is
     get-or-create (``ensure_agent``), so a repair path can safely re-run it.
-    Returns the ``context.md`` content that was written.
+    The scope's brief lives in the journal (scopes.md R143); see :func:`_set_brief`.
     """
     awm_dir = _get_awm_dir(repo_dir)
     awm_dir.mkdir(parents=True, exist_ok=True)
@@ -874,15 +856,6 @@ def _scaffold_awm_dir(
     data_report = data_dvc.provision_scope_data(project, scope, awm_dir)
     if data_report.get("mode") == "unknown":
         log.warning("scope %s/%s: %s", project, scope, data_report.get("detail"))
-
-    context_content = context or _default_context(project, scope)
-    (awm_dir / "context.md").write_text(context_content)
-    try:
-        (awm_dir / "history.md").write_text(_generate_history_md(project, scope))
-    except Exception as exc:  # noqa: BLE001 — a scope is still usable; `journal render` renders it later
-        log.warning("scope %s/%s: history.md not rendered: %s", project, scope, exc)
-    _write_scope_opencode_config(awm_dir)
-
     dao = ScopesDAO()
     with dao.transaction() as conn:
         # Ensure the project row exists first — ensure_agent requires it, and
@@ -900,7 +873,29 @@ def _scaffold_awm_dir(
 
     search_index.index_scope(project, scope)
 
-    return context_content
+
+#: journal briefs.MAX_CHARS; checked here too so a create refuses before it makes anything.
+BRIEF_MAX_CHARS = 400
+
+
+def _check_brief(text: str | None) -> None:
+    if text and len(text.strip()) > BRIEF_MAX_CHARS:
+        raise ValueError(f"the scope brief (context) is {len(text.strip())} characters; "
+                         f"the limit is {BRIEF_MAX_CHARS}. See journal brief_set for what it holds.")
+
+
+def _set_brief(project: str, scope: str, text: str | None) -> str | None:
+    """Write ``text`` as the scope's journal brief. Returns a warning when it could not."""
+    if not (text or "").strip():
+        return None
+    try:
+        from awm.gatewayclient import call_sync
+        call_sync("journal", "brief_set", {"project": project, "scope": scope,
+                                           "text": text.strip()}, timeout=10.0)
+    except Exception as exc:  # noqa: BLE001 - the scope exists; the brief can be set again
+        log.warning("scope %s/%s: brief not written: %s", project, scope, exc)
+        return f"the brief was not written ({exc}); set it with journal brief_set"
+    return None
 
 
 @dataclass
@@ -1030,6 +1025,7 @@ def create_scope(req: ScopeCreateRequest) -> ScopeActionResponse:
             raise ValueError(
                 f"'{data_dvc.SHARED_STORE_DIRNAME}' is reserved at the top of a project "
                 f"for its shared data store; pick another scope name")
+    _check_brief(req.context)
     bare_dir = PROJECTS_DIR / req.project / ".bare"
     if not bare_dir.exists():
         if req.project == VAGRANT_PROJECT:
@@ -1098,7 +1094,6 @@ def create_scope(req: ScopeCreateRequest) -> ScopeActionResponse:
         _scaffold_awm_dir(
             req.project, req.scope, repo_dir,
             branch=feature_branch,
-            context=req.context,
             is_vagrant=(req.project == VAGRANT_PROJECT),
         )
     except BaseException:
@@ -1108,6 +1103,13 @@ def create_scope(req: ScopeCreateRequest) -> ScopeActionResponse:
         raise
     if tags:
         _tags.set_tags(req.project, req.scope, tags)
+    brief_warning = _set_brief(req.project, req.scope, req.context)
+
+    try:
+        from awm.scopes import hygiene
+        hygiene.after_create()
+    except Exception as exc:  # noqa: BLE001 — counting must never fail a create
+        log.warning("scope %s/%s: hygiene count failed: %s", req.project, req.scope, exc)
 
     return ScopeActionResponse(
         project=req.project,
@@ -1117,6 +1119,7 @@ def create_scope(req: ScopeCreateRequest) -> ScopeActionResponse:
         message=(
             f"Created scope at projects/{req.project}/{req.scope} (.awm/ initialized) "
             f"on {checkout.note}, session {session_num}"
+            + (f"; {brief_warning}" if brief_warning else "")
         ),
     )
 
@@ -1135,13 +1138,8 @@ def repair_scope(project: str, scope: str) -> ScopeActionResponse:
     repo_dir = PROJECTS_DIR / project / scope
     if not repo_dir.is_dir():
         raise FileNotFoundError(f"Worktree not found at {repo_dir}")
-    awm_dir = _get_awm_dir(repo_dir)
-    context_path = awm_dir / "context.md"
-    if not context_path.exists():
-        raise FileNotFoundError(
-            f"No .awm/context.md at {context_path} — refusing to repair "
-            f"a worktree that wasn't initialized by scope_create"
-        )
+    if not (repo_dir / ".git").exists():
+        raise FileNotFoundError(f"{repo_dir} is not a git worktree; nothing to repair")
 
     r = run_git(["git", "-C", str(repo_dir), "branch", "--show-current"])
     branch = (r.stdout or "").strip()
@@ -1225,6 +1223,8 @@ def update_scope(project: str, scope: str, req: ScopeUpdateRequest) -> ScopeActi
 
     cleanup_msg = ""
     if req.cleanup:
+        _removal_guard(bare_dir, repo_dir, project, scope, feature_branch, req.force,
+                       branch_goes=req.delete_branch)
         _cleanup_worktree(bare_dir, repo_dir,
                           project=project, scope=scope, force=req.force)
         cleanup_msg = (f", worktree removed, "
@@ -1506,7 +1506,9 @@ def delete_scope(project: str, scope: str, force: bool = False,
     if aid_row is None:
         raise FileNotFoundError(f"No scope '{scope}' found in project '{project}'")
 
-    _cleanup_worktree(bare_dir, repo_dir, project=project, scope=scope, force=force)
+    discarded = _removal_guard(bare_dir, repo_dir, project, scope, feature_branch, force,
+                               branch_goes=delete_branch)
+    guard = _cleanup_worktree(bare_dir, repo_dir, project=project, scope=scope, force=force)
     branch_msg = _settle_branch(bare_dir, feature_branch, delete_branch)
 
     with dao.transaction() as conn:
@@ -1521,7 +1523,15 @@ def delete_scope(project: str, scope: str, force: bool = False,
     return ScopeActionResponse(
         project=project, scope=scope, status="deleted",
         message=f"Scope deleted, worktree removed, {branch_msg}",
+        discarded=_discard_list(guard, discarded) if force else None,
     )
+
+
+def _discard_list(guard: dict, removal: dict) -> dict | None:
+    """What a forced removal threw away, in full (scopes.md R44)."""
+    out = {"uncommitted": [p.strip() for p in guard.get("paths", [])], "dvc_drift": removal["dvc_drift"],
+           "commits": removal["commits"]}
+    return out if any(out.values()) else None
 
 
 def _v37_render_scope(r, session: int = 1) -> ScopeInfo:
@@ -1596,7 +1606,7 @@ def search_scopes(
     """Search scopes. Defaults to status='active'.
 
     With a ``query``, scopes whose name contains it come first, then the rest
-    ranked by relevance of their goals and ``context.md``. A project's main
+    ranked by relevance of their brief and ``context.md``. A project's main
     checkout counts as an active scope named for its default branch. With no
     ``project`` the reply also lists every project (see
     :func:`awm.scopes.projects.search_projects`) and every tag in use. With

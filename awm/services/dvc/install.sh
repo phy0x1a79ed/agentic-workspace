@@ -13,15 +13,16 @@
 # Override the target env with AWM_ENV=<name>, the globus env with GLOBUS_ENV=<name>.
 set -euo pipefail
 cd "$(dirname "$0")"
-WS="$(git rev-parse --show-toplevel)"
+HERE="$(pwd)"
+AWM="${AWM_ROOT:-$(git rev-parse --show-toplevel)/awm}"
 ENV="${AWM_ENV:-awm}"
 GENV="${GLOBUS_ENV:-globus}"
 run() { echo "+ pip install -e $*"; mamba run -n "$ENV" pip install -e "$@"; }
 
-run "$WS/awm/service_components/config" --no-deps
-run "$WS/awm/service_components/persistence" --no-deps
-run "$WS/awm/service_components/gatewayclient" --no-deps
-run "$WS/awm/services/dvc"
+run "$AWM/service_components/config" --no-deps
+run "$AWM/service_components/persistence" --no-deps
+run "$AWM/service_components/gatewayclient" --no-deps
+run "$HERE"
 
 GBIN="$(mamba run -n "$GENV" python -c 'import shutil; print(shutil.which("globus") or "")' 2>/dev/null || true)"
 if [ -z "$GBIN" ]; then

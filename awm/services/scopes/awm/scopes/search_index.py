@@ -2,8 +2,8 @@
 
 Writes go through one background worker, so a scope write returns without waiting
 for its embedding and the model is never loaded twice. A supervised backfill
-walks the tables at startup and every few hours. Posts and goals live in the
-journal service; a scope's goals are read from it over the gateway.
+walks the tables at startup and every few hours. Posts and briefs live in the
+journal service; a scope's brief is read from it over the gateway.
 """
 
 from __future__ import annotations
@@ -46,25 +46,23 @@ def _read(path: Path, limit: int | None = None) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _scope_objectives(project: str, scope: str) -> list[str]:
-    """The scope-level goals in force, from the journal service; none when it cannot answer."""
+def _scope_brief(project: str, scope: str) -> str:
+    """The scope's brief from the journal service; empty when it has none or cannot answer."""
     try:
         from awm.gatewayclient import call_sync
-        res = call_sync("journal", "goal_read",
-                        {"project": project, "scope": scope, "levels": ["scope"]}, timeout=5.0)
-        return [g["objective"] for g in res.get("goals", [])]
-    except Exception:  # noqa: BLE001 — a scope is still indexed by its context.md alone
-        return []
+        res = call_sync("journal", "brief_read", {"project": project, "scope": scope}, timeout=5.0)
+        return ((res or {}).get("brief") or {}).get("text") or ""
+    except Exception:  # noqa: BLE001
+        return ""
 
 
 def scope_document(project: str, scope: str, worktree: str | None,
                    created_at: int | None) -> engine.Document:
-    """The scope's goals in force and its ``.awm/context.md``."""
+    """The scope's brief, and a ``.awm/context.md`` an older scope still has."""
     from awm.scopes.scopes import _resolve_worktree
 
-    objectives = _scope_objectives(project, scope)
     context = _read(_resolve_worktree(project, scope, worktree) / ".awm" / "context.md")
-    body = "\n\n".join(x for x in (*objectives, context) if x.strip())
+    body = "\n\n".join(x for x in (_scope_brief(project, scope), context) if x.strip())
     return engine.Document(f"{project}/{scope}", body, title=f"{project}/{scope}",
                            date=_date(created_at))
 

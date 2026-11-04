@@ -130,7 +130,7 @@ def test_create_scope_in_vagrant_project_succeeds(vagrant_bootstrap):
     assert resp.status == "active"
     worktree = vagrant_bootstrap["projects_dir"] / VAGRANT_PROJECT / "smoke"
     assert worktree.exists()
-    assert (worktree / ".awm" / "context.md").exists()
+    assert (worktree / ".awm").is_dir()
 
     # Row exists with project='_vagrant'.
     listed = scopes_svc.search_scopes(status="all", project=VAGRANT_PROJECT)

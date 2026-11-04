@@ -1,0 +1,17 @@
+[plugin]
+name = "tether"
+version = "0.1.0"
+trust = "own"
+
+[[service]]
+name = "tether"
+
+[[tool]]
+name = "tether"
+major = 1
+tier = "on"
+
+[needs]
+secrets = []
+network = []
+platform = ["linux"]

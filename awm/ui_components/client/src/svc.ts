@@ -2,9 +2,9 @@
  * svc(name) — thin wrapper over the conventional /svc/<name>/ surface
  * every awm service exposes. Three call shapes covered:
  *
- *   svc('tts').fn('listEngines')           → POST /svc/tts/fn/listEngines
- *   svc('tts').session('call', { ... })    → POST /svc/tts/session/call
- *   svc('tts').ws(sessionId)               → wss://<host>/svc/tts/session/<id>
+ *   svc('mic').fn('status')                → POST /svc/mic/fn/status
+ *   svc('mic').session('stream', { ... })  → POST /svc/mic/session/stream
+ *   svc('mic').ws(sessionId)               → wss://<host>/svc/mic/session/<id>
  *
  * `url(suffix)` is the escape hatch for anything that doesn't fit (e.g.
  * a service that exposes a non-standard path). Built on apiFetch so the

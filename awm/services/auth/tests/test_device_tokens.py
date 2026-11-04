@@ -34,8 +34,6 @@ def auth(awm_workspace, monkeypatch):
         validity_hours = 24.0
         mint_cadence_hours = 12.0
         push_enabled = False
-        penpot_rotation_hour = 4
-        penpot_rotation_enabled = True
 
     monkeypatch.setattr(service, "_settings", lambda: _S())
     store.init()
@@ -290,9 +288,6 @@ def test_a_v3_db_gains_the_device_token_table(awm_workspace):
         "CREATE TABLE awm_login_fail (key TEXT PRIMARY KEY, fails INTEGER NOT "
         "NULL DEFAULT 0, locked_until REAL NOT NULL DEFAULT 0, last_at REAL "
         "NOT NULL DEFAULT 0);"
-        "CREATE TABLE awm_penpot (username TEXT PRIMARY KEY, email TEXT NOT "
-        "NULL, password TEXT NOT NULL, rotated_at REAL NOT NULL, created_at "
-        "REAL NOT NULL);"
         "CREATE TABLE schema_version (version INTEGER NOT NULL);"
         "INSERT INTO schema_version (version) VALUES (3);"
         "INSERT INTO awm_users VALUES ('tony', 'h', 's', 'p', 0, 0);")

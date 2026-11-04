@@ -113,10 +113,10 @@ def quiet_swarms() -> frozenset[str]:
     return frozenset(s.strip() for s in raw.replace(",", " ").split() if s.strip())
 
 
-def new_agent_target() -> tuple[str, str]:
-    """The project and scope `/new-agent` starts in."""
-    return (os.environ.get("AWM_REPORTING_NEW_AGENT_PROJECT") or "awm",
-            os.environ.get("AWM_REPORTING_NEW_AGENT_SCOPE") or "dev")
+def new_agent_target() -> tuple[str | None, str | None]:
+    """The project and scope `/new-agent` starts in. None for both is the node's lobby (scopes.md R40)."""
+    return (os.environ.get("AWM_REPORTING_NEW_AGENT_PROJECT") or None,
+            os.environ.get("AWM_REPORTING_NEW_AGENT_SCOPE") or None)
 
 
 def projects_dir() -> Path:

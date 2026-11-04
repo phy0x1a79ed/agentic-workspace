@@ -8,9 +8,7 @@ client that POSTs ``/hub/service/register``, opens ``WS
 /hub/service/control/<id>``, sends a ``ready`` frame carrying its api manifest,
 then answers inbound ``call`` / ``notify`` / ``session.open`` envelopes.
 
-Before this module, every service hand-rolled that ~250-line loop (see the
-``tts`` / ``stt`` ``backend/hub_adapter.py``). ``ServiceAdapter`` factors the
-boilerplate out so a feature service's adapter is just: build a manifest +
+``ServiceAdapter`` factors that loop out so a feature service's adapter is just: build a manifest +
 a ``{fn: callable}`` dispatch map, then ``await ServiceAdapter(...).run()``.
 
 The companion ``call`` / ``RefCache`` in this package is the *other* direction
@@ -104,7 +102,7 @@ class SessionContext:
     """Everything a ``session.open`` handler needs to run a direct session.
 
     ``open_bridge()`` opens the upstream side of the hub bridge so the handler
-    can byte-relay frames (the PCM-audio case for tts/stt). Most feature
+    can byte-relay frames (the PCM-audio case for mic). Most feature
     services have no sessions and never use this.
     """
     hub_url: str
@@ -145,7 +143,7 @@ class ServiceAdapter:
         reply ``result`` (return ``None`` for fire-and-forget / no payload).
     session_handlers:
         Optional ``{session_kind: async callable(SessionContext)}`` for
-        services that expose direct sessions (tts/stt PCM bridges).
+        services that expose direct sessions (mic's PCM bridge).
     on_start:
         Optional sync-or-async zero-arg callable run once at startup — the
         place to call ``init_service_db`` so the service's own DB exists before
@@ -162,6 +160,9 @@ class ServiceAdapter:
         ``run.sh`` honours). This matches what filesystem discovery records, so
         a self-registered service and a bootstrap-spawned one are identical.
     """
+
+    #: The adapter whose ``run()`` serves this process, for ``awm.usage``.
+    current: "ServiceAdapter | None" = None
 
     def __init__(
         self,
@@ -183,6 +184,9 @@ class ServiceAdapter:
         # The currently-connected control WS, or None between reconnects. Held
         # so the service can originate `emit` frames (pub/sub) on it.
         self._control_ws: Any | None = None
+        #: The event loop ``run()`` serves on, so another thread can schedule
+        #: a frame onto it.
+        self.loop: asyncio.AbstractEventLoop | None = None
         # Set once ``on_start`` has finished (or failed, recorded below). Every
         # inbound envelope waits on it, which is what lets the adapter announce
         # readiness before initialisation has run.
@@ -261,6 +265,22 @@ class ServiceAdapter:
                 {"kind": "emit", "topic": topic, "payload": payload}))
         except Exception as exc:  # noqa: BLE001
             log.debug("%s: emit on %s dropped: %s", self.name, topic, exc)
+
+    async def send_usage(self, name: str, ok: bool | None = None,
+                         ms: float | None = None) -> bool:
+        """Report one background run on the control WS (contract § Usage
+        event). The gateway stamps the plugin from this service. Returns False
+        when no control WS is connected, so the caller can post it instead."""
+        ws = self._control_ws
+        if ws is None:
+            return False
+        try:
+            await ws.send(json.dumps({"kind": "usage", "surface": "background",
+                                      "name": name, "ok": ok, "ms": ms}))
+        except Exception as exc:  # noqa: BLE001
+            log.debug("%s: usage frame for %s dropped: %s", self.name, name, exc)
+            return False
+        return True
 
     # -- dispatch ----------------------------------------------------------
 
@@ -515,8 +535,13 @@ class ServiceAdapter:
             # one evicts (last connect wins). `awm dev shadow` sets it.
             "origin": os.environ.get("AWM_SERVICE_ORIGIN"),
         }
+        # A service the gateway does not spawn proves itself with a token file (R99).
+        headers = {}
+        if token_file := os.environ.get("AWM_HUB_TOKEN_FILE"):
+            with open(token_file) as f:
+                headers["X-Awm-Service-Token"] = f.read().strip()
         async with httpx.AsyncClient(verify=False, timeout=15) as cli:
-            r = await cli.post(f"{hub_url}/hub/service/register", json=payload)
+            r = await cli.post(f"{hub_url}/hub/service/register", json=payload, headers=headers)
             if r.status_code == 409:
                 # A live instance already holds this name's lease (T3). Stand
                 # down — the incumbent keeps running. Other non-2xx stay
@@ -627,6 +652,8 @@ class ServiceAdapter:
         up when prod has no ``dev`` base to overlay) never stops the base loop,
         and the base resumes on prod when this process exits (overlay WS drop).
         """
+        ServiceAdapter.current = self
+        self.loop = asyncio.get_running_loop()
         hub_url = os.environ.get("AWM_HUB_URL", "").rstrip("/")
         # A hub-ASSIGNED sid (the supervisor respawn-by-sid path) is reconnected
         # by sid and never re-registered; a SELF-MINTED one (empty env) is minted

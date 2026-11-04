@@ -26,7 +26,7 @@ def test_local_index_ranks(posts):
 
 def test_a_kind_the_index_lacks_falls_back_to_substring(posts):
     from awm.journal import channel
-    _, _, semantic = channel.search(query="telescope", kind="system")
+    _, _, semantic = channel.search(query="telescope", kind="brief")
     assert semantic == "none"
 
 

@@ -145,7 +145,25 @@ async def _h_get(args: dict, as_: str | None = None) -> dict:
     if node and node != request.LOCAL and not privacy.from_peer(as_) \
             and node_label(node) != node_label(config.node_name()):
         return await federation.fetch(ARCHIVE.peers, node, str(args["source"]), str(args["id"]))
-    return await ARCHIVE.get(str(args["source"]), str(args["id"]), _grants(args), request.hidden_for(as_))
+    out = await ARCHIVE.get(str(args["source"]), str(args["id"]), _grants(args), request.hidden_for(as_))
+    if out["document"].get("kind") == JOURNAL_KIND and args.get("_caller_pid"):
+        task = asyncio.create_task(_note_read(str(args["id"]), args["_caller_pid"]))
+        _NOTING.add(task)
+        task.add_done_callback(_NOTING.discard)
+    return out
+
+
+#: The journal post kind whose get counts as a read for citations (sessions.md R15).
+JOURNAL_KIND = "journal"
+_NOTING: set[asyncio.Task] = set()
+
+
+async def _note_read(post_id: str, caller_pid: Any) -> None:
+    try:
+        await ARCHIVE.gateway.call("journal", "note_read",
+                                   {"post_id": post_id, "_caller_pid": caller_pid}, 10.0)
+    except Exception as exc:  # noqa: BLE001 - a get never fails on the read record
+        log.info("search: read of journal %s not recorded: %s", post_id, exc)
 
 
 async def _h_sources(args: dict, as_: str | None = None) -> dict:

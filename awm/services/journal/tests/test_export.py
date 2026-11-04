@@ -14,7 +14,7 @@ def posted(journal_workspace):
     for i in range(5):
         ids.append(channel.post("awm", "dev", author="agent:awm/dev", kind="journal",
                                 body=f"entry {i}\nmore", meta={"title": f"Title {i}"}).id)
-    channel.post("awm", "dev", author="system", kind="system", body="not indexed")
+    channel.post("awm", "dev", author="system", kind="brief", body="not indexed")
     channel.post("awm", "dev", author="user:a", kind="message", body="")
     return sorted(ids)
 
@@ -25,7 +25,8 @@ def test_one_page_carries_everything_and_the_id_set(posted):
     assert page["done"] is True and page["next_cursor"] is None
     assert page["ids"] == posted
     doc = page["documents"][0]
-    assert set(doc) == {"id", "title", "text", "ts", "project", "scope", "kind"}
+    assert set(doc) == {"id", "title", "text", "ts", "project", "scope", "tags", "kind", "comments"}
+    assert doc["tags"] == ["journal"] and doc["comments"] == 0
     assert doc["project"] == "awm" and doc["scope"] == "dev" and doc["kind"] == "journal"
     assert doc["ts"].endswith("+00:00") and doc["text"].startswith("entry")
 

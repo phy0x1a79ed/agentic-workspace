@@ -120,7 +120,7 @@ class TestChannelOps:
 # ---------------------------------------------------------------------------
 # journal_post input-shape: body must be the terminal parameter so a mangled
 # tool-call serialization can't swallow trailing kind/meta params, and the
-# history.md title fallback must neutralise a malformed/untitled body.
+# history render title fallback must neutralise a malformed/untitled body.
 # ---------------------------------------------------------------------------
 
 class TestScopePostInputShape:
@@ -184,7 +184,7 @@ class TestHistoryTitleNeutralise:
 
 
 class TestHistoryRender:
-    """`.awm/history.md` is where the startup ritual sends every agent.
+    """The history render is what the startup ritual reads first.
 
     Measured on awm/svc-scopes before this was fixed: a single project-wide
     ``ORDER BY ts DESC LIMIT`` ranked the scope's four journal entries 62nd,
@@ -227,19 +227,13 @@ class TestHistoryRender:
         self._journal("sib", "sibling entry")
         assert "Active Sibling Scopes" not in generate_history_md("awm", "mine")
 
-    def test_render_writes_the_scopes_history_file(self, journal_workspace):
+    def test_render_returns_the_history_and_writes_no_file(self, journal_workspace):
+        """The startup ritual reads the journal directly (scopes.md R142)."""
         from awm.journal import render
-        self._journal("mine", "WRITTEN-ENTRY")
+        self._journal("mine", "RENDERED-ENTRY")
         out = render.render("awm", "mine")
-        path = journal_workspace["projects_dir"] / "awm" / "mine" / ".awm" / "history.md"
-        assert out["path"] == str(path)
-        assert path.read_text() == out["content"] and "WRITTEN-ENTRY" in out["content"]
-
-    def test_render_without_write_leaves_the_file_alone(self, journal_workspace):
-        from awm.journal import render
-        out = render.render("awm", "mine", write=False)
+        assert "RENDERED-ENTRY" in out["content"] and set(out) == {"content", "history_lines"}
         assert not (journal_workspace["projects_dir"] / "awm" / "mine").exists()
-        assert out["written"] is False
 
     @pytest.mark.parametrize("project,scope", [("..", "x"), ("a/b", "x"), ("awm", "../x"), ("awm", "/x")])
     def test_render_refuses_a_path_escape(self, journal_workspace, project, scope):

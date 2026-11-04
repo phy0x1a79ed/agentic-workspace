@@ -76,7 +76,7 @@ MANIFESTS = _manifests()
 
 
 def test_manifests_found():
-    assert len(MANIFESTS) >= 30
+    assert len(MANIFESTS) >= 25
     assert sum(len(v) for v in MANIFESTS.values()) >= 300
 
 
@@ -132,7 +132,6 @@ def test_operation_files_are_scanned():
 
 def test_relabelled_verbs_are_write():
     by = {(svc, e["name"]): e["effect"] for svc, es in MANIFESTS.items() for e in es}
-    assert by[("stt", "transcribe")] == "write"
     assert by[("rlm-browser", "commands")] == "write"
     assert by[("rlm-browser", "observe")] == "write"
 

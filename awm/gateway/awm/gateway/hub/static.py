@@ -81,9 +81,9 @@ async def serve_static(request: Request, rec: ServiceRecord) -> Response:
         if private_gate.path_refused(as_, root):
             return PlainTextResponse("not found", status_code=404)
         served_at_root = index.is_file() or rec.entry
-        # Canonical directory URL: a bare prefix (``/ui/stt``) is the
+        # Canonical directory URL: a bare prefix (``/ui/mic``) is the
         # bundle's directory, so redirect it to the trailing-slash form
-        # (``/ui/stt/``) the same way nginx/Apache/GitHub Pages do. Without
+        # (``/ui/mic/``) the same way nginx/Apache/GitHub Pages do. Without
         # this the browser resolves the bundle's relative ``./assets/...`` refs
         # against the parent (``/ui/``) and every asset 404s. Only the prefix
         # root redirects; asset sub-paths stay byte-serves.

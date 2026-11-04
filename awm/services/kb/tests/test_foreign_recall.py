@@ -1,4 +1,4 @@
-"""Which recall modes a foreign peer may use, and that recall never reads posts."""
+"""Which recall modes any caller may use, and that recall never reads posts."""
 
 import pytest
 
@@ -42,26 +42,23 @@ async def test_recall_reads_papers_only_whatever_the_caller_names(seen, as_):
     assert seen[-1]["sources"] == ["papers"]
 
 
-@pytest.mark.parametrize("peer", ["peer:kbonly", "peer:kbj", "peer:stranger"])
-@pytest.mark.parametrize("extra", [{"mode": "graph"}, {"mode": "answer"}, {"search_type": "CHUNKS"},
-                                   {"mode": "hybrid", "search_type": "RAG_COMPLETION"}])
-async def test_foreign_refused_graph_answer_and_search_type(seen, peer, extra):
-    with pytest.raises(PermissionError):
-        await recall(peer, **extra)
+@pytest.mark.parametrize("as_", [None, "peer:dom", "peer:kbonly"])
+@pytest.mark.parametrize("mode", ["graph", "answer"])
+async def test_no_caller_gets_a_mode_beyond_the_store(seen, as_, mode):
+    with pytest.raises(ValueError):
+        await recall(as_, mode=mode)
     assert seen == []
 
 
 @pytest.mark.parametrize("mode", ["hybrid", "vector", "lexical"])
-async def test_foreign_plain_modes_pass(seen, mode):
+async def test_foreign_store_modes_pass(seen, mode):
     await recall("peer:kbonly", mode=mode)
     assert seen[-1]["mode"] == mode
 
 
-@pytest.mark.parametrize("extra", [{"mode": "graph"}, {"mode": "answer"}, {"search_type": "CHUNKS"}])
-@pytest.mark.parametrize("as_", [None, "peer:dom", "user:someone"])
-async def test_domestic_may_use_graph_answer_and_search_type(seen, as_, extra):
-    await recall(as_, **extra)
-    assert seen[-1]["query"] == "q"
+async def test_search_type_is_not_forwarded(seen):
+    await recall(None, search_type="RAG_COMPLETION")
+    assert "search_type" not in seen[-1]
 
 
 async def test_foreign_status_is_counts_only(monkeypatch):

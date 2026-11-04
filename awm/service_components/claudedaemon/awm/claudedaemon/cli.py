@@ -96,6 +96,15 @@ def stop_and_remove(job: str, *, claude: str | None = None,
             "detail": (rm_detail or "the job is still there") if not removed else stop_detail}
 
 
+def stop_keeping(job: str, *, claude: str | None = None, timeout: float = TIMEOUT_S,
+                 run: Callable[..., subprocess.CompletedProcess] = subprocess.run) -> dict:
+    """`claude stop <job>` alone: the job and its transcript stay, so it resumes by id."""
+    if not isinstance(job, str) or not JOB_PATTERN.match(job):
+        raise ValueError("job must be a job id")
+    stopped, detail = _run(claude or launch.default_claude_bin(), "stop", job, timeout, run)
+    return {"stopped": stopped, "removed": False, "kept": True, "detail": detail}
+
+
 def _wait(done: Callable[[], bool], seconds: float, sleep: Callable[[float], None],
           clock: Callable[[], float]) -> bool:
     deadline = clock() + seconds

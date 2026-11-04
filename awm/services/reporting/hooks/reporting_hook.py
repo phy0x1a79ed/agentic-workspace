@@ -134,7 +134,7 @@ def handle(p: dict) -> None:
 
     if p.get("hook_event_name") == "SessionStart":
         if p.get("source") == "clear":
-            call("hook_session_clear")
+            call("hook_session_clear", new_session_id=sid)
     elif p.get("hook_event_name") == "UserPromptSubmit":
         prompt = p.get("prompt") or ""
         claims = CLAIM_WORDS.search(prompt) and NOTE_URL.search(prompt)

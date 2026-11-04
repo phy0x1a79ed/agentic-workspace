@@ -17,8 +17,7 @@ import { awmAs } from './auth';
 
 /**
  * One post on a scope channel. Field names match the backend (`author`,
- * `body`, `ts`) and are structurally compatible with `@awm/tts-history`'s
- * `Post`, so fetched/streamed posts drop straight into `<TtsHistory>`.
+ * `body`, `ts`).
  */
 export interface ScopePost {
   id?: string;

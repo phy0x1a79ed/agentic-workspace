@@ -135,7 +135,7 @@
     {/if}
 
     <PanelLabel tone="dim">agent transcript</PanelLabel>
-    <Skeleton label="tts-history (agent room transcript)" height="120px" />
+    <Skeleton label="agent room transcript" height="120px" />
 
     <div class="controls">
       <Button kind="primary" size="sm">Retry</Button>

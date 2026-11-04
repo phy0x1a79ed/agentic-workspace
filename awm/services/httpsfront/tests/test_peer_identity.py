@@ -3,8 +3,8 @@
 What these pin: a node token verifies against the book's key for its issuer and
 only for this node's name, and yields ``peer:<node>``; the legacy bearer still
 yields bare ``peer`` until ``AWM_PEER_LEGACY_BEARER=0`` retires it; a domestic
-node is a peer in every way the legacy bearer was (the gateway, never the vault,
-Penpot or a person's files); a foreign node, or one the book does not list,
+node is a peer in every way the legacy bearer was (the gateway, never the vault
+or a person's files); a foreign node, or one the book does not list,
 reaches ``/invoke`` and ``/tools`` (the gateway's effect gate limits what it may
 call there) and gets a 404 for everything else the mesh edge serves, WebSockets
 included.
@@ -220,7 +220,7 @@ def test_the_foreign_door_is_tools_and_invoke_exactly():
     assert policy.foreign_allows("/tools")
     assert policy.foreign_allows("/invoke")
     for path in ("/", "/invoke/", "/peers", "/tools/invoke", "/invoke/x", "/tools/x", "/hub/services",
-                 "/svc/notes/fn/list", "/trilium/", "/penpot/", "/files/x",
+                 "/svc/notes/fn/list", "/trilium/", "/files/x",
                  "/__auth/whoami"):
         assert not policy.foreign_allows(path), path
 
@@ -242,7 +242,6 @@ def test_an_fqdn_hostname_and_a_bare_book_name_agree(monkeypatch, keys):
 def test_a_machine_is_not_a_person_on_the_public_policy():
     for sub in ("peer", "peer:mira", "peer:shaula", "operator"):
         assert not policy.allows("/trilium/", sub), sub
-        assert not policy.allows("/penpot/", sub), sub
     assert policy.allows("/trilium/", "tony")
 
 
@@ -250,7 +249,6 @@ def test_a_machine_is_not_a_person_on_the_public_policy():
 
 GATEWAY = "http://127.0.0.1:7819"
 VAULT = "http://127.0.0.1:12511"
-PENPOT = "http://127.0.0.1:9001"
 
 BEARERS = {"b-legacy": "peer", "b-mira": "peer:mira", "b-shaula": "peer:shaula",
            "b-nobody": "peer:nobody",
@@ -290,7 +288,7 @@ async def _extra(request):
 @contextmanager
 def _edge(bearer=None):
     app = proxy.build_app(GATEWAY + "/", "/dev/null", profile=None,
-                          vault_upstream=VAULT, penpot_upstream=PENPOT,
+                          vault_upstream=VAULT,
                           extra_routes=[("/signin", ["GET"], _extra)])
     app.state.gate = _Gate()
     seen: list = []
@@ -310,8 +308,8 @@ def _edge(bearer=None):
 
 
 GATEWAY_PATHS = ["/svc/notes/fn/list", "/hub/services", "/files/projects/x",
-                 "/svc/drawio/emit/t", "/ui/drawio/", "/"]
-VAULT_PENPOT = ["/trilium/", "/trilium/api/tree", "/penpot/", "/penpot/api/rpc/x"]
+                 "/svc/journal/emit/t", "/ui/trilium/", "/"]
+VAULT_PATHS = ["/trilium/", "/trilium/api/tree"]
 
 
 @pytest.mark.parametrize("bearer", ["b-legacy", "b-mira"])
@@ -325,8 +323,8 @@ def test_a_domestic_node_reaches_the_gateway_as_the_legacy_bearer_did(bearer):
 
 
 @pytest.mark.parametrize("bearer", ["b-legacy", "b-mira", "b-shaula", "b-nobody"])
-@pytest.mark.parametrize("path", VAULT_PENPOT)
-def test_no_peer_reaches_the_vault_or_penpot(bearer, path):
+@pytest.mark.parametrize("path", VAULT_PATHS)
+def test_no_peer_reaches_the_vault(bearer, path):
     with _edge(bearer) as (c, seen):
         assert c.get(path).status_code == 404
     assert seen == []
@@ -413,12 +411,11 @@ def test_a_domestic_node_still_sees_whoami_and_extra_routes():
 
 
 @pytest.mark.parametrize("bearer,path,reaches", [
-    ("b-mira", "/svc/drawio/emit/t", True),
-    ("b-legacy", "/svc/drawio/emit/t", True),
-    ("b-shaula", "/svc/drawio/emit/t", False),
-    ("b-nobody", "/svc/drawio/emit/t", False),
+    ("b-mira", "/svc/journal/emit/t", True),
+    ("b-legacy", "/svc/journal/emit/t", True),
+    ("b-shaula", "/svc/journal/emit/t", False),
+    ("b-nobody", "/svc/journal/emit/t", False),
     ("b-mira", "/trilium/", False),
-    ("b-mira", "/penpot/ws/notifications", False),
     ("b-shaula", "/trilium/", False),
 ])
 def test_websockets_by_peer_kind(monkeypatch, bearer, path, reaches):
@@ -498,7 +495,7 @@ def test_caller_pid_headers_do_not_ride_a_websocket(monkeypatch, bearer):
         headers["Authorization"] = f"Bearer {bearer}"
     with _edge() as (c, _):
         try:
-            with c.websocket_connect("/svc/drawio/emit/t", headers=headers):
+            with c.websocket_connect("/svc/journal/emit/t", headers=headers):
                 pass
         except Exception:  # noqa: BLE001
             pass
@@ -552,7 +549,7 @@ def test_a_node_token_is_not_forwarded_over_a_websocket(monkeypatch, bearer, for
     monkeypatch.setattr(proxy.websockets, "connect", connect)
     with _edge() as (c, _):
         try:
-            with c.websocket_connect("/svc/drawio/emit/t",
+            with c.websocket_connect("/svc/journal/emit/t",
                                      headers={"Authorization": f"Bearer {bearer}"}):
                 pass
         except Exception:  # noqa: BLE001

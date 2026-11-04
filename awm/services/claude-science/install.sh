@@ -24,7 +24,7 @@
 # Override the target env with AWM_ENV=<name>.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
-WS="$(git -C "$HERE" rev-parse --show-toplevel)"
+AWM="${AWM_ROOT:-$(git -C "$HERE" rev-parse --show-toplevel)/awm}"
 ENV="${AWM_ENV:-awm}"
 
 # The release this service has been verified against. Bumping it is a deliberate
@@ -36,10 +36,10 @@ INSTALLER_URL="https://claude.ai/install-claude-science.sh"
 
 run() { echo "+ pip install -e $*"; mamba run -n "$ENV" pip install -e "$@"; }
 
-run "$WS/awm/service_components/config" --no-deps
-run "$WS/awm/service_components/gatewayclient" --no-deps
-run "$WS/awm/services/httpsfront" --no-deps
-run "$WS/awm/services/claude-science"
+run "$AWM/service_components/config" --no-deps
+run "$AWM/service_components/gatewayclient" --no-deps
+run "$AWM/services/httpsfront" --no-deps
+run "$HERE"
 
 # Bake the target env's absolute interpreter into a gitignored `.runtime-env`
 # sidecar so the hub supervisor can respawn this service under systemd's

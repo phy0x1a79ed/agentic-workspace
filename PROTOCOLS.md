@@ -2,7 +2,7 @@
 
 ## Purpose & Contents
 
-This file holds the procedures for operating the workspace. Read it by path when a task needs one. It covers the workspace layout, the scope lifecycle, scope naming, hub integration, per-user and shared data, data and backups, retiring a project, pushing to a peer, submodules, and the CLI.
+This file holds the procedures for operating the workspace. Read it by path when a task needs one. It covers the workspace layout, the scope lifecycle, scope naming, hub integration, per-user and shared data, counting use of a plugin, data and backups, retiring a project, pushing to a peer, submodules, and the CLI.
 
 Agent orientation goes in `AGENTS.md`. awm internals go in `ARCHITECTURE.md`. Cross-node behaviour goes in `FEDERATION.md`. What a project is for goes in that project's own files.
 
@@ -28,10 +28,10 @@ Nothing enumerable goes here, with one exception: a table that records a decisio
 1. **Create.** `scope(verb="create")` makes a git worktree on `feat/<scope>` with `.awm/` metadata. It refuses an unknown project. Pass `new_project=true` to create the project first, with `clone_url` or `fork_url` to start from a remote. Omit `scope` to create the project alone. A branch that already exists is checked out, not recreated. When several remotes carry it, pass `from_branch="<remote>/<branch>"` to pick the upstream.
 2. **Start.** The agent runs the startup ritual in `AGENTS.md`.
 3. **Work.** Code goes in the worktree. Data goes in `data/`.
-4. **Debrief.** The agent runs the `debrief` skill. It posts the session trace with `journal(verb="post")` as `kind=journal`.
+4. **Debrief.** The agent runs the `debrief` skill. It posts the session trace with `journal(verb="post")` tagged `journal`.
 5. **Complete.** `scope(verb="complete")` updates the status and optionally merges the branch. `cleanup=true` removes the worktree. The branch stays unless the caller passes `delete_branch=true`. `scope(verb="delete")` follows the same rule.
 
-`awm scope heal` repairs scopes. It is idempotent. Run it with `--dry-run` first to preview. It keeps scope-local metadata inside `.awm/` only. It also lists worktrees that no scope row names and live rows whose worktree is gone. It registers and retires neither. Register a listed worktree that has `.awm/context.md` with `scope repair`, and one without it with `scope ensure`. Retire a listed row with `scope complete`.
+`awm scope heal` repairs scopes. It is idempotent. Run it with `--dry-run` first to preview. It keeps scope-local metadata inside `.awm/` only. It also lists worktrees that no scope row names and live rows whose worktree is gone. It registers and retires neither. Register a listed worktree with `scope repair`, which reads its branch from the worktree. Retire a listed row with `scope complete`.
 
 `scope private` hides a project or scope from every other node. `FEDERATION.md` § *Private projects* covers what it hides.
 
@@ -66,7 +66,7 @@ A hub scope integrates a set of peripheral scopes with two local git operations.
 
 | Hub | Branch | Peripherals |
 |-----|--------|-------------|
-| `feat-dag` | `feat/feat-dag` | `svc-events`, `web-stt`, `web-tts`, `web-ui` |
+| `feat-dag` | `feat/feat-dag` | `svc-events`, `web-ui` |
 | `feat-gamebot` | `feat/feat-gamebot` | `svc-effector`, `svc-events`, `rlm-browser`, `rlm-factorio`, `rlm-chess` |
 | `dev` | `dev` | all promotable scopes |
 
@@ -82,9 +82,17 @@ Per-user data is a scope in project `userdata`, at scope `<name>` on branch `use
 - `userroot.wrap_handlers` binds the caller for every verb.
 - `awm.config.autocommit` commits the service's subdirectory.
 
-Notes and drawio are the reference implementations.
-
 Shared data never goes in `userdata`. `userroot.users()` treats every subdirectory of `projects/userdata/` as a person, so a shared store there becomes a phantom user. Put shared data in a scope of the project whose code serves it, DVC-pinned under `data/`. One path then moves on a deploy instead of two. The Trilium vault is the worked example: its database and pinned chunks live in `projects/trilium/release` beside the fork that serves them. A node that runs the service without that checkout gets a plain directory at the same path and pins nothing.
+
+## Counting use of a plugin
+
+The gateway counts each tool call by itself. A project that uses a plugin some other way reports the use, so the plugin's count stays true:
+
+1. Install the library into the project's env: `mamba run -n <env> pip install -e <awm>/service_components/usage`.
+2. Call `awm.usage.record_code("<plugin>", "<part>")` each time the project's code calls the plugin's code directly.
+3. Wrap a job the project runs for a plugin in `with awm.usage.background_run("<job>", plugin="<plugin>"):`.
+
+The events land in `<AWM_DIR>/usage/<YYYY-MM-DD>.jsonl`. `ARCHITECTURE.md` § *Usage per plugin* has the internals.
 
 ## Data
 
@@ -173,5 +181,5 @@ The CLI mirrors the whole expanded tool surface, hidden verbs included. It gener
 | `awm scope heal [--dry-run]` | Idempotent repair |
 | `awm dvc scope-status / mount / gc` | A scope's data view, what materialises, cache reclaim |
 | `awm dvc sync / pull / coverage` | Push the cache off-site, restore one scope, audit what is uncovered |
-| `awm journal post / fetch / render` | Scope posts and goals, and the `.awm/history.md` render |
+| `awm journal post / fetch / render` | Scope posts and briefs, and the history render |
 | `awm gateway register / list / deregister` | External hub registrations |

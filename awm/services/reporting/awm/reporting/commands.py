@@ -25,7 +25,7 @@ log = logging.getLogger("awm.reporting.commands")
 SOCIAL_TOPIC = "command"
 DEFAULT_REASON = "rejected by the recipient"
 RENAME_HINT = ("You were started from Discord as {name}, a placeholder name. Once you know what this "
-               "session is for, rename yourself to a short name for that work (2-4 words) with "
+               "session is for, rename yourself to `<task>/<descriptor>` with "
                "reflection(verb=\"rename\", args={{name: \"<name>\"}}).")
 # Discord only starts agents and carries urgent request_human notices; an agent never posts there.
 QUIET_HINT = "Do not post to Discord yourself."
@@ -137,15 +137,16 @@ class Commands:
         project, scope = config.new_agent_target()
         name = f"agent-{uuid.uuid4().hex[:4]}"
         prompt = str(event.get("prompt") or "").strip()
-        spec = {"project": project, "scope": scope, "name": name, "remote_control": True,
-                "started_by": "Tony from Discord",
+        spec = {"name": name, "remote_control": True, "started_by": "Tony from Discord",
                 "prompt": _new_agent_prompt(name, prompt)}
+        if scope:
+            spec.update(project=project, scope=scope)
         started = await self.cx.start(spec)
         job = started.get("job")
         if not started.get("ok"):
             outcome = f"could not start an agent: {started.get('reason') or started.get('error') or started}"
         elif started.get("link"):
-            outcome = f"{name} ({project}/{scope}, job {job}): {started['link']}"
+            outcome = f"{name} ({f'{project}/{scope}' if scope else 'lobby'}, job {job}): {started['link']}"
         else:
             outcome = (f"started {job}, link not ready yet: "
                        f"{started.get('link_reason') or 'Remote Control did not report a link'}")

@@ -40,13 +40,13 @@ class SeatError(ValueError):
 
 def session_claim(pid: int) -> dict | None:
     """The job and name of the local session ``pid``, or None when it has none."""
-    from awm.claudedaemon import roster
+    from awm.gatewayclient.sessions import session_of
 
-    rec = roster.session_by_pid(pid)
+    rec = session_of(pid)
     if not rec:
         return None
-    return {"kind": rec.get("kind") or "", "job": str(rec.get("jobId") or ""),
-            "name": str(rec.get("name") or "")}
+    return {"kind": "bg" if rec.get("hosting") == "background" else "interactive",
+            "job": str(rec.get("job") or ""), "name": str(rec.get("name") or "")}
 
 
 def caller(args: dict, as_: str | None) -> dict:
@@ -184,9 +184,9 @@ async def live_jobs(node: str) -> set[str] | None:
     """The running background jobs on ``node``, or None when it cannot tell."""
     try:
         if node == config.node_name():
-            reply = await gatewayclient.call("cx", "list", {}, timeout=30.0)
+            reply = await gatewayclient.call("cch", "list", {}, timeout=30.0)
         else:
-            reply = await gatewayclient.call_peer(node, "cx", "list", {}, timeout=30.0)
+            reply = await gatewayclient.call_peer(node, "cch", "list", {}, timeout=30.0)
     except Exception as exc:  # noqa: BLE001 — an unreachable node keeps its seats
         log.info("cannot list sessions on %s: %s", node, exc)
         return None

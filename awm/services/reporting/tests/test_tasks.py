@@ -861,6 +861,15 @@ async def test_a_post_that_names_its_session_lands_only_on_that_sessions_card(en
     assert len(env.ledger.events(other["id"], "journal")) == 2
 
 
+async def test_a_journal_stamped_in_r9_form_lands_on_the_card_of_its_claude_session(env, tmp_path):
+    await in_scope(env, tmp_path)
+    uuid = "abcdef01-2345-6789-abcd-ef0123456789"
+    mine = env.task()
+    env.ledger.alias(mine["id"], uuid)
+    await env.tasks.on_post({"post": post("a", scope="elsewhere", meta={"session": "cc" + uuid.replace("-", "")})})
+    assert len(env.ledger.events(mine["id"], "journal")) == 1
+
+
 async def test_the_same_post_twice_is_appended_once(env, tmp_path):
     await in_scope(env, tmp_path)
     for _ in range(2):
@@ -1049,3 +1058,26 @@ async def test_a_sweep_that_misses_the_row_once_keeps_the_agent_line(env):
     await env.tasks.sweep([live()])
     await env.tasks.sweep([])
     assert "Agent:" in env.body() and env.task()["agent"] == "fix the thing"
+
+
+async def test_a_new_card_mints_a_task_id_for_its_session(env, tmp_path):
+    from awm.reporting.work import Work
+
+    env.tasks.work = Work(tmp_path / "reporting.db")
+    session = env.records[200]["sessionId"] = "22222222-3333-4444-5555-666666666666"
+    await env.call("track_task", pid=200, title="Look into the printer")
+    task_id = env.tasks.work.task_for_session(session)
+    assert task_id and env.tasks.work.task_get(task_id)["title"] == "Look into the printer"
+    await env.call("track_task", pid=200, title="again")
+    assert env.tasks.work.task_for_session(session) == task_id
+
+
+async def test_a_clear_gives_the_new_session_the_old_one_as_its_parent(env, tmp_path):
+    from awm.reporting.work import Work
+
+    env.tasks.work = Work(tmp_path / "reporting.db")
+    old = env.records[100]["sessionId"] = "22222222-3333-4444-5555-666666666666"
+    await env.call("hook_plan_approved", plan_text="# Before the clear\n\nx")
+    new = "33333333-4444-5555-6666-777777777777"
+    await env.call("hook_session_clear", new_session_id=new)
+    assert {"session_id": new, "parent": old, "how": "clear", "node": env.tasks.node} in env.fetches

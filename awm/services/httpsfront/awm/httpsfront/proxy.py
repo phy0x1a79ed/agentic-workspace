@@ -69,7 +69,7 @@ from starlette.routing import Route, WebSocketRoute
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from awm.config import peertoken, usertoken
-from awm.httpsfront import board, pages, penpot, policy, slices, store, tether, vault
+from awm.httpsfront import board, pages, policy, slices, store, tether, vault
 from awm.httpsfront.auth import (
     AS_COOKIE_NAME,
     COOKIE_NAME,
@@ -262,34 +262,6 @@ def _set_as_cookie(resp: Response, sub: str, max_age: int,
     )
 
 
-def _set_penpot_cookie(resp: Response, token: str, max_age: int,
-                       samesite: str = "lax") -> None:
-    """Hand the browser the Penpot session awm holds on this person's behalf.
-
-    Same name, path and flags Penpot's own ``assign-session-cookie`` uses, so
-    Penpot's renewal replaces this cookie rather than the browser ending up
-    holding two at different paths. The lifetime is awm's session TTL rather
-    than Penpot's much longer default: the Penpot identity is granted by the awm
-    session and has no business outliving it.
-    """
-    resp.set_cookie(
-        penpot.COOKIE_NAME, token, max_age=max_age, path="/",
-        httponly=True, secure=True, samesite=samesite,
-    )
-
-
-def _clear_penpot_cookies(resp: Response) -> None:
-    """Drop Penpot's session cookie when the awm identity changes.
-
-    The same hole ``_clear_vault_cookies`` closes, with a worse consequence:
-    Penpot's cookie *is* an identity, not a handle to a shared vault, so a
-    browser that keeps it across a sign-out hands the next person to sign in the
-    previous person's design files. The edge re-mints the right one on the next
-    shell load, so clearing costs nothing.
-    """
-    resp.delete_cookie(penpot.COOKIE_NAME, path="/")
-
-
 def _unpack(result) -> tuple[bool, str | None, str | None]:
     """``(ok, refreshed, sub)`` from a gate answer; a two-tuple (an older gate)
     means the operator."""
@@ -405,7 +377,6 @@ async def _login(request: Request) -> Response:
     _set_session_cookie(resp, res["token"], ttl, samesite)
     _set_as_cookie(resp, sub, ttl, samesite)
     _clear_vault_cookies(resp)
-    _clear_penpot_cookies(resp)
     return resp
 
 
@@ -473,7 +444,6 @@ async def _logout(request: Request) -> Response:
     resp.delete_cookie(COOKIE_NAME, path="/")
     resp.delete_cookie(AS_COOKIE_NAME, path="/")
     _clear_vault_cookies(resp)
-    _clear_penpot_cookies(resp)
     return resp
 
 
@@ -631,10 +601,6 @@ def _vault_up(app) -> str | None:
     return getattr(app.state, "vault_http_up", None)
 
 
-def _penpot_up(app) -> str | None:
-    return getattr(app.state, "penpot_http_up", None)
-
-
 def _tether_up(app) -> str | None:
     return getattr(app.state, "tether_http_up", None)
 
@@ -655,18 +621,6 @@ async def _vault_bare(request: Request) -> Response:
     button either way.
     """
     return RedirectResponse(vault.SHELL, status_code=308)
-
-
-async def _penpot_bare(request: Request) -> Response:
-    """``/penpot`` → ``/penpot/``, permanently.
-
-    Same reasoning as ``_vault_bare``, plus one Penpot has of its own: its
-    client compares ``location.origin + location.pathname`` against its
-    configured public URI, which always ends in a slash. Without the redirect
-    the shell loads and renders Penpot's not-found page — which contains a
-    login form, so it reads as a session problem and is not one.
-    """
-    return RedirectResponse(penpot.SHELL, status_code=308)
 
 
 async def _vault_manifest(request: Request) -> Response:
@@ -702,54 +656,6 @@ def _vault_unavailable(request: Request, reason: str) -> Response:
                         status_code=503, headers={"Retry-After": "5"})
 
 
-def _penpot_unavailable(request: Request, reason: str) -> Response:
-    """Penpot's own not-answering-yet response — same shape as
-    ``_vault_unavailable`` and for the same reason (a cold container stack
-    can take a while to bind), but inline rather than through ``pages.py``:
-    that module is outside this change's file ownership, and its
-    ``vault_unavailable_page`` is Trilium-branded copy that would misname the
-    outage here.
-    """
-    if request.method == "GET" and _wants_html(request):
-        body = (
-            '<!doctype html><html lang="en"><head><meta charset="utf-8">'
-            '<meta http-equiv="refresh" content="5">'
-            "<title>penpot — starting</title></head><body>"
-            "<h1>penpot</h1>"
-            f"<p>Penpot is not answering yet: {reason}.</p>"
-            "<p>This page retries every five seconds.</p>"
-            "</body></html>"
-        )
-        return HTMLResponse(body, status_code=503,
-                            headers={"Retry-After": "5",
-                                     "Cache-Control": "no-store"})
-    return JSONResponse({"error": "penpot unavailable", "reason": reason},
-                        status_code=503, headers={"Retry-After": "5"})
-
-
-#: Penpot RPC paths, *inside the mount*. A 401 from one of these is the SPA
-#: telling us the cookie it was given no longer works — the one moment the edge
-#: can see a stale Penpot session, since the shell document itself is static
-#: nginx output that says nothing about who is asking.
-_PENPOT_RPC_PREFIX = "/api/rpc/"
-
-
-def _penpot_bridge_kind(request: Request, path: str) -> str | None:
-    """``"shell"``, ``"rpc"`` or ``None`` — where the sign-in bridge applies.
-
-    Only the shell document, not every asset: a page load is one document and a
-    hundred files, and putting an RPC to the auth service in front of each of
-    those would be a round trip per sprite. Penpot routes on the URL *fragment*,
-    so ``/penpot/`` is the only document there is and once per page load is
-    exactly right.
-    """
-    if request.method == "GET" and path == penpot.SHELL:
-        return "shell"
-    if penpot.upstream_path(path).startswith(_PENPOT_RPC_PREFIX):
-        return "rpc"
-    return None
-
-
 async def _http_proxy(request: Request) -> Response:
     app = request.app
     public = _is_public(app)
@@ -759,11 +665,6 @@ async def _http_proxy(request: Request) -> Response:
     if _re_segments(raw, path):
         return _not_found()
     if public and policy.classify(path) is policy.Verdict.DENY:
-        return _not_found()
-    # Penpot's own credential commands, refused here as well as in the policy
-    # door: a mesh node's edge runs no profile and consults no policy, so the
-    # line above is not reached there at all.
-    if _penpot_up(app) and penpot.refused(path):
         return _not_found()
     # The slice mount, answered before authentication rather than after it.
     # This is the one path on this listener a caller reaches without a session,
@@ -811,22 +712,17 @@ async def _http_proxy(request: Request) -> Response:
     if public and not policy.allows(path, sub):
         return _not_found()
     # A foreign node gets the gateway's calling surface and nothing else. The
-    # vault and Penpot are among the "nothing else", so this comes before the
-    # branches below ever pick them as an upstream.
+    # vault is among the "nothing else", so this comes before the branch below
+    # ever picks it as an upstream.
     if _foreign(app, sub):
         # `peers` widens the catalog to the fleet view, which is ours to show
         # our own swarm and nobody else.
         if not policy.foreign_allows(path) or "peers" in request.query_params:
             return _not_found()
-    # The vault and Penpot are the upstreams on this listener that are not the
-    # gateway. Which upstream is decided here and nowhere else, from a path
-    # the caller cannot use to name anything but one of these two apps. The
-    # vault is checked first — unchanged from before Penpot existed — so a
-    # host running both keeps the vault's pre-existing behaviour; see
-    # penpot.py's module docstring for the root-path collision that follows.
+    # The vault is the upstream on this listener that is not the gateway.
+    # Which upstream is decided here and nowhere else, from a path the caller
+    # cannot use to name anything but the vault.
     up = app.state.http_up
-    penpot_up = _penpot_up(app)
-    bridge: str | None = None
     if vault_up and vault.owns(path):
         if not public and is_machine_sub(sub):
             # The mesh edge runs no allow-list, so the check `policy.allows`
@@ -837,14 +733,6 @@ async def _http_proxy(request: Request) -> Response:
             # The mount is in the decoded path but not in the bytes.
             return _not_found()
         up, raw = vault_up, inner
-    elif penpot_up and penpot.owns(path):
-        if not public and is_machine_sub(sub):
-            return _not_found()
-        inner = penpot.upstream_raw_path(raw)
-        if inner is None:
-            return _not_found()
-        up, raw = penpot_up, inner
-        bridge = _penpot_bridge_kind(request, path)
     client: httpx.AsyncClient = app.state.client
     url = _upstream_url(up, raw, request.scope.get("query_string") or b"")
     upstream_req = client.build_request(
@@ -856,8 +744,6 @@ async def _http_proxy(request: Request) -> Response:
     except httpx.ConnectError:
         if up is vault_up:
             return _vault_unavailable(request, "not listening yet")
-        if up is penpot_up:
-            return _penpot_unavailable(request, "not listening yet")
         return Response("upstream gateway unreachable", status_code=502)
     out = StreamingResponse(
         resp.aiter_raw(),
@@ -876,12 +762,6 @@ async def _http_proxy(request: Request) -> Response:
         _set_session_cookie(out, refreshed,
                             int(await app.state.gate.session_ttl_seconds()),
                             _samesite(app))
-    # A device carries its own bearer on every call, so the edge hands it no
-    # cookie of any kind, Penpot's included.
-    if bridge and sub and not usertoken.looks_like_token(
-            bearer_of(request.headers.get("authorization"))):
-        await _bridge_penpot_session(request, out, bridge, sub,
-                                     resp.status_code)
     return out
 
 
@@ -1257,60 +1137,6 @@ def _invoke_result(result) -> dict:
     return result if isinstance(result, dict) else {}
 
 
-async def _bridge_penpot_session(request: Request, out: Response, kind: str,
-                                 sub: str, status: int) -> None:
-    """Give this browser the Penpot session awm holds for ``sub``.
-
-    Two moments, and only two. On the **shell** document, before the SPA boots,
-    so it comes up already signed in — the cookie is replaced only when it
-    differs from the one awm holds, which is what makes a nightly rotation
-    invisible: the rotation ends the browser's session and leaves awm's intact,
-    so the very next page load carries the survivor.
-
-    On an **RPC 401**, which is the SPA reporting that the cookie it was given
-    has stopped working. That is the case a page load cannot fix on its own,
-    because the shell is static nginx output and 200s for anyone. Note that
-    ``get-profile`` is *not* one of the commands that says so: with a dead
-    cookie Penpot answers it 200 with the anonymous profile, so anything asking
-    "is this session still alive?" has to ask a command that genuinely requires
-    authentication (``get-teams`` does). Verified against a live stack. The re-login
-    is conditional on the presented cookie still being the one awm has cached
-    (see ``AuthGate.penpot_session``), so a page's worth of simultaneous 401s
-    costs one login rather than one each.
-
-    Everything here degrades to doing nothing: no credential recorded, an auth
-    service that is down, a machine bearer. Penpot then shows its own login
-    screen, which is exactly what it did before this bridge existed.
-    """
-    if is_machine_sub(sub):
-        return
-    presented = request.cookies.get(penpot.COOKIE_NAME)
-    gate: AuthGate = request.app.state.gate
-    # Same shape as the ``verify_login`` lookup in ``_login``: a gate that
-    # predates this capability simply does not bridge, rather than 500ing every
-    # Penpot page on a host whose edge has not caught up.
-    if getattr(gate, "penpot_session", None) is None:
-        return
-    if kind == "rpc":
-        if status != 401:
-            return
-        token = await gate.penpot_session(sub, stale_token=presented)
-    else:
-        token = await gate.penpot_session(sub)
-    if not token or token == presented:
-        return
-    _set_penpot_cookie(out, token,
-                       int(await gate.session_ttl_seconds()),
-                       _samesite(request.app))
-    # Belt and braces on a response that now carries one person's identity.
-    # Penpot's own nginx already sends no-store for the shell and Cloudflare
-    # does not cache a response with Set-Cookie — but a cached copy of this
-    # response would hand the next visitor somebody else's design files, and
-    # that failure is bad enough that it should not rest on two other parties
-    # continuing to behave.
-    out.headers["cache-control"] = "no-store"
-
-
 async def _ca(request: Request) -> Response:
     """Serve the local root CA so a device can install + trust it once, clearing
     ERR_CERT_AUTHORITY_INVALID. Sent as a downloadable
@@ -1344,12 +1170,6 @@ async def _ws_proxy(ws: WebSocket) -> None:
     up = app.state.ws_up
     vault_ws = getattr(app.state, "vault_ws_up", None)
     is_vault = bool(vault_ws) and vault.owns(path)
-    penpot_ws = getattr(app.state, "penpot_ws_up", None)
-    # Vault takes precedence on a path both would claim — same ordering as the
-    # HTTP leg, and for the same reason (see penpot.py's collision note): the
-    # pre-existing feature's behaviour must not shift under it.
-    is_penpot = (bool(penpot_ws) and not is_vault
-                 and penpot.owns(path))
     # The same second mount on the same child as the HTTP leg. Trilium builds
     # its socket URI from ``location.pathname``, so a shell served under a
     # slice opens its socket there and nowhere else.
@@ -1386,15 +1206,6 @@ async def _ws_proxy(ws: WebSocket) -> None:
             await ws.close(code=1008)
             return
         up, raw = tether_ws, inner
-    elif is_penpot:
-        # Penpot's collab socket (/ws/notifications) is what keeps a shared
-        # board's live edits in sync — the same "silent wrong upstream" hazard
-        # as the vault's socket, and the whole reason this leg exists at all.
-        inner = penpot.upstream_raw_path(raw)
-        if inner is None:
-            await ws.close(code=1008)
-            return
-        up, raw = penpot_ws, inner
     # ``websockets.connect`` parses the URI without decoding its path, so the
     # bytes reach the upstream as they arrived — the same contract the HTTP leg
     # gets from ``copy_with(raw_path=…)``.
@@ -1437,8 +1248,8 @@ async def _ws_proxy(ws: WebSocket) -> None:
             await ws.close(code=1008)  # policy violation
             return
         # A foreign node has no WebSocket at all; a domestic peer has the
-        # gateway's, but never the vault's or Penpot's.
-        if _foreign(app, sub) or ((is_vault or is_penpot) and is_machine_sub(sub)):
+        # gateway's, but never the vault's.
+        if _foreign(app, sub) or (is_vault and is_machine_sub(sub)):
             await ws.close(code=1008)
             return
 
@@ -1586,7 +1397,6 @@ def build_app(upstream: str, ca_path: str, *, landing: bool = True,
               rewrite_origin: bool = False,
               profile: str | None = None,
               vault_upstream: str | None = None,
-              penpot_upstream: str | None = None,
               tether_upstream: str | None = None,
               board_upstream: str | None = None) -> Starlette:
     """Assemble the front. ``landing=False`` drops the awm index page at ``/``.
@@ -1619,20 +1429,8 @@ def build_app(upstream: str, ca_path: str, *, landing: bool = True,
     origin, one session and one login cover both awm and the vault. Off by
     default, so every existing caller is unchanged.
 
-    ``penpot_upstream`` adds Penpot the same way, mounted at
-    :data:`penpot.SHELL`. Both mounts are prefixes, so the two apps and the
-    edge's own surface are disjoint by construction and all three can run on
-    one listener. Unlike the vault, Penpot does not claim ``/logout``: its own
-    logout ends a real Penpot session and stays Penpot's, where the vault's own
-    login is off entirely and its logout button would otherwise be a dead end.
-
-    Penpot additionally requires ``PENPOT_PUBLIC_URI`` on its containers to
-    carry this same mount — the edge cannot enforce that from here, and a
-    disagreement renders Penpot's not-found page on every route. See
-    ``penpot.py``'s module docstring.
-
     ``tether_upstream`` adds the remote-assistance relay, mounted at
-    :data:`tether.PREFIX` — and unlike the other two, its paths are reachable
+    :data:`tether.PREFIX` — and unlike the vault, its paths are reachable
     with **no session**, because the person redeeming an invite is a friend
     being helped with their own machine and has no awm account. The relay does
     its own gating; see :mod:`awm.httpsfront.tether` for what that rests on.
@@ -1692,11 +1490,6 @@ def build_app(upstream: str, ca_path: str, *, landing: bool = True,
         routes.append(Route(vault.SHELL_BARE, _vault_bare, methods=["GET"]))
         routes.append(Route(vault.MANIFEST, _gated(_vault_manifest), methods=["GET"]))
         routes.append(Route(vault.LOGOUT, _vault_logout, methods=["GET", "POST"]))
-    if penpot_upstream:
-        # Only the bare-mount redirect — no manifest override (Penpot ships
-        # none to fix up) and no /logout hijack (Penpot's own logout is
-        # meaningful and stays Penpot's; see the docstring above).
-        routes.append(Route(penpot.SHELL_BARE, _penpot_bare, methods=["GET"]))
     for path, methods, handler in (extra_routes or ()):
         routes.append(Route(path, _gated(handler), methods=list(methods)))
     routes += [
@@ -1737,13 +1530,6 @@ def build_app(upstream: str, ca_path: str, *, landing: bool = True,
     else:
         app.state.vault_http_up = None
         app.state.vault_ws_up = None
-    if penpot_upstream:
-        p = penpot_upstream.rstrip("/")
-        app.state.penpot_http_up = p
-        app.state.penpot_ws_up = "ws" + p[len("http"):]
-    else:
-        app.state.penpot_http_up = None
-        app.state.penpot_ws_up = None
     if tether_upstream:
         t = tether_upstream.rstrip("/")
         app.state.tether_http_up = t
@@ -1763,7 +1549,6 @@ def serve(*, port: int, cert: str, key: str, ca: str, upstream: str,
           tls: bool = True,
           host: str | None = None,
           vault_upstream: str | None = None,
-          penpot_upstream: str | None = None,
           tether_upstream: str | None = None,
           board_upstream: str | None = None) -> None:
     """Bind ``0.0.0.0:port`` with TLS and reverse-proxy to ``upstream`` forever
@@ -1783,7 +1568,6 @@ def serve(*, port: int, cert: str, key: str, ca: str, upstream: str,
     app = build_app(upstream, ca, landing=landing, extra_routes=extra_routes,
                     rewrite_origin=rewrite_origin, profile=profile,
                     vault_upstream=vault_upstream,
-                    penpot_upstream=penpot_upstream,
                     tether_upstream=tether_upstream,
                     board_upstream=board_upstream)
     bind: dict = (
