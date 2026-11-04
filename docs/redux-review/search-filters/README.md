@@ -13,3 +13,4 @@ This file holds the result of the review topic on how a caller filters `search`:
 ## Decisions
 
 - 2026-11-04: Each source carries its node, such as `kb@altair`. A bare source is this node's, and no source named means this node only. The `peers` argument goes. Tags replace `kind`, and precedent posts replace the `precedence` source (`fleet.md` R136 item 7). Tony: "A whitelist is fine. Each entry needs to specify peer. If no peers are specified, then it is just local only." and "Kind needs to be fixed. Precedence needs to be fixed."
+- 2026-11-04: `sources` is required and has no default. A bare `journals` means this node's journal, the common case (`fleet.md` R136 item 7). Tony: "Let's not have a default for the sources. But I anticipate that the majority of these will just be search journal, implying local journal."
