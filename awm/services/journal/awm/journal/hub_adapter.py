@@ -20,6 +20,7 @@ from awm.gatewayclient import ServiceAdapter, spawn_supervised
 from awm.journal import channel, dao, migrate, search_index, tagsync
 from awm.journal.operations.briefs import BRIEF_HANDLERS, BRIEF_MANIFEST_FUNCTIONS
 from awm.journal.operations.goals import GOAL_HANDLERS, GOAL_MANIFEST_FUNCTIONS
+from awm.journal.operations.lineage import LINEAGE_HANDLERS, LINEAGE_MANIFEST_FUNCTIONS
 from awm.journal.operations.posts import POST_HANDLERS, POST_MANIFEST_FUNCTIONS
 from awm.journal.operations.render import RENDER_HANDLERS, RENDER_MANIFEST_FUNCTIONS
 from awm.journal.operations.tags import TAG_HANDLERS, TAG_MANIFEST_FUNCTIONS
@@ -29,7 +30,8 @@ log = logging.getLogger("awm.journal.hub_adapter")
 
 API_MANIFEST: dict[str, Any] = {
     "functions": (POST_MANIFEST_FUNCTIONS + TAG_MANIFEST_FUNCTIONS + GOAL_MANIFEST_FUNCTIONS
-                  + BRIEF_MANIFEST_FUNCTIONS + RENDER_MANIFEST_FUNCTIONS),
+                  + BRIEF_MANIFEST_FUNCTIONS + RENDER_MANIFEST_FUNCTIONS
+                  + LINEAGE_MANIFEST_FUNCTIONS),
     "emitters": [
         {
             "topic": "posts",
@@ -44,7 +46,7 @@ API_MANIFEST: dict[str, Any] = {
 }
 
 HANDLERS: dict[str, Any] = {**POST_HANDLERS, **TAG_HANDLERS, **GOAL_HANDLERS, **BRIEF_HANDLERS,
-                            **RENDER_HANDLERS}
+                            **RENDER_HANDLERS, **LINEAGE_HANDLERS}
 
 
 async def _on_start() -> None:

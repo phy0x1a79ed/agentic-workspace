@@ -131,6 +131,24 @@ CREATE TABLE IF NOT EXISTS session_reads (
 
 MIGRATIONS[(2, 3)] = READS_SQL
 
+# A debrief journal's citations, its reply_to list (sessions.md R14), and the
+# parent links reflection records (R13). Both point one way: no reverse lookup.
+LINKS_SQL = """\
+CREATE TABLE IF NOT EXISTS post_cites (
+    post_id   TEXT NOT NULL,
+    cited_id  TEXT NOT NULL,
+    ord       INTEGER NOT NULL,
+    PRIMARY KEY (post_id, cited_id)
+);
+CREATE TABLE IF NOT EXISTS session_parents (
+    session  TEXT PRIMARY KEY,
+    parent   TEXT NOT NULL,
+    how      TEXT NOT NULL,
+    node     TEXT NOT NULL DEFAULT '',
+    at       REAL NOT NULL
+);
+"""
+
 # (3, 4) belongs to the trust lane's post_versions (fleet.md R107 item 1). It is
 # empty here so a branch without that lane still reaches v5; the trust merge
 # replaces it.
@@ -141,7 +159,7 @@ MIGRATIONS[(3, 4)] = "SELECT 1;"
 # (fleet.md R107 items 6 to 8). A kind with no fixed tag becomes a migrated tag.
 _SUPERSEDES = "json_extract(meta, '$.supersedes')"
 _RETIRES = "json_extract(meta, '$.retires')"
-MIGRATIONS[(4, 5)] = TAGS_SQL + f"""\
+MIGRATIONS[(4, 5)] = TAGS_SQL + LINKS_SQL + f"""\
 ALTER TABLE scope_posts ADD COLUMN reply_to TEXT;
 ALTER TABLE scope_posts ADD COLUMN thread_id TEXT;
 INSERT OR IGNORE INTO tags (id, name, description, origin, version, created_at, updated_at)
@@ -191,7 +209,7 @@ def init() -> None:
     """Idempotently create the journal DB, its tables and the embeddings store."""
     global _initialized
     if not _initialized:
-        init_service_db(SERVICE, SCHEMA_SQL + READS_SQL + EMBEDDINGS_DDL,
+        init_service_db(SERVICE, SCHEMA_SQL + READS_SQL + LINKS_SQL + EMBEDDINGS_DDL,
                         schema_version=SCHEMA_VERSION, migrations=MIGRATIONS)
         conn = get_connection(SERVICE)
         try:

@@ -543,11 +543,14 @@ class Tasks:
         """
         task = await self.db.find(self.node, who.key)
         new = str(args.get("new_session_id") or who.session_id or "")
-        if task is not None and self.work is not None and task["session_id"] and new:
+        if task is not None and task["session_id"] and new:
             # The cleared session's new id takes the old one as its parent (sessions.md R13).
+            # The journal holds the lineage (R16).
             try:
-                await asyncio.to_thread(self.work.set_parent, new, task["session_id"], "clear", self.node)
-            except ValueError as exc:
+                await self._fetch(JOURNAL_SERVICE, "session_parent",
+                                  {"session_id": new, "parent": task["session_id"], "how": "clear",
+                                   "node": self.node}, timeout=30.0)
+            except Exception as exc:  # noqa: BLE001 — a lost link never fails the clear
                 log.info("reporting: no parent link for the clear of %s: %s", task["session_id"], exc)
         if task is None or task["state"] not in OPEN:
             return {"ok": True, "tracked": False, "blocked": False}

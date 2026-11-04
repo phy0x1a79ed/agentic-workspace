@@ -30,9 +30,10 @@ POST_MANIFEST_FUNCTIONS = [
         "description": (
             "Post to a scope's channel. tags come from the vocabulary (tag_list); a post "
             "with none is a message. tags=[journal] is the scope's own debrief; structured "
-            "fields go in meta. reply_to=<post id> makes the post a comment: it lands in "
-            "the channel of its thread's first post, and that post's author gets it in "
-            "its inbox. Tag a post precedent when it records a decision Tony made or "
+            "fields go in meta. reply_to=[<post id>] makes the post a comment: it lands "
+            "in the channel of its thread's first post, and that post's author gets it in "
+            "its inbox. On a journal, reply_to lists the journals it built on. "
+            "Tag a post precedent when it records a decision Tony made or "
             "overrode that holds beyond the session: post it at project='' "
             "scope='workspace', with a body that holds the context, the question and "
             "the decision. Search precedents before you ask Tony a preference question. "
@@ -54,13 +55,13 @@ POST_MANIFEST_FUNCTIONS = [
              "description": "Tag names from the vocabulary. An unknown tag is refused."},
             {"name": "kind", "type": "string", "required": False,
              "description": "Old alias for one tag, such as journal. Use tags."},
-            {"name": "reply_to", "type": "string", "required": False,
-             "description": "The post this one comments on."},
+            {"name": "reply_to", "type": "array", "required": False,
+             "description": "Post ids. A comment names the one post it answers. A debrief "
+                            "journal names every earlier journal it built on: its citations, "
+                            "picked from journal reads. A journal stays in its own scope."},
             {"name": "meta", "type": "object", "required": False,
              "description": "Structured fields. meta.session names the session a journal covers; "
-                            "omit it for your own session. meta.cites lists the journals that "
-                            "shaped the work: [{journal: <post id>, reason: <one line>}]. "
-                            "Pick them from journal reads at debrief."},
+                            "omit it for your own session."},
             {"name": "to_scope", "type": "string", "required": False},
             {"name": "body", "type": "string", "required": True,
              "description": "Free-text post content. Pass this argument LAST — "
@@ -236,23 +237,28 @@ def _visible(as_: str | None):
 
 def _handle_post(args: dict, as_: str | None = None) -> dict:
     project, scope = args.get("project"), args.get("scope")
-    if args.get("reply_to"):
-        parent = channel.get_post(args["reply_to"])
-        if parent is None or not _visible(as_)(parent):
-            raise ValueError(f"no post {args['reply_to']} to reply to")
+    tag_ids = channel.post_tag_ids(args.get("kind"), args.get("tags"))
+    meta = _with_session(args.get("meta"), args.get("_caller_pid"), tag_ids)
+    targets = channel.reply_targets(args.get("reply_to"))
+    targets += [c for c in sessions.cite_ids(meta) if c not in targets]
+    for t in targets:
+        target = channel.get_post(t)
+        if target is None or not _visible(as_)(target):
+            raise ValueError(f"no post {t} to reply to")
+    if targets and kinds.JOURNAL not in tag_ids:
+        parent = channel.get_post(targets[0])
         root = channel.get_post(parent.root) or parent
         project, scope = root.project, root.scope
-    elif not project or not scope:
-        raise ValueError("a post needs project and scope, or reply_to")
+    if not project or not scope:
+        raise ValueError("a post needs project and scope, or a reply_to to comment on")
     if private.hides(as_, project, scope):
         raise ValueError(f"no scope {project}/{scope}")
-    tag_ids = channel.post_tag_ids(args.get("kind"), args.get("tags"))
     post = channel.post(
         project, scope,
         author=args["author"], body=args["body"],
         kind=args.get("kind"), tags=args.get("tags"),
-        meta=_with_session(args.get("meta"), args.get("_caller_pid"), tag_ids),
-        reply_to=args.get("reply_to"),
+        meta=meta,
+        reply_to=targets,
         to_scope=args.get("to_scope"),
         origin=channel.edge_origin(as_),
     )

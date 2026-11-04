@@ -222,7 +222,7 @@ class TestHistory:
         chain = goals.history(a.id)
         assert [g.id for g in chain] == [a.id] and chain[0].closed and closed.closed
         assert [r["id"] for r in goals.retirements(chain)] == [reason["id"]]
-        assert reason["body"] == "obsolete" and reason["reply_to"] == a.id
+        assert reason["body"] == "obsolete" and reason["reply_to"] == [a.id]
 
     def test_history_excludes_an_unrelated_goal(self, journal_workspace):
         from awm.journal import goals

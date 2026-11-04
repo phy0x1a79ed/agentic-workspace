@@ -1080,5 +1080,4 @@ async def test_a_clear_gives_the_new_session_the_old_one_as_its_parent(env, tmp_
     await env.call("hook_plan_approved", plan_text="# Before the clear\n\nx")
     new = "33333333-4444-5555-6666-777777777777"
     await env.call("hook_session_clear", new_session_id=new)
-    [edge] = env.tasks.work.ancestors(new)
-    assert (edge["parent"], edge["how"]) == ("cc" + old.replace("-", ""), "clear")
+    assert {"session_id": new, "parent": old, "how": "clear", "node": env.tasks.node} in env.fetches

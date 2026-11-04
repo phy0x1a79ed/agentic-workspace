@@ -161,38 +161,3 @@ async def test_open_and_attach_keep_the_name_and_link_for_the_board(work):
     await verbs.call("task_attach", {"task_id": opened["task_id"], "session_id": B, "role": "worker"})
     rows = {s["name"]: s["rc_url"] for s in work.task_sessions(opened["task_id"])}
     assert rows == {"t/coord": None, "t/worker": "https://claude.ai/code/session_x"}
-
-
-def test_parent_links_form_the_hard_edges(work):
-    assert work.set_parent(B, A, "start") is True
-    assert work.set_parent(B, C, "start") is False  # one parent per session
-    assert work.set_parent(C, B, "clear") is True
-    up = work.ancestors(C)
-    assert [(e["session_id"], e["parent"], e["how"]) for e in up] == [
-        (task_ids.session_key(C), task_ids.session_key(B), "clear"),
-        (task_ids.session_key(B), R9_A, "start")]
-    assert [c["session_id"] for c in work.children(A)] == [task_ids.session_key(B)]
-    with pytest.raises(ValueError):
-        work.set_parent(B, A, "adopted")
-
-
-async def test_lineage_joins_parent_links_and_citations(work):
-    async def cites(session):
-        return [{"journal": "j1", "reason": "the base", "from": "j2", "session": R9_A}]
-
-    work.set_parent(B, A, "start")
-    verbs = TaskVerbs(work, "mizar", resolve=lambda pid: None, cites=cites)
-    out = await verbs.call("lineage", {"session_id": B})
-    assert out["ok"] and out["started_by"][0]["parent"] == R9_A
-    assert out["built_on"][0]["session"] == R9_A and out["started"] == []
-    rec = await verbs.call("session_parent", {"session_id": C, "parent": B})
-    assert rec["recorded"] is True
-
-
-async def test_lineage_stands_without_the_journal(work):
-    async def down(session):
-        raise ConnectionError("no journal")
-
-    verbs = TaskVerbs(work, "mizar", resolve=lambda pid: None, cites=down)
-    out = await verbs.call("lineage", {"session_id": A})
-    assert out["ok"] and out["built_on"] is None

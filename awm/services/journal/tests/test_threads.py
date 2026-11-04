@@ -25,7 +25,7 @@ def test_a_comment_lives_in_the_thread_of_its_first_post(journal_workspace):
                body="fix it at the lock")
     for c in (c1, c2):
         assert (c["project"], c["scope"]) == ("awm", "dev") and c["thread"] == root["id"]
-    assert c2["reply_to"] == c1["id"]
+    assert c2["reply_to"] == [c1["id"]]
     out = _fetch(post_id=root["id"])
     assert out["posts"][0]["comments"] == 2
     [top] = out["thread"]

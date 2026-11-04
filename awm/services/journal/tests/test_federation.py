@@ -178,7 +178,7 @@ def test_goal_writes_carry_the_peer_origin(journal_workspace):
     assert local["author"] == "user:tony"
     reason = _handle_goal_retire({"goal_id": made["id"], "author": "user:mallory",
                                   "reason": "done"}, "peer:shaula")["reason"]
-    assert reason["author"] == "peer:shaula" and reason["reply_to"] == made["id"]
+    assert reason["author"] == "peer:shaula" and reason["reply_to"] == [made["id"]]
 
 
 # ---------------------------------------------------------------------------
@@ -197,7 +197,7 @@ def test_every_journal_verb_declares_an_effect():
 
 
 READS = {"fetch", "inbox", "reads", "render", "goal_read", "goal_history", "brief_read",
-         "brief_history", "tag_list", "export"}
+         "brief_history", "tag_list", "lineage", "export"}
 
 
 def test_only_the_known_reads_are_reads():
@@ -222,5 +222,6 @@ def test_every_published_tool_is_journal_prefixed_and_hidden_verbs_leave_mcp():
     for name, fn in _functions().items():
         assert fn["tool"] == f"journal_{name}"
     hidden = {n for n, f in _functions().items() if f.get("surfaces") == ["cli", "http"]}
-    assert hidden == {"export", "reindex", "note_read", "precedent_import"}
+    assert hidden == {"export", "reindex", "note_read", "precedent_import", "session_parent",
+                      "lineage_import"}
     assert _functions()["tag_receive"]["surfaces"] == ["http"]

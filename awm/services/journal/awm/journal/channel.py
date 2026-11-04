@@ -14,9 +14,11 @@ literal worktree scope: ``project=''`` marks a non-literal channel whose ref
 lives verbatim in ``scope`` (e.g. ``'user:alice'``, ``'project:awm'``,
 ``'workspace'``).
 
-A comment is a post with ``reply_to`` (fleet.md R107 item 5). It lives in the
-channel of its thread's first post, wherever the commenter sits, and
-``thread_id`` names that first post.
+``reply_to`` takes a list (fleet.md R107 item 5). A comment names one post: it
+lives in the channel of its thread's first post, wherever the commenter sits,
+and ``thread_id`` names that first post. A debrief journal names every earlier
+journal it built on: those are its citations (sessions.md R14, ``post_cites``),
+and it stays in its writer's channel. Both links point one way.
 
 All SQL goes through :class:`JournalDAO`.
 """
@@ -25,7 +27,7 @@ from __future__ import annotations
 
 import json
 import uuid as _uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Iterable
 
 from awm.journal import kinds, owners, search_index, tags as tagmod
@@ -55,8 +57,9 @@ class ScopePost:
     body: str
     meta: dict
     ts: str              # ISO TEXT
-    reply_to: str | None = None
+    reply_to: str | None = None   # a comment's parent
     thread_id: str | None = None
+    cites: list[str] = field(default_factory=list)  # a debrief journal's citations
     match: dict | None = None  # search hits only: {score, snippet}
     comments: int | None = None  # search hits and thread reads only
 
@@ -83,8 +86,10 @@ class ScopePost:
             "body": self.body, "meta": self.meta, "ts": self.ts,
         }
         if self.reply_to:
-            d["reply_to"] = self.reply_to
+            d["reply_to"] = [self.reply_to]
             d["thread"] = self.thread_id
+        elif self.cites:
+            d["reply_to"] = list(self.cites)
         if self.comments is not None:
             d["comments"] = self.comments
         if self.match is not None:
@@ -199,10 +204,26 @@ def _coerce_meta(raw) -> dict:
     return value if isinstance(value, dict) else {}
 
 
-def _row_to_post(row, tag_ids: list[str] | None = None) -> ScopePost:
+def cites_of_posts(post_ids: list[str]) -> dict[str, list[str]]:
+    """Each post's citations, in the order it gave them."""
+    out: dict[str, list[str]] = {pid: [] for pid in post_ids}
+    for i in range(0, len(post_ids), 500):
+        chunk = post_ids[i:i + 500]
+        marks = ",".join("?" * len(chunk))
+        for r in JournalDAO().query_all(
+                f"SELECT post_id, cited_id FROM post_cites WHERE post_id IN ({marks})"
+                " ORDER BY post_id, ord", chunk):
+            out[r["post_id"]].append(r["cited_id"])
+    return out
+
+
+def _row_to_post(row, tag_ids: list[str] | None = None,
+                 cites: list[str] | None = None) -> ScopePost:
     meta = _coerce_meta(row["meta"])
     if tag_ids is None:
         tag_ids = tagmod.of_posts([row["id"]])[row["id"]]
+    if cites is None:
+        cites = cites_of_posts([row["id"]])[row["id"]]
     keys = row.keys()
     return ScopePost(
         id=row["id"], project=row["owner_project"], scope=row["owner_scope"],
@@ -210,14 +231,16 @@ def _row_to_post(row, tag_ids: list[str] | None = None) -> ScopePost:
         body=row["body"] or "", meta=meta, ts=ms_to_iso(row["ts"]) or "",
         reply_to=row["reply_to"] if "reply_to" in keys else None,
         thread_id=row["thread_id"] if "thread_id" in keys else None,
+        cites=cites,
     )
 
 
 def rows_to_posts(rows) -> list[ScopePost]:
     """Posts from ``scope_posts`` rows, with one tag lookup for them all."""
     rows = list(rows)
-    by_post = tagmod.of_posts([r["id"] for r in rows])
-    return [_row_to_post(r, by_post[r["id"]]) for r in rows]
+    ids = [r["id"] for r in rows]
+    by_post, cites = tagmod.of_posts(ids), cites_of_posts(ids)
+    return [_row_to_post(r, by_post[r["id"]], cites[r["id"]]) for r in rows]
 
 
 def _row_to_subscriber(row) -> Subscriber:
@@ -274,7 +297,7 @@ def post_tag_ids(kind: str | None = None, tags: Any = None,
 
 def post(project: str, scope: str, *, author: str, body: str,
          kind: str | None = None, tags: Any = None, meta: dict | None = None,
-         reply_to: str | None = None, to_scope: str | None = None,
+         reply_to: str | list[str] | None = None, to_scope: str | None = None,
          origin: str | None = None, keep_channel: bool = False,
          extra_tags: list[str] = (), ts: int | None = None) -> ScopePost:
     """Append a post to a scope's channel and hand it to the cross-service emitter.
@@ -285,14 +308,25 @@ def post(project: str, scope: str, *, author: str, body: str,
     ``meta["claimed_author"]`` so a domestic reader can see which agent sent it.
     A caller with no stamp may not send an author of the ``peer:`` shape.
 
-    With ``reply_to`` the post is a comment and lands in the channel of its
-    thread's first post, whatever ``project``/``scope`` say, unless
-    ``keep_channel`` (a cross-level goal revision). ``extra_tags`` are tag ids
-    the journal's own code adds, past the kind-tag rule.
+    ``reply_to`` on a journal lists the journals it cites, each of which must
+    be a journal (sessions.md R17); the journal stays in ``project``/``scope``.
+    On any other post it names the one post the comment answers, and the post
+    lands in the channel of its thread's first post, whatever
+    ``project``/``scope`` say, unless ``keep_channel`` (a cross-level goal
+    revision). ``extra_tags`` are tag ids the journal's own code adds.
     """
     if origin is None and (author or "").startswith("peer:"):
         raise ValueError("author 'peer:...' is reserved for edge-stamped peer identities")
     tag_ids = post_tag_ids(kind, tags, extra_tags)
+    targets = reply_targets(reply_to)
+    cites: list[str] = []
+    reply_to = None
+    if kinds.JOURNAL in tag_ids:
+        cites = require_journals(targets)
+    elif len(targets) > 1:
+        raise ValueError("a comment answers one post; only a debrief journal lists several")
+    elif targets:
+        reply_to = targets[0]
     thread_id = None
     if reply_to:
         parent = get_post(reply_to)
@@ -319,6 +353,9 @@ def post(project: str, scope: str, *, author: str, body: str,
              reply_to or None, thread_id),
         )
         tagmod.attach(conn, pid, tag_ids)
+        JournalDAO(conn=conn).executemany(
+            "INSERT INTO post_cites (post_id, cited_id, ord) VALUES (?, ?, ?)",
+            [(pid, c, i) for i, c in enumerate(cites)])
     post_obj = get_post(pid)
 
     # One post → one cross-service `emit` on the `posts` topic (fan-out to all
@@ -331,6 +368,26 @@ def post(project: str, scope: str, *, author: str, body: str,
             pass
     search_index.index_post(thread_id or pid)
     return post_obj
+
+
+def reply_targets(raw: Any) -> list[str]:
+    """``reply_to`` as a list of post ids: one id, or a list of them."""
+    if raw in (None, "", []):
+        return []
+    items = [raw] if isinstance(raw, str) else raw
+    if not isinstance(items, (list, tuple)) or not all(isinstance(x, str) and x for x in items):
+        raise ValueError("reply_to is a post id or a list of post ids")
+    return list(dict.fromkeys(items))
+
+
+def require_journals(targets: list[str]) -> list[str]:
+    """``targets`` when each is a journal post (sessions.md R17)."""
+    found = tagmod.of_posts(targets)
+    for t in targets:
+        if kinds.JOURNAL not in found.get(t, []):
+            raise ValueError(f"citation {t} is not a journal post. Journal for that session first, "
+                             "then cite the new journal (sessions.md R17)")
+    return targets
 
 
 def set_tags(post_id: str, *, add: Any = (), remove: Any = ()) -> ScopePost:

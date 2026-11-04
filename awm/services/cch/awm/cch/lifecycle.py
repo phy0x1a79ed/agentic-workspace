@@ -357,9 +357,9 @@ async def _attach_task(spec: dict[str, Any], session_id: str | None) -> str | No
 
 
 async def _record_parent(session_id: str, parent: str) -> None:
-    """Give the task store the start's parent link (sessions.md R13). The lineage record keeps it too."""
+    """Give the journal the start's parent link (sessions.md R13, R16)."""
     try:
-        await gatewayclient.call("reporting", "session_parent",
+        await gatewayclient.call("journal", "session_parent",
                                  {"session_id": session_id, "parent": parent, "how": "start"}, timeout=30)
     except Exception as exc:  # noqa: BLE001 — the lineage record still holds the parent
         log.info("cx: parent link %s -> %s not recorded: %s", parent, session_id, exc)

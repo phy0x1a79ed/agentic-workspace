@@ -1,10 +1,11 @@
 """Who wrote a journal, what it cites, and what each session read (sessions.md R14, R15, R17).
 
 A journal post carries ``meta.session``, the R9 id of the session it covers. It
-defaults to the posting session. ``meta.cites`` lists the journals that shaped
-the work, each with a one-line reason, and points only at journal posts. Every
-journal that ``fetch`` hands a session lands in ``session_reads``, the candidate
-list the agent picks its citations from at debrief.
+defaults to the posting session. A debrief journal's ``reply_to`` lists the
+journals that shaped the work, and points only at journal posts. The older
+``meta.cites`` still folds into that list while the move runs. Every journal
+that ``fetch`` hands a session lands in ``session_reads``, the candidate list
+the agent picks its citations from at debrief.
 """
 
 from __future__ import annotations
@@ -115,23 +116,19 @@ def reads(session: str, limit: int = 200) -> list[dict]:
 
 def cites_of(session: str) -> list[dict]:
     """The union of the citations of every journal ``session`` wrote (R14)."""
-    rows = JournalDAO().query_all(
-        "SELECT id, meta FROM scope_posts WHERE json_extract(meta, '$.session')=? AND EXISTS ("
-        "SELECT 1 FROM post_tags pt WHERE pt.post_id = scope_posts.id AND pt.tag_id = ?)",
-        (session, kinds.JOURNAL))
+    from awm.journal import lineage
     out, seen = [], set()
-    for r in rows:
-        for c in _meta(r["meta"]).get("cites") or []:
-            if isinstance(c, dict) and c.get("journal") not in seen:
-                seen.add(c.get("journal"))
-                out.append({**c, "from": r["id"]})
-    if out:
-        marks = ",".join("?" * len(out))
-        cited = {r["id"]: _meta(r["meta"]).get("session") for r in JournalDAO().query_all(
-            f"SELECT id, meta FROM scope_posts WHERE id IN ({marks})", [c["journal"] for c in out])}
-        for c in out:
-            c["session"] = cited.get(c["journal"])
+    for c in lineage.cited_by_session(session):
+        if c["journal"] not in seen:
+            seen.add(c["journal"])
+            out.append(c)
     return out
+
+
+def cite_ids(meta: Any) -> list[str]:
+    """The journal ids an old-style ``meta.cites`` names, to fold into ``reply_to``."""
+    cites = meta.get("cites") if isinstance(meta, dict) else None
+    return [c["journal"] for c in cites or [] if isinstance(c, dict) and isinstance(c.get("journal"), str)]
 
 
 def _meta(raw: Any) -> dict:

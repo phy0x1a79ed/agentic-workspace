@@ -49,16 +49,6 @@ MANIFEST: list[dict[str, Any]] = [
     {"name": "task_get", "tool": "operations_task_get", "effect": "read",
      "description": "A task's record and its sessions.",
      "params": [_TASK]},
-    {"name": "lineage", "tool": "operations_lineage", "effect": "read",
-     "description": "A session's lineage (sessions.md R16). Hard edges: the sessions it came from, "
-                    "nearest first, and the sessions it started or became after a clear. Soft edges: "
-                    "the journals its own journals cite, with the session each covers.",
-     "params": [_SESSION]},
-    {"name": "session_parent", "tool": "operations_session_parent", "surfaces": HIDDEN, "effect": "write",
-     "description": "Record who started a session, as `cx start` does for a calling session (R13).",
-     "params": [{**_SESSION, "required": True},
-                {"name": "parent", "type": "string", "required": True, "description": "The parent's session id."},
-                {"name": "how", "type": "string", "description": "start or clear. Default: start."}]},
     {"name": "task_session_end", "tool": "operations_task_session_end", "surfaces": HIDDEN, "effect": "write",
      "description": "Mark a session of a task finished.",
      "params": [_TASK, {**_SESSION, "required": True}]},
@@ -66,18 +56,11 @@ MANIFEST: list[dict[str, Any]] = [
 
 Resolve = Callable[[int], Any]
 Notify = Callable[[str, str], Awaitable[bool]]
-Cites = Callable[[str], Awaitable[list[dict]]]
 
 
 def _shown(args: dict) -> dict[str, str | None]:
     """The optional name and Remote Control link a caller passed, for the board."""
     return {k: (str(args[k]).strip()[:200] or None) if args.get(k) else None for k in ("name", "rc_url")}
-
-
-async def journal_cites(session: str) -> list[dict]:
-    """The citations of ``session``'s journals, from the journal service."""
-    out = await gatewayclient.call("journal", "reads", {"session": session, "limit": 1}, timeout=60)
-    return list(out.get("cites") or []) if isinstance(out, dict) else []
 
 
 async def notify_main(job: str, text: str) -> bool:
@@ -91,9 +74,8 @@ async def notify_main(job: str, text: str) -> bool:
 
 
 class TaskVerbs:
-    def __init__(self, work: Work, node: str, resolve: Resolve, notify: Notify = notify_main,
-                 cites: Cites = journal_cites) -> None:
-        self.work, self.node, self._resolve, self._notify, self._cites = work, node, resolve, notify, cites
+    def __init__(self, work: Work, node: str, resolve: Resolve, notify: Notify = notify_main) -> None:
+        self.work, self.node, self._resolve, self._notify = work, node, resolve, notify
 
     async def _session(self, args: dict, required: bool = False) -> str:
         given = args.get("session_id")
@@ -153,26 +135,6 @@ class TaskVerbs:
 
     async def task_get(self, args: dict) -> dict:
         return {"ok": True, "task": await asyncio.to_thread(self.work.task_get, str(args.get("task_id") or ""))}
-
-    async def lineage(self, args: dict) -> dict:
-        session = await self._session(args)
-        up = await asyncio.to_thread(self.work.ancestors, session)
-        down = await asyncio.to_thread(self.work.children, session)
-        built_on: list[dict] | None
-        try:
-            built_on = await self._cites(session)
-        except Exception as exc:  # noqa: BLE001 — the hard edges stand without the journal
-            log.warning("reporting: lineage of %s has no citations: %s", session, exc)
-            built_on = None
-        return {"ok": True, "session_id": session,
-                "task_id": await asyncio.to_thread(self.work.task_for_session, session),
-                "started_by": up, "started": down, "built_on": built_on}
-
-    async def session_parent(self, args: dict) -> dict:
-        session = await self._session(args, required=True)
-        made = await asyncio.to_thread(self.work.set_parent, session, str(args.get("parent") or ""),
-                                       str(args.get("how") or "start"), self.node)
-        return {"ok": True, "session_id": session, "recorded": made}
 
     async def task_session_end(self, args: dict) -> dict:
         session = await self._session(args, required=True)

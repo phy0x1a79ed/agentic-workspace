@@ -21,14 +21,4 @@ CREATE TABLE IF NOT EXISTS work_sessions (
     PRIMARY KEY (task_id, session)
 );
 CREATE INDEX IF NOT EXISTS work_sessions_by_session ON work_sessions (session);
--- The hard edges of the lineage graph (sessions.md R13, R16): who started a
--- session, or which session it was before a clear. One parent per session.
-CREATE TABLE IF NOT EXISTS session_parents (
-    session  TEXT PRIMARY KEY,
-    parent   TEXT NOT NULL,
-    how      TEXT NOT NULL,
-    node     TEXT NOT NULL DEFAULT '',
-    at       REAL NOT NULL
-);
-CREATE INDEX IF NOT EXISTS session_parents_by_parent ON session_parents (parent);
 """
