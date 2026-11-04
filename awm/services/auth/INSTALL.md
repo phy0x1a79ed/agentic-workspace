@@ -6,25 +6,17 @@ authority** for AWM's human + machine credentials; the `httpsfront` edge only
 
 What it does:
 
-- Mints a **pair** — a `login-password` (human, typed once a day) and a
-  `peer-credential` (the legacy machine bearer for peer nodes) — every **12 h** (cadence),
+- Mints a `login-password` (human, typed once a day) every **12 h** (cadence),
   each valid **24 h**. The overlapping windows mean up to two generations are
   valid at once, so a client never has to re-authenticate across a rotation.
 - On startup mints if none is valid or the newest is older than the cadence, so
   a restart never leaves a stale-only state (no dependency on `events`).
 - Signs **sliding session tokens** (HMAC-SHA256 with a long-lived secret); the
   edge verifies + refreshes cookies offline using material from `edge_material`.
-- Pushes the day's **login password** (never the peer credential) to the
-  Ops note under AWM on each mint, best-effort.
-- Mirrors the current peer credential to a file (`$AWM_DIR/services/auth/
-  peer_cred.current`) that `$AWM_PEER_CRED` points to, for the SSH peer-auth
-  channel (`ssh <peer> 'cat "$AWM_PEER_CRED"'`). That bearer is the legacy
-  path. `AWM_PEER_LEGACY_BEARER=0` retires it.
-- Holds this node's **Ed25519 key** (`node_ed25519.key`, minted when absent) and
-  signs five-minute **node tokens** for other nodes (`sign_peer_token`).
-  `node_key` returns the public key and its fingerprint, which a peer pins in its
-  book. `edge_material` also hands the edge each book peer with its relation and
-  pinned key. See `FEDERATION.md` § *Node identity and tokens*.
+- Pushes the day's **login password** to the Ops note under AWM on each mint,
+  best-effort.
+- Holds no credential for other nodes: a node reaches another over the ssh edge
+  (fleet.md R92), not through the HTTPS front.
 
 ## Install
 
@@ -102,9 +94,8 @@ The operator, on the host, manages any user's tokens. A signed-in user manages o
 
 ## Security notes
 
-- `password`, `peer_credential`, `edge_material` and `sign_peer_token` are
-  effectively loopback-only (the last two also refuse any call that carries an
-  identity stamp): the edge blocks those paths for any unauthenticated external
+- `password` and `edge_material` are effectively loopback-only
+  (`edge_material` also refuses any call that carries an identity stamp): the edge blocks those paths for any unauthenticated external
   caller, and the loopback gateway is never exposed off-host.
 - The signing secret is minted once and never rotated (rotating it would drop
   every live session); the *credentials* rotate instead.

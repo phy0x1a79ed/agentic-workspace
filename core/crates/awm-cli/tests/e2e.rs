@@ -157,9 +157,15 @@ struct Gateway {
 
 impl Gateway {
     fn start(state: &Path) -> Self {
+        Self::start_with(state, &[])
+    }
+
+    fn start_with(state: &Path, env: &[(&str, &str)]) -> Self {
         let child = Command::new(awm_bin())
             .args(["gateway", "serve", "--state"])
             .arg(state)
+            .envs(env.iter().copied())
+            .env_remove("AWM_EDGES_FILE")
             .env("AWM_LOG", "info")
             .env("GATEWAY_ONLY_SECRET", "leaked")
             .stderr(std::fs::File::create(state.join("gateway.stderr")).unwrap())
@@ -634,6 +640,58 @@ fn gateway_end_to_end() {
     let status = gw.stop();
     assert!(status.success(), "{}", fail("gateway exit"));
     assert!(!node.state.join("gateway.json").exists(), "gateway.json outlived the gateway");
+}
+
+/// A `peer=` call leaves through `ssh <peer> awm edge-serve`, and the peer runs it as a
+/// call from the calling node (fleet.md R92, R93). A stand-in for ssh runs `edge-serve`
+/// against the far gateway, with the login's key named `awm:near:user`.
+#[test]
+fn a_peer_call_crosses_the_ssh_edge() {
+    let tmp = tempfile::tempdir().unwrap();
+    let base = tmp.path();
+    let edges = "nodes:\n  near: {role: homebase}\n  far: {role: homebase}\nedges:\n  near: {far: lan}\n";
+    let node = |name: &str, tool: Option<&str>| -> PathBuf {
+        let (core, state) = (base.join(name).join("core"), base.join(name).join("state"));
+        std::fs::create_dir_all(&core).unwrap();
+        if let Some(tool) = tool {
+            write(&core.join(tool).join("awm-plugin.toml"),
+                  &format!("[plugin]\nname = \"{tool}\"\n\n[[service]]\nname = \"{tool}\"\n\n[[tool]]\nname = \"{tool}\"\n"));
+            write(&core.join(tool).join("run.sh"), &format!("export FAKE_TOOL={tool}\nexec '{}'\n", fake_bin().display()));
+        }
+        write(&state.join("edges.yml"), edges);
+        write(&state.join("config.toml"), &format!(
+            "node = \"{name}\"\nlisten = \"127.0.0.1:0\"\nworkspace = \"{}\"\ncore_roots = [\"{}\"]\ntool_wait_s = 30\nsession_cache_s = 0\n",
+            base.join(name).display(), core.display()));
+        state
+    };
+    let (far_state, near_state) = (node("far", Some("remote")), node("near", None));
+    let far = Gateway::start(&far_state);
+
+    let home = base.join("home");
+    write(&home.join(".ssh/authorized_keys"), "ssh-ed25519 AAAAC3NzaE2Ekey awm:near:user\n");
+    write(&base.join("user-auth"), "publickey ssh-ed25519 AAAAC3NzaE2Ekey\n");
+    let ssh = base.join("fake-ssh");
+    write(&ssh, &format!(
+        "#!/bin/sh\nunset AWM_EDGES_FILE\nexport AWM_DIR='{}' AWM_GATEWAY_URL='{}' AWM_NODE_NAME=far SSH_USER_AUTH='{}' HOME='{}'\nexec '{}' edge-serve\n",
+        far_state.display(), far.url, base.join("user-auth").display(), home.display(), awm_bin().display()));
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&ssh, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let near = Gateway::start_with(&near_state, &[("AWM_EDGE_SSH", ssh.to_str().unwrap())]);
+
+    let invoke = |peer: &str| {
+        let resp = http().post(format!("{}/invoke", near.url))
+            .json(&json!({"name": "remote", "args": {"verb": "whoami", "args": {}, "peer": peer}}))
+            .send().unwrap();
+        (resp.status().as_u16(), resp.json::<Value>().unwrap_or(Value::Null))
+    };
+    let (status, body) = invoke("far");
+    assert_eq!(status, 200, "{body} near: {} far: {}", log(&near_state), log(&far_state));
+    let result: Value = serde_json::from_str(body["result"].as_str().unwrap()).unwrap();
+    assert_eq!(result["caller"]["node"], "near", "the far node runs it as a call from near: {result}");
+    let (status, body) = invoke("elsewhere");
+    assert!(status >= 400, "a node with no edge from here is refused: {body}");
+    drop(near);
+    drop(far);
 }
 
 #[test]

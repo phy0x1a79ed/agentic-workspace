@@ -131,40 +131,11 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             headers["X-Awm-As"] = as_
         if session_pid:
             headers["X-Awm-Session-Pid"] = session_pid
-        # Declare that this caller can follow a peer redirect. The gateway
-        # resolves where a call belongs (default provider, or an explicit
-        # ``peer``) and hands back that peer's address rather than relaying —
-        # only a caller that talks to peer edges may opt in, so the CLI and the
-        # web UI keep seeing plain results and plain errors.
-        headers["X-Awm-Peer-Redirect"] = "1"
         arguments = mcp_http.with_search_context(name, arguments)
         data = await _request_with_retry(
             "POST", "/invoke", json_body={"name": name, "args": arguments},
             headers=headers,
         )
-        redirect = data.get("peer_redirect")
-        if redirect:
-            # Followed exactly once: the peer's own gateway resolves against its
-            # own book, and chaining would let two nodes bounce a call forever.
-            # ``peer`` is stripped for the same reason — the far side must not
-            # re-route what we already routed.
-            forwarded = mcp_caller.forwarded_args(name, arguments, session_pid)
-            from awm.gateway import peer_files
-            hop = await asyncio.to_thread(
-                peer_files.invoke_with_files,
-                redirect["peer"], redirect, {"name": name, "args": forwarded}, as_)
-            if hop is not None:
-                # Files went up with the call and came back to local paths.
-                if hop.status_code >= 400:
-                    hop.raise_for_status()
-                return [TextContent(type="text", text=hop.json()["result"])]
-            data = await _peer_invoke(
-                redirect["peer"], name, forwarded, as_, entry=redirect)
-            # The call ran elsewhere, so any file it produced is on that node.
-            # Local calls skip this entirely — their paths are already ours.
-            text = await _localize(data["result"], redirect["peer"], as_,
-                                   entry=redirect)
-            return [TextContent(type="text", text=text)]
         return [TextContent(type="text", text=data["result"])]
     except httpx.HTTPStatusError as e:
         # Core returned a structured error — surface its body.
@@ -250,64 +221,6 @@ async def _request_with_retry(
                 await asyncio.sleep(0.3)
     raise mcp_http.CoreUnreachable(
         f"awm daemon unreachable after {max_wait}s: {last_err}")
-
-
-# ---------------------------------------------------------------------------
-# Cross-peer federation (client-side, no relay)
-# ---------------------------------------------------------------------------
-
-async def _peer_invoke(peer_name: str, base_name: str, arguments: dict,
-                       as_: str | None,
-                       entry: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Invoke ``base_name`` on ``peer_name``'s edge directly with a signed node
-    token. A peer this node holds an edge to that refuses it gets the legacy
-    ssh-fetched bearer (re-fetched once on a 401); any other peer never does — see
-    ``gatewayclient.peer_send``.
-
-    ``entry`` is the peer's already-resolved ``{edge_url, ssh_alias}`` —
-    a redirect carries it, so following one costs no second lookup. Absent, it is
-    resolved from the local gateway's book.
-    """
-    from awm import gatewayclient
-
-    if entry is None or not entry.get("edge_url"):
-        entry = await asyncio.to_thread(gatewayclient.resolve_peer, peer_name)
-    edge = entry["edge_url"].rstrip("/")
-    ca = gatewayclient._peer_ca()
-    # Same ladder as the loopback path; only the connect leg stays short.
-    ptmo = httpx.Timeout(mcp_http.read_timeout(), connect=10.0)
-
-    async def send(bearer: str) -> httpx.Response:
-        headers = {"Authorization": f"Bearer {bearer}"}
-        if as_:
-            headers["X-Awm-As"] = as_
-        async with httpx.AsyncClient(timeout=ptmo, verify=ca) as cli:
-            return await cli.post(f"{edge}/invoke",
-                                  json={"name": base_name, "args": arguments},
-                                  headers=headers)
-
-    resp = await gatewayclient.peer_send(peer_name, entry, send)
-    resp.raise_for_status()
-    return resp.json()
-
-
-async def _localize(result: Any, peer_name: str, as_: str | None,
-                    entry: dict[str, Any] | None = None) -> Any:
-    """Pull down any file the peer's reply points at, so ``path`` is openable here.
-
-    Shared with the stdio proxy (``peer_files``) so this proxy — the documented
-    rollback — cannot silently lose the behaviour. Never raises.
-    """
-    from awm.gateway import peer_files
-
-    try:
-        return await peer_files.materialize_async(
-            result, peer_name, entry=entry, as_=as_)
-    except Exception as exc:  # noqa: BLE001 — a broken rewrite must not eat the reply
-        # stdout is the MCP framing; diagnostics go to stderr only.
-        print(f"awm-mcp: peer file materialization failed for {peer_name}: {exc}",
-              file=sys.stderr)
-        return result
 
 
 def _ensure_core_running() -> None:

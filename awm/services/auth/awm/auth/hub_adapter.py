@@ -6,12 +6,8 @@ loop runs in ``on_start``.
 
 Verbs:
   - ``password``        current login password + window (loopback/CLI).
-  - ``peer_credential`` current peer credential + its mirror-file path.
   - ``verify``          shared login password → signed operator session token.
-  - ``edge_material``   signing secret + valid peer creds + book peers' public
-                        keys for the edge.
-  - ``node_key``        this node's public key and fingerprint.
-  - ``sign_peer_token`` a five-minute token proving this node to another node.
+  - ``edge_material``   signing secret + device token digests for the edge.
   - ``rotate``          force a mint now (ops/testing).
   - ``status``          rotation state summary, incl. last push outcome (the
                         gateway's ``awm status`` embeds it).
@@ -35,9 +31,7 @@ from awm.auth.config import CONTRACT
 log = logging.getLogger("awm.auth.hub_adapter")
 
 
-# Credential-bearing and admin verbs stay off the agent MCP surface. auth shares
-# the awm tool with the gateway; `awm status` carries its rotation state, so only
-# `node_key` is agent-facing.
+# Credential-bearing and admin verbs stay off the agent MCP surface.
 _CLI_HTTP = ["cli", "http"]
 
 API_MANIFEST: dict[str, Any] = {
@@ -49,15 +43,6 @@ API_MANIFEST: dict[str, Any] = {
             "surfaces": _CLI_HTTP,
             "description": "Get the current day's awm login password and its "
                            "validity window (loopback/CLI only).",
-            "params": [],
-        },
-        {
-            "name": "peer_credential",
-            "tool": "auth_peer_credential",
-            "effect": "secret",
-            "surfaces": _CLI_HTTP,
-            "description": "Get the current peer credential and the path of the "
-                           "file it is mirrored to for the SSH peer-auth channel.",
             "params": [],
         },
         {
@@ -79,9 +64,7 @@ API_MANIFEST: dict[str, Any] = {
             "tool": "auth_edge_material",
             "effect": "secret",
             "surfaces": _CLI_HTTP,
-            "description": "Signing secret + currently-valid peer credentials + "
-                           "each book peer's name and public key + "
-                           "live device-token digests + session-lifetime "
+            "description": "Signing secret + live device-token digests + session-lifetime "
                            "knobs, for the httpsfront edge to enforce auth "
                            "offline. device_used reports the device tokens "
                            "the edge accepted since its last fetch; "
@@ -90,24 +73,6 @@ API_MANIFEST: dict[str, Any] = {
                            "names its scope.",
             "params": [{"name": "device_used", "type": "object"},
                        {"name": "token_scopes", "type": "array"}],
-        },
-        {
-            "name": "node_key",
-            "tool": "auth_node_key",
-            "effect": "read",
-            "description": "This node's ed25519 public key and its fingerprint, "
-                           "to hand to a peer that will verify this node's "
-                           "tokens. The private key is never returned.",
-            "params": [],
-        },
-        {
-            "name": "sign_peer_token",
-            "tool": "auth_sign_peer_token",
-            "effect": "secret",
-            "surfaces": _CLI_HTTP,
-            "description": "Sign a five-minute token that proves this node's "
-                           "identity to the node named by aud.",
-            "params": [{"name": "aud", "type": "string", "required": True}],
         },
         {
             "name": "rotate",
@@ -172,11 +137,8 @@ API_MANIFEST: dict[str, Any] = {
 
 HANDLERS: dict[str, Any] = {
     "password": service.h_password,
-    "peer_credential": service.h_peer_credential,
     "verify": service.h_verify,
     "edge_material": service.h_edge_material,
-    "node_key": service.h_node_key,
-    "sign_peer_token": service.h_sign_peer_token,
     "rotate": service.h_rotate,
     "status": service.h_status,
     "device_mint": service.h_device_mint,

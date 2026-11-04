@@ -21,20 +21,16 @@ AWM = Path(__file__).resolve().parents[2]
 FOLDERS = sorted(p.parent for root in ("services", "plugins") for p in (AWM / root).glob(f"*/{discovery.PLUGIN_MANIFEST}"))
 
 #: gatewayclient calls, by the index of their tool argument.
-CALL_FNS = {"call": 0, "call_sync": 0, "call_peer": 1, "call_peer_sync": 1, "call_maybe_peer": 1, "call_sync_maybe_peer": 1}
-#: gatewayclient calls that can reach a peer, which first sign a token through the local auth.
-PEER_FNS = {"call_peer", "call_peer_sync", "call_maybe_peer", "call_sync_maybe_peer", "invoke_peer", "invoke_peer_sync",
-            "subscribe_peer", "subscribe_maybe_peer", "acquire_lease_peer", "acquire_lease_maybe_peer", "fetch_peer_file"}
-PEER_SIGN = ("auth", "sign_peer_token")
+CALL_FNS = {"call": 0, "call_sync": 0}
 
 #: Calls the scan cannot read, because a variable names the tool or the verb, or a shared
 #: library makes them for the plugin. ``harness@1`` names a contract.
 CALLS: dict[str, set[tuple[str, str]]] = {
     # trustpolicy.requests.file_request names the approver, whose verbs operations serves
     # now. browser already needs operations; trilium and zotero wait on T18 (UNSERVED).
-    "browser": {("operations", "approval_request"), PEER_SIGN},
-    "channel": {("reflection", "session_of"), ("reflection", "message"), ("reflection", "list_other"),
-                PEER_SIGN},  # gatewayclient sessions and push
+    "browser": {("operations", "approval_request")},
+    "channel": {("reflection", "session_of"), ("reflection", "message"), ("reflection", "list_other")},
+    # gatewayclient sessions and push
     "operations": {  # GatewayTool("<tool>").call(verb)
         ("reflection", "session_of"), ("reflection", "message"), ("reflection", "start_other"), ("social", "send"),
         *{("2fa", v) for v in ("burst", "approve_all", "approve", "deny", "devices", "pending")},
@@ -45,12 +41,10 @@ CALLS: dict[str, set[tuple[str, str]]] = {
                 ("routine", "deploy")},  # Outbound.invoke
     "wake": {("reflection", "start_other"), ("reflection", "message"), ("harness@1", "revive_pinned"), ("reflection", "revive_pinned"),
              ("wake", "standby_take"), ("wake", "standby_release")},  # Gateway.call
-    "auth": {PEER_SIGN},  # call_maybe_peer signs through auth's own verb
     "claude-science": {("scope", "search"), ("scope", "resolve"), ("journal", "fetch"), ("search", "query"), ("search", "get"),
                        ("dvc", "coverage"), ("dvc", "scope_status")},  # mcp_bridge DEFAULT_ALLOWLIST
     "httpsfront": {("trilium", "slice_resolve")},  # proxy.py posts /invoke itself
     "journal": {("reflection", "session_of")},  # gatewayclient.sessions
-    "kb": {("zotero", "items")},  # invoke_peer "zotero_items"
     "reflection": {
         ("scope", "claim"), ("scope", "release"), ("journal", "post"),  # _scopes_call, alarm
         *{("harness@1", v) for v in ("platform", "status", "resolve", "find", "list", "start", "stop", "resume", "adopt", "send",
@@ -60,10 +54,10 @@ CALLS: dict[str, set[tuple[str, str]]] = {
                ("search", "query"), ("search", "get")},  # the archive sources today, and federation
     "social": {("reflection", "session_of"), ("reflection", "message"), ("reflection", "list_other"),
                *{("harness-cc", v) for v in ("list", "probe", "start", "resume", "adopt")}},  # push, sessions, Cx._call
-    "trilium": {PEER_SIGN, ("approver", "approval_request")},  # trustpolicy.requests
+    "trilium": {("approver", "approval_request")},  # trustpolicy.requests
     "zotero": {("trilium", v) for v in ("note_search", "note_get", "note_upsert", "note_create", "note_update", "attr_set",
                                         "note_place", "attachment_put", "note_delete")}  # vault.call_sync(SERVICE, fn)
-              | {("approver", "order_pull"), ("approver", "order_done")},  # orders.py invoke_peer
+              | {("approver", "order_pull"), ("approver", "order_done")},  # orders.py approver_call
 }
 
 #: Recorded calls no manifest can list yet, since no plugin serves them, each with why.
@@ -87,8 +81,6 @@ def _literal_calls(folder: Path) -> set[tuple[str, str]]:
                 continue
             f = node.func
             name = f.attr if isinstance(f, ast.Attribute) else getattr(f, "id", "")
-            if name in PEER_FNS:
-                found.add(PEER_SIGN)
             at = CALL_FNS.get(name)
             if at is None or len(node.args) < at + 2:
                 continue

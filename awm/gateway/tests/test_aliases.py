@@ -117,7 +117,7 @@ def test_the_published_renames_are_in_the_table():
         ("project_create", "scope_create"),
         ("gateway_list", "awm_registry_list"), ("services_list", "awm_services_list"),
         ("services_reap", "awm_services_reap"), ("peer_providers", "awm_providers"),
-        ("peer_join", "operations_peer_join"), ("config_set", "awm_config_set"),
+        ("config_set", "awm_config_set"),
         ("config_contracts", "awm_config_contracts"),
         ("rlm_browser_acquire", "rlm-browser_acquire"),
         ("rlm_factorio_world_new", "factorio_world_new"),
@@ -175,7 +175,7 @@ def test_every_row_this_branch_owns_lands_on_a_name_the_tree_publishes():
     published = _tree_published()
     owned = {"awm", "browser", "factorio"}
     missing = [a.flat_new for a in aliases.ALIASES
-               if a.new_tool in owned or a.flat_new.startswith("operations_peer_")
+               if a.new_tool in owned
                if a.flat_new not in published]
     assert not missing
 

@@ -102,7 +102,7 @@ async def test_a_borrower_carries_the_file_inside_the_call(monkeypatch, plan):
         return {"ok": True}
 
     monkeypatch.setattr(gc, "peer_env", lambda var: "mira")
-    monkeypatch.setattr(gc, "call_peer", call_peer)
+    monkeypatch.setattr(gc, "call", lambda tool, verb, args=None, *, peer=None, **kw: (call_peer)(peer, tool, verb, args, **kw))
     monkeypatch.setattr(hub, "_connectors", {})
     await hub.HANDLERS["send"]({"account": "slack-bot", "channel": "D1",
                                 "text": "t", "file": plan})

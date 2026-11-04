@@ -271,97 +271,9 @@ class TestInvoke:
         filehop.remove_sent([f])
 
 
-# -- MCP proxy, end to end into the gateway ----------------------------------
+# -- describe ----------------------------------------------------------------
 
-@pytest.fixture()
-def proxy_to(monkeypatch, gateway):
-    """Point the proxies' peer client (``peer_files``) at the gateway app."""
-    from starlette.testclient import TestClient
-
-    from awm import gatewayclient
-    from awm.gateway import peer_files
-
-    app = gateway[0]
-    sent: list = []
-
-    class Client(TestClient):
-        def __init__(self, *a, **kw):
-            super().__init__(app, base_url="https://mira:1")
-
-        def send(self, request, **kw):
-            sent.append(request)
-            return super().send(request, **kw)
-
-    monkeypatch.setattr(httpx, "Client", Client)
-    monkeypatch.setattr(gatewayclient, "peer_send_sync", lambda peer, entry, send: send("tok"))
-    monkeypatch.setattr(gatewayclient, "_peer_ca", lambda: None)
-    peer_files._spec_cache.clear()
-    return peer_files, sent, gateway
-
-
-_MIRA = {"edge_url": "https://mira:1", "ssh_alias": "mira"}
-
-
-class TestProxy:
-    def _describe_ok(self, monkeypatch, params, returns_files=False):
-        from awm.gateway import catalog
-
-        async def dispatch(name, args, as_=None, _orig=catalog.dispatch):
-            if args.get("verb") == "describe":
-                verb = {"verb": args["args"]["verb"], "params": params}
-                if returns_files:
-                    verb["returns_files"] = True
-                return json.dumps({"domain": name, "verbs": [verb]})
-            return await _orig(name, args, as_)
-        monkeypatch.setattr(catalog, "dispatch", dispatch)
-
-    def test_put_sends_local_file_in_one_call(self, proxy_to, monkeypatch, tmp_path):
-        peer_files, sent, gateway = proxy_to
-        self._describe_ok(monkeypatch, {"src": {"file": "in"}})
-        f = tmp_path / "local.bin"
-        f.write_bytes(b"from-altair")
-        resp = peer_files.invoke_with_files(
-            "mira", _MIRA, _domain_call(src=str(f), path="p"), None)
-        assert resp.status_code == 200 and "result" in resp.json()
-        assert gateway[1][-1]["content"] == b"from-altair"
-        assert sent[-1].headers["content-type"] == filehop.CONTENT_TYPE
-        assert filehop.RETURN_FILES_HEADER.lower() not in sent[-1].headers
-
-    def test_get_brings_files_back_local(self, proxy_to, monkeypatch):
-        peer_files, _sent, gateway = proxy_to
-        self._describe_ok(monkeypatch, {"path": {}}, returns_files=True)
-        d = tempfile.mkdtemp(prefix="awm-social-")
-        far = os.path.join(d, "far.bin")
-        with open(far, "wb") as fh:
-            fh.write(b"from-mira")
-        gateway[2]["result_files"] = [far]
-        resp = peer_files.invoke_with_files(
-            "mira", _MIRA, {"name": "social",
-                            "args": {"verb": "bucket_get", "args": {"path": "p"}}}, None)
-        local = json.loads(resp.json()["result"])["files"][0]["path"]
-        assert local != far and open(local, "rb").read() == b"from-mira"
-        assert os.path.basename(local) == "far.bin"
-        filehop.remove_sent([local])
-
-    def test_verb_without_files_is_left_to_plain_json(self, proxy_to, monkeypatch):
-        peer_files, sent, _gateway = proxy_to
-        self._describe_ok(monkeypatch, {"path": {}})
-        call = {"name": "social", "args": {"verb": "bucket_ls", "args": {"path": "p"}}}
-        assert peer_files.invoke_with_files("mira", _MIRA, call, None) is None
-        # the spec is cached: a second call does not describe again
-        n = len(sent)
-        assert peer_files.invoke_with_files("mira", _MIRA, call, None) is None
-        assert len(sent) == n
-
-    def test_old_peer_without_markers_is_left_to_plain_json(self, proxy_to, monkeypatch,
-                                                          tmp_path):
-        peer_files, _sent, _gateway = proxy_to
-        self._describe_ok(monkeypatch, {"src": {}})
-        f = tmp_path / "local.bin"
-        f.write_bytes(b"x")
-        assert peer_files.invoke_with_files(
-            "mira", _MIRA, _domain_call(src=str(f)), None) is None
-
+class TestDescribe:
     def test_describe_carries_the_markers(self):
         from mcp.types import Tool
 

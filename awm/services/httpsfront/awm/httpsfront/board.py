@@ -11,8 +11,8 @@ That is the tether's arrangement, and for the same structural reason the mount
 is answered before the edge's own authentication. The edge does not check the
 ``Authorization`` header either: it is a credential for the board, and an edge
 that checked it would be a second place to get that check wrong. It looks at
-the header only to keep a mesh credential (a node token or the legacy node-wide
-bearer) from reaching the board, and refuses a request carrying two. What the edge
+the header only to keep a device token from reaching the board, and refuses a
+request carrying two. What the edge
 adds is narrower than a login and cheaper than a socket: an allow-list of exact
 path shapes, a body-size cap, and the removal of every header that claims an
 identity the edge did not verify.

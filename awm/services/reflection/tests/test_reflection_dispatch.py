@@ -528,8 +528,8 @@ def test_a_retire_tells_every_peer(fakes, monkeypatch):
     told = []
     monkeypatch.setattr(hub_adapter, "_peers", lambda: ["altair", "alcor"])
     from awm import gatewayclient
-    monkeypatch.setattr(gatewayclient, "call_peer_sync",
-                        lambda peer, svc, fn, a, timeout: told.append((peer, fn, a)))
+    monkeypatch.setattr(gatewayclient, "call_sync",
+                        lambda tool, verb, args=None, *, peer=None, **kw: (lambda peer, svc, fn, a, timeout: told.append((peer, fn, a)))(peer, tool, verb, args, **kw))
     hub_adapter._tell_peers(OTHER)
     assert told == [("altair", "retired", {"session_id": OTHER}),
                     ("alcor", "retired", {"session_id": OTHER})]
@@ -607,9 +607,8 @@ def test_session_of_with_no_plugin_answering_is_unknown(fakes):
     assert out["known"] is False and out["mode"] == "unknown"
 
 
-def test_the_hint_asks_only_book_peers_this_node_reaches(tmp_path, monkeypatch):
+def test_the_hint_asks_only_the_nodes_this_node_reaches(tmp_path, monkeypatch):
     import yaml
-    from awm.config import peerbook
     from awm.reflection import elsewhere
 
     edges = tmp_path / "edges.yml"
@@ -619,6 +618,4 @@ def test_the_hint_asks_only_book_peers_this_node_reaches(tmp_path, monkeypatch):
     }))
     monkeypatch.setenv("AWM_EDGES_FILE", str(edges))
     monkeypatch.setenv("AWM_NODE_NAME", "here")
-    monkeypatch.setattr(peerbook, "list_records",
-                        lambda: [{"name": n} for n in ("here", "altair", "deneb", "vega")])
-    assert elsewhere._reached_peers() == ["altair"]
+    assert elsewhere._reached_peers() == ["altair", "mira"]

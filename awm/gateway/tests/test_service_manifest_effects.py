@@ -115,6 +115,5 @@ def test_gateway_native_reads():
     from awm.gateway.gateway_ops import GATEWAY_OPERATIONS
     reads = {op.name for op in GATEWAY_OPERATIONS if op.effect == "read"}
     assert reads == {"awm_status", "awm_registry_list", "awm_services_list",
-                     "operations_peer_list", "operations_peer_resolve",
                      "awm_providers", "awm_config_contracts"}
     assert all(not hasattr(op, "category") for op in GATEWAY_OPERATIONS)

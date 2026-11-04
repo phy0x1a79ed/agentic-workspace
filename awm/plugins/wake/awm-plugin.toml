@@ -32,7 +32,3 @@ name = "harness"
 major = 1
 verbs = ["revive_pinned"]
 
-[[needs.tool]]
-name = "auth"
-major = 1
-verbs = ["sign_peer_token"]

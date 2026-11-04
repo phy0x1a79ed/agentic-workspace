@@ -25,7 +25,3 @@ name = "operations"
 major = 2
 verbs = ["approval_request"]
 
-[[needs.tool]]
-name = "auth"
-major = 1
-verbs = ["sign_peer_token"]

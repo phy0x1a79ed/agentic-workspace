@@ -39,7 +39,3 @@ name = "journal"
 major = 1
 verbs = ["brief_read", "post"]
 
-[[needs.tool]]
-name = "auth"
-major = 1
-verbs = ["sign_peer_token"]

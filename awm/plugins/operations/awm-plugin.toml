@@ -43,7 +43,3 @@ name = "trilium"
 major = 1
 verbs = ["note_get", "note_create", "note_update", "attr_delete", "attr_set", "note_search", "note_children", "note_delete"]
 
-[[needs.tool]]
-name = "auth"
-major = 1
-verbs = ["sign_peer_token"]

@@ -15,7 +15,6 @@ from awm.gateway.hub import discovery
 from awm.gateway.hub.registry import ServiceRecord
 from awm.gateway.operations import register_service_cli_commands
 
-pytestmark = pytest.mark.usefixtures("edge_peers")
 
 
 _NATIVE = {"awm", "operations"}

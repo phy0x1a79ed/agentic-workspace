@@ -1,8 +1,7 @@
 """Calls to other plugins, only through the gateway, by tool name (install.md R117 items 1 and 2).
 
-A local ``/invoke`` that names a peer comes back from today's gateway as a
-``peer_redirect``, and the call then goes to that peer's edge through
-``awm.gatewayclient``, which is a library, not a plugin.
+A call that names a ``peer`` goes to the local ``/invoke`` too: the gateway
+carries it over the ssh edge.
 """
 
 from __future__ import annotations
@@ -46,7 +45,7 @@ class Gateway:
             payload["peer"] = peer
         from awm import gatewayclient
 
-        headers = {"X-Awm-Peer-Redirect": "1"}
+        headers = {}
         if token := gatewayclient.service_token():
             headers["X-Awm-Service-Token"] = token
         try:
@@ -57,21 +56,7 @@ class Gateway:
             raise CallError(f"{name}.{verb}: gateway unreachable: {exc}") from exc
         if resp.status_code // 100 != 2:
             raise CallError(f"{name}.{verb}: HTTP {resp.status_code}: {resp.text[:300]}")
-        body = resp.json()
-        if isinstance(body, dict) and "peer_redirect" in body and peer:
-            return await self._via_peer_edge(peer, name, payload)
-        return _unwrap(body)
-
-    async def _via_peer_edge(self, peer: str, name: str, payload: dict) -> Any:
-        from awm import gatewayclient
-
-        try:
-            body = await gatewayclient.invoke_peer(
-                peer, name, {"verb": payload["verb"], "args": payload["args"]},
-                timeout=self.timeout)
-        except Exception as exc:  # noqa: BLE001 — a down peer is an expected answer here
-            raise CallError(f"{name}.{payload['verb']} on {peer}: {exc}") from exc
-        return _unwrap(body)
+        return _unwrap(resp.json())
 
     async def harness(self) -> str | None:
         """The tool of this node's harness provider, or None where the gateway names none.

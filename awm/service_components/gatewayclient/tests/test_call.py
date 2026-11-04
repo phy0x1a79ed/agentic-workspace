@@ -65,3 +65,22 @@ def test_a_refusal_raises_with_its_status(monkeypatch):
     with pytest.raises(gc.GatewayCallError) as exc:
         gc.call_sync("journal", "post")
     assert exc.value.status == 403 and "journal/post" in str(exc.value)
+
+
+def test_a_peer_call_names_the_peer_in_the_envelope(gateway):
+    seen, _ = gateway
+    assert asyncio.run(gc.call("reflection", "message", {"job": "j"}, peer="alcor")) == {"ok": True}
+    assert seen[0][2] == {"name": "reflection", "args": {"verb": "message", "args": {"job": "j"}, "peer": "alcor"}}
+    gc.call_sync("journal", "render", peer="local")
+    assert seen[1][2] == {"name": "journal_render", "args": {}}
+
+
+def test_a_stream_or_file_from_a_peer_refuses(gateway):
+    async def first():
+        async for item in gc.subscribe("social", "command", peer="mira"):
+            return item
+
+    with pytest.raises(gc.GatewayCallError, match="needs the Rust gateway"):
+        asyncio.run(first())
+    with pytest.raises(gc.GatewayCallError, match="needs the Rust gateway"):
+        gc.fetch_peer_file_sync("mira", "/tmp/x")

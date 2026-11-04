@@ -102,8 +102,6 @@ def _rows() -> list[Alias]:
     add("gateway", "deregister", "awm", "registry_deregister")
     for verb in ("list", "start", "stop", "restart", "enable", "disable", "reap"):
         add("services", verb, "awm", f"services_{verb}")
-    for verb in ("join", "add", "set", "list", "resolve", "forget"):
-        add("peer", verb, "operations", f"peer_{verb}")
     add("peer", "providers", "awm", "providers")
     add("config", "contracts", "awm", "config_contracts")
     add("config", "set", "awm", "config_set")

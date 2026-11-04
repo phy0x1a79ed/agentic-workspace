@@ -44,9 +44,9 @@ def test_a_session_id_with_no_job_behind_it_cannot_hold_a_channel(monkeypatch):
 
 
 def test_a_holder_on_another_node_with_no_session_id_is_known_by_its_job(monkeypatch):
-    from awm.config import peerbook
+    from awm.config import edges
 
-    monkeypatch.setattr(peerbook, "caller_peer", lambda as_: "alcor")
+    monkeypatch.setattr(edges, "caller_peer", lambda as_: "alcor")
     holder = holders.caller({"_caller_session": {"kind": "bg", "job": "feed1234",
                                                  "name": "far"}}, "peer:alcor")
     assert holder == {"node": "alcor", "session": "job:feed1234", "job": "feed1234",

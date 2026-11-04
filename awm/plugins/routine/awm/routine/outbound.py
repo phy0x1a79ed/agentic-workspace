@@ -77,7 +77,7 @@ class GatewayOutbound:
         return res
 
     async def notify_operator(self, text: str) -> None:
-        from awm.config.peerbook import operator_dm
+        from awm.config import operator_dm
         target = operator_dm()
         if target is None:
             raise RuntimeError("this node has no operator DM channel")

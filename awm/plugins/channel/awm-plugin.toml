@@ -26,7 +26,3 @@ name = "reflection"
 major = 1
 verbs = ["list_other", "session_of", "message"]
 
-[[needs.tool]]
-name = "auth"
-major = 1
-verbs = ["sign_peer_token"]

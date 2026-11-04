@@ -18,7 +18,3 @@ secrets = []
 network = ["tcp:22 the sync hub and the backup host"]
 platform = ["linux"]
 
-[[needs.tool]]
-name = "auth"
-major = 1
-verbs = ["sign_peer_token"]

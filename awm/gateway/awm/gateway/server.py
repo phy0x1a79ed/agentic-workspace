@@ -967,16 +967,11 @@ async def _invoke(payload: dict, request: Request):
             log.info("refused %s.%s on peer %s: it acts on the caller's own session",
                      e.tool, e.verb, e.peer)
             raise HTTPException(400, refusal)
-        # The call belongs to a peer. The gateway resolves, never relays — so a
-        # caller that told us it can dial a peer edge (only `awm-mcp` does, via
-        # this header) gets the address back and makes the call itself, keeping
-        # the invariant that no peer bytes traverse a gateway. Anyone else gets
-        # 421 Misdirected Request, which is literally this condition, rather than
-        # a silent local run — that would be the half-route failure the whole
+        # The call belongs to a peer. Only the Rust gateway carries it, over the
+        # ssh edge; running it here instead would be the half-route the
         # default-provider model exists to prevent.
-        if request.headers.get("X-Awm-Peer-Redirect"):
-            return {"peer_redirect": e.payload()}
-        raise HTTPException(421, str(e))
+        raise HTTPException(421, f"{e}: {e.tool} on peer {e.peer!r} needs the Rust gateway (T19), "
+                                 "which carries a call over the ssh edge")
     except catalog.ArgumentError as e:
         raise HTTPException(400, e.payload)
     except ValueError as e:

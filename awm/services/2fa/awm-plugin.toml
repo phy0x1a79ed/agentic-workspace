@@ -20,7 +20,3 @@ name = "social"
 major = 1
 verbs = ["send"]
 
-[[needs.tool]]
-name = "auth"
-major = 1
-verbs = ["sign_peer_token"]

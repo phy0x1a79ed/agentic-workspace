@@ -257,8 +257,7 @@ def _tell_peers(session_id: str) -> None:
     for peer in _peers():
         try:
             from awm import gatewayclient
-            gatewayclient.call_peer_sync(peer, "reflection", "retired",
-                                         {"session_id": session_id}, timeout=15.0)
+            gatewayclient.call_sync("reflection", "retired", {"session_id": session_id}, peer=peer, timeout=15.0)
         except Exception as exc:  # noqa: BLE001 - that node checks again at its start
             log.warning("reflection: could not tell %s that %s retired: %s",
                         peer, session_id, exc)
@@ -502,9 +501,7 @@ def _ask_peers(session_ids: list[str]) -> list[dict]:
     out = []
     for peer in _peers():
         try:
-            reply = gatewayclient.call_peer_sync(peer, "reflection", "retired_among",
-                                                 {"session_ids": session_ids},
-                                                 timeout=10.0)
+            reply = gatewayclient.call_sync("reflection", "retired_among", {"session_ids": session_ids}, peer=peer, timeout=10.0)
         except Exception as exc:  # noqa: BLE001 - a silent peer cannot say
             log.info("reflection: %s did not answer retired_among: %s", peer, exc)
             out.append({"peer": peer, "answered": False})
