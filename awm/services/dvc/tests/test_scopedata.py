@@ -84,9 +84,9 @@ def test_an_unknown_project_raises_rather_than_returning_nothing(dvc_workspace):
         scopedata.project_worktrees("nope")
 
 
-def test_scope_status_of_a_plain_nested_scope_reports_missing(project):
+def test_scope_status_of_a_plain_nested_scope_reports_no_dvc(project):
     rep = scopedata.scope_status("p", "fab/dev")
-    assert rep["mode"] == "missing"
+    assert rep["mode"] == "none"
 
 
 def test_gc_with_nothing_listed_is_refused_not_run(project):

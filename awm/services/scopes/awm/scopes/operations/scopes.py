@@ -18,7 +18,7 @@ SCOPE_MANIFEST_FUNCTIONS = [
         "tool": "scope_create",
         "effect": "write",
         "description": (
-            "Create a new scope (worktree + .awm/ metadata) for a project. "
+            "Create a new scope (a worktree, its data view and its brief) for a project. "
             "The new branch defaults to feat/<scope>; pass branch_name to name "
             "it explicitly (e.g. a plain branch like 'release' or 'dev'). "
             "A branch that already exists is checked out, not recreated. A branch "
@@ -165,17 +165,29 @@ SCOPE_MANIFEST_FUNCTIONS = [
         "timeout": 600.0,
     },
     {
+        "name": "scope_awm_sweep",
+        "tool": "scope_awm_sweep",
+        "effect": "write",
+        "surfaces": ["cli", "http"],
+        "description": (
+            "One-shot for the deploy (scopes.md R142): empty each worktree's .awm/ folder on "
+            "this node. Removes the data and skills links, history.md and mcp-opencode.json, "
+            "moves the DVC mount list and failure sentinel into the worktree's git dir, and "
+            "rewrites each DVC project's hooks to match. Leaves context.md for the scope "
+            "briefs one-shot and reports it. Idempotent."
+        ),
+        "params": [{"name": "dry_run", "type": "boolean", "required": False}],
+        "timeout": 600.0,
+    },
+    {
         "name": "scope_heal",
         "tool": "scope_heal",
         "effect": "write",
         "description": (
-            "Idempotent repair pass over active scopes: enforce tier-3 = .awm/ "
-            "only (strip @.awm/context.md imports, drop untracked AGENTS.md / "
-            "CLAUDE.md, delete the stale .awm/history.md and .awm/mcp-opencode.json) "
-            "and bring the scope's data view to whatever its checkout implies "
-            "— installing the DVC merge driver + hooks and materialising the "
-            "pinned chunks, or leaving an unconverted project on the legacy "
-            "shared symlink. Pass dry_run=true to preview. "
+            "Idempotent repair pass over active scopes: drop an untracked AGENTS.md / "
+            "CLAUDE.md, and bring a DVC project's data view to whatever its checkout "
+            "implies — installing the DVC merge driver + hooks, materialising the "
+            "pinned chunks and building missing shared copies. Pass dry_run=true to preview. "
             "The reply also lists worktrees under projects/<project>/ that no scope "
             "row names (unregistered_worktrees) and active or allocated rows whose "
             "worktree is gone (orphaned_rows). Heal never registers or retires a "
@@ -411,6 +423,13 @@ def _handle_scope_delete(args: dict) -> dict:
     return result.model_dump()
 
 
+def _handle_scope_awm_sweep(args: dict, as_: str | None = None) -> dict:
+    if privacy.from_peer(as_):
+        raise PermissionError("scope_awm_sweep runs on its own node")
+    from awm.scopes import awm_sweep
+    return awm_sweep.sweep(dry_run=bool(args.get("dry_run", False)))
+
+
 def _handle_scope_heal(args: dict, as_: str | None = None) -> dict:
     dry_run = bool(args.get("dry_run", False))
     if args.get("project") and privacy.from_peer(as_) and privacy.hidden(args["project"]):
@@ -520,6 +539,7 @@ SCOPE_HANDLERS = {
     "scope_complete": _handle_scope_complete,
     "scope_delete": _handle_scope_delete,
     "scope_heal": _handle_scope_heal,
+    "scope_awm_sweep": _handle_scope_awm_sweep,
     "scope_private": _handle_scope_private,
     "scope_tag": _handle_scope_tag,
     "scope_repair": _handle_scope_repair,

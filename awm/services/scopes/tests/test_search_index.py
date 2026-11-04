@@ -2,27 +2,20 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 
-
-def test_scope_is_found_by_its_context_and_brief(seeded_scopes, monkeypatch):
+def test_scope_is_found_by_its_brief(seeded_scopes, monkeypatch):
     from awm.scopes import scopes, search_index
-    worktree = Path(seeded_scopes[0][4])
-    (worktree / ".awm").mkdir()
-    (worktree / ".awm" / "context.md").write_text("# proj-a/scope-1\n\nOwns the sonar calibration rig.")
     monkeypatch.setattr(search_index, "_scope_brief",
                         lambda project, scope: "for the bathymetry export"
                         if (project, scope) == ("proj-a", "scope-1") else "")
     search_index.index_scope("proj-a", "scope-1")
     search_index.flush()
-    found = scopes.search_scopes(query="sonar rig calibration", status="all")
-    assert found.scopes[0].scope == "scope-1"
     found = scopes.search_scopes(query="bathymetry", status="all")
     assert found.scopes[0].scope == "scope-1"
-    assert scopes.search_scopes(query="sonar", status="completed").scopes == []
+    assert scopes.search_scopes(query="bathymetry", status="completed").scopes == []
 
 
-def test_a_silent_journal_service_leaves_the_context_to_index(monkeypatch):
+def test_a_silent_journal_service_indexes_an_empty_brief(monkeypatch):
     from awm.scopes import search_index
 
     def refuse(*a, **k):

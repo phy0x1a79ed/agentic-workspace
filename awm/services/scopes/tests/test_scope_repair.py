@@ -21,9 +21,8 @@ def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess:
 def split_brain_scope(scopes_workspace):
     """Build a real bare repo + worktree on disk, but DO NOT insert the DB row.
 
-    Mirrors the gapseq/dev state from inbox #232: worktree, branch, and
-    `.awm/context.md` present; `agents` table empty for the (project, scope)
-    pair.
+    Mirrors the gapseq/dev state from inbox #232: worktree and branch
+    present; `agents` table empty for the (project, scope) pair.
     """
     projects_dir = scopes_workspace["projects_dir"]
     project = "ghostproj"
@@ -45,10 +44,6 @@ def split_brain_scope(scopes_workspace):
 
     worktree = projects_dir / project / scope
     _git(bare, "worktree", "add", "-b", f"feat/{scope}", str(worktree), "main")
-
-    awm_dir = worktree / ".awm"
-    awm_dir.mkdir()
-    (awm_dir / "context.md").write_text(f"# {project}/{scope}\n\n(seeded by test)\n")
 
     return {"project": project, "scope": scope, "worktree": worktree, "bare": bare}
 

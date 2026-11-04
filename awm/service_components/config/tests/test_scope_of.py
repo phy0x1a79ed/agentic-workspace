@@ -13,7 +13,8 @@ pytestmark = [pytest.mark.unit, pytest.mark.smoke]
 def projects(tmp_path):
     root = tmp_path / "projects"
     for scope in ("awm/dev", "metasmith/engine/presentation"):
-        (root / scope / ".awm").mkdir(parents=True)
+        (root / scope).mkdir(parents=True)
+        (root / scope / ".git").write_text("gitdir: ../.bare/worktrees/x\n")
     (root / "awm" / "dev" / "awm" / "services").mkdir(parents=True)
     return root
 

@@ -1,4 +1,4 @@
-"""Scopes-side channel tests: the legacy seed fold and the schema migration."""
+"""The scopes schema migration."""
 from __future__ import annotations
 
 import sqlite3
@@ -6,83 +6,6 @@ import sqlite3
 import pytest
 
 pytestmark = [pytest.mark.scopes]
-
-
-def _build_legacy_db(path) -> None:
-    db = sqlite3.connect(path)
-    db.executescript("""
-        CREATE TABLE projects (id TEXT PRIMARY KEY, name TEXT, url TEXT, repo_path TEXT, created_at INTEGER);
-        CREATE TABLE users (id TEXT PRIMARY KEY, username TEXT);
-        CREATE TABLE agents (id TEXT PRIMARY KEY, project_id TEXT, scope TEXT, status TEXT,
-            agent_cli TEXT, branch TEXT, worktree TEXT, display_name TEXT, is_vagrant INT, created_at INT, retired_at INT);
-        CREATE TABLE session_logs (id INTEGER PRIMARY KEY, agent_id TEXT, created_at INT, file_path TEXT, git_commit TEXT,
-            summary TEXT, metadata TEXT, content TEXT, skill_path TEXT, outcome TEXT, deviations TEXT, suggestions TEXT,
-            skill_version TEXT, resolved_at INT, resolution TEXT, title TEXT);
-        CREATE TABLE messages (id INTEGER PRIMARY KEY, recipient_id TEXT, sender_id TEXT, msg_type TEXT, subject TEXT,
-            body TEXT, metadata TEXT, status TEXT, created_at INT, read_at INT);
-        CREATE TABLE embeddings (source_type TEXT, source_id TEXT, chunk_text TEXT, embedding BLOB, updated_at INT);
-    """)
-    db.execute("INSERT INTO projects VALUES ('p1','awm',NULL,'/repo',1000)")
-    db.execute("INSERT INTO users VALUES ('u1','alice')")
-    db.execute("INSERT INTO agents VALUES ('a1','p1','dev','active','claude','feat/dev','/wt/dev','dev',0,1000,NULL)")
-    db.execute("INSERT INTO agents VALUES ('a2','p1','helper','active','claude','feat/helper','/wt/helper','helper',0,1000,NULL)")
-    db.execute("INSERT INTO session_logs (id,agent_id,created_at,summary,metadata,skill_path,outcome,title) "
-               "VALUES (1,'a1',2000,'did the thing','{\"decisions\":[\"d1\"]}','awm/debrief.md','success','Did the thing')")
-    db.execute("INSERT INTO messages (id,recipient_id,sender_id,msg_type,subject,body,status,created_at) "
-               "VALUES (1,'a1','u1','notification','hi','hello dev','unread',2500)")
-    db.execute("INSERT INTO messages (id,recipient_id,sender_id,msg_type,subject,body,status,created_at) "
-               "VALUES (2,'u1','a1','notification','re','reply to alice','unread',2600)")
-    db.commit()
-    db.close()
-
-
-class TestSeedFold:
-    """The legacy seed folds the non-rooms comms pair (session_logs + messages)
-    into the scope channel. Rooms folding was removed with the rooms subsystem."""
-
-    def test_fold(self, scopes_workspace, tmp_path):
-        from awm.scopes.seed import seed_from_legacy
-        from awm.persistence.databases import get_connection
-
-        legacy = tmp_path / "state.db"
-        _build_legacy_db(legacy)
-        counts = seed_from_legacy(legacy)
-
-        assert counts["agents"] == 2
-        # 1 journal + 1 dev message + 1 alice message
-        assert counts["scope_posts"] == 3
-
-        conn = get_connection("scopes")
-        conn.row_factory = sqlite3.Row
-        try:
-            dev = conn.execute(
-                "SELECT kind, body, ts FROM scope_posts "
-                "WHERE owner_project='awm' AND owner_scope='dev' ORDER BY ts"
-            ).fetchall()
-            # One journal entry + the message addressed to dev.
-            assert sum(1 for r in dev if r["kind"] == "journal") == 1
-            assert "hello dev" in [r["body"] for r in dev]
-            # Non-literal user channel.
-            alice = conn.execute(
-                "SELECT body FROM scope_posts WHERE owner_project='' AND owner_scope='user:alice'"
-            ).fetchall()
-            assert [r["body"] for r in alice] == ["reply to alice"]
-        finally:
-            conn.close()
-
-    def test_idempotent(self, scopes_workspace, tmp_path):
-        from awm.scopes.seed import seed_from_legacy
-        from awm.persistence.databases import get_connection
-        legacy = tmp_path / "state.db"
-        _build_legacy_db(legacy)
-        seed_from_legacy(legacy)
-        seed_from_legacy(legacy)  # re-run must not duplicate
-        conn = get_connection("scopes")
-        try:
-            n = conn.execute("SELECT COUNT(*) FROM scope_posts").fetchone()[0]
-        finally:
-            conn.close()
-        assert n == 3
 
 
 class TestSchemaMigrationV3:

@@ -83,8 +83,8 @@ def scope_of(cwd: "str | Path | None",
              projects: "str | Path") -> tuple[str | None, str | None]:
     """Project and scope of a directory under ``projects``, else (None, None).
 
-    The scope is the deepest enclosing directory that holds a ``.awm/``, so a
-    session sitting in a subdirectory of a worktree still reads as that scope.
+    The scope is the deepest enclosing git worktree, the directory that holds a
+    ``.git``, so a session in a subdirectory of a worktree reads as that scope.
     A directory under no scope falls back to its own path below the project.
     """
     if not cwd:
@@ -97,7 +97,7 @@ def scope_of(cwd: "str | Path | None",
     if not parts:
         return None, None
     for depth in range(len(parts), 1, -1):
-        if (root.joinpath(*parts[:depth]) / ".awm").is_dir():
+        if (root.joinpath(*parts[:depth]) / ".git").exists():
             return parts[0], "/".join(parts[1:depth])
     return parts[0], "/".join(parts[1:]) or None
 

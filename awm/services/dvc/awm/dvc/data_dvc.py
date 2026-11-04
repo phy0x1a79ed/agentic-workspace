@@ -28,10 +28,10 @@ design: one lever instead of two.
 Three consequences worth internalising before changing anything here:
 
 * **Data is a first-class repo folder, not scope metadata.** It lives at
-  ``<repo>/data/`` and is tracked, which is why ``.awm/`` is wholly gitignored:
-  a pin has to be *visible* to be committed alongside the code it belongs to.
-  ``.awm/data`` survives only as a compatibility symlink to ``../data``, for the
-  125+ call sites that still name that path.
+  ``<repo>/data/`` and is tracked: a pin has to be *visible* to be committed
+  alongside the code it belongs to. The hooks' local state (the mount list and
+  the failure sentinel) sits in the worktree's own git directory, which never
+  travels (scopes.md R142).
 
 * **Chunks are declared anywhere.** ``dvc add`` works on any path and drops the
   pin beside its target, so there is no single mount point to defend. Chunk
@@ -49,8 +49,8 @@ Three consequences worth internalising before changing anything here:
   module therefore never exposes a bare ``gc``.
 
 **Degrades, never fails.** dvc is not on the daemon's PATH (it lives in its own
-mamba env), so every entry point resolves the binary first and falls back to the
-legacy shared symlink rather than breaking scope creation.
+mamba env), so every entry point resolves the binary first and reports a project
+it cannot serve rather than breaking scope creation.
 """
 
 from __future__ import annotations
@@ -84,11 +84,10 @@ DATA_SUBDIR = "data"
 # to hold the same file store it once.
 CACHE_DIRNAME = ".dvc_cache"
 
-# Default exclusions, written once at conversion. The structural entries earn
-# their place -- `**/.git/` stops a vendored checkout becoming thousands of
-# objects, `.awm/` keeps scope metadata out of the cache. Everything reaching
-# the cache is in the sync, and the sync is append-only, so an object added
-# once cannot be unadded.
+# Default exclusions, written once at conversion. The structural entry earns its
+# place -- `**/.git/` stops a vendored checkout becoming thousands of objects.
+# Everything reaching the cache is in the sync, and the sync is append-only, so
+# an object added once cannot be unadded.
 _DVCIGNORE = """\
 # AWM-managed defaults. Paths here are never hashed into the cache, and an
 # exclusion has to be in place BEFORE the first `dvc add` -- content added once
@@ -114,10 +113,6 @@ secrets/
 # commit instead (VENDORED.tsv), and re-clone on demand.
 **/.git/
 
-# --- awm's own metadata ----------------------------------------------------
-.awm/
-**/.awm/
-
 # --- machine-local noise ---------------------------------------------------
 .DS_Store
 __pycache__/
@@ -132,11 +127,15 @@ _GIT_ATTRIBUTES_LINE = "*.dvc merge=dvc"
 
 # Per-scope, gitignored, one chunk path per line. Mounting is a *local* choice
 # ("which of the chunks my commit pins do I want on disk?"), not a property of
-# the commit, which is exactly why it lives under `.awm/` and does not travel.
+# the commit, which is exactly why it lives in the worktree's git dir and does
+# not travel.
 MOUNTS_FILE = "data-mounts"
 
 # Written by the hook when a checkout could not be satisfied. See _CHECKOUT_SH.
 CHECKOUT_FAILED_FILE = "data-checkout-failed"
+
+# The folder under a worktree's git dir that holds the two files above.
+STATE_SUBDIR = "awm"
 
 # The shared body both hooks run.
 #
@@ -158,8 +157,9 @@ CHECKOUT_FAILED_FILE = "data-checkout-failed"
 #    leaves a sentinel that `data_status` and provisioning both surface.
 _CHECKOUT_SH = """\
 DVC={dvc_bin}
-SENTINEL=".awm/{failed_file}"
-MOUNTS=".awm/{mounts_file}"
+STATE="$(git rev-parse --git-dir)/{state_subdir}"
+SENTINEL="$STATE/{failed_file}"
+MOUNTS="$STATE/{mounts_file}"
 SHARED="data/{shared_file}"
 # Hooks live in the COMMON git dir, so they fire in every worktree of the
 # project -- including the ones whose branch predates the conversion and has no
@@ -231,7 +231,7 @@ if [ "${{#missing[@]}}" -gt 0 ]; then
 no shared copy on this node for: ${{missing[*]}}. Run 'scope heal' to build it."
 fi
 if [ "$failed" = 1 ]; then
-  mkdir -p .awm
+  mkdir -p "$STATE"
   {{ echo "dvc checkout FAILED after $1"; echo "$out"; }} >> "$SENTINEL"
   echo "!! awm: dvc checkout failed -- your data does NOT match this commit." >&2
   echo "!! $out" >&2
@@ -314,7 +314,7 @@ def dvc_available() -> bool:
 
 
 def enabled() -> bool:
-    """Global kill switch. ``AWM_DATA_DVC=0`` reverts every project to symlinks."""
+    """Global kill switch. ``AWM_DATA_DVC=0`` provisions no project's data."""
     return os.environ.get("AWM_DATA_DVC", "1").lower() not in ("0", "off", "false", "no")
 
 
@@ -409,15 +409,6 @@ def site_cache_dir() -> Path | None:
     if not TMPFS.is_dir() or not os.access(TMPFS, os.W_OK):
         return None
     return TMPFS / f"awm-dvc-{os.getuid()}"
-
-
-def legacy_data_dir(project: str) -> Path:
-    """``<workspace>/data/<project>`` — the pre-DVC shared directory.
-
-    Still the symlink target for any project that has not been converted, and
-    still the thing ~949 absolute paths point at, so it does not go away.
-    """
-    return _config.DATA_DIR / project
 
 
 def data_dir(repo_dir: Path) -> Path:
@@ -751,9 +742,8 @@ def ensure_repo_wiring(repo_dir: Path) -> dict:
     """Install the git-side machinery that makes a code merge move the data.
 
     Everything lands in the **common git dir**, which every worktree of the
-    project shares and which is never committed — the same trick
-    ``_ensure_awm_gitignored`` already uses for ``info/exclude``. So this costs
-    no commit to any project repo and cannot conflict with anything a user tracks.
+    project shares and which is never committed. So this costs no commit to any
+    project repo and cannot conflict with anything a user tracks.
 
     Three pieces, and all three are required:
 
@@ -803,7 +793,7 @@ def ensure_repo_wiring(repo_dir: Path) -> dict:
     # 3. the two hooks DVC does not ship
     hooks = common / "hooks"
     hooks.mkdir(parents=True, exist_ok=True)
-    fmt = {"dvc_bin": binp, "mounts_file": MOUNTS_FILE,
+    fmt = {"dvc_bin": binp, "mounts_file": MOUNTS_FILE, "state_subdir": STATE_SUBDIR,
            "failed_file": CHECKOUT_FAILED_FILE, "shared_file": SHARED_DECLARATION}
     for name, template in (("post-merge", _POST_MERGE_HOOK),
                            ("post-commit", _POST_COMMIT_HOOK),
@@ -856,7 +846,7 @@ def data_path_conflict(repo_dir: Path) -> str | None:
     """Why ``<repo>/data`` cannot become the tracked data folder, if it cannot.
 
     Several worktrees already have a ``data`` **symlink** at the repo root — a
-    hand-rolled convenience pointing at the shared data dir or at ``.awm/data``
+    hand-rolled convenience pointing at the shared data dir
     — and a few projects track a real ``data/`` of their own. ``dvc add``
     refuses a git-tracked path outright (*output … is already tracked by SCM*),
     and a stray symlink would be walked into rather than replaced.
@@ -880,12 +870,11 @@ def data_path_conflict(repo_dir: Path) -> str | None:
     return None
 
 
-def provision_scope_data(project: str, scope: str, awm_dir: Path) -> dict:
+def provision_scope_data(project: str, scope: str, worktree: Path) -> dict:
     """Materialise a scope's data view. The single entry point.
 
-    Returns ``{mode, ...}`` with ``mode`` ∈ ``dvc | symlink | unknown``.
-    Idempotent, so it is safe from scope creation *and* from the repair path —
-    which is what lets ``scope heal`` migrate every scope that pre-dates this.
+    Returns ``{mode, ...}`` with ``mode`` ∈ ``dvc | none | unknown``.
+    Idempotent, so it is safe from scope creation *and* from the repair path.
 
     Note what this does **not** do, and why. It does not create, clone, branch or
     fetch anything: a scope's data is whatever its commit pins, and the commit
@@ -893,28 +882,27 @@ def provision_scope_data(project: str, scope: str, awm_dir: Path) -> dict:
     plus checkout*, which is the entire reason the pin-in-the-code-repo design
     removes so much machinery.
     """
-    if not awm_dir.is_absolute():
-        # A relative awm_dir is a caller bug that fails destructively rather
-        # than merely wrongly, so it is refused rather than normalised: there is
-        # no correct anchor to normalise against, only a wrong one.
+    if not worktree.is_absolute():
+        # A relative path is a caller bug that fails destructively rather than
+        # merely wrongly, so it is refused rather than normalised: there is no
+        # correct anchor to normalise against, only a wrong one.
         return {
             "mode": "unknown",
-            "path": str(awm_dir / "data"),
+            "path": str(worktree),
             "detail": (
-                f"refusing a relative .awm path ({awm_dir}): it would resolve "
+                f"refusing a relative worktree path ({worktree}): it would resolve "
                 f"against the wrong directory. Pass an absolute worktree path."
             ),
         }
 
-    repo_dir = awm_dir.parent
-    compat = awm_dir / "data"
+    repo_dir = worktree
 
     if not is_dvc_project(repo_dir):
         reason = (
             "dvc not found (set AWM_DVC_BIN)" if enabled() and not dvc_available()
             else "project not DVC-backed"
         )
-        return _provision_symlink(project, compat, reason=reason)
+        return {"mode": "none", "path": str(data_dir(repo_dir)), "detail": reason}
 
     # Two gates, both hard refusals, both for silent failures rather than loud
     # ones -- which is exactly why they are worth a round trip each.
@@ -932,7 +920,6 @@ def provision_scope_data(project: str, scope: str, awm_dir: Path) -> dict:
     if conflict:
         return {"mode": "unknown", "path": str(data_dir(repo_dir)), "detail": conflict}
 
-    awm_dir.mkdir(parents=True, exist_ok=True)
     # Cache config first: it is a precondition for the checkout below, and a
     # checkout against the wrong cache is how a second cache gets built.
     ensure_cache_config(repo_dir)
@@ -949,7 +936,7 @@ def provision_scope_data(project: str, scope: str, awm_dir: Path) -> dict:
 
     pins = chunk_pins(repo_dir)
     report["chunks"] = len(pins)
-    mounts = read_mounts(awm_dir)
+    mounts = read_mounts(repo_dir)
     report["mounts"] = mounts if mounts is not None else "all"
     store_root = shared_store_root(repo_dir)
     shared = shared_chunks(repo_dir) if store_root else {}
@@ -984,7 +971,7 @@ def provision_scope_data(project: str, scope: str, awm_dir: Path) -> dict:
     # A sentinel left by the hook means a previous merge advanced a pin whose
     # content the cache could not supply -- and that `dvc checkout` deleted the
     # old files on its way to failing. Surface it every time until it clears.
-    sentinel = awm_dir / CHECKOUT_FAILED_FILE
+    sentinel = state_dir(repo_dir) / CHECKOUT_FAILED_FILE
     if sentinel.exists():
         checked_out = report["checkout"] == "ok" or (shared and report["checkout"] == "skipped")
         linked = all(v == "linked" or v.startswith("private")
@@ -994,28 +981,29 @@ def provision_scope_data(project: str, scope: str, awm_dir: Path) -> dict:
         else:
             report["stale_checkout"] = sentinel.read_text()[-400:]
 
-    # `.awm/data` kept resolving for 125 scadc files and the documented
-    # layout, so it survives as a relative symlink to the real data folder
-    # rather than as a second copy. This makes repointing those callers optional
-    # cleanup instead of a blocking migration step.
-    linked = _link_compat_path(compat, repo_dir)
-    report["compat_symlink"] = str(compat) if linked == "ok" else linked
     return report
 
 
-def read_mounts(awm_dir: Path) -> list[str] | None:
+def state_dir(worktree: Path) -> Path:
+    """``<git-dir>/awm`` of ``worktree``: the hooks' local state, which never travels."""
+    r = _git(worktree, "rev-parse", "--absolute-git-dir")
+    git_dir = Path(r.stdout.strip()) if r.returncode == 0 and r.stdout.strip() else worktree / ".git"
+    return git_dir / STATE_SUBDIR
+
+
+def read_mounts(worktree: Path) -> list[str] | None:
     """Which chunks this scope wants on disk, or None for "all of them".
 
     Mounting is a **local** decision, not a property of the commit: fig-resolve
     pins `_old` and `uniref50` exactly as every other scope does — same hashes,
     same backup coverage, same reproducibility — it just does not want 65 GB of
-    them materialised. So the list lives under gitignored ``.awm/`` and does not
+    them materialised. So the list lives in the worktree's git dir and does not
     travel, while the *pins* live in the commit and do.
 
     Absent file means every chunk, which is the right default: a scope that has
     not thought about it should see all its data.
     """
-    path = awm_dir / MOUNTS_FILE
+    path = state_dir(worktree) / MOUNTS_FILE
     if not path.is_file():
         return None
     out: list[str] = []
@@ -1026,12 +1014,15 @@ def read_mounts(awm_dir: Path) -> list[str] | None:
     return out
 
 
-def write_mounts(awm_dir: Path, chunks: list[str]) -> Path:
-    """Declare the chunks this scope wants materialised."""
-    awm_dir.mkdir(parents=True, exist_ok=True)
-    path = awm_dir / MOUNTS_FILE
+def write_mounts(worktree: Path, chunks: list[str] | None) -> Path:
+    """Declare the chunks this scope wants materialised. None removes the list: all of them."""
+    path = state_dir(worktree) / MOUNTS_FILE
+    if chunks is None:
+        path.unlink(missing_ok=True)
+        return path
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
-        "# AWM-managed, scope-local, gitignored. One chunk path per line.\n"
+        "# AWM-managed, worktree-local. One chunk path per line.\n"
         "# These are the chunks materialised on disk here. Every chunk this\n"
         "# commit pins stays pinned and backed up whether or not it is listed --\n"
         "# this file only decides what costs you inodes and checkout time.\n"
@@ -1039,48 +1030,6 @@ def write_mounts(awm_dir: Path, chunks: list[str]) -> Path:
         + "".join(f"{c}\n" for c in chunks)
     )
     return path
-
-
-def _link_compat_path(compat: Path, repo_dir: Path) -> str:
-    """Point ``.awm/data`` at ``../data`` — relative, so it survives a move.
-
-    Returns what actually happened, because the refusal below is the more
-    dangerous outcome and the caller must be able to report it. A scope with a
-    real directory left at ``.awm/data`` reads *that* through every one of the
-    125+ call sites naming the path, while its code expects ``../data`` — and
-    there is no error anywhere. It must not be reported as success.
-    """
-    target = Path("..") / DATA_SUBDIR
-    if compat.is_symlink():
-        if os.readlink(str(compat)) == str(target):
-            return "ok"
-        compat.unlink()
-    elif compat.is_dir():
-        # Somebody's files, not ours to delete -- leave them and say so.
-        log.warning("%s is a real directory; leaving it and skipping the compat "
-                    "symlink. Move it aside once its content is migrated.", compat)
-        return "refused:real-directory"
-    elif compat.exists():
-        compat.unlink()
-    data_dir(repo_dir).mkdir(parents=True, exist_ok=True)
-    compat.symlink_to(target)
-    return "ok"
-
-
-def _provision_symlink(project: str, dest: Path, *, reason: str) -> dict:
-    """The pre-DVC behaviour, verbatim: one shared directory, symlinked in."""
-    target = legacy_data_dir(project)
-    if dest.is_symlink() or dest.exists():
-        if dest.is_dir() and not dest.is_symlink():
-            return {
-                "mode": "unknown", "path": str(dest),
-                "detail": f"{dest} is a real directory; refusing to replace it with a symlink",
-            }
-        dest.unlink()
-    target.mkdir(parents=True, exist_ok=True)
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.symlink_to(target)
-    return {"mode": "symlink", "path": str(dest), "target": str(target), "detail": reason}
 
 
 # ---------------------------------------------------------------------------
@@ -1105,20 +1054,13 @@ def data_status(project: str, scope: str, worktree: Path) -> dict:
     ``dvc status`` answers.
     """
     repo_dir = worktree
-    compat = worktree / ".awm" / "data"
 
     if not is_dvc_repo(repo_dir):
-        if compat.is_symlink():
-            return {"project": project, "scope": scope, "mode": "symlink",
-                    "target": os.readlink(str(compat))}
-        if not compat.exists():
-            return {"project": project, "scope": scope, "mode": "missing"}
-        return {"project": project, "scope": scope, "mode": "plain-dir",
-                "path": str(compat)}
+        return {"project": project, "scope": scope, "mode": "none",
+                "path": str(data_dir(repo_dir))}
 
     pins = chunk_pins(repo_dir)
-    awm_dir = worktree / ".awm"
-    mounts = read_mounts(awm_dir)
+    mounts = read_mounts(repo_dir)
     out: dict = {
         "project": project, "scope": scope, "mode": "dvc",
         "path": str(data_dir(repo_dir)),
@@ -1132,7 +1074,7 @@ def data_status(project: str, scope: str, worktree: Path) -> dict:
     # The one genuinely broken state, and it is silent unless something says so:
     # a merge advanced a pin the cache could not satisfy, and the checkout that
     # failed had already removed the previous files.
-    sentinel = awm_dir / CHECKOUT_FAILED_FILE
+    sentinel = state_dir(repo_dir) / CHECKOUT_FAILED_FILE
     if sentinel.exists():
         out["checkout_failed"] = sentinel.read_text()[-600:]
     store_root = shared_store_root(repo_dir)

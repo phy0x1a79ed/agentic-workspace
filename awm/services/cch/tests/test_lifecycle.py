@@ -1434,7 +1434,8 @@ def test_a_job_that_moved_lists_under_the_scope_it_is_in_now(home, launched, mon
     home.add(PARENT_JOB, "<warm saiga>", os.getpid())
     start(BASE)
     there = home.projects / "metasmith" / "engine" / "presentation"
-    (there / ".awm").mkdir(parents=True)
+    there.mkdir(parents=True)
+    (there / ".git").write_text("gitdir: x\n")
     (there / "src").mkdir()
     path = home.jobs / CHILD_JOB / "state.json"
     rec = json.loads(path.read_text())

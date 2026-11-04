@@ -143,12 +143,8 @@ def mount(project: str, scope: str, chunks: list[str] | None = None) -> dict:
     _check_name(project, "project name")
     _check_name(scope, "scope name", nested=True)
     worktree = _scope_worktree(project, scope)
-    awm_dir = worktree / ".awm"
-    if chunks:
-        data_dvc.write_mounts(awm_dir, chunks)
-    else:
-        (awm_dir / data_dvc.MOUNTS_FILE).unlink(missing_ok=True)
-    report = data_dvc.provision_scope_data(project, scope, awm_dir)
+    data_dvc.write_mounts(worktree, chunks or None)
+    report = data_dvc.provision_scope_data(project, scope, worktree)
     return {"project": project, "scope": scope, **report}
 
 

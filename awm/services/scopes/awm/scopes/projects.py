@@ -23,7 +23,7 @@ from awm.scopes.models import (
     ProjectCreateRequest, ProjectCreateResponse,
     ProjectListInfo, ProjectListResponse, ProjectScopeCounts,
 )
-from awm.scopes.scopes import _scaffold_awm_dir, main_checkouts
+from awm.scopes.scopes import _register_scope, main_checkouts
 from awm.scopes._validation import validate_name
 
 
@@ -162,10 +162,9 @@ def create_project(req: ProjectCreateRequest) -> ProjectCreateResponse:
                 f"Failed to create worktree for {default_branch}: {r.stderr}"
             )
 
-    # Scaffold the initial default-branch worktree exactly as a scope would:
-    # .awm/ metadata + data symlink + agents DB row, so the project is
-    # immediately usable and visible to scope_search without a scope_repair.
-    _scaffold_awm_dir(
+    # Register the initial default-branch worktree exactly as a scope would, so
+    # the project is visible to scope_search without a scope_repair.
+    _register_scope(
         req.name, default_branch, worktree_dir,
         branch=default_branch,
     )

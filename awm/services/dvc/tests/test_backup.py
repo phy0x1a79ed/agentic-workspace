@@ -342,7 +342,7 @@ def test_a_symlink_to_a_file_is_skipped_too(tmp_path):
 
 
 def test_a_symlink_cannot_smuggle_an_excluded_tree_back_in(tmp_path):
-    """`.awm/data` points at the checkouts this job exists to leave alone."""
+    """A link into `data/` points at the checkouts this job exists to leave alone."""
     touch(tmp_path / "data" / "chunk" / "big.bin", "payload")
     touch(tmp_path / "keep.txt")
     (tmp_path / "awm").mkdir()

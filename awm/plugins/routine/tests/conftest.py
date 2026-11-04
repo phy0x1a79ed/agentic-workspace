@@ -107,7 +107,6 @@ class Workspace:
         wt = self.proj / name
         if not wt.exists():
             git(self.bare, "worktree", "add", "-q", "-b", f"feat/{name}", str(wt), base)
-            (wt / ".awm").mkdir()
         for rel, text in files.items():
             (wt / rel).parent.mkdir(parents=True, exist_ok=True)
             (wt / rel).write_text(text)

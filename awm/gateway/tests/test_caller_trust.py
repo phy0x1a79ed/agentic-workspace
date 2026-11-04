@@ -25,7 +25,8 @@ def node(tmp_path, monkeypatch):
     """reflection's answers for two sessions, faked at the lookup."""
     projects = tmp_path / "projects"
     worktree = projects / "awm" / "redux-x"
-    (worktree / ".awm").mkdir(parents=True)
+    worktree.mkdir(parents=True)
+    (worktree / ".git").write_text("gitdir: x\n")
     (worktree / "core").mkdir()
     answers = {
         4242: {"ok": True, "session_id": R9, "hosting": "background", "job": "j1",

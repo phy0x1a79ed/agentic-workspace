@@ -180,9 +180,9 @@ def partition(root: str, excluded: list[str], dest_prefix: str) -> list[dict]:
     """Minimal set of transfer items covering ``root`` except ``excluded``.
 
     **Symlinks are skipped, not followed and not emitted.** Following one is
-    unsafe here — ``.awm/data`` points at a project's ``data/`` directory, so
-    following it would drag the very checkouts this job excludes (and, through
-    a scope's link, the shared cache) into a mirror that deletes. Emitting one
+    unsafe here — a shared chunk is a link into a project's data store, so
+    following it would drag the very checkouts this job excludes into a mirror
+    that deletes. Emitting one
     is worse than useless: Globus resolves the link server-side, and a link to
     a directory then fails the item with ``IS_A_DIRECTORY: recursive was set to
     False for a directory``. That is **not** covered by ``skip_source_errors``,

@@ -96,8 +96,8 @@ Every destination the mirror emits is under `workspace/`, so the transfer that
 deletes structurally cannot reach the archive beside it, whatever the exclusion
 logic gets wrong. `tests/test_backup.py` asserts that rather than trusting it.
 
-Symlinks are skipped, not followed and not recreated — following `.awm/data`
-would drag the excluded checkouts back in, and *naming* a link to a directory
+Symlinks are skipped, not followed and not recreated — following a shared-chunk
+link would drag the excluded checkouts back in, and *naming* a link to a directory
 wedges the whole transfer (see `partition`'s docstring). Their targets are
 backed up on their own account; a restore just does not get the links back.
 

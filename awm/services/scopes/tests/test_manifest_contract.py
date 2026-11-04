@@ -56,7 +56,7 @@ def test_the_service_publishes_exactly_the_scope_tool_verbs():
     }
     hidden = {n for n, f in published.items() if f.get("surfaces") == ["cli", "http"]}
     assert hidden == {"scope_ref_resolve", "scope_reindex", "project_ensure",
-                      "scope_claim", "scope_release", "scope_withdraw"}
+                      "scope_claim", "scope_release", "scope_withdraw", "scope_awm_sweep"}
 
 
 def test_the_identity_rpcs_keep_their_internal_names():

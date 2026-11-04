@@ -172,37 +172,3 @@ def seeded_scopes(scopes_workspace, scopes_dao_conn):
     return [(*t, now, now) for t in scope_data]
 
 
-@pytest.fixture()
-def seeded_sessions(scopes_workspace, seeded_scopes, scopes_dao_conn):
-    """Insert journal posts (kind='journal') into scope_posts.
-
-    A scope IS the channel; the debrief journal is a self-post by the owning
-    agent, with structured fields in ``meta``. (Replaces the old session_logs
-    table.)
-    """
-    import json
-    from awm.scopes.identity import iso_to_ms
-    from datetime import timedelta
-
-    conn = scopes_dao_conn
-    base = datetime.now(timezone.utc)
-    t1 = base.isoformat()
-    t2 = (base + timedelta(seconds=1)).isoformat()
-    t3 = (base + timedelta(seconds=2)).isoformat()
-
-    sessions_data = [
-        ("proj-a", "scope-1", t1, "Initial exploration of dataset", {}),
-        ("proj-a", "scope-1", t2, "Built feature extraction pipeline",
-         {"decisions": ["Used pandas"]}),
-        ("proj-a", "scope-2", t3, "Reviewed results and documented findings", {}),
-    ]
-    for i, (project, scope, logged_at, summary, meta) in enumerate(sessions_data):
-        conn.execute(
-            "INSERT INTO scope_posts "
-            "(id, owner_project, owner_scope, author, kind, body, meta, ts) "
-            "VALUES (?,?,?,?, 'journal', ?, ?, ?)",
-            (f"journal:{i}", project, scope, f"agent:{project}/{scope}",
-             summary, json.dumps(meta), iso_to_ms(logged_at)),
-        )
-    conn.commit()
-    return sessions_data

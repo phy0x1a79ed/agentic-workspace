@@ -815,7 +815,8 @@ MOVED_DIR = "projects/metasmith/engine/presentation"
 
 def moved(tmp_path):
     there = tmp_path / MOVED_DIR
-    (there / ".awm").mkdir(parents=True)
+    there.mkdir(parents=True)
+    (there / ".git").write_text("gitdir: x\n")
     (there / "src").mkdir()
     return str(there / "src")
 

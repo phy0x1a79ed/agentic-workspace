@@ -70,7 +70,7 @@ def _idle_since(project: str, scope: str, worktree: Path, bare: Path, branch: st
     """When a session last used the scope, in epoch seconds.
 
     Claims are new, so a scope without one falls back to the newest of its last
-    commit and its ``.awm/`` folder.
+    commit and its worktree's ``.git`` file, which ``git worktree add`` writes.
     """
     used = claims.last_used(project, scope)
     if used is not None:
@@ -80,7 +80,7 @@ def _idle_since(project: str, scope: str, worktree: Path, bare: Path, branch: st
     if r.returncode == 0 and (r.stdout or "").strip().isdigit():
         stamps.append(float(r.stdout.strip()))
     try:
-        stamps.append((worktree / ".awm").stat().st_mtime)
+        stamps.append((worktree / ".git").stat().st_mtime)
     except OSError:
         pass
     return max(stamps, default=0.0)

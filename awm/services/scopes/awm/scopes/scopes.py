@@ -59,10 +59,6 @@ from awm.scopes._validation import validate_name, validate_scope_name
 log = logging.getLogger("awm.scopes")
 
 
-def _get_awm_dir(repo_dir: Path) -> Path:
-    return repo_dir / ".awm"
-
-
 def _worktree_admin_dir(bare_dir: Path, worktree_dir: Path) -> Path | None:
     """git's per-worktree admin directory under ``.bare/worktrees/``, or None.
 
@@ -531,9 +527,6 @@ def ensure_vagrant_session(user_as: str) -> tuple[str, str]:
     return agent_id, f"{VAGRANT_PROJECT}/{scope_name}"
 
 
-_CONTEXT_IMPORT_LINE = "@.awm/context.md"
-
-
 def _is_tracked(worktree_dir: Path, path: str) -> bool:
     res = subprocess.run(
         ["git", "-C", str(worktree_dir), "ls-files", "--error-unmatch", path],
@@ -542,43 +535,12 @@ def _is_tracked(worktree_dir: Path, path: str) -> bool:
     return res.returncode == 0
 
 
-def _strip_context_import(text: str) -> tuple[str, bool]:
-    lines = text.splitlines(keepends=True)
-    changed = False
-    while lines and lines[-1].strip() == _CONTEXT_IMPORT_LINE:
-        lines.pop()
-        changed = True
-        if lines and lines[-1].strip() == "":
-            lines.pop()
-    if not changed:
-        return text, False
-    new = "".join(lines)
-    if new and not new.endswith("\n"):
-        new += "\n"
-    return new, True
-
-
-# Files the scaffold once wrote and nothing reads now (scopes.md R142). A
-# hand-written context.md stays until the deploy sweep turns it into a brief.
-STALE_AWM_FILES = ("history.md", "mcp-opencode.json")
-
-
 def _heal_worktree(worktree_dir: Path, *, project: str, scope: str, dry_run: bool) -> dict:
-    actions: dict[str, str | None] = {
-        "import_line": None, "agents_md": None,
-        "claude_md": None, "data": None, "skills_link": None, "stale_files": None,
-    }
+    actions: dict[str, str | None] = {"agents_md": None, "claude_md": None, "data": None}
 
     agents_path = worktree_dir / "AGENTS.md"
     if agents_path.is_file() and not agents_path.is_symlink():
-        if _is_tracked(worktree_dir, "AGENTS.md"):
-            body = agents_path.read_text()
-            new_body, changed = _strip_context_import(body)
-            if changed:
-                actions["import_line"] = "stripped"
-                if not dry_run:
-                    agents_path.write_text(new_body)
-        else:
+        if not _is_tracked(worktree_dir, "AGENTS.md"):
             actions["agents_md"] = "deleted:untracked"
             if not dry_run:
                 agents_path.unlink()
@@ -603,67 +565,16 @@ def _heal_worktree(worktree_dir: Path, *, project: str, scope: str, dry_run: boo
             if not dry_run:
                 claude_path.unlink()
 
-    awm_dir = worktree_dir / ".awm"
-    skills_link = awm_dir / "skills"
-    if skills_link.is_symlink():
-        actions["skills_link"] = "deleted:symlink"
-        if not dry_run:
-            skills_link.unlink()
-
-    # Data view. Idempotent by construction, which is what makes heal the
-    # migration path for scopes that pre-date this layer: one still on the
-    # legacy shared symlink is brought to whatever its checkout now says the
-    # first time heal runs over it.
-    actions["data"] = _heal_data(awm_dir, project=project, scope=scope, dry_run=dry_run)
-
-    stale = [awm_dir / name for name in STALE_AWM_FILES if (awm_dir / name).is_file()]
-    if stale:
-        actions["stale_files"] = "deleted:" + ",".join(p.name for p in stale)
-        if not dry_run:
-            for p in stale:
-                p.unlink()
+    # Data view: wiring plus a checkout of what the branch pins, and the shared
+    # copies the hook asks heal to build. Idempotent.
+    if not dry_run and data_dvc.is_dvc_project(worktree_dir):
+        report = data_dvc.provision_scope_data(project, scope, worktree_dir)
+        if report.get("mode") == "unknown":
+            actions["data"] = f"error:{report.get('detail', '')[:120]}"
+        elif report.get("stale_checkout"):
+            actions["data"] = "stale-checkout"
 
     return actions
-
-
-# `.awm/data` shapes heal has to recognise. Named explicitly rather than guessed
-# at with a chain of `if exists`, because the transition heal reports is only
-# meaningful if the starting point was identified rather than assumed.
-def _classify_data_path(dest: Path) -> str:
-    if dest.is_symlink():
-        target = os.readlink(str(dest))
-        return "compat-symlink" if target in ("../data", "..\\data") else "legacy-symlink"
-    if not dest.exists():
-        return "absent"
-    return "plain-dir"
-
-
-def _heal_data(awm_dir: Path, *, project: str, scope: str, dry_run: bool) -> str | None:
-    """Bring ``.awm/data`` to whatever this scope's checkout now implies.
-
-    Three shapes are live at once — a legacy shared symlink, the compat symlink,
-    and nothing at all — so this reports the transition it made rather than
-    assuming a starting point.
-    """
-    dest = awm_dir / "data"
-    before = _classify_data_path(dest)
-    wants_dvc = data_dvc.is_dvc_project(awm_dir.parent)
-
-    if dry_run:
-        if wants_dvc and before != "compat-symlink":
-            return f"would-convert:{before}->dvc"
-        if not wants_dvc and before == "absent":
-            return "would-symlink"
-        return None
-
-    report = data_dvc.provision_scope_data(project, scope, awm_dir)
-    mode = report.get("mode")
-    if mode == "unknown":
-        return f"error:{report.get('detail', '')[:120]}"
-    after = _classify_data_path(dest)
-    if after == before:
-        return None
-    return f"{before}->{after}"
 
 
 def _resolve_worktree(project: str, scope: str, recorded: str | None) -> Path:
@@ -796,39 +707,7 @@ def audit_worktrees(project: str | None = None) -> dict:
     return {"unregistered": unregistered, "orphaned_rows": orphaned, "errors": errors}
 
 
-def _ensure_awm_gitignored(repo_dir: Path) -> None:
-    """Make ``.awm/`` invisible to git in ``repo_dir`` without touching any
-    tracked file.
-
-    awm's own project repos gitignore ``.awm/`` already, but a freshly cloned
-    third-party repo (e.g. one cloned by ``scope_create`` with ``new_project``) does not — so the
-    scaffolded ``.awm/`` would show up as untracked and leave the worktree
-    "dirty". Appending ``.awm/`` to the repo's common ``info/exclude`` (shared
-    by every worktree, never committed) fixes that cleanly. No-op when git
-    already ignores ``.awm``.
-    """
-    check = run_git(["git", "-C", str(repo_dir), "check-ignore", "-q", ".awm"])
-    if check.returncode == 0:
-        return  # already ignored — tracked .gitignore or a prior exclude entry
-    cd = run_git(["git", "-C", str(repo_dir), "rev-parse", "--git-common-dir"])
-    if cd.returncode != 0:
-        return  # not a git worktree we can reason about; leave it alone
-    common = Path(cd.stdout.strip())
-    if not common.is_absolute():
-        common = (repo_dir / common).resolve()
-    info = common / "info"
-    info.mkdir(parents=True, exist_ok=True)
-    exclude = info / "exclude"
-    prior = exclude.read_text() if exclude.exists() else ""
-    if ".awm/" in prior.split():
-        return
-    with exclude.open("a") as fh:
-        if prior and not prior.endswith("\n"):
-            fh.write("\n")
-        fh.write(".awm/\n")
-
-
-def _scaffold_awm_dir(
+def _register_scope(
     project: str,
     scope: str,
     repo_dir: Path,
@@ -836,24 +715,17 @@ def _scaffold_awm_dir(
     branch: str,
     is_vagrant: bool = False,
 ) -> None:
-    """Scaffold a worktree's ``.awm/`` metadata + agents DB row.
+    """Provision a new worktree's data view, then record its agents row and index it.
 
     Shared by :func:`create_scope` and :func:`create_project` so a project's
     initial default-branch worktree gets the exact same treatment as any
-    scope. Idempotent: symlinks are unlink-before-relink and the agents row is
-    get-or-create (``ensure_agent``), so a repair path can safely re-run it.
-    The scope's brief lives in the journal (scopes.md R143); see :func:`_set_brief`.
+    scope. Idempotent: the agents row is get-or-create (``ensure_agent``).
+    A scope keeps no files outside git and DVC (scopes.md R142); its brief
+    lives in the journal (R143), see :func:`_set_brief`.
     """
-    awm_dir = _get_awm_dir(repo_dir)
-    awm_dir.mkdir(parents=True, exist_ok=True)
-    _ensure_awm_gitignored(repo_dir)
-
-    # The scope's data view. For a DVC-backed project this is wiring plus a
-    # checkout of what the branch already pins — the base branch threaded into
-    # `worktree add` above carries the data with it, which is the bug that
-    # started this whole exercise, fixed by construction rather than by a
-    # second code path. Unconverted projects keep the legacy shared symlink.
-    data_report = data_dvc.provision_scope_data(project, scope, awm_dir)
+    # For a DVC-backed project this is wiring plus a checkout of what the branch
+    # already pins: the base branch threaded into `worktree add` carries the data.
+    data_report = data_dvc.provision_scope_data(project, scope, repo_dir)
     if data_report.get("mode") == "unknown":
         log.warning("scope %s/%s: %s", project, scope, data_report.get("detail"))
     dao = ScopesDAO()
@@ -1007,7 +879,7 @@ def _roll_back_create(bare_dir: Path, repo_dir: Path, branch: str,
 
 
 def create_scope(req: ScopeCreateRequest) -> ScopeActionResponse:
-    """Create a new scope: git worktree + .awm/ metadata + agents row.
+    """Create a new scope: git worktree + data view + agents row.
 
     With ``new_project`` the project is created first when it does not exist,
     and ``scope`` may then be omitted to create the project alone. ``tags`` go
@@ -1048,7 +920,7 @@ def create_scope(req: ScopeCreateRequest) -> ScopeActionResponse:
             return ScopeActionResponse(
                 project=req.project, scope=main.name, status="active", session=1,
                 message=f"Created project at projects/{req.project} "
-                        f"(main checkout {main.name}, .awm/ initialized)")
+                        f"(main checkout {main.name})")
     elif req.scope is None:
         raise FileExistsError(f"Project '{req.project}' already exists at {bare_dir}")
 
@@ -1091,7 +963,7 @@ def create_scope(req: ScopeCreateRequest) -> ScopeActionResponse:
                          f"--set-upstream-to={checkout.upstream}", feature_branch])
             if r.returncode != 0:
                 raise RuntimeError(f"Failed to set upstream {checkout.upstream}: {r.stderr}")
-        _scaffold_awm_dir(
+        _register_scope(
             req.project, req.scope, repo_dir,
             branch=feature_branch,
             is_vagrant=(req.project == VAGRANT_PROJECT),
@@ -1117,7 +989,7 @@ def create_scope(req: ScopeCreateRequest) -> ScopeActionResponse:
         status="active",
         session=session_num,
         message=(
-            f"Created scope at projects/{req.project}/{req.scope} (.awm/ initialized) "
+            f"Created scope at projects/{req.project}/{req.scope} "
             f"on {checkout.note}, session {session_num}"
             + (f"; {brief_warning}" if brief_warning else "")
         ),
@@ -1125,7 +997,7 @@ def create_scope(req: ScopeCreateRequest) -> ScopeActionResponse:
 
 
 def repair_scope(project: str, scope: str) -> ScopeActionResponse:
-    """Reconcile an on-disk worktree+.awm/ with a missing DB row."""
+    """Reconcile an on-disk worktree with a missing DB row."""
     validate_name(project, kind="project name")
     validate_scope_name(scope)
 

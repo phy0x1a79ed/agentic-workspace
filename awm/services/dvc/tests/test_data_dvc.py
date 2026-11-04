@@ -78,15 +78,14 @@ def dvc_project(dvc_workspace, tmp_path):
 # ---------------------------------------------------------------------------
 
 class TestDegradation:
-    def test_unconverted_project_keeps_the_shared_symlink(self, dvc_workspace):
-        """No `.dvc/` in the checkout means nothing changes for that project."""
+    def test_an_unconverted_project_gets_no_data_link(self, dvc_workspace):
+        """No `.dvc/` in the checkout: nothing to provision, and no `.awm/data` link."""
         ws = dvc_workspace["workspace"]
         wt = ws / "projects" / "plain" / "main"
-        (wt / ".awm").mkdir(parents=True)
-        rep = dd.provision_scope_data("plain", "main", wt / ".awm")
-        assert rep["mode"] == "symlink"
-        assert (wt / ".awm" / "data").is_symlink()
-        assert Path(os.readlink(str(wt / ".awm" / "data"))) == ws / "data" / "plain"
+        wt.mkdir(parents=True)
+        rep = dd.provision_scope_data("plain", "main", wt)
+        assert rep["mode"] == "none"
+        assert not (wt / ".awm").exists()
 
     def test_missing_dvc_binary_degrades_rather_than_failing(
         self, dvc_workspace, monkeypatch):
@@ -94,16 +93,72 @@ class TestDegradation:
         monkeypatch.setattr(dd, "dvc_available", lambda: False)
         ws = dvc_workspace["workspace"]
         wt = ws / "projects" / "p" / "s"
-        (wt / ".awm").mkdir(parents=True)
-        rep = dd.provision_scope_data("p", "s", wt / ".awm")
-        assert rep["mode"] == "symlink"
+        wt.mkdir(parents=True)
+        rep = dd.provision_scope_data("p", "s", wt)
+        assert rep["mode"] == "none"
         assert "dvc not found" in rep["detail"]
 
-    def test_relative_awm_dir_is_refused_not_normalised(self, dvc_workspace):
+    def test_a_relative_worktree_is_refused_not_normalised(self, dvc_workspace):
         """There is no correct anchor to normalise against, only a wrong one."""
-        rep = dd.provision_scope_data("p", "s", Path(".awm"))
+        rep = dd.provision_scope_data("p", "s", Path("s"))
         assert rep["mode"] == "unknown"
         assert "relative" in rep["detail"]
+
+
+class TestHookState:
+    """The hooks keep their mount list and failure sentinel in the worktree's git dir (R142)."""
+
+    @pytest.fixture()
+    def wired(self, dvc_workspace, tmp_path, monkeypatch):
+        calls = tmp_path / "dvc-calls"
+        fake = tmp_path / "fake-dvc"
+        fake.write_text(f'#!/bin/sh\necho "$@" >> {calls}\necho "cache object missing" >&2\nexit 1\n')
+        fake.chmod(0o755)
+        monkeypatch.setenv("AWM_DVC_BIN", str(fake))
+        dd.dvc_bin.cache_clear()
+        bare = dvc_workspace["projects_dir"] / "p" / ".bare"
+        bare.parent.mkdir(parents=True)
+        _sh("git", "init", "-q", "--bare", "-b", "main", str(bare))
+        wt = bare.parent / "main"
+        _sh("git", "-C", str(bare), "worktree", "add", "-q", "--orphan", "-b", "main", str(wt))
+        for k, v in (("user.email", "t@t"), ("user.name", "t")):
+            _git(wt, "config", k, v)
+        (wt / ".dvc").mkdir()
+        (wt / "README.md").write_text("seed\n")
+        _git(wt, "add", "README.md")
+        _git(wt, "commit", "-q", "-m", "seed")
+        assert dd.ensure_repo_wiring(wt)["result"] == "ok"
+        yield {"bare": bare, "worktree": wt, "calls": calls}
+        dd.dvc_bin.cache_clear()
+
+    def _merge_a_side_branch(self, wt: Path) -> None:
+        _git(wt, "checkout", "-q", "-b", "side")
+        (wt / "side.txt").write_text("x\n")
+        _git(wt, "add", "side.txt")
+        _git(wt, "commit", "-q", "-m", "side")
+        _git(wt, "checkout", "-q", "main")
+        _git(wt, "merge", "-q", "--no-ff", "-m", "merge side", "side")
+
+    def test_the_state_dir_is_inside_the_worktree_git_dir(self, wired):
+        state = dd.state_dir(wired["worktree"])
+        assert state == wired["bare"] / "worktrees" / "main" / dd.STATE_SUBDIR
+
+    def test_a_failed_checkout_leaves_its_sentinel_in_the_git_dir(self, wired):
+        wt = wired["worktree"]
+        self._merge_a_side_branch(wt)
+        sentinel = dd.state_dir(wt) / dd.CHECKOUT_FAILED_FILE
+        assert "cache object missing" in sentinel.read_text()
+        assert not (wt / ".awm").exists()
+        assert _git(wt, "status", "--porcelain").strip() == ""
+
+    def test_the_hook_reads_the_mount_list_from_the_git_dir(self, wired):
+        wt = wired["worktree"]
+        dd.write_mounts(wt, ["data/hot"])
+        assert dd.read_mounts(wt) == ["data/hot"]
+        self._merge_a_side_branch(wt)
+        assert "checkout data/hot" in wired["calls"].read_text()
+        dd.write_mounts(wt, None)
+        assert dd.read_mounts(wt) is None
 
 
 # ---------------------------------------------------------------------------
@@ -124,8 +179,7 @@ class TestGates:
         _git(wt, "add", "-A"); _git(wt, "commit", "-q", "-m", "ignore data")
 
         assert dd.pin_would_be_ignored(wt) is not None
-        (wt / ".awm").mkdir(exist_ok=True)
-        rep = dd.provision_scope_data("p", "main", wt / ".awm")
+        rep = dd.provision_scope_data("p", "main", wt)
         assert rep["mode"] == "unknown"
         assert "silently never committed" in rep["detail"]
 
@@ -134,36 +188,9 @@ class TestGates:
         wt = dvc_project["worktree"]
         (wt / "data").symlink_to(dvc_project["workspace"] / "data")
         assert dd.data_path_conflict(wt) is not None
-        (wt / ".awm").mkdir(exist_ok=True)
-        rep = dd.provision_scope_data("p", "main", wt / ".awm")
+        rep = dd.provision_scope_data("p", "main", wt)
         assert rep["mode"] == "unknown"
         assert (wt / "data").is_symlink(), "must not delete what a human put there"
-
-    def test_a_refused_compat_symlink_is_reported_not_papered_over(self, dvc_project):
-        """The refusal must never be reported as a successful link.
-
-        A scope with a real directory left at `.awm/data` reads *that* through
-        every call site naming the path, while its code expects `../data`.
-        Nothing raises. If provisioning answers
-        `mode: dvc, checkout: ok, compat_symlink: <path>` the migration looks
-        done and is not -- so the caller has to be told.
-        """
-        wt = dvc_project["worktree"]
-        awm = wt / ".awm"
-        awm.mkdir(exist_ok=True)
-        # somebody's real directory sitting where the compat symlink goes
-        (awm / "data").mkdir()
-        (awm / "data" / "leftover.txt").write_text("someone put this here\n")
-
-        rep = dd.provision_scope_data("p", "main", awm)
-        assert rep["compat_symlink"] == "refused:real-directory"
-        assert (awm / "data" / "leftover.txt").exists(), "must not delete it either"
-
-        (awm / "data" / "leftover.txt").unlink()
-        (awm / "data").rmdir()
-        rep = dd.provision_scope_data("p", "main", awm)
-        assert rep["compat_symlink"] == str(awm / "data")
-        assert os.readlink(str(awm / "data")) == "../data"
 
 
 # ---------------------------------------------------------------------------
@@ -176,8 +203,7 @@ class TestOneLever:
         """AC 1: no `dvc` command typed, and an untouched chunk stays untouched."""
         wt = dvc_project["worktree"]
         bare = dvc_project["bare"]
-        (wt / ".awm").mkdir(exist_ok=True)
-        dd.provision_scope_data("p", "main", wt / ".awm")
+        dd.provision_scope_data("p", "main", wt)
 
         for chunk in ("alpha", "beta"):
             (wt / "data" / chunk).mkdir(parents=True)
@@ -190,8 +216,7 @@ class TestOneLever:
         wt2 = dvc_project["workspace"] / "projects" / "p" / "s2"
         _sh("git", "-C", str(bare), "worktree", "add", "-q", str(wt2), "-b", "feat/s2", "main")
         _git(wt2, "config", "user.email", "t@t"); _git(wt2, "config", "user.name", "t")
-        (wt2 / ".awm").mkdir(parents=True, exist_ok=True)
-        dd.provision_scope_data("p", "s2", wt2 / ".awm")
+        dd.provision_scope_data("p", "s2", wt2)
         _sh(dd.dvc_bin(), "unprotect", "data/alpha", "-q", cwd=str(wt2))
         (wt2 / "data" / "alpha" / "g.txt").write_text("added by s2\n")
         _sh(dd.dvc_bin(), "add", "data/alpha", "-q", cwd=str(wt2))
@@ -209,8 +234,7 @@ class TestOneLever:
     def test_two_scopes_share_one_physical_copy(self, dvc_project):
         """AC 7: N scopes holding a chunk cost one copy, verified by inode."""
         wt = dvc_project["worktree"]
-        (wt / ".awm").mkdir(exist_ok=True)
-        dd.provision_scope_data("p", "main", wt / ".awm")
+        dd.provision_scope_data("p", "main", wt)
         (wt / "data" / "c").mkdir(parents=True)
         (wt / "data" / "c" / "f.bin").write_text("x" * 5000)
         _sh(dd.dvc_bin(), "add", "data/c", "-q", cwd=str(wt))
@@ -219,8 +243,7 @@ class TestOneLever:
         wt2 = dvc_project["workspace"] / "projects" / "p" / "s2"
         _sh("git", "-C", str(dvc_project["bare"]), "worktree", "add", "-q",
             str(wt2), "-b", "feat/s2", "main")
-        (wt2 / ".awm").mkdir(parents=True, exist_ok=True)
-        dd.provision_scope_data("p", "s2", wt2 / ".awm")
+        dd.provision_scope_data("p", "s2", wt2)
 
         a = (wt / "data" / "c" / "f.bin").stat().st_ino
         b = (wt2 / "data" / "c" / "f.bin").stat().st_ino
@@ -234,17 +257,16 @@ class TestOneLever:
         the project has ever tracked.
         """
         wt = dvc_project["worktree"]
-        (wt / ".awm").mkdir(exist_ok=True)
-        dd.provision_scope_data("p", "main", wt / ".awm")
+        dd.provision_scope_data("p", "main", wt)
         for chunk in ("hot", "cold"):
             (wt / "data" / chunk).mkdir(parents=True)
             (wt / "data" / chunk / "f.txt").write_text(f"{chunk}\n")
             _sh(dd.dvc_bin(), "add", f"data/{chunk}", "-q", cwd=str(wt))
         _git(wt, "add", "-A"); _git(wt, "commit", "-q", "-m", "hot+cold")
 
-        dd.write_mounts(wt / ".awm", ["data/hot"])
+        dd.write_mounts(wt, ["data/hot"])
         _sh("rm", "-rf", str(wt / "data" / "cold"))
-        rep = dd.provision_scope_data("p", "main", wt / ".awm")
+        rep = dd.provision_scope_data("p", "main", wt)
 
         assert rep["checkout"] == "ok"
         assert (wt / "data" / "hot" / "f.txt").exists()
@@ -261,24 +283,23 @@ class TestOneLever:
         nothing means exactly that.
         """
         wt = dvc_project["worktree"]
-        (wt / ".awm").mkdir(exist_ok=True)
-        dd.provision_scope_data("p", "main", wt / ".awm")
+        dd.provision_scope_data("p", "main", wt)
         (wt / "data" / "c").mkdir(parents=True)
         (wt / "data" / "c" / "f.txt").write_text("v1\n")
         _sh(dd.dvc_bin(), "add", "data/c", "-q", cwd=str(wt))
         _git(wt, "add", "-A"); _git(wt, "commit", "-q", "-m", "chunk")
 
-        dd.write_mounts(wt / ".awm", [])
-        assert dd.read_mounts(wt / ".awm") == []
+        dd.write_mounts(wt, [])
+        assert dd.read_mounts(wt) == []
         _sh("rm", "-rf", str(wt / "data" / "c"))
-        rep = dd.provision_scope_data("p", "main", wt / ".awm")
+        rep = dd.provision_scope_data("p", "main", wt)
 
         assert rep["checkout"] == "skipped"
         assert not (wt / "data" / "c").exists()
 
         # ...and removing the list restores "everything".
-        (wt / ".awm" / dd.MOUNTS_FILE).unlink()
-        rep = dd.provision_scope_data("p", "main", wt / ".awm")
+        (dd.state_dir(wt) / dd.MOUNTS_FILE).unlink()
+        rep = dd.provision_scope_data("p", "main", wt)
         assert rep["checkout"] == "ok"
         assert (wt / "data" / "c" / "f.txt").exists()
 
@@ -293,8 +314,7 @@ class TestCacheSafety:
         helper must touch directories only.
         """
         wt = dvc_project["worktree"]
-        (wt / ".awm").mkdir(exist_ok=True)
-        dd.provision_scope_data("p", "main", wt / ".awm")
+        dd.provision_scope_data("p", "main", wt)
         (wt / "data" / "c").mkdir(parents=True)
         f = wt / "data" / "c" / "f.bin"
         f.write_text("y" * 5000)
@@ -311,8 +331,7 @@ class TestCacheSafety:
         """Unlinking one name of a hardlinked inode never touches the object."""
         import shutil
         wt = dvc_project["worktree"]
-        (wt / ".awm").mkdir(exist_ok=True)
-        dd.provision_scope_data("p", "main", wt / ".awm")
+        dd.provision_scope_data("p", "main", wt)
         (wt / "data" / "c").mkdir(parents=True)
         (wt / "data" / "c" / "f.bin").write_text("z" * 5000)
         _sh(dd.dvc_bin(), "add", "data/c", "-q", cwd=str(wt))
@@ -453,7 +472,6 @@ def _scope(dvc_project, name: str, branch: str | None = None) -> Path:
     _sh("git", "-C", str(dvc_project["bare"]), "worktree", "add", "-q", str(wt),
         "-b", branch or f"feat/{name}", "main")
     _git(wt, "config", "user.email", "t@t"); _git(wt, "config", "user.name", "t")
-    (wt / ".awm").mkdir(parents=True, exist_ok=True)
     return wt
 
 
@@ -461,8 +479,7 @@ def _scope(dvc_project, name: str, branch: str | None = None) -> Path:
 def shared_project(dvc_project):
     """main pins a big chunk declared shared and a small one that is not."""
     wt = dvc_project["worktree"]
-    (wt / ".awm").mkdir(exist_ok=True)
-    dd.provision_scope_data("p", "main", wt / ".awm")
+    dd.provision_scope_data("p", "main", wt)
     for chunk in ("ref/big", "small"):
         (wt / "data" / chunk).mkdir(parents=True)
         (wt / "data" / chunk / "f.txt").write_text(f"{chunk} v1\n")
@@ -489,8 +506,8 @@ class TestSharedChunks:
     def test_scopes_link_one_shared_copy(self, shared_project):
         a = _scope(shared_project, "a")
         b = _scope(shared_project, "g/b")
-        ra = dd.provision_scope_data("p", "a", a / ".awm")
-        rb = dd.provision_scope_data("p", "g/b", b / ".awm")
+        ra = dd.provision_scope_data("p", "a", a)
+        rb = dd.provision_scope_data("p", "g/b", b)
 
         md5 = dd.pin_md5(a / "data" / "ref" / "big.dvc")
         copy = _store(shared_project) / "ref" / "big" / md5
@@ -505,22 +522,21 @@ class TestSharedChunks:
 
     def test_no_declaration_keeps_private_checkouts(self, dvc_project):
         wt = dvc_project["worktree"]
-        (wt / ".awm").mkdir(exist_ok=True)
-        dd.provision_scope_data("p", "main", wt / ".awm")
+        dd.provision_scope_data("p", "main", wt)
         (wt / "data" / "c").mkdir(parents=True)
         (wt / "data" / "c" / "f.txt").write_text("v1\n")
         _sh(dd.dvc_bin(), "add", "data/c", "-q", cwd=str(wt))
         _git(wt, "add", "-A"); _git(wt, "commit", "-q", "-m", "chunk")
         s = _scope(dvc_project, "s")
-        rep = dd.provision_scope_data("p", "s", s / ".awm")
+        rep = dd.provision_scope_data("p", "s", s)
         assert "shared" not in rep
         assert not (s / "data" / "c").is_symlink()
         assert not _store(dvc_project).exists()
 
     def test_a_mount_list_can_leave_a_shared_chunk_out(self, shared_project):
         s = _scope(shared_project, "s")
-        dd.write_mounts(s / ".awm", ["data/small"])
-        rep = dd.provision_scope_data("p", "s", s / ".awm")
+        dd.write_mounts(s, ["data/small"])
+        rep = dd.provision_scope_data("p", "s", s)
         assert rep["shared"] == {}
         assert not (s / "data" / "ref" / "big").exists()
         assert (s / "data" / "small" / "f.txt").is_file()
@@ -528,8 +544,8 @@ class TestSharedChunks:
     def test_a_merge_repoints_the_link_or_leaves_the_sentinel(self, shared_project):
         a = _scope(shared_project, "a")
         b = _scope(shared_project, "b")
-        dd.provision_scope_data("p", "a", a / ".awm")
-        dd.provision_scope_data("p", "b", b / ".awm")
+        dd.provision_scope_data("p", "a", a)
+        dd.provision_scope_data("p", "b", b)
 
         # b re-pins the shared chunk from a private tree.
         (b / "data" / "ref" / "big").unlink()
@@ -543,39 +559,39 @@ class TestSharedChunks:
         big = a / "data" / "ref" / "big"
         assert not big.exists() and not big.is_symlink(), \
             "no copy for the new md5: drop the link, never build a real tree"
-        assert "no shared copy" in (a / ".awm" / dd.CHECKOUT_FAILED_FILE).read_text()
+        assert "no shared copy" in (dd.state_dir(a) / dd.CHECKOUT_FAILED_FILE).read_text()
 
-        rep = dd.provision_scope_data("p", "b", b / ".awm")
+        rep = dd.provision_scope_data("p", "b", b)
         assert rep["shared"] == {"data/ref/big": "linked"}, "b's clean tree is adopted"
         md5 = dd.pin_md5(b / "data" / "ref" / "big.dvc")
         assert (_store(shared_project) / "ref" / "big" / md5 / "g.txt").is_file()
 
-        rep = dd.provision_scope_data("p", "a", a / ".awm")
+        rep = dd.provision_scope_data("p", "a", a)
         assert rep["shared"] == {"data/ref/big": "linked"}
         assert (big / "g.txt").is_file()
-        assert not (a / ".awm" / dd.CHECKOUT_FAILED_FILE).exists()
+        assert not (dd.state_dir(a) / dd.CHECKOUT_FAILED_FILE).exists()
 
     def test_a_merge_repoints_to_an_existing_copy(self, shared_project):
         a = _scope(shared_project, "a")
-        dd.provision_scope_data("p", "a", a / ".awm")
+        dd.provision_scope_data("p", "a", a)
         b = _scope(shared_project, "b")
-        dd.provision_scope_data("p", "b", b / ".awm")
+        dd.provision_scope_data("p", "b", b)
         (b / "data" / "ref" / "big").unlink()
         _sh(dd.dvc_bin(), "checkout", "-q", "data/ref/big", cwd=str(b))
         _sh(dd.dvc_bin(), "unprotect", "data/ref/big", "-q", cwd=str(b))
         (b / "data" / "ref" / "big" / "g.txt").write_text("v2\n")
         _sh(dd.dvc_bin(), "add", "data/ref/big", "-q", cwd=str(b))
         _git(b, "add", "-A"); _git(b, "commit", "-q", "-m", "v2")
-        dd.provision_scope_data("p", "b", b / ".awm")
+        dd.provision_scope_data("p", "b", b)
 
         _git(a, "merge", "--no-edit", "feat/b")
         assert (a / "data" / "ref" / "big").is_symlink()
         assert (a / "data" / "ref" / "big" / "g.txt").is_file()
-        assert not (a / ".awm" / dd.CHECKOUT_FAILED_FILE).exists()
+        assert not (dd.state_dir(a) / dd.CHECKOUT_FAILED_FILE).exists()
 
     def test_data_status_reports_links_without_hashing_them(self, shared_project):
         a = _scope(shared_project, "a")
-        dd.provision_scope_data("p", "a", a / ".awm")
+        dd.provision_scope_data("p", "a", a)
         st = dd.data_status("p", "a", a)
         assert st["shared"] == {"data/ref/big": "linked"}
         assert st["in_sync"] is True
@@ -583,14 +599,14 @@ class TestSharedChunks:
     def test_heal_replaces_a_clean_private_copy_and_keeps_a_modified_one(self, shared_project):
         a = _scope(shared_project, "a")
         b = _scope(shared_project, "b")
-        dd.provision_scope_data("p", "a", a / ".awm")
+        dd.provision_scope_data("p", "a", a)
         # b predates the declaration: a private, clean tree.
         _drop_link(b)
         dd.ensure_cache_config(b)
         _sh(dd.dvc_bin(), "checkout", "-q", "data/ref/big", cwd=str(b))
         assert (b / "data/ref/big/f.txt").is_file()
         assert not (b / "data" / "ref" / "big").is_symlink()
-        rep = dd.provision_scope_data("p", "b", b / ".awm")
+        rep = dd.provision_scope_data("p", "b", b)
         assert rep["shared"] == {"data/ref/big": "linked"}
         assert (b / "data" / "ref" / "big").is_symlink()
 
@@ -600,7 +616,7 @@ class TestSharedChunks:
         _sh(dd.dvc_bin(), "checkout", "-q", "data/ref/big", cwd=str(c))
         _sh(dd.dvc_bin(), "unprotect", "data/ref/big", "-q", cwd=str(c))
         (c / "data" / "ref" / "big" / "f.txt").write_text("local edit\n")
-        rep = dd.provision_scope_data("p", "c", c / ".awm")
+        rep = dd.provision_scope_data("p", "c", c)
         assert rep["shared"] == {"data/ref/big": "private:modified"}
         assert (c / "data" / "ref" / "big" / "f.txt").read_text() == "local edit\n"
 
@@ -609,7 +625,7 @@ class TestSharedChunks:
         dd.ensure_cache_config(b)
         _sh(dd.dvc_bin(), "checkout", "-q", "data/ref/big", cwd=str(b))
         ino = (b / "data/ref/big/f.txt").stat().st_ino
-        rep = dd.provision_scope_data("p", "b", b / ".awm")
+        rep = dd.provision_scope_data("p", "b", b)
         assert rep["shared"] == {"data/ref/big": "linked"}
         md5 = dd.pin_md5(b / "data" / "ref" / "big.dvc")
         moved = _store(shared_project) / "ref" / "big" / md5 / "f.txt"
@@ -618,17 +634,17 @@ class TestSharedChunks:
     def test_a_bare_dvc_checkout_never_empties_a_shared_copy(self, shared_project):
         """The hook never runs one, but a person might, over a link to another md5."""
         a = _scope(shared_project, "a")
-        dd.provision_scope_data("p", "a", a / ".awm")
+        dd.provision_scope_data("p", "a", a)
         v1 = dd.pin_md5(a / "data" / "ref" / "big.dvc")
         b = _scope(shared_project, "b")
-        dd.provision_scope_data("p", "b", b / ".awm")
+        dd.provision_scope_data("p", "b", b)
         (b / "data" / "ref" / "big").unlink()
         _sh(dd.dvc_bin(), "checkout", "-q", "data/ref/big", cwd=str(b))
         _sh(dd.dvc_bin(), "unprotect", "data/ref/big", "-q", cwd=str(b))
         (b / "data" / "ref" / "big" / "g.txt").write_text("v2\n")
         _sh(dd.dvc_bin(), "add", "data/ref/big", "-q", cwd=str(b))
         _git(b, "add", "-A"); _git(b, "commit", "-q", "-m", "v2")
-        dd.provision_scope_data("p", "b", b / ".awm")
+        dd.provision_scope_data("p", "b", b)
         v2 = dd.pin_md5(b / "data" / "ref" / "big.dvc")
 
         _git(a, "merge", "--no-edit", "feat/b")
@@ -641,7 +657,7 @@ class TestSharedChunks:
         assert (store / v2 / "g.txt").read_text() == "v2\n"
 
         # DVC answers the refused unlink by making the cache object writable.
-        dd.provision_scope_data("p", "b", b / ".awm")
+        dd.provision_scope_data("p", "b", b)
         assert not os.access(store / v2 / "g.txt", os.W_OK), "heal re-protects it"
 
         # A branch switch repoints the link with no merge involved.
@@ -653,7 +669,7 @@ class TestSharedChunks:
     def test_deleting_a_scope_leaves_the_shared_copy(self, shared_project):
         import shutil
         a = _scope(shared_project, "a")
-        dd.provision_scope_data("p", "a", a / ".awm")
+        dd.provision_scope_data("p", "a", a)
         copy = (a / "data" / "ref" / "big").resolve()
         dd.chmod_dirs_writable(a)
         shutil.rmtree(a)
@@ -691,8 +707,7 @@ def _closure(cache: Path, oid: str) -> set[str]:
 def gc_layout(dvc_project):
     """Two worktrees whose pins reach the cache by every route gc must honour."""
     wt, bare = dvc_project["worktree"], dvc_project["bare"]
-    (wt / ".awm").mkdir(exist_ok=True)
-    dd.provision_scope_data("p", "main", wt / ".awm")
+    dd.provision_scope_data("p", "main", wt)
     h: dict[str, str] = {}
 
     h["history"] = _add_chunk(wt, "old", "old\n")

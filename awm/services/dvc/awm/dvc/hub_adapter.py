@@ -295,8 +295,8 @@ API_MANIFEST: dict[str, Any] = {
             "effect": "read",
             "tool": "dvc_scope_status",
             "description": (
-                "Report a scope's data view: mode (dvc | legacy shared symlink | "
-                "missing), the commit that pins the data, which chunks it pins, "
+                "Report a scope's data view: mode (dvc, or none for a project "
+                "with no DVC), the commit that pins the data, which chunks it pins, "
                 "which of those are materialised on disk, and whether the workspace "
                 "still matches the pins. There is no separate data branch to drift "
                 "— the code revision IS the data revision."

@@ -129,7 +129,7 @@ class TestCreateWritesTheBrief:
         mod.create_scope(ScopeCreateRequest(project=PROJECT, scope="b", context="For the brief."))
         assert ("journal", "brief_set", {"project": PROJECT, "scope": "b",
                                          "text": "For the brief."}) in calls
-        assert not (proj / "b" / ".awm" / "context.md").exists()
+        assert not (proj / "b" / ".awm").exists()
 
     def test_a_brief_over_400_characters_is_refused_before_anything_is_made(self, proj):
         with pytest.raises(ValueError, match="limit is 400"):

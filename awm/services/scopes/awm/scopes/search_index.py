@@ -56,13 +56,9 @@ def _scope_brief(project: str, scope: str) -> str:
         return ""
 
 
-def scope_document(project: str, scope: str, worktree: str | None,
-                   created_at: int | None) -> engine.Document:
-    """The scope's brief, and a ``.awm/context.md`` an older scope still has."""
-    from awm.scopes.scopes import _resolve_worktree
-
-    context = _read(_resolve_worktree(project, scope, worktree) / ".awm" / "context.md")
-    body = "\n\n".join(x for x in (_scope_brief(project, scope), context) if x.strip())
+def scope_document(project: str, scope: str, created_at: int | None) -> engine.Document:
+    """The scope's journal brief."""
+    body = _scope_brief(project, scope)
     return engine.Document(f"{project}/{scope}", body, title=f"{project}/{scope}",
                            date=_date(created_at))
 
@@ -82,7 +78,7 @@ def project_document(name: str, scopes: Iterable[str]) -> engine.Document:
 
 
 def _scope_rows(conn, project: str | None = None, scope: str | None = None):
-    sql = ("SELECT p.name AS project, a.scope, a.worktree, a.created_at"
+    sql = ("SELECT p.name AS project, a.scope, a.created_at"
            " FROM agents a JOIN projects p ON p.id = a.project_id WHERE 1=1")
     params: list = []
     if project is not None:
@@ -95,7 +91,7 @@ def _scope_rows(conn, project: str | None = None, scope: str | None = None):
 
 
 def _scope_docs(conn) -> list[engine.Document]:
-    return [scope_document(r["project"], r["scope"], r["worktree"], r["created_at"])
+    return [scope_document(r["project"], r["scope"], r["created_at"])
             for r in _scope_rows(conn)]
 
 
@@ -134,8 +130,7 @@ def _index_scope(conn, project: str, scope: str) -> None:
         engine.delete_document(conn, "scope", f"{project}/{scope}")
         return
     r = rows[-1]
-    engine.index_document(conn, "scope", scope_document(project, scope, r["worktree"],
-                                                        r["created_at"]))
+    engine.index_document(conn, "scope", scope_document(project, scope, r["created_at"]))
 
 
 def _index_project(conn, name: str) -> None:
