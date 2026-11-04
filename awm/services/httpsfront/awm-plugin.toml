@@ -12,6 +12,6 @@ major = 1
 tier = "off"
 
 [needs]
-secrets = []
+secrets = ["AWM_APPROVER_GRANT_PUBKEY"]  # alcor's grant key, for the passkey sign-in (fleet.md R84)
 network = []
 platform = ["linux"]
