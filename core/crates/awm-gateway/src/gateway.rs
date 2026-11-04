@@ -632,13 +632,17 @@ impl Gateway {
         v
     }
 
-    fn verb_names(&self, entry: &ToolEntry) -> Vec<(String, String, Vec<String>)> {
+    /// Each verb with its summary and required arguments. On `mcp`, a verb whose `surfaces`
+    /// leaves out `mcp`, such as a hook's, is left out. The CLI and HTTP keep every verb.
+    fn verb_names(&self, entry: &ToolEntry, mcp: bool) -> Vec<(String, String, Vec<String>)> {
+        let listed = entry.verbs.iter().filter(|(_, vb)| !mcp || on_mcp(&vb.spec));
+        let own = listed.map(|(_, vb)| (vb.verb.clone(), summary(&vb.spec), required(&vb.spec)));
         if entry.name == NATIVE_TOOL {
             let mut v: Vec<_> = NATIVE_VERBS.iter().map(|(n, d)| (n.to_string(), d.to_string(), vec![])).collect();
-            v.extend(entry.verbs.iter().map(|(_, vb)| (vb.verb.clone(), summary(&vb.spec), required(&vb.spec))));
+            v.extend(own);
             return v;
         }
-        entry.verbs.iter().map(|(_, vb)| (vb.verb.clone(), summary(&vb.spec), required(&vb.spec))).collect()
+        own.collect()
     }
 
     /// `GET /tools?view=domains`: one `{verb, args, peer}` tool per public tool on the MCP surface.
@@ -653,7 +657,7 @@ impl Gateway {
             .values()
             .filter(|e| e.tier == Tier::On && holder.is_none_or(|h| h.may_use(&e.name)))
             .map(|e| {
-                let mut verbs = self.verb_names(e);
+                let mut verbs = self.verb_names(e, true);
                 if let Some(h) = holder {
                     verbs.retain(|(v, _, _)| h.may(&e.name, v));
                 }
@@ -694,7 +698,7 @@ impl Gateway {
     pub fn flat_tools(&self) -> Vec<Value> {
         let mut out = Vec::new();
         for e in self.tools().values() {
-            for (verb, desc, _) in self.verb_names(e) {
+            for (verb, desc, _) in self.verb_names(e, false) {
                 let spec = e.verbs.iter().find(|(_, v)| v.verb == verb).map(|(_, v)| v.spec.clone()).unwrap_or(Value::Null);
                 out.push(json!({
                     "name": format!("{}_{verb}", e.name),
@@ -707,10 +711,10 @@ impl Gateway {
         out
     }
 
-    fn describe(&self, entry: &ToolEntry, filter: Option<&Value>) -> Value {
+    fn describe(&self, entry: &ToolEntry, filter: Option<&Value>, mcp: bool) -> Value {
         let wanted: Option<Vec<&str>> = filter.and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).collect());
         let mut verbs = Vec::new();
-        for (verb, desc, _) in self.verb_names(entry) {
+        for (verb, desc, _) in self.verb_names(entry, mcp) {
             if wanted.as_ref().is_some_and(|w| !w.contains(&verb.as_str())) {
                 continue;
             }
@@ -737,13 +741,13 @@ impl Gateway {
         json!({"tool": entry.name, "plugin": entry.plugin, "verbs": verbs})
     }
 
-    fn overview(&self) -> Value {
+    fn overview(&self, mcp: bool) -> Value {
         let tools: Vec<Value> = self
             .tools()
             .values()
             .map(|e| {
                 json!({"tool": e.name, "plugin": e.plugin, "tier": if e.tier == Tier::On {"on"} else {"off"},
-                       "verbs": self.verb_names(e).into_iter().map(|(v, s, r)| json!({"verb": v, "summary": one_line(&s), "required": r})).collect::<Vec<_>>()})
+                       "verbs": self.verb_names(e, mcp).into_iter().map(|(v, s, r)| json!({"verb": v, "summary": one_line(&s), "required": r})).collect::<Vec<_>>()})
             })
             .collect();
         json!({"node": self.node, "tools": tools,
@@ -1055,9 +1059,9 @@ impl Gateway {
                 entry.clone()
             };
             let answer = if tool == NATIVE_TOOL && inner.get("verbs").is_none() {
-                self.overview()
+                self.overview(ctx.surface == Surface::Mcp)
             } else {
-                self.describe(&entry, inner.get("verbs"))
+                self.describe(&entry, inner.get("verbs"), ctx.surface == Surface::Mcp)
             };
             return Ok(render(&answer));
         }
@@ -1087,6 +1091,11 @@ pub fn render(v: &Value) -> String {
         Value::String(s) => s.clone(),
         other => serde_json::to_string_pretty(other).unwrap_or_default(),
     }
+}
+
+/// Whether a verb lists on MCP: a manifest `surfaces` list that leaves out `mcp` hides it.
+fn on_mcp(spec: &Value) -> bool {
+    spec.get("surfaces").and_then(Value::as_array).is_none_or(|s| s.iter().any(|v| v == "mcp"))
 }
 
 fn summary(spec: &Value) -> String {

@@ -47,11 +47,14 @@ async fn main() -> anyhow::Result<()> {
     let (mut sink, mut stream) = ws.split();
 
     let f = |verb: &str, desc: &str, params: Value| json!({"name": verb, "tool": format!("{tool}_{verb}"), "description": desc, "params": params});
+    // A hook-only verb: off the MCP surface, on the CLI and HTTP.
+    let mut run_job = f("run_job", "Report one background run.", json!([{"name": "job", "type": "string", "required": true}]));
+    run_job["surfaces"] = json!(["cli", "http"]);
     let manifest = json!({"functions": [
         f("echo", "Return the text.", json!([{"name": "text", "type": "string", "required": true}])),
         f("add", "Add two numbers.", json!([{"name": "a", "type": "number", "required": true}, {"name": "b", "type": "number", "required": true}])),
         f("whoami", "The caller the gateway stamped.", json!([])),
-        f("run_job", "Report one background run.", json!([{"name": "job", "type": "string", "required": true}])),
+        run_job,
         f("call_needed", "Call the first needed tool.", json!([{"name": "verb", "required": true}, {"name": "args", "type": "object"}])),
         f("caller_of_token", "The isolated session that holds a caller token.", json!([{"name": "token", "required": true}])),
         f("scoped", "Return the args as received.", json!([{"name": "project"}, {"name": "scope"}])),

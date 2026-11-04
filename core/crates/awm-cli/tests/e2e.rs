@@ -332,10 +332,12 @@ fn gateway_end_to_end() {
     for want in ["echo", "add", "whoami", "describe"] {
         assert!(verbs.as_array().unwrap().iter().any(|v| v == want), "fake verbs lack {want}: {verbs}");
     }
+    assert!(!verbs.as_array().unwrap().iter().any(|v| v == "run_job"), "a hook-only verb lists on MCP: {verbs}");
     assert!(fake["inputSchema"]["properties"]["peer"].is_object(), "the peer key is missing: {fake}");
 
     let (text, err) = mcp.call("fake", json!({"verb": "describe"}));
     assert!(!err && text.contains("echo") && text.contains("text"), "fake describe: {text}");
+    assert!(!text.contains("run_job"), "MCP describe shows a hook-only verb: {text}");
     let (text, err) = mcp.call("fake", json!({"verb": "echo", "args": {"text": "x", "bogus": 1}}));
     assert!(err && text.contains("bogus"), "an unknown argument must be refused with the schema: {text}");
     let (text, err) = mcp.call("fake", json!({"verb": "echo", "args": {"text": "x"}, "peer": "nowhere"}));
