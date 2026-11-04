@@ -18,7 +18,7 @@ from pathlib import Path
 
 from awm.journal import builtin_tags, search_index, tags
 from awm.journal.dao import JournalDAO
-from awm.journal.refs import now_ms
+from awm.persistence.timestamps import now_ms
 
 CHANNEL = ("", "workspace")
 AUTHOR = "system"

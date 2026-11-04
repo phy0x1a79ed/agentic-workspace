@@ -26,6 +26,7 @@ from awm.config import (
     VAGRANT_PROJECT,
 )
 from awm.config import privacy
+from awm.persistence.timestamps import now_ms
 from awm.scopes.git_utils import run_git, detect_default_branch
 from awm.dvcdata import data_dvc
 from awm.gatewayclient import cancel
@@ -36,7 +37,6 @@ from awm.scopes.identity import (
     agent_record_for_scope,
     ensure_agent,
     ensure_project,
-    now_ms,
     retire_agent,
 )
 from awm.scopes.models import (

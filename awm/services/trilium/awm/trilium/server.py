@@ -24,16 +24,15 @@ from __future__ import annotations
 
 import logging
 import os
-import signal
 import subprocess
 import threading
 import time
 from pathlib import Path
 from typing import Any
 
-from awm.trilium import instances, procs, sync
+from awm.trilium import instances, sync
 from awm.trilium.instances import Vault
-from awm.gatewayclient.proc import child_preexec
+from awm.gatewayclient.proc import GroupChild, child_preexec
 
 log = logging.getLogger("awm.trilium.server")
 
@@ -129,10 +128,14 @@ def child_env(vault: Vault) -> dict[str, str]:
     return env
 
 
-class Child(procs.GroupChild):
+class Child(GroupChild):
     """The vault's node process. Every method is safe to call at any time."""
 
     STOP_TIMEOUT_S = 20.0
+
+    @property
+    def log_file(self):
+        return self.vault.log_file
 
     def __init__(self, vault: Vault | None = None) -> None:
         self.vault = vault or instances.VAULT
@@ -314,13 +317,6 @@ class Child(procs.GroupChild):
                 self._last_error = f"{type(exc).__name__}: {exc}"
                 return {"action": "respawn-failed", "error": self._last_error}
         return {"action": "respawned", "previous_exit": code}
-
-    def logs(self, tail: int = 200) -> str:
-        try:
-            with open(self.vault.log_file, "rb") as fh:
-                return b"".join(fh.readlines()[-tail:]).decode("utf-8", "replace")
-        except OSError as exc:
-            return f"(no log at {self.vault.log_file}: {exc})"
 
 
 #: The one child this service supervises. There is no fleet: one vault, one

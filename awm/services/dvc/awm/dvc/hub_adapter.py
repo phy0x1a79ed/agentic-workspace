@@ -42,12 +42,12 @@ import logging
 from time import time
 from typing import Any
 
-from awm.config import privacy
+from awm.config import cron, privacy
 from awm.gatewayclient import ServiceAdapter, spawn_supervised
 
 from awm.dvc import coverage as coveragemod
 from awm.dvc.cache import DvcScopeError
-from awm.dvc import cron, jobs, runs, scopedata, transfer
+from awm.dvc import jobs, runs, scopedata, transfer
 from awm.dvc.config import load as load_config
 from awm.dvc.globus import task_status, wait
 from awm.dvc.scheduler import Scheduler

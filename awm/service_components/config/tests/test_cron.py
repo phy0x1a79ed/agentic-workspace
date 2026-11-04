@@ -1,11 +1,4 @@
-"""The vendored cron parser.
-
-Vendored from awm-events rather than imported (see the module docstring), so it
-gets its own tests here — a copy with no tests is a copy that silently rots.
-Kept to the forms this service actually uses: a daily cron, the ``@every`` form
-that makes a five-minute live drill possible, and the failure modes the
-scheduler and the ``schedule`` verb both have to survive.
-"""
+"""The cron parser the schedulers share: a daily cron, the ``@every`` form, and the failures they must survive."""
 
 from __future__ import annotations
 
@@ -13,7 +6,7 @@ from datetime import datetime
 
 import pytest
 
-from awm.dvc import cron
+from awm.config import cron
 
 
 def at(y, mo, d, h, mi) -> float:

@@ -8,7 +8,7 @@ from datetime import datetime
 
 import pytest
 
-from awm.events import cron
+from awm.config import cron
 from awm.events.dao import EventsDAO, init
 
 

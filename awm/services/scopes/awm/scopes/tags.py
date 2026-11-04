@@ -13,7 +13,7 @@ from typing import Any
 
 from awm.scopes._validation import validate_name, validate_scope_name
 from awm.scopes.dao import ScopesDAO
-from awm.scopes.identity import now_ms
+from awm.persistence.timestamps import now_ms
 
 RULE = ("a tag is lowercase letters, digits, '.', '_' or '-', starts with a "
         "letter or digit, and is at most 32 characters")

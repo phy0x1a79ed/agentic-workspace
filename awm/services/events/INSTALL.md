@@ -3,7 +3,7 @@
 A Python feature service in the `awm.events` namespace. It needs the `awm` conda
 env to contain its package plus the shared component libraries it imports
 (`config`, `persistence`, `gatewayclient`). It has **no** third-party runtime
-deps — the cron/interval parsing is stdlib-only (`awm/events/cron.py`).
+deps — the cron/interval parsing is stdlib-only (`config`'s `awm/config/cron.py`).
 
 ## Install
 

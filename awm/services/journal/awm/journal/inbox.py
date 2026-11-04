@@ -21,7 +21,7 @@ from typing import Any
 from awm.journal import tags as tagmod
 from awm.journal.channel import _author_to_display, _coerce_meta
 from awm.journal.dao import JournalDAO
-from awm.journal.refs import ms_to_iso, now_ms
+from awm.persistence.timestamps import ms_to_iso, now_ms
 
 DEFAULT_LIMIT = 20
 MAX_LIMIT = 50

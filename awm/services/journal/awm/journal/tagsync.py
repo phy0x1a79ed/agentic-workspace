@@ -19,7 +19,7 @@ import threading
 from typing import Any, Callable
 
 from awm.journal.dao import JournalDAO
-from awm.journal.refs import now_ms
+from awm.persistence.timestamps import now_ms
 
 log = logging.getLogger("awm.journal.tagsync")
 

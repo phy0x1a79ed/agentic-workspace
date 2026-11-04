@@ -18,8 +18,8 @@ transaction.
 from __future__ import annotations
 
 import uuid as _uuid
-from datetime import datetime, timezone
 
+from awm.persistence.timestamps import now_ms
 from awm.scopes.dao import ScopesDAO
 
 # ---------- sentinel refs --------------------------------------------------
@@ -28,44 +28,9 @@ SYSTEM_REF = "system"
 
 # Deterministic sentinel user IDs (same derivation as the legacy ``db.py``
 # so seed data that carries these uuids keeps resolving correctly).
-import uuid as _uuid_mod
-
-_SENTINEL_NS = _uuid_mod.uuid5(_uuid_mod.NAMESPACE_DNS, "awm.v37.users.sentinels")
-CLI_USER_ID = str(_uuid_mod.uuid5(_SENTINEL_NS, "cli"))
-SYSTEM_USER_ID = str(_uuid_mod.uuid5(_SENTINEL_NS, "system"))
-
-
-# ---------- timestamp helpers -----------------------------------------------
-
-
-def now_ms() -> int:
-    return int(datetime.now(timezone.utc).timestamp() * 1000)
-
-
-def iso_to_ms(iso_str: str | None) -> int | None:
-    if not iso_str:
-        return None
-    s = iso_str.strip()
-    if not s:
-        return None
-    try:
-        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return int(dt.timestamp() * 1000)
-
-
-def ms_to_iso(ms: int | None) -> str | None:
-    """unix-ms → ISO-8601 UTC string. Keeps legacy API responses stable."""
-    if ms is None:
-        return None
-    try:
-        dt = datetime.fromtimestamp(int(ms) / 1000, tz=timezone.utc)
-    except (ValueError, TypeError, OSError):
-        return None
-    return dt.isoformat()
+_SENTINEL_NS = _uuid.uuid5(_uuid.NAMESPACE_DNS, "awm.v37.users.sentinels")
+CLI_USER_ID = str(_uuid.uuid5(_SENTINEL_NS, "cli"))
+SYSTEM_USER_ID = str(_uuid.uuid5(_SENTINEL_NS, "system"))
 
 
 # ---------- project lookups -------------------------------------------------
@@ -284,7 +249,6 @@ def display_for_ref(ref: str, *, conn=None) -> str:
 
 __all__ = [
     "SYSTEM_REF", "CLI_USER_ID", "SYSTEM_USER_ID",
-    "now_ms", "iso_to_ms", "ms_to_iso",
     "project_by_name", "project_id_for_name", "ensure_project",
     "agent_by_id", "agent_id_for_scope", "agent_record_for_scope",
     "project_scope_for_agent", "ensure_agent", "retire_agent",

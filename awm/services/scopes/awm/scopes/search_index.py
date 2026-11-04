@@ -1,36 +1,22 @@
 """The scopes service's search index: scopes and projects in the retrieval engine.
 
-Writes go through one background worker, so a scope write returns without waiting
-for its embedding and the model is never loaded twice. A supervised backfill
-walks the tables at startup and every few hours. Posts and briefs live in the
+Writes go through the service's one index worker (:class:`ServiceIndex`). A
+supervised backfill walks the tables at startup and every few hours. Posts and briefs live in the
 journal service; a scope's brief is read from it over the gateway.
 """
 
 from __future__ import annotations
 
-import asyncio
-import logging
-from concurrent.futures import Future, ThreadPoolExecutor
-from datetime import datetime, timezone
+from concurrent.futures import Future
 from pathlib import Path
 from typing import Any, Iterable
 
 from awm.persistence import embeddings as engine
-from awm.persistence.databases import get_connection, get_connection_at, service_db_path
+from awm.persistence.service_index import ServiceIndex
+from awm.persistence.timestamps import ms_to_date
 
-log = logging.getLogger("awm.scopes.search_index")
-
-BACKFILL_EVERY_S = 6 * 3600
 _README_CHARS = 2000
 _README_CHECKOUTS = ("release", "main", "dev")
-
-_worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="scopes-index")
-
-
-def _date(ts_ms: int | None) -> str:
-    if not ts_ms:
-        return ""
-    return datetime.fromtimestamp(ts_ms / 1000, timezone.utc).date().isoformat()
 
 
 def _read(path: Path, limit: int | None = None) -> str:
@@ -60,7 +46,7 @@ def scope_document(project: str, scope: str, created_at: int | None) -> engine.D
     """The scope's journal brief."""
     body = _scope_brief(project, scope)
     return engine.Document(f"{project}/{scope}", body, title=f"{project}/{scope}",
-                           date=_date(created_at))
+                           date=ms_to_date(created_at))
 
 
 def project_document(name: str, scopes: Iterable[str]) -> engine.Document:
@@ -114,16 +100,6 @@ def _project_docs(conn) -> list[engine.Document]:
 # ---------------------------------------------------------------------------
 
 
-def _run(db: Path, fn, *args) -> None:
-    conn = get_connection_at(db)
-    try:
-        fn(conn, *args)
-    except Exception:
-        log.exception("search index update failed: %s%r", fn.__name__, args)
-    finally:
-        conn.close()
-
-
 def _index_scope(conn, project: str, scope: str) -> None:
     rows = list(_scope_rows(conn, project, scope))
     if not rows:
@@ -140,75 +116,15 @@ def _index_project(conn, name: str) -> None:
     engine.index_document(conn, "project", project_document(name, scopes))
 
 
-# Each job binds the DB when it is queued, not when it runs, so a write can
-# never land in whatever database the process points at later.
 def index_scope(project: str, scope: str) -> Future:
-    return _worker.submit(_run, service_db_path("scopes"), _index_scope, project, scope)
+    return INDEX.submit(_index_scope, project, scope)
 
 
 def index_project(name: str) -> Future:
-    return _worker.submit(_run, service_db_path("scopes"), _index_project, name)
+    return INDEX.submit(_index_project, name)
 
 
-def flush() -> None:
-    """Wait until every queued index update has been written."""
-    _worker.submit(lambda: None).result()
-
-
-# ---------------------------------------------------------------------------
-# Backfill
-# ---------------------------------------------------------------------------
-
-
-def ensure_schema() -> None:
-    conn = get_connection("scopes")
-    try:
-        engine.ensure_schema(conn)
-    finally:
-        conn.close()
-
-
-def reindex(*, force: bool = False, dry_run: bool = False,
-            db: Path | None = None) -> dict[str, Any]:
-    """Bring scopes and projects in line with the tables; returns counts per type."""
-    conn = get_connection_at(db or service_db_path("scopes"))
-    try:
-        engine.ensure_schema(conn)
-        return {
-            st: engine.reindex(conn, st, docs(conn), force=force, prune=True, dry_run=dry_run)
-            for st, docs in (("scope", _scope_docs), ("project", _project_docs))
-        }
-    finally:
-        conn.close()
-
-
-def run_reindex(*, force: bool = False, dry_run: bool = False) -> dict[str, Any]:
-    """:func:`reindex` on the index worker, so it never races the backfill."""
-    return _worker.submit(reindex, force=force, dry_run=dry_run,
-                          db=service_db_path("scopes")).result()
-
-
-async def backfill_loop() -> None:
-    """Reindex now and every :data:`BACKFILL_EVERY_S`; runs under ``spawn_supervised``."""
-    loop = asyncio.get_running_loop()
-    while True:
-        counts = await loop.run_in_executor(_worker, reindex)
-        log.info("search backfill: %s", {k: {x: v[x] for x in ("documents", "indexed", "pruned",
-                                                               "seconds")}
-                                         for k, v in counts.items()})
-        await asyncio.sleep(BACKFILL_EVERY_S)
-
-
-# ---------------------------------------------------------------------------
-# Reads
-# ---------------------------------------------------------------------------
-
-
-def search(source_type: str, query: str, *, allowed: str | None = None,
-           params: Iterable[Any] = (), limit: int = 10) -> engine.SearchResult:
-    conn = get_connection("scopes")
-    try:
-        return engine.search(conn, query, source_type=source_type, allowed=allowed,
-                             params=params, limit=limit)
-    finally:
-        conn.close()
+INDEX = ServiceIndex("scopes", lambda conn: {"scope": _scope_docs(conn),
+                                             "project": _project_docs(conn)})
+flush, ensure_schema, run_reindex = INDEX.flush, INDEX.ensure_schema, INDEX.run_reindex
+backfill_loop, search = INDEX.backfill_loop, INDEX.search

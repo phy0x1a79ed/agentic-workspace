@@ -12,14 +12,13 @@ from __future__ import annotations
 
 import logging
 import os
-import signal
 import subprocess
 import threading
 import time
 from typing import Any
 
 from awm.kb import instances
-from awm.gatewayclient.proc import child_preexec, signal_group
+from awm.gatewayclient.proc import GroupChild, child_preexec
 
 log = logging.getLogger("awm.kb.server")
 
@@ -50,8 +49,14 @@ def child_env() -> dict[str, str]:
     return env
 
 
-class Child:
+class Child(GroupChild):
     """The kb server process. Every method is safe to call at any time."""
+
+    STOP_TIMEOUT_S = 30.0
+
+    @property
+    def log_file(self):
+        return instances.LOG_FILE
 
     def __init__(self) -> None:
         self._lock = threading.RLock()
@@ -130,24 +135,6 @@ class Child:
             time.sleep(0.5)
         self._last_error = f"did not bind {instances.PORT} within {instances.START_TIMEOUT_S}s"
 
-    def stop(self, *, timeout: float = 30.0, hold: bool = False) -> dict[str, Any]:
-        """Stop the server. With `hold`, keep `reconcile` from respawning it until the next `start`."""
-        with self._lock:
-            self._held = hold
-            proc = self._proc
-            if proc is None or proc.poll() is not None:
-                self._proc = None
-                return {"action": "not-running", "running": False}
-            signal_group(proc, signal.SIGTERM)
-            try:
-                proc.wait(timeout=timeout)
-            except subprocess.TimeoutExpired:
-                signal_group(proc, signal.SIGKILL)
-                proc.wait(timeout=5)
-            self._proc = None
-            self._started_at = None
-        return {"action": "stopped", "running": False}
-
     def restart(self) -> dict[str, Any]:
         self.stop()
         return self.start() | {"action": "restarted"}
@@ -166,13 +153,6 @@ class Child:
                 self._last_error = f"{type(exc).__name__}: {exc}"
                 return {"action": "respawn-failed", "error": self._last_error}
         return {"action": "respawned", "previous_exit": code}
-
-    def logs(self, tail: int = 200) -> str:
-        try:
-            with open(instances.LOG_FILE, "rb") as fh:
-                return b"".join(fh.readlines()[-tail:]).decode("utf-8", "replace")
-        except OSError as exc:
-            return f"(no log at {instances.LOG_FILE}: {exc})"
 
 
 CHILD = Child()

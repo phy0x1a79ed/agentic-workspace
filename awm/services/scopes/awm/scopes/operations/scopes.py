@@ -484,11 +484,6 @@ def _handle_scope_scatter(args: dict) -> dict:
     return result.model_dump()
 
 
-def _handle_scope_reindex(args: dict) -> dict:
-    return search_index.run_reindex(force=bool(args.get("force", False)),
-                                    dry_run=bool(args.get("dry_run", False)))
-
-
 def _pid(args: dict) -> int | None:
     pid = args.get("pid", args.get("_caller_pid"))
     return int(pid) if isinstance(pid, (int, str)) and str(pid).isdigit() else None
@@ -518,7 +513,7 @@ def _handle_scope_claims(args: dict, as_: str | None = None) -> dict:
 SCOPE_HANDLERS = {
     "scope_create": _handle_scope_create,
     "scope_search": _handle_scope_search,
-    "scope_reindex": _handle_scope_reindex,
+    "scope_reindex": search_index.INDEX.handle_reindex,
     "scope_complete": _handle_scope_complete,
     "scope_delete": _handle_scope_delete,
     "scope_heal": _handle_scope_heal,

@@ -28,14 +28,13 @@ from __future__ import annotations
 import logging
 import os
 import shutil
-import signal
 import subprocess
 import threading
 import time
 from typing import Any
 
-from awm.gatewayclient.proc import child_preexec
-from awm.trilium import instances, procs
+from awm.gatewayclient.proc import GroupChild, child_preexec
+from awm.trilium import instances
 
 log = logging.getLogger("awm.trilium.sync")
 
@@ -133,7 +132,7 @@ def tunnel_cmd() -> list[str]:
     ]
 
 
-class Tunnel(procs.GroupChild):
+class Tunnel(GroupChild):
     """The ssh forward to the hub. Every method is safe to call at any time.
 
     Inert on a hub: every method returns a state saying so and spawns nothing.
@@ -249,13 +248,6 @@ class Tunnel(procs.GroupChild):
             self._next_attempt = time.time() + self._retry_s
         return {"action": "reopened", "previous_exit": code,
                 "retry_s": self._retry_s}
-
-    def logs(self, tail: int = 200) -> str:
-        try:
-            with open(self.log_file, "rb") as fh:
-                return b"".join(fh.readlines()[-tail:]).decode("utf-8", "replace")
-        except OSError as exc:
-            return f"(no log at {self.log_file}: {exc})"
 
 
 #: The one link this node holds. Inert on the hub.
