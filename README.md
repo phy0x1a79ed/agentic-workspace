@@ -97,17 +97,12 @@ The plugin's egress proxy rides in `HTTP_PROXY` and `HTTPS_PROXY`, and passes on
 
 ### Writing `run.sh`
 
-For a **Python service**, branch on the dev signal so the same script works from a dev sandbox and from the installed env:
+For a **Python service**, exec the interpreter `AWM_PYTHON` names. `install.sh` writes it to `.runtime-env`, and the dev sandbox sets it, with `PYTHONPATH`, in its config's `[env]`:
 
 ```bash
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")"
-
-if [[ -n "${DEV_PYTHONPATH:-}" ]]; then
-  exec env PYTHONPATH="$DEV_PYTHONPATH" mamba run -n "${AWM_ENV:-awm}" --no-capture-output \
-    python -m awm.myservice.hub_adapter
-fi
 [ -f ./.runtime-env ] && . ./.runtime-env      # sets AWM_PYTHON, the env's interpreter
 exec "${AWM_PYTHON:-python}" -m awm.myservice.hub_adapter
 ```

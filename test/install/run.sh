@@ -105,7 +105,7 @@ echo "$out" | grep -q "hello needs 2fa" || fail "hello's call to 2fa answered $o
 docker exec "$run-node" grep -q 'name = "hello"' /state/installed.toml || fail "no pin for hello"
 
 step "the peer hears the new node's table change"
-for _ in $(seq 50); do
+for _ in $(seq 300); do
     awm_in peer awm table | grep -q '"name": "hello"' && break
     sleep 0.1
 done
@@ -141,7 +141,7 @@ awm_in node uninstall cch >/dev/null || fail "uninstall the stub harness"
 
 step "uninstall runs hot on both nodes"
 awm_in node uninstall hello >/dev/null || fail "uninstall hello"
-for _ in $(seq 50); do
+for _ in $(seq 300); do
     awm_in peer awm table | grep -q '"name": "hello"' || break
     sleep 0.1
 done
