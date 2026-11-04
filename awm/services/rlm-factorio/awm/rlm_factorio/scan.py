@@ -20,7 +20,7 @@ import base64
 import hashlib
 import json
 import time
-from typing import Callable
+from typing import Any, Callable
 
 from awm.rlm_factorio import throttle
 
@@ -172,11 +172,15 @@ def resolve_area(args: dict, seat_position: Callable[[], dict] | None) -> dict:
     return q
 
 
-def _as_list(v) -> list:
-    if isinstance(v, list):
-        return v
-    if isinstance(v, dict):
-        return [v[k] for k in sorted(v, key=int)]
+def as_list(value: Any) -> list:
+    """Coerce Lua's table encoding back to a list (sparse arrays included)."""
+    if isinstance(value, list):
+        return value
+    if isinstance(value, dict):
+        try:
+            return [value[k] for k in sorted(value, key=int)]
+        except (TypeError, ValueError):
+            return list(value.values())
     return []
 
 
@@ -233,9 +237,9 @@ class Scanner:
             except ValueError:
                 raise ScanError(out.strip() or "scan page returned nothing") from None
             self._adapt(key, cost, int(page.get("work") or 0))
-            rows.extend(_as_list(page.get("rows")))
+            rows.extend(as_list(page.get("rows")))
             total += int(page.get("count") or 0)
-            nxt = _as_list(page.get("next")) or None
+            nxt = as_list(page.get("next")) or None
             if nxt is None:
                 cursor = None
                 break

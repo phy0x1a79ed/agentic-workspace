@@ -48,7 +48,7 @@ from typing import Any
 
 import httpx
 
-from awm.gatewayclient import service_token
+from awm.gatewayclient import hub_base_url, service_token
 
 log = logging.getLogger("awm.claude_science.mcp_bridge")
 
@@ -128,10 +128,6 @@ def is_allowed(domain: str, verb: str) -> bool:
     return verb in ALLOW.get(domain, ())
 
 
-def _hub_url() -> str:
-    return os.environ.get("AWM_HUB_URL", "http://127.0.0.1:7819/").rstrip("/")
-
-
 def _headers() -> dict[str, str]:
     token = service_token()
     return {"X-Awm-Service-Token": token} if token else {}
@@ -146,7 +142,7 @@ async def _catalog(client: httpx.AsyncClient) -> list[dict[str, Any]]:
     allowlist entry for a domain that is not running should be invisible, not a
     tool that always errors.
     """
-    resp = await client.get(f"{_hub_url()}/tools", headers=_headers(), timeout=30.0)
+    resp = await client.get(f"{hub_base_url()}/tools", headers=_headers(), timeout=30.0)
     resp.raise_for_status()
     payload = resp.json()
     entries = payload.get("tools") if isinstance(payload, dict) else payload
@@ -175,7 +171,7 @@ async def _catalog(client: httpx.AsyncClient) -> list[dict[str, Any]]:
 async def _invoke(client: httpx.AsyncClient, domain: str, verb: str,
                   args: dict[str, Any]) -> Any:
     resp = await client.post(
-        f"{_hub_url()}/invoke",
+        f"{hub_base_url()}/invoke",
         json={"name": f"{domain}_{verb}", "args": args or {}},
         headers=_headers(),
         timeout=300.0,

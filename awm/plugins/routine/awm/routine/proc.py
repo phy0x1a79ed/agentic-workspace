@@ -1,6 +1,7 @@
 """Run one shell command in its own process group, with a time budget.
 
 A timeout or a cancel kills the whole group, so a step's children die with it.
+:func:`git` is the blocking git call the deploy, refresh and runner modules share.
 """
 
 from __future__ import annotations
@@ -8,11 +9,19 @@ from __future__ import annotations
 import asyncio
 import os
 import signal
+import subprocess
 import time
+from pathlib import Path
 from dataclasses import dataclass
 
 TAIL = 4000
 KILL_GRACE = 5.0
+
+
+def git(root: Path | str, *args: str) -> str:
+    """``git -C root args``, stripped stdout. A failure raises CalledProcessError."""
+    return subprocess.run(["git", "-C", str(root), *args], capture_output=True,
+                          text=True, check=True).stdout.strip()
 
 
 @dataclass

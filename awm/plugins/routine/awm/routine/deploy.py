@@ -48,13 +48,6 @@ def _git(cwd: Path | str, *args: str, input: str | None = None,
                           input=input, env={**os.environ, **(env or {})})
 
 
-def _out(cwd: Path | str, *args: str) -> str:
-    r = _git(cwd, *args)
-    if r.returncode != 0:
-        raise subprocess.CalledProcessError(r.returncode, args, r.stdout, r.stderr)
-    return r.stdout.strip()
-
-
 def _rev(bare: Path, ref: str) -> str:
     r = _git(bare, "rev-parse", "--verify", "-q", f"{ref}^{{commit}}")
     return r.stdout.strip() if r.returncode == 0 else ""
@@ -105,7 +98,7 @@ class Deployer:
         worktree = self.workspace / "projects" / project / scope
         if not branch:
             if (worktree / ".git").exists():
-                branch = _out(worktree, "rev-parse", "--abbrev-ref", "HEAD")
+                branch = proc.git(worktree, "rev-parse", "--abbrev-ref", "HEAD")
             else:
                 branch = f"feat/{scope}"
         if branch in (DEV, RELEASE, "HEAD"):
@@ -247,7 +240,7 @@ class Deployer:
                 raise StepFailed("merge", f"{label} conflicts with {', '.join(merged) or DEV}"
                                  f" in: {', '.join(conflicts) or r.stdout.strip()[-500:]}")
             merged.append(label)
-        state["head"] = _out(wt, "rev-parse", "HEAD")
+        state["head"] = proc.git(wt, "rev-parse", "HEAD")
         self.store.record_batch_step(bid, {"step": "merge", "ok": True, "merged": merged,
                                            "head": state["head"]})
 
