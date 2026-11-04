@@ -9,10 +9,16 @@ set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 repo="$(cd "$here/../.." && pwd)"
 reg="${AWM_TEST_REGISTRY:-quay.io/hallamlab}"
-tag="${AWM_TEST_TAG:-dev}"
 bin="${AWM_TEST_BIN:-$repo/core/target/x86_64-unknown-linux-musl/release/awm}"
-node_img="$reg/awm-test-node:$tag"
-stub_img="$reg/awm-test-stubs:$tag"
+# The pinned digests, or the images build-images.sh tagged when AWM_TEST_TAG names a tag.
+pin() { sed -n "s/^$1=//p" "$here/images.pin"; }
+if [ -n "${AWM_TEST_TAG:-}" ]; then
+    node_img="$reg/awm-test-node:$AWM_TEST_TAG"
+    stub_img="$reg/awm-test-stubs:$AWM_TEST_TAG"
+else
+    node_img="$(pin node)"
+    stub_img="$(pin stubs)"
+fi
 run="awm-install-$$"
 work="$(mktemp -d)"
 user=(--user "$(id -u):$(id -g)" -e HOME=/tmp)
