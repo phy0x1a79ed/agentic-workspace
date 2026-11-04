@@ -1,0 +1,13 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "awm-grantlib"
+version = "1.0.0"
+requires-python = ">=3.11"
+description = "Check alcor's signed grants and orders (fleet.md R97 item 3)."
+dependencies = ["cryptography>=42"]
+
+[tool.setuptools]
+py-modules = ["verify_grant"]
