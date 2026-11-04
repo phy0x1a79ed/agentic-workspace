@@ -793,14 +793,29 @@ impl Gateway {
             return Ok(Some(h));
         }
         let ctx = CallContext { plugin: Some(NATIVE_TOOL.into()), ..CallContext::local(self.node.clone(), Surface::Plugin) };
-        let envelope = json!({"verb": crate::isolated::PROVIDER_VERB, "args": {"token": token}});
-        let text = self.invoke(crate::isolated::PROVIDER_TOOL, envelope, &ctx).await?;
-        let answer: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
-        let holder = Holder::from_answer(&answer);
-        if let Some(h) = &holder {
-            self.tokens.put(token, h.clone());
+        let (contract, major) = crate::isolated::HARNESS_CONTRACT;
+        let harness: Vec<String> = self.providers(contract, major).into_iter().map(|o| o.name).collect();
+        let local: Vec<&String> = harness.iter().filter(|h| self.owner(h).is_some_and(|o| o.peer.is_none())).collect();
+        if local.is_empty() {
+            return Err(ApiError::new(503, format!("no {contract}@{major} plugin runs on this node")));
         }
-        Ok(holder)
+        let mut failed = None;
+        for tool in local {
+            let envelope = json!({"verb": crate::isolated::PROVIDER_VERB, "args": {"token": token}});
+            match self.invoke(tool, envelope, &ctx).await {
+                Ok(text) => {
+                    let answer: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
+                    if let Some(h) = Holder::from_answer(&answer) {
+                        let h = Holder { harness: harness.clone(), ..h };
+                        self.tokens.put(token, h.clone());
+                        return Ok(Some(h));
+                    }
+                }
+                Err(e) => failed = Some(e),
+            }
+        }
+        // A harness that could not answer may hold the token: that is no answer, not "unknown".
+        failed.map_or(Ok(None), Err)
     }
 
     /// A call from an isolated session: its whitelist, this node only, its own scope.

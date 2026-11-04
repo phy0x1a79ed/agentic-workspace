@@ -11,7 +11,6 @@ register into the catalog/hub. See `catalog.py` for the registration contract.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 import os
 import shutil
@@ -40,7 +39,7 @@ from awm.config import (
 )
 from awm.config import edges
 from awm.config import modes as session_modes
-from awm.gateway import catalog, filehop, isolated, mcp_caller, peer_catalog, usage_log
+from awm.gateway import catalog, filehop, mcp_caller, peer_catalog, usage_log
 from awm.gateway.gateway_ops import GATEWAY_OPERATIONS, bound_caller
 from awm.gateway.operations import register_fastapi_routes
 
@@ -365,19 +364,7 @@ async def lifespan(app: FastAPI):
     except Exception as exc:  # noqa: BLE001
         print(f"[awm] service bring-up skipped: {exc}")
 
-    door, door_task = None, None
-    door_addr = isolated.listen_address()
-    if door_addr:
-        door = isolated.door_server(*door_addr)
-        door_task = asyncio.create_task(door.serve())
-        log.info("isolated door on %s:%s", *door_addr)
-
     yield
-
-    if door is not None:
-        door.should_exit = True
-        with contextlib.suppress(Exception):
-            await asyncio.wait_for(door_task, 5)
 
     # ----- Graceful shutdown backstop ---------------------------------------
     # On Linux the signal override above has already drained services in-band
@@ -448,7 +435,12 @@ async def _refuse_permission(request, exc):
 # (catalog) and the CLI command (cli.py). Add a new control op as an Operation,
 # not a hand-written route here.
 register_fastapi_routes(app, GATEWAY_OPERATIONS)
-isolated.mount(app)
+
+#: An isolated session's caller token. Only the Rust gateway serves its door
+#: (`core/crates/awm-gateway/src/isolated.rs`), so here it is refused everywhere.
+TOKEN_HEADER = "X-Awm-Caller-Token"
+#: The R9 id the isolated door writes. No call through this gateway may carry it.
+SESSION_KEY = "_caller_session_id"
 
 
 # ---------------------------------------------------------------------------
@@ -638,7 +630,7 @@ def _stamp_trust(name: str, args: dict, pid_header: str | None,
         if not isinstance(bag, dict):
             bag = {}
             args["args"] = bag
-    bag.pop(isolated.SESSION_KEY, None)
+    bag.pop(SESSION_KEY, None)
     if as_:
         # The far node vouched for the pair. A peer's service sends none: it is trusted,
         # as a local service is.
@@ -901,7 +893,7 @@ async def invoke_tool(request: Request):
 
 
 async def _invoke(payload: dict, request: Request):
-    if request.headers.get(isolated.TOKEN_HEADER):
+    if request.headers.get(TOKEN_HEADER):
         raise HTTPException(403, "an isolated session calls awm only through /mcp")
     name = payload.get("name")
     args = payload.get("args")
@@ -1086,7 +1078,7 @@ class HubRoutingMiddleware:
 
         stamp = _svc_stamp(rec.name, headers, as_)
 
-        if headers.get(isolated.TOKEN_HEADER):
+        if headers.get(TOKEN_HEADER):
             if scope["type"] == "http":
                 await JSONResponse({"error": "an isolated session calls awm only through /mcp"},
                                    status_code=403)(scope, receive, send)
