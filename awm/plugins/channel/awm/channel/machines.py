@@ -71,7 +71,7 @@ class Machines:
 
     # -- the session's lifecycle --------------------------------------------
 
-    async def invite(self, os_name: str | None, holder_id: str, label: str) -> dict:
+    async def invite(self, os_name: str | None) -> dict:
         """Mint a session for one declared kind of computer.
 
         Refused before reaching the daemon when the OS is missing or unknown: a
@@ -87,7 +87,7 @@ class Machines:
             raise MachineError("the tether minted no usable slot")
         self.mark.declared[slot] = {"os": os_name,
                                     "word": str(answer.get("code") or "").split(" ")[0]}
-        sid = self.mark.claim(slot, holder_id, label, floor) or await self._await_mint(slot)
+        sid = self.mark.claim(slot, floor) or await self._await_mint(slot)
         line = remote_os.launcher_line(os_name, answer.get("command") or "")
         return {
             **answer,

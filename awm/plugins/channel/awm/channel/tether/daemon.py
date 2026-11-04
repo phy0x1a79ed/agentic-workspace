@@ -309,10 +309,6 @@ class Child:
                         paths.ROLE, previous, paths.DAEMON_LOG)
         return self.start() | {"previous_exit": previous}
 
-    def restart(self, *, force: bool = False) -> dict[str, Any]:
-        self.stop()
-        return self.start()
-
     def shutdown(self) -> None:
         """The child dies with this process either way. Stopping it here makes a
         clean shutdown look clean in the log rather than like a kill."""
@@ -489,24 +485,6 @@ class Adopted:
         self._next_try = time.monotonic() + wait
         log.warning("tether: the operator daemon is not running (%s); next try in %.0fs",
                     self._error, wait)
-
-    def restart(self, *, force: bool = False) -> dict[str, Any]:
-        """Replace the daemon, which ends every session it holds."""
-        with self._lock:
-            state, report = probe()
-            live = live_sessions(report)
-            if live and not force:
-                return {"ok": False, "action": "refused",
-                        "error": f"{len(live)} session(s) live; restarting ends them. "
-                                 f"Pass force to do it anyway.",
-                        "sessions": [s.get("slot") for s in live]}
-            self._stop()
-            self._failures = 0
-            self._next_try = 0.0
-            out = self._start()
-            if out["action"] == "started":
-                self._started = time.monotonic()
-            return out
 
     def shutdown(self) -> None:
         """Leave the daemon running. That is the point of adopting it."""

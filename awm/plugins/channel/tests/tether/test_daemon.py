@@ -143,23 +143,6 @@ def test_a_new_release_waits_for_the_live_session_to_end(binary):
     assert child.reconcile() == {"action": "none"}
 
 
-def test_restart_is_refused_while_a_session_is_live_unless_forced(binary):
-    exe, sessions, started = binary
-    pid = _launch(binary)
-    sessions.write_text(json.dumps([{"slot": 3, "phase": "open"}]))
-
-    child = daemon.Adopted()
-    refused = child.restart()
-    assert refused["ok"] is False
-    assert refused["sessions"] == [3]
-    assert _pid() == pid
-
-    forced = child.restart(force=True)
-    started.append(_pid())
-    assert forced["action"] == "started"
-    assert _pid() not in (None, pid)
-
-
 def test_a_daemon_that_will_not_start_backs_off(binary, monkeypatch):
     exe, _, _ = binary
     exe.write_text("#!/bin/sh\nexit 3\n")

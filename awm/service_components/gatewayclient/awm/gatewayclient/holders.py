@@ -68,7 +68,8 @@ def _session_rows(include_stopped: bool = False) -> list[dict] | None:
     return rows
 
 
-def _row_live(row: dict) -> bool:
+def row_live(row: dict) -> bool:
+    """Whether a ``reflection list_other`` row is a running session."""
     return (row.get("state") not in _DEAD_STATES and row.get("live") is not False
             and row.get("alive") is not False)
 
@@ -144,4 +145,4 @@ def live_sessions() -> set[str] | None:
     rows = _session_rows()
     if rows is None:
         return None
-    return {str(r["session_id"]).lower() for r in rows if _row_live(r)}
+    return {str(r["session_id"]).lower() for r in rows if row_live(r)}
