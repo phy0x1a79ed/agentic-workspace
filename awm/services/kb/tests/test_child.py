@@ -7,20 +7,27 @@ import pytest
 from awm.kb import server
 
 
-def test_child_env_replaces_pythonpath_and_adds_no_llm_key(kb_paths, monkeypatch):
+def test_child_env_replaces_pythonpath_and_names_the_server(kb_paths, monkeypatch):
     monkeypatch.setenv("PYTHONPATH", "/awm/worktree")
     monkeypatch.setenv("DEV_PYTHONPATH", "/awm/worktree")
-    kb_paths.ZOTERO_LIBRARY.write_text("{}")
     env = server.child_env()
     assert env["PYTHONPATH"] == str(kb_paths.CHECKOUT / "src")
     assert "DEV_PYTHONPATH" not in env
     assert "LLM_API_KEY" not in env
-    assert env["KB_ZOTERO_LIBRARY"] == str(kb_paths.ZOTERO_LIBRARY)
     assert env["KB_PORT"] == str(kb_paths.PORT) and env["KB_HOST"] == "127.0.0.1"
 
 
-def test_child_env_skips_a_missing_library(kb_paths):
-    assert "KB_ZOTERO_LIBRARY" not in server.child_env()
+def test_child_env_points_the_server_at_the_shipped_indexes_that_exist(kb_paths, monkeypatch):
+    monkeypatch.delenv("KB_VECTORS", raising=False)
+    monkeypatch.delenv("KB_LADYBUG", raising=False)
+    env = server.child_env()
+    assert "KB_VECTORS" not in env
+    kb_paths.VECTORS.mkdir(parents=True)
+    env = server.child_env()
+    assert env["KB_VECTORS"] == str(kb_paths.VECTORS) and "KB_LADYBUG" not in env
+    assert "KB_ZOTERO_LIBRARY" not in env
+    monkeypatch.setenv("KB_VECTORS", "/elsewhere")
+    assert server.child_env()["KB_VECTORS"] == "/elsewhere"
 
 
 def test_child_env_puts_the_kb_env_lib_first(kb_paths, monkeypatch):

@@ -40,3 +40,20 @@ def test_the_limit_cuts_the_tail():
 
 def test_no_lists_is_no_hits():
     assert merge.fuse([[], []], 10) == []
+
+
+def test_fusion_orders_the_anchors_head_and_adds_below_it():
+    a, b, c, d, e = (hit("journals", x) for x in "abcde")
+    kept = merge.within([e, a, b, c, d], [d, c, b, a], 2)
+    assert [h["id"] for h in kept] == ["c", "d", "e", "a", "b"]
+
+
+def test_an_anchor_hit_fusion_dropped_stays_dropped():
+    a, b, c = (hit("journals", x) for x in "abc")
+    assert [h["id"] for h in merge.within([a, b], [c, b, a], 3)] == ["a", "b"]
+
+
+def test_an_anchor_hit_only_the_anchor_holds_keeps_its_place_in_the_head():
+    lists = [[hit("journals", x) for x in "abc"], [hit("journals", x) for x in "abc"], [hit("journals", x) for x in "dz"]]
+    fused = merge.fuse(lists, sum(map(len, lists)))
+    assert [h["id"] for h in merge.within(fused, lists[2], 2)][:2] == ["d", "z"]

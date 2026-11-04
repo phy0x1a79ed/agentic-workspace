@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Install the awm-kb service into the awm env, and the `kb` env its server runs in.
 #
-# The server's dependencies (torch, PyMuPDF, OCR) never enter the awm
+# The server's dependencies (fastembed, faiss, PyMuPDF) never enter the awm
 # env. They live in a separate env built from the kb checkout's own
 # envs/kb/base.yml, and this script records that env's interpreter for the
 # supervisor. A node with no kb checkout installs the service and warns: it
@@ -47,7 +47,7 @@ fi
 
 WANT="$(sha256sum "$ENV_FILE" | cut -d' ' -f1)"
 STAMP="$HERE/kb-env-stamp"
-if mamba run -n "$KB_ENV" python -c 'import sys' >/dev/null 2>&1 \
+if mamba run -n "$KB_ENV" python -c 'import fastembed, faiss' >/dev/null 2>&1 \
    && [ "$(cat "$STAMP" 2>/dev/null || true)" = "$WANT" ]; then
     echo "env '$KB_ENV' matches $ENV_FILE — nothing to do."
 elif mamba run -n "$KB_ENV" python -c 'import sys' >/dev/null 2>&1; then

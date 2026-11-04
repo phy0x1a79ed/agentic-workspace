@@ -430,7 +430,8 @@ class Probe:
 
     def search_hits(self, query: str, terms: list[str]) -> tuple[bool, Any, str]:
         """The local search fanned out to the peer."""
-        args = {"query": query, "peers": self.peer, "limit": 100}
+        sources = [s["name"] for s in self.peer_call("search", "sources", {}).get("sources", [])]
+        args = {"query": query, "peers": self.peer, "limit": 100, "sources": sources}
         for _ in range(3):
             out = parse_result(self.local_invoke("search", {"verb": "query", "args": args})["result"])
             answer = (out.get("peers") or {}).get(self.peer, {})

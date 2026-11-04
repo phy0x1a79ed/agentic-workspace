@@ -8,8 +8,15 @@ name = "kb"
 
 [[service.archive]]
 name = "kb"
-mode = "index"
-export = "kb_export"
+mode = "live"
+query = "kb_query"
+get = "kb_get"
+
+[[service.archive]]
+name = "library"
+mode = "live"
+query = "kb_library"
+get = "kb_get"
 
 [[tool]]
 name = "kb"

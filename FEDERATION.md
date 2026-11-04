@@ -158,7 +158,7 @@ Every verb declares an effect: `read`, `queue`, `write` or `secret`. A verb with
 A category is the only boundary. A read verb that returns journal text under another category leaks around the grant. `search` is the one verb family that does so on purpose, and it filters every hit by source. Review each new read verb for this. Services also narrow what a granted category returns:
 
 - `journal fetch` shows a foreign peer journal posts only.
-- `kb recall` gives a foreign peer only the hybrid, vector and lexical modes.
+- `kb status` tells a foreign peer only whether the kb server is up. `kb related` refuses a foreign peer.
 
 Revoke a grant with `awm peer revoke <name> <source>`. The next call is refused.
 

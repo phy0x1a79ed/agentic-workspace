@@ -31,12 +31,21 @@ def kb_paths(tmp_path, monkeypatch):
     (checkout / "src" / "kb" / "server.py").write_text(FAKE_SERVER)
     port = _free_port()
     for name, value in {
-        "CHECKOUT": checkout, "LIVE": checkout / "live", "SNAPSHOT_DIR": checkout / "data" / "store",
+        "CHECKOUT": checkout, "LIVE": checkout / "live",
         "LOG_FILE": tmp_path / "state" / "logs" / "kb-server.log", "PORT": port,
         "URL": f"http://127.0.0.1:{port}",
-        "ZOTERO_LIBRARY": tmp_path / "library.json", "START_TIMEOUT_S": 20.0,
+        "START_TIMEOUT_S": 20.0, "VECTORS": tmp_path / "state" / "w2" / "vectors",
     }.items():
         monkeypatch.setattr(instances, name, value)
     monkeypatch.setenv("KB_PYTHON", sys.executable)
-    monkeypatch.delenv("KB_ZOTERO_LIBRARY", raising=False)
     return instances
+
+
+@pytest.fixture(autouse=True)
+def fresh_answers():
+    """kb_query and kb_library share an answer for a few seconds; no test may see another's."""
+    from awm.kb import hub_adapter
+
+    hub_adapter._answers.clear()
+    yield
+    hub_adapter._answers.clear()

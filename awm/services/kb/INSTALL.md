@@ -1,46 +1,45 @@
 # kb
 
-The paper knowledgebase as an awm service. It supervises the kb server from `projects/kb`, relays its recall as `kb_<verb>` tools, and feeds the Zotero library to the `search` service as the archive source `kb`. The tool is off the agent surface (`tier = "off"`): agents find papers through `search query`.
+The paper knowledgebase as an awm service. It answers the archive's two live paper sources, `kb` and `library`, for `search`, and reads one paper whole for `search get`. It also supervises the kb server from `projects/kb`, which encodes query text and serves the meaning indexes. The tool is off the agent surface (`tier = "off"`): agents find papers through `search query`.
 
 ## Purpose & Contents
 
-This file holds the contract between awm and the kb server: what the child runs under, which keys it gets, where its store lives, what the archive source `kb` serves, and what a foreign peer may recall. How the server works is in `projects/kb`'s `AGENTS.md`.
+This file holds the contract between awm and the kb project: what the child runs under, which files the two sides share, what the two sources serve, and what a peer may call. How the kb project builds the shared files is in `projects/kb`.
 
 ## The child
 
-The server is `python -m kb.server` from the kb checkout, run by the `kb` env's interpreter. It starts its own ingest worker. Its dependencies never enter the awm env, whose torch pin is load-bearing.
+The server is `python -m kb.server` from the kb checkout, run by the `kb` env's interpreter. It answers `/encode`, `/related` and `/status`. Its dependencies (fastembed, faiss, PyMuPDF) never enter the awm env, whose torch pin is load-bearing.
 
 - **Checkout.** `KB_CHECKOUT`, default `projects/kb/release`.
 - **Interpreter.** `install.sh` builds the `kb` env from the checkout's `envs/kb/base.yml` and records its python in `kb-python`. Under systemd there is no `mamba` to find it at runtime.
 - **Port.** `KB_PORT`, default 12531, on loopback. Only this service talks to it.
-- **Process tree.** The server runs in its own session with `PR_SET_PDEATHSIG`, and the worker carries the same signal from the server. One group kill stops both, and neither outlives its parent.
+- **Process tree.** The server runs in its own session with `PR_SET_PDEATHSIG`. One group kill stops it, and it never outlives its parent.
+- **Encoder.** The model loads only from the checkout's `live/fastembed` cache and never downloads. Until it loads, and whenever the server is down, `kb query` answers by keyword alone.
 
 **CAUTION** The child's `PYTHONPATH` is replaced, not extended. A dev sandbox puts awm's source there, and awm code must never load in the kb interpreter.
 
-## Keys
+**CAUTION** compute's `PROTECTED` names `kb.server`. The server runs in its own session, so the `awm-service` pattern does not cover it. A rename of the module must update that pattern.
 
-| key | source | needed for |
+## The shared files
+
+The kb project builds these files and ships them to the state directory (`KB_STATE_DIR`, default `.awm/services/kb`). `awm/kb/instances.py` names each path. A builder in `projects/kb` and a reader here agree on each format:
+
+| file | built by | read by |
 |---|---|---|
-| Zotero | `ZOTERO_API_KEY` in the workspace `.awm/env` | PDF full text |
+| `papers.db` | `kb.fastlayer` | `awm.kb.fastlayer`, for both sources and `kb get` |
+| `hops/` | `kb.hops`, from `kb.graph`'s `graph.db` | `awm.kb.hops`, for `kb hop` and the author filter |
+| `w2/vectors/` | `kb.vectors` | the kb server, for `kb related` |
 
-Without a Zotero key, `kb sync` reads the zotero service's mirror at `projects/trilium/release/data/vault/zotero/library.json`. That gives metadata and abstracts, no PDFs. Ingest is chunk-only by default and spends nothing.
+**CAUTION** Land a format change in both repositories together. A reader refuses a `papers.db` whose `meta.schema` it does not know, and the verbs that read the file then answer nothing.
 
-## The store
+`papers_delta.db` is the one file this service writes. It holds the Zotero items that `papers.db` lacks. The service polls the zotero service on `KB_ZOTERO_PEER` (default `mira`) for items that moved, and re-maps the held items each time a new base ships.
 
-The store is `live/` in the kb checkout (`KB_LIVE`), beside the code that writes it. It is untracked.
+**WARNING** Never `dvc add` the delta. A pinned file is a read-only hardlink into the shared cache, and this service writes the delta while it runs.
 
-**WARNING** Never `dvc add` `live/`. A pinned file is a read-only hardlink into the shared cache, and the server writes the store constantly.
+## The archive sources
 
-`kb snapshot` pauses ingest, stops the server, copies `live/` to `data/store/` and runs `dvc add` on the copy. Committing the pin is left to the caller. The copy skips the embedding model cache, which re-downloads.
+`awm-plugin.toml` declares two live `[[service.archive]]` tables. `kb` answers through `kb_query` over every paper. `library` answers through `kb_library` over the Zotero library's papers alone. Both read a whole paper through `kb_get`. Posts are not in either source: the `journal` service owns them and `search` indexes them from there.
 
-## The archive source
+## A peer
 
-`service.toml` declares one `[[archive]]` table named `kb`, in index mode, exported by the hidden `kb_export`. The name is also the federation grant, so a peer's `kb` grant keeps its meaning. Posts are not in this source: the `journal` service owns them and `search` indexes them from there.
-
-`kb_export` reads the Zotero mirror (`KB_ZOTERO_LIBRARY`) itself, never the kb server, so the source stays current while the server is down or ingesting. It pages the mirror in key order, keyed on the last key sent. `cursor` is the previous page's `next_cursor`. `limit` is the page size, default 200, at most 1000. Each document is `id` (the Zotero key), `title`, `text`, `ts`, `kind` (`paper`) and, when the item has one, `url`. `ts` is the publication year's first day, else the mirror's pull time. `text` matches what the kb server indexes. The last page sets `done` and also returns `ids`, every key in the library, so `search` can drop papers Zotero deleted. A missing mirror raises, and never reports an empty id set. A foreign caller is refused.
-
-**CAUTION** The documents are metadata and abstracts, with no PDF text, because no node holds a `ZOTERO_API_KEY`. The key changes what the kb server's own recall reads. It does not change this export.
-
-## A foreign peer's recall
-
-A foreign peer holding the `kb` grant may call `status` and `recall`, both declared `read` with category `kb` (`FEDERATION.md` § *The foreign gate*). `status` returns counts and nothing else. `recall` always reads papers. Every caller gets the same three modes, hybrid, vector and lexical, which rank rows from kb's own store. Any other mode raises `ValueError`.
+A peer reaches the `kb` read verbs only over an edge (`FEDERATION.md`). `related` refuses every peer caller: it serves this node's `search` only. The lifecycle verbs are operator-only and refuse every edge caller.

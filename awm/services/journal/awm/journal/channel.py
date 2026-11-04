@@ -503,37 +503,84 @@ def fetch(*, project: str | None = None, scope: str | None = None,
     return rows_to_posts(rows)
 
 
+#: The search archive's name for the posts the journal exports to it.
+SEARCH_SOURCE = "journals"
+SEARCH_TIMEOUT_S = 30.0
+#: The most hits search returns per section.
+SEARCH_MAX = 100
+
+
+def ranked(query: str, *, project: str | None, scope: str | None,
+           before_ts: str | None, want: int) -> tuple[list[dict], dict | None]:
+    """The search service's hits on the journal's own posts, best first: its ``exact``
+    section, then ``related``. Raises when search cannot answer for the source."""
+    from awm.gatewayclient import call_sync
+    args: dict = {"query": query, "sources": [SEARCH_SOURCE], "limit": max(1, min(want, SEARCH_MAX))}
+    if project:
+        args["project"] = project
+    if scope:
+        args["scope"] = scope
+    if before_ts:
+        args["before"] = before_ts
+    res = call_sync("search", "query", args, timeout=SEARCH_TIMEOUT_S)
+    status = (res.get("sources") or {}).get(SEARCH_SOURCE) or {}
+    if status.get("status") not in ("ok", "frozen"):
+        raise RuntimeError(f"search source {SEARCH_SOURCE}: {status.get('status') or 'missing'}"
+                           f" {status.get('error') or ''}".strip())
+    hits, seen = [], set()
+    for section in ("exact", "related"):
+        for h in (res.get(section) or {}).get(SEARCH_SOURCE) or []:
+            if h.get("id") and h["id"] not in seen:
+                seen.add(h["id"])
+                hits.append(h)
+    return hits, status.get("degraded")
+
+
+#: Characters of a post's body around the first match, as the hit's snippet.
+SNIPPET_CHARS = 240
+
+
+def _snippet(body: str, query: str) -> str:
+    """The body around the query's first occurrence, else around its first word that occurs, else its start."""
+    low = body.lower()
+    words = [query.strip(), *query.split()]
+    at = next((i for i in (low.find(w.lower()) for w in words if w) if i >= 0), 0)
+    start = max(0, at - SNIPPET_CHARS // 4)
+    return " ".join(body[start:start + SNIPPET_CHARS].split())
+
+
 def search(*, query: str, project: str | None = None, scope: str | None = None,
            kind: str | None = None, author: str | None = None, limit: int = 50,
            offset: int = 0, before_ts: str | None = None,
            order: str | None = None, exclude: tuple[str, list] = ("", []),
            tags: Any = None) -> tuple[list[ScopePost], dict | None, str]:
-    """Thread first posts matching ``query`` by meaning and keyword, best first, a
-    ``degraded`` block, and which engine ranked them: ``local``, or ``none`` for a
+    """Thread first posts matching ``query``, best first, a ``degraded`` block, and
+    which engine ranked them: ``search`` (the search service), or ``none`` for a
     substring match.
 
-    The index holds one document per thread, its first post with its comments,
-    so a hit is a first post with its comment count (fleet.md R107 item 5). The
-    filters apply to that first post. ``order`` re-sorts by time. A filter
-    without an indexed tag falls back to a substring match.
+    The search service ranks the threads the journal exports to it, one document
+    per thread (its first post with its comments), so a hit is a first post with
+    its comment count (fleet.md R107 item 5). This module then keeps the hits its
+    own filters allow, so the tag filter, the caller's privacy exclusion and
+    ``author`` hold whatever search returned. ``order`` re-sorts by time. A
+    filter without an indexed tag, or a search that cannot answer, falls back to
+    a substring match.
     """
     where, params = _post_filter(project, scope, kind, author, before_ts, exclude, tags)
     where += " AND thread_id IS NULL"
     degraded = None
     semantic = "none"
-    if not search_index.may_hold(tagmod.kind_filter(kind, tags)):
-        ids = None
-    else:
+    hits = None
+    expr = tagmod.kind_filter(kind, tags)
+    if search_index.may_hold(expr):
+        narrowed = bool(author or exclude[0] or project == "" or tagmod.parse_filter(expr))
         try:
-            res = search_index.search("post", query, allowed=f"SELECT id FROM scope_posts WHERE 1=1{where}",
-                                      params=params, limit=offset + limit)
-            ids, degraded = [h["source_id"] for h in res.hits][offset:], res.degraded
-            matches = {h["source_id"]: h for h in res.hits}
-            semantic = "local"
+            hits, degraded = ranked(query, project=project, scope=scope, before_ts=before_ts,
+                                    want=SEARCH_MAX if narrowed else offset + limit)
+            semantic = "search"
         except Exception as exc:  # noqa: BLE001 — reported, then answered by keyword
-            ids = None
             degraded = {"semantic": "error", "error": repr(exc)[:300], "fallback": "keyword"}
-    if ids is None:
+    if hits is None:
         rows = JournalDAO().query_all(
             f"SELECT * FROM scope_posts WHERE 1=1{where} AND (body LIKE ? OR EXISTS ("
             "SELECT 1 FROM scope_posts c WHERE c.thread_id = scope_posts.id AND c.body LIKE ?))"
@@ -541,13 +588,15 @@ def search(*, query: str, project: str | None = None, scope: str | None = None,
             [*params, f"%{query}%", f"%{query}%", limit, offset])
         posts = rows_to_posts(rows)
     else:
+        ids = [h["id"] for h in hits]
         marks = ",".join("?" * len(ids))
-        by_id = {r["id"]: r for r in JournalDAO().query_all(
-            f"SELECT * FROM scope_posts WHERE id IN ({marks})", ids)} if ids else {}
-        posts = rows_to_posts(by_id[i] for i in ids if i in by_id)
-        for p in posts:
-            h = matches[p.id]
-            p.match = {"score": h["score"], "snippet": h["snippet"]}
+        allowed = {r["id"]: r for r in JournalDAO().query_all(
+            f"SELECT * FROM scope_posts WHERE id IN ({marks}){where}", [*ids, *params])} if ids else {}
+        kept = [h for h in hits if h["id"] in allowed]
+        posts = rows_to_posts(allowed[h["id"]] for h in kept)
+        for p, h in zip(posts, kept):
+            p.match = {"score": h.get("score"), "snippet": _snippet(p.body or "", query)}
+        posts = posts[offset:offset + limit]
     counts = comment_counts([p.id for p in posts])
     for p in posts:
         p.comments = counts.get(p.id, 0)

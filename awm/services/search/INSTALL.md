@@ -20,7 +20,8 @@ A service joins with one `[[archive]]` table per source in its `service.toml`. T
 
 - `name`: the source name. It is also the federation grant. Use lowercase letters, digits, `_` and `-`.
 - `mode = "index"` with `export = "<tool>_export"`. The hidden export verb pages documents. Optional `topic` names an event that triggers a pass.
-- `mode = "live"` with `query = "<tool>_<verb>"`. The verb takes `query`, `limit` and the common filters. It returns `{hits: [{id, title, snippet, ts?, project?, scope?, kind?, url?}]}`. `search` calls it at query time. Optional `optin = true` runs the source only when a caller names it in `sources`.
+- `mode = "live"` with `query = "<tool>_<verb>"`. The verb takes `query`, `limit` and the common filters. It returns `{exact: [hit], related: [hit]}`, each hit `{id, title, ts?, project?, scope?, kind?, url?, match?}`. A bare `{hits: [hit]}` counts as `related`. `search` calls it at query time. Optional `optin = true` runs the source only when a caller names it in `sources`.
+- `get = "<tool>_<verb>"` on a live table. The verb takes `id` and returns the whole document. Without it, `search get` cannot read that source's hits.
 
 The export verb takes `cursor` and `limit` (default 200, clamped to 1-1000). It returns `{documents: [{id, title, text, ts, project?, scope?, kind?, url?, tags?}], next_cursor, done, ids}`. `tags` is a list of strings.
 
@@ -37,3 +38,5 @@ The export verb takes `cursor` and `limit` (default 200, clamped to 1-1000). It 
 - A peer never sees a document under a private mark (`awm.config.privacy`). `search` matches a document by its `project` and `scope`, in every journal spelling `privacy.canonical` reads, and by a tag equal to a marked project's name, ignoring case. A live hit also matches by a transcript slug in `project`. The filter runs in the index query, so a page stays full. The `sources` and `status` counts leave the hidden documents out. `get` answers `no document` for one.
 - **CAUTION** A document with no `project`, `scope` or marked tag stays visible to peers whatever its text says, such as an untagged precedence decision that mentions a private project. An unreadable marks file hides from peers every document that names a project, a scope or a tag.
 - A peer on a release without `search` reports `unsupported` and never hides local hits.
+- A hit names its document and quotes none of it. `search` drops every key outside the hit shape above, so neither a source nor a peer can add text to a hit.
+- Each `search get` writes one row to the usage log in `search.db`: the time, the caller's project and scope, the query, the source, the document id and the node. No rank reads the log yet. Turn a usage rank on only after a replay of the log shows it beats the plain order.

@@ -72,6 +72,16 @@ class Exporter:
         return out
 
 
+def every(result: dict[str, Any]) -> list[dict[str, Any]]:
+    """Every hit of a query answer: section by section in reading order, each section source by source."""
+    return [h for section in ("exact", "related") for hits in result[section].values() for h in hits]
+
+
+def flat(section: dict[str, list[dict[str, Any]]]) -> list[dict[str, Any]]:
+    """One section's hits, source by source."""
+    return [h for hits in section.values() for h in hits]
+
+
 def doc(title: str, text: str, ts: str = "2026-03-01T10:00:00Z", **extra: Any) -> dict[str, Any]:
     return {"title": title, "text": text, "ts": ts, **extra}
 
@@ -111,8 +121,9 @@ class FakeGateway:
     def plug_live(self, name: str, hits: Callable[[dict], Any], *, service: str | None = None,
                   **table: Any) -> None:
         service = service or name
+        verbs = ("query", *(["get"] if table.get("get") else []))
         self.entries.append(entry(service, [{"name": name, "mode": "live", "query": f"{service}_query",
-                                             **table}], verbs=("query",)))
+                                             **table}], verbs=verbs))
         self.handlers[(service, "query")] = hits
 
     def stop(self, service: str) -> None:

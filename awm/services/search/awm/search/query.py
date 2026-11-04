@@ -26,12 +26,16 @@ class Query:
     sources: list[str] | None = None
     project: str = ""
     scope: str = ""
-    kind: str = ""
+    kinds: list[str] = field(default_factory=list)
     after: str = ""
     before: str = ""
     limit: int = DEFAULT_LIMIT
     local: bool = True
     peer_names: list[str] | str = field(default_factory=list)
+    #: Another node made the call, so it answers from this node alone and asks no home either.
+    relayed: bool = False
+    #: The scope the call is made from, as project/scope; no order depends on it.
+    context: str = ""
     hidden: Sequence[dict] | None = ()
     raw: dict[str, str] = field(default_factory=dict)
 
@@ -40,7 +44,7 @@ class Query:
         return bool(self.peer_names)
 
     def filters(self, sources: list[str]) -> Filters:
-        return Filters(sources, self.project, self.scope, self.kind, self.after, self.before, self.hidden)
+        return Filters(sources, self.project, self.scope, self.kinds, self.after, self.before, self.hidden)
 
     def forwarded(self) -> dict[str, Any]:
         """The arguments a peer is asked with: the same question, never a further fan-out."""
@@ -103,11 +107,14 @@ def parse(args: dict[str, Any], as_: str | None = None) -> Query:
     local, peer_names = _peers(args.get("peers"))
     if privacy.from_peer(as_):
         local, peer_names = True, []  # a peer's call searches this node only, never fanning out again
+    kinds = names(args.get("kind")) or []
+    raw = {k: str(args[k]) for k in ("project", "scope", "after", "before", "author") if args.get(k)}
+    if kinds:
+        raw["kind"] = ",".join(kinds)
     return Query(
         text=text, sources=names(args.get("sources")),
         project=str(args.get("project") or ""), scope=str(args.get("scope") or ""),
-        kind=str(args.get("kind") or ""), after=_time(args, "after"), before=_time(args, "before"),
+        kinds=kinds, after=_time(args, "after"), before=_time(args, "before"),
         limit=max(1, min(int(args.get("limit") or DEFAULT_LIMIT), MAX_LIMIT)),
-        local=local, peer_names=peer_names,
-        hidden=hidden_for(as_),
-        raw={k: str(args[k]) for k in ("project", "scope", "kind", "after", "before") if args.get(k)})
+        local=local, peer_names=peer_names, relayed=privacy.from_peer(as_),
+        hidden=hidden_for(as_), context=str(args.get("context") or "").strip(), raw=raw)
