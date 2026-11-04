@@ -1,76 +1,57 @@
-"""Calls to other plugins through this node's gateway, by tool name (redux plugin contract v1.8)."""
+"""Calls to other plugins through this node's gateway, as the relay's Refused and Unreachable."""
 
 from __future__ import annotations
 
 import json
-import os
 from typing import Any
 
 import httpx
 
+from awm import gatewayclient
 from awm.operations.relay import Refused, Unreachable
 
-def hub() -> str:
-    return os.environ.get("AWM_HUB_URL", "http://127.0.0.1:8765")
 
-
-def _headers() -> dict[str, str]:
-    """The service token this spawn was given, which names operations to the gateway."""
+def _fault(exc: Exception) -> Exception:
+    """A transport failure, a 5xx or a retryable 4xx is Unreachable; any other 4xx is Refused."""
+    if not isinstance(exc, gatewayclient.GatewayCallError):
+        return Unreachable(str(exc))
+    if exc.status >= 500 or exc.status in (404, 408, 429):
+        return Unreachable(f"{exc.status} {exc.body[:200]}")
     try:
-        token = open(os.environ["AWM_HUB_TOKEN_FILE"]).read().strip()
-    except (KeyError, OSError):
-        return {}
-    return {"X-Awm-Service-Token": token} if token else {}
+        detail = json.loads(exc.body).get("detail", exc.body)
+    except (ValueError, AttributeError):
+        detail = exc.body or str(exc.status)
+    return Refused(detail)
 
 
 class GatewayTool:
-    """One tool reached by name. Transport failures and 5xx become Unreachable."""
+    """One tool reached by name."""
 
     def __init__(self, name: str, *, peer: str | None = None, timeout: float = 15.0) -> None:
         self.name, self.peer, self.timeout = name, peer, timeout
 
-    def _body(self, verb: str, args: dict[str, Any], peer: str | None) -> dict[str, Any]:
-        body: dict[str, Any] = {"name": self.name, "args": {"verb": verb, "args": args}}
-        peer = peer or self.peer
-        if peer:
-            body["args"]["peer"] = peer
-        return body
-
-    @staticmethod
-    def _reply(r: httpx.Response) -> Any:
-        if r.status_code >= 500 or r.status_code in (404, 408, 429):
-            raise Unreachable(f"{r.status_code} {r.text[:200]}")
-        if r.status_code >= 400:
-            raise Refused(r.json().get("detail", r.text) if r.content else str(r.status_code))
-        res = r.json().get("result")
-        return json.loads(res) if isinstance(res, str) else res
-
     async def call(self, verb: str, args: dict[str, Any], *, timeout: float | None = None,
                    peer: str | None = None) -> Any:
         try:
-            async with httpx.AsyncClient(timeout=timeout or self.timeout) as c:
-                r = await c.post(f"{hub()}/invoke", json=self._body(verb, args, peer),
-                                 headers=_headers())
-        except httpx.HTTPError as exc:
-            raise Unreachable(str(exc)) from exc
-        return self._reply(r)
+            return await gatewayclient.call(self.name, verb, args, peer=peer or self.peer,
+                                            timeout=timeout or self.timeout)
+        except (gatewayclient.GatewayCallError, httpx.HTTPError) as exc:
+            raise _fault(exc) from exc
 
     def call_sync(self, verb: str, args: dict[str, Any], *, timeout: float | None = None) -> Any:
         try:
-            r = httpx.post(f"{hub()}/invoke", json=self._body(verb, args, None),
-                           headers=_headers(),
-                           timeout=timeout or self.timeout)
-        except httpx.HTTPError as exc:
-            raise Unreachable(str(exc)) from exc
-        return self._reply(r)
+            return gatewayclient.call_sync(self.name, verb, args, peer=self.peer,
+                                           timeout=timeout or self.timeout)
+        except (gatewayclient.GatewayCallError, httpx.HTTPError) as exc:
+            raise _fault(exc) from exc
 
 
 async def usage(page: str) -> None:
     """Record one page visit (plugin contract, § Pages on their own origin)."""
     try:
         async with httpx.AsyncClient(timeout=3) as c:
-            await c.post(f"{hub()}/usage", json={"surface": "page", "plugin": "operations",
-                                                 "name": page})
+            await c.post(f"{gatewayclient.hub_base_url()}/usage",
+                         json={"surface": "page", "plugin": "operations", "name": page})
     except httpx.HTTPError:
         pass
 
