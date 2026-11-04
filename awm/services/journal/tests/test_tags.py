@@ -106,13 +106,12 @@ def test_a_type_tag_is_set_only_when_the_post_is_made(vocab, name):
         channel.set_tags(p.id, add=[name] if name != "message" else [], remove=[name] if name == "message" else [])
 
 
-def test_the_retag_verb_refuses_a_foreign_peer(vocab, monkeypatch):
-    from awm.journal import channel
+def test_the_retag_verb_refuses_an_untrusted_session(vocab):
     from awm.journal.operations.tags import TAG_HANDLERS
-    monkeypatch.setattr(channel, "is_foreign", lambda as_: as_ == "peer:x")
     p = _post()
     with pytest.raises(PermissionError):
-        TAG_HANDLERS["retag"]({"post_id": p.id, "add": ["closed"]}, "peer:x")
+        TAG_HANDLERS["retag"]({"post_id": p.id, "add": ["closed"],
+                               "_caller_trust": "untrusted", "_caller_scope": "awm/x"}, None)
     out = TAG_HANDLERS["retag"]({"post_id": p.id, "add": ["closed"]}, None)
     assert "closed" in out["post"]["tags"]
 

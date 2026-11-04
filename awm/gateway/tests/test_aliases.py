@@ -181,7 +181,7 @@ def test_usage_renames_fold_the_old_pair_into_the_new_one():
     renames = aliases.usage_renames()
     assert renames[("scope", "post")] == ("journal", "post")
     assert renames[("cx", "start")] == ("reflection", "start_other")
-    assert renames[("rlm", "browser_status")] == ("browser", "status")
+    assert renames[("rlm", "browser_status")] == ("rlm-browser", "status")
     usage.set_renames(renames)
     usage.record("cx", "start")
     usage.record("reflection", "start_other")

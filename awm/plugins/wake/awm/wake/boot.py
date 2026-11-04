@@ -16,7 +16,7 @@ from collections.abc import Callable
 from typing import Any
 
 from awm.wake import config as wake_config
-from awm.wake.gateway import HARNESS, REFLECTION, WAKE, CallError, Gateway, resolves
+from awm.wake.gateway import REFLECTION, WAKE, CallError, Gateway
 
 log = logging.getLogger("awm.wake.boot")
 
@@ -32,9 +32,9 @@ async def run(cfg: wake_config.WakeConfig, gw: Gateway, *, gateway_wait_s: float
             return {**report, "release": await _release(cfg, gw, report)}
         await sleep(5)
 
-    # The redux gateway serves revive_pinned on harness-cc. Today's gateway
-    # serves it as a hidden reflection verb.
-    harness = HARNESS if resolves(HARNESS) else REFLECTION
+    # The redux gateway serves revive_pinned on the harness provider. Today's
+    # gateway serves it as a hidden reflection verb.
+    harness = await gw.harness() or REFLECTION
     revived: Any = None
     error = None
     for attempt in range(revive_tries):

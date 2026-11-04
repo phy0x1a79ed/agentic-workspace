@@ -26,16 +26,20 @@ def cfg():
 
 
 class FakeGateway:
-    """Records calls and answers them from a table of (uuid, verb) -> reply or exception."""
+    """Records calls and answers them from a table of (tool, verb) -> reply or exception."""
 
-    def __init__(self, replies=None, up=True):
+    def __init__(self, replies=None, up=True, harness=None):
         self.calls = []
         self.replies = replies or {}
         self._up = up
+        self._harness = harness
 
-    async def call(self, tool_uuid, verb, args=None, peer=None):
-        self.calls.append((tool_uuid, verb, args or {}, peer))
-        reply = self.replies.get((tool_uuid, verb), {"ok": True})
+    async def harness(self):
+        return self._harness
+
+    async def call(self, tool, verb, args=None, peer=None):
+        self.calls.append((tool, verb, args or {}, peer))
+        reply = self.replies.get((tool, verb), {"ok": True})
         if isinstance(reply, Exception):
             raise reply
         return reply(args) if callable(reply) else reply

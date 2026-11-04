@@ -6,7 +6,9 @@ import base64
 
 import pytest
 from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
+
+import verify_grant
 
 import awm.trustpolicy as tp
 
@@ -28,7 +30,7 @@ def _grant(sk, pk, **over):
              "not_before": NOW - 10, "not_after": NOW + 900, "approved_by_device": "pk1"}
     grant.update(over)
     sig = base64.urlsafe_b64encode(sk.sign(tp.canonical(grant))).decode().rstrip("=")
-    return {"grant": grant, "sig": sig, "key_id": tp.grants.key_id(pk)}
+    return {"grant": grant, "sig": sig, "key_id": verify_grant.key_id(Ed25519PublicKey.from_public_bytes(pk))}
 
 
 def test_a_starter_sets_equal_or_lower():

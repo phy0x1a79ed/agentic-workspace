@@ -8,9 +8,6 @@ trust = "own"
 # kill the batch that called it. It refreshes with the project (deploy.toml).
 
 
-[placement]
-nodes = ["*"]
-
 [[service]]
 name = "routine"
 path = "."

@@ -172,10 +172,7 @@ async def relay(monkeypatch):
     monkeypatch.setenv("AWM_BOARD_TOKEN", token)
     monkeypatch.setenv("AWM_SWARM", "alpha")
     monkeypatch.setenv("AWM_NODE_NAME", "vega.mesh")
-    monkeypatch.setattr("awm.config.list_records", lambda: [
-        {"name": "rigel", "relation": "domestic", "swarm": "alpha"},
-        {"name": "shaula", "relation": "foreign", "swarm": "beta"},
-    ])
+    monkeypatch.setattr("awm.config.list_records", lambda: [{"name": "rigel"}])
     server.alpha_token, server.beta_token = token, other
     yield server
     await server.stop()

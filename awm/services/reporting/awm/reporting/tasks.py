@@ -325,19 +325,20 @@ class Tasks:
 
     async def _ensure_task_id(self, who: Who, title: str) -> None:
         """Open the task of new work in operations (sessions.md R57 step 1), unless the session has one."""
-        if not who.session_id:
+        session = ids.to_r9(who.session_id)
+        if not session:
             return
         try:
             have = await self._fetch(OPERATIONS_SERVICE, "task_for_session",
-                                     {"session_id": who.session_id}, timeout=30.0)
+                                     {"session_id": session}, timeout=30.0)
             if isinstance(have, dict) and have.get("task_id"):
                 return
             made = await self._fetch(OPERATIONS_SERVICE, "task_open",
-                                     {"title": title, "session_id": who.session_id}, timeout=30.0)
+                                     {"title": title, "session_id": session}, timeout=30.0)
         except Exception as exc:  # noqa: BLE001 — a card without a task id still tracks the work
             log.warning("reporting: no task id for %s: %s", who.key, exc)
             return
-        log.info("reporting: task %s opened for session %s", (made or {}).get("task_id"), who.session_id)
+        log.info("reporting: task %s opened for session %s", (made or {}).get("task_id"), session)
 
     async def _file_away(self, task: dict, why: str) -> None:
         """Move ``task`` off its session's key, so the session's next work opens a card of its own."""

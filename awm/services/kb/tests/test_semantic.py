@@ -207,20 +207,19 @@ def relayed(monkeypatch):
         return {"hits": []}
 
     monkeypatch.setattr(client, "related", related)
-    monkeypatch.setattr(hub_adapter.config, "peer_relation", lambda n: "foreign" if n == "stranger" else "domestic")
     monkeypatch.setattr(hub_adapter.config, "caller_peer", lambda as_: (as_ or "").removeprefix("peer:") or None)
     return seen
 
 
-async def test_related_is_domestic(relayed):
+async def test_related_serves_this_node_only(relayed):
     with pytest.raises(PermissionError):
-        await hub_adapter.HANDLERS["related"]({"text": "x"}, as_="peer:stranger")
+        await hub_adapter.HANDLERS["related"]({"text": "x"}, as_="peer:home")
     await hub_adapter.HANDLERS["related"]({"text": "x", "zones": ["journal"], "junk": 1})
     assert relayed[-1] == ("related", {"text": "x", "zones": ["journal"]})
 
 
-def test_the_manifest_declares_related_under_the_kb_grant():
+def test_the_manifest_declares_related_as_a_read_off_the_mcp_surface():
     verbs = {f["name"]: f for f in hub_adapter.API_MANIFEST["functions"]}
-    assert verbs["related"]["category"] == "kb" and verbs["related"]["effect"] == "read"
+    assert "category" not in verbs["related"] and verbs["related"]["effect"] == "read"
     assert verbs["related"]["surfaces"] == ["cli", "http"]
     assert set(hub_adapter.HANDLERS) >= set(verbs)

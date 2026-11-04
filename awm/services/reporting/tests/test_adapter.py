@@ -19,9 +19,7 @@ pytestmark = [pytest.mark.unit, pytest.mark.smoke]
 SWARM_VERBS = {"swarm_list": "read", "swarm_get": "read", "swarm_messages": "read",
                "swarm_message_post": "write", "swarm_files": "read", "swarm_file_fetch": "read"}
 EFFECTS = {"status": "read", "board_ensure": "write", "ops_post": "write", "convert": "write",
-           **dict.fromkeys(hub_adapter.TASK_VERBS, "write"), **SWARM_VERBS,
-           "task_open": "write", "task_attach": "write", "task_join": "write", "task_session_end": "write",
-           "task_for_session": "read", "task_sessions": "read", "task_get": "read"}
+           **dict.fromkeys(hub_adapter.TASK_VERBS, "write"), **SWARM_VERBS}
 
 
 def functions() -> dict[str, dict]:
@@ -56,10 +54,9 @@ PUBLISHED = {
     "ops_post": "operations_ops_post", "board_ensure": "operations_board_ensure",
     "convert": "operations_convert",
     **{name: f"operations_{name}" for name in SWARM_VERBS},
-    **{name: f"operations_{name}" for name in hub_adapter.TASK_ID_VERBS},
 }
 HIDDEN = {"hook_plan", "hook_plan_approved", "hook_todos", "hook_prompt", "hook_session_clear", "ops_post",
-          "board_ensure", "convert", "task_open", "task_attach", "task_session_end"}
+          "board_ensure", "convert"}
 
 
 def test_the_verbs_publish_into_the_operations_tool_and_every_one_has_a_handler():

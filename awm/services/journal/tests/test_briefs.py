@@ -55,9 +55,11 @@ def test_edit_needs_a_brief(journal_workspace):
         _run("brief_edit", {"project": "awm", "scope": "s", "old": "a", "new": "b"})
 
 
-def test_a_foreign_peer_reads_no_brief(journal_workspace):
-    with pytest.raises(ValueError, match="no scope"):
-        _run("brief_read", {"project": "awm", "scope": "s"}, as_="peer:stranger")
+def test_an_untrusted_session_reads_no_other_scopes_brief(journal_workspace):
+    from awm.journal import bounds
+    with pytest.raises(bounds.Refused):
+        _run("brief_read", {"project": "awm", "scope": "s",
+                            "_caller_trust": "untrusted", "_caller_scope": "awm/other"})
 
 
 def test_the_write_verbs_carry_the_r143_text():

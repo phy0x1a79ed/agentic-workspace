@@ -21,34 +21,34 @@ SEAT = _p("seat", required=True, desc="The seat id that seat_open returned.")
 TAB = _p("tab", required=True, desc="A tab id of this seat's window.")
 
 VERBS: list[dict[str, Any]] = [
-    {"name": "seat_open", "description": "Attach this session to its own browser window. A trusted "
+    {"name": "seat_open", "effect": "write", "description": "Attach this session to its own browser window. A trusted "
      "session gets Tony's profile unless it asks for a blank one. A cooperative session always gets "
      "a blank one. Returns the seat id.",
      "params": [_p("profile", desc="tony or blank."),
                 _p("own_container", "boolean", desc="Run this seat in its own container.")]},
-    {"name": "seat_close", "description": "Close this seat's window, tabs and container.", "params": [SEAT]},
-    {"name": "seats", "description": "This session's seats.", "params": []},
-    {"name": "tab_open", "description": "Open a tab in this seat's window.",
+    {"name": "seat_close", "effect": "write", "description": "Close this seat's window, tabs and container.", "params": [SEAT]},
+    {"name": "seats", "effect": "read", "description": "This session's seats.", "params": []},
+    {"name": "tab_open", "effect": "write", "description": "Open a tab in this seat's window.",
      "params": [SEAT, _p("url", required=True)]},
-    {"name": "tab_close", "description": "Close a tab of this seat.", "params": [SEAT, TAB]},
-    {"name": "tab_activate", "description": "Switch to a tab of this seat.", "params": [SEAT, TAB]},
-    {"name": "tab_list", "description": "This seat's tabs.", "params": [SEAT]},
-    {"name": "navigate", "description": "Load a URL in a tab of this seat.",
+    {"name": "tab_close", "effect": "write", "description": "Close a tab of this seat.", "params": [SEAT, TAB]},
+    {"name": "tab_activate", "effect": "write", "description": "Switch to a tab of this seat.", "params": [SEAT, TAB]},
+    {"name": "tab_list", "effect": "read", "description": "This seat's tabs.", "params": [SEAT]},
+    {"name": "navigate", "effect": "write", "description": "Load a URL in a tab of this seat.",
      "params": [SEAT, TAB, _p("url", required=True)]},
-    {"name": "cdp", "description": "Run a page-level DevTools method on a tab of this seat. Target, "
+    {"name": "cdp", "effect": "write", "description": "Run a page-level DevTools method on a tab of this seat. Target, "
      "Browser, Storage and cookie-wide methods are refused.",
      "params": [SEAT, TAB, _p("method", required=True), _p("params", "object")]},
-    {"name": "screenshot", "description": "A PNG of a tab, base64.", "params": [SEAT, TAB]},
-    {"name": "signin", "description": "Ask Tony to pass a captcha or sign in on this seat's window. "
+    {"name": "screenshot", "effect": "read", "description": "A PNG of a tab, base64.", "params": [SEAT, TAB]},
+    {"name": "signin", "effect": "write", "description": "Ask Tony to pass a captcha or sign in on this seat's window. "
      "Files a request on the approvals queue and raises the window in the viewer.",
      "params": [SEAT, _p("site", required=True), _p("reason", required=True)]},
-    {"name": "viewer", "description": "The one viewer that shows every window.", "params": []},
+    {"name": "viewer", "effect": "read", "description": "The one viewer that shows every window.", "params": []},
 ]
 
 API_MANIFEST = {
     "description": "alcor's browser (fleet.md R102): each session drives its own Chrome window, "
                    "its seat. One viewer shows them all.",
-    "functions": [{**v, "tool": TOOL} for v in VERBS],
+    "functions": [{**v, "tool": f"{TOOL}_{v['name']}"} for v in VERBS],
     "emitters": [], "sessions": [],
 }
 

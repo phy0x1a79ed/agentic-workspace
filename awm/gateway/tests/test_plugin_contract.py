@@ -145,9 +145,17 @@ def test_each_service_has_a_manifest_or_a_named_legacy_reason(folder):
         assert not (folder / "service.toml").exists(), "the manifest replaces service.toml"
 
 
+#: Refused until the cutover: board and reporting serve ``operations`` until the
+#: federation threads move onto persistent rooms, then they go (queue.md R145).
+CUTOVER = {"operations": "already served by plugin 'board'", "browser": "plugin 'board' serves major 1"}
+
+
 def test_the_loader_refuses_no_folder_of_the_tree(monkeypatch):
     monkeypatch.delenv("AWM_SERVICE_ROOTS", raising=False)
-    assert discovery.plugin_refusals() == {}
+    refused = discovery.plugin_refusals()
+    assert {k: v for k, v in refused.items() if k not in CUTOVER} == {}
+    for folder, reason in CUTOVER.items():
+        assert reason in refused.get(folder, reason), refused[folder]
 
 
 @pytest.mark.parametrize("folder", _plugins(), ids=lambda f: f.name)

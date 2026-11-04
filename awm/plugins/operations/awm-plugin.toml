@@ -6,9 +6,6 @@ name = "operations"
 version = "0.2.0"
 trust = "own"
 
-[placement]
-nodes = ["*"]
-
 [[service]]
 name = "operations"
 path = "."
@@ -20,10 +17,6 @@ name = "operations"
 major = 2
 service = "operations"
 tier = "on"
-
-[[page]]
-name = "panel"
-path = "/panel"
 
 [needs]
 # Every node: the door key into alcor's singleton door (fleet.md R98 item 2) and alcor's

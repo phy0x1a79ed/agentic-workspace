@@ -42,22 +42,21 @@ class FakeSearch:
         import re
         from awm.journal.dao import JournalDAO
         from awm.journal.refs import iso_to_ms
-        from awm.journal.search_index import INDEXED_KINDS
+        from awm.journal.search_index import INDEXED_PARAMS, INDEXED_SQL, thread_text
         words = set(re.findall(r"\w+", args["query"].lower()))
-        sql, params = "SELECT * FROM scope_posts WHERE body != ''", []
+        sql, params = "SELECT * FROM scope_posts WHERE body != ''" + INDEXED_SQL, list(INDEXED_PARAMS)
         for key, col in (("project", "owner_project"), ("scope", "owner_scope")):
             if args.get(key):
                 sql += f" AND {col} = ?"
                 params.append(args[key])
-        kinds = [k for k in (args.get("kind") or INDEXED_KINDS) if k in INDEXED_KINDS] or [""]
-        sql += f" AND kind IN ({','.join('?' * len(kinds))})"
-        params += kinds
         if args.get("before"):
             sql += " AND ts < ?"
             params.append(iso_to_ms(args["before"]))
         exact, related = [], []
-        for r in JournalDAO().query_all(sql, params):
-            body = r["body"]
+        dao = JournalDAO()
+        for r in dao.query_all(sql, params):
+            with dao.transaction() as conn:
+                body = thread_text(conn, r["id"], r["body"])
             score = len(words & set(re.findall(r"\w+", body.lower())))
             if not score:
                 continue
