@@ -1,23 +1,21 @@
 ---
 name: retire
-description: End this session for good — run when the user says "retire", "retire this session" or "close this session", or when your work is done. Debriefs, points whoever started the session at the journal, then ends with reflection stop, or with reflection wait when it waits on other sessions. Ends the session only, never the scope or its goal.
+description: End this session for good — run when the user says "retire", "retire this session" or "close this session", or when your work is done. Debriefs, points whoever started the session at the journal, then ends with reflection stop, or with reflection wait when it waits on other sessions. Ends the session only, never the scope.
 ---
 
 # Retire
 
 Run this when told to retire, or when your work is done. The work is done when what you were asked for is landed and deployed, it is verified, and nothing waits on you. You close on your own. Tony does not accept the work first.
 
-Retire ends the session, not the work. Never run `scope complete`, `goal_retire` or a branch delete as part of it.
+Retire ends the session, not the work. Never run `scope complete` or a branch delete as part of it.
 
 Do not retire while you have follow-up issues. Raise each one with `operations request_human` (`kind:"blocked"` or `kind:"review"`) and stay live until Tony answers.
 
 ## 1. Debrief
 
-Run the `debrief` skill in full. Its journal is your report, written once. It posts to your task's card, where Tony reads it without a live agent.
+Run the `debrief` skill in full. Its journal is your report, written once, with its citations in `reply_to`. Tony reads it from your task's card without a live agent.
 
-At the debrief, cite the journals that shaped your work. Run `journal reads` for the candidates. Cite only the sources that mattered, each with a one-line reason, in the journal's `meta.cites`.
-
-Write no review summary and no second report. The journal is the report.
+The debrief's hand-back names the journal on your card. Write no second report.
 
 ## 2. Point your starter at the journal
 
