@@ -128,7 +128,7 @@ def test_a_journal_fetch_reads_newest_first_and_messages_oldest_first(journal_wo
     assert bodies(kind="message") == ["first", "second"]
 
 
-@pytest.mark.parametrize("kind", ["message", "goal", "system"])
+@pytest.mark.parametrize("kind", ["message", "goal", "brief"])
 def test_a_foreign_fetch_of_another_kind_is_refused(journal_workspace, peer_book, kind):
     with pytest.raises(PermissionError):
         _fetch("peer:capella", kind=kind)
@@ -176,9 +176,9 @@ def test_goal_writes_carry_the_peer_origin(journal_workspace):
     local = _handle_goal_set({"objective": "own goal", "author": "user:tony", "level": "scope",
                               "project": "awm", "scope": "dev"})["goal"]
     assert local["author"] == "user:tony"
-    tomb = _handle_goal_retire({"goal_id": made["id"], "author": "user:mallory"},
-                               "peer:shaula")["tombstone"]
-    assert tomb["author"] == "peer:shaula"
+    reason = _handle_goal_retire({"goal_id": made["id"], "author": "user:mallory",
+                                  "reason": "done"}, "peer:shaula")["reason"]
+    assert reason["author"] == "peer:shaula" and reason["reply_to"] == made["id"]
 
 
 # ---------------------------------------------------------------------------
@@ -196,7 +196,8 @@ def test_every_journal_verb_declares_an_effect():
     assert missing == []
 
 
-READS = {"fetch", "inbox", "reads", "render", "goal_read", "goal_history", "brief_read", "export"}
+READS = {"fetch", "inbox", "reads", "render", "goal_read", "goal_history", "brief_read",
+         "brief_history", "tag_list", "export"}
 
 
 def test_only_the_known_reads_are_reads():
@@ -221,4 +222,5 @@ def test_every_published_tool_is_journal_prefixed_and_hidden_verbs_leave_mcp():
     for name, fn in _functions().items():
         assert fn["tool"] == f"journal_{name}"
     hidden = {n for n, f in _functions().items() if f.get("surfaces") == ["cli", "http"]}
-    assert hidden == {"export", "reindex", "note_read"}
+    assert hidden == {"export", "reindex", "note_read", "precedent_import"}
+    assert _functions()["tag_receive"]["surfaces"] == ["http"]

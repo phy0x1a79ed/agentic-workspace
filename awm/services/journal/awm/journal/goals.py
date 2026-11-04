@@ -1,6 +1,6 @@
 """Goals — what the user is actually after, held on the scope post log.
 
-A goal is a ``scope_posts`` row with ``kind='goal'``. It is not a task and not a
+A goal is a ``scope_posts`` row tagged ``goal``. It is not a task and not a
 plan: it is the terminal objective at the altitude the user stated it, in the
 user's own words, so a later session retrieves it instead of re-eliciting it.
 
@@ -10,19 +10,13 @@ user's own words, so a later session retrieves it instead of re-eliciting it.
   ``project``    → ``('', 'project:<name>')``
   ``scope``      → ``(<project>, <scope>)``
 
-which is the same non-literal-channel addressing the scopes seed already
-maps refs onto. Reading at a scope unions all three and returns them broad to
-specific — the general frame first, the current campaign last.
+Reading at a scope unions all three and returns them broad to specific — the
+general frame first, the current campaign last.
 
-**Editing is supersede, never mutation.** The post log has no UPDATE or DELETE
-path anywhere, deliberately, and goals do not add one. A revision is a new goal
-naming the record it replaces; a retirement is a tombstone naming the record it
-retires. Both are ordinary appends, so the drift history is free and the
-append-only invariant the journal depends on is untouched.
-
-The collapse is therefore computed **on read**, over the whole fetched union
-rather than per channel — a revision that moves a goal between levels still
-retires the old one. Caching it would go stale on the next append.
+**A revision replies to the goal it replaces**, and the old goal gets the
+``superseded`` tag; a retirement gives the goal the ``closed`` tag and posts the
+reason as a comment (fleet.md R107 items 7 and 8). The thread under a goal is
+its history. The goal in force is a goal with neither tag.
 
 The read never ranks and never truncates. A stop line rotated out of a top-`k`
 is a correctness failure, not a relevance tradeoff, so this path sorts and
@@ -36,7 +30,7 @@ from dataclasses import dataclass
 from awm.journal import channel, kinds
 from awm.journal.dao import JournalDAO
 
-GOAL_KIND = kinds.GOAL
+GOAL_TAG = kinds.GOAL
 
 LEVELS = ("workspace", "project", "scope")
 _LEVEL_ORDER = {name: i for i, name in enumerate(LEVELS)}
@@ -111,13 +105,10 @@ class Goal:
     fallback: str
     stop_line: str
     noise: str
-    supersedes: str     # id of the record this one replaces ('' if original)
-    retires: str        # id this tombstone retires ('' if not a tombstone)
+    supersedes: str     # id of the goal this one replies to and replaces ('' if original)
+    superseded: bool
+    closed: bool        # retired
     ts: str
-
-    @property
-    def is_tombstone(self) -> bool:
-        return bool(self.retires)
 
     @property
     def missing(self) -> list[str]:
@@ -130,11 +121,9 @@ class Goal:
             "scope": self.scope, "author": self.author,
             "objective": self.objective, "fallback": self.fallback,
             "stop_line": self.stop_line, "noise": self.noise,
-            "supersedes": self.supersedes, "retires": self.retires,
-            "ts": self.ts,
+            "supersedes": self.supersedes, "superseded": self.superseded,
+            "closed": self.closed, "ts": self.ts, "missing": self.missing,
         }
-        if not self.is_tombstone:
-            d["missing"] = self.missing
         return d
 
 
@@ -148,30 +137,39 @@ def _post_to_goal(post: channel.ScopePost) -> Goal:
         fallback=str(meta.get("fallback") or ""),
         stop_line=str(meta.get("stop_line") or ""),
         noise=str(meta.get("noise") or ""),
-        supersedes=str(meta.get("supersedes") or ""),
-        retires=str(meta.get("retires") or ""),
+        supersedes=post.reply_to or "",
+        superseded=post.has(kinds.SUPERSEDED),
+        closed=post.has(kinds.CLOSED),
         ts=post.ts,
     )
 
 
-def _row_to_goal(row) -> Goal:
-    return _post_to_goal(channel._row_to_post(row))
+_TAGGED = ("EXISTS (SELECT 1 FROM post_tags gt WHERE gt.post_id = scope_posts.id"
+           " AND gt.tag_id = ?)")
 
 
 def _fetch_channel(owner_project: str, owner_scope: str) -> list[Goal]:
-    """Every goal-kind post on one channel, oldest first. No limit by design —
+    """Every goal on one channel, oldest first. No limit by design —
     see the module docstring on why this path must not truncate."""
     rows = JournalDAO().query_all(
-        "SELECT * FROM scope_posts WHERE owner_project=? AND owner_scope=? "
-        "AND kind=? ORDER BY ts ASC, id ASC",
-        (owner_project, owner_scope, GOAL_KIND),
+        f"SELECT * FROM scope_posts WHERE owner_project=? AND owner_scope=? AND {_TAGGED}"
+        " ORDER BY ts ASC, id ASC",
+        (owner_project, owner_scope, GOAL_TAG),
     )
-    return [_row_to_goal(r) for r in rows]
+    return [_post_to_goal(p) for p in channel.rows_to_posts(rows)]
+
+
+def _revisions_of(goal_id: str) -> list[Goal]:
+    """The goals that reply to ``goal_id``, in any channel, oldest first."""
+    rows = JournalDAO().query_all(
+        f"SELECT * FROM scope_posts WHERE reply_to=? AND {_TAGGED} ORDER BY ts ASC, id ASC",
+        (goal_id, GOAL_TAG))
+    return [_post_to_goal(p) for p in channel.rows_to_posts(rows)]
 
 
 def get_goal(goal_id: str) -> Goal | None:
     post = channel.get_post(goal_id)
-    if post is None or post.kind != GOAL_KIND:
+    if post is None or not post.has(GOAL_TAG):
         return None
     return _post_to_goal(post)
 
@@ -192,9 +190,10 @@ def set_goal(*, objective: str, author: str, level: str | None = None,
     Demanding all four up front would be the same all-or-nothing reflex this
     whole feature exists to correct.
 
-    With ``supersedes`` and no ``level``, the revision lands on the *same
-    channel* as the record it replaces, so a restatement can never silently
-    change level. Pass ``level`` explicitly to move one.
+    With ``supersedes`` the revision replies to the goal it replaces, which gets
+    the ``superseded`` tag. With no ``level`` it lands on the *same channel*, so
+    a restatement can never silently change level. Pass ``level`` explicitly to
+    move one; :data:`channel.CROSS_CHANNEL_REVISIONS` decides whether it may.
 
     A revision **inherits** every disposition field it does not mention. A
     caller restating only the objective would otherwise drop the stop line out
@@ -211,8 +210,6 @@ def set_goal(*, objective: str, author: str, level: str | None = None,
         prior = get_goal(supersedes)
         if prior is None:
             raise GoalError(f"no goal {supersedes!r} to supersede")
-        if prior.is_tombstone:
-            raise GoalError(f"goal {supersedes!r} is a tombstone, not a goal")
 
     if level:
         owner = owner_for_level(level, project, scope)
@@ -227,45 +224,43 @@ def set_goal(*, objective: str, author: str, level: str | None = None,
                 else (value or ""))
         for field, value in given.items()
     }
-    if supersedes:
-        meta["supersedes"] = supersedes
+    moves = prior is not None and owner != (prior.project, prior.scope)
+    if moves and not channel.CROSS_CHANNEL_REVISIONS:
+        raise GoalError("a revision stays on its goal's level; retire the goal and set a "
+                        "new one at the other level")
 
     post = channel.post(owner[0], owner[1], author=author, body=objective,
-                        kind=GOAL_KIND, meta=meta, origin=origin)
+                        extra_tags=[GOAL_TAG], meta=meta, origin=origin,
+                        reply_to=supersedes or None, keep_channel=moves)
+    if prior is not None:
+        channel.mark(prior.id, kinds.SUPERSEDED)
     return _post_to_goal(post)
 
 
 def retire_goal(goal_id: str, *, author: str, reason: str = "",
-                origin: str | None = None) -> Goal:
-    """Append a tombstone retiring ``goal_id``. Nothing is deleted; the retired
-    goal stays readable through :func:`history` and a raw ``journal_fetch``."""
+                origin: str | None = None) -> tuple[Goal, dict | None]:
+    """Close ``goal_id`` and post ``reason`` as a comment on it. Nothing is deleted;
+    the retired goal stays readable through :func:`history` and a raw ``journal_fetch``.
+    Returns the closed goal and the reason comment, if any."""
     target = get_goal(goal_id)
     if target is None:
         raise GoalError(f"no goal {goal_id!r} to retire")
-    if target.is_tombstone:
-        raise GoalError(f"{goal_id!r} is already a tombstone")
-    post = channel.post(target.project, target.scope, author=author,
-                        body=reason or "", kind=GOAL_KIND,
-                        meta={"retires": goal_id}, origin=origin)
-    return _post_to_goal(post)
+    if target.closed:
+        raise GoalError(f"goal {goal_id!r} is retired already")
+    comment = None
+    if (reason or "").strip():
+        comment = channel.post(target.project, target.scope, author=author, body=reason.strip(),
+                               reply_to=goal_id, origin=origin).to_dict()
+    channel.mark(goal_id, kinds.CLOSED)
+    return get_goal(goal_id), comment
 
 
 # ---------------------------------------------------------------------------
 # Read
 # ---------------------------------------------------------------------------
 
-def _collapse(goals: list[Goal]) -> list[Goal]:
-    """Drop every record a later append superseded or retired, plus the
-    tombstones themselves. Computed over the whole union, so a revision that
-    moves a goal between levels still retires the record it names."""
-    dead = set()
-    for g in goals:
-        if g.supersedes:
-            dead.add(g.supersedes)
-        if g.retires:
-            dead.add(g.retires)
-            dead.add(g.id)
-    return [g for g in goals if g.id not in dead and not g.is_tombstone]
+def _in_force(goals: list[Goal]) -> list[Goal]:
+    return [g for g in goals if not (g.superseded or g.closed)]
 
 
 def _sort_key(g: Goal) -> tuple:
@@ -277,7 +272,7 @@ def read_goals(project: str | None = None, scope: str | None = None,
     """Every goal in force at ``(project, scope)``, broad to specific.
 
     Unions the workspace channel, the project channel and the scope channel —
-    whichever the arguments reach — collapses the supersede/retire chains, and
+    whichever the arguments reach — drops superseded and closed goals, and
     sorts. Nothing is scored and nothing is dropped for length.
     """
     wanted = list(levels) if levels else list(LEVELS)
@@ -293,40 +288,46 @@ def read_goals(project: str | None = None, scope: str | None = None,
             continue
         for g in _fetch_channel(*owner):
             seen[g.id] = g
-    return sorted(_collapse(list(seen.values())), key=_sort_key)
+    return sorted(_in_force(list(seen.values())), key=_sort_key)
 
 
 def history(goal_id: str) -> list[Goal]:
-    """The full chain of restatements a goal belongs to, oldest first, with any
-    tombstone last. Walks backwards along ``supersedes`` and forwards along the
-    records that name it, within the goal's own channel."""
+    """The chain of restatements a goal belongs to, oldest first. Walks the reply
+    links up to the first goal, then down through every revision."""
     target = get_goal(goal_id)
     if target is None:
         raise GoalError(f"no goal {goal_id!r}")
-    everything = {g.id: g for g in _fetch_channel(target.project, target.scope)}
-    forward: dict[str, list[Goal]] = {}
-    for g in everything.values():
-        parent = g.supersedes or g.retires
-        if parent:
-            forward.setdefault(parent, []).append(g)
-
-    root = target
-    guard = set()
-    while root.supersedes and root.supersedes in everything:
-        if root.id in guard:  # a cycle can only come from a hand-edited meta
+    root, seen = target, {target.id}
+    while root.supersedes:
+        parent = get_goal(root.supersedes)
+        if parent is None or parent.id in seen:
             break
-        guard.add(root.id)
-        root = everything[root.supersedes]
+        seen.add(parent.id)
+        root = parent
 
     chain: list[Goal] = []
-    stack = [root]
-    while stack:
-        g = stack.pop(0)
-        if any(c.id == g.id for c in chain):
+    queue = [root]
+    done: set[str] = set()
+    while queue:
+        g = queue.pop(0)
+        if g.id in done:
             continue
+        done.add(g.id)
         chain.append(g)
-        stack.extend(sorted(forward.get(g.id, []), key=lambda x: (x.ts, x.id)))
+        queue.extend(_revisions_of(g.id))
     return chain
+
+
+def retirements(chain: list[Goal]) -> list[dict]:
+    """The reason comments posted on the closed goals of a chain."""
+    closed = [g.id for g in chain if g.closed]
+    if not closed:
+        return []
+    marks = ",".join("?" * len(closed))
+    rows = JournalDAO().query_all(
+        f"SELECT * FROM scope_posts WHERE reply_to IN ({marks}) AND NOT {_TAGGED}"
+        " ORDER BY ts ASC, id ASC", (*closed, GOAL_TAG))
+    return [p.to_dict() for p in channel.rows_to_posts(rows)]
 
 
 # ---------------------------------------------------------------------------

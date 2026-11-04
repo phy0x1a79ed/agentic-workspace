@@ -1,17 +1,16 @@
 """Goal operation definitions for the gateway manifest.
 
-Goals ride the scope post log as ``kind='goal'`` — see :mod:`awm.journal.goals`
+Goals ride the scope post log tagged ``goal`` — see :mod:`awm.journal.goals`
 for the model. Four verbs, published as ``journal_goal_<verb>`` and reached as
 ``journal(verb="goal_<verb>", …)``:
 
-  - ``goal_set``     — record a goal, or a revision that supersedes one.
-  - ``goal_retire``  — append a tombstone retiring a goal.
+  - ``goal_set``     — record a goal, or a revision that replies to and supersedes one.
+  - ``goal_retire``  — close a goal, with the reason as a comment.
   - ``goal_read``    — everything in force at a scope, broad to specific,
                        rendered with the comparison instruction attached.
   - ``goal_history`` — the full chain of restatements behind one goal.
 
-There is no delete verb and no edit-in-place. The post log has no mutation path
-and goals do not add one.
+There is no delete verb and no edit-in-place.
 """
 
 from awm.journal import channel, goals, private
@@ -27,7 +26,8 @@ GOAL_MANIFEST_FUNCTIONS = [
             "it, in their own words. level ∈ workspace|project|scope decides the "
             "channel it lands on (workspace = the standing frame, scope = the "
             "current campaign). Pass supersedes=<goal id> to revise: that writes "
-            "a NEW record and keeps the old one — there is no edit in place — and "
+            "a NEW record replying to the old one, which gets the superseded tag "
+            "and stays readable — there is no edit in place — and "
             "the revision stays on the superseded goal's level unless you pass "
             "level explicitly. A revision INHERITS every disposition field it "
             "does not mention, so restating just the objective never silently "
@@ -65,9 +65,9 @@ GOAL_MANIFEST_FUNCTIONS = [
         "tool": "journal_goal_retire",
         "effect": "write",
         "description": (
-            "Retire a goal by appending a tombstone. Nothing is deleted — the "
-            "goal drops out of the goal_read set but stays readable via "
-            "goal_history."
+            "Retire a goal: it gets the closed tag and the reason becomes a comment "
+            "on it. Nothing is deleted — the goal drops out of the goal_read set but "
+            "stays readable via goal_history."
         ),
         "params": [
             {"name": "goal_id", "type": "string", "required": True},
@@ -99,8 +99,8 @@ GOAL_MANIFEST_FUNCTIONS = [
         "tool": "journal_goal_history",
         "effect": "read",
         "description": (
-            "The full chain of restatements a goal belongs to, oldest first — "
-            "how the objective drifted, and the tombstone if it was retired."
+            "The full chain of restatements a goal belongs to, oldest first, by its "
+            "reply links — how the objective drifted — and the reason for each retirement."
         ),
         "params": [
             {"name": "goal_id", "type": "string", "required": True},
@@ -142,11 +142,11 @@ def _handle_goal_set(args: dict, as_: str | None = None) -> dict:
 
 def _handle_goal_retire(args: dict, as_: str | None = None) -> dict:
     _refuse_hidden(args["goal_id"], as_, " to retire")
-    tombstone = goals.retire_goal(
+    goal, comment = goals.retire_goal(
         args["goal_id"], author=args["author"], reason=args.get("reason") or "",
         origin=channel.edge_origin(as_),
     )
-    return {"tombstone": tombstone.to_dict(), "retired": args["goal_id"]}
+    return {"goal": goal.to_dict(), "reason": comment, "retired": args["goal_id"]}
 
 
 def _refuse_foreign(as_: str | None) -> None:
@@ -171,7 +171,8 @@ def _handle_goal_history(args: dict, as_: str | None = None) -> dict:
     _refuse_foreign(as_)
     _refuse_hidden(args["goal_id"], as_, "")
     chain = goals.history(args["goal_id"])
-    return {"chain": [g.to_dict() for g in chain], "total": len(chain)}
+    return {"chain": [g.to_dict() for g in chain], "total": len(chain),
+            "retirements": goals.retirements(chain)}
 
 
 GOAL_HANDLERS = {

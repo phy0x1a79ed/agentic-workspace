@@ -33,6 +33,13 @@ BRIEF_MANIFEST_FUNCTIONS = [
         "params": list(_WHERE),
     },
     {
+        "name": "brief_history",
+        "tool": "journal_brief_history",
+        "effect": "read",
+        "description": "Every version of the scope's brief, oldest first; the last is in force.",
+        "params": list(_WHERE),
+    },
+    {
         "name": "brief_set",
         "tool": "journal_brief_set",
         "effect": "write",
@@ -71,6 +78,11 @@ def _handle_brief_read(args: dict, as_: str | None = None) -> dict:
     return {"brief": brief.to_dict() if brief else None}
 
 
+def _handle_brief_history(args: dict, as_: str | None = None) -> dict:
+    found = briefs.history(*_where(args, as_))
+    return {"briefs": [b.to_dict() for b in found], "total": len(found)}
+
+
 def _handle_brief_set(args: dict, as_: str | None = None) -> dict:
     project, scope = _where(args, as_)
     brief = briefs.set_brief(project, scope, args["text"], author=_author(args, project, scope),
@@ -88,6 +100,7 @@ def _handle_brief_edit(args: dict, as_: str | None = None) -> dict:
 
 BRIEF_HANDLERS = {
     "brief_read": _handle_brief_read,
+    "brief_history": _handle_brief_history,
     "brief_set": _handle_brief_set,
     "brief_edit": _handle_brief_edit,
 }

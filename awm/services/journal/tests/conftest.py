@@ -59,3 +59,24 @@ def journal_conn(journal_workspace):
     conn = get_connection("journal")
     yield conn
     conn.close()
+
+
+#: The journal schema before tags (v1): posts carry a kind column.
+OLD_DDL = """
+CREATE TABLE scope_posts (id TEXT PRIMARY KEY, owner_project TEXT NOT NULL, owner_scope TEXT NOT NULL,
+    author TEXT NOT NULL, kind TEXT NOT NULL DEFAULT 'message', body TEXT NOT NULL DEFAULT '',
+    meta TEXT NOT NULL DEFAULT '{}', ts INTEGER NOT NULL);
+CREATE INDEX idx_scope_posts_kind ON scope_posts(owner_project, owner_scope, kind, ts);
+CREATE TABLE scope_subscribers (owner_project TEXT NOT NULL, owner_scope TEXT NOT NULL,
+    guest_kind TEXT NOT NULL, guest_ref TEXT NOT NULL, display_name TEXT NOT NULL,
+    joined_at INTEGER NOT NULL, PRIMARY KEY (owner_project, owner_scope, guest_kind, guest_ref));
+CREATE TABLE schema_version (version INTEGER NOT NULL);
+INSERT INTO schema_version VALUES (1);
+"""
+
+
+def insert_post(conn, pid, project, scope, author, tag, body, meta, ts):
+    """A raw post row and its one tag, as a seed or an older release wrote it."""
+    conn.execute("INSERT INTO scope_posts (id, owner_project, owner_scope, author, body, meta, ts)"
+                 " VALUES (?,?,?,?,?,?,?)", (pid, project, scope, author, body, meta, ts))
+    conn.execute("INSERT INTO post_tags (post_id, tag_id) VALUES (?, ?)", (pid, f"builtin:{tag}"))

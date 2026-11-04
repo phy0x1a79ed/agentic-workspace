@@ -1,8 +1,9 @@
 """The scope brief: what a scope is for, one per scope, on the scope's channel (scopes.md R143).
 
-A brief is a ``scope_posts`` row of kind ``brief``. A write appends a new post
-naming the one it replaces, as a goal revision does, so the log keeps every
-version and the newest is the brief in force.
+A brief is a ``scope_posts`` row tagged ``brief``. A write appends a new post that
+replies to the one it replaces, which gets the ``superseded`` tag, as a goal
+revision does (fleet.md R107 item 8). The thread keeps every version, and the
+brief in force is the newest one not superseded.
 """
 
 from __future__ import annotations
@@ -36,18 +37,33 @@ class Brief:
 
 
 def _to_brief(post: channel.ScopePost) -> Brief:
-    meta = post.meta if isinstance(post.meta, dict) else {}
     return Brief(id=post.id, project=post.project, scope=post.scope, author=post.author,
-                 text=post.body or "", supersedes=str(meta.get("supersedes") or ""),
-                 ts=post.ts)
+                 text=post.body or "", supersedes=post.reply_to or "", ts=post.ts)
+
+
+def _tagged(tag_id: str, negated: bool = False) -> str:
+    return (f" AND {'NOT ' if negated else ''}EXISTS (SELECT 1 FROM post_tags bt"
+            f" WHERE bt.post_id = scope_posts.id AND bt.tag_id = '{tag_id}')")
 
 
 def read(project: str, scope: str) -> Brief | None:
     row = JournalDAO().query_one(
-        "SELECT * FROM scope_posts WHERE owner_project=? AND owner_scope=? AND kind=? "
-        "ORDER BY ts DESC, rowid DESC LIMIT 1",
-        (project, scope, kinds.BRIEF))
+        "SELECT * FROM scope_posts WHERE owner_project=? AND owner_scope=?"
+        f"{_tagged(kinds.BRIEF)}{_tagged(kinds.SUPERSEDED, True)}"
+        " ORDER BY ts DESC, rowid DESC LIMIT 1", (project, scope))
     return _to_brief(channel._row_to_post(row)) if row else None
+
+
+def history(project: str, scope: str) -> list[Brief]:
+    """Every version of the scope's brief, oldest first, by walking the reply links up."""
+    brief = read(project, scope)
+    out, seen = [], set()
+    while brief is not None and brief.id not in seen:
+        seen.add(brief.id)
+        out.append(brief)
+        parent = channel.get_post(brief.supersedes) if brief.supersedes else None
+        brief = _to_brief(parent) if parent is not None and parent.has(kinds.BRIEF) else None
+    return out[::-1]
 
 
 def _checked(text: str) -> str:
@@ -66,9 +82,11 @@ def set_brief(project: str, scope: str, text: str, *, author: str,
     prior = read(project, scope)
     if prior is not None and prior.text == text:
         return prior
-    meta = {"supersedes": prior.id} if prior is not None else {}
-    return _to_brief(channel.post(project, scope, author=author, body=text,
-                                  kind=kinds.BRIEF, meta=meta, origin=origin))
+    post = channel.post(project, scope, author=author, body=text, extra_tags=[kinds.BRIEF],
+                        reply_to=prior.id if prior is not None else None, origin=origin)
+    if prior is not None:
+        channel.mark(prior.id, kinds.SUPERSEDED)
+    return _to_brief(post)
 
 
 def edit_brief(project: str, scope: str, old: str, new: str, *, author: str,

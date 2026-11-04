@@ -35,8 +35,9 @@ def legacy(seeded, journal_conn):
             ("legacy-other", "task:awm", "dev", "entry legacy awm")]
     for i, (pid, project, scope, body) in enumerate(rows):
         journal_conn.execute(
-            "INSERT INTO scope_posts (id, owner_project, owner_scope, author, kind, body, meta, ts)"
-            " VALUES (?, ?, ?, 'system', 'journal', ?, '{}', ?)", (pid, project, scope, body, i + 1))
+            "INSERT INTO scope_posts (id, owner_project, owner_scope, author, body, meta, ts)"
+            " VALUES (?, ?, ?, 'system', ?, '{}', ?)", (pid, project, scope, body, i + 1))
+        journal_conn.execute("INSERT INTO post_tags VALUES (?, 'builtin:journal')", (pid,))
     journal_conn.commit()
     return seeded
 

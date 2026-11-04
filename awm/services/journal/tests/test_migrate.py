@@ -51,7 +51,9 @@ def test_copies_posts_goals_and_subscribers(journal_workspace, scopes_db):
     assert _count(target, "scope_posts") == 3 and _count(target, "scope_subscribers") == 1
     conn = sqlite3.connect(target)
     try:
-        assert conn.execute("SELECT kind, ts FROM scope_posts WHERE id='p2'").fetchone() == ("goal", 2000)
+        assert conn.execute("SELECT ts FROM scope_posts WHERE id='p2'").fetchone() == (2000,)
+        assert conn.execute("SELECT tag_id FROM post_tags WHERE post_id='p2'").fetchone() == (
+            "builtin:goal",)
     finally:
         conn.close()
 

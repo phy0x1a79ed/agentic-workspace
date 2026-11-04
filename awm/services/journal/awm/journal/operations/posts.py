@@ -2,9 +2,9 @@
 
 A scope IS the channel. Each entry's ``name`` is the service-internal handle
 (``/svc/journal/fn/<name>``) and its ``tool`` is the published ``journal_<verb>``:
-  - ``post``        — append a post (message / journal / system).
+  - ``post``        — append a post with its tags, or a comment with ``reply_to``.
   - ``fetch``       — fetch/search a scope's posts (``query`` → hybrid search,
-                      ``kind`` filter).
+                      ``tags`` filter; a post_id read returns its thread).
   - ``subscribe``   — enroll a guest (scope or user) as a subscriber.
   - ``unsubscribe`` — remove a subscriber.
   - ``reads``       — the journals a session read, its citation candidates.
@@ -16,7 +16,8 @@ import logging
 from typing import Any
 
 from awm.gatewayclient import sessions as caller
-from awm.journal import channel, inbox, owners, private, sessions
+from awm.journal import channel, inbox, kinds, owners, private, sessions, tagsync
+from awm.journal import tags as tagmod
 
 log = logging.getLogger("awm.journal.posts")
 
@@ -27,10 +28,16 @@ POST_MANIFEST_FUNCTIONS = [
         "tool": "journal_post",
         "effect": "write",
         "description": (
-            "Post to a scope's channel. kind ∈ message|journal|system. "
-            "Journal entries are the scope's own debrief; structured fields go in meta. "
-            "Pass all structured params (kind, meta, to_scope) BEFORE the free-text "
-            "body, which must be the LAST argument — see the body param note."
+            "Post to a scope's channel. tags come from the vocabulary (tag_list); a post "
+            "with none is a message. tags=[journal] is the scope's own debrief; structured "
+            "fields go in meta. reply_to=<post id> makes the post a comment: it lands in "
+            "the channel of its thread's first post, and that post's author gets it in "
+            "its inbox. Tag a post precedent when it records a decision Tony made or "
+            "overrode that holds beyond the session: post it at project='' "
+            "scope='workspace', with a body that holds the context, the question and "
+            "the decision. Search precedents before you ask Tony a preference question. "
+            "Pass all structured params (tags, meta, reply_to) BEFORE the "
+            "free-text body, which must be the LAST argument — see the body param note."
         ),
         # body is declared LAST on purpose. The harness serializes a tool call as
         # ordered <parameter> blocks; a long multi-line value can bleed past its
@@ -38,10 +45,17 @@ POST_MANIFEST_FUNCTIONS = [
         # long free-text field terminal means a bleed has no trailing param to
         # corrupt (kind/meta survive). Do not move body up.
         "params": [
-            {"name": "project", "type": "string", "required": True},
-            {"name": "scope", "type": "string", "required": True},
+            {"name": "project", "type": "string", "required": False,
+             "description": "Required unless reply_to is given."},
+            {"name": "scope", "type": "string", "required": False,
+             "description": "Required unless reply_to is given."},
             {"name": "author", "type": "string", "required": True},
-            {"name": "kind", "type": "string", "required": False},
+            {"name": "tags", "type": "array", "required": False,
+             "description": "Tag names from the vocabulary. An unknown tag is refused."},
+            {"name": "kind", "type": "string", "required": False,
+             "description": "Old alias for one tag, such as journal. Use tags."},
+            {"name": "reply_to", "type": "string", "required": False,
+             "description": "The post this one comments on."},
             {"name": "meta", "type": "object", "required": False,
              "description": "Structured fields. meta.session names the session a journal covers; "
                             "omit it for your own session. meta.cites lists the journals that "
@@ -67,16 +81,20 @@ POST_MANIFEST_FUNCTIONS = [
             "hit with match.snippet — a limit of ~10 is plenty; the reply's "
             "`semantic` says which index ranked them: local, or none for a "
             "substring match); omit scope to "
-            "search across scopes; kind filters (e.g. "
-            "kind='journal' for session logs / debrief entries); post_id fetches "
-            "one. Without a query, kind='journal' reads newest-first "
-            "(e.g. last 5 awm session logs: project='awm', kind='journal', "
+            "search across scopes; a query returns each thread's first post with its "
+            "comment count. tags filters with 'and' and '!' (e.g. tags='journal' for "
+            "session logs, '!closed and complaint' for open complaints); post_id fetches "
+            "one with its thread of comments. Without a query, tags='journal' reads "
+            "newest-first (e.g. last 5 awm session logs: project='awm', tags='journal', "
             "limit=5)."
         ),
         "params": [
             {"name": "project", "type": "string", "required": False},
             {"name": "scope", "type": "string", "required": False},
-            {"name": "kind", "type": "string", "required": False},
+            {"name": "tags", "type": "string", "required": False,
+             "description": "A tag filter: names joined by 'and', '!' negates one."},
+            {"name": "kind", "type": "string", "required": False,
+             "description": "Old alias for one tag. Use tags."},
             {"name": "query", "type": "string", "required": False},
             {"name": "author", "type": "string", "required": False},
             {"name": "post_id", "type": "string", "required": False},
@@ -84,7 +102,7 @@ POST_MANIFEST_FUNCTIONS = [
             {"name": "offset", "type": "integer", "required": False},
             {"name": "before_ts", "type": "string", "required": False},
             {"name": "order", "type": "string", "required": False,
-             "description": "'asc' (oldest-first) or 'desc' (newest-first). Default: 'desc' for kind='journal', else 'asc' within one scope."},
+             "description": "'asc' (oldest-first) or 'desc' (newest-first). Default: 'desc' for tags='journal', else 'asc' within one scope."},
         ],
     },
     {
@@ -143,7 +161,8 @@ POST_MANIFEST_FUNCTIONS = [
             "What a scope has not read yet: one line per post, newest first, bounded. "
             "Each line has the post id, author, age, a gist (its title, leading "
             "heading or first sentence), whether it looks like it asks for action, "
-            "and its length. Read one in full with fetch(post_id=…). The read "
+            "and its length. It also lists comments on threads the scope started, "
+            "wherever they live. Read one in full with fetch(post_id=…). The read "
             "cursor belongs to the scope, so the next session there starts where "
             "this one acknowledged. Posts the scope wrote itself are never unread. "
             "Mark read with ack(through=<ack_through>)."
@@ -151,8 +170,10 @@ POST_MANIFEST_FUNCTIONS = [
         "params": [
             {"name": "project", "type": "string", "required": True},
             {"name": "scope", "type": "string", "required": True},
+            {"name": "tags", "type": "string", "required": False,
+             "description": "A tag filter. Default 'message'."},
             {"name": "kind", "type": "string", "required": False,
-             "description": "Post kind to list. Default 'message'."},
+             "description": "Old alias for one tag. Use tags."},
             {"name": "limit", "type": "integer", "required": False,
              "description": f"Posts to list. Default {inbox.DEFAULT_LIMIT}, at most {inbox.MAX_LIMIT}."},
             {"name": "all", "type": "boolean", "required": False,
@@ -185,19 +206,53 @@ def _caller_session(caller_pid: Any) -> str | None:
     return sessions.r9(rec.get("session_id")) if rec else None
 
 
-def _with_session(meta: Any, caller_pid: Any, kind: str = "message") -> Any:
+def _with_session(meta: Any, caller_pid: Any, tag_ids: list[str] = (kinds.MESSAGE,)) -> Any:
     """``meta`` with ``session`` stamped in R9 form and ``cites`` checked (R14, R17)."""
-    return sessions.check_cites(sessions.stamp(meta, _caller_session(caller_pid)), kind)
+    return sessions.check_cites(sessions.stamp(meta, _caller_session(caller_pid)), list(tag_ids))
+
+
+def refuse_clashed(as_: str | None) -> None:
+    """Refuse a peer's read while a tag clash stands between it and this node (R107 item 6)."""
+    from awm import config
+    peer = config.caller_peer(as_) if isinstance(as_, str) and as_.startswith("peer") else None
+    if tagsync.blocked(peer):
+        raise PermissionError(f"a tag clash stands between {peer} and this node; reads "
+                              "between them wait until an agent renames the newer tag")
+
+
+def peer_gate(as_: str | None) -> str | None:
+    """The tag a caller's every read must carry, or None for no such limit.
+
+    Today's rule: a foreign peer reads journal posts only. fleet.md R107 item 3
+    replaces it with the trust lane's bounds, and then no tag decides read access.
+    """
+    return kinds.JOURNAL if channel.is_foreign(as_) else None
+
+
+def _visible(as_: str | None):
+    gate = peer_gate(as_)
+    return lambda p: (gate is None or p.has(gate)) and not private.hides_post(as_, p)
 
 
 def _handle_post(args: dict, as_: str | None = None) -> dict:
-    if private.hides(as_, args["project"], args["scope"]):
-        raise ValueError(f"no scope {args['project']}/{args['scope']}")
+    project, scope = args.get("project"), args.get("scope")
+    if args.get("reply_to"):
+        parent = channel.get_post(args["reply_to"])
+        if parent is None or not _visible(as_)(parent):
+            raise ValueError(f"no post {args['reply_to']} to reply to")
+        root = channel.get_post(parent.root) or parent
+        project, scope = root.project, root.scope
+    elif not project or not scope:
+        raise ValueError("a post needs project and scope, or reply_to")
+    if private.hides(as_, project, scope):
+        raise ValueError(f"no scope {project}/{scope}")
+    tag_ids = channel.post_tag_ids(args.get("kind"), args.get("tags"))
     post = channel.post(
-        args["project"], args["scope"],
+        project, scope,
         author=args["author"], body=args["body"],
-        kind=args.get("kind", "message"),
-        meta=_with_session(args.get("meta"), args.get("_caller_pid"), args.get("kind", "message")),
+        kind=args.get("kind"), tags=args.get("tags"),
+        meta=_with_session(args.get("meta"), args.get("_caller_pid"), tag_ids),
+        reply_to=args.get("reply_to"),
         to_scope=args.get("to_scope"),
         origin=channel.edge_origin(as_),
     )
@@ -234,38 +289,49 @@ def _channel_project(project: Any, scope: Any) -> Any:
 
 
 def _handle_fetch(args: dict, as_: str | None = None) -> dict:
-    # The verb's category grants journals; a foreign caller sees no other kind.
-    foreign = channel.is_foreign(as_)
-    kind = args.get("kind")
-    if foreign:
-        if kind and kind != "journal":
-            raise PermissionError("peers may read journal posts only")
-        kind = "journal"
+    refuse_clashed(as_)
+    gate = peer_gate(as_)
+    foreign = gate is not None
+    expr = tagmod.kind_filter(args.get("kind"), args.get("tags"))
+    if gate is not None:
+        terms = tagmod.parse_filter(expr)
+        for neg, name in terms:
+            tag = tagmod.by_name(name)
+            if not neg and tag is not None and tag.id in tagmod.TYPE_TAGS and tag.id != gate:
+                raise PermissionError("peers may read journal posts only")
+        expr = [*(("!" if neg else "") + n for neg, n in terms), tagmod.get(gate).name]
+    visible = _visible(as_)
     post_id = args.get("post_id")
     if post_id:
         p = channel.get_post(post_id)
-        if p is not None and foreign and p.kind != "journal":
+        if p is not None and not visible(p):
             p = None  # answer as for a post that does not exist, so ids cannot be probed
-        if p is not None and private.hides(as_, p.project, p.scope):
-            p = None
-        if p is not None and not foreign:
+        if p is None:
+            return {"posts": [], "total": 0}
+        if not foreign:
             _note_reads(args, [p])
-        return {"posts": [p.to_dict()] if p else [], "total": 1 if p else 0}
+        thread = channel.nest(p, channel.thread_posts(p.root), visible)
+        p.comments = _count(thread)
+        out = {"posts": [p.to_dict()], "total": 1, "thread": thread}
+        return out
+    journal_first = tagmod.parse_filter(expr) == [(False, tagmod.get(kinds.JOURNAL).name)]
     common = dict(
         project=_channel_project(args.get("project"), args.get("scope")),
         scope=args.get("scope"),
-        kind=kind,
+        tags=expr,
         author=args.get("author"),
         limit=int(args.get("limit", 50)),
         offset=int(args.get("offset", 0)),
         before_ts=args.get("before_ts"),
-        order=args.get("order") or (
-            "desc" if kind == "journal" and not args.get("query") else None),
+        order=args.get("order") or ("desc" if journal_first and not args.get("query") else None),
         exclude=private.exclusion(as_),
     )
     degraded = semantic = None
     if args.get("query"):
         posts, degraded, semantic = channel.search(query=args["query"], **common)
+        if foreign:
+            for p in posts:
+                p.comments = _count(channel.nest(p, channel.thread_posts(p.id), visible))
     else:
         posts = channel.fetch(**common)
     if not foreign:
@@ -278,9 +344,13 @@ def _handle_fetch(args: dict, as_: str | None = None) -> dict:
     return out
 
 
+def _count(tree: list[dict]) -> int:
+    return sum(1 + _count(c["replies"]) for c in tree)
+
+
 def _handle_note_read(args: dict, as_: str | None = None) -> dict:
     post = channel.get_post(str(args["post_id"]))
-    if post is None or private.hides(as_, post.project, post.scope):
+    if post is None or not _visible(as_)(post):
         return {"ok": True, "recorded": 0}
     return {"ok": True, "recorded": sessions.record_reads(
         _caller_session(args.get("_caller_pid")), [post])}
@@ -326,7 +396,7 @@ def _handle_inbox(args: dict, as_: str | None = None) -> dict:
     if channel.is_foreign(as_) or private.hides(as_, project, scope):
         raise ValueError(f"no scope {project}/{scope}")
     owners.require_scope(project, scope)
-    return inbox.digest(project, scope, kind=args.get("kind") or "message",
+    return inbox.digest(project, scope, tags=args.get("tags"), kind=args.get("kind"),
                         limit=int(args.get("limit") or inbox.DEFAULT_LIMIT),
                         include_read=args.get("all") in (True, "true", "True", "1", 1),
                         exclude=private.exclusion(as_))

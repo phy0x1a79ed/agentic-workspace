@@ -196,9 +196,9 @@ class TestRetire:
     def test_double_retire_refuses(self, journal_workspace):
         from awm.journal import goals
         g = goals.set_goal(objective="x", author=USER, level="workspace")
-        t = goals.retire_goal(g.id, author=USER)
+        goals.retire_goal(g.id, author=USER)
         with pytest.raises(goals.GoalError):
-            goals.retire_goal(t.id, author=USER)
+            goals.retire_goal(g.id, author=USER)
 
     def test_retire_unknown_id_refuses(self, journal_workspace):
         from awm.journal import goals
@@ -215,13 +215,14 @@ class TestHistory:
         for probe in (a.id, b.id, c.id):
             assert [g.id for g in goals.history(probe)] == [a.id, b.id, c.id]
 
-    def test_history_includes_the_tombstone(self, journal_workspace):
+    def test_history_shows_the_retirement(self, journal_workspace):
         from awm.journal import goals
         a = goals.set_goal(objective="v1", author=USER, level="workspace")
-        t = goals.retire_goal(a.id, author=USER, reason="obsolete")
+        closed, reason = goals.retire_goal(a.id, author=USER, reason="obsolete")
         chain = goals.history(a.id)
-        assert [g.id for g in chain] == [a.id, t.id]
-        assert chain[-1].is_tombstone
+        assert [g.id for g in chain] == [a.id] and chain[0].closed and closed.closed
+        assert [r["id"] for r in goals.retirements(chain)] == [reason["id"]]
+        assert reason["body"] == "obsolete" and reason["reply_to"] == a.id
 
     def test_history_excludes_an_unrelated_goal(self, journal_workspace):
         from awm.journal import goals

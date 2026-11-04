@@ -1,8 +1,9 @@
 """The scope channel — a scope IS the channel.
 
 There is no separate rooms/messages/session_logs machinery. Every scope owns
-one append-only post log (``scope_posts``); messages, journal (debrief)
-entries, and system notices are all rows there, differentiated by ``kind``.
+one post log (``scope_posts``); messages, journal (debrief) entries, goals,
+briefs and precedents are all rows there, told apart by their tags
+(:mod:`awm.journal.tags`).
 Other scopes/users subscribe to a channel (``scope_subscribers``); the owner is
 implicit (the scope itself). Raw agent acts are NOT here; a session's own
 transcript is read through the transcripts service.
@@ -13,12 +14,9 @@ literal worktree scope: ``project=''`` marks a non-literal channel whose ref
 lives verbatim in ``scope`` (e.g. ``'user:alice'``, ``'project:awm'``,
 ``'workspace'``).
 
-Post ``kind``:
-  - ``message`` — a post by a user or another scope/agent.
-  - ``journal`` — a self-post by the owning agent (the debrief entry; its
-    structured fields live in ``meta``).
-  - ``system``  — a system notice.
-  - ``goal``    — what the user is after at this level; see :mod:`awm.journal.goals`.
+A comment is a post with ``reply_to`` (fleet.md R107 item 5). It lives in the
+channel of its thread's first post, wherever the commenter sits, and
+``thread_id`` names that first post.
 
 All SQL goes through :class:`JournalDAO`.
 """
@@ -28,8 +26,9 @@ from __future__ import annotations
 import json
 import uuid as _uuid
 from dataclasses import dataclass
+from typing import Any, Iterable
 
-from awm.journal import owners, search_index
+from awm.journal import kinds, owners, search_index, tags as tagmod
 from awm.journal.dao import JournalDAO
 from awm.journal.refs import SYSTEM_REF, ms_to_iso, now_ms, iso_to_ms
 
@@ -52,18 +51,42 @@ class ScopePost:
     project: str
     scope: str
     author: str          # 'agent:proj/scope', 'user:name', or 'system'
-    kind: str            # 'message' | 'journal' | 'system' | …
+    tag_ids: list[str]
     body: str
     meta: dict
     ts: str              # ISO TEXT
+    reply_to: str | None = None
+    thread_id: str | None = None
     match: dict | None = None  # search hits only: {score, snippet}
+    comments: int | None = None  # search hits and thread reads only
+
+    @property
+    def kind(self) -> str:
+        """The old ``kind``, derived from the tags for readers that still ask for it."""
+        return tagmod.derived_kind(self.tag_ids)
+
+    @property
+    def tags(self) -> list[str]:
+        return tagmod.names_of(self.tag_ids)
+
+    def has(self, tag_id: str) -> bool:
+        return tag_id in self.tag_ids
+
+    @property
+    def root(self) -> str:
+        return self.thread_id or self.id
 
     def to_dict(self) -> dict:
         d = {
             "id": self.id, "project": self.project, "scope": self.scope,
-            "author": self.author, "kind": self.kind, "body": self.body,
-            "meta": self.meta, "ts": self.ts,
+            "author": self.author, "tags": self.tags, "kind": self.kind,
+            "body": self.body, "meta": self.meta, "ts": self.ts,
         }
+        if self.reply_to:
+            d["reply_to"] = self.reply_to
+            d["thread"] = self.thread_id
+        if self.comments is not None:
+            d["comments"] = self.comments
         if self.match is not None:
             d["match"] = self.match
         return d
@@ -176,13 +199,25 @@ def _coerce_meta(raw) -> dict:
     return value if isinstance(value, dict) else {}
 
 
-def _row_to_post(row) -> ScopePost:
+def _row_to_post(row, tag_ids: list[str] | None = None) -> ScopePost:
     meta = _coerce_meta(row["meta"])
+    if tag_ids is None:
+        tag_ids = tagmod.of_posts([row["id"]])[row["id"]]
+    keys = row.keys()
     return ScopePost(
         id=row["id"], project=row["owner_project"], scope=row["owner_scope"],
-        author=_author_to_display(row["author"]), kind=row["kind"],
+        author=_author_to_display(row["author"]), tag_ids=tag_ids,
         body=row["body"] or "", meta=meta, ts=ms_to_iso(row["ts"]) or "",
+        reply_to=row["reply_to"] if "reply_to" in keys else None,
+        thread_id=row["thread_id"] if "thread_id" in keys else None,
     )
+
+
+def rows_to_posts(rows) -> list[ScopePost]:
+    """Posts from ``scope_posts`` rows, with one tag lookup for them all."""
+    rows = list(rows)
+    by_post = tagmod.of_posts([r["id"] for r in rows])
+    return [_row_to_post(r, by_post[r["id"]]) for r in rows]
 
 
 def _row_to_subscriber(row) -> Subscriber:
@@ -216,9 +251,32 @@ def set_emitter(fn) -> None:
 # Post
 # ---------------------------------------------------------------------------
 
+#: A goal revision that moves a level replies across channels, so it keeps its
+#: new level. Waiting on Tony (redux-journal Q1); False puts it in the thread's channel.
+CROSS_CHANNEL_REVISIONS = True
+
+
+def post_tag_ids(kind: str | None = None, tags: Any = None,
+                 extra: Iterable[str] = ()) -> list[str]:
+    """The tag ids a new post carries: its ``tags``, the tag for the old ``kind`` alias,
+    and the ``extra`` ids the journal's own code adds.
+
+    A post that names no type tag is a message, as the old ``kind`` default was.
+    """
+    ids = tagmod.resolve(tagmod.names_arg(tags))
+    for t in ([tagmod.kind_tag(kind)] if kind else []) + list(extra):
+        if t not in ids:
+            ids.append(t)
+    if not any(t in tagmod.TYPE_TAGS or t.startswith(kinds.MIGRATED_PREFIX) for t in ids):
+        ids.append(kinds.MESSAGE)
+    return ids
+
+
 def post(project: str, scope: str, *, author: str, body: str,
-         kind: str = "message", meta: dict | None = None,
-         to_scope: str | None = None, origin: str | None = None) -> ScopePost:
+         kind: str | None = None, tags: Any = None, meta: dict | None = None,
+         reply_to: str | None = None, to_scope: str | None = None,
+         origin: str | None = None, keep_channel: bool = False,
+         extra_tags: list[str] = (), ts: int | None = None) -> ScopePost:
     """Append a post to a scope's channel and hand it to the cross-service emitter.
 
     ``origin`` is an edge-stamped peer identity (see :func:`edge_origin`). It is
@@ -226,11 +284,26 @@ def post(project: str, scope: str, *, author: str, body: str,
     who it is never outranks the edge's. The claim is kept in
     ``meta["claimed_author"]`` so a domestic reader can see which agent sent it.
     A caller with no stamp may not send an author of the ``peer:`` shape.
+
+    With ``reply_to`` the post is a comment and lands in the channel of its
+    thread's first post, whatever ``project``/``scope`` say, unless
+    ``keep_channel`` (a cross-level goal revision). ``extra_tags`` are tag ids
+    the journal's own code adds, past the kind-tag rule.
     """
     if origin is None and (author or "").startswith("peer:"):
         raise ValueError("author 'peer:...' is reserved for edge-stamped peer identities")
+    tag_ids = post_tag_ids(kind, tags, extra_tags)
+    thread_id = None
+    if reply_to:
+        parent = get_post(reply_to)
+        if parent is None:
+            raise ValueError(f"no post {reply_to} to reply to")
+        thread_id = parent.root
+        if not keep_channel:
+            root = parent if parent.thread_id is None else get_post(thread_id) or parent
+            project, scope = root.project, root.scope
     owners.require_scope(project, scope)
-    now = now_ms()
+    now = ts if ts is not None else now_ms()
     pid = str(_uuid.uuid4())
     meta = dict(_coerce_meta(meta))
     if origin and author:
@@ -240,13 +313,13 @@ def post(project: str, scope: str, *, author: str, body: str,
         author_ref = origin or _author_to_stored(author)
         JournalDAO(conn=conn).execute(
             "INSERT INTO scope_posts "
-            "(id, owner_project, owner_scope, author, kind, body, meta, ts) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (pid, project, scope, author_ref, kind, body or "",
-             json.dumps(meta), now),
+            "(id, owner_project, owner_scope, author, body, meta, ts, reply_to, thread_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (pid, project, scope, author_ref, body or "", json.dumps(meta), now,
+             reply_to or None, thread_id),
         )
-    row = JournalDAO().query_one("SELECT * FROM scope_posts WHERE id=?", (pid,))
-    post_obj = _row_to_post(row)
+        tagmod.attach(conn, pid, tag_ids)
+    post_obj = get_post(pid)
 
     # One post → one cross-service `emit` on the `posts` topic (fan-out to all
     # subscribers; each filters by its own (project, scope)).
@@ -256,9 +329,64 @@ def post(project: str, scope: str, *, author: str, body: str,
                       "post": post_obj.to_dict()})
         except Exception:
             pass
-    if kind in search_index.INDEXED_KINDS and body:
-        search_index.index_post(pid)
+    search_index.index_post(thread_id or pid)
     return post_obj
+
+
+def set_tags(post_id: str, *, add: Any = (), remove: Any = ()) -> ScopePost:
+    """Add and remove several tags on one post at once (fleet.md R107 item 7)."""
+    p = get_post(post_id)
+    if p is None:
+        raise ValueError(f"no post {post_id}")
+    tagmod.retag(post_id, add=tagmod.names_arg(add), remove=tagmod.names_arg(remove))
+    search_index.index_post(p.root)
+    return get_post(post_id)
+
+
+def mark(post_id: str, tag_id: str) -> None:
+    """Add one of the code's own tags (closed, superseded) to a post."""
+    dao = JournalDAO()
+    with dao.transaction() as conn:
+        tagmod.attach(conn, post_id, [tag_id])
+
+
+# ---------------------------------------------------------------------------
+# Threads
+# ---------------------------------------------------------------------------
+
+def comment_counts(root_ids: list[str]) -> dict[str, int]:
+    if not root_ids:
+        return {}
+    marks = ",".join("?" * len(root_ids))
+    out = {i: 0 for i in root_ids}
+    for r in JournalDAO().query_all(
+            f"SELECT thread_id, COUNT(*) AS n FROM scope_posts WHERE thread_id IN ({marks})"
+            " GROUP BY thread_id", root_ids):
+        out[r["thread_id"]] = r["n"]
+    return out
+
+
+def thread_posts(root_id: str) -> list[ScopePost]:
+    """Every comment of a thread, oldest first."""
+    return rows_to_posts(JournalDAO().query_all(
+        "SELECT * FROM scope_posts WHERE thread_id=? ORDER BY ts ASC, id ASC", (root_id,)))
+
+
+def nest(top: ScopePost, comments: list[ScopePost], visible=lambda p: True) -> list[dict]:
+    """The comments under ``top`` as a tree: each a post dict with its own ``replies``."""
+    children: dict[str, list[ScopePost]] = {}
+    for c in comments:
+        children.setdefault(c.reply_to, []).append(c)
+
+    def walk(pid: str, seen: set) -> list[dict]:
+        out = []
+        for c in children.get(pid, []):
+            if c.id in seen or not visible(c):
+                continue
+            seen.add(c.id)
+            out.append({**c.to_dict(), "replies": walk(c.id, seen)})
+        return out
+    return walk(top.id, {top.id})
 
 
 # ---------------------------------------------------------------------------
@@ -273,7 +401,7 @@ def get_post(post_id: str) -> ScopePost | None:
 
 
 def _post_filter(project, scope, kind, author, before_ts,
-                 exclude: tuple[str, list] = ("", [])) -> tuple[str, list]:
+                 exclude: tuple[str, list] = ("", []), tags: Any = None) -> tuple[str, list]:
     sql, params = exclude[0], list(exclude[1])
     if project is not None:
         sql += " AND owner_project = ?"
@@ -281,9 +409,9 @@ def _post_filter(project, scope, kind, author, before_ts,
     if scope is not None:
         sql += " AND owner_scope = ?"
         params.append(scope)
-    if kind:
-        sql += " AND kind = ?"
-        params.append(kind)
+    tag_sql, tag_params = tagmod.filter_sql(tagmod.kind_filter(kind, tags))
+    sql += tag_sql
+    params += tag_params
     if author:
         sql += " AND author = ?"
         params.append(author if edge_origin(author) else _author_to_stored(author))
@@ -299,13 +427,14 @@ def fetch(*, project: str | None = None, scope: str | None = None,
           kind: str | None = None, query: str | None = None,
           author: str | None = None, limit: int = 50, offset: int = 0,
           before_ts: str | None = None, order: str | None = None,
-          exclude: tuple[str, list] = ("", [])) -> list[ScopePost]:
+          exclude: tuple[str, list] = ("", []), tags: Any = None) -> list[ScopePost]:
     """Pull / search posts.
 
     - ``scope`` given, no ``query`` → that channel's recent posts.
     - ``query`` given → :func:`search`, ranked by relevance (within the scope
       if given, else cross-scope).
-    - ``kind`` narrows by post kind (e.g. ``'journal'`` for debrief entries).
+    - ``tags`` narrows by a tag filter such as ``'journal and !closed'``;
+      ``kind`` is the old alias for one tag.
     - ``author`` narrows by stored/display author ref.
     - ``order`` ∈ ``'asc'`` | ``'desc'`` forces oldest- or newest-first. With no
       ``order`` the default is oldest→newest for a single channel and
@@ -317,8 +446,8 @@ def fetch(*, project: str | None = None, scope: str | None = None,
     if query:
         return search(project=project, scope=scope, kind=kind, query=query, author=author,
                       limit=limit, offset=offset, before_ts=before_ts, order=order,
-                      exclude=exclude)[0]
-    where, params = _post_filter(project, scope, kind, author, before_ts, exclude)
+                      exclude=exclude, tags=tags)[0]
+    where, params = _post_filter(project, scope, kind, author, before_ts, exclude, tags)
     if order in ("asc", "desc"):
         direction = order.upper()
     else:
@@ -326,26 +455,28 @@ def fetch(*, project: str | None = None, scope: str | None = None,
     rows = JournalDAO().query_all(
         f"SELECT * FROM scope_posts WHERE 1=1{where} ORDER BY ts {direction} LIMIT ? OFFSET ?",
         [*params, limit, offset])
-    return [_row_to_post(r) for r in rows]
+    return rows_to_posts(rows)
 
 
 def search(*, query: str, project: str | None = None, scope: str | None = None,
            kind: str | None = None, author: str | None = None, limit: int = 50,
            offset: int = 0, before_ts: str | None = None,
-           order: str | None = None,
-           exclude: tuple[str, list] = ("", [])) -> tuple[list[ScopePost], dict | None, str]:
-    """Posts matching ``query`` by meaning and keyword, best first, a ``degraded`` block,
-    and which engine ranked them: ``local``, or ``none`` for a substring match.
+           order: str | None = None, exclude: tuple[str, list] = ("", []),
+           tags: Any = None) -> tuple[list[ScopePost], dict | None, str]:
+    """Thread first posts matching ``query`` by meaning and keyword, best first, a
+    ``degraded`` block, and which engine ranked them: ``local``, or ``none`` for a
+    substring match.
 
-    The filters narrow the candidates before ranking. ``order`` re-sorts the
-    selected posts by time. A kind the index does not hold (``system``) falls
-    back to a substring match.
+    The index holds one document per thread, its first post with its comments,
+    so a hit is a first post with its comment count (fleet.md R107 item 5). The
+    filters apply to that first post. ``order`` re-sorts by time. A filter
+    without an indexed tag falls back to a substring match.
     """
-    where, params = _post_filter(project, scope, kind, author, before_ts, exclude)
+    where, params = _post_filter(project, scope, kind, author, before_ts, exclude, tags)
+    where += " AND thread_id IS NULL"
     degraded = None
     semantic = "none"
-    indexed = not kind or kind in search_index.INDEXED_KINDS
-    if not indexed:
+    if not search_index.may_hold(tagmod.kind_filter(kind, tags)):
         ids = None
     else:
         try:
@@ -359,17 +490,22 @@ def search(*, query: str, project: str | None = None, scope: str | None = None,
             degraded = {"semantic": "error", "error": repr(exc)[:300], "fallback": "keyword"}
     if ids is None:
         rows = JournalDAO().query_all(
-            f"SELECT * FROM scope_posts WHERE 1=1{where} AND body LIKE ?"
-            " ORDER BY ts DESC LIMIT ? OFFSET ?", [*params, f"%{query}%", limit, offset])
-        posts = [_row_to_post(r) for r in rows]
+            f"SELECT * FROM scope_posts WHERE 1=1{where} AND (body LIKE ? OR EXISTS ("
+            "SELECT 1 FROM scope_posts c WHERE c.thread_id = scope_posts.id AND c.body LIKE ?))"
+            " ORDER BY ts DESC LIMIT ? OFFSET ?",
+            [*params, f"%{query}%", f"%{query}%", limit, offset])
+        posts = rows_to_posts(rows)
     else:
         marks = ",".join("?" * len(ids))
         by_id = {r["id"]: r for r in JournalDAO().query_all(
             f"SELECT * FROM scope_posts WHERE id IN ({marks})", ids)} if ids else {}
-        posts = [_row_to_post(by_id[i]) for i in ids if i in by_id]
+        posts = rows_to_posts(by_id[i] for i in ids if i in by_id)
         for p in posts:
             h = matches[p.id]
             p.match = {"score": h["score"], "snippet": h["snippet"]}
+    counts = comment_counts([p.id for p in posts])
+    for p in posts:
+        p.comments = counts.get(p.id, 0)
     if order in ("asc", "desc"):
         posts.sort(key=lambda p: p.ts, reverse=order == "desc")
     return posts, degraded, semantic

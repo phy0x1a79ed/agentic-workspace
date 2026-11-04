@@ -130,11 +130,11 @@ def test_an_old_database_gains_the_reads_table(tmp_path, monkeypatch):
     path = pdbs.service_db_path("journal")
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
-    conn.executescript(dao.SCHEMA_SQL + "CREATE TABLE schema_version (version INTEGER NOT NULL);"
-                                        "INSERT INTO schema_version VALUES (1);")
+    from tests.conftest import OLD_DDL
+    conn.executescript(OLD_DDL)
     conn.close()
     monkeypatch.setattr(dao, "_initialized", False)
     dao.init()
     conn = sqlite3.connect(path)
-    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 3
+    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == dao.SCHEMA_VERSION
     conn.execute("SELECT * FROM session_reads").fetchall()

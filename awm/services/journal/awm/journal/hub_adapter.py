@@ -17,32 +17,34 @@ import logging
 from typing import Any
 
 from awm.gatewayclient import ServiceAdapter, spawn_supervised
-from awm.journal import channel, dao, migrate, search_index
+from awm.journal import channel, dao, migrate, search_index, tagsync
 from awm.journal.operations.briefs import BRIEF_HANDLERS, BRIEF_MANIFEST_FUNCTIONS
 from awm.journal.operations.goals import GOAL_HANDLERS, GOAL_MANIFEST_FUNCTIONS
 from awm.journal.operations.posts import POST_HANDLERS, POST_MANIFEST_FUNCTIONS
 from awm.journal.operations.render import RENDER_HANDLERS, RENDER_MANIFEST_FUNCTIONS
+from awm.journal.operations.tags import TAG_HANDLERS, TAG_MANIFEST_FUNCTIONS
 from awm.persistence import embeddings
 
 log = logging.getLogger("awm.journal.hub_adapter")
 
 API_MANIFEST: dict[str, Any] = {
-    "functions": (POST_MANIFEST_FUNCTIONS + GOAL_MANIFEST_FUNCTIONS + BRIEF_MANIFEST_FUNCTIONS
-                  + RENDER_MANIFEST_FUNCTIONS),
+    "functions": (POST_MANIFEST_FUNCTIONS + TAG_MANIFEST_FUNCTIONS + GOAL_MANIFEST_FUNCTIONS
+                  + BRIEF_MANIFEST_FUNCTIONS + RENDER_MANIFEST_FUNCTIONS),
     "emitters": [
         {
             "topic": "posts",
             "description": (
                 "Fires once per new scope-channel post. Payload "
-                "{project, scope, post}; subscribers filter by (project, "
-                "scope)."
+                "{project, scope, post}; post carries tags and a derived kind. "
+                "Subscribers filter by (project, scope)."
             ),
         },
     ],
     "sessions": [],
 }
 
-HANDLERS: dict[str, Any] = {**POST_HANDLERS, **GOAL_HANDLERS, **BRIEF_HANDLERS, **RENDER_HANDLERS}
+HANDLERS: dict[str, Any] = {**POST_HANDLERS, **TAG_HANDLERS, **GOAL_HANDLERS, **BRIEF_HANDLERS,
+                            **RENDER_HANDLERS}
 
 
 async def _on_start() -> None:
@@ -51,6 +53,7 @@ async def _on_start() -> None:
     log.info("scopes migration: %s", result)
     await asyncio.to_thread(search_index.ensure_schema)
     spawn_supervised("journal:search-backfill", search_index.backfill_loop)
+    spawn_supervised("journal:tag-pull", tagsync.pull_loop)
     embeddings.warm()
 
 
