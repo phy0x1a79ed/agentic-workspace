@@ -1608,18 +1608,13 @@ def test_prune_pins_drops_only_jobs_that_are_gone(home, launched):
 # --- the manifest ------------------------------------------------------------
 
 
-def test_the_manifest_declares_effects_and_drops_status():
+def test_the_manifest_drops_status():
     from awm.cch.cx_adapter import API_MANIFEST
 
     fns = {f["name"]: f for f in API_MANIFEST["functions"]}
     assert {"start", "list", "stop", "resume", "adopt", "probe", "claim", "seed", "remove"} == set(fns)
     assert "status" not in fns and "wake" not in fns
-    assert fns["start"]["effect"] == "write"
-    assert fns["stop"]["effect"] == "write"
-    assert fns["resume"]["effect"] == "write"
-    assert fns["list"]["effect"] == "read"
-    assert fns["probe"]["effect"] == "read"
-    assert all(f["effect"] in ("read", "write") for f in fns.values())
+    assert not any("effect" in f for f in fns.values())
     assert "tier" not in str(API_MANIFEST)
 
 

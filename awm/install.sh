@@ -19,10 +19,9 @@ if mamba run -n "$ENV" pip show -q awm-gateway >/dev/null 2>&1; then
     mamba run -n "$ENV" pip uninstall -y awm-gateway
 fi
 
-for lib in config persistence gatewayclient claudedaemon kept trustpolicy tlsfront dvcdata; do
+for lib in config persistence gatewayclient grantlib claudedaemon kept trustpolicy tlsfront dvcdata; do
     [ -d "$WS/awm/service_components/$lib" ] && run "$WS/awm/service_components/$lib" --no-deps
 done
-run "$WS/awm/service_components/grantlib" --no-deps
 
 export AWM_ROOT="$WS/awm"
 declare -A seen=()

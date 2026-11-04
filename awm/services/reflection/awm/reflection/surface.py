@@ -11,7 +11,6 @@ from typing import Any
 DESCRIPTION = "Act on Claude Code and other agent sessions: your own (compact, mode, message_self) and others on this node (start_other, list_other, message, stop, ...). reflection finds the session's harness plugin and asks it."
 
 FUNCTIONS: list[dict[str, Any]] = [{'name': 'message_self',
-  'effect': 'write',
   'tool': 'reflection_message_self',
   'description': 'Type a command/text into YOUR OWN prompt and submit it (no Escape, '
                  'so it QUEUES behind the current turn). Use for self-directed slash '
@@ -46,7 +45,6 @@ FUNCTIONS: list[dict[str, Any]] = [{'name': 'message_self',
               'description': 'Required to send destructive commands (/clear, /quit, '
                              '/exit).'}]},
  {'name': 'compact',
-  'effect': 'write',
   'tool': 'reflection_compact',
   'description': 'Compact your own conversation: injects /compact into your own '
                  'prompt; it queues and runs the instant the current turn ends. A '
@@ -65,7 +63,6 @@ FUNCTIONS: list[dict[str, Any]] = [{'name': 'message_self',
               'type': 'integer',
               'description': 'Wait this many ms before injecting (default 0).'}]},
  {'name': 'mode',
-  'effect': 'write',
   'tool': 'reflection_mode',
   'description': 'Put your own session back into bypass-permissions mode. Approving a '
                  'plan drops the session into whatever mode it was in before planning '
@@ -81,7 +78,6 @@ FUNCTIONS: list[dict[str, Any]] = [{'name': 'message_self',
                              'For hooks, which reach us through an ancestry walk; '
                              'agents never need it.'}]},
  {'name': 'remote_control',
-  'effect': 'write',
   'tool': 'reflection_remote_control',
   'description': 'Turn Remote Control on or off for a session on this node. On types '
                  '`/rc <name>` and returns the claude.ai link once it connects, or '
@@ -104,7 +100,6 @@ FUNCTIONS: list[dict[str, Any]] = [{'name': 'message_self',
               'description': 'A job id, or a session name as `list_other` shows it. '
                              'Omit to act on your own session.'}]},
  {'name': 'model',
-  'effect': 'write',
   'tool': 'reflection_model',
   'description': "Switch a session's model: types `/model <model>` and submits it. "
                  'Queues behind a running turn. Refused while a modal or permission '
@@ -127,7 +122,6 @@ FUNCTIONS: list[dict[str, Any]] = [{'name': 'message_self',
               'description': 'A job id, or a session name as `list_other` shows it. '
                              'Omit to act on your own session.'}]},
  {'name': 'effort',
-  'effect': 'write',
   'tool': 'reflection_effort',
   'description': "Set a session's effort: types `/effort <level>` and submits it. "
                  'Queues behind a running turn. Refused while a modal or permission '
@@ -150,7 +144,6 @@ FUNCTIONS: list[dict[str, Any]] = [{'name': 'message_self',
               'description': 'A job id, or a session name as `list_other` shows it. '
                              'Omit to act on your own session.'}]},
  {'name': 'rename',
-  'effect': 'write',
   'tool': 'reflection_rename',
   'description': 'Rename a session: types `/rename <name>` and submits it. Queues '
                  'behind a running turn. Refused while a modal or permission prompt is '
@@ -167,7 +160,6 @@ FUNCTIONS: list[dict[str, Any]] = [{'name': 'message_self',
               'description': 'A job id, or a session name as `list_other` shows it. '
                              'Omit to act on your own session.'}]},
  {'name': 'cd',
-  'effect': 'write',
   'tool': 'reflection_cd',
   'description': 'Move a session to another directory: types `/cd <path>` and submits '
                  "it. Claude Code then runs the session's tools from there, so later "
@@ -193,7 +185,6 @@ FUNCTIONS: list[dict[str, Any]] = [{'name': 'message_self',
               'description': 'A job id, or a session name as `list_other` shows it. '
                              'Omit to act on your own session.'}]},
  {'name': 'interrupt',
-  'effect': 'write',
   'tool': 'reflection_interrupt',
   'description': "Interrupt a session's running turn: presses Escape once, as a person "
                  'would. Refused while a modal or permission prompt is showing.',
@@ -203,7 +194,6 @@ FUNCTIONS: list[dict[str, Any]] = [{'name': 'message_self',
               'description': 'A job id, or a session name as `list_other` shows it. '
                              'Omit to act on your own session.'}]},
  {'name': 'stop',
-  'effect': 'write',
   'tool': 'reflection_stop',
   'description': 'Retire a background session on this node: stop it and remove its '
                  'job (`claude stop`, then `claude rm`). The transcript stays, so the '
@@ -223,7 +213,6 @@ FUNCTIONS: list[dict[str, Any]] = [{'name': 'message_self',
               'type': 'boolean',
               'description': 'Required to stop your own session.'}]},
  {'name': 'link',
-  'effect': 'read',
   'tool': 'reflection_link',
   'description': "Read a session's claude.ai link and whether Remote Control is on, "
                  'from its record. Types nothing.',
@@ -233,7 +222,6 @@ FUNCTIONS: list[dict[str, Any]] = [{'name': 'message_self',
               'description': 'A job id, or a session name as `list_other` shows it. '
                              'Omit to act on your own session.'}]},
  {'name': 'message',
-  'effect': 'write',
   'tool': 'reflection_message',
   'description': "To talk to another agent, use your harness's own channel first: in "
                  'Claude Code, `SendMessage` to a session that `ListAgents` shows, and '
@@ -258,7 +246,6 @@ FUNCTIONS: list[dict[str, Any]] = [{'name': 'message_self',
               'description': 'Required to send destructive commands (/clear, /quit, '
                              '/exit).'}]},
  {'name': 'pending',
-  'effect': 'read',
   'tool': 'reflection_pending',
   'description': 'List the deferred resumes this service still owes — one per session '
                  'that has a slash command in flight. A session that compacted and '
@@ -271,7 +258,6 @@ FUNCTIONS: list[dict[str, Any]] = [{'name': 'message_self',
   'timeout': 30,
   'params': []},
  {'name': 'whoami',
-  'effect': 'read',
   'tool': 'reflection_whoami',
   'description': 'Report which session reflection resolves you to, and how it would '
                  "reach you (a tmux pane, or a background session's PTY). Useful when "
@@ -406,8 +392,7 @@ FUNCTIONS: list[dict[str, Any]] = [{'name': 'message_self',
                              'refresh, no ssh and only the awm verbs it needs inside '
                              'its own scope. It starts untrusted unless trust says '
                              'otherwise.'}],
-  'timeout': 1800,
-  'effect': 'write'},
+  'timeout': 1800},
  {'name': 'list_other',
   'tool': 'reflection_list_other',
   'description': 'List the sessions on this node: background jobs with their state, '
@@ -422,8 +407,7 @@ FUNCTIONS: list[dict[str, Any]] = [{'name': 'message_self',
               'description': 'Only sessions in this project.'},
              {'name': 'scope',
               'type': 'string',
-              'description': 'Only sessions in this scope.'}],
-  'effect': 'read'},
+              'description': 'Only sessions in this scope.'}]},
  {'name': 'stop_other',
   'tool': 'reflection_stop_other',
   'description': 'Retire a session that `start_other` created: stop it and remove its '
@@ -434,8 +418,7 @@ FUNCTIONS: list[dict[str, Any]] = [{'name': 'message_self',
               'type': 'string',
               'required': True,
               'description': 'The job id `start_other` returned.'}],
-  'timeout': 30,
-  'effect': 'write'},
+  'timeout': 30},
  {'name': 'resume_other',
   'tool': 'reflection_resume_other',
   'description': 'Bring back a waiting job that `start_other` created, under the same '
@@ -453,8 +436,7 @@ FUNCTIONS: list[dict[str, Any]] = [{'name': 'message_self',
              {'name': 'prompt',
               'type': 'string',
               'description': 'The first message the resumed session gets.'}],
-  'timeout': 90,
-  'effect': 'write'},
+  'timeout': 90},
  {'name': 'adopt_other',
   'tool': 'reflection_adopt_other',
   'surfaces': ['cli', 'http'],
@@ -465,8 +447,7 @@ FUNCTIONS: list[dict[str, Any]] = [{'name': 'message_self',
               'type': 'string',
               'required': True,
               'description': 'The job id.'}],
-  'timeout': 30,
-  'effect': 'write'},
+  'timeout': 30},
  {'name': 'harness_event',
   'tool': 'reflection_harness_event',
   'description': 'A harness plugin reports how a command with a follow-up ended, done '
@@ -491,7 +472,6 @@ FUNCTIONS: list[dict[str, Any]] = [{'name': 'message_self',
              {'name': 'injected_at_ms', 'type': 'integer'},
              {'name': 'reissues', 'type': 'integer'},
              {'name': 'at_ms', 'type': 'integer'}],
-  'effect': 'write',
   'surfaces': ['cli', 'http'],
   'timeout': 30},
  {'name': 'session_of',
@@ -499,12 +479,10 @@ FUNCTIONS: list[dict[str, Any]] = [{'name': 'message_self',
   'description': 'The session that a process on this node belongs to, for a service '
                  'that holds a stamped caller pid. Asks every harness plugin.',
   'params': [{'name': 'pid', 'type': 'integer', 'required': True}],
-  'effect': 'read',
   'surfaces': ['cli', 'http'],
   'timeout': 30},
  {'name': 'wait',
   'tool': 'reflection_wait',
-  'effect': 'write',
   'timeout': 60,
   'description': 'Pause your own session until every session in `until` has retired, '
                  'then wake it with a line that says so. A wait works like a retire, in '
@@ -521,14 +499,12 @@ FUNCTIONS: list[dict[str, Any]] = [{'name': 'message_self',
                              'wait for.'}]},
  {'name': 'waits',
   'tool': 'reflection_waits',
-  'effect': 'read',
   'surfaces': ['cli', 'http'],
   'description': 'Every recorded wait: who waits, on whom, which of them have '
                  'retired, since when, and in which scope.',
   'params': []},
  {'name': 'retired',
   'tool': 'reflection_retired',
-  'effect': 'write',
   'surfaces': ['cli', 'http'],
   'description': 'A peer tells this node that a session retired there, so a wait here '
                  'that lists it can wake its waiter.',
@@ -536,7 +512,6 @@ FUNCTIONS: list[dict[str, Any]] = [{'name': 'message_self',
               'description': 'The R9 id of the session that retired.'}]},
  {'name': 'retired_among',
   'tool': 'reflection_retired_among',
-  'effect': 'read',
   'surfaces': ['cli', 'http'],
   'description': 'Which of these sessions retired on this node, and which this node '
                  'still knows as live or stopped.',

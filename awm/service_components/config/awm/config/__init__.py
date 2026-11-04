@@ -264,9 +264,5 @@ def load_env_file(path: Path = ENV_FILE) -> int:
 # Federation reader contracts (re-exported; defined in submodules)
 # ---------------------------------------------------------------------------
 
-from awm.config.effects import (  # noqa: E402,F401
-    EFFECTS,
-    verb_effect,
-)
 from awm.config.edges import caller_peer  # noqa: E402,F401
 from awm.config.operator import operator_dm  # noqa: E402,F401

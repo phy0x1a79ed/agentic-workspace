@@ -73,10 +73,10 @@ _TARGET = [
 ]
 
 
-def _verb(name: str, description: str, params: list, *, effect: str = "write",
-        timeout: Optional[int] = None) -> dict:
+def _verb(name: str, description: str, params: list, *,
+          timeout: Optional[int] = None) -> dict:
     out = {"name": name, "tool": f"{TOOL}_{name}", "description": description,
-           "params": params, "effect": effect}
+           "params": params}
     if timeout:
         out["timeout"] = timeout
     return out
@@ -103,18 +103,16 @@ API_MANIFEST: dict[str, Any] = {
         "follow-up through to its end. reflection calls it; it is not on MCP."
     ),
     "functions": [
-        _verb("platform", "The platform code, name and optional verbs.", [],
-            effect="read"),
+        _verb("platform", "The platform code, name and optional verbs.", []),
         _verb("resolve", "Whether the session at pid is a Claude Code session, "
-            "and which.", [_p("pid", "integer", required=True)], effect="read",
+            "and which.", [_p("pid", "integer", required=True)],
             timeout=30),
-        _verb("find", "The sessions a ref names.", [_p("ref", required=True)],
-            effect="read", timeout=30),
-        _verb("status", "A session's live state.", _TARGET, effect="read",
+        _verb("find", "The sessions a ref names.", [_p("ref", required=True)], timeout=30),
+        _verb("status", "A session's live state.", _TARGET,
             timeout=30),
         _verb("list", "Every Claude Code session on this node, with lineage and "
             "the warm pool.", _cx_params("list") + [
-                _p("include_stopped", "boolean")], effect="read"),
+                _p("include_stopped", "boolean")]),
         _verb("send", "Type text or a slash command into a session and submit it.",
             _TARGET + [
                 _p("text", required=True),
@@ -152,22 +150,22 @@ API_MANIFEST: dict[str, Any] = {
             [_p("pid", "integer"), _p("expect_session")], timeout=60),
         _verb("remote_control", "Turn Remote Control on or off.", _TARGET + [
             _p("on", "boolean", required=True), _p("name")], timeout=60),
-        _verb("link", "A session's claude.ai link.", _TARGET, effect="read",
+        _verb("link", "A session's claude.ai link.", _TARGET,
             timeout=30),
         _verb("adopt", "Take on a job started outside start.",
             _TARGET + _cx_params("adopt"), timeout=30),
         _verb("revive_pinned", "Resume each pinned job whose process is gone.",
             [], timeout=600),
-        _verb("pending", "The follow-ups cch still owes.", [], effect="read"),
+        _verb("pending", "The follow-ups cch still owes.", []),
         _verb("probe", "Whether cch on `node` answers `list` from this node, and its "
             "daemon state. Returns no sessions. A seat keeper on another node asks "
             "this to tell its own lost contact from the node being down.",
-            [_p("node", required=True)], effect="read", timeout=30),
+            [_p("node", required=True)], timeout=30),
         _verb("live_session_ids", "The Claude session UUIDs a running Claude Code "
             "process holds. Refuses when a record cannot be read, so a caller never "
-            "acts on a shorter list than the truth.", [], effect="read", timeout=30),
+            "acts on a shorter list than the truth.", [], timeout=30),
         _verb("caller_of_token", "The isolated session that holds a caller token, "
-            "and the verbs it may call.", [_p("token", required=True)], effect="read",
+            "and the verbs it may call.", [_p("token", required=True)],
             timeout=10),
         _verb("pool_claim", "Claim the warm session for a folder.",
             _cx_params("claim"), timeout=9),
@@ -176,7 +174,6 @@ API_MANIFEST: dict[str, Any] = {
             _cx_params("remove"), timeout=120),
         *[_verb(f"daemon_{v}", _keep_fn(v)["description"],
               [dict(p) for p in _keep_fn(v)["params"]],
-              effect=_keep_fn(v).get("effect", "write"),
               timeout=_keep_fn(v).get("timeout"))
           for v in ("status", "ensure", "hold", "release")],
     ],

@@ -1,4 +1,4 @@
-//! Session modes and the verbs each may call: the Rust twin of `awm.config.modes`.
+//! Session modes and the verbs each may call.
 //!
 //! A mode not listed in [`MODES`], such as the default `worker`, is unrestricted. The one
 //! listed mode is [`UNKNOWN`], which a session gets when its mode cannot be read.

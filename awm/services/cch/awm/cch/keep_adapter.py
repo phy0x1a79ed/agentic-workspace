@@ -45,7 +45,6 @@ API_MANIFEST: dict[str, Any] = {
                 "last stopped, recent starts, whether it is held, and linger."
             ),
             "params": [],
-            "effect": "read",
         },
         {
             "name": "ensure",
@@ -63,7 +62,6 @@ API_MANIFEST: dict[str, Any] = {
                  "description": "Seconds to wait for the daemon. Default 30."},
             ],
             "timeout": 60,
-            "effect": "write",
         },
         {
             "name": "hold",
@@ -82,7 +80,6 @@ API_MANIFEST: dict[str, Any] = {
                  "description": "How long the hold lasts. Default 600, at most 1200."},
             ],
             "timeout": 60,
-            "effect": "write",
         },
         {
             "name": "release",
@@ -90,7 +87,6 @@ API_MANIFEST: dict[str, Any] = {
             "description": "End a daemon_hold and start the daemon again.",
             "params": [],
             "timeout": 60,
-            "effect": "write",
         },
     ],
     "emitters": [],

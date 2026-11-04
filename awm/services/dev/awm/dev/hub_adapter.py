@@ -24,9 +24,9 @@ _WORKTREE = {"name": "worktree", "type": "string", "required": True,
              "description": "Absolute path of the worktree whose sandbox to drive, under the workspace's projects/."}
 
 
-def _fn(name: str, description: str, effect: str = "write") -> dict[str, Any]:
+def _fn(name: str, description: str) -> dict[str, Any]:
     return {"name": name, "tool": f"dev_{name}", "description": description,
-            "params": [_WORKTREE], "effect": effect, "timeout": 120}
+            "params": [_WORKTREE], "timeout": 120}
 
 
 API_MANIFEST: dict[str, Any] = {
@@ -36,7 +36,7 @@ API_MANIFEST: dict[str, Any] = {
         _fn("stop", "Stop the worktree's dev sandbox (gateway and services)."),
         _fn("restart", "Restart the worktree's dev sandbox."),
         _fn("seed", "(Re)seed the worktree's dev sandbox without restarting."),
-        _fn("status", "Show what the worktree's dev sandbox is running.", "read"),
+        _fn("status", "Show what the worktree's dev sandbox is running."),
     ],
     "emitters": [],
     "sessions": [],

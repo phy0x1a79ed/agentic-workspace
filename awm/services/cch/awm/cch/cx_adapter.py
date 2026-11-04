@@ -158,7 +158,6 @@ API_MANIFEST: dict[str, Any] = {
                                 "and does not stop the start."},
             ],
             "timeout": 1800,
-            "effect": "write",
         },
         {
             "name": "list",
@@ -179,7 +178,6 @@ API_MANIFEST: dict[str, Any] = {
                 {"name": "scope", "type": "string",
                  "description": "Only sessions in this scope."},
             ],
-            "effect": "read",
         },
         {
             "name": "stop",
@@ -195,7 +193,6 @@ API_MANIFEST: dict[str, Any] = {
                  "description": "The job id `start_other` returned."},
             ],
             "timeout": 30,
-            "effect": "write",
         },
         {
             "name": "resume",
@@ -212,7 +209,6 @@ API_MANIFEST: dict[str, Any] = {
                  "description": "The job id `start_other` returned."},
             ],
             "timeout": 90,
-            "effect": "write",
         },
         {
             "name": "adopt",
@@ -228,7 +224,6 @@ API_MANIFEST: dict[str, Any] = {
                  "description": "The job id."},
             ],
             "timeout": 30,
-            "effect": "write",
         },
         {
             "name": "probe",
@@ -245,7 +240,6 @@ API_MANIFEST: dict[str, Any] = {
                  "description": "The node to look at."},
             ],
             "timeout": 30,
-            "effect": "read",
         },
         {
             "name": "claim",
@@ -262,7 +256,6 @@ API_MANIFEST: dict[str, Any] = {
                  "description": "The directory to move the session to."},
             ],
             "timeout": 9,
-            "effect": "write",
         },
         {
             "name": "seed",
@@ -278,7 +271,6 @@ API_MANIFEST: dict[str, Any] = {
             ),
             "params": [],
             "timeout": 60,
-            "effect": "write",
         },
         {
             "name": "remove",
@@ -297,7 +289,6 @@ API_MANIFEST: dict[str, Any] = {
                  "description": "Carry out the plan (default false)."},
             ],
             "timeout": 120,
-            "effect": "write",
         },
     ],
     "emitters": [],

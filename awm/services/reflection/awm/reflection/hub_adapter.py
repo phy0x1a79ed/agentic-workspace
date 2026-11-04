@@ -37,7 +37,7 @@ API_MANIFEST: dict[str, Any] = {
 }
 
 SWEEP_EVERY_S = 300
-#: The mode a gate restricts hardest (awm.config.modes).
+#: The mode the gateway's gate restricts hardest (core modes.rs).
 UNKNOWN_MODE = "unknown"
 
 
