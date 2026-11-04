@@ -29,12 +29,9 @@ PREFIX = "awmut1."
 
 _ID_RE = re.compile(r"^[0-9a-f]{16}$")
 
-#: The avatar stage session: open it, then hold its socket. The id is the
-#: gateway's session id (``secrets.token_urlsafe``); the bounds leave room for a
-#: longer id and still never match ``stage``.
+#: The avatar stage session: one WebSocket, whose first frame is the init.
 AVATAR_STAGE = "avatar-stage"
-_AVATAR_OPEN = "/svc/avatar/session/stage"
-_AVATAR_SOCKET = re.compile(r"^/svc/avatar/session/[A-Za-z0-9_-]{8,64}$")
+_AVATAR_SESSION = "/hub/session/avatar/stage"
 
 #: Every scope a token may be minted with.
 SCOPES = frozenset({AVATAR_STAGE})
@@ -88,7 +85,5 @@ def scope_admits(scope: str, *, method: str, path: str, raw: bytes,
     if query or raw != path.encode("ascii", "replace"):
         return False
     if scope == AVATAR_STAGE:
-        if websocket:
-            return bool(_AVATAR_SOCKET.match(path))
-        return method == "POST" and path == _AVATAR_OPEN
+        return websocket and method == "GET" and path == _AVATAR_SESSION
     return False

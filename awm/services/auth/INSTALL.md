@@ -45,7 +45,7 @@ A device token lets an unattended device or app act as one user without storing 
 1. Send the token on every request to the edge as `Authorization: Bearer awmut1.…`. The edge stamps `X-Awm-As: user:<name>` as for a cookie login and sets no cookie.
 2. Revoke a lost or retired token by its id. The edge honours a revoked token until its next material refresh, at most 30 s later.
 
-Pass `--scope avatar-stage` to narrow a token to the avatar stage session: `POST /svc/avatar/session/stage` and the WebSocket it returns. The edge refuses a scoped token on every other path with a 401. Scope a token whose bearer crosses another host, such as the deneb relay, so a leak there does not hand over the whole user. `awm/service_components/config/awm/config/usertoken.py` holds the shapes, and both this service and the edge read them from there.
+Pass `--scope avatar-stage` to narrow a token to the avatar stage session: the WebSocket `/hub/session/avatar/stage`. The edge refuses a scoped token on every other path with a 401. Scope a token whose bearer crosses another host, such as the deneb relay, so a leak there does not hand over the whole user. `awm/service_components/config/awm/config/usertoken.py` holds the shapes, and both this service and the edge read them from there.
 
 **CAUTION** This service sends a scoped token only to an edge that names its scope in `edge_material`. An edge that could not read the scope would honour the token everywhere. A node whose `httpsfront` predates scopes therefore refuses scoped tokens.
 
