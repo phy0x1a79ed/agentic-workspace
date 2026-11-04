@@ -251,10 +251,6 @@ async def _h_send(args: dict) -> dict:
                 f"the files come to {size} bytes, over the "
                 f"{conn.max_file_bytes} that {args['account']!r} takes per message")
     extra = {"files": files} if files else {}
-    if args.get("ack_ref"):
-        edited = await conn.edit_ack(str(args["ack_ref"]), text, **extra)
-        if edited is not None:
-            return {"ok": True, "edited": True, **edited}
     cfg = _accounts.get(args["account"])
     personal = cfg is not None and cfg.kind == "user"
     if not personal:
@@ -931,9 +927,6 @@ API_MANIFEST: dict[str, Any] = {
             "effect": "write",
             "tool": "social_send",
             "description": "Send a message as a configured account to a channel. "
-                           "`ack_ref`, from a slash command's event, replaces that "
-                           "command's acknowledgement while the platform still "
-                           "allows it, and sends a new message otherwise. "
                            "`file` uploads a file from the node social runs on, such as "
                            "a plan's .md, with `text` as its message; `text` is "
                            "optional with a file. `files` attaches inline text "
@@ -949,7 +942,6 @@ API_MANIFEST: dict[str, Any] = {
                 {"name": "channel", "type": "string", "required": True},
                 {"name": "text", "type": "string", "required": False},
                 {"name": "thread", "type": "string", "required": False},
-                {"name": "ack_ref", "type": "string", "required": False},
                 {"name": "file", "type": "string", "required": False},
                 {"name": "files", "type": "array", "required": False},
                 {"name": "quiet", "type": "boolean", "required": False},

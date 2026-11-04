@@ -303,8 +303,8 @@ def _brief_line(project: str, scope: str) -> str:
     except Exception as exc:  # noqa: BLE001 - a move never waits on the brief
         log.info("reflection: no brief for %s/%s: %s", project, scope, exc)
         return ""
-    text = ((got or {}).get("brief") or {}).get("text") if isinstance(got, dict) else None
-    return f"The brief of {project}/{scope}: {text}" if text else ""
+    brief = got.get("brief") if isinstance(got, dict) else None
+    return (brief.get("line") or "") if isinstance(brief, dict) else ""
 
 
 def _cd(args: dict) -> dict:

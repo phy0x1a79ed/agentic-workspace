@@ -36,9 +36,14 @@ class Brief:
     supersedes: str
     ts: str
 
+    @property
+    def line(self) -> str:
+        """The line a session gets in its context: at start, and after a move."""
+        return f"The brief of {self.project}/{self.scope}: {self.text}"
+
     def to_dict(self) -> dict:
         return {"id": self.id, "project": self.project, "scope": self.scope,
-                "author": self.author, "text": self.text,
+                "author": self.author, "text": self.text, "line": self.line,
                 "supersedes": self.supersedes, "ts": self.ts}
 
 

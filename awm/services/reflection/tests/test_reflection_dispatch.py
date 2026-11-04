@@ -313,7 +313,8 @@ def test_cd_hands_the_new_scopes_brief_to_the_harness(fakes, monkeypatch):
 def test_the_brief_line_reads_the_journal(monkeypatch):
     import awm.gatewayclient as gc
     monkeypatch.setattr(gc, "call_sync", lambda svc, fn, a, timeout=None: {
-        "brief": {"text": "For the scopes service."}} if (svc, fn) == ("journal", "brief_read") else {})
+        "brief": {"line": "The brief of awm/s: For the scopes service."}}
+        if (svc, fn) == ("journal", "brief_read") else {})
     assert hub_adapter._brief_line("awm", "s") == "The brief of awm/s: For the scopes service."
     monkeypatch.setattr(gc, "call_sync", lambda *a, **k: {"brief": None})
     assert hub_adapter._brief_line("awm", "s") == ""

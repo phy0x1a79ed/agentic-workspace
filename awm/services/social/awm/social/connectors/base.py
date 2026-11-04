@@ -180,7 +180,7 @@ class Connector(ABC):
     # the only reader of its chats). The adapter then injects ``history``.
     keeps_history: bool = False
     history = None  # awm.social.history.History, set by the adapter
-    # True for a connector whose ``send`` and ``edit_ack`` take ``files``: a list
+    # True for a connector whose ``send`` takes ``files``: a list
     # of attachments, each ``{"filename"}`` plus one of ``text``, ``b64`` or
     # ``path`` (see :func:`file_bytes`).
     sends_files: bool = False
@@ -216,15 +216,6 @@ class Connector(ABC):
         only connector, such as Tony's own Slack (R127), leaves this default.
         """
         raise NotImplementedError(f"{self.platform} account {self.account.name!r} is read only")
-
-    async def edit_ack(self, ref: str, text: str, *,
-                       files: list[dict] | None = None) -> dict | None:
-        """Rewrite the acknowledgement of the command carrying ``ack_ref=ref``.
-
-        Returns ``None`` when the platform can no longer edit it (expired,
-        unknown, or no command surface at all); the caller then sends anew.
-        """
-        return None
 
     async def fetch(
         self, channel: str, *, limit: int = 50, before: str | None = None
