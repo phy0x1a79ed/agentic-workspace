@@ -2,10 +2,20 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any
+from urllib.parse import quote
 
 TOOL = "operations"
 HIDDEN = ["cli", "http"]
+#: alcor's approver panel, where Tony's passkey confirms an action (queue.md R65).
+PANEL_ORIGIN = "https://auth.tony-xy-liu.com"
+
+
+def panel_url(task_id: str) -> str:
+    """The approver panel opened on one card, for a seat to send Tony (sessions.md R68)."""
+    origin = os.environ.get("AWM_APPROVER_ORIGIN") or PANEL_ORIGIN
+    return f"{origin.rstrip('/')}/panel?task={quote(task_id, safe='')}"
 
 
 def _p(name: str, type_: str = "string", required: bool = False, desc: str = "") -> dict:
@@ -33,7 +43,8 @@ VERBS: list[dict[str, Any]] = [
      "description": "Tell Tony you need him. kind blocked (with reason) or review (with summary) "
      "puts your card in Needs you. urgent:true on a block also sends him a Discord DM. kind "
      "approval posts an Arbutus admin bundle to Slack for Tony or Ryan. Tony answers in your "
-     "session, and his prompt moves the card back to Working.",
+     "session, and his prompt moves the card back to Working. The answer's panel_url opens the "
+     "card on his passkey panel.",
      "params": [_p("kind", desc="blocked, review or approval."), _p("reason"), _p("summary"),
                 _p("urgent", "boolean"), _p("bundle", desc="kind approval: the bundle's name."),
                 _p("title", desc="A title, if this opens your card.")]},
@@ -59,7 +70,9 @@ VERBS: list[dict[str, Any]] = [
      "description": "A session's task id, or null.", "params": [SID]},
     {"name": "task_sessions", "effect": "read",
      "description": "Every session of a task, active or finished, with its role.", "params": [TID]},
-    {"name": "task_get", "effect": "read", "description": "One card with its sessions.",
+    {"name": "task_get", "effect": "read", "description": "One card with its sessions, and "
+     "panel_url: send Tony that link for an action that needs his approval, such as close, "
+     "reject or spawn (sessions.md R68).",
      "params": [TID]},
     {"name": "task_list", "effect": "read",
      "description": "Cards newest first, by section (proposed, needs_you, working, done), with a "
