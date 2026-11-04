@@ -26,7 +26,7 @@ verbs = ["platform", "status", "resolve", "find", "list", "start", "stop", "resu
 
 [[needs.tool]]
 name = "operations"
-major = 1
+major = 2
 verbs = ["task_for_session"]
 
 [[needs.tool]]
