@@ -1,4 +1,4 @@
-"""Stdlib-only cron / interval parsing for the events scheduler.
+"""Stdlib-only cron / interval parsing for the services' schedulers (events, dvc).
 
 Two schedule forms are supported, both resolved by :func:`next_due` to "the next
 epoch timestamp strictly after a given instant":
