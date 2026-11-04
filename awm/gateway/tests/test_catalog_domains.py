@@ -95,8 +95,8 @@ def test_envelope_constant_not_mutated_across_domains(patched_registry):
 
 def test_native_domains_present(patched_registry):
     tools = {t.name: t for t in catalog.list_domain_tools()}
-    # gateway-native ops fold by tool: the awm tool, plus the peer book in operations
-    assert "awm" in tools and "operations" in tools
+    # gateway-native ops fold by tool: the awm tool
+    assert "awm" in tools
     assert not {"gateway", "services", "peer", "config"} & set(tools)
 
 
@@ -149,10 +149,9 @@ def test_describe_trims_a_pydantic_native_verb():
     from awm.gateway.gateway_ops import GATEWAY_OPERATIONS
     ops = {op.name: op for op in GATEWAY_OPERATIONS}
     out = catalog._describe_verb(
-        "peer_set", catalog._to_mcp_tool(ops["operations_peer_set"]))
-    assert out["required"] == ["name"]
-    assert out["params"]["name"] == {}
-    assert out["params"]["public_key"] == {}
+        "config_set", catalog._to_mcp_tool(ops["awm_config_set"]))
+    assert out["required"] == ["key"]
+    assert out["params"]["key"] == {}
     reap = catalog._describe_verb(
         "services_reap", catalog._to_mcp_tool(ops["awm_services_reap"]))
     assert reap["params"] == {"dry_run": {"type": "boolean", "default": False}}

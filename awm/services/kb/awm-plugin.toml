@@ -1,7 +1,6 @@
 [plugin]
 name = "kb"
 version = "0.1.0"
-trust = "own"
 
 [[service]]
 name = "kb"
@@ -25,5 +24,11 @@ tier = "off"
 
 [needs]
 secrets = []
-network = []
+network = ["huggingface.co", "*.huggingface.co", "*.hf.co"]
 platform = ["linux"]
+
+[[needs.tool]]
+name = "zotero"
+major = 1
+verbs = ["items"]
+

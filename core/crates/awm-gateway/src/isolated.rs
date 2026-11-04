@@ -15,7 +15,9 @@ use serde_json::{json, Value};
 use crate::caller::{SCOPE_KEY, SESSION_KEY, TRUST_KEY};
 
 pub const TOKEN_HEADER: &str = "x-awm-caller-token";
-pub const PROVIDER_TOOL: &str = "harness-cc";
+/// The contract every harness plugin implements. Its providers know the caller tokens, and
+/// no isolated session may call one of them.
+pub const HARNESS_CONTRACT: (&str, u32) = ("harness", 1);
 pub const PROVIDER_VERB: &str = "caller_of_token";
 const CACHE_FOR: Duration = Duration::from_secs(10);
 
@@ -26,7 +28,7 @@ pub const OWN_SESSION_VERBS: [&str; 5] = ["whoami", "compact", "message_self", "
 /// The levels a token may carry. An isolated session is never trusted.
 const LEVELS: [&str; 2] = ["untrusted", "cooperative"];
 
-/// The session that holds a caller token, as `harness-cc caller_of_token` answers it.
+/// The session that holds a caller token, as a harness's `caller_of_token` answers it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Holder {
     pub session_id: String,
@@ -35,6 +37,8 @@ pub struct Holder {
     pub scope: String,
     pub trust: String,
     pub tools: BTreeMap<String, Vec<String>>,
+    /// The tools that implement the harness contract now, which the ceiling refuses.
+    pub harness: Vec<String>,
 }
 
 impl Holder {
@@ -57,7 +61,15 @@ impl Holder {
                     .collect()
             })
             .unwrap_or_default();
-        Some(Self { session_id: text("session_id")?, name: text("name"), project: text("project")?, scope: text("scope")?, trust, tools })
+        Some(Self {
+            session_id: text("session_id")?,
+            name: text("name"),
+            project: text("project")?,
+            scope: text("scope")?,
+            trust,
+            tools,
+            harness: Vec::new(),
+        })
     }
 
     pub fn own_scope(&self) -> String {
@@ -65,11 +77,24 @@ impl Holder {
     }
 
     pub fn may_use(&self, tool: &str) -> bool {
-        within_ceiling(tool, None) && self.tools.contains_key(tool)
+        self.within_ceiling(tool, None) && self.tools.contains_key(tool)
     }
 
     pub fn may(&self, tool: &str, verb: &str) -> bool {
-        within_ceiling(tool, Some(verb)) && self.tools.get(tool).is_some_and(|v| v.iter().any(|x| x == verb))
+        self.within_ceiling(tool, Some(verb)) && self.tools.get(tool).is_some_and(|v| v.iter().any(|x| x == verb))
+    }
+
+    /// What the gateway refuses an isolated session whatever its token says: ssh (R109
+    /// item 1), every harness plugin, and every reflection verb that reaches another session
+    /// (item 2).
+    fn within_ceiling(&self, tool: &str, verb: Option<&str>) -> bool {
+        if tool == "ssh" || self.harness.iter().any(|h| h == tool) {
+            return false;
+        }
+        match (tool, verb) {
+            ("reflection", Some(v)) => OWN_SESSION_VERBS.contains(&v),
+            _ => true,
+        }
     }
 
     pub fn caller(&self, node: &str) -> Caller {
@@ -80,18 +105,6 @@ impl Holder {
             trust: Some(self.trust.clone()),
             scope: Some(self.own_scope()),
         }
-    }
-}
-
-/// What the gateway refuses an isolated session whatever its token says: ssh (R109 item 1),
-/// the harness plugins, and every reflection verb that reaches another session (item 2).
-fn within_ceiling(tool: &str, verb: Option<&str>) -> bool {
-    if tool == "ssh" || tool.starts_with("harness-") {
-        return false;
-    }
-    match (tool, verb) {
-        ("reflection", Some(v)) => OWN_SESSION_VERBS.contains(&v),
-        _ => true,
     }
 }
 
@@ -171,6 +184,7 @@ mod tests {
             "project": "awm", "scope": "redux-x", "trust": "untrusted",
             "tools": {"journal": ["fetch", "post"], "reflection": ["whoami", "start_other"], "ssh": ["run"], "harness-cc": ["send"]},
         }))
+        .map(|h| Holder { harness: vec!["harness-cc".into(), "harness-ds".into()], ..h })
         .unwrap()
     }
 
@@ -195,6 +209,8 @@ mod tests {
         assert!(h.may("reflection", "whoami") && !h.may("reflection", "start_other"));
         assert!(!h.may_use("ssh") && !h.may("ssh", "run"));
         assert!(!h.may_use("harness-cc") && !h.may("harness-cc", "send"));
+        let h = Holder { tools: BTreeMap::from([("harness-x".to_string(), vec!["send".to_string()])]), ..holder() };
+        assert!(h.may("harness-x", "send"), "the ceiling follows the contract, not a name prefix");
         assert!(!h.may_use("search"));
     }
 

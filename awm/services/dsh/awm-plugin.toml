@@ -1,7 +1,6 @@
 [plugin]
 name = "dsh"
 version = "0.2.0"
-trust = "own"
 
 [[service]]
 name = "dsh"
@@ -22,9 +21,10 @@ name = "dsh"
 
 [needs]
 secrets = []
-network = []
+network = ["openrouter.ai", "github.com", "api.github.com"]
 platform = ["linux"]
 
 [[needs.tool]]
 name = "reflection"   # dsh sends it harness_event
 major = 1
+verbs = ["harness_event"]

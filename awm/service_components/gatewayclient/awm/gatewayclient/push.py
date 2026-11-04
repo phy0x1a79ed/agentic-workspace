@@ -11,7 +11,7 @@ import logging
 from typing import Awaitable, Callable
 
 from awm import config
-from awm.gatewayclient import call, call_peer
+from awm.gatewayclient import call
 
 log = logging.getLogger("awm.gatewayclient.push")
 
@@ -23,9 +23,8 @@ Send = Callable[[str, str, str], Awaitable[str]]
 
 
 async def _reflection(node: str, verb: str, args: dict) -> object:
-    if node == config.node_name():
-        return await call("reflection", verb, args, timeout=60.0)
-    return await call_peer(node, "reflection", verb, args, timeout=60.0)
+    peer = None if node == config.node_name() else node
+    return await call("reflection", verb, args, peer=peer, timeout=60.0)
 
 
 async def reflect(node: str, job: str, text: str) -> str:

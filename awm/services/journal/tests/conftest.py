@@ -17,6 +17,19 @@ def stub_embedder():
 
 
 @pytest.fixture(autouse=True)
+def stamped_as_a_local_tool(request, monkeypatch):
+    """Each handler call is one the gateway stamped trusted, as it stamps a call that
+    names no session. A test that sends its own `_caller_trust` keeps it, and a test
+    marked `unstamped` sees the bare args."""
+    from awm.journal import bounds
+    if request.node.get_closest_marker("unstamped"):
+        return
+    real = bounds.of
+    monkeypatch.setattr(bounds, "of", lambda args, as_: real(
+        {"_caller_trust": "trusted", **args} if isinstance(args, dict) else args, as_))
+
+
+@pytest.fixture(autouse=True)
 def no_scopes_service(monkeypatch):
     """Every scope exists: no test reaches a gateway."""
     from awm.journal import owners

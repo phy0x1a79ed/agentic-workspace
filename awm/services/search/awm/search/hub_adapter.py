@@ -15,8 +15,8 @@ import logging
 from typing import Any
 
 from awm import config
+from awm.config import edges
 from awm.config import privacy
-from awm.config.peertoken import node_label
 from awm.gatewayclient import ServiceAdapter, spawn_supervised
 from awm.persistence import embeddings
 
@@ -205,7 +205,7 @@ async def _h_get(args: dict, as_: str | None = None) -> dict:
             log.warning("search: could not log a get: %s", exc)
     node = str(args.get("node") or "").strip()
     if node and node != request.LOCAL and not privacy.from_peer(as_) \
-            and node_label(node) != node_label(config.node_name()):
+            and edges.label(node) != edges.label(config.node_name()):
         return await federation.fetch(ARCHIVE.peers, node, str(args["source"]), str(args["id"]))
     out = await ARCHIVE.get(str(args["source"]), str(args["id"]), request.hidden_for(as_))
     if out["document"].get("kind") == JOURNAL_KIND and args.get("_caller_pid"):

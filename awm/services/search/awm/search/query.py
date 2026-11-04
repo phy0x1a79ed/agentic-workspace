@@ -6,8 +6,8 @@ from dataclasses import dataclass, field
 from typing import Any, Sequence
 
 from awm import config
+from awm.config import edges
 from awm.config import privacy
-from awm.config.peertoken import node_label
 
 from awm.search import store
 from awm.search.index import Filters
@@ -93,8 +93,8 @@ def _peers(value: Any) -> tuple[bool, list[str] | str]:
     if isinstance(value, str) and value.strip().lower() in ("true", "1", "yes", FLEET):
         return True, FLEET
     chosen = names(value) or []
-    here = node_label(config.node_name())
-    remote = [n for n in chosen if n != LOCAL and node_label(n) != here]
+    here = edges.label(config.node_name())
+    remote = [n for n in chosen if n != LOCAL and edges.label(n) != here]
     if FLEET in remote:
         return True, remote
     return len(remote) < len(chosen), remote

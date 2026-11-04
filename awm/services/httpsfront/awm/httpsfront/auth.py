@@ -5,20 +5,16 @@ fronts stays open and auth-unaware. This module is where the door checks
 credentials — it *enforces* what the ``auth`` service *mints*.
 
 It never validates a password itself and never stores credential state. It fetches
-**material** from the ``auth`` service over loopback (the signing secret + the
-currently-valid peer credentials + the session-lifetime knobs), caches it for a
-few seconds, and then:
+**material** from the ``auth`` service over loopback (the signing secret, the
+device token digests and the session-lifetime knobs), caches it for a few
+seconds, and then:
 
 * verifies + **slides** the browser session cookie **offline** with the shared
   HMAC secret (no RPC per request), and
-* checks a peer's ``Authorization: Bearer`` against the valid peer credentials,
-  or, when the bearer is a node token (``awmpt1.``), verifies it against the
-  public key the peer book holds for the node that signed it. A node token
-  yields ``peer:<node>``; the legacy shared bearer yields the bare ``peer``.
 * checks a **device token** (``awmut1.``) against the digests of the live
   device tokens, and yields the user it was minted for. Such a bearer is
-  settled on its own branch: one that fails is a 401, never a peer attempt
-  and never a fall-back to the cookie. A **scoped** device token also has to
+  settled on its own branch: one that fails is a 401, never a fall-back to the
+  cookie. A **scoped** device token also has to
   match the request's shape (:func:`awm.config.usertoken.scope_admits`), and a
   caller that passes no shape never admits one.
 
@@ -26,6 +22,9 @@ A login is alcor's passkey grant (:mod:`awm.httpsfront.portal`). Once the edge
 has checked it, :meth:`AuthGate.mint_session` signs the session cookie with the
 same secret. The token's ``sub`` is the identity the proxy stamps on every
 upstream request as ``X-Awm-As: user:<sub>``.
+
+No other node comes in here: a node reaches another over the ssh edge (fleet.md
+R92), so no bearer names a node.
 
 Fail-closed: if the ``auth`` service is unreachable and no material is cached, the
 edge authenticates nothing (login page / 401), never fails open.
@@ -35,12 +34,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import time
 from typing import Any, NamedTuple
 
 from awm import config
-from awm.config import peertoken, tokens, usertoken
+from awm.config import tokens, usertoken
 
 log = logging.getLogger("awm.httpsfront.auth")
 
@@ -48,13 +46,8 @@ COOKIE_NAME = "awm_session"
 # Readable twin of the session cookie: the signed-in username, for the pages'
 # user chip. Carries no authority — the edge stamps identity from the session.
 AS_COOKIE_NAME = "awm_as"
-# The legacy shared bearer's identity, and the prefix of a verified node's.
-PEER_SUB = "peer"
-PEER_PREFIX = "peer:"
-LEGACY_BEARER_ENV = "AWM_PEER_LEGACY_BEARER"
-EDGE_PEERS_ENV = "AWM_EDGE_PEERS"
-# Re-fetch edge material at most this often (peer creds rotate every ~12h, so a
-# few seconds of staleness is harmless and keeps the hot path RPC-free).
+# Re-fetch edge material at most this often; a few seconds of staleness is
+# harmless and keeps the hot path RPC-free.
 _REFRESH_INTERVAL = 30.0
 
 
@@ -68,51 +61,10 @@ def bearer_of(authorization: str | None) -> str | None:
     return None
 
 
-def is_peer_sub(sub: str | None) -> bool:
-    """Whether ``sub`` is a node's identity: the legacy ``peer`` or ``peer:<node>``.
-
-    Every check that keeps a machine out of a person's space asks this, never
-    ``sub == PEER_SUB``: a bare equality passes a verified node straight through.
-    """
-    return bool(sub) and (sub == PEER_SUB or sub.startswith(PEER_PREFIX))
-
-
 def is_machine_sub(sub: str | None) -> bool:
-    """A peer node or the shared-password ``operator`` session, as opposed to a person."""
-    return sub == "operator" or is_peer_sub(sub)
-
-
-def edge_admits_peers() -> bool:
-    """Whether this node lets any peer in at its edge (``AWM_EDGE_PEERS``).
-
-    ``0`` closes the inbound side only: this node's own outbound calls still
-    follow its edges.
-    """
-    return (os.environ.get(EDGE_PEERS_ENV) or "").strip() != "0"
-
-
-def legacy_bearer_enabled(mat: dict[str, Any] | None = None) -> bool:
-    """Whether the shared peer bearer is still honoured (``AWM_PEER_LEGACY_BEARER``)."""
-    if (os.environ.get(LEGACY_BEARER_ENV) or "").strip() == "0":
-        return False
-    return (mat or {}).get("legacy_bearer", True) is not False
-
-
-def _verified_node(mat: dict[str, Any], token: str) -> str | None:
-    """The book name of the node that signed ``token`` for this node, else ``None``."""
-    issuer = peertoken.issuer_of(token)
-    if issuer is None:
-        return None
-    for peer in mat.get("peers") or []:
-        if peertoken.node_label(peer.get("name")) != issuer or not peer.get("public_key"):
-            continue
-        try:
-            peertoken.verify(token, peer["public_key"], aud=config.node_name())
-        except peertoken.TokenError as exc:
-            log.info("edge: node token from %s refused: %s", issuer, exc)
-            return None
-        return peer["name"]
-    return None
+    """The shared-password ``operator`` session, or a name that reads as a node
+    (``peer``, ``peer:<node>``), as opposed to a person."""
+    return sub == "operator" or sub == "peer" or bool(sub) and sub.startswith("peer:")
 
 
 class Shape(NamedTuple):
@@ -152,9 +104,7 @@ def _device_sub(mat: dict[str, Any], token: str) -> tuple[str, str, str | None] 
 class AuthGate:
     """Caches auth material and answers per-request authentication questions."""
 
-    def __init__(self, *, peers: bool = True) -> None:
-        #: Whether node tokens count here. The public listener honours none.
-        self._peers = peers
+    def __init__(self) -> None:
         self._material: dict[str, Any] | None = None
         self._fetched_at = 0.0
         self._lock = asyncio.Lock()
@@ -188,23 +138,13 @@ class AuthGate:
                         del self._device_used[token_id]
             return self._material
 
-    async def peer_credentials(self) -> list[str] | None:
-        """The legacy node-wide bearers on file, or ``None`` when no material is held."""
-        mat = await self._material_fresh()
-        if not mat:
-            return None
-        return [str(c) for c in mat.get("peer_credentials") or []]
-
     async def authenticate(self, *, cookie: str | None, bearer: str | None,
                            shape: Shape | None = None,
                            ) -> tuple[bool, str | None, str | None]:
         """Return ``(ok, refreshed_cookie_token_or_None, sub)``.
 
         A **device token** authenticates as the user it was minted for, or not
-        at all: it is decided before any peer check and sets no cookie. A valid
-        **node token** authenticates as ``peer:<node>``, and a valid
-        **legacy peer bearer** as the bare ``peer`` while that bearer is still
-        honoured; neither needs a cookie (peers don't carry sessions). A valid
+        at all, and sets no cookie. A valid
         **session cookie** authenticates and, unless the session has passed its
         hard age ceiling, yields a refreshed token to re-set (the sliding
         window). A scoped device token authenticates only when ``shape`` is
@@ -214,7 +154,6 @@ class AuthGate:
         if not mat:
             return False, None, None
         secret = mat["secret"]
-        admits = edge_admits_peers()
 
         if bearer and usertoken.looks_like_token(bearer):
             found = _device_sub(mat, bearer)
@@ -227,14 +166,6 @@ class AuthGate:
                 return False, None, None
             self._device_used[token_id] = time.time()
             return True, None, sub
-
-        if bearer and peertoken.looks_like_token(bearer):
-            node = _verified_node(mat, bearer) if self._peers and admits else None
-            if node:
-                return True, None, PEER_PREFIX + node
-        elif (bearer and admits and legacy_bearer_enabled(mat)
-                and bearer in set(mat.get("peer_credentials") or [])):
-            return True, None, PEER_SUB
 
         if cookie:
             claims = tokens.verify(secret, cookie)

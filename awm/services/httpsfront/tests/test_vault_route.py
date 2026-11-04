@@ -215,13 +215,8 @@ def test_signed_out_the_vault_asks_for_a_login():
     assert r.status_code == 302 and "/portal_login?next=" in r.headers["location"]
 
 
-#: The legacy bearer, a token from a node with an edge, and one from a node without.
+#: Names that read as a node, which no session may carry into the vault.
 PEERS = ["peer", "peer:mira", "peer:shaula"]
-
-
-@pytest.fixture(autouse=True)
-def _book(peer_book):
-    peer_book({"mira": {}, "shaula": {}})
 
 
 @pytest.mark.parametrize("sub", PEERS)

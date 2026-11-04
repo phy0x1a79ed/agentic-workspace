@@ -1,7 +1,7 @@
 """A supervised, self-healing subscription over a gateway emitter topic.
 
-``subscribe`` / ``subscribe_peer`` / ``subscribe_maybe_peer`` each deliver
-*one connection's worth* of events and then return — their docstrings say so
+``subscribe`` delivers
+*one connection's worth* of events and then return — its docstring says so
 explicitly, and forbid an inner reconnect loop, because a mid-stream
 credential rotation must surface as a reconnect the caller controls. Every
 long-lived consumer therefore has to write its own reconnect loop, and until
@@ -91,7 +91,7 @@ class SupervisedSubscription:
     """A named, self-healing consumer of one emitter topic.
 
     ``stream_factory`` is a zero-argument callable returning a fresh async
-    iterator of events — typically ``lambda: subscribe_maybe_peer(...)``.
+    iterator of events — typically ``lambda: subscribe(..., peer=...)``.
     Taking a factory rather than importing the subscribe functions keeps this
     module free of a circular import and makes it testable against fake
     streams with no monkeypatching. Read any peer selector *inside* the

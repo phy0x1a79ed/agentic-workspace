@@ -307,7 +307,7 @@ class TestFnDispatch:
                             json={"x": 1, "y": "two"},
                         )
                     assert r.status_code == 200, r.text
-                    assert r.json() == {"got": {"x": 1, "y": "two"}}
+                    assert r.json() == {"got": {"x": 1, "y": "two", "_caller_trust": "trusted"}}
                 finally:
                     replier_task.cancel()
 
@@ -382,7 +382,7 @@ class TestFnDispatch:
                 # Confirm the service saw a notify envelope (no id).
                 env = await svc.wait_for(lambda e: e.get("kind") == "notify")
                 assert env["fn"] == "ping"
-                assert env["args"] == {"hello": True}
+                assert env["args"] == {"hello": True, "_caller_trust": "trusted"}
                 assert "id" not in env
 
         asyncio.new_event_loop().run_until_complete(run())

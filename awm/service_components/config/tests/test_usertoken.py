@@ -6,7 +6,7 @@ import base64
 
 import pytest
 
-from awm.config import peertoken, usertoken
+from awm.config import usertoken
 
 pytestmark = [pytest.mark.unit, pytest.mark.smoke]
 
@@ -39,10 +39,3 @@ def test_the_digest_matches_only_its_secret():
     assert not usertoken.matches(usertoken.mint()[1], stored)
     assert not usertoken.matches(secret, "")
     assert not usertoken.matches(secret, "ünicode")
-
-
-def test_the_two_token_kinds_never_look_alike():
-    _, _, token = usertoken.mint()
-    assert usertoken.looks_like_token(token) and not peertoken.looks_like_token(token)
-    node = peertoken.sign(peertoken.generate_private_key(), iss="a", aud="b")
-    assert not usertoken.looks_like_token(node)

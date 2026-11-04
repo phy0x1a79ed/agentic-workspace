@@ -30,7 +30,7 @@ def _approver_call(verb: str, args: dict) -> Any:
     from awm.config import edges
     host = next((s["host"] for s in edges.singletons() if s["tool"] == "approver"), None)
     peer = host if host and host != edges.here() else None
-    return gatewayclient.call_sync_maybe_peer(peer, "approver", verb, args, timeout=60.0)
+    return gatewayclient.call_sync("approver", verb, args, peer=peer, timeout=60.0)
 
 
 def grant_key(awm_dir: Path | None = None) -> bytes:

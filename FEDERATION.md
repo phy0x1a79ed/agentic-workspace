@@ -171,8 +171,6 @@ A node can mark a project or one scope of it private. Run `scope private project
 - **Where the mark lives.** The marks live in `<AWM_DIR>/private.json`. `scope private` owns the writes. `awm.config.privacy` is the only reader. Every process rereads the file when it changes, so a mark needs no restart. A file that exists and does not parse hides everything from peers. The mark is per node. It does nothing for a copy of the project on another node.
 - **Slug collisions.** Claude names a transcript folder by turning every non-alphanumeric character of the path into `-`. A mark on `metasmith` would therefore also cover `metasmith-libraries`. `scope private` refuses a mark whose slug prefixes another project's or scope's directory.
 
-Run `awm/scripts/privacy-probe.sh <peer> <project> --expect visible|hidden` from another node to prove a mark. Run it once with `visible` before marking, because the hidden run compares counts against that baseline.
-
 **CAUTION** A mark is visibility hygiene, not a security boundary. Text that mentions the project from another project's records stays visible, and so do precedent posts with no tag naming the project, kb papers and Trilium notes. A domestic peer can still start a session here, or drive the browser at this node's own `/files`, and that session reads with a local stamp. A closed node (§ Authentication) refuses that session too.
 
 ## Federated search
@@ -320,36 +318,6 @@ the legacy bearer for five minutes. A foreign peer never gets the legacy bearer.
 Its refusal returns as sent. A caller that sets `AWM_PEER_LEGACY_BEARER=0`
 treats every peer the same way. Only 401 triggers the fallback, because a 403 is an
 authorisation verdict that another credential cannot change.
-
-### Files across the hop
-
-A verb whose arguments or results are local paths declares it in its manifest:
-`"file": "in"` on a param, `"returns_files": true` on a function whose result
-lists `files[].path`. The catalog projects both into the verb's schema and its
-`describe` answer, and `awm-mcp` reads them from the far node's `describe`
-(cached for ten minutes, in `gateway/peer_files.py`, shared by both proxies).
-When it follows a redirect for such a verb, it sends one tar body
-(`application/x-awm-call+tar`): the call, then each local file or folder. With
-`X-Awm-Return-Files` the far gateway answers with a tar of the result files,
-and the proxy rewrites each path to its local copy. `awm/gateway/awm/gateway/filehop.py`
-holds the format.
-
-- Tar, not multipart, because it needs only the standard library on both ends
-  and carries a folder as a folder.
-- A path that does not exist on the calling node travels unchanged, so a path
-  already on the far node still works.
-- Both ends must carry the file hop. Against an older gateway the proxy sees no
-  markers in `describe` and sends plain JSON, so the far side reads the path on
-  its own disk.
-- The far gateway sends back only result files under its system temp dir. A
-  file it does not send comes back as `path: null` with an `error`.
-- A verb with these markers skips the `fileviewer` pull (§ *Cross-peer bytes*).
-  That pull stays the fallback for a peer without the hop, and it cannot carry
-  a folder.
-- The proxy waits up to its read ceiling (`mcp_http.read_timeout()`, about an
-  hour). The far gateway enforces each verb's own `timeout`.
-- `httpsfront` streams request bodies through, so a large upload never sits
-  whole in the edge.
 
 ### Who provides what — and why the gateway still never relays
 

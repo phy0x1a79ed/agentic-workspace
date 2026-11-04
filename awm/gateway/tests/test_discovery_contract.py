@@ -44,24 +44,27 @@ def roots(tmp_path, monkeypatch, awm_workspace):
 def test_each_rule_refuses_its_folder_and_names_why(roots):
     core, other = roots
     _plugin(core, "provider", _simple("provider", "prov", "major = 2\nimplements = ['harness@1']\n"))
-    _plugin(core, "dependent", _simple("dependent", extra="[[needs.tool]]\nname = 'prov'\nmajor = 2\n"))
+    _plugin(core, "dependent", _simple("dependent", extra="[[needs.tool]]\nname = 'prov'\nmajor = 2\nverbs = ['get']\n"))
     _plugin(core, "journal", _simple("journal"))
     _plugin(other, "dup", _simple("dup", "prov"))
     _plugin(other, "takes-2fa", _simple("takes-2fa", "2fa"))
     _plugin(other, "takes-journal", _simple("takes-journal", "journal"))
-    _plugin(other, "missing", _simple("missing", extra="[[needs.tool]]\nname = 'nobody'\n"))
-    _plugin(other, "wrong-major", _simple("wrong-major", extra="[[needs.tool]]\nname = 'prov'\nmajor = 1\n"))
+    _plugin(other, "missing", _simple("missing", extra="[[needs.tool]]\nname = 'nobody'\nverbs = ['get']\n"))
+    _plugin(other, "wrong-major", _simple("wrong-major", extra="[[needs.tool]]\nname = 'prov'\nmajor = 1\nverbs = ['get']\n"))
     _plugin(other, "escape", "[plugin]\nname = 'escape'\n[[service]]\nname = 'escape'\npath = '..'\n")
     _plugin(other, "bad-name", _simple("bad-name", "a_b"))
     _plugin(other, "has-uuid", _simple("has-uuid", extra="uuid = '6f1c2c1e-0d4b-4f3e-9a51-3b8f2d7a9c10'\n"))
     _plugin(other, "bad-toml", "[plugin\nname =")
     _plugin(other, "windows-only", _simple("windows-only") + "[needs]\nplatform = ['windows']\n")
     _plugin(other, "bad-implements", _simple("bad-implements", extra="implements = ['harness']\n"))
-    _plugin(other, "needs-refused", _simple("needs-refused", extra="[[needs.tool]]\nname = 'bad-implements'\n"))
+    _plugin(other, "no-verbs", _simple("no-verbs", extra="[[needs.tool]]\nname = 'prov'\nmajor = 2\n"))
+    _plugin(other, "bad-verb", _simple("bad-verb", extra="[[needs.contract]]\nname = 'harness'\nverbs = ['send-it']\n"))
+    _plugin(other, "needs-refused", _simple("needs-refused", extra="[[needs.tool]]\nname = 'bad-implements'\nverbs = ['get']\n"))
 
     refused = discovery.plugin_refusals()
     assert set(refused) == {"dup", "takes-2fa", "missing", "wrong-major", "escape", "bad-name", "has-uuid",
-                            "bad-toml", "windows-only", "bad-implements", "needs-refused", "takes-journal"}
+                            "bad-toml", "windows-only", "bad-implements", "needs-refused", "takes-journal",
+                            "no-verbs", "bad-verb"}
     assert "already served by plugin 'provider'" in refused["dup"]
     assert "reserved" in refused["takes-2fa"]
     assert "'nobody'" in refused["missing"]
@@ -70,14 +73,16 @@ def test_each_rule_refuses_its_folder_and_names_why(roots):
     assert "unknown key 'uuid'" in refused["has-uuid"]
     assert "platform" in refused["windows-only"]
     assert "<contract>@<major>" in refused["bad-implements"]
+    assert "lists no verbs" in refused["no-verbs"]
+    assert "'send-it' is not a verb name" in refused["bad-verb"]
     names = {s.name for s in discovery.discover_services()}
     assert names == {"provider", "dependent", "journal"}
 
 
-def test_a_reserved_name_needs_a_core_root_and_own_trust(roots):
+def test_trust_is_an_unknown_key(roots):
     core, _ = roots
-    _plugin(core, "twofa", _simple("twofa", "2fa").replace("[plugin]\n", "[plugin]\ntrust = 'third-party'\n"))
-    assert "reserved" in discovery.plugin_refusals()["twofa"]
+    _plugin(core, "twofa", _simple("twofa", "2fa").replace("[plugin]\n", "[plugin]\ntrust = 'own'\n"))
+    assert "unknown key 'trust'" in discovery.plugin_refusals()["twofa"]
 
 
 def test_legacy_folders_share_a_tool_but_a_manifest_may_not_join_them(roots):
@@ -92,7 +97,7 @@ def test_legacy_folders_share_a_tool_but_a_manifest_may_not_join_them(roots):
 def test_a_need_on_a_singleton_homed_on_a_peer_resolves(roots, monkeypatch):
     core, _ = roots
     monkeypatch.setattr("awm.gateway.peer_catalog.declared_homes", lambda: {"2fa": "alcor"})
-    _plugin(core, "vpn", _simple("vpn", extra="[[needs.tool]]\nname = '2fa'\n"))
+    _plugin(core, "vpn", _simple("vpn", extra="[[needs.tool]]\nname = '2fa'\nverbs = ['burst']\n"))
     assert discovery.plugin_refusals() == {}
 
 
@@ -116,3 +121,22 @@ def test_the_hub_answers_tool_owners_and_contract_providers_by_name(roots):
     assert sorted(p["name"] for p in providers) == ["harness-cc", "harness-ds"]
     assert client.get("/hub/contract/harness@2").json() == []
     assert {r["name"] for r in client.get("/hub/table").json()} == {"harness-cc", "harness-ds", "reflection"}
+
+
+def test_a_plugin_may_call_only_what_its_needs_list(roots):
+    core, other = roots
+    _plugin(core, "cch", _simple("cch", "harness-cc", "implements = ['harness@1']\n"))
+    _plugin(core, "journal", _simple("journal"))
+    _plugin(other, "caller", _simple("caller", extra=(
+        "[[needs.tool]]\nname = 'journal'\nverbs = ['post']\n"
+        "[[needs.contract]]\nname = 'harness'\nverbs = ['send']\n")))
+    _legacy(core, "old", "old")
+    assert discovery.needs_refusal("caller", "caller", "anything") is None
+    assert discovery.needs_refusal("caller", "journal", "post") is None
+    assert discovery.needs_refusal("caller", "journal", "describe") is None
+    assert discovery.needs_refusal("caller", "harness-cc", "send") is None
+    assert "does not list journal.fetch" in discovery.needs_refusal("caller", "journal", "fetch")
+    assert "harness-cc.stop" in discovery.needs_refusal("caller", "harness-cc", "stop")
+    assert "scope.resolve" in discovery.needs_refusal("caller", "scope", "resolve")
+    assert discovery.needs_refusal("old", "journal", "fetch") is None, "a legacy folder is not held"
+    assert discovery.needs_refusal("gone", "journal", "fetch") is None

@@ -264,7 +264,7 @@ def test_cd_claims_the_new_scope_and_releases_the_old(fakes, monkeypatch):
                         lambda fn, a: calls.append((fn, a)) or {"ok": True, "claimed": True})
     out = run("cd", {"_caller_pid": ME, "path": "/w/projects/awm/new"})
     assert out["ok"] and out["claim"]["claimed"]
-    assert [c[0] for c in calls] == ["scope_claim", "scope_release"]
+    assert [c[0] for c in calls] == ["claim", "release"]
     assert calls[0][1]["scope"] == "new" and calls[1][1]["scope"] == "old"
     assert fakes.cc.calls[-1] == ("set", {"pid": ME, "cwd": "/w/projects/awm/new"})
 
@@ -528,8 +528,8 @@ def test_a_retire_tells_every_peer(fakes, monkeypatch):
     told = []
     monkeypatch.setattr(hub_adapter, "_peers", lambda: ["altair", "alcor"])
     from awm import gatewayclient
-    monkeypatch.setattr(gatewayclient, "call_peer_sync",
-                        lambda peer, svc, fn, a, timeout: told.append((peer, fn, a)))
+    monkeypatch.setattr(gatewayclient, "call_sync",
+                        lambda tool, verb, args=None, *, peer=None, **kw: (lambda peer, svc, fn, a, timeout: told.append((peer, fn, a)))(peer, tool, verb, args, **kw))
     hub_adapter._tell_peers(OTHER)
     assert told == [("altair", "retired", {"session_id": OTHER}),
                     ("alcor", "retired", {"session_id": OTHER})]
@@ -557,13 +557,13 @@ def test_the_start_check_counts_a_retire_it_missed(fakes, lonely):
 
 
 def test_whoami_asks_for_the_task_by_session_id(monkeypatch):
-    """reporting's task_for_session reads session_id (sessions.md R57 step 2)."""
+    """operations' task_for_session reads session_id (sessions.md R57 step 2)."""
     asked = []
     from awm import gatewayclient
     monkeypatch.setattr(gatewayclient, "call_sync", lambda svc, fn, a, timeout: asked.append(
         (svc, fn, a)) or {"task_id": "abcd1234"})
     assert hub_adapter._task_of(MY_ID) == "abcd1234"
-    assert asked == [("reporting", "task_for_session", {"session_id": MY_ID})]
+    assert asked == [("operations", "task_for_session", {"session_id": MY_ID})]
 
 
 def test_session_of_gives_the_gate_the_mode_and_the_trust(fakes):
@@ -571,6 +571,15 @@ def test_session_of_gives_the_gate_the_mode_and_the_trust(fakes):
     out = run("session_of", {"pid": ME})
     assert out["known"] and out["session_id"] == MY_ID
     assert (out["mode"], out["trust"]) == ("worker", "trusted")
+
+
+def test_a_hand_started_session_reads_as_trusted_and_a_recorded_one_keeps_its_level(fakes):
+    """Tony's own terminal sessions have no ledger entry: the gateway must not lock
+    them out now that a failed lookup is untrusted (fleet.md R103 item 2)."""
+    from awm.reflection import policy
+    assert run("session_of", {"pid": ME})["trust"] == "trusted"
+    policy.record(MY_ID, "cooperative", "test")
+    assert run("session_of", {"pid": ME})["trust"] == "cooperative"
 
 
 def test_session_of_a_pid_no_plugin_claims_carries_the_plugins_mode(fakes):
@@ -598,9 +607,8 @@ def test_session_of_with_no_plugin_answering_is_unknown(fakes):
     assert out["known"] is False and out["mode"] == "unknown"
 
 
-def test_the_hint_asks_only_book_peers_this_node_reaches(tmp_path, monkeypatch):
+def test_the_hint_asks_only_the_nodes_this_node_reaches(tmp_path, monkeypatch):
     import yaml
-    from awm.config import peerbook
     from awm.reflection import elsewhere
 
     edges = tmp_path / "edges.yml"
@@ -610,6 +618,4 @@ def test_the_hint_asks_only_book_peers_this_node_reaches(tmp_path, monkeypatch):
     }))
     monkeypatch.setenv("AWM_EDGES_FILE", str(edges))
     monkeypatch.setenv("AWM_NODE_NAME", "here")
-    monkeypatch.setattr(peerbook, "list_records",
-                        lambda: [{"name": n} for n in ("here", "altair", "deneb", "vega")])
-    assert elsewhere._reached_peers() == ["altair"]
+    assert elsewhere._reached_peers() == ["altair", "mira"]

@@ -1,7 +1,6 @@
 [plugin]
 name = "ssh"
 version = "0.1.0"
-trust = "own"
 
 [[service]]
 name = "ssh"
@@ -13,17 +12,21 @@ tier = "on"
 
 [needs]
 secrets = []
-network = []
+network = ["tcp:22 the hosts of ~/.ssh/config"]
 platform = ["linux"]
 
 [[needs.tool]]
 name = "2fa"
 major = 1
+verbs = ["burst", "status", "ping"]
 
 [[needs.tool]]
 name = "social"
 major = 1
+verbs = ["send", "emit_probe"]
 
 [[needs.tool]]
 name = "vpn"
 major = 1
+verbs = ["up"]
+

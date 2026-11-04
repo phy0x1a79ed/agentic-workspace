@@ -1,9 +1,10 @@
-"""No login lives in auth: the passkey grant replaced the shared password.
+"""No login lives in auth, and no rotating credential either.
 
-The contract these pin: ``password`` and ``verify`` are gone, so is every
-account verb, the public profile rotates nothing, and every older DB migrates
-in place to a credential table with no login password and no lockout table
-(fleet.md R84, users.md R130).
+The passkey grant replaced the shared password (fleet.md R84, users.md R130) and
+the edge list replaced the peer credential (fleet.md R86). What these pin: the
+login and rotation verbs are gone, edge_material carries only the secret, the
+device tokens and the session knobs, and every older DB migrates in place to one
+with no credential table and no lockout table.
 """
 
 from __future__ import annotations
@@ -18,13 +19,10 @@ pytestmark = [pytest.mark.unit, pytest.mark.smoke]
 @pytest.fixture()
 def auth(awm_workspace, monkeypatch):
     from awm.auth import service, store
-    monkeypatch.delenv("AWM_AUTH_PROFILE", raising=False)
 
     class _S:
         session_ttl_hours = 1.0
         max_session_days = 30.0
-        validity_hours = 24.0
-        mint_cadence_hours = 12.0
 
     monkeypatch.setattr(service, "_settings", lambda: _S())
     store.init()
@@ -32,33 +30,28 @@ def auth(awm_workspace, monkeypatch):
     return service
 
 
-def test_the_login_verbs_are_gone():
+def test_the_login_and_rotation_verbs_are_gone():
     from awm.auth import hub_adapter, service
     names = {f["name"] for f in hub_adapter.API_MANIFEST["functions"]}
-    for verb in ("password", "verify", "user_add", "user_passwd", "user_disable", "user_list"):
+    for verb in ("password", "verify", "rotate", "peer_credential", "user_add",
+                 "user_passwd", "user_disable", "user_list"):
         assert verb not in names and verb not in hub_adapter.HANDLERS
         assert not hasattr(service, f"h_{verb}")
+    for gone in ("mint_now", "rotation_enabled", "shared_password_enabled"):
+        assert not hasattr(service, gone)
 
 
-def test_a_generation_holds_no_login_password(auth):
-    from awm.auth import store
-    gen = store.mint_generation(validity_seconds=3600)
-    assert "login_password" not in gen and "login_password" not in store.latest()
+def test_edge_material_is_the_secret_the_tokens_and_the_knobs(auth):
+    out = auth.h_edge_material({})
+    assert set(out) == {"secret", "device_tokens", "session_ttl_seconds",
+                        "max_session_seconds"}
+    assert out["session_ttl_seconds"] == 3600.0
 
 
-def test_public_profile_hands_out_no_peer_credentials(auth, monkeypatch):
-    from awm.auth import store
-    monkeypatch.setenv("AWM_AUTH_PROFILE", "public")
-    store.mint_generation(validity_seconds=3600)
-    assert auth.h_edge_material({})["peer_credentials"] == []
-    assert auth.h_status({})["rotation_enabled"] is False
-
-
-async def test_public_profile_on_start_does_not_rotate(auth, monkeypatch):
-    from awm.auth import store
-    monkeypatch.setenv("AWM_AUTH_PROFILE", "public")
+async def test_on_start_mints_nothing(auth):
+    from awm.persistence.databases import service_db_path
     await auth.on_start()
-    assert store.latest() is None
+    assert "awm_credentials" not in _tables(service_db_path("auth"))
 
 
 # --- migration -------------------------------------------------------------------
@@ -96,7 +89,7 @@ def test_v1_db_migrates_in_place(awm_workspace):
     conn.commit(); conn.close()
     store.init()
     assert store.ensure_secret() == "keep-me"
-    assert {"awm_users", "awm_login_fail"}.isdisjoint(_tables(path))
+    assert {"awm_users", "awm_login_fail", "awm_credentials"}.isdisjoint(_tables(path))
 
 
 def test_a_v5_db_drops_its_static_accounts(awm_workspace):
@@ -131,7 +124,7 @@ def test_a_v5_db_drops_its_static_accounts(awm_workspace):
     conn.commit()
     conn.close()
     store.init()
-    assert {"awm_users", "awm_login_fail"}.isdisjoint(_tables(path))
+    assert {"awm_users", "awm_login_fail", "awm_credentials"}.isdisjoint(_tables(path))
     assert [t["id"] for t in store.device_live()] == ["aaaaaaaaaaaaaaaa"]
     rows = {t["id"]: t for t in store.device_list()}
     assert rows["bbbbbbbbbbbbbbbb"]["revoked_at"] is not None
@@ -140,7 +133,7 @@ def test_a_v5_db_drops_its_static_accounts(awm_workspace):
     assert rows["eeeeeeeeeeeeeeee"]["revoked_at"] is not None
 
 
-def test_a_v6_db_drops_its_login_passwords(awm_workspace):
+def test_a_v6_db_drops_its_credentials_and_lockout(awm_workspace):
     from awm.auth import store
     from awm.persistence.databases import service_db_path
     path = service_db_path("auth")
@@ -162,6 +155,4 @@ def test_a_v6_db_drops_its_login_passwords(awm_workspace):
     conn.commit()
     conn.close()
     store.init()
-    assert "awm_login_fail" not in _tables(path)
-    assert store.latest() == {"generation": 1, "peer_credential": "peer-x",
-                              "minted_at": 0, "expires_at": 9e12}
+    assert {"awm_credentials", "awm_login_fail"}.isdisjoint(_tables(path))

@@ -164,9 +164,13 @@ async def test_signin_files_a_request_and_raises_the_window(chrome):
     assert chrome.calls[-1][0] == "Target.activateTarget"
 
 
-async def test_a_call_with_no_level_gets_a_blank_profile(chrome):
+async def test_a_call_with_no_level_is_untrusted(chrome):
     hs = hub_adapter.handlers(SeatBook(chrome), node="alcor", viewer_url="")
-    seat = await hs["seat_open"]({"_caller_session": {"job": "j"}})
+    unstamped = await hs["seat_open"]({"_caller_session": {"job": "j"}})
+    untrusted = await hs["seat_open"]({"_caller_session": {"job": "j"}, "_caller_trust": "untrusted"})
+    assert "error" in unstamped and unstamped == untrusted
+    seat = await hs["seat_open"]({"_caller_session": {"job": "j"}, "_caller_trust": "cooperative"})
     assert seat["profile"] == "blank"
-    refused = await hs["seat_open"]({"_caller_session": {"job": "j"}, "profile": "tony"})
+    refused = await hs["seat_open"]({"_caller_session": {"job": "j"}, "_caller_trust": "cooperative",
+                                     "profile": "tony"})
     assert "trusted" in refused["error"]

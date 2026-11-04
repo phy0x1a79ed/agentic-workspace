@@ -37,7 +37,7 @@ def test_a_post_to_an_unknown_scope_is_refused(journal_workspace, real_owners, m
     calls = _gateway(monkeypatch, {"exists": False, "project": "awm", "scope": "nope"})
     with pytest.raises(ValueError, match="no scope awm/nope"):
         channel.post("awm", "nope", author="user:a", body="x")
-    assert calls == [("scopes", "resolveScope", {"project": "awm", "scope": "nope"})]
+    assert calls == [("scope", "resolve", {"project": "awm", "scope": "nope"})]
 
 
 def test_a_known_scope_is_accepted_and_remembered(journal_workspace, real_owners, monkeypatch):

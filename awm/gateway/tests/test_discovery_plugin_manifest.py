@@ -10,7 +10,6 @@ MANIFEST = """
 [plugin]
 name = "{name}"
 version = "0.1.0"
-trust = "own"
 
 [[service]]
 name = "{name}"

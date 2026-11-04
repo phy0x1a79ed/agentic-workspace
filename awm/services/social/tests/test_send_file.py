@@ -102,7 +102,7 @@ async def test_a_borrower_carries_the_file_inside_the_call(monkeypatch, plan):
         return {"ok": True}
 
     monkeypatch.setattr(gc, "peer_env", lambda var: "mira")
-    monkeypatch.setattr(gc, "call_peer", call_peer)
+    monkeypatch.setattr(gc, "call", lambda tool, verb, args=None, *, peer=None, **kw: (call_peer)(peer, tool, verb, args, **kw))
     monkeypatch.setattr(hub, "_connectors", {})
     await hub.HANDLERS["send"]({"account": "slack-bot", "channel": "D1",
                                 "text": "t", "file": plan})
@@ -112,11 +112,11 @@ async def test_a_borrower_carries_the_file_inside_the_call(monkeypatch, plan):
                                        "files": [{"filename": "plan.md", "b64": b64}]})]
 
 
-def test_the_manifest_hops_the_file():
+def test_text_is_optional_with_a_file():
     from awm.social import hub_adapter as hub
     fn = next(f for f in hub.API_MANIFEST["functions"] if f["name"] == "send")
     params = {p["name"]: p for p in fn["params"]}
-    assert params["file"]["file"] == "in"
+    assert "file" in params
     assert not params["text"]["required"]
 
 

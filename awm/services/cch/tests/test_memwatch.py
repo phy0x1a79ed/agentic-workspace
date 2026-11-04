@@ -65,13 +65,9 @@ def test_a_tick_tells_the_operator_and_the_sessions(monkeypatch):
     monkeypatch.setattr(hub_adapter.config, "operator_dm", lambda: ("discord-bot", "D1"))
     monkeypatch.setattr(hub_adapter.config, "node_name", lambda: "altair")
 
-    async def call_maybe_peer(peer, service, fn, args, **kw):
-        sent.append((service, fn, args))
-
     async def call(service, fn, args, **kw):
-        messaged.append((service, fn, args))
+        (sent if service == "social" else messaged).append((service, fn, args))
 
-    monkeypatch.setattr(hub_adapter.gatewayclient, "call_maybe_peer", call_maybe_peer)
     monkeypatch.setattr(hub_adapter.gatewayclient, "call", call)
     asyncio.run(hub_adapter.memory_tick(T0))
     asyncio.run(hub_adapter.memory_tick(T0 + SUSTAIN_S))

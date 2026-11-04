@@ -25,13 +25,9 @@ SUBS = {TONY: "tony", STEVEN: "steven"}
 
 
 class _Gate:
-    """Two sessions, one peer bearer and one node token."""
+    """Two sessions."""
 
     async def authenticate(self, *, cookie=None, bearer=None, shape=None):
-        if bearer == "peer-cred":
-            return True, None, "peer"
-        if bearer == "node-mira":
-            return True, None, "peer:mira"
         if cookie in SUBS:
             return True, None, SUBS[cookie]
         return False, None, None
@@ -80,28 +76,7 @@ def test_http_overwrites_the_browsers_x_awm_as():
     assert seen["x-awm-as"] == "user:tony"
 
 
-def test_a_legacy_peer_bearer_names_no_node_and_is_refused():
-    """The legacy bearer authenticates as bare ``peer``, which names no node and
-    so has no edge here: the request never reaches the gateway."""
-    with _client(_app(), token=None) as c:
-        seen = _capture(c)
-        r = c.get("/svc/notes/fn/list", headers={
-            "Authorization": "Bearer peer-cred", "X-Awm-As": "user:tony"})
-    assert r.status_code == 404
-    assert seen == {}
-
-
-def test_a_node_token_is_stamped_as_peer_colon_node(peer_book):
-    peer_book({"mira": {}})
-    with _client(_app(), token=None) as c:
-        seen = _capture(c)
-        r = c.get("/svc/notes/fn/list", headers={
-            "Authorization": "Bearer node-mira", "X-Awm-As": "user:tony"})
-    assert r.status_code == 200
-    assert seen["x-awm-as"] == "peer:mira"
-
-
-def test_a_forged_peer_header_never_reaches_the_gateway(peer_book):
+def test_a_forged_peer_header_never_reaches_the_gateway():
     """A browser (or another node) naming itself `peer:mira` gets overwritten."""
     with _client(_app()) as c:
         seen = _capture(c)
