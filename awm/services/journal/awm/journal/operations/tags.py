@@ -61,7 +61,7 @@ TAG_MANIFEST_FUNCTIONS = [
         "effect": "write",
         "description": (
             "Add and remove several tags on one post at once, such as add=[closed]. "
-            "A type tag (message, journal, goal, brief, precedent) is set only when the "
+            "A type tag (message, journal, brief, precedent) is set only when the "
             "post is made; closed and superseded change freely."
         ),
         "params": [

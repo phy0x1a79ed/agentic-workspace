@@ -27,7 +27,7 @@ log = logging.getLogger("awm.journal.search_index")
 
 SERVICE = "journal"
 #: A thread is indexed when its first post carries one of these tags.
-INDEXED_TAGS = (kinds.JOURNAL, kinds.MESSAGE, kinds.GOAL, kinds.PRECEDENT,
+INDEXED_TAGS = (kinds.JOURNAL, kinds.MESSAGE, kinds.PRECEDENT,
                 kinds.MIGRATED_PREFIX + "debrief", kinds.MIGRATED_PREFIX + "note")
 _MARKS = ",".join("?" * len(INDEXED_TAGS))
 #: A WHERE fragment over ``scope_posts`` keeping the thread first posts the index holds.

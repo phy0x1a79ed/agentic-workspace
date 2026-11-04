@@ -43,7 +43,6 @@
      49 scope describe
      28 scope search
      27 scope create
-     22 scope goal_read
      16 scope refresh
       5 scope heal
       4 scope delete

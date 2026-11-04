@@ -207,9 +207,9 @@ def _caller_session(caller_pid: Any) -> str | None:
     return sessions.r9(rec.get("session_id")) if rec else None
 
 
-def _with_session(meta: Any, caller_pid: Any, tag_ids: list[str] = (kinds.MESSAGE,)) -> Any:
-    """``meta`` with ``session`` stamped in R9 form and ``cites`` checked (R14, R17)."""
-    return sessions.check_cites(sessions.stamp(meta, _caller_session(caller_pid)), list(tag_ids))
+def _with_session(meta: Any, caller_pid: Any) -> Any:
+    """``meta`` with ``session`` stamped in R9 form (R14, R17)."""
+    return sessions.stamp(meta, _caller_session(caller_pid))
 
 
 def refuse_clashed(as_: str | None) -> None:
@@ -238,9 +238,10 @@ def _visible(as_: str | None):
 def _handle_post(args: dict, as_: str | None = None) -> dict:
     project, scope = args.get("project"), args.get("scope")
     tag_ids = channel.post_tag_ids(args.get("kind"), args.get("tags"))
-    meta = _with_session(args.get("meta"), args.get("_caller_pid"), tag_ids)
+    meta, cited = sessions.fold_cites(_with_session(args.get("meta"), args.get("_caller_pid")),
+                                      tag_ids)
     targets = channel.reply_targets(args.get("reply_to"))
-    targets += [c for c in sessions.cite_ids(meta) if c not in targets]
+    targets += [c for c in cited if c not in targets]
     for t in targets:
         target = channel.get_post(t)
         if target is None or not _visible(as_)(target):

@@ -27,7 +27,8 @@ def _post(**kw):
 def test_the_fixed_tags_are_seeded(journal_workspace):
     from awm.journal import tags
     names = {t.name for t in tags.vocabulary()}
-    assert {"message", "journal", "goal", "brief", "closed", "superseded", "precedent"} <= names
+    assert {"message", "journal", "brief", "closed", "superseded", "precedent"} <= names
+    assert "goal" not in names
     assert tags.by_name("precedent").description.startswith("A decision Tony made or overrode")
 
 
@@ -97,7 +98,7 @@ def test_one_call_adds_and_removes_several_tags(vocab):
         channel.set_tags(p.id, add=["closed"], remove=["closed"])
 
 
-@pytest.mark.parametrize("name", ["message", "journal", "goal", "brief", "precedent"])
+@pytest.mark.parametrize("name", ["message", "journal", "brief", "precedent"])
 def test_a_type_tag_is_set_only_when_the_post_is_made(vocab, name):
     from awm.journal import channel, tags
     p = _post()

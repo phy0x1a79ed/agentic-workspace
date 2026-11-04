@@ -19,9 +19,9 @@ def posts(journal_workspace, monkeypatch):
     return mod
 
 
-def _post(posts, kind="journal", meta=None, pid=42, body="debrief", scope="dev"):
+def _post(posts, kind="journal", meta=None, pid=42, body="debrief", scope="dev", **extra):
     args = {"project": "awm", "scope": scope, "author": "agent:awm/dev", "body": body,
-            "kind": kind, "meta": meta, "_caller_pid": pid}
+            "kind": kind, "meta": meta, "_caller_pid": pid, **extra}
     return posts._handle_post(args)["post"]
 
 
@@ -49,23 +49,23 @@ def test_a_session_that_is_not_an_id_is_refused(posts):
         _post(posts, meta={"session": "forged"})
 
 
-def test_a_citation_points_at_a_journal_with_a_reason(posts):
+def test_an_old_meta_cites_folds_into_reply_to_and_keeps_its_reasons(posts):
     src = _post(posts, scope="other", pid=7, meta={"session": OTHER})
     out = _post(posts, meta={"cites": [{"journal": src["id"], "reason": " built the claim table "},
                                        {"journal": src["id"], "reason": "again"}]})
-    assert out["meta"]["cites"] == [{"journal": src["id"], "reason": "built the claim table"}]
+    assert out["reply_to"] == [src["id"]] and "cites" not in out["meta"]
+    assert out["meta"]["cite_reasons"] == {src["id"]: "again"}
+    bare = _post(posts, meta={"cites": [{"journal": src["id"]}]})
+    assert bare["reply_to"] == [src["id"]] and "cite_reasons" not in bare["meta"]
 
 
 @pytest.mark.parametrize("cite,match", [
-    ({"journal": "nope", "reason": "x"}, "not a journal post"),
-    ({"journal": "ID", "reason": ""}, "one-line reason"),
-    ({"journal": "ID", "reason": "two\nlines"}, "one-line reason"),
+    ({"journal": "nope"}, "no post nope"),
     ("ID", r"\{journal"),
 ])
 def test_a_bad_citation_is_refused(posts, cite, match):
     src = _post(posts, scope="other", pid=7)
-    cite = cite.replace("ID", src["id"]) if isinstance(cite, str) else \
-        {**cite, "journal": cite["journal"].replace("ID", src["id"])}
+    cite = cite.replace("ID", src["id"]) if isinstance(cite, str) else cite
     with pytest.raises(ValueError, match=match):
         _post(posts, meta={"cites": [cite]})
 
@@ -73,10 +73,10 @@ def test_a_bad_citation_is_refused(posts, cite, match):
 def test_a_message_is_not_citable_and_cannot_cite(posts):
     msg = _post(posts, kind="message", pid=7, body="chatter")
     with pytest.raises(ValueError, match="not a journal post"):
-        _post(posts, meta={"cites": [{"journal": msg["id"], "reason": "x"}]})
+        _post(posts, reply_to=[msg["id"]])
     src = _post(posts, scope="other", pid=7)
-    with pytest.raises(ValueError, match="only a journal"):
-        _post(posts, kind="message", meta={"cites": [{"journal": src["id"], "reason": "x"}]})
+    with pytest.raises(ValueError, match="only a debrief journal"):
+        _post(posts, kind="message", meta={"cites": [{"journal": src["id"]}]})
 
 
 def test_a_fetch_records_the_journals_a_session_read(posts):

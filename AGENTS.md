@@ -37,7 +37,6 @@ Run this at session start. Run it again any time to refresh. The harness gives y
 
 1. Run `journal(verb="render", args={project:<p>, scope:<s>})`. It returns the scope's latest journal entries, then its project's.
 2. Run `journal(verb="inbox", args={project:<p>, scope:<s>})` for the messages your scope has not read, one line each. Read one in full with `journal(verb="fetch", args={post_id:<id>})`. Run `journal(verb="ack", args={project:<p>, scope:<s>, through:<ack_through>})` once you have read them, so the next session starts after them.
-3. Run `journal(verb="goal_read", args={project:<p>, scope:<s>})` for the goal in force. Read it again before you propose a deliverable. The `goal-alignment` skill sets or revises it.
 
 ## MCP tools
 

@@ -181,5 +181,5 @@ The CLI mirrors the whole expanded tool surface, hidden verbs included. It gener
 | `awm scope heal [--dry-run]` | Idempotent repair |
 | `awm dvc scope-status / mount / gc` | A scope's data view, what materialises, cache reclaim |
 | `awm dvc sync / pull / coverage` | Push the cache off-site, restore one scope, audit what is uncovered |
-| `awm journal post / fetch / render` | Scope posts, goals and briefs, and the history render |
+| `awm journal post / fetch / render` | Scope posts and briefs, and the history render |
 | `awm gateway register / list / deregister` | External hub registrations |

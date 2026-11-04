@@ -1,8 +1,8 @@
 """The scope brief: what a scope is for, one per scope, on the scope's channel (scopes.md R143).
 
 A brief is a ``scope_posts`` row tagged ``brief``. A write appends a new post that
-replies to the one it replaces, which gets the ``superseded`` tag, as a goal
-revision does (fleet.md R107 item 8). The thread keeps every version, and the
+replies to the one it replaces, which gets the ``superseded`` tag (fleet.md
+R107 item 8). The thread keeps every version, and the
 brief in force is the newest one not superseded.
 """
 

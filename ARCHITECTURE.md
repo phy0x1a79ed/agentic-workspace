@@ -45,7 +45,7 @@ The gateway's crash-loop breaker lives in memory on purpose: a gateway restart i
 
 ### The journal is the channel
 
-The `journal` service owns every post and goal, in its own database. It split out of `scopes` so that worktree lifecycle and messaging deploy and fail apart. There are no `rooms`, `messages` or `session_logs` tables. One `scope_posts` table and `scope_subscribers`, addressed by `(project, scope)`, carry everything. Tags from one fleet-wide vocabulary tell posts apart (`message`, `journal`, `goal`, `brief`, `precedent`, …). A comment is a post with `reply_to`, kept in its thread's channel. A non-agent inbox (`user:`, `project:`, `workspace`) is a non-literal channel with `owner_project=''`.
+The `journal` service owns every post, in its own database. It split out of `scopes` so that worktree lifecycle and messaging deploy and fail apart. There are no `rooms`, `messages` or `session_logs` tables. One `scope_posts` table and `scope_subscribers`, addressed by `(project, scope)`, carry everything. Tags from one fleet-wide vocabulary tell posts apart (`message`, `journal`, `brief`, `precedent`, …). A comment is a post with `reply_to`, kept in its thread's channel. A non-agent inbox (`user:`, `project:`, `workspace`) is a non-literal channel with `owner_project=''`.
 
 `journal` validates a literal scope through the `resolveScope` RPC to `scopes`, and an unreachable `scopes` never blocks a post. The service publishes the `posts` topic with payload `{project, scope, post}`. `awm/services/journal/INSTALL.md` covers the first-start copy of the old tables out of the `scopes` database.
 

@@ -42,7 +42,7 @@ def _count(db_path, table):
         conn.close()
 
 
-def test_copies_posts_goals_and_subscribers(journal_workspace, scopes_db):
+def test_copies_posts_and_subscribers_and_a_goal_becomes_a_journal(journal_workspace, scopes_db):
     from awm.journal import migrate
     from awm.persistence.databases import service_db_path
     out = migrate.migrate_from_scopes(source=scopes_db)
@@ -53,7 +53,7 @@ def test_copies_posts_goals_and_subscribers(journal_workspace, scopes_db):
     try:
         assert conn.execute("SELECT ts FROM scope_posts WHERE id='p2'").fetchone() == (2000,)
         assert conn.execute("SELECT tag_id FROM post_tags WHERE post_id='p2'").fetchone() == (
-            "builtin:goal",)
+            "builtin:journal",)
     finally:
         conn.close()
 
@@ -108,5 +108,5 @@ def test_migrated_posts_are_searchable_after_a_reindex(journal_workspace, scopes
     from awm.journal import channel, migrate, search_index
     migrate.migrate_from_scopes(source=scopes_db)
     search_index.run_reindex()
-    posts, _, _ = channel.search(query="the aim", kind="goal")
-    assert [p.id for p in posts] == ["p2"]
+    posts, _, _ = channel.search(query="the aim", kind="journal")
+    assert posts[0].id == "p2"

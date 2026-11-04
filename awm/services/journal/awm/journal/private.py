@@ -1,7 +1,7 @@
 """Which journal channels a peer caller may not see, by the node's private marks.
 
 A channel's owner pair names its project as a literal scope ``(<project>, <scope>)``,
-a project-level goal channel ``('', 'project:<p>')``, or one of the legacy
+a project-level channel ``('', 'project:<p>')``, or one of the legacy
 spellings :func:`awm.config.privacy.hidden` knows (``task:<p>``, ``('', 'user:proj:<p>')``).
 A mark on the project covers them all; :func:`exclusion` must match the same set.
 

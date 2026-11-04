@@ -73,29 +73,6 @@ def test_export_carries_one_document_per_thread(journal_workspace):
     assert doc["comments"] == 1 and "a comment" in doc["text"]
 
 
-def test_a_goal_revision_replies_and_supersedes(journal_workspace):
-    from awm.journal import channel, goals
-    a = goals.set_goal(objective="v1", author="user:tony", level="scope", project="awm",
-                       scope="dev")
-    b = goals.set_goal(objective="v2", author="user:tony", supersedes=a.id)
-    assert b.supersedes == a.id and "superseded" in channel.get_post(a.id).tags
-    assert channel.get_post(b.id).reply_to == a.id
-    assert [g.id for g in goals.read_goals("awm", "dev", levels=["scope"])] == [b.id]
-
-
-def test_a_goal_revision_that_moves_level_follows_the_switch(journal_workspace, monkeypatch):
-    from awm.journal import channel, goals
-    a = goals.set_goal(objective="v1", author="user:tony", level="scope", project="awm",
-                       scope="dev")
-    b = goals.set_goal(objective="v2", author="user:tony", supersedes=a.id, level="workspace")
-    assert (b.project, b.scope) == ("", "workspace") and b.supersedes == a.id
-    assert [g.id for g in goals.history(a.id)] == [a.id, b.id]
-    monkeypatch.setattr(channel, "CROSS_CHANNEL_REVISIONS", False)
-    with pytest.raises(goals.GoalError, match="stays on its goal's level"):
-        goals.set_goal(objective="v3", author="user:tony", supersedes=b.id, level="project",
-                       project="awm")
-
-
 def test_a_brief_supersedes_by_reply_and_keeps_its_history(journal_workspace):
     from awm.journal import briefs, channel
     one = briefs.set_brief("awm", "dev", "for the gateway", author="agent:awm/dev")

@@ -108,7 +108,7 @@ def test_the_published_renames_are_in_the_table():
         ("reporting_board_ensure", "operations_board_ensure"),
         ("reporting_request_human_user", "operations_request_human"),
         ("reporting_request_human_review", "operations_request_human"),
-        ("scope_post", "journal_post"), ("scope_goal_history", "journal_goal_history"),
+        ("scope_post", "journal_post"),
         ("scope_subscribe", "journal_subscribe"),
         ("scope_data_mount", "dvc_mount"), ("scope_data_gc", "dvc_gc"),
         ("scope_data_status", "dvc_scope_status"),

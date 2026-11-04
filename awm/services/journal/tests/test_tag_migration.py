@@ -1,4 +1,4 @@
-"""Schema migration to v5: kinds become tags, supersedes and tombstones become replies."""
+"""Schema migration to v5: kinds become tags, goals become journals, cites become citations."""
 
 from __future__ import annotations
 
@@ -28,6 +28,11 @@ def old_db(tmp_path, monkeypatch):
         ("g2", "", "workspace", "user:tony", "goal", "v2", {"supersedes": "g1"}, 5),
         ("g3", "", "workspace", "user:tony", "goal", "v3", {"supersedes": "g2"}, 6),
         ("t", "", "workspace", "user:tony", "goal", "obsolete", {"retires": "g3"}, 7),
+        ("x1", "", "project:_goaltest", "user:tony", "goal", "probe", {}, 10),
+        ("x2", "awm", "dev", "user:tony", "goal", "TEST-goal", {}, 11),
+        ("x3", "awm", "dev", "user:tony", "goal", "test cleanup", {}, 12),
+        ("c", "awm", "dev", "agent:awm/dev", "journal", "built on j",
+         {"cites": [{"journal": "j", "reason": "the base"}, {"journal": "gone"}]}, 13),
         ("b1", "awm", "dev", "agent:awm/dev", "brief", "for x", {}, 8),
         ("b2", "awm", "dev", "agent:awm/dev", "brief", "for y", {"supersedes": "b1"}, 9),
     ]
@@ -54,21 +59,32 @@ def test_every_kind_becomes_a_tag(old_db):
     assert "migrated" in desc
 
 
-def test_supersedes_and_tombstones_become_replies(old_db):
+def test_goals_become_journals_and_the_test_rows_go(old_db):
     conn = sqlite3.connect(old_db)
-    rows = {r[0]: r[1:] for r in conn.execute("SELECT id, reply_to, thread_id, meta FROM scope_posts")}
-    assert rows["g2"][:2] == ("g1", "g1") and rows["g3"][:2] == ("g2", "g1")
-    assert rows["t"][:2] == ("g3", "g1") and rows["b2"][:2] == ("b1", "b1")
-    assert "supersedes" not in rows["g2"][2] and "retires" not in rows["t"][2]
-    assert "builtin:superseded" in _tags(conn, "g1") and "builtin:superseded" in _tags(conn, "g2")
-    assert "builtin:closed" in _tags(conn, "g3") and "builtin:superseded" in _tags(conn, "b1")
-    assert _tags(conn, "t") == {"builtin:message"}
+    ids = {r[0] for r in conn.execute("SELECT id FROM scope_posts")}
+    assert not {"x1", "x2", "x3"} & ids
+    for g in ("g1", "g2", "g3", "t"):
+        assert _tags(conn, g) == {"builtin:journal"}
+    meta = json.loads(conn.execute("SELECT meta FROM scope_posts WHERE id='g2'").fetchone()[0])
+    assert meta == {"supersedes": "g1"}
+    assert conn.execute("SELECT reply_to FROM scope_posts WHERE id='g2'").fetchone()[0] is None
+    assert conn.execute("SELECT 1 FROM tags WHERE name='goal'").fetchone() is None
 
 
-def test_the_migrated_goals_and_briefs_read_as_before(old_db):
-    from awm.journal import briefs, goals
-    assert goals.read_goals() == []
-    assert [g.id for g in goals.history("g2")] == ["g1", "g2", "g3"]
-    assert [r["id"] for r in goals.retirements(goals.history("g1"))] == ["t"]
+def test_a_brief_supersedes_by_reply(old_db):
+    from awm.journal import briefs
+    conn = sqlite3.connect(old_db)
+    assert conn.execute("SELECT reply_to, thread_id FROM scope_posts WHERE id='b2'").fetchone() == (
+        "b1", "b1")
+    assert "builtin:superseded" in _tags(conn, "b1")
     assert briefs.read("awm", "dev").id == "b2"
     assert [b.id for b in briefs.history("awm", "dev")] == ["b1", "b2"]
+
+
+def test_meta_cites_become_citations_and_the_reasons_stay(old_db):
+    from awm.journal import channel
+    conn = sqlite3.connect(old_db)
+    assert conn.execute("SELECT cited_id FROM post_cites WHERE post_id='c'").fetchall() == [("j",)]
+    post = channel.get_post("c")
+    assert post.to_dict()["reply_to"] == ["j"]
+    assert post.meta == {"cite_reasons": {"j": "the base"}}

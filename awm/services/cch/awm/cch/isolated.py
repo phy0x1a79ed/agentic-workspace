@@ -45,7 +45,7 @@ LOGIN_KEYS = ("accessToken", "expiresAt", "scopes", "subscriptionType", "rateLim
 #: refuses every other verb for a caller token, and refuses a scope other than the
 #: session's own where a verb takes one.
 WHITELIST: dict[str, tuple[str, ...]] = {
-    "journal": ("render", "inbox", "fetch", "ack", "goal_read", "post"),
+    "journal": ("render", "inbox", "fetch", "ack", "post"),
     "search": ("query", "get"),
     "reflection": ("whoami", "compact", "message_self", "pending", "mode"),
     "operations": ("track", "status", "request_human", "done"),

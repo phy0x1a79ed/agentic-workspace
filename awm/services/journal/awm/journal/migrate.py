@@ -1,6 +1,6 @@
 """First-start copy of the post log from the scopes database.
 
-Posts and goals lived in the scopes service's ``scope_posts`` table before the
+Posts lived in the scopes service's ``scope_posts`` table before the
 journal service existed. When the journal's own log is empty, this copies that
 table and the subscriber table across. It backs up the journal database first,
 copies with ``INSERT OR IGNORE`` so a rerun adds nothing, and never writes to
@@ -51,6 +51,8 @@ def _kind_tag(conn: sqlite3.Connection, kind: str | None) -> str:
         return kinds.MESSAGE
     if name in kinds.KIND_TO_TAG:
         return kinds.KIND_TO_TAG[name]
+    if name in kinds.FOLDED_KINDS:
+        return kinds.FOLDED_KINDS[name]
     row = conn.execute("SELECT id FROM tags WHERE name=?", (name,)).fetchone()
     if row is not None:
         return row[0]

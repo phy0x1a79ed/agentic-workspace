@@ -15,14 +15,14 @@ from dataclasses import dataclass
 from typing import Any, Iterable
 
 from awm.journal.dao import JournalDAO
-from awm.journal.kinds import (BRIEF, GOAL, JOURNAL, KIND_TAGS, KIND_TO_TAG, MESSAGE,
+from awm.journal.kinds import (BRIEF, JOURNAL, KIND_TAGS, KIND_TO_TAG, MESSAGE,
                                MIGRATED_PREFIX, PRECEDENT)
 from awm.journal.refs import ms_to_iso, now_ms
 
 _TAG_TO_KIND = {v: k for k, v in KIND_TO_TAG.items()}
 #: Set when a post is made, never after (fleet.md R107 item 6).
 TYPE_TAGS = (*KIND_TAGS, PRECEDENT)
-_KIND_ORDER = (JOURNAL, GOAL, BRIEF, PRECEDENT, MESSAGE)
+_KIND_ORDER = (JOURNAL, BRIEF, PRECEDENT, MESSAGE)
 
 _NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_.:+/-]{0,63}$")
 _RESERVED = {"and", "not", "or"}
@@ -275,7 +275,7 @@ def has(post_id: str, tag_id: str, conn: sqlite3.Connection | None = None) -> bo
 def retag(post_id: str, *, add: Iterable[str] = (), remove: Iterable[str] = ()) -> list[str]:
     """Add and remove several tags on one post in one transaction; returns its tag ids.
 
-    A type tag (message, journal, goal, brief, precedent) is set only when the
+    A type tag (message, journal, brief, precedent) is set only when the
     post is made (fleet.md R107 item 6); closed and superseded change freely.
     """
     add_ids, remove_ids = resolve(add), resolve(remove)

@@ -79,7 +79,7 @@ SCOPE_MANIFEST_FUNCTIONS = [
         "effect": "read",
         "description": (
             "Search scopes: name matches first, then scopes ranked by the "
-            "meaning of their goals and context. Each project's main checkout "
+            "meaning of their brief and context. Each project's main checkout "
             "is a scope named for its default branch. "
             "Defaults to status='active'; pass status='all' for the full history. "
             "With no project, the reply also lists every project, matched and "

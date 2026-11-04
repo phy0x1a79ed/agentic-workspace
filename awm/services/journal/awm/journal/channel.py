@@ -1,7 +1,7 @@
 """The scope channel — a scope IS the channel.
 
 There is no separate rooms/messages/session_logs machinery. Every scope owns
-one post log (``scope_posts``); messages, journal (debrief) entries, goals,
+one post log (``scope_posts``); messages, journal (debrief) entries,
 briefs and precedents are all rows there, told apart by their tags
 (:mod:`awm.journal.tags`).
 Other scopes/users subscribe to a channel (``scope_subscribers``); the owner is
@@ -274,11 +274,6 @@ def set_emitter(fn) -> None:
 # Post
 # ---------------------------------------------------------------------------
 
-#: A goal revision that moves a level replies across channels, so it keeps its
-#: new level. Waiting on Tony (redux-journal Q1); False puts it in the thread's channel.
-CROSS_CHANNEL_REVISIONS = True
-
-
 def post_tag_ids(kind: str | None = None, tags: Any = None,
                  extra: Iterable[str] = ()) -> list[str]:
     """The tag ids a new post carries: its ``tags``, the tag for the old ``kind`` alias,
@@ -298,8 +293,8 @@ def post_tag_ids(kind: str | None = None, tags: Any = None,
 def post(project: str, scope: str, *, author: str, body: str,
          kind: str | None = None, tags: Any = None, meta: dict | None = None,
          reply_to: str | list[str] | None = None, to_scope: str | None = None,
-         origin: str | None = None, keep_channel: bool = False,
-         extra_tags: list[str] = (), ts: int | None = None) -> ScopePost:
+         origin: str | None = None, extra_tags: list[str] = (),
+         ts: int | None = None) -> ScopePost:
     """Append a post to a scope's channel and hand it to the cross-service emitter.
 
     ``origin`` is an edge-stamped peer identity (see :func:`edge_origin`). It is
@@ -312,8 +307,7 @@ def post(project: str, scope: str, *, author: str, body: str,
     be a journal (sessions.md R17); the journal stays in ``project``/``scope``.
     On any other post it names the one post the comment answers, and the post
     lands in the channel of its thread's first post, whatever
-    ``project``/``scope`` say, unless ``keep_channel`` (a cross-level goal
-    revision). ``extra_tags`` are tag ids the journal's own code adds.
+    ``project``/``scope`` say. ``extra_tags`` are tag ids the journal's own code adds.
     """
     if origin is None and (author or "").startswith("peer:"):
         raise ValueError("author 'peer:...' is reserved for edge-stamped peer identities")
@@ -333,9 +327,8 @@ def post(project: str, scope: str, *, author: str, body: str,
         if parent is None:
             raise ValueError(f"no post {reply_to} to reply to")
         thread_id = parent.root
-        if not keep_channel:
-            root = parent if parent.thread_id is None else get_post(thread_id) or parent
-            project, scope = root.project, root.scope
+        root = parent if parent.thread_id is None else get_post(thread_id) or parent
+        project, scope = root.project, root.scope
     owners.require_scope(project, scope)
     now = ts if ts is not None else now_ms()
     pid = str(_uuid.uuid4())

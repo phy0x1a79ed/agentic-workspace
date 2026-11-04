@@ -82,8 +82,7 @@ def _rows() -> list[Alias]:
     add("reporting", "request_human_user", "operations", "request_human", {"kind": "blocked"})
     add("reporting", "request_human_review", "operations", "request_human", {"kind": "review"})
 
-    for verb in ("post", "fetch", "subscribe", "unsubscribe",
-                 "goal_set", "goal_retire", "goal_read", "goal_history"):
+    for verb in ("post", "fetch", "subscribe", "unsubscribe"):
         add("scope", verb, "journal", verb)
     add("scope", "data_mount", "dvc", "mount")
     add("scope", "data_gc", "dvc", "gc")

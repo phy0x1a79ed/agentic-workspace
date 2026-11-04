@@ -7,7 +7,7 @@ loop (register → ready → serve → reconnect).
 The four **identity RPCs** — ``resolveScope``, ``resolveRef``,
 ``ensureProject``, ``ensureScope`` — are exposed in ``functions[]`` of the
 ready manifest, alongside the scope ops. Everything is published under the
-``scope`` tool; posts, goals and the history render live in the journal service.
+``scope`` tool; posts, briefs and the history render live in the journal service.
 
 Run via ``start.sh`` (which the hub spawns and respawns):
     python -m awm.scopes.hub_adapter

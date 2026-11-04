@@ -2,7 +2,7 @@
 
 *Human setup + usage guide for awm. Agents operating in this workspace load [`AGENTS.md`](AGENTS.md) at session start via the harness's native mechanism (see § Harness Integration) — not this file. **Do not merge this README into AGENTS.md, PROTOCOLS.md or ARCHITECTURE.md** — their audience is agents; this one's audience is humans installing, networking, and operating the system.*
 
-A lightweight Python service + CLI for coordinating multiple AI agents working in parallel on shared resources. Provides project/scope management, the journal (per-scope posts, goals and history), one ranked search over what the swarm knows, background Claude Code sessions (`reflection start_other`), cross-node federation, and an MCP server for direct tool use by Claude Code / OpenCode / other MCP clients.
+A lightweight Python service + CLI for coordinating multiple AI agents working in parallel on shared resources. Provides project/scope management, the journal (per-scope posts, briefs, precedents and history), one ranked search over what the swarm knows, background Claude Code sessions (`reflection start_other`), cross-node federation, and an MCP server for direct tool use by Claude Code / OpenCode / other MCP clients.
 
 For agent orientation (paths, MCP tools, startup), see [`AGENTS.md`](AGENTS.md). For workspace procedures (scope lifecycle, naming, hubs, data, backups), see [`PROTOCOLS.md`](PROTOCOLS.md). For **awm-internal architecture** — modifying the hub, registry, supervisor, RPC layer, manifest generator — see [`ARCHITECTURE.md`](ARCHITECTURE.md). This README covers install and the *usage* side of the package model (authoring components / services / pages); ARCHITECTURE.md covers the *implementation* side.
 

@@ -1,7 +1,7 @@
 """Journal data access: the post log, the subscriber table and the search index.
 
 A scope IS the channel. Everything written to it (messages, journal entries,
-goals, briefs, precedents) is a row in ``scope_posts``, told apart by its tags
+briefs, precedents) is a row in ``scope_posts``, told apart by its tags
 (``post_tags``, see :mod:`awm.journal.tags`). A comment is a post with
 ``reply_to``; ``thread_id`` names its thread's first post.
 """
@@ -154,14 +154,20 @@ CREATE TABLE IF NOT EXISTS session_parents (
 # replaces it.
 MIGRATIONS[(3, 4)] = "SELECT 1;"
 
-# Kinds become tags, meta.supersedes becomes a reply plus the superseded tag, and a
-# goal tombstone (meta.retires) becomes a comment on the goal, which gets closed
-# (fleet.md R107 items 6 to 8). A kind with no fixed tag becomes a migrated tag.
+# Kinds become tags (fleet.md R107 item 6); a kind with no fixed tag becomes a
+# migrated tag. The goal log went (item 10): a real goal becomes a journal post in
+# its channel with its body and meta, and the goal test rows go. A brief's
+# meta.supersedes becomes a reply plus the superseded tag (item 8). A journal's
+# meta.cites becomes its citations, and each reason stays as meta.cite_reasons
+# (sessions.md R14, R15).
 _SUPERSEDES = "json_extract(meta, '$.supersedes')"
-_RETIRES = "json_extract(meta, '$.retires')"
+_GOAL_TEST = ("kind = 'goal' AND (owner_project = '_goaltest' OR owner_scope = 'project:_goaltest'"
+              " OR body LIKE 'TEST-%' OR lower(body) LIKE 'test cleanup%')")
+_CITES = "json_valid(meta) AND json_type(meta, '$.cites') = 'array'"
 MIGRATIONS[(4, 5)] = TAGS_SQL + LINKS_SQL + f"""\
 ALTER TABLE scope_posts ADD COLUMN reply_to TEXT;
 ALTER TABLE scope_posts ADD COLUMN thread_id TEXT;
+DELETE FROM scope_posts WHERE {_GOAL_TEST};
 INSERT OR IGNORE INTO tags (id, name, description, origin, version, created_at, updated_at)
     SELECT DISTINCT '{kinds.MIGRATED_PREFIX}' || lower(trim(kind)), lower(trim(kind)),
            '{kinds.MIGRATED_DESCRIPTION}', '', 1, 0, 0
@@ -175,18 +181,10 @@ INSERT OR IGNORE INTO post_tags (post_id, tag_id)
 INSERT OR IGNORE INTO post_tags (post_id, tag_id)
     SELECT id, '{kinds.MESSAGE}' FROM scope_posts WHERE trim(kind) = '';
 UPDATE scope_posts SET reply_to = {_SUPERSEDES}
-    WHERE {_SUPERSEDES} IN (SELECT id FROM scope_posts);
+    WHERE kind = 'brief' AND {_SUPERSEDES} IN (SELECT id FROM scope_posts WHERE kind = 'brief');
 INSERT OR IGNORE INTO post_tags (post_id, tag_id)
     SELECT reply_to, '{kinds.SUPERSEDED}' FROM scope_posts WHERE reply_to IS NOT NULL;
-UPDATE scope_posts SET reply_to = {_RETIRES}
-    WHERE {_RETIRES} IN (SELECT id FROM scope_posts);
-INSERT OR IGNORE INTO post_tags (post_id, tag_id)
-    SELECT {_RETIRES}, '{kinds.CLOSED}' FROM scope_posts WHERE {_RETIRES} = reply_to;
-DELETE FROM post_tags WHERE tag_id = '{kinds.GOAL}'
-    AND post_id IN (SELECT id FROM scope_posts WHERE {_RETIRES} = reply_to);
-INSERT OR IGNORE INTO post_tags (post_id, tag_id)
-    SELECT id, '{kinds.MESSAGE}' FROM scope_posts WHERE {_RETIRES} = reply_to;
-UPDATE scope_posts SET meta = json_remove(meta, '$.supersedes', '$.retires')
+UPDATE scope_posts SET meta = json_remove(meta, '$.supersedes')
     WHERE reply_to IS NOT NULL AND json_valid(meta);
 UPDATE scope_posts SET thread_id = (
     WITH RECURSIVE up(id, parent, depth) AS (
@@ -196,6 +194,18 @@ UPDATE scope_posts SET thread_id = (
         WHERE up.depth < 10000)
     SELECT id FROM up WHERE parent IS NULL)
     WHERE reply_to IS NOT NULL;
+INSERT OR IGNORE INTO post_cites (post_id, cited_id, ord)
+    SELECT p.id, json_extract(c.value, '$.journal'), c.key
+    FROM scope_posts p, json_each(p.meta, '$.cites') c
+    WHERE p.kind = 'journal' AND json_valid(p.meta) AND json_type(p.meta, '$.cites') = 'array'
+      AND json_extract(c.value, '$.journal') IN (SELECT id FROM scope_posts);
+UPDATE scope_posts SET meta = json_set(meta, '$.cite_reasons', json((
+    SELECT json_group_object(json_extract(c.value, '$.journal'), json_extract(c.value, '$.reason'))
+    FROM json_each(scope_posts.meta, '$.cites') c
+    WHERE json_extract(c.value, '$.reason') IS NOT NULL)))
+    WHERE {_CITES} AND EXISTS (SELECT 1 FROM json_each(scope_posts.meta, '$.cites') c
+                              WHERE json_extract(c.value, '$.reason') IS NOT NULL);
+UPDATE scope_posts SET meta = json_remove(meta, '$.cites') WHERE {_CITES};
 DROP INDEX IF EXISTS idx_scope_posts_kind;
 ALTER TABLE scope_posts DROP COLUMN kind;
 CREATE INDEX IF NOT EXISTS idx_scope_posts_thread ON scope_posts(thread_id, ts);

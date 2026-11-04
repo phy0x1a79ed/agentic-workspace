@@ -1606,7 +1606,7 @@ def search_scopes(
     """Search scopes. Defaults to status='active'.
 
     With a ``query``, scopes whose name contains it come first, then the rest
-    ranked by relevance of their goals and ``context.md``. A project's main
+    ranked by relevance of their brief and ``context.md``. A project's main
     checkout counts as an active scope named for its default branch. With no
     ``project`` the reply also lists every project (see
     :func:`awm.scopes.projects.search_projects`) and every tag in use. With

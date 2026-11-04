@@ -2,8 +2,8 @@
 
 A journal post carries ``meta.session``, the R9 id of the session it covers. It
 defaults to the posting session. A debrief journal's ``reply_to`` lists the
-journals that shaped the work, and points only at journal posts. The older
-``meta.cites`` still folds into that list while the move runs. Every journal
+journals that shaped the work, and points only at journal posts. An old-style
+``meta.cites`` folds into that list, its reasons kept as ``meta.cite_reasons``. Every journal
 that ``fetch`` hands a session lands in ``session_reads``, the candidate list
 the agent picks its citations from at debrief.
 """
@@ -14,7 +14,7 @@ import json
 from typing import Any, Iterable
 
 from awm.gatewayclient import ids
-from awm.journal import kinds, tags as tagmod
+from awm.journal import kinds
 from awm.journal.dao import JournalDAO
 from awm.journal.refs import now_ms
 
@@ -52,31 +52,34 @@ def stamp(meta: Any, caller: str | None) -> Any:
     return meta
 
 
-def check_cites(meta: Any, tag_ids: list[str]) -> Any:
-    """``meta`` with ``cites`` checked: journal posts only, each with a one-line reason."""
+def fold_cites(meta: Any, tag_ids: list[str]) -> tuple[Any, list[str]]:
+    """Fold an old-style ``meta.cites`` into citation ids for ``reply_to``.
+
+    Each reason it gives stays as ``meta.cite_reasons``; a citation needs none
+    (sessions.md R15). Returns ``meta`` without ``cites`` and the cited ids.
+    """
     if not isinstance(meta, dict) or "cites" not in meta:
-        return meta
-    cites = meta["cites"]
+        return meta, []
+    meta = dict(meta)
+    cites = meta.pop("cites")
     if cites in (None, []):
-        return {k: v for k, v in meta.items() if k != "cites"}
+        return meta, []
     if not is_journal(tag_ids):
-        raise ValueError("only a journal post may cite (sessions.md R14)")
+        raise ValueError("only a debrief journal cites (sessions.md R14)")
     if not isinstance(cites, list):
-        raise ValueError("meta.cites is a list of {journal, reason}")
-    out, seen = [], set()
+        raise ValueError("meta.cites is a list of {journal}; pass the ids in reply_to instead")
+    ids, reasons = [], {}
     for c in cites:
         if not isinstance(c, dict) or not isinstance(c.get("journal"), str):
-            raise ValueError("each citation is {journal: <post id>, reason: <one line>}")
+            raise ValueError("each meta.cites entry is {journal: <post id>}; use reply_to")
+        if c["journal"] not in ids:
+            ids.append(c["journal"])
         reason = c.get("reason")
-        if not isinstance(reason, str) or not reason.strip() or "\n" in reason.strip():
-            raise ValueError(f"citation {c['journal']} needs a one-line reason")
-        if not tagmod.has(c["journal"], kinds.JOURNAL):
-            raise ValueError(f"citation {c['journal']} is not a journal post. Journal for that "
-                             f"session first, then cite the new journal (sessions.md R17)")
-        if c["journal"] not in seen:
-            seen.add(c["journal"])
-            out.append({"journal": c["journal"], "reason": reason.strip()[:MAX_REASON]})
-    return {**meta, "cites": out}
+        if isinstance(reason, str) and reason.strip():
+            reasons[c["journal"]] = " ".join(reason.split())[:MAX_REASON]
+    if reasons:
+        meta["cite_reasons"] = {**(meta.get("cite_reasons") or {}), **reasons}
+    return meta, ids
 
 
 def record_reads(session: str | None, posts: Iterable[Any]) -> int:
@@ -123,12 +126,6 @@ def cites_of(session: str) -> list[dict]:
             seen.add(c["journal"])
             out.append(c)
     return out
-
-
-def cite_ids(meta: Any) -> list[str]:
-    """The journal ids an old-style ``meta.cites`` names, to fold into ``reply_to``."""
-    cites = meta.get("cites") if isinstance(meta, dict) else None
-    return [c["journal"] for c in cites or [] if isinstance(c, dict) and isinstance(c.get("journal"), str)]
 
 
 def _meta(raw: Any) -> dict:

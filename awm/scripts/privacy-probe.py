@@ -536,10 +536,6 @@ class Probe:
         out = self.peer_call("journal", "fetch", {"limit": 500, **args})
         return self.own_rows(out.get("posts", []), "posts")
 
-    def journal_goals(self) -> tuple[bool, Any, str]:
-        out = self.peer_call("journal", "goal_read", {})
-        return self.own_rows(out.get("goals", []), "goals")
-
     def journal_export(self) -> tuple[bool, Any, str]:
         docs: list[dict] = []
         cursor = None
@@ -708,7 +704,6 @@ class Probe:
                    control="render")
         self.check(f"4.4 journal fetch query={self.project} (no project)",
                    lambda: self.journal_fetch(query=self.project, limit=100), may_be_vacuous=True)
-        self.check("4.5 journal goal_read (no project)", self.journal_goals, may_be_vacuous=True)
         self.check("4.6 journal export", self.journal_export)
         self.check("5 dvc coverage", self.dvc_coverage)
         self.check(f"6 /files{self.facts['file']}", lambda: self.static_file(self.facts["file"]),

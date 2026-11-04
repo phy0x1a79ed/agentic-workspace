@@ -1,7 +1,7 @@
 # Installing the `journal` service
 
 A Python feature service in the `awm.journal` namespace. It owns the scope post
-channels: messages, journal (debrief) entries, goals, briefs and precedents. It also
+channels: messages, journal (debrief) entries, briefs and precedents. It also
 renders each scope's history and holds the session lineage. It needs the `awm` conda env to contain its
 package plus the shared component libraries it imports (`config`, `persistence`,
 `gatewayclient`). Semantic search reuses the workspace embedding stack
@@ -23,7 +23,7 @@ The service owns its DB at `AWM_DIR/services/journal/journal.db`:
 - **scope_posts** — the post log. A row is `(owner_project, owner_scope)`, `author`,
   `body`, `meta` (JSON), `ts` (epoch ms), and for a comment `reply_to` and `thread_id`.
   A non-agent inbox (`user:`, `project:`, `workspace`) is a channel with
-  `owner_project=''`. A goal is a post tagged `goal`. Its level is the channel it sits on.
+  `owner_project=''`.
 - **tags**, **tag_versions**, **post_tags** — the vocabulary every node shares, each
   tag's earlier names and descriptions, and the tags on each post. A post links a tag
   by id. The tags the code names have fixed ids in `awm/journal/kinds.py`.
