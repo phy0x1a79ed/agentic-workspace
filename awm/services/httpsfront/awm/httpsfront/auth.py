@@ -22,11 +22,10 @@ few seconds, and then:
   match the request's shape (:func:`awm.config.usertoken.scope_admits`), and a
   caller that passes no shape never admits one.
 
-A login (``POST /__auth/login``) is the one path that calls the ``auth`` service:
-it forwards the submitted username + password (and the client IP, for the
-lockout) to ``auth.verify`` and, on success, gets back a freshly signed token
-to set as the cookie. The token's ``sub`` is the verified identity the proxy
-stamps on every upstream request as ``X-Awm-As: user:<sub>``.
+A login is alcor's passkey grant (:mod:`awm.httpsfront.portal`). Once the edge
+has checked it, :meth:`AuthGate.mint_session` signs the session cookie with the
+same secret. The token's ``sub`` is the identity the proxy stamps on every
+upstream request as ``X-Awm-As: user:<sub>``.
 
 Fail-closed: if the ``auth`` service is unreachable and no material is cached, the
 edge authenticates nothing (login page / 401), never fails open.
@@ -253,36 +252,13 @@ class AuthGate:
                 return True, None, sub
         return False, None, None
 
-    async def verify_login(self, *, username: str | None, password: str,
-                           client_ip: str | None) -> dict[str, Any]:
-        """Forward a login to ``auth.verify``. Returns ``{ok, token, sub}`` on
-        success, ``{ok: False, locked: True, retry_after}`` when the username
-        or IP is locked out, else ``{ok: False}``."""
-        args: dict[str, Any] = {"password": password}
-        if username:
-            args["username"] = username
-        if client_ip:
-            args["client_ip"] = client_ip
-        try:
-            from awm import gatewayclient
-            res = await gatewayclient.call("auth", "verify", args)
-        except Exception as exc:  # noqa: BLE001
-            log.warning("edge: auth.verify RPC failed: %s", exc)
-            return {"ok": False}
-        if not isinstance(res, dict):
-            return {"ok": False}
-        if res.get("ok") and res.get("token"):
-            return {"ok": True, "token": str(res["token"]),
-                    "sub": str(res.get("sub") or "operator")}
-        if res.get("locked"):
-            return {"ok": False, "locked": True,
-                    "retry_after": int(res.get("retry_after") or 60)}
-        return {"ok": False}
-
-    async def verify_password(self, password: str) -> str | None:
-        """Shared-password login (the autologin link); a token or ``None``."""
-        res = await self.verify_login(username=None, password=password, client_ip=None)
-        return res.get("token") if res.get("ok") else None
+    async def mint_session(self, sub: str) -> tuple[str, int] | None:
+        """A fresh session token for ``sub`` and its lifetime, or None with no material."""
+        mat = await self._material_fresh()
+        if not mat:
+            return None
+        ttl = float(mat.get("session_ttl_seconds") or 86400.0)
+        return tokens.mint(mat["secret"], sub=sub, ttl=ttl), int(ttl)
 
     async def session_ttl_seconds(self) -> float:
         mat = await self._material_fresh()

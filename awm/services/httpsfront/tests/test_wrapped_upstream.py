@@ -31,8 +31,6 @@ class _StubGate:
     async def session_ttl_seconds(self) -> float:
         return 3600.0
 
-    async def verify_password(self, password: str):
-        return None
 
 
 def _client(app, *, authed: bool = True) -> TestClient:
@@ -145,11 +143,11 @@ def test_extra_route_is_gated_for_an_anonymous_caller():
     assert "granted" not in r.text
 
 
-def test_anonymous_browser_gets_the_login_page_not_the_route():
+def test_anonymous_browser_goes_to_the_passkey_login_not_the_route():
     with _client(_app_with_extra(), authed=False) as c:
         r = c.get("/_signin", headers={"accept": "text/html"})
-    # Same deny shape as the catch-all proxy: a page, not a bare 401.
-    assert r.status_code == 200
+    # Same deny shape as the catch-all proxy: the approver's login, not a bare 401.
+    assert r.status_code == 302 and "/portal_login?next=" in r.headers["location"]
     assert "granted" not in r.text
 
 
@@ -157,11 +155,11 @@ def test_extra_route_cannot_shadow_the_edge_auth_surface():
     """Registered after /__auth/*, so a caller cannot replace login."""
     app = proxy.build_app(
         "http://127.0.0.1:12203/", "/nonexistent/ca.pem", landing=False,
-        extra_routes=[("/__auth/login", ["GET", "POST"], _secret)],
+        extra_routes=[("/__auth/portal", ["GET", "POST"], _secret)],
     )
     app.state.gate = _StubGate()
     with _client(app) as c:
-        r = c.post("/__auth/login", json={"password": "nope"})
-    # The edge's own handler answered (401 from verify_password), not ours.
-    assert r.status_code == 401
+        r = c.get("/__auth/portal?next=/&grant=nope")
+    # The edge's own handler answered (403 for a bad grant), not ours.
+    assert r.status_code == 403
     assert "granted" not in r.text

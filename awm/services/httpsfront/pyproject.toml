@@ -10,6 +10,7 @@ description = "AWM httpsfront service: a whole-gateway HTTPS front — terminate
 dependencies = [
     "awm-config",
     "awm-gatewayclient",
+    "awm-grantlib",
     "starlette",
     "uvicorn",
     "httpx",

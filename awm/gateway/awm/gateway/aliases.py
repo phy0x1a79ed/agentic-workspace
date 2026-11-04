@@ -108,8 +108,7 @@ def _rows() -> list[Alias]:
     add("config", "contracts", "awm", "config_contracts")
     add("config", "set", "awm", "config_set")
 
-    for verb in ("password", "peer_credential", "verify", "edge_material", "node_key",
-                 "sign_peer_token", "rotate"):
+    for verb in ("peer_credential", "edge_material", "node_key", "sign_peer_token", "rotate"):
         add("auth", verb, "awm", verb)
     add("auth", "status", "awm", "auth_status")
 

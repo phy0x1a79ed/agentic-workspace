@@ -24,8 +24,6 @@ class _StubGate:
     async def session_ttl_seconds(self) -> float:
         return 3600.0
 
-    async def verify_password(self, password: str):
-        return None
 
 
 def _client(app, *, authed: bool = True) -> TestClient:

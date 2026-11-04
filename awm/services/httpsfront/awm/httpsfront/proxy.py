@@ -67,9 +67,10 @@ from starlette.responses import (
 )
 from starlette.routing import Route, WebSocketRoute
 from starlette.websockets import WebSocket, WebSocketDisconnect
+from verify_grant import GrantInvalid
 
 from awm.config import edges, peertoken, usertoken
-from awm.httpsfront import board, pages, policy, slices, store, tether, vault
+from awm.httpsfront import board, pages, policy, portal, slices, store, tether, vault
 from awm.httpsfront.auth import (
     AS_COOKIE_NAME,
     COOKIE_NAME,
@@ -303,10 +304,6 @@ def _not_found() -> Response:
     return Response("not found", status_code=404)
 
 
-def _client_ip(request: Request) -> str | None:
-    return request.client.host if request.client else None
-
-
 def _client_headers(conn: Request | WebSocket) -> dict[str, str]:
     """The client-address headers the HTTP leg gives the relay, for a socket.
 
@@ -322,33 +319,18 @@ def _client_headers(conn: Request | WebSocket) -> dict[str, str]:
     return out
 
 
-def _site_name(request: Request) -> str:
-    """What to call this node on the sign-in screen.
-
-    The public host's own hostname is a droplet name nobody types; what a person
-    typed is in ``Host``, and it is the only label that will match the address
-    bar they are looking at. Off the public profile the peer name is right and
-    the Host header is usually an IP.
-    """
-    if not _is_public(request.app):
-        return _PEER_NAME
-    host = (request.headers.get("host") or "").split(":")[0]
-    label = host.split(".")[0]
-    return label.title() if label else _PEER_NAME
-
-
 def _deny(request: Request) -> Response:
-    """Sign-in screen for a browser GET, 403 for a node token at an edge closed
-    to peers, else 401 (API / peer).
+    """The approver's passkey login for a browser GET, 403 for a node token at an
+    edge closed to peers, else 401 (API / peer).
 
     A caller falls back to another credential on a 401 and never on a 403, so a
     closed edge says it is closed rather than looking like a bad token.
     """
     if request.method == "GET" and _wants_html(request):
-        return HTMLResponse(
-            pages.login_page(public=_is_public(request.app),
-                             name=_site_name(request)),
-            status_code=200)
+        host = request.headers.get("host") or ""
+        path = portal.local_path(request.url.path) or "/"
+        return RedirectResponse(portal.login_url(f"https://{host}{path}"), status_code=302,
+                                headers={"Cache-Control": "no-store"})
     bearer = bearer_of(request.headers.get("authorization"))
     if (bearer and peertoken.looks_like_token(bearer)
             and not edge_admits_peers() and not _is_public(request.app)):
@@ -356,84 +338,35 @@ def _deny(request: Request) -> Response:
     return JSONResponse({"error": "unauthenticated"}, status_code=401)
 
 
-async def _login(request: Request) -> Response:
-    """``POST /__auth/login`` — ``{username?, password}``. Validate via the auth
-    service and, on success, set the session cookie plus the readable
-    ``awm_as`` twin. A locked username/IP answers 429 with ``Retry-After``."""
-    gate: AuthGate = request.app.state.gate
+async def _portal(request: Request) -> Response:
+    """``GET /__auth/portal?grant=<grant>&next=<path>``: the approver's way back.
+
+    The grant is alcor's ``portal_login`` grant for this node, this host and this
+    path, spent once. The only success is a 302 to ``next`` with the session set,
+    so nothing renders under the address that carried the grant.
+    """
+    headers = {"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"}
+    path = portal.local_path(request.query_params.get("next"))
+    if path is None:
+        return JSONResponse({"error": "next is a local path"}, status_code=400, headers=headers)
     try:
-        data = await request.json()
-    except Exception:  # noqa: BLE001 — accept form encoding as a fallback
-        form = await request.form()
-        data = {"password": form.get("password", ""),
-                "username": form.get("username", "")}
-    data = data or {}
-    username = str(data.get("username") or "").strip() or None
-    password = str(data.get("password") or "")
-    verify_login = getattr(gate, "verify_login", None)
-    if verify_login is None:
-        token = await gate.verify_password(password)
-        res = {"ok": True, "token": token, "sub": "operator"} if token else {"ok": False}
-    else:
-        res = await verify_login(username=username, password=password,
-                                 client_ip=_client_ip(request))
-    if res.get("locked"):
-        retry = int(res.get("retry_after") or 60)
-        return JSONResponse({"ok": False, "locked": True, "retry_after": retry},
-                            status_code=429, headers={"Retry-After": str(retry)})
-    if not res.get("ok"):
-        return JSONResponse({"ok": False}, status_code=401)
-    sub = str(res.get("sub") or "operator")
-    resp = JSONResponse({"ok": True, "user": sub})
-    ttl = int(await gate.session_ttl_seconds())
+        sub = request.app.state.grants.accept(
+            request.query_params.get("grant") or "",
+            portal.host_of(request.headers.get("host")), path)
+    except GrantInvalid as exc:
+        log.info("edge: portal grant refused: %s", exc)
+        return JSONResponse({"error": "the sign-in grant is refused"}, status_code=403,
+                            headers=headers)
+    minted = await request.app.state.gate.mint_session(sub) if sub else None
+    if minted is None:
+        return JSONResponse({"error": "no session can be signed here"}, status_code=503,
+                            headers=headers)
+    token, ttl = minted
+    resp = RedirectResponse(path, status_code=302, headers=headers)
     samesite = _samesite(request.app)
-    _set_session_cookie(resp, res["token"], ttl, samesite)
+    _set_session_cookie(resp, token, ttl, samesite)
     _set_as_cookie(resp, sub, ttl, samesite)
     _clear_vault_cookies(resp)
-    return resp
-
-
-def safe_local_path(raw: str | None, default: str = "/") -> str:
-    """Coerce a caller-supplied redirect target into a *local* path.
-
-    Anything that could leave this origin falls back to ``default``: a scheme, an
-    authority (``//host``, and ``/\\host`` which some browsers normalise to one),
-    a relative path, or a header-splitting character. Query and fragment are
-    dropped — an autologin lands you on a *page*, and letting the caller append
-    arbitrary query state to it widens the route for no current use.
-    """
-    if not raw or not raw.startswith("/") or raw.startswith("//"):
-        return default
-    if any(c in raw for c in ("\\", "\n", "\r", "\t", "\x00")):
-        return default
-    path = raw.split("#", 1)[0].split("?", 1)[0]
-    return path or default
-
-
-async def _auth_link(request: Request) -> Response:
-    """``GET /__auth/link?p=<password>[&to=<local path>]`` — the tappable
-    autologin the Discord password push carries.
-
-    A password in a URL is only safe if the URL is never a page. So the *only*
-    successful outcome here is a 302 to a clean local path with the session
-    cookie already set: nothing is rendered under the address that carried the
-    credential, the response is uncacheable, and no referrer leaks it onward. It
-    cannot act as a bearer for an API call either — it mints a cookie and
-    redirects, nothing else.
-
-    A wrong or expired password sets no cookie and lands on the login form,
-    without echoing the submitted value.
-    """
-    gate: AuthGate = request.app.state.gate
-    dest = safe_local_path(request.query_params.get("to"))
-    token = await gate.verify_password(request.query_params.get("p") or "")
-    headers = {"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"}
-    if not token:
-        return RedirectResponse("/", status_code=302, headers=headers)
-    resp = RedirectResponse(dest, status_code=302, headers=headers)
-    ttl = int(await gate.session_ttl_seconds())
-    _set_session_cookie(resp, token, ttl)
-    _set_as_cookie(resp, "operator", ttl)
     return resp
 
 
@@ -1474,11 +1407,7 @@ def build_app(upstream: str, ca_path: str, *, landing: bool = True,
         routes.append(Route("/ca.crt", _ca, methods=["GET"]))
         routes.append(Route("/ca.pem", _ca, methods=["GET"]))
     # Auth endpoints — handled by the edge itself, never proxied.
-    routes.append(Route("/__auth/login", _login, methods=["POST"]))
-    if not public:
-        # Autologin from the Discord password push — validates and 302s; see
-        # _auth_link for why it may never render a page.
-        routes.append(Route("/__auth/link", _auth_link, methods=["GET"]))
+    routes.append(Route(portal.CALLBACK, _portal, methods=["GET"]))
     routes.append(Route("/__auth/logout", _logout, methods=["POST", "GET"]))
     routes.append(Route("/__auth/whoami", _whoami, methods=["GET"]))
     if public:
@@ -1529,6 +1458,7 @@ def build_app(upstream: str, ca_path: str, *, landing: bool = True,
         _origin_of(http_up) if rewrite_origin else None
     )
     app.state.gate = AuthGate(peers=profile != PUBLIC_PROFILE)
+    app.state.grants = portal.Grants()
     app.state.profile = profile
     #: token -> (expires_at, resolved | None). Per app, so a test builds its own.
     app.state.slice_cache = {}
@@ -1590,9 +1520,9 @@ def serve(*, port: int, cert: str, key: str, ca: str, upstream: str,
         port=port,
         **bind,
         # SECURITY, not tidiness: uvicorn writes access records — including the
-        # full query string — to `uvicorn.access` at INFO. `GET /__auth/link?p=…`
-        # carries a live login password, so raising this to "info" or "debug" to
-        # chase an unrelated problem would start writing passwords to disk.
+        # full query string — to `uvicorn.access` at INFO. `GET /__auth/portal?grant=…`
+        # carries a live sign-in grant, so raising this to "info" or "debug" to
+        # chase an unrelated problem would start writing grants to disk.
         # Pinned by tests/test_no_access_logging.py.
         log_level="warning",
         ws="websockets",

@@ -31,17 +31,20 @@ def settings() -> dict[str, Any]:
     cfg = json.loads(cfg_file.read_text()) if cfg_file.exists() else {}
     return {
         "dir": d,
-        "origin": os.environ.get("AWM_APPROVER_ORIGIN", cfg.get("origin", "https://localhost:8443")),
+        "origin": os.environ.get("AWM_APPROVER_ORIGIN",
+                                 cfg.get("origin", "https://auth.tony-xy-liu.com")),
+        # Plain HTTP on loopback. alcor's front reads deneb's PROXY header, ends TLS
+        # and sends the client address in forwarded_header (queue.md R64).
         "bind": os.environ.get("AWM_APPROVER_BIND", cfg.get("bind", "127.0.0.1:8443")),
-        "tls_cert": os.environ.get("AWM_APPROVER_TLS_CERT", cfg.get("tls_cert")),
-        "tls_key": os.environ.get("AWM_APPROVER_TLS_KEY", cfg.get("tls_key")),
         "board_origins": [o for o in os.environ.get(
             "AWM_APPROVER_BOARD_ORIGINS", ",".join(cfg.get("board_origins", []))).split(",") if o],
         "forwarded_header": os.environ.get("AWM_APPROVER_FORWARDED_HEADER",
-                                           cfg.get("forwarded_header")),
+                                           cfg.get("forwarded_header", "X-Forwarded-For")),
         "allowed_orders": cfg.get("allowed_orders", {"spawn": ["*"], "new_from": ["*"]}),
         "rate_max": int(cfg.get("rate_max", 30)),
         "peers": cfg.get("peers", []),
+        # The pages that may ask for a passkey sign-in: {host: node} (fleet.md R84).
+        "portals": cfg.get("portals", {}),
         "board_peer": os.environ.get("AWM_BOARD_PEER", cfg.get("board_peer", "deneb")),
         "board_parent": os.environ.get("AWM_TRILIUM_BOARD_PARENT", cfg.get("board_parent", "root")),
     }
@@ -68,7 +71,7 @@ def build_home(s: dict[str, Any]):
                                       Path.home() / ".awm" / "operations" / "queue.db")))
     ap = Approver(s["dir"] / "approver.db", Keys.load_or_create(s["dir"] / "keys"),
                   Config(origin=s["origin"], allowed_orders=s["allowed_orders"],
-                         rate_max=s["rate_max"]), store, TwoFa())
+                         portals=s["portals"], rate_max=s["rate_max"]), store, TwoFa())
     writer = Writer(store, TriliumTool(peer=s["board_peer"]), parent=s["board_parent"])
     store.body_reader = writer.read_body
     return Home(store, ap, writer), writer
@@ -209,8 +212,8 @@ async def start_home(home, writer, s: dict[str, Any], bg: list[asyncio.Task]) ->
     host, port = s["bind"].rsplit(":", 1)
     app = create_app(home.approver, board_origins=s["board_origins"],
                      forwarded_header=s["forwarded_header"], peers=s["peers"], usage=usage)
-    cfg = uvicorn.Config(app, host=host, port=int(port), log_level="info",
-                         ssl_certfile=s["tls_cert"], ssl_keyfile=s["tls_key"], server_header=False)
+    cfg = uvicorn.Config(app, host=host, port=int(port), log_level="info", server_header=False,
+                         proxy_headers=False)
     bg.append(asyncio.create_task(uvicorn.Server(cfg).serve()))
 
     async def sweep_loop() -> None:

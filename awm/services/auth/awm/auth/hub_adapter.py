@@ -5,16 +5,14 @@ Boots on the shared ``awm.gatewayclient.ServiceAdapter`` loop (register → read
 loop runs in ``on_start``.
 
 Verbs:
-  - ``password``        current login password + window (loopback/CLI).
   - ``peer_credential`` current peer credential + its mirror-file path.
-  - ``verify``          shared login password → signed operator session token.
   - ``edge_material``   signing secret + valid peer creds + book peers' public
                         keys for the edge.
   - ``node_key``        this node's public key and fingerprint.
   - ``sign_peer_token`` a five-minute token proving this node to another node.
   - ``rotate``          force a mint now (ops/testing).
-  - ``status``          rotation state summary, incl. last push outcome (the
-                        gateway's ``awm status`` embeds it).
+  - ``status``          rotation state summary (the gateway's ``awm status``
+                        embeds it).
   - ``device_mint`` / ``device_list`` / ``device_revoke``
                         revocable operator device tokens (CLI/HTTP,
                         operator only).
@@ -43,15 +41,6 @@ _CLI_HTTP = ["cli", "http"]
 API_MANIFEST: dict[str, Any] = {
     "functions": [
         {
-            "name": "password",
-            "tool": "awm_password",
-            "effect": "secret",
-            "surfaces": _CLI_HTTP,
-            "description": "Get the current day's awm login password and its "
-                           "validity window (loopback/CLI only).",
-            "params": [],
-        },
-        {
             "name": "peer_credential",
             "tool": "awm_peer_credential",
             "effect": "secret",
@@ -59,20 +48,6 @@ API_MANIFEST: dict[str, Any] = {
             "description": "Get the current peer credential and the path of the "
                            "file it is mirrored to for the SSH peer-auth channel.",
             "params": [],
-        },
-        {
-            "name": "verify",
-            "tool": "awm_verify",
-            "effect": "secret",
-            "surfaces": _CLI_HTTP,
-            "description": "Validate the shared login password; on success "
-                           "return a signed operator session token for the "
-                           "edge to set as a cookie. A locked client IP "
-                           "answers {ok:false, retry_after}.",
-            "params": [
-                {"name": "password", "type": "string", "required": True},
-                {"name": "client_ip", "type": "string"},
-            ],
         },
         {
             "name": "edge_material",
@@ -123,8 +98,7 @@ API_MANIFEST: dict[str, Any] = {
             "effect": "read",
             "surfaces": _CLI_HTTP,
             "description": "Report rotation state: valid generations, latest "
-                           "window, cadence, the last Discord push attempt's "
-                           "outcome, and the peer-cred file path.",
+                           "window, cadence and the peer-cred file path.",
             "params": [],
         },
         {
@@ -165,15 +139,13 @@ API_MANIFEST: dict[str, Any] = {
     ],
     "emitters": [],
     "sessions": [],
-    # Opt into the settings page (rotation cadence, validity, Discord push).
+    # Opt into the settings page (rotation cadence, validity, session lifetime).
     "config": CONTRACT.manifest_fragment(),
 }
 
 
 HANDLERS: dict[str, Any] = {
-    "password": service.h_password,
     "peer_credential": service.h_peer_credential,
-    "verify": service.h_verify,
     "edge_material": service.h_edge_material,
     "node_key": service.h_node_key,
     "sign_peer_token": service.h_sign_peer_token,

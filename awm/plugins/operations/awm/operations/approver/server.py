@@ -18,7 +18,7 @@ from awm.operations.approver.core import Approver, ApproverError
 
 STATIC = resources.files("awm.operations.approver") / "static"
 PAGES = {"/panel": "panel.html", "/panel/button": "button.html", "/enrol": "enrol.html",
-         "/login": "login.html"}
+         "/portal_login": "login.html"}
 ASSETS = {"panel.js", "panel.css", "approver.js"}  # panel.js imports approver.js
 STATUS = {"need_passkey": 401, "locked": 423, "stale_head": 409, "unknown_device": 403,
           "bad_signature": 403, "stale": 403, "unknown_passkey": 403, "bad_passkey": 403, "not_allowed": 403,
@@ -192,13 +192,12 @@ def create_app(ap: Approver, *, board_origins: list[str] | None = None,
         reader(request)
         return ap.order_get(order_id) or JSONResponse({"error": "not found"}, status_code=404)
 
-    # -- portal login (fleet.md R84) ---------------------------------------------------------
+    # -- portal login (fleet.md R84, users.md R130) ---------------------------------------------------------
 
     @app.post("/api/login/begin")
     async def login_begin(request: Request):
         b = await body(request)
-        return ap.login_begin(str(b.get("site", "")), str(b.get("node", "")),
-                              str(b.get("return", "")))
+        return ap.login_begin(str(b.get("next", "")))
 
     @app.post("/api/login/finish")
     async def login_finish(request: Request):

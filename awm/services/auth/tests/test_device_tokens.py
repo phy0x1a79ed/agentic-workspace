@@ -261,7 +261,7 @@ def test_a_v3_db_gains_the_device_token_table(awm_workspace):
     assert [t["id"] for t in store.device_live()] == ["0123456789abcdef"]
 
 
-def test_the_v6_migration_drops_the_users_and_the_plaintext_penpot_tables(awm_workspace):
+def test_the_v5_db_drops_the_users_and_the_plaintext_penpot_tables(awm_workspace):
     from awm.auth import store
     from awm.persistence.databases import service_db_path
     path = service_db_path("auth")
@@ -287,4 +287,4 @@ def test_the_v6_migration_drops_the_users_and_the_plaintext_penpot_tables(awm_wo
     version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
     conn.close()
     assert not tables & {"awm_penpot", "awm_users"}
-    assert version == 6
+    assert version == 7

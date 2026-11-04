@@ -41,8 +41,6 @@ class _Gate:
     async def session_ttl_seconds(self) -> float:
         return 3600.0
 
-    async def verify_password(self, password: str):
-        return None
 
 
 async def _body():
@@ -214,7 +212,7 @@ def test_signed_out_the_vault_asks_for_a_login():
     _, handler = _recorder()
     with _client(_app(), handler, authed=False) as c:
         r = c.get(vault.SHELL, headers={"Accept": "text/html"})
-    assert r.status_code == 200 and "username" in r.text
+    assert r.status_code == 302 and "/portal_login?next=" in r.headers["location"]
 
 
 #: The legacy bearer, a token from a node with an edge, and one from a node without.

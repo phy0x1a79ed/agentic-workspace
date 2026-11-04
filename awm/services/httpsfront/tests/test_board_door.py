@@ -71,8 +71,6 @@ class _Gate:
     async def session_ttl_seconds(self):
         return 3600.0
 
-    async def verify_password(self, password):
-        return None
 
 
 @pytest.fixture(autouse=True)

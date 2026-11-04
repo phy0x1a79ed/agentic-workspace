@@ -1,8 +1,8 @@
-"""Self-contained HTML the edge serves itself (never proxied): the sign-in
-screen shown to an unauthenticated browser, the landing page shown at ``/``
-after sign-in, and the "not answering yet" page the vault gets while it starts.
+"""Self-contained HTML the edge serves itself (never proxied): the landing page
+shown at ``/`` after sign-in, and the "not answering yet" page the vault gets
+while it starts. Sign-in itself is alcor's passkey page (:mod:`.portal`).
 
-All three are inline + dependency-free on purpose: the security edge must not
+Both are inline + dependency-free on purpose: the security edge must not
 depend on the frontend build being present or on any external asset (a strict
 rule for the one authenticated door into AWM). The landing page is *dynamic* —
 it lists the live ``/ui/*`` pages the gateway currently has registered.
@@ -219,89 +219,6 @@ _STYLE = _TOKENS + """
          background: var(--cmd-button-background-color);
          color: var(--cmd-button-text-color); cursor: pointer; }
 """
-
-
-def login_page(public: bool = False, name: str = "awm") -> str:
-    """The sign-in screen: a modal in Trilium's theme, on Trilium's backdrop.
-
-    It is drawn as the knowledge base behind it is drawn because it is the same
-    product to the person in front of it — the door and the room should not
-    look like two different builds. Everything is inline and dependency-free,
-    which is not a style choice: the one authenticated door into awm must not
-    need the frontend build, or any external asset, to render itself.
-
-    This screen covers *every* service, not only the vault. The gate is in the
-    catch-all proxy, before anything is forwarded, so any path that would answer
-    HTML to an unauthenticated browser answers this instead. It cannot appear
-    *over* the page it is guarding — the edge never renders a page it has
-    refused to serve — which is why the card sits on a backdrop of its own.
-
-    ``public`` drops the shared-password hint and the CA link: on the public
-    host there is no shared password and a real certificate. ``name`` is the
-    label at the top, so a person can see which node they are signing in to.
-    """
-    title = html.escape(name)
-    if public:
-        extras = ""
-    else:
-        extras = """<p class="note">Leave the username blank to use the current day's
-shared password. Get it on the daemon host with <code>awm auth password</code>;
-it is also sent to the operator's Discord DM with the bot when minted.</p>
-<p class="note">A new device has to trust this node's CA once, or the browser
-blocks pages and sockets alike: <a href="/ca.crt">install the certificate</a>.
-(Served unauthenticated on purpose &mdash; a device that doesn't trust us yet
-can't sign in to fetch it.)</p>"""
-    return f"""<!doctype html>
-<html lang="en"><head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>{title} &mdash; sign in</title>
-<style>{_TOKENS}{_DOOR}</style>
-</head><body>
-<div class="backdrop">
-<main class="card" role="dialog" aria-labelledby="t" aria-modal="true">
-  <header>
-    <h1 id="t">{title}</h1>
-    <p class="muted">Sign in to continue.</p>
-  </header>
-  <form id="f" autocomplete="on">
-    <label for="u">Username</label>
-    <input id="u" name="username" type="text" autofocus
-           autocomplete="username" autocapitalize="none" />
-    <label for="p">Password</label>
-    <input id="p" name="password" type="password"
-           autocomplete="current-password" />
-    <div class="err" id="e" role="alert"></div>
-    <footer><button id="b" type="submit">Sign in</button></footer>
-  </form>
-  {extras}
-</main>
-</div>
-<script>
-const f=document.getElementById('f'),u=document.getElementById('u'),
-      p=document.getElementById('p'),b=document.getElementById('b'),
-      e=document.getElementById('e');
-f.addEventListener('submit',async(ev)=>{{
-  ev.preventDefault(); e.textContent=''; b.disabled=true;
-  try {{
-    const r=await fetch('/__auth/login',{{method:'POST',
-      headers:{{'Content-Type':'application/json'}},
-      body:JSON.stringify({{username:u.value.trim(),password:p.value}})}});
-    if(r.ok){{
-      // reload(), not replace(href): on a URL with a fragment, such as the
-      // vault's /trilium/#root/..., replacing it with itself only scrolls.
-      if(location.pathname==='/') location.replace('/'); else location.reload();
-      return;
-    }}
-    if(r.status===429){{
-      let s=60; try{{ s=(await r.json()).retry_after||s; }}catch(_){{}}
-      e.textContent='Too many attempts. Try again in '+Math.ceil(s/60)+' min.';
-    }} else e.textContent = r.status===401 ? 'Incorrect username or password.' : ('Error '+r.status);
-  }} catch(_){{ e.textContent='Network error.'; }}
-  b.disabled=false; p.select();
-}});
-</script>
-</body></html>"""
 
 
 def landing_page(
