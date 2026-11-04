@@ -24,8 +24,8 @@ docstring holds the rest.
   repository needs the repository's own entry, which is the `.bare` directory for
   a scope worktree.
 - `sessionmode` answers `mode_of(pid)`, the restricted mode a session was started
-  in. It reads the lineage records that `reflection start_other` (the cx service) writes from disk, so the gateway gates a
-  caller with no call into the `cx` process. The answer is a mode string, `None`
+  in. It reads from disk the lineage records that `cch` writes when it starts a
+  session, so `cch` answers `session_of` with no call into another process. The answer is a mode string, `None`
   or `"unknown"`, and a reader treats `"unknown"` as the most restricted mode.
 - `pty`, `lane` and `job` type into a session. `DaemonLane` addresses one
   session's PTY. `open_lane` opens it for a single write. `connect` hands back a
@@ -34,16 +34,15 @@ docstring holds the rest.
 
 The component owns no state, supervises nothing, and has no third-party
 dependencies. It is imported source with no `install.sh`, installed by name from
-`awm/gateway/install.sh`. The consumers are `cx`, `reflection`, `transcripts`
-and the gateway.
+`awm/install.sh`. Its consumer is `cch`, the Claude Code harness plugin.
 
 ## What stayed with the callers
 
 Deciding *which* session a caller may reach, and whether it may start one.
 `awm.reflection.session_target` resolves a caller to exactly one session by
 process ancestry and refuses anything it cannot identify, which is that service's
-whole guarantee. `cx` holds the id of a session it created itself and addresses
-it straight from the roster. `cx` also decides who may start a session and in
+whole guarantee. `cch` holds the id of a session it created itself and addresses
+it straight from the roster. `reflection` decides who may start a session and in
 what mode. `launch` takes a directory, a name, flags and a prompt, and starts
 what it is told.
 
@@ -54,7 +53,7 @@ claims them — but nothing here decides whether the caller was entitled to that
 session in the first place.
 
 **CAUTION:** `sessionmode` resolves the lineage directory from the same
-environment variables `cx` writes with. A reader that located it differently
+environment variables `cch` writes with. A reader that located it differently
 would find no record for any session and answer "not restricted".
 
 ## What this cannot promise

@@ -208,71 +208,19 @@ This doc holds the nodes of the fleet, the role of each, and how each node is ha
 
 ## Gap from today
 
-Surveyed read only on 2026-11-01, from the cloud project's `VMs/tencent/` READMEs and scripts and the `feat/redux` source. Nobody logged in to deneb for it.
+Status at the wave-2 gather (`feat/redux` 16da3979, 2026-11-04). `docs/redux-review/build-survey.md` § 3 holds the row for each requirement.
 
-- **R139 missing.** No awm code wakes, reboots or fails over a machine. mizar runs `wakeonlan` only by hand (`~/handoff/wol-run.sh`). Wake-on-LAN works on capella and mira, and is untested on alcor. On mizar's 2026-10-29 test reboot, the four pinned jobs did not come back (`respawned=0 dead=2`). Tony watched it from a temporary session on alcor.
-- **R98 item 1 broken.** alcor's firewall admits port 22 from mizar only.
-- **R136 missing.** No code exists for the approved plan, and its 15 tasks are pending. `feat/svc-kb` holds the first plan, a single index over everything, and is 23 commits and about 3.9k lines ahead of release. Its regression gate failed on 2026-10-21: the 12 GB papers database on altair's root disk gave a p95 latency of 16 s (journal 379a9d9f). Released search still merges every source into one list. Four services each load torch and MiniLM, about 2.9 GB on altair.
-- **deneb is a Tencent VM behind Cloudflare.** The Tencent firewall admits ports 22, 80 and 443 from anywhere. ufw narrows 80 and 443 to Cloudflare's ranges. Cloudflare ends the public TLS and sees every request and response in plaintext (`VMs/tencent/README.md`). The Tencent account and an API key on capella can reset or snapshot the box.
-- **The public edge has five doors with no session.** These are the login page, the tether relay, the federation board, vault slices and the placeholder page (`httpsfront/policy.py`). Behind a login sit the vault, Penpot, draw.io and the file viewer. A login is a static password per user, rate limited, with a lockout (`auth/INSTALL.md`). A private node's gateway also takes a daily shared password. R84 missing.
-- **deneb holds a key into altair.** The `awm` account's ssh config logs in to altair as `tony` with its own key (`deneb/etc/ssh/awm-client.conf`). The tether's operator bearer is the same value on deneb and altair. Both break the station decision above and R79.
-- **Agents that read untrusted text run on deneb.** Tony's Discord DM and the unimatrix0 #bots seat run as Claude Code sessions of the `awm` account. That account holds the altair key, the Claude Code login and the box's service credentials in `/etc/awm/env` (`deneb/README.md` § The relay seats). R79 broken.
-- **deneb is the vault's sync hub.** altair and capella sync through it, and a sync link carries no authentication, so deneb can rewrite every note on every copy (`trilium/INSTALL.md`). Trilium runs a note's scripts in the browser of whoever reads it. The day's shared login password also lives in the Ops note (`auth/INSTALL.md`). R81 broken.
-- **deneb runs more than a relay and the vault.** It also runs Penpot in Docker, the Zotero sync timer, the reporting service and a game server (`install-awm.sh` `PUBLIC_SERVICES`). R82 broken. The Zotero timer runs every 1200 s (`deneb/README.md` § The bibliography), so R83 is broken. The Zotero docs call its key read only, and `awm zotero status` reports whether it can write (`zotero/INSTALL.md`). The live key is not checked.
-- **Logins over ssh are narrow.** sshd admits `tony` by key only, with passwordless sudo, and `avatar-relay` for one reverse port. fail2ban guards port 22 (`deneb/etc/ssh/90-hardening.conf`).
-- **R64 is not compatible with the Cloudflare proxy.** For deneb to forward alcor's TLS unopened, alcor's name must skip the Cloudflare proxy. Today every public name goes through it.
-- **R120 missing.** awm runs only on Linux. Only the tether's owner side runs on Windows: `tether invite` takes `os: windows`. A tether session lives only in the operator daemon's memory, and a dropped link resumes only within 10 minutes.
-
-### Communication between nodes
-
-Surveyed read only on 2026-11-01, from `FEDERATION.md`, the `feat/redux` source and the peer books on mizar and altair.
-
-- **Every node is a full peer.** A cross-node call goes from the caller straight to the other node's edge. It carries a node token that lives 300 seconds and is signed with the caller's Ed25519 key. The edge checks it against the key pinned in its own peer book (`httpsfront/auth.py`). mizar and altair set `AWM_PEER_LEGACY_BEARER=0`, so the shared bearer over ssh no longer works there.
-- **Domestic means full trust.** A domestic peer runs every verb except the peer book writes. It can start a session on the node with `reflection start_other`, and that session acts as a local caller (`FEDERATION.md` § Relations and grants).
-- **deneb is a domestic fleet peer.** Both books mark deneb domestic, with the role `fleet`. Any process on deneb can therefore start a session on mizar or altair. This breaks the station decision above.
-- **Each node keeps its own book by hand, and the books disagree.** mizar's book holds alcor, altair, deneb and mira. altair's book also holds capella, mizar and shaula. mira's role is `station`, but it owns the `2fa`, `social` and ssh arbiter singletons.
-- **The nodes use two meshes and an ssh tunnel.** mizar runs Tailscale only. altair reaches capella, deneb and mira over ZeroTier `phynet` and reaches alcor and mizar over Tailscale. mizar reaches mira on the LAN and reaches deneb's edge through a local ssh forward (`awm-edge-fwd@deneb`). `FEDERATION.md` § Overview still names three nodes and one mesh.
-- **One private CA signs every edge.** Each node verifies its peers against it. capella and mira both still hold the CA key, so either can mint a certificate for any node.
-- **mira's browser uses 2.6 GB and escapes its memory cap.** Opera holds 12 tabs where 4 are needed. It runs as a snap, which moves it out of its unit's control group, so a memory cap on the unit has no effect. Gmail and Drive use IMAP and the REST API in the 90 MB social process, with no browser.
-- **Singletons live on mira.** Every other node reaches `2fa`, `social` and the ssh slot arbiter on mira through env selectors such as `AWM_TWOFA_PEER`.
-- **R87 broken.** Today's edges differ from the table. deneb holds an ssh key into altair. altair reaches capella, deneb and mira, and starts sessions on capella. lyra holds no key to any node. mizar's peer book lacks capella. Each node keeps its book by hand, apart from its ssh keys, so the two drift.
-- **One foreign peer exists.** shaula, of the `collins` swarm, is in altair's book with read grants on journals, kb, notes, precedence and writing. A foreign node reaches only `/tools` and `/invoke` on a mesh edge, and only the read verbs that its grants name. Federated search asks it when a caller names it.
-- **Nodes share no data, except the vault.** Each node owns its own databases, and a call names a peer to read across. The vault copies sync through deneb with no authentication (§ above).
-- **Agents on two nodes have no direct line.** `SendMessage` reaches sessions on one node only. A journal post wakes nobody. Intake on altair (`AWM_FRONT_DOOR=1`) wakes only sessions on altair.
-
-### Cross-node use, as observed
-
-Counted on 2026-11-02 from the Claude transcripts on mizar (49, from 2026-10-28), altair (138, from 2026-10-02), alcor (1) and mira (6), and from the `feat/redux` call sites of `gatewayclient`. The transcripts on capella and deneb were not read. alcor's one session called only mizar, and mira's sessions reached only capella, over ssh.
-
-- **Raw ssh carries most cross-node work.** Agents ran about 600 ssh or scp commands to other nodes from mizar and about 480 from altair. They made about 200 awm calls with a `peer` argument from each.
-- **Each target node has one main use, and the use runs one way.**
-  1. **To alcor: compute.** mizar starts and watches jobs over ssh (`cd`, `tail`, `tmux`, `nohup`, `ps`, `pkill`) and copies results back with scp.
-  2. **To deneb: admin.** Both nodes run `sudo` commands for installs and config.
-  3. **To mira: service admin and the singletons.** Agents deploy and fix services over ssh. Every node's services call `2fa`, Discord and the ssh arbiter on mira.
-  4. **To capella: the desktop.** Agents reach Windows files and programs under `/mnt/c` over ssh and scp. altair reads capella's journals and search archive and starts sessions there.
-  5. **To altair: knowledge and the old hub.** mizar searches altair's archive and precedence, reads its journals, posts on the Swarm board and runs the tether through it. mizar also uses altair as an ssh jump host and git remote.
-- **Agents reach agents across nodes through `reflection`.** About 30 calls from each node list, message, start or stop a session on another node. `SendMessage` (381 on altair, 56 on mizar) reaches only the same node. A Discord or Slack seat reaches its session on another node through `social`, which calls `cx` and `reflection message` there (`social/seats.py`).
-- **The status probes are many and small.** Agents call `awm status`, `services_list` and `daemon_status` on each node to see whether it is up.
-- **No foreign call is in real use.** shaula took part in tests from 2026-10-09 to 2026-10-17. It then fell behind on release, and federated search reported it `unsupported` (journals `6356c138`, `ee9d5e2f`). Caviar uses the board, not the peer book. No agent session made a foreign peer call.
-- **No node logs who called it.** The edge logs at warning level only, and `gateway/access_log.py` is dormant. Nothing records which peer read what, or when.
-
-### Networks under the edges
-
-Surveyed read only on 2026-11-02 from mizar, from altair's ssh config, and from capella, which was woken for it and shut down after.
-
-- **Four home boxes share one gigabit switch.** mizar is 172.16.0.25, alcor .23, mira .24, and capella's Windows host .21. The router hands out the addresses by DHCP, so an address can change.
-- **mizar reaches every node by its Tailscale address** (`~/.ssh/config`), mira also by LAN as `mira-lan`. The comment there still says deneb is reached over its public address.
-- **Tailscale runs inside capella's WSL.** Windows on capella cannot reach a Tailscale address, so the Windows copy of capella's ssh config fails for every host it names by one.
-- **ZeroTier reaches capella's WSL only through a Windows port forward.** WSL runs in NAT mode at 172.25.181.70. ZeroTier runs in Windows at 10.74.81.110. Windows forwards ports 22, 16122, 12100 to 12150, 12200 to 12202 and 19222 from every interface to WSL's fixed address (`netsh portproxy`). No task updates the forwards. They work only while WSL keeps that address. The task `PortMon-4231` samples port use for a Tcpip fault and does not touch them. The Windows build (26200) supports WSL's mirrored mode, which shares the host's addresses with WSL. It is not on.
-- **capella exposes Chrome's debug port.** Windows forwards port 19222 on every interface to Chrome's DevTools port, and the firewall rule `Claude-Chrome-Debugger-WSL` admits it from any address. Whoever reaches capella on the LAN or ZeroTier can drive that Chrome. Close the port once the attachable browser on alcor runs (R89). Until then it stays open, so agents keep a dev browser. Tony: "For chrome dev, accept but wait until we implement all this before acting so we have access to the dev browser if needed in the meantime, which will become a singleton service. -> this will be the attachable browser on alcor." (2026-11-02).
-- **capella answers on 172.16.0.21 and 172.16.0.22.** capella's ssh config still points `lyra` at .22, port 12022.
-- **mira's network port runs at 100 Mb.** With all three home pairs busy at once, mizar to alcor fell to about 100 Mbit/s, likely from switch pause frames on mira's slow port. This is not proven (`~/handoff/net/README.md` on mizar).
-- **altair's browser service drives capella's Chrome** through the debug port 19222.
-- **Arbutus nodes share a private network.** altair is 192.168.100.142 on the network the Arbutus workers boot onto. It reaches shaula and the workers directly. From outside, capella reaches them through `bastion-01`. Tailscale on altair gives mizar a direct path to altair that skips the bastion.
-- **ZeroTier `phynet` holds altair, capella, mira, deneb, lyra and macpro.** mizar and alcor are not on it. macpro is an OS X 10.11 Mac Pro behind a university NAT. It is reachable only over ZeroTier, and its ZeroTier must stay on 1.6.6 (altair `~/.ssh/config`).
-- **altair already gates admin logins.** A login other than `awmpeer` to a long-lived Arbutus host is refused unless Tony opens a timed window with the unlock script in altair's `~/.ssh`. The gate logs each attempt. shaula has three accounts: `awmpeer` (contained), `jcollins` (John's own) and `ubuntu` (admin).
-- **altair reaches deneb over deneb's public address** (altair `~/.ssh/config`). R87 gives altair no edge to deneb.
-- **The Arbutus project holds more nodes than the fleet knows.** The arbutus-infra Terraform (altair, `dev` worktree) defines `bastion-01`, `worker-01` and `worker-02`, altair (devbox-02), a devbox, the GTDB-Tk gateway and its on-demand workers, showtime, a services map, `macbu-stage` and the `awm-peer` security group that holds shaula. The live list was not read from OpenStack.
+- **R79, R81, R82, R87, R88, R90, R95, R98, R100, R101, R105, R108.** Their roles and config sit on cloud `feat/redux-fleet` and are not applied. The old Ops book goes at T27 (R81).
+- **R84.** The passkey portal login is built, and its vault login role is not applied. `approver_portals` lists only nexus. Tony names the other portal hosts at walkthrough M9, and the coordinator writes them at T27.
+- **R91, R94, R96.** The shogun, lyra and tailnet roles are not applied. `lyra_setup` refuses until lyra has a tailnet address. Tony joins the nodes to Tailscale and finishes lyra at the keyboard (`drafts/edges.md`). T27 creates the shogun VM.
+- **R92, R93.** `awm-edge` is built and not live. The avatar relay still relies on the fleet CA that R92 retires. A cloud change moves it off the CA, and the avatar stage client on capella changes at walkthrough M10.
+- **R99.** alcor's units carry memory caps and OOM scores and are not applied. The OOM order is unverified.
+- **R83, R139.** The Zotero key's read-only state is unchecked. Wake-on-LAN on alcor is untested.
+- **R103.** A node that loads no reflection resolves every caller trusted (T23).
+- **R107.** The one-shots `precedent_import` on altair and `lineage_import` on each node have not run. The `~/.claude` drafts under `docs/redux/drafts/claude-home/` go live at T27. In them goal-alignment writes an ordinary post (item 10), debrief posts with `tags` and `reply_to`, and `CLAUDE.md` drops graphify and precedence.
+- **R109.** The login-sync unit is not installed (items 1 to 6). Tony has yet to confirm port 8765 for the isolated door (item 7).
+- **R131, R136.** The papers.db rebuild on sockeye is pending (R131). The decayed score `s` and the rank are not built (R136 items 1 to 6). The rank stays off by design until the replay shows a gain.
+- **R120.** Missing, and parked until Tony meets Armando.
 
 ### Test of the edges (R95, R96)
 

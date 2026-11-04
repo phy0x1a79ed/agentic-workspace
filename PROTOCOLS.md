@@ -58,7 +58,7 @@ A scope name may contain `/` when one project holds several products. A nested n
 
 References stay `project/scope` and split on the first slash.
 
-A standing `feat-*` scope may own the cross-service wiring for one feature family. It runs its own dev sandbox on a port pinned in a gitignored `awm/gateway/dev/.env`. `dev` is the release-staging worktree, not a feature scope.
+A standing `feat-*` scope may own the cross-service wiring for one feature family. It runs its own dev sandbox (`awm/services/dev/sandbox/run.sh`) on a port pinned in a gitignored `awm/services/dev/sandbox/.env`. `dev` is the release-staging worktree, not a feature scope.
 
 ## Hubs and peripherals
 
@@ -171,15 +171,16 @@ Nothing in the workspace consumes a submodule. If one must, two facts apply that
 
 ## CLI
 
-The CLI mirrors the whole expanded tool surface, hidden verbs included. It generates one `awm <tool> <verb>` command per registered verb from the same live catalog as the MCP surface. Run `awm <tool> --help` for a tool's verbs and `awm <tool> <verb> --help` for one verb's parameters.
+The CLI reaches every verb, hidden verbs included. A first word that is not a core command names a tool: `awm <tool> <verb> [--key value]... [--json '{..}'] [--peer <node>]` runs the verb through the same catalog as the MCP surface. A hyphen in a verb stands for an underscore. Run `awm <tool> --help` for a tool's verbs and `awm <tool> <verb> --help` for one verb's parameters. Run `awm --help` for the core commands.
 
 | Command | Purpose |
 |---|---|
-| `awm gateway init / status / serve / stop / restart` | Gateway lifecycle |
+| `awm status / plugins / reload` | Gateway health, what the loader loaded and refused, a reload with no restart |
+| `awm services [list\|start\|stop\|restart\|enable\|disable] [name]` | Service lifecycle |
+| `awm deploy [--dry-run]` | This node's refresh from its checkout, `FEDERATION.md` § *Deploy* |
 | `awm scope create --project <name> --new-project` | Create a project |
 | `awm scope create / search / complete` | Scope worktree management. `search` with no project lists every project |
 | `awm scope heal [--dry-run]` | Idempotent repair |
 | `awm dvc scope-status / mount / gc` | A scope's data view, what materialises, cache reclaim |
 | `awm dvc sync / pull / coverage` | Push the cache off-site, restore one scope, audit what is uncovered |
 | `awm journal post / fetch / render` | Scope posts, and a scope's latest journals as markdown |
-| `awm gateway register / list / deregister` | External hub registrations |

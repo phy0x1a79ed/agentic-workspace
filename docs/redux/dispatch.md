@@ -28,9 +28,6 @@ Timer and agent triggered processes belong in `routines.md`. How a session start
 
 ## Gap from today
 
-Surveyed read only on 2026-10-31, from the `feat/redux` source.
+Status at the wave-2 gather (`feat/redux` 16da3979, 2026-11-04). `docs/redux-review/build-survey.md` § 3 holds the row for each requirement.
 
-- **No automatic dispatch.** Only `cx start` starts a background session (`cx/lifecycle.py`). Its callers are Tony's Discord `/new-agent`, an agent's `reflection start_other`, and seeded starts (`cx/seed.py`). Each start comes from a person or an agent turn. No event, condition or decision starts one.
-- **Schedulers do not start agents.** The `events` service emits `schedule.tick` and `agent.wake`, and only the game bot consumes them. The `routine` service of `routines.md` R34, which tests conditions and dispatches agents, is designed but not built.
-- **A service can start a session.** `cx start` accepts a call with no calling session, as from a service or an operator at the front door (`_refuse_unknown_caller`, `cx/lifecycle.py`). Such a start records no parent session, so R13 lineage is lost (`routines.md` R47 traces it through the run). A node with the `station` role refuses every start (R48 names the peer instead). `cx start` also needs a fixed project and scope (`sessions.md` R18 conflict).
-- **No brief states R50.** The lifecycle brief that `cx start` adds names who to report to. It gives no guidelines for when to start a top-level session.
+Nothing in this doc is open. R49 is a given, and the lifecycle brief carries the R50 guidelines.

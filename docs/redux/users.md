@@ -34,20 +34,12 @@ How a channel works belongs in `channels.md`. The owner's queue belongs in `queu
 
 ## Gap from today
 
-Tony: "me and also lab members through slack seats on altair, under my supervision" (2026-10-30).
+Status at the wave-2 gather (`feat/redux` 16da3979, 2026-11-04). `docs/redux-review/build-survey.md` § 3 holds the row for each requirement.
 
-Surveyed read only on 2026-10-30. Each user found, against the boundaries of R121:
-
-- Lab members reach awm through Slack seats on altair (R121 item 1).
-- **R126 broken.** Nothing in `social` stops a first message: `awm/services/social/awm/social/connectors/slack_bot_conn.py` and `hub_adapter.py` send to any DM. A seat brief lives in mira's `social.toml`, and editing one replaces other seats' agents. slack-main relays Tony's instructions to every lab seat.
-- **R128 missing.** No seat workspace exists. Person scopes sit in metasmith (`lab/steven-chen`, `lab/beth-davenport`), seat sessions in awm (`seat-slack-main`, `seat-tony-dm` and others), and the SOP lives as loose skill copies on mizar and altair.
-- **R129 missing.** Discord seats run on deneb, and `social` runs on mira.
-- **R122 missing.** shaula, of the `collins` swarm, is a foreign peer in altair's book with standing read grants on journals, kb, notes, precedence and writing (`fleet.md` § Gap from today).
-- Ryan approves admin windows by Slack reply.
-- Bots come in through Discord kept seats, the boundary for humans, not through rooms.
-- **R130 broken.** altair's HTTPS edge holds 2 static per-user passwords from `awm auth user-add`, owners not identified.
-- People who accept a tether reach an agent from their own computers (R121 item 4).
-- deneb's public edge has five doors with no session, among them the tether relay and the federation board (`fleet.md` § Gap from today). R124 governs what these doors may reach.
+- **R124.** The board door stays public from the cutover until `feat/redux-r77` merges at T27 (`channels.md` R77).
+- **R128.** The seat workspace template exists. Its GitHub repo and the lab fork do not.
+- **R129.** The cloud branch `feat/redux-fleet` places the Slack seats on altair and the Discord seats on mizar, and moves social off mira. That config is not applied.
+- **R130.** The auth migration to schema v7 removes every password login. It runs at the T26 deploy.
 
 ## The Slack seat system today
 

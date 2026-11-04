@@ -103,7 +103,7 @@ line in the text sets the subject. UBC-webmail / WeChat later get their own path
 
 The external platforms are the source of truth, and every read below queries
 them live. Live receive *emits* each message arriving after connect on the
-`message` topic. Follow it with `awm services listen social message --peer
+`message` topic. Follow it with `awm listen social message --peer
 <owner>`, one JSON line per message.
 
 A bot account (Slack `xoxb-`) is the one exception: it keeps a synced history of
@@ -244,15 +244,11 @@ line came from. Newlines become ` ⏎ `. Text past 1500 characters is cut, and a
   says only "on it".
 
 The holder is the calling session, never an argument. On the owner node the
-gateway stamps `_caller_pid`. A caller on another node arrives through the
-owner's edge, and its MCP proxy adds `_caller_session` from its own session
-record.
-
-**CAUTION** Two lists must agree for a cross-node mount:
-`SESSION_CLAIM_VERBS` in `awm/gateway/awm/gateway/mcp_caller.py` and the
-`social` entry of `_CALLER_STAMPED` in `server.py` beside it. The owner strips
-`_caller_session` from any call that skips the edge. A proxy started before the deploy sends no
-claim, so restart the session after you deploy.
+gateway stamps `_caller_pid`. A caller on another node reaches the owner through
+its own node's `social`, which reads the caller's session record
+(`gatewayclient.holders.claim`) and forwards it as `_caller_session`. The owner's
+gateway drops `_caller_session` from any call that skips the edge
+(`core/crates/awm-gateway/src/caller.rs`).
 
 ### Kept seats
 

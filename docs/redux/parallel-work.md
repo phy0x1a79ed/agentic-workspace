@@ -23,12 +23,6 @@ Related rules live in other docs:
 
 ## Gap from today
 
-Surveyed read only on 2026-11-01.
+Status at the wave-2 gather (`feat/redux` 16da3979, 2026-11-04). `docs/redux-review/build-survey.md` § 3 holds the row for each requirement.
 
-- **R59 missing.** No skill plans work in waves or starts top-level sessions. The nearest skills under `~/.claude/skills` are these:
-  1. `autopilot` drives an approved plan through its phases. It uses subagents for review. It starts no top-level session.
-  2. `scatter-gather` merges a set of `feat/<p>` branches into a hub branch, and the hub back out to them, through `scope gather` and `scope scatter`. The hub map lives in `PROTOCOLS.md` § Hubs and peripherals. It plans nothing.
-  3. `retire` debriefs, reports to the session that started it and stops the job.
-- **No pointer to the skill.** The planning style in the global `CLAUDE.md` names no parallel work skill.
-- **No claim and no release.** `reflection cd` types `/cd` into the session. It trusts an awm worktree first (`reflection/control.py`, `cd`). It records no claim and checks no other session (`scopes.md` gap, R3 and R42). No verb releases a scope. A session leaves a scope only when it moves or ends.
-- The wait and the deploy are missing too. See the `sessions.md` gap for R51 and the `routines.md` gap for R26.
+- **R59.** The skill draft sits at `docs/redux/drafts/claude-home/skills/parallel-work/SKILL.md`. T27 installs it with its pointer in `CLAUDE.md`.

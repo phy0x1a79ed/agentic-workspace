@@ -62,26 +62,7 @@ This doc holds how a session finds its project and scope, enters it, shares it w
 
 ## Gap from today
 
-Surveyed read only on 2026-10-30.
+Status at the wave-2 gather (`feat/redux` 16da3979, 2026-11-04). `docs/redux-review/build-survey.md` § 3 holds the row for each requirement.
 
-- **R1 partial.** The worker lifecycle brief (`cx/lifecycle.py:90-99`, precedence `909435672ebbd415`) tells a session to find or create its scope and move with `reflection cd`. Only Discord `/new-agent` tells it to rename itself, in the user prompt. Terminal sessions and pinned seats get no brief. The brief never mentions creating a project.
-- **R40 missing.** Every launcher starts a session inside a folder. Discord `/new-agent` always starts in `awm/dev` (`reporting/config.py:116`), so each new agent occupies that scope before it routes.
-- **R41 missing.** A plain `claude` or `cx` session gets no brief and counts for no occupancy check.
-- **R2 partial.** `start_other`, `cx` and plain `claude` all launch straight into a folder, and Bash `cd` works. `reflection cd` is not a single entry point.
-- **R3 missing.** No occupancy check exists. Live means "process running" today.
-- **R42 missing.** No claim record exists, so nothing releases a claim when a session ends.
-- **R4 exists.** `scope create` takes `new_project` with `clone_url` or `fork_url`. `start_other` cannot create a new project.
-- **R43 exists.** A cloned scope gets a new `feat/<scope>` branch from the detected default branch (`scopes.py:939`). The clone also adds a worktree on the default branch as a scope of its own (`projects.py:150`).
-- **R5 exists.** Nothing deletes scopes automatically.
-- **R44 partial.** `scope delete` blocks on uncommitted and untracked files, and `force` discards them (`scopes.py:286`). It refuses a folder that holds nested scopes. It keeps the branch unless `delete_branch` is set, and reports the restore commit. It misses DVC drift, unique branch commits and a live session. A forced delete reports only a count and a sample.
-- **R6 missing.** No hygiene check exists. `scope heal` repairs scope files, such as the `AGENTS.md` import, context links and the data link, and reports missing worktrees. It never looks for unused scopes.
-- **R7 mostly missing.** `request_human` and card messages cover steps 1 and 4. No per-scope queue (R46) or release event exists.
-
-Surveyed read only on 2026-11-01 for thread 1o, subagents.
-
-- **awm cannot see a subagent.** A Claude Code subagent runs inside its parent's process. awm names the caller by its Claude Code process (`resolve_caller_pid`, `gateway/mcp_caller.py`), so every awm call that a subagent makes counts as its parent's. awm sees a subagent only as a transcript file in the parent's `subagents/` folder, which the transcripts sweep archives (`transcripts/layout.py`).
-- **A subagent cannot enter a scope on its own.** `reflection cd` types `/cd` into the calling session (`reflection/control.py`, `cd`). Called from a subagent, it moves the parent. A test on 2026-11-01 showed that a subagent's `cd` lasts for one Bash call only. The next call starts again in the parent's folder. A subagent works in another scope only through a `cd` at the start of each command, absolute paths or `git -C`. The subagent also carries its parent's Claude session id (`CLAUDE_CODE_SESSION_ID`).
-- **No tool sets a subagent's folder to an awm scope.** The Agent tool takes no folder. Its `isolation: "worktree"` makes a new worktree under `.claude/worktrees/` on a new branch. Per the tool's own description, `EnterWorktree` called from a subagent with a pinned folder accepts only a worktree under `.claude/worktrees/` of the same repository. awm scopes live at `projects/<project>/<scope>/`. Untested.
-- **Harness worktrees conflict with the brief.** The Agent tool's `isolation: "worktree"` and the `EnterWorktree` tool make a git worktree under `.claude/worktrees/` on a new branch. The lifecycle brief forbids worktrees there (`BRIEF`, `cx/lifecycle.py`). The Claude Code prompt for a background job tells the job to call `EnterWorktree` before its first edit.
-- **The harness tracks subagents, awm does not.** A session lists its own subagents with `ListAgents` and continues one with `SendMessage`. No awm record holds a subagent, its scope or its branch.
-- **The lifecycle brief does not mention subagents.** It tells a started session to find or create its scope and to move there with `reflection cd`.
+- **R142.** `scope_awm_sweep` runs once per node at T27. No one-shot moves the hand-written `.awm/` notes.
+- **R143.** A T27 one-shot writes each scope's brief.

@@ -66,14 +66,14 @@ A node's HTTPS lane (`httpsfront`) admits people only, with the passkey. It admi
 
 The cookie slides on each authenticated request, up to a hard maximum session age. No password login exists.
 
-**CAUTION** `/__auth/portal?grant=…` carries a live, single-use grant. It stays safe only while the route is never a page. It validates, answers 302 to a clean local path with the cookie set, and sends `no-store` and `no-referrer`. uvicorn's `log_level="warning"` in `proxy.serve` keeps query strings out of the logs. Keep both.
+**CAUTION** `/__auth/portal?grant=…` carries a live, single-use grant. It stays safe only while the route is never a page. It validates, answers 302 to a clean local path with the cookie set, and sends `no-store` and `no-referrer`. uvicorn's `log_level="warning"` in `awm.tlsfront.proxy` keeps query strings out of the logs. Keep both.
 
 ## Trust across nodes
 
 awm gives each session a trust level from what started it: Tony, a seat's channel or a room (R103). An agent cannot raise its own level.
 
 - A starter sets a session's level equal to its own or lower.
-- A call whose session lookup fails runs as untrusted, in both gateways.
+- A call whose session lookup fails runs as untrusted.
 - Reflection follows the edges exactly. Across an edge, an agent starts, messages and wakes the other node's sessions as it does local ones (R104).
 - A session started across an edge takes its starter's level. An untrusted session cannot start or steer sessions.
 
@@ -141,16 +141,17 @@ mizar holds the canonical repo of awm. A deploy lands a scope's branch on `relea
 3. The batch merges each pinned branch, runs the `check` in `deploy.toml`, and promotes `feat → dev → release`.
 4. It pushes `release` to the `github` remote, fast-forward only. A backup that has diverged fails the batch before anything lands. A failed push marks the batch `backup-failed`, refreshes no node and starts the fixing session.
 5. It refreshes each node in turn. For a node in the install config's `[fleet.push.<node>]`, such as altair, it first pushes `release` to that node as `refs/mizar/release`, fast-forward only.
-6. On each node, `routine refresh` runs `scripts/refresh-checkout.sh`, which moves the checkout to the new release. It refuses a checkout with local commits. Then a supervising session runs `awm deploy`, then `bash awm/services/trilium/install.sh`, and confirms every enabled service came back.
+6. On each node, `routine refresh` runs `scripts/refresh-checkout.sh`, which moves the checkout to the new release. It refuses a checkout with local commits. Then a supervising session runs `scripts/awm-deploy.sh`, then `bash awm/services/trilium/install.sh`, and confirms every enabled service came back. `deploy.toml` § `refresh` holds its prompt.
 7. The verdict goes to the scope's journal and the calling session's card. A failed batch starts one fixing session with every branch in it.
 
 altair does no awm work. It only receives each release.
 
-`awm deploy` is the node-local restart onto the release the checkout holds. Three facts keep it working:
+`awm deploy` brings the node in line with its checkout. `scripts/awm-deploy.sh` builds the static core binary and runs it. `awm deploy --dry-run` prints each step. It runs `awm/install.sh` and the page build, places the binary at `~/.local/bin/awm`, writes `config.toml` when the node has none, and replaces the `awm` user unit from `core/deploy/awm.service`. It restarts the unit when the binary or the unit changed, and reloads the plugins otherwise. Then it waits for every enabled service and checks each thing it placed.
 
-- It needs mamba, the env's `node` on `PATH` and a populated `awm/node_modules`. Run `mamba install -n awm nodejs`, then `npm install` in `awm/`.
+- awm needs no sudo and no `/usr/local/bin`. The unit and the workspace `.mcp.json` name `~/.local/bin/awm` by absolute path. The edge runs `PATH="$HOME/.local/bin:$PATH" awm edge-serve`, because a non-interactive ssh shell often lacks `~/.local/bin`.
+- The gateway reads its environment from `config.toml` `[env]` only. `awm deploy` names each key of the old `.awm/env` that `[env]` does not pass on. A key left only there reaches no service.
+- The deploy needs mamba, the env's `node` on `PATH` and a populated `awm/node_modules`. Run `mamba install -n awm nodejs`, then `npm install` in `awm/`.
 - Keep `enabled.json` explicit. A service absent from it counts as enabled.
-- The supervisor probe uses `systemctl --user is-active`, not `is-enabled`.
 
 ## Not done
 

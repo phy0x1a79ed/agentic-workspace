@@ -1,6 +1,7 @@
 # Installing the `httpsfront` service (whole-gateway HTTPS front)
 
-A Python feature service in the `awm.httpsfront` namespace. It makes **all of
+A Python feature service in the `awm.httpsfront` namespace, built on the
+`awm.tlsfront` library (certs, the auth gate, the portal and the proxy core). It makes **all of
 awm reachable over HTTPS**: it terminates TLS on an off-host `0.0.0.0:<port>`
 listener (default **8443**) and transparently reverse-proxies every request —
 HTTP *and* WebSocket — to the loopback awm gateway (`AWM_HUB_URL`, normally
@@ -17,8 +18,8 @@ way; both have since been folded in. httpsfront is now the **only** off-host
 listener in awm, and everything else rides the gateway behind it — which is also
 why it is the only holder of the CA.
 
-Because every awm page makes *same-origin* relative calls (`/svc/*`, same-origin
-WebSockets), fronting the gateway wholesale is what makes those calls work under
+Because every awm page makes *same-origin* relative calls (`/invoke`, same-origin
+`/hub/*` WebSockets), fronting the gateway wholesale is what makes those calls work under
 HTTPS with no per-path allowlist to maintain.
 
 ## Install
@@ -26,7 +27,7 @@ HTTPS with no per-path allowlist to maintain.
     bash install.sh
 
 `install.sh` editable-installs the component libraries (`config`,
-`gatewayclient`) and this service into the `awm` env (override with
+`gatewayclient`, `tlsfront`, operations' `grantlib`) and this service into the `awm` env (override with
 `AWM_ENV=<name>`) and writes a gitignored `.runtime-env` sidecar baking
 `AWM_PYTHON` = the env's absolute interpreter, so the gateway can respawn the
 service under systemd's minimal PATH (where `mamba` is not present).
@@ -40,8 +41,7 @@ service under systemd's minimal PATH (where `mamba` is not present).
 | `httpx` | async HTTP reverse-proxy client |
 | `websockets` | WebSocket reverse-proxy client (browser ⇄ gateway) |
 
-All four are already dependencies of the gateway, so in the `awm` env they
-resolve as already-satisfied.
+The `awm` env already holds all four.
 
 ## System dependencies (NOT pip-installable)
 
@@ -56,7 +56,7 @@ Both live in `/usr/bin`, on the minimal systemd PATH the supervisor uses.
 
 ## TLS — reuses the remote-audio CA
 
-Certs are minted by `awm.httpsfront.certs` into a gitignored `.certs/` next to
+Certs are minted by `awm.tlsfront.certs` into a gitignored `.certs/` next to
 the service, or into `AWM_EDGE_CERT_DIR` on a host whose app user cannot write
 the checkout. The **root CA is shared with remote-audio** at
 `~/.config/remote-audio/ca` (override with `REMOTE_AUDIO_CA_DIR`), so a device
@@ -105,7 +105,7 @@ exact path shapes, both described in `awm/httpsfront/tether.py`.
 
 `AWM_EDGE_BOARD` widens the door like the tether flag does, so it is off unless a host means it. The board authenticates its own parties with a bearer the board issued, so the mount answers before edge authentication. It forwards only the exact method-and-path shapes in `awm/httpsfront/board.py`. The mount **strips every `X-Awm-*` header**, `Cookie` and `X-Forwarded-*` from the request. It also removes a device token, so the board never holds a credential that is live elsewhere. The edge claims the whole `/board` mount on every node, wired or not, and a path under it never reaches the gateway.
 
-On every profile the edge overwrites `X-Awm-As` with the session's verified subject (`user:<name>` for a session or a device token), so a downstream service may trust that header — except on the tether and board mounts, which have no verified subject and where the header is stripped rather than defaulted. The edge admits people only. Another node reaches this one over its ssh edge, never through this door (`FEDERATION.md` § *A call across an edge*). The readable `awm_as` cookie is the username for the pages' user chip and carries no authority.
+On every profile the edge overwrites `X-Awm-As` with the session's verified subject (`user:<name>` for a session or a device token), so a downstream service may trust that header — except on the tether mount, which has no verified subject and where the header is stripped rather than defaulted. The edge admits people only. Another node reaches this one over its ssh edge, never through this door (`FEDERATION.md` § *A call across an edge*). The readable `awm_as` cookie is the username for the pages' user chip and carries no authority.
 
 A browser with no session goes to alcor's approver, `AWM_APPROVER_ORIGIN/portal_login?next=<this page>`. After the passkey, the approver sends it to `/__auth/portal` with a `portal_login` grant. The edge checks the grant offline against `AWM_APPROVER_GRANT_PUBKEY`, for this node, this host and this path. It spends the grant once and mints the session cookie (`awm/httpsfront/portal.py`, fleet.md R84). No password login remains. The approver issues a grant only for a host its config's `portals` map lists.
 
@@ -132,7 +132,7 @@ longer any other.
 
 ## Reuse: fronting something that is not the gateway
 
-`proxy.serve(upstream=…, landing=False, extra_routes=…, rewrite_origin=…)` is the
+`awm.tlsfront.proxy.serve(upstream=…, landing=False, extra_routes=…, rewrite_origin=…)` is the
 whole reuse surface. `claude-science` and `dsh` both front their own loopback
 binaries with it rather than reimplementing TLS, the shared CA and the
 `awm_session` gate.

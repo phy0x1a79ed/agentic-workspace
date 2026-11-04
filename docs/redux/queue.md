@@ -55,19 +55,9 @@ How a session closes and raises follow-up issues belongs in `sessions.md`. What 
 
 ## Gap from today
 
-Surveyed read only on 2026-11-01 from the `feat/redux` source, and brought up to date on 2026-11-03.
+Status at the wave-2 gather (`feat/redux` 16da3979, 2026-11-04). `docs/redux-review/build-survey.md` § 3 holds the row for each requirement.
 
-- **No task queue is live.** The `operations` core plugin (`awm/plugins/operations`) holds the store, the relay with its outbox, the approver with its passkey panel, the board page and its writer, and `request_human` (R61 to R66, R85, R137, R145). It is not installed on any node. `reporting` and `board` still serve the `operations` tool, and they go at the cutover, after the federation threads move onto persistent rooms (`channels.md` R72 item 5).
-- **The Kanban is a Trilium note tree.** The Swarm board has seven column books: Proposed, Planned, Active, Blocked, Pending review, Done and Rejected (`reporting/ledger.py` `COLUMNS`, `reporting/swarmboard.py`). Each node's reporting service keeps a ledger as the source of truth, with integer task ids per node (R106 item 1). A sweep mirrors the ledger onto the board. A failed board write leaves a dirty mark for the next sweep (`reporting/tasks.py`).
-- **A second board exists.** The federation board (`board` service) holds cards between swarms, also as Trilium notes. A task linked to a federation card mirrors its state there (`tasks.py` `_mirror`). Cards for our own swarm leaked onto it (journal `50deb4fd`).
-- **The queue is two columns.** `request_human` with `kind:"blocked"` moves a card to Blocked. `kind:"review"` moves it to Pending review. An urgent block also sends Tony a Discord direct message. `kind:"approval"` posts an Arbutus bundle to Slack for Tony or Ryan (`reporting/approvals.py`, `users.md` R123).
-- **One click works only while the session lives.** A card shows an Agent line. It links to the session's claude.ai Remote Control page, or shows the attach command when Remote Control is off (`reporting/record.py` `_agent`). The line drops when the session ends or the task closes.
-- **A drag is the only action.** Tony acts on a card by dragging it to another column. The sweep reads the drag on its next tick. A drag to Done or Rejected closes the task (`tasks.py` `_board`). A card missing from two sweeps in a row cancels its task.
-- **A card starts no session.** A session claims a card when its prompt says `claim task <ref>` (`tasks.py` `hook_prompt`). Tony opens a session first and pastes that line.
-- **An answer reaches the session through its prompt.** Any prompt to a blocked session moves its card back to Active (`hook_prompt`).
-- **The vault runs on several nodes.** One vault runs as copies whose sync links carry no authentication, so every copy can rewrite every note (`trilium/INSTALL.md` § One document, three machines). R105 keeps Trilium on deneb only.
-- **The trilium tool cannot write the board.** Its note verbs refuse any call that crosses an edge, and `note_create` takes no fixed note id. The board writer on alcor needs both (R105, `fleet.md` R87 item 3).
-- **The edge may refuse the embedded panel.** The awm edge's content security policy must allow alcor's address as a frame source (R65).
-- **R137 missing.** 2fa approvals reach Tony only on Discord: Approve and Deny buttons, and `/approve` to arm a burst (`awm/services/2fa/awm/twofa/notify.py`).
-- **R85 partial.** alcor's authorized keys admit mizar and capella, and lyra has no key into alcor. Its firewall admits port 22 from mizar only (`fleet.md` § Gap, R98 item 1). No enrol command runs on alcor.
-- Each card tracks one session. `sessions.md` § Gap, R57 and R58, holds that gap.
+- **R60.** From the cutover until T27, `board` stays a door-only service on deneb, and its intake turns a card into a Proposed task in operations. The merge of `feat/redux-r77` deletes the door and the intake at T27 (`channels.md` R77).
+- **R64.** The approver's host changes sit unapplied on cloud `feat/redux-fleet`: SNI passthrough, the tunnel user and the CSP, plus the tunnel, certificate and PROXY front on alcor. Tony adds the DNS records for `auth.tony-xy-liu.com` (`drafts/manual-steps.md`).
+- **R65.** The IndexedDB partition is unchecked on the real host names.
+- **R85.** Enrolment is built. lyra holds no key to alcor yet.

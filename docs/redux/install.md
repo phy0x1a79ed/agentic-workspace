@@ -66,17 +66,12 @@ Which node holds which role belongs in `fleet.md`. How a deploy moves through th
 
 ## Gap from today
 
-Surveyed read only on 2026-11-02, from the `feat/redux` source and the deployed tree on mizar.
+Status at the wave-2 gather (`feat/redux` 16da3979, 2026-11-04). `docs/redux-review/build-survey.md` § 3 holds the row for each requirement.
 
-- **All of awm is Python.** The gateway is about 14.5k lines, the shared libraries 8.4k, the services 107k and the tests about 83k. On mizar `awm --help` takes 1.4 s, and the `awm` env holds 2.7 GB, torch alone 776 MB. Neither mizar nor altair has `cargo`.
-- **A bare box takes about 15 steps to become a node.** `awm/gateway/setup.sh` and `awm/gateway/install.sh` make the Python env, the installs, `gateway init` and the command wrappers. Every other step is manual: `.awm/env`, `enabled.json`, nodejs, the systemd unit, the certificate, peer keys, `known_hosts`, the Claude login, hooks and the secrets of each service.
-- **A fresh node starts every service** unless an explicit `enabled.json` limits it.
-- **Install still needs sudo** for the `/usr/local/bin` links, apt packages and linger. This breaks `fleet.md` R101.
-- **The plugin contract is already blind to language and place.** A plugin is a folder with a `run.sh` that connects to the gateway. `AWM_SERVICE_ROOTS` (commit 041102fa) loads services from outside the repo, but no node sets it. All 44 services sit in `awm/services/`. tether is the nearest to an outside plugin: a pinned release with Rust binaries from GitHub.
-- **R115 partial.** The gateway discovers services from `awm/services/` and pages from a separate folder of built bundles (`AWM_PAGES_DIR`, `awm/gateway/awm/gateway/server.py` step 2b). Nothing installs either from a plugin's own repository, and one plugin cannot ship a service and its page together.
-- **R33 missing.** No plugin has its own refresh hook or version pin. `awm deploy` restarts the whole gateway. Every Python service shares the one `awm` env.
-- **No test environment exists.** awm has no Dockerfile, no CI, no cloud-agent setup and no fake peer. Rootless Docker works on mizar and in capella's WSL.
-- **R132 broken.** The gateway's usage tally (`.awm/gateway/usage.json`) counts only MCP calls by tool and verb. It misses page visits, CLI calls, direct imports such as game-bot's `fxlab`, and background work. On 2026-11-03 it showed 0 to 5 calls for compute, dev, transcripts, fileviewer and rlm-factorio, which run mostly outside it.
-- **R134 broken.** The dropped services still sit in `awm/services/`. The workspace `AGENTS.md` and the global `CLAUDE.md` tell agents to query `graphify`.
-- **R135 missing.** cx and keep are two services that both serve the `reflection` tool. No cch exists, and reflection reaches Claude Code directly. The gateway's caller lookup and mode gate, journal, board, reporting, tether, social and transcripts import the shared Claude Code library (`awm.claudedaemon`). The gateway knows a caller only by `~/.claude/sessions` or the OpenCode process, so reflection refuses every dsh session. dsh acts only on the harness, never on one session.
-- **mizar has two miniforge installs.** The services run from `~/miniforge3`. `.mcp.json` points at `~/lib/miniforge3`.
+- **R112.** The Rust core serves every route, and `awm deploy` places its binary, unit and `config.toml` on each node. That apply path first runs at the first node deploy. The Rust gateway has no port of these Python gateway features: MCP `tools/list_changed`, MCP `notifications/cancelled`, the ranked `describe`, the `effect` gate, the old-name aliases, and the `surfaces` key, so hook-only verbs now list on MCP.
+- **R114.** Each deploy pushes `release` to the GitHub backup. The `origin` remote stays on altair, and mizar has no `github` remote until `scripts/move-canonical.sh` runs at T27.
+- **R115.** The cloud role `plugin_homes` makes the optional plugins their own projects at T27, and their awm folders go at T23. The trilium install mode `pin` checks a sha256, and the pin stays empty until the fork moves to mizar and releases (item 4). The tarball host is open with Tony.
+- **R116.** Clients that ignore the egress proxy go unchecked (item 1). The grant key exists only after the passkey enrolment on alcor at T27 (item 2). Tokenless callers, the cch hooks and the CLI, still resolve through the pid walk (item 3).
+- **R117.** Items 5 and 7 are unverified.
+- **R118, R119.** The install test has not run on a cloud agent. T26 pushes the `quay.io/hallamlab/awm-test-*` images and pins them by digest.
+- **R134.** The kb commit e997f9b lives on altair only and is unchecked.
