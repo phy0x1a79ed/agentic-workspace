@@ -31,17 +31,11 @@ def manifest(folder: str) -> dict[str, Any]:
 
 
 def entry(folder: str, extra: tuple[str, ...] = ()) -> dict[str, Any]:
-    """The registry entry the gateway lists for a plugin: its archive tables, and a function for each verb they
-    name plus ``extra``."""
+    """The ``awm services`` row the gateway lists for a plugin: its archive tables and its tool."""
     m = manifest(folder)
     [service] = m["service"]
-    tool = m["tool"][0]["name"]
-    tables = service.get("archive", [])
-    published = {t[k] for t in tables for k in ("export", "query", "get", "hop") if t.get(k)}
-    published |= {f"{tool}_{v}" for v in extra}
-    functions = [{"name": p.split("_", 1)[1], "tool": p} for p in sorted(published)]
-    return {"name": service["name"], "kind": "service", "backend_status": "ready", "archive": tables,
-            "api": {"functions": functions}}
+    return {"name": service["name"], "plugin": m["plugin"]["name"], "status": "ready",
+            "tools": [m["tool"][0]["name"]], "archive": service.get("archive", [])}
 
 
 def declared() -> set[tuple[str, str]]:

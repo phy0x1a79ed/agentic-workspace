@@ -713,14 +713,7 @@ HANDLERS = {verb: _guarded(verb, fn) for verb, fn in {
 
 
 def _replay() -> None:
-    """Re-arm the follow-ups the process this one replaced still owed.
-
-    An overlay must not: the base process still holds a watcher for each
-    promise, and two watchers type the resume twice.
-    """
-    if os.environ.get("AWM_SERVICE_OVERLAY"):
-        log.info("cch: running as an overlay; leaving pending resumes to the base")
-        return
+    """Re-arm the follow-ups the process this one replaced still owed."""
     try:
         outcome = inject.replay_pending()
     except Exception as exc:  # noqa: BLE001 - a bad record must not keep cch down

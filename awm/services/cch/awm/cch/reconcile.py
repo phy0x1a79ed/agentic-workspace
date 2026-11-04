@@ -11,14 +11,11 @@ one, move the pointer, delete the old one" true without anything having to
 sequence it: an aged session has already stopped counting as claimable, so its
 replacement is seeded first, and only then does removal collect it.
 
-Two guards keep a second copy of this service from seeding against the same
-home directory. The overlay flag covers `awm dev shadow`. It is not enough on
-its own, because shadowing a service whose base is not yet registered brings it
-up as a *base* with the flag gone — exactly the situation while a new service
-is being built — and a dev sandbox bootstraps its own copy of every service
-against the same home. So the tick also takes a non-blocking exclusive lock,
-which covers the overlay, the sandbox, a stray manual run, and a predecessor
-that has not finished dying, with one mechanism.
+A second copy of this service must not seed against the same home directory:
+a dev sandbox bootstraps its own copy of every service against the same home.
+So the tick takes a non-blocking exclusive lock, which covers the sandbox, a
+stray manual run, and a predecessor that has not finished dying, with one
+mechanism.
 """
 
 from __future__ import annotations
@@ -51,12 +48,6 @@ class Loop:
 
     # -- what the adapter calls -------------------------------------------
 
-    def held_back(self) -> str | None:
-        """Why this process must not run the loop at all, or None if it may."""
-        if os.environ.get("AWM_SERVICE_OVERLAY"):
-            return "running as an overlay; the base owns the pool"
-        return None
-
     def enabled(self) -> str | None:
         """Why this process must not tend the warm pool, or None if it may.
 
@@ -68,7 +59,7 @@ class Loop:
             return "switched off (AWM_CX_LOOP=0)"
         if not config.pool_wanted():
             return "this node does not run the cx profile"
-        return self.held_back()
+        return None
 
     async def run(self) -> None:
         """Sleep, then work, forever. Never returns; never raises."""
@@ -88,7 +79,7 @@ class Loop:
 
     def status(self) -> dict[str, Any]:
         return {
-            "loop": self.held_back() or ("running" if self._running else "not started"),
+            "loop": "running" if self._running else "not started",
             "seeding_loop": self.enabled() or "on",
             "holds_lock": self._lock_fd is not None,
             "last_tick": (None if self._last_tick is None
@@ -98,7 +89,7 @@ class Loop:
     # -- one tick ----------------------------------------------------------
 
     async def tick(self) -> None:
-        if self.held_back() is not None or not self._take_lock():
+        if not self._take_lock():
             return
         if self.enabled() is None:
             await self._tend_pool()

@@ -1,11 +1,14 @@
 """An MCP endpoint over HTTP, exposing a curated slice of awm's verbs.
 
-awm has no MCP-over-HTTP transport — ``awm-mcp`` stdio is the only one — so
-this module is it: a minimal JSON-RPC endpoint speaking MCP's ``initialize`` /
+The gateway's own ``/mcp`` serves every tool to a caller on this node. This
+module serves the remote claude-science client only an allowlisted slice: a
+minimal JSON-RPC endpoint speaking MCP's ``initialize`` /
 ``tools/list`` / ``tools/call``, translating each call into the gateway's own
-``GET /tools`` and ``POST /invoke``. It registers as a ``kind=url`` mount, so
-httpsfront gives it TLS and the edge session and there is no second listener to
-secure.
+``GET /tools`` and ``POST /invoke``. Its loopback listener is the service's
+``mount``, which the gateway serves at ``/s/claude-science/``, so httpsfront
+gives it TLS and the edge session and there is no second listener to secure.
+Each call carries the service token, so the gateway also holds it to the verbs
+the manifest's ``[[needs.tool]]`` declares.
 
 **This is not the Claude Science workbench's connector, and cannot be.** It was
 built to be one, on the reasoning that a *remote* connector is called by the app
@@ -40,14 +43,17 @@ from __future__ import annotations
 import json
 import logging
 import os
+import socket
 from typing import Any
 
 import httpx
 
+from awm.gatewayclient import service_token
+
 log = logging.getLogger("awm.claude_science.mcp_bridge")
 
-#: Prefix this bridge is mounted at on the gateway.
-MOUNT_PREFIX = os.environ.get("CLAUDE_SCIENCE_MCP_PREFIX", "/claude-science/mcp")
+#: Where the gateway serves this bridge: the service mount plus the bridge's path.
+MOUNT_PREFIX = "/s/claude-science/mcp"
 
 #: MCP protocol revision we negotiate. Echoed back on `initialize`.
 PROTOCOL_VERSION = "2025-06-18"
@@ -60,6 +66,9 @@ PROTOCOL_VERSION = "2025-06-18"
 #:
 #: Excluded on purpose, and worth naming so the omissions read as decisions:
 #:   ssh / vpn / 2fa / social  — act on the fleet's credentials and channels
+#:
+#: Every verb here must also be in the manifest's ``[[needs.tool]]``: the gateway
+#: refuses a verb the plugin did not declare.
 #:
 #: WARNING for anyone widening this via CLAUDE_SCIENCE_MCP_ALLOW: the catalog
 #: below is read from the EXPANDED ``GET /tools``, which is unfiltered by
@@ -123,6 +132,11 @@ def _hub_url() -> str:
     return os.environ.get("AWM_HUB_URL", "http://127.0.0.1:7819/").rstrip("/")
 
 
+def _headers() -> dict[str, str]:
+    token = service_token()
+    return {"X-Awm-Service-Token": token} if token else {}
+
+
 async def _catalog(client: httpx.AsyncClient) -> list[dict[str, Any]]:
     """The allowlisted verbs, described from the gateway's live catalog.
 
@@ -132,7 +146,7 @@ async def _catalog(client: httpx.AsyncClient) -> list[dict[str, Any]]:
     allowlist entry for a domain that is not running should be invisible, not a
     tool that always errors.
     """
-    resp = await client.get(f"{_hub_url()}/tools", timeout=30.0)
+    resp = await client.get(f"{_hub_url()}/tools", headers=_headers(), timeout=30.0)
     resp.raise_for_status()
     payload = resp.json()
     entries = payload.get("tools") if isinstance(payload, dict) else payload
@@ -163,6 +177,7 @@ async def _invoke(client: httpx.AsyncClient, domain: str, verb: str,
     resp = await client.post(
         f"{_hub_url()}/invoke",
         json={"name": f"{domain}_{verb}", "args": args or {}},
+        headers=_headers(),
         timeout=300.0,
     )
     resp.raise_for_status()
@@ -236,11 +251,11 @@ async def handle_rpc(message: dict[str, Any],
 
 
 # ---------------------------------------------------------------------------
-# The listener and its gateway mount
+# The listener
 # ---------------------------------------------------------------------------
 
 _STATE: dict[str, Any] = {
-    "listening_port": None, "mounted": False, "prefix": MOUNT_PREFIX,
+    "listening_port": None, "serving": False, "prefix": MOUNT_PREFIX,
     "allowlist": {d: list(v) for d, v in ALLOW.items()},
     "tool_count": sum(len(v) for v in ALLOW.values()),
     "error": None,
@@ -254,9 +269,9 @@ def status() -> dict:
 def build_app():
     """A Starlette app speaking MCP over HTTP POST.
 
-    One catch-all route: the gateway preserves the mount prefix when it
-    proxies, so requests arrive here as ``/claude-science/mcp`` rather than
-    ``/``, and a client that appends its own path segment should still land.
+    One catch-all route: the gateway strips ``/s/claude-science`` when it
+    proxies, so requests arrive here as ``/mcp``, and a client that appends its
+    own path segment should still land.
     """
     from starlette.applications import Starlette
     from starlette.requests import Request
@@ -265,7 +280,7 @@ def build_app():
 
     # One client for the life of the process, held in this closure rather than
     # built by a lifespan handler and stashed on ``app.state``. The listener
-    # runs with uvicorn's lifespan protocol *off* (see ``serve_and_mount``), so
+    # runs with uvicorn's lifespan protocol *off* (see ``serve``), so
     # a lifespan-built client is simply never created — and the failure lands
     # far from the cause, as ``KeyError: 'client'`` on the first call, with GET
     # /status still answering 200 because it never touches the client. A closure
@@ -300,26 +315,40 @@ def build_app():
     )
 
 
-async def serve_and_mount() -> None:
-    """Run the loopback listener and keep it mounted on the gateway.
+def listen() -> str:
+    """Bind the loopback listener's port and return the URL to register as the mount.
 
-    Two things in one coroutine because they are one fact: the mount points at
-    a port, so re-registering after a gateway restart has to advertise the port
-    we are actually listening on. Runs as a background task off the adapter's
-    ``on_start`` and never returns.
-
-    The listener binds an OS-chosen loopback port. The stable address is the
-    gateway prefix, which is what the connector is configured with — reachable
-    unauthenticated on the gateway's own loopback, and through ``httpsfront``
-    with the edge session, without this module knowing about either.
+    Bound before the service registers, so the mount names a port that exists.
+    ``serve`` takes the socket over; a respawned ``serve`` binds the same port.
     """
-    import asyncio
+    sock = _bind(int(os.environ.get("CLAUDE_SCIENCE_MCP_PORT") or 0))
+    _STATE.update({"listening_port": sock.getsockname()[1], "error": None})
+    _SOCKETS.append(sock)
+    return f"http://127.0.0.1:{_STATE['listening_port']}"
 
+
+_SOCKETS: list[socket.socket] = []
+
+
+def _bind(port: int) -> socket.socket:
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.bind(("127.0.0.1", port))
+    return sock
+
+
+async def serve() -> None:
+    """Serve the bridge on the socket ``listen`` bound. Runs under
+    ``spawn_supervised`` off the adapter's ``on_start``; returns only when the
+    listener stops."""
     import uvicorn
-    import websockets
 
+    port = _STATE["listening_port"]
+    if port is None:
+        raise RuntimeError("mcp bridge: listen() was never called")
+    sock = _SOCKETS.pop() if _SOCKETS else _bind(port)
     config = uvicorn.Config(
-        build_app(), host="127.0.0.1", port=0, log_level="warning",
+        build_app(), log_level="warning",
         # The app deliberately has no lifespan handlers (build_app holds its
         # client in a closure), and leaving the protocol on means every teardown
         # logs a CancelledError traceback at ERROR from uvicorn's lifespan
@@ -328,59 +357,10 @@ async def serve_and_mount() -> None:
         # the app relies on a lifespan is what broke every call once already.
         lifespan="off",
     )
-    server = uvicorn.Server(config)
-    task = asyncio.create_task(server.serve())
-
-    # Wait for the bind so the mount advertises a port that exists.
-    for _ in range(100):
-        if server.started:
-            break
-        await asyncio.sleep(0.05)
-    if not server.started:
-        _STATE["error"] = "listener failed to start"
-        log.error("mcp bridge: listener did not start")
-        return
-    port = server.servers[0].sockets[0].getsockname()[1]
-    _STATE.update({"listening_port": port, "error": None})
     log.info("mcp bridge listening on 127.0.0.1:%d (%d tools allowlisted)",
              port, _STATE["tool_count"])
-
-    hub_url = os.environ.get("AWM_HUB_URL", "").rstrip("/")
-    if not hub_url:
-        _STATE["error"] = "AWM_HUB_URL unset; not mounted"
-        log.error("mcp bridge: AWM_HUB_URL not set; cannot register the mount")
-        await task
-        return
-    ws_base = hub_url.replace("https://", "wss://").replace("http://", "ws://")
-
-    backoff = 1.0
-    while True:
-        try:
-            async with httpx.AsyncClient(verify=False, timeout=15) as cli:
-                r = await cli.post(f"{hub_url}/hub/register", json={
-                    "name": "claude-science-mcp",
-                    "prefix": MOUNT_PREFIX,
-                    "url": f"http://127.0.0.1:{port}",
-                })
-                r.raise_for_status()
-            body = r.json()
-            _STATE["mounted"] = True
-            log.info("mcp bridge mounted: %s → 127.0.0.1:%d (id=%s)",
-                     MOUNT_PREFIX, port, body.get("service_id"))
-            backoff = 1.0
-            async with websockets.connect(
-                f"{ws_base}{body['lease_ws_path']}",
-                max_size=None, open_timeout=10,
-            ) as ws:
-                # First frame is "ready"; then hold the socket. Registry records
-                # are in-memory, so a gateway restart drops the mount and the
-                # loop below puts it back.
-                async for _ in ws:
-                    pass
-        except Exception as exc:  # noqa: BLE001 — stay up across any fault
-            log.warning("mcp bridge mount lost (%s); retrying in %.1fs",
-                        exc, backoff)
-        finally:
-            _STATE["mounted"] = False
-        await asyncio.sleep(backoff)
-        backoff = min(backoff * 2, 30.0)
+    _STATE["serving"] = True
+    try:
+        await uvicorn.Server(config).serve(sockets=[sock])
+    finally:
+        _STATE["serving"] = False

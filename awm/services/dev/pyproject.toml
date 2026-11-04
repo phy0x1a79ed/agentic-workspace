@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "awm-dev"
 version = "0.1.0"
 requires-python = ">=3.11"
-description = "AWM dev service: owns `awm dev` lifecycle and self-shadows onto prod."
+description = "AWM dev service: drives a worktree's dev sandbox (`awm dev start --worktree <path>`)."
 dependencies = [
     "awm-gatewayclient",
 ]

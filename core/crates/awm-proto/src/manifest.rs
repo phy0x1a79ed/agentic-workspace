@@ -1,10 +1,9 @@
-//! `awm-plugin.toml`, and the legacy `service.toml` a folder with only a `run.sh` carries.
+//! `awm-plugin.toml`, the manifest at the top of a plugin folder.
 
 use serde::{Deserialize, Serialize};
 
 pub const MANIFEST_FILE: &str = "awm-plugin.toml";
-pub const LEGACY_RUN: &str = "run.sh";
-pub const LEGACY_SERVICE_TOML: &str = "service.toml";
+pub const DEFAULT_RUN: &str = "run.sh";
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -57,7 +56,7 @@ fn dot() -> String {
     ".".into()
 }
 fn default_run() -> String {
-    LEGACY_RUN.into()
+    DEFAULT_RUN.into()
 }
 fn default_install() -> String {
     "install.sh".into()
@@ -69,13 +68,6 @@ pub enum Tier {
     #[default]
     On,
     Off,
-}
-
-impl Tier {
-    /// Today's `service.toml` reads anything but `"off"` as on.
-    pub fn from_legacy(raw: Option<&str>) -> Self {
-        if raw == Some("off") { Tier::Off } else { Tier::On }
-    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -105,6 +97,7 @@ fn one() -> u32 {
 #[serde(deny_unknown_fields)]
 pub struct PageDecl {
     pub name: String,
+    /// The built bundle, relative to the plugin folder. Default `pages/<name>/dist`.
     #[serde(default)]
     pub dir: Option<String>,
     #[serde(default = "default_entry")]
@@ -153,19 +146,6 @@ pub fn parse_implements(raw: &str) -> Option<(String, u32)> {
     let (name, m) = raw.split_once('@')?;
     let name = name.trim();
     crate::valid_tool_name(name).then(|| Some((name.to_string(), m.trim().parse().ok()?)))?
-}
-
-/// The keys of today's `service.toml` that the loader reads.
-#[derive(Debug, Clone, Default, Deserialize)]
-pub struct LegacyServiceToml {
-    #[serde(default)]
-    pub tool: Option<String>,
-    #[serde(default)]
-    pub tier: Option<String>,
-    #[serde(default)]
-    pub profiles: Option<Vec<String>>,
-    #[serde(default)]
-    pub archive: Vec<toml::Value>,
 }
 
 impl Manifest {

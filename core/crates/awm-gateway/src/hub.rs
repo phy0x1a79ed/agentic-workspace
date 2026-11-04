@@ -43,6 +43,10 @@ struct Svc {
     pending: HashMap<String, oneshot::Sender<Reply>>,
     /// When the control WebSocket last closed, for the respawn watchdog.
     down_since: Option<Instant>,
+    /// The `api` of its last `ready` frame: its functions, session kinds and config block.
+    api: Value,
+    /// The loopback URL of its own HTTP server, served at `/s/<service>/`.
+    mount: Option<String>,
 }
 
 #[derive(Debug)]
@@ -74,6 +78,7 @@ pub struct ServiceView {
     pub pid: Option<i64>,
     pub verbs: usize,
     pub refusal: Option<String>,
+    pub mount: Option<String>,
 }
 
 #[derive(Default)]
@@ -98,7 +103,7 @@ impl Hub {
     }
 
     /// `POST /hub/service/register`: a fresh service id, unless a live instance holds the name.
-    pub fn register(&self, name: &str, plugin: &str, pid: Option<i64>) -> Result<String, NameHeld> {
+    pub fn register(&self, name: &str, plugin: &str, pid: Option<i64>, mount: Option<String>) -> Result<String, NameHeld> {
         let mut map = self.lock();
         if let Some(old) = map.get(name) {
             if old.tx.is_some() {
@@ -119,6 +124,8 @@ impl Hub {
                 tx: None,
                 pending,
                 down_since: Some(Instant::now()),
+                api: Value::Null,
+                mount,
             },
         );
         Ok(id)
@@ -171,6 +178,7 @@ impl Hub {
             }
         }
         if let Some(svc) = map.get_mut(name) {
+            svc.api = api.clone();
             if problems.is_empty() {
                 svc.verbs = verbs;
                 svc.status = Status::Ready;
@@ -219,6 +227,24 @@ impl Hub {
         self.lock().get(name).and_then(|s| s.down_since).map(|t| t.elapsed())
     }
 
+    /// The `api` of a service's last `ready` frame, `Null` before it sent one.
+    pub fn api_of(&self, name: &str) -> Value {
+        self.lock().get(name).map(|s| s.api.clone()).unwrap_or(Value::Null)
+    }
+
+    pub fn id_of(&self, name: &str) -> Option<String> {
+        self.lock().get(name).map(|s| s.id.clone())
+    }
+
+    /// The service a control id belongs to.
+    pub fn name_of_id(&self, id: &str) -> Option<String> {
+        self.lock().iter().find(|(_, s)| s.id == id).map(|(n, _)| n.clone())
+    }
+
+    pub fn mount_of(&self, name: &str) -> Option<String> {
+        self.lock().get(name).filter(|s| s.status == Status::Ready).and_then(|s| s.mount.clone())
+    }
+
     pub fn plugin_of(&self, name: &str) -> Option<String> {
         self.lock().get(name).map(|s| s.plugin.clone())
     }
@@ -239,6 +265,7 @@ impl Hub {
                 pid: s.pid,
                 verbs: s.verbs.len(),
                 refusal: s.refusal.clone(),
+                mount: s.mount.clone(),
             })
             .collect();
         v.sort_by(|a, b| a.name.cmp(&b.name));
@@ -344,10 +371,10 @@ mod tests {
     #[tokio::test]
     async fn register_claim_ready_call() {
         let hub = Hub::default();
-        let id = hub.register("journal", "journal", Some(1)).unwrap();
+        let id = hub.register("journal", "journal", Some(1), None).unwrap();
         let Claim::Claimed { mut rx, .. } = hub.claim(&id) else { panic!() };
         assert!(matches!(hub.claim(&id), Claim::Held));
-        assert!(hub.register("journal", "journal", None).is_err());
+        assert!(hub.register("journal", "journal", None, None).is_err());
         let bind = ["journal".to_string()];
         hub.ready("journal", &json!({"functions": [{"name": "post"}, {"name": "x", "tool": "journal_fetch"}]}), &bind);
         assert_eq!(hub.status("journal"), Some(Status::Ready));
@@ -364,7 +391,7 @@ mod tests {
         let (res, _) = tokio::join!(call, answer);
         assert_eq!(res.unwrap()["id"], 7);
 
-        let id2 = hub.register("journal2", "journal2", None).unwrap();
+        let id2 = hub.register("journal2", "journal2", None, None).unwrap();
         let _c = hub.claim(&id2);
         hub.ready("journal2", &json!({"functions": [{"name": "post", "tool": "journal_post"}]}), &bind);
         assert_eq!(hub.status("journal2"), Some(Status::Refused));
@@ -375,7 +402,7 @@ mod tests {
         assert_eq!(hub.status("journal"), Some(Status::Refused), "a stale socket must not take a service down");
         hub.disconnected("journal", &id);
         assert!(hub.down_for("journal").is_some());
-        assert!(hub.register("journal", "journal", None).is_ok());
+        assert!(hub.register("journal", "journal", None, None).is_ok());
         hub.forget("journal");
         assert_eq!(hub.status("journal"), None);
     }

@@ -81,8 +81,9 @@ def test_the_claim_budget_covers_a_move_that_is_merely_slow():
     assert claim["timeout"] > claim_mod.MOVE_TIMEOUT_S
 
 
-def test_the_shell_half_posts_to_the_internal_handle():
-    assert "/svc/cch/fn/pool_claim " in BIN.read_text()
+def test_the_shell_half_invokes_the_published_verb():
+    src = BIN.read_text()
+    assert "POST /invoke " in src and "harness-cc_pool_claim" in src
 
 
 def test_the_shell_half_waits_out_the_service_budget():

@@ -11,12 +11,15 @@ front is the transparent proxy it always was (every older test in this dir).
 
 from __future__ import annotations
 
+import json
+
 import httpx
 import pytest
 from starlette.testclient import TestClient
 
 from awm.httpsfront import policy, proxy
-from awm.httpsfront.auth import COOKIE_NAME
+from awm.tlsfront import proxy as tlsproxy
+from awm.tlsfront.auth import COOKIE_NAME
 
 pytestmark = [pytest.mark.unit, pytest.mark.smoke]
 
@@ -107,7 +110,7 @@ def test_ws_forwards_only_the_verified_identity(monkeypatch):
         fwd.update(additional_headers or {})
         return _Up()
 
-    monkeypatch.setattr(proxy.websockets, "connect", connect)
+    monkeypatch.setattr(tlsproxy.websockets, "connect", connect)
     with _client(_app()) as c:
         with c.websocket_connect("/svc/notes/emit/note:tony:1",
                                  headers={"X-Awm-As": "user:steven",
@@ -134,11 +137,16 @@ def test_logout_clears_both_cookies():
 # --- the public profile ------------------------------------------------------
 
 DENIED = [
-    "/hub/services", "/invoke", "/tools", "/svc/scopes/fn/scope_search",
+    "/hub/services", "/hub/plugins", "/tools", "/svc/scopes/fn/scope_search",
     "/svc/auth/fn/password", "/svc/auth/fn/verify",
     "/__auth/link", "/__auth/login", "/ca.crt", "/ca.pem",
-    "/ui/agents/", "/files/", "/files/projects/awm/dev/x",
+    "/ui/agents/", "/p/dashboard/dashboard/", "/p/httpsfront/login/",
+    "/files/", "/s/fileviewer/", "/s/fileviewer/projects/awm/dev/x",
+    "/s/claude-science/mcp",
     "/__landing/tags",
+    # `/invoke` is a POST. Its body is what the door checks; see
+    # test_public_invoke_* below.
+    "/invoke",
     # notes and drawio left the public host, then awm (install.md R134). These
     # are here rather than merely absent because they are the paths whose
     # verdict *changed*: an allow-list that only records what is open cannot
@@ -150,17 +158,16 @@ DENIED = [
     # is a live Trilium route; see awm.httpsfront.vault.NOT_FORWARDED.
     "/etapi/app-info", "/custom/x", "/mcp", "/share/abc",
     "/login", "/setup", "/set-password", "/robots.txt",
-    # …and the vault verbs that act on everyone's knowledge base at once.
-    "/svc/trilium/fn/restore", "/svc/trilium/fn/stop",
-    "/svc/trilium/fn/logs", "/svc/trilium/fn/export",
+    # The trilium page's old addresses, which the gateway no longer serves.
+    "/ui/trilium", "/ui/trilium/", "/svc/trilium/fn/status",
+    "/svc/trilium/fn/restore",
     # Adjacent to an open mount, not inside it. The prefix is a
     # ``startswith`` against a deny-by-default door, so writing it bare would
     # hand this path to the internet on the strength of its name alone.
-    "/ui/triliumXYZ", "/ui/trilium-admin/x",
+    "/p/trilium/triliumXYZ", "/p/trilium/trilium-admin/x", "/p/trilium/",
 ]
 ALLOWED = [
-    "/ui/trilium", "/ui/trilium/", "/svc/trilium/fn/status",
-    "/svc/trilium/fn/snapshots",
+    "/p/trilium/trilium", "/p/trilium/trilium/", "/p/trilium/trilium/assets/index.js",
 ]
 
 
@@ -183,18 +190,85 @@ def test_allowed_paths_proxy_when_signed_in(path):
 
 def test_allowed_paths_want_a_login_when_signed_out():
     with _client(_app("public"), token=None) as c:
-        r = c.get("/ui/trilium/", headers={"Accept": "text/html"})
+        r = c.get("/p/trilium/trilium/", headers={"Accept": "text/html"})
         assert r.status_code == 302 and r.headers["location"].endswith(
-            "/portal_login?next=https%3A%2F%2Ffront.example%2Fui%2Ftrilium%2F")
-        assert c.get("/svc/trilium/fn/status").status_code == 401
+            "/portal_login?next=https%3A%2F%2Ffront.example%2Fp%2Ftrilium%2Ftrilium%2F")
+        assert c.post("/invoke", json=_call("status")).status_code == 401
+
+
+def _call(verb, **extra):
+    """The body the trilium page's `tool('trilium').call(verb)` posts."""
+    return {"name": "trilium", "args": {"verb": verb, "args": {}, **extra}}
+
+
+def _capture_body(c):
+    seen = _capture(c)
+    handler = c.app.state.client._transport.handler
+
+    def with_body(request: httpx.Request) -> httpx.Response:
+        seen["body"] = request.read()
+        return handler(request)
+
+    c.app.state.client = httpx.AsyncClient(transport=httpx.MockTransport(with_body))
+    return seen
+
+
+@pytest.mark.parametrize("verb", sorted(policy.TRILIUM_OPEN_FNS))
+def test_public_invoke_admits_the_trilium_pages_read_verbs(verb):
+    with _client(_app("public")) as c:
+        seen = _capture_body(c)
+        r = c.post("/invoke", json=_call(verb),
+                   headers={"Referer": "https://front.example/p/trilium/trilium/"})
+    assert r.status_code == 200
+    assert seen["path"] == "/invoke"
+    assert json.loads(seen["body"]) == _call(verb)
+    assert seen["x-awm-as"] == "user:tony"
+    assert seen["referer"] == "https://front.example/p/trilium/trilium/"
+
+
+@pytest.mark.parametrize("body", [
+    _call("restore"), _call("stop"), _call("logs"), _call("export"),
+    _call("slice_resolve"),
+    _call("status", peer="mira"),
+    {"name": "trilium_status", "args": {}},
+    {"name": "journal", "args": {"verb": "status", "args": {}}},
+    {"name": "trilium", "args": {"verb": "status", "args": []}},
+    {"name": "trilium", "args": {"verb": "status"}, "peer": "mira"},
+    [], "status",
+])
+def test_public_invoke_refuses_every_other_call(body):
+    with _client(_app("public")) as c:
+        seen = _capture(c)
+        assert c.post("/invoke", json=body).status_code == 404
+    assert "path" not in seen
+
+
+def test_public_invoke_refuses_a_body_that_is_not_json_or_too_large():
+    with _client(_app("public")) as c:
+        seen = _capture(c)
+        assert c.post("/invoke", content=b"{not json").status_code == 404
+        big = json.dumps({"name": "trilium", "args": {
+            "verb": "status", "args": {"pad": "x" * policy.INVOKE_BODY_CAP}}})
+        assert c.post("/invoke", content=big).status_code == 404
+    assert "path" not in seen
+
+
+def test_public_invoke_has_no_socket():
+    from starlette.websockets import WebSocketDisconnect
+
+    with _client(_app("public")) as c:
+        with pytest.raises(WebSocketDisconnect):
+            with c.websocket_connect("/invoke"):
+                pass
 
 
 def test_user_scoped_paths_admit_only_their_user():
     with _client(_app("public")) as c:
         _capture(c)
-        assert c.get("/files/projects/userdata/tony/notes/a.md").status_code == 200
-        assert c.get("/files/projects/userdata/steven/notes/a.md").status_code == 404
-        assert c.get("/files/projects/userdata/tony").status_code == 200
+        assert c.get("/s/fileviewer/projects/userdata/tony/notes/a.md").status_code == 200
+        assert c.get("/s/fileviewer/projects/userdata/steven/notes/a.md").status_code == 404
+        assert c.get("/s/fileviewer/projects/userdata/tony").status_code == 200
+        assert c.get("/files/projects/userdata/tony/notes/a.md").status_code == 404
 
 
 def test_no_emit_topic_is_public():
@@ -225,8 +299,8 @@ def test_serve_without_tls_binds_loopback(monkeypatch):
         def run(self):
             pass
 
-    monkeypatch.setattr(proxy.uvicorn, "Config", _Cfg)
-    monkeypatch.setattr(proxy.uvicorn, "Server", _Srv)
+    monkeypatch.setattr(tlsproxy.uvicorn, "Config", _Cfg)
+    monkeypatch.setattr(tlsproxy.uvicorn, "Server", _Srv)
     proxy.serve(port=8444, cert="", key="", ca="", upstream="http://127.0.0.1:1/",
                 profile="public", tls=False)
     assert captured["host"] == "127.0.0.1"

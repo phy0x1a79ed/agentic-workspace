@@ -487,10 +487,9 @@ this folder (any folder with a `run.sh` under `awm/services/`), starts it with
 
 No auth — the registration handshake carries no token.
 
-To iterate against a running sandbox without installing, use
-`awm dev shadow awm/services/social`; it execs this same `run.sh` as an overlay.
-Under a shadow `AWM_WORKSPACE` is rewritten to a sandbox dir, so point the
-service at a real `social.toml` with **`AWM_SOCIAL_CONFIG=/abs/path/social.toml`**
+To iterate without installing, run the worktree's dev sandbox (`bash awm/services/dev/sandbox/run.sh start`); it runs this same `run.sh` from the worktree.
+The sandbox's `AWM_DIR` holds no `social.toml`, so point the service at a real
+one with **`AWM_SOCIAL_CONFIG=/abs/path/social.toml`** in the sandbox's `[env]`
 (the parallel of the 2fa service's `AWM_2FA_DIR`).
 
 ## Discord slash commands
@@ -504,7 +503,7 @@ The commands sync as *global* commands in `on_ready`, because global is the
 only kind that appears in a DM. The command tree allows the bot DM context only,
 so Discord hides the commands in servers and group DMs. On invocation the connector checks the sender,
 acks within Discord's 3s deadline and emits a normalised event on the `command`
-emitter topic (`/svc/social/emit/command`) with `{command, account,
+emitter topic (`/hub/emit/social/command`) with `{command, account,
 channel_id, operator, …}`. The service does nothing with a command itself.
 
 The `/new-agent` ack is public in the DM and carries an `ack_ref` in its event.

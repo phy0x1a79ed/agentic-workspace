@@ -100,9 +100,8 @@ cat "$(git rev-parse --show-toplevel)/results" > "$out"
 def test_full_tests_flags_only_new_failures(tmp_path):
     repo = tmp_path / "r"
     (repo / "scripts").mkdir(parents=True)
-    (repo / "awm/gateway/scripts").mkdir(parents=True)
     shutil.copy(REPO / "scripts/full-tests.sh", repo / "scripts/full-tests.sh")
-    fake = repo / "awm/gateway/scripts/run-tests.sh"
+    fake = repo / "scripts/run-tests.sh"
     fake.write_text(FAKE_RUN_TESTS)
     fake.chmod(0o755)
     git(repo, "init", "-q")

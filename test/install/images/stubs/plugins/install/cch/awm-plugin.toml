@@ -1,0 +1,11 @@
+[plugin]
+name = "cch"
+version = "0.0.0"
+
+[[service]]
+name = "cch"
+
+[[tool]]
+name = "harness-cc"
+major = 1
+implements = ["harness@1"]

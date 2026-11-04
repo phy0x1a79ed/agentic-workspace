@@ -7,7 +7,7 @@ loop that emits ``schedule.tick`` for every persisted schedule.
 
 The three schedule functions are exposed over the control WS and projected into
 the gateway catalog as ``events_<fn>`` tools. ``schedule.tick{game}`` is declared
-as an emitter and fanned out on ``/svc/events/emit/schedule.tick``; subscribers
+as an emitter and fanned out on ``/hub/emit/events/schedule.tick``; subscribers
 use it to wake a bot for the game.
 
 Run via ``run.sh`` (which the hub spawns and respawns):

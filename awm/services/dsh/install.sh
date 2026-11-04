@@ -5,8 +5,8 @@
 # Three halves, because this service has three kinds of dependency:
 #
 #   1. Python — the adapter, the supervisor and the mesh front. Installs the
-#      component libraries it imports first, then httpsfront (the front is a
-#      *configuration* of that component, not a copy of it), then the service.
+#      component libraries it imports first, tlsfront among them (the front is
+#      a *configuration* of that library, not a copy of it), then the service.
 #
 #   2. A node toolchain — its own mamba env pinned to node 24. The harness needs
 #      >= 22.19 and the node on the host PATH is older and carries no npm, so
@@ -19,7 +19,7 @@
 #      so it is stamped and skipped when the tree has not moved.
 #
 # Every step is idempotent and skips itself when already satisfied, because this
-# script runs on every deploy (awm/gateway/install.sh invokes each service's).
+# script runs on every deploy (awm/install.sh invokes each plugin's).
 #
 # Override the target env with AWM_ENV=<name>.
 set -euo pipefail
@@ -56,7 +56,8 @@ run() { echo "+ pip install -e $*"; mamba run -n "$ENV" pip install -e "$@"; }
 
 run "$AWM/service_components/config" --no-deps
 run "$AWM/service_components/gatewayclient" --no-deps
-run "$AWM/services/httpsfront" --no-deps
+run "$AWM/plugins/operations/grantlib" --no-deps
+run "$AWM/service_components/tlsfront" --no-deps
 run "$HERE"
 
 # Bake the target env's absolute interpreter into a gitignored `.runtime-env`

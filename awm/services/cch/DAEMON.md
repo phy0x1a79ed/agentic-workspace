@@ -129,8 +129,8 @@ kept seats afterwards. Nothing resumes the others.
 Any agent brings a node's daemon back with
 `reflection daemon_ensure peer=<node>`, with no ssh. When that answers
 `action: held`, `reflection daemon_release peer=<node>` ends the hold. When the
-verb does not answer at all, `keep` itself is down: run
-`awm services_restart name=keep peer=<node>`.
+verb does not answer at all, the `cch` service itself is down: run
+`awm services restart cch` on that node.
 
 ## Low memory
 

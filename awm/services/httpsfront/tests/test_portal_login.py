@@ -16,8 +16,9 @@ from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 from starlette.testclient import TestClient
 from verify_grant import canon, key_id, payload_digest
 
-from awm.httpsfront import portal, proxy
-from awm.httpsfront.auth import AS_COOKIE_NAME, COOKIE_NAME
+from awm.httpsfront import proxy
+from awm.tlsfront import portal
+from awm.tlsfront.auth import AS_COOKIE_NAME, COOKIE_NAME
 
 pytestmark = [pytest.mark.unit, pytest.mark.smoke]
 

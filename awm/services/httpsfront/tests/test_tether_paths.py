@@ -111,8 +111,8 @@ def test_a_near_miss_inside_the_mount_is_refused_rather_than_forwarded(path, why
     assert not policy.allows(path, "tony")
 
 
-@pytest.mark.parametrize("path", ["/tether-admin", "/tetherfoo", "/ui/tether",
-                                  "/rooms", "/roomy", "/ui/room"])
+@pytest.mark.parametrize("path", ["/tether-admin", "/tetherfoo", "/p/tether/tether",
+                                  "/rooms", "/roomy", "/p/room/room"])
 def test_a_name_that_merely_starts_the_same_is_not_this_mounts(path):
     """The mount is claimed by exact shape, so a future page called something
     beginning with these eight characters is still the gateway's — and reaching

@@ -91,7 +91,7 @@ API_MANIFEST: dict[str, Any] = {
             "description": (
                 "Fires on a VPN exit state change. Payload {profile, event, "
                 "container, exit_ip} where event ∈ {up, down, degraded} — "
-                "projected on /svc/vpn/emit/state. 'down' also fires when a live "
+                "projected on /hub/emit/vpn/state. 'down' also fires when a live "
                 "exit's tunnel drops (kill-switch), detected on the next status."
             ),
         },

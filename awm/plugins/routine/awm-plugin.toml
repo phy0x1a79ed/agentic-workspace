@@ -1,5 +1,3 @@
-# The plugin contract (plugin-contract.md, redux-core). service.toml carries the
-# same tool for today's Python gateway.
 [plugin]
 name = "routine"
 version = "0.1.0"

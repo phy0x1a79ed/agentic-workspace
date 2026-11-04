@@ -56,7 +56,7 @@ API_MANIFEST: dict[str, Any] = {
                 "does not come up in time, is held, or cannot run here. "
                 "Pass peer=<node> to bring another node's daemon back with no "
                 "ssh. When this verb itself does not answer, the node's keep "
-                "service is down: `awm services_restart name=keep` on that peer."
+                "service is down: run `awm services restart cch` on that node."
             ),
             "params": [
                 {"name": "timeout", "type": "number",

@@ -48,7 +48,6 @@ fn default_config(root: &std::path::Path) -> anyhow::Result<String> {
     let awm = root.join("awm");
     let cfg = toml::toml! {
         core_roots = [(awm.join("services").display().to_string()), (awm.join("plugins").display().to_string())]
-        page_roots = [(awm.join("pages").display().to_string())]
         workspace = (root.display().to_string())
     };
     Ok(toml::to_string_pretty(&cfg)?)

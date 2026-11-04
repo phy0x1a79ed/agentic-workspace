@@ -307,6 +307,6 @@ error rather than guessing.
 
 ## Iterating
 
-    awm dev shadow awm/services/reflection
+    bash awm/services/dev/sandbox/run.sh start
 
-execs this same `run.sh` as an overlay against a running sandbox hub.
+runs the worktree's gateway, which runs this same `run.sh` from the worktree.

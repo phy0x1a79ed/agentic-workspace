@@ -417,7 +417,6 @@ this folder, starts it with `bash run.sh`, and injects `AWM_HUB_URL`,
 `AWM_SERVICE_NAME` and `AWM_SERVICE_ID`. No auth.
 
 Only one copy may own the pool. The reconcile loop takes a non-blocking
-exclusive lock and skips the tick if it cannot get it, which covers an
-`awm dev shadow` overlay, a dev sandbox running its own copy against the same
-home directory, a stray manual run, and a predecessor that has not finished
+exclusive lock and skips the tick if it cannot get it, which covers a dev
+sandbox running its own copy against the same home directory, a stray manual run, and a predecessor that has not finished
 dying. The `list` pool summary reports whether the answering process holds it.

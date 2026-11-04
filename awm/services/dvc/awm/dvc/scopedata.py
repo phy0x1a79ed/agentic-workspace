@@ -2,7 +2,7 @@
 
 These resolve a scope from ``(project, scope)`` through the workspace layout
 and git, never the scopes database, so the dvc service answers without the
-scopes service. The engine itself lives in :mod:`awm.dvc.data_dvc`.
+scopes service. The engine itself lives in :mod:`awm.dvcdata.data_dvc`.
 """
 
 from __future__ import annotations
@@ -11,8 +11,8 @@ import subprocess
 from pathlib import Path
 
 from awm import config as _config
-from awm.dvc import data_dvc
-from awm.dvc.backup import has_cache_tag
+from awm.dvcdata import data_dvc
+from awm.dvcdata.cachetag import has_cache_tag
 
 
 def _git(*args: str) -> subprocess.CompletedProcess:

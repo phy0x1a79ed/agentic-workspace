@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Canonical install for the awm-httpsfront service (editable, into the `awm` env).
 #
-# Installs the component libraries it imports (config, gatewayclient) first, then
-# the service itself. The proxy is built on starlette/uvicorn/httpx/websockets,
+# Installs the component libraries it imports (config, gatewayclient, grantlib,
+# tlsfront) first, then the service itself. The proxy is built on
+# starlette/uvicorn/httpx/websockets,
 # which the gateway already depends on — so in the `awm` env they resolve as
 # already-satisfied. System dep: openssl (mint the CA + leaf) — see INSTALL.md.
 # Override the target env with AWM_ENV=<name>.
@@ -15,6 +16,7 @@ run() { echo "+ pip install -e $*"; mamba run -n "$ENV" pip install -e "$@"; }
 run "$AWM/service_components/config" --no-deps
 run "$AWM/service_components/gatewayclient" --no-deps
 run "$AWM/plugins/operations/grantlib" --no-deps
+run "$AWM/service_components/tlsfront" --no-deps
 run "$HERE"
 
 # Bake the target env's absolute interpreter into a gitignored `.runtime-env`

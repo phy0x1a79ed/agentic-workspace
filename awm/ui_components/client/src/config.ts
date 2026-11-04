@@ -3,10 +3,10 @@
  *
  * `fetchConfigContracts` lists every opted-in service contract (+ the gateway
  * global slot) with its live values; `saveConfigContract` writes one contract's
- * values back to its owning registrant. Both are same-origin gateway routes
- * (`/config/*`), so the page must be served by the hub (apiFetch is relative).
+ * values back to its owning service. Both are verbs of the gateway's native
+ * `awm` tool over `POST /invoke`.
  */
-import { apiFetch } from './auth';
+import { tool } from './invoke';
 
 export interface ConfigContract {
   /** Owner key: a service name, or 'gateway' for the global slot. */
@@ -20,20 +20,15 @@ export interface ConfigContract {
   unavailable: boolean;
 }
 
-/** GET /config/contracts — every published contract + live values. */
+/** `awm config_contracts` — every published contract + live values. */
 export function fetchConfigContracts(): Promise<{ contracts: ConfigContract[] }> {
-  return apiFetch<{ contracts: ConfigContract[] }>('/config/contracts', {
-    method: 'GET',
-  });
+  return tool('awm').call<{ contracts: ConfigContract[] }>('config_contracts');
 }
 
-/** POST /config/set — persist one contract's values to its owner. */
+/** `awm config_set` — persist one contract's values to its owner. */
 export function saveConfigContract(
   key: string,
   values: Record<string, unknown>,
 ): Promise<ConfigContract> {
-  return apiFetch<ConfigContract>('/config/set', {
-    method: 'POST',
-    body: { key, values },
-  });
+  return tool('awm').call<ConfigContract>('config_set', { key, values });
 }

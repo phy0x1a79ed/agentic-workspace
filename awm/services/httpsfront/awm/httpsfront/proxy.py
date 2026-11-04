@@ -1,155 +1,85 @@
-"""The off-host HTTPS reverse proxy — TLS front for the whole awm gateway.
+"""The whole-gateway HTTPS front — TLS for the awm gateway and its neighbours.
 
 The awm gateway binds **loopback plain HTTP** (``127.0.0.1:7819``) with no auth,
 by design. But powerful browser APIs — ``getUserMedia`` for the notes-page
 dictation, clipboard, etc. — need a *secure context*, which off-localhost means
 HTTPS. So this listener terminates TLS on ``0.0.0.0:<port>`` and transparently
 reverse-proxies **every** request — HTTP and WebSocket alike — to the loopback
-gateway, so the entire awm surface (pages at ``/ui/*``, service RPC at
-``/svc/*``, the hub control plane, config, …) is reachable over one HTTPS origin.
+gateway, so the entire awm surface (pages at ``/p/<plugin>/<page>/``, ``/invoke``,
+service mounts at ``/s/<service>/``, the hub control plane, …) is reachable over
+one HTTPS origin.
 
-Because the notes page (and every awm page) makes *same-origin* relative calls
-(``apiFetch('/svc/...')``, ``new WebSocket(<same-origin path>)``), fronting the
-gateway wholesale is what makes those calls Just Work under HTTPS — there is no
+Because every awm page makes *same-origin* relative calls, fronting the gateway
+wholesale is what makes those calls Just Work under HTTPS — there is no
 per-path allowlist to keep in sync.
 
-Two things the edge asserts on every proxied request: the caller is
-authenticated, and ``X-Awm-As`` names the identity the session was minted
-for (``user:<sub>``). The browser's own value of
-that header is discarded — downstream services trust it, so only the edge may
-write it.
+The TLS relay, the edge session and the raw-path contract are
+:mod:`awm.tlsfront.proxy`'s. This module adds what only the gateway's front
+carries: the landing page at ``/``, the vault, slice, tether and board mounts,
+and the public profile (``AWM_EDGE_PROFILE=public``), which narrows the door to
+the allow-list in :mod:`awm.httpsfront.policy` and, with ``AWM_EDGE_TLS=0``,
+serves plain HTTP on loopback for a TLS-terminating nginx in front.
 
-The public profile (``AWM_EDGE_PROFILE=public``) narrows the door to the
-allow-list in :mod:`awm.httpsfront.policy` and, with ``AWM_EDGE_TLS=0``, serves
-plain HTTP on loopback for a TLS-terminating nginx in front.
-
-**Routing reads the decoded path; forwarding sends the raw one.** Both are
-deliberate and neither may be "simplified" into the other. Every routing and
-policy decision needs the *decoded* path, because that is what the caller
-means; every upstream request needs the *raw* bytes, because rebuilding a URL
-from the decoded string loses the difference between ``%23`` and ``#`` and
-between ``%2e%2e`` and a directory climb. The gap between the two is closed by
-refusing any target that re-segments when decoded — see :func:`_re_segments`.
-
-Built on Starlette + uvicorn (TLS) with ``httpx`` for HTTP and the ``websockets``
-client for WS bridging — all already present in the ``awm`` env (the gateway
-depends on them). Runs in a daemon thread launched from the hub adapter's
-``on_start``; when the gateway drains/respawns this service, the process exits
-and the listener dies with it (one supervised lifetime, exactly like ``mic``).
+Runs in a daemon thread launched from the hub adapter's ``on_start``; when the
+gateway drains/respawns this service, the process exits and the listener dies
+with it (one supervised lifetime, exactly like ``mic``).
 """
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import socket
 import time
-from collections.abc import Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
-from pathlib import Path
-from urllib.parse import quote, urlsplit
 
 import httpx
-import uvicorn
-import websockets
 from starlette.applications import Starlette
-from starlette.background import BackgroundTask
 from starlette.requests import Request
-from starlette.responses import (
-    HTMLResponse,
-    JSONResponse,
-    RedirectResponse,
-    Response,
-    StreamingResponse,
-)
-from starlette.routing import Route, WebSocketRoute
-from starlette.websockets import WebSocket, WebSocketDisconnect
-from verify_grant import GrantInvalid
+from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
+from starlette.routing import BaseRoute, Route
+from starlette.websockets import WebSocket
 
-from awm.config import usertoken
-from awm.httpsfront import board, pages, policy, portal, slices, store, tether, vault
-from awm.httpsfront.auth import (
-    AS_COOKIE_NAME,
-    COOKIE_NAME,
-    AuthGate,
-    Shape,
-    bearer_of,
-    is_machine_sub,
+from awm import gatewayclient
+from awm.tlsfront.auth import is_machine_sub
+from awm.tlsfront.proxy import build_app as build_front
+from awm.tlsfront.proxy import (
+    CALLER_HEADERS,
+    HOP,
+    as_header,
+    authenticate_sub,
+    authenticate_ws,
+    bridge,
+    client_headers,
+    consumed_edge_token,
+    deny,
+    forward,
+    gated,
+    http_shape,
+    not_found,
+    query_of,
+    raw_target,
+    re_segments,
+    refresh_cookie,
+    req_headers,
+    samesite,
+    serve_app,
+    streamed,
+    upstream_unreachable,
+    upstream_url,
+    wants_html,
+    ws_headers,
+    ws_url,
 )
+
+from awm.httpsfront import board, pages, policy, slices, store, tether, vault
 
 log = logging.getLogger("awm.httpsfront.proxy")
 
-# Hop-by-hop headers must not be forwarded (RFC 7230 §6.1); the client/httpx set
-# their own. ``host`` is dropped so httpx derives it from the upstream URL.
-_HOP = {
-    "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
-    "te", "trailers", "transfer-encoding", "upgrade", "host",
-}
-
-# Request methods the front forwards (a superset covering the awm surface).
-_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"]
-
-_ALL_METHODS = _METHODS  # alias for route registration clarity
-
 _PEER_NAME = socket.gethostname().split(".")[0].title()
 
-# Routing reads the *decoded* path; forwarding sends the *raw* one. Those two
-# facts are the whole of the encoding contract on this edge, and they are the
-# kind of invariant that reads as an accident and gets "simplified" back into a
-# bug — so they live together, here, with the reason.
-
-
-def _raw_target(scope, decoded: str) -> bytes:
-    """The request path exactly as it arrived, percent-encoding intact.
-
-    Starlette's ``url.path`` is percent-*decoded*, so rebuilding an upstream URL
-    out of it destroys the difference between ``%23`` and ``#``: httpx reparses
-    the string it is handed and takes everything after a ``#`` as a fragment,
-    which it never sends. Trilium's client escapes its search string into the
-    path, so that alone truncated every attribute search to ``/api/search/``.
-
-    ASGI keeps the original bytes in ``raw_path`` — uvicorn sets it on both its
-    h11 and its httptools implementation, HTTP and WebSocket alike. A server
-    that omits it leaves us re-encoding the decoded path, which is lossy in
-    exactly this way but no worse than what it replaces.
-    """
-    raw = scope.get("raw_path")
-    if raw:
-        return raw.split(b"?", 1)[0]
-    return quote(decoded).encode("ascii")
-
-
-def _re_segments(raw: bytes, decoded: str) -> bool:
-    """Whether this target means one thing to the router and another upstream.
-
-    The two paths agree on everything except a target that *re-segments* when
-    decoded. An encoded separator (``%2f``, ``%5c``) is one segment to the
-    router and two to the upstream; a ``..`` — plain or arrived as ``%2e%2e`` —
-    is a segment to the router and a level up to any client that normalises
-    before sending, which is how ``/trilium/api/%2e%2e/etapi/app-info`` used to
-    classify as the vault's and arrive as the unauthenticated ETAPI's.
-
-    Refused outright rather than canonicalised: nothing this edge serves needs
-    either form, and a 404 is the same answer every other path off the list
-    gets.
-    """
-    low = raw.lower()
-    if b"%2f" in low or b"%5c" in low:
-        return True
-    return ".." in decoded.split("/")
-
-
-def _upstream_url(origin: str, raw_path: bytes, query: bytes) -> httpx.URL:
-    """``origin`` + the target, byte for byte.
-
-    ``copy_with(raw_path=…)`` sets the target verbatim instead of reparsing a
-    string — the reparse is what swallowed the fragment and what normalised the
-    ``..``. It carries the query with it, so nothing else may append one.
-    """
-    return httpx.URL(origin).copy_with(
-        raw_path=raw_path + (b"?" + query if query else b""))
-
+#: The header the gateway knows a service's own calls by.
+SERVICE_TOKEN_HEADER = "X-Awm-Service-Token"
 
 PUBLIC_PROFILE = "public"
 # Where a signed-in browser lands on the public profile. The vault, because
@@ -159,272 +89,56 @@ PUBLIC_PROFILE = "public"
 # index — an enumeration of the whole internal surface — to the internet.
 PUBLIC_HOME = vault.SHELL
 
-
-def _as_header(sub: str | None) -> str:
-    """The identity stamped on a forwarded request: ``user:<sub>``."""
-    return f"user:{sub or 'operator'}"
-
-
-def _origin_override(app) -> str | None:
-    """The scheme+authority a rewriting front presents as ``Origin``, or None.
-
-    ``_HOP`` drops the browser's ``Host`` so httpx derives it from the upstream
-    URL — so an upstream that compares ``Origin`` against ``Host`` sees a pair
-    that cannot match while ``Origin`` is forwarded verbatim. Rewriting it to
-    the upstream's own origin restores the comparison the upstream is actually
-    trying to make: same-origin, as it would be on loopback.
-    """
-    return getattr(app.state, "origin_override", None)
-
-
-#: Headers the gateway reads as *who is calling* or *which session this is*.
-#: Only a local process may set the pid pair and the redirect flag; a caller
-#: that crossed the edge could otherwise point reflection or `start_other`'s parent
-#: stamp at any local session. Dropped, never forwarded, case-insensitively.
-_CALLER_HEADERS = frozenset({
-    "x-awm-as", "x-awm-caller-pid", "x-awm-session-pid", "x-awm-peer-redirect"})
-
-
-def _consumed_edge_token(authorization: str | None) -> bool:
-    """Whether this ``Authorization`` is a device token the edge has read.
-
-    Any ``awmut1.`` bearer counts, verified or not: one that failed here may
-    still be live where it was meant for, and an upstream app that saw it could
-    replay it there.
-    """
-    return usertoken.looks_like_token(bearer_of(authorization))
-
-
-def _req_headers(request: Request, sub: str | None = None) -> dict[str, str]:
-    hdrs = {k: v for k, v in request.headers.items()
-            if k.lower() not in _HOP and k.lower() not in _CALLER_HEADERS}
-    if _consumed_edge_token(request.headers.get("authorization")):
-        hdrs.pop("authorization", None)
-    hdrs["X-Forwarded-Proto"] = "https"
-    # Overwrite, never default: the browser's value is unverified.
-    hdrs["X-Awm-As"] = _as_header(sub)
-    override = _origin_override(request.app)
-    # Only rewrite a header the browser actually sent: minting an Origin where
-    # there was none turns a same-origin navigation into a cross-origin one.
-    if override and "origin" in hdrs:
-        hdrs["origin"] = override
-    # ``host`` is dropped above so httpx derives it from the upstream URL, which
-    # means the upstream otherwise cannot tell what address the browser used.
-    # awm's own services never needed that, but a reverse-proxied third party
-    # does: an app that builds its self-origin from the request (for redirects,
-    # or to decide the ``Secure`` flag on its own cookies) derives a loopback
-    # http:// origin without this, and its browser session never persists.
-    host = request.headers.get("host")
-    if host:
-        hdrs["X-Forwarded-Host"] = host
-    if request.client:
-        hdrs["X-Forwarded-For"] = request.client.host
-    return hdrs
-
-
-def _resp_headers(resp: httpx.Response) -> list[tuple[str, str]]:
-    # Preserve everything except hop-by-hop; keep raw ``aiter_raw`` bytes so
-    # content-encoding + content-length stay consistent (we pass bytes through).
-    return [(k, v) for k, v in resp.headers.multi_items() if k.lower() not in _HOP]
-
-
-def _wants_html(request: Request) -> bool:
-    return "text/html" in (request.headers.get("accept") or "")
-
-
-def _samesite(app) -> str:
-    return "strict" if getattr(app.state, "profile", None) == PUBLIC_PROFILE else "lax"
-
-
-def _set_session_cookie(resp: Response, token: str, max_age: int,
-                        samesite: str = "lax") -> None:
-    resp.set_cookie(
-        COOKIE_NAME, token, max_age=max_age, path="/",
-        httponly=True, secure=True, samesite=samesite,
-    )
-
-
-def _set_as_cookie(resp: Response, sub: str, max_age: int,
-                   samesite: str = "lax") -> None:
-    resp.set_cookie(
-        AS_COOKIE_NAME, sub, max_age=max_age, path="/",
-        httponly=False, secure=True, samesite=samesite,
-    )
-
-
-def _unpack(result) -> tuple[bool, str | None, str | None]:
-    """``(ok, refreshed, sub)`` from a gate answer; a two-tuple (an older gate)
-    means the operator."""
-    ok, refreshed = result[0], result[1]
-    sub = result[2] if len(result) > 2 else None
-    return ok, refreshed, (sub or "operator") if ok else None
-
-
-async def _authenticate(request: Request) -> tuple[bool, str | None]:
-    """(ok, refreshed_cookie_token_or_None) for the current request."""
-    ok, refreshed, _ = await _authenticate_sub(request)
-    return ok, refreshed
-
-
-async def _authenticate_sub(request: Request, shape: Shape | None = None,
-                            ) -> tuple[bool, str | None, str | None]:
-    """(ok, refreshed_cookie_token_or_None, sub) for the current request.
-
-    Only the proxy legs pass ``shape``, so a scoped device token reaches the
-    paths its scope names and none of the edge's own routes.
-    """
-    gate: AuthGate = request.app.state.gate
-    return _unpack(await gate.authenticate(
-        cookie=request.cookies.get(COOKIE_NAME),
-        bearer=bearer_of(request.headers.get("authorization")),
-        shape=shape,
-    ))
+#: Trilium's own cookies, dropped whenever the awm identity changes.
+#:
+#: They are not namespaced by person and they sit at ``path=/``, so after a
+#: second person signs in on the same browser profile the first person's
+#: session identifier would still be sent. The vault does not know it, mints a
+#: fresh session and overwrites — self-healing, but the already-rendered page
+#: holds a CSRF token bound to the old identifier, so the next write 403s and
+#: the client has to re-bootstrap. Identity changes at sign-in and sign-out,
+#: and the library clears these at both, so the window simply does not open.
+VAULT_COOKIES = ("trilium.sid", "trilium-csrf")
 
 
 def _is_public(app) -> bool:
     return getattr(app.state, "profile", None) == PUBLIC_PROFILE
 
 
-def _not_found() -> Response:
-    return Response("not found", status_code=404)
-
-
-def _client_headers(conn: Request | WebSocket) -> dict[str, str]:
-    """The client-address headers the HTTP leg gives the relay, for a socket.
-
-    The same values :func:`_req_headers` sends: the peer address as
-    ``X-Forwarded-For``, and a ``cf-connecting-ip`` passed on as it arrived.
-    """
-    out: dict[str, str] = {}
-    cf = conn.headers.get("cf-connecting-ip")
-    if cf:
-        out["cf-connecting-ip"] = cf
-    if conn.client:
-        out["X-Forwarded-For"] = conn.client.host
-    return out
-
-
-def _deny(request: Request) -> Response:
-    """The approver's passkey login for a browser GET, else 401."""
-    if request.method == "GET" and _wants_html(request):
-        host = request.headers.get("host") or ""
-        path = portal.local_path(request.url.path) or "/"
-        return RedirectResponse(portal.login_url(f"https://{host}{path}"), status_code=302,
-                                headers={"Cache-Control": "no-store"})
-    return JSONResponse({"error": "unauthenticated"}, status_code=401)
-
-
-async def _portal(request: Request) -> Response:
-    """``GET /__auth/portal?grant=<grant>&next=<path>``: the approver's way back.
-
-    The grant is alcor's ``portal_login`` grant for this node, this host and this
-    path, spent once. The only success is a 302 to ``next`` with the session set,
-    so nothing renders under the address that carried the grant.
-    """
-    headers = {"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"}
-    path = portal.local_path(request.query_params.get("next"))
-    if path is None:
-        return JSONResponse({"error": "next is a local path"}, status_code=400, headers=headers)
-    try:
-        sub = request.app.state.grants.accept(
-            request.query_params.get("grant") or "",
-            portal.host_of(request.headers.get("host")), path)
-    except GrantInvalid as exc:
-        log.info("edge: portal grant refused: %s", exc)
-        return JSONResponse({"error": "the sign-in grant is refused"}, status_code=403,
-                            headers=headers)
-    minted = await request.app.state.gate.mint_session(sub) if sub else None
-    if minted is None:
-        return JSONResponse({"error": "no session can be signed here"}, status_code=503,
-                            headers=headers)
-    token, ttl = minted
-    resp = RedirectResponse(path, status_code=302, headers=headers)
-    samesite = _samesite(request.app)
-    _set_session_cookie(resp, token, ttl, samesite)
-    _set_as_cookie(resp, sub, ttl, samesite)
-    _clear_vault_cookies(resp)
-    return resp
-
-
-def _clear_vault_cookies(resp: Response) -> None:
-    """Drop Trilium's own cookies when the awm identity changes.
-
-    They are not namespaced by person and they sit at ``path=/``, so after a
-    second person signs in on the same browser profile the first person's
-    session identifier would still be sent. The vault does not know it, mints a
-    fresh session and overwrites — self-healing, but the already-rendered page
-    holds a CSRF token bound to the old identifier, so the next write 403s and
-    the client has to re-bootstrap. Identity changes at exactly two moments and
-    both are here, so the window simply does not open.
-    """
-    for name in ("trilium.sid", "trilium-csrf"):
-        resp.delete_cookie(name, path="/")
-
-
-async def _logout(request: Request) -> Response:
-    resp = JSONResponse({"ok": True})
-    resp.delete_cookie(COOKIE_NAME, path="/")
-    resp.delete_cookie(AS_COOKIE_NAME, path="/")
-    _clear_vault_cookies(resp)
-    return resp
-
-
-async def _whoami(request: Request) -> Response:
-    ok, _, sub = await _authenticate_sub(request)
-    if ok:
-        return JSONResponse({"user": sub})
-    return JSONResponse({"error": "unauthenticated"}, status_code=401)
-
-
 async def _public_home(request: Request) -> Response:
     """``/`` on the public profile: the vault, or the login form first."""
-    ok, _, _ = await _authenticate_sub(request)
+    ok, _, _ = await authenticate_sub(request)
     if not ok:
-        return _deny(request)
+        return deny(request)
     return RedirectResponse(PUBLIC_HOME, status_code=302)
 
 
 async def _root(request: Request) -> Response:
-    """Authenticated landing page at ``/`` — a dynamic index of ``/ui/*`` pages
-    pulled from the gateway registry, tagged and filterable via ``store``."""
-    ok, refreshed, sub = await _authenticate_sub(request)
+    """Authenticated landing page at ``/`` — an index of the pages the
+    gateway's loaded plugins serve, tagged and filterable via ``store``."""
+    ok, refreshed, _ = await authenticate_sub(request)
     if not ok:
-        return _deny(request)
+        return deny(request)
     app = request.app
-    services: list = []
+    entries: list = []
     try:
         client: httpx.AsyncClient = app.state.client
-        r = await client.get(app.state.http_up + "/hub/services")
+        r = await client.get(app.state.http_up + "/hub/plugins")
         if r.status_code == 200:
-            services = (r.json() or {}).get("services", [])
+            entries = pages.page_entries(r.json())
     except Exception as exc:  # noqa: BLE001 — degrade to an empty index
-        log.debug("landing: could not fetch registry: %s", exc)
+        log.debug("landing: could not fetch the plugin snapshot: %s", exc)
     dao = store.LandingDAO()
-    page_names = [str(s.get("name", s.get("prefix", ""))) for s in services]
-    tags_by_page = dao.tags_by_page(page_names)
-    tag_counts = dao.all_tag_counts()
-    selected = dao.selected_tags()
-    display_names = dao.display_names(page_names)
+    page_names = [e["name"] for e in entries]
     resp = HTMLResponse(
         pages.landing_page(
-            services, tags_by_page, tag_counts, selected, _PEER_NAME,
-            display_names=display_names,
+            entries, dao.tags_by_page(page_names), dao.all_tag_counts(),
+            dao.selected_tags(), _PEER_NAME,
+            display_names=dao.display_names(page_names),
         )
     )
-    if refreshed:
-        _set_session_cookie(resp, refreshed,
-                            int(await app.state.gate.session_ttl_seconds()))
+    await refresh_cookie(app, resp, refreshed)
     return resp
-
-
-async def _body(request: Request):
-    """Stream a request body of known length upstream rather than holding it
-    whole: a peer's file-hop call can carry gigabytes. Anything else is read
-    first, so the upstream leg is framed by length and a caller's
-    ``Transfer-Encoding`` never reaches it."""
-    if request.headers.get("content-length") not in (None, "", "0"):
-        return request.stream()
-    return await request.body()
 
 
 async def _landing_add_tag(request: Request) -> Response:
@@ -565,7 +279,7 @@ def _vault_unavailable(request: Request, reason: str) -> Response:
     is 503 with a ``Retry-After`` so a browser and a monitor both do the right
     thing, and the page refreshes itself so nobody has to.
     """
-    if request.method == "GET" and _wants_html(request):
+    if request.method == "GET" and wants_html(request):
         body = pages.vault_unavailable_page(reason)
         return HTMLResponse(body, status_code=503,
                             headers={"Retry-After": "5",
@@ -574,16 +288,36 @@ def _vault_unavailable(request: Request, reason: str) -> Response:
                         status_code=503, headers={"Retry-After": "5"})
 
 
+async def _public_invoke(request: Request, sub: str | None,
+                         refreshed: str | None) -> Response:
+    """``/invoke`` on the public profile: the trilium page's read verbs only.
+
+    The body is read under a cap and checked before anything is forwarded,
+    then sent as read, so what was checked is what the gateway runs.
+    """
+    content = await _capped_body(request, policy.INVOKE_BODY_CAP)
+    if content is None or not policy.invoke_allows(content):
+        return not_found()
+    raw = raw_target(request.scope, request.url.path)
+    return await forward(request, request.app.state.http_up, raw, sub, refreshed,
+                         content=content)
+
+
 async def _http_proxy(request: Request) -> Response:
     app = request.app
     public = _is_public(app)
     path = request.url.path
-    raw = _raw_target(request.scope, path)
+    raw = raw_target(request.scope, path)
     # Before the upstream branch, or the gateway leg keeps the hole.
-    if _re_segments(raw, path):
-        return _not_found()
-    if public and policy.classify(path) is policy.Verdict.DENY:
-        return _not_found()
+    if re_segments(raw, path):
+        return not_found()
+    verdict = policy.classify(path) if public else None
+    if verdict is policy.Verdict.DENY:
+        return not_found()
+    # `/invoke` is called with POST and nothing else, so any other method is a
+    # path off the list, signed in or not.
+    if verdict is policy.Verdict.INVOKE and request.method != "POST":
+        return not_found()
     # The slice mount, answered before authentication rather than after it.
     # This is the one path on this listener a caller reaches without a session,
     # and it stays narrow because the token has to name a slice the trilium
@@ -592,7 +326,7 @@ async def _http_proxy(request: Request) -> Response:
     vault_up = _vault_up(app)
     if vault_up and slices.refused(path):
         # Before the branch below, and not left to the policy door: this node may run no profile.
-        return _not_found()
+        return not_found()
     if vault_up and slices.owns(path):
         return await _slice_proxy(request, path, raw, vault_up)
     # The tether mount, answered before authentication for the same structural
@@ -610,10 +344,10 @@ async def _http_proxy(request: Request) -> Response:
     # because a mesh node's edge runs no profile at all.
     tether_up = _tether_up(app)
     if tether.refused(path):
-        return _not_found()
+        return not_found()
     if tether.owns(path):
         return (await _tether_proxy(request, raw, tether_up)
-                if tether_up else _not_found())
+                if tether_up else not_found())
     # The board mount, answered before authentication because the board
     # authenticates its own parties and the edge must not stand in front of
     # that with a login or a node token. The whole mount is claimed on every
@@ -621,58 +355,32 @@ async def _http_proxy(request: Request) -> Response:
     if board.in_mount(path):
         board_up = _board_up(app)
         if not board_up or not board.allows(request.method, path):
-            return _not_found()
+            return not_found()
         return await _board_proxy(request, raw, board_up)
-    ok, refreshed, sub = await _authenticate_sub(request, Shape(
-        request.method, path, raw, request.scope.get("query_string") or b"", False))
+    ok, refreshed, sub = await authenticate_sub(request, http_shape(request, path, raw))
     if not ok:
-        return _deny(request)
+        return deny(request)
     if public and not policy.allows(path, sub):
-        return _not_found()
+        return not_found()
+    if verdict is policy.Verdict.INVOKE:
+        return await _public_invoke(request, sub, refreshed)
     # The vault is the upstream on this listener that is not the gateway.
     # Which upstream is decided here and nowhere else, from a path the caller
     # cannot use to name anything but the vault.
-    up = app.state.http_up
     if vault_up and vault.owns(path):
         if not public and is_machine_sub(sub):
             # The mesh edge runs no allow-list, so the check `policy.allows`
             # would have made on the public profile is made here instead.
-            return _not_found()
+            return not_found()
         inner = vault.upstream_raw_path(raw)
         if inner is None:
             # The mount is in the decoded path but not in the bytes.
-            return _not_found()
-        up, raw = vault_up, inner
-    client: httpx.AsyncClient = app.state.client
-    url = _upstream_url(up, raw, request.scope.get("query_string") or b"")
-    upstream_req = client.build_request(
-        request.method, url, headers=_req_headers(request, sub),
-        content=await _body(request),
-    )
-    try:
-        resp = await client.send(upstream_req, stream=True)
-    except httpx.ConnectError:
-        if up is vault_up:
-            return _vault_unavailable(request, "not listening yet")
-        return Response("upstream gateway unreachable", status_code=502)
-    out = StreamingResponse(
-        resp.aiter_raw(),
-        status_code=resp.status_code,
-        background=BackgroundTask(resp.aclose),
-    )
-    # Assign the raw list rather than passing ``headers=dict(...)``: a dict keeps
-    # only the last of a repeated key, and ``Set-Cookie`` is repeated whenever an
-    # upstream sets more than one cookie in a response. Collapsing those loses
-    # every cookie but the last, which is invisible until a wrapped app's session
-    # simply fails to establish. ``set_cookie`` below appends to this same list.
-    out.raw_headers = [
-        (k.encode("latin-1"), v.encode("latin-1")) for k, v in _resp_headers(resp)
-    ]
-    if refreshed:
-        _set_session_cookie(out, refreshed,
-                            int(await app.state.gate.session_ttl_seconds()),
-                            _samesite(app))
-    return out
+            return not_found()
+        return await forward(
+            request, vault_up, inner, sub, refreshed,
+            unreachable=lambda r: _vault_unavailable(r, "not listening yet"))
+    return await forward(request, app.state.http_up, raw, sub, refreshed,
+                         unreachable=upstream_unreachable)
 
 
 async def _tether_proxy(request: Request, raw: bytes, up: str) -> Response:
@@ -698,12 +406,12 @@ async def _tether_proxy(request: Request, raw: bytes, up: str) -> Response:
     inner = tether.upstream_raw_path(raw)
     if inner is None:
         # The mount is in the decoded path but not in the bytes.
-        return _not_found()
-    headers = _req_headers(request)
+        return not_found()
+    headers = req_headers(request)
     headers.pop("X-Awm-As", None)
 
     client: httpx.AsyncClient = request.app.state.client
-    url = _upstream_url(up, inner, request.scope.get("query_string") or b"")
+    url = upstream_url(up, inner, request.scope.get("query_string") or b"")
     upstream_req = client.build_request(
         request.method, url, headers=headers, content=await request.body(),
     )
@@ -712,15 +420,8 @@ async def _tether_proxy(request: Request, raw: bytes, up: str) -> Response:
     except httpx.ConnectError:
         # The same answer the relay gives for everything it declines, so a
         # relay that is down and a slot that never existed are one reply.
-        return _not_found()
-    out = StreamingResponse(
-        resp.aiter_raw(),
-        status_code=resp.status_code,
-        background=BackgroundTask(resp.aclose),
-    )
-    out.raw_headers = [
-        (k.encode("latin-1"), v.encode("latin-1")) for k, v in _resp_headers(resp)
-    ]
+        return not_found()
+    out = streamed(resp)
     return out
 
 
@@ -737,7 +438,7 @@ def _board_headers(request: Request, *, drop_auth: bool = False) -> dict[str, st
     hdrs = {}
     for key, value in request.headers.items():
         low = key.lower()
-        if (low in _HOP or low in _CALLER_HEADERS or low.startswith("x-awm-")
+        if (low in HOP or low in CALLER_HEADERS or low.startswith("x-awm-")
                 or low.startswith("x-forwarded-") or low in ("cookie", "content-length")):
             continue
         hdrs[key] = value
@@ -822,16 +523,16 @@ async def _board_proxy(request: Request, raw: bytes, up: str) -> Response:
     """
     inner = board.upstream_raw_path(raw)
     if inner is None:
-        return _not_found()
+        return not_found()
     auths = request.headers.getlist("authorization")
     if len(auths) > 1:
-        return _not_found()
-    drop_auth = bool(auths) and _consumed_edge_token(auths[0])
+        return not_found()
+    drop_auth = bool(auths) and consumed_edge_token(auths[0])
     body = await _capped_body(request, board.body_cap(request.method, request.url.path))
     if body is None:
         return Response("request body too large", status_code=413)
     client: httpx.AsyncClient = request.app.state.board_client
-    url = _upstream_url(up, inner, request.scope.get("query_string") or b"")
+    url = upstream_url(up, inner, request.scope.get("query_string") or b"")
     upstream_req = client.build_request(
         request.method, url, headers=_board_headers(request, drop_auth=drop_auth),
         content=body,
@@ -842,11 +543,8 @@ async def _board_proxy(request: Request, raw: bytes, up: str) -> Response:
         return Response("board busy", status_code=503)
     except httpx.TransportError:
         # The same answer the board gives for everything it declines.
-        return _not_found()
-    out = StreamingResponse(_relay(resp), status_code=resp.status_code)
-    out.raw_headers = [
-        (k.encode("latin-1"), v.encode("latin-1")) for k, v in _resp_headers(resp)
-    ]
+        return not_found()
+    out = streamed(resp, _relay(resp))
     return out
 
 
@@ -872,12 +570,12 @@ async def _slice_proxy(request: Request, path: str, raw: bytes,
     app = request.app
     token = slices.token_of(path)
     if token is None:
-        return _not_found()
+        return not_found()
     info = await _resolve_slice(app, token)
     if info is None:
         # 404, deliberately not 403: a slice that was revoked, expired or never
         # existed should look like a URL that never existed either.
-        return _not_found()
+        return not_found()
     if path == slices.shell_bare(token):
         # Same reasoning as ``_vault_bare`` — every reference in the shell is
         # relative and resolves against the document's directory.
@@ -885,32 +583,25 @@ async def _slice_proxy(request: Request, path: str, raw: bytes,
     inner = slices.upstream_raw_path(raw)
     if inner is None:
         # The mount is in the decoded path but not in the bytes.
-        return _not_found()
+        return not_found()
     visitor = _slice_visitor(request, info, token)
     if visitor is _SLICE_MISMATCH:
         # Loud rather than silently mis-attributed: this link names somebody
         # the token does not.
         return Response("this link names a different visitor", status_code=400)
     client: httpx.AsyncClient = app.state.client
-    url = _upstream_url(vault_up, inner, request.scope.get("query_string") or b"")
+    url = upstream_url(vault_up, inner, request.scope.get("query_string") or b"")
     body = await request.body()
     upstream_req = client.build_request(
         request.method, url,
-        headers=_slice_req_headers(request, info, visitor), content=body,
+        headers=_slicereq_headers(request, info, visitor), content=body,
     )
     try:
         resp = await client.send(upstream_req, stream=True)
     except httpx.ConnectError:
         return _vault_unavailable(request, "not listening yet")
-    out = StreamingResponse(
-        resp.aiter_raw(),
-        status_code=resp.status_code,
-        background=BackgroundTask(resp.aclose),
-    )
-    out.raw_headers = [
-        (k.encode("latin-1"), v.encode("latin-1")) for k, v in _resp_headers(resp)
-    ]
-    _remember_slice_visitor(request, out, info, token, visitor, _samesite(app))
+    out = streamed(resp)
+    _remember_slice_visitor(request, out, info, token, visitor, samesite(app))
     return out
 
 
@@ -946,18 +637,18 @@ def _remember_slice_visitor(request: Request, out: Response, info: dict,
                    httponly=True, secure=True, samesite=samesite)
 
 
-def _slice_req_headers(request: Request, info: dict, visitor) -> dict[str, str]:
+def _slicereq_headers(request: Request, info: dict, visitor) -> dict[str, str]:
     """The forwarded headers: the slice's three, and no identity at all.
 
     Overwritten rather than defaulted, exactly as ``X-Awm-As`` is in
-    :func:`_req_headers`. Trilium trusts these as much as it trusts loopback,
+    :func:`~awm.tlsfront.proxy.req_headers`. Trilium trusts these as much as it trusts loopback,
     which is total and correct — the child binds loopback and this edge is its
     only route in — so a browser must not be able to state any of them.
     """
-    hdrs = {k: v for k, v in request.headers.items() if k.lower() not in _HOP}
+    hdrs = {k: v for k, v in request.headers.items() if k.lower() not in HOP}
     hdrs["X-Forwarded-Proto"] = "https"
     for name in (slices.HEADER_ROOT, slices.HEADER_USER, slices.HEADER_WRITE,
-                 *_CALLER_HEADERS):
+                 *CALLER_HEADERS):
         hdrs.pop(name.lower(), None)
     hdrs[slices.HEADER_ROOT] = info["note_id"]
     hdrs[slices.HEADER_WRITE] = "1" if info.get("write") else "0"
@@ -974,9 +665,12 @@ def _slice_req_headers(request: Request, info: dict, visitor) -> dict[str, str]:
 async def _resolve_slice(app, token: str) -> dict | None:
     """What ``token`` opens, or ``None`` if it opens nothing.
 
-    Asked of the trilium service over the gateway on loopback, with no
-    ``X-Awm-As``: an absent identity is what that service's ``_operator_only``
-    admits, and it is absent here because this call did not cross an edge.
+    Asked of the trilium service over the gateway on loopback as this
+    service, by its token and with no ``X-Awm-As``: the gateway runs it on the
+    service lane with no identity, which is what that service's
+    ``_operator_only`` admits, and the identity is absent because this call did
+    not cross an edge. The token is also what holds the call to this plugin's
+    ``[[needs.tool]]`` entry for ``trilium.slice_resolve``.
 
     The answer is ``{"found": bool, "note_id", "user", "write"}``, which the
     gateway delivers as JSON or as a JSON string; anything that is not a
@@ -993,7 +687,9 @@ async def _resolve_slice(app, token: str) -> dict | None:
     try:
         resp = await client.post(
             app.state.http_up.rstrip("/") + "/invoke",
-            json={"name": "trilium_slice_resolve", "args": {"token": token}},
+            json={"name": "trilium",
+                  "args": {"verb": "slice_resolve", "args": {"token": token}}},
+            headers=_service_headers(),
             timeout=5.0,
         )
     except httpx.HTTPError as exc:
@@ -1006,6 +702,12 @@ async def _resolve_slice(app, token: str) -> dict | None:
             info = result
     cache[token] = (now + SLICE_RESOLVE_TTL, info)
     return info
+
+
+def _service_headers() -> dict[str, str]:
+    """This service's token, when the supervisor gave it one."""
+    token = gatewayclient.service_token()
+    return {SERVICE_TOKEN_HEADER: token} if token else {}
 
 
 def _invoke_result(result) -> dict:
@@ -1023,36 +725,19 @@ def _invoke_result(result) -> dict:
     return result if isinstance(result, dict) else {}
 
 
-async def _ca(request: Request) -> Response:
-    """Serve the local root CA so a device can install + trust it once, clearing
-    ERR_CERT_AUTHORITY_INVALID. Sent as a downloadable
-    ``application/x-x509-ca-cert`` so Android/iOS offer to install it."""
-    ca_path: str = request.app.state.ca_path
-    try:
-        body = Path(ca_path).read_bytes()
-    except OSError:
-        return Response("CA not available", status_code=404)
-    return Response(
-        body,
-        media_type="application/x-x509-ca-cert",
-        headers={"Content-Disposition": 'attachment; filename="awm-ca.crt"'},
-    )
-
-
 async def _ws_proxy(ws: WebSocket) -> None:
-    """Bridge a browser WebSocket to the same path on the loopback gateway,
-    pumping text+binary frames both directions until either side closes."""
+    """Bridge a browser WebSocket to the same path on the loopback gateway, or
+    on the vault, slice or tether upstream that owns the path."""
     app = ws.app
     path = ws.url.path
-    raw = _raw_target(ws.scope, path)
-    if _re_segments(raw, path):
+    target = raw = raw_target(ws.scope, path)
+    if re_segments(raw, path):
         await ws.close(code=1008)
         return
     # The board speaks SSE, never a socket, and its mount is not the gateway's.
     if board.in_mount(path):
         await ws.close(code=1008)
         return
-    query = ws.scope.get("query_string") or b""
     up = app.state.ws_up
     vault_ws = getattr(app.state, "vault_ws_up", None)
     is_vault = bool(vault_ws) and vault.owns(path)
@@ -1070,39 +755,20 @@ async def _ws_proxy(ws: WebSocket) -> None:
     if tether.refused(path) or (is_tether and not tether_ws):
         await ws.close(code=1008)
         return
-    if is_vault:
+    if is_vault or is_slice or is_tether:
         # The client derives its socket URL from the page's own pathname, so a
         # shell served at /trilium/ opens its socket there. Same rewrite as the
         # HTTP leg, or the vault's live updates never arrive and nothing says so.
-        inner = vault.upstream_raw_path(raw)
+        mount = vault if is_vault else slices if is_slice else tether
+        inner = mount.upstream_raw_path(raw)
         if inner is None:
             await ws.close(code=1008)
             return
-        up, raw = vault_ws, inner
-    elif is_slice:
-        inner = slices.upstream_raw_path(raw)
-        if inner is None:
-            await ws.close(code=1008)
-            return
-        up, raw = vault_ws, inner
-    elif is_tether:
-        inner = tether.upstream_raw_path(raw)
-        if inner is None:
-            await ws.close(code=1008)
-            return
-        up, raw = tether_ws, inner
-    # ``websockets.connect`` parses the URI without decoding its path, so the
-    # bytes reach the upstream as they arrived — the same contract the HTTP leg
-    # gets from ``copy_with(raw_path=…)``.
-    up_url = up + (raw + (b"?" + query if query else b"")).decode("ascii")
+        up, raw = (tether_ws if is_tether else vault_ws), inner
 
-    # Edge auth: Starlette HTTP handling never sees a WS scope, so the guard is
-    # enforced here, before accept(). A browser sends the session cookie on the
-    # WS handshake (same-origin); a peer/client sends a bearer. No cookie
-    # refresh on a WS (it is not an HTTP response).
-    gate: AuthGate = app.state.gate
     public = _is_public(app)
-    if public and policy.classify(ws.url.path) is policy.Verdict.DENY:
+    # `/invoke` is a POST; on the public door it has no socket form.
+    if public and policy.classify(path) in (policy.Verdict.DENY, policy.Verdict.INVOKE):
         await ws.close(code=1008)
         return
     slice_info = None
@@ -1124,12 +790,8 @@ async def _ws_proxy(ws: WebSocket) -> None:
         # refuses a pair it did not issue before this socket becomes one.
         pass
     else:
-        ok, _, sub = _unpack(await gate.authenticate(
-            cookie=ws.cookies.get(COOKIE_NAME),
-            bearer=bearer_of(ws.headers.get("authorization")),
-            shape=Shape("GET", path, _raw_target(ws.scope, path), query, True),
-        ))
-        if not ok or (public and not policy.allows(ws.url.path, sub)):
+        ok, sub = await authenticate_ws(ws, path, target)
+        if not ok or (public and not policy.allows(path, sub)):
             await ws.close(code=1008)  # policy violation
             return
         # The operator session has the gateway's WebSocket, never the vault's.
@@ -1137,21 +799,7 @@ async def _ws_proxy(ws: WebSocket) -> None:
             await ws.close(code=1008)
             return
 
-    # Forward cookies and the verified identity so the gateway sees the real
-    # caller. ``origin`` and the forwarded-* hints matter only for a
-    # reverse-proxied third party: an upstream that origin-checks its WS
-    # upgrades (an allowlist of the exact scheme+host+port a browser may
-    # connect from) rejects every handshake if the header never arrives. The
-    # gateway ignores all but X-Awm-As.
-    fwd = {}
-    for k in ("cookie", "authorization", "origin"):
-        v = ws.headers.get(k)
-        if v:
-            fwd[k] = v
-    # Only these three are copied, so none of `_CALLER_HEADERS` can ride along;
-    # a device token is dropped for the reason given at `_consumed_edge_token`.
-    if _consumed_edge_token(fwd.get("authorization")):
-        fwd.pop("authorization", None)
+    fwd = ws_headers(ws)
     if slice_info is not None:
         visitor = _slice_visitor(ws, slice_info, slice_token)
         if visitor is _SLICE_MISMATCH:
@@ -1167,149 +815,29 @@ async def _ws_proxy(ws: WebSocket) -> None:
         # one it never checked. The relay wants none: what admits this socket
         # is a slot and a ticket it issued itself. The address goes as the
         # plain leg sends it, because the relay keys its miss budget on it.
-        fwd.update(_client_headers(ws))
+        fwd.update(client_headers(ws))
     else:
-        fwd["X-Awm-As"] = _as_header(sub)
-    override = _origin_override(app)
-    if override and "origin" in fwd:
-        fwd["origin"] = override
-    fwd["X-Forwarded-Proto"] = "https"
-    host = ws.headers.get("host")
-    if host:
-        fwd["X-Forwarded-Host"] = host
-
-    # Subprotocols are negotiated end to end rather than dropped: a browser that
-    # asks for one and gets a handshake response without it fails the connection
-    # per RFC 6455. No awm service uses them, so `or None` keeps the gateway
-    # front's behaviour byte-identical.
-    subprotocols = list(ws.scope.get("subprotocols") or [])
-
-    try:
-        upstream = await websockets.connect(
-            up_url, additional_headers=fwd, max_size=None, open_timeout=10,
-            subprotocols=subprotocols or None,
-        )
-    except Exception as exc:  # noqa: BLE001 — upstream refused / bad path
-        # Path only, never the query string — see the log_level note in serve().
-        log.debug("ws upstream connect failed for %s: %s", ws.url.path, exc)
-        # Reject the handshake outright rather than accept-then-close, so the
-        # client sees a clean failure instead of a socket that opens and dies.
-        await ws.close(code=1011)
-        return
-    await ws.accept(subprotocol=getattr(upstream, "subprotocol", None))
-
-    async def client_to_upstream() -> None:
-        try:
-            while True:
-                msg = await ws.receive()
-                t = msg.get("type")
-                if t == "websocket.disconnect":
-                    break
-                if msg.get("text") is not None:
-                    await upstream.send(msg["text"])
-                elif msg.get("bytes") is not None:
-                    await upstream.send(msg["bytes"])
-        except WebSocketDisconnect:
-            pass
-
-    async def upstream_to_client() -> None:
-        try:
-            async for data in upstream:
-                if isinstance(data, (bytes, bytearray)):
-                    await ws.send_bytes(bytes(data))
-                else:
-                    await ws.send_text(data)
-        except Exception:  # noqa: BLE001 — upstream closed
-            pass
-
-    a = asyncio.ensure_future(client_to_upstream())
-    b = asyncio.ensure_future(upstream_to_client())
-    try:
-        await asyncio.wait({a, b}, return_when=asyncio.FIRST_COMPLETED)
-    finally:
-        for task in (a, b):
-            task.cancel()
-        try:
-            await upstream.close()
-        except Exception:  # noqa: BLE001
-            pass
-        try:
-            await ws.close()
-        except Exception:  # noqa: BLE001
-            pass
+        fwd["X-Awm-As"] = as_header(sub)
+    await bridge(ws, ws_url(up, raw, query_of(ws)), fwd)
 
 
-def _origin_of(url: str) -> str:
-    """``scheme://host[:port]`` of ``url`` — an RFC 6454 origin, no path."""
-    parts = urlsplit(url)
-    return f"{parts.scheme}://{parts.netloc}"
-
-
-#: An extra endpoint a wrapping front adds: ``(path, methods, handler)``.
-ExtraRoute = tuple[str, Sequence[str], Callable[[Request], Awaitable[Response]]]
-
-
-def _gated(
-    handler: Callable[[Request], Awaitable[Response]],
-) -> Callable[[Request], Awaitable[Response]]:
-    """Wrap an extra route in the edge session check the catch-all proxy applies.
-
-    Same deny shape (login page for a browser GET, 401 otherwise) and the same
-    sliding-cookie refresh, so an added endpoint is indistinguishable from a
-    proxied path as far as auth is concerned.
-    """
-    async def _wrapped(request: Request) -> Response:
-        ok, refreshed, sub = await _authenticate_sub(request)
-        if not ok:
-            return _deny(request)
-        resp = await handler(request)
-        if refreshed:
-            _set_session_cookie(
-                resp, refreshed,
-                int(await request.app.state.gate.session_ttl_seconds()),
-                _samesite(request.app),
-            )
-        return resp
-
-    return _wrapped
-
-
-def build_app(upstream: str, ca_path: str, *, landing: bool = True,
-              extra_routes: Sequence[ExtraRoute] | None = None,
-              rewrite_origin: bool = False,
+def build_app(upstream: str, ca_path: str, *,
               profile: str | None = None,
               vault_upstream: str | None = None,
               relay_upstream: str | None = None,
               board_upstream: str | None = None) -> Starlette:
-    """Assemble the front. ``landing=False`` drops the awm index page at ``/``.
+    """Assemble the gateway's front on :func:`awm.tlsfront.proxy.build_app`.
 
     ``profile="public"`` builds the internet-facing door: no CA download, no
-    autologin link, no landing page (``/`` sends a signed-in browser to the
-    notes page), ``SameSite=Strict`` cookies, and every proxied path checked
-    against :mod:`awm.httpsfront.policy` — a path off the list is 404 whether
-    or not the caller is signed in.
-
-    The landing page is right for the gateway front, whose ``/`` has nothing
-    else to serve. It is wrong for a front that sits in front of a *single*
-    app — a wrapped app's SPA lives at ``/``, and the index route would shadow
-    it. Turning it off lets ``/`` fall through to the catch-all proxy, which is
-    what makes this module reusable for any upstream rather than the gateway
-    alone. Default keeps the gateway front's behaviour byte-identical.
-
-    ``extra_routes`` are ``(path, methods, handler)`` triples for endpoints the
-    upstream cannot serve itself — a sign-in shim that has to shell out to the
-    wrapped binary, say. They are registered after the ``/__auth/*`` routes, so
-    they cannot shadow the edge's own auth surface, and **this function gates
-    them** with the same check the catch-all proxy applies, including the
-    sliding cookie refresh. Handlers are therefore plain endpoints that may
-    assume an authenticated caller: the gate is not something a caller can
-    forget, because the whole reason such a route exists is that it does
-    something privileged on the upstream's behalf.
+    landing page (``/`` sends a signed-in browser to the vault),
+    ``SameSite=Strict`` cookies, and every proxied path checked against
+    :mod:`awm.httpsfront.policy` — a path off the list is 404 whether or not
+    the caller is signed in.
 
     ``vault_upstream`` adds the shared knowledge base as a *second* upstream on
     this same listener, mounted at :data:`vault.SHELL`. It is what makes one
     origin, one session and one login cover both awm and the vault. Off by
-    default, so every existing caller is unchanged.
+    default.
 
     ``relay_upstream`` adds the channel relay, mounted at
     :data:`tether.PREFIX` and :data:`tether.ROOMS` — and unlike the vault, its paths are reachable
@@ -1325,80 +853,43 @@ def build_app(upstream: str, ca_path: str, *, landing: bool = True,
     authenticates its own parties and the edge passes their ``Authorization``
     through. Only the method-and-path shapes in :mod:`awm.httpsfront.board`
     are forwarded. Off by default; the mount answers 404 until it is wired.
-
-    ``rewrite_origin=True`` replaces a present ``Origin`` with the upstream's
-    own scheme+authority on both the HTTP and the WebSocket path. Two wrapped
-    apps want opposite things here. One origin-checks its WebSocket upgrades
-    against an allowlist of the exact browser origins it expects, and needs the
-    real header (``claude-science``). The other compares ``Origin`` against
-    ``Host`` and demands they match — and since ``Host`` is dropped so httpx
-    derives it from the upstream URL, the browser's real ``Origin`` can never
-    match it, so every request 403s (``dsh``). Default off: the gateway front
-    and every existing caller keep byte-identical behaviour.
     """
-    http_up = upstream.rstrip("/")
-    # http://… → ws://… ,  https://… → wss://…
-    ws_up = "ws" + http_up[len("http"):]
-
     public = profile == PUBLIC_PROFILE
-    routes = []
-    if not public:
-        # Public (no auth): CA download so a device can install the root once.
-        routes.append(Route("/ca.crt", _ca, methods=["GET"]))
-        routes.append(Route("/ca.pem", _ca, methods=["GET"]))
-    # Auth endpoints — handled by the edge itself, never proxied.
-    routes.append(Route(portal.CALLBACK, _portal, methods=["GET"]))
-    routes.append(Route("/__auth/logout", _logout, methods=["POST", "GET"]))
-    routes.append(Route("/__auth/whoami", _whoami, methods=["GET"]))
+    routes: list[BaseRoute] = []
     if public:
         routes.append(Route("/", _public_home, methods=["GET"]))
-    elif landing:
-        # Authenticated landing page (dynamic index of /ui/* pages).
+    else:
+        # Authenticated landing page, and the tag/filter endpoints behind it.
         routes.append(Route("/", _root, methods=["GET"]))
-    if landing and not public:
-        # Tag/filter endpoints backing the landing page's tagging UI.
-        routes.append(Route("/__landing/tags", _gated(_landing_add_tag), methods=["POST"]))
-        routes.append(Route("/__landing/tags", _gated(_landing_remove_tag), methods=["DELETE"]))
-        routes.append(Route("/__landing/filter", _gated(_landing_select_filter), methods=["POST"]))
-        routes.append(Route("/__landing/filter", _gated(_landing_deselect_filter), methods=["DELETE"]))
-        routes.append(Route("/__landing/name", _gated(_landing_set_name), methods=["POST"]))
+        routes.append(Route("/__landing/tags", gated(_landing_add_tag), methods=["POST"]))
+        routes.append(Route("/__landing/tags", gated(_landing_remove_tag), methods=["DELETE"]))
+        routes.append(Route("/__landing/filter", gated(_landing_select_filter), methods=["POST"]))
+        routes.append(Route("/__landing/filter", gated(_landing_deselect_filter), methods=["DELETE"]))
+        routes.append(Route("/__landing/name", gated(_landing_set_name), methods=["POST"]))
     if vault_upstream:
         # Before the catch-all, and after /__auth/*: these three are the edge's
         # own answers on paths the vault would otherwise be asked for.
         routes.append(Route(vault.SHELL_BARE, _vault_bare, methods=["GET"]))
-        routes.append(Route(vault.MANIFEST, _gated(_vault_manifest), methods=["GET"]))
+        routes.append(Route(vault.MANIFEST, gated(_vault_manifest), methods=["GET"]))
         routes.append(Route(vault.LOGOUT, _vault_logout, methods=["GET", "POST"]))
-    for path, methods, handler in (extra_routes or ()):
-        routes.append(Route(path, _gated(handler), methods=list(methods)))
-    routes += [
-        # Everything else is auth-gated inside the handler, then proxied.
-        WebSocketRoute("/{path:path}", _ws_proxy),
-        Route("/{path:path}", _http_proxy, methods=_ALL_METHODS),
-    ]
-    # Lifespan (Starlette 1.3+ removed the @app.on_event decorator): own the
-    # shared upstream httpx client for the server's lifetime.
+
     @asynccontextmanager
-    async def _lifespan(app_: Starlette):
-        app_.state.client = httpx.AsyncClient(timeout=None, follow_redirects=False)
+    async def _board_lifespan(app_: Starlette):
         app_.state.board_client = _board_client() if board_upstream else None
         try:
             yield
         finally:
-            await app_.state.client.aclose()
             if app_.state.board_client is not None:
                 await app_.state.board_client.aclose()
 
-    app = Starlette(routes=routes, lifespan=_lifespan)
-    app.state.http_up = http_up
-    app.state.ws_up = ws_up
-    app.state.ca_path = ca_path
-    # Derived from the upstream URL rather than taken as a string, so the
-    # rewritten Origin is by construction the one httpx will also put in Host.
-    app.state.origin_override = (
-        _origin_of(http_up) if rewrite_origin else None
+    app = build_front(
+        upstream, ca_path, routes=routes,
+        http_handler=_http_proxy, ws_handler=_ws_proxy,
+        ca_download=not public,
+        same_site="strict" if public else "lax",
+        identity_cookies=VAULT_COOKIES,
+        lifespan=_board_lifespan,
     )
-    app.state.gate = AuthGate()
-    app.state.grants = portal.Grants()
     app.state.profile = profile
     #: token -> (expires_at, resolved | None). Per app, so a test builds its own.
     app.state.slice_cache = {}
@@ -1421,54 +912,16 @@ def build_app(upstream: str, ca_path: str, *, landing: bool = True,
 
 
 def serve(*, port: int, cert: str, key: str, ca: str, upstream: str,
-          landing: bool = True,
-          extra_routes: Sequence[ExtraRoute] | None = None,
-          rewrite_origin: bool = False,
           profile: str | None = None,
           tls: bool = True,
           vault_upstream: str | None = None,
           relay_upstream: str | None = None,
           board_upstream: str | None = None) -> None:
-    """Bind ``0.0.0.0:port`` with TLS and reverse-proxy to ``upstream`` forever
-    (blocks). Designed to run in a daemon thread from the hub adapter.
-
-    ``tls=False`` binds plain HTTP on ``127.0.0.1:port`` instead, trusting
-    ``X-Forwarded-*`` from loopback only — the shape for a TLS-terminating
-    nginx in front (the public host). ``cert``/``key`` are unused then.
-
-    ``upstream``, ``landing`` and ``extra_routes`` are what make this reusable
-    beyond the gateway: the ``claude-science`` service calls it against its own
-    loopback binary with ``landing=False`` to get TLS, the shared CA, and the
-    ``awm_session`` edge auth without duplicating any of it, and adds one gated
-    sign-in route the wrapped binary cannot serve itself.
-    """
-    app = build_app(upstream, ca, landing=landing, extra_routes=extra_routes,
-                    rewrite_origin=rewrite_origin, profile=profile,
+    """Build the front and serve it on ``port`` forever (blocks); see
+    :func:`awm.tlsfront.proxy.serve_app` for ``tls=False``."""
+    app = build_app(upstream, ca, profile=profile,
                     vault_upstream=vault_upstream,
                     relay_upstream=relay_upstream,
                     board_upstream=board_upstream)
-    bind: dict = (
-        {"host": "0.0.0.0", "ssl_certfile": cert, "ssl_keyfile": key}
-        if tls else
-        {"host": "127.0.0.1", "proxy_headers": True,
-         "forwarded_allow_ips": "127.0.0.1"}
-    )
-    config = uvicorn.Config(
-        app,
-        port=port,
-        **bind,
-        # SECURITY, not tidiness: uvicorn writes access records — including the
-        # full query string — to `uvicorn.access` at INFO. `GET /__auth/portal?grant=…`
-        # carries a live sign-in grant, so raising this to "info" or "debug" to
-        # chase an unrelated problem would start writing grants to disk.
-        # Pinned by tests/test_no_access_logging.py.
-        log_level="warning",
-        ws="websockets",
-        timeout_keep_alive=75,
-        # Off the main thread uvicorn skips signal handlers automatically.
-    )
-    server = uvicorn.Server(config)
-    log.info("front listening on %s:%d → %s (tls %s, profile %s)",
-             bind["host"], port, upstream, "on" if tls else "off",
-             profile or "default")
-    server.run()
+    serve_app(app, port=port, cert=cert, key=key, tls=tls,
+              label=f"{upstream} (profile {profile or 'default'})")

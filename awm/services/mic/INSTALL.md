@@ -7,7 +7,7 @@ null-sink whose `.monitor` is the default capture source — so `/voice` and
 `arecord` record the phone.
 
 The page is an ordinary awm page and the audio is an ordinary awm session
-(`kind="stream"`, `transport="direct"`, opened at `/svc/mic/session/stream`).
+(`kind="stream"`, `transport="direct"`, opened at `/hub/session/mic/stream`).
 `getUserMedia` needs a secure context, and [`httpsfront`](../httpsfront/INSTALL.md)
 supplies one for every awm page — so mic binds no port and mints no certificate.
 It used to do both, which is why it could not start at all on a node holding

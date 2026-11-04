@@ -75,8 +75,7 @@ folder (any folder with a `run.sh` under `awm/services/`), starts it with
 `bash run.sh`, and injects `AWM_HUB_URL`, `AWM_SERVICE_NAME` and `AWM_SERVICE_ID`.
 Registration carries no token.
 
-To iterate against a running sandbox without installing, use
-`awm dev shadow --port 7821 awm/services/journal`.
+To iterate without installing, run the worktree's dev sandbox (`bash awm/services/dev/sandbox/run.sh start`); it runs this same `run.sh` from the worktree.
 
 ## Tests
 

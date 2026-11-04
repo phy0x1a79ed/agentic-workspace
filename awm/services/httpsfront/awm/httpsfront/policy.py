@@ -4,15 +4,15 @@ On the public profile (``AWM_EDGE_PROFILE=public``) the front stops being a
 transparent proxy for the whole gateway and becomes a door for a named few
 things. This module is the single statement of that door: a request whose path
 is not listed here is a 404 whether or not it carries a session, so nothing
-else in awm — the hub control plane, ``/invoke``, other services, the
+else in awm — the hub control plane, other services' verbs, other pages, the
 fileviewer root — is even discoverable from outside.
 
-Seven answers per path:
+Eight answers per path:
 
 * ``DENY``  — not part of the public surface. 404.
 * ``OPEN``  — allowed for any authenticated session.
 * ``USER``  — allowed only when the path names the session's own user (the
-  user's own ``/files`` subtree).
+  user's own subtree under the fileviewer mount).
 * ``VAULT`` — the shared knowledge base, allowed for any session belonging to a
   person. A fourth verdict rather than ``USER`` because the two mean opposite
   things: ``USER`` admits a path that *names* the caller, and a vault path names
@@ -46,6 +46,9 @@ Seven answers per path:
   Like ``TETHER`` it is an allow-list of exact shapes (see
   :mod:`awm.httpsfront.board`), and a path inside the mount that no shape
   claims is ``DENY``. Whether a board is wired at all is the proxy's question.
+* ``INVOKE`` — ``/invoke``, allowed only for a body that :func:`invoke_allows`
+  admits: the trilium page's read verbs and nothing else. The one verdict the
+  path cannot settle, because every verb on the gateway shares that path.
 
 The lists are constants with tests, not a per-host environment string, so a
 change to the surface is a reviewed diff.
@@ -53,11 +56,13 @@ change to the surface is a reviewed diff.
 
 from __future__ import annotations
 
+import json
 import re
 from enum import Enum
 
+from awm.tlsfront.auth import is_machine_sub
+
 from awm.httpsfront import board, slices, tether, vault
-from awm.httpsfront.auth import is_machine_sub
 
 class Verdict(str, Enum):
     DENY = "deny"
@@ -67,16 +72,27 @@ class Verdict(str, Enum):
     SLICE = "slice"
     TETHER = "tether"
     BOARD = "board"
+    INVOKE = "invoke"
 
+
+#: The trilium page, as the gateway serves it at ``/p/<plugin>/<page>/``.
+TRILIUM_PAGE = "/p/trilium/trilium"
 
 #: Written slashed, with the bare form in ``OPEN_EXACT`` beside it, because
-#: this is a ``startswith`` against a deny-by-default door: a bare "/ui/trilium"
-#: here opens every path merely *starting* with those characters, so a future
-#: "/ui/trilium-admin" would be reachable from the internet by having a name,
-#: which is the one thing this module exists to prevent.
-OPEN_PREFIXES = ("/ui/trilium/",)
-OPEN_EXACT = frozenset({"/", "/ui/trilium",
+#: this is a ``startswith`` against a deny-by-default door: a bare
+#: "/p/trilium/trilium" here opens every path merely *starting* with those
+#: characters, so a future "/p/trilium/trilium-admin" would be reachable from
+#: the internet by having a name, which is the one thing this module exists to
+#: prevent.
+OPEN_PREFIXES = (TRILIUM_PAGE + "/",)
+OPEN_EXACT = frozenset({"/", TRILIUM_PAGE,
                         "/__auth/portal", "/__auth/logout", "/__auth/whoami"})
+
+#: The gateway's one call path. Every verb of every tool shares it.
+INVOKE = "/invoke"
+#: The most a public ``/invoke`` body may carry. The trilium page's read verbs
+#: send a few dozen bytes.
+INVOKE_BODY_CAP = 16 * 1024
 
 # The vault's own verbs. An allow-list, opposite to the deny-lists above,
 # because this surface is small and closed and most of it is destructive: the
@@ -89,8 +105,7 @@ OPEN_EXACT = frozenset({"/", "/ui/trilium",
 # `_operator_only` in the trilium service. Both, because the day one of them is
 # wrong should not also be the day the other was the only one.
 TRILIUM_OPEN_FNS = frozenset({"status", "snapshots", "url"})
-_FN = re.compile(r"^/svc/trilium/fn/([^/]+)$")
-_FILES = re.compile(r"^/files/projects/userdata/([^/]+)(?:/.*)?$")
+_FILES = re.compile(r"^/s/fileviewer/projects/userdata/([^/]+)(?:/.*)?$")
 
 
 def classify(path: str) -> Verdict:
@@ -125,9 +140,8 @@ def classify(path: str) -> Verdict:
         return Verdict.OPEN
     if path.startswith(OPEN_PREFIXES):
         return Verdict.OPEN
-    m = _FN.match(path)
-    if m:
-        return Verdict.OPEN if m.group(1) in TRILIUM_OPEN_FNS else Verdict.DENY
+    if path == INVOKE:
+        return Verdict.INVOKE
     if _FILES.match(path):
         return Verdict.USER
     return Verdict.DENY
@@ -155,6 +169,10 @@ def allows(path: str, sub: str | None) -> bool:
         return True
     if verdict is Verdict.DENY or not sub:
         return False
+    if verdict is Verdict.INVOKE:
+        # The path says nothing; the body is checked by `invoke_allows` where
+        # the proxy has read it.
+        return True
     if verdict is Verdict.VAULT:
         # A person, not a machine. A peer (the legacy bearer or a verified
         # `peer:<node>`) is another node's process and has no business in a
@@ -163,3 +181,27 @@ def allows(path: str, sub: str | None) -> bool:
         return not is_machine_sub(sub)
     m = _FILES.match(path)
     return bool(m) and m.group(1) == sub
+
+
+def invoke_allows(body: bytes) -> bool:
+    """Whether a public ``/invoke`` body is one of the trilium page's calls.
+
+    Exactly ``{"name": "trilium", "args": {"verb": <open verb>, "args": {...}}}``.
+    No other key is admitted, so no ``peer`` sends the call to another node, and
+    the flat ``trilium_<verb>`` name form is not admitted either: one shape is
+    one thing to check.
+    """
+    try:
+        data = json.loads(body)
+    except (ValueError, UnicodeDecodeError):
+        return False
+    if not isinstance(data, dict) or set(data) - {"name", "args"}:
+        return False
+    if data.get("name") != "trilium":
+        return False
+    envelope = data.get("args")
+    if not isinstance(envelope, dict) or set(envelope) - {"verb", "args"}:
+        return False
+    if envelope.get("verb") not in TRILIUM_OPEN_FNS:
+        return False
+    return isinstance(envelope.get("args", {}), dict)

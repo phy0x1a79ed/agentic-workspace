@@ -14,7 +14,7 @@ HEAD="$(git -C "$ROOT" rev-parse HEAD)"
 SUMMARY="$(mktemp)"
 trap 'rm -f "$SUMMARY"' EXIT
 
-PYTEST_ARGS="${PYTEST_ARGS:--q}" "$ROOT/awm/gateway/scripts/run-tests.sh" --summary "$SUMMARY" >"$STATE/last.log" 2>&1
+PYTEST_ARGS="${PYTEST_ARGS:--q}" "$ROOT/scripts/run-tests.sh" --summary "$SUMMARY" >"$STATE/last.log" 2>&1
 
 failing="$(awk '$2 == "FAIL" {print $1}' "$SUMMARY" | sort -u)"
 new=()

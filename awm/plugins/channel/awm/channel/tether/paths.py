@@ -72,7 +72,7 @@ CONTROL_SOCKET = STATE_DIR / "operator.sock"
 DAEMON_LOG = STATE_DIR / "daemon.log"
 
 #: The transient user unit the operator daemon runs in. Named after STATE_DIR
-#: so a dev shadow, which has its own state root, never adopts or stops the
+#: so a dev sandbox, which has its own state root, never adopts or stops the
 #: daemon a deployed gateway is keeping.
 OPERATOR_UNIT = "awm-tether-operator-" + hashlib.sha1(str(STATE_DIR).encode()).hexdigest()[:8]
 

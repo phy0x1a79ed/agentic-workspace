@@ -37,38 +37,47 @@ ln -sfn "$SERVICE_DIR" "$RIG/services/rlm-factorio"
 : > "$RIG/AGENTS.md"   # workspace-root anchor
 
 export AWM_WORKSPACE="$RIG"
-export AWM_SERVICES_DIR="$RIG/services"
 export AWM_PORT="$PORT"
-export AWM_PROFILES="gamebot"
 # DEFAULT project on purpose: this is the real world, not a rig world.
 export AWM_FACTORIO_PROJECT="rlm-factorio"
 export AWM_FACTORIO_CONTAINER="rlm-factorio-appliance"
 export AWM_FACTORIO_GAME_PORT=12140
 export AWM_FACTORIO_CONTROL_PORT=12142
 
-if curl -fsS --max-time 2 "$HUB/hub/services" >/dev/null 2>&1; then
+if curl -fsS --max-time 2 "$HUB/status" >/dev/null 2>&1; then
     echo "gateway already up on :$PORT"
 else
-    setsid bash -c 'exec mamba run -n awm --no-capture-output python -m awm.gateway gateway serve' \
+    # The gateway passes a service only its [env], so the AWM_FACTORIO_* settings go there.
+mkdir -p "$RIG/.awm"
+{ printf 'node = "rlm-factorio-rig"\nlisten = "127.0.0.1:%s"\nworkspace = "%s"\n' "$PORT" "$RIG"
+  printf 'core_roots = ["%s/services"]\nprofiles = ["gamebot"]\n[env]\n' "$RIG"
+  env | grep '^AWM_FACTORIO_' | sed -E 's/^([^=]+)=(.*)$/\1 = "\2"/'; } > "$RIG/.awm/config.toml"
+setsid "${AWM_BIN:-awm}" gateway serve --state "$RIG/.awm" \
         >"$GW_LOG" 2>&1 &
     echo $! > "$PIDFILE"
     for _ in $(seq 1 120); do
-        curl -fsS --max-time 3 "$HUB/hub/services" >/dev/null 2>&1 && break
+        curl -fsS --max-time 3 "$HUB/status" >/dev/null 2>&1 && break
         sleep 0.5
     done
-    curl -fsS --max-time 3 "$HUB/hub/services" >/dev/null 2>&1 \
+    curl -fsS --max-time 3 "$HUB/status" >/dev/null 2>&1 \
         || { echo "gateway did not come up:"; tail -30 "$GW_LOG"; exit 1; }
     echo "gateway up on :$PORT (workspace $RIG)"
 fi
 
+registered() {
+    curl -fsS --max-time 3 -X POST "$HUB/invoke" -H 'content-type: application/json' \
+        -d '{"name":"awm","args":{"verb":"services","args":{}}}' 2>/dev/null | python3 -c 'import sys, json
+rows = json.loads(json.load(sys.stdin)["result"])
+sys.exit(0 if any(r["name"] == "rlm-factorio" and r["status"] == "ready" for r in rows) else 1)'
+}
 for _ in $(seq 1 90); do
-    curl -fsS --max-time 3 "$HUB/hub/services" 2>/dev/null | grep -q '"rlm-factorio"' && break
+    registered && break
     sleep 1
 done
-curl -fsS --max-time 3 "$HUB/hub/services" 2>/dev/null | grep -q '"rlm-factorio"' \
+registered \
     && echo "rlm-factorio registered" \
     || { echo "service did not register:"; tail -40 "$RIG/.awm/logs/services/rlm-factorio.log" 2>/dev/null; exit 1; }
 
 echo
 echo "drive it with:   AWM_PORT=$PORT awm rlm factorio-status"
-echo "or over HTTP:    curl -s -XPOST $HUB/svc/rlm-factorio/fn/status -d '{}' -H 'content-type: application/json'"
+echo "or over HTTP:    curl -s -XPOST $HUB/invoke -H 'content-type: application/json' -d '{\"name\":\"factorio\",\"args\":{\"verb\":\"status\",\"args\":{}}}'"

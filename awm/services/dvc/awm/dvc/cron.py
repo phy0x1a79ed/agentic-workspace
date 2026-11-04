@@ -1,7 +1,7 @@
 """Stdlib-only cron / interval parsing for the dvc job scheduler.
 
 VENDORED, NOT IMPORTED. This is a verbatim copy of
-``awm/services/events/awm/events/cron.py``. ``awm/gateway/scripts/run-tests.sh``
+``awm/services/events/awm/events/cron.py``. ``scripts/run-tests.sh``
 puts only this dist's source root plus config/persistence/gatewayclient on
 ``PYTHONPATH``, so a top-level import from another service breaks collection for
 the whole suite — and depending on ``awm-events`` would drag an unrelated

@@ -25,7 +25,7 @@ FUNCTIONS = API_MANIFEST["functions"]
 def test_every_function_publishes_a_science_tool_over_its_short_name():
     """The tool is `science`, not the service's `claude-science`: a published
     name built from the service would fold into domain `claude`. `name` stays
-    the service-internal handle behind `/svc/claude-science/fn/<name>`."""
+    the service-internal function name."""
     for fn in FUNCTIONS:
         assert fn["tool"] == f"science_{fn['name']}", fn
 

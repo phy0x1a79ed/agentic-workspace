@@ -1,15 +1,10 @@
 # AWM runtime state
 .awm/
 
-# Per-service interpreter sidecar baked by awm/gateway/install.sh (machine-specific)
+# Per-service interpreter sidecar baked by each plugin's install.sh (machine-specific)
 awm/services/*/.runtime-env
 awm/plugins/*/.runtime-env
 
-# Per-worktree dev sandbox (lives at awm/gateway/dev/): env override + the
-# generated per-sandbox MCP config symlink. State dirs (.awm/, data/, projects/)
-# are covered by the global patterns below.
-awm/gateway/dev/.env
-awm/gateway/dev/.mcp.json
 
 # Per-host orientation symlink. AGENTS.md is the canonical tracked source;
 # CLAUDE.md is a host-local symlink to it (see .awm/context.md for the
@@ -28,7 +23,7 @@ tasks/
 
 # One-off sandboxes (bioinformatics run outputs, etc.) and pre-collapse layout
 # leftovers — never tracked. Both were untracked-but-unignored, so a `git add -A`
-# would have pushed them (packages/ is superseded by awm/pages/ + awm/services/;
+# would have pushed them (packages/ is superseded by awm/services/ and awm/plugins/;
 # the packages/**/dist/ rule below is now subsumed by this).
 scratch/
 packages/
@@ -49,9 +44,9 @@ frontend/node_modules/
 # through the MCP surface.
 node_modules
 packages/**/dist/
-# Post-collapse layout: pages build to awm/pages/<name>/dist/ (registered with
-# the hub via `awm packages sync`, not committed).
-awm/pages/*/dist/
+# Plugin pages build to <plugin>/pages/<name>/dist/ under awm/services/ and
+# awm/plugins/, not committed.
+awm/*/*/pages/*/dist/
 
 # Python
 __pycache__/

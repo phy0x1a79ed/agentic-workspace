@@ -26,7 +26,7 @@
 #
 # Which one runs is decided by TRILIUM_INSTALL_MODE, and by default by whether
 # a fork exists. Every step is idempotent and skips itself when already
-# satisfied, because this script runs on every deploy (awm/gateway/install.sh
+# satisfied, because this script runs on every deploy (awm/install.sh
 # invokes each service's).
 #
 # Override the target env with AWM_ENV=<name>.

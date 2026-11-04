@@ -37,6 +37,8 @@ pub struct CallContext {
     pub plugin: Option<String>,
     /// The calling session's mode, when a restricted mode may gate it (`config/modes.py`).
     pub mode: Option<String>,
+    /// The pid of the calling session on this node, which a service reads as `_caller_pid`.
+    pub pid: Option<u32>,
 }
 
 impl CallContext {
@@ -47,9 +49,64 @@ impl CallContext {
             surface,
             plugin: None,
             mode: None,
+            pid: None,
         }
     }
 }
 
 /// Headers a caller may not set: the gateway owns them.
 pub const GATEWAY_OWNED_HEADERS: [&str; 2] = ["x-awm-trust", "x-awm-lane"];
+
+/// One WebSocket message, as an emit stream or a session carries it across the edge.
+/// It travels as `{"text": ...}`, `{"b64": ...}` for binary, or `{"close": reason}`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WsMsg {
+    Text(String),
+    Binary(Vec<u8>),
+    Close(Option<String>),
+}
+
+impl Serialize for WsMsg {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        use base64::Engine;
+        use serde::ser::SerializeMap;
+        let mut m = s.serialize_map(Some(1))?;
+        match self {
+            WsMsg::Text(t) => m.serialize_entry("text", t)?,
+            WsMsg::Binary(b) => m.serialize_entry("b64", &base64::engine::general_purpose::STANDARD.encode(b))?,
+            WsMsg::Close(r) => m.serialize_entry("close", r)?,
+        }
+        m.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for WsMsg {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        use base64::Engine;
+        use serde::de::Error;
+        let v = serde_json::Value::deserialize(d)?;
+        if let Some(t) = v.get("text").and_then(|t| t.as_str()) {
+            return Ok(WsMsg::Text(t.to_string()));
+        }
+        if let Some(b) = v.get("b64").and_then(|b| b.as_str()) {
+            return base64::engine::general_purpose::STANDARD.decode(b).map(WsMsg::Binary).map_err(D::Error::custom);
+        }
+        if let Some(r) = v.get("close") {
+            return Ok(WsMsg::Close(r.as_str().map(str::to_string)));
+        }
+        Err(D::Error::custom("a WebSocket message is {text}, {b64} or {close}"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ws_messages_round_trip() {
+        for m in [WsMsg::Text("hi".into()), WsMsg::Binary(vec![0, 255, 7]), WsMsg::Close(Some("done".into())), WsMsg::Close(None)] {
+            let line = serde_json::to_string(&m).unwrap();
+            assert_eq!(serde_json::from_str::<WsMsg>(&line).unwrap(), m, "{line}");
+        }
+    }
+}

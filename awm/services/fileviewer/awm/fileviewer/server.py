@@ -1,57 +1,46 @@
-"""Register fileviewer's bytes as a gateway ``kind=static`` mount and hold its lease.
+"""Serve files by absolute path on a loopback HTTP listener, behind the gateway.
 
-fileviewer no longer runs its own HTTP listener. Instead it registers a
-``kind=static`` mount at ``/files`` on the gateway (root ``FILEVIEWER_MOUNT_ROOT``,
-default ``/``) and holds that mount's WS lease for the life of the process. The
-gateway's ``serve_static`` ships each file's bytes with a correct ``Content-Type``,
-and ``httpsfront`` fronts the whole gateway — so a figure links as an
-origin-relative ``/files/<abs-path>`` that renders for any device that can open
-the notes page, not just a browser on the server's own loopback. That is the
-whole point of the change: the old ``http://127.0.0.1:12210/?path=…`` links were
-loopback-only and never reachable through the HTTPS front.
+fileviewer runs a small HTTP server on ``127.0.0.1`` and registers its URL as
+the service's ``mount``. The gateway proxies ``/s/fileviewer/<rest>`` to it, and
+``httpsfront`` fronts the gateway, so a figure links as an origin-relative
+``/s/fileviewer/<abs-path>`` that renders on any device that can open the notes
+page. Each file ships with a ``Content-Type`` from ``mimetypes``.
 
-**Mask.** The mount exposes the entire filesystem under the root, so a denylist
-(a per-mount ``deny`` glob list, enforced gateway-side in ``serve_static`` on the
-*resolved* path) hides secrets — ssh keys, TLS private keys, the gateway auth
-token, ``.env`` files, ``.certs`` — and hides the mask override file itself. A
-masked path 404s exactly like a missing one; matching is on the symlink-resolved
-path, so a symlink to a secret can't slip past. Globs are gitignore-shaped: a
-leading ``!`` re-exposes and the last match wins, so a servable subtree can be
-carved out of a broad deny without unmasking its siblings.
+**Mask.** The listener exposes the entire filesystem under the root, so a
+denylist (``deny`` globs matched on the *resolved* path) hides secrets — ssh
+keys, TLS private keys, the gateway auth token, ``.env`` files, ``.certs`` — and
+hides the mask override file itself. A masked path 404s exactly like a missing
+one; matching is on the symlink-resolved path, so a symlink to a secret can't
+slip past. Globs are gitignore-shaped: a leading ``!`` re-exposes and the last
+match wins, so a servable subtree can be carved out of a broad deny without
+unmasking its siblings.
 
-Two records, two leases: the ``ServiceAdapter`` (``kind=service`` at
-``/svc/fileviewer``) gives supervision + the ``fileviewer_status`` verb; this
-module owns the separate ``kind=static`` mount and its lease. The control WS does
-not cover the mount, so ``hold_mount`` runs its own register + hold-lease +
-reconnect loop — it must survive the gateway bouncing (records are in-memory) or
-the mount silently vanishes after a gateway restart.
-
-Pure-ish stdlib plus ``httpx`` / ``websockets`` (already deps of the adapter).
+Peers never reach this listener: the edge carries only tool calls.
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
+import mimetypes
 import os
-import ssl
+import shutil
 import threading
-from pathlib import Path
-
-import httpx
-import websockets
+from http import HTTPStatus
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path, PurePosixPath
+from urllib.parse import unquote, urlsplit
 
 log = logging.getLogger("awm.fileviewer.server")
 
-# Where the mount lives on the origin, and what filesystem root it exposes. The
-# root defaults to "/" — literally "all files" — with the mask as the safety
-# layer. Narrow it by setting FILEVIEWER_MOUNT_ROOT to bound the blast radius.
+# What filesystem root the listener exposes, and the origin-relative prefix the
+# gateway serves it at. The root defaults to "/" — literally "all files" — with
+# the mask as the safety layer. Narrow it by setting FILEVIEWER_MOUNT_ROOT to
+# bound the blast radius.
 SERVICE_NAME = os.environ.get("AWM_SERVICE_NAME", "fileviewer")
-MOUNT_PREFIX = os.environ.get("FILEVIEWER_MOUNT_PREFIX", "/files")
+MOUNT_PREFIX = f"/s/{SERVICE_NAME}"
 MOUNT_ROOT = os.environ.get("FILEVIEWER_MOUNT_ROOT", "/")
 
-# Default mask: gitignore-style globs, matched by the gateway with
-# PurePosixPath.full_match against the resolved path relative to MOUNT_ROOT, so
+# Default mask: gitignore-style globs, matched with PurePosixPath.full_match against the resolved path relative to MOUNT_ROOT, so
 # ``**`` spans directories. A leading ``!`` negates and the LAST matching glob
 # wins, so any negation must be listed *before* the secret patterns or it
 # re-exposes them. Denylist-shaped and best-effort — a new secret type in an
@@ -89,7 +78,7 @@ class _State:
         self.root: str | None = None
         self.deny: tuple[str, ...] = ()
         self.mounted = False
-        self.service_id: str | None = None
+        self.url: str | None = None
 
     def snapshot(self) -> dict:
         with self.lock:
@@ -99,7 +88,7 @@ class _State:
                 "prefix": prefix,
                 "root": root,
                 "deny_globs": len(self.deny),
-                "service_id": self.service_id,
+                "listen": self.url,
                 # Origin-relative shape — no host/port. The notes page resolves
                 # it against whatever host is serving the UI.
                 "url_shape": (
@@ -144,66 +133,130 @@ def load_mask() -> tuple[str, ...]:
     return tuple(dict.fromkeys(globs))
 
 
-def _ssl_ctx() -> ssl.SSLContext:
-    ctx = ssl.create_default_context()
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE  # loopback, self-signed gateway cert
-    return ctx
+class _Handler(BaseHTTPRequestHandler):
+    """GET/HEAD by path under ``server.root``; anything unservable is 404."""
+
+    server: "FileServer"
+
+    def do_GET(self) -> None:  # noqa: N802
+        self._serve(body=True)
+
+    def do_HEAD(self) -> None:  # noqa: N802
+        self._serve(body=False)
+
+    def log_message(self, fmt: str, *args) -> None:
+        log.debug("%s %s", self.address_string(), fmt % args)
+
+    def _serve(self, *, body: bool) -> None:
+        url = urlsplit(self.path)
+        target = resolve(unquote(url.path), self.server.root, self.server.deny)
+        if target is None:
+            self._not_found()
+            return
+        mime = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
+        try:
+            f = target.open("rb")
+        except OSError:
+            self._not_found()
+            return
+        with f:
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", mime)
+            self.send_header("Content-Length", str(os.fstat(f.fileno()).st_size))
+            self.end_headers()
+            if body:
+                shutil.copyfileobj(f, self.wfile)
+
+    def _not_found(self) -> None:
+        data = b"not found"
+        self.send_response(HTTPStatus.NOT_FOUND)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(data)
 
 
-async def hold_mount() -> None:
-    """Register the ``kind=static`` mount and hold its lease forever.
+class FileServer(ThreadingHTTPServer):
+    daemon_threads = True
 
-    Registers ``{name, prefix:/files, static:{dir:<root>, deny:<mask>}}`` on the
-    hub, then holds the returned ``/hub/lease/{id}`` WS open. On any drop —
-    network hiccup or a gateway restart that wipes the in-memory registry — it
-    re-registers (idempotent: same name+prefix replaces in place, minting a fresh
-    id) and re-holds, with capped exponential backoff. Meant to be launched as a
-    background task from the adapter's ``on_start`` (it runs in the adapter's
-    event loop and never returns)."""
-    hub_url = os.environ.get("AWM_HUB_URL", "").rstrip("/")
-    if not hub_url:
-        log.error("AWM_HUB_URL not set; fileviewer mount cannot register")
-        return
-    ws_base = hub_url.replace("https://", "wss://").replace("http://", "ws://")
-    ssl_ctx = _ssl_ctx() if ws_base.startswith("wss://") else None
+    def __init__(self, root: str, deny: tuple[str, ...], port: int = 0) -> None:
+        self.root = Path(root).resolve()
+        self.deny = deny
+        super().__init__(("127.0.0.1", port), _Handler)
 
+    @property
+    def url(self) -> str:
+        return f"http://127.0.0.1:{self.server_address[1]}"
+
+
+def resolve(rel: str, root: Path, deny: tuple[str, ...]) -> Path | None:
+    """The file a request path names, or None when it must 404.
+
+    The path resolves against ``root``. A target outside the root, a masked
+    one, or one that is neither a file nor a directory with ``index.html``
+    yields None. Missing, masked and forbidden all look alike.
+    """
+    rel = rel.lstrip("/")
+    if "\x00" in rel:
+        return None
+    try:
+        target = (root / rel).resolve()
+    except (OSError, ValueError):
+        return None
+    if not _is_within(target, root) or _is_masked(target, root, deny):
+        return None
+    if target.is_dir():
+        target = target / "index.html"
+        if _is_masked(target, root, deny):
+            return None
+    return target if target.is_file() else None
+
+
+def _is_within(target: Path, root: Path) -> bool:
+    try:
+        target.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
+def _is_masked(target: Path, root: Path, deny: tuple[str, ...]) -> bool:
+    """True if ``target`` (already resolved) is hidden by the ``deny`` globs,
+    taken relative to ``root``. Matching the *resolved* path is deliberate: a
+    symlink pointing at a masked file resolves to it and is caught here.
+    Semantics are gitignore's: a leading ``!`` negates and the last matching
+    glob wins, so keep secret patterns last."""
+    if not deny:
+        return False
+    try:
+        rel = target.relative_to(root).as_posix()
+    except ValueError:
+        return True
+    pp = PurePosixPath(rel)
+    masked = False
+    for glob in deny:
+        negated = glob.startswith("!")
+        pattern = glob[1:] if negated else glob
+        if pattern and pp.full_match(pattern):
+            masked = not negated
+    return masked
+
+
+def start(port: int | None = None) -> FileServer:
+    """Bind the listener, serve it on a daemon thread, and record it in STATE.
+
+    ``port`` defaults to ``FILEVIEWER_PORT``, else an ephemeral port: the
+    gateway learns the URL from the registration, so nothing else needs it.
+    """
+    if port is None:
+        port = int(os.environ.get("FILEVIEWER_PORT") or 0)
     mask = load_mask()
+    srv = FileServer(MOUNT_ROOT, mask, port)
+    threading.Thread(target=srv.serve_forever, name="fileviewer-http", daemon=True).start()
     with STATE.lock:
         STATE.prefix, STATE.root, STATE.deny = MOUNT_PREFIX, MOUNT_ROOT, mask
-
-    backoff = 1.0
-    while True:
-        try:
-            async with httpx.AsyncClient(verify=False, timeout=15) as cli:
-                r = await cli.post(f"{hub_url}/hub/register", json={
-                    "name": SERVICE_NAME,
-                    "prefix": MOUNT_PREFIX,
-                    "static": {"dir": MOUNT_ROOT, "deny": list(mask)},
-                })
-                r.raise_for_status()
-            body = r.json()
-            sid = body["service_id"]
-            lease_path = body["lease_ws_path"]
-            log.info("fileviewer mount up: %s → %s (id=%s, %d deny globs)",
-                     MOUNT_PREFIX, MOUNT_ROOT, sid, len(mask))
-            with STATE.lock:
-                STATE.mounted, STATE.service_id = True, sid
-            backoff = 1.0
-            async with websockets.connect(
-                f"{ws_base}{lease_path}",
-                ssl=ssl_ctx, max_size=None, open_timeout=10,
-            ) as ws:
-                # First frame is {"type":"ready",...}; then just hold the socket
-                # open (iterating drains frames and returns when the hub closes).
-                async for _ in ws:
-                    pass
-            log.info("fileviewer mount lease closed; re-registering")
-        except Exception as exc:  # noqa: BLE001 — stay up across any transient fault
-            log.warning("fileviewer mount lost (%s); re-registering in %.1fs",
-                        exc, backoff)
-        finally:
-            with STATE.lock:
-                STATE.mounted = False
-        await asyncio.sleep(backoff)
-        backoff = min(backoff * 2, 30.0)
+        STATE.mounted, STATE.url = True, srv.url
+    log.info("fileviewer listening on %s: %s → %s (%d deny globs)",
+             srv.url, MOUNT_PREFIX, MOUNT_ROOT, len(mask))
+    return srv

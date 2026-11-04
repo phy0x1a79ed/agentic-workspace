@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from awm.dvc import data_dvc
+from awm.dvcdata import data_dvc
 from awm.scopes import awm_sweep
 
 pytestmark = [pytest.mark.scopes, pytest.mark.subprocess]

@@ -196,7 +196,7 @@ fn spawn(gw: &Gateway, spec: &ServiceSpec) -> std::io::Result<tokio::process::Ch
     if let Some(ws) = &gw.cfg.workspace {
         cmd.env("AWM_WORKSPACE", ws);
     }
-    if spec.egress_guarded {
+    {
         let port = gw.egress.port_for(gw.weak(), &spec.plugin)?;
         let exempt = crate::egress::exempt_hosts(&gw.cfg.edges_path(&gw.state), &gw.hub_url());
         cmd.envs(crate::egress::proxy_env(port, &exempt));

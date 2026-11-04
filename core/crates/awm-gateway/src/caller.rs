@@ -15,6 +15,13 @@ pub const TRUST_KEY: &str = "_caller_trust";
 pub const SCOPE_KEY: &str = "_caller_scope";
 /// The R9 id of an isolated session, which has no pid. Only the isolated door writes it.
 pub const SESSION_KEY: &str = "_caller_session_id";
+/// The calling session's pid on this node: reflection, operations and cch find the session
+/// by it (contract § Caller arguments).
+pub const PID_KEY: &str = "_caller_pid";
+/// A session claim `{kind, job, name}` from another node. It survives only on an edge call.
+pub const CLAIM_KEY: &str = "_caller_session";
+/// Where `resolve_caller` records which pid of the walk the session answered for.
+pub const FOUND_PID: &str = "_found_pid";
 pub const FAILED_LOOKUP_TRUST: &str = "untrusted";
 /// A caller that is no session: a user's shell on this node, or a plugin's service.
 pub const NO_SESSION_TRUST: &str = "trusted";
@@ -91,11 +98,18 @@ pub fn fill(caller: &mut Caller, lookup: &Lookup, projects: &Path) -> Option<Str
 
 /// Write the caller's trust and scope into a call's arguments, for services that predate the
 /// `caller` frame. Any value the caller sent is dropped first.
-pub fn stamp(args: &mut Value, caller: &Caller) {
+pub fn stamp(args: &mut Value, caller: &Caller, pid: Option<u32>) {
     let Some(map) = args.as_object_mut() else { return };
     map.remove(TRUST_KEY);
     map.remove(SCOPE_KEY);
     map.remove(SESSION_KEY);
+    map.remove(PID_KEY);
+    if caller.lane != awm_proto::Lane::Edge {
+        map.remove(CLAIM_KEY);
+    }
+    if let Some(pid) = pid.filter(|_| caller.lane == awm_proto::Lane::Local) {
+        map.insert(PID_KEY.into(), Value::from(pid));
+    }
     if let Some(trust) = &caller.trust {
         map.insert(TRUST_KEY.into(), Value::String(trust.clone()));
     }
@@ -170,11 +184,15 @@ mod tests {
     #[test]
     fn stamp_replaces_what_the_caller_sent() {
         let caller = Caller { trust: Some("untrusted".into()), scope: Some("awm/x".into()), ..Caller::default() };
-        let mut args = json!({"text": "hi", "_caller_trust": "trusted", "_caller_scope": "a/b"});
-        stamp(&mut args, &caller);
-        assert_eq!(args, json!({"text": "hi", "_caller_trust": "untrusted", "_caller_scope": "awm/x"}));
-        let mut args = json!({"_caller_trust": "trusted"});
-        stamp(&mut args, &Caller::default());
+        let mut args = json!({"text": "hi", "_caller_trust": "trusted", "_caller_scope": "a/b", "_caller_pid": 1, "_caller_session": {"job": "x"}});
+        stamp(&mut args, &caller, Some(42));
+        assert_eq!(args, json!({"text": "hi", "_caller_trust": "untrusted", "_caller_scope": "awm/x", "_caller_pid": 42}));
+        let mut args = json!({"_caller_trust": "trusted", "_caller_pid": 7});
+        stamp(&mut args, &Caller::default(), None);
         assert_eq!(args, json!({}));
+        let edge = Caller { lane: awm_proto::Lane::Edge, ..Caller::default() };
+        let mut args = json!({"_caller_session": {"job": "x"}});
+        stamp(&mut args, &edge, Some(42));
+        assert_eq!(args, json!({"_caller_session": {"job": "x"}}), "a claim survives on an edge call, a pid never crosses");
     }
 }

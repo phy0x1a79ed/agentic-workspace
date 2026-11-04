@@ -7,6 +7,8 @@ to reach is the append-only cache archive sitting beside it on the collection.
 
 from __future__ import annotations
 
+from awm.dvcdata.cachetag import CACHEDIR_SIGNATURE
+
 from awm.dvc import backup
 from awm.dvc.config import ChinookConfig
 
@@ -141,7 +143,7 @@ def test_an_unparseable_pin_does_not_abort_discovery(tmp_path):
 # mid-run then cost ~12 s of serial scan per vanished file — days, in all.
 
 
-TAG = backup.CACHEDIR_SIGNATURE.decode() + "\n# a cache\n"
+TAG = CACHEDIR_SIGNATURE.decode() + "\n# a cache\n"
 
 
 def test_regenerable_dirs_go_to_globus_as_name_filters():

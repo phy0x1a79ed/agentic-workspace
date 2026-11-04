@@ -5,13 +5,14 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use awm_proto::Caller;
+use awm_gateway::peer::WsPipe;
+use awm_proto::{Caller, WsMsg};
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::process::Command;
-use tokio::sync::{oneshot, Mutex};
+use tokio::sync::{mpsc, oneshot, Mutex};
 
-use crate::frame::{Request, Response};
+use crate::frame::{Request, Response, WS_CLOSE, WS_OPEN, WS_SEND};
 
 #[derive(Debug, thiserror::Error)]
 pub enum EdgeError {
@@ -45,7 +46,12 @@ impl SshCommand {
     }
 }
 
-type Pending = Arc<Mutex<HashMap<u64, oneshot::Sender<Response>>>>;
+enum Waiter {
+    Call(oneshot::Sender<Response>),
+    Stream(mpsc::UnboundedSender<WsMsg>),
+}
+
+type Pending = Arc<Mutex<HashMap<u64, Waiter>>>;
 
 struct Channel {
     writer: Mutex<Box<dyn AsyncWrite + Send + Unpin>>,
@@ -65,8 +71,21 @@ impl Channel {
             while let Ok(Some(line)) = lines.next_line().await {
                 match serde_json::from_str::<Response>(&line) {
                     Ok(resp) => {
-                        if let Some(tx) = p.lock().await.remove(&resp.id) {
-                            let _ = tx.send(resp);
+                        let mut map = p.lock().await;
+                        match map.remove(&resp.id) {
+                            Some(Waiter::Call(tx)) => {
+                                let _ = tx.send(resp);
+                            }
+                            Some(Waiter::Stream(tx)) if resp.more => {
+                                let msg = resp.result.and_then(|r| serde_json::from_value::<WsMsg>(r).ok());
+                                if msg.is_none_or(|m| tx.send(m).is_ok()) {
+                                    map.insert(resp.id, Waiter::Stream(tx));
+                                }
+                            }
+                            Some(Waiter::Stream(tx)) => {
+                                let _ = tx.send(WsMsg::Close(resp.error));
+                            }
+                            None => {}
                         }
                     }
                     Err(e) => tracing::warn!("edge: unreadable reply line: {e}"),
@@ -81,6 +100,14 @@ impl Channel {
 
 /// Opens a channel's two ends. Swapped out in tests.
 pub type Opener = Arc<dyn Fn(&str) -> std::io::Result<(Box<dyn AsyncRead + Send + Unpin>, Box<dyn AsyncWrite + Send + Unpin>, Option<tokio::process::Child>)> + Send + Sync>;
+
+async fn send_line(ch: &Channel, req: &Request) -> std::io::Result<()> {
+    let mut line = serde_json::to_vec(req).expect("json");
+    line.push(b'\n');
+    let mut w = ch.writer.lock().await;
+    w.write_all(&line).await?;
+    w.flush().await
+}
 
 pub struct EdgeClient {
     open: Opener,
@@ -125,21 +152,45 @@ impl EdgeClient {
         Ok(ch)
     }
 
+    /// Open the stream `path` on `peer`'s gateway, as `caller`.
+    pub async fn open_ws(&self, peer: &str, path: &str, caller: Caller) -> Result<WsPipe, EdgeError> {
+        let ch = self.channel(peer).await?;
+        let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        let (mine, theirs) = WsPipe::pair();
+        let WsPipe { tx: to_me, rx: mut from_me } = theirs;
+        ch.pending.lock().await.insert(id, Waiter::Stream(to_me.clone()));
+        let open = Request { id, name: WS_OPEN.into(), args: serde_json::json!({"path": path}), caller: caller.clone() };
+        if let Err(e) = send_line(&ch, &open).await {
+            ch.alive.store(false, Ordering::SeqCst);
+            ch.pending.lock().await.remove(&id);
+            return Err(EdgeError::Unreachable { peer: peer.into(), reason: e.to_string() });
+        }
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    msg = from_me.recv() => match msg {
+                        Some(WsMsg::Close(_)) | None => break,
+                        Some(m) => {
+                            let req = Request { id, name: WS_SEND.into(), args: serde_json::to_value(&m).unwrap_or_default(), caller: caller.clone() };
+                            if send_line(&ch, &req).await.is_err() { break; }
+                        }
+                    },
+                    _ = to_me.closed() => break,
+                }
+            }
+            ch.pending.lock().await.remove(&id);
+            let _ = send_line(&ch, &Request { id, name: WS_CLOSE.into(), args: Value::Null, caller }).await;
+        });
+        Ok(mine)
+    }
+
     /// Call tool `name` on `peer` with `args`, as `caller`.
     pub async fn invoke(&self, peer: &str, name: &str, args: Value, caller: Caller) -> Result<Value, EdgeError> {
         let ch = self.channel(peer).await?;
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let (tx, rx) = oneshot::channel();
-        ch.pending.lock().await.insert(id, tx);
-        let mut line = serde_json::to_vec(&Request { id, name: name.into(), args, caller }).expect("json");
-        line.push(b'\n');
-        let sent = {
-            let mut w = ch.writer.lock().await;
-            match w.write_all(&line).await {
-                Ok(()) => w.flush().await,
-                Err(e) => Err(e),
-            }
-        };
+        ch.pending.lock().await.insert(id, Waiter::Call(tx));
+        let sent = send_line(&ch, &Request { id, name: name.into(), args, caller }).await;
         if let Err(e) = sent {
             ch.alive.store(false, Ordering::SeqCst);
             ch.pending.lock().await.remove(&id);

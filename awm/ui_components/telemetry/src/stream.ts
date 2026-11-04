@@ -5,8 +5,8 @@
  * publishes (see the Python `awm.telemetry` component). A third-party client
  * syncs it two ways, both carrying `(seq, id)` so they dedupe:
  *
- *   pollStream(svc, op, stream, cursor)        → one-shot catch-up read (events after cursor)
- *   subscribeStream(svc, kind, init, onFrame)  → live WS frames (backfill + push), raw
+ *   pollStream(tool, verb, stream, cursor)         → one-shot catch-up read (events after cursor)
+ *   subscribeStream(service, kind, init, onFrame)  → live WS frames (backfill + push), raw
  *   syncStream({...})                          → managed: dedup by id + advance cursor + reconnect
  *
  * The cursor is `{ after_seq, after_id }` — `after_seq` is the monotonic order
@@ -14,12 +14,11 @@
  * dedupes on. `StreamTracker` is the pure idempotency core (no I/O), so the
  * backfill/live overlap and a lagged reconnect never surface a duplicate.
  *
- * Rides `svc()` / `toWsUrl()` from `@awm/client`, so it speaks the same
- * `/svc/<name>/fn/<op>` + `/svc/<name>/session/<kind>` surface as every other
- * service call.
+ * Rides `tool()` / `openSession()` from `@awm/client`: a verb over
+ * `POST /invoke` and a direct session at `/hub/session/<service>/<kind>`.
  */
 
-import { svc, toWsUrl } from '@awm/client';
+import { openSession, tool } from '@awm/client';
 
 import { StreamTracker, type StreamCursor, type TelemetryEvent } from './tracker';
 
@@ -47,19 +46,18 @@ function cursorArgs(stream: string, cursor: StreamCursor): Record<string, unknow
 }
 
 /**
- * Direct poll sync: events on `stream` after `cursor`, via the service's poll op
- * (`POST /svc/<svcName>/fn/<op>` → `{ events }`). The op name is the service's —
- * a service that adopts telemetry exposes one returning
- * `{ events: tel.read_after(stream, after_seq) }`.
+ * Direct poll sync: events on `stream` after `cursor`, via the tool's poll verb
+ * (→ `{ events }`). The verb is the service's — a service that adopts
+ * telemetry exposes one returning `{ events: tel.read_after(stream, after_seq) }`.
  */
 export async function pollStream(
-  svcName: string,
-  op: string,
+  toolName: string,
+  verb: string,
   stream: string,
   cursor: StreamCursor = {},
   limit?: number,
 ): Promise<TelemetryEvent[]> {
-  const { events } = await svc(svcName).fn<{ events: TelemetryEvent[] }>(op, {
+  const { events } = await tool(toolName).call<{ events: TelemetryEvent[] }>(verb, {
     ...cursorArgs(stream, cursor),
     ...(limit !== undefined ? { limit } : {}),
   });
@@ -67,56 +65,45 @@ export async function pollStream(
 }
 
 /**
- * Live-subscribe to a stream's raw frames. Opens the service's direct WS
- * session (`POST /svc/<svcName>/session/<sessionKind>` → `{ ws_path }`, then the
- * WS): the first frame is `backfill` (from the init cursor), then `event` frames
- * stream live. Read-only — sends nothing on the socket.
+ * Live-subscribe to a stream's raw frames. Opens the service's direct session
+ * with the cursor as its init: the first frame back is `backfill` (from the
+ * init cursor), then `event` frames stream live. Sends nothing after the init.
  *
  * `onFrame` gets each parsed frame verbatim; the caller dedupes by `event.id`
  * and reconnects on `lagged`. For dedup + reconnect handled for you, use
  * `syncStream`.
  */
 export function subscribeStream(
-  svcName: string,
+  service: string,
   sessionKind: string,
   init: { stream: string } & StreamCursor,
   onFrame: (frame: StreamFrame) => void,
 ): StreamSubscription {
-  let ws: WebSocket | null = null;
   let closed = false;
-
-  void (async () => {
+  const ws = openSession(service, sessionKind, cursorArgs(init.stream, init));
+  ws.addEventListener('message', (ev) => {
+    if (typeof ev.data !== 'string') return;
+    let parsed: StreamFrame | null = null;
     try {
-      const { ws_path } = await svc(svcName).session<{ ws_path: string }>(
-        sessionKind,
-        cursorArgs(init.stream, init),
-      );
-      if (closed) return;
-      ws = new WebSocket(toWsUrl(ws_path));
-      ws.addEventListener('message', (ev) => {
-        if (typeof ev.data !== 'string') return;
-        let parsed: StreamFrame | null = null;
-        try {
-          parsed = JSON.parse(ev.data) as StreamFrame;
-        } catch {
-          return;
-        }
-        if (parsed) onFrame(parsed);
-      });
-      ws.addEventListener('error', () => {
-        onFrame({ type: 'error', message: 'telemetry ws error' });
-      });
-    } catch (err) {
-      onFrame({ type: 'error', message: (err as Error).message });
+      parsed = JSON.parse(ev.data) as StreamFrame;
+    } catch {
+      return;
     }
-  })();
+    if (parsed) onFrame(parsed);
+  });
+  ws.addEventListener('error', () => {
+    onFrame({ type: 'error', message: 'telemetry ws error' });
+  });
+  ws.addEventListener('close', (ev) => {
+    if (!closed && ev.code === 1011) onFrame({ type: 'error', message: ev.reason || 'session refused' });
+  });
 
   return {
     close(): void {
       if (closed) return;
       closed = true;
       try {
-        ws?.close();
+        ws.close();
       } catch {
         /* ignore */
       }
@@ -125,8 +112,8 @@ export function subscribeStream(
 }
 
 export interface SyncOptions {
-  /** Service name (the `/svc/<name>` prefix). */
-  svcName: string;
+  /** The service that serves the live session. */
+  service: string;
   /** The stream key to sync. */
   stream: string;
   /** Direct session kind for the live WS (default `'telemetry'`). */
@@ -154,7 +141,7 @@ export function syncStream(opts: SyncOptions): StreamSubscription {
   const connect = (): void => {
     if (closed) return;
     sub = subscribeStream(
-      opts.svcName,
+      opts.service,
       sessionKind,
       { stream: opts.stream, ...tracker.cursor },
       (frame) => {

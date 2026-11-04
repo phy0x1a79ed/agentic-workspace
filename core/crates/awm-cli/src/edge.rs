@@ -67,12 +67,36 @@ pub async fn edge_serve() -> anyhow::Result<i32> {
     if !edges.reaches(&from, &here) {
         anyhow::bail!("no edge from {from} to {here}");
     }
-    awm_edge::serve(tokio::io::stdin(), tokio::io::stdout(), from, move |name, args, caller| {
-        let dir = dir.clone();
-        async move { invoke_local(&dir, &name, args, &caller).await }
-    })
+    let stream_dir = dir.clone();
+    awm_edge::serve(
+        tokio::io::stdin(),
+        tokio::io::stdout(),
+        from,
+        move |name, args, caller| {
+            let dir = dir.clone();
+            async move { invoke_local(&dir, &name, args, &caller).await }
+        },
+        move |path, caller| {
+            let dir = stream_dir.clone();
+            async move { open_local_stream(&dir, &path, &caller).await }
+        },
+    )
     .await;
     Ok(0)
+}
+
+/// Open a stream path on the loopback gateway as `caller`, vouched for by the edge token.
+pub async fn open_local_stream(dir: &Path, path: &str, caller: &Caller) -> Result<awm_gateway::peer::WsPipe, String> {
+    if !awm_gateway::peer::stream_path_allowed(path) {
+        return Err(format!("{path} is not a stream path"));
+    }
+    let token = std::fs::read_to_string(dir.join("edge.token")).map_err(|e| format!("edge token: {e}"))?;
+    let url = format!("{}{path}", gateway_url().replacen("http", "ws", 1));
+    let headers = [
+        ("x-awm-caller", serde_json::to_string(caller).expect("json")),
+        ("x-awm-edge-token", token.trim().to_string()),
+    ];
+    awm_gateway::peer::connect_ws(&url, &headers).await
 }
 
 /// `awm port --key awm:<holder>:service`: one door call from `SSH_ORIGINAL_COMMAND`.

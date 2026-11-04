@@ -234,3 +234,57 @@ def test_the_served_app_refuses_a_non_allowlisted_verb():
     })
     assert r.status_code == 200, r.text
     assert "allowlist" in r.json()["error"]["message"]
+
+
+# ---------------------------------------------------------------------------
+# The gateway holds the bridge to its manifest
+# ---------------------------------------------------------------------------
+
+def test_a_call_carries_the_service_token(monkeypatch, tmp_path):
+    """The token names the plugin, so the gateway's [[needs.tool]] guard applies."""
+    token = tmp_path / "svc.token"
+    token.write_text("tok\n")
+    monkeypatch.setenv("AWM_HUB_TOKEN_FILE", str(token))
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.headers.get("X-Awm-Service-Token"))
+        return httpx.Response(200, json={"result": "{}"})
+
+    _call({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+           "params": {"name": mcp_bridge.tool_name("scope", "search"), "arguments": {}}}, handler)
+    assert seen == ["tok"]
+
+
+def test_every_default_verb_is_declared_in_the_manifest():
+    import tomllib
+    from pathlib import Path
+    manifest = tomllib.loads((Path(__file__).resolve().parents[1] / "awm-plugin.toml").read_text())
+    declared = {(n["name"], v) for n in manifest["needs"]["tool"] for v in n["verbs"]}
+    allowed = {(d, v) for d, verbs in mcp_bridge.DEFAULT_ALLOWLIST.items() for v in verbs}
+    assert allowed <= declared, allowed - declared
+
+
+def test_the_listener_serves_on_the_port_it_registered(monkeypatch):
+    monkeypatch.setattr(mcp_bridge, "_SOCKETS", [])
+    monkeypatch.setitem(mcp_bridge._STATE, "listening_port", None)
+    url = mcp_bridge.listen()
+    port = mcp_bridge._STATE["listening_port"]
+    assert url == f"http://127.0.0.1:{port}"
+
+    async def go():
+        task = asyncio.create_task(mcp_bridge.serve())
+        for _ in range(100):
+            if mcp_bridge._STATE["serving"]:
+                try:
+                    async with httpx.AsyncClient() as cli:
+                        r = await cli.get(f"{url}/mcp")
+                    break
+                except httpx.ConnectError:
+                    pass
+            await asyncio.sleep(0.05)
+        task.cancel()
+        return r
+
+    r = asyncio.run(go())
+    assert r.status_code == 200 and r.json()["prefix"] == "/s/claude-science/mcp"

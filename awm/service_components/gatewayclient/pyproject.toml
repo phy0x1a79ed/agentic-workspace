@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "awm-gatewayclient"
 version = "0.1.0"
 requires-python = ">=3.11"
-description = "AWM gateway client: how a service process ORIGINATES a call to another service via the gateway (POST /svc/<name>/fn/<fn>), with identity (X-Awm-As) threaded through. Plus a short-TTL positive-only RefCache for validate-by-calling reference checks. Pure imported source; no console scripts, no install.sh."
+description = "AWM gateway client: how a service process ORIGINATES a call to another service via the gateway (POST /invoke), with identity (X-Awm-As) threaded through. Plus a short-TTL positive-only RefCache for validate-by-calling reference checks. Pure imported source; no console scripts, no install.sh."
 dependencies = [
     "httpx",
     "websockets",

@@ -13,7 +13,8 @@ Public API
 ``call_sync(tool, verb, args, *, as_=None, timeout=30.0)`` — sync variant.
 ``peer=<node>`` on either runs the verb on that node: the local gateway carries it over
     the ssh edge.
-``subscribe(service, topic, *, as_=None)`` — async generator over a topic.
+``subscribe(service, topic, *, peer=None, as_=None)`` — async generator over a topic.
+``acquire_lease(service, host, *, kind="lease", peer=None)`` — hold a direct-session slot.
 ``GatewayCallError`` — raised on a non-2xx reply, carrying ``status`` + ``body``.
 ``RefCache`` — short-TTL, positive-only cache wrapping ``call`` for the
     validate-by-calling hot path.
@@ -35,6 +36,7 @@ import os
 import time
 from pathlib import Path
 from typing import Any, AsyncIterator
+from urllib.parse import quote
 
 import httpx
 
@@ -51,9 +53,6 @@ __all__ = [
     "call_sync",
     "subscribe",
     "peer_env",
-    "fetch_peer_file",
-    "fetch_peer_file_sync",
-    "NEEDS_RUST_GATEWAY",
     "SupervisedSubscription",
     "spawn_supervised",
     "acquire_lease",
@@ -201,6 +200,23 @@ def call_sync(
     return _result(resp, tool, verb)
 
 
+def _ws_base() -> str:
+    return hub_base_url().replace("https://", "wss://").replace("http://", "ws://")
+
+
+def _ws_headers(as_: str | None) -> list[tuple[str, str]] | None:
+    extra: list[tuple[str, str]] = []
+    if token := service_token():
+        extra.append(("X-Awm-Service-Token", token))
+    if as_ is not None:
+        extra.append(("X-Awm-As", as_))
+    return extra or None
+
+
+def _peer_query(peer: str | None) -> str:
+    return f"?peer={quote(peer)}" if (peer := _remote(peer)) else ""
+
+
 async def subscribe(
     service: str,
     topic: str,
@@ -211,38 +227,21 @@ async def subscribe(
 ) -> AsyncIterator[Any]:
     """Async generator over a service's emitter topic, via the gateway.
 
-    For a ``peer`` it raises ``GatewayCallError``: the edge carries no stream yet.
-
-    **Provisional / may be unused in pass 1.** Opens a WS to
-    ``{AWM_HUB_URL}/svc/{service}/emit/{topic}`` — the same browser-side
-    subscription surface (``proxy_service_emit_ws``), which registers a
-    subscriber on the owning service's control channel and fans each
-    ``emit`` payload out as one JSON text frame. Yields the decoded payload
-    per frame; exits when the gateway closes the socket.
-
-    The ``X-Awm-As`` identity header is sent as a connect header when
-    ``as_`` is given (the gateway's emit route reads it the same way the
-    HTTP route reads it).
+    Opens a WebSocket to ``/hub/emit/{service}/{topic}``; a ``peer`` naming
+    another node subscribes on that node over the edge. The gateway fans each
+    ``emit`` payload out as one JSON text frame. Yields the decoded payload per
+    frame; exits when the gateway closes the socket.
 
     ``on_connect``, if given, is called with no arguments once the socket is
     open — so a supervisor can observe "connected" without this function
     growing a reconnect loop it must not have.
     """
-    if peer := _remote(peer):
-        raise GatewayCallError(501, NEEDS_RUST_GATEWAY.format(what=f"subscribe {service}/{topic}", peer=peer),
-                               service=service, fn=topic)
     import websockets  # local import: WS isn't needed on the call() hot path
 
-    base = hub_base_url()
-    ws_base = base.replace("https://", "wss://").replace("http://", "ws://")
-    ws_url = f"{ws_base}/svc/{service}/emit/{topic}"
-    extra: list[tuple[str, str]] = []
-    if as_ is not None:
-        extra.append(("X-Awm-As", as_))
-
+    ws_url = f"{_ws_base()}/hub/emit/{quote(service)}/{quote(topic)}{_peer_query(peer)}"
     async with websockets.connect(
         ws_url,
-        additional_headers=extra or None,
+        additional_headers=_ws_headers(as_),
         max_size=None,
         open_timeout=10,
         **_PING_KWARGS,
@@ -251,7 +250,7 @@ async def subscribe(
             on_connect()
         async for raw in ws:
             if isinstance(raw, (bytes, bytearray)):
-                # Non-direct emit fan-out is always JSON text; ignore binary.
+                # Emit fan-out is always JSON text; ignore binary.
                 continue
             try:
                 yield json.loads(raw)
@@ -260,13 +259,9 @@ async def subscribe(
 
 
 # ---------------------------------------------------------------------------
-# Cross-node calls. A call names its ``peer``, and the local gateway carries it over the
-# ssh edge (fleet.md R92, R93). Only the Rust gateway does that. Streams, leases and file
-# fetches have no edge form yet, so for a peer they refuse.
+# Cross-node calls. A call, stream or lease names its ``peer``, and the local
+# gateway carries it over the ssh edge (fleet.md R92, R93).
 # ---------------------------------------------------------------------------
-
-#: The refusal for a cross-node stream, lease or file, which the edge does not carry yet.
-NEEDS_RUST_GATEWAY = "{what} on peer {peer!r} needs the Rust gateway (T19): the ssh edge carries only /invoke calls"
 
 
 def _remote(peer: str | None) -> str | None:
@@ -287,23 +282,12 @@ def peer_env(var: str) -> str | None:
     return v or None
 
 
-def fetch_peer_file_sync(peer: str, path: str, *args: Any, **kwargs: Any) -> Any:
-    """Fetch a file from ``peer``. Refuses: the edge carries no file yet."""
-    raise GatewayCallError(501, NEEDS_RUST_GATEWAY.format(what=f"fetching {path}", peer=peer),
-                           service="file", fn="fetch")
-
-
-async def fetch_peer_file(peer: str, path: str, *args: Any, **kwargs: Any) -> Any:
-    """:func:`fetch_peer_file_sync` for async callers."""
-    return fetch_peer_file_sync(peer, path, *args, **kwargs)
-
-
 # ---------------------------------------------------------------------------
 # Direct-session leases — hold a service slot for as long as a WS stays open.
 # The open socket IS the lease (ZooKeeper-ephemeral / etcd-keepalive style): the
 # holder keeps it open for the guarded work, then reports a verdict; a drop is
-# observed by the owning service at once. The two-step open mirrors the browser
-# direct-session handshake (POST /svc/<svc>/session/<kind> → open the ws_path).
+# observed by the owning service at once. One WebSocket to
+# /hub/session/<svc>/<kind> carries the init as its first frame.
 # ---------------------------------------------------------------------------
 
 
@@ -371,18 +355,6 @@ class Lease:
         await self.aclose()
 
 
-def _lease_ws_path(resp: httpx.Response, where: str) -> str:
-    if resp.status_code < 200 or resp.status_code >= 300:
-        raise GatewayCallError(resp.status_code, resp.text,
-                               service=where, fn="session")
-    ws_path = (resp.json() or {}).get("ws_path")
-    if not ws_path:
-        raise GatewayCallError(resp.status_code,
-                               "session open returned no ws_path",
-                               service=where, fn="session")
-    return ws_path
-
-
 async def _read_grant(ws: Any, node: str | None = None) -> Lease:
     """Read the owning service's first frame — its grant/deny — into a Lease."""
     try:
@@ -392,7 +364,10 @@ async def _read_grant(ws: Any, node: str | None = None) -> Lease:
             await ws.close()
         except Exception:  # noqa: BLE001
             pass
-        raise GatewayCallError(502, f"lease grant not received: {exc}", service="lease", fn="grant") from exc
+        # The gateway refuses a session by closing with 1011 and the reason.
+        rcvd = getattr(exc, "rcvd", None)
+        reason = rcvd.reason if rcvd is not None and rcvd.reason else str(exc)
+        raise GatewayCallError(502, f"lease grant not received: {reason}", service="lease", fn="grant") from exc
     try:
         frame = json.loads(raw) if isinstance(raw, str) else {}
     except json.JSONDecodeError:
@@ -411,30 +386,30 @@ async def acquire_lease(
     node: str | None = None,
     timeout: float = 10.0,
 ) -> Lease:
-    """Open a direct-session lease on a local service and read the grant frame.
-    A lease on a ``peer`` raises ``GatewayCallError``: the edge carries no lease yet.
+    """Open a direct-session lease on ``service`` and read the grant frame.
 
-    POSTs ``{hub}/svc/{service}/session/{kind}`` with ``{"host": host}`` to
-    allocate the session, then opens the returned ``ws_path`` and reads the first
-    frame (the owning service's grant/deny). The caller holds the :class:`Lease`
-    for the guarded work and reports a verdict.
+    Opens one WebSocket to ``/hub/session/{service}/{kind}`` (on ``peer`` when it
+    names another node), sends ``{"host": host, "node": node}`` as the first text
+    frame, and reads the owning service's grant/deny. The caller holds the
+    :class:`Lease` for the guarded work and reports a verdict. A refusal by the
+    gateway or the service raises ``GatewayCallError``.
     """
-    if peer := _remote(peer):
-        raise GatewayCallError(501, NEEDS_RUST_GATEWAY.format(what=f"a {service} lease", peer=peer),
-                               service=service, fn="session")
     import websockets
 
-    base = hub_base_url()
-    body = json.dumps({"host": host, "node": node} if node else {"host": host})
-    async with httpx.AsyncClient(timeout=timeout) as cli:
-        resp = await cli.post(f"{base}/svc/{service}/session/{kind}",
-                              content=body, headers=_headers(as_))
-    ws_path = _lease_ws_path(resp, service)
-    ws_base = base.replace("https://", "wss://").replace("http://", "ws://")
-    extra = [("X-Awm-As", as_)] if as_ is not None else None
-    ws = await websockets.connect(f"{ws_base}{ws_path}",
-                                  additional_headers=extra,
-                                  max_size=None, open_timeout=10)
+    url = f"{_ws_base()}/hub/session/{quote(service)}/{quote(kind)}{_peer_query(peer)}"
+    try:
+        ws = await websockets.connect(url, additional_headers=_ws_headers(as_),
+                                      max_size=None, open_timeout=timeout)
+    except websockets.InvalidStatus as exc:
+        status = exc.response.status_code
+        body = (exc.response.body or b"").decode("utf-8", "replace")
+        raise GatewayCallError(status, body, service=service, fn="session") from exc
+    init = {"host": host, "node": node} if node else {"host": host}
+    try:
+        await ws.send(json.dumps(init))
+    except Exception as exc:  # noqa: BLE001
+        await ws.close()
+        raise GatewayCallError(502, f"session init not sent: {exc}", service=service, fn="session") from exc
     return await _read_grant(ws, node)
 
 

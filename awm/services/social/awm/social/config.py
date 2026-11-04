@@ -73,8 +73,7 @@ from awm.trustpolicy import LEVELS
 
 
 # Default config path. ``AWM_SOCIAL_CONFIG`` overrides it wholesale — needed
-# under ``awm dev shadow``, which rewrites ``AWM_WORKSPACE`` to a sandbox dir
-# that doesn't hold the real ``social.toml`` (the same shape as the 2fa
+# in a dev sandbox, whose ``AWM_DIR`` doesn't hold the real ``social.toml`` (the same shape as the 2fa
 # service's ``AWM_2FA_DIR`` override). Resolved at load() time, not import.
 CONFIG_FILE = config.AWM_DIR / "social.toml"
 
