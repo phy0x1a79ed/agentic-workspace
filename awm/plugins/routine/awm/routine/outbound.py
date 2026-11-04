@@ -1,21 +1,18 @@
 """Everything the routine service asks of other plugins, behind one interface.
 
-The service calls other plugins only through the gateway (install.md R117), on
-the `POST /invoke` door that today's Python gateway and the Rust gateway both
-serve. Tests replace :class:`Outbound` with a fake.
+The service calls other plugins only through the gateway (install.md R117), with
+:func:`awm.gatewayclient.call`. Tests replace :class:`Outbound` with a fake.
 """
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 from typing import Any, Protocol
 
-import httpx
+from awm import gatewayclient
 
 log = logging.getLogger("awm.routine.outbound")
-
 
 
 class Outbound(Protocol):
@@ -41,33 +38,14 @@ class Outbound(Protocol):
 
 
 class GatewayOutbound:
-    """The real outbound: `POST $AWM_HUB_URL/invoke`."""
-
-    def __init__(self, hub_url: str | None = None) -> None:
-        self.hub_url = (hub_url or os.environ.get("AWM_HUB_URL")
-                        or "http://127.0.0.1:8765").rstrip("/")
+    """The real outbound, through this node's gateway."""
 
     async def invoke(self, tool: str, verb: str, args: dict[str, Any],
                      *, peer: str | None = None, timeout: float = 60.0) -> Any:
-        inner: dict[str, Any] = {"verb": verb, "args": args}
-        if peer and peer != "local":
-            inner["peer"] = peer
-        from awm import gatewayclient
-
-        token = gatewayclient.service_token()
-        async with httpx.AsyncClient(timeout=timeout) as cli:
-            resp = await cli.post(f"{self.hub_url}/invoke",
-                                  json={"name": tool, "args": inner},
-                                  headers={"X-Awm-Service-Token": token} if token else {})
-        if resp.status_code >= 300:
-            raise RuntimeError(f"{tool} {verb}: HTTP {resp.status_code}: {resp.text[:400]}")
-        body = resp.json()
-        result = body.get("result", body) if isinstance(body, dict) else body
-        if isinstance(result, str):
-            try:
-                result = json.loads(result)
-            except ValueError:
-                pass
+        try:
+            result = await gatewayclient.call(tool, verb, args, peer=peer, timeout=timeout)
+        except gatewayclient.GatewayCallError as exc:
+            raise RuntimeError(f"{tool} {verb}: HTTP {exc.status}: {exc.body[:400]}") from exc
         if isinstance(result, dict) and result.get("error"):
             raise RuntimeError(f"{tool} {verb}: {result['error']}")
         return result
