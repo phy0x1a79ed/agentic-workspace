@@ -151,12 +151,18 @@ A second instance of a live service gets 409 on register and stands down.
 
 Both gateways also write the caller's trust and scope into the args of every call, for a service that reads args only. The journal and the browser bound every verb by them.
 
-- `_caller_trust` is the calling session's level. The gateway reads it from reflection's ledger, `<AWM_DIR>/services/reflection/trust.json`, keyed by the R9 session id. A session with no entry is `trusted`.
-- `_caller_scope` is `<project>/<scope>` of the session record's `cwd`, as `awm.config.scope_of` reads it. It is absent outside a project.
+- `_caller_trust` is the calling session's level, from reflection's `session_of` answer.
+- `_caller_scope` is `<project>/<scope>` of that answer's `cwd`, as `awm.config.scope_of` reads it. It is absent outside a project.
 - `_caller_session` keeps its meaning: the `{kind, job, name}` claim of a session on another node.
 - `_caller_session_id` is the R9 id of an isolated session. Only the isolated door writes it (§ Isolated sessions). Both gateways drop it from every other call.
 
-The gateway finds the session from `X-Awm-Session-Pid`, the pid `awm mcp` sends. It drops the two keys a caller sends. A call that names no session carries neither key. The journal reads that as `trusted`, the browser as `cooperative`.
+The gateway finds the session from `X-Awm-Session-Pid`, the pid `awm mcp` sends. It asks `reflection session_of {pid}` on the `/svc` door, with no session pid, so the lookup is neither gated nor looked up itself. reflection asks the harness plugins (`install.md` R135 item 6). The gateway reads no harness's files.
+
+1. A known session answers `{ok, known: true, session_id, mode, trust, cwd, ...}`. A pid no harness claims answers `{ok, known: false, mode, reason}`.
+2. The gateway keeps a positive answer `session_cache_s` seconds (install config, default 5). It never keeps a failed lookup.
+3. No answer, or no session, reads as `trusted` with no scope.
+
+The gateway drops the two keys a caller sends. A call that names no session carries neither key. The journal reads that as `trusted`, the browser as `cooperative`.
 
 Over an edge, the pair comes from the far node. The Rust gateway takes it from the edge's `caller` frame. The Python gateway keeps the pair only on a request that carries `X-Awm-As`, and its proxy fills the pair from its own node's ledger when it follows a peer redirect. The Rust gateway refuses a `_caller_trust` or `_caller_scope` that a model sends to `/invoke` as an unknown argument of a verb that declares its params.
 

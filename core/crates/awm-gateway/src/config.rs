@@ -68,6 +68,9 @@ pub struct Config {
     /// Seconds a call waits for a tool that is not up yet (R117 item 7).
     #[serde(default = "default_wait")]
     pub tool_wait_s: f64,
+    /// Seconds a positive `reflection session_of` answer is kept. A failed lookup is never kept.
+    #[serde(default = "default_session_cache")]
+    pub session_cache_s: f64,
     /// Seconds a service may stay off its control WebSocket before a respawn.
     #[serde(default = "default_reconnect")]
     pub reconnect_window_s: f64,
@@ -101,6 +104,9 @@ fn default_reserved() -> Vec<String> {
 }
 fn default_wait() -> f64 {
     10.0
+}
+fn default_session_cache() -> f64 {
+    5.0
 }
 fn default_reconnect() -> f64 {
     10.0

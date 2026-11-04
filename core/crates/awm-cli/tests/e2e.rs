@@ -71,6 +71,12 @@ secrets = ["FAKE_SECRET"]
 "#,
     );
     write(&core.join("fake/run.sh"), &format!("exec '{}'\n", fake.display()));
+    // reflection is the fake too: it answers session_of from sessions.json.
+    write(&core.join("reflection/awm-plugin.toml"), "[plugin]\nname = \"reflection\"\n\n[[service]]\nname = \"reflection\"\n\n[[tool]]\nname = \"reflection\"\n");
+    write(
+        &core.join("reflection/run.sh"),
+        &format!("export FAKE_TOOL=reflection FAKE_SESSIONS_FILE='{}'\nexec '{}'\n", state.join("sessions.json").display(), fake.display()),
+    );
     write(&core.join("fake/ui/index.html"), "<html><body>fake-ui-marker</body></html>\n");
 
     write(
@@ -118,7 +124,7 @@ major = 1
     write(
         &state.join("config.toml"),
         &format!(
-            "node = \"e2e\"\nlisten = \"127.0.0.1:0\"\nworkspace = \"{}\"\ncore_roots = [\"{}\"]\nplugin_roots = [\"{}\"]\ntool_wait_s = 90\n[[external]]\nservice = \"ext\"\ntoken_file = \"{}\"\n[fleet]\nhome = \"e2e\"\nnodes = [\"e2e\"]\n{env}",
+            "node = \"e2e\"\nlisten = \"127.0.0.1:0\"\nworkspace = \"{}\"\ncore_roots = [\"{}\"]\nplugin_roots = [\"{}\"]\ntool_wait_s = 90\nsession_cache_s = 0\n[[external]]\nservice = \"ext\"\ntoken_file = \"{}\"\n[fleet]\nhome = \"e2e\"\nnodes = [\"e2e\"]\n{env}",
             ws.display(),
             core.display(),
             third.display(),
@@ -140,7 +146,6 @@ impl Gateway {
             .arg(state)
             .env("AWM_LOG", "info")
             .env("GATEWAY_ONLY_SECRET", "leaked")
-            .env("AWM_CX_SESSIONS", state.join("sessions"))
             .stderr(std::fs::File::create(state.join("gateway.stderr")).unwrap())
             .spawn()
             .unwrap();
@@ -308,15 +313,15 @@ fn gateway_end_to_end() {
     assert_eq!((who["caller"]["node"].as_str(), who["caller"]["lane"].as_str(), who["as"].as_str()), (Some("elsewhere"), Some("edge"), Some("tony")));
     assert_eq!((who["trust"].as_str(), who["scope"].as_str()), (Some("high"), None), "an edge caller's trust reaches the args");
 
-    // A local session gets its id, its level from reflection's ledger and its scope from its cwd.
-    // The model's own `_caller_trust` is refused as an unknown argument.
+    // A local session gets its id, its level and its scope (from its cwd) from reflection's
+    // session_of. The model's own `_caller_trust` is refused as an unknown argument.
     let worktree = node.state.parent().unwrap().join("ws/projects/awm/redux-x");
     std::fs::create_dir_all(worktree.join(".awm")).unwrap();
     std::fs::create_dir_all(worktree.join("core")).unwrap();
     let uuid = "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0";
     let r9 = format!("cc{}", uuid.replace('-', ""));
-    write(&node.state.join("sessions/4242.json"), &json!({"sessionId": uuid, "cwd": worktree.join("core")}).to_string());
-    write(&node.state.join("services/reflection/trust.json"), &json!({&r9: {"level": "cooperative"}}).to_string());
+    let session = |trust: &str| json!({"4242": {"ok": true, "known": true, "session_id": r9, "trust": trust, "cwd": worktree.join("core")}}).to_string();
+    write(&node.state.join("sessions.json"), &session("cooperative"));
     let as_session = |args: Value| -> Value {
         http().post(format!("{url}/invoke")).header("X-Awm-Session-Pid", "4242").json(&json!({"name": "fake", "args": args})).send().unwrap().json().unwrap()
     };
@@ -327,10 +332,14 @@ fn gateway_end_to_end() {
     assert_eq!((who["trust"].as_str(), who["scope"].as_str()), (Some("cooperative"), Some("awm/redux-x")), "{who}");
     let reply = as_session(json!({"verb": "whoami", "args": {"_caller_trust": "trusted"}}));
     assert!(reply["result"].is_null() && reply.to_string().contains("_caller_trust"), "{reply}");
-    write(&node.state.join("services/reflection/trust.json"), "{}");
+    write(&node.state.join("sessions.json"), &session("trusted"));
     let reply = as_session(json!({"verb": "whoami"}));
     let who: Value = serde_json::from_str(reply["result"].as_str().unwrap()).unwrap();
-    assert_eq!(who["trust"], "trusted", "a session with no entry is trusted: {who}");
+    assert_eq!(who["trust"], "trusted", "{who}");
+    write(&node.state.join("sessions.json"), "{}");
+    let reply = as_session(json!({"verb": "whoami"}));
+    let who: Value = serde_json::from_str(reply["result"].as_str().unwrap()).unwrap();
+    assert_eq!((who["caller"]["session"].clone(), who["trust"].as_str()), (Value::Null, Some("trusted")), "a pid no harness claims: {who}");
 
     // A plugin gets the secrets its manifest lists, and nothing else of the node's (R116 item 1).
     let env_of = |tool: &str, name: &str| -> String {

@@ -47,6 +47,8 @@ pub struct Gateway {
     /// The tools each peer serves, refreshed when a peer says its table changed.
     pub peer_tools: RwLock<BTreeMap<String, Vec<RemoteTool>>>,
     reloading: tokio::sync::Mutex<()>,
+    /// reflection's `session_of` answers by pid, with when they were fetched.
+    sessions: std::sync::Mutex<HashMap<u32, (Instant, Value)>>,
     installing: tokio::sync::Mutex<()>,
     /// Passes a change whose source needs approval (R116 item 2).
     pub approver: Box<dyn crate::install::Approver>,
@@ -142,6 +144,7 @@ impl Gateway {
             tokens: TokenCache::default(),
             peer_tools: RwLock::new(peer_tools),
             reloading: tokio::sync::Mutex::new(()),
+            sessions: std::sync::Mutex::new(HashMap::new()),
             installing: tokio::sync::Mutex::new(()),
             approver: Box::new(crate::install::NoPasskeyYet),
             me: me.clone(),
@@ -266,6 +269,31 @@ impl Gateway {
                 false
             }
         }
+    }
+
+    /// Who owns `pid`: reflection's `session_of` answer, or `None` when reflection is down or
+    /// does not answer. The call carries no session pid, so it is neither looked up nor gated.
+    pub async fn session_of(&self, pid: u32) -> Option<Value> {
+        let ttl = Duration::from_secs_f64(self.cfg.session_cache_s);
+        if let Some((at, v)) = self.sessions.lock().unwrap_or_else(|p| p.into_inner()).get(&pid) {
+            if at.elapsed() < ttl {
+                return Some(v.clone());
+            }
+        }
+        let caller = awm_proto::Caller { node: self.node.clone(), lane: Lane::Service, ..Default::default() };
+        let answer = self
+            .hub
+            .call(crate::caller::LOOKUP_SERVICE, crate::caller::LOOKUP_FN, json!({"pid": pid}), None, &caller, Duration::from_secs(5))
+            .await
+            .ok()?;
+        let answer = match answer {
+            Value::String(s) => serde_json::from_str(&s).unwrap_or(Value::String(s)),
+            v => v,
+        };
+        if !ttl.is_zero() {
+            self.sessions.lock().unwrap_or_else(|p| p.into_inner()).insert(pid, (Instant::now(), answer.clone()));
+        }
+        Some(answer)
     }
 
     /// Fetch each source, pass the change through the approver, and load it as one change.

@@ -6,6 +6,8 @@
 //! `[[needs.tool]]` of its own `awm-plugin.toml` by name through `/invoke`). As a fake harness plugin it also answers
 //! `caller_of_token(token)` from the JSON map in `FAKE_TOKENS`, and `scoped(project?, scope?,
 //! to_scope?)` returns the args it got. `env(name)` returns one variable of its environment.
+//! As a fake reflection it answers `session_of(pid)` from the JSON map in the file at
+//! `FAKE_SESSIONS_FILE`, read on each call.
 
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
@@ -47,6 +49,7 @@ async fn main() -> anyhow::Result<()> {
         f("caller_of_token", "The isolated session that holds a caller token.", json!([{"name": "token", "required": true}])),
         f("scoped", "Return the args as received.", json!([{"name": "project"}, {"name": "scope"}, {"name": "to_scope"}])),
         f("env", "One variable of the service's environment, or null.", json!([{"name": "name", "required": true}])),
+        f("session_of", "The session that owns a pid.", json!([{"name": "pid", "type": "integer", "required": true}])),
     ]});
     let tokens: Value = std::env::var("FAKE_TOKENS").ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or(json!({}));
     sink.send(Message::Text(json!({"kind": "ready", "api": manifest}).to_string().into())).await?;
@@ -78,6 +81,12 @@ async fn main() -> anyhow::Result<()> {
                 None => json!({"ok": true, "known": false}),
             }),
             "scoped" => Ok(args.clone()),
+            "session_of" => Ok(std::env::var("FAKE_SESSIONS_FILE")
+                .ok()
+                .and_then(|p| std::fs::read_to_string(p).ok())
+                .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+                .and_then(|m| m.get(args["pid"].to_string()).cloned())
+                .unwrap_or_else(|| json!({"ok": true, "known": false, "mode": null}))),
             "env" => Ok(args["name"].as_str().and_then(|n| std::env::var(n).ok()).map(Value::from).unwrap_or(Value::Null)),
             "run_job" => {
                 let usage = json!({"kind": "usage", "surface": "background", "name": args["job"], "ok": true, "ms": 5});
