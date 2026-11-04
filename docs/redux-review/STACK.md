@@ -21,25 +21,13 @@ Procedure, from dfs-interview § Work the stack:
 
 ## Current topic
 
-**journals**. Its result: `journals/README.md`.
+**plugin-guards**. Its result: `plugin-guards/README.md`.
 
 ## Stack
 
 - **plugin-guards** (2026-11-03): R116 items 3 and 4 mechanisms, raised by redux-plugins: a page origin per plugin, and the container for a third-party plugin
   - [ ] Page origin per plugin (R116 item 3): (a) a host per plugin, <plugin>.localhost and <plugin>.<node host>, a wildcard cert per node; or (b) a port per plugin. The lane recommends (a)
   - [ ] Third-party container (R116 item 4): (a) one unix socket per plugin bind-mounted, --network none unless needs.network, egress filtering later; or (b) a plugin listener on the docker bridge with a per-spawn token. The lane recommends (a)
-- **journals** (2026-11-03): for journals, I want to talk about making journals commentable (threads, like reddit posts). also want to talk about adding tags to journals with a set ontology (by the agents. 1 degree of separate helps with consistency since harder to just add rando tags). tags for existing uses, but then also would allow for complaint posts like bug reports. then journals need a way of also marking "closed", kind of like issues.  This would allow meta imrpovements to be more systematized in awm
-  - [x] Tag descriptions. Tony: "each tag should also get a description when adding and is editable" (answered 2026-11-03)
-  - [x] Precedence folds into the journal. Tony: "and prescedent can then fold into the same journal system once updated?" (answered 2026-11-03)
-  - [x] superseded_by in the journal. Tony: "how does superseded_by work in new journal system?" (answered 2026-11-03)
-  - [x] Precedence protocol moves to a skill, skills in a folder. Tony: "lets make the tag precedent. we can move the protocol to a skill?" and "we should move the debrief and precedent skills to a folder maybe" (answered 2026-11-03)
-  - [x] Usage decays with no sweep. Tony: "can we make usage decay so that it doesnt count up forever? can we make this decay not require periodic sweeps?" (answered 2026-11-03)
-  - [x] Where lineage lives (R13 parent links, R16 graph) once reporting goes: operations, journal or reflection. Raised by redux-harness; follows from queue.md R145 removing reporting, where the sessions lane serves lineage and session_parent (answered 2026-11-03)
-  - [x] Protected tags: which tags the code names (message, journal, goal, brief, closed, superseded, folded, precedent) and whether they can be deleted, renamed or added after posting. From the multi-tag review Tony asked for (answered 2026-11-03)
-  - [x] Peer visibility once kind is a tag: keyed on a tag, or on trust bounds (R107 item 3). From the multi-tag review (answered 2026-11-03)
-  - [x] Sync conflict: two nodes add the same tag name. From the multi-tag review (answered 2026-11-03)
-  - [x] Old kinds system, debrief, note: tags or dropped. From the multi-tag review (answered 2026-11-03)
-  - [x] Goal revision across levels: a superseding reply lives in the first post scope (R107 items 5, 8), but goal_set can move a goal to another level. (a) refuse a level change on supersede, retire and set anew; (b) exempt supersede replies from the placement rule. Raised by redux-journal; interim (b) (answered 2026-11-03)
 - **search-filters** (2026-11-03): can we make parameterized search possible? then we can do search with empty terms and only sql (if that's what hop takes) with source as kb for hop. Then we can also make searching journals possible to filter to only reports etc
   - [ ] kb tool surface: does hop become a search filter so the kb tool goes (Tony: kb becomes a b2b service only for search)
 - **fleet-deploy** (2026-11-03): lets go over each of the major systems architecturally to make sure we are still aligned
@@ -60,3 +48,4 @@ Procedure, from dfs-interview § Work the stack:
 - **sessions-harness** (closed 2026-11-03): `sessions-harness/README.md`
 - **queue-approver** (closed 2026-11-03): `queue-approver/README.md`
 - **channels** (closed 2026-11-03): `channels/README.md`
+- **journals** (closed 2026-11-03): `journals/README.md`
