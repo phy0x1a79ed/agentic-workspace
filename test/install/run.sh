@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # The install test (install.md R118): a bare container installs awm, then joins a fake
-# fleet as a new node. Run it only when asked; it is never part of the fast smoke.
+# fleet as a new node. It also reloads a changed plugin hot (R144) and calls through the
+# isolated door (fleet.md R109 item 7). Run it only when asked; it is never part of the fast smoke.
 #
 # It builds nothing. It takes the static awm binary at $AWM_TEST_BIN and the images that
 # build-images.sh made (or that the registry holds). It touches no real login or node.
@@ -73,6 +74,7 @@ docker exec "$run-node" sh -c 'command -v awm >/dev/null && ! ls /opt/awm-test 2
 cat > "$work/node.toml" <<EOF
 node = "new-node"
 listen = "0.0.0.0:7819"
+isolated_listen = "127.0.0.1:7829"
 [[peer]]
 name = "fake-peer"
 url = "http://fake-peer:7819"
@@ -94,6 +96,8 @@ echo "$out" | grep -q "via the fleet" || fail "2fa answered $out"
 step "the new node installs a plugin from a folder; its needs resolve on the peer"
 docker create --name "$run-src" "$stub_img" true >/dev/null
 docker cp "$run-src:/opt/awm-test/plugins/install/hello" "$work/src/hello"
+docker cp "$run-src:/opt/awm-test/plugins/install/cch" "$work/src/cch"
+cp "$here/door.sh" "$work/src/door.sh"
 docker rm "$run-src" >/dev/null
 awm_in node install /src/hello || fail "install hello"
 out="$(awm_in node hello call_needed --verb echo --args '{"text":"hello needs 2fa"}')" || fail "hello's call: $out"
@@ -108,6 +112,32 @@ done
 awm_in peer awm table | grep -q '"name": "hello"' || fail "the peer never learned hello"
 out="$(awm_in peer hello echo --text "from the peer")" || fail "hello from the peer: $out"
 echo "$out" | grep -q "from the peer" || fail "hello from the peer answered $out"
+
+step "a changed plugin reloads hot, with no gateway restart (R144)"
+core_pid() { awm_in node status | grep -o '"core_pid": [0-9]*'; }
+before="$(core_pid)"
+docker exec "$run-node" sh -c 'echo "# changed" >> /state/installed/hello/run.sh'
+out="$(awm_in node reload)" || fail "reload: $out"
+echo "$out" | tr -d ' \n' | grep -q '"updated":\["hello"\]' || fail "the reload did not update hello: $out"
+out="$(awm_in node hello echo --text "after the reload")" || fail "hello after the reload: $out"
+echo "$out" | grep -q "after the reload" || fail "hello after the reload answered $out"
+[ "$(core_pid)" = "$before" ] || fail "the reload restarted the gateway"
+
+step "an isolated session calls through the door with its caller token (R109 item 7)"
+awm_in node install /src/cch >/dev/null || fail "install the stub harness"
+door() { docker exec "$run-node" bash /src/door.sh "$@"; }
+rpc() { printf '{"jsonrpc":"2.0","id":1,"method":"%s","params":%s}' "$1" "$2"; }
+door - "$(rpc initialize '{}')" | head -1 | grep -q " 401 " || fail "the door let in a call with no token"
+door guess "$(rpc initialize '{}')" | head -1 | grep -q " 401 " || fail "the door let in an unknown token"
+out="$(door good "$(rpc initialize '{"protocolVersion":"2025-06-18","capabilities":{}}')")"
+echo "$out" | grep -q '"serverInfo"' || fail "initialize through the door: $out"
+out="$(door good "$(rpc tools/call '{"name":"hello","arguments":{"verb":"echo","args":{"text":"from the box"}}}')")"
+echo "$out" | grep -q "from the box" || fail "hello echo through the door: $out"
+out="$(door good "$(rpc tools/call '{"name":"hello","arguments":{"verb":"whoami"}}')")"
+echo "$out" | grep -q 'untrusted' || fail "the door's caller is not the untrusted session: $out"
+out="$(door good "$(rpc tools/call '{"name":"hello","arguments":{"verb":"add","args":{"a":1,"b":2}}}')")"
+echo "$out" | grep -q 'whitelist' || fail "the door ran a verb off the token's whitelist: $out"
+awm_in node uninstall cch >/dev/null || fail "uninstall the stub harness"
 
 step "uninstall runs hot on both nodes"
 awm_in node uninstall hello >/dev/null || fail "uninstall hello"
