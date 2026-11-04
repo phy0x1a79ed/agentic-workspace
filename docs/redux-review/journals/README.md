@@ -64,6 +64,34 @@ Reviewed read only on 2026-11-03, against `origin/release` 266f4b29 and the lane
 - 2026-11-03: A citation is a bare id in the `reply_to` list, with no reason (`sessions.md` R15). Old reasons stay on the citing post's meta. Tony: "No reason".
 - 2026-11-03: The goal log goes. Its 7 real goals become ordinary posts, and the goal verbs and the startup goal step go (`fleet.md` R107 item 10). This makes the goal-level question moot. Tony: "Goals are not used... check" and "Drop goals".
 
+## Build result
+
+Reported by the redux-journal lane on 2026-11-03. Local commits only, on `feat/redux-journal`: 9ec42129, dc6953a2, 52894a5e, 66b8690e.
+
+- **Built.** R107 items 5 to 10 and `sessions.md` R13 to R16.
+  - Tags with fixed ids for the code-named tags, `tag_add`, `tag_edit`, `tag_list` and `retag`. Filters take `!` and `and`. `kind` is an alias in and a derived field out.
+  - Tag sync pushes each add and edit to the peers and pulls every 6 hours. A clash gives the newer tag a provisional `<name>.clash-<id6>`, starts a `tag-clash-<id8>` agent in the lobby, and refuses journal fetch and export from the clashed peer until the rename.
+  - Comments, nested threads, citations in `reply_to` stored one way, lineage in the journal, briefs and precedents superseded by reply. The `precedence` plugin and tool and the goal log are gone.
+- **Tests pass.** journal 198, gateway 1305, scopes 292, cch 745, reporting 451, search 115, claude-science 101. The (4,5) migration ran on a copy of mizar's `journal.db`: 70 posts, 63 journal and 7 message, nothing untagged. No live database was touched.
+- **For the trust lane.**
+  - `dao.py:155` holds `MIGRATIONS[(3,4)] = "SELECT 1;"`. The trust merge puts `post_versions` there.
+  - The addenda fold writes `kind='folded'`, and no `kind` column exists now. It needs a tag.
+  - `peer_gate()` (`operations/posts.py:224`) keeps the foreign journal-only gate until trust bounds land.
+  - `tagsync.peers()` (`tagsync.py:44`) reads the peer book. It moves to the edge list.
+- **For the harness.** `reflection` records each parent link through `journal session_parent` at `start_other` and at clear. Today cch `lifecycle.py:316` and reporting `tasks.py:538` do it.
+- **For search-finish** (search-filters topic). A tags filter with `!` and `and`, the comment count, `get` returning the thread, the precedence source dropped, and federated search blocked while a clash between two peers stands.
+- **One-shots at cutover.** `awm journal precedent_import` on altair, where `precedence.db` lives, and `awm journal lineage_import --path <reporting work db>` on each node.
+- **Open for Tony.** Changes under `~/.claude`, which the lane did not make: the debrief skill posts with `tags=["journal"]` and bare ids in `reply_to`, goal-alignment writes an ordinary post, goal 50708f67 moves into `~/.claude/CLAUDE.md`, and the global `CLAUDE.md` points its precedence lines at precedent posts.
+- **For the cleanup pass.**
+  - The first-start copy from `scopes.db` (`journal/migrate.py`, `hub_adapter.py:53`), and the `scope_posts` DDL in `scopes/dao.py:74-86` and the kind rows in `scopes/seed.py`.
+  - Ignored params: `channel.py:295` `to_scope` and `operations/posts.py:65` `manifest`.
+  - `render.py:45` still says the file is auto-generated, but no file exists since R142.
+  - `private.py:72` legacy spellings, the `_ASK_TYPES` heuristic in `inbox.py:37`, the `INDEXED_TAGS` migrated kinds in `search_index.py:30-31`, and the name `kinds.py`.
+  - `channel.is_foreign` and `edge_origin` duplicate `gatewayclient/__init__.py:536`. Trust deletes both.
+  - reporting keeps an orphan `session_parents` table after `lineage_import`.
+  - Gateway tests use `goal_read` and `precedence` as synthetic names. `AGENTS.md:56` still says "precedence decisions".
+  - The brief guide in `operations/briefs.py` still mentions the goal.
+
 ## Recall after compaction
 
 Tested on 2026-11-03. A fork of each stopped session was asked, with tools off, which journal posts it had read before compacting. The forks ran with `claude -p --resume <id> --fork-session --no-session-persistence`, so the originals were untouched.
