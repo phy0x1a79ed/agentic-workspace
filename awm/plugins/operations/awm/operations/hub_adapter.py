@@ -173,6 +173,10 @@ async def main() -> None:
     async def flusher() -> None:
         while not stop.is_set():
             await relay.flush()
+            try:
+                await front.remind_due()
+            except Exception:  # noqa: BLE001 - a missed reminder never stops the outbox
+                log.exception("urgent-block reminders failed")
             await asyncio.sleep(10)
 
     async def on_start() -> None:

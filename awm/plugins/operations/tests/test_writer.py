@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from typing import Any
 
 import pytest
@@ -207,3 +208,20 @@ def test_the_writer_holds_no_vault_token():
     from awm.operations import trilium, writer
     for mod in (trilium, writer, board):
         assert "ETAPI_TOKEN" not in inspect.getsource(mod)
+
+
+def test_messages_plan_and_todos_reach_the_card(tmp_path):
+    api = FakeTrilium()
+    store = Store(tmp_path / "q.db")
+    w = Writer(store, TriliumTool(tool=api))
+    t = store.task_open("deploy", "ccA")["task_id"]
+    store.task_detail(t, plan="# Deploy", todos=[{"id": "1", "subject": "go", "status": "pending"}])
+    store.task_message(t, "deploy passed", author="deploy", node="mizar")
+    w.sync_once()
+    record = json.loads(api.notes[record_note_id(t)]["content"])
+    assert record["plan"] == "# Deploy" and record["todos"][0]["subject"] == "go"
+    msgs = api.notes[board.messages_note_id(t)]
+    assert msgs["parents"] == [card_note_id(t)] and "deploy passed" in msgs["content"]
+    store.task_message(t, "second", author="tony")
+    w.sync_once()
+    assert "second" in api.notes[board.messages_note_id(t)]["content"]

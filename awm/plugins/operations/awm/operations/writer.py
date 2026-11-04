@@ -15,7 +15,8 @@ import time
 from datetime import datetime, timezone
 from typing import Any
 
-from awm.operations.board import ROOT_ID, card_note_id, ensure_root, record_note_id
+from awm.operations.board import (ROOT_ID, card_note_id, ensure_root, messages_note_id,
+                                  record_note_id)
 from awm.operations.store import Store
 from awm.operations.trilium import TriliumTool
 
@@ -92,15 +93,33 @@ class Writer:
                 self.api.label_delete(nid, name)
         record = json.dumps({"task_id": tid, "sessions": card.get("sessions", []),
                              "parent_task": card["parent_task"], "tags": card["tags"],
-                             "reason": card["meta"].get("reason")}, sort_keys=True)
+                             "reason": card["meta"].get("reason"),
+                             "plan": card["meta"].get("plan"),
+                             "todos": card["meta"].get("todos")}, sort_keys=True)
         rid = record_note_id(tid)
         if self.api.note(rid) is None:
             self.api.create_note(nid, "record", "code", record, note_id=rid,
                                  mime="application/json")
         else:
             self.api.update(rid, content=record)
+        self._messages(tid, nid)
         if card["kind"] == "note" and card["body_ref"] != nid:
             self.store.card_action("set_body_ref", tid, {"body_ref": nid})
+
+    def _messages(self, tid: str, nid: str) -> None:
+        """The card's messages as one Markdown child, oldest first."""
+        messages = self.store.task_messages(tid)
+        if not messages:
+            return
+        text = "\n\n".join(
+            f"**{m['author'] or 'unknown'}** on {m['node'] or '?'}, "
+            f"{datetime.fromtimestamp(m['ts'], timezone.utc).isoformat(timespec='seconds')}"
+            f" (#{m['seq']})\n\n{m['body']}" for m in messages)
+        mid = messages_note_id(tid)
+        if self.api.note(mid) is None:
+            self.api.create_note(nid, "messages", "code", text, note_id=mid, mime=MARKDOWN)
+        else:
+            self.api.update(mid, content=text)
 
     # -- the loop ------------------------------------------------------------------------
 

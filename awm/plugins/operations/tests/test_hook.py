@@ -1,4 +1,4 @@
-"""The reporting hook against a stub gateway, run the way Claude Code runs it: `python3 -S`, JSON on stdin."""
+"""The operations hook against a stub gateway, run the way Claude Code runs it: `python3 -S`, JSON on stdin."""
 from __future__ import annotations
 
 import json
@@ -13,9 +13,8 @@ from pathlib import Path
 import pytest
 
 HERE = Path(__file__).resolve().parent
-HOOK = HERE / "reporting_hook.py"
+HOOK = HERE.parent / "hooks" / "operations_hook.py"
 INSTALLER = HERE.parents[2] / "scripts" / "deploy-hooks.sh"
-URL = "https://nexus.example.org/trilium/#root/abc/def123456789"
 
 
 class Gateway:
@@ -74,7 +73,7 @@ def start(source):
 
 
 def marker(home):
-    return home / ".claude" / "awm-reporting" / "s1.blocked"
+    return home / ".claude" / "awm-operations" / "s1.blocked"
 
 
 def test_a_clear_files_the_task_away_and_other_session_starts_are_ignored(home, gw):
@@ -87,10 +86,10 @@ def test_a_clear_files_the_task_away_and_other_session_starts_are_ignored(home, 
 
 
 def test_the_settings_fragment_runs_the_hook_on_clear_only():
-    fragment = json.loads((HERE / "awm-reporting-settings.json").read_text())
+    fragment = json.loads((HOOK.parent / "awm-operations-settings.json").read_text())
     (entry,) = fragment["hooks"]["SessionStart"]
     assert entry["matcher"] == "clear"
-    assert "awm-reporting-hook.py" in entry["hooks"][0]["command"]
+    assert "awm-operations-hook.py" in entry["hooks"][0]["command"]
 
 
 def test_a_plan_write_sends_the_file_text(home, gw):
@@ -114,7 +113,6 @@ def test_a_plan_that_opened_a_card_tells_the_agent(home, gw):
         "hookEventName": "PostToolUse", "additionalContext": "card X is yours"}}
     out = run(home, gw.url, post("ExitPlanMode", tool_response={"plan": "# plan"}), prints=True)
     assert json.loads(out.stdout)["hookSpecificOutput"]["additionalContext"] == "card X is yours"
-    run(home, gw.url, prompt("claim " + URL))
 
 
 def test_other_writes_and_subagent_plans_are_ignored(home, gw):
@@ -178,37 +176,10 @@ def test_todowrite_carries_the_list_in_its_input(home, gw):
         {"id": "1", "subject": "a", "status": "pending"}, {"id": "2", "subject": "b", "status": "completed"}]
 
 
-def test_a_plain_prompt_makes_no_call(home, gw):
+def test_a_prompt_makes_no_call_unless_the_card_waits_for_tony(home, gw):
     run(home, gw.url, prompt("fix the build"))
-    run(home, gw.url, prompt("see https://example.org/page#top"))
-    run(home, gw.url, prompt("read " + URL + " first"))
+    run(home, gw.url, prompt("claim task ABCD1234"), CLAUDE_JOB_DIR="/jobs/j1")
     assert gw.calls == []
-
-
-def test_a_prompt_with_a_note_url_is_sent(home, gw):
-    run(home, gw.url, prompt("claim task " + URL + " please"))
-    assert gw.calls[0][2] == {"name": "operations_hook_prompt",
-                              "args": {"session_id": "s1", "prompt": "claim task " + URL + " please"}}
-
-
-def test_a_background_jobs_first_prompt_asks_once_and_prints_the_notice(home, gw):
-    gw.reply = {"ok": True, "blocked": False, "opened": True, "notice": "on the board"}
-    out = run(home, gw.url, prompt("do the thing"), prints=True, CLAUDE_JOB_DIR="/jobs/j1")
-    assert gw.calls[0][2]["args"] == {"session_id": "s1", "prompt": "do the thing", "first": True}
-    assert json.loads(out.stdout)["hookSpecificOutput"] == {
-        "hookEventName": "UserPromptSubmit", "additionalContext": "on the board"}
-    run(home, gw.url, prompt("next"), CLAUDE_JOB_DIR="/jobs/j1")
-    assert len(gw.calls) == 1
-
-
-def test_a_first_prompt_the_gateway_missed_asks_again(home):
-    run(home, "http://127.0.0.1:9", prompt("do the thing"), CLAUDE_JOB_DIR="/jobs/j1")
-    assert not (home / ".claude" / "awm-reporting" / "s1.seen").exists()
-
-
-def test_a_claim_of_a_nexus_url_without_a_trilium_path_is_sent(home, gw):
-    run(home, gw.url, prompt("attach to https://nexus.example.org/#root/abc/def123456789"))
-    assert len(gw.calls) == 1
 
 
 def test_the_blocked_marker_follows_the_result(home, gw):
@@ -244,11 +215,16 @@ def test_garbage_input_exits_zero(home, raw):
 def test_the_installer_deploys_idempotently(tmp_path):
     script = tmp_path / "awm" / "scripts" / "deploy-hooks.sh"
     script.parent.mkdir(parents=True)
-    (tmp_path / "awm" / "services").symlink_to(INSTALLER.parents[1] / "services")
+    for d in ("services", "plugins"):
+        (tmp_path / "awm" / d).symlink_to(INSTALLER.parents[1] / d)
     script.write_text(re.sub(r'\|(local[^|]*)\|', "|local|", INSTALLER.read_text()))
     claude = tmp_path / ".claude"
     claude.mkdir()
-    (claude / "settings.json").write_text(json.dumps({"hooks": {"PostToolUse": [{"hooks": [{"command": "other"}]}]}}))
+    old = {"hooks": [{"command": "python3 -S ~/.claude/hooks/awm-reporting-hook.py || true"}]}
+    (claude / "settings.json").write_text(json.dumps({"hooks": {
+        "PostToolUse": [{"hooks": [{"command": "other"}]}, old], "SessionStart": [old]}}))
+    (claude / "hooks").mkdir()
+    (claude / "hooks" / "awm-reporting-hook.py").write_text("old")
     env = {"PATH": os.environ["PATH"], "HOME": str(tmp_path)}
 
     def deploy(*a):
@@ -259,8 +235,10 @@ def test_the_installer_deploys_idempotently(tmp_path):
     again = deploy("--check")
     assert again.returncode == 0, again.stdout
     settings = json.loads((claude / "settings.json").read_text())
-    reporting = settings["hooks"]["PostToolUse"][-1]
-    assert reporting["hooks"][0]["command"] == f"python3 -S {tmp_path}/.claude/hooks/awm-reporting-hook.py 2>/dev/null || true"
+    operations = settings["hooks"]["PostToolUse"][-1]
+    assert operations["hooks"][0]["command"] == f"python3 -S {tmp_path}/.claude/hooks/awm-operations-hook.py 2>/dev/null || true"
     assert {"hooks": [{"command": "other"}]} in settings["hooks"]["PostToolUse"]
-    standalone = json.loads((claude / "hooks" / "awm-reporting-settings.json").read_text())
+    assert "awm-reporting-hook.py" not in json.dumps(settings)
+    assert not (claude / "hooks" / "awm-reporting-hook.py").exists()
+    standalone = json.loads((claude / "hooks" / "awm-operations-settings.json").read_text())
     assert set(standalone["hooks"]) == {"PostToolUse", "UserPromptSubmit", "SessionStart"}

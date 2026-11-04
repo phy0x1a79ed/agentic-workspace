@@ -25,6 +25,10 @@ def record_note_id(task_id: str) -> str:
     return "swr" + task_id.encode().hex()
 
 
+def messages_note_id(task_id: str) -> str:
+    return "swm" + task_id.encode().hex()
+
+
 def ensure_root(api: TriliumTool, parent: str = "root") -> None:
     if api.note(ROOT_ID) is None:
         api.create_note(parent, "Swarm", "render", note_id=ROOT_ID, labels={"swarmBoard": ""})

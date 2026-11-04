@@ -10,8 +10,12 @@ away.
 
 from __future__ import annotations
 
+import json
 import logging
-from dataclasses import dataclass
+import os
+import re
+import time
+from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
 from awm.gatewayclient.ids import normalise
@@ -22,6 +26,15 @@ log = logging.getLogger("awm.operations.front")
 
 NEEDS_YOU_STATES = ("planned", "blocked", "review")
 TITLE_CHARS = 80
+HEADING = re.compile(r"^#+\s+(.+?)\s*#*\s*$", re.M)
+CLAIM_PREFIX = re.compile(r"^\s*claim\s+task\s+", re.I)
+NOTICE = ("This session's work is card {task_id} on Tony's Swarm board. Move it with operations "
+          "task_report, and call request_human when you need Tony.")
+
+
+def remind_s() -> float:
+    """How long an urgent block waits before Tony gets one reminder."""
+    return float(os.environ.get("AWM_OPERATIONS_REMIND_S", "3600"))
 
 SessionOf = Callable[[int], Awaitable[dict | None]]
 Tell = Callable[[str | None, str, str], Awaitable[bool]]
@@ -55,6 +68,7 @@ class Front:
     tell: Tell
     dm: Dm
     arbutus: Any = None
+    clock: Callable[[], float] = field(default=time.time)
 
     # -- who is calling --------------------------------------------------------
 
@@ -67,7 +81,10 @@ class Front:
         rec = await self.session_of(pid) if isinstance(pid, int) else None
         if not rec:
             return Caller(None)
-        return Caller(normalise(rec["session_id"]), rec.get("job"), rec.get("name"))
+        caller = Caller(normalise(rec["session_id"]), rec.get("job"), rec.get("name"))
+        if caller.job:
+            self.relay.mark(f"job:{caller.job}", caller.session_id)
+        return caller
 
     async def _session(self, args: dict, *, required: bool = False) -> tuple[str | None, Caller]:
         caller = await self._caller(args)
@@ -188,11 +205,39 @@ class Front:
         out = await self.task_report({"task_id": task_id, "session_id": session, "state": kind,
                                       "reason": text})
         if kind == "blocked" and args.get("urgent") is True:
-            out["notified"] = await self.dm(
-                f"**{caller.name or task_id}** on **{self.node}** needs you.\n{text}\n"
-                f"Card {task_id}. Attach: `claude attach {caller.job or caller.name or '<job>'}` "
-                f"on {self.node}")
+            message = (f"**{caller.name or task_id}** on **{self.node}** needs you.\n{text}\n"
+                       f"Card {task_id}. Attach: `claude attach "
+                       f"{caller.job or caller.name or '<job>'}` on {self.node}")
+            out["notified"] = await self.dm(message)
+            self.relay.mark(f"remind:{task_id}", json.dumps(
+                {"due": self.clock() + remind_s(), "text": message}))
         return out
+
+    async def remind_due(self) -> int:
+        """Send the one reminder of each urgent block that is still blocked. Returns how many went."""
+        sent = 0
+        for key, value in self.relay.marks("remind:").items():
+            task_id = key.removeprefix("remind:")
+            try:
+                due = json.loads(value)
+            except ValueError:
+                self.relay.mark(key, clear=True)
+                continue
+            if self.clock() < float(due.get("due") or 0):
+                continue
+            try:
+                card = _unwrap(await self.relay.read("task_get", {"task_id": task_id}))
+            except Refused:
+                card = None
+            if isinstance(card, dict) and card.get("section") == "needs_you" \
+                    and card.get("status") == "blocked":
+                if not await self.dm("Still waiting: " + str(due.get("text") or task_id)):
+                    continue  # try again on the next pass
+                sent += 1
+            elif card is None and self.relay.down_since() is not None:
+                continue  # alcor is away: decide when it answers
+            self.relay.mark(key, clear=True)
+        return sent
 
     async def _arbutus(self, args: dict, session: str | None, caller: Caller) -> dict:
         if self.arbutus is None:
@@ -220,10 +265,119 @@ class Front:
             return {"ok": True, "moved": False}
         task_id = self.relay.mark(f"needs:{caller.session_id}")
         if not task_id:
-            return {"ok": True, "moved": False}
+            return {"ok": True, "moved": False, "blocked": False}
         await self.task_report({"task_id": task_id, "session_id": caller.session_id,
                                 "state": "working"})
-        return {"ok": True, "moved": True, "task_id": task_id}
+        self.relay.mark(f"remind:{task_id}", clear=True)
+        return {"ok": True, "moved": True, "task_id": task_id, "blocked": False}
+
+    # -- the plan, todo and clear hooks, and a session's own card -------------------
+
+    async def _card_or_open(self, session: str, caller: Caller, title: str) -> tuple[str, bool]:
+        task_id = await self._task_of(session)
+        if task_id:
+            return task_id, False
+        out = await self.relay.write("task_open", {
+            "title": _title(title) or caller.name or f"Work on {self.node}",
+            "session_id": session, "name": caller.name})
+        return out["task_id"], True
+
+    def _opened(self, out: dict, task_id: str, opened: bool) -> dict:
+        out = {**out, "task_id": task_id, "opened": opened}
+        if opened:
+            out["notice"] = NOTICE.format(task_id=task_id)
+        return out
+
+    async def hook_plan(self, args: dict) -> dict:
+        """A plan was written: the card shows it and waits in Needs you as planned."""
+        session, caller = await self._session(args, required=True)
+        text = str(args.get("plan_text") or "")
+        heading = HEADING.search(text)
+        task_id, opened = await self._card_or_open(session, caller,
+                                                   heading.group(1) if heading else "")
+        await self.relay.write("task_detail", {"task_id": task_id, "plan": text})
+        out = await self.task_report({"task_id": task_id, "session_id": session,
+                                      "state": "planned"})
+        return self._opened({**out, "blocked": True}, task_id, opened)
+
+    async def hook_plan_approved(self, args: dict) -> dict:
+        """The plan was approved: the card moves to Working."""
+        session, caller = await self._session(args, required=True)
+        text = str(args.get("plan_text") or "")
+        heading = HEADING.search(text)
+        task_id, opened = await self._card_or_open(session, caller,
+                                                   heading.group(1) if heading else "")
+        if text:
+            await self.relay.write("task_detail", {"task_id": task_id, "plan": text})
+        out = await self.task_report({"task_id": task_id, "session_id": session,
+                                      "state": "working"})
+        return self._opened({**out, "blocked": False}, task_id, opened)
+
+    async def hook_todos(self, args: dict) -> dict:
+        """The session's todo list changed. A session with no card is left alone."""
+        items = args.get("items")
+        if not isinstance(items, list):
+            raise ValueError("items must be a list")
+        session, _ = await self._session(args, required=True)
+        task_id = await self._task_of(session)
+        if not task_id:
+            return {"ok": True, "tracked": False}
+        await self.relay.write("task_detail", {"task_id": task_id, "todos": items})
+        return {"ok": True, "tracked": True, "task_id": task_id}
+
+    async def hook_session_clear(self, args: dict) -> dict:
+        """A /clear gave the job a new session id. The old one leaves its card.
+
+        The new id has no card, so the job's next plan opens one of its own. The old id is
+        the last one this relay saw for the job, or the one the harness still reports.
+        """
+        pid = args.pop("_caller_pid", None)
+        args.pop("_caller_session_id", None)
+        rec = await self.session_of(pid) if isinstance(pid, int) else None
+        if not rec or not rec.get("job"):
+            return {"ok": True, "ended": None}
+        new = normalise(str(args.get("new_session_id") or rec["session_id"]))
+        seen = self.relay.mark(f"job:{rec['job']}")
+        reported = normalise(rec["session_id"])
+        old = next((s for s in (seen, reported) if s and s != new), None)
+        self.relay.mark(f"job:{rec['job']}", new)
+        task_id = await self._task_of(old)
+        if not task_id:
+            return {"ok": True, "ended": None}
+        await self.relay.write("task_session_end", {"task_id": task_id, "session_id": old})
+        self.relay.mark(f"needs:{old}", clear=True)
+        return {"ok": True, "ended": old, "task_id": task_id}
+
+    async def claim_task(self, args: dict) -> dict:
+        """Take a card for the calling session, when Tony says ``claim task <id>``."""
+        session, caller = await self._session(args, required=True)
+        ref = CLAIM_PREFIX.sub("", str(args.get("task_id") or args.get("ref") or "")).split()
+        if not ref:
+            raise ValueError("task_id is required")
+        out = await self.relay.write("task_claim", {"task_id": ref[0], "session_id": session,
+                                                    "name": caller.name})
+        self.relay.mark(f"needs:{session}", clear=True)
+        return {"ok": True, **out}
+
+    async def track_task(self, args: dict) -> dict:
+        """The calling session's card, or a new one in Working."""
+        session, caller = await self._session(args, required=True)
+        task_id, opened = await self._card_or_open(session, caller, str(args.get("title") or ""))
+        return self._opened({"ok": True}, task_id, opened)
+
+    async def swarm_message_post(self, args: dict) -> dict:
+        """A message on a card, signed with the caller's name and node."""
+        session, caller = await self._session(args)
+        out = await self.relay.write("task_message", {
+            "task_id": args.get("card_id"), "body": str(args.get("body") or ""),
+            "author": caller.name or session or "a service", "session_id": session})
+        return {"ok": True, **out}
+
+    async def swarm_messages(self, args: dict) -> dict:
+        return {"ok": True, "card_id": args.get("card_id"),
+                "messages": _unwrap(await self.relay.read(
+                    "task_messages", {"task_id": args.get("card_id"),
+                                      "after": int(args.get("after") or 0)}))}
 
     # -- approvals (fleet.md R97) -------------------------------------------------------
 
@@ -276,7 +430,9 @@ class Front:
 
     VERBS = ("task_open", "task_attach", "task_join", "task_report", "task_session_end",
              "task_for_session", "task_sessions", "task_get", "task_list", "request_human",
-             "hook_prompt", "approval_request", "approval_get", "approval_wait",
+             "hook_prompt", "hook_plan", "hook_plan_approved", "hook_todos",
+             "hook_session_clear", "claim_task", "track_task", "swarm_message_post",
+             "swarm_messages", "approval_request", "approval_get", "approval_wait",
              "approval_cancel", "order_pull", "order_done", "keys", "status")
 
     async def call(self, verb: str, args: dict) -> Any:
