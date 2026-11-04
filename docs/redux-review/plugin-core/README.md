@@ -6,7 +6,7 @@ This doc holds the review of the awm core and its plugin system: how they are bu
 
 ## As built
 
-Surveyed read only on mizar, 2026-11-03.
+Surveyed read only on mizar, 2026-11-03. The wave-2 gather (`feat/redux` 16da3979, 2026-11-04) supersedes this survey: the Python gateway is deleted and the Rust core is the only gateway (R112), every plugin folder carries an `awm-plugin.toml`, and no legacy loader remains (R115). `install.md` § *Gap from today* holds what is still open.
 
 - **Deployed (`release`, same as `dev`).** The core is the Python gateway. It finds plugins by scanning `awm/services/` and `AWM_SERVICE_ROOTS` (`awm/gateway/awm/gateway/hub/discovery.py:123`). 43 service folders each carry a `service.toml`. No `awm-plugin.toml` exists.
 - **The Rust core (`feat/redux-core`, 18 commits).** A Cargo workspace in `core/` builds one static musl binary of 8.8 MB in the `awm-rust-build` image. It serves the gateway, the MCP proxy, the CLI and `bootstrap`. No live service runs on it. No RAM measurement exists.

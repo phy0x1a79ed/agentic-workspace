@@ -51,4 +51,4 @@ the cutover are not posted again.
 
 ## Tests
 
-    awm/gateway/scripts/run-tests.sh board
+    scripts/run-tests.sh board

@@ -129,7 +129,7 @@ A manifest function may carry these keys:
 
 ### The MCP view
 
-`GET /tools` lists one entry per verb. `GET /tools?view=domains` folds the same catalog into one `{verb, args, peer}` tool per published tool, which `awm-mcp` lists. Every MCP client therefore carries the small surface, while the CLI and HTTP reach every verb. A tool with `tier = "off"` leaves the folded view and stays in the flat one.
+`GET /tools` lists one entry per verb. `GET /tools?view=domains` folds the same catalog into one `{verb, args, peer}` tool per published tool, which `awm mcp` lists. Every MCP client therefore carries the small surface, while the CLI and HTTP reach every verb. A tool with `tier = "off"` leaves the folded view and stays in the flat one.
 
 - **describe.** `describe` is reserved on every tool and answered from the catalog with no service round trip. `awm(verb="describe")` returns every tool with its verbs, a one-line summary and the required arguments. `describe` on a tool lists its verbs and params, and takes `verbs` as a filter.
 - **Strict arguments.** The gateway refuses an argument the verb's `params` do not declare, with 400 and the verb's schema. Names that start with an underscore belong to the gateway.

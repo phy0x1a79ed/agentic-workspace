@@ -139,7 +139,7 @@ Two, from one process:
 
 | kind | name | prefix / port | what |
 |---|---|---|---|
-| `service` | `dsh` | `/svc/dsh` | the verbs, plus supervision and the model route |
+| `service` | `dsh` | — | the verbs, plus supervision and the model route |
 | — | (TLS front) | `0.0.0.0:12130` | the harness GUI, behind `awm_session` |
 
 The front is not a gateway registration — it is a listener this process owns,
@@ -153,7 +153,7 @@ from nowhere else, which is what `dsh url` reporting a loopback address means.
 Check the host's forwarding before blaming the front.
 
 A third thing appears without this process doing anything: the reception page at
-`/ui/dsh`, which the gateway mounts on any node where the page is *built*.
+`/p/dsh/dsh/`, which the gateway serves on any node where the page is *built*.
 It reports the harness, the front and the model route as three separate states,
 because those are three different failures with three different fixes.
 
@@ -165,10 +165,10 @@ The harness itself listens on loopback `12311`.
 ./install.sh
 ```
 
-`awm/gateway/install.sh` runs this on every deploy. Every step is idempotent and
+`awm/install.sh` runs this on every deploy. Every step is idempotent and
 skips itself when already satisfied. It does four things:
 
-- Installs the Python bits, including `httpsfront`, whose cert handling, auth
+- Installs the Python bits, including `awm.tlsfront`, whose cert handling, auth
   gate and reverse proxy the front is a *configuration* of.
 - Writes `.runtime-env`, the absolute interpreter the supervisor respawns with.
 - Creates the `dsh` mamba env pinned to nodejs 24 when it is missing.
@@ -275,7 +275,7 @@ false means the built bundles are older than the commit that is checked out.
 Then, from a browser on the mesh:
 
 1. `https://<mesh-ip>:12100/` — the awm landing index lists `dsh`.
-2. `/ui/dsh` — the reception page. **Open harness** goes to `https://<mesh-ip>:12130/`.
+2. `/p/dsh/dsh/` — the reception page. **Open harness** goes to `https://<mesh-ip>:12130/`.
 3. Open **Settings → Models**. It must list the provider directory with an
    `openrouter` row. **Settings → Plugins** must render configuration cards.
    Both empty, or "settings are unavailable in this browser", means the page did
@@ -301,5 +301,6 @@ A device that has never talked to awm needs the root once:
 | `DSH_REQUIRE_HARNESS` | unset | `1` makes a missing fork fatal (install-time only) |
 | `DSH_AUTH_JSON` | `~/.local/share/opencode/auth.json` | where the OpenRouter key is read from |
 
-Point `DSH_FORK_DIR` at `projects/deepseek-harness/dev` in a sandbox's gitignored
-`awm/gateway/dev/.env` to run the hot loop against a supervised service.
+To run the hot loop against a supervised service, point `DSH_FORK_DIR` at
+`projects/deepseek-harness/dev` in the `[env]` that `awm/services/dev/sandbox/run.sh`
+writes. The gateway passes a service no variable outside `[env]`.

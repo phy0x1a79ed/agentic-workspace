@@ -1,7 +1,7 @@
 # Installing the `mic` service (remote microphone)
 
 A Python feature service in the `awm.mic` namespace. It gives a host with no
-capture device a microphone fed from a phone's browser: the page at `/ui/mic`
+capture device a microphone fed from a phone's browser: the page at `/p/mic/mic/`
 captures the phone's mic and streams s16le PCM into a PulseAudio `virtmic`
 null-sink whose `.monitor` is the default capture source — so `/voice` and
 `arecord` record the phone.
@@ -100,10 +100,10 @@ restart `awm.service`.
 
     awm services list                       # mic → running
     awm mic status                          # sink, active_streams, audio_path_ok
-    curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:7819/ui/mic/
+    curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:7819/p/mic/mic/
     pactl get-default-source                # virtmic.monitor
 
-Then open `/ui/mic/` — on `http://127.0.0.1:<hub port>` locally (loopback is a
+Then open `/p/mic/mic/` — on `http://127.0.0.1:<hub port>` locally (loopback is a
 secure context, so this needs no TLS and no login) or on
 `https://<host>:$AWM_HTTPS_PORT` from the phone — tap **START**, and confirm the
 badge turns purple. Purple means the service reported `ready`, i.e. `pacat` is

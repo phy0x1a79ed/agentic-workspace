@@ -336,7 +336,7 @@ it was not before. It is not built.
 ./install.sh
 ```
 
-`awm/gateway/install.sh` runs this on every deploy. There is nothing to install
+`awm/install.sh` runs this on every deploy. There is nothing to install
 but the Python: the library is read over HTTPS from the standard library, and
 the vault is reached over the gateway.
 

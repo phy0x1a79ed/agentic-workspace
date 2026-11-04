@@ -83,7 +83,7 @@ A node can mark a project or one scope of it private. Run `scope private project
 
 - **What a mark covers.** A project mark covers the project's directory, each scope in it and each path below it. A scope mark covers that scope and the scopes nested under it. Journal posts in the project count, and so do precedent posts tagged with its name. A Claude transcript counts when its folder name is the slug of a covered path, or when any of its lines ran with a `cwd` under one.
 - **How a node loses it.** The gateway refuses a cross-node call whose arguments name a covered project, scope or path, with the error an unknown tool gets. Each service drops covered rows from the lists it gives another node, so a call that names nothing still hides them.
-- **Where the mark lives.** `<AWM_DIR>/private.json`. `scope private` owns the writes. `awm.config.privacy` is the only reader. Every process rereads the file when it changes. A file that exists and does not parse hides everything from other nodes. The mark is per node.
+- **Where the mark lives.** `<AWM_DIR>/private.json`. `scope private` owns the writes. The gateway (`privacy.rs`) and `awm.config.privacy` read it. Every process rereads the file when it changes. A file that exists and does not parse hides everything from other nodes. The mark is per node.
 - **Slug collisions.** Claude names a transcript folder by turning every non-alphanumeric character of the path into `-`. A mark on `metasmith` would also cover `metasmith-libraries`. `scope private` refuses a mark whose slug prefixes another project's or scope's directory.
 
 **CAUTION** A mark is visibility hygiene, not a security boundary. Text about the project in another project's records stays visible, and so do kb papers and Trilium notes. A session started here across an edge reads with a local stamp.
@@ -149,7 +149,7 @@ altair does no awm work. It only receives each release.
 `awm deploy` brings the node in line with its checkout. `scripts/awm-deploy.sh` builds the static core binary and runs it. `awm deploy --dry-run` prints each step. It runs `awm/install.sh` and the page build, places the binary at `~/.local/bin/awm`, writes `config.toml` when the node has none, and replaces the `awm` user unit from `core/deploy/awm.service`. It restarts the unit when the binary or the unit changed, and reloads the plugins otherwise. Then it waits for every enabled service and checks each thing it placed.
 
 - awm needs no sudo and no `/usr/local/bin`. The unit and the workspace `.mcp.json` name `~/.local/bin/awm` by absolute path. The edge runs `PATH="$HOME/.local/bin:$PATH" awm edge-serve`, because a non-interactive ssh shell often lacks `~/.local/bin`.
-- The gateway reads its environment from `config.toml` `[env]` only. `awm deploy` names each key of the old `.awm/env` that `[env]` does not pass on. A key left only there reaches no service.
+- The gateway passes a service only `config.toml` `[env]`. `awm deploy` names each key of the old `.awm/env` that `[env]` does not pass on. A key left only there reaches no service.
 - The deploy needs mamba, the env's `node` on `PATH` and a populated `awm/node_modules`. Run `mamba install -n awm nodejs`, then `npm install` in `awm/`.
 - Keep `enabled.json` explicit. A service absent from it counts as enabled.
 

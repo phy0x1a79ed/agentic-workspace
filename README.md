@@ -1,53 +1,58 @@
 # Agentic Workspace Manager (AWM)
 
-*Human setup + usage guide for awm. Agents operating in this workspace load [`AGENTS.md`](AGENTS.md) at session start via the harness's native mechanism (see § Harness Integration) — not this file. **Do not merge this README into AGENTS.md, PROTOCOLS.md or ARCHITECTURE.md** — their audience is agents; this one's audience is humans installing, networking, and operating the system.*
+## Purpose & Contents
 
-A lightweight Python service + CLI for coordinating multiple AI agents working in parallel on shared resources. Provides project/scope management, the journal (per-scope posts, briefs, precedents and history), one ranked search over what the swarm knows, background Claude Code sessions (`reflection start_other`), calls between nodes over ssh edges, and an MCP server for direct tool use by Claude Code and other MCP clients.
+This is the human guide to awm: how to install it, wire up Claude Code, author a service or a page, run the gateway, and keep project data. Agents load [`AGENTS.md`](AGENTS.md) at session start, not this file. Do not merge this README into `AGENTS.md`, `PROTOCOLS.md` or `ARCHITECTURE.md`, because their audience is agents.
 
-For agent orientation (paths, MCP tools, startup), see [`AGENTS.md`](AGENTS.md). For workspace procedures (scope lifecycle, naming, hubs, data, backups), see [`PROTOCOLS.md`](PROTOCOLS.md). For **awm-internal architecture** — modifying the hub, registry, supervisor, RPC layer, manifest generator — see [`ARCHITECTURE.md`](ARCHITECTURE.md). This README covers install and the *usage* side of the package model (authoring components / services / pages); ARCHITECTURE.md covers the *implementation* side.
+- [`AGENTS.md`](AGENTS.md) — agent orientation: paths, MCP tools, startup.
+- [`PROTOCOLS.md`](PROTOCOLS.md) — workspace procedures: scope lifecycle, naming, hubs, data, backups.
+- [`ARCHITECTURE.md`](ARCHITECTURE.md) — awm internals: the gateway, the catalog, the gates, the supervisor.
+- [`FEDERATION.md`](FEDERATION.md) — everything that crosses nodes, and the deploy.
 
-## Quick Install
+awm coordinates AI agents that work in parallel on shared resources. It provides project and scope management, the journal (per-scope posts, briefs, precedents and history), one ranked search over what the swarm knows, background Claude Code sessions (`reflection start_other`), calls between nodes over ssh edges, and one MCP server for Claude Code and other MCP clients.
 
-```bash
-awm/gateway/setup.sh
+## Overview
+
+awm is one Rust binary, `awm`, plus a set of out-of-process plugins. The binary is the gateway: it serves the CLI, HTTP and MCP, and loads, starts and supervises the plugins. Each plugin is a folder with an `awm-plugin.toml`, its own services and its own SQLite DB. Shared Python libraries live in `awm/service_components/`.
+
+```
+   awm <tool> <verb>     POST /invoke      awm mcp (stdio)
+            \                 |                 /
+             +----------------+----------------+
+                              |
+                 +------------v-------------+
+                 |  awm gateway serve       |   the only gateway, owns no tables
+                 |  (core/crates)           |   loads, starts, supervises plugins
+                 +------------+-------------+
+                              |   register / ready / call / emit, with a service token
+          +-------------------+--------------------+
+          |                   |                    |
+     +----v-----+       +-----v-----+       +------v------+
+     | scopes   |       | cch       |       | journal     |   ...each a plugin with
+     | (own DB) |       | (own DB)  |       | (own DB)    |   its own DB and run.sh
+     +----------+       +-----------+       +-------------+
 ```
 
-This creates an `awm` mamba environment, installs the gateway plus every
-discovered feature service, initializes runtime state, and adds `awm` and
-`awm-mcp` to your PATH.
-
-To run awm as a service account on a shared host, point `AWM_WORKSPACE` at a
-checkout the service account can read, and make the checkout's `.awm/`
-(gitignored) a symlink into a state dir the service account owns. Install
-with `AWM_SERVICES` set to the services the host needs. `setup.sh` refuses
-to run when `AWM_WORKSPACE` names a different checkout, so a second install
-cannot land in a home directory by accident. The cloud project's Ansible
-installs awm on Tony's nodes this way. It holds every host-specific step, because
-awm names no host.
-
-## Manual Install
+## Install
 
 ```bash
-mamba env create -f awm/gateway/environment.yml
-bash awm/gateway/install.sh
-mkdir -p .awm
-mamba run -n awm python -m awm.gateway init
+awm/setup.sh
+systemctl --user enable --now awm
 ```
 
-`awm/gateway/install.sh` is the single composition root: it installs the
-shared component libs (`awm.config`, `awm.persistence`, …), then loops every
-`awm/services/*/install.sh` to install each discovered feature service, then
-the gateway itself (resolving third-party deps). There is no hardcoded service
-list — adding a folder under `awm/services/` is enough. To install or
-reinstall a single service on its own, run `bash awm/services/<name>/install.sh`;
-that yields a service the gateway can respawn standalone. Override the target
-env with `AWM_ENV`.
+`setup.sh` creates or updates the `awm` mamba env, builds the static core binary in the Rust container (`scripts/rust-build.sh`), and runs `awm/install.sh`. That installs the shared libraries and runs every plugin's own `install.sh`, then places the binary at `~/.local/bin/awm`. `setup.sh` then writes `.awm/config.toml` with `awm bootstrap` and installs the `awm` user unit from `core/deploy/awm.service`. Set `AWM_BIN` to a built binary to skip the build.
+
+awm needs no sudo. The unit and the workspace `.mcp.json` name `~/.local/bin/awm` by absolute path.
+
+`setup.sh` refuses to run when `AWM_WORKSPACE` names a different checkout, so a second install cannot land in a home directory by accident. The cloud project installs awm on Tony's nodes with an install config of its own (`awm bootstrap --config`). It holds every host-specific step, because awm names no host.
+
+After the first install, `awm deploy` brings a node in line with its checkout (`FEDERATION.md` § *Deploy*).
 
 ## Harness Integration
 
 AWM drives Claude Code. A session loads three context tiers: the workspace `AGENTS.md`, the repo `AGENTS.md` at the scope worktree root, and the scope brief. Claude Code loads both `AGENTS.md` tiers by its native walk-up from the cwd. The brief lives in the journal (`journal brief_read`). cch's SessionStart hook adds it to a session that starts in a scope, and `reflection cd` carries it in the move's follow-up (`docs/redux/scopes.md` R143).
 
-`<workspace>/.mcp.json` is the MCP registry. Every registered server is advertised even when its upstream is down.
+`<workspace>/.mcp.json` registers the `awm` MCP server, which runs `awm mcp`.
 
 ### Set up Claude Code
 
@@ -65,38 +70,34 @@ Run `awm scope heal` to bring scopes that predate this wiring to the current sha
 
 ## Authoring a service
 
-A **service** is a folder under `awm/services/<name>/` that the gateway can
-run — in any language (a Python process, a compiled binary, a thin proxy to a
-remote API like OpenRouter). The folder name *is* the service name, and it is
-the only contract: drop a folder in and the gateway discovers, installs, and
-runs it. There is **no central registry to edit, no `kind` field, and no
-auth — ever.**
+A **plugin** is a folder under `awm/services/` or `awm/plugins/` with an `awm-plugin.toml`. Each service it declares runs as its own process, in any language: a Python process, a compiled binary, a thin proxy to a remote API. Drop a folder in and the gateway loads, installs and runs it. There is no central registry to edit.
 
 ### What the folder ships
 
 | File | Required? | Purpose |
 |---|---|---|
-| `run.sh` | **yes**, executable | The *only* thing the gateway ever runs to start the service: `bash run.sh`. Self-contained — it must launch the process with no extra arguments and no inherited assumptions. |
-| `INSTALL.md` | **yes** | Human install notes: deps, env, anything an operator needs. |
-| `install.sh` | optional | Editable-installs the service's deps and writes the `.runtime-env` sidecar (see below). Picked up automatically by the install loop. |
-| `awm-plugin.toml` | **yes** | The plugin manifest: the service, the MCP tool it publishes under with its unique name, major and tier (`on` or `off`), its pages, its `[needs]`, and `[[service.archive]]` tables that plug it into `search`. Every function the service registers is published as `<tool>_<verb>`. The format is `docs/redux/drafts/plugin-contract.md`. A few legacy folders still use `service.toml` (see `ARCHITECTURE.md` § *The plugin manifest*). |
+| `awm-plugin.toml` | **yes** | The manifest: its services, the tools it publishes with major and tier (`on` or `off`), its pages, its `[needs]`, and `[[service.archive]]` tables that plug it into `search`. Every function a service registers is published as `<tool>_<verb>`. The format is `docs/redux/drafts/plugin-contract.md`. |
+| `run.sh` | **yes**, executable | The only thing the gateway runs to start the service: `bash run.sh`. It must launch the process with no arguments. |
+| `INSTALL.md` | **yes** | Install notes: deps, env, anything an operator needs. |
+| `install.sh` | optional | Editable-installs the service's deps and writes the `.runtime-env` sidecar. `awm/install.sh` runs it. |
 
-### The three injected env vars (and *only* these)
+### What the gateway hands a service
 
-The gateway hands a starting service exactly three environment variables.
-There is no token, no key file, no bearer — the control plane is loopback and
-unauthenticated.
+The gateway starts `run.sh` with a cleared environment. It passes the install config's `[env]`, the secrets the manifest declares, and these:
 
 | Var | Purpose |
 |---|---|
-| `AWM_HUB_URL` | base URL of the running gateway (e.g. `http://127.0.0.1:7819/`) |
-| `AWM_SERVICE_NAME` | the service name (= folder name) |
-| `AWM_SERVICE_ID` | assigned by the gateway on respawn so a reconnect targets the same control URL |
+| `AWM_HUB_URL` | base URL of the running gateway, such as `http://127.0.0.1:7819/` |
+| `AWM_SERVICE_NAME` | the service name |
+| `AWM_PLUGIN` | the plugin name |
+| `AWM_HUB_TOKEN_FILE` | the service token for this spawn. Send it as `X-Awm-Service-Token` |
+| `AWM_DIR`, `AWM_WORKSPACE`, `AWM_NODE_NAME`, `AWM_PORT` | where state and the workspace live, and which node this is |
+
+The plugin's egress proxy rides in `HTTP_PROXY` and `HTTPS_PROXY`, and passes only the hosts `needs.network` lists. A variable the gateway does not pass is absent, so read everything else from `[env]`.
 
 ### Writing `run.sh`
 
-For a **Python service**, branch on the dev signal so the same script works
-both from the uninstalled worktree and from an installed env:
+For a **Python service**, branch on the dev signal so the same script works from a dev sandbox and from the installed env:
 
 ```bash
 #!/usr/bin/env bash
@@ -104,259 +105,89 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 if [[ -n "${DEV_PYTHONPATH:-}" ]]; then
-  # Dev: run the uninstalled worktree code via the env interpreter.
-  exec mamba run -n awm --no-capture-output python -m awm.myservice.hub_adapter
-else
-  # Prod: source the sidecar install.sh wrote, exec the baked interpreter.
-  source ./.runtime-env          # sets AWM_PYTHON = the env's python
-  exec "${AWM_PYTHON:-python}" -m awm.myservice.hub_adapter
+  exec env PYTHONPATH="$DEV_PYTHONPATH" mamba run -n "${AWM_ENV:-awm}" --no-capture-output \
+    python -m awm.myservice.hub_adapter
 fi
+[ -f ./.runtime-env ] && . ./.runtime-env      # sets AWM_PYTHON, the env's interpreter
+exec "${AWM_PYTHON:-python}" -m awm.myservice.hub_adapter
 ```
 
-A **non-Python service** just execs its binary — same three env vars, no
-branch needed:
+`hub_adapter.py` builds on `awm.gatewayclient.ServiceAdapter`, which registers, sends `ready`, dispatches calls and reconnects. `awm/services/dev/` is the smallest complete example to copy.
 
-```bash
-#!/usr/bin/env bash
-set -euo pipefail
-cd "$(dirname "$0")"
-exec ./bin/myservice          # reads AWM_HUB_URL / AWM_SERVICE_NAME / AWM_SERVICE_ID from env
-```
+A **non-Python service** execs its binary. The binary reads the variables above, registers at `POST /hub/service/register` with its token, opens the control WebSocket the reply names and sends `ready` with its API manifest.
 
-`install.sh` (optional) editable-installs the service and writes the
-`.runtime-env` sidecar that bakes `AWM_PYTHON` (the absolute path to the env's
-interpreter). That sidecar is what lets `run.sh` exec the right interpreter
-under systemd, where `mamba` is not on `PATH`.
-
-### How the gateway picks it up
-
-- **Discovery** — the gateway scans `awm/services/*` for a `run.sh` (a plain
-  filesystem scan; no hardcoded name list). Any folder with one is a service.
-- **Bootstrap + reconcile** — on boot the gateway reconciles the services it
-  has journaled, then **bootstraps** any discovered-but-unjournaled ones. So a
-  fresh clone or a wiped `.awm/state/services.json` comes up with every
-  *enabled* service running — no manual kick needed.
-- **Enable / disable** — state lives in `.awm/services/enabled.json` (a service
-  absent from the file is enabled). A disabled service stays down across
-  restarts.
-- **Respawn durability** — services are journaled with their PID; the control
-  WS lease is liveness. If a service dies (or the gateway restarts), the
-  supervisor respawns it from its `run.sh`.
+**CAUTION** `run.sh` must be self-contained. The gateway runs it on a minimal `PATH` with no `mamba`. A Python `run.sh` sources the `.runtime-env` sidecar and execs the interpreter it names.
 
 ### Controlling a service
 
 ```bash
-awm services list                 # discovered services + enabled/running state
-awm services start <name>         # start a stopped service (idempotent)
-awm services start --all          # start every enabled service
-awm services stop <name>          # evict + kill + drop its journal entry
+awm services list                 # each service: status, pid, enabled, tools
+awm services start <name>         # start one, and clear its crash-loop breaker
+awm services stop <name>
 awm services restart <name>
-awm services enable <name>        # clear the disable flag (won't auto-start)
-awm services disable <name>       # stop it and keep it down across restarts
-awm services reap                 # kill orphaned hub_adapters targeting this hub
-                                  #   that hold no live lease (--dry-run lists only)
+awm services enable <name>        # writes .awm/enabled.json, then starts it
+awm services disable <name>       # stops it and keeps it down across restarts
+awm plugins                       # what loaded, what was refused and why
+awm reload                        # load a changed tree with no gateway restart
+awm listen <service> <topic>      # print each payload a service emits
 ```
 
-### Iterating with `awm dev shadow`
+A service absent from `.awm/enabled.json` follows its profile. Keep the file explicit on a node, so a new plugin's services do not start by surprise.
 
-To live-test local changes without evicting the running bases, bring your
-worktree's pages **and** services up against a hub in one command:
+### Iterating in a dev sandbox
 
-```bash
-awm dev shadow --port 7821 pages/mic \
-  awm/services/mic awm/services/fileviewer
-```
-
-`--port` selects the hub (**default `7821`, the dev sandbox**) — the CLI
-otherwise targets `AWM_PORT` (prod `7819`), so always pass `--port` to keep off
-prod. Each target comes up in **one foreground process**; a single Ctrl-C tears
-the whole stack down (overlays popped, services we spawned SIGTERM'd, dev's bases
-resume).
-
-Each target auto-selects base-vs-overlay against what the hub already serves:
-
-- **Service** (a path under `awm/services/`): execs the folder's `run.sh` with
-  the dev `PYTHONPATH` so it runs *this* worktree's code. If `/svc/<name>` already
-  has a base it registers as an overlay (`AWM_SERVICE_OVERLAY=1`, one process /
-  one identity, its control WS as the lease); if not, the adapter self-registers
-  as a fresh base. A base created this way is **not journaled** — it won't respawn
-  if the hub restarts mid-session. You can pass another worktree's path to shadow
-  its copy.
-- **Page** (`pages/<name>`): serves `awm/pages/<name>/dist` at `/ui/<name>` —
-  overlay if a page base already serves that prefix, else a fresh page base. The
-  hub redirects the bare `/ui/<name>` to `/ui/<name>/` so the bundle's relative
-  asset refs resolve; you can hand out either URL form.
-
-`--name <override>` renames a single target (single-target invocations only).
-
-Shadows of `ui_components/` are an error — components are build-time deps. Edit
-the component locally, rebuild (`npm run build`, from `awm/`), and shadow the
-*page* that imports it instead.
-
-### Installing
-
-`bash awm/gateway/install.sh` is the single composition root — it installs the
-component libs, loops every discovered `awm/services/*/install.sh`, then the
-gateway. To install one service standalone (respawnable on its own), run
-`bash awm/services/<name>/install.sh`.
+`awm/services/dev/sandbox/run.sh` runs your worktree's gateway on its own port with its own state, so you test a change without touching prod. `ARCHITECTURE.md` § *Dev sandboxes* lists the ports. Point the CLI at it with `AWM_GATEWAY_URL=http://127.0.0.1:<port>`.
 
 ## Authoring a page
 
-The frontend follows the same "just source" model as the Python components: a
-shared component is a source folder imported by name, with **no per-unit
-`package.json` or `vite.config.ts` and no hand-maintained dependency list.**
+A page lives in its plugin, at `<plugin>/pages/<name>/`, and the manifest's `[[page]]` names it. The gateway serves its built `dist/` at `/p/<plugin>/<name>/`. A shared component is a source folder imported by name, with no per-unit `package.json` or `vite.config.ts`.
 
 ```
-awm/ui_components/<name>/   ← shared Svelte library; imported as @awm/<name>; no URL
-awm/pages/<name>/           ← static bundle; built to dist/ and served at /ui/<name>/
+awm/ui_components/<name>/          shared Svelte library, imported as @awm/<name>
+<plugin>/pages/<name>/             a page, built to dist/ and served at /p/<plugin>/<name>/
 ```
-
-### What you author on disk
 
 | Kind | Files you write |
 |---|---|
-| Component | `src/index.ts` (barrel re-exporting each public component) plus the `.svelte` / `.ts` / `.css` files it ships. That's it. |
-| Page | `index.html`, `src/main.ts` (entry; calls `mount(App, …)`), `src/App.svelte` (root component), plus any page-local code under `src/lib/`. Prefix defaults to `/ui/<dirname>`; override it with an optional one-line `prefix.txt` at the page root. |
+| Component | `src/index.ts`, a barrel that re-exports each public component, plus the `.svelte`, `.ts` and `.css` files it ships. |
+| Page | `index.html`, `src/main.ts` (the entry, which calls `mount(App, …)`), `src/App.svelte`, plus any page-local code under `src/lib/`. |
 
-There is nothing else to write — no manifest, no per-page build config. The
-single root `awm/vite.config.ts` resolves `@awm/<name>` (and subpaths like
-`@awm/primitives/style.css`) to component source by path alias, and the root
-build loop builds every page with it. Third-party deps (svelte, vite, `bits-ui`,
-…) are declared once in the root `awm/package.json`, not per component.
+The single root `awm/vite.config.ts` resolves `@awm/<name>` and subpaths such as `@awm/primitives/style.css` to component source. Third-party deps such as svelte, vite and `bits-ui` go once in the root `awm/package.json`.
 
 ### Building a page
 
-Build from the `awm/` directory:
-
+```bash
+cd awm
+npm install        # once per machine
+npm run build      # builds every page
 ```
-npm install        # once per machine — installs the central third-party deps
-npm run build      # builds every page → awm/pages/<name>/dist/
-```
 
-`npm run build` runs `scripts/build.sh`, which builds each `pages/*/` that has
-an `index.html` (source-only placeholder dirs are skipped). To serve a freshly
-built page against a running hub, overlay its bundle with `awm dev shadow`:
+`npm run build` runs `awm/scripts/build.sh`, which builds each page that has an `index.html`. The gateway serves the built `dist/`, never the source, so build before you look. A page with no `dist/` is not served. `awm deploy` builds every page.
+
+### Talking to the gateway from a page
+
+Use `@awm/client`. Never hand-roll a `fetch`.
+
+- `tool('mic').call('status', {...})` posts to `/invoke` and returns the parsed result. A refusal throws an `HttpError`.
+- `openSession('mic', 'stream', {...})` opens the WebSocket `/hub/session/mic/stream` and sends the init as its first frame.
+- `apiFetch(path, init?)` JSON-encodes object bodies and turns a non-2xx reply into a typed `HttpError`.
+
+A page calls only the tools its plugin's manifest lists in `[[needs.tool]]`. The gateway knows the page's plugin by its `Referer`.
+
+## Running the gateway
+
+The `awm` user unit runs `awm gateway serve --state <workspace>/.awm` on `127.0.0.1:7819`. It logs to `.awm/awm.log`, and each service logs to `.awm/logs/<service>.log`.
 
 ```bash
-awm dev shadow --port 7821 pages/<name>   # serve awm/pages/<name>/dist at /ui/<name>
+systemctl --user restart awm      # restart the gateway and every service
+awm status                        # gateway and service health
 ```
 
-Build first — the shadow (and prod) serve the built `dist/` directory, not the
-source. (See `ARCHITECTURE.md` § *Frontend* for the canonical
-build/shadow SOP and how resolution works.)
+The gateway reads its configuration from `.awm/config.toml` only. Put an environment variable that the services need, such as `SSH_AUTH_SOCK` for `scope create --clone-url git@github.com:…`, in its `[env]` table, then restart the gateway. `awm reload` does not pass a changed `[env]` to a running service.
 
-### Composing components into a page
+### The CLI
 
-Just `import` from `@awm/<name>` in the page's `src/` — no dependency entry to
-add anywhere. Vite + `@sveltejs/vite-plugin-svelte` resolves the alias and
-compiles the source in at build time.
-
-```svelte
-<!-- awm/pages/dashboard/src/App.svelte -->
-<script>
-  import { Button, Card } from '@awm/primitives';
-  import '@awm/primitives/style.css';
-  import { apiFetch, svc, AuthError } from '@awm/client';
-</script>
-```
-
-Global CSS doesn't ride the component barrel — `import '@awm/primitives/style.css'`
-explicitly. A page bundles only the components it actually imports.
-
-### Talking to the hub from a page — `@awm/client`
-
-Pages and components never hand-roll `fetch` against `/svc/<name>/…`. Use
-`@awm/client`:
-
-- `apiFetch(path, init?)` — JSON-encodes object bodies and turns non-2xx
-  responses into a typed `HttpError` so callers can branch on failure without
-  regex-parsing the message. The hub is loopback and unauthenticated — there
-  is no cookie, identity header, or login flow to wire up.
-- `svc('mic').fn('status')` / `svc('mic').session('stream', {…})` /
-  `svc('mic').ws(sessionId)` — wraps the `/svc/<name>/{fn,session}/…`
-  surface every service exposes.
-
-### Hub-service control plane
-
-Three endpoints frame the service surface:
-
-| Method | Path | Purpose |
-|---|---|---|
-| `POST` | `/hub/service/register` | Body `{name, prefix, pid, start, cwd}`. Returns `{service_id, control_ws_path, bridge_ws_base}` — no token; the control plane is loopback and unauthenticated. |
-| `WS` | `/hub/service/control/{service_id}` | Persistent control channel; closing it evicts the service. |
-| `WS` | `/hub/service/bridge/{service_id}/{bridge_id}` | Upstream side of a direct session/emitter bridge; hub byte-relays frames between this and the browser-side WS. |
-
-Envelopes on the control WS:
-
-| `kind` | Direction | Fields | Use |
-|---|---|---|---|
-| `ready` | service → hub | `{api}` | Handshake; api manifest. |
-| `call` | hub → service | `{id, fn, args, as?}` | RPC request expecting a reply. |
-| `reply` | service → hub | `{id, ok, result?, error?}` | Reply to a `call`. |
-| `notify` | hub → service | `{fn, args, as?}` | Fire-and-forget. |
-| `sub` / `unsub` | hub → service | `{topic, sub_id, as?}` | Browser subscriber bookkeeping. |
-| `emit` | service → hub | `{topic, payload}` | Event for a non-direct emitter. |
-| `session.open` | hub → service | `{session_id, session_kind, init, as?, bridge_id?}` | Browser opened a session. |
-| `session.opened` | service → hub | `{session_id, ok, error?}` | Service acknowledges. |
-| `session.frame` | both ways | `{session_id, payload}` | One frame on a non-direct session. |
-| `session.close` | both ways | `{session_id, code?, reason?}` | Session ended. |
-
-Browser-side, the hub exposes:
-
-| Browser | Hub action |
-|---|---|
-| `POST /svc/<name>/fn/<fn>` | `call` (or `notify`); reply returned as HTTP JSON |
-| `POST /svc/<name>/session/<kind>` | Allocates `session_id`, returns `{ws_path}` |
-| `WS /svc/<name>/session/<id>` | Direct → byte relay through bridge; non-direct → `session.frame` envelopes |
-| `WS /svc/<name>/emit/<topic>` | Non-direct → JSON fan-out; direct → bridged WS |
-
-### Gotchas
-
-- **No auth on the bridge.** The control plane is loopback and unauthenticated; the bridge WS at `/hub/service/bridge/{sid}/{bid}` is plain loopback like everything else — no token is checked anywhere.
-- **10s reconnect window.** On gateway restart, services have 10 seconds to re-open their control WS. After that the supervisor `SIGTERM`s the last-known PID (from `<AWM_DIR>/state/services.json`) and respawns from the service's `run.sh`.
-- **Shadow can't displace a component.** Edit the component, rebuild the page that imports it, then shadow the page.
-- **`run.sh` must be self-contained.** The gateway runs `bash run.sh` with only the three injected env vars on a minimal systemd `PATH`. A Python `run.sh` that relies on `mamba` being on `PATH` breaks on respawn — source the `.runtime-env` sidecar and exec the baked `AWM_PYTHON` interpreter (see *Authoring a service*).
-
-See `ARCHITECTURE.md` for **awm-internal** architecture — the registry overlay, supervisor PID journal, `rpc.py` envelope schemas, and how to modify the hub itself.
-
-## Server Lifecycle
-
-The server auto-starts when you run any CLI command, or when a session's `awm-mcp` finds it down. A node whose gateway belongs to a system-wide `awm.service` (capella, deneb) never auto-starts one: a detached gateway there misses the unit's `EnvironmentFile`, runs under the OS hostname instead of `AWM_NODE_NAME`, and holds the port so the unit's own start exits. To run manually:
-
-```bash
-awm gateway serve     # foreground, local-only listener on 127.0.0.1:7819
-awm gateway status    # health check (auto-starts if needed)
-awm gateway stop      # stop the server
-awm gateway restart   # drain services, restart via systemd, wait for healthy
-                      #   (synchronous — verifies PID changed + uptime reset)
-                      #   HTTP/MCP endpoint (awm_restart) is fire-and-forget
-awm gateway refresh   # restart server to pick up source changes (dev mode)
-```
-
-The server auto-shuts down after 30 minutes of inactivity (configurable via `AWM_IDLE_SHUTDOWN` env var; set to `0` to disable).
-
-`awm <command> --help` lists every subcommand. Beyond the gateway-control groups, the CLI generates an `awm <tool> <verb>` command for every registered feature-service verb (`awm scope create`, `awm reflection list-other`, …) from the same live catalog the MCP surface reads. Note the surfaces are projected differently from one shared catalog: the **CLI and HTTP** stay fully expanded, hidden verbs included (one `awm <tool> <verb>` command and one `POST /invoke {name:"<tool>_<verb>"}` route per verb), while the **MCP** surface collapses to one generic `{verb,args,peer}` tool per service tool (`GET /tools?view=domains`, with a `describe` verb for parameter schemas), all top-level, to keep the tool count small for agents. A service's `awm-plugin.toml` sets its `tool` and its `tier` (`on` or `off`), and an off tool stays on the CLI and HTTP. So shell usage is unchanged; only what an MCP client sees is collapsed. For agent-facing usage (scopes, the journal), see `AGENTS.md` and `PROTOCOLS.md` — those workflows are typically driven from inside an MCP-equipped agent, not the shell.
-
-### Per-workspace env file
-
-`awm gateway serve` and `awm-mcp` read `$AWM_WORKSPACE/.awm/env` at startup
-(if present) and merge its `KEY=VAL` lines into the process env before
-doing anything else. Use it to plumb things into the daemon that
-systemd doesn't forward by default — the canonical case is
-`SSH_AUTH_SOCK` so `awm scope create --new-project --clone-url git@github.com:…` reaches
-your user ssh-agent. Format is dumb `KEY=VAL` per line, `#` for
-comments, leading `export ` tolerated, single- or double-quoted values
-are unquoted. Existing env vars are overridden; missing file is a no-op.
-
-Example `.awm/env`:
-
-```
-SSH_AUTH_SOCK=/run/user/1000/keyring/ssh
-```
-
-Restart the daemon (`sudo systemctl restart awm.service` or
-`systemctl --user restart awm.service`, depending on which unit is
-live on your host) to pick up changes.
+`awm --help` lists the core commands. Any other first word names a tool: `awm <tool> <verb> [--key value]… [--json '{…}'] [--peer <node>]` runs one verb through the same catalog as MCP, hidden verbs included. `awm <tool> --help` lists a tool's verbs, and `awm <tool> <verb> --help` shows one verb's parameters. MCP folds each tool into one `{verb, args, peer}` call, and leaves out the tools whose tier is `off`.
 
 ## Project data — versioning and concurrency
 
@@ -376,9 +207,9 @@ promote. Isolation is branch isolation — there is no data branch, no promote
 verb, and no separate `--data` leg on gather/scatter.
 
 ```bash
-awm scope data-status <project> <scope>              # mode, pinning commit, what is materialised
-awm scope data-mount  <project> <scope> --chunks ... # what materialises on disk here
-awm scope data-gc --projects a --projects b          # reclaim cache space (dry run by default)
+awm dvc scope-status --project <p> --scope <s>       # mode, pinning commit, what is materialised
+awm dvc mount --project <p> --scope <s> --chunks ... # what materialises on disk here
+awm dvc gc --projects a --projects b                 # reclaim cache space (dry run by default)
 ```
 
 awm wires; DVC operates. Wiring is the absolute cache path in the untracked
@@ -422,86 +253,36 @@ scratch directories, run outputs, `.awm/` service state — is covered by nothin
 deliberately. `awm dvc coverage` lists exactly what that is, per scope, so the
 decision stays visible.
 
-## Destructive operations
-
-`POST /projects` and `DELETE /scopes/{p}/{s}` are 403'd by default. Set `AWM_ALLOW_DESTRUCTIVE=1` in the environment to permit them. No restart needed — re-read each request.
-
-## Architecture
-
-awm is a modular **gateway** plus a set of out-of-process **feature services**.
-The gateway is the sole interface (CLI, HTTP, MCP stdio) and the coordination
-hub; it owns no tables of its own. Each feature service is its own pip dist
-with its own SQLite DB, discovered and run from a folder under `awm/services/`.
-Shared component libs (`awm.config`, `awm.persistence`, the gateway client) are
-imported source.
+## Layout
 
 ```
-        ┌─────────┐  ┌──────────┐  ┌───────────┐
-        │ Typer   │  │ FastAPI  │  │ MCP stdio │
-        │ CLI     │  │ HTTP     │  │ Server    │
-        └────┬────┘  └────┬─────┘  └─────┬─────┘
-             │            │              │
-             └────────────┼──────────────┘
-                          │
-                 ┌────────▼─────────┐
-                 │  awm.gateway     │   sole interface + coordination hub
-                 │  (de-DB'd)       │   discovers + supervises services
-                 └────────┬─────────┘
-                          │  register / ready / call / emit (loopback, no auth)
-        ┌─────────────────┼──────────────────┐
-        │                 │                  │
-   ┌────▼─────┐     ┌──────▼──────┐    ┌──────▼──────┐
-   │ scopes   │     │ cch         │    │ dev /       │   …each an out-of-proc
-   │ service  │     │ service     │    │ journal /   │    feature service with
-   │ (+own DB)│     │ (+own DB)   │    │ channel     │    its own DB + run.sh
-   └──────────┘     └─────────────┘    └─────────────┘
-```
-
-```
-awm/                          # nested tree of pip dists (PEP 420 namespace layout)
-  gateway/                    # the gateway dist (package awm.gateway)
-    install.sh                # composition root: installs components + every service + gateway
-    setup.sh  environment.yml # env bootstrap
-    deploy/awm.service        # systemd unit
-    scripts/run-tests.sh      # runs each dist's own tests/
-    awm/gateway/              # the namespace package (the nesting is intentional)
-      server.py               # FastAPI app: awm.gateway.server:app
-      cli.py                  # Typer CLI
-      hub/discovery.py        # filesystem scan of awm/services/* for run.sh
-  service_components/         # shared Python imported source (no install.sh)
-    config/  persistence/  gatewayclient/  claudedaemon/
-  services/                   # one folder per feature service (discovered)
-    scopes/  cch/  dev/
-      run.sh                  # the only entry the gateway runs (bash run.sh)
-      INSTALL.md  install.sh
+core/                         # the Rust core: cargo workspace of crates, built into ~/.local/bin/awm
+  deploy/awm.service          # the user unit
+awm/
+  install.sh  setup.sh  environment.yml
+  service_components/         # shared Python libraries (config, persistence, gatewayclient, ...)
+  services/<name>/            # plugins: awm-plugin.toml, run.sh, INSTALL.md, pages/
+  plugins/<name>/             # plugins, same shape
   ui_components/<name>/       # shared Svelte libraries, imported as @awm/<name>
-  pages/<name>/               # static front-end bundles built to dist/, served at /ui/<name>/
-  vite.config.ts              # one root config: @awm/* alias + per-page build
-  scripts/build.sh            # build loop: each page → pages/<name>/dist/
-  package.json                # central third-party frontend deps + `npm run build`
-.awm/                         # runtime state (gitignored)
+  vite.config.ts  package.json  scripts/build.sh
+scripts/                      # run-tests.sh, rust-build.sh, awm-deploy.sh, refresh-checkout.sh
+test/                         # contract/ (manifest and call checks), install/ (container install)
+.awm/                         # node state, gitignored
+  config.toml                 # the gateway's configuration
+  enabled.json                # per-service enable state
   services/<svc>/<svc>.db     # per-service SQLite DBs
-  services/enabled.json       # per-service enable/disable state
-  state/services.json         # PID journal for respawn
-  awm.pid  awm.log
+  logs/  usage/  tokens/
 .mcp.json                     # MCP server registration
 ```
 
-For the awm-internal architecture in detail (registry, supervisor, RPC
-envelope layer, manifest generator), see [`ARCHITECTURE.md`](ARCHITECTURE.md).
-
 ## Troubleshooting
 
-**Port in use**: `awm gateway stop` then retry, or `lsof -i :7819` to find the process.
+**Port in use**: `systemctl --user stop awm`, then `lsof -i :7819` to find the process that holds it.
 
-**Server won't start**: Check `.awm/awm.log` for errors. Ensure port 7819 is free.
+**Gateway won't start**: Read `.awm/awm.log`. Run `awm plugins` once it is up, for any plugin the loader refused.
 
-**Database issues**: Each feature service owns its own DB under `.awm/services/<svc>/<svc>.db`. Delete the offending one and let the service re-seed on next boot, or re-run `awm/gateway/install.sh` and `awm.gateway init`.
+**A service is down**: `awm services list` shows its status. A `failed` service tripped its crash-loop breaker. Read `.awm/logs/<service>.log`, fix the cause, then run `awm services start <name>`.
 
-**Services stuck at "down"**: `awm services list` shows each service's enabled/running state. `awm services start --all` brings up every enabled service; a fresh clone or wiped `.awm/state/services.json` self-heals on the next gateway boot (reconcile-then-bootstrap).
+**Database issues**: Each plugin owns its DB under `.awm/services/<svc>/<svc>.db`. Delete the offending one and restart the service, which seeds it again.
 
-**MCP not connecting**: Verify `.mcp.json` exists at workspace root. Check that `awm-mcp` is on PATH (`mamba run -n awm which awm-mcp`). Restart Claude Code to pick up changes.
-
-## What goes in this file
-
-README.md is the human-facing setup + usage guide for awm: how to install it, wire up harness integration, and the *usage* side of the package model — the day-to-day workflows for authoring a service, a page, or a component, controlling and shadowing services, talking to the hub from a page, and operating the server. Agent orientation goes in `AGENTS.md`; workspace procedures go in `PROTOCOLS.md`; awm-internal architecture and implementation detail go in `ARCHITECTURE.md`.
+**MCP not connecting**: Check that `.mcp.json` at the workspace root runs `~/.local/bin/awm mcp`, and that the binary exists. Restart Claude Code to pick up a change.

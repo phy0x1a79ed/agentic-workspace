@@ -695,11 +695,11 @@ One, plus a page that appears on its own:
 
 | kind | name | prefix / port | what |
 |---|---|---|---|
-| `service` | `trilium` | `/svc/trilium` | the verbs and the supervisor |
-| — | (page) | `/ui/trilium` | the reception page, mounted where `dist/` exists |
+| `service` | `trilium` | — | the verbs and the supervisor |
+| — | (page) | `/p/trilium/trilium/` | the reception page, served where `dist/` exists |
 
 **This service binds no listener at all.** The vault answers on loopback
-`awm.config.VAULT_PORT` (12511), and `awm.httpsfront` proxies `/trilium/` to it —
+`awm.config.VAULT_PORT` (12511), and `httpsfront` proxies `/trilium/` to it —
 so the port is defined in `awm.config` rather than here, because two processes
 must agree on it and neither owns it. There is deliberately nothing in this
 package that could bind a socket; see the invariant above.
@@ -715,7 +715,7 @@ refused for a caller arriving through an edge.
 ./install.sh
 ```
 
-`awm/gateway/install.sh` runs this on every deploy. Every step is idempotent and
+`awm/install.sh` runs this on every deploy. Every step is idempotent and
 skips itself when already satisfied.
 
 **The pinned fork release** wins when `server.pin` names a `url`. A fork release

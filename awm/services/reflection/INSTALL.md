@@ -78,7 +78,7 @@ the record catches that one — see *How a send is confirmed* above.
 
 A verb acts on the caller's own session unless it names `job`. The caller's
 identity is not accepted as an argument at all; it is observed.
-`awm-mcp` runs as a stdio child of the session that calls it, so the gateway
+`awm mcp` runs as a stdio child of the session that calls it, so the gateway
 stamps that proxy's parent pid onto every reflection call as `_caller_pid` —
 always overwriting, and stripping it when there is no header, so a model cannot
 name a different session.

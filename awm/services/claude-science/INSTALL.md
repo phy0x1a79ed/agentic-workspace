@@ -29,7 +29,7 @@ the real front is a security fix first and tidiness second.
 **The daemon is adopted, not owned.** Every other awm service parents its child
 and lets the gateway's supervision cover the whole stack. This one deliberately
 does not: the workbench holds live conversations, sandbox binds, and analysis
-runs, and `awm gateway restart` happens on every deploy. So this service starts
+runs, and a deploy can restart the gateway. So this service starts
 a daemon if none is running, adopts one that is, restarts one that has died —
 and leaves it running when the service stops. `stop` is an explicit verb.
 
@@ -99,7 +99,7 @@ Four, from one process:
 
 | kind | name | prefix / port | what |
 |---|---|---|---|
-| `service` | `claude-science` | `/svc/claude-science` | the verbs, plus supervision |
+| `service` | `claude-science` | — | the verbs, plus supervision |
 | — | (TLS front) | `0.0.0.0:12201` | the workbench UI, behind `awm_session` |
 | — | (TLS front) | `0.0.0.0:12202` | generated-HTML previews, separate origin |
 | mount | `claude-science` | `/s/claude-science/mcp` | the MCP bridge's loopback listener, the service's mount |
@@ -109,20 +109,15 @@ owns, the same shape as `httpsfront`'s own. They die with the service; the
 daemon does not.
 
 A fifth thing appears without this process doing anything: the control panel at
-`/ui/claude-science`, which the gateway mounts on any node where the page has
-been *built*. Page discovery keys on a built `dist/` and has no profile gate, so
-a node that deploys the tree without running the service still mounts the panel
-— and it will be dead, because the page calls the local `/svc/claude-science`
-with no peer selector.
+`/p/claude-science/claude-science/`, which the gateway serves on any node where
+the plugin loads and the page has been *built*. A page has no profile gate, so a
+node that loads the plugin without running the service still serves the panel,
+with no service of its own behind it.
 
-**The verb surface is `science`, not `claude-science`.** `service.toml` sets
-`tool = "science"`, and every manifest entry publishes a `tool` of
-`science_<verb>` while its `name` stays the short service-internal handle
-(`/svc/claude-science/fn/status`): the gateway folds a published name by
-splitting on its *first* underscore, so `claude_science_status` would land as
-domain `claude`. The
-surface is `awm science status`, `mcp__awm__science {verb:"status"}`. The
-service, the prefix and the folder keep the full name.
+**The verb surface is `science`, not `claude-science`.** `awm-plugin.toml`
+declares the tool `science`, and every function publishes as `science_<verb>`.
+The surface is `awm science status`, `mcp__awm__science {verb:"status"}`. The
+plugin, the service and the folder keep the full name.
 
 Five verbs are daemon plumbing and are off MCP (`surfaces: ["cli", "http"]`):
 `start`, `stop`, `restart`, `logs` and `update_check`. They still answer on the
@@ -219,17 +214,19 @@ binary the permission rather than relaxing the sysctl host-wide: an
 `bwrap --ro-bind / / --dev /dev --unshare-all /bin/true` must exit 0 — because
 otherwise it surfaces much later as a daemon that will not start.
 
-Then opt this node in, via the profile gate in `service.toml`. Deployments are
+Then opt this node in, via the profile gate in `awm-plugin.toml`. Deployments are
 **per-node and independent**, so every node that wants a workbench does this for
 itself:
 
 ```
-# in <workspace>/.awm/env
-AWM_PROFILES=claude-science
+# in <workspace>/.awm/config.toml
+profiles = ["claude-science"]
+
+[env]
 # every browser-reachable origin besides the one derived from AWM_EDGE_URL —
 # capella: https://172.25.181.70:12201 (the WSL interface)
 # altair:  https://192.168.100.142:12201,https://127.0.0.1:12201
-CLAUDE_SCIENCE_EXTRA_ORIGINS=...
+CLAUDE_SCIENCE_EXTRA_ORIGINS = "..."
 ```
 
 **On a trust-consumer node, provision the fronts' leaf by hand.** The fronts
@@ -251,11 +248,8 @@ Both are gitignored host state, so a deploy's `git clean -fd` leaves them alone.
 Nothing re-cuts a consumer's leaf when it expires — check `fronts[*].san` and
 the expiry if the fronts ever stop serving.
 
-Then deploy. **Export the profile into the deploy shell as well** —
-`AWM_PROFILES=claude-science awm deploy`. The CLI does not read `.awm/env`
-(only the gateway does), so deploy's verification set is computed without the
-profile and silently omits this service: it reports success without ever having
-checked the workbench came back.
+Then run `awm deploy`. It asks the gateway which services are enabled, so it
+waits for the workbench too.
 
 ## Environment
 
@@ -423,21 +417,19 @@ curl -sk -o /dev/null -w '%{http_code}\n' https://<edge-host>:12201/   # 401/log
 curl -sk -o /dev/null -w '%{http_code}\n' https://<edge-host>:12202/   # 401/login
 
 # the MCP bridge
-curl -s http://127.0.0.1:7819/claude-science/mcp                       # bridge status
-curl -s -X POST http://127.0.0.1:7819/claude-science/mcp \
+curl -s http://127.0.0.1:7819/s/claude-science/mcp                       # bridge status
+curl -s -X POST http://127.0.0.1:7819/s/claude-science/mcp \
   -H 'content-type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | head -c 400
-curl -s -X POST http://127.0.0.1:7819/claude-science/mcp \
+curl -s -X POST http://127.0.0.1:7819/s/claude-science/mcp \
   -H 'content-type: application/json' \
   -d '{"jsonrpc":"2.0","id":2,"method":"tools/call",
        "params":{"name":"awm__ssh__connect","arguments":{}}}'           # refused
 
 # adoption: the deploy-safety guarantee
-awm science status | grep pid ; awm gateway restart
+awm science status | grep pid ; systemctl --user restart awm
 awm science status | grep pid                                   # same pid
 
-# from a node that runs its own — resolves local, never a peer's
-awm peer providers science          # default: local
 ```
 
 In a browser on the mesh: open `https://<edge-host>:12201/`, log in with the awm
