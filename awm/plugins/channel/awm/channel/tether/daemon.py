@@ -45,7 +45,7 @@ from pathlib import Path
 from typing import Any
 
 from awm.channel.tether import paths
-from awm.gatewayclient.proc import child_preexec, user_manager_env
+from awm.gatewayclient.proc import child_preexec, signal_group, user_manager_env
 
 log = logging.getLogger("awm.channel.tether.daemon")
 
@@ -258,11 +258,11 @@ class Child:
             return {"action": "not-running", "running": False}
         # The group, not the pid: the child may have spawned its own children
         # and signalling one of them leaves the rest holding the socket.
-        self._signal_group(proc, signal.SIGTERM)
+        signal_group(proc, signal.SIGTERM)
         try:
             proc.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
-            self._signal_group(proc, signal.SIGKILL)
+            signal_group(proc, signal.SIGKILL)
             proc.wait(timeout=5)
         self._proc = None
         self._started_at = None
@@ -282,17 +282,6 @@ class Child:
         """The child dies with this process either way. Stopping it here makes a
         clean shutdown look clean in the log rather than like a kill."""
         self.stop()
-
-    @staticmethod
-    def _signal_group(proc: subprocess.Popen, sig: int) -> None:
-        try:
-            os.killpg(os.getpgid(proc.pid), sig)
-        except (ProcessLookupError, PermissionError):
-            try:
-                proc.send_signal(sig)
-            except ProcessLookupError:
-                pass
-
 
 class Adopted:
     """The operator daemon, attached to if it is running and launched if not.

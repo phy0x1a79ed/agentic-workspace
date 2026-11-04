@@ -19,7 +19,7 @@ import time
 from typing import Any
 
 from awm.kb import instances
-from awm.gatewayclient.proc import child_preexec
+from awm.gatewayclient.proc import child_preexec, signal_group
 
 log = logging.getLogger("awm.kb.server")
 
@@ -138,25 +138,15 @@ class Child:
             if proc is None or proc.poll() is not None:
                 self._proc = None
                 return {"action": "not-running", "running": False}
-            self._signal_group(proc, signal.SIGTERM)
+            signal_group(proc, signal.SIGTERM)
             try:
                 proc.wait(timeout=timeout)
             except subprocess.TimeoutExpired:
-                self._signal_group(proc, signal.SIGKILL)
+                signal_group(proc, signal.SIGKILL)
                 proc.wait(timeout=5)
             self._proc = None
             self._started_at = None
         return {"action": "stopped", "running": False}
-
-    @staticmethod
-    def _signal_group(proc: subprocess.Popen, sig: int) -> None:
-        try:
-            os.killpg(os.getpgid(proc.pid), sig)
-        except (ProcessLookupError, PermissionError):
-            try:
-                proc.send_signal(sig)
-            except ProcessLookupError:
-                pass
 
     def restart(self) -> dict[str, Any]:
         self.stop()

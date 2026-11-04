@@ -1,4 +1,4 @@
-"""How a service parents a child process, or hands one to the user's systemd manager.
+"""How a service parents a child process, signals its group, or hands one to the user's systemd manager.
 
 A library because the plugins that spawn children may not import each other
 (install.md R117 item 1).
@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 import shutil
 import signal
+import subprocess
 from pathlib import Path
 
 PR_SET_PDEATHSIG = 1
@@ -47,3 +48,18 @@ def user_manager_env() -> dict[str, str] | None:
         "XDG_RUNTIME_DIR": runtime,
         "DBUS_SESSION_BUS_ADDRESS": f"unix:path={runtime}/bus",
     }
+
+
+def signal_group(proc: subprocess.Popen, sig: int) -> None:
+    """Signal the child's whole process group, or the child alone when the group is gone.
+
+    The group, not the pid: a child may have spawned children of its own, and
+    signalling one of them leaves the rest holding the socket.
+    """
+    try:
+        os.killpg(os.getpgid(proc.pid), sig)
+    except (ProcessLookupError, PermissionError):
+        try:
+            proc.send_signal(sig)
+        except ProcessLookupError:
+            pass
