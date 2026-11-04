@@ -136,6 +136,14 @@ edge** — it came from `/invoke` on loopback, which is the host's own CLI. That
 allow-list is defence in depth, and could not be the enforcement: a mesh node's
 edge runs no profile and never consults it.
 
+**One edge caller writes: the operations home's board writer.** alcor's writer
+reaches the vault through deneb's singleton door, stamped `peer:<AWM_OPERATIONS_HOME>`
+(default `alcor`). `_note_caller` admits it for the note and attribute verbs only,
+and `_writer_inside` then refuses any note outside the roots this host's
+`AWM_TRILIUM_WRITER_ROOTS` names (default `awmSwarmBoard`, the board root). The
+caller's word never sets the subtree. Search without an ancestor answers only
+notes inside it. `tests/test_writer_subtree.py` pins the refusals.
+
 CAUTION: this is deliberately *not* `userroot.wrap_handlers`. That answers
 "whose store?", which a shared vault never asks, and under
 `AWM_USER_ROOT_STRICT=1` it raises for exactly the caller we need to admit.
