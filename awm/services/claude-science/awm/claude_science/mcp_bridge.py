@@ -1,7 +1,8 @@
 """An MCP endpoint over HTTP, exposing a curated slice of awm's verbs.
 
-awm has no MCP-over-HTTP transport — ``awm-mcp`` stdio is the only one — so
-this module is it: a minimal JSON-RPC endpoint speaking MCP's ``initialize`` /
+The gateway's own ``/mcp`` serves every tool to a caller on this node. This
+module serves the remote claude-science client only an allowlisted slice: a
+minimal JSON-RPC endpoint speaking MCP's ``initialize`` /
 ``tools/list`` / ``tools/call``, translating each call into the gateway's own
 ``GET /tools`` and ``POST /invoke``. Its loopback listener is the service's
 ``mount``, which the gateway serves at ``/s/claude-science/``, so httpsfront

@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # rlm_harness.sh — exercise rlm-factorio against a throwaway, isolated gateway.
 #
-# Boots a fresh gateway whose discovery root (AWM_SERVICES_DIR) is a temp tree
+# Boots a fresh gateway whose plugin root is a temp tree
 # symlinking ONLY this service, and whose workspace root (AWM_WORKSPACE) is a
 # temp dir, so it never touches prod state, DBs, or ports. The gateway
 # auto-bootstraps the discovered service (default-enabled), which self-registers
-# over the control WS; we then drive it over HTTP at /svc/rlm-factorio/fn/<verb>.
+# over the control WS; we then drive it over HTTP with /invoke.
 #
 # The compose project is isolated too, and that is not cosmetic: the DEFAULT
 # project owns `rlm-factorio_factorio-saves`, the volume the user's real worlds
@@ -37,11 +37,9 @@ ln -s "$SERVICE_DIR" "$HARNESS/services/rlm-factorio"
 : > "$HARNESS/AGENTS.md"   # workspace-root anchor (config also honors AWM_WORKSPACE)
 
 export AWM_WORKSPACE="$HARNESS"
-export AWM_SERVICES_DIR="$HARNESS/services"
 export AWM_PORT="$PORT"
 # The service ships a committed `profiles = ["gamebot"]` marker, so a gateway
 # without that profile skips it at bootstrap. Claim it here.
-export AWM_PROFILES="gamebot"
 # Off the default project and ports — see the note at the top of this file.
 export AWM_FACTORIO_PROJECT="$PROJECT"
 export AWM_FACTORIO_CONTAINER="$PROJECT-appliance"
@@ -60,16 +58,28 @@ say()  { printf '\n=== %s ===\n' "$*"; }
 ok()   { PASS=$((PASS+1)); printf '  ok   %s\n' "$*"; }
 bad()  { FAIL=$((FAIL+1)); printf '  FAIL %s\n' "$*"; }
 
-# POST a verb. Sets globals RESP_BODY / RESP_CODE; returns 0 iff HTTP 2xx.
+# POST a verb of the factorio tool. Sets globals RESP_BODY (the verb's result, or the
+# error body) / RESP_CODE; returns 0 iff HTTP 2xx.
 # (Default body set on its own line — `${2:-{}}` mis-parses the braces in bash.)
 invoke() {
     local fn="$1" data="${2:-}" r
     [ -n "$data" ] || data='{}'
-    r="$(curl -s -w '|%{http_code}' --max-time 1900 -X POST \
-            "$HUB/svc/rlm-factorio/fn/$fn" \
-            -H 'content-type: application/json' -d "$data")"
-    RESP_CODE="${r##*|}"; RESP_BODY="${r%|*}"
+    r="$(curl -s -w '|%{http_code}' --max-time 1900 -X POST "$HUB/invoke" \
+            -H 'content-type: application/json' \
+            -d "{\"name\":\"factorio\",\"args\":{\"verb\":\"$fn\",\"args\":$data}}")"
+    RESP_CODE="${r##*|}"
+    RESP_BODY="$(printf '%s' "${r%|*}" | python3 -c 'import sys, json
+d = json.load(sys.stdin)
+print(d["result"] if isinstance(d.get("result"), str) else json.dumps(d))' 2>/dev/null || printf '%s' "${r%|*}")"
     case "$RESP_CODE" in 2*) return 0 ;; *) return 1 ;; esac
+}
+
+# 0 iff the gateway lists rlm-factorio as ready.
+registered() {
+    curl -fsS --max-time 3 -X POST "$HUB/invoke" -H 'content-type: application/json' \
+        -d '{"name":"awm","args":{"verb":"services","args":{}}}' 2>/dev/null | python3 -c 'import sys, json
+rows = json.loads(json.load(sys.stdin)["result"])
+sys.exit(0 if any(r["name"] == "rlm-factorio" and r["status"] == "ready" for r in rows) else 1)'
 }
 
 # Extract a dotted path from a JSON string. Usage: jget "$RESP_BODY" snapshot.position.x
@@ -125,27 +135,31 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 say "booting throwaway gateway on :$PORT (workspace=$HARNESS)"
-setsid bash -c 'exec mamba run -n awm --no-capture-output python -m awm.gateway gateway serve' \
+# The gateway passes a service only its [env], so the AWM_FACTORIO_* settings go there.
+mkdir -p "$HARNESS/.awm"
+{ printf 'node = "rlm-factorio-rig"\nlisten = "127.0.0.1:%s"\nworkspace = "%s"\n' "$PORT" "$HARNESS"
+  printf 'core_roots = ["%s/services"]\nprofiles = ["gamebot"]\n[env]\n' "$HARNESS"
+  env | grep '^AWM_FACTORIO_' | sed -E 's/^([^=]+)=(.*)$/\1 = "\2"/'; } > "$HARNESS/.awm/config.toml"
+setsid "${AWM_BIN:-awm}" gateway serve --state "$HARNESS/.awm" \
     >"$GW_LOG" 2>&1 &
 GW_PGID=$!
 
-# Wait for the gateway HTTP to answer (/ is unrouted → 404; poll a real route).
+# Wait for the gateway HTTP to answer (poll /status).
 up=0
 for _ in $(seq 1 80); do
-    code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "$HUB/hub/services" 2>/dev/null || true)"
+    code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "$HUB/status" 2>/dev/null || true)"
     if [ "$code" = "200" ]; then up=1; break; fi
     sleep 0.5
 done
 [ "$up" = 1 ] && ok "gateway up" || { bad "gateway did not come up; log:"; tail -30 "$GW_LOG"; exit 1; }
 
-# Confirm discovery, then gate on a real routed call (the service appears in
-# /hub/services before its control WS is routable — a status 200 proves both).
+# Confirm discovery, then gate on a real routed call.
 say "waiting for rlm-factorio to register"
-# Poll rather than check once: the gateway answers /hub/services as soon as it
-# is up, which is before the service it just spawned has registered itself.
+# Poll rather than check once: the gateway is up before the service it just
+# spawned has registered itself.
 seen=0
 for _ in $(seq 1 60); do
-    if curl -fsS --max-time 3 "$HUB/hub/services" 2>/dev/null | grep -q '"rlm-factorio"'; then
+    if registered; then
         seen=1; break
     fi
     sleep 1
@@ -153,7 +167,7 @@ done
 if [ "$seen" = 1 ]; then
     ok "service discovered"
 else
-    bad "service not in /hub/services; service log:"; tail -40 "$SVC_LOG" 2>/dev/null
+    bad "service not ready in awm services; service log:"; tail -40 "$SVC_LOG" 2>/dev/null
     bad "gateway log:"; tail -20 "$GW_LOG"; exit 1
 fi
 wait_routable && ok "control channel routable" \

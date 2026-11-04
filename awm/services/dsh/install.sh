@@ -19,7 +19,7 @@
 #      so it is stamped and skipped when the tree has not moved.
 #
 # Every step is idempotent and skips itself when already satisfied, because this
-# script runs on every deploy (awm/gateway/install.sh invokes each service's).
+# script runs on every deploy (awm/install.sh invokes each plugin's).
 #
 # Override the target env with AWM_ENV=<name>.
 set -euo pipefail

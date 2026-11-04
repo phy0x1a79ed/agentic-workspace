@@ -194,7 +194,7 @@ def for_caller(pid: Any, session_id: Optional[str] = None) -> tuple[Provider, di
     if not pid:
         raise HarnessError(
             "could not tell which session is calling, so there is no session of "
-            "your own to act on. Call through a session's own awm-mcp proxy, or "
+            "your own to act on. Call through a session's own `awm mcp` proxy, or "
             "name a session with `job`")
     answers = [(p, r) for p, r in _ask_all("resolve", {"pid": pid}) if r.get("mine")]
     if not answers:

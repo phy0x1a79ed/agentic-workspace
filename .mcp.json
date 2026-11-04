@@ -1,8 +1,8 @@
 {
   "mcpServers": {
     "awm": {
-      "command": "/home/tony/lib/miniforge3/envs/awm/bin/awm-mcp",
-      "args": [],
+      "command": "/home/tony/.local/bin/awm",
+      "args": ["mcp"],
       "env": {
         "AWM_WORKSPACE": "/home/tony/agentic_workspace"
       }

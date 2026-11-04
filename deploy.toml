@@ -5,7 +5,7 @@
 [deploy]
 # Only the dists the batch touched, only their smoke tests. Exit 5 (nothing
 # collected) counts as a pass.
-check = 'awm/gateway/scripts/run-tests.sh --smoke --changed "$AWM_DEPLOY_BASE"'
+check = 'scripts/run-tests.sh --smoke --changed "$AWM_DEPLOY_BASE"'
 check_timeout = 60
 
 [promote]
