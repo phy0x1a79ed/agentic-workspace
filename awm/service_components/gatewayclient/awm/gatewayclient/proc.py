@@ -67,8 +67,8 @@ def signal_group(proc: subprocess.Popen, sig: int) -> None:
 
 
 class GroupChild:
-    """The stop half of a supervised child: a subclass sets ``_lock``, ``_proc``,
-    ``_held`` and ``_started_at`` and spawns the child in its own session."""
+    """The stop and log half of a supervised child: a subclass sets ``_lock``, ``_proc``,
+    ``_held``, ``_started_at`` and ``log_file`` and spawns the child in its own session."""
 
     STOP_TIMEOUT_S = 10.0
 
@@ -95,3 +95,11 @@ class GroupChild:
             self._proc = None
             self._started_at = None
         return {"action": "stopped", "running": False}
+
+    def logs(self, tail: int = 200) -> str:
+        """The last ``tail`` lines of the child's log."""
+        try:
+            with open(self.log_file, "rb") as fh:
+                return b"".join(fh.readlines()[-tail:]).decode("utf-8", "replace")
+        except OSError as exc:
+            return f"(no log at {self.log_file}: {exc})"

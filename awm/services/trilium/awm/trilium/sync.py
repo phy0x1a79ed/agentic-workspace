@@ -249,13 +249,6 @@ class Tunnel(GroupChild):
         return {"action": "reopened", "previous_exit": code,
                 "retry_s": self._retry_s}
 
-    def logs(self, tail: int = 200) -> str:
-        try:
-            with open(self.log_file, "rb") as fh:
-                return b"".join(fh.readlines()[-tail:]).decode("utf-8", "replace")
-        except OSError as exc:
-            return f"(no log at {self.log_file}: {exc})"
-
 
 #: The one link this node holds. Inert on the hub.
 TUNNEL = Tunnel()

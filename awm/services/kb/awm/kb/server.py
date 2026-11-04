@@ -54,6 +54,10 @@ class Child(GroupChild):
 
     STOP_TIMEOUT_S = 30.0
 
+    @property
+    def log_file(self):
+        return instances.LOG_FILE
+
     def __init__(self) -> None:
         self._lock = threading.RLock()
         self._proc: subprocess.Popen | None = None
@@ -149,13 +153,6 @@ class Child(GroupChild):
                 self._last_error = f"{type(exc).__name__}: {exc}"
                 return {"action": "respawn-failed", "error": self._last_error}
         return {"action": "respawned", "previous_exit": code}
-
-    def logs(self, tail: int = 200) -> str:
-        try:
-            with open(instances.LOG_FILE, "rb") as fh:
-                return b"".join(fh.readlines()[-tail:]).decode("utf-8", "replace")
-        except OSError as exc:
-            return f"(no log at {instances.LOG_FILE}: {exc})"
 
 
 CHILD = Child()
