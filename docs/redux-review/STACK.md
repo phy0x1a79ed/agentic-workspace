@@ -25,6 +25,7 @@ Procedure, from dfs-interview § Work the stack:
 
 ## Stack
 
+- **lane-open-items** (2026-11-03): The open-for-Tony items each lane reported, in the Build result sections of channels, queue-approver, plugin-core and sessions-harness READMEs
 - **plugin-guards** (2026-11-03): R116 items 3 and 4 mechanisms, raised by redux-plugins: a page origin per plugin, and the container for a third-party plugin
   - [ ] Page origin per plugin (R116 item 3): (a) a host per plugin, <plugin>.localhost and <plugin>.<node host>, a wildcard cert per node; or (b) a port per plugin. The lane recommends (a)
   - [ ] Third-party container (R116 item 4): (a) one unix socket per plugin bind-mounted, --network none unless needs.network, egress filtering later; or (b) a plugin listener on the docker bridge with a per-spawn token. The lane recommends (a)
