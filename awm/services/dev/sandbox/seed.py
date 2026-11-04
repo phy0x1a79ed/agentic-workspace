@@ -111,7 +111,7 @@ def main() -> int:
         ):
             _invoke("journal_post", {
                 "project": "demo", "scope": "alpha",
-                "author": "user:dev", "body": body, "kind": "message",
+                "author": "user:dev", "body": body,
             })
         print("[seed] seeded demo/alpha channel")
     else:

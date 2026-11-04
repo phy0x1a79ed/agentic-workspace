@@ -88,7 +88,6 @@ def raise_alarm(event: dict) -> dict:
         try:
             _gateway_call("journal", "post", {
                 "project": project, "scope": scope, "author": "reflection",
-                "kind": "message",
                 "meta": {"alarm": "reflection-lost",
                          "session_id": entry["session_id"], "command": command},
                 "body": (f"reflection lost `{command}` for session {who}: "
