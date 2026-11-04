@@ -28,13 +28,12 @@ from __future__ import annotations
 import logging
 import os
 import shutil
-import signal
 import subprocess
 import threading
 import time
 from typing import Any
 
-from awm.trilium import instances
+from awm.trilium import instances, procs
 
 log = logging.getLogger("awm.trilium.sync")
 
@@ -132,21 +131,7 @@ def tunnel_cmd() -> list[str]:
     ]
 
 
-def _preexec() -> None:  # pragma: no cover — runs in the forked child
-    """Own session, and die with the parent. Same reasoning as the vault
-    child's — see `server._preexec`."""
-    os.setsid()
-    try:
-        import ctypes
-
-        ctypes.CDLL("libc.so.6", use_errno=True).prctl(1, signal.SIGTERM)  # PR_SET_PDEATHSIG
-    except Exception:  # noqa: BLE001 — best effort; the group kill still works
-        pass
-    if os.getppid() == 1:
-        os._exit(1)
-
-
-class Tunnel:
+class Tunnel(procs.GroupChild):
     """The ssh forward to the hub. Every method is safe to call at any time.
 
     Inert on a hub: every method returns a state saying so and spawns nothing.
@@ -204,7 +189,7 @@ class Tunnel:
         try:
             self._proc = subprocess.Popen(
                 cmd, stdin=subprocess.DEVNULL, stdout=out,
-                stderr=subprocess.STDOUT, preexec_fn=_preexec,
+                stderr=subprocess.STDOUT, preexec_fn=procs.preexec,
             )
         finally:
             out.close()
@@ -225,34 +210,6 @@ class Tunnel:
                 raise
             self._next_attempt = time.time() + self._retry_s
         return self.snapshot() | {"action": "started"}
-
-    def stop(self, *, timeout: float = 10.0, hold: bool = False) -> dict[str, Any]:
-        """Close the forward. With `hold`, keep the loop from reopening it."""
-        with self._lock:
-            self._held = hold
-            proc = self._proc
-            if proc is None or proc.poll() is not None:
-                self._proc = None
-                return {"action": "not-running", "running": False}
-            self._signal_group(proc, signal.SIGTERM)
-            try:
-                proc.wait(timeout=timeout)
-            except subprocess.TimeoutExpired:
-                self._signal_group(proc, signal.SIGKILL)
-                proc.wait(timeout=5)
-            self._proc = None
-            self._started_at = None
-        return {"action": "stopped", "running": False}
-
-    @staticmethod
-    def _signal_group(proc: subprocess.Popen, sig: int) -> None:
-        try:
-            os.killpg(os.getpgid(proc.pid), sig)
-        except (ProcessLookupError, PermissionError):
-            try:
-                proc.send_signal(sig)
-            except ProcessLookupError:
-                pass
 
     def reconcile(self) -> dict[str, Any]:
         """Reopen the forward if it has died. Cheap; called on a loop.

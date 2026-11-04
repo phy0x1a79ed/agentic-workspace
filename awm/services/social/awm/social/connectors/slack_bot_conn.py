@@ -34,8 +34,8 @@ import logging
 import aiohttp
 
 from awm.social.connectors.base import (
-    Account, Attachment, Channel, Connector, Identity, InboundMessage,
-    OnMessage, file_bytes, slack_reaction,
+    Account, Channel, Connector, Identity, InboundMessage, OnMessage,
+    file_bytes, looks_like_slack_user_id, slack_attachments, slack_reaction,
 )
 from awm.social.emoji import to_name
 
@@ -64,25 +64,6 @@ class SlackApiError(RuntimeError):
     def __init__(self, method: str, error: str) -> None:
         super().__init__(f"slack {method}: {error}")
         self.error = error
-
-
-def _attachments_of(m: dict) -> list[Attachment]:
-    out: list[Attachment] = []
-    for i, f in enumerate(m.get("files", []) or []):
-        url = f.get("url_private_download") or f.get("url_private") or ""
-        out.append(Attachment(
-            idx=i,
-            filename=f.get("name") or f.get("title") or f"attachment-{i}",
-            mime=f.get("mimetype", "") or "",
-            size=int(f.get("size", 0) or 0),
-            url=url,
-            ref={"id": f.get("id", ""), "url": url},
-        ))
-    return out
-
-
-def _looks_like_user_id(s: str) -> bool:
-    return bool(s) and s[0] in ("U", "W") and s[1:].isalnum() and s.isupper()
 
 
 def _chat_kind(ch: dict) -> str:
@@ -183,7 +164,7 @@ class SlackBotConnector(Connector):
             message_id=m.get("ts", ""),
             ts=m.get("ts", ""),
             text=m.get("text", "") or "",
-            attachments=_attachments_of(m),
+            attachments=slack_attachments(m),
         )
 
     def _is_own(self, m: dict) -> bool:
@@ -373,7 +354,7 @@ class SlackBotConnector(Connector):
         writable only once someone other than Opal has written in it. A channel
         is always writable: posting there reaches no one first.
         """
-        if _looks_like_user_id(channel):
+        if looks_like_slack_user_id(channel):
             channel = (await self._call("conversations.open", users=channel))["channel"]["id"]
         if channel in self._spoken_to:
             return channel
@@ -468,7 +449,7 @@ class SlackBotConnector(Connector):
         return out
 
     async def _resolve_user_id(self, who: str) -> str:
-        if _looks_like_user_id(who):
+        if looks_like_slack_user_id(who):
             return who
         needle = who.lstrip("@").lower()
         for u in await self._paged("users.list", "members"):
@@ -495,7 +476,7 @@ class SlackBotConnector(Connector):
             raise ValueError(f"message {message_id} not found in {channel}")
         out: list[tuple[str, str, bytes]] = []
         headers = {"Authorization": f"Bearer {self.account.token}"}
-        for a in _attachments_of(msgs[0]):
+        for a in slack_attachments(msgs[0]):
             if idx is not None and a.idx != idx:
                 continue
             async with self._session().get(a.url, headers=headers) as resp:

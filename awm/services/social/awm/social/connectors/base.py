@@ -149,6 +149,30 @@ def file_size(f: dict) -> int:
     return len(str(f.get("text", "")).encode())
 
 
+def slack_attachments(m: dict) -> list[Attachment]:
+    """A Slack message's ``files[]`` as attachments. ``url`` is the auth-gated
+    ``url_private``. A hidden or tombstoned file has none and is skipped."""
+    out: list[Attachment] = []
+    for i, f in enumerate(m.get("files", []) or []):
+        url = f.get("url_private_download") or f.get("url_private") or ""
+        if not url and f.get("mode") in ("hidden", "tombstone"):
+            continue
+        out.append(Attachment(
+            idx=i,
+            filename=f.get("name") or f.get("title") or f"attachment-{i}",
+            mime=f.get("mimetype", "") or "",
+            size=int(f.get("size", 0) or 0),
+            url=url,
+            ref={"id": f.get("id", ""), "url": url},
+        ))
+    return out
+
+
+def looks_like_slack_user_id(s: str) -> bool:
+    """Slack user ids are ``U…``, or ``W…`` on enterprise grid, in capitals."""
+    return bool(s) and s[0] in ("U", "W") and s[1:].isalnum() and s.isupper()
+
+
 def slack_reaction(
     conn: "Connector", channel: str, message_id: str, name: str, *,
     remove: bool, error: str = "",

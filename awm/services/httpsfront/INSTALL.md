@@ -27,7 +27,7 @@ HTTPS with no per-path allowlist to maintain.
     bash install.sh
 
 `install.sh` editable-installs the component libraries (`config`,
-`gatewayclient`, `tlsfront`, operations' `grantlib`) and this service into the `awm` env (override with
+`gatewayclient`, `tlsfront`, `grantlib`) and this service into the `awm` env (override with
 `AWM_ENV=<name>`) and writes a gitignored `.runtime-env` sidecar baking
 `AWM_PYTHON` = the env's absolute interpreter, so the gateway can respawn the
 service under systemd's minimal PATH (where `mamba` is not present).

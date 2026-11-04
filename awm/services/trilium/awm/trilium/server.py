@@ -24,35 +24,16 @@ from __future__ import annotations
 
 import logging
 import os
-import signal
 import subprocess
 import threading
 import time
 from pathlib import Path
 from typing import Any
 
-from awm.trilium import instances, sync
+from awm.trilium import instances, procs, sync
 from awm.trilium.instances import Vault
 
 log = logging.getLogger("awm.trilium.server")
-
-
-def _preexec() -> None:  # pragma: no cover — runs in the forked child
-    """Own session (so the tree is one signalable group) + die with the parent.
-
-    Order matters: `setsid` first, then the death signal, then a re-check that
-    the parent is still alive — a parent that exited between the fork and
-    `prctl` would leave a child nothing will ever signal.
-    """
-    os.setsid()
-    try:
-        import ctypes
-
-        ctypes.CDLL("libc.so.6", use_errno=True).prctl(1, signal.SIGTERM)  # PR_SET_PDEATHSIG
-    except Exception:  # noqa: BLE001 — best effort; the group kill still works
-        pass
-    if os.getppid() == 1:
-        os._exit(1)
 
 
 def child_env(vault: Vault) -> dict[str, str]:
@@ -146,8 +127,10 @@ def child_env(vault: Vault) -> dict[str, str]:
     return env
 
 
-class Child:
+class Child(procs.GroupChild):
     """The vault's node process. Every method is safe to call at any time."""
+
+    STOP_TIMEOUT_S = 20.0
 
     def __init__(self, vault: Vault | None = None) -> None:
         self.vault = vault or instances.VAULT
@@ -245,7 +228,7 @@ class Child:
             self._proc = subprocess.Popen(
                 cmd, cwd=str(entry.parent), env=child_env(vault),
                 stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT,
-                preexec_fn=_preexec,
+                preexec_fn=procs.preexec,
             )
         finally:
             out.close()
@@ -307,42 +290,6 @@ class Child:
             time.sleep(0.4)
         self._last_error = (f"did not bind {port} within "
                             f"{instances.START_TIMEOUT_S}s")
-
-    def stop(self, *, timeout: float = 20.0, hold: bool = False) -> dict[str, Any]:
-        """Stop the child. With `hold`, keep the loop from bringing it back.
-
-        A hold is released by the next `start`, so the pairing is stop-then-start
-        rather than a lock somebody has to remember to drop. Whatever holds one
-        must start the child again even when its own work failed, or everyone is
-        left with no server and no error that says why.
-        """
-        with self._lock:
-            self._held = hold
-            proc = self._proc
-            if proc is None or proc.poll() is not None:
-                self._proc = None
-                return {"action": "not-running", "running": False}
-            # The whole group. Signalling the pid alone leaves anything node
-            # spawned holding the port.
-            self._signal_group(proc, signal.SIGTERM)
-            try:
-                proc.wait(timeout=timeout)
-            except subprocess.TimeoutExpired:
-                self._signal_group(proc, signal.SIGKILL)
-                proc.wait(timeout=5)
-            self._proc = None
-            self._started_at = None
-        return {"action": "stopped", "running": False}
-
-    @staticmethod
-    def _signal_group(proc: subprocess.Popen, sig: int) -> None:
-        try:
-            os.killpg(os.getpgid(proc.pid), sig)
-        except (ProcessLookupError, PermissionError):
-            try:
-                proc.send_signal(sig)
-            except ProcessLookupError:
-                pass
 
     def restart(self) -> dict[str, Any]:
         self.stop()

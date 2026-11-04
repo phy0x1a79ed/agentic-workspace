@@ -44,10 +44,6 @@ PAGE = 200
 MAX_PAGES = 100_000
 
 
-def _describe(exc: BaseException) -> str:
-    return (f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__)[:300]
-
-
 def _with_conn(fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
     conn = store.connect()
     try:
@@ -110,7 +106,7 @@ class Archive:
         try:
             entries = await self.gateway.services()
         except Exception as exc:  # noqa: BLE001 — the gateway being down is not a reason to forget sources
-            self.registry_error = _describe(exc)
+            self.registry_error = federation.describe_error(exc)
             return False
         sources, _ = registry.parse(entries)
         now = self.now()
@@ -200,7 +196,7 @@ class Archive:
             result: dict[str, Any] = await self._pass(source)
             error = None
         except Exception as exc:  # noqa: BLE001 — recorded on the source, retried on the next tick
-            result, error = {}, _describe(exc)
+            result, error = {}, federation.describe_error(exc)
             log.warning("search: sweep of %s failed: %s", name, error)
         finally:
             self._sweeping.discard(name)
@@ -349,7 +345,7 @@ class Archive:
                     rest = [n for n in names if n not in kb_names]
                 except Exception as exc:  # noqa: BLE001 — the archive's own embeddings answer instead
                     log.warning("search: kb entry index unavailable, using the archive's embeddings: %s",
-                                _describe(exc))
+                                federation.describe_error(exc))
         finally:
             if asked is not None and not asked.done():
                 asked.cancel()
@@ -369,7 +365,7 @@ class Archive:
         except (asyncio.TimeoutError, TimeoutError):
             return source, {}, {"status": "error", "error": f"timeout after {LIVE_TIMEOUT_S:g}s"}
         except Exception as exc:  # noqa: BLE001 — one source failing never fails the search
-            return source, {}, {"status": "error", "error": _describe(exc)}
+            return source, {}, {"status": "error", "error": federation.describe_error(exc)}
         status: dict[str, Any] = {"status": "ok", "hits": hitshape.count(found)}
         if isinstance(raw, dict) and isinstance(raw.get("degraded"), dict):
             status["degraded"] = {str(k): str(v)[:300] for k, v in raw["degraded"].items()}
@@ -393,7 +389,7 @@ class Archive:
             raw = await asyncio.wait_for(self.gateway.call("journal", "tag_list", {}, LIVE_TIMEOUT_S),
                                          timeout=LIVE_TIMEOUT_S + 1.0)
         except Exception as exc:  # noqa: BLE001 — the journal being down is not a clash
-            log.warning("search: tag clashes unread: %s", _describe(exc))
+            log.warning("search: tag clashes unread: %s", federation.describe_error(exc))
             return self._clashes[1] if self._clashes else set()
         here = edges.label(config.node_name())
         nodes: set[str] = set()
@@ -472,7 +468,7 @@ class Archive:
                 continue
             got = results.pop(0)
             if isinstance(got, BaseException):
-                statuses[name]["hop"] = {"status": "error", "error": _describe(got)}
+                statuses[name]["hop"] = {"status": "error", "error": federation.describe_error(got)}
                 continue
             statuses[name]["hop"] = {"status": "ok", "hits": len(got)}
             out += [{**h, "origin": h.get("origin") or self.origin()} for h in got]
@@ -524,7 +520,7 @@ class Archive:
         if searched_index:
             found = results.pop(0)
             if isinstance(found, BaseException):
-                statuses.update({n: {"status": "error", "error": _describe(found)} for n in searched_index})
+                statuses.update({n: {"status": "error", "error": federation.describe_error(found)} for n in searched_index})
             else:
                 sections, degraded = found
                 lists.append(sections)
@@ -534,7 +530,7 @@ class Archive:
         for source in searched_live:
             found = results.pop(0)
             if isinstance(found, BaseException):
-                statuses[source.name] = {"status": "error", "error": _describe(found)}
+                statuses[source.name] = {"status": "error", "error": federation.describe_error(found)}
             else:
                 _, sections, status = found
                 lists.append(sections)
@@ -559,7 +555,7 @@ class Archive:
 def _remote_status(asked: Any, name: str) -> dict[str, Any]:
     """One remote source's status: the node's own for it, or the node's when the node did not answer."""
     if isinstance(asked, BaseException):
-        return {"status": "error", "error": _describe(asked)}
+        return {"status": "error", "error": federation.describe_error(asked)}
     if asked.status.get("status") != "ok":
         return dict(asked.status)
     theirs = (asked.status.get("sources") or {}).get(name)
