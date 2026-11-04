@@ -1496,13 +1496,11 @@ def serve(*, port: int, cert: str, key: str, ca: str, upstream: str,
           rewrite_origin: bool = False,
           profile: str | None = None,
           tls: bool = True,
-          host: str | None = None,
           vault_upstream: str | None = None,
           tether_upstream: str | None = None,
           board_upstream: str | None = None) -> None:
     """Bind ``0.0.0.0:port`` with TLS and reverse-proxy to ``upstream`` forever
     (blocks). Designed to run in a daemon thread from the hub adapter.
-    ``host`` narrows the bind to one address.
 
     ``tls=False`` binds plain HTTP on ``127.0.0.1:port`` instead, trusting
     ``X-Forwarded-*`` from loopback only — the shape for a TLS-terminating
@@ -1520,9 +1518,9 @@ def serve(*, port: int, cert: str, key: str, ca: str, upstream: str,
                     tether_upstream=tether_upstream,
                     board_upstream=board_upstream)
     bind: dict = (
-        {"host": host or "0.0.0.0", "ssl_certfile": cert, "ssl_keyfile": key}
+        {"host": "0.0.0.0", "ssl_certfile": cert, "ssl_keyfile": key}
         if tls else
-        {"host": host or "127.0.0.1", "proxy_headers": True,
+        {"host": "127.0.0.1", "proxy_headers": True,
          "forwarded_allow_ips": "127.0.0.1"}
     )
     config = uvicorn.Config(

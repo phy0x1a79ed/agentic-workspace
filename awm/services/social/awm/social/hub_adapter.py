@@ -860,7 +860,7 @@ API_MANIFEST: dict[str, Any] = {
                            "`ack_ref`, from a slash command's event, replaces that "
                            "command's acknowledgement while the platform still "
                            "allows it, and sends a new message otherwise. "
-                           "`file` uploads a file from the calling node, such as "
+                           "`file` uploads a file from the node social runs on, such as "
                            "a plan's .md, with `text` as its message; `text` is "
                            "optional with a file. `files` attaches inline text "
                            "files, each {filename, text}. Discord and Slack take "
@@ -876,8 +876,7 @@ API_MANIFEST: dict[str, Any] = {
                 {"name": "text", "type": "string", "required": False},
                 {"name": "thread", "type": "string", "required": False},
                 {"name": "ack_ref", "type": "string", "required": False},
-                {"name": "file", "type": "string", "required": False,
-                 "file": "in"},
+                {"name": "file", "type": "string", "required": False},
                 {"name": "files", "type": "array", "required": False},
                 {"name": "quiet", "type": "boolean", "required": False},
             ],
@@ -1033,11 +1032,10 @@ API_MANIFEST: dict[str, Any] = {
             "effect": "write",
             "tool": "social_download_attachments",
             "description": "Download a message's attachments to a system temp dir "
-                           "(outside the awm workspace) on the calling node. "
+                           "(outside the awm workspace) on the node social runs on. "
                            "Re-fetches the message live, returns the absolute "
                            "file paths + metadata. "
                            "`idx` optionally selects a single attachment.",
-            "returns_files": True,
             "timeout": 300,
             "params": [
                 {"name": "account", "type": "string", "required": True},
@@ -1180,7 +1178,7 @@ API_MANIFEST: dict[str, Any] = {
             "effect": "write",
             "tool": "social_bucket_get",
             "description": "Download a file from a bucket to a system temp dir "
-                           "(outside the awm workspace) on the calling node and "
+                           "(outside the awm workspace) on the node social runs on and "
                            "return its absolute path + metadata. Any size; it "
                            "streams in chunks. Google-native docs are exported "
                            "(Docs→pdf, Sheets→csv). A folder downloads as a "
@@ -1189,7 +1187,6 @@ API_MANIFEST: dict[str, Any] = {
                            "10000). Files that fail are listed in `failures` "
                            "and the rest still download. `version` (a label from "
                            "bucket_versions) reads an older version of a file.",
-            "returns_files": True,
             "timeout": 3600,
             "params": [
                 {"name": "bucket", "type": "string", "required": True},
@@ -1202,8 +1199,8 @@ API_MANIFEST: dict[str, Any] = {
             "name": "bucket_put",
             "effect": "write",
             "tool": "social_bucket_put",
-            "description": "Upload a local file (`src` = a path on the calling "
-                           "node; it travels with the call) to `path` in a "
+            "description": "Upload a file (`src` = a path on the node social "
+                           "runs on) to `path` in a "
                            "bucket, creating or overwriting it. Any size; it "
                            "streams in chunks. A local folder uploads as the "
                            "folder `path`, its tree inside it; files that fail "
@@ -1215,8 +1212,7 @@ API_MANIFEST: dict[str, Any] = {
             "params": [
                 {"name": "bucket", "type": "string", "required": True},
                 {"name": "path", "type": "string", "required": True},
-                {"name": "src", "type": "string", "required": True,
-                 "file": "in"},
+                {"name": "src", "type": "string", "required": True},
                 {"name": "mime", "type": "string", "required": False},
                 {"name": "parents", "type": "boolean", "required": False},
             ],
