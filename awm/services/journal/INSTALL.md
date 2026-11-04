@@ -48,7 +48,7 @@ The verbs marked CLI and HTTP only serve other services and the one-shot imports
 
 The service publishes the `posts` topic, once per new post, with payload
 `{project, scope, post}`. The post carries its tags and a `kind` derived from them,
-for readers that still filter on `kind`.
+for readers of the old post shape.
 
 ## Search archive
 

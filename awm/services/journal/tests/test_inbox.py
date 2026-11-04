@@ -18,7 +18,7 @@ def clock(monkeypatch):
 
 def _post(body, *, scope="dev", project="awm", author="agent:metasmith/engine", meta=None):
     from awm.journal import channel
-    return channel.post(project, scope, author=author, body=body, kind="message", meta=meta).id
+    return channel.post(project, scope, author=author, body=body, tags="message", meta=meta).id
 
 
 class TestFetchNeedsProject:
@@ -27,7 +27,7 @@ class TestFetchNeedsProject:
         _post("for awm")
         _post("for metasmith", project="metasmith")
         with pytest.raises(ValueError) as err:
-            _handle_fetch({"scope": "dev", "kind": "message"})
+            _handle_fetch({"scope": "dev", "tags": "message"})
         assert "needs project" in str(err.value)
         assert "awm, metasmith" in str(err.value)
         assert "inbox" in str(err.value)
@@ -36,7 +36,7 @@ class TestFetchNeedsProject:
         from awm.journal.operations.posts import _handle_fetch
         _post("for awm")
         _post("for metasmith", project="metasmith")
-        out = _handle_fetch({"project": "awm", "scope": "dev", "kind": "message"})
+        out = _handle_fetch({"project": "awm", "scope": "dev", "tags": "message"})
         assert [p["body"] for p in out["posts"]] == ["for awm"]
 
     def test_non_literal_channel_needs_no_project(self, journal_workspace, clock):
@@ -49,7 +49,7 @@ class TestFetchNeedsProject:
         from awm.journal.operations.posts import _handle_fetch
         _post("one")
         _post("two", project="metasmith")
-        assert _handle_fetch({"kind": "message"})["total"] == 2
+        assert _handle_fetch({"tags": "message"})["total"] == 2
 
 
 class TestDigest:

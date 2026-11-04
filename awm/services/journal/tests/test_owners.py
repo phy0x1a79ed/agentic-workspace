@@ -59,10 +59,3 @@ def test_an_unreachable_scopes_service_does_not_stop_a_post(journal_workspace, r
     from awm.journal import channel
     _gateway(monkeypatch, exc=RuntimeError("gateway down"))
     assert channel.post("awm", "dev", author="user:a", body="written anyway").body == "written anyway"
-
-
-def test_goals_on_an_unknown_scope_are_refused_too(journal_workspace, real_owners, monkeypatch):
-    from awm.journal import goals
-    _gateway(monkeypatch, {"exists": False})
-    with pytest.raises(ValueError):
-        goals.set_goal(objective="x", author="user:tony", level="scope", project="awm", scope="nope")

@@ -61,7 +61,7 @@ def test_a_post_with_no_tag_is_a_message_and_kind_is_derived(vocab):
     assert p.tags == ["message"] and p.kind == "message"
     j = _post(tags=["journal", "complaint"])
     assert set(j.tags) == {"journal", "complaint"} and j.to_dict()["kind"] == "journal"
-    assert _post(kind="journal").tags == ["journal"]
+    assert _post(tags="journal").tags == ["journal"]
 
 
 def test_a_rename_shows_on_every_post_and_keeps_the_versions(vocab):
@@ -71,7 +71,7 @@ def test_a_rename_shows_on_every_post_and_keeps_the_versions(vocab):
     assert "gripe" in channel.get_post(p.id).tags
     assert [v["name"] for v in tags.versions("gripe")] == ["complaint", "gripe"]
     tags.edit("journal", name="session-log")
-    assert channel.get_post(_post(kind="journal").id).kind == "journal"
+    assert channel.get_post(_post(tags="session-log").id).kind == "journal"
     assert [v["name"] for v in tags.versions("session-log")] == ["journal", "session-log"]
 
 
@@ -130,7 +130,7 @@ def test_inbox_takes_a_tag_filter(vocab):
     _post(author="user:tony", body="hello")
     assert inbox.digest("awm", "dev")["unread"] == 2
     assert inbox.digest("awm", "dev", tags="complaint")["unread"] == 1
-    assert inbox.digest("awm", "dev", kind="journal")["unread"] == 0
+    assert inbox.digest("awm", "dev", tags="journal")["unread"] == 0
 
 
 def test_a_post_tagged_with_a_marked_project_is_hidden_from_a_peer(vocab, journal_workspace):

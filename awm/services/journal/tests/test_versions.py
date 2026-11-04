@@ -20,8 +20,8 @@ def db(journal_workspace, monkeypatch):
     return journal_workspace
 
 
-def _post(body, scope="x", kind="journal"):
-    return channel.post("awm", scope, author="agent:awm/" + scope, body=body, kind=kind)
+def _post(body, scope="x", tags="journal"):
+    return channel.post("awm", scope, author="agent:awm/" + scope, body=body, tags=tags)
 
 
 def test_an_edit_keeps_every_version_and_reads_show_the_latest(db):

@@ -19,9 +19,9 @@ def posts(journal_workspace, monkeypatch):
     return mod
 
 
-def _post(posts, kind="journal", meta=None, pid=42, body="debrief", scope="dev", **extra):
+def _post(posts, tags="journal", meta=None, pid=42, body="debrief", scope="dev", **extra):
     args = {"project": "awm", "scope": scope, "author": "agent:awm/dev", "body": body,
-            "kind": kind, "meta": meta, "_caller_pid": pid, **extra}
+            "tags": tags, "meta": meta, "_caller_pid": pid, **extra}
     return posts._handle_post(args)["post"]
 
 
@@ -61,17 +61,17 @@ def test_a_bad_citation_is_refused(posts, cite, match):
 
 
 def test_a_message_is_not_citable_and_cannot_cite(posts):
-    msg = _post(posts, kind="message", pid=7, body="chatter")
+    msg = _post(posts, tags="message", pid=7, body="chatter")
     with pytest.raises(ValueError, match="not a journal post"):
         _post(posts, reply_to=[msg["id"]])
     src = _post(posts, scope="other", pid=7)
     with pytest.raises(ValueError, match="only a debrief journal"):
-        _post(posts, kind="message", meta={"cites": [{"journal": src["id"]}]})
+        _post(posts, tags="message", meta={"cites": [{"journal": src["id"]}]})
 
 
 def test_a_fetch_records_the_journals_a_session_read(posts):
     a = _post(posts, scope="other", pid=7, body="first")
-    _post(posts, scope="other", pid=7, kind="message", body="chatter")
+    _post(posts, scope="other", pid=7, tags="message", body="chatter")
     _post(posts, scope="other", body="my own")
     posts._handle_fetch({"project": "awm", "scope": "other", "_caller_pid": 42})
     posts._handle_fetch({"post_id": a["id"], "_caller_pid": 42})
@@ -83,7 +83,7 @@ def test_a_fetch_records_the_journals_a_session_read(posts):
 def test_a_read_another_service_notes_is_a_read(posts):
     """search get of a journal post (sessions.md R15)."""
     a = _post(posts, scope="other", pid=7, body="found by search")
-    msg = _post(posts, scope="other", pid=7, kind="message", body="chatter")
+    msg = _post(posts, scope="other", pid=7, tags="message", body="chatter")
     assert posts._handle_note_read({"post_id": a["id"], "_caller_pid": 42})["recorded"] == 1
     assert posts._handle_note_read({"post_id": msg["id"], "_caller_pid": 42})["recorded"] == 0
     assert posts._handle_note_read({"post_id": "nope", "_caller_pid": 42})["recorded"] == 0

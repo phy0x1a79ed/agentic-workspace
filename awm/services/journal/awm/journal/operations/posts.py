@@ -81,7 +81,7 @@ POST_MANIFEST_FUNCTIONS = [
         # ordered <parameter> blocks; a long multi-line value can bleed past its
         # closing tag and swallow any parameter emitted AFTER it. Keeping the one
         # long free-text field terminal means a bleed has no trailing param to
-        # corrupt (kind/meta survive). Do not move body up.
+        # corrupt (tags/meta survive). Do not move body up.
         "params": [
             {"name": "project", "type": "string", "required": False,
              "description": "Required unless reply_to is given."},
@@ -90,8 +90,6 @@ POST_MANIFEST_FUNCTIONS = [
             {"name": "author", "type": "string", "required": True},
             {"name": "tags", "type": "array", "required": False,
              "description": "Tag names from the vocabulary. An unknown tag is refused."},
-            {"name": "kind", "type": "string", "required": False,
-             "description": "Old alias for one tag, such as journal. Use tags."},
             {"name": "reply_to", "type": "array", "required": False,
              "description": "Post ids. A comment names the one post it answers. A debrief "
                             "journal names every earlier journal it built on: its citations, "
@@ -128,8 +126,6 @@ POST_MANIFEST_FUNCTIONS = [
             {"name": "scope", "type": "string", "required": False},
             {"name": "tags", "type": "string", "required": False,
              "description": "A tag filter: names joined by 'and', '!' negates one."},
-            {"name": "kind", "type": "string", "required": False,
-             "description": "Old alias for one tag. Use tags."},
             {"name": "query", "type": "string", "required": False},
             {"name": "author", "type": "string", "required": False},
             {"name": "post_id", "type": "string", "required": False},
@@ -181,8 +177,6 @@ POST_MANIFEST_FUNCTIONS = [
             {"name": "scope", "type": "string", "required": True},
             {"name": "tags", "type": "string", "required": False,
              "description": "A tag filter. Default 'message'."},
-            {"name": "kind", "type": "string", "required": False,
-             "description": "Old alias for one tag. Use tags."},
             {"name": "limit", "type": "integer", "required": False,
              "description": f"Posts to list. Default {inbox.DEFAULT_LIMIT}, at most {inbox.MAX_LIMIT}."},
             {"name": "all", "type": "boolean", "required": False,
@@ -236,7 +230,7 @@ def _visible(args: dict, as_: str | None):
 
 def _handle_post(args: dict, as_: str | None = None) -> dict:
     project, scope = args.get("project"), args.get("scope")
-    tag_ids = channel.post_tag_ids(args.get("kind"), args.get("tags"))
+    tag_ids = channel.post_tag_ids(args.get("tags"))
     meta, cited = sessions.fold_cites(_with_session(args.get("meta"), args.get("_caller_pid")),
                                       tag_ids)
     targets = channel.reply_targets(args.get("reply_to"))
@@ -258,7 +252,7 @@ def _handle_post(args: dict, as_: str | None = None) -> dict:
     post = channel.post(
         project, scope,
         author=args["author"], body=args["body"],
-        kind=args.get("kind"), tags=args.get("tags"),
+        tags=args.get("tags"),
         meta=meta,
         reply_to=targets,
         origin=channel.edge_origin(as_),
@@ -298,7 +292,7 @@ def _channel_project(project: Any, scope: Any) -> Any:
 def _handle_fetch(args: dict, as_: str | None = None) -> dict:
     refuse_clashed(as_)
     remote = privacy.from_peer(as_)
-    expr = tagmod.kind_filter(args.get("kind"), args.get("tags"))
+    expr = args.get("tags")
     visible = _visible(args, as_)
     post_id = args.get("post_id")
     bound = bounds.of(args, as_)
@@ -383,7 +377,7 @@ def _handle_inbox(args: dict, as_: str | None = None) -> dict:
     if privacy.from_peer(as_) or private.hides(as_, project, scope):
         raise ValueError(f"no scope {project}/{scope}")
     owners.require_scope(project, scope)
-    return inbox.digest(project, scope, tags=args.get("tags"), kind=args.get("kind"),
+    return inbox.digest(project, scope, tags=args.get("tags"),
                         limit=int(args.get("limit") or inbox.DEFAULT_LIMIT),
                         include_read=args.get("all") in (True, "true", "True", "1", 1),
                         exclude=private.exclusion(as_))

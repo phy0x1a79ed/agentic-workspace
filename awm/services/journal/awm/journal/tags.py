@@ -105,16 +105,6 @@ def resolve(names: Iterable[str]) -> list[str]:
     return ids
 
 
-def kind_tag(kind: str) -> str:
-    """The tag id an old ``kind`` value stands for (the move's alias)."""
-    if kind in KIND_TO_TAG:
-        return KIND_TO_TAG[kind]
-    tag = by_name(kind)
-    if tag is None:
-        raise _unknown([kind])
-    return tag.id
-
-
 def names_arg(raw: Any) -> list[str]:
     """A tag list argument as names: a list, or one comma-separated string."""
     if raw in (None, "", []):
@@ -334,12 +324,3 @@ def filter_sql(expr: Any, *, column: str = "scope_posts.id") -> tuple[str, list]
                 f" WHERE pt.post_id = {column} AND pt.tag_id = ?)")
         params.append(found[name].id)
     return sql, params
-
-
-def kind_filter(kind: str | None, expr: Any) -> Any:
-    """Fold the old ``kind`` argument into a tag filter, as one more conjunct."""
-    if not kind:
-        return expr
-    tag = get(kind_tag(kind))
-    terms = parse_filter(expr)
-    return [*(("!" if neg else "") + n for neg, n in terms), tag.name]

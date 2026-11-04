@@ -17,7 +17,7 @@ def seeded(journal_workspace):
     for project, scope in [("avatar", "Avatar"), ("avatar", "Avatar/dev"), ("awm", "dev"),
                            ("awm", "secret"), ("awm", "secret/sub")]:
         ids[(project, scope)] = channel.post(project, scope, author=f"agent:{project}/{scope}",
-                                             kind="journal", body=f"entry {project} {scope}").id
+                                             tags="journal", body=f"entry {project} {scope}").id
     return ids
 
 
@@ -43,35 +43,35 @@ def _fetch(as_, **args):
 
 @pytest.mark.parametrize("as_", PEERS)
 def test_a_peer_fetch_without_a_project_drops_marked_channels(marked, as_):
-    assert _owners(_fetch(as_, kind="journal")) == {("awm", "dev")}
-    assert _owners(_fetch(as_, kind="journal", query="entry")) == {("awm", "dev")}
+    assert _owners(_fetch(as_, tags="journal")) == {("awm", "dev")}
+    assert _owners(_fetch(as_, tags="journal", query="entry")) == {("awm", "dev")}
 
 
 @pytest.mark.parametrize("as_", PEERS)
 def test_a_peer_fetch_naming_a_marked_project_finds_nothing(marked, as_):
-    assert _fetch(as_, project="avatar", kind="journal") == []
-    assert _fetch(as_, project="awm", scope="secret/sub", kind="journal") == []
+    assert _fetch(as_, project="avatar", tags="journal") == []
+    assert _fetch(as_, project="awm", scope="secret/sub", tags="journal") == []
     assert _fetch(as_, post_id=marked[("avatar", "Avatar")]) == []
     assert _fetch(as_, post_id=marked[("awm", "dev")]) != []
 
 
 @pytest.mark.parametrize("as_", LOCALS)
 def test_a_local_fetch_sees_everything(marked, as_):
-    assert len(_owners(_fetch(as_, kind="journal"))) == 5
+    assert len(_owners(_fetch(as_, tags="journal"))) == 5
     assert _fetch(as_, post_id=marked[("avatar", "Avatar")]) != []
 
 
 def test_a_broken_marks_file_shows_a_peer_nothing(seeded, journal_workspace):
     from awm.config import privacy
     privacy.marks_path().write_text("{not json")
-    assert _fetch("peer", kind="journal") == []
-    assert len(_fetch(None, kind="journal")) == 5
+    assert _fetch("peer", tags="journal") == []
+    assert len(_fetch(None, tags="journal")) == 5
 
 
 def test_an_unmark_restores_the_peer_view(marked):
     from awm.config import privacy
     privacy.write_marks([])
-    assert len(_owners(_fetch("peer", kind="journal"))) == 5
+    assert len(_owners(_fetch("peer", tags="journal"))) == 5
 
 
 def test_a_peer_cannot_post_to_a_marked_scope(marked):

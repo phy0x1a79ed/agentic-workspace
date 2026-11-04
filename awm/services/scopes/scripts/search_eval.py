@@ -7,7 +7,7 @@ recall@k, MRR@k and nDCG@k per subset plus the queries that missed.
 A query set is JSONL, one query per line::
 
     {"id": "q1", "subset": "journal-needle", "service": "post",
-     "query": "...", "filter": {"project": "awm", "kind": "journal"},
+     "query": "...", "filter": {"project": "awm", "tags": "journal"},
      "relevant": ["<doc id>", ...]}
 
 Query sets name real document ids and paraphrase private content, so they live

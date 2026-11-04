@@ -96,9 +96,8 @@ def _mine(project: str, scope: str) -> tuple[str, list]:
             [project, scope, self_ref(project, scope)])
 
 
-def _filter(tags: Any, kind: str | None) -> tuple[str, list]:
-    expr = tagmod.kind_filter(kind, tags) if kind else (tags if tags not in (None, "", []) else "message")
-    return tagmod.filter_sql(expr)
+def _filter(tags: Any) -> tuple[str, list]:
+    return tagmod.filter_sql(tags if tags not in (None, "", []) else "message")
 
 
 def _unread_clause(project: str, scope: str) -> tuple[str, list]:
@@ -114,22 +113,22 @@ def _unread_clause(project: str, scope: str) -> tuple[str, list]:
     return sql, params
 
 
-def unread_count(project: str, scope: str, *, tags: Any = None, kind: str | None = None,
+def unread_count(project: str, scope: str, *, tags: Any = None,
                  exclude: tuple[str, list] = ("", [])) -> int:
     mine, mine_params = _mine(project, scope)
-    tag_sql, tag_params = _filter(tags, kind)
+    tag_sql, tag_params = _filter(tags)
     unread, unread_params = _unread_clause(project, scope)
     return JournalDAO().query_one(
         f"SELECT COUNT(*) AS n FROM scope_posts WHERE {mine}{tag_sql}{exclude[0]}{unread}",
         (*mine_params, *tag_params, *exclude[1], *unread_params))["n"]
 
 
-def digest(project: str, scope: str, *, tags: Any = None, kind: str | None = None,
+def digest(project: str, scope: str, *, tags: Any = None,
            limit: int = DEFAULT_LIMIT, include_read: bool = False,
            exclude: tuple[str, list] = ("", [])) -> dict:
     """The newest ``limit`` unread posts of a scope's inbox, one line each, plus the counts around them.
 
-    ``tags`` is a tag filter, default ``message``; ``kind`` is its old alias.
+    ``tags`` is a tag filter, default ``message``.
     ``include_read`` lists read posts too, each marked ``read``. ``ack_through`` is the
     newest unread post listed: pass it to :func:`ack` so a post that arrives after
     this digest stays unread.
@@ -137,7 +136,7 @@ def digest(project: str, scope: str, *, tags: Any = None, kind: str | None = Non
     limit = max(1, min(int(limit), MAX_LIMIT))
     dao = JournalDAO()
     mine, mine_params = _mine(project, scope)
-    tag_sql, tag_params = _filter(tags, kind)
+    tag_sql, tag_params = _filter(tags)
     base = f"FROM scope_posts WHERE {mine}{tag_sql}{exclude[0]}"
     base_params = [*mine_params, *tag_params, *exclude[1]]
     unread_sql, unread_params = _unread_clause(project, scope)
@@ -173,7 +172,7 @@ def digest(project: str, scope: str, *, tags: Any = None, kind: str | None = Non
     listed_unread = [p for p in posts if not p.get("read")]
     out = {
         "project": project, "scope": scope,
-        "tags": kind or (tags if tags not in (None, "", []) else "message"),
+        "tags": tags if tags not in (None, "", []) else "message",
         "unread": unread, "total": total, "posts": posts,
         "more": (total if include_read else unread) - len(posts),
         "cursor": cursor(project, scope),

@@ -234,15 +234,12 @@ def set_emitter(fn) -> None:
 # Post
 # ---------------------------------------------------------------------------
 
-def post_tag_ids(kind: str | None = None, tags: Any = None,
-                 extra: Iterable[str] = ()) -> list[str]:
-    """The tag ids a new post carries: its ``tags``, the tag for the old ``kind`` alias,
-    and the ``extra`` ids the journal's own code adds.
-
-    A post that names no type tag is a message, as the old ``kind`` default was.
+def post_tag_ids(tags: Any = None, extra: Iterable[str] = ()) -> list[str]:
+    """The tag ids a new post carries: its ``tags`` and the ``extra`` ids the
+    journal's own code adds. A post that names no type tag is a message.
     """
     ids = tagmod.resolve(tagmod.names_arg(tags))
-    for t in ([tagmod.kind_tag(kind)] if kind else []) + list(extra):
+    for t in extra:
         if t not in ids:
             ids.append(t)
     if not any(t in tagmod.TYPE_TAGS for t in ids):
@@ -251,7 +248,7 @@ def post_tag_ids(kind: str | None = None, tags: Any = None,
 
 
 def post(project: str, scope: str, *, author: str, body: str,
-         kind: str | None = None, tags: Any = None, meta: dict | None = None,
+         tags: Any = None, meta: dict | None = None,
          reply_to: str | list[str] | None = None,
          origin: str | None = None, extra_tags: list[str] = (),
          ts: int | None = None) -> ScopePost:
@@ -271,7 +268,7 @@ def post(project: str, scope: str, *, author: str, body: str,
     """
     if origin is None and (author or "").startswith("peer:"):
         raise ValueError("author 'peer:...' is reserved for edge-stamped peer identities")
-    tag_ids = post_tag_ids(kind, tags, extra_tags)
+    tag_ids = post_tag_ids(tags, extra_tags)
     targets = reply_targets(reply_to)
     cites: list[str] = []
     reply_to = None
@@ -410,7 +407,7 @@ def get_post(post_id: str) -> ScopePost | None:
     return _row_to_post(row) if row else None
 
 
-def _post_filter(project, scope, kind, author, before_ts,
+def _post_filter(project, scope, author, before_ts,
                  exclude: tuple[str, list] = ("", []), tags: Any = None) -> tuple[str, list]:
     sql, params = exclude[0], list(exclude[1])
     if project is not None:
@@ -419,7 +416,7 @@ def _post_filter(project, scope, kind, author, before_ts,
     if scope is not None:
         sql += " AND owner_scope = ?"
         params.append(scope)
-    tag_filter = tagmod.kind_filter(kind, tags)
+    tag_filter = tags
     tag_sql, tag_params = tagmod.filter_sql(tag_filter)
     sql += tag_sql
     params += tag_params
@@ -440,7 +437,7 @@ def _post_filter(project, scope, kind, author, before_ts,
 
 
 def fetch(*, project: str | None = None, scope: str | None = None,
-          kind: str | None = None, query: str | None = None,
+          query: str | None = None,
           author: str | None = None, limit: int = 50, offset: int = 0,
           before_ts: str | None = None, order: str | None = None,
           exclude: tuple[str, list] = ("", []), tags: Any = None) -> list[ScopePost]:
@@ -449,8 +446,7 @@ def fetch(*, project: str | None = None, scope: str | None = None,
     - ``scope`` given, no ``query`` → that channel's recent posts.
     - ``query`` given → :func:`search`, ranked by relevance (within the scope
       if given, else cross-scope).
-    - ``tags`` narrows by a tag filter such as ``'journal and !closed'``;
-      ``kind`` is the old alias for one tag.
+    - ``tags`` narrows by a tag filter such as ``'journal and !closed'``.
     - ``author`` narrows by stored/display author ref.
     - ``order`` ∈ ``'asc'`` | ``'desc'`` forces oldest- or newest-first. With no
       ``order`` the default is oldest→newest for a single channel and
@@ -460,10 +456,10 @@ def fetch(*, project: str | None = None, scope: str | None = None,
     - ``exclude`` is a WHERE fragment from :func:`awm.journal.private.exclusion`.
     """
     if query:
-        return search(project=project, scope=scope, kind=kind, query=query, author=author,
+        return search(project=project, scope=scope, query=query, author=author,
                       limit=limit, offset=offset, before_ts=before_ts, order=order,
                       exclude=exclude, tags=tags)[0]
-    where, params = _post_filter(project, scope, kind, author, before_ts, exclude, tags)
+    where, params = _post_filter(project, scope, author, before_ts, exclude, tags)
     if order in ("asc", "desc"):
         direction = order.upper()
     else:
@@ -521,7 +517,7 @@ def _snippet(body: str, query: str) -> str:
 
 
 def search(*, query: str, project: str | None = None, scope: str | None = None,
-           kind: str | None = None, author: str | None = None, limit: int = 50,
+           author: str | None = None, limit: int = 50,
            offset: int = 0, before_ts: str | None = None,
            order: str | None = None, exclude: tuple[str, list] = ("", []),
            tags: Any = None) -> tuple[list[ScopePost], dict | None, str]:
@@ -537,12 +533,12 @@ def search(*, query: str, project: str | None = None, scope: str | None = None,
     filter without an indexed tag, or a search that cannot answer, falls back to
     a substring match.
     """
-    where, params = _post_filter(project, scope, kind, author, before_ts, exclude, tags)
+    where, params = _post_filter(project, scope, author, before_ts, exclude, tags)
     where += " AND thread_id IS NULL"
     degraded = None
     semantic = "none"
     hits = None
-    expr = tagmod.kind_filter(kind, tags)
+    expr = tags
     if search_index.may_hold(expr):
         narrowed = bool(author or exclude[0] or project == "" or tagmod.parse_filter(expr))
         try:
