@@ -36,7 +36,7 @@ CALLS: dict[str, set[tuple[str, str]]] = {
     "operations": {  # GatewayTool("<tool>").call(verb)
         ("reflection", "session_of"), ("reflection", "message"), ("reflection", "start_other"), ("social", "send"),
         *{("2fa", v) for v in ("burst", "approve_all", "approve", "deny", "devices", "pending")},
-        *{("trilium", v) for v in ("note_get", "note_create", "note_update", "attr_delete", "attr_set", "note_search",
+        *{("trilium", v) for v in ("note_get", "note_create", "note_update", "attr_delete", "attr_set",
                                    "note_children", "note_delete")},
     },
     "routine": {("reflection", "start_other"), ("reflection", "session_of"), ("social", "send"), ("journal", "post"),

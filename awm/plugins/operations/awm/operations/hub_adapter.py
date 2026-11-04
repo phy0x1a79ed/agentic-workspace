@@ -72,7 +72,8 @@ def build_home(s: dict[str, Any]):
     ap = Approver(s["dir"] / "approver.db", Keys.load_or_create(s["dir"] / "keys"),
                   Config(origin=s["origin"], allowed_orders=s["allowed_orders"],
                          portals=s["portals"], rate_max=s["rate_max"]), store, TwoFa())
-    writer = Writer(store, TriliumTool(peer=s["board_peer"]), parent=s["board_parent"])
+    writer = Writer(store, TriliumTool(peer=s["board_peer"]), parent=s["board_parent"],
+                    portals=s["portals"])
     store.body_reader = writer.read_body
     return Home(store, ap, writer), writer
 

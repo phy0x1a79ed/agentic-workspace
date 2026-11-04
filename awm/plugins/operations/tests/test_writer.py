@@ -188,18 +188,20 @@ def test_board_install_is_idempotent(api, fake):
     assert "awm-panel" in fake.notes[board.PAGE_ID]["content"]
 
 
-def test_ops_post_rewrites_one_note_per_kind_and_node(store, api, fake):
-    w = Writer(store, api)
-    with pytest.raises(ValueError, match="Ops book"):
-        w.post_ops("password", "mizar", "mizar login password", "x")
-    fake.note_create("Ops", note_id="opsBook", labels={"swarmOps": ""})
-    first = w.post_ops("password", "mizar", "mizar login password", "`aaa`")
-    again = w.post_ops("password", "mizar", "mizar login password", "`bbb`")
+def test_ops_post_rewrites_one_note_per_kind_and_node_under_the_board(store, api, fake):
+    w = Writer(store, api, portals={"vault.test": "deneb", "mizar.test": "mizar"})
+    first = w.post_ops("scope-hygiene", "mizar", "Scope hygiene", "2 removed")
+    again = w.post_ops("scope-hygiene", "mizar", "Scope hygiene", "3 removed")
     assert first == again
     note = fake.notes[first]
-    assert note["title"] == "password - mizar" and "`bbb`" in note["content"]
+    assert note["parents"] == [board.OPS_ID] and fake.notes[board.OPS_ID]["parents"] == [ROOT_ID]
+    assert note["title"] == "scope-hygiene - mizar" and "3 removed" in note["content"]
     assert "agentManaged" in note["labels"] and note["mime"] == "text/x-markdown"
-    assert w.post_ops("password", "alcor", "alcor login password", "`c`") != first
+    assert w.post_ops("scope-hygiene", "alcor", "Scope hygiene", "0") != first
+    portals = fake.notes[board.PORTALS_ID]
+    assert portals["parents"] == [board.OPS_ID]
+    assert "[deneb](https://vault.test/)" in portals["content"]
+    assert "password" not in portals["content"].lower()
 
 
 def test_the_writer_holds_no_vault_token():

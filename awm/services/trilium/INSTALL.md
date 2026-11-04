@@ -716,8 +716,17 @@ refused for a caller arriving through an edge.
 ```
 
 `awm/gateway/install.sh` runs this on every deploy. Every step is idempotent and
-skips itself when already satisfied. Two paths, and which one runs is the whole
-difference between a build node and a serving node:
+skips itself when already satisfied.
+
+**The pinned fork release** wins when `server.pin` names a `url`. A fork release
+on mizar publishes one server tarball, and awm pins its version, url and sha256
+(install.md R115 item 4). `install.sh` fetches it, refuses it when the sha256
+differs, and unpacks it where the upstream tarball goes. The `tarball-stamp`
+line `fork <version> sha256:<hash>` tells `instances.entry_point` that this
+bundle carries the fork's code, so the slice verbs run on it. A fork change goes
+live by one route: release the fork, bump `server.pin`, deploy awm. Until the
+first fork release, the pin is empty and the two older paths below still run.
+They go once every Trilium node serves the pin:
 
 - **Build the fork.** `projects/trilium/release` *is* the runnable server, so
   every line we change is tracked TypeScript on a branch rather than an edit to a
