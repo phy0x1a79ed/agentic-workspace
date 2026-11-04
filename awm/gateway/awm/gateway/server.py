@@ -892,6 +892,30 @@ async def invoke_tool(request: Request):
         await run_in_threadpool(shutil.rmtree, spool, True)
 
 
+SERVICE_TOKEN_HEADER = "X-Awm-Service-Token"
+
+
+def _call_target(name: str, args: dict) -> tuple[str, str]:
+    """The ``(tool, verb)`` a call runs: a tool with a ``verb`` envelope, else a
+    flat ``<tool>_<verb>``. Tool names hold no underscore."""
+    if "verb" in args and "_" not in name:
+        return name, str(args.get("verb") or "")
+    tool, _, verb = name.partition("_")
+    return tool, verb
+
+
+def _needs_refusal(token: str, name: str, args: dict) -> str | None:
+    """Why the service that holds ``token`` may not make this call (R116 item 3).
+    A token no spawn was given is refused outright."""
+    from awm.gateway.hub import discovery, supervisor
+
+    service = supervisor.service_of_token(token)
+    if service is None:
+        raise HTTPException(401, "unknown service token")
+    tool, verb = _call_target(name, args)
+    return discovery.needs_refusal(service, tool, verb)
+
+
 async def _invoke(payload: dict, request: Request):
     if request.headers.get(TOKEN_HEADER):
         raise HTTPException(403, "an isolated session calls awm only through /mcp")
@@ -906,6 +930,11 @@ async def _invoke(payload: dict, request: Request):
     as_ = request.headers.get("X-Awm-As")
     mode = None
     name, args = catalog.resolve_alias(name, args)
+    if isinstance(args, dict) and (token := request.headers.get(SERVICE_TOKEN_HEADER)):
+        reason = await asyncio.to_thread(_needs_refusal, token, name, args)
+        if reason:
+            log.info("needs guard: refused %s — %s", name, reason)
+            raise HTTPException(403, reason)
     if isinstance(args, dict):
         mode = await asyncio.to_thread(_caller_mode, request.headers, as_)
         reason = _call_refusal(mode, name, args)

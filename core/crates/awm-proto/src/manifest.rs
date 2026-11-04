@@ -142,6 +142,10 @@ pub struct NeedTool {
     pub name: String,
     #[serde(default = "one")]
     pub major: u32,
+    /// Every verb the plugin calls on the tool, or on each provider of the contract. The
+    /// gateway refuses any other (R116 item 3). `describe` needs no entry.
+    #[serde(default)]
+    pub verbs: Vec<String>,
 }
 
 /// Parse `"<contract>@<major>"`.

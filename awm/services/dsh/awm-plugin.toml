@@ -27,3 +27,4 @@ platform = ["linux"]
 [[needs.tool]]
 name = "reflection"   # dsh sends it harness_event
 major = 1
+verbs = ["harness_event"]

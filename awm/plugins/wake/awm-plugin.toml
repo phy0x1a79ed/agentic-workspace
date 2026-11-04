@@ -24,8 +24,15 @@ network = ["udp:9 broadcast", "tcp:22 lan"]
 [[needs.tool]]
 name = "reflection"
 major = 1
+verbs = ["start_other", "message"]
 
 # A harness plugin serves revive_pinned (harness-contract.md).
 [[needs.contract]]
 name = "harness"
 major = 1
+verbs = ["revive_pinned"]
+
+[[needs.tool]]
+name = "auth"
+major = 1
+verbs = ["sign_peer_token"]

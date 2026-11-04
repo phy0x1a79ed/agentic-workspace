@@ -24,3 +24,19 @@ platform = ["linux"]
 [[needs.tool]]
 name = "scope"
 major = 1
+verbs = ["resolve"]
+
+[[needs.tool]]
+name = "search"
+major = 1
+verbs = ["query"]
+
+[[needs.tool]]
+name = "reflection"
+major = 1
+verbs = ["start_other", "session_of"]
+
+[[needs.tool]]
+name = "auth"
+major = 1
+verbs = ["sign_peer_token"]

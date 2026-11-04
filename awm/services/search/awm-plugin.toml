@@ -14,3 +14,23 @@ tier = "on"
 secrets = []
 network = []
 platform = ["linux"]
+
+[[needs.tool]]
+name = "journal"
+major = 1
+verbs = ["export", "note_read"]
+
+[[needs.tool]]
+name = "kb"
+major = 1
+verbs = ["query", "library", "get", "related"]
+
+[[needs.tool]]
+name = "transcripts"
+major = 1
+verbs = ["query"]
+
+[[needs.tool]]
+name = "auth"
+major = 1
+verbs = ["sign_peer_token"]

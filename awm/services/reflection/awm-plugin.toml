@@ -22,3 +22,24 @@ network = []
 [[needs.contract]]
 name = "harness"
 major = 1
+verbs = ["platform", "status", "resolve", "find", "list", "start", "stop", "resume", "adopt", "send", "compact", "mode", "set", "interrupt", "remote_control", "link", "pending"]
+
+[[needs.tool]]
+name = "operations"
+major = 1
+verbs = ["task_for_session"]
+
+[[needs.tool]]
+name = "scope"
+major = 1
+verbs = ["claim", "release"]
+
+[[needs.tool]]
+name = "journal"
+major = 1
+verbs = ["brief_read", "post"]
+
+[[needs.tool]]
+name = "auth"
+major = 1
+verbs = ["sign_peer_token"]

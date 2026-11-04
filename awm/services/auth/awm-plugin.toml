@@ -18,7 +18,9 @@ platform = ["linux"]
 [[needs.tool]]
 name = "social"
 major = 1
+verbs = ["send"]
 
 [[needs.tool]]
 name = "operations"
 major = 1
+verbs = ["ops_post"]

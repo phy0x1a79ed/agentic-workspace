@@ -6,7 +6,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock, RwLock, Weak};
 use std::time::{Duration, Instant};
 
-use awm_proto::{CallContext, Lane, Surface, Tier, UsageEvent};
+use awm_proto::manifest::NeedTool;
+use awm_proto::{CallContext, Lane, Surface, Tier, UsageEvent, MANIFEST_FILE};
 use serde_json::{json, Value};
 
 use crate::config::Config;
@@ -786,6 +787,10 @@ impl Gateway {
             tracing::info!("mode gate: refused {tool}.{verb}: {why}");
             return Err(ApiError::new(403, why));
         }
+        if let Some(why) = ctx.plugin.as_deref().and_then(|p| self.undeclared(p, &tool, &verb)) {
+            tracing::info!("needs guard: refused {tool}.{verb}: {why}");
+            return Err(ApiError::new(403, why));
+        }
         if let Some(peer) = peer.filter(|p| p != "local" && *p != self.node) {
             let envelope = json!({"verb": verb, "args": inner});
             return Ok(self.peers.invoke(&peer, &tool, envelope, ctx).await?);
@@ -795,6 +800,29 @@ impl Gateway {
         let result = self.invoke_local(&tool, &verb, inner, ctx, &tools).await;
         self.record_call(&tools, &tool, &verb, ctx, result.is_ok(), started);
         result
+    }
+
+    /// Why `plugin` may not call `tool`'s `verb`, or None when it may (R116 item 3). A plugin
+    /// may call its own tools, and each tool or contract provider its manifest's needs list
+    /// with that verb. A plugin with no manifest, or one this node does not load, is not held.
+    pub fn undeclared(&self, plugin: &str, tool: &str, verb: &str) -> Option<String> {
+        let load = self.read_load();
+        let p = load.plugins.iter().find(|p| p.name == plugin && !p.legacy)?;
+        if p.tools.iter().any(|t| t.name == tool) {
+            return None;
+        }
+        let lists = |n: &NeedTool| verb == DESCRIBE || n.verbs.iter().any(|v| v == verb);
+        if p.needs.tool.iter().any(|n| n.name == tool && lists(n)) {
+            return None;
+        }
+        let contracts: Vec<NeedTool> = p.needs.contract.iter().filter(|n| lists(n)).cloned().collect();
+        drop(load);
+        if contracts.iter().any(|n| self.providers(&n.name, n.major).iter().any(|o| o.name == tool)) {
+            return None;
+        }
+        Some(format!(
+            "plugin {plugin:?} does not list {tool}.{verb} in its {MANIFEST_FILE}; add the verb to its [[needs.tool]] or [[needs.contract]]"
+        ))
     }
 
     fn record_call(&self, tools: &BTreeMap<String, ToolEntry>, tool: &str, verb: &str, ctx: &CallContext, ok: bool, started: Instant) {

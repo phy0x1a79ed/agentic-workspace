@@ -23,3 +23,29 @@ platform = ["linux"]
 [[needs.tool]]
 name = "reflection"   # reflection: cch sends it harness_event
 major = 1
+verbs = ["harness_event", "message"]
+
+[[needs.tool]]
+name = "social"
+major = 1
+verbs = ["send"]
+
+[[needs.tool]]
+name = "operations"
+major = 1
+verbs = ["task_attach"]
+
+[[needs.tool]]
+name = "journal"
+major = 1
+verbs = ["session_parent"]
+
+[[needs.tool]]
+name = "scope"
+major = 1
+verbs = ["tag", "create"]
+
+[[needs.tool]]
+name = "auth"
+major = 1
+verbs = ["sign_peer_token"]

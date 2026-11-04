@@ -13,7 +13,6 @@ from typing import Any
 
 import httpx
 
-PLUGIN = "wake"
 
 REFLECTION = "reflection"
 WAKE = "wake"
@@ -45,7 +44,11 @@ class Gateway:
         payload: dict[str, Any] = {"verb": verb, "args": args or {}}
         if peer:
             payload["peer"] = peer
-        headers = {"X-Awm-Plugin": PLUGIN, "X-Awm-Peer-Redirect": "1"}
+        from awm import gatewayclient
+
+        headers = {"X-Awm-Peer-Redirect": "1"}
+        if token := gatewayclient.service_token():
+            headers["X-Awm-Service-Token"] = token
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as cli:
                 resp = await cli.post(f"{self.hub_url}/invoke",

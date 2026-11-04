@@ -32,7 +32,8 @@ pub struct CallContext {
     /// The `X-Awm-As` principal, when the caller acts for someone.
     pub as_: Option<String>,
     pub surface: Surface,
-    /// The calling plugin, from `X-Awm-Plugin`.
+    /// The calling plugin, known by its service token or by the path of the page that sent
+    /// the call. Its manifest's needs bound what it may call (R116 item 3).
     pub plugin: Option<String>,
     /// The calling session's mode, when a restricted mode may gate it (`config/modes.py`).
     pub mode: Option<String>,

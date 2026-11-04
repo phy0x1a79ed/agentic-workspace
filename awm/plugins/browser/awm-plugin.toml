@@ -20,3 +20,9 @@ tier = "on"
 [[needs.tool]]   # operations: the approver, for captcha and sign-in requests (R102 item 7, R145)
 name = "operations"
 major = 2
+verbs = ["approval_request"]
+
+[[needs.tool]]
+name = "auth"
+major = 1
+verbs = ["sign_peer_token"]

@@ -77,9 +77,11 @@ secrets = ["FAKE_SECRET"]
         &core.join("reflection/run.sh"),
         &format!("export FAKE_TOOL=reflection FAKE_SESSIONS_FILE='{}'\nexec '{}'\n", state.join("sessions.json").display(), fake.display()),
     );
-    // scope is the fake too: the journal plugin needs the tool to load.
-    write(&core.join("scope/awm-plugin.toml"), "[plugin]\nname = \"scope\"\n\n[[service]]\nname = \"scope\"\n\n[[tool]]\nname = \"scope\"\n");
-    write(&core.join("scope/run.sh"), &format!("export FAKE_TOOL=scope\nexec '{}'\n", fake.display()));
+    // The fake also serves the other tools the journal plugin needs to load.
+    for tool in ["scope", "search", "auth"] {
+        write(&core.join(format!("{tool}/awm-plugin.toml")), &format!("[plugin]\nname = \"{tool}\"\n\n[[service]]\nname = \"{tool}\"\n\n[[tool]]\nname = \"{tool}\"\n"));
+        write(&core.join(format!("{tool}/run.sh")), &format!("export FAKE_TOOL={tool}\nexec '{}'\n", fake.display()));
+    }
     write(&core.join("fake/ui/index.html"), "<html><body>fake-ui-marker</body></html>\n");
 
     write(
@@ -97,6 +99,7 @@ service = "caller"
 [[needs.tool]]
 name = "fake"
 major = 1
+verbs = ["echo", "whoami"]
 "#,
     );
     write(&third.join("caller/run.sh"), &format!("exec '{}'\n", fake.display()));
@@ -401,6 +404,22 @@ fn gateway_end_to_end() {
         .send()
         .unwrap();
     assert_eq!(forged.status().as_u16(), 401, "a wrong service token passed");
+    // A verb the manifest does not list is refused, by the service token (R116 item 3).
+    let (code, out, errout) = cli(&url, &["caller", "call_needed", "--verb", "add", "--args", r#"{"a":1,"b":2}"#]);
+    assert!(code == 0 && out.contains("does not list fake.add"), "an undeclared verb passed: {out} {errout}");
+    // A page is held to its plugin's needs by the path it was served from.
+    let from_page = |tool: &str| {
+        http()
+            .post(format!("{url}/invoke"))
+            .header("Referer", format!("{url}/p/fake/ui/"))
+            .json(&json!({"name": tool, "args": {"verb": "echo", "args": {"text": "from the page"}}}))
+            .send()
+            .unwrap()
+            .status()
+            .as_u16()
+    };
+    assert_eq!(from_page("fake"), 200, "a page may call its own tool");
+    assert_eq!(from_page("caller"), 403, "a page called a tool its plugin does not need");
     let gone = http().post(format!("{url}/svc/fake/fn/echo")).json(&json!({"text": "x"})).send().unwrap();
     assert_eq!(gone.status().as_u16(), 404, "the /svc door still answers");
 
@@ -499,7 +518,7 @@ fn gateway_end_to_end() {
     plugin_at(&src.join("fake"), "fake", "fake-again", "");
     let (code, out, _) = cli(&url, &["install", src.join("fake").to_str().unwrap()]);
     assert!(code != 0 && out.contains("already loaded"), "a core plugin's name must not install: {out}");
-    plugin_at(&src.join("inst"), "inst", "inst-three", "\n[[needs.tool]]\nname = \"nobody\"\n");
+    plugin_at(&src.join("inst"), "inst", "inst-three", "\n[[needs.tool]]\nname = \"nobody\"\nverbs = [\"get\"]\n");
     let (code, out, _) = cli(&url, &["install", src.join("inst").to_str().unwrap()]);
     assert!(code != 0 && out.contains("nobody"), "{out}");
     let (code, out, _) = cli(&url, &["inst-two", "echo", "--text", "still here"]);

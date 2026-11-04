@@ -18,11 +18,19 @@ platform = ["linux"]
 [[needs.tool]]
 name = "2fa"
 major = 1
+verbs = ["burst", "status", "ping"]
 
 [[needs.tool]]
 name = "social"
 major = 1
+verbs = ["send", "emit_probe"]
 
 [[needs.tool]]
 name = "vpn"
 major = 1
+verbs = ["up"]
+
+[[needs.tool]]
+name = "auth"
+major = 1
+verbs = ["sign_peer_token"]

@@ -23,14 +23,17 @@ tier = "on"
 [[needs.tool]]
 name = "reflection"   # start_other, for fixing and condition agents
 major = 1
+verbs = ["start_other"]
 
 [[needs.tool]]
 name = "social"       # send, for the operator's Discord DM
 major = 1
+verbs = ["send"]
 
 [[needs.tool]]
 name = "journal"      # post, for each deploy mark
 major = 1
+verbs = ["post"]
 
 [needs]
 secrets = []

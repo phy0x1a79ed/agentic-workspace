@@ -16,7 +16,6 @@ import httpx
 
 log = logging.getLogger("awm.routine.outbound")
 
-PLUGIN = "routine"
 
 
 class Outbound(Protocol):
@@ -47,10 +46,13 @@ class GatewayOutbound:
         inner: dict[str, Any] = {"verb": verb, "args": args}
         if peer and peer != "local":
             inner["peer"] = peer
+        from awm import gatewayclient
+
+        token = gatewayclient.service_token()
         async with httpx.AsyncClient(timeout=timeout) as cli:
             resp = await cli.post(f"{self.hub_url}/invoke",
                                   json={"name": tool, "args": inner},
-                                  headers={"X-Awm-Plugin": PLUGIN})
+                                  headers={"X-Awm-Service-Token": token} if token else {})
         if resp.status_code >= 300:
             raise RuntimeError(f"{tool} {verb}: HTTP {resp.status_code}: {resp.text[:400]}")
         body = resp.json()

@@ -14,3 +14,13 @@ tier = "off"
 secrets = []
 network = []
 platform = ["linux"]
+
+[[needs.tool]]
+name = "auth"
+major = 1
+verbs = ["edge_material", "verify"]
+
+[[needs.tool]]
+name = "trilium"
+major = 1
+verbs = ["slice_resolve"]

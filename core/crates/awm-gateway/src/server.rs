@@ -123,7 +123,6 @@ fn header<'a>(h: &'a HeaderMap, name: &str) -> Option<&'a str> {
 /// A local request gets the id, trust level, mode and scope of the session its pid header
 /// leads to (`caller.rs`).
 async fn context(gw: &Gateway, h: &HeaderMap, default: Surface) -> Result<CallContext, ApiError> {
-    let mut plugin = header(h, "x-awm-plugin").map(str::to_string);
     // A service names itself by the token its spawn was given. A wrong token is refused,
     // since a caller that sends one means to be that service.
     let service = match header(h, SERVICE_TOKEN_HEADER) {
@@ -133,10 +132,12 @@ async fn context(gw: &Gateway, h: &HeaderMap, default: Surface) -> Result<CallCo
         },
         None => None,
     };
-    if let Some(name) = &service {
-        plugin = Some(gw.plugin_of_service(name));
-    }
-    let surface = if plugin.is_some() {
+    // A page names its plugin by the path it was served from.
+    let plugin = match &service {
+        Some(name) => Some(gw.plugin_of_service(name)),
+        None => header(h, "referer").and_then(page_plugin),
+    };
+    let surface = if service.is_some() {
         Surface::Plugin
     } else {
         header(h, "x-awm-surface").and_then(Surface::parse).unwrap_or(default)
@@ -177,6 +178,15 @@ async fn context(gw: &Gateway, h: &HeaderMap, default: Surface) -> Result<CallCo
         as_ = Some(format!("peer:{}", caller.node));
     }
     Ok(CallContext { caller, as_, surface, plugin, mode })
+}
+
+/// The plugin whose page sent a request, from its Referer `<origin>/p/<plugin>/<page>/...`.
+fn page_plugin(referer: &str) -> Option<String> {
+    let path = referer.split_once("://").map_or(referer, |(_, rest)| rest.find('/').map_or("", |i| &rest[i..]));
+    let mut parts = path.strip_prefix("/p/")?.splitn(3, '/');
+    let plugin = parts.next().filter(|p| awm_proto::valid_tool_name(p))?;
+    parts.next().filter(|page| !page.is_empty())?;
+    Some(plugin.to_string())
 }
 
 async fn status(State(gw): Gw) -> Json<Value> {
@@ -488,4 +498,20 @@ async fn mcp_message(gw: &Gateway, holder: &crate::isolated::Holder, msg: &Value
         other => return Some(crate::isolated::rpc_error(&id, -32601, format!("method {other:?} not found"))),
     };
     Some(json!({"jsonrpc": "2.0", "id": id, "result": result}))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::page_plugin;
+
+    #[test]
+    fn a_page_is_known_by_its_path() {
+        assert_eq!(page_plugin("https://mizar.example:7819/p/dsh/dsh/").as_deref(), Some("dsh"));
+        assert_eq!(page_plugin("http://127.0.0.1:7819/p/ops/board/assets/x.js").as_deref(), Some("ops"));
+        assert_eq!(page_plugin("/p/mic/mic").as_deref(), Some("mic"));
+        assert_eq!(page_plugin("https://host/p/dsh"), None);
+        assert_eq!(page_plugin("https://host/p/dsh/"), None);
+        assert_eq!(page_plugin("https://host/dashboard/p/dsh/x"), None);
+        assert_eq!(page_plugin("https://host/p/a_b/x/"), None);
+    }
 }

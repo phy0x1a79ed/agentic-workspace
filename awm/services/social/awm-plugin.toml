@@ -18,3 +18,14 @@ platform = ["linux"]
 [[needs.tool]]
 name = "reflection"
 major = 1
+verbs = ["message", "list_other", "session_of"]
+
+[[needs.tool]]
+name = "harness-cc"
+major = 1
+verbs = ["list", "probe", "start", "resume", "adopt"]
+
+[[needs.tool]]
+name = "auth"
+major = 1
+verbs = ["sign_peer_token"]

@@ -18,3 +18,14 @@ platform = ["linux"]
 [[needs.tool]]
 name = "journal"
 major = 1
+verbs = ["subscribe", "brief_set", "brief_read"]
+
+[[needs.tool]]
+name = "operations"
+major = 1
+verbs = ["ops_post"]
+
+[[needs.tool]]
+name = "reflection"
+major = 1
+verbs = ["waits", "message"]

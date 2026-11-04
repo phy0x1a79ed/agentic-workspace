@@ -17,3 +17,8 @@ name = "trilium"
 secrets = []
 network = []
 platform = ["linux"]
+
+[[needs.tool]]
+name = "auth"
+major = 1
+verbs = ["sign_peer_token"]

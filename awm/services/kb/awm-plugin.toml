@@ -26,3 +26,13 @@ tier = "off"
 secrets = []
 network = []
 platform = ["linux"]
+
+[[needs.tool]]
+name = "zotero"
+major = 1
+verbs = ["items"]
+
+[[needs.tool]]
+name = "auth"
+major = 1
+verbs = ["sign_peer_token"]
