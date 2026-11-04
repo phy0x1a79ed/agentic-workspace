@@ -17,7 +17,6 @@ to prove nothing had changed.
 ```
 data/vault/zotero/
   library.json          the normalized items and collections, plus the version
-  files/<key>/<name>    the stored attachments, exactly as Zotero filed them
 ```
 
 `library.json` carries `versions`, one `Last-Modified-Version` per library.
@@ -39,7 +38,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import shutil
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -52,7 +50,6 @@ from typing import Any, Iterable
 CHUNK = "data/vault/zotero"
 
 LIBRARY_JSON = "library.json"
-FILES_DIR = "files"
 
 #: Item types that are neither a reference nor a file: Zotero's own notes and
 #: annotations, which belong to the item they hang off rather than to the
@@ -369,7 +366,6 @@ class Bundle:
         self.scope = Path(scope)
         self.root = self.scope / CHUNK
         self.library_json = self.root / LIBRARY_JSON
-        self.files = self.root / FILES_DIR
 
     @property
     def exists(self) -> bool:
@@ -424,54 +420,6 @@ class Bundle:
         os.replace(staged, self.library_json)
         return payload
 
-    def file_for(self, ref: str, name: str) -> Path:
-        """Where a stored file lives in the bundle.
-
-        Under `<library>/<key>/`, mirroring how an item is identified: Zotero
-        files everything under one flat `storage/<key>/` and relies on keys not
-        colliding, which holds inside a library and not between them.
-        """
-        return self.files / ref / name
-
-    def prune_files(self, keep: set[str]) -> int:
-        """Drop stored files for attachments the library no longer has.
-
-        The mirror is a mirror. Keeping the bytes of a paper somebody deleted
-        would make the DVC cache grow forever and the bundle stop describing
-        the library it is named after.
-
-        Walked top-down against the wanted paths rather than at a fixed depth,
-        because a ref is `<library>/<key>` and a library id is itself two
-        segments (`users/0`, `groups/5284390`). Assuming one directory level
-        per library made `users/0` look like an unwanted key and deleted every
-        file under it — right after they were fetched, so the pull reported
-        copying them and the disk held none.
-        """
-        if not self.files.is_dir():
-            return 0
-        wanted = {self.files / ref for ref in keep}
-        prefixes = {parent for ref in wanted for parent in ref.parents}
-        gone = 0
-
-        def walk(directory: Path) -> None:
-            nonlocal gone
-            for child in sorted(directory.iterdir()):
-                if not child.is_dir():
-                    continue
-                if child in wanted:
-                    continue
-                if child in prefixes:
-                    walk(child)
-                    continue
-                shutil.rmtree(child, ignore_errors=True)
-                gone += 1
-
-        walk(self.files)
-        for directory in sorted(self.files.rglob("*"), reverse=True):
-            if directory.is_dir() and not any(directory.iterdir()):
-                directory.rmdir()
-        return gone
-
     def stats(self) -> dict[str, Any]:
         library = self.read()
         items = library.get("items") or []
@@ -482,9 +430,5 @@ class Bundle:
             "libraries": sorted({i.get("library_name", "") for i in items}),
             "collections": len(library.get("collections") or []),
             "with_files": len([i for i in items if i.get("files")]),
-            "files": sum(1 for f in self.files.rglob("*") if f.is_file())
-                     if self.files.is_dir() else 0,
-            "bytes": sum(f.stat().st_size for f in self.files.rglob("*")
-                         if f.is_file()) if self.files.is_dir() else 0,
             "path": str(self.root),
         }

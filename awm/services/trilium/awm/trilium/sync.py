@@ -34,6 +34,7 @@ import threading
 import time
 from typing import Any
 
+from awm.gatewayclient.proc import child_preexec
 from awm.trilium import instances, procs
 
 log = logging.getLogger("awm.trilium.sync")
@@ -132,20 +133,6 @@ def tunnel_cmd() -> list[str]:
     ]
 
 
-def _preexec() -> None:  # pragma: no cover — runs in the forked child
-    """Own session, and die with the parent. Same reasoning as the vault
-    child's — see `server._preexec`."""
-    os.setsid()
-    try:
-        import ctypes
-
-        ctypes.CDLL("libc.so.6", use_errno=True).prctl(1, signal.SIGTERM)  # PR_SET_PDEATHSIG
-    except Exception:  # noqa: BLE001 — best effort; the group kill still works
-        pass
-    if os.getppid() == 1:
-        os._exit(1)
-
-
 class Tunnel(procs.GroupChild):
     """The ssh forward to the hub. Every method is safe to call at any time.
 
@@ -204,7 +191,7 @@ class Tunnel(procs.GroupChild):
         try:
             self._proc = subprocess.Popen(
                 cmd, stdin=subprocess.DEVNULL, stdout=out,
-                stderr=subprocess.STDOUT, preexec_fn=_preexec,
+                stderr=subprocess.STDOUT, preexec_fn=child_preexec,
             )
         finally:
             out.close()

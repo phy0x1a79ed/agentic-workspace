@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import logging
 from collections import Counter
-from pathlib import Path
 from typing import Any
 
 from awm.gatewayclient import call_sync
@@ -162,10 +161,6 @@ class Vault:
             })
         return sorted(out, key=lambda n: n["note_id"])
 
-    def owned(self, root: str, label: str) -> dict[str, str]:
-        """The same, keeping one note per value."""
-        return {key: ids[0] for key, ids in self.owned_all(root, label).items()}
-
     def read(self, note_id: str) -> dict:
         return self._call("note_get", note_id=note_id)
 
@@ -215,19 +210,6 @@ class Vault:
         places, and copies would let it diverge from itself.
         """
         return self._call("note_place", note_id=note_id, parents=sorted(set(parents)))
-
-    def attach(self, note_id: str, path: Path, *,
-               title: str | None = None) -> bool:
-        """Attach a file the *service* can read.
-
-        The path is sent rather than the bytes: an apply carries a hundred
-        megabytes of PDF, and base64 over the RPC envelope would carry it
-        twice. Both processes are on this host and the bundle is a committed
-        artifact of it, so a path is a shared reference rather than a guess.
-        """
-        out = self._call("attachment_put", note_id=note_id, path=str(path),
-                    title=title or path.name)
-        return bool(out.get("changed"))
 
     def delete(self, note_id: str) -> None:
         self._call("note_delete", note_id=note_id)

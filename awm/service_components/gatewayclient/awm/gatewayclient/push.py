@@ -12,12 +12,12 @@ from typing import Awaitable, Callable
 
 from awm import config
 from awm.gatewayclient import call
+from awm.gatewayclient.holders import row_live
 
 log = logging.getLogger("awm.gatewayclient.push")
 
 PUSH_RETRY_S = 120.0
 _GONE_MARKERS = ("no session on this node has the job id", "is not running")
-_DEAD_STATES = ("gone", "stopped")
 
 Send = Callable[[str, str, str], Awaitable[str]]
 
@@ -110,6 +110,4 @@ async def live_jobs(node: str) -> set[str] | None:
     if not isinstance(reply, dict) or "sessions" not in reply or reply.get("errors"):
         return None
     return {str(row["job"]) for row in reply["sessions"]
-            if isinstance(row, dict) and row.get("job")
-            and row.get("state") not in _DEAD_STATES and row.get("alive") is not False
-            and row.get("live") is not False}
+            if isinstance(row, dict) and row.get("job") and row_live(row)}

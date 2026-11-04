@@ -10,7 +10,6 @@ digits of that UUID. A verb the fork cannot serve answers ``unsupported``.
 """
 from __future__ import annotations
 
-import json
 import logging
 import os
 import threading
@@ -378,6 +377,3 @@ def provider_name() -> Optional[str]:
         return None
     return sel.get("provider") or None
 
-
-def as_json(obj: Any) -> str:
-    return json.dumps(obj)

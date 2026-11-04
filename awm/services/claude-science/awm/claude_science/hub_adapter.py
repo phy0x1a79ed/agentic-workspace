@@ -61,7 +61,6 @@ API_MANIFEST: dict[str, Any] = {
         {
             "name": "status",
             "tool": "science_status",
-            "effect": "read",
             "description": (
                 "Report the Claude Science workbench: whether the daemon is "
                 "running and at what pid/version/port, whether this service "
@@ -77,7 +76,6 @@ API_MANIFEST: dict[str, Any] = {
         {
             "name": "start",
             "tool": "science_start",
-            "effect": "write",
             "surfaces": ["cli", "http"],
             "description": (
                 "Adopt the running workbench daemon, or launch one detached if "
@@ -90,7 +88,6 @@ API_MANIFEST: dict[str, Any] = {
         {
             "name": "stop",
             "tool": "science_stop",
-            "effect": "write",
             "surfaces": ["cli", "http"],
             "description": (
                 "Stop the workbench daemon through its own socket, ending live "
@@ -103,7 +100,6 @@ API_MANIFEST: dict[str, Any] = {
         {
             "name": "restart",
             "tool": "science_restart",
-            "effect": "write",
             "surfaces": ["cli", "http"],
             "description": (
                 "Stop the workbench daemon and start it again — e.g. to pick up "
@@ -115,7 +111,6 @@ API_MANIFEST: dict[str, Any] = {
         {
             "name": "logs",
             "tool": "science_logs",
-            "effect": "read",
             "surfaces": ["cli", "http"],
             "description": "Tail the workbench daemon's log.",
             "params": [
@@ -126,7 +121,6 @@ API_MANIFEST: dict[str, Any] = {
         {
             "name": "url",
             "tool": "science_url",
-            "effect": "secret",
             "description": (
                 "Mint a fresh single-use sign-in link for the workbench, valid "
                 "about three minutes. The loopback form the binary prints — "
@@ -138,7 +132,6 @@ API_MANIFEST: dict[str, Any] = {
         {
             "name": "signin_url",
             "tool": "science_signin_url",
-            "effect": "secret",
             "description": (
                 "The mesh URL that signs a browser into the workbench in one "
                 "click. Behind awm's edge session, so it is only usable by "
@@ -149,7 +142,6 @@ API_MANIFEST: dict[str, Any] = {
         {
             "name": "connector",
             "tool": "science_connector",
-            "effect": "write",
             "description": (
                 "The workbench's local (stdio) MCP servers. With no arguments, "
                 "list them and say whether each one actually connects. Given a "
@@ -181,7 +173,6 @@ API_MANIFEST: dict[str, Any] = {
         {
             "name": "grants",
             "tool": "science_grants",
-            "effect": "write",
             "description": (
                 "The host directories Claude may read or write inside the "
                 "workbench's sandbox. With no arguments, list them. Given a "
@@ -202,7 +193,6 @@ API_MANIFEST: dict[str, Any] = {
         {
             "name": "message",
             "tool": "science_message",
-            "effect": "write",
             "description": (
                 "Send a message into a running Claude Science conversation, as "
                 "the user's next turn. Names a conversation by id, id prefix or "
@@ -223,7 +213,6 @@ API_MANIFEST: dict[str, Any] = {
         {
             "name": "new",
             "tool": "science_new",
-            "effect": "write",
             "description": (
                 "Start a new Claude Science conversation with text as its "
                 "first turn, in a project named by name (found or created). "
@@ -246,7 +235,6 @@ API_MANIFEST: dict[str, Any] = {
         {
             "name": "read",
             "tool": "science_read",
-            "effect": "read",
             "description": (
                 "Read a Claude Science conversation's transcript from a cursor. "
                 "Returns the messages with text, the conversation's status "
@@ -274,7 +262,6 @@ API_MANIFEST: dict[str, Any] = {
         {
             "name": "update_check",
             "tool": "science_update_check",
-            "effect": "read",
             "surfaces": ["cli", "http"],
             "description": (
                 "Ask the binary whether a newer build is available. Reports "

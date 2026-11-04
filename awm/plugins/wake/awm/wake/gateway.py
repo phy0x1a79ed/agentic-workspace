@@ -6,11 +6,11 @@ carries it over the ssh edge.
 
 from __future__ import annotations
 
-import json
-import os
 from typing import Any
 
 import httpx
+
+from awm import gatewayclient
 
 
 REFLECTION = "reflection"
@@ -23,40 +23,19 @@ class CallError(RuntimeError):
     pass
 
 
-def _unwrap(body: Any) -> Any:
-    result = body.get("result", body) if isinstance(body, dict) else body
-    if isinstance(result, str):
-        try:
-            return json.loads(result)
-        except ValueError:
-            return result
-    return result
-
-
 class Gateway:
     def __init__(self, hub_url: str | None = None, timeout: float = 60.0):
-        self.hub_url = (hub_url or os.environ.get("AWM_HUB_URL") or "http://127.0.0.1:12100").rstrip("/")
+        self.hub_url = (hub_url or gatewayclient.hub_base_url()).rstrip("/")
         self.timeout = timeout
 
     async def call(self, name: str, verb: str, args: dict | None = None,
                    peer: str | None = None) -> Any:
-        payload: dict[str, Any] = {"verb": verb, "args": args or {}}
-        if peer:
-            payload["peer"] = peer
-        from awm import gatewayclient
-
-        headers = {}
-        if token := gatewayclient.service_token():
-            headers["X-Awm-Service-Token"] = token
         try:
-            async with httpx.AsyncClient(timeout=self.timeout) as cli:
-                resp = await cli.post(f"{self.hub_url}/invoke",
-                                      json={"name": name, "args": payload}, headers=headers)
+            return await gatewayclient.call(name, verb, args, peer=peer, timeout=self.timeout)
         except httpx.HTTPError as exc:
             raise CallError(f"{name}.{verb}: gateway unreachable: {exc}") from exc
-        if resp.status_code // 100 != 2:
-            raise CallError(f"{name}.{verb}: HTTP {resp.status_code}: {resp.text[:300]}")
-        return _unwrap(resp.json())
+        except gatewayclient.GatewayCallError as exc:
+            raise CallError(f"{name}.{verb}: HTTP {exc.status}: {exc.body[:300]}") from exc
 
     async def harness(self) -> str | None:
         """The tool of this node's harness provider, or None where the gateway names none.

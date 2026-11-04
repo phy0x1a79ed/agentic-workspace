@@ -49,6 +49,7 @@ from typing import Any
 import yaml
 
 from awm.config import AWM_DIR, WORKSPACE_ROOT
+from awm.gatewayclient.proc import child_preexec, signal_group
 
 log = logging.getLogger("awm.dsh.harness")
 
@@ -198,24 +199,6 @@ def listening(port: int = PORT, *, timeout: float = 0.5) -> bool:
         return s.connect_ex(("127.0.0.1", port)) == 0
 
 
-def _preexec() -> None:  # pragma: no cover — runs in the forked child
-    """Own session (so the tree is one signalable group) + die with the parent.
-
-    Order matters: ``setsid`` first, then the death signal, then a re-check
-    that the parent is still alive — a parent that exited between the fork and
-    ``prctl`` would leave a child nothing will ever signal.
-    """
-    os.setsid()
-    try:
-        import ctypes
-
-        ctypes.CDLL("libc.so.6", use_errno=True).prctl(1, signal.SIGTERM)  # PR_SET_PDEATHSIG
-    except Exception:  # noqa: BLE001 — best effort; the group kill still works
-        pass
-    if os.getppid() == 1:
-        os._exit(1)
-
-
 class Supervisor:
     """Owns exactly one harness process. Every method is safe to call at any time."""
 
@@ -321,7 +304,7 @@ class Supervisor:
             self._proc = subprocess.Popen(
                 cmd, cwd=str(WORKDIR), env=env,
                 stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT,
-                preexec_fn=_preexec,
+                preexec_fn=child_preexec,
             )
         finally:
             out.close()
@@ -362,25 +345,15 @@ class Supervisor:
                 return {"action": "not-running", "running": False}
             # The whole group: the CLI shim, node, and anything node spawned.
             # Signalling the pid alone leaves the tree holding the port.
-            self._signal_group(proc, signal.SIGTERM)
+            signal_group(proc, signal.SIGTERM)
             try:
                 proc.wait(timeout=timeout)
             except subprocess.TimeoutExpired:
-                self._signal_group(proc, signal.SIGKILL)
+                signal_group(proc, signal.SIGKILL)
                 proc.wait(timeout=5)
             self._proc = None
             self._started_at = None
         return {"action": "stopped", "running": False}
-
-    @staticmethod
-    def _signal_group(proc: subprocess.Popen, sig: int) -> None:
-        try:
-            os.killpg(os.getpgid(proc.pid), sig)
-        except (ProcessLookupError, PermissionError):
-            try:
-                proc.send_signal(sig)
-            except ProcessLookupError:
-                pass
 
     def restart(self) -> dict[str, Any]:
         self.stop()

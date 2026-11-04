@@ -32,37 +32,37 @@ _PROJECT = _p("project", "string", True, "The project the routine belongs to.")
 _NAME = _p("name", "string", True, "The routine's name.")
 
 ROUTINE_FUNCTIONS: list[dict[str, Any]] = [
-    {"name": "install", "tool": "routine_install", "effect": "write",
+    {"name": "install", "tool": "routine_install", 
      "description": ("Install a routine on this node from its definition file in a "
                      "checkout of its project, pinned at the checkout's commit. "
                      "Reinstall after editing the definition."),
      "params": [_PROJECT, _p("path", "string", True,
                              "The definition file, such as <worktree>/routines/<name>.toml.")]},
-    {"name": "uninstall", "tool": "routine_uninstall", "effect": "write",
+    {"name": "uninstall", "tool": "routine_uninstall", 
      "description": "Remove an installed routine and its timer.",
      "params": [_PROJECT, _NAME]},
-    {"name": "list", "tool": "routine_list", "effect": "read",
+    {"name": "list", "tool": "routine_list", 
      "description": "The routines installed on this node, with their timers and last run.",
      "params": [_p("project", "string", False, "Only this project.")]},
-    {"name": "trigger", "tool": "routine_trigger", "effect": "write",
+    {"name": "trigger", "tool": "routine_trigger", 
      "description": ("Run a routine now and return its run record at once. Refused "
                      "while the routine has a live run. A failed run starts a fixing "
                      "agent on the routine's declared peer."),
      "params": [_PROJECT, _NAME,
                 _p("wait", "boolean", False, "Return only when the run ends."),
                 _p("trigger", "string", False, "`call` (default) or `timer`.")]},
-    {"name": "cancel", "tool": "routine_cancel", "effect": "write",
+    {"name": "cancel", "tool": "routine_cancel", 
      "description": "Stop a routine's live run and every process it started.",
      "params": [_PROJECT, _NAME]},
-    {"name": "schedule", "tool": "routine_schedule", "effect": "write",
+    {"name": "schedule", "tool": "routine_schedule", 
      "description": ("Set a routine's timer: a systemd user timer that calls "
                      "`trigger`. Uses the definition's timer unless `timer` is given."),
      "params": [_PROJECT, _NAME,
                 _p("timer", "string", False, "A systemd OnCalendar expression.")]},
-    {"name": "unschedule", "tool": "routine_unschedule", "effect": "write",
+    {"name": "unschedule", "tool": "routine_unschedule", 
      "description": "Clear a routine's timer.",
      "params": [_PROJECT, _NAME]},
-    {"name": "runs", "tool": "routine_runs", "effect": "read",
+    {"name": "runs", "tool": "routine_runs", 
      "description": "Recent runs, newest first, or one run by id.",
      "params": [_p("project", "string", False, "Only this project."),
                 _p("name", "string", False, "Only this routine."),
@@ -192,7 +192,7 @@ async def main() -> None:
 
 
 DEPLOY_FUNCTIONS: list[dict[str, Any]] = [
-    {"name": "deploy", "tool": "routine_deploy", "effect": "write",
+    {"name": "deploy", "tool": "routine_deploy", 
      "description": ("Land the calling scope's branch: pin its head, return a ticket at "
                      "once, then merge, check, promote to release, back it up and "
                      "refresh the nodes in a batch. The verdict goes to the scope's "
@@ -206,12 +206,12 @@ DEPLOY_FUNCTIONS: list[dict[str, Any]] = [
                 _p("card", "string", False, ("The Swarm-board task that takes the "
                                              "verdict, for a call from a peer. Default: "
                                              "the calling session's."))]},
-    {"name": "deploys", "tool": "routine_deploys", "effect": "read",
+    {"name": "deploys", "tool": "routine_deploys", 
      "description": "Recent deploy batches with their tickets, or one batch or ticket by id.",
      "params": [_p("project", "string", False, "Only this project."),
                 _p("id", "string", False, "One batch or ticket."),
                 _p("limit", "integer", False, "How many batches. Default 10.")]},
-    {"name": "refresh", "tool": "routine_refresh", "effect": "write",
+    {"name": "refresh", "tool": "routine_refresh", 
      "description": ("Refresh this node's checkout of a project after a deploy, from "
                      "its own deploy.toml. The deploy calls it on each node in turn."),
      "params": [_PROJECT, _p("from", "string", True, "The old release commit."),

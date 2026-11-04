@@ -26,7 +26,6 @@ API_MANIFEST: dict[str, Any] = {
     "functions": [
         {
             "name": "status",
-            "effect": "read",
             "tool": "engcyc_status",
             "description": (
                 "Report the EngCyc portal: why it cannot run here if it cannot, "
@@ -37,7 +36,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "start",
-            "effect": "write",
             "tool": "engcyc_start",
             "description": "Start the portal and wait until it answers. Idempotent.",
             "params": [],
@@ -45,7 +43,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "stop",
-            "effect": "write",
             "tool": "engcyc_stop",
             "description": (
                 "Stop the portal. The supervision loop leaves it stopped until "
@@ -56,7 +53,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "restart",
-            "effect": "write",
             "tool": "engcyc_restart",
             "description": "Stop the portal and start it again, e.g. to reload meta.tsv.",
             "params": [],
@@ -64,7 +60,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "logs",
-            "effect": "read",
             "tool": "engcyc_logs",
             "description": "Tail gunicorn's server log.",
             "params": [

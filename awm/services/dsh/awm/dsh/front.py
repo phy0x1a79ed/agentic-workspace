@@ -47,7 +47,6 @@ import os
 import shutil
 import threading
 import time
-from pathlib import Path
 from typing import Any
 
 from awm import config

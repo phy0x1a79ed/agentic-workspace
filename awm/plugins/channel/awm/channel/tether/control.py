@@ -53,8 +53,3 @@ async def call(verb: str, args: dict[str, Any] | None = None, *,
     if not line:
         raise DaemonUnavailable("daemon closed the connection without replying")
     return json.loads(line)
-
-
-def available() -> bool:
-    """Whether the control socket exists. Not proof anything is listening."""
-    return paths.CONTROL_SOCKET.is_socket()

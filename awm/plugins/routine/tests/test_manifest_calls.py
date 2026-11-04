@@ -45,7 +45,11 @@ class Gateway:
 
     def __call__(self, req: httpx.Request) -> httpx.Response:
         body = json.loads(req.content)
-        tool, inner = body["name"], body["args"]
+        if "verb" in body["args"]:  # a peer call: {name: tool, args: {verb, args, peer}}
+            tool, inner = body["name"], body["args"]
+        else:  # a local call: {name: "<tool>_<verb>", args}
+            tool, verb = body["name"].split("_", 1)
+            inner = {"verb": verb, "args": body["args"]}
         verb = inner["verb"]
         self.calls.append((tool, verb, inner.get("peer"), req.headers.get("X-Awm-Service-Token")))
         if (tool, verb) == ("reflection", "start_other") and self.fail_start:
@@ -64,8 +68,9 @@ class Gateway:
 def gateway(monkeypatch, tmp_path) -> Gateway:
     gw = Gateway()
     real = httpx.AsyncClient
-    monkeypatch.setattr(outbound.httpx, "AsyncClient",
+    monkeypatch.setattr(httpx, "AsyncClient",
                         lambda **kw: real(transport=httpx.MockTransport(gw), **kw))
+    monkeypatch.setenv("AWM_HUB_URL", "http://gateway.test")
     token = tmp_path / "token"
     token.write_text(TOKEN)
     monkeypatch.setenv("AWM_HUB_TOKEN_FILE", str(token))
@@ -73,7 +78,7 @@ def gateway(monkeypatch, tmp_path) -> Gateway:
 
 
 def _deployer(store, ws, fleet: str, node: str = "mizar") -> Deployer:
-    out = outbound.GatewayOutbound("http://gateway.test")
+    out = outbound.GatewayOutbound()
     ref = Refresher(out, node=node, checkout_root=lambda p: ws.proj / "release",
                     fleet_config=lambda: fleetconf.parse(fleet))
     return Deployer(store, out, workspace=ws.root, refresher=ref)

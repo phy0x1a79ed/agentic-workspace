@@ -134,7 +134,6 @@ API_MANIFEST: dict[str, Any] = {
         # ---- lifecycle ----
         {
             "name": "acquire",
-            "effect": "write",
             "tool": "factorio_acquire",
             "description": (
                 "Acquire a Factorio world: bring its appliance container up "
@@ -172,7 +171,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "release",
-            "effect": "write",
             "tool": "factorio_release",
             "description": (
                 "Release a session: stop + remove the appliance container. The "
@@ -185,7 +183,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "reset",
-            "effect": "write",
             "tool": "factorio_reset",
             "description": (
                 "Reset a session in place: generate a fresh world (discards live "
@@ -198,7 +195,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "status",
-            "effect": "read",
             "tool": "factorio_status",
             "description": (
                 "Status of one session (pass session_id) or all sessions (omit "
@@ -212,7 +208,6 @@ API_MANIFEST: dict[str, Any] = {
         # ---- seats ----
         {
             "name": "join",
-            "effect": "write",
             "tool": "factorio_join",
             "description": (
                 "Join the session's world with a drone: a body the world holds "
@@ -242,7 +237,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "rejoin",
-            "effect": "write",
             "tool": "factorio_rejoin",
             "description": (
                 "Bring seats back after a world reload: a drone the loaded "
@@ -261,7 +255,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "leave",
-            "effect": "write",
             "tool": "factorio_leave",
             "description": (
                 "Release a seat: remove its drone, inventory and all, or stop "
@@ -274,7 +267,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "seats",
-            "effect": "read",
             "tool": "factorio_seats",
             "description": (
                 "List seats, optionally for one session: their name, role and "
@@ -291,7 +283,6 @@ API_MANIFEST: dict[str, Any] = {
         # ---- perceive ----
         {
             "name": "observe",
-            "effect": "write",
             "tool": "factorio_observe",
             "description": (
                 "Look at the world through one seat: {snapshot, screenshot}. "
@@ -315,7 +306,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "screenshot",
-            "effect": "write",
             "tool": "factorio_screenshot",
             "description": (
                 "Render what the world looks like around a seat and return "
@@ -355,7 +345,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "observe_events",
-            "effect": "write",
             "tool": "factorio_observe_events",
             "description": (
                 "Drain the session's pending events: returns {events: [{kind, "
@@ -369,7 +358,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "recipes",
-            "effect": "read",
             "tool": "factorio_recipes",
             "description": (
                 "List the force's unlocked recipes ({name, ingredients, "
@@ -389,7 +377,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "technologies",
-            "effect": "read",
             "tool": "factorio_technologies",
             "description": (
                 "List technologies ({name, researched, prerequisites}). "
@@ -406,7 +393,6 @@ API_MANIFEST: dict[str, Any] = {
         # ---- act: world lifecycle (sacred saves) ----
         {
             "name": "world_new",
-            "effect": "write",
             "tool": "factorio_world_new",
             "description": (
                 "Generate a fresh world and re-exec the engine on it. Discards "
@@ -421,7 +407,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "world_save",
-            "effect": "write",
             "tool": "factorio_world_save",
             "description": (
                 "Snapshot the running world to an immutable named .zip (live "
@@ -437,7 +422,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "world_load",
-            "effect": "write",
             "tool": "factorio_world_load",
             "description": (
                 "Load a named save and re-exec the engine on a copy of it. The "
@@ -453,7 +437,6 @@ API_MANIFEST: dict[str, Any] = {
         # ---- act: live control ----
         {
             "name": "pause",
-            "effect": "write",
             "tool": "factorio_pause",
             "description": (
                 "Pause or resume the live world (game.tick_paused); with no "
@@ -470,7 +453,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "advance",
-            "effect": "write",
             "tool": "factorio_advance",
             "description": (
                 "Run a paused world forward by ticks at up to speed (default "
@@ -490,7 +472,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "wait_until",
-            "effect": "read",
             "tool": "factorio_wait_until",
             "description": (
                 "Block until a condition holds in the world, or until timeout_s "
@@ -516,7 +497,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "exec_lua",
-            "effect": "write",
             "tool": "factorio_exec_lua",
             "description": (
                 "Run Lua in the running world. Pass code inline OR path = a "
@@ -570,7 +550,6 @@ API_MANIFEST: dict[str, Any] = {
         # ---- orders (mod >= 0.5): one blocking call instead of a poll loop ----
         {
             "name": "walk",
-            "effect": "write",
             "tool": "factorio_walk",
             "description": (
                 "Walk the seat's drone straight to (x,y) -- it flies over water, "
@@ -604,7 +583,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "wait",
-            "effect": "write",
             "tool": "factorio_wait",
             "description": (
                 "Block until a condition holds in the world, checked inside "
@@ -652,7 +630,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "throw",
-            "effect": "write",
             "tool": "factorio_throw",
             "description": (
                 "Throw `count` capsules (default 1, max 100) of `item` from "
@@ -676,7 +653,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "order",
-            "effect": "read",
             "tool": "factorio_order",
             "description": (
                 "Read a walk, wait or throw order by id; with timeout "
@@ -691,7 +667,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "blueprint_stamp",
-            "effect": "write",
             "tool": "factorio_blueprint_stamp",
             "description": (
                 "Stamp a blueprint string at (x,y) on the shared force. Pass "
@@ -736,7 +711,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "blueprint_capture",
-            "effect": "write",
             "tool": "factorio_blueprint_capture",
             "description": (
                 "Capture a region of the world as a blueprint string, so one "
@@ -768,7 +742,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "scan",
-            "effect": "read",
             "tool": "factorio_scan",
             "description": (
                 "Survey entities in an area, in pages. Give the corners "
@@ -811,7 +784,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "load",
-            "effect": "read",
             "tool": "factorio_load",
             "description": (
                 "The game-call meters: server UPS, the limits in force, and "
@@ -828,7 +800,6 @@ API_MANIFEST: dict[str, Any] = {
         # ---- act: as a player (a seat drives all of these) ----
         {
             "name": "move",
-            "effect": "write",
             "tool": "factorio_move",
             "description": (
                 "Start the seat's drone walking straight to (x,y) and return "
@@ -843,7 +814,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "stop",
-            "effect": "write",
             "tool": "factorio_stop",
             "description": (
                 "Halt the seat where it stands: clears its walk target and any "
@@ -853,7 +823,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "teleport",
-            "effect": "write",
             "tool": "factorio_teleport",
             "description": (
                 "Put the seat at (x,y) instantly. A CHEAT and flagged as one "
@@ -871,7 +840,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "respawn",
-            "effect": "write",
             "tool": "factorio_respawn",
             "description": (
                 "Give a seat a drone again, now, at its force's spawn: skips "
@@ -883,7 +851,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "mine",
-            "effect": "write",
             "tool": "factorio_mine",
             "description": (
                 "Mine the resource/tree/rock nearest (x,y) into the seat's own "
@@ -903,7 +870,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "craft",
-            "effect": "write",
             "tool": "factorio_craft",
             "description": (
                 "Queue a handcraft on the seat's real crafting queue (consumes "
@@ -920,7 +886,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "build",
-            "effect": "write",
             "tool": "factorio_build",
             "description": (
                 "Place an item from the seat's inventory as an entity at (x,y) "
@@ -937,7 +902,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "insert",
-            "effect": "write",
             "tool": "factorio_insert",
             "description": (
                 "Move items from the seat's inventory into the entity at (x,y) "
@@ -956,7 +920,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "take",
-            "effect": "write",
             "tool": "factorio_take",
             "description": (
                 "Take items from the entity at (x,y) into the seat's inventory "
@@ -974,7 +937,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "research",
-            "effect": "write",
             "tool": "factorio_research",
             "description": (
                 "Unlock a technology directly (CHEAT path, flagged "
@@ -993,7 +955,6 @@ API_MANIFEST: dict[str, Any] = {
         # ---- tool library and lab mod (mod >= 0.6) ----
         {
             "name": "tool",
-            "effect": "write",
             "tool": "factorio_tool",
             "description": (
                 "Run a library tool by name with args. Returns {ok, r} where r "
@@ -1015,7 +976,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "tool_list",
-            "effect": "read",
             "tool": "factorio_tool_list",
             "description": (
                 "List the world's tools: name, kind, effect, summary, size, "
@@ -1025,7 +985,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "tool_sync",
-            "effect": "write",
             "tool": "factorio_tool_sync",
             "description": (
                 "Define the tool files (RLM_FACTORIO_TOOLS, every *.lua) in the "
@@ -1040,7 +999,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "sbx",
-            "effect": "write",
             "tool": "factorio_sbx",
             "description": (
                 "Call a verb of the fxlab-sbx lab mod: remote.call('sbx', verb, "
@@ -1752,7 +1710,7 @@ def _world_seats(session: dict | None) -> dict[str, dict] | None:
         res, _ = _iface(session, "seats", {}, key=SYS, metered=False, timeout=10.0)
     except Exception:  # noqa: BLE001 — a dark appliance is not an error here
         return None
-    return {s["seat"]: s for s in _as_list(res.get("seats"))}
+    return {s["seat"]: s for s in scan.as_list(res.get("seats"))}
 
 
 def _seats(args: dict) -> dict:
@@ -2017,18 +1975,6 @@ def _resolve(args: dict, *, need_seat: bool = True) -> tuple[dict, dict | None]:
 _SNAPSHOT_LISTS = ("players", "nearby", "crafting")
 
 
-def _as_list(value: Any) -> list:
-    """Coerce Lua's table encoding back to a list (sparse arrays included)."""
-    if isinstance(value, list):
-        return value
-    if isinstance(value, dict):
-        try:
-            return [value[k] for k in sorted(value, key=int)]
-        except (TypeError, ValueError):
-            return list(value.values())
-    return []
-
-
 def _act(fn: str, *keys: str, need_seat: bool = True, lists: tuple = (),
          god: bool = False):
     """Handler factory: resolve the target, name the seat, call the mod.
@@ -2051,7 +1997,7 @@ def _act(fn: str, *keys: str, need_seat: bool = True, lists: tuple = (),
         result, cost = _iface(row, fn, body, key=key)
         for name in lists:
             if name in result:
-                result[name] = _as_list(result[name])
+                result[name] = scan.as_list(result[name])
         return _budgeted(row, key, result, cost, throttle.CMD_BUDGET_MS)
     return handler
 
@@ -2067,7 +2013,7 @@ def _observe(args: dict) -> dict:
     snapshot, cost = _iface(row, "observe", body, key=key)
     for name in _SNAPSHOT_LISTS:
         if name in snapshot:
-            snapshot[name] = _as_list(snapshot[name])
+            snapshot[name] = scan.as_list(snapshot[name])
     shot = None
     if args.get("screenshot"):
         shot = _screenshot({"seat_id": seat["seat_id"]})["path"]
@@ -2237,7 +2183,7 @@ def _await_order(row: dict, key: str, order_id: int, timeout: float,
     deadline = time.monotonic() + timeout
     while True:
         res, _ = _iface(row, "order_status", {"order": order_id}, key=key)
-        order = _as_list(res.get("orders"))[0]
+        order = scan.as_list(res.get("orders"))[0]
         if order.get("status") != "running" or time.monotonic() + ORDER_POLL_S >= deadline:
             return order
         if seat is not None:
@@ -2561,7 +2507,7 @@ def _tool_problems(stem: str, header: dict) -> list[str]:
 
 def _tool_listing(row: dict, key: str) -> dict:
     result, _ = _iface(row, "tool_list", {}, key=key)
-    result["tools"] = _as_list(result.get("tools"))
+    result["tools"] = scan.as_list(result.get("tools"))
     return result
 
 
@@ -2849,7 +2795,7 @@ def _wait_probe(row: dict, seat: dict | None, args: dict):
             state = json.loads(_run(row, key, code, timeout=30.0)["output"])
             for name in ("idle", "missing", "ids"):
                 if name in state:
-                    state[name] = _as_list(state[name])
+                    state[name] = scan.as_list(state[name])
             if working:
                 return state["total"] > 0 and state["working"] == state["total"], state
             return state["remaining"] == 0, state

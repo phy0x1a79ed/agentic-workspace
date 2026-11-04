@@ -31,7 +31,6 @@ BIN_DIR = Path(os.environ.get("AWM_TETHER_BIN") or STATE_DIR / "bin")
 
 OPERATOR_BIN = BIN_DIR / "tether-operator"
 RELAY_BIN = BIN_DIR / "tether-relay"
-OWNER_BIN = BIN_DIR / "tether"
 
 #: The release this host is pinned to, versioned with the adapter, and the one
 #: it has actually fetched. fetch-release.sh writes VERSION_FILE last, so a
@@ -107,7 +106,6 @@ ROLE = os.environ.get("AWM_TETHER_ROLE", "operator").strip().lower()
 
 OPERATOR = "operator"
 RELAY = "relay"
-ROLES = (OPERATOR, RELAY)
 
 
 def role_binary() -> Path:

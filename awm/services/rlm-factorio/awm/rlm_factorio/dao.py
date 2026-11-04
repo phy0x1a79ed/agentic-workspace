@@ -315,16 +315,3 @@ class FactorioDAO(BaseDAO):
             "UPDATE rlm_seats SET last_seen_at = ? WHERE seat_id = ?",
             (_now(), str(seat_id).strip()),
         )
-
-    def delete_seat(self, seat_id: str) -> bool:
-        rows = self.execute(
-            "DELETE FROM rlm_seats WHERE seat_id = ?", (str(seat_id).strip(),))
-        return rows > 0
-
-    def delete_session(self, session_id: str) -> bool:
-        """Return True if a row was deleted."""
-        rows = self.execute(
-            "DELETE FROM rlm_sessions WHERE session_id = ?",
-            (str(session_id).strip(),),
-        )
-        return rows > 0

@@ -25,11 +25,6 @@ log = logging.getLogger("awm.routine.refresh")
 MANIFEST = "awm-plugin.toml"
 
 
-def _git(root: Path, *args: str) -> str:
-    return subprocess.run(["git", "-C", str(root), *args], capture_output=True,
-                          text=True, check=True).stdout.strip()
-
-
 def default_checkout_root(workspace: Path) -> Callable[[str], Path]:
     """The live checkout of a project on this node.
 
@@ -164,7 +159,7 @@ class Refresher:
     async def _hot(self, root: Path, cfg: Refresh, env: dict[str, str], frm: str,
                    to: str) -> NodeResult:
         try:
-            changed = _git(root, "diff", "--name-only", frm, to).splitlines() if frm else []
+            changed = proc.git(root, "diff", "--name-only", frm, to).splitlines() if frm else []
         except subprocess.CalledProcessError as e:
             return NodeResult(self.node, False, f"hot: cannot diff {frm[:12]}..{to[:12]}: "
                                                 f"{e.stderr.strip()[:300]}")

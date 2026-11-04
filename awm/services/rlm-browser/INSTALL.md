@@ -18,17 +18,10 @@ respawn the service under systemd's minimal PATH (where `mamba` is not present).
 
 ## Run
 
-You never invoke the service by hand in normal operation. The gateway discovers
-this folder (any folder with a `run.sh` under `awm/services/`), starts it with
-`bash run.sh`, and injects the only three env vars the adapter reads:
-
-| Env var | Set by | Meaning |
-|---|---|---|
-| `AWM_HUB_URL` | gateway | base URL of the running gateway |
-| `AWM_SERVICE_NAME` | gateway | this service's name (= folder name, `rlm-browser`) |
-| `AWM_SERVICE_ID` | gateway | assigned on respawn so reconnect targets the same control URL |
-
-No auth — the registration handshake carries no token.
+You never invoke the service by hand in normal operation. The gateway reads
+`awm-plugin.toml`, starts the service with `bash run.sh`, and sets `AWM_HUB_URL`,
+`AWM_SERVICE_NAME` and `AWM_HUB_TOKEN_FILE`. The adapter names itself to the
+gateway with the token in that file.
 
 To iterate without installing, run the worktree's dev sandbox (`bash awm/services/dev/sandbox/run.sh start`); it runs this same `run.sh` from the worktree.
 A manifest change takes effect on `awm reload` or a service restart.

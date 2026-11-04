@@ -19,5 +19,5 @@ def private_state(tmp_path, monkeypatch):
     monkeypatch.setattr(paths, "ENV_FILE", state / "daemon.env")
     monkeypatch.setattr(paths, "STREAM_STATE", state / "stream.json")
     monkeypatch.setattr(paths, "OPERATOR_UNIT", "awm-tether-operator-test")
-    monkeypatch.setattr(daemon, "_user_manager_env", lambda: None)
+    monkeypatch.setattr(daemon, "user_manager_env", lambda: None)
     return state

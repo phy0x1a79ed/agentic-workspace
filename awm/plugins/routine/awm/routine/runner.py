@@ -20,11 +20,6 @@ log = logging.getLogger("awm.routine.runner")
 UsageHook = Callable[[str, bool, int], None]
 
 
-def _git(root: str, *args: str) -> str:
-    return subprocess.run(["git", "-C", root, *args], capture_output=True,
-                          text=True, check=True).stdout.strip()
-
-
 class Runner:
     def __init__(self, store: Store, out: Outbound, *,
                  on_usage: UsageHook | None = None) -> None:
@@ -44,9 +39,9 @@ class Runner:
             raise FileNotFoundError(f"no routine definition at {p}")
         routine = definitions.load(p)
         try:
-            root = _git(str(p.parent), "rev-parse", "--show-toplevel")
-            sha = _git(root, "rev-parse", "HEAD")
-            dirty = bool(_git(root, "status", "--porcelain", "--", str(p)))
+            root = proc.git(str(p.parent), "rev-parse", "--show-toplevel")
+            sha = proc.git(root, "rev-parse", "HEAD")
+            dirty = bool(proc.git(root, "status", "--porcelain", "--", str(p)))
         except subprocess.CalledProcessError:
             root, sha, dirty = str(p.parent), "", False
         if dirty:

@@ -350,10 +350,8 @@ class Channels:
             raise ChannelError("a machine channel needs `os`: ask the owner whether the "
                                "machine runs Windows PowerShell (`windows`) or WSL, Linux "
                                "or Mac (`unix`)")
-        label = holder.get("name") or f"job {holder['job']}"
         try:
-            answer = await self.machines.invite(os_name, f"{holder['node']}/{holder['session']}",
-                                                f"{label} on {holder['node']}")
+            answer = await self.machines.invite(os_name)
         except (MachineError, MachineGone) as exc:
             raise ChannelError(str(exc)) from exc
         slot = answer["slot"]

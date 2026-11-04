@@ -130,8 +130,6 @@ async def test_open_mints_a_session_and_names_the_channel_by_it(chans, daemon, t
     assert "[scriptblock]" in opened["command"]
     assert opened["os"]["declared"] == "windows"
     assert daemon.calls[0] == ("invite", {})
-    owner = chans.machines.mark.owners[opened["name"]]
-    assert owner["by"] == f"testnode/{HOLDER['session']}"
     # The phrase goes to the holder once and is never kept.
     db = (tmp_path / "state" / "channels.db").read_bytes()
     assert PHRASE.encode() not in db
@@ -320,10 +318,10 @@ async def test_status_of_a_machine_names_its_tasks_and_flags_an_os_mismatch(chan
     assert row["tether"]["role"] == paths.OPERATOR
 
 
-def test_the_mark_keeps_who_minted_each_session(tmp_path):
+def test_a_claim_settles_when_its_mint_arrives(tmp_path):
     mark = stream.Mark(tmp_path / "m.json")
     mark.begin(1)
-    assert mark.claim(3, "n/s", "label", 0) is None
+    assert mark.claim(3, 0) is None
     ev = {"type": "session.minted", "seq": 0, "slot": 3}
     mark.stamp(1, ev)
-    assert mark.owners[ev["session"]]["by"] == "n/s"
+    assert 3 not in mark.claims and mark.current(3) == ev["session"]

@@ -18,7 +18,7 @@ log = logging.getLogger("awm.wake")
 
 API_MANIFEST: dict[str, Any] = {
     "functions": [
-        {"name": "wake", "effect": "write", "tool": "wake_wake",
+        {"name": "wake", "tool": "wake_wake",
          "description": (
              "Start a home machine with Wake-on-LAN, then wait until it answers on ssh. "
              "Only the pairs in this node's wake table run (fleet.md R139); any other "
@@ -30,14 +30,14 @@ API_MANIFEST: dict[str, Any] = {
                     {"name": "budget_s", "type": "number", "required": False,
                      "description": "Seconds to wait. Default the target's budget, 180."}],
          "timeout": 400},
-        {"name": "status", "effect": "read", "tool": "wake_status",
+        {"name": "status", "tool": "wake_status",
          "description": "Whether a wake target answers on ssh now. Returns {target, up}.",
          "params": [{"name": "target", "type": "string", "required": True, "description": "Node to probe."}]},
-        {"name": "nodes", "effect": "read", "tool": "wake_nodes",
+        {"name": "nodes", "tool": "wake_nodes",
          "description": ("This node's wake table: each target with its wakers, whether this "
                          "node may wake it, and the standby partner."),
          "params": []},
-        {"name": "handover", "effect": "write", "tool": "wake_handover",
+        {"name": "handover", "tool": "wake_handover",
          "description": (
              "Before this node restarts: ask the standby partner to hold a session that "
              "answers Tony, then reboot when `reboot` is true. Refuses, and leaves this node "
@@ -49,7 +49,7 @@ API_MANIFEST: dict[str, Any] = {
                     {"name": "reboot", "type": "boolean", "required": False,
                      "description": "Reboot this node once the partner holds. Default false."}],
          "timeout": 120},
-        {"name": "standby_take", "effect": "write", "tool": "wake_standby_take",
+        {"name": "standby_take", "tool": "wake_standby_take",
          "description": ("Called by the partner's handover: hold a standby session for the "
                          "node that goes down. Idempotent while a hold is open."),
          "params": [{"name": "down", "type": "string", "required": True, "description": "The node that goes down."},
@@ -57,16 +57,16 @@ API_MANIFEST: dict[str, Any] = {
                     {"name": "expect_down_s", "type": "number", "required": False,
                      "description": "Expected downtime in seconds."}],
          "timeout": 120},
-        {"name": "standby_release", "effect": "write", "tool": "wake_standby_release",
+        {"name": "standby_release", "tool": "wake_standby_release",
          "description": ("Called by the returning node's boot runner: end the hold and pass "
                          "the revive report to the standby session."),
          "params": [{"name": "down", "type": "string", "required": True, "description": "The node that came back."},
                     {"name": "report", "type": "object", "required": False,
                      "description": "The boot runner's report."}]},
-        {"name": "standby_status", "effect": "read", "tool": "wake_standby_status",
+        {"name": "standby_status", "tool": "wake_standby_status",
          "description": "The holds on this node and the partner's missed probes.",
          "params": []},
-        {"name": "boot", "effect": "write", "tool": "wake_boot",
+        {"name": "boot", "tool": "wake_boot",
          "description": ("Run the boot routine by hand: revive this node's pinned jobs "
                          "through the harness, then release the partner's hold. The boot "
                          "unit runs the same routine once per boot."),

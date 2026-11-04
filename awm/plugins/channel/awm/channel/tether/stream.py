@@ -67,7 +67,7 @@ IDLE_DEADLINE_S = 90.0
 #: open is not a record.
 MAX_LOG_BYTES = 64 * 1024 * 1024
 
-#: How many past mints of one slot this host remembers the owners of.
+#: How many past mints of one slot this host remembers.
 GENS_PER_SLOT = 8
 
 
@@ -231,13 +231,12 @@ class Mark:
     keyed by slot and pruned against the daemon's live sessions instead.
     Written after every event. The file is a few kilobytes at most.
 
-    It also holds who each session belongs to. A slot is not an identity: the
-    relay hands the same number out again once a session ends, so every mint
-    gets a session id, and each event is stamped with the id of the mint it
-    belongs to. ``gens`` keeps each slot's mints by the seq that began them,
-    ``owners`` says which caller minted each one, and ``claims`` holds an
-    invite's owner until the mint it asked for shows up on the stream, since
-    the reply and the event race each other.
+    A slot is not an identity: the relay hands the same number out again once
+    a session ends, so every mint gets a session id, and each event is stamped
+    with the id of the mint it belongs to. ``gens`` keeps each slot's mints by
+    the seq that began them, and ``claims`` holds an invite's floor seq until
+    the mint it asked for shows up on the stream, since the reply and the
+    event race each other.
     """
 
     def __init__(self, path: Path | None = None) -> None:
@@ -248,8 +247,7 @@ class Mark:
         self.cursors: dict[str, int] = {}
         self.declared: dict[int, dict[str, str]] = {}
         self.gens: dict[int, list[dict]] = {}
-        self.owners: dict[str, dict] = {}
-        self.claims: dict[int, dict] = {}
+        self.claims: dict[int, int] = {}
         try:
             saved = json.loads(self.path.read_text())
         except (OSError, ValueError):
@@ -262,8 +260,8 @@ class Mark:
         self.cursors = {str(k): int(v) for k, v in (saved.get("cursors") or {}).items()}
         self.declared = {int(k): dict(v) for k, v in (saved.get("declared") or {}).items()}
         self.gens = {int(k): [dict(g) for g in v] for k, v in (saved.get("gens") or {}).items()}
-        self.owners = {str(k): dict(v) for k, v in (saved.get("owners") or {}).items()}
-        self.claims = {int(k): dict(v) for k, v in (saved.get("claims") or {}).items()}
+        self.claims = {int(k): int(v) for k, v in (saved.get("claims") or {}).items()
+                       if isinstance(v, int)}
 
     def seen(self, epoch: int, seq: int) -> bool:
         """Whether this event was recorded and announced before a restart."""
@@ -278,7 +276,6 @@ class Mark:
         self.open.clear()
         self.cursors.clear()
         self.gens.clear()
-        self.owners.clear()
         self.claims.clear()
         self.save()
 
@@ -304,9 +301,6 @@ class Mark:
             gens.sort(key=lambda g: g["from"])
             del gens[:-GENS_PER_SLOT]
             self._settle(slot)
-            live = {g["sid"] for v in self.gens.values() for g in v}
-            for gone in set(self.owners) - live:
-                del self.owners[gone]
             self.save()
         found = None
         for g in gens:
@@ -321,24 +315,23 @@ class Mark:
         gens = self.gens.get(slot)
         return gens[-1]["sid"] if gens else None
 
-    def claim(self, slot: int, by: str | None, label: str, floor: int) -> str | None:
-        """Record who minted the session on ``slot`` at or after seq ``floor``.
+    def claim(self, slot: int, floor: int) -> str | None:
+        """Wait for the mint on ``slot`` at or after seq ``floor``.
 
         Returns its session id when the mint is already on the stream, and
-        None when the owner waits in ``claims`` for it to arrive.
+        None while the claim waits in ``claims`` for it to arrive.
         """
-        self.claims[slot] = {"by": by, "label": label, "floor": floor}
+        self.claims[slot] = floor
         sid = self._settle(slot)
         self.save()
         return sid
 
     def _settle(self, slot: int) -> str | None:
-        want = self.claims.get(slot)
-        if want is None:
+        floor = self.claims.get(slot)
+        if floor is None:
             return None
         for g in reversed(self.gens.get(slot, [])):
-            if g["from"] >= want["floor"]:
-                self.owners[g["sid"]] = {"by": want["by"], "label": want["label"]}
+            if g["from"] >= floor:
                 del self.claims[slot]
                 return g["sid"]
         return None
@@ -346,7 +339,7 @@ class Mark:
     def save(self) -> None:
         state = {"epoch": self.epoch, "next": self.next, "open": self.open,
                  "cursors": self.cursors, "declared": self.declared,
-                 "gens": self.gens, "owners": self.owners, "claims": self.claims}
+                 "gens": self.gens, "claims": self.claims}
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             fd, tmp = tempfile.mkstemp(dir=self.path.parent, prefix=".stream-")

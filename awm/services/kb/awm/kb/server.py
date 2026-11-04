@@ -19,20 +19,9 @@ import time
 from typing import Any
 
 from awm.kb import instances
+from awm.gatewayclient.proc import child_preexec, signal_group
 
 log = logging.getLogger("awm.kb.server")
-
-
-def _preexec() -> None:  # pragma: no cover — runs in the forked child
-    os.setsid()
-    try:
-        import ctypes
-
-        ctypes.CDLL("libc.so.6", use_errno=True).prctl(1, signal.SIGTERM)  # PR_SET_PDEATHSIG
-    except Exception:  # noqa: BLE001 — best effort; the group kill still works
-        pass
-    if os.getppid() == 1:
-        os._exit(1)
 
 
 def child_env() -> dict[str, str]:
@@ -108,7 +97,7 @@ class Child:
             self._proc = subprocess.Popen(
                 cmd, cwd=str(instances.CHECKOUT), env=child_env(),
                 stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT,
-                preexec_fn=_preexec,
+                preexec_fn=child_preexec,
             )
         finally:
             out.close()
@@ -149,25 +138,15 @@ class Child:
             if proc is None or proc.poll() is not None:
                 self._proc = None
                 return {"action": "not-running", "running": False}
-            self._signal_group(proc, signal.SIGTERM)
+            signal_group(proc, signal.SIGTERM)
             try:
                 proc.wait(timeout=timeout)
             except subprocess.TimeoutExpired:
-                self._signal_group(proc, signal.SIGKILL)
+                signal_group(proc, signal.SIGKILL)
                 proc.wait(timeout=5)
             self._proc = None
             self._started_at = None
         return {"action": "stopped", "running": False}
-
-    @staticmethod
-    def _signal_group(proc: subprocess.Popen, sig: int) -> None:
-        try:
-            os.killpg(os.getpgid(proc.pid), sig)
-        except (ProcessLookupError, PermissionError):
-            try:
-                proc.send_signal(sig)
-            except ProcessLookupError:
-                pass
 
     def restart(self) -> dict[str, Any]:
         self.stop()
