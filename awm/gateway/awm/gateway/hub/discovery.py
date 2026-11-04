@@ -499,7 +499,7 @@ def set_enabled(name: str, enabled: bool) -> None:
 
 #: Tool names only a core plugin may claim. The edge
 #: list's singleton tools join them (``peer_catalog.declared_homes``).
-RESERVED_TOOLS = frozenset({"awm", "2fa", "approver", "queue-store", "journal"})
+RESERVED_TOOLS = frozenset({"awm", "auth", "2fa", "approver", "queue-store", "journal"})
 _NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]*")
 _MANIFEST_KEYS = {
     "": {"plugin", "service", "tool", "page", "needs"},

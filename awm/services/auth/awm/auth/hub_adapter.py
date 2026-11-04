@@ -44,7 +44,7 @@ API_MANIFEST: dict[str, Any] = {
     "functions": [
         {
             "name": "password",
-            "tool": "awm_password",
+            "tool": "auth_password",
             "effect": "secret",
             "surfaces": _CLI_HTTP,
             "description": "Get the current day's awm login password and its "
@@ -53,7 +53,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "peer_credential",
-            "tool": "awm_peer_credential",
+            "tool": "auth_peer_credential",
             "effect": "secret",
             "surfaces": _CLI_HTTP,
             "description": "Get the current peer credential and the path of the "
@@ -62,7 +62,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "verify",
-            "tool": "awm_verify",
+            "tool": "auth_verify",
             "effect": "secret",
             "surfaces": _CLI_HTTP,
             "description": "Validate the shared login password; on success "
@@ -76,7 +76,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "edge_material",
-            "tool": "awm_edge_material",
+            "tool": "auth_edge_material",
             "effect": "secret",
             "surfaces": _CLI_HTTP,
             "description": "Signing secret + currently-valid peer credentials + "
@@ -93,7 +93,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "node_key",
-            "tool": "awm_node_key",
+            "tool": "auth_node_key",
             "effect": "read",
             "description": "This node's ed25519 public key and its fingerprint, "
                            "to hand to a peer that will verify this node's "
@@ -102,7 +102,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "sign_peer_token",
-            "tool": "awm_sign_peer_token",
+            "tool": "auth_sign_peer_token",
             "effect": "secret",
             "surfaces": _CLI_HTTP,
             "description": "Sign a five-minute token that proves this node's "
@@ -111,7 +111,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "rotate",
-            "tool": "awm_rotate",
+            "tool": "auth_rotate",
             "effect": "secret",
             "surfaces": _CLI_HTTP,
             "description": "Force minting a fresh credential pair now.",
@@ -119,7 +119,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "status",
-            "tool": "awm_auth_status",
+            "tool": "auth_status",
             "effect": "read",
             "surfaces": _CLI_HTTP,
             "description": "Report rotation state: valid generations, latest "
@@ -129,7 +129,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "device_mint",
-            "tool": "awm_device_mint",
+            "tool": "auth_device_mint",
             "effect": "secret",
             "surfaces": _CLI_HTTP,
             "description": "Mint a revocable operator device token, for an "
@@ -146,7 +146,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "device_list",
-            "tool": "awm_device_list",
+            "tool": "auth_device_list",
             "effect": "read",
             "surfaces": _CLI_HTTP,
             "description": "List device tokens (no secrets). Operator only.",
@@ -154,7 +154,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "device_revoke",
-            "tool": "awm_device_revoke",
+            "tool": "auth_device_revoke",
             "effect": "write",
             "surfaces": _CLI_HTTP,
             "description": "Revoke a device token by id. The edge stops "

@@ -5,9 +5,8 @@ version = "0.1.0"
 [[service]]
 name = "auth"
 
-# auth adds its verbs to the core's `awm` tool (plugin-contract.md § Plugin folder).
 [[tool]]
-name = "awm"
+name = "auth"
 major = 1
 tier = "on"
 

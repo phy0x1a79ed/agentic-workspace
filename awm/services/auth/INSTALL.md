@@ -63,9 +63,9 @@ Beside the rotating shared password, static per-user passwords:
 
 A device token lets an unattended device or app act as one user without storing a password. It is `awmut1.<id>.<secret>`. This service keeps only the SHA-256 of the secret.
 
-    awm awm device-mint --username tony --label kiosk   # prints the token once
-    awm awm device-list [--username tony]               # no secrets
-    awm awm device-revoke --id <id>
+    awm auth device-mint --username tony --label kiosk   # prints the token once
+    awm auth device-list [--username tony]               # no secrets
+    awm auth device-revoke --id <id>
 
 1. Send the token on every request to the edge as `Authorization: Bearer awmut1.…`. The edge stamps `X-Awm-As: user:<name>` as for a cookie login and sets no cookie.
 2. Revoke a lost or retired token by its id. The edge honours a revoked token until its next material refresh, at most 30 s later. Disabling the user drops all of that user's tokens the same way.

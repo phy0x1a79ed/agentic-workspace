@@ -108,11 +108,6 @@ def _rows() -> list[Alias]:
     add("config", "contracts", "awm", "config_contracts")
     add("config", "set", "awm", "config_set")
 
-    for verb in ("password", "peer_credential", "verify", "edge_material", "node_key",
-                 "sign_peer_token", "rotate"):
-        add("auth", verb, "awm", verb)
-    add("auth", "status", "awm", "auth_status")
-
     for verb in ("acquire", "release", "reset", "status", "tab_open", "tab_close",
                  "tab_list", "tab_activate", "observe", "screenshot", "cdp", "commands"):
         add("rlm", f"browser_{verb}", "rlm-browser", verb)
