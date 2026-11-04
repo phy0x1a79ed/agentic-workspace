@@ -16,6 +16,8 @@ run "$AWM/service_components/persistence" --no-deps
 run "$AWM/service_components/gatewayclient" --no-deps
 run "$AWM/service_components/kept" --no-deps
 run "$HERE"
+mamba run -n "$ENV" python -c 'import slack_sdk' \
+    || { echo "slack_sdk did not install into env '$ENV'" >&2; exit 1; }
 
 # Bake the target env's absolute interpreter into a gitignored `.runtime-env`
 # sidecar so the hub supervisor can respawn this service under systemd's
