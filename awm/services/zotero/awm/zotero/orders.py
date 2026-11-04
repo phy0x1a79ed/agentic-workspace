@@ -1,13 +1,12 @@
 """Run a sync when Tony presses Sync now on the bibliography page (fleet.md R83).
 
 The button lives on alcor's approver panel. A press becomes an order envelope
-signed with alcor's grant key. This node long-polls the approver for its
-orders, checks each signature with alcor's public key, runs each order once,
-and reports back. Nothing here can be triggered from deneb's public front: an
+signed with alcor's grant key. This node long-polls its own ``operations`` relay,
+which reaches alcor, for its orders. It checks each signature with alcor's public
+key, runs each order once, and reports back. Nothing here can be triggered from deneb's public front: an
 order that does not verify is dropped.
 
-The puller is off until the config names the approver's node and alcor's
-public key (``ZOTERO_ORDERS_APPROVER`` and ``ZOTERO_ORDERS_PUBKEY``).
+The puller is off until the config names alcor's public key (``ZOTERO_ORDERS_PUBKEY``).
 """
 
 from __future__ import annotations
@@ -38,7 +37,6 @@ class OrderRefused(Exception):
 
 @dataclass(frozen=True)
 class Settings:
-    approver: str
     pubkey: str
     node: str
     seen_path: Path
@@ -46,13 +44,12 @@ class Settings:
     @classmethod
     def from_env(cls, env: dict[str, str] | None = None) -> Settings | None:
         env = os.environ if env is None else env
-        approver = env.get("ZOTERO_ORDERS_APPROVER", "").strip()
         pubkey = env.get("ZOTERO_ORDERS_PUBKEY", "").strip()
-        if not approver or not pubkey:
+        if not pubkey:
             return None
         node = env.get("AWM_NODE_NAME") or socket.gethostname().split(".")[0]
         awm_dir = Path(env.get("AWM_DIR") or Path.home() / "agentic_workspace" / ".awm")
-        return cls(approver, pubkey, node, awm_dir / "zotero" / "orders-seen.json")
+        return cls(pubkey, node, awm_dir / "zotero" / "orders-seen.json")
 
 
 def grant_verifier(pubkey: str, node: str) -> Verify:
@@ -70,14 +67,11 @@ def grant_verifier(pubkey: str, node: str) -> Verify:
     return verify
 
 
-def approver_call(peer: str) -> Call:
-    """Reach the approver on its node, over the edge."""
+async def operations_call(verb: str, args: dict) -> Any:
+    """This node's operations relay, which carries the call to alcor."""
     from awm import gatewayclient
 
-    async def call(verb: str, args: dict) -> Any:
-        return await gatewayclient.call("approver", verb, args, peer=peer, timeout=WAIT_S + 20)
-
-    return call
+    return await gatewayclient.call("operations", verb, args, timeout=WAIT_S + 20)
 
 
 class Seen:
@@ -162,6 +156,6 @@ def from_env(run_sync: Callable[[dict], Awaitable[dict]]) -> Puller | None:
     settings = Settings.from_env()
     if settings is None:
         return None
-    return Puller(settings.node, approver_call(settings.approver),
+    return Puller(settings.node, operations_call,
                   grant_verifier(settings.pubkey, settings.node), Seen(settings.seen_path),
                   run_sync)

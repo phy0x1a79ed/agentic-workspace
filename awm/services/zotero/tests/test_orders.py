@@ -117,7 +117,6 @@ def test_a_failed_sync_reports_not_ok(alcor, make):
 
 def test_off_until_configured():
     assert orders.Settings.from_env({}) is None
-    assert orders.Settings.from_env({"ZOTERO_ORDERS_APPROVER": "alcor"}) is None
-    s = orders.Settings.from_env({"ZOTERO_ORDERS_APPROVER": "alcor", "ZOTERO_ORDERS_PUBKEY": "k",
+    s = orders.Settings.from_env({"ZOTERO_ORDERS_PUBKEY": "k",
                                   "AWM_NODE_NAME": "deneb", "AWM_DIR": "/x"})
     assert s.node == "deneb" and str(s.seen_path) == "/x/zotero/orders-seen.json"

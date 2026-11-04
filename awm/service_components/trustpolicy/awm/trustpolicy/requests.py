@@ -1,14 +1,15 @@
 """Ask Tony for a grant through the approver on alcor (fleet.md R97, R100, R90, R102, R103).
 
-Each request is a card in Needs you. The approver answers with a signed grant,
-and for ``admin_ssh`` also with an ssh user certificate. A request runs from 15
-minutes to 24 hours and expires 24 hours after it is made (R100 items 1-2).
+The calls go to this node's ``operations`` relay, which carries them to alcor and
+records the calling session as the requester. Each request is a card in Needs you.
+The approver answers with a signed grant, and for ``admin_ssh`` also with an ssh user
+certificate. A request runs from 15 minutes to 24 hours and expires 24 hours after it
+is made (R100 items 1-2).
 """
 
 from __future__ import annotations
 
 import base64
-import os
 import subprocess
 from pathlib import Path
 from typing import Any, Callable
@@ -27,10 +28,7 @@ class GrantDenied(PermissionError):
 
 def _approver_call(verb: str, args: dict) -> Any:
     from awm import gatewayclient
-    from awm.config import edges
-    host = next((s["host"] for s in edges.singletons() if s["tool"] == "approver"), None)
-    peer = host if host and host != edges.here() else None
-    return gatewayclient.call_sync("approver", verb, args, peer=peer, timeout=60.0)
+    return gatewayclient.call_sync("operations", verb, args, timeout=60.0)
 
 
 def grant_key(awm_dir: Path | None = None) -> bytes:
@@ -59,21 +57,18 @@ def file_request(kind: str, *, node: str, reason: str, minutes: int = MIN_MINUTE
         raise ValueError("a request needs a reason Tony can read")
     filed = call("approval_request", {
         "kind": kind, "node": node, "reason": reason, "minutes": _minutes(minutes),
-        "payload": payload or {}, "requester_session": os.environ.get("AWM_SESSION_ID", ""),
-    })
+        "payload": payload or {}})
     return filed["request_id"]
 
 
 def request(kind: str, *, node: str, reason: str, minutes: int = MIN_MINUTES,
-            payload: dict | None = None, session: str | None = None,
-            wait_s: float = 24 * 3600, call: Call = _approver_call) -> dict:
+            payload: dict | None = None, wait_s: float = 24 * 3600, call: Call = _approver_call) -> dict:
     """File one request and wait for Tony. Returns the approver's final record."""
     if not reason.strip():
         raise ValueError("a request needs a reason Tony can read")
     filed = call("approval_request", {
         "kind": kind, "node": node, "reason": reason, "minutes": _minutes(minutes),
-        "payload": payload or {}, "requester_session": session or os.environ.get("AWM_SESSION_ID", ""),
-    })
+        "payload": payload or {}})
     rid = filed["request_id"]
     while True:
         step = min(wait_s, WAIT_STEP_S)
