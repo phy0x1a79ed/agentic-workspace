@@ -156,7 +156,7 @@ def _task_of(session_id: str) -> Optional[str]:
         from awm.gatewayclient import call_sync
         out = call_sync("operations", "task_for_session", {"session_id": session_id},
                         timeout=5.0)
-    except Exception:  # noqa: BLE001 - a missing reporting service is no task
+    except Exception:  # noqa: BLE001 - a missing operations service is no task
         return None
     return out.get("task_id") if isinstance(out, dict) else None
 
@@ -180,14 +180,14 @@ def _session_of(args: dict) -> dict:
         return {"ok": True, "known": False, "mode": mode, "reason": str(exc)}
     sid = who.get("session_id") or ""
     return {**who, "ok": True, "known": True, "harness": p.tool, "platform": p.code,
-            "mode": who.get("mode", UNKNOWN_MODE), "trust": policy.level_of(sid)}
+            "mode": who.get("mode", UNKNOWN_MODE), "trust": policy.level_of(sid, known=True)}
 
 
 def _whoami(args: dict) -> dict:
     p, who = _caller(args)
     sid = who.get("session_id") or ""
     return {**who, "ok": True, "harness": p.tool, "platform": p.code,
-            "trust": policy.level_of(sid), "task_id": _task_of(sid) if sid else None,
+            "trust": policy.level_of(sid, known=True), "task_id": _task_of(sid) if sid else None,
             "session": who.get("name") or sid}
 
 

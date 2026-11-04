@@ -102,11 +102,9 @@ def test_caller_peer_names_the_node_of_a_peer_stamp():
 
 def test_operator_dm_falls_back_to_tonys_dm(monkeypatch):
     import awm.config as config
-    for var in ("AWM_OPERATOR_DM_ACCOUNT", "AWM_OPERATOR_DM_CHANNEL", "AWM_REPORTING_DM_CHANNEL"):
+    for var in ("AWM_OPERATOR_DM_ACCOUNT", "AWM_OPERATOR_DM_CHANNEL"):
         monkeypatch.delenv(var, raising=False)
     assert config.operator_dm() == ("discord-bot", "dm:188743359983124480")
-    monkeypatch.setenv("AWM_REPORTING_DM_CHANNEL", "dm:2")
-    assert config.operator_dm() == ("discord-bot", "dm:2")
     monkeypatch.setenv("AWM_OPERATOR_DM_CHANNEL", " dm:1 ")
     monkeypatch.setenv("AWM_OPERATOR_DM_ACCOUNT", "other-bot")
     assert config.operator_dm() == ("other-bot", "dm:1")

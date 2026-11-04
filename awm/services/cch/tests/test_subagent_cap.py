@@ -62,6 +62,30 @@ def test_a_reservation_that_never_starts_lapses(hook, monkeypatch, capsys):
     assert _agent(hook, monkeypatch, capsys) is None
 
 
+def test_a_stop_frees_its_own_agent(hook, monkeypatch, capsys):
+    monkeypatch.setattr(hook, "level", lambda: "cooperative")
+    for i in range(5):
+        _agent(hook, monkeypatch, capsys)
+        _fire(hook, monkeypatch, capsys, "SubagentStart", agent_id=f"a{i}")
+    _fire(hook, monkeypatch, capsys, "SubagentStop", agent_id="a3")
+    _fire(hook, monkeypatch, capsys, "SubagentStop", agent_id="a3")
+    assert _agent(hook, monkeypatch, capsys) is None
+    assert _agent(hook, monkeypatch, capsys) is not None, "a repeated stop frees no second slot"
+
+
+def test_a_subagent_whose_stop_never_comes_lapses(hook, monkeypatch, capsys):
+    monkeypatch.setattr(hook, "level", lambda: "cooperative")
+    clock = [1000.0]
+    monkeypatch.setattr(hook.time, "time", lambda: clock[0])
+    for i in range(5):
+        _agent(hook, monkeypatch, capsys)
+        _fire(hook, monkeypatch, capsys, "SubagentStart", agent_id=f"a{i}")
+    clock[0] += hook.RESERVE_S + 1
+    assert _agent(hook, monkeypatch, capsys) is not None
+    clock[0] += hook.RUNNING_S
+    assert _agent(hook, monkeypatch, capsys) is None
+
+
 def test_a_trusted_session_is_not_capped(hook, monkeypatch, capsys):
     monkeypatch.setattr(hook, "level", lambda: "trusted")
     for _ in range(7):

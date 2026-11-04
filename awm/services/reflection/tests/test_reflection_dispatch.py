@@ -180,12 +180,20 @@ def test_list_other_merges_every_harness(fakes):
 
 
 def test_list_other_shows_each_recorded_level(fakes):
-    """A session with no record shows None, which a gate reads as trusted (policy.DEFAULT_LEVEL)."""
+    """A session with no record shows None, which a gate reads as trusted when a harness knows it."""
     fakes.ds.sessions["x"] = {"session_id": "ds" + "c" * 32, "name": "web"}
     policy.record("ds" + "c" * 32, "cooperative", "test")
     rows = {r["harness"]: r for r in run("list_other", {})["sessions"]}
     assert rows["harness-ds"]["trust"] == "cooperative"
     assert rows["harness-cc"]["trust"] is None
+
+
+def test_a_session_no_harness_knows_reads_untrusted(fakes):
+    """Only a session a harness recorded, by hand with no level, reads trusted (R103 item 2)."""
+    assert policy.level_of(MY_ID) == "trusted"
+    fakes.cc.answers["status"] = {"ok": False, "reason": "no such session"}
+    assert policy.level_of("cc" + "9" * 32) == "untrusted"
+    assert policy.level_of(None) == "trusted", "a caller that is no session"
 
 
 def test_stop_retires_the_session_and_removes_its_job(fakes):

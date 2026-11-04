@@ -352,10 +352,13 @@ impl Gateway {
     /// Walk from `pid` up its ancestors to the nearest session a harness claims (`caller.rs`).
     pub async fn resolve_caller(&self, pid: u32) -> crate::caller::Lookup {
         use crate::caller::Lookup;
-        // No harness runs where no plugin serves the lookup tool, so no pid is a session's.
-        let served = self.read_load().plugins.iter().any(|p| p.tools.iter().any(|t| t.name == crate::caller::LOOKUP_TOOL));
-        if !served {
-            return Lookup::NoOwner { mode: None };
+        {
+            let load = self.read_load();
+            if !load.plugins.iter().any(|p| p.tools.iter().any(|t| t.name == crate::caller::LOOKUP_TOOL)) {
+                // A node that runs no reflection runs no harness, so no pid is a session's. One
+                // that should run it cannot tell, so the caller is untrusted (R103 item 2).
+                return if crate::caller::lookup_expected(&load, &self.cfg) { Lookup::Failed } else { Lookup::NoOwner { mode: None } };
+            }
         }
         let mut first_mode = None;
         let mut at = Some(pid);

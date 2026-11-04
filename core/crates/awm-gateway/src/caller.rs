@@ -4,7 +4,8 @@
 //! (`X-Awm-Caller-Pid`). The gateway walks that pid's ancestors and asks reflection
 //! `session_of` for each, which asks the harness plugins (install.md R135 item 6). The first
 //! session found is the caller. A chain no harness claims is a user's shell, which passes as
-//! trusted. A lookup that fails is untrusted with mode `unknown` (fleet.md R103 item 2).
+//! trusted. A lookup that fails is untrusted with mode `unknown` (fleet.md R103 item 2), and so
+//! is every lookup on a node whose plugin set holds reflection but did not load it.
 
 use std::path::Path;
 
@@ -29,6 +30,8 @@ pub const TRUSTED: &str = "trusted";
 /// The tool and verb the gateway asks who owns a pid.
 pub const LOOKUP_TOOL: &str = "reflection";
 pub const LOOKUP_VERB: &str = "session_of";
+/// The plugin that serves `LOOKUP_TOOL`.
+pub const LOOKUP_PLUGIN: &str = "reflection";
 /// How many ancestors the walk asks about, as `mcp_caller.MAX_ANCESTRY_HOPS`.
 pub const MAX_HOPS: usize = 8;
 
@@ -42,6 +45,14 @@ pub enum Lookup {
     NoOwner { mode: Option<String> },
     /// reflection did not answer, or answered nonsense.
     Failed,
+}
+
+/// Whether the node's plugin set holds the lookup plugin: the install config names it, or the
+/// loader found it in a root and refused it. Only a node without it runs no harness, so only
+/// there a pid nobody serves the lookup for is a user's shell.
+pub fn lookup_expected(load: &crate::loader::LoadResult, cfg: &crate::config::Config) -> bool {
+    let named = cfg.wants(LOOKUP_PLUGIN) && cfg.plugins.iter().any(|p| p == LOOKUP_PLUGIN);
+    named || load.refused.iter().any(|r| r.plugin == LOOKUP_PLUGIN)
 }
 
 /// The parent of `pid`, from `/proc/<pid>/stat` field 4. The comm field may hold spaces
@@ -151,6 +162,31 @@ mod tests {
         let mut c = Caller::default();
         assert_eq!(fill(&mut c, &Lookup::NoOwner { mode: None }, &projects), None);
         assert_eq!((c.session.as_deref(), c.trust.as_deref(), c.scope.as_deref()), (None, Some("trusted"), None));
+    }
+
+    fn config(plugins: &[&str]) -> crate::config::Config {
+        let text = format!("plugins = {:?}", plugins);
+        toml::from_str(&text).unwrap()
+    }
+
+    #[test]
+    fn a_node_without_reflection_expects_no_lookup() {
+        let load = crate::loader::LoadResult::default();
+        assert!(!lookup_expected(&load, &config(&["*"])), "no reflection folder in the roots");
+        assert!(!lookup_expected(&load, &config(&["journal", "scopes"])));
+    }
+
+    #[test]
+    fn reflection_enabled_but_not_loaded_expects_a_lookup() {
+        let mut refused = crate::loader::LoadResult::default();
+        refused.refused.push(crate::loader::Refusal {
+            plugin: LOOKUP_PLUGIN.into(),
+            dir: "/x/reflection".into(),
+            reason: "needs harness@1".into(),
+        });
+        assert!(lookup_expected(&refused, &config(&["*"])), "refused at load");
+        let missing = crate::loader::LoadResult::default();
+        assert!(lookup_expected(&missing, &config(&["journal", "reflection"])), "named but in no root");
     }
 
     #[test]

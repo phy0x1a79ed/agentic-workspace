@@ -5,9 +5,11 @@ library what a level allows. The gateway refuses what a level may never call
 (channels.md R125); a steer stays here, because only this ledger knows the
 target's level.
 
-A session with no recorded level reads as ``trusted``: every session started
-before levels existed acted with full trust, and a level that appears from
-nowhere would refuse them.
+A session with no recorded level reads as ``trusted`` only when a harness
+plugin knows it: a session started by hand, or before levels existed, acted
+with full trust. A session id that neither this ledger nor any harness knows
+reads as ``untrusted`` (fleet.md R103 item 2). A caller that is no session, a
+user's shell or a service, starts sessions as ``trusted``.
 """
 from __future__ import annotations
 
@@ -24,6 +26,7 @@ from awm.reflection import alarm
 log = logging.getLogger("awm.reflection.policy")
 
 DEFAULT_LEVEL = "trusted"
+UNKNOWN_SESSION_LEVEL = "untrusted"
 _lock = threading.Lock()
 
 
@@ -56,12 +59,27 @@ def _write(data: dict) -> None:
     os.replace(tmp, path)
 
 
-def level_of(session_id: Optional[str]) -> str:
-    return recorded_levels().get(session_id or "") or DEFAULT_LEVEL
+def level_of(session_id: Optional[str], *, known: bool = False) -> str:
+    """The level of ``session_id``. ``known`` says a harness already answered for it."""
+    if not session_id:
+        return DEFAULT_LEVEL
+    level = recorded_levels().get(session_id)
+    if level:
+        return level
+    return DEFAULT_LEVEL if known or _harness_knows(session_id) else UNKNOWN_SESSION_LEVEL
+
+
+def _harness_knows(session_id: str) -> bool:
+    from awm.reflection import harness
+    try:
+        harness.for_session(session_id)
+    except harness.HarnessError:
+        return False
+    return True
 
 
 def recorded_levels() -> dict[str, str]:
-    """Each session's recorded level. A session missing here reads as ``DEFAULT_LEVEL``."""
+    """Each session's recorded level, as ``record`` wrote it."""
     return {sid: rec["level"] for sid, rec in _read().items()
             if isinstance(rec, dict) and rec.get("level")}
 

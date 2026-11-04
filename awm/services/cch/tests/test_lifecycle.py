@@ -1857,6 +1857,7 @@ def test_a_started_session_that_waits_can_be_resumed(home, launched, respawned,
                                                               monkeypatch):
     """start_other, a kept stop, resume_other: a wait keeps the job, so its lineage
     survives the prune and the resume finds it (live a92d02bf and c63d29b9)."""
+    import functools
     import threading
 
     from awm.cch import control, hub_adapter, lifecycle
@@ -1872,13 +1873,16 @@ def test_a_started_session_that_waits_can_be_resumed(home, launched, respawned,
 
     monkeypatch.setattr(cli, "stop_keeping", claude_stop)
     monkeypatch.setattr(control, "_sleep", lambda s: None)
+    # The own-session stop runs after the call returns: run it inline, so the stop and
+    # its lineage record land before the test reads them.
+    monkeypatch.setattr(control, "stop", functools.partial(control.stop, spawn=lambda fn: fn()))
     monkeypatch.setattr(hub_adapter.control, "resolve", lambda ref, pid: control.Target(
         pid=os.getppid(), kind="bg", job=CHILD_JOB, name="demo", alive=True,
         is_self=True))
     retired = asyncio.run(hub_adapter.HANDLERS["stop"](
         {"ref": CHILD_JOB, "pid": os.getppid(), "confirm": True, "keep": True}, None))
     assert retired["ok"] and retired["stopping"]
-    assert stopped.wait(5)
+    assert stopped.is_set()
 
     # The daemon drops the stopped worker from its roster and keeps its state.
     home.set_workers({})

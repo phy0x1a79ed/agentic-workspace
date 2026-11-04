@@ -21,7 +21,7 @@ CHECK=0
 
 # name | source under awm/ | file in ~/.claude/hooks | nodes | extra file (same dir as source)
 HOOKS=(
-  "cx-name|services/cch/hooks/name_on_prompt.py|awm-cx-name-hook.py|local miraz|"
+  "cx-name|services/cch/hooks/name_on_prompt.py|awm-cx-name-hook.py|local altair|"
   "reflection|services/cch/hooks/plan_mode_hook.py|awm-reflection-mode.py|local|"
   "brief|services/cch/hooks/brief_on_start.py|awm-brief-hook.py|local|"
   "subagent-cap|services/cch/hooks/subagent_cap.py|awm-subagent-cap.py|local altair|"
