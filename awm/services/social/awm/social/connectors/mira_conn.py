@@ -24,15 +24,12 @@ import logging
 
 from awm.social.connectors.base import (
     Account, Attachment, Channel, Connector, Identity, InboundMessage,
-    OnMessage, file_bytes, slack_reaction,
+    OnMessage, file_bytes,
 )
-from awm.social.emoji import to_name
 
 log = logging.getLogger("awm.social.connectors.mira")
 
 WS_RETRY_MAX_S = 30.0
-# Files ride base64 in one JSON body, under the daemon's 16 MiB request cap.
-MAX_UPLOAD_BYTES = 8 * 1024 * 1024
 
 
 def _to_attachments(items: list) -> list[Attachment]:
@@ -56,9 +53,6 @@ class MiraConnector(Connector):
     def __init__(self, account: Account, on_message: OnMessage) -> None:
         super().__init__(account, on_message)
         self.platform = account.platform
-        if self.platform == "slack":
-            self.sends_files = True
-            self.max_file_bytes = MAX_UPLOAD_BYTES
         self._base = (account.mira_url or "").rstrip("/")
         self._token = account.mira_token or ""
         self._verify = account.mira_verify_tls
@@ -109,6 +103,8 @@ class MiraConnector(Connector):
 
     async def send(self, channel: str, text: str, *, thread: str | None = None,
                    files: list[dict] | None = None) -> dict:
+        if self.platform == "slack":
+            return await super().send(channel, text, thread=thread)  # read only, R127
         body = {"channel": channel, "text": text}
         if thread:
             body["thread"] = thread
@@ -125,17 +121,6 @@ class MiraConnector(Connector):
             "channel_id": resp.get("channel_id", channel),
             "ts": resp.get("ts", ""),
         }
-
-    async def react(
-        self, channel: str, message_id: str, emoji: str, *, remove: bool = False,
-    ) -> dict:
-        if self.platform != "slack":
-            return await super().react(channel, message_id, emoji, remove=remove)
-        name = to_name(emoji)
-        await self._post(f"/v1/{self.platform}/react", {
-            "channel": channel, "message_id": message_id, "emoji": name,
-            "remove": remove})
-        return slack_reaction(self, channel, message_id, name, remove=remove)
 
     async def list_channels(self, *, include_dms: bool = False) -> list[Channel]:
         params = {"include_dms": "true"} if include_dms else {}

@@ -5,7 +5,7 @@ import pytest
 
 from awm.kb import hub_adapter
 
-OPERATOR = ("start", "stop", "restart", "logs", "sync", "snapshot")
+OPERATOR = ("start", "stop", "restart", "logs")
 
 
 def test_every_function_is_a_kb_tool_with_a_handler():
@@ -22,28 +22,16 @@ async def test_operator_verbs_refuse_an_edge_caller(verb):
         await hub_adapter.HANDLERS[verb]({}, as_="user:someone")
 
 
-async def test_recall_passes_only_set_fields(monkeypatch):
-    seen = {}
-
-    async def fake_recall(body, **kw):
-        seen.update(body)
-        return {"hits": []}
-
-    monkeypatch.setattr(hub_adapter.client, "recall", fake_recall)
-    await hub_adapter.HANDLERS["recall"]({"query": "q", "sources": ["posts"], "mode": None, "verb": "recall"},
-                                         as_="user:someone")
-    assert seen == {"query": "q", "sources": ["papers"]}
-
-
-def test_export_is_hidden_and_the_posts_feed_is_gone():
+def test_the_retired_verbs_are_gone():
     by_name = {f["name"]: f for f in hub_adapter.API_MANIFEST["functions"]}
-    assert by_name["export"]["surfaces"] == ["cli", "http"]
-    assert "sweep" not in by_name
-    assert not any(p["name"] in ("project", "scope", "kind", "require_complete", "sources")
-                   for p in by_name["recall"]["params"])
+    assert not {"sweep", "export", "graph", "schema", "sync", "recall", "snapshot", "rank"} & set(by_name)
+    assert not {"recall", "snapshot", "rank"} & set(hub_adapter.HANDLERS)
 
 
-def test_service_toml_declares_the_kb_archive_source():
-    toml = tomllib.loads((Path(hub_adapter.__file__).parents[2] / "service.toml").read_text())
-    assert toml["tool"] == "kb" and toml["tier"] == "off"
-    assert toml["archive"] == [{"name": "kb", "mode": "index", "export": "kb_export"}]
+def test_the_plugin_manifest_declares_the_kb_and_library_archive_sources():
+    toml = tomllib.loads((Path(hub_adapter.__file__).parents[2] / "awm-plugin.toml").read_text())
+    [tool] = toml["tool"]
+    assert tool["name"] == "kb" and tool["tier"] == "off"
+    [service] = toml["service"]
+    assert service["archive"] == [{"name": "kb", "mode": "live", "query": "kb_query", "get": "kb_get"},
+                                  {"name": "library", "mode": "live", "query": "kb_library", "get": "kb_get"}]

@@ -103,7 +103,7 @@ def test_other_domains_untouched():
     assert args["args"]["_caller_pid"] == 5
 
     flat = {}
-    _stamp_caller("journal_fetch", flat, "2488")
+    _stamp_caller("journal_goal_read", flat, "2488")
     assert "_caller_pid" not in flat
 
 
@@ -115,6 +115,15 @@ def test_a_journal_post_is_stamped_with_its_session():
     _stamp_caller("journal", domain, "2488")
     assert domain["args"]["_caller_pid"] == 2488
 
+
+
+def test_every_channel_verb_is_stamped_with_its_holder():
+    flat = {"_caller_pid": 5}
+    _stamp_caller("channel_write", flat, "2488")
+    assert flat["_caller_pid"] == 2488
+    domain = {"verb": "open", "args": {"kind": "room"}}
+    _stamp_caller("channel", domain, None)
+    assert "_caller_pid" not in domain["args"]
 
 # ---------------------------------------------------------------------------
 # `start_other` and `stop_other`: cx's verbs, published under reflection
@@ -247,7 +256,7 @@ class _FakeChannel:
     def function_spec(self, fn):
         return {}
 
-    async def call(self, fn, args, as_=None, timeout=30.0, grants=None):
+    async def call(self, fn, args, as_=None, timeout=30.0):
         self.calls.append((fn, args))
         return {"ok": True}
 
@@ -289,7 +298,7 @@ async def test_svc_door_stamps_from_the_header(monkeypatch):
     assert args["_caller_pid"] == 2488
 
 
-async def test_svc_door_ignores_the_header_on_an_edge_request(monkeypatch, domestic_peers):
+async def test_svc_door_ignores_the_header_on_an_edge_request(monkeypatch, edge_peers):
     args = await _post_svc(monkeypatch, "cx", "start", {"_caller_pid": 999},
                            headers={"X-Awm-Session-Pid": "2488"}, as_="peer:capella")
     assert "_caller_pid" not in args
@@ -327,11 +336,17 @@ async def test_svc_door_with_no_body_still_calls_with_no_args(monkeypatch):
 from awm.gateway.mcp_caller import resolve_caller_pid as _resolve_caller_pid
 
 
-def _sessions(tmp_path, *pids):
-    """A Claude Code sessions dir holding a record for each of `pids`."""
-    for pid in pids:
-        (tmp_path / f"{pid}.json").write_text("{}")
-    return str(tmp_path)
+@pytest.fixture
+def sessions(monkeypatch):
+    """reflection's answer for a pid: a session when its pid is in the returned set."""
+    from awm.gateway import mcp_caller
+
+    known: set[int] = set()
+    monkeypatch.setattr(mcp_caller, "_cache", {})
+    monkeypatch.setattr(mcp_caller, "_ask_reflection",
+                        lambda pid: {"ok": True, "session_id": "cc1"} if pid in known
+                        else {"ok": True, "known": False})
+    return known
 
 
 def _chain(parent_of):
@@ -339,87 +354,70 @@ def _chain(parent_of):
     return lambda pid: parent_of.get(pid)
 
 
-def test_direct_child_resolves_to_the_parent(tmp_path):
+def test_direct_child_resolves_to_the_parent(sessions):
+    sessions.update({100})
     # The ordinary case: `.mcp.json` runs the interpreter directly, so the REPL
     # is our parent and the walk stops before it starts.
     got = _resolve_caller_pid(
-        100, sessions_dir=_sessions(tmp_path, 100), ppid_of=_chain({100: 1}))
+        100, ppid_of=_chain({100: 1}))
     assert got == 100
 
 
-def test_walks_past_a_wrapper_process(tmp_path):
+def test_walks_past_a_wrapper_process(sessions):
+    sessions.update({300})
     # The regression: `mamba run -n awm awm-mcp` puts pid 200 between the proxy
     # and the REPL at 300. Naming 200 is what made reflection refuse.
     got = _resolve_caller_pid(
-        200, sessions_dir=_sessions(tmp_path, 300), ppid_of=_chain({200: 300, 300: 1}))
+        200, ppid_of=_chain({200: 300, 300: 1}))
     assert got == 300
 
 
-def test_no_session_in_the_chain_returns_the_parent_unchanged(tmp_path):
+def test_no_session_in_the_chain_returns_the_parent_unchanged(sessions):
     # A genuine non-Claude caller must refuse exactly as it did before the walk
     # existed — the walk may not invent an identity.
     got = _resolve_caller_pid(
-        200, sessions_dir=_sessions(tmp_path), ppid_of=_chain({200: 300, 300: 1}))
+        200, ppid_of=_chain({200: 300, 300: 1}))
     assert got == 200
 
 
-def test_stops_at_the_nearest_session_not_an_outer_one(tmp_path):
+def test_stops_at_the_nearest_session_not_an_outer_one(sessions):
+    sessions.update({400, 500})
     # An agent nested inside another agent: 400 is our own REPL, 500 is the
     # session that spawned it. Resolving to 500 would type into a *different*
     # agent's prompt, so first-match is a safety property, not an optimisation.
     got = _resolve_caller_pid(
         200,
-        sessions_dir=_sessions(tmp_path, 400, 500),
         ppid_of=_chain({200: 400, 400: 500, 500: 1}),
     )
     assert got == 400
 
 
-def test_walk_is_bounded(tmp_path):
+def test_walk_is_bounded(sessions):
+    sessions.update({999})
     # A pathological or cyclic chain must not spin; it falls back to the parent.
     got = _resolve_caller_pid(
-        200, sessions_dir=_sessions(tmp_path, 999), ppid_of=lambda pid: pid + 1,
+        200, ppid_of=lambda pid: pid + 1,
         max_hops=4)
     assert got == 200
 
 
-def test_stops_at_an_opencode_repl_pid(tmp_path):
-    # OpenCode writes no per-pid record file, so the walk must name the process
-    # whose exe is `opencode` — the direct analogue of the claude record stop.
-    got = _resolve_caller_pid(
-        200, sessions_dir=_sessions(tmp_path),
-        ppid_of=_chain({200: 400, 400: 1}),
-        is_opencode=lambda pid: pid == 400)
-    assert got == 400
-
-
-def test_opencode_stop_respects_first_match_too(tmp_path):
-    # Same safety property as the claude path: an agent nested inside another
-    # resolves to its own REPL, never to the session that spawned it.
-    got = _resolve_caller_pid(
-        200, sessions_dir=_sessions(tmp_path),
-        ppid_of=_chain({200: 400, 400: 500, 500: 1}),
-        is_opencode=lambda pid: pid in (400, 500))
-    assert got == 400
-
-
-def test_a_plain_process_does_not_stop_the_walk(tmp_path):
-    # The default `is_opencode` reads /proc; injected here as False so a wrapper
-    # (bash) between the proxy and the opencode REPL is walked past.
-    got = _resolve_caller_pid(
-        200, sessions_dir=_sessions(tmp_path),
-        ppid_of=_chain({200: 300, 300: 1}),
-        is_opencode=lambda pid: pid == 300)
-    assert got == 300
-
-
-def test_stops_at_init(tmp_path):
+def test_stops_at_init(sessions):
     # pid 1 is never a Claude session; walking into it (or past a vanished
     # process, where ppid_of returns None) ends the walk.
     assert _resolve_caller_pid(
-        200, sessions_dir=_sessions(tmp_path), ppid_of=_chain({200: 1})) == 200
+        200, ppid_of=_chain({200: 1})) == 200
     assert _resolve_caller_pid(
-        200, sessions_dir=_sessions(tmp_path), ppid_of=lambda pid: None) == 200
+        200, ppid_of=lambda pid: None) == 200
+
+
+def test_no_answer_from_reflection_names_the_parent_unchanged(sessions, monkeypatch):
+    from awm.gateway import mcp_caller
+
+    def down(pid):
+        raise mcp_caller.LookupUnavailable("reflection is not up")
+
+    monkeypatch.setattr(mcp_caller, "_ask_reflection", down)
+    assert _resolve_caller_pid(200, ppid_of=_chain({200: 300, 300: 1})) == 200
 
 
 # ---------------------------------------------------------------------------
@@ -496,21 +494,29 @@ def test_trilium_reads_are_not_stamped():
     assert args["args"] == {"_caller_pid": 9}
 
 
-def test_every_tether_verb_is_stamped_so_a_session_answers_to_its_minter():
-    for verb in ("invite", "drain", "run", "send", "cut", "status"):
+def test_every_channel_verb_is_stamped_so_a_channel_answers_to_its_holder():
+    for verb in ("open", "drain", "write", "close", "status", "encrypt"):
         flat = {}
-        _stamp_caller(f"tether_{verb}", flat, "2488")
+        _stamp_caller(f"channel_{verb}", flat, "2488")
         assert flat["_caller_pid"] == 2488, verb
     domain = {"verb": "drain", "args": {"_caller_pid": 1}}
-    _stamp_caller("tether", domain, "2488")
+    _stamp_caller("channel", domain, "2488")
     assert domain["args"]["_caller_pid"] == 2488
 
 
-def test_a_cli_tether_call_is_stamped_with_the_session_it_runs_under(monkeypatch):
+def test_a_cli_channel_call_is_stamped_with_the_session_it_runs_under(monkeypatch):
     """The CLI sends its session through the descendant header; the gateway
     walks it to the session's own pid, as it does for a hook."""
     from awm.gateway import mcp_caller
     monkeypatch.setattr(mcp_caller, "resolve_caller_pid", lambda pid: 550415)
     flat = {}
-    _stamp_caller("tether_run", flat, None, "777")
+    _stamp_caller("channel_write", flat, None, "777")
     assert flat["_caller_pid"] == 550415
+
+
+@pytest.mark.parametrize("name", ["journal_fetch", "search_get"])
+def test_the_reads_that_feed_citations_are_stamped(name):
+    """journal fetch and search get record what a session read (sessions.md R15)."""
+    flat = {"_caller_pid": 1}
+    _stamp_caller(name, flat, "2488")
+    assert flat["_caller_pid"] == 2488

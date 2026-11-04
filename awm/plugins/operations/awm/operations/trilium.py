@@ -1,0 +1,74 @@
+"""The board's way into deneb's vault: the ``trilium`` tool, never ETAPI (fleet.md R105, R87 item 3).
+
+alcor holds no vault token. Each call goes through alcor's gateway to the ``trilium``
+tool on deneb, a singleton service that gives alcor no edge.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+from awm.operations.gateway import GatewayTool
+from awm.operations.relay import Refused
+
+
+class TriliumTool:
+    """The few note verbs the writer, ``board-install`` and the spawn body check use."""
+
+    def __init__(self, peer: str | None = "deneb", tool: Any = None) -> None:
+        self.tool = tool or GatewayTool("trilium", peer=peer, timeout=20)
+
+    def _call(self, verb: str, **args: Any) -> Any:
+        return self.tool.call_sync(verb, {k: v for k, v in args.items() if v is not None})
+
+    def note(self, note_id: str) -> dict[str, Any] | None:
+        """The note with its attributes and no body, or None when the vault has none by that id."""
+        try:
+            return self._call("note_get", note_id=note_id, content=False)
+        except Refused as exc:
+            if "404" in str(exc) or "not found" in str(exc).lower():
+                return None
+            raise
+
+    def content(self, note_id: str) -> str:
+        return str(self._call("note_get", note_id=note_id).get("content") or "")
+
+    def create_note(self, parent: str, note_id: str, title: str, type_: str, content: str = "",
+                    mime: str | None = None, labels: dict[str, str] | None = None) -> None:
+        """Create a note under a fixed id, so a re-run finds it again.
+
+        The trilium tool's ``note_create`` takes no ``note_id`` today. The call fails until
+        it does: that is a question for Tony, not something the writer works around.
+        """
+        self._call("note_create", parent=parent, note_id=note_id, title=title, type=type_,
+                   content=content, mime=mime, labels=labels or None)
+
+    def update(self, note_id: str, *, title: str | None = None, content: str | None = None,
+               mime: str | None = None, labels: dict[str, str] | None = None) -> None:
+        self._call("note_update", note_id=note_id, title=title, content=content, mime=mime,
+                   labels=labels or None)
+
+    def label_delete(self, note_id: str, name: str) -> None:
+        self._call("attr_delete", note_id=note_id, name=name)
+
+    def relation(self, note_id: str, name: str, target: str) -> None:
+        self._call("attr_set", note_id=note_id, name=name, value=target, type="relation")
+
+    def search(self, query: str, limit: int = 5) -> list[dict[str, Any]]:
+        return list((self._call("note_search", query=query, limit=limit) or {}).get("results") or [])
+
+    def children(self, note_id: str) -> list[dict[str, Any]]:
+        return list((self._call("note_children", note_id=note_id) or {}).get("children") or [])
+
+    def create(self, parent: str, title: str, content: str, *, type_: str = "code",
+               mime: str | None = None, labels: dict[str, str] | None = None) -> str:
+        """A new note under a parent, its id chosen by Trilium."""
+        return self._call("note_create", parent=parent, title=title, content=content, type=type_,
+                          mime=mime, labels=labels or None)["note_id"]
+
+    def delete_note(self, note_id: str) -> None:
+        try:
+            self._call("note_delete", note_id=note_id)
+        except Refused as exc:
+            if "404" not in str(exc) and "not found" not in str(exc).lower():
+                raise

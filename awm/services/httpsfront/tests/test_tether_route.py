@@ -121,10 +121,6 @@ def test_the_edge_asserts_no_identity_it_did_not_verify():
 
 
 def test_the_callers_address_reaches_the_relay_on_the_plain_leg():
-    """The only leg where it can. The edge forwards no client address across a
-    WebSocket upgrade, so the relay's per-address budget is counted on this
-    request or on nothing — which is why the owner's client claims a ticket
-    before it opens a socket."""
     seen, handler = _recorder()
     with _client(_app(), handler) as c:
         c.post("/tether/claim/7", headers={"CF-Connecting-IP": "203.0.113.9"})
@@ -234,3 +230,39 @@ def test_a_ticket_of_the_wrong_shape_never_becomes_a_socket(monkeypatch):
 def test_a_socket_on_a_path_the_mount_refuses_never_opens(monkeypatch):
     seen = _ws_target(monkeypatch, _app(), "/tether/health")
     assert seen == {}
+
+
+def test_a_rooms_socket_carries_the_callers_address(monkeypatch):
+    """The relay keys a room's miss budget on the address, so each guesser over
+    a websocket spends its own budget rather than one shared one."""
+    captured: dict = {}
+
+    async def _fake_connect(url, *, additional_headers=None, **kw):
+        captured["url"] = url
+        captured["headers"] = {k.lower(): v
+                               for k, v in (additional_headers or {}).items()}
+        raise RuntimeError("upstream refused")
+
+    monkeypatch.setattr(proxy.websockets, "connect", _fake_connect)
+    _, handler = _recorder()
+    with _client(_app(), handler) as c:
+        try:
+            with c.websocket_connect("/room/acre-anchor-kettle/ws",
+                                     headers={"CF-Connecting-IP": "203.0.113.9"}):
+                pass
+        except Exception:  # noqa: BLE001 — the reject is the expected path
+            pass
+    assert captured["url"] == "ws://127.0.0.1:12520/room/acre-anchor-kettle/ws"
+    assert captured["headers"]["cf-connecting-ip"] == "203.0.113.9"
+    assert "x-forwarded-for" in captured["headers"]
+    assert "x-awm-as" not in captured["headers"]
+
+
+def test_a_room_reaches_the_relay_with_its_path_unchanged():
+    seen, handler = _recorder()
+    with _client(_app(), handler) as c:
+        c.get("/room/acre-anchor-kettle")
+        assert seen["url"] == "http://127.0.0.1:12520/room/acre-anchor-kettle"
+        c.post("/room", headers={"Authorization": "Bearer relay-secret"})
+        assert seen["url"] == "http://127.0.0.1:12520/room"
+        assert seen["headers"]["authorization"] == "Bearer relay-secret"

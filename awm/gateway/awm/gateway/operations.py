@@ -100,7 +100,6 @@ class Operation:
     peer_only: bool = False
     tags: list[str] = field(default_factory=list)
     effect: str = "write"
-    category: str | None = None
     tool: str = ""
     verb: str = ""
 
@@ -585,7 +584,7 @@ def _make_service_cli_handler(tool: dict, api_func: Callable) -> Callable:
 #: proxy names it for every call. Narrow on purpose: for the other stamped tools
 #: a call that names a session is held to that session's gates, and a CLI call
 #: has always been exempt from them.
-CALLER_NAMING_TOOLS = frozenset({"tether"})
+CALLER_NAMING_TOOLS = frozenset({"channel"})
 
 
 def _caller_headers(tool_name: str) -> dict[str, str]:

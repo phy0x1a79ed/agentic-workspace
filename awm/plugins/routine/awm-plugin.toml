@@ -1,0 +1,38 @@
+# The plugin contract (plugin-contract.md, redux-core). service.toml carries the
+# same tool for today's Python gateway.
+[plugin]
+name = "routine"
+version = "0.1.0"
+trust = "own"
+# No refresh hook: this plugin runs the deploy, so a hook that restarts it would
+# kill the batch that called it. It refreshes with the project (deploy.toml).
+
+
+[[service]]
+name = "routine"
+path = "."
+run = "run.sh"
+install = "install.sh"
+
+[[tool]]
+name = "routine"
+major = 1
+service = "routine"
+tier = "on"
+
+# The tools the routine plugin calls (install.md R117).
+[[needs.tool]]
+name = "reflection"   # start_other, for fixing and condition agents
+major = 1
+
+[[needs.tool]]
+name = "social"       # send, for the operator's Discord DM
+major = 1
+
+[[needs.tool]]
+name = "journal"      # post, for each deploy mark
+major = 1
+
+[needs]
+secrets = []
+network = []

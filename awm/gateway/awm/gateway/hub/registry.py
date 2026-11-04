@@ -70,7 +70,7 @@ class ServiceRecord:
     # in its `ready` frame (functions/emitters/sessions). The control WS
     # state lives on the rpc.py ControlChannel keyed by service_id.
     api: dict[str, Any] = field(default_factory=dict)
-    # The ``[[archive]]`` tables of the service's ``service.toml``: the search
+    # The ``[[archive]]`` tables of the service's manifest: the search
     # sources it plugs in, read when the service reaches ``ready``.
     archive: list[dict[str, Any]] = field(default_factory=list)
     start_cmd: list[str] = field(default_factory=list)
@@ -90,7 +90,7 @@ class ServiceRecord:
     # the base for its prefix. Eviction pops overlays but never collapses
     # the base on shadow lifecycle.
     is_overlay: bool = False
-    # Human-facing "who" label for an overlay (e.g. "stt-shadow @ web-stt"),
+    # Human-facing "who" label for an overlay (e.g. "mic-shadow @ web-mic"),
     # set by `awm dev shadow`. Used as the evictor identity when this overlay
     # takes over a prefix and evicts the incumbent(s).
     origin: str = ""
@@ -254,7 +254,7 @@ class Registry:
                     f"no base registered for prefix {prefix!r}; cannot shadow"
                 )
             # The new overlay may share a name with an outgoing overlay (e.g.
-            # two worktrees both auto-name `stt-shadow`); that's fine, the
+            # two worktrees both auto-name `mic-shadow`); that's fine, the
             # incumbent is evicted below. It may NOT collide with the base —
             # `_by_name` is (kind, name)-keyed and the base owns that slot.
             if rec.name == stack[0].name and rec.kind == stack[0].kind:

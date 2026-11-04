@@ -1,6 +1,5 @@
 """The agent stamp: the name comes from the session behind the gateway's pid, never from the model."""
 
-import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -14,40 +13,30 @@ from door_stubs import Live  # noqa: E402
 from awm.board import agent, hub_adapter  # noqa: E402
 
 
-def jobs(tmp_path, job="b59c1af9", **state):
-    (tmp_path / job).mkdir()
-    (tmp_path / job / "state.json").write_text(json.dumps(state))
-    return tmp_path
+def test_a_session_is_named_by_what_reflection_reports():
+    record = {"session_id": "cc" + "0" * 32, "hosting": "background", "name": "msm fed shaula"}
+    assert agent.session_name(7, lookup=lambda pid: record) == "msm fed shaula"
 
 
-def test_a_background_job_is_named_by_its_state_file(tmp_path):
-    root = jobs(tmp_path, name="msm fed shaula")
-    record = {"kind": "bg", "jobId": "b59c1af9", "name": "stale seed name"}
-    assert agent.session_name(7, lookup=lambda pid: record, jobs_dir=root) == "msm fed shaula"
+def test_the_default_lookup_asks_reflection(monkeypatch):
+    from awm.gatewayclient import sessions
 
-
-def test_a_job_without_a_state_name_falls_back_to_its_session_record(tmp_path):
-    record = {"kind": "bg", "jobId": "nojob", "name": "from the record"}
-    assert agent.session_name(7, lookup=lambda pid: record, jobs_dir=tmp_path) == "from the record"
-
-
-def test_an_interactive_session_is_named_by_its_record(tmp_path):
-    assert agent.session_name(7, lookup=lambda pid: {"kind": "interactive", "name": "me"},
-                              jobs_dir=tmp_path) == "me"
+    monkeypatch.setattr(sessions, "session_of", lambda pid: {"name": "asked"} if pid == 7 else None)
+    assert agent.session_name(7) == "asked"
 
 
 @pytest.mark.parametrize("pid,record", [
     (None, {"name": "x"}), ("7", {"name": "x"}), (True, {"name": "x"}),
-    (7, None), (7, {}), (7, {"kind": "interactive"}), (7, {"name": "   "})])
-def test_no_pid_no_record_or_no_name_is_none(tmp_path, pid, record):
-    assert agent.session_name(pid, lookup=lambda p: record, jobs_dir=tmp_path) is None
+    (7, None), (7, {}), (7, {"hosting": "terminal"}), (7, {"name": "   "})])
+def test_no_pid_no_record_or_no_name_is_none(pid, record):
+    assert agent.session_name(pid, lookup=lambda p: record) is None
 
 
-def test_a_lookup_that_fails_is_none_and_not_an_error(tmp_path):
+def test_a_lookup_that_fails_is_none_and_not_an_error():
     def broken(pid):
-        raise OSError("no sessions dir")
+        raise OSError("reflection is down")
 
-    assert agent.session_name(7, lookup=broken, jobs_dir=tmp_path) is None
+    assert agent.session_name(7, lookup=broken) is None
 
 
 # -- the relay ----------------------------------------------------------------------

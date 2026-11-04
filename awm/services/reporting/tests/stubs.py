@@ -196,7 +196,7 @@ class FakeCx:
         self._n += 1
         job = f"job{self._n:04d}"
         self.rows.append({"job": job, "name": spec["name"], "state": "idle",
-                          "project": spec["project"], "scope": spec["scope"]})
+                          "project": spec.get("project"), "scope": spec.get("scope")})
         return {"ok": True, "job": job, "link": f"https://claude.ai/code/session_{job}"}
 
 

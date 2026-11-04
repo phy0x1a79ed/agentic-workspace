@@ -26,7 +26,7 @@ from typing import Any
 
 from awm.gatewayclient import ServiceAdapter, spawn_supervised
 
-from awm.dsh import front, harness, settings
+from awm.dsh import front, harness, sessions, settings
 
 log = logging.getLogger("awm.dsh.hub_adapter")
 
@@ -190,7 +190,107 @@ async def _h_logs(args: dict) -> dict:
     return {"tail": tail, "log": await asyncio.to_thread(SUPERVISOR.logs, tail)}
 
 
+# -- harness-ds: the harness contract (harness-contract.md § dsh) -----------
+
+
+def _fork_pid() -> int | None:
+    return SUPERVISOR.snapshot().get("pid")
+
+
+def _contract(fn):
+    """A contract verb: run off the event loop, and a fork fault reads as ok=false."""
+    async def run(args: dict) -> dict:
+        try:
+            return await asyncio.to_thread(fn, args)
+        except sessions.ForkError as exc:
+            return {"ok": False, "error": str(exc)}
+    return run
+
+
+def _hs_find(args: dict) -> dict:
+    row = sessions.find_one(args.get("ref") or "")
+    return {"ok": True, "matches": [row] if row else []}
+
+
+def _hs_status(args: dict) -> dict:
+    try:
+        row = sessions.target(args, _fork_pid())
+    except sessions.ForkError as exc:
+        if not harness.listening():
+            return {"ok": True, "live": False, "state": "stopped"}
+        return {"ok": False, "error": str(exc), "unknown_ref": args.get("session_id")
+                or args.get("ref")}
+    return {"ok": True, **row}
+
+
+def _hs_list(args: dict) -> dict:
+    rows = sessions.rows()
+    for key in ("project", "scope"):
+        if args.get(key):
+            rows = [r for r in rows if r.get(key) == args[key]]
+    return {"ok": True, "sessions": rows}
+
+
+def _hs_send(args: dict) -> dict:
+    if args.get("followup"):
+        return sessions._unsupported("type a follow-up after any command but /compact")
+    return sessions.send(sessions.target(args, _fork_pid()), args["text"])
+
+
+_CONTRACT_HANDLERS = {
+    "platform": lambda a: sessions.platform(),
+    "resolve": lambda a: sessions.resolve(a.get("pid"), _fork_pid()),
+    "find": _hs_find,
+    "status": _hs_status,
+    "list": _hs_list,
+    "send": _hs_send,
+    "interrupt": lambda a: sessions.interrupt(sessions.target(a, _fork_pid())),
+    "start": lambda a: sessions.start(a, workspace=sessions.workspace_root(),
+                                      provider=sessions.provider_name()),
+    "stop": lambda a: sessions.stop(sessions.target(a, _fork_pid())),
+    "resume": lambda a: sessions.resume(sessions.target(a, _fork_pid()), a.get("prompt")),
+    "set": lambda a: sessions.set_(sessions.target(a, _fork_pid()), a,
+                                   sessions.provider_name()),
+    "compact": lambda a: sessions.compact(sessions.target(a, _fork_pid()),
+                                          a.get("followup")),
+}
+
+_TARGET = [{"name": n, "type": t, "required": False} for n, t in
+           (("session_id", "string"), ("ref", "string"), ("pid", "integer"))]
+_CONTRACT_PARAMS = {
+    "platform": [], "resolve": [{"name": "pid", "type": "integer", "required": True}],
+    "find": [{"name": "ref", "type": "string", "required": True}],
+    "status": _TARGET, "interrupt": _TARGET, "stop": _TARGET + [
+        {"name": "keep", "type": "boolean"}, {"name": "confirm", "type": "boolean"}],
+    "list": [{"name": "project", "type": "string"}, {"name": "scope", "type": "string"},
+             {"name": "include_stopped", "type": "boolean"}],
+    "send": _TARGET + [{"name": n, "type": t} for n, t in (
+        ("text", "string"), ("submit", "boolean"), ("confirm", "boolean"),
+        ("followup", "string"), ("delay_ms", "integer"))],
+    "start": [{"name": n, "type": t} for n, t in (
+        ("project", "string"), ("scope", "string"), ("prompt", "string"),
+        ("name", "string"), ("model", "string"), ("effort", "string"),
+        ("preset", "string"), ("trust", "string"), ("task_id", "string"),
+        ("role", "string"), ("started_by", "string"), ("pin", "boolean"),
+        ("suggest", "boolean"), ("isolated", "boolean"), ("pid", "integer"))],
+    "resume": _TARGET + [{"name": "prompt", "type": "string"}],
+    "set": _TARGET + [{"name": n, "type": "string"} for n in ("model", "effort", "name", "cwd")],
+    "compact": _TARGET + [{"name": "followup", "type": "string"},
+                          {"name": "delay_ms", "type": "integer"}],
+}
+
+for _verb in _CONTRACT_HANDLERS:
+    API_MANIFEST["functions"].append({
+        "name": f"harness_{_verb}", "tool": f"harness-ds_{_verb}",
+        "effect": "read" if _verb in ("platform", "resolve", "find", "status", "list")
+        else "write",
+        "surfaces": ["cli", "http"], "timeout": 60,
+        "description": f"Harness contract verb `{_verb}` for DeepSeek harness sessions.",
+        "params": _CONTRACT_PARAMS[_verb]})
+
+
 HANDLERS = {
+    **{f"harness_{v}": _contract(fn) for v, fn in _CONTRACT_HANDLERS.items()},
     "status": _h_status,
     "start": _h_start,
     "stop": _h_stop,

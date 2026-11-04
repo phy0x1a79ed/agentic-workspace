@@ -4,8 +4,8 @@ The environment half is regression cover for a live outage: after mic was
 reduced to a pure consumer, `pacat` inherited systemd's minimal environment,
 which carries no ``XDG_RUNTIME_DIR``. libpulse then cannot find
 ``$XDG_RUNTIME_DIR/pulse/native`` and dies with "Connection refused" on every
-stream — while `virtmic_status` happily reports the daemon healthy, because
-virtmic repairs the variable in its *own* process. The phone connected, `pacat`
+stream — while the sink status happily reported the daemon healthy, because
+the then-separate virtmic service repaired the variable in its *own* process. The phone connected, `pacat`
 died, the socket closed, the browser reconnected, and the whole thing spun at
 ~2 Hz.
 

@@ -1,7 +1,0 @@
-tool = "notes"
-tier = "off"
-
-[[archive]]
-name = "notes"
-mode = "index"
-export = "notes_export"

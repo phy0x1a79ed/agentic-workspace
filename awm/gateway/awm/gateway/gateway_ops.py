@@ -87,8 +87,8 @@ def is_peer_stamp(as_: str | None) -> bool:
 def _book_writer_only(verb: str) -> None:
     """Refuse a peer-book write that arrived under a peer identity.
 
-    Only this node changes its own book, so the refusal holds for a domestic
-    peer as much as a foreign one. No stamp (the local CLI) and a non-peer stamp
+    Only this node changes its own book, so the refusal holds for every peer,
+    whatever its edges. No stamp (the local CLI) and a non-peer stamp
     (a placed agent, an operator session) pass."""
     if is_peer_stamp(_CALLER_AS.get()):
         raise PermissionError(
@@ -104,8 +104,7 @@ def _book_writer_only(verb: str) -> None:
 
 async def _op_status() -> dict[str, Any]:
     """The node's status in one call: the gateway process and its base URL,
-    every service's state, auth's credential rotation, the node role and the
-    compute watchdog.
+    every service's state, auth's credential rotation and the node role.
 
     The first keys are what ``GET /status`` has always answered (the startup
     probe reads them), so the payload only grows. ``active_scopes`` stays 0 until
@@ -132,20 +131,17 @@ async def _op_status() -> dict[str, Any]:
     status["services"] = {row["name"]: row["status"] for row in rows}
     status["services_down"] = [row["name"] for row in rows
                                if row["enabled"] and row["status"] != "ready"]
-    auth, compute = await asyncio.gather(
-        _service_reading("auth", "status"), _service_reading("compute", "status"))
-    status["auth"] = auth
-    status["compute"] = compute
+    status["auth"] = await _service_reading("auth", "status")
     return status
 
 
 def _node_identity() -> dict[str, Any]:
-    from awm.config import node_role, node_swarm
+    from awm.config import edges
 
     try:
-        return {"node_role": node_role(), "swarm": node_swarm()}
-    except ValueError as exc:
-        return {"node_role": None, "node_role_error": str(exc)}
+        return {"role": edges.role(edges.here())}
+    except ValueError as exc:  # an edge list that does not validate
+        return {"role": None, "role_error": str(exc)}
 
 
 _READING_TIMEOUT_S = 1.5
@@ -172,14 +168,6 @@ def _op_restart() -> Any:
     from awm.gateway.core import restart_core
 
     return restart_core()
-
-
-def _op_mcp_sync() -> Any:
-    """Read workspace ``.mcp.json`` and regenerate the backend-specific MCP
-    configs under ``.awm/``."""
-    from awm.gateway.exports import sync_mcp_configs
-
-    return sync_mcp_configs()
 
 
 async def _op_gateway_list() -> dict[str, Any]:
@@ -416,7 +404,7 @@ class ReapRequest(BaseModel):
 
 # Matches the ``awm.<svc>.hub_adapter`` module token in a process cmdline (the
 # only thing a feature service is ever launched as), e.g.
-# ``python -m awm.stt.hub_adapter``. The gateway itself is ``awm.gateway
+# ``python -m awm.mic.hub_adapter``. The gateway itself is ``awm.gateway
 # serve`` and the MCP proxy is ``awm-mcp`` — neither matches.
 _HUB_ADAPTER_RE = re.compile(r"awm\.[\w.]*hub_adapter")
 
@@ -706,33 +694,18 @@ class PeerJoinRequest(BaseModel):
     name: str
     edge_url: str
     ssh_alias: str | None = None
-    relation: str | None = None
-    swarm: str | None = None
-    principal: str | None = None
-    role: str | None = None
     public_key: str | None = None
 
 
 class PeerSetRequest(BaseModel):
-    """Body for ``peer set`` — change trust fields on a recorded peer."""
+    """Body for ``peer set`` — change a recorded peer's pinned key."""
 
     name: str
-    relation: str | None = None
-    swarm: str | None = None
-    principal: str | None = None
-    role: str | None = None
     public_key: str | None = None
 
 
-class PeerGrantRequest(BaseModel):
-    """Body for ``peer grant`` / ``peer revoke`` — one archive source for one peer."""
-
-    name: str
-    category: str
-
-
 def _op_peer_join(req: PeerJoinRequest) -> dict[str, Any]:
-    """Record (or update) a peer: name → HTTPS edge URL + ssh alias + trust record.
+    """Record (or update) a peer: name → HTTPS edge URL + ssh alias + pinned key.
 
     Local to this node's book. Run it on both nodes to make the relationship
     mutual (each side records the other) — the gateway never syncs peers.
@@ -741,9 +714,7 @@ def _op_peer_join(req: PeerJoinRequest) -> dict[str, Any]:
     from awm.gateway import peers
 
     return {"peer": peers.add(
-        req.name, req.edge_url, req.ssh_alias, relation=req.relation,
-        swarm=req.swarm, principal=req.principal, role=req.role,
-        public_key=req.public_key)}
+        req.name, req.edge_url, req.ssh_alias, public_key=req.public_key)}
 
 
 def _op_peer_add(req: PeerJoinRequest) -> dict[str, Any]:
@@ -753,36 +724,11 @@ def _op_peer_add(req: PeerJoinRequest) -> dict[str, Any]:
 
 
 def _op_peer_set(req: PeerSetRequest) -> dict[str, Any]:
-    """Update a recorded peer's relation, swarm, principal, role or public key.
-
-    Setting ``public_key`` pins the key and recomputes its fingerprint.
-    """
+    """Pin a recorded peer's public key and recompute its fingerprint."""
     _book_writer_only("set")
     from awm.gateway import peers
 
-    return {"peer": peers.update(
-        req.name, relation=req.relation, swarm=req.swarm,
-        principal=req.principal, role=req.role, public_key=req.public_key)}
-
-
-def _op_peer_grant(req: PeerGrantRequest) -> dict[str, Any]:
-    """Grant a foreign peer one archive source (e.g. ``journals``)."""
-    _book_writer_only("grant")
-    from awm.gateway import peers
-
-    record, warning = peers.grant(req.name, req.category)
-    out: dict[str, Any] = {"peer": record}
-    if warning:
-        out["warning"] = warning
-    return out
-
-
-def _op_peer_revoke(req: PeerGrantRequest) -> dict[str, Any]:
-    """Revoke one read category from a peer."""
-    _book_writer_only("revoke")
-    from awm.gateway import peers
-
-    return {"peer": peers.revoke(req.name, req.category)}
+    return {"peer": peers.update(req.name, public_key=req.public_key)}
 
 
 def _op_peer_list() -> dict[str, Any]:
@@ -793,7 +739,7 @@ def _op_peer_list() -> dict[str, Any]:
 
 
 def _op_peer_resolve(name: str) -> dict[str, Any]:
-    """Resolve one peer name to its full record (edge URL, relation, key...). 404 if unknown.
+    """Resolve one peer name to its full record (edge URL, ssh alias, key). 404 if unknown.
 
     Pure directory lookup — it returns an address and never proxies. Callers use
     the address to reach the peer's edge directly.
@@ -806,16 +752,8 @@ def _op_peer_resolve(name: str) -> dict[str, Any]:
     return {"peer": entry}
 
 
-def _peer_trust_params() -> list[Param]:
+def _peer_key_params() -> list[Param]:
     return [
-        Param(name="relation", type="string", required=False, cli_type="option",
-              description="domestic (same swarm, fully trusted) or foreign."),
-        Param(name="swarm", type="string", required=False, cli_type="option",
-              description="Swarm the peer belongs to (lowercase slug)."),
-        Param(name="principal", type="string", required=False, cli_type="option",
-              description="Short name of the person the peer acts for."),
-        Param(name="role", type="string", required=False, cli_type="option",
-              description="fleet or station."),
         Param(name="public_key", type="string", required=False, cli_type="option",
               description="Peer's ed25519 public key, base64 of the raw 32 bytes."),
     ]
@@ -830,7 +768,7 @@ def _peer_join_params() -> list[Param]:
               description="Peer HTTPS edge URL (bare host:port → https://)."),
         Param(name="ssh_alias", type="string", required=False, cli_type="option",
               description="ssh host for the $AWM_PEER_CRED fetch (default: name)."),
-        *_peer_trust_params(),
+        *_peer_key_params(),
     ]
 
 
@@ -987,7 +925,7 @@ GATEWAY_OPERATIONS: list[Operation] = [
         name="awm_status",
         tool="awm", verb="status",
         description="This node's status in one call: gateway and its base URL, every service's state, "
-                    "auth rotation, node role and the compute watchdog.",
+                    "auth rotation and node role.",
         service_func=_op_status,
         http_method="GET", http_path="/status",
         cli_group="gateway", cli_command="status",
@@ -1004,16 +942,6 @@ GATEWAY_OPERATIONS: list[Operation] = [
         # op from being an unlabelled CLI entry.
         cli_group="gateway", cli_command="restart",
         output=JsonOutput(), surfaces=_HTTP,
-        effect="write",
-    ),
-    Operation(
-        name="awm_mcp_sync",
-        tool="awm", verb="mcp_sync",
-        description="Read workspace .mcp.json and regenerate backend-specific MCP configs under .awm/.",
-        service_func=_op_mcp_sync,
-        http_method="POST", http_path="/mcp-sync",
-        cli_group="gateway", cli_command="mcp-sync",
-        output=JsonOutput(), surfaces=_CLI_HTTP,
         effect="write",
     ),
     Operation(
@@ -1133,8 +1061,8 @@ GATEWAY_OPERATIONS: list[Operation] = [
         name="operations_peer_join",
         tool="operations", verb="peer_join",
         description="Record a peer node (name → HTTPS edge URL + ssh alias, plus "
-                    "relation, swarm, principal, role, public key) in this node's "
-                    "address book. Run on both nodes for a mutual link.",
+                    "public key) in this node's address book. Who may call whom "
+                    "comes from the fleet edge list, not the book.",
         service_func=_op_peer_join,
         http_method="POST", http_path="/peers",
         cli_group="peer", cli_command="join",
@@ -1161,8 +1089,7 @@ GATEWAY_OPERATIONS: list[Operation] = [
     Operation(
         name="operations_peer_set",
         tool="operations", verb="peer_set",
-        description="Change a recorded peer's relation, swarm, principal, role or "
-                    "public key. Setting the key pins it and computes its fingerprint.",
+        description="Pin a recorded peer's public key and compute its fingerprint.",
         service_func=_op_peer_set,
         http_method="POST", http_path="/peers/set",
         cli_group="peer", cli_command="set",
@@ -1171,45 +1098,7 @@ GATEWAY_OPERATIONS: list[Operation] = [
         params=[
             Param(name="name", type="string", required=True, cli_type="argument",
                   description="Peer node name to update."),
-            *_peer_trust_params(),
-        ],
-        surfaces=_CLI_HTTP,
-        effect="write",
-    ),
-    Operation(
-        name="operations_peer_grant",
-        tool="operations", verb="peer_grant",
-        description="Grant a foreign peer one archive source (a name from search "
-                    "sources, e.g. journals). Meaningless for a domestic peer; "
-                    "the result warns.",
-        service_func=_op_peer_grant,
-        http_method="POST", http_path="/peers/grant",
-        cli_group="peer", cli_command="grant",
-        output=JsonOutput(),
-        request_model=PeerGrantRequest,
-        params=[
-            Param(name="name", type="string", required=True, cli_type="argument",
-                  description="Peer node name."),
-            Param(name="category", type="string", required=True, cli_type="argument",
-                  description="Archive source to grant (lowercase slug)."),
-        ],
-        surfaces=_CLI_HTTP,
-        effect="write",
-    ),
-    Operation(
-        name="operations_peer_revoke",
-        tool="operations", verb="peer_revoke",
-        description="Revoke one read category from a peer.",
-        service_func=_op_peer_revoke,
-        http_method="POST", http_path="/peers/revoke",
-        cli_group="peer", cli_command="revoke",
-        output=JsonOutput(),
-        request_model=PeerGrantRequest,
-        params=[
-            Param(name="name", type="string", required=True, cli_type="argument",
-                  description="Peer node name."),
-            Param(name="category", type="string", required=True, cli_type="argument",
-                  description="Read category to revoke."),
+            *_peer_key_params(),
         ],
         surfaces=_CLI_HTTP,
         effect="write",
@@ -1218,7 +1107,7 @@ GATEWAY_OPERATIONS: list[Operation] = [
         name="operations_peer_list",
         tool="operations", verb="peer_list",
         description="List recorded peers with every record field (edge URL, "
-                    "relation, swarm, principal, role, key fingerprint, grants).",
+                    "ssh alias, key fingerprint).",
         service_func=_op_peer_list,
         http_method="GET", http_path="/peers",
         cli_group="peer", cli_command="list",

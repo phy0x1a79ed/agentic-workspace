@@ -141,7 +141,7 @@ def _load_tool_catalog() -> list[dict]:
 # ---------------------------------------------------------------------------
 # Generated control-plane commands
 # ---------------------------------------------------------------------------
-# The gateway control plane (status / restart / mcp-sync / hub list+deregister /
+# The gateway control plane (status / restart / hub list+deregister /
 # services lifecycle) generates its CLI from GATEWAY_OPERATIONS — one Operation
 # per op, the SAME source that drives the MCP tool + HTTP route. The generator
 # owns the `gateway` / `services` group instances; the hand-authored commands
@@ -673,7 +673,7 @@ def services_listen(
         help="Comma-separated `field=value` pairs an event must all carry, "
              "such as `session=1-748-3f2a`"),
     peer: Optional[str] = typer.Option(
-        None, "--peer", help="Follow the topic on this domestic peer instead"),
+        None, "--peer", help="Follow the topic on this peer instead"),
 ):
     """Print one compact JSON line per event a service emits, until stopped.
 
@@ -976,9 +976,9 @@ def dev_shadow(
         ...,
         help="One or more targets to bring up on the hub in ONE process. Each is "
              "either 'pages/<name>' (a built page from awm/pages/<name>/dist) or a "
-             "path to a service folder / its run.sh (e.g. awm/services/stt). "
-             "Example: awm dev shadow --port 7821 pages/stt awm/services/stt "
-             "awm/services/tts",
+             "path to a service folder / its run.sh (e.g. awm/services/mic). "
+             "Example: awm dev shadow --port 7821 pages/mic awm/services/mic "
+             "awm/services/fileviewer",
     ),
     port: int = typer.Option(
         7821, "--port", "-p",

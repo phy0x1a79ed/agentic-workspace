@@ -24,6 +24,7 @@ from datetime import datetime
 from typing import Any, Awaitable, Callable
 
 from awm import gatewayclient
+from awm.gatewayclient import ids
 from awm.claudedaemon import roster
 from awm.config import node_name
 
@@ -39,6 +40,11 @@ from awm.reporting.swarmboard import TAGS_LABEL, BoardError, SwarmBoard
 
 log = logging.getLogger("awm.reporting.tasks")
 
+
+def _same_session(value: Any) -> str:
+    """A session id in one form, so a journal's R9 stamp matches a card's Claude UUID."""
+    return ids.to_r9(value) or str(value or "")
+
 #: A Trilium note URL: the note is the last segment of the fragment.
 NOTE_URL = re.compile(r"https?://[^\s#]+#(?:[\w-]+/)*([\w-]{4,})")
 CLAIM_WORDS = re.compile(r"\b(claim|attach)\b", re.I)
@@ -46,6 +52,7 @@ CLAIM_WORDS = re.compile(r"\b(claim|attach)\b", re.I)
 CLAIM_TASK = re.compile(r"\bclaim\s+task\s+(\S+)", re.I)
 _CARD_REF = re.compile(r"[0-9a-fA-F]{6,32}")
 JOURNAL_SERVICE = "journal"
+OPERATIONS_SERVICE = "operations"
 JOURNAL_FETCH = "fetch"
 JOURNAL_TOPIC = "posts"
 SCOPES_SERVICE = "scopes"
@@ -89,6 +96,20 @@ def _session_name(pid: Any) -> str | None:
     from awm.board import agent
 
     return agent.session_name(pid)
+
+
+def _caller_record(pid: int) -> dict | None:
+    """The calling session from reflection, in the record shape the ledger keys on."""
+    from awm.gatewayclient.sessions import session_of
+
+    rec = session_of(pid)
+    if not rec:
+        return None
+    return {"pid": rec.get("pid") or pid,
+            "kind": "bg" if rec.get("hosting") == "background" else "interactive",
+            "jobId": rec.get("job"), "procStart": rec.get("proc_start"),
+            "sessionId": rec.get("claude_session_id") or rec.get("session_id"),
+            "cwd": rec.get("cwd")}
 
 
 def blocked_marker(session_id: str):
@@ -174,7 +195,7 @@ FED_STATES = {PLANNED: "planned", ACTIVE: "active", BLOCKED: "blocked", REVIEW: 
 
 class Tasks:
     def __init__(self, ledger: Ledger, board: SwarmBoard, *, node: str | None = None,
-                 resolve: Callable[[int], dict | None] = roster.session_by_pid,
+                 resolve: Callable[[int], dict | None] = _caller_record,
                  job_state: Callable[[str], dict] = _job_state,
                  job_exists: Callable[[str], bool] = _job_exists,
                  dm: Callable[[str], Awaitable[None]] = send_dm,
@@ -299,7 +320,25 @@ class Tasks:
         if who.session_id:
             await self.db.alias(task["id"], who.session_id)
         await self.db.event(task["id"], "created", title)
+        await self._ensure_task_id(who, title)
         return await self.db.get(task["id"])
+
+    async def _ensure_task_id(self, who: Who, title: str) -> None:
+        """Open the task of new work in operations (sessions.md R57 step 1), unless the session has one."""
+        session = ids.to_r9(who.session_id)
+        if not session:
+            return
+        try:
+            have = await self._fetch(OPERATIONS_SERVICE, "task_for_session",
+                                     {"session_id": session}, timeout=30.0)
+            if isinstance(have, dict) and have.get("task_id"):
+                return
+            made = await self._fetch(OPERATIONS_SERVICE, "task_open",
+                                     {"title": title, "session_id": session}, timeout=30.0)
+        except Exception as exc:  # noqa: BLE001 — a card without a task id still tracks the work
+            log.warning("reporting: no task id for %s: %s", who.key, exc)
+            return
+        log.info("reporting: task %s opened for session %s", (made or {}).get("task_id"), session)
 
     async def _file_away(self, task: dict, why: str) -> None:
         """Move ``task`` off its session's key, so the session's next work opens a card of its own."""
@@ -504,6 +543,16 @@ class Tasks:
         no longer finds the old task's key among the jobs, moves it to Pending review.
         """
         task = await self.db.find(self.node, who.key)
+        new = str(args.get("new_session_id") or who.session_id or "")
+        if task is not None and task["session_id"] and new:
+            # The cleared session's new id takes the old one as its parent (sessions.md R13).
+            # The journal holds the lineage (R16).
+            try:
+                await self._fetch(JOURNAL_SERVICE, "session_parent",
+                                  {"session_id": new, "parent": task["session_id"], "how": "clear",
+                                   "node": self.node}, timeout=30.0)
+            except Exception as exc:  # noqa: BLE001 — a lost link never fails the clear
+                log.info("reporting: no parent link for the clear of %s: %s", task["session_id"], exc)
         if task is None or task["state"] not in OPEN:
             return {"ok": True, "tracked": False, "blocked": False}
         old = task["session_id"] or f"task{task['id']}"
@@ -1152,7 +1201,8 @@ class Tasks:
         if session:
             if "/" in task["key"]:  # filed away: the session has moved on to another card
                 return False
-            return session == task["session_id"] or session in await self.db.aliases(task["id"])
+            mine = {_same_session(task["session_id"])} | {_same_session(a) for a in await self.db.aliases(task["id"])}
+            return _same_session(session) in mine
         return (task["project"], task["scope"]) == (post.get("project"), post.get("scope"))
 
     async def _catch_up(self) -> None:

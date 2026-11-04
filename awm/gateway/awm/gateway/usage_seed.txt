@@ -18,21 +18,8 @@
       1 dvc sync
       1 dvc task
       1 fileviewer status
-      3 graphify describe
-      2 graphify refs
-      1 graphify find
-     10 hpcllm serve_request
-      4 hpcllm serve_list
-      3 hpcllm model_list
-      3 hpcllm serve_status
-      2 hpcllm describe
-      1 hpcllm serve_cancel
       2 httpsfront status
-      1 notes describe
       5 peer list
-     17 precedence add
-     10 precedence search
-      7 precedence describe
       3 project create
       3 project describe
       3 project search
@@ -56,7 +43,6 @@
      49 scope describe
      28 scope search
      27 scope create
-     22 scope goal_read
      16 scope refresh
       5 scope heal
       4 scope delete

@@ -19,8 +19,6 @@ set -euo pipefail
 export AWM_PORT="${AWM_PORT:-7821}"
 
 case "${1:-help}" in
-  tts-only)    awm dev shadow services/tts pages/tts ;;
-  stt-only)    awm dev shadow services/stt pages/stt ;;
-  voice)       awm dev shadow services/stt services/tts pages/stt pages/tts ;;
-  help|*)      echo "templates: tts-only | stt-only | voice"; exit 1 ;;
+  mic)         awm dev shadow services/mic pages/mic ;;
+  help|*)      echo "templates: mic"; exit 1 ;;
 esac

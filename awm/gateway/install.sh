@@ -10,8 +10,7 @@
 # Service installation is single-source: there is no hardcoded list of service
 # names here. Every dir under awm/services/ that ships its own install.sh is
 # discovered by glob and installed by running that script — each one owns its
-# own `.runtime-env` sidecar. Dirs without an install.sh (tts, stt, network,
-# packages, hub) are correctly skipped.
+# own `.runtime-env` sidecar. Dirs without an install.sh are skipped.
 set -euo pipefail
 WS="$(git -C "$(dirname "$0")" rev-parse --show-toplevel)"
 export AWM_ENV="${AWM_ENV:-awm}"
@@ -26,6 +25,8 @@ run "$WS/awm/service_components/persistence" --no-deps
 run "$WS/awm/service_components/gatewayclient" --no-deps
 run "$WS/awm/service_components/claudedaemon" --no-deps
 run "$WS/awm/service_components/kept" --no-deps
+run "$WS/awm/plugins/operations/grantlib" --no-deps
+run "$WS/awm/service_components/trustpolicy" --no-deps
 
 # Feature services the gateway loads. Each install.sh owns its own
 # `.runtime-env` sidecar. The glob may match nothing; guard so set -u/-e does

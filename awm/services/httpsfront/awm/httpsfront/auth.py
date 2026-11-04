@@ -83,27 +83,11 @@ def is_machine_sub(sub: str | None) -> bool:
     return sub == "operator" or is_peer_sub(sub)
 
 
-def is_foreign_peer(sub: str | None, relation_of=None) -> bool:
-    """Whether ``sub`` is a node outside this swarm.
-
-    ``peer:<node>`` is foreign unless ``relation_of(node)`` says domestic, so a
-    node the relation source does not know, or no source at all, gets the narrow
-    door. ``relation_of`` is the gate's :meth:`AuthGate.peer_relation`: the
-    relation comes from the same material snapshot that held the key, never a
-    separate read of the book. The legacy bearer is the old node-wide credential
-    and is not foreign.
-    """
-    node = config.caller_peer(sub)
-    if node is None:
-        return False
-    return (relation_of(node) if relation_of else None) != "domestic"
-
-
 def edge_admits_peers() -> bool:
     """Whether this node lets any peer in at its edge (``AWM_EDGE_PEERS``).
 
-    ``0`` closes the inbound side only: the peer book keeps its relations,
-    because this node's own outbound calls pick providers from them.
+    ``0`` closes the inbound side only: this node's own outbound calls still
+    follow its edges.
     """
     return (os.environ.get(EDGE_PEERS_ENV) or "").strip() != "0"
 
@@ -178,13 +162,6 @@ class AuthGate:
         #: Device tokens accepted since the last fetch, ``{id: epoch_seconds}``,
         #: reported to ``auth`` on the next one.
         self._device_used: dict[str, float] = {}
-
-    def peer_relation(self, node: str) -> str | None:
-        """``domestic`` or ``foreign`` for ``node`` per the cached material, else ``None``."""
-        for peer in (self._material or {}).get("peers") or []:
-            if peer.get("name") == node:
-                return peer.get("relation")
-        return None
 
     async def _material_fresh(self) -> dict[str, Any] | None:
         now = time.monotonic()
@@ -306,42 +283,6 @@ class AuthGate:
         """Shared-password login (the autologin link); a token or ``None``."""
         res = await self.verify_login(username=None, password=password, client_ip=None)
         return res.get("token") if res.get("ok") else None
-
-    async def penpot_session(self, username: str, *,
-                             stale_token: str | None = None,
-                             refresh: bool = False) -> str | None:
-        """The Penpot session token to hand ``username``'s browser, or ``None``.
-
-        Penpot keeps accounts of its own, so an awm session alone does not open
-        a design file; the ``auth`` service holds a Penpot credential per person
-        and exchanges it for a session. The edge never sees the credential —
-        only the session it becomes, which is the same split as everything else
-        here: auth mints, the edge enforces.
-
-        ``stale_token`` is the token the browser presented and the caller
-        believes is dead. Passing it makes the re-login *conditional*: if
-        another request has already replaced the cached token, that one comes
-        back instead. Without it a burst of failing requests would each drive
-        their own login.
-
-        ``None`` means there is no Penpot identity to give — no credential
-        recorded, or the ``auth`` service is unreachable. Both degrade to
-        Penpot's own login screen rather than to an error page.
-        """
-        args: dict[str, Any] = {"username": username}
-        if stale_token:
-            args["stale_token"] = stale_token
-        if refresh:
-            args["refresh"] = True
-        try:
-            from awm import gatewayclient
-            res = await gatewayclient.call("auth", "penpot_session", args)
-        except Exception as exc:  # noqa: BLE001 — no credential, or auth is down
-            log.info("edge: no Penpot session for %s: %s", username, exc)
-            return None
-        if isinstance(res, dict) and res.get("token"):
-            return str(res["token"])
-        return None
 
     async def session_ttl_seconds(self) -> float:
         mat = await self._material_fresh()

@@ -1,7 +1,13 @@
-"""The archive's index: documents into the retrieval engine, and the filtered query over them."""
+"""The archive's index: documents in, and the filtered query out in sections.
+
+``exact`` lists the documents that hold the query literally, then those with a
+passage holding all its words. ``related`` ranks the rest by meaning and words.
+A hit names its document; it quotes none of it.
+"""
 
 from __future__ import annotations
 
+import re
 import sqlite3
 from dataclasses import dataclass, field
 from typing import Any, Sequence
@@ -11,7 +17,10 @@ from awm.persistence import embeddings as engine
 
 from awm.search import store
 
-SNIPPET_CHARS = 300
+#: How many matching documents a literal or keyword query weighs before it ranks them.
+CANDIDATES = 1000
+#: The shortest literal the trigram index can find; a shorter one scans.
+TRIGRAM = 3
 #: The journal's spellings of a project ``<p>`` besides its bare name, in the ``project`` column ...
 PROJECT_SPELLINGS = ("task:{}",)
 #: ... and, with an empty ``project``, in the ``scope`` column. ``privacy.canonical`` reads all of them.
@@ -80,19 +89,22 @@ class Filters:
     sources: list[str] = field(default_factory=list)
     project: str = ""
     scope: str = ""
-    kind: str = ""
+    kinds: list[str] = field(default_factory=list)
     after: str = ""
     before: str = ""
     hidden: Sequence[dict] | None = ()
 
     def allowed(self) -> tuple[str, list[Any]]:
-        """The SQL the engine applies before scoring, and its bound values."""
+        """A ``SELECT key`` over the permitted documents, and its bound values."""
         clauses = [f"source IN ({','.join('?' * len(self.sources))})"]
         params: list[Any] = list(self.sources)
-        for column, value in (("project", self.project), ("scope", self.scope), ("kind", self.kind)):
+        for column, value in (("project", self.project), ("scope", self.scope)):
             if value:
                 clauses.append(f"{column} = ?")
                 params.append(value)
+        if self.kinds:
+            clauses.append(f"kind IN ({','.join('?' * len(self.kinds))})")
+            params += self.kinds
         if self.after:
             clauses.append("ts >= ?")
             params.append(self.after)
@@ -115,9 +127,10 @@ def apply_page(conn: sqlite3.Connection, source: str, raw: list[dict[str, Any]])
     rows = [row for _, row in pairs if row]
     emptied = [str(d["id"]) for d, row in pairs if row is None and d.get("id")]
     store.drop_documents(conn, source, emptied)
-    store.put_documents(conn, rows)
+    changed = store.put_documents(conn, rows)
     counts = engine.reindex(conn, store.CORPUS, [store.engine_document(r) for r in rows])
-    return {"documents": len(rows), "skipped": len(raw) - len(rows), "indexed": counts["indexed"]}
+    return {"documents": len(rows), "changed": changed, "skipped": len(raw) - len(rows),
+            "indexed": counts["indexed"]}
 
 
 def reindex(conn: sqlite3.Connection, *, force: bool = False) -> dict[str, Any]:
@@ -126,25 +139,150 @@ def reindex(conn: sqlite3.Connection, *, force: bool = False) -> dict[str, Any]:
     return engine.reindex(conn, store.CORPUS, docs, force=force, prune=True)
 
 
-def search(conn: sqlite3.Connection, query: str, filters: Filters,
-           limit: int) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
-    """Ranked hits over the selected sources, plus the engine's ``degraded`` block if any."""
-    if not filters.sources:
+# -- hits ------------------------------------------------------------------
+
+
+def literal(query: str) -> str:
+    """The text an exact search looks for: the query, without one pair of surrounding quotes."""
+    text = query.strip()
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in "\"'`":
+        text = text[1:-1]
+    return text
+
+
+def _hit(row: sqlite3.Row, match: str, score: float) -> dict[str, Any]:
+    hit = {"source": row["source"], "id": row["doc_id"], "title": row["title"], "ts": row["ts"],
+           "score": round(score, 4), "match": match}
+    hit.update({k: row[k] for k in ("project", "scope", "kind", "url") if row[k]})
+    return hit
+
+
+def exact_literal(conn: sqlite3.Connection, query: str, filters: Filters, limit: int) -> list[dict[str, Any]]:
+    """Documents holding ``query`` as a substring, case-insensitively, as grep would find them.
+
+    A case-sensitive match ranks above a case-folded one, a match in the title
+    above one in the body, more matches above fewer, and then newer first.
+    """
+    needle = literal(query)
+    if not needle.strip() or not filters.sources:
+        return []
+    allowed, params = filters.allowed()
+    if len(needle) >= TRIGRAM:
+        rows = conn.execute(
+            "SELECT d.* FROM documents_exact JOIN documents d ON d.rid = documents_exact.rowid"
+            f" WHERE documents_exact MATCH ? AND d.key IN ({allowed}) ORDER BY d.ts DESC LIMIT ?",
+            ['"' + needle.replace('"', '""') + '"', *params, CANDIDATES]).fetchall()
+    else:
+        rows = conn.execute(
+            f"SELECT * FROM documents WHERE key IN ({allowed})"
+            " AND (instr(lower(title), lower(?)) > 0 OR instr(lower(text), lower(?)) > 0)"
+            " ORDER BY ts DESC LIMIT ?", [*params, needle, needle, CANDIDATES]).fetchall()
+    pattern = re.compile(re.escape(needle), re.IGNORECASE)
+    ranked = []
+    for row in rows:
+        body = len(pattern.findall(row["text"]))
+        head = len(pattern.findall(row["title"]))
+        if not (body or head):
+            continue
+        cased = needle in row["text"] or needle in row["title"]
+        ranked.append(((cased, bool(head), body + head, row["ts"]), row))
+    ranked.sort(key=lambda r: r[0], reverse=True)
+    return [_hit(row, "literal", float(rank[2])) for rank, row in ranked[:limit]]
+
+
+def exact_keyword(conn: sqlite3.Connection, query: str, filters: Filters, limit: int,
+                  skip: set[str] = frozenset(), every: bool = True) -> list[dict[str, Any]]:
+    """Documents with a passage holding every word of the query, best BM25 passage first; ``skip`` names keys to
+    leave out. A document holding only some of the words is left to ``related``, which ranks it by meaning too.
+    ``every=False`` asks for any of the words instead."""
+    expr = engine.fts_query(query)
+    if every:
+        expr = expr.replace(" OR ", " AND ")
+    if not expr or not filters.sources:
+        return []
+    allowed, params = filters.allowed()
+    found = conn.execute(
+        "SELECT p.key, bm25(passages_words) AS rank"
+        " FROM passages_words JOIN passages p ON p.id = passages_words.rowid"
+        f" WHERE passages_words MATCH ? AND p.key IN ({allowed}) ORDER BY rank LIMIT ?",
+        [expr, *params, CANDIDATES * 4]).fetchall()
+    by_key: dict[str, float] = {}
+    for p in found:
+        if p["key"] not in skip and p["key"] not in by_key and len(by_key) < limit:
+            by_key[p["key"]] = p["rank"]
+    if not by_key:
+        return []
+    keys = list(by_key)
+    rows = {r["key"]: r for r in conn.execute(
+        f"SELECT * FROM documents WHERE key IN ({','.join('?' * len(keys))})", keys)}
+    return [_hit(rows[key], "keyword", -rank) for key, rank in by_key.items() if key in rows]
+
+
+def related(conn: sqlite3.Connection, query: str, filters: Filters,
+            limit: int) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+    """Documents nearest the query in meaning and words together.
+
+    The engine fuses cosine with BM25 over any of the query's words. Without a
+    model it ranks by the words alone and says so in the ``degraded`` block.
+    """
+    if not filters.sources or not query.strip():
         return [], None
     allowed, params = filters.allowed()
-    found = engine.search(conn, query, source_type=store.CORPUS, allowed=allowed, params=params,
-                          limit=limit)
-    keys = [h["source_id"] for h in found.hits]
+    result = engine.search(conn, query, source_type=store.CORPUS, allowed=allowed, params=params, limit=limit)
+    match = "keyword" if result.degraded else "meaning"
+    keys = [h["source_id"] for h in result.hits]
     rows = {r["key"]: r for r in conn.execute(
         f"SELECT * FROM documents WHERE key IN ({','.join('?' * len(keys))})", keys)} if keys else {}
-    hits = []
-    for h in found.hits:
-        row = rows.get(h["source_id"])
-        if row is None:
+    return [_hit(rows[h["source_id"]], match, h["score"]) for h in result.hits if h["source_id"] in rows], \
+        result.degraded
+
+
+def exact(conn: sqlite3.Connection, query: str, filters: Filters, limit: int) -> list[dict[str, Any]]:
+    """The ``exact`` section: literal matches, then documents with a passage holding every word."""
+    literal_hits = exact_literal(conn, query, filters, limit)
+    seen = {store.key_of(h["source"], h["id"]) for h in literal_hits}
+    return literal_hits + exact_keyword(conn, query, filters, limit - len(literal_hits), seen)
+
+
+def words(conn: sqlite3.Connection, query: str, filters: Filters, limit: int) -> list[dict[str, Any]]:
+    """Documents with a passage holding any word of the query, best BM25 passage first: the word half of
+    ``related`` for the sources whose meaning half comes from kb."""
+    return exact_keyword(conn, query, filters, limit, every=False)
+
+
+def search(conn: sqlite3.Connection, query: str, filters: Filters,
+           limit: int) -> tuple[dict[str, list[dict[str, Any]]], dict[str, Any] | None]:
+    """The ``exact`` and ``related`` sections over the selected sources, plus the engine's ``degraded`` block.
+
+    ``related`` runs twice as deep as ``limit``, because the merge drops from it
+    every document ``exact`` already holds.
+    """
+    near, degraded = related(conn, query, filters, limit * 2)
+    return {"exact": exact(conn, query, filters, limit), "related": near}, degraded
+
+
+def resolve(conn: sqlite3.Connection, entries: list[dict[str, Any]], filters: Filters,
+            limit: int) -> list[dict[str, Any]]:
+    """Documents for the kb entry index's matches, best first; at most ``limit`` per source.
+
+    An entry names a document and a span of its title or text. A document that is gone, or that the filters
+    exclude, is dropped: the index is rebuilt nightly, so it can name what the archive has since forgotten.
+    """
+    best: dict[str, float] = {}
+    for e in sorted(entries, key=lambda e: -e["score"]):
+        best.setdefault(store.key_of(e["source"], e["doc"]), e["score"])
+    if not best or not filters.sources:
+        return []
+    allowed, params = filters.allowed()
+    keys = list(best)
+    rows = {r["key"]: r for r in conn.execute(
+        f"SELECT * FROM documents WHERE key IN ({','.join('?' * len(keys))}) AND key IN ({allowed})",
+        [*keys, *params])}
+    hits, taken = [], {}
+    for key in keys:
+        row = rows.get(key)
+        if row is None or taken.get(row["source"], 0) >= limit:
             continue
-        hit = {"source": row["source"], "id": row["doc_id"], "title": row["title"],
-               "snippet": " ".join(h["snippet"].split())[:SNIPPET_CHARS], "ts": row["ts"],
-               "score": h["score"]}
-        hit.update({k: row[k] for k in ("project", "scope", "kind", "url") if row[k]})
-        hits.append(hit)
-    return hits, found.degraded
+        taken[row["source"]] = taken.get(row["source"], 0) + 1
+        hits.append(_hit(row, "meaning", best[key]))
+    return hits

@@ -7,7 +7,7 @@ loop runs in ``on_start``.
 Verbs:
   - ``password``        current login password + window (loopback/CLI).
   - ``peer_credential`` current peer credential + its mirror-file path.
-  - ``verify``          login password → signed session token.
+  - ``verify``          shared login password → signed operator session token.
   - ``edge_material``   signing secret + valid peer creds + book peers' public
                         keys for the edge.
   - ``node_key``        this node's public key and fingerprint.
@@ -15,13 +15,9 @@ Verbs:
   - ``rotate``          force a mint now (ops/testing).
   - ``status``          rotation state summary, incl. last push outcome (the
                         gateway's ``awm status`` embeds it).
-  - ``user_add`` / ``user_passwd`` / ``user_disable`` / ``user_list``
-                        static per-user accounts (CLI/HTTP only).
-  - ``penpot_record`` / ``penpot_session`` / ``penpot_rotate`` / ``penpot_list``
-                        the Penpot credential awm holds per person, and the
-                        session the edge exchanges it for (CLI/HTTP only).
   - ``device_mint`` / ``device_list`` / ``device_revoke``
-                        revocable per-device user tokens (CLI/HTTP only).
+                        revocable operator device tokens (CLI/HTTP,
+                        operator only).
   - ``config_get``/``config_set`` from the config contract.
 """
 
@@ -69,14 +65,12 @@ API_MANIFEST: dict[str, Any] = {
             "tool": "awm_verify",
             "effect": "secret",
             "surfaces": _CLI_HTTP,
-            "description": "Validate a login (per-user password when username "
-                           "is given, else the shared password); on success "
-                           "return a signed session token for the edge to set "
-                           "as a cookie. A locked username/IP answers "
-                           "{ok:false, retry_after}.",
+            "description": "Validate the shared login password; on success "
+                           "return a signed operator session token for the "
+                           "edge to set as a cookie. A locked client IP "
+                           "answers {ok:false, retry_after}.",
             "params": [
                 {"name": "password", "type": "string", "required": True},
-                {"name": "username", "type": "string"},
                 {"name": "client_ip", "type": "string"},
             ],
         },
@@ -86,7 +80,7 @@ API_MANIFEST: dict[str, Any] = {
             "effect": "secret",
             "surfaces": _CLI_HTTP,
             "description": "Signing secret + currently-valid peer credentials + "
-                           "each book peer's name, public key and relation + "
+                           "each book peer's name and public key + "
                            "live device-token digests + session-lifetime "
                            "knobs, for the httpsfront edge to enforce auth "
                            "offline. device_used reports the device tokens "
@@ -134,105 +128,18 @@ API_MANIFEST: dict[str, Any] = {
             "params": [],
         },
         {
-            "name": "user_add",
-            "tool": "awm_user_add",
-            "effect": "secret",
-            "surfaces": _CLI_HTTP,
-            "description": "Create a user account. The password is generated "
-                           "server-side and returned once.",
-            "params": [{"name": "username", "type": "string", "required": True}],
-        },
-        {
-            "name": "user_passwd",
-            "tool": "awm_user_passwd",
-            "effect": "secret",
-            "surfaces": _CLI_HTTP,
-            "description": "Reset a user's password to a fresh generated one, "
-                           "returned once. Clears the user's lockout.",
-            "params": [{"name": "username", "type": "string", "required": True}],
-        },
-        {
-            "name": "user_disable",
-            "tool": "awm_user_disable",
-            "effect": "write",
-            "surfaces": _CLI_HTTP,
-            "description": "Disable (default) or re-enable a user account.",
-            "params": [
-                {"name": "username", "type": "string", "required": True},
-                {"name": "disabled", "type": "boolean"},
-            ],
-        },
-        {
-            "name": "user_list",
-            "tool": "awm_user_list",
-            "effect": "read",
-            "surfaces": _CLI_HTTP,
-            "description": "List user accounts (no secrets).",
-            "params": [],
-        },
-        {
-            "name": "penpot_record",
-            "tool": "awm_penpot_record",
-            "effect": "secret",
-            "surfaces": _CLI_HTTP,
-            "description": "Record the Penpot credential awm holds on a user's "
-                           "behalf. Overwrites an existing one, which is how a "
-                           "credential that drifted from Penpot's own profile "
-                           "is repaired. Returns no password.",
-            "params": [
-                {"name": "username", "type": "string", "required": True},
-                {"name": "email", "type": "string", "required": True},
-                {"name": "password", "type": "string", "required": True},
-            ],
-        },
-        {
-            "name": "penpot_session",
-            "tool": "awm_penpot_session",
-            "effect": "secret",
-            "surfaces": _CLI_HTTP,
-            "description": "Log in to Penpot as a named user and return the "
-                           "session cookie for the edge to set. Cached per "
-                           "user; pass stale_token to re-login only if the "
-                           "cache still holds that dead value, or refresh to "
-                           "re-login unconditionally.",
-            "params": [
-                {"name": "username", "type": "string", "required": True},
-                {"name": "stale_token", "type": "string"},
-                {"name": "refresh", "type": "boolean"},
-            ],
-        },
-        {
-            "name": "penpot_rotate",
-            "tool": "awm_penpot_rotate",
-            "effect": "secret",
-            "surfaces": _CLI_HTTP,
-            "description": "Replace the stored Penpot password for one user, "
-                           "or for everyone when username is omitted.",
-            "params": [{"name": "username", "type": "string"}],
-        },
-        {
-            "name": "penpot_list",
-            "tool": "awm_penpot_list",
-            "effect": "read",
-            "surfaces": _CLI_HTTP,
-            "description": "List the recorded Penpot credentials (no secrets).",
-            "params": [],
-        },
-        {
             "name": "device_mint",
             "tool": "awm_device_mint",
             "effect": "secret",
             "surfaces": _CLI_HTTP,
-            "description": "Mint a revocable device token that acts as a user, "
-                           "for an unattended device or app that must not "
-                           "store a password. The token is returned once. The "
-                           "operator may mint for anyone; a user only for "
-                           "themself. scope narrows the token to a few exact "
+            "description": "Mint a revocable operator device token, for an "
+                           "unattended device or app that must not store a "
+                           "password. The token is returned once. Operator "
+                           "only. scope narrows the token to a few exact "
                            "request shapes: avatar-stage admits only the "
                            "avatar stage session (POST "
                            "/svc/avatar/session/stage and its WebSocket).",
             "params": [
-                {"name": "username", "type": "string", "required": True},
                 {"name": "label", "type": "string", "required": True},
                 {"name": "scope", "type": "string"},
             ],
@@ -242,10 +149,8 @@ API_MANIFEST: dict[str, Any] = {
             "tool": "awm_device_list",
             "effect": "read",
             "surfaces": _CLI_HTTP,
-            "description": "List device tokens (no secrets): every user's for "
-                           "the operator, or one user's when username is "
-                           "given; a user sees only their own.",
-            "params": [{"name": "username", "type": "string"}],
+            "description": "List device tokens (no secrets). Operator only.",
+            "params": [],
         },
         {
             "name": "device_revoke",
@@ -253,7 +158,8 @@ API_MANIFEST: dict[str, Any] = {
             "effect": "write",
             "surfaces": _CLI_HTTP,
             "description": "Revoke a device token by id. The edge stops "
-                           "honouring it within its ~30 s material refresh.",
+                           "honouring it within its ~30 s material refresh. "
+                           "Operator only.",
             "params": [{"name": "id", "type": "string", "required": True}],
         },
     ],
@@ -273,14 +179,6 @@ HANDLERS: dict[str, Any] = {
     "sign_peer_token": service.h_sign_peer_token,
     "rotate": service.h_rotate,
     "status": service.h_status,
-    "user_add": service.h_user_add,
-    "user_passwd": service.h_user_passwd,
-    "user_disable": service.h_user_disable,
-    "user_list": service.h_user_list,
-    "penpot_record": service.h_penpot_record,
-    "penpot_session": service.h_penpot_session,
-    "penpot_rotate": service.h_penpot_rotate,
-    "penpot_list": service.h_penpot_list,
     "device_mint": service.h_device_mint,
     "device_list": service.h_device_list,
     "device_revoke": service.h_device_revoke,

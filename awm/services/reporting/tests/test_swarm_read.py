@@ -141,16 +141,17 @@ async def test_a_federation_id_is_pointed_at_the_board_verbs(runtime):
     assert out["ok"] is False and "no Trilium note" in out["error"]
 
 
-async def test_the_board_answers_this_node_and_domestic_peers_only(runtime, monkeypatch):
-    monkeypatch.setattr(hub_adapter, "peer_relation", {"deneb": "domestic", "caviar": "foreign"}.get)
+async def test_the_board_answers_this_node_and_peers_that_reach_it_only(runtime, fleet):
+    fleet({"testnode": "homebase", "deneb": "laptop", "caviar": "laptop"},
+          {"deneb": ["testnode"], "testnode": ["caviar"]})
     verb = hub_adapter.HANDLERS["swarm_list"]
     assert (await verb({}, "peer:deneb"))["ok"] is True
-    for caller in ("peer:caviar", "peer:stranger", "user:guest"):
+    for caller in ("peer:caviar", "peer:stranger", "peer", "user:guest"):
         out = await verb({}, caller)
-        assert out["ok"] is False and "domestic" in out["error"]
+        assert out["ok"] is False and "reach this node" in out["error"]
 
 
-async def test_post_signs_with_the_session_and_node(runtime, monkeypatch):
+async def test_post_signs_with_the_session_and_node(runtime, monkeypatch, fleet):
     from awm.board import agent
 
     monkeypatch.setattr(agent, "session_name", lambda pid: "fxdiff-design" if pid == 42 else None)
@@ -158,13 +159,13 @@ async def test_post_signs_with_the_session_and_node(runtime, monkeypatch):
     out = await hub_adapter.HANDLERS["swarm_message_post"](
         {"card_id": runtime.board.card, "body": "renders look right", "_caller_pid": 42}, None)
     assert out["ok"] is True and out["message"]["from"] == "fxdiff-design on deneb"
-    monkeypatch.setattr(hub_adapter, "peer_relation", lambda name: "domestic")
+    fleet({"deneb": "homebase", "capella": "laptop"}, {"capella": ["deneb"]})
     out = await hub_adapter.HANDLERS["swarm_message_post"](
         {"card_id": runtime.board.card, "body": "from afar"}, "peer:capella")
     assert out["message"]["from"] == "a session on capella"
 
 
-async def test_file_fetch_lands_read_only_in_quarantine(runtime, monkeypatch, tmp_path):
+async def test_file_fetch_lands_read_only_in_quarantine(runtime, monkeypatch, tmp_path, fleet):
     monkeypatch.setenv("AWM_BOARD_QUARANTINE", str(tmp_path / "q"))
     card = runtime.board.card
     att = runtime.board.tri.attach(card, "../render.png", b"\x89PNG", mime="image/png")
@@ -174,5 +175,5 @@ async def test_file_fetch_lands_read_only_in_quarantine(runtime, monkeypatch, tm
     assert out["ok"] is True and path.startswith(str(tmp_path / "q" / "swarm" / card / att))
     assert open(path, "rb").read() == b"\x89PNG" and not os.access(path, os.W_OK)
     assert (await fetch({"card_id": card, "file_id": att}, None))["path"] == path
-    monkeypatch.setattr(hub_adapter, "peer_relation", lambda name: "domestic")
+    fleet({"testnode": "homebase", "capella": "laptop"}, {"capella": ["testnode"]})
     assert (await fetch({"card_id": card, "file_id": att}, "peer:capella"))["ok"] is False

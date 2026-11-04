@@ -1,4 +1,4 @@
-"""Every service manifest verb declares a valid effect and a valid grant category.
+"""Every service manifest verb declares a valid effect and no grant category.
 
 The services run in their own processes with their own dependencies, so this
 reads each ``hub_adapter.py`` statically instead of importing it.
@@ -11,12 +11,12 @@ from pathlib import Path
 
 import pytest
 
-from awm.config import ARCHIVE_CATEGORY, EFFECTS, LEGACY_GRANTS
-from awm.gateway.hub import discovery
+from awm.config import EFFECTS
 
 pytestmark = [pytest.mark.unit]
 
 SERVICES = Path(__file__).resolve().parents[2] / "services"
+PLUGINS = Path(__file__).resolve().parents[2] / "plugins"
 
 # Services whose declarations another owner maintains; they are still validated.
 _OTHER_OWNERS = {"cx", "board", "httpsfront", "scopes"}
@@ -61,14 +61,15 @@ def _function_entries(tree: ast.AST) -> list[dict]:
 
 def _manifests() -> dict[str, list[dict]]:
     found: dict[str, list[dict]] = {}
-    for path in (sorted(SERVICES.glob("*/awm/*/hub_adapter.py"))
-                 + sorted(SERVICES.glob("*/awm/*/service.py"))
-                 + sorted(SERVICES.glob("*/awm/*/operations.py"))
-                 + sorted(SERVICES.glob("*/awm/*/operations/*.py"))):
-        entries = _function_entries(ast.parse(path.read_text()))
-        if entries:
-            found.setdefault(path.parts[len(SERVICES.parts)], []).extend(
-                {**e, "file": str(path.relative_to(SERVICES))} for e in entries)
+    for root in (SERVICES, PLUGINS):
+        for path in (sorted(root.glob("*/awm/*/hub_adapter.py"))
+                     + sorted(root.glob("*/awm/*/service.py"))
+                     + sorted(root.glob("*/awm/*/operations.py"))
+                     + sorted(root.glob("*/awm/*/operations/*.py"))):
+            entries = _function_entries(ast.parse(path.read_text()))
+            if entries:
+                found.setdefault(path.parts[len(root.parts)], []).extend(
+                    {**e, "file": str(path.relative_to(root))} for e in entries)
     return found
 
 
@@ -76,7 +77,7 @@ MANIFESTS = _manifests()
 
 
 def test_manifests_found():
-    assert len(MANIFESTS) >= 30
+    assert len(MANIFESTS) >= 25
     assert sum(len(v) for v in MANIFESTS.values()) >= 300
 
 
@@ -86,43 +87,17 @@ def test_declared_effects_are_valid():
     assert not bad, bad
 
 
-def _archive_sources() -> set[str]:
-    return {t["name"] for folder in SERVICES.iterdir() if folder.is_dir()
-            for t in discovery.read_archive(folder)}
-
-
-def test_declared_categories_are_grantable():
-    grantable = _archive_sources() | set(LEGACY_GRANTS) | {ARCHIVE_CATEGORY}
-    bad = [(e["file"], e["name"], e["category"]) for es in MANIFESTS.values()
-           for e in es if e["category"] is not None and e["category"] not in grantable]
-    assert not bad, bad
-
-
-def test_only_read_verbs_carry_a_category():
-    bad = [(e["file"], e["name"], e["effect"]) for es in MANIFESTS.values()
-           for e in es if e["category"] is not None and e["effect"] != "read"]
-    assert not bad, bad
+def test_no_verb_declares_a_grant_category():
+    """Read grants are gone (fleet.md R86): a peer with an edge gets every verb."""
+    leaked = [(e["file"], e["name"]) for es in MANIFESTS.values()
+              for e in es if e["category"] is not None]
+    assert not leaked, leaked
 
 
 def test_every_verb_declares_an_effect():
     missing = [(e["file"], e["name"]) for svc, es in MANIFESTS.items()
                if svc not in _OTHER_OWNERS for e in es if e["effect"] is None]
     assert not missing, missing
-
-
-def test_kb_reads_carry_the_kb_category():
-    kb = {e["name"]: e for e in MANIFESTS["kb"]}
-    assert kb["recall"]["category"] == "kb" and kb["recall"]["effect"] == "read"
-    assert kb["status"]["category"] == "kb"
-    assert kb["start"]["category"] is None
-
-
-def test_no_category_outside_the_archive_services():
-    """Any other read verb stays unreachable by a grant until a category is added."""
-    leaked = [(svc, e["name"]) for svc, es in MANIFESTS.items()
-              if svc not in ("kb", "journal", "search")
-              for e in es if e["category"] is not None]
-    assert not leaked, leaked
 
 
 def test_operation_files_are_scanned():
@@ -132,7 +107,6 @@ def test_operation_files_are_scanned():
 
 def test_relabelled_verbs_are_write():
     by = {(svc, e["name"]): e["effect"] for svc, es in MANIFESTS.items() for e in es}
-    assert by[("stt", "transcribe")] == "write"
     assert by[("rlm-browser", "commands")] == "write"
     assert by[("rlm-browser", "observe")] == "write"
 
@@ -143,4 +117,4 @@ def test_gateway_native_reads():
     assert reads == {"awm_status", "awm_registry_list", "awm_services_list",
                      "operations_peer_list", "operations_peer_resolve",
                      "awm_providers", "awm_config_contracts"}
-    assert all(op.category is None for op in GATEWAY_OPERATIONS)
+    assert all(not hasattr(op, "category") for op in GATEWAY_OPERATIONS)

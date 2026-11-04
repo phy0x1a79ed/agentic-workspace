@@ -1,0 +1,27 @@
+[plugin]
+name = "journal"
+version = "0.1.0"
+trust = "own"
+
+[[service]]
+name = "journal"
+
+[[service.archive]]
+name = "journals"
+mode = "index"
+export = "journal_export"
+topic = "posts"
+
+[[tool]]
+name = "journal"
+major = 1
+tier = "on"
+
+[needs]
+secrets = []
+network = []
+platform = ["linux"]
+
+[[needs.tool]]
+name = "scope"
+major = 1

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import importlib.util
+
 import pytest
 
 pytestmark = [pytest.mark.unit, pytest.mark.smoke]
@@ -93,6 +95,12 @@ class _FakeWeb:
         return {"messages": self._delta.get(channel, [])}
 
 
+#: social declares slack_sdk, but the shared awm test env does not carry it. These
+#: run where social's own install put it.
+needs_slack_sdk = pytest.mark.skipif(importlib.util.find_spec("slack_sdk") is None,
+                                     reason="slack_sdk is not installed in this env")
+
+
 class TestSlackSession:
     def test_build_session_account_from_creds_cmd(self):
         from awm.social import connectors
@@ -105,6 +113,7 @@ class TestSlackSession:
         assert c._session is True
         assert c.account.creds_cmd == "ssh mira awm-slack-creds"
 
+    @needs_slack_sdk
     def test_inline_xoxc_sets_cookie_header(self):
         from awm.social.connectors.base import Account
         from awm.social.connectors.slack_conn import SlackConnector
@@ -139,6 +148,7 @@ class TestSlackSession:
         with pytest.raises(RuntimeError):
             await c._fetch_creds()
 
+    @needs_slack_sdk
     async def test_poll_baselines_then_emits_only_new(self):
         from awm.social.connectors.base import Account
         from awm.social.connectors.slack_conn import SlackConnector
@@ -323,12 +333,14 @@ class TestSlackDms:
         c._web = web
         return c
 
+    @needs_slack_sdk
     async def test_list_channels_excludes_dms_by_default(self):
         web = _FakeDmWeb()
         chans = await self._conn(web).list_channels()
         assert web.calls[0][0] == "conversations_list"
         assert [c.id for c in chans] == ["C1"]
 
+    @needs_slack_sdk
     async def test_list_channels_include_dms_enumerates_ims(self):
         web = _FakeDmWeb()
         chans = await self._conn(web).list_channels(include_dms=True)
@@ -339,6 +351,7 @@ class TestSlackDms:
         # An im has no name → falls back to the peer user id.
         assert next(c.name for c in chans if c.id == "D1") == "UALICE"
 
+    @needs_slack_sdk
     async def test_open_dm_by_user_id(self):
         web = _FakeDmWeb()
         ch = await self._conn(web).open_dm("UALICE")
@@ -347,6 +360,7 @@ class TestSlackDms:
         assert not any(c[0] == "users_list" for c in web.calls)
         assert ("conversations_open", {"users": "UALICE"}) in web.calls
 
+    @needs_slack_sdk
     async def test_open_dm_resolves_name_via_users_list(self):
         web = _FakeDmWeb()
         ch = await self._conn(web).open_dm("alice")
@@ -355,6 +369,7 @@ class TestSlackDms:
         assert any(c[0] == "users_list" for c in web.calls)
         assert ("conversations_open", {"users": "UALICE"}) in web.calls
 
+    @needs_slack_sdk
     async def test_open_dm_unknown_name_raises(self):
         web = _FakeDmWeb()
         with pytest.raises(RuntimeError):

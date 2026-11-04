@@ -59,13 +59,15 @@ def _mode_from_args(a: dict) -> str | None:
         return "rendered" if a.get("graphics") else "headless"
     return mode
 
+#: The seat singleton owns `browser` (fleet.md R102); each tool name is unique (install.md R117 item 2).
+
 API_MANIFEST: dict[str, Any] = {
     "functions": [
         # ---- lifecycle ----
         {
             "name": "acquire",
             "effect": "write",
-            "tool": "browser_acquire",
+            "tool": "rlm-browser_acquire",
             "description": (
                 "Acquire a browser realm session for a game; returns "
                 "{session_id, mode, backend}. mode (default 'headless') is one "
@@ -86,7 +88,7 @@ API_MANIFEST: dict[str, Any] = {
         {
             "name": "release",
             "effect": "write",
-            "tool": "browser_release",
+            "tool": "rlm-browser_release",
             "description": "Release a session: tear its Chrome down and drop the row.",
             "params": [
                 {"name": "session_id", "type": "string", "required": True},
@@ -95,7 +97,7 @@ API_MANIFEST: dict[str, Any] = {
         {
             "name": "reset",
             "effect": "write",
-            "tool": "browser_reset",
+            "tool": "rlm-browser_reset",
             "description": (
                 "Reset a session in place: close every tab, keep the browser + "
                 "slot, open one fresh blank tab."
@@ -107,7 +109,7 @@ API_MANIFEST: dict[str, Any] = {
         {
             "name": "status",
             "effect": "read",
-            "tool": "browser_status",
+            "tool": "rlm-browser_status",
             "description": (
                 "Status of one session (pass session_id) or all (omit it). "
                 "Returns {sessions: [{session_id, game, mode, backend, egress, "
@@ -121,7 +123,7 @@ API_MANIFEST: dict[str, Any] = {
         {
             "name": "tab_open",
             "effect": "write",
-            "tool": "browser_tab_open",
+            "tool": "rlm-browser_tab_open",
             "description": "Open a new tab (optionally at url). Returns {tab_id}.",
             "params": [
                 {"name": "session_id", "type": "string", "required": True},
@@ -131,7 +133,7 @@ API_MANIFEST: dict[str, Any] = {
         {
             "name": "tab_close",
             "effect": "write",
-            "tool": "browser_tab_close",
+            "tool": "rlm-browser_tab_close",
             "description": "Close a tab by tab_id.",
             "params": [
                 {"name": "session_id", "type": "string", "required": True},
@@ -141,7 +143,7 @@ API_MANIFEST: dict[str, Any] = {
         {
             "name": "tab_list",
             "effect": "read",
-            "tool": "browser_tab_list",
+            "tool": "rlm-browser_tab_list",
             "description": "List the session's live tabs. Returns {tabs: [...]}.",
             "params": [
                 {"name": "session_id", "type": "string", "required": True},
@@ -150,7 +152,7 @@ API_MANIFEST: dict[str, Any] = {
         {
             "name": "tab_activate",
             "effect": "write",
-            "tool": "browser_tab_activate",
+            "tool": "rlm-browser_tab_activate",
             "description": "Bring a tab to the foreground by tab_id.",
             "params": [
                 {"name": "session_id", "type": "string", "required": True},
@@ -161,7 +163,7 @@ API_MANIFEST: dict[str, Any] = {
         {
             "name": "observe",
             "effect": "write",
-            "tool": "browser_observe",
+            "tool": "rlm-browser_observe",
             "description": (
                 "Read a tab's RENDERED page (post-JS DOM). Returns "
                 "{tab_id, html, url, title}. Omit tab_id for the active page."
@@ -174,7 +176,7 @@ API_MANIFEST: dict[str, Any] = {
         {
             "name": "screenshot",
             "effect": "read",
-            "tool": "browser_screenshot",
+            "tool": "rlm-browser_screenshot",
             "description": (
                 "Capture a PNG of a tab. Returns {tab_id, image (base64), "
                 "format}. full_page=true captures beyond the viewport."
@@ -189,7 +191,7 @@ API_MANIFEST: dict[str, Any] = {
         {
             "name": "cdp",
             "effect": "write",
-            "tool": "browser_cdp",
+            "tool": "rlm-browser_cdp",
             "description": (
                 "Relay an arbitrary Chrome DevTools Protocol method to the "
                 "engine and return {result}. This single verb IS the full act "
@@ -210,7 +212,7 @@ API_MANIFEST: dict[str, Any] = {
         {
             "name": "commands",
             "effect": "write",
-            "tool": "browser_commands",
+            "tool": "rlm-browser_commands",
             "description": (
                 "Return the running Chrome's LIVE CDP protocol descriptor "
                 "(/json/protocol): every domain/method/param available through "

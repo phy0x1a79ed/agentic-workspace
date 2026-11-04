@@ -59,7 +59,7 @@ def test_probe_healthy_peer_same_workspace(monkeypatch):
     assert result.detail == "/ws"
 
 
-def test_probe_foreign_holder_wrong_workspace(monkeypatch):
+def test_probe_other_holder_wrong_workspace(monkeypatch):
     monkeypatch.setattr(pu.socket, "socket", lambda *a, **kw: _fake_socket_connects())
     monkeypatch.setattr(
         pu.urllib.request, "urlopen",
@@ -67,12 +67,12 @@ def test_probe_foreign_holder_wrong_workspace(monkeypatch):
     )
     monkeypatch.setattr(pu, "_find_port_holder", lambda h, p: (12345, "awm gateway serve"))
     result = pu.probe_existing_awm("127.0.0.1", 7819, "/ws")
-    assert result.state == "foreign_holder"
+    assert result.state == "other_holder"
     assert result.holder_pid == 12345
     assert "workspace_root" in (result.detail or "")
 
 
-def test_probe_foreign_holder_garbage_response(monkeypatch):
+def test_probe_other_holder_garbage_response(monkeypatch):
     monkeypatch.setattr(pu.socket, "socket", lambda *a, **kw: _fake_socket_connects())
     body = b"not json at all"
     resp = MagicMock()
@@ -83,11 +83,11 @@ def test_probe_foreign_holder_garbage_response(monkeypatch):
     monkeypatch.setattr(pu.urllib.request, "urlopen", MagicMock(return_value=resp))
     monkeypatch.setattr(pu, "_find_port_holder", lambda h, p: (777, "nginx"))
     result = pu.probe_existing_awm("127.0.0.1", 7819, "/ws")
-    assert result.state == "foreign_holder"
+    assert result.state == "other_holder"
     assert result.holder_pid == 777
 
 
-def test_probe_foreign_holder_missing_fields(monkeypatch):
+def test_probe_other_holder_missing_fields(monkeypatch):
     monkeypatch.setattr(pu.socket, "socket", lambda *a, **kw: _fake_socket_connects())
     monkeypatch.setattr(
         pu.urllib.request, "urlopen",
@@ -95,7 +95,7 @@ def test_probe_foreign_holder_missing_fields(monkeypatch):
     )
     monkeypatch.setattr(pu, "_find_port_holder", lambda h, p: (None, None))
     result = pu.probe_existing_awm("127.0.0.1", 7819, "/ws")
-    assert result.state == "foreign_holder"
+    assert result.state == "other_holder"
     assert "missing expected fields" in (result.detail or "")
 
 
@@ -109,10 +109,10 @@ def test_exit_if_healthy_peer_exits_zero(monkeypatch):
     assert ei.value.code == 0
 
 
-def test_exit_if_healthy_peer_exits_one_on_foreign(monkeypatch):
+def test_exit_if_healthy_peer_exits_one_on_another_holder(monkeypatch):
     monkeypatch.setattr(
         pu, "probe_existing_awm",
-        lambda *a, **kw: pu.ProbeResult("foreign_holder", 99, "stranger", "bad"),
+        lambda *a, **kw: pu.ProbeResult("other_holder", 99, "stranger", "bad"),
     )
     with pytest.raises(SystemExit) as ei:
         pu.exit_if_healthy_peer("127.0.0.1", 7819, "/ws")

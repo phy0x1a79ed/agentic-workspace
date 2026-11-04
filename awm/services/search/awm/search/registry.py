@@ -1,6 +1,7 @@
 """The plug-in registry: which archive sources the running services declare.
 
-A service joins the archive with one ``[[archive]]`` table per source in its
+A service joins the archive with one ``[[service.archive]]`` table per source
+in its ``awm-plugin.toml``, or one ``[[archive]]`` table in a legacy
 ``service.toml``. The gateway lists those tables under ``archive`` in each
 ``awm registry_list`` entry, and this module reads them there, so a service
 that appears needs no change here.
@@ -25,7 +26,8 @@ _READY = "ready"
 
 @dataclass(frozen=True)
 class Source:
-    """One plug-in. ``export`` and ``query`` are the service-internal function names.
+    """One plug-in. ``export``, ``query`` and ``get`` are the service-internal function names; a live source
+    with no ``get`` holds nothing a caller can read whole.
 
     ``error`` is set when the table is unusable; the source is still listed, so
     the mistake shows in ``search sources`` instead of the source vanishing.
@@ -36,6 +38,7 @@ class Source:
     mode: str
     export: str = ""
     query: str = ""
+    get: str = ""
     topic: str = ""
     optin: bool = False
     error: str = ""
@@ -72,7 +75,11 @@ def _source(service: str, table: dict[str, Any], api: Any) -> Source:
     if not internal:
         reason = f"names {published!r}, which the service does not publish" if published else "names none"
         return Source(**base, error=f"a {mode} source needs a `{verb}` verb, and the table {reason}")
-    return Source(**base, **{verb: internal})
+    reader = str(table.get("get") or "") if mode == "live" else ""
+    get = _internal(api, service, reader) if reader else ""
+    if reader and not get:
+        return Source(**base, error=f"the table's `get` names {reader!r}, which the service does not publish")
+    return Source(**base, **{verb: internal}, get=get)
 
 
 def services_dir() -> Path:
@@ -80,12 +87,23 @@ def services_dir() -> Path:
 
 
 def manifest_tables(service: str) -> list[dict[str, Any]]:
-    """The ``[[archive]]`` tables in the service folder's ``service.toml``.
+    """The archive tables in the service folder's ``awm-plugin.toml``, else its ``service.toml``.
 
     The fallback for a gateway whose registry entries carry no ``archive`` key.
     """
+    folder = services_dir() / service
     try:
-        data = tomllib.loads((services_dir() / service / "service.toml").read_text())
+        plugin = tomllib.loads((folder / "awm-plugin.toml").read_text())
+    except OSError:
+        plugin = None
+    except ValueError:
+        return []
+    if plugin is not None:
+        entries = [s for s in plugin.get("service") or [] if isinstance(s, dict)]
+        entry = next((s for s in entries if s.get("name") == service), entries[0] if len(entries) == 1 else {})
+        return [t for t in entry.get("archive") or [] if isinstance(t, dict)]
+    try:
+        data = tomllib.loads((folder / "service.toml").read_text())
     except (OSError, ValueError):
         return []
     return [t for t in data.get("archive") or [] if isinstance(t, dict)]

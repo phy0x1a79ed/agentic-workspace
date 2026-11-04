@@ -16,9 +16,7 @@ import pytest
 def peer_book(tmp_path, monkeypatch):
     """An empty peer book in tmp, so no test reads the real node's.
 
-    Call the fixture's value with a ``{name: entry}`` mapping to fill it. A node
-    missing from the book is foreign to the edge, which is what an empty one
-    means for every test that does not say otherwise.
+    Call the fixture's value with a ``{name: entry}`` mapping to fill it.
     """
     path = tmp_path / "peers.json"
     monkeypatch.setattr("awm.config.peerbook.peers_file", lambda: path)
@@ -29,6 +27,31 @@ def peer_book(tmp_path, monkeypatch):
         path.write_text(json.dumps(book))
 
     return write
+
+
+#: The fleet every test runs in: mira and capella hold an edge to altair,
+#: shaula is a listed node with none, and nobody is not listed at all.
+FLEET = """\
+nodes:
+  altair:  {role: homebase}
+  capella: {role: homebase}
+  mira:    {role: laptop}
+  shaula:  {role: work}
+edges:
+  mira:    {altair: lan, capella: lan}
+  capella: {altair: lan}
+  altair:  {capella: lan}
+"""
+
+
+@pytest.fixture(autouse=True)
+def fleet(tmp_path, monkeypatch):
+    """A tmp edge list, and this node named ``altair`` unless a test says otherwise."""
+    path = tmp_path / "edges.yml"
+    path.write_text(FLEET)
+    monkeypatch.setenv("AWM_EDGES_FILE", str(path))
+    monkeypatch.setenv("AWM_NODE_NAME", "altair")
+    return path
 
 
 @pytest.fixture()

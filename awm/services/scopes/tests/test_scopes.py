@@ -118,7 +118,7 @@ class TestCreateScope:
             capture_output=True, text=True, check=True,
         ).stdout.strip()
         assert branch == "release"
-        assert (worktree / ".awm" / "context.md").exists()
+        assert not (worktree / ".awm" / "context.md").exists()
 
 
 class TestUpdateScope:
@@ -315,72 +315,31 @@ class TestHealWorktree:
         assert actions["claude_md"] is None
         assert (wt / "CLAUDE.md").read_text() == "# real tracked claude\n"
 
-    def test_backfills_missing_context_md(self, tmp_path, scopes_workspace):
+    def test_heal_writes_no_context_md_and_no_opencode_config(self, tmp_path, scopes_workspace):
+        """The brief lives in the journal (scopes.md R143) and awm has no OpenCode lane (install.md R135)."""
         wt = tmp_path / "wt"
         wt.mkdir()
         _git_init_tracked_agents(wt)
-
         actions = _heal_worktree(wt, project="proj-a", scope="s1", dry_run=False)
-
-        assert actions["context_md"] == "created"
-        assert (wt / ".awm" / "context.md").exists()
-        body = (wt / ".awm" / "context.md").read_text()
-        assert "proj-a/s1" in body
-
-    def test_refreshes_stale_opencode_config(self, tmp_path, scopes_workspace):
-        wt = tmp_path / "wt"
-        wt.mkdir()
-        _git_init_tracked_agents(wt)
-        (scopes_workspace["workspace"] / "AGENTS.md").write_text("# orient\n")
-        awm = wt / ".awm"
-        awm.mkdir()
-        (awm / "mcp-opencode.json").write_text(
-            '{"$schema":"x","mcp":{},"instructions":["legacy.md"]}\n'
-        )
-
-        actions = _heal_worktree(wt, project="proj-a", scope="s1", dry_run=False)
-
-        assert actions["opencode_config"] == "rewritten"
-        import json
-        cfg = json.loads((awm / "mcp-opencode.json").read_text())
-        assert cfg["instructions"] == [
-            str(scopes_workspace["workspace"] / "AGENTS.md"),
-            ".awm/context.md",
-        ]
-
-    def test_creates_missing_opencode_config(self, tmp_path, scopes_workspace):
-        wt = tmp_path / "wt"
-        wt.mkdir()
-        _git_init_tracked_agents(wt)
-        (scopes_workspace["workspace"] / "AGENTS.md").write_text("# orient\n")
-
-        actions = _heal_worktree(wt, project="proj-a", scope="s1", dry_run=False)
-
-        assert actions["opencode_config"] == "created"
-        assert (wt / ".awm" / "mcp-opencode.json").is_file()
-
-    def test_opencode_config_dry_run_reports_would_create(self, tmp_path, scopes_workspace):
-        wt = tmp_path / "wt"
-        wt.mkdir()
-        _git_init_tracked_agents(wt)
-
-        actions = _heal_worktree(wt, project="proj-a", scope="s1", dry_run=True)
-
-        assert actions["opencode_config"] == "would-create"
+        assert "context_md" not in actions and "opencode_config" not in actions
+        assert not (wt / ".awm" / "context.md").exists()
         assert not (wt / ".awm" / "mcp-opencode.json").exists()
 
-    def test_leaves_existing_context_md_alone(self, tmp_path):
-        wt = tmp_path / "wt"
-        wt.mkdir()
-        _git_init_tracked_agents(wt)
-        (wt / ".awm").mkdir()
-        original = "# my custom context\n"
-        (wt / ".awm" / "context.md").write_text(original)
+    def test_deletes_the_files_nothing_reads_and_keeps_context_md(self, tmp_path):
+        """history.md and mcp-opencode.json go (scopes.md R142). The deploy sweep reads context.md."""
+        awm_dir = tmp_path / "wt" / ".awm"
+        awm_dir.mkdir(parents=True)
+        for name in ("history.md", "mcp-opencode.json", "context.md"):
+            (awm_dir / name).write_text("x")
 
-        actions = _heal_worktree(wt, project="proj-a", scope="s1", dry_run=False)
+        dry = _heal_worktree(awm_dir.parent, project="proj-a", scope="s1", dry_run=True)
+        assert dry["stale_files"] == "deleted:history.md,mcp-opencode.json"
+        assert (awm_dir / "history.md").exists()
 
-        assert actions["context_md"] is None
-        assert (wt / ".awm" / "context.md").read_text() == original
+        actions = _heal_worktree(awm_dir.parent, project="proj-a", scope="s1", dry_run=False)
+        assert actions["stale_files"] == "deleted:history.md,mcp-opencode.json"
+        assert not (awm_dir / "history.md").exists() and not (awm_dir / "mcp-opencode.json").exists()
+        assert (awm_dir / "context.md").exists()
 
     def test_removes_skills_symlink(self, tmp_path):
         wt = tmp_path / "wt"
@@ -417,10 +376,8 @@ class TestHealWorktree:
 
         assert actions["import_line"] == "stripped"
         assert actions["claude_md"] == "deleted:symlink"
-        assert actions["context_md"] == "created"
         assert (wt / "AGENTS.md").read_text() == before_agents
         assert (wt / "CLAUDE.md").is_symlink()
-        assert not (wt / ".awm" / "context.md").exists() if (wt / ".awm").exists() else True
 
     def test_idempotent(self, tmp_path, scopes_workspace):
         wt = tmp_path / "wt"
@@ -430,17 +387,14 @@ class TestHealWorktree:
 
         _heal_worktree(wt, project="proj-a", scope="s1", dry_run=False)
         agents_after = (wt / "AGENTS.md").read_text()
-        ctx_after = (wt / ".awm" / "context.md").read_text()
 
         second = _heal_worktree(wt, project="proj-a", scope="s1", dry_run=False)
 
         assert second == {
             "import_line": None, "agents_md": None,
-            "claude_md": None, "context_md": None,
-            "opencode_config": None, "data": None, "skills_link": None,
+            "claude_md": None, "data": None, "skills_link": None, "stale_files": None,
         }
         assert (wt / "AGENTS.md").read_text() == agents_after
-        assert (wt / ".awm" / "context.md").read_text() == ctx_after
 
 
 # ---------------------------------------------------------------------------
@@ -553,10 +507,8 @@ class TestHealScopes:
         actions = report[0]["actions"]
         assert actions["agents_md"] == "deleted:untracked"
         assert actions["claude_md"] == "deleted:symlink"
-        assert actions["context_md"] == "created"
         assert not (wt / "AGENTS.md").exists()
         assert not (wt / "CLAUDE.md").exists()
-        assert (wt / ".awm" / "context.md").exists()
 
     def test_dry_run_reports_without_mutating(self, scopes_workspace, seeded_scopes):
         from awm.scopes import scopes as scopes_mod
@@ -583,6 +535,5 @@ class TestHealScopes:
         second = heal_scopes()
         assert second[0]["actions"] == {
             "import_line": None, "agents_md": None,
-            "claude_md": None, "context_md": None,
-            "opencode_config": None, "data": None, "skills_link": None,
+            "claude_md": None, "data": None, "skills_link": None, "stale_files": None,
         }

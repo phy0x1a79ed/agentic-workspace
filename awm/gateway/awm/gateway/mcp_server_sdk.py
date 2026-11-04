@@ -137,6 +137,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         # only a caller that talks to peer edges may opt in, so the CLI and the
         # web UI keep seeing plain results and plain errors.
         headers["X-Awm-Peer-Redirect"] = "1"
+        arguments = mcp_http.with_search_context(name, arguments)
         data = await _request_with_retry(
             "POST", "/invoke", json_body={"name": name, "args": arguments},
             headers=headers,
@@ -259,11 +260,11 @@ async def _peer_invoke(peer_name: str, base_name: str, arguments: dict,
                        as_: str | None,
                        entry: dict[str, Any] | None = None) -> dict[str, Any]:
     """Invoke ``base_name`` on ``peer_name``'s edge directly with a signed node
-    token. A domestic peer that refuses it gets the legacy ssh-fetched bearer
-    (re-fetched once on a 401); a foreign peer never does — see
+    token. A peer this node holds an edge to that refuses it gets the legacy
+    ssh-fetched bearer (re-fetched once on a 401); any other peer never does — see
     ``gatewayclient.peer_send``.
 
-    ``entry`` is the peer's already-resolved ``{edge_url, ssh_alias, relation}`` —
+    ``entry`` is the peer's already-resolved ``{edge_url, ssh_alias}`` —
     a redirect carries it, so following one costs no second lookup. Absent, it is
     resolved from the local gateway's book.
     """

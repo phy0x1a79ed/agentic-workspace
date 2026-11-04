@@ -2,12 +2,13 @@
 
 A session cx started in a restricted mode may call only the verbs
 `awm.config.modes` lists for it. The gateway finds the mode from the pid header
-through `awm.claudedaemon.sessionmode`, which reads files on disk. These tests
-cover the gate's decision for each kind of policy, both call shapes and both
-doors, the fail-closed lookups, and the per-pid cache. The built-in modes are
-only `unknown`, so the tests register their own: `fixed` and `fixed2` name
-their verbs (`Allow`), and `reader` admits by declared effect (`ByEffect`). The
-last group runs the real tri-state lookup against a temporary Claude home.
+through `reflection session_of` (`mcp_caller.lookup`), which asks the session's
+harness plugin. These tests cover the gate's decision for each kind of policy,
+both call shapes and both doors, the fail-closed lookups, and the per-pid cache.
+The built-in modes are only `unknown`, so the tests register their own: `fixed`
+and `fixed2` name their verbs (`Allow`), and `reader` admits by declared effect
+(`ByEffect`). The tri-state reading of Claude Code's files is cch's, tested with
+`awm.claudedaemon.sessionmode`.
 """
 
 from __future__ import annotations
@@ -86,9 +87,8 @@ def dispatched(monkeypatch):
 
 @pytest.fixture
 def modes(monkeypatch):
-    """Answer `mode_of` from a dict, count the lookups, start with a clean cache."""
-    from awm.claudedaemon import sessionmode
-
+    """Answer reflection's session_of from a dict of modes, count the lookups, start
+    with a clean cache."""
     answers: dict[int, object] = {}
     lookups: list[int] = []
 
@@ -97,9 +97,14 @@ def modes(monkeypatch):
         answer = answers[pid]
         if isinstance(answer, Exception):
             raise answer
-        return answer
+        return {"ok": True, "known": False, "mode": answer}
 
-    monkeypatch.setattr(sessionmode, "mode_of", fake)
+    monkeypatch.setattr(server.mcp_caller, "_ask_reflection", fake)
+    monkeypatch.setattr(server.mcp_caller, "_cache", {})
+    # Only the gate's own cache is under test, and only the gate's lookups count.
+    monkeypatch.setattr(server.mcp_caller, "LOOKUP_TTL_S", 0.0)
+    monkeypatch.setattr(server.mcp_caller, "caller_trust",
+                        lambda pid, **kw: {server.mcp_caller.TRUST_KEY: "trusted"})
     monkeypatch.setattr(server, "_mode_cache", {})
     answers["lookups"] = lookups  # type: ignore[assignment]
     return answers
@@ -312,19 +317,10 @@ def test_a_failed_lookup_is_the_most_restricted_mode(client, dispatched, modes, 
     assert invoke(client, "reflection_compact").status_code == 200
 
 
-def test_a_missing_claudedaemon_is_the_most_restricted_mode(client, dispatched, modes,
-                                                            monkeypatch):
-    import builtins
-    real = builtins.__import__
-
-    def refuse(name, *a, **kw):
-        if name == "awm.claudedaemon" or name.startswith("awm.claudedaemon."):
-            raise ImportError(name)
-        return real(name, *a, **kw)
-
-    monkeypatch.setattr(builtins, "__import__", refuse)
-    monkeypatch.delitem(__import__("sys").modules, "awm.claudedaemon.sessionmode", raising=False)
-    assert server._mode_of_pid(PID) == "unknown"
+def test_no_answer_from_reflection_is_the_most_restricted_mode(client, dispatched, modes):
+    modes[PID] = server.mcp_caller.LookupUnavailable("reflection is not up")
+    assert invoke(client, "operations_board_list").status_code == 403
+    assert invoke(client, "reflection_compact").status_code == 200
 
 
 # --- the cache -------------------------------------------------------------------
@@ -446,7 +442,7 @@ def test_the_door_does_not_gate_an_ungated_session(door, modes):
     assert door(board, "party_add", headers={}).status_code == 503
 
 
-def test_the_door_does_not_gate_an_edge_stamped_request(door, modes, domestic_peers):
+def test_the_door_does_not_gate_an_edge_stamped_request(door, modes, edge_peers):
     board = _service("board", [{"name": "party_add", "tool": "operations_party_add"}])
     resp = door(board, "party_add", headers={**HEAD, "X-Awm-As": "peer:capella"})
     assert resp.status_code == 503 and modes["lookups"] == []
@@ -458,158 +454,6 @@ def test_the_door_does_not_gate_an_edge_stamped_request(door, modes, domestic_pe
 def _proc_start(pid: int) -> str:
     with open(f"/proc/{pid}/stat") as fh:
         return fh.read().partition(") ")[2].split()[19]
-
-
-@pytest.fixture
-def home(tmp_path, monkeypatch):
-    """A temporary Claude home, laid out as cx and the gateway both read it."""
-    root = tmp_path / "claude"
-    for sub in ("daemon", "jobs", "sessions", "cx/starts"):
-        (root / sub).mkdir(parents=True)
-    (root / "daemon" / "roster.json").write_text(json.dumps({"workers": {}}))
-    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(root))
-    for var in ("AWM_CX_ROSTER", "AWM_CX_JOBS", "AWM_CX_SESSIONS", "AWM_CX_STATE"):
-        monkeypatch.delenv(var, raising=False)
-    monkeypatch.setattr(server, "_mode_cache", {})
-    # the tests run under a real Claude Code session; its processes are not
-    # candidates for the ancestor lookup unless a test says so
-    from awm.claudedaemon import sessionmode
-
-    monkeypatch.setattr(sessionmode, "_may_be_a_session", lambda pid: False)
-    return root
-
-
-def _start_session(root, mode, job="abababab"):
-    """A background session the way cx records it: roster, job state, lineage."""
-    (root / "daemon" / "roster.json").write_text(json.dumps({"workers": {job: {
-        "replPid": PID, "replProcStart": _proc_start(PID), "startedAt": 1,
-        "dispatch": {"seed": {"name": "rep"}}}}}))
-    (root / "jobs" / job).mkdir()
-    (root / "jobs" / job / "state.json").write_text(json.dumps({"name": "rep"}))
-    (root / "cx" / "starts" / f"{job}.json").write_text(json.dumps({"mode": mode}))
-
-
-def test_a_cx_started_fixed_mode_session_is_gated_from_disk(client, dispatched, home):
-    _start_session(home, "fixed")
-    assert invoke(client, "operations_board_list").status_code == 200
-    assert invoke(client, "operations_party_add").status_code == 403
-    assert domain_call(client, "ssh", "connect").status_code == 403
-
-
-def test_the_gateway_reads_the_lineage_where_cx_writes_it(client, dispatched, home, monkeypatch):
-    state = home.parent / "elsewhere"
-    (state / "starts").mkdir(parents=True)
-    (home / "cx" / "starts" / "abababab.json").write_text("{}")
-    monkeypatch.setenv("AWM_CX_STATE", str(state))
-    (state / "starts" / "abababab.json").write_text(json.dumps({"mode": "fixed2"}))
-    _start_session(home, "worker")
-    (state / "starts" / "abababab.json").write_text(json.dumps({"mode": "fixed2"}))
-    assert invoke(client, "operations_board_post").status_code == 403
-
-
-def test_a_pid_with_no_record_is_not_gated(client, dispatched, home):
-    assert invoke(client, "ssh_connect").status_code == 200
-
-
-def test_an_unreadable_roster_leaves_only_compaction(client, dispatched, home, monkeypatch):
-    from awm.claudedaemon import sessionmode
-
-    monkeypatch.setattr(sessionmode, "_may_be_a_session", lambda pid: True)
-    _start_session(home, "fixed")
-    (home / "daemon" / "roster.json").write_text("{ not json")
-    assert invoke(client, "operations_board_list").status_code == 403
-    assert invoke(client, "reflection_compact").status_code == 200
-
-
-def test_a_corrupt_lineage_record_leaves_only_compaction(client, dispatched, home):
-    _start_session(home, "fixed")
-    (home / "cx" / "starts" / "abababab.json").write_text("{ not json")
-    assert invoke(client, "operations_board_list").status_code == 403
-    assert invoke(client, "reflection_compact").status_code == 200
-
-
-def test_an_unrestricted_recorded_mode_is_not_gated(client, dispatched, home):
-    _start_session(home, "worker")
-    assert invoke(client, "ssh_connect").status_code == 200
-
-
-def test_an_interactive_caller_is_ungated_whatever_else_is_damaged(client, dispatched, home):
-    """The lockout: a damaged roster or a missing lineage directory must not
-    turn every terminal into `unknown`."""
-    import shutil
-
-    (home / "sessions" / f"{PID}.json").write_text(json.dumps({
-        "pid": PID, "procStart": _proc_start(PID), "kind": "interactive"}))
-    (home / "daemon" / "roster.json").write_text("{ not json")
-    shutil.rmtree(home / "cx")
-    assert invoke(client, "ssh_connect").status_code == 200
-    assert invoke(client, "operations_party_add").status_code == 200
-
-
-def test_a_caller_with_no_roster_and_no_lineage_directory_is_ungated(client, dispatched, home):
-    import shutil
-
-    (home / "daemon" / "roster.json").unlink()
-    shutil.rmtree(home / "cx")
-    assert invoke(client, "ssh_connect").status_code == 200
-
-
-def test_a_corrupt_record_of_another_job_does_not_lock_the_session(client, dispatched,
-                                                                       home):
-    _start_session(home, "fixed")
-    (home / "cx" / "starts" / "cccccccc.json").write_text("{ not json")
-    (home / "cx" / "starts" / "pending-0123456789abcdef.json").write_text("[")
-    assert invoke(client, "operations_board_list").status_code == 200
-    assert invoke(client, "operations_board_post").status_code == 403
-
-
-def test_a_proxy_whose_repl_has_no_session_record_is_gated_by_the_roster(
-        client, dispatched, home, monkeypatch):
-    """The REPL of a cx-started session has no sessions/<pid>.json, and its MCP
-    proxy runs under a wrapper: the caller is a record-less child of a listed job."""
-    from awm.claudedaemon import sessionmode
-
-    parent = os.getppid()
-    (home / "daemon" / "roster.json").write_text(json.dumps({"workers": {"abababab": {
-        "replPid": parent, "replProcStart": _proc_start(parent),
-        "dispatch": {"seed": {"name": "rep"}}}}}))
-    (home / "cx" / "starts" / "abababab.json").write_text(json.dumps({"mode": "reader"}))
-    monkeypatch.setattr(sessionmode, "_may_be_a_session", lambda pid: pid == parent)
-    assert invoke(client, "scope_post").status_code == 403
-    assert invoke(client, "reflection_compact").status_code == 200
-
-
-def test_a_header_naming_a_pid_with_no_process_is_the_most_restricted_mode(client, dispatched,
-                                                                          home):
-    """The T14 fail-open: pid 4999999 has no /proc entry, and the walk up from it
-    used to end at once and read as "not cx-started"."""
-    dead = {"X-Awm-Session-Pid": "4999999"}
-    assert not os.path.exists("/proc/4999999")
-    assert invoke(client, "scope_post", headers=dead).status_code == 403
-    assert domain_call(client, "scope", "post", headers=dead).status_code == 403
-    assert invoke(client, "reflection_compact", headers=dead).status_code == 200
-    descendant = {"X-Awm-Caller-Pid": "4999999"}
-    assert invoke(client, "scope_post", headers=descendant).status_code == 403
-    assert dispatched and all(c[0] == "reflection_compact" for c in dispatched)
-
-
-def test_a_pid_that_exists_but_is_interactive_stays_ungated(client, dispatched, home):
-    (home / "sessions" / f"{PID}.json").write_text(json.dumps({
-        "pid": PID, "procStart": _proc_start(PID), "kind": "interactive"}))
-    assert invoke(client, "scope_post").status_code == 200
-    assert invoke(client, "scope_post",
-                  headers={"X-Awm-Caller-Pid": str(PID)}).status_code == 200
-
-
-def test_a_cx_launched_job_with_no_lineage_is_the_most_restricted_mode(client, dispatched, home):
-    _start_session(home, "worker")
-    (home / "cx" / "starts" / "abababab.json").unlink()
-    roster_path = home / "daemon" / "roster.json"
-    data = json.loads(roster_path.read_text())
-    data["workers"]["abababab"]["dispatch"]["launch"] = {"args": ["--permission-mode=dontAsk"]}
-    roster_path.write_text(json.dumps(data))
-    assert invoke(client, "operations_board_list").status_code == 403
-    assert invoke(client, "reflection_compact").status_code == 200
 
 
 # --- an effect-based mode ----------------------------------------
@@ -732,7 +576,7 @@ def test_the_door_refuses_a_reader_post_it_cannot_inspect(door, modes):
 
 
 @pytest.mark.parametrize("mode", ["fixed", "fixed2", "unknown", "reader"])
-@pytest.mark.parametrize("name", ["awm_restart", "awm_mcp_sync"])
+@pytest.mark.parametrize("name", ["awm_restart"])
 def test_a_flat_native_op_is_judged_as_its_tool_and_verb(client, dispatched, modes,
                                                              catalog_of_services, mode, name):
     modes[PID] = mode
@@ -807,7 +651,8 @@ def test_missing_or_null_args_still_dispatch(client, dispatched, modes):
     assert client.post("/invoke", json={"name": "cx_list"}, headers=HEAD).status_code == 200
     assert client.post("/invoke", json={"name": "cx_list", "args": None},
                        headers=HEAD).status_code == 200
-    assert dispatched[0][1] == {} and dispatched[1][1] == {}
+    # Only the gateway's own keys, such as the caller's trust, are added.
+    assert all(not any(not k.startswith("_") for k in d[1]) for d in dispatched[:2])
 
 
 # --- small refusals ---------------------------------------------------------------
@@ -840,24 +685,12 @@ def test_a_restricted_mode_gets_403_not_a_peer_redirect(client, monkeypatch, mod
     assert resp.status_code == 200 and "peer_redirect" in resp.json()
 
 
-def test_the_lineage_directory_is_created_at_startup(awm_workspace, tmp_path, monkeypatch):
-    state = tmp_path / "cxstate"
-    monkeypatch.setenv("AWM_CX_STATE", str(state))
-    with TestClient(server.app, raise_server_exceptions=False):
-        assert (state / "starts").is_dir()
-
-
-def test_the_proxy_walk_reads_session_records_where_the_gate_does(tmp_path, monkeypatch):
+def test_the_proxy_walk_asks_reflection_as_the_gate_does(monkeypatch):
     from awm.gateway import mcp_caller
 
-    sessions = tmp_path / "sess"
-    sessions.mkdir()
-    (sessions / "4242.json").write_text("{}")
-    monkeypatch.setenv("AWM_CX_SESSIONS", str(sessions))
-    assert mcp_caller.resolve_caller_pid(4242, ppid_of=lambda p: None,
-                                         is_opencode=lambda p: False) == 4242
-    assert mcp_caller.resolve_caller_pid(77, ppid_of={77: 4242}.get,
-                                         is_opencode=lambda p: False) == 4242
-    monkeypatch.setenv("AWM_CX_SESSIONS", str(tmp_path / "nowhere"))
-    assert mcp_caller.resolve_caller_pid(77, ppid_of={77: 4242}.get,
-                                         is_opencode=lambda p: False) == 77
+    monkeypatch.setattr(mcp_caller, "_cache", {})
+    monkeypatch.setattr(mcp_caller, "_ask_reflection", lambda pid: {
+        "ok": True, "session_id": "cc1"} if pid == 4242 else {"ok": True, "known": False})
+    assert mcp_caller.resolve_caller_pid(4242, ppid_of=lambda p: None) == 4242
+    assert mcp_caller.resolve_caller_pid(77, ppid_of={77: 4242}.get) == 4242
+    assert mcp_caller.resolve_caller_pid(78, ppid_of={78: 79}.get) == 78

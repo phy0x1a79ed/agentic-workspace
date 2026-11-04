@@ -6,8 +6,13 @@ import asyncio
 from typing import Any, Callable
 
 import pytest
+import yaml
 
+from awm.config import edges
 from awm.search.archive import Archive
+
+#: This node's name in every test's edge list.
+HERE = "local"
 
 
 @pytest.fixture(autouse=True)
@@ -23,11 +28,11 @@ def stub_embedder():
 
 @pytest.fixture(autouse=True)
 def node(monkeypatch, tmp_path):
-    """A named node with an empty peer book, so no test reads the live one."""
+    """A named node with an empty peer book and edge list, so no test reads the live ones."""
     import awm.config as cfg
     monkeypatch.setattr(cfg, "AWM_DIR", tmp_path / ".awm")
-    monkeypatch.setenv("AWM_NODE_NAME", "local")
-    monkeypatch.setenv("AWM_SWARM", "tony")
+    monkeypatch.setenv("AWM_NODE_NAME", HERE)
+    monkeypatch.setenv(edges.EDGES_FILE_ENV, str(tmp_path / "edges.yml"))
 
 
 @pytest.fixture()
@@ -65,6 +70,16 @@ class Exporter:
         if not more:
             out["ids"] = keys
         return out
+
+
+def every(result: dict[str, Any]) -> list[dict[str, Any]]:
+    """Every hit of a query answer: section by section in reading order, each section source by source."""
+    return [h for section in ("exact", "related") for hits in result[section].values() for h in hits]
+
+
+def flat(section: dict[str, list[dict[str, Any]]]) -> list[dict[str, Any]]:
+    """One section's hits, source by source."""
+    return [h for hits in section.values() for h in hits]
 
 
 def doc(title: str, text: str, ts: str = "2026-03-01T10:00:00Z", **extra: Any) -> dict[str, Any]:
@@ -106,8 +121,9 @@ class FakeGateway:
     def plug_live(self, name: str, hits: Callable[[dict], Any], *, service: str | None = None,
                   **table: Any) -> None:
         service = service or name
+        verbs = ("query", *(["get"] if table.get("get") else []))
         self.entries.append(entry(service, [{"name": name, "mode": "live", "query": f"{service}_query",
-                                             **table}], verbs=("query",)))
+                                             **table}], verbs=verbs))
         self.handlers[(service, "query")] = hits
 
     def stop(self, service: str) -> None:
@@ -138,17 +154,27 @@ class FakeGateway:
 
 
 class FakePeers:
-    """A peer book and one callable per peer standing in for its ``search_query``."""
+    """A peer book and one callable per peer standing in for its ``search_query``.
 
-    def __init__(self) -> None:
+    Each peer added also enters the edge list, with an edge from this node unless ``edge`` is false.
+    """
+
+    def __init__(self, edges_file: Any) -> None:
+        self.edges_file = edges_file
         self.book: dict[str, dict[str, Any]] = {}
         self.answers: dict[str, Callable[[dict], Any]] = {}
         self.calls: list[tuple[str, str, dict]] = []
+        self.fleet: dict[str, Any] = {"nodes": {HERE: {"role": "homebase"}}, "edges": {HERE: {}}}
 
-    def add(self, name: str, answer: Callable[[dict], Any], relation: str = "domestic",
-            swarm: str = "tony", role: str = "fleet") -> None:
-        self.book[name] = {"name": name, "relation": relation, "swarm": swarm, "role": role}
+    def add(self, name: str, answer: Callable[[dict], Any], *, edge: bool = True,
+            role: str = "homebase") -> None:
+        self.book[name] = {"name": name}
         self.answers[name] = answer
+        self.fleet["nodes"][name] = {"role": role}
+        if edge:
+            self.fleet["edges"][HERE][name] = "lan"
+        self.edges_file.write_text(yaml.safe_dump(self.fleet))
+        edges._load.cache_clear()
 
     def records(self) -> list[dict[str, Any]]:
         return list(self.book.values())
@@ -182,8 +208,8 @@ def gateway() -> FakeGateway:
 
 
 @pytest.fixture()
-def peers() -> FakePeers:
-    return FakePeers()
+def peers(tmp_path) -> FakePeers:
+    return FakePeers(tmp_path / "edges.yml")
 
 
 @pytest.fixture()

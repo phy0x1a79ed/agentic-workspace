@@ -76,29 +76,6 @@ Pass `--scope avatar-stage` to narrow a token to the avatar stage session: `POST
 
 The operator, on the host, manages any user's tokens. A signed-in user manages only their own, over HTTP through the edge. `last_used_at` is as coarse as the edge's material refresh: the edge reports use on its next fetch, which the next request after the 30 s window triggers.
 
-## Penpot credentials
-
-Penpot keeps its own accounts and has no "trust the proxy" mode, so this
-service also holds one Penpot credential per person. Nobody is ever shown it.
-
-    awm auth penpot-record --username tony --email tony@host --password …
-    awm auth penpot-session --username tony        # what the edge asks for
-    awm auth penpot-rotate [--username tony]       # force a replacement
-    awm auth penpot-list                           # no secrets
-
-The public host's `add-user.sh` calls `penpot-record` once, right after it creates
-the Penpot profile with the same password. A background loop replaces every
-stored password at `penpot_rotation_hour` local time, and catches up on start
-when the box was off at that hour. This loop runs on the `public` profile too:
-that flag turns off the *shared* password, and these are per-user foreign
-credentials.
-
-**CAUTION** The stored password is what a rotation offers Penpot as its *old*
-password. If the two drift apart, rotation is refused with
-`old-password-not-match` and there is no HTTP path back. Re-run
-`add-user.sh <name>` on the box holding the stack. It resets the Penpot
-password and records the new one, which is the only repair.
-
 ## Configuration (settings page / `awm config`)
 
 | Field | Default | Purpose |

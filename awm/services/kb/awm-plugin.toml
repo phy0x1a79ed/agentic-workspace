@@ -1,0 +1,29 @@
+[plugin]
+name = "kb"
+version = "0.1.0"
+trust = "own"
+
+[[service]]
+name = "kb"
+
+[[service.archive]]
+name = "kb"
+mode = "live"
+query = "kb_query"
+get = "kb_get"
+
+[[service.archive]]
+name = "library"
+mode = "live"
+query = "kb_library"
+get = "kb_get"
+
+[[tool]]
+name = "kb"
+major = 1
+tier = "off"
+
+[needs]
+secrets = []
+network = []
+platform = ["linux"]

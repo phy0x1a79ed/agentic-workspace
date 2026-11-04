@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "awm-wake"
+version = "0.1.0"
+requires-python = ">=3.11"
+description = "AWM wake plugin: Wake-on-LAN between home machines and the mizar/alcor standby pairing."
+dependencies = ["awm-gatewayclient", "httpx"]
+
+[tool.setuptools.packages.find]
+include = ["awm.wake*"]
+namespaces = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+markers = ["unit: pure unit tests", "smoke: fast tests"]

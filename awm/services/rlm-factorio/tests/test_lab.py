@@ -292,7 +292,7 @@ def test_lab_cap_refuses_at_once(compose, monkeypatch):
     assert rows[a["session_id"]]["control_port"] != rows[b["session_id"]]["control_port"]
 
 
-def test_failed_bring_up_marks_error_and_tears_down(compose, monkeypatch):
+def test_failed_bring_up_marks_error_and_tears_down(compose, monkeypatch, usage_events):
     def fail(row):
         raise appliance.ApplianceError("no engine")
     monkeypatch.setattr(appliance, "wait_ready", fail)
@@ -300,9 +300,10 @@ def test_failed_bring_up_marks_error_and_tears_down(compose, monkeypatch):
         call("acquire", game="factorio", kind="lab", name="a", create=True)
     assert len(compose["down"]) == 1
     assert ha.dao.FactorioDAO().live_sessions() == []
+    assert [(job, ok) for _, job, ok, _ in usage_events] == [("lab", False)]
 
 
-def test_release_a_lab(compose, engine, monkeypatch):
+def test_release_a_lab(compose, engine, monkeypatch, usage_events):
     engine()
     dropped = []
     monkeypatch.setattr(ha.broker, "drop", dropped.append)
@@ -310,6 +311,8 @@ def test_release_a_lab(compose, engine, monkeypatch):
     assert call("release", session_id=sid)["released"]
     assert dropped == ["rlm-factorio-lab-a-appliance"]
     assert ha.dao.FactorioDAO().get_session(sid)["status"] == "stopped"
+    ((plugin, job, ok, ms),) = usage_events
+    assert (plugin, job, ok) == (None, "lab", True) and ms >= 0
 
 
 # ---- supervisor verbs on a lab ------------------------------------------------------

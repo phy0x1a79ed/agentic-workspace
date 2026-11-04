@@ -37,8 +37,6 @@ def pushed(monkeypatch):
         # override these via monkeypatch.setattr(service, "_settings", ...).
         push_retry_attempts = 1
         push_retry_backoff_seconds = 0.0
-        penpot_rotation_hour = 4
-        penpot_rotation_enabled = True
 
     monkeypatch.setattr(service, "_settings", lambda: _S())
 
@@ -277,8 +275,6 @@ async def test_h_status_reports_the_last_push_outcome(pushed, monkeypatch):
     # test of the push-status wiring, not a DB integration test.
     monkeypatch.setattr(store, "latest", lambda: None)
     monkeypatch.setattr(store, "valid_generations", lambda: [])
-    monkeypatch.setattr(store, "user_list", lambda: [])
-    monkeypatch.setattr(store, "penpot_list", lambda: [])
 
     await service._push_password_to_discord(PASSWORD, 0.0)
 
@@ -297,16 +293,3 @@ async def test_an_unset_target_follows_the_operator_dm(pushed, monkeypatch):
     await service._push_password_to_discord_attempt(PASSWORD)
     assert pushed[0]["args"]["channel"] == "dm:42"
     assert pushed[0]["args"]["account"] == "discord-bot"
-
-
-async def test_another_swarm_with_no_target_sends_nothing(pushed, monkeypatch):
-    from awm.auth import service
-    settings = type(service._settings())
-    monkeypatch.setattr(settings, "discord_account", "")
-    monkeypatch.setattr(settings, "discord_channel", "")
-    for var in ("AWM_OPERATOR_DM_CHANNEL", "AWM_REPORTING_DM_CHANNEL"):
-        monkeypatch.delenv(var, raising=False)
-    monkeypatch.setenv("AWM_SWARM", "collins")
-    with pytest.raises(RuntimeError, match="AWM_OPERATOR_DM_CHANNEL"):
-        await service._push_password_to_discord_attempt(PASSWORD)
-    assert pushed == []

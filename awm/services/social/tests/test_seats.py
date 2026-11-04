@@ -148,7 +148,7 @@ async def test_a_message_in_a_held_seat_is_pushed_to_the_holder(wired):
     await wired._h_mount({"account": "bot", "channel": "D1", **mine}, as_)
     await wired._on_message(_msg(text="first\nsecond"))
     await wired._on_message(_msg(channel_id="C1", message_id="11.1", text="unheld"))
-    assert wired.pushed == [("altair", ME["job"], "slack from tony [channel=D1 message_id=10.1]: first ⏎ second")]
+    assert wired.pushed == [("altair", ME["job"], "slack [untrusted] from tony [channel=D1 message_id=10.1]: first ⏎ second")]
 
 
 async def test_a_message_kept_from_the_holder_is_not_pushed(wired):
@@ -177,66 +177,23 @@ async def test_replies_under_a_quiet_send_are_kept_from_the_holder(wired, monkey
     await wired._on_message(_msg(thread_id="20.1", message_id="20.1", text="approve?"))
     await wired._on_message(_msg(thread_id="9.5", message_id="20.3", text="other thread"))
     assert [line for _, _, line in wired.pushed] == [
-        "slack from tony ↳9.5 [channel=D1 message_id=20.3]: other thread"]
+        "slack [untrusted] from tony ↳9.5 [channel=D1 message_id=20.3]: other thread"]
 
 
 def test_push_line_marks_thread_replies_and_cuts_long_text():
     from awm.social import seats
     from awm.social.connectors.base import Attachment
     reply = _msg(thread_id="9.5", message_id="10.1", text="yes")
-    assert seats.push_line(reply) == "slack from tony ↳9.5 [channel=D1 message_id=10.1]: yes"
+    assert seats.push_line(reply) == "slack [untrusted] from tony ↳9.5 [channel=D1 message_id=10.1]: yes"
     parent = _msg(thread_id="10.1", message_id="10.1", platform="discord")
-    assert seats.push_line(parent) == "discord from tony [channel=D1 message_id=10.1]: hi"
+    assert seats.push_line(parent) == "discord [untrusted] from tony [channel=D1 message_id=10.1]: hi"
     long = seats.push_line(_msg(text="x" * (seats.TEXT_MAX + 50)))
     assert long.endswith("…(cut, full text in social history)")
     assert len(long) < seats.TEXT_MAX + 120
     files = _msg(text="", attachments=[Attachment(idx=0, filename="a"),
                                        Attachment(idx=1, filename="b")])
-    assert seats.push_line(files) == "slack from tony [channel=D1 message_id=10.1]: [+2 files]"
-    assert seats.push_line(_msg(message_id="")) == "slack from tony: hi"
-
-
-async def test_pusher_delivers_in_order_and_retries_a_refusal():
-    from awm.social import seats
-    sent, outcomes = [], iter(["retry", "ok", "ok", "ok"])
-    slept = []
-
-    async def send(node, job, line):
-        sent.append(line)
-        return next(outcomes)
-
-    async def sleep(s):
-        slept.append(s)
-
-    p = seats.Pusher(send=send, sleep=sleep)
-    for line in ("a", "b", "c"):
-        p.push("altair", "j1", line)
-    await p.idle()
-    assert sent == ["a", "a", "b", "c"] and slept == [2.0]
-
-
-async def test_pusher_drops_after_the_retry_window_and_releases_a_gone_holder():
-    from awm.social import seats
-    gone = []
-
-    async def refuse(node, job, line):
-        return "retry"
-
-    p = seats.Pusher(send=refuse, retry_s=0.05, sleep=lambda s: asyncio.sleep(0))
-    p.push("altair", "j1", "a")
-    await p.idle()
-
-    sent = []
-
-    async def vanish(node, job, line):
-        sent.append(line)
-        return "gone"
-
-    p = seats.Pusher(send=vanish, on_gone=lambda n, j: gone.append((n, j)))
-    p.push("altair", "j1", "a")
-    p.push("altair", "j1", "b")
-    await p.idle()
-    assert sent == ["a"] and gone == [("altair", "j1")]
+    assert seats.push_line(files) == "slack [untrusted] from tony [channel=D1 message_id=10.1]: [+2 files]"
+    assert seats.push_line(_msg(message_id="")) == "slack [untrusted] from tony: hi"
 
 
 async def test_prune_releases_dead_holders_and_keeps_unreachable_nodes(wired):
@@ -277,13 +234,39 @@ async def test_a_borrower_forwards_its_session_not_its_pid(wired, monkeypatch):
                                         "_caller_session": ME})]
 
 
-async def test_a_session_still_writing_its_record_is_retried_not_released(monkeypatch):
-    """A just-resumed REPL refuses pushes for a few seconds after a reboot."""
+# -- trust (channels.md R70, users.md R126 item 2) ------------------------------
+
+def _acct(**kw):
+    from awm.social.config import AccountConfig
+    return AccountConfig(name="slack-bot", platform="slack", token="xoxb-1", **kw)
+
+
+def test_seat_trust_levels():
     from awm.social import seats
+    cfg = _acct(trusted_chats=("DTONY",))
+    assert seats.seat_trust(cfg, "DTONY") == "trusted"
+    assert seats.seat_trust(cfg, "DBETH") == "cooperative"
+    assert seats.seat_trust(None, "D1") == "untrusted"
 
-    async def refuse(*a, **kw):
-        return {"ok": False, "error": "no Claude Code session record for pid 6595"}
 
-    monkeypatch.setattr(seats.config, "node_name", lambda: "deneb")
-    monkeypatch.setattr(seats.gatewayclient, "call", refuse)
-    assert await seats.reflect("deneb", "f97d97d7", "hello") == "retry"
+def test_push_line_carries_the_level():
+    from awm.social import seats
+    from awm.social.connectors.base import InboundMessage
+    m = InboundMessage(account="slack-bot", platform="slack", channel_id="D1",
+                       channel_name="", thread_id="", sender_id="U1",
+                       sender_name="beth", message_id="1.0", ts="1.0", text="hi")
+    assert seats.push_line(m, "cooperative").startswith("slack [cooperative] from beth")
+
+
+def test_a_lab_seat_reads_only_its_own_chats(awm_workspace):
+    from awm.social import dao, seats
+    dao.init()
+    store = dao.SocialDAO()
+    cfg = _acct(trusted_chats=("DTONY",))
+    beth = {"node": "altair", "job": "j-beth", "name": "seat:slack/DM/beth"}
+    main = {"node": "altair", "job": "j-main", "name": "seat:slack/DM/tony"}
+    store.mount("slack-bot", "DBETH", "beth", beth)
+    store.mount("slack-bot", "DTONY", "tony", main)
+    assert seats.readable_chats(store, cfg, beth) == {"DBETH"}
+    assert seats.readable_chats(store, cfg, main) is None
+    assert seats.readable_chats(store, cfg, {"node": "mizar", "job": "x"}) is None

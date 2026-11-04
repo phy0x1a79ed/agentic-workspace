@@ -3,8 +3,8 @@
 A mount is a ``social_mounts`` row on the node that owns the account. Each new
 message in a mounted seat is typed into the holder's prompt through
 ``reflection message`` on the holder's node, one line per message, in order per
-holder. A seat is released by its holder, taken by a forced mount, or freed by
-the prune once the holder's job is gone.
+holder (``awm.gatewayclient.push``, channels.md R69). A seat is released by its
+holder, taken by a forced mount, or freed by the prune once the holder's job is gone.
 
 The holder is never named by the model. On the owner node the gateway stamps
 ``_caller_pid``. A call from another node arrives through that node's edge,
@@ -16,20 +16,15 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Awaitable, Callable
 
-from awm import config, gatewayclient
+from awm import config
+from awm.gatewayclient.push import live_jobs
 from awm.social.connectors.base import InboundMessage
 
 log = logging.getLogger("awm.social.seats")
 
-PUSH_RETRY_S = 120.0
 PRUNE_S = 60.0
 TEXT_MAX = 1500
-_GONE_MARKERS = ("no session on this node has the job id", "is not running")
-_DEAD_STATES = ("gone", "stopped")
-
-Send = Callable[[str, str, str], Awaitable[str]]
 
 
 class SeatError(ValueError):
@@ -40,13 +35,13 @@ class SeatError(ValueError):
 
 def session_claim(pid: int) -> dict | None:
     """The job and name of the local session ``pid``, or None when it has none."""
-    from awm.claudedaemon import roster
+    from awm.gatewayclient.sessions import session_of
 
-    rec = roster.session_by_pid(pid)
+    rec = session_of(pid)
     if not rec:
         return None
-    return {"kind": rec.get("kind") or "", "job": str(rec.get("jobId") or ""),
-            "name": str(rec.get("name") or "")}
+    return {"kind": "bg" if rec.get("hosting") == "background" else "interactive",
+            "job": str(rec.get("job") or ""), "name": str(rec.get("name") or "")}
 
 
 def caller(args: dict, as_: str | None) -> dict:
@@ -78,11 +73,42 @@ def holder_label(row: dict) -> str:
     return f"{row['job']}@{row['node']}{name}"
 
 
+# -- trust -------------------------------------------------------------------
+
+def seat_trust(account_cfg, channel_id: str) -> str:  # noqa: ANN001
+    """The trust level of the seat on ``channel_id`` (``channels.md`` R70)."""
+    if account_cfg is None:
+        return "untrusted"
+    if channel_id in account_cfg.trusted_chats:
+        return "trusted"
+    return account_cfg.trust
+
+
+def readable_chats(dao, account_cfg, holder: dict | None) -> set[str] | None:  # noqa: ANN001
+    """The chats of ``account_cfg`` whose history ``holder`` may read, or
+    ``None`` for no bound.
+
+    A session that holds no seat on the account is not bounded here. A seat
+    holder reads only the chats it holds, so a lab seat never reads Tony's DM
+    (users.md R126 item 2). A holder of a trusted seat reads every chat.
+    """
+    if holder is None or account_cfg is None:
+        return None
+    held = {r["channel_id"] for r in dao.mounts(account_cfg.name)
+            if r["node"] == holder["node"] and r["job"] == holder["job"]}
+    if not held:
+        return None
+    if any(seat_trust(account_cfg, c) == "trusted" for c in held):
+        return None
+    return held
+
+
 # -- the pushed line ---------------------------------------------------------
 
-def push_line(m: InboundMessage) -> str:
-    """``<platform> from <sender>[ [bot]][ ↳<thread>] [channel=<id> message_id=<id>]: <text>``
-    on one line. The ids are what the holder passes to ``social react``."""
+def push_line(m: InboundMessage, level: str = "untrusted") -> str:
+    """``<platform> [<level>] from <sender>[ [bot]][ ↳<thread>] [channel=<id> message_id=<id>]: <text>``
+    on one line. The level is the seat's (R70). The ids are what the holder
+    passes to ``social react``."""
     who = m.sender_name or m.sender_id or "?"
     if m.sender_bot:
         who += " [bot]"
@@ -96,106 +122,10 @@ def push_line(m: InboundMessage) -> str:
         text = f"{text} [+{n} file{'s' if n > 1 else ''}]".lstrip()
     ids = (f" [channel={m.channel_id} message_id={m.message_id}]"
            if m.message_id else "")
-    return f"{m.platform} from {who}{thread}{ids}: {text}"
-
-
-# -- delivery ----------------------------------------------------------------
-
-async def reflect(node: str, job: str, text: str) -> str:
-    """Type ``text`` into ``job`` on ``node``: ``ok``, ``gone`` or ``retry``."""
-    args = {"job": job, "text": text}
-    try:
-        if node == config.node_name():
-            reply = await gatewayclient.call("reflection", "message", args, timeout=60.0)
-        else:
-            reply = await gatewayclient.call_peer(node, "reflection", "message", args,
-                                                  timeout=60.0)
-    except Exception as exc:  # noqa: BLE001 — unreachable is retried, never a release
-        log.info("push to %s@%s failed: %s", job, node, exc)
-        return "retry"
-    if isinstance(reply, dict) and reply.get("ok"):
-        return "ok"
-    reason = str((reply or {}).get("error") or (reply or {}).get("reason") or reply)
-    if any(marker in reason for marker in _GONE_MARKERS):
-        return "gone"
-    log.info("push to %s@%s refused: %s", job, node, reason)
-    return "retry"
-
-
-class Pusher:
-    """One ordered queue per holder. A line the holder refuses is retried for
-    :data:`PUSH_RETRY_S`, then dropped: the synced history still has it."""
-
-    def __init__(self, send: Send = reflect,
-                 on_gone: Callable[[str, str], None] | None = None,
-                 sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
-                 retry_s: float = PUSH_RETRY_S) -> None:
-        self._send = send
-        self._on_gone = on_gone
-        self._sleep = sleep
-        self._retry_s = retry_s
-        self._queues: dict[tuple[str, str], asyncio.Queue[str]] = {}
-        self._workers: dict[tuple[str, str], asyncio.Task] = {}
-
-    def push(self, node: str, job: str, line: str) -> None:
-        key = (node, job)
-        self._queues.setdefault(key, asyncio.Queue()).put_nowait(line)
-        if key not in self._workers:
-            self._workers[key] = asyncio.create_task(self._drain(key))
-
-    async def idle(self) -> None:
-        """Wait until every queue is empty (for tests and shutdown)."""
-        while self._workers:
-            await asyncio.gather(*list(self._workers.values()), return_exceptions=True)
-
-    async def _drain(self, key: tuple[str, str]) -> None:
-        q = self._queues[key]
-        try:
-            while not q.empty():
-                if await self._deliver(key, q.get_nowait()) == "gone":
-                    while not q.empty():
-                        q.get_nowait()
-                    if self._on_gone is not None:
-                        self._on_gone(*key)
-        finally:
-            del self._workers[key]
-            del self._queues[key]
-
-    async def _deliver(self, key: tuple[str, str], line: str) -> str:
-        node, job = key
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + self._retry_s
-        delay = 2.0
-        while True:
-            outcome = await self._send(node, job, line)
-            if outcome in ("ok", "gone"):
-                return outcome
-            if loop.time() + delay > deadline:
-                log.warning("dropped a push to %s@%s after %.0fs of refusals",
-                            job, node, self._retry_s)
-                return "dropped"
-            await self._sleep(delay)
-            delay = min(delay * 2, 30.0)
+    return f"{m.platform} [{level}] from {who}{thread}{ids}: {text}"
 
 
 # -- releasing dead holders --------------------------------------------------
-
-async def live_jobs(node: str) -> set[str] | None:
-    """The running background jobs on ``node``, or None when it cannot tell."""
-    try:
-        if node == config.node_name():
-            reply = await gatewayclient.call("cx", "list", {}, timeout=30.0)
-        else:
-            reply = await gatewayclient.call_peer(node, "cx", "list", {}, timeout=30.0)
-    except Exception as exc:  # noqa: BLE001 — an unreachable node keeps its seats
-        log.info("cannot list sessions on %s: %s", node, exc)
-        return None
-    if not isinstance(reply, dict) or "sessions" not in reply:
-        return None
-    return {str(row["job"]) for row in reply["sessions"]
-            if isinstance(row, dict) and row.get("job")
-            and row.get("state") not in _DEAD_STATES and row.get("alive") is not False}
-
 
 async def prune(dao, list_jobs=live_jobs) -> list[dict]:  # noqa: ANN001
     """Release every seat whose holder's job is gone; returns the freed rows."""

@@ -152,41 +152,19 @@ async def test_slack_without_reactions_write_refuses(monkeypatch):
         await conn.react("D1", "1.1", "eyes")
 
 
-async def test_slack_user_reacts_through_the_sdk(monkeypatch):
-    from slack_sdk.errors import SlackApiError
-    conn = _build(name="tony", platform="slack", token="xoxp-1", app_token="xapp-1")
-    calls = []
-
-    class _Web:
-        async def reactions_add(self, **kw):
-            calls.append(("add", kw))
-            raise SlackApiError("dup", {"ok": False, "error": "already_reacted"})
-
-        async def reactions_remove(self, **kw):
-            calls.append(("remove", kw))
-            return {"ok": True}
-
-    monkeypatch.setattr(conn, "_web_client", lambda: _Web())
-    assert (await conn.react("D1", "1.1", "👀"))["emoji"] == "eyes"
-    assert (await conn.react("D1", "1.1", "👀", remove=True))["removed"]
-    assert calls == [("add", {"channel": "D1", "timestamp": "1.1", "name": "eyes"}),
-                     ("remove", {"channel": "D1", "timestamp": "1.1", "name": "eyes"})]
-
-
-async def test_mira_posts_the_reaction_to_the_daemon(monkeypatch):
-    conn = _build(name="mira", platform="slack", token="", source="mira",
-                  mira_url="https://h:7822", mira_token="tok")
-    posts = []
-
-    async def post(path, body, timeout=30):
-        posts.append((path, body))
-        return {"ok": True}
-
-    monkeypatch.setattr(conn, "_post", post)
-    r = await conn.react("D1", "1.1", ":eyes:", remove=True)
-    assert posts == [("/v1/slack/react", {"channel": "D1", "message_id": "1.1",
-                                          "emoji": "eyes", "remove": True})]
-    assert r["as"] == "reaction" and r["removed"]
+async def test_tony_slack_has_no_react():
+    # R127: no function writes to Slack as Tony, a reaction included.
+    from awm.social.connectors.slack_conn import SlackConnector
+    from awm.social.connectors.mira_conn import MiraConnector
+    assert "react" not in vars(SlackConnector) and "send" not in vars(SlackConnector)
+    assert "react" not in vars(MiraConnector)
+    for conn in (_build(name="tony", platform="slack", token="xoxp-1", app_token="xapp-1"),
+                 _build(name="mira", platform="slack", token="", source="mira",
+                        mira_url="https://h:7822", mira_token="tok")):
+        with pytest.raises(NotImplementedError):
+            await conn.react("D1", "1.1", "eyes")
+        with pytest.raises(NotImplementedError, match="read only"):
+            await conn.send("D1", "hi")
 
 
 async def test_gmail_and_teams_refuse():

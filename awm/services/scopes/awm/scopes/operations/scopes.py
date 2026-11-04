@@ -2,7 +2,7 @@
 
 from awm.config import privacy
 from awm.scopes.models import ScopeCreateRequest, ScopeUpdateRequest
-from awm.scopes import private, scopes, search_index, tags
+from awm.scopes import claims, private, scopes, search_index, tags
 
 
 # Manifest function descriptors (serializable dicts for API_MANIFEST["functions"])
@@ -55,7 +55,10 @@ SCOPE_MANIFEST_FUNCTIONS = [
             {"name": "branch_name", "type": "string", "required": False,
              "description": "Branch to check out. Default feat/<scope>. It may "
                             "already exist locally or on a remote."},
-            {"name": "context", "type": "string", "required": False},
+            {"name": "context", "type": "string", "required": False,
+             "description": "The scope brief: what the scope is for, in at most two "
+                            "sentences and 400 characters. It goes to the journal as "
+                            "brief_set would write it; see brief_set for what it holds."},
             {"name": "new_project", "type": "boolean", "required": False,
              "description": "Create the project first when it does not exist. "
                             "Default false: an unknown project is an error."},
@@ -76,7 +79,7 @@ SCOPE_MANIFEST_FUNCTIONS = [
         "effect": "read",
         "description": (
             "Search scopes: name matches first, then scopes ranked by the "
-            "meaning of their goals and context. Each project's main checkout "
+            "meaning of their brief and context. Each project's main checkout "
             "is a scope named for its default branch. "
             "Defaults to status='active'; pass status='all' for the full history. "
             "With no project, the reply also lists every project, matched and "
@@ -163,7 +166,7 @@ SCOPE_MANIFEST_FUNCTIONS = [
         "description": (
             "Idempotent repair pass over active scopes: enforce tier-3 = .awm/ "
             "only (strip @.awm/context.md imports, drop untracked AGENTS.md / "
-            "CLAUDE.md, recreate context.md and the per-scope opencode config) "
+            "CLAUDE.md, delete the stale .awm/history.md and .awm/mcp-opencode.json) "
             "and bring the scope's data view to whatever its checkout implies "
             "— installing the DVC merge driver + hooks and materialising the "
             "pinned chunks, or leaving an unconverted project on the legacy "
@@ -292,6 +295,67 @@ SCOPE_MANIFEST_FUNCTIONS = [
 ]
 
 
+_CLAIM_KEY = [
+    {"name": "project", "type": "string", "required": True},
+    {"name": "scope", "type": "string", "required": True},
+    {"name": "session_id", "type": "string", "required": True,
+     "description": "The session's id in R9 form (`cc` + hex of its Claude session UUID)."},
+]
+
+CLAIM_MANIFEST_FUNCTIONS = [
+    {
+        "name": "scope_claim",
+        "tool": "scope_claim",
+        "surfaces": ["cli", "http"],
+        "effect": "write",
+        "description": (
+            "Claim a scope for a live session (scopes.md R3, R42). reflection cd calls this "
+            "before it moves a session; agents use cd, not this verb. A scope holds at most one "
+            "live session, and the claim ends when the session's process ends, unless the "
+            "session waits on other sessions. A held scope answers ok=false with its holder. "
+            "queue=true joins the scope's first-come queue and returns queued_position. A "
+            "terminal session (terminal=true) is warned and never blocked."
+        ),
+        "params": [
+            *_CLAIM_KEY,
+            {"name": "pid", "type": "integer", "required": False,
+             "description": "The session's process id on this node. Default: the calling process."},
+            {"name": "job", "type": "string", "required": False,
+             "description": "The session's background job, which the queue notifies when the scope frees."},
+            {"name": "queue", "type": "boolean", "required": False},
+            {"name": "terminal", "type": "boolean", "required": False},
+        ],
+    },
+    {
+        "name": "scope_release",
+        "tool": "scope_release",
+        "surfaces": ["cli", "http"],
+        "effect": "write",
+        "description": "End a session's claim on a scope and notify the first session in its queue.",
+        "params": list(_CLAIM_KEY),
+    },
+    {
+        "name": "scope_withdraw",
+        "tool": "scope_withdraw",
+        "surfaces": ["cli", "http"],
+        "effect": "write",
+        "description": "Take a session out of a scope's queue (scopes.md R46).",
+        "params": list(_CLAIM_KEY),
+    },
+    {
+        "name": "scope_claims",
+        "tool": "scope_claims",
+        "effect": "read",
+        "description": "The live session holding each scope, and each scope's queue.",
+        "params": [
+            {"name": "project", "type": "string", "required": False},
+            {"name": "scope", "type": "string", "required": False},
+        ],
+    },
+]
+SCOPE_MANIFEST_FUNCTIONS = SCOPE_MANIFEST_FUNCTIONS + CLAIM_MANIFEST_FUNCTIONS
+
+
 def _handle_scope_create(args: dict) -> dict:
     req = ScopeCreateRequest(
         project=args["project"],
@@ -417,6 +481,32 @@ def _handle_scope_reindex(args: dict) -> dict:
                                     dry_run=bool(args.get("dry_run", False)))
 
 
+def _pid(args: dict) -> int | None:
+    pid = args.get("pid", args.get("_caller_pid"))
+    return int(pid) if isinstance(pid, (int, str)) and str(pid).isdigit() else None
+
+
+def _handle_scope_claim(args: dict) -> dict:
+    return claims.claim(args["project"], args["scope"], args["session_id"], pid=_pid(args),
+                        job=args.get("job") or None, queue=bool(args.get("queue", False)),
+                        terminal=bool(args.get("terminal", False)))
+
+
+def _handle_scope_release(args: dict) -> dict:
+    return claims.release(args["project"], args["scope"], args["session_id"])
+
+
+def _handle_scope_withdraw(args: dict) -> dict:
+    return claims.withdraw(args["project"], args["scope"], args["session_id"])
+
+
+def _handle_scope_claims(args: dict, as_: str | None = None) -> dict:
+    out = claims.listing(args.get("project"), args.get("scope"))
+    out["claims"] = privacy.visible_rows(out["claims"], as_)
+    out["count"] = len(out["claims"])
+    return out
+
+
 SCOPE_HANDLERS = {
     "scope_create": _handle_scope_create,
     "scope_search": _handle_scope_search,
@@ -430,4 +520,8 @@ SCOPE_HANDLERS = {
     "scope_sync": _handle_scope_sync,
     "scope_gather": _handle_scope_gather,
     "scope_scatter": _handle_scope_scatter,
+    "scope_claim": _handle_scope_claim,
+    "scope_release": _handle_scope_release,
+    "scope_withdraw": _handle_scope_withdraw,
+    "scope_claims": _handle_scope_claims,
 }

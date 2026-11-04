@@ -103,8 +103,8 @@ def _forwards_body(request: Request) -> bool:
     headers is present; the method says nothing (bodyless POST and GET-with-body
     both exist in the wild). Handing httpx a stream for a request that framed no
     body makes it invent ``Transfer-Encoding: chunked`` and append a zero-length
-    chunk terminator. An upstream that never reads request bodies — the drawio
-    view listener is a stdlib ``ThreadingHTTPServer`` doing exactly that — then
+    chunk terminator. An upstream that never reads request bodies, such as a
+    stdlib ``ThreadingHTTPServer``, then
     parses that terminator as the next request line, answers ``400`` and drops
     the connection, which the hub's pooled client has already handed to somebody
     else. It surfaces as an intermittent gateway ``500``.
@@ -298,23 +298,22 @@ def _http_to_ws(url: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _is_foreign_caller(as_: str | None) -> bool:
-    """Whether ``as_`` is a foreign peer, which has no business on any ``/svc``
-    door: the edge already keeps it out, and this is the backstop for the window
-    in which the edge's cached peer material is stale after a relation change.
-    Imported lazily because ``catalog`` imports this package."""
-    from awm.gateway import catalog  # noqa: PLC0415
+def _is_edgeless_caller(as_: str | None) -> bool:
+    """Whether ``as_`` is a peer node with no edge to this node, which has no
+    business on any ``/svc`` door: the edge already keeps it out, and this is the
+    backstop (see :func:`awm.config.edges.admits`)."""
+    from awm.config import edges  # noqa: PLC0415
 
-    return catalog.foreign_grants(as_) is not None
+    return not edges.admits(as_)
 
 
 _NOT_FOUND = {"error": "not found"}
 
 
-async def _refuse_foreign_ws(client_ws: WebSocket, as_: str | None) -> bool:
-    """Close a not-yet-accepted socket from a foreign peer; True if it was closed.
+async def _refuse_edgeless_ws(client_ws: WebSocket, as_: str | None) -> bool:
+    """Close a not-yet-accepted socket from a peer with no edge here; True if it was closed.
     Closing before ``accept`` answers the handshake with an HTTP error."""
-    if not _is_foreign_caller(as_):
+    if not _is_edgeless_caller(as_):
         return False
     try:
         await client_ws.close(code=1008, reason="not found")
@@ -338,10 +337,10 @@ async def proxy_service_http(
     Body is read as JSON (empty body → null args). Function is dispatched
     against the service's api manifest; declared no-response functions go
     via ``notify`` (returns 202), everything else awaits a ``reply``
-    envelope (returns the result as JSON). A foreign peer gets a 404, and so
-    does any peer whose args name a private target.
+    envelope (returns the result as JSON). A peer with no edge here gets a
+    404, and so does any peer whose args name a private target.
     """
-    if _is_foreign_caller(as_):
+    if _is_edgeless_caller(as_):
         return JSONResponse(_NOT_FOUND, status_code=404)
     ch = rpc.get_control(service_id)
     if ch is None or not ch.ready.is_set():
@@ -372,7 +371,8 @@ async def proxy_service_http(
         return JSONResponse(_NOT_FOUND, status_code=404)
     if stamp is not None and (args is None or isinstance(args, dict)):
         stamped = {} if args is None else args
-        stamp(fn, stamped)
+        # The stamp may ask reflection about the caller through this gateway.
+        await asyncio.to_thread(stamp, fn, stamped)
         args = stamped if (stamped or args is not None) else None
     if spec.get("no_response"):
         ch.notify(fn, args, as_=as_)
@@ -399,10 +399,10 @@ async def open_session_via_http(
     Body is the ``init`` payload (json). Allocates a session_id (and, for
     direct kinds, a bridge_id), sends ``session.open`` to the service,
     awaits ``session.opened``, returns ``{ws_path: "/svc/<name>/session/<id>"}``
-    on success. A foreign peer gets a 404, and so does any peer whose ``init``
-    names a private target.
+    on success. A peer with no edge here gets a 404, and so does any peer whose
+    ``init`` names a private target.
     """
-    if _is_foreign_caller(as_):
+    if _is_edgeless_caller(as_):
         return JSONResponse(_NOT_FOUND, status_code=404)
     ch = rpc.get_control(service_id)
     if ch is None or not ch.ready.is_set():
@@ -462,10 +462,10 @@ async def proxy_session_ws(
     ``session.frame`` envelopes back to the browser, JSON for json
     payloads or decoded base64 for binary.
 
-    ``as_`` is the caller's identity when the route knows it; a foreign peer is
-    closed out before the socket is accepted.
+    ``as_`` is the caller's identity when the route knows it; a peer with no edge
+    here is closed out before the socket is accepted.
     """
-    if await _refuse_foreign_ws(client_ws, as_):
+    if await _refuse_edgeless_ws(client_ws, as_):
         return
     ch = rpc.get_control(service_id)
     if ch is None or not ch.ready.is_set():
@@ -634,9 +634,9 @@ async def proxy_service_emit_ws(
 
     Direct emitters use a different path (a bridge) and never reach
     this handler — the route picks ``proxy_session_ws``-style relay
-    for them instead. A foreign peer is closed out before the socket is accepted.
+    for them instead. A peer with no edge here is closed out before the socket is accepted.
     """
-    if await _refuse_foreign_ws(client_ws, as_):
+    if await _refuse_edgeless_ws(client_ws, as_):
         return
     ch = rpc.get_control(service_id)
     if ch is None or not ch.ready.is_set():

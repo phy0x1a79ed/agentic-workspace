@@ -1,9 +1,17 @@
-"""The search service's database: the source registry, the document table, the corpus.
+"""The search service's database: the source registry, the documents, their passages, the corpus.
 
-Every archive document is one row in ``documents`` keyed ``source:id``, and one
-document in the retrieval engine under the single source type :data:`CORPUS`.
-One corpus matters because the engine normalises scores per call: ranking each
-source in its own corpus would make their scores incomparable.
+Every archive document is one row in ``documents`` keyed ``source:id``. Two FTS5
+indexes serve the exact section. ``documents_exact`` holds trigrams of whole
+documents and finds any literal of three characters or more, even one that
+crosses a passage boundary. ``passages_words`` holds porter-stemmed words of
+passages and ranks keyword matches by BM25. Each passage is indexed with its
+document's title, project, scope and kind beside its own words, because a query
+often names the project or the subject while the passage names neither. Both are external-content tables
+kept in step by triggers on an explicit integer key, which no VACUUM renumbers.
+
+Each document is also one entry in the retrieval engine under the single source
+type :data:`CORPUS`, which serves the related section. One corpus matters
+because the engine normalises scores per call.
 """
 
 from __future__ import annotations
@@ -17,11 +25,13 @@ from typing import Any, Iterable
 from awm.persistence import embeddings as engine
 from awm.persistence.databases import get_connection, init_service_db
 
+from awm.search import passages as cutter
+
 SERVICE = "search"
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 6
 CORPUS = "doc"
 
-SCHEMA_SQL = """\
+_SOURCES = """\
 CREATE TABLE IF NOT EXISTS sources (
     name        TEXT PRIMARY KEY,
     service     TEXT NOT NULL,
@@ -34,9 +44,11 @@ CREATE TABLE IF NOT EXISTS sources (
     first_seen  REAL NOT NULL,
     last_seen   REAL NOT NULL
 );
+"""
 
-CREATE TABLE IF NOT EXISTS documents (
-    key      TEXT PRIMARY KEY,       -- source:id
+_DOCUMENTS = ["""CREATE TABLE IF NOT EXISTS documents (
+    rid      INTEGER PRIMARY KEY,
+    key      TEXT NOT NULL UNIQUE,   -- source:id
     source   TEXT NOT NULL,
     doc_id   TEXT NOT NULL,
     title    TEXT NOT NULL DEFAULT '',
@@ -47,22 +59,116 @@ CREATE TABLE IF NOT EXISTS documents (
     ts       TEXT NOT NULL DEFAULT '', -- ISO 8601 UTC, second resolution, so text order is time order
     url      TEXT NOT NULL DEFAULT '',
     tags     TEXT NOT NULL DEFAULT ''  -- lowercased, one per line, newline-bracketed (tag_field)
-);
-CREATE INDEX IF NOT EXISTS idx_documents_source ON documents(source, doc_id);
-CREATE INDEX IF NOT EXISTS idx_documents_filter ON documents(source, project, scope, kind, ts);
-""" + engine.EMBEDDINGS_DDL
+);""",
+    "CREATE INDEX IF NOT EXISTS idx_documents_source ON documents(source, doc_id);",
+    "CREATE INDEX IF NOT EXISTS idx_documents_filter ON documents(source, project, scope, kind, ts);"]
 
-#: v2 adds ``tags``. Clearing ``synced_at`` makes every index source due at once, so the tags fill in.
+_TEXT_INDEXES = """
+CREATE VIRTUAL TABLE IF NOT EXISTS documents_exact USING fts5(
+    title, text, content='documents', content_rowid='rid', tokenize='trigram');
+CREATE TRIGGER IF NOT EXISTS documents_exact_ai AFTER INSERT ON documents BEGIN
+    INSERT INTO documents_exact(rowid, title, text) VALUES (new.rid, new.title, new.text);
+END;
+CREATE TRIGGER IF NOT EXISTS documents_exact_ad AFTER DELETE ON documents BEGIN
+    INSERT INTO documents_exact(documents_exact, rowid, title, text)
+        VALUES ('delete', old.rid, old.title, old.text);
+END;
+CREATE TRIGGER IF NOT EXISTS documents_exact_au AFTER UPDATE OF title, text ON documents BEGIN
+    INSERT INTO documents_exact(documents_exact, rowid, title, text)
+        VALUES ('delete', old.rid, old.title, old.text);
+    INSERT INTO documents_exact(rowid, title, text) VALUES (new.rid, new.title, new.text);
+END;
+
+CREATE TABLE IF NOT EXISTS passages (
+    id       INTEGER PRIMARY KEY,
+    key      TEXT NOT NULL,          -- the document's source:id
+    field    TEXT NOT NULL,          -- title or text: the field start and stop index into
+    start    INTEGER NOT NULL,
+    stop     INTEGER NOT NULL,
+    section  TEXT NOT NULL DEFAULT '',
+    context  TEXT NOT NULL DEFAULT '',  -- the document's title, project, scope and kind
+    text     TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_passages_key ON passages(key, field, start);
+CREATE VIRTUAL TABLE IF NOT EXISTS passages_words USING fts5(
+    context, text, content='passages', content_rowid='id', tokenize='porter unicode61');
+CREATE TRIGGER IF NOT EXISTS passages_words_ai AFTER INSERT ON passages BEGIN
+    INSERT INTO passages_words(rowid, context, text) VALUES (new.id, new.context, new.text);
+END;
+CREATE TRIGGER IF NOT EXISTS passages_words_ad AFTER DELETE ON passages BEGIN
+    INSERT INTO passages_words(passages_words, rowid, context, text)
+        VALUES ('delete', old.id, old.context, old.text);
+END;
+"""
+
+VERDICTS = ("relevant", "irrelevant")
+SECTIONS = ("exact", "related")
+
+_JUDGEMENTS = """
+CREATE TABLE IF NOT EXISTS judgements (
+    query       TEXT NOT NULL,
+    source      TEXT NOT NULL,
+    doc_id      TEXT NOT NULL,
+    verdict     TEXT NOT NULL CHECK (verdict IN ('relevant', 'irrelevant')),
+    section     TEXT NOT NULL DEFAULT '',  -- the section a relevant hit must answer in; '' for any
+    collection  TEXT NOT NULL DEFAULT '',  -- the set it was seeded from, or '' for a mark by hand
+    note        TEXT NOT NULL DEFAULT '',
+    judge       TEXT NOT NULL DEFAULT '',  -- the caller who recorded it
+    ts          REAL NOT NULL,
+    PRIMARY KEY (query, source, doc_id)
+);
+CREATE INDEX IF NOT EXISTS idx_judgements_collection ON judgements(collection);
+"""
+
+#: Each ``search get``: who opened which hit for which query. No rank reads it until the journal replay shows
+#: a usage rank beats the plain order (fleet.md R136 item 6).
+_USAGE = """
+CREATE TABLE IF NOT EXISTS usage (
+    ts      REAL NOT NULL,
+    scope   TEXT NOT NULL DEFAULT '',  -- the caller's scope, within its project
+    query   TEXT NOT NULL DEFAULT '',
+    source  TEXT NOT NULL,
+    doc_id  TEXT NOT NULL,
+    node    TEXT NOT NULL DEFAULT '',  -- the node holding the document; 'local' for this one
+    project TEXT NOT NULL DEFAULT ''   -- the caller's project
+);
+CREATE INDEX IF NOT EXISTS idx_usage_scope ON usage(scope, ts);
+"""
+#: The usage log as v5 made it, before ``project``: a migration replays its own version's schema.
+_USAGE_V5 = """
+CREATE TABLE IF NOT EXISTS usage (ts REAL NOT NULL, scope TEXT NOT NULL DEFAULT '', query TEXT NOT NULL DEFAULT '',
+                                  source TEXT NOT NULL, doc_id TEXT NOT NULL, node TEXT NOT NULL DEFAULT '');
+CREATE INDEX IF NOT EXISTS idx_usage_scope ON usage(scope, ts);
+"""
+
+SCHEMA_SQL = _SOURCES + "\n".join(_DOCUMENTS) + _TEXT_INDEXES + _JUDGEMENTS + _USAGE + engine.EMBEDDINGS_DDL
+
+#: v2 adds ``tags``; clearing ``synced_at`` makes every index source due at once, so the tags fill in. v3 gives
+#: documents an integer key for the text indexes and builds them. v4 adds the judgements, v5 the usage log, and
+#: v6 its project.
 MIGRATIONS = {
     (1, 2): "ALTER TABLE documents ADD COLUMN tags TEXT NOT NULL DEFAULT '';\n"
             "UPDATE sources SET synced_at = NULL;",
+    (2, 3): "\n".join([
+        "ALTER TABLE documents RENAME TO documents_v2;",
+        "DROP INDEX IF EXISTS idx_documents_source;",
+        "DROP INDEX IF EXISTS idx_documents_filter;",
+        _DOCUMENTS[0],
+        "INSERT INTO documents (key, source, doc_id, title, text, project, scope, kind, ts, url, tags)"
+        " SELECT key, source, doc_id, title, text, project, scope, kind, ts, url, tags FROM documents_v2;",
+        "DROP TABLE documents_v2;",
+        *_DOCUMENTS[1:],
+    ]) + _TEXT_INDEXES + "INSERT INTO documents_exact(documents_exact) VALUES ('rebuild');\n",
+    (3, 4): _JUDGEMENTS,
+    (4, 5): _USAGE_V5,
+    (5, 6): "ALTER TABLE usage ADD COLUMN project TEXT NOT NULL DEFAULT '';",
 }
 
 _initialized = False
 
 
 def init() -> None:
-    """Idempotently create the search database and the engine's chunk store."""
+    """Idempotently create the search database and the engine's chunk store, and cut missing passages."""
     global _initialized
     if not _initialized:
         init_service_db(SERVICE, SCHEMA_SQL, schema_version=SCHEMA_VERSION, migrations=MIGRATIONS)
@@ -70,6 +176,7 @@ def init() -> None:
     conn = connect()
     try:
         engine.ensure_schema(conn)
+        cut_missing(conn)
     finally:
         conn.close()
 
@@ -109,15 +216,19 @@ def record_registry(conn: sqlite3.Connection, sources: dict[str, dict], present:
 
     ``sources`` maps a name to its ``{service, mode, ...}`` spec. A stored source
     the registry no longer shows is kept and marked absent, never deleted: its
-    documents stay searchable as frozen. An unchanged registry writes nothing,
-    because a query calls this and must not wait on a sweep's write lock.
+    documents stay searchable as frozen. A source that turns from index to live
+    answers for itself from then on, so its indexed documents are dropped. An
+    unchanged registry writes nothing, because a query calls this and must not
+    wait on a sweep's write lock.
     """
     now = time.time() if now is None else now
-    stored = {r["name"]: r for r in conn.execute("SELECT name, spec, present FROM sources")}
+    stored = {r["name"]: r for r in conn.execute("SELECT name, mode, spec, present FROM sources")}
     news = []
     for name, spec in sources.items():
         blob = json.dumps(spec, sort_keys=True)
         row = stored.get(name)
+        if row is not None and row["mode"] == "index" and spec["mode"] == "live":
+            drop_documents(conn, name, document_ids(conn, name))
         if row is None:
             conn.execute(
                 "INSERT INTO sources (name, service, mode, spec, present, first_seen, last_seen)"
@@ -165,6 +276,8 @@ def mark_attempt(conn: sqlite3.Connection, name: str, error: str | None,
 
 # -- documents -------------------------------------------------------------
 
+_FIELDS = ("title", "text", "project", "scope", "kind", "ts", "url", "tags")
+
 
 def key_of(source: str, doc_id: str) -> str:
     return f"{source}:{doc_id}"
@@ -199,14 +312,52 @@ def clean(source: str, raw: dict[str, Any]) -> dict[str, Any] | None:
             "url": str(raw.get("url") or ""), "tags": tag_field(raw.get("tags"))}
 
 
-def put_documents(conn: sqlite3.Connection, rows: Iterable[dict[str, Any]]) -> None:
+_CUT_FIELDS = ("title", "text", "project", "scope", "kind")
+
+
+def _cut(conn: sqlite3.Connection, doc: Any) -> None:
+    key, title, text = doc["key"], doc["title"], doc["text"]
+    context = " ".join(doc[f] for f in ("title", "project", "scope", "kind") if doc[f])
+    conn.execute("DELETE FROM passages WHERE key=?", (key,))
+    rows = [(key, "title", 0, len(title), "", context, title)] if title.strip() else []
+    rows += [(key, "text", p.start, p.end, p.section, context, text[p.start:p.end]) for p in cutter.split(text)]
+    conn.executemany("INSERT INTO passages (key, field, start, stop, section, context, text)"
+                     " VALUES (?,?,?,?,?,?,?)", rows)
+
+
+def put_documents(conn: sqlite3.Connection, rows: Iterable[dict[str, Any]]) -> int:
+    """Store ``rows``, writing only what changed; return how many changed.
+
+    An unchanged document costs one read, so a full export pass over a quiet
+    source rewrites no index.
+    """
+    rows = list(rows)
+    held = {r["key"]: r for r in conn.execute(
+        f"SELECT key, {', '.join(_FIELDS)} FROM documents WHERE key IN ({','.join('?' * len(rows))})",
+        [r["key"] for r in rows])} if rows else {}
+    changed = [r for r in rows if r["key"] not in held or any(held[r["key"]][f] != r[f] for f in _FIELDS)]
     conn.executemany(
         "INSERT INTO documents (key, source, doc_id, title, text, project, scope, kind, ts, url, tags)"
         " VALUES (:key,:source,:doc_id,:title,:text,:project,:scope,:kind,:ts,:url,:tags)"
         " ON CONFLICT(key) DO UPDATE SET title=excluded.title, text=excluded.text,"
         " project=excluded.project, scope=excluded.scope, kind=excluded.kind, ts=excluded.ts,"
-        " url=excluded.url, tags=excluded.tags", list(rows))
+        " url=excluded.url, tags=excluded.tags", changed)
+    for r in changed:
+        old = held.get(r["key"])
+        if old is None or any(old[f] != r[f] for f in _CUT_FIELDS):
+            _cut(conn, r)
     conn.commit()
+    return len(changed)
+
+
+def cut_missing(conn: sqlite3.Connection) -> int:
+    """Cut passages for every stored document that has none, as after the move to schema 3."""
+    rows = conn.execute(f"SELECT key, {', '.join(_CUT_FIELDS)} FROM documents"
+                        " WHERE key NOT IN (SELECT DISTINCT key FROM passages)").fetchall()
+    for r in rows:
+        _cut(conn, r)
+    conn.commit()
+    return len(rows)
 
 
 def document_ids(conn: sqlite3.Connection, source: str) -> set[str]:
@@ -218,6 +369,7 @@ def drop_documents(conn: sqlite3.Connection, source: str, doc_ids: Iterable[str]
     for doc_id in gone:
         key = key_of(source, doc_id)
         engine.delete_document(conn, CORPUS, key)
+        conn.execute("DELETE FROM passages WHERE key=?", (key,))
         conn.execute("DELETE FROM documents WHERE key=?", (key,))
     conn.commit()
     return len(gone)
@@ -226,3 +378,40 @@ def drop_documents(conn: sqlite3.Connection, source: str, doc_ids: Iterable[str]
 def get_document(conn: sqlite3.Connection, source: str, doc_id: str) -> dict[str, Any] | None:
     row = conn.execute("SELECT * FROM documents WHERE key=?", (key_of(source, doc_id),)).fetchone()
     return dict(row) if row else None
+
+
+def log_use(conn: sqlite3.Connection, row: dict[str, Any]) -> None:
+    """Append one get to the usage log."""
+    conn.execute("INSERT INTO usage (ts, project, scope, query, source, doc_id, node)"
+                 " VALUES (:ts, :project, :scope, :query, :source, :doc_id, :node)",
+                 {"ts": time.time(), "project": "", "scope": "", "query": "", "node": "", **row})
+    conn.commit()
+
+
+def judge(conn: sqlite3.Connection, row: dict[str, Any]) -> dict[str, Any]:
+    """Record a verdict on one hit for one query, replacing any earlier verdict on the same pair."""
+    row = {"section": "", "collection": "", "note": "", "judge": "", "ts": time.time(), **row}
+    conn.execute(
+        "INSERT INTO judgements (query, source, doc_id, verdict, section, collection, note, judge, ts)"
+        " VALUES (:query, :source, :doc_id, :verdict, :section, :collection, :note, :judge, :ts)"
+        " ON CONFLICT (query, source, doc_id) DO UPDATE SET verdict=excluded.verdict,"
+        " section=excluded.section, collection=excluded.collection, note=excluded.note,"
+        " judge=excluded.judge, ts=excluded.ts", row)
+    conn.commit()
+    return row
+
+
+def unjudge(conn: sqlite3.Connection, query: str, source: str, doc_id: str) -> int:
+    gone = conn.execute("DELETE FROM judgements WHERE query=? AND source=? AND doc_id=?",
+                        (query, source, doc_id)).rowcount
+    conn.commit()
+    return gone
+
+
+def judgements(conn: sqlite3.Connection, collection: str = "", query: str = "") -> list[dict[str, Any]]:
+    sql, params = "SELECT * FROM judgements WHERE 1=1", []
+    if collection:
+        sql, params = sql + " AND collection=?", [*params, collection]
+    if query:
+        sql, params = sql + " AND query=?", [*params, query]
+    return [dict(r) for r in conn.execute(sql + " ORDER BY collection, query, source, doc_id", params)]

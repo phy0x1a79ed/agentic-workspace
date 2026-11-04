@@ -31,6 +31,7 @@ ENV="${AWM_ENV:-awm}"
 # and `.awm/`. Run from a scope worktree they differ, and using the git toplevel
 # for a `projects/` path silently addresses a directory that does not exist.
 REPO="$(git -C "$HERE" rev-parse --show-toplevel)"
+AWM="${AWM_ROOT:-$REPO/awm}"
 workspace_root() {
     [ -n "${AWM_WORKSPACE:-}" ] && { printf '%s\n' "$AWM_WORKSPACE"; return; }
     local d="$1"
@@ -53,10 +54,10 @@ FORK_DIR="${DSH_FORK_DIR:-$WS/projects/deepseek-harness/release}"
 
 run() { echo "+ pip install -e $*"; mamba run -n "$ENV" pip install -e "$@"; }
 
-run "$REPO/awm/service_components/config" --no-deps
-run "$REPO/awm/service_components/gatewayclient" --no-deps
-run "$REPO/awm/services/httpsfront" --no-deps
-run "$REPO/awm/services/dsh"
+run "$AWM/service_components/config" --no-deps
+run "$AWM/service_components/gatewayclient" --no-deps
+run "$AWM/services/httpsfront" --no-deps
+run "$HERE"
 
 # Bake the target env's absolute interpreter into a gitignored `.runtime-env`
 # sidecar so the hub supervisor can respawn this service under systemd's

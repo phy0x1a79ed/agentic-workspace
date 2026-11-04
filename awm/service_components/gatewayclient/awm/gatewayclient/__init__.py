@@ -285,8 +285,8 @@ async def subscribe(
 # Cross-peer calls — reach ANOTHER node's service edge directly (never relayed
 # through a gateway). The local gateway is asked only to RESOLVE the peer's
 # address; the call then goes straight to the peer's httpsfront edge, over
-# CA-verified TLS, authenticated with a node-signed token (or, for a domestic
-# peer that has not upgraded, a bearer fetched over SSH).
+# CA-verified TLS, authenticated with a node-signed token (or, for a peer this
+# node holds an edge to that has not upgraded, a bearer fetched over SSH).
 # ---------------------------------------------------------------------------
 
 
@@ -494,18 +494,19 @@ def _peer_headers(bearer: str, as_: str | None) -> dict[str, str]:
 # ---- Node-signed tokens -----------------------------------------------------
 # A peer edge accepts either a short-lived token signed by THIS node's key (the
 # local ``auth`` service holds the key; ``sign_peer_token`` is operator-only, so
-# it is called with no identity) or, for a domestic peer on a node that has not
-# upgraded yet, the legacy shared bearer fetched over ssh. A foreign peer never
-# sees the legacy bearer, and nor does any peer once this node sets
+# it is called with no identity) or, for a peer this node holds an edge to
+# (``awm.config.edges``) that has not upgraded yet, the legacy shared bearer
+# fetched over ssh. A peer with no edge from here never sees the legacy bearer,
+# and nor does any peer once this node sets
 # ``AWM_PEER_LEGACY_BEARER=0``: if the token path fails, the call fails.
 
 _PEER_TOKEN_MARGIN = 30.0     # stop reusing a token this long before it expires
 _PEER_TOKEN_DEFAULT_TTL = 300.0
-#: The edge's answer to a credential it does not accept. Only this status sends a
-#: domestic peer to the legacy bearer: a 403 is an authorisation verdict on a
+#: The edge's answer to a credential it does not accept. Only this status sends an
+#: edge peer to the legacy bearer: a 403 is an authorisation verdict on a
 #: caller the edge did identify, which a different credential cannot cure.
 _TOKEN_REFUSED = (401,)
-#: How long a domestic peer that refused our token is called with the legacy
+#: How long an edge peer that refused our token is called with the legacy
 #: bearer straight away, so an un-upgraded node costs one failed attempt per
 #: window rather than a signing RPC and two requests per call.
 _PEER_TOKEN_REFUSAL_TTL = 300.0
@@ -533,12 +534,11 @@ def _peer_aud(peer: str) -> str:
     return aud
 
 
-def _is_foreign(entry: dict[str, Any] | None) -> bool:
-    """Whether a resolved peer entry is not domestic. A ``relation`` key that is
-    absent means the answering gateway predates relations, so every peer was
-    domestic; one that is present but empty or unknown fails closed as foreign."""
-    entry = entry or {}
-    return "relation" in entry and entry["relation"] != "domestic"
+def _no_edge(peer: str) -> bool:
+    """Whether this node holds no edge to ``peer`` in the fleet edge list."""
+    from awm.config import edges
+
+    return not edges.reaches(edges.here(), peer)
 
 
 def _legacy_retired() -> bool:
@@ -546,14 +546,14 @@ def _legacy_retired() -> bool:
     return (os.environ.get("AWM_PEER_LEGACY_BEARER") or "").strip() == "0"
 
 
-def _token_only(entry: dict[str, Any] | None) -> bool:
-    """Whether a peer is called with the signed token alone: a foreign peer, and
-    every peer once this node has retired the legacy bearer."""
-    return _is_foreign(entry) or _legacy_retired()
+def _token_only(peer: str) -> bool:
+    """Whether a peer is called with the signed token alone: a peer this node
+    holds no edge to, and every peer once this node has retired the legacy bearer."""
+    return _legacy_retired() or _no_edge(peer)
 
 
 def _skip_token(peer: str, token_only: bool) -> bool:
-    """Whether to go straight to the legacy bearer: a domestic peer that refused
+    """Whether to go straight to the legacy bearer: an edge peer that refused
     our token within the last ``_PEER_TOKEN_REFUSAL_TTL`` seconds."""
     return (not token_only
             and _peer_token_refused.get(_peer_aud(peer), 0.0) > time.monotonic())
@@ -561,8 +561,8 @@ def _skip_token(peer: str, token_only: bool) -> bool:
 
 def _note_token_refused(peer: str, token_only: bool, status: int) -> None:
     """Drop the cached token, log the audience we signed for (a book name that
-    differs from the peer's node name shows up here), and remember a domestic
-    refusal."""
+    differs from the peer's node name shows up here), and remember an edge
+    peer's refusal."""
     aud = _peer_aud(peer)
     _peer_token_cache.pop(aud, None)
     log.warning("peer %r refused the signed token (HTTP %s, aud=%r)%s",
@@ -643,7 +643,7 @@ async def peer_send_cred(peer: str, entry: dict[str, Any] | None,
     """:func:`peer_send` that also returns the credential the answer came on, for
     a caller that must open a second connection (a WS) with the same credential."""
     entry = entry or {}
-    token_only = _token_only(entry)
+    token_only = _token_only(peer)
     token = None
     try:
         if not _skip_token(peer, token_only):
@@ -651,7 +651,7 @@ async def peer_send_cred(peer: str, entry: dict[str, Any] | None,
     except PeerError as exc:
         if token_only:
             raise
-        log.info("no signed token for domestic peer %r (%s); using the legacy bearer",
+        log.info("no signed token for edge peer %r (%s); using the legacy bearer",
                  peer, exc)
     if token is not None:
         resp = await send(token)
@@ -674,7 +674,7 @@ def peer_send_cred_sync(peer: str, entry: dict[str, Any] | None,
                         send: Any) -> tuple[httpx.Response, str]:
     """Synchronous variant of :func:`peer_send_cred`."""
     entry = entry or {}
-    token_only = _token_only(entry)
+    token_only = _token_only(peer)
     token = None
     try:
         if not _skip_token(peer, token_only):
@@ -682,7 +682,7 @@ def peer_send_cred_sync(peer: str, entry: dict[str, Any] | None,
     except PeerError as exc:
         if token_only:
             raise
-        log.info("no signed token for domestic peer %r (%s); using the legacy bearer",
+        log.info("no signed token for edge peer %r (%s); using the legacy bearer",
                  peer, exc)
     if token is not None:
         resp = send(token)
@@ -704,12 +704,12 @@ def peer_send_cred_sync(peer: str, entry: dict[str, Any] | None,
 async def peer_send(peer: str, entry: dict[str, Any] | None, send: Any) -> httpx.Response:
     """Run ``send(bearer) -> Response`` against ``peer`` with the right credential.
 
-    The signed token goes first. When a domestic peer's edge refuses it with a
+    The signed token goes first. When an edge peer's front refuses it with a
     401 (an un-upgraded node), or this node cannot sign one, the request is
     repeated once with the legacy ssh-fetched bearer, itself re-fetched once on a
     401; the peer is then called with the legacy bearer directly for a few
-    minutes. A foreign peer, or any peer once this node has retired the legacy
-    bearer, is never offered it: its refusal is returned as is, and a signing
+    minutes. A peer this node holds no edge to, or any peer once this node has
+    retired the legacy bearer, is never offered it: its refusal is returned as is, and a signing
     failure raises :class:`PeerError`.
     """
     return (await peer_send_cred(peer, entry, send))[0]
@@ -735,7 +735,7 @@ async def call_peer(
     Resolves the peer's edge via the local gateway, then POSTs
     ``{edge}/svc/{service}/fn/{fn}`` **directly to the peer edge** over
     CA-verified TLS — no bytes traverse the local gateway. Authenticates with a
-    node-signed token; a domestic peer that refuses it gets the legacy ssh-fetched
+    node-signed token; an edge peer that refuses it gets the legacy ssh-fetched
     bearer instead (see :func:`peer_send`).
     """
     entry = await resolve_peer_async(peer)
@@ -800,10 +800,10 @@ async def invoke_peer(
     """Call the tool ``name`` on ``peer`` through its edge ``/invoke``.
 
     ``name`` is the flat tool name (``kb_search``) or a domain name with
-    ``args={"verb": ..., "args": {...}}``. This is the door a foreign peer
-    exposes, so it carries no ``X-Awm-As``: the peer's edge stamps who we are
-    from the signed token. A foreign peer is only ever offered the token; a
-    domestic one may fall back to the legacy bearer (see :func:`peer_send`).
+    ``args={"verb": ..., "args": {...}}``. It carries no ``X-Awm-As``: the
+    peer's edge stamps who we are from the signed token. A peer this node holds
+    no edge to is only ever offered the token; an edge peer may fall back to the
+    legacy bearer (see :func:`peer_send`).
     Raises :class:`PeerError` for setup failures and :class:`GatewayCallError`
     for a non-2xx reply, which for a refused verb is the peer's 404.
     """
@@ -857,7 +857,7 @@ async def subscribe_peer(
     the local gateway, then opens a WebSocket to
     ``{edge}/svc/{service}/emit/{topic}`` **directly on the peer edge** (never
     relayed through a gateway), over CA-verified TLS with a node-signed token (a
-    domestic peer that refuses it gets the ssh-fetched legacy bearer). Yields the
+    edge peer that refuses it gets the ssh-fetched legacy bearer). Yields the
     decoded payload per frame, byte-for-byte as :func:`subscribe` does for a
     local topic — a consumer cannot tell a peer stream from a local one.
 
@@ -878,7 +878,7 @@ async def subscribe_peer(
     entry = await resolve_peer_async(peer)
     edge = entry["edge_url"].rstrip("/")
     ssh_alias = entry.get("ssh_alias") or peer
-    token_only = _token_only(entry)
+    token_only = _token_only(peer)
     ws_base = edge.replace("https://", "wss://").replace("http://", "ws://")
     ws_url = f"{ws_base}/svc/{service}/emit/{topic}"
     ssl_ctx = ssl.create_default_context(cafile=_peer_ca())
@@ -900,9 +900,9 @@ async def subscribe_peer(
         status = getattr(getattr(exc, "response", None), "status_code", None)
         return status in _TOKEN_REFUSED
 
-    # The signed token goes first. A domestic peer that refuses it, or a node that
-    # cannot sign one, gets the legacy bearer; a foreign peer never does. (A
-    # foreign edge serves only /tools and /invoke, so its handshake fails cleanly.)
+    # The signed token goes first. An edge peer that refuses it, or a node that
+    # cannot sign one, gets the legacy bearer; a peer with no edge from here never
+    # does.
     conn = None
     token = None
     try:
@@ -1041,8 +1041,8 @@ def fetch_peer_file_sync(
                         fh.write(chunk)
                 return _FileFetch(status)
 
-    # A foreign peer's edge serves only /tools and /invoke, so a foreign fetch
-    # fails with the 404 below; it is never offered the legacy bearer.
+    # A peer this node has no edge to refuses the fetch, and is never offered
+    # the legacy bearer.
     result = peer_send_sync(peer, entry, send)
     if result.status_code == 404:
         raise PeerError(
@@ -1321,7 +1321,7 @@ async def acquire_lease_peer(
 
     The direct-session analogue of :func:`call_peer` / :func:`subscribe_peer`:
     resolve the peer edge, POST the session open with a node-signed token (the
-    legacy ssh bearer only for a domestic peer that refuses it, see
+    legacy ssh bearer only for an edge peer that refuses it, see
     :func:`peer_send`) and open the lease WS **on the peer edge** over
     CA-verified TLS with the credential that opened the session. One retry if the
     socket handshake rejects it with a 401.
@@ -1332,7 +1332,7 @@ async def acquire_lease_peer(
 
     entry = await resolve_peer_async(peer)
     edge = entry["edge_url"].rstrip("/")
-    foreign = _is_foreign(entry)
+    edgeless = _no_edge(peer)
     ws_base = edge.replace("https://", "wss://").replace("http://", "ws://")
     ca = _peer_ca()
     ssl_ctx = ssl.create_default_context(cafile=ca)
@@ -1358,9 +1358,9 @@ async def acquire_lease_peer(
         except websockets.InvalidStatus as exc:
             status = getattr(getattr(exc, "response", None), "status_code", None)
             # The credential that opened the session was refused on the socket:
-            # drop what we cached and open once more. Never for a foreign peer,
+            # drop what we cached and open once more. Never for a peer with no edge from here,
             # whose retry would only repeat the same refusal.
-            if attempt == 0 and status in _TOKEN_REFUSED and not foreign:
+            if attempt == 0 and status in _TOKEN_REFUSED and not edgeless:
                 _peer_token_cache.pop(_peer_aud(peer), None)
                 _peer_cred_cache.pop(entry.get("ssh_alias") or peer, None)
                 continue

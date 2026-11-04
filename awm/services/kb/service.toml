@@ -1,7 +1,0 @@
-tool = "kb"
-tier = "off"
-
-[[archive]]
-name = "kb"
-mode = "index"
-export = "kb_export"

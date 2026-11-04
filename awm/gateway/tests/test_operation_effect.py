@@ -1,4 +1,4 @@
-"""Operation.effect / category declaration and validation."""
+"""Operation.effect declaration and validation."""
 
 from __future__ import annotations
 
@@ -20,12 +20,12 @@ def _op(**kw) -> Operation:
 def test_defaults():
     op = _op()
     assert op.effect == "write"
-    assert op.category is None
+    assert not hasattr(op, "category")
 
 
 @pytest.mark.parametrize("effect", ["read", "queue", "write", "secret"])
 def test_valid_effects(effect):
-    assert _op(effect=effect, category="kb").category == "kb"
+    assert _op(effect=effect).effect == effect
 
 
 def test_invalid_effect_rejected():

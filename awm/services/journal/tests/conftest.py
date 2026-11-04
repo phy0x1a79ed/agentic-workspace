@@ -24,6 +24,60 @@ def no_scopes_service(monkeypatch):
     monkeypatch.setattr(owners, "require_scope", lambda project, scope: None)
 
 
+class FakeSearch:
+    """Stands in for the search service's ``query`` over the journals source: it reads the
+    post table as the journal exports it and ranks by how many query words a post holds."""
+
+    def __init__(self):
+        self.calls: list[dict] = []
+        self.status: dict = {"status": "ok"}
+        self.error: Exception | None = None
+
+    def __call__(self, service, fn, args=None, **kw):
+        if (service, fn) != ("search", "query"):
+            raise AssertionError(f"unexpected gateway call {service}.{fn}")
+        self.calls.append(dict(args or {}))
+        if self.error is not None:
+            raise self.error
+        import re
+        from awm.journal.dao import JournalDAO
+        from awm.journal.refs import iso_to_ms
+        from awm.journal.search_index import INDEXED_PARAMS, INDEXED_SQL, thread_text
+        words = set(re.findall(r"\w+", args["query"].lower()))
+        sql, params = "SELECT * FROM scope_posts WHERE body != ''" + INDEXED_SQL, list(INDEXED_PARAMS)
+        for key, col in (("project", "owner_project"), ("scope", "owner_scope")):
+            if args.get(key):
+                sql += f" AND {col} = ?"
+                params.append(args[key])
+        if args.get("before"):
+            sql += " AND ts < ?"
+            params.append(iso_to_ms(args["before"]))
+        exact, related = [], []
+        dao = JournalDAO()
+        for r in dao.query_all(sql, params):
+            with dao.transaction() as conn:
+                body = thread_text(conn, r["id"], r["body"])
+            score = len(words & set(re.findall(r"\w+", body.lower())))
+            if not score:
+                continue
+            line = next((ln for ln in body.splitlines() if words & set(re.findall(r"\w+", ln.lower()))), body)
+            hit = {"source": "journals", "id": r["id"], "score": float(score), "passages": [{"text": line[:300]}]}
+            (exact if args["query"].lower() in body.lower() else related).append(hit)
+        limit = int(args.get("limit") or 10)
+        rank = lambda hits: sorted(hits, key=lambda h: -h["score"])[:limit]  # noqa: E731
+        return {"exact": {"journals": rank(exact)}, "related": {"journals": rank(related)}, "graph": {},
+                "sources": {"journals": self.status}}
+
+
+@pytest.fixture(autouse=True)
+def fake_search(monkeypatch):
+    """Every ``journal fetch`` with a query reaches this stand-in, never a gateway."""
+    import awm.gatewayclient as gc
+    fake = FakeSearch()
+    monkeypatch.setattr(gc, "call_sync", fake)
+    return fake
+
+
 @pytest.fixture()
 def journal_workspace(tmp_path, monkeypatch):
     """A temporary workspace with the journal's database and the projects dir redirected."""
@@ -59,3 +113,24 @@ def journal_conn(journal_workspace):
     conn = get_connection("journal")
     yield conn
     conn.close()
+
+
+#: The journal schema before tags (v1): posts carry a kind column.
+OLD_DDL = """
+CREATE TABLE scope_posts (id TEXT PRIMARY KEY, owner_project TEXT NOT NULL, owner_scope TEXT NOT NULL,
+    author TEXT NOT NULL, kind TEXT NOT NULL DEFAULT 'message', body TEXT NOT NULL DEFAULT '',
+    meta TEXT NOT NULL DEFAULT '{}', ts INTEGER NOT NULL);
+CREATE INDEX idx_scope_posts_kind ON scope_posts(owner_project, owner_scope, kind, ts);
+CREATE TABLE scope_subscribers (owner_project TEXT NOT NULL, owner_scope TEXT NOT NULL,
+    guest_kind TEXT NOT NULL, guest_ref TEXT NOT NULL, display_name TEXT NOT NULL,
+    joined_at INTEGER NOT NULL, PRIMARY KEY (owner_project, owner_scope, guest_kind, guest_ref));
+CREATE TABLE schema_version (version INTEGER NOT NULL);
+INSERT INTO schema_version VALUES (1);
+"""
+
+
+def insert_post(conn, pid, project, scope, author, tag, body, meta, ts):
+    """A raw post row and its one tag, as a seed or an older release wrote it."""
+    conn.execute("INSERT INTO scope_posts (id, owner_project, owner_scope, author, body, meta, ts)"
+                 " VALUES (?,?,?,?,?,?,?)", (pid, project, scope, author, body, meta, ts))
+    conn.execute("INSERT INTO post_tags (post_id, tag_id) VALUES (?, ?)", (pid, f"builtin:{tag}"))

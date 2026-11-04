@@ -50,14 +50,12 @@ class TestUnregisteredWorktrees:
         mod.create_scope(ScopeCreateRequest(project=PROJECT, scope="known"))
         _by_hand(proj, proj / "shards", "feat/shards")
         nested = _by_hand(proj, proj / "engine" / "a", "feat/engine-a")
-        (nested / ".awm").mkdir()
-        (nested / ".awm" / "context.md").write_text("ctx\n")
 
         found = mod.audit_worktrees(PROJECT)["unregistered"]
 
-        assert sorted((u["scope"], u["branch"], u["context_md"]) for u in found) == [
-            ("engine/a", "feat/engine-a", True),
-            ("shards", "feat/shards", False),
+        assert sorted((u["scope"], u["branch"]) for u in found) == [
+            ("engine/a", "feat/engine-a"),
+            ("shards", "feat/shards"),
         ]
 
     def test_skips_claude_worktrees_outside_paths_and_missing_dirs(self, proj, tmp_path):
@@ -119,3 +117,32 @@ def test_heal_reports_both_lists_and_writes_no_rows(proj):
 
     assert _rows() == before
     assert not (proj / "shards" / ".awm").exists()
+
+
+class TestCreateWritesTheBrief:
+    """A create's context is the scope's journal brief, not a file (scopes.md R143)."""
+
+    def test_the_context_goes_to_journal_brief_set(self, proj, monkeypatch):
+        import awm.gatewayclient as gc
+        calls = []
+        monkeypatch.setattr(gc, "call_sync", lambda svc, fn, a, timeout=None: calls.append((svc, fn, a)) or {})
+        mod.create_scope(ScopeCreateRequest(project=PROJECT, scope="b", context="For the brief."))
+        assert ("journal", "brief_set", {"project": PROJECT, "scope": "b",
+                                         "text": "For the brief."}) in calls
+        assert not (proj / "b" / ".awm" / "context.md").exists()
+
+    def test_a_brief_over_400_characters_is_refused_before_anything_is_made(self, proj):
+        with pytest.raises(ValueError, match="limit is 400"):
+            mod.create_scope(ScopeCreateRequest(project=PROJECT, scope="long", context="x" * 401))
+        assert not (proj / "long").exists()
+
+    def test_a_brief_the_journal_refuses_is_a_warning(self, proj, monkeypatch):
+        import awm.gatewayclient as gc
+
+        def refuse(svc, fn, a, timeout=None):
+            if fn == "brief_set":
+                raise RuntimeError("journal down")
+            return {}
+        monkeypatch.setattr(gc, "call_sync", refuse)
+        out = mod.create_scope(ScopeCreateRequest(project=PROJECT, scope="w", context="For w."))
+        assert out.status == "active" and "journal brief_set" in out.message

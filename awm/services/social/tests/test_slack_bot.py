@@ -69,6 +69,10 @@ class _FakeSlack:
             thread.sort(key=lambda m: float(m["ts"]))
             replies = [m for m in thread[1:] if float(m["ts"]) > since]
             return self._page("messages", thread[:1] + replies, form)
+        if method == "conversations.open":
+            return web.json_response({"ok": True, "channel": {"id": "D1"}})
+        if method == "conversations.info":
+            return web.json_response({"ok": True, "channel": {"id": form["channel"], "is_im": True}})
         if method == "users.info":
             return web.json_response({"ok": True, "user": {
                 "id": form["user"], "profile": {"display_name": "tony"}}})
@@ -161,7 +165,7 @@ async def test_receive_sync_and_send(awm_workspace):
     # Push: only the other person's message is emitted, never the bot's echo.
     assert [m.text for m in got] == ["hi bot"]
     assert got[0].sender_name == "tony"
-    assert sent["channel_id"] == "D1" and fake.posted[0]["channel"] == "U2"
+    assert sent["channel_id"] == "D1" and fake.posted[0]["channel"] == "D1"
     # History: backfill + live + edit + own send, oldest first.
     rows = store.history("bot", channel_id="D1")
     assert [(r["text"], r["own"], r["edited"]) for r in rows] == [

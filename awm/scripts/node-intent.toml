@@ -175,12 +175,6 @@
 "env:AWM_RLM_BROWSER_ATTACH_PEER" = "altair's rlm-browser drives capella's browser"
 "env:AWM_IDLE_SHUTDOWN" = "capella sets it in its awm.service unit instead"
 "env:AWM_SWARM" = "set to the default (tony); capella relies on the default"
-"running:penpot" = "Penpot runs on altair only (Tony skipped it on capella)"
-"running:penpot-plugins" = "Penpot runs on altair only (Tony skipped it on capella)"
-"running:penpot-view" = "Penpot runs on altair only (Tony skipped it on capella)"
-"awm-svc-state:penpot-view" = "Penpot runs on altair only (Tony skipped it on capella)"
-"project:penpot" = "Penpot runs on altair only (Tony skipped it on capella)"
-"gitconfig:safe.directory" = "the Penpot checkout belongs to the penpot user"
 
 "bin:agent" = "agent CLI; Tony declined other agent CLIs on capella"
 "bin:cursor-agent" = "agent CLI; Tony declined other agent CLIs on capella"
@@ -301,4 +295,3 @@
 "dotfile:.config/awm/logrotate.conf" = "the header comment names the node's timer kind"
 "enabled:social" = "capella runs its own social; altair routes social to mira"
 "enabled:rlm-factorio" = "capella runs rlm-factorio"
-"enabled:penpot*" = "Penpot runs on altair only (Tony skipped it on capella)"

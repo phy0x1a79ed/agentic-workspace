@@ -201,13 +201,6 @@ BASE_URL = f"http://{HOST}:{PORT}"
 VAULT_PORT = int(os.environ.get("AWM_VAULT_PORT", "12511"))
 VAULT_URL = f"http://{HOST}:{VAULT_PORT}"
 
-# Penpot's frontend nginx port, on the local production stack. Named here for
-# the same reason as VAULT_PORT: two processes have to agree on it and
-# neither owns it — the penpot service's stack supervisor publishes it, and
-# httpsfront proxies to it.
-PENPOT_PORT = int(os.environ.get("AWM_PENPOT_PORT", "9001"))
-PENPOT_URL = f"http://{HOST}:{PENPOT_PORT}"
-
 # The tether relay's loopback port, on the public host. Named here for the same
 # reason again: the relay binds it and the edge proxies to it, and neither owns
 # it. The relay reads the same variable itself, so this constant and that binary
@@ -272,21 +265,13 @@ def load_env_file(path: Path = ENV_FILE) -> int:
 # ---------------------------------------------------------------------------
 
 from awm.config.effects import (  # noqa: E402,F401
-    ARCHIVE_CATEGORY,
     EFFECTS,
-    verb_category,
     verb_effect,
 )
 from awm.config.peerbook import (  # noqa: E402,F401
-    LEGACY_GRANTS,
-    RELATIONS,
-    ROLES,
     caller_peer,
     list_records,
     load_book,
-    node_role,
-    node_swarm,
     operator_dm,
     peer_record,
-    peer_relation,
 )

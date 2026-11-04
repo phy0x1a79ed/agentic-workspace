@@ -540,13 +540,14 @@ def _who(args: dict) -> dict:
 
 
 def _domestic(recipient: str) -> bool:
-    """Whether ``recipient`` names this swarm, this node or a peer of this swarm."""
-    from awm.config import list_records, node_name, node_swarm
+    """Whether ``recipient`` names this board party, this node or a peer in this node's book."""
+    import os
 
-    swarm = node_swarm()
-    names = {swarm, node_name().split(".")[0].lower()}
-    names.update(r["name"].lower() for r in list_records()
-                 if r["relation"] == "domestic" or r["swarm"] == swarm)
+    from awm.config import list_records, node_name
+
+    party = (os.environ.get("AWM_SWARM") or "").strip() or "tony"
+    names = {party, node_name().split(".")[0].lower()}
+    names.update(r["name"].lower() for r in list_records())
     return recipient.strip().lower() in names
 
 

@@ -26,18 +26,18 @@ def test_the_flag_off_refuses(monkeypatch):
     assert config.refusal() is not None
 
 
-def test_a_station_refuses_even_with_the_flag(monkeypatch):
-    monkeypatch.setenv("AWM_NODE_ROLE", "station")
+def test_a_station_refuses_even_with_the_flag(fleet):
+    fleet({"testnode": "station"})
     assert "station" in config.refusal()
 
 
-def test_a_bad_role_refuses_instead_of_running(monkeypatch):
-    monkeypatch.setenv("AWM_NODE_ROLE", "bunker")
+def test_a_bad_role_refuses_instead_of_running(fleet):
+    fleet({"testnode": "bunker"})
     assert "invalid" in config.refusal()
 
 
-async def test_start_on_a_station_logs_a_refusal_and_builds_nothing(monkeypatch, caplog, tmp_path):
-    monkeypatch.setenv("AWM_NODE_ROLE", "station")
+async def test_start_on_a_station_logs_a_refusal_and_builds_nothing(monkeypatch, caplog, tmp_path, fleet):
+    fleet({"testnode": "station"})
     monkeypatch.setattr(hub_adapter, "RUNTIME", None)
     spawned = []
     monkeypatch.setattr(hub_adapter, "spawn_supervised", lambda *a, **k: spawned.append(a))
@@ -82,8 +82,8 @@ async def test_start_with_the_flag_on_follows_the_board_and_the_commands(monkeyp
     assert hub_adapter.RUNTIME.door
 
 
-async def test_the_sweep_ticker_sweeps_nothing_on_a_station(monkeypatch):
-    monkeypatch.setenv("AWM_NODE_ROLE", "station")
+async def test_the_sweep_ticker_sweeps_nothing_on_a_station(fleet):
+    fleet({"testnode": "station"})
     seen = []
 
     async def on_rows(rows):
@@ -104,10 +104,15 @@ async def test_the_sweep_ticker_runs_on_a_node_with_the_flag_off(monkeypatch):
     assert seen == [[{"job": "j"}]]
 
 
-def test_the_swarm_comes_from_the_node_and_not_a_constant(monkeypatch):
-    assert config.swarm() == "tony"
+def test_the_swarm_is_tony_whatever_the_environment(monkeypatch):
     monkeypatch.setenv("AWM_SWARM", "mock")
-    assert config.swarm() == "mock"
+    assert config.swarm() == "tony"
+
+
+def test_the_role_comes_from_the_edge_list(fleet):
+    assert config.role() == "unknown"
+    fleet({"testnode": "homebase"})
+    assert config.role() == "homebase"
 
 
 def test_the_queue_path_defaults_to_the_service_state_path(monkeypatch):

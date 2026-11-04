@@ -75,13 +75,9 @@ class TestReadSideResilience:
         from awm.journal.refs import now_ms
         inner = {"title": "Project setup with dev and factorio scopes",
                  "outcome": "success", "skill_path": "awm/debrief.md"}
-        conn.execute(
-            "INSERT INTO scope_posts "
-            "(id, owner_project, owner_scope, author, kind, body, meta, ts) "
-            "VALUES (?,?,?,?, 'journal', ?, ?, ?)",
-            ("poisoned", project, scope, f"agent:{project}/{scope}",
-             "did setup", json.dumps(json.dumps(inner)), now_ms()),
-        )
+        from tests.conftest import insert_post
+        insert_post(conn, "poisoned", project, scope, f"agent:{project}/{scope}", "journal",
+                    "did setup", json.dumps(json.dumps(inner)), now_ms())
         conn.commit()
         return inner
 

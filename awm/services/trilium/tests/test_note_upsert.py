@@ -65,7 +65,7 @@ def vault(monkeypatch):
     return fake
 
 
-IMG = '<p><img src="/penpot-view/f/p/b"></p>'
+IMG = '<p><img src="/files/f/p/b"></p>'
 
 
 def test_the_first_run_creates_the_note(vault):

@@ -1,0 +1,21 @@
+[plugin]
+name = "scopes"
+version = "0.1.0"
+trust = "own"
+
+[[service]]
+name = "scopes"
+
+[[tool]]
+name = "scope"
+major = 1
+tier = "on"
+
+[needs]
+secrets = []
+network = []
+platform = ["linux"]
+
+[[needs.tool]]
+name = "journal"
+major = 1

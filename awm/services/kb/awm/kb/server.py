@@ -1,17 +1,15 @@
 """Supervision of the one kb server process.
 
-The child is `python -m kb.server` from the kb checkout, in the `kb` env. It
-starts its own ingest worker and keeps it alive. This module keeps the server
-alive.
+The child is `python -m kb.server` from the kb checkout, in the `kb` env. This
+module keeps it alive.
 
-The child is parented: its own session, so the whole tree (server and worker)
-is signalled as one group, and `PR_SET_PDEATHSIG`, so it dies with this
+The child is parented: its own session, so the whole tree is signalled as one
+group, and `PR_SET_PDEATHSIG`, so it dies with this
 process. The store is on disk, so a restart costs a warm-up and no data.
 """
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import signal
@@ -37,21 +35,11 @@ def _preexec() -> None:  # pragma: no cover — runs in the forked child
         os._exit(1)
 
 
-def openrouter_key() -> str | None:
-    """The OpenRouter key from opencode's auth store. Never logged, only handed to the child."""
-    try:
-        entry = json.loads(instances.AUTH_JSON.read_text()).get("openrouter") or {}
-    except (OSError, ValueError):
-        return None
-    return (entry.get("key") or "").strip() or None
-
-
 def child_env() -> dict[str, str]:
     """The child's environment.
 
     `PYTHONPATH` is replaced, not extended: the awm source a dev sandbox puts
-    there must never reach the kb interpreter. The LLM key serves only the
-    `answer` and `graph` recall modes. Ingest defaults to chunk-only and needs none.
+    there must never reach the kb interpreter.
 
     The env's `lib/` leads `LD_LIBRARY_PATH`. PyMuPDF's wheel looks for
     `libstdc++` beside itself, then in the system cache. On Ubuntu 22.04 that
@@ -64,16 +52,12 @@ def child_env() -> dict[str, str]:
         "KB_HOST": instances.HOST,
         "KB_PORT": str(instances.PORT),
     })
+    if "KB_VECTORS" not in env and instances.VECTORS.exists():
+        env["KB_VECTORS"] = str(instances.VECTORS)
     py = instances.python()
     if py:
         lib = os.path.join(os.path.dirname(os.path.dirname(py)), "lib")
         env["LD_LIBRARY_PATH"] = os.pathsep.join(filter(None, [lib, env.get("LD_LIBRARY_PATH")]))
-    if "KB_ZOTERO_LIBRARY" not in env and instances.ZOTERO_LIBRARY.is_file():
-        env["KB_ZOTERO_LIBRARY"] = str(instances.ZOTERO_LIBRARY)
-    if not env.get("LLM_API_KEY"):
-        key = openrouter_key()
-        if key:
-            env["LLM_API_KEY"] = key
     return env
 
 
@@ -158,7 +142,7 @@ class Child:
         self._last_error = f"did not bind {instances.PORT} within {instances.START_TIMEOUT_S}s"
 
     def stop(self, *, timeout: float = 30.0, hold: bool = False) -> dict[str, Any]:
-        """Stop the server and its worker. With `hold`, keep `reconcile` from respawning it until the next `start`."""
+        """Stop the server. With `hold`, keep `reconcile` from respawning it until the next `start`."""
         with self._lock:
             self._held = hold
             proc = self._proc

@@ -15,7 +15,7 @@ the reply stays honest about where it came from.
 
 Two rules this must never break:
 
-* **Never leave a foreign path in ``path``.** A file we could not fetch gets
+* **Never leave a remote path in ``path``.** A file we could not fetch gets
   ``path: null`` plus an ``error`` naming why. Half the point is that a caller
   can trust ``path`` to be openable; a phantom path that merely looks plausible
   is worse than an error.

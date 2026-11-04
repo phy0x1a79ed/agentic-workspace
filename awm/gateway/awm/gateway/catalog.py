@@ -81,7 +81,7 @@ from typing import Any
 from mcp.types import Tool
 from starlette.concurrency import run_in_threadpool
 
-from awm.config import ARCHIVE_CATEGORY, caller_peer, peer_record, verb_category, verb_effect
+from awm.config import edges, verb_effect
 from awm.gateway import aliases, filehop, peer_catalog, private_gate, surface, usage
 from awm.gateway.gateway_ops import GATEWAY_OPERATIONS, bound_caller
 from awm.gateway.hub import discovery, rpc
@@ -120,7 +120,7 @@ def _serialize(obj: Any) -> str:
 
 # ---------------------------------------------------------------------------
 # Gateway control ops — generated from the declarative GATEWAY_OPERATIONS
-# registry (the gateway's own control plane: status / restart / mcp-sync /
+# registry (the gateway's own control plane: status / restart /
 # hub list+deregister / services lifecycle). Their MCP tools + HTTP routes +
 # CLI commands all come from one Operation each — see gateway_ops.py.
 # ---------------------------------------------------------------------------
@@ -163,7 +163,7 @@ def _tool_name(rec: ServiceRecord, fn: dict) -> str:
     ``name`` stays the service-internal handle that ``/svc/<service>/fn/<name>``
     dispatches on, while the published name is what every surface shows. Under the
     registration rule (see ``surface``) it is ``<tool>_<verb>``, where ``<tool>``
-    is the service's ``service.toml`` ``tool``. :func:`list_tools` enforces global
+    is the tool the service's manifest names. :func:`list_tools` enforces global
     uniqueness by warn-and-skip, so two services must not publish one name."""
     return surface.published_name(rec.name, fn)
 
@@ -199,7 +199,7 @@ def _fn_to_tool(rec: ServiceRecord, fn: dict) -> Tool:
     )
 
 
-def list_tools(grants: frozenset[str] | None = None) -> list[Tool]:
+def list_tools() -> list[Tool]:
     """Native tools + every registered service's declared functions. Sync over a
     GIL-safe registry snapshot — never awaits, never blocks.
 
@@ -208,15 +208,7 @@ def list_tools(grants: frozenset[str] | None = None) -> list[Tool]:
     are not — so we warn-and-skip duplicates (first registrant wins) rather than
     raise: a raised error here would 500 ``/tools`` and blind every MCP client,
     which re-fetches it constantly. Gateway control-op names are reserved up
-    front (generated from GATEWAY_OPERATIONS, not hand-rolled).
-
-    ``grants`` is a foreign caller's read grants (see :func:`foreign_grants`);
-    with it, only the tools that caller may call are listed."""
-    if grants is not None:
-        entries = _flat_entries()
-        return [t for t in list_tools()
-                if _allowed(entries.get(t.name, {}).get("effect"),
-                            entries.get(t.name, {}).get("category"), grants)]
+    front (generated from GATEWAY_OPERATIONS, not hand-rolled)."""
     tools: list[Tool] = list(_GATEWAY_MCP_TOOLS)
     seen: set[str] = {t.name for t in _GATEWAY_MCP_TOOLS}
     for rec in get_registry().service_records():
@@ -243,101 +235,32 @@ def _find_service_fn(name: str) -> tuple[ServiceRecord | None, str | None]:
     return None, None
 
 
-# ---------------------------------------------------------------------------
-# Foreign-caller gate
-# ---------------------------------------------------------------------------
-# A caller the edge stamped ``peer:<node>`` where the peer book does not call
-# <node> domestic is foreign. It may call a verb only when the verb declares
-# ``effect = read`` AND a ``category`` the peer's record grants. Everything else
-# is refused with the error an unknown tool gets, so a refusal reveals nothing
-# about what exists. The peer book is read on every call: a revoked grant bites
-# on the next one. The bare legacy ``peer`` and an absent identity are not
-# stamped by the edge as a node, so they are untouched.
-
-
-def foreign_grants(as_: str | None) -> frozenset[str] | None:
-    """The read categories a foreign caller holds, or ``None`` if the caller is
-    not foreign (a domestic node, the legacy bare ``peer``, or no identity).
-
-    A node missing from the peer book is foreign with no grants, and so is any
-    stamp that starts with ``peer:`` but names no node (``peer:``, ``peer: ``):
-    a malformed stamp fails closed."""
-    node = caller_peer(as_)
-    if node is None:
-        return frozenset() if isinstance(as_, str) and as_.startswith("peer:") else None
-    record = peer_record(node)
-    if record is None:
-        return frozenset()
-    if record["relation"] == "domestic":
-        return None
-    return frozenset(g for g in record["grants"] if isinstance(g, str))
-
-
-def _fn_policy(fn: dict) -> tuple[str, str | None]:
-    """``(effect, category)`` a manifest function declares. An effect the book
-    of effects does not know counts as ``write``: a typo must not open a verb."""
+def _fn_effect(fn: dict) -> str:
+    """The effect a manifest function declares. An effect the book of effects
+    does not know counts as ``write``: a typo must not open a verb."""
     try:
-        effect = verb_effect(fn)
+        return verb_effect(fn)
     except ValueError:
         log.warning("function %r declares an unknown effect; treating it as write",
                     fn.get("name"))
-        effect = "write"
-    category = verb_category(fn)
-    return effect, category if isinstance(category, str) else None
-
-
-def _allowed(effect: Any, category: Any, grants: frozenset[str]) -> bool:
-    """Whether a verb declaring ``effect``/``category`` is open to a caller holding
-    ``grants``. Anything but strings is refused, so one malformed manifest entry
-    cannot raise inside the gate. A verb in the ``archive`` category answers for
-    itself by the grants it is handed (see :func:`_rpc_call`), so any caller
-    holding a grant may reach it."""
-    if not (isinstance(effect, str) and effect == "read" and isinstance(category, str)):
-        return False
-    if category == ARCHIVE_CATEGORY:
-        return bool(grants)
-    return category in grants
+        return "write"
 
 
 def _flat_entries() -> dict[str, dict[str, Any]]:
     """``{flat tool name: entry}`` with the precedence ``dispatch`` and
     :func:`list_tools` use: native ops first, then the first registrant.
 
-    An entry is ``{effect, category, op, rec, fn}`` where exactly one of ``op``
-    and ``rec``/``fn`` is set: the thing the gate approves is the thing that
-    runs. A native op never carries a category: its handler runs in-process
-    without the caller's identity, so no grant can reach it."""
+    An entry is ``{effect, op, rec, fn}`` where exactly one of ``op`` and
+    ``rec``/``fn`` is set: the thing the gate approves is the thing that runs."""
     out: dict[str, dict[str, Any]] = {
-        name: {"effect": op.effect, "category": None, "op": op, "rec": None, "fn": None}
+        name: {"effect": op.effect, "op": op, "rec": None, "fn": None}
         for name, op in _GATEWAY_OPS_BY_NAME.items()}
     for rec in get_registry().service_records():
         for fn in (rec.api or {}).get("functions", []) or []:
             if isinstance(fn, dict) and fn.get("name"):
-                effect, category = _fn_policy(fn)
                 out.setdefault(_tool_name(rec, fn), {
-                    "effect": effect, "category": category,
-                    "op": None, "rec": rec, "fn": fn["name"]})
+                    "effect": _fn_effect(fn), "op": None, "rec": rec, "fn": fn["name"]})
     return out
-
-
-def _foreign_catalog(catalog: dict[str, list[dict[str, Any]]],
-                     grants: frozenset[str]) -> dict[str, list[dict[str, Any]]]:
-    """``catalog`` cut to the verbs ``grants`` allow; a domain with none is gone."""
-    out: dict[str, list[dict[str, Any]]] = {}
-    for domain, verbs in catalog.items():
-        kept = [v for v in verbs if _allowed(v["effect"], v["category"], grants)]
-        if kept:
-            out[domain] = kept
-    return out
-
-
-def _has_peer_arg(args: dict) -> bool:
-    """Whether a call asks to be routed to a node, in the envelope, as a flat
-    argument or inside the verb's own arguments. A foreign caller gets no onward
-    hops."""
-    inner = args.get("args")
-    return args.get("peer") is not None or (
-        isinstance(inner, dict) and inner.get("peer") is not None)
 
 
 def _fn_timeout(rec: ServiceRecord, internal_name: str) -> float | None:
@@ -353,20 +276,15 @@ def _fn_timeout(rec: ServiceRecord, internal_name: str) -> float | None:
     return None
 
 
-async def _rpc_call(rec: ServiceRecord, fn: str, args: dict, as_: str | None,
-                    grants: frozenset[str] | None = None) -> Any:
-    """RPC a service function over its control WS, applying its manifest timeout.
-
-    ``grants`` is a foreign caller's read grants; the service sees them as
-    ``args["_grants"]`` (see :meth:`rpc.ControlChannel.call`)."""
+async def _rpc_call(rec: ServiceRecord, fn: str, args: dict, as_: str | None) -> Any:
+    """RPC a service function over its control WS, applying its manifest timeout."""
     ch = rpc.get_control(rec.service_id)
     if ch is None:
         raise RuntimeError(f"service {rec.name!r} control channel not open")
-    extra: dict[str, Any] = {"grants": grants} if grants is not None else {}
     timeout = _fn_timeout(rec, fn)
     if timeout is not None:
-        return await ch.call(fn, args, as_=as_, timeout=timeout, **extra)
-    return await ch.call(fn, args, as_=as_, **extra)
+        return await ch.call(fn, args, as_=as_, timeout=timeout)
+    return await ch.call(fn, args, as_=as_)
 
 
 # ---------------------------------------------------------------------------
@@ -375,7 +293,7 @@ async def _rpc_call(rec: ServiceRecord, fn: str, args: dict, as_: str | None,
 # The expanded ``list_tools()`` projection above stays exactly as-is (the CLI
 # generator and the flat ``/invoke`` dispatch both depend on it). This second,
 # *parallel* projection folds that same surface by **tool**: each service
-# publishes under the ``tool`` its ``service.toml`` names, and a published name is
+# publishes under the ``tool`` its manifest names, and a published name is
 # ``<tool>_<verb>`` (see ``surface``). Gateway-native ops group by their ``tool``
 # and ``verb`` (their CLI group and command, when those are not set). The MCP
 # stdio proxy requests this view, so a client carries a few dozen generic tools instead of
@@ -455,15 +373,14 @@ def _domain_catalog() -> dict[str, list[dict[str, Any]]]:
     projection), reused verbatim by :func:`_describe_domain`. Native ops are
     folded first so a service can never shadow a gateway-native verb (first-wins,
     mirroring ``list_tools``'s duplicate handling). Each entry also carries the
-    verb's declared ``effect`` and ``category`` (which the foreign-caller gate
-    reads) and the ``op`` or ``rec``/``fn`` it resolves to, so dispatch runs
-    exactly the entry that was approved. A native op never has a category. Sync
-    over a GIL-safe registry snapshot — same contract as ``list_tools``."""
+    verb's declared ``effect`` and the ``op`` or ``rec``/``fn`` it resolves to,
+    so dispatch runs exactly the entry that was approved. Sync over a GIL-safe
+    registry snapshot — same contract as ``list_tools``."""
     domains: dict[str, list[dict[str, Any]]] = {}
     seen: set[tuple[str, str]] = set()
 
     def _add(domain: str, verb: str, tool: Tool, *, origin: str,
-             effect: str, category: str | None, op: Any = None,
+             effect: str, op: Any = None,
              rec: ServiceRecord | None = None, fn: str | None = None) -> None:
         key = (domain, verb)
         if not (domain and verb):
@@ -476,14 +393,14 @@ def _domain_catalog() -> dict[str, list[dict[str, Any]]]:
             return
         seen.add(key)
         domains.setdefault(domain, []).append(
-            {"verb": verb, "tool": tool, "effect": effect, "category": category,
+            {"verb": verb, "tool": tool, "effect": effect,
              "op": op, "rec": rec, "fn": fn})
 
     for op in GATEWAY_OPERATIONS:
         if "mcp" not in op.surfaces:
             continue
         _add(op.mcp_tool, op.mcp_verb, _to_mcp_tool(op), origin="gateway-native",
-             effect=op.effect, category=None, op=op)
+             effect=op.effect, op=op)
 
     for rec in get_registry().service_records():
         for fn in (rec.api or {}).get("functions", []) or []:
@@ -492,9 +409,8 @@ def _domain_catalog() -> dict[str, list[dict[str, Any]]]:
             if not _mcp_visible(rec, fn):
                 continue
             domain, verb = _split_name(rec, fn)
-            effect, category = _fn_policy(fn)
             _add(domain, verb, _fn_to_tool(rec, fn), origin=f"service {rec.name!r}",
-                 effect=effect, category=category, rec=rec, fn=fn["name"])
+                 effect=_fn_effect(fn), rec=rec, fn=fn["name"])
 
     return domains
 
@@ -544,10 +460,11 @@ def _peer_phrase(res: dict[str, Any] | None) -> tuple[str, list[str] | None, boo
             valid, True)
 
 
-def _domain_envelope(verb_names: list[str], *, with_peer: bool = True,
-                     res: dict[str, Any] | None = None) -> dict[str, Any]:
+def _domain_envelope(verb_names: list[str], *,
+                     res: dict[str, Any] | None = None, with_peer: bool = True) -> dict[str, Any]:
     """The ``{verb, args, peer}`` envelope schema, with ``verb`` enumerated and,
-    given the tool's provider resolution ``res``, ``peer`` enumerated.
+    given the tool's provider resolution ``res``, ``peer`` enumerated. Without
+    ``with_peer`` it has no ``peer``: an isolated session calls this node only.
 
     Deep-copied — a shallow copy shares the nested ``properties`` dict, so
     stamping the enum would mutate the module constant for every later tool.
@@ -740,8 +657,7 @@ def _fleet_domain_description(res: dict[str, Any],
     return head + tail
 
 
-def list_domain_tools(*, peers: bool = False,
-                      grants: frozenset[str] | None = None) -> list[Tool]:
+def list_domain_tools(*, peers: bool = False) -> list[Tool]:
     """Project the collapsed MCP surface — one ``Tool`` per tool name, each
     advertising the ``{verb, args, peer}`` envelope with ``verb`` enumerated.
 
@@ -755,21 +671,9 @@ def list_domain_tools(*, peers: bool = False,
     appears too, each description saying where it runs by default and each
     ``peer`` argument enumerating the nodes that serve it. Every tool is
     top-level; nothing is held back behind an index.
-
-    ``grants`` (a foreign caller's read grants, see :func:`foreign_grants`) wins
-    over ``peers``: the caller sees this node's tools only, cut to the verbs it
-    may call, with no ``peer`` routing.
     """
     catalog = _domain_catalog()
     blurbs = _domain_blurbs()
-    if grants is not None:
-        cut = _foreign_catalog(catalog, grants)
-        return [Tool(name=domain,
-                     description=_local_domain_description(
-                         domain, entries, blurbs.get(domain)),
-                     inputSchema=_domain_envelope(
-                         [e["verb"] for e in entries], with_peer=False))
-                for domain, entries in cut.items()]
     local_verbs = _local_domain_verbs(catalog)
 
     if not peers:
@@ -1008,9 +912,7 @@ def _check_envelope(name: str, args: dict, entry: dict[str, Any] | None) -> None
 
 
 async def _dispatch_domain(name: str, args: dict, as_: str | None,
-                           catalog: dict[str, list[dict[str, Any]]],
-                           *, local_only: bool = False,
-                           grants: frozenset[str] | None = None) -> str:
+                           catalog: dict[str, list[dict[str, Any]]]) -> str:
     """Dispatch a collapsed per-tool call (``{verb, args, peer}``).
 
     Routing comes first: the envelope's optional ``peer`` (or, absent one, the
@@ -1027,22 +929,18 @@ async def _dispatch_domain(name: str, args: dict, as_: str | None,
     routes through its Operation (same handler as the HTTP route + CLI command); a
     service verb is resolved back to its internal function via the existing
     ``_find_service_fn`` reverse lookup and RPC'd with the ``as_`` placement
-    identity threaded exactly as the flat path does.
-
-    ``local_only`` (a foreign caller, whose ``catalog`` is already cut to the verbs
-    it may call) skips the routing step: the verb runs here or not at all."""
+    identity threaded exactly as the flat path does."""
     verb = args.get("verb")
     inner = args.get("args") or {}
     if not isinstance(inner, dict):
         raise ValueError("'args' must be an object")
 
-    if not local_only:
-        requested_peer = args.get("peer")
-        if requested_peer is not None and not isinstance(requested_peer, str):
-            raise ValueError("'peer' must be a node name string")
-        target = await _choose_target(name, requested_peer, catalog)
-        if target != peer_catalog.LOCAL:
-            raise peer_catalog.PeerRedirect(target, name, verb)
+    requested_peer = args.get("peer")
+    if requested_peer is not None and not isinstance(requested_peer, str):
+        raise ValueError("'peer' must be a node name string")
+    target = await _choose_target(name, requested_peer, catalog)
+    if target != peer_catalog.LOCAL:
+        raise peer_catalog.PeerRedirect(target, name, verb)
 
     entry = next((v for v in catalog.get(name, []) if v["verb"] == verb), None)
     _check_envelope(name, args, entry)
@@ -1051,18 +949,18 @@ async def _dispatch_domain(name: str, args: dict, as_: str | None,
         return _serialize(_answer_describe(name, inner, catalog))
 
     # Enforce the surface gate on dispatch, not just listing: a verb absent from
-    # the (surface-filtered, and for a foreign caller grant-cut) catalog is
+    # the surface-filtered catalog is
     # unknown here even if a matching function exists. What runs is the catalog
     # entry itself, never a second lookup that could land on another function.
     if entry is None:
         raise ValueError(f"Unknown verb {verb!r} for domain {name!r}")
     usage.record(name, entry["verb"])
-    return await _run_entry(entry, inner, as_, grants,
+    return await _run_entry(entry, inner, as_,
                             unknown=f"Unknown verb {verb!r} for domain {name!r}")
 
 
 async def _run_entry(entry: dict[str, Any], args: dict, as_: str | None,
-                     grants: frozenset[str] | None = None, *, unknown: str) -> str:
+                     *, unknown: str) -> str:
     """Run the native op or service function a catalog entry resolved to.
 
     A peer caller whose arguments name a private project, scope or path is
@@ -1077,7 +975,7 @@ async def _run_entry(entry: dict[str, Any], args: dict, as_: str | None,
                 return _serialize(await _call_service(op, args))
             return _serialize(await run_in_threadpool(_call_service, op, args))
     _check_arguments(entry["rec"], entry["fn"], args)
-    return _serialize(await _rpc_call(entry["rec"], entry["fn"], args, as_, grants))
+    return _serialize(await _rpc_call(entry["rec"], entry["fn"], args, as_))
 
 
 def published_name_of(service: str, fn: str) -> str:
@@ -1137,21 +1035,19 @@ async def dispatch(name: str, args: dict, as_: str | None = None) -> str:
     by-name ``/invoke`` posts keep working.
 
     A tool **no local service provides** but a peer does routes here too, so a
-    peer-only tool (``hpcllm``, ``orch``, …) is callable by its plain name
+    peer-only tool (``orch``, …) is callable by its plain name
     rather than needing a ``<tool>@<peer>`` twin.
 
-    A foreign caller (``X-Awm-As`` naming a peer the book does not call domestic)
-    goes through :func:`_dispatch_foreign` instead, which runs only the ``read``
-    verbs in the categories its record grants.
+    A peer node with no edge to this node (see :func:`awm.config.edges.admits`)
+    is refused with ``Unknown tool``, the answer for a name that does not exist.
 
     A name that an earlier release published (see :mod:`aliases`) is rewritten to
     its successor first, so the gates below judge the verb that will run.
     """
     args = args or {}
     name, args = resolve_alias(name, args)
-    grants = foreign_grants(as_)
-    if grants is not None:
-        return await _dispatch_foreign(name, args, as_, grants)
+    if not edges.admits(as_):
+        raise ValueError(f"Unknown tool: {name}")
     if "verb" in args:
         domains = _domain_catalog()
         if name in domains or name in peer_catalog.fleet_domains(
@@ -1174,47 +1070,3 @@ async def _dispatch_flat(name: str, args: dict, as_: str | None) -> str:
         usage.record(*_split_name(rec, spec))
     return await _run_entry({"rec": rec, "fn": fn}, args, as_,
                             unknown=f"Unknown tool: {name}")
-
-
-async def _dispatch_foreign(name: str, args: dict, as_: str | None,
-                            grants: frozenset[str]) -> str:
-    """Dispatch for a foreign caller: only ``read`` verbs in a granted category.
-
-    Every refusal is ``Unknown tool`` (→ 404), the answer for a name that does not
-    exist, so the caller learns nothing about the verbs it may not call. The call
-    always runs on this node: any ``peer`` argument is refused, because a foreign
-    node gets no onward hops through us. The ``describe`` verb sees the same cut
-    catalog as ``/tools``."""
-    if not isinstance(name, str) or not isinstance(args, dict):
-        raise ValueError(f"Unknown tool: {name}")
-    if _has_peer_arg(args):
-        raise ValueError(f"Unknown tool: {name}")
-    domains = _foreign_catalog(_domain_catalog(), grants)
-    if "verb" in args and name in domains:
-        if not isinstance(args["verb"], str):
-            raise ValueError(f"Unknown tool: {name}")
-        try:
-            return await _dispatch_domain(name, args, as_, domains, local_only=True,
-                                          grants=grants)
-        except rpc.RpcError as exc:
-            raise _refusal_as_unknown(
-                exc, f"Unknown verb {args['verb']!r} for domain {name!r}") from None
-    entry = _flat_entries().get(name)
-    if entry is None or not _allowed(entry["effect"], entry["category"], grants):
-        raise ValueError(f"Unknown tool: {name}")
-    try:
-        return await _run_entry(entry, args, as_, grants, unknown=f"Unknown tool: {name}")
-    except rpc.RpcError as exc:
-        raise _refusal_as_unknown(exc, f"Unknown tool: {name}") from None
-
-
-def _refusal_as_unknown(exc: rpc.RpcError, unknown: str) -> Exception:
-    """A service's own ``PermissionError`` for a foreign caller, as the 404 an
-    unknown tool gets; any other service error is returned unchanged.
-
-    A verb whose category the peer holds can still refuse part of what it serves
-    (scopes shows a peer journals but not messages). That refusal must look like
-    the gate's, or its message tells the peer which verbs and kinds exist."""
-    if exc.error_class == "PermissionError":
-        return ValueError(unknown)
-    return exc

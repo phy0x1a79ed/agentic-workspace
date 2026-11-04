@@ -3,6 +3,7 @@
 
 # Per-service interpreter sidecar baked by awm/gateway/install.sh (machine-specific)
 awm/services/*/.runtime-env
+awm/plugins/*/.runtime-env
 
 # Per-worktree dev sandbox (lives at awm/gateway/dev/): env override + the
 # generated per-sandbox MCP config symlink. State dirs (.awm/, data/, projects/)

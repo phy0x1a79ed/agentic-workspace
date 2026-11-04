@@ -34,6 +34,9 @@ class History:
     def mark_deleted(self, channel_id: str, message_id: str) -> None:
         self._dao.mark_deleted(self.account, channel_id, message_id)
 
+    def has_inbound(self, channel_id: str) -> bool:
+        return self._dao.has_inbound(self.account, channel_id)
+
     def synced_ts(self, channel_id: str) -> str | None:
         return self._dao.synced_ts(self.account, channel_id)
 

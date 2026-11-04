@@ -18,6 +18,7 @@ from typing import Any
 from awm.persistence import databases
 
 from awm.reporting import ACTIVE, ASSIGNED, GONE, PROPOSED, STATUSES, TERMINAL
+from awm.reporting.work_schema import WORK_SCHEMA
 
 _QUEUE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS cards (
@@ -116,7 +117,7 @@ CREATE TABLE IF NOT EXISTS waits (
 );
 """
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 _FED_COLUMNS = "    card_id    TEXT,\n    fed_state  TEXT,\n"
 _AGENT_COLUMNS = "    agent      TEXT,\n    agent_link TEXT,\n"
@@ -193,7 +194,7 @@ class Db:
 
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
-        databases.init_db_at(self.path, _QUEUE_SCHEMA + _TASKS_SCHEMA,
+        databases.init_db_at(self.path, _QUEUE_SCHEMA + _TASKS_SCHEMA + WORK_SCHEMA,
                              schema_version=SCHEMA_VERSION,
                              migrations={(1, 2): _TASKS_SCHEMA_V2, (2, 3): _OWNED_MIGRATION,
                                          (3, 4): _SPEC_HASH_MIGRATION,
@@ -201,7 +202,8 @@ class Db:
                                          (5, 6): _INTAKE_MIGRATION,
                                          (6, 7): _AGENT_MIGRATION,
                                          (7, 8): _TAGS_MIGRATION,
-                                         (8, 9): _WAITS_MIGRATION})
+                                         (8, 9): _WAITS_MIGRATION,
+                                         (9, 10): WORK_SCHEMA})
 
     def _conn(self) -> sqlite3.Connection:
         return databases.get_connection_at(self.path)

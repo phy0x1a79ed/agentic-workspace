@@ -1,0 +1,17 @@
+[plugin]
+name = "httpsfront"
+version = "0.1.0"
+trust = "own"
+
+[[service]]
+name = "httpsfront"
+
+[[tool]]
+name = "httpsfront"
+major = 1
+tier = "off"
+
+[needs]
+secrets = []
+network = []
+platform = ["linux"]

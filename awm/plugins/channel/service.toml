@@ -1,0 +1,4 @@
+# Read by today's Python gateway, which loads this folder as a legacy plugin.
+# awm-plugin.toml is the same declaration for the Rust gateway.
+tool = "channel"
+tier = "on"

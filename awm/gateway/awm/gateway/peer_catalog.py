@@ -30,12 +30,12 @@ per-listing fetch could not promise.
 contain them — mira's book holds ``cosmos``, which this node cannot dial. We would
 advertise providers we cannot reach. Peer chaining is deliberately not a thing.
 
-**Only domestic peers are providers.** The sweep reads a peer only when its book
-relation is ``domestic``, and every reader (``snapshot``, ``resolve``,
-``fleet_domains``, ``declared_homes``) keeps only such peers on read as well, so a
-peer flipped to foreign between sweeps vanishes at once and an unreadable book
-leaves no provider at all. A foreign peer's domains never reach a tool description,
-or a default provider.
+**Only peers this node holds an edge to are providers** (``awm.config.edges``).
+The sweep reads a book peer only when this node reaches it, and every reader
+(``snapshot``, ``resolve``, ``fleet_domains``, ``declared_homes``) keeps only such
+peers on read as well, so a peer whose edge is removed between sweeps vanishes at
+once and an unreadable book leaves no provider at all. A peer with no edge from
+here never reaches a tool description, or a default provider.
 
 **A declared singleton has exactly one provider.** Not "local plus the owner" —
 one. Two nodes both treating themselves as a valid provider for a singular
@@ -130,19 +130,18 @@ _swept_at: float = 0.0
 _sweep_lock: asyncio.Lock | None = None
 
 
-_relations_cache: tuple[tuple[Any, ...], dict[str, str]] | None = None
+_book_cache: tuple[tuple[Any, ...], frozenset[str]] | None = None
 
 
-def _domestic_peers() -> frozenset[str]:
-    """Names the peer book marks ``domestic`` — the only peers that may provide.
+def _edge_peers() -> frozenset[str]:
+    """Book peers this node holds an edge to — the only peers that may provide.
 
-    An allowlist: a peer the book does not list, or lists as anything but
-    ``domestic``, is out, and a book that cannot be read leaves nobody in. The
-    book is re-read when its file changes (the key is path, inode, mtime and
-    size), so flipping a peer to foreign takes effect on the next read, not the
-    next sweep."""
-    global _relations_cache
-    from awm.config import peerbook
+    An allowlist: a peer the book does not list, or that this node has no edge
+    to, is out, and a book that cannot be read leaves nobody in. The book is
+    re-read when its file changes (the key is path, inode, mtime and size); the
+    edge list is read on every call, so a removed edge bites on the next read."""
+    global _book_cache
+    from awm.config import edges, peerbook
 
     path = peerbook.peers_file()
     try:
@@ -150,24 +149,24 @@ def _domestic_peers() -> frozenset[str]:
         key = (str(path), st.st_ino, st.st_mtime_ns, st.st_size)
     except OSError:
         key = (str(path),)
-    if _relations_cache is None or _relations_cache[0] != key:
-        relations = {r["name"]: r["relation"] for r in peerbook.list_records()}
-        _relations_cache = (key, relations)
-    return frozenset(n for n, rel in _relations_cache[1].items() if rel == "domestic")
+    if _book_cache is None or _book_cache[0] != key:
+        _book_cache = (key, frozenset(r["name"] for r in peerbook.list_records()))
+    here = edges.here()
+    return frozenset(n for n in _book_cache[1] if n != here and edges.reaches(here, n))
 
 
-def _domestic_only(snap: Mapping[str, dict[str, Any]]) -> Mapping[str, dict[str, Any]]:
-    """``snap`` cut to the peers the book calls domestic."""
-    domestic = _domestic_peers()
-    if all(name in domestic for name in snap):
+def _edge_only(snap: Mapping[str, dict[str, Any]]) -> Mapping[str, dict[str, Any]]:
+    """``snap`` cut to the peers this node holds an edge to."""
+    reachable = _edge_peers()
+    if all(name in reachable for name in snap):
         return snap
-    return {name: info for name, info in snap.items() if name in domestic}
+    return {name: info for name, info in snap.items() if name in reachable}
 
 
 def snapshot() -> dict[str, dict[str, Any]]:
-    """The last sweep's result, domestic peers only. Never blocks, never raises,
+    """The last sweep's result, edge peers only. Never blocks, never raises,
     possibly empty."""
-    return dict(_domestic_only(_snapshot))
+    return dict(_edge_only(_snapshot))
 
 
 def swept_at() -> float | None:
@@ -180,9 +179,9 @@ def declared_homes() -> dict[str, str]:
 
     Read fresh on every call so a change to ``.awm/env`` takes effect on the next
     gateway restart without a code path caching it into permanence. A home owned
-    by a foreign peer is dropped: a foreign peer is never a provider.
+    by a peer this node has no edge to is dropped: such a peer is never a provider.
     """
-    domestic = _domestic_peers()
+    reachable = _edge_peers()
     homes: dict[str, str] = {}
     for domain, env in _SEEDED_HOME_ENVS.items():
         owner = (os.environ.get(env) or "").strip()
@@ -195,7 +194,7 @@ def declared_homes() -> dict[str, str]:
         owner = (value or "").strip()
         if domain and owner:
             homes[domain] = owner
-    return {d: o for d, o in homes.items() if o in domestic}
+    return {d: o for d, o in homes.items() if o in reachable}
 
 
 # ---------------------------------------------------------------------------
@@ -237,7 +236,7 @@ async def _fetch_peer(entry: Mapping[str, Any]) -> dict[str, Any]:
     peer's own tool descriptions on its ``descriptions`` attribute.
 
     CA-verified TLS with a signed node token, or the ssh-fetched legacy bearer
-    when a domestic peer refuses it — the same path ``gatewayclient.call_peer``
+    when a peer refuses it — the same path ``gatewayclient.call_peer``
     uses, and never ``verify=False``: a credential on an unverified connection
     could be captured. Raises on any failure; the sweep records that as
     ``reachable: False`` rather than dropping the peer, so "asleep" stays
@@ -285,9 +284,10 @@ async def sweep() -> dict[str, dict[str, Any]]:
     async with _sweep_lock:
         from awm.gateway import peers
 
-        # A foreign peer is never read: its domains must not reach our tool
-        # descriptions or any default provider.
-        book = [e for e in peers.list_all() if e.get("relation") == "domestic"]
+        # A peer this node has no edge to is never read: its domains must not
+        # reach our tool descriptions or any default provider.
+        reachable = _edge_peers()
+        book = [e for e in peers.list_all() if e["name"] in reachable]
         if not book:
             _snapshot, _swept_at = {}, time.time()
             return _snapshot
@@ -355,14 +355,14 @@ def catalog_pending(peer: str,
                     snap: Mapping[str, dict[str, Any]] | None = None) -> str | None:
     """Why this node does not know ``peer``'s domains yet, or ``None`` once it does.
 
-    A domestic peer no sweep has read has no domain map, so ``resolve`` cannot
+    An edge peer no sweep has read has no domain map, so ``resolve`` cannot
     list it as a provider of anything. That is "not loaded", not "does not
     provide". It happens in the seconds after a gateway restart: the first sweep
     runs before the auth service can sign a node token, and the next one comes
     ``_SWEEP_RETRY_S`` later. A peer read once keeps its last map when it fails
     later, so only a peer never read is pending.
     """
-    if peer not in _domestic_peers():
+    if peer not in _edge_peers():
         return None
     snap = snapshot() if snap is None else snap
     info = snap.get(peer)
@@ -436,7 +436,6 @@ class PeerRedirect(Exception):
             "verb": self.verb,
             "edge_url": entry.get("edge_url"),
             "ssh_alias": entry.get("ssh_alias") or self.peer,
-            "relation": entry.get("relation"),
         }
 
 
@@ -467,7 +466,7 @@ def resolve(tool: str, local_domains: Mapping[str, list[str]],
        default**: the caller must name one. Guessing would silently bind a call
        to whichever node happened to sort first.
     """
-    snap = snapshot() if snap is None else _domestic_only(snap)
+    snap = snapshot() if snap is None else _edge_only(snap)
 
     home = declared_homes().get(tool)
     if home:
@@ -518,7 +517,7 @@ def description_for(res: Mapping[str, Any],
     default = res.get("default")
     if default in (None, LOCAL):
         return None
-    snap = snapshot() if snap is None else _domestic_only(snap)
+    snap = snapshot() if snap is None else _edge_only(snap)
     text = ((snap.get(default) or {}).get("descriptions") or {}).get(res["tool"])
     return text if isinstance(text, str) and text.strip() else None
 
@@ -528,11 +527,11 @@ def fleet_domains(local_domains: Mapping[str, list[str]],
     """Every domain name callable from this node — local ∪ every peer's.
 
     The union is what keeps the collapsed surface honest: a domain only a peer
-    runs (``hpcllm``, ``orch``, …) still appears exactly once, so nothing that is
+    runs (``orch``, …) still appears exactly once, so nothing that is
     reachable today stops being nameable. A declared singleton's domain is
     included even if this node runs no such service.
     """
-    snap = snapshot() if snap is None else _domestic_only(snap)
+    snap = snapshot() if snap is None else _edge_only(snap)
     names = set(local_domains)
     for info in snap.values():
         names.update((info.get("domains") or {}).keys())

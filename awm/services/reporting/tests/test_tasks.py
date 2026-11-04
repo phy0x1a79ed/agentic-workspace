@@ -43,6 +43,8 @@ class Env:
         self.fed.names = self.names
         self.posts: list[dict] = []
         self.fetches: list[dict] = []
+        self.ops: list[tuple[str, dict]] = []
+        self.op_tasks: dict[str, str] = {}
         self.scope_tags: dict[tuple[str, str], list[str]] = {}
         self.tag_lookups: list[tuple[str, str]] = []
         self.tags_error: Exception | None = None
@@ -54,6 +56,12 @@ class Env:
             if self.tags_error:
                 raise self.tags_error
             return {"effective": self.scope_tags.get((args["project"], args["scope"]), [])}
+        if service == "operations":
+            self.ops.append((fn, args))
+            if fn == "task_for_session":
+                return {"ok": True, "task_id": self.op_tasks.get(args["session_id"])}
+            self.op_tasks[args["session_id"]] = f"t{len(self.op_tasks):07d}"
+            return {"ok": True, "task_id": self.op_tasks[args["session_id"]]}
         self.fetches.append(args)
         return {"posts": list(self.posts)}
 
@@ -861,6 +869,15 @@ async def test_a_post_that_names_its_session_lands_only_on_that_sessions_card(en
     assert len(env.ledger.events(other["id"], "journal")) == 2
 
 
+async def test_a_journal_stamped_in_r9_form_lands_on_the_card_of_its_claude_session(env, tmp_path):
+    await in_scope(env, tmp_path)
+    uuid = "abcdef01-2345-6789-abcd-ef0123456789"
+    mine = env.task()
+    env.ledger.alias(mine["id"], uuid)
+    await env.tasks.on_post({"post": post("a", scope="elsewhere", meta={"session": "cc" + uuid.replace("-", "")})})
+    assert len(env.ledger.events(mine["id"], "journal")) == 1
+
+
 async def test_the_same_post_twice_is_appended_once(env, tmp_path):
     await in_scope(env, tmp_path)
     for _ in range(2):
@@ -1049,3 +1066,20 @@ async def test_a_sweep_that_misses_the_row_once_keeps_the_agent_line(env):
     await env.tasks.sweep([live()])
     await env.tasks.sweep([])
     assert "Agent:" in env.body() and env.task()["agent"] == "fix the thing"
+
+
+async def test_a_new_card_opens_its_task_in_operations_once(env):
+    session = env.records[200]["sessionId"] = "22222222-3333-4444-5555-666666666666"
+    await env.call("track_task", pid=200, title="Look into the printer")
+    opened = [a for fn, a in env.ops if fn == "task_open"]
+    assert opened == [{"title": "Look into the printer", "session_id": "cc22222222333344445555666666666666"}]
+    await env.call("track_task", pid=200, title="again")
+    assert len([1 for fn, _ in env.ops if fn == "task_open"]) == 1
+
+
+async def test_a_clear_gives_the_new_session_the_old_one_as_its_parent(env, tmp_path):
+    old = env.records[100]["sessionId"] = "22222222-3333-4444-5555-666666666666"
+    await env.call("hook_plan_approved", plan_text="# Before the clear\n\nx")
+    new = "33333333-4444-5555-6666-777777777777"
+    await env.call("hook_session_clear", new_session_id=new)
+    assert {"session_id": new, "parent": old, "how": "clear", "node": env.tasks.node} in env.fetches
