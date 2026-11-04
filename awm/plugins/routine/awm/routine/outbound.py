@@ -84,5 +84,4 @@ class GatewayOutbound:
 
     async def journal(self, project: str, scope: str, body: str) -> None:
         await self.invoke("journal", "post", {
-            "project": project, "scope": scope, "author": "routine",
-            "kind": "message", "body": body})
+            "project": project, "scope": scope, "author": "routine", "body": body})
