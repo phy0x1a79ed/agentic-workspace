@@ -80,7 +80,7 @@ Per-user data is a scope in project `userdata`, at scope `<name>` on branch `use
 - `userroot.wrap_handlers` binds the caller for every verb.
 - `awm.config.autocommit` commits the service's subdirectory.
 
-Shared data never goes in `userdata`. `userroot.users()` treats every subdirectory of `projects/userdata/` as a person, so a shared store there becomes a phantom user. Put shared data in a scope of the project whose code serves it, DVC-pinned under `data/`. One path then moves on a deploy instead of two. The Trilium vault is the worked example: its database and pinned chunks live in `projects/trilium/release` beside the fork that serves them. A node that runs the service without that checkout gets a plain directory at the same path and pins nothing.
+Shared data never goes in `userdata`. `userroot.users()` treats every subdirectory of `projects/userdata/` as a person, so a shared store there becomes a phantom user. Put shared data in a scope of the project whose code serves it, DVC-pinned under `data/`. One path then moves on a deploy instead of two. Give the data a repository of its own when the code's repository is public or tagged for release: commits of data then publish with the code and move every version. The Trilium vault is the worked example: its database and pinned chunks live in `projects/vault/release`, apart from the public fork. A node that runs the service without that checkout gets a plain directory at the same path and pins nothing.
 
 ## Counting use of a plugin
 

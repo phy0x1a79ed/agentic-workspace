@@ -44,10 +44,13 @@ log = logging.getLogger("awm.zotero.sync")
 #: The scope holding the vault, and so the bundle. The same default the trilium
 #: service resolves, spelled again rather than imported: these are separate
 #: dists, and a cross-dist import is what the per-service layout exists to stop.
+#: The vault repository's checkout once the node has one, else the in-fork path.
+_PROJECTS = Path(os.environ.get("AWM_WORKSPACE",
+                                Path.home() / "agentic_workspace")) / "projects"
+_VAULT_HOME = _PROJECTS / "vault" / "release"
 VAULT_SCOPE = Path(os.environ.get("TRILIUM_VAULT_SCOPE")
-                   or (Path(os.environ.get("AWM_WORKSPACE",
-                                           Path.home() / "agentic_workspace"))
-                       / "projects" / "trilium" / "release"))
+                   or (_VAULT_HOME if _VAULT_HOME.is_dir()
+                       else _PROJECTS / "trilium" / "release"))
 
 #: Where the library lands in the vault. One note, and everything under it.
 LIBRARY_NOTE = os.environ.get("ZOTERO_LIBRARY_NOTE", "Library")

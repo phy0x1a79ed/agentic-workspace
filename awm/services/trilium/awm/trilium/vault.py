@@ -57,9 +57,8 @@ CONTAINER_EXT = ".tnbackup"
 #: The two chunks, relative to the scope worktree. Named once each, because
 #: the pin, the commit and the `.gitignore` DVC writes all have to agree.
 #:
-#: The export is a chunk rather than committed text because the fork is a
-#: public repository. A pin publishes a hash; the bytes stay in the local
-#: cache. The cost is that an export no longer shows up in a branch diff — the
+#: The export is a chunk rather than committed text, so a pushed vault history
+#: carries hashes and the bytes stay in the shared cache. The cost is that an export no longer shows up in a branch diff — the
 #: tree on disk is still diffable, and an older export is still reachable
 #: through its pin.
 CHUNK = "data/vault/backups"
