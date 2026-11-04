@@ -1,4 +1,4 @@
-"""``awm deploy`` — one safe command to ship the release worktree to prod.
+"""``awm deploy`` — the node-local restart onto the release this checkout holds.
 
 Everything the old bounce runbook did by hand, in the right order and
 idempotently: conditionally (re)install the dist set, conditionally rebuild

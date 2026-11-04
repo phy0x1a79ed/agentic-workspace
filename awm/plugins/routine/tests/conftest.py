@@ -20,6 +20,8 @@ class FakeOutbound:
         self.fail_start = False
         self.fail_dm = False
         self.invoke_results: dict[tuple[str, str, str | None], Any] = {}
+        self.cards: dict[int, str] = {}
+        self.card_posts: list[tuple[str, str]] = []
 
     async def start_session(self, **kw: Any) -> dict[str, Any]:
         if self.fail_start:
@@ -34,6 +36,12 @@ class FakeOutbound:
 
     async def journal(self, project: str, scope: str, body: str) -> None:
         self.posts.append((project, scope, body))
+
+    async def card_of(self, pid: int) -> str:
+        return self.cards.get(pid, "")
+
+    async def card_post(self, card: str, body: str) -> None:
+        self.card_posts.append((card, body))
 
     async def invoke(self, tool: str, verb: str, args: dict, *, peer: str | None = None,
                      timeout: float = 60.0) -> Any:
@@ -116,6 +124,15 @@ class Workspace:
 
     def rev(self, ref: str) -> str:
         return git(self.bare, "rev-parse", ref)
+
+    def backup(self, name: str = "github") -> Path:
+        """A bare repo standing in for GitHub, a remote of the canonical repo that
+        holds release as it is now."""
+        remote = self.root / f"{name}.git"
+        git(self.root, "init", "-q", "--bare", str(remote))
+        git(self.bare, "remote", "add", name, str(remote))
+        git(self.bare, "push", "-q", name, "release")
+        return remote
 
     def show(self, ref: str, path: str) -> str:
         return git(self.bare, "show", f"{ref}:{path}")

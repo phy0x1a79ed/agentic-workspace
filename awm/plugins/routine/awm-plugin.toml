@@ -21,9 +21,9 @@ tier = "on"
 
 # The tools the routine plugin calls (install.md R117).
 [[needs.tool]]
-name = "reflection"   # start_other, for fixing and condition agents
+name = "reflection"   # start_other for fixing agents, session_of for the caller's card
 major = 1
-verbs = ["start_other"]
+verbs = ["start_other", "session_of"]
 
 [[needs.tool]]
 name = "social"       # send, for the operator's Discord DM
@@ -34,6 +34,11 @@ verbs = ["send"]
 name = "journal"      # post, for each deploy mark
 major = 1
 verbs = ["post"]
+
+[[needs.tool]]
+name = "operations"   # the card verdict
+major = 1
+verbs = ["task_for_session", "swarm_message_post"]
 
 [needs]
 secrets = []

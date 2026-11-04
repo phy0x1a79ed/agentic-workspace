@@ -182,7 +182,7 @@ plugins = ["*"]
 
 [fleet]
 home = "mizar"
-nodes = ["mizar", "altair", "capella"]
+nodes = ["mizar", "alcor", "capella"]
 """
 
 
@@ -192,28 +192,28 @@ async def test_refresh_runs_homebase_then_peers_in_order(store, out, ws, tmp_pat
     [t] = await land(make(store, out, ws, fleet=INSTALL), "a")
     assert t["state"] == "landed"
     assert log.read_text().split() == ["mizar", ws.rev("release")]
-    assert [(c[0], c[1], c[3]) for c in out.calls] == [("routine", "refresh", "altair"),
+    assert [(c[0], c[1], c[3]) for c in out.calls] == [("routine", "refresh", "alcor"),
                                                       ("routine", "refresh", "capella")]
     assert out.calls[0][2]["to"] == ws.rev("release")
     nodes = store.get_batch(t["batch_id"])["nodes"]
-    assert [n["node"] for n in nodes] == ["mizar", "altair", "capella"]
+    assert [n["node"] for n in nodes] == ["mizar", "alcor", "capella"]
 
 
 async def test_refresh_stops_at_first_failed_node(store, out, ws, tmp_path):
     ws.scope("a", {"deploy.toml": FLEET.format(log=tmp_path / "r.log")})
-    out.invoke_results[("routine", "refresh", "altair")] = {"ok": False, "detail": "boom"}
+    out.invoke_results[("routine", "refresh", "alcor")] = {"ok": False, "detail": "boom"}
     [t] = await land(make(store, out, ws, fleet=INSTALL), "a")
-    assert [c[3] for c in out.calls] == ["altair"]
+    assert [c[3] for c in out.calls] == ["alcor"]
     batch = store.get_batch(t["batch_id"])
     assert batch["state"] == "refresh-failed" and batch["failed_step"] == "refresh"
-    assert "altair" in batch["error"] and "boom" in batch["error"]
+    assert "alcor" in batch["error"] and "boom" in batch["error"]
     assert t["state"] == "landed"
     assert "Release already holds" in out.starts[0]["prompt"]
 
 
 async def test_unreachable_peer_fails_refresh(store, out, ws, tmp_path):
     ws.scope("a", {"deploy.toml": FLEET.format(log=tmp_path / "r.log")})
-    out.invoke_results[("routine", "refresh", "altair")] = RuntimeError("no route")
+    out.invoke_results[("routine", "refresh", "alcor")] = RuntimeError("no route")
     [t] = await land(make(store, out, ws, fleet=INSTALL), "a")
     assert "no route" in store.get_batch(t["batch_id"])["error"]
 
@@ -262,9 +262,9 @@ async def test_peer_refresh_verb_reads_its_own_config(store, out, ws, tmp_path):
     rel = ws.proj / "release"
     (rel / "deploy.toml").write_text(
         f'[refresh]\nkind = "restart"\ncommand = "echo $AWM_REFRESH_FROM > {log}"\n')
-    verbs = DeployVerbs(make(store, out, ws, node="altair"))
+    verbs = DeployVerbs(make(store, out, ws, node="alcor"))
     res = await verbs.refresh({"project": "proj", "from": "abc", "to": "def"})
-    assert res["ok"] and res["node"] == "altair"
+    assert res["ok"] and res["node"] == "alcor"
     assert log.read_text().strip() == "abc"
 
 
@@ -325,11 +325,11 @@ async def test_deploy_forwards_to_canonical_node(store, out, ws):
 # -- the install config's [fleet] table ---------------------------------------
 
 def test_fleetconf_reads_home_and_overrides():
-    f = fleetconf.parse(INSTALL + '[fleet.project.metasmith]\ncanonical = "altair"\n'
+    f = fleetconf.parse(INSTALL + '[fleet.project.engcyc]\ncanonical = "altair"\n'
                         'nodes = ["altair"]\n')
     assert f.canonical("awm") == "mizar"
-    assert f.rollout("awm") == ("mizar", "altair", "capella")
-    assert (f.canonical("metasmith"), f.rollout("metasmith")) == ("altair", ("altair",))
+    assert f.rollout("awm") == ("mizar", "alcor", "capella")
+    assert (f.canonical("engcyc"), f.rollout("engcyc")) == ("altair", ("altair",))
 
 
 def test_fleetconf_absent_is_this_node_alone(tmp_path):
@@ -345,5 +345,138 @@ def test_fleetconf_absent_is_this_node_alone(tmp_path):
     ('[fleet.project.p]\npeer = "b"', "only canonical and nodes"),
 ])
 def test_fleetconf_rejects(text, msg):
+    with pytest.raises(fleetconf.FleetConfigError, match=msg):
+        fleetconf.parse(text)
+
+
+# -- the backup remote (install.md R114) --------------------------------------
+
+BACKUP = '[promote]\nbackup = "github"\n'
+
+
+async def test_backup_takes_each_release(store, out, ws):
+    gh = ws.backup()
+    ws.scope("a", {"deploy.toml": BACKUP})
+    [t] = await land(make(store, out, ws), "a")
+    assert t["state"] == "landed"
+    assert git(gh, "rev-parse", "release") == ws.rev("release")
+    steps = [s["step"] for s in store.get_batch(t["batch_id"])["steps"]]
+    assert steps.index("promote") < steps.index("backup") < steps.index("refresh")
+
+
+async def test_diverged_backup_stops_before_release_moves(store, out, ws, tmp_path):
+    gh = ws.backup()
+    other = tmp_path / "other"
+    git(tmp_path, "clone", "-q", str(gh), str(other))
+    git(other, "checkout", "-q", "release")
+    git(other, "commit", "-q", "--allow-empty", "-m", "made on github")
+    git(other, "push", "-q", "origin", "release")
+    tip = git(gh, "rev-parse", "release")
+    ws.scope("a", {"deploy.toml": BACKUP})
+    rel0, dev0 = ws.rev("release"), ws.rev("dev")
+    [t] = await land(make(store, out, ws), "a")
+    batch = store.get_batch(t["batch_id"])
+    assert (t["state"], batch["state"], batch["failed_step"]) == ("failed", "failed", "backup")
+    assert (ws.rev("release"), ws.rev("dev")) == (rel0, dev0)
+    assert git(gh, "rev-parse", "release") == tip
+    assert "never forces" in batch["error"]
+    assert "Nothing landed" in out.starts[0]["prompt"]
+
+
+async def test_failed_backup_push_lands_but_refreshes_nothing(store, out, ws, tmp_path):
+    gh = ws.backup()
+    hook = gh / "hooks" / "pre-receive"
+    hook.write_text("#!/bin/sh\necho read only >&2\nexit 1\n")
+    hook.chmod(0o755)
+    log = tmp_path / "r.log"
+    ws.scope("a", {"deploy.toml": BACKUP + FLEET.format(log=log)})
+    [t] = await land(make(store, out, ws, fleet=INSTALL), "a")
+    batch = store.get_batch(t["batch_id"])
+    assert (t["state"], batch["state"]) == ("landed", "backup-failed")
+    assert "read only" in batch["error"]
+    assert not log.exists() and out.calls == []
+    assert "the backup remote does not" in out.starts[0]["prompt"]
+
+
+async def test_missing_backup_remote_fails_backup(store, out, ws):
+    ws.scope("a", {"deploy.toml": BACKUP})
+    [t] = await land(make(store, out, ws), "a")
+    assert store.get_batch(t["batch_id"])["failed_step"] == "backup"
+    assert t["state"] == "failed"
+
+
+# -- the card half of the verdict (R26) ---------------------------------------
+
+async def test_verdict_posts_to_the_callers_card(store, out, ws, monkeypatch):
+    wt = ws.scope("a", {"a.txt": "a\n"})
+    monkeypatch.chdir(wt)
+    out.cards[os.getpid()] = "TASK0001"
+    verbs = DeployVerbs(make(store, out, ws))
+    res = await verbs.deploy({"_caller_pid": os.getpid()})
+    assert store.get_ticket(res["ticket"])["card"] == "TASK0001"
+    await verbs.deployer.drain()
+    [(card, body)] = out.card_posts
+    assert card == "TASK0001" and body.startswith("✓") and res["ticket"] in body
+    assert out.posts[0][2] == body
+
+
+async def test_no_card_means_journal_only(store, out, ws):
+    ws.scope("a", {"a.txt": "a\n"})
+    await land(make(store, out, ws), "a")
+    assert out.card_posts == [] and len(out.posts) == 1
+
+
+async def test_forwarded_deploy_carries_the_card(store, out, ws, monkeypatch):
+    wt = ws.scope("a", {"a.txt": "a\n"})
+    monkeypatch.chdir(wt)
+    out.cards[os.getpid()] = "TASK0002"
+    out.invoke_results[("routine", "deploy", "altair")] = {"ticket": "t1"}
+    verbs = DeployVerbs(make(store, out, ws, node="mizar", fleet=FORWARD))
+    await verbs.deploy({"_caller_pid": os.getpid()})
+    [(_, _, args, _)] = out.calls
+    assert args["card"] == "TASK0002"
+
+
+# -- push nodes (R31: a node that cannot fetch from home) ---------------------
+
+PUSH = INSTALL + '\n[fleet.push.alcor]\nurl = "{url}"\nprojects = ["proj"]\n'
+
+
+async def test_push_node_takes_release_before_its_refresh(store, out, ws, tmp_path):
+    peer = tmp_path / "peer-{project}.git"
+    git(tmp_path, "init", "-q", "--bare", str(tmp_path / "peer-proj.git"))
+    ws.scope("a", {"deploy.toml": FLEET.format(log=tmp_path / "r.log")})
+    [t] = await land(make(store, out, ws, fleet=PUSH.format(url=peer)), "a")
+    assert t["state"] == "landed"
+    assert git(tmp_path / "peer-proj.git", "rev-parse", "refs/mizar/release") == ws.rev("release")
+    assert [c[3] for c in out.calls] == ["alcor", "capella"]
+
+
+async def test_push_refuses_a_non_fast_forward(store, out, ws, tmp_path):
+    target = tmp_path / "peer-proj.git"
+    git(tmp_path, "init", "-q", "--bare", str(target))
+    other = tmp_path / "o"
+    git(tmp_path, "init", "-q", str(other))
+    git(other, "commit", "-q", "--allow-empty", "-m", "unrelated")
+    git(other, "push", "-q", str(target), "HEAD:refs/mizar/release")
+    ws.scope("a", {"deploy.toml": FLEET.format(log=tmp_path / "r.log")})
+    [t] = await land(make(store, out, ws, fleet=PUSH.format(url=tmp_path / "peer-{project}.git")), "a")
+    batch = store.get_batch(t["batch_id"])
+    assert batch["state"] == "refresh-failed" and "refs/mizar/release" in batch["error"]
+    assert out.calls == []
+
+
+def test_fleetconf_push():
+    f = fleetconf.parse(PUSH.format(url="altair:/w/projects/{project}/.bare"))
+    assert f.push_url("alcor", "proj") == "altair:/w/projects/proj/.bare"
+    assert f.push_url("alcor", "other") == "" and f.push_url("capella", "proj") == ""
+
+
+@pytest.mark.parametrize("text, msg", [
+    ('[fleet.push.a]\nurl = "a:/x"\nprojects = ["p"]', "with {project}"),
+    ('[fleet.push.a]\nurl = "a:/{project}"', "url and projects"),
+    ('[fleet.push.a]\nurl = "a:/{project}"\nprojects = "p"', "list of project names"),
+])
+def test_fleetconf_push_rejects(text, msg):
     with pytest.raises(fleetconf.FleetConfigError, match=msg):
         fleetconf.parse(text)

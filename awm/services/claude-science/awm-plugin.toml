@@ -1,5 +1,7 @@
 [plugin]
 name = "claude-science"
+# Restarts this plugin alone after a deploy (routines.md R33).
+refresh = "awm services restart claude-science"
 version = "0.1.0"
 
 [[service]]

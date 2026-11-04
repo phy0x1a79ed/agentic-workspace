@@ -2,9 +2,10 @@
 
 A `deploy` call pins a scope's branch head as a ticket and returns at once. One
 worker per project takes every waiting ticket into a batch and runs pin, merge,
-check, promote, refresh and report. Only this engine writes `dev` and
+check, promote, backup, refresh and report. Only this engine writes `dev` and
 `release` (R29), so a ref that moved under a batch is a failure, never a
-force.
+force. The backup remote takes `release` the same way: a backup that diverged
+stops the batch before release moves (install.md R114).
 """
 
 from __future__ import annotations
@@ -34,10 +35,11 @@ _ID = {"GIT_AUTHOR_NAME": "awm deploy", "GIT_AUTHOR_EMAIL": "deploy@awm.invalid"
 
 
 class StepFailed(Exception):
-    def __init__(self, step: str, error: str) -> None:
+    def __init__(self, step: str, error: str, *, landed: bool = False) -> None:
         super().__init__(f"{step}: {error}")
         self.step = step
         self.error = error
+        self.landed = landed
 
 
 def _git(cwd: Path | str, *args: str, input: str | None = None,
@@ -68,6 +70,7 @@ class Submission:
     scope: str
     branch: str
     sha: str
+    card: str = ""
 
 
 class Deployer:
@@ -121,7 +124,8 @@ class Deployer:
 
     def submit(self, sub: Submission, caller: str = "") -> dict[str, Any]:
         ticket = self.store.add_ticket(project=sub.project, scope=sub.scope,
-                                       branch=sub.branch, sha=sub.sha, caller=caller)
+                                       branch=sub.branch, sha=sub.sha, caller=caller,
+                                       card=sub.card)
         self._wake.set()
         return ticket
 
@@ -185,15 +189,17 @@ class Deployer:
             await asyncio.to_thread(self._merge, bid, bare, wt, tickets, state)
             cfg = self._config(wt)
             await self._check(bid, wt, cfg, state)
-            await asyncio.to_thread(self._promote, bid, bare, state)
+            await asyncio.to_thread(self._promote, bid, bare, state, cfg)
+            await asyncio.to_thread(self._backup, bid, bare, state, cfg)
         except StepFailed as f:
-            await self._fail(batch, tickets, f.step, f.error, cfg=cfg)
+            await self._fail(batch, tickets, f.step, f.error, cfg=cfg, landed=f.landed)
             return
         finally:
             _git(bare, "worktree", "remove", "--force", str(wt))
             _git(bare, "worktree", "prune")
             shutil.rmtree(tmp, ignore_errors=True)
-        fleet = await self.refresher.fleet(project, state["release_before"], state["head"])
+        fleet = await self.refresher.fleet(project, state["release_before"], state["head"],
+                                           bare=bare)
         self.store.update_batch(bid, nodes=fleet.nodes)
         self.store.record_batch_step(bid, {"step": "refresh", "ok": fleet.ok,
                                            "failed_node": fleet.failed_node})
@@ -271,8 +277,11 @@ class Deployer:
         if not res.ok:
             raise StepFailed("check", f"exited {res.code}\n{res.output}")
 
-    def _promote(self, bid: str, bare: Path, state: dict[str, str]) -> None:
+    def _promote(self, bid: str, bare: Path, state: dict[str, str],
+                 cfg: DeployConfig) -> None:
         head, dev0, rel0 = state["head"], state["dev_before"], state["release_before"]
+        if cfg.backup:
+            self._backup_in_line(bid, bare, cfg.backup, head)
         clean = self._clean_checkouts(bare, (DEV, RELEASE))
         # One transaction moves both refs, each only from the value pin read.
         rel_old = rel0 or "0" * 40
@@ -290,6 +299,35 @@ class Deployer:
                 moved.append(str(path))
         self.store.record_batch_step(bid, {"step": "promote", "ok": True, "head": head,
                                            "checkouts": moved})
+
+    def _backup_in_line(self, bid: str, bare: Path, remote: str, head: str) -> None:
+        """Refuse a promote that the backup could not take by fast-forward."""
+        r = _git(bare, "ls-remote", "--exit-code", remote, f"refs/heads/{RELEASE}")
+        if r.returncode == 2:
+            return
+        if r.returncode != 0:
+            self.store.record_batch_step(bid, {"step": "backup", "ok": False})
+            raise StepFailed("backup", f"cannot read {RELEASE} on {remote}: "
+                                       f"{r.stderr.strip()[-500:]}")
+        tip = r.stdout.split()[0]
+        if not (_rev(bare, tip) and _is_ancestor(bare, tip, head)):
+            self.store.record_batch_step(bid, {"step": "backup", "ok": False, "tip": tip})
+            raise StepFailed("backup", (
+                f"{RELEASE} on {remote} is at {tip[:12]}, which this batch's {RELEASE} "
+                f"does not contain. Nothing landed. Bring {remote} back in line with "
+                f"{RELEASE} by hand. deploy never forces a push."))
+
+    def _backup(self, bid: str, bare: Path, state: dict[str, str],
+                cfg: DeployConfig) -> None:
+        if not cfg.backup:
+            return
+        r = _git(bare, "push", "--porcelain", cfg.backup,
+                 f"{state['head']}:refs/heads/{RELEASE}")
+        self.store.record_batch_step(bid, {"step": "backup", "ok": r.returncode == 0,
+                                           "remote": cfg.backup})
+        if r.returncode != 0:
+            raise StepFailed("backup", f"push of {RELEASE} to {cfg.backup} failed: "
+                             f"{(r.stderr or r.stdout).strip()[-500:]}", landed=True)
 
     def _clean_checkouts(self, bare: Path, branches: tuple[str, ...]) -> list[tuple[Path, str]]:
         """The worktrees with one of ``branches`` checked out and no local change,
@@ -310,10 +348,7 @@ class Deployer:
 
     async def _report(self, project: str, tickets: list[dict[str, Any]], bid: str,
                       mark: str) -> None:
-        """Post each submitter's verdict to their scope's journal (R26).
-
-        The session card half of R26 waits for a board verb that writes to a
-        card."""
+        """Post each submitter's verdict to their scope's journal and their card (R26)."""
         for t in tickets:
             body = (f"{mark}\nDeploy ticket {t['id']}: {t['branch']} at "
                     f"{t['sha'][:12]}, batch {bid}.")
@@ -321,6 +356,11 @@ class Deployer:
                 await self.out.journal(project, t["scope"], body)
             except Exception as e:  # noqa: BLE001
                 log.warning("report to %s/%s failed: %s", project, t["scope"], e)
+            if t.get("card"):
+                try:
+                    await self.out.card_post(t["card"], body)
+                except Exception as e:  # noqa: BLE001
+                    log.warning("report to card %s failed: %s", t["card"], e)
 
     async def _fail(self, batch: dict[str, Any], tickets: list[dict[str, Any]],
                     step: str, error: str, *, cfg: DeployConfig | None = None,
@@ -329,8 +369,10 @@ class Deployer:
         cfg = cfg or DeployConfig()
         branches = "\n".join(f"- {t['branch']} at {t['sha'][:12]} (scope {t['scope']}, "
                              f"ticket {t['id']})" for t in tickets)
-        where = ("Release already holds these commits. The nodes after the failed "
-                 "one still run the old release." if landed else
+        where = (("Release already holds these commits, but the backup remote does "
+                  "not, and no node refreshed." if step == "backup" else
+                  "Release already holds these commits. The nodes after the failed "
+                  "one still run the old release.") if landed else
                  f"Nothing landed: {DEV} and {RELEASE} did not move.")
         prompt = (
             f"The deploy batch {bid} of `{project}` failed at `{step}`.\n\n{where}\n\n"
@@ -347,7 +389,7 @@ class Deployer:
                         f"{', '.join(submitters) or 'unknown callers'}"),
             summary=f"Deploy batch {project}/{bid} failed at {step}.")
         mark = f"✗ failed at {step}"
-        self.store.finish_batch(bid, "refresh-failed" if landed else "failed", mark=mark,
+        self.store.finish_batch(bid, f"{step}-failed" if landed else "failed", mark=mark,
                                 failed_step=step, error=error,
                                 fixer=esc.job or esc.via)
         await self._report(project, tickets, bid,

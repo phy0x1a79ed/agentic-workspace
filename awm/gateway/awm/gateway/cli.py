@@ -292,9 +292,11 @@ def restart():
 
 
 # ---------------------------------------------------------------------------
-# `awm deploy` — one safe command to ship the release worktree to prod
-# (hand-authored: it orchestrates subprocesses + a systemd restart + a hub
-# poll, none of which fits a declarative request/response Operation). The pure
+# `awm deploy` — the node-local restart that the deploy's refresh hook runs once
+# this node's checkout holds the new release (deploy.toml). It moves no ref and
+# reaches no other node: `routine deploy` lands a change and walks the fleet.
+# Hand-authored: it orchestrates subprocesses + a systemd restart + a hub poll,
+# none of which fits a declarative request/response Operation. The pure
 # planning logic lives in awm.gateway.deploy and is unit-tested.
 # ---------------------------------------------------------------------------
 
@@ -320,7 +322,7 @@ def deploy(
         60.0, "--timeout",
         help="Seconds to wait for the gateway to come back healthy / verify."),
 ):
-    """Ship the release worktree to the running (systemd) gateway, safely.
+    """Restart this node's gateway on the release its checkout holds, safely.
 
     install (only if the dist set, a service folder or a service's install
     inputs changed) → build (only if page source
@@ -363,11 +365,11 @@ def deploy(
     if plan.changed_pages:
         typer.echo(f"            changed: {', '.join(plan.changed_pages)}")
     typer.echo(f"  reap:     {'YES' if plan.do_reap else 'no '}")
-    # Which supervisor is probed, not assumed. The fleet is mixed: capella's prod
-    # runs as a system unit needing sudo, while mira and altair run a per-user
-    # unit that must NOT be restarted with sudo (a different systemd instance
-    # entirely — `sudo systemctl restart awm.service` there reports the unit
-    # missing and leaves the old gateway running until the wait times out).
+    # Which supervisor is probed, not assumed. A node may run a system unit that
+    # needs sudo or a per-user unit that must NOT be restarted with sudo (a
+    # different systemd instance entirely — `sudo systemctl restart awm.service`
+    # there reports the unit missing and leaves the old gateway running until the
+    # wait times out).
     user_unit = user_unit_is_active()
     typer.echo(f"  restart:  YES ({'per-user' if user_unit else 'system'} "
                f"awm.service)")

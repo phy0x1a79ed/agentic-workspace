@@ -216,7 +216,7 @@ run = "exit 1"
 prompt = "Never sent."
 
 [agent]
-peer = "altair"
+peer = "alcor"
 scope = "disk-care"
 """
 
@@ -228,7 +228,7 @@ async def test_condition_dispatches_agent(store, out, project_repo):
     assert run["state"] == "ok"
     assert [s.get("held") for s in run["steps"]] == [True, False]
     [start] = out.starts
-    assert start["peer"] == "altair" and start["scope"] == "disk-care"
+    assert start["peer"] == "alcor" and start["scope"] == "disk-care"
     assert "Free some disk." in start["prompt"] and "disk 95%" in start["prompt"]
     assert run["dispatched"][0]["role"] == "agent"
 

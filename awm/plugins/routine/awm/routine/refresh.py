@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
+import shlex
 import subprocess
 import tomllib
 from dataclasses import dataclass, field
@@ -188,22 +189,40 @@ class Refresher:
                 return r
         return NodeResult(self.node, True, "" if hooks else "nothing to refresh", hooks)
 
-    async def fleet(self, project: str, frm: str, to: str) -> FleetResult:
+    async def fleet(self, project: str, frm: str, to: str, *,
+                    bare: Path | None = None) -> FleetResult:
         """Refresh each node in order, stopping at the first failure (R31).
 
         The install config names the nodes, home base first (fleetconf). An
-        empty list means this node only."""
-        nodes = list(self.fleet_config().rollout(project)) or [self.node]
+        empty list means this node only. A push node first takes the release
+        from ``bare``."""
+        fleet = self.fleet_config()
+        nodes = list(fleet.rollout(project)) or [self.node]
         done: list[dict[str, Any]] = []
         for node in nodes:
             if node == self.node:
                 r = await self.local(project, frm, to)
             else:
-                r = await self._peer(node, project, frm, to)
+                url = fleet.push_url(node, project)
+                r = await self._push(node, url, bare, to) if url else None
+                if r is None:
+                    r = await self._peer(node, project, frm, to)
             done.append(r.to_dict())
             if not r.ok:
                 return FleetResult(False, done, node, r.detail)
         return FleetResult(True, done)
+
+    async def _push(self, node: str, url: str, bare: Path | None,
+                    to: str) -> NodeResult | None:
+        """Push ``to`` into ``node``'s repo. A failure, or None to go on to its refresh."""
+        if bare is None:
+            return NodeResult(node, False, "push: no repo to push from")
+        ref = f"refs/{self.node}/release"
+        res = await proc.run(f"git -C {shlex.quote(str(bare))} push --porcelain "
+                             f"{shlex.quote(url)} {to}:{ref}", cwd=str(bare), timeout=300.0)
+        if not res.ok:
+            return NodeResult(node, False, f"push to {url} as {ref} {_why(res)}\n{res.output}")
+        return None
 
     async def _peer(self, node: str, project: str, frm: str, to: str) -> NodeResult:
         try:

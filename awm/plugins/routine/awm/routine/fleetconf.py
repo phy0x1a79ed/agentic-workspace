@@ -11,8 +11,14 @@ its `[fleet]` table says which node is home base and the order nodes refresh in:
     canonical = "<node>"
     nodes = ["<canonical>", ...]
 
-The node that lands a project leads its rollout. An absent file or table is a
-fleet of this node alone.
+    [fleet.push.<node>]           # optional, for a node that cannot fetch from home
+    url = "<node>:<workspace>/projects/{project}/.bare"
+    projects = ["<name>", ...]
+
+The node that lands a project leads its rollout. Before a push node refreshes,
+the landing node pushes the new release into its repo as
+`refs/<landing node>/release`, fast-forward only (routines.md R31). An absent
+file or table is a fleet of this node alone.
 """
 
 from __future__ import annotations
@@ -36,10 +42,22 @@ class ProjectFleet:
 
 
 @dataclass(frozen=True)
+class Push:
+    url: str
+    projects: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class Fleet:
     home: str = ""
     nodes: tuple[str, ...] = ()
     projects: dict[str, ProjectFleet] = field(default_factory=dict)
+    push: dict[str, Push] = field(default_factory=dict)
+
+    def push_url(self, node: str, project: str) -> str:
+        """Where ``node`` takes ``project``'s release by push. Empty means it fetches."""
+        p = self.push.get(node)
+        return p.url.format(project=project) if p and project in p.projects else ""
 
     def canonical(self, project: str) -> str:
         """The node that lands ``project``. Empty means wherever deploy is called."""
@@ -71,7 +89,7 @@ def parse(text: str, *, source: str = FILE) -> Fleet:
         raw = tomllib.loads(text).get("fleet") or {}
     except tomllib.TOMLDecodeError as e:
         raise FleetConfigError(f"{source}: {e}") from e
-    if extra := set(raw) - {"home", "nodes", "project"}:
+    if extra := set(raw) - {"home", "nodes", "project", "push"}:
         raise FleetConfigError(f"{source}: unknown keys in [fleet]: {sorted(extra)}")
     home = str(raw.get("home", ""))
     nodes = _nodes(raw.get("nodes"), f"{source}: [fleet]", home)
@@ -83,7 +101,18 @@ def parse(text: str, *, source: str = FILE) -> Fleet:
         canonical = str(body.get("canonical", ""))
         projects[name] = ProjectFleet(canonical,
                                       _nodes(body.get("nodes"), where, canonical or home))
-    return Fleet(home=home, nodes=nodes, projects=projects)
+    push: dict[str, Push] = {}
+    for node, body in (raw.get("push") or {}).items():
+        where = f"{source}: [fleet.push.{node}]"
+        if not isinstance(body, dict) or set(body) != {"url", "projects"}:
+            raise FleetConfigError(f"{where} takes url and projects")
+        url, names = body["url"], body["projects"]
+        if not isinstance(url, str) or "{project}" not in url:
+            raise FleetConfigError(f"{where} url must name the repo with {{project}}")
+        if not isinstance(names, list) or not all(isinstance(n, str) and n for n in names):
+            raise FleetConfigError(f"{where} projects must be a list of project names")
+        push[node] = Push(url, tuple(names))
+    return Fleet(home=home, nodes=nodes, projects=projects, push=push)
 
 
 def load(path: Path) -> Fleet:

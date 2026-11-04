@@ -37,7 +37,8 @@ CALLS: dict[str, set[tuple[str, str]]] = {
         *{("trilium", v) for v in ("note_get", "note_create", "note_update", "attr_delete", "attr_set", "note_search",
                                    "note_children", "note_delete")},
     },
-    "routine": {("reflection", "start_other"), ("social", "send"), ("journal", "post"), ("routine", "refresh"),
+    "routine": {("reflection", "start_other"), ("reflection", "session_of"), ("social", "send"), ("journal", "post"),
+                ("operations", "task_for_session"), ("operations", "swarm_message_post"), ("routine", "refresh"),
                 ("routine", "deploy")},  # Outbound.invoke
     "wake": {("reflection", "start_other"), ("reflection", "message"), ("harness@1", "revive_pinned"), ("reflection", "revive_pinned"),
              ("wake", "standby_take"), ("wake", "standby_release")},  # Gateway.call

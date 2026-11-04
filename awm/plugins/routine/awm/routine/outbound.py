@@ -29,6 +29,12 @@ class Outbound(Protocol):
     async def journal(self, project: str, scope: str, body: str) -> None:
         """Post to a scope's journal."""
 
+    async def card_of(self, pid: int) -> str:
+        """The Swarm-board task of the session at ``pid`` on this node, or ``""``."""
+
+    async def card_post(self, card: str, body: str) -> None:
+        """Post a message on a Swarm-board card."""
+
     async def invoke(self, tool: str, verb: str, args: dict[str, Any],
                      *, peer: str | None = None, timeout: float = 60.0) -> Any:
         """Call any tool verb, here or on a peer."""
@@ -85,6 +91,18 @@ class GatewayOutbound:
         await self.invoke("social", "send", {
             "account": account, "channel": channel, "text": text},
             peer=os.environ.get("AWM_SOCIAL_PEER") or None)
+
+    async def card_of(self, pid: int) -> str:
+        who = await self.invoke("reflection", "session_of", {"pid": pid}, timeout=10.0)
+        sid = who.get("session_id") if isinstance(who, dict) and who.get("known") else ""
+        if not sid:
+            return ""
+        res = await self.invoke("operations", "task_for_session", {"session_id": sid},
+                                timeout=10.0)
+        return str(res.get("task_id") or "") if isinstance(res, dict) else ""
+
+    async def card_post(self, card: str, body: str) -> None:
+        await self.invoke("operations", "swarm_message_post", {"card_id": card, "body": body})
 
     async def journal(self, project: str, scope: str, body: str) -> None:
         await self.invoke("journal", "post", {
