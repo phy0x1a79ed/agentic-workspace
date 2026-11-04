@@ -11,8 +11,10 @@ from __future__ import annotations
 
 from typing import Any
 
-#: The answer's sections, in the order they are read: literal and keyword, then meaning.
-SECTIONS = ("exact", "related")
+#: The answer's sections, in the order they are read: literal and keyword, then meaning, then a hop's walk.
+SECTIONS = ("exact", "related", "hop")
+#: The sections a document shows in once: the first that holds it. A hop lists what its walk reached.
+READ_ONCE = ("exact", "related")
 #: A section a peer on an older release may still send. It is dropped, never read.
 RETIRED_SECTIONS = ("graph",)
 _TEXT_KEYS = ("source", "id", "title", "ts", "project", "scope", "kind", "url", "match")
@@ -50,7 +52,7 @@ def sections(raw: Any, origin: dict[str, str], limit: int,
     if any(isinstance(raw.get(s), (list, dict)) for s in (*SECTIONS, *RETIRED_SECTIONS)):
         lists = {s: _flat(raw.get(s)) for s in SECTIONS}
     elif isinstance(raw.get("hits"), list):
-        lists = {"exact": [], "related": raw["hits"]}
+        lists = {"exact": [], "related": raw["hits"], "hop": []}
     else:
         raise ValueError("the answer has no sections and no hits")
     return {s: _cap([h for h in (clean(x, origin, source) for x in items) if h], limit)

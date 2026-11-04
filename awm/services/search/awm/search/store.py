@@ -28,7 +28,7 @@ from awm.persistence.databases import get_connection, init_service_db
 from awm.search import passages as cutter
 
 SERVICE = "search"
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 CORPUS = "doc"
 
 _SOURCES = """\
@@ -58,10 +58,15 @@ _DOCUMENTS = ["""CREATE TABLE IF NOT EXISTS documents (
     kind     TEXT NOT NULL DEFAULT '',
     ts       TEXT NOT NULL DEFAULT '', -- ISO 8601 UTC, second resolution, so text order is time order
     url      TEXT NOT NULL DEFAULT '',
+    reply_to TEXT NOT NULL DEFAULT '',  -- the ids it replies to or cites, newline-bracketed (id_field)
     tags     TEXT NOT NULL DEFAULT ''  -- lowercased, one per line, newline-bracketed (tag_field)
 );""",
     "CREATE INDEX IF NOT EXISTS idx_documents_source ON documents(source, doc_id);",
     "CREATE INDEX IF NOT EXISTS idx_documents_filter ON documents(source, project, scope, kind, ts);"]
+
+#: Added in v7; the v3 migration builds the table without it.
+_REPLY_TO_COLUMN = "    reply_to TEXT NOT NULL DEFAULT '',  -- the ids it replies to or cites, newline-bracketed (id_field)\n"
+assert _REPLY_TO_COLUMN in _DOCUMENTS[0]
 
 _TEXT_INDEXES = """
 CREATE VIRTUAL TABLE IF NOT EXISTS documents_exact USING fts5(
@@ -145,7 +150,7 @@ SCHEMA_SQL = _SOURCES + "\n".join(_DOCUMENTS) + _TEXT_INDEXES + _JUDGEMENTS + _U
 
 #: v2 adds ``tags``; clearing ``synced_at`` makes every index source due at once, so the tags fill in. v3 gives
 #: documents an integer key for the text indexes and builds them. v4 adds the judgements, v5 the usage log, and
-#: v6 its project.
+#: v6 its project. v7 adds ``reply_to`` and makes every index source due, so the links fill in.
 MIGRATIONS = {
     (1, 2): "ALTER TABLE documents ADD COLUMN tags TEXT NOT NULL DEFAULT '';\n"
             "UPDATE sources SET synced_at = NULL;",
@@ -153,7 +158,7 @@ MIGRATIONS = {
         "ALTER TABLE documents RENAME TO documents_v2;",
         "DROP INDEX IF EXISTS idx_documents_source;",
         "DROP INDEX IF EXISTS idx_documents_filter;",
-        _DOCUMENTS[0],
+        _DOCUMENTS[0].replace(_REPLY_TO_COLUMN, ""),
         "INSERT INTO documents (key, source, doc_id, title, text, project, scope, kind, ts, url, tags)"
         " SELECT key, source, doc_id, title, text, project, scope, kind, ts, url, tags FROM documents_v2;",
         "DROP TABLE documents_v2;",
@@ -162,6 +167,8 @@ MIGRATIONS = {
     (3, 4): _JUDGEMENTS,
     (4, 5): _USAGE_V5,
     (5, 6): "ALTER TABLE usage ADD COLUMN project TEXT NOT NULL DEFAULT '';",
+    (6, 7): "ALTER TABLE documents ADD COLUMN reply_to TEXT NOT NULL DEFAULT '';\n"
+            "UPDATE sources SET synced_at = NULL;",
 }
 
 _initialized = False
@@ -276,7 +283,7 @@ def mark_attempt(conn: sqlite3.Connection, name: str, error: str | None,
 
 # -- documents -------------------------------------------------------------
 
-_FIELDS = ("title", "text", "project", "scope", "kind", "ts", "url", "tags")
+_FIELDS = ("title", "text", "project", "scope", "kind", "ts", "url", "tags", "reply_to")
 
 
 def key_of(source: str, doc_id: str) -> str:
@@ -300,6 +307,20 @@ def tag_field(tags: Any) -> str:
     return "\n" + "\n".join(names) + "\n" if names else ""
 
 
+def id_field(ids: Any) -> str:
+    """The stored form of a document's links: ids as given, one per line, with a newline at each end."""
+    if isinstance(ids, str):
+        ids = [ids]
+    if not isinstance(ids, (list, tuple)):
+        return ""
+    kept = list(dict.fromkeys(str(i).strip() for i in ids if str(i).strip() and "\n" not in str(i)))
+    return "\n" + "\n".join(kept) + "\n" if kept else ""
+
+
+def id_list(field: str) -> list[str]:
+    return [i for i in (field or "").split("\n") if i]
+
+
 def clean(source: str, raw: dict[str, Any]) -> dict[str, Any] | None:
     """A stored row from one exported document, or ``None`` when it has no id or no content."""
     doc_id = str(raw.get("id") or "")
@@ -309,7 +330,8 @@ def clean(source: str, raw: dict[str, Any]) -> dict[str, Any] | None:
     return {"key": key_of(source, doc_id), "source": source, "doc_id": doc_id, "title": title,
             "text": text, "project": str(raw.get("project") or ""), "scope": str(raw.get("scope") or ""),
             "kind": str(raw.get("kind") or ""), "ts": normalize_ts(raw.get("ts")),
-            "url": str(raw.get("url") or ""), "tags": tag_field(raw.get("tags"))}
+            "url": str(raw.get("url") or ""), "tags": tag_field(raw.get("tags")),
+            "reply_to": id_field(raw.get("reply_to"))}
 
 
 _CUT_FIELDS = ("title", "text", "project", "scope", "kind")
@@ -337,11 +359,11 @@ def put_documents(conn: sqlite3.Connection, rows: Iterable[dict[str, Any]]) -> i
         [r["key"] for r in rows])} if rows else {}
     changed = [r for r in rows if r["key"] not in held or any(held[r["key"]][f] != r[f] for f in _FIELDS)]
     conn.executemany(
-        "INSERT INTO documents (key, source, doc_id, title, text, project, scope, kind, ts, url, tags)"
-        " VALUES (:key,:source,:doc_id,:title,:text,:project,:scope,:kind,:ts,:url,:tags)"
+        "INSERT INTO documents (key, source, doc_id, title, text, project, scope, kind, ts, url, tags, reply_to)"
+        " VALUES (:key,:source,:doc_id,:title,:text,:project,:scope,:kind,:ts,:url,:tags,:reply_to)"
         " ON CONFLICT(key) DO UPDATE SET title=excluded.title, text=excluded.text,"
         " project=excluded.project, scope=excluded.scope, kind=excluded.kind, ts=excluded.ts,"
-        " url=excluded.url, tags=excluded.tags", changed)
+        " url=excluded.url, tags=excluded.tags, reply_to=excluded.reply_to", changed)
     for r in changed:
         old = held.get(r["key"])
         if old is None or any(old[f] != r[f] for f in _CUT_FIELDS):

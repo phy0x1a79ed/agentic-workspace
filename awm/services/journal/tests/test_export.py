@@ -25,10 +25,19 @@ def test_one_page_carries_everything_and_the_id_set(posted):
     assert page["done"] is True and page["next_cursor"] is None
     assert page["ids"] == posted
     doc = page["documents"][0]
-    assert set(doc) == {"id", "title", "text", "ts", "project", "scope", "tags", "kind", "comments"}
-    assert doc["tags"] == ["journal"] and doc["comments"] == 0
+    assert set(doc) == {"id", "title", "text", "ts", "project", "scope", "tags", "kind", "comments", "reply_to"}
+    assert doc["tags"] == ["journal"] and doc["comments"] == 0 and doc["reply_to"] == []
     assert doc["project"] == "awm" and doc["scope"] == "dev" and doc["kind"] == "journal"
     assert doc["ts"].endswith("+00:00") and doc["text"].startswith("entry")
+
+
+def test_a_journal_carries_the_journals_it_cites_as_reply_to(posted):
+    from awm.journal import channel
+    from awm.journal.export import export_page
+    cited = channel.post("awm", "dev", author="agent:awm/dev", kind="journal", body="builds on two",
+                         reply_to=[posted[2], posted[0]]).id
+    by_id = {d["id"]: d for d in export_page(None, 50)["documents"]}
+    assert by_id[cited]["reply_to"] == [posted[2], posted[0]]
 
 
 def test_pages_walk_in_id_order_without_repeats(posted):

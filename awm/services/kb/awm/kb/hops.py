@@ -1,4 +1,4 @@
-"""``kb hop`` and the author filter, over kb's hop arrays (``kb.hops`` builds them).
+"""The walk behind search's ``hop`` on papers, and the author filter, over kb's hop arrays (``kb.hops`` builds them).
 
 Every array is memory-mapped, so a hop pages in only the rows it walks. A hop ranks by personalized PageRank
 from its seeds and breaks ties by date, newest first. It never re-ranks by meaning (precedence 5db3b97b404c877a).

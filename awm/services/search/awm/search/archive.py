@@ -3,8 +3,8 @@
 An index source is paged through its service's ``export`` verb into the one
 corpus, pushed on its topic when it has one and swept in full every hour. A
 source whose service stops is frozen: its documents stay, because absence is
-not deletion. A live source is asked at query time. The archive's sections,
-each live source's and each peer's fuse by reciprocal rank, section by section.
+not deletion. A live source is asked at query time, and a source named on another node is
+asked of that node's search. Each source answers apart, section by section.
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, Sequence
 
 from awm import config
-from awm.config import privacy
+from awm.config import edges, privacy
 from awm.gatewayclient import SupervisedSubscription
 from awm.persistence import embeddings as engine
 
@@ -35,7 +35,10 @@ SETTLE_S = 5.0
 TICK_S = 15.0
 REGISTRY_TTL_S = 10.0
 LIVE_TIMEOUT_S = 15.0
-HOMES_TTL_S = 300.0
+#: How long the journal's open tag clashes are trusted before they are read again.
+CLASHES_TTL_S = 60.0
+#: A hop's link type -> the ``along`` a live source's hop verb takes.
+ALONG = {"citations": "cites", "cited_by": "cited_by", "authors": "authors"}
 EXPORT_TIMEOUT_S = 120.0
 PAGE = 200
 MAX_PAGES = 100_000
@@ -90,9 +93,7 @@ class Archive:
         self._wake = asyncio.Event()
         self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="search-index")
         self._topics: dict[tuple[str, str], tuple[SupervisedSubscription, asyncio.Task]] = {}
-        #: Source name → the node that is home to its domain, for a domain this node does not serve.
-        self.homed: dict[str, str] = {}
-        self.homed_at: float | None = None
+        self._clashes: tuple[float, set[str]] | None = None
 
     def origin(self) -> dict[str, str]:
         return {"node": config.node_name()}
@@ -128,16 +129,6 @@ class Archive:
         if news:
             self._wake.set()
         return True
-
-    async def refresh_homes(self, force: bool = False) -> None:
-        """Learn the sources of each domain declared homed on another node, at most every :data:`HOMES_TTL_S`."""
-        if not force and self.homed_at is not None and self.now() - self.homed_at < HOMES_TTL_S:
-            return
-        served = {s.service for s in self.sources.values()}
-        wanted = {d: h for d, h in federation.homes().items() if d not in served}
-        found, unread = await federation.homed_sources(self.peers, wanted) if wanted else ({}, set())
-        kept = {n: h for n, h in self.homed.items() if h in unread}
-        self.homed, self.homed_at = {**kept, **found}, self.now()
 
     async def _refresh_if_stale(self) -> None:
         if self.registry_at is None or self.now() - self.registry_at > REGISTRY_TTL_S:
@@ -231,7 +222,6 @@ class Archive:
             self._wake.clear()
             try:
                 await self.refresh()
-                await self.refresh_homes()
                 for name in self._due_names():
                     await self.sweep(name)
             except Exception:  # noqa: BLE001 — a bad tick must not end the loop
@@ -295,9 +285,10 @@ class Archive:
         doc = await asyncio.to_thread(_with_conn, store.get_document, source, doc_id)
         if doc is None or index.covered(hidden, doc["project"], doc["scope"], doc["tags"]):
             raise ValueError(f"no document {source}:{doc_id}")
-        return {"document": {**{k: doc[k] for k in ("title", "text", "project", "scope", "kind", "ts", "url")
-                                if doc[k]}, "source": source, "id": doc_id, "frozen": not row["present"],
-                             "origin": self.origin()}}
+        kept = {k: doc[k] for k in ("title", "text", "project", "scope", "kind", "ts", "url") if doc[k]}
+        tags = [t for t in doc["tags"].split("\n") if t]
+        return {"document": {**kept, **({"tags": tags} if tags else {}), "source": source, "id": doc_id,
+                             "frozen": not row["present"], "origin": self.origin()}}
 
     async def _get_live(self, name: str, doc_id: str) -> dict[str, Any]:
         source = self.sources.get(name)
@@ -391,27 +382,115 @@ class Archive:
             status["error"] = row["last_error"]
         return status
 
-    async def query(self, q: Query) -> dict[str, Any]:
-        """The ``exact`` and ``related`` sections over the picked sources and peers, plus a status for every
-        source and peer asked. Each source keeps its own keyword-and-meaning order."""
+    # -- tag clashes ------------------------------------------------------
+
+    async def clashed(self) -> set[str]:
+        """The nodes an open tag clash stands between this node and, as the journal records them. A journal
+        that cannot answer leaves the last set in force, and none before the first read."""
+        if self._clashes is not None and self.now() - self._clashes[0] < CLASHES_TTL_S:
+            return self._clashes[1]
+        try:
+            raw = await asyncio.wait_for(self.gateway.call("journal", "tag_list", {}, LIVE_TIMEOUT_S),
+                                         timeout=LIVE_TIMEOUT_S + 1.0)
+        except Exception as exc:  # noqa: BLE001 — the journal being down is not a clash
+            log.warning("search: tag clashes unread: %s", _describe(exc))
+            return self._clashes[1] if self._clashes else set()
+        here = edges.label(config.node_name())
+        nodes: set[str] = set()
+        for c in (raw or {}).get("clashes") or []:
+            pair = {edges.label(str(c.get("older_node") or "")), edges.label(str(c.get("newer_node") or ""))}
+            if here in pair and len(pair) == 2:
+                nodes |= pair - {here}
+        self._clashes = (self.now(), nodes)
+        return nodes
+
+    async def refuse_clashed(self, node: str | None) -> None:
+        """Refuse a call to or from ``node`` while an open tag clash stands between it and this node."""
+        if node and edges.label(node) in await self.clashed():
+            raise PermissionError(f"an open tag clash stands between {node} and this node; "
+                                  "searches between them wait until an agent renames the tag")
+
+    # -- hop --------------------------------------------------------------
+
+    @staticmethod
+    def _seeds(q: Query, name: str, lists: list[dict[str, list[dict[str, Any]]]]) -> list[str]:
+        """Where a hop on ``name`` starts: the ids it was given, else that source's hits for the words in
+        the first section that holds any, best first. ``related`` ranks every document by meaning, so its hits
+        seed a walk only when nothing matched the words."""
+        if q.hop and q.hop.start:
+            return q.hop.start
+        here = edges.label(config.node_name())
+        for section in hitshape.READ_ONCE:
+            found = [h["id"] for f in lists for h in f.get(section, [])
+                     if h["source"] == name and edges.label(h["origin"]["node"]) == here]
+            if found:
+                return list(dict.fromkeys(found))
+        return []
+
+    async def _walk(self, q: Query, name: str, seeds: list[str], live: Source | None) -> list[dict[str, Any]]:
+        """The hits one ``q.hop`` from ``seeds`` in source ``name``, in the walk's order."""
+        hop = q.hop
+        if live is None:
+            return await asyncio.to_thread(_with_conn, index.walk, name, seeds, q.filters([name]), hop.limit)
+        args = {"ids": seeds, "along": ALONG[hop.via], "limit": hop.limit,
+                **{k: q.raw[k] for k in ("after", "before") if k in q.raw}}
+        raw = await asyncio.wait_for(self.gateway.call(live.tool, live.hop, args, LIVE_TIMEOUT_S),
+                                     timeout=LIVE_TIMEOUT_S + 1.0)
+        hits = raw.get("hits") if isinstance(raw, dict) else None
+        if not isinstance(hits, list):
+            raise ValueError("the hop answered without hits")
+        origin = self.origin()
+        return [{**h, "match": hop.via} for h in (hitshape.clean(x, origin, name) for x in hits)
+                if h and not _unseen(h, q.hidden)][:hop.limit]
+
+    async def _hops(self, q: Query, index_names: list[str], live: list[Source],
+                    lists: list[dict[str, list[dict[str, Any]]]], statuses: dict[str, Any]) -> list[dict[str, Any]]:
+        """Walk ``q.hop`` from each named source whose links include its type; record each walk's status."""
+        hop = q.hop
+        walks: list[tuple[str, Source | None]]
+        if hop.via == "reply_to":
+            walks = [(n, None) for n in index_names]
+        else:
+            walks = [(s.name, s) for s in live if s.hop and hop.via in s.links]
+        walked = {n for n, _ in walks}
+        for name in [*index_names, *(s.name for s in live)]:
+            if name not in walked and name in statuses:
+                statuses[name]["hop"] = {"status": "none", "detail": f"no {hop.via} links"}
+        if not walks:
+            return []
+        if any(not neg for neg, _ in q.tags) and hop.via != "reply_to":
+            for name, _ in walks:
+                statuses[name]["hop"] = {"status": "ok", "hits": 0}
+            return []
+        seeds = {name: self._seeds(q, name, lists) for name, _ in walks}
+        results = await asyncio.gather(*(self._walk(q, n, seeds[n], s) for n, s in walks if seeds[n]),
+                                       return_exceptions=True)
+        out: list[dict[str, Any]] = []
+        for name, _ in walks:
+            if not seeds[name]:
+                statuses[name]["hop"] = {"status": "ok", "hits": 0}
+                continue
+            got = results.pop(0)
+            if isinstance(got, BaseException):
+                statuses[name]["hop"] = {"status": "error", "error": _describe(got)}
+                continue
+            statuses[name]["hop"] = {"status": "ok", "hits": len(got)}
+            out += [{**h, "origin": h.get("origin") or self.origin()} for h in got]
+        return out
+
+    # -- query ------------------------------------------------------------
+
+    async def query(self, q: Query, caller: str | None = None) -> dict[str, Any]:
+        """The ``exact`` and ``related`` sections, and ``hop`` when one is asked, over the named sources of
+        each node, plus a status for every source asked. Each source keeps its own order. ``caller`` names
+        the node that relayed the call."""
+        await self.refuse_clashed(caller)
         await self._refresh_if_stale()
         rows = {r["name"]: r for r in await self._rows(q.hidden)}
-        statuses: dict[str, Any] = {}
-        searchable = sorted({*rows, *self.homed})
-        if not q.local:
-            rows = {}
-        if q.sources is None and not q.relayed:
-            # Every source is opt in (fleet.md R136 item 4): the caller names what to search.
-            raise ValueError("search query needs `sources`: names from `search sources`. Searchable here: "
-                             + (", ".join(searchable) or "none"))
-        if q.sources is None:  # a peer that predates opt-in sources relays a query without them
-            picked = [n for n, r in rows.items() if r["mode"] == "index" or not r["spec"].get("optin")]
-        else:
-            picked = [n for n in q.sources if n in rows]
-            if q.local:
-                statuses.update({n: {"status": "absent"} for n in q.sources if n not in rows})
+        statuses: dict[str, Any] = {n: {"status": "absent"} for n in q.elsewhere}
+        statuses.update({n: {"status": "absent"} for n in q.sources if n not in rows})
         index_names, live = [], []
-        for name in picked:
+        for name in (n for n in q.sources if n in rows):
             row = rows[name]
             if row["spec"].get("error"):
                 statuses[name] = {"status": "error", "error": row["spec"]["error"]}
@@ -421,36 +500,38 @@ class Archive:
                 live.append(self.sources[name])
             else:
                 statuses[name] = {"status": "frozen", "hits": 0}
-        homed: dict[str, list[str]] = {}
-        if q.local and not q.relayed:
-            for name in (q.sources if q.sources is not None else list(self.homed)):
-                if name in self.homed and name not in rows:
-                    homed.setdefault(self.homed[name], []).append(name)
-                    statuses.pop(name, None)
 
+        searched_index, searched_live = index_names, live
         if q.raw.get("author"):  # only papers have authors: the filter is one no archived document can meet
             statuses.update({n: {"status": "ok", "hits": 0} for n in index_names})
-            index_names = []
-        jobs: list[Any] = [self._archive_hits(q, index_names)] if index_names else []
-        jobs += [self._live(source, q) for source in live]
-        jobs += [federation.ask_home(self.peers, home, names, q.forwarded(), q.limit)
-                 for home, names in homed.items()]
-        if q.fan_out:
-            jobs.append(federation.ask(self.peers, q.peer_names, q.forwarded(), q.limit))
+            searched_index = []
+        if any(not neg for neg, _ in q.tags):  # a live source's documents carry no tags, so none can meet one
+            statuses.update({s.name: {"status": "ok", "hits": 0} for s in live})
+            searched_live = []
+        if not q.text:
+            statuses.update({n: {"status": "ok", "hits": 0} for n in index_names})
+            statuses.update({s.name: {"status": "ok", "hits": 0} for s in live})
+            searched_index, searched_live = [], []
+
+        clashed = await self.clashed() if q.remote else set()
+        jobs: list[Any] = [self._archive_hits(q, searched_index)] if searched_index else []
+        jobs += [self._live(source, q) for source in searched_live]
+        jobs += [federation.ask_home(self.peers, node, q.forwarded(names), q.limit, edges.label(node) in clashed)
+                 for node, names in q.remote.items()]
         results = await asyncio.gather(*jobs, return_exceptions=True)
 
-        lists, degraded, peer_status = [], None, {}
-        if index_names:
+        lists, degraded = [], None
+        if searched_index:
             found = results.pop(0)
             if isinstance(found, BaseException):
-                statuses.update({n: {"status": "error", "error": _describe(found)} for n in index_names})
+                statuses.update({n: {"status": "error", "error": _describe(found)} for n in searched_index})
             else:
                 sections, degraded = found
                 lists.append(sections)
                 every = [h for hits in sections.values() for h in hits]
-                per_source = {n: sum(1 for h in every if h["source"] == n) for n in index_names}
-                statuses.update({n: self._index_status(rows[n], per_source[n]) for n in index_names})
-        for source in live:
+                per_source = {n: sum(1 for h in every if h["source"] == n) for n in searched_index}
+                statuses.update({n: self._index_status(rows[n], per_source[n]) for n in searched_index})
+        for source in searched_live:
             found = results.pop(0)
             if isinstance(found, BaseException):
                 statuses[source.name] = {"status": "error", "error": _describe(found)}
@@ -458,29 +539,33 @@ class Archive:
                 _, sections, status = found
                 lists.append(sections)
                 statuses[source.name] = status
-        for home, names in homed.items():
+        for node, names in q.remote.items():
             asked = results.pop(0)
             for name in names:
-                if isinstance(asked, BaseException):
-                    statuses[name] = {"status": "error", "error": _describe(asked), "via": home}
-                elif asked.status.get("status") != "ok":
-                    statuses[name] = {**asked.status, "via": home}
-                else:
-                    count = sum(1 for hits in asked.found.values() for h in hits if h["source"] == name)
-                    statuses[name] = {"status": "ok", "hits": count, "via": home}
+                statuses[f"{name}@{node}"] = _remote_status(asked, name)
             if not isinstance(asked, BaseException):
                 lists.append(asked.found)
-        if q.fan_out:
-            asked = results.pop(0)
-            if isinstance(asked, BaseException):
-                peer_status["*"] = {"status": "error", "error": _describe(asked)}
-            else:
-                for result in asked:
-                    lists.append(result.found)
-                    peer_status[result.name] = result.status
 
-        fused = merge.fuse_sections(lists, q.limit)
-        out: dict[str, Any] = {"query": q.text, **fused, "sources": statuses, "peers": peer_status}
+        hopped = await self._hops(q, index_names, live, lists, statuses) if q.hop else []
+        fused = merge.fuse_sections([*lists, {"hop": hopped}] if hopped else lists, q.limit, self.origin()["node"])
+        out: dict[str, Any] = {"query": q.text, **fused, "sources": statuses}
+        if not q.hop:
+            out.pop("hop", None)
         if degraded:
             out["degraded"] = degraded
         return out
+
+
+def _remote_status(asked: Any, name: str) -> dict[str, Any]:
+    """One remote source's status: the node's own for it, or the node's when the node did not answer."""
+    if isinstance(asked, BaseException):
+        return {"status": "error", "error": _describe(asked)}
+    if asked.status.get("status") != "ok":
+        return dict(asked.status)
+    theirs = (asked.status.get("sources") or {}).get(name)
+    if not isinstance(theirs, dict):
+        return {"status": "absent"}
+    kept = {k: theirs[k] for k in ("status", "hits", "error") if isinstance(theirs.get(k), (str, int))}
+    if isinstance(theirs.get("hop"), dict):
+        kept["hop"] = {k: v for k, v in theirs["hop"].items() if isinstance(v, (str, int))}
+    return kept or {"status": "absent"}

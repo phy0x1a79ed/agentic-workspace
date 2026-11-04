@@ -1,4 +1,4 @@
-"""Reciprocal rank fusion over the ranked lists the archive, live sources and peers return.
+"""Reciprocal rank fusion over the ranked lists the archive, live sources and other nodes return.
 
 Scores from different lists do not compare: the archive's are fused cosine and
 BM25, a live source has none, and each peer ranks against its own corpus. Rank
@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from awm.search.hits import SECTIONS, bare
+from awm.search.hits import READ_ONCE, SECTIONS, bare
 
 RRF_K = 60
 
@@ -44,15 +44,21 @@ def within(fused: list[dict[str, Any]], anchor: list[dict[str, Any]], cut: int) 
     return first + [h for h in fused if _identity(h) not in head]
 
 
-def fuse_sections(found: list[dict[str, list[dict[str, Any]]]],
-                  limit: int) -> dict[str, dict[str, list[dict[str, Any]]]]:
+def label(hit: dict[str, Any], here: str) -> str:
+    """The name a hit's source answers under: bare on this node, ``name@node`` from another."""
+    node = hit["origin"]["node"]
+    return hit["source"] if node == here else f"{hit['source']}@{node}"
+
+
+def fuse_sections(found: list[dict[str, list[dict[str, Any]]]], limit: int,
+                  here: str) -> dict[str, dict[str, list[dict[str, Any]]]]:
     """Each section fused across ``found`` into one ranked list per source, ``limit`` hits at most each.
 
     A source is reported on its own: its hits are never ranked against another source's, so papers do not
-    crowd out journal posts. A source's lists from several places (this node, a peer, a live source) fuse
-    into one. A document is kept only in the first section that holds it: the sections read in order, so a
-    document already shown as an exact match would only repeat itself further down. A source with no hits in
-    a section has no entry there. No hit leaves with its passages.
+    crowd out journal posts, and a source on another node answers under ``name@node``. A source's lists from
+    this node fuse into one. A document is kept only in the first of :data:`READ_ONCE` that holds it: those
+    sections read in order, so a document already shown as an exact match would only repeat itself further
+    down. A source with no hits in a section has no entry there. No hit leaves with its passages.
     """
     out: dict[str, dict[str, list[dict[str, Any]]]] = {}
     shown: set[tuple[str, str, str]] = set()
@@ -61,11 +67,13 @@ def fuse_sections(found: list[dict[str, list[dict[str, Any]]]],
         for f in found:
             grouped: dict[str, list[dict[str, Any]]] = {}
             for hit in f.get(section, []):
-                grouped.setdefault(hit["source"], []).append(hit)
+                grouped.setdefault(label(hit, here), []).append(hit)
             for source, hits in grouped.items():
                 lists.setdefault(source, []).append(hits)
-        per_source = {s: [bare(h) for h in fuse(lists[s], limit * 2) if _identity(h) not in shown][:limit]
+        once = section in READ_ONCE
+        per_source = {s: [bare(h) for h in fuse(lists[s], limit * 2) if not (once and _identity(h) in shown)][:limit]
                       for s in sorted(lists)}
         out[section] = {s: hits for s, hits in per_source.items() if hits}
-        shown |= {_identity(h) for hits in out[section].values() for h in hits}
+        if once:
+            shown |= {_identity(h) for hits in out[section].values() for h in hits}
     return out

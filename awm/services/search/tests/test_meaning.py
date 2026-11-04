@@ -17,8 +17,7 @@ SHED = "the garden shed roof was replaced"
 
 
 def entry(source, doc_id, score, text=SINK, part="text", start=0, end=None, zone=None):
-    zones = {"journals": "journal", "precedence": "precedent", "notes": "note"}
-    return {"score": score, "gid": 1, "zone": zone or zones[source], "source": source, "doc": doc_id, "part": part,
+    return {"score": score, "gid": 1, "zone": zone or "journal", "source": source, "doc": doc_id, "part": part,
             "start": start, "end": len(text) if end is None else end}
 
 
@@ -28,8 +27,8 @@ async def loaded(archive, gateway):
         "j1": doc("Kitchen refit", SINK, "2026-03-01T10:00:00Z", project="awm", scope="dev", kind="journal"),
         "j2": doc("Garden shed", SHED, "2026-05-01T10:00:00Z", project="home", scope="yard", kind="journal")},
         topic="posts")
-    gateway.plug("precedence", {"p1": doc("Sink choice", "the user prefers a deep kitchen sink",
-                                          "2026-02-01T00:00:00Z", kind="decision")})
+    gateway.plug("wiki", {"p1": doc("Sink choice", "the user prefers a deep kitchen sink",
+                                    "2026-02-01T00:00:00Z")})
     gateway.plug_live("kb", lambda args: {"exact": [], "related": []})
     await synced(archive, gateway)
     return archive
@@ -65,21 +64,21 @@ async def related_ids(archive, **args):
 
 
 async def test_kb_entries_become_related_hits_with_no_text(loaded, kb):
-    kb["answer"] = [entry("journals", "j1", 0.9, start=3, end=20), entry("precedence", "p1", 0.8, part="title",
-                                                                       text="Sink choice")]
-    ids, result = await related_ids(loaded, sources=["journals", "precedence"])
-    assert [i for i in ids if i[0] == "journals"][0] == ("journals", "j1") and ("precedence", "p1") in ids
+    kb["answer"] = [entry("journals", "j1", 0.9, start=3, end=20)]
+    ids, result = await related_ids(loaded, sources=["journals", "wiki"])
+    assert [i for i in ids if i[0] == "journals"][0] == ("journals", "j1")
     first = flat(result["related"])[0]
     assert first["match"] == "meaning" and not any("passages" in h for h in flat(result["related"]))
-    assert kb["brute"] == [["journals"], ["precedence"]]  # the third list of the fusion, one source at a time
+    # The third list of the fusion for journals, then wiki, which kb's entry index does not hold, alone.
+    assert kb["brute"] == [["journals"], ["wiki"]]
     assert "degraded" not in result
 
 
 async def test_the_request_names_the_sources_and_their_zones(loaded, kb):
-    await related_ids(loaded, sources=["journals", "precedence"], limit=4)
+    await related_ids(loaded, sources=["journals", "wiki"], limit=4)
     args = kb["calls"][0]
-    assert args["text"] == "plumbing overhaul" and args["sources"] == ["journals", "precedence"]
-    assert args["zones"] == ["journal", "precedent"] and args["k"] >= 24
+    assert args["text"] == "plumbing overhaul" and args["sources"] == ["journals"]
+    assert args["zones"] == ["journal"] and args["k"] >= 24
     await related_ids(loaded, sources=["journals"], project="awm")
     assert kb["calls"][1]["k"] == 200 and kb["calls"][1]["zones"] == ["journal"]
 

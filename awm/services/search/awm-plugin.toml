@@ -18,12 +18,12 @@ platform = ["linux"]
 [[needs.tool]]
 name = "journal"
 major = 1
-verbs = ["export", "note_read"]
+verbs = ["export", "note_read", "tag_list"]
 
 [[needs.tool]]
 name = "kb"
 major = 1
-verbs = ["query", "library", "get", "related"]
+verbs = ["query", "library", "get", "hop", "related"]
 
 [[needs.tool]]
 name = "transcripts"

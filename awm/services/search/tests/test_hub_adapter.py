@@ -34,13 +34,22 @@ def test_every_verb_is_published_under_the_search_tool_and_wired():
 
 def test_the_query_verb_declares_every_key_it_reads_and_every_key_it_sends_a_peer():
     declared = {p["name"] for p in FNS["query"]["params"]}
-    full = {"query": "q", "sources": ["a"], "project": "p", "scope": "s", "kind": "k",
-            "after": "2026-01-01", "before": "2026-02-01", "limit": 3, "passages": 1, "peers": "fleet",
-            "context": "awm/dev", "author": "Lee"}
+    full = {"query": "q", "sources": ["a", "b@altair"], "project": "p", "scope": "s", "tags": "x and !y",
+            "after": "2026-01-01", "before": "2026-02-01", "limit": 3, "context": "awm/dev", "author": "Lee",
+            "hop": {"via": "citations", "from": ["doi:1"]}}
     assert set(full) == declared
-    sent = parse(full).forwarded()
+    q = parse(full)
+    sent = q.forwarded(q.remote["altair"])
     assert set(sent) <= declared
-    assert {"query", "limit", "peers"} <= set(sent) and "context" not in sent
+    assert sent["sources"] == ["b"] and sent["tags"] == "x and !y" and "context" not in sent
+    assert sent["hop"] == {"via": "citations", "from": ["doi:1"], "limit": 20}
+
+
+def test_only_sources_are_required_and_the_retired_params_are_gone():
+    params = {p["name"]: p for p in FNS["query"]["params"]}
+    assert [n for n, p in params.items() if p.get("required")] == ["sources"]
+    assert not {"kind", "peers", "passages"} & set(params)
+    assert "kb hop" not in FNS["query"]["description"]
 
 
 def test_the_judgement_verbs_are_closed_to_peers():
@@ -75,17 +84,17 @@ async def test_a_bad_verdict_or_section_is_refused(search_db):
 
 async def test_the_handlers_answer_an_admitted_peer_every_source(archive, gateway, monkeypatch):
     gateway.plug("journals", {"j1": doc("Sink", "kitchen sink journal")})
-    gateway.plug("precedence", {"p1": doc("Sink", "kitchen sink precedent")})
+    gateway.plug("wiki", {"p1": doc("Sink", "kitchen sink precedent")})
     await synced(archive, gateway)
     monkeypatch.setattr(hub_adapter, "ARCHIVE", archive)
     monkeypatch.setattr(hub_adapter.privacy, "marks", lambda: [])
-    result = await HANDLERS["query"]({"query": "kitchen sink", "sources": ["journals", "precedence"]},
+    result = await HANDLERS["query"]({"query": "kitchen sink", "sources": ["journals", "wiki"]},
                                      "peer:shaula")
-    assert {h["source"] for h in every(result)} == {"journals", "precedence"}
-    assert {s["name"] for s in (await HANDLERS["sources"]({}, "peer:shaula"))["sources"]} == {"journals", "precedence"}
+    assert {h["source"] for h in every(result)} == {"journals", "wiki"}
+    assert {s["name"] for s in (await HANDLERS["sources"]({}, "peer:shaula"))["sources"]} == {"journals", "wiki"}
     status = await HANDLERS["status"]({}, "peer:shaula")
-    assert status["sources"] == {"journals": 1, "precedence": 1} and "registry" in status
-    got = await HANDLERS["get"]({"source": "precedence", "id": "p1"}, "peer:shaula")
+    assert status["sources"] == {"journals": 1, "wiki": 1} and "registry" in status
+    got = await HANDLERS["get"]({"source": "wiki", "id": "p1"}, "peer:shaula")
     assert got["document"]["origin"] == {"node": "local"}
 
 

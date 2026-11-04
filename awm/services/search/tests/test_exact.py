@@ -1,4 +1,4 @@
-"""The exact section, passages and their spans, kind lists, sections from elsewhere, and the move to schema 2."""
+"""The exact section, passages and their spans, tag filters, sections from elsewhere, and the move to schema 2."""
 
 from __future__ import annotations
 
@@ -28,18 +28,19 @@ Edit /etc/awm/env and set AWM_GATEWAY_PORT=8443, then restart the unit.
 @pytest.fixture()
 async def loaded(archive, gateway):
     gateway.plug("journals", {
-        "j1": doc("Deploy notes", LOG, "2026-03-01T10:00:00Z", project="awm", kind="journal"),
+        "j1": doc("Deploy notes", LOG, "2026-03-01T10:00:00Z", project="awm", tags=["journal"]),
         "j2": doc("Gateway port", "the gateway port moved to 8443 last week", "2026-05-01T10:00:00Z",
-                  project="awm", kind="message"),
+                  project="awm", tags=["message"]),
         "j3": doc("CONNECTIONREFUSEDERROR in caps", "an old CONNECTIONREFUSEDERROR log", "2026-06-01T10:00:00Z",
-                  kind="journal")})
-    gateway.plug("precedence", {"p1": doc("Ports", "prefer port 8443 for the gateway", kind="decision")})
+                  tags=["journal", "closed"]),
+        "p1": doc("Ports", "prefer port 8443 for the gateway", tags=["Precedent"])})
+    gateway.plug("wiki", {"w1": doc("Ports", "the gateway listens on port 8443")})
     await synced(archive, gateway)
     return archive
 
 
 #: The sources the ``loaded`` fixture registers.
-LOADED = ["journals", "precedence"]
+LOADED = ["journals", "wiki"]
 
 
 def test_passages_are_exact_spans_with_their_sections():
@@ -101,16 +102,31 @@ async def test_a_document_holding_only_some_of_the_words_is_related_not_exact(lo
     assert [(h["id"], h["match"]) for h in flat(both["exact"])] == [("j1", "keyword")]
 
 
-async def test_kind_takes_a_list(loaded):
-    result = await loaded.query(parse({"query": "gateway", "sources": LOADED, "kind": ["message", "decision"]}))
-    assert {h["id"] for h in every(result)} == {"j2", "p1"}
-    result = await loaded.query(parse({"query": "gateway", "sources": LOADED, "kind": "journal,message"}))
-    assert {h["id"] for h in every(result)} <= {"j1", "j2", "j3"}
+@pytest.mark.parametrize("tags, expected", [
+    ("precedent", {"p1"}),
+    ("PRECEDENT", {"p1"}),
+    ("journal", {"j1", "j3"}),
+    ("journal and !closed", {"j1"}),
+    ("not closed and journal", {"j1"}),
+    (["journal", "!closed"], {"j1"}),
+    ("!journal", {"j2", "p1", "w1"}),
+    ("journal and message", set()),
+])
+async def test_tags_filter_as_the_journal_reads_them(loaded, tags, expected):
+    result = await loaded.query(parse({"query": "gateway port 8443 caps connection deploy", "sources": LOADED,
+                                       "tags": tags, "limit": 50}))
+    assert {h["id"] for h in every(result)} == expected
+
+
+@pytest.mark.parametrize("tags", ["journal or message", "a b", "!", "journal and"])
+def test_a_tag_filter_that_cannot_be_read_is_refused(tags):
+    with pytest.raises(ValueError, match="tag filter"):
+        parse({"query": "x", "sources": ["journals"], "tags": tags})
 
 
 async def test_a_quiet_pass_rewrites_nothing(loaded):
     again = await loaded.sweep("journals")
-    assert again["documents"] == 3 and again["changed"] == 0
+    assert again["documents"] == 4 and again["changed"] == 0
 
 
 async def test_an_edit_recuts_the_passages(archive, gateway):
@@ -171,8 +187,8 @@ async def test_a_live_source_answering_in_sections_has_its_passages_dropped(load
 
 async def test_a_peer_on_an_older_release_answers_in_related(loaded, peers):
     peers.add("capella", lambda args: {"hits": [{"source": "journals", "id": "r1", "snippet": "from afar"}]})
-    result = await loaded.query(parse({"query": "zzzz", "sources": ["journals"], "peers": "capella"}))
-    assert [h["id"] for h in flat(result["related"])] == ["r1"]
+    result = await loaded.query(parse({"query": "zzzz", "sources": ["journals@capella"]}))
+    assert [h["id"] for h in result["related"]["journals@capella"]] == ["r1"]
     assert "passages" not in flat(result["related"])[0]
 
 

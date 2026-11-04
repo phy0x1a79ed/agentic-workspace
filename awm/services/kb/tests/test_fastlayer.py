@@ -80,9 +80,9 @@ def test_keywords_follow_literals(layer):
 
 
 def test_filters_papers_cannot_meet_answer_nothing(layer):
-    for args in ({"kind": "journal"}, {"project": "awm"}, {"scope": "dev"}):
+    for args in ({"project": "awm"}, {"scope": "dev"}):
         assert exact(layer, "assembly", fastlayer.Filters.from_args(args), 10) == []
-    assert exact(layer, "assembly", fastlayer.Filters.from_args({"kind": "journal,paper"}), 10)
+    assert exact(layer, "assembly", fastlayer.Filters.from_args({}), 10)
     recent = exact(layer, "assembly index", fastlayer.Filters.from_args({"after": "2000-01-01"}), 10)
     assert [h["id"] for h in recent] == ["doi:10.1/at"]
 

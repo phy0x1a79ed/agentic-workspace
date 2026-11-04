@@ -121,7 +121,7 @@ class FakeGateway:
     def plug_live(self, name: str, hits: Callable[[dict], Any], *, service: str | None = None,
                   **table: Any) -> None:
         service = service or name
-        verbs = ("query", *(["get"] if table.get("get") else []))
+        verbs = ("query", *(["get"] if table.get("get") else []), *(["hop"] if table.get("hop") else []))
         self.entries.append(entry(service, [{"name": name, "mode": "live", "query": f"{service}_query",
                                              **table}], verbs=verbs))
         self.handlers[(service, "query")] = hits
@@ -154,21 +154,19 @@ class FakeGateway:
 
 
 class FakePeers:
-    """A peer book and one callable per peer standing in for its ``search_query``.
+    """One callable per node standing in for its ``search_query``, and the edge list that reaches it.
 
     Each peer added also enters the edge list, with an edge from this node unless ``edge`` is false.
     """
 
     def __init__(self, edges_file: Any) -> None:
         self.edges_file = edges_file
-        self.book: dict[str, dict[str, Any]] = {}
         self.answers: dict[str, Callable[[dict], Any]] = {}
         self.calls: list[tuple[str, str, dict]] = []
         self.fleet: dict[str, Any] = {"nodes": {HERE: {"role": "homebase"}}, "edges": {HERE: {}}}
 
     def add(self, name: str, answer: Callable[[dict], Any], *, edge: bool = True,
             role: str = "homebase") -> None:
-        self.book[name] = {"name": name}
         self.answers[name] = answer
         self.fleet["nodes"][name] = {"role": role}
         if edge:
@@ -177,7 +175,8 @@ class FakePeers:
         edges._load.cache_clear()
 
     def records(self) -> list[dict[str, Any]]:
-        return list(self.book.values())
+        """The nodes this one holds an edge to, as the real :class:`Peers` lists them."""
+        return [{"name": n} for n in edges.reachable_from(edges.here())]
 
     async def invoke(self, peer: str, name: str, args: dict[str, Any], timeout: float) -> Any:
         self.calls.append((peer, name, args))

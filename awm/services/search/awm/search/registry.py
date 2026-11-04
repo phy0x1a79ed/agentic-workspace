@@ -26,8 +26,8 @@ _READY = "ready"
 
 @dataclass(frozen=True)
 class Source:
-    """One plug-in. ``export``, ``query`` and ``get`` are verbs of ``tool``; a live source
-    with no ``get`` holds nothing a caller can read whole.
+    """One plug-in. ``export``, ``query``, ``get`` and ``hop`` are verbs of ``tool``; a live source with no
+    ``get`` holds nothing a caller can read whole, and ``hop`` walks the ``links`` it names.
 
     ``error`` is set when the table is unusable; the source is still listed, so
     the mistake shows in ``search sources`` instead of the source vanishing.
@@ -40,6 +40,8 @@ class Source:
     export: str = ""
     query: str = ""
     get: str = ""
+    hop: str = ""
+    links: tuple[str, ...] = ()
     topic: str = ""
     optin: bool = False
     error: str = ""
@@ -50,7 +52,10 @@ class Source:
 
     @classmethod
     def from_spec(cls, spec: dict[str, Any]) -> "Source":
-        return cls(**{k: v for k, v in spec.items() if k in cls.__dataclass_fields__})
+        kept = {k: v for k, v in spec.items() if k in cls.__dataclass_fields__}
+        if "links" in kept:
+            kept["links"] = tuple(kept["links"])
+        return cls(**kept)
 
 
 def _published(api: Any, service: str, named: str) -> str:
@@ -81,7 +86,13 @@ def _source(service: str, table: dict[str, Any], api: Any) -> Source:
     get = _published(api, service, reader) if reader else ""
     if reader and not get.startswith(f"{tool}_"):
         return Source(**base, error=f"the table's `get` names {reader!r}, which the service does not publish under {tool!r}")
-    return Source(**base, tool=tool, **{role: verb}, get=get.split("_", 1)[1] if get else "")
+    walker = str(table.get("hop") or "") if mode == "live" else ""
+    hop = _published(api, service, walker) if walker else ""
+    if walker and not hop.startswith(f"{tool}_"):
+        return Source(**base, error=f"the table's `hop` names {walker!r}, which the service does not publish under {tool!r}")
+    links = tuple(str(x) for x in table.get("links") or [] if isinstance(x, str)) if hop else ()
+    return Source(**base, tool=tool, **{role: verb}, get=get.split("_", 1)[1] if get else "",
+                  hop=hop.split("_", 1)[1] if hop else "", links=links)
 
 
 def services_dir() -> Path:
