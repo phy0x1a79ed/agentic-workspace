@@ -6,10 +6,10 @@ instance, one database, one knowledge base that collaborators work in together.
 The awm edge session says who is reading; the vault does not need to, and no
 longer asks.
 
-**The vault lives inside the Trilium project.** The fork worktree this node
-serves holds the live database under `live/`, and the DVC-pinned snapshots,
-Zotero mirror and markdown export under `data/vault/`. The code and the data it
-serves move together, and there is one path to know rather than two.
+**The vault has a repository of its own.** `projects/vault/release` holds the
+live database under `live/`, and the DVC-pinned snapshots, Zotero mirror and
+markdown export under `data/vault/`. The Trilium fork is public and its release
+tags name code, so the vault's nightly pins are kept out of its history.
 
 **The port is defined once, in `awm.config`.** The supervisor binds it and the
 edge proxies to it, and neither owns it. One definition means there is no RPC
@@ -53,14 +53,28 @@ NODE_BIN_FILE = INSTALL_DIR / "node-bin"
 FORK_DIR = Path(os.environ.get("TRILIUM_FORK_DIR")
                 or (WORKSPACE_ROOT / "projects" / "trilium" / "release"))
 
-#: Where the vault's content lives — the same worktree, so the code and the
-#: data it serves are one path.
+#: The vault repository's checkout, apart from the fork. Every nightly snapshot
+#: is a commit, and in the fork those commits would publish with the code and
+#: move `git describe` on every release.
 #:
-#: A node that serves the published tarball has no fork to check out, and gets
-#: a plain directory at this path instead. Every write below asks whether the
-#: scope is a git checkout before it pins or commits, so one implementation
-#: covers both shapes.
-SCOPE = Path(os.environ.get("TRILIUM_VAULT_SCOPE") or FORK_DIR)
+#: `awm.zotero.sync.VAULT_SCOPE` and `awm.kb.instances.ZOTERO_LIBRARY` spell the
+#: same two paths and must agree.
+VAULT_HOME = WORKSPACE_ROOT / "projects" / "vault" / "release"
+
+
+def _default_scope() -> Path:
+    """`VAULT_HOME` once this node has it, else the in-fork path every node
+    used before the vault had a repository. Moving `live/` is a host step taken
+    with the server stopped, so a deploy of this code must not move it."""
+    return VAULT_HOME if VAULT_HOME.is_dir() else FORK_DIR
+
+
+#: Where the vault's content lives.
+#:
+#: A node with no vault checkout gets a plain directory at this path instead.
+#: Every write below asks whether the scope is a git checkout before it pins or
+#: commits, so one implementation covers both shapes.
+SCOPE = Path(os.environ.get("TRILIUM_VAULT_SCOPE") or _default_scope())
 
 #: What `pnpm server:build` emits — one bundle, plus an `assets/` beside it.
 FORK_ENTRY = FORK_DIR / "apps" / "server" / "dist" / "main.cjs"
@@ -199,6 +213,19 @@ class Vault:
 
 #: The one vault this node serves.
 VAULT = Vault()
+
+
+def stranded_database(vault: Vault = VAULT) -> Path | None:
+    """A database left in the fork while `vault` serves from elsewhere.
+
+    Trilium provisions an empty document wherever it finds none, and reports
+    that empty one as initialized. Starting in that state would serve a blank
+    vault with the real one a directory away.
+    """
+    if vault.scope == FORK_DIR or vault.document_db.exists():
+        return None
+    legacy = FORK_DIR / "live" / "document.db"
+    return legacy if legacy.exists() else None
 
 
 # -- what is installed to run -----------------------------------------------

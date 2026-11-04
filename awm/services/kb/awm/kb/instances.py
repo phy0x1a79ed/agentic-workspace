@@ -36,9 +36,13 @@ URL = f"http://{HOST}:{PORT}"
 
 #: The Zotero mirror the zotero service keeps in the Trilium vault. kb reads it
 #: for metadata and abstracts when no node holds a `ZOTERO_API_KEY`.
+#: The vault repository's checkout once the node has one, else the in-fork path,
+#: as `awm.zotero.sync.VAULT_SCOPE` resolves it.
+_VAULT_HOME = WORKSPACE_ROOT / "projects" / "vault" / "release"
+_VAULT_SCOPE = (_VAULT_HOME if _VAULT_HOME.is_dir()
+                else WORKSPACE_ROOT / "projects" / "trilium" / "release")
 ZOTERO_LIBRARY = Path(os.environ.get("KB_ZOTERO_LIBRARY")
-                      or (WORKSPACE_ROOT / "projects" / "trilium" / "release" / "data"
-                          / "vault" / "zotero" / "library.json"))
+                      or (_VAULT_SCOPE / "data" / "vault" / "zotero" / "library.json"))
 
 #: opencode's credential store, where the OpenRouter key lives on every node.
 AUTH_JSON = Path(os.environ.get("KB_AUTH_JSON")

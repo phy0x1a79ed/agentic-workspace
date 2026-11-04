@@ -19,15 +19,45 @@ pytestmark = [pytest.mark.unit, pytest.mark.smoke]
 VAULT = instances.VAULT
 
 
-def test_the_vault_lives_in_the_worktree_that_serves_it():
-    """One project holds Trilium and the data Trilium serves, so a deploy moves
-    one path. `projects/userdata/<name>` was never a candidate: every directory
-    there is one person's data on one person's branch, and the vault is
-    shared."""
-    assert "userdata" not in VAULT.scope.parts
-    assert VAULT.scope == instances.FORK_DIR
+def test_the_vault_has_a_repository_apart_from_the_fork():
+    """The fork is public and its release tags name code. Nightly pins committed
+    there would publish with it and move `git describe` on every release.
+    `projects/userdata/<name>` is not a candidate either: every directory there
+    is one person's data, and the vault is shared."""
+    assert "userdata" not in instances.VAULT_HOME.parts
+    assert instances.VAULT_HOME.parts[-3:] == ("projects", "vault", "release")
+    assert not instances.VAULT_HOME.is_relative_to(instances.FORK_DIR)
     assert VAULT.snapshots_dir.is_relative_to(VAULT.scope / "data")
     assert VAULT.notes_dir.is_relative_to(VAULT.scope / "data")
+
+
+def test_the_default_scope_moves_only_once_the_vault_checkout_exists(
+        monkeypatch, tmp_path):
+    """A deploy of this code must not strand a node's database: `live/` moves
+    in a host step, with the server stopped."""
+    home = tmp_path / "projects" / "vault" / "release"
+    monkeypatch.setattr(instances, "VAULT_HOME", home)
+    assert instances._default_scope() == instances.FORK_DIR
+    home.mkdir(parents=True)
+    assert instances._default_scope() == home
+
+
+def test_a_database_left_in_the_fork_blocks_a_start_elsewhere(
+        monkeypatch, tmp_path):
+    """Trilium would provision an empty vault beside the real one and report it
+    initialized."""
+    fork, home = tmp_path / "fork", tmp_path / "home"
+    (fork / "live").mkdir(parents=True)
+    home.mkdir()
+    monkeypatch.setattr(instances, "FORK_DIR", fork)
+    vault = instances.Vault(scope=home)
+    assert instances.stranded_database(vault) is None
+    (fork / "live" / "document.db").write_bytes(b"")
+    assert instances.stranded_database(vault) == fork / "live" / "document.db"
+    assert instances.stranded_database(instances.Vault(scope=fork)) is None
+    (home / "live").mkdir()
+    (home / "live" / "document.db").write_bytes(b"")
+    assert instances.stranded_database(vault) is None
 
 
 def test_the_live_database_is_never_where_a_pin_would_reach():
@@ -88,3 +118,15 @@ def test_the_scope_is_overridable_for_a_sandbox(monkeypatch):
     finally:
         monkeypatch.delenv("TRILIUM_VAULT_SCOPE")
         importlib.reload(instances)
+
+
+def test_the_zotero_mirror_and_kb_resolve_the_same_vault():
+    """The mirror pins its chunk into the vault's checkout and kb reads it. The
+    paths are spelled once per dist, so a default that moves in one place and
+    not the others splits the vault across two repositories."""
+    services = instances.SERVICE_DIR.parent
+    for rel in (("zotero", "awm", "zotero", "sync.py"),
+                ("kb", "awm", "kb", "instances.py")):
+        text = services.joinpath(*rel).read_text()
+        assert '"vault" / "release"' in text, rel
+        assert '"trilium" / "release"' in text, rel

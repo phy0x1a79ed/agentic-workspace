@@ -26,7 +26,7 @@ The server is `python -m kb.server` from the kb checkout, run by the `kb` env's 
 | OpenRouter | `~/.local/share/opencode/auth.json`, handed to the child as `LLM_API_KEY` | `recall` modes `answer` and `graph` only |
 | Zotero | `ZOTERO_API_KEY` in the workspace `.awm/env` | PDF full text |
 
-Without a Zotero key, `kb sync` reads the zotero service's mirror at `projects/trilium/release/data/vault/zotero/library.json`. That gives metadata and abstracts, no PDFs. Ingest is chunk-only by default and spends nothing.
+Without a Zotero key, `kb sync` reads the zotero service's mirror at `data/vault/zotero/library.json` in the vault's checkout, `projects/vault/release` (or `projects/trilium/release` on a node without it). That gives metadata and abstracts, no PDFs. Ingest is chunk-only by default and spends nothing.
 
 ## The store
 

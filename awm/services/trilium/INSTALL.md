@@ -600,30 +600,36 @@ builds the fork carries them.
 
 ## Where the vault's content lives
 
-`projects/trilium/release`, the same worktree the node serves. `live/` holds the
-database. `data/vault/` holds the pinned snapshots, the mirrored Zotero library
-and the markdown export. One path moves on a deploy instead of two, so nothing
-has to keep a second one in step.
+`projects/vault/release`, a checkout of the vault's own repository. `live/` holds
+the database. `data/vault/` holds the pinned snapshots, the mirrored Zotero
+library and the markdown export. The fork is public and its release tags name
+code, so every nightly pin commits here and never in the fork.
 
-The path is the same on every node. What sits at it is not.
+A node without `projects/vault/release` falls back to `projects/trilium/release`,
+where the vault lived before it had a repository. `instances.VAULT_HOME`, the
+zotero service's `VAULT_SCOPE` and kb's `ZOTERO_LIBRARY` spell both paths and
+must agree.
 
-- A node that builds the fork has a git worktree there with a DVC repository.
-  Its pins are committed on `release`.
-- A node that serves the published tarball has a plain directory. No `.git`, no
-  `.dvc`, no bare repository, no scope row. It holds no Trilium source, so git
-  has nothing to track and DVC has nothing to pin.
+- A node that pins has a git checkout there with a DVC repository. Its pins are
+  committed on the vault repository's `release`.
+- A node that only serves has a plain directory. No `.git`, no `.dvc`. Git has
+  nothing to track and DVC has nothing to pin.
 
 Every write asks `is_checkout` before it pins or commits. Without a checkout the
-service writes its files and reports that it committed nothing. That is what
-lets a deployment box run this service with no code of its own, so treat it as
-load-bearing rather than as a graceful degradation.
+service writes its files and reports that it committed nothing. Treat that as
+load-bearing: it lets a deployment box run this service with no repository.
 
-WARNING: the live database sits inside a git worktree on a build node. `git
+CAUTION: the service refuses to start when the vault directory has no database
+and `projects/trilium/release/live/document.db` exists. Trilium would otherwise
+provision an empty vault beside the real one and report it initialized. Move
+`live/` with the server stopped.
+
+WARNING: the live database sits inside a git checkout on a pinning node. `git
 clean -fdx` there deletes it and nothing warns first.
 
-CAUTION: `live/` is excluded through the bare repository's `info/exclude`, never
-through the fork's root `.gitignore`. Upstream owns that file. Anything added to
-it conflicts at every version bump.
+CAUTION: the vault repository ignores `live/` through its own `.gitignore`. A
+node still on the fallback path ignores it through the fork's bare
+`info/exclude`, never the fork's root `.gitignore`, which upstream owns.
 
 The data tree is also excluded from the probe that decides whether to rebuild.
 `install.sh` and `instances.NOT_SOURCE` spell the same two exclusions. They have
@@ -862,10 +868,10 @@ An end-to-end check of the data verbs, on the host:
 ```
 awm trilium snapshot --name before-upgrade
 awm trilium export
-git -C projects/trilium/release log --oneline -2
+git -C projects/vault/release log --oneline -2
 ```
 
-Each commits one pin on `release`. `snapshot` adds a database copy under a name
+Each commits one pin on the vault repository's `release`. `snapshot` adds a database copy under a name
 no other snapshot has. `export` replaces the notes chunk wholesale. Neither is
 reachable from a browser — run them where you can ssh.
 
