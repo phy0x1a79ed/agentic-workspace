@@ -34,7 +34,7 @@ Procedure, from dfs-interview § Work the stack:
   - [x] superseded_by in the journal. Tony: "how does superseded_by work in new journal system?" (answered 2026-11-03)
   - [x] Precedence protocol moves to a skill, skills in a folder. Tony: "lets make the tag precedent. we can move the protocol to a skill?" and "we should move the debrief and precedent skills to a folder maybe" (answered 2026-11-03)
   - [x] Usage decays with no sweep. Tony: "can we make usage decay so that it doesnt count up forever? can we make this decay not require periodic sweeps?" (answered 2026-11-03)
-  - [ ] Where lineage lives (R13 parent links, R16 graph) once reporting goes: operations, journal or reflection. Raised by redux-harness; follows from queue.md R145 removing reporting, where the sessions lane serves lineage and session_parent
+  - [x] Where lineage lives (R13 parent links, R16 graph) once reporting goes: operations, journal or reflection. Raised by redux-harness; follows from queue.md R145 removing reporting, where the sessions lane serves lineage and session_parent (answered 2026-11-03)
   - [x] Protected tags: which tags the code names (message, journal, goal, brief, closed, superseded, folded, precedent) and whether they can be deleted, renamed or added after posting. From the multi-tag review Tony asked for (answered 2026-11-03)
   - [x] Peer visibility once kind is a tag: keyed on a tag, or on trust bounds (R107 item 3). From the multi-tag review (answered 2026-11-03)
   - [x] Sync conflict: two nodes add the same tag name. From the multi-tag review (answered 2026-11-03)
