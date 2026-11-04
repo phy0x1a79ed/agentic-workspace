@@ -2,14 +2,14 @@
   /**
    * The settings surface: one card per published config contract.
    *
-   * On mount it fetches the gateway aggregator (`/config/contracts`), which folds
+   * On mount it calls the gateway aggregator (`awm config_contracts`), which folds
    * every opted-in service's contract (+ the gateway global slot) with its live
    * values. Three states:
    *   loading — request in flight.
    *   down    — the aggregator call failed (hub unreachable); a disabled note.
    *   loaded  — a ContractCard per contract (each owns its own save/reset).
    *
-   * Lifted out of the dashboard so a dedicated /ui/settings/ page and the
+   * Lifted out of the dashboard so a dedicated /p/dashboard/settings/ page and the
    * dashboard Settings tab render the exact same component.
    */
   import { fetchConfigContracts, type ConfigContract } from '@awm/client';

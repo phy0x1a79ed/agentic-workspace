@@ -1,10 +1,10 @@
 """Browser microphone → the PulseAudio ``virtmic`` null-sink.
 
 The service half of mic's ``stream`` session. The browser opens
-``POST /svc/mic/session/stream`` declaring its capture format, the gateway hands
-both sides a direct byte-relayed WebSocket, and every binary frame that arrives
-is s16le PCM written straight into a ``pacat`` playing into the sink — so
-whatever the phone hears, this machine records.
+``/hub/session/mic/stream`` and sends its capture format as the first frame;
+the gateway hands both sides a direct byte-relayed WebSocket, and every binary
+frame that arrives is s16le PCM written straight into a ``pacat`` playing into
+the sink — so whatever the phone hears, this machine records.
 
 This used to be an off-host HTTPS listener with a hand-rolled WebSocket, because
 ``getUserMedia`` needs a secure context and the hub is loopback-only. ``httpsfront``

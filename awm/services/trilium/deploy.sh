@@ -151,7 +151,7 @@ run bash "$RELEASE/awm/services/trilium/install.sh"
 # ---------------------------------------------------------------------------
 
 say "building the reception page"
-PAGE_DIR="$RELEASE/awm/pages/trilium"
+PAGE_DIR="$RELEASE/awm/services/trilium/pages/trilium"
 VITE="$RELEASE/awm/node_modules/.bin/vite"
 # Recorded before the build, because it is what decides whether the gateway has
 # ever seen this page: mounts are discovered at boot, so a dist that did not

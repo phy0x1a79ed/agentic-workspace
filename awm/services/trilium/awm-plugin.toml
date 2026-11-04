@@ -12,6 +12,7 @@ tier = "on"
 
 [[page]]
 name = "trilium"
+dir = "pages/trilium/dist"
 
 [needs]
 secrets = []

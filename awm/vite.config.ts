@@ -19,7 +19,7 @@ const root = path.dirname(fileURLToPath(import.meta.url));
 const components = path.join(root, 'ui_components');
 const lib = path.resolve(process.cwd(), 'src/lib');
 
-// A page under an AWM_PAGE_ROOTS entry lives outside this tree, so a bare
+// A page under an AWM_PLUGIN_ROOTS entry lives outside this tree, so a bare
 // import from its source (`svelte`, and the `svelte/internal/*` imports the
 // compiler injects) finds no node_modules above it. Resolve those as if
 // imported from here, so every page shares this tree's one set of deps. The

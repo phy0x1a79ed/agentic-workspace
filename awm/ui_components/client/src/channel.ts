@@ -4,15 +4,12 @@
  *   postToScope(project, scope, body)         -> append a human message to the scope
  *   fetchScope(project, scope)                -> backlog of posts (one-shot)
  *
- * Everything rides `svc()` / `apiFetch`, the same `/svc/<name>` surface every
- * other service call uses.
- *
- * Backend ops (over /svc/journal/fn/*):
+ * Both are verbs of the `journal` tool over `POST /invoke`:
  *   fetch(project, scope, kind?, limit?, order?, before_ts?)
  *   post(project, scope, author, body, kind?, meta?, to_scope?)
  */
 
-import { svc } from './svc';
+import { tool } from './invoke';
 import { awmAs } from './auth';
 
 /**
@@ -53,7 +50,7 @@ export async function fetchScope(
   scope: string,
   opts: FetchOpts = {},
 ): Promise<ScopePost[]> {
-  const { posts } = await svc('journal').fn<{ posts: ScopePost[]; total: number }>(
+  const { posts } = await tool('journal').call<{ posts: ScopePost[]; total: number }>(
     'fetch',
     { project, scope, order: 'asc', ...opts },
   );
@@ -75,7 +72,7 @@ export async function postToScope(
   body: string,
   opts: PostOpts = {},
 ): Promise<ScopePost> {
-  const { post } = await svc('journal').fn<{ post: ScopePost }>('post', {
+  const { post } = await tool('journal').call<{ post: ScopePost }>('post', {
     project,
     scope,
     author: opts.author ?? awmAs(),
