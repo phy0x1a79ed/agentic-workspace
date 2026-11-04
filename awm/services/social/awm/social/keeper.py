@@ -433,7 +433,14 @@ class Cx:
         return reply if isinstance(reply, dict) else {"ok": False, "reason": repr(reply)}
 
     async def start(self, node: str, spec: dict) -> dict:
-        return await self._verb(node, "start", spec, START_TIMEOUT_S)
+        """Start through reflection, which records the seat's level and lineage (fleet.md R103)."""
+        try:
+            peer = None if node == config.node_name() else node
+            reply = await gatewayclient.call("reflection", "start_other", spec, peer=peer,
+                                             timeout=START_TIMEOUT_S)
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "reason": f"reflection start_other on {node} failed: {exc}"}
+        return reply if isinstance(reply, dict) else {"ok": False, "reason": repr(reply)}
 
     async def resume(self, node: str, job: str) -> dict:
         return await self._verb(node, "resume", {"job": job}, RESUME_TIMEOUT_S)

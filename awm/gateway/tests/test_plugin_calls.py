@@ -55,7 +55,7 @@ CALLS: dict[str, set[tuple[str, str]]] = {
                ("transcripts", "query"), ("search", "query"), ("search", "get")},  # the archive sources, their hop,
     # and federation. search's tests/test_needs.py replays these against the real manifests.
     "social": {("reflection", "session_of"), ("reflection", "message"), ("reflection", "list_other"),
-               *{("harness-cc", v) for v in ("list", "probe", "start", "resume", "adopt")}},  # push, sessions, Cx._call
+               *{("harness-cc", v) for v in ("list", "probe", "resume", "adopt")}},  # push, sessions, Cx._call
     "trilium": {("approver", "approval_request")},  # trustpolicy.requests
     "zotero": {("trilium", v) for v in ("note_search", "note_get", "note_upsert", "note_create", "note_update", "attr_set",
                                         "note_place", "attachment_put", "note_delete")}  # vault.call_sync(SERVICE, fn)
