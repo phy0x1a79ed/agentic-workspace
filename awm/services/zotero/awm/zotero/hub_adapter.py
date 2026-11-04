@@ -32,7 +32,7 @@ from typing import Any
 from awm.gatewayclient import ServiceAdapter, spawn_supervised
 
 from awm.zotero import bundle as bundle_mod
-from awm.zotero import source, stream as stream_mod, sync, vault
+from awm.zotero import orders, source, stream as stream_mod, sync, vault
 
 log = logging.getLogger("awm.zotero.hub_adapter")
 
@@ -438,6 +438,13 @@ async def _on_start() -> None:
     spawn_supervised("zotero:sync", _sync_loop)
     spawn_supervised("zotero:push", _push_loop)
     spawn_supervised("zotero:stream", STREAM.run)
+    try:
+        puller = orders.from_env(lambda a: _h_sync(a, None))
+    except ImportError as e:
+        log.warning("zotero: Sync now orders are configured but grantlib is missing: %s", e)
+        puller = None
+    if puller is not None:
+        spawn_supervised("zotero:orders", puller.run)
 
 
 async def main() -> None:
