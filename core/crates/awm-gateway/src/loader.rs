@@ -7,7 +7,7 @@ use awm_proto::manifest::{
     parse_implements, LegacyServiceToml, Manifest, NeedTool, Needs, PluginMeta, ServiceDecl, ToolDecl,
     LEGACY_RUN, LEGACY_SERVICE_TOML,
 };
-use awm_proto::{valid_tool_name, Tier, Trust, MANIFEST_FILE};
+use awm_proto::{valid_tool_name, Tier, MANIFEST_FILE};
 use serde::Serialize;
 
 #[derive(Debug, Clone, Serialize)]
@@ -17,7 +17,6 @@ pub struct Plugin {
     pub dir: PathBuf,
     pub core: bool,
     pub legacy: bool,
-    pub trust: Trust,
     pub refresh: Option<String>,
     pub services: Vec<ServiceSpec>,
     pub tools: Vec<ToolSpec>,
@@ -241,7 +240,7 @@ fn read_folder(dir: &Path) -> Option<Result<(Manifest, bool), String>> {
     };
     let tool = legacy.tool.clone().unwrap_or_else(|| name.clone());
     let manifest = Manifest {
-        plugin: PluginMeta { name: name.clone(), version: "0.0.0".into(), trust: Trust::Own, refresh: None },
+        plugin: PluginMeta { name: name.clone(), version: "0.0.0".into(), refresh: None },
         placement: Default::default(),
         service: vec![ServiceDecl {
             name: name.clone(),
@@ -361,7 +360,6 @@ fn build_plugin(cand: &Candidate, input: &LoadInput, warnings: &mut Vec<String>)
         dir: cand.dir.clone(),
         core: cand.core,
         legacy: cand.legacy,
-        trust: m.plugin.trust,
         refresh: m.plugin.refresh.clone(),
         services,
         tools,
@@ -421,7 +419,7 @@ fn claim(
         if !own.insert(&t.name) {
             return Err(format!("tool {:?} is declared twice", t.name));
         }
-        if reserved.contains(t.name.as_str()) && !(p.core && p.trust == Trust::Own) {
+        if reserved.contains(t.name.as_str()) && !p.core {
             return Err(format!("tool {:?} is reserved for core plugins", t.name));
         }
         // Legacy folders share a tool as today (cx, keep and reflection all publish

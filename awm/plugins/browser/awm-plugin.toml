@@ -4,7 +4,6 @@
 [plugin]
 name = "browser"
 version = "0.1.0"
-trust = "own"
 
 [[service]]
 name = "browser"

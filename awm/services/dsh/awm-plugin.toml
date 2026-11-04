@@ -1,7 +1,6 @@
 [plugin]
 name = "dsh"
 version = "0.2.0"
-trust = "own"
 
 [[service]]
 name = "dsh"

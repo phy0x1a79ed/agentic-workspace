@@ -86,7 +86,6 @@ secrets = ["FAKE_SECRET"]
         &third.join("caller/awm-plugin.toml"),
         r#"[plugin]
 name = "caller"
-trust = "third-party"
 
 [[service]]
 name = "caller"

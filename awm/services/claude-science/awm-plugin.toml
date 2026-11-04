@@ -1,7 +1,6 @@
 [plugin]
 name = "claude-science"
 version = "0.1.0"
-trust = "own"
 
 [[service]]
 name = "claude-science"

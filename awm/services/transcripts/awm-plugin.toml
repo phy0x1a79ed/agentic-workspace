@@ -1,7 +1,6 @@
 [plugin]
 name = "transcripts"
 version = "0.1.0"
-trust = "own"
 
 [[service]]
 name = "transcripts"

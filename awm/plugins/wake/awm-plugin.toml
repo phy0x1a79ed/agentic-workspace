@@ -3,7 +3,6 @@
 [plugin]
 name = "wake"
 version = "0.1.0"
-trust = "own"
 
 [[service]]
 name = "wake"

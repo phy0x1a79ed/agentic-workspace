@@ -3,7 +3,6 @@
 [plugin]
 name = "routine"
 version = "0.1.0"
-trust = "own"
 # No refresh hook: this plugin runs the deploy, so a hook that restarts it would
 # kill the batch that called it. It refreshes with the project (deploy.toml).
 

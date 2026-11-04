@@ -74,10 +74,10 @@ def test_each_rule_refuses_its_folder_and_names_why(roots):
     assert names == {"provider", "dependent", "journal"}
 
 
-def test_a_reserved_name_needs_a_core_root_and_own_trust(roots):
+def test_trust_is_an_unknown_key(roots):
     core, _ = roots
-    _plugin(core, "twofa", _simple("twofa", "2fa").replace("[plugin]\n", "[plugin]\ntrust = 'third-party'\n"))
-    assert "reserved" in discovery.plugin_refusals()["twofa"]
+    _plugin(core, "twofa", _simple("twofa", "2fa").replace("[plugin]\n", "[plugin]\ntrust = 'own'\n"))
+    assert "unknown key 'trust'" in discovery.plugin_refusals()["twofa"]
 
 
 def test_legacy_folders_share_a_tool_but_a_manifest_may_not_join_them(roots):

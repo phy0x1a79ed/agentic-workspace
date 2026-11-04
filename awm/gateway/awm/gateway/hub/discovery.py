@@ -64,8 +64,7 @@ Contract rules: discovery refuses a folder whose manifest breaks the plugin
 contract, as the Rust loader does, so the supervisor never starts it.
 ``plugin_refusals`` names each refused folder and why. A manifest that does not
 parse is refused. The rules are those of ``plugin-contract.md`` § Manifest:
-tool and plugin names, unique tool names, reserved names only in a core root
-with ``trust = "own"``, paths inside the folder, the platform, and each
+tool and plugin names, unique tool names, reserved names only in a core root, paths inside the folder, the platform, and each
 ``[[needs.tool]]`` served at its major. Refusals cascade.
 """
 
@@ -498,13 +497,13 @@ def set_enabled(name: str, enabled: bool) -> None:
 # Contract rules, checked at load
 # ---------------------------------------------------------------------------
 
-#: Tool names only a core plugin with ``trust = "own"`` may claim. The edge
+#: Tool names only a core plugin may claim. The edge
 #: list's singleton tools join them (``peer_catalog.declared_homes``).
 RESERVED_TOOLS = frozenset({"awm", "2fa", "approver", "queue-store", "journal"})
 _NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]*")
 _MANIFEST_KEYS = {
     "": {"plugin", "service", "tool", "page", "needs"},
-    "plugin": {"name", "version", "trust", "refresh"},
+    "plugin": {"name", "version", "refresh"},
     "service": {"name", "path", "run", "install", "profiles", "archive"},
     "tool": {"name", "major", "service", "services", "tier", "implements"},
     "page": {"name", "dir", "entry"},
@@ -544,11 +543,9 @@ def check_manifest(folder: Path, manifest: dict, *, core: bool) -> tuple[list[tu
     plugin = manifest.get("plugin")
     problems += _unknown(plugin, "plugin") if plugin is not None else ["no [plugin] table"]
     plugin = plugin if isinstance(plugin, dict) else {}
-    name, trust = plugin.get("name"), plugin.get("trust", "own")
+    name = plugin.get("name")
     if not isinstance(name, str) or not _NAME.fullmatch(name):
         problems.append(f"plugin name {name!r} must be letters, digits and hyphens")
-    if trust not in ("own", "third-party"):
-        problems.append(f"trust {trust!r} is not own or third-party")
     services = manifest.get("service") or []
     for svc in services:
         problems += _unknown(svc, "service")
@@ -568,7 +565,7 @@ def check_manifest(folder: Path, manifest: dict, *, core: bool) -> tuple[list[tu
             problems.append(f"tool {tname!r}: major {major!r} is not an integer")
         if any(t == tname for t, _ in tools):
             problems.append(f"tool {tname!r} is declared twice")
-        if tname in reserved_tools() and not (core and trust == "own"):
+        if tname in reserved_tools() and not core:
             problems.append(f"tool {tname!r} is reserved for core plugins")
         named = tool.get("services") or ([tool["service"]] if "service" in tool else [])
         if "service" in tool and "services" in tool:

@@ -4,7 +4,7 @@ pub mod manifest;
 pub mod usage;
 pub mod wire;
 
-pub use manifest::{LegacyServiceToml, Manifest, Tier, Trust, MANIFEST_FILE};
+pub use manifest::{LegacyServiceToml, Manifest, Tier, MANIFEST_FILE};
 pub use usage::{Surface, UsageEvent};
 pub use wire::{CallContext, Caller, Lane};
 

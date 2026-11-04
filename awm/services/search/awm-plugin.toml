@@ -1,7 +1,6 @@
 [plugin]
 name = "search"
 version = "0.1.0"
-trust = "own"
 
 [[service]]
 name = "search"
