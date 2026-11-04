@@ -11,7 +11,6 @@ RENDER_MANIFEST_FUNCTIONS = [
     {
         "name": "render",
         "tool": "journal_render",
-        "effect": "read",
         "description": (
             "A scope's history from the journal, as markdown: its own latest "
             "journal entries first, then its project's. The startup ritual reads it."
@@ -24,7 +23,6 @@ RENDER_MANIFEST_FUNCTIONS = [
     {
         "name": "export",
         "tool": "journal_export",
-        "effect": "read",
         "surfaces": _CLI_HTTP,
         "description": (
             "Page the indexed posts as search documents. Pass the previous page's "
@@ -39,7 +37,6 @@ RENDER_MANIFEST_FUNCTIONS = [
     {
         "name": "reindex",
         "tool": "journal_reindex",
-        "effect": "write",
         "surfaces": _CLI_HTTP,
         "description": (
             "Bring the post search index in line with the post table: embeds what "
@@ -55,7 +52,6 @@ RENDER_MANIFEST_FUNCTIONS = [
     {
         "name": "precedent_import",
         "tool": "journal_precedent_import",
-        "effect": "write",
         "surfaces": _CLI_HTTP,
         "description": (
             "Import precedence.db once: each decision becomes a workspace post tagged "

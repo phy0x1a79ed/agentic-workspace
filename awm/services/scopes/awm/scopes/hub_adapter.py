@@ -172,7 +172,6 @@ _IDENTITY_FUNCTIONS = [
     {
         "name": "resolveScope",
         "tool": "scope_resolve",
-        "effect": "read",
         "description": (
             "Validate-only read: does this (project, scope) exist and "
             "what is its status? Returns {exists, project, scope, status, private} "
@@ -186,7 +185,6 @@ _IDENTITY_FUNCTIONS = [
     {
         "name": "resolveRef",
         "tool": "scope_ref_resolve",
-        "effect": "read",
         "description": (
             "Resolve a literal author/recipient string to its natural-key "
             "identity. Returns {kind, project?, scope?, username?} or null."
@@ -199,7 +197,6 @@ _IDENTITY_FUNCTIONS = [
     {
         "name": "ensureProject",
         "tool": "project_ensure",
-        "effect": "write",
         "description": "Idempotent get-or-create of a project. Returns {project}.",
         "params": [
             {"name": "project", "type": "string", "required": True},
@@ -211,7 +208,6 @@ _IDENTITY_FUNCTIONS = [
     {
         "name": "ensureScope",
         "tool": "scope_ensure",
-        "effect": "write",
         "description": (
             "Idempotent get-or-create of an agent/scope record. An unknown "
             "project is refused unless new_project=true, which registers the "

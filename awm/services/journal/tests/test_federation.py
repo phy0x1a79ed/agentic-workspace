@@ -1,4 +1,4 @@
-"""Federation surface of the journal: edge-stamped origins, peer reads, verb effects."""
+"""Federation surface of the journal: edge-stamped origins and peer reads."""
 
 from __future__ import annotations
 
@@ -107,30 +107,13 @@ def test_a_journal_fetch_reads_newest_first_and_messages_oldest_first(journal_wo
     assert bodies(kind="message") == ["first", "second"]
 
 
-
-
 # ---------------------------------------------------------------------------
-# Every verb declares an effect, and none carries a category
+# No verb carries a category
 # ---------------------------------------------------------------------------
 
 def _functions():
     from awm.journal.hub_adapter import API_MANIFEST
     return {f["name"]: f for f in API_MANIFEST["functions"]}
-
-
-def test_every_journal_verb_declares_an_effect():
-    from awm.config import EFFECTS
-    missing = [n for n, f in _functions().items() if f.get("effect") not in EFFECTS]
-    assert missing == []
-
-
-READS = {"fetch", "history", "inbox", "reads", "render", "brief_read",
-         "brief_history", "tag_list", "lineage", "export"}
-
-
-def test_only_the_known_reads_are_reads():
-    reads = {n for n, f in _functions().items() if f["effect"] == "read"}
-    assert reads == READS
 
 
 def test_no_journal_verb_carries_a_category():

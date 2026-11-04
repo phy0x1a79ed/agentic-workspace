@@ -26,7 +26,6 @@ BRIEF_MANIFEST_FUNCTIONS = [
     {
         "name": "brief_read",
         "tool": "journal_brief_read",
-        "effect": "read",
         "description": ("The scope's brief: what the scope is for. The harness hands it to "
                         "a session when the session enters the scope, so read it only to "
                         "look again. Returns brief null when the scope has none."),
@@ -35,14 +34,12 @@ BRIEF_MANIFEST_FUNCTIONS = [
     {
         "name": "brief_history",
         "tool": "journal_brief_history",
-        "effect": "read",
         "description": "Every version of the scope's brief, oldest first; the last is in force.",
         "params": list(_WHERE),
     },
     {
         "name": "brief_set",
         "tool": "journal_brief_set",
-        "effect": "write",
         "description": WRITE_GUIDE + " brief_set replaces the whole brief.",
         "params": [*_WHERE, _AUTHOR,
                    {"name": "text", "type": "string", "required": True,
@@ -51,7 +48,6 @@ BRIEF_MANIFEST_FUNCTIONS = [
     {
         "name": "brief_edit",
         "tool": "journal_brief_edit",
-        "effect": "write",
         "description": WRITE_GUIDE + " brief_edit replaces one passage, old, with new.",
         "params": [*_WHERE, _AUTHOR,
                    {"name": "old", "type": "string", "required": True,

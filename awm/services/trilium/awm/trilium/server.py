@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import logging
 import os
+import signal
 import subprocess
 import threading
 import time
@@ -34,6 +35,24 @@ from awm.trilium import instances, procs, sync
 from awm.trilium.instances import Vault
 
 log = logging.getLogger("awm.trilium.server")
+
+
+def _preexec() -> None:  # pragma: no cover — runs in the forked child
+    """Own session (so the tree is one signalable group) + die with the parent.
+
+    Order matters: `setsid` first, then the death signal, then a re-check that
+    the parent is still alive — a parent that exited between the fork and
+    `prctl` would leave a child nothing will ever signal.
+    """
+    os.setsid()
+    try:
+        import ctypes
+
+        ctypes.CDLL("libc.so.6", use_errno=True).prctl(1, signal.SIGTERM)  # PR_SET_PDEATHSIG
+    except Exception:  # noqa: BLE001 — best effort; the group kill still works
+        pass
+    if os.getppid() == 1:
+        os._exit(1)
 
 
 def child_env(vault: Vault) -> dict[str, str]:
@@ -228,7 +247,7 @@ class Child(procs.GroupChild):
             self._proc = subprocess.Popen(
                 cmd, cwd=str(entry.parent), env=child_env(vault),
                 stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT,
-                preexec_fn=procs.preexec,
+                preexec_fn=_preexec,
             )
         finally:
             out.close()

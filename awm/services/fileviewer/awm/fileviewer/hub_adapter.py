@@ -34,7 +34,6 @@ API_MANIFEST: dict[str, Any] = {
     "functions": [
         {
             "name": "status",
-            "effect": "read",
             "tool": "fileviewer_status",
             "description": (
                 "Report the fileviewer mount: its origin-relative prefix "

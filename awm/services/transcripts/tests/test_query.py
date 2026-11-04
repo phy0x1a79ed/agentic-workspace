@@ -61,6 +61,6 @@ def test_the_source_is_live_opt_in_and_the_service_is_off():
 def test_the_query_verb_is_hidden_and_declares_every_filter_search_sends():
     from awm.transcripts.hub_adapter import API_MANIFEST, HANDLERS
     fn = next(f for f in API_MANIFEST["functions"] if f["name"] == "query")
-    assert fn["surfaces"] == ["cli", "http"] and fn["effect"] == "read" and fn["tool"] == "transcripts_query"
+    assert fn["surfaces"] == ["cli", "http"] and fn["tool"] == "transcripts_query"
     assert {p["name"] for p in fn["params"]} >= {"query", "project", "scope", "kind", "after", "before", "limit"}
     assert "query" in HANDLERS

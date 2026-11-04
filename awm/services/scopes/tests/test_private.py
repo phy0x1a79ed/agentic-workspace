@@ -151,10 +151,10 @@ def test_search_and_resolve_report_the_mark(scopes_workspace, seeded_scopes):
     assert HANDLERS["resolveScope"]({"project": "proj-a", "scope": "scope-2"})["private"] is False
 
 
-def test_the_verb_is_a_write():
+def test_the_verb_is_published():
     from awm.scopes.hub_adapter import API_MANIFEST
     spec = next(f for f in API_MANIFEST["functions"] if f["name"] == "scope_private")
-    assert spec["effect"] == "write" and spec["tool"] == "scope_private"
+    assert spec["tool"] == "scope_private"
     params = {p["name"]: p for p in spec["params"]}
     assert params["private"] == {**params["private"], "type": "boolean", "required": True}
     assert params["project"]["required"] and not params["scope"]["required"]

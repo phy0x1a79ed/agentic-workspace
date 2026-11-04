@@ -26,7 +26,6 @@ POST_MANIFEST_FUNCTIONS = [
     {
         "name": "edit",
         "tool": "journal_edit",
-        "effect": "write",
         "description": (
             "Correct a post in place. Give old and new to replace one passage, or body for the "
             "whole text. The journal keeps every earlier version with its diff; reads show "
@@ -45,14 +44,12 @@ POST_MANIFEST_FUNCTIONS = [
     {
         "name": "history",
         "tool": "journal_history",
-        "effect": "read",
         "description": "Every version of a post, oldest first, each with its diff from the one before.",
         "params": [{"name": "post_id", "type": "string", "required": True}],
     },
     {
         "name": "addenda",
         "tool": "journal_addenda",
-        "effect": "write",
         "description": (
             "List the posts that open as an addendum or correction to an earlier post of the "
             "same scope, with the post each corrects. With apply, fold each into its target as "
@@ -67,7 +64,6 @@ POST_MANIFEST_FUNCTIONS = [
     {
         "name": "post",
         "tool": "journal_post",
-        "effect": "write",
         "description": (
             "Post to a scope's channel. tags come from the vocabulary (tag_list); a post "
             "with none is a message. tags=[journal] is the scope's own debrief; structured "
@@ -111,7 +107,6 @@ POST_MANIFEST_FUNCTIONS = [
     {
         "name": "fetch",
         "tool": "journal_fetch",
-        "effect": "read",
         "timeout": 60,
         "description": (
             "Fetch or search a scope's posts — messages and journal entries. "
@@ -148,7 +143,6 @@ POST_MANIFEST_FUNCTIONS = [
     {
         "name": "reads",
         "tool": "journal_reads",
-        "effect": "read",
         "description": (
             "The journals a session read through fetch, newest first: the candidates "
             "to cite at debrief. Also lists the citations its own journals already make. "
@@ -162,7 +156,6 @@ POST_MANIFEST_FUNCTIONS = [
     {
         "name": "note_read",
         "tool": "journal_note_read",
-        "effect": "write",
         "description": (
             "Record that the calling session read one journal post through another "
             "service, such as search get (sessions.md R15). For services, not agents."
@@ -173,7 +166,6 @@ POST_MANIFEST_FUNCTIONS = [
     {
         "name": "inbox",
         "tool": "journal_inbox",
-        "effect": "read",
         "description": (
             "What a scope has not read yet: one line per post, newest first, bounded. "
             "Each line has the post id, author, age, a gist (its title, leading "
@@ -200,7 +192,6 @@ POST_MANIFEST_FUNCTIONS = [
     {
         "name": "ack",
         "tool": "journal_ack",
-        "effect": "write",
         "description": (
             "Mark a scope's posts read through one post: it and every post before "
             "it. Pass the ack_through id that inbox returned, so a post that "

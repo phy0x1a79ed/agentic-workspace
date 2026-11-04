@@ -30,7 +30,6 @@ API_MANIFEST: dict[str, Any] = {
     "functions": [
         {
             "name": "query",
-            "effect": "read",
             "tool": "search_query",
             "timeout": 60,
             "description": (
@@ -81,7 +80,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "get",
-            "effect": "read",
             "tool": "search_get",
             "description": (
                 "One document in full: title, text, project, scope, kind, tags, ts and url; a "
@@ -102,7 +100,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "sources",
-            "effect": "read",
             "tool": "search_sources",
             "description": (
                 "Every source the archive holds: its service, mode (index or live), document "
@@ -113,7 +110,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "status",
-            "effect": "read",
             "tool": "search_status",
             "description": (
                 "The archive's health: documents per source, whether semantic ranking is "
@@ -123,7 +119,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "reindex",
-            "effect": "write",
             "tool": "search_reindex",
             "surfaces": _CLI_HTTP,
             "timeout": 600,
@@ -138,7 +133,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "judge",
-            "effect": "write",
             "tool": "search_judge",
             "description": (
                 "Record whether one hit answers one query, for the judgement set that every "
@@ -161,7 +155,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "judgements",
-            "effect": "read",
             "tool": "search_judgements",
             "surfaces": _CLI_HTTP,
             "description": "The recorded judgements, optionally of one set or one query.",

@@ -220,6 +220,6 @@ async def test_related_serves_this_node_only(relayed):
 
 def test_the_manifest_declares_related_as_a_read_off_the_mcp_surface():
     verbs = {f["name"]: f for f in hub_adapter.API_MANIFEST["functions"]}
-    assert "category" not in verbs["related"] and verbs["related"]["effect"] == "read"
+    assert "category" not in verbs["related"]
     assert verbs["related"]["surfaces"] == ["cli", "http"]
     assert set(hub_adapter.HANDLERS) >= set(verbs)
