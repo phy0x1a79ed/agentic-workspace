@@ -125,13 +125,16 @@ SCOPE_MANIFEST_FUNCTIONS = [
         "description": (
             "Complete (retire) a scope. Optionally merge, and remove the worktree "
             "with cleanup=true. The branch stays unless delete_branch=true, which "
-            "needs cleanup=true. The reply then names the branch and its last SHA."
+            "needs cleanup=true. The reply then names the branch and its last SHA. "
+            "cleanup refuses as scope_delete does; force=true discards and lists "
+            "what it threw away."
         ),
         "params": [
             {"name": "project", "type": "string", "required": True},
             {"name": "scope", "type": "string", "required": True},
             {"name": "merge", "type": "boolean", "required": False},
             {"name": "cleanup", "type": "boolean", "required": False},
+            {"name": "force", "type": "boolean", "required": False},
             {"name": "delete_branch", "type": "boolean", "required": False,
              "description": "Also delete the scope's git branch. Default false: "
                             "the branch is kept."},
@@ -146,7 +149,9 @@ SCOPE_MANIFEST_FUNCTIONS = [
             "delete_branch=true. The reply then names the branch and its last "
             "SHA. Refuses when the worktree has uncommitted changes -- which "
             "covers data as well as code, since a data chunk is committed via "
-            "its .dvc pin; pass force=true to discard them."
+            "its .dvc pin -- or the branch has commits no other branch or remote "
+            "holds, even when the branch is kept. force=true discards them and "
+            "the reply lists each one. A live session's claim always refuses."
         ),
         "params": [
             {"name": "project", "type": "string", "required": True},
@@ -391,6 +396,7 @@ def _handle_scope_complete(args: dict) -> dict:
         action="complete",
         merge=bool(args.get("merge", False)),
         cleanup=bool(args.get("cleanup", False)),
+        force=bool(args.get("force", False)),
         delete_branch=bool(args.get("delete_branch", False)),
     )
     result = scopes.update_scope(args["project"], args["scope"], req)

@@ -106,6 +106,9 @@ def test_a_forced_delete_lists_every_uncommitted_path(scope):
     assert len(out.discarded["uncommitted"]) == 8
 
 
-def test_a_kept_branch_keeps_its_commits_so_they_do_not_block(scope):
+def test_a_kept_branch_with_commits_no_other_ref_holds_blocks_the_delete(scope):
     _commit(scope, "work")
-    assert mod.delete_scope(PROJECT, "s").status == "deleted"
+    with pytest.raises(RuntimeError, match="no other branch or remote holds"):
+        mod.delete_scope(PROJECT, "s")
+    out = mod.delete_scope(PROJECT, "s", force=True)
+    assert out.status == "deleted" and len(out.discarded["commits"]) == 1

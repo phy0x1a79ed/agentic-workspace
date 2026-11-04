@@ -387,13 +387,13 @@ def _unique_commits(bare_dir: Path, branch: str) -> list[str]:
 
 
 def _removal_guard(bare_dir: Path, worktree_dir: Path, project: str, scope: str, branch: str,
-                   force: bool, *, branch_goes: bool) -> dict:
+                   force: bool) -> dict:
     """The R44 checks that run before a scope's worktree goes.
 
     A live session's claim blocks the removal always. Pinned data changed since
-    its last ``dvc add`` blocks it unless ``force`` is set. Commits no other ref
-    holds block it only when the branch goes too, because a kept branch keeps
-    them. A forced removal lists each one. Uncommitted files are checked by
+    its last ``dvc add``, and commits no other ref holds, block it unless
+    ``force`` is set. The commits block even when the branch is kept (R44 item
+    4). A forced removal lists each one. Uncommitted files are checked by
     :func:`_cleanup_worktree`.
     """
     from awm.scopes import claims
@@ -403,7 +403,7 @@ def _removal_guard(bare_dir: Path, worktree_dir: Path, project: str, scope: str,
         raise RuntimeError(f"Refusing to remove {project}/{scope}: live session {holder['session_id']} "
                            f"holds it. force does not override a live session (scopes.md R44).")
     drift = _dvc_drift(worktree_dir) if worktree_dir.is_dir() else []
-    commits = _unique_commits(bare_dir, branch) if branch_goes else []
+    commits = _unique_commits(bare_dir, branch)
     blockers = []
     if drift:
         blockers.append(f"{len(drift)} data pin(s) changed since their last `dvc add` "
@@ -1222,17 +1222,19 @@ def update_scope(project: str, scope: str, req: ScopeUpdateRequest) -> ScopeActi
         merge_msg = f", merged into {default_branch}"
 
     cleanup_msg = ""
+    discarded = None
     if req.cleanup:
-        _removal_guard(bare_dir, repo_dir, project, scope, feature_branch, req.force,
-                       branch_goes=req.delete_branch)
-        _cleanup_worktree(bare_dir, repo_dir,
-                          project=project, scope=scope, force=req.force)
+        removal = _removal_guard(bare_dir, repo_dir, project, scope, feature_branch, req.force)
+        guard = _cleanup_worktree(bare_dir, repo_dir,
+                                  project=project, scope=scope, force=req.force)
         cleanup_msg = (f", worktree removed, "
                        f"{_settle_branch(bare_dir, feature_branch, req.delete_branch)}")
+        discarded = _discard_list(guard, removal) if req.force else None
 
     return ScopeActionResponse(
         project=project, scope=scope, status="completed",
         message=f"Scope completed{merge_msg}{cleanup_msg}",
+        discarded=discarded,
     )
 
 
@@ -1506,8 +1508,7 @@ def delete_scope(project: str, scope: str, force: bool = False,
     if aid_row is None:
         raise FileNotFoundError(f"No scope '{scope}' found in project '{project}'")
 
-    discarded = _removal_guard(bare_dir, repo_dir, project, scope, feature_branch, force,
-                               branch_goes=delete_branch)
+    discarded = _removal_guard(bare_dir, repo_dir, project, scope, feature_branch, force)
     guard = _cleanup_worktree(bare_dir, repo_dir, project=project, scope=scope, force=force)
     branch_msg = _settle_branch(bare_dir, feature_branch, delete_branch)
 
