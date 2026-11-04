@@ -21,7 +21,7 @@ Procedure, from dfs-interview § Work the stack:
 
 ## Current topic
 
-**search-filters**. Its result: `search-filters/README.md`.
+**lane-open-items**. Its result: `lane-open-items/README.md`.
 
 ## Stack
 
@@ -35,8 +35,6 @@ Procedure, from dfs-interview § Work the stack:
   - [ ] Queue rest: approver forwarded header, order_pull callers, Chromium libs, AWM_TRILIUM_URL, cutover gaps (queue)
   - [ ] Harness rest: harness_event callback, hidden session_of, old state paths, R44 item 4, R109 item 7 (harness)
   - [ ] ~/.claude edits from the journal lane: debrief, goal-alignment, goal 50708f67, CLAUDE.md precedence lines (journal)
-- **search-filters** (2026-11-03): can we make parameterized search possible? then we can do search with empty terms and only sql (if that's what hop takes) with source as kb for hop. Then we can also make searching journals possible to filter to only reports etc
-  - [ ] kb tool surface: does hop become a search filter so the kb tool goes (Tony: kb becomes a b2b service only for search)
 - **fleet-deploy** (2026-11-03): lets go over each of the major systems architecturally to make sure we are still aligned
   - [ ] Which repo is canonical for awm: GitHub (install.md R114, R118) or mizar (routines.md R31)? Today origin is altair.
   - [ ] fleet.md R109: the harness lane proposes item 7, an access-token login and a caller-token door for isolated sessions. Accept it?
@@ -57,3 +55,4 @@ Procedure, from dfs-interview § Work the stack:
 - **channels** (closed 2026-11-03): `channels/README.md`
 - **journals** (closed 2026-11-03): `journals/README.md`
 - **plugin-guards** (closed 2026-11-03): `plugin-guards/README.md`
+- **search-filters** (closed 2026-11-03): `search-filters/README.md`
