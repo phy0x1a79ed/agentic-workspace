@@ -40,7 +40,8 @@ impl SshCommand {
             "-o", "ControlPersist=10m", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3",
         ];
         let mut args: Vec<String> = opts.iter().map(|s| s.to_string()).collect();
-        args.extend([peer.to_string(), "awm".into(), "edge-serve".into()]);
+        // A non-interactive ssh shell often lacks ~/.local/bin, where the core binary lives.
+        args.extend([peer.to_string(), "PATH=\"$HOME/.local/bin:$PATH\"".into(), "awm".into(), "edge-serve".into()]);
         let program = std::env::var("AWM_EDGE_SSH").ok().filter(|p| !p.trim().is_empty()).unwrap_or_else(|| "ssh".into());
         Self { program, args }
     }
