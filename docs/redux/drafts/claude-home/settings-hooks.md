@@ -6,7 +6,7 @@ This file holds the hook changes to `~/.claude/settings.json` that go live at T2
 
 ## Make the change
 
-Run `awm/scripts/deploy-hooks.sh` on each node after the T27 deploy. Its `operations` row installs `~/.claude/hooks/awm-operations-hook.py`, and its retired list removes every settings entry and the file of `awm-reporting-hook.py`. No hand edit is needed.
+Run `awm/scripts/deploy-hooks.sh` on each node after the T27 deploy. Its `operations` row installs `~/.claude/hooks/awm-operations-hook.py`, and its retired list removes every settings entry and the file of `awm-reporting-hook.py`. That swap needs no hand edit.
 
 ## What changes
 
