@@ -44,10 +44,11 @@ def _start(hook, monkeypatch, capsys, cwd, text):
 
 
 def test_a_session_in_a_scope_gets_its_brief(hook, tree, monkeypatch, capsys):
-    out = json.loads(_start(hook, monkeypatch, capsys, str(tree), "For the harness lane."))
+    line = "The brief of awm/redux/harness: For the harness lane."
+    out = json.loads(_start(hook, monkeypatch, capsys, str(tree), line))
     assert out["hookSpecificOutput"] == {
         "hookEventName": "SessionStart",
-        "additionalContext": "The brief of awm/redux/harness: For the harness lane."}
+        "additionalContext": line}
 
 
 def test_no_brief_and_no_scope_add_nothing(hook, tree, monkeypatch, capsys):

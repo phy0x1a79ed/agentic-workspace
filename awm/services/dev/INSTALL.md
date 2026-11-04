@@ -21,7 +21,8 @@ worktree's port band, with `sandbox/.awm/` as its state dir. It writes
 `awm/plugins` as core roots, and the worktree's dist roots as each service's
 `PYTHONPATH`. It uses `core/target/{release,debug}/awm` when built, else the
 `awm` on PATH; set `AWM_BIN` to choose. Put overrides such as `AWM_PORT` in the
-gitignored `sandbox/.env`.
+gitignored `sandbox/.env`. Every `.env` key also reaches the services through the
+config's `[env]`, such as `DSH_FORK_DIR` for dsh.
 
 Drive it directly with `bash sandbox/run.sh start|stop|restart|status|seed|reset|logs`,
 or through the service: `awm dev start --worktree <absolute worktree path>`. The

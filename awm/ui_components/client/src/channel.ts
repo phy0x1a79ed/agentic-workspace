@@ -6,7 +6,7 @@
  *
  * Both are verbs of the `journal` tool over `POST /invoke`:
  *   fetch(project, scope, kind?, limit?, order?, before_ts?)
- *   post(project, scope, author, body, kind?, meta?, to_scope?)
+ *   post(project, scope, author, body, kind?, meta?)
  */
 
 import { tool } from './invoke';
@@ -28,7 +28,6 @@ export interface ScopePost {
   meta?: Record<string, unknown>;
   /** ISO timestamp. Always present on backend posts. */
   ts: string;
-  to_scope?: string | string[];
   [k: string]: unknown;
 }
 
@@ -61,7 +60,6 @@ export interface PostOpts {
   /** Defaults to the current operator identity (`awmAs()`, e.g. 'user:operator'). */
   author?: string;
   kind?: string;
-  to_scope?: string;
   meta?: Record<string, unknown>;
 }
 
@@ -78,7 +76,6 @@ export async function postToScope(
     author: opts.author ?? awmAs(),
     body,
     kind: opts.kind ?? 'message',
-    ...(opts.to_scope ? { to_scope: opts.to_scope } : {}),
     ...(opts.meta ? { meta: opts.meta } : {}),
   });
   return post;

@@ -4,8 +4,8 @@
 //! `echo(text)`, `add(a, b)`, `whoami()` (returns the `caller` frame the gateway stamped),
 //! `run_job(job)` (reports a background run), and `call_needed(verb, args)` (calls the first
 //! `[[needs.tool]]` of its own `awm-plugin.toml` by name through `/invoke`, with its service token). As a fake harness plugin it also answers
-//! `caller_of_token(token)` from the JSON map in `FAKE_TOKENS`, and `scoped(project?, scope?,
-//! to_scope?)` returns the args it got. `env(name)` returns one variable of its environment.
+//! `caller_of_token(token)` from the JSON map in `FAKE_TOKENS`, and `scoped(project?, scope?)`
+//! returns the args it got. `env(name)` returns one variable of its environment.
 //! As a fake reflection it answers `session_of(pid)` from the JSON map in the file at
 //! `FAKE_SESSIONS_FILE`, read on each call. As a fake approver, `approval_request` writes its
 //! request to the file at `FAKE_APPROVAL_FILE` and `approval_get` answers that file.
@@ -54,7 +54,7 @@ async fn main() -> anyhow::Result<()> {
         f("run_job", "Report one background run.", json!([{"name": "job", "type": "string", "required": true}])),
         f("call_needed", "Call the first needed tool.", json!([{"name": "verb", "required": true}, {"name": "args", "type": "object"}])),
         f("caller_of_token", "The isolated session that holds a caller token.", json!([{"name": "token", "required": true}])),
-        f("scoped", "Return the args as received.", json!([{"name": "project"}, {"name": "scope"}, {"name": "to_scope"}])),
+        f("scoped", "Return the args as received.", json!([{"name": "project"}, {"name": "scope"}])),
         f("env", "One variable of the service's environment, or null.", json!([{"name": "name", "required": true}])),
         f("session_of", "The session that owns a pid.", json!([{"name": "pid", "type": "integer", "required": true}])),
         f("approval_request", "Record an approval request.", json!([{"name": "kind", "required": true}, {"name": "node"}, {"name": "reason"}, {"name": "payload", "type": "object"}])),

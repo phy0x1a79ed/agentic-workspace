@@ -46,7 +46,7 @@ pub struct Config {
     /// Its `singletons[].tool` names join the reserved list. A missing file is an empty fleet.
     #[serde(default)]
     pub edges_file: Option<PathBuf>,
-    /// Extra environment for every service, such as `DEV_PYTHONPATH`. Never a secret:
+    /// Extra environment for every service, such as `PYTHONPATH`. Never a secret:
     /// every service sees it.
     #[serde(default)]
     pub env: BTreeMap<String, String>,

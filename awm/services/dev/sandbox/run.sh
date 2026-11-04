@@ -55,9 +55,9 @@ _awm_bin() {
 
 # Every dist root of the worktree, so each service the sandbox starts imports
 # this worktree's code. A dir is a dist root iff it holds an awm/ namespace dir.
-# It reaches the services as PYTHONPATH with AWM_PYTHON, through each run.sh's
-# installed branch: the DEV_PYTHONPATH branch execs `mamba run
-# --no-capture-output`, which mamba 2.5 breaks (see scripts/run-tests.sh).
+# It reaches the services as PYTHONPATH with AWM_PYTHON, which each run.sh
+# execs. `mamba run --no-capture-output` is no way in: mamba 2.5 breaks it (see
+# scripts/run-tests.sh).
 _pythonpath() {
   local d pp=""
   for d in "$REPO_ROOT"/awm/service_components/* "$REPO_ROOT"/awm/services/* "$REPO_ROOT"/awm/plugins/*; do
@@ -75,6 +75,24 @@ _python() {
   py="$("${mamba:-mamba}" run -n "${AWM_ENV:-awm}" python -c 'import sys; print(sys.executable)' 2>/dev/null | grep -v '^[[:space:]]*$' | tail -1)"
   [ -x "$py" ] || { echo "[dev] could not resolve the ${AWM_ENV:-awm} env's python" >&2; return 1; }
   printf '%s' "$py"
+}
+
+# The names .env sets, minus those the [env] block writes itself, so every
+# other .env key, such as DSH_FORK_DIR, reaches the services.
+_env_names() {
+  [ -f "$HERE/.env" ] || return 0
+  sed -nE 's/^[[:space:]]*(export[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*)=.*/\2/p' "$HERE/.env" \
+    | grep -vxE 'PYTHONPATH|AWM_PYTHON|AWM_ENV_BIN|AWM_ALLOW_DESTRUCTIVE|AWM_GITHUB_USER|GIT_CONFIG_(COUNT|KEY_0|VALUE_0)' \
+    | sort -u
+}
+
+_toml_env() {
+  local name value
+  for name in $(_env_names); do
+    value="${!name-}"
+    value="${value//\\/\\\\}"
+    printf '%s = "%s"\n' "$name" "${value//\"/\\\"}"
+  done
 }
 
 _toml_list() {
@@ -111,6 +129,7 @@ AWM_GITHUB_USER = "${AWM_GITHUB_USER:-dev-sandbox}"
 GIT_CONFIG_COUNT = "1"
 GIT_CONFIG_KEY_0 = "init.defaultBranch"
 GIT_CONFIG_VALUE_0 = "main"
+$(_toml_env)
 EOF
 }
 

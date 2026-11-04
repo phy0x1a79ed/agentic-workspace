@@ -938,7 +938,7 @@ fn isolated_door_end_to_end() {
     let (text, err) = door_call(&door, "fake", json!({"verb": "scoped", "args": {"_caller_trust": "trusted"}}));
     let got: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
     assert!(!err && got["project"] == "awm" && got["scope"] == "iso" && got["_caller_trust"] == "untrusted", "{text}");
-    for bad in [json!({"scope": "other"}), json!({"project": "cloud"}), json!({"to_scope": "awm/other"})] {
+    for bad in [json!({"scope": "other"}), json!({"project": "cloud"})] {
         let (text, err) = door_call(&door, "fake", json!({"verb": "scoped", "args": bad}));
         assert!(err && text.contains("own scope awm/iso"), "{bad}: {text}");
     }

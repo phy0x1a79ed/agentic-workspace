@@ -56,9 +56,10 @@ def _invoke(tool: str, args: dict, timeout: float = TIMEOUT_S) -> object:
 
 
 def brief(project: str, scope: str) -> str:
+    """The line the session gets, as journal words it."""
     result = _invoke("journal_brief_read", {"project": project, "scope": scope})
     got = result.get("brief") if isinstance(result, dict) else None
-    return got.get("text") or "" if isinstance(got, dict) else ""
+    return got.get("line") or "" if isinstance(got, dict) else ""
 
 
 def _ppid(pid: int) -> int:
@@ -133,11 +134,10 @@ def main() -> None:
             report_clear(session_id, before)
     cwd = payload.get("cwd")
     where = scope_of(cwd) if isinstance(cwd, str) and cwd else None
-    text = brief(*where) if where else ""
-    if text:
+    line = brief(*where) if where else ""
+    if line:
         print(json.dumps({"hookSpecificOutput": {
-            "hookEventName": "SessionStart",
-            "additionalContext": f"The brief of {where[0]}/{where[1]}: {text}"}}))
+            "hookEventName": "SessionStart", "additionalContext": line}}))
 
 
 if __name__ == "__main__":

@@ -1,52 +1,27 @@
-# Installing the `cx` service
+# Installing the `cch` plugin
 
 ## Purpose & Contents
 
-`cx` runs Claude Code sessions on a node. It does two jobs. It starts, lists and
-stops named background sessions for other agents. It also keeps one background
-session idling, and the `cx` command claims that session and attaches, so a
-launch paints an already-started renderer instead of booting one.
+`cch` is the Claude Code harness of a node. It serves the tool `harness-cc`, which implements `harness@1`, and `reflection` calls it to find, start, stop, resume and type into Claude Code sessions. It also holds the node's Claude Code daemon (`DAEMON.md`). It keeps one background session idling for the `cx` command, which claims that session and attaches, so a launch paints an already-started renderer instead of booting one.
 
-This file holds what installing and operating the service needs, and the
-reasoning that reading the code does not give: who may start a session and what
-a restricted caller gets, where a session's mode lives, why a session is moved
-exactly once, which of two files answers which question about a session, what
-standing brief a worker gets, how a session comes by its name, why the service
-refuses to seed or start on a node with no daemon, which trust rule applies to a
-move and to a start, how a stopped session resumes, why a pinned session is
-removed when it stops, and what the pool deliberately does not do. The verb list
-is in `awm cx --help`.
+This file holds what installing and operating the plugin needs, and the reasoning that reading the code does not give: who may start a session and what a restricted caller gets, where a session's mode lives, why a session is moved exactly once, which of two files answers which question about a session, what standing brief a worker gets, how a session comes by its name, why the plugin refuses to seed or start on a node with no daemon, which trust rule applies to a move and to a start, how a stopped session resumes, why a pinned session is removed when it stops, and what the pool deliberately does not do. The verbs are in `awm-plugin.toml` and `awm harness-cc --help`.
 
 ## Install
 
-Both halves go on a node together. A node with the service and no command gains
-nothing. A node with the command and no service launches cold, correctly and
-silently.
+The gateway loads the plugin from its `awm-plugin.toml`, and `awm deploy` runs `install.sh`. Two steps are by hand:
 
     ../../scripts/deploy-hooks.sh             # every awm hook, on every node
-    bash install.sh                          # the service, into the awm env
     ln -sf "$PWD/bin/cx" ~/.local/bin/cx     # the command, on PATH
-    awm services enable cx                   # this service is profile-gated off
 
-**CAUTION:** the hook goes first, and it goes to every node, not just this one.
-A node running the service without it names every session it hands out
-`claimed <noun>` and never takes that name off, which reads as deliberate and is
-worse than the name it replaced. A node with the hook and no service has nothing
-named `claimed ` to act on. `../../scripts/deploy-hooks.sh --check` reports drift and
-writes nothing; a second run is a no-op.
+**CAUTION:** the hooks go first, and they go to every node they list, not just this one. A node running the plugin without the naming hook names every session it hands out `claimed <noun>` and never takes that name off, which reads as deliberate and is worse than the name it replaced. A node with the hook and no plugin has nothing named `claimed ` to act on. `../../scripts/deploy-hooks.sh --check` reports drift and writes nothing. A second run is a no-op.
 
-`install.sh` editable-installs the `gatewayclient` and `claudedaemon` components
-and this service into the `awm` env. Override the env with `AWM_ENV=<name>`.
+A node with the plugin and no `cx` command gains no warm launch. A node with the command and no plugin launches cold, correctly and silently.
 
-`service.toml` gates discovery on the `cx` profile, so the service does not
-start on a node that has not asked for it. An explicit `awm services enable cx`
-overrides the gate and is the intended way to turn it on. The same file sets
-`tool = "reflection"` and `tier = "on"`, so the verbs sit in the `reflection`
-tool wherever the service runs. The pool verbs (`claim_other`, `seed_other`,
-`remove_other`) are hidden from MCP and answer on the CLI and HTTP.
+`install.sh` editable-installs the `gatewayclient`, `claudedaemon`, `kept` and `config` components and this plugin into the `awm` env. Override the env with `AWM_ENV=<name>`.
 
-A station (`AWM_NODE_ROLE=station`) runs no sessions. `start_other` and seeding refuse there, and
-the gateway logs a warning at boot if a station enables this service.
+`harness-cc` has tier `off`: no verb is on MCP. Sessions reach it through `reflection`. The pool verbs (`pool_claim`, `pool_seed`, `pool_remove`) and the daemon verbs answer on the CLI and HTTP.
+
+A station, as the node's edge list names it, runs no sessions. `start` and seeding refuse there.
 
 ## Operate
 
@@ -54,34 +29,17 @@ the gateway logs a warning at boot if a station enables this service.
     awm reflection start-other --help   # start a named session in a scope's worktree
     awm reflection stop-other --help    # stop a session that start_other created
     awm reflection resume-other --help  # bring a stopped session back with its conversation
-    awm reflection remove-other         # what the pool may delete, and why. Deletes nothing
-    awm reflection remove-other --apply # delete it
-    awm reflection seed-other           # start one warm session now, or say why it is refused
+    awm harness-cc pool-remove          # what the pool may delete, and why. Deletes nothing
+    awm harness-cc pool-remove --apply  # delete it
+    awm harness-cc pool-seed            # start one warm session now, or say why it is refused
 
-`claude stop` drops a job from the roster and leaves its state record as it was.
-`stop_other` therefore sets the record's `state` to `stopped` itself. A dead job
-that the roster still holds reads `stopped` in `list_other` when its record says
-so, and `gone` otherwise. **CAUTION** `reporting` reads this record for a job
-missing from `list_other`. `stopped`, or a removed job directory, moves the
-session's card to Pending review. Any other state keeps the card in its column,
-flagged "not running, resumable".
+`claude stop` drops a job from the roster and leaves its state record as it was. `stop` therefore sets the record's `state` to `stopped` itself. A dead job that the roster still holds reads `stopped` in `list_other` when its record says so, and `gone` otherwise.
 
-`list_other` derives the pool summary from the live session records. There is no
-stored pointer to "the current session", because a stored pointer is a second
-thing that has to agree with the records and it is the half that goes stale.
+`list_other` derives the pool summary from the live session records. There is no stored pointer to "the current session", because a stored pointer is a second thing that has to agree with the records and it is the half that goes stale.
 
-Every knob is an environment variable on the service process. `AWM_CX_WANT=0`
-stops the pool without stopping the service. `AWM_CX_LOOP=0` stops seeding and
-rotation alone. The reconcile loop keeps adopting late starts, because cx
-refuses to stop or resume a job it holds no lineage record for. `AWM_CX_ROTATE_AGE_S` sets the age at which a session is replaced.
-`AWM_CX_PREFIX`, `AWM_CX_SEED_DIR`, `AWM_CX_MODEL`, `AWM_CX_EFFORT` and
-`AWM_CX_CLAUDE` shape what is seeded. `AWM_CX_PROJECTS` sets the root of the
-scope worktrees that `start_other` uses, and `AWM_CX_MCP_SOURCE` names the MCP config a
-strict session copies. See `awm/cx/config.py`.
+Every knob is an environment variable on the service process. `AWM_CX_WANT=0` stops the pool without stopping the plugin. `AWM_CX_LOOP=0` stops seeding and rotation alone. The reconcile loop keeps adopting late starts, because cch refuses to stop or resume a job it holds no lineage record for. `AWM_CX_ROTATE_AGE_S` sets the age at which a session is replaced. `AWM_CX_PREFIX`, `AWM_CX_SEED_DIR`, `AWM_CX_MODEL`, `AWM_CX_EFFORT` and `AWM_CX_CLAUDE` shape what is seeded. `AWM_CX_PROJECTS` sets the root of the scope worktrees that `start` uses, and `AWM_CX_MCP_SOURCE` names the MCP config a strict session copies. See `awm/cch/config.py`.
 
-`AWM_CX_CLAIMED_PREFIX` is the one knob the hook reads too, from its own copy of
-the default. Change it on the service and the hook stops recognising the
-sessions the service renames. A test asserts the two agree.
+`AWM_CX_CLAIMED_PREFIX` is the one knob the hook reads too, from its own copy of the default. Change it on the plugin and the hook stops recognising the sessions the plugin renames. A test asserts the two agree.
 
 ## Why the shape is what it is
 
@@ -103,11 +61,11 @@ disagree.
 5. A live session already holds the name.
 
 `stop_other` ends only a session that `start_other` created, and it keeps the conversation.
-It finds such a session by its lineage record. A session that cx started may
+It finds such a session by its lineage record. A session that cch started may
 stop only the jobs it started itself. An operator, a service or a session that
-cx did not start may stop any job `start_other` created.
+cch did not start may stop any job `start_other` created.
 
-A lineage record is one JSON file per started session, under `starts/` in cx's
+A lineage record is one JSON file per started session, under `starts/` in cch's
 state directory. It holds the name, scope, parent, caller and mode. `parent`
 comes from the pid the gateway stamps on the call, never from an argument the
 model supplies. A pending record goes to disk before the launch, so a launch
@@ -117,9 +75,9 @@ the late job, or drops the record after five minutes.
 #### Every caller gets the same session
 
 A session that `start_other` starts behaves like one Tony starts with `cx`:
-skip-permissions, his settings, and Remote Control off. cx applies no
+skip-permissions, his settings, and Remote Control off. cch applies no
 caller-dependent policy, so an agent starts exactly what a person would. A
-named `permission` starts the session in that mode, and cx adds
+named `permission` starts the session in that mode, and cch adds
 `--allow-dangerously-skip-permissions` so bypass stays in the session's mode
 cycle. A plan-mode start therefore returns to bypass once its plan is approved.
 
@@ -138,7 +96,7 @@ a compaction summary rewrites the conversation and never the system prompt.
 A `start` with no `scope`, or with `suggest: true`, runs in the lobby
 (`AWM_CX_LOBBY`, default `~/.local/state/awm/lobby`). The lobby sits outside
 every git checkout, so the session creates no worktree before it picks its
-scope and moves there with `reflection cd`. cx writes the lobby's `CLAUDE.md`
+scope and moves there with `reflection cd`. cch writes the lobby's `CLAUDE.md`
 to import the workspace `AGENTS.md`, trusts the folder, and passes the awm MCP
 server with `--mcp-config`, because the workspace `.mcp.json` does not reach
 it. A `task_id` makes the new session join that task's card, as `main` when no
@@ -146,15 +104,15 @@ session started it and as `worker` otherwise.
 
 #### A worker gets a lifecycle brief
 
-cx appends the lifecycle brief (`lifecycle.BRIEF`) after any `system_prompt`.
+cch appends the lifecycle brief (`lifecycle.BRIEF`) after any `system_prompt`.
 The brief tells the session to work in its work's scope, to ask Tony through
 `request_human`, and to sign off with the `retire` skill when the work is done:
 debrief, report back, and stop itself. It spells those steps out for a node
 without `retire`. It rides in the system prompt so that no compaction paraphrases it away.
 
 - A calling session is named as the starter and as the place to report to.
-  `started_by` names the starter only when no session called, such as
-  reporting's `/new-agent`. Without either, the brief says "an awm service".
+  `started_by` names the starter only when no session called, such as a
+  service. Without either, the brief says "an awm service".
 - A pinned start gets no brief. A kept seat has its own brief from the keeper,
   and the keeper's spec hash covers the system prompt.
 - `brief: false` leaves the brief out.
@@ -165,9 +123,9 @@ then `list_other` reads the job's fields from its pending record.
 
 **CAUTION** `--restricted` refuses bypass, so a restricted start runs in its
 named mode with no way to reach bypass. A restricted session also ignores user
-settings, so cx passes it `--settings` with the operations hook fragment from
+settings, so cch passes it `--settings` with the operations hook fragment from
 `AWM_CX_RESTRICTED_SETTINGS` (default
-`~/.claude/hooks/awm-operations-settings.json`). cx omits the flag when the file
+`~/.claude/hooks/awm-operations-settings.json`). cch omits the flag when the file
 is absent on the node.
 
 #### Where a mode lives
@@ -176,7 +134,7 @@ The gateway gates a calling session by its mode. It reads the answer from
 `awm.claudedaemon.sessionmode`,
 which reads the lineage records and Claude Code's own session records from disk.
 The gateway therefore needs no call into this process. The answer is a mode
-string, `None` for a session that cx did not start, or `unknown`. A caller reads
+string, `None` for a session that cch did not start, or `unknown`. A caller reads
 `unknown` as the most restricted mode.
 
 ### A session is moved exactly once
@@ -261,23 +219,23 @@ environment**. If the gateway were ever the process that started it, then
 every session on the box would come up with an environment that has no
 `~/.local/bin` on its PATH.
 
-So the service reads the roster's supervisor pid, checks it against `/proc`, and
+So the plugin reads the roster's supervisor pid, checks it against `/proc`, and
 refuses to seed or start when no daemon is running. No daemon means nobody is
 using Claude Code on that node, and a cold first launch is the right answer
 there.
 
-The `keep` service holds a daemon on every node from boot, in the user unit
-`awm-claude-daemon.service`. Before cx refuses a start, resume or stop, it asks
-`keep` to ensure the daemon. It refuses with `code: "daemon_down"` only when
-that fails. `awm/services/keep/` holds the unit's launch.
+cch holds a daemon on every node from boot, in the user unit
+`awm-claude-daemon.service` (`DAEMON.md`). Before cch refuses a start, resume or
+stop, it ensures the daemon. It refuses with `code: "daemon_down"` only when that
+fails. `awm/cch/daemon.py` holds the unit's launch.
 
-**CAUTION** cx launches each session through the user manager's bus under
+**CAUTION** cch launches each session through the user manager's bus under
 `/run/user/<uid>`, and reaches the daemon's sockets under `/tmp`. A gateway run as
 a sandboxed system unit must see both, so no `ProtectHome=yes` and no
-`PrivateTmp=yes` there. Hidden from cx, `claude --bg` starts inside the gateway's
-unit. That client starts a second daemon, which evicts keep's daemon and
+`PrivateTmp=yes` there. Hidden from cch, `claude --bg` starts inside the gateway's
+unit. That client starts a second daemon, which evicts the kept daemon and
 dies with the next gateway restart, taking every session with it. So with no user
-bus, cx compares the daemon's mount namespace with its own and refuses a start
+bus, cch compares the daemon's mount namespace with its own and refuses a start
 when they differ. A node with no systemd and one namespace launches directly.
 
 The transient systemd unit covers the residual race where the daemon dies
@@ -304,7 +262,7 @@ of an awm project under the workspace's `projects/` directory, because awm made
 it and no person watches a background session. They refuse every other
 untrusted directory. A start that fails the rule would not error. The daemon
 refuses with "Workspace not trusted" and the caller waits out its launch
-timeout, so cx checks first and names the directory. The rule and the grant
+timeout, so cch checks first and names the directory. The rule and the grant
 live in `awm.claudedaemon.trust`.
 
 ### Almost nothing is collected once somebody has it
@@ -404,7 +362,7 @@ and `bin/cx` speaks to it with bash's `/dev/tcp`, forking nothing. The injection
 then happens inside a service that is already warm, which keeps a Python
 interpreter start off the path of every launch.
 
-The timeouts have to agree with each other. `MOVE_TIMEOUT_S` in `awm/cx/claim.py`
+The timeouts have to agree with each other. `MOVE_TIMEOUT_S` in `awm/cch/claim.py`
 is how long a move may take, the manifest's `claim` timeout must exceed it, and
 `CX_WAIT` in `bin/cx` must exceed that. A budget below the one beneath it aborts
 a claim that was about to succeed, and the session is spent for nothing. A test
@@ -412,9 +370,8 @@ asserts the ladder.
 
 ## Run
 
-You never invoke the service by hand in normal operation. The gateway discovers
-this folder, starts it with `bash run.sh`, and injects `AWM_HUB_URL`,
-`AWM_SERVICE_NAME` and `AWM_SERVICE_ID`. No auth.
+You never invoke the plugin by hand in normal operation. The gateway loads it
+from its manifest and starts it with `bash run.sh`.
 
 Only one copy may own the pool. The reconcile loop takes a non-blocking
 exclusive lock and skips the tick if it cannot get it, which covers a dev
