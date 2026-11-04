@@ -16,7 +16,7 @@ from awm.gatewayclient import ServiceAdapter, spawn_supervised
 
 from awm.channel import lines
 from awm.channel.relay import Rooms
-from awm.gatewayclient import holders, push
+from awm.gatewayclient import holders, ids, push
 from awm.channel.service import ChannelError, Channels
 from awm.channel.store import Store
 
@@ -198,8 +198,11 @@ def _yes(args: dict, key: str) -> bool:
 
 
 async def _holder(args: dict, as_: str | None) -> dict:
+    """The calling session, with its stamped level and whether the isolated door sent it."""
     # Off the event loop: naming the caller may ask reflection, a blocking call.
-    return await asyncio.to_thread(holders.caller, args, as_)
+    holder = await asyncio.to_thread(holders.caller, args, as_)
+    return {**holder, "level": str(args.get("_caller_trust") or "untrusted"),
+            "isolated": bool(ids.to_r9(args.get(holders.SESSION_KEY)))}
 
 
 async def open_(args: dict, as_: str | None = None) -> dict:

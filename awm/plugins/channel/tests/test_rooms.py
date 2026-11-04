@@ -107,9 +107,11 @@ async def test_a_channel_closes_once_its_holding_session_ends(channels, sessions
 async def test_an_isolated_session_holds_a_room_by_its_session_id(channels, pushed, sessions):
     """It has no job: the push and the prune both go by its R9 id (R111)."""
     iso = "cc" + "abcdef0123456789" * 2
-    holder = {"node": "testnode", "session": iso, "job": iso, "name": "boxed"}
+    holder = {"node": "testnode", "session": iso, "job": iso, "name": "boxed",
+              "level": "untrusted", "isolated": True}
     sessions.ids = {iso}
     opened = await channels.open(holder, "room")
+    assert (await channels.status(holder))["channels"][0]["holder_level"] == "untrusted"
     guest = Guest(opened["link"])
     try:
         await guest.say("to the container")
@@ -120,6 +122,26 @@ async def test_an_isolated_session_holds_a_room_by_its_session_id(channels, push
         assert await channels.prune() == [opened["name"]]
     finally:
         await guest.aclose()
+
+
+async def test_channel_admits_sessions_by_their_level(channels):
+    """A failed lookup is untrusted and opens nothing; cooperative and trusted open (R125, R111)."""
+    lost = {**HOLDER, "level": "untrusted"}
+    with pytest.raises(ChannelError, match="only when it is isolated"):
+        await channels.open(lost, "room")
+    with pytest.raises(ChannelError, match="only when it is isolated"):
+        await channels.open({k: v for k, v in HOLDER.items() if k != "level"}, "room")
+    opened = await channels.open(OTHER, "room")
+    [row] = (await channels.status(OTHER))["channels"]
+    assert (row["name"], row["holder_level"], row["trust"]) == (opened["name"], "cooperative", "untrusted")
+
+
+async def test_the_adapter_stamps_the_holder_level(monkeypatch):
+    monkeypatch.setattr(hub_adapter.holders, "caller", lambda args, as_: dict(HOLDER))
+    got = await hub_adapter._holder({"_caller_trust": "cooperative"}, None)
+    assert (got["level"], got["isolated"]) == ("cooperative", False)
+    got = await hub_adapter._holder({"_caller_session_id": "cc" + "c" * 32}, None)
+    assert (got["level"], got["isolated"]) == ("untrusted", True)
 
 
 async def test_a_session_that_cannot_be_checked_keeps_its_channels(channels, sessions):
