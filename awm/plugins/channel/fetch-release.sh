@@ -19,7 +19,7 @@
 #
 # A GitHub outage must not take the relay down. A fetch that cannot complete
 # leaves the binaries already in place untouched and leaves the VERSION stamp
-# behind the pin, which `awm tether status` reports as a version lag. The node
+# behind the pin, which `channel status` on a machine reports as a version lag. The node
 # keeps serving the version it has.
 #
 # # Which files each role takes

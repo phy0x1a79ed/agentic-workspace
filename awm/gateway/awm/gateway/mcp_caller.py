@@ -23,8 +23,7 @@ import urllib.request
 # strips `CLAIM_KEY` from any call that did not come through an edge.
 SESSION_CLAIM_VERBS = {
     "social": frozenset({"mount", "unmount"}),
-    "tether": frozenset({"invite", "status", "run", "shell", "keys", "resize",
-                         "close", "tasks", "send", "cut", "drain"}),
+    "channel": frozenset({"open", "write", "drain", "status", "close", "encrypt"}),
 }
 CLAIM_KEY = "_caller_session"
 # The calling session's trust level and its own `<project>/<scope>`, on every

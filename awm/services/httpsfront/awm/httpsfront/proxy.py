@@ -309,6 +309,21 @@ def _client_ip(request: Request) -> str | None:
     return request.client.host if request.client else None
 
 
+def _client_headers(conn: Request | WebSocket) -> dict[str, str]:
+    """The client-address headers the HTTP leg gives the relay, for a socket.
+
+    The same values :func:`_req_headers` sends: the peer address as
+    ``X-Forwarded-For``, and a ``cf-connecting-ip`` passed on as it arrived.
+    """
+    out: dict[str, str] = {}
+    cf = conn.headers.get("cf-connecting-ip")
+    if cf:
+        out["cf-connecting-ip"] = cf
+    if conn.client:
+        out["X-Forwarded-For"] = conn.client.host
+    return out
+
+
 def _site_name(request: Request) -> str:
     """What to call this node on the sign-in screen.
 
@@ -1174,10 +1189,9 @@ async def _ws_proxy(ws: WebSocket) -> None:
     # its socket URI from ``location.pathname``, so a shell served under a
     # slice opens its socket there and nowhere else.
     is_slice = bool(vault_ws) and slices.owns(path)
-    # The session socket. This is the leg the whole mount exists for, and the
-    # one the edge strips every header from: only cookie, authorization and
-    # origin are forwarded below, and no client address at all — which is why
-    # the owner's client claims its ticket on the plain leg first.
+    # The session socket, and a room's. Only cookie, authorization and origin
+    # are forwarded below, plus the client address on this leg alone, so the
+    # relay counts each guesser against its own budget.
     tether_ws = getattr(app.state, "tether_ws_up", None)
     is_tether = tether.owns(path)
     # Claimed whether or not a relay is wired — see the HTTP leg for why the
@@ -1282,8 +1296,9 @@ async def _ws_proxy(ws: WebSocket) -> None:
     elif is_tether:
         # No identity to forward, and the default would be the edge asserting
         # one it never checked. The relay wants none: what admits this socket
-        # is a slot and a ticket it issued itself.
-        pass
+        # is a slot and a ticket it issued itself. The address goes as the
+        # plain leg sends it, because the relay keys its miss budget on it.
+        fwd.update(_client_headers(ws))
     else:
         fwd["X-Awm-As"] = _as_header(sub)
     override = _origin_override(app)

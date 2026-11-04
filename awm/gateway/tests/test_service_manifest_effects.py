@@ -17,6 +17,7 @@ from awm.gateway.hub import discovery
 pytestmark = [pytest.mark.unit]
 
 SERVICES = Path(__file__).resolve().parents[2] / "services"
+PLUGINS = Path(__file__).resolve().parents[2] / "plugins"
 
 # Services whose declarations another owner maintains; they are still validated.
 _OTHER_OWNERS = {"cx", "board", "httpsfront", "scopes"}
@@ -61,14 +62,15 @@ def _function_entries(tree: ast.AST) -> list[dict]:
 
 def _manifests() -> dict[str, list[dict]]:
     found: dict[str, list[dict]] = {}
-    for path in (sorted(SERVICES.glob("*/awm/*/hub_adapter.py"))
-                 + sorted(SERVICES.glob("*/awm/*/service.py"))
-                 + sorted(SERVICES.glob("*/awm/*/operations.py"))
-                 + sorted(SERVICES.glob("*/awm/*/operations/*.py"))):
-        entries = _function_entries(ast.parse(path.read_text()))
-        if entries:
-            found.setdefault(path.parts[len(SERVICES.parts)], []).extend(
-                {**e, "file": str(path.relative_to(SERVICES))} for e in entries)
+    for root in (SERVICES, PLUGINS):
+        for path in (sorted(root.glob("*/awm/*/hub_adapter.py"))
+                     + sorted(root.glob("*/awm/*/service.py"))
+                     + sorted(root.glob("*/awm/*/operations.py"))
+                     + sorted(root.glob("*/awm/*/operations/*.py"))):
+            entries = _function_entries(ast.parse(path.read_text()))
+            if entries:
+                found.setdefault(path.parts[len(root.parts)], []).extend(
+                    {**e, "file": str(path.relative_to(root))} for e in entries)
     return found
 
 

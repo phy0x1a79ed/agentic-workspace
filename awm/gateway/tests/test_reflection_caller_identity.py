@@ -116,6 +116,15 @@ def test_a_journal_post_is_stamped_with_its_session():
     assert domain["args"]["_caller_pid"] == 2488
 
 
+
+def test_every_channel_verb_is_stamped_with_its_holder():
+    flat = {"_caller_pid": 5}
+    _stamp_caller("channel_write", flat, "2488")
+    assert flat["_caller_pid"] == 2488
+    domain = {"verb": "open", "args": {"kind": "room"}}
+    _stamp_caller("channel", domain, None)
+    assert "_caller_pid" not in domain["args"]
+
 # ---------------------------------------------------------------------------
 # `start_other` and `stop_other`: cx's verbs, published under reflection
 # ---------------------------------------------------------------------------
@@ -485,23 +494,23 @@ def test_trilium_reads_are_not_stamped():
     assert args["args"] == {"_caller_pid": 9}
 
 
-def test_every_tether_verb_is_stamped_so_a_session_answers_to_its_minter():
-    for verb in ("invite", "drain", "run", "send", "cut", "status"):
+def test_every_channel_verb_is_stamped_so_a_channel_answers_to_its_holder():
+    for verb in ("open", "drain", "write", "close", "status", "encrypt"):
         flat = {}
-        _stamp_caller(f"tether_{verb}", flat, "2488")
+        _stamp_caller(f"channel_{verb}", flat, "2488")
         assert flat["_caller_pid"] == 2488, verb
     domain = {"verb": "drain", "args": {"_caller_pid": 1}}
-    _stamp_caller("tether", domain, "2488")
+    _stamp_caller("channel", domain, "2488")
     assert domain["args"]["_caller_pid"] == 2488
 
 
-def test_a_cli_tether_call_is_stamped_with_the_session_it_runs_under(monkeypatch):
+def test_a_cli_channel_call_is_stamped_with_the_session_it_runs_under(monkeypatch):
     """The CLI sends its session through the descendant header; the gateway
     walks it to the session's own pid, as it does for a hook."""
     from awm.gateway import mcp_caller
     monkeypatch.setattr(mcp_caller, "resolve_caller_pid", lambda pid: 550415)
     flat = {}
-    _stamp_caller("tether_run", flat, None, "777")
+    _stamp_caller("channel_write", flat, None, "777")
     assert flat["_caller_pid"] == 550415
 
 

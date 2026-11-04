@@ -17,7 +17,7 @@ import time
 
 import pytest
 
-from awm.tether import daemon, paths
+from awm.channel.tether import daemon, paths
 
 pytestmark = [pytest.mark.unit]
 

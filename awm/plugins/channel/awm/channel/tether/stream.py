@@ -47,9 +47,9 @@ import time
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Container, Iterable
 
-from awm.tether import paths
+from awm.channel.tether import paths
 
-log = logging.getLogger("awm.tether.stream")
+log = logging.getLogger("awm.channel.tether.stream")
 
 #: How many events this side holds. Smaller than the daemon's own ring on
 #: purpose: this one refills from that one after a restart, and a smaller buffer

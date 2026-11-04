@@ -1,0 +1,27 @@
+[plugin]
+name = "channel"
+version = "0.2.0"
+trust = "own"
+
+[[service]]
+name = "channel"
+path = "."
+run = "run.sh"
+install = "install.sh"
+
+[[tool]]
+name = "channel"
+major = 1
+service = "channel"
+tier = "on"
+
+[needs]
+secrets = ["AWM_TETHER_ISSUE_TOKEN"]
+network = ["nexus.tony-xy-liu.com", "github.com"]
+platform = ["linux"]
+
+# reflection: `message` pushes each line into the holder's prompt, and its cx
+# service's `list` tells which holders on another node are gone.
+[[needs.tool]]
+name = "reflection"
+major = 1

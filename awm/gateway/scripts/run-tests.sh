@@ -66,7 +66,7 @@ declare -A DISTS=(
   [zotero]="$WS/awm/services/zotero::$WS/awm/services/zotero/tests"
   [cch]="$WS/awm/services/cch::$WS/awm/services/cch/tests"
   [dev]="$WS/awm/services/dev::$WS/awm/services/dev/tests"
-  [tether]="$WS/awm/services/tether::$WS/awm/services/tether/tests"
+  [channel]="$WS/awm/plugins/channel::$WS/awm/plugins/channel/tests"
   [kb]="$WS/awm/services/kb::$WS/awm/services/kb/tests"
   [board]="$WS/awm/services/board::$WS/awm/services/board/tests"
   [transcripts]="$WS/awm/services/transcripts::$WS/awm/services/transcripts/tests"
@@ -76,7 +76,7 @@ declare -A DISTS=(
 )
 
 # Stable run order.
-ORDER=(gateway gatewayclient config persistence telemetry usage claudedaemon kept scopes journal search events social 2fa ssh auth httpsfront rlm-browser rlm-factorio fileviewer mic vpn reflection dvc claude-science dsh engcyc trilium zotero cch dev tether kb board reporting reporting-hooks transcripts routine)
+ORDER=(gateway gatewayclient config persistence telemetry usage claudedaemon kept scopes journal search events social 2fa ssh auth httpsfront rlm-browser rlm-factorio fileviewer mic vpn reflection dvc claude-science dsh engcyc trilium zotero cch dev channel kb board reporting reporting-hooks transcripts routine)
 
 CHANGED_BASE=""
 SMOKE=0

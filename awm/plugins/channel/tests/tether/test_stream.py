@@ -14,7 +14,8 @@ import json
 
 import pytest
 
-from awm.tether import hub_adapter, paths, stream
+from awm.channel import machines
+from awm.channel.tether import paths, stream
 
 pytestmark = [pytest.mark.unit, pytest.mark.smoke]
 
@@ -90,7 +91,7 @@ def test_output_split_across_chunks_is_whole_again_before_anyone_reads_it():
               data=base64.b64encode(second).decode(), bytes=len(second)),
     ]
 
-    merged = hub_adapter._decoded(events, raw=False)
+    merged = machines.decoded(events, raw=False)
 
     assert len(merged) == 1, "consecutive chunks of one stream are one thing"
     assert merged[0]["text"] == "★"
@@ -105,7 +106,7 @@ def test_two_streams_are_not_run_together():
               data=base64.b64encode(b"err").decode(), bytes=3),
     ]
 
-    merged = hub_adapter._decoded(events, raw=False)
+    merged = machines.decoded(events, raw=False)
 
     assert [e["stream"] for e in merged] == ["stdout", "stderr"]
     assert [e["text"] for e in merged] == ["out", "err"]
@@ -117,7 +118,7 @@ def test_raw_keeps_the_bytes_for_things_that_are_not_text():
               data=base64.b64encode(b"\x1b[2J").decode(), bytes=4),
     ]
 
-    merged = hub_adapter._decoded(events, raw=True)
+    merged = machines.decoded(events, raw=True)
 
     assert base64.b64decode(merged[0]["data"]) == b"\x1b[2J"
     assert "text" not in merged[0]
@@ -235,23 +236,6 @@ async def test_a_new_daemon_epoch_clears_the_cursors_and_starts_new_files(monkey
     assert mark.epoch == 6
     assert mark.cursors == {}
     assert len(list(paths.SESSIONS_DIR.iterdir())) == 2
-
-
-async def test_drain_remembers_where_a_caller_was_across_a_restart(monkeypatch):
-    hub_adapter.JOURNAL.reset(9)
-    for seq in range(3):
-        hub_adapter.JOURNAL.append(event(seq))
-    try:
-        first = await hub_adapter.drain({"all": True}, "agent")
-        assert first["cursor"] == 3
-
-        monkeypatch.setattr(hub_adapter, "MARK", stream.Mark(paths.STREAM_STATE))
-        hub_adapter.JOURNAL.append(event(3))
-        again = await hub_adapter.drain({"all": True}, "agent")
-    finally:
-        hub_adapter.JOURNAL.reset(0)
-
-    assert [e["seq"] for e in again["events"]] == [3]
 
 
 async def test_every_event_is_stamped_with_the_mint_it_belongs_to(monkeypatch):

@@ -510,7 +510,7 @@ _CALLER_STAMPED: dict[str, frozenset[str] | None] = {
     "social": frozenset({"mount", "unmount"}),
     "journal": frozenset({"post", "fetch"}),
     "search": frozenset({"get"}),
-    "tether": None,
+    "channel": None,
 }
 
 
@@ -577,8 +577,8 @@ def _stamp_caller(name: str, args: dict, pid_header: str | None,
     caller a seat's holder, `journal` `post`, which records the posting
     session so the post joins that session's card, `journal` `fetch` and
     `search` `get`, which record the journals a session read (sessions.md R15),
-    and every `tether` verb,
-    since a tether session answers only to the session that minted it. A call from another node carries the session in
+    and every `channel` verb,
+    since a channel answers only to the session that holds it. A call from another node carries the session in
     `mcp_caller.CLAIM_KEY` instead, so that key survives only on an edge request. Their contract with the model requires zero
     awareness of any of this: calls arrive carrying nothing about who is making
     them, and this is the one place identity is attached before dispatch.

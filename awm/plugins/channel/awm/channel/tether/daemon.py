@@ -15,9 +15,8 @@ instead in a transient unit of the user's systemd manager. Detaching alone
 would not do: ``systemctl restart awm`` kills by control group, and every
 descendant of the gateway inherits that group however it forks. On start the
 adapter attaches to a daemon that answers on the control socket and launches
-one only when none does. It replaces a running daemon in two cases only: the
-binary under it was replaced by a new release and no session is live, or the
-``restart`` verb asks. Stopping the service leaves the daemon running. A
+one only when none does. It replaces a running daemon only when the binary
+under it was replaced by a new release and no session is live. Stopping the service leaves the daemon running. A
 reboot ends it, because the unit is transient. Nothing about the owner's side
 changes: either person can still cut a session, and the owner's client keeps
 nothing.
@@ -46,9 +45,9 @@ import time
 from pathlib import Path
 from typing import Any
 
-from awm.tether import paths
+from awm.channel.tether import paths
 
-log = logging.getLogger("awm.tether.daemon")
+log = logging.getLogger("awm.channel.tether.daemon")
 
 #: How often the supervised loop asks whether the daemon is still there.
 TICK_S = 5.0
