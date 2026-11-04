@@ -379,11 +379,13 @@ async fn reload(State(gw): Gw, h: HeaderMap) -> Result<Json<Value>, ApiError> {
 #[derive(Deserialize)]
 struct InstallBody {
     sources: Vec<String>,
+    #[serde(default)]
+    approval: Option<String>,
 }
 
 async fn install(State(gw): Gw, h: HeaderMap, Json(body): Json<InstallBody>) -> Result<Json<Value>, ApiError> {
     refuse_token(&h)?;
-    gw.install(&body.sources).await.map(Json)
+    gw.install(&body.sources, body.approval.as_deref()).await.map(Json)
 }
 
 #[derive(Deserialize)]

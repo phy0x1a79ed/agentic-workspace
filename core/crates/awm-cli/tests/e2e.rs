@@ -31,6 +31,10 @@ fn repo() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..").canonicalize().unwrap()
 }
 
+fn chrono_now() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64
+}
+
 fn write(path: &Path, text: &str) {
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(path, text).unwrap();
@@ -76,6 +80,12 @@ secrets = ["FAKE_SECRET"]
     write(
         &core.join("reflection/run.sh"),
         &format!("export FAKE_TOOL=reflection FAKE_SESSIONS_FILE='{}'\nexec '{}'\n", state.join("sessions.json").display(), fake.display()),
+    );
+    // operations is the fake too: it records approval requests in approval.json.
+    write(&core.join("operations/awm-plugin.toml"), "[plugin]\nname = \"operations\"\n\n[[service]]\nname = \"operations\"\n\n[[tool]]\nname = \"operations\"\n");
+    write(
+        &core.join("operations/run.sh"),
+        &format!("export FAKE_TOOL=operations FAKE_APPROVAL_FILE='{}'\nexec '{}'\n", state.join("approval.json").display(), fake.display()),
     );
     // The fake also serves the other tools the journal plugin needs to load.
     for tool in ["scope", "search", "auth"] {
@@ -527,6 +537,45 @@ fn gateway_end_to_end() {
     assert_eq!(code, 0, "{out} {errout}");
     assert_eq!(http().get(format!("{url}/hub/tool/inst-two")).send().unwrap().status().as_u16(), 404);
     assert!(!node.state.join("installed/inst").exists());
+
+    // A git source installs a pinned commit, and only on an approval that names that commit.
+    let repo = src.join("gitted");
+    plugin_at(&repo, "gitted", "gitted", "");
+    let git = |args: &[&str]| {
+        let out = Command::new("git").arg("-C").arg(&repo).args(args).output().unwrap();
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+    git(&["init", "-q"]);
+    git(&["add", "-A"]);
+    git(&["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "one"]);
+    let sha = git(&["rev-parse", "HEAD"]);
+    let source = format!("git:{}@{sha}", repo.display());
+    let (code, out, errout) = cli(&url, &["install", &source]);
+    assert_eq!(code, 0, "{out} {errout}");
+    assert!(out.contains("qfake") && out.contains(&format!("gitted@{sha}")), "{out}");
+    let asked: Value = serde_json::from_str(&std::fs::read_to_string(node.state.join("approval.json")).unwrap()).unwrap();
+    assert_eq!(asked["kind"], "plugin_commits");
+    assert_eq!(asked["payload"]["plugins"][0]["commit"], json!(sha));
+    assert_eq!(http().get(format!("{url}/hub/tool/gitted")).send().unwrap().status().as_u16(), 404, "nothing loads before approval");
+    let (code, out, _) = cli(&url, &["install", &source, "--approval", "qfake"]);
+    assert!(code != 0 && out.contains("pending"), "a pending request must not install: {out}");
+    let now = chrono_now();
+    let grant = |commits: Value| json!({"status": "approved", "kind": "plugin_commits", "grant": {"grant": {
+        "kind": "plugin_commits", "commits": commits, "not_before": now - 5, "not_after": now + 600}}});
+    write(&node.state.join("approval.json"), &grant(json!([format!("gitted@{}", "0".repeat(40))])).to_string());
+    let (code, out, _) = cli(&url, &["install", &source, "--approval", "qfake"]);
+    assert!(code != 0 && out.contains("not this change"), "a grant for another commit must not install: {out}");
+    write(&node.state.join("approval.json"), &grant(json!([format!("gitted@{sha}")])).to_string());
+    let (code, out, errout) = cli(&url, &["install", &source, "--approval", "qfake"]);
+    assert_eq!(code, 0, "{out} {errout}");
+    let (code, out, _) = cli(&url, &["gitted", "echo", "--text", "from git"]);
+    assert!(code == 0 && out.contains("from git"), "{out}");
+    let pins = std::fs::read_to_string(node.state.join("installed.toml")).unwrap();
+    assert!(pins.contains(&format!("commit = \"{sha}\"")) && pins.contains("source = \"git:"), "{pins}");
+    assert!(!node.state.join("installed/gitted/.git").exists());
+    let (code, out, errout) = cli(&url, &["uninstall", "gitted"]);
+    assert_eq!(code, 0, "{out} {errout}");
 
     // Usage per plugin and surface, not MCP calls alone (R132).
     let (code, out, _) = cli(&url, &["usage", "--days", "1"]);

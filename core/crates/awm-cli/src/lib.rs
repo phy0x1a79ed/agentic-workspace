@@ -38,8 +38,13 @@ pub enum Command {
     Plugins,
     /// Load the plugins again and apply the change, with no gateway restart (R144).
     Reload,
-    /// Install or update plugins from folders, as one change.
-    Install { sources: Vec<String> },
+    /// Install or update plugins from folders or git:<url>@<commit>, as one change.
+    Install {
+        sources: Vec<String>,
+        /// The approved request id of a git change.
+        #[arg(long)]
+        approval: Option<String>,
+    },
     /// Remove an installed plugin.
     Uninstall { name: String },
     /// Serve calls from another node over ssh: the forced command of an edge's user key.
@@ -99,7 +104,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<i32> {
         Command::Status => get_and_print("/status").await,
         Command::Plugins => get_and_print("/hub/plugins").await,
         Command::Reload => post_and_print("/hub/reload", json!({})).await,
-        Command::Install { sources } => {
+        Command::Install { sources, approval } => {
             let sources: Vec<String> = sources
                 .into_iter()
                 .map(|s| match std::path::Path::new(&s).canonicalize() {
@@ -107,7 +112,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<i32> {
                     _ => s,
                 })
                 .collect();
-            post_and_print("/hub/install", json!({"sources": sources})).await
+            post_and_print("/hub/install", json!({"sources": sources, "approval": approval})).await
         }
         Command::Uninstall { name } => post_and_print("/hub/uninstall", json!({"name": name})).await,
         Command::EdgeServe => edge::edge_serve().await,

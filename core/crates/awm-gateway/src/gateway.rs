@@ -27,7 +27,7 @@ const NATIVE_VERBS: [(&str, &str); 8] = [
     ("usage", "Usage per plugin and surface over the last `days` days (default 60)."),
     ("table", "The live name table: each tool's owner plugin and node, and each contract's providers."),
     ("reload", "Read the plugin roots and the install config again. Starts added plugins, restarts changed ones and stops removed ones, with no gateway restart."),
-    ("install", "Install or update plugins from `sources` (a list) or `source`: each a plugin folder. All of them load as one change, or none does."),
+    ("install", "Install or update plugins from `sources` (a list) or `source`: each a plugin folder or git:<url>@<commit>. All of them load as one change, or none does. A git change asks for Tony's passkey approval first; run it again with `approval`=<request_id> once approved."),
     ("uninstall", "Remove an installed plugin by `name` and stop its services."),
 ];
 const DEFAULT_CALL_TIMEOUT_S: f64 = 120.0;
@@ -51,8 +51,6 @@ pub struct Gateway {
     /// reflection's `session_of` answers by pid, with when they were fetched.
     sessions: std::sync::Mutex<HashMap<u32, (Instant, Value)>>,
     installing: tokio::sync::Mutex<()>,
-    /// Passes a change whose source needs approval (R116 item 2).
-    pub approver: Box<dyn crate::install::Approver>,
     me: Weak<Gateway>,
 }
 
@@ -147,7 +145,6 @@ impl Gateway {
             reloading: tokio::sync::Mutex::new(()),
             sessions: std::sync::Mutex::new(HashMap::new()),
             installing: tokio::sync::Mutex::new(()),
-            approver: Box::new(crate::install::NoPasskeyYet),
             me: me.clone(),
         }))
     }
@@ -337,9 +334,11 @@ impl Gateway {
         Lookup::NoOwner { mode: first_mode }
     }
 
-    /// Fetch each source, pass the change through the approver, and load it as one change.
-    /// A plugin the loader refuses rolls the whole change back.
-    pub async fn install(&self, sources: &[String]) -> Result<Value, ApiError> {
+    /// Fetch each source and load them as one change. A plugin the loader refuses rolls the
+    /// whole change back. A change from a git source loads only on Tony's passkey approval of
+    /// its commits (R116 item 2): without `approval` the install asks for one and loads nothing;
+    /// with the request id, it loads once the grant names exactly the change's commits.
+    pub async fn install(&self, sources: &[String], approval: Option<&str>) -> Result<Value, ApiError> {
         use crate::install::{installed_root, source_of, Pending, Pin, Pins};
         if sources.is_empty() {
             return Err(ApiError::new(400, "install needs `source` or `sources`"));
@@ -355,7 +354,13 @@ impl Gateway {
         for (i, raw) in sources.iter().enumerate() {
             let source = source_of(raw).map_err(|e| ApiError::new(400, e))?;
             let dest = stage.join(i.to_string());
-            let got = source.fetch(&dest).map_err(|e| {
+            let (source, got) = tokio::task::spawn_blocking(move || {
+                let got = source.fetch(&dest).map(|f| (dest, f));
+                (source, got)
+            })
+            .await
+            .map_err(|e| ApiError::new(500, e.to_string()))?;
+            let (dest, got) = got.map_err(|e| {
                 cleanup(&stage);
                 ApiError::new(400, e)
             })?;
@@ -371,13 +376,20 @@ impl Gateway {
             fetched.push((dest, got, source.spec()));
         }
         if needs_approval {
+            let pins = Pins::load(&self.state);
             let change: Vec<Pending> = fetched
                 .iter()
-                .map(|(_, f, spec)| Pending { name: f.name.clone(), source: spec.clone(), commit: f.commit.clone() })
+                .map(|(_, f, spec)| Pending {
+                    plugin: f.name.clone(),
+                    source: spec.clone(),
+                    commit: f.commit.clone().unwrap_or_default(),
+                    from: pins.plugin.iter().find(|p| p.name == f.name).and_then(|p| p.commit.clone()).filter(|c| f.commit.as_ref() != Some(c)),
+                })
                 .collect();
-            if let Err(e) = self.approver.approve(&change) {
+            let approved = self.approve(&change, approval).await;
+            if !matches!(approved, Ok(None)) {
                 cleanup(&stage);
-                return Err(ApiError::new(403, e));
+                return approved.map(|asked| asked.unwrap_or_default());
             }
         }
         let mut moved = Vec::new();
@@ -416,6 +428,38 @@ impl Gateway {
         }
         pins.save(&self.state).map_err(|e| ApiError::new(500, e.to_string()))?;
         Ok(json!({"installed": moved.iter().map(|(n, ..)| n).collect::<Vec<_>>(), "reload": report}))
+    }
+
+    /// `Ok(None)` when `approval` approves `change`. Without one, file a `plugin_commits`
+    /// request and answer what to do next.
+    async fn approve(&self, change: &[crate::install::Pending], approval: Option<&str>) -> Result<Option<Value>, ApiError> {
+        use crate::install::{check_grant, commits_of, request_payload, APPROVER_TOOL, COMMITS_KIND};
+        let ctx = CallContext { plugin: Some(NATIVE_TOOL.into()), ..CallContext::local(self.node.clone(), Surface::Plugin) };
+        let call = |verb: &'static str, args: Value| {
+            let ctx = &ctx;
+            async move {
+                // Boxed: install is itself a verb of the native tool, so this call recurses.
+                let text = Box::pin(self.invoke(APPROVER_TOOL, json!({"verb": verb, "args": args}), ctx)).await.map_err(|e| {
+                    ApiError::new(e.status, format!("{APPROVER_TOOL} {verb}: {}", e.detail.as_str().map_or_else(|| e.detail.to_string(), str::to_string)))
+                })?;
+                Ok::<Value, ApiError>(serde_json::from_str(&text).unwrap_or(Value::String(text)))
+            }
+        };
+        let Some(request_id) = approval else {
+            let names: Vec<&str> = change.iter().map(|p| p.plugin.as_str()).collect();
+            let asked = call("approval_request", json!({
+                "kind": COMMITS_KIND, "reason": format!("install {} on {}", names.join(", "), self.node),
+                "payload": request_payload(change)})).await?;
+            let id = asked.get("request_id").cloned().unwrap_or(Value::Null);
+            return Ok(Some(json!({
+                "installed": [], "approval": asked, "commits": commits_of(change),
+                "next": format!("Approve request {} on the passkey panel, then run the same install again with approval={}",
+                                id.as_str().unwrap_or("?"), id.as_str().unwrap_or("<request_id>")),
+            })));
+        };
+        let answer = call("approval_get", json!({"request_id": request_id})).await?;
+        check_grant(change, &answer, chrono::Utc::now().timestamp()).map_err(|e| ApiError::new(403, format!("request {request_id}: {e}")))?;
+        Ok(None)
     }
 
     /// Remove an installed plugin: its folder, its pin and its services.
@@ -677,7 +721,7 @@ impl Gateway {
                             .map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect())
                             .unwrap_or_default();
                         sources.extend(args.get("source").and_then(Value::as_str).map(str::to_string));
-                        self.install(&sources).await
+                        self.install(&sources, args.get("approval").and_then(Value::as_str)).await
                     }
                     _ => {
                         let name = args.get("name").and_then(Value::as_str).unwrap_or_default();
