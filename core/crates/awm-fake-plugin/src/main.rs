@@ -50,7 +50,7 @@ async fn main() -> anyhow::Result<()> {
         f("scoped", "Return the args as received.", json!([{"name": "project"}, {"name": "scope"}, {"name": "to_scope"}])),
         f("env", "One variable of the service's environment, or null.", json!([{"name": "name", "required": true}])),
         f("session_of", "The session that owns a pid.", json!([{"name": "pid", "type": "integer", "required": true}])),
-        f("approval_request", "Record an approval request.", json!([{"name": "kind", "required": true}, {"name": "reason"}, {"name": "payload", "type": "object"}])),
+        f("approval_request", "Record an approval request.", json!([{"name": "kind", "required": true}, {"name": "node"}, {"name": "reason"}, {"name": "payload", "type": "object"}])),
         f("approval_get", "The recorded approval.", json!([{"name": "request_id", "required": true}])),
     ]});
     let tokens: Value = std::env::var("FAKE_TOKENS").ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or(json!({}));
@@ -90,7 +90,7 @@ async fn main() -> anyhow::Result<()> {
                 .and_then(|m| m.get(args["pid"].to_string()).cloned())
                 .unwrap_or_else(|| json!({"ok": true, "known": false, "mode": null}))),
             "approval_request" => {
-                let asked = json!({"request_id": "qfake", "status": "pending", "kind": args["kind"], "payload": args["payload"]});
+                let asked = json!({"request_id": "qfake", "status": "pending", "kind": args["kind"], "node": args["node"], "payload": args["payload"]});
                 std::env::var("FAKE_APPROVAL_FILE")
                     .map_err(|e| e.to_string())
                     .and_then(|f| std::fs::write(f, asked.to_string()).map_err(|e| e.to_string()))

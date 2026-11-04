@@ -55,30 +55,45 @@ pub fn request_payload(change: &[Pending]) -> Value {
     json!({"change": commits_of(change).join(","), "plugins": change})
 }
 
-/// Whether an `approval_get` answer approves exactly this change, now. The grant must name
-/// every commit of the change and no other, so an approval of one change never passes another.
-pub fn check_grant(change: &[Pending], answer: &Value, now: i64) -> Result<(), String> {
+/// The approver's grant key, base64url, as a node secret or in the gateway's environment.
+pub const GRANT_KEY: &str = "AWM_APPROVER_GRANT_PUBKEY";
+
+/// The key that signs approvals on this node. With none, no install that needs approval passes.
+pub fn grant_key(secrets_file: &Path) -> Result<[u8; 32], String> {
+    let value = crate::supervisor::granted_secrets(secrets_file, &[GRANT_KEY.to_string()])
+        .into_iter()
+        .map(|(_, v)| v)
+        .find(|v| !v.trim().is_empty())
+        .ok_or_else(|| format!("{GRANT_KEY} is not set on this node, so no approval can be checked; enrol the passkey and set the approver's grant_pub as {GRANT_KEY} in the node's secrets"))?;
+    awm_trust::grant::load_public_key(&value).map_err(|e| format!("{GRANT_KEY}: {e}"))
+}
+
+/// Whether an `approval_get` answer approves exactly this change on `node`, now. The
+/// gateway checks the signature itself, so the approver tool's word alone approves nothing.
+/// The grant must name every commit of the change and no other, so an approval of one
+/// change never passes another.
+pub fn check_grant(change: &[Pending], answer: &Value, key: &[u8; 32], node: &str, now: i64) -> Result<(), String> {
+    use awm_trust::grant::{verify_grant, Expect, GrantError};
     let status = answer.get("status").and_then(Value::as_str).unwrap_or("unknown");
     if status != "approved" {
         return Err(format!("the approval request is {status}, not approved"));
     }
-    let grant = answer.pointer("/grant/grant").ok_or("the approval carries no grant")?;
-    if grant.get("kind").and_then(Value::as_str) != Some(COMMITS_KIND) {
-        return Err(format!("the grant is not a {COMMITS_KIND} grant"));
-    }
-    let named: Vec<String> = grant
-        .get("commits")
+    let envelope = answer.get("grant").ok_or("the approval carries no grant")?;
+    let payload = request_payload(change);
+    let expect = Expect { kind: Some(COMMITS_KIND), node: Some(node), payload: Some(&payload), ..Default::default() };
+    verify_grant(envelope, key, &expect, now).map_err(|e| match e {
+        GrantError::Expired => "the grant is outside its window; ask for a new approval".to_string(),
+        e => e.to_string(),
+    })?;
+    let named: Vec<String> = envelope
+        .pointer("/grant/commits")
         .and_then(Value::as_array)
         .map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect())
         .unwrap_or_default();
     if named != commits_of(change) {
         return Err(format!("the grant approves {named:?}, not this change {:?}", commits_of(change)));
     }
-    let window = (grant.get("not_before").and_then(Value::as_i64), grant.get("not_after").and_then(Value::as_i64));
-    match window {
-        (Some(from), Some(to)) if (from..=to).contains(&now) => Ok(()),
-        _ => Err("the grant has expired; ask for a new approval".into()),
-    }
+    Ok(())
 }
 
 /// A plugin folder on this machine. The install copies it, so a later edit of the source
@@ -324,6 +339,8 @@ mod tests {
 
     #[test]
     fn a_grant_approves_exactly_its_change() {
+        use base64::Engine;
+        use ed25519_dalek::{Signer, SigningKey};
         let (a, b) = ("a".repeat(40), "b".repeat(40));
         let change = vec![
             Pending { plugin: "zotero".into(), source: "git:x".into(), commit: b.clone(), from: Some(a.clone()) },
@@ -332,15 +349,34 @@ mod tests {
         let payload = request_payload(&change);
         assert_eq!(payload["plugins"][0], json!({"plugin": "zotero", "source": "git:x", "commit": b, "from": a}));
         assert!(payload["plugins"][1].get("from").is_none());
-        let answer = |status: &str, commits: Vec<String>| {
-            json!({"status": status, "grant": {"grant": {"kind": "plugin_commits", "commits": commits,
-                                                          "not_before": 100, "not_after": 200}}})
-        };
         let both = commits_of(&change);
         assert_eq!(both, vec![format!("engcyc@{a}"), format!("zotero@{b}")]);
-        assert!(check_grant(&change, &answer("approved", both.clone()), 150).is_ok());
-        assert!(check_grant(&change, &answer("pending", both.clone()), 150).unwrap_err().contains("pending"));
-        assert!(check_grant(&change, &answer("approved", both[..1].to_vec()), 150).is_err());
-        assert!(check_grant(&change, &answer("approved", both), 201).unwrap_err().contains("expired"));
+        let sk = SigningKey::from_bytes(&[7; 32]);
+        let pk = sk.verifying_key().to_bytes();
+        let signed = |status: &str, commits: &[String], node: &str| {
+            let grant = json!({"grant_id": "g1", "request_id": "q1", "kind": "plugin_commits", "node": node, "subject": "tony",
+                "payload_sha256": awm_trust::grant::payload_digest(&payload), "not_before": 100, "not_after": 200,
+                "approved_by_device": "d", "commits": commits});
+            let sig = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(sk.sign(&awm_trust::grant::canonical(&grant)).to_bytes());
+            json!({"status": status, "grant": {"grant": grant, "sig": sig, "key_id": awm_trust::grant::key_id(&pk)}})
+        };
+        assert!(check_grant(&change, &signed("approved", &both, "home"), &pk, "home", 150).is_ok());
+        assert!(check_grant(&change, &signed("pending", &both, "home"), &pk, "home", 150).unwrap_err().contains("pending"));
+        assert!(check_grant(&change, &signed("approved", &both[..1], "home"), &pk, "home", 150).unwrap_err().contains("not this change"));
+        assert!(check_grant(&change, &signed("approved", &both, "home"), &pk, "home", 200).unwrap_err().contains("window"));
+        assert!(check_grant(&change, &signed("approved", &both, "work"), &pk, "home", 150).unwrap_err().contains("node"));
+        let mut forged = signed("approved", &both, "home");
+        forged["grant"]["grant"]["not_after"] = json!(900);
+        assert!(check_grant(&change, &forged, &pk, "home", 150).unwrap_err().contains("does not verify"));
+        let other = SigningKey::from_bytes(&[8; 32]).verifying_key().to_bytes();
+        assert!(check_grant(&change, &signed("approved", &both, "home"), &other, "home", 150).is_err());
+        let t = tempfile::tempdir().unwrap();
+        let secrets = t.path().join("secrets.env");
+        if std::env::var_os(GRANT_KEY).is_none() {
+            assert!(grant_key(&secrets).unwrap_err().contains(GRANT_KEY));
+        }
+        let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(pk);
+        std::fs::write(&secrets, format!("{GRANT_KEY}={b64}\n")).unwrap();
+        assert_eq!(grant_key(&secrets).unwrap(), pk);
     }
 }

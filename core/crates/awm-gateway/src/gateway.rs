@@ -440,7 +440,8 @@ impl Gateway {
     /// `Ok(None)` when `approval` approves `change`. Without one, file a `plugin_commits`
     /// request and answer what to do next.
     async fn approve(&self, change: &[crate::install::Pending], approval: Option<&str>) -> Result<Option<Value>, ApiError> {
-        use crate::install::{check_grant, commits_of, request_payload, APPROVER_TOOL, COMMITS_KIND};
+        use crate::install::{check_grant, commits_of, grant_key, request_payload, APPROVER_TOOL, COMMITS_KIND};
+        let key = grant_key(&self.cfg.secrets_path(&self.state)).map_err(|e| ApiError::new(403, e))?;
         let ctx = CallContext { plugin: Some(NATIVE_TOOL.into()), ..CallContext::local(self.node.clone(), Surface::Plugin) };
         let call = |verb: &'static str, args: Value| {
             let ctx = &ctx;
@@ -455,7 +456,7 @@ impl Gateway {
         let Some(request_id) = approval else {
             let names: Vec<&str> = change.iter().map(|p| p.plugin.as_str()).collect();
             let asked = call("approval_request", json!({
-                "kind": COMMITS_KIND, "reason": format!("install {} on {}", names.join(", "), self.node),
+                "kind": COMMITS_KIND, "node": self.node, "reason": format!("install {} on {}", names.join(", "), self.node),
                 "payload": request_payload(change)})).await?;
             let id = asked.get("request_id").cloned().unwrap_or(Value::Null);
             return Ok(Some(json!({
@@ -465,7 +466,7 @@ impl Gateway {
             })));
         };
         let answer = call("approval_get", json!({"request_id": request_id})).await?;
-        check_grant(change, &answer, chrono::Utc::now().timestamp()).map_err(|e| ApiError::new(403, format!("request {request_id}: {e}")))?;
+        check_grant(change, &answer, &key, &self.node, chrono::Utc::now().timestamp()).map_err(|e| ApiError::new(403, format!("request {request_id}: {e}")))?;
         Ok(None)
     }
 

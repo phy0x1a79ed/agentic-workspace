@@ -570,6 +570,14 @@ fn gateway_end_to_end() {
     git(&["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "one"]);
     let sha = git(&["rev-parse", "HEAD"]);
     let source = format!("git:{}@{sha}", repo.display());
+    let (code, out, _) = cli(&url, &["install", &source]);
+    assert!(code != 0 && out.contains("AWM_APPROVER_GRANT_PUBKEY"), "with no grant key no approval can pass: {out}");
+    // The gateway checks the approver's signature itself, with the key the passkey enrolment gives.
+    let signer = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
+    let pk = signer.verifying_key().to_bytes();
+    let b64 = |b: &[u8]| base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, b);
+    let secrets = std::fs::read_to_string(node.state.join("secrets.env")).unwrap();
+    write(&node.state.join("secrets.env"), &format!("{secrets}AWM_APPROVER_GRANT_PUBKEY={}\n", b64(&pk)));
     let (code, out, errout) = cli(&url, &["install", &source]);
     assert_eq!(code, 0, "{out} {errout}");
     assert!(out.contains("qfake") && out.contains(&format!("gitted@{sha}")), "{out}");
@@ -580,12 +588,24 @@ fn gateway_end_to_end() {
     let (code, out, _) = cli(&url, &["install", &source, "--approval", "qfake"]);
     assert!(code != 0 && out.contains("pending"), "a pending request must not install: {out}");
     let now = chrono_now();
-    let grant = |commits: Value| json!({"status": "approved", "kind": "plugin_commits", "grant": {"grant": {
-        "kind": "plugin_commits", "commits": commits, "not_before": now - 5, "not_after": now + 600}}});
-    write(&node.state.join("approval.json"), &grant(json!([format!("gitted@{}", "0".repeat(40))])).to_string());
+    let grant = |commits: Value, key: &ed25519_dalek::SigningKey| {
+        let body = json!({"grant_id": "gfake", "request_id": "qfake", "kind": "plugin_commits", "node": asked["node"],
+            "subject": "tony", "payload_sha256": awm_trust::grant::payload_digest(&asked["payload"]),
+            "not_before": now - 5, "not_after": now + 600, "approved_by_device": "dfake", "commits": commits});
+        let sig = ed25519_dalek::Signer::sign(key, &awm_trust::grant::canonical(&body)).to_bytes();
+        json!({"status": "approved", "kind": "plugin_commits",
+               "grant": {"grant": body, "sig": b64(&sig), "key_id": awm_trust::grant::key_id(&pk)}})
+    };
+    write(&node.state.join("approval.json"), &grant(json!([format!("gitted@{}", "0".repeat(40))]), &signer).to_string());
     let (code, out, _) = cli(&url, &["install", &source, "--approval", "qfake"]);
     assert!(code != 0 && out.contains("not this change"), "a grant for another commit must not install: {out}");
-    write(&node.state.join("approval.json"), &grant(json!([format!("gitted@{sha}")])).to_string());
+    // A well-formed grant the approver's key did not sign approves nothing, whatever operations says.
+    let forger = ed25519_dalek::SigningKey::from_bytes(&[10; 32]);
+    write(&node.state.join("approval.json"), &grant(json!([format!("gitted@{sha}")]), &forger).to_string());
+    let (code, out, _) = cli(&url, &["install", &source, "--approval", "qfake"]);
+    assert!(code != 0 && out.contains("does not verify"), "a grant with a bad signature must not install: {out}");
+    assert_eq!(http().get(format!("{url}/hub/tool/gitted")).send().unwrap().status().as_u16(), 404);
+    write(&node.state.join("approval.json"), &grant(json!([format!("gitted@{sha}")]), &signer).to_string());
     let (code, out, errout) = cli(&url, &["install", &source, "--approval", "qfake"]);
     assert_eq!(code, 0, "{out} {errout}");
     let (code, out, _) = cli(&url, &["gitted", "echo", "--text", "from git"]);
