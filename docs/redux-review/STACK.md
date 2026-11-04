@@ -35,8 +35,6 @@ Procedure, from dfs-interview § Work the stack:
   - [ ] Queue rest: approver forwarded header, order_pull callers, Chromium libs, AWM_TRILIUM_URL, cutover gaps (queue)
   - [ ] Harness rest: harness_event callback, hidden session_of, old state paths, R44 item 4, R109 item 7 (harness)
   - [ ] ~/.claude edits from the journal lane: debrief, goal-alignment, goal 50708f67, CLAUDE.md precedence lines (journal)
-- **trust-users** (2026-11-03): lets go over each of the major systems architecturally to make sure we are still aligned
-  - [ ] A failed session lookup reads as trusted with no scope, in both gateways (redux-harness e93907a0, redux-core 4ef3593b), as a missing record did before. R103 says an agent cannot raise its own level. Fail closed to untrusted instead? Also the Rust gateway has no mode gate yet; it should read mode from the same session_of answer
 - **cleanup-pass** (2026-11-03): when done, we need to schedule a pass to remove code to make source code cohesive and not have vestigial elements, and combining modules/funcitons that are duplicated
 
 ## Parked
@@ -54,3 +52,4 @@ Procedure, from dfs-interview § Work the stack:
 - **plugin-guards** (closed 2026-11-03): `plugin-guards/README.md`
 - **search-filters** (closed 2026-11-03): `search-filters/README.md`
 - **fleet-deploy** (closed 2026-11-03): `fleet-deploy/README.md`
+- **trust-users** (closed 2026-11-03): `trust-users/README.md`
