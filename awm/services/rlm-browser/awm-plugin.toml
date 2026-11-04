@@ -7,8 +7,9 @@ trust = "own"
 name = "rlm-browser"
 profiles = ["gamebot"]
 
+# The browser seat singleton owns the name `browser` (fleet.md R102); each tool name is unique (R117 item 2).
 [[tool]]
-name = "browser"
+name = "rlm-browser"
 major = 1
 tier = "on"
 

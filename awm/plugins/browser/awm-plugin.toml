@@ -14,11 +14,10 @@ install = "install.sh"
 
 [[tool]]
 name = "browser"
-uuid = "03b15432-96bf-4f34-abed-9bb5623ceea0"
 major = 1
 service = "browser"
 tier = "on"
 
-[[needs.tool]]   # approver, for captcha and sign-in requests (R102 item 7)
-uuid = "0db78f30-1121-416b-83e2-4fb162e134be"
-major = 1
+[[needs.tool]]   # operations: the approver, for captcha and sign-in requests (R102 item 7, R145)
+name = "operations"
+major = 2

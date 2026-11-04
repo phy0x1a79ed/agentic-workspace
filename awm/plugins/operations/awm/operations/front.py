@@ -60,6 +60,10 @@ class Front:
 
     async def _caller(self, args: dict) -> Caller:
         pid = args.pop("_caller_pid", None)
+        # An isolated session has no host pid: the gateway's isolated door stamps its R9 id.
+        isolated = args.pop("_caller_session_id", None)
+        if isolated:
+            return Caller(normalise(isolated))
         rec = await self.session_of(pid) if isinstance(pid, int) else None
         if not rec:
             return Caller(None)

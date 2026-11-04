@@ -115,7 +115,7 @@ def _rows() -> list[Alias]:
 
     for verb in ("acquire", "release", "reset", "status", "tab_open", "tab_close",
                  "tab_list", "tab_activate", "observe", "screenshot", "cdp", "commands"):
-        add("rlm", f"browser_{verb}", "browser", verb)
+        add("rlm", f"browser_{verb}", "rlm-browser", verb)
     for verb in ("acquire", "release", "reset", "status", "join", "rejoin", "leave",
                  "seats", "observe", "screenshot", "observe_events", "recipes",
                  "technologies", "world_new", "world_save", "world_load", "pause",

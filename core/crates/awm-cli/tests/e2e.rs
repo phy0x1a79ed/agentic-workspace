@@ -77,6 +77,9 @@ secrets = ["FAKE_SECRET"]
         &core.join("reflection/run.sh"),
         &format!("export FAKE_TOOL=reflection FAKE_SESSIONS_FILE='{}'\nexec '{}'\n", state.join("sessions.json").display(), fake.display()),
     );
+    // scope is the fake too: the journal plugin needs the tool to load.
+    write(&core.join("scope/awm-plugin.toml"), "[plugin]\nname = \"scope\"\n\n[[service]]\nname = \"scope\"\n\n[[tool]]\nname = \"scope\"\n");
+    write(&core.join("scope/run.sh"), &format!("export FAKE_TOOL=scope\nexec '{}'\n", fake.display()));
     write(&core.join("fake/ui/index.html"), "<html><body>fake-ui-marker</body></html>\n");
 
     write(

@@ -19,23 +19,21 @@ install = "install.sh"
 
 [[tool]]
 name = "routine"
-uuid = "1e1de892-633a-5112-a190-fada538ad2ba"   # uuid5(NAMESPACE_URL, "awm:tool:routine")
 major = 1
 service = "routine"
 tier = "on"
 
-# The tools the routine plugin calls (install.md R117). Each UUID is the legacy
-# uuid5 of the tool name, which a converted plugin keeps.
+# The tools the routine plugin calls (install.md R117).
 [[needs.tool]]
-uuid = "550c10ed-c2cb-5175-acfa-b17e97b52d6c"   # reflection: start_other, for fixing and condition agents
+name = "reflection"   # start_other, for fixing and condition agents
 major = 1
 
 [[needs.tool]]
-uuid = "2bfe60e2-3d54-5c59-9224-50b42b51b8f5"       # social: send, for the operator's Discord DM
+name = "social"       # send, for the operator's Discord DM
 major = 1
 
 [[needs.tool]]
-uuid = "17fe8c12-3c76-5412-a796-9e88a3a5e1ce"      # journal: post, for each deploy mark
+name = "journal"      # post, for each deploy mark
 major = 1
 
 [needs]

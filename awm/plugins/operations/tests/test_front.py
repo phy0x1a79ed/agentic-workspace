@@ -119,3 +119,9 @@ async def test_arbutus_approval_blocks_the_card_until_slack_decides(h):
     assert "Tony or Ryan" in h.store.task_get(out["task_id"])["meta"]["reason"]
     await h.front.arbutus_decided(out["task_id"], "Approved by ryan in Slack.")
     assert h.store.task_get(out["task_id"])["section"] == "working"
+
+
+async def test_an_isolated_session_is_known_by_the_id_the_door_stamped(h):
+    """An isolated session has no host pid: its own-session verbs read _caller_session_id."""
+    out = await h.front.call("task_open", {"_caller_session_id": B, "title": "boxed work"})
+    assert h.store.task_get(out["task_id"])["sessions"][0]["session_id"] == B

@@ -46,7 +46,8 @@ where
     let mut lines = BufReader::new(reader).lines();
     while let Ok(Some(line)) = lines.next_line().await {
         let Ok(req) = serde_json::from_str::<Request>(&line) else { continue };
-        let caller = Caller { node: from.clone(), lane: Lane::Edge, session: req.caller.session, trust: req.caller.trust };
+        let caller = Caller { node: from.clone(), lane: Lane::Edge, session: req.caller.session, trust: req.caller.trust,
+                              scope: req.caller.scope };
         let (writer, invoke) = (writer.clone(), invoke.clone());
         tokio::spawn(async move {
             let resp = match invoke(req.name, req.args, caller).await {

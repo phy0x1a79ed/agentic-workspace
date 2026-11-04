@@ -8,8 +8,10 @@ use serde_json::Value;
 
 use crate::client::{EdgeClient, EdgeError};
 
-/// The frame name that asks the far side for its tool list instead of a tool.
+/// The frame name that asks the far side for its `/hub/table` instead of a tool.
 pub const TOOLS_FRAME: &str = "_tools";
+/// The frame name that tells the far side this node's table changed (R117 item 3).
+pub const TABLE_CHANGED_FRAME: &str = "_table_changed";
 
 pub struct EdgePeers {
     here: String,
@@ -48,7 +50,7 @@ impl PeerTransport for EdgePeers {
         Box::pin(async move {
             self.reachable(peer)?;
             let caller = Caller { node: self.here.clone(), lane: Lane::Edge, session: ctx.caller.session.clone(),
-                                  trust: ctx.caller.trust.clone() };
+                                  trust: ctx.caller.trust.clone(), scope: ctx.caller.scope.clone() };
             let v = self.client.invoke(peer, name, args, caller).await.map_err(|e| Self::map(peer, e))?;
             Ok(match v {
                 Value::String(s) => s,
@@ -62,6 +64,18 @@ impl PeerTransport for EdgePeers {
             self.reachable(peer)?;
             let caller = Caller { node: self.here.clone(), lane: Lane::Edge, ..Caller::default() };
             self.client.invoke(peer, TOOLS_FRAME, Value::Null, caller).await.map_err(|e| Self::map(peer, e))
+        })
+    }
+
+    fn table_changed<'a>(&'a self, peer: &'a str, node: &'a str) -> BoxFuture<'a, Result<(), PeerError>> {
+        Box::pin(async move {
+            self.reachable(peer)?;
+            let caller = Caller { node: self.here.clone(), lane: Lane::Edge, ..Caller::default() };
+            self.client
+                .invoke(peer, TABLE_CHANGED_FRAME, serde_json::json!({"node": node}), caller)
+                .await
+                .map(|_| ())
+                .map_err(|e| Self::map(peer, e))
         })
     }
 }

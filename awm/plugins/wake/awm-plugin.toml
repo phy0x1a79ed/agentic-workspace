@@ -1,4 +1,4 @@
-# Plugin contract v1.3 (docs/redux/drafts/plugin-contract.md on feat/redux-core).
+# The plugin contract (docs/redux/drafts/plugin-contract.md).
 # The cloud project's install config places it on mizar and alcor (fleet.md R140).
 [plugin]
 name = "wake"
@@ -13,7 +13,6 @@ install = "install.sh"
 
 [[tool]]
 name = "wake"
-uuid = "7c1d4b8e-2f5a-4e93-a6b0-9d3e8f21c5a7"
 major = 1
 service = "wake"
 tier = "on"
@@ -23,12 +22,11 @@ secrets = []
 network = ["udp:9 broadcast", "tcp:22 lan"]
 
 # reflection: start_other, message, and revive_pinned under today's gateway.
-# uuid5(NAMESPACE_URL, "awm:tool:reflection").
 [[needs.tool]]
-uuid = "550c10ed-c2cb-5175-acfa-b17e97b52d6c"
+name = "reflection"
 major = 1
 
-# harness-cc: revive_pinned. uuid5(NAMESPACE_URL, "awm:tool:harness-cc").
-[[needs.tool]]
-uuid = "cc6d1ff4-9007-5f2f-b008-71249dc76346"
+# A harness plugin serves revive_pinned (harness-contract.md).
+[[needs.contract]]
+name = "harness"
 major = 1

@@ -27,8 +27,12 @@ pub async fn invoke_local(dir: &Path, name: &str, args: Value, caller: &Caller) 
     let token = std::fs::read_to_string(dir.join("edge.token")).map_err(|e| format!("edge token: {e}"))?;
     let client = reqwest::Client::new();
     let base = gateway_url();
+    let frame = name == awm_edge::TOOLS_FRAME || name == awm_edge::TABLE_CHANGED_FRAME;
     let req = if name == awm_edge::TOOLS_FRAME {
-        client.get(format!("{base}/hub/uuids"))
+        client.get(format!("{base}/hub/table"))
+    } else if name == awm_edge::TABLE_CHANGED_FRAME {
+        // The edge stamped the calling node; a peer reports only its own table.
+        client.post(format!("{base}/hub/table/changed")).json(&json!({"node": caller.node}))
     } else {
         client.post(format!("{base}/invoke")).json(&json!({"name": name, "args": args}))
     };
@@ -40,7 +44,7 @@ pub async fn invoke_local(dir: &Path, name: &str, args: Value, caller: &Caller) 
         .map_err(|e| format!("gateway unreachable: {e}"))?;
     let ok = resp.status().is_success();
     let body: Value = resp.json().await.unwrap_or(Value::Null);
-    match (ok, name == awm_edge::TOOLS_FRAME) {
+    match (ok, frame) {
         (true, true) => Ok(body),
         (true, false) => Ok(body.get("result").cloned().unwrap_or(Value::Null)),
         (false, _) => Err(match body.get("detail").cloned().unwrap_or(body) {
@@ -78,7 +82,7 @@ pub async fn port(key: &str) -> anyhow::Result<i32> {
     let allowed = EdgeList::load(&edges_path(&dir))?.door_tools(&here);
     let original = std::env::var("SSH_ORIGINAL_COMMAND").unwrap_or_default();
     let holder = key.split(':').nth(1).unwrap_or_default().to_string();
-    let caller = Caller { node: holder, lane: Lane::Service, session: None, trust: None };
+    let caller = Caller { node: holder, lane: Lane::Service, session: None, trust: None, scope: None };
     let req = awm_trust::port::parse(&original);
     let result = match &req {
         Ok(r) if allowed.contains(&r.name) => Some(invoke_local(&dir, &r.name, r.args.clone(), &caller).await),

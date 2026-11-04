@@ -120,7 +120,7 @@ def test_the_published_renames_are_in_the_table():
         ("peer_join", "operations_peer_join"), ("config_set", "awm_config_set"),
         ("config_contracts", "awm_config_contracts"),
         ("auth_node_key", "awm_node_key"), ("auth_status", "awm_auth_status"),
-        ("rlm_browser_acquire", "browser_acquire"),
+        ("rlm_browser_acquire", "rlm-browser_acquire"),
         ("rlm_factorio_world_new", "factorio_world_new"),
     }
     assert expected <= pairs
