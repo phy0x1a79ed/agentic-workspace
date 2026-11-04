@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from typing import Any, AsyncIterator
 
-import httpx
-
 from awm import gatewayclient
 
 
@@ -13,11 +11,9 @@ class Gateway:
     """The calls the archive makes; tests stand in for them."""
 
     async def services(self) -> list[dict[str, Any]]:
-        """The entries of ``awm registry_list``."""
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            reply = await client.get(f"{gatewayclient.hub_base_url()}/hub/services")
-        reply.raise_for_status()
-        return (reply.json() or {}).get("services") or []
+        """The rows of ``awm services``."""
+        rows = await gatewayclient.call("awm", "services", {}, timeout=10.0)
+        return rows if isinstance(rows, list) else []
 
     async def call(self, tool: str, verb: str, args: dict[str, Any], timeout: float) -> Any:
         return await gatewayclient.call(tool, verb, args, timeout=timeout)

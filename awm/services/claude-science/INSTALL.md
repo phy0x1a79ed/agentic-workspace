@@ -102,7 +102,7 @@ Four, from one process:
 | `service` | `claude-science` | `/svc/claude-science` | the verbs, plus supervision |
 | — | (TLS front) | `0.0.0.0:12201` | the workbench UI, behind `awm_session` |
 | — | (TLS front) | `0.0.0.0:12202` | generated-HTML previews, separate origin |
-| `url` | `claude-science-mcp` | `/claude-science/mcp` | the MCP bridge's loopback listener |
+| mount | `claude-science` | `/s/claude-science/mcp` | the MCP bridge's loopback listener, the service's mount |
 
 The two fronts are not gateway registrations — they are listeners this process
 owns, the same shape as `httpsfront`'s own. They die with the service; the
@@ -342,7 +342,7 @@ socket as loopback TCP inside the namespace). Tunnelling awm through one would
 work and would deliberately defeat a boundary upstream built on purpose — a
 decision, not a workaround, and one a future build can break silently.
 
-**The HTTP bridge stays** at `/claude-science/mcp`, and its allowlist still
+**The HTTP bridge stays** at `/s/claude-science/mcp`, and its allowlist still
 governs it. Nothing in this fleet can consume it as a *connector*, but it is a
 working MCP-over-HTTP endpoint for awm — usable by any MCP client that is not
 this workbench.
@@ -353,7 +353,7 @@ call `ssh`, `social` and gateway control, and the mode gate for
 `cx`-started sessions documents itself as *not* a trust boundary. So the bridge ships an
 explicit `{domain: verbs}` list, enforced on `tools/call` and not merely on
 `tools/list` (hiding a tool is not refusing it). It defaults to read/query verbs
-of `scope`, `journal`, `search` and `dvc`. Widen it in `CLAUDE_SCIENCE_MCP_ALLOW`, deliberately.
+of `scope`, `journal`, `search` and `dvc`. Widen it in `CLAUDE_SCIENCE_MCP_ALLOW`, deliberately, and add each verb to the manifest's `[[needs.tool]]`: the bridge calls with the service token, so the gateway refuses a verb the plugin did not declare.
 
 ## Host file access
 

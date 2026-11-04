@@ -2,7 +2,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use awm_edge::{caller_node, serve, EdgeClient, EdgeError};
-use awm_proto::{Caller, Lane};
+use awm_gateway::peer::WsPipe;
+use awm_proto::{Caller, Lane, WsMsg};
 use serde_json::json;
 
 fn duplex_client(opens: Arc<AtomicUsize>, drop_after: Option<usize>) -> EdgeClient {
@@ -13,18 +14,43 @@ fn duplex_client(opens: Arc<AtomicUsize>, drop_after: Option<usize>) -> EdgeClie
         let (sr, sw) = tokio::io::split(server_end);
         let served = Arc::new(AtomicUsize::new(0));
         let peer = peer.to_string();
-        tokio::spawn(serve(sr, sw, "home".into(), move |name, args, caller: Caller| {
-            let n = served.fetch_add(1, Ordering::SeqCst);
-            let peer = peer.clone();
-            async move {
-                if drop_after == Some(n) {
-                    return Err("drop".into());
+        tokio::spawn(serve(
+            sr,
+            sw,
+            "home".into(),
+            move |name, args, caller: Caller| {
+                let n = served.fetch_add(1, Ordering::SeqCst);
+                let peer = peer.clone();
+                async move {
+                    if drop_after == Some(n) {
+                        return Err("drop".into());
+                    }
+                    assert_eq!(caller.lane, Lane::Edge);
+                    assert_eq!(caller.node, "home");
+                    Ok(json!({"peer": peer, "tool": name, "args": args, "trust": caller.trust}))
                 }
-                assert_eq!(caller.lane, Lane::Edge);
-                assert_eq!(caller.node, "home");
-                Ok(json!({"peer": peer, "tool": name, "args": args, "trust": caller.trust}))
-            }
-        }));
+            },
+            // An echo stream: it greets with the path and the caller's node, then answers
+            // each message with itself and closes on "bye".
+            |path: String, caller: Caller| async move {
+                if path.contains("refused") {
+                    return Err("no such stream".to_string());
+                }
+                let (mine, theirs) = WsPipe::pair();
+                let WsPipe { tx, mut rx } = theirs;
+                tx.send(WsMsg::Text(format!("{path} for {}", caller.node))).unwrap();
+                tokio::spawn(async move {
+                    while let Some(m) = rx.recv().await {
+                        if m == WsMsg::Text("bye".into()) {
+                            let _ = tx.send(WsMsg::Close(Some("done".into())));
+                            break;
+                        }
+                        let _ = tx.send(m);
+                    }
+                });
+                Ok(mine)
+            },
+        ));
         Ok((Box::new(cr) as _, Box::new(cw) as _, None))
     }))
 }
@@ -46,6 +72,22 @@ async fn calls_overlap_on_one_warm_channel() {
         assert_eq!(v["trust"], "cooperative");
     }
     assert_eq!(opens.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn a_stream_carries_text_and_bytes_both_ways_and_ends() {
+    let c = duplex_client(Arc::new(AtomicUsize::new(0)), None);
+    let mut pipe = c.open_ws("work", "/hub/session/ssh/lease", Caller::default()).await.unwrap();
+    assert_eq!(pipe.rx.recv().await, Some(WsMsg::Text("/hub/session/ssh/lease for home".into())));
+    pipe.tx.send(WsMsg::Binary(vec![1, 2, 255])).unwrap();
+    assert_eq!(pipe.rx.recv().await, Some(WsMsg::Binary(vec![1, 2, 255])));
+    // A call still runs beside the open stream.
+    assert_eq!(c.invoke("work", "journal", json!({}), Caller::default()).await.unwrap()["tool"], "journal");
+    pipe.tx.send(WsMsg::Text("bye".into())).unwrap();
+    assert_eq!(pipe.rx.recv().await, Some(WsMsg::Close(Some("done".into()))));
+
+    let mut refused = c.open_ws("work", "/hub/emit/refused/x", Caller::default()).await.unwrap();
+    assert_eq!(refused.rx.recv().await, Some(WsMsg::Close(Some("no such stream".into()))));
 }
 
 #[tokio::test]

@@ -28,8 +28,7 @@ this folder (any folder with a `run.sh` under `awm/services/`), starts it with
 
 No auth — the registration handshake carries no token.
 
-To iterate against a running sandbox without installing, use
-`awm dev shadow awm/services/events`; it execs this same `run.sh` as an overlay.
+To iterate without installing, run the worktree's dev sandbox (`bash awm/services/dev/sandbox/run.sh start`); it runs this same `run.sh` from the worktree.
 
 ## What it does
 
@@ -37,7 +36,7 @@ To iterate against a running sandbox without installing, use
   into the gateway catalog as `events_schedule` / `events_unschedule` /
   `events_list`.
 - **emitter:** `schedule.tick{game}` — fired on cadence (jittered), fanned out
-  on `/svc/events/emit/schedule.tick`. A subscriber wakes a bot for that game. No
+  on `/hub/emit/events/schedule.tick`. A subscriber wakes a bot for that game. No
   service in this tree subscribes today.
 
 ### Cron syntax

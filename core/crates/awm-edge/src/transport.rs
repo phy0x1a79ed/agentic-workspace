@@ -1,7 +1,7 @@
 //! The gateway's [`PeerTransport`] over the edges: a node reaches only the peers
 //! its edge list gives it an edge to, each over its warm ssh channel.
 
-use awm_gateway::peer::{BoxFuture, PeerError, PeerTransport};
+use awm_gateway::peer::{stream_path_allowed, BoxFuture, PeerError, PeerTransport, WsPipe};
 use awm_proto::{CallContext, Caller, Lane};
 use awm_trust::edges::EdgeList;
 use serde_json::Value;
@@ -56,6 +56,18 @@ impl PeerTransport for EdgePeers {
                 Value::String(s) => s,
                 other => other.to_string(),
             })
+        })
+    }
+
+    fn open_ws<'a>(&'a self, peer: &'a str, path: &'a str, ctx: &'a CallContext) -> BoxFuture<'a, Result<WsPipe, PeerError>> {
+        Box::pin(async move {
+            self.reachable(peer)?;
+            if !stream_path_allowed(path) {
+                return Err(PeerError::Refused { peer: peer.into(), status: 403, body: format!("{path} is not a stream path") });
+            }
+            let caller = Caller { node: self.here.clone(), lane: Lane::Edge, session: ctx.caller.session.clone(),
+                                  trust: ctx.caller.trust.clone(), scope: ctx.caller.scope.clone() };
+            self.client.open_ws(peer, path, caller).await.map_err(|e| Self::map(peer, e))
         })
     }
 

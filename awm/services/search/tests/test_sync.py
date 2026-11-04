@@ -171,7 +171,7 @@ async def test_an_event_during_a_pass_asks_for_another(archive, gateway, clock):
 
 
 async def test_a_source_whose_table_is_unusable_is_listed_but_never_swept(archive, gateway):
-    gateway.entries.append({"name": "odd", "kind": "service", "backend_status": "ready", "api": {"functions": []},
+    gateway.entries.append({"name": "odd", "status": "ready", "tools": ["other"],
                             "archive": [{"name": "odd", "mode": "index", "export": "odd_export"}]})
     await archive.refresh()
     assert archive._due_names() == []

@@ -30,13 +30,12 @@ from awm.gatewayclient.holders import HolderError as ChannelError
 from awm.channel import machines as machine_kind
 from awm.channel.machines import MachineError, MachineGone, Machines
 from awm.channel.relay import LASTS, RelayError, RoomGone, Rooms
-from awm.channel.store import Store
+from awm.channel.store import UNTRUSTED, Store
 
 log = logging.getLogger("awm.channel.service")
 
 KINDS = ("room", "machine")
 TARGETS = ("say", "shell")
-UNTRUSTED = "untrusted"
 PRUNE_S = 60.0
 
 #: How long one follow of a machine's conversation waits on the stream.
@@ -67,6 +66,11 @@ class Channels:
 
     async def open(self, holder: dict, kind: str, os_name: str | None = None,
                    persistent: bool = False) -> dict:
+        if (holder.get("level") or UNTRUSTED) == UNTRUSTED and not holder.get("isolated"):
+            # A failed lookup runs untrusted (fleet.md R103 item 2). Only an isolated
+            # session opens a channel at that level, for its own task (channels.md R111).
+            raise ChannelError("an untrusted session opens a channel only when it is "
+                               "isolated, for its own task")
         if kind not in KINDS:
             raise ChannelError(f"kind is one of {', '.join(KINDS)}, not {kind!r}")
         if kind == "machine":
@@ -298,7 +302,7 @@ class Channels:
     def _public(self, row: dict) -> dict:
         return {
             "name": row["name"], "kind": row["kind"], "lasts": row["lasts"],
-            "trust": row["trust"],
+            "trust": row["trust"], "holder_level": row["holder_level"],
             "open": row["open"], "link": row["link"], "ended": row["ended"],
             "messages": row["cursor"],
             "encrypted": bool(row["crypto"] and row["crypto"].get("phase") == "sealed"),

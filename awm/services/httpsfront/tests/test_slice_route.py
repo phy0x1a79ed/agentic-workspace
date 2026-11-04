@@ -18,6 +18,7 @@ import pytest
 from starlette.testclient import TestClient
 
 from awm.httpsfront import proxy, slices
+from awm.tlsfront import proxy as tlsproxy
 
 pytestmark = [pytest.mark.unit, pytest.mark.smoke]
 
@@ -69,7 +70,11 @@ def _recorder(known=None, *, result_as_text=False):
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/invoke":
             seen["resolves"] += 1
-            token = json.loads(request.content)["args"]["token"]
+            call = json.loads(request.content)
+            assert call["name"] == "trilium"
+            assert call["args"]["verb"] == "slice_resolve"
+            token = call["args"]["args"]["token"]
+            seen["resolve_headers"] = {k.lower(): v for k, v in request.headers.items()}
             answer = known.get(token, UNKNOWN)
             # The gateway hands a handler's dict over as JSON or as a JSON string,
             # depending on how the call reached it.
@@ -88,6 +93,21 @@ def _client(app, handler):
         c.app.state.client = httpx.AsyncClient(
             transport=httpx.MockTransport(handler))
         yield c
+
+
+# -- the resolve call --------------------------------------------------------
+
+def test_the_resolve_goes_as_this_service_with_no_identity(monkeypatch, tmp_path):
+    """The service token holds the call to httpsfront's own needs list, and the
+    absent `X-Awm-As` is what trilium's `_operator_only` admits."""
+    token_file = tmp_path / "token"
+    token_file.write_text("svc-token\n")
+    monkeypatch.setenv("AWM_HUB_TOKEN_FILE", str(token_file))
+    seen, handler = _recorder()
+    with _client(_app(), handler) as c:
+        assert c.get(f"/slice/{BOUND}/").status_code == 200
+    assert seen["resolve_headers"]["x-awm-service-token"] == "svc-token"
+    assert "x-awm-as" not in seen["resolve_headers"]
 
 
 # -- admitted without a session ----------------------------------------------
@@ -272,7 +292,7 @@ def _ws_target(monkeypatch, app, path: str, *, known=None,
                                for k, v in (additional_headers or {}).items()}
         raise RuntimeError("upstream refused")  # closes the handshake cleanly
 
-    monkeypatch.setattr(proxy.websockets, "connect", _fake_connect)
+    monkeypatch.setattr(tlsproxy.websockets, "connect", _fake_connect)
     _, handler = _recorder(known=known)
     with _client(app, handler) as c:
         try:

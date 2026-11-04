@@ -22,7 +22,7 @@ verbs = ["subscribe", "brief_set", "brief_read"]
 
 [[needs.tool]]
 name = "operations"
-major = 1
+major = 2
 verbs = ["ops_post"]
 
 [[needs.tool]]

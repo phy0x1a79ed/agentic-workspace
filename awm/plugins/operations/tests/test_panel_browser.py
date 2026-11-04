@@ -200,5 +200,17 @@ def test_panel_end_to_end(stack):
         assert len(store.task_list(section="proposed", q="Lost then found")["cards"]) == 1
         assert store.task_list(section="proposed", q="Lost then found")["cards"][0]["kind"] == "note"
         assert not ap.devices()[0]["locked"]
+
+        # A seat's link opens the panel on one card (sessions.md R68). With no board body to
+        # sign, a Proposed note offers no spawn; a Working card closes.
+        lost = store.task_list(section="proposed", q="Lost then found")["cards"][0]
+        page.goto(f"{origin}/panel?task={lost['task_id']}")
+        page.locator("#card h2", has_text="Lost then found").wait_for()
+        assert page.locator("button", has_text="Spawn agent").count() == 0
+        page.locator("#card", has_text="Open this card on the board").wait_for()
+        page.goto(f"{origin}/panel?task={card['task_id']}")
+        page.locator("#card h2", has_text="Rework the tunnel").wait_for()
+        page.locator("#card button", has_text="Close").click()
+        wait_for(lambda: store.task_get(card["task_id"])["section"] == "done")
         assert not errors, errors
         browser.close()

@@ -230,7 +230,7 @@ def _resolve(caller_pid: Optional[int]):
             "could not tell which session is calling, so there is nothing safe "
             "to inject into. Reflection types into the caller's own prompt and "
             "will not guess at a target — this usually means the call did not "
-            "come through a session's own awm-mcp proxy (a plain shell, for "
+            "come through a session's own `awm mcp` proxy (a plain shell, for "
             "instance)")
     return resolve_lane(caller_pid)
 
@@ -484,7 +484,7 @@ def send(text: str, *, caller_pid: Optional[int], enter: bool = True,
             "could not tell which session is calling, so there is nothing safe "
             "to inject into. Reflection types into the caller's own prompt and "
             "will not guess at a target — this usually means the call did not "
-            "come through a session's own awm-mcp proxy (a plain shell, for "
+            "come through a session's own `awm mcp` proxy (a plain shell, for "
             "instance)")
     # Ask the guards before announcing or detecting anything. This used to run
     # after the log line, which made the log claim a refused `/clear` had gone

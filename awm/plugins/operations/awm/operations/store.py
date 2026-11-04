@@ -34,6 +34,9 @@ REPORT_STATES = {
 APPROVAL_OUTCOMES = ("approved", "denied", "expired", "cancelled")
 ROLES = ("main", "worker", "joined")
 PAGE = 50
+PLAN_CHARS = 20_000
+TODO_ITEMS = 200
+MESSAGE_CHARS = 20_000
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS tasks (
@@ -78,6 +81,16 @@ CREATE TABLE IF NOT EXISTS applied_ops (
     result TEXT NOT NULL,
     ts REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS messages (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id TEXT NOT NULL,
+    ts REAL NOT NULL,
+    author TEXT,
+    node TEXT,
+    session_id TEXT,
+    body TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS messages_task ON messages(task_id, seq);
 CREATE TABLE IF NOT EXISTS kv (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -317,6 +330,73 @@ class Store:
                 self._event(db, tid, "session_end", session_id=session_id)
                 return {"task_id": tid}
         return self._once(op_id, run)
+
+    def task_claim(self, task_id: str, session_id: str, *, node: str | None = None,
+                   name: str | None = None, rc_url: str | None = None,
+                   op_id: str | None = None) -> dict[str, Any]:
+        """A session takes a card as its main session. A Proposed or Needs-you card moves to Working."""
+        def run():
+            with self._tx() as db:
+                row = self._task(db, task_id)
+                if row["kind"] == "approval":
+                    raise QueueError("an approval card is not work to claim")
+                if row["section"] == DONE:
+                    raise QueueError(f"task {row['task_id']} is done: start a new one from it")
+                tid = row["task_id"]
+                self._add_session(db, tid, session_id, "main", node, name, rc_url)
+                section, status = row["section"], row["status"]
+                if section in (PROPOSED, NEEDS_YOU):
+                    if row["kind"] == "note":
+                        db.execute("UPDATE tasks SET kind='task' WHERE task_id=?", (tid,))
+                    section, status = WORKING, None
+                    self._set_card(db, tid, section, status, "claim", session_id=session_id)
+                return {"task_id": tid, "title": row["title"], "section": section,
+                        "status": status}
+        return self._once(op_id, run)
+
+    def task_detail(self, task_id: str, *, plan: str | None = None,
+                    todos: list[dict] | None = None, op_id: str | None = None) -> dict[str, Any]:
+        """Record a session's plan or todo list on its card. Neither moves the card."""
+        def run():
+            with self._tx() as db:
+                row = self._task(db, task_id)
+                tid, meta = row["task_id"], json.loads(row["meta"])
+                if plan is not None:
+                    meta["plan"] = plan[:PLAN_CHARS]
+                if todos is not None:
+                    meta["todos"] = [{k: str(i.get(k) or "") for k in ("id", "subject", "status")}
+                                     for i in todos[:TODO_ITEMS] if isinstance(i, dict)]
+                db.execute("UPDATE tasks SET meta=?, updated=? WHERE task_id=?",
+                           (json.dumps(meta), self.clock(), tid))
+                self._event(db, tid, "detail", plan=plan is not None, todos=todos is not None)
+                return {"task_id": tid}
+        return self._once(op_id, run)
+
+    def task_message(self, task_id: str, body: str, *, author: str | None = None,
+                     node: str | None = None, session_id: str | None = None,
+                     op_id: str | None = None) -> dict[str, Any]:
+        """A message on a card, for Tony and every session that reads it. It moves no card."""
+        if not body or not body.strip():
+            raise QueueError("a message needs a body")
+
+        def run():
+            with self._tx() as db:
+                tid = self._task(db, task_id)["task_id"]
+                cur = db.execute(
+                    "INSERT INTO messages(task_id, ts, author, node, session_id, body) "
+                    "VALUES (?,?,?,?,?,?)",
+                    (tid, self.clock(), author, node, session_id, body[:MESSAGE_CHARS]))
+                self._event(db, tid, "message", seq=cur.lastrowid)
+                return {"task_id": tid, "seq": cur.lastrowid}
+        return self._once(op_id, run)
+
+    def task_messages(self, task_id: str, after: int = 0) -> list[dict[str, Any]]:
+        with self._lock:
+            tid = self._task(self._db, task_id)["task_id"]
+            rows = self._db.execute("SELECT * FROM messages WHERE task_id=? AND seq>? ORDER BY seq",
+                                    (tid, int(after or 0))).fetchall()
+        return [{"seq": r["seq"], "ts": r["ts"], "author": r["author"], "node": r["node"],
+                 "session_id": r["session_id"], "body": r["body"]} for r in rows]
 
     def task_get(self, task_id: str) -> dict[str, Any]:
         with self._lock:

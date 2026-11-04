@@ -7,7 +7,15 @@ export {
   HttpError,
   type ApiFetchInit,
 } from './auth';
-export { svc, toWsUrl, type SvcClient } from './svc';
+export {
+  invoke,
+  tool,
+  openSession,
+  toWsUrl,
+  type ToolClient,
+  type CallOpts,
+  type SessionOpts,
+} from './invoke';
 export {
   fetchScope,
   postToScope,

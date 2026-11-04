@@ -1,0 +1,8 @@
+# The Trilium server release that awm serves (install.md R115 item 4): a tarball that a
+# release of our fork (projects/trilium on mizar) published. Bump all three together,
+# then deploy awm. Empty url keeps install.sh on its older paths.
+# The tarball holds one top-level folder with main.cjs and node/bin/node, as upstream's
+# server tarball does. install.sh refuses one whose sha256 differs.
+version=
+url=
+sha256=

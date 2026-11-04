@@ -19,11 +19,20 @@ md5() { [[ -e $2 ]] && echo "$1=$(md5sum <"$2" | cut -c1-12)"; }
 echo "node:$(grep -oP '^(export )?AWM_NODE_NAME=\K\S+' "$W/.awm/env" | tr -d "\"'")"
 
 grep -oE '^(export )?[A-Za-z_][A-Za-z0-9_]*=' "$W/.awm/env" | sed 's/^export //; s/=$//' | sort -u | emit env
+STATE=${AWM_DIR:-$W/.awm}
 python3 -S -c "
 import json, sys
 for k, v in sorted(json.load(open(sys.argv[1])).items()):
-    print(f'enabled:{k}={str(v).lower()}')" "$W/.awm/services/enabled.json"
-awm services list 2>/dev/null | awk 'NR>1 && $3=="True" {print $1}' | emit running
+    print(f'enabled:{k}={str(v).lower()}')" "$STATE/enabled.json" 2>/dev/null
+awm services list 2>/dev/null | python3 -S -c "
+import json, sys
+try:
+    rows = json.load(sys.stdin)
+except ValueError:
+    rows = []
+for r in sorted(rows if isinstance(rows, list) else [], key=lambda r: r.get('name', '')):
+    if r.get('status') == 'ready':
+        print(r['name'])" | emit running
 names "$W/.awm" | emit awm-dotdir
 names "$W/.awm/services" | emit awm-svc-state
 echo "release=$(git -C "$W" rev-parse --short HEAD 2>/dev/null)" | emit checkout

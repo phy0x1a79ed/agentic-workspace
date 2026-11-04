@@ -42,7 +42,7 @@ def test_registration_does_not_wait_for_a_slow_on_start(monkeypatch):
 
     ad = _adapter(on_start=slow_init)
 
-    async def fake_run_target(hub_url, sid, *, name, prefix, overlay):
+    async def fake_run_target(hub_url, sid):
         order.append("registered")
 
     monkeypatch.setattr(ad, "_run_target", fake_run_target)
@@ -111,7 +111,7 @@ def test_a_failed_init_propagates_out_of_run(monkeypatch):
 
     ad = _adapter(on_start=bad_init)
 
-    async def fake_run_target(hub_url, sid, *, name, prefix, overlay):
+    async def fake_run_target(hub_url, sid):
         await asyncio.sleep(3600)
 
     monkeypatch.setattr(ad, "_run_target", fake_run_target)
@@ -126,7 +126,7 @@ def test_no_on_start_opens_the_gate_immediately(monkeypatch):
     ad = _adapter()
     opened: list[bool] = []
 
-    async def fake_run_target(hub_url, sid, *, name, prefix, overlay):
+    async def fake_run_target(hub_url, sid):
         opened.append(ad._init_done.is_set())
 
     monkeypatch.setattr(ad, "_run_target", fake_run_target)

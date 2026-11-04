@@ -5,14 +5,14 @@
   // that actually select files extend it:
   //   - tsconfig.components.json  → ui_components/* (the shared, contract-
   //                                 bearing libraries: @awm/client, @awm/*)
-  //   - tsconfig.pages.json       → pages/* (thin static-bundle mounts)
+  //   - tsconfig.pages.json       → each plugin's pages/* (thin static-bundle mounts)
   //
   // Wired behind `npm run typecheck` (see package.json):
   //   - `tsc -p ui_components/client/tsconfig.json` type-checks the pure-TS
   //     @awm/client package (the hub client every page/component imports).
   //   - `svelte-check --tsconfig ./tsconfig.components.json` type-checks the
   //     .svelte component libraries. This is the GATING surface.
-  //   - `npm run typecheck:pages` is an ADVISORY pass over pages/* (see the
+  //   - `npm run typecheck:pages` is an ADVISORY pass over the plugin pages (see the
   //     note in package.json) — pages are thin mounts whose page-local
   //     `$lib` alias resolution needs Vite, which svelte-check can't load
   //     under this vite 5.x / @sveltejs/load-config combo.

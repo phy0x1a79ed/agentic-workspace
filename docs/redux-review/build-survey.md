@@ -82,19 +82,19 @@ Key:
 ### install.md
 | R | Status | Where / what is missing |
 |---|---|---|
-| R112 | P | Rust core built (core 759e516a, 1f75dc5a). No service runs on it. Every node runs Python |
+| R112 | B | rust 5ab900eb deletes the Python gateway; the Rust core serves every route (80518c29, e3265058). rust a4494351 `awm deploy` places the binary, unit and config.toml per node, untested until the first node deploy. Not applied. MCP `tools/list_changed` not ported |
 | R113 | B | core ae8306d5, 8c678557 |
 | R114 | P | Each deploy pushes `release` to the GitHub backup, and a batch fails when the backup has diverged (deploy 366d4d48, e43f70aa). Left for T27: origin is still altair, and mizar has no `github` remote yet (`scripts/move-canonical.sh`) |
-| R115 | P | Folder install with manifests and pins built (plugins 503291d8, 14639f7b; core 341dd669 `installed.toml`). Git install at a pinned commit, with approval (gateway 3aea4d3d). Missing: optional plugins as their own projects (cloud nodes c8d52be `plugin_homes` runs at T27, the awm folders go at T23), the trilium tarball install with the fork on mizar, and pages still built into `awm/pages` |
-| R116.1 | P | secrets (core 341dd669). network runs through a per-plugin egress proxy in the Rust gateway only (gateway 96330d54). Services move onto it at T19. Clients that ignore the proxy are not checked |
+| R115 | P | Folder install with manifests and pins built (plugins 503291d8, 14639f7b; core 341dd669 `installed.toml`); rust 3d480f75 drops the legacy loader. Git install at a pinned commit, with approval (gateway 3aea4d3d). item 1 B: pages live in their plugins at `/p/<plugin>/<page>/` (rust 82140b59). item 4 trilium prepared: `server.pin` and install mode `pin` with sha256 (cutover 0b22c138); the pin is empty until the fork moves to mizar and releases, tarball host open with Tony. Missing: optional plugins as their own projects (cloud nodes c8d52be `plugin_homes` runs at T27, the awm folders go at T23) |
+| R116.1 | P | secrets (core 341dd669). network through a per-plugin egress proxy (gateway 96330d54); every service is held to its `needs.network` and services run on the Rust gateway (rust 3d480f75, 5ab900eb). Clients that ignore the proxy are not checked |
 | R116.2 | B | pin record, and the `plugin_commits` approval wired to git installs (gateway 3aea4d3d). The gateway verifies the grant signature (gateway 738dd8ae, 59b49445). The grant key exists only after the passkey enrolment on alcor (T27) |
-| R116.3 | P | `[[needs.tool]]` lists tool and verbs, and the loader and dispatch refuse the rest (gateway ca565b40). Replay test `awm/gateway/tests/test_plugin_calls.py`. Left for T19: callers with no token and the Python emit subscriptions are not guarded |
+| R116.3 | P | `[[needs.tool]]` lists tool and verbs, and the loader and dispatch refuse the rest (gateway ca565b40). Emit subscriptions are guarded by the subscriber's `[[needs.tool]]`, and Python services call with their service token (rust 80518c29, e3265058). Replay test now `test/contract/` (rust 5ab900eb). Left: tokenless callers (cch hooks, the CLI) keep the pid walk |
 | R116.4 | B | gateway 29e3b158 (the `trust` key is gone from the contract and every manifest) |
 | R116.5 | B | core 48de7a4a |
-| R117 | P | items 2 and 3 B (core 48de7a4a). The peer `table_changed` of item 3 was checked in wave 0 (gateway journal 9830ea0b). item 4 B (harness 29adcb67, `harness@1`). item 1: cross imports remain (claude-science and dsh to httpsfront, reporting to board, scopes to dvc). Items 5 to 7 not verified |
-| R144 | B | core 48de7a4a (`awm reload`) |
+| R117 | P | item 1 B: tlsfront and dvcdata become libraries, no cross import left (rust 460ba4fb, 5ab900eb). items 2 and 3 B (core 48de7a4a); peer `table_changed` checked in wave 0 (gateway journal 9830ea0b). item 4 B (harness 29adcb67, `harness@1`). item 6 B (libraries, grantlib counts as one). Items 5 and 7 not verified |
+| R144 | B | core 48de7a4a (`awm reload`). The install test reloads a changed plugin without a gateway restart (rust a5f2854b) |
 | R118 | B | core 21c2b302 (`test/install/run.sh`, rootless). No cloud-agent run yet |
-| R119 | P | images built as `quay.io/hallamlab/awm-test-*:dev`, not pushed. Org is an open question. No digest pins |
+| R119 | P | test images named `quay.io/hallamlab/awm-test-*`, the stubs image gains a cch stub (rust 5ab900eb). Not pushed, no digest pins: T26 |
 | R132 | B | core 9fc0da8c, plugins 71f41d9a |
 | R133 | B | plugins 2a8fc7ce, 196af229. item 6 placement: cloud `plugins.yml` `engcyc: [altair, showtime]` |
 | R134 | P | removals B (plugins 2a8fc7ce; auth v6 3ad110fa). Cognee is out of kb (svc-kb 4857c0f0, on feat/redux since wave 0). kb publishes no MCP tool: its `[[tool]] kb` has tier off (search 538ae158, 06e0597c). kb e997f9b is on altair only and not checked |
@@ -105,15 +105,15 @@ Key:
 |---|---|---|
 | R79 | P | cloud fleet e7b079a `deneb_station` role. cloud nodes c8d52be `discord_seats` moves the Discord seats to mizar. Not applied |
 | R80 | N/A | |
-| R81 | M | no lane reports the Ops page change |
+| R81 | B | Ops book is the fixed note `awmSwarmOps` under `awmSwarmBoard`, with a Portals note from the approver's `portals`, no password (cutover 0b22c138). Not applied. The old Ops book is deleted at T27 |
 | R82 | P | Penpot dropped (plugins 2a8fc7ce). Game server off through `deneb_station`, not applied |
 | R83 | B | fleet 58109656 (Sync now through the approver). Read-only key not checked |
 | R84 | P | The approver serves `portal_login`, and httpsfront checks the grant and mints the session (queue 38e4e2b0). The vault login sits behind it (cloud nodes c8d52be `deneb_passkey_login`). Not applied. `approver_portals` lists only nexus. Tony names the other portal hosts at walkthrough M9, and the coordinator writes them at T27 |
-| R86 | P | trust 549f8941. gateway b91cc867 deletes the peer book and peer tokens, and peer calls go through the local gateway over the ssh edge. Left for T19: peer subscribe, lease and file fetch refuse |
+| R86 | B | trust 549f8941. gateway b91cc867 deletes the peer book and peer tokens, and peer calls go through the local gateway over the ssh edge. Peer subscribe and lease run over awm-edge with `peer=` (rust 80518c29, e3265058); `fetch_peer_file` dropped (rust 5ab900eb) |
 | R87 | B | edge reader (trust 28ffa524, 43ab434a) and cloud `edges.yml`. item 3: alcor's writer reaches the trilium note verbs inside its subtree (queue b664d53a). Not applied |
 | R88 | B | stations are in `edges.yml`. item 1: showtime is a station that shogun manages (cloud fleet c06e6e0). Not applied |
 | R89 | B | core 6d8cc642 `[[external]]`; cloud `singleton_door` role |
-| R92 | B | trust 70a7577c (`awm edge-serve`, `awm port`). gateway b91cc867 deletes the HTTPS node-token transport |
+| R92 | B | trust 70a7577c (`awm edge-serve`, `awm port`). gateway b91cc867 deletes the HTTPS node-token transport. Every edge call carries the `peer:<node>` stamp, and the edge streams sockets (rust 80518c29) |
 | R93 | B | trust c2d119c2 (`awm-edge`). Not live |
 | R94 | P | cloud nodes c8d52be `lyra_setup` (refuses until lyra has a tailnet address) and fleet c06e6e0 admin routes. Not applied. The rest needs Tony at the keyboard (`drafts/edges.md`) |
 | R95 | P | cloud `wsl_bridge` role, not applied |
@@ -124,7 +124,7 @@ Key:
 | R100 | B | trust 7ce6221a (admin ssh grant requests). Not applied |
 | R101 | P | cloud `users_sudo` role, not applied |
 | R102 | B | trust 47d13807. Tool-name clash with rlm-browser |
-| R103 | B | trustpolicy (trust 4c96975c). Gateways pass `_caller_trust` (core e1ec810e, 126afb11). item 2: a failed lookup runs as untrusted in both gateways, and the Rust gateway gates by mode (gateway 9755a706) |
+| R103 | P | trustpolicy (trust 4c96975c). The gateway passes `_caller_trust` (core e1ec810e, 126afb11). item 2: a failed lookup runs as untrusted and the Rust gateway gates by mode (gateway 9755a706). Gap: a node that loads no reflection resolves every caller trusted, NoOwner (rust a5f2854b), for T23 |
 | R104 | B | edges and crates (trust). item 4 B (`awm port` refuses reflection). item 2 B: `policy.first_message_hint`, checked by T12 (sessions journal b729f208) |
 | R105 | B | trust 6beec37a (nightly copy, diff hold); cloud `trilium_deneb` role. cloud fleet c06e6e0 `trilium_copy_stop` stops the other copies, and nodes c8d52be `trilium_snapshot` takes the snapshot on deneb (item 4). Not applied |
 | R106 | B | queue 416f8f38, f41612a4 |
@@ -133,7 +133,7 @@ Key:
 | R108 | B (config) | cloud fleet 2225de3; converges in containers. Not applied |
 | R140 | B | core 1f75dc5a, fleet d744538a, routines 1df74bfc, trust 43ab434a |
 | R109.1-6 | B | harness b6394431, c0276daa (rootless container, access-token login). Login-sync unit not installed |
-| R109.7 | B | core 8fa54aed, 579dcf87, 65907c3d (token door, whitelist under a ceiling, scope pin). gateway 6c6a28cd looks up the `harness@1` provider, takes the ceiling from the contract and deletes the Python isolated door. Open: port 8765 |
+| R109.7 | B | core 8fa54aed, 579dcf87, 65907c3d (token door, whitelist under a ceiling, scope pin). gateway 6c6a28cd looks up the `harness@1` provider, takes the ceiling from the contract and deletes the Python isolated door. The install test passes the door (rust a5f2854b). Open: port 8765 |
 | R139 | B | fleet 13ea967a, 295129f8. WoL on alcor untested |
 | R131 | P | svc-kb keeps data on disk. papers.db rebuild (sockeye 13884514) pending |
 | R136.1-6 | P | altair feat/svc-kb 5cf88c81, 19ffd55e, 7fc61fe9, 4857c0f0, aab968bd; kb a4a2dab, 3d1c391. Hits are title-only and the get log exists. The decayed score `s` and the rank are not built (rank off until the replay gain, by design). In feat/redux since wave 0 |
@@ -145,29 +145,29 @@ Key:
 ### queue.md
 | R | Status | Where / what is missing |
 |---|---|---|
-| R60 | P | new board built. Removing reporting and board waits on cutover |
+| R60 | P | new board built. reporting deleted and board cut to the door and its intake (cutover ee2b6037). Board door and intake deletion on `feat/redux-r77` f3928d5f, merges in T27 (R77) |
 | R61 | B | queue 0fe170f5, e987f9b7 (Done paging, urgent DM, prompt moves the card) |
 | R62, R63 | B | queue 0fe170f5, 2f98b5f7, e987f9b7 |
 | R66 | B | one-way writer B. trilium `note_create` takes `note_id`, and alcor's writer reaches the note verbs inside its subtree (queue b664d53a) |
 | R64 | B | approver B (queue d2823c8f: passkeys, device chain, windows of 12 h at most). The default address is `auth.tony-xy-liu.com` (queue b664d53a, 38e4e2b0). Host changes in cloud fleet c06e6e0 (SNI passthrough, tunnel user, CSP) and alcor 356e788 (tunnel, cert, a front that reads PROXY). Not applied. The DNS records are Tony's steps (`drafts/manual-steps.md`) |
 | R65 | B | queue 2f98b5f7, e987f9b7 (in-flight 60 s). IndexedDB partition not checked on the real names |
 | R137 | B | queue 2f98b5f7 |
-| R145 | P | queue f41612a4 (one `operations`). Not served yet: reporting verbs (`hook_plan*`, `hook_todos`, `hook_session_clear`, `claim_task`, `track_task`, `board_*`, `swarm_*`, `convert`, `peer_*`) and the urgent-block reminder |
+| R145 | B | queue f41612a4 (one `operations`). operations serves `hook_plan*`, `hook_todos`, `hook_session_clear`, `claim_task`, `track_task`, `swarm_message_post`, `swarm_messages` and the urgent-block reminder (cutover 81c20173); the rest dropped with reasons (cutover journal 115bbbe8). reporting deleted (cutover ee2b6037) |
 | R85 | P | enrolment B (2f98b5f7). lyra's key to alcor not done |
 
 ### channels.md
 | R | Status | Where / what is missing |
 |---|---|---|
-| R69 | B | one push loop in `awm.gatewayclient.holders`, which channel and seats both import (channels 84a6b79e, 68fe1d31) |
-| R70 | B | trust tags on seat lines (08660b2e); channel lines carry the level (channels 3a8f7e05) |
-| R71 | P | tags B. The behaviour rests on prompts plus trustpolicy |
-| R125 | P | trustpolicy library only. No gateway gate (social block, no top-level start). channel admits any background session |
+| R69 | B | one push loop in `awm.gatewayclient.holders`, which channel and seats both import (channels 84a6b79e, 68fe1d31). On Rust, `_caller_pid` is stamped so `holders.caller` names a seat (rust 80518c29) |
+| R70 | B | trust tags on seat lines (08660b2e); channel lines carry the level (channels 3a8f7e05); channel admits by level and records `holder_level` (coop e69f17bb) |
+| R71 | B | tags B. Levels gated at dispatch by `call_refusal` in awm-trust (coop 1dd271cc), item 3 included; social held-chat rules (coop f1a5535d) |
+| R125 | B | Rust gate at dispatch, awm-trust `trust.rs` (coop 1dd271cc): no `start_other`/`resume_other`/`adopt_other`, operations only `request_human`, no trilium, social only held-chat verbs and mount by seat rules (coop f1a5535d), 2fa for cooperative only. 5-subagent cap via cch hook (coop a55f44a9, 65c3b8f1); a slot leaks if SubagentStop never fires. Kept seats start through reflection with a level (coop 9558383a). channel admission by level (coop e69f17bb). A missing ledger entry still reads trusted until the T27 seat restart |
 | R127 | B | trust 08660b2e |
 | R72 | B | channels 403d003e, b8116164, 3a8f7e05 (`/room/`, task and persistent rooms, six words, holders by R9). Persistent rooms survive a relay restart (tether 67558dd, channels 84a6b79e). Live only after the tether v0.3.0 release and pin bump (T26) |
 | R73 | B | channels 6381bb10 |
 | R74, R75 | B | met in tether v0.2.0 |
 | R76, R138 | P | tether `feat/redux-channels2` af9ea6e at 0.3.0, unpushed and unreleased. The awm pin (cab62d9f) waits on `feat/redux-channels2-pin` for T26 |
-| R77 | M | board door and intake deletion (T9) not done. Waits on Caviar and muse moving to persistent rooms |
+| R77 | P | board door, intake and httpsfront's board mount deleted on `feat/redux-r77` f3928d5f (cutover); cutover leaves board door-only with no tool (ee2b6037). Merges in T27, after Caviar and muse move to persistent rooms |
 | R110 | B | channels 3a8f7e05 (tether folded in, `awm/services/tether` deleted) |
 | R111 | B | channels 84a6b79e (an isolated session holds a channel through its R9 id) |
 
@@ -177,8 +177,8 @@ Key:
 | R121 | N/A | |
 | R122 | B | trust 549f8941 |
 | R123 | B | queue (Arbutus approval path in operations `request_human`) |
-| R124 | P | board door still public (R77) |
-| R126 | P | item 1 B (trust 08660b2e). Items 2 to 5 not reported |
+| R124 | P | board door still public until `feat/redux-r77` merges in T27 (R77) |
+| R126 | B | item 1 B (trust 08660b2e). items 2 and 3: mount below trusted never takes a trusted chat, force only over no holder or the caller's parent (coop f1a5535d, 0922f718). item 4 holds structurally: the gate keys on the recorded level only (coop 1dd271cc). item 5 is judgement in the main seat's brief (docs afcbb936) |
 | R128 | P | template (trust 43ab434a). GitHub repo and lab fork not created |
 | R129 | B | cloud fleet c06e6e0 `seat_hosts` (Slack on altair, Discord on mizar), nodes c8d52be `discord_seats`, alcor 356e788 social cutover from mira. Not applied |
 | R130 | B | trust c22e3533. queue 38e4e2b0, 6cb7ae18 remove every password login (auth schema v7). The auth migration runs at deploy (T26) |
@@ -186,9 +186,9 @@ Key:
 ### sessions.md
 | R | Status | Where / what is missing |
 |---|---|---|
-| R9 | B | harness 2b3e0779. Duplicate parsers: `reporting/federation.py`, `queue-relay/ids.py` |
+| R9 | B | harness 2b3e0779. Duplicate parser `reporting/federation.py` deleted with reporting (cutover ee2b6037) |
 | R56 | B | sessions b3a75403 |
-| R58 | P | minted in operations (queue) and `reporting/task_ids.py` (sessions 86c67200). Keep one |
+| R58 | B | minted in operations (queue); `reporting/task_ids.py` deleted with reporting (cutover ee2b6037) |
 | R57 | B | sessions 86c67200, harness 970b4bf2 |
 | R13 | B | journal holds lineage (journal 52894a5e). reflection `start_other` and the harness clear event record the parent (sessions 052f8650) |
 | R8 | P | retire draft (sessions 3938718b, 73248bd4). `~/.claude/skills/retire` not updated |
@@ -202,7 +202,7 @@ Key:
 | R51 | B | harness 6f17ffd2. Cross-node wake tested against a stub only |
 | R52 | P | needs R26 deploy live |
 | R67 | P | seat-holder skill draft only |
-| R68 | P | panel exists. No flow sends a seat to the card link |
+| R68 | B | approver `/panel?task=<id>` selects the card; `task_get` and `request_human` answer `panel_url` (coop ef480704) |
 | R78 | B | sessions 6709c060, harness 2e438c1e |
 
 ### scopes.md
@@ -222,7 +222,7 @@ Key:
 |---|---|---|
 | R34, R36-R39, R47, R48 | B | routines 0e9a8840 |
 | R19-R21, R23-R25, R27, R29, R30 | B | routines a95afeb1 (engine, batching, two-ref promote, refresh, `full-tests.sh`, dry run 16/16) |
-| R26 | P | ticket B. The deploy finds the caller's card and posts the verdict (deploy 366d4d48, e43f70aa). It waits on T18's `swarm_message_post` |
+| R26 | B | ticket B. The deploy finds the caller's card and posts the verdict (deploy 366d4d48, e43f70aa) through operations `swarm_message_post` (cutover 81c20173). Not applied |
 | R31 | P | `[fleet]` from the install config (1df74bfc). The GitHub backup push and the altair push are built (deploy 366d4d48). Moving canonical from altair to mizar is T27 |
 | R32 | B | deploy 366d4d48 (`scripts/refresh-checkout.sh` and the supervised restart prompt) |
 | R33 | P | contract `refresh` key. engcyc, rlm-factorio, zotero and claude-science carry a refresh hook (deploy 366d4d48). The split into own projects runs at T27 (cloud nodes c8d52be `plugin_homes`), and the awm folders go at T23 |
@@ -322,6 +322,8 @@ Key:
 - **Wave 1, 2026-11-04.** `feat/redux` fast-forwards to gateway 61b31e89 (T6, journal 9830ea0b), then to sessions 6daad8bf (T12, journals b729f208 and 31373881). Then it merges queue 6cb7ae18 (T13, journal 9929bd81) as bd84bcca, channels 68fe1d31 (T11, journal 7394e430) as 6fcbed58, search 06e0597c (T7, journal d691d982) as d31271b3, and deploy e43f70aa (T8, journal de0d3454) as af854b5b. Each later branch merged gateway's plugin contract v1.10 into itself first. The diff from 337fa145 is +6,812 and −15,055 lines over 365 files, and +6,311 and −13,618 in Python and Rust. 41 Python dists pass, operations passes 112 in the awm-queue env, and the Rust workspace passes. 38 dvc property tests skip on mizar, which has no dvc. Cloud `feat/redux-fleet` merges fleet c06e6e0 (T9, journal b14db7d8), nodes c8d52be (T10, journal 91527b67) and alcor 356e788 (T2, journal 6b7f041d) as b2f5e42. No role is applied to a host.
 - Cloud `feat/redux-fleet` then fast-forwards to 88b6747 (journal c0c3eaf5): one list of the playbooks that may target mira, one `move_stop` gate for every stop, deneb's `awm_dir` under /opt/awm, and the dead peer and mesh keys removed. pytest, run-containers.sh, run-moves.sh and trust/run.sh pass.
 - Open after wave 1: the avatar relay still relies on the fleet CA that R92 retires. The tether v0.3.0 pin waits on `feat/redux-channels2-pin` for T26. R35 waits for T27 on altair. The cross-node subscribe, lease and file fetch refuse until T19.
+- **Wave 2, 2026-11-04.** `feat/redux` merges coop 0922f718 (T17, journal bb9a4d4d) as b0bf1311, cutover 0b22c138 (T18, journal 115bbbe8) as da1fdba5, and rust a5f2854b (T19, journal 9034edd4) as 07ca00ce, then rust's follow-up a4494351 as 0481f425. The diff from 1408a0d9 is +7,284 and −43,122 lines over 481 files, and +6,045 and −40,798 in Python and Rust. The Python gateway, reporting and the legacy loader are gone. 41 Python dists pass, operations passes 140 in the awm-queue env, the Rust workspace passes 69, and the install test passes with R144 hot reload and the R109 item 7 door. `feat/redux-r77` f3928d5f holds the board and intake deletion for T27.
+- Open after wave 2: a node that loads no reflection resolves every caller trusted (T23). A missing seat ledger entry reads trusted until the T27 seat restart. The subagent cap leaks a slot when SubagentStop never fires (T23). MCP `tools/list_changed` is not ported (T23). `awm deploy`'s apply path first runs at the first node deploy. The avatar relay moves off the fleet CA in cloud (redux-build/alcor), and the avatar stage client changes on capella (M10). The Trilium tarball host is open with Tony.
 
 ## 6. Deferred
 

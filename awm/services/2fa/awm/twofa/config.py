@@ -51,9 +51,8 @@ def _service_dir() -> Path:
     """The device-creds directory.
 
     Defaults to ``$AWM_DIR/services/2fa`` (alongside the other services' DBs
-    under ``.awm/``), but ``AWM_2FA_DIR`` overrides it wholesale — needed under
-    ``awm dev shadow``, which rewrites ``AWM_WORKSPACE`` to a sandbox dir that
-    doesn't hold the real device creds.
+    under ``.awm/``), but ``AWM_2FA_DIR`` overrides it wholesale — needed in a
+    dev sandbox, whose ``AWM_DIR`` doesn't hold the real device creds.
     """
     override = os.environ.get("AWM_2FA_DIR")
     if override and override.strip():

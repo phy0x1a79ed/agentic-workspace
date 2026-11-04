@@ -15,9 +15,10 @@ tier = "on"
 
 [[page]]
 name = "claude-science"
+dir = "pages/claude-science/dist"
 
 [needs]
-secrets = []
+secrets = ["AWM_APPROVER_GRANT_PUBKEY"]  # the mesh front's passkey sign-in (awm.tlsfront.portal)
 network = ["api.anthropic.com", "*.anthropic.com", "claude.ai", "*.claude.ai", "storage.googleapis.com"]
 platform = ["linux"]
 
@@ -40,3 +41,8 @@ verbs = ["query", "get"]
 name = "dvc"
 major = 1
 verbs = ["coverage", "scope_status"]
+
+[[needs.tool]]
+name = "auth"         # the mesh front's edge session check (awm.tlsfront.auth)
+major = 1
+verbs = ["edge_material"]

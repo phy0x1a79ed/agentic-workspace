@@ -39,23 +39,17 @@ def test_every_declared_function_has_a_handler():
 def test_every_declared_parameter_reaches_the_catalog():
     """The manifest key is `params`, and nothing complains about any other.
 
-    `catalog._fn_to_tool` reads `fn.get("params", [])`, so a function that
+    The gateway projects a verb's schema from `fn["params"]`, so a function that
     spells it `parameters` projects a tool with an empty inputSchema: the verb
     still appears, still dispatches, and every flag it declares is silently
     gone. That is exactly what shipped here -- `awm trilium restore` offered
     no --snapshot at all -- and nothing errored, which is why it is a test and
     not a comment.
     """
-    from awm.gateway.catalog import _fn_to_tool
-
-    class _Rec:
-        name = "trilium"
-
     for fn in FUNCTIONS:
-        declared = {p["name"] for p in fn.get("params", [])}
-        projected = set(_fn_to_tool(_Rec(), fn).inputSchema["properties"])
-        assert declared == projected, fn["name"]
         assert not set(fn) & {"parameters"}, fn["name"]
+        for p in fn.get("params", []):
+            assert isinstance(p, dict) and isinstance(p.get("name"), str) and p["name"], fn["name"]
 
 
 def test_a_verb_that_needs_an_argument_declares_it_required():

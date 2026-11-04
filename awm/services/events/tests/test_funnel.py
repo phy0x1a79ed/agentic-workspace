@@ -129,11 +129,23 @@ class TestListen:
         assert subs == ["rlm-factorio", "rlm-factorio"]
 
     def test_probe_doubt_answers_enabled(self, monkeypatch, funnel):
-        import httpx
+        from awm import gatewayclient
 
-        class Boom:
-            def __init__(self, *a, **k):
-                raise httpx.ConnectError("gateway down")
+        async def boom(*a, **k):
+            raise gatewayclient.GatewayCallError(503, "gateway down")
 
-        monkeypatch.setattr(httpx, "AsyncClient", Boom)
+        monkeypatch.setattr(gatewayclient, "call", boom)
         assert _run(funnel._source_enabled("rlm-factorio")) is True
+
+    def test_probe_reads_the_services_row(self, monkeypatch, funnel):
+        from awm import gatewayclient
+        seen = []
+
+        async def rows(tool, verb, args, **kw):
+            seen.append((tool, verb))
+            return [{"name": "rlm-factorio", "status": "down", "enabled": False}]
+
+        monkeypatch.setattr(gatewayclient, "call", rows)
+        assert _run(funnel._source_enabled("rlm-factorio")) is False
+        assert _run(funnel._source_enabled("other")) is True
+        assert seen[0] == ("awm", "services")

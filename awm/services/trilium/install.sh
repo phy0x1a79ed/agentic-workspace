@@ -2,7 +2,9 @@
 # Canonical install for the awm-trilium service (editable, into the `awm` env),
 # plus the Trilium server bundle it supervises.
 #
-# Three halves, because this service has three kinds of dependency:
+# Three halves, because this service has three kinds of dependency. The pinned
+# fork release (server.pin, install.md R115 item 4) replaces 2a, 2b and 3 once the
+# fork on mizar publishes its first tarball:
 #
 #   1. Python — the adapter and the per-user supervisor. Installs the
 #      component libraries it imports first, then the service.
@@ -24,7 +26,7 @@
 #
 # Which one runs is decided by TRILIUM_INSTALL_MODE, and by default by whether
 # a fork exists. Every step is idempotent and skips itself when already
-# satisfied, because this script runs on every deploy (awm/gateway/install.sh
+# satisfied, because this script runs on every deploy (awm/install.sh
 # invokes each service's).
 #
 # Override the target env with AWM_ENV=<name>.
@@ -71,8 +73,13 @@ BASE_REF="${TRILIUM_BASE_REF:-v0.105.0}"
 TARBALL_DIR="$INSTALL_DIR/server"
 TARBALL_ENTRY="$TARBALL_DIR/main.cjs"
 
-# auto | build | tarball. `auto` builds when a fork is checked out and falls
-# back to the tarball when there is none.
+# The fork release awm pins (server.pin). Once it names a url, `auto` installs it.
+pin() { sed -n "s/^$1=//p" "$HERE/server.pin" 2>/dev/null | head -1; }
+PIN_VERSION="$(pin version)"; PIN_URL="$(pin url)"; PIN_SHA="$(pin sha256)"
+
+# auto | pin | build | tarball. `auto` installs the pinned fork release when
+# server.pin names one, else builds when a fork is checked out, else falls back
+# to upstream's tarball.
 MODE="${TRILIUM_INSTALL_MODE:-auto}"
 
 run() { echo "+ pip install -e $*"; mamba run -n "$ENV" pip install -e "$@"; }
@@ -95,7 +102,40 @@ printf 'AWM_PYTHON=%s\nAWM_ENV_BIN=%s\n' "$PYBIN" "$(dirname "$PYBIN")" \
 mkdir -p "$STATE_DIR" 2>/dev/null || true
 
 if [ "$MODE" = "auto" ]; then
-    if [ -e "$FORK_DIR/.git" ]; then MODE=build; else MODE=tarball; fi
+    if [ -n "$PIN_URL" ]; then MODE=pin
+    elif [ -e "$FORK_DIR/.git" ]; then MODE=build; else MODE=tarball; fi
+fi
+
+# -- the pinned fork release ---------------------------------------------------
+if [ "$MODE" = "pin" ]; then
+    [ -n "$PIN_URL" ] && [ -n "$PIN_SHA" ] && [ -n "$PIN_VERSION" ] || {
+        echo "error: server.pin needs version, url and sha256." >&2; exit 1; }
+    STAMP_FILE="$INSTALL_DIR/tarball-stamp"
+    WANT_STAMP="fork $PIN_VERSION sha256:$PIN_SHA"
+    if [ "$(cat "$STAMP_FILE" 2>/dev/null || true)" = "$WANT_STAMP" ] \
+       && [ -f "$TARBALL_ENTRY" ]; then
+        echo "Trilium fork release $PIN_VERSION already unpacked — nothing to do."
+    else
+        TMP="$(mktemp -d)"
+        trap 'rm -rf "$TMP"' EXIT
+        echo "Fetching the fork release $PIN_VERSION from $PIN_URL …"
+        curl -fsSL -o "$TMP/server.tar.xz" "$PIN_URL"
+        GOT="$(sha256sum "$TMP/server.tar.xz" | cut -d' ' -f1)"
+        [ "$GOT" = "$PIN_SHA" ] || {
+            echo "error: $PIN_URL has sha256 $GOT, and server.pin names $PIN_SHA." >&2; exit 1; }
+        rm -rf "$TARBALL_DIR"
+        mkdir -p "$TARBALL_DIR"
+        tar -xJf "$TMP/server.tar.xz" -C "$TARBALL_DIR" --strip-components=1
+        test -f "$TARBALL_ENTRY" || {
+            echo "error: the fork release did not contain main.cjs at its root." >&2; exit 1; }
+        printf '%s\n' "$WANT_STAMP" > "$STAMP_FILE"
+        rm -rf "$TMP"
+        trap - EXIT
+    fi
+    echo "Installed awm-trilium into env '$ENV'."
+    echo "Server:  $TARBALL_ENTRY (fork release $PIN_VERSION)"
+    echo "State:   $STATE_DIR"
+    exit 0
 fi
 
 # -- (b) the published tarball ----------------------------------------------

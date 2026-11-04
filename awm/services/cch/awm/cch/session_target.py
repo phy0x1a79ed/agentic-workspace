@@ -6,7 +6,7 @@ process id that the gateway observed (never one the model supplied), and either
 returns the one place that pid lives — or refuses.
 
 The pid is trustworthy because of how the MCP proxy is spawned. Claude Code runs
-``awm-mcp`` as a stdio child of the REPL, one proxy per session, so the proxy's
+``awm mcp`` as a stdio child of the REPL, one proxy per session, so the proxy's
 own parent *is* the calling agent. That holds identically whether the session is
 hosted in a tmux pane or as a background job, which is the whole reason the
 service no longer needs to care which it is.

@@ -102,16 +102,11 @@ class Funnel:
     async def _source_enabled(self, service: str) -> bool:
         """False only when the gateway says ``service`` is disabled; any
         doubt (gateway down, service unknown) answers True."""
-        import httpx
-
         from awm import gatewayclient
 
         try:
-            async with httpx.AsyncClient(timeout=5.0) as cli:
-                r = await cli.get(
-                    f"{gatewayclient.hub_base_url()}/hub/services/discovered")
-            r.raise_for_status()
-            for s in r.json().get("services", []):
+            rows = await gatewayclient.call("awm", "services", {}, timeout=5.0)
+            for s in rows if isinstance(rows, list) else []:
                 if s.get("name") == service:
                     return bool(s.get("enabled", True))
         except Exception as exc:  # noqa: BLE001 — a probe must never kill the loop

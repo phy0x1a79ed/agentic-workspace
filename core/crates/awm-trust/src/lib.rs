@@ -10,4 +10,4 @@ pub mod trust;
 
 pub use edges::{EdgeList, Network};
 pub use grant::{verify_grant, Grant, GrantError};
-pub use trust::{cross_edge, journal_bound, level_for_start, may_steer, JournalBound, Level, TrustError};
+pub use trust::{call_refusal, cross_edge, journal_bound, level_for_start, may_steer, stamped_level, Call, JournalBound, Level, TrustError};

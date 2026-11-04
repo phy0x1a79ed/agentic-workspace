@@ -8,7 +8,7 @@ use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{any, get, post};
 use axum::{Json, Router};
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
@@ -38,6 +38,11 @@ pub fn router(gw: Arc<Gateway>) -> Router {
         .route("/usage", get(usage_get).post(usage_post))
         .route("/hub/service/register", post(register))
         .route("/hub/service/control/{id}", get(control))
+        .route("/hub/service/bridge/{id}/{bridge}", get(bridge))
+        .route("/hub/emit/{service}/{topic}", get(stream))
+        .route("/hub/session/{service}/{kind}", get(stream))
+        .route("/s/{service}", any(crate::mount::handle))
+        .route("/s/{service}/{*rest}", any(crate::mount::handle))
         .route("/hub/table", get(table))
         .route("/hub/table/changed", post(table_changed))
         .route("/hub/tool/{name}", get(tool_owner))
@@ -156,6 +161,7 @@ async fn context(gw: &Gateway, h: &HeaderMap, default: Surface) -> Result<CallCo
         }
     }
     let mut mode = None;
+    let mut session_pid = None;
     let pid = header(h, "x-awm-session-pid").or_else(|| header(h, "x-awm-caller-pid"));
     if !edge && service.is_some() && pid.is_none() {
         // A service acting on its own account: trusted, on the service lane.
@@ -169,15 +175,18 @@ async fn context(gw: &Gateway, h: &HeaderMap, default: Surface) -> Result<CallCo
             Some(Err(_)) => crate::caller::Lookup::Failed,
             None => crate::caller::Lookup::NoOwner { mode: None },
         };
+        if let crate::caller::Lookup::Session(a) = &lookup {
+            session_pid = a.get(crate::caller::FOUND_PID).and_then(Value::as_u64).map(|p| p as u32);
+        }
         mode = crate::caller::fill(&mut caller, &lookup, &gw.projects_dir());
     }
     let mut as_ = header(h, "x-awm-as").map(str::to_string);
-    // A singleton door call (`awm port`) comes from another node's service: name that node
-    // as the stamp a service reads, since a Python handler sees `as_` and not `caller`.
-    if edge && as_.is_none() && caller.lane == Lane::Service && caller.node != gw.node {
+    // A call from another node names that node as the stamp a service reads, since a Python
+    // handler sees `as_` and not `caller`, and hides what the private marks cover from it.
+    if edge && as_.is_none() && caller.node != gw.node {
         as_ = Some(format!("peer:{}", caller.node));
     }
-    Ok(CallContext { caller, as_, surface, plugin, mode })
+    Ok(CallContext { caller, as_, surface, plugin, mode, pid: session_pid })
 }
 
 /// The plugin whose page sent a request, from its Referer `<origin>/p/<plugin>/<page>/...`.
@@ -247,6 +256,9 @@ struct RegisterReq {
     pid: Option<i64>,
     #[serde(default)]
     overlay: bool,
+    /// The loopback URL of the service's own HTTP server, served at `/s/<name>/`.
+    #[serde(default)]
+    mount: Option<String>,
 }
 
 async fn register(State(gw): Gw, h: HeaderMap, Json(req): Json<RegisterReq>) -> Result<Json<Value>, ApiError> {
@@ -261,8 +273,11 @@ async fn register(State(gw): Gw, h: HeaderMap, Json(req): Json<RegisterReq>) -> 
             return Err(ApiError::new(403, format!("service {:?} needs its service token", req.name)));
         }
     }
+    if let Some(m) = req.mount.as_deref().filter(|m| !crate::mount::valid_mount(m)) {
+        return Err(ApiError::new(400, format!("mount {m:?} is not a loopback http URL")));
+    }
     let plugin = gw.plugin_of_service(&req.name);
-    let Ok(id) = gw.hub.register(&req.name, &plugin, req.pid) else {
+    let Ok(id) = gw.hub.register(&req.name, &plugin, req.pid, req.mount.clone()) else {
         return Err(ApiError::new(409, format!("service {:?} already has a live instance connected", req.name)));
     };
     tracing::info!("registered service {} (plugin {plugin}) pid {:?}", req.name, req.pid);
@@ -317,6 +332,12 @@ async fn control_socket(gw: Arc<Gateway>, id: String, socket: WebSocket) {
         match frame.get("kind").and_then(Value::as_str) {
             Some("ready") => gw.hub.ready(&name, frame.get("api").unwrap_or(&Value::Null), &bindings),
             Some("reply") => gw.hub.reply(&name, &frame),
+            Some("emit") => {
+                if let Some(topic) = frame.get("topic").and_then(Value::as_str) {
+                    gw.topics.publish(&gw, &name, topic, frame.get("payload").unwrap_or(&Value::Null));
+                }
+            }
+            Some("session.opened") => gw.stream_sessions.opened(&name, &frame),
             Some("usage") => {
                 let mut f = frame.clone();
                 f["plugin"] = json!(gw.plugin_of_service(&name));
@@ -332,6 +353,46 @@ async fn control_socket(gw: Arc<Gateway>, id: String, socket: WebSocket) {
     gw.hub.disconnected(&name, &id);
     writer.abort();
     tracing::info!("control WS closed for {name}");
+}
+
+#[derive(Deserialize)]
+struct StreamQuery {
+    peer: Option<String>,
+}
+
+/// `GET /hub/emit/<service>/<topic>` and `GET /hub/session/<service>/<kind>` (`streams.rs`).
+async fn stream(
+    State(gw): Gw,
+    h: HeaderMap,
+    uri: axum::http::Uri,
+    Query(q): Query<StreamQuery>,
+    ws: WebSocketUpgrade,
+) -> Result<Response, ApiError> {
+    refuse_token(&h)?;
+    let ctx = context(&gw, &h, Surface::Http).await?;
+    if crate::modes::is_restricted(ctx.mode.as_deref()) {
+        return Err(ApiError::new(403, format!("mode {:?} may not open a stream", ctx.mode.as_deref().unwrap_or_default())));
+    }
+    let path = uri.path().to_string();
+    let pipe = match q.peer.filter(|p| p != "local" && *p != gw.node) {
+        Some(peer) => {
+            if ctx.caller.lane == Lane::Edge {
+                return Err(ApiError::new(403, "a stream from another node may not hop on"));
+            }
+            gw.peers.open_ws(&peer, &path, &ctx).await?
+        }
+        None => gw.open_local(&path, &ctx)?,
+    };
+    Ok(ws.max_message_size(64 << 20).on_upgrade(move |socket| crate::streams::relay(socket, pipe)))
+}
+
+/// `GET /hub/service/bridge/<service_id>/<bridge_id>`: a service's end of a direct session.
+async fn bridge(State(gw): Gw, Path((id, bridge)): Path<(String, String)>, ws: WebSocketUpgrade) -> Response {
+    let Some(service) = gw.hub.name_of_id(&id) else { return (StatusCode::FORBIDDEN, "unknown service").into_response() };
+    if !gw.stream_sessions.expects_bridge(&service, &bridge) {
+        return (StatusCode::NOT_FOUND, "no session waits for this bridge").into_response();
+    }
+    ws.max_message_size(64 << 20).on_upgrade(move |socket| async move { gw.stream_sessions.bridge(&service, &bridge, socket) })
 }
 
 /// This node's tools, for a peer's name table.

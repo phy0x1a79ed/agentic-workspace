@@ -15,8 +15,8 @@ from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
 from awm.browser_seats.cdp import Cdp
+from awm.trustpolicy import LEVELS
 
-LEVELS = ("untrusted", "cooperative", "trusted")
 PROFILES = ("tony", "blank")
 
 # Page-level domains a seat may drive on its own tabs.

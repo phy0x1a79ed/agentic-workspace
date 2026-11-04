@@ -18,9 +18,10 @@ implements = ["harness@1"]
 
 [[page]]
 name = "dsh"
+dir = "pages/dsh/dist"
 
 [needs]
-secrets = []
+secrets = ["AWM_APPROVER_GRANT_PUBKEY"]  # the mesh front's passkey sign-in (awm.tlsfront.portal)
 network = ["openrouter.ai", "github.com", "api.github.com"]
 platform = ["linux"]
 
@@ -28,3 +29,8 @@ platform = ["linux"]
 name = "reflection"   # dsh sends it harness_event
 major = 1
 verbs = ["harness_event"]
+
+[[needs.tool]]
+name = "auth"         # the mesh front's edge session check (awm.tlsfront.auth)
+major = 1
+verbs = ["edge_material"]

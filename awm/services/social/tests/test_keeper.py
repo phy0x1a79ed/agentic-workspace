@@ -1109,3 +1109,23 @@ async def test_the_online_check_needs_one_target_to_accept():
     finally:
         server.close()
         await server.wait_closed()
+
+
+async def test_a_kept_seat_starts_through_reflection_with_its_level(monkeypatch):
+    """reflection records the level, so the gateway stamps it (fleet.md R103, channels.md R125)."""
+    from awm import config, gatewayclient
+    from awm.social.keeper import Cx
+
+    calls = []
+
+    async def call(tool, verb, args=None, *, peer=None, timeout=None):
+        calls.append((tool, verb, peer, args))
+        return {"ok": True, "job": "j1", "trust": args["trust"]}
+
+    monkeypatch.setattr(gatewayclient, "call", call)
+    monkeypatch.setattr(config, "node_name", lambda: "mira")
+    spec = {"name": "seat:slack/DM/beth", "trust": "cooperative"}
+    assert (await Cx().start("altair", spec))["trust"] == "cooperative"
+    assert calls == [("reflection", "start_other", "altair", spec)]
+    await Cx().start("mira", spec)
+    assert calls[-1][2] is None

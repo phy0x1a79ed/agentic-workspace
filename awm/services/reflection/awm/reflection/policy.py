@@ -1,8 +1,9 @@
 """The one seam between reflection and the trust lane's policy library (`awm.trustpolicy`).
 
 reflection keeps each session's trust level in its own ledger and asks the
-library what a level allows. Until the library is installed on a node, every
-check allows what reflection allowed before levels existed.
+library what a level allows. The gateway refuses what a level may never call
+(channels.md R125); a steer stays here, because only this ledger knows the
+target's level.
 
 A session with no recorded level reads as ``trusted``: every session started
 before levels existed acted with full trust, and a level that appears from
@@ -31,10 +32,7 @@ class Refused(PermissionError):
 
 
 def _lib():
-    try:
-        import awm.trustpolicy as lib
-    except ImportError:
-        return None
+    import awm.trustpolicy as lib
     return lib
 
 
@@ -59,9 +57,13 @@ def _write(data: dict) -> None:
 
 
 def level_of(session_id: Optional[str]) -> str:
-    if not session_id:
-        return DEFAULT_LEVEL
-    return (_read().get(session_id) or {}).get("level") or DEFAULT_LEVEL
+    return recorded_levels().get(session_id or "") or DEFAULT_LEVEL
+
+
+def recorded_levels() -> dict[str, str]:
+    """Each session's recorded level. A session missing here reads as ``DEFAULT_LEVEL``."""
+    return {sid: rec["level"] for sid, rec in _read().items()
+            if isinstance(rec, dict) and rec.get("level")}
 
 
 def record(session_id: str, level: str, origin: str) -> None:
@@ -79,10 +81,9 @@ def record(session_id: str, level: str, origin: str) -> None:
 def check_steer(actor_id: Optional[str], verb: str,
                 target_id: Optional[str] = None) -> None:
     """Raise :class:`Refused` when the caller may not run ``verb`` on another session."""
-    lib = _lib()
-    if lib is None or not actor_id:
+    if not actor_id:
         return
-    ok, why = lib.may_steer(level_of(actor_id), verb,
+    ok, why = _lib().may_steer(level_of(actor_id), verb,
                             target_level=level_of(target_id) if target_id else None)
     if not ok:
         raise Refused(why)
@@ -93,8 +94,6 @@ def start_level(actor_id: Optional[str], requested: Optional[str], *,
     """The level a new session starts at. Raises :class:`Refused` above the caller's."""
     lib = _lib()
     starter = level_of(actor_id)
-    if lib is None:
-        return requested or (starter if actor_id else None)
     try:
         key = lib.grant_key() if grant else None
     except Exception:  # noqa: BLE001 - no key reads as no grant
@@ -108,8 +107,7 @@ def start_level(actor_id: Optional[str], requested: Optional[str], *,
 
 def first_message_hint(actor_id: Optional[str]) -> Optional[str]:
     """The hint for a session's first awm message to a local session, once."""
-    lib = _lib()
-    if lib is None or not actor_id:
+    if not actor_id:
         return None
     with _lock:
         data = _read()
@@ -121,4 +119,4 @@ def first_message_hint(actor_id: Optional[str]) -> Optional[str]:
             _write(data)
         except OSError:
             return None
-    return lib.FIRST_LOCAL_MESSAGE_HINT
+    return _lib().FIRST_LOCAL_MESSAGE_HINT

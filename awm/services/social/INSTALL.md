@@ -211,7 +211,12 @@ line came from. Newlines become ` ⏎ `. Text past 1500 characters is cut, and a
 
 - **One holder.** A mount on a held seat is refused and names the holder.
   `force=true` takes it, and the old holder gets one line saying it lost the
-  seat. The swarm is cooperative, so force is the recovery path.
+  seat. Force is the recovery path for a trusted caller.
+- **Below trusted.** A cooperative or untrusted caller sends, reacts, fetches,
+  reads history and downloads only in the chats it holds. It never mounts a
+  trusted chat. It forces a held seat only from the session that started it,
+  as the main seat hands a person's DM over. A borrowing node forwards its
+  caller's level in `_caller_session`, and the owner only ever lowers to it.
 - **Release.** `social_unmount` frees one seat, or every seat the caller holds.
   The owner prunes every 60 s and frees each seat whose job is gone or stopped.
   An idle background session retires after about an hour, which frees its seats
@@ -220,7 +225,7 @@ line came from. Newlines become ` ⏎ `. Text past 1500 characters is cut, and a
   sits at a dialog) is retried with backoff for 2 minutes, then dropped.
   History still holds it.
 - **Quiet threads.** A bot send with `quiet=true` keeps the replies in that
-  message's thread from the holder, for good. `reporting` posts each admin
+  message's thread from the holder, for good. operations posts each Arbutus admin
   approval request this way, so the #arbutus holder never answers an
   `approve` meant for the approval handler.
 - **Discord DM.** A Discord DM carries the operator's notifications and slash
@@ -476,28 +481,23 @@ this folder (any folder with a `run.sh` under `awm/services/`), starts it with
 
 No auth — the registration handshake carries no token.
 
-To iterate against a running sandbox without installing, use
-`awm dev shadow awm/services/social`; it execs this same `run.sh` as an overlay.
-Under a shadow `AWM_WORKSPACE` is rewritten to a sandbox dir, so point the
-service at a real `social.toml` with **`AWM_SOCIAL_CONFIG=/abs/path/social.toml`**
+To iterate without installing, run the worktree's dev sandbox (`bash awm/services/dev/sandbox/run.sh start`); it runs this same `run.sh` from the worktree.
+The sandbox's `AWM_DIR` holds no `social.toml`, so point the service at a real
+one with **`AWM_SOCIAL_CONFIG=/abs/path/social.toml`** in the sandbox's `[env]`
 (the parallel of the 2fa service's `AWM_2FA_DIR`).
 
 ## Discord slash commands
 
-The Discord connector registers three application commands. Each works only as
-a **DM to the bot**, and only for a sender in the `social_operators` table.
-
-| Command | Consumer |
-|---|---|
-| `/approve [device]` | `2fa` and `ssh` arm a Duo approval burst (see their INSTALL) |
-| `/reject <ref> [reason]` | `reporting` rejects the federation card |
-| `/new-agent [prompt]` | `reporting` starts a session with Remote Control on and answers with its link |
+The Discord connector registers one application command, `/approve [device]`.
+The `2fa` and `ssh` services consume it to arm a Duo approval burst (see their
+INSTALL). It works only as a **DM to the bot**, and only for a sender in the
+`social_operators` table.
 
 The commands sync as *global* commands in `on_ready`, because global is the
 only kind that appears in a DM. The command tree allows the bot DM context only,
 so Discord hides the commands in servers and group DMs. On invocation the connector checks the sender,
 acks within Discord's 3s deadline and emits a normalised event on the `command`
-emitter topic (`/svc/social/emit/command`) with `{command, account,
+emitter topic (`/hub/emit/social/command`) with `{command, account,
 channel_id, operator, …}`. The service does nothing with a command itself.
 
 The `/new-agent` ack is public in the DM and carries an `ack_ref` in its event.

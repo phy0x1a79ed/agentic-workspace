@@ -22,11 +22,12 @@ from awm.gatewayclient.push import Pusher
 
 BEARER = "a-test-bearer-nothing-guards"
 HOLDER = {"node": "testnode", "session": "cc" + "a" * 32, "job": "job-aaaa",
-          "name": "tester"}
+          "name": "tester", "level": "trusted"}
 OTHER = {"node": "testnode", "session": "cc" + "b" * 32, "job": "job-bbbb",
-         "name": "someone-else"}
+         "name": "someone-else", "level": "cooperative"}
 #: A holder on another node, known by its job.
-FAR = {"node": "farnode", "session": "job:job-cccc", "job": "job-cccc", "name": "far"}
+FAR = {"node": "farnode", "session": "job:job-cccc", "job": "job-cccc", "name": "far",
+       "level": "trusted"}
 
 
 def _relay_bin() -> Path | None:

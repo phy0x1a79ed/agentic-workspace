@@ -22,8 +22,8 @@ run "$AWM/service_components/gatewayclient" --no-deps
 if [[ "${AWM_SEARCH:-1}" != "0" ]]; then
     bash "$AWM/service_components/persistence/install-search.sh" "$ENV"
 fi
-# Provisioning imports the DVC wiring from awm.dvc.data_dvc.
-run "$AWM/services/dvc" --no-deps
+# Provisioning imports the DVC wiring from awm.dvcdata.data_dvc.
+run "$AWM/service_components/dvcdata" --no-deps
 run "$HERE"
 
 # Bake the target env's absolute interpreter into a gitignored `.runtime-env`

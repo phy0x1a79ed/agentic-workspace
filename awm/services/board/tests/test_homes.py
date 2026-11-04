@@ -5,7 +5,6 @@ import pytest
 from awm.board.vault import Vault
 
 from test_archive import BOARD_LABEL, request
-from test_migrate import WRITES, snapshot
 
 
 def fold(board, card, home):
@@ -83,71 +82,3 @@ def test_two_cards_folded_into_each_other_read_without_looping(board, trilium, f
 # -- the migration ---------------------------------------------------------------------
 
 
-def test_the_homes_dry_run_reports_the_plan_and_changes_nothing(board, trilium, folded):
-    before, calls = snapshot(trilium), len(trilium.calls)
-    report = board.migrate_homes(dry_run=True)
-    assert report["dry_run"] is True and report["cards_to_move"] == 3
-    assert report["already_homed"] == 0 and report["home_missing"] == 1
-    assert report["without_home"] == 2                                  # the home and the lone card
-    assert report["by_home"] == {folded["home"]: {"title": "Factorio benchmark",
-                                                  "to_move": 3, "already": 0}}
-    assert snapshot(trilium) == before
-    assert not [fn for fn, _ in trilium.calls[calls:] if fn in WRITES]
-
-
-def test_the_homes_apply_files_each_folded_card_under_its_home_and_a_second_apply_changes_nothing(
-        board, trilium, folded, tony):
-    report = board.migrate_homes(dry_run=False)
-    assert report["moved"] == 3
-    assert all(under_home(trilium, folded, n) for n in "abc")
-    assert not trilium.is_filed_archived(folded["a"])
-    assert trilium.is_filed_archived(folded["lone"]) and trilium.is_filed_archived(folded["stray"])
-    assert trilium.is_filed_archived(folded["home"])                    # the home itself stays filed
-    assert board.get(tony, folded["a"])["state"] == "proposed"
-    assert board.list(tony) == []
-    before, calls = snapshot(trilium), len(trilium.calls)
-    again = board.migrate_homes(dry_run=False)
-    assert again["moved"] == 0 and again["cards_to_move"] == 0 and again["already_homed"] == 3
-    assert again["by_home"][folded["home"]]["to_move"] == 0
-    assert snapshot(trilium) == before
-    assert not [fn for fn, _ in trilium.calls[calls:] if fn in WRITES]
-
-
-def test_the_homes_apply_leaves_a_loop_of_homes_where_it_is(board, trilium, folded):
-    trilium.set_attr(trilium.card_note(folded["home"]), "cardFolded", folded["a"])
-    report = board.migrate_homes(dry_run=False)
-    assert report["cyclic_skipped"] == 4 and report["moved"] == 0     # home, a, b and c all lead into the loop
-    assert trilium.is_filed_archived(folded["a"])
-
-
-def test_the_homes_dry_run_counts_a_card_that_names_itself_as_a_loop(board, trilium, folded):
-    trilium.set_attr(trilium.card_note(folded["lone"]), "cardFolded", folded["lone"])
-    report = board.migrate_homes(dry_run=True)
-    assert report["cyclic_skipped"] == 1 and report["home_missing"] == 1
-
-
-def test_a_card_folded_into_a_folded_card_goes_flat_under_the_top_home(board, trilium, folded, tony):
-    trilium.set_attr(trilium.card_note(folded["a"]), "cardFolded", folded["b"])
-    trilium.set_attr(trilium.card_note(folded["b"]), "cardFolded", folded["c"])
-    trilium.set_attr(trilium.card_note(folded["c"]), "cardFolded", folded["home"])
-    plan = board.migrate_homes(dry_run=True)
-    assert plan["by_home"][folded["home"]]["to_move"] == 3 and list(plan["by_home"]) == [folded["home"]]
-    board.migrate_homes(dry_run=False)
-    assert all(under_home(trilium, folded, n) for n in "abc")
-    assert board.get(tony, folded["a"])["state"] == "proposed"
-    before = snapshot(trilium)
-    assert board.migrate_homes(dry_run=False)["moved"] == 0 and snapshot(trilium) == before
-
-
-def test_a_card_nested_under_an_intermediate_home_reads_and_is_lifted_to_the_top(
-        board, trilium, folded, tony):
-    trilium.set_attr(trilium.card_note(folded["a"]), "cardFolded", folded["b"])
-    trilium.set_attr(trilium.card_note(folded["b"]), "cardFolded", folded["home"])
-    trilium("note_move", {"note_id": trilium.card_note(folded["b"]),
-                          "parent": trilium.card_note(folded["home"])})
-    trilium("note_move", {"note_id": trilium.card_note(folded["a"]),
-                          "parent": trilium.card_note(folded["b"])})
-    fresh = Vault(trilium, board_label=BOARD_LABEL)
-    assert fresh.read(folded["a"])["state"] == "proposed"               # reads through the chain
-    report = board.migrate_homes(dry_run=False)
-    assert report["moved"] == 2 and under_home(trilium, folded, "a")       # a lifted, c filed

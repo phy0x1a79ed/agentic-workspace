@@ -160,16 +160,14 @@ without `retire`. It rides in the system prompt so that no compaction paraphrase
 - `brief: false` leaves the brief out.
 
 **CAUTION** The lineage record and the `list_other` row carry `brief`.
-Reporting opens a board card for each live job with `brief` set, so a session
-started without the brief stays off the board until it plans, claims or asks.
 A job runs its first prompt before `start` writes its lineage record, so until
 then `list_other` reads the job's fields from its pending record.
 
 **CAUTION** `--restricted` refuses bypass, so a restricted start runs in its
 named mode with no way to reach bypass. A restricted session also ignores user
-settings, so cx passes it `--settings` with the reporting hook fragment from
+settings, so cx passes it `--settings` with the operations hook fragment from
 `AWM_CX_RESTRICTED_SETTINGS` (default
-`~/.claude/hooks/awm-reporting-settings.json`). cx omits the flag when the file
+`~/.claude/hooks/awm-operations-settings.json`). cx omits the flag when the file
 is absent on the node.
 
 #### Where a mode lives
@@ -419,7 +417,6 @@ this folder, starts it with `bash run.sh`, and injects `AWM_HUB_URL`,
 `AWM_SERVICE_NAME` and `AWM_SERVICE_ID`. No auth.
 
 Only one copy may own the pool. The reconcile loop takes a non-blocking
-exclusive lock and skips the tick if it cannot get it, which covers an
-`awm dev shadow` overlay, a dev sandbox running its own copy against the same
-home directory, a stray manual run, and a predecessor that has not finished
+exclusive lock and skips the tick if it cannot get it, which covers a dev
+sandbox running its own copy against the same home directory, a stray manual run, and a predecessor that has not finished
 dying. The `list` pool summary reports whether the answering process holds it.

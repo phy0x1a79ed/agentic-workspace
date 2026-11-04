@@ -9,6 +9,7 @@ requires-python = ">=3.11"
 description = "AWM dvc service: the chinook Globus collection as an append-only remote for the shared DVC cache — a daily whole-cache sync, plus a hash-selective per-scope pull/push inverse."
 dependencies = [
     "awm-config",
+    "awm-dvcdata",
     "awm-gatewayclient",
     "awm-persistence",
     "pyyaml",

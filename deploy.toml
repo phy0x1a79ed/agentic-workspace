@@ -5,7 +5,7 @@
 [deploy]
 # Only the dists the batch touched, only their smoke tests. Exit 5 (nothing
 # collected) counts as a pass.
-check = 'awm/gateway/scripts/run-tests.sh --smoke --changed "$AWM_DEPLOY_BASE"'
+check = 'scripts/run-tests.sh --smoke --changed "$AWM_DEPLOY_BASE"'
 check_timeout = 60
 
 [promote]
@@ -23,7 +23,7 @@ prompt = """This node's awm checkout already holds the new release. Restart awm 
 on it under supervision, as FEDERATION.md § Deploy says. First find the other \
 sessions on this node with ListAgents. Tell each live one that awm restarts, and \
 wait until none is mid-call to an awm tool or holds a tether or ssh session it \
-cannot lose. Then run `awm deploy`, then `bash awm/services/trilium/install.sh` \
-(awm deploy cannot see the Trilium fork move), and confirm every enabled \
+cannot lose. Then run `scripts/awm-deploy.sh`, then `bash awm/services/trilium/install.sh` \
+(the deploy cannot see the Trilium fork move), and confirm every enabled \
 service came back. If one did not, fix it before you stop. Tell the sessions \
 you warned that awm is back."""

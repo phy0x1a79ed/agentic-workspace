@@ -11,8 +11,7 @@
 # whose checkout does not carry the hook yet, and its md5 is checkable.
 #
 # `local` is the node this runs on. Capella refuses every peer, so it runs this
-# itself. Reporting runs on the fleet nodes only. mira is a station and gets none
-# of it.
+# itself. mira is a station and gets none of it.
 set -uo pipefail
 
 AWM="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -25,7 +24,14 @@ HOOKS=(
   "cx-name|services/cch/hooks/name_on_prompt.py|awm-cx-name-hook.py|local miraz|"
   "reflection|services/cch/hooks/plan_mode_hook.py|awm-reflection-mode.py|local|"
   "brief|services/cch/hooks/brief_on_start.py|awm-brief-hook.py|local|"
-  "reporting|services/reporting/hooks/reporting_hook.py|awm-reporting-hook.py|local|awm-reporting-settings.json"
+  "subagent-cap|services/cch/hooks/subagent_cap.py|awm-subagent-cap.py|local altair|"
+  "operations|plugins/operations/hooks/operations_hook.py|awm-operations-hook.py|local|awm-operations-settings.json"
+)
+
+# Hooks that are gone, as file in ~/.claude/hooks, then nodes. Their settings.json
+# entries and files are removed.
+RETIRED=(
+  "awm-reporting-hook.py|local|"
 )
 
 # settings.json entries per hook, as {event: entry}; @file reads the "hooks" of a shipped
@@ -34,7 +40,8 @@ declare -A ENTRIES=(
   [cx-name]='{"UserPromptSubmit":{"hooks":[{"type":"command","command":"python3 -S $HOME/.claude/hooks/awm-cx-name-hook.py 2>/dev/null || true","timeout":5}]}}'
   [reflection]='{"PostToolUse":{"matcher":"ExitPlanMode","hooks":[{"type":"command","command":"python3 -S $HOME/.claude/hooks/awm-reflection-mode.py 2>/dev/null || true","timeout":20}]}}'
   [brief]='{"SessionStart":{"hooks":[{"type":"command","command":"python3 -S $HOME/.claude/hooks/awm-brief-hook.py 2>/dev/null || true","timeout":6}]}}'
-  [reporting]='@awm-reporting-settings.json'
+  [subagent-cap]='{"PreToolUse":{"matcher":"Agent|Task","hooks":[{"type":"command","command":"python3 -S $HOME/.claude/hooks/awm-subagent-cap.py 2>/dev/null || true","timeout":5}]},"SubagentStart":{"hooks":[{"type":"command","command":"python3 -S $HOME/.claude/hooks/awm-subagent-cap.py 2>/dev/null || true","timeout":5}]},"SubagentStop":{"hooks":[{"type":"command","command":"python3 -S $HOME/.claude/hooks/awm-subagent-cap.py 2>/dev/null || true","timeout":5}]}}'
+  [operations]='@awm-operations-settings.json'
 )
 
 on() {
@@ -73,6 +80,27 @@ if changed:
 print(" ".join(out))
 PYEOF
 
+read -r -d '' UNPATCH <<'PYEOF'
+import json, os, shutil, sys
+p = os.path.expanduser("~/.claude/settings.json")
+key = sys.argv[2]
+s = json.load(open(p))
+gone = 0
+for event, lst in list(s.get("hooks", {}).items()):
+    keep = [e for e in lst if not any(key in (h.get("command") or "") for h in e.get("hooks", []))]
+    gone += len(lst) - len(keep)
+    if keep: s["hooks"][event] = keep
+    else: del s["hooks"][event]
+if gone and os.environ.get("HOOK_CHECK") != "1":
+    shutil.copy(p, os.path.expanduser(f"~/.claude/backups/settings.json.{sys.argv[1]}"))
+    tmp = p + ".tmp"
+    with open(tmp, "w") as fh:
+        json.dump(s, fh, indent=2)
+        fh.write("\n")
+    os.replace(tmp, p)
+print(f"{gone} entries" if gone else "ok")
+PYEOF
+
 # Copies $1 to ~/.claude/hooks/$2 on $3 through a temp name, so a symlink there is replaced, never written through.
 put() {
   local src=$1 dst=hooks/$2 node=$3 want got state
@@ -106,6 +134,23 @@ for row in "${HOOKS[@]}"; do
     out=$(printf '%s' "$PATCH" | on "$node" "mkdir -p ~/.claude/backups; HOOK_CHECK=$CHECK python3 - $TS $dst $(printf '%s' "$entries" | base64 -w0)")
     printf '  %-10s settings.json  %s\n' "$node" "${out:-failed}"
     [[ $out == *absent* || $out == *drift* || -z $out ]] && rc=1
+  done
+done
+
+for row in "${RETIRED[@]}"; do
+  IFS='|' read -r dst nodes _ <<<"$row"
+  echo "retired $dst"
+  for node in $nodes; do
+    if [[ -z ${up[$node]:-} ]]; then on "$node" true >/dev/null 2>&1 && up[$node]=1 || up[$node]=0; fi
+    if [[ ${up[$node]} == 0 ]]; then echo "  UNREACHABLE  $node"; rc=1; continue; fi
+    out=$(printf '%s' "$UNPATCH" | on "$node" "mkdir -p ~/.claude/backups; HOOK_CHECK=$CHECK python3 - $TS $dst")
+    printf '  %-10s settings.json  %s\n' "$node" "${out:-failed}"
+    [[ $out == ok ]] || { (( ! CHECK )) && [[ $out == *entries ]]; } || rc=1
+    if on "$node" "test -e ~/.claude/hooks/$dst"; then
+      if (( CHECK )); then printf '  %-10s %-28s present\n' "$node" "$dst"; rc=1
+      else on "$node" "mv -f ~/.claude/hooks/$dst ~/.claude/backups/$dst.$TS"
+           printf '  %-10s %-28s removed\n' "$node" "$dst"; fi
+    fi
   done
 done
 exit $rc

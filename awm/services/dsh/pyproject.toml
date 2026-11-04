@@ -10,9 +10,10 @@ description = "AWM dsh service: supervise the DeepSeek Harness web server on loo
 dependencies = [
     "awm-config",
     "awm-gatewayclient",
-    # Service-on-service: the mesh front is a configuration of httpsfront's
-    # cert handling, auth gate and reverse proxy, not a second implementation.
-    "awm-httpsfront",
+    # The mesh front is a configuration of the shared TLS front library:
+    # its cert handling, edge session check and reverse proxy.
+    "awm-grantlib",
+    "awm-tlsfront",
     "PyYAML",
 ]
 

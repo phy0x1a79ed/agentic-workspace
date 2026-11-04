@@ -88,3 +88,19 @@ def test_the_scope_is_overridable_for_a_sandbox(monkeypatch):
     finally:
         monkeypatch.delenv("TRILIUM_VAULT_SCOPE")
         importlib.reload(instances)
+
+
+def test_a_tarball_from_the_fork_release_counts_as_the_fork(tmp_path, monkeypatch):
+    server = tmp_path / "server"
+    (server / "node" / "bin").mkdir(parents=True)
+    (server / "main.cjs").write_text("")
+    (server / "node" / "bin" / "node").write_text("")
+    monkeypatch.setattr(instances, "FORK_ENTRY", tmp_path / "no-fork" / "main.cjs")
+    monkeypatch.setattr(instances, "TARBALL_ENTRY", server / "main.cjs")
+    monkeypatch.setattr(instances, "TARBALL_NODE", server / "node" / "bin" / "node")
+    monkeypatch.setattr(instances, "TARBALL_STAMP", tmp_path / "tarball-stamp")
+    instances.TARBALL_STAMP.write_text("TriliumNotes-Server-v0.105.0-linux-x64.tar.xz\n")
+    assert instances.entry_point()[1] == "tarball"
+    instances.TARBALL_STAMP.write_text("fork v0.105.0-awm.1 sha256:ab\n")
+    assert instances.entry_point() == (server / "main.cjs", "fork")
+    assert instances.node_exe() == str(server / "node" / "bin" / "node")

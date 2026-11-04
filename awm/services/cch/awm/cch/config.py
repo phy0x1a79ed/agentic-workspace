@@ -74,7 +74,7 @@ def skip_permission_flags() -> list[str]:
 
 def restricted_settings() -> Path:
     env = os.environ.get("AWM_CX_RESTRICTED_SETTINGS")
-    return Path(env) if env else Path.home() / ".claude" / "hooks" / "awm-reporting-settings.json"
+    return Path(env) if env else Path.home() / ".claude" / "hooks" / "awm-operations-settings.json"
 
 
 def seed_env() -> dict[str, str]:

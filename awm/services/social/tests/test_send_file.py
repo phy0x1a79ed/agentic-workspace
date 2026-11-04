@@ -50,7 +50,7 @@ def conn(monkeypatch):
 
 async def _send(**args):
     from awm.social import hub_adapter as hub
-    return await hub.HANDLERS["send"]({"account": "bot", "channel": "D1", **args})
+    return await hub.HANDLERS["send"]({"account": "bot", "channel": "D1", "_caller_trust": "trusted", **args})
 
 
 # -- the verb -----------------------------------------------------------------
@@ -104,10 +104,10 @@ async def test_a_borrower_carries_the_file_inside_the_call(monkeypatch, plan):
     monkeypatch.setattr(gc, "peer_env", lambda var: "mira")
     monkeypatch.setattr(gc, "call", lambda tool, verb, args=None, *, peer=None, **kw: (call_peer)(peer, tool, verb, args, **kw))
     monkeypatch.setattr(hub, "_connectors", {})
-    await hub.HANDLERS["send"]({"account": "slack-bot", "channel": "D1",
+    await hub.HANDLERS["send"]({"account": "slack-bot", "channel": "D1", "_caller_trust": "trusted",
                                 "text": "t", "file": plan})
     b64 = base64.b64encode(b"# Plan\n").decode()
-    assert calls == [("mira", "send", {"account": "slack-bot", "channel": "D1",
+    assert calls == [("mira", "send", {"account": "slack-bot", "channel": "D1", "_caller_trust": "trusted",
                                        "text": "t",
                                        "files": [{"filename": "plan.md", "b64": b64}]})]
 

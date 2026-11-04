@@ -75,7 +75,7 @@ Supersedes the "Scope roadmap" + "Open questions" above, after deduping with Ton
 - **`svc-timer` → `svc-events`** — generalized to an agent event/notification service: timer (cron → `schedule.tick`) first, plus the funnel that normalizes realm/effector hooks (`game.*.needs_*`, `rlm.*.error`) into agent-wake notifications the `agents` service consumes.
 - **All web realm/effector/agent/timer code lives under `awm/services/*`;** `projects/game-bot` is retired for web work (the factorio slice stays a standalone POC).
 
-Resulting scopes (created + seeded 2026-06-27): `feat-gamebot` (composition), `rlm-browser`, `svc-effector`, `svc-events`. The gamebot sandbox runs on a pinned `:7871` (gitignored `awm/gateway/dev/.env`); per-effort dev-sandbox isolation is a separate deferred migration (owned by another agent).
+Resulting scopes (created + seeded 2026-06-27): `feat-gamebot` (composition), `rlm-browser`, `svc-effector`, `svc-events`. The gamebot sandbox runs on a pinned `:7871` (gitignored `awm/services/dev/sandbox/.env`); per-effort dev-sandbox isolation is a separate deferred migration (owned by another agent).
 EOF
   note "WEB_GAMES_ON_AWM.md: appended dedup update"
 }

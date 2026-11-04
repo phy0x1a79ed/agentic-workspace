@@ -16,7 +16,7 @@ The script installs the component libraries and this service into the `awm` env 
 
 ## Joining the archive
 
-A service joins with one `[[archive]]` table per source in its `service.toml`. The gateway lists the tables under `archive` in each `awm registry_list` entry. `search` reads them there, so a new table appears in `search sources` with no change to this service.
+A service joins with one `[[service.archive]]` table per source in its `awm-plugin.toml`. The gateway lists the tables under `archive` in each row of `awm services`. `search` reads them there, so a new table appears in `search sources` with no change to this service.
 
 - `name`: the source name. It is also the federation grant. Use lowercase letters, digits, `_` and `-`.
 - `mode = "index"` with `export = "<tool>_export"`. The hidden export verb pages documents. Optional `topic` names an event that triggers a pass.

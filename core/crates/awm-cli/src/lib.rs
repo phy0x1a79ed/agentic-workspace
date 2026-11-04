@@ -6,6 +6,7 @@ use clap::{Parser, Subcommand};
 use serde_json::{json, Map, Value};
 
 pub mod bootstrap;
+pub mod deploy;
 pub mod edge;
 
 #[derive(Parser, Debug)]
@@ -47,6 +48,26 @@ pub enum Command {
     },
     /// Remove an installed plugin.
     Uninstall { name: String },
+    /// List the services, or start, stop, restart, enable or disable one.
+    Services {
+        /// list, start, stop, restart, enable or disable.
+        #[arg(default_value = "list")]
+        action: String,
+        name: Option<String>,
+    },
+    /// Print each payload a service emits on a topic, one JSON line each.
+    Listen {
+        service: String,
+        topic: String,
+        /// Listen on another node, over the edge.
+        #[arg(long)]
+        peer: Option<String>,
+        /// Print only payloads whose `key` equals `value` (repeatable, all must match).
+        #[arg(long = "match", value_name = "KEY=VALUE")]
+        matches: Vec<String>,
+    },
+    /// Refresh this node from its checkout: install the plugins' envs, build the pages, reload.
+    Deploy(deploy::Args),
     /// Serve calls from another node over ssh: the forced command of an edge's user key.
     EdgeServe,
     /// One call through the service door: the forced command of a service key.
@@ -115,6 +136,9 @@ pub async fn run(cli: Cli) -> anyhow::Result<i32> {
             post_and_print("/hub/install", json!({"sources": sources, "approval": approval})).await
         }
         Command::Uninstall { name } => post_and_print("/hub/uninstall", json!({"name": name})).await,
+        Command::Services { action, name } => services(&action, name).await,
+        Command::Listen { service, topic, peer, matches } => listen(&service, &topic, peer, &matches).await,
+        Command::Deploy(args) => deploy::run(args).await,
         Command::EdgeServe => edge::edge_serve().await,
         Command::Port { key } => edge::port(&key).await,
         Command::Tool(words) => run_tool(&words).await,
@@ -139,11 +163,69 @@ async fn get_and_print(path: &str) -> anyhow::Result<i32> {
     Ok(if ok { 0 } else { 1 })
 }
 
-/// Parse `<tool> <verb> [--key value]...` into the `/invoke` body.
+/// `awm services`: the `awm` tool's service verbs.
+async fn services(action: &str, name: Option<String>) -> anyhow::Result<i32> {
+    const ACTIONS: [&str; 6] = ["list", "start", "stop", "restart", "enable", "disable"];
+    if !ACTIONS.contains(&action) {
+        anyhow::bail!("awm services: {action:?} is not one of {}", ACTIONS.join(", "));
+    }
+    let (verb, args) = match (action, name) {
+        ("list", _) => ("services", json!({})),
+        (_, Some(n)) => (action, json!({"name": n})),
+        (_, None) => anyhow::bail!("awm services {action} needs a service name"),
+    };
+    let body = json!({"name": awm_gateway::gateway::NATIVE_TOOL, "args": {"verb": verb, "args": args}});
+    invoke_and_print(&body).await
+}
+
+/// `awm listen`: one JSON line per payload, until the gateway closes the stream.
+async fn listen(service: &str, topic: &str, peer: Option<String>, matches: &[String]) -> anyhow::Result<i32> {
+    let mut wanted = Vec::new();
+    for m in matches {
+        let Some((k, v)) = m.split_once('=') else { anyhow::bail!("--match takes KEY=VALUE, not {m:?}") };
+        wanted.push((k.to_string(), v.to_string()));
+    }
+    let mut url = format!("{}/hub/emit/{service}/{topic}", gateway_url().replacen("http", "ws", 1));
+    if let Some(p) = peer {
+        url.push_str(&format!("?peer={p}"));
+    }
+    let mut pipe = awm_gateway::peer::connect_ws(&url, &[("x-awm-caller-pid", std::process::id().to_string())])
+        .await
+        .map_err(|e| anyhow::anyhow!("awm listen {service}/{topic}: {e}"))?;
+    while let Some(msg) = pipe.rx.recv().await {
+        match msg {
+            awm_proto::WsMsg::Text(t) => {
+                let v: Value = serde_json::from_str(&t).unwrap_or(Value::String(t.clone()));
+                let hit = wanted.iter().all(|(k, want)| match v.get(k) {
+                    Some(Value::String(s)) => s == want,
+                    Some(other) => other.to_string() == *want,
+                    None => false,
+                });
+                if hit {
+                    println!("{}", serde_json::to_string(&v)?);
+                }
+            }
+            awm_proto::WsMsg::Close(Some(why)) => {
+                eprintln!("awm listen: closed: {why}");
+                return Ok(1);
+            }
+            awm_proto::WsMsg::Close(None) => break,
+            awm_proto::WsMsg::Binary(_) => {}
+        }
+    }
+    Ok(0)
+}
+
+/// Parse `<tool> <verb> [--key value]...` into the `/invoke` body. A verb word may spell
+/// its underscores as hyphens.
 pub fn parse_tool_call(words: &[String]) -> anyhow::Result<Value> {
     let [tool, rest @ ..] = words else { anyhow::bail!("usage: awm <tool> <verb> [--key value]...") };
+    let verb_word;
     let (verb, flags) = match rest {
-        [verb, flags @ ..] if !verb.starts_with("--") => (verb.as_str(), flags),
+        [verb, flags @ ..] if !verb.starts_with("--") => {
+            verb_word = verb.replace('-', "_");
+            (verb_word.as_str(), flags)
+        }
         _ => ("describe", rest),
     };
     let mut args = Map::new();
@@ -184,14 +266,26 @@ pub fn parse_tool_call(words: &[String]) -> anyhow::Result<Value> {
 }
 
 async fn run_tool(words: &[String]) -> anyhow::Result<i32> {
-    let body = parse_tool_call(words)?;
+    let help = words.iter().any(|w| w == "--help" || w == "-h");
+    let words: Vec<String> = words.iter().filter(|w| *w != "--help" && *w != "-h").cloned().collect();
+    let mut body = parse_tool_call(&words)?;
+    if help {
+        // `awm <tool> <verb> --help` prints the verb's schema instead of running it.
+        let verb = body["args"]["verb"].as_str().unwrap_or(awm_gateway::gateway::DESCRIBE).to_string();
+        let filter = if verb == awm_gateway::gateway::DESCRIBE { json!({}) } else { json!({"verbs": [verb]}) };
+        body["args"] = json!({"verb": awm_gateway::gateway::DESCRIBE, "args": filter, "peer": body["args"]["peer"]});
+    }
+    invoke_and_print(&body).await
+}
+
+async fn invoke_and_print(body: &Value) -> anyhow::Result<i32> {
     let url = format!("{}/invoke", gateway_url());
     let resp = reqwest::Client::new()
         .post(&url)
         .header("X-Awm-Surface", "cli")
         // The gateway walks this pid's ancestors to the session, if any, that runs the CLI.
         .header("X-Awm-Caller-Pid", std::process::id().to_string())
-        .json(&body)
+        .json(body)
         .send()
         .await
         .map_err(|e| anyhow::anyhow!("awm gateway unreachable at {url}: {e}"))?;
@@ -233,5 +327,6 @@ mod tests {
         assert_eq!(b["args"]["args"]["a"][0], 1);
         assert_eq!(b["args"]["args"]["b"], "c");
         assert!(parse_tool_call(&w("x v stray")).is_err());
+        assert_eq!(parse_tool_call(&w("scope git-gather --hub x")).unwrap()["args"]["verb"], "git_gather");
     }
 }

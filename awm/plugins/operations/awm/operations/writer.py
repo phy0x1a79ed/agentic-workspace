@@ -15,7 +15,8 @@ import time
 from datetime import datetime, timezone
 from typing import Any
 
-from awm.operations.board import ROOT_ID, card_note_id, ensure_root, record_note_id
+from awm.operations.board import (OPS_ID, ROOT_ID, card_note_id, ensure_ops, ensure_root,
+                                  messages_note_id, record_note_id)
 from awm.operations.store import Store
 from awm.operations.trilium import TriliumTool
 
@@ -25,15 +26,15 @@ HEARTBEAT_S = 60
 MARK = "writer_mark"
 POLL_S = 2.0
 BODY_MAX = 100_000
-OPS_LABEL = "swarmOps"
 MARKDOWN = "text/x-markdown"
 MANAGED = {"agentManaged": "", "readOnly": ""}
 
 
 class Writer:
     def __init__(self, store: Store, api: TriliumTool, *, parent: str = "root",
-                 clock=time.time) -> None:
+                 portals: dict[str, str] | None = None, clock=time.time) -> None:
         self.store, self.api, self.parent, self.clock = store, api, parent, clock
+        self.portals = dict(portals or {})
         self._root_ok = False
         self._beat = 0.0
 
@@ -45,14 +46,18 @@ class Writer:
             raise ValueError(f"the note body is over {BODY_MAX} characters")
         return text
 
+    def _ensure_root(self) -> None:
+        if not self._root_ok:
+            ensure_root(self.api, self.parent)
+            ensure_ops(self.api, self.portals)
+            self._root_ok = True
+
     # -- the Ops book ----------------------------------------------------------------
 
     def post_ops(self, kind: str, node: str, title: str, body: str) -> str:
         """Rewrite the one managed note for this kind and node in the Ops book."""
-        hits = self.api.search(f"#{OPS_LABEL}")
-        if len(hits) != 1:
-            raise ValueError(f"{len(hits)} notes carry #{OPS_LABEL}: the Ops book needs exactly one")
-        ops, name = hits[0]["noteId"], f"{kind} - {node}"
+        self._ensure_root()
+        ops, name = OPS_ID, f"{kind} - {node}"
         stamp = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
         content = f"Changed: {stamp}\n\n## {title}\n\n{body}\n"
         for kid in self.api.children(ops):
@@ -92,23 +97,39 @@ class Writer:
                 self.api.label_delete(nid, name)
         record = json.dumps({"task_id": tid, "sessions": card.get("sessions", []),
                              "parent_task": card["parent_task"], "tags": card["tags"],
-                             "reason": card["meta"].get("reason")}, sort_keys=True)
+                             "reason": card["meta"].get("reason"),
+                             "plan": card["meta"].get("plan"),
+                             "todos": card["meta"].get("todos")}, sort_keys=True)
         rid = record_note_id(tid)
         if self.api.note(rid) is None:
             self.api.create_note(nid, "record", "code", record, note_id=rid,
                                  mime="application/json")
         else:
             self.api.update(rid, content=record)
+        self._messages(tid, nid)
         if card["kind"] == "note" and card["body_ref"] != nid:
             self.store.card_action("set_body_ref", tid, {"body_ref": nid})
+
+    def _messages(self, tid: str, nid: str) -> None:
+        """The card's messages as one Markdown child, oldest first."""
+        messages = self.store.task_messages(tid)
+        if not messages:
+            return
+        text = "\n\n".join(
+            f"**{m['author'] or 'unknown'}** on {m['node'] or '?'}, "
+            f"{datetime.fromtimestamp(m['ts'], timezone.utc).isoformat(timespec='seconds')}"
+            f" (#{m['seq']})\n\n{m['body']}" for m in messages)
+        mid = messages_note_id(tid)
+        if self.api.note(mid) is None:
+            self.api.create_note(nid, "messages", "code", text, note_id=mid, mime=MARKDOWN)
+        else:
+            self.api.update(mid, content=text)
 
     # -- the loop ------------------------------------------------------------------------
 
     def sync_once(self, limit: int = 200) -> int:
         """Apply the events after the mark. Returns how many it applied."""
-        if not self._root_ok:
-            ensure_root(self.api, self.parent)
-            self._root_ok = True
+        self._ensure_root()
         after = int(self.store.kv_get(MARK) or 0)
         events = self.store.events_since(after, limit)
         if not events:

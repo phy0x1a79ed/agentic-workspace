@@ -9,6 +9,9 @@
 //! As a fake reflection it answers `session_of(pid)` from the JSON map in the file at
 //! `FAKE_SESSIONS_FILE`, read on each call. As a fake approver, `approval_request` writes its
 //! request to the file at `FAKE_APPROVAL_FILE` and `approval_get` answers that file.
+//! `emit(topic, payload)` sends one emit frame. It serves the direct session kind `echo`:
+//! its bridge sends `{"init": <init>}` first, then echoes each message. With `FAKE_MOUNT` set
+//! it registers an HTTP mount that answers `mount <method> <path>`.
 
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
@@ -25,10 +28,14 @@ async fn main() -> anyhow::Result<()> {
         Ok(path) => std::fs::read_to_string(path)?.trim().to_string(),
         Err(_) => String::new(),
     };
+    let mut register = json!({"name": name, "pid": std::process::id(), "start": ["bash", "run.sh"], "cwd": "."});
+    if std::env::var_os("FAKE_MOUNT").is_some() {
+        register["mount"] = json!(serve_mount().await?);
+    }
     let reg: Value = http
         .post(format!("{hub}/hub/service/register"))
         .header("X-Awm-Service-Token", &token)
-        .json(&json!({"name": name, "pid": std::process::id(), "start": ["bash", "run.sh"], "cwd": "."}))
+        .json(&register)
         .send()
         .await?
         .error_for_status()?
@@ -52,7 +59,8 @@ async fn main() -> anyhow::Result<()> {
         f("session_of", "The session that owns a pid.", json!([{"name": "pid", "type": "integer", "required": true}])),
         f("approval_request", "Record an approval request.", json!([{"name": "kind", "required": true}, {"name": "node"}, {"name": "reason"}, {"name": "payload", "type": "object"}])),
         f("approval_get", "The recorded approval.", json!([{"name": "request_id", "required": true}])),
-    ]});
+        f("emit", "Emit one payload on a topic.", json!([{"name": "topic", "required": true}, {"name": "payload"}])),
+    ], "sessions": [{"kind": "echo", "transport": "direct"}]});
     let tokens: Value = std::env::var("FAKE_TOKENS").ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or(json!({}));
     sink.send(Message::Text(json!({"kind": "ready", "api": manifest}).to_string().into())).await?;
 
@@ -62,6 +70,16 @@ async fn main() -> anyhow::Result<()> {
         match frame["kind"].as_str() {
             Some("shutdown") => break,
             Some("call") => {}
+            Some("session.open") => {
+                let opened = json!({"kind": "session.opened", "session_id": frame["session_id"], "ok": frame["session_kind"] == "echo",
+                                    "error": "only echo sessions"});
+                sink.send(Message::Text(opened.to_string().into())).await?;
+                if frame["session_kind"] == "echo" {
+                    let url = format!("{}/hub/service/bridge/{id}/{}", hub.replacen("http", "ws", 1), frame["bridge_id"].as_str().unwrap_or(""));
+                    tokio::spawn(echo_bridge(url, frame["init"].clone()));
+                }
+                continue;
+            }
             _ => continue,
         }
         let args = &frame["args"];
@@ -72,7 +90,8 @@ async fn main() -> anyhow::Result<()> {
                 _ => Err("add needs numbers a and b".into()),
             },
             "whoami" => Ok(json!({"caller": frame["caller"], "as": frame["as"],
-                "trust": args["_caller_trust"], "scope": args["_caller_scope"], "session_id": args["_caller_session_id"]})),
+                "trust": args["_caller_trust"], "scope": args["_caller_scope"], "session_id": args["_caller_session_id"],
+                "pid": args["_caller_pid"]})),
             "caller_of_token" => Ok(match args["token"].as_str().and_then(|t| tokens.get(t)).and_then(Value::as_object) {
                 Some(rec) => {
                     let mut answer = rec.clone();
@@ -101,6 +120,11 @@ async fn main() -> anyhow::Result<()> {
                 .and_then(|f| std::fs::read_to_string(f).map_err(|e| e.to_string()))
                 .and_then(|t| serde_json::from_str(&t).map_err(|e| e.to_string())),
             "env" => Ok(args["name"].as_str().and_then(|n| std::env::var(n).ok()).map(Value::from).unwrap_or(Value::Null)),
+            "emit" => {
+                let emit = json!({"kind": "emit", "topic": args["topic"], "payload": args["payload"]});
+                sink.send(Message::Text(emit.to_string().into())).await?;
+                Ok(json!("emitted"))
+            }
             "run_job" => {
                 let usage = json!({"kind": "usage", "surface": "background", "name": args["job"], "ok": true, "ms": 5});
                 sink.send(Message::Text(usage.to_string().into())).await?;
@@ -116,6 +140,41 @@ async fn main() -> anyhow::Result<()> {
         sink.send(Message::Text(reply.to_string().into())).await?;
     }
     Ok(())
+}
+
+async fn echo_bridge(url: String, init: Value) {
+    let Ok((ws, _)) = tokio_tungstenite::connect_async(&url).await else { return };
+    let (mut sink, mut stream) = ws.split();
+    if sink.send(Message::Text(json!({"init": init}).to_string().into())).await.is_err() {
+        return;
+    }
+    while let Some(Ok(msg)) = stream.next().await {
+        if matches!(msg, Message::Close(_)) || sink.send(msg).await.is_err() {
+            break;
+        }
+    }
+}
+
+/// A one-request-per-connection HTTP server on loopback: each answer names the request line.
+async fn serve_mount() -> anyhow::Result<String> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let url = format!("http://{}", listener.local_addr()?);
+    tokio::spawn(async move {
+        while let Ok((mut conn, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                let mut buf = vec![0u8; 8192];
+                let n = conn.read(&mut buf).await.unwrap_or(0);
+                let head = String::from_utf8_lossy(&buf[..n]);
+                let line = head.lines().next().unwrap_or("").to_string();
+                let mut it = line.split_whitespace();
+                let body = format!("mount {} {}", it.next().unwrap_or("?"), it.next().unwrap_or("?"));
+                let resp = format!("HTTP/1.1 200 OK\r\ncontent-type: text/plain\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len());
+                let _ = conn.write_all(resp.as_bytes()).await;
+            });
+        }
+    });
+    Ok(url)
 }
 
 async fn call_needed(http: &reqwest::Client, hub: &str, token: &str, args: &Value) -> Result<Value, String> {

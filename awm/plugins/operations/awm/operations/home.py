@@ -31,6 +31,10 @@ class Home:
             "task_join": lambda x: _call(s.task_join, ("task_id", "session_id"), x),
             "task_report": lambda x: _call(s.task_report, ("task_id", "session_id", "state"), x),
             "task_session_end": lambda x: _call(s.task_session_end, ("task_id", "session_id"), x),
+            "task_claim": lambda x: _call(s.task_claim, ("task_id", "session_id"), x),
+            "task_detail": lambda x: _call(s.task_detail, ("task_id",), x),
+            "task_message": lambda x: _call(s.task_message, ("task_id", "body"), x),
+            "task_messages": lambda x: s.task_messages(x["task_id"], x.get("after") or 0),
             "task_for_session": lambda x: s.task_for_session(x["session_id"]),
             "task_sessions": lambda x: s.task_sessions(x["task_id"]),
             "task_get": lambda x: s.task_get(x["task_id"]),
@@ -43,14 +47,15 @@ class Home:
         }
 
     VERBS = ("task_open", "task_attach", "task_join", "task_report", "task_session_end",
-             "task_for_session", "task_sessions", "task_get", "task_list", "approval_request",
+             "task_claim", "task_detail", "task_message", "task_messages", "task_for_session",
+             "task_sessions", "task_get", "task_list", "approval_request",
              "approval_get", "approval_wait", "approval_cancel", "order_pull", "order_done", "keys",
              "ops_post")
 
     async def call(self, verb: str, args: dict[str, Any], node: str | None = None) -> Any:
         """One verb from a relay. Raises ValueError for a refusal the relay must not replay."""
         args = {k: v for k, v in (args or {}).items() if k != "op_id" or verb.startswith("task_")}
-        if node and verb in ("task_open", "task_attach", "task_join"):
+        if node and verb in ("task_open", "task_attach", "task_join", "task_claim", "task_message"):
             args["node"] = node  # the door's key names the node: a node speaks only for itself
         try:
             if verb in self._sync:

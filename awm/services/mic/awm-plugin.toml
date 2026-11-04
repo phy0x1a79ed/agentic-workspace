@@ -12,6 +12,7 @@ tier = "off"
 
 [[page]]
 name = "mic"
+dir = "pages/mic/dist"
 
 [needs]
 secrets = []

@@ -47,21 +47,28 @@ def seat_trust(account_cfg, channel_id: str) -> str:  # noqa: ANN001
     return account_cfg.trust
 
 
-def readable_chats(dao, account_cfg, holder: dict | None) -> set[str] | None:  # noqa: ANN001
-    """The chats of ``account_cfg`` whose history ``holder`` may read, or
-    ``None`` for no bound.
-
-    A session that holds no seat on the account is not bounded here. A seat
-    holder reads only the chats it holds, so a lab seat never reads Tony's DM
-    (users.md R126 item 2). A holder of a trusted seat reads every chat.
-    """
-    if holder is None or account_cfg is None:
-        return None
-    held = {r["channel_id"] for r in dao.mounts(account_cfg.name)
+def held_chats(dao, account: str, holder: dict | None) -> set[str]:  # noqa: ANN001
+    """The chats of ``account`` that ``holder`` holds."""
+    if holder is None:
+        return set()
+    return {r["channel_id"] for r in dao.mounts(account)
             if r["node"] == holder["node"] and r["job"] == holder["job"]}
-    if not held:
-        return None
-    if any(seat_trust(account_cfg, c) == "trusted" for c in held):
+
+
+def chat_bound(dao, account_cfg, holder: dict | None, level: str) -> set[str] | None:  # noqa: ANN001
+    """The chats of ``account_cfg`` that a caller at ``level`` may read and
+    answer, or ``None`` for no bound.
+
+    A caller below trusted reaches only the chats it holds (channels.md R125
+    item 2). A trusted caller is bounded only while it holds seats and none of
+    them is trusted, so a lab seat never reads Tony's DM (users.md R126 item 2).
+    """
+    if account_cfg is None:
+        return None if level == "trusted" else set()
+    held = held_chats(dao, account_cfg.name, holder)
+    if level != "trusted":
+        return held
+    if not held or any(seat_trust(account_cfg, c) == "trusted" for c in held):
         return None
     return held
 

@@ -9,8 +9,12 @@ pub mod install;
 pub mod isolated;
 pub mod loader;
 pub mod modes;
+pub mod mount;
+pub mod native;
 pub mod peer;
+pub mod privacy;
 pub mod server;
+pub mod streams;
 pub mod supervisor;
 pub mod usage;
 

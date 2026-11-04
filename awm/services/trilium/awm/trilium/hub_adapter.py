@@ -693,7 +693,7 @@ async def _agent_gate(args: dict, verb: str, *note_ids: str) -> None:
                       if a.get("type") == "label"}
             if "agentManaged" in labels:
                 out.append(f"note {note_id} has #agentManaged: only the "
-                           f"reporting service writes it")
+                           f"operations board writer writes it")
             elif "agentWritable" not in labels:
                 out.append(f"note {note_id} has no effective #agentWritable label")
         return out

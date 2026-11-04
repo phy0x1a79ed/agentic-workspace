@@ -12,9 +12,15 @@ tier = "on"
 
 [[page]]
 name = "trilium"
+dir = "pages/trilium/dist"
 
 [needs]
 secrets = []
 network = ["tcp:22 the sync hub and the backup host"]
 platform = ["linux"]
 
+
+[[needs.tool]]   # the backup's diff hold asks Tony through trustpolicy.requests (fleet.md R105)
+name = "operations"
+major = 2
+verbs = ["approval_request"]

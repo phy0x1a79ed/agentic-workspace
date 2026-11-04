@@ -1,12 +1,18 @@
 //! How a call with `peer` reaches another node. The trust lane's `awm-edge` implements
 //! [`PeerTransport`] over ssh. [`HttpPeers`] posts to a peer gateway's `/invoke`, for tests.
+//!
+//! A stream (an emit subscription or a session) crosses as a [`WsPipe`]: the far node opens
+//! the same `/hub/emit/...` or `/hub/session/...` WebSocket on its own gateway, and each
+//! message travels as a [`WsMsg`].
 
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::pin::Pin;
 
-use awm_proto::CallContext;
+use awm_proto::{CallContext, WsMsg};
+use futures_util::{SinkExt, StreamExt};
 use serde_json::Value;
+use tokio::sync::mpsc;
 
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
@@ -42,6 +48,91 @@ pub trait PeerTransport: Send + Sync {
     fn table_changed<'a>(&'a self, _peer: &'a str, _node: &'a str) -> BoxFuture<'a, Result<(), PeerError>> {
         Box::pin(async { Ok(()) })
     }
+
+    /// Open the WebSocket at `path` (a `/hub/emit/...` or `/hub/session/...` path with its
+    /// query) on `peer`'s gateway, as this call's caller.
+    fn open_ws<'a>(&'a self, peer: &'a str, _path: &'a str, _ctx: &'a CallContext) -> BoxFuture<'a, Result<WsPipe, PeerError>> {
+        Box::pin(async move { Err(PeerError::Unreachable { peer: peer.into(), reason: "this transport carries no streams".into() }) })
+    }
+}
+
+/// One end of a stream: `tx` sends toward the far end, `rx` yields what it sends back. The
+/// stream ends when either side drops its half or sends `WsMsg::Close`.
+pub struct WsPipe {
+    pub tx: mpsc::UnboundedSender<WsMsg>,
+    pub rx: mpsc::UnboundedReceiver<WsMsg>,
+}
+
+impl WsPipe {
+    /// Two pipes joined back to back: what one sends, the other receives.
+    pub fn pair() -> (WsPipe, WsPipe) {
+        let (a_tx, b_rx) = mpsc::unbounded_channel();
+        let (b_tx, a_rx) = mpsc::unbounded_channel();
+        (WsPipe { tx: a_tx, rx: a_rx }, WsPipe { tx: b_tx, rx: b_rx })
+    }
+}
+
+/// Paths a stream may open on a peer: never the control socket or a further hop.
+pub fn stream_path_allowed(path: &str) -> bool {
+    (path.starts_with("/hub/emit/") || path.starts_with("/hub/session/")) && !path.contains("peer=") && !path.contains("..")
+}
+
+/// Drive a client WebSocket from a pipe, until either side ends.
+pub fn pipe_from_tungstenite<S>(ws: tokio_tungstenite::WebSocketStream<S>) -> WsPipe
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
+    use tokio_tungstenite::tungstenite::protocol::{frame::coding::CloseCode, CloseFrame};
+    use tokio_tungstenite::tungstenite::Message;
+    let (mine, theirs) = WsPipe::pair();
+    let WsPipe { tx, mut rx } = theirs;
+    let (mut sink, mut stream) = ws.split();
+    tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                out = rx.recv() => {
+                    let msg = match out {
+                        Some(WsMsg::Text(t)) => Message::Text(t.into()),
+                        Some(WsMsg::Binary(b)) => Message::Binary(b.into()),
+                        Some(WsMsg::Close(reason)) => {
+                            let frame = reason.map(|r| CloseFrame { code: CloseCode::Error, reason: r.into() });
+                            let _ = sink.send(Message::Close(frame)).await;
+                            break;
+                        }
+                        None => { let _ = sink.close().await; break; }
+                    };
+                    if sink.send(msg).await.is_err() { break; }
+                }
+                inc = stream.next() => {
+                    let msg = match inc {
+                        Some(Ok(Message::Text(t))) => WsMsg::Text(t.to_string()),
+                        Some(Ok(Message::Binary(b))) => WsMsg::Binary(b.to_vec()),
+                        Some(Ok(Message::Close(f))) => {
+                            let _ = tx.send(WsMsg::Close(f.map(|f| f.reason.to_string()).filter(|r| !r.is_empty())));
+                            break;
+                        }
+                        Some(Ok(_)) => continue,
+                        Some(Err(e)) => { let _ = tx.send(WsMsg::Close(Some(e.to_string()))); break; }
+                        None => break,
+                    };
+                    if tx.send(msg).is_err() { break; }
+                }
+            }
+        }
+    });
+    mine
+}
+
+/// Connect to a WebSocket with extra headers and return its pipe.
+pub async fn connect_ws(url: &str, headers: &[(&str, String)]) -> Result<WsPipe, String> {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    let mut req = url.into_client_request().map_err(|e| e.to_string())?;
+    for (k, v) in headers {
+        let name = tokio_tungstenite::tungstenite::http::HeaderName::from_bytes(k.as_bytes()).map_err(|e| e.to_string())?;
+        req.headers_mut().insert(name, v.parse().map_err(|_| format!("bad header {k}"))?);
+    }
+    let (ws, _) = tokio_tungstenite::connect_async(req).await.map_err(|e| e.to_string())?;
+    Ok(pipe_from_tungstenite(ws))
 }
 
 pub struct HttpPeers {
@@ -114,6 +205,18 @@ impl PeerTransport for HttpPeers {
             resp.json()
                 .await
                 .map_err(|e| PeerError::Unreachable { peer: peer.into(), reason: e.to_string() })
+        })
+    }
+
+    fn open_ws<'a>(&'a self, peer: &'a str, path: &'a str, ctx: &'a CallContext) -> BoxFuture<'a, Result<WsPipe, PeerError>> {
+        Box::pin(async move {
+            if !stream_path_allowed(path) {
+                return Err(PeerError::Refused { peer: peer.into(), status: 403, body: format!("{path} is not a stream path") });
+            }
+            let url = format!("{}{path}", self.url(peer)?.replacen("http", "ws", 1));
+            connect_ws(&url, &[("x-awm-caller-node", ctx.caller.node.clone())])
+                .await
+                .map_err(|reason| PeerError::Unreachable { peer: peer.into(), reason })
         })
     }
 

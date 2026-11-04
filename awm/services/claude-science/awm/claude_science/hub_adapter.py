@@ -47,7 +47,7 @@ SUPERVISOR = daemon.Supervisor(
 )
 
 
-#: ``name`` is the service-internal handle (``/svc/claude-science/fn/<name>``);
+#: ``name`` is the service-internal handle (the function the gateway calls on the control WS);
 #: ``tool`` is the published name, ``science_<verb>``. The service is
 #: ``claude-science`` but the tool is ``science``: the first-underscore fold
 #: would otherwise cut the service name in half (``claude_science_status`` ->
@@ -562,7 +562,7 @@ async def _on_start() -> None:
     # exactly like one nobody has called yet, and a dead supervision loop looks
     # exactly like a workbench that has not crashed. spawn_supervised logs at
     # ERROR and respawns, so "absent" cannot masquerade as "quiet".
-    spawn_supervised("claude-science:mcp-bridge", mcp_bridge.serve_and_mount)
+    spawn_supervised("claude-science:mcp-bridge", mcp_bridge.serve)
     spawn_supervised("claude-science:health", _health_loop)
     spawn_supervised("claude-science:outputs", _outputs_loop)
 
@@ -574,6 +574,7 @@ async def main() -> None:
     )
     await ServiceAdapter(
         "claude-science", API_MANIFEST, HANDLERS, on_start=_on_start,
+        mount=mcp_bridge.listen(),
     ).run()
 
 

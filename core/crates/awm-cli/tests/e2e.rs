@@ -75,7 +75,7 @@ secrets = ["FAKE_SECRET"]
 network = ["egress-ok.invalid"]
 "#,
     );
-    write(&core.join("fake/run.sh"), &format!("exec '{}'\n", fake.display()));
+    write(&core.join("fake/run.sh"), &format!("export FAKE_MOUNT=1\nexec '{}'\n", fake.display()));
     // reflection is the fake too: it answers session_of from sessions.json.
     write(&core.join("reflection/awm-plugin.toml"), "[plugin]\nname = \"reflection\"\n\n[[service]]\nname = \"reflection\"\n\n[[tool]]\nname = \"reflection\"\n");
     write(
@@ -124,7 +124,7 @@ verbs = ["echo", "whoami"]
     let mut env = String::new();
     if let Some(py) = &python {
         let repo = repo();
-        let mut path = vec![repo.join("awm/gateway"), repo.join("awm/services/journal"), repo.join("awm/plugins/operations/grantlib")];
+        let mut path = vec![repo.join("awm/services/journal"), repo.join("awm/plugins/operations/grantlib")];
         for comp in std::fs::read_dir(repo.join("awm/service_components")).unwrap().flatten() {
             path.push(comp.path());
         }
@@ -261,6 +261,47 @@ impl Drop for Mcp {
     }
 }
 
+/// Open a stream WebSocket and talk to it from this sync test.
+struct Stream {
+    rt: tokio::runtime::Runtime,
+    pipe: awm_gateway::peer::WsPipe,
+}
+
+impl Stream {
+    fn open(url: &str) -> Result<Self, String> {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let ws = url.replacen("http", "ws", 1);
+        let pipe = rt.block_on(awm_gateway::peer::connect_ws(&ws, &[]))?;
+        Ok(Stream { rt, pipe })
+    }
+
+    fn send(&self, m: awm_proto::WsMsg) {
+        self.pipe.tx.send(m).unwrap();
+    }
+
+    fn next(&mut self) -> Option<awm_proto::WsMsg> {
+        let rx = &mut self.pipe.rx;
+        self.rt.block_on(async { tokio::time::timeout(Duration::from_secs(20), rx.recv()).await.ok().flatten() })
+    }
+}
+
+/// Emit on `emit_url`'s `<tool> emit` until the stream yields a payload, which it returns.
+fn first_emitted(stream: &mut Stream, emit_url: &str, tool: &str) -> Value {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let resp = http().post(format!("{emit_url}/invoke"))
+            .json(&json!({"name": tool, "args": {"verb": "emit", "args": {"topic": "news", "payload": {"n": 1, "project": "open"}}}}))
+            .send().unwrap();
+        assert!(resp.status().is_success(), "emit: {}", resp.text().unwrap_or_default());
+        let rx = &mut stream.pipe.rx;
+        let got = stream.rt.block_on(async { tokio::time::timeout(Duration::from_millis(300), rx.recv()).await.ok().flatten() });
+        if let Some(awm_proto::WsMsg::Text(t)) = got {
+            return serde_json::from_str(&t).unwrap();
+        }
+        assert!(Instant::now() < deadline, "no emitted payload arrived: {got:?}");
+    }
+}
+
 fn http() -> reqwest::blocking::Client {
     reqwest::blocking::Client::builder().timeout(Duration::from_secs(120)).build().unwrap()
 }
@@ -352,12 +393,19 @@ fn gateway_end_to_end() {
     assert_eq!(who["caller"]["session"], json!(r9), "{who}");
     assert_eq!((who["caller"]["trust"].as_str(), who["caller"]["scope"].as_str()), (Some("cooperative"), Some("awm/redux-x")), "{who}");
     assert_eq!((who["trust"].as_str(), who["scope"].as_str()), (Some("cooperative"), Some("awm/redux-x")), "{who}");
+    // The stamped level gates the call before the tool is looked up (channels.md R125).
+    let gated: Value = http().post(format!("{url}/invoke")).header("X-Awm-Session-Pid", "4242")
+        .json(&json!({"name": "trilium", "args": {"verb": "note_get"}})).send().unwrap().json().unwrap();
+    assert!(gated.to_string().contains("a cooperative session may not use the \\\"trilium\\\" tool"), "{gated}");
     let reply = as_session(json!({"verb": "whoami", "args": {"_caller_trust": "trusted"}}));
     assert!(reply["result"].is_null() && reply.to_string().contains("_caller_trust"), "{reply}");
     write(&node.state.join("sessions.json"), &session("trusted"));
     let reply = as_session(json!({"verb": "whoami"}));
     let who: Value = serde_json::from_str(reply["result"].as_str().unwrap()).unwrap();
     assert_eq!(who["trust"], "trusted", "{who}");
+    let ungated: Value = http().post(format!("{url}/invoke")).header("X-Awm-Session-Pid", "4242")
+        .json(&json!({"name": "trilium", "args": {"verb": "note_get"}})).send().unwrap().json().unwrap();
+    assert!(ungated.to_string().contains("Unknown tool"), "a trusted session passes the level gate: {ungated}");
     write(&node.state.join("sessions.json"), "{}");
     let reply = as_session(json!({"verb": "whoami"}));
     let who: Value = serde_json::from_str(reply["result"].as_str().unwrap()).unwrap();
@@ -375,6 +423,7 @@ fn gateway_end_to_end() {
     write(&node.state.join("sessions.json"), &at(parent, json!({"ok": true, "known": true, "session_id": r9, "trust": "cooperative", "mode": null, "cwd": worktree.join("core")})));
     let who: Value = serde_json::from_str(as_cli(json!({"verb": "whoami"}))["result"].as_str().unwrap()).unwrap();
     assert_eq!((who["trust"].as_str(), who["caller"]["session"].as_str()), (Some("cooperative"), Some(r9.as_str())), "a CLI under a cooperative session: {who}");
+    assert_eq!(who["pid"], json!(parent), "the service finds the session by the pid the walk ended on: {who}");
     write(&node.state.join("sessions.json"), "{}");
     let who: Value = serde_json::from_str(as_cli(json!({"verb": "whoami"}))["result"].as_str().unwrap()).unwrap();
     assert_eq!(who["trust"], "trusted", "a shell with no harness ancestor: {who}");
@@ -464,10 +513,61 @@ fn gateway_end_to_end() {
     let page = http().get(format!("{url}/p/fake/ui/")).header("Accept", "text/html").send().unwrap();
     assert!(page.status().is_success());
     assert!(page.text().unwrap().contains("fake-ui-marker"));
+
+    // A service's own HTTP server, behind the gateway at /s/<service>/.
+    let mounted = http().get(format!("{url}/s/fake/hello?q=1")).send().unwrap();
+    assert_eq!(mounted.text().unwrap(), "mount GET /hello?q=1");
+    assert_eq!(http().get(format!("{url}/s/caller/x")).send().unwrap().status().as_u16(), 404, "a service with no mount");
+
+    // Emit topics: each payload reaches each subscriber as one JSON frame.
+    let mut sub = Stream::open(&format!("{url}/hub/emit/fake/news")).unwrap();
+    assert_eq!(first_emitted(&mut sub, &url, "fake")["n"], 1);
+    let mut listen = Command::new(awm_bin()).args(["listen", "fake", "news", "--match", "n=1"]).env("AWM_GATEWAY_URL", &url)
+        .stdout(Stdio::piped()).spawn().unwrap();
+    let mut lines = BufReader::new(listen.stdout.take().unwrap()).lines();
+    let poke = url.clone();
+    let poker = std::thread::spawn(move || {
+        for _ in 0..40 {
+            let _ = http().post(format!("{poke}/invoke"))
+                .json(&json!({"name": "fake", "args": {"verb": "emit", "args": {"topic": "news", "payload": {"n": 1}}}})).send();
+            std::thread::sleep(Duration::from_millis(250));
+        }
+    });
+    let line = lines.next().expect("awm listen printed nothing").unwrap();
+    assert_eq!(serde_json::from_str::<Value>(&line).unwrap()["n"], 1);
+    let _ = listen.kill();
+    poker.join().unwrap();
+    assert!(Stream::open(&format!("{url}/hub/emit/nobody/news")).is_err(), "an unknown service has no topics");
+
+    // A direct session: the init goes first, then bytes relay both ways through the bridge.
+    let mut session = Stream::open(&format!("{url}/hub/session/fake/echo")).unwrap();
+    session.send(awm_proto::WsMsg::Text(json!({"hello": "init"}).to_string()));
+    match session.next() {
+        Some(awm_proto::WsMsg::Text(t)) => assert_eq!(serde_json::from_str::<Value>(&t).unwrap()["init"]["hello"], "init"),
+        other => panic!("session greeting: {other:?} {}", log(&node.state)),
+    }
+    session.send(awm_proto::WsMsg::Binary(vec![7, 0, 255]));
+    assert_eq!(session.next(), Some(awm_proto::WsMsg::Binary(vec![7, 0, 255])));
+    assert!(Stream::open(&format!("{url}/hub/session/fake/nope")).is_err(), "an undeclared session kind is refused");
+
+    // The service verbs of the `awm` tool, and their CLI.
+    let (code, out, _) = cli(&url, &["services"]);
+    assert_eq!(code, 0);
+    let rows: Value = serde_json::from_str(&out).unwrap();
+    let fake_row = rows.as_array().unwrap().iter().find(|r| r["name"] == "fake").cloned().unwrap();
+    assert_eq!((fake_row["status"].clone(), fake_row["enabled"].clone()), (json!("ready"), json!(true)), "{fake_row}");
+    assert!(fake_row["mount"].as_str().unwrap().starts_with("http://127.0.0.1:"));
+    let (code, out, err) = cli(&url, &["services", "restart", "caller"]);
+    assert_eq!(code, 0, "{out}{err}");
+    let (code, out, _) = cli(&url, &["caller", "echo", "--text", "back after restart"]);
+    assert_eq!((code, out.trim()), (0, "back after restart"));
+    let (code, out, _) = cli(&url, &["fake", "echo", "--help"]);
+    assert_eq!(code, 0);
+    assert!(out.contains("\"verb\": \"echo\"") && !out.contains("\"verb\": \"add\""), "--help describes the one verb: {out}");
     let posted = http().post(format!("{url}/usage")).json(&json!({"plugin": "fake", "surface": "code", "name": "lib"})).send().unwrap();
     assert!(posted.status().is_success());
 
-    // The Python journal service, loaded unchanged from its run.sh folder.
+    // The Python journal service, loaded from its plugin folder.
     if node.journal {
         let (code, _, errout) =
             cli(&url, &["journal", "post", "--project", "e2e", "--scope", "t", "--author", "e2e", "--body", "hello from the rust gateway"]);
@@ -688,6 +788,29 @@ fn a_peer_call_crosses_the_ssh_edge() {
     assert_eq!(status, 200, "{body} near: {} far: {}", log(&near_state), log(&far_state));
     let result: Value = serde_json::from_str(body["result"].as_str().unwrap()).unwrap();
     assert_eq!(result["caller"]["node"], "near", "the far node runs it as a call from near: {result}");
+    assert_eq!(result["as"], "peer:near", "a service sees a call from another node by its stamp: {result}");
+
+    // Streams cross the edge too: an emit subscription and a direct session on the far node.
+    let mut sub = Stream::open(&format!("{}/hub/emit/remote/news?peer=far", near.url)).unwrap();
+    assert_eq!(first_emitted(&mut sub, &far.url, "remote")["n"], 1, "near: {} far: {}", log(&near_state), log(&far_state));
+    let mut session = Stream::open(&format!("{}/hub/session/remote/echo?peer=far", near.url)).unwrap();
+    session.send(awm_proto::WsMsg::Text(json!({"host": "h"}).to_string()));
+    match session.next() {
+        Some(awm_proto::WsMsg::Text(t)) => assert_eq!(serde_json::from_str::<Value>(&t).unwrap()["init"]["host"], "h"),
+        other => panic!("edge session greeting: {other:?} near: {} far: {}", log(&near_state), log(&far_state)),
+    }
+    session.send(awm_proto::WsMsg::Binary(vec![1, 2, 3]));
+    assert_eq!(session.next(), Some(awm_proto::WsMsg::Binary(vec![1, 2, 3])));
+
+    // A marked project stays hidden from the other node, on calls and on streams.
+    write(&far_state.join("private.json"), &json!({"version": 1, "marks": [{"project": "open", "path": "/nowhere/open"}]}).to_string());
+    let resp = http().post(format!("{}/invoke", near.url))
+        .json(&json!({"name": "remote", "args": {"verb": "scoped", "args": {"project": "open"}, "peer": "far"}}))
+        .send().unwrap();
+    assert!(resp.status().as_u16() >= 400, "a marked project is unknown to a peer: {}", resp.text().unwrap_or_default());
+    let local = http().post(format!("{}/invoke", far.url))
+        .json(&json!({"name": "remote", "args": {"verb": "scoped", "args": {"project": "open"}}})).send().unwrap();
+    assert!(local.status().is_success(), "the node itself still sees it");
     let (status, body) = invoke("elsewhere");
     assert!(status >= 400, "a node with no edge from here is refused: {body}");
     drop(near);

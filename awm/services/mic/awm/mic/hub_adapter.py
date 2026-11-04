@@ -5,7 +5,7 @@ Boots the mic service as a gateway-registered process on the shared
 reconnect). The gateway injects only ``AWM_HUB_URL`` / ``AWM_SERVICE_NAME`` /
 ``AWM_SERVICE_ID`` — there is no token.
 
-The audio rides the hub like every other stream in awm: the page at ``/ui/mic``
+The audio rides the hub like every other stream in awm: the page at ``/p/mic/mic/``
 opens a ``stream`` session, the gateway byte-relays it to this process, and
 ``bridge`` pipes the PCM into the ``virtmic`` null-sink. mic used to run its own
 off-host HTTPS listener because ``getUserMedia`` needs a secure context;

@@ -66,8 +66,8 @@ API_MANIFEST: dict[str, Any] = {
                            "password. The token is returned once. Operator "
                            "only. scope narrows the token to a few exact "
                            "request shapes: avatar-stage admits only the "
-                           "avatar stage session (POST "
-                           "/svc/avatar/session/stage and its WebSocket).",
+                           "avatar stage session (the WebSocket "
+                           "/hub/session/avatar/stage).",
             "params": [
                 {"name": "label", "type": "string", "required": True},
                 {"name": "scope", "type": "string"},

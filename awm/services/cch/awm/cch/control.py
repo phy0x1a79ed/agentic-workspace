@@ -137,7 +137,7 @@ def _caller_target(caller_pid: Any) -> Target:
         raise session_target.ResolveError(
             "could not tell which session is calling, so there is no session of "
             "your own to act on. Name another with `job`, or call through a "
-            "session's own awm-mcp proxy")
+            "session's own `awm mcp` proxy")
     record = session_target.read_session_record(caller_pid)
     bg = record.get("kind") == "bg"
     return Target(caller_pid, "bg" if bg else "interactive",

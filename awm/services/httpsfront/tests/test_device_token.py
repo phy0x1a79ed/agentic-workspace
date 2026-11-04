@@ -19,7 +19,8 @@ from starlette.testclient import TestClient
 
 from awm.config import tokens, usertoken
 from awm.httpsfront import proxy
-from awm.httpsfront.auth import COOKIE_NAME, AuthGate
+from awm.tlsfront import proxy as tlsproxy
+from awm.tlsfront.auth import COOKIE_NAME, AuthGate
 
 pytestmark = [pytest.mark.unit, pytest.mark.smoke]
 
@@ -222,7 +223,7 @@ def test_a_device_token_is_not_forwarded_over_a_websocket(monkeypatch):
         dialled.append({k.lower(): v for k, v in (additional_headers or {}).items()})
         raise RuntimeError("upstream refused")
 
-    monkeypatch.setattr(proxy.websockets, "connect", connect)
+    monkeypatch.setattr(tlsproxy.websockets, "connect", connect)
     c, _ = _edge(_gate([entry]))
     try:
         try:

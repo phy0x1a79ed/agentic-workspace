@@ -75,12 +75,39 @@ def test_a_peer_call_names_the_peer_in_the_envelope(gateway):
     assert seen[1][2] == {"name": "journal_render", "args": {}}
 
 
-def test_a_stream_or_file_from_a_peer_refuses(gateway):
-    async def first():
-        async for item in gc.subscribe("social", "command", peer="mira"):
-            return item
+def test_a_subscription_opens_the_emit_route_with_the_token(monkeypatch, tmp_path):
+    import websockets
+    monkeypatch.setenv("AWM_HUB_URL", "https://127.0.0.1:7819")
+    token = tmp_path / "svc.token"
+    token.write_text("tok")
+    monkeypatch.setenv("AWM_HUB_TOKEN_FILE", str(token))
+    seen = {}
 
-    with pytest.raises(gc.GatewayCallError, match="needs the Rust gateway"):
-        asyncio.run(first())
-    with pytest.raises(gc.GatewayCallError, match="needs the Rust gateway"):
-        gc.fetch_peer_file_sync("mira", "/tmp/x")
+    class _WS:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        def __aiter__(self):
+            async def frames():
+                yield '{"n": 1}'
+                yield b"ignored"
+                yield "plain"
+            return frames()
+
+    def connect(url, **kw):
+        seen["url"], seen["headers"] = url, kw["additional_headers"]
+        return _WS()
+
+    monkeypatch.setattr(websockets, "connect", connect)
+
+    async def collect(**kw):
+        return [item async for item in gc.subscribe("social", "command", **kw)]
+
+    assert asyncio.run(collect(peer="mira", as_="tony")) == [{"n": 1}, "plain"]
+    assert seen["url"] == "wss://127.0.0.1:7819/hub/emit/social/command?peer=mira"
+    assert seen["headers"] == [("X-Awm-Service-Token", "tok"), ("X-Awm-As", "tony")]
+    asyncio.run(collect())
+    assert seen["url"] == "wss://127.0.0.1:7819/hub/emit/social/command"

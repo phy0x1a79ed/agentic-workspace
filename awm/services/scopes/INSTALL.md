@@ -67,5 +67,4 @@ The off-site half of the cache — the append-only sync to chinook and the
 per-scope selective restore — belongs to the `dvc` *service*, not here. See
 `awm/services/dvc/INSTALL.md`.
 
-To iterate against a running sandbox without installing, use
-`awm dev shadow awm/services/scopes`; it execs this same `run.sh` as an overlay.
+To iterate without installing, run the worktree's dev sandbox (`bash awm/services/dev/sandbox/run.sh start`); it runs this same `run.sh` from the worktree.

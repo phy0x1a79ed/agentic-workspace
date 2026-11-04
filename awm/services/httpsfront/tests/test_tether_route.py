@@ -17,6 +17,7 @@ import pytest
 from starlette.testclient import TestClient
 
 from awm.httpsfront import proxy
+from awm.tlsfront import proxy as tlsproxy
 
 pytestmark = [pytest.mark.unit, pytest.mark.smoke]
 
@@ -199,7 +200,7 @@ def _ws_target(monkeypatch, app, path: str) -> dict:
                                for k, v in (additional_headers or {}).items()}
         raise RuntimeError("upstream refused")  # closes the handshake cleanly
 
-    monkeypatch.setattr(proxy.websockets, "connect", _fake_connect)
+    monkeypatch.setattr(tlsproxy.websockets, "connect", _fake_connect)
     _, handler = _recorder()
     with _client(app, handler) as c:
         try:
@@ -241,7 +242,7 @@ def test_a_rooms_socket_carries_the_callers_address(monkeypatch):
                                for k, v in (additional_headers or {}).items()}
         raise RuntimeError("upstream refused")
 
-    monkeypatch.setattr(proxy.websockets, "connect", _fake_connect)
+    monkeypatch.setattr(tlsproxy.websockets, "connect", _fake_connect)
     _, handler = _recorder()
     with _client(_app(), handler) as c:
         try:

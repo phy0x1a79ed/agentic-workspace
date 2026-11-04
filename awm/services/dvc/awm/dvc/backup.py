@@ -59,6 +59,8 @@ from typing import Any
 
 import yaml
 
+from awm.dvcdata.cachetag import CACHEDIR_TAG, is_cache_tag
+
 from awm.dvc import globus
 from awm.dvc.config import SHARED_CACHE, WORKSPACE_ROOT, ChinookConfig
 
@@ -80,10 +82,7 @@ REGENERABLE_DIRS = frozenset(
     {"__pycache__", "node_modules", ".pytest_cache", ".mypy_cache", ".ruff_cache"}
 )
 
-# Any other directory opts out by holding a tag per the Cache Directory Tagging
-# spec (https://bford.info/cachedir/), the same marker tar, borg and restic honour.
-CACHEDIR_TAG = "CACHEDIR.TAG"
-CACHEDIR_SIGNATURE = b"Signature: 8a477f597d28d172789f06886806bc55"
+# Any other directory opts out by holding a tag (see awm.dvcdata.cachetag).
 
 
 def filter_rules() -> list[dict]:
@@ -129,20 +128,6 @@ def shared_store_paths(root: Path) -> list[str]:
     )
 
 
-def _is_cache_tag(path: str) -> bool:
-    try:
-        with open(path, "rb") as f:
-            return f.read(len(CACHEDIR_SIGNATURE)) == CACHEDIR_SIGNATURE
-    except OSError:
-        return False
-
-
-def has_cache_tag(directory: Path) -> bool:
-    """Whether ``directory`` holds a valid ``CACHEDIR.TAG`` of its own."""
-    tag = directory / CACHEDIR_TAG
-    return tag.is_file() and not tag.is_symlink() and _is_cache_tag(str(tag))
-
-
 def cache_tagged_paths(root: Path, *, skip: list[str] | None = None) -> list[str]:
     """Absolute paths of every directory under ``root`` holding a valid ``CACHEDIR.TAG``.
 
@@ -161,7 +146,7 @@ def cache_tagged_paths(root: Path, *, skip: list[str] | None = None) -> list[str
             return
         for entry in entries:
             if entry.name == CACHEDIR_TAG and entry.is_file(follow_symlinks=False) \
-                    and _is_cache_tag(entry.path):
+                    and is_cache_tag(entry.path):
                 found.append(os.path.normpath(dir_path))
                 return
         for entry in entries:

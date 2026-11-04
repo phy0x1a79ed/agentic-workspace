@@ -20,10 +20,17 @@ use crate::usage::UsageStore;
 
 pub const DESCRIBE: &str = "describe";
 pub const NATIVE_TOOL: &str = "awm";
-const NATIVE_VERBS: [(&str, &str); 8] = [
+const NATIVE_VERBS: [(&str, &str); 15] = [
     ("status", "The gateway's status: node, uptime, plugins and services."),
     ("plugins", "Every plugin the loader read: loaded, refused with the reason, and skipped."),
-    ("services", "Every service the hub knows, with its status."),
+    ("services", "Every service of the loaded plugins and every one the hub knows: status, pid, enabled, tools, mount and archive tables."),
+    ("start", "Start the service `name` (a trusted caller on this node)."),
+    ("stop", "Stop the service `name` until it is started again or the gateway restarts."),
+    ("restart", "Restart the service `name`: its plugin's refresh hook (routines.md R33) and an operator both use it."),
+    ("enable", "Enable the service `name` in <state>/enabled.json and start it."),
+    ("disable", "Disable the service `name` in <state>/enabled.json and stop it."),
+    ("config_contracts", "Every service config contract a service's ready api opts into, with its live values, for the settings page."),
+    ("config_set", "Save `values` to the config contract `key`, through its service's config_set."),
     ("usage", "Usage per plugin and surface over the last `days` days (default 60)."),
     ("table", "The live name table: each tool's owner plugin and node, and each contract's providers."),
     ("reload", "Read the plugin roots and the install config again. Starts added plugins, restarts changed ones and stops removed ones, with no gateway restart."),
@@ -31,6 +38,15 @@ const NATIVE_VERBS: [(&str, &str); 8] = [
     ("uninstall", "Remove an installed plugin by `name` and stop its services."),
 ];
 const DEFAULT_CALL_TIMEOUT_S: f64 = 120.0;
+/// Verbs that act on the calling session itself. Sent to a peer, one would find no calling
+/// session there, so the call is refused before it leaves the node.
+const SESSION_BOUND: [(&str, &[&str]); 2] = [
+    ("reflection", &["message_self", "compact", "mode", "whoami"]),
+    ("operations", &["hook_plan", "hook_plan_approved", "hook_todos", "hook_prompt", "hook_session_clear",
+                     "claim_task", "track_task", "request_human", "approval_cancel"]),
+];
+/// Native verbs that change this node, so only a trusted caller here may run them.
+const NATIVE_WRITES: [&str; 9] = ["reload", "install", "uninstall", "start", "stop", "restart", "enable", "disable", "config_set"];
 
 pub struct Gateway {
     pub state: PathBuf,
@@ -53,6 +69,12 @@ pub struct Gateway {
     installing: tokio::sync::Mutex<()>,
     /// Each guarded plugin's egress proxy port (R116 item 1).
     pub egress: crate::egress::Egress,
+    /// Emit subscribers by service and topic.
+    pub topics: crate::streams::Topics,
+    /// Direct sessions waiting for their service's answer or bridge.
+    pub stream_sessions: crate::streams::Sessions,
+    /// The private marks a call from another node may not reach.
+    pub marks: crate::privacy::Marks,
     me: Weak<Gateway>,
 }
 
@@ -122,6 +144,7 @@ impl Gateway {
         let state = state.canonicalize()?;
         std::fs::create_dir_all(crate::install::installed_root(&state))?;
         let node = cfg.node_name();
+        let workspace = cfg.workspace.clone().unwrap_or_else(|| state.parent().map(Path::to_path_buf).unwrap_or_default());
         let peer_tools = fetch_peer_tools(&state, peers.as_ref()).await;
         let load = load_plugins(&state, &cfg, &peer_tools);
         for r in &load.refused {
@@ -130,7 +153,9 @@ impl Gateway {
         for w in &load.warnings {
             tracing::warn!("{w}");
         }
+        let marks = crate::privacy::Marks::new(&state, &workspace);
         Ok(Arc::new_cyclic(|me| Self {
+            marks,
             usage: UsageStore::new(state.join("usage")),
             state,
             cfg,
@@ -148,6 +173,8 @@ impl Gateway {
             sessions: std::sync::Mutex::new(HashMap::new()),
             installing: tokio::sync::Mutex::new(()),
             egress: Default::default(),
+            topics: Default::default(),
+            stream_sessions: Default::default(),
             me: me.clone(),
         }))
     }
@@ -325,12 +352,19 @@ impl Gateway {
     /// Walk from `pid` up its ancestors to the nearest session a harness claims (`caller.rs`).
     pub async fn resolve_caller(&self, pid: u32) -> crate::caller::Lookup {
         use crate::caller::Lookup;
+        // No harness runs where no plugin serves the lookup tool, so no pid is a session's.
+        let served = self.read_load().plugins.iter().any(|p| p.tools.iter().any(|t| t.name == crate::caller::LOOKUP_TOOL));
+        if !served {
+            return Lookup::NoOwner { mode: None };
+        }
         let mut first_mode = None;
         let mut at = Some(pid);
         for hop in 0..crate::caller::MAX_HOPS {
             let Some(p) = at.filter(|p| *p > 1) else { break };
             let Some(answer) = self.session_of(p).await.filter(Value::is_object) else { return Lookup::Failed };
             if answer.get("known").and_then(Value::as_bool) == Some(true) {
+                let mut answer = answer;
+                answer[crate::caller::FOUND_PID] = json!(p);
                 return Lookup::Session(answer);
             }
             if hop == 0 {
@@ -716,12 +750,22 @@ impl Gateway {
     async fn native(&self, verb: &str, args: &Value, ctx: &CallContext) -> Result<Value, ApiError> {
         match verb {
             "table" => Ok(self.table_view()),
-            "reload" | "install" | "uninstall" => {
-                if ctx.caller.lane != Lane::Local || ctx.caller.trust.as_deref() != Some(crate::caller::TRUSTED) {
+            _ if NATIVE_WRITES.contains(&verb) => {
+                let trusted = ctx.caller.trust.as_deref() == Some(crate::caller::TRUSTED);
+                if ctx.caller.lane != Lane::Local || !trusted {
                     return Err(ApiError::new(403, format!("{verb} takes a trusted caller on this node")));
                 }
+                let name = || args.get("name").and_then(Value::as_str).filter(|n| !n.is_empty()).map(str::to_string);
                 match verb {
                     "reload" => self.reload().await,
+                    "start" | "stop" | "restart" | "enable" | "disable" => {
+                        let Some(name) = name() else { return Err(ApiError::new(400, format!("{verb} needs `name`"))) };
+                        self.service_control(verb, &name).await
+                    }
+                    "config_set" => {
+                        let key = args.get("key").and_then(Value::as_str).unwrap_or_default();
+                        self.config_set(key, args.get("values").cloned().unwrap_or_else(|| json!({}))).await
+                    }
                     "install" => {
                         let mut sources: Vec<String> = args
                             .get("sources")
@@ -739,7 +783,8 @@ impl Gateway {
             }
             "status" => Ok(self.status()),
             "plugins" => Ok(self.load_snapshot()),
-            "services" => Ok(json!(self.hub.services())),
+            "services" => Ok(self.services_view()),
+            "config_contracts" => Ok(self.config_contracts().await),
             "usage" => {
                 let days = args.get("days").and_then(Value::as_i64).unwrap_or(crate::usage::WINDOW_DAYS);
                 Ok(json!(self.usage.tally(days)))
@@ -839,11 +884,19 @@ impl Gateway {
             tracing::info!("mode gate: refused {tool}.{verb}: {why}");
             return Err(ApiError::new(403, why));
         }
+        if let Some(why) = self.level_refusal(&tool, &verb, &inner, ctx) {
+            tracing::info!("level gate: refused {tool}.{verb}: {why}");
+            return Err(ApiError::new(403, why));
+        }
         if let Some(why) = ctx.plugin.as_deref().and_then(|p| self.undeclared(p, &tool, &verb)) {
             tracing::info!("needs guard: refused {tool}.{verb}: {why}");
             return Err(ApiError::new(403, why));
         }
         if let Some(peer) = peer.filter(|p| p != "local" && *p != self.node) {
+            if SESSION_BOUND.iter().any(|(t, vs)| *t == tool && vs.contains(&verb.as_str())) {
+                return Err(ApiError::new(400, format!(
+                    "{tool}.{verb} acts on your own session on this node, so it cannot run on peer {peer:?}; call it without peer")));
+            }
             let envelope = json!({"verb": verb, "args": inner});
             return Ok(self.peers.invoke(&peer, &tool, envelope, ctx).await?);
         }
@@ -854,13 +907,23 @@ impl Gateway {
         result
     }
 
+    /// Why the caller's stamped level may not make this call (channels.md R125).
+    fn level_refusal(&self, tool: &str, verb: &str, args: &Value, ctx: &CallContext) -> Option<String> {
+        let level = awm_trust::stamped_level(ctx.caller.trust.as_deref(), ctx.caller.lane != Lane::Edge);
+        let (contract, major) = crate::isolated::HARNESS_CONTRACT;
+        let harness = self.providers(contract, major).iter().any(|o| o.name == tool);
+        let names_other = args.get("job").and_then(Value::as_str).is_some_and(|j| !j.is_empty());
+        awm_trust::call_refusal(level, &awm_trust::Call { tool, verb, harness, names_other })
+    }
+
     /// Why `plugin` may not call `tool`'s `verb`, or None when it may (R116 item 3). A plugin
     /// may call its own tools, and each tool or contract provider its manifest's needs list
     /// with that verb. A plugin with no manifest, or one this node does not load, is not held.
     pub fn undeclared(&self, plugin: &str, tool: &str, verb: &str) -> Option<String> {
         let load = self.read_load();
-        let p = load.plugins.iter().find(|p| p.name == plugin && !p.legacy)?;
-        if p.tools.iter().any(|t| t.name == tool) {
+        let p = load.plugins.iter().find(|p| p.name == plugin)?;
+        // The core's own tool needs no manifest entry: its writes take a trusted local caller.
+        if p.tools.iter().any(|t| t.name == tool) || tool == NATIVE_TOOL {
             return None;
         }
         let lists = |n: &NeedTool| verb == DESCRIBE || n.verbs.iter().any(|v| v == verb);
@@ -942,6 +1005,7 @@ impl Gateway {
             surface: Surface::Mcp,
             plugin: None,
             mode: None,
+            pid: None,
         };
         if verb == DESCRIBE {
             let allowed: Vec<String> = holder.tools.get(tool).into_iter().flatten().filter(|v| holder.may(tool, v)).cloned().collect();
@@ -997,10 +1061,14 @@ impl Gateway {
         if tool == NATIVE_TOOL && NATIVE_VERBS.iter().any(|(v, _)| *v == verb) {
             return self.native(verb, &inner, ctx).await.map(|v| render(&v));
         }
+        if self.marks.refuses(ctx, &inner) {
+            tracing::info!("private gate: refused {tool}.{verb} to {}", ctx.caller.node);
+            return Err(ApiError::new(404, format!("Unknown tool {tool:?}")));
+        }
         let (service, found) = self.wait_for_verb(tool, verb).await?;
         check_arguments(tool, verb, &found.spec, &inner)?;
         let mut inner = inner;
-        crate::caller::stamp(&mut inner, &ctx.caller);
+        crate::caller::stamp(&mut inner, &ctx.caller, ctx.pid);
         let timeout = found.spec.get("timeout").and_then(Value::as_f64).unwrap_or(DEFAULT_CALL_TIMEOUT_S);
         let value = self
             .hub
@@ -1078,7 +1146,14 @@ fn strip_stamps(args: &Value) -> Value {
 fn check_arguments(tool: &str, verb: &str, spec: &Value, args: &Value) -> Result<(), ApiError> {
     let Some(params) = spec.get("params").and_then(Value::as_array) else { return Ok(()) };
     let known: Vec<&str> = params.iter().filter_map(|p| p.get("name").and_then(Value::as_str)).collect();
-    let unknown: Vec<&String> = args.as_object().into_iter().flat_map(|m| m.keys()).filter(|k| !known.contains(&k.as_str())).collect();
+    // The stamp replaces or drops these two, so a caller that sends one is not refused for it.
+    let restamped = [crate::caller::PID_KEY, crate::caller::CLAIM_KEY];
+    let unknown: Vec<&String> = args
+        .as_object()
+        .into_iter()
+        .flat_map(|m| m.keys())
+        .filter(|k| !known.contains(&k.as_str()) && !restamped.contains(&k.as_str()))
+        .collect();
     if unknown.is_empty() {
         return Ok(());
     }
@@ -1126,7 +1201,6 @@ fn load_plugins(state: &Path, cfg: &Config, peer_tools: &BTreeMap<String, Vec<Re
         wants: &wants,
         core_roots: &cfg.core_roots,
         plugin_roots: &plugin_roots,
-        page_roots: &cfg.page_roots,
         profiles: &cfg.profiles,
         reserved: &reserved,
         enabled: &enabled,

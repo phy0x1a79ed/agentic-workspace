@@ -75,7 +75,6 @@ def fakes(monkeypatch, tmp_path):
     monkeypatch.setattr(alarm, "STATE_DIR", tmp_path / "state")
     posts = []
     monkeypatch.setattr(alarm, "_call", lambda s, f, a: posts.append((s, f, a)))
-    monkeypatch.setattr(policy, "_lib", lambda: None)
     monkeypatch.setattr(hub_adapter, "_task_of", lambda sid: "task-9")
     monkeypatch.setattr(hub_adapter, "_scopes_call", lambda fn, a: None)
     return type("Fakes", (), {"cc": cc, "ds": ds, "posts": posts})
@@ -178,6 +177,15 @@ def test_list_other_merges_every_harness(fakes):
     out = run("list_other", {"project": "awm"})
     assert {r["harness"] for r in out["sessions"]} == {"harness-cc", "harness-ds"}
     assert fakes.cc.calls[-1] == ("list", {"project": "awm"})
+
+
+def test_list_other_shows_each_recorded_level(fakes):
+    """A session with no record shows None, which a gate reads as trusted (policy.DEFAULT_LEVEL)."""
+    fakes.ds.sessions["x"] = {"session_id": "ds" + "c" * 32, "name": "web"}
+    policy.record("ds" + "c" * 32, "cooperative", "test")
+    rows = {r["harness"]: r for r in run("list_other", {})["sessions"]}
+    assert rows["harness-ds"]["trust"] == "cooperative"
+    assert rows["harness-cc"]["trust"] is None
 
 
 def test_stop_retires_the_session_and_removes_its_job(fakes):

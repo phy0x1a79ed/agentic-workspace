@@ -33,7 +33,7 @@ log = logging.getLogger("awm.dsh.hub_adapter")
 SUPERVISOR = harness.Supervisor()
 
 #: Every function carries an explicit ``tool`` name under a ``dsh_`` prefix, the
-#: tool its service.toml names. The tool is off the MCP surface; the verbs answer
+#: tool its awm-plugin.toml names. The tool is off the MCP surface; the verbs answer
 #: on the CLI (``awm dsh status``) and over HTTP.
 API_MANIFEST: dict[str, Any] = {
     "functions": [
