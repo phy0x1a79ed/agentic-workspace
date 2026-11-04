@@ -3,7 +3,7 @@
 //! It publishes, under the tool `FAKE_TOOL` (default: the service name):
 //! `echo(text)`, `add(a, b)`, `whoami()` (returns the `caller` frame the gateway stamped),
 //! `run_job(job)` (reports a background run), and `call_needed(verb, args)` (calls the first
-//! `[[needs.tool]]` of its own `awm-plugin.toml` by name through `/invoke`). As a fake harness plugin it also answers
+//! `[[needs.tool]]` of its own `awm-plugin.toml` by name through `/invoke`, with its service token). As a fake harness plugin it also answers
 //! `caller_of_token(token)` from the JSON map in `FAKE_TOKENS`, and `scoped(project?, scope?,
 //! to_scope?)` returns the args it got. `env(name)` returns one variable of its environment.
 //! As a fake reflection it answers `session_of(pid)` from the JSON map in the file at
@@ -18,7 +18,6 @@ async fn main() -> anyhow::Result<()> {
     let hub = std::env::var("AWM_HUB_URL")?.trim_end_matches('/').to_string();
     let name = std::env::var("AWM_SERVICE_NAME")?;
     let tool = std::env::var("FAKE_TOOL").unwrap_or_else(|_| name.clone());
-    let plugin = std::env::var("AWM_PLUGIN").unwrap_or_else(|_| name.clone());
     let http = reqwest::Client::new();
 
     let token = match std::env::var("AWM_HUB_TOKEN_FILE") {
@@ -27,7 +26,7 @@ async fn main() -> anyhow::Result<()> {
     };
     let reg: Value = http
         .post(format!("{hub}/hub/service/register"))
-        .header("X-Awm-Service-Token", token)
+        .header("X-Awm-Service-Token", &token)
         .json(&json!({"name": name, "pid": std::process::id(), "start": ["bash", "run.sh"], "cwd": "."}))
         .send()
         .await?
@@ -93,7 +92,7 @@ async fn main() -> anyhow::Result<()> {
                 sink.send(Message::Text(usage.to_string().into())).await?;
                 Ok(json!("ran"))
             }
-            "call_needed" => call_needed(&http, &hub, &plugin, args).await,
+            "call_needed" => call_needed(&http, &hub, &token, args).await,
             other => Err(format!("unknown function {other:?}")),
         };
         let reply = match result {
@@ -105,7 +104,7 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn call_needed(http: &reqwest::Client, hub: &str, plugin: &str, args: &Value) -> Result<Value, String> {
+async fn call_needed(http: &reqwest::Client, hub: &str, token: &str, args: &Value) -> Result<Value, String> {
     let text = std::fs::read_to_string("awm-plugin.toml").map_err(|e| format!("awm-plugin.toml: {e}"))?;
     let manifest: toml::Value = toml::from_str(&text).map_err(|e| e.to_string())?;
     let tool = manifest
@@ -119,7 +118,7 @@ async fn call_needed(http: &reqwest::Client, hub: &str, plugin: &str, args: &Val
     let body = json!({"name": tool, "args": {"verb": args["verb"], "args": args.get("args").cloned().unwrap_or(json!({}))}});
     let resp = http
         .post(format!("{hub}/invoke"))
-        .header("X-Awm-Plugin", plugin)
+        .header("X-Awm-Service-Token", token)
         .json(&body)
         .send()
         .await

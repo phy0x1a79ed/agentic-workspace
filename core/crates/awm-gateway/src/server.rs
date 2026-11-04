@@ -18,6 +18,8 @@ use crate::gateway::{ApiError, Gateway};
 use crate::hub::Claim;
 use crate::supervisor;
 
+const SERVICE_TOKEN_HEADER: &str = "x-awm-service-token";
+
 type Gw = State<Arc<Gateway>>;
 
 impl IntoResponse for ApiError {
@@ -44,7 +46,6 @@ pub fn router(gw: Arc<Gateway>) -> Router {
         .route("/hub/reload", post(reload))
         .route("/hub/install", post(install))
         .route("/hub/uninstall", post(uninstall))
-        .route("/svc/{service}/fn/{function}", post(svc_fn))
         .route("/p/{plugin}/{page}", get(page_root))
         .route("/p/{plugin}/{page}/", get(page_root))
         .route("/p/{plugin}/{page}/{*path}", get(page_file))
@@ -121,8 +122,20 @@ fn header<'a>(h: &'a HeaderMap, name: &str) -> Option<&'a str> {
 /// `X-Awm-Caller` counts only with the edge token, which only `awm edge-serve` can read.
 /// A local request gets the id, trust level, mode and scope of the session its pid header
 /// leads to (`caller.rs`).
-async fn context(gw: &Gateway, h: &HeaderMap, default: Surface) -> CallContext {
-    let plugin = header(h, "x-awm-plugin").map(str::to_string);
+async fn context(gw: &Gateway, h: &HeaderMap, default: Surface) -> Result<CallContext, ApiError> {
+    let mut plugin = header(h, "x-awm-plugin").map(str::to_string);
+    // A service names itself by the token its spawn was given. A wrong token is refused,
+    // since a caller that sends one means to be that service.
+    let service = match header(h, SERVICE_TOKEN_HEADER) {
+        Some(token) => match gw.service_of_token(token) {
+            Some(name) => Some(name),
+            None => return Err(ApiError::new(401, "unknown service token")),
+        },
+        None => None,
+    };
+    if let Some(name) = &service {
+        plugin = Some(gw.plugin_of_service(name));
+    }
     let surface = if plugin.is_some() {
         Surface::Plugin
     } else {
@@ -142,9 +155,14 @@ async fn context(gw: &Gateway, h: &HeaderMap, default: Surface) -> CallContext {
         }
     }
     let mut mode = None;
-    if !edge {
+    let pid = header(h, "x-awm-session-pid").or_else(|| header(h, "x-awm-caller-pid"));
+    if !edge && service.is_some() && pid.is_none() {
+        // A service acting on its own account: trusted, on the service lane.
+        caller.lane = Lane::Service;
+        caller.trust = Some(crate::caller::TRUSTED.into());
+    } else if !edge {
         // A local request with no pid comes from no session: a user's tool on this node.
-        let pid = header(h, "x-awm-session-pid").or_else(|| header(h, "x-awm-caller-pid"));
+        // A service that forwards a session's pid acts for that session.
         let lookup = match pid.map(str::parse::<u32>) {
             Some(Ok(pid)) => gw.resolve_caller(pid).await,
             Some(Err(_)) => crate::caller::Lookup::Failed,
@@ -158,7 +176,7 @@ async fn context(gw: &Gateway, h: &HeaderMap, default: Surface) -> CallContext {
     if edge && as_.is_none() && caller.lane == Lane::Service && caller.node != gw.node {
         as_ = Some(format!("peer:{}", caller.node));
     }
-    CallContext { caller, as_, surface, plugin, mode }
+    Ok(CallContext { caller, as_, surface, plugin, mode })
 }
 
 async fn status(State(gw): Gw) -> Json<Value> {
@@ -190,7 +208,7 @@ async fn invoke(State(gw): Gw, h: HeaderMap, body: Option<Json<Value>>) -> Resul
         return Err(ApiError::new(400, "missing 'name' in payload"));
     };
     let args = body.get("args").cloned().filter(|a| !a.is_null()).unwrap_or_else(|| json!({}));
-    let ctx = context(&gw, &h, Surface::Http).await;
+    let ctx = context(&gw, &h, Surface::Http).await?;
     let result = gw.invoke(name, args, &ctx).await?;
     Ok(Json(json!({"result": result})))
 }
@@ -216,8 +234,6 @@ async fn usage_post(State(gw): Gw, Json(ev): Json<UsageEvent>) -> Result<Json<Va
 struct RegisterReq {
     name: String,
     #[serde(default)]
-    prefix: Option<String>,
-    #[serde(default)]
     pid: Option<i64>,
     #[serde(default)]
     overlay: bool,
@@ -227,13 +243,9 @@ async fn register(State(gw): Gw, h: HeaderMap, Json(req): Json<RegisterReq>) -> 
     if req.overlay {
         return Err(ApiError::new(409, "the Rust gateway does not run shadow overlays"));
     }
-    let token_file = match gw.cfg.external(&req.name) {
-        Some(external) => external.token_file.clone(),
-        None => Some(supervisor::service_token_path(&gw.state, &req.name)).filter(|p| p.exists()),
-    };
-    if let Some(path) = token_file {
+    if let Some(path) = gw.token_file_of(&req.name) {
         let expected = std::fs::read_to_string(&path).unwrap_or_default();
-        let sent = header(&h, "x-awm-service-token").unwrap_or_default();
+        let sent = header(&h, SERVICE_TOKEN_HEADER).unwrap_or_default();
         if expected.trim().is_empty() || expected.trim() != sent {
             tracing::warn!("service {}: register without its service token; refused", req.name);
             return Err(ApiError::new(403, format!("service {:?} needs its service token", req.name)));
@@ -248,7 +260,6 @@ async fn register(State(gw): Gw, h: HeaderMap, Json(req): Json<RegisterReq>) -> 
     Ok(Json(json!({
         "service_id": id,
         "name": req.name,
-        "prefix": req.prefix.unwrap_or_else(|| format!("/svc/{}", req.name)),
         "control_ws_path": format!("/hub/service/control/{id}"),
         "bridge_ws_base": format!("/hub/service/bridge/{id}"),
         "canonical_workspace": workspace,
@@ -373,18 +384,6 @@ struct UninstallBody {
 async fn uninstall(State(gw): Gw, h: HeaderMap, Json(body): Json<UninstallBody>) -> Result<Json<Value>, ApiError> {
     refuse_token(&h)?;
     gw.uninstall(&body.name).await.map(Json)
-}
-
-async fn svc_fn(
-    State(gw): Gw,
-    Path((service, function)): Path<(String, String)>,
-    h: HeaderMap,
-    body: Option<Json<Value>>,
-) -> Result<Json<Value>, ApiError> {
-    refuse_token(&h)?;
-    let args = body.map(|Json(v)| v).unwrap_or_else(|| json!({}));
-    let ctx = context(&gw, &h, Surface::Plugin).await;
-    gw.call_function(&service, &function, args, &ctx).await.map(Json)
 }
 
 async fn page_root(State(gw): Gw, Path((plugin, page)): Path<(String, String)>) -> Response {

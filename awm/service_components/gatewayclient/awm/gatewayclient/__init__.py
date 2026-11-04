@@ -1,47 +1,24 @@
-"""Service-originated calls to other services, via the gateway.
+"""Service-originated calls to other plugins' verbs, via the gateway.
 
-In the modular architecture the gateway is the sole interface. A *browser
-or MCP client* already reaches a feature service through it:
-``POST /svc/<name>/fn/<fn>`` is translated by the gateway's service-routing
-layer (``awm.gateway.hub.proxy.proxy_service_http``) into a
-``ControlChannel.call`` on that service's control WS, and the JSON reply is
-returned as the HTTP body. The ``X-Awm-As: <principal>`` header carries the
-caller's identity end-to-end (the route layer reads it and threads it through
-as ``as_``).
-
-What was missing is a way for a SERVICE PROCESS to originate the same kind of
-call — which is exactly what the "no global identity; refs are natural keys
-validated by calling the owning service via gateway RPC, cached" invariant
-requires. A service that holds a reference to, say, ``project/scope`` does not
-import the scopes service to validate it; it *calls* the scopes service via
-the gateway and caches the positive answer. This module is that small client.
+A service calls another tool's verb the way every other caller does: ``POST
+/invoke`` with the flat name ``<tool>_<verb>``. It names itself with the token
+the supervisor minted for this spawn (``AWM_HUB_TOKEN_FILE``), sent as
+``X-Awm-Service-Token``, so the gateway knows which plugin calls and can hold
+it to the verbs its manifest declares. ``X-Awm-As`` carries a forwarded
+principal and ``X-Awm-Caller-Pid`` the session a call acts for.
 
 Public API
 ----------
-``call(service, fn, args, *, as_=None, timeout=30.0)`` — async; one RPC.
-``call_sync(service, fn, args, *, as_=None, timeout=30.0)`` — sync variant.
-``subscribe(service, topic, *, as_=None)`` — async generator over a topic
-    (provisional; may be unused in pass 1).
+``call(tool, verb, args, *, as_=None, timeout=30.0)`` — async; one call.
+``call_sync(tool, verb, args, *, as_=None, timeout=30.0)`` — sync variant.
+``call_peer`` / ``call_peer_sync`` — the same call on a peer's edge ``/invoke``.
+``subscribe(service, topic, *, as_=None)`` — async generator over a topic.
 ``GatewayCallError`` — raised on a non-2xx reply, carrying ``status`` + ``body``.
 ``RefCache`` — short-TTL, positive-only cache wrapping ``call`` for the
     validate-by-calling hot path.
 
-Transport notes (mirrored from ``proxy_service_http``)
-------------------------------------------------------
-* URL shape is ``{AWM_HUB_URL}/svc/{service}/fn/{fn}``; ``AWM_HUB_URL`` is the
-  gateway base URL the hub injects into every service process (e.g.
-  ``http://127.0.0.1:7819/``).
-* The request body IS the args object, JSON-encoded (``proxy_service_http``
-  does ``args = json.loads(body)``; empty body → ``null`` args). We always
-  send a JSON body, defaulting ``args`` to ``{}``.
-* Identity rides ``X-Awm-As: <as_>`` when ``as_`` is given — the same header
-  the gateway route reads to populate ``as_`` on the upstream ``call``.
-* The gateway binds loopback-only with no auth layer on the ``/svc`` surface
-  (federation is retired), so no bearer is required — the registration
-  handshake carries no token at all.
-* The reply is JSON. ``proxy_service_http`` returns the raw result, or ``{}``
-  when the service returned ``None`` — so callers see ``{}`` for a null
-  result, never Python ``None``, over this boundary.
+A result comes back decoded from the JSON text ``/invoke`` returns, a string
+that is not JSON stays a string, and a null result reads as ``{}``.
 
 A service calling ITSELF must use its own local DAO — do NOT round-trip
 through the gateway to reach your own functions. This client is for
@@ -125,7 +102,7 @@ _DEFAULT_HUB_URL = "http://127.0.0.1:7819/"
 
 
 class GatewayCallError(Exception):
-    """A ``/svc/<name>/fn/<fn>`` call returned a non-2xx response.
+    """A gateway call returned a non-2xx response.
 
     Carries the HTTP ``status`` and the (text) ``body`` the gateway sent, so
     callers can branch on, e.g., 503 (service control channel not open),
@@ -139,7 +116,7 @@ class GatewayCallError(Exception):
         self.body = body
         self.service = service
         self.fn = fn
-        where = f"{service}/{fn}" if service or fn else "<svc>/<fn>"
+        where = f"{service}/{fn}" if service or fn else "<tool>/<verb>"
         super().__init__(f"gateway call {where} failed: HTTP {status}: {body}")
 
 
@@ -152,12 +129,21 @@ def hub_base_url() -> str:
     return (os.environ.get("AWM_HUB_URL") or _DEFAULT_HUB_URL).rstrip("/")
 
 
-def _svc_url(service: str, fn: str) -> str:
-    return f"{hub_base_url()}/svc/{service}/fn/{fn}"
+def service_token() -> str | None:
+    """This service's token, from the file the supervisor names, or None."""
+    path = os.environ.get("AWM_HUB_TOKEN_FILE")
+    if not path:
+        return None
+    try:
+        return Path(path).read_text().strip() or None
+    except OSError:
+        return None
 
 
 def _headers(as_: str | None, caller_pid: int | None = None) -> dict[str, str]:
     h: dict[str, str] = {"Content-Type": "application/json"}
+    if token := service_token():
+        h["X-Awm-Service-Token"] = token
     if as_ is not None:
         h["X-Awm-As"] = as_
     if caller_pid is not None:
@@ -174,43 +160,49 @@ def _parse_reply(resp: httpx.Response, service: str, fn: str) -> Any:
     try:
         return resp.json()
     except json.JSONDecodeError:
-        # The /svc surface always returns JSON on 2xx; treat a non-JSON 2xx
-        # body as raw text rather than masking it.
         return resp.text
 
 
+def _invoke_body(tool: str, verb: str, args: dict | None) -> str:
+    return json.dumps({"name": f"{tool}_{verb}", "args": args or {}})
+
+
+def _result(resp: httpx.Response, tool: str, verb: str) -> Any:
+    """The decoded ``result`` of an ``/invoke`` reply. Non-2xx raises."""
+    body = _parse_reply(resp, tool, verb)
+    result = body.get("result") if isinstance(body, dict) else body
+    if isinstance(result, str):
+        try:
+            result = json.loads(result)
+        except json.JSONDecodeError:
+            return result
+    return {} if result is None else result
+
+
 async def call(
-    service: str,
-    fn: str,
+    tool: str,
+    verb: str,
     args: dict | None = None,
     *,
     as_: str | None = None,
     caller_pid: int | None = None,
     timeout: float = 30.0,
 ) -> Any:
-    """Call ``fn`` on ``service`` via the gateway and return the JSON result.
+    """Call ``tool``'s ``verb`` through the gateway's ``/invoke`` and return the result.
 
-    POSTs ``json(args)`` to ``{AWM_HUB_URL}/svc/{service}/fn/{fn}`` with an
-    ``X-Awm-As: <as_>`` header when ``as_`` is given. ``caller_pid`` names the
-    session the call acts for: the gateway stamps it as the verb's
-    ``_caller_pid``, as it does for the session's own calls. Raises
+    ``caller_pid`` names the session the call acts for: the gateway stamps that
+    session's trust and mode, as it does for the session's own calls. Raises
     ``GatewayCallError`` on any non-2xx response (status + body attached).
-
-    A ``None``/null service result comes back as ``{}`` (the gateway
-    substitutes ``{}`` for ``None``) — callers that need a true "not found"
-    signal should have the owning service return a falsy payload they can
-    test (e.g. ``null`` inside a field), not rely on HTTP status.
     """
-    url = _svc_url(service, fn)
     async with httpx.AsyncClient(timeout=timeout) as cli:
-        resp = await cli.post(url, content=json.dumps(args or {}),
+        resp = await cli.post(f"{hub_base_url()}/invoke", content=_invoke_body(tool, verb, args),
                               headers=_headers(as_, caller_pid))
-    return _parse_reply(resp, service, fn)
+    return _result(resp, tool, verb)
 
 
 def call_sync(
-    service: str,
-    fn: str,
+    tool: str,
+    verb: str,
     args: dict | None = None,
     *,
     as_: str | None = None,
@@ -218,15 +210,13 @@ def call_sync(
 ) -> Any:
     """Synchronous variant of :func:`call`, for non-async service code.
 
-    Same URL/header/body contract; uses a blocking ``httpx.Client``. Do not
-    call this from inside the event loop of an async service — use
+    Do not call this from inside the event loop of an async service — use
     :func:`call` there.
     """
-    url = _svc_url(service, fn)
     with httpx.Client(timeout=timeout) as cli:
-        resp = cli.post(url, content=json.dumps(args or {}),
+        resp = cli.post(f"{hub_base_url()}/invoke", content=_invoke_body(tool, verb, args),
                         headers=_headers(as_))
-    return _parse_reply(resp, service, fn)
+    return _result(resp, tool, verb)
 
 
 async def subscribe(
@@ -722,41 +712,38 @@ def peer_send_sync(peer: str, entry: dict[str, Any] | None, send: Any) -> httpx.
 
 async def call_peer(
     peer: str,
-    service: str,
-    fn: str,
+    tool: str,
+    verb: str,
     args: dict | None = None,
     *,
     as_: str | None = None,
     timeout: float = 30.0,
 ) -> Any:
-    """Call ``fn`` on ``service`` running on peer node ``peer`` and return the
-    JSON result.
+    """Call ``tool``'s ``verb`` on peer node ``peer`` and return the result.
 
-    Resolves the peer's edge via the local gateway, then POSTs
-    ``{edge}/svc/{service}/fn/{fn}`` **directly to the peer edge** over
-    CA-verified TLS — no bytes traverse the local gateway. Authenticates with a
-    node-signed token; an edge peer that refuses it gets the legacy ssh-fetched
-    bearer instead (see :func:`peer_send`).
+    Resolves the peer's edge via the local gateway, then POSTs ``{edge}/invoke``
+    **directly to the peer edge** over CA-verified TLS — no bytes traverse the
+    local gateway. Authenticates with a node-signed token; an edge peer that
+    refuses it gets the legacy ssh-fetched bearer instead (see :func:`peer_send`).
     """
     entry = await resolve_peer_async(peer)
     edge = entry["edge_url"].rstrip("/")
-    url = f"{edge}/svc/{service}/fn/{fn}"
     ca = _peer_ca()
-    body = json.dumps(args or {})
+    body = _invoke_body(tool, verb, args)
 
     async def send(bearer: str) -> httpx.Response:
         async with httpx.AsyncClient(timeout=timeout, verify=ca) as cli:
-            return await cli.post(url, content=body,
+            return await cli.post(f"{edge}/invoke", content=body,
                                   headers=_peer_headers(bearer, as_))
 
     resp = await peer_send(peer, entry, send)
-    return _parse_reply(resp, f"{service}@{peer}", fn)
+    return _result(resp, f"{tool}@{peer}", verb)
 
 
 def call_peer_sync(
     peer: str,
-    service: str,
-    fn: str,
+    tool: str,
+    verb: str,
     args: dict | None = None,
     *,
     as_: str | None = None,
@@ -765,16 +752,15 @@ def call_peer_sync(
     """Synchronous variant of :func:`call_peer`."""
     entry = resolve_peer(peer)
     edge = entry["edge_url"].rstrip("/")
-    url = f"{edge}/svc/{service}/fn/{fn}"
     ca = _peer_ca()
-    body = json.dumps(args or {})
+    body = _invoke_body(tool, verb, args)
 
     def send(bearer: str) -> httpx.Response:
         with httpx.Client(timeout=timeout, verify=ca) as cli:
-            return cli.post(url, content=body, headers=_peer_headers(bearer, as_))
+            return cli.post(f"{edge}/invoke", content=body, headers=_peer_headers(bearer, as_))
 
     resp = peer_send_sync(peer, entry, send)
-    return _parse_reply(resp, f"{service}@{peer}", fn)
+    return _result(resp, f"{tool}@{peer}", verb)
 
 
 def _parse_invoke_reply(resp: httpx.Response, peer: str, name: str) -> Any:
@@ -1106,8 +1092,8 @@ def peer_env(var: str) -> str | None:
 
 async def call_maybe_peer(
     peer: str | None,
-    service: str,
-    fn: str,
+    tool: str,
+    verb: str,
     args: dict | None = None,
     *,
     as_: str | None = None,
@@ -1120,14 +1106,14 @@ async def call_maybe_peer(
     not scattered across call sites.
     """
     if peer:
-        return await call_peer(peer, service, fn, args, as_=as_, timeout=timeout)
-    return await call(service, fn, args, as_=as_, timeout=timeout)
+        return await call_peer(peer, tool, verb, args, as_=as_, timeout=timeout)
+    return await call(tool, verb, args, as_=as_, timeout=timeout)
 
 
 def call_sync_maybe_peer(
     peer: str | None,
-    service: str,
-    fn: str,
+    tool: str,
+    verb: str,
     args: dict | None = None,
     *,
     as_: str | None = None,
@@ -1143,8 +1129,8 @@ def call_sync_maybe_peer(
     are here to prevent.
     """
     if peer:
-        return call_peer_sync(peer, service, fn, args, as_=as_, timeout=timeout)
-    return call_sync(service, fn, args, as_=as_, timeout=timeout)
+        return call_peer_sync(peer, tool, verb, args, as_=as_, timeout=timeout)
+    return call_sync(tool, verb, args, as_=as_, timeout=timeout)
 
 
 async def subscribe_maybe_peer(

@@ -390,6 +390,19 @@ fn gateway_end_to_end() {
     assert_eq!(http().get(format!("{url}/hub/tool/nobody")).send().unwrap().status().as_u16(), 404);
     let (code, out, errout) = cli(&url, &["caller", "call_needed", "--verb", "echo", "--args", r#"{"text":"via caller"}"#]);
     assert!(code == 0 && out.contains("via caller"), "{out} {errout}");
+    // It names itself by its service token: a trusted call on the service lane.
+    let (code, out, errout) = cli(&url, &["caller", "call_needed", "--verb", "whoami"]);
+    assert!(code == 0, "{errout}");
+    assert!(out.contains(r#"\"lane\": \"service\""#) && out.contains(r#"\"trust\": \"trusted\""#), "a service call: {out}");
+    let forged = http()
+        .post(format!("{url}/invoke"))
+        .header("X-Awm-Service-Token", "not-a-token")
+        .json(&json!({"name": "fake", "args": {"verb": "whoami"}}))
+        .send()
+        .unwrap();
+    assert_eq!(forged.status().as_u16(), 401, "a wrong service token passed");
+    let gone = http().post(format!("{url}/svc/fake/fn/echo")).json(&json!({"text": "x"})).send().unwrap();
+    assert_eq!(gone.status().as_u16(), 404, "the /svc door still answers");
 
     // Background runs and code use report themselves; pages count visits.
     let (code, out, _) = cli(&url, &["fake", "run_job", "--job", "nightly"]);

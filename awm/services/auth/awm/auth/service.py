@@ -266,7 +266,7 @@ async def _push_password_to_discord_attempt(login_password: str) -> None:
     if not s.push_discord:
         result = await gatewayclient.call_maybe_peer(
             gatewayclient.peer_env(_REPORTING_PEER_ENV),
-            "reporting", "ops_post", {
+            "operations", "ops_post", {
                 "kind": "password", "node": node,
                 "title": f"{node} login password", "body": text,
             })

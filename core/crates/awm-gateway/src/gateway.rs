@@ -164,6 +164,28 @@ impl Gateway {
     }
 
     /// The plugin a service belongs to. A service the loader does not know is its own plugin.
+    /// The file holding the token `service` proves itself with: its external config's, else
+    /// the one the supervisor minted for its spawn. None when it has neither.
+    pub fn token_file_of(&self, service: &str) -> Option<PathBuf> {
+        match self.cfg.external(service) {
+            Some(external) => external.token_file.clone(),
+            None => Some(crate::supervisor::service_token_path(&self.state, service)).filter(|p| p.exists()),
+        }
+    }
+
+    /// The registered service whose token is `token`, if any.
+    pub fn service_of_token(&self, token: &str) -> Option<String> {
+        let token = token.trim();
+        if token.is_empty() {
+            return None;
+        }
+        self.hub.services().into_iter().map(|s| s.name).find(|name| {
+            self.token_file_of(name)
+                .and_then(|p| std::fs::read_to_string(p).ok())
+                .is_some_and(|expected| !expected.trim().is_empty() && expected.trim() == token)
+        })
+    }
+
     pub fn plugin_of_service(&self, service: &str) -> String {
         self.read_load()
             .plugins
@@ -905,25 +927,6 @@ impl Gateway {
             .call(&service, &found.function, inner, ctx.as_.as_deref(), &ctx.caller, Duration::from_secs_f64(timeout))
             .await?;
         Ok(render(&value))
-    }
-
-    /// `POST /svc/<service>/fn/<fn>`, the door today's Python services call each other through.
-    pub async fn call_function(&self, service: &str, function: &str, args: Value, ctx: &CallContext) -> Result<Value, ApiError> {
-        let started = Instant::now();
-        let mut args = args;
-        crate::caller::stamp(&mut args, &ctx.caller);
-        let result = self
-            .hub
-            .call(service, function, args, ctx.as_.as_deref(), &ctx.caller, Duration::from_secs_f64(DEFAULT_CALL_TIMEOUT_S))
-            .await
-            .map_err(ApiError::from);
-        let mut ev = UsageEvent::new(self.plugin_of_service(service), Surface::Plugin);
-        ev.tool = Some(service.to_string());
-        ev.verb = Some(function.to_string());
-        ev.ok = Some(result.is_ok());
-        ev.ms = Some(started.elapsed().as_millis() as u64);
-        self.usage.record(ev);
-        result
     }
 }
 

@@ -61,17 +61,19 @@ class Net:
         if path.startswith("/peers/"):
             return httpx.Response(200, json={"peer": {
                 "edge_url": EDGE, "ssh_alias": "hub-ssh"}})
-        if path == "/svc/auth/fn/sign_peer_token":
+        if request.url.host == "gateway.test" and path == "/invoke":
             assert "X-Awm-As" not in request.headers, "signing is an operator call"
-            aud = json.loads(request.content)["aud"]
+            sent = json.loads(request.content)
+            assert sent["name"] == "auth_sign_peer_token", sent
+            aud = sent["args"]["aud"]
             self.minted.append(aud)
             if self.sign_gate:
                 self.sign_gate()
             if self.sign_status != 200:
                 return httpx.Response(self.sign_status, text="no node key")
-            return httpx.Response(200, json={
+            return httpx.Response(200, json={"result": json.dumps({
                 "token": f"awmpt1.t{len(self.minted)}.sig", "iss": "me", "aud": aud,
-                "expires_in": self.expires_in})
+                "expires_in": self.expires_in})})
         auth = request.headers.get("Authorization", "")
         body = json.loads(request.content) if request.content else None
         self.edge_calls.append((path, auth, body))
@@ -298,13 +300,13 @@ def test_a_json_looking_scalar_result_stays_a_string(net, monkeypatch):
 
 def test_call_peer_uses_the_token_then_falls_back_for_an_edge_peer(net):
     net.edge_status = 200
-    assert asyncio.run(gc.call_peer("hub", "kb", "get", {"id": 1})) == {"ok": True}
-    assert net.edge_calls[0] == ("/svc/kb/fn/get", "Bearer awmpt1.t1.sig", {"id": 1})
+    assert asyncio.run(gc.call_peer("hub", "kb", "get", {"id": 1})) == {"hits": [1, 2]}
+    assert net.edge_calls[0] == ("/invoke", "Bearer awmpt1.t1.sig", {"name": "kb_get", "args": {"id": 1}})
 
     gc._peer_token_cache.clear()
     net.edge_calls.clear()
     net.refuse = lambda auth: auth.startswith("Bearer awmpt1.")
-    assert gc.call_peer_sync("hub", "kb", "get", {"id": 1}) == {"ok": True}
+    assert gc.call_peer_sync("hub", "kb", "get", {"id": 1}) == {"hits": [1, 2]}
     assert _auths(net) == ["Bearer awmpt1.t2.sig", "Bearer legacy-bearer"]
 
 

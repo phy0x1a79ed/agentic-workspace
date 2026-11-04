@@ -130,7 +130,7 @@ async def test_the_default_push_goes_to_the_ops_note(pushed, monkeypatch):
     await service._push_password_to_discord(PASSWORD, 0.0)
     assert len(pushed) == 1
     sent = pushed[0]
-    assert (sent["service"], sent["fn"]) == ("reporting", "ops_post")
+    assert (sent["service"], sent["fn"]) == ("operations", "ops_post")
     assert sent["args"]["kind"] == "password"
     assert sent["args"]["node"] == "altair"
     assert "altair" in sent["args"]["title"]

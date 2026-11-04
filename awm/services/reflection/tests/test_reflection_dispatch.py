@@ -264,7 +264,7 @@ def test_cd_claims_the_new_scope_and_releases_the_old(fakes, monkeypatch):
                         lambda fn, a: calls.append((fn, a)) or {"ok": True, "claimed": True})
     out = run("cd", {"_caller_pid": ME, "path": "/w/projects/awm/new"})
     assert out["ok"] and out["claim"]["claimed"]
-    assert [c[0] for c in calls] == ["scope_claim", "scope_release"]
+    assert [c[0] for c in calls] == ["claim", "release"]
     assert calls[0][1]["scope"] == "new" and calls[1][1]["scope"] == "old"
     assert fakes.cc.calls[-1] == ("set", {"pid": ME, "cwd": "/w/projects/awm/new"})
 
@@ -557,13 +557,13 @@ def test_the_start_check_counts_a_retire_it_missed(fakes, lonely):
 
 
 def test_whoami_asks_for_the_task_by_session_id(monkeypatch):
-    """reporting's task_for_session reads session_id (sessions.md R57 step 2)."""
+    """operations' task_for_session reads session_id (sessions.md R57 step 2)."""
     asked = []
     from awm import gatewayclient
     monkeypatch.setattr(gatewayclient, "call_sync", lambda svc, fn, a, timeout: asked.append(
         (svc, fn, a)) or {"task_id": "abcd1234"})
     assert hub_adapter._task_of(MY_ID) == "abcd1234"
-    assert asked == [("reporting", "task_for_session", {"session_id": MY_ID})]
+    assert asked == [("operations", "task_for_session", {"session_id": MY_ID})]
 
 
 def test_session_of_gives_the_gate_the_mode_and_the_trust(fakes):
