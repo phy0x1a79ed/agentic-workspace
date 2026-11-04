@@ -62,7 +62,7 @@ Every verb takes JSON and returns JSON with `ok`. *target* below is `session_id`
 | `interrupt` | target | `{interrupted}` |
 | `start` | `project?`, `scope?`, `prompt?`, `name?`, `model?`, `effort?`, `trust?`, `task_id?`, `role?`, `started_by?`, `pin?`, `suggest?`, `isolated?`, `pid?` | `{session_id, job, name, cwd}` |
 | `stop` | target, `keep?`, `confirm?` | `{stopped}`. With `keep` (the default) the session stays resumable by its id (`sessions.md` R10). Without it, the plugin removes the session's job. The caller's own session needs `confirm`. |
-| `resume` | target, `prompt?` | `{session_id, job, live}`. Brings back a stopped session from its transcript. |
+| `resume` | target, `prompt?` | `{session_id, job, live}`. Brings back a stopped session from its transcript. The target may be the session id of a retired session, whose job is gone (`sessions.md` R10 item 3). |
 | `set` | target, `model?`, `effort?`, `name?`, `cwd?`, `brief?` | `{applied: {key: outcome}}`. With `cwd`, `brief` is the line the caller's own follow-up carries once the move applied: reflection passes the new scope's brief (`scopes.md` R143). |
 | `compact` | target, `followup?`, `delay_ms?` | `{submitted, ticket?}`. The plugin runs the compaction, then delivers `followup`, and signals the end with a `harness_event` (§ Events). |
 
@@ -81,7 +81,7 @@ Optional verbs, listed in `capabilities` when served:
 
 ## Events
 
-A harness plugin reports the end of a `compact` or of any command with a follow-up by calling `reflection` fn `harness_event`:
+A harness plugin reports the end of a `compact` or of any command with a follow-up, and a session's clear, by calling `reflection` fn `harness_event`:
 
 > ```
 > {"session_id": "cc0e38…", "ticket": "…", "kind": "done" | "lost",
@@ -90,6 +90,12 @@ A harness plugin reports the end of a `compact` or of any command with a follow-
 > ```
 
 `done` means the session took the follow-up up after the command finished. `lost` means the plugin gave up, and `reason` says why. The plugin types a notice into a live session before it sends `lost`, and says so in `told_session`. reflection records the outcome in its ledger. On `lost` it raises the alarm: an ERROR log line, the `lost` list of `reflection pending`, and a journal message to the scope that `cwd` names.
+
+A session that clears itself gets a new session id. The plugin reports it with a `clear` event, and reflection records the old id as the new one's parent (`sessions.md` R13):
+
+> ```
+> {"session_id": "<new>", "parent": "<old>", "kind": "clear"}
+> ```
 
 A plugin that cannot reach reflection keeps the event and sends it again when it next starts. reflection asks each plugin's `pending` for the tickets it still holds. A settled ticket that its plugin no longer holds and that got no event is lost too.
 
