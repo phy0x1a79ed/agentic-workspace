@@ -93,9 +93,8 @@ class TestDigest:
 
     def test_asks_flags_requests_not_reports(self):
         from awm.journal.inbox import asks
-        assert asks("", {"type": "bug"}, "scope create is slow")
-        assert asks("Can you look at the tether?", {}, "Can you look at the tether?")
-        assert not asks("Fixed in e7ca6ce1 and deployed.", {}, "Fixed in e7ca6ce1 and deployed.")
+        assert asks("Can you look at the tether?", "Can you look at the tether?")
+        assert not asks("Fixed in e7ca6ce1 and deployed.", "Fixed in e7ca6ce1 and deployed.")
 
 
 class TestCursor:

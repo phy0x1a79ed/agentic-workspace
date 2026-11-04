@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
-from awm.journal import kinds
+from awm.journal import builtin_tags
 from awm.persistence import embeddings as engine
 from awm.persistence.databases import get_connection, get_connection_at, service_db_path
 
@@ -27,15 +27,14 @@ log = logging.getLogger("awm.journal.search_index")
 
 SERVICE = "journal"
 #: A thread is indexed when its first post carries one of these tags.
-INDEXED_TAGS = (kinds.JOURNAL, kinds.MESSAGE, kinds.PRECEDENT,
-                kinds.MIGRATED_PREFIX + "debrief", kinds.MIGRATED_PREFIX + "note")
+INDEXED_TAGS = (builtin_tags.JOURNAL, builtin_tags.MESSAGE, builtin_tags.PRECEDENT)
 _MARKS = ",".join("?" * len(INDEXED_TAGS))
 #: A WHERE fragment over ``scope_posts`` keeping the thread first posts the index holds.
 INDEXED_SQL = (f" AND thread_id IS NULL AND EXISTS (SELECT 1 FROM post_tags it WHERE"
                f" it.post_id = scope_posts.id AND it.tag_id IN ({_MARKS}))"
                f" AND NOT EXISTS (SELECT 1 FROM post_tags ft WHERE"
                f" ft.post_id = scope_posts.id AND ft.tag_id = ?)")
-INDEXED_PARAMS = [*INDEXED_TAGS, kinds.FOLDED]
+INDEXED_PARAMS = [*INDEXED_TAGS, builtin_tags.FOLDED]
 BACKFILL_EVERY_S = 6 * 3600
 
 _worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="journal-index")
@@ -57,7 +56,7 @@ def may_hold(terms: Any) -> bool:
     for negated, name in tags.parse_filter(terms):
         tag = tags.by_name(name)
         if (not negated and tag is not None and tag.id not in INDEXED_TAGS
-                and (tag.id in kinds.KIND_TAGS or tag.id.startswith(kinds.MIGRATED_PREFIX))):
+                and (tag.id in builtin_tags.KIND_TAGS or tag.id.startswith(builtin_tags.MIGRATED_PREFIX))):
             return False
     return True
 

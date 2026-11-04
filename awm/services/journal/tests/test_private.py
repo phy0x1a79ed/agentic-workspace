@@ -22,21 +22,6 @@ def seeded(journal_workspace):
 
 
 @pytest.fixture()
-def legacy(seeded, journal_conn):
-    """Rows in the legacy spellings the journal DB still holds: ``task:<p>`` and ``('', 'user:proj:<p>')``."""
-    rows = [("legacy-task", "task:avatar", "Avatar", "entry legacy task"),
-            ("legacy-user", "", "user:proj:avatar", "entry legacy user"),
-            ("legacy-other", "task:awm", "dev", "entry legacy awm")]
-    for i, (pid, project, scope, body) in enumerate(rows):
-        journal_conn.execute(
-            "INSERT INTO scope_posts (id, owner_project, owner_scope, author, body, meta, ts)"
-            " VALUES (?, ?, ?, 'system', ?, '{}', ?)", (pid, project, scope, body, i + 1))
-        journal_conn.execute("INSERT INTO post_tags VALUES (?, 'builtin:journal')", (pid,))
-    journal_conn.commit()
-    return seeded
-
-
-@pytest.fixture()
 def marked(seeded, journal_workspace):
     from awm.config import privacy
     projects = journal_workspace["projects_dir"]
@@ -119,26 +104,3 @@ def test_a_peer_export_drops_marked_documents_and_ids(marked):
     assert marked[("avatar", "Avatar")] not in peer["ids"]
     assert marked[("avatar", "Avatar")] in local["ids"]
     assert len(local["documents"]) == 5
-
-
-@pytest.mark.parametrize("as_", PEERS)
-def test_a_peer_sees_no_legacy_spelling_of_a_marked_project(legacy, journal_workspace, as_):
-    from awm.config import privacy
-    from awm.journal.operations.render import _handle_export
-    projects = journal_workspace["projects_dir"]
-    privacy.write_marks([{"project": "avatar", "scope": None, "path": str(projects / "avatar")}])
-    shown = {p["id"] for p in _fetch(as_, kind="journal")}
-    assert "legacy-other" in shown and not shown & {"legacy-task", "legacy-user"}
-    assert _fetch(as_, post_id="legacy-task") == [] and _fetch(as_, post_id="legacy-user") == []
-    exported = {d["id"] for d in _handle_export({}, as_)["documents"]}
-    assert "legacy-other" in exported and not exported & {"legacy-task", "legacy-user"}
-    assert {"legacy-task", "legacy-user"} <= {p["id"] for p in _fetch(None, kind="journal")}
-
-
-def test_a_scope_mark_covers_the_task_spelling(legacy, journal_workspace):
-    from awm.config import privacy
-    projects = journal_workspace["projects_dir"]
-    privacy.write_marks([{"project": "avatar", "scope": "Avatar",
-                          "path": str(projects / "avatar" / "Avatar")}])
-    shown = {p["id"] for p in _fetch("peer", kind="journal")}
-    assert "legacy-task" not in shown and "legacy-user" in shown

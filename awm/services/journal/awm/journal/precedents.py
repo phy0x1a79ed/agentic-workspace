@@ -16,7 +16,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from awm.journal import kinds, search_index, tags
+from awm.journal import builtin_tags, search_index, tags
 from awm.journal.dao import JournalDAO
 from awm.journal.refs import now_ms
 
@@ -121,11 +121,11 @@ def import_db(source: Path, *, dry_run: bool = False) -> dict:
                      json.dumps({k: v for k, v in meta.items() if v}), _ms(d["created"], d["added"]),
                      pid[reply[d["id"]]] if d["id"] in reply else None,
                      pid[top] if top != d["id"] else None))
-        ids = [kinds.PRECEDENT, *(tags.by_name(n).id for n in names.get(d["id"], []))]
+        ids = [builtin_tags.PRECEDENT, *(tags.by_name(n).id for n in names.get(d["id"], []))]
         if d["status"] == "superseded" or d["id"] in {o for olds in replaces.values() for o in olds}:
-            ids.append(kinds.SUPERSEDED)
+            ids.append(builtin_tags.SUPERSEDED)
         if d["status"] == "retired":
-            ids.append(kinds.CLOSED)
+            ids.append(builtin_tags.CLOSED)
         links += [(pid[d["id"]], t) for t in dict.fromkeys(ids)]
         for extra in replaces.get(d["id"], [])[1:]:
             notes_out.append((post_id("supersede", f"{extra}>{d['id']}"), extra,
@@ -139,7 +139,7 @@ def import_db(source: Path, *, dry_run: bool = False) -> dict:
     for nid, did, text, author, created in notes_out:
         rows.append((nid, *CHANNEL, author if ":" in author or author == "system" else f"user:{author}",
                      text, "{}", _ms(created), pid[did], pid[root(did)]))
-        links.append((nid, kinds.MESSAGE))
+        links.append((nid, builtin_tags.MESSAGE))
 
     dao = JournalDAO()
     with dao.transaction() as conn:

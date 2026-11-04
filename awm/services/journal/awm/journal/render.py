@@ -6,7 +6,7 @@ Every session's startup ritual reads this render, so its layout is a contract.
 from __future__ import annotations
 
 import re
-from awm.journal import inbox, kinds, private
+from awm.journal import builtin_tags, inbox, private
 from awm.journal.channel import _coerce_meta
 from awm.journal.dao import JournalDAO
 from awm.journal.refs import validate_project, validate_scope
@@ -54,7 +54,7 @@ def generate_history_md(project: str, scope: str, exclude: tuple[str, list] = ("
     # debrief is a self-post). Structured fields live in meta.
     hide = (" AND EXISTS (SELECT 1 FROM post_tags jt WHERE jt.post_id = scope_posts.id"
             " AND jt.tag_id = ?)" + hide)
-    hide_params = [kinds.JOURNAL, *hide_params]
+    hide_params = [builtin_tags.JOURNAL, *hide_params]
     #
     # TWO queries, not one. A single project-wide SELECT ... LIMIT ranks a
     # scope's own history against every sibling's, so in a busy project a scope

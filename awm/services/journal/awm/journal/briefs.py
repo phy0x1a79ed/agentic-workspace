@@ -11,7 +11,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from awm.journal import channel, kinds
+from awm.journal import builtin_tags, channel
 from awm.journal.dao import JournalDAO
 
 MAX_CHARS = 400
@@ -55,7 +55,7 @@ def _tagged(tag_id: str, negated: bool = False) -> str:
 def read(project: str, scope: str) -> Brief | None:
     row = JournalDAO().query_one(
         "SELECT * FROM scope_posts WHERE owner_project=? AND owner_scope=?"
-        f"{_tagged(kinds.BRIEF)}{_tagged(kinds.SUPERSEDED, True)}"
+        f"{_tagged(builtin_tags.BRIEF)}{_tagged(builtin_tags.SUPERSEDED, True)}"
         " ORDER BY ts DESC, rowid DESC LIMIT 1", (project, scope))
     return _to_brief(channel._row_to_post(row)) if row else None
 
@@ -68,7 +68,7 @@ def history(project: str, scope: str) -> list[Brief]:
         seen.add(brief.id)
         out.append(brief)
         parent = channel.get_post(brief.supersedes) if brief.supersedes else None
-        brief = _to_brief(parent) if parent is not None and parent.has(kinds.BRIEF) else None
+        brief = _to_brief(parent) if parent is not None and parent.has(builtin_tags.BRIEF) else None
     return out[::-1]
 
 
@@ -92,10 +92,10 @@ def set_brief(project: str, scope: str, text: str, *, author: str,
     prior = read(project, scope)
     if prior is not None and prior.text == text:
         return prior
-    post = channel.post(project, scope, author=author, body=text, extra_tags=[kinds.BRIEF],
+    post = channel.post(project, scope, author=author, body=text, extra_tags=[builtin_tags.BRIEF],
                         reply_to=prior.id if prior is not None else None, origin=origin)
     if prior is not None:
-        channel.mark(prior.id, kinds.SUPERSEDED)
+        channel.mark(prior.id, builtin_tags.SUPERSEDED)
     return _to_brief(post)
 
 

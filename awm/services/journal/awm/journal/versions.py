@@ -11,7 +11,7 @@ from __future__ import annotations
 import difflib
 import re
 
-from awm.journal import channel, kinds, search_index
+from awm.journal import builtin_tags, channel, search_index
 from awm.journal import tags as tagmod
 from awm.journal.dao import JournalDAO
 from awm.journal.refs import ms_to_iso, now_ms
@@ -73,7 +73,7 @@ def addenda(project: str | None = None, scope: str | None = None) -> list[dict]:
     """Posts that open as an addendum or correction to an earlier post of the same
     scope, named by its id or the first 8 characters of it."""
     where = ["NOT EXISTS (SELECT 1 FROM post_tags pt WHERE pt.post_id = scope_posts.id AND pt.tag_id = ?)"]
-    params = [kinds.FOLDED]
+    params = [builtin_tags.FOLDED]
     if project:
         where.append("owner_project=?")
         params.append(project)
@@ -111,7 +111,7 @@ def fold(addendum_id: str, target_id: str, *, editor: str) -> dict:
         JournalDAO(conn=conn).execute(
             "UPDATE scope_posts SET meta=json_set(meta, '$.folded_into', ?) WHERE id=?",
             (target_id, addendum_id))
-        tagmod.attach(conn, addendum_id, [kinds.FOLDED])
+        tagmod.attach(conn, addendum_id, [builtin_tags.FOLDED])
     search_index.index_post(add.root)
     return out
 

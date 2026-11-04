@@ -146,8 +146,8 @@ def _clash(holder: dict, incoming: dict) -> str | None:
 
     Returns the name to store ``incoming`` under, or None when it should wait.
     """
-    from awm.journal import kinds
-    if holder["id"] in kinds.BUILTINS and incoming["id"] in kinds.BUILTINS:
+    from awm.journal import builtin_tags
+    if holder["id"] in builtin_tags.BUILTINS and incoming["id"] in builtin_tags.BUILTINS:
         return None
     newer, older = (incoming, holder) if _newer(incoming, holder) else (holder, incoming)
     base = holder["name"]

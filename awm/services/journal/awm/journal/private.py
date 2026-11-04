@@ -1,9 +1,8 @@
 """Which journal channels a peer caller may not see, by the node's private marks.
 
-A channel's owner pair names its project as a literal scope ``(<project>, <scope>)``,
-a project-level channel ``('', 'project:<p>')``, or one of the legacy
-spellings :func:`awm.config.privacy.hidden` knows (``task:<p>``, ``('', 'user:proj:<p>')``).
-A mark on the project covers them all; :func:`exclusion` must match the same set.
+A channel's owner pair names its project as a literal scope ``(<project>, <scope>)``
+or a project-level channel ``('', 'project:<p>')``. A mark on the project covers
+both; :func:`exclusion` must match the same set.
 
 A post tagged with a marked project's name, ignoring case, is hidden wherever it
 sits, as precedence hid a decision with such a tag (fleet.md R107 item 9). A tag
@@ -67,14 +66,12 @@ def exclusion(as_: str | None) -> tuple[str, list]:
     for m in marks:
         project = m["project"]
         if m["scope"] is None:
-            clauses.append("owner_project IN (?, ?)"
-                           " OR (owner_project = '' AND owner_scope IN (?, ?))")
-            params += [project, "task:" + project, _PROJECT_CHANNEL + project, "user:proj:" + project]
+            clauses.append("owner_project = ? OR (owner_project = '' AND owner_scope = ?)")
+            params += [project, _PROJECT_CHANNEL + project]
         else:
             prefix = m["scope"] + "/"
-            clauses.append("owner_project IN (?, ?)"
-                           " AND (owner_scope = ? OR substr(owner_scope, 1, ?) = ?)")
-            params += [project, "task:" + project, m["scope"], len(prefix), prefix]
+            clauses.append("owner_project = ? AND (owner_scope = ? OR substr(owner_scope, 1, ?) = ?)")
+            params += [project, m["scope"], len(prefix), prefix]
     if not clauses:
         return EVERYTHING
     return " AND NOT (" + " OR ".join(f"({c})" for c in clauses) + ")", params

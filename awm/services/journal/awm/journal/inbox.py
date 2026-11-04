@@ -34,7 +34,6 @@ _SENTENCE_END_RE = re.compile(r"(?<=[.!?])\s")
 _ASK_RE = re.compile(
     r"\?|\b(please|request(?:s|ed)?|can you|could you|would you|needs? you|"
     r"action required|todo|blocked|bug|broken|fix(?:es)?)\b", re.I)
-_ASK_TYPES = {"request", "bug", "question", "blocked"}
 
 
 def _one_line(text: str, width: int = GIST_WIDTH) -> str:
@@ -60,10 +59,8 @@ def gist(body: str, meta: dict) -> str:
     return _one_line(_SENTENCE_END_RE.split(" ".join(paragraph.split()), 1)[0])
 
 
-def asks(body: str, meta: dict, line: str) -> bool:
+def asks(body: str, line: str) -> bool:
     """Whether a post looks like it asks the reader to act. A keyword heuristic, not a judgement."""
-    if str(meta.get("type", "")).lower() in _ASK_TYPES:
-        return True
     return bool(_ASK_RE.search(f"{line} {(body or '')[:600]}"))
 
 
@@ -164,7 +161,7 @@ def digest(project: str, scope: str, *, tags: Any = None, kind: str | None = Non
         line = gist(r["body"], meta)
         item = {"id": r["id"], "author": _author_to_display(r["author"]),
                 "age": _age(r["ts"], now), "gist": line,
-                "asks": asks(r["body"], meta, line), "chars": len(r["body"] or "")}
+                "asks": asks(r["body"], line), "chars": len(r["body"] or "")}
         if r["reply_to"]:
             item["reply_to"] = r["reply_to"]
             if (r["owner_project"], r["owner_scope"]) != (project, scope):

@@ -30,7 +30,8 @@ import uuid as _uuid
 from dataclasses import dataclass, field
 from typing import Any, Iterable
 
-from awm.journal import kinds, owners, search_index, tags as tagmod
+from awm.config import privacy
+from awm.journal import builtin_tags, owners, search_index, tags as tagmod
 from awm.journal.dao import JournalDAO
 from awm.journal.refs import SYSTEM_REF, ms_to_iso, now_ms, iso_to_ms
 
@@ -142,10 +143,8 @@ def _author_to_stored(display: str) -> str:
 
 
 def edge_origin(as_: str | None) -> str | None:
-    """``as_`` when the edge stamped it as a peer identity (``peer`` or ``peer:<node>``), else ``None``."""
-    if as_ == "peer" or (as_ or "").startswith("peer:"):
-        return as_
-    return None
+    """``as_`` when the edge stamped it as a peer identity, else ``None``."""
+    return as_ if privacy.from_peer(as_) else None
 
 
 def _author_to_display(author_ref: str) -> str:
@@ -274,14 +273,14 @@ def post_tag_ids(kind: str | None = None, tags: Any = None,
     for t in ([tagmod.kind_tag(kind)] if kind else []) + list(extra):
         if t not in ids:
             ids.append(t)
-    if not any(t in tagmod.TYPE_TAGS or t.startswith(kinds.MIGRATED_PREFIX) for t in ids):
-        ids.append(kinds.MESSAGE)
+    if not any(t in tagmod.TYPE_TAGS for t in ids):
+        ids.append(builtin_tags.MESSAGE)
     return ids
 
 
 def post(project: str, scope: str, *, author: str, body: str,
          kind: str | None = None, tags: Any = None, meta: dict | None = None,
-         reply_to: str | list[str] | None = None, to_scope: str | None = None,
+         reply_to: str | list[str] | None = None,
          origin: str | None = None, extra_tags: list[str] = (),
          ts: int | None = None) -> ScopePost:
     """Append a post to a scope's channel and hand it to the cross-service emitter.
@@ -304,7 +303,7 @@ def post(project: str, scope: str, *, author: str, body: str,
     targets = reply_targets(reply_to)
     cites: list[str] = []
     reply_to = None
-    if kinds.JOURNAL in tag_ids:
+    if builtin_tags.JOURNAL in tag_ids:
         cites = require_journals(targets)
     elif len(targets) > 1:
         raise ValueError("a comment answers one post; only a debrief journal lists several")
@@ -366,7 +365,7 @@ def require_journals(targets: list[str]) -> list[str]:
     """``targets`` when each is a journal post (sessions.md R17)."""
     found = tagmod.of_posts(targets)
     for t in targets:
-        if kinds.JOURNAL not in found.get(t, []):
+        if builtin_tags.JOURNAL not in found.get(t, []):
             raise ValueError(f"citation {t} is not a journal post. Journal for that session first, "
                              "then cite the new journal (sessions.md R17)")
     return targets
@@ -456,10 +455,10 @@ def _post_filter(project, scope, kind, author, before_ts,
         # An addendum folded into its target (versions.fold) stays out of the reads.
         sql += (" AND NOT EXISTS (SELECT 1 FROM post_tags fp"
                 " WHERE fp.post_id = scope_posts.id AND fp.tag_id = ?)")
-        params.append(kinds.FOLDED)
+        params.append(builtin_tags.FOLDED)
     if author:
         sql += " AND author = ?"
-        params.append(author if edge_origin(author) else _author_to_stored(author))
+        params.append(author if privacy.from_peer(author) else _author_to_stored(author))
     if before_ts is not None:
         bms = iso_to_ms(before_ts)
         if bms is not None:

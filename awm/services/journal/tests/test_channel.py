@@ -136,7 +136,7 @@ class TestScopePostInputShape:
             f"bleed; got order {names}"
         )
         # structured params precede the free-text body
-        for p in ("kind", "meta", "to_scope"):
+        for p in ("kind", "meta"):
             assert names.index(p) < names.index("body")
 
     def test_projected_tool_schema_lists_body_last(self):

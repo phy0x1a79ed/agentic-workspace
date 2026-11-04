@@ -15,8 +15,10 @@ name and its ``tool`` is the published ``journal_<verb>``:
 import logging
 from typing import Any
 
+from awm.config import privacy
 from awm.gatewayclient import ids, sessions as caller
-from awm.journal import bounds, channel, inbox, kinds, owners, private, sessions, tagsync, versions
+from awm.journal import (bounds, builtin_tags, channel, inbox, owners, private, sessions, tagsync,
+                         versions)
 from awm.journal import tags as tagmod
 
 log = logging.getLogger("awm.journal.posts")
@@ -103,7 +105,6 @@ POST_MANIFEST_FUNCTIONS = [
             {"name": "meta", "type": "object", "required": False,
              "description": "Structured fields. meta.session names the session a journal covers; "
                             "omit it for your own session."},
-            {"name": "to_scope", "type": "string", "required": False},
             {"name": "body", "type": "string", "required": True,
              "description": "Free-text post content. Pass this argument LAST — "
                             "emit every other parameter before it."},
@@ -255,7 +256,7 @@ def _with_session(meta: Any, caller_pid: Any) -> Any:
 def refuse_clashed(as_: str | None) -> None:
     """Refuse a peer's read while a tag clash stands between it and this node (R107 item 6)."""
     from awm import config
-    peer = config.caller_peer(as_) if isinstance(as_, str) and as_.startswith("peer") else None
+    peer = config.caller_peer(as_) if privacy.from_peer(as_) else None
     if tagsync.blocked(peer):
         raise PermissionError(f"a tag clash stands between {peer} and this node; reads "
                               "between them wait until an agent renames the newer tag")
@@ -279,7 +280,7 @@ def _handle_post(args: dict, as_: str | None = None) -> dict:
         target = channel.get_post(t)
         if target is None or not visible(target):
             raise ValueError(f"no post {t} to reply to")
-    if targets and kinds.JOURNAL not in tag_ids:
+    if targets and builtin_tags.JOURNAL not in tag_ids:
         parent = channel.get_post(targets[0])
         root = channel.get_post(parent.root) or parent
         project, scope = root.project, root.scope
@@ -294,7 +295,6 @@ def _handle_post(args: dict, as_: str | None = None) -> dict:
         kind=args.get("kind"), tags=args.get("tags"),
         meta=meta,
         reply_to=targets,
-        to_scope=args.get("to_scope"),
         origin=channel.edge_origin(as_),
     )
     return {"post": post.to_dict()}
@@ -331,8 +331,7 @@ def _channel_project(project: Any, scope: Any) -> Any:
 
 def _handle_fetch(args: dict, as_: str | None = None) -> dict:
     refuse_clashed(as_)
-    bound = bounds.of(args, as_)
-    remote = channel.edge_origin(as_) is not None
+    remote = privacy.from_peer(as_)
     expr = tagmod.kind_filter(args.get("kind"), args.get("tags"))
     visible = _visible(args, as_)
     post_id = args.get("post_id")
@@ -347,9 +346,8 @@ def _handle_fetch(args: dict, as_: str | None = None) -> dict:
             _note_reads(args, [p])
         thread = channel.nest(p, channel.thread_posts(p.root), visible)
         p.comments = _count(thread)
-        out = {"posts": [p.to_dict()], "total": 1, "thread": thread}
-        return out
-    journal_first = tagmod.parse_filter(expr) == [(False, tagmod.get(kinds.JOURNAL).name)]
+        return {"posts": [p.to_dict()], "total": 1, "thread": thread}
+    journal_first = tagmod.parse_filter(expr) == [(False, tagmod.get(builtin_tags.JOURNAL).name)]
     project, scope = bounds.narrow(
         bound, _channel_project(args.get("project"), args.get("scope")), args.get("scope"))
     common = dict(
@@ -402,7 +400,7 @@ def _note_reads(args: dict, posts: list) -> None:
 
 
 def _handle_reads(args: dict, as_: str | None = None) -> dict:
-    if channel.edge_origin(as_):
+    if privacy.from_peer(as_):
         raise PermissionError("a session's reads stay on its own node")
     named = args.get("session")
     session = ids.to_r9(named) if named else _caller_session(args.get("_caller_pid"))
@@ -433,7 +431,7 @@ def _handle_unsubscribe(args: dict, as_: str | None = None) -> dict:
 def _handle_inbox(args: dict, as_: str | None = None) -> dict:
     project, scope = args["project"], args["scope"]
     bounds.read(bounds.of(args, as_), project, scope)
-    if channel.edge_origin(as_) or private.hides(as_, project, scope):
+    if privacy.from_peer(as_) or private.hides(as_, project, scope):
         raise ValueError(f"no scope {project}/{scope}")
     owners.require_scope(project, scope)
     return inbox.digest(project, scope, tags=args.get("tags"), kind=args.get("kind"),
@@ -445,7 +443,7 @@ def _handle_inbox(args: dict, as_: str | None = None) -> dict:
 def _handle_ack(args: dict, as_: str | None = None) -> dict:
     project, scope = args["project"], args["scope"]
     bounds.write(bounds.of(args, as_), project, scope)
-    if channel.edge_origin(as_) or private.hides(as_, project, scope):
+    if privacy.from_peer(as_) or private.hides(as_, project, scope):
         raise ValueError(f"no scope {project}/{scope}")
     owners.require_scope(project, scope)
     by = _with_session({}, args.get("_caller_pid")).get("session") or as_

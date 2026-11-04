@@ -14,7 +14,7 @@ import json
 from typing import Any, Iterable
 
 from awm.gatewayclient import ids
-from awm.journal import kinds
+from awm.journal import builtin_tags
 from awm.journal.dao import JournalDAO
 from awm.journal.refs import now_ms
 
@@ -23,7 +23,7 @@ MAX_REASON = 200
 
 
 def is_journal(tag_ids: Any) -> bool:
-    return kinds.JOURNAL in (tag_ids or ())
+    return builtin_tags.JOURNAL in (tag_ids or ())
 
 
 def stamp(meta: Any, caller: str | None) -> Any:

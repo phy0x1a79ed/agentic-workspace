@@ -26,7 +26,7 @@ The service owns its DB at `AWM_DIR/services/journal/journal.db`:
   `owner_project=''`.
 - **tags**, **tag_versions**, **post_tags** — the vocabulary every node shares, each
   tag's earlier names and descriptions, and the tags on each post. A post links a tag
-  by id. The tags the code names have fixed ids in `awm/journal/kinds.py`.
+  by id. The tags the code names have fixed ids in `awm/journal/builtin_tags.py`.
 - **tag_clashes** — two nodes that added one name before they synced. See
   `awm/journal/tagsync.py`.
 - **post_cites** — a debrief journal's citations, its `reply_to` list.
