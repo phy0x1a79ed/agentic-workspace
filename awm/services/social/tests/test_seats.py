@@ -225,7 +225,7 @@ async def test_a_borrower_forwards_its_session_not_its_pid(wired, monkeypatch):
         return {"ok": True}
 
     monkeypatch.setattr(gc, "peer_env", lambda var: "mira")
-    monkeypatch.setattr(gc, "call_peer", call_peer)
+    monkeypatch.setattr(gc, "call", lambda tool, verb, args=None, *, peer=None, **kw: (call_peer)(peer, tool, verb, args, **kw))
     monkeypatch.setattr(wired, "_connectors", {})
     monkeypatch.setattr(seats, "session_claim", lambda pid: ME)
     await wired.HANDLERS["mount"]({"account": "slack-bot", "channel": "D1",

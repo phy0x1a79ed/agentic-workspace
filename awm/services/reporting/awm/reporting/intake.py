@@ -126,8 +126,7 @@ async def send_social(account: str, channel: str, text: str, *, ack_ref: str = "
         args["files"] = files
     if thread:
         args["thread"] = thread
-    result = await gatewayclient.call_maybe_peer(
-        gatewayclient.peer_env("AWM_SOCIAL_PEER"), "social", "send", args)
+    result = await gatewayclient.call("social", "send", args, peer=gatewayclient.peer_env("AWM_SOCIAL_PEER"))
     if isinstance(result, dict) and result.get("ok") is False:
         raise RuntimeError(f"social send refused: {result.get('error') or result}")
     return result if isinstance(result, dict) else {}

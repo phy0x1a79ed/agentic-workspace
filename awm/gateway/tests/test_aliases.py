@@ -117,9 +117,8 @@ def test_the_published_renames_are_in_the_table():
         ("project_create", "scope_create"),
         ("gateway_list", "awm_registry_list"), ("services_list", "awm_services_list"),
         ("services_reap", "awm_services_reap"), ("peer_providers", "awm_providers"),
-        ("peer_join", "operations_peer_join"), ("config_set", "awm_config_set"),
+        ("config_set", "awm_config_set"),
         ("config_contracts", "awm_config_contracts"),
-        ("auth_node_key", "awm_node_key"), ("auth_status", "awm_auth_status"),
         ("rlm_browser_acquire", "rlm-browser_acquire"),
         ("rlm_factorio_world_new", "factorio_world_new"),
     }
@@ -129,6 +128,10 @@ def test_the_published_renames_are_in_the_table():
 def test_the_removed_verbs_have_no_row():
     old = {a.flat_old for a in aliases.ALIASES}
     assert "scope_archive_search" not in old and "kb_sweep" not in old
+
+
+def test_auth_is_a_tool_of_its_own_so_no_row_moves_it():
+    assert not [a for a in aliases.ALIASES if "auth" in (a.old_tool, a.new_tool)]
 
 
 def test_the_two_request_human_rows_inject_their_kind():
@@ -172,7 +175,7 @@ def test_every_row_this_branch_owns_lands_on_a_name_the_tree_publishes():
     published = _tree_published()
     owned = {"awm", "browser", "factorio"}
     missing = [a.flat_new for a in aliases.ALIASES
-               if a.new_tool in owned or a.flat_new.startswith("operations_peer_")
+               if a.new_tool in owned
                if a.flat_new not in published]
     assert not missing
 

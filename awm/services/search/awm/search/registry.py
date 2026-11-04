@@ -26,7 +26,7 @@ _READY = "ready"
 
 @dataclass(frozen=True)
 class Source:
-    """One plug-in. ``export``, ``query`` and ``get`` are the service-internal function names; a live source
+    """One plug-in. ``export``, ``query`` and ``get`` are verbs of ``tool``; a live source
     with no ``get`` holds nothing a caller can read whole.
 
     ``error`` is set when the table is unusable; the source is still listed, so
@@ -36,6 +36,7 @@ class Source:
     name: str
     service: str
     mode: str
+    tool: str = ""
     export: str = ""
     query: str = ""
     get: str = ""
@@ -52,13 +53,13 @@ class Source:
         return cls(**{k: v for k, v in spec.items() if k in cls.__dataclass_fields__})
 
 
-def _internal(api: Any, service: str, published: str) -> str:
-    """The internal function name behind a published verb name, or ``''``."""
+def _published(api: Any, service: str, named: str) -> str:
+    """The published ``<tool>_<verb>`` a table names, by published or internal name, or ``''``."""
     functions = [fn for fn in (api or {}).get("functions") or [] if isinstance(fn, dict) and fn.get("name")]
-    for fn in functions:
-        if (fn.get("tool") or f"{service}_{fn['name']}") == published:
-            return fn["name"]
-    return next((fn["name"] for fn in functions if fn["name"] == published), "")
+    names = [str(fn.get("tool") or f"{service}_{fn['name']}") for fn in functions]
+    if named in names:
+        return named
+    return next((p for fn, p in zip(functions, names) if fn["name"] == named), "")
 
 
 def _source(service: str, table: dict[str, Any], api: Any) -> Source:
@@ -69,17 +70,18 @@ def _source(service: str, table: dict[str, Any], api: Any) -> Source:
         return Source(**base, error=f"source name {name!r} must match {_NAME.pattern}")
     if mode not in MODES:
         return Source(**base, error=f"mode {mode!r} is not one of {MODES}")
-    verb = "export" if mode == "index" else "query"
-    published = str(table.get(verb) or "")
-    internal = _internal(api, service, published) if published else ""
-    if not internal:
-        reason = f"names {published!r}, which the service does not publish" if published else "names none"
-        return Source(**base, error=f"a {mode} source needs a `{verb}` verb, and the table {reason}")
+    role = "export" if mode == "index" else "query"
+    named = str(table.get(role) or "")
+    published = _published(api, service, named) if named else ""
+    if not published:
+        reason = f"names {named!r}, which the service does not publish" if named else "names none"
+        return Source(**base, error=f"a {mode} source needs a `{role}` verb, and the table {reason}")
+    tool, verb = published.split("_", 1)
     reader = str(table.get("get") or "") if mode == "live" else ""
-    get = _internal(api, service, reader) if reader else ""
-    if reader and not get:
-        return Source(**base, error=f"the table's `get` names {reader!r}, which the service does not publish")
-    return Source(**base, **{verb: internal}, get=get)
+    get = _published(api, service, reader) if reader else ""
+    if reader and not get.startswith(f"{tool}_"):
+        return Source(**base, error=f"the table's `get` names {reader!r}, which the service does not publish under {tool!r}")
+    return Source(**base, tool=tool, **{role: verb}, get=get.split("_", 1)[1] if get else "")
 
 
 def services_dir() -> Path:

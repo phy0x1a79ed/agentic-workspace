@@ -24,4 +24,5 @@ markers = [
     "smoke: fast unit + tiny in-process tests; target <30s, run on every dev iteration",
     "journal: posts, subscribers, goals and the history render",
     "integration: cross-component integration tests",
+    "unstamped: the handler sees the args with no gateway stamp",
 ]

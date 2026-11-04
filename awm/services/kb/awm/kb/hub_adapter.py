@@ -362,7 +362,7 @@ async def _zotero_page(args: dict[str, Any]) -> dict[str, Any]:
     peer = instances.ZOTERO_PEER
     if peer in ("", "local", config.node_name()):
         return await gatewayclient.call("zotero", "items", args, timeout=60)
-    reply = await gatewayclient.invoke_peer(peer, "zotero_items", args, timeout=60)
+    reply = await gatewayclient.call("zotero", "items", args, peer=peer, timeout=60)
     return reply["result"] if isinstance(reply, dict) and "items" not in reply and "result" in reply else reply
 
 

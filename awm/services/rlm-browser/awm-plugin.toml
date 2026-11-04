@@ -1,7 +1,6 @@
 [plugin]
 name = "rlm-browser"
 version = "0.1.0"
-trust = "own"
 
 [[service]]
 name = "rlm-browser"
@@ -15,5 +14,6 @@ tier = "on"
 
 [needs]
 secrets = []
-network = []
+network = ["*"]
 platform = ["linux"]
+

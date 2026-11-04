@@ -442,7 +442,7 @@ def test_the_door_does_not_gate_an_ungated_session(door, modes):
     assert door(board, "party_add", headers={}).status_code == 503
 
 
-def test_the_door_does_not_gate_an_edge_stamped_request(door, modes, edge_peers):
+def test_the_door_does_not_gate_an_edge_stamped_request(door, modes):
     board = _service("board", [{"name": "party_add", "tool": "operations_party_add"}])
     resp = door(board, "party_add", headers={**HEAD, "X-Awm-As": "peer:capella"})
     assert resp.status_code == 503 and modes["lookups"] == []
@@ -588,8 +588,6 @@ def test_the_native_op_resolves_to_its_tool_and_verb(catalog_of_services):
     domain, verb, effect, _, flat = server._resolve_call("awm_restart", {})
     assert (domain, verb, effect, flat) == ("awm", "restart", "write", True)
     assert server._resolve_call("awm", {"verb": "status"})[:3] == ("awm", "status", "read")
-    assert server._resolve_call("operations_peer_join", {})[:3] == (
-        "operations", "peer_join", "write")
 
 
 def test_a_native_read_op_is_open_to_the_reader_only_by_its_effect(
@@ -667,7 +665,7 @@ def test_a_flat_describe_name_is_not_a_describe(client, dispatched, modes):
     assert domain_call(client, "kb", "describe").status_code == 200
 
 
-def test_a_restricted_mode_gets_403_not_a_peer_redirect(client, monkeypatch, modes):
+def test_a_call_resolved_to_a_peer_is_refused_here(client, monkeypatch, modes):
     from awm.gateway import peer_catalog
 
     async def redirect(name, args, as_=None):
@@ -675,14 +673,12 @@ def test_a_restricted_mode_gets_403_not_a_peer_redirect(client, monkeypatch, mod
 
     monkeypatch.setattr(server.catalog, "dispatch", redirect)
     modes[PID] = "fixed"
-    resp = invoke(client, "operations", {"verb": "board_list"},
-                  {**HEAD, "X-Awm-Peer-Redirect": "1"})
+    resp = invoke(client, "operations", {"verb": "board_list"}, HEAD)
     assert resp.status_code == 403 and "peer" in resp.json()["detail"]
     modes[PID] = None
     server._mode_cache.clear()
-    resp = invoke(client, "operations", {"verb": "board_list"},
-                  {**HEAD, "X-Awm-Peer-Redirect": "1"})
-    assert resp.status_code == 200 and "peer_redirect" in resp.json()
+    resp = invoke(client, "operations", {"verb": "board_list"}, HEAD)
+    assert resp.status_code == 421 and "needs the Rust gateway" in resp.json()["detail"]
 
 
 def test_the_proxy_walk_asks_reflection_as_the_gate_does(monkeypatch):

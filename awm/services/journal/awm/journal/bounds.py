@@ -1,8 +1,8 @@
 """Who may read and write which journals (fleet.md R107 item 3).
 
 The bound follows the calling session's trust level, which the gateway passes as
-``_caller_trust``. A session with no level on record is trusted, as reflection's
-ledger has it. A call over an edge comes from the stamped peer node. A
+``_caller_trust``. A call with no level is untrusted: the gateway stamps every call
+it routes. A call over an edge comes from the stamped peer node. A
 cooperative or untrusted session needs its own scope, ``_caller_scope``.
 """
 
@@ -17,7 +17,7 @@ class Refused(PermissionError):
 
 
 def of(args: dict, as_: str | None) -> JournalBound:
-    level = str(args.get("_caller_trust") or "trusted")
+    level = str(args.get("_caller_trust") or "untrusted")
     if level == "trusted":
         # Over an edge, the gateway already admitted the calling node (R107 item 4).
         return JournalBound(None, None, None)

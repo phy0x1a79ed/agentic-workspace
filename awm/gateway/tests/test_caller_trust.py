@@ -1,9 +1,10 @@
 """The caller's trust level and own scope reach every service call.
 
 The journal and the browser bound a session by `_caller_trust` and
-`_caller_scope`. The gateway asks reflection's session_of for both: the level
-from reflection's ledger, where a session with no entry is trusted, and the
-scope from the session's cwd.
+`_caller_scope`. The gateway walks the caller's pid to its session and asks
+reflection's session_of for both: the level from reflection's ledger, and the
+scope from the session's cwd. A chain no harness claims is a user's shell and
+trusted. A lookup that fails is untrusted (fleet.md R103 item 2).
 """
 
 import json
@@ -30,8 +31,12 @@ def node(tmp_path, monkeypatch):
     answers = {
         4242: {"ok": True, "session_id": R9, "hosting": "background", "job": "j1",
                "name": "n", "trust": "cooperative", "cwd": str(worktree / "core")},
-        5151: {"ok": True, "session_id": "cc" + "f" * 32, "cwd": "/tmp"},
+        # Started by hand: reflection's ledger has no entry, which it reads as trusted.
+        5151: {"ok": True, "session_id": "cc" + "f" * 32, "trust": "trusted", "cwd": "/tmp"},
+        6161: {"ok": True, "session_id": "cc" + "e" * 32, "cwd": "/tmp"},
     }
+    # 900 is a CLI run inside session 4242. Every other pid has no parent.
+    monkeypatch.setattr(mcp_caller, "_ppid_of", {900: 4242}.get)
 
     def ask(pid):
         if answers.get("down"):
@@ -49,15 +54,32 @@ def test_a_session_gets_its_ledger_level_and_its_scope(node):
                                              "_caller_scope": "awm/redux-x"}
 
 
-def test_a_session_with_no_entry_is_trusted_and_outside_a_project_has_no_scope(node):
+def test_a_hand_started_session_is_trusted_and_outside_a_project_has_no_scope(node):
     assert mcp_caller.caller_trust(5151) == {"_caller_trust": "trusted"}
 
 
-def test_no_session_or_no_reflection_reads_as_trusted(node):
+def test_a_session_reflection_gives_no_level_is_untrusted(node):
+    assert mcp_caller.caller_trust(6161) == {"_caller_trust": "untrusted"}
+
+
+def test_a_cli_under_a_cooperative_session_is_cooperative(node):
+    assert mcp_caller.caller_trust(900)["_caller_trust"] == "cooperative"
+    assert mcp_caller.resolve_caller_pid(900) == 4242
+
+
+def test_a_shell_no_harness_claims_is_trusted(node):
+    assert mcp_caller.resolve(77)[0] == mcp_caller.NO_OWNER
     assert mcp_caller.caller_trust(77) == {"_caller_trust": "trusted"}
+
+
+def test_a_failed_lookup_is_untrusted(node):
     node["down"] = True
     mcp_caller._cache.clear()
-    assert mcp_caller.caller_trust(4242) == {"_caller_trust": "trusted"}
+    assert mcp_caller.resolve(4242)[0] == mcp_caller.FAILED
+    assert mcp_caller.caller_trust(4242) == {"_caller_trust": "untrusted"}
+    args = {"verb": "fetch", "args": {}}
+    _stamp_trust("journal", args, None, "900")
+    assert args["args"]["_caller_trust"] == "untrusted"
 
 
 def test_the_answer_is_remembered_for_a_while(node, monkeypatch):
@@ -89,17 +111,19 @@ def test_the_flat_shape_is_stamped_at_the_top(node):
     assert flat["_caller_trust"] == "cooperative" and flat["_caller_scope"] == "awm/redux-x"
 
 
-def test_a_descendant_pid_resolves_to_its_session(node, monkeypatch):
-    monkeypatch.setattr(mcp_caller, "resolve_caller_pid", lambda pid, **kw: 4242)
+def test_a_descendant_pid_resolves_to_its_session(node):
     args = {"verb": "fetch", "args": {}}
-    _stamp_trust("journal", args, None, "999")
+    _stamp_trust("journal", args, None, "900")
     assert args["args"]["_caller_trust"] == "cooperative"
 
 
-def test_no_session_pid_carries_neither_key(node):
-    args = {"verb": "fetch", "args": {"_caller_trust": "trusted", "_caller_scope": "a/b"}}
+def test_no_pid_is_a_local_tool_and_trusted(node):
+    args = {"verb": "fetch", "args": {"_caller_trust": "untrusted", "_caller_scope": "a/b"}}
     _stamp_trust("journal", args, None)
-    assert args["args"] == {}
+    assert args["args"] == {"_caller_trust": "trusted"}
+    bad = {"verb": "fetch", "args": {}}
+    _stamp_trust("journal", bad, "12x")
+    assert bad["args"] == {"_caller_trust": "untrusted"}
 
 
 def test_an_edge_request_keeps_the_far_proxys_pair(node):
@@ -107,6 +131,9 @@ def test_an_edge_request_keeps_the_far_proxys_pair(node):
     args = {"verb": "fetch", "args": dict(sent)}
     _stamp_trust("journal", args, "4242", as_="peer:altair")
     assert args["args"] == sent
+    unsent = {"verb": "fetch", "args": {}}
+    _stamp_trust("journal", unsent, None, as_="peer:altair")
+    assert unsent["args"] == {"_caller_trust": "trusted"}, "a peer's service sends no pair"
 
 
 def test_a_redirect_carries_the_callers_pair_to_the_peer(node):

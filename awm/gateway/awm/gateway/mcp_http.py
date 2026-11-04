@@ -3,8 +3,8 @@
 Two proxies speak the same MCP surface to the same core — :mod:`mcp_stdio`
 (default) and :mod:`mcp_server_sdk` (the ``AWM_MCP_SDK=1`` rollback, which
 :mod:`mcp_server` selects without a redeploy). This module holds what they must
-agree on, for the same reason :mod:`peer_files` is its own module: a rollback
-that behaves differently from the thing it rolls back is not a rollback. They
+agree on: a rollback that behaves differently from the thing it rolls back is
+not a rollback. They
 had already drifted — the SDK proxy left its read timeout out of the retry
 classification, so the failure below reached callers there with an *empty*
 message while the default proxy mislabelled it.

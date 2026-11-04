@@ -3,7 +3,6 @@
 [plugin]
 name = "routine"
 version = "0.1.0"
-trust = "own"
 # No refresh hook: this plugin runs the deploy, so a hook that restarts it would
 # kill the batch that called it. It refreshes with the project (deploy.toml).
 
@@ -22,21 +21,25 @@ tier = "on"
 
 # The tools the routine plugin calls (install.md R117).
 [[needs.tool]]
-name = "reflection"   # start_other, for fixing and condition agents
+name = "reflection"   # start_other for fixing agents, session_of for the caller's card
 major = 1
+verbs = ["start_other", "session_of"]
 
 [[needs.tool]]
 name = "social"       # send, for the operator's Discord DM
 major = 1
+verbs = ["send"]
 
 [[needs.tool]]
 name = "journal"      # post, for each deploy mark
 major = 1
+verbs = ["post"]
 
 [[needs.tool]]
-name = "operations"   # task_for_session and swarm_message_post, for the card verdict
+name = "operations"   # the card verdict
 major = 1
+verbs = ["task_for_session", "swarm_message_post"]
 
 [needs]
 secrets = []
-network = []
+network = ["github.com", "api.github.com", "*.githubusercontent.com"]

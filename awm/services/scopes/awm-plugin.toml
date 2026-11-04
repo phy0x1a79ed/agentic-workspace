@@ -1,7 +1,6 @@
 [plugin]
 name = "scopes"
 version = "0.1.0"
-trust = "own"
 
 [[service]]
 name = "scopes"
@@ -13,9 +12,20 @@ tier = "on"
 
 [needs]
 secrets = []
-network = []
+network = ["github.com", "api.github.com", "*.githubusercontent.com", "tcp:22 github.com, git over ssh"]
 platform = ["linux"]
 
 [[needs.tool]]
 name = "journal"
 major = 1
+verbs = ["subscribe", "brief_set", "brief_read"]
+
+[[needs.tool]]
+name = "operations"
+major = 1
+verbs = ["ops_post"]
+
+[[needs.tool]]
+name = "reflection"
+major = 1
+verbs = ["waits", "message"]

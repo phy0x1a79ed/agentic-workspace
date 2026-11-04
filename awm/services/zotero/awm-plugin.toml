@@ -3,7 +3,6 @@ name = "zotero"
 # Restarts this plugin alone after a deploy (routines.md R33).
 refresh = "awm services restart zotero"
 version = "0.1.0"
-trust = "own"
 
 [[service]]
 name = "zotero"
@@ -15,9 +14,11 @@ tier = "off"
 
 [needs]
 secrets = ["ZOTERO_API_KEY"]
-network = []
+network = ["api.zotero.org", "stream.zotero.org"]
 platform = ["linux"]
 
 [[needs.tool]]
 name = "trilium"
 major = 1
+verbs = ["note_search", "note_get", "note_upsert", "note_create", "note_update", "attr_set", "note_place", "attachment_put", "note_delete"]
+

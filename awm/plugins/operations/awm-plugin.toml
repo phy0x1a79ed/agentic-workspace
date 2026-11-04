@@ -4,7 +4,6 @@
 [plugin]
 name = "operations"
 version = "0.2.0"
-trust = "own"
 
 [[service]]
 name = "operations"
@@ -27,15 +26,20 @@ network = ["alcor"]
 [[needs.tool]]   # the calling session, start_other for spawns, join notices
 name = "reflection"
 major = 1
+verbs = ["session_of", "message", "start_other"]
 
 [[needs.tool]]   # the urgent DM and the Arbutus approval thread
 name = "social"
 major = 1
+verbs = ["send"]
 
 [[needs.tool]]   # on alcor: the panel's 2fa strip (R137)
 name = "2fa"
 major = 1
+verbs = ["burst", "approve_all", "approve", "deny", "devices", "pending"]
 
 [[needs.tool]]   # on deneb: the board's cards and the spawn body check (fleet.md R105)
 name = "trilium"
 major = 1
+verbs = ["note_get", "note_create", "note_update", "attr_delete", "attr_set", "note_search", "note_children", "note_delete"]
+

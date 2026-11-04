@@ -691,10 +691,7 @@ def services_listen(
 
     _require_server()
     os.environ.setdefault("AWM_HUB_URL", BASE_URL)
-    if peer:
-        stream = _functools.partial(gatewayclient.subscribe_peer, peer, service, topic)
-    else:
-        stream = _functools.partial(gatewayclient.subscribe, service, topic)
+    stream = _functools.partial(gatewayclient.subscribe, service, topic, peer=peer)
 
     def _write(line: str) -> None:
         print(line, flush=True)
@@ -706,9 +703,9 @@ def services_listen(
         raise typer.Exit(2)
     try:
         _asyncio.run(emit_listen.listen(stream, match.split(","), _write,
-                                        fatal=(gatewayclient.PeerError,),
+                                        fatal=(gatewayclient.GatewayCallError,),
                                         where=fields))
-    except gatewayclient.PeerError as exc:
+    except gatewayclient.GatewayCallError as exc:
         typer.echo(f"listen: {exc}", err=True)
         raise typer.Exit(1)
     except KeyboardInterrupt:

@@ -53,7 +53,7 @@ def test_shared_password_mints_operator(auth):
     r = auth.h_verify({"password": gen["login_password"]})
     assert r["ok"] and r["sub"] == "operator"
     assert tokens.verify(store.ensure_secret(), r["token"])["sub"] == "operator"
-    assert auth.h_edge_material({})["peer_credentials"] == [gen["peer_credential"]]
+    assert "peer_credentials" not in auth.h_edge_material({})
 
 
 def test_a_verify_naming_a_username_is_refused(auth, shared):
@@ -104,7 +104,6 @@ def test_public_profile_accepts_no_login(auth, monkeypatch):
     gen = store.mint_generation(validity_seconds=3600)
     assert auth.h_verify({"password": gen["login_password"]}) == {"ok": False}
     assert auth.h_verify({"username": "tony", "password": "x"}) == {"ok": False}
-    assert auth.h_edge_material({})["peer_credentials"] == []
     assert auth.h_status({})["shared_password_enabled"] is False
 
 

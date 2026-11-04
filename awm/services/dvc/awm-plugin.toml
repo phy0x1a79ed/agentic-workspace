@@ -1,7 +1,6 @@
 [plugin]
 name = "dvc"
 version = "0.1.0"
-trust = "own"
 
 [[service]]
 name = "dvc"
@@ -13,5 +12,5 @@ tier = "on"
 
 [needs]
 secrets = []
-network = []
+network = ["*.globus.org"]
 platform = ["linux"]

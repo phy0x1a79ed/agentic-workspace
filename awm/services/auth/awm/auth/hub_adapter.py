@@ -6,12 +6,8 @@ loop runs in ``on_start``.
 
 Verbs:
   - ``password``        current login password + window (loopback/CLI).
-  - ``peer_credential`` current peer credential + its mirror-file path.
   - ``verify``          shared login password → signed operator session token.
-  - ``edge_material``   signing secret + valid peer creds + book peers' public
-                        keys for the edge.
-  - ``node_key``        this node's public key and fingerprint.
-  - ``sign_peer_token`` a five-minute token proving this node to another node.
+  - ``edge_material``   signing secret + device token digests for the edge.
   - ``rotate``          force a mint now (ops/testing).
   - ``status``          rotation state summary, incl. last push outcome (the
                         gateway's ``awm status`` embeds it).
@@ -35,16 +31,14 @@ from awm.auth.config import CONTRACT
 log = logging.getLogger("awm.auth.hub_adapter")
 
 
-# Credential-bearing and admin verbs stay off the agent MCP surface. auth shares
-# the awm tool with the gateway; `awm status` carries its rotation state, so only
-# `node_key` is agent-facing.
+# Credential-bearing and admin verbs stay off the agent MCP surface.
 _CLI_HTTP = ["cli", "http"]
 
 API_MANIFEST: dict[str, Any] = {
     "functions": [
         {
             "name": "password",
-            "tool": "awm_password",
+            "tool": "auth_password",
             "effect": "secret",
             "surfaces": _CLI_HTTP,
             "description": "Get the current day's awm login password and its "
@@ -52,17 +46,8 @@ API_MANIFEST: dict[str, Any] = {
             "params": [],
         },
         {
-            "name": "peer_credential",
-            "tool": "awm_peer_credential",
-            "effect": "secret",
-            "surfaces": _CLI_HTTP,
-            "description": "Get the current peer credential and the path of the "
-                           "file it is mirrored to for the SSH peer-auth channel.",
-            "params": [],
-        },
-        {
             "name": "verify",
-            "tool": "awm_verify",
+            "tool": "auth_verify",
             "effect": "secret",
             "surfaces": _CLI_HTTP,
             "description": "Validate the shared login password; on success "
@@ -76,12 +61,10 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "edge_material",
-            "tool": "awm_edge_material",
+            "tool": "auth_edge_material",
             "effect": "secret",
             "surfaces": _CLI_HTTP,
-            "description": "Signing secret + currently-valid peer credentials + "
-                           "each book peer's name and public key + "
-                           "live device-token digests + session-lifetime "
+            "description": "Signing secret + live device-token digests + session-lifetime "
                            "knobs, for the httpsfront edge to enforce auth "
                            "offline. device_used reports the device tokens "
                            "the edge accepted since its last fetch; "
@@ -92,26 +75,8 @@ API_MANIFEST: dict[str, Any] = {
                        {"name": "token_scopes", "type": "array"}],
         },
         {
-            "name": "node_key",
-            "tool": "awm_node_key",
-            "effect": "read",
-            "description": "This node's ed25519 public key and its fingerprint, "
-                           "to hand to a peer that will verify this node's "
-                           "tokens. The private key is never returned.",
-            "params": [],
-        },
-        {
-            "name": "sign_peer_token",
-            "tool": "awm_sign_peer_token",
-            "effect": "secret",
-            "surfaces": _CLI_HTTP,
-            "description": "Sign a five-minute token that proves this node's "
-                           "identity to the node named by aud.",
-            "params": [{"name": "aud", "type": "string", "required": True}],
-        },
-        {
             "name": "rotate",
-            "tool": "awm_rotate",
+            "tool": "auth_rotate",
             "effect": "secret",
             "surfaces": _CLI_HTTP,
             "description": "Force minting a fresh credential pair now.",
@@ -119,7 +84,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "status",
-            "tool": "awm_auth_status",
+            "tool": "auth_status",
             "effect": "read",
             "surfaces": _CLI_HTTP,
             "description": "Report rotation state: valid generations, latest "
@@ -129,7 +94,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "device_mint",
-            "tool": "awm_device_mint",
+            "tool": "auth_device_mint",
             "effect": "secret",
             "surfaces": _CLI_HTTP,
             "description": "Mint a revocable operator device token, for an "
@@ -146,7 +111,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "device_list",
-            "tool": "awm_device_list",
+            "tool": "auth_device_list",
             "effect": "read",
             "surfaces": _CLI_HTTP,
             "description": "List device tokens (no secrets). Operator only.",
@@ -154,7 +119,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "device_revoke",
-            "tool": "awm_device_revoke",
+            "tool": "auth_device_revoke",
             "effect": "write",
             "surfaces": _CLI_HTTP,
             "description": "Revoke a device token by id. The edge stops "
@@ -172,11 +137,8 @@ API_MANIFEST: dict[str, Any] = {
 
 HANDLERS: dict[str, Any] = {
     "password": service.h_password,
-    "peer_credential": service.h_peer_credential,
     "verify": service.h_verify,
     "edge_material": service.h_edge_material,
-    "node_key": service.h_node_key,
-    "sign_peer_token": service.h_sign_peer_token,
     "rotate": service.h_rotate,
     "status": service.h_status,
     "device_mint": service.h_device_mint,

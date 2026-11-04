@@ -31,6 +31,10 @@ fn repo() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..").canonicalize().unwrap()
 }
 
+fn chrono_now() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64
+}
+
 fn write(path: &Path, text: &str) {
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(path, text).unwrap();
@@ -68,6 +72,7 @@ dir = "ui"
 
 [needs]
 secrets = ["FAKE_SECRET"]
+network = ["egress-ok.invalid"]
 "#,
     );
     write(&core.join("fake/run.sh"), &format!("exec '{}'\n", fake.display()));
@@ -77,16 +82,23 @@ secrets = ["FAKE_SECRET"]
         &core.join("reflection/run.sh"),
         &format!("export FAKE_TOOL=reflection FAKE_SESSIONS_FILE='{}'\nexec '{}'\n", state.join("sessions.json").display(), fake.display()),
     );
-    // scope is the fake too: the journal plugin needs the tool to load.
-    write(&core.join("scope/awm-plugin.toml"), "[plugin]\nname = \"scope\"\n\n[[service]]\nname = \"scope\"\n\n[[tool]]\nname = \"scope\"\n");
-    write(&core.join("scope/run.sh"), &format!("export FAKE_TOOL=scope\nexec '{}'\n", fake.display()));
+    // operations is the fake too: it records approval requests in approval.json.
+    write(&core.join("operations/awm-plugin.toml"), "[plugin]\nname = \"operations\"\n\n[[service]]\nname = \"operations\"\n\n[[tool]]\nname = \"operations\"\n");
+    write(
+        &core.join("operations/run.sh"),
+        &format!("export FAKE_TOOL=operations FAKE_APPROVAL_FILE='{}'\nexec '{}'\n", state.join("approval.json").display(), fake.display()),
+    );
+    // The fake also serves the other tools the journal plugin needs to load.
+    for tool in ["scope", "search", "auth"] {
+        write(&core.join(format!("{tool}/awm-plugin.toml")), &format!("[plugin]\nname = \"{tool}\"\n\n[[service]]\nname = \"{tool}\"\n\n[[tool]]\nname = \"{tool}\"\n"));
+        write(&core.join(format!("{tool}/run.sh")), &format!("export FAKE_TOOL={tool}\nexec '{}'\n", fake.display()));
+    }
     write(&core.join("fake/ui/index.html"), "<html><body>fake-ui-marker</body></html>\n");
 
     write(
         &third.join("caller/awm-plugin.toml"),
         r#"[plugin]
 name = "caller"
-trust = "third-party"
 
 [[service]]
 name = "caller"
@@ -98,6 +110,7 @@ service = "caller"
 [[needs.tool]]
 name = "fake"
 major = 1
+verbs = ["echo", "whoami"]
 "#,
     );
     write(&third.join("caller/run.sh"), &format!("exec '{}'\n", fake.display()));
@@ -144,9 +157,15 @@ struct Gateway {
 
 impl Gateway {
     fn start(state: &Path) -> Self {
+        Self::start_with(state, &[])
+    }
+
+    fn start_with(state: &Path, env: &[(&str, &str)]) -> Self {
         let child = Command::new(awm_bin())
             .args(["gateway", "serve", "--state"])
             .arg(state)
+            .envs(env.iter().copied())
+            .env_remove("AWM_EDGES_FILE")
             .env("AWM_LOG", "info")
             .env("GATEWAY_ONLY_SECRET", "leaked")
             .stderr(std::fs::File::create(state.join("gateway.stderr")).unwrap())
@@ -323,7 +342,7 @@ fn gateway_end_to_end() {
     std::fs::create_dir_all(worktree.join("core")).unwrap();
     let uuid = "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0";
     let r9 = format!("cc{}", uuid.replace('-', ""));
-    let session = |trust: &str| json!({"4242": {"ok": true, "known": true, "session_id": r9, "trust": trust, "cwd": worktree.join("core")}}).to_string();
+    let session = |trust: &str| json!({"4242": {"ok": true, "known": true, "session_id": r9, "trust": trust, "mode": null, "cwd": worktree.join("core")}}).to_string();
     write(&node.state.join("sessions.json"), &session("cooperative"));
     let as_session = |args: Value| -> Value {
         http().post(format!("{url}/invoke")).header("X-Awm-Session-Pid", "4242").json(&json!({"name": "fake", "args": args})).send().unwrap().json().unwrap()
@@ -344,6 +363,36 @@ fn gateway_end_to_end() {
     let who: Value = serde_json::from_str(reply["result"].as_str().unwrap()).unwrap();
     assert_eq!((who["caller"]["session"].clone(), who["trust"].as_str()), (Value::Null, Some("trusted")), "a pid no harness claims: {who}");
 
+    // The CLI names its own pid, and the gateway walks up to the session that runs it. A child
+    // of a cooperative session is cooperative. A shell no harness claims is a user's, trusted.
+    // This test is the session, and a child process of it stands in for the CLI.
+    let mut cli_proc = std::process::Command::new("sleep").arg("60").spawn().unwrap();
+    let (me, parent) = (cli_proc.id(), std::process::id());
+    let as_cli = |args: Value| -> Value {
+        http().post(format!("{url}/invoke")).header("X-Awm-Caller-Pid", me.to_string()).json(&json!({"name": "fake", "args": args})).send().unwrap().json().unwrap()
+    };
+    let at = |pid: u32, rec: Value| json!({pid.to_string(): rec}).to_string();
+    write(&node.state.join("sessions.json"), &at(parent, json!({"ok": true, "known": true, "session_id": r9, "trust": "cooperative", "mode": null, "cwd": worktree.join("core")})));
+    let who: Value = serde_json::from_str(as_cli(json!({"verb": "whoami"}))["result"].as_str().unwrap()).unwrap();
+    assert_eq!((who["trust"].as_str(), who["caller"]["session"].as_str()), (Some("cooperative"), Some(r9.as_str())), "a CLI under a cooperative session: {who}");
+    write(&node.state.join("sessions.json"), "{}");
+    let who: Value = serde_json::from_str(as_cli(json!({"verb": "whoami"}))["result"].as_str().unwrap()).unwrap();
+    assert_eq!(who["trust"], "trusted", "a shell with no harness ancestor: {who}");
+    let _ = cli_proc.kill();
+
+    // A lookup that fails runs untrusted with mode `unknown`, which may only compact and ask
+    // reflection who it is (fleet.md R103 item 2).
+    write(&node.state.join("sessions.json"), &at(4242, json!("not an answer")));
+    let reply = as_session(json!({"verb": "whoami"}));
+    assert!(reply["result"].is_null() && reply.to_string().contains("may not call fake.whoami"), "a failed lookup must be gated: {reply}");
+    let reply: Value = http().post(format!("{url}/invoke")).header("X-Awm-Session-Pid", "4242")
+        .json(&json!({"name": "awm", "args": {"verb": "reload"}})).send().unwrap().json().unwrap();
+    assert!(reply["result"].is_null(), "an untrusted caller reloaded the gateway: {reply}");
+    write(&node.state.join("sessions.json"), &at(4242, json!({"ok": true, "known": true, "session_id": r9, "trust": "trusted", "cwd": "/"})));
+    let reply = as_session(json!({"verb": "whoami"}));
+    assert!(reply.to_string().contains("may not call fake.whoami"), "a session whose mode is unread is gated: {reply}");
+    write(&node.state.join("sessions.json"), "{}");
+
     // A plugin gets the secrets its manifest lists, and nothing else of the node's (R116 item 1).
     let env_of = |tool: &str, name: &str| -> String {
         let (code, out, errout) = cli(&url, &[tool, "env", "--name", name]);
@@ -355,12 +404,59 @@ fn gateway_end_to_end() {
     assert_eq!(env_of("caller", "FAKE_SECRET"), "null", "a plugin got a secret it does not declare");
     assert_eq!(env_of("fake", "GATEWAY_ONLY_SECRET"), "null", "the gateway's own environment leaked into a service");
 
+    // A plugin reaches only the hosts its needs.network lists, through its own egress proxy.
+    let proxy = env_of("fake", "HTTPS_PROXY");
+    assert!(proxy.starts_with("http://127.0.0.1:"), "a guarded plugin has no proxy: {proxy}");
+    assert!(env_of("fake", "NO_PROXY").contains("127.0.0.1"));
+    let connect = |target: &str| -> String {
+        use std::io::{Read, Write};
+        let mut s = std::net::TcpStream::connect(proxy.trim_start_matches("http://")).unwrap();
+        write!(s, "CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n\r\n").unwrap();
+        let mut out = String::new();
+        let _ = s.read_to_string(&mut out);
+        out
+    };
+    let refused = connect("example.org:443");
+    assert!(refused.starts_with("HTTP/1.1 403") && refused.contains("add \"example.org\" to network"), "{refused}");
+    let listed = connect("egress-ok.invalid:443");
+    assert!(listed.starts_with("HTTP/1.1 502"), "a listed host must pass the guard and fail only on DNS: {listed}");
+    assert!(connect("egress-ok.invalid:8443").starts_with("HTTP/1.1 403"), "a listed host allows only 80 and 443");
+
     // A plugin calls the tool it needs by its name, looked up at call time.
     let owner: Value = http().get(format!("{url}/hub/tool/fake")).send().unwrap().json().unwrap();
     assert_eq!((owner["plugin"].as_str(), owner["peer"].as_str()), (Some("fake"), None), "{owner}");
     assert_eq!(http().get(format!("{url}/hub/tool/nobody")).send().unwrap().status().as_u16(), 404);
     let (code, out, errout) = cli(&url, &["caller", "call_needed", "--verb", "echo", "--args", r#"{"text":"via caller"}"#]);
     assert!(code == 0 && out.contains("via caller"), "{out} {errout}");
+    // It names itself by its service token: a trusted call on the service lane.
+    let (code, out, errout) = cli(&url, &["caller", "call_needed", "--verb", "whoami"]);
+    assert!(code == 0, "{errout}");
+    assert!(out.contains(r#"\"lane\": \"service\""#) && out.contains(r#"\"trust\": \"trusted\""#), "a service call: {out}");
+    let forged = http()
+        .post(format!("{url}/invoke"))
+        .header("X-Awm-Service-Token", "not-a-token")
+        .json(&json!({"name": "fake", "args": {"verb": "whoami"}}))
+        .send()
+        .unwrap();
+    assert_eq!(forged.status().as_u16(), 401, "a wrong service token passed");
+    // A verb the manifest does not list is refused, by the service token (R116 item 3).
+    let (code, out, errout) = cli(&url, &["caller", "call_needed", "--verb", "add", "--args", r#"{"a":1,"b":2}"#]);
+    assert!(code == 0 && out.contains("does not list fake.add"), "an undeclared verb passed: {out} {errout}");
+    // A page is held to its plugin's needs by the path it was served from.
+    let from_page = |tool: &str| {
+        http()
+            .post(format!("{url}/invoke"))
+            .header("Referer", format!("{url}/p/fake/ui/"))
+            .json(&json!({"name": tool, "args": {"verb": "echo", "args": {"text": "from the page"}}}))
+            .send()
+            .unwrap()
+            .status()
+            .as_u16()
+    };
+    assert_eq!(from_page("fake"), 200, "a page may call its own tool");
+    assert_eq!(from_page("caller"), 403, "a page called a tool its plugin does not need");
+    let gone = http().post(format!("{url}/svc/fake/fn/echo")).json(&json!({"text": "x"})).send().unwrap();
+    assert_eq!(gone.status().as_u16(), 404, "the /svc door still answers");
 
     // Background runs and code use report themselves; pages count visits.
     let (code, out, _) = cli(&url, &["fake", "run_job", "--job", "nightly"]);
@@ -457,7 +553,7 @@ fn gateway_end_to_end() {
     plugin_at(&src.join("fake"), "fake", "fake-again", "");
     let (code, out, _) = cli(&url, &["install", src.join("fake").to_str().unwrap()]);
     assert!(code != 0 && out.contains("already loaded"), "a core plugin's name must not install: {out}");
-    plugin_at(&src.join("inst"), "inst", "inst-three", "\n[[needs.tool]]\nname = \"nobody\"\n");
+    plugin_at(&src.join("inst"), "inst", "inst-three", "\n[[needs.tool]]\nname = \"nobody\"\nverbs = [\"get\"]\n");
     let (code, out, _) = cli(&url, &["install", src.join("inst").to_str().unwrap()]);
     assert!(code != 0 && out.contains("nobody"), "{out}");
     let (code, out, _) = cli(&url, &["inst-two", "echo", "--text", "still here"]);
@@ -466,6 +562,65 @@ fn gateway_end_to_end() {
     assert_eq!(code, 0, "{out} {errout}");
     assert_eq!(http().get(format!("{url}/hub/tool/inst-two")).send().unwrap().status().as_u16(), 404);
     assert!(!node.state.join("installed/inst").exists());
+
+    // A git source installs a pinned commit, and only on an approval that names that commit.
+    let repo = src.join("gitted");
+    plugin_at(&repo, "gitted", "gitted", "");
+    let git = |args: &[&str]| {
+        let out = Command::new("git").arg("-C").arg(&repo).args(args).output().unwrap();
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+    git(&["init", "-q"]);
+    git(&["add", "-A"]);
+    git(&["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "one"]);
+    let sha = git(&["rev-parse", "HEAD"]);
+    let source = format!("git:{}@{sha}", repo.display());
+    let (code, out, _) = cli(&url, &["install", &source]);
+    assert!(code != 0 && out.contains("AWM_APPROVER_GRANT_PUBKEY"), "with no grant key no approval can pass: {out}");
+    // The gateway checks the approver's signature itself, with the key the passkey enrolment gives.
+    let signer = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
+    let pk = signer.verifying_key().to_bytes();
+    let b64 = |b: &[u8]| base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, b);
+    let secrets = std::fs::read_to_string(node.state.join("secrets.env")).unwrap();
+    write(&node.state.join("secrets.env"), &format!("{secrets}AWM_APPROVER_GRANT_PUBKEY={}\n", b64(&pk)));
+    let (code, out, errout) = cli(&url, &["install", &source]);
+    assert_eq!(code, 0, "{out} {errout}");
+    assert!(out.contains("qfake") && out.contains(&format!("gitted@{sha}")), "{out}");
+    let asked: Value = serde_json::from_str(&std::fs::read_to_string(node.state.join("approval.json")).unwrap()).unwrap();
+    assert_eq!(asked["kind"], "plugin_commits");
+    assert_eq!(asked["payload"]["plugins"][0]["commit"], json!(sha));
+    assert_eq!(http().get(format!("{url}/hub/tool/gitted")).send().unwrap().status().as_u16(), 404, "nothing loads before approval");
+    let (code, out, _) = cli(&url, &["install", &source, "--approval", "qfake"]);
+    assert!(code != 0 && out.contains("pending"), "a pending request must not install: {out}");
+    let now = chrono_now();
+    let grant = |commits: Value, key: &ed25519_dalek::SigningKey| {
+        let body = json!({"grant_id": "gfake", "request_id": "qfake", "kind": "plugin_commits", "node": asked["node"],
+            "subject": "tony", "payload_sha256": awm_trust::grant::payload_digest(&asked["payload"]),
+            "not_before": now - 5, "not_after": now + 600, "approved_by_device": "dfake", "commits": commits});
+        let sig = ed25519_dalek::Signer::sign(key, &awm_trust::grant::canonical(&body)).to_bytes();
+        json!({"status": "approved", "kind": "plugin_commits",
+               "grant": {"grant": body, "sig": b64(&sig), "key_id": awm_trust::grant::key_id(&pk)}})
+    };
+    write(&node.state.join("approval.json"), &grant(json!([format!("gitted@{}", "0".repeat(40))]), &signer).to_string());
+    let (code, out, _) = cli(&url, &["install", &source, "--approval", "qfake"]);
+    assert!(code != 0 && out.contains("not this change"), "a grant for another commit must not install: {out}");
+    // A well-formed grant the approver's key did not sign approves nothing, whatever operations says.
+    let forger = ed25519_dalek::SigningKey::from_bytes(&[10; 32]);
+    write(&node.state.join("approval.json"), &grant(json!([format!("gitted@{sha}")]), &forger).to_string());
+    let (code, out, _) = cli(&url, &["install", &source, "--approval", "qfake"]);
+    assert!(code != 0 && out.contains("does not verify"), "a grant with a bad signature must not install: {out}");
+    assert_eq!(http().get(format!("{url}/hub/tool/gitted")).send().unwrap().status().as_u16(), 404);
+    write(&node.state.join("approval.json"), &grant(json!([format!("gitted@{sha}")]), &signer).to_string());
+    let (code, out, errout) = cli(&url, &["install", &source, "--approval", "qfake"]);
+    assert_eq!(code, 0, "{out} {errout}");
+    let (code, out, _) = cli(&url, &["gitted", "echo", "--text", "from git"]);
+    assert!(code == 0 && out.contains("from git"), "{out}");
+    let pins = std::fs::read_to_string(node.state.join("installed.toml")).unwrap();
+    assert!(pins.contains(&format!("commit = \"{sha}\"")) && pins.contains("source = \"git:"), "{pins}");
+    assert!(!node.state.join("installed/gitted/.git").exists());
+    let (code, out, errout) = cli(&url, &["uninstall", "gitted"]);
+    assert_eq!(code, 0, "{out} {errout}");
 
     // Usage per plugin and surface, not MCP calls alone (R132).
     let (code, out, _) = cli(&url, &["usage", "--days", "1"]);
@@ -485,6 +640,58 @@ fn gateway_end_to_end() {
     let status = gw.stop();
     assert!(status.success(), "{}", fail("gateway exit"));
     assert!(!node.state.join("gateway.json").exists(), "gateway.json outlived the gateway");
+}
+
+/// A `peer=` call leaves through `ssh <peer> awm edge-serve`, and the peer runs it as a
+/// call from the calling node (fleet.md R92, R93). A stand-in for ssh runs `edge-serve`
+/// against the far gateway, with the login's key named `awm:near:user`.
+#[test]
+fn a_peer_call_crosses_the_ssh_edge() {
+    let tmp = tempfile::tempdir().unwrap();
+    let base = tmp.path();
+    let edges = "nodes:\n  near: {role: homebase}\n  far: {role: homebase}\nedges:\n  near: {far: lan}\n";
+    let node = |name: &str, tool: Option<&str>| -> PathBuf {
+        let (core, state) = (base.join(name).join("core"), base.join(name).join("state"));
+        std::fs::create_dir_all(&core).unwrap();
+        if let Some(tool) = tool {
+            write(&core.join(tool).join("awm-plugin.toml"),
+                  &format!("[plugin]\nname = \"{tool}\"\n\n[[service]]\nname = \"{tool}\"\n\n[[tool]]\nname = \"{tool}\"\n"));
+            write(&core.join(tool).join("run.sh"), &format!("export FAKE_TOOL={tool}\nexec '{}'\n", fake_bin().display()));
+        }
+        write(&state.join("edges.yml"), edges);
+        write(&state.join("config.toml"), &format!(
+            "node = \"{name}\"\nlisten = \"127.0.0.1:0\"\nworkspace = \"{}\"\ncore_roots = [\"{}\"]\ntool_wait_s = 30\nsession_cache_s = 0\n",
+            base.join(name).display(), core.display()));
+        state
+    };
+    let (far_state, near_state) = (node("far", Some("remote")), node("near", None));
+    let far = Gateway::start(&far_state);
+
+    let home = base.join("home");
+    write(&home.join(".ssh/authorized_keys"), "ssh-ed25519 AAAAC3NzaE2Ekey awm:near:user\n");
+    write(&base.join("user-auth"), "publickey ssh-ed25519 AAAAC3NzaE2Ekey\n");
+    let ssh = base.join("fake-ssh");
+    write(&ssh, &format!(
+        "#!/bin/sh\nunset AWM_EDGES_FILE\nexport AWM_DIR='{}' AWM_GATEWAY_URL='{}' AWM_NODE_NAME=far SSH_USER_AUTH='{}' HOME='{}'\nexec '{}' edge-serve\n",
+        far_state.display(), far.url, base.join("user-auth").display(), home.display(), awm_bin().display()));
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&ssh, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let near = Gateway::start_with(&near_state, &[("AWM_EDGE_SSH", ssh.to_str().unwrap())]);
+
+    let invoke = |peer: &str| {
+        let resp = http().post(format!("{}/invoke", near.url))
+            .json(&json!({"name": "remote", "args": {"verb": "whoami", "args": {}, "peer": peer}}))
+            .send().unwrap();
+        (resp.status().as_u16(), resp.json::<Value>().unwrap_or(Value::Null))
+    };
+    let (status, body) = invoke("far");
+    assert_eq!(status, 200, "{body} near: {} far: {}", log(&near_state), log(&far_state));
+    let result: Value = serde_json::from_str(body["result"].as_str().unwrap()).unwrap();
+    assert_eq!(result["caller"]["node"], "near", "the far node runs it as a call from near: {result}");
+    let (status, body) = invoke("elsewhere");
+    assert!(status >= 400, "a node with no edge from here is refused: {body}");
+    drop(near);
+    drop(far);
 }
 
 #[test]

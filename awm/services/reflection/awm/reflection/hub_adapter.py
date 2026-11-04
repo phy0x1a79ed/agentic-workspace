@@ -154,7 +154,7 @@ def _mode(args: dict) -> dict:
 def _task_of(session_id: str) -> Optional[str]:
     try:
         from awm.gatewayclient import call_sync
-        out = call_sync("reporting", "task_for_session", {"session_id": session_id},
+        out = call_sync("operations", "task_for_session", {"session_id": session_id},
                         timeout=5.0)
     except Exception:  # noqa: BLE001 - a missing reporting service is no task
         return None
@@ -257,8 +257,7 @@ def _tell_peers(session_id: str) -> None:
     for peer in _peers():
         try:
             from awm import gatewayclient
-            gatewayclient.call_peer_sync(peer, "reflection", "retired",
-                                         {"session_id": session_id}, timeout=15.0)
+            gatewayclient.call_sync("reflection", "retired", {"session_id": session_id}, peer=peer, timeout=15.0)
         except Exception as exc:  # noqa: BLE001 - that node checks again at its start
             log.warning("reflection: could not tell %s that %s retired: %s",
                         peer, session_id, exc)
@@ -285,13 +284,13 @@ def _message(args: dict) -> dict:
     return {**out, "hint": hint} if hint else out
 
 
-def _scopes_call(fn: str, args: dict) -> Optional[dict]:
-    """The scopes service's answer, or None when it does not serve ``fn`` yet."""
+def _scopes_call(verb: str, args: dict) -> Optional[dict]:
+    """The scope tool's answer, or None when it does not serve ``verb`` yet."""
     try:
         from awm.gatewayclient import call_sync
-        out = call_sync("scopes", fn, args, timeout=10.0)
+        out = call_sync("scope", verb, args, timeout=10.0)
     except Exception as exc:  # noqa: BLE001
-        log.info("reflection: scopes %s unavailable: %s", fn, exc)
+        log.info("reflection: scope %s unavailable: %s", verb, exc)
         return None
     return out if isinstance(out, dict) else None
 
@@ -321,7 +320,7 @@ def _cd(args: dict) -> dict:
     warning = None
     if where and sid:
         project, scope = where
-        got = _scopes_call("scope_claim", {
+        got = _scopes_call("claim", {
             "project": project, "scope": scope, "session_id": sid,
             "pid": before.get("pid"), "job": before.get("job"),
             "terminal": before.get("kind") == "interactive"})
@@ -338,7 +337,7 @@ def _cd(args: dict) -> dict:
                                   **({"brief": line} if line else {})})
     old = alarm.scope_of(before.get("cwd"))
     if out.get("ok") and old and old != where and sid and claim != "unavailable":
-        _scopes_call("scope_release", {"project": old[0], "scope": old[1],
+        _scopes_call("release", {"project": old[0], "scope": old[1],
                                        "session_id": sid})
     out = {**out, "claim": claim}
     if warning:
@@ -502,9 +501,7 @@ def _ask_peers(session_ids: list[str]) -> list[dict]:
     out = []
     for peer in _peers():
         try:
-            reply = gatewayclient.call_peer_sync(peer, "reflection", "retired_among",
-                                                 {"session_ids": session_ids},
-                                                 timeout=10.0)
+            reply = gatewayclient.call_sync("reflection", "retired_among", {"session_ids": session_ids}, peer=peer, timeout=10.0)
         except Exception as exc:  # noqa: BLE001 - a silent peer cannot say
             log.info("reflection: %s did not answer retired_among: %s", peer, exc)
             out.append({"peer": peer, "answered": False})

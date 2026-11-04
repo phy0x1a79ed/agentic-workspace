@@ -64,8 +64,7 @@ Contract rules: discovery refuses a folder whose manifest breaks the plugin
 contract, as the Rust loader does, so the supervisor never starts it.
 ``plugin_refusals`` names each refused folder and why. A manifest that does not
 parse is refused. The rules are those of ``plugin-contract.md`` § Manifest:
-tool and plugin names, unique tool names, reserved names only in a core root
-with ``trust = "own"``, paths inside the folder, the platform, and each
+tool and plugin names, unique tool names, reserved names only in a core root, paths inside the folder, the platform, and each
 ``[[needs.tool]]`` served at its major. Refusals cascade.
 """
 
@@ -498,18 +497,19 @@ def set_enabled(name: str, enabled: bool) -> None:
 # Contract rules, checked at load
 # ---------------------------------------------------------------------------
 
-#: Tool names only a core plugin with ``trust = "own"`` may claim. The edge
+#: Tool names only a core plugin may claim. The edge
 #: list's singleton tools join them (``peer_catalog.declared_homes``).
-RESERVED_TOOLS = frozenset({"awm", "2fa", "approver", "queue-store", "journal"})
+RESERVED_TOOLS = frozenset({"awm", "auth", "2fa", "approver", "queue-store", "journal"})
 _NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]*")
+_VERB = re.compile(r"[A-Za-z0-9][A-Za-z0-9_]*")
 _MANIFEST_KEYS = {
     "": {"plugin", "service", "tool", "page", "needs"},
-    "plugin": {"name", "version", "trust", "refresh"},
+    "plugin": {"name", "version", "refresh"},
     "service": {"name", "path", "run", "install", "profiles", "archive"},
     "tool": {"name", "major", "service", "services", "tier", "implements"},
     "page": {"name", "dir", "entry"},
     "needs": {"secrets", "network", "tool", "contract", "platform", "gpu"},
-    "need": {"name", "major"},
+    "need": {"name", "major", "verbs"},
 }
 _OS = {"linux": "linux", "darwin": "macos", "win32": "windows"}
 
@@ -544,11 +544,9 @@ def check_manifest(folder: Path, manifest: dict, *, core: bool) -> tuple[list[tu
     plugin = manifest.get("plugin")
     problems += _unknown(plugin, "plugin") if plugin is not None else ["no [plugin] table"]
     plugin = plugin if isinstance(plugin, dict) else {}
-    name, trust = plugin.get("name"), plugin.get("trust", "own")
+    name = plugin.get("name")
     if not isinstance(name, str) or not _NAME.fullmatch(name):
         problems.append(f"plugin name {name!r} must be letters, digits and hyphens")
-    if trust not in ("own", "third-party"):
-        problems.append(f"trust {trust!r} is not own or third-party")
     services = manifest.get("service") or []
     for svc in services:
         problems += _unknown(svc, "service")
@@ -568,7 +566,7 @@ def check_manifest(folder: Path, manifest: dict, *, core: bool) -> tuple[list[tu
             problems.append(f"tool {tname!r}: major {major!r} is not an integer")
         if any(t == tname for t, _ in tools):
             problems.append(f"tool {tname!r} is declared twice")
-        if tname in reserved_tools() and not (core and trust == "own"):
+        if tname in reserved_tools() and not core:
             problems.append(f"tool {tname!r} is reserved for core plugins")
         named = tool.get("services") or ([tool["service"]] if "service" in tool else [])
         if "service" in tool and "services" in tool:
@@ -591,8 +589,15 @@ def check_manifest(folder: Path, manifest: dict, *, core: bool) -> tuple[list[tu
     if isinstance(needs, dict):
         for dep in (needs.get("tool") or []) + (needs.get("contract") or []):
             problems += _unknown(dep, "need")
-            if isinstance(dep, dict) and not (isinstance(dep.get("name"), str) and _NAME.fullmatch(dep["name"])):
+            if not isinstance(dep, dict):
+                continue
+            if not (isinstance(dep.get("name"), str) and _NAME.fullmatch(dep["name"])):
                 problems.append(f"a need names {dep.get('name')!r}, not a tool or contract name")
+            verbs = dep.get("verbs")
+            if not verbs or not isinstance(verbs, list):
+                problems.append(f"needs {dep.get('name')!r} but lists no verbs")
+            elif bad := [v for v in verbs if not (isinstance(v, str) and _VERB.fullmatch(v))]:
+                problems.append(f"needs {dep.get('name')!r}: {bad[0]!r} is not a verb name")
         platform = needs.get("platform") or []
         if platform and _OS.get(sys.platform, sys.platform) not in platform:
             problems.append(f"needs platform {platform}, this node is {_OS.get(sys.platform, sys.platform)}")
@@ -674,6 +679,36 @@ def plugin_refusals() -> dict[str, str]:
     for name, reason in refused.items():
         _log_once(f"plugin {name} refused: {reason}")
     return refused
+
+
+def needs_refusal(service: str, tool: str, verb: str) -> str | None:
+    """Why the plugin that runs ``service`` may not call ``tool``'s ``verb``, or
+    None when it may (R116 item 3). Its own tools pass, and each tool or local
+    contract provider that its needs list with the verb. A folder with no
+    manifest is not held."""
+    folder = service_folder(service)
+    path = folder / PLUGIN_MANIFEST if folder else None
+    if path is None or not path.is_file():
+        return None
+    try:
+        manifest = _load_toml(path)
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+        return None
+    if any(isinstance(t, dict) and t.get("name") == tool for t in manifest.get("tool") or []):
+        return None
+    needs = manifest.get("needs") or {}
+
+    def lists(dep: object) -> bool:
+        return isinstance(dep, dict) and (verb == "describe" or verb in (dep.get("verbs") or []))
+
+    if any(lists(d) and d.get("name") == tool for d in needs.get("tool") or []):
+        return None
+    wanted = {f"{d['name']}@{d.get('major', 1)}" for d in needs.get("contract") or [] if lists(d)}
+    if wanted and any(r["name"] == tool and wanted & set(r["implements"]) for r in name_table()):
+        return None
+    plugin = (manifest.get("plugin") or {}).get("name") or service
+    return (f"plugin {plugin!r} does not list {tool}.{verb} in its {PLUGIN_MANIFEST}; "
+            "add the verb to its [[needs.tool]] or [[needs.contract]]")
 
 
 def name_table() -> list[dict]:

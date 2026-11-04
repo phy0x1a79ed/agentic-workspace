@@ -31,7 +31,10 @@ CLAIM_KEY = "_caller_session"
 # peer redirect, and the peer's gateway keeps them only on an edge request.
 TRUST_KEY = "_caller_trust"
 SCOPE_KEY = "_caller_scope"
-DEFAULT_TRUST = "trusted"
+#: A call whose lookup fails runs untrusted (fleet.md R103 item 2).
+FAILED_LOOKUP_TRUST = "untrusted"
+#: A caller no harness claims, or a call that names no pid: a user's shell or a service.
+NO_SESSION_TRUST = "trusted"
 MAX_ANCESTRY_HOPS = 8
 
 
@@ -112,34 +115,48 @@ def lookup(pid: int) -> dict:
     return rec
 
 
-def resolve_caller_pid(start_pid: int, *, ppid_of=_ppid_of,
-                       max_hops: int = MAX_ANCESTRY_HOPS) -> int:
-    """The nearest ancestor that is an agent session — usually our parent.
+#: What `resolve` found: the nearest session, no session in the chain, or no answer.
+SESSION, NO_OWNER, FAILED = "session", "no_owner", "failed"
 
-    The proxy is normally a direct stdio child of the REPL, so hop zero hits.
-    That stops holding the moment something wraps the launch: an ``.mcp.json``
-    spelling the command ``mamba run -n awm awm-mcp`` leaves the wrapper sitting
-    between us and the REPL, and naming the wrapper made reflection refuse.
 
-    Walking up fixes that without widening what a model can reach. The chain comes
-    from ``/proc`` and never from an argument, and the walk stops at the *first*
-    session it meets, so an agent nested inside another resolves to its own REPL
-    and never to its parent's. A pid is a session when reflection, through the
-    session's harness plugin, knows it. A chain with none, or no answer from
-    reflection, returns ``start_pid`` unchanged, so a genuine non-agent caller
-    refuses exactly as it did before.
+def resolve(start_pid: int, *, ppid_of=None,
+            max_hops: int = MAX_ANCESTRY_HOPS) -> tuple[str, dict, int]:
+    """``(outcome, record, pid)`` for the nearest ancestor of ``start_pid`` that is a session.
+
+    The chain comes from ``/proc`` and never from an argument, and the walk stops at
+    the *first* session it meets, so an agent nested inside another resolves to its
+    own REPL and never to its parent's. ``SESSION`` returns that session's record
+    and pid. ``NO_OWNER`` means reflection answered for every pid and no harness
+    claims one, so the caller is a user's shell, and returns the first pid's record.
+    ``FAILED`` means reflection did not answer. Both return ``start_pid``.
     """
+    ppid_of = ppid_of or _ppid_of
     pid: int | None = start_pid
+    first: dict | None = None
     for _ in range(max_hops):
         if pid is None or pid <= 1:
             break
         try:
-            if lookup(pid)["known"]:
-                return pid
+            rec = lookup(pid)
         except LookupUnavailable:
-            return start_pid
+            return FAILED, {}, start_pid
+        if rec["known"]:
+            return SESSION, rec, pid
+        first = rec if first is None else first
         pid = ppid_of(pid)
-    return start_pid
+    return NO_OWNER, first or {}, start_pid
+
+
+def resolve_caller_pid(start_pid: int, *, ppid_of=None,
+                       max_hops: int = MAX_ANCESTRY_HOPS) -> int:
+    """The nearest ancestor that is an agent session, else ``start_pid``.
+
+    An ``.mcp.json`` that spells the command ``mamba run -n awm awm-mcp`` leaves
+    the wrapper between the proxy and the REPL, so the proxy walks up. A chain with
+    no session, or no answer from reflection, returns ``start_pid`` unchanged, so a
+    genuine non-agent caller refuses exactly as it did before.
+    """
+    return resolve(start_pid, ppid_of=ppid_of, max_hops=max_hops)[2]
 
 
 def _known(pid: int) -> dict:
@@ -165,15 +182,18 @@ def _default_projects() -> str:
 
 
 def caller_trust(pid: int, *, projects: str | None = None) -> dict:
-    """``{TRUST_KEY, SCOPE_KEY?}`` for the session ``pid``.
+    """``{TRUST_KEY, SCOPE_KEY?}`` for the caller at ``pid`` (see `resolve`).
 
-    The level is reflection's for the session; a session reflection holds no
-    level for, or no session, is trusted, as reflection's ledger reads it. The
-    scope is ``<project>/<scope>`` of the session's ``cwd``, absent outside a
-    project.
+    A session gets reflection's level for it, and the scope of its ``cwd``, absent
+    outside a project. A chain no harness claims is trusted. A failed lookup, or a
+    session with no level, is untrusted.
     """
-    rec = _known(pid)
-    out = {TRUST_KEY: str(rec.get("trust") or DEFAULT_TRUST)}
+    outcome, rec, _pid = resolve(pid)
+    if outcome == NO_OWNER:
+        return {TRUST_KEY: NO_SESSION_TRUST}
+    if outcome == FAILED:
+        return {TRUST_KEY: FAILED_LOOKUP_TRUST}
+    out = {TRUST_KEY: str(rec.get("trust") or FAILED_LOOKUP_TRUST)}
     if rec.get("cwd"):
         from awm.config import scope_of
         project, scope = scope_of(rec["cwd"], projects or _default_projects())

@@ -30,21 +30,11 @@ pub struct PluginMeta {
     #[serde(default = "default_version")]
     pub version: String,
     #[serde(default)]
-    pub trust: Trust,
-    #[serde(default)]
     pub refresh: Option<String>,
 }
 
 fn default_version() -> String {
     "0.0.0".into()
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum Trust {
-    #[default]
-    Own,
-    ThirdParty,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -152,6 +142,10 @@ pub struct NeedTool {
     pub name: String,
     #[serde(default = "one")]
     pub major: u32,
+    /// Every verb the plugin calls on the tool, or on each provider of the contract. The
+    /// gateway refuses any other (R116 item 3). `describe` needs no entry.
+    #[serde(default)]
+    pub verbs: Vec<String>,
 }
 
 /// Parse `"<contract>@<major>"`.
@@ -191,7 +185,6 @@ mod tests {
 [plugin]
 name = "mic"
 version = "0.1.0"
-trust = "own"
 
 [placement]
 nodes = ["*"]
@@ -236,6 +229,11 @@ major = 1
     #[test]
     fn a_uuid_is_an_unknown_key() {
         assert!(Manifest::parse("[plugin]\nname='x'\n[[tool]]\nname='x'\nuuid='6f1c2c1e-0d4b-4f3e-9a51-3b8f2d7a9c10'\n").is_err());
+    }
+
+    #[test]
+    fn trust_is_gone_since_installing_trusts_a_plugin() {
+        assert!(Manifest::parse("[plugin]\nname='x'\ntrust='own'\n").is_err());
     }
 
     #[test]

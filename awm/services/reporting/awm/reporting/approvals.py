@@ -186,8 +186,7 @@ class Approvals:
         """Consume social's message topic. Never returns."""
         self.subscription = gatewayclient.SupervisedSubscription(
             "reporting/social.message",
-            lambda: gatewayclient.subscribe_maybe_peer(
-                gatewayclient.peer_env("AWM_SOCIAL_PEER"), "social", SOCIAL_TOPIC),
+            lambda: gatewayclient.subscribe("social", SOCIAL_TOPIC, peer=gatewayclient.peer_env("AWM_SOCIAL_PEER")),
             self.handle)
         await self.subscription.run()
 

@@ -3,7 +3,6 @@ name = "claude-science"
 # Restarts this plugin alone after a deploy (routines.md R33).
 refresh = "awm services restart claude-science"
 version = "0.1.0"
-trust = "own"
 
 [[service]]
 name = "claude-science"
@@ -19,5 +18,25 @@ name = "claude-science"
 
 [needs]
 secrets = []
-network = []
+network = ["api.anthropic.com", "*.anthropic.com", "claude.ai", "*.claude.ai", "storage.googleapis.com"]
 platform = ["linux"]
+
+[[needs.tool]]
+name = "scope"
+major = 1
+verbs = ["search", "resolve"]
+
+[[needs.tool]]
+name = "journal"
+major = 1
+verbs = ["fetch"]
+
+[[needs.tool]]
+name = "search"
+major = 1
+verbs = ["query", "get"]
+
+[[needs.tool]]
+name = "dvc"
+major = 1
+verbs = ["coverage", "scope_status"]
