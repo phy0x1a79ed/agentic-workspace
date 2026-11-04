@@ -61,6 +61,7 @@ This doc holds awm's registered routines: what a routine is, what triggers it, a
 - **R31.** The fleet route. Tony: "this all looks good to me" (2026-10-31).
   - One `deploy` service per project runs on the node that holds the project's canonical repo. awm's canonical repo moves to mizar, the homebase. GitHub keeps a backup, which each deploy updates (`install.md` R114). Tony: "Mizar is the canonical home of AWM. But we should also try to keep the remote on GitHub up to date as a backup." (2026-11-04).
   - A session on another node pushes its feature branch to the canonical repo before it calls `deploy`.
+  - awm work happens on mizar. altair runs awm but does no awm work, so it never pushes to the canonical repo. mizar sends each `release` to altair over its edge, or through GitHub, and altair's refresh hook takes it from there. Tony: "awm work happend on mizar. mizar can then push changes to altair directly or through github. altair shouldnt work on awm" (2026-11-04).
   - Each other node refreshes itself through the project's refresh hook (R25). The hook fetches `release`, then restarts or queues a coordinated restart.
   - Nodes refresh one at a time, homebase first. A failed node dispatches a session (R27) and stops the rollout before the remaining nodes.
   - How nodes reach each other belongs to thread 1g.
