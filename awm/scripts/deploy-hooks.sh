@@ -25,6 +25,7 @@ HOOKS=(
   "cx-name|services/cch/hooks/name_on_prompt.py|awm-cx-name-hook.py|local miraz|"
   "reflection|services/cch/hooks/plan_mode_hook.py|awm-reflection-mode.py|local|"
   "brief|services/cch/hooks/brief_on_start.py|awm-brief-hook.py|local|"
+  "subagent-cap|services/cch/hooks/subagent_cap.py|awm-subagent-cap.py|local altair|"
   "reporting|services/reporting/hooks/reporting_hook.py|awm-reporting-hook.py|local|awm-reporting-settings.json"
 )
 
@@ -35,6 +36,7 @@ declare -A ENTRIES=(
   [reflection]='{"PostToolUse":{"matcher":"ExitPlanMode","hooks":[{"type":"command","command":"python3 -S $HOME/.claude/hooks/awm-reflection-mode.py 2>/dev/null || true","timeout":20}]}}'
   [brief]='{"SessionStart":{"hooks":[{"type":"command","command":"python3 -S $HOME/.claude/hooks/awm-brief-hook.py 2>/dev/null || true","timeout":6}]}}'
   [reporting]='@awm-reporting-settings.json'
+  [subagent-cap]='{"PreToolUse":{"matcher":"Agent|Task","hooks":[{"type":"command","command":"python3 -S $HOME/.claude/hooks/awm-subagent-cap.py 2>/dev/null || true","timeout":5}]},"SubagentStart":{"hooks":[{"type":"command","command":"python3 -S $HOME/.claude/hooks/awm-subagent-cap.py 2>/dev/null || true","timeout":5}]},"SubagentStop":{"hooks":[{"type":"command","command":"python3 -S $HOME/.claude/hooks/awm-subagent-cap.py 2>/dev/null || true","timeout":5}]}}'
 )
 
 on() {
