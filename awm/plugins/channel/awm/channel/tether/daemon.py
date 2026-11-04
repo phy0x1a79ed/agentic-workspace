@@ -36,7 +36,6 @@ import json
 import logging
 import os
 import re
-import shutil
 import signal
 import socket
 import subprocess
@@ -46,6 +45,7 @@ from pathlib import Path
 from typing import Any
 
 from awm.channel.tether import paths
+from awm.gatewayclient.proc import child_preexec, user_manager_env
 
 log = logging.getLogger("awm.channel.tether.daemon")
 
@@ -76,24 +76,6 @@ _SYSTEMD_OWN = frozenset({
     "WATCHDOG_PID", "WATCHDOG_USEC", "MAINPID",
 })
 _NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
-
-
-def _preexec() -> None:  # pragma: no cover — runs in the forked child
-    """Own session, die with the parent, and refuse to be orphaned.
-
-    Order matters: ``setsid`` first so the tree is one signalable group, then
-    the death signal, then a re-check — a parent that exited between the fork
-    and ``prctl`` would leave a child nothing is ever going to signal.
-    """
-    os.setsid()
-    try:
-        import ctypes
-
-        ctypes.CDLL("libc.so.6", use_errno=True).prctl(1, signal.SIGTERM)  # PR_SET_PDEATHSIG
-    except Exception:  # noqa: BLE001 — best effort; the group kill still works
-        pass
-    if os.getppid() == 1:
-        os._exit(1)
 
 
 def _env() -> dict[str, str]:
@@ -151,19 +133,6 @@ def probe(timeout: float = PROBE_TIMEOUT_S) -> tuple[str, dict[str, Any]]:
 
 def live_sessions(report: dict[str, Any]) -> list[dict]:
     return [s for s in report.get("sessions") or [] if s.get("phase") != "ended"]
-
-
-def _user_manager_env() -> dict[str, str] | None:
-    """Env for reaching this user's systemd manager, or ``None`` if there is none."""
-    if not shutil.which("systemd-run"):
-        return None
-    runtime = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
-    if not Path(runtime, "bus").is_socket():
-        return None
-    return {
-        "XDG_RUNTIME_DIR": runtime,
-        "DBUS_SESSION_BUS_ADDRESS": f"unix:path={runtime}/bus",
-    }
 
 
 def _systemctl(bus: dict[str, str], *args: str,
@@ -269,7 +238,7 @@ class Child:
                 stdin=subprocess.DEVNULL,
                 stdout=out,
                 stderr=subprocess.STDOUT,
-                preexec_fn=_preexec,
+                preexec_fn=child_preexec,
             )
         except OSError as exc:
             self._error = f"{type(exc).__name__}: {exc}"
@@ -402,7 +371,7 @@ class Adopted:
 
     def snapshot(self) -> dict[str, Any]:
         binary = paths.role_binary()
-        bus = _user_manager_env()
+        bus = user_manager_env()
         unit = self._unit(bus)
         pid = self.pid(unit)
         launched = self._launched()
@@ -444,7 +413,7 @@ class Adopted:
         if state != "absent":
             if not young:
                 self._failures = 0
-            pid = self.pid(self._unit(_user_manager_env()))
+            pid = self.pid(self._unit(user_manager_env()))
             if self._adopted is None:
                 self._adopted = True
                 log.info("tether: attached to the running operator daemon (pid %s)", pid)
@@ -501,7 +470,7 @@ class Adopted:
             return {"action": "not-built", "error": self._error}
 
         _private_dir()
-        bus = _user_manager_env()
+        bus = user_manager_env()
         try:
             if bus is not None:
                 self._launch_unit(binary, bus)
@@ -570,7 +539,7 @@ class Adopted:
             out.close()
 
     def _stop(self, timeout: float = 15.0) -> None:
-        bus = _user_manager_env()
+        bus = user_manager_env()
         pid = self.pid(self._unit(bus))
         if bus is not None:
             _systemctl(bus, "stop", paths.OPERATOR_UNIT, timeout=timeout + 15)

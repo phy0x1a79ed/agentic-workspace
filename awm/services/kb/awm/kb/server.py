@@ -19,20 +19,9 @@ import time
 from typing import Any
 
 from awm.kb import instances
+from awm.gatewayclient.proc import child_preexec
 
 log = logging.getLogger("awm.kb.server")
-
-
-def _preexec() -> None:  # pragma: no cover — runs in the forked child
-    os.setsid()
-    try:
-        import ctypes
-
-        ctypes.CDLL("libc.so.6", use_errno=True).prctl(1, signal.SIGTERM)  # PR_SET_PDEATHSIG
-    except Exception:  # noqa: BLE001 — best effort; the group kill still works
-        pass
-    if os.getppid() == 1:
-        os._exit(1)
 
 
 def child_env() -> dict[str, str]:
@@ -108,7 +97,7 @@ class Child:
             self._proc = subprocess.Popen(
                 cmd, cwd=str(instances.CHECKOUT), env=child_env(),
                 stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT,
-                preexec_fn=_preexec,
+                preexec_fn=child_preexec,
             )
         finally:
             out.close()

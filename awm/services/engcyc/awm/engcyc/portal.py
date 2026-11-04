@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any
 
 from awm.config import AWM_DIR, WORKSPACE_ROOT
+from awm.gatewayclient.proc import child_preexec
 
 log = logging.getLogger("awm.engcyc.portal")
 
@@ -82,19 +83,6 @@ def child_env() -> dict[str, str]:
     return env
 
 
-def _preexec() -> None:  # pragma: no cover — runs in the forked child
-    """Own session (so the tree is one signalable group) + die with the parent."""
-    os.setsid()
-    try:
-        import ctypes
-
-        ctypes.CDLL("libc.so.6", use_errno=True).prctl(1, signal.SIGTERM)  # PR_SET_PDEATHSIG
-    except Exception:  # noqa: BLE001 — best effort; the group kill still works
-        pass
-    if os.getppid() == 1:
-        os._exit(1)
-
-
 class Supervisor:
     """Owns exactly one gunicorn master. Every method is safe to call at any time."""
 
@@ -142,7 +130,7 @@ class Supervisor:
             self._proc = subprocess.Popen(
                 cmd, cwd=str(PORTAL_DIR / "src"), env=child_env(),
                 stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT,
-                preexec_fn=_preexec,
+                preexec_fn=child_preexec,
             )
         finally:
             out.close()

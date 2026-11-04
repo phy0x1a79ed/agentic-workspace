@@ -154,7 +154,7 @@ def _never_called(*args, **kwargs):
 
 # ---------------------------------------------------------------------------
 # Where the daemon is launched — the half of "outlives us" that detaching
-# does not buy. See daemon._user_manager_env.
+# does not buy. See daemon.user_manager_env.
 # ---------------------------------------------------------------------------
 
 def _capture_launch(monkeypatch, *, has_user_manager: bool):
@@ -166,7 +166,7 @@ def _capture_launch(monkeypatch, *, has_user_manager: bool):
 
     monkeypatch.setattr(daemon, "installed", lambda: True)
     monkeypatch.setattr(
-        daemon, "_user_manager_env",
+        daemon, "user_manager_env",
         (lambda: {"XDG_RUNTIME_DIR": "/run/user/1000",
                   "DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/user/1000/bus"})
         if has_user_manager else (lambda: None),
@@ -224,11 +224,11 @@ def test_without_a_user_manager_it_falls_back_to_the_binarys_own_detach(monkeypa
 def test_status_says_which_of_the_two_it_would_be(monkeypatch):
     """The difference is whether the daemon survives a deploy, so it is status,
     not a log line."""
-    monkeypatch.setattr(daemon, "_user_manager_env", lambda: None)
+    monkeypatch.setattr(daemon, "user_manager_env", lambda: None)
     monkeypatch.setattr(daemon, "status_json", _running)
     sup = daemon.Supervisor(main_front_port=12201, sandbox_front_port=12202)
     assert sup.snapshot()["user_unit"] is None
-    monkeypatch.setattr(daemon, "_user_manager_env", lambda: {"X": "y"})
+    monkeypatch.setattr(daemon, "user_manager_env", lambda: {"X": "y"})
     assert sup.snapshot()["user_unit"] == f"{daemon.TRANSIENT_UNIT}.service"
 
 
