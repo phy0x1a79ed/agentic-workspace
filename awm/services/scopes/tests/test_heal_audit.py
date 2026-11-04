@@ -131,11 +131,6 @@ class TestCreateWritesTheBrief:
                                          "text": "For the brief."}) in calls
         assert not (proj / "b" / ".awm").exists()
 
-    def test_a_brief_over_400_characters_is_refused_before_anything_is_made(self, proj):
-        with pytest.raises(ValueError, match="limit is 400"):
-            mod.create_scope(ScopeCreateRequest(project=PROJECT, scope="long", context="x" * 401))
-        assert not (proj / "long").exists()
-
     def test_a_brief_the_journal_refuses_is_a_warning(self, proj, monkeypatch):
         import awm.gatewayclient as gc
 

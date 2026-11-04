@@ -1,4 +1,4 @@
-"""Post-channel tests: live post/fetch/subscribe and the history render.
+"""Post-channel tests: live post/fetch and the history render.
 
 A scope IS the channel; these cover the surface that replaced the old
 rooms/messages/session_logs trio.
@@ -62,18 +62,6 @@ class TestChannelOps:
         p = channel.post("awm", "dev", author="user:alice", body="findme", kind="message")
         got = channel.get_post(p.id)
         assert got is not None and got.body == "findme"
-
-    def test_subscribe_unsubscribe(self, journal_workspace):
-        from awm.journal import channel
-        channel.subscribe("awm", "dev", "awm/helper")
-        channel.subscribe("awm", "dev", "user:bob")
-        subs = {(s.guest_kind, s.guest_ref) for s in channel.list_subscribers("awm", "dev")}
-        assert ("agent", "awm/helper") in subs
-        assert ("user", "user:bob") in subs
-        assert channel.unsubscribe("awm", "dev", "awm/helper") is True
-        assert channel.unsubscribe("awm", "dev", "awm/helper") is False
-        subs2 = {(s.guest_kind, s.guest_ref) for s in channel.list_subscribers("awm", "dev")}
-        assert ("agent", "awm/helper") not in subs2
 
     def test_non_literal_channel(self, journal_workspace):
         """Posting to a user/project inbox uses owner_project='' (non-literal)."""

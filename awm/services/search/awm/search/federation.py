@@ -12,7 +12,6 @@ import json
 from dataclasses import dataclass, field
 from typing import Any
 
-from awm import config
 from awm.config import edges
 from awm.search import hits as hitshape
 

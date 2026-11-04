@@ -55,10 +55,6 @@ def control_path(cfg: HostConfig) -> str:
     return os.path.join(LIVE_DIR, f"{cfg.host}_{cfg.port}_{cfg.user}")
 
 
-def control_sock_name(cfg: HostConfig) -> str:
-    return f"{cfg.host}_{cfg.port}_{cfg.user}"
-
-
 def lock_path(cfg: HostConfig) -> str:
     return os.path.join(LOCK_DIR, f"{cfg.host}.lock")
 

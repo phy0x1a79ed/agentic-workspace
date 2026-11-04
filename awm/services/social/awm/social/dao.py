@@ -200,15 +200,6 @@ class SocialDAO(BaseDAO):
         )
         return {"name": name, "platform": platform, "kind": kind}
 
-    def list_accounts(self) -> list[dict]:
-        rows = self.query_all(
-            "SELECT name, platform, kind, display_name, enabled, added_at "
-            "FROM social_accounts ORDER BY name"
-        )
-        for r in rows:
-            r["enabled"] = bool(r["enabled"])
-        return rows
-
     # -- operators (platform-scoped) ---------------------------------------
 
     def add_operator(

@@ -24,12 +24,10 @@ from awm.gatewayclient import ServiceAdapter, spawn_supervised
 from awm.persistence import embeddings
 from awm.scopes import dao, search_index, tags as _tags
 from awm.scopes.identity import (
-    agent_id_for_scope,
     agent_record_for_scope,
     ensure_agent,
     ensure_project,
     project_id_for_name,
-    project_scope_for_agent,
     resolve_ref,
     user_id_for_username,
     username_for_user_id,

@@ -3,9 +3,7 @@
 There is no separate rooms/messages/session_logs machinery. Every scope owns
 one post log (``scope_posts``); messages, journal (debrief) entries,
 briefs and precedents are all rows there, told apart by their tags
-(:mod:`awm.journal.tags`).
-Other scopes/users subscribe to a channel (``scope_subscribers``); the owner is
-implicit (the scope itself). Raw agent acts are NOT here; a session's own
+(:mod:`awm.journal.tags`). Raw agent acts are NOT here; a session's own
 transcript is read through the transcripts service.
 
 Addressing is the scope's natural key ``(project, scope)``. For legacy
@@ -99,23 +97,6 @@ class ScopePost:
         if self.match is not None:
             d["match"] = self.match
         return d
-
-
-@dataclass
-class Subscriber:
-    project: str
-    scope: str
-    guest_kind: str      # 'agent' | 'user'
-    guest_ref: str       # 'project/scope' (agent) or 'user:<name>'
-    display_name: str
-    joined_at: str       # ISO TEXT
-
-    def to_dict(self) -> dict:
-        return {
-            "project": self.project, "scope": self.scope,
-            "guest_kind": self.guest_kind, "guest_ref": self.guest_ref,
-            "display_name": self.display_name, "joined_at": self.joined_at,
-        }
 
 
 # ---------------------------------------------------------------------------
@@ -229,15 +210,6 @@ def rows_to_posts(rows) -> list[ScopePost]:
     ids = [r["id"] for r in rows]
     by_post, cites = tagmod.of_posts(ids), cites_of_posts(ids)
     return [_row_to_post(r, by_post[r["id"]], cites[r["id"]]) for r in rows]
-
-
-def _row_to_subscriber(row) -> Subscriber:
-    return Subscriber(
-        project=row["owner_project"], scope=row["owner_scope"],
-        guest_kind=row["guest_kind"], guest_ref=row["guest_ref"],
-        display_name=row["display_name"] or "",
-        joined_at=ms_to_iso(row["joined_at"]) or "",
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -602,84 +574,3 @@ def search(*, query: str, project: str | None = None, scope: str | None = None,
     if order in ("asc", "desc"):
         posts.sort(key=lambda p: p.ts, reverse=order == "desc")
     return posts, degraded, semantic
-
-
-# ---------------------------------------------------------------------------
-# Subscribers
-# ---------------------------------------------------------------------------
-
-def _normalize_guest(guest: str) -> tuple[str, str, str]:
-    """Map a guest ref to (guest_kind, guest_ref, display_name)."""
-    g = guest
-    if g.startswith(("agent:", "scope:")):
-        g = g.split(":", 1)[1]
-    if g.startswith("user:"):
-        name = g[len("user:"):]
-        return "user", f"user:{name}", name
-    if "/" in g:
-        return "agent", g, g
-    # bare username
-    return "user", f"user:{g}", g
-
-
-def subscribe(project: str, scope: str, guest: str,
-              display_name: str | None = None) -> Subscriber:
-    """Enroll a guest (another scope or a user) as a subscriber of a channel."""
-    guest_kind, guest_ref, default_name = _normalize_guest(guest)
-    now = now_ms()
-    dao = JournalDAO()
-    with dao.transaction() as conn:
-        JournalDAO(conn=conn).execute(
-            "INSERT OR IGNORE INTO scope_subscribers "
-            "(owner_project, owner_scope, guest_kind, guest_ref, display_name, joined_at) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (project, scope, guest_kind, guest_ref,
-             display_name or default_name, now),
-        )
-    row = JournalDAO().query_one(
-        "SELECT * FROM scope_subscribers WHERE owner_project=? AND owner_scope=? "
-        "AND guest_kind=? AND guest_ref=?",
-        (project, scope, guest_kind, guest_ref),
-    )
-    sub = _row_to_subscriber(row)
-    return sub
-
-
-def unsubscribe(project: str, scope: str, guest: str) -> bool:
-    """Remove a subscriber. Returns True if a row was deleted."""
-    guest_kind, guest_ref, _ = _normalize_guest(guest)
-    dao = JournalDAO()
-    existing = dao.query_one(
-        "SELECT 1 FROM scope_subscribers WHERE owner_project=? AND owner_scope=? "
-        "AND guest_kind=? AND guest_ref=?",
-        (project, scope, guest_kind, guest_ref),
-    )
-    if existing is None:
-        return False
-    with dao.transaction() as conn:
-        JournalDAO(conn=conn).execute(
-            "DELETE FROM scope_subscribers WHERE owner_project=? AND owner_scope=? "
-            "AND guest_kind=? AND guest_ref=?",
-            (project, scope, guest_kind, guest_ref),
-        )
-    return True
-
-
-def list_subscribers(project: str, scope: str) -> list[Subscriber]:
-    rows = JournalDAO().query_all(
-        "SELECT * FROM scope_subscribers WHERE owner_project=? AND owner_scope=? "
-        "ORDER BY joined_at",
-        (project, scope),
-    )
-    return [_row_to_subscriber(r) for r in rows]
-
-
-def channels_for_subscriber(guest: str) -> list[tuple[str, str]]:
-    """Return (project, scope) channels the given guest subscribes to."""
-    guest_kind, guest_ref, _ = _normalize_guest(guest)
-    rows = JournalDAO().query_all(
-        "SELECT owner_project, owner_scope FROM scope_subscribers "
-        "WHERE guest_kind=? AND guest_ref=?",
-        (guest_kind, guest_ref),
-    )
-    return [(r["owner_project"], r["owner_scope"]) for r in rows]

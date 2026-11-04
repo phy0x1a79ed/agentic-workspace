@@ -1,4 +1,4 @@
-"""Journal data access: the post log, the subscriber table and the search index.
+"""Journal data access: the post log, its tags, links and versions, and the search index.
 
 A scope IS the channel. Everything written to it (messages, journal entries,
 briefs, precedents) is a row in ``scope_posts``, told apart by its tags
@@ -104,17 +104,6 @@ CREATE INDEX IF NOT EXISTS idx_scope_posts_owner_ts ON scope_posts(owner_project
 CREATE INDEX IF NOT EXISTS idx_scope_posts_thread ON scope_posts(thread_id, ts);
 CREATE INDEX IF NOT EXISTS idx_scope_posts_reply ON scope_posts(reply_to);
 CREATE INDEX IF NOT EXISTS idx_scope_posts_author ON scope_posts(author, ts);
-
-CREATE TABLE IF NOT EXISTS scope_subscribers (
-    owner_project  TEXT NOT NULL,
-    owner_scope    TEXT NOT NULL,
-    guest_kind     TEXT NOT NULL,       -- 'agent' | 'user'
-    guest_ref      TEXT NOT NULL,       -- 'project/scope' or 'user:<name>'
-    display_name   TEXT NOT NULL,
-    joined_at      INTEGER NOT NULL,
-    PRIMARY KEY (owner_project, owner_scope, guest_kind, guest_ref)
-);
-CREATE INDEX IF NOT EXISTS idx_scope_subscribers_ref ON scope_subscribers(guest_kind, guest_ref);
 """ + _CURSORS_SQL + TAGS_SQL
 
 READS_SQL = """\
@@ -172,7 +161,7 @@ MIGRATIONS[(3, 4)] = "ALTER TABLE scope_posts ADD COLUMN version INTEGER NOT NUL
 # its channel with its body and meta, and the goal test rows go. A brief's
 # meta.supersedes becomes a reply plus the superseded tag (item 8). A journal's
 # meta.cites becomes its citations, and each reason stays as meta.cite_reasons
-# (sessions.md R14, R15). The legacy channel spellings ``task:<p>`` and
+# (sessions.md R14, R15). The subscriber table, which nothing read, goes. The legacy channel spellings ``task:<p>`` and
 # ``('', 'user:proj:<p>')`` become ``<p>`` and ``('', 'project:<p>')``.
 _SUPERSEDES = "json_extract(meta, '$.supersedes')"
 _GOAL_TEST = ("kind = 'goal' AND (owner_project = '_goaltest' OR owner_scope = 'project:_goaltest'"
@@ -231,10 +220,7 @@ UPDATE OR IGNORE scope_cursors SET owner_project = substr(owner_project, 6) WHER
 UPDATE OR IGNORE scope_cursors SET owner_scope = 'project:' || substr(owner_scope, 11)
     WHERE owner_project = '' AND owner_scope LIKE 'user:proj:%';
 DELETE FROM scope_cursors WHERE owner_project LIKE 'task:%' OR owner_scope LIKE 'user:proj:%';
-UPDATE OR IGNORE scope_subscribers SET owner_project = substr(owner_project, 6) WHERE owner_project LIKE 'task:%';
-UPDATE OR IGNORE scope_subscribers SET owner_scope = 'project:' || substr(owner_scope, 11)
-    WHERE owner_project = '' AND owner_scope LIKE 'user:proj:%';
-DELETE FROM scope_subscribers WHERE owner_project LIKE 'task:%' OR owner_scope LIKE 'user:proj:%';
+DROP TABLE IF EXISTS scope_subscribers;
 """
 
 

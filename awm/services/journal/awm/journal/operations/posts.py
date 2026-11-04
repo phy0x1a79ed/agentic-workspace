@@ -5,8 +5,6 @@ name and its ``tool`` is the published ``journal_<verb>``:
   - ``post``        — append a post with its tags, or a comment with ``reply_to``.
   - ``fetch``       — fetch/search a scope's posts (``query`` → the search service,
                       ``tags`` filter; a post_id read returns its thread).
-  - ``subscribe``   — enroll a guest (scope or user) as a subscriber.
-  - ``unsubscribe`` — remove a subscriber.
   - ``reads``       — the journals a session read, its citation candidates.
   - ``inbox``       — a bounded one-line-per-post digest of what a scope has not read.
   - ``ack``         — move a scope's read cursor.
@@ -171,29 +169,6 @@ POST_MANIFEST_FUNCTIONS = [
         ),
         "params": [{"name": "post_id", "type": "string", "required": True}],
         "surfaces": ["cli", "http"],
-    },
-    {
-        "name": "subscribe",
-        "tool": "journal_subscribe",
-        "effect": "write",
-        "description": "Subscribe a guest (another scope 'project/scope', or 'user:<name>') to a scope's channel.",
-        "params": [
-            {"name": "project", "type": "string", "required": True},
-            {"name": "scope", "type": "string", "required": True},
-            {"name": "guest", "type": "string", "required": True},
-            {"name": "display_name", "type": "string", "required": False},
-        ],
-    },
-    {
-        "name": "unsubscribe",
-        "tool": "journal_unsubscribe",
-        "effect": "write",
-        "description": "Remove a guest from a scope's channel.",
-        "params": [
-            {"name": "project", "type": "string", "required": True},
-            {"name": "scope", "type": "string", "required": True},
-            {"name": "guest", "type": "string", "required": True},
-        ],
     },
     {
         "name": "inbox",
@@ -411,23 +386,6 @@ def _handle_reads(args: dict, as_: str | None = None) -> dict:
     return {"session": session, "reads": rows, "total": len(rows), "cites": sessions.cites_of(session)}
 
 
-def _handle_subscribe(args: dict, as_: str | None = None) -> dict:
-    bounds.write(bounds.of(args, as_), args["project"], args["scope"])
-    if private.hides(as_, args["project"], args["scope"]):
-        raise ValueError(f"no scope {args['project']}/{args['scope']}")
-    sub = channel.subscribe(
-        args["project"], args["scope"], args["guest"],
-        display_name=args.get("display_name"),
-    )
-    return {"subscriber": sub.to_dict()}
-
-
-def _handle_unsubscribe(args: dict, as_: str | None = None) -> dict:
-    bounds.write(bounds.of(args, as_), args["project"], args["scope"])
-    removed = channel.unsubscribe(args["project"], args["scope"], args["guest"])
-    return {"removed": removed}
-
-
 def _handle_inbox(args: dict, as_: str | None = None) -> dict:
     project, scope = args["project"], args["scope"]
     bounds.read(bounds.of(args, as_), project, scope)
@@ -492,8 +450,6 @@ POST_HANDLERS = {
     "fetch": _handle_fetch,
     "reads": _handle_reads,
     "note_read": _handle_note_read,
-    "subscribe": _handle_subscribe,
-    "unsubscribe": _handle_unsubscribe,
     "inbox": _handle_inbox,
     "ack": _handle_ack,
 }

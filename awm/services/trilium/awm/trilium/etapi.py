@@ -25,7 +25,6 @@ from __future__ import annotations
 import os
 import secrets
 import string
-from pathlib import Path
 from typing import Any
 
 import httpx
@@ -77,9 +76,6 @@ class Etapi:
         if r.status_code >= 400:
             raise EtapiError(f"{method} {path} -> {r.status_code}: {r.text[:400]}")
         return r
-
-    def app_info(self) -> dict:
-        return self._request("GET", "/etapi/app-info").json()
 
     def backup(self, name: str) -> None:
         """Ask Trilium to copy its database. Returns nothing, because ETAPI
@@ -321,12 +317,6 @@ class Etapi:
                 self.delete_attribute(a["attributeId"])
                 gone += 1
         return gone
-
-    def label_value(self, note_id: str, name: str) -> str | None:
-        for a in self.attributes(note_id):
-            if a.get("type") == "label" and a.get("name") == name:
-                return a.get("value") or ""
-        return None
 
     # -- attachments ---------------------------------------------------------
 

@@ -74,12 +74,10 @@ def test_an_unmark_restores_the_peer_view(marked):
     assert len(_owners(_fetch("peer", kind="journal"))) == 5
 
 
-def test_a_peer_cannot_post_or_subscribe_to_a_marked_scope(marked):
-    from awm.journal.operations.posts import _handle_post, _handle_subscribe
+def test_a_peer_cannot_post_to_a_marked_scope(marked):
+    from awm.journal.operations.posts import _handle_post
     with pytest.raises(ValueError, match="no scope"):
         _handle_post({"project": "avatar", "scope": "Avatar", "author": "x", "body": "b"}, "peer")
-    with pytest.raises(ValueError, match="no scope"):
-        _handle_subscribe({"project": "awm", "scope": "secret", "guest": "user:x"}, "peer")
     assert _handle_post({"project": "avatar", "scope": "Avatar", "author": "user:t",
                          "body": "b"}, None)["post"]["project"] == "avatar"
 

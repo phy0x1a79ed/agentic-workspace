@@ -21,7 +21,7 @@ from starlette.testclient import TestClient
 from awm.config import tokens, usertoken
 from awm.httpsfront import proxy
 from awm.tlsfront import proxy as tlsproxy
-from awm.tlsfront.auth import COOKIE_NAME, AuthGate, Shape
+from awm.tlsfront.auth import AuthGate, Shape
 
 pytestmark = [pytest.mark.unit, pytest.mark.smoke]
 

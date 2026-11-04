@@ -39,8 +39,6 @@ def _call(helper: str, *args: Any) -> str:
     arglist = ", ".join(json.dumps(a) for a in args)
     return f"(async()=>{{ return JSON.stringify(await {helper}({arglist})); }})()"
 
-UPLOAD_TIMEOUT_S = 150.0
-
 class Driver(ABC):
     platform: str = "base"
     #: substring identifying this platform's Opera page target

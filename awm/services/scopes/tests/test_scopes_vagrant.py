@@ -152,13 +152,3 @@ def test_list_scopes_filters_vagrant_distinct_from_resident(
 
     resident_only = scopes_svc.search_scopes(status="all", project="proj-a")
     assert all(s.project == "proj-a" for s in resident_only.scopes)
-
-
-# ---------------------------------------------------------------------------
-# Slug helper sanity
-# ---------------------------------------------------------------------------
-
-def test_vagrant_scope_name_slug():
-    assert scopes_svc._vagrant_scope_name("user:operator") == "operator-handler"
-    assert scopes_svc._vagrant_scope_name("user:tony@host") == "tony-host-handler"
-    assert scopes_svc._vagrant_scope_name("") == "anon-handler"

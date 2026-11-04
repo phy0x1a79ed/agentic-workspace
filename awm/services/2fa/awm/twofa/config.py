@@ -217,7 +217,3 @@ class Config:
     social_default_device: str = field(
         default_factory=lambda: _env_str("AWM_2FA_SOCIAL_DEVICE", "cwl"))
 
-    @property
-    def enrolled_devices(self) -> dict[str, DeviceCreds]:
-        """Subset of :attr:`devices` whose cred files both exist on disk."""
-        return {n: d for n, d in self.devices.items() if d.enrolled}
