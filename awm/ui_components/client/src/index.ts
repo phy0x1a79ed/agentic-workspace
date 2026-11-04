@@ -17,14 +17,6 @@ export {
   type SessionOpts,
 } from './invoke';
 export {
-  fetchScope,
-  postToScope,
-  isAgentPost,
-  type ScopePost,
-  type FetchOpts,
-  type PostOpts,
-} from './channel';
-export {
   fetchConfigContracts,
   saveConfigContract,
   type ConfigContract,

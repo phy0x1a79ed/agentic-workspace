@@ -24,11 +24,7 @@ import uuid
 from collections import OrderedDict
 from pathlib import Path
 
-try:  # SERVICES_DIR lands in awm.config later (T3); derive it until then.
-    from awm.config import SERVICES_DIR
-except ImportError:  # pragma: no cover - depends on T3 timing
-    from awm.config import AWM_DIR
-    SERVICES_DIR = AWM_DIR / "services"
+from awm.config import SERVICES_DIR
 
 
 def new_uuid() -> str:
