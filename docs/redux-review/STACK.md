@@ -30,7 +30,7 @@ Procedure, from dfs-interview § Work the stack:
   - [ ] Third-party container (R116 item 4): (a) one unix socket per plugin bind-mounted, --network none unless needs.network, egress filtering later; or (b) a plugin listener on the docker bridge with a per-spawn token. The lane recommends (a)
 - **journals** (2026-11-03): for journals, I want to talk about making journals commentable (threads, like reddit posts). also want to talk about adding tags to journals with a set ontology (by the agents. 1 degree of separate helps with consistency since harder to just add rando tags). tags for existing uses, but then also would allow for complaint posts like bug reports. then journals need a way of also marking "closed", kind of like issues.  This would allow meta imrpovements to be more systematized in awm
   - [x] Tag descriptions. Tony: "each tag should also get a description when adding and is editable" (answered 2026-11-03)
-  - [ ] Precedence folds into the journal. Tony: "and prescedent can then fold into the same journal system once updated?"
+  - [x] Precedence folds into the journal. Tony: "and prescedent can then fold into the same journal system once updated?" (answered 2026-11-03)
   - [x] superseded_by in the journal. Tony: "how does superseded_by work in new journal system?" (answered 2026-11-03)
   - [ ] Precedence protocol moves to a skill, skills in a folder. Tony: "lets make the tag precedent. we can move the protocol to a skill?" and "we should move the debrief and precedent skills to a folder maybe"
   - [x] Usage decays with no sweep. Tony: "can we make usage decay so that it doesnt count up forever? can we make this decay not require periodic sweeps?" (answered 2026-11-03)
