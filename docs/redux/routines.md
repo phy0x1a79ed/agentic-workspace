@@ -89,5 +89,5 @@ Status at the wave-2 gather (`feat/redux` 16da3979, 2026-11-04). `docs/redux-rev
 
 - **R26.** The deploy finds the caller's card and posts the verdict through operations. It is not applied, and `awm deploy`'s apply path first runs at the first node deploy.
 - **R31.** The `[fleet]` config, the GitHub backup push and the altair push are built. Canonical moves from altair to mizar at T27 (`install.md` R114).
-- **R33.** engcyc, rlm-factorio, zotero and claude-science carry a refresh hook. The cloud role `plugin_homes` splits them into their own projects at T27, and their awm folders go at T23.
+- **R33.** engcyc, rlm-factorio, zotero and claude-science carry a refresh hook. The cloud role `plugin_homes` splits them into their own projects at T27, and their awm folders go in the same step.
 - **R28, R35.** The metasmith routine exists only as a draft in `drafts/redux-routines-plan.md`. R35 waits for a T27 worker on altair, where the metasmith repo lives.

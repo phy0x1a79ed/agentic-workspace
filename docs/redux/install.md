@@ -68,9 +68,9 @@ Which node holds which role belongs in `fleet.md`. How a deploy moves through th
 
 Status at the wave-2 gather (`feat/redux` 16da3979, 2026-11-04). `docs/redux-review/build-survey.md` § 3 holds the row for each requirement.
 
-- **R112.** The Rust core serves every route, and `awm deploy` places its binary, unit and `config.toml` on each node. That apply path first runs at the first node deploy. The Rust gateway has no port of these Python gateway features: MCP `tools/list_changed`, MCP `notifications/cancelled`, the ranked `describe`, the `effect` gate, the old-name aliases, and the `surfaces` key, so hook-only verbs now list on MCP.
+- **R112.** The Rust core serves every route, and `awm deploy` places its binary, unit and `config.toml` on each node. That apply path first runs at the first node deploy. The Rust gateway drops three Python gateway features by design: MCP `notifications/cancelled`, the ranked `describe` and the old-name aliases, whose callers T27 renames.
 - **R114.** Each deploy pushes `release` to the GitHub backup. The `origin` remote stays on altair, and mizar has no `github` remote until `scripts/move-canonical.sh` runs at T27.
-- **R115.** The cloud role `plugin_homes` makes the optional plugins their own projects at T27, and their awm folders go at T23. The trilium install mode `pin` checks a sha256, and the pin stays empty until the fork moves to mizar and releases (item 4). The tarball host is open with Tony.
+- **R115.** The cloud role `plugin_homes` makes the optional plugins their own projects at T27, and their awm folders go in the same step. The trilium install mode `pin` checks a sha256, and the pin stays empty until the fork moves to mizar and releases (item 4). The tarball host is open with Tony.
 - **R116.** Clients that ignore the egress proxy go unchecked (item 1). The grant key exists only after the passkey enrolment on alcor at T27 (item 2). Tokenless callers, the cch hooks and the CLI, still resolve through the pid walk (item 3).
 - **R117.** Items 5 and 7 are unverified.
 - **R118, R119.** The install test has not run on a cloud agent. T26 pushes the `quay.io/hallamlab/awm-test-*` images and pins them by digest.
