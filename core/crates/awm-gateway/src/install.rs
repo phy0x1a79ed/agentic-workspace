@@ -55,14 +55,15 @@ pub fn request_payload(change: &[Pending]) -> Value {
     json!({"change": commits_of(change).join(","), "plugins": change})
 }
 
-/// The approver's grant key, base64url, as a node secret or in the gateway's environment.
+/// The approver's grant key, base64url: a node secret or the gateway's own environment,
+/// else the config's `[env]`, where the fleet's awm_config role writes it.
 pub const GRANT_KEY: &str = "AWM_APPROVER_GRANT_PUBKEY";
 
 /// The key that signs approvals on this node. With none, no install that needs approval passes.
-pub fn grant_key(secrets_file: &Path) -> Result<[u8; 32], String> {
-    let value = crate::supervisor::granted_secrets(secrets_file, &[GRANT_KEY.to_string()])
-        .into_iter()
-        .map(|(_, v)| v)
+pub fn grant_key(secrets_file: &Path, config_env: &std::collections::BTreeMap<String, String>) -> Result<[u8; 32], String> {
+    let from_secrets = crate::supervisor::granted_secrets(secrets_file, &[GRANT_KEY.to_string()]).into_iter().map(|(_, v)| v);
+    let value = from_secrets
+        .chain(config_env.get(GRANT_KEY).cloned())
         .find(|v| !v.trim().is_empty())
         .ok_or_else(|| format!("{GRANT_KEY} is not set on this node, so no approval can be checked; enrol the passkey and set the approver's grant_pub as {GRANT_KEY} in the node's secrets"))?;
     awm_trust::grant::load_public_key(&value).map_err(|e| format!("{GRANT_KEY}: {e}"))
@@ -372,11 +373,14 @@ mod tests {
         assert!(check_grant(&change, &signed("approved", &both, "home"), &other, "home", 150).is_err());
         let t = tempfile::tempdir().unwrap();
         let secrets = t.path().join("secrets.env");
+        let none = std::collections::BTreeMap::new();
         if std::env::var_os(GRANT_KEY).is_none() {
-            assert!(grant_key(&secrets).unwrap_err().contains(GRANT_KEY));
+            assert!(grant_key(&secrets, &none).unwrap_err().contains(GRANT_KEY));
         }
         let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(pk);
+        let in_config = std::collections::BTreeMap::from([(GRANT_KEY.to_string(), b64.clone())]);
+        assert_eq!(grant_key(&secrets, &in_config).unwrap(), pk);
         std::fs::write(&secrets, format!("{GRANT_KEY}={b64}\n")).unwrap();
-        assert_eq!(grant_key(&secrets).unwrap(), pk);
+        assert_eq!(grant_key(&secrets, &none).unwrap(), pk);
     }
 }

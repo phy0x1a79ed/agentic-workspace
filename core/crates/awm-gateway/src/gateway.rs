@@ -441,7 +441,7 @@ impl Gateway {
     /// request and answer what to do next.
     async fn approve(&self, change: &[crate::install::Pending], approval: Option<&str>) -> Result<Option<Value>, ApiError> {
         use crate::install::{check_grant, commits_of, grant_key, request_payload, APPROVER_TOOL, COMMITS_KIND};
-        let key = grant_key(&self.cfg.secrets_path(&self.state)).map_err(|e| ApiError::new(403, e))?;
+        let key = grant_key(&self.cfg.secrets_path(&self.state), &self.cfg.env).map_err(|e| ApiError::new(403, e))?;
         let ctx = CallContext { plugin: Some(NATIVE_TOOL.into()), ..CallContext::local(self.node.clone(), Surface::Plugin) };
         let call = |verb: &'static str, args: Value| {
             let ctx = &ctx;
