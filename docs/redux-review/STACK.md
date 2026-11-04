@@ -21,20 +21,10 @@ Procedure, from dfs-interview § Work the stack:
 
 ## Current topic
 
-**lane-open-items**. Its result: `lane-open-items/README.md`.
+**cleanup-pass**. Its result: `cleanup-pass/README.md`.
 
 ## Stack
 
-- **lane-open-items** (2026-11-03): The open-for-Tony items each lane reported, in the Build result sections of channels, queue-approver, plugin-core and sessions-harness READMEs
-  - [ ] Trilium tool lane: note_create without note_id, note verbs refuse calls across an edge (queue)
-  - [ ] Tether lane push and pin bump (channels)
-  - [ ] Persistent rooms end on a relay restart, against channels.md R72 item 5 (channels)
-  - [ ] Relay limits, spake2 suite, tether verbs, isolated sessions without a channel (channels)
-  - [ ] auth verbs on the awm tool or an auth tool; quay org for test images (plugins)
-  - [ ] Python discovery root, isolated door port 8765 and ceiling list (plugins)
-  - [ ] Queue rest: approver forwarded header, order_pull callers, Chromium libs, AWM_TRILIUM_URL, cutover gaps (queue)
-  - [ ] Harness rest: harness_event callback, hidden session_of, old state paths, R44 item 4, R109 item 7 (harness)
-  - [ ] ~/.claude edits from the journal lane: debrief, goal-alignment, goal 50708f67, CLAUDE.md precedence lines (journal)
 - **cleanup-pass** (2026-11-03): when done, we need to schedule a pass to remove code to make source code cohesive and not have vestigial elements, and combining modules/funcitons that are duplicated
 
 ## Parked
@@ -53,3 +43,4 @@ Procedure, from dfs-interview § Work the stack:
 - **search-filters** (closed 2026-11-03): `search-filters/README.md`
 - **fleet-deploy** (closed 2026-11-03): `fleet-deploy/README.md`
 - **trust-users** (closed 2026-11-03): `trust-users/README.md`
+- **lane-open-items** (closed 2026-11-03): `lane-open-items/README.md`
