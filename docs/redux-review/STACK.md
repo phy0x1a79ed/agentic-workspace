@@ -32,7 +32,7 @@ Procedure, from dfs-interview § Work the stack:
   - [x] Tag descriptions. Tony: "each tag should also get a description when adding and is editable" (answered 2026-11-03)
   - [x] Precedence folds into the journal. Tony: "and prescedent can then fold into the same journal system once updated?" (answered 2026-11-03)
   - [x] superseded_by in the journal. Tony: "how does superseded_by work in new journal system?" (answered 2026-11-03)
-  - [ ] Precedence protocol moves to a skill, skills in a folder. Tony: "lets make the tag precedent. we can move the protocol to a skill?" and "we should move the debrief and precedent skills to a folder maybe"
+  - [x] Precedence protocol moves to a skill, skills in a folder. Tony: "lets make the tag precedent. we can move the protocol to a skill?" and "we should move the debrief and precedent skills to a folder maybe" (answered 2026-11-03)
   - [x] Usage decays with no sweep. Tony: "can we make usage decay so that it doesnt count up forever? can we make this decay not require periodic sweeps?" (answered 2026-11-03)
   - [ ] Where lineage lives (R13 parent links, R16 graph) once reporting goes: operations, journal or reflection. Raised by redux-harness; follows from queue.md R145 removing reporting, where the sessions lane serves lineage and session_parent
   - [x] Protected tags: which tags the code names (message, journal, goal, brief, closed, superseded, folded, precedent) and whether they can be deleted, renamed or added after posting. From the multi-tag review Tony asked for (answered 2026-11-03)
