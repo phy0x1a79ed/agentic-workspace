@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 # Run cargo in mizar's Rust build container (install.md R113).
 # Usage: scripts/rust-build.sh [cargo args...]   e.g. scripts/rust-build.sh test
+#        AWM_CARGO_TARGET_DIR=<dir> scripts/rust-build.sh build   (build into a persistent target dir)
 #        AWM_RUST_WORKDIR=<dir> scripts/rust-build.sh build   (another Cargo project)
 set -euo pipefail
 here="$(cd "$(dirname "$0")/.." && pwd)"
 image="${AWM_RUST_IMAGE:-awm-rust-build:1.99.1}"
 volume="${AWM_CARGO_CACHE:-awm-cargo-cache}"
 workdir="$(cd "${AWM_RUST_WORKDIR:-$here/core}" && pwd)"
+target_dir="${AWM_CARGO_TARGET_DIR:-$workdir/target}"
 
 if ! docker image inspect "$image" >/dev/null 2>&1; then
     docker build -t "$image" -f "$here/core/Dockerfile" "$here/core"
@@ -19,11 +21,16 @@ docker run --rm -v "$volume:/c" "$image" sh -c 'chmod -R a+rwX /c 2>/dev/null ||
 
 mounts=(-v "$volume:/cargo/registry" -v "$workdir:$workdir")
 [ "$workdir" != "$here/core" ] || mounts+=(-v "$here:$here:ro")
+if [ -n "${AWM_CARGO_TARGET_DIR:-}" ]; then
+    mkdir -p "$target_dir"
+    target_dir="$(cd "$target_dir" && pwd)"
+    mounts+=(-v "$target_dir:$target_dir")
+fi
 env_conda=()
 conda="${AWM_CONDA_ROOT:-$HOME/miniforge3}"
 [ -d "$conda" ] && mounts+=(-v "$conda:$conda:ro") && env_conda=(-e "AWM_CONDA_ROOT=$conda")
 
 tty=(); [ -t 0 ] && tty=(-it)
 exec docker run --rm "${tty[@]}" --user "$(id -u):$(id -g)" "${mounts[@]}" "${env_conda[@]}" \
-    -e CARGO_TARGET_DIR="$workdir/target" -e HOME=/tmp \
+    -e CARGO_TARGET_DIR="$target_dir" -e HOME=/tmp \
     -w "$workdir" "$image" cargo "$@"

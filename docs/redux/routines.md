@@ -53,10 +53,11 @@ This doc holds awm's registered routines: what a routine is, what triggers it, a
 - **R27.** `deploy` runs these deterministic steps on a batch. Any failure dispatches an implementation session (R23).
   1. **Pin.** Confirm that each pinned commit exists. The worktrees share one bare repo, so no push is needed.
   2. **Merge.** Merge the batch onto `dev`.
-  3. **Check.** Run the project's smoke checks on `dev`. Smoke checks are fast. They tell that something is wrong, not what is wrong. A run longer than 1 minute is a failure of its own. Tony: "the tests for step 3 should be limited to at most 1 min and if this is exceeded, this is another error that spawns an integration agent."
-  4. **Promote.** Fast-forward `release` to `dev`.
-  5. **Refresh.** Run the project's refresh hook (R25). A failed refresh dispatches a session too, and does not call Tony. Tony: "Calling me is not really productive with no agent to talk to."
-  6. **Report.** Show each submitter one mark. A tick means the batch landed. A cross names the failed step (merge, check failure, check timeout, refresh) and links to the card of the dispatched session. Tony: "maybe as small as a check box."
+  3. **Pins.** Run the project's pin refresh in the batch's tree. It rebuilds each stale built-file pin into the landing node's artifact store. The engine commits the changed pins as `deploy: refresh pins`, so the next steps cover that commit. A failed build stops the batch before promote. The step has its own timeout, apart from the check's.
+  4. **Check.** Run the project's smoke checks on `dev`. Smoke checks are fast. They tell that something is wrong, not what is wrong. A run longer than 1 minute is a failure of its own. Tony: "the tests for step 3 should be limited to at most 1 min and if this is exceeded, this is another error that spawns an integration agent."
+  5. **Promote.** Fast-forward `release` to `dev`.
+  6. **Refresh.** Run the project's refresh hook (R25). A failed refresh dispatches a session too, and does not call Tony. Tony: "Calling me is not really productive with no agent to talk to."
+  7. **Report.** Show each submitter one mark. A tick means the batch landed. A cross names the failed step (merge, pins, check failure, check timeout, refresh) and links to the card of the dispatched session. Tony: "maybe as small as a check box."
 - **R29.** Only `deploy` writes `dev` and `release`. Agents never merge or push into either. Instructions carry the rule, with no hook to enforce it. A `reference-transaction` hook in each bare repo is the next step if agents break the rule. Tony: "lets just pick a and escalate if there are issues."
 - **R31.** The fleet route. Tony: "this all looks good to me" (2026-10-31).
   - One `deploy` service per project runs on the node that holds the project's canonical repo. awm's canonical repo moves to mizar, the homebase. GitHub keeps a backup, which each deploy updates (`install.md` R114). Tony: "Mizar is the canonical home of AWM. But we should also try to keep the remote on GitHub up to date as a backup." (2026-11-04).

@@ -4,7 +4,8 @@
 # The artifact is a tarball of each plugin's pages/<name>/dist folder, with paths relative to
 # the checkout root. A push node unpacks it and never builds (scripts/awm-deploy.sh), so only
 # this node needs node and awm/node_modules. The pin is stale exactly when a page source, a
-# shared component or the toolchain files changed since this ran.
+# shared component or the toolchain files changed since this ran. scripts/refresh-pins.sh runs
+# this for awm's deploy and commits the pin.
 set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 . "$root/scripts/pins.sh"

@@ -1,5 +1,5 @@
 # The built plugin pages that a deploy unpacks on every node, so no node but mizar builds.
-# Refresh with the script that wrote it, on mizar, and commit the result.
+# Written by the deploy on mizar (scripts/refresh-pins.sh). Do not edit.
 version=pages-be690bea4d52
 file=awm-pages-be690bea4d52.tar.gz
 sha256=a29374420ad7c1a7e19389da509e66d05320b927a144750303301aef9f9e3a73
