@@ -29,6 +29,7 @@ Procedure, from dfs-interview § Work the stack:
 
 - **spec** (2026-11-04): Basic rough spec is disk based search over text, mainly journals, for agentic memory.
   - **sort** (2026-11-04): Order however necessary and query will reorder by relavence whatever that means -> maybe need to add a sort by schema in querry
+    - [ ] Where in the query does a source's sort go?
   - **memory** (2026-11-04): Want disk because keeping a large corpus in ram is not feasible with essentially unlimited size. But something like 100mb is acceptable.
   - **latency** (2026-11-04): It needs to be fast because agents will constantly call it so something like 1s is prolly max, but flexible. Simple queries like last journal or journals about x where x is specific/obvious should return fast like 0.1s.
   - **matching** (2026-11-04): Search requires both exact and semantic matches.
