@@ -103,6 +103,7 @@ From journal 6a98c0c6 (awm/redux) and walkthrough's handover (manual-steps.md at
 - [x] tell redux-build/deneb-board how deneb-gaps was solved (told 2026-11-05)
 - [x] tell redux-build/dev how pin-refresh was solved (told 2026-11-05)
 - **redux-build/session-cleanup (job 79aa5482, sonnet medium): inventory and cleanup only; the listing design is for discussion** (2026-11-05): took session-list
+- **redux-build/dev** (2026-11-05): took mizar-backup
 
 ## Closed
 
