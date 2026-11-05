@@ -28,6 +28,7 @@ Procedure, from dfs-interview § Work the stack:
 ## Stack
 
 - **incremental** (2026-11-05): Plus we design some sort of incremental build system -> whatever this is, would be great if we never need to read whole corpus for build (incremental), not sure how possible this is
+  - [ ] Must each source supply a change feed, so search reads only what changed?
 
 ## Parked
 
