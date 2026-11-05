@@ -532,3 +532,122 @@ def test_a_transcript_that_shrinks_is_re_read_from_the_top(sessions):
     sessions.write_text(json.dumps(user_text("resume please")) + "\n")
     tail.poll()
     assert tail.consumed("resume please") is True
+
+
+# -- a /clear, end to end ----------------------------------------------------
+
+def command_entry(name, args="", when_ms=2_000_000, prompt_id="p1"):
+    """The entry the CLI writes for a local slash command, copied from a live /clear."""
+    return {"type": "user", "timestamp": at(when_ms), "promptId": prompt_id,
+            "message": {"role": "user", "content": (
+                f"<command-name>{name}</command-name>\n"
+                f"            <command-message>{name[1:]}</command-message>\n"
+                f"            <command-args>{args}</command-args>")}}
+
+
+def command_stdout(text, when_ms=2_000_000, prompt_id="p1"):
+    return {"type": "user", "timestamp": at(when_ms), "promptId": prompt_id,
+            "message": {"role": "user",
+                        "content": f"<local-command-stdout>{text}</local-command-stdout>"}}
+
+
+def _clear_session(sessions, *, when_ms):
+    """Write what a live /clear writes: the dequeue, a new id, a new file."""
+    from awm.cch import session_target
+
+    append(sessions, queue("dequeue") | {"timestamp": at(when_ms - 20)})
+    cleared = "99999999-8888-7777-6666-555555555555"
+    (session_target.SESSIONS_DIR / "4242.json").write_text(
+        json.dumps({"sessionId": cleared}))
+    fresh = transcript.PROJECTS_DIR / "-home-tony-somewhere" / f"{cleared}.jsonl"
+    append(fresh, command_entry("/clear", when_ms=when_ms),
+           {"type": "system", "subtype": "local_command", "timestamp": at(when_ms),
+            "content": "<local-command-stdout></local-command-stdout>"})
+    return cleared
+
+
+def test_a_self_cleared_session_with_a_background_task_gets_its_resume_at_once(
+        sessions, monkeypatch):
+    # Measured 2026-11-04 on redux-build/search-opt: the /clear ran at 23:00:37
+    # and its resume went in at 23:01:52. The /clear start line exists only in
+    # its <command-name> form, and the dequeue sits in the old file 22ms before
+    # the new id, so a tail polling every 2s switches files without reading it.
+    # A session holding a background task wears `shell`, and a `shell` with our
+    # command still queued never settles.
+    from awm.cch import watcher
+
+    injected = 1_000_000
+    append(sessions, tool_use("toolu_bg"), tool_result("toolu_bg"),
+           queue("enqueue", "/clear") | {"timestamp": at(injected + 100)})
+    tail = transcript.Tail(4242)
+    tail.watch("/clear")
+    tail.poll()
+    assert tail.queued("/clear") is True
+
+    cleared = _clear_session(sessions, when_ms=injected + 20_000)
+    monkeypatch.setattr(watcher, "now_ms", lambda: injected + 120_000)
+
+    class Clock:
+        t = 0.0
+
+        def __call__(self):
+            self.t += 50.0
+            return self.t
+
+    outcome = watcher.await_completion(
+        4242, injected_at_ms=injected, text="/clear", tail=tail,
+        read_status=lambda _pid: ("shell", injected + 20_000),
+        sleep=lambda _s: None, clock=Clock(), proc_start=lambda _p: "123")
+    assert outcome == watcher.STARTED_OUTCOME
+    assert tail.session_id == cleared
+    assert tail.queued("/clear") is False
+
+
+def test_a_clear_leaves_no_foreground_call_in_flight(sessions):
+    # A clear runs between turns. A tool call the old conversation never answered
+    # (an interrupted one) is not a call the new conversation is waiting on.
+    append(sessions, tool_use("toolu_orphan"))
+    tail = transcript.Tail(4242)
+    tail.poll()
+    assert tail.tool_call_in_flight() is True
+    _clear_session(sessions, when_ms=2_000_000)
+    tail.poll()
+    assert tail.tool_call_in_flight() is False
+
+
+def test_the_first_poll_does_not_count_as_a_clear(sessions):
+    # Opening a tail is not a session id changing under it: the catch-up window
+    # still applies, and nothing is reset.
+    append(sessions, tool_use("toolu_1"))
+    tail = transcript.Tail(4242)
+    tail.poll()
+    assert tail.session_id == SESSION
+    assert tail.tool_call_in_flight() is True
+
+
+def test_a_local_command_is_seen_to_start_from_its_command_name_entry(sessions):
+    tail = transcript.Tail(4242)
+    tail.watch("/mcp reconnect awm")
+    append(sessions, command_entry("/mcp", "reconnect awm", when_ms=2_000_000))
+    tail.poll()
+    assert tail.started("/mcp reconnect awm", since_ms=1_000_000) is True
+
+
+def test_a_local_commands_output_is_read_off_its_prompt(sessions):
+    tail = transcript.Tail(4242)
+    tail.watch("/mcp reconnect awm")
+    append(sessions, command_entry("/mcp", "reconnect awm", prompt_id="pA"),
+           command_stdout("Successfully reconnected to awm", prompt_id="pA"),
+           command_stdout("someone else's", prompt_id="pB"))
+    tail.poll()
+    assert tail.output("/mcp reconnect awm",
+                       since_ms=1_000_000) == "Successfully reconnected to awm"
+
+
+def test_an_earlier_runs_output_does_not_answer_for_this_one(sessions):
+    tail = transcript.Tail(4242)
+    tail.watch("/mcp reconnect awm")
+    append(sessions, command_entry("/mcp", "reconnect awm", when_ms=500_000),
+           command_stdout("Successfully reconnected to awm", when_ms=500_000))
+    tail.poll()
+    assert tail.output("/mcp reconnect awm", since_ms=1_000_000) is None

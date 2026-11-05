@@ -88,11 +88,26 @@ _PASTE_ENVELOPE = re.compile(
     re.DOTALL)
 
 
+# A local slash command such as /clear or /mcp is recorded only in this form;
+# /compact writes a plain "/compact" entry as well.
+_COMMAND_ENTRY = re.compile(
+    r"\A<command-name>(/\S+)</command-name>.*?<command-args>(.*?)</command-args>",
+    re.DOTALL)
+_COMMAND_STDOUT = re.compile(
+    r"\A<local-command-stdout>(.*)</local-command-stdout>\Z", re.DOTALL)
+_ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
+
 def _unwrapped(text: str) -> str:
-    """``text`` stripped, with any paste envelope removed."""
+    """``text`` stripped, with any paste envelope or command envelope removed."""
     text = (text or "").strip()
     match = _PASTE_ENVELOPE.match(text)
-    return match.group(2).strip() if match else text
+    if match:
+        return match.group(2).strip()
+    match = _COMMAND_ENTRY.match(text)
+    if match:
+        return f"{match.group(1)} {match.group(2).strip()}".strip()
+    return text
 
 
 def session_id_for(repl_pid: int) -> Optional[str]:
@@ -215,6 +230,10 @@ class Tail:
         # The line being typed in right now, and the moment typing began: the one
         # owner a content-less enqueue can have.
         self._expecting: Optional[tuple[str, int]] = None
+        # A local command's output arrives as a separate entry under the same
+        # promptId as the command.
+        self._command_of_prompt: dict[str, str] = {}
+        self._output: dict[str, tuple[int, str]] = {}
 
     # -- what we are looking for -------------------------------------------
 
@@ -255,18 +274,20 @@ class Tail:
         self._expecting = None
         return text
 
+    def _note_output(self, line: Optional[str], entry: dict, text: str) -> None:
+        if line and line in self._watched:
+            self._output[line] = (_stamp_ms(entry), _ANSI.sub("", text).strip())
+
     # -- reading ------------------------------------------------------------
 
     def _resolve(self) -> Optional[Path]:
         session_id, cwd = session_and_cwd_for(self.repl_pid)
-        if session_id and session_id != self._session_id:
-            # A /clear mid-wait: the old file stops growing and a new one starts
-            # empty, so follow the new one from its beginning.
+        if session_id and self._session_id is None:
             self._session_id = session_id
             self._cwd = cwd
             self._path = path_for(session_id)
-            self._offset = 0
-            self._partial = ""
+        elif session_id and session_id != self._session_id:
+            self._follow_clear(session_id, cwd)
         elif session_id and (self._path is None or cwd != self._cwd
                              or not self._path.exists()):
             # A /cd mid-wait: same conversation, same id, and Claude Code moves
@@ -278,6 +299,28 @@ class Tail:
             self._path = path_for(session_id)
         return self._path
 
+    def _follow_clear(self, session_id: str, cwd: Optional[str]) -> None:
+        """Move to the new conversation a /clear started, from its first line.
+
+        The old file is read to its end first. Claude Code writes the queue's
+        ``dequeue`` there a few milliseconds before the record names the new id,
+        so a tail that switched without it would hold our command as queued for
+        good. A clear runs between turns, so no foreground call carries over.
+        """
+        if self._path is not None and self._offset is not None:
+            self._read(self._path)
+        self._session_id = session_id
+        self._cwd = cwd
+        self._path = path_for(session_id)
+        self._offset = 0
+        self._partial = ""
+        self._open_tools.clear()
+
+    @property
+    def session_id(self) -> Optional[str]:
+        """The session id the tail last read under, or ``None`` before the first poll."""
+        return self._session_id
+
     def poll(self) -> bool:
         """Ingest whatever has been appended since the last call.
 
@@ -287,6 +330,9 @@ class Tail:
         path = self._resolve()
         if path is None:
             return False
+        return self._read(path)
+
+    def _read(self, path: Path) -> bool:
         try:
             size = path.stat().st_size
             with path.open("r", encoding="utf-8", errors="replace") as fp:
@@ -351,7 +397,13 @@ class Tail:
             for block in content if isinstance(content, list) else []:
                 if isinstance(block, dict) and block.get("type") == "tool_result":
                     self._open_tools.discard(str(block.get("tool_use_id")))
-            text = _unwrapped(_text_of(entry))
+            raw = _text_of(entry).strip()
+            stdout = _COMMAND_STDOUT.match(raw)
+            if stdout:
+                self._note_output(self._command_of_prompt.get(
+                    str(entry.get("promptId") or "")), entry, stdout.group(1))
+                return
+            text = _unwrapped(raw)
             if text and text in self._watched:
                 # The turn running this line has begun. Written by the CLI as the
                 # prompt is taken up, which for a slash command is the moment the
@@ -359,10 +411,21 @@ class Tail:
                 stamp = _stamp_ms(entry)
                 self._started[text] = max(self._started.get(text, 0), stamp)
                 self._note_landed(text, stamp, queued=False)
+                if entry.get("promptId"):
+                    self._command_of_prompt[str(entry["promptId"])] = text
             return
 
         if kind == "system" and entry.get("subtype") == "compact_boundary":
             self._compacted_at = max(self._compacted_at, _stamp_ms(entry))
+            return
+
+        if kind == "system" and entry.get("subtype") == "local_command":
+            # /cd reports this way, naming its command in `commandRun`.
+            run = entry.get("commandRun")
+            stdout = _COMMAND_STDOUT.match(str(entry.get("content") or "").strip())
+            if isinstance(run, dict) and stdout:
+                line = f"/{run.get('command') or ''} {run.get('args') or ''}".strip()
+                self._note_output(line, entry, stdout.group(1))
             return
 
         if kind == "queue-operation":
@@ -476,6 +539,11 @@ class Tail:
         if since_ms is not None:
             return self._landed_at.get(text, 0) > since_ms
         return text in self._consumed or text in self._queued
+
+    def output(self, text: str, *, since_ms: int) -> Optional[str]:
+        """What the local command ``text`` printed in a run after ``since_ms``, or ``None``."""
+        stamp, said = self._output.get((text or "").strip(), (0, ""))
+        return said if stamp > since_ms else None
 
     def tool_call_in_flight(self) -> Optional[bool]:
         """Is a *foreground* tool call outstanding? ``None`` if unknown.

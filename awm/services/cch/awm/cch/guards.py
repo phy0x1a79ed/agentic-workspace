@@ -34,6 +34,10 @@ INTERACTIVE = {
 # (e.g. `/model opus` switches immediately; `/model` alone opens the chooser).
 _MODAL_WHEN_BARE = {"/model"}
 
+# The `/mcp` forms that act without opening the panel (Claude Code 2.1.318:
+# `/mcp [reconnect|enable|disable [<server>|all]]`). Bare `/mcp` opens the panel.
+MCP_ACTIONS = ("reconnect", "enable", "disable")
+
 # A bare slash command (e.g. /compact) runs at end-of-turn and then leaves the
 # session idle with nothing to do — for an autonomous agent that is death. So a
 # self-directed slash command must be trailed by a real prompt that gives the
@@ -45,6 +49,19 @@ DEFAULT_FOLLOWUP = "Continue with what you were doing."
 def is_slash(text: str) -> bool:
     """True if ``text`` is a slash command (a TUI control command, not a prompt)."""
     return text.strip().startswith("/")
+
+
+def mcp_line(action: str, server: str) -> str:
+    """The `/mcp` line that runs ``action`` on ``server``, a name or ``all``.
+
+    Raises ``ValueError`` for an action or a server name the line cannot carry.
+    """
+    if action not in MCP_ACTIONS:
+        raise ValueError(f"action must be one of {', '.join(MCP_ACTIONS)}")
+    server = server.strip() if isinstance(server, str) else ""
+    if not server or not server.isprintable() or any(c.isspace() for c in server):
+        raise ValueError("server must be one MCP server name, or all")
+    return f"/mcp {action} {server}"
 
 
 def opens_modal(text: str) -> bool:
@@ -82,6 +99,17 @@ def refusal(text: str, *, confirm: bool,
             "reason": f"{first!r} irreversibly discards context; "
                       f"pass confirm=true to proceed.",
             "guard": sorted(DESTRUCTIVE),
+        }
+    if first == "/mcp" and not allow_modal:
+        return {
+            "ok": False,
+            "refused": True,
+            "kind": "interactive",
+            "reason": "bare '/mcp' opens a panel that swallows typed input. Use "
+                      "reflection(verb=\"mcp\", args={action: reconnect|enable|"
+                      "disable, server: <name>|all, job?}) to reconnect, enable "
+                      "or disable a session's MCP servers.",
+            "guard": ["/mcp"],
         }
     if not allow_modal and opens_modal(text):
         return {

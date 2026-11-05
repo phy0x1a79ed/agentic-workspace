@@ -73,6 +73,7 @@ Optional verbs, listed in `capabilities` when served:
 | `pending` | cc | The follow-ups the plugin still owes, each with its `ticket`. |
 | `mode` | cc | Put a session back into bypass permissions. |
 | `remote_control` | cc | Turn Remote Control on or off. |
+| `mcp` | cc | Reconnect, enable or disable a session's MCP servers: target, `action`, `server`. |
 | `link` | cc | Read a session's claude.ai link. |
 | `adopt` | cc | Take on a job that `start` did not create. |
 | `revive_pinned` | cc | Resume each pinned session whose process is gone, after a reboot. |

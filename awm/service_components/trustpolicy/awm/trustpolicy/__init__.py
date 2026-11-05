@@ -23,7 +23,7 @@ LEVELS = ("untrusted", "cooperative", "trusted")
 #: never authority, so it may go to a higher level (a seat asks the main seat).
 STEER_VERBS = frozenset({
     "start_other", "resume_other", "stop_other", "stop", "interrupt", "model",
-    "effort", "rename", "cd", "compact", "mode", "remote_control",
+    "effort", "rename", "cd", "mcp", "compact", "mode", "remote_control",
 })
 
 FIRST_LOCAL_MESSAGE_HINT = (

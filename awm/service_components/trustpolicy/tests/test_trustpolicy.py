@@ -88,6 +88,7 @@ def test_untrusted_steers_and_messages_nobody():
 
 def test_nobody_steers_above_its_level():
     assert tp.may_steer("cooperative", "stop", target_level="trusted")[0] is False
+    assert tp.may_steer("cooperative", "mcp", target_level="trusted")[0] is False
     assert tp.may_steer("cooperative", "stop", target_level="cooperative")[0] is True
     assert tp.may_steer("trusted", "interrupt", target_level="trusted")[0] is True
 
