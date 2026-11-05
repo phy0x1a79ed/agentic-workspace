@@ -25,16 +25,22 @@ Procedure, from dfs-interview § Work the stack:
 
 **board**, under **parallel-uptime**. Its result: `dispatch-mode/parallel-uptime/board/README.md`.
 
+## Pending
+
+- **M10** (2026-11-05): Name the portal hostname your browser uses for mizar, alcor, altair, capella and lyra, or none. Suggested for mizar: mizar.tail080e54.ts.net. dns-guide walks you through it.
+- **M12** (2026-11-05): Cloudflare: add A record auth -> 43.162.91.185, DNS only. dns-guide checks it.
+- **M13** (2026-11-05): Cloudflare: add CAA record auth = 0 issue "letsencrypt.org; validationmethods=dns-01". Needs M12.
+- **M14** (2026-11-05): Cloudflare: create an API token, Zone DNS Edit, zone tony-xy-liu.com only; keep it in your password manager until M25. Give an ACME email or none. Needs M12.
+- **rt-plugins** (2026-11-05): rt-container waits on your go to build the stock plugins (projects/stock/plugins). Talk to it directly.
+
 ## Stack
 
 - **dispatch-mode** (2026-11-05): as tasks are decided and worked out, please dispatch top level agents to work on them / their issues can be pushed back to the stack / we will notify them once their issues are solved and how, rather than when we decide how to solve. / we can add this mode to dfs-interview skill
   - **parallel-uptime** (2026-11-05): I'd like to be able to work in parallel. if all discussion goes through you, then I sit idle while you work and vice versa. our first topic should be a protocol taht maximizes both of our up times
     - **board** (2026-11-05): the "One file holds everything" is not a hard blocker, can we look into setting up trillium and the new board then? this would include the alcor services
       - [x] Does alcor open for the board's services only (operations, approver and passkey, deneb tunnel), with rt, IBKR and mira still shut? (answered 2026-11-05)
-      - [ ] Tony's DNS steps M10, M12, M13, M14: can he do them now, in parallel?
+      - [x] Tony's DNS steps M10, M12, M13, M14: can he do them now, in parallel? (answered 2026-11-05)
       - [x] Discord on alcor: hold social's Discord accounts on alcor until mira's cutover? (answered 2026-11-05)
-- **search-awm-api** (2026-11-05): can we make it so search also retrieves information about the awm API itself (as a source) agents seem to use it for that as well
-- **spawn-tuning** (2026-11-05): new agents spawned should have model and effort level tuned to task, with fable requireing user consent. no xHigh for any model
 
 ## Parked
 
@@ -66,3 +72,5 @@ From journal 6a98c0c6 (awm/redux) and walkthrough's handover (manual-steps.md at
 ## Closed
 
 - **tarball-host** (closed 2026-11-05): `dispatch-mode/parallel-uptime/board/tarball-host/README.md`
+- **search-awm-api** (closed 2026-11-05): `search-awm-api/README.md`
+- **spawn-tuning** (closed 2026-11-05): `spawn-tuning/README.md`
