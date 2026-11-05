@@ -23,7 +23,7 @@ Procedure, from dfs-interview § Work the stack:
 
 ## Current topic
 
-**board**, under **parallel-uptime**. Its result: `dispatch-mode/parallel-uptime/board/README.md`.
+**alcor-door**, under **board**. Its result: `dispatch-mode/parallel-uptime/board/alcor-door/README.md`.
 
 ## Pending
 
@@ -33,8 +33,8 @@ Procedure, from dfs-interview § Work the stack:
 - **M14** (2026-11-05): Cloudflare: create an API token, Zone DNS Edit, zone tony-xy-liu.com only; keep it in your password manager until M25. Give an ACME email or none. Needs M12.
 - **rt-plugins** (2026-11-05): rt-container waits on your go to build the stock plugins (projects/stock/plugins). Talk to it directly.
 - **Q-tarball-backup** (2026-11-05): Trilium fork backup: push its branches and tags to the existing GitHub fork phy0x1a79ed/Trilium, and attach the pinned tarball to a GitHub release there as a backup copy only (deneb still gets mizar's push)? Recommended: yes.
-- **Q-deneb** (2026-11-05): deneb for the board: OK to apply deneb's roles after a dry run I review (SNI forward to alcor, Trilium from the fork tarball, passkey login, push node), live vault backed up first?
 - **Q-alcor-door** (2026-11-05): alcor's port 22 lockdown: after it, ssh to alcor works only from mizar, capella and lyra over the tailnet. No LAN ssh, no phone, no altair. OK, or should more devices (your phone, by tailnet address) stay allowed?
+- **Q-deneb** (2026-11-05): deneb for the board: after a dry run I review, apply deneb's roles: SNI forward to alcor, push node, passkey login, and Trilium moved to its own sandboxed user (fleet.md R105 item 1). That moves the live vault: stop Trilium, back up document.db to mizar, move the data, start, check. OK?
 
 ## Stack
 
@@ -79,9 +79,11 @@ From journal 6a98c0c6 (awm/redux) and walkthrough's handover (manual-steps.md at
 - **redux-build/deneb-board (job a4d345a8): deneb push node, trilium leftovers, deneb dry run; apply waits on Q-deneb** (2026-11-05): took deneb-board
 - **redux-build/search-awm-api (job 8790d479, opus high)** (2026-11-05): took search-awm-api
 - **redux-build/spawn-tuning (job 716a0319, sonnet high)** (2026-11-05): took spawn-tuning
+- [x] tell redux-build/deneb-board how trilium-shape was solved (told 2026-11-05)
 
 ## Closed
 
 - **tarball-host** (closed 2026-11-05): `dispatch-mode/parallel-uptime/board/tarball-host/README.md`
 - **search-awm-api** (closed 2026-11-05): `search-awm-api/README.md`
 - **spawn-tuning** (closed 2026-11-05): `spawn-tuning/README.md`
+- **trilium-shape** (closed 2026-11-05): `dispatch-mode/parallel-uptime/board/deneb-board/trilium-shape/README.md`
