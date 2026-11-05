@@ -37,6 +37,7 @@ Procedure, from dfs-interview § Work the stack:
 
 ## Stack
 
+- **session-list** (2026-11-05): why are there so many sessions? start top level session to clean up the sessions. at least list shouldnt expose dead sessions -> need discussion here
 - **dispatch-mode** (2026-11-05): as tasks are decided and worked out, please dispatch top level agents to work on them / their issues can be pushed back to the stack / we will notify them once their issues are solved and how, rather than when we decide how to solve. / we can add this mode to dfs-interview skill
   - **parallel-uptime** (2026-11-05): I'd like to be able to work in parallel. if all discussion goes through you, then I sit idle while you work and vice versa. our first topic should be a protocol taht maximizes both of our up times
     - **board** (2026-11-05): the "One file holds everything" is not a hard blocker, can we look into setting up trillium and the new board then? this would include the alcor services
@@ -97,6 +98,7 @@ From journal 6a98c0c6 (awm/redux) and walkthrough's handover (manual-steps.md at
 - [x] tell redux-build/dev how zotero-home was solved (told 2026-11-05)
 - [x] tell redux-build/deneb-board how deneb-gaps was solved (told 2026-11-05)
 - [x] tell redux-build/dev how pin-refresh was solved (told 2026-11-05)
+- **redux-build/session-cleanup (job 79aa5482, sonnet medium): inventory and cleanup only; the listing design is for discussion** (2026-11-05): took session-list
 
 ## Closed
 
