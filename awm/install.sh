@@ -12,13 +12,6 @@ export AWM_ENV="${AWM_ENV:-awm}"
 ENV="$AWM_ENV"
 run() { echo "+ pip install -e $*"; mamba run -n "$ENV" pip install -e "$@"; }
 
-# The Python gateway's dist went with T19. An old editable install of it still owns the env's
-# `awm` and `awm-mcp` scripts, which an old /usr/local/bin symlink may still name.
-if mamba run -n "$ENV" pip show -q awm-gateway >/dev/null 2>&1; then
-    echo "+ pip uninstall awm-gateway"
-    mamba run -n "$ENV" pip uninstall -y awm-gateway
-fi
-
 for lib in config persistence gatewayclient grantlib claudedaemon kept trustpolicy tlsfront dvcdata; do
     [ -d "$WS/awm/service_components/$lib" ] && run "$WS/awm/service_components/$lib" --no-deps
 done

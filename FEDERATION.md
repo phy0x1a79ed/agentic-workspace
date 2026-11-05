@@ -150,7 +150,7 @@ altair does no awm work. It only receives each release.
 `awm deploy` brings the node in line with its checkout. `scripts/awm-deploy.sh` builds the static core binary and runs it. `awm deploy --dry-run` prints each step. It runs `awm/install.sh` and the page build, places the binary at `~/.local/bin/awm`, writes `config.toml` when the node has none, and replaces the `awm` user unit from `core/deploy/awm.service`. It restarts the unit when the binary or the unit changed, and reloads the plugins otherwise. Then it waits for every enabled service and checks each thing it placed.
 
 - awm needs no sudo and no `/usr/local/bin`. The unit and the workspace `.mcp.json` name `~/.local/bin/awm` by absolute path. The edge runs `PATH="$HOME/.local/bin:$PATH" awm edge-serve`, because a non-interactive ssh shell often lacks `~/.local/bin`.
-- The gateway passes a service only `config.toml` `[env]`. `awm deploy` names each key of the old `.awm/env` that `[env]` does not pass on. A key left only there reaches no service.
+- The gateway passes a service only `config.toml` `[env]`.
 - The deploy needs mamba, the env's `node` on `PATH` and a populated `awm/node_modules`. Run `mamba install -n awm nodejs`, then `npm install` in `awm/`.
 - Keep `enabled.json` explicit. A service absent from it counts as enabled.
 
