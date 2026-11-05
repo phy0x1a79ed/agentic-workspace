@@ -40,6 +40,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from awm.config.tools import dvc_bin
 from awm.trilium import etapi, instances
 from awm.trilium.instances import Vault
 
@@ -79,30 +80,6 @@ DVC_TIMEOUT_S = 1800
 # merge driver, the hooks — lives in `awm/dvc/data_dvc.py` and is not
 # restated here. This is only the little that a service needs to run the two
 # binaries against one scope worktree.
-
-_DVC_FALLBACKS = (
-    Path.home() / "lib/miniforge3/envs/dvc/bin/dvc",
-    Path.home() / "lib/miniforge3/envs/awm/bin/dvc",
-    Path("/usr/local/bin/dvc"),
-    Path("/usr/bin/dvc"),
-)
-
-
-def dvc_bin() -> str | None:
-    """Absolute `dvc`, or None. Same order as the scopes service: override,
-    PATH, then the known env locations — a service under systemd has a minimal
-    PATH and dvc lives in its own mamba env."""
-    override = os.environ.get("AWM_DVC_BIN")
-    if override and Path(override).is_file() and os.access(override, os.X_OK):
-        return override
-    found = shutil.which("dvc")
-    if found:
-        return found
-    for cand in _DVC_FALLBACKS:
-        if cand.is_file() and os.access(cand, os.X_OK):
-            return str(cand)
-    return None
-
 
 def _env() -> dict[str, str]:
     env = dict(os.environ)

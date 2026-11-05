@@ -11,7 +11,7 @@ another's backup tree. Shape::
     local_endpoint  = "57b23332-9048-11f1-ad24-02ce27bde401"  # this node's GCP endpoint
     remote_endpoint = "2602486c-1e0f-47a0-be15-eec1b0ff0f96"  # the chinook collection
     prefix          = "/Workspace_backups/Tony_Liu/altair"    # this node's tree on chinook
-    globus_bin      = "/home/tony/lib/miniforge3/envs/globus/bin/globus"
+    globus_bin      = "/path/to/globus"                         # optional: else a conda env named globus
 
 ``prefix`` is load-bearing in both directions: ``sync`` writes the cache there,
 and ``pull`` reads objects back from exactly that tree. They must name the same
@@ -28,12 +28,12 @@ under the live tree stay there forever.
 from __future__ import annotations
 
 import os
-import shutil
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
 from awm import config
+from awm.config.tools import tool_bin
 
 CONFIG_FILE: Path = config.AWM_DIR / "dvc.toml"
 
@@ -81,9 +81,7 @@ def _resolve_globus_bin(from_file: str) -> str:
         return env
     if from_file:
         return from_file
-    if found := shutil.which("globus"):
-        return found
-    return "globus"
+    return tool_bin("globus", "AWM_DVC_GLOBUS_BIN") or "globus"
 
 
 def load() -> ChinookConfig:

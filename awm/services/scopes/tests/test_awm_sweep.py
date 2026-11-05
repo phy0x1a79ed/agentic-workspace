@@ -56,7 +56,6 @@ def layout(tmp_path, monkeypatch):
     fake.write_text("#!/bin/sh\nexit 0\n")
     fake.chmod(0o755)
     monkeypatch.setenv("AWM_DVC_BIN", str(fake))
-    data_dvc.dvc_bin.cache_clear()
 
     plain = _project(projects, "plain", ["dev", "lab/sub"])
     for scope, wt in plain.items():
@@ -83,7 +82,6 @@ def layout(tmp_path, monkeypatch):
     (odd["main"] / ".awm" / "data" / "notes.txt").write_text("someone's files\n")
 
     yield {"projects": projects, "plain": plain, "tracked": tracked, "odd": odd}
-    data_dvc.dvc_bin.cache_clear()
 
 
 def test_a_dry_run_reports_and_changes_nothing(layout):

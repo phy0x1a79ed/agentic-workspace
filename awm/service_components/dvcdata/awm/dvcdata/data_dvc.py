@@ -64,12 +64,12 @@ import stat
 import subprocess
 import time
 from dataclasses import dataclass, field
-from functools import lru_cache
 from pathlib import Path
 
 import yaml
 
 from awm import config as _config
+from awm.config.tools import dvc_bin
 from awm.dvcdata.cachetag import has_cache_tag
 from awm.gatewayclient import cancel
 
@@ -273,40 +273,6 @@ LINKS_ONLY=1
 """ + _CHECKOUT_SH.replace('$1', 'a branch switch')
 
 _AWM_HOOK_MARKER = "# AWM-managed."
-
-
-# ---------------------------------------------------------------------------
-# Binary resolution
-# ---------------------------------------------------------------------------
-
-_DVC_ENV_VAR = "AWM_DVC_BIN"
-
-_DVC_FALLBACKS = (
-    Path.home() / "lib/miniforge3/envs/dvc/bin/dvc",
-    Path.home() / "lib/miniforge3/envs/awm/bin/dvc",
-    Path("/usr/local/bin/dvc"),
-    Path("/usr/bin/dvc"),
-)
-
-
-@lru_cache(maxsize=1)
-def dvc_bin() -> str | None:
-    """Absolute path to ``dvc``, or None when it isn't installed.
-
-    The scopes service runs under systemd with a minimal PATH and dvc lives in
-    its own mamba env, so ``shutil.which`` alone finds nothing. Order: explicit
-    override, PATH, then the known env locations.
-    """
-    override = os.environ.get(_DVC_ENV_VAR)
-    if override and Path(override).is_file() and os.access(override, os.X_OK):
-        return override
-    found = shutil.which("dvc")
-    if found:
-        return found
-    for cand in _DVC_FALLBACKS:
-        if cand.is_file() and os.access(cand, os.X_OK):
-            return str(cand)
-    return None
 
 
 def dvc_available() -> bool:
@@ -1326,8 +1292,9 @@ def _check_cache_layout(cache: Path) -> None:
     if not cache.is_dir():
         raise GcRefused(f"no cache at {cache}")
     extra = sorted(p.name for p in cache.iterdir() if p.name != "files")
-    extra += sorted(f"files/{p.name}" for p in (cache / "files").iterdir()
-                    if p.name != "md5")
+    if (cache / "files").is_dir():
+        extra += sorted(f"files/{p.name}" for p in (cache / "files").iterdir()
+                        if p.name != "md5")
     if extra:
         raise GcRefused(f"unknown cache layout at {cache}: {', '.join(extra[:10])}")
 
@@ -1359,6 +1326,8 @@ def _sweep(cache: Path, keep: set[str], *, dry_run: bool, grace_s: float) -> dic
              "collected": 0, "collected_bytes": 0, "bytes_freed": 0,
              "still_linked": 0, "errors": []}
     md5_root = cache / "files" / "md5"
+    if not md5_root.is_dir():
+        return stats
     for shard in sorted(os.scandir(md5_root), key=lambda e: e.name):
         if shard.is_dir(follow_symlinks=False):
             entries = [(shard.name + obj.name, obj) for obj in os.scandir(shard.path)]

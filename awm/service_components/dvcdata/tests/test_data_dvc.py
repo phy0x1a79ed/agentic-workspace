@@ -114,7 +114,6 @@ class TestHookState:
         fake.write_text(f'#!/bin/sh\necho "$@" >> {calls}\necho "cache object missing" >&2\nexit 1\n')
         fake.chmod(0o755)
         monkeypatch.setenv("AWM_DVC_BIN", str(fake))
-        dd.dvc_bin.cache_clear()
         bare = dvc_workspace["projects_dir"] / "p" / ".bare"
         bare.parent.mkdir(parents=True)
         _sh("git", "init", "-q", "--bare", "-b", "main", str(bare))
@@ -128,7 +127,6 @@ class TestHookState:
         _git(wt, "commit", "-q", "-m", "seed")
         assert dd.ensure_repo_wiring(wt)["result"] == "ok"
         yield {"bare": bare, "worktree": wt, "calls": calls}
-        dd.dvc_bin.cache_clear()
 
     def _merge_a_side_branch(self, wt: Path) -> None:
         _git(wt, "checkout", "-q", "-b", "side")
