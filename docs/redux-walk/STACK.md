@@ -67,6 +67,7 @@ From journal 6a98c0c6 (awm/redux) and walkthrough's handover (manual-steps.md at
 - R77 after the Caviar and muse invites (M55)
 - reflection follow-ups from reflect-selfstop (release dcd8ba4d, journal 8542e517): cch status misses a session by its post-clear id, so stop {job:<new id>} misses it; old trust.json records have no job field
 - altair still commits nightly vault snapshots to its fork release; R105 stops that (trilium-fork, 2026-11-05)
+- search-awm-api follow-ups (journal e06acc4b): `search sources` counts awm docs for singletons a relayed caller cannot see; a stale `_grants` line in search INSTALL.md
 - end state: verify every node (T28), retire mira and its disk (T29, M56), debrief (T30)
 
 ## Workers
