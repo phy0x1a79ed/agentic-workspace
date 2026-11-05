@@ -27,7 +27,7 @@ The kb project builds these files and ships them to the state directory (`KB_STA
 | file | built by | read by |
 |---|---|---|
 | `papers.db` | `kb.fastlayer` | `awm.kb.fastlayer`, for both sources and `kb get` |
-| `hops/` | `kb.hops`, from `kb.graph`'s `graph.db` | `awm.kb.hops`, for search's `hop` on papers and the author filter |
+| `hops/` | `kb.hops`, from `kb.graph`'s `graph.db` | `awm.kb.hops`, for `kb hop` and the author filter |
 | `w2/vectors/` | `kb.vectors` | the kb server, for `kb related` |
 
 **CAUTION** Land a format change in both repositories together. A reader refuses a `papers.db` whose `meta.schema` it does not know, and the verbs that read the file then answer nothing.

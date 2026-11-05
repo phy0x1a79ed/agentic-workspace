@@ -41,11 +41,9 @@ def test_the_query_takes_no_kind():
     assert "kind" not in {p["name"] for p in by_name["library"]["params"]}
 
 
-def test_the_plugin_manifest_declares_the_kb_and_library_sources_and_their_hop():
+def test_the_plugin_manifest_declares_the_kb_and_library_sources():
     toml = tomllib.loads((Path(hub_adapter.__file__).parents[2] / "awm-plugin.toml").read_text())
     [service] = toml["service"]
-    links = ["citations", "cited_by", "authors"]
     assert service["archive"] == [
-        {"name": "kb", "mode": "live", "query": "kb_query", "get": "kb_get", "hop": "kb_hop", "links": links},
-        {"name": "library", "mode": "live", "query": "kb_library", "get": "kb_get", "hop": "kb_hop",
-         "links": links}]
+        {"name": "kb", "mode": "live", "query": "kb_query", "get": "kb_get"},
+        {"name": "library", "mode": "live", "query": "kb_library", "get": "kb_get"}]

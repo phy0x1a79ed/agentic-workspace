@@ -10,19 +10,15 @@ name = "kb"
 mode = "live"
 query = "kb_query"
 get = "kb_get"
-hop = "kb_hop"
-links = ["citations", "cited_by", "authors"]
 
 [[service.archive]]
 name = "library"
 mode = "live"
 query = "kb_library"
 get = "kb_get"
-hop = "kb_hop"
-links = ["citations", "cited_by", "authors"]
 
 # The gateway resolves search's needs against this tool. Every verb is off MCP (surfaces cli, http):
-# search reads kb as two sources and walks them with its `hop`.
+# search reads kb as two sources.
 [[tool]]
 name = "kb"
 major = 1

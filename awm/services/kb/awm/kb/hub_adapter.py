@@ -1,6 +1,6 @@
-"""Hub adapter for the kb service: the papers `search` reads and walks, and the kb server.
+"""Hub adapter for the kb service: the papers `search` reads, and the kb server.
 
-kb publishes no MCP tool. Every verb is internal: `search` calls query, library, get, hop and related, and
+kb publishes no MCP tool. Every verb is internal: `search` calls query, library, get and related, and
 an operator runs the lifecycle verbs with `awm kb <verb>` on the host.
 
 The kb server, a process from the `kb` project in its own env (see `server`), encodes text and serves the
@@ -37,7 +37,7 @@ _tasks: set[asyncio.Task] = set()
 
 API_MANIFEST: dict[str, Any] = {
     "description": (
-        "Papers: the kb and library sources `search query` reads and walks with its `hop`, and the kb "
+        "Papers: the kb and library sources `search query` reads, and the kb "
         "server that encodes queries. Call `search`; kb serves search only."
     ),
     "functions": [
@@ -137,7 +137,7 @@ API_MANIFEST: dict[str, Any] = {
             "tool": "kb_hop",
             "surfaces": ["cli", "http"],
             "description": (
-                "Papers one hop from the given papers, for `search query`'s `hop`: their authors' other "
+                "Papers one hop from the given papers: their authors' other "
                 "papers (`authors`), the papers they cite (`cites`) or the papers citing them "
                 "(`cited_by`), ranked by personalized PageRank from the first five, the first weighted "
                 "most, and never by meaning; ties go to the newest."
