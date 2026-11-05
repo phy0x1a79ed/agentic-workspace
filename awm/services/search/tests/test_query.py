@@ -302,8 +302,8 @@ def test_non_scalar_values(value):
 
 
 def test_source_named_text_or_unknown_kind():
-    bad({"text@altair": {}}, r"query\.text@altair: not a source; allowed: journals, kb, transcripts")
-    bad({"notes": {}}, r"query\.notes: not a source; allowed: journals, kb, transcripts")
+    bad({"text@altair": {}}, r"query\.text@altair: not a source; allowed: awm, journals, kb, transcripts")
+    bad({"notes": {}}, r"query\.notes: not a source; allowed: awm, journals, kb, transcripts")
     bad({"precedence@altair": {}}, "not a source")
 
 

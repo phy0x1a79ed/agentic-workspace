@@ -45,6 +45,21 @@ def test_singletons_have_doors():
     assert edges.singleton_door("home") is None
 
 
+def test_a_singleton_admits_its_host_and_its_callers():
+    assert edges.may_call("spare", "2fa") and edges.may_call("Home.lan", "2fa")
+    assert not edges.may_call("work", "2fa") and not edges.may_call(None, "2fa")
+    assert edges.may_call("work", "channel") and edges.may_call("work", "journal")
+
+
+def test_a_planned_caller_is_left_out(tmp_path, monkeypatch):
+    planned = tmp_path / "edges.yml"
+    planned.write_text("nodes: {a: {role: standby}, b: {role: admin, planned: true}, c: {role: work}}\n"
+                       "singleton_doors: {a: {port: 2201, network: lan}}\n"
+                       "singletons: [{tool: t, host: a, callers: [b, c]}]\n")
+    monkeypatch.setenv(edges.EDGES_FILE_ENV, str(planned))
+    assert edges.may_call("c", "t") and not edges.may_call("b", "t")
+
+
 def test_default_path_is_node_config(monkeypatch, tmp_path):
     import awm.config as config
     monkeypatch.delenv(edges.EDGES_FILE_ENV)

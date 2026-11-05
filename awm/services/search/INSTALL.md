@@ -37,6 +37,14 @@ The export verb takes `since` and `limit`. It returns `{changes: [{id, entry?}],
 - **CAUTION** The feed must show every write that changes an entry, a tag rename included. A missed change stays stale in the index until the next rebuild. The journal bumps its feed with triggers in the same transaction as the write.
 - **CAUTION** An export that cannot read its store must raise. A failed read changes nothing and retries a minute later.
 
+## The awm source
+
+`search` declares one source of its own, `awm`: one entry per tool and verb that this node's gateway describes, with the verb's description and params as text. Its feed is the hidden `search_api_export` verb, which reads the whole table through `describe` on each read. The feed's epoch is a digest of the table, so a changed table rebuilds the source.
+
+- A change in the `awm services` rows, such as a service that restarts or registers, brings the next read forward.
+- `get` on an `awm` hit calls `<tool> describe` with that one verb and returns its answer. The index holds only what a query ranks.
+- **CAUTION** A query or `get` that a peer relays leaves out each singleton tool whose callers in `edges.yml` leave that peer out (`fleet.md` R98 item 3). A count in `search sources` still includes those tools.
+
 ## Rebuilds
 
 `search` rebuilds a source from the start of its feed when the source's fields, its hit, the embedding model or `lance_store.ENGINE_VERSION` change, when the epoch changes, and on `search reindex`.

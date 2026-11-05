@@ -10,6 +10,7 @@ Each source answers apart, section by section.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import logging
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -20,7 +21,7 @@ from awm.config import edges, privacy
 from awm.gatewayclient import SupervisedSubscription
 from awm.persistence import embeddings as engine
 
-from awm.search import federation, hits as hitshape, lance_query, lance_store, merge, registry, store
+from awm.search import api_source, federation, hits as hitshape, lance_query, lance_store, merge, registry, store
 from awm.search import query as request
 from awm.search.federation import Peers
 from awm.search.gateway import Gateway
@@ -119,6 +120,7 @@ class Archive:
         self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="search-index")
         self._topics: dict[tuple[str, str], tuple[SupervisedSubscription, asyncio.Task]] = {}
         self._clashes: tuple[float, set[str]] | None = None
+        self._table: str | None = None
 
     def origin(self) -> dict[str, str]:
         return {"node": config.node_name()}
@@ -150,6 +152,8 @@ class Archive:
             self.registry_error = federation.describe_error(exc)
             return False
         sources, _ = registry.parse(entries)
+        table = api_source.fingerprint(entries)
+        table_changed, self._table = table != self._table, table
         now = self.now()
         news = await asyncio.to_thread(_with_conn, store.record_registry,
                                        {n: s.spec() for n, s in sources.items()}, set(sources), now)
@@ -165,6 +169,8 @@ class Archive:
                 else:
                     self._due.setdefault(name, (row["synced_at"] or 0) + SWEEP_EVERY_S)
         self._follow_topics()
+        if table_changed and api_source.NAME in sources:
+            self._soon([api_source.NAME])
         if news:
             self._wake.set()
         return True
@@ -193,13 +199,16 @@ class Archive:
         self._pool.shutdown(wait=False)
 
     def _pushed(self, topic: tuple[str, str]) -> None:
+        self._soon([n for n, s in self.sources.items() if (s.service, s.topic) == topic and s.mode == "index"])
+
+    def _soon(self, names: list[str]) -> None:
+        """Bring the next read of each source forward to a few seconds from now."""
         soon = self.now() + SETTLE_S
-        for name, source in self.sources.items():
-            if (source.service, source.topic) == topic and source.mode == "index":
-                if name in self._sweeping:
-                    self._redo.add(name)
-                else:
-                    self._due[name] = min(self._due.get(name, soon), soon)
+        for name in names:
+            if name in self._sweeping:
+                self._redo.add(name)
+            else:
+                self._due[name] = min(self._due.get(name, soon), soon)
         self._wake.set()
 
     # -- feed reads (on the worker) -----------------------------------------
@@ -378,8 +387,14 @@ class Archive:
                 "sweeping": sorted(self._sweeping),
                 "subscriptions": [sub.health() for sub, _ in self._topics.values()]}
 
-    async def get(self, source: str, doc_id: str, hidden: Sequence[dict] | None = ()) -> dict[str, Any]:
+    async def get(self, source: str, doc_id: str, hidden: Sequence[dict] | None = (),
+                  caller: str | None = None) -> dict[str, Any]:
+        """One document. ``caller`` names the node that relayed the call."""
         await self._refresh_if_stale()
+        if source == api_source.NAME and source in self.sources:
+            described = await api_source.document(self.gateway, doc_id, caller)
+            return {"document": {**described, "source": source, "id": doc_id, "frozen": False,
+                                 "origin": self.origin()}}
         rows = {r["name"]: r for r in await asyncio.to_thread(_with_conn, store.source_rows)}
         row = rows.get(source)
         if row is None:
@@ -478,8 +493,11 @@ class Archive:
         except ValueError as exc:
             return {"exact": [], "error": str(exc)}
 
-    async def _here(self, src: request.Source, rows: dict[str, dict[str, Any]], req: request.Request) -> dict[str, Any]:
+    async def _here(self, src: request.Source, rows: dict[str, dict[str, Any]], req: request.Request,
+                    caller: str | None) -> dict[str, Any]:
         row = rows.get(src.kind)
+        if src.kind == api_source.NAME:
+            src = dataclasses.replace(src, filter=api_source.veiled(src.filter, caller))
         if row is None:
             return {"exact": [], "error": f"this node has no {src.kind} source"}
         if row["spec"].get("error"):
@@ -507,7 +525,7 @@ class Archive:
         await self._refresh_if_stale()
         rows = {r["name"]: r for r in await asyncio.to_thread(_with_conn, store.source_rows)}
         clashed = await self.clashed() if req.remote else set()
-        here = [self._here(src, rows, req) for src in req.sources]
+        here = [self._here(src, rows, req, caller) for src in req.sources]
         there = [self._there(node, srcs, req, clashed) for node, srcs in req.remote.items()]
         results = await asyncio.gather(*here, *there, return_exceptions=True)
         out: dict[str, Any] = {name: {"exact": [], "error": "a relayed call answers for this node alone"}

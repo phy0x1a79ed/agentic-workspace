@@ -133,6 +133,19 @@ def singleton_tools() -> list[str]:
     return [s["tool"] for s in singletons()]
 
 
+def may_call(node: str | None, tool: str) -> bool:
+    """Whether ``node`` may call ``tool``: any tool that is no singleton, and a singleton from its host or
+    from one of its callers that is not planned (R98 item 3). Names compare by :func:`label`."""
+    held = next((s for s in singletons() if s.get("tool") == tool), None)
+    if held is None:
+        return True
+    name = label(node)
+    if name == label(held.get("host")):
+        return True
+    planned = {label(n) for n, rec in nodes().items() if (rec or {}).get("planned")}
+    return name in {label(c) for c in held.get("callers") or []} - planned
+
+
 def singleton_door(host: str) -> dict[str, Any] | None:
     """``{port, network}`` of ``host``'s singleton door (R98 item 2), or ``None``."""
     return (load().get("singleton_doors") or {}).get(host)

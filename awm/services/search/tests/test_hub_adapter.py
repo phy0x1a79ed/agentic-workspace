@@ -28,7 +28,7 @@ def test_the_operator_verbs_stay_on_the_cli_and_http():
 
 
 def test_every_verb_is_published_under_the_search_tool_and_wired():
-    assert set(HANDLERS) == set(FNS) == {"query", "get", "sources", "status", "reindex", "judge", "judgements"}
+    assert set(HANDLERS) == set(FNS) == {"query", "get", "sources", "status", "reindex", "judge", "judgements", "api_export"}
     for name, fn in FNS.items():
         assert fn["tool"] == f"search_{name}"
 
@@ -82,7 +82,7 @@ async def test_a_relayed_get_is_not_logged_by_the_serving_node(logged, monkeypat
         async def refuse_clashed(self, node):
             pass
 
-        async def get(self, source, doc_id, hidden):
+        async def get(self, source, doc_id, hidden, caller):
             return {"document": {"title": "t"}}
 
     monkeypatch.setattr(hub_adapter, "ARCHIVE", Stub())

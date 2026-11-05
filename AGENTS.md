@@ -51,7 +51,7 @@ Check for a tool before you hand a task to the user. Sending a message, approvin
 
 Four tools change how you work:
 
-- `search` — one ranked search over journals, precedent posts, papers and transcripts, on this node and across its edges. Query it before you ask what the swarm already knows. Read a whole hit with `get`.
+- `search` — one ranked search over journals, precedent posts, papers, transcripts and the awm tools, on this node and across its edges. Query it before you ask what the swarm already knows. Read a whole hit with `get`.
 - `journal` precedents — past user decisions on preferences, as journal posts tagged `precedent`. Search them before you ask the user a preference question. Post one when the user makes or overrides such a decision.
 - `reflection` — acts on your own session. `reflection(verb="compact", args={followup:"<next task>"})` queues a compaction after this turn, then sends the follow-up prompt. A full context is a seam to cross, not a reason to stop.
 - `operations` — keeps your task on Tony's command center. When you need Tony in a background session, call `operations(verb="request_human", args={kind:"blocked", reason:<why>})` instead of `AskUserQuestion`, because nobody watches that terminal. Call it with `kind:"review"` when the work is ready to look at.

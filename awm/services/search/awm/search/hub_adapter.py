@@ -19,7 +19,7 @@ from awm.config import privacy
 from awm.gatewayclient import ServiceAdapter, spawn_supervised
 from awm.persistence import embeddings
 
-from awm.search import federation, query as request, store
+from awm.search import api_source, federation, query as request, store
 from awm.search.archive import Archive
 
 log = logging.getLogger("awm.search.hub_adapter")
@@ -30,7 +30,7 @@ QUERY_DESCRIPTION = """\
 search query — rank items from named sources.
   query: string | {"text"?: T, "<source>": F, ...}    max: hits per source per section, default 10
 
-<source>: journals, kb or transcripts, with @node for another node. `sources` lists their fields.
+<source>: a kind `sources` lists, such as journals, or awm for the node's tools; @node for another node.
 F: MongoDB filter on the source's fields: $and $or $nor $eq $ne $gt $gte $lt $lte $in $nin $all.
    {} matches all. * in a value globs. A scope covers its nested scopes. ts is ISO-8601.
 $sort in F: one field, +/-. On content, by match score.
@@ -61,7 +61,7 @@ API_MANIFEST: dict[str, Any] = {
             "tool": "search_get",
             "description": (
                 "One document in full: every field its source declares; a paper adds its "
-                "authors and journal. Take `source` and `id` from a hit. For a hit from "
+                "authors and journal, and an awm hit is its verb's describe. Take `source` and `id` from a hit. For a hit from "
                 "another node, set `node` to the node of its source. Pass the `query` the hit "
                 "answered: each get is logged with the caller's scope as feedback on search."
             ),
@@ -132,6 +132,19 @@ API_MANIFEST: dict[str, Any] = {
             ],
         },
         {
+            "name": "api_export",
+            "tool": "search_api_export",
+            "surfaces": _CLI_HTTP,
+            "description": (
+                "The awm source's change feed: one entry per tool and verb this node's gateway "
+                "describes. The epoch is a digest of the whole table."
+            ),
+            "params": [
+                {"name": "since", "type": "string", "description": "The cursor of the last page read."},
+                {"name": "limit", "type": "integer", "description": "Changes per page. Default 200."},
+            ],
+        },
+        {
             "name": "judgements",
             "tool": "search_judgements",
             "surfaces": _CLI_HTTP,
@@ -180,7 +193,7 @@ async def _h_get(args: dict, as_: str | None = None) -> dict:
     if not request.is_here(node) and not privacy.from_peer(as_):
         await ARCHIVE.refuse_clashed(node)
         return await federation.fetch(ARCHIVE.peers, node, str(args["source"]), str(args["id"]))
-    out = await ARCHIVE.get(str(args["source"]), str(args["id"]), request.hidden_for(as_))
+    out = await ARCHIVE.get(str(args["source"]), str(args["id"]), request.hidden_for(as_), _relayer(as_))
     if JOURNAL_TAG in out["document"].get("tag", ()) and args.get("_caller_pid"):
         task = asyncio.create_task(_note_read(str(args["id"]), args["_caller_pid"]))
         _NOTING.add(task)
@@ -264,6 +277,10 @@ async def _h_judgements(args: dict) -> dict:
     return await asyncio.to_thread(_judgements, args)
 
 
+async def _h_api_export(args: dict) -> dict:
+    return await api_source.export(ARCHIVE.gateway, args)
+
+
 HANDLERS = {
     "query": _h_query,
     "get": _h_get,
@@ -272,6 +289,7 @@ HANDLERS = {
     "reindex": _h_reindex,
     "judge": _h_judge,
     "judgements": _h_judgements,
+    "api_export": _h_api_export,
 }
 
 

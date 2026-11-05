@@ -176,6 +176,8 @@ class FakeGateway:
     async def call(self, service: str, fn: str, args: dict[str, Any], timeout: float) -> Any:
         self.calls.append((service, fn, args))
         result = self.handlers[(service, fn)](args)
+        if asyncio.iscoroutine(result):
+            result = await result
         if isinstance(result, Exception):
             raise result
         return result
