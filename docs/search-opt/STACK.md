@@ -1,0 +1,41 @@
+# search-opt: stack
+
+## Purpose
+
+Settle what Tony wants from disk-based search in awm before any design: the target and how it is measured, keyword and string matching, semantic matching, the query syntax, and one store per source. Journals come first. Papers can stay slow.
+
+Procedure, from dfs-interview § Work the stack:
+
+1. Run `stack.py <folder> current` for the top topic. Ask only its own questions.
+2. Dispatch read-only subagents to survey what already exists for the topic.
+3. Record each difference between the survey and the user's description.
+4. Ask the user about each difference with an unclear answer.
+5. Put one question per message to the user, or a small set of closely related questions. Give your recommendation with it.
+6. Queue the other questions with `stack.py <folder> ask`.
+7. Match each answer to the message it replies to. Ask when a reply could answer more than one message.
+8. Record each answer in the topic's `README.md`. Copy the user's words from `quote.py`.
+9. Write the result as the current design.
+10. Tick each answered question with `stack.py <folder> answer`.
+11. Run `stack.py <folder> close` when the topic's question queue is empty.
+12. Commit.
+13. Compact only when the closed topic ran long, with many exchanges or large reads. After a short topic, present the next topic in the same turn.
+14. To compact, run `reflection(verb="compact", args={followup:...})`. Write a followup that invokes `dfs-interview` by name. Name the discussion folder, the closed topic, its commit and the new top topic in it.
+
+## Current topic
+
+**target**. Its result: `target/README.md`.
+
+## Stack
+
+- **target** (2026-11-04): papers can stay slow, daily use journals is what matters. I mean the same mechanism can prolly work for both / aim for 10x altair as baseline / search must stay on disk
+  - [ ] Is the gate measured cold or warm, on which node, and at what latency?
+  - [ ] May the journal export contract change on this branch (export by change sequence, reconcile by hash)?
+- **keyword** (2026-11-04): Needs to cover keyword/string text matches
+- **semantic** (2026-11-04): and semantic matches
+- **prior** (2026-11-04): Im Suggesting to use pagerank as an optimization for disk based search. So that it doesnt have to scan the whole corpus.
+- **query-syntax** (2026-11-04): plus the new querry syntax afterwards
+- **per-source** (2026-11-04): We can then use this to hold each of the sources separately.
+
+## Parked
+
+## Closed
