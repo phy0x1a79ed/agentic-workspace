@@ -381,8 +381,8 @@ fn gateway_end_to_end() {
     // A local session gets its id, its level and its scope (from its cwd) from reflection's
     // session_of. The model's own `_caller_trust` is refused as an unknown argument.
     let worktree = node.state.parent().unwrap().join("ws/projects/awm/redux-x");
-    std::fs::create_dir_all(worktree.join(".awm")).unwrap();
     std::fs::create_dir_all(worktree.join("core")).unwrap();
+    write(&worktree.join(".git"), "gitdir: ../.bare/worktrees/redux-x\n");
     let uuid = "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0";
     let r9 = format!("cc{}", uuid.replace('-', ""));
     let session = |trust: &str| json!({"4242": {"ok": true, "known": true, "session_id": r9, "trust": trust, "mode": null, "cwd": worktree.join("core")}}).to_string();

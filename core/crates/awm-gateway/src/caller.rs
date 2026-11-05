@@ -63,7 +63,8 @@ pub fn ppid_of(pid: u32) -> Option<u32> {
 }
 
 /// `<project>/<scope>` of a directory under `projects`, as `awm.config.scope_of` reads it:
-/// the deepest enclosing directory that holds a `.awm/`, else the path below the project.
+/// the deepest enclosing git worktree, the directory that holds a `.git`, else the path below
+/// the project.
 pub fn scope_of(cwd: &Path, projects: &Path) -> Option<String> {
     let root = projects.canonicalize().ok()?;
     let cwd = cwd.canonicalize().ok()?;
@@ -72,7 +73,7 @@ pub fn scope_of(cwd: &Path, projects: &Path) -> Option<String> {
     if parts.len() < 2 {
         return None;
     }
-    let depth = (2..=parts.len()).rev().find(|&d| root.join(parts[..d].join("/")).join(".awm").is_dir()).unwrap_or(parts.len());
+    let depth = (2..=parts.len()).rev().find(|&d| root.join(parts[..d].join("/")).join(".git").exists()).unwrap_or(parts.len());
     Some(format!("{}/{}", parts[0], parts[1..depth].join("/")))
 }
 
@@ -137,8 +138,8 @@ mod tests {
     fn projects() -> (tempfile::TempDir, std::path::PathBuf) {
         let tmp = tempfile::tempdir().unwrap();
         let projects = tmp.path().join("projects");
-        std::fs::create_dir_all(projects.join("awm/redux-x/.awm")).unwrap();
         std::fs::create_dir_all(projects.join("awm/redux-x/core/src")).unwrap();
+        std::fs::write(projects.join("awm/redux-x/.git"), "gitdir: ../.bare/worktrees/redux-x\n").unwrap();
         std::fs::create_dir_all(projects.join("loose/a/b")).unwrap();
         (tmp, projects)
     }
@@ -215,6 +216,46 @@ mod tests {
         let (_tmp, projects) = projects();
         assert_eq!(scope_of(&projects.join("loose/a/b"), &projects).as_deref(), Some("loose/a/b"));
         assert_eq!(scope_of(&projects.join("loose"), &projects), None);
+    }
+
+    fn git(dir: &Path, args: &[&str]) -> String {
+        let out = std::process::Command::new("git").current_dir(dir).args(args).output().expect("git runs");
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        String::from_utf8(out.stdout).unwrap().trim().to_string()
+    }
+
+    /// The workspace layout: a bare repo per project, a worktree per scope, a scope nested
+    /// inside another, and a session whose cwd is a subfolder.
+    #[test]
+    fn a_scope_is_the_deepest_enclosing_worktree_of_a_bare_repo() {
+        let tmp = tempfile::tempdir().unwrap();
+        let projects = tmp.path().join("projects");
+        let p = projects.join("proj");
+        std::fs::create_dir_all(&p).unwrap();
+        git(&p, &["init", "-q", "--bare", ".bare"]);
+        let bare = p.join(".bare");
+        let tree = git(&bare, &["mktree"]);
+        let commit = git(&bare, &["-c", "user.name=t", "-c", "user.email=t@t", "commit-tree", "-m", "root", &tree]);
+        git(&bare, &["branch", "dev", &commit]);
+        git(&bare, &["branch", "feat/build", &commit]);
+        git(&bare, &["branch", "feat/build-x", &commit]);
+        git(&bare, &["worktree", "add", "-q", "../dev", "dev"]);
+        git(&bare, &["worktree", "add", "-q", "../redux-build", "feat/build"]);
+        git(&bare, &["worktree", "add", "-q", "../redux-build/x", "feat/build-x"]);
+        std::fs::create_dir_all(p.join("redux-build/x/core/src")).unwrap();
+        std::fs::create_dir_all(p.join("redux-build/docs")).unwrap();
+        std::fs::create_dir_all(p.join("dev/.awm")).unwrap();
+        std::fs::create_dir_all(p.join("loose/a")).unwrap();
+        let at = |rel: &str| scope_of(&p.join(rel), &projects);
+        assert_eq!(at("dev").as_deref(), Some("proj/dev"));
+        assert_eq!(at("dev/.awm").as_deref(), Some("proj/dev"), "a leftover .awm/ marks nothing");
+        assert_eq!(at("redux-build").as_deref(), Some("proj/redux-build"));
+        assert_eq!(at("redux-build/docs").as_deref(), Some("proj/redux-build"));
+        assert_eq!(at("redux-build/x").as_deref(), Some("proj/redux-build/x"), "the nested worktree wins");
+        assert_eq!(at("redux-build/x/core/src").as_deref(), Some("proj/redux-build/x"));
+        assert_eq!(at("loose/a").as_deref(), Some("proj/loose/a"), "under no worktree: its own path");
+        assert_eq!(at("").as_deref(), None);
+        assert_eq!(scope_of(tmp.path(), &projects), None);
     }
 
     #[test]
