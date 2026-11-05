@@ -93,7 +93,7 @@ def degraded_marker(service: str, *, fallback: str) -> dict[str, Any]:
     what actually produced the results — ``keyword``, ``fuzzy``, ``listing``, or
     ``none``.
     """
-    fix = ("unset AWM_SEARCH=0 in .awm/env and restart the service" if disabled()
+    fix = ("unset AWM_SEARCH=0 in config.toml [env] and restart the service" if disabled()
            else f"run awm/services/{service}/install.sh on this node")
     return {
         "semantic": "unavailable",

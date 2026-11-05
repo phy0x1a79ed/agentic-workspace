@@ -414,7 +414,6 @@ async def _on_start() -> None:
 
 
 async def main() -> None:
-    config.load_env_file()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     await ServiceAdapter("kb", API_MANIFEST, HANDLERS, on_start=_on_start).run()
 

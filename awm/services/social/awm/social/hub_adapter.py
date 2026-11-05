@@ -1568,7 +1568,6 @@ def _on_start() -> None:
     ``social.toml`` is logged and skipped — the service still serves its DB-only
     tools (the operator allowlist) with zero live connections.
     """
-    config.load_env_file()
     dao_init()
     try:
         accounts = social_config.load()

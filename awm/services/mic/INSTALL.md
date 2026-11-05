@@ -86,7 +86,7 @@ To remove the durability layers, delete the marker-fenced stanzas by hand.
 ## Always-on gateway
 
 If the mic is permanent infrastructure on this host, the gateway must not idle
-out: set `AWM_IDLE_SHUTDOWN=0` in the gateway's `$AWM_WORKSPACE/.awm/env` and
+out: set `AWM_IDLE_SHUTDOWN=0` in the gateway's `config.toml` `[env]` and
 restart `awm.service`.
 
 ## Env overrides
