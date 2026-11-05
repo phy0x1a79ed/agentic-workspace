@@ -237,7 +237,21 @@ def _model(args: dict) -> dict:
     return _on_target("set", "model", args, {"model": args.get("model")})
 
 
+#: High is the upper limit for any session reflection starts, resumes or retunes.
+OVER_LIMIT = ("xhigh", "max")
+
+
+def _over_limit(level: Any) -> dict | None:
+    if level in OVER_LIMIT:
+        return {"ok": False, "reason": f"effort {level} is above the limit. High is the "
+                                       "upper limit for any model."}
+    return None
+
+
 def _effort(args: dict) -> dict:
+    refused = _over_limit(args.get("level"))
+    if refused:
+        return refused
     return _on_target("set", "effort", args, {"effort": args.get("level")})
 
 
@@ -435,6 +449,14 @@ async def _start_other(args: dict, as_: str | None = None) -> dict:
     pid = _caller_pid(args)
     actor = await asyncio.to_thread(_actor, args)
     policy.check_steer(actor, "start_other")
+    if not args.get("model") or not args.get("effort"):
+        return {"ok": False, "reason": "model and effort are required, with no default. Pick "
+                                       "both to fit the task: a smaller model and lower effort "
+                                       "for mechanical work, a larger model and high effort for "
+                                       "design or debugging. Fable needs Tony's consent first."}
+    refused = _over_limit(args.get("effort"))
+    if refused:
+        return refused
     requested = args.get("trust") or (ISOLATED_TRUST if args.get("isolated") else None)
     level = policy.start_level(actor, requested)
     p = _start_provider(args)

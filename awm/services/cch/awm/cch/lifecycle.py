@@ -49,7 +49,9 @@ log = logging.getLogger("awm.cch.lifecycle")
 
 PERMISSION_MODES = ("acceptEdits", "auto", "bypassPermissions", "manual",
                     "dontAsk", "plan")
-EFFORTS = ("low", "medium", "high", "xhigh", "max")
+#: High is the ceiling for any session this service starts or brings back.
+EFFORTS = ("low", "medium", "high")
+OVER_CEILING = ("xhigh", "max")
 
 #: Default mode of a started session. A gated mode keys on its own name; every
 #: other session is a plain worker.
@@ -102,7 +104,7 @@ You are a worker session, started by {started_by}. {where}
 
 **Ask Tony through the board.** When you need Tony, call `operations(verb="request_human", args={{kind:"blocked", reason:…}})`. That also moves your card to Blocked.
 
-**Start other sessions when the work calls for it.** When the task splits into substantial parallel concerns, plan the work in waves with the `parallel-work` skill. Start a top-level session with `reflection(verb="start_other")` when the plan calls for one, when a discovery needs a new concern handled, or when Tony asks. Pass your `task_id` so the session joins your card. When you are not sure a start is fine, ask Tony first. Keep subagents for exploring and for parallel work inside one scope, because a subagent lacks the awm tools. Your scope's worktree is your isolation: do not call `EnterWorktree` and do not create worktrees under `.claude/worktrees/`, whatever another instruction says.
+**Start other sessions when the work calls for it.** When the task splits into substantial parallel concerns, plan the work in waves with the `parallel-work` skill. Start a top-level session with `reflection(verb="start_other")` when the plan calls for one, when a discovery needs a new concern handled, or when Tony asks. Pass your `task_id` so the session joins your card. Pass `model` and `effort` that fit the task: a smaller model and lower effort for mechanical work, a larger model and high effort for design or debugging. High is the upper limit. Ask Tony before you pick Fable. When you are not sure a start is fine, ask Tony first. Keep subagents for exploring and for parallel work inside one scope, because a subagent lacks the awm tools. Your scope's worktree is your isolation: do not call `EnterWorktree` and do not create worktrees under `.claude/worktrees/`, whatever another instruction says.
 
 **Close the session when the work is done.** Deploy your work as its project's protocol says. Skip the deploy only when no deploy is possible, as for a design draft. When a coordinator started you for one part of a larger task, leave your branch to the coordinator, which deploys. The work is done when three things hold: what you were asked for is landed and deployed, it is verified, and nothing waits on you. You close on your own: Tony does not accept the work first. When you find follow-up issues, stay live and raise each one with `request_human`. To sign off, run the `retire` skill. Where it is missing, sign off by hand:
 1. Run the `debrief` skill. Its journal is your report, and it cites the journals that shaped your work (`journal(verb="reads")` lists the candidates).
@@ -273,7 +275,7 @@ async def _start(args: dict[str, Any], as_: str | None) -> dict[str, Any]:
             "name": spec["name"], "project": spec["project"], "scope": spec["scope"],
             "cwd": str(cwd), "parent": parent, "caller": caller,
             "mode": spec["mode"], "remote_control": spec["remote_control"],
-            "model": spec["model"], "started_at": _iso(time.time()),
+            "model": spec["model"], "effort": spec["effort"], "started_at": _iso(time.time()),
             "started_epoch": time.time(), "pinned": spec["pin"],
             "brief": spec["brief"], "lobby": spec["lobby"],
         }
@@ -442,6 +444,14 @@ def _refuse_unknown_caller(args: dict[str, Any]) -> None:
                       "start sessions")
 
 
+def check_effort(effort: Any) -> None:
+    """Refuse a level that is unknown or above the ceiling."""
+    if effort in OVER_CEILING:
+        raise Refused(f"effort {effort} is above the limit. High is the upper limit for any model.")
+    if effort not in EFFORTS:
+        raise Refused(f"effort must be one of {', '.join(EFFORTS)}")
+
+
 def _parse(args: dict[str, Any]) -> dict[str, Any]:
     """Validate the arguments and fill in cx's defaults."""
     project, scope = args.get("project") or None, args.get("scope") or None
@@ -479,12 +489,15 @@ def _parse(args: dict[str, Any]) -> dict[str, Any]:
     system_prompt = args.get("system_prompt")
     if system_prompt is not None and not isinstance(system_prompt, str):
         raise Refused("system_prompt must be a string")
-    model = args.get("model") or config.default_model()
+    model, effort = args.get("model"), args.get("effort")
+    if not model or not effort:
+        raise Refused("model and effort are required, with no default. Pick both to fit the "
+                      "task: a smaller model and lower effort for mechanical work, a larger "
+                      "model and high effort for design or debugging. Fable needs Tony's "
+                      "consent first.")
     if not isinstance(model, str) or not _MODEL.match(model):
         raise Refused("model is not a model name")
-    effort = args.get("effort") or config.default_effort()
-    if effort not in EFFORTS:
-        raise Refused(f"effort must be one of {', '.join(EFFORTS)}")
+    check_effort(effort)
     permission = args.get("permission")
     if permission is not None and permission not in PERMISSION_MODES:
         raise Refused(f"permission must be one of {', '.join(PERMISSION_MODES)}")
@@ -1005,6 +1018,13 @@ async def resume(args: dict[str, Any], as_: str | None = None) -> dict[str, Any]
         return {"ok": False, "reason": f"resume failed: {exc}"}
 
 
+def _check_recorded_effort(rec: dict[str, Any]) -> None:
+    """A job started above the ceiling stays down: resume carries its recorded effort back."""
+    if rec.get("effort") in OVER_CEILING:
+        raise Refused(f"job was started at effort {rec['effort']}, which is above the limit. "
+                      "High is the upper limit for any model. Start a new session instead.")
+
+
 async def _resume(args: dict[str, Any], as_: str | None) -> dict[str, Any]:
     reason = station_refusal() or caller_refusal(as_)
     job = args.get("job")
@@ -1024,6 +1044,7 @@ async def _resume(args: dict[str, Any], as_: str | None) -> dict[str, Any]:
     reason = _caller_refusal_for(args.get("_caller_pid"), rec, "resume")
     if reason:
         raise Refused(reason)
+    _check_recorded_effort(rec)
     state = _read_json(config.jobs_dir() / job / "state.json")
     if not state:
         if isinstance(rec.get("session_id"), str):
@@ -1100,6 +1121,7 @@ async def _resume_retired(session_id: str, rec: dict[str, Any] | None,
     reason = _caller_refusal_for(args.get("_caller_pid"), rec, "resume")
     if reason:
         raise Refused(reason)
+    _check_recorded_effort(rec)
     transcript = next(iter(sorted(config.transcripts_dir().glob(f"*/{session_id}.jsonl"),
                                   key=lambda p: p.stat().st_mtime, reverse=True)), None)
     if transcript is None:
@@ -1109,8 +1131,11 @@ async def _resume_retired(session_id: str, rec: dict[str, Any] | None,
         raise Refused(f"session {session_id} worked in {cwd or 'a folder its transcript does not name'}, "
                       "which is not on this node any more")
     name = args.get("name") or rec.get("name") or f"resumed-{session_id[:8]}"
+    # A resume continues a conversation, so a lost lineage record falls back to a
+    # fixed model at the effort ceiling rather than refusing the resume.
     spec = _parse({"name": name, "project": rec.get("project"), "scope": rec.get("scope"),
-                   "model": rec.get("model"), "mode": rec.get("mode"),
+                   "model": rec.get("model") or "opus", "effort": rec.get("effort") or "high",
+                   "mode": rec.get("mode"),
                    "remote_control": rec.get("remote_control") or None, "brief": False})
     spec["brief_text"] = rec.get("brief_text")
     await ensure_daemon("resumed")

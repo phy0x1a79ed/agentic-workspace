@@ -261,7 +261,8 @@ in the owner's `social.toml`:
     node    = "altair"                 # where the agent runs: it needs Claude Code
     scope   = "awm/seat-hallam-general"
     brief   = """…"""                  # the agent's standing instructions
-    # model = "opus"   effort = "high"  (optional)
+    model   = "opus"                   # required: fit it to the seat
+    effort  = "high"                   # required: high is the upper limit
     # compact_at = 200000              (optional: 200k to 960k tokens)
     # alert_after = 300                (optional: seconds down before the alert)
 

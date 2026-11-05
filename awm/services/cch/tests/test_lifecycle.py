@@ -18,6 +18,7 @@ import pytest
 
 from awm.cch import config
 
+FIT = {"model": "opus", "effort": "high"}
 PARENT_JOB = "aaaaaaaa"
 CHILD_JOB = "bbbbbbbb"
 
@@ -168,6 +169,12 @@ def peers(fleet):
 def start(args, as_=None):
     from awm.cch import lifecycle
 
+    return asyncio.run(lifecycle.start({**FIT, **args}, as_))
+
+
+def start_raw(args, as_=None):
+    from awm.cch import lifecycle
+
     return asyncio.run(lifecycle.start(args, as_))
 
 
@@ -177,7 +184,7 @@ def stop(args, as_=None):
     return asyncio.run(lifecycle.stop(args, as_))
 
 
-BASE = {"project": "awm", "scope": "demo"}
+BASE = {"project": "awm", "scope": "demo", **FIT}
 
 
 # --- a successful start ------------------------------------------------------
@@ -228,11 +235,11 @@ def test_the_accept_filter_takes_only_the_named_session(home, launched):
     assert not accept(S("other", "other"))
 
 
-def test_defaults_are_skip_permissions_opus_and_high(home, launched):
-    start(BASE)
+def test_a_start_launches_skip_permissions_with_the_model_and_effort_asked(home, launched):
+    start({**BASE, "model": "sonnet", "effort": "medium"})
     flags = launched[0]["flags"]
     assert "--dangerously-skip-permissions" in flags
-    assert "--effort=high" in flags and "--model=opus" in flags
+    assert "--effort=medium" in flags and "--model=sonnet" in flags
     assert not any(f.startswith("--permission-mode") for f in flags)
 
 
@@ -575,8 +582,26 @@ def test_remote_control_accepts_a_plain_label(home, launched):
     {"scope": "demo"},
 ])
 def test_bad_arguments_refuse(home, launched, args):
-    out = start(args)
+    out = start({**FIT, **args})
     assert out["ok"] is False and launched == []
+
+
+@pytest.mark.parametrize("missing", ["model", "effort", "both"])
+def test_a_start_without_model_and_effort_is_refused_with_no_default(home, launched, missing):
+    args = {k: v for k, v in BASE.items() if missing == "both" or k != missing}
+    if missing == "both":
+        args = {k: v for k, v in args.items() if k not in FIT}
+    out = start_raw(args)
+    assert out["ok"] is False and launched == []
+    assert "model and effort are required" in out["reason"] and "fit the" in out["reason"]
+
+
+@pytest.mark.parametrize("effort", ["xhigh", "max"])
+@pytest.mark.parametrize("model", ["opus", "sonnet", "haiku", "fable"])
+def test_effort_above_high_is_refused_on_any_model(home, launched, model, effort):
+    out = start({**BASE, "model": model, "effort": effort})
+    assert out["ok"] is False and launched == []
+    assert "upper limit" in out["reason"]
 
 
 # --- a launch that outlives its timeout (M3) ---------------------------------

@@ -51,7 +51,7 @@ Reply when someone addresses Opal, or when you can add something meaningful with
 ## Start a task session
 
 1. Pick a slug from the person's name, for example `beth-davenport`.
-2. Run `reflection start_other` with project `metasmith`, scope `lab/<slug>`, name `<slug>/<two-word task>`, `trust: "cooperative"`, `tags: ["lab", "<slug>"]` and the brief below as `prompt`. Without `trust`, the session starts at your own level, trusted, and no cooperative gate applies to it. Do not pin it: a pinned session reaches no card. The tags mark the scope as lab work on `scope search` and on the command center.
+2. Run `reflection start_other` with project `metasmith`, scope `lab/<slug>`, name `<slug>/<two-word task>`, `trust: "cooperative"`, a `model` and `effort` that fit the person's task (high is the upper limit), `tags: ["lab", "<slug>"]` and the brief below as `prompt`. Without `trust`, the session starts at your own level, trusted, and no cooperative gate applies to it. Do not pin it: a pinned session reaches no card. The tags mark the scope as lab work on `scope search` and on the command center.
 3. Confirm with `social seats` that the session holds the person's seat.
 
 Put any preference the person already told you into the brief's request. One task session holds a person's seat at a time. When a second request arrives while one runs, pass it to that session with `reflection message`. Start a new session for it only after the first retires.

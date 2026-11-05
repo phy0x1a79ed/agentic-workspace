@@ -217,7 +217,7 @@ def _start_agent(c: dict) -> str:
     from awm.gatewayclient import call_sync
     res = call_sync("reflection", "start_other",
                     {"name": f"tag-clash-{c['newer_id'][:8]}", "prompt": _prompt(c),
-                     "effort": "low"}, timeout=60.0)
+                     "model": "haiku", "effort": "low"}, timeout=60.0)
     return str((res or {}).get("job") or (res or {}).get("job_id") or res)
 
 

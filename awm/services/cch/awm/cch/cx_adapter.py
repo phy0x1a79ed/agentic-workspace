@@ -62,7 +62,11 @@ API_MANIFEST: dict[str, Any] = {
                 "Claude Code daemon runs, when the worktree is untrusted, or "
                 "when a live session already holds the name. A worktree of "
                 "an awm project is trusted first, not refused. The session "
-                "defaults to skip-permissions, opus and high effort. "
+                "defaults to skip-permissions. model and effort are required, "
+                "with no default: pick both to fit the task, a smaller model and "
+                "lower effort for mechanical work, a larger model and high effort "
+                "for design or debugging. High is the upper limit, so xhigh and "
+                "max are refused on any model. "
                 "Every caller gets the same session, whoever it is."
             ),
             "params": [
@@ -97,10 +101,13 @@ API_MANIFEST: dict[str, Any] = {
                  "description": "The session's name, <task>/<descriptor> for the "
                                 "sessions of one task (sessions.md R56). Defaults "
                                 "to the scope, or lobby-<hex> in the lobby."},
-                {"name": "model", "type": "string",
-                 "description": "A model alias or full name."},
-                {"name": "effort", "type": "string",
-                 "description": "low, medium, high, xhigh or max."},
+                {"name": "model", "type": "string", "required": True,
+                 "description": "A model alias or full name, chosen to fit the "
+                                "task. A call without one is refused."},
+                {"name": "effort", "type": "string", "required": True,
+                 "description": "low, medium or high, chosen to fit the task. "
+                                "High is the upper limit; xhigh and max are "
+                                "refused."},
                 {"name": "permission", "type": "string",
                  "description": "A permission mode (plan, acceptEdits, auto, "
                                 "manual, dontAsk, bypassPermissions). Omitted "
@@ -202,7 +209,8 @@ API_MANIFEST: dict[str, Any] = {
                 "created, under the same job id and with its own conversation "
                 "(`claude respawn`), and re-pin it if it was pinned. Refuses a "
                 "running job, a removed job, a job whose transcript is gone, and "
-                "a job that `start_other` did not create."
+                "a job that `start_other` did not create, and a job started "
+                "above the high-effort limit."
             ),
             "params": [
                 {"name": "job", "type": "string", "required": True,

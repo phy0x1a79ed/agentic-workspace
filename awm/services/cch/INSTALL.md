@@ -48,7 +48,10 @@ Every knob is an environment variable on the service process. `AWM_CX_WANT=0` st
 `start_other` creates a named background session in a scope's worktree and returns its
 job id and the `claude attach` command. It creates the worktree through the
 `scopes` service when the caller may and the worktree is absent. A session
-defaults to skip-permissions, `opus` and high effort. The model is a
+defaults to skip-permissions. `model` and `effort` are required, with no
+default, and High is the upper limit: `start_other`, `resume_other` and the
+`effort` verb refuse xhigh and max on any model. Fable needs no gate in code:
+the coordinator asks Tony in the chat first. The model is a
 `--model` flag, because the flag wins over `ANTHROPIC_MODEL` where the two
 disagree.
 

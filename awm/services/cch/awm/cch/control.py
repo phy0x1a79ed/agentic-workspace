@@ -46,7 +46,8 @@ from awm.cch import (
 
 log = logging.getLogger("awm.cch.control")
 
-EFFORTS = ("low", "medium", "high", "xhigh", "max")
+#: High is the ceiling for any session, whatever the model.
+EFFORTS = ("low", "medium", "high")
 _MODEL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._\[\]:-]*$")
 _RC_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
@@ -305,11 +306,11 @@ class _DefaultsGuard:
     """Holds the user's saved defaults while `/effort` or `/model` runs.
 
     Both save their value as the default for new sessions; see
-    :mod:`settings_guard`. ``/effort max`` saves nothing, so it needs no guard.
+    :mod:`settings_guard`.
     """
 
     def __init__(self, answers: Optional[tuple[str, str]]) -> None:
-        self.on = answers is not None and answers != ("effort", "max")
+        self.on = answers is not None
         self.snap = settings_guard.snapshot() if self.on else None
 
     def refresh(self) -> None:
@@ -392,6 +393,9 @@ def model(name: str, *, job: Optional[str], caller_pid: Any,
 
 def effort(level: str, *, job: Optional[str], caller_pid: Any,
            spawn: Callable[[Callable[[], None]], Any] = inject._default_spawn) -> dict:
+    if level in ("xhigh", "max"):
+        return {"ok": False, "reason": f"effort {level} is above the limit. High is the upper "
+                                       "limit for any model."}
     if level not in EFFORTS:
         return {"ok": False, "reason": f"effort must be one of {', '.join(EFFORTS)}"}
     return _slash(job, caller_pid, f"/effort {level}", "the effort change",
@@ -931,7 +935,6 @@ WRONG_OFFER_GRACE_S = 6.0
 _HOOK_ASKED = "a premodelswitch hook asked you to confirm"
 _YES_SWITCH = re.compile(r"^(?:\d+\s*[.)]\s*)?yes,?\s+switch to\s+(.+)$", re.I)
 _NO_OPTION = re.compile(r"^(?:\d+\s*[.)]\s*)?no\b", re.I)
-_EFFORT_ALIASES = {"xhigh": ("xhigh", "extra high", "x-high")}
 _WORDS = re.compile(r"[^a-z0-9]+")
 
 
@@ -939,8 +942,7 @@ def _offer_names(kind: str, value: str, offered: str) -> bool:
     """Whether "Yes, switch to <offered>" is the switch that was asked for."""
     offered = offered.strip().lower()
     if kind == "effort":
-        names = _EFFORT_ALIASES.get(value.lower(), (value.lower(),))
-        return any(re.match(re.escape(n) + r"(?![a-z0-9])", offered) for n in names)
+        return re.match(re.escape(value.lower()) + r"(?![a-z0-9])", offered) is not None
     # A model is offered under its display name, which an alias or a dated id
     # only partly spells, so every word of the request must appear in the offer.
     base = re.sub(r"\[.*?\]", "", value.lower())

@@ -139,7 +139,8 @@ FUNCTIONS: list[dict[str, Any]] = [{'name': 'message_self',
   'params': [{'name': 'level',
               'type': 'string',
               'required': True,
-              'description': 'low, medium, high, xhigh or max.'},
+              'description': 'low, medium or high. High is the upper limit; xhigh and '
+                             'max are refused on any model.'},
              {'name': 'job',
               'type': 'string',
               'description': 'A job id, or a session name as `list_other` shows it. '
@@ -301,7 +302,12 @@ FUNCTIONS: list[dict[str, Any]] = [{'name': 'message_self',
                  'name or the scope. The new session claims its scope, and a stop '
                  'ends the claim. A lobby start claims nothing until its `cd`. '
                  'A worktree of an awm project is trusted first, not refused. '
-                 'The session defaults to skip-permissions, opus and high effort. '
+                 'The session defaults to skip-permissions. `model` and `effort` are '
+                 'required, with no default: a call without them is refused. Pick both '
+                 'to fit the task, a smaller model and lower effort for mechanical work, '
+                 'a larger model and high effort for design or debugging. High is the '
+                 'upper limit, so xhigh and max are refused on any model. A call that '
+                 'names Fable needs the user to agree first: ask in the chat. '
                  'Every caller gets the same session, whoever it is.',
   'params': [{'name': 'project',
               'type': 'string',
@@ -329,10 +335,13 @@ FUNCTIONS: list[dict[str, Any]] = [{'name': 'message_self',
               'description': "The session's name; defaults to the scope."},
              {'name': 'model',
               'type': 'string',
-              'description': 'A model alias or full name.'},
+              'required': True,
+              'description': 'A model alias or full name, chosen to fit the task.'},
              {'name': 'effort',
               'type': 'string',
-              'description': 'low, medium, high, xhigh or max.'},
+              'required': True,
+              'description': 'low, medium or high, chosen to fit the task. High is the '
+                             'upper limit; xhigh and max are refused.'},
              {'name': 'permission',
               'type': 'string',
               'description': 'A permission mode (plan, acceptEdits, auto, manual, '
@@ -455,8 +464,9 @@ FUNCTIONS: list[dict[str, Any]] = [{'name': 'message_self',
                  'it if it was pinned. A retired session, whose job is gone, comes back '
                  'in a new job from its transcript under the same session id '
                  '(sessions.md R10). A resume by hand clears the job\'s wait. Refuses '
-                 'a running job, a session whose transcript is gone, and a job that '
-                 '`start_other` did not create.',
+                 'a running job, a session whose transcript is gone, a job that '
+                 '`start_other` did not create, and a job started above the '
+                 'high-effort limit.',
   'params': [{'name': 'job',
               'type': 'string',
               'required': True,

@@ -97,6 +97,7 @@ async def take(cfg: WakeConfig, store: Store, gw: Gateway, *, down: str, reason:
         "project": cfg.standby.session_project, "scope": cfg.standby.session_scope,
         "name": f"standby-for-{down}", "remote_control": True, "brief": False,
         "started_by": f"the wake plugin on {cfg.node}",
+        "model": "sonnet", "effort": "medium",
         "prompt": brief(cfg, down, reason, deadline_at, planned)})
     if not isinstance(started, dict) or not started.get("job"):
         raise Refused(f"no standby session started on {cfg.node}: {started!r}")

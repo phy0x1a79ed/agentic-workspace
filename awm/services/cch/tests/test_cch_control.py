@@ -264,7 +264,7 @@ def test_link_reads_an_interactive_sessions_own_record(world):
 
 @pytest.mark.parametrize("verb,arg,text", [
     (control.model, "opus", "/model opus"),
-    (control.effort, "xhigh", "/effort xhigh"),
+    (control.effort, "medium", "/effort medium"),
     (control.rename, "  new name ", "/rename new name"),
 ])
 def test_a_slash_verb_types_its_command_into_the_named_session(world, verb, arg, text):
@@ -830,8 +830,13 @@ def test_a_dialog_that_was_declined_leaves_the_file_alone(world, after_typing):
     assert world.settings.read_text() == SETTINGS_TEXT
 
 
-def test_effort_max_is_session_only_and_takes_no_guard(world):
-    assert control._DefaultsGuard(("effort", "max")).on is False
+def test_effort_above_high_is_refused_on_any_model(world):
+    for level in ("xhigh", "max"):
+        out = control.effort(level, job=OTHER_JOB, caller_pid=ME)
+        assert out["ok"] is False and "upper limit" in out["reason"]
+
+
+def test_a_defaults_guard_covers_effort_and_model(world):
     assert control._DefaultsGuard(("effort", "low")).on is True
     assert control._DefaultsGuard(("model", "opus")).on is True
     assert control._DefaultsGuard(None).on is False
