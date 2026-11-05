@@ -36,8 +36,8 @@ All routes keep `ControlMaster auto` with `ControlPersist`, except an admin logi
 
 | From | To | Network |
 |---|---|---|
-| any home box | mizar, alcor, mira, capella | LAN, at an address the router reserves |
-| any home box | capella | LAN, port 22 forwarded from capella's LAN address to `127.0.0.1:22` in WSL |
+| any home box | mizar, alcor, mira, capella | Tailscale, which takes the direct LAN path |
+| any home box | capella | Tailscale to Windows, then the port 22 forward to `127.0.0.1:22` in WSL (R95 item 2) |
 | any node | altair, shogun | Tailscale |
 | any node outside Arbutus | other Arbutus nodes | internet, `ProxyJump bastion-01` |
 | altair | Arbutus nodes | the Arbutus private network, direct |
@@ -51,7 +51,6 @@ All routes keep `ControlMaster auto` with `ControlPersist`, except an admin logi
 
 Group this work into one sitting in the implementation pass. Tony: "For the implemenation pass, it would be great if all of the work that requires me can be grouped together, like adding tailscale" (2026-11-02).
 
-- Reserve LAN addresses for mizar, alcor, mira and capella on the router.
 - Install Tailscale on the Windows side of lyra and capella, and log each in. Remove the one inside capella's WSL.
 - Run an elevated shell on lyra for the port 22 forward to `127.0.0.1` and its firewall rule.
 - Approve each new key: alcor into mizar, lyra into its edges, and mizar into lyra.
