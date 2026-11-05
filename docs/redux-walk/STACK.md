@@ -57,7 +57,7 @@ From journal 6a98c0c6 (awm/redux) and walkthrough's handover (manual-steps.md at
 ## Workers
 
 - **redux-build/trilium-fork (job e74cd7f2): the fork on mizar, its first release tarball, server.pin** (2026-11-05): took board
-- [ ] tell redux-build/trilium-fork how tarball-host was solved
+- [x] tell redux-build/trilium-fork how tarball-host was solved (told 2026-11-05)
 
 ## Closed
 
