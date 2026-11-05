@@ -55,8 +55,6 @@ Procedure, from dfs-interview § Work the stack:
         - [x] Why does deneb need nodejs, npm and build-essential if mizar pushes built artifacts? (asked deneb-board) (answered 2026-11-05)
         - [x] When core-artifact lands: tell deneb-board the artifact names and route (cloud tip 88c35a8 holds) (answered 2026-11-05)
         - **pin-refresh** (2026-11-05): from redux-build/dev: rebuilding pins automatically in the routine deploy is more than a small change. Please start a worker.
-        - **deneb-gaps** (2026-11-05): from redux-build/deneb-board: Flags: the trilium service makes an empty vault when it finds no db; zotero writes library.json into the vault scope ... needs a decision; channel is also a deneb singleton ... How does a singleton receive a secret? The tether relay could break at cutover.
-          - [ ] When dev's release holds deneb-singletons 04ec7d9f: tell deneb-board the release id, then close deneb-gaps
 - **path-front-door** (2026-11-05): Tony raised a path-based front door (nexus.tony-xy-liu.com/<node>/...) as a possible later design; not decided. (via dns-guide, 2026-11-05)
 
 ## Parked
@@ -100,6 +98,7 @@ From journal 6a98c0c6 (awm/redux) and walkthrough's handover (manual-steps.md at
 - **redux-build/deneb-singletons (job 8e4c71f0, opus high): trilium refuses an empty vault, zotero through the trilium tool, per-singleton secrets and tether paths** (2026-11-05): took deneb-gaps
 - **redux-build/pin-refresh (job b51aabfa, sonnet high): routine deploy rebuilds stale core and page pins** (2026-11-05): took pin-refresh
 - [x] tell redux-build/dev how zotero-home was solved (told 2026-11-05)
+- [x] tell redux-build/deneb-board how deneb-gaps was solved (told 2026-11-05)
 
 ## Closed
 
@@ -108,3 +107,4 @@ From journal 6a98c0c6 (awm/redux) and walkthrough's handover (manual-steps.md at
 - **spawn-tuning** (closed 2026-11-05): `spawn-tuning/README.md`
 - **trilium-shape** (closed 2026-11-05): `dispatch-mode/parallel-uptime/board/deneb-board/trilium-shape/README.md`
 - **zotero-home** (closed 2026-11-05): `dispatch-mode/parallel-uptime/board/deneb-board/zotero-home/README.md`
+- **deneb-gaps** (closed 2026-11-05): `dispatch-mode/parallel-uptime/board/deneb-board/deneb-gaps/README.md`
