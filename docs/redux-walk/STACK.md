@@ -34,8 +34,8 @@ Procedure, from dfs-interview § Work the stack:
 - **rt-plugins** (2026-11-05): rt-container waits on your go to build the stock plugins (projects/stock/plugins). Talk to it directly.
 - **Q-tarball-backup** (2026-11-05): Trilium fork backup: push its branches and tags to the existing GitHub fork phy0x1a79ed/Trilium, and attach the pinned tarball to a GitHub release there as a backup copy only (deneb still gets mizar's push)? Recommended: yes.
 - **Q-alcor-door** (2026-11-05): alcor's port 22 lockdown: after it, ssh to alcor works only from mizar, capella and lyra over the tailnet. No LAN ssh, no phone, no altair. OK, or should more devices (your phone, by tailnet address) stay allowed?
-- **Q-deneb** (2026-11-05): deneb for the board: after a dry run I review, apply deneb's roles: SNI forward to alcor, push node, passkey login, and Trilium moved to its own sandboxed user (fleet.md R105 item 1). That moves the live vault: stop Trilium, back up document.db to mizar, move the data, start, check. OK?
 - **Q-seat-models** (2026-11-05): Seats: after spawn-tuning, each Slack/Discord seat names its model and effort. dev sets them to today's opus at high. Want any seat lighter, such as sonnet at medium for plain Q&A seats? Optional, no rush.
+- **Q-deneb** (2026-11-05): deneb cutover, after deneb-singletons lands: about 10 minutes of vault downtime. Backups first: an online copy plus a stopped copy to mizar, with the nightly mirror as a third. Changes: sshd allows awm-tunnel and admin besides tony and avatar-relay; ufw opens 443 to all (the SNI stream: auth goes to alcor, everything else stays Cloudflare-only behind it); nginx SNI routing and CSP headers; Trilium moves to its own sandboxed user; deneb becomes a push node; installs nodejs/npm (being questioned). Side effects: the avatar relay answers 503 until capella's side moves (M44), and zotero's library sync is off until its fix lands. OK to run it?
 
 ## Stack
 
@@ -50,6 +50,8 @@ Procedure, from dfs-interview § Work the stack:
       - **alcor-door** (2026-11-05): from redux-build/alcor-open: alcor_door: FIREWALL on port 22. It allows 22 from mizar 100.125.95.5, capella 100.90.179.70 and lyra 100.85.115.29, then deletes the blanket 22 rules ... After it, port 22 on alcor answers only those three tailnet addresses. No LAN ssh, no phone.
       - **tarball-backup** (2026-11-05): trilium-fork: mizar's .awm/artifacts holds the only copy of the pinned tarball. A rebuild changes the sha256, so it needs a backup policy. Nothing is pushed to the GitHub fork. That waits on your go.
       - **deneb-board** (2026-11-05): trilium-fork follow-ups: deneb gets the tarball only once cloud's install config makes deneb a push node; cloud deploy.yml awm_fleet_push.altair still lists trilium and canonical_repos defaults include trilium; the mizar vault mirror does not exist yet
+        - [ ] Why does deneb need nodejs, npm and build-essential if mizar pushes built artifacts? (asked deneb-board)
+        - **deneb-gaps** (2026-11-05): from redux-build/deneb-board: Flags: the trilium service makes an empty vault when it finds no db; zotero writes library.json into the vault scope ... needs a decision; channel is also a deneb singleton ... How does a singleton receive a secret? The tether relay could break at cutover.
 
 ## Parked
 
@@ -87,6 +89,7 @@ From journal 6a98c0c6 (awm/redux) and walkthrough's handover (manual-steps.md at
 - [x] tell redux-build/deneb-board how trilium-shape was solved (told 2026-11-05)
 - **redux-build/core-artifact (job 96e615ee, sonnet high): pinned musl core binary for push nodes (from dev's deneb route answers)** (2026-11-05): took deneb-board
 - **redux-build/door-client (job 48198ebe, opus high): gateway client for a peer's singleton door; needs check counts door-routed tools as declared** (2026-11-05): took door-client
+- **redux-build/deneb-singletons (job 8e4c71f0, opus high): trilium refuses an empty vault, zotero through the trilium tool, per-singleton secrets and tether paths** (2026-11-05): took deneb-gaps
 
 ## Closed
 
