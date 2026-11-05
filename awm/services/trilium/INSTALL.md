@@ -66,9 +66,14 @@ is a bug in the mount.
 shortcut.** Its own login existed to say *which person*, back when there was one
 instance each. With one shared vault it says nothing at all, and the awm edge
 already knows who signed in — so a second password would ask the same question
-twice and answer it worse. The child runs with `noAuthentication`, and a fresh
-vault is provisioned over loopback (`provision.py`) so nobody's first visit is a
-setup wizard.
+twice and answer it worse. The child runs with `noAuthentication`, and `awm trilium init` creates a fresh
+vault over loopback (`provision.py`) so nobody's first visit is a setup wizard.
+
+**The service never makes a vault by itself.** `start` and the supervision loop
+refuse a vault path whose `live/document.db` is missing or empty, and name
+`init`. A supervisor that created a vault whenever it found none turned a path
+mistake, such as a cutover that had not yet moved the data in, into a second
+empty vault that took writes. `init` refuses where a vault exists.
 
 What that setting costs, exactly: **protected notes stop working.** They are
 encrypted with the Trilium password, and there is not one.
@@ -123,7 +128,7 @@ host bound to the same edge — not one per person.
 **Read verbs are public; everything else is an operator's.** The vault is shared,
 so `restore` discards everyone's work and `snapshot` and `export` each rebuild
 the whole thing on a two-core box. `status`, `snapshots` and `url` are reachable
-from a browser; `start`, `stop`, `restart`, `provision`, `logs`, `snapshot`,
+from a browser; `start`, `stop`, `restart`, `init`, `logs`, `snapshot`,
 `export`, `restore` and `note_upsert` are refused for any caller that arrived
 through an edge. `tests/test_operator_only.py` holds the two lists and fails
 until a newly added verb is put in one of them.

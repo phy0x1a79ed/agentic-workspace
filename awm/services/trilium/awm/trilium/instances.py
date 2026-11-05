@@ -46,8 +46,6 @@ INSTALL_DIR = SERVICE_DIR
 
 #: The vault repository's checkout, apart from the fork. Every nightly snapshot
 #: is a commit, and in the fork those commits would publish with the code.
-#:
-#: `awm.zotero.sync.VAULT_SCOPE` spells the same two paths and must agree.
 VAULT_HOME = WORKSPACE_ROOT / "projects" / "vault" / "release"
 
 
@@ -164,6 +162,18 @@ class Vault:
     def document_db(self) -> Path:
         """The live database. Its `-wal` and `-shm` siblings are part of it."""
         return self.data_dir / "document.db"
+
+    @property
+    def has_document(self) -> bool:
+        """Whether there is a vault here to serve.
+
+        An empty file counts as none: Trilium opens the path before it has a
+        schema, so a child started on a missing database leaves one behind.
+        """
+        try:
+            return self.document_db.stat().st_size > 0
+        except OSError:
+            return False
 
     @property
     def notes_dir(self) -> Path:

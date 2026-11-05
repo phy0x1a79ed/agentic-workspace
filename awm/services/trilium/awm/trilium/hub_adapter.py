@@ -105,13 +105,14 @@ API_MANIFEST: dict[str, Any] = {
             "params": [],
         },
         {
-            "name": "provision",
-            "tool": "trilium_provision",
+            "name": "init",
+            "tool": "trilium_init",
             "surfaces": _CLI_HTTP,
             "description": (
-                "Create the vault's database if it has none. Idempotent, and "
-                "the supervision loop does it unprompted — this verb is for "
-                "when it failed and you want the error. Operator only."
+                "Create an empty vault where the vault path holds no database, "
+                "and serve it. The service never makes one by itself: start "
+                "refuses a path with no database. Refuses where a vault "
+                "exists. Operator only."
             ),
             "params": [],
         },
@@ -722,9 +723,9 @@ async def _h_restart(args: dict, as_: str | None = None) -> dict:
     return await asyncio.to_thread(CHILD.restart)
 
 
-async def _h_provision(args: dict, as_: str | None = None) -> dict:
-    _operator_only(as_, "provision")
-    return await asyncio.to_thread(CHILD.provision)
+async def _h_init(args: dict, as_: str | None = None) -> dict:
+    _operator_only(as_, "init")
+    return await asyncio.to_thread(CHILD.init)
 
 
 async def _h_url(args: dict, as_: str | None = None) -> dict:
@@ -1254,7 +1255,7 @@ HANDLERS = {
     "stop": _h_stop,
     "restart": _h_restart,
     "url": _h_url,
-    "provision": _h_provision,
+    "init": _h_init,
     "logs": _h_logs,
     "snapshot": _h_snapshot,
     "snapshots": _h_snapshots,
@@ -1286,7 +1287,7 @@ HANDLERS = {
 
 
 async def _health_loop() -> None:
-    """Respawn the child if it died, and provision it if it has no database.
+    """Respawn the child if it died, and settle the launchbar once it answers.
     Never exits.
 
     Watches process liveness rather than an HTTP probe: a slow probe while
@@ -1347,7 +1348,7 @@ async def _snapshot_loop() -> None:
 
 
 async def _on_start() -> None:
-    """Start the vault's server, give it a database if it has none, then loop.
+    """Start the vault's server, then loop.
 
     No failure here is fatal. The service still registers, so `status` can
     report *why* it is broken, and the loop keeps retrying.
@@ -1373,6 +1374,9 @@ async def _on_start() -> None:
                     "awm/services/trilium/install.sh; the service will "
                     "register and report this via status",
                     instances.VAULT.scope)
+    elif not instances.VAULT.has_document:
+        log.error("trilium: %s; the service will register and report this "
+                  "via status", server.NoVault(instances.VAULT))
     else:
         try:
             res = await asyncio.to_thread(CHILD.start)

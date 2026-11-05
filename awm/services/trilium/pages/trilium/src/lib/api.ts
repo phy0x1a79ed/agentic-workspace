@@ -10,7 +10,7 @@
  *
  * **Only the read verbs are here, and that is enforced elsewhere.** The service
  * refuses `start`, `stop`, `restart`, `restore`, `snapshot`, `export`, `logs`
- * and `provision` for any caller arriving through an edge, because the vault is
+ * and `init` for any caller arriving through an edge, because the vault is
  * shared: each of those is one person acting on everyone's work, and `restore`
  * discards it. They are operator verbs, run on the host. Leaving them out of
  * this module is the second line of that, not the first.
