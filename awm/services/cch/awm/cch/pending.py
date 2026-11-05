@@ -153,7 +153,8 @@ def render_followup(changes, link: Optional[str] = None, closing: str = "") -> s
             continue
         if c.kind == "mcp":
             mcp.append(f"`/mcp {c.value}` printed: {c.detail}." if c.detail else
-                       f"`/mcp {c.value}` ran; its output could not be read.")
+                       f"`/mcp {c.value}` ran. Claude Code did not record what it "
+                       f"printed, so check that server's tools.")
             continue
         phrase = _PHRASES[c.kind].format(value=c.value)
         if c.outcome == FAILED:

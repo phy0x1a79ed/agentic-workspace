@@ -842,7 +842,8 @@ def test_an_mcp_change_reports_what_the_command_printed():
     silent = pending.Change("mcp", "disable all", "k2")
     text = pending.render_followup((said, silent), None, "")
     assert text.startswith("`/mcp reconnect awm` printed: Successfully reconnected "
-                           "to awm. `/mcp disable all` ran; its output could not be read.")
+                           "to awm. `/mcp disable all` ran. Claude Code did not record "
+                           "what it printed")
     assert text.endswith(guards.DEFAULT_FOLLOWUP)
 
 
@@ -852,6 +853,9 @@ def test_the_resume_after_a_self_mcp_waits_for_its_output():
 
         def poll(self):
             self.polls += 1
+
+        def started(self, line, *, since_ms):
+            return True
 
         def output(self, line, *, since_ms):
             assert line == "/mcp reconnect awm" and since_ms == 1000
@@ -877,3 +881,21 @@ def test_a_promise_follows_its_session_through_a_clear():
     assert moved.session_id == "new-id"
     assert pending.read(999_999_992).session_id == "new-id"
     assert inject._follow_session_id(moved, cleared, "me") is moved
+
+
+def test_a_self_mcp_drained_from_the_queue_is_not_waited_on():
+    class Unrecorded:
+        def poll(self):
+            pass
+
+        def started(self, line, *, since_ms):
+            return False
+
+        def output(self, line, *, since_ms):
+            raise AssertionError("waited for output that is never recorded")
+
+    item = pending.Pending(
+        repl_pid=999_999_993, proc_start="", session_id="s", text="/mcp reconnect awm",
+        followup="", injected_at_ms=1000,
+        changes=(pending.Change("mcp", "reconnect awm", "k1"),))
+    assert inject._mcp_outputs(item, Unrecorded()) is item

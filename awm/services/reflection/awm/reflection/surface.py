@@ -193,7 +193,9 @@ FUNCTIONS: list[dict[str, Any]] = [{'name': 'message_self',
                  'refused everywhere. Queues behind a running turn. Refused while a '
                  'modal or permission prompt is showing. On your own session the '
                  'command runs when your turn ends, and one follow-up prompt then '
-                 'reports what it printed. Another session between turns answers '
+                 'reports it. Claude Code records what a queued command printed '
+                 'only when it was submitted to an idle prompt, so that report '
+                 'often cannot quote it. Another session between turns answers '
                  'with the printed result as `output`.',
   'timeout': 60,
   'params': [{'name': 'action',

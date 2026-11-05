@@ -197,7 +197,8 @@ Every verb is on MCP + CLI + HTTP:
 - Session control, on the caller or on `job`: `remote_control` (types `/rc`,
   and answers with the `https://claude.ai/code/session_…` link once the bridge
   connects), `model`, `effort`, `rename`, `cd` (types `/cd <path>`), `mcp`
-  (types `/mcp <action> <server>` and reports what it printed),
+  (types `/mcp <action> <server>` and reports what it printed, when Claude
+  Code recorded it),
   `interrupt` (one Escape), `stop`
   (ends a background session and runs `claude rm`), `link` (reads the record
   and types nothing) and `message` (types into another session, under the

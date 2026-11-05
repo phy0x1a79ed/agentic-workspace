@@ -704,6 +704,11 @@ def _mcp_outputs(item: pending.Pending, tail, *,
                  clock: Callable[[], float] = time.monotonic) -> pending.Pending:
     """``item`` with each `/mcp` change carrying what the command printed."""
     owed = [c for c in item.changes if c.kind == "mcp" and not c.detail]
+    tail.poll()
+    # Claude Code records a local command only when it is submitted to an idle
+    # prompt. One drained from the queue leaves no start line and no output.
+    owed = [c for c in owed
+            if tail.started(f"/mcp {c.value}", since_ms=item.injected_at_ms) is True]
     if not owed:
         return item
     deadline = clock() + MCP_OUTPUT_WAIT_S
