@@ -35,6 +35,7 @@ Procedure, from dfs-interview § Work the stack:
 - **Q-tarball-backup** (2026-11-05): Trilium fork backup: push its branches and tags to the existing GitHub fork phy0x1a79ed/Trilium, and attach the pinned tarball to a GitHub release there as a backup copy only (deneb still gets mizar's push)? Recommended: yes.
 - **Q-alcor-door** (2026-11-05): alcor's port 22 lockdown: after it, ssh to alcor works only from mizar, capella and lyra over the tailnet. No LAN ssh, no phone, no altair. OK, or should more devices (your phone, by tailnet address) stay allowed?
 - **Q-deneb** (2026-11-05): deneb for the board: after a dry run I review, apply deneb's roles: SNI forward to alcor, push node, passkey login, and Trilium moved to its own sandboxed user (fleet.md R105 item 1). That moves the live vault: stop Trilium, back up document.db to mizar, move the data, start, check. OK?
+- **Q-seat-models** (2026-11-05): Seats: after spawn-tuning, each Slack/Discord seat names its model and effort. dev sets them to today's opus at high. Want any seat lighter, such as sonnet at medium for plain Q&A seats? Optional, no rush.
 
 ## Stack
 
@@ -68,6 +69,7 @@ From journal 6a98c0c6 (awm/redux) and walkthrough's handover (manual-steps.md at
 - reflection follow-ups from reflect-selfstop (release dcd8ba4d, journal 8542e517): cch status misses a session by its post-clear id, so stop {job:<new id>} misses it; old trust.json records have no job field
 - altair still commits nightly vault snapshots to its fork release; R105 stops that (trilium-fork, 2026-11-05)
 - search-awm-api follow-ups (journal e06acc4b): `search sources` counts awm docs for singletons a relayed caller cannot see; a stale `_grants` line in search INSTALL.md
+- spawn-tuning follow-ups (journal 0fc35624): cch test_stop_refuses_a_caller_whose_mode_is_unknown fails on 9d346fb4 too; run-tests.sh does not run the operations plugin tests
 - end state: verify every node (T28), retire mira and its disk (T29, M56), debrief (T30)
 
 ## Workers
