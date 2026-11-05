@@ -148,6 +148,16 @@ impl Gateway {
         ))
     }
 
+    /// The tools `service` answers for: its name, the tools its plugin declares for it, and
+    /// the tools it registered.
+    fn service_tools(&self, service: &str) -> Vec<String> {
+        let mut out = vec![service.to_string()];
+        let load = self.read_load();
+        out.extend(load.plugins.iter().flat_map(|p| &p.tools).filter(|t| t.services.iter().any(|s| s == service)).map(|t| t.name.clone()));
+        out.extend(self.hub.verbs().into_iter().filter(|(s, _)| s == service).map(|(_, v)| v.tool));
+        out
+    }
+
     fn knows_service(&self, service: &str) -> bool {
         self.hub.status(service).is_some()
             || self.read_load().plugins.iter().flat_map(|p| &p.services).any(|s| s.name == service)
@@ -156,7 +166,7 @@ impl Gateway {
     /// Open a stream path on this node for `ctx`. Refusals come back before any socket opens.
     pub fn open_local(&self, path: &str, ctx: &CallContext) -> Result<WsPipe, ApiError> {
         let Some((what, service, name)) = parts(path) else { return Err(ApiError::new(404, format!("no stream at {path}"))) };
-        if !self.knows_service(service) {
+        if !self.knows_service(service) || self.service_tools(service).iter().any(|t| self.singleton_refuses(t, &ctx.caller)) {
             return Err(ApiError::new(404, format!("Unknown service {service:?}")));
         }
         if let Some(why) = ctx.plugin.as_deref().and_then(|p| self.stream_refusal(p, service)) {

@@ -60,6 +60,19 @@ def test_rejects_unknown_network(tmp_path, monkeypatch):
         edges.load()
 
 
+@pytest.mark.parametrize("singleton, error", [
+    ("{tool: t, host: a}", "no callers list"),
+    ("{tool: t, host: a, callers: [b]}", "caller b is no node"),
+])
+def test_rejects_a_bad_callers_list(tmp_path, monkeypatch, singleton, error):
+    bad = tmp_path / "edges.yml"
+    bad.write_text("nodes: {a: {role: standby}}\nsingleton_doors: {a: {port: 2201, network: lan}}\n"
+                   f"singletons: [{singleton}]\n")
+    monkeypatch.setenv(edges.EDGES_FILE_ENV, str(bad))
+    with pytest.raises(ValueError, match=error):
+        edges.load()
+
+
 def test_missing_file_is_empty_fleet(tmp_path, monkeypatch):
     monkeypatch.setenv(edges.EDGES_FILE_ENV, str(tmp_path / "none.yml"))
     assert edges.reachable_from("home") == []

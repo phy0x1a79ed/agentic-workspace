@@ -18,5 +18,5 @@ edges:
 singleton_doors:
   spare: {port: 2201, network: tailscale}
 singletons:
-  - {tool: 2fa, host: spare}
-  - {tool: channel, host: spare}
+  - {tool: 2fa, host: spare, callers: [laptop, home]}
+  - {tool: channel, host: spare, callers: [laptop, home, work]}

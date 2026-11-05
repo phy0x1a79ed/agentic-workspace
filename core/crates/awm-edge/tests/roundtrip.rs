@@ -60,7 +60,7 @@ async fn calls_overlap_on_one_warm_channel() {
     let opens = Arc::new(AtomicUsize::new(0));
     let c = Arc::new(duplex_client(opens.clone(), None));
     let caller = Caller { node: "spoofed".into(), lane: Lane::Local, session: Some("s1".into()), trust: Some("cooperative".into()),
-                         scope: Some("awm/x".into()) };
+                         scope: Some("awm/x".into()), origin: None };
     let mut tasks = Vec::new();
     for i in 0..20 {
         let (c, caller) = (c.clone(), caller.clone());

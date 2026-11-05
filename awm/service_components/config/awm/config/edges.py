@@ -52,9 +52,19 @@ def _validate(data: Any, path: Path) -> dict[str, Any]:
                 raise ValueError(f"{path}: self edge on {src}")
             if net not in NETWORKS:
                 raise ValueError(f"{path}: edge {src} -> {dst} network {net!r} not in {NETWORKS}")
+    tools = set()
     for s in data.get("singletons") or []:
+        tool = s.get("tool")
         if s.get("host") not in (data.get("singleton_doors") or {}):
-            raise ValueError(f"{path}: singleton {s.get('tool')} on a host with no door")
+            raise ValueError(f"{path}: singleton {tool} on a host with no door")
+        if tool in tools:
+            raise ValueError(f"{path}: singleton {tool} is listed twice")
+        tools.add(tool)
+        if not isinstance(s.get("callers"), list):
+            raise ValueError(f"{path}: singleton {tool} names no callers list")
+        for c in s["callers"]:
+            if c not in nodes:
+                raise ValueError(f"{path}: singleton {tool} caller {c} is no node")
     return data
 
 
@@ -115,7 +125,7 @@ def is_station(name: str) -> bool:
 
 
 def singletons() -> list[dict[str, Any]]:
-    """The singleton services, each ``{tool, host, after?}`` (R89)."""
+    """The singleton services, each ``{tool, host, callers}`` (R89, R98 item 3)."""
     return list(load().get("singletons") or [])
 
 

@@ -99,14 +99,15 @@ pub async fn open_local_stream(dir: &Path, path: &str, caller: &Caller) -> Resul
     awm_gateway::peer::connect_ws(&url, &headers).await
 }
 
-/// `awm port --key awm:<holder>:service`: one door call from `SSH_ORIGINAL_COMMAND`.
+/// `awm port --key awm:<holder>:service`: one door call from `SSH_ORIGINAL_COMMAND`, for
+/// a singleton here that admits the key's holder.
 pub async fn port(key: &str) -> anyhow::Result<i32> {
     let dir = awm_dir()?;
     let here = node_name();
-    let allowed = EdgeList::load(&edges_path(&dir))?.door_tools(&here);
-    let original = std::env::var("SSH_ORIGINAL_COMMAND").unwrap_or_default();
     let holder = key.split(':').nth(1).unwrap_or_default().to_string();
-    let caller = Caller { node: holder, lane: Lane::Service, session: None, trust: None, scope: None };
+    let allowed = EdgeList::load(&edges_path(&dir))?.door_tools(&here, &holder);
+    let original = std::env::var("SSH_ORIGINAL_COMMAND").unwrap_or_default();
+    let caller = Caller { node: holder, lane: Lane::Service, ..Caller::default() };
     let req = awm_trust::port::parse(&original);
     let result = match &req {
         Ok(r) if allowed.contains(&r.name) => Some(invoke_local(&dir, &r.name, r.args.clone(), &caller).await),

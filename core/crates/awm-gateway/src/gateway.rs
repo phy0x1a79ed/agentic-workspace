@@ -7,7 +7,8 @@ use std::sync::{Arc, OnceLock, RwLock, Weak};
 use std::time::{Duration, Instant};
 
 use awm_proto::manifest::NeedTool;
-use awm_proto::{CallContext, Lane, Surface, Tier, UsageEvent, MANIFEST_FILE};
+use awm_proto::{CallContext, Caller, Lane, Surface, Tier, UsageEvent, MANIFEST_FILE};
+use awm_trust::edges::EdgeList;
 use serde_json::{json, Value};
 
 use crate::config::Config;
@@ -75,6 +76,8 @@ pub struct Gateway {
     pub stream_sessions: crate::streams::Sessions,
     /// The private marks a call from another node may not reach.
     pub marks: crate::privacy::Marks,
+    /// The node's edge list, whose singletons each name their callers (fleet.md R98 item 3).
+    pub edges: RwLock<EdgeList>,
     me: Weak<Gateway>,
 }
 
@@ -147,6 +150,7 @@ impl Gateway {
         let state = state.canonicalize()?;
         std::fs::create_dir_all(crate::install::installed_root(&state))?;
         let node = cfg.node_name();
+        let edges = EdgeList::load(&cfg.edges_path(&state))?;
         let workspace = cfg.workspace_dir(&state);
         let peer_tools = cached_peer_tools(&state, &peers.peers());
         let load = load_plugins(&state, &cfg, &peer_tools);
@@ -159,6 +163,7 @@ impl Gateway {
         let marks = crate::privacy::Marks::new(&state, &workspace);
         let gw = Arc::new_cyclic(|me| Self {
             marks,
+            edges: RwLock::new(edges),
             usage: UsageStore::new(state.join("usage")),
             state,
             cfg,
@@ -263,12 +268,20 @@ impl Gateway {
         serde_json::to_value(&*self.read_load()).unwrap_or(Value::Null)
     }
 
-    /// The tools this node's plugins serve, as `/hub/table` gives them to a peer.
-    pub fn local_table(&self) -> Vec<RemoteTool> {
+    /// Whether the singleton list keeps `tool` from `caller`: a call from another node, or
+    /// relayed for one, that the tool's callers leave out (fleet.md R98 item 3).
+    pub fn singleton_refuses(&self, tool: &str, caller: &Caller) -> bool {
+        let edges = self.edges.read().unwrap_or_else(|p| p.into_inner());
+        caller.nodes_behind(&self.node).any(|n| !edges.may_call(n, tool))
+    }
+
+    /// The tools this node's plugins serve, as `/hub/table` gives them to `caller`.
+    pub fn local_table(&self, caller: &Caller) -> Vec<RemoteTool> {
         self.read_load()
             .plugins
             .iter()
             .flat_map(|p| p.tools.iter())
+            .filter(|t| !self.singleton_refuses(&t.name, caller))
             .map(|t| RemoteTool {
                 name: t.name.clone(),
                 major: t.major,
@@ -293,9 +306,10 @@ impl Gateway {
         loader::providers(&self.name_table(), contract, major)
     }
 
-    /// The live table as `awm table` shows it.
-    pub fn table_view(&self) -> Value {
-        let index = self.name_table();
+    /// The live table as `awm table` shows it to `caller`.
+    pub fn table_view(&self, caller: &Caller) -> Value {
+        let mut index = self.name_table();
+        index.retain(|p| !self.singleton_refuses(&p.owner.name, caller));
         let mut contracts: BTreeMap<String, Vec<Value>> = BTreeMap::new();
         for p in &index {
             for (c, m) in &p.implements {
@@ -558,6 +572,8 @@ impl Gateway {
         }
         let _one_at_a_time = self.reloading.lock().await;
         let cfg = Config::load(&self.state).map_err(|e| ApiError::new(400, e.to_string()))?;
+        let edges = EdgeList::load(&cfg.edges_path(&self.state)).map_err(|e| ApiError::new(400, format!("{e:#}")))?;
+        *self.edges.write().unwrap_or_else(|p| p.into_inner()) = edges;
         let peers = self.peer_tools.read().unwrap_or_else(|p| p.into_inner()).clone();
         let new = load_plugins(&self.state, &cfg, &peers);
         let old: BTreeMap<String, loader::Plugin> =
@@ -766,10 +782,11 @@ impl Gateway {
         json!({"tool": entry.name, "plugin": entry.plugin, "verbs": verbs})
     }
 
-    fn overview(&self, mcp: bool) -> Value {
+    fn overview(&self, mcp: bool, caller: &Caller) -> Value {
         let tools: Vec<Value> = self
             .tools()
             .values()
+            .filter(|e| !self.singleton_refuses(&e.name, caller))
             .map(|e| {
                 json!({"tool": e.name, "plugin": e.plugin, "tier": if e.tier == Tier::On {"on"} else {"off"},
                        "verbs": self.verb_names(e, mcp).into_iter().map(|(v, s, r)| json!({"verb": v, "summary": one_line(&s), "required": r})).collect::<Vec<_>>()})
@@ -781,7 +798,7 @@ impl Gateway {
 
     async fn native(&self, verb: &str, args: &Value, ctx: &CallContext) -> Result<Value, ApiError> {
         match verb {
-            "table" => Ok(self.table_view()),
+            "table" => Ok(self.table_view(&ctx.caller)),
             _ if NATIVE_WRITES.contains(&verb) => {
                 let trusted = ctx.caller.trust.as_deref() == Some(crate::caller::TRUSTED);
                 if ctx.caller.lane != Lane::Local || !trusted {
@@ -906,6 +923,11 @@ impl Gateway {
         };
         if !inner.is_object() {
             return Err(ApiError::new(400, "'args' must be an object"));
+        }
+        // Checked before the call is relayed, so a node carries no call its origin may not make.
+        if self.singleton_refuses(&tool, &ctx.caller) {
+            tracing::info!("singleton gate: refused {tool}.{verb} to {:?}", ctx.caller.nodes_behind(&self.node).collect::<Vec<_>>());
+            return Err(ApiError::new(404, format!("Unknown tool {tool:?}")));
         }
         // A tool no local plugin serves runs where the name table says it lives (R117 item 3).
         let peer = peer.or_else(|| if tools.contains_key(&tool) { None } else { self.owner(&tool).and_then(|o| o.peer) });
@@ -1083,7 +1105,7 @@ impl Gateway {
                 entry.clone()
             };
             let answer = if tool == NATIVE_TOOL && inner.get("verbs").is_none() {
-                self.overview(ctx.surface == Surface::Mcp)
+                self.overview(ctx.surface == Surface::Mcp, &ctx.caller)
             } else {
                 self.describe(&entry, inner.get("verbs"), ctx.surface == Surface::Mcp)
             };

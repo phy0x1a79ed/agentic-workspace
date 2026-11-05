@@ -24,6 +24,9 @@ pub struct Node {
     pub managed: bool,
     #[serde(default)]
     pub addresses: BTreeMap<String, Option<String>>,
+    /// The node does not exist yet. Nothing it names takes effect.
+    #[serde(default)]
+    pub planned: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -36,8 +39,8 @@ pub struct Door {
 pub struct Singleton {
     pub tool: String,
     pub host: String,
-    #[serde(default)]
-    pub after: Option<String>,
+    /// The nodes that may call it besides its host, as directed edges into it (R98 item 3).
+    pub callers: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -94,9 +97,18 @@ impl EdgeList {
                 }
             }
         }
+        let mut tools = std::collections::BTreeSet::new();
         for s in &list.singletons {
             if !list.singleton_doors.contains_key(&s.host) {
                 bail!("singleton {} on {}, which has no door", s.tool, s.host);
+            }
+            if !tools.insert(&s.tool) {
+                bail!("singleton {} is listed twice", s.tool);
+            }
+            for c in &s.callers {
+                if !list.nodes.contains_key(c) {
+                    bail!("singleton {} caller {c} is no node", s.tool);
+                }
             }
         }
         Ok(list)
@@ -137,9 +149,25 @@ impl EdgeList {
         self.singletons.iter().map(|s| s.tool.clone()).collect()
     }
 
-    /// The singleton tools that `host` serves through its door.
-    pub fn door_tools(&self, host: &str) -> Vec<String> {
-        self.singletons.iter().filter(|s| s.host == host).map(|s| s.tool.clone()).collect()
+    /// Whether `node` may call `tool`. A tool that is no singleton is not held here. A
+    /// singleton admits its host and its callers, less any planned node, and no one else.
+    pub fn may_call(&self, node: &str, tool: &str) -> bool {
+        match self.singletons.iter().find(|s| s.tool == tool) {
+            None => true,
+            Some(s) => {
+                node == s.host
+                    || (s.callers.iter().any(|c| c == node) && !self.nodes.get(node).is_some_and(|n| n.planned))
+            }
+        }
+    }
+
+    /// The singleton tools that `host` serves through its door to `caller`.
+    pub fn door_tools(&self, host: &str, caller: &str) -> Vec<String> {
+        self.singletons
+            .iter()
+            .filter(|s| s.host == host && self.may_call(caller, &s.tool))
+            .map(|s| s.tool.clone())
+            .collect()
     }
 }
 
@@ -161,7 +189,7 @@ edges:
 singleton_doors:
   spare: {port: 2201, network: tailscale}
 singletons:
-  - {tool: 2fa, host: spare}
+  - {tool: 2fa, host: spare, callers: [home, laptop]}
 "#;
 
     #[test]
@@ -173,7 +201,28 @@ singletons:
         assert_eq!(e.reached_by("spare"), vec!["home"]);
         assert_eq!(e.network("home", "spare"), Some(Network::Lan));
         assert_eq!(e.network("spare", "work"), None);
-        assert_eq!(e.door_tools("spare"), vec!["2fa"]);
+        assert_eq!(e.door_tools("spare", "home"), vec!["2fa"]);
+    }
+
+    #[test]
+    fn a_singleton_admits_only_its_host_and_callers() {
+        let e = EdgeList::parse(FIXTURE).unwrap();
+        assert!(e.may_call("spare", "2fa") && e.may_call("home", "2fa") && e.may_call("laptop", "2fa"));
+        assert!(!e.may_call("work", "2fa") && !e.may_call("relay", "2fa") && !e.may_call("nowhere", "2fa"));
+        assert!(e.may_call("work", "journal"), "a tool that is no singleton is not held");
+        assert!(e.door_tools("spare", "work").is_empty());
+        assert!(e.door_tools("home", "home").is_empty(), "home has no singleton");
+    }
+
+    #[test]
+    fn a_planned_caller_is_skipped() {
+        let e = EdgeList::parse(
+            "nodes:\n  host: {role: standby}\n  soon: {role: admin, planned: true}\n\
+             singleton_doors:\n  host: {port: 2201, network: lan}\n\
+             singletons:\n  - {tool: vault, host: host, callers: [soon]}\n",
+        )
+        .unwrap();
+        assert!(!e.may_call("soon", "vault"));
     }
 
     #[test]
@@ -196,6 +245,10 @@ singletons:
         assert!(EdgeList::parse("nodes: {a: {role: homebase}}\nedges: {a: {b: lan}}\n").is_err());
         assert!(EdgeList::parse("nodes: {a: {role: homebase}, b: {role: work}}\nedges: {a: {b: pigeon}}\n").is_err());
         assert!(EdgeList::parse("nodes: {a: {role: king}}\n").is_err());
+        let door = "nodes: {a: {role: standby}}\nsingleton_doors: {a: {port: 2201, network: lan}}\n";
+        assert!(EdgeList::parse(&format!("{door}singletons: [{{tool: t, host: a}}]\n")).is_err(), "callers is required");
+        assert!(EdgeList::parse(&format!("{door}singletons: [{{tool: t, host: a, callers: [b]}}]\n")).is_err());
+        assert!(EdgeList::parse(&format!("{door}singletons: [{{tool: t, host: a, callers: []}}, {{tool: t, host: a, callers: []}}]\n")).is_err());
     }
 
     #[test]

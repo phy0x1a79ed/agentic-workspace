@@ -395,9 +395,10 @@ async fn bridge(State(gw): Gw, Path((id, bridge)): Path<(String, String)>, ws: W
     ws.max_message_size(64 << 20).on_upgrade(move |socket| async move { gw.stream_sessions.bridge(&service, &bridge, socket) })
 }
 
-/// This node's tools, for a peer's name table.
-async fn table(State(gw): Gw) -> Json<Value> {
-    Json(json!(gw.local_table()))
+/// This node's tools, for a peer's name table, less the singletons that leave the peer out.
+async fn table(State(gw): Gw, h: HeaderMap) -> Result<Json<Value>, ApiError> {
+    let ctx = context(&gw, &h, Surface::Http).await?;
+    Ok(Json(json!(gw.local_table(&ctx.caller))))
 }
 
 #[derive(Deserialize)]

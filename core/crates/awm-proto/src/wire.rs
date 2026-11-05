@@ -23,6 +23,22 @@ pub struct Caller {
     pub trust: Option<String>,
     /// The calling session's own `<project>/<scope>`.
     pub scope: Option<String>,
+    /// The node a relayed call started from, when it is not `node` (fleet.md R98 item 3).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
+}
+
+impl Caller {
+    /// The nodes behind this call other than `here`: the node it came from, and the one it
+    /// started from when another node relays it.
+    pub fn nodes_behind<'a>(&'a self, here: &'a str) -> impl Iterator<Item = &'a str> + 'a {
+        std::iter::once(self.node.as_str()).chain(self.origin.as_deref()).filter(move |n| *n != here)
+    }
+
+    /// The origin a call carries on when this node relays it: its own, or the node it came from.
+    pub fn relayed_origin(&self, here: &str) -> Option<String> {
+        self.origin.clone().or_else(|| (self.node != here).then(|| self.node.clone()))
+    }
 }
 
 /// What the gateway knows about one inbound call.

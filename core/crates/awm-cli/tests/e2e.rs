@@ -269,9 +269,13 @@ struct Stream {
 
 impl Stream {
     fn open(url: &str) -> Result<Self, String> {
+        Self::open_as(url, &[])
+    }
+
+    fn open_as(url: &str, headers: &[(&str, String)]) -> Result<Self, String> {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let ws = url.replacen("http", "ws", 1);
-        let pipe = rt.block_on(awm_gateway::peer::connect_ws(&ws, &[]))?;
+        let pipe = rt.block_on(awm_gateway::peer::connect_ws(&ws, headers))?;
         Ok(Stream { rt, pipe })
     }
 
@@ -744,6 +748,38 @@ fn gateway_end_to_end() {
     assert!(!node.state.join("gateway.json").exists(), "gateway.json outlived the gateway");
 }
 
+/// A node's state dir under `base`, whose core root holds a fake plugin per tool.
+fn edge_node(base: &Path, name: &str, tools: &[&str], edges: &str) -> PathBuf {
+    let (core, state) = (base.join(name).join("core"), base.join(name).join("state"));
+    std::fs::create_dir_all(&core).unwrap();
+    for tool in tools {
+        write(&core.join(tool).join("awm-plugin.toml"),
+              &format!("[plugin]\nname = \"{tool}\"\n\n[[service]]\nname = \"{tool}\"\n\n[[tool]]\nname = \"{tool}\"\n"));
+        write(&core.join(tool).join("run.sh"), &format!("export FAKE_TOOL={tool}\nexec '{}'\n", fake_bin().display()));
+    }
+    write(&state.join("edges.yml"), edges);
+    write(&state.join("config.toml"), &format!(
+        "node = \"{name}\"\nlisten = \"127.0.0.1:0\"\nworkspace = \"{}\"\ncore_roots = [\"{}\"]\ntool_wait_s = 30\nsession_cache_s = 0\n",
+        base.join(name).display(), core.display()));
+    state
+}
+
+/// A stand-in for ssh from `from` to `to`: it runs `edge-serve` against `to`'s gateway, with
+/// the login's key named `awm:<from>:user`.
+fn fake_ssh(base: &Path, from: &str, to: &str, to_state: &Path, to_url: &str) -> PathBuf {
+    let home = base.join(format!("home-{to}"));
+    write(&home.join(".ssh/authorized_keys"), &format!("ssh-ed25519 AAAAC3NzaE2E{from} awm:{from}:user\n"));
+    let auth = base.join(format!("user-auth-{from}"));
+    write(&auth, &format!("publickey ssh-ed25519 AAAAC3NzaE2E{from}\n"));
+    let ssh = base.join(format!("fake-ssh-{from}"));
+    write(&ssh, &format!(
+        "#!/bin/sh\nunset AWM_EDGES_FILE\nexport AWM_DIR='{}' AWM_GATEWAY_URL='{to_url}' AWM_NODE_NAME={to} SSH_USER_AUTH='{}' HOME='{}'\nexec '{}' edge-serve\n",
+        to_state.display(), auth.display(), home.display(), awm_bin().display()));
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&ssh, std::fs::Permissions::from_mode(0o755)).unwrap();
+    ssh
+}
+
 /// A `peer=` call leaves through `ssh <peer> awm edge-serve`, and the peer runs it as a
 /// call from the calling node (fleet.md R92, R93). A stand-in for ssh runs `edge-serve`
 /// against the far gateway, with the login's key named `awm:near:user`.
@@ -752,32 +788,9 @@ fn a_peer_call_crosses_the_ssh_edge() {
     let tmp = tempfile::tempdir().unwrap();
     let base = tmp.path();
     let edges = "nodes:\n  near: {role: homebase}\n  far: {role: homebase}\nedges:\n  near: {far: lan}\n";
-    let node = |name: &str, tool: Option<&str>| -> PathBuf {
-        let (core, state) = (base.join(name).join("core"), base.join(name).join("state"));
-        std::fs::create_dir_all(&core).unwrap();
-        if let Some(tool) = tool {
-            write(&core.join(tool).join("awm-plugin.toml"),
-                  &format!("[plugin]\nname = \"{tool}\"\n\n[[service]]\nname = \"{tool}\"\n\n[[tool]]\nname = \"{tool}\"\n"));
-            write(&core.join(tool).join("run.sh"), &format!("export FAKE_TOOL={tool}\nexec '{}'\n", fake_bin().display()));
-        }
-        write(&state.join("edges.yml"), edges);
-        write(&state.join("config.toml"), &format!(
-            "node = \"{name}\"\nlisten = \"127.0.0.1:0\"\nworkspace = \"{}\"\ncore_roots = [\"{}\"]\ntool_wait_s = 30\nsession_cache_s = 0\n",
-            base.join(name).display(), core.display()));
-        state
-    };
-    let (far_state, near_state) = (node("far", Some("remote")), node("near", None));
+    let (far_state, near_state) = (edge_node(base, "far", &["remote"], edges), edge_node(base, "near", &[], edges));
     let far = Gateway::start(&far_state);
-
-    let home = base.join("home");
-    write(&home.join(".ssh/authorized_keys"), "ssh-ed25519 AAAAC3NzaE2Ekey awm:near:user\n");
-    write(&base.join("user-auth"), "publickey ssh-ed25519 AAAAC3NzaE2Ekey\n");
-    let ssh = base.join("fake-ssh");
-    write(&ssh, &format!(
-        "#!/bin/sh\nunset AWM_EDGES_FILE\nexport AWM_DIR='{}' AWM_GATEWAY_URL='{}' AWM_NODE_NAME=far SSH_USER_AUTH='{}' HOME='{}'\nexec '{}' edge-serve\n",
-        far_state.display(), far.url, base.join("user-auth").display(), home.display(), awm_bin().display()));
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(&ssh, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let ssh = fake_ssh(base, "near", "far", &far_state, &far.url);
     let near = Gateway::start_with(&near_state, &[("AWM_EDGE_SSH", ssh.to_str().unwrap())]);
 
     let invoke = |peer: &str| {
@@ -817,6 +830,109 @@ fn a_peer_call_crosses_the_ssh_edge() {
     assert!(status >= 400, "a node with no edge from here is refused: {body}");
     drop(near);
     drop(far);
+}
+
+/// Each singleton names the nodes that may call it, and every other node finds no such tool:
+/// at the door, in the table and describe, on a relayed call and on a direct session
+/// (fleet.md R98 item 3). `vault` admits `ally` and `relay`. `outsider` holds edges to both
+/// `host` and `relay` and is no caller.
+#[test]
+fn a_singleton_admits_only_its_callers() {
+    let tmp = tempfile::tempdir().unwrap();
+    let base = tmp.path();
+    let edges = "nodes:\n  host: {role: standby}\n  ally: {role: laptop}\n  relay: {role: homebase}\n  outsider: {role: work}\n\
+                 edges:\n  ally: {host: lan}\n  relay: {host: lan}\n  outsider: {host: lan, relay: lan}\n\
+                 singleton_doors:\n  host: {port: 2201, network: lan}\n\
+                 singletons:\n  - {tool: vault, host: host, callers: [ally, relay]}\n";
+    let host_state = edge_node(base, "host", &["vault", "open"], edges);
+    let host = Gateway::start(&host_state);
+    let token = |state: &Path| std::fs::read_to_string(state.join("edge.token")).unwrap().trim().to_string();
+    let headers = |state: &Path, caller: Value| vec![("x-awm-caller", caller.to_string()), ("x-awm-edge-token", token(state))];
+    let from = |node: &str| json!({"node": node, "lane": "edge"});
+    let call = |url: &str, hs: &[(&str, String)], tool: &str, verb: &str, peer: Option<&str>| {
+        let mut req = http().post(format!("{url}/invoke")).json(&json!({"name": tool, "args": {"verb": verb, "args": {}, "peer": peer}}));
+        for (k, v) in hs {
+            req = req.header(*k, v);
+        }
+        let resp = req.send().unwrap();
+        (resp.status().as_u16(), resp.json::<Value>().unwrap_or(Value::Null))
+    };
+    let fail = || format!("host: {}", log(&host_state));
+
+    // The table and describe leave vault out for a node it does not admit.
+    let table = |caller: Value| -> Vec<String> {
+        let mut req = http().get(format!("{}/hub/table", host.url));
+        for (k, v) in headers(&host_state, caller) {
+            req = req.header(k, v);
+        }
+        let rows: Vec<Value> = req.send().unwrap().json().unwrap();
+        rows.iter().filter_map(|r| r["name"].as_str().map(str::to_string)).collect()
+    };
+    assert!(table(from("outsider")).contains(&"open".to_string()) && !table(from("outsider")).contains(&"vault".to_string()));
+    assert!(table(from("ally")).contains(&"vault".to_string()));
+    let (status, body) = call(&host.url, &headers(&host_state, from("outsider")), "awm", "describe", None);
+    assert_eq!(status, 200, "{body} {}", fail());
+    let overview: Value = serde_json::from_str(body["result"].as_str().unwrap()).unwrap();
+    let listed: Vec<&str> = overview["tools"].as_array().unwrap().iter().filter_map(|t| t["tool"].as_str()).collect();
+    assert!(listed.contains(&"open") && !listed.contains(&"vault"), "{listed:?}");
+    for verb in ["describe", "whoami"] {
+        let (status, body) = call(&host.url, &headers(&host_state, from("outsider")), "vault", verb, None);
+        assert_eq!((status, body["detail"].as_str()), (404, Some("Unknown tool \"vault\"")), "{verb}: {body}");
+    }
+    let (status, body) = call(&host.url, &headers(&host_state, from("ally")), "vault", "whoami", None);
+    assert_eq!(status, 200, "{body} {}", fail());
+    let (status, _) = call(&host.url, &[], "vault", "whoami", None);
+    assert_eq!(status, 200, "the host calls its own singleton");
+
+    // A call relayed for a node the list leaves out is refused where it lands.
+    let relayed = json!({"node": "relay", "lane": "edge", "origin": "outsider"});
+    let (status, body) = call(&host.url, &headers(&host_state, relayed), "vault", "whoami", None);
+    assert_eq!(status, 404, "{body}");
+
+    // A direct session and an emit stream from a node the list leaves out are refused.
+    let session = format!("{}/hub/session/vault/echo", host.url);
+    assert!(Stream::open_as(&session, &headers(&host_state, from("outsider"))).is_err(), "{}", fail());
+    assert!(Stream::open_as(&format!("{}/hub/emit/vault/news", host.url), &headers(&host_state, from("outsider"))).is_err());
+    let mut ok = Stream::open_as(&session, &headers(&host_state, from("ally"))).expect("ally opens a session");
+    ok.send(awm_proto::WsMsg::Text(json!({"host": "h"}).to_string()));
+    assert!(matches!(ok.next(), Some(awm_proto::WsMsg::Text(_))), "{}", fail());
+
+    // The door serves a key only the singletons that admit its holder.
+    let door = |holder: &str| {
+        let out = Command::new(awm_bin())
+            .args(["port", "--key", &format!("awm:{holder}:service")])
+            .env_remove("AWM_EDGES_FILE")
+            .env("AWM_DIR", &host_state)
+            .env("AWM_GATEWAY_URL", &host.url)
+            .env("AWM_NODE_NAME", "host")
+            .env("SSH_ORIGINAL_COMMAND", r#"{"name": "vault", "args": {"verb": "whoami"}}"#)
+            .output()
+            .unwrap();
+        (out.status.success(), serde_json::from_slice::<Value>(&out.stdout).unwrap_or(Value::Null))
+    };
+    let (ok_, reply) = door("outsider");
+    assert_eq!((ok_, reply["error"].as_str()), (false, Some("Unknown tool \"vault\"")), "{reply}");
+    let (ok_, reply) = door("ally");
+    assert!(ok_, "{reply} {}", fail());
+    let who: Value = serde_json::from_str(reply["result"].as_str().unwrap()).unwrap();
+    assert_eq!(who["caller"]["node"], "ally");
+
+    // Over a real edge: relay carries its own calls and a caller's, and none for outsider.
+    let relay_state = edge_node(base, "relay", &[], edges);
+    let ssh = fake_ssh(base, "relay", "host", &host_state, &host.url);
+    let relay = Gateway::start_with(&relay_state, &[("AWM_EDGE_SSH", ssh.to_str().unwrap())]);
+    let (status, body) = call(&relay.url, &[], "vault", "whoami", Some("host"));
+    assert_eq!(status, 200, "{body} relay: {} {}", log(&relay_state), fail());
+    let who: Value = serde_json::from_str(body["result"].as_str().unwrap()).unwrap();
+    assert_eq!((who["caller"]["node"].as_str(), who["caller"].get("origin")), (Some("relay"), None), "{who}");
+    let (status, body) = call(&relay.url, &headers(&relay_state, from("ally")), "vault", "whoami", Some("host"));
+    assert_eq!(status, 200, "{body}");
+    let who: Value = serde_json::from_str(body["result"].as_str().unwrap()).unwrap();
+    assert_eq!(who["caller"]["origin"], "ally", "the call carries the node it started from: {who}");
+    let (status, body) = call(&relay.url, &headers(&relay_state, from("outsider")), "vault", "whoami", Some("host"));
+    assert_eq!((status, body["detail"].as_str()), (404, Some("Unknown tool \"vault\"")), "{body}");
+    drop(relay);
+    drop(host);
 }
 
 #[test]
