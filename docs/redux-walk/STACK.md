@@ -46,6 +46,7 @@ From journal 6a98c0c6 (awm/redux) and walkthrough's handover (manual-steps.md at
 - mira: rt-container's design, IBKR (M30), cutover play (M31), capella debug port (M32), held until Tony opens mira and alcor
 - Discord seats (M34)
 - R77 after the Caviar and muse invites (M55)
+- reflection follow-ups from reflect-selfstop (release dcd8ba4d, journal 8542e517): cch status misses a session by its post-clear id, so stop {job:<new id>} misses it; old trust.json records have no job field
 - end state: verify every node (T28), retire mira and its disk (T29, M56), debrief (T30)
 
 ## Closed
