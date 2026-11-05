@@ -5,11 +5,19 @@ library what a level allows. The gateway refuses what a level may never call
 (channels.md R125); a steer stays here, because only this ledger knows the
 target's level.
 
+A level belongs to the job as well as to the session id it started under: a
+cleared or respawned conversation keeps its job but takes a new session id,
+and must keep its level.
+
 A session with no recorded level reads as ``trusted`` only when a harness
 plugin knows it: a session started by hand, or before levels existed, acted
 with full trust. A session id that neither this ledger nor any harness knows
 reads as ``untrusted`` (fleet.md R103 item 2). A caller that is no session, a
 user's shell or a service, starts sessions as ``trusted``.
+
+A session is described as the harness describes it: a dict with
+``session_id``, ``job`` when it has one, and ``known: False`` when no harness
+answered for it.
 """
 from __future__ import annotations
 
@@ -59,14 +67,46 @@ def _write(data: dict) -> None:
     os.replace(tmp, path)
 
 
-def level_of(session_id: Optional[str], *, known: bool = False) -> str:
-    """The level of ``session_id``. ``known`` says a harness already answered for it."""
+def level_of(session_id: Optional[str], *, known: bool = False,
+             job: Optional[str] = None) -> str:
+    """The level of ``session_id``, or of ``job`` under a new session id.
+
+    ``known`` says a harness already answered for it.
+    """
     if not session_id:
         return DEFAULT_LEVEL
-    level = recorded_levels().get(session_id)
+    level = recorded_level(session_id, job)
     if level:
         return level
     return DEFAULT_LEVEL if known or _harness_knows(session_id) else UNKNOWN_SESSION_LEVEL
+
+
+def level(who: dict) -> str:
+    """The level of a session as a harness described it."""
+    return level_of(who.get("session_id"), known=who.get("known", True), job=who.get("job"))
+
+
+def recorded_level(session_id: Optional[str], job: Optional[str] = None) -> Optional[str]:
+    """The level ``record`` wrote for ``session_id``, or for its job; None for no record."""
+    if not session_id:
+        return None
+    data = _read()
+    rec = data.get(session_id)
+    if isinstance(rec, dict) and rec.get("level"):
+        return rec["level"]
+    if not job:
+        return None
+    return next((r["level"] for sid, r in data.items()
+                 if isinstance(r, dict) and r.get("level") and r.get("job") == job
+                 and sid[:2] == session_id[:2]), None)
+
+
+def same_session(a: dict, b: dict) -> bool:
+    """Whether two descriptions name one session, across a change of session id."""
+    sa, sb = a.get("session_id") or "", b.get("session_id") or ""
+    if sa and sa == sb:
+        return True
+    return bool(a.get("job")) and a.get("job") == b.get("job") and sa[:2] == sb[:2]
 
 
 def _harness_knows(session_id: str) -> bool:
@@ -78,17 +118,13 @@ def _harness_knows(session_id: str) -> bool:
     return True
 
 
-def recorded_levels() -> dict[str, str]:
-    """Each session's recorded level, as ``record`` wrote it."""
-    return {sid: rec["level"] for sid, rec in _read().items()
-            if isinstance(rec, dict) and rec.get("level")}
-
-
-def record(session_id: str, level: str, origin: str) -> None:
+def record(session_id: str, level: str, origin: str, job: Optional[str] = None) -> None:
     with _lock:
         data = _read()
         data[session_id] = {**(data.get(session_id) or {}), "level": level,
                             "origin": origin, "at_ms": int(time.time() * 1000)}
+        if job:
+            data[session_id]["job"] = job
         try:
             _write(data)
         except OSError as exc:
@@ -96,22 +132,28 @@ def record(session_id: str, level: str, origin: str) -> None:
                         session_id, exc)
 
 
-def check_steer(actor_id: Optional[str], verb: str,
-                target_id: Optional[str] = None) -> None:
-    """Raise :class:`Refused` when the caller may not run ``verb`` on another session."""
-    if not actor_id:
+def check_steer(actor: Optional[dict], verb: str, target: Optional[dict] = None) -> None:
+    """Raise :class:`Refused` when the caller may not run ``verb`` on another session.
+
+    ``actor`` is None for a caller that is no session. A session acting on
+    itself steers nobody.
+    """
+    if not actor:
         return
-    ok, why = _lib().may_steer(level_of(actor_id), verb,
-                            target_level=level_of(target_id) if target_id else None)
+    if target and same_session(actor, target):
+        return
+    ok, why = _lib().may_steer(
+        level(actor), verb,
+        target_level=level(target) if target and target.get("session_id") else None)
     if not ok:
         raise Refused(why)
 
 
-def start_level(actor_id: Optional[str], requested: Optional[str], *,
+def start_level(actor: Optional[dict], requested: Optional[str], *,
                 session_id: Optional[str] = None, grant: Any = None) -> Optional[str]:
     """The level a new session starts at. Raises :class:`Refused` above the caller's."""
     lib = _lib()
-    starter = level_of(actor_id)
+    starter = level(actor) if actor else DEFAULT_LEVEL
     try:
         key = lib.grant_key() if grant else None
     except Exception:  # noqa: BLE001 - no key reads as no grant

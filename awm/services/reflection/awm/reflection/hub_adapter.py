@@ -180,36 +180,51 @@ def _session_of(args: dict) -> dict:
         return {"ok": True, "known": False, "mode": mode, "reason": str(exc)}
     sid = who.get("session_id") or ""
     return {**who, "ok": True, "known": True, "harness": p.tool, "platform": p.code,
-            "mode": who.get("mode", UNKNOWN_MODE), "trust": policy.level_of(sid, known=True)}
+            "mode": who.get("mode", UNKNOWN_MODE), "trust": policy.level(who)}
 
 
 def _whoami(args: dict) -> dict:
     p, who = _caller(args)
     sid = who.get("session_id") or ""
     return {**who, "ok": True, "harness": p.tool, "platform": p.code,
-            "trust": policy.level_of(sid, known=True), "task_id": _task_of(sid) if sid else None,
+            "trust": policy.level(who), "task_id": _task_of(sid) if sid else None,
             "session": who.get("name") or sid}
 
 
 # --- a session named by `job`, or the caller's own ------------------------------
 
 
-def _actor_id(args: dict) -> Optional[str]:
-    if _caller_sid(args):
-        return _caller_sid(args)
-    pid = _caller_pid(args)
-    if not pid:
+def _actor(args: dict) -> Optional[dict]:
+    """The calling session as its harness describes it, or None for a caller that is no session."""
+    sid, pid = _caller_sid(args), _caller_pid(args)
+    if not sid and not pid:
         return None
     try:
-        return harness.for_caller(pid)[1].get("session_id")
+        who = harness.for_caller(pid, sid)[1]
     except harness.HarnessError:
-        return None
+        return {"session_id": sid, "known": False} if sid else None
+    return who if who.get("session_id") else None
+
+
+def _described(p: harness.Provider, named: dict) -> dict:
+    """The target ``named`` as its harness describes it, or ``named`` when it cannot."""
+    try:
+        who = harness.call(p, "status", named)
+    except harness.HarnessError:
+        return {**named, "known": False}
+    if who.get("ok") is False or not who.get("session_id"):
+        return {**named, "known": False}
+    return who
+
+
+def _check_steer(verb: str, args: dict, p: harness.Provider, named: dict) -> None:
+    policy.check_steer(_actor(args), verb, _described(p, named))
 
 
 def _on_target(verb: str, steer: Optional[str], args: dict, extra: dict) -> dict:
     p, named = harness.target(_job(args), _caller_pid(args), _caller_sid(args))
     if steer and _job(args):
-        policy.check_steer(_actor_id(args), steer, named.get("session_id"))
+        _check_steer(steer, args, p, named)
     return harness.call(p, verb, {**named, **extra})
 
 
@@ -242,7 +257,7 @@ def _interrupt(args: dict) -> dict:
 def _stop(args: dict) -> dict:
     p, named = harness.target(_job(args), _caller_pid(args), _caller_sid(args))
     if _job(args):
-        policy.check_steer(_actor_id(args), "stop", named.get("session_id"))
+        _check_steer("stop", args, p, named)
     out = harness.call(p, "stop", {**named, "keep": False,
                                    "confirm": _bool(args.get("confirm"))})
     return _after_retire(out, named.get("session_id"))
@@ -286,7 +301,8 @@ def _message(args: dict) -> dict:
         return {"ok": False, "reason": "job is required: the session to message"}
     out = _on_target("send", None, args, {"text": args.get("text"),
                                           "confirm": _bool(args.get("confirm"))})
-    hint = policy.first_message_hint(_actor_id(args)) if out.get("ok") else None
+    actor = _actor(args) if out.get("ok") else None
+    hint = policy.first_message_hint(actor.get("session_id")) if actor else None
     return {**out, "hint": hint} if hint else out
 
 
@@ -362,7 +378,7 @@ def _cd(args: dict) -> dict:
     pid = _caller_pid(args)
     p, named = harness.target(_job(args), pid, _caller_sid(args))
     if _job(args):
-        policy.check_steer(_actor_id(args), "cd", named.get("session_id"))
+        _check_steer("cd", args, p, named)
     before = harness.call(p, "status", named)
     sid = before.get("session_id") or named.get("session_id") or ""
     where = alarm.scope_of(args.get("path"))
@@ -417,9 +433,8 @@ def _start_provider(args: dict) -> harness.Provider:
 
 async def _start_other(args: dict, as_: str | None = None) -> dict:
     pid = _caller_pid(args)
-    actor = await asyncio.to_thread(_actor_id, args)
-    if actor:
-        policy.check_steer(actor, "start_other")
+    actor = await asyncio.to_thread(_actor, args)
+    policy.check_steer(actor, "start_other")
     requested = args.get("trust") or (ISOLATED_TRUST if args.get("isolated") else None)
     level = policy.start_level(actor, requested)
     p = _start_provider(args)
@@ -443,11 +458,11 @@ async def _start_other(args: dict, as_: str | None = None) -> dict:
     if out.get("ok") and sid and level:
         name = str(args.get("name") or "")
         origin = f"seat:{name[5:]}" if name.startswith("seat:") else (
-            f"session:{actor}" if actor else (as_ or "service"))
-        policy.record(sid, level, origin)
+            f"session:{actor['session_id']}" if actor else (as_ or "service"))
+        policy.record(sid, level, origin, out.get("job"))
         out = {**out, "trust": level}
     if out.get("ok") and sid and actor:
-        await asyncio.to_thread(_record_parent, sid, actor, "start")
+        await asyncio.to_thread(_record_parent, sid, actor["session_id"], "start")
     return out
 
 
@@ -468,17 +483,18 @@ async def _list_other(args: dict, as_: str | None = None) -> dict:
     fwd = {k: v for k, v in args.items() if not k.startswith("_")}
     answers = await asyncio.to_thread(harness.everyone, "list", fwd, as_=as_)
     out: dict[str, Any] = {"ok": True, "sessions": []}
-    levels = await asyncio.to_thread(policy.recorded_levels)
     for p, got in answers:
         if got.get("ok") is False:
             out.setdefault("errors", []).append({"harness": p.tool, **got})
             continue
-        # `trust` is the recorded level, or None for a session with no record.
-        out["sessions"] += [{**r, "harness": p.tool, "trust": levels.get(r.get("session_id") or "") or r.get("trust")}
-                            for r in got.get("sessions") or []]
+        out["sessions"] += [{**r, "harness": p.tool} for r in got.get("sessions") or []]
         for key in ("pool", "daemon"):
             if key in got:
                 out[key] = got[key]
+    # `trust` is the recorded level, or None for a session with no record.
+    out["sessions"] = await asyncio.to_thread(lambda: [
+        {**r, "trust": policy.recorded_level(r.get("session_id"), r.get("job")) or r.get("trust")}
+        for r in out["sessions"]])
     return out
 
 
@@ -489,8 +505,7 @@ async def _on_job(verb: str, steer: str, args: dict, as_: str | None,
         return {"ok": False, "reason": "job is required"}
     pid = _caller_pid(args)
     p, named = await asyncio.to_thread(harness.for_ref, job)
-    actor = await asyncio.to_thread(_actor_id, args)
-    policy.check_steer(actor, steer, named.get("session_id"))
+    await asyncio.to_thread(_check_steer, steer, args, p, named)
     return await asyncio.to_thread(harness.call, p, verb,
                                    {**named, "pid": pid, **(extra or {})}, as_=as_)
 

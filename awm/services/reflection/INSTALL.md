@@ -127,13 +127,19 @@ trusted.
 The session-control verbs take an optional `job`: a job id or a name as
 `list_other` shows it. A name two sessions share is refused with the candidates
 listed. The target is resolved through the same `session_target` lookup as the
-caller, with the target's REPL pid, so the same identity checks hold. Any
-session may act on any other session on its node, and nothing reaches another
-node.
+caller, with the target's REPL pid, so the same identity checks hold. Nothing
+reaches another node.
 
-**CAUTION** A confused agent can stop or reconfigure another agent's session.
-`stop` refuses the caller's own session without `confirm`, and that is the
-only guard.
+A verb that names a `job` other than the caller's own is a steer, and the
+caller's trust level gates it (`awm.trustpolicy.may_steer`). A session that
+names its own job steers nobody, so `stop {job, confirm:true}` retires the
+caller at every level. Both the caller and the target are described by their
+harness, and a trust level follows the job. A cleared or respawned conversation
+takes a new session id under the same job and keeps its level.
+
+**CAUTION** `stop` refuses the caller's own session without `confirm`. A
+trusted session can still stop or reconfigure any session at or below its own
+level.
 
 Callers with no proxy in front of them (a human at a plain shell) have no
 identity and are refused. `reflection_whoami` reports what the service resolved,

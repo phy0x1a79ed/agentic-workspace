@@ -17,6 +17,7 @@ CC = harness.Provider("harness-cc", "cc")
 DS = harness.Provider("harness-ds", "ds")
 ME = 4242
 MY_ID = "cc" + "0e38" * 8
+NEW_PID = 5151
 
 
 class Fake:
@@ -52,10 +53,20 @@ class Fake:
                 out.update(followup_deferred=True, ticket="t-1")
             return out
         if verb == "start":
-            return {"ok": True, "job": "abcd1234", "session_id": "cc" + "1" * 32}
+            row = {"session_id": "cc" + "1" * 32, "name": "new", "pid": NEW_PID, "job": "abcd1234"}
+            self.sessions["abcd1234"] = row
+            return {"ok": True, "job": row["job"], "session_id": row["session_id"]}
         if verb == "status":
-            return {"ok": True, "session_id": MY_ID, "kind": "bg", "job": "j1",
-                    "pid": ME, "cwd": "/w/projects/awm/old"}
+            ref = args.get("ref") or args.get("session_id")
+            rows = list(self.sessions.values())
+            if ref:
+                row = self.sessions.get(ref) or next(
+                    (r for r in rows if r.get("session_id") == ref), None)
+            else:
+                row = next((r for r in rows if r.get("pid") == args.get("pid")), None)
+            if row is None:
+                return {"ok": False, "reason": f"no session {ref or args.get('pid')}"}
+            return {"ok": True, "kind": "bg", **row, "cwd": "/w/projects/awm/old"}
         return {"ok": True, "verb": verb}
 
     def verbs(self):
@@ -273,11 +284,90 @@ def test_a_start_above_the_callers_trust_is_refused(fakes, monkeypatch):
 
 
 def test_a_steer_the_callers_trust_forbids_is_refused(fakes, monkeypatch):
+    fakes.cc.sessions["j2"] = PEER
     monkeypatch.setattr(policy, "_lib", lambda: type("L", (), {
         "may_steer": staticmethod(lambda a, v, target_level=None: (False, "no"))}))
-    out = run("interrupt", {"_caller_pid": ME, "job": "j1"})
+    out = run("interrupt", {"_caller_pid": ME, "job": "j2"})
     assert out == {"ok": False, "error": "no"}
     assert "interrupt" not in fakes.cc.verbs()
+
+
+PEER = {"session_id": "cc" + "2" * 32, "name": "other", "pid": 77, "job": "j2"}
+
+
+def _asked_to_steer(monkeypatch):
+    asked = []
+    monkeypatch.setattr(policy, "_lib", lambda: type("L", (), {
+        "may_steer": staticmethod(lambda a, v, target_level=None: asked.append(
+            (a, v, target_level)) or (False, "no"))}))
+    return asked
+
+
+@pytest.mark.parametrize("level", ["trusted", "cooperative", "untrusted"])
+def test_a_session_stops_itself_by_its_own_job(fakes, level):
+    """A session acting on itself steers nobody: retire's self-stop works at every level."""
+    policy.record(MY_ID, level, "test", "j1")
+    out = run("stop", {"_caller_pid": ME, "job": "j1", "confirm": True})
+    assert out["ok"] is True
+    assert fakes.cc.calls[-1][0] == "stop" and fakes.cc.calls[-1][1]["confirm"] is True
+
+
+def test_a_self_stop_never_asks_the_steer_policy(fakes, monkeypatch):
+    asked = _asked_to_steer(monkeypatch)
+    assert run("stop", {"_caller_pid": ME, "job": "j1", "confirm": True})["ok"] is True
+    assert asked == []
+
+
+@pytest.mark.parametrize("verb", ["stop", "stop_other"])
+def test_a_trusted_sessions_stop_of_another_job_still_runs_the_check(fakes, monkeypatch, verb):
+    fakes.cc.sessions["j2"] = PEER
+    asked = _asked_to_steer(monkeypatch)
+    out = run(verb, {"_caller_pid": ME, "job": "j2", "confirm": True})
+    assert out == {"ok": False, "error": "no"}
+    assert asked == [("trusted", verb, "trusted")]
+    assert "stop" not in fakes.cc.verbs()
+
+
+@pytest.mark.parametrize("verb", ["stop", "stop_other"])
+def test_an_untrusted_session_cannot_stop_another(fakes, verb):
+    fakes.cc.sessions["j2"] = PEER
+    policy.record(MY_ID, "untrusted", "test", "j1")
+    out = run(verb, {"_caller_pid": ME, "job": "j2", "confirm": True})
+    assert out["ok"] is False and "untrusted" in out["error"]
+    assert "stop" not in fakes.cc.verbs()
+
+
+def test_a_short_job_ref_carries_the_targets_level(fakes):
+    """The target named by job is described by its harness, so its level counts."""
+    fakes.cc.sessions["j2"] = PEER
+    policy.record(MY_ID, "cooperative", "test", "j1")
+    out = run("interrupt", {"_caller_pid": ME, "job": "j2"})
+    assert out["ok"] is False and "trusted" in out["error"]
+
+
+def test_a_caller_whoami_calls_trusted_steers_as_trusted(fakes, monkeypatch):
+    """No ledger entry and no harness that finds the id by status: whoami and the
+    steer check must agree, since the harness resolved the caller by its pid."""
+    fakes.cc.sessions["j2"] = PEER
+    monkeypatch.setattr(policy, "_harness_knows", lambda sid: False)
+    assert run("whoami", {"_caller_pid": ME})["trust"] == "trusted"
+    assert run("stop", {"_caller_pid": ME, "job": "j2", "confirm": True})["ok"] is True
+
+
+@pytest.mark.parametrize("level", ["cooperative", "untrusted"])
+def test_a_level_follows_the_job_to_a_new_session_id(fakes, level):
+    """A cleared or respawned conversation keeps its job, and so its level."""
+    fakes.cc.sessions["j2"] = PEER
+    policy.record("cc" + "5" * 32, level, "test", "j1")
+    assert run("whoami", {"_caller_pid": ME})["trust"] == level
+    out = run("stop", {"_caller_pid": ME, "job": "j2", "confirm": True})
+    assert out["ok"] is False
+    assert run("stop", {"_caller_pid": ME, "job": "j1", "confirm": True})["ok"] is True
+
+
+def test_start_other_records_the_new_sessions_job(fakes):
+    run("start_other", {"_caller_pid": ME, "project": "awm", "scope": "x"})
+    assert json.loads(policy._path().read_text())["cc" + "1" * 32]["job"] == "abcd1234"
 
 
 def test_the_first_local_message_carries_the_hint_once(fakes, monkeypatch):
@@ -708,7 +798,7 @@ def scope_claims(fakes, monkeypatch):
 def test_start_other_claims_its_scope_for_the_new_session(fakes, scope_claims):
     out = run("start_other", {"_caller_pid": ME, "project": "awm", "scope": "x"})
     assert out["ok"] and out["claim"]["claimed"]
-    assert scope_claims.held[("awm", "x")] == {"session_id": NEW_ID, "pid": ME, "job": "abcd1234"}
+    assert scope_claims.held[("awm", "x")] == {"session_id": NEW_ID, "pid": NEW_PID, "job": "abcd1234"}
     assert ("status", {"session_id": NEW_ID}) in fakes.cc.calls
 
 
@@ -743,3 +833,4 @@ def test_a_stop_releases_the_sessions_claims(fakes, scope_claims, verb):
     out = run(verb, {"_caller_pid": ME, "job": "j1", "confirm": True})
     assert out["ok"]
     assert list(scope_claims.held) == [("awm", "y")]
+
