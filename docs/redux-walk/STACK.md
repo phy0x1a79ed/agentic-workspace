@@ -23,25 +23,18 @@ Procedure, from dfs-interview § Work the stack:
 
 ## Current topic
 
-**door-client**, under **board**. Its result: `dispatch-mode/parallel-uptime/board/door-client/README.md`.
+**mizar-backup**. Its result: `mizar-backup/README.md`.
 
 ## Pending
 
-- **rt-plugins** (2026-11-05): rt-container waits on your go to build the stock plugins (projects/stock/plugins). Talk to it directly.
-- **Q-tarball-backup** (2026-11-05): Trilium fork backup: push its branches and tags to the existing GitHub fork phy0x1a79ed/Trilium, and attach the pinned tarball to a GitHub release there as a backup copy only (deneb still gets mizar's push)? Recommended: yes.
-- **Q-alcor-door** (2026-11-05): alcor's port 22 lockdown: after it, ssh to alcor works only from mizar, capella and lyra over the tailnet. No LAN ssh, no phone, no altair. OK, or should more devices (your phone, by tailnet address) stay allowed?
 - **Q-seat-models** (2026-11-05): Seats: after spawn-tuning, each Slack/Discord seat names its model and effort. dev sets them to today's opus at high. Want any seat lighter, such as sonnet at medium for plain Q&A seats? Optional, no rush.
 - **Q-deneb** (2026-11-05): deneb cutover, READY (release f5c5294d): about 10 minutes of vault downtime. Backups first: an online copy plus a stopped copy to mizar, with the nightly mirror as a third. Changes: sshd allows awm-tunnel and admin besides tony and avatar-relay; ufw opens 443 to all (the SNI stream: auth goes to alcor, everything else stays Cloudflare-only behind it); nginx SNI routing and CSP headers; Trilium moves to its own sandboxed user; deneb becomes a push node; no Node or build tools: mizar ships the built pages. A singleton door on port 2201, tailnet only, for its callers; the awm user's shell becomes /bin/sh for the door's forced command (port 22 still excludes awm). Side effects: the avatar relay answers 503 until capella's side moves (M44). OK to run it?
 - **M10b** (2026-11-05): Tailnet admin console, DNS page: turn on HTTPS Certificates, so each node's <machine>.tail080e54.ts.net portal can get a certificate. Each name then shows in the public Certificate Transparency logs (you chose ts.net names knowing that; say if not).
 - **rc-rows** (2026-11-05): On claude.ai/code, archive the 31 dead Remote Control rows: 7 redux-build-* (alcor, clean-plugins, search, channels, queue, deploy, integrate), 14 finished (awm redux, core-redux-gateway-plugins-bootstrap, fleet-board-rework, fxdiff-design, retire-full-close, owner-dm-defaults, discord dm previews, multi-admin machine access, plan-bypass-mode, science-bash-stall, capellaz cc mem cleanup, avatar, lit kb, cloud/homelab), representative x5, secretary x5. Your call on: engcyc pipeline plan, msm-*, fosdb, cyanoverse, treesapp, ecspr, job application system, 4 offline seat rows, 4 cloud sessions.
-- **Q-chinook** (2026-11-05): mizar has no off-site data backup: its nightly chinook jobs fail every night because mizar has no .awm/dvc.toml [chinook] section (altair has one). OK to give mizar the same chinook endpoints and a mizar prefix, so mizar's DVC cache and workspace back up nightly? Recommended: yes, since mizar is now the canonical node.
-- **Q-mira-orig** (2026-11-05): On mira, ~/rt/model/day/run_day.py.orig (Massive key) and ~/rt/ibc/config.ini.orig (IBKR login) hold secrets in plain text at mode 0644. mira is frozen, so nothing changed. Fix now with chmod 600 (no process reads them), or leave for mira's retirement?
 
 ## Stack
 
 - **mizar-backup** (2026-11-05): from redux-build/rt-container: rt-container (2026-11-05): mizar had no dvc binary; data_dvc's fallbacks look under ~/lib/miniforge3 but mizar's miniforge is ~/miniforge3, so scope create/heal report mode none. Both nightly chinook jobs on mizar (cache_sync, workspace_backup) fail: .awm/dvc.toml [chinook] is missing, so nothing on mizar is backed up off-site.
-- **session-list** (2026-11-05): why are there so many sessions? start top level session to clean up the sessions. at least list shouldnt expose dead sessions -> need discussion here
-  - [ ] Which list: Claude Code's ListAgents rows (product; we can only archive) or awm reflection list_other (ours: live only, retire archives its RC row)?
 - **dispatch-mode** (2026-11-05): as tasks are decided and worked out, please dispatch top level agents to work on them / their issues can be pushed back to the stack / we will notify them once their issues are solved and how, rather than when we decide how to solve. / we can add this mode to dfs-interview skill
   - **parallel-uptime** (2026-11-05): I'd like to be able to work in parallel. if all discussion goes through you, then I sit idle while you work and vice versa. our first topic should be a protocol taht maximizes both of our up times
     - **board** (2026-11-05): the "One file holds everything" is not a hard blocker, can we look into setting up trillium and the new board then? this would include the alcor services
@@ -114,3 +107,4 @@ From journal 6a98c0c6 (awm/redux) and walkthrough's handover (manual-steps.md at
 - **zotero-home** (closed 2026-11-05): `dispatch-mode/parallel-uptime/board/deneb-board/zotero-home/README.md`
 - **deneb-gaps** (closed 2026-11-05): `dispatch-mode/parallel-uptime/board/deneb-board/deneb-gaps/README.md`
 - **pin-refresh** (closed 2026-11-05): `dispatch-mode/parallel-uptime/board/deneb-board/pin-refresh/README.md`
+- **session-list** (closed 2026-11-05): `session-list/README.md`
