@@ -20,3 +20,5 @@ This topic holds the path to a live board: the Trilium command center page (queu
 ## Decisions
 
 - alcor opens for every service except the rt services. Discord may stay blocked on alcor too. Tony: "alcor for all except the rt services, we may also have to block discord as well" (2026-11-05). mira stays untouched.
+- Discord stays off alcor until mira's cutover. Tony: "discord OK" (2026-11-05).
+- redux-build/dns-guide (sonnet, medium) walks Tony through M10 and M12 to M14. Tony: "start a sonnet agent to walk me through M10 and M12-14" (2026-11-05).

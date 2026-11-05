@@ -32,7 +32,9 @@ Procedure, from dfs-interview § Work the stack:
     - **board** (2026-11-05): the "One file holds everything" is not a hard blocker, can we look into setting up trillium and the new board then? this would include the alcor services
       - [x] Does alcor open for the board's services only (operations, approver and passkey, deneb tunnel), with rt, IBKR and mira still shut? (answered 2026-11-05)
       - [ ] Tony's DNS steps M10, M12, M13, M14: can he do them now, in parallel?
-      - [ ] Discord on alcor: hold social's Discord accounts on alcor until mira's cutover?
+      - [x] Discord on alcor: hold social's Discord accounts on alcor until mira's cutover? (answered 2026-11-05)
+- **search-awm-api** (2026-11-05): can we make it so search also retrieves information about the awm API itself (as a source) agents seem to use it for that as well
+- **spawn-tuning** (2026-11-05): new agents spawned should have model and effort level tuned to task, with fable requireing user consent. no xHigh for any model
 
 ## Parked
 
@@ -59,6 +61,7 @@ From journal 6a98c0c6 (awm/redux) and walkthrough's handover (manual-steps.md at
 - **redux-build/trilium-fork (job e74cd7f2): the fork on mizar, its first release tarball, server.pin** (2026-11-05): took board
 - [x] tell redux-build/trilium-fork how tarball-host was solved (told 2026-11-05)
 - **redux-build/alcor-open (job 839aad63): alcor onto dcd8ba4d and its roles, dry run first, rt, IBKR, mira and Discord held** (2026-11-05): took board
+- **redux-build/dns-guide (job 67cbdc6d, sonnet medium): guides Tony through M10, M12-M14** (2026-11-05): took board
 
 ## Closed
 
