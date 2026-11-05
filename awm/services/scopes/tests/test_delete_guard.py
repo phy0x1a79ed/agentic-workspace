@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 from pathlib import Path
 
 import pytest
 
+from awm.dvcdata import data_dvc
 from awm.scopes import claims
 from awm.scopes import scopes as mod
-from awm.scopes.models import ScopeCreateRequest
+from awm.scopes.models import ScopeCreateRequest, ScopeUpdateRequest
 
 pytestmark = [pytest.mark.scopes, pytest.mark.slow, pytest.mark.subprocess]
 
@@ -71,12 +73,39 @@ def test_ignored_files_never_block(scope):
     assert mod.delete_scope(PROJECT, "s").status == "deleted"
 
 
-def test_changed_pinned_data_blocks_unless_forced(scope, monkeypatch):
-    monkeypatch.setattr(mod, "_dvc_drift", lambda wt: ["data/raw.dvc"])
-    with pytest.raises(RuntimeError, match="changed since their last `dvc add`"):
+def _dvc_status(monkeypatch, state: str) -> None:
+    """Make the scope a DVC repo whose one pin ``dvc status`` reports in ``state``."""
+    status = {"data/raw.dvc": [{"changed outs": {"data/raw": state}}]}
+    monkeypatch.setattr(data_dvc, "is_dvc_repo", lambda wt: True)
+    monkeypatch.setattr(data_dvc, "chunk_pins", lambda wt: ["data/raw.dvc"])
+    monkeypatch.setattr(data_dvc, "dvc_available", lambda: True)
+    monkeypatch.setattr(data_dvc, "_dvc", lambda wt, *a, **k: subprocess.CompletedProcess(
+        a, 0, stdout=json.dumps(status), stderr=""))
+
+
+@pytest.mark.parametrize("state", ["modified", "new"])
+def test_data_that_differs_from_its_pin_blocks_unless_forced(scope, monkeypatch, state):
+    _dvc_status(monkeypatch, state)
+    with pytest.raises(RuntimeError, match="data differs from its pin"):
         mod.delete_scope(PROJECT, "s")
+    assert scope.exists()
     out = mod.delete_scope(PROJECT, "s", force=True)
-    assert out.discarded["dvc_drift"] == ["data/raw.dvc"]
+    assert out.discarded["dvc_drift"] == [f"data/raw ({state})"]
+
+
+@pytest.mark.parametrize("state", ["deleted", "not in cache"])
+def test_pinned_data_absent_from_disk_or_cache_never_blocks(scope, monkeypatch, state):
+    _dvc_status(monkeypatch, state)
+    out = mod.delete_scope(PROJECT, "s")
+    assert out.status == "deleted"
+
+
+def test_an_uncommitted_pin_blocks_as_an_untracked_file(scope):
+    (scope / "data").mkdir()
+    (scope / "data" / "raw.dvc").write_text("outs:\n- md5: 0\n  path: raw\n")
+    with pytest.raises(RuntimeError, match="uncommitted"):
+        mod.delete_scope(PROJECT, "s")
+    assert (scope / "data" / "raw.dvc").exists()
 
 
 def test_a_scope_without_dvc_has_no_drift(scope):
@@ -112,3 +141,52 @@ def test_a_kept_branch_with_commits_no_other_ref_holds_blocks_the_delete(scope):
         mod.delete_scope(PROJECT, "s")
     out = mod.delete_scope(PROJECT, "s", force=True)
     assert out.status == "deleted" and len(out.discarded["commits"]) == 1
+
+def _complete_state(scope: Path) -> tuple:
+    """What a refused ``complete`` must leave as it was: the record, main, and origin's main."""
+    bare = scope.parent / ".bare"
+    return (mod.agent_id_for_scope(PROJECT, "s", active_only=True), _git(bare, "rev-parse", "main"),
+            _git(bare, "ls-remote", "origin", "main"), scope.exists())
+
+
+@pytest.fixture
+def mergeable(scope):
+    """The scope with one commit to merge, and the project's main checkout to merge it in."""
+    bare = scope.parent / ".bare"
+    _git(bare, "worktree", "add", "-q", str(scope.parent / "main"), "main")
+    _git(bare, "config", "user.email", "t@t")
+    _git(bare, "config", "user.name", "t")
+    _commit(scope, "work")
+    return scope
+
+
+def test_a_complete_refused_by_uncommitted_files_changes_nothing(mergeable):
+    (mergeable / "draft.txt").write_text("x")
+    before = _complete_state(mergeable)
+    with pytest.raises(RuntimeError, match="uncommitted"):
+        mod.update_scope(PROJECT, "s", ScopeUpdateRequest(merge=True, cleanup=True))
+    assert _complete_state(mergeable) == before and before[0] is not None
+
+
+def test_a_complete_refused_by_a_live_claim_changes_nothing(mergeable):
+    claims.claim(PROJECT, "s", SESSION, pid=os.getpid())
+    before = _complete_state(mergeable)
+    with pytest.raises(RuntimeError, match="force does not override"):
+        mod.update_scope(PROJECT, "s", ScopeUpdateRequest(merge=True, cleanup=True, force=True))
+    assert _complete_state(mergeable) == before
+
+
+def test_a_complete_without_merge_refused_by_unique_commits_changes_nothing(mergeable):
+    before = _complete_state(mergeable)
+    with pytest.raises(RuntimeError, match="no other branch or remote holds"):
+        mod.update_scope(PROJECT, "s", ScopeUpdateRequest(cleanup=True))
+    assert _complete_state(mergeable) == before
+
+
+def test_a_complete_that_merges_its_commits_cleans_up(mergeable):
+    head = _git(mergeable, "rev-parse", "HEAD")
+    out = mod.update_scope(PROJECT, "s", ScopeUpdateRequest(merge=True, cleanup=True))
+    bare = mergeable.parent / ".bare"
+    assert out.status == "completed" and not mergeable.exists()
+    assert _git(bare, "merge-base", "--is-ancestor", head, "main") == ""
+    assert mod.agent_id_for_scope(PROJECT, "s", active_only=True) is None
