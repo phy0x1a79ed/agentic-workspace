@@ -33,6 +33,9 @@ pub struct Node {
 pub struct Door {
     pub port: u16,
     pub network: Network,
+    /// The account a caller logs in as. Absent, ssh uses the caller's own login name.
+    #[serde(default)]
+    pub user: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -185,6 +188,11 @@ impl EdgeList {
         Some((address, door.port))
     }
 
+    /// The account a caller logs in as at `host`'s singleton door, when the door names one.
+    pub fn door_user(&self, host: &str) -> Option<String> {
+        self.singleton_doors.get(host)?.user.clone()
+    }
+
     /// The singleton tools that `host` serves through its door to `caller`.
     pub fn door_tools(&self, host: &str, caller: &str) -> Vec<String> {
         self.singletons
@@ -242,6 +250,13 @@ singletons:
         )
         .unwrap();
         assert_eq!(e.door_address("station"), Some(("203.0.113.7".into(), 2201)), "an internet door listens on the public address");
+        assert_eq!(e.door_user("station"), None, "a door without a user leaves the login to ssh");
+        let e = EdgeList::parse(
+            "nodes:\n  station: {role: station, addresses: {tailscale: 100.1.1.1}}\n\
+             singleton_doors:\n  station: {port: 2201, network: tailscale, user: awm}\n",
+        )
+        .unwrap();
+        assert_eq!(e.door_user("station").as_deref(), Some("awm"));
     }
 
     #[test]

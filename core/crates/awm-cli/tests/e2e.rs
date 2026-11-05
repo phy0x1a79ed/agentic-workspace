@@ -971,7 +971,7 @@ fn a_caller_reaches_a_peers_singleton_through_its_door() {
     let edges = "nodes:\n  mizar: {role: homebase}\n  alcor: {role: standby}\n  \
                  deneb: {role: station, addresses: {public: 127.0.0.1, tailscale: 100.64.0.9}}\n  shogun: {role: admin}\n\
                  edges:\n  alcor: {mizar: tailscale}\n  mizar: {alcor: tailscale, deneb: internet}\n  shogun: {mizar: tailscale}\n\
-                 singleton_doors:\n  deneb: {port: 2201, network: internet}\n\
+                 singleton_doors:\n  deneb: {port: 2201, network: internet, user: awm}\n\
                  singletons:\n  - {tool: trilium, host: deneb, callers: [mizar, alcor]}\n";
     let deneb_state = edge_node(base, "deneb", &["trilium"], edges);
     let deneb = Gateway::start(&deneb_state);
@@ -1017,6 +1017,7 @@ fn a_caller_reaches_a_peers_singleton_through_its_door() {
     }
     let args = std::fs::read_to_string(&door.args).unwrap();
     assert!(args.contains("\n-p\n2201\n127.0.0.1\nport {"), "the door listens on deneb's public address: {args}");
+    assert!(args.contains("\n-l\nawm\n"), "the caller logs in as the door's user: {args}");
     // operations' own call to trilium takes the same door.
     let resp = http().post(format!("{}/invoke", alcor.url))
         .json(&json!({"name": "ops", "args": {"verb": "call_needed", "args": {"verb": "whoami"}}}))

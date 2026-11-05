@@ -317,7 +317,8 @@ impl Gateway {
         let Some((address, port)) = edges.door_address(&s.host) else {
             return Err(ApiError::new(502, format!("{tool}: edges.yml gives {}'s singleton door no address on its network", s.host)));
         };
-        Ok(Some(crate::door::DoorRoute { tool: tool.into(), host: s.host.clone(), address, port }))
+        let user = edges.door_user(&s.host);
+        Ok(Some(crate::door::DoorRoute { tool: tool.into(), host: s.host.clone(), address, port, user }))
     }
 
     /// Who owns a tool name right now (R117 item 3).

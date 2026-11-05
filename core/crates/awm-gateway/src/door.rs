@@ -1,7 +1,7 @@
 //! The client for another host's singleton door (fleet.md R89, R98 item 2).
 //!
 //! A singleton runs on one host, and each of its callers reaches it through that host's door,
-//! never through an edge. One call is one `ssh -p <port> <address> port <request>` with this
+//! never through an edge. One call is one `ssh -l <user> -p <port> <address> port <request>` with this
 //! node's service key, which the host forces to `awm port`. The door reads the request from
 //! `SSH_ORIGINAL_COMMAND` and prints one JSON line. A shared master connection keeps the link
 //! warm (R93). `AWM_DOOR_SSH` names another program to run in place of ssh, with the same
@@ -27,6 +27,8 @@ pub struct DoorRoute {
     pub host: String,
     pub address: String,
     pub port: u16,
+    /// The account to log in as, from the door's `user` in edges.yml.
+    pub user: Option<String>,
 }
 
 impl DoorRoute {
@@ -44,6 +46,9 @@ fn ssh_args(route: &DoorRoute, request: &DoorRequest) -> Vec<String> {
         "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3",
     ];
     let mut args: Vec<String> = opts.iter().map(|s| s.to_string()).collect();
+    if let Some(user) = &route.user {
+        args.extend(["-l".into(), user.clone()]);
+    }
     args.extend(["-i".into(), key, "-p".into(), route.port.to_string(), route.address.clone()]);
     args.push(format!("port {}", serde_json::to_string(request).expect("json")));
     args
@@ -97,7 +102,7 @@ mod tests {
 
     #[test]
     fn the_request_rides_in_the_ssh_command() {
-        let route = DoorRoute { tool: "vault".into(), host: "h".into(), address: "203.0.113.7".into(), port: 2201 };
+        let route = DoorRoute { tool: "vault".into(), host: "h".into(), address: "203.0.113.7".into(), port: 2201, user: None };
         let req = DoorRequest { name: "vault".into(), args: json!({"verb": "get"}), origin: None };
         let args = ssh_args(&route, &req);
         let n = args.len();
@@ -106,5 +111,16 @@ mod tests {
         assert!(args.iter().any(|a| a.ends_with(SERVICE_KEY)));
         let parsed = awm_trust::port::parse(&args[n - 1]).unwrap();
         assert_eq!((parsed.name.as_str(), parsed.origin), ("vault", None));
+        assert!(!args.iter().any(|a| a == "-l"), "no user named, so ssh logs in as the caller");
+    }
+
+    #[test]
+    fn the_door_user_is_the_login_name() {
+        let route = DoorRoute { tool: "vault".into(), host: "h".into(), address: "100.1.1.1".into(), port: 2201, user: Some("awm".into()) };
+        let req = DoorRequest { name: "vault".into(), args: json!({}), origin: None };
+        let args = ssh_args(&route, &req);
+        let at = args.iter().position(|a| a == "-l").expect("-l");
+        assert_eq!(args[at + 1], "awm");
+        assert!(at < args.len() - 2, "the login precedes the address and the command");
     }
 }
