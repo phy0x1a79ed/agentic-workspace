@@ -54,7 +54,6 @@ Procedure, from dfs-interview § Work the stack:
       - **deneb-board** (2026-11-05): trilium-fork follow-ups: deneb gets the tarball only once cloud's install config makes deneb a push node; cloud deploy.yml awm_fleet_push.altair still lists trilium and canonical_repos defaults include trilium; the mizar vault mirror does not exist yet
         - [x] Why does deneb need nodejs, npm and build-essential if mizar pushes built artifacts? (asked deneb-board) (answered 2026-11-05)
         - [x] When core-artifact lands: tell deneb-board the artifact names and route (cloud tip 88c35a8 holds) (answered 2026-11-05)
-        - **pin-refresh** (2026-11-05): from redux-build/dev: rebuilding pins automatically in the routine deploy is more than a small change. Please start a worker.
 - **path-front-door** (2026-11-05): Tony raised a path-based front door (nexus.tony-xy-liu.com/<node>/...) as a possible later design; not decided. (via dns-guide, 2026-11-05)
 
 ## Parked
@@ -99,6 +98,7 @@ From journal 6a98c0c6 (awm/redux) and walkthrough's handover (manual-steps.md at
 - **redux-build/pin-refresh (job b51aabfa, sonnet high): routine deploy rebuilds stale core and page pins** (2026-11-05): took pin-refresh
 - [x] tell redux-build/dev how zotero-home was solved (told 2026-11-05)
 - [x] tell redux-build/deneb-board how deneb-gaps was solved (told 2026-11-05)
+- [x] tell redux-build/dev how pin-refresh was solved (told 2026-11-05)
 
 ## Closed
 
@@ -108,3 +108,4 @@ From journal 6a98c0c6 (awm/redux) and walkthrough's handover (manual-steps.md at
 - **trilium-shape** (closed 2026-11-05): `dispatch-mode/parallel-uptime/board/deneb-board/trilium-shape/README.md`
 - **zotero-home** (closed 2026-11-05): `dispatch-mode/parallel-uptime/board/deneb-board/zotero-home/README.md`
 - **deneb-gaps** (closed 2026-11-05): `dispatch-mode/parallel-uptime/board/deneb-board/deneb-gaps/README.md`
+- **pin-refresh** (closed 2026-11-05): `dispatch-mode/parallel-uptime/board/deneb-board/pin-refresh/README.md`
