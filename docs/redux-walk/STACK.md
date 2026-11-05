@@ -80,6 +80,7 @@ From journal 6a98c0c6 (awm/redux) and walkthrough's handover (manual-steps.md at
 - **redux-build/search-awm-api (job 8790d479, opus high)** (2026-11-05): took search-awm-api
 - **redux-build/spawn-tuning (job 716a0319, sonnet high)** (2026-11-05): took spawn-tuning
 - [x] tell redux-build/deneb-board how trilium-shape was solved (told 2026-11-05)
+- **redux-build/core-artifact (job 96e615ee, sonnet high): pinned musl core binary for push nodes (from dev's deneb route answers)** (2026-11-05): took deneb-board
 
 ## Closed
 
