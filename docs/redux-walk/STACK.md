@@ -30,6 +30,8 @@ Procedure, from dfs-interview § Work the stack:
 - **dispatch-mode** (2026-11-05): as tasks are decided and worked out, please dispatch top level agents to work on them / their issues can be pushed back to the stack / we will notify them once their issues are solved and how, rather than when we decide how to solve. / we can add this mode to dfs-interview skill
   - **parallel-uptime** (2026-11-05): I'd like to be able to work in parallel. if all discussion goes through you, then I sit idle while you work and vice versa. our first topic should be a protocol taht maximizes both of our up times
     - **board** (2026-11-05): the "One file holds everything" is not a hard blocker, can we look into setting up trillium and the new board then? this would include the alcor services
+      - [ ] Does alcor open for the board's services only (operations, approver and passkey, deneb tunnel), with rt, IBKR and mira still shut?
+      - [ ] Tony's DNS steps M10, M12, M13, M14: can he do them now, in parallel?
 
 ## Parked
 
@@ -50,5 +52,9 @@ From journal 6a98c0c6 (awm/redux) and walkthrough's handover (manual-steps.md at
 - R77 after the Caviar and muse invites (M55)
 - reflection follow-ups from reflect-selfstop (release dcd8ba4d, journal 8542e517): cch status misses a session by its post-clear id, so stop {job:<new id>} misses it; old trust.json records have no job field
 - end state: verify every node (T28), retire mira and its disk (T29, M56), debrief (T30)
+
+## Workers
+
+- **redux-build/trilium-fork (job e74cd7f2): the fork on mizar, its first release tarball, server.pin** (2026-11-05): took board
 
 ## Closed
