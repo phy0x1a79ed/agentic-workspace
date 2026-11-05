@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import os
 import socket
-import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -36,25 +35,17 @@ SERVICE_DIR = HERE.parents[1]                   # …/awm/services/trilium
 STATE_DIR = Path(os.environ.get("TRILIUM_STATE_DIR") or (AWM_DIR / "services" / "trilium"))
 LOG_DIR = STATE_DIR / "logs"
 
-#: Per-service *install* artifacts: the unpacked server tarball, the recorded
-#: node bin, the tarball stamp. Beside the service and gitignored.
+#: Per-service *install* artifacts: the unpacked server release and its stamp.
+#: Beside the service and gitignored.
 #:
-#: Not in STATE_DIR, and the reason is sirius. There the install runs as the
-#: dev user and the gateway runs as the application account, which owns the
-#: state root — an install writing there fails on permissions. Everything
-#: written at install time and only read at runtime belongs on the install
-#: side of that line.
+#: Not in STATE_DIR: where the install runs as one user and the gateway as
+#: another account that owns the state root, an install writing there fails on
+#: permissions. Everything written at install time and only read at runtime
+#: belongs on the install side of that line.
 INSTALL_DIR = SERVICE_DIR
-NODE_BIN_FILE = INSTALL_DIR / "node-bin"
-
-#: The fork worktree this node serves. `release` by default. A dev sandbox
-#: points TRILIUM_FORK_DIR at `dev`.
-FORK_DIR = Path(os.environ.get("TRILIUM_FORK_DIR")
-                or (WORKSPACE_ROOT / "projects" / "trilium" / "release"))
 
 #: The vault repository's checkout, apart from the fork. Every nightly snapshot
-#: is a commit, and in the fork those commits would publish with the code and
-#: move `git describe` on every release.
+#: is a commit, and in the fork those commits would publish with the code.
 #:
 #: `awm.zotero.sync.VAULT_SCOPE` spells the same two paths and must agree.
 VAULT_HOME = WORKSPACE_ROOT / "projects" / "vault" / "release"
@@ -67,31 +58,14 @@ VAULT_HOME = WORKSPACE_ROOT / "projects" / "vault" / "release"
 #: commits, so one implementation covers both shapes.
 SCOPE = Path(os.environ.get("TRILIUM_VAULT_SCOPE") or VAULT_HOME)
 
-#: What `pnpm server:build` emits — one bundle, plus an `assets/` beside it.
-FORK_ENTRY = FORK_DIR / "apps" / "server" / "dist" / "main.cjs"
-
-#: Where `install.sh` unpacks the published server tarball when there is no
-#: fork to build. Upstream ships a Node runtime inside it, so a node serving
-#: from here needs no node toolchain of its own — which is the whole reason
-#: sirius can install in a minute.
-TARBALL_DIR = INSTALL_DIR / "server"
-TARBALL_ENTRY = TARBALL_DIR / "main.cjs"
-TARBALL_NODE = TARBALL_DIR / "node" / "bin" / "node"
-#: What `install.sh` unpacked into TARBALL_DIR. A line starting ``fork `` means the
-#: tarball came from a release of our fork (``server.pin``), so it carries the fork's
-#: code, the slice mask included (install.md R115 item 4).
-TARBALL_STAMP = INSTALL_DIR / "tarball-stamp"
-
-#: What `install.sh` last built, kept in `<git-dir>/awm` of the fork worktree,
-#: which never travels.
-BUILD_STAMP_NAME = "trilium-build-stamp"
-
-#: The parts of the worktree that are the vault's rather than Trilium's, as git
-#: pathspecs. Excluded from the dirtiness probe below: a pending pin is not a
-#: source change, and `install.sh` rebuilds the whole monorepo when it reads the
-#: tree as dirty. That script spells the same two — they have to agree, or a
-#: deploy alternates between rebuilding and not.
-NOT_SOURCE = (":!data", ":!live")
+#: The fork release `install.sh` unpacks from the tarball `server.pin` names.
+#: It carries its own Node runtime, so a serving node needs no toolchain.
+SERVER_PIN = SERVICE_DIR / "server.pin"
+SERVER_DIR = INSTALL_DIR / "server"
+SERVER_ENTRY = SERVER_DIR / "main.cjs"
+SERVER_NODE = SERVER_DIR / "node" / "bin" / "node"
+#: ``<version> sha256:<hash>`` of the release unpacked in SERVER_DIR.
+SERVER_STAMP = INSTALL_DIR / "tarball-stamp"
 
 #: The loopback port the vault's node process binds. Defined in `awm.config`
 #: because the edge needs the same number; see its comment there.
@@ -130,7 +104,7 @@ class Vault:
 
         Without it there is nothing to serve and the supervisor says so instead
         of spawning a child against an empty path. A directory is enough: a
-        node serving the published tarball has one, and no checkout.
+        node with no vault checkout has one.
         """
         return self.scope.is_dir()
 
@@ -138,10 +112,9 @@ class Vault:
     def is_checkout(self) -> bool:
         """Whether this vault can hold history.
 
-        True on the node that authors Trilium, where the scope is the fork's
-        git worktree; false on a node serving the published tarball, where the
-        same path is a plain directory. A worktree's `.git` is a file rather
-        than a directory, so both forms count.
+        True where the scope is the vault repository's worktree; false where
+        the same path is a plain directory. A worktree's `.git` is a file
+        rather than a directory, so both forms count.
         """
         return (self.scope / ".git").exists()
 
@@ -214,94 +187,44 @@ VAULT = Vault()
 # -- what is installed to run -----------------------------------------------
 
 
-def entry_point() -> tuple[Path, str] | None:
-    """The server bundle to launch, and which of the two it is.
-
-    The fork wins when it is built, because a change we authored is only real
-    if it is the thing running. The tarball is what a node that cannot build
-    serves — sirius holds no GitHub credential and has two vCPUs.
-    """
-    if FORK_ENTRY.is_file():
-        return FORK_ENTRY, "fork"
-    if TARBALL_ENTRY.is_file():
-        return TARBALL_ENTRY, "fork" if _fork_tarball() else "tarball"
-    return None
-
-
-def _fork_tarball() -> bool:
+def _read_pin() -> dict[str, str]:
     try:
-        return TARBALL_STAMP.read_text().startswith("fork ")
+        lines = SERVER_PIN.read_text().splitlines()
     except OSError:
-        return False
+        return {}
+    return dict(line.split("=", 1) for line in lines
+                if "=" in line and not line.lstrip().startswith("#"))
+
+
+def entry_point() -> Path | None:
+    """The server bundle to launch: the unpacked fork release, once installed."""
+    return SERVER_ENTRY if SERVER_ENTRY.is_file() and SERVER_NODE.is_file() else None
 
 
 def node_exe() -> str:
-    """Absolute node for the chosen entry point, falling back to PATH.
-
-    The published tarball carries its own Node runtime beside the bundle, so a
-    tarball install needs no toolchain. A fork build does, and reads the
-    absolute bin directory `install.sh` recorded — the supervisor respawns
-    under systemd's minimal PATH, where neither `node` nor the `mamba` that
-    could find it exists.
-    """
-    chosen = entry_point()
-    if chosen and chosen[0] == TARBALL_ENTRY and TARBALL_NODE.is_file():
-        return str(TARBALL_NODE)
-    try:
-        recorded = NODE_BIN_FILE.read_text().strip()
-    except OSError:
-        recorded = ""
-    return str(Path(recorded) / "node") if recorded else "node"
-
-
-def _git(*args: str) -> str | None:
-    try:
-        r = subprocess.run(["git", "-C", str(FORK_DIR), *args],
-                           capture_output=True, text=True, timeout=10)
-    except (OSError, subprocess.SubprocessError):
-        return None
-    return r.stdout.strip() if r.returncode == 0 else None
+    """The Node runtime the release carries beside its bundle."""
+    return str(SERVER_NODE)
 
 
 def source_state() -> dict[str, Any]:
-    """Which revision is on disk, and whether the build matches it.
+    """Which fork release is unpacked, and whether it is the one awm pins.
 
-    Without this a stale or hand-edited deployment is invisible: the server
-    serves whatever bundle happens to be in `dist/`, and nothing relates it to
-    a commit. `dirty` and `built_current` are the two ways that goes wrong —
-    an uncommitted edit, and a commit that was never rebuilt.
+    `current` false means `server.pin` moved and `install.sh` has not run since,
+    so the server still serves the release before.
     """
-    chosen = entry_point()
-    state: dict[str, Any] = {
-        "entry": str(chosen[0]) if chosen else None,
-        "source": chosen[1] if chosen else None,
-        "fork_dir": str(FORK_DIR),
-    }
-    if not (FORK_DIR / ".git").exists():
-        return state
-    status = _git("status", "--porcelain", "--", *NOT_SOURCE)
-    head = _git("rev-parse", "HEAD")
-    stamp = None
-    git_dir = _git("rev-parse", "--absolute-git-dir")
     try:
-        stamp = dict(line.split("=", 1) for line in
-                     (Path(git_dir) / "awm" / BUILD_STAMP_NAME).read_text().split()
-                     if "=" in line) if git_dir else None
-    except (OSError, ValueError):
-        pass
-    state.update({
-        "branch": _git("rev-parse", "--abbrev-ref", "HEAD"),
-        # No `--dirty`: it has no pathspec, so it would read the vault's own
-        # writes as a modified source tree. `dirty` below answers that.
-        "describe": _git("describe", "--tags", "--always"),
-        "head": head,
-        "dirty": None if status is None else bool(status),
-        "built_head": (stamp or {}).get("head"),
-        "built_current": (None if (stamp is None or head is None)
-                          else stamp.get("head") == head
-                          and stamp.get("dirty") == ("1" if status else "0")),
-    })
-    return state
+        installed = SERVER_STAMP.read_text().split()
+    except OSError:
+        installed = []
+    pin = _read_pin()
+    want = [pin.get("version", ""), f"sha256:{pin.get('sha256', '')}"]
+    entry = entry_point()
+    return {
+        "entry": str(entry) if entry else None,
+        "installed": installed[0] if installed else None,
+        "pinned": pin.get("version") or None,
+        "current": bool(entry) and installed == want,
+    }
 
 
 def listening(port: int, *, timeout: float = 0.5) -> bool:

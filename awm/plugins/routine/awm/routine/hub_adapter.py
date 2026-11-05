@@ -293,7 +293,8 @@ def build_deployer(store: Store, out: Outbound) -> Deployer:
     return Deployer(store, out, workspace=ws,
                     refresher=Refresher(out, node=node_name(),
                                         checkout_root=default_checkout_root(ws),
-                                        fleet_config=lambda: fleetconf.load(install_config)))
+                                        fleet_config=lambda: fleetconf.load(install_config),
+                                        artifact_store=AWM_DIR / "artifacts"))
 
 
 if __name__ == "__main__":

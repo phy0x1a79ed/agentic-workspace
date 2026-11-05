@@ -41,22 +41,14 @@ export interface VaultState {
   error: string | null;
 }
 
-/** Which bundle is being served, and whether it matches the source on disk.
+/** Which fork release is unpacked, and whether it is the one awm pins.
  *  Absent for a caller arriving through the edge. */
 export interface SourceState {
   entry: string | null;
-  /** `fork` when this node builds what it serves, `tarball` when it serves the
-   *  published build. A serving-only node reports `tarball` and no revision. */
-  source: 'fork' | 'tarball' | null;
-  fork_dir: string;
-  branch?: string | null;
-  describe?: string | null;
-  head?: string | null;
-  dirty?: boolean | null;
-  built_head?: string | null;
-  /** False when the bundle on disk was built from a different commit, or from
-   *  a clean tree that has since been edited. */
-  built_current?: boolean | null;
+  installed: string | null;
+  pinned: string | null;
+  /** False when server.pin moved and install.sh has not run since. */
+  current: boolean;
 }
 
 export interface Status {

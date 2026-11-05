@@ -16,8 +16,7 @@ closes the window where this process dies between the fork and the child's
 first instruction.
 
 **Where things live.** The vault's content is in the `vault` project's worktree,
-never in service state — see `instances`. Service state holds only the recorded
-node bin, the tarball fallback, and these logs.
+never in service state — see `instances`. Service state holds only these logs.
 """
 
 from __future__ import annotations
@@ -118,13 +117,9 @@ def child_env(vault: Vault) -> dict[str, str]:
     assert (env["TRILIUM_SYNC_SYNCSERVERHOST"] == sync.DISABLED
             or env["TRILIUM_SYNC_SYNCSERVERHOST"].startswith("http://127.0.0.1:")), \
         "the vault child must sync through loopback: the tunnel is the only link"
-    nb = instances.NODE_BIN_FILE
-    try:
-        recorded = nb.read_text().strip()
-    except OSError:
-        recorded = ""
-    if recorded:
-        env["PATH"] = recorded + os.pathsep + env.get("PATH", "")
+    # The release's own Node, for anything the server spawns: systemd's PATH
+    # carries none.
+    env["PATH"] = str(instances.SERVER_NODE.parent) + os.pathsep + env.get("PATH", "")
     return env
 
 
@@ -202,13 +197,11 @@ class Child(GroupChild):
 
     def _spawn(self) -> None:
         """Launch the vault's server. Caller holds the lock."""
-        chosen = instances.entry_point()
-        if chosen is None:
+        entry = instances.entry_point()
+        if entry is None:
             raise FileNotFoundError(
-                f"no Trilium server bundle: neither {instances.FORK_ENTRY} nor "
-                f"{instances.TARBALL_ENTRY} exists — run "
+                f"no Trilium server release at {instances.SERVER_DIR} — run "
                 f"awm/services/trilium/install.sh")
-        entry, _source = chosen
 
         vault = self.vault
         if not vault.exists:

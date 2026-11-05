@@ -14,11 +14,13 @@ its `[fleet]` table says which node is home base and the order nodes refresh in:
     [fleet.push.<node>]           # optional, for a node that cannot fetch from home
     url = "<node>:<workspace>/projects/{project}/.bare"
     projects = ["<name>", ...]
+    artifacts = "<node>:<awm dir>/artifacts"   # optional
 
 The node that lands a project leads its rollout. Before a push node refreshes,
 the landing node pushes the new release into its repo as
-`refs/<landing node>/release`, fast-forward only (routines.md R31). An absent
-file or table is a fleet of this node alone.
+`refs/<landing node>/release`, fast-forward only (routines.md R31), and, when
+the node names an `artifacts` directory, the files the release pins (artifacts.py).
+An absent file or table is a fleet of this node alone.
 """
 
 from __future__ import annotations
@@ -45,6 +47,7 @@ class ProjectFleet:
 class Push:
     url: str
     projects: tuple[str, ...]
+    artifacts: str = ""
 
 
 @dataclass(frozen=True)
@@ -58,6 +61,11 @@ class Fleet:
         """Where ``node`` takes ``project``'s release by push. Empty means it fetches."""
         p = self.push.get(node)
         return p.url.format(project=project) if p and project in p.projects else ""
+
+    def artifacts_dest(self, node: str) -> str:
+        """Where ``node`` takes pinned artifacts by push. Empty means it takes none."""
+        p = self.push.get(node)
+        return p.artifacts if p else ""
 
     def canonical(self, project: str) -> str:
         """The node that lands ``project``. Empty means wherever deploy is called."""
@@ -104,14 +112,18 @@ def parse(text: str, *, source: str = FILE) -> Fleet:
     push: dict[str, Push] = {}
     for node, body in (raw.get("push") or {}).items():
         where = f"{source}: [fleet.push.{node}]"
-        if not isinstance(body, dict) or set(body) != {"url", "projects"}:
-            raise FleetConfigError(f"{where} takes url and projects")
+        if (not isinstance(body, dict) or not {"url", "projects"} <= set(body)
+                or set(body) - {"url", "projects", "artifacts"}):
+            raise FleetConfigError(f"{where} takes url and projects, and optionally artifacts")
         url, names = body["url"], body["projects"]
+        artifacts = body.get("artifacts", "")
+        if not isinstance(artifacts, str):
+            raise FleetConfigError(f"{where} artifacts must be a directory as <host>:<path>")
         if not isinstance(url, str) or "{project}" not in url:
             raise FleetConfigError(f"{where} url must name the repo with {{project}}")
         if not isinstance(names, list) or not all(isinstance(n, str) and n for n in names):
             raise FleetConfigError(f"{where} projects must be a list of project names")
-        push[node] = Push(url, tuple(names))
+        push[node] = Push(url, tuple(names), artifacts)
     return Fleet(home=home, nodes=nodes, projects=projects, push=push)
 
 

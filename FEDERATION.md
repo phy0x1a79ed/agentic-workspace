@@ -150,7 +150,7 @@ mizar holds the canonical repo of awm. A deploy lands a scope's branch on `relea
 2. Run `routine deploy` from your scope. It pins the branch head and returns a ticket at once. A call on another node forwards to mizar with the pinned commit.
 3. The batch merges each pinned branch, runs the `check` in `deploy.toml`, and promotes `feat → dev → release`.
 4. It pushes `release` to the `github` remote, fast-forward only. A backup that has diverged fails the batch before anything lands. A failed push marks the batch `backup-failed`, refreshes no node and starts the fixing session.
-5. It refreshes each node in turn. For a node in the install config's `[fleet.push.<node>]`, such as altair, it first pushes `release` to that node as `refs/mizar/release`, fast-forward only.
+5. It refreshes each node in turn. For a node in the install config's `[fleet.push.<node>]`, such as altair, it first pushes `release` to that node as `refs/mizar/release`, fast-forward only. When that entry names an `artifacts` directory, it then pushes each file the release pins (`deploy.toml` § `artifacts`) from mizar's `<AWM_DIR>/artifacts`, and refuses a file whose sha256 differs from its pin. The Trilium server tarball travels this way. Its node never fetches it.
 6. On each node, `routine refresh` runs `scripts/refresh-checkout.sh`, which moves the checkout to the new release. It refuses a checkout with local commits. Then a supervising session runs `scripts/awm-deploy.sh`, then `bash awm/services/trilium/install.sh`, and confirms every enabled service came back. `deploy.toml` § `refresh` holds its prompt.
 7. The verdict goes to the scope's journal and the calling session's card. A failed batch starts one fixing session with every branch in it.
 

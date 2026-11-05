@@ -39,6 +39,9 @@ class DeployConfig:
     refresh: Refresh = field(default_factory=Refresh)
     fixer_peer: str = "local"
     fixer_prompt: str = ""
+    # Pin files, each naming a built file in this node's artifact store that the
+    # rollout pushes to each push node (artifacts.py, install.md R115 item 4).
+    artifact_pins: tuple[str, ...] = ()
 
 
 _SECTIONS = {
@@ -46,6 +49,7 @@ _SECTIONS = {
     "promote": {"backup"},
     "refresh": {"kind", "command", "sync", "prompt", "timeout"},
     "fixer": {"peer", "prompt"},
+    "artifacts": {"pins"},
 }
 
 
@@ -70,6 +74,9 @@ def parse(text: str) -> DeployConfig:
     if kind == "queue" and not r.get("prompt"):
         raise ConfigError(f"{FILE}: a queue refresh needs a prompt")
     fx = raw.get("fixer", {})
+    pins = raw.get("artifacts", {}).get("pins", [])
+    if not isinstance(pins, list) or not all(isinstance(p, str) and p for p in pins):
+        raise ConfigError(f"{FILE}: [artifacts] pins must be a list of paths")
     return DeployConfig(
         check=d.get("check", ""),
         check_timeout=float(d.get("check_timeout", CHECK_BUDGET)),
@@ -78,4 +85,5 @@ def parse(text: str) -> DeployConfig:
                         prompt=r.get("prompt", ""),
                         timeout=float(r.get("timeout", 600.0))),
         fixer_peer=fx.get("peer", "local"),
-        fixer_prompt=fx.get("prompt", ""))
+        fixer_prompt=fx.get("prompt", ""),
+        artifact_pins=tuple(pins))

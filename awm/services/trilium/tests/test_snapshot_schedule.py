@@ -89,7 +89,7 @@ def test_a_vault_with_no_snapshots_is_due(scope, monkeypatch):
 
 
 def test_a_node_with_no_checkout_does_not_schedule(tmp_path):
-    """Sirius and capella serve the published tarball and have nothing to pin.
+    """A node with no vault checkout has nothing to pin.
     The schedule stands down rather than writing copies nobody ships."""
     v = Vault(scope=tmp_path)
     v.snapshots_dir.mkdir(parents=True)

@@ -1189,25 +1189,8 @@ def _slice_url(token: str, note_id: str, user: str | None) -> str:
     return f"{edge}/slice/{token}/{query}#root/{note_id}"
 
 
-def _fork_only(verb: str) -> None:
-    """Refuse a slice verb on a node serving the published tarball.
-
-    The mask that confines a slice to one subtree lives in the fork. Upstream's
-    build ignores the edge's slice headers entirely and answers every route, so a
-    token resolved against it would open the whole vault to whoever holds the
-    link. Refused at both ends -- minting and resolving -- because a database
-    that reaches such a node by sync carries tokens minted elsewhere.
-    """
-    entry = instances.entry_point()
-    if entry is not None and entry[1] != "fork":
-        raise PermissionError(
-            f"{verb} needs the Trilium fork: this node serves the published "
-            f"tarball, which has no slice mask and would expose the whole vault")
-
-
 async def _h_slice_expose(args: dict, as_: str | None = None) -> dict:
     _operator_only(as_, "slice_expose")
-    _fork_only("slice_expose")
     note_id = _note_id(args)
     user = (args.get("user") or "").strip() or None
     write = bool(args.get("write"))
@@ -1257,7 +1240,6 @@ async def _h_slice_revoke(args: dict, as_: str | None = None) -> dict:
 
 async def _h_slice_resolve(args: dict, as_: str | None = None) -> dict:
     _operator_only(as_, "slice_resolve")
-    _fork_only("slice_resolve")
     token = (args.get("token") or "").strip()
     row = await asyncio.to_thread(slices.resolve, token) if token else None
     if row is None:
@@ -1383,9 +1365,9 @@ async def _on_start() -> None:
             log.exception("trilium: sync tunnel failed to open; the loop will "
                           "retry")
     if instances.entry_point() is None:
-        log.warning("trilium: no server bundle at %s or %s — run install.sh; "
+        log.warning("trilium: no server release at %s — run install.sh; "
                     "the service will register and report this via status",
-                    instances.FORK_ENTRY, instances.TARBALL_ENTRY)
+                    instances.SERVER_DIR)
     elif not instances.VAULT.exists:
         log.warning("trilium: no vault directory at %s — run "
                     "awm/services/trilium/install.sh; the service will "
@@ -1403,9 +1385,8 @@ async def _on_start() -> None:
     # A dead supervision loop looks exactly like a vault that has not crashed,
     # so it is spawned supervised rather than as a bare task nobody reads.
     spawn_supervised("trilium:health", _health_loop)
-    # Only where a snapshot becomes a pin. A node serving the published tarball
-    # has no checkout to commit into, and its copy of the vault is covered by
-    # whichever node does.
+    # Only where a snapshot becomes a pin. A node with no vault checkout has
+    # nothing to commit into, and its copy of the vault is covered elsewhere.
     if instances.VAULT.is_checkout:
         spawn_supervised("trilium:snapshot", _snapshot_loop)
 

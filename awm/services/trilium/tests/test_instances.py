@@ -26,7 +26,6 @@ def test_the_vault_has_a_repository_apart_from_the_fork():
     is one person's data, and the vault is shared."""
     assert "userdata" not in instances.VAULT_HOME.parts
     assert instances.VAULT_HOME.parts[-3:] == ("projects", "vault", "release")
-    assert not instances.VAULT_HOME.is_relative_to(instances.FORK_DIR)
     assert VAULT.snapshots_dir.is_relative_to(VAULT.scope / "data")
     assert VAULT.notes_dir.is_relative_to(VAULT.scope / "data")
 
@@ -65,8 +64,8 @@ def test_a_restore_keeps_what_it_replaced_out_of_git_and_out_of_the_chunk():
 def test_install_artifacts_are_not_in_runtime_state():
     """The user that installs and the user that runs differ on sirius. Anything
     written at install time has to land where the installer can write it."""
-    assert instances.TARBALL_DIR.is_relative_to(instances.INSTALL_DIR)
-    assert instances.NODE_BIN_FILE.is_relative_to(instances.INSTALL_DIR)
+    assert instances.SERVER_DIR.is_relative_to(instances.INSTALL_DIR)
+    assert instances.SERVER_STAMP.is_relative_to(instances.INSTALL_DIR)
     assert not instances.INSTALL_DIR.is_relative_to(instances.STATE_DIR)
 
 
@@ -74,16 +73,6 @@ def test_the_port_has_exactly_one_definition():
     """The supervisor binds it and the edge proxies to it. A second copy is a
     vault nobody can reach, with no error that says why."""
     assert instances.UPSTREAM_PORT is config.VAULT_PORT
-
-
-def test_the_dirtiness_probe_and_the_installer_exclude_the_same_paths():
-    """`install.sh` rebuilds the whole monorepo when it reads the worktree as
-    dirty, and the vault writes into that worktree. The two probes have to name
-    the same exclusions or a deploy alternates between rebuilding and not."""
-    script = (instances.SERVICE_DIR / "install.sh").read_text()
-    assert instances.NOT_SOURCE == (":!data", ":!live")
-    for spec in instances.NOT_SOURCE:
-        assert f"'{spec}'" in script
 
 
 def test_the_scope_is_overridable_for_a_sandbox(monkeypatch):
@@ -98,20 +87,40 @@ def test_the_scope_is_overridable_for_a_sandbox(monkeypatch):
         importlib.reload(instances)
 
 
-def test_a_tarball_from_the_fork_release_counts_as_the_fork(tmp_path, monkeypatch):
+def test_the_server_is_the_pinned_fork_release(tmp_path, monkeypatch):
+    """The supervisor runs only what install.sh unpacked, with the Node the
+    release carries, and status says whether that is the release awm pins."""
     server = tmp_path / "server"
+    monkeypatch.setattr(instances, "SERVER_DIR", server)
+    monkeypatch.setattr(instances, "SERVER_ENTRY", server / "main.cjs")
+    monkeypatch.setattr(instances, "SERVER_NODE", server / "node" / "bin" / "node")
+    monkeypatch.setattr(instances, "SERVER_STAMP", tmp_path / "tarball-stamp")
+    monkeypatch.setattr(instances, "SERVER_PIN", tmp_path / "server.pin")
+    instances.SERVER_PIN.write_text("# a comment\nversion=v2\nfile=s.tar.xz\nsha256=bb\n")
+    assert instances.entry_point() is None
+    assert instances.source_state() == {"entry": None, "installed": None,
+                                        "pinned": "v2", "current": False}
+
     (server / "node" / "bin").mkdir(parents=True)
     (server / "main.cjs").write_text("")
     (server / "node" / "bin" / "node").write_text("")
-    monkeypatch.setattr(instances, "FORK_ENTRY", tmp_path / "no-fork" / "main.cjs")
-    monkeypatch.setattr(instances, "TARBALL_ENTRY", server / "main.cjs")
-    monkeypatch.setattr(instances, "TARBALL_NODE", server / "node" / "bin" / "node")
-    monkeypatch.setattr(instances, "TARBALL_STAMP", tmp_path / "tarball-stamp")
-    instances.TARBALL_STAMP.write_text("TriliumNotes-Server-v0.105.0-linux-x64.tar.xz\n")
-    assert instances.entry_point()[1] == "tarball"
-    instances.TARBALL_STAMP.write_text("fork v0.105.0-awm.1 sha256:ab\n")
-    assert instances.entry_point() == (server / "main.cjs", "fork")
+    instances.SERVER_STAMP.write_text("v1 sha256:aa\n")
+    assert instances.entry_point() == server / "main.cjs"
     assert instances.node_exe() == str(server / "node" / "bin" / "node")
+    assert instances.source_state()["current"] is False
+
+    instances.SERVER_STAMP.write_text("v2 sha256:bb\n")
+    assert instances.source_state() == {"entry": str(server / "main.cjs"), "installed": "v2",
+                                        "pinned": "v2", "current": True}
+
+
+def test_install_takes_the_pushed_file_and_never_fetches():
+    """mizar pushes the release to the node (install.md R115 item 4). An
+    install that downloads or builds would reach past what the deploy pinned."""
+    script = (instances.SERVICE_DIR / "install.sh").read_text()
+    assert "/artifacts" in script and "sha256sum" in script
+    for gone in ("curl", "wget", "gh release", "pnpm", "TRILIUM_INSTALL_MODE"):
+        assert gone not in script
 
 
 def test_the_zotero_mirror_resolves_the_same_vault():

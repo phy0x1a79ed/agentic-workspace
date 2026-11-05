@@ -1,11 +1,9 @@
 # install.sh sidecar (absolute interpreter path; host-specific)
 .runtime-env
 
-# Install artifacts: the unpacked published server (with its own node runtime),
-# the absolute node bin install.sh recorded, and what was downloaded. Beside the
-# service rather than in workspace state, because the user that installs and the
-# user that runs are not the same one everywhere.
+# Install artifacts: the unpacked fork release (with its own node runtime) and
+# its stamp. Beside the service rather than in workspace state, because the
+# user that installs and the user that runs need not be the same one.
 server/
-node-bin
+server.incoming/
 tarball-stamp
-tarball-sha256

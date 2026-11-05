@@ -7,6 +7,7 @@ node's committed config says (routines.md R25, R31, R33).
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import shlex
@@ -16,7 +17,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
-from awm.routine import deployconf, fleetconf, proc
+from awm.routine import artifacts, deployconf, fleetconf, proc
 from awm.routine.deployconf import Refresh
 from awm.routine.outbound import Outbound
 
@@ -96,11 +97,13 @@ def plugin_folders(root: Path, paths: list[str]) -> tuple[dict[str, str | None],
 class Refresher:
     def __init__(self, out: Outbound, *, node: str,
                  checkout_root: Callable[[str], Path],
-                 fleet_config: Callable[[], fleetconf.Fleet] = fleetconf.Fleet) -> None:
+                 fleet_config: Callable[[], fleetconf.Fleet] = fleetconf.Fleet,
+                 artifact_store: Path | None = None) -> None:
         self.out = out
         self.node = node
         self.checkout_root = checkout_root
         self.fleet_config = fleet_config
+        self.artifact_store = artifact_store
 
     def _env(self, frm: str, to: str) -> dict[str, str]:
         return {"AWM_REFRESH_FROM": frm, "AWM_REFRESH_TO": to, "AWM_NODE_NAME": self.node}
@@ -190,16 +193,24 @@ class Refresher:
 
         The install config names the nodes, home base first (fleetconf). An
         empty list means this node only. A push node first takes the release
-        from ``bare``."""
+        from ``bare``, then the files the release pins when it names an
+        artifacts directory."""
         fleet = self.fleet_config()
         nodes = list(fleet.rollout(project)) or [self.node]
         done: list[dict[str, Any]] = []
+        pinned: list[artifacts.Artifact] | None = None
         for node in nodes:
             if node == self.node:
                 r = await self.local(project, frm, to)
             else:
                 url = fleet.push_url(node, project)
                 r = await self._push(node, url, bare, to) if url else None
+                dest = fleet.artifacts_dest(node) if url else ""
+                if r is None and dest:
+                    if pinned is None:
+                        pinned, r = await self._pinned(node, bare, to)
+                    if r is None:
+                        r = await self._push_artifacts(node, dest, pinned)
                 if r is None:
                     r = await self._peer(node, project, frm, to)
             done.append(r.to_dict())
@@ -217,6 +228,30 @@ class Refresher:
                              f"{shlex.quote(url)} {to}:{ref}", cwd=str(bare), timeout=300.0)
         if not res.ok:
             return NodeResult(node, False, f"push to {url} as {ref} {_why(res)}\n{res.output}")
+        return None
+
+    async def _pinned(self, node: str, bare: Path | None,
+                      to: str) -> tuple[list[artifacts.Artifact], NodeResult | None]:
+        """The release's pinned files, each checked against this node's store."""
+        if bare is None:
+            return [], NodeResult(node, False, "artifacts: no repo to read the pins from")
+        try:
+            pinned = await asyncio.to_thread(artifacts.pinned, bare, to)
+            if pinned and self.artifact_store is None:
+                raise ValueError("this node has no artifact store")
+            for art in pinned:
+                await artifacts.check(self.artifact_store, art)
+        except (ValueError, deployconf.ConfigError) as e:
+            return [], NodeResult(node, False, f"artifacts: {e}")
+        return pinned, None
+
+    async def _push_artifacts(self, node: str, dest: str,
+                              pinned: list[artifacts.Artifact]) -> NodeResult | None:
+        for art in pinned:
+            res = await artifacts.push(self.artifact_store, art, dest)
+            if not res.ok:
+                return NodeResult(node, False,
+                                  f"artifacts: push of {art.file} to {dest} {_why(res)}\n{res.output}")
         return None
 
     async def _peer(self, node: str, project: str, frm: str, to: str) -> NodeResult:

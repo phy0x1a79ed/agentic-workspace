@@ -24,6 +24,12 @@ on it under supervision, as FEDERATION.md § Deploy says. First find the other \
 sessions on this node with ListAgents. Tell each live one that awm restarts, and \
 wait until none is mid-call to an awm tool or holds a tether or ssh session it \
 cannot lose. Then run `scripts/awm-deploy.sh`, then `bash awm/services/trilium/install.sh` \
-(the deploy cannot see the Trilium fork move), and confirm every enabled \
-service came back. If one did not, fix it before you stop. Tell the sessions \
+(it unpacks the Trilium release server.pin names, which awm-deploy.sh does not), \
+and confirm every enabled service came back. If one did not, fix it before you stop. Tell the sessions \
 you warned that awm is back."""
+
+[artifacts]
+# Built files the release pins. Before a push node refreshes, the landing node
+# pushes each into the node's artifact store, when the install config names one
+# (install.md R115 item 4).
+pins = ["awm/services/trilium/server.pin"]

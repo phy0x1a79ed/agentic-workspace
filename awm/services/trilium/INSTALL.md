@@ -21,8 +21,8 @@ somebody with no account, which notes an agent session may write, why the kanban
 service's, why the document is replicated over an ssh forward rather than over
 the edge, why exactly one node may run a service that writes into the vault and when several may, why
 there are four kinds of database copy and only two of them survive a deletion,
-why a node that serves the tarball gets a directory where a node that builds the
-fork gets a checkout, and what a shared origin costs.
+why a node without a vault checkout gets a plain directory, how a fork release
+reaches the node that serves it, and what a shared origin costs.
 
 Trilium's own architecture belongs to `projects/trilium` and its upstream docs.
 The patches we carry to it are the exception, because nothing in that project
@@ -492,15 +492,9 @@ CAUTION: a link is a credential, and anyone it is forwarded to has it. Expiry an
 `slice-revoke` exist for that reason; nothing can make a link identify a person. A
 bound token at least fixes the name, so attribution can be shared but not forged.
 
-CAUTION: the tarball install path carries none of the fork's slice code, so
-upstream's build would answer every route a token reached. `slice_expose` and
-`slice_resolve` therefore refuse outright on a node not serving the fork —
-resolving as well as minting, because a replicated database carries the notes a
-token was minted against. That is a live condition rather than a hypothetical
-one: capella serves the tarball and now holds the shared document, so slices are
-minted and resolved on sirius alone. `ship-bundle.sh` closes the gap, but it is
-written for sirius today — the `/opt/awm` paths and the `awm` service account in
-it are that host's, not a mesh node's.
+CAUTION: the slice mask lives in the fork. Upstream's build answers every route
+a token reaches, so a node must never serve anything but the pinned fork release.
+`install.sh` installs nothing else.
 
 ## The board
 
@@ -589,10 +583,8 @@ A delete or a rename can still flicker: between the bulk action stripping the
 label off the cards and the definition write landing, a refresh can resolve the
 old column and draw it. Nothing persists it, and it goes when the write arrives.
 
-CAUTION: the tarball install path serves upstream's build, which has neither
-patch. A node that installs from the tarball shows bare card titles, and loses a
-column change made while the board is open in a second browser. Only a node that
-builds the fork carries them.
+CAUTION: upstream's build has neither patch. It shows bare card titles, and loses
+a column change made while the board is open in a second browser.
 
 ## Where the vault's content lives
 
@@ -617,10 +609,6 @@ WARNING: the live database sits inside a git checkout on a pinning node. `git
 clean -fdx` there deletes it and nothing warns first.
 
 CAUTION: the vault repository ignores `live/` through its own `.gitignore`.
-
-The data tree is also excluded from the probe that decides whether to rebuild.
-`install.sh` and `instances.NOT_SOURCE` spell the same two exclusions. They have
-to agree, or a deploy alternates between rebuilding and not.
 
 ## Four kinds of copy, and only one is a restore path
 
@@ -712,106 +700,42 @@ refused for a caller arriving through an edge.
 ./install.sh
 ```
 
-`awm/install.sh` runs this on every deploy. Every step is idempotent and
-skips itself when already satisfied.
+`awm/install.sh` runs this on every deploy, and so does the supervising session
+of awm's deploy refresh (`deploy.toml` at the repo root). Every step is
+idempotent.
 
-**The pinned fork release** wins when `server.pin` names a `url`. A fork release
-on mizar publishes one server tarball, and awm pins its version, url and sha256
-(install.md R115 item 4). `install.sh` fetches it, refuses it when the sha256
-differs, and unpacks it where the upstream tarball goes. The `tarball-stamp`
-line `fork <version> sha256:<hash>` tells `instances.entry_point` that this
-bundle carries the fork's code, so the slice verbs run on it. A fork change goes
-live by one route: release the fork, bump `server.pin`, deploy awm. Until the
-first fork release, the pin is empty and the two older paths below still run.
-They go once every Trilium node serves the pin:
+**The server is one fork release, and awm pins it.** `server.pin` names the
+release's version, its tarball's file name and its sha256 (install.md R115
+item 4). `install.sh` takes the tarball from `<AWM_DIR>/artifacts`, refuses it
+when the sha256 differs, and unpacks it into `server/`. The tarball carries its
+own Node runtime, so a serving node needs no toolchain. `install.sh` never builds
+the fork and never downloads. A node that holds no tarball installs the service
+without a server and says so. `TRILIUM_REQUIRE_SERVER=1` makes that fatal.
 
-- **Build the fork.** `projects/trilium/release` *is* the runnable server, so
-  every line we change is tracked TypeScript on a branch rather than an edit to a
-  build artifact. Stamped on the fork's HEAD, its dirty flag and its lockfile
-  hash, and skipped when none of the three moved.
-- **Download the published tarball** for the pinned tag. Upstream ships a Node
-  runtime inside it, so this path needs no toolchain at all — which is what lets
-  sirius install in a minute instead of building TypeScript on two vCPUs. That
-  bundled runtime is also what a shipped fork bundle runs under.
+**A fork change reaches the vault by one route.**
 
-`TRILIUM_INSTALL_MODE` forces one; the default picks the build when a fork is
-checked out. A missing fork is a warning and a clean exit, because the gateway
-runs every service's install under `set -e` and a hard failure aborts the whole
-deploy on a node that simply does not serve Trilium. `TRILIUM_REQUIRE_SERVER=1`
-makes it fatal where one is expected.
+1. Run the change on the fork's dev server on mizar, against a copy of a vault
+   snapshot: `apps/server/scripts/dev-server.sh` in a `projects/trilium` worktree.
+2. Merge it into the fork's `release`.
+3. Run `apps/server/scripts/release-fork.sh` in `projects/trilium/release`. It
+   builds the tarball in a container, puts it in mizar's `<AWM_DIR>/artifacts`,
+   tags `fork-<version>`, and prints the three pin lines.
+4. Write the three lines into `server.pin`.
+5. Deploy awm. Before a push node refreshes, the deploy pushes the tarball into
+   the node's artifact store, when the install config names one
+   (`FEDERATION.md` § Deploy). The node never fetches it.
 
-**A node that cannot build can still serve the fork.** It takes
-`apps/server/dist/` from a node that can:
+A change made as a note, such as the board page, a widget or a script, needs none
+of this. It goes live through the `trilium` tool.
 
-```
-./ship-bundle.sh [host]           # default: sirius
-```
+CAUTION: a rebuild of the same commit makes a tarball with another sha256. Keep
+the tarball a pin names in mizar's artifact store, or every deploy after it fails
+at the push.
 
-The script refuses a bundle that does not match the local HEAD, refuses a remote
-Node that does not match `.nvmrc`, copies the bundle and its build stamp, writes
-`node-bin`, swaps the directory, and restarts the unit. `entry_point()` tests for
-`dist/main.cjs` and prefers the fork whenever that file exists, so the copy is
-the switch and deleting `main.cjs` is the way back. sirius serves the fork this
-way, which is what lets it mint and resolve a slice.
-
-CAUTION: never give a serving node a fork checkout. `install.sh` picks its path
-by testing for `<fork>/.git`, so a checkout there turns every later deploy into a
-monorepo build the node cannot finish. A shipped bundle leaves that directory
-free of `.git`, which keeps the install on the tarball path while the fork bundle
-serves. That also leaves `source_state()` with no revision to report, so the
-build stamp the script copies is the only record of which commit is running.
-
-CAUTION: `node_exe()` returns the tarball's bundled Node only while the tarball
-is the chosen entry. The moment the fork entry exists it reads `node-bin` and
-falls back to a bare `node`, which systemd's PATH does not carry. The tarball's
-runtime and the fork's `.nvmrc` must name the same version. Both are 24.19.0 at
-v0.105.0, and a tag bump that moves one breaks the pairing with no warning.
-
-**The fork is a project, not a dependency.** Run this on a build node only, once.
-A serving node never runs it — that is what the CAUTION above forbids.
-
-```
-./bootstrap-fork.sh
-```
-
-CAUTION: `git clone --bare` turns every branch on the fork into a local head, and
-upstream maintains `release/v0.102.2`. Git stores refs as paths, so that head and
-a `release` branch cannot coexist and `scope create` fails on the collision. The
-script deletes the colliding heads; both remotes still carry them.
-
-**Install artifacts live beside the service, not in workspace state.** `server/`,
-`node-bin` and the tarball stamp are gitignored files under
-`awm/services/trilium/`. On sirius the install runs as the dev user while the
-gateway runs as the application account that owns the state root, so anything
-written at install time has to be on the install side of that line.
-
-## Deploy
-
-```
-./deploy.sh                       # this node's gateway
-
-# sirius is provisioned from its own repository, not this one
-VMs/digital_ocean/sirius/deploy.sh release
-```
-
-`deploy.sh` does three things `awm deploy` does not: it promotes the commits into
-the tree the editable install resolves `awm` to, it runs this service's
-`install.sh`, and it builds the page. The install matters because `awm deploy`
-re-runs a service's install script only when the *set* of installed dists
-changes — a rebuilt bundle never lands after the first deploy.
-
-awm's deploy refresh closes the same gap for a fleet promotion: its supervising
-session re-runs this `install.sh` after `awm deploy` (`deploy.toml` at the repo
-root). It runs *unconditionally* rather than on a pathspec: the fork lives in a
-separate repository, so no diff over the awm tree can see it move. The install
-is stamped and costs seconds when nothing did.
-
-`deploy.sh` makes the change live on this node and stops there. Fleet promotion
-is the `routine deploy` route, which pushes to GitHub and to each node itself.
-
-CAUTION: the merge commit is made in a throwaway worktree of the local bare,
-never in the release checkout. That checkout is a deploy target that gets
-`reset --hard`, so a commit authored there is discarded later with no warning.
+**Install artifacts live beside the service, not in workspace state.** `server/`
+and `tarball-stamp` are gitignored files under `awm/services/trilium/`. Where the
+install runs as one user and the gateway as an account that owns the state root,
+anything written at install time has to be on the install side of that line.
 
 ## sirius is not wired differently
 
