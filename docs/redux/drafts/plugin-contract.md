@@ -220,6 +220,8 @@ A service in the install config's `[[external]]` list runs under its own system 
 1. Run the service's `run.sh` from its unit, with `WorkingDirectory` set to the service folder. Set `AWM_HUB_URL` to the gateway's URL and `AWM_SERVICE_NAME` to the service name.
 2. Set `AWM_HUB_TOKEN_FILE` to a file that holds the service's token.
 3. Point the entry's `token_file` at a file with the same token, readable by the gateway's user.
+4. Load the secrets its plugin's `needs.secrets` names with `LoadCredential=secrets.env:/etc/awm/secrets/<tool>.env`. Keep the source file root's alone (mode 0600, in a 0700 directory), holding only that plugin's names, as `secrets.env` lines. systemd gives the unit a copy only its user reads, and `awm.gatewayclient` puts the lines into the environment when the service imports it. The gateway's `secrets.env` does not carry them. `test/singletons/secrets.sh` proves one singleton cannot read another's secret.
+5. Point `AWM_DIR` at the unit's own state directory. A service keeps its files, and fetches its binaries, under `AWM_DIR`.
 
 ## Isolated sessions
 

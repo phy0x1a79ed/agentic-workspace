@@ -100,6 +100,11 @@ SESSIONS_DIR = STATE_DIR / "sessions"
 #: floor, never a message (``tether-relay/src/room.rs``). Relay role only.
 ROOM_STATE = STATE_DIR / "rooms"
 
+#: Where the relay serves the launchers and clients from, and where
+#: fetch-release.sh puts them. Inside STATE_DIR by default, so a relay running
+#: as its own user owns it. fetch-release.sh spells the same default.
+ASSETS_DIR = Path(os.environ.get("AWM_TETHER_ASSETS") or STATE_DIR / "assets")
+
 ROLE = os.environ.get("AWM_TETHER_ROLE", "operator").strip().lower()
 
 OPERATOR = "operator"
