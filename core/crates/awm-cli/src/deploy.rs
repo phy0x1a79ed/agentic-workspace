@@ -136,7 +136,14 @@ pub async fn run(args: Args) -> anyhow::Result<i32> {
     }
 
     if !args.no_install {
-        step("install", std::process::Command::new("bash").arg(root.join("awm/install.sh")).current_dir(&root))?;
+        step(
+            "install",
+            std::process::Command::new("bash")
+                .arg(root.join("awm/install.sh"))
+                .current_dir(&root)
+                .env("AWM_DIR", &state)
+                .env("AWM_CORE", std::env::current_exe()?),
+        )?;
     }
     if !args.no_build {
         step("build pages", std::process::Command::new("bash").arg(root.join("awm/scripts/build.sh")).current_dir(&root))?;

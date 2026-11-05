@@ -92,7 +92,7 @@ A node can run plugins that live outside the awm checkout, so a private project 
 
 - `config.toml` `plugin_roots`, which the gateway loads from;
 - `AWM_SERVICE_ROOTS`, which `awm/install.sh` reads to run each plugin's `install.sh`;
-- `AWM_PLUGIN_ROOTS`, which `awm/scripts/build.sh` reads to build each plugin's pages.
+- `AWM_PLUGIN_ROOTS`, which `awm/scripts/build.sh` reads to build each plugin's pages. `scripts/release-pages.sh` packs only the tree's own plugin pages into `scripts/pages.pin`, so a page of a plugin outside the tree reaches a push node by no deploy route.
 
 A root missing from the first list loads nothing. A root missing from the second loads a plugin with no `.runtime-env`, and one missing from the third serves no page.
 

@@ -1,12 +1,20 @@
 #!/usr/bin/env bash
-# The node-local deploy, run with this checkout's core binary. A node still on the Python
-# gateway has no Rust `awm` on its PATH, so the binary comes from AWM_BIN or is built here.
+# The node-local deploy. It runs the core binary that scripts/core.pin names and unpacks the
+# page dists that scripts/pages.pin names, both from <AWM_DIR>/artifacts, where mizar's deploy
+# pushed them (scripts/release-core.sh and release-pages.sh built them). This script builds
+# nothing. A sha256 that differs from a pin, or a pin older than the tree, stops the deploy.
 # Arguments pass through to `awm deploy`.
 set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
-bin="${AWM_BIN:-$root/core/target/x86_64-unknown-linux-musl/release/awm}"
-if [ -z "${AWM_BIN:-}" ] && command -v docker >/dev/null 2>&1; then
-    "$root/scripts/rust-build.sh" build --release --target x86_64-unknown-linux-musl -p awm-cli
-fi
-[ -x "$bin" ] || { echo "no core binary at $bin: set AWM_BIN, or install docker to build it" >&2; exit 1; }
-exec "$bin" deploy --root "$root" --bin "$bin" "$@"
+. "$root/scripts/pins.sh"
+store="${AWM_DIR:-$root/.awm}/artifacts"
+
+bin="$(verify_pin "$root/scripts/core.pin" "$(core_version "$root")" "$store" release-core.sh)"
+pages="$(verify_pin "$root/scripts/pages.pin" "$(pages_version "$root")" "$store" release-pages.sh)"
+
+# Replace each page folder the tarball holds, so a page that lost a file loses it here too.
+tar -tzf "$pages" | sed -n 's|^\(.*/dist\)/$|\1|p' | while read -r dist; do rm -rf "${root:?}/$dist"; done
+tar -xzf "$pages" -C "$root"
+
+chmod 0755 "$bin"
+exec "$bin" deploy --root "$root" --bin "$bin" --no-build "$@"
