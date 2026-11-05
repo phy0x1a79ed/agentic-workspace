@@ -29,6 +29,8 @@ Procedure, from dfs-interview § Work the stack:
 
 - **spec** (2026-11-04): Basic rough spec is disk based search over text, mainly journals, for agentic memory.
   - **matching** (2026-11-04): Search requires both exact and semantic matches.
+    - [ ] Does 'one vector per entry' mean one vector per query string, per corpus entry, or both?
+    - [ ] Does exact matching strip punctuation, and on which side?
 
 ## Parked
 
