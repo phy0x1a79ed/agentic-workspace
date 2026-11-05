@@ -215,8 +215,8 @@ def test_start_other_passes_the_spec_through_and_records_trust(fakes, monkeypatc
     out = run("start_other", {"_caller_pid": ME, "project": "awm", "scope": "x",
                               "task_id": "t9", "role": "worker", "trust": "cooperative",
                               "name": "seat:ana"})
-    verb, args = fakes.cc.calls[-1]
-    assert verb == "start" and args["task_id"] == "t9" and args["pid"] == ME
+    [args] = [a for v, a in fakes.cc.calls if v == "start"]
+    assert args["task_id"] == "t9" and args["pid"] == ME
     assert out["trust"] == "cooperative"
     assert policy.level_of("cc" + "1" * 32) == "cooperative"
     assert json.loads(policy._path().read_text())["cc" + "1" * 32]["origin"] == "seat:ana"
@@ -253,8 +253,8 @@ def test_an_isolated_start_is_untrusted_unless_trust_is_named(fakes, monkeypatch
         "may_steer": staticmethod(lambda a, v, target_level=None: (True, ""))}))
     out = run("start_other", {"_caller_pid": ME, "project": "awm", "scope": "x",
                               "isolated": True})
-    verb, args = fakes.cc.calls[-1]
-    assert verb == "start" and args["isolated"] is True
+    [args] = [a for v, a in fakes.cc.calls if v == "start"]
+    assert args["isolated"] is True
     assert out["trust"] == "untrusted"
 
 
@@ -666,3 +666,80 @@ def test_the_hint_asks_only_the_nodes_this_node_reaches(tmp_path, monkeypatch):
     monkeypatch.setenv("AWM_EDGES_FILE", str(edges))
     monkeypatch.setenv("AWM_NODE_NAME", "here")
     assert elsewhere._reached_peers() == ["altair", "mira"]
+
+
+class FakeClaims:
+    """The scopes claim verbs over one table, holding each scope for one session (scopes.md R42)."""
+
+    def __init__(self):
+        self.held: dict[tuple[str, str], dict] = {}
+        self.calls: list[tuple[str, dict]] = []
+
+    def __call__(self, verb, a):
+        self.calls.append((verb, a))
+        key = (a.get("project"), a.get("scope"))
+        if verb == "claim":
+            holder = self.held.get(key)
+            if holder and holder["session_id"] != a["session_id"]:
+                return {"ok": False, "claimed": False, "holder": holder,
+                        "reason": f"session {holder['session_id']} holds {key[0]}/{key[1]}"}
+            self.held[key] = {"session_id": a["session_id"], "pid": a.get("pid"), "job": a.get("job")}
+            return {"ok": True, "claimed": True, "holder": self.held[key]}
+        if verb == "release":
+            if (self.held.get(key) or {}).get("session_id") == a["session_id"]:
+                del self.held[key]
+            return {"ok": True}
+        if verb == "claims":
+            return {"claims": [{"project": p, "scope": s, "holder": h} for (p, s), h in self.held.items()
+                               if a.get("project") in (None, p) and a.get("scope") in (None, s)]}
+        return None
+
+
+NEW_ID = "cc" + "1" * 32
+
+
+@pytest.fixture
+def scope_claims(fakes, monkeypatch):
+    table = FakeClaims()
+    monkeypatch.setattr(hub_adapter, "_scopes_call", table)
+    return table
+
+
+def test_start_other_claims_its_scope_for_the_new_session(fakes, scope_claims):
+    out = run("start_other", {"_caller_pid": ME, "project": "awm", "scope": "x"})
+    assert out["ok"] and out["claim"]["claimed"]
+    assert scope_claims.held[("awm", "x")] == {"session_id": NEW_ID, "pid": ME, "job": "abcd1234"}
+    assert ("status", {"session_id": NEW_ID}) in fakes.cc.calls
+
+
+def test_a_start_into_a_held_scope_is_refused_before_it_launches(fakes, scope_claims):
+    run("start_other", {"_caller_pid": ME, "project": "awm", "scope": "x"})
+    starts = fakes.cc.verbs().count("start")
+    out = run("start_other", {"_caller_pid": ME, "project": "awm", "scope": "x", "name": "two"})
+    assert out["ok"] is False and NEW_ID in out["reason"]
+    assert fakes.cc.verbs().count("start") == starts
+
+
+def test_a_start_that_loses_the_claim_stops_the_new_session(fakes, scope_claims, monkeypatch):
+    monkeypatch.setattr(hub_adapter, "_held_by", lambda project, scope: None)
+    scope_claims.held[("awm", "x")] = {"session_id": "cc" + "9" * 32, "pid": 1, "job": "other"}
+    out = run("start_other", {"_caller_pid": ME, "project": "awm", "scope": "x"})
+    assert out["ok"] is False and out["stopped"] == "abcd1234"
+    verb, args = fakes.cc.calls[-1]
+    assert verb == "stop" and args["session_id"] == NEW_ID and args["keep"] is False
+
+
+@pytest.mark.parametrize("spec", [{"project": "awm"}, {"project": "awm", "scope": "x", "suggest": True}])
+def test_a_lobby_start_claims_nothing(fakes, scope_claims, spec):
+    out = run("start_other", {"_caller_pid": ME, **spec})
+    assert out["ok"] and "claim" not in out and scope_claims.calls == []
+
+
+@pytest.mark.parametrize("verb", ["stop", "stop_other"])
+def test_a_stop_releases_the_sessions_claims(fakes, scope_claims, verb):
+    scope_claims.held[("awm", "x")] = {"session_id": MY_ID, "pid": ME, "job": "j1"}
+    scope_claims.held[("awm", "y")] = {"session_id": "cc" + "9" * 32, "pid": 1, "job": "other"}
+    fakes.cc.answers["stop"] = {"ok": True, "job": "j1", "session_id": MY_ID}
+    out = run(verb, {"_caller_pid": ME, "job": "j1", "confirm": True})
+    assert out["ok"]
+    assert list(scope_claims.held) == [("awm", "y")]

@@ -190,3 +190,13 @@ def test_a_complete_that_merges_its_commits_cleans_up(mergeable):
     assert out.status == "completed" and not mergeable.exists()
     assert _git(bare, "merge-base", "--is-ancestor", head, "main") == ""
     assert mod.agent_id_for_scope(PROJECT, "s", active_only=True) is None
+
+
+def test_a_started_sessions_claim_blocks_a_forced_delete_until_it_stops(scope):
+    """The claim reflection start_other makes: the new session's id, pid and job."""
+    claims.claim(PROJECT, "s", SESSION, pid=os.getpid(), job="abcd1234")
+    with pytest.raises(RuntimeError, match="force does not override"):
+        mod.delete_scope(PROJECT, "s", force=True)
+    assert scope.exists()
+    claims.release(PROJECT, "s", SESSION)
+    assert mod.delete_scope(PROJECT, "s").status == "deleted"

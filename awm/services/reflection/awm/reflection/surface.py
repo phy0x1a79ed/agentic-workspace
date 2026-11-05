@@ -298,7 +298,9 @@ FUNCTIONS: list[dict[str, Any]] = [{'name': 'message_self',
                  '`claude attach` command. Refuses on a station, for a caller that is '
                  'not a domestic peer, when no Claude Code daemon runs, when the '
                  'worktree is untrusted, or when a live session already holds the '
-                 'name. A worktree of an awm project is trusted first, not refused. '
+                 'name or the scope. The new session claims its scope, and a stop '
+                 'ends the claim. A lobby start claims nothing until its `cd`. '
+                 'A worktree of an awm project is trusted first, not refused. '
                  'The session defaults to skip-permissions, opus and high effort. '
                  'Every caller gets the same session, whoever it is.',
   'params': [{'name': 'project',
