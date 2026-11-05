@@ -76,6 +76,9 @@ From journal 6a98c0c6 (awm/redux) and walkthrough's handover (manual-steps.md at
 - **redux-build/alcor-open (job 839aad63): alcor onto dcd8ba4d and its roles, dry run first, rt, IBKR, mira and Discord held** (2026-11-05): took board
 - **redux-build/dns-guide (job 67cbdc6d, sonnet medium): guides Tony through M10, M12-M14** (2026-11-05): took board
 - **note: users_sudo on alcor held as Tony's M29 (ssh admin gate); social on alcor runs with no accounts** (2026-11-05): took dispatch-mode
+- **redux-build/deneb-board (job a4d345a8): deneb push node, trilium leftovers, deneb dry run; apply waits on Q-deneb** (2026-11-05): took deneb-board
+- **redux-build/search-awm-api (job 8790d479, opus high)** (2026-11-05): took search-awm-api
+- **redux-build/spawn-tuning (job 716a0319, sonnet high)** (2026-11-05): took spawn-tuning
 
 ## Closed
 
