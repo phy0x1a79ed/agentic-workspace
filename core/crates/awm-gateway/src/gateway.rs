@@ -1122,19 +1122,35 @@ fn required(spec: &Value) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// A manifest's type name as a JSON Schema type.
+fn json_type(name: &str) -> &'static str {
+    match name {
+        "integer" | "int" => "integer",
+        "number" | "float" => "number",
+        "boolean" | "bool" => "boolean",
+        "object" | "dict" => "object",
+        "array" | "list" => "array",
+        _ => "string",
+    }
+}
+
+/// A verb's params as JSON Schema. A param's `type` is one name or a list of names, so it may take more than one.
 fn input_schema(spec: &Value) -> Value {
     let mut props = serde_json::Map::new();
     let mut req = Vec::new();
     for p in spec.get("params").and_then(Value::as_array).into_iter().flatten() {
         let Some(name) = p.get("name").and_then(Value::as_str) else { continue };
-        let ty = match p.get("type").and_then(Value::as_str).unwrap_or("string") {
-            t @ ("string" | "integer" | "number" | "boolean" | "object" | "array") => t,
-            "int" => "integer",
-            "bool" => "boolean",
-            "float" => "number",
-            "dict" => "object",
-            "list" => "array",
-            _ => "string",
+        let ty = match p.get("type") {
+            Some(Value::Array(types)) => {
+                let mut named: Vec<&str> = Vec::new();
+                for t in types.iter().map(|t| json_type(t.as_str().unwrap_or("string"))) {
+                    if !named.contains(&t) {
+                        named.push(t);
+                    }
+                }
+                if named.len() == 1 { json!(named[0]) } else { json!(named) }
+            }
+            other => json!(json_type(other.and_then(Value::as_str).unwrap_or("string"))),
         };
         props.insert(name.into(), json!({"type": ty, "description": p.get("description").cloned().unwrap_or(json!(""))}));
         if p.get("required").and_then(Value::as_bool).unwrap_or(false) {
@@ -1218,4 +1234,25 @@ fn load_plugins(state: &Path, cfg: &Config, peer_tools: &BTreeMap<String, Vec<Re
         enabled: &enabled,
         peer_tools,
     })
+}
+
+#[cfg(test)]
+mod input_schema_tests {
+    use super::*;
+
+    #[test]
+    fn a_param_may_take_more_than_one_type() {
+        let spec = json!({"params": [
+            {"name": "query", "type": ["string", "object"], "required": true},
+            {"name": "max", "type": "int"},
+            {"name": "same", "type": ["dict", "object"]},
+            {"name": "plain"},
+        ]});
+        let schema = input_schema(&spec);
+        assert_eq!(schema["properties"]["query"]["type"], json!(["string", "object"]));
+        assert_eq!(schema["properties"]["max"]["type"], json!("integer"));
+        assert_eq!(schema["properties"]["same"]["type"], json!("object"));
+        assert_eq!(schema["properties"]["plain"]["type"], json!("string"));
+        assert_eq!(schema["required"], json!(["query"]));
+    }
 }

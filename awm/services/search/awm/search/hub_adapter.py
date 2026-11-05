@@ -49,7 +49,7 @@ API_MANIFEST: dict[str, Any] = {
             "timeout": 60,
             "description": QUERY_DESCRIPTION,
             "params": [
-                {"name": "query", "type": "object", "required": True,
+                {"name": "query", "type": ["string", "object"], "required": True,
                  "description": "A string, or an object {\"text\"?: T, \"<source>\": F, ...}."},
                 {"name": "max", "type": "integer",
                  "description": "Hits per source per section, 1-100. Default 10."},
