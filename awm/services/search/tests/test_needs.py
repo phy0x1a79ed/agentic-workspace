@@ -17,7 +17,7 @@ import pytest
 from awm.search import hub_adapter
 from awm.search.hub_adapter import HANDLERS
 
-from .conftest import Exporter, doc
+from .conftest import Feed, doc
 
 pytestmark = [pytest.mark.search]
 
@@ -45,9 +45,9 @@ def declared() -> set[tuple[str, str]]:
 
 @pytest.fixture()
 async def replayed(archive, gateway, monkeypatch):
-    gateway.entries = [entry("journal", ("note_read", "tag_list")), entry("kb", ("related",)), entry("transcripts")]
-    page = Exporter({"j1": doc("Kitchen", "kitchen sink journal", tags=["journal"]),
-                     "j2": doc("Reply", "kitchen reply", tags=["journal"], reply_to=["j1"])})
+    gateway.entries = [entry("journal", ("note_read", "tag_list")), entry("kb"), entry("transcripts")]
+    page = Feed({"j1": doc("Kitchen", "kitchen sink journal", tag=["journal"]),
+                 "j2": doc("Reply", "kitchen reply", tag=["journal"], replies_to=["j1"])})
     paper = {"exact": [{"id": "doi:1", "title": "Kitchen taps"}], "related": []}
     gateway.handlers.update({
         ("journal", "export"): page,
@@ -55,7 +55,6 @@ async def replayed(archive, gateway, monkeypatch):
         ("journal", "tag_list"): lambda args: {"tags": [], "clashes": []},
         ("kb", "query"): lambda args: paper,
         ("kb", "get"): lambda args: {"document": {"title": "Kitchen taps", "text": "whole"}},
-        ("kb", "related"): lambda args: {"hits": []},
         ("transcripts", "query"): lambda args: {"hits": [{"id": "s1:1", "title": "kitchen"}]},
     })
     monkeypatch.setattr(hub_adapter, "ARCHIVE", archive)

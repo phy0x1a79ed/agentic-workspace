@@ -33,12 +33,13 @@ search query — rank items from named sources.
 <source>: journals, kb or transcripts, with @node for another node. `sources` lists their fields.
 F: MongoDB filter on the source's fields: $and $or $nor $eq $ne $gt $gte $lt $lte $in $nin $all.
    {} matches all. * in a value globs. A scope covers its nested scopes. ts is ISO-8601.
+$sort in F: one field, +/-. On content, by match score.
 T: string | {"$contains": s} | {"$about": s} | {"$and"|"$or": [...]}, shared by all sources.
-   $contains: case-insensitive substring, as grep. Nests under $and $or $nor.
+   $contains: case-insensitive phrase of whole words. Nests under $and $or $nor.
    $about: rank by meaning. At most one, directly under the top $and or $or.
    Under $and or alone it only ranks the matches. Under $or it also adds the nearest others, as `related`.
 Short forms: query s = {"text": s}. No source = this node's journals. T s = {"$or": [{"$about": s}, {"$contains": s}]}.
-Returns {source: {exact, related}}. A hit is {id, title, ts}. Open one with `get`.
+Returns {source: {exact, related}}. A hit is the id and the fields `sources` marks. Open one with `get`.
 """
 
 API_MANIFEST: dict[str, Any] = {
@@ -59,8 +60,8 @@ API_MANIFEST: dict[str, Any] = {
             "name": "get",
             "tool": "search_get",
             "description": (
-                "One document in full: title, text, project, scope, kind, tags, ts and url; a "
-                "paper adds its authors and journal. Take `source` and `id` from a hit. For a hit from "
+                "One document in full: every field its source declares; a paper adds its "
+                "authors and journal. Take `source` and `id` from a hit. For a hit from "
                 "another node, set `node` to the node of its source. Pass the `query` the hit "
                 "answered: each get is logged with the caller's scope as feedback on search."
             ),
@@ -76,8 +77,8 @@ API_MANIFEST: dict[str, Any] = {
             "name": "sources",
             "tool": "search_sources",
             "description": (
-                "Every source the archive holds, with its kind, node, fields (multi-valued ones "
-                "marked), document count, last successful sync, whether it is frozen (its service "
+                "Every source the archive holds, with its kind, node, fields and their classes, "
+                "the fields a hit shows, document count, last successful sync, whether it is frozen (its service "
                 "is not running, so its last documents are served) and its last error; and the "
                 "archive's health: whether semantic ranking is available, the registry's last "
                 "read, running sweeps and push subscriptions."
@@ -100,12 +101,11 @@ API_MANIFEST: dict[str, Any] = {
             "surfaces": _CLI_HTTP,
             "timeout": 600,
             "description": (
-                "Re-embed stale documents (all of them with force) and queue a fresh export "
-                "pass over one source, or over every index source."
+                "Rebuild one index source, or every index source, from the start of its "
+                "change feed."
             ),
             "params": [
-                {"name": "source", "type": "string", "description": "Only this source's pass."},
-                {"name": "force", "type": "boolean", "description": "Re-embed every document."},
+                {"name": "source", "type": "string", "description": "Only this source."},
             ],
         },
         {
@@ -181,7 +181,7 @@ async def _h_get(args: dict, as_: str | None = None) -> dict:
         await ARCHIVE.refuse_clashed(node)
         return await federation.fetch(ARCHIVE.peers, node, str(args["source"]), str(args["id"]))
     out = await ARCHIVE.get(str(args["source"]), str(args["id"]), request.hidden_for(as_))
-    if JOURNAL_TAG in out["document"].get("tags", ()) and args.get("_caller_pid"):
+    if JOURNAL_TAG in out["document"].get("tag", ()) and args.get("_caller_pid"):
         task = asyncio.create_task(_note_read(str(args["id"]), args["_caller_pid"]))
         _NOTING.add(task)
         task.add_done_callback(_NOTING.discard)
@@ -215,9 +215,7 @@ async def _h_sources(args: dict, as_: str | None = None) -> dict:
     for row in listed:
         if row["name"] in RETIRED:
             continue
-        fields = request.FIELDS.get(row["name"], {})
-        out.append({**row, "kind": row["name"], "node": node,
-                    "fields": {f: ("multi" if multi else "single") for f, multi in fields.items()}})
+        out.append({**row, "kind": row["name"], "node": node})
     return {**{k: v for k, v in health.items() if k != "sources"}, "sources": out}
 
 
@@ -226,8 +224,7 @@ async def _h_status(args: dict, as_: str | None = None) -> dict:
 
 
 async def _h_reindex(args: dict) -> dict:
-    force = args.get("force") in (True, "true", "True", "1", 1)
-    return await ARCHIVE.reindex(args.get("source") or None, force)
+    return await ARCHIVE.reindex(args.get("source") or None)
 
 
 def _judge(args: dict, as_: str | None) -> dict:

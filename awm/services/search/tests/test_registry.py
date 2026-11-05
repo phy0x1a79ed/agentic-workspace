@@ -10,7 +10,7 @@ import pytest
 
 from awm.search import registry
 
-from .conftest import entry, index_table
+from .conftest import FIELDS, HIT, entry, index_table
 
 pytestmark = [pytest.mark.search]
 
@@ -26,10 +26,11 @@ def test_a_source_is_called_by_its_published_tool_and_verb():
     e = entry("journal", [index_table("journals", "journal")], tools=("journal",))
     src = registry.parse([e])[0]["journals"]
     assert (src.tool, src.export) == ("journal", "export")
-    e = entry("papers", [{"name": "papers", "mode": "index", "export": "export"}])
+    e = entry("papers", [{"name": "papers", "mode": "index", "export": "export", "fields": FIELDS}])
     src = registry.parse([e])[0]["papers"]
     assert (src.tool, src.export) == ("papers", "export"), "a bare verb finds the service's one tool"
-    e = entry("cc", [{"name": "cc", "mode": "index", "export": "harness_cc_export"}], tools=("harness", "harness_cc"))
+    e = entry("cc", [{"name": "cc", "mode": "index", "export": "harness_cc_export", "fields": FIELDS}],
+              tools=("harness", "harness_cc"))
     assert registry.parse([e])[0]["cc"].tool == "harness_cc", "the longest tool name wins"
 
 
@@ -48,8 +49,15 @@ def test_a_live_source_names_its_query_verb():
 @pytest.mark.parametrize("table, fragment", [
     ({"name": "Bad Name", "mode": "index", "export": "s_export"}, "must match"),
     ({"name": "x", "mode": "stream", "export": "s_export"}, "mode"),
-    ({"name": "x", "mode": "index"}, "names none"),
-    ({"name": "x", "mode": "index", "export": "other_export"}, "does not publish"),
+    ({"name": "x", "mode": "index", "fields": {"text": "content"}}, "names none"),
+    ({"name": "x", "mode": "index", "export": "other_export", "fields": {"text": "content"}}, "does not publish"),
+    ({"name": "x", "mode": "index", "export": "s_export"}, "at least one content field"),
+    ({"name": "x", "mode": "index", "export": "s_export", "fields": {"text": "prose"}}, "has class 'prose'"),
+    ({"name": "x", "mode": "index", "export": "s_export", "fields": {"id": "content"}}, "not be `id`"),
+    ({"name": "x", "mode": "index", "export": "s_export", "fields": {"ts": {"class": "datetime", "nested": "/"}}},
+     "only a categorical field nests"),
+    ({"name": "x", "mode": "index", "export": "s_export", "fields": {"text": "content"}, "hit": ["title"]},
+     "`hit` must list declared fields"),
     ({"name": "x", "mode": "live", "query": "other_query"}, "does not publish"),
     ({"name": "x", "mode": "live", "query": "s_query", "get": "other_get"}, "`get` names"),
 ])
@@ -69,15 +77,19 @@ def test_a_row_without_archive_keys_falls_back_to_the_plugin_manifest(tmp_path, 
     folder.mkdir()
     (folder / "awm-plugin.toml").write_text(
         '[plugin]\nname = "journal"\n\n[[service]]\nname = "journal"\n\n'
-        '[[service.archive]]\nname = "journals"\nmode = "index"\nexport = "journal_export"\n')
+        '[[service.archive]]\nname = "journals"\nmode = "index"\nexport = "journal_export"\n'
+        '[service.archive.fields]\ntext = "content"\n')
     monkeypatch.setenv("AWM_SERVICES_DIR", str(tmp_path))
     sources, _ = registry.parse([entry("journal", archive=False)])
     assert sources["journals"].export == "export"
 
 
-def test_a_spec_survives_storage():
+def test_a_stored_spec_keeps_the_declaration():
+    import json
     src = registry.parse([entry("journal", [index_table("journals", "journal", topic="posts")])])[0]["journals"]
-    assert registry.Source.from_spec(src.spec()) == src
+    stored = json.loads(json.dumps(src.spec()))
+    assert registry.parse_fields(stored["table"]) == (src.fields, src.hit)
+    assert src.hit == tuple(HIT) and src.fields["scope"].nested == "/"
 
 
 SERVICES = Path(__file__).resolve().parents[2]

@@ -1,8 +1,7 @@
 """Reciprocal rank fusion over the ranked lists one source's answer is built from.
 
-Scores from different lists do not compare: the archive's are fused cosine and
-BM25, and kb's entry index scores against its own passages. Rank position is
-the one thing every list has, so it is all that is fused.
+A live source answers in two sections whose scores do not compare. Rank position
+is the one thing both lists have, so it is all that is fused.
 """
 
 from __future__ import annotations
@@ -28,9 +27,3 @@ def fuse(lists: list[list[dict[str, Any]]], limit: int) -> list[dict[str, Any]]:
     ordered.sort(key=lambda k: -scores[k])
     return [first[k] for k in ordered[:limit]]
 
-
-def within(fused: list[dict[str, Any]], anchor: list[dict[str, Any]], cut: int) -> list[dict[str, Any]]:
-    """``anchor``'s first ``cut`` hits in ``fused``'s order, then the rest of ``fused``: fusion reorders the
-    anchor's head and adds below it, and never pushes one of those hits out of the first ``cut``."""
-    head = {h["id"] for h in anchor[:cut]}
-    return [h for h in fused if h["id"] in head] + [h for h in fused if h["id"] not in head]

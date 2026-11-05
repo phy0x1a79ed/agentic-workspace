@@ -23,6 +23,7 @@ from typing import Any, Iterable, Sequence
 
 import lancedb
 import numpy as np
+from lancedb.index import FTS, BTree, IvfRq, LabelList
 import pyarrow as pa
 
 from awm import config
@@ -45,8 +46,18 @@ KEEP_VERSIONS = timedelta(hours=1)
 CHUNKS = "__chunks"
 TS = pa.timestamp("us", tz="UTC")
 _ARROW = {"content": pa.string(), "categorical": pa.list_(pa.string()), "numeric": pa.float64(), "datetime": TS}
-_FTS = dict(with_position=True, base_tokenizer="simple", lower_case=True, stem=False,
-            remove_stop_words=False, ascii_folding=True)
+_FTS = FTS(with_position=True, base_tokenizer="simple", lower_case=True, stem=False,
+           remove_stop_words=False, ascii_folding=True)
+
+
+def table_names(db: lancedb.DBConnection) -> set[str]:
+    names, token = set(), None
+    while True:
+        page = db.list_tables(page_token=token)
+        names |= set(page.tables)
+        token = page.page_token
+        if not token:
+            return names
 
 
 def root() -> Path:
@@ -104,6 +115,13 @@ def _chunk_texts(row: dict[str, Any], fields: dict[str, Field], head: str) -> li
     return [f"{engine.header(doc, sec)}\n{text}" for sec, text in parts]
 
 
+def layout(fields: dict[str, Field], hit: Sequence[str], model: str) -> str:
+    """What a source's tables were built with: the engine version, its declarations and the embedding model.
+    Tables built under another layout are dropped and rebuilt."""
+    decl = repr((sorted((f.name, f.cls, f.nested) for f in fields.values()), tuple(hit)))
+    return f"{ENGINE_VERSION}.{hashlib.sha1(decl.encode()).hexdigest()[:12]}.{model or 'words'}"
+
+
 def _hash(text: str) -> str:
     return hashlib.sha1(f"{ENGINE_VERSION}\x00{text}".encode()).hexdigest()
 
@@ -123,7 +141,7 @@ class Tables:
         self.name, self.fields, self.hit = name, fields, tuple(hit)
         self.head = lead(fields, hit)
         self.content = [n for n, f in fields.items() if f.cls == "content"]
-        existing = set(db.table_names())
+        existing = table_names(db)
         self.entries = (db.open_table(name) if name in existing
                         else db.create_table(name, schema=entries_schema(fields)))
         chunks = name + CHUNKS
@@ -175,21 +193,20 @@ class Tables:
         have = {i.name for i in self.entries.list_indices()}
         if self.entries.count_rows():
             if "id_idx" not in have:
-                self.entries.create_scalar_index("id", index_type="BTREE")
+                self.entries.create_index("id", config=BTree())
             for name in self.content:
                 if f"{name}_idx" not in have:
-                    self.entries.create_fts_index(name, **_FTS)
+                    self.entries.create_index(name, config=_FTS)
             for name, f in self.fields.items():
                 if f.cls != "content" and f"{name}_idx" not in have:
-                    self.entries.create_scalar_index(name, index_type="LABEL_LIST" if f.cls == "categorical"
-                                                     else "BTREE")
+                    self.entries.create_index(name, config=LabelList() if f.cls == "categorical" else BTree())
         rows = self.chunks.count_rows()
         have = {i.name for i in self.chunks.list_indices()}
         if rows and "id_idx" not in have:
-            self.chunks.create_scalar_index("id", index_type="BTREE")
+            self.chunks.create_index("id", config=BTree())
         if rows >= IVF_MIN_ROWS and "vector_idx" not in have:
-            self.chunks.create_index(metric="cosine", index_type="IVF_RQ", num_partitions=max(16, int(rows ** 0.5)),
-                                     num_bits=1, vector_column_name="vector")
+            self.chunks.create_index("vector", config=IvfRq(distance_type="cosine", num_bits=1,
+                                                            num_partitions=max(16, int(rows ** 0.5))))
 
     def maintain(self) -> dict[str, Any]:
         """Fold new rows into the indexes, compact small files, merge stacked deltas, drop old versions."""
@@ -204,11 +221,11 @@ class Tables:
             else:
                 ds.optimize.optimize_indices(num_indices_to_merge=0)
             ds.optimize.compact_files(materialize_deletions_threshold=0.5)
-            table.cleanup_old_versions(older_than=KEEP_VERSIONS)
+            ds.cleanup_old_versions(older_than=KEEP_VERSIONS)
         return {"merged": merged}
 
-    def count(self) -> int:
-        return self.entries.count_rows()
+    def count(self, cond: str = "true") -> int:
+        return self.entries.count_rows() if cond == "true" else self.entries.count_rows(cond)
 
 
 class Store:
@@ -231,13 +248,14 @@ class Store:
             return held
 
     def has(self, name: str) -> bool:
-        return name in self.db.table_names()
+        return name in table_names(self.db)
 
     def drop(self, name: str) -> None:
         """Remove a source's tables; the next :meth:`tables` creates them empty."""
         with self._lock:
             self._open.pop(name, None)
+            held = table_names(self.db)
             for table in (name, name + CHUNKS):
-                if table in self.db.table_names():
+                if table in held:
                     self.db.drop_table(table)
                     shutil.rmtree(self.path / f"{table}.lance", ignore_errors=True)

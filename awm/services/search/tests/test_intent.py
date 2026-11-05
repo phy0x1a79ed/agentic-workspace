@@ -31,7 +31,7 @@ _J = [
     ("J13", "awm", "svc-search", ["journal"], "2024-11-30T10:00:00Z", "First HNSW trial", "HNSW prototype works."),
     ("J14", "awm", "svc-kb", ["issue", "closed"], "2026-10-08T10:00:00Z", "p95 spike on ingest", "Fixed by batching."),
 ]
-JOURNALS = {i: doc(title, body, ts, project=p, scope=s, tags=tags, kind="journal") for i, p, s, tags, ts, title, body in _J}
+JOURNALS = {i: doc(title, body, ts, project=p, scope=s, tag=tags, kind="journal") for i, p, s, tags, ts, title, body in _J}
 ALL = set(JOURNALS)
 
 # The kit's reference calls, verbatim.
@@ -79,10 +79,17 @@ async def test_task_1_a_phrase_finds_the_trigram_notes(archive, gateway):
     assert {"J1", "J2"} <= set(ids(section(got, "exact")))
 
 
-async def test_task_2_open_issues_of_a_project_newest_first(archive, gateway):
+async def test_task_2_open_issues_of_a_project(archive, gateway):
     got = await ask(archive, gateway, journals_only(REF[1]))
-    assert ids(section(got, "exact")) == ["J5", "J2", "J9"]
+    assert sorted(ids(section(got, "exact"))) == ["J2", "J5", "J9"]
     assert "related" not in got["journals"]
+
+
+async def test_task_2_sorted_newest_first(archive, gateway):
+    call = journals_only(REF[1])
+    call["query"]["journals"] = {**call["query"]["journals"], "$sort": "-ts"}
+    got = await ask(archive, gateway, call)
+    assert ids(section(got, "exact")) == ["J5", "J2", "J9"]
 
 
 async def test_task_3_the_october_service_scopes_hold_every_must(archive, gateway):

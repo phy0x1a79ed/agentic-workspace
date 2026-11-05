@@ -1,4 +1,4 @@
-"""Fixtures for the search service tests: a private database, a fake gateway, fake plug-ins and peers."""
+"""Fixtures for the search service tests: a private database and store, a fake gateway, fake plug-ins and peers."""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ def stub_embedder():
     """Index and search with a deterministic stub, never the real model."""
     from awm.persistence import embeddings
     from awm.persistence.search_testing import StubEmbedder
-    emb = StubEmbedder()
+    emb = StubEmbedder(dim=384)
     embeddings.use_embedder(emb)
     yield emb
     embeddings.use_embedder(None)
@@ -48,28 +48,64 @@ def search_db(tmp_path, monkeypatch):
     return services_dir
 
 
-class Exporter:
-    """A plug-in's store behind the export contract: keys ascending, a keyset cursor, ids last."""
+#: The fields a test source declares unless it says otherwise: the journal's.
+FIELDS = {"title": "content", "text": "content", "ts": "datetime", "project": "categorical",
+          "scope": {"class": "categorical", "nested": "/"}, "tag": "categorical", "replies_to": "categorical"}
+HIT = ["title", "ts"]
+
+
+class _Docs(dict):
+    """A feed's documents: each write or delete bumps the key on the feed, as the journal's triggers do."""
+
+    def __init__(self, feed: "Feed") -> None:
+        super().__init__()
+        self.feed = feed
+
+    def __setitem__(self, key: str, value: dict[str, Any]) -> None:
+        super().__setitem__(key, value)
+        self.feed.bump(key)
+
+    def __delitem__(self, key: str) -> None:
+        super().__delitem__(key)
+        self.feed.bump(key)
+
+    def pop(self, key: str, *default: Any) -> Any:
+        out = super().pop(key, *default)
+        self.feed.bump(key)
+        return out
+
+
+class Feed:
+    """A plug-in's store behind the change-feed export contract: ``(seq, id)`` cursors, deletions without entry."""
 
     def __init__(self, docs: dict[str, dict[str, Any]] | None = None) -> None:
-        self.docs = docs or {}
+        self.seq: dict[str, int] = {}
+        self.head = 0
+        self.epoch = "epoch-1"
+        self.docs = _Docs(self)
+        for key, value in (docs or {}).items():
+            self.docs[key] = value
         self.fail: Exception | None = None
         self.calls = 0
+
+    def bump(self, key: str) -> None:
+        self.head += 1
+        self.seq[key] = self.head
 
     def __call__(self, args: dict[str, Any]) -> dict[str, Any]:
         self.calls += 1
         if self.fail:
             raise self.fail
         size = max(1, min(int(args.get("limit") or 200), 1000))
-        cursor = args.get("cursor")
-        keys = sorted(self.docs)
-        rest = [k for k in keys if not cursor or k > cursor]
-        page, more = rest[:size], len(rest) > size
-        out: dict[str, Any] = {"documents": [{"id": k, **self.docs[k]} for k in page],
-                               "next_cursor": page[-1] if more else None, "done": not more}
-        if not more:
-            out["ids"] = keys
-        return out
+        since = args.get("since")
+        seq, _, root = (since or "0:").partition(":")
+        if int(seq) > self.head:
+            return {"changes": [], "next": None, "done": True, "epoch": self.epoch, "reset": True}
+        rest = sorted((q, k) for k, q in self.seq.items() if (q, k) > (int(seq), root))
+        page, done = rest[:size], len(rest) <= size
+        changes = [{"id": k, **({"entry": self.docs[k]} if k in self.docs else {})} for _, k in page]
+        return {"changes": changes, "next": f"{page[-1][0]}:{page[-1][1]}" if page else since,
+                "done": done, "epoch": self.epoch}
 
 
 def every(result: dict[str, Any]) -> list[dict[str, Any]]:
@@ -101,7 +137,7 @@ def entry(service: str, tables: list[dict[str, Any]] | None = None, *, status: s
 
 
 def index_table(name: str, service: str, **extra: Any) -> dict[str, Any]:
-    return {"name": name, "mode": "index", "export": f"{service}_export", **extra}
+    return {"name": name, "mode": "index", "export": f"{service}_export", "fields": FIELDS, "hit": HIT, **extra}
 
 
 class FakeGateway:
@@ -113,10 +149,10 @@ class FakeGateway:
         self.queues: dict[tuple[str, str], asyncio.Queue] = {}
 
     def plug(self, name: str, docs: dict[str, dict[str, Any]], *, service: str | None = None,
-             **table: Any) -> Exporter:
-        """Register an index source backed by an :class:`Exporter` and return the exporter."""
+             **table: Any) -> Feed:
+        """Register an index source backed by a :class:`Feed` and return the feed."""
         service = service or name
-        exporter = Exporter(docs)
+        exporter = Feed(docs)
         self.entries = [e for e in self.entries if e["name"] != service]
         self.entries.append(entry(service, [index_table(name, service, **table)]))
         self.handlers[(service, "export")] = exporter
@@ -222,7 +258,7 @@ async def archive(search_db, gateway, peers, clock):
 
 
 async def synced(arch: Archive, gateway: FakeGateway) -> Archive:
-    """Read the registry and run one pass over every index source."""
+    """Read the registry and run one feed read of every index source."""
     await arch.refresh()
     for name in arch._due_names():
         await arch.sweep(name)

@@ -123,4 +123,4 @@ async def fetch(peers: Peers, name: str, source: str, doc_id: str) -> dict[str, 
     doc = raw.get("document") if isinstance(raw, dict) else None
     if not isinstance(doc, dict):
         raise RuntimeError(str((raw or {}).get("error") if isinstance(raw, dict) else "") or "reply has no document")
-    return {"document": {**doc, "source": source, "id": doc_id, "origin": _origin(record)}}
+    return {"document": {**doc, "source": source, "id": doc_id, "origin": {"node": record["name"]}}}

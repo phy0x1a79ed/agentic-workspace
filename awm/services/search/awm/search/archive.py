@@ -1,10 +1,10 @@
-"""The archive: the plug-in registry, the sweeps that fill the index, and the query over it.
+"""The archive: the plug-in registry, the feed reads that fill each index source's tables, and the query over them.
 
-An index source is paged through its service's ``export`` verb into the one
-corpus, pushed on its topic when it has one and swept in full every hour. A
-source whose service stops is frozen: its documents stay, because absence is
-not deletion. A live source is asked at query time, and a source named on another node is
-asked of that node's search. Each source answers apart, section by section.
+An index source is read through its service's ``export`` change feed into its own LanceDB tables: a read
+after a pushed event, and one every hour. Each read starts at the cursor the last one stored, so it carries
+only what changed. A source whose service stops is frozen: its entries stay, because absence is not deletion.
+A live source is asked at query time, and a source named on another node is asked of that node's search.
+Each source answers apart, section by section.
 """
 
 from __future__ import annotations
@@ -20,17 +20,18 @@ from awm.config import edges, privacy
 from awm.gatewayclient import SupervisedSubscription
 from awm.persistence import embeddings as engine
 
-from awm.search import compile, federation, hits as hitshape, index, meaning, merge, registry, store
+from awm.search import federation, hits as hitshape, lance_query, lance_store, merge, registry, store
 from awm.search import query as request
 from awm.search.federation import Peers
 from awm.search.gateway import Gateway
+from awm.search.lance_store import Store, Tables
 from awm.search.registry import Source
 
 log = logging.getLogger("awm.search.archive")
 
 SWEEP_EVERY_S = 3600.0
 RETRY_S = 60.0
-#: How long after a pushed event the sweep runs, so a burst of events costs one pass.
+#: How long after a pushed event the read runs, so a burst of events costs one read.
 SETTLE_S = 5.0
 TICK_S = 15.0
 REGISTRY_TTL_S = 10.0
@@ -50,24 +51,64 @@ def _with_conn(fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
         conn.close()
 
 
-def _drop_vanished(conn, source: str, kept: set[str]) -> int:
-    return store.drop_documents(conn, source, store.document_ids(conn, source) - kept)
+def _embedder() -> engine.Embedder | None:
+    try:
+        return engine.get_embedder()
+    except engine.EmbeddingsUnavailable:
+        return None
+
+
+def _covered(hidden: Sequence[dict] | None, project: str, scope: str) -> bool:
+    """Whether a private mark covers a live hit by its project and scope. ``None`` covers any hit naming one."""
+    if hidden is None:
+        return bool(project or scope)
+    name, named_scope = privacy.canonical(project, scope or None)
+    for mark in hidden:
+        if name != mark["project"]:
+            continue
+        marked = mark["scope"]
+        if marked is None or (named_scope is not None
+                              and (named_scope == marked or named_scope.startswith(marked + "/"))):
+            return True
+    return False
 
 
 def _unseen(hit: dict[str, Any], hidden: Sequence[dict] | None) -> bool:
     """Whether a live hit falls under a private mark, by project and scope or by transcript slug."""
     project = hit.get("project", "")
-    if index.covered(hidden, project, hit.get("scope", "")):
+    if _covered(hidden, project, hit.get("scope", "")):
         return True
     return bool(hidden) and bool(project) and privacy.hidden_slug(project)
 
 
+def _declared(spec: dict[str, Any]) -> tuple[dict[str, registry.Field], tuple[str, ...]] | None:
+    """A stored source's fields and hit, or ``None`` when it declares no content field to index."""
+    try:
+        fields, hit = registry.parse_fields(spec.get("table") or {})
+    except ValueError:
+        return None
+    return (fields, hit) if any(f.cls == "content" for f in fields.values()) else None
+
+
+def _declaration(fields: dict[str, registry.Field], hit: Sequence[str]) -> dict[str, Any]:
+    """The fields as a manifest writes them, and the hit, for ``search sources``."""
+    return {"fields": {n: {"class": f.cls, "nested": f.nested} if f.nested else f.cls for n, f in fields.items()},
+            "hit": list(hit)}
+
+
+def _check_page(page: Any) -> None:
+    if not (isinstance(page, dict) and isinstance(page.get("changes"), list)
+            and isinstance(page.get("done"), bool) and isinstance(page.get("epoch"), str)):
+        raise ValueError("export returned a page without changes, done and epoch")
+
+
 class Archive:
     def __init__(self, gateway: Gateway | None = None, peers: Peers | None = None, *,
-                 now: Callable[[], float] = time.time) -> None:
+                 lance: Store | None = None, now: Callable[[], float] = time.time) -> None:
         self.gateway = gateway or Gateway()
         self.peers = peers or Peers()
         self.now = now
+        self._lance = lance
         self.sources: dict[str, Source] = {}
         self.registry_at: float | None = None
         self.registry_error: str | None = None
@@ -82,10 +123,22 @@ class Archive:
     def origin(self) -> dict[str, str]:
         return {"node": config.node_name()}
 
-    async def _index(self, fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
-        """Run an index write on the worker, so embedding never queues behind itself or a query."""
-        return await asyncio.get_running_loop().run_in_executor(
-            self._pool, lambda: _with_conn(fn, *args, **kwargs))
+    @property
+    def lance(self) -> Store:
+        if self._lance is None:
+            self._lance = Store()
+        return self._lance
+
+    async def _work(self, fn: Callable[..., Any], *args: Any) -> Any:
+        """Run a store write on the one worker, so writes never interleave and never block a query."""
+        return await asyncio.get_running_loop().run_in_executor(self._pool, lambda: fn(*args))
+
+    def _held(self, name: str, spec: dict[str, Any]) -> Tables | None:
+        """A stored index source's tables, or ``None`` when it has none or declares nothing to index."""
+        declared = _declared(spec)
+        if declared is None or not self.lance.has(name):
+            return None
+        return self.lance.tables(name, *declared)
 
     # -- registry ---------------------------------------------------------
 
@@ -103,12 +156,14 @@ class Archive:
         stored = await asyncio.to_thread(_with_conn, store.source_rows)
         self.sources, self.registry_at, self.registry_error = sources, now, None
         for row in stored:
-            source = sources.get(row["name"])
+            name, source = row["name"], sources.get(row["name"])
+            if row["mode"] != "index" and row["layout"]:
+                await self._work(self._forget, name)
             if source and source.mode == "index" and not source.error:
-                if row["name"] in news:
-                    self._due[row["name"]] = now
+                if name in news:
+                    self._due[name] = now
                 else:
-                    self._due.setdefault(row["name"], (row["synced_at"] or 0) + SWEEP_EVERY_S)
+                    self._due.setdefault(name, (row["synced_at"] or 0) + SWEEP_EVERY_S)
         self._follow_topics()
         if news:
             self._wake.set()
@@ -131,7 +186,7 @@ class Archive:
             self._topics.pop(key)[1].cancel()
 
     def close(self) -> None:
-        """Stop following topics and release the index worker."""
+        """Stop following topics and release the store worker."""
         for _, task in self._topics.values():
             task.cancel()
         self._topics.clear()
@@ -147,37 +202,74 @@ class Archive:
                     self._due[name] = min(self._due.get(name, soon), soon)
         self._wake.set()
 
+    # -- feed reads (on the worker) -----------------------------------------
+
+    def _forget(self, name: str) -> None:
+        """Drop a source's tables and cursor, so its next read starts from the beginning of its feed."""
+        self.lance.drop(name)
+        _with_conn(store.save_feed_state, name, None, None, None)
+
+    def _apply(self, source: Source, changes: list[Any], embedder: engine.Embedder | None) -> dict[str, int]:
+        """Write one feed page. An entry with no content counts as a deletion."""
+        tables = self.lance.tables(source.name, source.fields, source.hit)
+        named = [c for c in changes if isinstance(c, dict) and c.get("id") not in (None, "")]
+        held = [c for c in named if isinstance(c.get("entry"), dict)
+                and any(str(c["entry"].get(n) or "").strip() for n in tables.content)]
+        rows = [{**c["entry"], "id": str(c["id"])} for c in held]
+        gone = [str(c["id"]) for c in named if c not in held]
+        tables.delete(gone)
+        embedded = tables.upsert(rows, embedder)
+        return {"upserted": len(rows), "deleted": len(gone), "embedded": embedded}
+
+    def _maintain(self, source: Source) -> dict[str, Any]:
+        return self.lance.tables(source.name, source.fields, source.hit).maintain()
+
     # -- sweeps -----------------------------------------------------------
 
-    async def _pass(self, source: Source) -> dict[str, int]:
-        cursor, pages = None, 0
-        totals = {"documents": 0, "changed": 0, "skipped": 0, "indexed": 0}
+    async def _pass(self, source: Source) -> dict[str, Any]:
+        """Read a source's feed from its stored cursor to the head. The cursor advances only after a page is
+        written, so a failed page is read again next time. A layout the tables were not built with, a changed
+        epoch or a reset from the feed rebuilds the source from the start."""
+        embedder = _embedder()
+        want = lance_store.layout(source.fields, source.hit, embedder.name if embedder else "")
+        state = await asyncio.to_thread(_with_conn, store.feed_state, source.name)
+        cursor, epoch = state["cursor"], state["epoch"]
+        totals: dict[str, Any] = {"pages": 0, "upserted": 0, "deleted": 0, "embedded": 0}
+        if state["layout"] != want:
+            await self._work(self._forget, source.name)
+            cursor, epoch, totals["rebuilt"] = None, None, True
         while True:
-            args: dict[str, Any] = {"limit": PAGE, **({"cursor": cursor} if cursor else {})}
+            args: dict[str, Any] = {"limit": PAGE, **({"since": cursor} if cursor else {})}
             page = await self.gateway.call(source.tool, source.export, args, EXPORT_TIMEOUT_S)
-            if not (isinstance(page, dict) and isinstance(page.get("documents"), list)
-                    and isinstance(page.get("done"), bool)):
-                raise ValueError("export returned a page without documents and done")
-            for key, value in (await self._index(index.apply_page, source.name, page["documents"])).items():
+            _check_page(page)
+            if page.get("reset") or (epoch is not None and page["epoch"] != epoch):
+                if cursor is None:
+                    raise ValueError("the feed asks for a reset of a read from its start")
+                await self._work(self._forget, source.name)
+                cursor, epoch, totals["rebuilt"] = None, None, True
+                continue
+            epoch = page["epoch"]
+            for key, value in (await self._work(self._apply, source, page["changes"], embedder)).items():
                 totals[key] += value
-            pages += 1
+            following = page.get("next")
+            await asyncio.to_thread(_with_conn, store.save_feed_state, source.name, following, epoch, want)
+            totals["pages"] += 1
             if page["done"]:
-                if not isinstance(page.get("ids"), list):
-                    raise ValueError("the final export page carries no ids")
-                dropped = await self._index(_drop_vanished, source.name, {str(i) for i in page["ids"]})
-                return {**totals, "pages": pages, "dropped": dropped}
-            following = page.get("next_cursor")
-            if not following or following == cursor or pages >= MAX_PAGES:
-                raise ValueError("the export cursor does not advance")
+                break
+            if not following or following == cursor or totals["pages"] >= MAX_PAGES:
+                raise ValueError("the feed cursor does not advance")
             cursor = following
+        if totals["upserted"] or totals["deleted"]:
+            totals["merged"] = (await self._work(self._maintain, source))["merged"]
+        return totals
 
     async def sweep(self, name: str) -> dict[str, Any]:
-        """One full pass over an index source. A failure is recorded and retried, never raised."""
+        """One feed read of an index source. A failure is recorded and retried, never raised."""
         source = self.sources.get(name)
         if source is None or source.mode != "index" or source.error:
             raise ValueError(f"{name!r} is not a running index source")
         if name in self._sweeping:
-            return {"source": name, "skipped": "a pass is already running"}
+            return {"source": name, "skipped": "a read is already running"}
         self._sweeping.add(name)
         self._redo.discard(name)
         try:
@@ -185,7 +277,7 @@ class Archive:
             error = None
         except Exception as exc:  # noqa: BLE001 — recorded on the source, retried on the next tick
             result, error = {}, federation.describe_error(exc)
-            log.warning("search: sweep of %s failed: %s", name, error)
+            log.warning("search: feed read of %s failed: %s", name, error)
         finally:
             self._sweeping.discard(name)
         now = self.now()
@@ -200,12 +292,28 @@ class Archive:
                 if s.mode == "index" and not s.error and n not in self._sweeping
                 and self._due.get(n, now) <= now]
 
+    def _warm(self) -> None:
+        """One small query per index source, so the first real query finds the indexes cached."""
+        embedder = _embedder()
+        for name, source in self.sources.items():
+            tables = self._held(name, source.spec()) if source.mode == "index" else None
+            if tables is None:
+                continue
+            try:
+                lance_query.answer(tables, embedder, lance_query.Ask("true", None, "warm up", False, None, 1))
+            except Exception as exc:  # noqa: BLE001 — a failed warm-up leaves the load to the first query
+                log.warning("search: warm-up of %s failed: %s", name, exc)
+
     async def run(self) -> None:
-        """Refresh the registry and sweep what is due, forever; cancel to stop."""
+        """Refresh the registry and read what is due, forever; cancel to stop."""
+        warmed = False
         while True:
             self._wake.clear()
             try:
                 await self.refresh()
+                if not warmed and self.registry_at is not None:
+                    warmed = True
+                    await asyncio.to_thread(self._warm)
                 for name in self._due_names():
                     await self.sweep(name)
             except Exception:  # noqa: BLE001 — a bad tick must not end the loop
@@ -217,22 +325,30 @@ class Archive:
             except asyncio.TimeoutError:
                 pass
 
-    async def reindex(self, source: str | None = None, force: bool = False) -> dict[str, Any]:
-        """Re-embed what is stale and queue a fresh pass over ``source`` (every index source if none)."""
+    async def reindex(self, source: str | None = None) -> dict[str, Any]:
+        """Rebuild ``source`` (every index source if none) from the start of its feed."""
         index_sources = [n for n, s in self.sources.items() if s.mode == "index" and not s.error]
         if source and source not in index_sources:
             raise ValueError(f"{source!r} is not a running index source")
-        for name in [source] if source else index_sources:
+        names = [source] if source else index_sources
+        for name in names:
+            await self._work(self._forget, name)
             self._due[name] = self.now()
         self._wake.set()
-        return {"engine": await self._index(index.reindex, force=force),
-                "resync": [source] if source else index_sources}
+        return {"rebuild": names}
 
     # -- reading ----------------------------------------------------------
 
     async def _rows(self, hidden: Sequence[dict] | None) -> list[dict[str, Any]]:
-        """The stored sources, counting only the documents this caller may see."""
-        return await asyncio.to_thread(_with_conn, store.source_rows, index.veil(hidden))
+        """The stored sources, each index source with the count of entries this caller may see."""
+        rows = await asyncio.to_thread(_with_conn, store.source_rows)
+        return await asyncio.to_thread(self._counted, rows, hidden)
+
+    def _counted(self, rows: list[dict[str, Any]], hidden: Sequence[dict] | None) -> list[dict[str, Any]]:
+        for r in rows:
+            tables = self._held(r["name"], r["spec"]) if r["mode"] == "index" else None
+            r["count"] = tables.count(lance_query.veil_sql(tables.fields, hidden)) if tables else 0
+        return rows
 
     async def sources_view(self, hidden: Sequence[dict] | None = ()) -> dict[str, Any]:
         await self._refresh_if_stale()
@@ -245,6 +361,10 @@ class Archive:
                      "last_sync": store.iso(r["synced_at"]), "frozen": not r["present"],
                      "last_error": spec.get("error") or r["last_error"]}
             entry.update({k: spec[k] for k in ("topic", "optin") if spec.get(k)})
+            try:
+                entry.update(_declaration(*registry.parse_fields(spec.get("table") or {})))
+            except ValueError:
+                pass
             out.append(entry)
         return {"sources": out}
 
@@ -260,19 +380,20 @@ class Archive:
 
     async def get(self, source: str, doc_id: str, hidden: Sequence[dict] | None = ()) -> dict[str, Any]:
         await self._refresh_if_stale()
-        rows = {r["name"]: r for r in await self._rows(hidden)}
+        rows = {r["name"]: r for r in await asyncio.to_thread(_with_conn, store.source_rows)}
         row = rows.get(source)
         if row is None:
             raise ValueError(f"no source {source!r}")
         if row["mode"] != "index":
             return await self._get_live(source, doc_id)
-        doc = await asyncio.to_thread(_with_conn, store.get_document, source, doc_id)
-        if doc is None or index.covered(hidden, doc["project"], doc["scope"], doc["tags"]):
+        tables = await asyncio.to_thread(self._held, source, row["spec"])
+        doc = None if tables is None else await asyncio.to_thread(
+            lance_query.document, tables, doc_id, lance_query.veil_sql(tables.fields, hidden))
+        if doc is None:
             raise ValueError(f"no document {source}:{doc_id}")
-        kept = {k: doc[k] for k in ("title", "text", "project", "scope", "kind", "ts", "url") if doc[k]}
-        tags = [t for t in doc["tags"].split("\n") if t]
-        return {"document": {**kept, **({"tags": tags} if tags else {}), "source": source, "id": doc_id,
-                             "frozen": not row["present"], "origin": self.origin()}}
+        kept = {k: v for k, v in doc.items() if k != "id" and v not in (None, "", [])}
+        return {"document": {**kept, "source": source, "id": doc_id, "frozen": not row["present"],
+                             "origin": self.origin()}}
 
     async def _get_live(self, name: str, doc_id: str) -> dict[str, Any]:
         source = self.sources.get(name)
@@ -319,57 +440,25 @@ class Archive:
 
     # -- query ------------------------------------------------------------
 
-    async def _entries(self, about: str, kind: str, narrowed: bool, limit: int) -> list[dict[str, Any]] | None:
-        """kb's entry-index matches for ``about``, or ``None`` when kb cannot answer."""
-        try:
-            return await meaning.ask(self.gateway, about, [kind], narrowed, limit)
-        except Exception as exc:  # noqa: BLE001 — the archive's own embeddings answer instead
-            log.warning("search: kb entry index unavailable, using the archive's embeddings: %s",
-                        federation.describe_error(exc))
-            return None
-
-    async def _ranked(self, about: str, allowed: index.Allowed, entries: Any, limit: int) -> list[dict[str, Any]]:
-        """The documents ``allowed`` holds, best first by ``about``.
-
-        Three lists fuse when kb's entry index answers: its matches, any-word BM25 and the archive's own
-        embeddings. The third raised real-ask recall@10 from 0.342 to 0.488 and lost no judged set (journal
-        b73eb9b5). The released engine ranked by the archive's own embeddings alone, and journal recall must not
-        fall below it (fleet.md R136 item 4): fusion reorders that list's head and adds below it.
-        """
-        own, degraded = await asyncio.to_thread(_with_conn, index.related, about, allowed, limit * 2)
-        if degraded:
-            log.info("search: ranking by words alone: %s", degraded)
-        found = await entries if entries is not None else None
-        if found is None:
-            return own[:limit]
-        meant = await asyncio.to_thread(_with_conn, index.resolve, found, allowed, limit * 2)
-        worded = await asyncio.to_thread(_with_conn, index.words, about, allowed, limit * 2)
-        lists = [meant, worded, own]
-        return merge.within(merge.fuse(lists, sum(map(len, lists))), own, limit)[:limit]
-
-    async def _indexed(self, src: request.Source, req: request.Request) -> dict[str, Any]:
-        """One archived source's answer. With no ``$about`` it is one read, newest first, that stops at ``max``."""
+    def _answer(self, tables: Tables, src: request.Source, req: request.Request) -> dict[str, Any]:
         text = req.text
         contains = text.contains if text else None
-        if text is None or text.about is None:
-            rows = await asyncio.to_thread(_with_conn, compile.newest, src.kind, src.filter, contains,
-                                           req.hidden, req.max)
-            return {"exact": [{"id": r["doc_id"], "title": r["title"], "ts": r["ts"]} for r in rows]}
-        kb_holds = meaning.covered([src.kind]) and any(s.service == "kb" for s in self.sources.values())
-        entries = asyncio.ensure_future(self._entries(text.about, src.kind, bool(src.filter) or contains is not None,
-                                                      req.max)) if kb_holds else None
+        ask = lance_query.Ask(
+            cond=lance_query.where(tables.fields, src.filter, req.hidden),
+            tree=lance_query.compile_tree(contains, tables.content) if contains is not None else None,
+            about=text.about if text else None, under_or=bool(text and text.under_or),
+            sort=src.sort, limit=req.max)
+        return lance_query.answer(tables, _embedder(), ask)
+
+    async def _indexed(self, src: request.Source, row: dict[str, Any], req: request.Request) -> dict[str, Any]:
+        """One archived source's answer from its tables."""
+        tables = await asyncio.to_thread(self._held, src.kind, row["spec"])
+        if tables is None:
+            return {"exact": [], "error": "not built yet: its first feed read has not written"}
         try:
-            jobs = [self._ranked(text.about, compile.allowed(src.kind, src.filter, contains, False, req.hidden),
-                                 entries, req.max)]
-            if text.under_or:
-                jobs.append(self._ranked(text.about,
-                                         compile.allowed(src.kind, src.filter, contains, True, req.hidden),
-                                         entries, req.max))
-            found = await asyncio.gather(*jobs)
-        finally:
-            if entries is not None and not entries.done():
-                entries.cancel()
-        return {"exact": found[0], **({"related": found[1]} if text.under_or else {})}
+            return await asyncio.to_thread(self._answer, tables, src, req)
+        except lance_query.Unserved as exc:
+            return {"exact": [], "error": f"query.{src.name}: {exc}"}
 
     async def _live(self, plug: Source, src: request.Source, req: request.Request) -> dict[str, Any]:
         """One live source's answer, through the thin translation its service takes today."""
@@ -396,7 +485,7 @@ class Archive:
         if row["spec"].get("error"):
             return {"exact": [], "error": row["spec"]["error"]}
         if row["mode"] == "index":
-            return await self._indexed(src, req)
+            return await self._indexed(src, row, req)
         if src.kind in self.sources:
             return await self._live(self.sources[src.kind], src, req)
         return {"exact": [], "error": "frozen: its service is not running"}
@@ -416,7 +505,7 @@ class Archive:
         ``caller`` names the node that relayed the call."""
         await self.refuse_clashed(caller)
         await self._refresh_if_stale()
-        rows = {r["name"]: r for r in await self._rows(req.hidden)}
+        rows = {r["name"]: r for r in await asyncio.to_thread(_with_conn, store.source_rows)}
         clashed = await self.clashed() if req.remote else set()
         here = [self._here(src, rows, req) for src in req.sources]
         there = [self._there(node, srcs, req, clashed) for node, srcs in req.remote.items()]
@@ -488,10 +577,12 @@ def live_answer(raw: Any, req: request.Request, src: request.Source) -> dict[str
         exact, related = raw["hits"], []
     else:
         exact, related = _flat(raw.get("exact")), _flat(raw.get("related"))
-    exact = [h for h in (hitshape.clean(x) for x in exact if not _unseen(x, req.hidden)) if h]
-    related = [h for h in (hitshape.clean(x) for x in related if not _unseen(x, req.hidden)) if h]
+    fields = request.hit_fields(src.kind)
+    exact = [h for h in (hitshape.clean(x, fields) for x in exact if not _unseen(x, req.hidden)) if h]
+    related = [h for h in (hitshape.clean(x, fields) for x in related if not _unseen(x, req.hidden)) if h]
     for hit in (*exact, *related):
-        hit["ts"] = store.normalize_ts(hit["ts"])
+        if "ts" in hit:
+            hit["ts"] = store.normalize_ts(hit["ts"])
     text = req.text
     if text.about is not None and not text.under_or:
         return {"exact": merge.fuse([exact, related], req.max)}

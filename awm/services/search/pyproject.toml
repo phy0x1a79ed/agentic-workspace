@@ -12,6 +12,8 @@ dependencies = [
     "awm-persistence",
     "awm-gatewayclient",
     "httpx",
+    "lancedb==0.39.0",
+    "pylance==14.0.2",
 ]
 
 # PEP 420 namespace package: no top-level awm/__init__.py; the namespace dir is awm/search/.

@@ -39,7 +39,9 @@ def test_the_query_verb_takes_query_and_max_and_carries_the_agreed_description()
     assert params["query"]["required"] and params["max"]["type"] == "integer" and not params["max"].get("required")
     text = FNS["query"]["description"]
     assert text == hub_adapter.QUERY_DESCRIPTION
-    assert len(text.splitlines()) == 12
+    assert len(text.splitlines()) == 13
+    assert "$sort in F: one field, +/-. On content, by match score." in text
+    assert "A hit is the id and the fields `sources` marks." in text
     assert text.startswith("search query \u2014 rank items from named sources.\n")
     assert text.endswith("Open one with `get`.\n")
     assert "Short forms: query s = " in text and "`related`" in text
@@ -141,7 +143,8 @@ async def test_sources_lists_fields_and_health_and_not_the_retired(archive, gate
     assert set(by_name) == {"journals"}
     row = by_name["journals"]
     assert row["kind"] == "journals" and row["node"] and row["count"] == 1
-    assert row["fields"]["tag"] == "multi" and row["fields"]["project"] == "single"
+    assert row["fields"]["tag"] == "categorical" and row["fields"]["text"] == "content"
+    assert row["fields"]["scope"] == {"class": "categorical", "nested": "/"} and row["hit"] == ["title", "ts"]
     assert {"last_sync", "frozen", "last_error"} <= set(row)
     assert "registry" in out and "semantic" in out and "sweeping" in out
 
@@ -191,12 +194,12 @@ async def test_the_handlers_answer_an_admitted_peer_every_source(archive, gatewa
     assert got["document"]["origin"] == {"node": "local"}
 
 
-async def test_reindex_queues_a_pass_and_names_a_bad_source(archive, gateway, monkeypatch):
+async def test_reindex_queues_a_rebuild_and_names_a_bad_source(archive, gateway, monkeypatch):
     gateway.plug("journals", {"j1": doc("Sink", "kitchen sink journal")})
     await synced(archive, gateway)
     monkeypatch.setattr(hub_adapter, "ARCHIVE", archive)
-    out = await HANDLERS["reindex"]({"source": "journals", "force": "true"})
-    assert out["resync"] == ["journals"] and out["engine"]["documents"] == 1
+    out = await HANDLERS["reindex"]({"source": "journals"})
+    assert out == {"rebuild": ["journals"]} and not archive.lance.has("journals")
     assert archive._due["journals"] <= archive.now()
     with pytest.raises(ValueError, match="not a running index source"):
         await HANDLERS["reindex"]({"source": "nothing"})

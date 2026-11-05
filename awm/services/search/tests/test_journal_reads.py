@@ -17,8 +17,8 @@ pytestmark = [pytest.mark.search]
 @pytest.fixture()
 async def served(archive, gateway, monkeypatch):
     gateway.plug("journals", {
-        "j1": doc("Journal", "a session journal", project="awm", scope="dev", tags=["journal"]),
-        "m1": doc("Message", "a message", project="awm", scope="dev", tags=["message"]),
+        "j1": doc("Journal", "a session journal", project="awm", scope="dev", tag=["journal"]),
+        "m1": doc("Message", "a message", project="awm", scope="dev", tag=["message"]),
     }, service="journal")
     gateway.handlers[("journal", "note_read")] = lambda args: {"ok": True, "recorded": 1}
     await synced(archive, gateway)
@@ -46,5 +46,5 @@ async def test_other_tags_and_callers_without_a_session_note_nothing(served):
 async def test_a_journal_that_does_not_answer_never_fails_the_get(served):
     served.handlers[("journal", "note_read")] = lambda args: RuntimeError("down")
     out = await HANDLERS["get"]({"source": "journals", "id": "j1", "_caller_pid": 4242}, None)
-    assert out["document"]["tags"] == ["journal"]
+    assert out["document"]["tag"] == ["journal"]
     await _noted(served)

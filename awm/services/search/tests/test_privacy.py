@@ -2,15 +2,13 @@
 
 from __future__ import annotations
 
-import sqlite3
-
 import pytest
 
 from awm.config import privacy
 from awm.search import hub_adapter, store
 from awm.search.hub_adapter import HANDLERS
 
-from .conftest import doc, every, section, synced
+from .conftest import doc, every, synced
 
 pytestmark = [pytest.mark.search]
 
@@ -31,10 +29,10 @@ async def served(archive, gateway, monkeypatch, root):
         "j6": doc("Marked scope", "kitchen sink in a marked scope", project="awm", scope="svc-a"),
         "j7": doc("Nested scope", "kitchen sink in a nested marked scope", project="awm", scope="svc-a/x"),
         "j8": doc("Near scope", "kitchen sink in a scope that only starts alike", project="awm", scope="svc-ab"),
-        "j9": doc("Goal", "kitchen sink goal set for the private project", scope="project:avatar"),
+        "j9": doc("Goal", "kitchen sink goal set on the private project's channel", project="avatar"),
         "p1": doc("Sink", "kitchen sink precedent with no project"),
-        "p2": doc("Tagged", "kitchen sink precedent tagged with the private project", tags=["UI", "Avatar"]),
-        "p3": doc("Near tag", "kitchen sink precedent tagged with a sibling", tags=["avatar2"]),
+        "p2": doc("Tagged", "kitchen sink precedent tagged with the private project", tag=["UI", "Avatar"]),
+        "p3": doc("Near tag", "kitchen sink precedent tagged with a sibling", tag=["avatar2"]),
     })
     await synced(archive, gateway)
     monkeypatch.setattr(hub_adapter, "ARCHIVE", archive)
@@ -103,9 +101,9 @@ async def test_get_answers_a_peer_as_if_a_hidden_document_did_not_exist(served):
         await HANDLERS["get"]({"source": "journals", "id": "zz"}, PEER)
     assert str(hidden.value) == "no document journals:j2"
     assert str(missing.value) == "no document journals:zz"
-    assert (await HANDLERS["get"]({"source": "journals", "id": "j2"}, LOCAL))["document"]["project"] == "avatar"
-    assert (await HANDLERS["get"]({"source": "journals", "id": "j2"}, USER))["document"]["project"] == "avatar"
-    assert (await HANDLERS["get"]({"source": "journals", "id": "j1"}, PEER))["document"]["project"] == "awm"
+    assert (await HANDLERS["get"]({"source": "journals", "id": "j2"}, LOCAL))["document"]["project"] == ["avatar"]
+    assert (await HANDLERS["get"]({"source": "journals", "id": "j2"}, USER))["document"]["project"] == ["avatar"]
+    assert (await HANDLERS["get"]({"source": "journals", "id": "j1"}, PEER))["document"]["project"] == ["awm"]
 
 
 async def test_sources_and_status_count_only_what_a_peer_may_see(served):
@@ -193,8 +191,8 @@ async def test_a_journal_that_cannot_list_its_clashes_refuses_nothing(served, ga
 
 
 async def test_a_relayed_query_over_a_hidden_tag_finds_nothing_by_the_tag_field(served):
-    assert await found(PEER, tag="avatar") == set()
-    assert await found(LOCAL, tag="avatar") == {"p2"}
+    assert await found(PEER, tag="Avatar") == set()
+    assert await found(LOCAL, tag="Avatar") == {"p2"}
 
 
 async def test_get_hides_a_document_tagged_with_a_marked_project_from_a_peer(served):
@@ -212,55 +210,21 @@ async def test_unmarking_shows_a_tagged_document_again_without_a_resync(served):
 
 
 @pytest.mark.parametrize("project, scope", [
-    ("avatar", ""), ("avatar", "dev"),
-    ("", "project:avatar"), ("", "project:avatar2"), ("avatar2", "dev"),
+    ("avatar", ""), ("avatar", "dev"), ("avatar2", "dev"),
     ("awm", "svc-a"), ("awm", "svc-a/x"), ("awm", "svc-ab"),
-    ("", "project:awm"), ("", ""), ("project:avatar", ""),
+    ("awm", ""), ("", ""),
 ])
-def test_the_sql_veil_and_the_python_check_agree(search_db, root, project, scope):
-    from awm.search import index, store
+def test_the_store_veil_and_the_live_hit_check_agree(tmp_path, root, project, scope):
+    from awm.search import archive, lance_query, lance_store
+    from awm.search.registry import parse_fields
     marks = [{"project": "avatar", "scope": None, "path": str(root / "avatar")},
              {"project": "awm", "scope": "svc-a", "path": str(root / "awm" / "svc-a")}]
-    where, params = index.veil(marks)
-    conn = store.connect()
-    try:
-        kept = conn.execute(f"SELECT * FROM (SELECT ? AS project, ? AS scope, '' AS tags) WHERE {where}",
-                            [project, scope, *params]).fetchall()
-    finally:
-        conn.close()
-    assert index.covered(marks, project, scope) == (not kept)
-
-
-def test_the_project_channel_names_the_project_for_privacy():
-    from awm.search import index
-    assert privacy.canonical("", index.PROJECT_CHANNEL.format("avatar")) == ("avatar", None)
-
-
-def test_a_version_1_index_gains_tags_and_links_and_resyncs_every_source(tmp_path, monkeypatch):
-    import awm.persistence.databases as pdbs
-    from awm.persistence.databases import get_connection, init_service_db
-    from awm.search import store
-    services_dir = tmp_path / "services"
-    services_dir.mkdir()
-    monkeypatch.setattr(pdbs, "SERVICES_DIR", services_dir)
-    v1 = store.SCHEMA_SQL.replace(store._REPLY_TO_COLUMN, "").replace(",\n    tags     TEXT NOT NULL DEFAULT ''", "")
-    table = v1.split("CREATE TABLE IF NOT EXISTS documents")[1].split(");")[0]
-    assert "tags " not in table and "reply_to " not in table
-    init_service_db(store.SERVICE, v1, schema_version=1)
-    conn = get_connection(store.SERVICE)
-    conn.execute("INSERT INTO sources (name, service, mode, spec, synced_at, first_seen, last_seen)"
-                 " VALUES ('wiki', 'wiki', 'index', '{}', 5, 1, 1)")
-    conn.execute("INSERT INTO documents (key, source, doc_id, title) VALUES ('wiki:p1', 'wiki', 'p1', 't')")
-    conn.commit()
-    conn.close()
-    monkeypatch.setattr(store, "_initialized", False)
-    store.init()
-    conn = store.connect()
-    try:
-        assert tuple(conn.execute("SELECT tags, reply_to FROM documents").fetchone()) == ("", "")
-        assert conn.execute("SELECT synced_at FROM sources").fetchone()[0] is None
-    finally:
-        conn.close()
+    fields, hit = parse_fields({"fields": {"text": "content", "project": "categorical",
+                                           "scope": {"class": "categorical", "nested": "/"}}})
+    tables = lance_store.Store(tmp_path / "lance").tables("t", fields, hit)
+    tables.upsert([{"id": "x", "text": "body", "project": project, "scope": scope}], None)
+    kept = tables.count(lance_query.veil_sql(fields, marks))
+    assert archive._covered(marks, project, scope) == (not kept)
 
 
 async def test_a_get_is_logged_with_the_callers_scope_and_query_and_a_peers_relayed_get_is_not(served):
@@ -274,15 +238,3 @@ async def test_a_get_is_logged_with_the_callers_scope_and_query_and_a_peers_rela
         conn.close()
     assert rows == [{"project": "awm", "scope": "dev", "query": "kitchen sink", "source": "journals", "doc_id": "j1",
                      "node": "local"}]
-
-
-def test_a_v5_usage_log_gains_its_project_column(tmp_path, monkeypatch):
-    conn = sqlite3.connect(":memory:")
-    conn.executescript(store._USAGE_V5)
-    assert "project" not in {r[1] for r in conn.execute("PRAGMA table_info(usage)")}
-    conn.executescript(store.MIGRATIONS[(5, 6)])
-    assert "project" in {r[1] for r in conn.execute("PRAGMA table_info(usage)")}
-    fresh = sqlite3.connect(":memory:")
-    fresh.executescript(store._USAGE)
-    assert [r[1] for r in fresh.execute("PRAGMA table_info(usage)")] == \
-        [r[1] for r in conn.execute("PRAGMA table_info(usage)")]

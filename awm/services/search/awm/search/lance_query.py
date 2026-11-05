@@ -4,8 +4,9 @@ A validated source filter compiles to a Lance SQL prefilter that both tables sha
 the chunk table carries every non-content field. The ``$contains`` tree compiles to a full-text
 query of phrases. A tree that only excludes cannot run as a full-text query on its own, so it
 compiles to its positive opposite and the caller keeps the entries it does not match.
-``$about`` ranks by reciprocal rank fusion of a vector search over chunks and any-word BM25
-over entries, both under the same prefilter.
+``$about`` ranks by a weighted sum of a vector search over chunks and any-word BM25 over entries,
+both under the same prefilter, each min-max normalised over its own top hits, as the released engine
+ranked.
 """
 
 from __future__ import annotations
@@ -25,7 +26,8 @@ from awm.search.registry import Field
 #: Probes and refine factor of a vector search over an IVF index.
 NPROBES = 20
 REFINE = 0
-RRF_K = 60
+#: How deep each ranked list reaches before fusion.
+FUSION_DEPTH = engine.FUSION_DEPTH
 #: How many phrase matches an ``$about`` ranks, or a sort orders, at most.
 CANDIDATES = 1000
 BATCH = 500
@@ -269,32 +271,28 @@ def _first(tables: Tables, tree: Tree | None, cond: str, order: Iterator[str] | 
     return out[:limit]
 
 
-def _fuse(lists: list[list[str]]) -> list[str]:
-    scores: dict[str, float] = {}
-    for ids in lists:
-        for rank, k in enumerate(ids):
-            scores[k] = scores.get(k, 0.0) + 1.0 / (RRF_K + rank + 1)
-    return sorted(scores, key=lambda k: -scores[k])
-
-
-def _vector(tables: Tables, embedder: engine.Embedder, about: str, cond: str, depth: int) -> list[str]:
+def _vector(tables: Tables, embedder: engine.Embedder, about: str, cond: str, depth: int) -> dict[str, float]:
+    """Each entry's best chunk similarity to ``about``, for the nearest ``depth`` entries."""
     if tables.chunks.count_rows() == 0:
-        return []
+        return {}
     qv = embedder.encode([about], query=True)[0]
     b = tables.chunks.search(qv).distance_type("cosine").nprobes(NPROBES).select(["id"]).limit(depth * 3)
     if REFINE:
         b = b.refine_factor(REFINE)
     if cond != "true":
         b = b.where(cond, prefilter=True)
-    return list(dict.fromkeys(b.to_arrow()["id"].to_pylist()))[:depth]
+    best: dict[str, float] = {}
+    for r in b.to_arrow().to_pylist():
+        best.setdefault(r["id"], 1.0 - r["_distance"])
+    return dict(list(best.items())[:depth])
 
 
-def _bm25(tables: Tables, about: str, cond: str, depth: int) -> list[str]:
+def _bm25(tables: Tables, about: str, cond: str, depth: int) -> dict[str, float]:
     terms = [w for w in words(about) if w not in engine._STOPWORDS] or words(about)
     if not terms:
-        return []
+        return {}
     query = MultiMatchQuery(" ".join(dict.fromkeys(terms)), list(tables.content))
-    return [k for k, _ in _fts(tables, query, cond, depth)]
+    return dict(_fts(tables, query, cond, depth))
 
 
 def ranked(tables: Tables, embedder: engine.Embedder | None, about: str, cond: str, depth: int,
@@ -304,10 +302,10 @@ def ranked(tables: Tables, embedder: engine.Embedder | None, about: str, cond: s
         if not within:
             return []
         cond = _and(cond, id_list(within))
-    lists = [_bm25(tables, about, cond, depth)]
-    if embedder is not None:
-        lists.insert(0, _vector(tables, embedder, about, cond, depth))
-    return _fuse(lists)[:depth]
+    reach = max(depth, FUSION_DEPTH)
+    dense = _vector(tables, embedder, about, cond, reach) if embedder is not None else {}
+    fused = engine.fuse(dense, _bm25(tables, about, cond, reach), depth=reach)
+    return sorted(fused, key=lambda k: (-fused[k], k))[:depth]
 
 
 def _cell(value: Any) -> Any:
@@ -325,8 +323,9 @@ def hits(tables: Tables, ids: Sequence[str]) -> list[dict[str, Any]]:
     return [by_id[i] for i in ids if i in by_id]
 
 
-def document(tables: Tables, doc_id: str) -> dict[str, Any] | None:
-    got = tables.entries.search().where(f"id = {quote(doc_id)}").limit(1).to_arrow().to_pylist()
+def document(tables: Tables, doc_id: str, cond: str = "true") -> dict[str, Any] | None:
+    """One entry whole, or ``None`` when it is absent or ``cond`` excludes it."""
+    got = tables.entries.search().where(_and(f"id = {quote(doc_id)}", cond)).limit(1).to_arrow().to_pylist()
     return {k: _cell(v) for k, v in got[0].items()} if got else None
 
 

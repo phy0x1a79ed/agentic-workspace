@@ -234,8 +234,8 @@ def test_operator_at_field_position():
 
 
 def test_field_the_kind_lacks_lists_its_fields():
-    bad({"transcripts": {"tag": "x"}}, r"query\.transcripts\.tag: transcripts has no field 'tag'; allowed: project, scope, ts")
-    bad({"kb": {"project": "x"}}, r"allowed: author, tag, ts, cites, cited_by")
+    bad({"transcripts": {"tag": "x"}}, r"query\.transcripts\.tag: transcripts has no field 'tag'; allowed: ts, project, scope")
+    bad({"kb": {"project": "x"}}, r"allowed: ts, author, tag, cites, cited_by")
     bad({"journals": {"$and": [{"author": "x"}]}}, r"\$and\[0\]\.author")
 
 
@@ -268,8 +268,9 @@ def test_text_unknown_operator():
 
 
 def test_contains_value_must_be_a_nonempty_string():
-    bad({"text": {"$contains": ""}}, "non-empty string")
-    bad({"text": {"$contains": 5}}, "non-empty string")
+    bad({"text": {"$contains": ""}}, "a letter or digit")
+    bad({"text": {"$contains": 5}}, "a letter or digit")
+    bad({"text": {"$contains": "--"}}, "a letter or digit")
     bad({"text": {"$about": ""}}, "non-empty string")
     bad({"text": {"$and": [{"$about": 5}]}}, "non-empty string")
     bad({"text": ""}, "text is empty")

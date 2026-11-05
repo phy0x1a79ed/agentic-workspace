@@ -23,7 +23,7 @@ verbs = ["export", "note_read", "tag_list"]
 [[needs.tool]]
 name = "kb"
 major = 1
-verbs = ["query", "get", "related"]
+verbs = ["query", "get"]
 
 [[needs.tool]]
 name = "transcripts"
