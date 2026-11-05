@@ -90,12 +90,13 @@ A node can mark a project or one scope of it private. Run `scope private project
 
 ## Search across nodes
 
-`search query` takes its `sources` as `name` for this node or `name@node` for another. It groups the sources by node and asks each other node once, across the edge, for that node's own sources. Each section of the reply names its sources as `name@node`.
+`search query` names each source as `kind` for this node or `kind@node` for another. It groups the sources by node and asks each other node once, across the edge, with the same text and each source's filter under its bare `kind`. The answer keys each peer source as `kind@node`.
 
 - A node that is down, refuses or times out never fails the search or hides local hits. Its sources show the status.
 - Scores from different nodes do not compare, so the merge fuses ranks and ignores scores.
 - A call that arrives from another node searches that node only. No node relays a search onward.
 - Two nodes whose journal tag vocabularies clash do not search each other. Search marks each `name@node` source of a clashed node refused and does not ask it, until the newer tag is renamed.
+- **CAUTION** A peer on a release before the `{query, max}` signature answers in the old shape. Search reports it as an error on each of that peer's sources, so update the nodes together.
 
 `ARCHITECTURE.md` § *The search archive* covers the plug-in contract.
 

@@ -219,7 +219,7 @@ Status at the wave-2 gather (`feat/redux` 16da3979, 2026-11-04). `docs/redux-rev
 - **R103.** A node that loads no reflection resolves every caller trusted (T23).
 - **R107.** The one-shots `precedent_import` on altair and `lineage_import` on each node have not run. The `~/.claude` drafts under `docs/redux/drafts/claude-home/` go live at T27. In them goal-alignment writes an ordinary post (item 10), debrief posts with `tags` and `reply_to`, and `CLAUDE.md` drops graphify and precedence.
 - **R109.** The login-sync unit is not installed (items 1 to 6). Tony has yet to confirm port 8765 for the isolated door (item 7).
-- **R131, R136.** The papers.db rebuild on sockeye is pending (R131). The decayed score `s` and the rank are not built (R136 items 1 to 6). The rank stays off by design until the replay shows a gain.
+- **R131, R136.** The papers.db rebuild on sockeye is pending (R131). Each `get` updates the stored score `s` (R136 item 6). The rank stays off by design until the replay shows a gain.
 - **R120.** Missing, and parked until Tony meets Armando.
 
 ### Test of the edges (R95, R96)
