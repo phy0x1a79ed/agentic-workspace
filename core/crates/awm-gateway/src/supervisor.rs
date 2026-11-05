@@ -251,10 +251,11 @@ fn kill_group(pgid: i32, signal: i32) {
     }
 }
 
-/// Stand every service down: the in-band `shutdown` frame, a grace period, then SIGTERM and SIGKILL.
+/// Stand every service this gateway runs down: the in-band `shutdown` frame, a grace period,
+/// then SIGTERM and SIGKILL. An external service has its own unit and only reconnects.
 pub async fn stop_all(gw: &Arc<Gateway>) {
     gw.stopping.store(true, Ordering::SeqCst);
-    gw.hub.broadcast(&json!({"kind": "shutdown"}));
+    gw.hub.broadcast(&json!({"kind": "shutdown"}), |name| gw.cfg.external(name).is_none());
     let deadline = Instant::now() + GRACE;
     while !gw.supervisor.groups().is_empty() && Instant::now() < deadline {
         tokio::time::sleep(Duration::from_millis(100)).await;

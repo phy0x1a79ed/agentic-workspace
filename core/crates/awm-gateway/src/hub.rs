@@ -292,10 +292,13 @@ impl Hub {
         self.changed.notify_waiters();
     }
 
-    /// Send a frame to every connected service.
-    pub fn broadcast(&self, frame: &Value) {
+    /// Send a frame to every connected service whose name `to` accepts.
+    pub fn broadcast(&self, frame: &Value, to: impl Fn(&str) -> bool) {
         let text = frame.to_string();
-        for svc in self.lock().values() {
+        for (name, svc) in self.lock().iter() {
+            if !to(name) {
+                continue;
+            }
             if let Some(tx) = &svc.tx {
                 let _ = tx.send(text.clone());
             }
@@ -405,5 +408,17 @@ mod tests {
         assert!(hub.register("journal", "journal", None, None).is_ok());
         hub.forget("journal");
         assert_eq!(hub.status("journal"), None);
+    }
+
+    #[tokio::test]
+    async fn broadcast_reaches_only_the_services_it_accepts() {
+        let hub = Hub::default();
+        let a = hub.register("owned", "owned", Some(1), None).unwrap();
+        let b = hub.register("journal", "journal", None, None).unwrap();
+        let Claim::Claimed { rx: mut ra, .. } = hub.claim(&a) else { panic!() };
+        let Claim::Claimed { rx: mut rb, .. } = hub.claim(&b) else { panic!() };
+        hub.broadcast(&json!({"kind": "shutdown"}), |n| n != "journal");
+        assert!(ra.recv().await.unwrap().contains("shutdown"));
+        assert!(rb.try_recv().is_err(), "an external service must not get the frame");
     }
 }
