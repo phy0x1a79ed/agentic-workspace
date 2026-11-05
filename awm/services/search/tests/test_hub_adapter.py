@@ -119,6 +119,17 @@ async def test_a_malformed_query_comes_back_as_a_value_error(monkeypatch):
         await HANDLERS["query"]({"query": {"journals": {"nonesuch": 1}}})
 
 
+async def test_an_old_release_call_is_refused_whole(monkeypatch):
+    class Stub:
+        async def query(self, req, caller):
+            raise AssertionError("an old-signature call must not reach the archive")
+
+    monkeypatch.setattr(hub_adapter, "ARCHIVE", Stub())
+    monkeypatch.setattr(hub_adapter.privacy, "marks", lambda: [])
+    with pytest.raises(ValueError):
+        await HANDLERS["query"]({"query": "sink", "sources": ["journals"], "limit": 5, "project": "awm"})
+
+
 async def test_sources_lists_fields_and_health_and_not_the_retired(archive, gateway, monkeypatch):
     gateway.plug("journals", {"j1": doc("Sink", "kitchen sink journal")})
     gateway.plug("precedence", {"p1": doc("Sink", "kitchen sink precedent")})

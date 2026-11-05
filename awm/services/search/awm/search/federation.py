@@ -55,6 +55,13 @@ def _no_tool(exc: BaseException) -> bool:
     return isinstance(exc, GatewayCallError) and (exc.status == 404 or "Unknown tool" in exc.body)
 
 
+OLDER_RELEASE = "its release answers the old search signature"
+
+
+class OlderRelease(RuntimeError):
+    """The peer answered in the shape of a release before the ``{query, max}`` signature."""
+
+
 def _reply(raw: Any, names: list[str]) -> dict[str, Any]:
     """The peer's answer: one object per source asked. An answer in the shape of an older release is refused."""
     if isinstance(raw, dict) and "result" in raw and not any(n in raw for n in names):
@@ -65,9 +72,9 @@ def _reply(raw: Any, names: list[str]) -> dict[str, Any]:
     if isinstance(raw, (str, bytes)):
         raw = json.loads(raw)
     if not isinstance(raw, dict) or not any(isinstance(raw.get(n), dict) for n in names):
-        detail = raw.get("error") if isinstance(raw, dict) else None
         if isinstance(raw, dict) and isinstance(raw.get("sources"), dict):
-            detail = "its release answers the old search signature"
+            raise OlderRelease(OLDER_RELEASE)
+        detail = raw.get("error") if isinstance(raw, dict) else None
         raise RuntimeError(str(detail or "reply names none of the sources asked"))
     return raw
 
@@ -95,6 +102,8 @@ async def _ask_one(peers: Peers, record: dict[str, Any], args: dict[str, Any], l
         reply = _reply(raw, names)
     except (asyncio.TimeoutError, TimeoutError):
         return PeerResult(name, {"status": "error", "error": f"timeout after {PEER_TIMEOUT_S:g}s"})
+    except OlderRelease:
+        return PeerResult(name, {"status": "older-release", "error": OLDER_RELEASE})
     except Exception as exc:  # noqa: BLE001 — a peer's failure is reported, never raised
         if _no_tool(exc):
             return PeerResult(name, {"status": "no-search", "error": "its release has no search tool"})
