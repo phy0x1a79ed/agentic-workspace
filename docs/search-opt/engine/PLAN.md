@@ -1,4 +1,4 @@
-# build: plan for LanceDB as the search engine
+# engine: plan for LanceDB as the search engine
 
 ## Context
 
@@ -107,7 +107,7 @@ Gotchas: a vector search over chunks returns several chunks per entry, so ask fo
 
 ### T6. Compact
 
-Handoff: the plan at `docs/search-opt/build/PLAN.md`, T2-T5 committed on `feat/redux-search-opt`, the todo list at T7. Carry the probe facts in T1 and anything T2-T5 found that the code does not show.
+Handoff: the plan at `docs/search-opt/engine/PLAN.md`, T2-T5 committed on `feat/redux-search-opt`, the todo list at T7. Carry the probe facts in T1 and anything T2-T5 found that the code does not show.
 
 ### T7. Wire the sync, the maintenance and the start-up rebuild, and remove the old index code
 
@@ -139,7 +139,7 @@ Gotchas: do not start capella or touch mira. Do not restart the live search on a
 
 ### T12. Draft the doc updates
 
-Rewrite `awm/services/search/INSTALL.md` for the field declarations, the change-feed export contract and the Lance store. Record the build decisions in `docs/search-opt/build/README.md`. Delete what the change made untrue.
+Rewrite `awm/services/search/INSTALL.md` for the field declarations, the change-feed export contract and the Lance store. Record the build decisions in `docs/search-opt/engine/README.md`. Delete what the change made untrue.
 
 Gotchas: describe the code as it stands, not the session.
 
