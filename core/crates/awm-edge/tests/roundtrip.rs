@@ -144,3 +144,33 @@ async fn edge_peers_follow_the_edge_list() {
     assert_eq!(v["trust"], "trusted");
     assert!(matches!(peers.invoke("relay", "journal", json!({}), &ctx).await, Err(PeerError::Unknown(_))));
 }
+
+#[tokio::test]
+async fn a_retiring_node_is_never_dialed() {
+    use awm_edge::EdgePeers;
+    use awm_gateway::peer::{PeerError, PeerTransport};
+    use awm_proto::{CallContext, Surface};
+    let edges = awm_trust::edges::EdgeList::parse(
+        "nodes:\n  home: {role: desktop, managed: true}\n  work: {role: work}\n  old: {role: retiring}\n\
+         edges:\n  home: {work: lan, old: lan}\n",
+    )
+    .unwrap();
+    let opens = Arc::new(AtomicUsize::new(0));
+    let peers = EdgePeers::new("home", edges, duplex_client(opens.clone(), None));
+    assert_eq!(peers.peers(), vec!["work".to_string()]);
+    let ctx = CallContext::local("home", Surface::Cli);
+    fn refused<T>(r: Result<T, PeerError>) {
+        match r {
+            Err(PeerError::Refused { body, .. }) => assert!(body.contains("retiring"), "{body}"),
+            Err(e) => panic!("not refused as retiring: {e}"),
+            Ok(_) => panic!("a retiring node answered"),
+        }
+    }
+    refused(peers.invoke("old", "journal", json!({"verb": "fetch"}), &ctx).await);
+    refused(peers.tools("old").await);
+    refused(peers.table_changed("old", "home").await);
+    assert!(peers.open_ws("old", "/hub/emit/x/y", &ctx).await.is_err());
+    assert_eq!(opens.load(Ordering::SeqCst), 0, "the opener was called for a retiring node");
+    peers.invoke("work", "journal", json!({}), &ctx).await.unwrap();
+    assert_eq!(opens.load(Ordering::SeqCst), 1);
+}

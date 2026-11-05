@@ -139,13 +139,16 @@ impl Gateway {
         Self::open_with(state, cfg, Arc::new(HttpPeers::new(urls))).await
     }
 
+    /// Load the plugins against the cached peer tables and return at once. Each peer's table
+    /// is then asked for in the background ([`Gateway::refresh_peers`]), so a peer that does
+    /// not answer never holds up the listener.
     pub async fn open_with(state: &Path, cfg: Config, peers: Arc<dyn PeerTransport>) -> anyhow::Result<Arc<Self>> {
         std::fs::create_dir_all(state)?;
         let state = state.canonicalize()?;
         std::fs::create_dir_all(crate::install::installed_root(&state))?;
         let node = cfg.node_name();
         let workspace = cfg.workspace_dir(&state);
-        let peer_tools = fetch_peer_tools(&state, peers.as_ref()).await;
+        let peer_tools = cached_peer_tools(&state, &peers.peers());
         let load = load_plugins(&state, &cfg, &peer_tools);
         for r in &load.refused {
             tracing::error!("plugin {} refused: {}", r.plugin, r.reason);
@@ -154,7 +157,7 @@ impl Gateway {
             tracing::warn!("{w}");
         }
         let marks = crate::privacy::Marks::new(&state, &workspace);
-        Ok(Arc::new_cyclic(|me| Self {
+        let gw = Arc::new_cyclic(|me| Self {
             marks,
             usage: UsageStore::new(state.join("usage")),
             state,
@@ -176,7 +179,9 @@ impl Gateway {
             topics: Default::default(),
             stream_sessions: Default::default(),
             me: me.clone(),
-        }))
+        });
+        gw.refresh_peers();
+        Ok(gw)
     }
 
     pub fn weak(&self) -> Weak<Gateway> {
@@ -300,6 +305,27 @@ impl Gateway {
         json!({"tools": index.iter().map(|p| json!(p.owner)).collect::<Vec<_>>(), "contracts": contracts})
     }
 
+    /// Ask every peer for its table, each in its own task, and reload when one changed. A
+    /// peer that does not answer delays no other peer.
+    pub fn refresh_peers(self: &Arc<Self>) {
+        for peer in self.peers.peers() {
+            let gw = self.clone();
+            tokio::spawn(async move {
+                let before = gw.cached_table_of(&peer);
+                if !gw.refresh_peer(&peer).await || gw.cached_table_of(&peer) == before {
+                    return;
+                }
+                if let Err(e) = gw.reload().await {
+                    tracing::warn!("peer {peer}: reload after its table: {}", e.detail);
+                }
+            });
+        }
+    }
+
+    fn cached_table_of(&self, peer: &str) -> Option<Value> {
+        self.peer_tools.read().unwrap_or_else(|p| p.into_inner()).get(peer).map(|t| json!(t))
+    }
+
     /// Ask one peer for its table again, after it said the table changed.
     pub async fn refresh_peer(&self, peer: &str) -> bool {
         if !self.peers.peers().iter().any(|p| p == peer) {
@@ -307,11 +333,10 @@ impl Gateway {
         }
         match self.peers.tools(peer).await.map(serde_json::from_value::<Vec<RemoteTool>>) {
             Ok(Ok(tools)) => {
-                self.peer_tools.write().unwrap_or_else(|p| p.into_inner()).insert(peer.to_string(), tools);
-                let cache = self.peer_tools.read().unwrap_or_else(|p| p.into_inner()).clone();
-                if let Ok(text) = serde_json::to_string_pretty(&cache) {
-                    let _ = std::fs::write(self.state.join("peer-tools.json"), text);
-                }
+                let mut known = self.peer_tools.write().unwrap_or_else(|p| p.into_inner());
+                known.insert(peer.to_string(), tools);
+                // Written under the lock, so concurrent refreshes cannot land an older map last.
+                save_peer_cache(&self.state, &known);
                 true
             }
             Ok(Err(e)) => {
@@ -1177,26 +1202,22 @@ fn check_arguments(tool: &str, verb: &str, spec: &Value, args: &Value) -> Result
     })
 }
 
-async fn fetch_peer_tools(state: &Path, peers: &dyn PeerTransport) -> BTreeMap<String, Vec<RemoteTool>> {
-    let cache = state.join("peer-tools.json");
+const PEER_CACHE: &str = "peer-tools.json";
+
+/// The last tables the current peers gave, from `peer-tools.json`.
+fn cached_peer_tools(state: &Path, peers: &[String]) -> BTreeMap<String, Vec<RemoteTool>> {
     let mut known: BTreeMap<String, Vec<RemoteTool>> =
-        std::fs::read_to_string(&cache).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
-    for peer in peers.peers() {
-        match peers.tools(&peer).await {
-            Ok(v) => match serde_json::from_value::<Vec<RemoteTool>>(v) {
-                Ok(tools) => {
-                    known.insert(peer, tools);
-                }
-                Err(e) => tracing::warn!("peer {peer}: bad tool list: {e}"),
-            },
-            Err(e) => tracing::warn!("peer {peer}: tool list from cache: {e}"),
-        }
-    }
-    known.retain(|p, _| peers.peers().contains(p));
-    if let Ok(text) = serde_json::to_string_pretty(&known) {
-        let _ = std::fs::write(&cache, text);
-    }
+        std::fs::read_to_string(state.join(PEER_CACHE)).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+    known.retain(|p, _| peers.contains(p));
     known
+}
+
+fn save_peer_cache(state: &Path, known: &BTreeMap<String, Vec<RemoteTool>>) {
+    let Ok(text) = serde_json::to_string_pretty(known) else { return };
+    let tmp = state.join(format!("{PEER_CACHE}.tmp"));
+    if std::fs::write(&tmp, text).is_ok() {
+        let _ = std::fs::rename(&tmp, state.join(PEER_CACHE));
+    }
 }
 
 fn load_plugins(state: &Path, cfg: &Config, peer_tools: &BTreeMap<String, Vec<RemoteTool>>) -> LoadResult {
