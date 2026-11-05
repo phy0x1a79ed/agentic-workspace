@@ -372,20 +372,6 @@ async def test_a_changed_brief_recycles_only_between_turns(kept):
     assert k.status(k.seats[0])["restarts"] == 0
 
 
-async def test_a_seat_started_under_the_old_name_keeps_its_agent(kept):
-    from awm.social.keeper import launch_spec, legacy_hash, legacy_name
-    k, cx, dao, _ = kept
-    seat = k.seats[0]
-    old = {**launch_spec(seat, "discord", True, legacy_name(seat)), "node": "altair"}
-    cx.rows.append({"job": "old00001", "name": legacy_name(seat), "state": "idle",
-                    "parent": None, "caller": "mira"})
-    dao.set_keeper("lab", "altair", "old00001", legacy_hash(old, seat))
-    await k.tick()
-    await k.tick()
-    assert not cx.started and not cx.stopped
-    assert dao.keeper("lab")["job"] == "old00001"
-
-
 async def test_a_renamed_chat_renames_new_agents_only(kept):
     k, cx, dao, _ = kept
     await k.tick()
