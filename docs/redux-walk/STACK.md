@@ -23,7 +23,7 @@ Procedure, from dfs-interview § Work the stack:
 
 ## Current topic
 
-**alcor-door**, under **board**. Its result: `dispatch-mode/parallel-uptime/board/alcor-door/README.md`.
+**door-client**, under **board**. Its result: `dispatch-mode/parallel-uptime/board/door-client/README.md`.
 
 ## Pending
 
@@ -48,6 +48,7 @@ Procedure, from dfs-interview § Work the stack:
       - **door-client** (2026-11-05): from redux-build/dev: alcor-open, needs your decision: 20 plugins are refused on alcor. The root is trilium. ... The gateway has no client for a peer's singleton door, so it lists peer tools only from edges.
         - [ ] Tell alcor-open to resume step 6 (approver check) and any role held for operations when the door-client release lands
         - [ ] Deploy door-client only after deneb's door answers with service keys (keys role from deneb-board; dev applies on mizar, alcor-open on alcor)
+        - [ ] After door-client is live: remove mizar's ZOTERO_SYNC_ENABLED=0 drop-in and zotero from every node but deneb
       - **alcor-door** (2026-11-05): from redux-build/alcor-open: alcor_door: FIREWALL on port 22. It allows 22 from mizar 100.125.95.5, capella 100.90.179.70 and lyra 100.85.115.29, then deletes the blanket 22 rules ... After it, port 22 on alcor answers only those three tailnet addresses. No LAN ssh, no phone.
       - **tarball-backup** (2026-11-05): trilium-fork: mizar's .awm/artifacts holds the only copy of the pinned tarball. A rebuild changes the sha256, so it needs a backup policy. Nothing is pushed to the GitHub fork. That waits on your go.
       - **deneb-board** (2026-11-05): trilium-fork follow-ups: deneb gets the tarball only once cloud's install config makes deneb a push node; cloud deploy.yml awm_fleet_push.altair still lists trilium and canonical_repos defaults include trilium; the mizar vault mirror does not exist yet
@@ -97,6 +98,7 @@ From journal 6a98c0c6 (awm/redux) and walkthrough's handover (manual-steps.md at
 - **redux-build/door-client (job 48198ebe, opus high): gateway client for a peer's singleton door; needs check counts door-routed tools as declared** (2026-11-05): took door-client
 - **redux-build/deneb-singletons (job 8e4c71f0, opus high): trilium refuses an empty vault, zotero through the trilium tool, per-singleton secrets and tether paths** (2026-11-05): took deneb-gaps
 - **redux-build/pin-refresh (job b51aabfa, sonnet high): routine deploy rebuilds stale core and page pins** (2026-11-05): took pin-refresh
+- [x] tell redux-build/dev how zotero-home was solved (told 2026-11-05)
 
 ## Closed
 
@@ -104,3 +106,4 @@ From journal 6a98c0c6 (awm/redux) and walkthrough's handover (manual-steps.md at
 - **search-awm-api** (closed 2026-11-05): `search-awm-api/README.md`
 - **spawn-tuning** (closed 2026-11-05): `spawn-tuning/README.md`
 - **trilium-shape** (closed 2026-11-05): `dispatch-mode/parallel-uptime/board/deneb-board/trilium-shape/README.md`
+- **zotero-home** (closed 2026-11-05): `dispatch-mode/parallel-uptime/board/deneb-board/zotero-home/README.md`
