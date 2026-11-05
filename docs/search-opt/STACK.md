@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Settle what Tony wants from disk-based search in awm before any design: the target and how it is measured, keyword and string matching, semantic matching, the query syntax, and one store per source. Journals come first. Papers can stay slow.
+Settle the specification of disk-based search for agentic memory before any design: what it serves, its sources, its memory and latency bounds, and its matching. The search signature is already decided and is an input, not a topic.
 
 Procedure, from dfs-interview § Work the stack:
 
@@ -23,19 +23,22 @@ Procedure, from dfs-interview § Work the stack:
 
 ## Current topic
 
-**target**. Its result: `target/README.md`.
+**sources**, under **spec**. Its result: `spec/sources/README.md`.
 
 ## Stack
 
-- **target** (2026-11-04): papers can stay slow, daily use journals is what matters. I mean the same mechanism can prolly work for both / aim for 10x altair as baseline / search must stay on disk
-  - [ ] Is the gate measured cold or warm, on which node, and at what latency?
-  - [ ] May the journal export contract change on this branch (export by change sequence, reconcile by hash)?
-- **keyword** (2026-11-04): Needs to cover keyword/string text matches
-- **semantic** (2026-11-04): and semantic matches
-- **prior** (2026-11-04): Im Suggesting to use pagerank as an optimization for disk based search. So that it doesnt have to scan the whole corpus.
-- **query-syntax** (2026-11-04): plus the new querry syntax afterwards
-- **per-source** (2026-11-04): We can then use this to hold each of the sources separately.
+- **spec** (2026-11-04): Basic rough spec is disk based search over text, mainly journals, for agentic memory.
+  - **sources** (2026-11-04): Other sources will be added, like transcripts and scientific papers.
+    - [ ] Is it one shared mechanism over the three kinds, each in its own store, with a new source added by supplying items in a common shape?
+  - **memory** (2026-11-04): Want disk because keeping a large corpus in ram is not feasible with essentially unlimited size. But something like 100mb is acceptable.
+  - **latency** (2026-11-04): It needs to be fast because agents will constantly call it so something like 1s is prolly max, but flexible. Simple queries like last journal or journals about x where x is specific/obvious should return fast like 0.1s.
+  - **matching** (2026-11-04): Search requires both exact and semantic matches.
 
 ## Parked
+
+- Earlier inputs from 367a5d0d: "Im Suggesting to use pagerank as an optimization for disk based search. So that it doesnt have to scan the whole corpus." It enters the stack at design time.
+- "We can then use this to hold each of the sources separately." It enters with **sources**.
+- Surveys of disk-based methods: `surveys/keyword.md` and `surveys/semantic.md`. They enter at design time.
+- Implementation questions set aside on 2026-11-05: which node and cold or warm for the gate, and whether the journal export contract may change.
 
 ## Closed
