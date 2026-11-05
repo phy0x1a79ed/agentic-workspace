@@ -357,8 +357,9 @@ def _remove_worktree(bare_dir: Path, worktree_dir: Path) -> None:
 
 
 #: The ``dvc status`` states of a pinned path whose bytes on disk are in no cache.
-#: ``deleted`` and ``not in cache`` lose nothing on this disk, so they never block.
-_LOSABLE_DVC_STATES = frozenset({"modified", "new"})
+#: ``not in cache`` counts only while the path is on disk, whose bytes are then the
+#: machine's only copy. ``deleted`` loses nothing, so it never blocks.
+_LOSABLE_DVC_STATES = frozenset({"modified", "new", "not in cache"})
 
 
 def _dvc_drift(worktree_dir: Path) -> list[str]:
@@ -386,6 +387,7 @@ def _dvc_drift(worktree_dir: Path) -> list[str]:
         for entry in entries if isinstance(entry, dict)
         for path, state in (entry.get("changed outs") or {}).items()
         if state in _LOSABLE_DVC_STATES
+        and (state != "not in cache" or (worktree_dir / path).exists())
     )
 
 

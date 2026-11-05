@@ -94,10 +94,27 @@ def test_data_that_differs_from_its_pin_blocks_unless_forced(scope, monkeypatch,
 
 
 @pytest.mark.parametrize("state", ["deleted", "not in cache"])
-def test_pinned_data_absent_from_disk_or_cache_never_blocks(scope, monkeypatch, state):
+def test_pinned_data_absent_from_disk_never_blocks(scope, monkeypatch, state):
     _dvc_status(monkeypatch, state)
+    assert not (scope / "data" / "raw").exists()
     out = mod.delete_scope(PROJECT, "s")
     assert out.status == "deleted"
+
+
+def test_data_on_disk_that_is_in_no_cache_blocks_unless_forced(scope, monkeypatch):
+    """The bytes on disk are then the machine's only copy, whether or not they match the pin."""
+    _dvc_status(monkeypatch, "not in cache")
+    (scope / ".gitignore").write_text("/data/raw\n")
+    _git(scope, "add", ".gitignore")
+    _git(scope, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "ignore")
+    _git(scope.parent / ".bare", "push", "-q", "origin", "feat/s")
+    (scope / "data").mkdir()
+    (scope / "data" / "raw").write_text("only copy")
+    with pytest.raises(RuntimeError, match=r"data/raw \(not in cache\)"):
+        mod.delete_scope(PROJECT, "s")
+    assert scope.exists()
+    out = mod.delete_scope(PROJECT, "s", force=True)
+    assert out.discarded["dvc_drift"] == ["data/raw (not in cache)"]
 
 
 def test_an_uncommitted_pin_blocks_as_an_untracked_file(scope):
