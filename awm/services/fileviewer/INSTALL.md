@@ -21,7 +21,7 @@ reach the listener: the edge carries only tool calls.
 ### The mask (hiding secrets)
 
 Because the mount exposes the whole filesystem under the root, a **denylist**
-hides secrets. It is a `deny` glob list the listener enforces, matched with `PurePosixPath.full_match` (so `**` spans
+hides secrets. It is a `deny` glob list the listener enforces, matched whole (so `**` spans
 directories) against the **symlink-resolved** path — a symlink to a secret can't
 slip past. A masked path 404s exactly like a missing one. The default mask covers
 ssh/gpg keys, `*.pem`/`*.key`/`*.p12`, `.certs`, tokens (`auth.token`, `*.token`,

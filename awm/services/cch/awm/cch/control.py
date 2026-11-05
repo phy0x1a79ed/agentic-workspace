@@ -1,4 +1,4 @@
-"""Session control: Remote Control, model, effort, rename, cd, interrupt, stop, link, message.
+"""Session control: Remote Control, model, effort, rename, cd, mcp, interrupt, stop, link, message.
 
 Every verb here acts on the caller's own session when it names no ``job``, and
 on any other session on this node when it does. ``job`` is a job id or the name
@@ -69,6 +69,8 @@ KEY_SETTLE_S = 0.35
 SELF_STOP_DELAY_S = 1.5
 # How long `cd` waits for an idle session's record to show the new directory.
 MOVE_WAIT_S = 8.0
+# How long `mcp` waits for another idle session to print the command's result.
+MCP_OUTPUT_WAIT_S = 30.0
 
 DISCONNECT_OPTION = "disconnect this session"
 
@@ -416,7 +418,8 @@ def cd(path: str, *, job: Optional[str], caller_pid: Any, brief: str = "",
     the trust dialog, whose default is to stay put, and the next keystroke
     typed into the session would answer it. A worktree of an awm project is
     trusted first instead, since awm made it. The move drops the session's MCP
-    servers (see :data:`inject.RECONNECT_AFTER_MOVE`); the caller's own session
+    servers (see :data:`inject.RECONNECT_AFTER_MOVE`), which :func:`mcp` types:
+    the caller's own session
     gets the reconnect from its resume, any other once its record shows the move.
     ``brief`` reaches the session once the move applied (scopes.md R143): the
     caller's own session in its follow-up, any other as a message after the reconnect.
@@ -487,12 +490,66 @@ def _await_cwd(t: Target, want: str, wait_s: float, poll_s: float) -> bool:
 
 def _reconnect(t: Target) -> bool:
     try:
-        _deliver(t, inject.RECONNECT_AFTER_MOVE, what="the MCP reconnect after a move")
+        _mcp_other(t, inject.RECONNECT_AFTER_MOVE)
     except inject.DeliveryError as exc:
         log.warning("reflection: could not reconnect awm for %s after its move: %s",
                     t.label, exc)
         return False
     return True
+
+
+def mcp(action: str, server: str, *, job: Optional[str], caller_pid: Any) -> dict:
+    """Reconnect, enable or disable MCP servers by typing the `/mcp` line that does it.
+
+    The caller's own session runs it when its turn ends and gets one follow-up
+    with what the command printed. Another session between turns answers with
+    its output here; one mid-turn runs it when that turn ends.
+    """
+    try:
+        line = guards.mcp_line(action, server)
+    except ValueError as exc:
+        return {"ok": False, "reason": str(exc)}
+    t = resolve(job, caller_pid)
+    _require_running(t)
+    refused = _check_clear(t)
+    if refused:
+        return refused
+    if t.is_self:
+        return {**inject.send(line, caller_pid=t.pid, allow_modal=True,
+                              change=_change("mcp", f"{action} {server.strip()}")),
+                "self": True, "job": t.job}
+    return _mcp_other(t, line)
+
+
+def _mcp_other(t: Target, line: str) -> dict:
+    """Type ``line`` into another session; read its output when it runs at once."""
+    between = _between_turns(t)
+    since = watcher.now_ms()
+    result = _deliver(t, line, what=f"`{line}`")
+    out = {"ok": True, **_identify(t), "hosting": result.lane.hosting, "text": line,
+           "submitted": result.submitted, "confirmed": result.confirmed}
+    if not between:
+        return {**out, "output": None,
+                "detail": f"{t.label} is mid-turn, so `{line}` runs when that turn ends"}
+    said = _await_output(t, line, since)
+    if said is None:
+        return {**out, "output": None,
+                "detail": f"`{line}` printed nothing readable within "
+                          f"{MCP_OUTPUT_WAIT_S:g}s"}
+    return {**out, "output": said}
+
+
+def _await_output(t: Target, line: str, since_ms: int) -> Optional[str]:
+    """What ``line`` printed in ``t``'s transcript after ``since_ms``, or ``None``."""
+    tail = observation.observation_for(t.pid).open_tail(t.pid)
+    tail.watch(line)
+    deadline = _clock() + MCP_OUTPUT_WAIT_S
+    while True:
+        tail.poll()
+        said = tail.output(line, since_ms=since_ms)
+        if said is not None or _clock() >= deadline:
+            return said
+        _sleep(POLL_S)
 
 
 def _send_brief(t: Target, brief: str) -> bool:

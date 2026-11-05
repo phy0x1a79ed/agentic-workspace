@@ -126,7 +126,7 @@ def check(now: float | None = None, idle_days: float = IDLE_DAYS, dry_run: bool 
             continue
         drift = mod._dvc_drift(worktree)
         if drift:
-            hold(f"data pins changed since their last dvc add ({', '.join(drift[:3])})")
+            hold(f"data differs from its pin ({', '.join(drift[:3])})")
             continue
         if dry_run:
             removed.append({"project": project, "scope": scope, "branch": branch, "dry_run": True})

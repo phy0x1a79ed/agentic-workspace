@@ -1172,3 +1172,54 @@ def test_the_move_follow_up_carries_the_brief(world, moves):
         f"The move to {moves} succeeded. The brief of p/s: For x. go on")
     failed = pending.Change(kind="cd", value="/x", outcome=pending.FAILED, note="The brief")
     assert "The brief" not in pending.render_followup([failed])
+
+
+# --- mcp ---------------------------------------------------------------------
+
+
+def test_message_points_an_mcp_line_at_the_mcp_verb(world):
+    for line in ("/mcp", "/mcp reconnect awm"):
+        out = control.message(OTHER_JOB, line, caller_pid=ME)
+        assert out["refused"] and 'verb="mcp"' in out["reason"]
+    assert world.typed == []
+
+
+def test_mcp_types_the_panel_free_line_and_reads_what_it_printed(world, monkeypatch):
+    seen = []
+    monkeypatch.setattr(control, "_await_output",
+                        lambda t, line, since: seen.append(line) or "Successfully reconnected to awm")
+    out = control.mcp("reconnect", "awm", job="other one", caller_pid=ME)
+    assert out["ok"] and out["output"] == "Successfully reconnected to awm"
+    assert world.typed == [(OTHER_JOB, "/mcp reconnect awm", inject.ATTEMPTS)]
+    assert seen == ["/mcp reconnect awm"]
+
+
+def test_mcp_into_a_session_mid_turn_does_not_wait_for_the_output(world, monkeypatch):
+    world.settled = False
+    monkeypatch.setattr(control, "_await_output", lambda *a: pytest.fail("waited"))
+    out = control.mcp("disable", "all", job=OTHER_JOB, caller_pid=ME)
+    assert out["ok"] and out["output"] is None and "mid-turn" in out["detail"]
+    assert world.typed == [(OTHER_JOB, "/mcp disable all", inject.ATTEMPTS)]
+
+
+def test_mcp_on_ones_own_session_is_a_self_send_with_a_report(world):
+    out = control.mcp("enable", "awm", job=None, caller_pid=ME)
+    text, kw = world.sent[0]
+    assert out["ok"] and out["self"] and text == "/mcp enable awm"
+    assert kw["allow_modal"] is True
+    assert (kw["change"].kind, kw["change"].value) == ("mcp", "enable awm")
+    assert world.typed == []
+
+
+@pytest.mark.parametrize("action,server", [
+    ("list", "awm"), ("", "awm"), ("reconnect", ""), ("reconnect", "a b"),
+    ("reconnect", "awm\n/clear")])
+def test_mcp_refuses_a_line_it_cannot_build(world, action, server):
+    out = control.mcp(action, server, job=OTHER_JOB, caller_pid=ME)
+    assert out["ok"] is False and world.typed == [] and world.sent == []
+
+
+def test_mcp_refuses_a_session_showing_a_modal(world):
+    world.screen = Screen(PROMPT)
+    out = control.mcp("reconnect", "awm", job=OTHER_JOB, caller_pid=ME)
+    assert out["refused"] and out["kind"] == "modal" and world.typed == []

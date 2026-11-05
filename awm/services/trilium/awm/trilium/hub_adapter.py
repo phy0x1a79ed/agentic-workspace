@@ -1411,11 +1411,6 @@ async def _on_start() -> None:
 
 
 async def main() -> None:
-    # Which node is the hub and which are spokes is declared in the workspace
-    # env file, and the gateway reads that file once at its own start. Reading
-    # it again here is what lets the declaration change with a restart of this
-    # service rather than of everything.
-    config.load_env_file()
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",

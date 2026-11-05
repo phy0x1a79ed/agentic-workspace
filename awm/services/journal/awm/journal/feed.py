@@ -16,7 +16,7 @@ from typing import Any
 from awm.journal import tags
 from awm.journal.channel import cites_of_posts
 from awm.journal.dao import JournalDAO
-from awm.journal.search_index import INDEXED_PARAMS, INDEXED_SQL, thread_text
+from awm.journal.indexed import INDEXED_PARAMS, INDEXED_SQL, thread_text
 from awm.persistence.timestamps import ms_to_iso
 
 DEFAULT_LIMIT = 200

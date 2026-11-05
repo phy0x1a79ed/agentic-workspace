@@ -22,8 +22,9 @@ FUNCTIONS: list[dict[str, Any]] = [{'name': 'message_self',
                  'next turn once the command finishes — a bare command would otherwise '
                  'go idle. The follow-up is DEFERRED (injected after the command '
                  "completes, never queued behind it) so it can't run ahead of the "
-                 'command. Modal commands (/mcp, /status, /model with no arg, …) are '
-                 'refused — they trap input and freeze the session.',
+                 'command. Modal commands (/status, /model with no arg, …) are '
+                 'refused — they trap input and freeze the session. So is every '
+                 '/mcp line: use the `mcp` verb.',
   'timeout': 60,
   'params': [{'name': 'text',
               'type': 'string',
@@ -170,9 +171,9 @@ FUNCTIONS: list[dict[str, Any]] = [{'name': 'message_self',
                  'Claude Code is not trusted in (the trust dialog would wait on a '
                  'person), and while a modal or permission prompt is showing. A '
                  'worktree of an awm project is trusted first, not refused. Claude '
-                 "Code drops the session's MCP servers on a move, so the verb types "
-                 '`/mcp reconnect awm` after it; any other MCP server stays '
-                 'disconnected. CLAUDE.md files add up across moves: the old one stays '
+                 "Code drops the session's MCP servers on a move, so the verb "
+                 'reconnects awm after it as `mcp` does; reconnect any other server '
+                 'with `mcp`. CLAUDE.md files add up across moves: the old one stays '
                  'in context. On your own session, one follow-up prompt reports the '
                  'move when it has run.',
   'timeout': 60,
@@ -180,6 +181,31 @@ FUNCTIONS: list[dict[str, Any]] = [{'name': 'message_self',
               'type': 'string',
               'required': True,
               'description': 'An absolute directory on this node.'},
+             {'name': 'job',
+              'type': 'string',
+              'description': 'A job id, or a session name as `list_other` shows it. '
+                             'Omit to act on your own session.'}]},
+ {'name': 'mcp',
+  'tool': 'reflection_mcp',
+  'description': "Reconnect, enable or disable a session's MCP servers: types "
+                 '`/mcp <action> <server>` and submits it. These forms act without '
+                 "opening Claude Code's MCP panel; bare `/mcp` opens it and stays "
+                 'refused everywhere. Queues behind a running turn. Refused while a '
+                 'modal or permission prompt is showing. On your own session the '
+                 'command runs when your turn ends, and one follow-up prompt then '
+                 'reports it. Claude Code records what a queued command printed '
+                 'only when it was submitted to an idle prompt, so that report '
+                 'often cannot quote it. Another session between turns answers '
+                 'with the printed result as `output`.',
+  'timeout': 60,
+  'params': [{'name': 'action',
+              'type': 'string',
+              'required': True,
+              'description': 'reconnect, enable or disable.'},
+             {'name': 'server',
+              'type': 'string',
+              'required': True,
+              'description': 'An MCP server name, such as awm, or all.'},
              {'name': 'job',
               'type': 'string',
               'description': 'A job id, or a session name as `list_other` shows it. '
@@ -231,7 +257,8 @@ FUNCTIONS: list[dict[str, Any]] = [{'name': 'message_self',
                  '(no Escape, so it queues behind its current turn). Same guards as '
                  '`message_self`: destructive commands need confirm, modal commands '
                  'are refused, and so is a session showing a modal or permission '
-                 'prompt. No follow-up is added.',
+                 'prompt. Every /mcp line is refused: reconnect, enable or disable '
+                 'servers with the `mcp` verb. No follow-up is added.',
   'timeout': 60,
   'params': [{'name': 'job',
               'type': 'string',
@@ -271,7 +298,9 @@ FUNCTIONS: list[dict[str, Any]] = [{'name': 'message_self',
                  '`claude attach` command. Refuses on a station, for a caller that is '
                  'not a domestic peer, when no Claude Code daemon runs, when the '
                  'worktree is untrusted, or when a live session already holds the '
-                 'name. A worktree of an awm project is trusted first, not refused. '
+                 'name or the scope. The new session claims its scope, and a stop '
+                 'ends the claim. A lobby start claims nothing until its `cd`. '
+                 'A worktree of an awm project is trusted first, not refused. '
                  'The session defaults to skip-permissions, opus and high effort. '
                  'Every caller gets the same session, whoever it is.',
   'params': [{'name': 'project',

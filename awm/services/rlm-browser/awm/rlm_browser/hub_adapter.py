@@ -18,7 +18,7 @@ browser command set:
     ``Input.dispatchKeyEvent``).
   - The command catalog is DISCOVERED, not declared: ``commands`` returns the
     running Chrome's own ``/json/protocol`` self-description. Swapping the
-    backend (simple↔rendered, host↔docker) changes none of these signatures.
+    backend (headless↔rendered, host↔docker) changes none of these signatures.
 
 The browser itself lives in :mod:`awm.rlm_browser.browser` (raw CDP over a
 swappable launch seam). This module is just the manifest + thin arg-unpacking
@@ -50,15 +50,6 @@ log = logging.getLogger("awm.rlm_browser.hub_adapter")
 _ATTACH_PEER_ENV = "AWM_RLM_BROWSER_ATTACH_PEER"
 
 
-def _mode_from_args(a: dict) -> str | None:
-    """Resolve the requested acquire mode, honoring the deprecated boolean
-    ``graphics`` alias (true→rendered, false→headless). Returns ``None`` when
-    neither is given, so the manager applies its own default."""
-    mode = a.get("mode")
-    if mode is None and "graphics" in a:
-        return "rendered" if a.get("graphics") else "headless"
-    return mode
-
 #: The seat singleton owns `browser` (fleet.md R102); each tool name is unique (install.md R117 item 2).
 
 API_MANIFEST: dict[str, Any] = {
@@ -75,8 +66,7 @@ API_MANIFEST: dict[str, Any] = {
                 "'attached' (do NOT launch — drive an EXISTING real Chrome over "
                 "CDP, e.g. the desktop browser; borrowed, so release never "
                 "closes it, and only one attached session may be active at a "
-                "time). mode is fixed for the session's life. (Legacy: a boolean "
-                "'graphics' is still accepted — true→rendered, false→headless.)"
+                "time). mode is fixed for the session's life."
             ),
             "params": [
                 {"name": "game", "type": "string", "required": True},
@@ -250,7 +240,7 @@ def _build() -> tuple[ServiceAdapter, BrowserManager]:
         return await gatewayclient.call("rlm-browser", fn, a, peer=peer)
 
     async def acquire(a):
-        mode = _norm_mode(_mode_from_args(a))
+        mode = _norm_mode(a.get("mode"))
         if mode == "attached":
             peer = gatewayclient.peer_env(_ATTACH_PEER_ENV)
             if peer:
@@ -258,7 +248,7 @@ def _build() -> tuple[ServiceAdapter, BrowserManager]:
                 mgr.note_forwarded(result["session_id"], peer)
                 return result
         return await mgr.acquire(
-            a["game"], mode=_mode_from_args(a), opts=a.get("opts"))
+            a["game"], mode=a.get("mode"), opts=a.get("opts"))
 
     async def release(a):
         peer = mgr.forwarded_peer(a["session_id"])

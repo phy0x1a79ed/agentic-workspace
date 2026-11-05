@@ -87,18 +87,6 @@ fn unit_text(root: &Path) -> anyhow::Result<String> {
     Ok(std::fs::read_to_string(root.join(UNIT))?)
 }
 
-/// Keys of `<state>/env` that the gateway's config does not pass to services. The Rust
-/// gateway reads only config.toml; a key left only in the old env file reaches no service.
-fn env_keys_not_in_config(state: &Path, config: &awm_gateway::config::Config) -> Vec<String> {
-    let Ok(text) = std::fs::read_to_string(state.join("env")) else { return vec![] };
-    text.lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty() && !l.starts_with('#'))
-        .filter_map(|l| l.trim_start_matches("export ").split_once('=').map(|(k, _)| k.trim().to_string()))
-        .filter(|k| !config.env.contains_key(k))
-        .collect()
-}
-
 async fn native(verb: &str) -> anyhow::Result<Value> {
     let url = format!("{}/invoke", crate::gateway_url());
     let resp = reqwest::Client::new()
@@ -208,20 +196,10 @@ pub async fn run(args: Args) -> anyhow::Result<i32> {
     if std::fs::read_to_string(&unit_dest).ok() != Some(unit_text(&root)?) {
         failed.push(format!("{} differs from {UNIT}", unit_dest.display()));
     }
-    match std::fs::read_to_string(&config_path).map_err(|e| e.to_string()).and_then(|t| {
+    if let Err(e) = std::fs::read_to_string(&config_path).map_err(|e| e.to_string()).and_then(|t| {
         toml::from_str::<awm_gateway::config::Config>(&t).map_err(|e| e.to_string())
     }) {
-        Ok(cfg) => {
-            let left = env_keys_not_in_config(&state, &cfg);
-            if !left.is_empty() {
-                println!("note: {}/env holds keys config.toml [env] does not pass on: {}", state.display(), left.join(", "));
-            }
-        }
-        Err(e) => failed.push(format!("{}: {e}", config_path.display())),
-    }
-    let stale = Path::new("/usr/local/bin/awm");
-    if stale.exists() && !same_bytes(stale, &bin_dest) {
-        println!("note: {} is not {}; a shell that finds it first runs an old awm", stale.display(), bin_dest.display());
+        failed.push(format!("{}: {e}", config_path.display()));
     }
     if !failed.is_empty() {
         eprintln!("deploy checks failed:\n  {}", failed.join("\n  "));

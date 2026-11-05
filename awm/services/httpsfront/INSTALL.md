@@ -111,16 +111,14 @@ A browser with no session goes to alcor's approver, `AWM_APPROVER_ORIGIN/portal_
 
 **CAUTION** `/__auth/portal` carries a live grant in its query string. Keep access logging off on every proxy in front of it.
 
-`AWM_HTTPS_PORT` is a clean one-line port knob: set it in the workspace's
-gitignored `$AWM_WORKSPACE/.awm/env` (merged into the gateway env at startup,
-before any service spawns — see README § *Per-workspace env file*), so a port
-change is that single edit plus a `systemctl restart awm.service`, not a
-re-architecture.
+`AWM_HTTPS_PORT` is a clean one-line port knob: set it in the gateway's
+`config.toml` `[env]`, which every service gets at spawn, so a port change is
+that single edit plus a `systemctl restart awm.service`.
 
 **On the production ZeroTier host** this is set to `AWM_HTTPS_PORT=12100` — the
 port Windows forwards into WSL over ZeroTier (a phone reaching `10.74.81.110`
 lands on 12100). So the HTTPS front is the *sole* exposure of awm on that host;
-there is no plain-HTTP relay. A future port change is one line in `.awm/env`.
+there is no plain-HTTP relay. A future port change is one line in `[env]`.
 
 ## Exposure note
 

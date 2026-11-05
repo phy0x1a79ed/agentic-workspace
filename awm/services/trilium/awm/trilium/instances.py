@@ -60,19 +60,12 @@ FORK_DIR = Path(os.environ.get("TRILIUM_FORK_DIR")
 VAULT_HOME = WORKSPACE_ROOT / "projects" / "vault" / "release"
 
 
-def _default_scope() -> Path:
-    """`VAULT_HOME` once this node has it, else the in-fork path every node
-    used before the vault had a repository. Moving `live/` is a host step taken
-    with the server stopped, so a deploy of this code must not move it."""
-    return VAULT_HOME if VAULT_HOME.is_dir() else FORK_DIR
-
-
 #: Where the vault's content lives.
 #:
 #: A node with no vault checkout gets a plain directory at this path instead.
 #: Every write below asks whether the scope is a git checkout before it pins or
 #: commits, so one implementation covers both shapes.
-SCOPE = Path(os.environ.get("TRILIUM_VAULT_SCOPE") or _default_scope())
+SCOPE = Path(os.environ.get("TRILIUM_VAULT_SCOPE") or VAULT_HOME)
 
 #: What `pnpm server:build` emits — one bundle, plus an `assets/` beside it.
 FORK_ENTRY = FORK_DIR / "apps" / "server" / "dist" / "main.cjs"
@@ -89,8 +82,9 @@ TARBALL_NODE = TARBALL_DIR / "node" / "bin" / "node"
 #: code, the slice mask included (install.md R115 item 4).
 TARBALL_STAMP = INSTALL_DIR / "tarball-stamp"
 
-#: What `install.sh` last built, written where the worktree already ignores it.
-BUILD_STAMP = FORK_DIR / ".awm" / "trilium-build-stamp"
+#: What `install.sh` last built, kept in `<git-dir>/awm` of the fork worktree,
+#: which never travels.
+BUILD_STAMP_NAME = "trilium-build-stamp"
 
 #: The parts of the worktree that are the vault's rather than Trilium's, as git
 #: pathspecs. Excluded from the dirtiness probe below: a pending pin is not a
@@ -217,19 +211,6 @@ class Vault:
 VAULT = Vault()
 
 
-def stranded_database(vault: Vault = VAULT) -> Path | None:
-    """A database left in the fork while `vault` serves from elsewhere.
-
-    Trilium provisions an empty document wherever it finds none, and reports
-    that empty one as initialized. Starting in that state would serve a blank
-    vault with the real one a directory away.
-    """
-    if vault.scope == FORK_DIR or vault.document_db.exists():
-        return None
-    legacy = FORK_DIR / "live" / "document.db"
-    return legacy if legacy.exists() else None
-
-
 # -- what is installed to run -----------------------------------------------
 
 
@@ -301,9 +282,11 @@ def source_state() -> dict[str, Any]:
     status = _git("status", "--porcelain", "--", *NOT_SOURCE)
     head = _git("rev-parse", "HEAD")
     stamp = None
+    git_dir = _git("rev-parse", "--absolute-git-dir")
     try:
         stamp = dict(line.split("=", 1) for line in
-                     BUILD_STAMP.read_text().split() if "=" in line)
+                     (Path(git_dir) / "awm" / BUILD_STAMP_NAME).read_text().split()
+                     if "=" in line) if git_dir else None
     except (OSError, ValueError):
         pass
     state.update({

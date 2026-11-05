@@ -16,13 +16,12 @@ import logging
 from typing import Any
 
 from awm.gatewayclient import ServiceAdapter, spawn_supervised
-from awm.journal import channel, dao, search_index, tagsync
+from awm.journal import channel, dao, tagsync
 from awm.journal.operations.briefs import BRIEF_HANDLERS, BRIEF_MANIFEST_FUNCTIONS
 from awm.journal.operations.lineage import LINEAGE_HANDLERS, LINEAGE_MANIFEST_FUNCTIONS
 from awm.journal.operations.posts import POST_HANDLERS, POST_MANIFEST_FUNCTIONS
 from awm.journal.operations.render import RENDER_HANDLERS, RENDER_MANIFEST_FUNCTIONS
 from awm.journal.operations.tags import TAG_HANDLERS, TAG_MANIFEST_FUNCTIONS
-from awm.persistence import embeddings
 
 log = logging.getLogger("awm.journal.hub_adapter")
 
@@ -35,7 +34,7 @@ API_MANIFEST: dict[str, Any] = {
             "topic": "posts",
             "description": (
                 "Fires once per new scope-channel post. Payload "
-                "{project, scope, post}; post carries tags and a derived kind. "
+                "{project, scope, post}; post carries its tags. "
                 "Subscribers filter by (project, scope)."
             ),
         },
@@ -49,10 +48,7 @@ HANDLERS: dict[str, Any] = {**POST_HANDLERS, **TAG_HANDLERS, **BRIEF_HANDLERS,
 
 async def _on_start() -> None:
     dao.init()
-    await asyncio.to_thread(search_index.ensure_schema)
-    spawn_supervised("journal:search-backfill", search_index.backfill_loop)
     spawn_supervised("journal:tag-pull", tagsync.pull_loop)
-    embeddings.warm()
 
 
 async def main() -> None:

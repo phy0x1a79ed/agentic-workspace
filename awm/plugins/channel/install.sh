@@ -17,6 +17,6 @@ PYBIN="$(mamba run -n "$ENV" python -c 'import sys; print(sys.executable)')"
 printf 'AWM_PYTHON=%s\nAWM_ENV_BIN=%s\n' "$PYBIN" "$(dirname "$PYBIN")" \
     > "$HERE/.runtime-env"
 
-bash "$HERE/fetch-release.sh" || echo "fetch-release.sh failed; see .awm/services/tether/fetch.log" >&2
+bash "$HERE/fetch-release.sh" || echo "fetch-release.sh failed; see .awm/services/channel/tether/fetch.log" >&2
 
 echo "Installed awm-channel into env '$ENV'."

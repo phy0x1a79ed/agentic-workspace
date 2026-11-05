@@ -12,11 +12,15 @@ export AWM_ENV="${AWM_ENV:-awm}"
 ENV="$AWM_ENV"
 run() { echo "+ pip install -e $*"; mamba run -n "$ENV" pip install -e "$@"; }
 
-# The Python gateway's dist went with T19. An old editable install of it still owns the env's
-# `awm` and `awm-mcp` scripts, which an old /usr/local/bin symlink may still name.
-if mamba run -n "$ENV" pip show -q awm-gateway >/dev/null 2>&1; then
-    echo "+ pip uninstall awm-gateway"
-    mamba run -n "$ENV" pip uninstall -y awm-gateway
+# Host prerequisites the plugins assume.
+missing=()
+command -v socat >/dev/null || missing+=("socat")
+node_major="$(node --version 2>/dev/null | sed -E 's/^v([0-9]+).*/\1/')"
+[ "${node_major:-0}" -ge 18 ] 2>/dev/null || missing+=("nodejs >= 18 (found: $(node --version 2>/dev/null || echo none))")
+if [ ${#missing[@]} -gt 0 ]; then
+    printf 'awm install: missing prerequisite: %s\n' "${missing[@]}" >&2
+    echo "       sudo apt-get install -y socat nodejs" >&2
+    exit 1
 fi
 
 for lib in config persistence gatewayclient grantlib claudedaemon kept trustpolicy tlsfront dvcdata; do

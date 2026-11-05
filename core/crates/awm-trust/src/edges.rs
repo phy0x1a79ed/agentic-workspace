@@ -111,6 +111,16 @@ impl EdgeList {
         self.edges.get(src).map(|t| t.keys().cloned().collect()).unwrap_or_default()
     }
 
+    /// Whether `node` has the role `retiring`. No outgoing call dials such a node.
+    pub fn retiring(&self, node: &str) -> bool {
+        self.nodes.get(node).is_some_and(|n| n.role == "retiring")
+    }
+
+    /// The nodes `src` may dial: its edges, less every retiring node.
+    pub fn dialable_from(&self, src: &str) -> Vec<String> {
+        self.reachable_from(src).into_iter().filter(|n| !self.retiring(n)).collect()
+    }
+
     pub fn reached_by(&self, dst: &str) -> Vec<String> {
         self.edges
             .iter()
@@ -164,6 +174,21 @@ singletons:
         assert_eq!(e.network("home", "spare"), Some(Network::Lan));
         assert_eq!(e.network("spare", "work"), None);
         assert_eq!(e.door_tools("spare"), vec!["2fa"]);
+    }
+
+    #[test]
+    fn retiring_nodes_are_not_dialed_but_still_trusted() {
+        let e = EdgeList::parse(
+            "nodes:\n  home: {role: homebase}\n  old: {role: retiring}\n  work: {role: work}\n\
+             edges:\n  home: {old: lan, work: lan}\n  old: {home: lan}\n",
+        )
+        .unwrap();
+        assert!(e.retiring("old"));
+        assert!(!e.retiring("work"));
+        assert_eq!(e.reachable_from("home"), vec!["old", "work"]);
+        assert_eq!(e.dialable_from("home"), vec!["work"]);
+        assert!(e.reaches("home", "old"));
+        assert_eq!(e.reached_by("home"), vec!["old"]);
     }
 
     #[test]

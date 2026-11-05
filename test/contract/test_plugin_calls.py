@@ -55,7 +55,7 @@ CALLS: dict[str, set[tuple[str, str]]] = {
     "reflection": {
         ("scope", "claim"), ("scope", "release"), ("journal", "post"),  # _scopes_call, alarm
         *{("harness@1", v) for v in ("platform", "status", "resolve", "find", "list", "start", "stop", "resume", "adopt", "send",
-                                     "compact", "mode", "set", "interrupt", "remote_control", "link", "pending")},
+                                     "compact", "mode", "set", "interrupt", "remote_control", "mcp", "link", "pending")},
     },
     "search": {("journal", "export"), ("kb", "query"), ("kb", "get"),
                ("transcripts", "query"), ("search", "query"), ("search", "get")},  # the archive sources

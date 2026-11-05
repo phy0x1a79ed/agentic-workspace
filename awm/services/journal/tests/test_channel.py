@@ -45,14 +45,13 @@ class TestChannelOps:
                      meta={"title": "Did it", "outcome": "success"})
         journals = channel.fetch(project="awm", scope="dev", tags="journal")
         assert len(journals) == 1
-        assert journals[0].kind == "journal"
+        assert journals[0].tags == ["journal"]
         assert journals[0].meta["outcome"] == "success"
 
     def test_search(self, journal_workspace):
-        from awm.journal import channel, search_index
+        from awm.journal import channel
         channel.post("awm", "dev", author="user:alice", body="the quick brown fox", tags="message")
         channel.post("awm", "dev", author="user:alice", body="unrelated", tags="message")
-        search_index.flush()
         hits = channel.fetch(project="awm", scope="dev", query="brown")
         assert hits[0].body == "the quick brown fox"
         assert hits[0].to_dict()["match"]["snippet"] == "the quick brown fox"
@@ -87,7 +86,7 @@ class TestChannelOps:
         assert ev["scope"] == "dev"
         assert ev["post"]["body"] == "ping"
         assert ev["post"]["author"] == "user:alice"
-        assert ev["post"]["kind"] == "message"
+        assert ev["post"]["tags"] == ["message"] and "kind" not in ev["post"]
 
     def test_emitter_failure_does_not_break_post(self, journal_workspace):
         """A throwing emitter never fails the post (best-effort signalling)."""

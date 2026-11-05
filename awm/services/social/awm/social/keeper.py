@@ -118,21 +118,10 @@ PERSON_NEEDS = (
 )
 
 
-def legacy_name(seat: SeatConfig) -> str:
-    """The name seats started before they were named for their chat carry."""
-    return f"seat - {seat.name}"
-
-
 def spec_hash(spec: dict) -> str:
     """The hash that decides a recycle. It leaves out the name, so a renamed chat keeps its agent."""
     kept = {k: v for k, v in spec.items() if k != "name"}
     return hashlib.sha256(json.dumps(kept, sort_keys=True, default=str).encode()).hexdigest()[:16]
-
-
-def legacy_hash(spec: dict, seat: SeatConfig) -> str:
-    """The hash recorded before :func:`spec_hash` left out the name."""
-    full = {**spec, "name": legacy_name(seat)}
-    return hashlib.sha256(json.dumps(full, sort_keys=True, default=str).encode()).hexdigest()[:16]
 
 
 def _chats_text(seat: SeatConfig) -> str:
@@ -734,9 +723,6 @@ class Keeper:
         rec = self.dao.keeper(seat.name)
         if rec and rec["node"] != seat.node:
             rec = None
-        if rec and rec["spec_hash"] == legacy_hash({**spec, "node": seat.node}, seat):
-            self.dao.set_keeper(seat.name, seat.node, rec["job"], want)
-            rec = self.dao.keeper(seat.name)
         row = next((r for r in rows if rec and r.get("job") == rec["job"] and _live(r)), None)
         if row is None:
             adopted = self._adoptable(seat, rows, rec, spec["name"])

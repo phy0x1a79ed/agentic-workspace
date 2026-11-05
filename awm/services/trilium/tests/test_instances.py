@@ -31,33 +31,11 @@ def test_the_vault_has_a_repository_apart_from_the_fork():
     assert VAULT.notes_dir.is_relative_to(VAULT.scope / "data")
 
 
-def test_the_default_scope_moves_only_once_the_vault_checkout_exists(
-        monkeypatch, tmp_path):
-    """A deploy of this code must not strand a node's database: `live/` moves
-    in a host step, with the server stopped."""
-    home = tmp_path / "projects" / "vault" / "release"
-    monkeypatch.setattr(instances, "VAULT_HOME", home)
-    assert instances._default_scope() == instances.FORK_DIR
-    home.mkdir(parents=True)
-    assert instances._default_scope() == home
-
-
-def test_a_database_left_in_the_fork_blocks_a_start_elsewhere(
-        monkeypatch, tmp_path):
-    """Trilium would provision an empty vault beside the real one and report it
-    initialized."""
-    fork, home = tmp_path / "fork", tmp_path / "home"
-    (fork / "live").mkdir(parents=True)
-    home.mkdir()
-    monkeypatch.setattr(instances, "FORK_DIR", fork)
-    vault = instances.Vault(scope=home)
-    assert instances.stranded_database(vault) is None
-    (fork / "live" / "document.db").write_bytes(b"")
-    assert instances.stranded_database(vault) == fork / "live" / "document.db"
-    assert instances.stranded_database(instances.Vault(scope=fork)) is None
-    (home / "live").mkdir()
-    (home / "live" / "document.db").write_bytes(b"")
-    assert instances.stranded_database(vault) is None
+def test_the_scope_is_the_vault_checkout_by_default(monkeypatch):
+    import importlib
+    monkeypatch.delenv("TRILIUM_VAULT_SCOPE", raising=False)
+    reloaded = importlib.reload(instances)
+    assert reloaded.SCOPE == reloaded.VAULT_HOME
 
 
 def test_the_live_database_is_never_where_a_pin_would_reach():
@@ -142,4 +120,4 @@ def test_the_zotero_mirror_resolves_the_same_vault():
     vault across two repositories."""
     text = instances.SERVICE_DIR.parent.joinpath("zotero", "awm", "zotero", "sync.py").read_text()
     assert '"vault" / "release"' in text
-    assert '"trilium" / "release"' in text
+    assert '"trilium" / "release"' not in text

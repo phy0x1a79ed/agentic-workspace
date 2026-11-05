@@ -3,7 +3,7 @@
 # for node-diff.sh to compare. Read-only, runs as tony without sudo, and runs
 # from stdin over ssh, so it may not source anything beside it.
 #
-# It never prints a value from .awm/env or a key file: env keys are names only,
+# It never prints a value from config.toml [env] or a key file: env keys are names only,
 # and a file whose content matters is printed as an md5.
 set -uo pipefail
 
@@ -16,10 +16,17 @@ emit() { local layer=$1; sed "s|^|$layer:|"; }
 names() { ls -A "$@" 2>/dev/null | grep -vE "$NOISE" | sort -u; }
 md5() { [[ -e $2 ]] && echo "$1=$(md5sum <"$2" | cut -c1-12)"; }
 
-echo "node:$(grep -oP '^(export )?AWM_NODE_NAME=\K\S+' "$W/.awm/env" | tr -d "\"'")"
-
-grep -oE '^(export )?[A-Za-z_][A-Za-z0-9_]*=' "$W/.awm/env" | sed 's/^export //; s/=$//' | sort -u | emit env
 STATE=${AWM_DIR:-$W/.awm}
+python3 -S -c "
+import sys, tomllib
+try:
+    cfg = tomllib.load(open(sys.argv[1], 'rb'))
+except (OSError, ValueError):
+    cfg = {}
+env = cfg.get('env') or {}
+print('node:' + str(cfg.get('node') or env.get('AWM_NODE_NAME') or ''))
+for k in sorted(env):
+    print('env:' + k)" "$STATE/config.toml"
 python3 -S -c "
 import json, sys
 for k, v in sorted(json.load(open(sys.argv[1])).items()):

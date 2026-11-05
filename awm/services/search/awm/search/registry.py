@@ -151,10 +151,7 @@ def services_dir() -> Path:
 
 
 def manifest_tables(service: str) -> list[dict[str, Any]]:
-    """The archive tables in the service folder's ``awm-plugin.toml``.
-
-    The fallback for a row that carries no ``archive`` key.
-    """
+    """The archive tables in the service folder's ``awm-plugin.toml``, for :func:`declared`."""
     try:
         plugin = tomllib.loads((services_dir() / service / "awm-plugin.toml").read_text())
     except (OSError, ValueError):
@@ -196,9 +193,7 @@ def parse(entries: list[dict[str, Any]]) -> tuple[dict[str, Source], set[str]]:
             continue
         service = str(entry.get("name") or "")
         running.add(service)
-        tables = entry.get("archive")
-        if tables is None:
-            tables = manifest_tables(service)
+        tables = entry.get("archive") or []
         tools = [str(t) for t in entry.get("tools") or [] if t] or [service]
         for table in tables:
             source = _source(service, table, tools)

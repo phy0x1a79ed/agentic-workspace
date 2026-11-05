@@ -74,10 +74,10 @@ FORK_DIR = Path(os.environ.get("DSH_FORK_DIR")
 CLI = FORK_DIR / "apps" / "cli" / "lib" / "bin.js"
 PKG_JSON = FORK_DIR / "package.json"
 
-#: What ``install.sh`` last built, written where the worktree already ignores
-#: it. Reported beside the live revision so a stale build is visible rather
-#: than something you infer from a symptom.
-BUILD_STAMP = FORK_DIR / ".awm" / "dsh-build-stamp"
+#: What ``install.sh`` last built, kept in ``<git-dir>/awm`` of the fork worktree
+#: (see :func:`build_stamp`). Reported beside the live revision so a stale build
+#: is visible rather than something you infer from a symptom.
+BUILD_STAMP_NAME = "dsh-build-stamp"
 
 #: Loopback port for the harness. Not the mesh port — the front owns that.
 PORT = int(os.environ.get("DSH_UPSTREAM_PORT", "12311"))
@@ -129,6 +129,12 @@ def _git(*args: str) -> str | None:
     return r.stdout.strip() if r.returncode == 0 else None
 
 
+def build_stamp() -> Path | None:
+    """The build stamp's path, in the fork worktree's git dir, which never travels."""
+    git_dir = _git("rev-parse", "--absolute-git-dir")
+    return Path(git_dir) / "awm" / BUILD_STAMP_NAME if git_dir else None
+
+
 def source_state() -> dict[str, Any]:
     """Which harness revision is on disk, and whether the build matches it.
 
@@ -139,11 +145,12 @@ def source_state() -> dict[str, Any]:
     """
     status = _git("status", "--porcelain")
     stamp = None
+    stamp_file = build_stamp()
     try:
         stamp = dict(
             line.split("=", 1) for line in
-            BUILD_STAMP.read_text().split() if "=" in line
-        )
+            stamp_file.read_text().split() if "=" in line
+        ) if stamp_file else None
     except (OSError, ValueError):
         pass
     head = _git("rev-parse", "HEAD")

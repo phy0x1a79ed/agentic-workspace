@@ -273,10 +273,15 @@ def _settle_branch(bare_dir: Path, branch: str, delete: bool) -> str:
     return f"branch {branch} deleted at {sha} (restore: git branch {branch} {sha})"
 
 
-def _cleanup_worktree(bare_dir: Path, worktree_dir: Path,
-                      *, project: str | None = None, scope: str | None = None,
-                      force: bool = False) -> dict:
-    """Remove a scope's worktree. The branch stays: see :func:`_delete_branch`.
+def _cleanup_worktree(bare_dir: Path, worktree_dir: Path, *, force: bool = False) -> dict:
+    """Check, then remove, a scope's worktree. The branch stays: see :func:`_delete_branch`."""
+    guard = _worktree_guard(bare_dir, worktree_dir, force=force)
+    _remove_worktree(bare_dir, worktree_dir)
+    return guard
+
+
+def _worktree_guard(bare_dir: Path, worktree_dir: Path, *, force: bool = False) -> dict:
+    """Refuse to remove a worktree whose removal would lose work; changes nothing.
 
     Deleting a worktree unlinks names, never bytes: a scope's data is hardlinks
     into the shared cache and its pins are commits on a branch, so the cache
@@ -287,12 +292,6 @@ def _cleanup_worktree(bare_dir: Path, worktree_dir: Path,
     dies with the worktree exactly as un-committed source does, so the guard is
     simply ``git status``, which covers both at once. That is the whole point of
     collapsing them onto one lever. ``force=True`` overrides it.
-
-    :func:`chmod_dirs_writable` is the fallback after ``worktree remove`` fails:
-    ``rmtree`` needs write permission on containing directories. It deliberately
-    never touches *files* — a materialised file shares its inode with the shared
-    cache object, so ``chmod +w`` on it would unprotect that object for every
-    other scope and project on the machine.
 
     Nesting adds a shape this has to refuse outright: ``projects/<p>/fabfos`` is
     not a scope, it is the *directory* the scope ``fabfos/dev`` lives in. It has
@@ -329,7 +328,19 @@ def _cleanup_worktree(bare_dir: Path, worktree_dir: Path,
                     f"Commit them — `dvc add` any new data chunk first — or pass force=true."
                 )
             guard["detail"] = f"forced: {len(pending)} uncommitted change(s) discarded"
+    return guard
 
+
+def _remove_worktree(bare_dir: Path, worktree_dir: Path) -> None:
+    """Remove a worktree that :func:`_worktree_guard` passed, and its git admin dir.
+
+    :func:`chmod_dirs_writable` is the fallback after ``worktree remove`` fails:
+    ``rmtree`` needs write permission on containing directories. It deliberately
+    never touches *files* — a materialised file shares its inode with the shared
+    cache object, so ``chmod +w`` on it would unprotect that object for every
+    other scope and project on the machine.
+    """
+    admin_dir = _worktree_admin_dir(bare_dir, worktree_dir)
     r = run_git(["git", "-C", str(bare_dir), "worktree", "remove", str(worktree_dir), "--force"])
     if r.returncode != 0 and worktree_dir.exists():
         # Directories only — see chmod_dirs_writable. Unlinking a hardlink
@@ -343,15 +354,19 @@ def _cleanup_worktree(bare_dir: Path, worktree_dir: Path,
     # established are dead, so this can never reach a live sibling.
     run_git(["git", "-C", str(bare_dir), "worktree", "prune"])
     _prune_empty_parents(bare_dir.parent, worktree_dir.parent)
-    return guard
+
+
+#: The ``dvc status`` states of a pinned path whose bytes on disk are in no cache.
+#: ``not in cache`` counts only while the path is on disk, whose bytes are then the
+#: machine's only copy. ``deleted`` loses nothing, so it never blocks.
+_LOSABLE_DVC_STATES = frozenset({"modified", "new", "not in cache"})
 
 
 def _dvc_drift(worktree_dir: Path) -> list[str]:
-    """Data pins whose files changed since their last ``dvc add`` (scopes.md R44 item 3).
+    """Pinned paths whose data on disk differs from its pin (scopes.md R44 item 3).
 
     Their bytes are in no cache yet, so a delete would lose them. An uncommitted
     pin shows to git as untracked, and the uncommitted-change check catches it.
-    Ignored files lose nothing that matters and never block a delete.
     """
     if not data_dvc.is_dvc_repo(worktree_dir) or not data_dvc.chunk_pins(worktree_dir):
         return []
@@ -364,7 +379,16 @@ def _dvc_drift(worktree_dir: Path) -> list[str]:
         changed = json.loads(r.stdout or "{}")
     except ValueError:
         return [f"dvc status answered {r.stdout[:200]!r}"]
-    return sorted(changed) if isinstance(changed, dict) else []
+    if not isinstance(changed, dict):
+        return []
+    return sorted(
+        f"{path} ({state})"
+        for entries in changed.values() if isinstance(entries, list)
+        for entry in entries if isinstance(entry, dict)
+        for path, state in (entry.get("changed outs") or {}).items()
+        if state in _LOSABLE_DVC_STATES
+        and (state != "not in cache" or (worktree_dir / path).exists())
+    )
 
 
 def _unique_commits(bare_dir: Path, branch: str) -> list[str]:
@@ -378,14 +402,15 @@ def _unique_commits(bare_dir: Path, branch: str) -> list[str]:
 
 
 def _removal_guard(bare_dir: Path, worktree_dir: Path, project: str, scope: str, branch: str,
-                   force: bool) -> dict:
+                   force: bool, *, commits: bool = True) -> dict:
     """The R44 checks that run before a scope's worktree goes.
 
-    A live session's claim blocks the removal always. Pinned data changed since
-    its last ``dvc add``, and commits no other ref holds, block it unless
+    A live session's claim blocks the removal always. Data on disk that differs
+    from its pin, and commits no other ref holds, block it unless
     ``force`` is set. The commits block even when the branch is kept (R44 item
-    4). A forced removal lists each one. Uncommitted files are checked by
-    :func:`_cleanup_worktree`.
+    4). A forced removal lists each one. ``commits=False`` skips that check, for
+    a caller that merges the branch first. Uncommitted files are checked by
+    :func:`_worktree_guard`.
     """
     from awm.scopes import claims
 
@@ -394,10 +419,10 @@ def _removal_guard(bare_dir: Path, worktree_dir: Path, project: str, scope: str,
         raise RuntimeError(f"Refusing to remove {project}/{scope}: live session {holder['session_id']} "
                            f"holds it. force does not override a live session (scopes.md R44).")
     drift = _dvc_drift(worktree_dir) if worktree_dir.is_dir() else []
-    commits = _unique_commits(bare_dir, branch)
+    commits = _unique_commits(bare_dir, branch) if commits else []
     blockers = []
     if drift:
-        blockers.append(f"{len(drift)} data pin(s) changed since their last `dvc add` "
+        blockers.append(f"{len(drift)} pinned path(s) whose data differs from its pin "
                         f"({', '.join(drift[:3])})")
     if commits:
         blockers.append(f"{len(commits)} commit(s) on {branch} that no other branch or remote holds "
@@ -793,7 +818,7 @@ def _roll_back_create(bare_dir: Path, repo_dir: Path, branch: str,
                       project: str, scope: str, made_at: str | None) -> None:
     """Undo a failed create. The branch goes only if this call made it and it has not moved."""
     try:
-        _cleanup_worktree(bare_dir, repo_dir, project=project, scope=scope, force=True)
+        _cleanup_worktree(bare_dir, repo_dir, force=True)
     except Exception as exc:  # noqa: BLE001 — the original failure is the one to report
         log.error("scope %s/%s: rollback left the worktree: %s", project, scope, exc)
     branch_fate = "kept"
@@ -883,7 +908,7 @@ def create_scope(req: ScopeCreateRequest) -> ScopeActionResponse:
     checkout = _plan_checkout(bare_dir, feature_branch, req.from_branch, repo_dir)
 
     if repo_dir.exists():
-        _cleanup_worktree(bare_dir, repo_dir, project=req.project, scope=req.scope)
+        _cleanup_worktree(bare_dir, repo_dir)
 
     # Everything from here on is undone if it fails or the caller cancels. The
     # branch is undone only when this call made it: checkout.made_at.
@@ -1008,9 +1033,14 @@ def update_scope(project: str, scope: str, req: ScopeUpdateRequest) -> ScopeActi
         raise ValueError("delete_branch needs cleanup=true: git cannot delete a branch "
                          "its worktree still has checked out")
 
-    aid = agent_id_for_scope(project, scope, active_only=True)
-    if aid:
-        retire_agent(aid)
+    # Every check that can refuse the cleanup runs before anything changes. A
+    # merge puts the branch's commits on the default branch, so it settles the
+    # unique-commit check itself.
+    removal = guard = None
+    if req.cleanup:
+        removal = _removal_guard(bare_dir, repo_dir, project, scope, feature_branch, req.force,
+                                 commits=not req.merge)
+        guard = _worktree_guard(bare_dir, repo_dir, force=req.force)
 
     merge_msg = ""
     if req.merge:
@@ -1026,12 +1056,14 @@ def update_scope(project: str, scope: str, req: ScopeUpdateRequest) -> ScopeActi
         run_git(["git", "-C", str(main_worktree), "push"])
         merge_msg = f", merged into {default_branch}"
 
+    aid = agent_id_for_scope(project, scope, active_only=True)
+    if aid:
+        retire_agent(aid)
+
     cleanup_msg = ""
     discarded = None
     if req.cleanup:
-        removal = _removal_guard(bare_dir, repo_dir, project, scope, feature_branch, req.force)
-        guard = _cleanup_worktree(bare_dir, repo_dir,
-                                  project=project, scope=scope, force=req.force)
+        _remove_worktree(bare_dir, repo_dir)
         cleanup_msg = (f", worktree removed, "
                        f"{_settle_branch(bare_dir, feature_branch, req.delete_branch)}")
         discarded = _discard_list(guard, removal) if req.force else None
@@ -1314,7 +1346,7 @@ def delete_scope(project: str, scope: str, force: bool = False,
         raise FileNotFoundError(f"No scope '{scope}' found in project '{project}'")
 
     discarded = _removal_guard(bare_dir, repo_dir, project, scope, feature_branch, force)
-    guard = _cleanup_worktree(bare_dir, repo_dir, project=project, scope=scope, force=force)
+    guard = _cleanup_worktree(bare_dir, repo_dir, force=force)
     branch_msg = _settle_branch(bare_dir, feature_branch, delete_branch)
 
     with dao.transaction() as conn:
@@ -1412,7 +1444,7 @@ def search_scopes(
     """Search scopes. Defaults to status='active'.
 
     With a ``query``, scopes whose name contains it come first, then the rest
-    ranked by relevance of their brief and ``context.md``. A project's main
+    ranked by relevance of their brief. A project's main
     checkout counts as an active scope named for its default branch. With no
     ``project`` the reply also lists every project (see
     :func:`awm.scopes.projects.search_projects`) and every tag in use. With

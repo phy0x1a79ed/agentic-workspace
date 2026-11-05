@@ -67,8 +67,6 @@ Chrome.
     may be active at a time (single-window). A second `acquire(mode=attached)`
     while one is active is rejected.
 
-  (Legacy: a boolean `graphics` is still accepted — `true`→`rendered`,
-  `false`→`headless`.)
 - **tabs** — `tab_open(session_id, url?) -> {tab_id}` · `tab_close` · `tab_list` ·
   `tab_activate`. A tab is a live CDP page target, not a durable row.
 - **perceive** (conveniences over CDP) — `observe(session_id, tab_id?) ->

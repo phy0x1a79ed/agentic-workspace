@@ -196,7 +196,7 @@ _IDENTITY_FUNCTIONS = [
     },
     {
         "name": "ensureProject",
-        "tool": "project_ensure",
+        "tool": "scope_project_ensure",
         "description": "Idempotent get-or-create of a project. Returns {project}.",
         "params": [
             {"name": "project", "type": "string", "required": True},

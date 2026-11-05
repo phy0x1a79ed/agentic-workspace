@@ -11,7 +11,6 @@ from __future__ import annotations
 import pytest
 
 from awm.rlm_browser.browser import BrowserManager, _Session, _norm_mode
-from awm.rlm_browser.hub_adapter import _mode_from_args
 
 pytestmark = [pytest.mark.unit, pytest.mark.smoke]
 
@@ -23,8 +22,7 @@ async def _noop_emit(topic, payload):  # pragma: no cover - trivial
 # --- mode canonicalization ------------------------------------------------
 
 @pytest.mark.parametrize("raw,want", [
-    ("simple", "headless"),     # legacy alias
-    ("Simple", "headless"),     # case-insensitive
+    ("Rendered", "rendered"),   # case-insensitive
     ("", "headless"),           # empty → default
     (None, "headless"),         # missing → default
     ("bogus", "headless"),      # unknown → default
@@ -34,17 +32,6 @@ async def _noop_emit(topic, payload):  # pragma: no cover - trivial
 ])
 def test_norm_mode(raw, want):
     assert _norm_mode(raw) == want
-
-
-@pytest.mark.parametrize("args,want", [
-    ({"graphics": True}, "rendered"),       # deprecated alias
-    ({"graphics": False}, "headless"),
-    ({"mode": "attached"}, "attached"),
-    ({"mode": "attached", "graphics": True}, "attached"),  # explicit mode wins
-    ({}, None),                              # neither → manager default
-])
-def test_mode_from_args(args, want):
-    assert _mode_from_args(args) == want
 
 
 # --- backend selection ----------------------------------------------------

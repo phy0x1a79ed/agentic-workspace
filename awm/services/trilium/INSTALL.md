@@ -601,9 +601,8 @@ the database. `data/vault/` holds the pinned snapshots, the mirrored Zotero
 library and the markdown export. The fork is public and its release tags name
 code, so every nightly pin commits here and never in the fork.
 
-A node without `projects/vault/release` falls back to `projects/trilium/release`,
-where the vault lived before it had a repository. `instances.VAULT_HOME` and the
-zotero service's `VAULT_SCOPE` spell both paths and must agree.
+`instances.VAULT_HOME` and the zotero service's `VAULT_SCOPE` spell this path and
+must agree.
 
 - A node that pins has a git checkout there with a DVC repository. Its pins are
   committed on the vault repository's `release`.
@@ -614,17 +613,10 @@ Every write asks `is_checkout` before it pins or commits. Without a checkout the
 service writes its files and reports that it committed nothing. Treat that as
 load-bearing: it lets a deployment box run this service with no repository.
 
-CAUTION: the service refuses to start when the vault directory has no database
-and `projects/trilium/release/live/document.db` exists. Trilium would otherwise
-provision an empty vault beside the real one and report it initialized. Move
-`live/` with the server stopped.
-
 WARNING: the live database sits inside a git checkout on a pinning node. `git
 clean -fdx` there deletes it and nothing warns first.
 
-CAUTION: the vault repository ignores `live/` through its own `.gitignore`. A
-node still on the fallback path ignores it through the fork's bare
-`info/exclude`, never the fork's root `.gitignore`, which upstream owns.
+CAUTION: the vault repository ignores `live/` through its own `.gitignore`.
 
 The data tree is also excluded from the probe that decides whether to rebuild.
 `install.sh` and `instances.NOT_SOURCE` spell the same two exclusions. They have

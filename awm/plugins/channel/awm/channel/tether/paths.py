@@ -18,10 +18,8 @@ from awm.config import AWM_DIR
 SERVICE_DIR = Path(__file__).resolve().parents[3]
 
 #: Per-host state: the fetched binaries, the daemon's control socket, its log.
-#: Still named for the tether service the channel plugin replaced, because a
-#: running operator daemon and its unit name are keyed on this path, and a
-#: deploy that moved it would orphan every live session.
-STATE_DIR = AWM_DIR / "services" / "tether"
+#: The operator daemon's unit name and socket derive from this path.
+STATE_DIR = AWM_DIR / "services" / "channel" / "tether"
 
 #: Where this host's binaries live. fetch-release.sh pulls the pinned release
 #: into STATE_DIR/bin on start, outside the checkout a deploy's clean of

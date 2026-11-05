@@ -21,6 +21,29 @@ def test_default_mask_covers_the_usual_secrets():
         assert glob in m, f"default mask missing {glob!r}"
 
 
+@pytest.mark.parametrize("glob, path, hit", [
+    ("**/.git/**", ".git/config", True),
+    ("**/.git/**", "a/b/.git/config", True),
+    ("**/.git/**", "a/.github/x", False),
+    ("**/.ssh", "home/u/.ssh", True),
+    ("**/.ssh", "home/u/.ssh/id", False),
+    ("**/*.pem", "etc/tls/a.pem", True),
+    ("**/*.pem", "a.pem", True),
+    ("**/*.pem", "a.pem.bak", False),
+    ("*.pem", "etc/a.pem", False),
+    ("**/.env*", "srv/.env.local", True),
+    ("**/id_[re]*", "u/id_rsa", True),
+    ("**/id_[!re]*", "u/id_rsa", False),
+    ("a/?/c", "a/b/c", True),
+    ("a/?/c", "a/bb/c", False),
+    ("a/**", "a/b/c", True),
+    ("a/**/c", "a/c", True),
+    ("**", "anything/at/all", True),
+])
+def test_glob_matches_like_full_match(glob, path, hit):
+    assert bool(server._glob_regex(glob).fullmatch(path)) is hit
+
+
 @pytest.mark.smoke
 def test_load_mask_defaults_only_when_no_override(monkeypatch):
     monkeypatch.delenv("FILEVIEWER_MASK_FILE", raising=False)

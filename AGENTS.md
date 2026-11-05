@@ -33,8 +33,7 @@ Find projects and scopes live. A list in a doc goes stale within days.
 
 Run this at session start. Run it again any time to refresh.
 
-1. Read the scope brief. The harness hands it to you when you enter a scope. `journal(verb="brief_read")` shows it again.
-2. Run `journal(verb="inbox", args={project:<p>, scope:<s>})` for the messages your scope has not read, one line each. Read one in full with `journal(verb="fetch", args={post_id:<id>})`. Run `journal(verb="ack", args={project:<p>, scope:<s>, through:<ack_through>})` once you have read them, so the next session starts after them.
+1. Run `journal(verb="inbox", args={project:<p>, scope:<s>})` for the messages your scope has not read, one line each. Read one in full with `journal(verb="fetch", args={post_id:<id>})`. Run `journal(verb="ack", args={project:<p>, scope:<s>, through:<ack_through>})` once you have read them, so the next session starts after them.
 
 `journal(verb="render", args={project:<p>, scope:<s>})` returns the scope's latest journals, then its project's, when you need its history.
 

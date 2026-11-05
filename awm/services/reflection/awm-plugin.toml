@@ -22,7 +22,7 @@ network = []
 [[needs.contract]]
 name = "harness"
 major = 1
-verbs = ["platform", "status", "resolve", "find", "list", "start", "stop", "resume", "adopt", "send", "compact", "mode", "set", "interrupt", "remote_control", "link", "pending"]
+verbs = ["platform", "status", "resolve", "find", "list", "start", "stop", "resume", "adopt", "send", "compact", "mode", "set", "interrupt", "remote_control", "mcp", "link", "pending"]
 
 [[needs.tool]]
 name = "operations"

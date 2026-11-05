@@ -20,14 +20,16 @@ Peers never reach this listener: the edge carries only tool calls.
 
 from __future__ import annotations
 
+import functools
 import logging
 import mimetypes
 import os
+import re
 import shutil
 import threading
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
 log = logging.getLogger("awm.fileviewer.server")
@@ -40,7 +42,7 @@ SERVICE_NAME = os.environ.get("AWM_SERVICE_NAME", "fileviewer")
 MOUNT_PREFIX = f"/s/{SERVICE_NAME}"
 MOUNT_ROOT = os.environ.get("FILEVIEWER_MOUNT_ROOT", "/")
 
-# Default mask: gitignore-style globs, matched with PurePosixPath.full_match against the resolved path relative to MOUNT_ROOT, so
+# Default mask: gitignore-style globs, matched whole against the resolved path relative to MOUNT_ROOT, so
 # ``**`` spans directories. A leading ``!`` negates and the LAST matching glob
 # wins, so any negation must be listed *before* the secret patterns or it
 # re-exposes them. Denylist-shaped and best-effort — a new secret type in an
@@ -221,6 +223,41 @@ def _is_within(target: Path, root: Path) -> bool:
         return False
 
 
+def _glob_segment(seg: str) -> str:
+    out, i = "", 0
+    while i < len(seg):
+        c = seg[i]
+        if c == "*":
+            out += "[^/]*"
+        elif c == "?":
+            out += "[^/]"
+        elif c == "[" and (end := seg.find("]", i + 2)) != -1:
+            body = seg[i + 1:end]
+            out += "[" + ("^" + body[1:] if body.startswith("!") else body).replace("\\", "\\\\") + "]"
+            i = end
+        else:
+            out += re.escape(c)
+        i += 1
+    return out
+
+
+@functools.lru_cache(maxsize=1024)
+def _glob_regex(pattern: str) -> re.Pattern[str]:
+    """``pattern`` as a regex for a whole relative path, as Python 3.13's
+    ``PurePath.full_match``: ``*`` stays in one segment, ``**`` spans zero or more."""
+    segs = pattern.split("/")
+    out = ""
+    for i, seg in enumerate(segs):
+        last = i == len(segs) - 1
+        if seg == "**" and last:
+            out = out[:-1] + "(?:/[^/]+)*" if out.endswith("/") else out + ".*"
+        elif seg == "**":
+            out += "(?:[^/]+/)*"
+        else:
+            out += _glob_segment(seg) + ("" if last else "/")
+    return re.compile(out)
+
+
 def _is_masked(target: Path, root: Path, deny: tuple[str, ...]) -> bool:
     """True if ``target`` (already resolved) is hidden by the ``deny`` globs,
     taken relative to ``root``. Matching the *resolved* path is deliberate: a
@@ -233,12 +270,11 @@ def _is_masked(target: Path, root: Path, deny: tuple[str, ...]) -> bool:
         rel = target.relative_to(root).as_posix()
     except ValueError:
         return True
-    pp = PurePosixPath(rel)
     masked = False
     for glob in deny:
         negated = glob.startswith("!")
         pattern = glob[1:] if negated else glob
-        if pattern and pp.full_match(pattern):
+        if pattern and _glob_regex(pattern).fullmatch(rel):
             masked = not negated
     return masked
 

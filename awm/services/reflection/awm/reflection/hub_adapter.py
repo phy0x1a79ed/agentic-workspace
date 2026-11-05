@@ -230,6 +230,11 @@ def _rename(args: dict) -> dict:
     return _on_target("set", "rename", args, {"name": args.get("name")})
 
 
+def _mcp(args: dict) -> dict:
+    return _on_target("mcp", "mcp", args, {"action": args.get("action"),
+                                           "server": args.get("server")})
+
+
 def _interrupt(args: dict) -> dict:
     return _on_target("interrupt", "interrupt", args, {})
 
@@ -244,9 +249,10 @@ def _stop(args: dict) -> dict:
 
 
 def _after_retire(out: dict, session_id: Optional[str]) -> dict:
-    """A retired session wakes its waiters, here and on every domestic peer (R51)."""
+    """A retired session ends its scope claims, and wakes its waiters here and on each domestic peer (R51)."""
     sid = out.get("session_id") or session_id
     if out.get("ok") and isinstance(sid, str) and ids.is_r9(sid):
+        _release_claims(sid)
         out = {**out, "woken": waits.retired(sid, wake=_wake)}
         threading.Thread(target=_tell_peers, args=(sid,), name="reflection-retired",
                          daemon=True).start()
@@ -293,6 +299,50 @@ def _scopes_call(verb: str, args: dict) -> Optional[dict]:
         log.info("reflection: scope %s unavailable: %s", verb, exc)
         return None
     return out if isinstance(out, dict) else None
+
+
+def _release_claims(session_id: str) -> None:
+    """End every scope claim ``session_id`` holds. A lost release never fails the stop."""
+    listing = _scopes_call("claims", {}) or {}
+    for row in listing.get("claims") or []:
+        if (row.get("holder") or {}).get("session_id") == session_id:
+            _scopes_call("release", {"project": row["project"], "scope": row["scope"],
+                                     "session_id": session_id})
+
+
+def _start_claim(p: harness.Provider, where: tuple[str, str], out: dict, pid: Any) -> dict:
+    """Claim the scope a started session runs in, or stop the session (scopes.md R42).
+
+    The claim carries the new session's pid, so it ends with the session's process.
+    """
+    project, scope = where
+    sid = out["session_id"]
+    try:
+        new_pid = harness.call(p, "status", {"session_id": sid}).get("pid")
+    except harness.HarnessError as exc:
+        log.warning("reflection: no pid for the new session %s: %s", sid, exc)
+        new_pid = None
+    got = _scopes_call("claim", {"project": project, "scope": scope, "session_id": sid,
+                                 "pid": new_pid, "job": out.get("job")})
+    if got is None:
+        return {**out, "claim": "unavailable"}
+    if got.get("ok", True) or got.get("claimed"):
+        return {**out, "claim": got}
+    try:
+        stopped = harness.call(p, "stop", {"session_id": sid, "pid": pid, "keep": False,
+                                           "confirm": True}).get("ok", True)
+    except harness.HarnessError as exc:
+        log.warning("reflection: could not stop %s after its claim was refused: %s", sid, exc)
+        stopped = False
+    return {"ok": False, "claim": got, "stopped": out.get("job") if stopped else None,
+            "reason": got.get("reason") or f"{project}/{scope} is held by {got.get('holder')}"}
+
+
+def _held_by(project: str, scope: str) -> Optional[dict]:
+    """The live session that holds the scope, or None when it is free or claims are unavailable."""
+    listing = _scopes_call("claims", {"project": project, "scope": scope}) or {}
+    return next((row.get("holder") for row in listing.get("claims") or []
+                 if row.get("scope") == scope and row.get("holder")), None)
 
 
 def _brief_line(project: str, scope: str) -> str:
@@ -373,10 +423,23 @@ async def _start_other(args: dict, as_: str | None = None) -> dict:
     requested = args.get("trust") or (ISOLATED_TRUST if args.get("isolated") else None)
     level = policy.start_level(actor, requested)
     p = _start_provider(args)
+    # A lobby start claims nothing until its own `cd`.
+    where = ((args["project"], args["scope"])
+             if args.get("project") and args.get("scope") and not args.get("suggest") else None)
+    if where:
+        holder = await asyncio.to_thread(_held_by, *where)
+        if holder:
+            return {"ok": False, "holder": holder,
+                    "reason": f"session {holder.get('session_id')} holds {where[0]}/{where[1]}. "
+                              f"Start the session elsewhere, or ask Tony on the board (R7)."}
     fwd = {k: v for k, v in args.items() if not k.startswith("_") and k != "platform"}
     out = await asyncio.to_thread(harness.call, p, "start", {**fwd, "pid": pid},
                                   as_=as_)
     sid = out.get("session_id")
+    if out.get("ok") and sid and where:
+        out = await asyncio.to_thread(_start_claim, p, where, out, pid)
+        if not out.get("ok"):
+            return out
     if out.get("ok") and sid and level:
         name = str(args.get("name") or "")
         origin = f"seat:{name[5:]}" if name.startswith("seat:") else (
@@ -593,6 +656,7 @@ HANDLERS = {verb: _guarded(verb, fn) for verb, fn in {
     "effort": _effort,
     "rename": _rename,
     "cd": _cd,
+    "mcp": _mcp,
     "interrupt": _interrupt,
     "stop": _stop,
     "link": _link,

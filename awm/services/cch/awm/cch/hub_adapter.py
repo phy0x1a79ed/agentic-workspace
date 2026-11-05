@@ -49,7 +49,7 @@ log = logging.getLogger("awm.cch.hub_adapter")
 
 TOOL = "harness-cc"
 CONTRACT = "harness@1"
-OPTIONAL_VERBS = ("mode", "remote_control", "link", "adopt", "revive_pinned",
+OPTIONAL_VERBS = ("mode", "remote_control", "mcp", "link", "adopt", "revive_pinned",
                   "pending", "probe", "live_session_ids", "caller_of_token", "pool_claim", "pool_seed", "pool_remove",
                   "daemon_status", "daemon_ensure", "daemon_hold", "daemon_release")
 
@@ -150,6 +150,12 @@ API_MANIFEST: dict[str, Any] = {
             [_p("pid", "integer"), _p("expect_session")], timeout=60),
         _verb("remote_control", "Turn Remote Control on or off.", _TARGET + [
             _p("on", "boolean", required=True), _p("name")], timeout=60),
+        _verb("mcp", "Reconnect, enable or disable a session's MCP servers.",
+            _TARGET + [_p("action", required=True,
+                          description="reconnect, enable or disable."),
+                       _p("server", required=True,
+                          description="An MCP server name, or all.")],
+            timeout=60),
         _verb("link", "A session's claude.ai link.", _TARGET,
             timeout=30),
         _verb("adopt", "Take on a job started outside start.",
@@ -575,6 +581,11 @@ def _remote_control(args: dict) -> dict:
                                   job=_ref(args), caller_pid=_pid(args))
 
 
+def _mcp(args: dict) -> dict:
+    return control.mcp(str(args.get("action") or ""), str(args.get("server") or ""),
+                       job=_ref(args), caller_pid=_pid(args))
+
+
 def _link(args: dict) -> dict:
     return control.link(job=_ref(args), caller_pid=_pid(args))
 
@@ -692,6 +703,7 @@ HANDLERS = {verb: _guarded(verb, fn) for verb, fn in {
     "compact": _compact,
     "mode": _mode,
     "remote_control": _remote_control,
+    "mcp": _mcp,
     "link": _link,
     "adopt": _adopt,
     "revive_pinned": _revive_pinned,

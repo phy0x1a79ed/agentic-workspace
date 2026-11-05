@@ -55,7 +55,7 @@ class FakeSearch:
         import re
         from awm.journal.dao import JournalDAO
         from awm.persistence.timestamps import iso_to_ms
-        from awm.journal.search_index import INDEXED_PARAMS, INDEXED_SQL, thread_text
+        from awm.journal.indexed import INDEXED_PARAMS, INDEXED_SQL, thread_text
         if self.answer_error is not None:
             return {"journals": {"error": self.answer_error}}
         text = args["query"]["text"]
@@ -117,10 +117,6 @@ def journal_workspace(tmp_path, monkeypatch):
     journal_dao.init()
 
     yield {"workspace": workspace, "services_dir": services_dir, "projects_dir": projects_dir}
-    # Queued index writes resolve the DB path when they run: drain them while
-    # it still points at this test's workspace.
-    from awm.journal import search_index
-    search_index.flush()
 
 
 @pytest.fixture()

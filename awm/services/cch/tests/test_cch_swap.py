@@ -40,6 +40,8 @@ class Script:
 
 
 class Tail:
+    session_id = None
+
     def __init__(self, script: Script):
         self.s = script
         self.repl_pid = OLD

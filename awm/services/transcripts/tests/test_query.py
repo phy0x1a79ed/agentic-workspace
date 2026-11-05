@@ -54,8 +54,11 @@ def test_the_source_is_live_opt_in_and_the_service_is_off():
     toml = Path(awm.transcripts.__path__[0]).parents[1] / "awm-plugin.toml"
     data = tomllib.loads(toml.read_text())
     assert [t["tier"] for t in data["tool"]] == ["off"]
-    assert data["service"][0]["archive"] == [{"name": "transcripts", "mode": "live", "query": "transcripts_query",
-                                "optin": True}]
+    [table] = data["service"][0]["archive"]
+    assert {k: table[k] for k in ("name", "mode", "query", "optin", "hit")} == {
+        "name": "transcripts", "mode": "live", "query": "transcripts_query", "optin": True, "hit": ["title", "ts"]}
+    assert table["fields"] == {"title": "content", "text": "content", "ts": "datetime", "project": "categorical",
+                               "scope": {"class": "categorical", "nested": "/"}}
 
 
 def test_the_query_verb_is_hidden_and_declares_every_filter_search_sends():

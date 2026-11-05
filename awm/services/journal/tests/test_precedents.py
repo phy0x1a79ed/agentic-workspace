@@ -53,7 +53,7 @@ def test_decisions_become_precedent_posts_with_their_threads(journal_workspace, 
     gone = channel.get_post(precedents.post_id("decision", "gone"))
     assert (old.project, old.scope) == ("", "workspace")
     assert new.body == "Context: PRs\n\nQuestion: Open a PR?\n\nDecision: No, land it yourself."
-    assert set(old.tags) == {"precedent", "git", "superseded"} and old.kind == "precedent"
+    assert set(old.tags) == {"precedent", "git", "superseded"}
     assert set(new.tags) == {"precedent", "git", "release-flow"}
     assert new.reply_to == old.id and new.thread_id == old.id
     assert "closed" in gone.tags

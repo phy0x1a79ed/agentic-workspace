@@ -4,8 +4,7 @@ A Python feature service in the `awm.journal` namespace. It owns the scope post
 channels: messages, journal (debrief) entries, briefs and precedents. It also
 renders each scope's history and holds the session lineage. It needs the `awm` conda env to contain its
 package plus the shared component libraries it imports (`config`, `persistence`,
-`gatewayclient`). Its post embedding index uses the workspace embedding stack
-(`sentence-transformers`, already in the `awm` env).
+`gatewayclient`).
 
 ## Install
 
@@ -31,7 +30,6 @@ The service owns its DB at `AWM_DIR/services/journal/journal.db`:
   `awm/journal/tagsync.py`.
 - **post_cites** — a debrief journal's citations, its `reply_to` list.
 - **session_parents** — the lineage's parent links, which reflection records.
-- the shared `embeddings` tables, holding the `post` index.
 
 A post to a literal scope is checked through the scopes service's `resolve` verb.
 An unreachable scopes service never blocks a post.
@@ -47,8 +45,7 @@ The verbs marked CLI and HTTP only serve other services and the one-shot imports
 (`precedent_import`, `lineage_import`). `tag_receive` is HTTP only: peers push tags to it.
 
 The service publishes the `posts` topic, once per new post, with payload
-`{project, scope, post}`. The post carries its tags and a `kind` derived from them,
-for readers of the old post shape.
+`{project, scope, post}`. The post carries its tags.
 
 ## Search archive
 

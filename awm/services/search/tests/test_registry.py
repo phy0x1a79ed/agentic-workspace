@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-import os
+import tomllib
 from pathlib import Path
-from unittest import mock
 
 import pytest
 
@@ -72,18 +71,6 @@ def test_a_second_service_cannot_take_a_name_held():
     assert sources["same"].service == "a"
 
 
-def test_a_row_without_archive_keys_falls_back_to_the_plugin_manifest(tmp_path, monkeypatch):
-    folder = tmp_path / "journal"
-    folder.mkdir()
-    (folder / "awm-plugin.toml").write_text(
-        '[plugin]\nname = "journal"\n\n[[service]]\nname = "journal"\n\n'
-        '[[service.archive]]\nname = "journals"\nmode = "index"\nexport = "journal_export"\n'
-        '[service.archive.fields]\ntext = "content"\n')
-    monkeypatch.setenv("AWM_SERVICES_DIR", str(tmp_path))
-    sources, _ = registry.parse([entry("journal", archive=False)])
-    assert sources["journals"].export == "export"
-
-
 def test_a_stored_spec_keeps_the_declaration():
     import json
     src = registry.parse([entry("journal", [index_table("journals", "journal", topic="posts")])])[0]["journals"]
@@ -97,9 +84,14 @@ SERVICES = Path(__file__).resolve().parents[2]
 
 def _tables():
     for folder in sorted(p.parent for p in SERVICES.glob("*/run.sh")):
-        with mock.patch.dict(os.environ, {"AWM_SERVICES_DIR": str(SERVICES)}):
-            for table in registry.manifest_tables(folder.name):
-                yield folder.name, table
+        try:
+            plugin = tomllib.loads((folder / "awm-plugin.toml").read_text())
+        except OSError:
+            continue
+        for svc in plugin.get("service") or []:
+            if svc.get("name") == folder.name:
+                for table in svc.get("archive") or []:
+                    yield folder.name, table
 
 
 def test_every_table_in_the_tree_names_a_verb_its_service_publishes():
