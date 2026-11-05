@@ -23,14 +23,9 @@ Procedure, from dfs-interview § Work the stack:
 
 ## Current topic
 
-**matching**, under **spec**. Its result: `spec/matching/README.md`.
+(none: the stack is empty)
 
 ## Stack
-
-- **spec** (2026-11-04): Basic rough spec is disk based search over text, mainly journals, for agentic memory.
-  - **matching** (2026-11-04): Search requires both exact and semantic matches.
-    - [ ] Does 'one vector per entry' mean one vector per query string, per corpus entry, or both?
-    - [ ] Does exact matching strip punctuation, and on which side?
 
 ## Parked
 
@@ -45,3 +40,5 @@ Procedure, from dfs-interview § Work the stack:
 - **sort** (closed 2026-11-04): `spec/sort/README.md`
 - **memory** (closed 2026-11-04): `spec/memory/README.md`
 - **latency** (closed 2026-11-04): `spec/latency/README.md`
+- **matching** (closed 2026-11-04): `spec/matching/README.md`
+- **spec** (closed 2026-11-04): `spec/README.md`
