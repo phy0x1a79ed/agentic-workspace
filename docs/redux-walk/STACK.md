@@ -23,11 +23,12 @@ Procedure, from dfs-interview § Work the stack:
 
 ## Current topic
 
-**dispatch-mode**. Its result: `dispatch-mode/README.md`.
+**parallel-uptime**, under **dispatch-mode**. Its result: `dispatch-mode/parallel-uptime/README.md`.
 
 ## Stack
 
 - **dispatch-mode** (2026-11-05): as tasks are decided and worked out, please dispatch top level agents to work on them / their issues can be pushed back to the stack / we will notify them once their issues are solved and how, rather than when we decide how to solve. / we can add this mode to dfs-interview skill
+  - **parallel-uptime** (2026-11-05): I'd like to be able to work in parallel. if all discussion goes through you, then I sit idle while you work and vice versa. our first topic should be a protocol taht maximizes both of our up times
 
 ## Parked
 
