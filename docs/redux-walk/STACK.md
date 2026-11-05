@@ -51,6 +51,7 @@ Procedure, from dfs-interview § Work the stack:
       - **tarball-backup** (2026-11-05): trilium-fork: mizar's .awm/artifacts holds the only copy of the pinned tarball. A rebuild changes the sha256, so it needs a backup policy. Nothing is pushed to the GitHub fork. That waits on your go.
       - **deneb-board** (2026-11-05): trilium-fork follow-ups: deneb gets the tarball only once cloud's install config makes deneb a push node; cloud deploy.yml awm_fleet_push.altair still lists trilium and canonical_repos defaults include trilium; the mizar vault mirror does not exist yet
         - [x] Why does deneb need nodejs, npm and build-essential if mizar pushes built artifacts? (asked deneb-board) (answered 2026-11-05)
+        - [ ] When core-artifact lands: tell deneb-board the artifact names and route (cloud tip 88c35a8 holds)
         - **deneb-gaps** (2026-11-05): from redux-build/deneb-board: Flags: the trilium service makes an empty vault when it finds no db; zotero writes library.json into the vault scope ... needs a decision; channel is also a deneb singleton ... How does a singleton receive a secret? The tether relay could break at cutover.
 
 ## Parked
