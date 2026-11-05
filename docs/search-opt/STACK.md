@@ -23,14 +23,11 @@ Procedure, from dfs-interview § Work the stack:
 
 ## Current topic
 
-**latency**, under **spec**. Its result: `spec/latency/README.md`.
+**matching**, under **spec**. Its result: `spec/matching/README.md`.
 
 ## Stack
 
 - **spec** (2026-11-04): Basic rough spec is disk based search over text, mainly journals, for agentic memory.
-  - **latency** (2026-11-04): It needs to be fast because agents will constantly call it so something like 1s is prolly max, but flexible. Simple queries like last journal or journals about x where x is specific/obvious should return fast like 0.1s.
-    - [ ] Do the latency targets hold with the corpus files cold, outside the OS page cache?
-    - [ ] Does query cost stay bounded as the corpus grows?
   - **matching** (2026-11-04): Search requires both exact and semantic matches.
 
 ## Parked
@@ -45,3 +42,4 @@ Procedure, from dfs-interview § Work the stack:
 - **sources** (closed 2026-11-04): `spec/sources/README.md`
 - **sort** (closed 2026-11-04): `spec/sort/README.md`
 - **memory** (closed 2026-11-04): `spec/memory/README.md`
+- **latency** (closed 2026-11-04): `spec/latency/README.md`

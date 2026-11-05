@@ -21,3 +21,4 @@ Tony, 2026-11-05: "Basic rough spec is disk based search over text, mainly journ
 
 ## Decisions
 
+- 2026-11-05: Search is a fuzzy lookup over agentic memory that answers "did we do this before, and if so, how?". It centres on journals on purpose. Papers and other sources use the same mechanism but set no requirement. Tony: "We are really building something closer to "fuzzy lookup" that answers "did we do this before, and if so, how?". This is centered around journals and that's intentional. Papers and other sources are just along for the ride."
