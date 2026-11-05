@@ -27,7 +27,6 @@ Procedure, from dfs-interview § Work the stack:
 
 ## Pending
 
-- **M10** (2026-11-05): Name the portal hostname your browser uses for mizar, alcor, altair, capella and lyra, or none. Suggested for mizar: mizar.tail080e54.ts.net. dns-guide walks you through it.
 - **M12** (2026-11-05): Cloudflare: add A record auth -> 43.162.91.185, DNS only. dns-guide checks it.
 - **M13** (2026-11-05): Cloudflare: add CAA record auth = 0 issue "letsencrypt.org; validationmethods=dns-01". Needs M12.
 - **M14** (2026-11-05): Cloudflare: create an API token, Zone DNS Edit, zone tony-xy-liu.com only; keep it in your password manager until M25. Give an ACME email or none. Needs M12.
@@ -36,6 +35,7 @@ Procedure, from dfs-interview § Work the stack:
 - **Q-alcor-door** (2026-11-05): alcor's port 22 lockdown: after it, ssh to alcor works only from mizar, capella and lyra over the tailnet. No LAN ssh, no phone, no altair. OK, or should more devices (your phone, by tailnet address) stay allowed?
 - **Q-seat-models** (2026-11-05): Seats: after spawn-tuning, each Slack/Discord seat names its model and effort. dev sets them to today's opus at high. Want any seat lighter, such as sonnet at medium for plain Q&A seats? Optional, no rush.
 - **Q-deneb** (2026-11-05): deneb cutover, after deneb-singletons lands: about 10 minutes of vault downtime. Backups first: an online copy plus a stopped copy to mizar, with the nightly mirror as a third. Changes: sshd allows awm-tunnel and admin besides tony and avatar-relay; ufw opens 443 to all (the SNI stream: auth goes to alcor, everything else stays Cloudflare-only behind it); nginx SNI routing and CSP headers; Trilium moves to its own sandboxed user; deneb becomes a push node; no Node or build tools: mizar ships the built pages. A singleton door on port 2201, tailnet only, for its callers; the awm user's shell becomes /bin/sh for the door's forced command (port 22 still excludes awm). Side effects: the avatar relay answers 503 until capella's side moves (M44). OK to run it?
+- **M10b** (2026-11-05): Tailnet admin console, DNS page: turn on HTTPS Certificates, so each node's <machine>.tail080e54.ts.net portal can get a certificate. Each name then shows in the public Certificate Transparency logs (you chose ts.net names knowing that; say if not).
 
 ## Stack
 
@@ -57,6 +57,7 @@ Procedure, from dfs-interview § Work the stack:
         - **pin-refresh** (2026-11-05): from redux-build/dev: rebuilding pins automatically in the routine deploy is more than a small change. Please start a worker.
         - **deneb-gaps** (2026-11-05): from redux-build/deneb-board: Flags: the trilium service makes an empty vault when it finds no db; zotero writes library.json into the vault scope ... needs a decision; channel is also a deneb singleton ... How does a singleton receive a secret? The tether relay could break at cutover.
           - [ ] When dev's release holds deneb-singletons 04ec7d9f: tell deneb-board the release id, then close deneb-gaps
+- **path-front-door** (2026-11-05): Tony raised a path-based front door (nexus.tony-xy-liu.com/<node>/...) as a possible later design; not decided. (via dns-guide, 2026-11-05)
 
 ## Parked
 
