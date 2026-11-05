@@ -5,10 +5,10 @@ from __future__ import annotations
 import pytest
 
 from awm.gatewayclient import GatewayCallError
-from awm.search import index
+from awm.search import index, meaning
 from awm.search.query import parse
 
-from .conftest import doc, every, flat, synced
+from .conftest import doc, every, ids, section, synced
 
 pytestmark = [pytest.mark.search]
 
@@ -27,8 +27,6 @@ async def loaded(archive, gateway):
         "j1": doc("Kitchen refit", SINK, "2026-03-01T10:00:00Z", project="awm", scope="dev", kind="journal"),
         "j2": doc("Garden shed", SHED, "2026-05-01T10:00:00Z", project="home", scope="yard", kind="journal")},
         topic="posts")
-    gateway.plug("wiki", {"p1": doc("Sink choice", "the user prefers a deep kitchen sink",
-                                    "2026-02-01T00:00:00Z")})
     gateway.plug_live("kb", lambda args: {"exact": [], "related": []})
     await synced(archive, gateway)
     return archive
@@ -36,9 +34,9 @@ async def loaded(archive, gateway):
 
 @pytest.fixture()
 def kb(gateway, monkeypatch):
-    """kb's `related` verb: whatever is in `answer`, or an error; `brute` records each call of the archive's
-    own embeddings, by the sources it ranked."""
-    state = {"answer": [], "error": None, "calls": []}
+    """kb's `related` verb: whatever is in `answer`, or an error; `brute` counts the calls of the archive's own
+    embeddings."""
+    state = {"answer": [], "error": None, "calls": [], "brute": 0}
 
     def related(args):
         state["calls"].append(args)
@@ -47,81 +45,89 @@ def kb(gateway, monkeypatch):
         return {"hits": state["answer"], "generation": "gen-0001"}
 
     gateway.handlers[("kb", "related")] = related
-    state["brute"] = []
     original = index.related
 
-    def spy(conn, query, filters, limit):
-        state["brute"].append(list(filters.sources))
-        return original(conn, query, filters, limit)
+    def spy(conn, query, allowed, limit):
+        state["brute"] += 1
+        return original(conn, query, allowed, limit)
 
     monkeypatch.setattr(index, "related", spy)
     return state
 
 
-async def related_ids(archive, **args):
-    result = await archive.query(parse({"query": "plumbing overhaul", **args}))
-    return [(h["source"], h["id"]) for h in flat(result["related"])], result
+def about(text, **source):
+    return {"query": {"text": {"$about": text}, "journals": source}}
 
 
-async def test_kb_entries_become_related_hits_with_no_text(loaded, kb):
+async def ranked(archive, text="plumbing overhaul", **source):
+    result = await archive.query(parse(about(text, **source)))
+    return ids(section(result, "exact")), result
+
+
+async def test_kb_entries_fuse_with_words_and_the_archives_own_embeddings(loaded, kb):
     kb["answer"] = [entry("journals", "j1", 0.9, start=3, end=20)]
-    ids, result = await related_ids(loaded, sources=["journals", "wiki"])
-    assert [i for i in ids if i[0] == "journals"][0] == ("journals", "j1")
-    first = flat(result["related"])[0]
-    assert first["match"] == "meaning" and not any("passages" in h for h in flat(result["related"]))
-    # The third list of the fusion for journals, then wiki, which kb's entry index does not hold, alone.
-    assert kb["brute"] == [["journals"], ["wiki"]]
-    assert "degraded" not in result
+    found, result = await ranked(loaded)
+    assert found[0] == "j1" and result["journals"].keys() == {"exact"}
+    assert all(set(h) == {"id", "title", "ts"} for h in every(result))
+    assert kb["brute"] == 1
 
 
-async def test_the_request_names_the_sources_and_their_zones(loaded, kb):
-    await related_ids(loaded, sources=["journals", "wiki"], limit=4)
+async def test_the_request_names_the_source_and_its_zone(loaded, kb):
+    await ranked(loaded)
     args = kb["calls"][0]
     assert args["text"] == "plumbing overhaul" and args["sources"] == ["journals"]
     assert args["zones"] == ["journal"] and args["k"] >= 24
-    await related_ids(loaded, sources=["journals"], project="awm")
-    assert kb["calls"][1]["k"] == 200 and kb["calls"][1]["zones"] == ["journal"]
+
+
+async def test_a_filtered_or_text_matched_query_asks_kb_for_more_entries(loaded, kb):
+    await ranked(loaded, project="awm")
+    await loaded.query(parse({"query": {"text": {"$and": [{"$about": "plumbing"}, {"$contains": "sink"}]}}}))
+    assert [c["k"] for c in kb["calls"]] == [meaning.ENTRIES_FILTERED] * 2
 
 
 async def test_a_document_the_archive_no_longer_holds_is_dropped(loaded, kb):
     kb["answer"] = [entry("journals", "gone", 0.99), entry("journals", "j2", 0.5, text=SHED)]
-    ids, _ = await related_ids(loaded, sources=["journals"])
-    assert ids[0] == ("journals", "j2") and ("journals", "gone") not in ids
+    found, _ = await ranked(loaded)
+    assert found[0] == "j2" and "gone" not in found
 
 
 async def test_filters_apply_to_the_resolved_documents(loaded, kb):
     kb["answer"] = [entry("journals", "j1", 0.9), entry("journals", "j2", 0.8, text=SHED)]
-    ids, _ = await related_ids(loaded, sources=["journals"], project="home")
-    assert ids == [("journals", "j2")]
-    ids, _ = await related_ids(loaded, sources=["journals"], before="2026-04-01")
-    assert ids == [("journals", "j1")]
+    found, _ = await ranked(loaded, project="home")
+    assert found == ["j2"]
+    found, _ = await ranked(loaded, ts={"$lt": "2026-04-01"})
+    assert found == ["j1"]
 
 
 async def test_a_span_past_the_end_of_an_edited_document_keeps_the_hit(loaded, kb):
     kb["answer"] = [entry("journals", "j2", 0.9, text=SHED, start=900, end=950)]
-    ids, _ = await related_ids(loaded, sources=["journals"])
-    assert ids[0] == ("journals", "j2")
+    found, _ = await ranked(loaded)
+    assert found[0] == "j2"
 
 
 async def test_each_document_is_one_hit_at_its_best_entry(loaded, kb):
     kb["answer"] = [entry("journals", "j1", 0.7, start=0, end=10), entry("journals", "j1", 0.9, start=11, end=30),
                     entry("journals", "j2", 0.8, text=SHED)]
-    ids, _ = await related_ids(loaded, sources=["journals"])
-    assert ids == [("journals", "j1"), ("journals", "j2")]
+    found, _ = await ranked(loaded)
+    assert found == ["j1", "j2"]
 
 
 async def test_a_document_holding_some_of_the_words_joins_the_meaning_matches(loaded, kb):
     kb["answer"] = [entry("journals", "j2", 0.9, text=SHED)]
-    ids, result = await related_ids(loaded, query="who replaced the leaking tap", sources=["journals"])
-    assert set(ids) >= {("journals", "j1"), ("journals", "j2")}
-    match = {h["id"]: h["match"] for h in flat(result["related"])}
-    assert match["j1"] == "keyword" and match["j2"] == "meaning"
-    assert kb["brute"] == [["journals"]]
+    found, _ = await ranked(loaded, "who replaced the leaking tap")
+    assert set(found) >= {"j1", "j2"}
+    assert kb["brute"] == 1
 
 
-async def test_a_word_from_the_documents_scope_counts_beside_its_passages_words(loaded, kb):
-    result = await loaded.query(parse({"query": "yard roof", "sources": ["journals"]}))
-    assert [(h["id"], h["match"]) for h in flat(result["exact"])] == [("j2", "keyword")]
+async def test_the_archives_own_head_survives_fusion(loaded, kb):
+    kb["answer"] = [entry("journals", "j2", 0.9, text=SHED)]
+    found, _ = await ranked(loaded, "kitchen sink refit")
+    assert found[0] == "j1"
+
+
+async def test_a_word_from_the_documents_scope_counts_beside_its_words(loaded, kb):
+    result = await loaded.query(parse({"query": {"text": {"$about": "yard roof"}, "journals": {}}}))
+    assert ids(result["journals"]["exact"])[0] == "j2"
 
 
 @pytest.mark.parametrize("failure", [GatewayCallError(503, '{"detail":"encoder is loading"}'), KeyError("x")])
@@ -130,33 +136,13 @@ async def test_when_kb_cannot_answer_the_archive_ranks_by_its_own_embeddings(loa
         del gateway.handlers[("kb", "related")]
     else:
         kb["error"] = failure
-    _, result = await related_ids(loaded, query="kitchen sink refit", sources=["journals"])
-    assert kb["brute"] == [["journals"]]
-    assert ("journals", "j1") in [(h["source"], h["id"]) for h in every(result)]
-
-
-async def test_sources_kb_does_not_hold_keep_the_archives_embeddings(loaded, kb, gateway):
-    gateway.plug("extra", {"x1": doc("Tap washers", "replacing the tap washer", "2026-03-02T00:00:00Z")})
-    await synced(loaded, gateway)
-    kb["answer"] = [entry("journals", "j1", 0.9)]
-    ids, result = await related_ids(loaded, query="tap washer", sources=["journals", "extra"])
-    assert ("journals", "j1") in ids
-    assert ("extra", "x1") in [(h["source"], h["id"]) for h in every(result)]
-    assert kb["brute"] == [["journals"], ["extra"]]
-    assert kb["calls"][0]["sources"] == ["journals"]
+    found, result = await ranked(loaded, "kitchen sink refit")
+    assert kb["brute"] == 1 and found[0] == "j1" and "error" not in result["journals"]
 
 
 async def test_without_kb_registered_no_call_is_made(archive, gateway, kb):
     gateway.plug("journals", {"j1": doc("Kitchen refit", SINK, "2026-03-01T10:00:00Z")})
     await synced(archive, gateway)
-    result = await archive.query(parse({"query": "kitchen sink refit", "sources": ["journals"]}))
-    assert kb["calls"] == [] and kb["brute"] == [["journals"]]
-    assert [h["id"] for h in every(result)] == ["j1"]
-
-
-async def test_kb_papers_keep_the_degraded_note_the_live_source_sends(archive, gateway):
-    gateway.plug_live("kb", lambda args: {"exact": [], "related": [{"id": "p", "title": "T", "passages": []}],
-                                          "graph": [], "degraded": {"semantic": "keyword only: encoder is loading"}})
-    result = await archive.query(parse({"query": "anything", "sources": ["kb"]}))
-    assert result["sources"]["kb"]["degraded"] == {"semantic": "keyword only: encoder is loading"}
-    assert [h["id"] for h in flat(result["related"])] == ["p"]
+    result = await archive.query(parse(about("kitchen sink refit")))
+    assert kb["calls"] == [] and kb["brute"] == 1
+    assert ids(result["journals"]["exact"]) == ["j1"]

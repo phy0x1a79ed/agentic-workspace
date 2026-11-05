@@ -9,7 +9,7 @@ import pytest
 from awm.search import archive as archive_mod, store
 from awm.search.query import parse
 
-from .conftest import doc, every, synced
+from .conftest import doc, ids, section, synced
 
 pytestmark = [pytest.mark.search]
 
@@ -51,11 +51,11 @@ async def test_a_vanished_id_is_dropped_and_an_edit_is_reindexed(archive, gatewa
     result = await archive.sweep("journals")
     assert result["dropped"] == 1
     assert count("journals") == 4
-    kitchen = await archive.query(parse({"query": "kitchen sink", "sources": ["journals"]}))
-    assert "j0" not in [h["id"] for h in every(kitchen)]
-    assert every(kitchen)[-1]["id"] == "j1"
-    shed = await archive.query(parse({"query": "garden shed", "sources": ["journals"]}))
-    assert every(shed)[0]["id"] == "j1"
+    kitchen = await archive.query(parse({"query": "kitchen sink"}))
+    assert "j0" not in ids(section(kitchen, "exact") + section(kitchen, "related"))
+    assert "j1" not in ids(section(kitchen, "exact"))
+    shed = await archive.query(parse({"query": "garden shed"}))
+    assert ids(section(shed, "exact")) == ["j1"]
 
 
 async def test_a_failing_export_changes_nothing_and_is_retried(archive, gateway, clock, monkeypatch):

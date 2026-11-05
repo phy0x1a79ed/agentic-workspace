@@ -1,95 +1,90 @@
-"""A search request: the arguments of ``search query`` read once, with the caller's reach applied."""
+"""A search request: the arguments of ``search query`` read once, validated, with the caller's reach applied."""
 
 from __future__ import annotations
 
 import json
 import re
 from dataclasses import dataclass, field
-from typing import Any, Sequence
+from typing import Any, Sequence, Union
 
 from awm import config
 from awm.config import edges
 from awm.config import privacy
 
 from awm.search import store
-from awm.search.index import Filters
 
-DEFAULT_LIMIT = 10
-MAX_LIMIT = 100
-#: The links a ``hop`` walks. kb answers the first three over papers, and the archive walks ``reply_to``.
-VIA = ("citations", "cited_by", "authors", "reply_to")
-MAX_HOP_FROM = 100
+#: kind -> {field: multi-valued}
+FIELDS: dict[str, dict[str, bool]] = {
+    "journals": {"project": False, "scope": False, "tag": True, "ts": False, "replies_to": True},
+    "transcripts": {"project": False, "scope": False, "ts": False},
+    "kb": {"author": True, "tag": True, "ts": False, "cites": True, "cited_by": True},
+}
+DEFAULT_MAX = 10
+MAX_MAX = 100
 
-
-@dataclass
-class Hop:
-    """A walk from the hits along one link type. Empty ``start`` starts from the hits for the words."""
-
-    via: str
-    start: list[str] = field(default_factory=list)
-    limit: int = 20
-
-    def forwarded(self) -> dict[str, Any]:
-        return {"via": self.via, "limit": self.limit, **({"from": self.start} if self.start else {})}
+LOGIC = ("$and", "$or", "$nor")
+SCALAR_OPS = ("$eq", "$ne", "$gt", "$gte", "$lt", "$lte")
+LIST_OPS = ("$in", "$nin", "$all")
+_NODE = re.compile(r"^[A-Za-z0-9_.-]+$")
 
 
-@dataclass
-class Query:
+class QueryError(ValueError):
+    """A malformed request: ``<json path>: <problem>; allowed: <values>``."""
+
+
+def _fail(path: str, problem: str, allowed: Sequence[str] | str = "") -> QueryError:
+    allowed = ", ".join(allowed) if not isinstance(allowed, str) else allowed
+    return QueryError(f"{path}: {problem}" + (f"; allowed: {allowed}" if allowed else ""))
+
+
+@dataclass(frozen=True)
+class Lit:
     text: str
-    #: Source names on this node, in the order named.
-    sources: list[str] = field(default_factory=list)
-    #: Node → the source names asked of that node's search.
-    remote: dict[str, list[str]] = field(default_factory=dict)
-    project: str = ""
-    scope: str = ""
-    #: ``[(negated, tag), ...]``: every term must hold, as the journal's tag filter reads ``"a and !b"``.
-    tags: list[tuple[bool, str]] = field(default_factory=list)
-    after: str = ""
-    before: str = ""
-    limit: int = DEFAULT_LIMIT
-    hop: Hop | None = None
-    #: Another node made the call, so it answers from this node alone.
-    relayed: bool = False
-    #: The scope the call is made from, as project/scope; no order depends on it.
-    context: str = ""
-    hidden: Sequence[dict] | None = ()
-    #: Sources named for another node on a relayed call, which this node does not answer for.
+
+
+@dataclass(frozen=True)
+class Op:
+    op: str
+    items: tuple["Node", ...]
+
+
+Node = Union[Lit, Op]
+
+
+@dataclass
+class Text:
+    about: str | None
+    under_or: bool
+    contains: Node | None
+    raw: Any
+
+
+@dataclass
+class Source:
+    name: str
+    kind: str
+    node: str
+    filter: dict
+
+
+@dataclass
+class Request:
+    text: Text | None
+    sources: list[Source]
+    remote: dict[str, list[Source]]
+    max: int
+    relayed: bool
+    hidden: Sequence[dict] | None
     elsewhere: list[str] = field(default_factory=list)
-    raw: dict[str, str] = field(default_factory=dict)
 
-    def filters(self, sources: list[str]) -> Filters:
-        return Filters(sources, self.project, self.scope, self.tags, self.after, self.before, self.hidden)
-
-    def tag_expr(self) -> str:
-        return " and ".join(("!" if neg else "") + name for neg, name in self.tags)
-
-    def forwarded(self, names: list[str]) -> dict[str, Any]:
-        """The arguments a peer is asked with: the same question over its own sources, by their bare names."""
-        args: dict[str, Any] = {"limit": self.limit, "sources": names, **self.raw}
-        if self.text:
-            args["query"] = self.text
-        if self.tags:
-            args["tags"] = self.tag_expr()
-        if self.hop is not None:
-            args["hop"] = self.hop.forwarded()
-        return args
-
-
-def names(value: Any) -> list[str] | None:
-    """A list of names from a list or a comma-separated string; ``None`` when nothing was given."""
-    if value is None or value == "":
-        return None
-    items = value.split(",") if isinstance(value, str) else value
-    return [str(n).strip() for n in items if str(n).strip()]
-
-
-def _time(args: dict[str, Any], key: str) -> str:
-    if not args.get(key):
-        return ""
-    stamp = store.normalize_ts(args[key])
-    if not stamp:
-        raise ValueError(f"{key}: {args[key]!r} is not an ISO 8601 date or time")
-    return stamp
+    def forwarded(self, node: str) -> dict[str, Any]:
+        """The arguments a peer is asked with: the same question over its own sources, by bare kind."""
+        body: dict[str, Any] = {}
+        if self.text is not None:
+            body["text"] = self.text.raw
+        for source in self.remote.get(node, []):
+            body[source.kind] = source.filter
+        return {"query": body, "max": self.max}
 
 
 def hidden_for(as_: str | None) -> list[dict] | None:
@@ -106,93 +101,194 @@ def is_here(node: str) -> bool:
     return not node or edges.label(node) == edges.label(config.node_name())
 
 
-def split_sources(value: Any) -> tuple[list[str], dict[str, list[str]]]:
-    """``(this node's names, {node: names})`` from ``name`` and ``name@node`` entries; a bare name is here."""
-    chosen = names(value)
-    if not chosen:
-        raise ValueError("search query needs `sources`: names such as journals or kb@altair, "
-                         "from `search sources`. A bare name searches this node.")
-    local: list[str] = []
-    remote: dict[str, list[str]] = {}
-    for entry in chosen:
-        name, _, node = entry.partition("@")
-        name, node = name.strip(), node.strip()
-        if not name:
-            raise ValueError(f"sources: {entry!r} names no source")
-        if is_here(node):
-            local += [name] if name not in local else []
-        else:
-            remote.setdefault(node, [])
-            remote[node] += [name] if name not in remote[node] else []
-    return local, remote
+class _Dup(dict):
+    dups: list[str]
 
 
-_TAG = re.compile(r"^[a-z0-9][a-z0-9_.:+/-]{0,63}$")
+def _pairs(items: list[tuple[str, Any]]) -> dict:
+    d = _Dup(items)
+    d.dups = sorted({k for k, _ in items if sum(1 for q, _ in items if q == k) > 1})
+    return d
 
 
-def parse_tags(expr: Any) -> list[tuple[bool, str]]:
-    """``[(negated, name), ...]`` from ``"a and !b"`` or a list of such terms, as the journal reads its filter."""
-    if expr in (None, "", []):
-        return []
-    parts = expr if isinstance(expr, (list, tuple)) else re.split(r"\s+and\s+", str(expr).strip(), flags=re.I)
-    terms = []
-    for raw in parts:
-        term, negated = str(raw).strip(), False
-        while True:
-            if term.startswith("!"):
-                negated, term = not negated, term[1:].strip()
-            elif term.lower().startswith("not "):
-                negated, term = not negated, term[4:].strip()
-            else:
-                break
-        term = term.lower()
-        if not _TAG.match(term):
-            raise ValueError(f"cannot read the tag filter {expr!r}: join tags with 'and', "
-                             "negate one with '!', such as '!closed and precedent'")
-        terms.append((negated, term))
-    return terms
+def _no_dups(value: Any, path: str) -> None:
+    if isinstance(value, dict):
+        for key in getattr(value, "dups", []):
+            raise _fail(f"{path}.{key}", "duplicate key")
+        for key, sub in value.items():
+            _no_dups(sub, f"{path}.{key}")
+    elif isinstance(value, list):
+        for i, sub in enumerate(value):
+            _no_dups(sub, f"{path}[{i}]")
 
 
-def parse_hop(value: Any) -> Hop | None:
-    """A :class:`Hop` from a JSON object or its text; ``None`` for an empty or missing one."""
-    if value in (None, "", {}):
-        return None
+def _max(value: Any) -> int:
+    if isinstance(value, str) and re.fullmatch(r"\s*\d+\s*", value):
+        value = int(value)
+    if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= MAX_MAX:
+        raise _fail("max", f"{value!r} is not an integer", f"1-{MAX_MAX}")
+    return value
+
+
+def _contains_tree(node: Any, path: str) -> Node:
+    if not isinstance(node, dict) or len(node) != 1:
+        raise _fail(path, "a text term is an object with exactly one key", ("$contains", *LOGIC))
+    (key, value), = node.items()
+    if key == "$contains":
+        if not isinstance(value, str) or not value:
+            raise _fail(f"{path}.$contains", "needs a non-empty string")
+        return Lit(value)
+    if key in LOGIC:
+        if not isinstance(value, list) or not value:
+            raise _fail(f"{path}.{key}", "needs a non-empty list")
+        return Op(key[1:], tuple(_contains_tree(sub, f"{path}.{key}[{i}]") for i, sub in enumerate(value)))
+    if key == "$about":
+        raise _fail(path, "$about sits only directly under the top $and or $or")
+    raise _fail(f"{path}.{key}", "not allowed in text", ("$contains", *LOGIC))
+
+
+def _about_string(value: Any, path: str) -> str:
+    if not isinstance(value, str) or not value:
+        raise _fail(path, "$about needs a non-empty string")
+    return value
+
+
+def _text(value: Any) -> Text:
+    path = "query.text"
     if isinstance(value, str):
-        try:
-            value = json.loads(value)
-        except ValueError as exc:
-            raise ValueError(f"hop: {exc}") from None
+        if not value:
+            raise _fail(path, "text is empty")
+        return Text(value, True, Lit(value), value)
+    if not isinstance(value, dict) or len(value) != 1:
+        raise _fail(path, "text is a string or an object with exactly one key", ("$contains", "$about", *LOGIC))
+    (key, body), = value.items()
+    if key == "$about":
+        return Text(_about_string(body, f"{path}.$about"), False, None, value)
+    if key in ("$and", "$or"):
+        if not isinstance(body, list) or not body:
+            raise _fail(f"{path}.{key}", "needs a non-empty list")
+        about: str | None = None
+        rest: list[Node] = []
+        for i, item in enumerate(body):
+            at = f"{path}.{key}[{i}]"
+            if isinstance(item, dict) and list(item) == ["$about"]:
+                if about is not None:
+                    raise _fail(f"{path}.{key}", "more than one $about")
+                about = _about_string(item["$about"], f"{at}.$about")
+            else:
+                rest.append(_contains_tree(item, at))
+        contains = None if not rest else rest[0] if len(rest) == 1 else Op(key[1:], tuple(rest))
+        return Text(about, key == "$or" and about is not None and contains is not None, contains, value)
+    return Text(None, False, _contains_tree(value, path), value)
+
+
+def _scalar(value: Any, name: str, path: str) -> Any:
+    if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+        raise _fail(path, f"{type(value).__name__} is not a scalar", "string, number")
+    if name == "ts":
+        stamp = store.normalize_ts(value) if isinstance(value, str) else ""
+        if not stamp:
+            raise _fail(path, f"{value!r} is not an ISO 8601 date or time", "2026-03-01, 2026-03-01T12:00:00Z")
+        return stamp
+    return value
+
+
+def _field_value(value: Any, name: str, path: str) -> Any:
+    if isinstance(value, list):
+        raise _fail(path, "a bare list is not a value", "a scalar, or an object with $in, $nin or $all")
     if not isinstance(value, dict):
-        raise ValueError('hop is a JSON object, such as {"via": "citations", "from": ["<id>"]}')
-    unknown = set(value) - {"via", "from", "limit"}
-    if unknown:
-        raise ValueError(f"hop: unknown keys {sorted(unknown)}; it takes via, from and limit")
-    via = str(value.get("via") or "").strip().lower()
-    if via not in VIA:
-        raise ValueError(f"hop: via {via!r} is not one of {', '.join(VIA)}")
-    start = names(value.get("from")) or []
-    if len(start) > MAX_HOP_FROM:
-        raise ValueError(f"hop: from names at most {MAX_HOP_FROM} ids")
-    limit = max(1, min(int(value.get("limit") or 20), MAX_LIMIT))
-    return Hop(via, start, limit)
+        return _scalar(value, name, path)
+    if not value:
+        raise _fail(path, "empty operator object", (*SCALAR_OPS, *LIST_OPS))
+    out: dict[str, Any] = {}
+    for op, operand in value.items():
+        at = f"{path}.{op}"
+        if op in SCALAR_OPS:
+            out[op] = _scalar(operand, name, at)
+        elif op in LIST_OPS:
+            if not isinstance(operand, list) or not operand:
+                raise _fail(at, "needs a non-empty list")
+            out[op] = [_scalar(x, name, f"{at}[{i}]") for i, x in enumerate(operand)]
+        else:
+            raise _fail(at, "unknown operator", (*SCALAR_OPS, *LIST_OPS))
+    return out
 
 
-def parse(args: dict[str, Any], as_: str | None = None) -> Query:
-    text = str(args.get("query") or "").strip()
-    hop = parse_hop(args.get("hop"))
-    if not text and not (hop and hop.start):
-        raise ValueError("search query needs a `query`, or a `hop` with `from`")
-    local, remote = split_sources(args.get("sources"))
+def _filter(f: Any, kind: str, path: str) -> dict:
+    if not isinstance(f, dict):
+        raise _fail(path, "a source filter is an object")
+    out: dict[str, Any] = {}
+    for key, value in f.items():
+        at = f"{path}.{key}"
+        if key in LOGIC:
+            if not isinstance(value, list) or not value:
+                raise _fail(at, "needs a non-empty list")
+            out[key] = [_filter(sub, kind, f"{at}[{i}]") for i, sub in enumerate(value)]
+        elif key in ("$about", "$contains"):
+            raise _fail(at, f"{key} belongs in text, not in a source filter")
+        elif key.startswith("$"):
+            raise _fail(at, "operator not allowed at a field position", (*LOGIC, *FIELDS[kind]))
+        elif key not in FIELDS[kind]:
+            raise _fail(at, f"{kind} has no field {key!r}", tuple(FIELDS[kind]))
+        else:
+            out[key] = _field_value(value, key, at)
+    return out
+
+
+def _source(key: str, value: Any) -> Source:
+    path = f"query.{key}"
+    kind, at, node = key.partition("@")
+    if kind not in FIELDS:
+        raise _fail(path, "not a source", sorted(FIELDS))
+    if at and not _NODE.match(node):
+        raise _fail(path, "malformed node after @", "kind@node, such as journals@altair")
+    return Source(key, kind, "" if is_here(node) else node, _filter(value, kind, path))
+
+
+def _query(query: Any) -> tuple[Text | None, list[Source]]:
+    if isinstance(query, str) and query.lstrip().startswith("{"):
+        try:
+            query = json.loads(query, object_pairs_hook=_pairs)
+        except ValueError as exc:
+            raise _fail("query", f"not valid JSON ({exc})") from None
+        _no_dups(query, "query")
+    if isinstance(query, str):
+        if not query.strip():
+            raise _fail("query", "the query is empty")
+        return _text(query), [_source("journals", {})]
+    if not isinstance(query, dict) or not query:
+        raise _fail("query", "a query is a string or a non-empty object", ("text", *FIELDS))
+    text = _text(query["text"]) if "text" in query else None
+    sources = [_source(k, v) for k, v in query.items() if k != "text"]
+    if not sources:
+        sources = [_source("journals", {})]
+    return text, sources
+
+
+def parse(args: dict[str, Any], as_: str | None = None) -> Request:
+    """The validated :class:`Request` for ``search query`` arguments, as the caller ``as_`` may see it."""
+    for key in args:
+        if key not in ("query", "max") and not key.startswith("_caller_"):
+            raise _fail(key, "unknown argument", ("query", "max"))
+    if "query" not in args:
+        raise _fail("query", "missing", "a string, or an object of text and sources")
+    maximum = _max(args["max"]) if args.get("max") is not None else DEFAULT_MAX
+    text, sources = _query(args["query"])
+
     relayed = privacy.from_peer(as_)
+    here: list[Source] = []
+    remote: dict[str, list[Source]] = {}
     elsewhere: list[str] = []
-    if relayed:  # a peer's call answers from this node alone, never asking another
-        elsewhere = [f"{n}@{node}" for node, ns in remote.items() for n in ns]
-        remote = {}
-    raw = {k: str(args[k]) for k in ("project", "scope", "after", "before", "author") if args.get(k)}
-    return Query(
-        text=text, sources=local, remote=remote,
-        project=str(args.get("project") or ""), scope=str(args.get("scope") or ""),
-        tags=parse_tags(args.get("tags")), after=_time(args, "after"), before=_time(args, "before"),
-        limit=max(1, min(int(args.get("limit") or DEFAULT_LIMIT), MAX_LIMIT)), hop=hop,
-        relayed=relayed, hidden=hidden_for(as_), context=str(args.get("context") or "").strip(),
-        elsewhere=elsewhere, raw=raw)
+    seen: set[tuple[str, str]] = set()
+    for source in sources:
+        ident = (source.kind, edges.label(source.node))
+        if ident in seen:
+            raise _fail(f"query.{source.name}", "this source is named twice")
+        seen.add(ident)
+        if not source.node:
+            here.append(source)
+        elif relayed:
+            elsewhere.append(source.name)
+        else:
+            remote.setdefault(edges.label(source.node), []).append(source)
+    return Request(text, here, remote, maximum, relayed, hidden_for(as_), elsewhere)

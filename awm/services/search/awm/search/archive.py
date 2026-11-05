@@ -20,10 +20,10 @@ from awm.config import edges, privacy
 from awm.gatewayclient import SupervisedSubscription
 from awm.persistence import embeddings as engine
 
-from awm.search import federation, hits as hitshape, index, meaning, merge, registry, store
+from awm.search import compile, federation, hits as hitshape, index, meaning, merge, registry, store
+from awm.search import query as request
 from awm.search.federation import Peers
 from awm.search.gateway import Gateway
-from awm.search.query import Query
 from awm.search.registry import Source
 
 log = logging.getLogger("awm.search.archive")
@@ -37,8 +37,6 @@ REGISTRY_TTL_S = 10.0
 LIVE_TIMEOUT_S = 15.0
 #: How long the journal's open tag clashes are trusted before they are read again.
 CLASHES_TTL_S = 60.0
-#: A hop's link type -> the ``along`` a live source's hop verb takes.
-ALONG = {"citations": "cites", "cited_by": "cited_by", "authors": "authors"}
 EXPORT_TIMEOUT_S = 120.0
 PAGE = 200
 MAX_PAGES = 100_000
@@ -62,16 +60,6 @@ def _unseen(hit: dict[str, Any], hidden: Sequence[dict] | None) -> bool:
     if index.covered(hidden, project, hit.get("scope", "")):
         return True
     return bool(hidden) and bool(project) and privacy.hidden_slug(project)
-
-
-def _live_sections(source: str, raw: Any, origin: dict[str, str], limit: int,
-                   hidden: Sequence[dict] | None) -> dict[str, list[dict[str, Any]]]:
-    found = hitshape.sections(raw, origin, limit, source=source)
-    for section in found:
-        found[section] = [h for h in found[section] if not _unseen(h, hidden)]
-        for hit in found[section]:
-            hit["ts"] = store.normalize_ts(hit["ts"])
-    return found
 
 
 class Archive:
@@ -301,83 +289,6 @@ class Archive:
             kept["authors"] = [str(a)[:200] for a in doc["authors"][:200]]
         return {"document": {**kept, "source": name, "id": doc_id, "frozen": False, "origin": self.origin()}}
 
-    # -- query ------------------------------------------------------------
-
-    def _per_source(self, fn: Callable[..., Any], q: Query, names: list[str], limit: int) -> list[Any]:
-        """``fn(conn, text, filters, limit, ...)`` once for each source, so each has its own ``limit``."""
-        conn = store.connect()
-        try:
-            return [fn(conn, q.text, q.filters([name]), limit) for name in names]
-        finally:
-            conn.close()
-
-    async def _archive_hits(self, q: Query, names: list[str]) -> tuple[dict[str, list[dict[str, Any]]], Any]:
-        """``exact`` from the archive's text indexes; ``related`` from kb's entry index fused with any-word BM25
-        and the archive's own embeddings for the sources kb holds, and from the archive's own embeddings alone
-        for the rest, or for all of them while kb cannot answer."""
-        kb_names = meaning.covered(names) if any(s.service == "kb" for s in self.sources.values()) else []
-        asked = asyncio.ensure_future(
-            meaning.ask(self.gateway, q.text, kb_names, q.filters(kb_names), q.limit)) if kb_names else None
-        origin = self.origin()
-        try:
-            exact = [h for hits in await asyncio.to_thread(self._per_source, index.exact, q, names, q.limit)
-                     for h in hits]
-            by_meaning: list[dict[str, Any]] = []
-            rest = names
-            if asked is not None:
-                try:
-                    entries = await asked
-                    meant = await asyncio.to_thread(_with_conn, index.resolve, entries, q.filters(kb_names),
-                                                    q.limit * 2)
-                    worded = await asyncio.to_thread(self._per_source, index.words, q, kb_names, q.limit * 2)
-                    own = await asyncio.to_thread(self._per_source, index.related, q, kb_names, q.limit * 2)
-                    # Three lists: kb's entry index, any-word BM25 and the archive's own embeddings. The third
-                    # raised real-ask recall@10 from 0.342 to 0.488 and lost no judged set (journal b73eb9b5).
-                    # The released engine ranked by the archive's own embeddings alone, and journal recall must
-                    # not fall below it (fleet.md R136 item 4): fusion reorders that list's head and adds below it.
-                    by_meaning = []
-                    for name, hits, (mine, _) in zip(kb_names, worded, own):
-                        anchor = [{**m, "origin": origin} for m in mine]
-                        lists = [[{**m, "origin": origin} for m in meant if m["source"] == name],
-                                 [{**w, "origin": origin} for w in hits], anchor]
-                        fused = merge.fuse(lists, sum(map(len, lists)))
-                        by_meaning += merge.within(fused, anchor, q.limit)[:q.limit * 2]
-                    rest = [n for n in names if n not in kb_names]
-                except Exception as exc:  # noqa: BLE001 — the archive's own embeddings answer instead
-                    log.warning("search: kb entry index unavailable, using the archive's embeddings: %s",
-                                federation.describe_error(exc))
-        finally:
-            if asked is not None and not asked.done():
-                asked.cancel()
-        brute = await asyncio.to_thread(self._per_source, index.related, q, rest, q.limit * 2) if rest else []
-        degraded = next((d for _, d in brute if d), None)
-        related = by_meaning + [h for hits, _ in brute for h in hits]
-        return {"exact": [{**h, "origin": origin} for h in exact],
-                "related": [{**h, "origin": origin} for h in related]}, degraded
-
-    async def _live(self, source: Source, q: Query) -> tuple[Source, dict[str, list[dict[str, Any]]], dict[str, Any]]:
-        args = {"query": q.text, "limit": q.limit, **q.raw}
-        try:
-            raw = await asyncio.wait_for(
-                self.gateway.call(source.tool, source.query, args, LIVE_TIMEOUT_S),
-                timeout=LIVE_TIMEOUT_S + 1.0)
-            found = _live_sections(source.name, raw, self.origin(), q.limit, q.hidden)
-        except (asyncio.TimeoutError, TimeoutError):
-            return source, {}, {"status": "error", "error": f"timeout after {LIVE_TIMEOUT_S:g}s"}
-        except Exception as exc:  # noqa: BLE001 — one source failing never fails the search
-            return source, {}, {"status": "error", "error": federation.describe_error(exc)}
-        status: dict[str, Any] = {"status": "ok", "hits": hitshape.count(found)}
-        if isinstance(raw, dict) and isinstance(raw.get("degraded"), dict):
-            status["degraded"] = {str(k): str(v)[:300] for k, v in raw["degraded"].items()}
-        return source, found, status
-
-    def _index_status(self, row: dict[str, Any], hits: int) -> dict[str, Any]:
-        state = "frozen" if not row["present"] else "unsynced" if row["synced_at"] is None else "ok"
-        status: dict[str, Any] = {"status": state, "hits": hits}
-        if row["last_error"]:
-            status["error"] = row["last_error"]
-        return status
-
     # -- tag clashes ------------------------------------------------------
 
     async def clashed(self) -> set[str]:
@@ -406,162 +317,192 @@ class Archive:
             raise PermissionError(f"an open tag clash stands between {node} and this node; "
                                   "searches between them wait until an agent renames the tag")
 
-    # -- hop --------------------------------------------------------------
-
-    @staticmethod
-    def _seeds(q: Query, name: str, lists: list[dict[str, list[dict[str, Any]]]]) -> list[str]:
-        """Where a hop on ``name`` starts: the ids it was given, else that source's hits for the words in
-        the first section that holds any, best first. ``related`` ranks every document by meaning, so its hits
-        seed a walk only when nothing matched the words."""
-        if q.hop and q.hop.start:
-            return q.hop.start
-        here = edges.label(config.node_name())
-        for section in hitshape.READ_ONCE:
-            found = [h["id"] for f in lists for h in f.get(section, [])
-                     if h["source"] == name and edges.label(h["origin"]["node"]) == here]
-            if found:
-                return list(dict.fromkeys(found))
-        return []
-
-    async def _walk(self, q: Query, name: str, seeds: list[str], live: Source | None) -> list[dict[str, Any]]:
-        """The hits one ``q.hop`` from ``seeds`` in source ``name``, in the walk's order."""
-        hop = q.hop
-        if live is None:
-            return await asyncio.to_thread(_with_conn, index.walk, name, seeds, q.filters([name]), hop.limit)
-        args = {"ids": seeds, "along": ALONG[hop.via], "limit": hop.limit,
-                **{k: q.raw[k] for k in ("after", "before") if k in q.raw}}
-        raw = await asyncio.wait_for(self.gateway.call(live.tool, live.hop, args, LIVE_TIMEOUT_S),
-                                     timeout=LIVE_TIMEOUT_S + 1.0)
-        hits = raw.get("hits") if isinstance(raw, dict) else None
-        if not isinstance(hits, list):
-            raise ValueError("the hop answered without hits")
-        origin = self.origin()
-        return [{**h, "match": hop.via} for h in (hitshape.clean(x, origin, name) for x in hits)
-                if h and not _unseen(h, q.hidden)][:hop.limit]
-
-    async def _hops(self, q: Query, index_names: list[str], live: list[Source],
-                    lists: list[dict[str, list[dict[str, Any]]]], statuses: dict[str, Any]) -> list[dict[str, Any]]:
-        """Walk ``q.hop`` from each named source whose links include its type; record each walk's status."""
-        hop = q.hop
-        walks: list[tuple[str, Source | None]]
-        if hop.via == "reply_to":
-            walks = [(n, None) for n in index_names]
-        else:
-            walks = [(s.name, s) for s in live if s.hop and hop.via in s.links]
-        walked = {n for n, _ in walks}
-        for name in [*index_names, *(s.name for s in live)]:
-            if name not in walked and name in statuses:
-                statuses[name]["hop"] = {"status": "none", "detail": f"no {hop.via} links"}
-        if not walks:
-            return []
-        if any(not neg for neg, _ in q.tags) and hop.via != "reply_to":
-            for name, _ in walks:
-                statuses[name]["hop"] = {"status": "ok", "hits": 0}
-            return []
-        seeds = {name: self._seeds(q, name, lists) for name, _ in walks}
-        results = await asyncio.gather(*(self._walk(q, n, seeds[n], s) for n, s in walks if seeds[n]),
-                                       return_exceptions=True)
-        out: list[dict[str, Any]] = []
-        for name, _ in walks:
-            if not seeds[name]:
-                statuses[name]["hop"] = {"status": "ok", "hits": 0}
-                continue
-            got = results.pop(0)
-            if isinstance(got, BaseException):
-                statuses[name]["hop"] = {"status": "error", "error": federation.describe_error(got)}
-                continue
-            statuses[name]["hop"] = {"status": "ok", "hits": len(got)}
-            out += [{**h, "origin": h.get("origin") or self.origin()} for h in got]
-        return out
-
     # -- query ------------------------------------------------------------
 
-    async def query(self, q: Query, caller: str | None = None) -> dict[str, Any]:
-        """The ``exact`` and ``related`` sections, and ``hop`` when one is asked, over the named sources of
-        each node, plus a status for every source asked. Each source keeps its own order. ``caller`` names
-        the node that relayed the call."""
+    async def _entries(self, about: str, kind: str, narrowed: bool, limit: int) -> list[dict[str, Any]] | None:
+        """kb's entry-index matches for ``about``, or ``None`` when kb cannot answer."""
+        try:
+            return await meaning.ask(self.gateway, about, [kind], narrowed, limit)
+        except Exception as exc:  # noqa: BLE001 — the archive's own embeddings answer instead
+            log.warning("search: kb entry index unavailable, using the archive's embeddings: %s",
+                        federation.describe_error(exc))
+            return None
+
+    async def _ranked(self, about: str, allowed: index.Allowed, entries: Any, limit: int) -> list[dict[str, Any]]:
+        """The documents ``allowed`` holds, best first by ``about``.
+
+        Three lists fuse when kb's entry index answers: its matches, any-word BM25 and the archive's own
+        embeddings. The third raised real-ask recall@10 from 0.342 to 0.488 and lost no judged set (journal
+        b73eb9b5). The released engine ranked by the archive's own embeddings alone, and journal recall must not
+        fall below it (fleet.md R136 item 4): fusion reorders that list's head and adds below it.
+        """
+        own, degraded = await asyncio.to_thread(_with_conn, index.related, about, allowed, limit * 2)
+        if degraded:
+            log.info("search: ranking by words alone: %s", degraded)
+        found = await entries if entries is not None else None
+        if found is None:
+            return own[:limit]
+        meant = await asyncio.to_thread(_with_conn, index.resolve, found, allowed, limit * 2)
+        worded = await asyncio.to_thread(_with_conn, index.words, about, allowed, limit * 2)
+        lists = [meant, worded, own]
+        return merge.within(merge.fuse(lists, sum(map(len, lists))), own, limit)[:limit]
+
+    async def _indexed(self, src: request.Source, req: request.Request) -> dict[str, Any]:
+        """One archived source's answer. With no ``$about`` it is one read, newest first, that stops at ``max``."""
+        text = req.text
+        contains = text.contains if text else None
+        if text is None or text.about is None:
+            rows = await asyncio.to_thread(_with_conn, compile.newest, src.kind, src.filter, contains,
+                                           req.hidden, req.max)
+            return {"exact": [{"id": r["doc_id"], "title": r["title"], "ts": r["ts"]} for r in rows]}
+        kb_holds = meaning.covered([src.kind]) and any(s.service == "kb" for s in self.sources.values())
+        entries = asyncio.ensure_future(self._entries(text.about, src.kind, bool(src.filter) or contains is not None,
+                                                      req.max)) if kb_holds else None
+        try:
+            jobs = [self._ranked(text.about, compile.allowed(src.kind, src.filter, contains, False, req.hidden),
+                                 entries, req.max)]
+            if text.under_or:
+                jobs.append(self._ranked(text.about,
+                                         compile.allowed(src.kind, src.filter, contains, True, req.hidden),
+                                         entries, req.max))
+            found = await asyncio.gather(*jobs)
+        finally:
+            if entries is not None and not entries.done():
+                entries.cancel()
+        return {"exact": found[0], **({"related": found[1]} if text.under_or else {})}
+
+    async def _live(self, plug: Source, src: request.Source, req: request.Request) -> dict[str, Any]:
+        """One live source's answer, through the thin translation its service takes today."""
+        try:
+            args = live_args(src, req)
+        except ValueError as exc:
+            return {"exact": [], "error": str(exc)}
+        try:
+            raw = await asyncio.wait_for(self.gateway.call(plug.tool, plug.query, args, LIVE_TIMEOUT_S),
+                                         timeout=LIVE_TIMEOUT_S + 1.0)
+        except (asyncio.TimeoutError, TimeoutError):
+            return {"exact": [], "error": f"timeout after {LIVE_TIMEOUT_S:g}s"}
+        except Exception as exc:  # noqa: BLE001 — one source failing never fails the search
+            return {"exact": [], "error": federation.describe_error(exc)}
+        try:
+            return live_answer(raw, req, src)
+        except ValueError as exc:
+            return {"exact": [], "error": str(exc)}
+
+    async def _here(self, src: request.Source, rows: dict[str, dict[str, Any]], req: request.Request) -> dict[str, Any]:
+        row = rows.get(src.kind)
+        if row is None:
+            return {"exact": [], "error": f"this node has no {src.kind} source"}
+        if row["spec"].get("error"):
+            return {"exact": [], "error": row["spec"]["error"]}
+        if row["mode"] == "index":
+            return await self._indexed(src, req)
+        if src.kind in self.sources:
+            return await self._live(self.sources[src.kind], src, req)
+        return {"exact": [], "error": "frozen: its service is not running"}
+
+    async def _there(self, node: str, sources: list[request.Source], req: request.Request,
+                     clashed: set[str]) -> dict[str, dict[str, Any]]:
+        asked = await federation.ask_home(self.peers, node, req.forwarded(node), req.max,
+                                          edges.label(node) in clashed)
+        if asked.status.get("status") != "ok":
+            error = asked.status.get("error") or asked.status.get("status")
+            return {s.name: {"exact": [], "error": str(error)} for s in sources}
+        return {s.name: asked.found.get(s.kind) or {"exact": [], "error": "the node did not answer for it"}
+                for s in sources}
+
+    async def query(self, req: request.Request, caller: str | None = None) -> dict[str, Any]:
+        """``{source: {exact, related?, error?}}`` for each source named, each answered apart.
+        ``caller`` names the node that relayed the call."""
         await self.refuse_clashed(caller)
         await self._refresh_if_stale()
-        rows = {r["name"]: r for r in await self._rows(q.hidden)}
-        statuses: dict[str, Any] = {n: {"status": "absent"} for n in q.elsewhere}
-        statuses.update({n: {"status": "absent"} for n in q.sources if n not in rows})
-        index_names, live = [], []
-        for name in (n for n in q.sources if n in rows):
-            row = rows[name]
-            if row["spec"].get("error"):
-                statuses[name] = {"status": "error", "error": row["spec"]["error"]}
-            elif row["mode"] == "index":
-                index_names.append(name)
-            elif name in self.sources:
-                live.append(self.sources[name])
-            else:
-                statuses[name] = {"status": "frozen", "hits": 0}
-
-        searched_index, searched_live = index_names, live
-        if q.raw.get("author"):  # only papers have authors: the filter is one no archived document can meet
-            statuses.update({n: {"status": "ok", "hits": 0} for n in index_names})
-            searched_index = []
-        if any(not neg for neg, _ in q.tags):  # a live source's documents carry no tags, so none can meet one
-            statuses.update({s.name: {"status": "ok", "hits": 0} for s in live})
-            searched_live = []
-        if not q.text:
-            statuses.update({n: {"status": "ok", "hits": 0} for n in index_names})
-            statuses.update({s.name: {"status": "ok", "hits": 0} for s in live})
-            searched_index, searched_live = [], []
-
-        clashed = await self.clashed() if q.remote else set()
-        jobs: list[Any] = [self._archive_hits(q, searched_index)] if searched_index else []
-        jobs += [self._live(source, q) for source in searched_live]
-        jobs += [federation.ask_home(self.peers, node, q.forwarded(names), q.limit, edges.label(node) in clashed)
-                 for node, names in q.remote.items()]
-        results = await asyncio.gather(*jobs, return_exceptions=True)
-
-        lists, degraded = [], None
-        if searched_index:
-            found = results.pop(0)
-            if isinstance(found, BaseException):
-                statuses.update({n: {"status": "error", "error": federation.describe_error(found)} for n in searched_index})
-            else:
-                sections, degraded = found
-                lists.append(sections)
-                every = [h for hits in sections.values() for h in hits]
-                per_source = {n: sum(1 for h in every if h["source"] == n) for n in searched_index}
-                statuses.update({n: self._index_status(rows[n], per_source[n]) for n in searched_index})
-        for source in searched_live:
-            found = results.pop(0)
-            if isinstance(found, BaseException):
-                statuses[source.name] = {"status": "error", "error": federation.describe_error(found)}
-            else:
-                _, sections, status = found
-                lists.append(sections)
-                statuses[source.name] = status
-        for node, names in q.remote.items():
-            asked = results.pop(0)
-            for name in names:
-                statuses[f"{name}@{node}"] = _remote_status(asked, name)
-            if not isinstance(asked, BaseException):
-                lists.append(asked.found)
-
-        hopped = await self._hops(q, index_names, live, lists, statuses) if q.hop else []
-        fused = merge.fuse_sections([*lists, {"hop": hopped}] if hopped else lists, q.limit, self.origin()["node"])
-        out: dict[str, Any] = {"query": q.text, **fused, "sources": statuses}
-        if not q.hop:
-            out.pop("hop", None)
-        if degraded:
-            out["degraded"] = degraded
+        rows = {r["name"]: r for r in await self._rows(req.hidden)}
+        clashed = await self.clashed() if req.remote else set()
+        here = [self._here(src, rows, req) for src in req.sources]
+        there = [self._there(node, srcs, req, clashed) for node, srcs in req.remote.items()]
+        results = await asyncio.gather(*here, *there, return_exceptions=True)
+        out: dict[str, Any] = {name: {"exact": [], "error": "a relayed call answers for this node alone"}
+                               for name in req.elsewhere}
+        for src, got in zip(req.sources, results):
+            out[src.name] = ({"exact": [], "error": federation.describe_error(got)}
+                             if isinstance(got, BaseException) else got)
+        for (node, srcs), got in zip(req.remote.items(), results[len(here):]):
+            if isinstance(got, BaseException):
+                got = {s.name: {"exact": [], "error": federation.describe_error(got)} for s in srcs}
+            out.update(got)
         return out
 
 
-def _remote_status(asked: Any, name: str) -> dict[str, Any]:
-    """One remote source's status: the node's own for it, or the node's when the node did not answer."""
-    if isinstance(asked, BaseException):
-        return {"status": "error", "error": federation.describe_error(asked)}
-    if asked.status.get("status") != "ok":
-        return dict(asked.status)
-    theirs = (asked.status.get("sources") or {}).get(name)
-    if not isinstance(theirs, dict):
-        return {"status": "absent"}
-    kept = {k: theirs[k] for k in ("status", "hits", "error") if isinstance(theirs.get(k), (str, int))}
-    if isinstance(theirs.get("hop"), dict):
-        kept["hop"] = {k: v for k, v in theirs["hop"].items() if isinstance(v, (str, int))}
-    return kept or {"status": "absent"}
+def _unserved(src: request.Source, field: str, served: str) -> ValueError:
+    return ValueError(f"query.{src.name}.{field}: not yet served on {src.kind}; served: {served}")
+
+
+def _scalar(src: request.Source, field: str, value: Any, served: str) -> str:
+    if isinstance(value, dict) and list(value) == ["$eq"]:
+        value = value["$eq"]
+    if not isinstance(value, str) or "*" in value:
+        raise _unserved(src, field, served)
+    return value
+
+
+def live_args(src: request.Source, req: request.Request) -> dict[str, Any]:
+    """The arguments a live source's ``query`` verb takes for ``src``: one string of text and the fields its
+    service reads today. Raises for what it cannot express."""
+    text = req.text
+    if text is None:
+        raise ValueError(f"query.{src.name}: {src.kind} needs text; it lists nothing by its fields alone yet")
+    shorthand = text.under_or and isinstance(text.contains, request.Lit) and text.contains.text == text.about
+    if text.about is not None and (text.contains is None or shorthand):
+        words = text.about
+    elif text.about is None and isinstance(text.contains, request.Lit):
+        words = text.contains.text
+    else:
+        raise ValueError(f"query.text: {src.kind} serves a string, one $contains or one $about so far")
+    args: dict[str, Any] = {"query": words, "limit": req.max}
+    if src.kind == "transcripts":
+        for field, value in src.filter.items():
+            if field != "project":
+                raise _unserved(src, field, "project")
+            args["project"] = _scalar(src, field, value, "project")
+    elif src.kind == "kb":
+        served = "author, ts with $gte and $lt"
+        for field, value in src.filter.items():
+            if field == "author":
+                args["author"] = _scalar(src, field, value, served)
+            elif field == "ts" and isinstance(value, dict) and set(value) <= {"$gte", "$lt"}:
+                args.update({{"$gte": "after", "$lt": "before"}[op]: v for op, v in value.items()})
+            else:
+                raise _unserved(src, field, served)
+    elif src.filter:
+        raise _unserved(src, next(iter(src.filter)), "nothing")
+    return args
+
+
+def live_answer(raw: Any, req: request.Request, src: request.Source) -> dict[str, Any]:
+    """A live source's sections as this signature's: a lone ``$about`` ranks everything into ``exact``, the
+    string form keeps the source's own two sections, and a ``$contains`` keeps its exact matches. A bare
+    ``hits`` list is a text match, so it counts as ``exact``."""
+    if not isinstance(raw, dict):
+        raise ValueError("the answer is not an object")
+    if isinstance(raw.get("hits"), list) and not any(k in raw for k in hitshape.SECTIONS):
+        exact, related = raw["hits"], []
+    else:
+        exact, related = _flat(raw.get("exact")), _flat(raw.get("related"))
+    exact = [h for h in (hitshape.clean(x) for x in exact if not _unseen(x, req.hidden)) if h]
+    related = [h for h in (hitshape.clean(x) for x in related if not _unseen(x, req.hidden)) if h]
+    for hit in (*exact, *related):
+        hit["ts"] = store.normalize_ts(hit["ts"])
+    text = req.text
+    if text.about is not None and not text.under_or:
+        return {"exact": merge.fuse([exact, related], req.max)}
+    if text.about is not None:
+        shown = {h["id"] for h in exact[:req.max]}
+        return {"exact": exact[:req.max], "related": [h for h in related if h["id"] not in shown][:req.max]}
+    return {"exact": exact[:req.max]}
+
+
+def _flat(section: Any) -> list[Any]:
+    """A section's hits as one list: a flat list as sent, or the per-source lists of an answer in turn."""
+    if isinstance(section, dict):
+        return [h for hits in section.values() if isinstance(hits, list) for h in hits]
+    return section if isinstance(section, list) else []

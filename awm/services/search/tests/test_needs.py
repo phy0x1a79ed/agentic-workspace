@@ -54,9 +54,7 @@ async def replayed(archive, gateway, monkeypatch):
         ("journal", "note_read"): lambda args: {"ok": True},
         ("journal", "tag_list"): lambda args: {"tags": [], "clashes": []},
         ("kb", "query"): lambda args: paper,
-        ("kb", "library"): lambda args: paper,
         ("kb", "get"): lambda args: {"document": {"title": "Kitchen taps", "text": "whole"}},
-        ("kb", "hop"): lambda args: {"hits": [{"id": "doi:2", "title": "Cited"}]},
         ("kb", "related"): lambda args: {"hits": []},
         ("transcripts", "query"): lambda args: {"hits": [{"id": "s1:1", "title": "kitchen"}]},
     })
@@ -64,9 +62,8 @@ async def replayed(archive, gateway, monkeypatch):
     await archive.refresh()
     for name in archive._due_names():
         await archive.sweep(name)
-    await HANDLERS["query"]({"query": "kitchen", "sources": ["journals", "kb", "library", "transcripts"],
-                             "hop": {"via": "citations"}}, None)
-    await HANDLERS["query"]({"query": "kitchen", "sources": ["journals"], "hop": {"via": "reply_to"}}, "peer:altair")
+    await HANDLERS["query"]({"query": {"text": "kitchen", "journals": {}, "kb": {}, "transcripts": {}}}, None)
+    await HANDLERS["query"]({"query": {"text": "kitchen", "journals": {}}}, "peer:altair")
     await HANDLERS["get"]({"source": "kb", "id": "doi:1"}, None)
     await HANDLERS["get"]({"source": "journals", "id": "j1", "_caller_pid": 4242}, None)
     await asyncio.gather(*hub_adapter._NOTING)

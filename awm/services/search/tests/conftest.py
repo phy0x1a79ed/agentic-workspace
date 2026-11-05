@@ -73,13 +73,17 @@ class Exporter:
 
 
 def every(result: dict[str, Any]) -> list[dict[str, Any]]:
-    """Every hit of a query answer: section by section in reading order, each section source by source."""
-    return [h for section in ("exact", "related") for hits in result[section].values() for h in hits]
+    """Every hit of a query answer: source by source, each source's ``exact`` then its ``related``."""
+    return [h for answer in result.values() for section in ("exact", "related") for h in answer.get(section, [])]
 
 
-def flat(section: dict[str, list[dict[str, Any]]]) -> list[dict[str, Any]]:
-    """One section's hits, source by source."""
-    return [h for hits in section.values() for h in hits]
+def section(result: dict[str, Any], name: str) -> list[dict[str, Any]]:
+    """One section's hits across every source of a query answer, source by source."""
+    return [h for answer in result.values() for h in answer.get(name, [])]
+
+
+def ids(hits: list[dict[str, Any]]) -> list[str]:
+    return [h["id"] for h in hits]
 
 
 def doc(title: str, text: str, ts: str = "2026-03-01T10:00:00Z", **extra: Any) -> dict[str, Any]:

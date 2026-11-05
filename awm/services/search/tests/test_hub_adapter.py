@@ -6,22 +6,25 @@ import pytest
 
 from awm.search import hub_adapter
 from awm.search.hub_adapter import API_MANIFEST, HANDLERS
-from awm.search.query import parse
 
-from .conftest import doc, every, synced
+from .conftest import doc, synced
 
 pytestmark = [pytest.mark.search]
 
 FNS = {f["name"]: f for f in API_MANIFEST["functions"]}
 
 
-def test_the_read_verbs_are_on_every_surface():
-    for name in ("query", "get", "sources", "status"):
-        assert "surfaces" not in FNS[name], name
+def mcp_verbs() -> set[str]:
+    return {n for n, f in FNS.items() if "surfaces" not in f}
 
 
-def test_reindex_is_hidden():
-    assert FNS["reindex"]["surfaces"] == ["cli", "http"]
+def test_the_mcp_surface_is_query_get_and_sources():
+    assert mcp_verbs() == {"query", "get", "sources"}
+
+
+def test_the_operator_verbs_stay_on_the_cli_and_http():
+    for name in ("status", "reindex", "judge", "judgements"):
+        assert FNS[name]["surfaces"] == ["cli", "http"], name
 
 
 def test_every_verb_is_published_under_the_search_tool_and_wired():
@@ -30,24 +33,106 @@ def test_every_verb_is_published_under_the_search_tool_and_wired():
         assert fn["tool"] == f"search_{name}"
 
 
-def test_the_query_verb_declares_every_key_it_reads_and_every_key_it_sends_a_peer():
-    declared = {p["name"] for p in FNS["query"]["params"]}
-    full = {"query": "q", "sources": ["a", "b@altair"], "project": "p", "scope": "s", "tags": "x and !y",
-            "after": "2026-01-01", "before": "2026-02-01", "limit": 3, "context": "awm/dev", "author": "Lee",
-            "hop": {"via": "citations", "from": ["doi:1"]}}
-    assert set(full) == declared
-    q = parse(full)
-    sent = q.forwarded(q.remote["altair"])
-    assert set(sent) <= declared
-    assert sent["sources"] == ["b"] and sent["tags"] == "x and !y" and "context" not in sent
-    assert sent["hop"] == {"via": "citations", "from": ["doi:1"], "limit": 20}
-
-
-def test_only_sources_are_required_and_the_retired_params_are_gone():
+def test_the_query_verb_takes_query_and_max_and_carries_the_agreed_description():
     params = {p["name"]: p for p in FNS["query"]["params"]}
-    assert [n for n, p in params.items() if p.get("required")] == ["sources"]
-    assert not {"kind", "peers", "passages"} & set(params)
-    assert "kb hop" not in FNS["query"]["description"]
+    assert list(params) == ["query", "max"]
+    assert params["query"]["required"] and params["max"]["type"] == "integer" and not params["max"].get("required")
+    text = FNS["query"]["description"]
+    assert text == hub_adapter.QUERY_DESCRIPTION
+    assert len(text.splitlines()) == 12
+    assert text.startswith("search query \u2014 rank items from named sources.\n")
+    assert text.endswith("Open one with `get`.\n")
+    assert "Short forms: query s = " in text and "`related`" in text
+
+
+def test_get_takes_source_id_node_and_query_and_no_context():
+    assert [p["name"] for p in FNS["get"]["params"]] == ["source", "id", "node", "query"]
+    assert [p["name"] for p in FNS["get"]["params"] if p.get("required")] == ["source", "id"]
+
+
+class Conn:
+    def close(self):
+        pass
+
+
+@pytest.fixture()
+def logged(monkeypatch):
+    rows = []
+    monkeypatch.setattr(hub_adapter.store, "connect", lambda: Conn())
+    monkeypatch.setattr(hub_adapter.store, "log_use", lambda conn, row: rows.append(row))
+    return rows
+
+
+def test_a_get_is_logged_with_the_callers_project_and_scope(logged):
+    hub_adapter._log_get({"source": "journals", "id": "j1", "query": " sink ",
+                          "_caller_scope": "awm/redux/search"}, "local")
+    assert logged == [{"project": "awm", "scope": "redux/search", "query": "sink", "source": "journals",
+                       "doc_id": "j1", "node": "local"}]
+
+
+def test_a_get_without_a_caller_scope_is_logged_with_none(logged):
+    hub_adapter._log_get({"source": "journals", "id": "j1"}, "local")
+    assert (logged[0]["project"], logged[0]["scope"], logged[0]["query"]) == ("", "", "")
+
+
+async def test_a_relayed_get_is_not_logged_by_the_serving_node(logged, monkeypatch):
+    class Stub:
+        async def refuse_clashed(self, node):
+            pass
+
+        async def get(self, source, doc_id, hidden):
+            return {"document": {"title": "t"}}
+
+    monkeypatch.setattr(hub_adapter, "ARCHIVE", Stub())
+    monkeypatch.setattr(hub_adapter.privacy, "marks", lambda: [])
+    args = {"source": "journals", "id": "j1", "_caller_scope": "awm/dev"}
+    await HANDLERS["get"](args, "peer:shaula")
+    assert logged == []
+    await HANDLERS["get"](args, None)
+    assert [r["doc_id"] for r in logged] == ["j1"]
+
+
+async def test_query_hands_the_parsed_request_to_the_archive(monkeypatch):
+    seen = []
+
+    class Stub:
+        async def query(self, req, caller):
+            seen.append((req, caller))
+            return {"journals": {"exact": []}}
+
+    monkeypatch.setattr(hub_adapter, "ARCHIVE", Stub())
+    monkeypatch.setattr(hub_adapter.privacy, "marks", lambda: [])
+    out = await HANDLERS["query"]({"query": {"text": "sink", "journals": {"scope": "redux"}}, "max": 3})
+    assert out == {"journals": {"exact": []}}
+    req, caller = seen[0]
+    assert req.max == 3 and req.sources[0].filter == {"scope": "redux"} and caller is None
+
+
+async def test_a_malformed_query_comes_back_as_a_value_error(monkeypatch):
+    class Stub:
+        async def query(self, req, caller):
+            raise AssertionError("a malformed query must not reach the archive")
+
+    monkeypatch.setattr(hub_adapter, "ARCHIVE", Stub())
+    monkeypatch.setattr(hub_adapter.privacy, "marks", lambda: [])
+    with pytest.raises(ValueError, match="journals"):
+        await HANDLERS["query"]({"query": {"journals": {"nonesuch": 1}}})
+
+
+async def test_sources_lists_fields_and_health_and_not_the_retired(archive, gateway, monkeypatch):
+    gateway.plug("journals", {"j1": doc("Sink", "kitchen sink journal")})
+    gateway.plug("precedence", {"p1": doc("Sink", "kitchen sink precedent")})
+    await synced(archive, gateway)
+    monkeypatch.setattr(hub_adapter, "ARCHIVE", archive)
+    monkeypatch.setattr(hub_adapter.privacy, "marks", lambda: [])
+    out = await HANDLERS["sources"]({})
+    by_name = {s["name"]: s for s in out["sources"]}
+    assert set(by_name) == {"journals"}
+    row = by_name["journals"]
+    assert row["kind"] == "journals" and row["node"] and row["count"] == 1
+    assert row["fields"]["tag"] == "multi" and row["fields"]["project"] == "single"
+    assert {"last_sync", "frozen", "last_error"} <= set(row)
+    assert "registry" in out and "semantic" in out and "sweeping" in out
 
 
 def test_the_judgement_verbs_are_closed_to_peers():
@@ -86,9 +171,8 @@ async def test_the_handlers_answer_an_admitted_peer_every_source(archive, gatewa
     await synced(archive, gateway)
     monkeypatch.setattr(hub_adapter, "ARCHIVE", archive)
     monkeypatch.setattr(hub_adapter.privacy, "marks", lambda: [])
-    result = await HANDLERS["query"]({"query": "kitchen sink", "sources": ["journals", "wiki"]},
-                                     "peer:shaula")
-    assert {h["source"] for h in every(result)} == {"journals", "wiki"}
+    result = await HANDLERS["query"]({"query": "kitchen sink"}, "peer:shaula")
+    assert [h["id"] for h in result["journals"]["exact"]] == ["j1"]
     assert {s["name"] for s in (await HANDLERS["sources"]({}, "peer:shaula"))["sources"]} == {"journals", "wiki"}
     status = await HANDLERS["status"]({}, "peer:shaula")
     assert status["sources"] == {"journals": 1, "wiki": 1} and "registry" in status

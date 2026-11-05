@@ -23,8 +23,8 @@ def test_search_ranks_the_journals_source(posts, fake_search):
     assert semantic == "search" and degraded is None
     assert [p.id for p in got] == [a.id] and got[0].match["snippet"] == "the telescope mirror cracked"
     # A tag filter is the journal's own, so search is asked for its whole section.
-    assert fake_search.calls == [{"query": "telescope mirror", "sources": ["journals"], "limit": 100,
-                                  "project": "awm", "before": "2999-01-01T00:00:00Z"}]
+    assert fake_search.calls == [{"query": {"text": "telescope mirror", "journals": {
+        "project": "awm", "ts": {"$lt": "2999-01-01T00:00:00Z"}}}, "max": 100}]
 
 
 def test_filters_search_lacks_still_hold(posts, fake_search):
@@ -32,7 +32,7 @@ def test_filters_search_lacks_still_hold(posts, fake_search):
     other = channel.post("awm", "dev", author="user:a", tags="message", body="telescope mirror again")
     got, _, _ = channel.search(query="telescope mirror", author="user:a")
     assert [p.id for p in got] == [other.id]
-    assert "author" not in fake_search.calls[-1] and fake_search.calls[-1]["limit"] == 100
+    assert "author" not in fake_search.calls[-1]["query"]["journals"] and fake_search.calls[-1]["max"] == 100
 
 
 def test_offset_pages_the_ranked_hits(posts):
@@ -44,11 +44,11 @@ def test_offset_pages_the_ranked_hits(posts):
     assert len(first) == 2 and len(second) == 2 and not {p.id for p in first} & {p.id for p in second}
 
 
-@pytest.mark.parametrize("status", [{"status": "absent"}, {"status": "error", "error": "boom"}])
-def test_a_source_search_cannot_answer_falls_back_to_substring(posts, fake_search, status):
+@pytest.mark.parametrize("error", ["boom", "absent"])
+def test_a_source_search_cannot_answer_falls_back_to_substring(posts, fake_search, error):
     from awm.journal import channel
     a, _ = posts
-    fake_search.status = status
+    fake_search.answer_error = error
     got, degraded, semantic = channel.search(query="mirror", project="awm")
     assert semantic == "none" and degraded["fallback"] == "keyword"
     assert [p.id for p in got] == [a.id]

@@ -26,56 +26,33 @@ log = logging.getLogger("awm.search.hub_adapter")
 
 _CLI_HTTP = ["cli", "http"]
 
+QUERY_DESCRIPTION = """\
+search query — rank items from named sources.
+  query: string | {"text"?: T, "<source>": F, ...}    max: hits per source per section, default 10
+
+<source>: journals, kb or transcripts, with @node for another node. `sources` lists their fields.
+F: MongoDB filter on the source's fields: $and $or $nor $eq $ne $gt $gte $lt $lte $in $nin $all.
+   {} matches all. * in a value globs. A scope covers its nested scopes. ts is ISO-8601.
+T: string | {"$contains": s} | {"$about": s} | {"$and"|"$or": [...]}, shared by all sources.
+   $contains: case-insensitive substring, as grep. Nests under $and $or $nor.
+   $about: rank by meaning. At most one, directly under the top $and or $or.
+   Under $and or alone it only ranks the matches. Under $or it also adds the nearest others, as `related`.
+Short forms: query s = {"text": s}. No source = this node's journals. T s = {"$or": [{"$about": s}, {"$contains": s}]}.
+Returns {source: {exact, related}}. A hit is {id, title, ts}. Open one with `get`.
+"""
+
 API_MANIFEST: dict[str, Any] = {
     "functions": [
         {
             "name": "query",
             "tool": "search_query",
             "timeout": 60,
-            "description": (
-                "One search over the sources you name in `sources`, such as journals, kb or "
-                "kb@altair: a bare name is this node's, and `name@node` is another node's. "
-                "No source is searched unless named. The answer has two ranked sections, read in "
-                "order: `exact` (the query as a literal substring, case-insensitive, then keyword "
-                "matches) and `related` (nearest in meaning). Each section reports each source on "
-                "its own: a map from source name (`name@node` for another node's) to that source's "
-                "ranked hits, up to `limit` each; a source with no hits is absent. A document "
-                "appears in the first section that holds it. Each hit carries source, id, title, ts "
-                "(its date), project and scope where it has them, score, match and origin (the "
-                "node that holds it), and no text: read a hit with `get`, passing the query it "
-                "answered. `hop` walks links from the hits into a third section, `hop`, in the "
-                "walk's order. Read the answer's `sources` for the status of each source asked."
-            ),
+            "description": QUERY_DESCRIPTION,
             "params": [
-                {"name": "sources", "type": "array", "required": True,
-                 "description": "The sources to search: names from `search sources`, such as journals "
-                                "or kb, each optionally `@node`, such as kb@altair. A bare name is this "
-                                "node's. Decisions are journal posts tagged precedent."},
-                {"name": "query", "type": "string",
-                 "description": "What to find, in words. Optional when `hop` names `from`."},
-                {"name": "tags", "type": "string",
-                 "description": "The journal's tag filter: tags joined by `and`, `!` negating one, such "
-                                "as `precedent` or `journal and !closed`. A source whose documents carry "
-                                "no tags, such as kb, answers nothing to a tag it must hold."},
-                {"name": "hop", "type": "object",
-                 "description": "Walk links from the hits, as {\"via\": ..., \"from\": [ids], \"limit\": n}. "
-                                "`via` is citations, cited_by or authors for papers (kb, library), or "
-                                "reply_to for journals. Without `from`, the walk starts from each "
-                                "source's hits for the words. Omit it to walk nothing."},
-                {"name": "project", "type": "string", "description": "Only this project's documents."},
-                {"name": "scope", "type": "string", "description": "Only this scope's documents."},
-                {"name": "after", "type": "string",
-                 "description": "Only documents at or after this ISO 8601 date or time (UTC)."},
-                {"name": "before", "type": "string",
-                 "description": "Only documents before this ISO 8601 date or time (UTC)."},
-                {"name": "limit", "type": "integer",
-                 "description": "Maximum hits per source in each section, 1-100. Default 10."},
-                {"name": "context", "type": "string",
-                 "description": "The scope the search is made from, as project/scope. Default: the "
-                                "calling session's scope. No order depends on it."},
-                {"name": "author", "type": "string",
-                 "description": "Only papers with an author of this surname, matched loosely, so "
-                                "'Huttenhauer' finds Huttenhower. Other sources answer nothing."},
+                {"name": "query", "type": "object", "required": True,
+                 "description": "A string, or an object {\"text\"?: T, \"<source>\": F, ...}."},
+                {"name": "max", "type": "integer",
+                 "description": "Hits per source per section, 1-100. Default 10."},
             ],
         },
         {
@@ -84,33 +61,33 @@ API_MANIFEST: dict[str, Any] = {
             "description": (
                 "One document in full: title, text, project, scope, kind, tags, ts and url; a "
                 "paper adds its authors and journal. Take `source` and `id` from a hit. For a hit from "
-                "another node, set `node` to the hit's origin node. Pass the `query` the hit "
+                "another node, set `node` to the node of its source. Pass the `query` the hit "
                 "answered: each get is logged with the caller's scope as feedback on search."
             ),
             "params": [
                 {"name": "source", "type": "string", "required": True, "description": "The hit's source."},
                 {"name": "id", "type": "string", "required": True, "description": "The hit's id."},
                 {"name": "node", "type": "string",
-                 "description": "The node that holds the document, from the hit's origin. Default: this node."},
+                 "description": "The node that holds the document. Default: this node."},
                 {"name": "query", "type": "string", "description": "The query whose hit this is."},
-                {"name": "context", "type": "string",
-                 "description": "The scope the get is made from, as project/scope. Default: the calling "
-                                "session's scope."},
             ],
         },
         {
             "name": "sources",
             "tool": "search_sources",
             "description": (
-                "Every source the archive holds: its service, mode (index or live), document "
-                "count, last successful sync, whether it is frozen (its service is not running, "
-                "so its last documents are served) and its last error."
+                "Every source the archive holds, with its kind, node, fields (multi-valued ones "
+                "marked), document count, last successful sync, whether it is frozen (its service "
+                "is not running, so its last documents are served) and its last error; and the "
+                "archive's health: whether semantic ranking is available, the registry's last "
+                "read, running sweeps and push subscriptions."
             ),
             "params": [],
         },
         {
             "name": "status",
             "tool": "search_status",
+            "surfaces": _CLI_HTTP,
             "description": (
                 "The archive's health: documents per source, whether semantic ranking is "
                 "available, the registry's last read, running sweeps and push subscriptions."
@@ -134,6 +111,7 @@ API_MANIFEST: dict[str, Any] = {
         {
             "name": "judge",
             "tool": "search_judge",
+            "surfaces": _CLI_HTTP,
             "description": (
                 "Record whether one hit answers one query, for the judgement set that every "
                 "change to search is replayed against. A later verdict on the same query and "
@@ -181,7 +159,7 @@ def _relayer(as_: str | None) -> str | None:
 
 
 def _log_get(args: dict, node: str) -> None:
-    project, _, scope = str(args.get("context") or "").strip().partition("/")
+    project, _, scope = str(args.get("_caller_scope") or "").strip().partition("/")
     conn = store.connect()
     try:
         store.log_use(conn, {"project": project, "scope": scope,
@@ -225,8 +203,22 @@ async def _note_read(post_id: str, caller_pid: Any) -> None:
         log.info("search: read of journal %s not recorded: %s", post_id, exc)
 
 
+RETIRED = frozenset({"precedence", "notes"})
+
+
 async def _h_sources(args: dict, as_: str | None = None) -> dict:
-    return await ARCHIVE.sources_view(request.hidden_for(as_))
+    hidden = request.hidden_for(as_)
+    listed = (await ARCHIVE.sources_view(hidden))["sources"]
+    health = await ARCHIVE.status_view(hidden)
+    node = config.node_name()
+    out = []
+    for row in listed:
+        if row["name"] in RETIRED:
+            continue
+        fields = request.FIELDS.get(row["name"], {})
+        out.append({**row, "kind": row["name"], "node": node,
+                    "fields": {f: ("multi" if multi else "single") for f, multi in fields.items()}})
+    return {**{k: v for k, v in health.items() if k != "sources"}, "sources": out}
 
 
 async def _h_status(args: dict, as_: str | None = None) -> dict:

@@ -483,25 +483,25 @@ def ranked(query: str, *, project: str | None, scope: str | None,
     """The search service's hits on the journal's own posts, best first: its ``exact``
     section, then ``related``. Raises when search cannot answer for the source."""
     from awm.gatewayclient import call_sync
-    args: dict = {"query": query, "sources": [SEARCH_SOURCE], "limit": max(1, min(want, SEARCH_MAX))}
+    journals: dict = {}
     if project:
-        args["project"] = project
+        journals["project"] = project
     if scope:
-        args["scope"] = scope
+        journals["scope"] = scope
     if before_ts:
-        args["before"] = before_ts
-    res = call_sync("search", "query", args, timeout=SEARCH_TIMEOUT_S)
-    status = (res.get("sources") or {}).get(SEARCH_SOURCE) or {}
-    if status.get("status") not in ("ok", "frozen"):
-        raise RuntimeError(f"search source {SEARCH_SOURCE}: {status.get('status') or 'missing'}"
-                           f" {status.get('error') or ''}".strip())
+        journals["ts"] = {"$lt": before_ts}
+    text = {"text": query, SEARCH_SOURCE: journals}
+    res = call_sync("search", "query", {"query": text, "max": max(1, min(want, SEARCH_MAX))},
+                    timeout=SEARCH_TIMEOUT_S)
+    answer = res.get(SEARCH_SOURCE) or {}
+    if answer.get("error") or "exact" not in answer:
+        raise RuntimeError(f"search source {SEARCH_SOURCE}: {answer.get('error') or 'missing'}")
     hits, seen = [], set()
-    for section in ("exact", "related"):
-        for h in (res.get(section) or {}).get(SEARCH_SOURCE) or []:
-            if h.get("id") and h["id"] not in seen:
-                seen.add(h["id"])
-                hits.append(h)
-    return hits, status.get("degraded")
+    for h in [*answer["exact"], *(answer.get("related") or [])]:
+        if h.get("id") and h["id"] not in seen:
+            seen.add(h["id"])
+            hits.append(h)
+    return hits, None
 
 
 #: Characters of a post's body around the first match, as the hit's snippet.
@@ -562,8 +562,8 @@ def search(*, query: str, project: str | None = None, scope: str | None = None,
             f"SELECT * FROM scope_posts WHERE id IN ({marks}){where}", [*ids, *params])} if ids else {}
         kept = [h for h in hits if h["id"] in allowed]
         posts = rows_to_posts(allowed[h["id"]] for h in kept)
-        for p, h in zip(posts, kept):
-            p.match = {"score": h.get("score"), "snippet": _snippet(p.body or "", query)}
+        for rank, p in enumerate(posts, 1):
+            p.match = {"rank": rank, "snippet": _snippet(p.body or "", query)}
         posts = posts[offset:offset + limit]
     counts = comment_counts([p.id for p in posts])
     for p in posts:

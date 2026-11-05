@@ -1,4 +1,4 @@
-"""The exact section, passages and their spans, tag filters, sections from elsewhere, and the move to schema 2."""
+"""The exact section, passages and their spans, filters, the sections of an answer, sections from elsewhere, and the move to schema 2."""
 
 from __future__ import annotations
 
@@ -8,9 +8,9 @@ import sqlite3
 import pytest
 
 from awm.search import passages, store
-from awm.search.query import parse
+from awm.search.query import QueryError, parse
 
-from .conftest import doc, every, flat, synced
+from .conftest import doc, every, ids, section, synced
 
 pytestmark = [pytest.mark.search]
 
@@ -33,14 +33,19 @@ async def loaded(archive, gateway):
                   project="awm", tags=["message"]),
         "j3": doc("CONNECTIONREFUSEDERROR in caps", "an old CONNECTIONREFUSEDERROR log", "2026-06-01T10:00:00Z",
                   tags=["journal", "closed"]),
-        "p1": doc("Ports", "prefer port 8443 for the gateway", tags=["Precedent"])})
-    gateway.plug("wiki", {"w1": doc("Ports", "the gateway listens on port 8443")})
+        "p1": doc("Ports", "prefer port 8443 for the gateway", "2026-04-01T10:00:00Z", tags=["Precedent"]),
+        "w1": doc("Ports again", "the gateway listens on port 8443", "2026-02-01T10:00:00Z")})
     await synced(archive, gateway)
     return archive
 
 
-#: The sources the ``loaded`` fixture registers.
-LOADED = ["journals", "wiki"]
+async def ask(arch, query, **kw):
+    return await arch.query(parse({"query": query, **kw}))
+
+
+def contains(text):
+    return {"text": {"$contains": text}}
+
 
 
 def test_passages_are_exact_spans_with_their_sections():
@@ -64,69 +69,146 @@ def test_a_long_block_is_cut_under_the_cap_at_sentence_ends():
 
 async def test_a_literal_finds_a_hash_a_path_and_an_error_line(loaded):
     for literal in ("3f9a2c1d7e", "/etc/awm/env", "[Errno 111] Connection refused", "PORT=84"):
-        result = await loaded.query(parse({"query": literal, "sources": LOADED}))
-        top = flat(result["exact"])[0]
-        assert (top["id"], top["match"]) == ("j1", "literal"), literal
-        assert "passages" not in top
+        result = await ask(loaded, contains(literal))
+        assert ids(result["journals"]["exact"]) == ["j1"], literal
+        assert set(result["journals"]["exact"][0]) == {"id", "title", "ts"}
+        assert "related" not in result["journals"]
 
 
 async def test_a_literal_across_two_passages_is_still_found(loaded):
-    result = await loaded.query(parse({"query": "3f9a2c1d7e.\n\n## Fix", "sources": LOADED}))
-    assert [h["id"] for h in flat(result["exact"])] == ["j1"]
+    result = await ask(loaded, contains("3f9a2c1d7e.\n\n## Fix"))
+    assert ids(result["journals"]["exact"]) == ["j1"]
 
 
-async def test_a_case_sensitive_match_ranks_first_and_quotes_strip_one_pair(loaded):
-    result = await loaded.query(parse({"query": '"ConnectionRefusedError"', "sources": LOADED}))
-    assert [h["id"] for h in flat(result["exact"])[:2]] == ["j1", "j3"]
+async def test_a_contains_ignores_case_and_lists_the_newest_first(loaded):
+    for literal in ("ConnectionRefusedError", "connectionrefusederror"):
+        result = await ask(loaded, contains(literal))
+        assert ids(result["journals"]["exact"]) == ["j3", "j1"], literal
 
 
 async def test_a_short_literal_scans(loaded):
-    result = await loaded.query(parse({"query": "3f", "sources": ["journals"]}))
-    assert flat(result["exact"])[0]["id"] == "j1"
+    result = await ask(loaded, contains("3f"))
+    assert ids(result["journals"]["exact"]) == ["j1"]
 
 
-async def test_keywords_follow_literals_and_no_document_repeats_across_sections(loaded):
-    result = await loaded.query(parse({"query": "gateway 8443", "sources": LOADED}))
-    matches = [h["match"] for h in flat(result["exact"])]
-    assert matches == sorted(matches, key=lambda m: m != "literal")
-    assert "keyword" in matches
-    keys = [(h["source"], h["id"]) for h in every(result)]
-    assert len(keys) == len(set(keys))
+async def test_a_string_query_splits_by_substring_into_exact_and_related(loaded):
+    result = await ask(loaded, "port 8443")
+    answer = result["journals"]
+    assert set(ids(answer["exact"])) == {"p1", "w1"}
+    assert not set(ids(answer["exact"])) & set(ids(answer["related"]))
+    assert set(ids(answer["related"])) <= {"j1", "j2", "j3"}
 
 
-async def test_a_document_holding_only_some_of_the_words_is_related_not_exact(loaded):
-    result = await loaded.query(parse({"query": "gateway restart unit caps", "sources": LOADED}))
-    assert flat(result["exact"]) == []
-    assert {h["id"] for h in flat(result["related"])} >= {"j1", "j2", "j3", "p1"}
-    both = await loaded.query(parse({"query": "restart unit", "sources": LOADED}))
-    assert [(h["id"], h["match"]) for h in flat(both["exact"])] == [("j1", "keyword")]
+async def test_a_document_holding_only_some_of_the_words_is_not_exact(loaded):
+    result = await ask(loaded, "gateway restart unit caps")
+    assert result["journals"]["exact"] == []
+    assert set(ids(result["journals"]["related"])) <= {"j1", "j2", "j3", "p1", "w1"}
 
 
-@pytest.mark.parametrize("tags, expected", [
-    ("precedent", {"p1"}),
-    ("PRECEDENT", {"p1"}),
-    ("journal", {"j1", "j3"}),
-    ("journal and !closed", {"j1"}),
-    ("not closed and journal", {"j1"}),
-    (["journal", "!closed"], {"j1"}),
-    ("!journal", {"j2", "p1", "w1"}),
-    ("journal and message", set()),
+@pytest.mark.parametrize("filter, expected", [
+    ({"tag": "precedent"}, {"p1"}),
+    ({"tag": "PRECEDENT"}, {"p1"}),
+    ({"tag": "journal"}, {"j1", "j3"}),
+    ({"tag": {"$in": ["message", "precedent"]}}, {"j2", "p1"}),
+    ({"tag": {"$all": ["journal", "closed"]}}, {"j3"}),
+    ({"tag": {"$all": ["journal", "message"]}}, set()),
+    ({"tag": {"$nin": ["closed"]}}, {"j1", "j2", "p1", "w1"}),
+    ({"tag": {"$ne": "journal"}}, {"j2", "p1", "w1"}),
+    ({"$nor": [{"tag": "journal"}]}, {"j2", "p1", "w1"}),
+    ({"$or": [{"tag": "message"}, {"tag": "closed"}]}, {"j2", "j3"}),
+    ({"$and": [{"tag": "journal"}, {"tag": {"$nin": ["closed"]}}]}, {"j1"}),
 ])
-async def test_tags_filter_as_the_journal_reads_them(loaded, tags, expected):
-    result = await loaded.query(parse({"query": "gateway port 8443 caps connection deploy", "sources": LOADED,
-                                       "tags": tags, "limit": 50}))
-    assert {h["id"] for h in every(result)} == expected
+async def test_tags_follow_mongodb_array_semantics(loaded, filter, expected):
+    result = await ask(loaded, {"journals": filter}, max=50)
+    assert set(ids(result["journals"]["exact"])) == expected
 
 
-@pytest.mark.parametrize("tags", ["journal or message", "a b", "!", "journal and"])
-def test_a_tag_filter_that_cannot_be_read_is_refused(tags):
-    with pytest.raises(ValueError, match="tag filter"):
-        parse({"query": "x", "sources": ["journals"], "tags": tags})
+@pytest.mark.parametrize("filter", [{"tag": ["journal", "closed"]}, {"tag": {"$regex": "jour"}},
+                                    {"tag": {"$in": "journal"}}, {"nonesuch": 1}])
+def test_a_filter_that_cannot_be_read_is_refused(filter):
+    with pytest.raises(QueryError):
+        parse({"query": {"journals": filter}})
+
+
+async def test_no_text_lists_newest_first_and_stops_at_max(loaded):
+    result = await ask(loaded, {"journals": {}}, max=3)
+    assert ids(result["journals"]["exact"]) == ["j3", "j2", "p1"]
+    assert "related" not in result["journals"]
+    assert set(result["journals"]["exact"][0]) == {"id", "title", "ts"}
+    assert len(ids((await ask(loaded, {"journals": {"project": "awm"}}))["journals"]["exact"])) == 2
+
+
+@pytest.mark.parametrize("text, expected", [
+    ({"$and": [{"$contains": "gateway"}, {"$contains": "8443"}]}, ["j2", "p1", "j1", "w1"]),
+    ({"$and": [{"$contains": "gateway"}, {"$contains": "LISTENS"}]}, ["w1"]),
+    ({"$or": [{"$contains": "listens"}, {"$contains": "caps"}]}, ["j3", "w1"]),
+    ({"$nor": [{"$contains": "gateway"}]}, ["j3"]),
+    ({"$and": [{"$contains": "8443"}, {"$nor": [{"$contains": "port moved"}]}]}, ["p1", "j1", "w1"]),
+    ({"$or": [{"$contains": "caps"}, {"$and": [{"$contains": "port"}, {"$contains": "prefer"}]}]}, ["j3", "p1"]),
+])
+async def test_contains_nests_under_and_or_nor(loaded, text, expected):
+    result = await ask(loaded, {"text": text}, max=50)
+    assert ids(result["journals"]["exact"]) == expected
+
+
+async def test_a_contains_and_a_filter_must_both_hold(loaded):
+    result = await ask(loaded, {"text": {"$contains": "gateway"}, "journals": {"tag": "journal"}})
+    assert ids(result["journals"]["exact"]) == ["j1"]
+
+
+async def test_scope_covers_nested_scopes_and_globs(archive, gateway):
+    gateway.plug("journals", {
+        "a": doc("A", "x", "2026-01-01T00:00:00Z", project="awm", scope="redux"),
+        "b": doc("B", "x", "2026-01-02T00:00:00Z", project="awm", scope="redux/search"),
+        "c": doc("C", "x", "2026-01-03T00:00:00Z", project="awm", scope="redux-dev"),
+        "d": doc("D", "x", "2026-01-04T00:00:00Z", project="other", scope="redux")})
+    await synced(archive, gateway)
+    nested = await ask(archive, {"journals": {"scope": "redux", "project": "awm"}})
+    assert ids(nested["journals"]["exact"]) == ["b", "a"]
+    glob = await ask(archive, {"journals": {"scope": "redux*", "project": "awm"}})
+    assert ids(glob["journals"]["exact"]) == ["c", "b", "a"]
+    assert ids((await ask(archive, {"journals": {"scope": "redux/*"}}))["journals"]["exact"]) == ["b"]
+
+
+async def test_replies_to_lists_the_posts_that_reply(archive, gateway):
+    gateway.plug("journals", {
+        "root": doc("Root", "question", "2026-01-01T00:00:00Z"),
+        "r1": doc("Re", "answer", "2026-01-02T00:00:00Z", reply_to=["root"]),
+        "r2": doc("Re2", "another", "2026-01-03T00:00:00Z", reply_to=["root", "r1"]),
+        "r3": doc("Re3", "elsewhere", "2026-01-04T00:00:00Z", reply_to=["r1"])})
+    await synced(archive, gateway)
+    result = await ask(archive, {"journals": {"replies_to": "root"}})
+    assert ids(result["journals"]["exact"]) == ["r2", "r1"]
+    result = await ask(archive, {"text": {"$contains": "answer"}, "journals": {"replies_to": {"$in": ["root"]}}})
+    assert ids(result["journals"]["exact"]) == ["r1"]
+
+
+async def test_about_under_or_gives_a_related_section_disjoint_from_exact(loaded):
+    text = {"$or": [{"$about": "gateway port"}, {"$contains": "8443"}]}
+    answer = (await ask(loaded, {"text": text}))["journals"]
+    assert set(ids(answer["exact"])) == {"j1", "j2", "p1", "w1"}
+    assert "related" in answer and ids(answer["related"]) == ["j3"]
+    assert not set(ids(answer["exact"])) & set(ids(answer["related"]))
+    narrowed = (await ask(loaded, {"text": text, "journals": {"tag": "journal"}}))["journals"]
+    assert ids(narrowed["exact"]) == ["j1"] and ids(narrowed["related"]) == ["j3"]
+
+
+async def test_about_under_and_gives_no_related_section(loaded):
+    text = {"$and": [{"$about": "gateway port"}, {"$contains": "8443"}]}
+    answer = (await ask(loaded, {"text": text}))["journals"]
+    assert set(ids(answer["exact"])) == {"j1", "j2", "p1", "w1"} and "related" not in answer
+
+
+async def test_a_lone_about_ranks_everything_into_exact(loaded):
+    for text in ({"$about": "gateway port 8443"}, {"$or": [{"$about": "gateway port 8443"}]}):
+        answer = (await ask(loaded, {"text": text}, max=50))["journals"]
+        assert set(ids(answer["exact"])) == {"j1", "j2", "j3", "p1", "w1"} and "related" not in answer
+    assert len((await ask(loaded, {"text": {"$about": "gateway port 8443"}}, max=2))["journals"]["exact"]) == 2
 
 
 async def test_a_quiet_pass_rewrites_nothing(loaded):
     again = await loaded.sweep("journals")
-    assert again["documents"] == 4 and again["changed"] == 0
+    assert again["documents"] == 5 and again["changed"] == 0
 
 
 async def test_an_edit_recuts_the_passages(archive, gateway):
@@ -134,8 +216,8 @@ async def test_an_edit_recuts_the_passages(archive, gateway):
     await synced(archive, gateway)
     exporter.docs["j1"] = doc("Notes", "replaced body with deadbeefcafe")
     assert (await archive.sweep("journals"))["changed"] == 1
-    assert (await archive.query(parse({"query": "3f9a2c1d7e", "sources": ["journals"]})))["exact"] == {}
-    assert (await archive.query(parse({"query": "deadbeefcafe", "sources": ["journals"]})))["exact"]["journals"][0]["id"] == "j1"
+    assert (await ask(archive, contains("3f9a2c1d7e")))["journals"]["exact"] == []
+    assert ids((await ask(archive, contains("deadbeefcafe")))["journals"]["exact"]) == ["j1"]
     conn = store.connect()
     try:
         assert {r[0] for r in conn.execute("SELECT text FROM passages")} == {"Notes", "replaced body with deadbeefcafe"}
@@ -165,8 +247,9 @@ async def test_grep_parity_on_sampled_substrings(archive, gateway):
         needle = text[at:at + n]
         if not needle.strip() or needle != needle.strip():
             continue
-        result = await archive.query(parse({"query": needle, "sources": ["journals"], "limit": 100}))
-        assert key in {h["id"] for h in flat(result["exact"]) if h["match"] == "literal"}, needle
+        result = await ask(archive, contains(needle), max=100)
+        grep = {k for k, d in docs.items() if needle.lower() in f"{d['title']} {d['text']}".lower()}
+        assert key in grep and set(ids(result["journals"]["exact"])) == grep, needle
 
 
 # -- sections from elsewhere -----------------------------------------------
@@ -179,17 +262,33 @@ async def test_a_live_source_answering_in_sections_has_its_passages_dropped(load
              "injected": True}]}],
         "graph": [{"id": "doi:2", "title": "Linked paper"}]})  # a retired section, dropped
     await loaded.refresh()
-    result = await loaded.query(parse({"query": "quoted line", "sources": ["kb"]}))
-    assert [h["id"] for h in flat(result["exact"])] == ["doi:1"]
-    assert set(flat(result["exact"])[0]) == {"source", "id", "title", "ts", "score", "origin"}
-    assert "graph" not in result and "doi:2" not in {h["id"] for h in every(result)}
+    result = await ask(loaded, {"text": "quoted line", "kb": {}})
+    assert ids(result["kb"]["exact"]) == ["doi:1"]
+    assert set(result["kb"]["exact"][0]) == {"id", "title", "ts"}
+    assert "doi:2" not in ids(every(result))
 
 
-async def test_a_peer_on_an_older_release_answers_in_related(loaded, peers):
+async def test_a_failing_live_source_reports_its_error_and_the_rest_answer(loaded, gateway):
+    gateway.plug_live("kb", lambda args: RuntimeError("kb is down"))
+    await loaded.refresh()
+    result = await ask(loaded, {"text": "port", "kb": {}, "journals": {}})
+    assert result["kb"]["exact"] == [] and "kb is down" in result["kb"]["error"]
+    assert "error" not in result["journals"] and result["journals"]["exact"]
+
+
+async def test_a_peer_answers_in_sections_and_is_asked_for_its_own_sources(loaded, peers):
+    peers.add("capella", lambda args: {"journals": {"exact": [
+        {"id": "r1", "title": "from afar", "ts": "2026-01-01T00:00:00Z", "passages": ["injected"], "extra": 1}],
+        "related": []}})
+    result = await ask(loaded, {"text": "zzzz", "journals@capella": {}})
+    assert result["journals@capella"]["exact"] == [{"id": "r1", "title": "from afar", "ts": "2026-01-01T00:00:00Z"}]
+    assert peers.calls[0][2] == {"query": {"text": "zzzz", "journals": {}}, "max": 10}
+
+
+async def test_a_peer_on_an_older_release_is_an_error_on_its_source(loaded, peers):
     peers.add("capella", lambda args: {"hits": [{"source": "journals", "id": "r1", "snippet": "from afar"}]})
-    result = await loaded.query(parse({"query": "zzzz", "sources": ["journals@capella"]}))
-    assert [h["id"] for h in result["related"]["journals@capella"]] == ["r1"]
-    assert "passages" not in flat(result["related"])[0]
+    result = await ask(loaded, {"text": "zzzz", "journals@capella": {}})
+    assert result["journals@capella"]["exact"] == [] and result["journals@capella"]["error"]
 
 
 # -- schema 2 --------------------------------------------------------------

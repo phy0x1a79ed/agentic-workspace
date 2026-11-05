@@ -11,7 +11,6 @@ import asyncio
 from typing import Any
 
 from awm.search.gateway import Gateway
-from awm.search.index import Filters
 
 #: Archive source -> the zone kb's entry index files its passages under.
 SOURCE_ZONES = {"journals": "journal"}
@@ -26,9 +25,9 @@ def covered(sources: list[str]) -> list[str]:
     return [s for s in sources if s in SOURCE_ZONES]
 
 
-async def ask(gateway: Gateway, text: str, sources: list[str], filters: Filters, limit: int) -> list[dict[str, Any]]:
-    """kb's entries for ``text`` among ``sources``, best first. Raises when kb cannot answer."""
-    narrowed = bool(filters.project or filters.scope or filters.tags or filters.after or filters.before)
+async def ask(gateway: Gateway, text: str, sources: list[str], narrowed: bool, limit: int) -> list[dict[str, Any]]:
+    """kb's entries for ``text`` among ``sources``, best first; ``narrowed`` when a filter or a text match
+    applies after kb answers. Raises when kb cannot answer."""
     k = ENTRIES_FILTERED if narrowed else max(ENTRIES, limit * 6)
     args = {"text": text, "k": min(k, ENTRIES_FILTERED), "sources": sources,
             "zones": sorted({SOURCE_ZONES[s] for s in sources})}

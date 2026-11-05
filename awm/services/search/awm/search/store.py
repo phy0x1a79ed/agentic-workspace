@@ -17,6 +17,7 @@ because the engine normalises scores per call.
 from __future__ import annotations
 
 import json
+import math
 import sqlite3
 import time
 from datetime import datetime, timezone
@@ -28,7 +29,7 @@ from awm.persistence.databases import get_connection, init_service_db
 from awm.search import passages as cutter
 
 SERVICE = "search"
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 CORPUS = "doc"
 
 _SOURCES = """\
@@ -146,11 +147,49 @@ CREATE TABLE IF NOT EXISTS usage (ts REAL NOT NULL, scope TEXT NOT NULL DEFAULT 
 CREATE INDEX IF NOT EXISTS idx_usage_scope ON usage(scope, ts);
 """
 
-SCHEMA_SQL = _SOURCES + "\n".join(_DOCUMENTS) + _TEXT_INDEXES + _JUDGEMENTS + _USAGE + engine.EMBEDDINGS_DDL
+#: v8: one row per value of a multi-valued field (``tag``, ``replies_to``), so a filter reads an index and not a
+#: substring of ``tags``; and a decayed use count per document, which nothing ranks by yet.
+_DOC_VALUES = """
+CREATE TABLE IF NOT EXISTS doc_values (rid INTEGER NOT NULL, field TEXT NOT NULL, value TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_doc_values_lookup ON doc_values(field, value, rid);
+CREATE INDEX IF NOT EXISTS idx_doc_values_rid ON doc_values(rid);
+CREATE TRIGGER IF NOT EXISTS doc_values_ad AFTER DELETE ON documents BEGIN
+    DELETE FROM doc_values WHERE rid = old.rid;
+END;
+CREATE TABLE IF NOT EXISTS usage_score (
+    source TEXT NOT NULL, doc_id TEXT NOT NULL, node TEXT NOT NULL DEFAULT '', s REAL NOT NULL,
+    PRIMARY KEY (source, doc_id, node));
+CREATE INDEX IF NOT EXISTS idx_usage_score_rank ON usage_score(source, s DESC);
+CREATE INDEX IF NOT EXISTS idx_documents_recent ON documents(source, ts);
+"""
+
+#: Fills ``doc_values`` from the newline-bracketed ``tags`` or ``reply_to`` column of every document.
+_SPLIT = """
+WITH RECURSIVE s(rid, item, rest) AS (
+    SELECT rid, '', substr({col}, 2) FROM documents WHERE {col} <> ''
+    UNION ALL
+    SELECT rid, substr(rest, 1, instr(rest, char(10)) - 1), substr(rest, instr(rest, char(10)) + 1)
+    FROM s WHERE rest <> '')
+INSERT INTO doc_values (rid, field, value) SELECT rid, '{field}', item FROM s WHERE item <> '';
+"""
+
+#: Drops documents of the retired sources with their passages and engine rows, then their registry rows.
+_RETIRE = """
+DELETE FROM embeddings_fts WHERE rowid IN (SELECT id FROM embeddings WHERE source_type = 'doc'
+    AND source_id IN (SELECT key FROM documents WHERE source IN ('precedence', 'notes')));
+DELETE FROM embeddings WHERE source_type = 'doc'
+    AND source_id IN (SELECT key FROM documents WHERE source IN ('precedence', 'notes'));
+DELETE FROM passages WHERE key IN (SELECT key FROM documents WHERE source IN ('precedence', 'notes'));
+DELETE FROM documents WHERE source IN ('precedence', 'notes');
+DELETE FROM sources WHERE name IN ('precedence', 'notes');
+"""
+
+SCHEMA_SQL = _SOURCES + "\n".join(_DOCUMENTS) + _TEXT_INDEXES + _JUDGEMENTS + _USAGE + _DOC_VALUES + engine.EMBEDDINGS_DDL
 
 #: v2 adds ``tags``; clearing ``synced_at`` makes every index source due at once, so the tags fill in. v3 gives
 #: documents an integer key for the text indexes and builds them. v4 adds the judgements, v5 the usage log, and
 #: v6 its project. v7 adds ``reply_to`` and makes every index source due, so the links fill in.
+#: v8 adds ``doc_values`` and ``usage_score``, backfills the values, and retires the precedence and notes sources.
 MIGRATIONS = {
     (1, 2): "ALTER TABLE documents ADD COLUMN tags TEXT NOT NULL DEFAULT '';\n"
             "UPDATE sources SET synced_at = NULL;",
@@ -169,6 +208,8 @@ MIGRATIONS = {
     (5, 6): "ALTER TABLE usage ADD COLUMN project TEXT NOT NULL DEFAULT '';",
     (6, 7): "ALTER TABLE documents ADD COLUMN reply_to TEXT NOT NULL DEFAULT '';\n"
             "UPDATE sources SET synced_at = NULL;",
+    (7, 8): _DOC_VALUES + "DELETE FROM doc_values;\n" + _RETIRE
+            + _SPLIT.format(col="tags", field="tag") + _SPLIT.format(col="reply_to", field="replies_to"),
 }
 
 _initialized = False
@@ -368,8 +409,18 @@ def put_documents(conn: sqlite3.Connection, rows: Iterable[dict[str, Any]]) -> i
         old = held.get(r["key"])
         if old is None or any(old[f] != r[f] for f in _CUT_FIELDS):
             _cut(conn, r)
+        if old is None or old["tags"] != r["tags"] or old["reply_to"] != r["reply_to"]:
+            _fill_values(conn, r)
     conn.commit()
     return len(changed)
+
+
+def _fill_values(conn: sqlite3.Connection, row: dict[str, Any]) -> None:
+    rid = conn.execute("SELECT rid FROM documents WHERE key=?", (row["key"],)).fetchone()[0]
+    conn.execute("DELETE FROM doc_values WHERE rid=?", (rid,))
+    conn.executemany("INSERT INTO doc_values (rid, field, value) VALUES (?,?,?)",
+                     [(rid, "tag", v) for v in id_list(row["tags"])]
+                     + [(rid, "replies_to", v) for v in id_list(row["reply_to"])])
 
 
 def cut_missing(conn: sqlite3.Connection) -> int:
@@ -402,11 +453,29 @@ def get_document(conn: sqlite3.Connection, source: str, doc_id: str) -> dict[str
     return dict(row) if row else None
 
 
+#: ``usage_score`` counts a get as exp(LAMBDA * t), t in days since EPOCH, kept as a log so a score never overflows:
+#: a get 30 days later weighs twice as much, so the sum ranks by recency-weighted use.
+EPOCH = datetime(2026, 1, 1, tzinfo=timezone.utc).timestamp()
+LAMBDA = math.log(2) / 30
+
+
+def logaddexp(a: float, b: float) -> float:
+    hi, lo = (a, b) if a >= b else (b, a)
+    return hi + math.log1p(math.exp(lo - hi))
+
+
 def log_use(conn: sqlite3.Connection, row: dict[str, Any]) -> None:
-    """Append one get to the usage log."""
+    """Append one get to the usage log and fold it into the document's ``usage_score``."""
+    row = {"ts": time.time(), "project": "", "scope": "", "query": "", "node": "", **row}
     conn.execute("INSERT INTO usage (ts, project, scope, query, source, doc_id, node)"
-                 " VALUES (:ts, :project, :scope, :query, :source, :doc_id, :node)",
-                 {"ts": time.time(), "project": "", "scope": "", "query": "", "node": "", **row})
+                 " VALUES (:ts, :project, :scope, :query, :source, :doc_id, :node)", row)
+    gain = LAMBDA * (row["ts"] - EPOCH) / 86400
+    held = conn.execute("SELECT s FROM usage_score WHERE source=? AND doc_id=? AND node=?",
+                        (row["source"], row["doc_id"], row["node"])).fetchone()
+    conn.execute("INSERT INTO usage_score (source, doc_id, node, s) VALUES (?,?,?,?)"
+                 " ON CONFLICT (source, doc_id, node) DO UPDATE SET s = excluded.s",
+                 (row["source"], row["doc_id"], row["node"],
+                  gain if held is None else logaddexp(held[0], gain)))
     conn.commit()
 
 

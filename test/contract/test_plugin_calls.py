@@ -57,8 +57,8 @@ CALLS: dict[str, set[tuple[str, str]]] = {
         *{("harness@1", v) for v in ("platform", "status", "resolve", "find", "list", "start", "stop", "resume", "adopt", "send",
                                      "compact", "mode", "set", "interrupt", "remote_control", "link", "pending")},
     },
-    "search": {("journal", "export"), ("kb", "query"), ("kb", "library"), ("kb", "get"), ("kb", "hop"),
-               ("transcripts", "query"), ("search", "query"), ("search", "get")},  # the archive sources, their hop,
+    "search": {("journal", "export"), ("kb", "query"), ("kb", "get"),
+               ("transcripts", "query"), ("search", "query"), ("search", "get")},  # the archive sources
     # and federation. search's tests/test_needs.py replays these against the real manifests.
     "social": {("reflection", "session_of"), ("reflection", "message"), ("reflection", "list_other"),
                *{("harness-cc", v) for v in ("list", "probe", "resume", "adopt")}},  # push, sessions, Cx._call

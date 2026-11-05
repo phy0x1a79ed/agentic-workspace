@@ -9,8 +9,8 @@ from awm.search import merge
 pytestmark = [pytest.mark.search]
 
 
-def hit(source, doc_id, ts="2026-01-01T00:00:00Z", node="local"):
-    return {"source": source, "id": doc_id, "ts": ts, "origin": {"node": node}}
+def hit(source, doc_id, ts="2026-01-01T00:00:00Z"):
+    return {"id": doc_id, "title": doc_id, "ts": ts}
 
 
 def test_a_hit_in_two_lists_outranks_a_hit_first_in_one():
@@ -19,19 +19,14 @@ def test_a_hit_in_two_lists_outranks_a_hit_first_in_one():
     assert [h["id"] for h in fused] == ["b", "a", "c"]
 
 
-def test_a_score_is_the_sum_of_each_lists_share():
+def test_a_fused_hit_gains_no_score_and_keeps_its_shape():
     fused = merge.fuse([[hit("j", "a")], [hit("j", "a")]], 10)
-    assert fused[0]["score"] == round(2 / (merge.RRF_K + 1), 5)
+    assert fused == [hit("j", "a")]
 
 
 def test_ties_go_to_the_newer_hit():
     old, new = hit("j", "old", "2025-01-01T00:00:00Z"), hit("j", "new", "2026-01-01T00:00:00Z")
     assert [h["id"] for h in merge.fuse([[old], [new]], 10)] == ["new", "old"]
-
-
-def test_the_same_id_on_two_nodes_is_two_hits():
-    fused = merge.fuse([[hit("j", "a", node="local")], [hit("j", "a", node="altair")]], 10)
-    assert len(fused) == 2
 
 
 def test_the_limit_cuts_the_tail():

@@ -43,7 +43,7 @@ class FakeSearch:
 
     def __init__(self):
         self.calls: list[dict] = []
-        self.status: dict = {"status": "ok"}
+        self.answer_error: str | None = None
         self.error: Exception | None = None
 
     def __call__(self, service, fn, args=None, **kw):
@@ -56,15 +56,19 @@ class FakeSearch:
         from awm.journal.dao import JournalDAO
         from awm.persistence.timestamps import iso_to_ms
         from awm.journal.search_index import INDEXED_PARAMS, INDEXED_SQL, thread_text
-        words = set(re.findall(r"\w+", args["query"].lower()))
+        if self.answer_error is not None:
+            return {"journals": {"error": self.answer_error}}
+        text = args["query"]["text"]
+        f = args["query"]["journals"]
+        words = set(re.findall(r"\w+", text.lower()))
         sql, params = "SELECT * FROM scope_posts WHERE body != ''" + INDEXED_SQL, list(INDEXED_PARAMS)
         for key, col in (("project", "owner_project"), ("scope", "owner_scope")):
-            if args.get(key):
+            if f.get(key):
                 sql += f" AND {col} = ?"
-                params.append(args[key])
-        if args.get("before"):
+                params.append(f[key])
+        if f.get("ts"):
             sql += " AND ts < ?"
-            params.append(iso_to_ms(args["before"]))
+            params.append(iso_to_ms(f["ts"]["$lt"]))
         exact, related = [], []
         dao = JournalDAO()
         for r in dao.query_all(sql, params):
@@ -74,12 +78,12 @@ class FakeSearch:
             if not score:
                 continue
             line = next((ln for ln in body.splitlines() if words & set(re.findall(r"\w+", ln.lower()))), body)
-            hit = {"source": "journals", "id": r["id"], "score": float(score), "passages": [{"text": line[:300]}]}
-            (exact if args["query"].lower() in body.lower() else related).append(hit)
-        limit = int(args.get("limit") or 10)
-        rank = lambda hits: sorted(hits, key=lambda h: -h["score"])[:limit]  # noqa: E731
-        return {"exact": {"journals": rank(exact)}, "related": {"journals": rank(related)}, "graph": {},
-                "sources": {"journals": self.status}}
+            hit = {"id": r["id"], "title": line[:80], "ts": r["ts"], "_score": score}
+            (exact if text.lower() in body.lower() else related).append(hit)
+        limit = int(args.get("max") or 10)
+        rank = lambda hits: [{k: v for k, v in h.items() if k != "_score"}  # noqa: E731
+                             for h in sorted(hits, key=lambda h: -h["_score"])[:limit]]
+        return {"journals": {"exact": rank(exact), "related": rank(related)}}
 
 
 @pytest.fixture(autouse=True)

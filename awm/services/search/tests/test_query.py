@@ -1,497 +1,361 @@
-"""Querying: ranking, filters, live sources, sources on other nodes, and the hop."""
+"""The request parser: short forms, text normalisation, node split, relayed calls and every rejection."""
 
 from __future__ import annotations
 
-import asyncio
+import json
 
 import pytest
 
-from awm.gatewayclient import GatewayCallError
-from awm.search import federation, store
-from awm.search.query import parse
+from awm.search.query import Lit, Op, QueryError, parse
 
-from .conftest import HERE, doc, every, flat, synced
+from .conftest import HERE
 
 pytestmark = [pytest.mark.search]
 
-HIT_KEYS = {"source", "id", "title", "ts", "score", "match", "origin"}
-#: The index sources the ``loaded`` fixture registers.
-LOADED = ["journals", "wiki", "kb"]
-
-
-@pytest.fixture()
-async def loaded(archive, gateway):
-    gateway.plug("journals", {
-        "j1": doc("Kitchen refit", "we decided to refit the kitchen sink and tap", "2026-03-01T10:00:00Z",
-                  project="awm", scope="dev", tags=["journal"]),
-        "j2": doc("Garden shed", "the garden shed roof was replaced", "2026-05-01T10:00:00Z",
-                  project="home", scope="yard", tags=["journal"], reply_to=["j1"]),
-        "j3": doc("Plumbing note", "a note about the kitchen plumbing", "2026-04-01T10:00:00Z",
-                  project="awm", scope="dev", tags=["message"], reply_to=["j2"])}, topic="posts")
-    gateway.plug("wiki", {"p1": doc("Sink choice", "the user prefers a deep kitchen sink", "2026-02-01T00:00:00Z")})
-    gateway.plug("kb", {"k1": doc("Fluid dynamics of taps", "papers on kitchen tap flow", "2020-01-01T00:00:00Z",
-                                  kind="paper", url="https://doi.org/10.1/x")})
-    await synced(archive, gateway)
-    return archive
 
+def bad(query, match, **extra):
+    with pytest.raises(QueryError, match=match):
+        parse({"query": query, **extra})
 
-def ids(result):
-    return [(h["source"], h["id"]) for h in every(result)]
 
+# -- short forms ---------------------------------------------------------------
 
-async def test_one_ranked_list_spans_every_named_source(loaded):
-    result = await loaded.query(parse({"query": "kitchen sink", "sources": LOADED}))
-    assert {s for s, _ in ids(result)} == {"journals", "wiki", "kb"}
-    for h in every(result):
-        assert HIT_KEYS <= set(h) and "passages" not in h
-        assert h["origin"] == {"node": "local"}
-    assert result["sources"]["journals"]["status"] == "ok"
-    assert "peers" not in result and "hop" not in result
 
+def test_string_query_is_text_over_this_nodes_journals():
+    req = parse({"query": "trigram budget"})
+    assert [(s.kind, s.node, s.filter) for s in req.sources] == [("journals", "", {})]
+    assert req.text.about == "trigram budget" and req.text.under_or
+    assert req.text.contains == Lit("trigram budget") and req.text.raw == "trigram budget"
+    assert (req.max, req.relayed, req.remote, req.elsewhere) == (10, False, {}, [])
 
-async def test_a_paraphrase_finds_the_journal(loaded):
-    result = await loaded.query(parse({"query": "kitchen sink refit", "sources": ["journals"]}))
-    assert ids(result)[0] == ("journals", "j1")
 
+def test_text_without_source_searches_journals():
+    req = parse({"query": {"text": {"$contains": "HNSW"}}})
+    assert [s.name for s in req.sources] == ["journals"]
+    assert req.text.about is None and req.text.contains == Lit("HNSW")
 
-async def test_sources_narrow_the_search(loaded):
-    result = await loaded.query(parse({"query": "kitchen", "sources": "kb,wiki"}))
-    assert {s for s, _ in ids(result)} <= {"kb", "wiki"}
-    assert set(result["sources"]) == {"kb", "wiki"}
 
-
-async def test_an_unknown_source_is_reported_absent(loaded):
-    result = await loaded.query(parse({"query": "kitchen", "sources": ["journals", "nothing"]}))
-    assert result["sources"]["nothing"] == {"status": "absent"}
-    assert ids(result)
+def test_sources_without_text_have_no_text():
+    req = parse({"query": {"journals": {"project": "awm", "tag": "debrief"}}})
+    assert req.text is None
+    assert req.sources[0].filter == {"project": "awm", "tag": "debrief"}
 
 
-@pytest.mark.parametrize("filters, expected", [
-    ({"project": "awm"}, {"j1", "j3"}),
-    ({"scope": "yard"}, {"j2"}),
-    ({"tags": "message"}, {"j3"}),
-    ({"tags": "!message"}, {"j1", "j2"}),
-    ({"after": "2026-04-01"}, {"j2", "j3"}),
-    ({"before": "2026-04-01"}, {"j1"}),
-    ({"after": "2026-03-15T00:00:00+00:00", "before": "2026-04-15"}, {"j3"}),
-])
-async def test_filters_apply_before_ranking(loaded, filters, expected):
-    result = await loaded.query(parse({"query": "kitchen garden roof plumbing", "sources": ["journals"], **filters}))
-    assert {i for _, i in ids(result)} == expected
+def test_json_string_query_is_an_object():
+    req = parse({"query": '{"text": "x", "journals": {"scope": "svc-*"}}'})
+    assert req.sources[0].filter == {"scope": "svc-*"} and req.text.about == "x"
 
 
-async def test_a_bad_date_is_refused():
-    with pytest.raises(ValueError, match="after"):
-        parse({"query": "x", "sources": ["journals"], "after": "last tuesday"})
-
+# -- text normalisation --------------------------------------------------------
 
-async def test_limit_is_clamped(loaded):
-    result = await loaded.query(parse({"query": "kitchen", "limit": 1, "sources": LOADED}))
-    assert all(len(hits) == 1 for s in ("exact", "related") for hits in result[s].values())
-    assert result["exact"] and result["related"]
-    assert parse({"query": "x", "sources": ["journals"], "limit": 5000}).limit == 100
 
-
-async def test_each_source_is_reported_apart_with_its_own_limit(loaded):
-    result = await loaded.query(parse({"query": "kitchen", "limit": 1, "sources": "journals,wiki,kb"}))
-    sections = {s: {src: [h["id"] for h in hits] for src, hits in result[s].items()} for s in ("exact", "related")}
-    for section in sections.values():
-        assert all(len(ids) == 1 for ids in section.values())
-        assert set(section) <= {"journals", "wiki", "kb"}
-    assert set(sections["exact"]) == {"journals", "wiki", "kb"}
-    assert all(h["source"] == src for s in ("exact", "related") for src, hits in result[s].items()
-               for h in hits)
-    wide = await loaded.query(parse({"query": "kitchen", "limit": 10, "sources": "journals,kb"}))
-    assert len(wide["exact"]["journals"]) == 2 and len(wide["exact"]["kb"]) == 1
+def text(value):
+    return parse({"query": {"text": value}}).text
 
 
-async def test_a_frozen_source_still_answers_and_says_so(loaded, gateway):
-    gateway.stop("kb")
-    await loaded.refresh()
-    result = await loaded.query(parse({"query": "tap flow", "sources": ["kb"]}))
-    assert ids(result) == [("kb", "k1")]
-    assert result["sources"]["kb"]["status"] == "frozen"
+def test_lone_about():
+    t = text({"$about": "latency"})
+    assert (t.about, t.under_or, t.contains) == ("latency", False, None)
 
 
-async def test_get_returns_the_stored_document(loaded):
-    got = (await loaded.get("kb", "k1"))["document"]
-    assert got["title"] == "Fluid dynamics of taps" and got["url"] == "https://doi.org/10.1/x"
-    with pytest.raises(ValueError, match="no document"):
-        await loaded.get("kb", "nope")
-    with pytest.raises(ValueError, match="no source"):
-        await loaded.get("missing", "k1")
+def test_or_with_only_about_is_a_lone_about():
+    t = text({"$or": [{"$about": "latency"}]})
+    assert (t.about, t.under_or, t.contains) == ("latency", False, None)
 
 
-# -- live sources ----------------------------------------------------------
+def test_or_with_about_and_contains_is_under_or():
+    t = text({"$or": [{"$about": "a"}, {"$contains": "p95"}]})
+    assert (t.about, t.under_or, t.contains) == ("a", True, Lit("p95"))
 
 
-def last_query(gateway):
-    return [args for _, fn, args in gateway.calls if fn == "query"][-1]
+def test_and_with_about_and_several_contains():
+    t = text({"$and": [{"$about": "a"}, {"$contains": "p95"}, {"$or": [{"$contains": "x"}, {"$contains": "y"}]}]})
+    assert t.about == "a" and not t.under_or
+    assert t.contains == Op("and", (Lit("p95"), Op("or", (Lit("x"), Lit("y")))))
 
 
-def transcripts(args):
-    return {"hits": [{"id": "s1:7", "title": "awm", "snippet": f"you said {args['query']}",
-                      "ts": "2026-06-01T00:00:00+00:00", "project": "awm"}]}
+def test_and_with_about_and_one_contains_collapses_to_it():
+    t = text({"$and": [{"$contains": "p95"}, {"$about": "a"}]})
+    assert t.contains == Lit("p95") and not t.under_or
 
 
-@pytest.mark.parametrize("sources", [None, "", [], [" "]])
-def test_a_query_without_sources_is_refused(sources):
-    args = {"query": "kitchen"} if sources is None else {"query": "kitchen", "sources": sources}
-    with pytest.raises(ValueError, match="needs `sources`"):
-        parse(args)
-    with pytest.raises(ValueError, match="needs `sources`"):
-        parse(args, "peer:altair")
+def test_no_about_keeps_the_whole_tree():
+    t = text({"$and": [{"$contains": "a"}, {"$contains": "b"}]})
+    assert (t.about, t.under_or) == (None, False)
+    assert t.contains == Op("and", (Lit("a"), Lit("b")))
+    t = text({"$nor": [{"$contains": "a"}, {"$contains": "b"}]})
+    assert t.contains == Op("nor", (Lit("a"), Lit("b")))
 
 
-def test_a_query_needs_words_or_a_hop_from_ids():
-    with pytest.raises(ValueError, match="needs a `query`, or a `hop` with `from`"):
-        parse({"sources": ["journals"]})
-    with pytest.raises(ValueError, match="needs a `query`"):
-        parse({"sources": ["journals"], "hop": {"via": "reply_to"}})
-    assert parse({"sources": ["journals"], "hop": {"via": "reply_to", "from": ["j1"]}}).text == ""
+def test_nor_nested_under_and_survives():
+    t = text({"$and": [{"$about": "a"}, {"$nor": [{"$contains": "z"}]}]})
+    assert t.contains == Op("nor", (Lit("z"),))
 
 
-@pytest.mark.parametrize("optin", [True, False])
-async def test_a_live_source_runs_only_when_named(loaded, gateway, optin):
-    gateway.plug_live("transcripts", transcripts, optin=optin)
-    await loaded.refresh()
-    others = await loaded.query(parse({"query": "kitchen", "sources": LOADED}))
-    assert "transcripts" not in others["sources"] and ("transcripts", "s1:7") not in ids(others)
-    assert not any(fn == "query" for _, fn, _ in gateway.calls)
-    named = await loaded.query(parse({"query": "kitchen", "sources": ["transcripts"]}))
-    assert ids(named) == [("transcripts", "s1:7")]
-    assert named["sources"]["transcripts"] == {"status": "ok", "hits": 1}
-    assert last_query(gateway)["query"] == "kitchen"
-
-
-async def test_a_failing_live_source_never_hides_the_archive(loaded, gateway):
-    gateway.plug_live("web", lambda args: RuntimeError("boom"))
-    await loaded.refresh()
-    result = await loaded.query(parse({"query": "kitchen", "sources": [*LOADED, "web"]}))
-    assert result["sources"]["web"]["status"] == "error" and "boom" in result["sources"]["web"]["error"]
-    assert ids(result)
-
-
-async def test_a_malformed_live_reply_is_an_error_status(loaded, gateway):
-    gateway.plug_live("web", lambda args: {"results": []})
-    await loaded.refresh()
-    assert (await loaded.query(parse({"query": "kitchen", "sources": ["web"]})))["sources"]["web"]["status"] == "error"
-
-
-async def test_filters_reach_a_live_source(loaded, gateway):
-    gateway.plug_live("web", transcripts)
-    await loaded.refresh()
-    await loaded.query(parse({"query": "kitchen", "sources": ["web"], "project": "awm", "after": "2026-01-01"}))
-    assert last_query(gateway) == {"query": "kitchen", "limit": 10, "project": "awm", "after": "2026-01-01"}
-
+def test_raw_is_the_text_as_given():
+    value = {"$or": [{"$about": "a"}, {"$contains": "b"}]}
+    assert text(value).raw == value
 
-async def test_a_source_that_turns_live_drops_its_indexed_documents(loaded, gateway):
-    gateway.plug("papers", {"z1": doc("Old abstract", "kitchen sink abstract")})
-    await synced(loaded, gateway)
-    assert ("papers", "z1") in ids(await loaded.query(parse({"query": "kitchen sink", "sources": ["papers"]})))
-    gateway.stop("papers")
-    gateway.plug_live("papers", lambda args: {"exact": [{"source": "papers", "id": "doi:1", "title": "New"}]})
-    await loaded.refresh()
-    assert ids(await loaded.query(parse({"query": "kitchen sink", "sources": ["papers"]}))) == [("papers", "doi:1")]
-    conn = store.connect()
-    try:
-        assert store.document_ids(conn, "papers") == set()
-    finally:
-        conn.close()
-
-
-# -- sources on other nodes ----------------------------------------------------------
-
-
-def peer_hits(*docs, sources=("journals",)):
-    return lambda args: {"hits": [{"source": "journals", "id": d, "title": f"remote {d}",
-                                   "snippet": "from afar", "ts": "2026-06-01T00:00:00Z", "score": 0.9,
-                                   "origin": {"node": "liar"}, "secret": "x"}
-                                  for d in docs],
-                         "sources": {s: {"status": "ok", "hits": len(docs)} for s in sources}}
-
-
-async def test_bare_sources_search_this_node_only(loaded, peers):
-    peers.add("altair", peer_hits("r1"))
-    result = await loaded.query(parse({"query": "kitchen", "sources": LOADED}))
-    assert every(result) and all(h["origin"]["node"] == HERE for h in every(result))
-    assert peers.calls == []
-
-
-async def test_a_source_named_with_this_node_is_this_nodes(loaded, peers):
-    peers.add("altair", peer_hits("r1"))
-    result = await loaded.query(parse({"query": "kitchen", "sources": [f"journals@{HERE}"]}))
-    assert set(result["sources"]) == {"journals"} and peers.calls == []
-
-
-async def test_a_source_at_a_node_is_asked_of_that_node_and_answers_under_its_name(loaded, peers):
-    peers.add("altair", peer_hits("r1", "r2"))
-    peers.add("shaula", peer_hits("r3"))
-    result = await loaded.query(parse({"query": "kitchen", "sources": ["journals", "journals@altair",
-                                                                        "journals@shaula"]}))
-    assert result["sources"]["journals@altair"] == {"status": "ok", "hits": 2}
-    assert [h["id"] for h in result["related"]["journals@altair"]] == ["r1", "r2"]
-    assert [h["id"] for h in result["related"]["journals@shaula"]] == ["r3"]
-    remote = {h["id"]: h for h in every(result) if h["origin"]["node"] != HERE}
-    assert remote["r1"]["origin"] == {"node": "altair"} and remote["r1"]["source"] == "journals"
-    assert remote["r3"]["origin"] == {"node": "shaula"}
-    assert "secret" not in remote["r1"]
-    assert all(h["origin"]["node"] == HERE for hits in result["exact"].get("journals", []) for h in [hits])
 
+# -- sources and nodes ---------------------------------------------------------
 
-async def test_only_the_named_node_is_asked_and_this_node_is_not_searched(loaded, peers):
-    peers.add("shaula", peer_hits("r3"))
-    peers.add("altair", peer_hits("r9"))
-    result = await loaded.query(parse({"query": "kitchen", "sources": ["journals@shaula"]}))
-    assert [h["id"] for h in every(result)] == ["r3"]
-    assert set(result["sources"]) == {"journals@shaula"} and [c[0] for c in peers.calls] == ["shaula"]
 
+def test_node_split_here_and_remote():
+    req = parse({"query": {"journals": {"project": "awm"}, "kb@altair": {"author": "Smith"},
+                           "transcripts@vega": {}}})
+    assert [s.name for s in req.sources] == ["journals"]
+    assert set(req.remote) == {"altair", "vega"}
+    assert req.remote["altair"][0].kind == "kb" and req.remote["altair"][0].node == "altair"
 
-async def test_a_node_is_asked_once_for_every_source_named_on_it(loaded, peers):
-    peers.add("altair", peer_hits(sources=("journals",)))
-    result = await loaded.query(parse({"query": "kitchen", "sources": ["journals@altair", "kb@altair"],
-                                       "project": "awm", "limit": 4, "tags": "!closed"}))
-    (name, tool, args), = peers.calls
-    assert (name, tool) == ("altair", "search_query")
-    assert args == {"query": "kitchen", "limit": 4, "project": "awm", "sources": ["journals", "kb"],
-                    "tags": "!closed"}
-    assert result["sources"]["kb@altair"] == {"status": "absent"}
 
+def test_explicit_this_node_is_local():
+    req = parse({"query": {f"journals@{HERE}": {"scope": "x"}}})
+    assert req.sources[0].name == f"journals@{HERE}" and req.sources[0].node == "" and not req.remote
 
-async def test_a_node_without_an_edge_or_unknown_is_an_error_and_is_not_asked(loaded, peers):
-    peers.add("shaula", peer_hits("r3"), edge=False)
-    result = await loaded.query(parse({"query": "kitchen", "sources": ["journals", "journals@shaula",
-                                                                        "journals@ghost"]}))
-    assert result["sources"]["journals@shaula"] == {"status": "error", "error": f"no edge from {HERE} to shaula"}
-    assert result["sources"]["journals@ghost"] == {"status": "error", "error": f"no edge from {HERE} to ghost"}
-    assert peers.calls == [] and every(result)
 
+def test_a_source_named_twice_after_normalisation_is_refused():
+    bad({"journals": {}, f"journals@{HERE}": {}}, "named twice")
+    bad({"kb@altair": {}, "kb@Altair": {}}, "named twice")
 
-async def test_a_station_is_never_asked(loaded, peers):
-    peers.add("mira", peer_hits("r2"), role="station")
-    result = await loaded.query(parse({"query": "kitchen", "sources": ["journals@mira"]}))
-    assert result["sources"]["journals@mira"] == {"status": "station"} and peers.calls == []
 
+def test_same_kind_on_different_nodes_is_fine():
+    req = parse({"query": {"journals": {}, "journals@altair": {}}})
+    assert len(req.sources) == 1 and len(req.remote["altair"]) == 1
 
-async def test_a_node_without_the_search_tool_is_no_search(loaded, peers):
-    peers.add("capella", lambda args: GatewayCallError(404, '{"detail":"Unknown tool: search_query"}'))
-    result = await loaded.query(parse({"query": "kitchen", "sources": ["journals", "journals@capella"]}))
-    assert result["sources"]["journals@capella"] == {"status": "no-search",
-                                                     "detail": "its release has no search tool"}
-    assert every(result)
-
-
-async def test_a_failing_or_slow_node_is_a_status(loaded, peers, monkeypatch):
-    monkeypatch.setattr(federation, "PEER_TIMEOUT_S", 0.05)
 
-    async def slow(args):
-        await asyncio.sleep(5)
+def test_forwarded_uses_bare_kinds_and_raw_text():
+    req = parse({"query": {"text": {"$contains": "x"}, "journals": {"project": "awm"},
+                           "journals@altair": {"ts": {"$gte": "2026-10-01"}}, "kb@altair": {"author": "A"}},
+                 "max": 20})
+    assert req.forwarded("altair") == {
+        "query": {"text": {"$contains": "x"}, "journals": {"ts": {"$gte": "2026-10-01T00:00:00Z"}},
+                  "kb": {"author": "A"}},
+        "max": 20}
 
-    peers.add("down", lambda args: ConnectionError("refused"))
-    peers.add("junk", lambda args: {"detail": "nope"})
-    peers.add("big", lambda args: "x" * (federation.MAX_REPLY_BYTES + 1))
-    peers.add("slow", slow)
-    named = ["journals", *(f"journals@{n}" for n in ("down", "junk", "big", "slow"))]
-    result = await loaded.query(parse({"query": "kitchen", "sources": named}))
-    assert "refused" in result["sources"]["journals@down"]["error"]
-    assert "no hits" in result["sources"]["journals@junk"]["error"]
-    assert "exceeds" in result["sources"]["journals@big"]["error"]
-    assert "timeout" in result["sources"]["journals@slow"]["error"]
-    assert every(result)
 
+def test_forwarded_omits_absent_text():
+    req = parse({"query": {"kb@altair": {}}})
+    assert req.forwarded("altair") == {"query": {"kb": {}}, "max": 10}
 
-async def test_a_call_from_a_peer_searches_this_node_only(loaded, peers):
-    peers.add("altair", peer_hits("r1"))
-    for as_ in ("peer:altair", "peer"):
-        result = await loaded.query(parse({"query": "kitchen", "sources": ["journals", "kb@altair"]}, as_))
-        assert result["sources"]["kb@altair"] == {"status": "absent"} and every(result)
-    assert peers.calls == []
 
+# -- relayed calls -------------------------------------------------------------
 
-async def test_a_node_answering_with_one_list_per_source_keeps_each_source_apart(loaded, peers):
-    peers.add("altair", lambda args: {
-        "exact": {"journals": [{"source": "journals", "id": "far1", "title": "Kitchen elsewhere"}],
-                  "kb": [{"source": "kb", "id": "doi:9", "title": "A far paper"}]},
-        "related": {}, "graph": {},
-        "sources": {"journals": {"status": "ok", "hits": 1}, "kb": {"status": "ok", "hits": 1}}})
-    result = await loaded.query(parse({"query": "kitchen", "sources": ["journals", "journals@altair", "kb@altair"],
-                                       "limit": 5}))
-    assert [h["id"] for h in result["exact"]["journals@altair"]] == ["far1"]
-    assert [h["id"] for h in result["exact"]["kb@altair"]] == ["doi:9"]
-    assert "far1" not in {h["id"] for h in result["exact"]["journals"]}
 
+def test_relayed_call_drops_remote_sources_and_records_them(monkeypatch):
+    from awm.config import privacy
+    monkeypatch.setattr(privacy, "marks", lambda: [{"mark": 1}])
+    req = parse({"query": {"journals": {}, "kb@altair": {}, "journals@vega": {}}}, as_="peer:altair")
+    assert req.relayed and req.remote == {} and req.elsewhere == ["kb@altair", "journals@vega"]
+    assert [s.name for s in req.sources] == ["journals"]
+    assert req.hidden == [{"mark": 1}]
 
-async def test_get_with_a_node_reads_that_peers_archive(peers):
-    peers.add("shaula", lambda args: {"document": {"title": "far", "text": "body", "origin": {"node": "liar"}}})
-    got = await federation.fetch(peers, "shaula", "journals", "r3")
-    assert got["document"]["origin"] == {"node": "shaula"}
-    assert peers.calls == [("shaula", "search_get", {"source": "journals", "id": "r3"})]
 
+def test_local_call_sees_nothing_hidden():
+    req = parse({"query": "x"}, as_="session")
+    assert not req.relayed and req.hidden == []
 
-# -- no reorder ----------------------------------------------------------------
 
+def test_unreadable_marks_hide_everything(monkeypatch):
+    from awm.config import privacy
 
-async def test_no_source_is_reordered_by_kb(loaded, gateway):
-    await loaded.query(parse({"query": "kitchen", "sources": LOADED}))
-    assert not any(fn == "rank" for _, fn, _ in gateway.calls)
+    def boom():
+        raise privacy.MarksUnreadable("no")
+    monkeypatch.setattr(privacy, "marks", boom)
+    assert parse({"query": "x"}, as_="peer").hidden is None
 
 
-# -- the author filter --------------------------------------------
+# -- max and arguments ---------------------------------------------------------
 
 
-async def test_a_live_paper_source_and_a_peer_are_asked_with_the_author(loaded, gateway):
-    asked = []
-    gateway.plug_live("papers", lambda args: asked.append(args) or {"exact": [], "related": []},
-                      service="papers")
-    await loaded.refresh()
-    q = parse({"query": "kitchen", "author": "Huttenhauer", "sources": ["papers"]})
-    await loaded.query(q)
-    assert asked[-1]["author"] == "Huttenhauer" and "then" not in asked[-1]
-    assert q.forwarded(["papers"])["author"] == "Huttenhauer"
+@pytest.mark.parametrize("value, expected", [(1, 1), (100, 100), ("20", 20), (None, 10)])
+def test_max_accepted(value, expected):
+    args = {"query": "x"} if value is None else {"query": "x", "max": value}
+    assert parse(args).max == expected
 
 
-async def test_an_author_filter_leaves_the_archived_sources_empty(loaded):
-    result = await loaded.query(parse({"query": "kitchen", "sources": LOADED, "author": "Lee"}))
-    assert not every(result)
-    assert result["sources"]["journals"] == {"status": "ok", "hits": 0}
+@pytest.mark.parametrize("value", [0, 101, -1, True, 2.5, "ten", "", [5]])
+def test_max_refused(value):
+    with pytest.raises(QueryError, match=r"^max: .*allowed: 1-100"):
+        parse({"query": "x", "max": value})
 
 
-async def test_the_library_is_a_live_source_of_its_own(loaded, gateway):
-    gateway.plug_live("library", lambda args: {"exact": [], "related": [
-        {"id": "doi:10.1/mine", "title": "My paper", "ts": "2021-01-01T00:00:00Z"}]}, service="kb")
-    await loaded.refresh()
-    both = await loaded.query(parse({"query": "kitchen tap", "sources": [*LOADED, "library"]}))
-    assert [h["id"] for h in both["related"]["library"]] == ["doi:10.1/mine"]
-    alone = await loaded.query(parse({"query": "kitchen tap", "sources": ["library"]}))
-    assert set(alone["related"]) == {"library"} and not alone["exact"]
+def test_unknown_argument_is_named():
+    with pytest.raises(QueryError, match=r"^sources: unknown argument; allowed: query, max"):
+        parse({"query": "x", "sources": ["journals"]})
 
 
-# -- get on a live source ---------------------------------------------------------
+def test_caller_keys_are_ignored():
+    assert parse({"query": "x", "_caller_scope": "awm/redux"}).max == 10
 
 
-async def test_a_live_source_with_a_get_verb_reads_a_document_whole(loaded, gateway):
-    gateway.plug_live("papers", lambda args: {"exact": [], "related": []}, service="papers", get="papers_get")
-    gateway.handlers[("papers", "get")] = lambda args: {"document": {
-        "title": "A paper", "text": "The whole paper.", "authors": ["Ann Lee"], "ts": "2021-01-01T00:00:00Z",
-        "injected": True}}
-    await loaded.refresh()
-    got = (await loaded.get("papers", "doi:1"))["document"]
-    assert got == {"title": "A paper", "text": "The whole paper.", "authors": ["Ann Lee"],
-                   "ts": "2021-01-01T00:00:00Z", "source": "papers", "id": "doi:1", "frozen": False,
-                   "origin": {"node": "local"}}
-    assert gateway.calls[-1] == ("papers", "get", {"id": "doi:1"})
+def test_query_is_required():
+    with pytest.raises(QueryError, match="^query: missing"):
+        parse({})
 
 
-async def test_a_get_first_after_a_start_still_finds_a_live_source(loaded, gateway):
-    gateway.plug_live("papers", lambda args: {"exact": [], "related": []}, service="papers", get="papers_get")
-    gateway.handlers[("papers", "get")] = lambda args: {"document": {"title": "A paper", "text": "Whole."}}
-    loaded.sources, loaded.registry_at = {}, None
-    assert (await loaded.get("papers", "doi:1"))["document"]["text"] == "Whole."
+# -- ts ------------------------------------------------------------------------
 
 
-async def test_a_live_source_without_a_get_verb_reads_nothing_whole(loaded, gateway):
-    gateway.plug_live("web", transcripts)
-    await loaded.refresh()
-    with pytest.raises(ValueError, match="reads no document whole"):
-        await loaded.get("web", "x")
+def test_ts_is_normalised_everywhere():
+    f = {"ts": {"$gte": "2026-03-01", "$lt": "2026-03-01T12:00:00+02:00", "$in": ["2026-03-02 05:00"]}}
+    req = parse({"query": {"journals": {"$or": [f, {"$and": [{"ts": "2026-04-01"}]}]}}})
+    first, second = req.sources[0].filter["$or"]
+    assert first["ts"] == {"$gte": "2026-03-01T00:00:00Z", "$lt": "2026-03-01T10:00:00Z",
+                           "$in": ["2026-03-02T05:00:00Z"]}
+    assert second["$and"][0]["ts"] == "2026-04-01T00:00:00Z"
 
 
-async def test_a_get_naming_a_verb_of_another_tool_is_an_error_source(loaded, gateway):
-    gateway.plug_live("papers", lambda args: {"exact": [], "related": []}, service="papers", get="library_get")
-    await loaded.refresh()
-    result = await loaded.query(parse({"query": "kitchen", "sources": ["papers"]}))
-    assert "library_get" in result["sources"]["papers"]["error"]
+@pytest.mark.parametrize("filt", [
+    {"ts": "yesterday"}, {"ts": {"$gt": "soon"}}, {"ts": {"$in": ["2026-01-01", "nope"]}},
+    {"$or": [{"ts": "x"}]}, {"$nor": [{"$and": [{"ts": {"$lte": "13/01/2026"}}]}]}, {"ts": 5}])
+def test_bad_ts_refused(filt):
+    bad({"journals": filt}, "ts|ISO 8601|scalar")
 
 
-# -- tags on live sources ------------------------------------------------------------
+def test_ts_error_names_its_path():
+    bad({"journals": {"$or": [{"ts": {"$in": ["2026-01-01", "nope"]}}]}},
+        r"query\.journals\.\$or\[0\]\.ts\.\$in\[1\]: 'nope' is not an ISO 8601")
 
 
-async def test_a_tag_a_live_source_must_hold_answers_nothing_unasked(loaded, gateway):
-    gateway.plug_live("web", transcripts)
-    await loaded.refresh()
-    held = await loaded.query(parse({"query": "kitchen", "sources": ["web", "journals"], "tags": "journal"}))
-    assert held["sources"]["web"] == {"status": "ok", "hits": 0}
-    assert not any(fn == "query" for _, fn, _ in gateway.calls)
-    assert "j1" in {h["id"] for h in every(held)} and {h["id"] for h in every(held)} <= {"j1", "j2"}
-    negated = await loaded.query(parse({"query": "kitchen", "sources": ["web"], "tags": "!closed"}))
-    assert ids(negated) == [("web", "s1:7")]
+# -- rejections ----------------------------------------------------------------
 
 
-# -- hop ----------------------------------------------------------------------------
+def test_bare_list_value():
+    bad({"journals": {"tag": ["a", "b"]}}, r"query\.journals\.tag: a bare list.*\$in")
 
 
-async def test_a_reply_to_hop_walks_both_ways_from_the_ids_given(loaded):
-    result = await loaded.query(parse({"sources": ["journals"], "hop": {"via": "reply_to", "from": ["j2"]}}))
-    assert not flat(result["exact"]) and not flat(result["related"])
-    assert {h["id"] for h in result["hop"]["journals"]} == {"j1", "j3"}
-    assert all(h["match"] == "reply_to" for h in result["hop"]["journals"])
-    assert result["sources"]["journals"]["hop"] == {"status": "ok", "hits": 2}
+def test_unknown_operator():
+    bad({"journals": {"tag": {"$regex": "x"}}}, r"query\.journals\.tag\.\$regex: unknown operator; allowed: \$eq")
 
 
-async def test_a_hop_without_from_starts_from_the_hits_for_the_words(loaded):
-    result = await loaded.query(parse({"query": "garden shed roof", "sources": ["journals"],
-                                       "hop": '{"via": "reply_to"}'}))
-    assert [h["id"] for h in result["exact"]["journals"]] == ["j2"]
-    assert {h["id"] for h in result["hop"]["journals"]} == {"j1", "j3"}
+def test_operator_at_field_position():
+    bad({"journals": {"$gt": 3}}, r"query\.journals\.\$gt: operator not allowed at a field position; allowed: \$and.*project")
+    bad({"journals": {"$or": [{"$in": [1]}]}}, r"\$or\[0\]\.\$in: operator not allowed")
 
 
-async def test_a_hop_obeys_the_filters(loaded):
-    result = await loaded.query(parse({"sources": ["journals"], "tags": "!message",
-                                       "hop": {"via": "reply_to", "from": ["j2"]}}))
-    assert [h["id"] for h in result["hop"]["journals"]] == ["j1"]
+def test_field_the_kind_lacks_lists_its_fields():
+    bad({"transcripts": {"tag": "x"}}, r"query\.transcripts\.tag: transcripts has no field 'tag'; allowed: project, scope, ts")
+    bad({"kb": {"project": "x"}}, r"allowed: author, tag, ts, cites, cited_by")
+    bad({"journals": {"$and": [{"author": "x"}]}}, r"\$and\[0\]\.author")
 
 
-@pytest.fixture()
-async def papers(loaded, gateway):
-    gateway.plug_live("papers", lambda args: {"exact": [{"id": "doi:2", "title": "B"}, {"id": "doi:1", "title": "A"}],
-                                              "related": [{"id": "doi:3", "title": "C"}]},
-                      hop="papers_hop", links=["citations", "cited_by", "authors"])
-    walked = []
-    gateway.handlers[("papers", "hop")] = lambda args: walked.append(args) or {"hits": [
-        {"id": "doi:9", "title": "Cited", "kind": "paper", "match": "cites", "score": 0.4, "text": "no"},
-        {"id": "doi:8", "title": "Also cited"}]}
-    await loaded.refresh()
-    return walked
+@pytest.mark.parametrize("key", ["$about", "$contains"])
+def test_text_operators_inside_a_source_filter(key):
+    bad({"journals": {key: "x"}}, rf"query\.journals\.\{key}: .*belongs in text")
+    bad({"journals": {"$or": [{key: "x"}]}}, rf"\$or\[0\]\.\{key}")
 
 
-async def test_a_paper_hop_seeds_from_the_exact_hits_in_order_and_keeps_the_walks_order(loaded, papers):
-    result = await loaded.query(parse({"query": "kitchen", "sources": ["papers", "journals"],
-                                       "after": "2020-01-01", "hop": {"via": "citations", "limit": 5}}))
-    assert papers == [{"ids": ["doi:2", "doi:1"], "along": "cites", "limit": 5, "after": "2020-01-01"}]
-    assert [h["id"] for h in result["hop"]["papers"]] == ["doi:9", "doi:8"]
-    assert "text" not in result["hop"]["papers"][0]
-    assert result["sources"]["journals"]["hop"] == {"status": "none", "detail": "no citations links"}
+def test_second_about():
+    bad({"text": {"$or": [{"$about": "a"}, {"$about": "b"}]}}, r"query\.text\.\$or: more than one \$about")
+    bad({"text": {"$and": [{"$about": "a"}, {"$about": "b"}, {"$contains": "c"}]}}, "more than one")
 
 
-async def test_a_paper_hop_from_ids_needs_no_words(loaded, papers, gateway):
-    result = await loaded.query(parse({"sources": ["papers"], "hop": {"via": "authors", "from": ["doi:7"]}}))
-    assert papers[-1]["ids"] == ["doi:7"] and papers[-1]["along"] == "authors"
-    assert not any(fn == "query" for _, fn, _ in gateway.calls)
-    assert [h["id"] for h in result["hop"]["papers"]] == ["doi:9", "doi:8"]
+def test_about_nested_too_deep():
+    bad({"text": {"$and": [{"$or": [{"$about": "a"}, {"$contains": "b"}]}]}}, r"query\.text\.\$and\[0\]\.\$or\[0\]: \$about sits only")
+    bad({"text": {"$nor": [{"$about": "a"}]}}, r"query\.text\.\$nor\[0\]: \$about sits only")
+    bad({"text": {"$and": [{"$nor": [{"$about": "a"}]}]}}, r"query\.text\.\$and\[0\]\.\$nor\[0\]: \$about sits only")
 
 
-async def test_a_failing_hop_is_a_status_and_never_fails_the_search(loaded, papers, gateway):
-    gateway.handlers[("papers", "hop")] = lambda args: RuntimeError("no hop arrays")
-    result = await loaded.query(parse({"query": "kitchen", "sources": ["papers"], "hop": {"via": "cited_by"}}))
-    assert "no hop arrays" in result["sources"]["papers"]["hop"]["error"]
-    assert ids(result)
+def test_text_object_with_several_keys():
+    bad({"text": {"$about": "a", "$contains": "b"}}, r"query\.text: .*exactly one key")
+    bad({"text": {"$and": [{"$contains": "a", "$about": "b"}]}}, r"query\.text\.\$and\[0\]: .*exactly one key")
+    bad({"text": {}}, "exactly one key")
 
 
-@pytest.mark.parametrize("hop, match", [
-    ({"via": "friends"}, "via"), ({"via": "citations", "depth": 2}, "unknown keys"), ("[1]", "JSON object"),
-    ("{not json", "hop:"),
-])
-def test_a_bad_hop_is_refused(hop, match):
-    with pytest.raises(ValueError, match=match):
-        parse({"query": "x", "sources": ["kb"], "hop": hop})
+def test_text_unknown_operator():
+    bad({"text": {"$regex": "a"}}, r"query\.text: .*exactly one key|not allowed in text")
+    bad({"text": {"$and": [{"$regex": "a"}]}}, r"\$and\[0\]\.\$regex: not allowed in text")
 
 
-async def test_a_hop_goes_to_the_node_that_holds_the_source(loaded, peers):
-    peers.add("altair", lambda args: {"exact": [], "related": [],
-                                      "hop": {"kb": [{"source": "kb", "id": "doi:5", "title": "Far"}]},
-                                      "sources": {"kb": {"status": "ok", "hits": 0,
-                                                         "hop": {"status": "ok", "hits": 1}}}})
-    result = await loaded.query(parse({"sources": ["kb@altair"], "hop": {"via": "citations", "from": ["doi:1"]}}))
-    assert peers.calls[0][2]["hop"] == {"via": "citations", "from": ["doi:1"], "limit": 20}
-    assert [h["id"] for h in result["hop"]["kb@altair"]] == ["doi:5"]
-    assert result["sources"]["kb@altair"] == {"status": "ok", "hits": 0, "hop": {"status": "ok", "hits": 1}}
+def test_contains_value_must_be_a_nonempty_string():
+    bad({"text": {"$contains": ""}}, "non-empty string")
+    bad({"text": {"$contains": 5}}, "non-empty string")
+    bad({"text": {"$about": ""}}, "non-empty string")
+    bad({"text": {"$and": [{"$about": 5}]}}, "non-empty string")
+    bad({"text": ""}, "text is empty")
+
+
+def test_empty_logical_lists():
+    bad({"journals": {"$and": []}}, r"query\.journals\.\$and: needs a non-empty list")
+    bad({"journals": {"$or": {"project": "x"}}}, "non-empty list")
+    bad({"text": {"$or": []}}, r"query\.text\.\$or: needs a non-empty list")
+    bad({"text": {"$and": [{"$nor": []}]}}, "non-empty list")
+
+
+def test_empty_operator_object():
+    bad({"journals": {"project": {}}}, r"query\.journals\.project: empty operator object")
+
+
+def test_empty_in_list():
+    bad({"journals": {"tag": {"$in": []}}}, r"\$in: needs a non-empty list")
+    bad({"journals": {"tag": {"$all": "a"}}}, r"\$all: needs a non-empty list")
+
+
+@pytest.mark.parametrize("value", [True, None, 1.5 + 0j, {"a": 1}])
+def test_non_scalar_values(value):
+    if isinstance(value, dict):
+        bad({"journals": {"project": {"$eq": value}}}, r"project\.\$eq: dict is not a scalar")
+    else:
+        bad({"journals": {"project": value}}, "not a scalar")
+    bad({"journals": {"project": {"$in": [value]}}}, r"\$in\[0\]")
+
+
+def test_source_named_text_or_unknown_kind():
+    bad({"text@altair": {}}, r"query\.text@altair: not a source; allowed: journals, kb, transcripts")
+    bad({"notes": {}}, r"query\.notes: not a source; allowed: journals, kb, transcripts")
+    bad({"precedence@altair": {}}, "not a source")
+
+
+@pytest.mark.parametrize("key", ["journals@", "journals@a b", "journals@@x", "kb@x/y"])
+def test_malformed_node(key):
+    bad({key: {}}, "malformed node after @")
+
+
+def test_source_filter_must_be_an_object():
+    bad({"journals": "awm"}, r"query\.journals: a source filter is an object")
+    bad({"journals": {"$and": ["x"]}}, r"\$and\[0\]: a source filter is an object")
+
+
+@pytest.mark.parametrize("query", [{}, [], 5, None, "", "   "])
+def test_empty_or_odd_query(query):
+    bad(query, "^query: ")
+
+
+def test_query_json_string_that_does_not_parse():
+    bad('{"text": ', "query: not valid JSON")
+
+
+def test_duplicate_keys_are_found_only_in_json_text():
+    text_form = '{"journals": {"project": "a", "project": "b"}}'
+    bad(text_form, r"query\.journals\.project: duplicate key")
+    bad('{"journals": {}, "journals": {}}', r"query\.journals: duplicate key")
+    bad('{"journals": {"$or": [{"tag": "a", "tag": "b"}]}}', r"\$or\[0\]\.tag: duplicate key")
+    bad('{"text": {"$or": [{"$about": "a", "$about": "b"}]}}', "duplicate key")
+    # an object has already lost its duplicates by the time it arrives
+    assert parse({"query": json.loads(text_form)}).sources[0].filter == {"project": "b"}
+
+
+# -- the plan's examples -------------------------------------------------------
+
+EXAMPLES = [
+    {"query": "trigram budget"},
+    {"query": {"journals": {"project": "awm", "scope": "redux-dev", "tag": "debrief"}}},
+    {"query": {"text": "trigram budget", "journals": {"project": "awm", "scope": "svc-*"}}},
+    {"query": {"text": {"$and": [{"$about": "search latency at 10x scale"},
+                                 {"$or": [{"$contains": "p95"}, {"$contains": "timeout"}]}]},
+               "journals": {"project": "awm"}, "journals@altair": {"ts": {"$gte": "2026-10-01"}}}},
+    {"query": {"text": {"$contains": "HNSW"}, "journals": {"replies_to": "<post id>"}}, "max": 20},
+]
+
+
+@pytest.mark.parametrize("args", EXAMPLES)
+def test_plan_examples_parse(args):
+    req = parse(args)
+    assert req.sources and req.max in (10, 20)
+
+
+def test_last_examples_shape():
+    req = parse(EXAMPLES[3])
+    assert req.text.about == "search latency at 10x scale" and not req.text.under_or
+    assert req.text.contains == Op("or", (Lit("p95"), Lit("timeout")))
+    assert req.remote["altair"][0].filter == {"ts": {"$gte": "2026-10-01T00:00:00Z"}}
