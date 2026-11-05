@@ -34,6 +34,7 @@ Procedure, from dfs-interview § Work the stack:
 - **rt-plugins** (2026-11-05): rt-container waits on your go to build the stock plugins (projects/stock/plugins). Talk to it directly.
 - **Q-tarball-backup** (2026-11-05): Trilium fork backup: push its branches and tags to the existing GitHub fork phy0x1a79ed/Trilium, and attach the pinned tarball to a GitHub release there as a backup copy only (deneb still gets mizar's push)? Recommended: yes.
 - **Q-deneb** (2026-11-05): deneb for the board: OK to apply deneb's roles after a dry run I review (SNI forward to alcor, Trilium from the fork tarball, passkey login, push node), live vault backed up first?
+- **Q-alcor-door** (2026-11-05): alcor's port 22 lockdown: after it, ssh to alcor works only from mizar, capella and lyra over the tailnet. No LAN ssh, no phone, no altair. OK, or should more devices (your phone, by tailnet address) stay allowed?
 
 ## Stack
 
@@ -43,6 +44,7 @@ Procedure, from dfs-interview § Work the stack:
       - [x] Does alcor open for the board's services only (operations, approver and passkey, deneb tunnel), with rt, IBKR and mira still shut? (answered 2026-11-05)
       - [x] Tony's DNS steps M10, M12, M13, M14: can he do them now, in parallel? (answered 2026-11-05)
       - [x] Discord on alcor: hold social's Discord accounts on alcor until mira's cutover? (answered 2026-11-05)
+      - **alcor-door** (2026-11-05): from redux-build/alcor-open: alcor_door: FIREWALL on port 22. It allows 22 from mizar 100.125.95.5, capella 100.90.179.70 and lyra 100.85.115.29, then deletes the blanket 22 rules ... After it, port 22 on alcor answers only those three tailnet addresses. No LAN ssh, no phone.
       - **tarball-backup** (2026-11-05): trilium-fork: mizar's .awm/artifacts holds the only copy of the pinned tarball. A rebuild changes the sha256, so it needs a backup policy. Nothing is pushed to the GitHub fork. That waits on your go.
       - **deneb-board** (2026-11-05): trilium-fork follow-ups: deneb gets the tarball only once cloud's install config makes deneb a push node; cloud deploy.yml awm_fleet_push.altair still lists trilium and canonical_repos defaults include trilium; the mizar vault mirror does not exist yet
 
@@ -73,6 +75,7 @@ From journal 6a98c0c6 (awm/redux) and walkthrough's handover (manual-steps.md at
 - [x] tell redux-build/trilium-fork how tarball-host was solved (told 2026-11-05)
 - **redux-build/alcor-open (job 839aad63): alcor onto dcd8ba4d and its roles, dry run first, rt, IBKR, mira and Discord held** (2026-11-05): took board
 - **redux-build/dns-guide (job 67cbdc6d, sonnet medium): guides Tony through M10, M12-M14** (2026-11-05): took board
+- **note: users_sudo on alcor held as Tony's M29 (ssh admin gate); social on alcor runs with no accounts** (2026-11-05): took dispatch-mode
 
 ## Closed
 
