@@ -1,55 +1,41 @@
-"""The mirrored library on disk: what `pull` writes and `apply` reads.
+"""The mirrored library: what `pull` writes and `apply` reads.
 
 **A full picture of every library, always — and that is what lets the read be
 partial.** `apply` retires a paper because the bundle no longer names it, so
 absence here is load-bearing. `fold` is the seam that keeps both true: a window
-read is merged into the library this file already describes, and nothing on the
-far side of that merge knows a read can be partial.
+read is merged into the library this bundle already describes, and nothing on
+the far side of that merge knows a read can be partial.
 
-The file also carries the cursor. `versions` holds one per library, so a node
-that loses its service state has not lost its place, and `whole_read` holds when
-each library was last read whole — outside the three keys `digest` covers,
-because a timestamp inside them would make every node re-apply the whole mirror
+The bundle also carries the cursor. `versions` holds one per library, so the
+mirror's place survives the loss of its service state, and `whole_read` holds
+when each library was last read whole — outside the three keys `digest` covers,
+because a timestamp inside them would make every pass re-apply the whole mirror
 to prove nothing had changed.
 
-**Shape.**
-
-```
-data/vault/zotero/
-  library.json          the normalized items and collections, plus the version
-```
-
-`library.json` carries `versions`, one `Last-Modified-Version` per library.
-Those numbers are the sync cursor, and keeping them *in the bundle* rather than
-in a service database is deliberate: a node that receives the bundle knows what
-it holds without being told, and a node that loses its service state has not
-lost its place.
+**Where it lives.** One JSON document, `library.json`, attached to the note the
+library is written under. Only the `trilium` tool touches the vault
+(`docs/redux/queue.md` R145), so the bundle goes through it like every note the
+mirror writes. Beside the notes it describes, it travels with the vault's
+backups and a restored vault holds the bundle it was written from.
 
 **One bundle, several libraries.** Zotero's personal library and each shared
 group are separate libraries with separate version counters, and a key is only
 unique within one — two libraries may both hold an item `ABCD1234`. So an item
-is identified here by `<library>/<key>`, and the stored files are filed under
-the same compound name. Flattening them onto the bare key looks harmless and
-would silently make one paper overwrite another.
+is identified here by `<library>/<key>`. Flattening them onto the bare key looks
+harmless and would silently make one paper overwrite another.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
-import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any, Iterable
 
-#: The chunk, relative to the vault scope. `data/` is what DVC pins in this
-#: workspace, and the whole point is that the bytes live in the shared cache
-#: rather than in git. `data/vault/` is the vault's corner of the Trilium
-#: project, beside the snapshots the trilium service pins.
-CHUNK = "data/vault/zotero"
-
+#: The attachment's title on the library's root note.
 LIBRARY_JSON = "library.json"
+LIBRARY_MIME = "application/json"
 
 #: Item types that are neither a reference nor a file: Zotero's own notes and
 #: annotations, which belong to the item they hang off rather than to the
@@ -359,22 +345,58 @@ def _by_ref(records: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
     return [latest[ref] for ref in sorted(latest)]
 
 
-class Bundle:
-    """The mirror as it sits in the vault scope."""
+class Attached:
+    """The bundle's bytes as one attachment on one note.
 
-    def __init__(self, scope: Path) -> None:
-        self.scope = Path(scope)
-        self.root = self.scope / CHUNK
-        self.library_json = self.root / LIBRARY_JSON
+    `vault` is anything with `attachment(note_id, title)` and
+    `attach(note_id, title, blob, mime)`: `awm.zotero.vault.Vault` in
+    production.
+    """
+
+    def __init__(self, vault: Any, note_id: str) -> None:
+        self.vault = vault
+        self.note_id = note_id
+
+    @property
+    def where(self) -> str:
+        return f"{LIBRARY_JSON} on note {self.note_id}"
+
+    def load(self) -> bytes | None:
+        return self.vault.attachment(self.note_id, LIBRARY_JSON)
+
+    def save(self, blob: bytes) -> None:
+        self.vault.attach(self.note_id, LIBRARY_JSON, blob, LIBRARY_MIME)
+
+
+class Bundle:
+    """The mirror, as its store holds it.
+
+    Read once and kept: a pass holds the sync lock, so nothing else writes the
+    bundle under it. A `store` of None is a library with no root note yet, which
+    holds nothing and cannot be written.
+    """
+
+    def __init__(self, store: Any | None) -> None:
+        self.store = store
+        self._held: dict[str, Any] | None = None
+
+    @property
+    def where(self) -> str:
+        return self.store.where if self.store else "nowhere: no note carries the library"
+
+    def _load(self) -> dict[str, Any] | None:
+        if self._held is None and self.store is not None:
+            raw = self.store.load()
+            if raw:
+                self._held = json.loads(raw.decode("utf-8"))
+        return self._held
 
     @property
     def exists(self) -> bool:
-        return self.library_json.is_file()
+        return self._load() is not None
 
     def read(self) -> dict[str, Any]:
-        if not self.exists:
-            return {"versions": {}, "items": [], "collections": []}
-        return json.loads(self.library_json.read_text("utf-8"))
+        return self._load() or {"versions": {}, "items": [], "collections": []}
 
     @property
     def versions(self) -> dict[str, int]:
@@ -386,10 +408,10 @@ class Bundle:
     def digest(self) -> str:
         """A fingerprint of the library this bundle holds.
 
-        Over the library's content and not over the file, because `pulled` is a
-        timestamp that moves whenever somebody looks at Zotero. Digesting the
-        file would make a node re-apply the whole mirror — thousands of round
-        trips — to prove that nothing had changed.
+        Over the library's content and not over the document, because `pulled`
+        is a timestamp that moves whenever somebody looks at Zotero. Digesting
+        the document would make a pass re-apply the whole mirror — thousands of
+        round trips — to prove that nothing had changed.
         """
         library = self.read()
         blob = json.dumps({k: library.get(k)
@@ -398,26 +420,15 @@ class Bundle:
         return hashlib.sha256(blob).hexdigest()[:16]
 
     def write(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """Replace `library.json`, never write into it.
-
-        Once a pull has been pinned, this file is a read-only hardlink into the
-        shared DVC cache. Writing in place fails outright with `Permission
-        denied` — and if the mode ever allowed it, the bytes would land inside
-        the cache object itself and corrupt it for every other scope and every
-        commit that pins it. Renaming a new file over the link breaks the link
-        and leaves the cached object alone.
-
-        It is also what makes the file safe to `rsync` while a pass is running:
-        a reader sees the whole old bundle or the whole new one.
-        """
-        self.root.mkdir(parents=True, exist_ok=True)
-        # Sorted and indented so the diff is the diff in the library, not in
-        # whatever order the API happened to answer in.
+        """Replace the whole bundle."""
+        if self.store is None:
+            raise RuntimeError("the bundle has no root note to live on")
+        # Sorted and indented so a diff between two copies is the diff in the
+        # library, not in whatever order the API happened to answer in.
         blob = json.dumps(payload, indent=2, sort_keys=True,
                           ensure_ascii=False) + "\n"
-        staged = self.library_json.with_name(self.library_json.name + ".new")
-        staged.write_text(blob, "utf-8")
-        os.replace(staged, self.library_json)
+        self.store.save(blob.encode("utf-8"))
+        self._held = json.loads(blob)
         return payload
 
     def stats(self) -> dict[str, Any]:
@@ -430,5 +441,5 @@ class Bundle:
             "libraries": sorted({i.get("library_name", "") for i in items}),
             "collections": len(library.get("collections") or []),
             "with_files": len([i for i in items if i.get("files")]),
-            "path": str(self.root),
+            "where": self.where,
         }

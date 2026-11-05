@@ -58,7 +58,7 @@ EDGE_VERBS = ["status", "snapshots", "url"]
 #: `note_get` would be that same surface wearing awm's name. The person reading
 #: the vault already has all of it in front of them, so nothing is lost by
 #: keeping these on the host.
-OPERATOR_VERBS = ["start", "stop", "restart", "provision", "logs",
+OPERATOR_VERBS = ["start", "stop", "restart", "init", "logs",
                   "snapshot", "export", "restore", "note_upsert",
                   "note_get", "note_children", "note_search",
                   "note_create", "note_update", "note_delete",

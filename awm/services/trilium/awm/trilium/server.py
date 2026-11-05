@@ -163,7 +163,7 @@ class Child(GroupChild):
             state: dict[str, Any] = {
                 "running": self._alive(),
                 "listening": instances.listening(instances.UPSTREAM_PORT),
-                "initialized": self._provisioned or None,
+                "initialized": vault.has_document,
                 "uptime_s": (round(time.time() - self._started_at, 1)
                              if self._started_at and self._alive() else None),
                 "backups": self.backups(),
@@ -195,8 +195,12 @@ class Child(GroupChild):
 
     # -- lifecycle ----------------------------------------------------------
 
-    def _spawn(self) -> None:
-        """Launch the vault's server. Caller holds the lock."""
+    def _spawn(self, *, empty: bool = False) -> None:
+        """Launch the vault's server. Caller holds the lock.
+
+        Refuses a vault path with no database unless `empty`, which only
+        `init` passes.
+        """
         entry = instances.entry_point()
         if entry is None:
             raise FileNotFoundError(
@@ -208,6 +212,8 @@ class Child(GroupChild):
             raise FileNotFoundError(
                 f"no vault directory at {vault.scope} — run "
                 f"awm/services/trilium/install.sh")
+        if not empty and not vault.has_document:
+            raise NoVault(vault)
         vault.data_dir.mkdir(parents=True, exist_ok=True)
         vault.rolling_dir.mkdir(parents=True, exist_ok=True)
         vault.log_file.parent.mkdir(parents=True, exist_ok=True)
@@ -248,30 +254,49 @@ class Child(GroupChild):
             self.provision()
         return self.snapshot() | {"action": "started"}
 
+    def init(self) -> dict[str, Any]:
+        """Create an empty vault where there is no database, and serve it.
+
+        The only way a vault comes into being: `start` and the supervision
+        loop refuse a path with no database (`NoVault`).
+        """
+        from awm.trilium import provision as _provision
+
+        with self._lock:
+            if self.vault.has_document:
+                raise FileExistsError(
+                    f"{self.vault.document_db} already holds a vault; init "
+                    f"creates one only where there is none")
+            if self._alive():
+                raise RuntimeError(
+                    "a Trilium child is running with no database under it; "
+                    "stop it first")
+            self._held = False
+            self._spawn(empty=True)
+        self._await_listening()
+        result = _provision.ensure_document()
+        if not result.get("initialized"):
+            self._last_error = f"init: {result.get('action')}: {result.get('detail')}"
+            return self.snapshot() | {"action": "init-failed", "init": result}
+        return self.snapshot() | {"action": "initialized", "init": result,
+                                  "launchbar": self.provision()}
+
     def provision(self) -> dict[str, Any]:
-        """Give the vault a database if it has none, and settle its launchbar.
+        """Settle the launchbar of a running vault.
 
-        Never fatal. Deferred to here rather than to `add-user.sh` because a
-        scope can exist long before a gateway does, and a script would have to
-        know a port. The probe is what makes it idempotent, and Trilium refuses
-        a second attempt on its own, so a racing supervision tick costs a
-        wasted request.
-
-        The launchbar step runs on every start rather than once, because it is
-        a *setting* Trilium keeps in the database where anyone can undo it —
-        see `provision.hide_day_note_launchers`.
+        On every start rather than once, because it is a *setting* Trilium
+        keeps in the database where anyone can undo it — see
+        `provision.hide_day_note_launchers`. Never fatal.
         """
         from awm.trilium import provision as _provision
 
         try:
-            result = _provision.ensure_document()
+            result = _provision.hide_day_note_launchers()
         except Exception as exc:  # noqa: BLE001 — a broken vault must still report
             self._last_error = f"provision: {type(exc).__name__}: {exc}"
             log.warning("trilium: provisioning failed: %s", self._last_error)
             return {"action": "provision-failed", "error": self._last_error}
-        self._provisioned = bool(result.get("initialized"))
-        if self._provisioned:
-            result = result | {"launchbar": _provision.hide_day_note_launchers()}
+        self._provisioned = not result.get("failed")
         return result
 
     def _await_listening(self) -> None:
@@ -310,6 +335,15 @@ class Child(GroupChild):
                 self._last_error = f"{type(exc).__name__}: {exc}"
                 return {"action": "respawn-failed", "error": self._last_error}
         return {"action": "respawned", "previous_exit": code}
+
+
+class NoVault(FileNotFoundError):
+    """The vault path holds no database, and only `init` makes one."""
+
+    def __init__(self, vault: Vault) -> None:
+        super().__init__(
+            f"no vault database at {vault.document_db}. Move the vault there, "
+            f"or run `awm trilium init` to create an empty one")
 
 
 #: The one child this service supervises. There is no fleet: one vault, one

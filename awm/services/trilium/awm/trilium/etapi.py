@@ -354,15 +354,17 @@ class Etapi:
                           blob: bytes, role: str = "file") -> dict:
         """Attach these bytes to this note under this title, replacing what
         was there. Matched on title, because an attachment has no other stable
-        name — and re-uploaded only when the length differs, so a periodic sync
-        does not rewrite a 20 MB PDF every pass."""
+        name. Skipped only when the bytes are the same: a length check alone
+        rules most uploads in or out without a read, but a JSON document whose
+        one number moved keeps its length."""
         existing = [a for a in self.attachments(owner_id)
                     if a.get("title") == title]
         for extra in existing[1:]:
             self.delete_attachment(extra["attachmentId"])
         if existing:
             att = existing[0]
-            if att.get("contentLength") == stored_length(blob, mime):
+            if (att.get("contentLength") == stored_length(blob, mime)
+                    and self.attachment_content(att["attachmentId"]) == blob):
                 return {"attachment_id": att["attachmentId"], "created": False,
                         "changed": False}
             self.set_attachment_content(att["attachmentId"], blob)

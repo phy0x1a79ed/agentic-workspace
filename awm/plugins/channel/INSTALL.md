@@ -34,11 +34,13 @@ A failed fetch is not fatal. The binaries in place keep running, and `channel st
 | `AWM_ROOM_RELAY` | plugin | the edge root that serves `/room` (default `https://nexus.tony-xy-liu.com`) |
 | `TETHER_RELAY` | operator daemon | the relay's tether mount |
 | `AWM_TETHER_PORT` | relay | the loopback port it binds (default 12520) |
-| `AWM_TETHER_ASSETS` | relay, fetch | the directory the relay serves the launchers and clients from |
+| `AWM_TETHER_ASSETS` | relay, fetch | the directory the relay serves the launchers and clients from (default `<AWM_DIR>/services/channel/tether/assets`) |
 | `AWM_TETHER_ROOM_STATE` | relay | where persistent rooms keep their files across a restart (default `.awm/services/channel/tether/rooms`) |
 | `AWM_TETHER_CLIENT_IP_HEADER` | relay | the header that carries the caller's address (default `cf-connecting-ip`) |
 | `AWM_EDGE_TETHER` | httpsfront | `1` mounts `/tether` and `/room` on the public edge |
 | `AWM_TETHER_BIN` | plugin, fetch | a local build, for development only |
+
+`AWM_TETHER_ISSUE_TOKEN` is a secret. Where the gateway spawns `channel`, it comes from the node's `secrets.env`. Where `channel` runs as a singleton under its own user, its unit loads it with `LoadCredential=secrets.env:/etc/awm/secrets/channel.env`, and `awm.gatewayclient.credentials` reads it. The binaries, the assets and the rooms live under the service's `AWM_DIR`, which a singleton's unit points at its own state directory.
 
 **CAUTION** Every host needs the same `AWM_TETHER_ISSUE_TOKEN`. The relay refuses to start without one. The operator daemon starts without one, so `channel status` can say why the other verbs fail.
 

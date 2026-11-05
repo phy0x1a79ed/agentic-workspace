@@ -1,18 +1,18 @@
-"""What the service does before its first sync.
+"""What the service does around a sync: starting, status and items.
 
-The adapter's `on_start` is the one place that reads the bundle outside the
-sync itself, so it is the one place a rename of a `stats()` key goes unnoticed
-until the service will not start.
+`status` and `items` read the bundle outside the sync itself, so they are where
+a rename of a `stats()` key goes unnoticed.
 """
 
 from __future__ import annotations
 
 import asyncio
-import logging
 
 import pytest
 
 from awm.zotero import bundle, hub_adapter
+
+from .fakes import MemoryStore
 
 
 @pytest.fixture
@@ -27,34 +27,27 @@ def _no_timer(monkeypatch):
 def _bundle_at(tmp_path):
     item = {"version": 1, "data": {"key": "AAAA", "itemType": "journalArticle",
                                    "title": "A paper"}}
-    b = bundle.Bundle(tmp_path)
+    b = bundle.Bundle(MemoryStore())
     b.write(bundle.merge([bundle.normalize([item], [], {})], {"users/0": 7}))
     return b
 
 
-def test_start_reports_the_bundle_it_found(tmp_path, monkeypatch, caplog,
-                                           _no_timer):
-    b = _bundle_at(tmp_path)
-    monkeypatch.setattr(hub_adapter.sync, "bundle", lambda: b)
-    with caplog.at_level(logging.INFO):
-        asyncio.run(hub_adapter._on_start())
-    line = " ".join(r.getMessage() for r in caplog.records)
-    assert "1 items" in line and "users/0" in line
+def test_start_starts_the_loops_and_reads_nothing(monkeypatch, _no_timer):
+    """The first sync belongs to the loop. A start that read the vault would
+    wait on the trilium service, and the gateway reaps a slow start."""
+    monkeypatch.setattr(hub_adapter.sync, "held",
+                        lambda vault: pytest.fail("on_start read the bundle"))
+    asyncio.run(hub_adapter._on_start())
     assert _no_timer == ["zotero:sync", "zotero:push", "zotero:stream"]
 
 
-def test_start_survives_a_bundle_that_is_not_there_yet(tmp_path, monkeypatch,
-                                                       caplog, _no_timer):
-    """A missing bundle is the state before the first sync, not a failure.
+def test_status_reports_a_vault_it_cannot_reach(monkeypatch):
+    def _down(vault):
+        raise hub_adapter.vault.VaultError("trilium note_search: refused")
 
-    The adapter treats an `on_start` raise as a failed initialisation and the
-    gateway then reaps the service, so this must stay non-fatal.
-    """
-    monkeypatch.setattr(hub_adapter.sync, "bundle",
-                        lambda: bundle.Bundle(tmp_path / "nothing"))
-    with caplog.at_level(logging.INFO):
-        asyncio.run(hub_adapter._on_start())
-    assert _no_timer == ["zotero:sync", "zotero:push", "zotero:stream"]
+    monkeypatch.setattr(hub_adapter.sync, "held", _down)
+    out = asyncio.run(hub_adapter._h_status({"probe": False}))
+    assert "refused" in out["bundle"]["error"]
 
 
 # -- status ------------------------------------------------------------------
@@ -63,7 +56,7 @@ def test_start_survives_a_bundle_that_is_not_there_yet(tmp_path, monkeypatch,
 def _status(monkeypatch, tmp_path, versions):
     """Run the status verb against a one-item bundle and a stubbed service."""
     b = _bundle_at(tmp_path)
-    monkeypatch.setattr(hub_adapter.sync, "bundle", lambda: b)
+    monkeypatch.setattr(hub_adapter.sync, "held", lambda vault: b)
     monkeypatch.setattr(hub_adapter.source, "versions", lambda: versions)
     monkeypatch.setattr(hub_adapter.source, "whoami",
                         lambda: {"user_id": "1", "username": "someone",
@@ -94,7 +87,7 @@ def test_an_unreachable_library_is_reported_not_raised(tmp_path, monkeypatch):
     """The network drops and the service restarts. Saying so is the answer, not
     failing the tick."""
     b = _bundle_at(tmp_path)
-    monkeypatch.setattr(hub_adapter.sync, "bundle", lambda: b)
+    monkeypatch.setattr(hub_adapter.sync, "held", lambda vault: b)
 
     def _boom() -> dict:
         raise hub_adapter.source.ZoteroUnavailable("the network went away")
@@ -162,7 +155,7 @@ def test_items_reads_a_library_the_cursor_omits_whole():
 
 def test_items_is_open_to_peers_and_the_operator_only(tmp_path, monkeypatch):
     b = _bundle_at(tmp_path)
-    monkeypatch.setattr(hub_adapter.sync, "bundle", lambda: b)
+    monkeypatch.setattr(hub_adapter.sync, "held", lambda vault: b)
     for as_ in (None, "peer:altair"):
         assert asyncio.run(hub_adapter._h_items({}, as_))["total"] == 1
     with pytest.raises(PermissionError):

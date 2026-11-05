@@ -26,8 +26,8 @@
 #
 # The operator's node takes the operator daemon. The public host (relay) takes
 # the relay binary, every client, and both launchers — the launchers and clients
-# into AWM_TETHER_ASSETS, which is the one directory the relay serves them from
-# and the same variable the relay reads, so the two can never disagree.
+# into AWM_TETHER_ASSETS, default <state>/assets, which is the one directory the
+# relay serves them from. paths.ASSETS_DIR spells the same default.
 #
 # AWM_TETHER_BIN set means a developer is pointing the service at their own
 # build; this then fetches nothing.
@@ -41,24 +41,29 @@ if [ -n "${AWM_TETHER_BIN:-}" ]; then
     exit 0
 fi
 
-# The workspace root, by the same rule awm.config uses: AWM_WORKSPACE when set,
-# else the first ancestor holding an AGENTS.md. Resolved the same way the
-# adapter resolves paths.STATE_DIR, so the directory this writes to and the
-# directory the adapter reads are always the one directory.
-workspace_root() {
+# This service's state, by the rule awm.config uses for AWM_DIR: AWM_DIR when
+# set, else <workspace>/.awm, the workspace being AWM_WORKSPACE or the first
+# ancestor holding an AGENTS.md. A singleton sets AWM_DIR to its own state
+# directory, so the binaries land where its adapter (paths.STATE_DIR) looks.
+awm_dir() {
+    if [ -n "${AWM_DIR:-}" ]; then
+        printf '%s\n' "$AWM_DIR"
+        return
+    fi
     if [ -n "${AWM_WORKSPACE:-}" ]; then
-        printf '%s\n' "$AWM_WORKSPACE"
+        printf '%s\n' "$AWM_WORKSPACE/.awm"
         return
     fi
     local d="$HERE"
     while [ "$d" != / ]; do
-        [ -f "$d/AGENTS.md" ] && { printf '%s\n' "$d"; return; }
+        [ -f "$d/AGENTS.md" ] && { printf '%s\n' "$d/.awm"; return; }
         d="$(dirname "$d")"
     done
-    printf '%s\n' "$PWD"
+    printf '%s\n' "$PWD/.awm"
 }
 
-STATE_DIR="$(workspace_root)/.awm/services/channel/tether"
+STATE_DIR="$(awm_dir)/services/channel/tether"
+ASSETS_DIR="${AWM_TETHER_ASSETS:-$STATE_DIR/assets}"
 BIN_DIR="$STATE_DIR/bin"
 VERSION_FILE="$BIN_DIR/VERSION"
 FETCH_LOG="$STATE_DIR/fetch.log"
@@ -127,19 +132,15 @@ add() { ASSET+=("$1"); DEST+=("$2"); }
 case "$ROLE" in
     relay)
         add tether-relay-linux-x86_64 "$BIN_DIR/tether-relay"
-        if [ -n "${AWM_TETHER_ASSETS:-}" ]; then
-            add tether "$AWM_TETHER_ASSETS/tether"
-            add tether.ps1 "$AWM_TETHER_ASSETS/tether.ps1"
-            while read -r _sum name; do
-                [ -n "${name:-}" ] || continue
-                case "$name" in
-                    SHA256SUMS|tether|tether.ps1|tether-relay-*|tether-operator-*) ;;
-                    tether-*) add "$name" "$AWM_TETHER_ASSETS/bin/$name" ;;
-                esac
-            done < "$stage/SHA256SUMS"
-        else
-            log "AWM_TETHER_ASSETS unset; fetching the relay binary only (the relay serves no clients until it is set)"
-        fi
+        add tether "$ASSETS_DIR/tether"
+        add tether.ps1 "$ASSETS_DIR/tether.ps1"
+        while read -r _sum name; do
+            [ -n "${name:-}" ] || continue
+            case "$name" in
+                SHA256SUMS|tether|tether.ps1|tether-relay-*|tether-operator-*) ;;
+                tether-*) add "$name" "$ASSETS_DIR/bin/$name" ;;
+            esac
+        done < "$stage/SHA256SUMS"
         ;;
     *)
         add tether-operator-linux-x86_64 "$BIN_DIR/tether-operator"

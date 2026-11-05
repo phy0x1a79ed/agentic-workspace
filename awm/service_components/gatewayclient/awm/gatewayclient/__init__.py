@@ -40,6 +40,7 @@ from urllib.parse import quote
 
 import httpx
 
+from awm.gatewayclient import credentials
 from awm.gatewayclient.adapter import ServiceAdapter, SessionContext
 from awm.gatewayclient.subscription import (
     SupervisedSubscription,
@@ -47,6 +48,10 @@ from awm.gatewayclient.subscription import (
 )
 
 log = logging.getLogger("awm.gatewayclient")
+
+# At import, because a service reads its secrets as it builds itself, before
+# its adapter exists.
+credentials.load()
 
 __all__ = [
     "call",

@@ -91,6 +91,7 @@ def _env() -> dict[str, str]:
     env["TETHER_CONTROL_SOCKET"] = str(paths.CONTROL_SOCKET)
     if paths.ROLE == paths.RELAY:
         env.setdefault("AWM_TETHER_ROOM_STATE", str(paths.ROOM_STATE))
+        env.setdefault("AWM_TETHER_ASSETS", str(paths.ASSETS_DIR))
     return env
 
 
