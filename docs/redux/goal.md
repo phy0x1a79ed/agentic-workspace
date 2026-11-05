@@ -16,7 +16,7 @@ Tony: "awm is the infrastructure for how I interact with agents with across mach
 
 Issues stacked up across nearly every part of awm, so a patch for one ran into the others. The rebuild also makes awm easier to install, and the same work cuts its RAM use on mizar, alcor and deneb. Many services feel unneeded, and the service system is too tied to awm itself. The plugin contract (`install.md` R115 to R117) makes that seam clear.
 
-The memory budget is alcor's cap on its singletons (`fleet.md` R99 item 3). The other nodes need no budget. Search keeps its data on disk where it can (`fleet.md` R131).
+The memory budget is the cap on each of alcor's singletons (`fleet.md` R99 item 3). The other nodes need no budget. Search keeps its data on disk where it can (`fleet.md` R131).
 
 Tony: "Multiple stacking issues that covered basically everything plus the need to make it more install friendly which also matched performance optimization to save ram" and "Mizar, alcor, deneb. A lot of services don't feel needed and the current services system feels too tied to awm itself so we clarified how services work to make the seam clearer" and "The ram budget was already loosely covered by alcor discussion? The other nodes dont really matter.  Search should stay disk if possible" (2026-11-03).
 
