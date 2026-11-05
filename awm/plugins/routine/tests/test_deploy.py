@@ -554,3 +554,115 @@ def test_a_pin_names_a_bare_file_and_its_hash(text, msg):
     from awm.routine import artifacts
     with pytest.raises(ValueError, match=msg):
         artifacts.parse_pin(text, "svc/server.pin")
+
+
+# -- the pins step: rebuild stale pins in the batch's tree and commit them ----------
+
+PINS_TOML = """[deploy]
+check = "true"
+[artifacts]
+pins = ["core.pin", "pages.pin"]
+refresh = "bash refresh.sh"
+refresh_timeout = 5
+"""
+
+# A stand-in for scripts/refresh-pins.sh: one pin per input tree, built into $AWM_DIR/artifacts.
+REFRESH_SH = """set -e
+mkdir -p "$AWM_DIR/artifacts"
+[ ! -e core/broken ] || { echo "cargo: build failed" >&2; exit 1; }
+for pair in core:core.pin pages:pages.pin; do
+  dir=${pair%%:*}; pin=${pair##*:}
+  v=$(git rev-parse --short=12 HEAD:$dir)
+  grep -qx "version=$v" $pin 2>/dev/null && continue
+  echo "$dir built" >> "$AWM_DIR/builds.log"
+  echo "$dir $v" > "$AWM_DIR/artifacts/$v"
+  echo "version=$v" > $pin
+done
+"""
+
+
+def pins_deployer(store, out, ws, tmp_path) -> tuple[Deployer, Path]:
+    """A deployer whose dev holds the pins fixture, both pins stale, and the node's awm dir."""
+    ws.scope("seed", {"deploy.toml": PINS_TOML, "refresh.sh": REFRESH_SH, "core/lib": "1\n",
+                      "pages/index": "1\n", "core.pin": "version=none\n",
+                      "pages.pin": "version=none\n"})
+    for ref in ("dev", "release"):
+        git(ws.bare, "update-ref", f"refs/heads/{ref}", ws.rev("feat/seed"))
+    awm_dir = tmp_path / "awm-dir"
+    refresher = Refresher(out, node="mizar", checkout_root=lambda p: ws.proj / "release",
+                          fleet_config=lambda: fleetconf.parse(""),
+                          artifact_store=awm_dir / "artifacts")
+    return Deployer(store, out, workspace=ws.root, refresher=refresher), awm_dir
+
+
+async def test_core_and_page_changes_each_commit_new_pins(store, out, ws, tmp_path):
+    dep, awm_dir = pins_deployer(store, out, ws, tmp_path)
+    ws.scope("a", {"core/lib": "2\n"})
+    ws.scope("b", {"pages/index": "2\n"})
+    ta, tb = await land(dep, "a", "b")
+    assert ta["state"] == tb["state"] == "landed"
+    assert git(ws.bare, "log", "-1", "--format=%s", "release") == "deploy: refresh pins"
+    assert ws.rev("dev") == ws.rev("release")
+    for pin, tree in (("core.pin", "core"), ("pages.pin", "pages")):
+        version = ws.rev(f"release:{tree}")[:12]
+        assert ws.show("release", pin) == f"version={version}"
+        # The artifact landed in the node's real store, not the temp tree.
+        assert (awm_dir / "artifacts" / version).is_file()
+    batch = store.get_batch(ta["batch_id"])
+    assert [s["step"] for s in batch["steps"]] == ["pin", "merge", "pins", "check", "promote",
+                                                    "refresh"]
+    assert batch["steps"][2]["refreshed"] == ["core.pin", "pages.pin"]
+
+
+async def test_only_the_stale_pin_is_rebuilt(store, out, ws, tmp_path):
+    dep, awm_dir = pins_deployer(store, out, ws, tmp_path)
+    ws.scope("a", {"core/lib": "2\n"})
+    await land(dep, "a")
+    (awm_dir / "builds.log").unlink()
+    ws.scope("b", {"pages/index": "2\n"})
+    [tb] = await land(dep, "b")
+    assert tb["state"] == "landed"
+    assert (awm_dir / "builds.log").read_text() == "pages built\n"
+    assert git(ws.bare, "diff", "--name-only", "release~1", "release").split() == ["pages.pin"]
+
+
+async def test_unchanged_tree_commits_no_pin(store, out, ws, tmp_path):
+    dep, awm_dir = pins_deployer(store, out, ws, tmp_path)
+    ws.scope("a", {"core/lib": "2\n"})
+    await land(dep, "a")
+    before = ws.rev("release")
+    ws.scope("c", {"docs.txt": "docs\n"})
+    [tc] = await land(dep, "c")
+    assert tc["state"] == "landed"
+    assert "deploy: refresh pins" not in git(ws.bare, "log", "--format=%s", f"{before}..release")
+    pins = store.get_batch(tc["batch_id"])["steps"][2]
+    assert pins["step"] == "pins" and pins["refreshed"] == []
+
+
+async def test_failed_build_stops_before_promote(store, out, ws, tmp_path):
+    dep, awm_dir = pins_deployer(store, out, ws, tmp_path)
+    ws.scope("a", {"core/broken": "x\n"})
+    dev0, rel0 = ws.rev("dev"), ws.rev("release")
+    [t] = await land(dep, "a")
+    batch = store.get_batch(t["batch_id"])
+    assert t["state"] == "failed" and batch["failed_step"] == "pins"
+    assert "cargo: build failed" in batch["error"]
+    assert (ws.rev("dev"), ws.rev("release")) == (dev0, rel0)
+    assert [s["step"] for s in batch["steps"]] == ["pin", "merge", "pins"]
+    assert len(out.starts) == 1
+
+
+async def test_pin_refresh_has_its_own_timeout(store, out, ws, tmp_path):
+    dep, awm_dir = pins_deployer(store, out, ws, tmp_path)
+    ws.scope("a", {"deploy.toml": PINS_TOML.replace("bash refresh.sh", "sleep 10")
+                   .replace("= 5", "= 0.3")})
+    [t] = await land(dep, "a")
+    assert store.get_batch(t["batch_id"])["failed_step"] == "pins timeout"
+
+
+async def test_no_artifact_store_fails_the_step(store, out, ws, tmp_path):
+    dep, awm_dir = pins_deployer(store, out, ws, tmp_path)
+    dep.refresher.artifact_store = None
+    ws.scope("a", {"core/lib": "2\n"})
+    [t] = await land(dep, "a")
+    assert store.get_batch(t["batch_id"])["failed_step"] == "pins"

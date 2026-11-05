@@ -170,6 +170,7 @@ def test_awm_deploy_toml_pins_the_built_files():
     cfg = deployconf.parse((REPO / "deploy.toml").read_text())
     assert {"scripts/core.pin", "scripts/pages.pin"} <= set(cfg.artifact_pins)
     assert "scripts/core.pin" in cfg.refresh.prompt
+    assert cfg.artifact_refresh == "scripts/refresh-pins.sh" and cfg.artifact_refresh_timeout > 600
     from awm.routine import artifacts
     pin = artifacts.parse_pin((REPO / "scripts/core.pin").read_text(), "scripts/core.pin")
     assert pin.file.startswith("awm-core-") and len(pin.sha256) == 64
@@ -265,8 +266,8 @@ def test_awm_deploy_runs_the_pinned_binary_and_unpacks_the_pages(tmp_path):
 @pytest.mark.parametrize("kw, msg", [
     ({"core_sha": "0" * 64}, "has sha256"),
     ({"pages_sha": "0" * 64}, "has sha256"),
-    ({"core_changed": True}, "release-core.sh"),
-    ({"pages_changed": True}, "release-pages.sh"),
+    ({"core_changed": True}, "refresh-pins.sh"),
+    ({"pages_changed": True}, "refresh-pins.sh"),
 ])
 def test_awm_deploy_stops_on_a_bad_pin_and_changes_nothing(tmp_path, kw, msg):
     node = _deploy_node(tmp_path, **kw)
@@ -386,3 +387,85 @@ def test_install_stops_when_the_core_cannot_answer(tmp_path):
     broken.chmod(0o755)
     r = _install(tree, broken, state)
     assert r.returncode == 1 and "wants on' failed" in r.stderr and not (tmp_path / "on.ran").exists()
+
+
+# -- scripts/refresh-pins.sh: rebuild only the stale pin, with the caches kept ----------
+
+def _refresh_tree(tmp_path):
+    """A checkout holding the real pins.sh and refresh-pins.sh, and stub release scripts
+    that log their call and write a real pin and artifact."""
+    tree = tmp_path / "tree"
+    (tree / "scripts").mkdir(parents=True)
+    (tree / "core").mkdir()
+    (tree / "awm/services/svc/pages/ui").mkdir(parents=True)
+    for f in ("refresh-pins.sh", "pins.sh"):
+        shutil.copy(REPO / "scripts" / f, tree / "scripts" / f)
+    stub = '''set -euo pipefail
+root="$(cd "$(dirname "$0")/.." && pwd)"
+. "$root/scripts/pins.sh"
+mkdir -p "$AWM_DIR"; echo "%(name)s target=${AWM_CARGO_TARGET_DIR:-} nm=$(ls "$root/awm/node_modules" 2>/dev/null | tr '\\n' ' ')" >> "$AWM_DIR/calls.log"
+version="$(%(ver)s "$root")"
+mkdir -p "$AWM_DIR/artifacts"; echo "%(name)s" > "$AWM_DIR/artifacts/$version"
+%(extra)s
+write_pin "$root/scripts/%(name)s.pin" d "$version" "$version" "$AWM_DIR/artifacts"
+'''
+    (tree / "scripts/release-core.sh").write_text(stub % {"name": "core", "ver": "core_version", "extra": ""})
+    (tree / "scripts/release-pages.sh").write_text(stub % {
+        "name": "pages", "ver": "pages_version",
+        "extra": 'mkdir -p "$root/awm/node_modules/pkg"; echo ok > "$root/awm/node_modules/pkg/index.js"'})
+    for f in ("release-core.sh", "release-pages.sh"):
+        (tree / "scripts" / f).chmod(0o755)
+    (tree / "core/Cargo.toml").write_text("1\n")
+    (tree / "awm/package-lock.json").write_text("{}\n")
+    (tree / "awm/services/svc/pages/ui/index.html").write_text("1\n")
+    (tree / ".gitignore").write_text("node_modules\n.awm/\n")
+    git(tmp_path, "init", "-q", str(tree))
+    _commit(tree, "one")
+    return tree
+
+
+def _run_pins(tree, awm_dir):
+    r = subprocess.run(["bash", str(tree / "scripts/refresh-pins.sh")], cwd=tree, capture_output=True,
+                       text=True, env={**os.environ, "AWM_DIR": str(awm_dir)})
+    assert r.returncode == 0, r.stderr
+    log = awm_dir / "calls.log"
+    return log.read_text().splitlines() if log.exists() else []
+
+
+def test_refresh_pins_builds_what_is_stale_and_nothing_else(tmp_path):
+    tree, awm_dir = _refresh_tree(tmp_path), tmp_path / "awm-dir"
+    first = _run_pins(tree, awm_dir)
+    assert [c.split()[0] for c in first] == ["core", "pages"]
+    assert f"target={awm_dir}/build-cache/cargo-target" in first[0]
+    assert (tree / "scripts/core.pin").read_text().count("version=core-") == 1
+    # Nothing changed, so nothing builds.
+    assert _run_pins(tree, awm_dir) == first
+    # A core change rebuilds the core only.
+    (tree / "core/Cargo.toml").write_text("2\n")
+    _commit(tree, "core")
+    assert [c.split()[0] for c in _run_pins(tree, awm_dir)[2:]] == ["core"]
+    # A page change rebuilds the pages only, and a missing artifact rebuilds its pin.
+    (tree / "awm/services/svc/pages/ui/index.html").write_text("2\n")
+    _commit(tree, "page")
+    assert [c.split()[0] for c in _run_pins(tree, awm_dir)[3:]] == ["pages"]
+    for f in (awm_dir / "artifacts").iterdir():
+        f.unlink()
+    assert [c.split()[0] for c in _run_pins(tree, awm_dir)[4:]] == ["core", "pages"]
+
+
+def test_refresh_pins_reuses_node_modules_by_lock_in_a_fresh_tree(tmp_path):
+    tree, awm_dir = _refresh_tree(tmp_path), tmp_path / "awm-dir"
+    _run_pins(tree, awm_dir)
+    cached = list((awm_dir / "build-cache/node_modules").iterdir())
+    assert len(cached) == 1 and (cached[0] / "pkg/index.js").is_file()
+    # A new temp tree has no node_modules; the cache brings it back before the page build.
+    shutil.rmtree(tree / "awm/node_modules")
+    (tree / "awm/services/svc/pages/ui/index.html").write_text("2\n")
+    _commit(tree, "page")
+    assert "nm=pkg" in _run_pins(tree, awm_dir)[-1]
+    # A new lock replaces the cached tree.
+    (tree / "awm/package-lock.json").write_text('{"v":2}\n')
+    shutil.rmtree(tree / "awm/node_modules")
+    _commit(tree, "lock")
+    assert "nm=pkg" not in _run_pins(tree, awm_dir)[-1]
+    assert [p.name for p in (awm_dir / "build-cache/node_modules").iterdir()] != [cached[0].name]

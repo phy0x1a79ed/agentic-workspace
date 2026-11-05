@@ -14,6 +14,7 @@ from typing import Any
 FILE = "deploy.toml"
 REFRESH_KINDS = ("restart", "queue", "hot", "none")
 CHECK_BUDGET = 60.0
+REFRESH_BUDGET = 1800.0
 
 
 class ConfigError(ValueError):
@@ -42,6 +43,9 @@ class DeployConfig:
     # Pin files, each naming a built file in this node's artifact store that the
     # rollout pushes to each push node (artifacts.py, install.md R115 item 4).
     artifact_pins: tuple[str, ...] = ()
+    # A command that rebuilds every stale pin in the batch's tree (see deploy.py).
+    artifact_refresh: str = ""
+    artifact_refresh_timeout: float = REFRESH_BUDGET
 
 
 _SECTIONS = {
@@ -49,7 +53,7 @@ _SECTIONS = {
     "promote": {"backup"},
     "refresh": {"kind", "command", "sync", "prompt", "timeout"},
     "fixer": {"peer", "prompt"},
-    "artifacts": {"pins"},
+    "artifacts": {"pins", "refresh", "refresh_timeout"},
 }
 
 
@@ -74,9 +78,14 @@ def parse(text: str) -> DeployConfig:
     if kind == "queue" and not r.get("prompt"):
         raise ConfigError(f"{FILE}: a queue refresh needs a prompt")
     fx = raw.get("fixer", {})
-    pins = raw.get("artifacts", {}).get("pins", [])
+    arts = raw.get("artifacts", {})
+    pins = arts.get("pins", [])
     if not isinstance(pins, list) or not all(isinstance(p, str) and p for p in pins):
         raise ConfigError(f"{FILE}: [artifacts] pins must be a list of paths")
+    if not isinstance(arts.get("refresh", ""), str):
+        raise ConfigError(f"{FILE}: [artifacts] refresh must be a command")
+    if arts.get("refresh") and not pins:
+        raise ConfigError(f"{FILE}: [artifacts] refresh needs pins to commit")
     return DeployConfig(
         check=d.get("check", ""),
         check_timeout=float(d.get("check_timeout", CHECK_BUDGET)),
@@ -86,4 +95,6 @@ def parse(text: str) -> DeployConfig:
                         timeout=float(r.get("timeout", 600.0))),
         fixer_peer=fx.get("peer", "local"),
         fixer_prompt=fx.get("prompt", ""),
-        artifact_pins=tuple(pins))
+        artifact_pins=tuple(pins),
+        artifact_refresh=arts.get("refresh", ""),
+        artifact_refresh_timeout=float(arts.get("refresh_timeout", REFRESH_BUDGET)))

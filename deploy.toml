@@ -34,3 +34,8 @@ you warned that awm is back."""
 # pushes each into the node's artifact store, when the install config names one
 # (install.md R115 item 4).
 pins = ["scripts/core.pin", "scripts/pages.pin", "awm/services/trilium/server.pin"]
+# Runs in the batch's temp tree after the merge. It rebuilds each stale pin into the landing
+# node's artifact store, and the engine commits the pins it rewrote as `deploy: refresh pins`.
+# A cold musl build takes minutes, so it has its own budget.
+refresh = "scripts/refresh-pins.sh"
+refresh_timeout = 1800

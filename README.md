@@ -157,7 +157,7 @@ npm install        # once per machine
 npm run build      # builds every page
 ```
 
-`npm run build` runs `awm/scripts/build.sh`, which builds each page that has an `index.html`. The gateway serves the built `dist/`, never the source, so build before you look. A page with no `dist/` is not served. A deploy builds nothing on a node: mizar's `scripts/release-pages.sh` builds the pages, and `scripts/awm-deploy.sh` unpacks them.
+`npm run build` runs `awm/scripts/build.sh`, which builds each page that has an `index.html`. The gateway serves the built `dist/`, never the source, so build before you look. A page with no `dist/` is not served. A deploy builds nothing on a node: the deploy on mizar rebuilds a stale pages pin (`scripts/refresh-pins.sh`), and `scripts/awm-deploy.sh` unpacks the pages.
 
 ### Talking to the gateway from a page
 
@@ -260,7 +260,7 @@ awm/
   plugins/<name>/             # plugins, same shape
   ui_components/<name>/       # shared Svelte libraries, imported as @awm/<name>
   vite.config.ts  package.json  scripts/build.sh
-scripts/                      # run-tests.sh, rust-build.sh, release-core.sh, release-pages.sh, awm-deploy.sh, refresh-checkout.sh
+scripts/                      # run-tests.sh, rust-build.sh, refresh-pins.sh, release-core.sh, release-pages.sh, awm-deploy.sh, refresh-checkout.sh
 test/                         # contract/ (manifest and call checks), install/ (container install)
 .awm/                         # node state, gitignored
   config.toml                 # the gateway's configuration

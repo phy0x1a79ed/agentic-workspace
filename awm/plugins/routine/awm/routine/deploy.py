@@ -1,8 +1,8 @@
-"""The deploy engine: tickets, batches and the six steps (routines.md R19 to R31).
+"""The deploy engine: tickets, batches and the steps (routines.md R19 to R31).
 
 A `deploy` call pins a scope's branch head as a ticket and returns at once. One
 worker per project takes every waiting ticket into a batch and runs pin, merge,
-check, promote, backup, refresh and report. Only this engine writes `dev` and
+pins, check, promote, backup, refresh and report. Only this engine writes `dev` and
 `release` (R29), so a ref that moved under a batch is a failure, never a
 force. The backup remote takes `release` the same way: a backup that diverged
 stops the batch before release moves (install.md R114).
@@ -181,6 +181,7 @@ class Deployer:
             self._pin(bid, bare, tickets, state)
             await asyncio.to_thread(self._merge, bid, bare, wt, tickets, state)
             cfg = self._config(wt)
+            await self._refresh_pins(bid, wt, cfg, state)
             await self._check(bid, wt, cfg, state)
             await asyncio.to_thread(self._promote, bid, bare, state, cfg)
             await asyncio.to_thread(self._backup, bid, bare, state, cfg)
@@ -250,6 +251,44 @@ class Deployer:
             return deployconf.parse(p.read_text()) if p.is_file() else DeployConfig()
         except ConfigError as e:
             raise StepFailed("check", str(e)) from e
+
+    async def _refresh_pins(self, bid: str, wt: Path, cfg: DeployConfig,
+                            state: dict[str, str]) -> None:
+        """Run the project's pin refresh in the batch's tree and commit the pins it
+        changed, so check, promote and backup cover the pin commit. The command
+        builds into the landing node's real artifact store, never the temp tree's."""
+        if not cfg.artifact_refresh:
+            return
+        store = self.refresher.artifact_store
+        if store is None:
+            raise StepFailed("pins", "this node has no artifact store to build into")
+        res = await proc.run(cfg.artifact_refresh, cwd=str(wt),
+                             timeout=cfg.artifact_refresh_timeout,
+                             env={"AWM_DIR": str(Path(store).parent),
+                                  "AWM_DEPLOY_BASE": state["dev_before"],
+                                  "AWM_DEPLOY_HEAD": state["head"]})
+        step = {"step": "pins", "ok": res.ok, "code": res.code,
+                "timed_out": res.timed_out, "seconds": res.seconds}
+        if res.timed_out:
+            self.store.record_batch_step(bid, step)
+            raise StepFailed("pins timeout",
+                             f"the pin refresh ran past its "
+                             f"{cfg.artifact_refresh_timeout:g}s budget\n{res.output}")
+        if not res.ok:
+            self.store.record_batch_step(bid, step)
+            raise StepFailed("pins", f"exited {res.code}\n{res.output}")
+        changed = _git(wt, "status", "--porcelain", "--", *cfg.artifact_pins).stdout.split("\n")
+        paths = [line[3:] for line in changed if line.strip()]
+        if paths:
+            _git(wt, "add", "--", *paths)
+            r = _git(wt, "commit", "-q", "-m", "deploy: refresh pins", env=_ID)
+            if r.returncode != 0:
+                self.store.record_batch_step(bid, {**step, "ok": False})
+                raise StepFailed("pins", f"commit of the new pins failed: "
+                                 f"{(r.stderr or r.stdout).strip()[-500:]}")
+            state["head"] = proc.git(wt, "rev-parse", "HEAD")
+        self.store.record_batch_step(bid, {**step, "refreshed": paths,
+                                           "head": state["head"]})
 
     async def _check(self, bid: str, wt: Path, cfg: DeployConfig,
                      state: dict[str, str]) -> None:
