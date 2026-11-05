@@ -190,11 +190,8 @@ def launch_spec(seat: SeatConfig, platform: str, keeps_history: bool, name: str,
         "system_prompt": system_prompt, "prompt": prompt,
         "autocompact": seat.compact_at + AUTOCOMPACT_RESERVE,
         "remote_control": True, "pin": True, "trust": level,
+        "model": seat.model, "effort": seat.effort,
     }
-    if seat.model:
-        spec["model"] = seat.model
-    if seat.effort:
-        spec["effort"] = seat.effort
     return spec
 
 

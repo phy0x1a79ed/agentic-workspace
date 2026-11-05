@@ -199,8 +199,8 @@ class SeatConfig:
     project: str
     scope: str
     brief: str
-    model: str | None = None
-    effort: str | None = None
+    model: str = ""
+    effort: str = ""
     compact_at: int = 200_000
     channels: tuple[str, ...] = ()
     every_chat: bool = False
@@ -554,8 +554,8 @@ def load_seats(path: Path | None = None) -> list[SeatConfig]:
         node = "altair"                   # where the agent runs
         scope = "awm/seat-hallam-general" # project/scope it starts in
         brief = "You speak as Opal ..."
-        # model = "opus"                  # optional
-        # effort = "high"                 # optional
+        model = "opus"                    # required: fit it to the seat
+        effort = "high"                   # required: high is the upper limit
         # compact_at = 200000             # optional, tokens
         # alert_after = 300               # optional, seconds down before an alert
 
@@ -594,9 +594,11 @@ def load_seats(path: Path | None = None) -> list[SeatConfig]:
         optional = {}
         for key in ("model", "effort"):
             value = section.get(key)
-            if value is not None and (not isinstance(value, str) or not value.strip()):
-                raise SocialConfigError(f"{where}.{key} must be a string")
-            optional[key] = value.strip() if value else None
+            if not isinstance(value, str) or not value.strip():
+                raise SocialConfigError(f"{where}.{key} is required: pick it to fit the seat")
+            optional[key] = value.strip()
+        if optional["effort"] in ("xhigh", "max"):
+            raise SocialConfigError(f"{where}.effort is above the limit: high is the upper limit")
         compact_at = section.get("compact_at", SeatConfig.compact_at)
         if (not isinstance(compact_at, int) or isinstance(compact_at, bool)
                 or not COMPACT_AT_MIN <= compact_at <= COMPACT_AT_MAX):

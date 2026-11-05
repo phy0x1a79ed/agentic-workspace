@@ -19,7 +19,7 @@ This skill adds to the planning style in the global `CLAUDE.md`. Keep that struc
 
 ## Run a wave
 
-1. Start one worker per stream with `reflection start_other`. Pass your task id. Name each worker `<task>/<descriptor>`.
+1. Start one worker per stream with `reflection start_other`. Pass your task id. Name each worker `<task>/<descriptor>`. Pass `model` and `effort` fitted to the stream: a smaller model and lower effort for mechanical work, a larger model and high effort for design or debugging. High is the upper limit. Ask Tony before you pick Fable.
 2. Brief each worker with its stream, its contracts and its scope. Tell it to claim the scope with `reflection cd` and to work on the scope's branch. Tell it to skip the deploy, then journal and retire. Its claim ends when it retires.
 3. Compact. Then call `reflection wait` with `until` set to the workers' session ids.
 4. Gather. Read each worker's journal. Check its branch against its stream. Merge each branch into your feature branch. Rerun the tests.

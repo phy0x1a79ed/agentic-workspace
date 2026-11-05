@@ -92,6 +92,8 @@ def fakes(monkeypatch, tmp_path):
 
 
 def run(verb, args, as_=None):
+    if verb in ("start", "start_other"):
+        args = {"model": "opus", "effort": "high", **args}
     fn = hub_adapter.HANDLERS[verb]
     out = fn(args, as_) if len(__import__("inspect").signature(fn).parameters) == 2 else fn(args)
     return asyncio.run(out) if asyncio.iscoroutine(out) else out
@@ -834,3 +836,18 @@ def test_a_stop_releases_the_sessions_claims(fakes, scope_claims, verb):
     assert out["ok"]
     assert list(scope_claims.held) == [("awm", "y")]
 
+
+
+def test_start_other_without_model_and_effort_is_refused_before_it_launches(fakes):
+    fn = hub_adapter.HANDLERS["start_other"]
+    for missing in ({"effort": "high"}, {"model": "opus"}, {}):
+        out = asyncio.run(fn({"_caller_pid": ME, "project": "awm", "scope": "x", **missing}, None))
+        assert out["ok"] is False and "model and effort are required" in out["reason"]
+
+
+@pytest.mark.parametrize("level", ["xhigh", "max"])
+def test_effort_above_high_is_refused_on_start_and_on_the_effort_verb(fakes, level):
+    out = run("start_other", {"_caller_pid": ME, "project": "awm", "scope": "x",
+                              "model": "opus", "effort": level})
+    assert out["ok"] is False and "upper limit" in out["reason"]
+    assert run("effort", {"level": level})["reason"].endswith("upper limit for any model.")

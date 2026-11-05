@@ -20,6 +20,8 @@ HOUR_MS = 3_600_000
 
 
 def run(verb, args, as_=None):
+    if verb in ("start", "start_other"):
+        args = {"model": "opus", "effort": "high", **args}
     fn = hub_adapter.HANDLERS[verb]
     out = fn(args, as_) if len(inspect.signature(fn).parameters) == 2 else fn(args)
     return asyncio.run(out) if asyncio.iscoroutine(out) else out

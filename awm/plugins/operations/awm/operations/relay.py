@@ -298,6 +298,7 @@ async def run_order(body: dict, start: Callable[[dict], Awaitable[Any]],
         "task_id": task_id,
         "role": "main",
         "remote_control": True,
+        "model": "opus", "effort": "high",
         "started_by": "Tony from the Swarm board",
     })
 

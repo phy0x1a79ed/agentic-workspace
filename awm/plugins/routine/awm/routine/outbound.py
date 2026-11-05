@@ -55,6 +55,7 @@ class GatewayOutbound:
         res = await self.invoke("reflection", "start_other", {
             "project": project, "scope": scope, "prompt": prompt,
             "started_by": started_by, "name": name,
+            "model": "opus", "effort": "high",
         }, peer=peer, timeout=120.0)
         if not isinstance(res, dict) or not res.get("job"):
             raise RuntimeError(f"start_other returned no job: {res!r}"[:400])

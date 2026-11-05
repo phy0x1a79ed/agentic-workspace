@@ -21,13 +21,16 @@ channel = "C1"
 node = "altair"
 scope = "awm/seat-lab"
 brief = "Answer the lab."
+model = "opus"
+effort = "high"
 """
 
 
 def _seat(**kw):
     from awm.social.config import SeatConfig
     base = dict(name="lab", account="bot", channel="C1", node="altair",
-                project="awm", scope="seat-lab", brief="Answer the lab.")
+                project="awm", scope="seat-lab", brief="Answer the lab.",
+                model="opus", effort="high")
     return SeatConfig(**{**base, **kw})
 
 
@@ -162,7 +165,7 @@ def test_seat_tables_load_beside_the_accounts(tmp_path):
     path.write_text(SEAT_TOML)
     (seat,) = config.load_seats(path)
     assert (seat.name, seat.account, seat.channel, seat.node) == ("lab", "bot", "C1", "altair")
-    assert (seat.project, seat.scope, seat.model) == ("awm", "seat-lab", None)
+    assert (seat.project, seat.scope, seat.model) == ("awm", "seat-lab", "opus")
     assert seat.compact_at == 200_000
     assert [a.name for a in config.load(path)] == ["bot"]
 
@@ -759,6 +762,8 @@ node = "altair"
 scope = "awm/dev"
 brief = "Hold them all."
 alert_after = 60
+model = "sonnet"
+effort = "medium"
 ''')
     lab, main = config.load_seats(path)
     assert lab.single and not main.single
