@@ -37,6 +37,16 @@ Criteria: (1) on disk with small steady RAM, (2) stripped substring, (3) vectors
 - A cold benchmark on altair decides between candidates: journals at 10x and papers at 5M chunks, page cache dropped, for NGRAM, FM, BM25 and IVF-RQ.
 - Verdict: gap-fill around an existing engine. Build ground up only if LanceDB and SQLite both fail cold.
 
+## Relaxed exact match
+
+Re-scored for the relaxed form: a case-insensitive phrase match on words.
+
+- Native phrase match: LanceDB (`PhraseQuery`, index with positions), SQLite FTS5, Postgres text search, Tantivy, Qdrant, Milvus (`PHRASE_MATCH`), Elasticsearch, Vespa. Meilisearch, Typesense, Manticore and Infinity from memory.
+- No phrase match: DuckDB fts, Weaviate*, Chroma.
+- The relaxed form lets the positional word index that serves BM25 also answer exact. The shadow column and the trigram index go.
+- A phrase query reads each word's position list. Without `$sort`, stopping at the first N matches in stored order reads only list heads: about 40 KB in FTS5 (900d3eab).
+- Verdict under the relaxed form: take it, and gap-fill around LanceDB, with SQLite FTS5 plus an own IVF as the fallback.
+
 ## Sources
 
 - https://docs.lancedb.com/indexing/scalar-index
