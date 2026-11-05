@@ -27,8 +27,8 @@ To iterate without installing, run a worktree's dev sandbox on its own port
 > **Do not let this service auto-bootstrap on the canonical dev sandbox (`:7821`)
 > or prod.** Discovery is a global filesystem scan and Chrome-behind-VPN egress
 > must not come up there by accident. Keep it on `feat/svc-vpn` (or `awm services
-> disable vpn`) until the profile-aware discovery gate lands (a separate effort —
-> see `feat-gamebot/.awm/context.md` § *Deferred*). Only ever shadow it onto `:7871`.
+> disable vpn`) until the profile-aware discovery gate lands, a separate effort.
+> Only ever shadow it onto `:7871`.
 
 ## 2. Build the per-profile container images
 
@@ -152,4 +152,4 @@ with `bash run.sh`, and injects only three env vars (`AWM_HUB_URL`,
 - **A browser session:** `browser acquire{game, opts:{vpn:"ubc"}}` — rlm-browser
   brings the exit up via `vpn_up` and launches Chrome with `--network=container:awm-vpn-ubc`.
   Implementing that `opts.vpn` handling is rlm-browser's job; this service ships the
-  descriptor + convention. See the scope's `.awm/context.md`.
+  descriptor + convention.

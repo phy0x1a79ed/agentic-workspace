@@ -17,8 +17,7 @@ page is trusted for settings, how a forked source tree becomes a served GUI, and
 which of the harness's own configuration this repository tracks.
 
 The harness's own architecture belongs to `projects/deepseek-harness` and its
-upstream docs. Each scope's `.awm/context.md` there says which branch does what.
-This file covers only the boundary between awm and the harness.
+upstream docs. This file covers only the boundary between awm and the harness.
 
 ## The contract
 
