@@ -1,1 +1,18 @@
 # board
+
+## Purpose & Contents
+
+This topic holds the path to a live board: the Trilium command center page (queue.md R61) and the services it needs on alcor and deneb.
+
+## Tony's words
+
+> the "One file holds everything" is not a hard blocker, can we look into setting up trillium and the new board then? this would include the alcor services
+
+## Survey (2026-11-05)
+
+- Built and on release dcd8ba4d: the operations plugin (approver, panel, `board-install`, writer, relay, door) and the trilium service.
+- Built in cloud 58339c4, applied nowhere: alcor's `approver_config`, `auth_tunnel`, `singleton_door`, `singletons_sandbox`, `alcor_ssh_door`. deneb's SNI forward, `deneb_passkey_login`, `trilium_deneb`, `trilium_backup`, `trilium_copy_stop`.
+- Missing: the Trilium fork on mizar (`projects/trilium`) and its release, so `trilium/server.pin` is empty. `approver_grant_pub` is empty. `approver_portals` names only nexus.
+- Live: mizar reaches neither alcor nor deneb. The edge-off drop-in (`AWM_EDGE_SSH=/bin/false`) stops every edge call, and both nodes run the old release. mizar's `config.toml` leaves out the operations relay, and the old `board` service still runs.
+- Tony's steps on the path: M10, M12, M13, M14, M19, M25, M29, M33, then M42, M49, M50.
+- Held out: alcor's rt play, `mira_copy`, M30, M31. None is a prerequisite.
