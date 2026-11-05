@@ -58,7 +58,7 @@ workspace_root() {
     printf '%s\n' "$PWD"
 }
 
-STATE_DIR="$(workspace_root)/.awm/services/tether"
+STATE_DIR="$(workspace_root)/.awm/services/channel/tether"
 BIN_DIR="$STATE_DIR/bin"
 VERSION_FILE="$BIN_DIR/VERSION"
 FETCH_LOG="$STATE_DIR/fetch.log"

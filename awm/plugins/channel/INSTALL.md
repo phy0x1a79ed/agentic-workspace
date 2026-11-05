@@ -35,7 +35,7 @@ A failed fetch is not fatal. The binaries in place keep running, and `channel st
 | `TETHER_RELAY` | operator daemon | the relay's tether mount |
 | `AWM_TETHER_PORT` | relay | the loopback port it binds (default 12520) |
 | `AWM_TETHER_ASSETS` | relay, fetch | the directory the relay serves the launchers and clients from |
-| `AWM_TETHER_ROOM_STATE` | relay | where persistent rooms keep their files across a restart (default `.awm/services/tether/rooms`) |
+| `AWM_TETHER_ROOM_STATE` | relay | where persistent rooms keep their files across a restart (default `.awm/services/channel/tether/rooms`) |
 | `AWM_TETHER_CLIENT_IP_HEADER` | relay | the header that carries the caller's address (default `cf-connecting-ip`) |
 | `AWM_EDGE_TETHER` | httpsfront | `1` mounts `/tether` and `/room` on the public edge |
 | `AWM_TETHER_BIN` | plugin, fetch | a local build, for development only |
@@ -50,7 +50,7 @@ A failed fetch is not fatal. The binaries in place keep running, and `channel st
 
 The relay dies with the plugin. The operator daemon does not: it runs in a transient user unit, `awm-tether-operator-<hash>`, outside the gateway's cgroup, so a deploy keeps every live session. The next plugin process attaches to it. The plugin replaces it only for a new release with no session live. A reboot ends it.
 
-**CAUTION** The plugin's state stays at `.awm/services/tether`, the tether service's old path, because the unit name and the control socket derive from it. Moving it orphans the running daemon and its sessions.
+**CAUTION** The unit name and the control socket derive from the state path, `.awm/services/channel/tether`. Moving it orphans the running daemon and its sessions.
 
 **CAUTION** The daemon reads its environment once, at launch. To apply a changed env file, stop the unit with `systemctl --user stop awm-tether-operator-<hash>`. The plugin starts a new daemon within a few seconds.
 
