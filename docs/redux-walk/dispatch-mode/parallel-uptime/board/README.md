@@ -16,3 +16,7 @@ This topic holds the path to a live board: the Trilium command center page (queu
 - Live: mizar reaches neither alcor nor deneb. The edge-off drop-in (`AWM_EDGE_SSH=/bin/false`) stops every edge call, and both nodes run the old release. mizar's `config.toml` leaves out the operations relay, and the old `board` service still runs.
 - Tony's steps on the path: M10, M12, M13, M14, M19, M25, M29, M33, then M42, M49, M50.
 - Held out: alcor's rt play, `mira_copy`, M30, M31. None is a prerequisite.
+
+## Decisions
+
+- alcor opens for every service except the rt services. Discord may stay blocked on alcor too. Tony: "alcor for all except the rt services, we may also have to block discord as well" (2026-11-05). mira stays untouched.

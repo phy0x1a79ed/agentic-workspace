@@ -30,9 +30,9 @@ Procedure, from dfs-interview § Work the stack:
 - **dispatch-mode** (2026-11-05): as tasks are decided and worked out, please dispatch top level agents to work on them / their issues can be pushed back to the stack / we will notify them once their issues are solved and how, rather than when we decide how to solve. / we can add this mode to dfs-interview skill
   - **parallel-uptime** (2026-11-05): I'd like to be able to work in parallel. if all discussion goes through you, then I sit idle while you work and vice versa. our first topic should be a protocol taht maximizes both of our up times
     - **board** (2026-11-05): the "One file holds everything" is not a hard blocker, can we look into setting up trillium and the new board then? this would include the alcor services
-      - [ ] Does alcor open for the board's services only (operations, approver and passkey, deneb tunnel), with rt, IBKR and mira still shut?
+      - [x] Does alcor open for the board's services only (operations, approver and passkey, deneb tunnel), with rt, IBKR and mira still shut? (answered 2026-11-05)
       - [ ] Tony's DNS steps M10, M12, M13, M14: can he do them now, in parallel?
-      - **tarball-host** (2026-11-05): from redux-build/trilium-fork: where should the Trilium fork's release tarball be published? The spec leaves it open (install.md "Gap from today" R115: "The tarball host is open with Tony"). Options: (a) a GitHub release of the fork, which needs a GitHub repo for it (phy0x1a79ed by default) and a push; (b) a file served from mizar that deneb fetches with curl over the deneb edge. I lean (b)
+      - [ ] Discord on alcor: hold social's Discord accounts on alcor until mira's cutover?
 
 ## Parked
 
@@ -57,5 +57,8 @@ From journal 6a98c0c6 (awm/redux) and walkthrough's handover (manual-steps.md at
 ## Workers
 
 - **redux-build/trilium-fork (job e74cd7f2): the fork on mizar, its first release tarball, server.pin** (2026-11-05): took board
+- [ ] tell redux-build/trilium-fork how tarball-host was solved
 
 ## Closed
+
+- **tarball-host** (closed 2026-11-05): `dispatch-mode/parallel-uptime/board/tarball-host/README.md`
