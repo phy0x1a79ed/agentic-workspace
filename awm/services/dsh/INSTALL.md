@@ -211,8 +211,9 @@ The chain from an edit to a served GUI:
 4. `harness.py` spawns `node <release>/apps/cli/lib/bin.js --profile web` on
    loopback. The front puts it on the mesh.
 
-**Builds are stamped, not sniffed.** `<fork>/.awm/dsh-build-stamp` records the
-commit, the dirty flag and the lockfile hash the current `lib/` came from. A
+**Builds are stamped, not sniffed.** `dsh-build-stamp`, in the fork worktree's
+`<git-dir>/awm`, records the commit, the dirty flag and the lockfile hash the
+current `lib/` came from. A
 deploy whose tree stayed put costs 0.1 s instead of a 45 s incremental build or a
 2.5 min cold one. `awm dsh status` reports the same three facts under `source`,
 so a stale or hand-edited deployment is visible rather than something you infer

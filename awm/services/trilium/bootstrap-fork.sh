@@ -110,8 +110,8 @@ fi
 
 # The vault's runtime paths, excluded in the bare rather than in a tracked
 # `.gitignore`: upstream owns the root `.gitignore`, and anything added there is
-# a merge conflict at every version bump. `.awm/` is already excluded by
-# `scope create`. Anchored, so only the worktree root's copies match.
+# a merge conflict at every version bump. Anchored, so only the worktree root's
+# copies match.
 #
 # `data/vault/` itself is not here — DVC writes a `.gitignore` beside the chunks
 # it pins, and the pins are tracked on purpose.

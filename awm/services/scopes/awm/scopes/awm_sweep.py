@@ -1,8 +1,8 @@
 """The one-shot sweep that empties each worktree's ``.awm/`` folder (scopes.md R142).
 
 The deploy runs it once per node. It removes what nothing reads any more, moves
-the DVC hooks' local state into the worktree's git dir, and rewrites the
-project's DVC hooks so they write there. It leaves ``context.md`` for the scope
+the DVC hooks' local state and the dsh and trilium build stamps into the
+worktree's git dir, and rewrites the project's DVC hooks so they write there. It leaves ``context.md`` for the scope
 briefs one-shot, and any file it does not know, and reports both. Idempotent.
 """
 
@@ -20,7 +20,8 @@ log = logging.getLogger("awm.scopes.awm_sweep")
 AWM_DIRNAME = ".awm"
 DROPPED_FILES = ("history.md", "mcp-opencode.json")
 DROPPED_LINKS = ("data", "skills")
-HOOK_STATE = (data_dvc.MOUNTS_FILE, data_dvc.CHECKOUT_FAILED_FILE)
+MOVED_STATE = (data_dvc.MOUNTS_FILE, data_dvc.CHECKOUT_FAILED_FILE,
+               "dsh-build-stamp", "trilium-build-stamp")
 
 
 def sweep(projects_dir: Path | None = None, dry_run: bool = False) -> dict:
@@ -79,11 +80,11 @@ def sweep_worktree(worktree: Path, *, dry_run: bool = False) -> dict:
     if removed:
         did["removed"] = removed
 
-    moved = [name for name in HOOK_STATE if (awm / name).is_file()]
+    moved = [name for name in MOVED_STATE if (awm / name).is_file()]
     if moved:
         did["moved"] = moved
         if not dry_run:
-            _move_hook_state(worktree, awm, moved)
+            _move_state(worktree, awm, moved)
 
     rest = sorted(p.name for p in awm.iterdir()) if awm.is_dir() else []
     if dry_run:
@@ -98,7 +99,7 @@ def sweep_worktree(worktree: Path, *, dry_run: bool = False) -> dict:
     return did
 
 
-def _move_hook_state(worktree: Path, awm: Path, names: list[str]) -> None:
+def _move_state(worktree: Path, awm: Path, names: list[str]) -> None:
     state = data_dvc.state_dir(worktree)
     state.mkdir(parents=True, exist_ok=True)
     for name in names:

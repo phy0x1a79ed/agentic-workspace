@@ -234,7 +234,8 @@ command -v "$NODE_BIN/pnpm" >/dev/null 2>&1 || \
 # lockfile the install resolved. Any of the three moving means the built
 # artifacts no longer describe the source, which is the whole point of stamping
 # rather than testing for the presence of a file.
-STAMP_DIR="$FORK_DIR/.awm"          # already excluded by the bare repo
+# It sits in the worktree's git dir, which never travels.
+STAMP_DIR="$(git -C "$FORK_DIR" rev-parse --absolute-git-dir)/awm"
 STAMP="$STAMP_DIR/trilium-build-stamp"
 HEAD_SHA="$(git -C "$FORK_DIR" rev-parse HEAD)"
 DIRTY=0

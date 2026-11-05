@@ -142,3 +142,11 @@ def test_a_second_run_finds_nothing_to_do(layout):
     again = awm_sweep.sweep(layout["projects"])
     assert [w for w in again["worktrees"] if set(w) - {"project", "worktree", "left"}] == []
     assert again["hooks"]["tracked"] == {}
+
+
+def test_a_build_stamp_moves_into_the_git_dir(layout):
+    wt = layout["plain"]["main"]
+    (wt / ".awm" / "dsh-build-stamp").write_text("head=abc dirty=0 lock=x\n")
+    awm_sweep.sweep(layout["projects"])
+    assert not (wt / ".awm").exists()
+    assert (data_dvc.state_dir(wt) / "dsh-build-stamp").read_text() == "head=abc dirty=0 lock=x\n"

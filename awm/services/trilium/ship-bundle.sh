@@ -19,7 +19,7 @@ HOST=${1:-sirius}
 HERE="$(cd "$(dirname "$0")" && pwd)"
 FORK_DIR="${TRILIUM_FORK_DIR:-$(cd "$HERE/../../.." && pwd)/projects/trilium/release}"
 DIST="$FORK_DIR/apps/server/dist"
-STAMP="$FORK_DIR/.awm/trilium-build-stamp"
+STAMP="$(git -C "$FORK_DIR" rev-parse --absolute-git-dir)/awm/trilium-build-stamp"
 
 step() { echo; echo "== $*"; }
 remote() { ssh "$HOST" "$@"; }
@@ -58,11 +58,12 @@ GOT="$(remote "$REMOTE_NODE/node --version" | tr -d 'v\n')"
 echo "   node $GOT, matching .nvmrc"
 
 step "ship"
-as_awm "mkdir -p $REMOTE_DIST.incoming $REMOTE_FORK/.awm"
+as_awm "mkdir -p $REMOTE_DIST.incoming"
 rsync -a --delete --rsync-path='sudo -n -u awm rsync' "$DIST/" "$HOST:$REMOTE_DIST.incoming/"
 # The only provenance a node without a checkout has: `source_state()` stops at
 # the missing `.git`, so this file is the sole record of which commit is served.
-rsync -a --rsync-path='sudo -n -u awm rsync' "$STAMP" "$HOST:$REMOTE_FORK/.awm/"
+# It sits beside `node-bin` and `tarball-stamp` in the service's install dir.
+rsync -a --rsync-path='sudo -n -u awm rsync' "$STAMP" "$HOST:/opt/awm/awm/services/trilium/bundle-stamp"
 remote "printf '%s\n' $REMOTE_NODE > /opt/awm/awm/services/trilium/node-bin"
 
 step "swap"

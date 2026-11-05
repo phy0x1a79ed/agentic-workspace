@@ -82,8 +82,9 @@ TARBALL_NODE = TARBALL_DIR / "node" / "bin" / "node"
 #: code, the slice mask included (install.md R115 item 4).
 TARBALL_STAMP = INSTALL_DIR / "tarball-stamp"
 
-#: What `install.sh` last built, written where the worktree already ignores it.
-BUILD_STAMP = FORK_DIR / ".awm" / "trilium-build-stamp"
+#: What `install.sh` last built, kept in `<git-dir>/awm` of the fork worktree,
+#: which never travels.
+BUILD_STAMP_NAME = "trilium-build-stamp"
 
 #: The parts of the worktree that are the vault's rather than Trilium's, as git
 #: pathspecs. Excluded from the dirtiness probe below: a pending pin is not a
@@ -281,9 +282,11 @@ def source_state() -> dict[str, Any]:
     status = _git("status", "--porcelain", "--", *NOT_SOURCE)
     head = _git("rev-parse", "HEAD")
     stamp = None
+    git_dir = _git("rev-parse", "--absolute-git-dir")
     try:
         stamp = dict(line.split("=", 1) for line in
-                     BUILD_STAMP.read_text().split() if "=" in line)
+                     (Path(git_dir) / "awm" / BUILD_STAMP_NAME).read_text().split()
+                     if "=" in line) if git_dir else None
     except (OSError, ValueError):
         pass
     state.update({
