@@ -52,7 +52,7 @@ Procedure, from dfs-interview § Work the stack:
       - **tarball-backup** (2026-11-05): trilium-fork: mizar's .awm/artifacts holds the only copy of the pinned tarball. A rebuild changes the sha256, so it needs a backup policy. Nothing is pushed to the GitHub fork. That waits on your go.
       - **deneb-board** (2026-11-05): trilium-fork follow-ups: deneb gets the tarball only once cloud's install config makes deneb a push node; cloud deploy.yml awm_fleet_push.altair still lists trilium and canonical_repos defaults include trilium; the mizar vault mirror does not exist yet
         - [x] Why does deneb need nodejs, npm and build-essential if mizar pushes built artifacts? (asked deneb-board) (answered 2026-11-05)
-        - [ ] When core-artifact lands: tell deneb-board the artifact names and route (cloud tip 88c35a8 holds)
+        - [x] When core-artifact lands: tell deneb-board the artifact names and route (cloud tip 88c35a8 holds) (answered 2026-11-05)
         - **deneb-gaps** (2026-11-05): from redux-build/deneb-board: Flags: the trilium service makes an empty vault when it finds no db; zotero writes library.json into the vault scope ... needs a decision; channel is also a deneb singleton ... How does a singleton receive a secret? The tether relay could break at cutover.
 
 ## Parked
@@ -76,6 +76,7 @@ From journal 6a98c0c6 (awm/redux) and walkthrough's handover (manual-steps.md at
 - altair still commits nightly vault snapshots to its fork release; R105 stops that (trilium-fork, 2026-11-05)
 - search-awm-api follow-ups (journal e06acc4b): `search sources` counts awm docs for singletons a relayed caller cannot see; a stale `_grants` line in search INSTALL.md
 - spawn-tuning follow-ups (journal 0fc35624): cch test_stop_refuses_a_caller_whose_mode_is_unknown fails on 9d346fb4 too; run-tests.sh does not run the operations plugin tests
+- core-artifact follow-up (journal 88a132af): pages of an out-of-tree plugin (AWM_PLUGIN_ROOTS, such as the optional plugin projects of R33) are not in pages.pin, so no push node gets them
 - end state: verify every node (T28), retire mira and its disk (T29, M56), debrief (T30)
 
 ## Workers
