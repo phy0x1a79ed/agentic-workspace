@@ -68,7 +68,9 @@ def canonical_workspace() -> Path:
 # Derived paths
 # ---------------------------------------------------------------------------
 
-AWM_DIR = WORKSPACE_ROOT / ".awm"
+# The gateway gives each service its state dir as AWM_DIR, and a singleton's unit
+# sets it outside any workspace.
+AWM_DIR = Path(os.environ["AWM_DIR"]).resolve() if os.environ.get("AWM_DIR", "").strip() else WORKSPACE_ROOT / ".awm"
 DB_PATH = AWM_DIR / "state.db"
 PID_FILE = AWM_DIR / "awm.pid"
 LOG_FILE = AWM_DIR / "awm.log"
