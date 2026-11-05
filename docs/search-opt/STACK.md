@@ -23,13 +23,12 @@ Procedure, from dfs-interview § Work the stack:
 
 ## Current topic
 
-**sources**, under **spec**. Its result: `spec/sources/README.md`.
+**sort**, under **spec**. Its result: `spec/sort/README.md`.
 
 ## Stack
 
 - **spec** (2026-11-04): Basic rough spec is disk based search over text, mainly journals, for agentic memory.
-  - **sources** (2026-11-04): Other sources will be added, like transcripts and scientific papers.
-    - [ ] Is it one shared mechanism over the three kinds, each in its own store, with a new source added by supplying items in a common shape?
+  - **sort** (2026-11-04): Order however necessary and query will reorder by relavence whatever that means -> maybe need to add a sort by schema in querry
   - **memory** (2026-11-04): Want disk because keeping a large corpus in ram is not feasible with essentially unlimited size. But something like 100mb is acceptable.
   - **latency** (2026-11-04): It needs to be fast because agents will constantly call it so something like 1s is prolly max, but flexible. Simple queries like last journal or journals about x where x is specific/obvious should return fast like 0.1s.
   - **matching** (2026-11-04): Search requires both exact and semantic matches.
@@ -42,3 +41,5 @@ Procedure, from dfs-interview § Work the stack:
 - Implementation questions set aside on 2026-11-05: which node and cold or warm for the gate, and whether the journal export contract may change.
 
 ## Closed
+
+- **sources** (closed 2026-11-04): `spec/sources/README.md`
