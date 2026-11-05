@@ -50,7 +50,7 @@ From journal 6a98c0c6 (awm/redux) and walkthrough's handover (manual-steps.md at
 - avatar stage client port (M11), needs capella awake
 - DNS and portal: auth A record, CAA, DNS token and ACME email (M12-M14), cutover check channel (M7), portal hosts (M10)
 - alcor sitting: deploy, real user CA, Chrome logins, Duo, passkey, Ansible apply (M19, M25-M29, M33, M42-M52)
-- mira: rt-container's design, IBKR (M30), cutover play (M31), capella debug port (M32), held until Tony opens mira and alcor
+- mira: rt-container's design (feat/rt-container abbe1ac holds the stock-market and rt callers; merge only with the stock plugins; the plugin build waits on Tony's go to rt-container), IBKR (M30), cutover play (M31), capella debug port (M32), held until Tony opens mira and alcor
 - Discord seats (M34)
 - R77 after the Caviar and muse invites (M55)
 - reflection follow-ups from reflect-selfstop (release dcd8ba4d, journal 8542e517): cch status misses a session by its post-clear id, so stop {job:<new id>} misses it; old trust.json records have no job field
