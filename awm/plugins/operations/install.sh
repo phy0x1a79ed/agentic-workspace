@@ -4,7 +4,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 WS="$(git -C "$HERE" rev-parse --show-toplevel)"
 ENV="${AWM_ENV:-awm-queue}"
-mamba env list | grep -q "^$ENV " || mamba create -y -n "$ENV" python=3.12 pip
+mamba env list | awk '{print $1}' | grep -qx "$ENV" || mamba create -y -n "$ENV" python=3.12 pip
 mamba run -n "$ENV" pip install -e "$WS/awm/service_components/gatewayclient"
 mamba run -n "$ENV" pip install -e "$WS/awm/service_components/config"
 mamba run -n "$ENV" pip install -e "$WS/awm/service_components/grantlib"
