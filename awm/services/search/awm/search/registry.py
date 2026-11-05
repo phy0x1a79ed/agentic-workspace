@@ -9,11 +9,8 @@ that appears needs no change here.
 from __future__ import annotations
 
 import logging
-import os
 import re
-import tomllib
 from dataclasses import asdict, dataclass, field
-from pathlib import Path
 from typing import Any
 
 log = logging.getLogger("awm.search.registry")
@@ -105,24 +102,6 @@ def _source(service: str, table: dict[str, Any], tools: list[str]) -> Source:
                   hop=hop[len(tool) + 1:] if hop else "", links=links)
 
 
-def services_dir() -> Path:
-    return Path(os.environ.get("AWM_SERVICES_DIR") or Path(__file__).resolve().parents[3])
-
-
-def manifest_tables(service: str) -> list[dict[str, Any]]:
-    """The archive tables in the service folder's ``awm-plugin.toml``.
-
-    The fallback for a row that carries no ``archive`` key.
-    """
-    try:
-        plugin = tomllib.loads((services_dir() / service / "awm-plugin.toml").read_text())
-    except (OSError, ValueError):
-        return []
-    entries = [s for s in plugin.get("service") or [] if isinstance(s, dict)]
-    entry = next((s for s in entries if s.get("name") == service), entries[0] if len(entries) == 1 else {})
-    return [t for t in entry.get("archive") or [] if isinstance(t, dict)]
-
-
 def parse(entries: list[dict[str, Any]]) -> tuple[dict[str, Source], set[str]]:
     """``({name: Source}, running services)`` from the rows of ``awm services``.
 
@@ -136,9 +115,7 @@ def parse(entries: list[dict[str, Any]]) -> tuple[dict[str, Source], set[str]]:
             continue
         service = str(entry.get("name") or "")
         running.add(service)
-        tables = entry.get("archive")
-        if tables is None:
-            tables = manifest_tables(service)
+        tables = entry.get("archive") or []
         tools = [str(t) for t in entry.get("tools") or [] if t] or [service]
         for table in tables:
             source = _source(service, table, tools)
