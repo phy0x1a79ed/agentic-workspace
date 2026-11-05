@@ -23,9 +23,12 @@ Procedure, from dfs-interview § Work the stack:
 
 ## Current topic
 
-(none: the stack is empty)
+**tooling**. Its result: `tooling/README.md`.
 
 ## Stack
+
+- **tooling** (2026-11-05): Can we achieve this by downloading and installing existing tools? Partially? If not, what do we need to design? Ground up or to gap fill for existing tools?
+  - [ ] Which existing tools meet the spec whole, which meet part, and what gap is left to design?
 
 ## Parked
 
