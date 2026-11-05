@@ -37,6 +37,13 @@ pub enum Command {
     Status,
     /// What the loader loaded, refused and skipped.
     Plugins,
+    /// Exit 0 when the install config enables the plugin, 1 when it does not. Needs no gateway.
+    Wants {
+        plugin: String,
+        /// The state directory (AWM_DIR) holding config.toml.
+        #[arg(long, env = "AWM_DIR")]
+        state: PathBuf,
+    },
     /// Load the plugins again and apply the change, with no gateway restart (R144).
     Reload,
     /// Install or update plugins from folders or git:<url>@<commit>, as one change.
@@ -124,6 +131,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<i32> {
         Command::Usage { days } => get_and_print(&format!("/usage?days={days}")).await,
         Command::Status => get_and_print("/status").await,
         Command::Plugins => get_and_print("/hub/plugins").await,
+        Command::Wants { plugin, state } => Ok(i32::from(!awm_gateway::config::Config::load(&state)?.wants(&plugin))),
         Command::Reload => post_and_print("/hub/reload", json!({})).await,
         Command::Install { sources, approval } => {
             let sources: Vec<String> = sources

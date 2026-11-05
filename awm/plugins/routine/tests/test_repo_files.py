@@ -162,3 +162,227 @@ def test_move_canonical_repoints_the_checkout_and_adds_github(tmp_path):
     r = _move(ws, "github", str(gh))
     assert r.returncode == 1 and "stops at backup" in r.stderr
     assert "canonical_repos" in _move(ws, "order").stdout
+
+
+# -- the core binary pin: scripts/core.pin and scripts/awm-deploy.sh ------------
+
+def test_awm_deploy_toml_pins_the_built_files():
+    cfg = deployconf.parse((REPO / "deploy.toml").read_text())
+    assert {"scripts/core.pin", "scripts/pages.pin"} <= set(cfg.artifact_pins)
+    assert "scripts/core.pin" in cfg.refresh.prompt
+    from awm.routine import artifacts
+    pin = artifacts.parse_pin((REPO / "scripts/core.pin").read_text(), "scripts/core.pin")
+    assert pin.file.startswith("awm-core-") and len(pin.sha256) == 64
+
+
+FAKE_BIN = '#!/bin/sh\necho "fake awm $*"\n'
+PAGE = "awm/services/svc/pages/ui/dist"
+
+
+def _commit(node, msg):
+    git(node, "add", "-A")
+    git(node, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", msg)
+
+
+def _pin(node, name, version, file, blob, sha=None):
+    import hashlib
+    (node / "scripts" / name).write_text(
+        f"version={version}\nfile={file}\nsha256={sha or hashlib.sha256(blob).hexdigest()}\n")
+
+
+def _pages_tar(tmp_path, body: str) -> bytes:
+    import io
+    import tarfile
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as t:
+        for d in ("awm", "awm/services", "awm/services/svc", "awm/services/svc/pages",
+                  "awm/services/svc/pages/ui", PAGE):
+            info = tarfile.TarInfo(d)
+            info.type = tarfile.DIRTYPE
+            info.mode = 0o755
+            t.addfile(info)
+        data = body.encode()
+        info = tarfile.TarInfo(f"{PAGE}/index.html")
+        info.size = len(data)
+        t.addfile(info, io.BytesIO(data))
+    return buf.getvalue()
+
+
+def _deploy_node(tmp_path, *, core_sha=None, pages_sha=None, core_changed=False, pages_changed=False):
+    """A checkout holding awm-deploy.sh and both pins, and the artifact store its node holds."""
+    node = tmp_path / "node"
+    (node / "scripts").mkdir(parents=True)
+    (node / "core").mkdir()
+    (node / "awm/services/svc/pages/ui").mkdir(parents=True)
+    for f in ("awm-deploy.sh", "pins.sh"):
+        shutil.copy(REPO / "scripts" / f, node / "scripts" / f)
+    (node / "core/Cargo.toml").write_text("x\n")
+    (node / ".gitignore").write_text("awm/*/*/pages/*/dist/\n")
+    (node / "awm/services/svc/pages/ui/index.html").write_text("src\n")
+    git(tmp_path, "init", "-q", str(node))
+    _commit(node, "one")
+    store = node / ".awm/artifacts"
+    store.mkdir(parents=True)
+
+    def pins_sh(cmd):
+        return subprocess.run(["bash", "-c", f". scripts/pins.sh; {cmd} ."], cwd=node,
+                              capture_output=True, text=True, check=True).stdout.strip()
+
+    cv, pv = pins_sh("core_version"), pins_sh("pages_version")
+    pages = _pages_tar(tmp_path, "built\n")
+    _pin(node, "core.pin", cv, f"awm-{cv}", FAKE_BIN.encode(), core_sha)
+    _pin(node, "pages.pin", pv, f"awm-{pv}.tar.gz", pages, pages_sha)
+    (store / f"awm-{cv}").write_bytes(FAKE_BIN.encode())
+    (store / f"awm-{pv}.tar.gz").write_bytes(pages)
+    stale = node / PAGE
+    stale.mkdir(parents=True)
+    (stale / "old.js").write_text("old\n")
+    if core_changed:
+        (node / "core/Cargo.toml").write_text("y\n")
+    if pages_changed:
+        (node / "awm/services/svc/pages/ui/index.html").write_text("changed\n")
+    _commit(node, "two")
+    return node
+
+
+def _run_deploy(node, *args):
+    return subprocess.run(["bash", str(node / "scripts/awm-deploy.sh"), *args], cwd=node,
+                          capture_output=True, text=True,
+                          env={"PATH": os.environ["PATH"], "HOME": os.environ["HOME"]})
+
+
+def test_awm_deploy_runs_the_pinned_binary_and_unpacks_the_pages(tmp_path):
+    node = _deploy_node(tmp_path)
+    r = _run_deploy(node, "--dry-run")
+    assert r.returncode == 0, r.stderr
+    file = (node / "scripts/core.pin").read_text().split("file=")[1].splitlines()[0]
+    assert r.stdout.strip() == (f"fake awm deploy --root {node} --bin {node}/.awm/artifacts/{file}"
+                                " --no-build --dry-run")
+    assert (node / PAGE / "index.html").read_text() == "built\n"
+    assert not (node / PAGE / "old.js").exists()
+
+
+@pytest.mark.parametrize("kw, msg", [
+    ({"core_sha": "0" * 64}, "has sha256"),
+    ({"pages_sha": "0" * 64}, "has sha256"),
+    ({"core_changed": True}, "release-core.sh"),
+    ({"pages_changed": True}, "release-pages.sh"),
+])
+def test_awm_deploy_stops_on_a_bad_pin_and_changes_nothing(tmp_path, kw, msg):
+    node = _deploy_node(tmp_path, **kw)
+    r = _run_deploy(node)
+    assert r.returncode == 1 and msg in r.stderr
+    assert r.stdout == "" and (node / PAGE / "old.js").exists()
+
+
+def test_awm_deploy_stops_when_an_artifact_never_arrived(tmp_path):
+    node = _deploy_node(tmp_path)
+    for f in (node / ".awm/artifacts").glob("*.tar.gz"):
+        f.unlink()
+    r = _run_deploy(node)
+    assert r.returncode == 1 and "pushes it to this node" in r.stderr
+
+
+async def test_pushed_artifacts_deploy_on_the_fixture_node(tmp_path):
+    from awm.routine import artifacts
+    node = _deploy_node(tmp_path)
+    mizar = tmp_path / "mizar-store"
+    mizar.mkdir()
+    for name in ("core.pin", "pages.pin"):
+        pin = artifacts.parse_pin((node / "scripts" / name).read_text(), f"scripts/{name}")
+        shutil.move(node / ".awm/artifacts" / pin.file, mizar / pin.file)
+        await artifacts.check(mizar, pin)
+        res = await artifacts.push(mizar, pin, str(node / ".awm/artifacts"))
+        assert res.ok, res.output
+    r = _run_deploy(node)
+    assert r.returncode == 0 and r.stdout.startswith("fake awm deploy --root")
+    assert (node / PAGE / "index.html").read_text() == "built\n"
+
+
+# -- awm/scripts/build.sh runs npm ci on a changed lock; awm/install.sh asks `awm wants` ---
+
+def _tree(tmp_path):
+    """A checkout holding copies of the two scripts, for them to run against."""
+    tree = tmp_path / "tree"
+    (tree / "awm/scripts").mkdir(parents=True)
+    git(tmp_path, "init", "-q", str(tree))
+    for rel in ("awm/scripts/build.sh", "awm/install.sh"):
+        shutil.copy(REPO / rel, tree / rel)
+    return tree
+
+
+def _fake_npm(tmp_path):
+    """An `npm` whose `ci` installs a fake vite and logs the call."""
+    bin_dir = tmp_path / "fakebin"
+    bin_dir.mkdir()
+    npm = bin_dir / "npm"
+    npm.write_text('#!/bin/sh\necho "npm $*" >> "$NPM_LOG"\nrm -rf node_modules\n'
+                   'mkdir -p node_modules/.bin\nprintf "#!/bin/sh\\n" > node_modules/.bin/vite\n'
+                   'chmod +x node_modules/.bin/vite\n')
+    npm.chmod(0o755)
+    return bin_dir
+
+
+def _build(tree, bin_dir, log):
+    return subprocess.run(["bash", str(tree / "awm/scripts/build.sh")], cwd=tree,
+                          capture_output=True, text=True,
+                          env={"PATH": f"{bin_dir}:{os.environ['PATH']}", "HOME": os.environ["HOME"],
+                               "NPM_LOG": str(log)})
+
+
+def test_build_runs_npm_ci_only_when_the_lock_changed(tmp_path):
+    tree, log = _tree(tmp_path), tmp_path / "npm.log"
+    bin_dir = _fake_npm(tmp_path)
+    (tree / "awm/package-lock.json").write_text("one\n")
+    assert _build(tree, bin_dir, log).returncode == 0
+    assert log.read_text() == "npm ci\n"
+    assert _build(tree, bin_dir, log).returncode == 0
+    assert log.read_text() == "npm ci\n"
+    (tree / "awm/package-lock.json").write_text("two\n")
+    assert _build(tree, bin_dir, log).returncode == 0
+    assert log.read_text() == "npm ci\nnpm ci\n"
+
+
+def _install(tree, core, state):
+    return subprocess.run(["bash", str(tree / "awm/install.sh")], cwd=tree,
+                          capture_output=True, text=True,
+                          env={"PATH": os.environ["PATH"], "HOME": os.environ["HOME"],
+                               "AWM_CORE": str(core), "AWM_DIR": str(state)})
+
+
+def _fake_core(tmp_path):
+    """A core whose `wants` follows config.toml's exclude line, as Config::wants does."""
+    core = tmp_path / "core"
+    core.write_text('#!/bin/sh\n[ "$1" = wants ] || exit 2\n'
+                    'grep -q "\\"$2\\"" "$AWM_DIR/config.toml" && exit 1\nexit 0\n')
+    core.chmod(0o755)
+    return core
+
+
+@pytest.mark.skipif(not shutil.which("socat"), reason="needs socat")
+def test_install_runs_the_plugins_the_config_enables(tmp_path):
+    tree, state = _tree(tmp_path), tmp_path / "state"
+    state.mkdir()
+    (state / "config.toml").write_text('plugins = ["*"]\nexclude = ["off"]\n')
+    for name in ("on", "off"):
+        d = tree / "awm/services" / name
+        d.mkdir(parents=True)
+        (d / "install.sh").write_text(f'echo ran >> "{tmp_path}/{name}.ran"\n')
+    r = _install(tree, _fake_core(tmp_path), state)
+    assert r.returncode == 0, r.stderr
+    assert (tmp_path / "on.ran").exists() and not (tmp_path / "off.ran").exists()
+    assert "does not enable it): off" in r.stdout
+
+
+@pytest.mark.skipif(not shutil.which("socat"), reason="needs socat")
+def test_install_stops_when_the_core_cannot_answer(tmp_path):
+    tree, state = _tree(tmp_path), tmp_path / "state"
+    state.mkdir()
+    d = tree / "awm/services/on"
+    d.mkdir(parents=True)
+    (d / "install.sh").write_text(f'echo ran >> "{tmp_path}/on.ran"\n')
+    broken = tmp_path / "broken"
+    broken.write_text("#!/bin/sh\nexit 2\n")
+    broken.chmod(0o755)
+    r = _install(tree, broken, state)
+    assert r.returncode == 1 and "wants on' failed" in r.stderr and not (tmp_path / "on.ran").exists()
