@@ -17,3 +17,4 @@ The gap on top of LanceDB or SQLite is glue: map field classes to columns, compi
 ## Decisions
 
 - 2026-11-05: Exact matching may bend to keep spaces when that lets an existing method serve it. The relaxed form is a case-insensitive phrase match on words, with punctuation as a word boundary: `p95-latency` matches `p95 latency`, but `p95latency` does not. Tony: "We can bend exact matching if existing methods keep spaces".
+- 2026-11-05: Take the relaxed exact match and gap-fill around a prebuilt engine. Search translates queries to the engine and results back from it. Choose one engine. Do not keep a fallback. Tony: "Accept, but i want to choose rather than have fallbacks." and "Gap filling makes sense, i guess we translate to and from a prebuilt engine dependency."

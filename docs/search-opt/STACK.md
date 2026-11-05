@@ -27,8 +27,10 @@ Procedure, from dfs-interview § Work the stack:
 
 ## Stack
 
+- **incremental** (2026-11-05): Plus we design some sort of incremental build system -> whatever this is, would be great if we never need to read whole corpus for build (incremental), not sure how possible this is
 - **tooling** (2026-11-05): Can we achieve this by downloading and installing existing tools? Partially? If not, what do we need to design? Ground up or to gap fill for existing tools?
-  - [ ] Which existing tools meet the spec whole, which meet part, and what gap is left to design?
+  - [x] Which existing tools meet the spec whole, which meet part, and what gap is left to design? (answered 2026-11-05)
+  - [ ] Which one engine, and how is it chosen?
 
 ## Parked
 
