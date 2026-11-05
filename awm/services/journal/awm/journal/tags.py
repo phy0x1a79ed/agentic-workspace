@@ -2,8 +2,7 @@
 
 A post links to a tag by the tag's id, so a rename shows on every post. The
 tags the code names have fixed ids. The four kind tags replace the old ``kind``
-column, and :func:`derived_kind` still answers ``kind`` for old peers and the
-skills that read it.
+column.
 """
 
 from __future__ import annotations
@@ -15,11 +14,9 @@ from dataclasses import dataclass
 from typing import Any, Iterable
 
 from awm.journal.dao import JournalDAO
-from awm.journal.builtin_tags import (BRIEF, JOURNAL, KIND_TAGS, KIND_TO_TAG, MESSAGE,
-                                      MIGRATED_PREFIX, PRECEDENT)
+from awm.journal.builtin_tags import BRIEF, JOURNAL, KIND_TAGS, MESSAGE, PRECEDENT
 from awm.persistence.timestamps import ms_to_iso, now_ms
 
-_TAG_TO_KIND = {v: k for k, v in KIND_TO_TAG.items()}
 #: Set when a post is made, never after (fleet.md R107 item 6).
 TYPE_TAGS = (*KIND_TAGS, PRECEDENT)
 _KIND_ORDER = (JOURNAL, BRIEF, PRECEDENT, MESSAGE)
@@ -230,18 +227,6 @@ def names_of(tag_ids: Iterable[str]) -> list[str]:
     by_id = {r["id"]: r["name"] for r in JournalDAO().query_all(
         f"SELECT id, name FROM tags WHERE id IN ({marks})", ids)}
     return [by_id[i] for i in ids if i in by_id]
-
-
-def derived_kind(tag_ids: Iterable[str]) -> str:
-    """The ``kind`` an old reader expects: the first kind tag, else a migrated kind, else message."""
-    ids = set(tag_ids)
-    for t in _KIND_ORDER:
-        if t in ids:
-            return _TAG_TO_KIND[t]
-    for t in sorted(ids):
-        if t.startswith(MIGRATED_PREFIX):
-            return t[len(MIGRATED_PREFIX):]
-    return "message"
 
 
 def attach(conn: sqlite3.Connection, post_id: str, tag_ids: Iterable[str]) -> None:

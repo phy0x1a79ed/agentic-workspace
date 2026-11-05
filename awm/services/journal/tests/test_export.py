@@ -25,9 +25,9 @@ def test_one_page_carries_everything_and_the_id_set(posted):
     assert page["done"] is True and page["next_cursor"] is None
     assert page["ids"] == posted
     doc = page["documents"][0]
-    assert set(doc) == {"id", "title", "text", "ts", "project", "scope", "tags", "kind", "comments", "reply_to"}
+    assert set(doc) == {"id", "title", "text", "ts", "project", "scope", "tags", "comments", "reply_to"}
     assert doc["tags"] == ["journal"] and doc["comments"] == 0 and doc["reply_to"] == []
-    assert doc["project"] == "awm" and doc["scope"] == "dev" and doc["kind"] == "journal"
+    assert doc["project"] == "awm" and doc["scope"] == "dev" and "journal" in doc["tags"]
     assert doc["ts"].endswith("+00:00") and doc["text"].startswith("entry")
 
 

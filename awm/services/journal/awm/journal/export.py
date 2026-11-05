@@ -36,15 +36,13 @@ def _document(row, tag_ids: list[str], comments: int, cites: list[str], conn) ->
         "text": thread_text(conn, row["id"], body),
         "ts": ms_to_iso(row["ts"]) or "", "project": row["owner_project"],
         "scope": row["owner_scope"], "tags": tags.names_of(tag_ids),
-        "kind": tags.derived_kind(tag_ids), "comments": comments, "reply_to": cites,
+        "comments": comments, "reply_to": cites,
     }
 
 
 def export_page(cursor: str | None = None, limit: int | None = None,
                 exclude: tuple[str, list] = ("", [])) -> dict:
-    """One page of ``{id,title,text,ts,project,scope,tags,kind,comments,reply_to}`` documents after ``cursor``.
-
-    ``kind`` is derived from the tags for a search that still filters on it.
+    """One page of ``{id,title,text,ts,project,scope,tags,comments,reply_to}`` documents after ``cursor``.
 
     ``exclude`` is a WHERE fragment from :func:`awm.journal.private.exclusion`.
     """

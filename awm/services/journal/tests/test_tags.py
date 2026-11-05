@@ -56,22 +56,22 @@ def test_a_post_with_an_unknown_tag_is_refused_with_the_vocabulary(vocab):
         _post(tags=["bugz"])
 
 
-def test_a_post_with_no_tag_is_a_message_and_kind_is_derived(vocab):
+def test_a_post_with_no_tag_is_a_message_and_carries_no_kind(vocab):
     p = _post()
-    assert p.tags == ["message"] and p.kind == "message"
+    assert p.tags == ["message"]
     j = _post(tags=["journal", "complaint"])
-    assert set(j.tags) == {"journal", "complaint"} and j.to_dict()["kind"] == "journal"
+    assert set(j.tags) == {"journal", "complaint"} and "kind" not in j.to_dict()
     assert _post(tags="journal").tags == ["journal"]
 
 
 def test_a_rename_shows_on_every_post_and_keeps_the_versions(vocab):
-    from awm.journal import channel, tags
+    from awm.journal import builtin_tags, channel, tags
     p = _post(tags=["complaint"])
     tags.edit("complaint", name="gripe")
     assert "gripe" in channel.get_post(p.id).tags
     assert [v["name"] for v in tags.versions("gripe")] == ["complaint", "gripe"]
     tags.edit("journal", name="session-log")
-    assert channel.get_post(_post(tags="session-log").id).kind == "journal"
+    assert channel.get_post(_post(tags="session-log").id).has(builtin_tags.JOURNAL)
     assert [v["name"] for v in tags.versions("session-log")] == ["journal", "session-log"]
 
 

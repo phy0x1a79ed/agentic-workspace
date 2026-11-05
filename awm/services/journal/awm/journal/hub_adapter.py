@@ -34,7 +34,7 @@ API_MANIFEST: dict[str, Any] = {
             "topic": "posts",
             "description": (
                 "Fires once per new scope-channel post. Payload "
-                "{project, scope, post}; post carries tags and a derived kind. "
+                "{project, scope, post}; post carries its tags. "
                 "Subscribers filter by (project, scope)."
             ),
         },

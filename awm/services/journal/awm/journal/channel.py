@@ -65,11 +65,6 @@ class ScopePost:
     version: int = 1
 
     @property
-    def kind(self) -> str:
-        """The old ``kind``, derived from the tags for readers that still ask for it."""
-        return tagmod.derived_kind(self.tag_ids)
-
-    @property
     def tags(self) -> list[str]:
         return tagmod.names_of(self.tag_ids)
 
@@ -83,7 +78,7 @@ class ScopePost:
     def to_dict(self) -> dict:
         d = {
             "id": self.id, "project": self.project, "scope": self.scope,
-            "author": self.author, "tags": self.tags, "kind": self.kind,
+            "author": self.author, "tags": self.tags,
             "body": self.body, "meta": self.meta, "ts": self.ts,
         }
         if self.reply_to:
