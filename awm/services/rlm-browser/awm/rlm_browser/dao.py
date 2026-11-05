@@ -62,7 +62,7 @@ _COLS = (
 # tolerates "duplicate column" if a prior partial run already added one.
 _MIGRATIONS = {
     (1, 2): """\
-ALTER TABLE rlm_sessions ADD COLUMN mode TEXT NOT NULL DEFAULT 'simple';
+ALTER TABLE rlm_sessions ADD COLUMN mode TEXT NOT NULL DEFAULT 'headless';
 ALTER TABLE rlm_sessions ADD COLUMN backend TEXT NOT NULL DEFAULT 'host';
 ALTER TABLE rlm_sessions ADD COLUMN cdp_port INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE rlm_sessions ADD COLUMN user_data_dir TEXT NOT NULL DEFAULT '';
