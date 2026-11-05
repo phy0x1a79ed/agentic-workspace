@@ -16,7 +16,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from awm.journal import builtin_tags, search_index, tags
+from awm.journal import builtin_tags, tags
 from awm.journal.dao import JournalDAO
 from awm.persistence.timestamps import now_ms
 
@@ -147,7 +147,4 @@ def import_db(source: Path, *, dry_run: bool = False) -> dict:
         d.executemany("INSERT OR IGNORE INTO scope_posts (id, owner_project, owner_scope, author,"
                       " body, meta, ts, reply_to, thread_id) VALUES (?,?,?,?,?,?,?,?,?)", rows)
         d.executemany("INSERT OR IGNORE INTO post_tags (post_id, tag_id) VALUES (?,?)", links)
-    for r in rows:
-        if r[8] is None:
-            search_index.index_post(r[0])
     return out

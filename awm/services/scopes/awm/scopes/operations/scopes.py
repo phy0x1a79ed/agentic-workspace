@@ -105,7 +105,6 @@ SCOPE_MANIFEST_FUNCTIONS = [
             "Bring the scopes service's search index of scopes and projects in line "
             "with the tables: embeds what is missing, changed or made by another "
             "model, and drops what no longer exists. Returns counts per type. "
-            "Posts are indexed by journal_reindex. "
             "dry_run reports without writing; force re-embeds everything."
         ),
         "params": [

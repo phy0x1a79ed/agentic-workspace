@@ -53,11 +53,9 @@ def test_the_first_posts_author_gets_each_comment_in_its_inbox(journal_workspace
 
 
 def test_search_returns_the_first_post_with_its_comment_count(journal_workspace):
-    from awm.journal import search_index
     root = _post(project="awm", scope="dev", author="agent:awm/dev", tags=["journal"],
                  body="gateway restart notes")
     _post(author="user:tony", reply_to=root["id"], body="the zeppelin hangar flooded")
-    search_index.flush()
     out = _fetch(query="zeppelin hangar", project="awm", limit=5)
     assert [p["id"] for p in out["posts"]] == [root["id"]]
     assert out["posts"][0]["comments"] == 1

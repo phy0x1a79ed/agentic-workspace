@@ -29,7 +29,7 @@ from dataclasses import dataclass, field
 from typing import Any, Iterable
 
 from awm.config import privacy
-from awm.journal import builtin_tags, owners, search_index, tags as tagmod
+from awm.journal import builtin_tags, indexed, owners, tags as tagmod
 from awm.journal.dao import JournalDAO
 from awm.journal.refs import SYSTEM_REF
 from awm.persistence.timestamps import iso_to_ms, ms_to_iso, now_ms
@@ -317,7 +317,6 @@ def post(project: str, scope: str, *, author: str, body: str,
                       "post": post_obj.to_dict()})
         except Exception:
             pass
-    search_index.index_post(thread_id or pid)
     return post_obj
 
 
@@ -347,7 +346,6 @@ def set_tags(post_id: str, *, add: Any = (), remove: Any = ()) -> ScopePost:
     if p is None:
         raise ValueError(f"no post {post_id}")
     tagmod.retag(post_id, add=tagmod.names_arg(add), remove=tagmod.names_arg(remove))
-    search_index.index_post(p.root)
     return get_post(post_id)
 
 
@@ -540,7 +538,7 @@ def search(*, query: str, project: str | None = None, scope: str | None = None,
     semantic = "none"
     hits = None
     expr = tags
-    if search_index.may_hold(expr):
+    if indexed.may_hold(expr):
         narrowed = bool(author or exclude[0] or project == "" or tagmod.parse_filter(expr))
         try:
             hits, degraded = ranked(query, project=project, scope=scope, before_ts=before_ts,

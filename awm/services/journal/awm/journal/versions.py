@@ -11,7 +11,7 @@ from __future__ import annotations
 import difflib
 import re
 
-from awm.journal import builtin_tags, channel, search_index
+from awm.journal import builtin_tags, channel
 from awm.journal import tags as tagmod
 from awm.journal.dao import JournalDAO
 from awm.persistence.timestamps import ms_to_iso, now_ms
@@ -51,7 +51,6 @@ def edit(post_id: str, *, editor: str, body: str | None = None, old: str | None 
                     "VALUES (?, ?, ?, ?, ?, ?, ?)",
                     (post_id, version, body, _diff(current, body, post_id, version), editor, reason, now))
         dao.execute("UPDATE scope_posts SET body=?, version=? WHERE id=?", (body, version, post_id))
-    search_index.index_post(row["thread_id"] or post_id)
     return {"post": channel.get_post(post_id).to_dict(), "version": version}
 
 
@@ -112,7 +111,6 @@ def fold(addendum_id: str, target_id: str, *, editor: str) -> dict:
             "UPDATE scope_posts SET meta=json_set(meta, '$.folded_into', ?) WHERE id=?",
             (target_id, addendum_id))
         tagmod.attach(conn, addendum_id, [builtin_tags.FOLDED])
-    search_index.index_post(add.root)
     return out
 
 

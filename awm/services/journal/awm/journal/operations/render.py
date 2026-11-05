@@ -1,8 +1,8 @@
-"""History-render and index-maintenance operation definitions for the gateway manifest."""
+"""History-render and export operation definitions for the gateway manifest."""
 
 from pathlib import Path
 
-from awm.journal import export, precedents, private, render, search_index
+from awm.journal import export, precedents, private, render
 from awm.persistence.databases import service_db_path
 
 _CLI_HTTP = ["cli", "http"]
@@ -33,21 +33,6 @@ RENDER_MANIFEST_FUNCTIONS = [
             {"name": "limit", "type": "integer", "required": False,
              "description": "Documents per page. Default 200, at most 1000."},
         ],
-    },
-    {
-        "name": "reindex",
-        "tool": "journal_reindex",
-        "surfaces": _CLI_HTTP,
-        "description": (
-            "Bring the post search index in line with the post table: embeds what "
-            "is missing, changed or made by another model, and drops what no longer "
-            "exists. dry_run reports without writing; force re-embeds everything."
-        ),
-        "params": [
-            {"name": "dry_run", "type": "boolean", "required": False},
-            {"name": "force", "type": "boolean", "required": False},
-        ],
-        "timeout": 3600.0,
     },
     {
         "name": "precedent_import",
@@ -88,5 +73,4 @@ RENDER_HANDLERS = {
     "precedent_import": _handle_precedent_import,
     "render": _handle_render,
     "export": _handle_export,
-    "reindex": search_index.INDEX.handle_reindex,
 }

@@ -12,7 +12,6 @@ import sqlite3
 
 from awm.persistence.dao import BaseDAO
 from awm.persistence.databases import get_connection, init_service_db
-from awm.persistence.embeddings import EMBEDDINGS_DDL
 
 from awm.journal import builtin_tags
 
@@ -228,10 +227,10 @@ _initialized = False
 
 
 def init() -> None:
-    """Idempotently create the journal DB, its tables and the embeddings store."""
+    """Idempotently create the journal DB and its tables."""
     global _initialized
     if not _initialized:
-        init_service_db(SERVICE, SCHEMA_SQL + READS_SQL + LINKS_SQL + VERSIONS_SQL + EMBEDDINGS_DDL,
+        init_service_db(SERVICE, SCHEMA_SQL + READS_SQL + LINKS_SQL + VERSIONS_SQL,
                         schema_version=SCHEMA_VERSION, migrations=MIGRATIONS)
         conn = get_connection(SERVICE)
         try:

@@ -14,7 +14,7 @@ from awm.journal import tags
 from awm.journal.channel import _coerce_meta, cites_of_posts, comment_counts
 from awm.journal.dao import JournalDAO
 from awm.persistence.timestamps import ms_to_iso
-from awm.journal.search_index import INDEXED_PARAMS, INDEXED_SQL, thread_text
+from awm.journal.indexed import INDEXED_PARAMS, INDEXED_SQL, thread_text
 
 DEFAULT_LIMIT = 200
 MAX_LIMIT = 1000
