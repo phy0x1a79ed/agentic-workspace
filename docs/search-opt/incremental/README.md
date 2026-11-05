@@ -29,3 +29,4 @@ Read from Lance `main` at 05a128c, `rust/lance/src/index/vector/builder.rs` and 
 - A split reads only the vector column, not the text.
 - With fewer than about 65 partitions, about 266k vectors at the default target, one split reads every vector. Above that it reads about 65 partitions' worth: about 27% at 1M and about 10% at 2.7M.
 - New rows go to the nearest partition. A partition starts near 4,096 rows, so splits begin when a region of the corpus has grown about 4 times. Even growth means about one wave of splits per 4 times growth. A hot topic splits its own partition sooner.
+- 2026-11-05: Accept Lance's partition maintenance as is: default target, no patch. Revisit later if needed. Tony: "Looks like we can just accept lancedb as is. We can always update later".

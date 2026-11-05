@@ -23,13 +23,9 @@ Procedure, from dfs-interview § Work the stack:
 
 ## Current topic
 
-**incremental**. Its result: `incremental/README.md`.
+(none: the stack is empty)
 
 ## Stack
-
-- **incremental** (2026-11-05): Plus we design some sort of incremental build system -> whatever this is, would be great if we never need to read whole corpus for build (incremental), not sure how possible this is
-  - [x] Must each source supply a change feed, so search reads only what changed? (answered 2026-11-05)
-  - [ ] How is the vector index kept balanced as the corpus grows, without a full retrain?
 
 ## Parked
 
@@ -47,3 +43,4 @@ Procedure, from dfs-interview § Work the stack:
 - **matching** (closed 2026-11-04): `spec/matching/README.md`
 - **spec** (closed 2026-11-04): `spec/README.md`
 - **tooling** (closed 2026-11-05): `tooling/README.md`
+- **incremental** (closed 2026-11-05): `incremental/README.md`
