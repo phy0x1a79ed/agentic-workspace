@@ -55,6 +55,7 @@ Procedure, from dfs-interview § Work the stack:
         - [x] When core-artifact lands: tell deneb-board the artifact names and route (cloud tip 88c35a8 holds) (answered 2026-11-05)
         - **pin-refresh** (2026-11-05): from redux-build/dev: rebuilding pins automatically in the routine deploy is more than a small change. Please start a worker.
         - **deneb-gaps** (2026-11-05): from redux-build/deneb-board: Flags: the trilium service makes an empty vault when it finds no db; zotero writes library.json into the vault scope ... needs a decision; channel is also a deneb singleton ... How does a singleton receive a secret? The tether relay could break at cutover.
+          - [ ] When dev's release holds deneb-singletons 04ec7d9f: tell deneb-board the release id, then close deneb-gaps
 
 ## Parked
 
