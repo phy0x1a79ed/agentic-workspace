@@ -161,6 +161,30 @@ impl EdgeList {
         }
     }
 
+    pub fn singleton(&self, tool: &str) -> Option<&Singleton> {
+        self.singletons.iter().find(|s| s.tool == tool)
+    }
+
+    /// The singletons `node` reaches through another host's door: each it may call that it
+    /// does not host itself (R89, R98 item 3).
+    pub fn door_singletons(&self, node: &str) -> Vec<&Singleton> {
+        self.singletons.iter().filter(|s| s.host != node && self.may_call(node, &s.tool)).collect()
+    }
+
+    /// Where `host`'s singleton door listens: its address on the door's network, and the port.
+    /// An `internet` door listens on the node's `public` address.
+    pub fn door_address(&self, host: &str) -> Option<(String, u16)> {
+        let door = self.singleton_doors.get(host)?;
+        let key = match door.network {
+            Network::Lan => "lan",
+            Network::Tailscale => "tailscale",
+            Network::Zerotier => "zerotier",
+            Network::Internet => "public",
+        };
+        let address = self.nodes.get(host)?.addresses.get(key)?.clone()?;
+        Some((address, door.port))
+    }
+
     /// The singleton tools that `host` serves through its door to `caller`.
     pub fn door_tools(&self, host: &str, caller: &str) -> Vec<String> {
         self.singletons
@@ -202,6 +226,22 @@ singletons:
         assert_eq!(e.network("home", "spare"), Some(Network::Lan));
         assert_eq!(e.network("spare", "work"), None);
         assert_eq!(e.door_tools("spare", "home"), vec!["2fa"]);
+    }
+
+    #[test]
+    fn a_caller_reaches_each_singleton_through_its_hosts_door() {
+        let e = EdgeList::parse(FIXTURE).unwrap();
+        let tools = |n: &str| e.door_singletons(n).iter().map(|s| s.tool.clone()).collect::<Vec<_>>();
+        assert_eq!(tools("laptop"), vec!["2fa"], "laptop holds no edge to spare and still calls 2fa");
+        assert!(tools("spare").is_empty(), "the host calls its own singleton, not its door");
+        assert!(tools("work").is_empty(), "a node no singleton names reaches none");
+        assert_eq!(e.door_address("spare"), None, "spare holds no tailscale address");
+        let e = EdgeList::parse(
+            "nodes:\n  station: {role: station, addresses: {public: 203.0.113.7, tailscale: 100.1.1.1}}\n\
+             singleton_doors:\n  station: {port: 2201, network: internet}\n",
+        )
+        .unwrap();
+        assert_eq!(e.door_address("station"), Some(("203.0.113.7".into(), 2201)), "an internet door listens on the public address");
     }
 
     #[test]

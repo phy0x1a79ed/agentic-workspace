@@ -107,10 +107,14 @@ pub async fn port(key: &str) -> anyhow::Result<i32> {
     let holder = key.split(':').nth(1).unwrap_or_default().to_string();
     let allowed = EdgeList::load(&edges_path(&dir))?.door_tools(&here, &holder);
     let original = std::env::var("SSH_ORIGINAL_COMMAND").unwrap_or_default();
-    let caller = Caller { node: holder, lane: Lane::Service, ..Caller::default() };
     let req = awm_trust::port::parse(&original);
     let result = match &req {
-        Ok(r) if allowed.contains(&r.name) => Some(invoke_local(&dir, &r.name, r.args.clone(), &caller).await),
+        Ok(r) if allowed.contains(&r.name) => {
+            // The gateway checks the node a relayed call started from against the callers too.
+            let origin = r.origin.clone().filter(|o| *o != holder);
+            let caller = Caller { node: holder.clone(), lane: Lane::Service, origin, ..Caller::default() };
+            Some(invoke_local(&dir, &r.name, r.args.clone(), &caller).await)
+        }
         _ => None,
     };
     let reply = awm_trust::port::serve(&original, key, &allowed, &dir.join("port.log"), |_| {

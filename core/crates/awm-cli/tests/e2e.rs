@@ -840,7 +840,7 @@ fn a_peer_call_crosses_the_ssh_edge() {
 fn a_singleton_admits_only_its_callers() {
     let tmp = tempfile::tempdir().unwrap();
     let base = tmp.path();
-    let edges = "nodes:\n  host: {role: standby}\n  ally: {role: laptop}\n  relay: {role: homebase}\n  outsider: {role: work}\n\
+    let edges = "nodes:\n  host: {role: standby, addresses: {lan: 127.0.0.1}}\n  ally: {role: laptop}\n  relay: {role: homebase}\n  outsider: {role: work}\n\
                  edges:\n  ally: {host: lan}\n  relay: {host: lan}\n  outsider: {host: lan, relay: lan}\n\
                  singleton_doors:\n  host: {port: 2201, network: lan}\n\
                  singletons:\n  - {tool: vault, host: host, callers: [ally, relay]}\n";
@@ -859,7 +859,8 @@ fn a_singleton_admits_only_its_callers() {
     };
     let fail = || format!("host: {}", log(&host_state));
 
-    // The table and describe leave vault out for a node it does not admit.
+    // The table gives no node a singleton, which it reaches only through the door. describe
+    // leaves vault out for a node it does not admit.
     let table = |caller: Value| -> Vec<String> {
         let mut req = http().get(format!("{}/hub/table", host.url));
         for (k, v) in headers(&host_state, caller) {
@@ -869,7 +870,7 @@ fn a_singleton_admits_only_its_callers() {
         rows.iter().filter_map(|r| r["name"].as_str().map(str::to_string)).collect()
     };
     assert!(table(from("outsider")).contains(&"open".to_string()) && !table(from("outsider")).contains(&"vault".to_string()));
-    assert!(table(from("ally")).contains(&"vault".to_string()));
+    assert!(!table(from("ally")).contains(&"vault".to_string()));
     let (status, body) = call(&host.url, &headers(&host_state, from("outsider")), "awm", "describe", None);
     assert_eq!(status, 200, "{body} {}", fail());
     let overview: Value = serde_json::from_str(body["result"].as_str().unwrap()).unwrap();
@@ -917,22 +918,167 @@ fn a_singleton_admits_only_its_callers() {
     let who: Value = serde_json::from_str(reply["result"].as_str().unwrap()).unwrap();
     assert_eq!(who["caller"]["node"], "ally");
 
-    // Over a real edge: relay carries its own calls and a caller's, and none for outsider.
+    // relay holds an edge to host, and still reaches vault only through the door.
     let relay_state = edge_node(base, "relay", &[], edges);
-    let ssh = fake_ssh(base, "relay", "host", &host_state, &host.url);
-    let relay = Gateway::start_with(&relay_state, &[("AWM_EDGE_SSH", ssh.to_str().unwrap())]);
+    let door = fake_door(base, "relay", "host", &host_state, &host.url);
+    let relay = Gateway::start_with(&relay_state, &[("AWM_DOOR_SSH", door.ssh.to_str().unwrap()), ("AWM_EDGE_SSH", "false")]);
     let (status, body) = call(&relay.url, &[], "vault", "whoami", Some("host"));
     assert_eq!(status, 200, "{body} relay: {} {}", log(&relay_state), fail());
     let who: Value = serde_json::from_str(body["result"].as_str().unwrap()).unwrap();
-    assert_eq!((who["caller"]["node"].as_str(), who["caller"].get("origin")), (Some("relay"), None), "{who}");
-    let (status, body) = call(&relay.url, &headers(&relay_state, from("ally")), "vault", "whoami", Some("host"));
-    assert_eq!(status, 200, "{body}");
-    let who: Value = serde_json::from_str(body["result"].as_str().unwrap()).unwrap();
-    assert_eq!(who["caller"]["origin"], "ally", "the call carries the node it started from: {who}");
-    let (status, body) = call(&relay.url, &headers(&relay_state, from("outsider")), "vault", "whoami", Some("host"));
-    assert_eq!((status, body["detail"].as_str()), (404, Some("Unknown tool \"vault\"")), "{body}");
+    assert_eq!((who["caller"]["node"].as_str(), who["caller"]["lane"].as_str()), (Some("relay"), Some("service")), "{who}");
     drop(relay);
     drop(host);
+}
+
+/// A stand-in for ssh to `host`'s singleton door with `from`'s service key: it runs `awm port`
+/// against `host`'s gateway. While `down` exists it fails as ssh does when no door answers.
+/// It writes its arguments to `args`.
+struct FakeDoor {
+    ssh: PathBuf,
+    down: PathBuf,
+    args: PathBuf,
+}
+
+fn fake_door(base: &Path, from: &str, host: &str, host_state: &Path, host_url: &str) -> FakeDoor {
+    let (ssh, down, args) = (base.join(format!("door-{from}")), base.join(format!("door-{from}.down")), base.join(format!("door-{from}.args")));
+    write(&ssh, &format!(
+        "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{args}'\nfor a; do last=\"$a\"; done\n\
+         if [ -e '{down}' ]; then echo 'ssh: connect to host {host} port 2201: Connection refused' >&2; exit 255; fi\n\
+         unset AWM_EDGES_FILE\nexport AWM_DIR='{}' AWM_GATEWAY_URL='{host_url}' AWM_NODE_NAME={host} SSH_ORIGINAL_COMMAND=\"$last\"\n\
+         exec '{}' port --key awm:{from}:service\n",
+        host_state.display(), awm_bin().display(), args = args.display(), down = down.display()));
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&ssh, std::fs::Permissions::from_mode(0o755)).unwrap();
+    FakeDoor { ssh, down, args }
+}
+
+/// A fake plugin `ops` that needs `trilium`, as operations does.
+fn ops_plugin(state: &Path) {
+    let core = state.parent().unwrap().join("core/ops");
+    write(&core.join("awm-plugin.toml"),
+          "[plugin]\nname = \"ops\"\n\n[[service]]\nname = \"ops\"\n\n[[tool]]\nname = \"ops\"\n\n[[needs.tool]]\nname = \"trilium\"\nverbs = [\"whoami\"]\n");
+    write(&core.join("run.sh"), &format!("export FAKE_TOOL=ops\nexec '{}'\n", fake_bin().display()));
+}
+
+/// alcor's shape (fleet.md R89, R98): an edge to mizar only, and a caller of trilium, which
+/// deneb hosts. alcor reaches trilium through deneb's door, and a door that is down refuses
+/// no plugin. shogun is no caller and finds no such tool. mizar relays a caller's call and
+/// carries its origin to the door, and relays none for shogun.
+#[test]
+fn a_caller_reaches_a_peers_singleton_through_its_door() {
+    let tmp = tempfile::tempdir().unwrap();
+    let base = tmp.path();
+    let edges = "nodes:\n  mizar: {role: homebase}\n  alcor: {role: standby}\n  \
+                 deneb: {role: station, addresses: {public: 127.0.0.1, tailscale: 100.64.0.9}}\n  shogun: {role: admin}\n\
+                 edges:\n  alcor: {mizar: tailscale}\n  mizar: {alcor: tailscale, deneb: internet}\n  shogun: {mizar: tailscale}\n\
+                 singleton_doors:\n  deneb: {port: 2201, network: internet}\n\
+                 singletons:\n  - {tool: trilium, host: deneb, callers: [mizar, alcor]}\n";
+    let deneb_state = edge_node(base, "deneb", &["trilium"], edges);
+    let deneb = Gateway::start(&deneb_state);
+    let fail = |state: &Path| format!("{}\ndeneb: {}", log(state), log(&deneb_state));
+    let invoke = |url: &str, hs: &[(&str, String)], tool: &str, verb: &str, peer: Option<&str>| {
+        let mut req = http().post(format!("{url}/invoke")).json(&json!({"name": tool, "args": {"verb": verb, "args": {}, "peer": peer}}));
+        for (k, v) in hs {
+            req = req.header(*k, v);
+        }
+        let resp = req.send().unwrap();
+        (resp.status().as_u16(), resp.json::<Value>().unwrap_or(Value::Null))
+    };
+    let result = |body: &Value| -> Value { serde_json::from_str(body["result"].as_str().unwrap_or("null")).unwrap_or(Value::Null) };
+    let table = |url: &str| -> Vec<Value> {
+        let (_, body) = invoke(url, &[], "awm", "table", None);
+        result(&body)["tools"].as_array().cloned().unwrap_or_default()
+    };
+    let plugins = |url: &str| -> Value { result(&invoke(url, &[], "awm", "plugins", None).1) };
+
+    // alcor boots with deneb's door down, and operations still loads.
+    let alcor_state = edge_node(base, "alcor", &[], edges);
+    ops_plugin(&alcor_state);
+    let door = fake_door(base, "alcor", "deneb", &deneb_state, &deneb.url);
+    write(&door.down, "");
+    let alcor = Gateway::start_with(&alcor_state, &[("AWM_DOOR_SSH", door.ssh.to_str().unwrap()), ("AWM_EDGE_SSH", "false")]);
+    let loaded = plugins(&alcor.url);
+    assert_eq!(loaded["refused"], json!([]), "{loaded} {}", fail(&alcor_state));
+    assert!(loaded["plugins"].as_array().unwrap().iter().any(|p| p["name"] == "ops"), "{loaded}");
+    assert!(table(&alcor.url).contains(&json!({"name": "trilium", "peer": "deneb", "door": true})), "{:?}", table(&alcor.url));
+    let (status, body) = invoke(&alcor.url, &[], "trilium", "whoami", None);
+    let detail = body["detail"].as_str().unwrap_or_default();
+    assert_eq!(status, 502, "{body}");
+    assert!(detail.contains("deneb's singleton door at 127.0.0.1:2201 did not answer for trilium") && detail.contains("Connection refused"), "{detail}");
+
+    // With the door up, the call reaches deneb as a service-lane call from alcor.
+    std::fs::remove_file(&door.down).unwrap();
+    for peer in [None, Some("deneb")] {
+        let (status, body) = invoke(&alcor.url, &[], "trilium", "whoami", peer);
+        assert_eq!(status, 200, "{body} {}", fail(&alcor_state));
+        let who = result(&body);
+        assert_eq!((who["caller"]["node"].as_str(), who["caller"]["lane"].as_str()), (Some("alcor"), Some("service")), "{who}");
+        assert_eq!(who["as"], "peer:alcor");
+    }
+    let args = std::fs::read_to_string(&door.args).unwrap();
+    assert!(args.contains("\n-p\n2201\n127.0.0.1\nport {"), "the door listens on deneb's public address: {args}");
+    // operations' own call to trilium takes the same door.
+    let resp = http().post(format!("{}/invoke", alcor.url))
+        .json(&json!({"name": "ops", "args": {"verb": "call_needed", "args": {"verb": "whoami"}}}))
+        .send().unwrap();
+    assert!(resp.status().is_success());
+    let via_ops = result(&resp.json::<Value>().unwrap());
+    assert_eq!(serde_json::from_str::<Value>(via_ops["result"].as_str().unwrap_or("null")).unwrap()["caller"]["node"], "alcor", "{via_ops}");
+    // No edge carries a singleton call, even toward a node with an edge to the host.
+    let (status, body) = invoke(&alcor.url, &[], "trilium", "whoami", Some("mizar"));
+    assert_eq!(status, 400, "{body}");
+    assert!(body["detail"].as_str().unwrap_or_default().contains("deneb's singleton door"), "{body}");
+
+    // deneb's table gives no singleton to another node, caller or not.
+    let token = |state: &Path| std::fs::read_to_string(state.join("edge.token")).unwrap().trim().to_string();
+    let edge_from = |state: &Path, caller: Value| vec![("x-awm-caller", caller.to_string()), ("x-awm-edge-token", token(state))];
+    let mut req = http().get(format!("{}/hub/table", deneb.url));
+    for (k, v) in edge_from(&deneb_state, json!({"node": "mizar", "lane": "edge"})) {
+        req = req.header(k, v);
+    }
+    let rows: Vec<Value> = req.send().unwrap().json().unwrap();
+    assert!(!rows.iter().any(|r| r["name"] == "trilium"), "{rows:?}");
+
+    // shogun is no caller: no trilium in its table, an unknown tool on a call, and a plugin
+    // that needs it is refused.
+    let shogun_state = edge_node(base, "shogun", &[], edges);
+    ops_plugin(&shogun_state);
+    let shogun_door = fake_door(base, "shogun", "deneb", &deneb_state, &deneb.url);
+    let shogun = Gateway::start_with(&shogun_state, &[("AWM_DOOR_SSH", shogun_door.ssh.to_str().unwrap()), ("AWM_EDGE_SSH", "false")]);
+    assert!(!table(&shogun.url).iter().any(|t| t["name"] == "trilium"), "{:?}", table(&shogun.url));
+    for peer in [None, Some("deneb")] {
+        let (status, body) = invoke(&shogun.url, &[], "trilium", "whoami", peer);
+        assert_eq!((status, body["detail"].as_str()), (404, Some("Unknown tool \"trilium\"")), "{body}");
+    }
+    assert!(!shogun_door.args.exists(), "shogun never dials the door");
+    let refused = plugins(&shogun.url)["refused"].clone();
+    assert!(refused.as_array().unwrap().iter().any(|r| r["plugin"] == "ops"), "{refused}");
+
+    // mizar relays a caller's call through its own door, carrying where it started, and none
+    // for shogun.
+    let mizar_state = edge_node(base, "mizar", &[], edges);
+    let mizar_door = fake_door(base, "mizar", "deneb", &deneb_state, &deneb.url);
+    let mizar = Gateway::start_with(&mizar_state, &[("AWM_DOOR_SSH", mizar_door.ssh.to_str().unwrap()), ("AWM_EDGE_SSH", "false")]);
+    let (status, body) = invoke(&mizar.url, &edge_from(&mizar_state, json!({"node": "alcor", "lane": "edge", "trust": "trusted"})), "trilium", "whoami", None);
+    assert_eq!(status, 200, "{body} {}", fail(&mizar_state));
+    let who = result(&body);
+    assert_eq!((who["caller"]["node"].as_str(), who["caller"]["origin"].as_str()), (Some("mizar"), Some("alcor")), "{who}");
+    let (status, body) = invoke(&mizar.url, &edge_from(&mizar_state, json!({"node": "shogun", "lane": "edge", "trust": "trusted"})), "trilium", "whoami", None);
+    assert_eq!((status, body["detail"].as_str()), (404, Some("Unknown tool \"trilium\"")), "{body}");
+    // deneb checks the origin a door call carries, too.
+    let out = Command::new(awm_bin())
+        .args(["port", "--key", "awm:mizar:service"])
+        .env_remove("AWM_EDGES_FILE")
+        .env("AWM_DIR", &deneb_state)
+        .env("AWM_GATEWAY_URL", &deneb.url)
+        .env("AWM_NODE_NAME", "deneb")
+        .env("SSH_ORIGINAL_COMMAND", r#"port {"name": "trilium", "args": {"verb": "whoami"}, "origin": "shogun"}"#)
+        .output()
+        .unwrap();
+    let reply: Value = serde_json::from_slice(&out.stdout).unwrap_or(Value::Null);
+    assert_eq!(reply["ok"], false, "{reply}");
+    assert!(reply["error"].as_str().unwrap_or_default().contains("Unknown tool"), "{reply}");
+    drop((mizar, shogun, alcor, deneb));
 }
 
 #[test]

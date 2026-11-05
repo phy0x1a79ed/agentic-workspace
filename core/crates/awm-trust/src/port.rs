@@ -3,20 +3,23 @@
 //! A service key's `authorized_keys` line reads
 //! `restrict,command="awm port --key awm:<holder>:service" ssh-ed25519 …`. sshd
 //! puts what the caller asked for in `SSH_ORIGINAL_COMMAND`. The door takes one
-//! JSON request `{"name","args"}`, answers any tool outside its set as unknown, logs every
+//! JSON request `{"name","args","origin"?}`, answers any tool outside its set as unknown, logs every
 //! call, and hands the rest to the local gateway at the service lane.
 
 use std::io::Write;
 use std::path::Path;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct DoorRequest {
     pub name: String,
     #[serde(default)]
     pub args: Value,
+    /// The node a call relayed through the key's holder started from (fleet.md R98 item 3).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
 }
 
 /// Parse `SSH_ORIGINAL_COMMAND`: `port <json>` or the bare JSON.
