@@ -32,6 +32,8 @@ Procedure, from dfs-interview § Work the stack:
 - **M13** (2026-11-05): Cloudflare: add CAA record auth = 0 issue "letsencrypt.org; validationmethods=dns-01". Needs M12.
 - **M14** (2026-11-05): Cloudflare: create an API token, Zone DNS Edit, zone tony-xy-liu.com only; keep it in your password manager until M25. Give an ACME email or none. Needs M12.
 - **rt-plugins** (2026-11-05): rt-container waits on your go to build the stock plugins (projects/stock/plugins). Talk to it directly.
+- **Q-tarball-backup** (2026-11-05): Trilium fork backup: push its branches and tags to the existing GitHub fork phy0x1a79ed/Trilium, and attach the pinned tarball to a GitHub release there as a backup copy only (deneb still gets mizar's push)? Recommended: yes.
+- **Q-deneb** (2026-11-05): deneb for the board: OK to apply deneb's roles after a dry run I review (SNI forward to alcor, Trilium from the fork tarball, passkey login, push node), live vault backed up first?
 
 ## Stack
 
@@ -41,6 +43,8 @@ Procedure, from dfs-interview § Work the stack:
       - [x] Does alcor open for the board's services only (operations, approver and passkey, deneb tunnel), with rt, IBKR and mira still shut? (answered 2026-11-05)
       - [x] Tony's DNS steps M10, M12, M13, M14: can he do them now, in parallel? (answered 2026-11-05)
       - [x] Discord on alcor: hold social's Discord accounts on alcor until mira's cutover? (answered 2026-11-05)
+      - **tarball-backup** (2026-11-05): trilium-fork: mizar's .awm/artifacts holds the only copy of the pinned tarball. A rebuild changes the sha256, so it needs a backup policy. Nothing is pushed to the GitHub fork. That waits on your go.
+      - **deneb-board** (2026-11-05): trilium-fork follow-ups: deneb gets the tarball only once cloud's install config makes deneb a push node; cloud deploy.yml awm_fleet_push.altair still lists trilium and canonical_repos defaults include trilium; the mizar vault mirror does not exist yet
 
 ## Parked
 
@@ -60,6 +64,7 @@ From journal 6a98c0c6 (awm/redux) and walkthrough's handover (manual-steps.md at
 - Discord seats (M34)
 - R77 after the Caviar and muse invites (M55)
 - reflection follow-ups from reflect-selfstop (release dcd8ba4d, journal 8542e517): cch status misses a session by its post-clear id, so stop {job:<new id>} misses it; old trust.json records have no job field
+- altair still commits nightly vault snapshots to its fork release; R105 stops that (trilium-fork, 2026-11-05)
 - end state: verify every node (T28), retire mira and its disk (T29, M56), debrief (T30)
 
 ## Workers
