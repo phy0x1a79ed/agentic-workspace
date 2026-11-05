@@ -76,6 +76,7 @@ From journal 6a98c0c6 (awm/redux) and walkthrough's handover (manual-steps.md at
 - core-artifact follow-up (journal 88a132af): pages of an out-of-tree plugin (AWM_PLUGIN_ROOTS, such as the optional plugin projects of R33) are not in pages.pin, so no push node gets them
 - homelab_base "Fetch Docker's apt key" reports a change on every run, so the role is not idempotent (alcor-open, 2026-11-05)
 - end state: verify every node (T28), retire mira and its disk (T29, M56), debrief (T30)
+- mizar off-site data backup: chinook is ruled out (lab resource) and mizar's chinook jobs are disabled; pick another target later (Tony, 2026-11-05)
 
 ## Workers
 
