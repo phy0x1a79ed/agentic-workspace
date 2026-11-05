@@ -6,7 +6,13 @@ This file holds whether existing tools meet the spec, in whole or in part, and t
 
 ## Survey
 
-Two read-only surveys run on 2026-11-05: integrated engines scored against the spec, and disk-based exact substring indexes.
+Three read-only surveys ran on 2026-11-05. Each file holds its table and sources.
+
+- `../surveys/engines.md`: integrated engines. No engine meets the spec whole. LanceDB is the best partial fit: embedded, phrase and BM25 search, IVF-RQ vectors, typed and list columns, column changes and merge updates. Its caches must be capped. It needs regular `optimize()`. It is unmeasured cold. SQLite FTS5 plus an own IVF on exact pread is the measured fallback.
+- `../surveys/substring.md`: exact matching. The relaxed form is native in FTS5, Tantivy, Lucene, Postgres and LanceDB. The strict form needs a second index on a stripped shadow column, such as FTS5 trigram queried by its rarest trigrams.
+- `../surveys/bio.md`: BLAST, DIAMOND and kin. None fits as an engine: they assume batches, RAM or static data. Their seed-index ideas (rarest q-grams, minimizers, volumes with tombstones) would serve a strict-form build.
+
+The gap on top of LanceDB or SQLite is glue: map field classes to columns, compile Mongo filters to SQL, write the query layer (exact and related legs, fusion, `$sort`, `max`, hit fields), and run maintenance jobs. No survey found cold-cache evidence on a disk like altair's. A cold benchmark decides between the candidates.
 
 ## Decisions
 
