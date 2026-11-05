@@ -10,3 +10,4 @@ Two read-only surveys run on 2026-11-05: integrated engines scored against the s
 
 ## Decisions
 
+- 2026-11-05: Exact matching may bend to keep spaces when that lets an existing method serve it. The relaxed form is a case-insensitive phrase match on words, with punctuation as a word boundary: `p95-latency` matches `p95 latency`, but `p95latency` does not. Tony: "We can bend exact matching if existing methods keep spaces".
