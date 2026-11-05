@@ -23,14 +23,13 @@ Procedure, from dfs-interview § Work the stack:
 
 ## Current topic
 
-**memory**, under **spec**. Its result: `spec/memory/README.md`.
+**latency**, under **spec**. Its result: `spec/latency/README.md`.
 
 ## Stack
 
 - **spec** (2026-11-04): Basic rough spec is disk based search over text, mainly journals, for agentic memory.
-  - **memory** (2026-11-04): Want disk because keeping a large corpus in ram is not feasible with essentially unlimited size. But something like 100mb is acceptable.
-    - [ ] What does the 100 MB bound cover, and does the OS page cache count?
   - **latency** (2026-11-04): It needs to be fast because agents will constantly call it so something like 1s is prolly max, but flexible. Simple queries like last journal or journals about x where x is specific/obvious should return fast like 0.1s.
+    - [ ] Do the latency targets hold with the corpus files cold, outside the OS page cache?
   - **matching** (2026-11-04): Search requires both exact and semantic matches.
 
 ## Parked
@@ -44,3 +43,4 @@ Procedure, from dfs-interview § Work the stack:
 
 - **sources** (closed 2026-11-04): `spec/sources/README.md`
 - **sort** (closed 2026-11-04): `spec/sort/README.md`
+- **memory** (closed 2026-11-04): `spec/memory/README.md`
