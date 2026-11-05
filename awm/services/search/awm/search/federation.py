@@ -14,6 +14,7 @@ from typing import Any
 
 from awm.config import edges
 from awm.search import hits as hitshape
+from awm.search.query import hit_fields
 
 #: Budget for one peer, connect to reply.
 PEER_TIMEOUT_S = 10.0
@@ -65,13 +66,14 @@ def _reply(raw: Any, names: list[str]) -> dict[str, Any]:
     return raw
 
 
-def _answer(raw: Any, limit: int) -> dict[str, Any]:
-    """One source's part of a peer's answer, cleaned: its sections and its error."""
+def _answer(raw: Any, limit: int, kind: str) -> dict[str, Any]:
+    """One source's part of a peer's answer, cleaned to the kind's hit fields: its sections and its error."""
     if not isinstance(raw, dict):
         return {"exact": [], "error": "the node did not answer for this source"}
-    out: dict[str, Any] = {"exact": hitshape.section(raw.get("exact"), limit)}
+    fields = hit_fields(kind)
+    out: dict[str, Any] = {"exact": hitshape.section(raw.get("exact"), limit, fields)}
     if "related" in raw:
-        out["related"] = hitshape.section(raw.get("related"), limit)
+        out["related"] = hitshape.section(raw.get("related"), limit, fields)
     if raw.get("error"):
         out["error"] = str(raw["error"])[:300]
     return out
@@ -90,7 +92,7 @@ async def _ask_one(peers: Peers, record: dict[str, Any], args: dict[str, Any], l
         return PeerResult(name, {"status": "error", "error": f"timeout after {PEER_TIMEOUT_S:g}s"})
     except Exception as exc:  # noqa: BLE001 — a peer's failure is reported, never raised
         return PeerResult(name, {"status": "error", "error": describe_error(exc)})
-    return PeerResult(name, {"status": "ok"}, {n: _answer(reply.get(n), limit) for n in names})
+    return PeerResult(name, {"status": "ok"}, {n: _answer(reply.get(n), limit, n) for n in names})
 
 
 async def ask_home(peers: Peers, home: str, args: dict[str, Any], limit: int,

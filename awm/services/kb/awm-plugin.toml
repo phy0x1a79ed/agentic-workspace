@@ -10,6 +10,16 @@ name = "kb"
 mode = "live"
 query = "kb_query"
 get = "kb_get"
+hit = ["title", "ts"]
+
+[service.archive.fields]
+title = "content"
+text = "content"
+ts = "datetime"
+author = "categorical"
+tag = "categorical"
+cites = "categorical"
+cited_by = "categorical"
 
 [[service.archive]]
 name = "library"

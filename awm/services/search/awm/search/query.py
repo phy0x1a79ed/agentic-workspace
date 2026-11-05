@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import json
 import re
 from dataclasses import dataclass, field
@@ -11,14 +12,9 @@ from awm import config
 from awm.config import edges
 from awm.config import privacy
 
-from awm.search import store
+from awm.search import registry, store
+from awm.search.registry import Field
 
-#: kind -> {field: multi-valued}
-FIELDS: dict[str, dict[str, bool]] = {
-    "journals": {"project": False, "scope": False, "tag": True, "ts": False, "replies_to": True},
-    "transcripts": {"project": False, "scope": False, "ts": False},
-    "kb": {"author": True, "tag": True, "ts": False, "cites": True, "cited_by": True},
-}
 DEFAULT_MAX = 10
 MAX_MAX = 100
 
@@ -26,6 +22,20 @@ LOGIC = ("$and", "$or", "$nor")
 SCALAR_OPS = ("$eq", "$ne", "$gt", "$gte", "$lt", "$lte")
 LIST_OPS = ("$in", "$nin", "$all")
 _NODE = re.compile(r"^[A-Za-z0-9_.-]+$")
+_SORT = re.compile(r"^([+-]?)([a-z][a-z0-9_]*)$")
+
+
+@functools.cache
+def kinds() -> dict[str, dict[str, Field]]:
+    """``{kind: {name: Field}}`` for every kind a manifest on disk declares fields for."""
+    return {k: fields for k, (fields, _) in registry.declared().items() if fields}
+
+
+@functools.cache
+def hit_fields(kind: str) -> tuple[str, ...]:
+    """The fields a hit of ``kind`` shows beside its id; ``title`` and ``ts`` for an undeclared kind."""
+    declared = registry.declared().get(kind)
+    return declared[1] if declared and declared[1] else ("title", "ts")
 
 
 class QueryError(ValueError):
@@ -65,6 +75,14 @@ class Source:
     kind: str
     node: str
     filter: dict
+    #: ``(field, descending)`` from ``$sort``, or ``None``.
+    sort: tuple[str, bool] | None = None
+
+    def asked(self) -> dict:
+        """The filter as a caller writes it, ``$sort`` included."""
+        if self.sort is None:
+            return self.filter
+        return {**self.filter, "$sort": ("-" if self.sort[1] else "+") + self.sort[0]}
 
 
 @dataclass
@@ -83,7 +101,7 @@ class Request:
         if self.text is not None:
             body["text"] = self.text.raw
         for source in self.remote.get(node, []):
-            body[source.kind] = source.filter
+            body[source.kind] = source.asked()
         return {"query": body, "max": self.max}
 
 
@@ -135,8 +153,8 @@ def _contains_tree(node: Any, path: str) -> Node:
         raise _fail(path, "a text term is an object with exactly one key", ("$contains", *LOGIC))
     (key, value), = node.items()
     if key == "$contains":
-        if not isinstance(value, str) or not value:
-            raise _fail(f"{path}.$contains", "needs a non-empty string")
+        if not isinstance(value, str) or not re.search(r"[^\W_]", value):
+            raise _fail(f"{path}.$contains", "needs a string with a letter or digit")
         return Lit(value)
     if key in LOGIC:
         if not isinstance(value, list) or not value:
@@ -182,18 +200,20 @@ def _text(value: Any) -> Text:
     return Text(None, False, _contains_tree(value, path), value)
 
 
-def _scalar(value: Any, name: str, path: str) -> Any:
+def _scalar(value: Any, f: Field, path: str) -> Any:
     if isinstance(value, bool) or not isinstance(value, (str, int, float)):
         raise _fail(path, f"{type(value).__name__} is not a scalar", "string, number")
-    if name == "ts":
+    if f.cls == "datetime":
         stamp = store.normalize_ts(value) if isinstance(value, str) else ""
         if not stamp:
             raise _fail(path, f"{value!r} is not an ISO 8601 date or time", "2026-03-01, 2026-03-01T12:00:00Z")
         return stamp
-    return value
+    if f.cls == "numeric" and not isinstance(value, (int, float)):
+        raise _fail(path, f"{value!r} is not a number", "a number")
+    return value if f.cls == "numeric" else str(value)
 
 
-def _field_value(value: Any, name: str, path: str) -> Any:
+def _field_value(value: Any, name: Field, path: str) -> Any:
     if isinstance(value, list):
         raise _fail(path, "a bare list is not a value", "a scalar, or an object with $in, $nin or $all")
     if not isinstance(value, dict):
@@ -214,35 +234,54 @@ def _field_value(value: Any, name: str, path: str) -> Any:
     return out
 
 
-def _filter(f: Any, kind: str, path: str) -> dict:
+def _filter(f: Any, fields: dict[str, Field], kind: str, path: str) -> dict:
     if not isinstance(f, dict):
         raise _fail(path, "a source filter is an object")
+    filterable = tuple(n for n, x in fields.items() if x.cls != "content")
     out: dict[str, Any] = {}
     for key, value in f.items():
         at = f"{path}.{key}"
         if key in LOGIC:
             if not isinstance(value, list) or not value:
                 raise _fail(at, "needs a non-empty list")
-            out[key] = [_filter(sub, kind, f"{at}[{i}]") for i, sub in enumerate(value)]
+            out[key] = [_filter(sub, fields, kind, f"{at}[{i}]") for i, sub in enumerate(value)]
         elif key in ("$about", "$contains"):
             raise _fail(at, f"{key} belongs in text, not in a source filter")
+        elif key == "$sort":
+            raise _fail(at, "$sort sits only at the top of a source filter")
         elif key.startswith("$"):
-            raise _fail(at, "operator not allowed at a field position", (*LOGIC, *FIELDS[kind]))
-        elif key not in FIELDS[kind]:
-            raise _fail(at, f"{kind} has no field {key!r}", tuple(FIELDS[kind]))
+            raise _fail(at, "operator not allowed at a field position", (*LOGIC, "$sort", *filterable))
+        elif key not in fields:
+            raise _fail(at, f"{kind} has no field {key!r}", filterable)
+        elif fields[key].cls == "content":
+            raise _fail(at, f"{key} is content: search it with text", filterable)
         else:
-            out[key] = _field_value(value, key, at)
+            out[key] = _field_value(value, fields[key], at)
     return out
+
+
+def _sort(value: Any, fields: dict[str, Field], kind: str, path: str) -> tuple[str, bool]:
+    m = _SORT.match(value) if isinstance(value, str) else None
+    if m is None or m.group(2) not in fields:
+        raise _fail(path, f"{value!r} is not one field of {kind} with + or -",
+                    tuple(f"-{n}" for n in fields))
+    return m.group(2), m.group(1) == "-"
 
 
 def _source(key: str, value: Any) -> Source:
     path = f"query.{key}"
     kind, at, node = key.partition("@")
-    if kind not in FIELDS:
-        raise _fail(path, "not a source", sorted(FIELDS))
+    known = kinds()
+    if kind not in known:
+        raise _fail(path, "not a source", sorted(known))
     if at and not _NODE.match(node):
         raise _fail(path, "malformed node after @", "kind@node, such as journals@altair")
-    return Source(key, kind, "" if is_here(node) else node, _filter(value, kind, path))
+    fields = known[kind]
+    sort = None
+    if isinstance(value, dict) and "$sort" in value:
+        sort = _sort(value["$sort"], fields, kind, f"{path}.$sort")
+        value = {k: v for k, v in value.items() if k != "$sort"}
+    return Source(key, kind, "" if is_here(node) else node, _filter(value, fields, kind, path), sort)
 
 
 def _query(query: Any) -> tuple[Text | None, list[Source]]:
@@ -257,7 +296,7 @@ def _query(query: Any) -> tuple[Text | None, list[Source]]:
             raise _fail("query", "the query is empty")
         return _text(query), [_source("journals", {})]
     if not isinstance(query, dict) or not query:
-        raise _fail("query", "a query is a string or a non-empty object", ("text", *FIELDS))
+        raise _fail("query", "a query is a string or a non-empty object", ("text", *kinds()))
     text = _text(query["text"]) if "text" in query else None
     sources = [_source(k, v) for k, v in query.items() if k != "text"]
     if not sources:

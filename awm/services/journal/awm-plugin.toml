@@ -10,6 +10,16 @@ name = "journals"
 mode = "index"
 export = "journal_export"
 topic = "posts"
+hit = ["title", "ts"]
+
+[service.archive.fields]
+title = "content"
+text = "content"
+ts = "datetime"
+project = "categorical"
+scope = { class = "categorical", nested = "/" }
+tag = "categorical"
+replies_to = "categorical"
 
 [[tool]]
 name = "journal"

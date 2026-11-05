@@ -10,6 +10,14 @@ name = "transcripts"
 mode = "live"
 query = "transcripts_query"
 optin = true
+hit = ["title", "ts"]
+
+[service.archive.fields]
+title = "content"
+text = "content"
+ts = "datetime"
+project = "categorical"
+scope = { class = "categorical", nested = "/" }
 
 [[tool]]
 name = "transcripts"
