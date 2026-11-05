@@ -194,16 +194,16 @@ The gateway appends each event to `<AWM_DIR>/usage/<YYYY-MM-DD>.jsonl` and prune
 
 ## The search archive
 
-`search` owns the `search` tool and the archive: a registry of plug-ins over one hybrid index. Agents get one ranked answer over everything the swarm knows, on this node and across its edges, and a new source joins without a change to `search`. `awm/services/search/INSTALL.md` § *Joining the archive* is the contract a plug-in meets. This section holds the reasons.
+`search` owns the `search` tool and the archive: a registry of plug-ins, each index source in its own LanceDB store. Agents get one search over everything the swarm knows, on this node and across its edges, and a new source joins without a change to `search`. `awm/services/search/INSTALL.md` § *Joining the archive* is the contract a plug-in meets. `docs/search-opt/` holds the spec and the engine's decisions. This section holds the reasons.
 
 - **Plug-ins.** A service joins with one `[[service.archive]]` table per source in its manifest. A caller names the source as `name`, or `name@node` on another node. The `mode` is `index` or `live`. `awm services` lists the tables under `archive` in each row, and `search` reads them there.
-- **index mode.** The service's hidden `<tool>_export` verb pages `{documents, next_cursor, done, ids}` in ascending key order. `ids` is the full key set and appears only on the last page. `search` drops stored documents whose key is missing from it. A push topic, when the table names one, schedules a debounced full pass, and an hourly pass runs regardless.
+- **Declared fields.** Each table declares its fields with a class and the fields a hit shows. The declaration is the query schema, so a new field needs no code in `search`. A change to it rebuilds the source.
+- **index mode.** The service's hidden `<tool>_export` verb is a change feed: the entries changed after a cursor, with deletions. `search` stores the cursor per page, so a read costs only the changes since the last one. A push topic, when the table names one, brings the next read forward, and an hourly read runs regardless.
 - **live mode.** The table names a query verb that `search` calls at query time. A source marked `optin` runs only when a caller names it. `transcripts` is the live source.
-- **One corpus.** Every document sits under one source type with a `source:id` key, and a side table holds source, project, scope, tags and ts for filtering. The engine normalises scores per call, so separate corpora would not rank against each other.
-- **Frozen sources.** A source whose service stops registering keeps its last documents, marked frozen, and a sweep never reads an absent service as "every document deleted".
-- **Merge.** Archive, live and other nodes' lists fuse by reciprocal rank fusion. Scores from different lists do not compare, so only rank counts.
+- **One store per source.** Each source answers apart, so no score has to compare across sources. A source's `$about` ranking fuses its own vector and keyword lists by score.
+- **Frozen sources.** A source whose service stops registering keeps its last entries, marked frozen, and a read never takes an absent service as "every entry deleted".
 
-**CAUTION** An export verb that cannot read its store must raise. An empty `ids` from a broken store deletes that source's documents from the index.
+**CAUTION** A feed must show every write that changes an entry. The journal bumps its feed with triggers in the same transaction as the write, so no code path can skip it.
 
 ## Service lifecycle
 

@@ -209,7 +209,7 @@ def _and(*parts: str) -> str:
 
 def _fts_rows(tables: Tables, query: Any, cond: str, limit: int | None, columns: Sequence[str] = ()
               ) -> list[dict[str, Any]]:
-    b = tables.entries.search(query, query_type="fts").select(["id", *columns]).limit(limit)
+    b = tables.entries.search(query, query_type="fts").select(["id", "_score", *columns]).limit(limit)
     if cond != "true":
         b = b.where(cond, prefilter=True)
     return b.to_arrow().to_pylist()
@@ -276,7 +276,7 @@ def _vector(tables: Tables, embedder: engine.Embedder, about: str, cond: str, de
     if tables.chunks.count_rows() == 0:
         return {}
     qv = embedder.encode([about], query=True)[0]
-    b = tables.chunks.search(qv).distance_type("cosine").nprobes(NPROBES).select(["id"]).limit(depth * 3)
+    b = tables.chunks.search(qv).distance_type("cosine").nprobes(NPROBES).select(["id", "_distance"]).limit(depth * 3)
     if REFINE:
         b = b.refine_factor(REFINE)
     if cond != "true":

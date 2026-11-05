@@ -1,18 +1,15 @@
 """Replay the judgement set through two search services, and check grep parity, for the regression gate.
 
     replay.py seed gold PARQUET            semdb's quote queries, each judged against its gold papers
-    replay.py seed kbeval QUERIES --search-db DB
-                                           kb's single-hop and paraphrase sets, targets resolved to journal ids
     replay.py seed sessions DIR...         a search hit that a session fetched with get, after that query
     replay.py seed jsonl FILE              one judgement per line: query, source, id, verdict, section, note
     replay.py run --old URL --new URL      recall of every judged query on both, with the gate's verdict
     replay.py run --judgements FILE...     the same, judged by seed-shaped files instead of --new's set
-    replay.py grep --new URL --search-db DB [--papers-db DB]
-                                           literal substrings sampled from the indexed text, found in `exact`
+    replay.py grep --new URL [--lance DIR] word phrases sampled from each index source's stored text,
+                                           asked as $contains and found in `exact`
 
 URLs are gateway bases such as http://127.0.0.1:7819 (prod) or a dev sandbox's. Judgements are read
-from and seeded into --new (default: AWM_HUB_URL, else prod). A paper matches across engines by its
-DOI, because the old engine keys papers by Zotero key and the new one by DOI.
+from and seeded into --new (default: AWM_HUB_URL, else prod). A paper matches by its DOI.
 """
 
 from __future__ import annotations
@@ -23,7 +20,6 @@ import json
 import os
 import random
 import re
-import sqlite3
 import sys
 import time
 from collections import defaultdict
@@ -33,7 +29,7 @@ from typing import Any, Iterable
 import httpx
 
 PROD = "http://127.0.0.1:7819"
-SECTIONS = ("exact", "related", "graph")
+SECTIONS = ("exact", "related")
 #: semdb's own max-pooling baseline on its gold set (criterion 5).
 GOLD_FLOOR = 0.389
 DOI = re.compile(r"(?:doi\.org/|^doi:)(10\.\S+)", re.I)
@@ -64,18 +60,15 @@ def identity(source: str, doc_id: str, url: str = "") -> str:
 
 
 def ranked(answer: dict[str, Any]) -> list[tuple[str, str, dict[str, Any], int]]:
-    """``(identity, section, hit, place)`` in reading order: the sections in turn, or an old answer's ``hits``.
-
-    A section is a flat list (an old answer) or one ranked list per source; ``place`` is the hit's 1-based place
-    in its own list, so a source's hits are not pushed down by another source's.
-    """
+    """``(identity, section, hit, place)`` in reading order, ``place`` being the hit's 1-based place in its own
+    source's section, so one source's hits do not push down another's."""
     out = []
-    for section in SECTIONS if any(k in answer for k in SECTIONS) else ("hits",):
-        body = answer.get(section) or []
-        for hits in body.values() if isinstance(body, dict) else [body]:
-            for place, hit in enumerate(hits, 1):
-                out.append((identity(hit["source"], str(hit["id"]), hit.get("url", "")),
-                            "related" if section == "hits" else section, hit, place))
+    for section in SECTIONS:
+        for source, body in answer.items():
+            if not isinstance(body, dict):
+                continue
+            for place, hit in enumerate(body.get(section) or [], 1):
+                out.append((identity(source.split("@")[0], str(hit["id"]), hit.get("url", "")), section, hit, place))
     return out
 
 
@@ -84,8 +77,8 @@ def searchable(hub: str) -> list[str]:
     return [s["name"] for s in call(hub, "sources", {})["sources"]]
 
 
-def ask(hub: str, query: str, limit: int, sources: list[str]) -> dict[str, Any]:
-    return call(hub, "query", {"query": query, "limit": limit, "sources": sources})
+def ask(hub: str, text: Any, limit: int, sources: list[str]) -> dict[str, Any]:
+    return call(hub, "query", {"query": {"text": text, **{s: {} for s in sources}}, "max": limit})
 
 
 # -- seeding ---------------------------------------------------------------
@@ -98,24 +91,6 @@ def seed_gold(path: str) -> Iterable[dict[str, Any]]:
         for doi in (ast.literal_eval(papers) if isinstance(papers, str) else papers):
             yield {"query": row["text"], "source": "kb", "id": doi, "verdict": "relevant", "set": "gold",
                    "note": f"{row['qid']} {row['variant']}"}
-
-
-def seed_kbeval(path: str, search_db: str) -> Iterable[dict[str, Any]]:
-    conn = sqlite3.connect(f"file:{search_db}?mode=ro", uri=True)
-    sets = json.loads(Path(path).read_text())
-    for name in ("single_hop", "paraphrase"):
-        for item in sets[name]:
-            for prefix in item["targets"]:
-                rows = conn.execute("SELECT 'journals', doc_id FROM documents WHERE source='journals'"
-                                    " AND doc_id LIKE ?", (prefix + "%",)).fetchall()
-                paper = conn.execute("SELECT url FROM documents WHERE source='kb' AND doc_id=?", (prefix,)).fetchone()
-                if paper and DOI.search(paper[0]):
-                    rows = [("kb", identity("kb", "", paper[0]))]
-                if len(rows) != 1:
-                    print(f"skip {prefix}: {len(rows)} journal or paper ids match", file=sys.stderr)
-                    continue
-                yield {"query": item["q"], "source": rows[0][0], "id": rows[0][1], "verdict": "relevant",
-                       "set": f"kb-{name.replace('_', '-')}"}
 
 
 def _tool_uses(path: Path) -> Iterable[tuple[str, Any]]:
@@ -168,7 +143,6 @@ def seed_jsonl(path: str) -> Iterable[dict[str, Any]]:
 
 def seed(args: argparse.Namespace) -> None:
     rows = {"gold": lambda: seed_gold(args.path[0]),
-            "kbeval": lambda: seed_kbeval(args.path[0], args.search_db),
             "sessions": lambda: seed_sessions(args.path),
             "jsonl": lambda: seed_jsonl(args.path[0])}[args.kind]()
     count = 0
@@ -279,33 +253,39 @@ def _pick(kind: str, text: str, rng: random.Random) -> str:
     if kind == "sentence":
         return _sentence(text, rng)
     found = {"hash": HASH, "path": PATH, "error": ERROR}[kind].findall(text)
-    found = [f.strip()[:80] for f in found if len(f.strip()) >= 7]
+    found = [_words(f.strip(), 80) for f in found if len(f.strip()) >= 7]
     return rng.choice(found) if found else ""
 
 
+def _words(text: str, most: int) -> str:
+    """``text`` cut to ``most`` characters at a word end: a ``$contains`` phrase matches whole words only."""
+    return text if len(text) <= most else text[:most + 1].rsplit(" ", 1)[0]
+
+
+def stored(lance: str) -> list[tuple[str, str, str]]:
+    """``(source, id, text)`` of every entry in the store's index sources, from the content fields."""
+    import lancedb
+    from awm.search import lance_store
+    db = lancedb.connect(lance or lance_store.root())
+    out = []
+    for name in sorted(t for t in lance_store.table_names(db) if not t.endswith("__chunks")):
+        rows = db.open_table(name).to_arrow().to_pylist()
+        for row in rows:
+            text = "\n".join(v for k, v in row.items() if k != "id" and isinstance(v, str))
+            if len(text) > 40:
+                out.append((name, str(row["id"]), text))
+    return out
+
+
 def samples(args: argparse.Namespace, rng: random.Random) -> list[dict[str, str]]:
-    plan = [("hash", 0.15), ("path", 0.15), ("error", 0.15), ("sentence", 0.15)]
-    if args.papers_db:
-        plan.append(("paper", 0.40))
-    total = sum(w for _, w in plan)
+    docs = stored(args.lance)
     out: list[dict[str, str]] = []
-    local = sqlite3.connect(f"file:{args.search_db}?mode=ro", uri=True)
-    docs = local.execute("SELECT source, doc_id, text FROM documents WHERE length(text) > 40").fetchall()
-    papers = sqlite3.connect(f"file:{args.papers_db}?mode=ro", uri=True) if args.papers_db else None
-    top = papers.execute("SELECT max(id) FROM passage").fetchone()[0] if papers else 0
-    for kind, weight in plan:
-        want = round(args.n * weight / total)
-        tries = 0
-        while want and tries < want * 200:
+    for kind in ("hash", "path", "error", "sentence"):
+        want, tries = args.n // 4, 0
+        while docs and want and tries < want * 200:
             tries += 1
-            if kind == "paper":
-                row = papers.execute("SELECT paper_id, text FROM passage WHERE id >= ? LIMIT 1",
-                                     (rng.randint(1, top),)).fetchone()
-                source, doc_id, text = "kb", row[0], row[1]
-                literal = _sentence(text, rng)
-            else:
-                source, doc_id, text = rng.choice(docs)
-                literal = _pick(kind, text, rng)
+            source, doc_id, text = rng.choice(docs)
+            literal = _pick(kind, text, rng)
             if literal and literal in text:
                 out.append({"kind": kind, "source": source, "id": doc_id, "literal": literal})
                 want -= 1
@@ -319,12 +299,9 @@ def grep(args: argparse.Namespace) -> int:
     misses, crowded, latencies = [], [], []
     for s in picked:
         start = time.time()
-        answer = call(args.new, "query", {"query": s["literal"], "sources": [s["source"]], "limit": 100,
-                                          "passages": 1})
+        answer = ask(args.new, {"$contains": s["literal"]}, 100, [s["source"]])
         latencies.append(time.time() - start)
-        section = answer.get("exact") or []
-        exact = [identity(h["source"], str(h["id"]), h.get("url", ""))
-                 for hits in (section.values() if isinstance(section, dict) else [section]) for h in hits]
+        exact = [ident for ident, section, _, _ in ranked(answer) if section == "exact"]
         hit = identity(s["source"], s["id"]) in exact
         tally[s["kind"]][0] += hit
         tally[s["kind"]][1] += 1
@@ -347,9 +324,8 @@ def main() -> int:
     parser.add_argument("--new", default=os.environ.get("AWM_HUB_URL") or PROD)
     sub = parser.add_subparsers(dest="cmd", required=True)
     s = sub.add_parser("seed")
-    s.add_argument("kind", choices=["gold", "kbeval", "sessions", "jsonl"])
+    s.add_argument("kind", choices=["gold", "sessions", "jsonl"])
     s.add_argument("path", nargs="+")
-    s.add_argument("--search-db")
     s.add_argument("--dry-run", action="store_true")
     r = sub.add_parser("run")
     r.add_argument("--old", help="The engine to compare against. Omit to score --new alone.")
@@ -358,14 +334,11 @@ def main() -> int:
                    help="Judgement files in the seed jsonl shape, read instead of --new's set.")
     r.add_argument("--out")
     g = sub.add_parser("grep")
-    g.add_argument("--search-db", required=True)
-    g.add_argument("--papers-db")
+    g.add_argument("--lance", help="The search store to sample from. Default: this workspace's.")
     g.add_argument("-n", type=int, default=1000)
     g.add_argument("--seed", type=int, default=7)
     g.add_argument("--out")
     args = parser.parse_args()
-    if args.cmd == "seed" and args.kind == "kbeval" and not args.search_db:
-        parser.error("seed kbeval needs --search-db")
     return {"seed": lambda: seed(args) or 0, "run": lambda: run(args), "grep": lambda: grep(args)}[args.cmd]()
 
 
