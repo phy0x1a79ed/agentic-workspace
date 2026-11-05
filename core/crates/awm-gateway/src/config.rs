@@ -171,11 +171,9 @@ impl Config {
     pub fn reserved_names(&self, state: &Path) -> Vec<String> {
         let mut names = self.reserved.clone();
         let path = self.edges_path(state);
-        if path.exists() {
-            match singleton_tools(&path) {
-                Ok(extra) => names.extend(extra),
-                Err(e) => tracing::warn!("edges file {}: {e}", path.display()),
-            }
+        match awm_trust::edges::EdgeList::load(&path) {
+            Ok(edges) => names.extend(edges.singleton_tools()),
+            Err(e) => tracing::warn!("edges file {}: {e:#}", path.display()),
         }
         names.sort();
         names.dedup();
@@ -186,20 +184,6 @@ impl Config {
 /// The plugin roots of the awm tree at `awm`.
 pub fn tree_roots(awm: &Path) -> Vec<PathBuf> {
     TREE_ROOTS.iter().map(|r| awm.join(r)).collect()
-}
-
-fn singleton_tools(path: &Path) -> anyhow::Result<Vec<String>> {
-    #[derive(Deserialize)]
-    struct Edges {
-        #[serde(default)]
-        singletons: Vec<Singleton>,
-    }
-    #[derive(Deserialize)]
-    struct Singleton {
-        tool: String,
-    }
-    let edges: Edges = serde_yaml::from_str(&std::fs::read_to_string(path)?)?;
-    Ok(edges.singletons.into_iter().map(|s| s.tool).collect())
 }
 
 pub fn hostname() -> String {
@@ -232,7 +216,12 @@ mod tests {
     fn defaults_and_singletons() {
         let dir = tempfile::tempdir().unwrap();
         let edges = dir.path().join("edges.yml");
-        std::fs::write(&edges, "singletons:\n  - {tool: browser, host: alcor}\n  - {tool: 2fa, host: alcor}\n").unwrap();
+        std::fs::write(
+            &edges,
+            "nodes:\n  alcor: {role: standby}\nsingleton_doors:\n  alcor: {port: 2201, network: lan}\n\
+             singletons:\n  - {tool: browser, host: alcor, callers: []}\n  - {tool: 2fa, host: alcor, callers: []}\n",
+        )
+        .unwrap();
         let cfg = Config { exclude: vec!["engcyc".into()], ..Config::default() };
         assert_eq!(cfg.listen, DEFAULT_LISTEN);
         assert!(cfg.wants("journal") && !cfg.wants("engcyc"));

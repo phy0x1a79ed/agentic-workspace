@@ -40,6 +40,12 @@ impl EdgePeers {
         }
     }
 
+    /// This node as the caller, carrying the node a relayed call started from.
+    fn caller(&self, ctx: &CallContext) -> Caller {
+        Caller { node: self.here.clone(), lane: Lane::Edge, session: ctx.caller.session.clone(), trust: ctx.caller.trust.clone(),
+                 scope: ctx.caller.scope.clone(), origin: ctx.caller.relayed_origin(&self.here) }
+    }
+
     fn map(peer: &str, e: EdgeError) -> PeerError {
         match e {
             EdgeError::Remote(body) => PeerError::Refused { peer: peer.into(), status: 502, body },
@@ -57,8 +63,7 @@ impl PeerTransport for EdgePeers {
         -> BoxFuture<'a, Result<String, PeerError>> {
         Box::pin(async move {
             self.reachable(peer)?;
-            let caller = Caller { node: self.here.clone(), lane: Lane::Edge, session: ctx.caller.session.clone(),
-                                  trust: ctx.caller.trust.clone(), scope: ctx.caller.scope.clone() };
+            let caller = self.caller(ctx);
             let v = self.client.invoke(peer, name, args, caller).await.map_err(|e| Self::map(peer, e))?;
             Ok(match v {
                 Value::String(s) => s,
@@ -73,8 +78,7 @@ impl PeerTransport for EdgePeers {
             if !stream_path_allowed(path) {
                 return Err(PeerError::Refused { peer: peer.into(), status: 403, body: format!("{path} is not a stream path") });
             }
-            let caller = Caller { node: self.here.clone(), lane: Lane::Edge, session: ctx.caller.session.clone(),
-                                  trust: ctx.caller.trust.clone(), scope: ctx.caller.scope.clone() };
+            let caller = self.caller(ctx);
             self.client.open_ws(peer, path, caller).await.map_err(|e| Self::map(peer, e))
         })
     }

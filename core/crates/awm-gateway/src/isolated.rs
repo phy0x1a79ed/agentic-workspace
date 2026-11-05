@@ -104,6 +104,7 @@ impl Holder {
             session: Some(self.session_id.clone()),
             trust: Some(self.trust.clone()),
             scope: Some(self.own_scope()),
+            origin: None,
         }
     }
 }

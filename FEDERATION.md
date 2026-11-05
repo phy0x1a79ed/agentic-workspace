@@ -42,17 +42,27 @@ The `table_changed` frame tells the nodes across each edge that this node's tool
 Machines reach each other through ssh keys at three levels (R92). Each `authorized_keys` line carries a comment `awm:<holder>:<level>`, so a log line names the holder and the level.
 
 - **User.** Tony's account, with a shell and agent access. A user key is an edge. Its forced command is `awm edge-serve` for awm traffic.
-- **Service.** A key locked to `awm port`, with no shell and no forwarding. `awm port` reads the verb from `SSH_ORIGINAL_COMMAND`, runs only the tools the host's singleton door lists, and logs each call to `<AWM_DIR>/port.log`. A service key from outside the edges carries an `expiry-time`: the timed invite.
+- **Service.** A key locked to `awm port`, with no shell and no forwarding. `awm port` reads the verb from `SSH_ORIGINAL_COMMAND`, runs only the host's singletons that admit the key's holder, and logs each call to `<AWM_DIR>/port.log`. A service key from outside the edges carries an `expiry-time`: the timed invite.
 - **Admin.** A separate account with sudo, for config and installs. shogun holds it on the Arbutus nodes.
 
 ## Singletons
 
-A singleton service fronts one external resource for the whole fleet, such as the 2FA phone, the real Chrome, the approver or the Trilium vault. It runs on one host. Every node reaches it, whether or not that node has an edge to the host (R89).
+A singleton service fronts one external resource for the fleet, such as the 2FA phone, the real Chrome, the approver or the Trilium vault. It runs on one host. Its callers reach it whether or not they hold an edge to the host (R89).
 
-- The edge list's `singletons` names each singleton tool and its host. Its `singleton_doors` gives each host's door port and network.
+- The edge list's `singletons` names each singleton tool, its host and its `callers`. Its `singleton_doors` gives each host's door port and network.
+- `callers` lists the nodes that may call the singleton besides its host, as directed edges into it (R98 item 3). A planned caller counts once it exists.
 - On every other node the gateway reserves the tool name, so no local plugin can serve it. A call to it goes to the host's door through a service key.
-- The door carries only the tools listed for it. It carries no reflection and no shell (R98, R104 item 4).
+- The door carries no reflection and no shell (R98, R104 item 4).
 - The host sees the caller stamped `peer:<node>`.
+
+The callers list fails closed. A node it leaves out gets the answer an unknown tool gets, at every point where a call can enter:
+
+1. `awm port` serves a key only the singletons that admit the key's holder.
+2. The gateway refuses the call, and leaves the tool out of its `/hub/table`, `awm table` and `describe` answers to that node.
+3. A direct session or an emit stream on the singleton's service is refused.
+4. A node that relays a call checks it against the node it started from, before it relays it. The call carries that node to the host as `caller.origin`, and the host checks it too. So mizar carries no call for a node the list leaves out.
+
+**CAUTION** Each gateway reads `callers` from its own `edges.yml`. A relay with a stale copy checks against its stale list, and only the host's check stands behind it.
 
 alcor hosts `2fa`, `operations` (the task queue and the approver), `browser` and `social`, and its ssh service is the slot arbiter. deneb hosts `trilium`, the vault, and `channel`, the public relays. The cloud project's `edges.yml` is the record.
 
