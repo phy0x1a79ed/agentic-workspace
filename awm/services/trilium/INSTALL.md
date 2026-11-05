@@ -594,12 +594,8 @@ a column change made while the board is open in a second browser.
 ## Where the vault's content lives
 
 `projects/vault/release`, a checkout of the vault's own repository. `live/` holds
-the database. `data/vault/` holds the pinned snapshots, the mirrored Zotero
-library and the markdown export. The fork is public and its release tags name
+the database. `data/vault/` holds the pinned snapshots and the markdown export. The fork is public and its release tags name
 code, so every nightly pin commits here and never in the fork.
-
-`instances.VAULT_HOME` and the zotero service's `VAULT_SCOPE` spell this path and
-must agree.
 
 - A node that pins has a git checkout there with a DVC repository. Its pins are
   committed on the vault repository's `release`.

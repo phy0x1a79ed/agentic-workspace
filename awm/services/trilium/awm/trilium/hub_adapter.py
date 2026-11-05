@@ -435,7 +435,7 @@ API_MANIFEST: dict[str, Any] = {
             "description": (
                 "Attach a file to a note, from a path on this host or from "
                 "base64. Replaces an attachment of the same title, and skips "
-                "the upload when the size already matches. Operator only: it "
+                "the upload when the bytes already match. Operator only: it "
                 "reads a path the service can reach."
             ),
             "params": [

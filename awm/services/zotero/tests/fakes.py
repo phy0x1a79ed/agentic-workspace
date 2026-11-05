@@ -149,15 +149,13 @@ class FakeVault:
         self.notes[note_id]["parents"] = sorted(set(parents))
         return {"note_id": note_id, "parents": sorted(set(parents))}
 
-    def attach(self, note_id: str, path, *, title: str | None = None) -> bool:
+    def attachment(self, note_id: str, title: str) -> bytes | None:
+        self.calls.append(("attachment", note_id))
+        return self.notes[note_id]["attachments"].get(title)
+
+    def attach(self, note_id: str, title: str, blob: bytes, mime: str) -> None:
         self.calls.append(("attach", note_id))
-        name = title or path.name
-        blob = path.read_bytes()
-        note = self.notes[note_id]
-        if note["attachments"].get(name) == len(blob):
-            return False
-        note["attachments"][name] = len(blob)
-        return True
+        self.notes[note_id]["attachments"][title] = bytes(blob)
 
     def delete(self, note_id: str) -> None:
         self.calls.append(("delete", note_id))
@@ -168,6 +166,21 @@ class FakeVault:
     def titles_under(self, root: str) -> list[str]:
         return sorted(n["title"] for nid, n in self.notes.items()
                       if root in n["parents"])
+
+
+class MemoryStore:
+    """A bundle store that is only a variable, for tests of the bundle alone."""
+
+    where = "memory"
+
+    def __init__(self) -> None:
+        self.blob: bytes | None = None
+
+    def load(self) -> bytes | None:
+        return self.blob
+
+    def save(self, blob: bytes) -> None:
+        self.blob = blob
 
 
 def item(key: str, *, library: str = "users/0", library_name: str = "My Library",

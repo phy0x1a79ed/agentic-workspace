@@ -15,14 +15,15 @@ import pytest
 
 from awm.zotero import bundle, source, sync
 
-from .fakes import FakeLibrary
+from .fakes import FakeLibrary, MemoryStore
 
 pytestmark = [pytest.mark.unit, pytest.mark.smoke]
 
 
 @pytest.fixture
-def scope(tmp_path):
-    return tmp_path
+def scope():
+    """Where the bundle lives. A variable: these tests are about the read."""
+    return MemoryStore()
 
 
 @pytest.fixture
@@ -35,7 +36,7 @@ def library(monkeypatch):
 def caught_up(scope, library) -> bundle.Bundle:
     """A bundle that has read every library whole, just now."""
     b = bundle.Bundle(scope)
-    sync._pull(b, force=True, commit=False)
+    sync._pull(b, force=True)
     return b
 
 
@@ -47,7 +48,7 @@ def test_a_tick_where_nothing_moved_asks_once_per_library(scope, library):
     b = caught_up(scope, library)
     library.calls.clear()
 
-    out = sync._pull(b, force=False, commit=False)
+    out = sync._pull(b, force=False)
 
     assert out["changed"] is False
     assert len(library.asked("items")) == 2, "one window read per library"
@@ -62,7 +63,7 @@ def test_a_paper_lands_in_one_request(scope, library):
     library.calls.clear()
     library.put("BBB", title="Just saved")
 
-    out = sync._pull(b, force=False, commit=False, only=["users/0"])
+    out = sync._pull(b, force=False, only=["users/0"])
 
     assert out["changed"] is True
     # One request between the stream frame and the paper. Not the library list,
@@ -79,7 +80,7 @@ def test_a_push_reads_only_the_library_it_was_told_about(scope, library):
     library.calls.clear()
     library.put("BBB", title="Just saved")
 
-    sync._pull(b, force=False, commit=False, only=["users/0"])
+    sync._pull(b, force=False, only=["users/0"])
 
     assert {c[1] for c in library.asked("items")} == {"users/0"}
 
@@ -90,7 +91,7 @@ def test_the_floor_reads_the_deletions_the_hot_path_skipped(scope, library):
     b = caught_up(scope, library)
     library.erase("BBB")
 
-    sync._pull(b, force=False, commit=False)
+    sync._pull(b, force=False)
 
     assert {i["ref"] for i in b.read()["items"]} == {"users/0/AAA"}
 
@@ -109,7 +110,7 @@ def test_a_trashed_paper_makes_the_pass_read_the_library_whole(scope, library):
     library.calls.clear()
     library.trash("BBB")
 
-    out = sync._pull(b, force=False, commit=False)
+    out = sync._pull(b, force=False)
 
     assert "My Library" in out["whole"], "the pass did not escalate"
     assert {i["ref"] for i in b.read()["items"]} == {"users/0/AAA"}
@@ -125,7 +126,7 @@ def test_a_collection_rename_does_not_cost_a_whole_read(scope, library):
     library.calls.clear()
     library.put_collection("COL", "Renamed")
 
-    out = sync._pull(b, force=False, commit=False)
+    out = sync._pull(b, force=False)
 
     assert out["whole"] == [], "a rename should not read the library whole"
     assert [c["name"] for c in b.read()["collections"]] == ["Renamed"]
@@ -138,7 +139,7 @@ def test_a_library_unread_for_a_day_is_read_whole(scope, library, monkeypatch):
     library.calls.clear()
     library.put("BBB", title="Another")
 
-    out = sync._pull(b, force=False, commit=False)
+    out = sync._pull(b, force=False)
 
     assert "My Library" in out["whole"]
     assert [c[2] for c in library.asked("items")] == [None, None], \
@@ -150,7 +151,7 @@ def test_forcing_sends_no_cursor(scope, library):
     b = caught_up(scope, library)
     library.calls.clear()
 
-    sync._pull(b, force=True, commit=False)
+    sync._pull(b, force=True)
 
     assert [c[2] for c in library.asked("items")] == [None, None]
 
@@ -166,7 +167,7 @@ def test_a_library_that_reports_a_lower_version_is_refused(scope, library):
     b = caught_up(scope, library)
     library.version["users/0"] = 0
 
-    out = sync._pull(b, force=False, commit=False)
+    out = sync._pull(b, force=False)
 
     assert out["behind"] == ["users/0"]
     assert {i["ref"] for i in b.read()["items"]} == {"users/0/AAA"}
@@ -184,7 +185,7 @@ def test_a_library_whose_read_fails_keeps_its_papers(scope, library):
     import awm.zotero.sync as module
     module.source.items = _boom
 
-    out = sync._pull(b, force=False, commit=False)
+    out = sync._pull(b, force=False)
 
     assert out["unread"] == ["users/0", "groups/1"]
     assert {i["ref"] for i in b.read()["items"]} == {"users/0/AAA"}
@@ -199,7 +200,7 @@ def test_a_whole_read_that_comes_back_empty_is_refused(scope, library):
     library.version["users/0"] += 1
 
     with pytest.raises(sync.ZoteroLostItsLibrary):
-        sync._pull(b, force=True, commit=False)
+        sync._pull(b, force=True)
 
     assert {i["ref"] for i in b.read()["items"]} == {"users/0/AAA"}
 
@@ -211,12 +212,12 @@ def test_the_whole_read_stamp_stays_out_of_the_digest(scope, library):
     b = caught_up(scope, library)
     was = b.digest
 
-    payload = json.loads(b.library_json.read_text())
+    payload = json.loads(scope.blob)
     assert payload["whole_read"], "the stamp was not recorded"
     payload["whole_read"]["users/0"] = "1999-01-01T00:00:00Z"
-    b.library_json.write_text(json.dumps(payload))
+    scope.save(json.dumps(payload).encode())
 
-    assert b.digest == was
+    assert bundle.Bundle(scope).digest == was
 
 
 def test_a_narrowed_pass_asks_nobody_which_libraries_exist(scope, library):
@@ -228,7 +229,7 @@ def test_a_narrowed_pass_asks_nobody_which_libraries_exist(scope, library):
     library.calls.clear()
     library.put("BBB", title="Just saved")
 
-    sync._pull(b, force=False, commit=False, only=["users/0"])
+    sync._pull(b, force=False, only=["users/0"])
 
     assert library.asked("libraries") == []
 
@@ -242,7 +243,7 @@ def test_a_library_the_bundle_has_never_seen_is_worth_a_request(scope, library):
     library.calls.clear()
     library.put("GGG", library="groups/1", title="First in the group")
 
-    out = sync._pull(b, force=False, commit=False, only=["groups/1"])
+    out = sync._pull(b, force=False, only=["groups/1"])
 
     assert library.asked("libraries"), "the name was guessed rather than asked"
     assert out["read"] == ["A group"]
@@ -251,8 +252,7 @@ def test_a_library_the_bundle_has_never_seen_is_worth_a_request(scope, library):
 # -- the one that matters ----------------------------------------------------
 
 
-def test_replaying_windows_lands_where_one_whole_read_would(scope, library,
-                                                            tmp_path):
+def test_replaying_windows_lands_where_one_whole_read_would(scope, library):
     """The property the whole design rests on, and the only test that keeps
     biting as the fold is refactored.
 
@@ -272,9 +272,9 @@ def test_replaying_windows_lands_where_one_whole_read_would(scope, library,
     def catch_up(what: str):
         nonlocal step
         step += 1
-        sync._pull(delta, force=False, commit=False)
-        whole = bundle.Bundle(tmp_path / f"whole{step}")
-        sync._pull(whole, force=True, commit=False)
+        sync._pull(delta, force=False)
+        whole = bundle.Bundle(MemoryStore())
+        sync._pull(whole, force=True)
         assert delta.read()["items"] == whole.read()["items"], what
         assert delta.read()["collections"] == whole.read()["collections"], what
         assert delta.digest == whole.digest, what
@@ -324,10 +324,10 @@ def test_a_group_renamed_outside_its_version_waits_for_a_whole_read(scope,
     b = caught_up(scope, library)
     library.rename_library("groups/1", "Renamed group")
 
-    sync._pull(b, force=False, commit=False)
+    sync._pull(b, force=False)
     assert {i["library_name"] for i in b.read()["items"]} == {"A group"}
 
-    sync._pull(b, force=True, commit=False)
+    sync._pull(b, force=True)
     assert {i["library_name"] for i in b.read()["items"]} == {"Renamed group"}
 
 
@@ -340,14 +340,15 @@ def test_a_bundle_from_before_notes_carried_keys_is_read_whole(scope, library):
     library.put("N1", parent="AAA", item_type="note", note="<p>one</p>")
     b = caught_up(scope, library)
 
-    payload = json.loads(b.library_json.read_text())
+    payload = json.loads(scope.blob)
     payload.pop("whole_read")
     for record in payload["items"]:
         if record.get("notes"):
             record["notes"] = list(record["notes"].values())
-    b.library_json.write_text(json.dumps(payload))
+    scope.save(json.dumps(payload).encode())
+    b = bundle.Bundle(scope)
 
-    out = sync._pull(b, force=False, commit=False)
+    out = sync._pull(b, force=False)
 
     assert out["whole"] == ["A group", "My Library"]
     assert [i for i in b.read()["items"] if i["ref"] == "users/0/AAA"][0][

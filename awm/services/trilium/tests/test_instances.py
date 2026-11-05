@@ -121,12 +121,3 @@ def test_install_takes_the_pushed_file_and_never_fetches():
     assert "/artifacts" in script and "sha256sum" in script
     for gone in ("curl", "wget", "gh release", "pnpm", "TRILIUM_INSTALL_MODE"):
         assert gone not in script
-
-
-def test_the_zotero_mirror_resolves_the_same_vault():
-    """The mirror pins its chunk into the vault's checkout. The path is spelled
-    once per dist, so a default that moves here and not in zotero splits the
-    vault across two repositories."""
-    text = instances.SERVICE_DIR.parent.joinpath("zotero", "awm", "zotero", "sync.py").read_text()
-    assert '"vault" / "release"' in text
-    assert '"trilium" / "release"' not in text

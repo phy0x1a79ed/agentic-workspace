@@ -1,10 +1,8 @@
 """Hub adapter for the zotero service — the reference library, mirrored.
 
-Two verbs do the work and they need two different machines. `pull` reads the
-Zotero desktop, which lives on one node; `apply` writes the vault, which lives
-on another and, on the public host, can never be the first. What crosses
-between them is a committed, DVC-pinned bundle in the vault scope — data, moved
-the way all data in this workspace moves.
+Two verbs do the work. `pull` reads Zotero's own service into the bundle, and
+`apply` writes the bundle into the vault. The bundle is an attachment on the
+library's root note, so both go through the `trilium` tool.
 
 `sync` is the two in order, and is what the timer calls. It is cheap when
 nothing has changed: Zotero's library carries a version, and a tick whose
@@ -115,15 +113,13 @@ API_MANIFEST: dict[str, Any] = {
             "name": "pull",
             "tool": "zotero_pull",
             "description": (
-                "Read the Zotero library into the bundle in the vault scope "
-                "and commit the pin. Free when no library's version has moved. "
-                "Operator only."
+                "Read the Zotero library into the bundle, the library.json "
+                "attachment on the library's root note. Free when no "
+                "library's version has moved. Operator only."
             ),
             "params": [
                 {"name": "force", "type": "boolean",
                  "description": "Re-read even when the version has not moved."},
-                {"name": "commit", "type": "boolean",
-                 "description": "Pin and commit the result. Default true."},
             ],
             "timeout": 900,
         },
@@ -191,8 +187,13 @@ def _operator_only(as_: str | None, verb: str) -> None:
 
 
 async def _h_status(args: dict, as_: str | None = None) -> dict:
-    out: dict[str, Any] = {"bundle": sync.bundle().stats(),
-                           "scope": str(sync.VAULT_SCOPE),
+    def _stats() -> dict:
+        try:
+            return sync.held(vault.Vault()).stats()
+        except (vault.VaultError, sync.RootError) as e:
+            return {"versions": {}, "error": str(e)[:300]}
+
+    out: dict[str, Any] = {"bundle": await asyncio.to_thread(_stats),
                            "last": dict(LAST)}
     out["may_create_root"] = MAY_CREATE_ROOT
     # An apply-only node has no library to ask. Probing is this verb's default
@@ -253,15 +254,15 @@ async def _h_items(args: dict, as_: str | None = None) -> dict:
         raise ValueError("since must be an object of {library: version}")
     offset = max(0, int(args.get("offset") or 0))
     limit = max(1, min(int(args.get("limit") or ITEMS_PAGE), ITEMS_MAX))
-    library = await asyncio.to_thread(sync.bundle().read)
+    library = await asyncio.to_thread(lambda: sync.held(vault.Vault()).read())
     return items_page(library, {str(k): int(v) for k, v in since.items()}, offset, limit)
 
 
 async def _h_pull(args: dict, as_: str | None = None) -> dict:
     _operator_only(as_, "pull")
     return await asyncio.to_thread(
-        sync.pull, force=bool(args.get("force")),
-        commit=args.get("commit", True) is not False)
+        sync.pull, vault.Vault(), force=bool(args.get("force")),
+        may_create=MAY_CREATE_ROOT)
 
 
 async def _h_apply(args: dict, as_: str | None = None) -> dict:
@@ -419,16 +420,6 @@ async def _on_start() -> None:
     to the loop — a full pull of a large library takes minutes, and doing it
     here would look exactly like a wedged start.
     """
-    b = sync.bundle()
-    try:
-        st = b.stats()
-        log.info("zotero: bundle at %s (%s items, versions %s)", b.root,
-                 st["items"], st["versions"])
-    except Exception:  # noqa: BLE001
-        # A bundle that cannot be read is what the first sync is for. Saying so
-        # beats refusing to start: the adapter treats an on_start raise as a
-        # failed initialisation and the gateway then reaps the service.
-        log.warning("zotero: no readable bundle at %s yet", b.root)
     spawn_supervised("zotero:sync", _sync_loop)
     spawn_supervised("zotero:push", _push_loop)
     spawn_supervised("zotero:stream", STREAM.run)
