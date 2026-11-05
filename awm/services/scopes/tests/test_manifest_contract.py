@@ -55,7 +55,7 @@ def test_the_service_publishes_exactly_the_scope_tool_verbs():
         "scope_git_gather", "scope_git_scatter", "scope_claims",
     }
     hidden = {n for n, f in published.items() if f.get("surfaces") == ["cli", "http"]}
-    assert hidden == {"scope_ref_resolve", "scope_reindex", "project_ensure",
+    assert hidden == {"scope_ref_resolve", "scope_reindex", "scope_project_ensure",
                       "scope_claim", "scope_release", "scope_withdraw", "scope_awm_sweep"}
 
 
