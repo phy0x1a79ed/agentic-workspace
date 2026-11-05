@@ -215,11 +215,6 @@ class Child(GroupChild):
             raise FileNotFoundError(
                 f"no vault directory at {vault.scope} — run "
                 f"awm/services/trilium/install.sh")
-        stranded = instances.stranded_database(vault)
-        if stranded is not None:
-            raise RuntimeError(
-                f"{vault.scope} has no database and {stranded} does — move "
-                f"{stranded.parent} to {vault.data_dir} before starting")
         vault.data_dir.mkdir(parents=True, exist_ok=True)
         vault.rolling_dir.mkdir(parents=True, exist_ok=True)
         vault.log_file.parent.mkdir(parents=True, exist_ok=True)

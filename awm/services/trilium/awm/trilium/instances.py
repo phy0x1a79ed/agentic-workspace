@@ -60,19 +60,12 @@ FORK_DIR = Path(os.environ.get("TRILIUM_FORK_DIR")
 VAULT_HOME = WORKSPACE_ROOT / "projects" / "vault" / "release"
 
 
-def _default_scope() -> Path:
-    """`VAULT_HOME` once this node has it, else the in-fork path every node
-    used before the vault had a repository. Moving `live/` is a host step taken
-    with the server stopped, so a deploy of this code must not move it."""
-    return VAULT_HOME if VAULT_HOME.is_dir() else FORK_DIR
-
-
 #: Where the vault's content lives.
 #:
 #: A node with no vault checkout gets a plain directory at this path instead.
 #: Every write below asks whether the scope is a git checkout before it pins or
 #: commits, so one implementation covers both shapes.
-SCOPE = Path(os.environ.get("TRILIUM_VAULT_SCOPE") or _default_scope())
+SCOPE = Path(os.environ.get("TRILIUM_VAULT_SCOPE") or VAULT_HOME)
 
 #: What `pnpm server:build` emits — one bundle, plus an `assets/` beside it.
 FORK_ENTRY = FORK_DIR / "apps" / "server" / "dist" / "main.cjs"
@@ -215,19 +208,6 @@ class Vault:
 
 #: The one vault this node serves.
 VAULT = Vault()
-
-
-def stranded_database(vault: Vault = VAULT) -> Path | None:
-    """A database left in the fork while `vault` serves from elsewhere.
-
-    Trilium provisions an empty document wherever it finds none, and reports
-    that empty one as initialized. Starting in that state would serve a blank
-    vault with the real one a directory away.
-    """
-    if vault.scope == FORK_DIR or vault.document_db.exists():
-        return None
-    legacy = FORK_DIR / "live" / "document.db"
-    return legacy if legacy.exists() else None
 
 
 # -- what is installed to run -----------------------------------------------
