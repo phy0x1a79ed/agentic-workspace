@@ -314,7 +314,7 @@ def snapshots(vault: Vault) -> dict[str, Any]:
 #
 # It runs where the vault is a git checkout, because that is what turns a
 # snapshot into a pin, and the pin's bytes into something the nightly archive
-# job already ships off-site. On a node serving the published tarball there is
+# job already ships off-site. On a node with no vault checkout there is
 # nothing to pin and the schedule stands down.
 
 #: How often the loop wakes. Cheap: it reads one directory and usually stops.

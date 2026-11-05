@@ -480,3 +480,77 @@ def test_fleetconf_push():
 def test_fleetconf_push_rejects(text, msg):
     with pytest.raises(fleetconf.FleetConfigError, match=msg):
         fleetconf.parse(text)
+
+
+# -- pinned artifacts (install.md R115 item 4: the landing node pushes them) ----
+
+PUSH_ART = PUSH + 'artifacts = "{dest}"\n'
+PIN = "version=v1\nfile=server-v1.tar.xz\nsha256={sha}\n"
+
+
+def _pinned_scope(ws, tmp_path, blob: bytes):
+    import hashlib
+    store = tmp_path / "store"
+    store.mkdir(exist_ok=True)
+    (store / "server-v1.tar.xz").write_bytes(blob)
+    conf = FLEET.format(log=tmp_path / "r.log") + '\n[artifacts]\npins = ["svc/server.pin"]\n'
+    ws.scope("a", {"deploy.toml": conf,
+                   "svc/server.pin": PIN.format(sha=hashlib.sha256(b"tarball").hexdigest())})
+    return store
+
+
+def make_art(store, out, ws, fleet, art_store):
+    ref = Refresher(out, node="mizar", checkout_root=lambda p: ws.proj / "release",
+                    fleet_config=lambda: fleetconf.parse(fleet), artifact_store=art_store)
+    return Deployer(store, out, workspace=ws.root, refresher=ref)
+
+
+async def test_push_node_takes_the_pinned_artifact_before_its_refresh(store, out, ws, tmp_path):
+    git(tmp_path, "init", "-q", "--bare", str(tmp_path / "peer-proj.git"))
+    art_store = _pinned_scope(ws, tmp_path, b"tarball")
+    dest = tmp_path / "peer-artifacts"
+    fleet = PUSH_ART.format(url=tmp_path / "peer-{project}.git", dest=dest)
+    [t] = await land(make_art(store, out, ws, fleet, art_store), "a")
+    assert t["state"] == "landed"
+    assert (dest / "server-v1.tar.xz").read_bytes() == b"tarball"
+    assert [c[3] for c in out.calls] == ["alcor", "capella"]
+
+
+async def test_an_artifact_that_differs_from_its_pin_refreshes_no_node_after(store, out, ws, tmp_path):
+    git(tmp_path, "init", "-q", "--bare", str(tmp_path / "peer-proj.git"))
+    art_store = _pinned_scope(ws, tmp_path, b"something else")
+    dest = tmp_path / "peer-artifacts"
+    fleet = PUSH_ART.format(url=tmp_path / "peer-{project}.git", dest=dest)
+    [t] = await land(make_art(store, out, ws, fleet, art_store), "a")
+    batch = store.get_batch(t["batch_id"])
+    assert batch["state"] == "refresh-failed" and "names" in batch["error"]
+    assert not dest.exists() and out.calls == []
+
+
+async def test_a_push_node_without_an_artifacts_dir_takes_none(store, out, ws, tmp_path):
+    git(tmp_path, "init", "-q", "--bare", str(tmp_path / "peer-proj.git"))
+    art_store = _pinned_scope(ws, tmp_path, b"something else")
+    fleet = PUSH.format(url=tmp_path / "peer-{project}.git")
+    [t] = await land(make_art(store, out, ws, fleet, art_store), "a")
+    assert t["state"] == "landed"
+
+
+def test_fleetconf_push_artifacts():
+    f = fleetconf.parse(PUSH_ART.format(url="d:/w/projects/{project}/.bare", dest="d:/w/.awm/artifacts"))
+    assert f.artifacts_dest("alcor") == "d:/w/.awm/artifacts" and f.artifacts_dest("capella") == ""
+
+
+def test_deployconf_artifact_pins():
+    assert deployconf.parse('[artifacts]\npins = ["a/b.pin"]').artifact_pins == ("a/b.pin",)
+    with pytest.raises(deployconf.ConfigError, match="list of paths"):
+        deployconf.parse('[artifacts]\npins = "a/b.pin"')
+
+
+@pytest.mark.parametrize("text, msg", [
+    ("version=v1\nsha256=ab\n", "needs file and sha256"),
+    ("file=../x.tar.xz\nsha256=ab\n", "bare file name"),
+])
+def test_a_pin_names_a_bare_file_and_its_hash(text, msg):
+    from awm.routine import artifacts
+    with pytest.raises(ValueError, match=msg):
+        artifacts.parse_pin(text, "svc/server.pin")

@@ -63,15 +63,14 @@
 
   {#if src && !src.entry}
     <p class="warn">
-      No server bundle installed. Run <code>awm/services/trilium/install.sh</code>
-      — it builds the fork at {src.fork_dir}, or downloads the published build
-      when there is none.
+      No Trilium server release installed. awm's deploy pushes the release that
+      <code>server.pin</code> names to this node, and
+      <code>awm/services/trilium/install.sh</code> unpacks it.
     </p>
-  {:else if src?.built_current === false}
+  {:else if src && !src.current}
     <p class="warn">
-      The bundle being served was built from {src.built_head?.slice(0, 8) ?? '—'},
-      and the worktree is at {src.describe ?? src.head?.slice(0, 8) ?? '—'}. Re-run
-      install.sh.
+      This node serves fork release {src.installed ?? '—'}, and awm pins
+      {src.pinned ?? '—'}. Re-run install.sh.
     </p>
   {/if}
 
@@ -138,11 +137,8 @@
       <dl>
         <dt>bundle</dt>
         <dd class="dim">{src?.entry ?? '—'}</dd>
-        <dt>from</dt>
-        <dd>
-          {src?.source === 'fork' ? 'the fork we build' : 'the published build'}
-          {#if src?.describe}<span class="dim"> · {src.describe}</span>{/if}
-        </dd>
+        <dt>release</dt>
+        <dd>{src?.installed ?? '—'}</dd>
       </dl>
       <p class="hint">
         Notes are stored as HTML, and the markdown tree in the vault's scope is
