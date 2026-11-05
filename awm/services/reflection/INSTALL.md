@@ -65,12 +65,23 @@ the transcript. So a four-round budget burned inside eight seconds of a
 compaction that ran for ninety-four. `ROUND_BACKOFF_S` holds off 30, then 60,
 then 120 seconds, sized against that measurement. Waiting itself stays unbounded.
 
+**A `/clear` is followed into its new transcript.** A clear gives the session a
+new id and a new transcript file in the same process. Claude Code writes the
+queue's `dequeue` into the old file a few milliseconds before the record names
+the new id. The tail therefore reads the old file to its end before it switches,
+or it holds the `/clear` as queued for good. A local command such as `/clear` or
+`/mcp` writes its start line only as `<command-name>…<command-args>`, so the tail
+reads that form as the command line. The promise takes the new session id, which
+a worker swap or a restart looks the session up by.
+
 **Modal guard.** Some commands open a blocking modal/picker (`/mcp`, `/status`,
 `/config`, `/permissions`, `/agents`, …, and bare `/model`). These *swallow*
 pasted input — a follow-up Enter doesn't escape them and for a navigable list it
 drills deeper — so they would freeze the session (only a hand-typed Esc recovers).
 `message_self` **refuses** them outright (this cannot be overridden by `confirm`). Run
 them by hand. `/model opus` (with an argument) acts directly and is allowed.
+Every `/mcp` line is refused, and the refusal names the `mcp` verb. That verb
+types only `/mcp reconnect|enable|disable <server>|all`, which act without the panel.
 A modal that is *already* open when a send arrives is a different problem, and
 the record catches that one — see *How a send is confirmed* above.
 
@@ -176,7 +187,7 @@ Every verb is on MCP + CLI + HTTP:
 
 - `reflection_message_self` — type any text/slash command into your own prompt and submit
   it. Destructive commands (`/clear`, `/quit`, `/exit`) require `confirm=true`;
-  modal commands (`/mcp`, `/status`, bare `/model`, …) are refused.
+  modal commands (`/status`, bare `/model`, …) and every `/mcp` line are refused.
 - `reflection_compact` — sugar for `message_self "/compact"`.
 - `reflection_mode` — put your own session back into bypass-permissions mode.
 - `reflection_pending` — list the deferred resumes still owed, node-wide. The
@@ -185,7 +196,8 @@ Every verb is on MCP + CLI + HTTP:
 - `reflection_whoami` — report which session reflection resolves you to.
 - Session control, on the caller or on `job`: `remote_control` (types `/rc`,
   and answers with the `https://claude.ai/code/session_…` link once the bridge
-  connects), `model`, `effort`, `rename`, `cd` (types `/cd <path>`),
+  connects), `model`, `effort`, `rename`, `cd` (types `/cd <path>`), `mcp`
+  (types `/mcp <action> <server>` and reports what it printed),
   `interrupt` (one Escape), `stop`
   (ends a background session and runs `claude rm`), `link` (reads the record
   and types nothing) and `message` (types into another session, under the
@@ -207,9 +219,9 @@ Every verb is on MCP + CLI + HTTP:
   workspace's `projects/` directory, and only there. A move keeps the
   old directory's CLAUDE.md in context and adds the new one.
 - **CAUTION** Claude Code 2.1.302 disconnects every MCP server on a `/cd` and
-  does not connect them again. `cd` types `/mcp reconnect awm` after the move:
-  on another session once its record shows the new directory, on your own
-  session just before its resume. Other MCP servers stay down. `list_other` and
+  does not connect them again. `cd` reconnects awm after the move, as `mcp`
+  does: on another session once its record shows the new directory, on your own
+  session just before its resume. Reconnect any other server with `mcp`. `list_other` and
   the Swarm board read a session's scope from its live cwd, so a moved session
   shows under its new scope with no register step.
 

@@ -230,6 +230,11 @@ def _rename(args: dict) -> dict:
     return _on_target("set", "rename", args, {"name": args.get("name")})
 
 
+def _mcp(args: dict) -> dict:
+    return _on_target("mcp", "mcp", args, {"action": args.get("action"),
+                                           "server": args.get("server")})
+
+
 def _interrupt(args: dict) -> dict:
     return _on_target("interrupt", "interrupt", args, {})
 
@@ -593,6 +598,7 @@ HANDLERS = {verb: _guarded(verb, fn) for verb, fn in {
     "effort": _effort,
     "rename": _rename,
     "cd": _cd,
+    "mcp": _mcp,
     "interrupt": _interrupt,
     "stop": _stop,
     "link": _link,

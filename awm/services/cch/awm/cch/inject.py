@@ -143,7 +143,12 @@ ROUND_BACKOFF_S = (30.0, 60.0, 120.0)
 # not connect them again, whatever directory it lands in. A session that moved
 # itself would come back without awm, and so without this service, before it
 # could ask for it, so the resume after a move is preceded by this command.
-RECONNECT_AFTER_MOVE = "/mcp reconnect awm"
+RECONNECT_AFTER_MOVE = guards.mcp_line("reconnect", "awm")
+
+# How long the resume after a self-directed `/mcp` waits for the command's output
+# to reach the transcript. A reconnect prints once the server has answered.
+MCP_OUTPUT_WAIT_S = 30.0
+MCP_OUTPUT_POLL_S = 0.5
 
 # How many times a session will be asked to bring its turn to a close before the
 # wait goes quiet and simply keeps holding. A pause request is text arriving
@@ -694,13 +699,38 @@ def _rc_link(repl_pid: int) -> Optional[str]:
         return None
 
 
-def _resume_text(item: pending.Pending) -> pending.Pending:
+def _mcp_outputs(item: pending.Pending, tail, *,
+                 sleep: Callable[[float], None] = time.sleep,
+                 clock: Callable[[], float] = time.monotonic) -> pending.Pending:
+    """``item`` with each `/mcp` change carrying what the command printed."""
+    owed = [c for c in item.changes if c.kind == "mcp" and not c.detail]
+    if not owed:
+        return item
+    deadline = clock() + MCP_OUTPUT_WAIT_S
+    said: dict[str, str] = {}
+    while True:
+        tail.poll()
+        for c in owed:
+            out = tail.output(f"/mcp {c.value}", since_ms=item.injected_at_ms)
+            if out is not None:
+                said[c.key] = out
+        if len(said) == len(owed) or clock() >= deadline:
+            break
+        sleep(MCP_OUTPUT_POLL_S)
+    return replace(item, changes=tuple(
+        replace(c, outcome=pending.APPLIED, detail=said[c.key]) if c.key in said else c
+        for c in item.changes))
+
+
+def _resume_text(item: pending.Pending, tail=None, **kw) -> pending.Pending:
     """``item`` with the resume rendered from what the changes did by now."""
     if not item.changes:
         return item
     on_disk = pending.read(item.repl_pid)
     if on_disk is not None and on_disk.injected_at_ms == item.injected_at_ms:
         item = replace(item, changes=on_disk.changes)
+    if tail is not None:
+        item = _mcp_outputs(item, tail, **{k: kw[k] for k in ("sleep", "clock") if k in kw})
     link = (_rc_link(item.repl_pid)
             if any(c.kind == "rc_on" for c in item.changes) else None)
     return replace(item, followup=pending.render_followup(
@@ -898,6 +928,22 @@ def _follow_through(item: pending.Pending, tail, who: str, *, read_status=None,
         sleep(FOLLOW_POLL_S)
 
 
+def _follow_session_id(item: pending.Pending, tail, who: str) -> pending.Pending:
+    """``item`` under the session id its process writes now.
+
+    A /clear gives the session a new id in the same process. The promise must
+    carry it, because a worker swap or a restart looks the session up by id.
+    """
+    current = tail.session_id
+    if not current or current == item.session_id:
+        return item
+    log.info("reflection: session %s now writes as %s (a /clear); its promise "
+             "follows", who, current)
+    item = replace(item, session_id=current)
+    pending.record(item)
+    return item
+
+
 def _await_and_resume_inner(item: pending.Pending, tail, who,
                             read_status=None, **kw) -> None:
     sleep = kw.get("sleep", time.sleep)
@@ -926,6 +972,7 @@ def _await_and_resume_inner(item: pending.Pending, tail, who,
                      "was waiting on; its resume is that command's to send",
                      who)
             return
+        item = _follow_session_id(item, tail, who)
         if outcome == watcher.VANISHED:
             moved = _await_successor(item, who, **kw)
             if moved is None:
@@ -979,7 +1026,7 @@ def _await_and_resume_inner(item: pending.Pending, tail, who,
             return
         # The resume is worded now, not when the command was queued: what a
         # change did is known only once its dialog has been answered.
-        item = _resume_text(item)
+        item = _resume_text(item, tail, **kw)
         tail.watch(item.followup)
 
         # A copy from an earlier round can turn up after its verify gave up on

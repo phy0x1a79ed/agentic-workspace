@@ -23,7 +23,7 @@ import pytest
 
 pytestmark = [pytest.mark.smoke]
 
-from awm.cch import inject, pending, session_target, watcher
+from awm.cch import guards, inject, pending, session_target, watcher
 
 
 LANE = session_target.TmuxLane(pane="%7", session_id="5d1d0001-0000-4000-8000-000000000001", repl_pid=4242,
@@ -32,6 +32,8 @@ LANE = session_target.TmuxLane(pane="%7", session_id="5d1d0001-0000-4000-8000-00
 
 class Tail:
     """A transcript that answers whatever the test says it answers."""
+
+    session_id = None
 
     def __init__(self, in_flight=None, landed=None, started=False,
                  landed_since=lambda: False):
@@ -832,3 +834,46 @@ def test_a_session_that_moves_mid_wait_is_reconnected_and_resumed_once(
     resumes = [t for t in seen if t != inject.RECONNECT_AFTER_MOVE]
     assert resumes == [f"The move to /home/tony/after succeeded. {CONTINUE}"]
     assert pending.load_all() == []
+
+
+def test_an_mcp_change_reports_what_the_command_printed():
+    said = pending.Change("mcp", "reconnect awm", "k1", pending.APPLIED,
+                          "Successfully reconnected to awm")
+    silent = pending.Change("mcp", "disable all", "k2")
+    text = pending.render_followup((said, silent), None, "")
+    assert text.startswith("`/mcp reconnect awm` printed: Successfully reconnected "
+                           "to awm. `/mcp disable all` ran; its output could not be read.")
+    assert text.endswith(guards.DEFAULT_FOLLOWUP)
+
+
+def test_the_resume_after_a_self_mcp_waits_for_its_output():
+    class OutTail:
+        polls = 0
+
+        def poll(self):
+            self.polls += 1
+
+        def output(self, line, *, since_ms):
+            assert line == "/mcp reconnect awm" and since_ms == 1000
+            return "Successfully reconnected to awm" if self.polls >= 3 else None
+
+    item = pending.Pending(
+        repl_pid=999_999_991, proc_start="", session_id="s", text="/mcp reconnect awm",
+        followup="", injected_at_ms=1000,
+        changes=(pending.Change("mcp", "reconnect awm", "k1"),))
+    out = inject._mcp_outputs(item, OutTail(), sleep=lambda _s: None)
+    assert out.changes[0].detail == "Successfully reconnected to awm"
+    assert out.changes[0].outcome == pending.APPLIED
+
+
+def test_a_promise_follows_its_session_through_a_clear():
+    # A worker swap or a restart finds the session by id, and /clear changes it.
+    item = pending.Pending(
+        repl_pid=999_999_992, proc_start="", session_id="old-id", text="/clear",
+        followup="Go on.", injected_at_ms=1000)
+    pending.record(item)
+    cleared = type("T", (), {"session_id": "new-id"})()
+    moved = inject._follow_session_id(item, cleared, "me")
+    assert moved.session_id == "new-id"
+    assert pending.read(999_999_992).session_id == "new-id"
+    assert inject._follow_session_id(moved, cleared, "me") is moved

@@ -50,9 +50,9 @@ pub enum TrustError {
 }
 
 /// Verbs that act on another session. `message` carries words, never authority.
-pub const STEER_VERBS: [&str; 12] = [
+pub const STEER_VERBS: [&str; 13] = [
     "start_other", "resume_other", "stop_other", "stop", "interrupt", "model", "effort", "rename",
-    "cd", "compact", "mode", "remote_control",
+    "cd", "mcp", "compact", "mode", "remote_control",
 ];
 
 /// A raise above the starter: the session, its alcor-signed grant and the check key.
@@ -222,6 +222,7 @@ mod tests {
         assert!(may_steer(Level::Untrusted, "message", None).is_err());
         assert!(may_steer(Level::Cooperative, "message", Some(Level::Trusted)).is_ok());
         assert!(may_steer(Level::Cooperative, "stop", Some(Level::Trusted)).is_err());
+        assert!(may_steer(Level::Cooperative, "mcp", Some(Level::Trusted)).is_err());
         assert!(may_steer(Level::Trusted, "interrupt", Some(Level::Trusted)).is_ok());
     }
 

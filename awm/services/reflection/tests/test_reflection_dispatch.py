@@ -145,6 +145,12 @@ def test_a_job_is_found_by_asking_each_harness(fakes):
     assert fakes.cc.calls[-1] == ("set", {"ref": "j1", "pid": ME, "model": "opus"})
 
 
+def test_mcp_goes_to_the_harness_of_the_session_it_names(fakes):
+    run("mcp", {"_caller_pid": ME, "job": "j1", "action": "reconnect", "server": "awm"})
+    assert fakes.cc.calls[-1] == ("mcp", {"ref": "j1", "pid": ME, "action": "reconnect",
+                                          "server": "awm"})
+
+
 def test_a_ref_two_harnesses_claim_is_refused(fakes):
     fakes.ds.sessions["j1"] = {"session_id": "ds" + "b" * 32}
     out = run("interrupt", {"_caller_pid": ME, "job": "j1"})

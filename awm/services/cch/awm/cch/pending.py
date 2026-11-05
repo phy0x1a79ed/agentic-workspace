@@ -146,10 +146,14 @@ def render_followup(changes, link: Optional[str] = None, closing: str = "") -> s
     with no outcome yet reads as succeeded.
     """
     tail = closing.strip() or guards.DEFAULT_FOLLOWUP
-    done, failed, notes, rc = [], [], [], False
+    done, failed, notes, mcp, rc = [], [], [], [], False
     for c in changes:
         if c.kind == "rc_on":
             rc = True
+            continue
+        if c.kind == "mcp":
+            mcp.append(f"`/mcp {c.value}` printed: {c.detail}." if c.detail else
+                       f"`/mcp {c.value}` ran; its output could not be read.")
             continue
         phrase = _PHRASES[c.kind].format(value=c.value)
         if c.outcome == FAILED:
@@ -166,7 +170,7 @@ def render_followup(changes, link: Optional[str] = None, closing: str = "") -> s
                      "Remote Control was turned on; run reflection link to read "
                      "its link.")
     parts.extend(failed)
-    return " ".join(parts + notes + [tail])
+    return " ".join(parts + mcp + notes + [tail])
 
 
 def held(pending: Pending, outcome: str) -> Pending:
