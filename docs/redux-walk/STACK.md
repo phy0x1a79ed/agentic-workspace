@@ -32,6 +32,7 @@ Procedure, from dfs-interview § Work the stack:
     - **board** (2026-11-05): the "One file holds everything" is not a hard blocker, can we look into setting up trillium and the new board then? this would include the alcor services
       - [ ] Does alcor open for the board's services only (operations, approver and passkey, deneb tunnel), with rt, IBKR and mira still shut?
       - [ ] Tony's DNS steps M10, M12, M13, M14: can he do them now, in parallel?
+      - **tarball-host** (2026-11-05): from redux-build/trilium-fork: where should the Trilium fork's release tarball be published? The spec leaves it open (install.md "Gap from today" R115: "The tarball host is open with Tony"). Options: (a) a GitHub release of the fork, which needs a GitHub repo for it (phy0x1a79ed by default) and a push; (b) a file served from mizar that deneb fetches with curl over the deneb edge. I lean (b)
 
 ## Parked
 
