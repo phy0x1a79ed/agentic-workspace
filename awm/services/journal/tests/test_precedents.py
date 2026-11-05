@@ -82,22 +82,21 @@ def test_a_dry_run_writes_nothing(journal_workspace, source):
 
 def test_precedents_reach_search_as_their_own_kind(journal_workspace, source):
     from awm.journal import precedents
-    from awm.journal.export import export_page
+    from awm.journal.feed import changes
     precedents.import_db(source)
-    docs = {d["id"]: d for d in export_page()["documents"]}
+    docs = {c["id"]: c["entry"] for c in changes(None, 1000)["changes"] if "entry" in c}
     root = docs[precedents.post_id("decision", "old")]
-    assert root["kind"] == "precedent" and "precedent" in root["tags"]
-    assert root["comments"] == 2 and "land it yourself" in root["text"]
+    assert "precedent" in root["tag"] and "land it yourself" in root["text"]
     assert precedents.post_id("decision", "new") not in docs
 
 
 def test_a_precedent_tagged_with_a_marked_project_is_hidden_from_peers(journal_workspace, source):
     from awm.config import privacy
     from awm.journal import precedents, private
-    from awm.journal.export import export_page
+    from awm.journal.feed import changes
     precedents.import_db(source)
     privacy.write_marks([{"project": "avatar", "scope": None,
                           "path": str(journal_workspace["projects_dir"] / "avatar")}])
-    ids = {d["id"] for d in export_page(exclude=private.exclusion("peer"))["documents"]}
+    ids = {c["id"] for c in changes(None, 1000, private.exclusion("peer"))["changes"] if "entry" in c}
     assert precedents.post_id("decision", "gone") not in ids
     assert precedents.post_id("decision", "old") in ids

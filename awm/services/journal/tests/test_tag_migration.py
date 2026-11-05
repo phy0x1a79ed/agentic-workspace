@@ -54,7 +54,7 @@ def _tags(conn, pid):
 
 def test_every_kind_becomes_a_tag(old_db):
     conn = sqlite3.connect(old_db)
-    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 5
+    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 6
     assert "kind" not in [r[1] for r in conn.execute("PRAGMA table_info(scope_posts)")]
     assert _tags(conn, "j") == {"builtin:journal"} and _tags(conn, "m") == {"builtin:message"}
     assert _tags(conn, "d") == {"builtin:journal"}
@@ -99,3 +99,9 @@ def test_the_legacy_channel_spellings_become_the_current_ones(old_db):
     owner = "SELECT owner_project, owner_scope FROM scope_posts WHERE id=?"
     assert conn.execute(owner, ("lt",)).fetchone() == ("avatar", "Avatar")
     assert conn.execute(owner, ("lu",)).fetchone() == ("", "project:avatar")
+
+
+def test_the_feed_migration_seeds_every_indexed_root(old_db):
+    conn = sqlite3.connect(old_db)
+    seeded = {r[0] for r in conn.execute("SELECT root_id FROM search_feed")}
+    assert {"j", "m"} <= seeded

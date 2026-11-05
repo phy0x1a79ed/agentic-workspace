@@ -15,9 +15,10 @@ from awm.persistence.databases import get_connection, init_service_db
 from awm.persistence.embeddings import EMBEDDINGS_DDL
 
 from awm.journal import builtin_tags
+from awm.journal.search_index import INDEXED_PARAMS, INDEXED_SQL
 
 SERVICE = "journal"
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 # Where a scope has read its own channel up to. One row per channel: seats churn,
 # the scope persists. See awm.journal.inbox.
@@ -224,6 +225,63 @@ DROP TABLE IF EXISTS scope_subscribers;
 """
 
 
+# The change feed search reads (awm.journal.feed): one row per thread first post with
+# the number of its last change. Triggers bump the root in the writing transaction.
+_NEXT = "(SELECT COALESCE(MAX(seq), 0) + 1 FROM search_feed)"
+
+
+def _bump(root_sql: str) -> str:
+    return (f"INSERT INTO search_feed (root_id, seq) SELECT r, {_NEXT} FROM ({root_sql}) WHERE r IS NOT NULL"
+            " ON CONFLICT(root_id) DO UPDATE SET seq = excluded.seq;")
+
+
+def _root_of(post: str) -> str:
+    return f"SELECT COALESCE(thread_id, id) AS r FROM scope_posts WHERE id = {post}"
+
+
+FEED_SQL = f"""\
+CREATE TABLE IF NOT EXISTS search_feed (
+    root_id  TEXT PRIMARY KEY,
+    seq      INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_search_feed_seq ON search_feed(seq, root_id);
+CREATE TABLE IF NOT EXISTS search_feed_epoch (epoch TEXT NOT NULL);
+CREATE TRIGGER IF NOT EXISTS search_feed_post_ai AFTER INSERT ON scope_posts BEGIN
+    {_bump("SELECT COALESCE(NEW.thread_id, NEW.id) AS r")}
+END;
+CREATE TRIGGER IF NOT EXISTS search_feed_post_au AFTER UPDATE ON scope_posts BEGIN
+    {_bump("SELECT COALESCE(NEW.thread_id, NEW.id) AS r UNION SELECT COALESCE(OLD.thread_id, OLD.id)")}
+END;
+CREATE TRIGGER IF NOT EXISTS search_feed_post_ad AFTER DELETE ON scope_posts BEGIN
+    {_bump("SELECT COALESCE(OLD.thread_id, OLD.id) AS r")}
+END;
+CREATE TRIGGER IF NOT EXISTS search_feed_tag_ai AFTER INSERT ON post_tags BEGIN
+    {_bump(_root_of("NEW.post_id"))}
+END;
+CREATE TRIGGER IF NOT EXISTS search_feed_tag_ad AFTER DELETE ON post_tags BEGIN
+    {_bump(_root_of("OLD.post_id"))}
+END;
+CREATE TRIGGER IF NOT EXISTS search_feed_cite_ai AFTER INSERT ON post_cites BEGIN
+    {_bump(_root_of("NEW.post_id"))}
+END;
+CREATE TRIGGER IF NOT EXISTS search_feed_cite_ad AFTER DELETE ON post_cites BEGIN
+    {_bump(_root_of("OLD.post_id"))}
+END;
+CREATE TRIGGER IF NOT EXISTS search_feed_tag_rename AFTER UPDATE OF name ON tags BEGIN
+    {_bump("SELECT DISTINCT COALESCE(p.thread_id, p.id) AS r FROM post_tags pt"
+           " JOIN scope_posts p ON p.id = pt.post_id WHERE pt.tag_id = NEW.id")}
+END;
+"""
+
+#: Seeds the feed on a journal that predates it: every indexed root, in id order.
+FEED_SEED_SQL = ("INSERT OR IGNORE INTO search_feed (root_id, seq) SELECT id, ROW_NUMBER() OVER (ORDER BY id)"
+                 " FROM scope_posts WHERE body != ''"
+                 + INDEXED_SQL.replace("?", "{}").format(*(f"'{p}'" for p in INDEXED_PARAMS)) + ";\n")
+
+
+
+MIGRATIONS[(5, 6)] = FEED_SQL + FEED_SEED_SQL
+
 _initialized = False
 
 
@@ -231,7 +289,7 @@ def init() -> None:
     """Idempotently create the journal DB, its tables and the embeddings store."""
     global _initialized
     if not _initialized:
-        init_service_db(SERVICE, SCHEMA_SQL + READS_SQL + LINKS_SQL + VERSIONS_SQL + EMBEDDINGS_DDL,
+        init_service_db(SERVICE, SCHEMA_SQL + READS_SQL + LINKS_SQL + VERSIONS_SQL + FEED_SQL + EMBEDDINGS_DDL,
                         schema_version=SCHEMA_VERSION, migrations=MIGRATIONS)
         conn = get_connection(SERVICE)
         try:

@@ -64,13 +64,12 @@ def test_search_returns_the_first_post_with_its_comment_count(journal_workspace)
 
 
 def test_export_carries_one_document_per_thread(journal_workspace):
-    from awm.journal.export import export_page
+    from awm.journal.feed import changes
     root = _post(project="awm", scope="dev", author="agent:awm/dev", tags=["journal"], body="root")
     _post(author="user:tony", reply_to=root["id"], body="a comment")
-    page = export_page()
-    assert page["ids"] == [root["id"]]
-    doc = page["documents"][0]
-    assert doc["comments"] == 1 and "a comment" in doc["text"]
+    page = changes()
+    assert [c["id"] for c in page["changes"]] == [root["id"]]
+    assert "a comment" in page["changes"][0]["entry"]["text"]
 
 
 def test_a_brief_supersedes_by_reply_and_keeps_its_history(journal_workspace):

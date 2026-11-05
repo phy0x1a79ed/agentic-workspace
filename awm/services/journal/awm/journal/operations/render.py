@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from awm.journal import export, precedents, private, render, search_index
+from awm.journal import feed, precedents, private, render, search_index
 from awm.persistence.databases import service_db_path
 
 _CLI_HTTP = ["cli", "http"]
@@ -25,13 +25,15 @@ RENDER_MANIFEST_FUNCTIONS = [
         "tool": "journal_export",
         "surfaces": _CLI_HTTP,
         "description": (
-            "Page the indexed posts as search documents. Pass the previous page's "
-            "next_cursor as cursor. The final page (done=true) also lists every id."
+            "The search archive's change feed: the indexed threads changed after `since`, each "
+            "with its entry, or without one when it was deleted. Pass the previous page's `next` "
+            "as `since`. A changed `epoch`, or `reset`, means read again from the start."
         ),
         "params": [
-            {"name": "cursor", "type": "string", "required": False},
+            {"name": "since", "type": "string", "required": False,
+             "description": "The cursor of the last change read. Default: the start."},
             {"name": "limit", "type": "integer", "required": False,
-             "description": "Documents per page. Default 200, at most 1000."},
+             "description": "Changes per page. Default 200, at most 1000."},
         ],
     },
     {
@@ -75,8 +77,7 @@ def _handle_render(args: dict, as_: str | None = None) -> dict:
 def _handle_export(args: dict, as_: str | None = None) -> dict:
     from awm.journal.operations.posts import refuse_clashed
     refuse_clashed(as_)
-    return export.export_page(args.get("cursor") or None, args.get("limit"),
-                              private.exclusion(as_))
+    return feed.changes(args.get("since") or None, args.get("limit"), private.exclusion(as_))
 
 
 def _handle_precedent_import(args: dict) -> dict:

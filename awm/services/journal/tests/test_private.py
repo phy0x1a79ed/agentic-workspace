@@ -98,7 +98,9 @@ def test_a_peer_render_of_a_marked_scope_is_empty(marked, journal_workspace):
 def test_a_peer_export_drops_marked_documents_and_ids(marked):
     from awm.journal.operations.render import _handle_export
     peer, local = _handle_export({}, "peer:altair"), _handle_export({}, None)
-    assert _owners(peer["documents"]) == {("awm", "dev")}
-    assert marked[("avatar", "Avatar")] not in peer["ids"]
-    assert marked[("avatar", "Avatar")] in local["ids"]
-    assert len(local["documents"]) == 5
+    shown = lambda page: {c["id"] for c in page["changes"] if "entry" in c}
+    assert {(c["entry"]["project"][0], c["entry"]["scope"][0]) for c in peer["changes"] if "entry" in c} \
+        == {("awm", "dev")}
+    assert marked[("avatar", "Avatar")] not in shown(peer)
+    assert marked[("avatar", "Avatar")] in shown(local)
+    assert len(shown(local)) == 5 and peer["epoch"] != local["epoch"]
