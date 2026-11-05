@@ -1,8 +1,8 @@
 """Asking another node's search for the sources named on it, each answer apart.
 
 A station runs no search and is never asked, nor is a node with no edge from
-this one, nor one that an open tag clash stands between. A node that fails,
-refuses or runs an older release shows as a status and never fails the search.
+this one, nor one that an open tag clash stands between. A node that fails or
+refuses shows as a status and never fails the search.
 """
 
 from __future__ import annotations
@@ -50,20 +50,8 @@ def describe_error(exc: BaseException) -> str:
     return (f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__)[:300]
 
 
-def _no_tool(exc: BaseException) -> bool:
-    from awm.gatewayclient import GatewayCallError
-    return isinstance(exc, GatewayCallError) and (exc.status == 404 or "Unknown tool" in exc.body)
-
-
-OLDER_RELEASE = "its release answers the old search signature"
-
-
-class OlderRelease(RuntimeError):
-    """The peer answered in the shape of a release before the ``{query, max}`` signature."""
-
-
 def _reply(raw: Any, names: list[str]) -> dict[str, Any]:
-    """The peer's answer: one object per source asked. An answer in the shape of an older release is refused."""
+    """The peer's answer: one object per source asked."""
     if isinstance(raw, dict) and "result" in raw and not any(n in raw for n in names):
         raw = raw["result"]
     size = len(raw) if isinstance(raw, (str, bytes)) else len(json.dumps(raw, default=str))
@@ -72,8 +60,6 @@ def _reply(raw: Any, names: list[str]) -> dict[str, Any]:
     if isinstance(raw, (str, bytes)):
         raw = json.loads(raw)
     if not isinstance(raw, dict) or not any(isinstance(raw.get(n), dict) for n in names):
-        if isinstance(raw, dict) and isinstance(raw.get("sources"), dict):
-            raise OlderRelease(OLDER_RELEASE)
         detail = raw.get("error") if isinstance(raw, dict) else None
         raise RuntimeError(str(detail or "reply names none of the sources asked"))
     return raw
@@ -102,11 +88,7 @@ async def _ask_one(peers: Peers, record: dict[str, Any], args: dict[str, Any], l
         reply = _reply(raw, names)
     except (asyncio.TimeoutError, TimeoutError):
         return PeerResult(name, {"status": "error", "error": f"timeout after {PEER_TIMEOUT_S:g}s"})
-    except OlderRelease:
-        return PeerResult(name, {"status": "older-release", "error": OLDER_RELEASE})
     except Exception as exc:  # noqa: BLE001 — a peer's failure is reported, never raised
-        if _no_tool(exc):
-            return PeerResult(name, {"status": "no-search", "error": "its release has no search tool"})
         return PeerResult(name, {"status": "error", "error": describe_error(exc)})
     return PeerResult(name, {"status": "ok"}, {n: _answer(reply.get(n), limit) for n in names})
 

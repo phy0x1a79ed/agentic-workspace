@@ -96,7 +96,6 @@ A node can mark a project or one scope of it private. Run `scope private project
 - Scores from different nodes do not compare, so the merge fuses ranks and ignores scores.
 - A call that arrives from another node searches that node only. No node relays a search onward.
 - Two nodes whose journal tag vocabularies clash do not search each other. Search marks each `name@node` source of a clashed node refused and does not ask it, until the newer tag is renamed.
-- **CAUTION** A peer on a release before the `{query, max}` signature answers in the old shape. Search reports it as an error on each of that peer's sources, so update the nodes together.
 
 `ARCHITECTURE.md` § *The search archive* covers the plug-in contract.
 

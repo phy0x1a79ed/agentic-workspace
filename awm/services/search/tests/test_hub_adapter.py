@@ -119,10 +119,10 @@ async def test_a_malformed_query_comes_back_as_a_value_error(monkeypatch):
         await HANDLERS["query"]({"query": {"journals": {"nonesuch": 1}}})
 
 
-async def test_an_old_release_call_is_refused_whole(monkeypatch):
+async def test_an_unknown_argument_is_refused_whole(monkeypatch):
     class Stub:
         async def query(self, req, caller):
-            raise AssertionError("an old-signature call must not reach the archive")
+            raise AssertionError("a call with unknown arguments must not reach the archive")
 
     monkeypatch.setattr(hub_adapter, "ARCHIVE", Stub())
     monkeypatch.setattr(hub_adapter.privacy, "marks", lambda: [])

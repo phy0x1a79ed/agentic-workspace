@@ -285,25 +285,10 @@ async def test_a_peer_answers_in_sections_and_is_asked_for_its_own_sources(loade
     assert peers.calls[0][2] == {"query": {"text": "zzzz", "journals": {}}, "max": 10}
 
 
-async def test_a_peer_on_an_older_release_is_an_error_on_its_source(loaded, peers):
+async def test_a_reply_in_another_shape_is_an_error_on_its_source(loaded, peers):
     peers.add("capella", lambda args: {"hits": [{"source": "journals", "id": "r1", "snippet": "from afar"}]})
     result = await ask(loaded, {"text": "zzzz", "journals@capella": {}})
     assert result["journals@capella"]["exact"] == [] and result["journals@capella"]["error"]
-
-
-async def test_a_mixed_fleet_fails_only_the_old_peers_sources(loaded, peers):
-    peers.add("capella", lambda args: {"query": "zzzz", "sources": {"journals": {"status": "ok"}},
-                                       "exact": [{"source": "journals", "id": "r1", "title": "old"}],
-                                       "related": [], "degraded": False})
-    peers.add("lyra", lambda args: RuntimeError("HTTP 422: unknown argument 'max'"))
-    peers.add("deneb", lambda args: {"journals": {"exact": [
-        {"id": "d1", "title": "new", "ts": "2026-01-01T00:00:00Z"}]}})
-    result = await ask(loaded, {"text": "sink", "journals": {}, "journals@capella": {},
-                                "journals@lyra": {}, "journals@deneb": {}})
-    assert "error" not in result["journals"] and every({"journals": result["journals"]})
-    assert result["journals@capella"] == {"exact": [], "error": "its release answers the old search signature"}
-    assert result["journals@lyra"]["exact"] == [] and "unknown argument" in result["journals@lyra"]["error"]
-    assert ids(result["journals@deneb"]["exact"]) == ["d1"]
 
 
 # -- schema 2 --------------------------------------------------------------
