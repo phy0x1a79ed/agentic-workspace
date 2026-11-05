@@ -27,7 +27,6 @@ Procedure, from dfs-interview § Work the stack:
 
 ## Pending
 
-- **M13** (2026-11-05): Cloudflare: add CAA record auth = 0 issue "letsencrypt.org; validationmethods=dns-01". Needs M12.
 - **M14** (2026-11-05): Cloudflare: create an API token, Zone DNS Edit, zone tony-xy-liu.com only; keep it in your password manager until M25. Give an ACME email or none. Needs M12.
 - **rt-plugins** (2026-11-05): rt-container waits on your go to build the stock plugins (projects/stock/plugins). Talk to it directly.
 - **Q-tarball-backup** (2026-11-05): Trilium fork backup: push its branches and tags to the existing GitHub fork phy0x1a79ed/Trilium, and attach the pinned tarball to a GitHub release there as a backup copy only (deneb still gets mizar's push)? Recommended: yes.
