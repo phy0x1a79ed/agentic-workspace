@@ -29,3 +29,12 @@
 - Delete the old Swarm board (`Nzv8wkoUgl2V`).
 - Delete the federation board's 8 pre-redux cards. The full test of the queue and approvals runs as its own topic, `end-state/queue-approvals-test`.
 - Still open: whether the new Ops replaces the old one, and where the new board goes. These wait on the answers to "why migrate" and "what is the AWM book".
+
+## Tony's answers, round 2 (2026-11-06)
+
+> the new swarm board is bugged and not showing anything. there's also a bunch of just folders under swarm that look like tasks. they are not organized
+
+> ops can be the new swarm status page I requested and all of our nodes including stations register to it.
+
+- Cause: after 5aff3f26, alcor's writer created `awmSwarmBoard` under `root` at 17:58Z and wrote the cards. `board-install` had never run, so the root had no page to render and each card showed as a bare note. Ran `python -m awm.operations.cli board-install` on alcor at about 18:20Z. The root now has `renderNote` → `awmSwarmBoardPage`.
+- Ops (`awmSwarmOps`) becomes the swarm status page: a roster of every node, stations included, each registered with its stats. That absorbs `end-state/node-roster`.

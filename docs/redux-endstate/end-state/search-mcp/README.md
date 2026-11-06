@@ -23,3 +23,12 @@ The spec: `fleet.md` R136 (the new search replaces the old one) and R98.3 (a nod
 3. shogun runs deb4d72d. That release's MCP lists only the tools served on shogun, so no door singleton (operations, social, 2fa and others) reaches shogun's sessions. shogun's browser and operations services are stopped.
 4. capella was unreachable, and lyra has no awm yet. Neither can be checked today.
 5. deneb's relay seats have no awm MCP. Their worktrees under `/var/lib/awm/projects/relay/` hold no `.mcp.json`. deneb's own `/opt/awm/.mcp.json` names a binary that does not exist there. The relay seats are due to move to mizar (journal f4ed07ad).
+
+## Core, as Tony set it (2026-11-06)
+
+> core = relay + search + files (all nodes)
+> mycore = shared services you listed
+> altiar has mycore except market access.
+> shogun runs core + operations + 2fa + socials
+
+The install-loop session (9fc4afc8) settles the plugin list from this.
