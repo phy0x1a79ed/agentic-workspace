@@ -99,15 +99,15 @@ def test_a_client_download_reaches_the_relay():
 
 # -- what the relay is told ----------------------------------------------------
 
-def test_the_operators_bearer_rides_through_for_the_relay_to_check():
-    """The edge deliberately does not read it. It is a credential for the
-    upstream, not for awm, and an edge that checked it would be a second place
-    to get that check wrong."""
+@pytest.mark.parametrize("path", ["/tether/issue", "/tether/status", "/room"])
+def test_a_public_call_on_a_bearers_route_is_refused_at_the_edge(path):
+    """The bearer and the routes it gates stay on the relay's host (channels.md
+    R147): the edge answers 404 and the relay never sees the request."""
     seen, handler = _recorder()
     with _client(_app(), handler) as c:
-        c.post("/tether/issue", headers={"Authorization": "Bearer the-issue-token"})
-    assert seen["url"] == RELAY + "/issue"
-    assert seen["headers"]["authorization"] == "Bearer the-issue-token"
+        resp = c.post(path, headers={"Authorization": "Bearer the-issue-token"})
+    assert resp.status_code == 404
+    assert "url" not in seen
 
 
 def test_the_edge_asserts_no_identity_it_did_not_verify():
@@ -262,6 +262,3 @@ def test_a_room_reaches_the_relay_with_its_path_unchanged():
     with _client(_app(), handler) as c:
         c.get("/room/acre-anchor-kettle")
         assert seen["url"] == "http://127.0.0.1:12520/room/acre-anchor-kettle"
-        c.post("/room", headers={"Authorization": "Bearer relay-secret"})
-        assert seen["url"] == "http://127.0.0.1:12520/room"
-        assert seen["headers"]["authorization"] == "Bearer relay-secret"

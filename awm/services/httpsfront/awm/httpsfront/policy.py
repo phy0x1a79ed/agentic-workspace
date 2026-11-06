@@ -33,11 +33,11 @@ Eight answers per path:
   no session at all, and the reason is the tool's whole point: the person on the
   other end is a friend being helped with their own machine, and one who needed
   an awm account first is one this could not help. What keeps it narrow is not
-  trust in that person but the relay's own shape — it refuses the two operator
-  routes without its own bearer, answers every refusal with an identical 404 so
-  its surface cannot be mapped by the shape of a decline, and issues a session
-  only to an authenticated operator, so nothing reachable here can be brought
-  into existence from outside. The mount is an allow-list of exact path grammars
+  trust in that person but the relay's own shape — a session or a room comes
+  into existence only on the relay's host, whose bearer routes this mount does
+  not forward, and the relay answers every refusal with an identical 404 so its
+  surface cannot be mapped by the shape of a decline. Nothing reachable here can
+  be brought into existence from outside. The mount is an allow-list of exact path grammars
   rather than a prefix, so a slot the relay never issued is turned away here
   before it costs a socket. See :mod:`awm.httpsfront.tether`.
 * ``BOARD`` — the federation board, the **third** verdict allowed with no edge

@@ -6,7 +6,7 @@ This file is the operator's contract for the tether component and the two plugin
 
 ## What it carries
 
-A channel is a room or a machine (`docs/redux/channels.md` R110). The public host's `relay` plugin keeps every room and supervises `tether-relay`. Each member node's `channel` plugin holds its sessions' rooms through `relay`, and supervises `tether-operator`, which mints machine sessions. The tether repository builds and publishes the binaries. Each host fetches the version `RELEASE` names.
+A channel is a room or a machine (`docs/redux/channels.md` R110). The public host's `relay` plugin keeps every room, issues every machine slot and supervises `tether-relay`. Each member node's `channel` plugin holds its sessions' rooms through `relay`, and supervises `tether-operator`, which mints machine sessions on slots `relay` issues. The tether repository builds and publishes the binaries. Each host fetches the version `RELEASE` names.
 
 ## Two roles
 
@@ -29,7 +29,7 @@ A failed fetch is not fatal. The binaries in place keep running, and `channel st
 
 | Env var | Read by | Meaning |
 |---|---|---|
-| `AWM_TETHER_ISSUE_TOKEN` | both roles | the bearer that makes opening a session or a room operator-only |
+| `AWM_TETHER_ISSUE_TOKEN` | relay | the bearer for the tether relay's `/issue`, `/status` and `POST /room` |
 | `AWM_ROOM_RELAY` | relay | the tether relay's room routes (default `http://127.0.0.1:$AWM_TETHER_PORT`) |
 | `AWM_ROOM_LINK` | relay | the edge root a room's link names (default `https://nexus.tony-xy-liu.com`) |
 | `AWM_RELAY_LEASE_S` | relay | how long a member stays without its node renewing it (default 180) |
@@ -43,7 +43,7 @@ A failed fetch is not fatal. The binaries in place keep running, and `channel st
 
 `AWM_TETHER_ISSUE_TOKEN` is a secret. Where the gateway spawns a plugin, it comes from the node's `secrets.env`. Where `relay` runs as a singleton under its own user, its unit loads it with `LoadCredential=secrets.env:/etc/awm/secrets/relay.env`, and `awm.gatewayclient.credentials` reads it. The binaries, the assets and the rooms live under the service's `AWM_DIR`, which a singleton's unit points at its own state directory.
 
-**CAUTION** Every host needs the same `AWM_TETHER_ISSUE_TOKEN`. The relay refuses to start without one. The operator daemon starts without one, so `channel status` can say why the other verbs fail.
+**CAUTION** Only the public host holds `AWM_TETHER_ISSUE_TOKEN` (`docs/redux/channels.md` R147). The relay refuses to start without one. The edge forwards none of the three routes it gates. A member node's operator daemon gets each slot, and restores a held one, from `relay issue` through deneb's door: the plugin names `awm.tether.issuer` in the daemon's `TETHER_ISSUER`, and that module calls on the `channel` service's account. A node outside `relay`'s callers in `edges.yml` gets no slot.
 
 **CAUTION** The edge's path grammar (`awm/services/httpsfront/awm/httpsfront/tether.py`) must match the relay's parsers exactly: slots, tokens, and room names of three or six list words. `awm/services/httpsfront/tests/test_tether_paths.py` writes both boundaries out.
 
@@ -62,6 +62,8 @@ The relay dies with its plugin. The operator daemon does not: it runs in a trans
 **CAUTION** The unit name and the control socket derive from the state path, `<AWM_DIR>/services/tether`. Moving it orphans the running daemon and its sessions.
 
 **CAUTION** The daemon reads its environment once, at launch. To apply a changed env file, stop the unit with `systemctl --user stop awm-tether-operator-<hash>`. The plugin starts a new daemon within a few seconds.
+
+**CAUTION** The daemon outlives `channel`, so its issuer reads the token file of `channel`'s current spawn on each call. While `channel` is down, an invite fails, and a restore retries until the resume window ends.
 
 **WARNING** Stopping the unit ends every live machine session. Each holding session gets an end line, and its channel closes.
 

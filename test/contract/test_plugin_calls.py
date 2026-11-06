@@ -34,7 +34,8 @@ CALLS: dict[str, set[tuple[str, str]]] = {
                                          "attr_set", "attr_delete")}},  # vault.gateway_transport
     "channel": {("reflection@1", "session_of"), ("reflection@1", "message"), ("reflection@1", "list_other"),
                 # gatewayclient sessions and push
-                *{("relay", v) for v in ("open", "join", "write", "close", "feed")}},  # RelayClient
+                *{("relay", v) for v in ("open", "join", "write", "close", "feed")},  # RelayClient
+                ("relay", "issue")},  # awm.tether.issuer, which the operator daemon runs as channel
     "operations": {  # GatewayTool("<tool>").call(verb)
         ("zotero", "order"),
         ("reflection", "session_of"), ("reflection", "message"), ("reflection", "start_other"), ("social", "send"),

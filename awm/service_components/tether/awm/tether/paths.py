@@ -78,7 +78,7 @@ OPERATOR_UNIT = "awm-tether-operator-" + hashlib.sha1(str(STATE_DIR).encode()).h
 LAUNCH_FILE = STATE_DIR / "daemon.json"
 
 #: The daemon's environment, handed to systemd as an EnvironmentFile rather
-#: than on a command line, because it carries the relay bearer. Mode 0600.
+#: than on a command line, because it copies the plugin's whole environment. Mode 0600.
 ENV_FILE = STATE_DIR / "daemon.env"
 
 #: How far this host has recorded and announced the daemon's stream, and each

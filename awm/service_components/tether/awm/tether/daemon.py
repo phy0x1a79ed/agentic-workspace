@@ -82,13 +82,17 @@ def _env() -> dict[str, str]:
     """The daemon's environment.
 
     Inherited wholesale, because what the daemon needs beyond the socket path
-    — which relay this fleet uses, the bearer that reaches its authenticated
-    half, a proxy — lives in the workspace env file and is already in this
-    process. Naming each variable here would mean editing this file every time
-    one is added.
+    and its issuer — which relay this fleet uses, a proxy, the gateway and the
+    service's token file the issuer calls through — lives in the workspace env
+    file and is already in this process. Naming each variable here would mean
+    editing this file every time one is added.
     """
+    from awm.tether import issuer
+
     env = dict(os.environ)
     env["TETHER_CONTROL_SOCKET"] = str(paths.CONTROL_SOCKET)
+    if paths.ROLE == paths.OPERATOR:
+        env["TETHER_ISSUER"] = json.dumps(issuer.ARGV)
     if paths.ROLE == paths.RELAY:
         env.setdefault("AWM_TETHER_ROOM_STATE", str(paths.ROOM_STATE))
         env.setdefault("AWM_TETHER_ASSETS", str(paths.ASSETS_DIR))
