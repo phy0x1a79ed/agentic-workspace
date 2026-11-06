@@ -17,7 +17,7 @@ from typing import Any
 from awm.routine import fleetconf, timers
 from awm.routine.deploy import Deployer
 from awm.routine.outbound import GatewayOutbound, Outbound
-from awm.routine.refresh import Refresher, default_checkout_root
+from awm.routine.refresh import Refresher, default_checkout_root, default_holds_project
 from awm.routine.runner import Runner
 from awm.routine.store import Store
 
@@ -293,6 +293,7 @@ def build_deployer(store: Store, out: Outbound) -> Deployer:
     return Deployer(store, out, workspace=ws,
                     refresher=Refresher(out, node=node_name(),
                                         checkout_root=default_checkout_root(ws),
+                                        holds_project=default_holds_project(ws),
                                         fleet_config=lambda: fleetconf.load(install_config),
                                         artifact_store=AWM_DIR / "artifacts"))
 

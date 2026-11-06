@@ -29,19 +29,25 @@ MANIFEST = "awm-plugin.toml"
 def default_checkout_root(workspace: Path) -> Callable[[str], Path]:
     """The live checkout of a project on this node.
 
-    `AWM_DEPLOY_ROOT_<PROJECT>` wins. Else `projects/<p>/release`, else, for the
-    project the workspace itself checks out (awm), the workspace root."""
+    `AWM_DEPLOY_ROOT_<PROJECT>` wins. awm runs from the workspace root whenever
+    that is a checkout, so for awm it comes next, ahead of the release worktree
+    the promote step already moved. Else `projects/<p>/release`."""
     def root(project: str) -> Path:
         env = os.environ.get(f"AWM_DEPLOY_ROOT_{project.upper().replace('-', '_')}")
         if env:
             return Path(env)
+        if project == "awm" and (workspace / ".git").exists():
+            return workspace
         rel = workspace / "projects" / project / "release"
         if rel.is_dir():
             return rel
-        if project == "awm" and (workspace / ".git").exists():
-            return workspace
         raise FileNotFoundError(f"no live checkout of {project} on this node")
     return root
+
+
+def default_holds_project(workspace: Path) -> Callable[[str], bool]:
+    """Whether this node holds a bare repo of a project, to make a scope in."""
+    return lambda project: (workspace / "projects" / project / ".bare").is_dir()
 
 
 @dataclass
@@ -99,8 +105,10 @@ class Refresher:
                  checkout_root: Callable[[str], Path],
                  fleet_config: Callable[[], fleetconf.Fleet] = fleetconf.Fleet,
                  artifact_store: Path | None = None,
-                 awake: Callable[[str], Awaitable[bool]] | None = None) -> None:
+                 awake: Callable[[str], Awaitable[bool]] | None = None,
+                 holds_project: Callable[[str], bool] = lambda _p: True) -> None:
         self.out = out
+        self.holds_project = holds_project
         self.awake = awake or _answers
         self.node = node
         self.checkout_root = checkout_root
@@ -158,7 +166,7 @@ class Refresher:
                   f"{frm[:12] or '(none)'} to {to[:12]} on node {self.node}. Its live "
                   f"checkout here is `{root}`: run the refresh from there. Refresh it "
                   f"here and confirm the services run the new commit.")
-        has_scopes = (root.parent / ".bare").is_dir()
+        has_scopes = self.holds_project(project)
         if not has_scopes:
             prompt += (f"\n\nThis node holds no `{project}` project to make a scope in, "
                        f"so you start in the lobby. Stay there and work on `{root}` by "

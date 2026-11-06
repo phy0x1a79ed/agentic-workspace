@@ -10,7 +10,7 @@ import pytest
 from awm.routine import deployconf, fleetconf
 from awm.routine.deploy import Deployer
 from awm.routine.hub_adapter import DEPLOY_FUNCTIONS, DeployVerbs
-from awm.routine.refresh import Refresher, plugin_folders
+from awm.routine.refresh import Refresher, default_checkout_root, plugin_folders
 
 from tests.conftest import git
 
@@ -227,11 +227,21 @@ async def test_queue_refresh_starts_supervising_session(store, out, ws):
     assert str(ws.proj / "release") in start["prompt"]
 
 
+def test_awm_refreshes_the_workspace_root_ahead_of_its_release_worktree(tmp_path):
+    (tmp_path / ".git").mkdir()
+    (tmp_path / "projects/awm/release").mkdir(parents=True)
+    (tmp_path / "projects/other/release").mkdir(parents=True)
+    root = default_checkout_root(tmp_path)
+    assert root("awm") == tmp_path
+    assert root("other") == tmp_path / "projects/other/release"
+
+
 async def test_queue_refresh_without_a_bare_repo_starts_in_the_lobby(out, tmp_path):
     root = tmp_path / "workspace"
     root.mkdir()
     (root / "deploy.toml").write_text('[refresh]\nkind = "queue"\nprompt = "Restart awm."\n')
-    ref = Refresher(out, node="alcor", checkout_root=lambda p: root)
+    ref = Refresher(out, node="alcor", checkout_root=lambda p: root,
+                    holds_project=lambda p: False)
     r = await ref.local("awm", "a" * 40, "b" * 40)
     assert r.ok
     [start] = out.starts
