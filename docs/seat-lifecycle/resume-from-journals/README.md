@@ -28,3 +28,12 @@ Tony: "search redux journals about seats, this was decided."
 - State on 2026-11-06: the template is a draft at `docs/redux/drafts/agentic-commons` (with `scripts/new-seat.sh`). No `agentic-commons` checkout exists on altair, and no awm project of that name exists.
 
 So a client's agent starts in `agentic-commons/seats/<person>/`, not in a metasmith scope. The open part is where its journals go, because an awm journal post names a project and a scope.
+
+## Decision
+
+Tony, 2026-11-06, to "should agentic-commons be an awm project with one scope per person?": "yes".
+
+1. `agentic-commons` is an awm project. Each person has one scope, `seats/<person>`, whose worktree holds their seat folder (R128 item 3).
+2. The new-seat routine starts a client's agent in that scope.
+3. The agent journals in that scope. The seat brief tells it to read that scope's journals for context when it needs them.
+4. A task stays resumable after its session is gone, because the next agent for that person starts in the same scope and reads the same journals.

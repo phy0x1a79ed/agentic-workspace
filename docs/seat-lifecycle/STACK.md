@@ -23,13 +23,10 @@ Procedure, from dfs-interview § Work the stack:
 
 ## Current topic
 
-**resume-from-journals**. Its result: `resume-from-journals/README.md`.
+**journal-tags**. Its result: `journal-tags/README.md`.
 
 ## Stack
 
-- **resume-from-journals** (2026-11-06): the task should be resumable from debrief journals, even if the sessions are gone.
-  - [x] Where does the routine start a client's agent, so that its journals are always in one place? Recommend: a fixed home scope per client, metasmith/lab/<client-slug>, created on first message. The agent journals there even when the work happens in another scope. (answered 2026-11-06)
-  - [ ] Is agentic-commons an awm project with one scope per person (project agentic-commons, scope seats/<person>), so a seat's journals post there and the next agent reads them there? Recommend yes.
 - **journal-tags** (2026-11-06): Seats should also be instructed to journal often -> we should also add tags for each user, and one that marks seats. otherwise, these journals are debreif journals.
 - **speak-rule** (2026-11-06): steven chen contacted the client without first being asked, on a stale request.
 - **lost-pushes** (2026-11-06): it looks like there is a bug in how seats work. retired seats came back
@@ -39,9 +36,11 @@ Procedure, from dfs-interview § Work the stack:
   - [ ] Tony's question 'can we sort natively in claude?' as it bears on seats. Asked by trilium-design/interview.
 - **unpause** (2026-11-06): can we pause and shutdown seats on altiar?
 - **edge-cases** (2026-11-06): the current system works. a main slack seat monitors for new DMs. it notifies me and spawns a seat on first DM by someone else. ... slack main handles those edges cases and uses judgement. can also ask me (users.md R126, 2026-11-02)
+- **seat-brief** (2026-11-06): need to consolidate previous decsions into brief for seats on altair. need to also have a more general version for other seats like discord
 
 ## Parked
 
 ## Closed
 
 - **lifecycle** (closed 2026-11-06): `lifecycle/README.md`
+- **resume-from-journals** (closed 2026-11-06): `resume-from-journals/README.md`
