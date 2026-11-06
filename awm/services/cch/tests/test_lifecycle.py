@@ -1746,6 +1746,8 @@ def test_a_retired_session_resumes_from_its_transcript_in_a_new_job(home, relaun
     from awm.cch import lifecycle
 
     assert lifecycle.read_lineage("feedface")["session_id"] == RETIRED
+    # The gateway gates a session with no mode in its record as `unknown` and refuses its calls.
+    assert lifecycle.read_lineage("feedface")["mode"] == "worker"
 
 
 def test_a_removed_job_with_a_kept_lineage_resumes_from_the_transcript(home, relaunched, monkeypatch):

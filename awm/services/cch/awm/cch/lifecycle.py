@@ -1160,6 +1160,7 @@ async def _resume_retired(session_id: str, rec: dict[str, Any] | None,
         _write_lineage(session.short, {
             **{k: v for k, v in rec.items() if k != "job"}, "job": session.short,
             "name": spec["name"], "cwd": cwd, "project": project, "scope": scope,
+            "mode": spec["mode"],
             "remote_control": spec["remote_control"], "session_id": session_id,
             "resumed_from": rec.get("job"), "started_at": _iso(time.time()),
             "started_epoch": time.time(), "pinned": False})
