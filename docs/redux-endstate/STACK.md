@@ -25,10 +25,15 @@ Procedure, from dfs-interview § Work the stack:
 
 **ops-board**. Its result: `ops-board/README.md`.
 
+## Pending
+
+- **shogun-callers** (2026-11-06): Which of alcor's singletons may shogun call? Recommend operations only (approvals R100, board).
+
 ## Stack
 
 - **ops-board** (2026-11-06): https://nexus.tony-xy-liu.com/trilium/#root/iF0A3SWEGqUx/P4ALwPiCSs6N?ntxId=CZkmWI ops board needs updating
 - **end-state** (2026-11-06): there are a few sessions that look left over. Please use the DFS interview skill so that we can review the end state and if there are anything left open for us to clean up and do.
+  - **shogun-singletons** (2026-11-06): from daae3825: After the render, shogun reaches neither alcor's operations and browser nor any other singleton. ... Should I do (b), and for which tools? Without an answer I do only (a) and report shogun's singleton access as open.
   - **env-reload** (2026-11-06): (from nexus-signin) a changed config.toml [env] reaches plugins only after a gateway restart
   - **search-mcp** (2026-11-06): one thing we should review is that all nodes are using the new search service and MCP.
     - [x] Refresh shogun to b1e85c50 now? (answered 2026-11-06)
