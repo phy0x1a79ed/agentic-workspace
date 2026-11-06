@@ -15,6 +15,7 @@ install = "install.sh"
 name = "operations"
 major = 2
 service = "operations"
+implements = ["operations@2"]
 tier = "on"
 
 [needs]

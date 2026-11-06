@@ -99,9 +99,10 @@ class Seen:
 
 class Puller:
     def __init__(self, node: str, call: Call, verify: Verify, seen: Seen,
-                 run_sync: Callable[[dict], Awaitable[dict]]):
+                 run_sync: Callable[[dict], Awaitable[dict]],
+                 wait: Callable[[], Awaitable[None]] | None = None):
         self.node, self.call, self.verify, self.seen = node, call, verify, seen
-        self.run_sync = run_sync
+        self.run_sync, self.wait = run_sync, wait
 
     async def tick(self, wait_s: float = WAIT_S) -> list[dict]:
         """Pull once and run what verifies. Returns one outcome per envelope."""
@@ -138,6 +139,8 @@ class Puller:
         """Pull forever. A return reads as a defect to the supervisor, so this never returns."""
         log.info("zotero: order puller started for node %s", self.node)
         while True:
+            if self.wait is not None:
+                await self.wait()
             try:
                 await self.tick()
             except Exception as exc:  # noqa: BLE001 — the approver may be down
@@ -156,6 +159,8 @@ def from_env(run_sync: Callable[[dict], Awaitable[dict]]) -> Puller | None:
     settings = Settings.from_env()
     if settings is None:
         return None
+    from awm.gatewayclient import until_provided
+
     return Puller(settings.node, operations_call,
                   grant_verifier(settings.pubkey, settings.node), Seen(settings.seen_path),
-                  run_sync)
+                  run_sync, wait=lambda: until_provided("operations", 2))

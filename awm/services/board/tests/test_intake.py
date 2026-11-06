@@ -46,3 +46,19 @@ async def test_a_failed_call_keeps_the_cursor(board, events, tony, collins, tmp_
     intake.call = ops
     await intake.step()
     assert [v for v, _ in ops.calls] == ["intake_post"]
+
+
+async def test_run_waits_for_a_provider_before_it_reads_the_log(events, tony, tmp_path):
+    class NoProvider(Exception):
+        pass
+
+    async def wait():
+        raise NoProvider
+
+    cursor = tmp_path / "cursor.json"
+    intake = Intake(events, tony, Ops(), cursor, wait=wait)
+    try:
+        await intake.run()
+    except NoProvider:
+        pass
+    assert not cursor.exists(), "no pass ran before a provider was there"

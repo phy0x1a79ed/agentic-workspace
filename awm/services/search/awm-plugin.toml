@@ -23,6 +23,7 @@ tier = "categorical"
 [[tool]]
 name = "search"
 major = 1
+implements = ["search@1"]
 tier = "on"
 
 [needs]

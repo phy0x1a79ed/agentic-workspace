@@ -22,7 +22,7 @@ platform = ["linux"]
 # reflection, through awm.gatewayclient.holders and push: `session_of` and
 # `list_other` name the holder and tell when it is gone, and `message` pushes
 # each line into its prompt.
-[[needs.tool]]
+[[needs.contract]]   # deneb runs no sessions, so it has no reflection (fleet.md R79)
 name = "reflection"
 major = 1
 verbs = ["list_other", "session_of", "message"]
