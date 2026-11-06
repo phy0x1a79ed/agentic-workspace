@@ -28,10 +28,10 @@ Procedure, from dfs-interview § Work the stack:
 ## Pending
 
 - **rc-rows** (2026-11-05): On claude.ai/code, archive the 31 dead Remote Control rows: 7 redux-build-* (alcor, clean-plugins, search, channels, queue, deploy, integrate), 14 finished (awm redux, core-redux-gateway-plugins-bootstrap, fleet-board-rework, fxdiff-design, retire-full-close, owner-dm-defaults, discord dm previews, multi-admin machine access, plan-bypass-mode, science-bash-stall, capellaz cc mem cleanup, avatar, lit kb, cloud/homelab), representative x5, secretary x5. Your call on: engcyc pipeline plan, msm-*, fosdb, cyanoverse, treesapp, ecspr, job application system, 4 offline seat rows, 4 cloud sessions.
-- **Q-altair-gate** (2026-11-05): capella and lyra reach altair over its tailnet address (R96), but the ssh admin gate's Match on altair keys on today's address, so a tailnet login would fall outside it. The gate is yours (M29). Options: you adjust the gate's Match for the tailnet address, or capella and lyra keep today's 192.168.100.142 route to altair.
 
 ## Stack
 
+- **mira-swap** (2026-11-05): Tony (2026-11-05): alcor needs to work in isolation of mira at end state, so alcor needs the relavent keys. expect alcor to take over mira at end state. we are making the swap now. discord and ibkr force us to make the change and 1week test with both running is not possible
 - **windows-nodes** (2026-11-05): Tony (2026-11-05): is there a session for setting up the ssh edges? lets fix capella and lyra in one go, including tailscale, etc / they also need the new awm isntall in their wsl instances
 - **rt-teach** (2026-11-05): Tony (2026-11-05): we need the rooms service to be up so that the Alcor agent can teach the RT agent, which was the original session that created the RT stock stuff, how to actually use the new system and edit.
   - [x] Which machine and session was the original RT agent? rt-container found no trace on mira or mizar. Leads point to your Mac, or capella or lyra over ssh. (answered 2026-11-05)
@@ -108,6 +108,7 @@ From journal 6a98c0c6 (awm/redux) and walkthrough's handover (manual-steps.md at
 - **redux-build/windows-nodes** (2026-11-05): took windows-nodes
 - **redux-build/tether-issue** (2026-11-05): took tether-issue-door
 - [ ] tell redux-build/dev how tether-issue-door was solved
+- **redux-build/mira-swap (job 99a8ed28, opus high)** (2026-11-05): took mira-swap
 
 ## Closed
 
