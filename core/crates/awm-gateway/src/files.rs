@@ -24,6 +24,9 @@ use serde_json::{json, Value};
 /// What one call carries inline, raw bytes before base64.
 pub const MAX_INLINE_BYTES: u64 = 24 << 20;
 
+/// The largest request body `/invoke` takes: a full inline file, base64 and framing.
+pub const MAX_REQUEST_BYTES: usize = 64 << 20;
+
 /// The verbs whose `file` argument is a path on the caller's node: `(tool, verb)`.
 const FILE_VERBS: &[(&str, &str)] = &[("social", "send")];
 
