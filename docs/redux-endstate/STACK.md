@@ -23,12 +23,11 @@ Procedure, from dfs-interview § Work the stack:
 
 ## Current topic
 
-**nexus-signin**. Its result: `nexus-signin/README.md`.
+**ops-board**. Its result: `ops-board/README.md`.
 
 ## Stack
 
-- **nexus-signin** (2026-11-06): https://nexus.tony-xy-liu.com/ {"error":"the sign-in grant is refused"} after passkey success, im on capella
-  - [ ] Does the passkey sign-in on nexus work now from capella?
+- **ops-board** (2026-11-06): https://nexus.tony-xy-liu.com/trilium/#root/iF0A3SWEGqUx/P4ALwPiCSs6N?ntxId=CZkmWI ops board needs updating
 - **end-state** (2026-11-06): there are a few sessions that look left over. Please use the DFS interview skill so that we can review the end state and if there are anything left open for us to clean up and do.
   - **env-reload** (2026-11-06): (from nexus-signin) a changed config.toml [env] reaches plugins only after a gateway restart
   - **search-mcp** (2026-11-06): one thing we should review is that all nodes are using the new search service and MCP.
@@ -46,3 +45,4 @@ Procedure, from dfs-interview § Work the stack:
 - **fir-ssh** (closed 2026-11-06): `fir-ssh/README.md`
 - **refresh-all** (closed 2026-11-06): `end-state/refresh-all/README.md`
 - **node-time** (closed 2026-11-06): `end-state/node-time/README.md`
+- **nexus-signin** (closed 2026-11-06): `nexus-signin/README.md`

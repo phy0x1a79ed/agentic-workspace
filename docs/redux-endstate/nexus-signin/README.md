@@ -21,3 +21,5 @@ alcor, altair and mizar already have the key. capella and shogun have none in `c
 ## Follow-up for awm
 
 The gateway reads `config.toml [env]` only when it starts. `awm reload` and `awm restart --name <svc>` do not pass a changed `[env]` to the plugins, and nothing reports that the change is pending. An `[env]` change needs a gateway restart.
+
+Tony (2026-11-06): "passkey works".
