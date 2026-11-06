@@ -28,6 +28,7 @@ Procedure, from dfs-interview § Work the stack:
 ## Stack
 
 - **keeper** (2026-11-06): Open from the plan: the social keeper keeps long-lived seats from social.toml [seat.*] (Tony's Discord DM butler, #bots, Hallam general). Does the new lifecycle replace it?
+  - [ ] Keep the keeper only for persistent rooms (muse, stream listeners) and move every chat seat, Tony's DM, #bots and Hallam general included, to the on-demand lifecycle? Recommend yes.
 - **group-dms** (2026-11-06): Open from the plan: a group DM with two lab members routes each sender to their own person seat, so two agents may answer in one chat.
 
 ## Parked
