@@ -23,9 +23,13 @@ Procedure, from dfs-interview § Work the stack:
 
 ## Current topic
 
-(none: the stack is empty)
+**tony-dm**. Its result: `tony-dm/README.md`.
 
 ## Stack
+
+- **tony-dm** (2026-11-06): Open from the plan: Tony's own DM with Opal (D0C9GMGRSFP, trusted). Is it a person seat like the others, where does its agent run, and what can it reach?
+- **keeper** (2026-11-06): Open from the plan: the social keeper keeps long-lived seats from social.toml [seat.*] (Tony's Discord DM butler, #bots, Hallam general). Does the new lifecycle replace it?
+- **group-dms** (2026-11-06): Open from the plan: a group DM with two lab members routes each sender to their own person seat, so two agents may answer in one chat.
 
 ## Parked
 
