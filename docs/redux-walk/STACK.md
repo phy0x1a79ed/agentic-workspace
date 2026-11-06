@@ -29,6 +29,7 @@ Procedure, from dfs-interview § Work the stack:
 
 - **rc-rows** (2026-11-05): On claude.ai/code, archive the 31 dead Remote Control rows: 7 redux-build-* (alcor, clean-plugins, search, channels, queue, deploy, integrate), 14 finished (awm redux, core-redux-gateway-plugins-bootstrap, fleet-board-rework, fxdiff-design, retire-full-close, owner-dm-defaults, discord dm previews, multi-admin machine access, plan-bypass-mode, science-bash-stall, capellaz cc mem cleanup, avatar, lit kb, cloud/homelab), representative x5, secretary x5. Your call on: engcyc pipeline plan, msm-*, fosdb, cyanoverse, treesapp, ecspr, job application system, 4 offline seat rows, 4 cloud sessions.
 - **Q-deneb-retry** (2026-11-05): The deneb cutover rolled back cleanly: backups verified, 2b kept. The release lacked door-client, so deneb couldn't load plugins that need alcor's operations and social. The retry needs a new release with door-client, about 10 minutes of vault downtime again. I'll bring you the plan and a window once dev's release candidate is green.
+- **Q-altair-window** (2026-11-05): altair is still on the old tree (266f4b29) and can't run the new update command yet, so its first update to the new release is a one-time, hand-supervised update in its own window. It restarts awm under altair's sessions, compute-budget included. Pick a time when altair's sessions can pause, after the deneb/alcor/mizar window.
 
 ## Stack
 
