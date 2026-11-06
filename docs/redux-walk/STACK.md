@@ -61,6 +61,8 @@ Procedure, from dfs-interview § Work the stack:
 
 From journal 6a98c0c6 (awm/redux) and walkthrough's handover (manual-steps.md at feat/redux-walkthrough a12a5f6e, M-numbers). Live workers: dev, singleton-callers, rt-container, reflect-selfstop.
 
+- **teams-slack-automations** (2026-11-05): Tony: "I'm deferring the non-essential browser automations like teams and slack, running on opera on mira". They stay on mira for now. social's slack "me" and teams accounts are off on alcor until they move.
+
 - lyra: run awm-wsl-bridge-lyra.ps1 on xps-laptop (M18), ssh 100.85.115.29 lands in WSL, then start WSL (M41)
 - tailnet: altair joins (M21), Tailnet Lock (M22), ACL from tailnet.yml (M36)
 - shogun: Ryan's keys (M6, M40), auth key and lock-sign (M35), app and wake credentials (M37, M38), its key into altair (M39); shogun stays planned
