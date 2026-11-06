@@ -31,11 +31,15 @@ Procedure, from dfs-interview § Work the stack:
 
 ## Stack
 
+- **install-loop** (2026-11-06): I want to start a session locally to iteratively dev on awm with cloud agent install tests so that the process is seamless and as close to 1 command as possible, including all core plugins (we can also discuss what that means, starting from the current definition, in that session) -> it would be good to do this for metasmith on altair as well
 - **ops-board** (2026-11-06): https://nexus.tony-xy-liu.com/trilium/#root/iF0A3SWEGqUx/P4ALwPiCSs6N?ntxId=CZkmWI ops board needs updating
   - [ ] Old AWM book: delete the old Ops password notes, carry Links into the new Ops, archive the old Swarm board?
   - [ ] Federation board: archive all 8 pre-redux cards, then check the door and intake end to end?
   - [ ] Place the new Swarm board under the AWM book, next to the federation board?
 - **end-state** (2026-11-06): there are a few sessions that look left over. Please use the DFS interview skill so that we can review the end state and if there are anything left open for us to clean up and do.
+  - **queue-approvals-test** (2026-11-06): lets hold a full test of the new queue and approvals workflow in 1 sitting, prolly with another agent
+  - **node-roster** (2026-11-06): can I get a board for this on awm? like an automatically updated roster with stats for each node? awm install has this as opt in, since not all installs will be for our swarm
+  - **session-naming** (2026-11-06): we should maybe to naming by hand and omit agent renaming unless needed. and we can revise the naming scheme to include node. please push this onto tthe stack ... the job ids dont match up. -> yea, need to revise session naming.
   - **shogun-singletons** (2026-11-06): from daae3825: After the render, shogun reaches neither alcor's operations and browser nor any other singleton. ... Should I do (b), and for which tools? Without an answer I do only (a) and report shogun's singleton access as open.
   - **env-reload** (2026-11-06): (from nexus-signin) a changed config.toml [env] reaches plugins only after a gateway restart
   - **search-mcp** (2026-11-06): one thing we should review is that all nodes are using the new search service and MCP.
