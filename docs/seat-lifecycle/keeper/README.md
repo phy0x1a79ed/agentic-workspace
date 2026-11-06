@@ -38,3 +38,9 @@ Tony, 2026-11-06: "yes, as long as awm is on a cold seat will be triggered? soun
 
 - While social runs (on alcor) and the seat's node answers, every inbound message reaches seats, so a cold seat starts.
 - While social is down, Slack still keeps the message. On restart the Slack connector's resync (`connectors/slack_bot_conn.py:196-238`) writes the missed messages to history from the last sync point. It does not hand them to seats, so today they start no agent and reach no holder.
+
+## Decision: messages missed while social is down
+
+Tony, 2026-11-06: "yes".
+
+After a social restart, the messages its resync finds after the last sync point go through seats as new messages: queue, push or cold start. Nothing older than the last sync point does.
