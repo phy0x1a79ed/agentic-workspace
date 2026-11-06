@@ -390,10 +390,10 @@ async def _tether_proxy(request: Request, raw: bytes, up: str) -> Response:
     by the shape of the path. What is left here is transport — and the two
     headers that matter on the way through:
 
-    ``authorization`` rides untouched, because the relay's own bearer is the
-    gate on ``/issue`` and ``/status``. The edge deliberately does not try to
-    read it: it is a credential for the upstream, not for awm, and an edge that
-    checked it would be a second place to get that check wrong.
+    ``authorization`` rides untouched. No route this mount forwards takes the
+    relay's bearer, and the edge does not read it: it is a credential for the
+    upstream, not for awm, and an edge that checked it would be a second place
+    to get that check wrong.
 
     ``X-Awm-As`` is removed rather than defaulted. Every other leg stamps a
     verified identity there; this one has none, and sending ``user:operator``

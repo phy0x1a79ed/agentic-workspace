@@ -3,7 +3,8 @@
 Run via ``run.sh``, which the gateway spawns and respawns:
     python -m awm.relay.hub_adapter
 
-Every verb is a member node's ``channel`` plugin acting for one of its sessions.
+Every verb is a member node's ``channel`` plugin acting for one of its sessions,
+or, for ``issue``, its operator daemon acting for the node.
 The node is the one the door stamped (``peer:<node>``), and the session is the
 node's word, as across an edge. A session that calls this tool itself carries a
 claim of its own and is refused: it holds rooms through its node's ``channel``.
@@ -39,8 +40,9 @@ NAME = {"name": "name", "type": "string", "required": True, "description": "The 
 
 API_MANIFEST: dict[str, Any] = {
     "description": (
-        "The host half of the channel rooms, on the public host. Member nodes' `channel` "
-        "plugins call it through this host's door; sessions use `channel`."
+        "The host half of the channel rooms and the issuer of every machine slot, on the "
+        "public host. Member nodes' `channel` plugins call it through this host's door; "
+        "sessions use `channel`."
     ),
     "functions": [
         {"name": "open", "tool": "relay_open", "surfaces": HIDDEN,
@@ -63,6 +65,14 @@ API_MANIFEST: dict[str, Any] = {
          "params": [{"name": "live", "type": "array"}, {"name": "acks", "type": "array"},
                     {"name": "wait", "type": "number"}],
          "timeout": 90},
+        {"name": "issue", "tool": "relay_issue", "surfaces": HIDDEN,
+         "description": "A machine-channel slot for the calling node's operator daemon: "
+                        "`{slot, token, expires_in}`. With `slot`, `token` and `owner`, put "
+                        "that held slot back on a relay that restarted: `{restored: true}` "
+                        "or `{refused: taken|ended}`.",
+         "params": [{"name": "slot", "type": "string"}, {"name": "token", "type": "string"},
+                    {"name": "owner", "type": "string"}],
+         "timeout": 60},
         {"name": "tether", "tool": "relay_tether", "surfaces": HIDDEN,
          "description": "This host's tether relay: its release and child.", "params": []},
     ],
@@ -132,6 +142,19 @@ async def feed(args: dict, as_: str | None = None) -> dict:
                                acks, float(args.get("wait") or 0))
 
 
+RESTORE_KEYS = ("slot", "token", "owner")
+
+
+async def issue(args: dict, as_: str | None = None) -> dict:
+    node = node_of(args, as_)
+    given = [k for k in RESTORE_KEYS if args.get(k) not in (None, "")]
+    if not given:
+        return await _relay().issue(node)
+    if len(given) < len(RESTORE_KEYS):
+        raise RelayRefused("a restore names `slot`, `token` and `owner`")
+    return await _relay().issue(node, {k: str(args[k]) for k in RESTORE_KEYS})
+
+
 CHILD: daemon.Child | daemon.Adopted | None = None
 
 
@@ -144,7 +167,7 @@ async def tether(args: dict, as_: str | None = None) -> dict:
 
 
 HANDLERS = {"open": open_, "join": join, "write": write, "close": close,
-            "status": status, "feed": feed, "tether": tether}
+            "status": status, "feed": feed, "issue": issue, "tether": tether}
 
 LOOPS: list[asyncio.Task] = []
 

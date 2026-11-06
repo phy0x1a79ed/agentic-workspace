@@ -43,9 +43,6 @@ TICKET = "0123456789abcdef0123456789abcdef"
     f"/tether/seat/{TICKET}/recv",              # and the three requests that hold it
     f"/tether/seat/{TICKET}/send",
     f"/tether/seat/{TICKET}/close",
-    "/tether/issue",                            # the operator's, gated at the relay
-    "/tether/status",
-    "/room",                                    # opening a room, gated at the relay
     "/room/acre-anchor-kettle",                 # a task room's how-to, for its guest
     "/room/acre-anchor-kettle/send",            # and its four requests
     "/room/acre-anchor-kettle/recv",
@@ -129,10 +126,8 @@ def test_a_name_that_merely_starts_the_same_is_not_this_mounts(path):
     ("/tether/claim/7", "/claim/7"),
     (f"/tether/seat/{TICKET}/recv", f"/seat/{TICKET}/recv"),
     (f"/tether/join/7/{TICKET}", f"/join/7/{TICKET}"),
-    ("/tether/issue", "/issue"),
     ("/tether/bin/tether", "/bin/tether"),
     ("/tether/win", "/win"),
-    ("/room", "/room"),
     ("/room/acre-anchor-kettle/recv", "/room/acre-anchor-kettle/recv"),
 ])
 def test_the_mount_comes_off_the_same_way_in_text_and_in_bytes(path, inner):
@@ -160,3 +155,14 @@ def test_every_route_we_decline_to_forward_is_named_with_its_reason():
     for path, reason in tether.NOT_FORWARDED.items():
         assert reason, path
         assert tether.refused(tether.PREFIX + path), path
+    # A room is opened at the edge root, so its route is refused there as well.
+    assert tether.refused(tether.ROOMS)
+
+
+@pytest.mark.parametrize("path", ["/tether/issue", "/tether/status", "/room"])
+def test_the_bearers_routes_stay_on_the_relays_host(path):
+    """The bearer never leaves the relay's host (channels.md R147), so the
+    routes it gates are refused here, not forwarded for the relay to refuse."""
+    assert not tether.owns(path)
+    assert tether.refused(path)
+    assert policy.classify(path) is policy.Verdict.DENY

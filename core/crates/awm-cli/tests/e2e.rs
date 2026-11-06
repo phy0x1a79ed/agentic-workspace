@@ -938,6 +938,39 @@ fn a_singleton_admits_only_its_callers() {
     drop(host);
 }
 
+/// deneb's door serves `relay` only to its callers, so a node outside them is issued no
+/// tether slot (channels.md R147). The fake `relay` answers `whoami` for a caller.
+#[test]
+fn a_node_outside_relays_callers_is_issued_no_slot() {
+    let tmp = tempfile::tempdir().unwrap();
+    let base = tmp.path();
+    let edges = "nodes:\n  deneb: {role: station}\n  mizar: {role: homebase}\n  outsider: {role: work}\n\
+                 edges:\n  mizar: {deneb: internet}\n  outsider: {deneb: internet}\n\
+                 singleton_doors:\n  deneb: {port: 2201, network: internet}\n\
+                 singletons:\n  - {tool: relay, host: deneb, callers: [mizar]}\n";
+    let deneb_state = edge_node(base, "deneb", &["relay"], edges);
+    let deneb = Gateway::start(&deneb_state);
+    let door = |holder: &str, request: &str| {
+        let out = Command::new(awm_bin())
+            .args(["port", "--key", &format!("awm:{holder}:service")])
+            .env_remove("AWM_EDGES_FILE")
+            .env("AWM_DIR", &deneb_state)
+            .env("AWM_GATEWAY_URL", &deneb.url)
+            .env("AWM_NODE_NAME", "deneb")
+            .env("SSH_ORIGINAL_COMMAND", request)
+            .output()
+            .unwrap();
+        (out.status.success(), serde_json::from_slice::<Value>(&out.stdout).unwrap_or(Value::Null))
+    };
+    let (ok, reply) = door("outsider", r#"{"name": "relay", "args": {"verb": "issue", "args": {}}}"#);
+    assert_eq!((ok, reply["error"].as_str()), (false, Some("Unknown tool \"relay\"")), "{reply}");
+    let (ok, reply) = door("mizar", r#"{"name": "relay", "args": {"verb": "whoami"}}"#);
+    assert!(ok, "{reply} deneb: {}", log(&deneb_state));
+    let who: Value = serde_json::from_str(reply["result"].as_str().unwrap()).unwrap();
+    assert_eq!(who["caller"]["node"], "mizar");
+    drop(deneb);
+}
+
 /// A stand-in for ssh to `host`'s singleton door with `from`'s service key: it runs `awm port`
 /// against `host`'s gateway. While `down` exists it fails as ssh does when no door answers.
 /// It writes its arguments to `args`.

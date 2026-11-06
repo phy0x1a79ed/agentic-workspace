@@ -6,17 +6,17 @@ That is the tool: the operator mints an invite, reads two words to a friend over
 the phone, and the friend runs one line on their own machine. A friend who had
 to have an awm login first would be a friend this tool could not help.
 
-**So the mount is unauthenticated, and the relay is what gates it.** Nothing is
-delegated on trust: the relay refuses ``/issue``, ``POST /room`` and ``/status`` without its own
-bearer, answers every refusal with the same 404 so its surface cannot be mapped
-by the shape of a decline, and — the property everything else rests on — a
-session exists there only because an authenticated operator asked for one. An
-unauthenticated caller cannot bring anything into existence, so what is exposed
-here is a door onto sessions that already exist and are already addressed by a
-number the relay itself issued.
+**So the mount is unauthenticated, and nothing here creates anything.** A slot
+and a room come into existence only on the relay's own host: its ``relay``
+service holds the bearer for ``/issue``, ``POST /room`` and ``/status``, and a
+member node asks it through its door (``channels.md`` R147). This edge forwards
+none of those three routes. What is exposed here is a door onto sessions and
+rooms that already exist and are already addressed by a name the relay itself
+issued, and the relay answers every refusal with the same 404 so its surface
+cannot be mapped by the shape of a decline.
 
-**The mount is an allow-list of exact shapes, not a prefix.** The relay's whole
-public surface is nineteen routes and every one of them has a fixed grammar, so the
+**The mount is an allow-list of exact shapes, not a prefix.** The relay's public
+surface is a short list of routes and every one of them has a fixed grammar, so the
 edge can refuse everything else before it has consulted anything at all — which
 is the plan's requirement that a slot the relay never issued be turned away
 before any pairing happens. The shapes have to agree exactly with what the relay
@@ -36,6 +36,8 @@ its path unchanged.
   - ``/health`` — the relay's liveness probe. Whatever supervises that process
     reaches it over loopback; the internet has no use for it and it is the one
     route that answers the same way whether or not anything is configured.
+  - ``/issue``, ``/status`` and ``POST /room`` — the bearer's routes. The bearer
+    never leaves the relay's host, so nothing on the internet could use them.
   - everything else under the mount — refused explicitly rather than left to
     fall through, because a path inside a mount that the mount does not claim
     would otherwise be proxied to the *gateway* instead.
@@ -104,9 +106,6 @@ SHAPES = (
     re.compile(rf"^{PREFIX}/seat/{_POLL_ID}/(?:recv|send|close)$"),  # and its requests
     re.compile(rf"^{PREFIX}/release/{_SLOT}/{_TOKEN}$"),   # the operator ending its own slot
     re.compile(rf"^{PREFIX}/hold/{_SLOT}/{_TOKEN}$"),      # the operator holding it for a consented owner
-    re.compile(rf"^{PREFIX}/issue$"),                      # operator only, at the relay
-    re.compile(rf"^{PREFIX}/status$"),                     # operator only, at the relay
-    re.compile(rf"^{ROOMS}$"),                             # opening a room: operator only, at the relay
     re.compile(rf"^{ROOMS}/{_ROOM}$"),                     # a room's how-to, for its guest
     re.compile(rf"^{ROOMS}/{_ROOM}/(?:send|recv|ws|leave)$"),  # and its requests
 )
@@ -116,6 +115,9 @@ SHAPES = (
 #: can assert each one stays unreachable.
 NOT_FORWARDED = {
     "/health": "a liveness probe for whatever supervises the process, over loopback",
+    "/issue": "mints a slot behind the bearer, which never leaves the relay's host",
+    "/status": "the operator's report, behind the same bearer",
+    "/room": "opens a room behind the same bearer",
 }
 
 

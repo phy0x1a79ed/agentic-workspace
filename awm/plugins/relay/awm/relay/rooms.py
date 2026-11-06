@@ -1,9 +1,11 @@
-"""The tether relay's room routes, as the host side uses them.
+"""The tether relay's bearer and room routes, as the host side uses them.
 
 The relay binary runs beside this service on the public host, so the routes are
-on loopback. A room's link names the public edge, which carries ``/room`` beside
-the tether's ``/tether`` mount, so a link spells out its kind (R72 item 1). The
-bearer is the one the tether operator uses.
+on loopback. The bearer gates ``/issue`` and ``POST /room``, and it never leaves
+this host: the edge forwards neither route, and a member node asks this host's
+``relay`` service for each slot (``channels.md`` R147). A room's link names the public
+edge, which carries ``/room/<name>`` beside the tether's ``/tether`` mount, so a
+link spells out its kind (R72 item 1).
 """
 
 from __future__ import annotations
@@ -48,6 +50,31 @@ class Rooms:
 
     def link(self, name: str) -> str:
         return f"{self.link_base}/room/{name}"
+
+    async def issue(self, restore: dict[str, str] | None = None) -> dict:
+        """A new slot as ``{slot, token, expires_in}``, or ``restore``'s held slot put back.
+
+        A restore answers ``{restored: true}``, or ``{refused: "taken"}`` when the
+        slot's number went to another session first, or ``{refused: "ended"}``.
+        """
+        if not self._bearer:
+            raise RelayError(f"{BEARER_ENV} is not set on this node, so it cannot issue a slot")
+        resp = await self._client.post(f"{self.base}/issue", json=restore,
+                                       headers={"Authorization": f"Bearer {self._bearer}"})
+        if resp.status_code == 503:
+            raise RelayError("the relay has no slot free right now; try again later")
+        if restore is not None and resp.status_code in (409, 410):
+            return {"refused": "taken" if resp.status_code == 409 else "ended"}
+        if resp.status_code == 400:
+            raise RelayError("the relay refused the restore: it names a slot, a seat "
+                             "token and an owner token")
+        if resp.status_code != 200:
+            raise RelayError(f"the relay refused to issue a slot ({resp.status_code}); "
+                             f"check {BASE_ENV} and {BEARER_ENV}")
+        if restore is not None:
+            return {"restored": True}
+        body = resp.json()
+        return {"slot": body["slot"], "token": body["token"], "expires_in": body["expires_in"]}
 
     async def open(self, lasts: str = "task") -> tuple[str, str]:
         """Open a room: its name and our host token."""

@@ -1,4 +1,8 @@
-"""The host half of every room: the relay's rooms, who holds them, and what waits for each.
+"""The host half of every channel: the rooms, who holds them, what waits for each, and every machine slot.
+
+A member node's operator daemon asks ``issue`` for each machine slot, and for a
+held one back after the tether relay restarted. The bearer that gates the
+tether relay stays on this host (``channels.md`` R147).
 
 A room's members are sessions on member nodes. A member node's ``channel``
 plugin calls this through deneb's door, naming the member; the door stamps the
@@ -70,6 +74,21 @@ class Relay:
         self.store.add_member(name, member)
         self._follow(name)
         return self._public(row)
+
+    async def issue(self, node: str, restore: dict | None = None) -> dict:
+        """A machine-channel slot for ``node``'s operator daemon, or its held slot put back."""
+        try:
+            issued = await self.rooms.issue(restore)
+        except httpx.HTTPError as exc:
+            raise RelayRefused(f"the tether relay at {self.rooms.base} is unreachable: {exc}") from exc
+        except RelayError as exc:
+            raise RelayRefused(str(exc)) from exc
+        if restore is None:
+            log.info("issued slot %s to %s", issued["slot"], node)
+        else:
+            log.info("slot %s for %s: %s", restore.get("slot"), node,
+                     "restored" if issued.get("restored") else issued.get("refused"))
+        return issued
 
     async def join(self, member: dict, name: str) -> dict:
         row = self._open_room(name)
