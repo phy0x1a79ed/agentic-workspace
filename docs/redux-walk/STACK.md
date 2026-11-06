@@ -23,7 +23,7 @@ Procedure, from dfs-interview § Work the stack:
 
 ## Current topic
 
-**mizar-backup**. Its result: `mizar-backup/README.md`.
+**deneb-retry**. Its result: `deneb-retry/README.md`.
 
 ## Pending
 
@@ -49,7 +49,6 @@ Procedure, from dfs-interview § Work the stack:
         - [ ] Deploy door-client only after deneb's door answers with service keys (keys role from deneb-board; dev applies on mizar, alcor-open on alcor)
         - [ ] After door-client is live: remove mizar's ZOTERO_SYNC_ENABLED=0 drop-in and zotero from every node but deneb
       - **alcor-door** (2026-11-05): from redux-build/alcor-open: alcor_door: FIREWALL on port 22. It allows 22 from mizar 100.125.95.5, capella 100.90.179.70 and lyra 100.85.115.29, then deletes the blanket 22 rules ... After it, port 22 on alcor answers only those three tailnet addresses. No LAN ssh, no phone.
-      - **tarball-backup** (2026-11-05): trilium-fork: mizar's .awm/artifacts holds the only copy of the pinned tarball. A rebuild changes the sha256, so it needs a backup policy. Nothing is pushed to the GitHub fork. That waits on your go.
       - **deneb-board** (2026-11-05): trilium-fork follow-ups: deneb gets the tarball only once cloud's install config makes deneb a push node; cloud deploy.yml awm_fleet_push.altair still lists trilium and canonical_repos defaults include trilium; the mizar vault mirror does not exist yet
         - [x] Why does deneb need nodejs, npm and build-essential if mizar pushes built artifacts? (asked deneb-board) (answered 2026-11-05)
         - [x] When core-artifact lands: tell deneb-board the artifact names and route (cloud tip 88c35a8 holds) (answered 2026-11-05)
@@ -113,3 +112,4 @@ From journal 6a98c0c6 (awm/redux) and walkthrough's handover (manual-steps.md at
 - **deneb-gaps** (closed 2026-11-05): `dispatch-mode/parallel-uptime/board/deneb-board/deneb-gaps/README.md`
 - **pin-refresh** (closed 2026-11-05): `dispatch-mode/parallel-uptime/board/deneb-board/pin-refresh/README.md`
 - **session-list** (closed 2026-11-05): `session-list/README.md`
+- **tarball-backup** (closed 2026-11-05): `dispatch-mode/parallel-uptime/board/tarball-backup/README.md`
