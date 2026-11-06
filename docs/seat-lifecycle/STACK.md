@@ -28,7 +28,8 @@ Procedure, from dfs-interview § Work the stack:
 ## Stack
 
 - **seat-start** (2026-11-06): how to seat starts work? do they go through the reflection, cch, etc and use the warm seats? so they start fast?
-  - [ ] Social posts an immediate system reply when a message starts an agent ('Opal is getting set up, one moment'), only when the agent has not mounted within 5 s? Recommend yes. Trim the 2.7 s session start as a later try.
+  - [x] Social posts an immediate system reply when a message starts an agent ('Opal is getting set up, one moment'), only when the agent has not mounted within 5 s? Recommend yes. Trim the 2.7 s session start as a later try. (answered 2026-11-06)
+  - [ ] Social reacts 👀 to every message a seat receives, at once; Discord shows typing while an agent works on a message; Slack typing waits for Tony to enable the AI-app feature (manifest change and reinstall)? Recommend yes.
 
 ## Parked
 

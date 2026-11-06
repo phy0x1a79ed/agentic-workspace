@@ -24,3 +24,11 @@
 The model's own latency sets a floor of a few seconds. Getting the agent's first action near 1 s is not realistic. An immediate reply from social is.
 
 Tony: "why 7 seconds? can we get that closer to 1? not important, but worth the try. -> or even a system message like "performing first time set up""
+
+## Reaction and typing indicator (survey, 2026-11-06)
+
+Tony: "can we just respond with eyes emoji as a reaction? can we also do teh typing indicator?"
+
+- Reaction: the Slack app already has `reactions:write`, and both connectors implement `react`. social can add 👀 the moment a message arrives.
+- Typing on Discord: a bot can show "Opal is typing…" through the channel's typing trigger. It lasts about 10 s, so social refreshes it until the agent's reply. The Discord connector does not call it yet.
+- Typing on Slack: the Web API gives a bot no typing indicator. The only equivalent is the AI-app status (`assistant.threads.setStatus`, "is thinking…"). It needs the app's Agents & AI Apps feature and the `assistant:write` scope. That changes the Slack app manifest, and a workspace admin must reinstall the app.
