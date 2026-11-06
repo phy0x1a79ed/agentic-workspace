@@ -28,7 +28,8 @@ Procedure, from dfs-interview § Work the stack:
 ## Stack
 
 - **group-dms** (2026-11-06): Open from the plan: a group DM with two lab members routes each sender to their own person seat, so two agents may answer in one chat.
-  - [ ] Treat a group DM like a channel without a channel seat: only a message that @mentions Opal goes to the sender's person seat, and that agent answers only its sender's request? Recommend yes.
+  - [x] Treat a group DM like a channel without a channel seat: only a message that @mentions Opal goes to the sender's person seat, and that agent answers only its sender's request? Recommend yes. (answered 2026-11-06)
+  - [ ] Adopt Tony's routing with these edge rules: thread ownership by the answering person seat, no person seats for bots, a group DM treated as a channel without a channel seat, first contact by public @Opal answered in place, and the handled-by and forward rules in the seat brief? Recommend yes.
 
 ## Parked
 
