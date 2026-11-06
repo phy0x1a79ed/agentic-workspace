@@ -4,9 +4,10 @@
 
 [deploy]
 # Only the dists the batch touched, only their smoke tests. Exit 5 (nothing
-# collected) counts as a pass.
+# collected) counts as a pass. A change to a shared component selects every
+# dist, which takes minutes, so the budget covers a full smoke run.
 check = 'scripts/run-tests.sh --smoke --changed "$AWM_DEPLOY_BASE"'
-check_timeout = 60
+check_timeout = 600
 
 [promote]
 # The canonical repo's GitHub remote takes each release, fast-forward only

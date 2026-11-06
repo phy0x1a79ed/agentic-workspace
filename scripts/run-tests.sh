@@ -148,7 +148,17 @@ fi
 # `mamba run` appends a blank line of its own on some builds, so drop empties
 # before taking the last one — otherwise `tail -1` returns "" and every dist is
 # skipped with a message that reads like a broken env.
-PY="$(mamba run -n awm python -c 'import sys; print(sys.executable)' 2>/dev/null | grep -v '^[[:space:]]*$' | tail -1)"
+# A service's PATH may hold the env's bin but not condabin, so look for mamba
+# under the conda root too before giving up.
+conda_root="${AWM_CONDA_ROOT:-$HOME/miniforge3}"
+MAMBA="$(command -v mamba 2>/dev/null || true)"
+for m in "$MAMBA" "${MAMBA_EXE:-}" "$conda_root/condabin/mamba" "$conda_root/bin/mamba"; do
+  if [ -n "$m" ] && [ -x "$m" ]; then MAMBA="$m"; break; fi
+done
+PY=""
+if [ -n "$MAMBA" ] && [ -x "$MAMBA" ]; then
+  PY="$("$MAMBA" run -n awm python -c 'import sys; print(sys.executable)' 2>/dev/null | grep -v '^[[:space:]]*$' | tail -1)"
+fi
 if [ ! -x "$PY" ]; then
   echo "could not resolve the awm env's python (got '${PY:-<empty>}')" >&2
   exit 1
