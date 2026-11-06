@@ -34,6 +34,11 @@ name = "social"
 major = 1
 verbs = ["send"]
 
+[[needs.tool]]   # on alcor: Sync now orders, into zotero on deneb's singleton door (fleet.md R83, R79)
+name = "zotero"
+major = 1
+verbs = ["order"]
+
 [[needs.tool]]   # on alcor: the panel's 2fa strip (R137)
 name = "2fa"
 major = 1

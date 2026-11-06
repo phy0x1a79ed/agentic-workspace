@@ -409,7 +409,8 @@ async def test_order_button_respects_allowed_orders(env, clock):
         {"action": "order", "args": {"kind": "reboot", "node": "deneb"}}])
     oks = [r["ok"] for r in out["result"]["batch"]]
     assert oks == [True, False, False]
-    assert len(await ap.order_pull("deneb", ["zotero_sync"])) == 1
+    assert out["result"]["batch"][0]["result"]["delivery"]["status"] == "started"
+    assert await ap.order_pull("deneb", ["zotero_sync"]) == [], "deneb took it at its door"
 
 
 async def test_order_pull_long_polls(env):

@@ -71,6 +71,12 @@ class ApproverError(Exception):
 
 class Tools(Protocol):
     async def twofa(self, verb: str, args: dict[str, Any]) -> Any: ...
+    async def zotero(self, verb: str, args: dict[str, Any]) -> Any: ...
+
+
+#: Orders for a node that opens no connection (fleet.md R79). The approver hands each one
+#: to the node's tool through its singleton door, in place of the node pulling it.
+DELIVERED = {"zotero_sync"}
 
 
 @dataclass
@@ -558,7 +564,10 @@ class Approver:
         if action == "order":
             node = self._order_node(args.get("kind", ""), args.get("node"))
             env = self.issue_order(args["kind"], node, args.get("payload") or {})
-            return {"order_id": env["order"]["order_id"], "node": node}
+            out = {"order_id": env["order"]["order_id"], "node": node}
+            if args["kind"] in DELIVERED:
+                out["delivery"] = await self._deliver(env)
+            return out
         if action == "twofa_burst":
             count = int(args.get("count", 1))
             if count not in BURST_COUNTS:
@@ -762,6 +771,21 @@ class Approver:
                             self.clock(), r["order_id"])
                 return [json.loads(r["envelope"]) for r in rows]
             await self._wait(f"orders:{node}", left)
+
+    async def _deliver(self, env: dict[str, Any]) -> dict[str, Any]:
+        """Hand a zotero_sync order to deneb's zotero. An order it never took stays pending."""
+        order_id = env["order"]["order_id"]
+        try:
+            reply = await self.tools.zotero("order", {"envelope": env})
+        except Exception as exc:  # noqa: BLE001 — the panel shows it as not delivered
+            return {"status": "undelivered", "reason": str(exc)[:300]}
+        if not isinstance(reply, dict):
+            return {"status": "undelivered", "reason": repr(reply)[:300]}
+        if reply.get("status") in ("started", "replay"):
+            self.order_done(order_id, True, f"delivered, {reply['status']}")
+        elif reply.get("status") == "refused":
+            self.order_done(order_id, False, str(reply.get("reason") or "")[:300])
+        return reply
 
     def order_done(self, order_id: str, ok: bool, note: str = "") -> dict[str, Any]:
         n = self._x("UPDATE orders SET done_at=?, ok=?, note=? WHERE order_id=? AND done_at IS NULL",

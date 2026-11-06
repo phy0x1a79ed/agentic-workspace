@@ -19,7 +19,7 @@ from typing import Any
 from awm.operations import door
 from awm.operations.api import API_MANIFEST
 from awm.operations.front import Front
-from awm.operations.gateway import GatewayTool, TwoFa, usage
+from awm.operations.gateway import ApproverTools, GatewayTool, usage
 from awm.operations.relay import Relay, Unreachable, order_loop
 
 log = logging.getLogger("awm.operations")
@@ -71,7 +71,7 @@ def build_home(s: dict[str, Any]):
                                       Path.home() / ".awm" / "operations" / "queue.db")))
     ap = Approver(s["dir"] / "approver.db", Keys.load_or_create(s["dir"] / "keys"),
                   Config(origin=s["origin"], allowed_orders=s["allowed_orders"],
-                         portals=s["portals"], rate_max=s["rate_max"]), store, TwoFa())
+                         portals=s["portals"], rate_max=s["rate_max"]), store, ApproverTools())
     writer = Writer(store, TriliumTool(peer=s["board_peer"]), parent=s["board_parent"],
                     portals=s["portals"])
     store.body_reader = writer.read_body

@@ -56,11 +56,16 @@ async def usage(page: str) -> None:
         pass
 
 
-class TwoFa:
-    """The approver's view of 2fa on its own node (R137)."""
+class ApproverTools:
+    """The tools the approver calls: 2fa on its own node (R137), and zotero behind deneb's
+    singleton door, which takes Sync now orders (fleet.md R83, R79)."""
 
     def __init__(self) -> None:
-        self.tool = GatewayTool("2fa", timeout=20)
+        self.twofa_tool = GatewayTool("2fa", timeout=20)
+        self.zotero_tool = GatewayTool("zotero", timeout=60)
 
     async def twofa(self, verb: str, args: dict[str, Any]) -> Any:
-        return await self.tool.call(verb, args)
+        return await self.twofa_tool.call(verb, args)
+
+    async def zotero(self, verb: str, args: dict[str, Any]) -> Any:
+        return await self.zotero_tool.call(verb, args)
