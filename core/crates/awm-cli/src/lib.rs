@@ -60,6 +60,15 @@ pub enum Command {
         #[arg(long)]
         force: bool,
     },
+    /// Stop the gateway and every service it runs. A restart (systemctl restart awm) leaves the
+    /// services running for the next gateway to adopt; only this command stands them down.
+    Stop,
+    /// Show whether the gateway is in hold mode, or `awm hold leave` to end it. The gateway
+    /// holds when it restarts more than 3 times in 10 minutes: it adopts services and spawns none.
+    Hold {
+        /// `leave` ends hold mode and starts the services that are down.
+        action: Option<String>,
+    },
     /// Install or update plugins from folders or git:<url>@<commit>, as one change.
     Install {
         sources: Vec<String>,
@@ -160,6 +169,8 @@ pub async fn run(cli: Cli) -> anyhow::Result<i32> {
         Command::Wants { plugin, state } => Ok(i32::from(!awm_gateway::config::Config::load(&state)?.wants(&plugin))),
         Command::Reload { restart, force } => post_and_print("/hub/reload", json!({"restart": restart, "force": force})).await,
         Command::Restart { plugin, force } => post_and_print("/hub/reload", json!({"restart": [plugin], "force": force})).await,
+        Command::Stop => stop().await,
+        Command::Hold { action } => hold(action.as_deref()).await,
         Command::Install { sources, approval } => {
             let sources: Vec<String> = sources
                 .into_iter()
@@ -196,6 +207,38 @@ async fn get_and_print(path: &str) -> anyhow::Result<i32> {
     let body: Value = resp.json().await?;
     println!("{}", serde_json::to_string_pretty(&body)?);
     Ok(if ok { 0 } else { 1 })
+}
+
+/// `awm stop`: ask the gateway to drain, then wait until it has exited.
+async fn stop() -> anyhow::Result<i32> {
+    let body = json!({"name": awm_gateway::gateway::NATIVE_TOOL, "args": {"verb": "drain", "args": {}}});
+    if invoke_and_print(&body).await? != 0 {
+        return Ok(1);
+    }
+    let marker = awm_dir().join("gateway.json");
+    for _ in 0..120 {
+        if !marker.exists() {
+            println!("gateway stopped");
+            return Ok(0);
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+    eprintln!("awm stop: the gateway is still draining after 60s");
+    Ok(1)
+}
+
+/// `awm hold`: the hold flag from `/status`, or `leave` to end hold mode.
+async fn hold(action: Option<&str>) -> anyhow::Result<i32> {
+    match action {
+        None => {
+            let url = format!("{}/status", gateway_url());
+            let status: Value = reqwest::get(&url).await.map_err(|e| anyhow::anyhow!("awm gateway unreachable at {url}: {e}"))?.json().await?;
+            println!("hold: {}", status["hold"].as_bool().unwrap_or(false));
+            Ok(0)
+        }
+        Some("leave") => invoke_and_print(&json!({"name": awm_gateway::gateway::NATIVE_TOOL, "args": {"verb": "hold_leave", "args": {}}})).await,
+        Some(other) => anyhow::bail!("awm hold: {other:?} is not `leave`"),
+    }
 }
 
 /// `awm services`: the `awm` tool's service verbs.

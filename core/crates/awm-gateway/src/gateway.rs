@@ -21,7 +21,7 @@ use crate::usage::UsageStore;
 
 pub const DESCRIBE: &str = "describe";
 pub const NATIVE_TOOL: &str = "awm";
-const NATIVE_VERBS: [(&str, &str); 15] = [
+const NATIVE_VERBS: [(&str, &str); 17] = [
     ("status", "The gateway's status: node, uptime, plugins and services."),
     ("plugins", "Every plugin the loader read: loaded, refused with the reason, and skipped."),
     ("services", "Every service of the loaded plugins and every one the hub knows: status, pid, enabled, tools, mount and archive tables."),
@@ -37,6 +37,8 @@ const NATIVE_VERBS: [(&str, &str); 15] = [
     ("reload", "Read the plugin roots and the install config again, with no gateway restart. Starts added plugins and stops removed or disabled ones. It restarts nothing unless `restart` (a list of plugin names) names it, with `force` to bypass the crash breaker. The result lists the running plugins whose `[env]` is stale."),
     ("install", "Install or update plugins from `sources` (a list) or `source`: each a plugin folder or git:<url>@<commit>. All of them load as one change, or none does. A git change asks for Tony's passkey approval first; run it again with `approval`=<request_id> once approved."),
     ("uninstall", "Remove an installed plugin by `name` and stop its services."),
+    ("drain", "The deliberate stop (`awm stop`): stand every service down, empty the services journal and end the gateway. A plain restart or SIGTERM leaves the services running for the next gateway to adopt."),
+    ("hold_leave", "Leave hold mode, which a gateway enters when it restarts too often: spawn the services that are down and clear the start log."),
 ];
 const DEFAULT_CALL_TIMEOUT_S: f64 = 120.0;
 /// Verbs that drive the calling session's own process. Sent to a peer, one would find no
@@ -44,7 +46,8 @@ const DEFAULT_CALL_TIMEOUT_S: f64 = 120.0;
 /// that acts on the session goes through the door, which carries the session's identity.
 const SESSION_BOUND: [(&str, &[&str]); 1] = [("reflection", &["message_self", "compact", "mode", "whoami"])];
 /// Native verbs that change this node, so only a trusted caller here may run them.
-const NATIVE_WRITES: [&str; 9] = ["reload", "install", "uninstall", "start", "stop", "restart", "enable", "disable", "config_set"];
+const NATIVE_WRITES: [&str; 11] =
+    ["reload", "install", "uninstall", "start", "stop", "restart", "enable", "disable", "config_set", "drain", "hold_leave"];
 /// How long a singleton's verb list, read through its host's door, stands before it is read
 /// again, and how soon a failed read is tried again.
 const DOOR_VERBS_TTL: Duration = Duration::from_secs(600);
@@ -204,6 +207,7 @@ impl Gateway {
             tracing::warn!("{w}");
         }
         let marks = crate::privacy::Marks::new(&state, &workspace);
+        let supervisor = Supervisor::new(&state);
         let gw = Arc::new_cyclic(|me| Self {
             marks,
             edges: RwLock::new(edges),
@@ -217,7 +221,7 @@ impl Gateway {
             url: OnceLock::new(),
             stopping: AtomicBool::new(false),
             started: Instant::now(),
-            supervisor: Supervisor::default(),
+            supervisor,
             tokens: TokenCache::default(),
             peer_tools: RwLock::new(peer_tools),
             reloading: tokio::sync::Mutex::new(()),
@@ -1016,6 +1020,8 @@ impl Gateway {
                         let Some(name) = name() else { return Err(ApiError::new(400, format!("{verb} needs `name`"))) };
                         self.service_control(verb, &name).await
                     }
+                    "drain" => self.drain(),
+                    "hold_leave" => self.hold_leave(),
                     "config_set" => {
                         let key = args.get("key").and_then(Value::as_str).unwrap_or_default();
                         self.config_set(key, args.get("values").cloned().unwrap_or_else(|| json!({}))).await
@@ -1064,6 +1070,8 @@ impl Gateway {
             "refused": load.refused.len(),
             "services": self.hub.services().len(),
             "connected": self.hub.connected(),
+            "hold": self.supervisor.held(),
+            "tripped": self.supervisor.failed(),
         })
     }
 

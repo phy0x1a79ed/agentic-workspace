@@ -63,9 +63,14 @@ log = logging.getLogger("awm.gatewayclient.adapter")
 
 # How long (seconds) the run loop keeps retrying after losing the control WS
 # before concluding the gateway is gone for good and exiting cleanly. Matches
-# the gateway's own ``_RECONNECT_WINDOW_S`` so a hard-killed gateway leaves no
-# orphaned services behind (see the lifecycle plan: T2). Override via env.
-_RECONNECT_DEADLINE_S = float(os.environ.get("AWM_RECONNECT_DEADLINE_S", "10.0"))
+# the gateway's ``adopt_window_s``: a restarted gateway adopts a service that
+# redials within it, and a gateway that never returns leaves no orphan behind.
+# Override via env.
+_RECONNECT_DEADLINE_S = float(os.environ.get("AWM_RECONNECT_DEADLINE_S", "60.0"))
+
+# How long a control WS must stay open to count as a confirmed link when no
+# frame arrived on it.
+_STABLE_LINK_S = 5.0
 
 # How long an inbound call waits for ``on_start`` to finish before failing with
 # "still initialising". Bounded on purpose: a service whose init genuinely hangs
@@ -361,6 +366,7 @@ class ServiceAdapter:
                 # cleared when this connection ends so emit no-ops between
                 # reconnects.
                 self._control_ws = ws
+                opened = monotonic()
                 try:
                     async for raw in ws:
                         # A frame actually arrived → the handshake is confirmed
@@ -406,10 +412,18 @@ class ServiceAdapter:
                 finally:
                     # The control WS ended: clear the exposed socket so emit
                     # no-ops between reconnects. The give-up deadline's
-                    # ``last_up`` is refreshed per-frame above, never here — a
-                    # bare connect the gateway closes at once must NOT reset it.
+                    # ``last_up`` is refreshed per frame above, and below only for
+                    # a socket that stayed up; a bare connect the gateway closes
+                    # at once must NOT reset it.
                     if self._control_ws is ws:
                         self._control_ws = None
+                    # A socket that stayed up is a confirmed link even when no
+                    # frame came: an idle service gets none, and without this a
+                    # second gateway restart would inherit the first outage's
+                    # clock and give up at once. A socket the gateway closes
+                    # within seconds still does not count.
+                    if state is not None and monotonic() - opened >= _STABLE_LINK_S:
+                        state["last_up"] = monotonic()
         except ConnectionClosed as exc:
             # The hub closed the control WS with a terminal code: 4409 = the
             # lease is already held by a live incumbent, 4404 = the service_id
@@ -591,8 +605,10 @@ class ServiceAdapter:
                 now = monotonic()
                 down_since = state["down_since"]
                 if down_since is None or state["last_up"] > down_since:
-                    # First failure since the link was last confirmed up.
+                    # First failure since the link was last confirmed up: a new
+                    # outage, so redial quickly again.
                     state["down_since"] = down_since = now
+                    backoff = 1.0
                 if now - down_since > _RECONNECT_DEADLINE_S:
                     # The gateway has been unreachable past the deadline — it
                     # is gone for good (hard kill / idle os._exit, where its

@@ -131,6 +131,25 @@ impl Hub {
         Ok(id)
     }
 
+    /// Record a plugin that outlived the last gateway: no lease, no verbs, the silence clock
+    /// running from now. Its own register takes the record over, since no live lease holds it.
+    pub fn rehydrate(&self, name: &str, plugin: &str, pid: Option<i64>) {
+        let mut map = self.lock();
+        map.entry(name.to_string()).or_insert_with(|| Svc {
+            id: uuid::Uuid::new_v4().simple().to_string(),
+            plugin: plugin.to_string(),
+            status: Status::Down,
+            pid,
+            verbs: vec![],
+            refusal: None,
+            tx: None,
+            pending: HashMap::new(),
+            down_since: Some(Instant::now()),
+            api: Value::Null,
+            mount: None,
+        });
+    }
+
     /// Take the control lease of service `id` for a new WebSocket.
     pub fn claim(&self, id: &str) -> Claim {
         let mut map = self.lock();
@@ -408,6 +427,18 @@ mod tests {
         assert!(hub.register("journal", "journal", None, None).is_ok());
         hub.forget("journal");
         assert_eq!(hub.status("journal"), None);
+    }
+
+    #[tokio::test]
+    async fn a_rehydrated_record_is_taken_over_by_its_services_register() {
+        let hub = Hub::default();
+        hub.rehydrate("journal", "journal", Some(9));
+        assert_eq!(hub.status("journal"), Some(Status::Down));
+        assert!(hub.down_for("journal").is_some());
+        assert!(hub.verbs().is_empty());
+        let id = hub.register("journal", "journal", Some(9), None).expect("no live lease holds the record");
+        assert!(matches!(hub.claim(&id), Claim::Claimed { .. }));
+        assert!(hub.register("journal", "journal", Some(9), None).is_err(), "a live lease still gets the 409");
     }
 
     #[tokio::test]

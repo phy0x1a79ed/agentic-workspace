@@ -426,3 +426,46 @@ def test_run_hub_assigned_sid_kept_on_disconnect(monkeypatch):
     monkeypatch.setattr(a, "_serve", _fake_serve)
     asyncio.run(asyncio.wait_for(a.run(), timeout=2))
     assert seen_sids == ["sid-env", "sid-env"]
+
+
+def test_default_deadline_matches_the_gateways_adoption_window(monkeypatch):
+    import importlib
+
+    monkeypatch.delenv("AWM_RECONNECT_DEADLINE_S", raising=False)
+    fresh = importlib.reload(adapter_mod)
+    try:
+        assert fresh._RECONNECT_DEADLINE_S == 60.0
+    finally:
+        importlib.reload(adapter_mod)
+
+
+class _FakeWS:
+    """A control socket that sends nothing and closes cleanly."""
+
+    async def send(self, _):
+        return None
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        raise StopAsyncIteration
+
+
+class _FakeConnect:
+    async def __aenter__(self):
+        return _FakeWS()
+
+    async def __aexit__(self, *exc):
+        return False
+
+
+@pytest.mark.parametrize("lived,confirmed", [(6.0, True), (0.5, False)])
+def test_an_idle_socket_that_stayed_up_confirms_the_link(monkeypatch, lived, confirmed):
+    monkeypatch.setattr(adapter_mod.websockets, "connect", lambda *a, **k: _FakeConnect())
+    ticks = iter([100.0, 100.0 + lived, 100.0 + lived])
+    monkeypatch.setattr(adapter_mod, "monotonic", lambda: next(ticks))
+    state = {"last_up": 1.0, "down_since": 2.0}
+    a = _adapter()
+    asyncio.run(a._serve("http://hub", "sid", state=state))
+    assert (state["last_up"] > 2.0) is confirmed

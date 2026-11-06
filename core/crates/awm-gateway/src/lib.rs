@@ -18,6 +18,7 @@ pub mod privacy;
 pub mod server;
 pub mod streams;
 pub mod supervisor;
+pub mod survival;
 pub mod usage;
 
 pub use gateway::Gateway;
