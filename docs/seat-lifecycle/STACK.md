@@ -29,7 +29,8 @@ Procedure, from dfs-interview § Work the stack:
 
 - **keeper** (2026-11-06): Open from the plan: the social keeper keeps long-lived seats from social.toml [seat.*] (Tony's Discord DM butler, #bots, Hallam general). Does the new lifecycle replace it?
   - [x] Keep the keeper only for persistent rooms (muse, stream listeners) and move every chat seat, Tony's DM, #bots and Hallam general included, to the on-demand lifecycle? Recommend yes. (answered 2026-11-06)
-  - [ ] Since the keeper already starts agents deterministically, let it do the cold start itself and drop the new-seat routine and the routine event trigger from this build? Recommend yes; event triggers stay a later general feature.
+  - [x] Since the keeper already starts agents deterministically, let it do the cold start itself and drop the new-seat routine and the routine event trigger from this build? Recommend yes; event triggers stay a later general feature. (answered 2026-11-06)
+  - [ ] Merge the keeper into seats: one seats component in social owns every declared seat (state, queue, routing, cold start, 4-hour reclaim, breaker, down notices), with the keeper's code moved in and the word 'keeper' gone; a hand mount stays for temporary seats like Kalen's and Patrik's; no routine or event trigger in this build? Recommend yes.
 - **group-dms** (2026-11-06): Open from the plan: a group DM with two lab members routes each sender to their own person seat, so two agents may answer in one chat.
 
 ## Parked
