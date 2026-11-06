@@ -22,12 +22,13 @@ def land(ws, tmp_path, fleet: str = INSTALL) -> Land:
                 node="mizar", fleet=fleetconf.parse(fleet))
 
 
-def submit(ln: Land, wt: Path, brief: str = "Behavior: x\n") -> dict:
-    return ln.submit(wt, brief)
+def submit(ln: Land, wt: Path, brief: str = "Behavior: x\n", restart: str = "none") -> dict:
+    return ln.submit(wt, brief, restart)
 
 
 REFRESH = ('[refresh]\nsync = "true"\ncommand = "scripts/refresh.sh"\n')
 SCRIPT = ('#!/bin/sh\necho "$1 $AWM_REFRESH_NODE" >> {log}\n'
+          'echo "restart=$AWM_REFRESH_RESTART" >> {log}.restart\n'
           'echo \'{mark}{{"ok": true, "node": "mizar"}}\'\n')
 
 
@@ -153,8 +154,10 @@ def test_a_node_without_its_own_command_refreshes_over_ssh(ws, tmp_path):
     ln.project = "awm"
     cmd = ln._refresh_command("altair", cfg, "a" * 40, "b" * 40)
     assert cmd.startswith("ssh -o BatchMode=yes altair ")
-    assert ("cd agentic_workspace && AWM_REFRESH_TO=" + "b" * 40
-            + " scripts/refresh-checkout.sh && bash scripts/node-refresh.sh " + "b" * 40) in cmd
+    import shlex
+    assert shlex.split(cmd)[-1] == (
+        "cd agentic_workspace && AWM_REFRESH_TO=" + "b" * 40 + " scripts/refresh-checkout.sh"
+        " && AWM_REFRESH_RESTART='' bash scripts/node-refresh.sh " + "b" * 40)
 
 
 def test_a_fix_after_promote_lands_as_a_new_release(ws, tmp_path):
@@ -174,3 +177,15 @@ def test_a_fix_after_promote_lands_as_a_new_release(ws, tmp_path):
     assert ln.run_batch(a["ticket"]) == 0
     assert ws.rev("release") != first and ws.show("release", "fix.txt") == "fix"
     assert log.read_text().split()[::2] == [first, ws.rev("release")]
+
+
+def test_the_batch_restarts_the_union_of_what_its_agents_name(ws, tmp_path):
+    log = with_refresh(ws, tmp_path)
+    ln = land(ws, tmp_path)
+    a = submit(ln, ws.scope("a", {"a.txt": "a\n"}, base="release"), restart="journal,scopes")
+    submit(ln, ws.scope("b", {"b.txt": "b\n"}, base="release"), restart="scopes,search")
+    submit(ln, ws.scope("c", {"c.txt": "c\n"}, base="release"))
+    assert ln.run_batch(a["ticket"]) == 0
+    assert Path(f"{log}.restart").read_text().split() == ["restart=journal,scopes,search"]
+    with pytest.raises(SystemExit, match="--restart"):
+        submit(ln, ws.scope("d", {"d.txt": "d\n"}, base="release"), restart=" , ")

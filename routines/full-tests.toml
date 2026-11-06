@@ -12,5 +12,5 @@ timeout = 7200
 
 [fixer]
 scope = "fix-full-tests"
-prompt = """Fix the newly failing dists on a feature branch and land it with `routine deploy`. \
+prompt = """Fix the newly failing dists on a feature branch and land it with the ci/land skill (`scripts/land.sh submit`). \
 .awm/full-tests/last.log holds the full run."""

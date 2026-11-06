@@ -2,7 +2,8 @@
 # Refresh this node's awm onto a release commit, with no agent (routines.md R32):
 #   node-refresh.sh <release sha, 40 hex>        (or $AWM_REFRESH_TO)
 #
-# Steps: sync (scripts/refresh-checkout.sh), deploy (scripts/awm-deploy.sh), health
+# Steps: sync (scripts/refresh-checkout.sh), deploy (scripts/awm-deploy.sh, restarting what
+# $AWM_REFRESH_RESTART names), health
 # (every enabled service ready, no plugin refused). They run in a transient user unit,
 # awm-refresh-<sha 12>, so the awm restart that deploy causes cannot kill them, and a
 # caller that dies or drops its ssh leaves them running.
@@ -49,7 +50,7 @@ launch() {
         rm -f "$log"
         local env=(AWM_REFRESH_IN_UNIT=1 PATH="$PATH" AWM_DIR="$AWM_DIR" HOME="$HOME")
         local v
-        for v in AWM_WORKSPACE AWM_NODE_NAME MAMBA_ROOT_PREFIX MAMBA_EXE AWM_CONDA_ROOT; do
+        for v in AWM_WORKSPACE AWM_NODE_NAME MAMBA_ROOT_PREFIX MAMBA_EXE AWM_CONDA_ROOT AWM_REFRESH_RESTART; do
             [[ -n ${!v:-} ]] && env+=("$v=${!v}")
         done
         if command -v systemd-run >/dev/null && systemctl --user show-environment >/dev/null 2>&1; then
@@ -103,7 +104,16 @@ steps() {
 
 step_sync() { (cd "$root" && AWM_REFRESH_TO=$1 sh scripts/refresh-checkout.sh); }
 
-step_deploy() { (cd "$root" && bash scripts/awm-deploy.sh); }
+# The landing agents name what restarts ($AWM_REFRESH_RESTART): plugin names, or gateway.
+step_deploy() {
+    local args=() restart=${AWM_REFRESH_RESTART:-}
+    if [[ $restart == gateway ]]; then
+        args=(--restart)
+    elif [[ -n $restart ]]; then
+        args=(--reload-restart "$restart")
+    fi
+    (cd "$root" && bash scripts/awm-deploy.sh "${args[@]}")
+}
 
 # awm deploy already waits for the services; this asks the gateway again, as a check
 # that does not trust the step it checks.

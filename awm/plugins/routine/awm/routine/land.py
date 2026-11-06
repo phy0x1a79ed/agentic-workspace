@@ -88,6 +88,7 @@ class Land:
         self.awm_dir = awm_dir
         self.node = node
         self.fleet = fleet
+        self._restart = ""
         self.dir = awm_dir / "land" / project
         self.tickets = self.dir / "tickets"
         self.tree = self.dir / "tree"
@@ -154,7 +155,7 @@ class Land:
 
     # -- verbs ----------------------------------------------------------------
 
-    def submit(self, cwd: Path, brief: str) -> dict[str, Any]:
+    def submit(self, cwd: Path, brief: str, restart: str = "none") -> dict[str, Any]:
         branch = git(cwd, "rev-parse", "--abbrev-ref", "HEAD", check=True).stdout.strip()
         if branch in (DEV, RELEASE, "HEAD"):
             raise SystemExit(f"submit a feature branch, not {branch}")
@@ -166,6 +167,7 @@ class Land:
         rel = cwd.resolve().relative_to((self.workspace / "projects" / self.project).resolve())
         t = {"id": uuid.uuid4().hex[:12], "project": self.project, "scope": str(rel),
              "branch": branch, "sha": sha, "brief": brief, "state": "queued",
+             "restart": restart_list(restart),
              "submitted": now(), "verdict": "", "reason": "", "batch": ""}
         self.save(t)
         return {"ticket": t["id"], "role": "queued" if self.merger() else "merger",
@@ -389,6 +391,8 @@ class Land:
 
     def _rollout(self, b: dict[str, Any], cfg: DeployConfig) -> None:
         to, frm = b["head"], b["base"]
+        self._restart = batch_restart(self.live(b))
+        say(f"restart: {self._restart or 'none'}")
         done = {n["node"] for n in b["nodes"] if n["ok"]}
         nodes = list(self.fleet.rollout(self.project)) or [self.node]
         pinned: list[artifacts.Artifact] | None = None
@@ -450,7 +454,8 @@ class Land:
         if cfg.refresh.sync:
             steps.append(f"AWM_REFRESH_TO={to} {cfg.refresh.sync}")
         if cfg.refresh.command:
-            steps.append(f"bash {q(cfg.refresh.command)} {to}")
+            steps.append(f"AWM_REFRESH_RESTART={q(self._restart)} "
+                         f"bash {q(cfg.refresh.command)} {to}")
         if not steps:
             return "true"
         body = " && ".join(steps)
@@ -466,7 +471,8 @@ class Land:
 
     def _refresh_env(self, node: str, frm: str, to: str) -> dict[str, str]:
         return {"AWM_REFRESH_NODE": node, "AWM_REFRESH_PROJECT": self.project,
-                "AWM_REFRESH_FROM": frm, "AWM_REFRESH_TO": to, "AWM_NODE_NAME": node}
+                "AWM_REFRESH_FROM": frm, "AWM_REFRESH_TO": to, "AWM_NODE_NAME": node,
+                "AWM_REFRESH_RESTART": self._restart}
 
     # -- settle ---------------------------------------------------------------
 
@@ -490,6 +496,20 @@ class Land:
         d = self.dir / "logs" / b["id"]
         d.mkdir(parents=True, exist_ok=True)
         return d / f"{name}.log"
+
+
+def restart_list(text: str) -> list[str]:
+    """What a submitter says must restart: plugin names, `gateway`, or `none`."""
+    names = [n.strip() for n in text.split(",") if n.strip()]
+    if not names:
+        raise SystemExit("--restart names the plugins to restart, `gateway`, or `none`")
+    return [] if names == ["none"] else names
+
+
+def batch_restart(tickets: list[dict[str, Any]]) -> str:
+    """The union of the batch's restart lists. `gateway` restarts everything."""
+    names = sorted({n for t in tickets for n in t.get("restart", [])})
+    return "gateway" if "gateway" in names else ",".join(names)
 
 
 def run(cmd: str, cwd: Path, label: str, log: Path, timeout: float,
@@ -563,6 +583,8 @@ def main(argv: list[str] | None = None) -> int:
     sub = ap.add_subparsers(dest="verb", required=True)
     s = sub.add_parser("submit", help="Queue this worktree's branch with its merge brief.")
     s.add_argument("--brief", required=True, help="The merge brief file.")
+    s.add_argument("--restart", required=True,
+                   help="What must restart on each node: plugin names (a,b), gateway, or none.")
     w = sub.add_parser("wait", help="Wait for a ticket's verdict: landed, bounced or merger.")
     w.add_argument("ticket")
     w.add_argument("--poll", type=float, default=10.0)
@@ -586,7 +608,7 @@ def main(argv: list[str] | None = None) -> int:
     if a.verb == "batch":
         return land.run_batch(a.ticket)
     if a.verb == "submit":
-        res = land.submit(cwd, Path(a.brief).read_text())
+        res = land.submit(cwd, Path(a.brief).read_text(), a.restart)
     elif a.verb == "wait":
         res = land.wait(a.ticket, a.poll)
     elif a.verb == "bounce":
