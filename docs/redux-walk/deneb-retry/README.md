@@ -12,3 +12,7 @@ The second attempt at deneb's cutover after the first rolled back on 2026-11-05:
 - Retry order: alcor on the door-client release, then deneb's cutover on the same release, then mizar in a later window.
 - mizar's edges are off by a drop-in (`edge-off.conf`, AWM_EDGE_SSH=/bin/false), which is why mizar's operations and trilium calls fail with "Broken pipe". Whether it stays is open with dev.
 - The retry needs Tony's go for a new window (Q-deneb-retry).
+- Rollback verified (deneb-board): deneb back on 3efb22b1, vault 240|1765|9, Trilium, zotero and tether up. Step 2b (sshd, ufw, SNI) stays.
+- deneb-board's view, adopted: the retry is one window. mizar on 60a1e5f8 would lose trilium and zotero once they sit behind deneb's door. The order is mizar, then alcor (operations serving), then deneb's cutover.
+- The release candidate must have: the door login user from `singleton_doors.<host>.user`, needs holding at install while a door is down, a met search need for deneb's journal, and the awm-deploy.sh chmod fix.
+- The cutover's rollback repoints trilium's node-bin by script. The avatar relay moved to a unix socket in 2b, so capella's client must switch (Tony's M44).
