@@ -32,6 +32,7 @@ Procedure, from dfs-interview § Work the stack:
 ## Stack
 
 - **zerotier-to-tailnet** (2026-11-06): cloud science on altair (and possibly other nodes) still point to old zerotier IP, so we have sign in to "10.74.81.84" for entering claude science and it just breaks. Need to move services to new tailscale system.
+  - [ ] When to restart mizar's gateway to apply the tailnet names (it stops mizar's sessions)?
 - **ops-board** (2026-11-06): https://nexus.tony-xy-liu.com/trilium/#root/iF0A3SWEGqUx/P4ALwPiCSs6N?ntxId=CZkmWI ops board needs updating
   - [x] Old AWM book: delete the old Ops password notes, carry Links into the new Ops, archive the old Swarm board? (answered 2026-11-06)
   - [x] Federation board: archive all 8 pre-redux cards, then check the door and intake end to end? (answered 2026-11-06)
@@ -61,6 +62,8 @@ Procedure, from dfs-interview § Work the stack:
 - [x] tell daae3825 how shogun-singletons was solved (told 2026-11-06)
 - **f6cd1c4b** (2026-11-06): took ops-board
 - **f6cd1c4b** (2026-11-06): took zerotier-to-tailnet
+- **f6cd1c4b** (2026-11-06): took zerotier-to-tailnet
+- **a2f9b042** (2026-11-06): took zerotier-to-tailnet
 
 ## Closed
 
