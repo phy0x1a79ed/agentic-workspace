@@ -30,3 +30,12 @@ On 2026-11-06 slack-main read "restart seats on DM" as "start every per-client a
 - A released seat pushes to nobody (`hub_adapter.py:148-152`). Only `social history` keeps its messages.
 - A per-client agent hands back with `social unmount`. slack-main took the seat again only through the hourly sweep cron (`SKILL.md:27-28, 65`). Tony dropped that sweep on 2026-11-02, so nothing takes a released seat back now.
 - A kept seat with `channels = "all"` remounts every chat its agent does not hold, every 60 s (`keeper.py:992-1001`). It also takes a seat back from a running per-client agent, and it refuses other sessions' mounts of its seats (`hub_adapter.py:574-580`). It cannot serve as slack-main in this design as it stands.
+
+## The routine tool (survey, 2026-11-06)
+
+Tony: "we can actually make this a deterministic routine, check that the awm tool exists".
+
+- `routine` exists on altair (`awm/plugins/routine`). A routine is a TOML definition in a project repo (`routines/full-tests.toml` is the model): shell steps, a trigger, and an optional agent.
+- Triggers are a systemd timer or a call (`routine trigger`). No event trigger exists. Social would have to call `routine trigger` itself.
+- A `condition` step that exits 0 dispatches one agent. Its scope is fixed by the definition (`runner.py:157-168`), so it cannot pick the client's scope. A plain step script can call `awm reflection start_other` with the client's scope and message instead.
+- A run is refused while the routine has a live run (`trigger` verb).
