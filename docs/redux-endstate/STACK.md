@@ -23,7 +23,7 @@ Procedure, from dfs-interview § Work the stack:
 
 ## Current topic
 
-**zerotier-to-tailnet**. Its result: `zerotier-to-tailnet/README.md`.
+**ops-board**. Its result: `ops-board/README.md`.
 
 ## Pending
 
@@ -31,8 +31,6 @@ Procedure, from dfs-interview § Work the stack:
 
 ## Stack
 
-- **zerotier-to-tailnet** (2026-11-06): cloud science on altair (and possibly other nodes) still point to old zerotier IP, so we have sign in to "10.74.81.84" for entering claude science and it just breaks. Need to move services to new tailscale system.
-  - [x] When to restart mizar's gateway to apply the tailnet names (it stops mizar's sessions)? (answered 2026-11-06)
 - **ops-board** (2026-11-06): https://nexus.tony-xy-liu.com/trilium/#root/iF0A3SWEGqUx/P4ALwPiCSs6N?ntxId=CZkmWI ops board needs updating
   - [x] Old AWM book: delete the old Ops password notes, carry Links into the new Ops, archive the old Swarm board? (answered 2026-11-06)
   - [x] Federation board: archive all 8 pre-redux cards, then check the door and intake end to end? (answered 2026-11-06)
@@ -76,3 +74,4 @@ Procedure, from dfs-interview § Work the stack:
 - **install-loop** (closed 2026-11-06): `install-loop/README.md`
 - **shogun-singletons** (closed 2026-11-06): `end-state/shogun-singletons/README.md`
 - **session-cleanup** (closed 2026-11-06): `end-state/session-cleanup/README.md`
+- **zerotier-to-tailnet** (closed 2026-11-06): `zerotier-to-tailnet/README.md`
