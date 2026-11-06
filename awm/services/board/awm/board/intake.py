@@ -27,6 +27,7 @@ POLL_S = 5.0
 PAGE = 200
 
 Call = Callable[[str, dict], Awaitable[Any]]
+Wait = Callable[[], Awaitable[None]]
 
 
 def party_label(party: Any, agent: str | None = None) -> str:
@@ -39,8 +40,10 @@ def party_label(party: Any, agent: str | None = None) -> str:
 
 
 class Intake:
-    def __init__(self, events: Any, party: dict, call: Call, cursor_path: Path) -> None:
+    def __init__(self, events: Any, party: dict, call: Call, cursor_path: Path,
+                 wait: Wait | None = None) -> None:
         self.events, self.party, self.call, self.cursor_path = events, party, call, cursor_path
+        self.wait = wait
         self.swarm = party["swarm"]
 
     def cursor(self) -> int:
@@ -91,6 +94,8 @@ class Intake:
 
     async def run(self) -> None:
         while True:
+            if self.wait is not None:
+                await self.wait()
             try:
                 n = await self.step()
             except Exception as exc:  # noqa: BLE001 - operations may be down; the cursor waits

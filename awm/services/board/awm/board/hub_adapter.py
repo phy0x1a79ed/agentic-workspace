@@ -99,8 +99,11 @@ class HostState:
         if gui_party is not None:
             from awm.board.intake import Intake
 
+            from awm.gatewayclient import until_provided
+
             self.intake = Intake(self.events, gui_party, _operations,
-                                 directory / "intake-cursor.json")
+                                 directory / "intake-cursor.json",
+                                 wait=lambda: until_provided("operations", 2))
 
 
 def hold_single_instance(directory: Path) -> None:

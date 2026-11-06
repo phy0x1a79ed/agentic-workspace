@@ -20,7 +20,7 @@ name = "trilium"
 major = 1
 verbs = ["note_get", "note_search", "note_create", "note_update", "note_place", "attr_set", "attr_delete"]
 
-[[needs.tool]]   # intake: posts to this swarm become Proposed cards
+[[needs.contract]]   # intake: posts to this swarm become Proposed cards, where operations is served
 name = "operations"
 major = 2
 verbs = ["intake_post", "intake_message"]

@@ -12,6 +12,7 @@ install = "install.sh"
 name = "reflection"
 major = 1
 service = "reflection"
+implements = ["reflection@1"]
 tier = "on"
 
 [needs]

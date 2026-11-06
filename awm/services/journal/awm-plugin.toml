@@ -36,7 +36,7 @@ name = "scope"
 major = 1
 verbs = ["resolve"]
 
-[[needs.tool]]
+[[needs.contract]]   # a node without search answers by keyword
 name = "search"
 major = 1
 verbs = ["query"]

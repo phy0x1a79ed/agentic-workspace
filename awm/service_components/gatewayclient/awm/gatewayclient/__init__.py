@@ -56,6 +56,8 @@ credentials.load()
 __all__ = [
     "call",
     "call_sync",
+    "provided",
+    "until_provided",
     "subscribe",
     "peer_env",
     "SupervisedSubscription",
@@ -183,6 +185,28 @@ async def call(
         resp = await cli.post(f"{hub_base_url()}/invoke", content=_invoke_body(tool, verb, args, peer),
                               headers=_headers(as_, caller_pid))
     return _result(resp, tool, verb)
+
+
+async def provided(contract: str, major: int, *, timeout: float = 10.0) -> bool:
+    """Whether a plugin on this node or a peer provides ``contract`` at ``major``."""
+    async with httpx.AsyncClient(timeout=timeout) as cli:
+        resp = await cli.get(f"{hub_base_url()}/hub/contract/{contract}@{major}", headers=_headers(None))
+    return bool(_parse_reply(resp, "hub", "contract"))
+
+
+async def until_provided(contract: str, major: int, *, idle_s: float = 300.0) -> None:
+    """Return once ``contract`` at ``major`` has a provider, or the gateway cannot say."""
+    told = False
+    while True:
+        try:
+            if await provided(contract, major):
+                return
+        except (httpx.HTTPError, GatewayCallError):
+            return
+        if not told:
+            log.info("no plugin provides %s@%s here; checking every %.0fs", contract, major, idle_s)
+            told = True
+        await asyncio.sleep(idle_s)
 
 
 def call_sync(

@@ -120,3 +120,21 @@ def test_off_until_configured():
     s = orders.Settings.from_env({"ZOTERO_ORDERS_PUBKEY": "k",
                                   "AWM_NODE_NAME": "deneb", "AWM_DIR": "/x"})
     assert s.node == "deneb" and str(s.seen_path) == "/x/zotero/orders-seen.json"
+
+
+def test_run_pulls_nothing_until_operations_is_provided(alcor, tmp_path):
+    class NoProvider(Exception):
+        pass
+
+    async def wait():
+        raise NoProvider
+
+    async def sync(args):
+        raise AssertionError("no order may run")
+
+    p = orders.Puller("deneb", alcor.call, orders.grant_verifier(alcor.pubkey, "deneb"),
+                      orders.Seen(tmp_path / "seen.json"), sync, wait=wait)
+    alcor.order()
+    with pytest.raises(NoProvider):
+        asyncio.run(p.run())
+    assert alcor.done == []
