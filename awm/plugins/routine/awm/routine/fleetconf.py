@@ -16,7 +16,7 @@ its `[fleet]` table says which node is home base and the order nodes refresh in:
     url = "<node>:<workspace>/projects/{project}/.bare"   # with projects, for a node
     projects = ["<name>", ...]                             # that cannot fetch from home
     artifacts = "<node>:<awm dir>/artifacts"               # for a node that builds nothing
-    refresh = "<command>"                                  # with url: how home refreshes it
+    refresh = "<command>"                                  # optional, with url: how home refreshes it
 
 The node that lands a project leads its rollout. Before a node refreshes, the
 landing node pushes the new release into its repo as `refs/<landing node>/release`,
@@ -132,10 +132,9 @@ def parse(text: str, *, source: str = FILE) -> Fleet:
         where = f"{source}: [fleet.push.{node}]"
         keys = set(body) if isinstance(body, dict) else set()
         if (not isinstance(body, dict) or keys - {"url", "projects", "artifacts", "refresh"}
-                or not ({"url", "projects", "refresh"} <= keys or keys == {"artifacts"}
-                        or keys == {"url", "projects", "refresh", "artifacts"})):
-            raise FleetConfigError(f"{where} takes url, projects and refresh, and optionally "
-                                   f"artifacts, or artifacts alone")
+                or not ({"url", "projects"} <= keys or keys == {"artifacts"})):
+            raise FleetConfigError(f"{where} takes url and projects, and optionally refresh "
+                                   f"and artifacts, or artifacts alone")
         url, names = body.get("url", ""), body.get("projects", [])
         artifacts = body.get("artifacts", "")
         if not isinstance(artifacts, str) or ("artifacts" in keys and not artifacts):

@@ -265,7 +265,7 @@ class Refresher:
                         pinned, r = await self._pinned(node, bare, to)
                     if r is None:
                         r = await self._push_artifacts(node, dest, pinned)
-                if r is None and url:
+                if r is None and url and fleet.refresh_command(node):
                     r = await self._refresh_by_command(node, project, fleet.refresh_command(node),
                                                        frm, to)
                 if r is None:

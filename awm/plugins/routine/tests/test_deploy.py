@@ -552,7 +552,7 @@ def test_fleetconf_push():
 
 @pytest.mark.parametrize("text, msg", [
     ('[fleet.push.a]\nurl = "a:/x"\nprojects = ["p"]\nrefresh = "true"', "with {project}"),
-    ('[fleet.push.a]\nurl = "a:/{project}"\nprojects = ["p"]', "url, projects and refresh"),
+    ('[fleet.push.a]\nurl = "a:/{project}"\nrefresh = "true"', "url and projects"),
     ('[fleet.push.a]\nurl = "a:/{project}"\nprojects = "p"\nrefresh = "true"', "list of project names"),
 ])
 def test_fleetconf_push_rejects(text, msg):

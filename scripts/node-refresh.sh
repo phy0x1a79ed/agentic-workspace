@@ -117,9 +117,10 @@ health_problems() {
     python3 -I -c '
 import json, sys
 services, plugins = json.loads(sys.argv[1]), json.loads(sys.argv[2])
-bad = [f"{s[\"name\"]} ({s[\"status\"]})" for s in services
+bad = ["{} ({})".format(s.get("name"), s.get("status")) for s in services
        if s.get("enabled") and not s.get("external") and s.get("status") != "ready"]
-bad += [f"refused plugin {r.get(\"plugin\")}: {r.get(\"reason\")}" for r in plugins.get("refused") or []]
+bad += ["refused plugin {}: {}".format(r.get("plugin"), r.get("reason"))
+        for r in plugins.get("refused") or []]
 print(", ".join(bad))
 sys.exit(1 if bad else 0)' "$services" "$plugins"
 }

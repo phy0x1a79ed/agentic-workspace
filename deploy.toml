@@ -20,6 +20,9 @@ backup = "github"
 # The checkout moves first, without a restart.
 kind = "queue"
 sync = "scripts/refresh-checkout.sh"
+# The land queue (scripts/land.sh) runs this on each node after sync, with the
+# release commit as its argument. It needs no agent.
+command = "scripts/node-refresh.sh"
 prompt = """This node's awm checkout already holds the new release. Restart awm \
 on it, as FEDERATION.md § Deploy says. Do not message other sessions: each one \
 reconnects to awm on its own after the restart. Run `scripts/awm-deploy.sh` \
