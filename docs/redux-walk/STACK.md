@@ -61,6 +61,8 @@ Procedure, from dfs-interview § Work the stack:
 
 From journal 6a98c0c6 (awm/redux) and walkthrough's handover (manual-steps.md at feat/redux-walkthrough a12a5f6e, M-numbers). Live workers: dev, singleton-callers, rt-container, reflect-selfstop.
 
+- **alcor-pass-2** (2026-11-05): leftovers of redux-build/alcor-open (journal 73dd9ef5): (1) lyra's edge key into alcor's ssh_edges once recorded; (2) operations gets AWM_APPROVER_GRANT_PUBKEY through singleton_needs or secrets, not config.toml [env], so spawn orders turn on; (3) singletons_sandbox stops a singleton that leaves the list; (4) deneb out of alcor's singleton callers (with deneb-board); (5) tailnet_portal on mizar, capella and lyra.
+
 - **teams-slack-automations** (2026-11-05): Tony: "I'm deferring the non-essential browser automations like teams and slack, running on opera on mira". They stay on mira for now. social's slack "me" and teams accounts are off on alcor until they move.
 
 - lyra: run awm-wsl-bridge-lyra.ps1 on xps-laptop (M18), ssh 100.85.115.29 lands in WSL, then start WSL (M41)
