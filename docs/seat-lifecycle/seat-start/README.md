@@ -37,6 +37,6 @@ Tony: "can we just respond with eyes emoji as a reaction? can we also do teh typ
 
 Tony, 2026-11-06: "react eyes only".
 
-1. social reacts 👀 to every message a seat receives, the moment it arrives. This is the fast acknowledgement.
+1. social reacts 👀 to a message that starts an agent (a cold start: the seat is empty or retiring), the moment it arrives. A message to a live agent gets no automatic reaction. Tony: "this is only for cold starts".
 2. No typing indicator on any platform, and no "getting set up" reply.
 3. The seat start itself stays as it is: `start_other` through cch on a warm spare, about 7 s to the first action.
