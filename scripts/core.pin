@@ -1,5 +1,5 @@
 # The awm core binary (static musl) that a deploy places at ~/.local/bin/awm.
 # Written by the deploy on mizar (scripts/refresh-pins.sh). Do not edit.
-version=core-631b8f3544f3
-file=awm-core-631b8f3544f3-linux-x86_64-musl
-sha256=b6f38b4eedd652a72b37963dda27a2de5d040eebf61ef39314a79ee052070280
+version=core-01c6db614161
+file=awm-core-01c6db614161-linux-x86_64-musl
+sha256=9a6777fa4c758c8309dc334e15005821c890cf1522d9d19dd6f61ea1e1ea3c6d
