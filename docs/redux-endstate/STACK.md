@@ -27,7 +27,6 @@ Procedure, from dfs-interview § Work the stack:
 
 ## Pending
 
-- **shogun-callers** (2026-11-06): Which of alcor's singletons may shogun call? Recommend operations only (approvals R100, board).
 - **install-hold** (2026-11-06): install-loop 9fc4afc8 (mizar) and metasmith-install-loop 80f06e0c (altair) hold until Sat 2026-11-07 15:05 PT (Tony: 'Change to 305 PM Saturday, when my subscription refreshes')
 
 ## Stack
@@ -42,7 +41,6 @@ Procedure, from dfs-interview § Work the stack:
   - **queue-approvals-test** (2026-11-06): lets hold a full test of the new queue and approvals workflow in 1 sitting, prolly with another agent
   - **node-roster** (2026-11-06): can I get a board for this on awm? like an automatically updated roster with stats for each node? awm install has this as opt in, since not all installs will be for our swarm
   - **session-naming** (2026-11-06): we should maybe to naming by hand and omit agent renaming unless needed. and we can revise the naming scheme to include node. please push this onto tthe stack ... the job ids dont match up. -> yea, need to revise session naming.
-  - **shogun-singletons** (2026-11-06): from daae3825: After the render, shogun reaches neither alcor's operations and browser nor any other singleton. ... Should I do (b), and for which tools? Without an answer I do only (a) and report shogun's singleton access as open.
   - **env-reload** (2026-11-06): (from nexus-signin) a changed config.toml [env] reaches plugins only after a gateway restart
   - **search-mcp** (2026-11-06): one thing we should review is that all nodes are using the new search service and MCP.
     - [x] Refresh shogun to b1e85c50 now? (answered 2026-11-06)
@@ -55,6 +53,7 @@ Procedure, from dfs-interview § Work the stack:
 - **daae3825** (2026-11-06): took node-time
 - **9fc4afc8** (2026-11-06): took install-loop
 - **80f06e0c** (2026-11-06): took install-loop
+- [ ] tell daae3825 how shogun-singletons was solved
 
 ## Closed
 
@@ -63,3 +62,4 @@ Procedure, from dfs-interview § Work the stack:
 - **node-time** (closed 2026-11-06): `end-state/node-time/README.md`
 - **nexus-signin** (closed 2026-11-06): `nexus-signin/README.md`
 - **install-loop** (closed 2026-11-06): `install-loop/README.md`
+- **shogun-singletons** (closed 2026-11-06): `end-state/shogun-singletons/README.md`
