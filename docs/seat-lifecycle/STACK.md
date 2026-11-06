@@ -28,6 +28,7 @@ Procedure, from dfs-interview § Work the stack:
 ## Stack
 
 - **lifecycle** (2026-11-06): need to update seats to retire after task is done with report sent back through DM. ... even for seats of lab messages and DMs, they should retire and not just sit there.
+  - [ ] When a client's agent retires, how does its seat go back to slack-main? Recommend: social gives each account a fallback holder (slack-main), so a push for a seat with no live holder goes to slack-main instead of being dropped.
 - **resume-from-journals** (2026-11-06): the task should be resumable from debrief journals, even if the sessions are gone.
 - **journal-tags** (2026-11-06): Seats should also be instructed to journal often -> we should also add tags for each user, and one that marks seats. otherwise, these journals are debreif journals.
 - **speak-rule** (2026-11-06): steven chen contacted the client without first being asked, on a stale request.
