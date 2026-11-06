@@ -28,7 +28,6 @@ Procedure, from dfs-interview § Work the stack:
 ## Pending
 
 - **rc-rows** (2026-11-05): On claude.ai/code, archive the 31 dead Remote Control rows: 7 redux-build-* (alcor, clean-plugins, search, channels, queue, deploy, integrate), 14 finished (awm redux, core-redux-gateway-plugins-bootstrap, fleet-board-rework, fxdiff-design, retire-full-close, owner-dm-defaults, discord dm previews, multi-admin machine access, plan-bypass-mode, science-bash-stall, capellaz cc mem cleanup, avatar, lit kb, cloud/homelab), representative x5, secretary x5. Your call on: engcyc pipeline plan, msm-*, fosdb, cyanoverse, treesapp, ecspr, job application system, 4 offline seat rows, 4 cloud sessions.
-- **M-zotero-ro** (2026-11-05): deneb's Zotero API key can write, and deneb only needs to read. At zotero.org (Settings → Feeds/API), create a read-only key for your library. Then replace ZOTERO_API_KEY in /etc/awm/secrets/zotero.env on deneb, or hand the key to deneb-board to place without printing it. Revoke the old key afterwards.
 - **M-tailnet-names** (2026-11-05): In the Tailscale admin console, delete the stale capella node (100.70.76.82) and rename xps-laptop to lyra. Then on capella run: "B:\Program Files\Tailscale\tailscale.exe" set --hostname=capella
 
 ## Stack
