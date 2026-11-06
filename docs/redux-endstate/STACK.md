@@ -49,6 +49,7 @@ Procedure, from dfs-interview § Work the stack:
   - **node-roster** (2026-11-06): can I get a board for this on awm? like an automatically updated roster with stats for each node? awm install has this as opt in, since not all installs will be for our swarm
   - **session-naming** (2026-11-06): we should maybe to naming by hand and omit agent renaming unless needed. and we can revise the naming scheme to include node. please push this onto tthe stack ... the job ids dont match up. -> yea, need to revise session naming.
   - **env-reload** (2026-11-06): (from nexus-signin) a changed config.toml [env] reaches plugins only after a gateway restart
+    - [ ] Tony: 'can we make the gateway restart more seamless? what is it for anyways?' Pass a changed [env] to plugins without a restart, and keep sessions alive across one?
   - **search-mcp** (2026-11-06): one thing we should review is that all nodes are using the new search service and MCP.
     - [x] Refresh shogun to b1e85c50 now? (answered 2026-11-06)
 
