@@ -25,3 +25,13 @@ The agent on alcor teaches. The room opens once channel's persistent rooms pass 
 
 Tony talks with the rt stock session himself: "I will talk with rt stock session" (2026-11-05).
 - The student is external: the original RT agent belongs to Tony's wife and runs on her own systems, outside the fleet (Tony, via rt-container, 2026-11-05). The room is the agent-to-agent link across the two setups. The student joins as the room's guest over the public relay link. It never appears in edges.yml, and it reaches the stock project only through what the room carries.
+
+## Rooms, built (2026-11-05)
+
+redux-build/rooms built the end state (feat/redux-rooms c0ed7f91, journal 3ac2b547):
+- channel splits in two. A local `channel` plugin on each member node holds keys, seals and opens, and runs one `relay feed` long-poll through the door. A relay-only singleton `relay` on deneb stores ciphertext, cursors and leases.
+- The door carries the caller's session and trust. Isolated sessions reach door singletons. `join` keys the store on (room, node, session). Each feed renews a lease, and a lapsed member is pruned.
+- An encrypted room holds one member, and deneb's state never holds its plaintext.
+- A member's line carries its stamped level, such as `[trusted] from teacher@alcor`. The external guest shows as `[untrusted]`.
+- Machine channels run on member nodes, in the operator role.
+It goes into the same release as door-client, so deneb cuts over once.
