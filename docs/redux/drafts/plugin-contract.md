@@ -162,7 +162,7 @@ The keys that place plugins:
 4. `[[external]]` names a service the gateway serves but does not spawn, as `{service, token_file?}`. Another user's systemd unit runs it (R99, R107). See § External services.
 5. `isolated_listen` is a second address that serves only the isolated door. See § Isolated sessions.
 
-A reload reads the keys that place plugins again: `plugins`, `exclude`, the roots, `profiles` and `reserved`. A change to `listen`, `isolated_listen`, `peer`, `env` or `[[external]]` takes a gateway restart.
+A reload reads the keys that place plugins again: `plugins`, `exclude`, the roots, `profiles` and `reserved`. It also reads `[env]` and `[[external]]`. A running plugin keeps the env it started with until it restarts, and the reload result lists these plugins under `stale_env`. A change to `listen`, `isolated_listen` or `peer` takes a gateway restart.
 
 The `[fleet]` table holds the rollout order: `home`, `nodes` (starting with `home`), and an optional `[fleet.project.<name>]` with `canonical` and `nodes`. The routine plugin reads it. The gateway ignores it. The routine plugin also honours `AWM_INSTALL_CONFIG` as an override of the path, for tests and dry runs. The gateway reads only `<AWM_DIR>/config.toml`.
 
@@ -274,10 +274,10 @@ A call to a tool that is not up yet waits up to 10 s, then fails with 503 and na
 The gateway keeps one live table from each tool name to the plugin that owns it, on this node and its peers (R117 item 3). Every call looks its name up in that table, so a plugin change takes effect at the next call (R144).
 
 1. `awm reload`, the `awm` tool's `reload` verb or `POST /hub/reload` reads the roots and the install config again. Only a trusted caller on this node may reload.
-2. The reload compares each plugin with the loaded one. It starts an added plugin, restarts a changed one and stops a removed one. Every other service keeps its process.
-3. A plugin is changed when its folder's stamp moved or its services differ. The stamp covers the names, sizes and mtimes of the folder's files. It skips `.git`, `node_modules`, `target`, `__pycache__`, `.venv` and `.pytest_cache`.
-4. To install a plugin, put its folder in a root and reload. To update it, change its files and reload. To rename a tool, edit the manifest and reload. To remove a plugin, delete its folder or add it to `exclude`, then reload.
-5. After a change, the gateway posts `{node}` to each peer's `POST /hub/table/changed`. The peer reads `GET /hub/table` again, then reloads, because a need may now resolve or break.
+2. The reload compares the loaded plugins with the roots. It starts an added or enabled service and stops a removed or disabled one. It never restarts a plugin because its files, stamp or manifest changed. Every other service keeps its process.
+3. The caller decides what restarts. `awm reload --restart <a,b>` restarts exactly the named plugins, and the result lists any name no plugin carries under `unknown`. `awm restart <plugin>` takes the same path for one plugin. `--force` bypasses the crash breaker. `awm deploy --reload-restart <a,b>` hands its names to `awm reload --restart`. The deploy request names the plugins, even when it disagrees with the file changes.
+4. To install a plugin, put its folder in a root and reload. To update it, change its files, then reload with `--restart <name>`. To rename a tool, edit the manifest, then reload with `--restart <name>`. To remove a plugin, delete its folder or add it to `exclude`, then reload. A page never restarts a plugin: the gateway reads its `dist` on each request.
+5. After a change, the gateway posts `{node}` to each peer's `POST /hub/table/changed`. The peer reads `GET /hub/table` again and re-resolves `needs` only. It starts the plugins whose `needs` now resolve and stops those whose `needs` no longer do. It runs no full reload and does not forward the notice.
 
 `GET /hub/table` lists this node's tools as `[{name, major, plugin, implements}]`. The `awm` tool's `table` verb shows the whole live table, peers included.
 

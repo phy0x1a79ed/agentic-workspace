@@ -31,6 +31,9 @@ pub struct Args {
     /// Restart the `awm` user unit even when neither the binary nor the unit changed.
     #[arg(long)]
     restart: bool,
+    /// Plugins the reload restarts, comma separated. Runs after the unit restart when both apply.
+    #[arg(long, value_delimiter = ',')]
+    reload_restart: Vec<String>,
     /// Print the steps and change nothing.
     #[arg(long)]
     dry_run: bool,
@@ -87,13 +90,34 @@ fn unit_text(root: &Path) -> anyhow::Result<String> {
     Ok(std::fs::read_to_string(root.join(UNIT))?)
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum Apply {
+    RestartUnit,
+    WaitForGateway,
+    Reload(Vec<String>),
+}
+
+/// The apply steps in order. A unit restart comes first and the named plugins restart after
+/// the new gateway answers, because a restart before it would be lost with the old gateway.
+fn plan(restart_unit: bool, names: &[String]) -> Vec<Apply> {
+    match (restart_unit, names.is_empty()) {
+        (true, true) => vec![Apply::RestartUnit],
+        (true, false) => vec![Apply::RestartUnit, Apply::WaitForGateway, Apply::Reload(names.to_vec())],
+        (false, _) => vec![Apply::Reload(names.to_vec())],
+    }
+}
+
 async fn native(verb: &str) -> anyhow::Result<Value> {
+    native_with(verb, json!({})).await
+}
+
+async fn native_with(verb: &str, args: Value) -> anyhow::Result<Value> {
     let url = format!("{}/invoke", crate::gateway_url());
     let resp = reqwest::Client::new()
         .post(&url)
         .header("X-Awm-Surface", "cli")
         .header("X-Awm-Caller-Pid", std::process::id().to_string())
-        .json(&json!({"name": awm_gateway::gateway::NATIVE_TOOL, "args": {"verb": verb, "args": {}}}))
+        .json(&json!({"name": awm_gateway::gateway::NATIVE_TOOL, "args": {"verb": verb, "args": args}}))
         .send()
         .await?;
     let ok = resp.status().is_success();
@@ -129,7 +153,7 @@ pub async fn run(args: Args) -> anyhow::Result<i32> {
     }
     println!("  config:  {}", if config_path.is_file() { "kept" } else { "written from this checkout's defaults" });
     println!("  unit:    {}", if unit_changes { "replaced from core/deploy/awm.service" } else { "current" });
-    println!("  apply:   {}", if restart { "restart the awm user unit" } else { "awm reload" });
+    println!("  apply:   {}", if restart { if args.reload_restart.is_empty() { "restart the awm user unit".to_string() } else { format!("restart the awm user unit, then awm reload --restart {}", args.reload_restart.join(",")) } } else if args.reload_restart.is_empty() { "awm reload".to_string() } else { format!("awm reload --restart {}", args.reload_restart.join(",")) });
     if args.dry_run {
         println!("--- dry run: nothing changed ---");
         return Ok(0);
@@ -161,11 +185,22 @@ pub async fn run(args: Args) -> anyhow::Result<i32> {
         place(&unit_dest, unit_text(&root)?.as_bytes(), 0o644)?;
         step("daemon-reload", std::process::Command::new("systemctl").args(["--user", "daemon-reload"]))?;
     }
-    if restart {
-        step("restart", std::process::Command::new("systemctl").args(["--user", "restart", "awm"]))?;
-    } else {
-        let report = native("reload").await?;
-        println!("-> reload: {}", serde_json::to_string(&report)?);
+    for apply in plan(restart, &args.reload_restart) {
+        match apply {
+            Apply::RestartUnit => step("restart", std::process::Command::new("systemctl").args(["--user", "restart", "awm"]))?,
+            Apply::WaitForGateway => {
+                println!("-> wait for the gateway");
+                let deadline = Instant::now() + Duration::from_secs(args.timeout);
+                while native("status").await.is_err() {
+                    anyhow::ensure!(Instant::now() < deadline, "the gateway did not answer within {}s", args.timeout);
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                }
+            }
+            Apply::Reload(names) => {
+                let report = native_with("reload", json!({"restart": names})).await?;
+                println!("-> reload: {}", serde_json::to_string(&report)?);
+            }
+        }
     }
 
     let deadline = Instant::now() + Duration::from_secs(args.timeout);
@@ -214,4 +249,18 @@ pub async fn run(args: Args) -> anyhow::Result<i32> {
     }
     println!("deployed: every enabled service is ready; binary, config and unit are in place");
     Ok(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_unit_restart_comes_before_the_named_plugin_restart() {
+        let names = vec!["channel".to_string()];
+        assert_eq!(plan(true, &names), vec![Apply::RestartUnit, Apply::WaitForGateway, Apply::Reload(names.clone())]);
+        assert_eq!(plan(true, &[]), vec![Apply::RestartUnit]);
+        assert_eq!(plan(false, &names), vec![Apply::Reload(names)]);
+        assert_eq!(plan(false, &[]), vec![Apply::Reload(vec![])]);
+    }
 }

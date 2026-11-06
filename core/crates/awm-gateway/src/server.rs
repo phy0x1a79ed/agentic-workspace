@@ -65,14 +65,14 @@ pub fn door_router(gw: Arc<Gateway>) -> Router {
 
 /// Bind, start the services, serve until SIGINT or SIGTERM, then stand everything down.
 pub async fn serve(gw: Arc<Gateway>) -> anyhow::Result<()> {
-    let listener = tokio::net::TcpListener::bind(&gw.cfg.listen).await?;
+    let listener = tokio::net::TcpListener::bind(&gw.cfg().listen).await?;
     let addr = listener.local_addr()?;
     let url = format!("http://{addr}");
     let _ = gw.url.set(url.clone());
     let token = uuid::Uuid::new_v4().simple().to_string();
     write_private(&gw.state.join("edge.token"), &token)?;
     let mut door_url = Value::Null;
-    if let Some(addr) = &gw.cfg.isolated_listen {
+    if let Some(addr) = &gw.cfg().isolated_listen {
         let door = tokio::net::TcpListener::bind(addr).await?;
         door_url = json!(format!("http://{}", door.local_addr()?));
         tracing::info!("isolated door on {door_url}");
@@ -290,7 +290,7 @@ async fn register(State(gw): Gw, h: HeaderMap, Json(req): Json<RegisterReq>) -> 
         return Err(ApiError::new(409, format!("service {:?} already has a live instance connected", req.name)));
     };
     tracing::info!("registered service {} (plugin {plugin}) pid {:?}", req.name, req.pid);
-    let workspace = gw.cfg.workspace.as_ref().map(|p| p.display().to_string()).unwrap_or_default();
+    let workspace = gw.cfg().workspace.as_ref().map(|p| p.display().to_string()).unwrap_or_default();
     Ok(Json(json!({
         "service_id": id,
         "name": req.name,
@@ -415,13 +415,14 @@ struct TableChanged {
     node: String,
 }
 
-/// A peer says its table changed: read it again, then reload, since a need may now resolve.
+/// A peer says its table changed: read it again and re-resolve `needs`. A full reload would
+/// change plugins on this node's own disk, and a peer's notice must not.
 async fn table_changed(State(gw): Gw, h: HeaderMap, Json(body): Json<TableChanged>) -> Result<Json<Value>, ApiError> {
     refuse_token(&h)?;
     if !gw.refresh_peer(&body.node).await {
         return Err(ApiError::new(404, format!("{:?} is not a peer of this node", body.node)));
     }
-    gw.reload().await.map(Json)
+    gw.reload_needs().await.map(Json)
 }
 
 /// The owner of a tool name, looked up now.
@@ -442,9 +443,10 @@ async fn plugins(State(gw): Gw) -> Json<Value> {
     Json(gw.load_snapshot())
 }
 
-async fn reload(State(gw): Gw, h: HeaderMap) -> Result<Json<Value>, ApiError> {
+async fn reload(State(gw): Gw, h: HeaderMap, body: Option<Json<Value>>) -> Result<Json<Value>, ApiError> {
     refuse_token(&h)?;
-    gw.reload().await.map(Json)
+    let request = crate::gateway::ReloadRequest::from_args(&body.map(|b| b.0).unwrap_or(Value::Null));
+    gw.reload(&request).await.map(Json)
 }
 
 #[derive(Deserialize)]

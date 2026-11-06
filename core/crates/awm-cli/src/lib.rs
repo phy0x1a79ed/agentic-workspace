@@ -44,8 +44,22 @@ pub enum Command {
         #[arg(long, env = "AWM_DIR")]
         state: PathBuf,
     },
-    /// Load the plugins again and apply the change, with no gateway restart (R144).
-    Reload,
+    /// Load the plugins again with no gateway restart (R144). Starts added plugins and stops
+    /// removed or disabled ones. Restarts only the plugins `--restart` names.
+    Reload {
+        /// Plugins to restart as well, comma separated.
+        #[arg(long, value_delimiter = ',')]
+        restart: Vec<String>,
+        /// Bypass the crash breaker for the restarted plugins.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Restart one plugin through the reload path. `--force` bypasses the crash breaker.
+    Restart {
+        plugin: String,
+        #[arg(long)]
+        force: bool,
+    },
     /// Install or update plugins from folders or git:<url>@<commit>, as one change.
     Install {
         sources: Vec<String>,
@@ -144,7 +158,8 @@ pub async fn run(cli: Cli) -> anyhow::Result<i32> {
         Command::Status => get_and_print("/status").await,
         Command::Plugins => get_and_print("/hub/plugins").await,
         Command::Wants { plugin, state } => Ok(i32::from(!awm_gateway::config::Config::load(&state)?.wants(&plugin))),
-        Command::Reload => post_and_print("/hub/reload", json!({})).await,
+        Command::Reload { restart, force } => post_and_print("/hub/reload", json!({"restart": restart, "force": force})).await,
+        Command::Restart { plugin, force } => post_and_print("/hub/reload", json!({"restart": [plugin], "force": force})).await,
         Command::Install { sources, approval } => {
             let sources: Vec<String> = sources
                 .into_iter()

@@ -102,7 +102,7 @@ The owning repo provides the rest of the contract. A Python plugin ships an `ins
 
 ### Installed plugins
 
-`awm install <source>…` installs or updates plugins as one change. A source is a folder or `git:<url>@<40-hex commit>`. A git source needs a passkey grant: an `operations approval_request` of kind `plugin_commits`, which the gateway checks against `AWM_APPROVER_GRANT_PUBKEY`. The plugins land in `<AWM_DIR>/installed/<name>`, pinned in `installed.toml`. When the reload refuses any of them, the whole change rolls back. `awm reload` applies a changed tree with no gateway restart.
+`awm install <source>…` installs or updates plugins as one change. A source is a folder or `git:<url>@<40-hex commit>`. A git source needs a passkey grant: an `operations approval_request` of kind `plugin_commits`, which the gateway checks against `AWM_APPROVER_GRANT_PUBKEY`. The plugins land in `<AWM_DIR>/installed/<name>`, pinned in `installed.toml`. When the reload refuses any of them, the whole change rolls back. `awm reload` applies a changed tree with no gateway restart and restarts only the plugins the caller names, and `install` names the plugins it replaced. `awm deploy --reload-restart <names>` hands its names to `awm reload --restart`. When the unit restarts too, the names restart after the new gateway answers.
 
 ### The service contract
 
@@ -299,7 +299,7 @@ Read `FEDERATION.md` before you touch anything cross-node. The loopback gateway 
 - This is not the retired federations: neither the v0 one (cr-sqlite replication, leader election, a `peers` registry) nor the peer book with node tokens and a private CA. The git history of their deletion is not a guide to the current system.
 - The gateway trusts `X-Awm-Caller` from `awm edge-serve` only beside the edge token in `<AWM_DIR>/edge.token`, which it rewrites at each start. It trusts `X-Awm-As` because `httpsfront` strips every inbound caller header (`X-Awm-As`, `X-Awm-Caller-Pid`, `X-Awm-Session-Pid`) and stamps its own. A new edge mount must do the same.
 - A cross-node call from a service passes `peer=<node>` to `awm.gatewayclient`. A hand-rolled local POST skips that branch, and the call silently runs on the wrong node.
-- A reload sends `_table_changed` across each edge, so the other nodes refetch this node's table. They cache it in `<AWM_DIR>/peer-tools.json`.
+- A reload that adds, removes or restarts a plugin sends `_table_changed` across each edge, so the other nodes refetch this node's table. They cache it in `<AWM_DIR>/peer-tools.json`. A peer that gets the notice re-resolves `needs` only: it starts the plugins whose `needs` now resolve and stops those whose `needs` no longer do. It never runs a full reload and never forwards the notice.
 
 ## File map
 
