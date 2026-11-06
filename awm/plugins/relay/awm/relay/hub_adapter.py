@@ -13,7 +13,10 @@ claim of its own and is refused: it holds rooms through its node's ``channel``.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import os
+import urllib.request
 from pathlib import Path
 from typing import Any
 
@@ -155,7 +158,33 @@ async def issue(args: dict, as_: str | None = None) -> dict:
     return await _relay().issue(node, {k: str(args[k]) for k in RESTORE_KEYS})
 
 
-CHILD: daemon.Child | daemon.Adopted | None = None
+def probe_relay(timeout: float = daemon.PROBE_TIMEOUT_S) -> tuple[str, dict[str, Any]]:
+    """The relay's ``probe``: ``/health`` says whether it runs, ``/status`` what it holds.
+
+    ``/status`` needs the issue bearer. Without it, or when it fails, the relay
+    is reported ``busy``, so a replacement waits rather than risk the backlog.
+    The report counts every held slot, poll and room as a live session.
+    """
+    base = f"http://127.0.0.1:{os.environ.get('AWM_TETHER_PORT') or 12520}"
+    try:
+        with urllib.request.urlopen(f"{base}/health", timeout=timeout) as resp:
+            resp.read()
+    except OSError:
+        return "absent", {}
+    bearer = os.environ.get("AWM_TETHER_ISSUE_TOKEN", "")
+    if not bearer:
+        return "busy", {}
+    req = urllib.request.Request(f"{base}/status", headers={"Authorization": f"Bearer {bearer}"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            body = json.loads(resp.read())
+    except (OSError, ValueError):
+        return "busy", {}
+    held = sum(int(body.get(k) or 0) for k in ("sessions", "polled", "rooms"))
+    return "answering", {"sessions": [{"phase": "open"}] * held}
+
+
+CHILD: daemon.Adopted | None = None
 
 
 async def tether(args: dict, as_: str | None = None) -> dict:
@@ -179,7 +208,7 @@ def build(state_dir: Path = STATE_DIR, **kw: Any) -> Relay:
 async def supervise_forever() -> None:
     """Start the tether relay binary, and keep starting it. Never returns."""
     global CHILD
-    CHILD = daemon.for_role()
+    CHILD = daemon.for_role(probe_relay)
     while True:
         try:
             await asyncio.to_thread(CHILD.reconcile)

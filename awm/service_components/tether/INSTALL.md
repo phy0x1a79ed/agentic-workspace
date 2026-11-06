@@ -57,7 +57,7 @@ A failed fetch is not fatal. The binaries in place keep running, and `channel st
 
 ## The operator daemon
 
-The relay dies with its plugin. The operator daemon does not: it runs in a transient user unit, `awm-tether-operator-<hash>`, outside the gateway's cgroup, so a deploy keeps every live session. The next plugin process attaches to it. The plugin replaces it only for a new release with no session live. A reboot ends it.
+Neither binary dies with its plugin. Each runs in a transient user unit outside the gateway's cgroup: `awm-tether-operator-<hash>` for the operator daemon, `awm-tether-relay-<hash>` for the relay. A deploy keeps every live session, and the relay keeps its rooms' backlog, which lives in its memory only (a restart empties every room and numbers the next message above the old ones). The next plugin process attaches to the running binary: the operator answers on its control socket, the relay on `/health`. The plugin replaces a binary only for a new release with no session or room live. For the relay it counts them from `/status`, which needs `AWM_TETHER_ISSUE_TOKEN`. Without the token the relay is never replaced. A reboot ends both. On a host with no user manager the status shows a null `unit`, and a restart of the plugin's own systemd unit still ends the binary.
 
 **CAUTION** The unit name and the control socket derive from the state path, `<AWM_DIR>/services/tether`. Moving it orphans the running daemon and its sessions.
 
