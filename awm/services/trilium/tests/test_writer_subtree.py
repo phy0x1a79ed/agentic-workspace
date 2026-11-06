@@ -19,6 +19,7 @@ pytestmark = [pytest.mark.unit]
 
 WRITER = "peer:alcor"
 BOARD = "awmSwarmBoard"
+TASKS = "awmSwarmTasks"
 
 
 @pytest.fixture
@@ -104,4 +105,28 @@ def test_another_caller_is_still_refused(vault, as_):
 
 def test_the_writer_gets_no_other_verb(vault):
     with pytest.raises(PermissionError, match="operator verb"):
-        call("note_move", note_id="outsideNote", parent="root")
+        call("note_place", note_id="outsideNote", parents=[BOARD])
+
+
+def test_the_writer_moves_a_card_between_its_folders(vault):
+    call("note_create", parent="root", note_id=TASKS, title="tasks")
+    call("note_create", parent=TASKS, note_id="colA", title="A")
+    call("note_create", parent=TASKS, note_id="colB", title="B")
+    call("note_create", parent="colA", note_id="swc1", title="card")
+    call("note_move", note_id="swc1", parent="colB")
+    assert vault.notes["swc1"]["parents"] == ["colB"]
+
+
+@pytest.mark.parametrize("args", [
+    {"note_id": "outsideNote", "parent": TASKS},
+    {"note_id": "swc1", "parent": "outsideNote"},
+    {"note_id": "swc1", "parent": "root"},
+    {"note_id": TASKS, "parent": "colA"},
+])
+def test_a_move_out_of_the_roots_or_of_a_root_is_refused(vault, args):
+    call("note_create", parent="root", note_id=TASKS, title="tasks")
+    call("note_create", parent=TASKS, note_id="colA", title="A")
+    call("note_create", parent="colA", note_id="swc1", title="card")
+    with pytest.raises(PermissionError):
+        call("note_move", **args)
+    assert vault.notes["swc1"]["parents"] == ["colA"]

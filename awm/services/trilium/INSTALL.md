@@ -145,7 +145,9 @@ edge runs no profile and never consults it.
 reaches the vault through deneb's singleton door, stamped `peer:<AWM_OPERATIONS_HOME>`
 (default `alcor`). `_note_caller` admits it for the note and attribute verbs only,
 and `_writer_inside` then refuses any note outside the roots this host's
-`AWM_TRILIUM_WRITER_ROOTS` names (default `awmSwarmBoard`, the board root). The
+`AWM_TRILIUM_WRITER_ROOTS` names (default `awmSwarmTasks,awmSwarmOps,awmSwarmBoard`:
+tasks, Ops and the board page). The writer moves a card between column folders with
+`note_move`, which needs both ends inside the roots and never moves a root. The
 caller's word never sets the subtree. Search without an ancestor answers only
 notes inside it. `tests/test_writer_subtree.py` pins the refusals.
 

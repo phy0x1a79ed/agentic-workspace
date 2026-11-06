@@ -57,6 +57,10 @@ class TriliumTool:
         self._call("note_update", note_id=note_id, title=title, content=content, mime=mime,
                    labels=labels or None)
 
+    def move(self, note_id: str, parent: str) -> None:
+        """Put the note under this parent and nowhere else."""
+        self._call("note_move", note_id=note_id, parent=parent)
+
     def label_delete(self, note_id: str, name: str) -> None:
         self._call("attr_delete", note_id=note_id, name=name)
 

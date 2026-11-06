@@ -572,10 +572,10 @@ def _operator_only(as_: str | None, verb: str) -> None:
 #: from across its door (fleet.md R87 item 3, queue.md R66).
 WRITER_VERBS = frozenset({
     "note_get", "note_children", "note_search", "note_create", "note_update",
-    "note_upsert", "note_delete", "attrs_get", "attr_set", "attr_delete"})
+    "note_upsert", "note_delete", "note_move", "attrs_get", "attr_set", "attr_delete"})
 WRITER_ROOTS_ENV = "AWM_TRILIUM_WRITER_ROOTS"
-#: The Swarm board's root note, which operations' `board.ROOT_ID` names.
-DEFAULT_WRITER_ROOTS = "awmSwarmBoard"
+#: The writer's three subtrees: tasks, Ops and the board page, as operations' `board` names them.
+DEFAULT_WRITER_ROOTS = "awmSwarmTasks,awmSwarmOps,awmSwarmBoard"
 #: How many notes one ancestry walk reads before it gives up and refuses.
 _WALK_MAX = 256
 
@@ -1049,8 +1049,12 @@ async def _h_note_delete(args: dict, as_: str | None = None) -> dict:
 
 
 async def _h_note_move(args: dict, as_: str | None = None) -> dict:
-    _operator_only(as_, "note_move")
+    writer = _note_caller(as_, "note_move")
     note_id, parent = _note_id(args), _note_id(args, "parent")
+    if writer:
+        if note_id in _writer_roots():
+            raise PermissionError(f"note_move on {note_id} refused: a writer root stays put")
+        await _writer_inside("note_move", note_id, parent)
     await _agent_gate(args, "note_move", note_id, parent)
     return await asyncio.to_thread(etapi.client().move_note, note_id, parent)
 
