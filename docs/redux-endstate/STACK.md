@@ -8,7 +8,7 @@ end-state/deneb-link
 
 ## Waiting on Tony
 
-- Undeployed, waiting on the deploy rework (deploy-routine/refresh with Tony): awm feat/redux-fixes 50040b96 (prompt prefix + retire suffix); awm feat/social-attachments dbfdb91d + 3084632b (gateway 64 MiB body limit, needed for sends over ~2 MB; journal 179873df). Nodes not on afedffa0: altair, shogun, lyra.
+- Tony: "hold the refresshes" (2026-11-06). No deploys or node refreshes until he lifts it. Undeployed, waiting on the deploy rework (deploy-routine/refresh with Tony): awm feat/redux-fixes 50040b96 (prompt prefix + retire suffix); awm feat/social-attachments dbfdb91d + 3084632b (gateway 64 MiB body limit, needed for sends over ~2 MB; journal 179873df). Nodes not on afedffa0: altair, shogun, lyra.
 
 - science-idle: the idle timeout for claude-science. Recommended: start on demand, stop after 30 min idle.
 
