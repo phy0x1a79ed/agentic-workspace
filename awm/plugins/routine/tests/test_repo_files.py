@@ -20,7 +20,7 @@ REPO = Path(__file__).resolve().parents[4]
 
 def test_awm_deploy_toml_parses():
     cfg = deployconf.parse((REPO / "deploy.toml").read_text())
-    assert cfg.check_timeout == 60 and "--smoke" in cfg.check
+    assert cfg.check_timeout == 600 and "--smoke" in cfg.check
     assert cfg.refresh.kind == "queue"
     assert cfg.refresh.sync == "scripts/refresh-checkout.sh"
     assert (REPO / cfg.refresh.sync).is_file()
