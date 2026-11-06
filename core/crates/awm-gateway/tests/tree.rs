@@ -49,3 +49,30 @@ fn a_singleton_behind_a_door_strands_no_plugin() {
     assert!(refused.is_empty(), "refused:\n{}", refused.join("\n"));
     assert!(got.plugins.iter().any(|p| p.name == "operations"), "operations loads");
 }
+
+/// deneb runs no agent session and opens no outbound ssh (fleet.md R79): no door, no edge, no
+/// peer. Its plugins load on their own, so a need on alcor's singletons or on an agent tool
+/// is a contract that may have no provider. Keep the list in step with cloud's
+/// homelab/inventory/host_vars/deneb.yml `awm_plugins`.
+#[test]
+fn denebs_plugins_load_with_no_door_and_no_peer() {
+    const DENEB: [&str; 7] = ["auth", "board", "channel", "fileviewer", "httpsfront", "trilium", "zotero"];
+    let awm = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../awm");
+    let roots = awm_gateway::config::tree_roots(&awm);
+    let reserved: Vec<String> = awm_gateway::config::DEFAULT_RESERVED.iter().map(|s| s.to_string()).collect();
+    let got = load(&LoadInput {
+        wants: &|p| DENEB.contains(&p),
+        core_roots: &roots,
+        plugin_roots: &[],
+        profiles: &[],
+        reserved: &reserved,
+        enabled: &HashMap::new(),
+        peer_tools: &BTreeMap::new(),
+        doors: &[],
+    });
+    let refused: Vec<String> = got.refused.iter().map(|r| format!("{}: {}", r.plugin, r.reason)).collect();
+    assert!(refused.is_empty(), "refused:\n{}", refused.join("\n"));
+    let mut loaded: Vec<&str> = got.plugins.iter().map(|p| p.name.as_str()).collect();
+    loaded.sort();
+    assert_eq!(loaded, DENEB);
+}
