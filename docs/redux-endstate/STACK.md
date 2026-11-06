@@ -23,14 +23,15 @@ Procedure, from dfs-interview § Work the stack:
 
 ## Current topic
 
-**fir-ssh**. Its result: `fir-ssh/README.md`.
+**search-mcp**, under **end-state**. Its result: `end-state/search-mcp/README.md`.
 
 ## Stack
 
-- **fir-ssh** (2026-11-06): A pressing event is that Slack seats on Altair cannot SSH into FIR. That's FIR.
-  - [ ] When fir returns: watch it and reconnect the altair master, and have slack-main tell the lab? Or leave seats to reconnect on demand?
 - **end-state** (2026-11-06): there are a few sessions that look left over. Please use the DFS interview skill so that we can review the end state and if there are anything left open for us to clean up and do.
+  - **search-mcp** (2026-11-06): one thing we should review is that all nodes are using the new search service and MCP.
 
 ## Parked
 
 ## Closed
+
+- **fir-ssh** (closed 2026-11-06): `fir-ssh/README.md`
