@@ -28,6 +28,7 @@ Procedure, from dfs-interview § Work the stack:
 ## Stack
 
 - **group-dms** (2026-11-06): Open from the plan: a group DM with two lab members routes each sender to their own person seat, so two agents may answer in one chat.
+  - [ ] Treat a group DM like a channel without a channel seat: only a message that @mentions Opal goes to the sender's person seat, and that agent answers only its sender's request? Recommend yes.
 
 ## Parked
 
