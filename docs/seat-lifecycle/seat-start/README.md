@@ -10,3 +10,17 @@
 - The daemon hands over a pre-started warm spare instead of booting a new process. Its log shows `bg claimed-spare <job>` for every seat started today (e831ba99, 72d5a63f, 9e22f611, a1406294).
 - Patrik's agent (a1406294): spare claimed 21:27:37.151Z, brief delivered 21:27:38.058Z, first tool call 21:27:44.108Z. That is about 7 s from start to work.
 - The new-seat routine calls the same `start_other`, so it uses the same warm spares. Its extra cost is the event hop from social and one script run, a few seconds.
+
+## Where the 7 seconds go (Patrik's agent a1406294)
+
+| Step | Time (Z) | Gap |
+|---|---|---|
+| spare claimed | 21:27:37.151 | |
+| brief delivered | 21:27:38.058 | 0.9 s |
+| first model request sent | 21:27:40.734 | 2.7 s (session start: MCP tools, hooks, attachments) |
+| first model output | 21:27:43.439 | 2.7 s (model latency on a cold 23k-token prompt) |
+| first tool call | 21:27:44.108 | 0.7 s |
+
+The model's own latency sets a floor of a few seconds. Getting the agent's first action near 1 s is not realistic. An immediate reply from social is.
+
+Tony: "why 7 seconds? can we get that closer to 1? not important, but worth the try. -> or even a system message like "performing first time set up""

@@ -28,9 +28,7 @@ Procedure, from dfs-interview § Work the stack:
 ## Stack
 
 - **seat-start** (2026-11-06): how to seat starts work? do they go through the reflection, cch, etc and use the warm seats? so they start fast?
-- **seat-model** (2026-11-06): Open from the plan: which model and effort a seat agent runs at (today opus, high).
-- **channel-seats** (2026-11-06): Open from the plan: which channels are channel seats (Hallam Hive #general, Discord #bots; Slack #arbutus and #bioinformatics?).
-- **seat-nodes** (2026-11-06): Open from the plan: Slack seats run on altair and Discord seats on mizar (R129); where the new-seat routine runs for each.
+  - [ ] Social posts an immediate system reply when a message starts an agent ('Opal is getting set up, one moment'), only when the agent has not mounted within 5 s? Recommend yes. Trim the 2.7 s session start as a later try.
 
 ## Parked
 
@@ -46,3 +44,6 @@ Procedure, from dfs-interview § Work the stack:
 - **edge-cases** (closed 2026-11-06): `edge-cases/README.md`
 - **seat-brief** (closed 2026-11-06): `seat-brief/README.md`
 - **unpause** (closed 2026-11-06): `unpause/README.md`
+- **seat-model** (closed 2026-11-06): `seat-model/README.md`
+- **channel-seats** (closed 2026-11-06): `channel-seats/README.md`
+- **seat-nodes** (closed 2026-11-06): `seat-nodes/README.md`
