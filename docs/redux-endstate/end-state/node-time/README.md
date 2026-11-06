@@ -21,3 +21,11 @@ On tzdata 2026e, America/Vancouver is UTC−7 all year, so it shows 10 a.m.
 Timers that a zone change moves:
 - altair: `arbutus-tfstate-offsite.timer` and `kb-papers-nightly.timer` name no zone and follow the system zone. Three more timers name America/Los_Angeles and do not move.
 - deneb: `awm-trilium-copy.timer` (03:10, no zone) moves from 19:10 UTC to 10:10 UTC.
+
+## Tony's answer (2026-11-06)
+
+> 2 yes -> this includes altair and basically every machine on arbutus (time zone correction)
+
+## Design
+
+The cloud project's Ansible baseline sets America/Vancouver and installs current tzdata on every node it manages. That covers the awm nodes and the Arbutus machines (altair, shogun, showtime and the workers).
