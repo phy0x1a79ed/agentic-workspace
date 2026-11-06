@@ -23,6 +23,7 @@ class FakeOutbound:
         self.cards: dict[int, str] = {}
         self.card_posts: list[tuple[str, str]] = []
         self.sessions: dict[str, str] = {}
+        self.messages: list[tuple[str, str]] = []
 
     async def start_session(self, **kw: Any) -> dict[str, Any]:
         if self.fail_start:
@@ -30,8 +31,12 @@ class FakeOutbound:
         self.starts.append(kw)
         return {"job": f"job{len(self.starts)}"}
 
-    async def find_session(self, name: str) -> str:
-        return self.sessions.get(name, "")
+    async def find_session(self, prefix: str) -> tuple[str, str]:
+        return next(((job, name) for name, job in self.sessions.items()
+                     if name.startswith(prefix)), ("", ""))
+
+    async def message_session(self, job: str, text: str) -> None:
+        self.messages.append((job, text))
 
     async def notify_operator(self, text: str) -> None:
         if self.fail_dm:

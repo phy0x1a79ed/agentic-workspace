@@ -255,7 +255,18 @@ async def test_queue_refresh_reuses_the_session_it_already_started(out, tmp_path
     ref = Refresher(out, node="alcor", checkout_root=lambda p: tmp_path)
     r = await ref.local("awm", "a" * 40, "b" * 40)
     assert r.ok and r.hooks == [{"hook": "queue", "job": "job9"}]
+    assert out.starts == [] and out.messages == []
+
+
+async def test_queue_refresh_retargets_a_supervisor_of_an_earlier_release(out, tmp_path):
+    (tmp_path / "deploy.toml").write_text('[refresh]\nkind = "queue"\nprompt = "Restart awm."\n')
+    out.sessions["refresh-awm-aaaaaaaa"] = "job7"
+    ref = Refresher(out, node="mizar", checkout_root=lambda p: tmp_path)
+    r = await ref.local("awm", "a" * 40, "b" * 40)
+    assert r.ok and r.hooks == [{"hook": "queue", "job": "job7"}]
     assert out.starts == []
+    [(job, text)] = out.messages
+    assert job == "job7" and "b" * 12 in text and str(tmp_path) in text
 
 
 class FlakyPeer(FakeOutbound):

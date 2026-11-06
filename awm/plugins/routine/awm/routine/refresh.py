@@ -166,20 +166,33 @@ class Refresher:
 
         It works in the project's `deploy-refresh` scope, or in the lobby on a
         node that holds no bare repo of the project, such as one that runs awm
-        from its workspace root."""
+        from its workspace root. A supervisor still live from an earlier
+        release holds that scope, so it is told the new release instead: the
+        sync already moved the checkout it restarts from."""
         prompt = (f"{cfg.prompt}\n\nThe deploy of `{project}` moved release from "
                   f"{frm[:12] or '(none)'} to {to[:12]} on node {self.node}. Its live "
                   f"checkout here is `{root}`: run the refresh from there. Refresh it "
                   f"here and confirm the services run the new commit.")
         name = f"refresh-{project}-{to[:8]}"
         try:
-            running = await self.out.find_session(name)
+            job, held = await self.out.find_session(f"refresh-{project}-")
         except Exception as e:  # noqa: BLE001
             log.warning("queue: cannot list this node's sessions: %s", e)
-            running = ""
-        if running:
-            return NodeResult(self.node, True, f"supervising session {running}, already started",
-                              [{"hook": "queue", "job": running}])
+            job, held = "", ""
+        if job and held == name:
+            return NodeResult(self.node, True, f"supervising session {job}, already started",
+                              [{"hook": "queue", "job": job}])
+        if job:
+            try:
+                await self.out.message_session(job, (
+                    f"Release of `{project}` moved again, to {to[:12]}, and `{root}` already "
+                    f"holds it. Restart onto what the checkout holds and confirm the "
+                    f"services run {to[:12]}."))
+            except Exception as e:  # noqa: BLE001
+                return NodeResult(self.node, False, f"queue: supervising session {held} ({job}) "
+                                                    f"is live and did not take the message: {e}")
+            return NodeResult(self.node, True, f"supervising session {job} ({held}), told {to[:12]}",
+                              [{"hook": "queue", "job": job}])
         has_scopes = self.holds_project(project)
         if not has_scopes:
             prompt += (f"\n\nThis node holds no `{project}` project to make a scope in, "
