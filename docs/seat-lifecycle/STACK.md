@@ -23,9 +23,14 @@ Procedure, from dfs-interview § Work the stack:
 
 ## Current topic
 
-(none: the stack is empty)
+**seat-start**. Its result: `seat-start/README.md`.
 
 ## Stack
+
+- **seat-start** (2026-11-06): how to seat starts work? do they go through the reflection, cch, etc and use the warm seats? so they start fast?
+- **seat-model** (2026-11-06): Open from the plan: which model and effort a seat agent runs at (today opus, high).
+- **channel-seats** (2026-11-06): Open from the plan: which channels are channel seats (Hallam Hive #general, Discord #bots; Slack #arbutus and #bioinformatics?).
+- **seat-nodes** (2026-11-06): Open from the plan: Slack seats run on altair and Discord seats on mizar (R129); where the new-seat routine runs for each.
 
 ## Parked
 
