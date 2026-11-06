@@ -25,7 +25,6 @@ end-state/deneb-link
   - **node-access**: Tony: "we need to not conflate teh ssh with the services door. even if there is edges access, we still set up service doors. mizar also needs root access to deneb, along with typical user access, following the arbutus paradigm -> we need this dev/use split for our personal nodes as well". Trigger: mizar's edge to deneb fails since ~06:05Z (`ssh deneb awm edge-serve` lands as tony; deneb's awm runs as user awm). Survey running. Dev path: certs (R100), Tony: "we can do certs, but we need some backup alternative as well".
   - **seats-pause**: "retired seats came back and steven chen contacted the client without first being asked, on a stale request." Five revived seats stopped ~19:10Z; pause in place (pins cleared, job records removed, PAUSED banner on altair's opal-seat-holder skill); seats/pause (e11ce259 on altair) keeps them paused, finds the cause and discusses seats with Tony (takes seat-lifecycle). Cause: Tony's own message, misread by slack-main; he meant "stop all per client seats, then swtich the reciever back to slack main. slack main then restarts and hands back the seats only once AFTER it gets a new DM message from that client". Also: to slack-main at 18:37Z asked it to restart the seats; Steven had replied at 18:32Z but the push never reached his old seat; the restart brief says "Answer anything unanswered".
   - **cloud-dev-split**: cloud's dev lives on altair (origin) and in mizar's redux-dev-apply worktree. They diverged (mizar f4ec5f4, altair b2598dc); reconciled to c17e328 on both, 2026-11-06. Pick one home for dev.
-  - **telegram-token**: Tony: "ok, delete the telegram token". Worker telegram/removal (edd4e880) removes the token and the Telegram code from the stock stack.
   - **skill-sync**: "we need a way to sync skills across the fleet..."
   - **agent-lifecycle**: "retire doesn seem to always work ... session full stop and closed (not visible anywhere), but transcripts kept (I guess transcripts should also be a plugin that runs on any node with agents)." Then: "when you start an agent, does it get a brief and standard brief (something that tells them to debreif,r report back and retire when done? and maybe also to setup a todo list?) agents seem like they just finish and sit there".
   - **agent-core**: "if a node can run agents, reflection + search should be mandatory". deneb has neither.
@@ -41,12 +40,13 @@ end-state/deneb-link
 ## Workers
 
 - trilium-design/interview (c6adc424, talks with Tony directly): status-pages, new-agent-button, note-agent-button, seat-rc-toggle.
-- telegram/removal (edd4e880): stock project.
 - seats/pause (e11ce259, altair, talks with Tony directly).
 - deploy-routine/refresh (02c80ee1, Opus): now Tony's top-level agent for reworking the deploy routine (talks with him directly): deterministic refresh, cascade guard, stock's refresh config. First step: move off the awm/deploy-refresh scope, whose claim broke awm refreshes.
 - install-loop (9fc4afc8 mizar), metasmith-install-loop (80f06e0c altair): hold until Sat 2026-11-07 15:05 PT.
 
 ## Closed
+
+- telegram-token (edd4e880, stock cffd561 + 7ba534c, ticket 247d53144cf9): Telegram code and grant removed, exit_validate posts to Discord; token gone from alcor's secrets.env and ps. Left: alcor's /home/rt/rt/stock/live is not a release checkout, so the inert old code stays until the rt pin runs; Tony may revoke the bot in BotFather.
 
 - deploy-routine: journal 5662544f (overrides R32). Open: register the R30 test suite and R35 metasmith release routines.
 
