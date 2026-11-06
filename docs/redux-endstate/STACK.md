@@ -53,7 +53,7 @@ Procedure, from dfs-interview § Work the stack:
 - **daae3825** (2026-11-06): took node-time
 - **9fc4afc8** (2026-11-06): took install-loop
 - **80f06e0c** (2026-11-06): took install-loop
-- [ ] tell daae3825 how shogun-singletons was solved
+- [x] tell daae3825 how shogun-singletons was solved (told 2026-11-06)
 
 ## Closed
 
