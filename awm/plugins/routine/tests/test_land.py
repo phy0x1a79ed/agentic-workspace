@@ -155,3 +155,22 @@ def test_a_node_without_its_own_command_refreshes_over_ssh(ws, tmp_path):
     assert cmd.startswith("ssh -o BatchMode=yes altair ")
     assert ("cd agentic_workspace && AWM_REFRESH_TO=" + "b" * 40
             + " scripts/refresh-checkout.sh && bash scripts/node-refresh.sh " + "b" * 40) in cmd
+
+
+def test_a_fix_after_promote_lands_as_a_new_release(ws, tmp_path):
+    log = with_refresh(ws, tmp_path)
+    flag = tmp_path / "alcor-ok"
+    fleet = ('[fleet]\nhome = "mizar"\nnodes = ["mizar", "alcor"]\n'
+             '[fleet.push.alcor]\nurl = "{u}"\nprojects = ["proj"]\nrefresh = "test -e {f}"\n')
+    git(tmp_path, "init", "-q", "--bare", str(tmp_path / "peer-proj.git"))
+    ln = land(ws, tmp_path, fleet.format(u=tmp_path / "peer-{project}.git", f=flag))
+    a = submit(ln, ws.scope("a", {"a.txt": "a\n"}, base="release"))
+    assert ln.run_batch(a["ticket"]) == 1
+    first = ws.rev("release")
+    (ln.tree / "fix.txt").write_text("fix\n")
+    git(ln.tree, "add", "fix.txt")
+    git(ln.tree, "commit", "-q", "-m", "fix")
+    flag.touch()
+    assert ln.run_batch(a["ticket"]) == 0
+    assert ws.rev("release") != first and ws.show("release", "fix.txt") == "fix"
+    assert log.read_text().split()[::2] == [first, ws.rev("release")]

@@ -269,6 +269,11 @@ class Land:
 
     def _steps(self, b: dict[str, Any]) -> None:
         cfg = self._merge(b)
+        if b.get("head") and rev(self.tree, "HEAD") != b["head"]:
+            # The merger fixed the code after promote: a new release, rolled out anew.
+            say(f"the batch moved past release {b['head'][:12]}: check, promote and roll "
+                f"out again")
+            b["steps"], b["nodes"] = {}, []
         if not b["steps"].get("pins"):
             self._pins(b, cfg)
         if not b["steps"].get("check"):
@@ -329,8 +334,9 @@ class Land:
         step("promote")
         head = rev(self.tree, "HEAD")
         rel, dev = rev(self.bare, f"refs/heads/{RELEASE}"), rev(self.bare, f"refs/heads/{DEV}")
-        if rel != b["base"]:
-            raise Stop(f"promote: release moved from {b['base'][:12]} to {rel[:12]} under the "
+        expected = b.get("head") or b["base"]
+        if rel != expected:
+            raise Stop(f"promote: release moved from {expected[:12]} to {rel[:12]} under the "
                        f"batch. Merge release into {self.tree}, then run batch again")
         if dev and not is_ancestor(self.bare, dev, head):
             raise Stop(f"promote: dev at {dev[:12]} holds commits release does not. Land them "
