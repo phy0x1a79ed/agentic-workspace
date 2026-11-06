@@ -227,3 +227,29 @@ def test_messages_plan_and_todos_reach_the_card(tmp_path):
     store.task_message(t, "second", author="tony")
     w.sync_once()
     assert "second" in api.notes[board.messages_note_id(t)]["content"]
+
+
+class _DoorTool:
+    """The trilium tool as alcor's gateway client raises it: a missing note is a 502."""
+
+    def __init__(self, exc):
+        self.exc = exc
+
+    def call_sync(self, verb, args):
+        raise self.exc
+
+
+def test_a_missing_note_through_the_door_reads_as_none():
+    from awm.operations.relay import Unreachable
+    body = ('502 {"detail":"{\\"error\\":\\"GET /etapi/notes/awmSwarmBoard -> 404: '
+            '{\\\\\\"code\\\\\\":\\\\\\"NOTE_NOT_FOUND\\\\\\"}\\"}"}')
+    api = TriliumTool(tool=_DoorTool(Unreachable(body)))
+    assert api.note("awmSwarmBoard") is None
+    api.delete_note("awmSwarmBoard")
+
+
+def test_an_unreachable_vault_still_raises():
+    from awm.operations.relay import Unreachable
+    api = TriliumTool(tool=_DoorTool(Unreachable("502 the link dropped")))
+    with pytest.raises(Unreachable):
+        api.note("awmSwarmBoard")
