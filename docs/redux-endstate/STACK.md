@@ -31,11 +31,13 @@ Procedure, from dfs-interview § Work the stack:
 
 ## Stack
 
+- **zerotier-to-tailnet** (2026-11-06): cloud science on altair (and possibly other nodes) still point to old zerotier IP, so we have sign in to "10.74.81.84" for entering claude science and it just breaks. Need to move services to new tailscale system.
 - **ops-board** (2026-11-06): https://nexus.tony-xy-liu.com/trilium/#root/iF0A3SWEGqUx/P4ALwPiCSs6N?ntxId=CZkmWI ops board needs updating
   - [x] Old AWM book: delete the old Ops password notes, carry Links into the new Ops, archive the old Swarm board? (answered 2026-11-06)
   - [x] Federation board: archive all 8 pre-redux cards, then check the door and intake end to end? (answered 2026-11-06)
   - [ ] Place the new Swarm board under the AWM book, next to the federation board?
 - **end-state** (2026-11-06): there are a few sessions that look left over. Please use the DFS interview skill so that we can review the end state and if there are anything left open for us to clean up and do.
+  - **science-idle** (2026-11-06): also, do we have an idle timeout to stop claude science from just being always on?
   - **session-cleanup** (2026-11-06): I also want to clean up the current list of sessions to prevent churn from restarts
     - [ ] Stop the five 'stop' items, and decide each 'ask' item as listed?
   - **seat-lifecycle** (2026-11-06): need to update seats to retire after task is done with report sent back through DM. Seats should also be instructed to journal often -> we should also add tags for each user, and one that marks seats. otherwise, these journals are debreif journals. ... the task should be resumable from debrief journals, even if the sessions are gone.
@@ -58,6 +60,7 @@ Procedure, from dfs-interview § Work the stack:
 - **80f06e0c** (2026-11-06): took install-loop
 - [x] tell daae3825 how shogun-singletons was solved (told 2026-11-06)
 - **f6cd1c4b** (2026-11-06): took ops-board
+- **f6cd1c4b** (2026-11-06): took zerotier-to-tailnet
 
 ## Closed
 
