@@ -32,6 +32,9 @@ Procedure, from dfs-interview § Work the stack:
 ## Stack
 
 - **ops-board** (2026-11-06): https://nexus.tony-xy-liu.com/trilium/#root/iF0A3SWEGqUx/P4ALwPiCSs6N?ntxId=CZkmWI ops board needs updating
+  - [ ] Old AWM book: delete the old Ops password notes, carry Links into the new Ops, archive the old Swarm board?
+  - [ ] Federation board: archive all 8 pre-redux cards, then check the door and intake end to end?
+  - [ ] Place the new Swarm board under the AWM book, next to the federation board?
 - **end-state** (2026-11-06): there are a few sessions that look left over. Please use the DFS interview skill so that we can review the end state and if there are anything left open for us to clean up and do.
   - **shogun-singletons** (2026-11-06): from daae3825: After the render, shogun reaches neither alcor's operations and browser nor any other singleton. ... Should I do (b), and for which tools? Without an answer I do only (a) and report shogun's singleton access as open.
   - **env-reload** (2026-11-06): (from nexus-signin) a changed config.toml [env] reaches plugins only after a gateway restart

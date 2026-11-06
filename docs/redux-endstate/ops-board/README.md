@@ -1,1 +1,19 @@
-# ops-board
+# ops-board: the vault's boards after the redux
+
+> https://nexus.tony-xy-liu.com/trilium/#root/iF0A3SWEGqUx/P4ALwPiCSs6N?ntxId=CZkmWI ops board needs updating
+
+> lets also clean up the federation board and prepare for use
+
+## What the spec says
+
+- `fleet.md` R81: the Ops page holds a static link to each box's portal and no password.
+- `fleet.md` R105, R106 and `queue.md` R61, R62: alcor's operations writer mirrors the task queue into deneb's vault as the Swarm board. The board's root is the note `awmSwarmBoard`. Its Ops book is `awmSwarmOps`, which holds the services' notices and a Portals note. The writer may write only under `awmSwarmBoard` (`AWM_TRILIUM_WRITER_ROOTS`). The operator's `board-install` creates the board page.
+- `channels.md` R77 and `awm/services/board/INSTALL.md`: the federation board (`#federationBoard`) stays until Caviar and muse move onto persistent rooms. Its door on deneb takes foreign swarms' cards. Intake turns each one into a Proposed card on the Swarm board.
+
+## State on 2026-11-06
+
+- The vault holds the pre-redux AWM book (`iF0A3SWEGqUx`): Major updates, Federation board (`0TIhqmkIu3Oc`), the old Swarm board (`Nzv8wkoUgl2V`) and the old Ops (`P4ALwPiCSs6N`).
+- The old Ops holds seven notes: `password - <node>` for capella, altair, mira, VM-0-8-ubuntu (deneb), mizar and alcor, last written 2026-10-27 to 2026-11-05 by the pre-redux services, plus a Links note (2026-10-15). R81 rules out passwords on the Ops page.
+- `awmSwarmBoard`, `awmSwarmOps` and Portals do not exist. alcor's writer fails every step: its first `note_get` on the missing root raises, because deneb's door returns ETAPI's 404 as a 502, which the gateway client raises as Unreachable, not Refused. No card reaches the vault. Fixed in awm 5aff3f26.
+- The writer cannot create `awmSwarmBoard` itself, because a note under `root` is outside its subtree. The operator creates it.
+- The federation board has 7 columns. Live cards: Proposed holds 7 (W1, W2, CL1, factorio-diffusion read access, factorio-diffusion stage 2, deneb access, TreeSAPP-AMBER runtime). Planned holds 1 (Opal on Slack). Each column also has an Archived or Older note.
