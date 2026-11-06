@@ -16,5 +16,5 @@ pages="$(verify_pin "$root/scripts/pages.pin" "$(pages_version "$root")" "$store
 tar -tzf "$pages" | sed -n 's|^\(.*/dist\)/$|\1|p' | while read -r dist; do rm -rf "${root:?}/$dist"; done
 tar -xzf "$pages" -C "$root"
 
-chmod 0755 "$bin"
+[ -x "$bin" ] || chmod 0755 "$bin"
 exec "$bin" deploy --root "$root" --bin "$bin" --no-build "$@"
