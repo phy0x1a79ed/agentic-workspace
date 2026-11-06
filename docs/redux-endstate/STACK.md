@@ -8,6 +8,8 @@ end-state/deneb-link
 
 ## Waiting on Tony
 
+- awm 50040b96 (prompt prefix + retire suffix) waits to deploy until deploy-routine/refresh releases the deploy-refresh scope.
+
 - science-idle: the idle timeout for claude-science. Recommended: start on demand, stop after 30 min idle.
 
 ## Preferences
@@ -41,7 +43,7 @@ end-state/deneb-link
 - trilium-design/interview (c6adc424, talks with Tony directly): status-pages, new-agent-button, note-agent-button, seat-rc-toggle.
 - telegram/removal (edd4e880): stock project.
 - seats/pause (e11ce259, altair, talks with Tony directly).
-- deploy-routine/refresh (02c80ee1, Opus): deterministic per-node refresh, agent only on failure (journal 5662544f).
+- deploy-routine/refresh (02c80ee1, Opus): now Tony's top-level agent for reworking the deploy routine (talks with him directly): deterministic refresh, cascade guard, stock's refresh config. First step: move off the awm/deploy-refresh scope, whose claim broke awm refreshes.
 - install-loop (9fc4afc8 mizar), metasmith-install-loop (80f06e0c altair): hold until Sat 2026-11-07 15:05 PT.
 
 ## Closed
