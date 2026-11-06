@@ -32,3 +32,11 @@ Tony: "can we just respond with eyes emoji as a reaction? can we also do teh typ
 - Reaction: the Slack app already has `reactions:write`, and both connectors implement `react`. social can add 👀 the moment a message arrives.
 - Typing on Discord: a bot can show "Opal is typing…" through the channel's typing trigger. It lasts about 10 s, so social refreshes it until the agent's reply. The Discord connector does not call it yet.
 - Typing on Slack: the Web API gives a bot no typing indicator. The only equivalent is the AI-app status (`assistant.threads.setStatus`, "is thinking…"). It needs the app's Agents & AI Apps feature and the `assistant:write` scope. That changes the Slack app manifest, and a workspace admin must reinstall the app.
+
+## Decision
+
+Tony, 2026-11-06: "react eyes only".
+
+1. social reacts 👀 to every message a seat receives, the moment it arrives. This is the fast acknowledgement.
+2. No typing indicator on any platform, and no "getting set up" reply.
+3. The seat start itself stays as it is: `start_other` through cch on a warm spare, about 7 s to the first action.
