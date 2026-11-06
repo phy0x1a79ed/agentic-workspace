@@ -98,15 +98,27 @@ pub enum GatewayAction {
     },
 }
 
-/// The gateway URL: `AWM_GATEWAY_URL`, else `<AWM_DIR>/gateway.json`, else the default port.
+/// This node's state directory: `AWM_DIR`, else `<AWM_WORKSPACE>/.awm`, else
+/// `~/agentic_workspace/.awm`, the layout the user unit sets. An ssh login into
+/// `awm edge-serve` carries none of these variables.
+pub fn awm_dir() -> PathBuf {
+    if let Some(dir) = std::env::var_os("AWM_DIR").filter(|d| !d.is_empty()) {
+        return PathBuf::from(dir);
+    }
+    if let Some(ws) = std::env::var_os("AWM_WORKSPACE").filter(|d| !d.is_empty()) {
+        return PathBuf::from(ws).join(".awm");
+    }
+    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+    home.join("agentic_workspace").join(".awm")
+}
+
+/// The gateway URL: `AWM_GATEWAY_URL`, else `<awm_dir>/gateway.json`, else the default port.
 pub fn gateway_url() -> String {
     if let Ok(url) = std::env::var("AWM_GATEWAY_URL") {
         return url;
     }
-    if let Some(dir) = std::env::var_os("AWM_DIR") {
-        if let Some(url) = read_gateway_json(Path::new(&dir)) {
-            return url;
-        }
+    if let Some(url) = read_gateway_json(&awm_dir()) {
+        return url;
     }
     format!("http://{}", awm_gateway::config::DEFAULT_LISTEN)
 }

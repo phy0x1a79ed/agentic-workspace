@@ -10,11 +10,8 @@ use awm_proto::{Caller, Lane};
 use awm_trust::edges::{edges_path, EdgeList};
 use serde_json::{json, Value};
 
-use crate::gateway_url;
+use crate::{awm_dir, gateway_url};
 
-fn awm_dir() -> anyhow::Result<PathBuf> {
-    std::env::var_os("AWM_DIR").map(PathBuf::from).ok_or_else(|| anyhow::anyhow!("AWM_DIR is not set"))
-}
 
 fn node_name() -> String {
     std::env::var("AWM_NODE_NAME").ok().filter(|s| !s.trim().is_empty()).unwrap_or_else(|| {
@@ -56,7 +53,7 @@ pub async fn invoke_local(dir: &Path, name: &str, args: Value, caller: &Caller) 
 
 /// `awm edge-serve`: sshd runs it for a node's user key. Serves stdin until it closes.
 pub async fn edge_serve() -> anyhow::Result<i32> {
-    let dir = awm_dir()?;
+    let dir = awm_dir();
     let auth = std::env::var_os("SSH_USER_AUTH")
         .ok_or_else(|| anyhow::anyhow!("SSH_USER_AUTH is not set: sshd needs ExposeAuthInfo yes"))?;
     let keys = dirs_home().join(".ssh/authorized_keys");
@@ -102,7 +99,7 @@ pub async fn open_local_stream(dir: &Path, path: &str, caller: &Caller) -> Resul
 /// `awm port --key awm:<holder>:service`: one door call from `SSH_ORIGINAL_COMMAND`, for
 /// a singleton here that admits the key's holder.
 pub async fn port(key: &str) -> anyhow::Result<i32> {
-    let dir = awm_dir()?;
+    let dir = awm_dir();
     let here = node_name();
     let holder = key.split(':').nth(1).unwrap_or_default().to_string();
     let allowed = EdgeList::load(&edges_path(&dir))?.door_tools(&here, &holder);
