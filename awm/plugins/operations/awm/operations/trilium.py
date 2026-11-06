@@ -9,7 +9,19 @@ from __future__ import annotations
 from typing import Any
 
 from awm.operations.gateway import GatewayTool
-from awm.operations.relay import Refused
+from awm.operations.relay import Refused, Unreachable
+
+
+def _missing(exc: Exception) -> bool:
+    """Whether a failed call says the note does not exist.
+
+    deneb's door returns ETAPI's 404 as a 502 whose body names ``NOTE_NOT_FOUND``,
+    which the gateway client raises as Unreachable, not Refused.
+    """
+    text = str(exc)
+    if isinstance(exc, Unreachable):
+        return "NOTE_NOT_FOUND" in text
+    return "404" in text or "not found" in text.lower()
 
 
 class TriliumTool:
@@ -25,8 +37,8 @@ class TriliumTool:
         """The note with its attributes and no body, or None when the vault has none by that id."""
         try:
             return self._call("note_get", note_id=note_id, content=False)
-        except Refused as exc:
-            if "404" in str(exc) or "not found" in str(exc).lower():
+        except (Refused, Unreachable) as exc:
+            if _missing(exc):
                 return None
             raise
 
@@ -45,6 +57,10 @@ class TriliumTool:
         self._call("note_update", note_id=note_id, title=title, content=content, mime=mime,
                    labels=labels or None)
 
+    def move(self, note_id: str, parent: str) -> None:
+        """Put the note under this parent and nowhere else."""
+        self._call("note_move", note_id=note_id, parent=parent)
+
     def label_delete(self, note_id: str, name: str) -> None:
         self._call("attr_delete", note_id=note_id, name=name)
 
@@ -57,6 +73,6 @@ class TriliumTool:
     def delete_note(self, note_id: str) -> None:
         try:
             self._call("note_delete", note_id=note_id)
-        except Refused as exc:
-            if "404" not in str(exc) and "not found" not in str(exc).lower():
+        except (Refused, Unreachable) as exc:
+            if not _missing(exc):
                 raise

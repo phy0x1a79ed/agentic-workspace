@@ -25,23 +25,33 @@ log = logging.getLogger("awm.routine.refresh")
 
 MANIFEST = "awm-plugin.toml"
 
+# What a peer's gateway answers while its routine service restarts.
+RESTARTING = ("closed its control connection", "is not up")
+PEER_ATTEMPTS = 7
+
 
 def default_checkout_root(workspace: Path) -> Callable[[str], Path]:
     """The live checkout of a project on this node.
 
-    `AWM_DEPLOY_ROOT_<PROJECT>` wins. Else `projects/<p>/release`, else, for the
-    project the workspace itself checks out (awm), the workspace root."""
+    `AWM_DEPLOY_ROOT_<PROJECT>` wins. awm runs from the workspace root whenever
+    that is a checkout, so for awm it comes next, ahead of the release worktree
+    the promote step already moved. Else `projects/<p>/release`."""
     def root(project: str) -> Path:
         env = os.environ.get(f"AWM_DEPLOY_ROOT_{project.upper().replace('-', '_')}")
         if env:
             return Path(env)
+        if project == "awm" and (workspace / ".git").exists():
+            return workspace
         rel = workspace / "projects" / project / "release"
         if rel.is_dir():
             return rel
-        if project == "awm" and (workspace / ".git").exists():
-            return workspace
         raise FileNotFoundError(f"no live checkout of {project} on this node")
     return root
+
+
+def default_holds_project(workspace: Path) -> Callable[[str], bool]:
+    """Whether this node holds a bare repo of a project, to make a scope in."""
+    return lambda project: (workspace / "projects" / project / ".bare").is_dir()
 
 
 @dataclass
@@ -99,13 +109,16 @@ class Refresher:
                  checkout_root: Callable[[str], Path],
                  fleet_config: Callable[[], fleetconf.Fleet] = fleetconf.Fleet,
                  artifact_store: Path | None = None,
-                 awake: Callable[[str], Awaitable[bool]] | None = None) -> None:
+                 awake: Callable[[str], Awaitable[bool]] | None = None,
+                 holds_project: Callable[[str], bool] = lambda _p: True) -> None:
         self.out = out
+        self.holds_project = holds_project
         self.awake = awake or _answers
         self.node = node
         self.checkout_root = checkout_root
         self.fleet_config = fleet_config
         self.artifact_store = artifact_store
+        self.peer_retry_wait = 10.0
 
     def _env(self, frm: str, to: str) -> dict[str, str]:
         return {"AWM_REFRESH_FROM": frm, "AWM_REFRESH_TO": to, "AWM_NODE_NAME": self.node}
@@ -131,7 +144,7 @@ class Refresher:
         if cfg.kind == "restart":
             return await self._command(root, cfg, env, "project")
         if cfg.kind == "queue":
-            return await self._queue(project, cfg, frm, to)
+            return await self._queue(project, root, cfg, frm, to)
         return await self._hot(root, cfg, env, frm, to)
 
     async def _command(self, root: Path, cfg: Refresh, env: dict[str, str],
@@ -147,15 +160,50 @@ class Refresher:
             return NodeResult(self.node, False, f"{label} {_why(res)}\n{res.output}", [hook])
         return NodeResult(self.node, True, "", [hook])
 
-    async def _queue(self, project: str, cfg: Refresh, frm: str, to: str) -> NodeResult:
+    async def _queue(self, project: str, root: Path, cfg: Refresh, frm: str,
+                     to: str) -> NodeResult:
+        """Start a session that restarts the project under supervision.
+
+        It works in the project's `deploy-refresh` scope, or in the lobby on a
+        node that holds no bare repo of the project, such as one that runs awm
+        from its workspace root. A supervisor still live from an earlier
+        release holds that scope, so it is told the new release instead: the
+        sync already moved the checkout it restarts from."""
         prompt = (f"{cfg.prompt}\n\nThe deploy of `{project}` moved release from "
-                  f"{frm[:12] or '(none)'} to {to[:12]} on node {self.node}. Refresh it "
+                  f"{frm[:12] or '(none)'} to {to[:12]} on node {self.node}. Its live "
+                  f"checkout here is `{root}`: run the refresh from there. Refresh it "
                   f"here and confirm the services run the new commit.")
+        name = f"refresh-{project}-{to[:8]}"
+        try:
+            job, held = await self.out.find_session(f"refresh-{project}-")
+        except Exception as e:  # noqa: BLE001
+            log.warning("queue: cannot list this node's sessions: %s", e)
+            job, held = "", ""
+        if job and held == name:
+            return NodeResult(self.node, True, f"supervising session {job}, already started",
+                              [{"hook": "queue", "job": job}])
+        if job:
+            try:
+                await self.out.message_session(job, (
+                    f"Release of `{project}` moved again, to {to[:12]}, and `{root}` already "
+                    f"holds it. Restart onto what the checkout holds and confirm the "
+                    f"services run {to[:12]}."))
+            except Exception as e:  # noqa: BLE001
+                return NodeResult(self.node, False, f"queue: supervising session {held} ({job}) "
+                                                    f"is live and did not take the message: {e}")
+            return NodeResult(self.node, True, f"supervising session {job} ({held}), told {to[:12]}",
+                              [{"hook": "queue", "job": job}])
+        has_scopes = self.holds_project(project)
+        if not has_scopes:
+            prompt += (f"\n\nThis node holds no `{project}` project to make a scope in, "
+                       f"so you start in the lobby. Stay there and work on `{root}` by "
+                       f"its path. Commit nothing in it.")
         try:
             res = await self.out.start_session(
-                peer="local", project=project, scope="deploy-refresh",
+                peer="local", project=project if has_scopes else "",
+                scope="deploy-refresh" if has_scopes else "",
                 prompt=prompt, started_by=f"deploy of {project} {to[:12]}",
-                name=f"refresh-{project}-{to[:8]}")
+                name=name)
         except Exception as e:  # noqa: BLE001
             return NodeResult(self.node, False, f"queue: the supervising session did not start: {e}")
         return NodeResult(self.node, True, f"supervising session {res.get('job', '')}",
@@ -273,12 +321,23 @@ class Refresher:
         return NodeResult(node, True, res.output[-2000:])
 
     async def _peer(self, node: str, project: str, frm: str, to: str) -> NodeResult:
-        try:
-            res = await self.out.invoke("routine", "refresh",
-                                        {"project": project, "from": frm, "to": to},
-                                        peer=node, timeout=1800.0)
-        except Exception as e:  # noqa: BLE001
-            return NodeResult(node, False, f"peer call failed: {e}")
+        """Call ``node``'s refresh, again while its routine service restarts.
+
+        The sync can move the code the peer's routine service runs from, and a
+        reload then restarts that service mid-call and loses its reply. A
+        refresh is idempotent, so the call runs again once the service is back."""
+        for attempt in range(PEER_ATTEMPTS):
+            try:
+                res = await self.out.invoke("routine", "refresh",
+                                            {"project": project, "from": frm, "to": to},
+                                            peer=node, timeout=1800.0)
+                break
+            except Exception as e:  # noqa: BLE001
+                if attempt + 1 == PEER_ATTEMPTS or not any(m in str(e) for m in RESTARTING):
+                    return NodeResult(node, False, f"peer call failed: {e}")
+                log.info("refresh on %s: %s; calling again in %.0fs", node, e,
+                         self.peer_retry_wait)
+                await asyncio.sleep(self.peer_retry_wait)
         if not isinstance(res, dict):
             return NodeResult(node, False, f"peer returned {res!r}"[:300])
         return NodeResult(node, bool(res.get("ok")), str(res.get("detail", "")),

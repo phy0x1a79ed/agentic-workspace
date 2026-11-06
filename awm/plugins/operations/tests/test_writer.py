@@ -13,7 +13,8 @@ from typing import Any
 import pytest
 
 from awm.operations import board
-from awm.operations.board import ROOT_ID, card_note_id, record_note_id
+from awm.operations.board import (BOOK_ID, COLUMN_IDS, OPS_ID, ROOT_ID, TASKS_ID, card_note_id,
+                                  record_note_id)
 from awm.operations.relay import Refused
 from awm.operations.store import QueueError, Store
 from awm.operations.trilium import TriliumTool
@@ -77,6 +78,10 @@ class FakeTrilium:
         self._get(note_id)["labels" if type == "label" else "relations"][name] = value
         return {}
 
+    def note_move(self, note_id: str, parent: str) -> dict[str, Any]:
+        self._get(note_id)["parents"] = [parent]
+        return {"note_id": note_id, "parent": parent}
+
     def note_delete(self, note_id: str) -> dict[str, Any]:
         self._get(note_id)
         del self.notes[note_id]
@@ -117,7 +122,7 @@ def test_writer_mirrors_cards(store, api, fake):
                         rc_url="https://claude.ai/code/session_x")["task_id"]
     assert w.step() > 0
     nid = card_note_id(t)
-    assert fake.notes[nid]["parents"] == [ROOT_ID]
+    assert fake.notes[nid]["parents"] == [COLUMN_IDS["working"]]
     got = labels(fake, nid)
     assert got["taskId"] == t and got["section"] == "working" and got["peer"] == "deneb"
     assert "status" not in got and "doneAt" not in got and "swarmCard" in got
@@ -128,6 +133,8 @@ def test_writer_mirrors_cards(store, api, fake):
     w.step()
     got = labels(fake, nid)
     assert got["section"] == "needs_you" and got["status"] == "blocked"
+    assert fake.notes[nid]["parents"] == [COLUMN_IDS["needs_you"]]
+    assert "needs a key" in fake.notes[nid]["content"] and "blocked" in fake.notes[nid]["content"]
     assert '"reason": "needs a key"' in fake.notes[record_note_id(t)]["content"]
     store.task_report(t, "cc-1", "working")
     w.step()
@@ -136,8 +143,30 @@ def test_writer_mirrors_cards(store, api, fake):
     w.step()
     got = labels(fake, nid)
     assert got["section"] == "done" and int(got["doneAt"]) > 0
+    assert fake.notes[nid]["parents"] == [COLUMN_IDS["done"]]
+    assert "needs a key" not in fake.notes[nid]["content"], "the body follows the current state"
     assert w.step() == 0  # the mark moved past every event
     assert not any(n["title"] in ("Ledger", "Older") for n in fake.notes.values())
+
+
+def test_the_layout_sits_side_by_side_in_the_book(store, api, fake):
+    Writer(store, api).step()
+    for note_id in (TASKS_ID, OPS_ID, ROOT_ID):
+        assert fake.notes[note_id]["parents"] == [BOOK_ID]
+    assert {n["title"] for n in fake.notes.values() if n["parents"] == [TASKS_ID]} == {
+        "Proposed", "Needs you", "Working", "Done", "Swarm triage"}
+    assert "readOnly" in fake.notes[TASKS_ID]["labels"]
+
+
+def test_a_card_body_lists_its_todos_and_ends_with_the_card(store, api, fake):
+    w = Writer(store, api)
+    t = store.task_open("deploy <it>", "ccA")["task_id"]
+    store.task_detail(t, todos=[{"id": "1", "subject": "ship", "status": "completed"},
+                                {"id": "2", "subject": "check", "status": "pending"}])
+    w.step()
+    body = fake.notes[card_note_id(t)]["content"]
+    assert "[x] ship" in body and "[ ] check" in body
+    assert "readOnly" in labels(fake, card_note_id(t))
 
 
 def test_proposed_body_is_tonys_and_spawn_checks_it(store, api, fake):
@@ -148,6 +177,7 @@ def test_proposed_body_is_tonys_and_spawn_checks_it(store, api, fake):
     nid = card_note_id(t)
     assert store.task_get(t)["body_ref"] == nid
     assert fake.notes[nid]["mime"] == "text/x-markdown"
+    assert "readOnly" not in labels(fake, nid)
     body = "# Rework\n\nFour sections, no drag.\n"
     fake.notes[nid]["content"] = body  # Tony writes the note in Trilium
 
@@ -162,6 +192,7 @@ def test_proposed_body_is_tonys_and_spawn_checks_it(store, api, fake):
     assert out["body"] == body and out["body_ref"] == nid
     w.step()
     assert labels(fake, nid)["section"] == "working" and fake.notes[nid]["content"] == body
+    assert fake.notes[nid]["parents"] == [COLUMN_IDS["working"]]
 
 
 def test_fold_removes_the_joiners_card(store, api, fake):
@@ -194,7 +225,7 @@ def test_ops_post_rewrites_one_note_per_kind_and_node_under_the_board(store, api
     again = w.post_ops("scope-hygiene", "mizar", "Scope hygiene", "3 removed")
     assert first == again
     note = fake.notes[first]
-    assert note["parents"] == [board.OPS_ID] and fake.notes[board.OPS_ID]["parents"] == [ROOT_ID]
+    assert note["parents"] == [board.OPS_ID] and fake.notes[board.OPS_ID]["parents"] == [BOOK_ID]
     assert note["title"] == "scope-hygiene - mizar" and "3 removed" in note["content"]
     assert "agentManaged" in note["labels"] and note["mime"] == "text/x-markdown"
     assert w.post_ops("scope-hygiene", "alcor", "Scope hygiene", "0") != first
@@ -227,3 +258,29 @@ def test_messages_plan_and_todos_reach_the_card(tmp_path):
     store.task_message(t, "second", author="tony")
     w.sync_once()
     assert "second" in api.notes[board.messages_note_id(t)]["content"]
+
+
+class _DoorTool:
+    """The trilium tool as alcor's gateway client raises it: a missing note is a 502."""
+
+    def __init__(self, exc):
+        self.exc = exc
+
+    def call_sync(self, verb, args):
+        raise self.exc
+
+
+def test_a_missing_note_through_the_door_reads_as_none():
+    from awm.operations.relay import Unreachable
+    body = ('502 {"detail":"{\\"error\\":\\"GET /etapi/notes/awmSwarmBoard -> 404: '
+            '{\\\\\\"code\\\\\\":\\\\\\"NOTE_NOT_FOUND\\\\\\"}\\"}"}')
+    api = TriliumTool(tool=_DoorTool(Unreachable(body)))
+    assert api.note("awmSwarmBoard") is None
+    api.delete_note("awmSwarmBoard")
+
+
+def test_an_unreachable_vault_still_raises():
+    from awm.operations.relay import Unreachable
+    api = TriliumTool(tool=_DoorTool(Unreachable("502 the link dropped")))
+    with pytest.raises(Unreachable):
+        api.note("awmSwarmBoard")

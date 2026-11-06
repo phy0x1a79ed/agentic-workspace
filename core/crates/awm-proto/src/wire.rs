@@ -26,6 +26,12 @@ pub struct Caller {
     /// The node a relayed call started from, when it is not `node` (fleet.md R98 item 3).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub origin: Option<String>,
+    /// The calling session's job and name on its own node, which a singleton's host needs to
+    /// act on the session through its door.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub job: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
 impl Caller {

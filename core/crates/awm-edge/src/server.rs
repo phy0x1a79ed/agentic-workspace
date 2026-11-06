@@ -64,7 +64,8 @@ where
     while let Ok(Some(line)) = lines.next_line().await {
         let Ok(req) = serde_json::from_str::<Request>(&line) else { continue };
         let caller = Caller { node: from.clone(), lane: Lane::Edge, session: req.caller.session, trust: req.caller.trust,
-                              scope: req.caller.scope, origin: req.caller.origin.filter(|o| *o != from) };
+                              scope: req.caller.scope, origin: req.caller.origin.filter(|o| *o != from),
+                              job: req.caller.job, name: req.caller.name };
         match req.name.as_str() {
             WS_SEND => {
                 if let (Some(tx), Ok(msg)) = (streams.lock().await.get(&req.id), serde_json::from_value::<WsMsg>(req.args)) {

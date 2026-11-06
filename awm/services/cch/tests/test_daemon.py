@@ -30,6 +30,7 @@ class FakeHost(daemon.Host):
     linger_state: bool | None = True
     tail: str = ""
     manager_env: dict[str, str] = field(default_factory=dict)
+    systemd: int | None = 255
 
     def now(self) -> float:
         return self.clock
@@ -49,6 +50,9 @@ class FakeHost(daemon.Host):
 
     def unit(self, bus):
         return dict(self.unit_state)
+
+    def systemd_version(self):
+        return self.systemd
 
     def run_unit(self, bus, argv):
         self.calls.append(("systemd-run", *argv))
@@ -98,6 +102,19 @@ def test_no_daemon_launches_the_unit_with_backoff_and_oom_properties():
                  "OOMPolicy=continue", "OOMScoreAdjust=-200"):
         assert f"--property={prop}" in argv
     assert argv[-4:] == ("daemon", "run", "--origin", "service")
+
+
+def test_a_systemd_older_than_254_gets_a_fixed_restart_delay_it_accepts():
+    host = FakeHost(systemd=249)
+    assert Keeper(host).reconcile()["action"] == "launched"
+    argv = next(c for c in host.calls if c[0] == "systemd-run")
+    assert "--property=RestartSec=1min" in argv
+    assert not any("RestartSteps" in a or "RestartMaxDelaySec" in a for a in argv)
+
+
+def test_systemd_version_reads_the_major_number():
+    assert daemon.systemd_version("systemd 249 (249.11-0ubuntu3.23)\n+PAM +AUDIT") == 249
+    assert daemon.systemd_version("") is None
 
 
 def test_memory_limits_come_from_the_environment(monkeypatch):

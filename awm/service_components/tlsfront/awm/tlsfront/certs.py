@@ -274,7 +274,10 @@ def ensure_certs(cert_dir, *, ca_dir=None, sans: list[str] | None = None) -> dic
             f"{ca_cert} from the node that holds the CA, or remove {ca_key} to "
             f"mint a new (fleet-incompatible) root deliberately."
         )
-    shutil.copyfile(ca_cert, ca_pub)
+    # A rewrite on every start would move the plugin's stamp, and the gateway
+    # restarts a plugin whose stamp moved: a reload loop across the fleet.
+    if not ca_pub.exists() or ca_pub.read_bytes() != ca_cert.read_bytes():
+        shutil.copyfile(ca_cert, ca_pub)
 
     # 2. Leaf server cert signed by the CA — (re)mint if missing or SAN changed.
     prev_san = san_file.read_text().strip() if san_file.exists() else None

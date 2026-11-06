@@ -75,7 +75,9 @@ The unit's properties:
   `RestartMaxDelaySec=10min`, `StartLimitIntervalSec=0`: systemd restarts the
   daemon after any exit, including the clean exit of an upgrade. The delay
   grows from 10 s to 10 min and never stops. A daemon that fails on every
-  start retries every 10 min, not in a tight loop.
+  start retries every 10 min, not in a tight loop. systemd before 254 rejects
+  `RestartSteps` and `RestartMaxDelaySec` and refuses the whole unit, so on
+  such a host the unit gets `RestartSec=1min` and no backoff.
 - `OOMPolicy=continue`: an OOM kill of one session does not stop the unit.
 - `OOMScoreAdjust=-200`: under global memory pressure the kernel prefers a
   process outside the unit. The sessions inherit the value.

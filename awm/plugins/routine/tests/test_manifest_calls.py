@@ -42,6 +42,7 @@ class Gateway:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str, str | None, str | None]] = []
         self.fail_start = False
+        self.sessions: list[dict] = []
 
     def __call__(self, req: httpx.Request) -> httpx.Response:
         body = json.loads(req.content)
@@ -57,6 +58,7 @@ class Gateway:
         result = {
             ("reflection", "start_other"): {"job": "j1"},
             ("reflection", "session_of"): {"known": True, "session_id": "cc01"},
+            ("reflection", "list_other"): {"ok": True, "sessions": self.sessions},
             ("operations", "task_for_session"): {"task_id": "TASK0001"},
             ("routine", "refresh"): {"ok": True, "node": inner.get("peer"), "hooks": []},
             ("routine", "deploy"): {"ticket": "t1"},
@@ -101,6 +103,14 @@ async def test_every_gateway_call_is_in_the_manifest(store, ws, gateway, monkeyp
     await dep.drain()
     # A deploy forwarded to the canonical node.
     await DeployVerbs(_deployer(store, ws, FORWARD)).deploy({"project": "proj", "scope": "a"})
+    # A peer's queue refresh: it looks for its supervising session, then starts one.
+    (ws.proj / "release" / "deploy.toml").write_text('[refresh]\nkind = "queue"\nprompt = "Restart."\n')
+    await DeployVerbs(_deployer(store, ws, INSTALL, node="alcor")).refresh(
+        {"project": "proj", "from": "a" * 40, "to": "b" * 40})
+    # The next release finds that supervisor still live and tells it the new commit.
+    gateway.sessions.append({"job": "j1", "name": "refresh-proj-bbbbbbbb"})
+    await DeployVerbs(_deployer(store, ws, INSTALL, node="alcor")).refresh(
+        {"project": "proj", "from": "b" * 40, "to": "c" * 40})
 
     needed, own = _needs()
     called = {(t, v) for t, v, _, _ in gateway.calls}

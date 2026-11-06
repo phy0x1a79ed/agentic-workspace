@@ -18,6 +18,7 @@ from typing import Any
 
 from awm.operations import door
 from awm.operations.api import API_MANIFEST
+from awm.operations.board import BOOK_ID
 from awm.operations.front import Front
 from awm.operations.gateway import ApproverTools, GatewayTool, usage
 from awm.operations.relay import Relay, Unreachable, order_loop
@@ -46,7 +47,7 @@ def settings() -> dict[str, Any]:
         # The pages that may ask for a passkey sign-in: {host: node} (fleet.md R84).
         "portals": cfg.get("portals", {}),
         "board_peer": os.environ.get("AWM_BOARD_PEER", cfg.get("board_peer", "deneb")),
-        "board_parent": os.environ.get("AWM_TRILIUM_BOARD_PARENT", cfg.get("board_parent", "root")),
+        "board_parent": os.environ.get("AWM_TRILIUM_BOARD_PARENT", cfg.get("board_parent", BOOK_ID)),
     }
 
 
@@ -98,6 +99,10 @@ def operator_dm():
     return dm
 
 
+def _from_session(args: dict) -> bool:
+    return any(args.get(k) for k in ("_caller_pid", "_caller_session_id", "_caller_session"))
+
+
 def handlers(front: Front, home: Any | None) -> dict[str, Any]:
     out: dict[str, Any] = {v: (lambda verb: lambda args: front.call(verb, args))(v)
                            for v in Front.VERBS}
@@ -106,14 +111,14 @@ def handlers(front: Front, home: Any | None) -> dict[str, Any]:
         def h(args: dict, as_: str | None = None) -> Any:
             if home is None:
                 return {"ok": False, "error": "devices live on the home node (alcor)"}
-            if as_ is not None or args.get("_caller_pid") or args.get("_caller_session_id"):
+            if as_ is not None or _from_session(args):
                 return {"ok": False, "error": "an operator verb: run awm-operations on alcor"}
             return fn(args)
         return h
 
     async def ops_post(args: dict, as_: str | None = None) -> dict:
         """A service's notice in the Ops book. Not for sessions."""
-        if as_ is not None or args.get("_caller_pid") or args.get("_caller_session_id"):
+        if as_ is not None or _from_session(args):
             return {"ok": False, "error": "ops_post takes this node's own services only"}
         fields = {k: args.get(k) for k in ("kind", "node", "title", "body")}
         if not all(isinstance(v, str) and v.strip() for v in fields.values()):

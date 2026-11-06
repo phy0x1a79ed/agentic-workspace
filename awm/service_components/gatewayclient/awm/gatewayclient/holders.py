@@ -91,7 +91,10 @@ def _push_target(session: str) -> str | None:
 def _from_claim(raw: object) -> dict | None:
     if not isinstance(raw, dict):
         return None
-    return {"background": raw.get("kind") == "bg" or raw.get("hosting") == "background",
+    # A gateway's door claim names no kind: it carries a job only for a background session.
+    door = "kind" not in raw and "hosting" not in raw and bool(raw.get("node"))
+    return {"background": raw.get("kind") == "bg" or raw.get("hosting") == "background"
+                          or (door and bool(raw.get("job"))),
             "job": str(raw.get("job") or ""),
             "session": raw.get("session_id") or ids.to_r9(raw.get("sessionId")),
             "name": str(raw.get("name") or "")}

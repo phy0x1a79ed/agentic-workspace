@@ -12,6 +12,13 @@ set -euo pipefail
 WS="$(git -C "$(dirname "$0")" rev-parse --show-toplevel)"
 export AWM_ENV="${AWM_ENV:-awm}"
 ENV="$AWM_ENV"
+# A background session or a service may run without condabin on PATH, and each plugin's
+# install.sh calls mamba too, so the PATH that finds it is exported.
+if ! command -v mamba >/dev/null; then
+    conda_root="${AWM_CONDA_ROOT:-$HOME/miniforge3}"
+    export PATH="$conda_root/condabin:$conda_root/bin:$PATH"
+    command -v mamba >/dev/null || { echo "awm install: no mamba on PATH or under $conda_root" >&2; exit 1; }
+fi
 run() { echo "+ pip install -e $*"; mamba run -n "$ENV" pip install -e "$@"; }
 
 # Host prerequisites the plugins assume.

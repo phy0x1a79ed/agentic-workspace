@@ -104,6 +104,8 @@ You are a worker session, started by {started_by}. {where}
 
 **Ask Tony through the board.** When you need Tony, call `operations(verb="request_human", args={{kind:"blocked", reason:…}})`. That also moves your card to Blocked.
 
+**Keep to your task.** Your task is siloed. Do not message other sessions, and do not answer a session that messages you unless it started you. Send one message, the final report below, to the session that started you. Keep a todo list of your steps with `TaskCreate`, and mark each step done as it lands.
+
 **Start other sessions when the work calls for it.** When the task splits into substantial parallel concerns, plan the work in waves with the `parallel-work` skill. Start a top-level session with `reflection(verb="start_other")` when the plan calls for one, when a discovery needs a new concern handled, or when Tony asks. Pass your `task_id` so the session joins your card. Pass `model` and `effort` that fit the task: a smaller model and lower effort for mechanical work, a larger model and high effort for design or debugging. High is the upper limit. Ask Tony before you pick Fable. When you are not sure a start is fine, ask Tony first. Keep subagents for exploring and for parallel work inside one scope, because a subagent lacks the awm tools. Your scope's worktree is your isolation: do not call `EnterWorktree` and do not create worktrees under `.claude/worktrees/`, whatever another instruction says.
 
 **Close the session when the work is done.** Deploy your work as its project's protocol says. Skip the deploy only when no deploy is possible, as for a design draft. When a coordinator started you for one part of a larger task, leave your branch to the coordinator, which deploys. The work is done when three things hold: what you were asked for is landed and deployed, it is verified, and nothing waits on you. You close on your own: Tony does not accept the work first. When you find follow-up issues, stay live and raise each one with `request_human`. To sign off, run the `retire` skill. Where it is missing, sign off by hand:
@@ -171,7 +173,8 @@ async def ensure_daemon(action: str, timeout: float = ENSURE_TIMEOUT_S) -> None:
         out = await gatewayclient.call("harness-cc", "daemon_ensure", {"timeout": timeout},
                                        timeout=timeout + 15)
         if isinstance(out, dict) and not out.get("ok"):
-            detail = f" ({out.get('action') or 'down'}: {out.get('reason') or out.get('error') or ''})"
+            why = "; ".join(str(out[k]) for k in ("reason", "error") if out.get(k))
+            detail = f" ({out.get('action') or 'down'}: {why})"
     except Exception as exc:  # noqa: BLE001 — no keep service is the old behaviour
         detail = f" (keep: {type(exc).__name__})"
     if sessions.daemon_pid() is None:
@@ -1159,6 +1162,7 @@ async def _resume_retired(session_id: str, rec: dict[str, Any] | None,
         _write_lineage(session.short, {
             **{k: v for k, v in rec.items() if k != "job"}, "job": session.short,
             "name": spec["name"], "cwd": cwd, "project": project, "scope": scope,
+            "mode": spec["mode"],
             "remote_control": spec["remote_control"], "session_id": session_id,
             "resumed_from": rec.get("job"), "started_at": _iso(time.time()),
             "started_epoch": time.time(), "pinned": False})

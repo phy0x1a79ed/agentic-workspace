@@ -1057,7 +1057,7 @@ fn a_caller_reaches_a_peers_singleton_through_its_door() {
         assert_eq!(who["as"], "peer:alcor");
     }
     let args = std::fs::read_to_string(&door.args).unwrap();
-    assert!(args.contains("\n-p\n2201\n127.0.0.1\nport {"), "the door listens on deneb's public address: {args}");
+    assert!(args.contains("\n-p\n2201\n127.0.0.1\nport\n"), "the door listens on deneb's public address, and the request is not on the command line: {args}");
     assert!(args.contains("\n-l\nawm\n"), "the caller logs in as the door's user: {args}");
     // operations' own call to trilium takes the same door.
     let resp = http().post(format!("{}/invoke", alcor.url))
@@ -1151,18 +1151,20 @@ fn a_door_call_carries_the_calling_session() {
     write(&alcor_state.join("config.toml"), &format!("{cfg}isolated_listen = \"127.0.0.1:0\"\n"));
     let r9 = "cc0f1e2d3c4b5a69788796a5b4c3d2e1f0";
     write(&alcor_state.join("sessions.json"),
-          &json!({"4242": {"ok": true, "known": true, "session_id": r9, "trust": "cooperative", "mode": null, "cwd": "/"}}).to_string());
+          &json!({"4242": {"ok": true, "known": true, "session_id": r9, "trust": "cooperative", "mode": null, "cwd": "/",
+                           "job": "0f1e2d3c", "name": "redux/x"}}).to_string());
     let door = fake_door(base, "alcor", "deneb", &deneb_state, &deneb.url);
     let alcor = Gateway::start_with(&alcor_state, &[("AWM_DOOR_SSH", door.ssh.to_str().unwrap()), ("AWM_EDGE_SSH", "false")]);
     let fail = || format!("{}\ndeneb: {}", log(&alcor_state), log(&deneb_state));
     let who_of = |reply: &Value| -> Value { serde_json::from_str(reply["result"].as_str().unwrap_or("null")).unwrap_or(Value::Null) };
 
-    // A session on alcor: deneb sees its id as the claim, and its own level.
+    // A session on alcor: deneb sees its id, job and name as the claim, on the node the door
+    // verified, and its own level. A claim the session wrote into its args never leaves alcor.
     let reply: Value = http().post(format!("{}/invoke", alcor.url)).header("X-Awm-Session-Pid", "4242")
-        .json(&json!({"name": "hall", "args": {"verb": "whoami", "args": {"_caller_session": {"session_id": "cc99"}}}}))
+        .json(&json!({"name": "hall", "args": {"verb": "whoami", "args": {"_caller_session": {"session_id": "cc99", "node": "lyra"}}}}))
         .send().unwrap().json().unwrap();
     let who = who_of(&reply);
-    assert_eq!(who["claim"], json!({"session_id": r9}), "{reply} {}", fail());
+    assert_eq!(who["claim"], json!({"session_id": r9, "node": "alcor", "job": "0f1e2d3c", "name": "redux/x"}), "{reply} {}", fail());
     assert_eq!((who["trust"].as_str(), who["caller"]["lane"].as_str(), who["as"].as_str()), (Some("cooperative"), Some("service"), Some("peer:alcor")), "{who}");
 
     // alcor's own service, with no session, claims none and stays trusted.
@@ -1178,10 +1180,28 @@ fn a_door_call_carries_the_calling_session() {
     let (text, err) = door_call(&iso, "hall", json!({"verb": "whoami"}));
     assert!(!err, "{text} {}", fail());
     let who: Value = serde_json::from_str(&text).unwrap();
-    assert_eq!(who["claim"], json!({"session_id": SESSION}), "{who}");
+    assert_eq!(who["claim"], json!({"session_id": SESSION, "node": "alcor", "name": "iso"}), "{who}");
     assert_eq!((who["trust"].as_str(), who["scope"].as_str()), (Some("untrusted"), Some("awm/iso")), "{who}");
     let (text, err) = door_call(&iso, "hall", json!({"verb": "echo", "args": {"text": "x"}}));
     assert!(err && text.contains("whitelist"), "{text}");
+
+    // The MCP list shows the singleton, with the verbs deneb's door describes.
+    let listed = (0..50).find_map(|_| {
+        let tools: Value = http().get(format!("{}/tools?view=domains", alcor.url)).send().unwrap().json().unwrap();
+        let hall = tools["tools"].as_array().unwrap().iter().find(|t| t["name"] == "hall").cloned();
+        match hall {
+            Some(h) if h["inputSchema"]["properties"]["verb"]["enum"].is_array() => Some(h),
+            _ => {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                None
+            }
+        }
+    });
+    let hall = listed.unwrap_or_else(|| panic!("hall never listed with its verbs: {}", fail()));
+    let verbs = hall["inputSchema"]["properties"]["verb"]["enum"].as_array().unwrap();
+    assert!(verbs.contains(&json!("whoami")) && verbs.contains(&json!("describe")), "{hall}");
+    assert!(hall["inputSchema"]["properties"].get("peer").is_none(), "a singleton runs only on its host: {hall}");
+    assert!(hall["description"].as_str().unwrap().contains("deneb's singleton door"), "{hall}");
     drop((alcor, deneb));
 }
 

@@ -18,7 +18,15 @@ log = logging.getLogger("awm.routine.outbound")
 class Outbound(Protocol):
     async def start_session(self, *, peer: str, project: str, scope: str,
                             prompt: str, started_by: str, name: str) -> dict[str, Any]:
-        """Start a background session. Returns at least ``{"job": ...}``."""
+        """Start a background session, in the lobby when ``scope`` is empty.
+        Returns at least ``{"job": ...}``."""
+
+    async def find_session(self, prefix: str) -> tuple[str, str]:
+        """The job and name of a session on this node whose name starts with
+        ``prefix``, or ``("", "")``."""
+
+    async def message_session(self, job: str, text: str) -> None:
+        """Type ``text`` into a session's prompt on this node."""
 
     async def notify_operator(self, text: str) -> None:
         """Send the operator a Discord DM."""
@@ -52,14 +60,24 @@ class GatewayOutbound:
 
     async def start_session(self, *, peer: str, project: str, scope: str,
                             prompt: str, started_by: str, name: str) -> dict[str, Any]:
-        res = await self.invoke("reflection", "start_other", {
-            "project": project, "scope": scope, "prompt": prompt,
-            "started_by": started_by, "name": name,
-            "model": "opus", "effort": "high",
-        }, peer=peer, timeout=120.0)
+        args: dict[str, Any] = {"prompt": prompt, "started_by": started_by, "name": name,
+                                "model": "opus", "effort": "high"}
+        if scope:
+            args |= {"project": project, "scope": scope}
+        res = await self.invoke("reflection", "start_other", args, peer=peer, timeout=120.0)
         if not isinstance(res, dict) or not res.get("job"):
             raise RuntimeError(f"start_other returned no job: {res!r}"[:400])
         return res
+
+    async def find_session(self, prefix: str) -> tuple[str, str]:
+        res = await self.invoke("reflection", "list_other", {}, timeout=30.0)
+        sessions = res.get("sessions", []) if isinstance(res, dict) else []
+        return next(((str(s.get("job") or ""), str(s["name"])) for s in sessions
+                     if isinstance(s, dict) and str(s.get("name") or "").startswith(prefix)
+                     and s.get("job")), ("", ""))
+
+    async def message_session(self, job: str, text: str) -> None:
+        await self.invoke("reflection", "message", {"job": job, "text": text}, timeout=30.0)
 
     async def notify_operator(self, text: str) -> None:
         from awm.config import operator_dm

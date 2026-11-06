@@ -4,6 +4,7 @@ pub mod caller;
 pub mod config;
 pub mod door;
 pub mod egress;
+pub mod files;
 pub mod gateway;
 pub mod hub;
 pub mod install;

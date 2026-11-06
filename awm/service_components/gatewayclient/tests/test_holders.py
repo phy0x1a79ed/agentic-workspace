@@ -62,6 +62,23 @@ def test_a_holder_on_another_node_with_no_session_id_is_known_by_its_job(monkeyp
                       "name": "far"}
 
 
+def test_a_background_session_behind_a_door_holds_a_seat(monkeypatch):
+    from awm.config import edges
+
+    monkeypatch.setattr(edges, "caller_peer", lambda as_: "altair")
+    claim = {"session_id": SID, "node": "altair", "job": "346ce8e4", "name": "seat:slack/main"}
+    assert holders.caller({"_caller_session": claim}, "peer:altair") == {
+        "node": "altair", "session": SID, "job": "346ce8e4", "name": "seat:slack/main"}
+
+
+def test_an_interactive_session_behind_a_door_holds_nothing(monkeypatch):
+    from awm.config import edges
+
+    monkeypatch.setattr(edges, "caller_peer", lambda as_: "altair")
+    with pytest.raises(HolderError, match="background session"):
+        holders.caller({"_caller_session": {"session_id": SID, "node": "altair"}}, "peer:altair")
+
+
 def test_a_borrower_forwards_its_record_as_a_claim(monkeypatch):
     _record(monkeypatch, {"hosting": "background", "job": "abcd1234",
                           "session_id": SID, "name": "worker"})
