@@ -115,7 +115,22 @@ step_deploy() {
     if (( ${#names[@]} )); then
         args+=(--reload-restart "$(IFS=,; echo "${names[*]}")")
     fi
-    (cd "$root" && bash scripts/awm-deploy.sh "${args[@]}")
+    local stamp
+    stamp=$(install_stamp "$1")
+    [[ $stamp == "$(cat "$dir/installed" 2>/dev/null)" ]] && args+=(--no-install)
+    (cd "$root" && bash scripts/awm-deploy.sh "${args[@]}") || return
+    echo "$stamp" > "$dir/installed"
+}
+
+# What the Python install depends on: the install inputs in the tree, and the node's
+# config, which picks the plugins. An unchanged stamp skips awm/install.sh. A code
+# change needs no install, because every package is installed editable.
+install_stamp() {
+    {
+        git -C "$root" ls-tree -r "$1" -- awm | grep -E \
+            '/(pyproject\.toml|setup\.(py|cfg)|requirements[^/]*\.txt|install[^/]*\.sh)$'
+        cat "$AWM_DIR/config.toml" 2>/dev/null
+    } | sha256sum | cut -c1-64
 }
 
 # awm deploy already waits for the services; this asks the gateway again, as a check
