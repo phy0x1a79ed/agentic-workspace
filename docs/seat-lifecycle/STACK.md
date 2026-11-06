@@ -1,0 +1,40 @@
+# seat-lifecycle: stack
+
+## Purpose
+
+Decide how Slack seats work after the 2026-11-06 incident: when a seat starts, speaks and retires; how it journals; how a task resumes from journals; and how Tony controls seats (pause, Remote Control) from the fleet dashboard.
+
+Procedure, from dfs-interview § Work the stack:
+
+1. Run `stack.py <folder> current` for the top topic. Ask only its own questions.
+2. Dispatch read-only subagents to survey what already exists for the topic.
+3. Record each difference between the survey and the user's description.
+4. Ask the user about each difference with an unclear answer.
+5. Put one question per message to the user, or a small set of closely related questions. Give your recommendation with it.
+6. Queue the other questions with `stack.py <folder> ask`.
+7. Match each answer to the message it replies to. Ask when a reply could answer more than one message.
+8. Record each answer in the topic's `README.md`. Copy the user's words from `quote.py`.
+9. Write the result as the current design.
+10. Tick each answered question with `stack.py <folder> answer`.
+11. Run `stack.py <folder> close` when the topic's question queue is empty.
+12. Commit.
+13. Compact only when the closed topic ran long, with many exchanges or large reads. After a short topic, present the next topic in the same turn.
+14. To compact, run `reflection(verb="compact", args={followup:...})`. Write a followup that invokes `dfs-interview` by name. Name the discussion folder, the closed topic, its commit and the new top topic in it.
+
+## Current topic
+
+**lifecycle**. Its result: `lifecycle/README.md`.
+
+## Stack
+
+- **lifecycle** (2026-11-06): need to update seats to retire after task is done with report sent back through DM. ... even for seats of lab messages and DMs, they should retire and not just sit there.
+- **resume-from-journals** (2026-11-06): the task should be resumable from debrief journals, even if the sessions are gone.
+- **journal-tags** (2026-11-06): Seats should also be instructed to journal often -> we should also add tags for each user, and one that marks seats. otherwise, these journals are debreif journals.
+- **speak-rule** (2026-11-06): steven chen contacted the client without first being asked, on a stale request.
+- **lost-pushes** (2026-11-06): it looks like there is a bug in how seats work. retired seats came back
+- **rc-toggle** (2026-11-06): about the seats, it would be great if on the new fleet status dashboard, I can turn remote control on and off for seats
+- **unpause** (2026-11-06): can we pause and shutdown seats on altiar?
+
+## Parked
+
+## Closed
