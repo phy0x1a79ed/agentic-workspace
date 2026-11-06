@@ -439,7 +439,7 @@ async def test_forwarded_deploy_carries_the_card(store, out, ws, monkeypatch):
 
 # -- push nodes (R31: a node that cannot fetch from home) ---------------------
 
-PUSH = INSTALL + '\n[fleet.push.alcor]\nurl = "{url}"\nprojects = ["proj"]\n'
+PUSH = INSTALL + '\n[fleet.push.alcor]\nurl = "{url}"\nprojects = ["proj"]\nrefresh = "true"\n'
 
 
 async def test_push_node_takes_release_before_its_refresh(store, out, ws, tmp_path):
@@ -449,7 +449,7 @@ async def test_push_node_takes_release_before_its_refresh(store, out, ws, tmp_pa
     [t] = await land(make(store, out, ws, fleet=PUSH.format(url=peer)), "a")
     assert t["state"] == "landed"
     assert git(tmp_path / "peer-proj.git", "rev-parse", "refs/mizar/release") == ws.rev("release")
-    assert [c[3] for c in out.calls] == ["alcor", "capella"]
+    assert [c[3] for c in out.calls] == ["capella"], "home refreshes the push node itself"
 
 
 async def test_push_refuses_a_non_fast_forward(store, out, ws, tmp_path):
@@ -473,9 +473,9 @@ def test_fleetconf_push():
 
 
 @pytest.mark.parametrize("text, msg", [
-    ('[fleet.push.a]\nurl = "a:/x"\nprojects = ["p"]', "with {project}"),
-    ('[fleet.push.a]\nurl = "a:/{project}"', "url and projects"),
-    ('[fleet.push.a]\nurl = "a:/{project}"\nprojects = "p"', "list of project names"),
+    ('[fleet.push.a]\nurl = "a:/x"\nprojects = ["p"]\nrefresh = "true"', "with {project}"),
+    ('[fleet.push.a]\nurl = "a:/{project}"\nprojects = ["p"]', "url, projects and refresh"),
+    ('[fleet.push.a]\nurl = "a:/{project}"\nprojects = "p"\nrefresh = "true"', "list of project names"),
 ])
 def test_fleetconf_push_rejects(text, msg):
     with pytest.raises(fleetconf.FleetConfigError, match=msg):
@@ -513,7 +513,7 @@ async def test_push_node_takes_the_pinned_artifact_before_its_refresh(store, out
     [t] = await land(make_art(store, out, ws, fleet, art_store), "a")
     assert t["state"] == "landed"
     assert (dest / "server-v1.tar.xz").read_bytes() == b"tarball"
-    assert [c[3] for c in out.calls] == ["alcor", "capella"]
+    assert [c[3] for c in out.calls] == ["capella"]
 
 
 async def test_an_artifact_that_differs_from_its_pin_refreshes_no_node_after(store, out, ws, tmp_path):
@@ -533,6 +533,94 @@ async def test_a_push_node_without_an_artifacts_dir_takes_none(store, out, ws, t
     fleet = PUSH.format(url=tmp_path / "peer-{project}.git")
     [t] = await land(make_art(store, out, ws, fleet, art_store), "a")
     assert t["state"] == "landed"
+
+
+ART_ONLY = INSTALL + '\n[fleet.push.alcor]\nartifacts = "{dest}"\n'
+
+
+async def test_a_fetching_node_takes_the_pinned_artifact_and_no_push(store, out, ws, tmp_path):
+    art_store = _pinned_scope(ws, tmp_path, b"tarball")
+    dest = tmp_path / "alcor-artifacts"
+    [t] = await land(make_art(store, out, ws, ART_ONLY.format(dest=dest), art_store), "a")
+    assert t["state"] == "landed"
+    assert (dest / "server-v1.tar.xz").read_bytes() == b"tarball"
+    assert [c[3] for c in out.calls] == ["alcor", "capella"]
+
+
+def make_sleepy(store, out, ws, fleet, art_store, awake):
+    ref = Refresher(out, node="mizar", checkout_root=lambda p: ws.proj / "release",
+                    fleet_config=lambda: fleetconf.parse(fleet), artifact_store=art_store,
+                    awake=awake)
+    return Deployer(store, out, workspace=ws.root, refresher=ref)
+
+
+async def test_a_sleeper_that_does_not_answer_is_skipped_and_never_woken(store, out, ws, tmp_path):
+    art_store = _pinned_scope(ws, tmp_path, b"tarball")
+    dest = tmp_path / "alcor-artifacts"
+    fleet = ART_ONLY.format(dest=dest).replace("[fleet]\n", '[fleet]\nsleepers = ["alcor"]\n')
+    asked = []
+
+    async def asleep(node):
+        asked.append(node)
+        return False
+
+    [t] = await land(make_sleepy(store, out, ws, fleet, art_store, asleep), "a")
+    assert t["state"] == "landed"
+    assert asked == ["alcor"] and not dest.exists()
+    assert [c[3] for c in out.calls] == ["capella"], "the rollout goes on past the sleeper"
+
+
+async def test_a_sleeper_that_answers_refreshes_as_usual(store, out, ws, tmp_path):
+    art_store = _pinned_scope(ws, tmp_path, b"tarball")
+    dest = tmp_path / "alcor-artifacts"
+    fleet = ART_ONLY.format(dest=dest).replace("[fleet]\n", '[fleet]\nsleepers = ["alcor"]\n')
+
+    async def awake(node):
+        return True
+
+    [t] = await land(make_sleepy(store, out, ws, fleet, art_store, awake), "a")
+    assert t["state"] == "landed" and (dest / "server-v1.tar.xz").exists()
+    assert [c[3] for c in out.calls] == ["alcor", "capella"]
+
+
+async def test_a_node_without_routine_refreshes_by_the_command_home_runs(store, out, ws, tmp_path):
+    git(tmp_path, "init", "-q", "--bare", str(tmp_path / "peer-proj.git"))
+    art_store = _pinned_scope(ws, tmp_path, b"tarball")
+    dest, log = tmp_path / "peer-artifacts", tmp_path / "cmd.log"
+    fleet = PUSH_ART.format(url=tmp_path / "peer-{project}.git", dest=dest).replace(
+        'refresh = "true"', f'refresh = "echo $AWM_REFRESH_NODE $AWM_REFRESH_PROJECT $AWM_REFRESH_TO >> {log}"')
+    [t] = await land(make_art(store, out, ws, fleet, art_store), "a")
+    assert t["state"] == "landed" and (dest / "server-v1.tar.xz").exists()
+    node, project, to = log.read_text().split()
+    assert node == "alcor" and project == "proj" and len(to) == 40
+    assert [c[3] for c in out.calls] == ["capella"], "no peer routine call to alcor"
+
+
+async def test_a_failed_refresh_command_stops_the_rollout(store, out, ws, tmp_path):
+    git(tmp_path, "init", "-q", "--bare", str(tmp_path / "peer-proj.git"))
+    art_store = _pinned_scope(ws, tmp_path, b"tarball")
+    fleet = PUSH_ART.format(url=tmp_path / "peer-{project}.git", dest=tmp_path / "d").replace(
+        'refresh = "true"', 'refresh = "exit 3"')
+    [t] = await land(make_art(store, out, ws, fleet, art_store), "a")
+    batch = store.get_batch(t["batch_id"])
+    assert batch["state"] == "refresh-failed" and out.calls == []
+
+
+def test_fleetconf_sleepers():
+    f = fleetconf.parse('[fleet]\nhome = "mizar"\nnodes = ["mizar", "capella"]\nsleepers = ["capella"]\n')
+    assert f.sleepers == ("capella",)
+    with pytest.raises(fleetconf.FleetConfigError, match="names home"):
+        fleetconf.parse('[fleet]\nhome = "mizar"\nsleepers = ["mizar"]\n')
+
+
+def test_fleetconf_artifacts_only():
+    f = fleetconf.parse(ART_ONLY.format(dest="alcor:/w/.awm/artifacts"))
+    assert f.artifacts_dest("alcor") == "alcor:/w/.awm/artifacts"
+    assert f.push_url("alcor", "proj") == ""
+    for bad in ('[fleet.push.a]\nprojects = ["p"]\nartifacts = "a:/x"',
+                '[fleet.push.a]\nartifacts = ""', '[fleet.push.a]\n'):
+        with pytest.raises(fleetconf.FleetConfigError):
+            fleetconf.parse(bad)
 
 
 def test_fleetconf_push_artifacts():

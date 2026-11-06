@@ -15,7 +15,7 @@ import subprocess
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Awaitable, Callable
 
 from awm.routine import artifacts, deployconf, fleetconf, proc
 from awm.routine.deployconf import Refresh
@@ -98,8 +98,10 @@ class Refresher:
     def __init__(self, out: Outbound, *, node: str,
                  checkout_root: Callable[[str], Path],
                  fleet_config: Callable[[], fleetconf.Fleet] = fleetconf.Fleet,
-                 artifact_store: Path | None = None) -> None:
+                 artifact_store: Path | None = None,
+                 awake: Callable[[str], Awaitable[bool]] | None = None) -> None:
         self.out = out
+        self.awake = awake or _answers
         self.node = node
         self.checkout_root = checkout_root
         self.fleet_config = fleet_config
@@ -192,9 +194,10 @@ class Refresher:
         """Refresh each node in order, stopping at the first failure (R31).
 
         The install config names the nodes, home base first (fleetconf). An
-        empty list means this node only. A push node first takes the release
-        from ``bare``, then the files the release pins when it names an
-        artifacts directory."""
+        empty list means this node only. A push node takes the release from
+        ``bare``, the pinned files when it names an artifacts directory, then
+        home runs its refresh command. A node that fetches takes the pinned
+        files when it names a directory, then refreshes itself."""
         fleet = self.fleet_config()
         nodes = list(fleet.rollout(project)) or [self.node]
         done: list[dict[str, Any]] = []
@@ -202,15 +205,21 @@ class Refresher:
         for node in nodes:
             if node == self.node:
                 r = await self.local(project, frm, to)
+            elif node in fleet.sleepers and not await self.awake(node):
+                r = NodeResult(node, True, "asleep: skipped and not woken. It takes this "
+                                           "release at its next refresh.")
             else:
                 url = fleet.push_url(node, project)
                 r = await self._push(node, url, bare, to) if url else None
-                dest = fleet.artifacts_dest(node) if url else ""
+                dest = fleet.artifacts_dest(node)
                 if r is None and dest:
                     if pinned is None:
                         pinned, r = await self._pinned(node, bare, to)
                     if r is None:
                         r = await self._push_artifacts(node, dest, pinned)
+                if r is None and url:
+                    r = await self._refresh_by_command(node, project, fleet.refresh_command(node),
+                                                       frm, to)
                 if r is None:
                     r = await self._peer(node, project, frm, to)
             done.append(r.to_dict())
@@ -254,6 +263,15 @@ class Refresher:
                                   f"artifacts: push of {art.file} to {dest} {_why(res)}\n{res.output}")
         return None
 
+    async def _refresh_by_command(self, node: str, project: str, cmd: str, frm: str,
+                                  to: str) -> NodeResult:
+        """Refresh push node ``node`` with the command its entry names, run here."""
+        env = {**self._env(frm, to), "AWM_REFRESH_NODE": node, "AWM_REFRESH_PROJECT": project}
+        res = await proc.run(cmd, cwd="/", timeout=1800.0, env=env)
+        if not res.ok:
+            return NodeResult(node, False, f"refresh command {_why(res)}\n{res.output}")
+        return NodeResult(node, True, res.output[-2000:])
+
     async def _peer(self, node: str, project: str, frm: str, to: str) -> NodeResult:
         try:
             res = await self.out.invoke("routine", "refresh",
@@ -265,6 +283,13 @@ class Refresher:
             return NodeResult(node, False, f"peer returned {res!r}"[:300])
         return NodeResult(node, bool(res.get("ok")), str(res.get("detail", "")),
                           list(res.get("hooks", [])))
+
+
+async def _answers(node: str) -> bool:
+    """Whether ``node`` takes an ssh connection now. A connect never wakes a node."""
+    res = await proc.run(f"ssh -o BatchMode=yes -o ConnectTimeout=8 {shlex.quote(node)} true",
+                         cwd="/", timeout=20.0)
+    return res.ok
 
 
 def _why(res: proc.Result) -> str:
