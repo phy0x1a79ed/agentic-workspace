@@ -171,7 +171,8 @@ async def ensure_daemon(action: str, timeout: float = ENSURE_TIMEOUT_S) -> None:
         out = await gatewayclient.call("harness-cc", "daemon_ensure", {"timeout": timeout},
                                        timeout=timeout + 15)
         if isinstance(out, dict) and not out.get("ok"):
-            detail = f" ({out.get('action') or 'down'}: {out.get('reason') or out.get('error') or ''})"
+            why = "; ".join(str(out[k]) for k in ("reason", "error") if out.get(k))
+            detail = f" ({out.get('action') or 'down'}: {why})"
     except Exception as exc:  # noqa: BLE001 — no keep service is the old behaviour
         detail = f" (keep: {type(exc).__name__})"
     if sessions.daemon_pid() is None:

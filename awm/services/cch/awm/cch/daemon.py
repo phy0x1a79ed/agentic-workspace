@@ -14,6 +14,8 @@ systemd manager, `awm-claude-daemon.service`, launched from here:
   never given up for good. systemd keeps counting restarts across healthy runs,
   so a daemon that has stayed up for ``SETTLE_S`` gets its count reset here.
   Without that, a few weeks of upgrades leave every restart waiting 10 minutes.
+  systemd before 254 rejects both properties and refuses the whole unit, so
+  there the daemon restarts after a fixed minute instead.
 - ``OOMPolicy=continue``: one OOM-killed session does not stop the unit.
 - ``OOMScoreAdjust=-200``: the kernel picks the real memory hog first.
 
@@ -73,14 +75,16 @@ HOLD_DEFAULT_S = 600.0
 UNIT_PROPERTIES = (
     "KillMode=process",
     "Restart=always",
-    "RestartSec=10s",
-    "RestartSteps=6",
-    "RestartMaxDelaySec=10min",
     "StartLimitIntervalSec=0",
     "OOMPolicy=continue",
     "OOMScoreAdjust=-200",
     "TimeoutStopSec=30",
 )
+#: systemd before 254 refuses RestartSteps and RestartMaxDelaySec and with them
+#: the whole unit, so an older host restarts at one fixed, longer delay.
+BACKOFF_SINCE = 254
+BACKOFF = ("RestartSec=10s", "RestartSteps=6", "RestartMaxDelaySec=10min")
+NO_BACKOFF = ("RestartSec=1min",)
 
 _SHOW = ("LoadState", "ActiveState", "SubState", "MainPID", "NRestarts", "Result",
          "ExecMainCode", "ExecMainStatus", "MemoryHigh", "MemoryMax")
@@ -277,6 +281,14 @@ class Host:
         args = ["show", f"{UNIT}.service", *(f"-p{k}" for k in _SHOW)]
         return parse_show(self.systemctl(bus, *args).stdout)
 
+    def systemd_version(self) -> int | None:
+        try:
+            out = subprocess.run(["systemctl", "--version"], capture_output=True, text=True,
+                                 timeout=10)
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        return systemd_version(out.stdout)
+
     def run_unit(self, bus: dict[str, str], argv: list[str]) -> subprocess.CompletedProcess:
         return subprocess.run(argv, capture_output=True, text=True, timeout=60,
                               env={**os.environ, **bus})
@@ -327,10 +339,23 @@ def _user() -> str:
     return pwd.getpwuid(os.getuid()).pw_name
 
 
-def launch_argv(claude: str, env: dict[str, str], memory: tuple[str, ...]) -> list[str]:
+def systemd_version(text: str) -> int | None:
+    """The major version from ``systemctl --version``, e.g. 249 from ``systemd 249 (249.11)``."""
+    parts = text.split()
+    if len(parts) >= 2 and parts[0] == "systemd" and parts[1].isdigit():
+        return int(parts[1])
+    return None
+
+
+def restart_properties(version: int | None) -> tuple[str, ...]:
+    return BACKOFF if version is None or version >= BACKOFF_SINCE else NO_BACKOFF
+
+
+def launch_argv(claude: str, env: dict[str, str], memory: tuple[str, ...],
+                restart: tuple[str, ...] = BACKOFF) -> list[str]:
     return ["systemd-run", "--user", "--quiet", "--collect", f"--unit={UNIT}",
             "--description=Claude Code daemon, kept by awm",
-            *(f"--property={p}" for p in (*UNIT_PROPERTIES, *memory)),
+            *(f"--property={p}" for p in (*UNIT_PROPERTIES, *restart, *memory)),
             f"--working-directory={Path.home()}",
             *(f"--setenv={k}={v}" for k, v in env.items()),
             "--", claude, "daemon", "run", "--origin", "service"]
@@ -450,7 +475,8 @@ class Keeper:
                 self.host.systemctl(bus, "set-property", "--runtime", f"{UNIT}.service", *memory)
             proc = self.host.systemctl(bus, "start", "--no-block", f"{UNIT}.service")
         else:
-            proc = self.host.run_unit(bus, launch_argv(claude_bin(), daemon_env(), memory))
+            restart = restart_properties(self.host.systemd_version())
+            proc = self.host.run_unit(bus, launch_argv(claude_bin(), daemon_env(), memory, restart))
         if proc.returncode != 0:
             return {"action": "failed", "reason": reason,
                     "error": (proc.stderr or proc.stdout or "").strip()[:400]}
