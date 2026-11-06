@@ -17,3 +17,15 @@
 - `awmSwarmBoard`, `awmSwarmOps` and Portals do not exist. alcor's writer fails every step: its first `note_get` on the missing root raises, because deneb's door returns ETAPI's 404 as a 502, which the gateway client raises as Unreachable, not Refused. No card reaches the vault. Fixed in awm 5aff3f26.
 - The writer cannot create `awmSwarmBoard` itself, because a note under `root` is outside its subtree. The operator creates it.
 - The federation board has 7 columns. Live cards: Proposed holds 7 (W1, W2, CL1, factorio-diffusion read access, factorio-diffusion stage 2, deneb access, TreeSAPP-AMBER runtime). Planned holds 1 (Opal on Slack). Each column also has an Archived or Older note.
+
+## Tony's answers (2026-11-06)
+
+> 2 I never used the old swarm board, so it can just be deleted. I havent looked at the new one yet. why are we migrating rather than updating the ops section?
+
+> 3 can just delete, never used. lets hold a full test of the new queue and approvals workflow in 1 sitting, prolly with another agent
+
+> 4 what is the awm book? what is the new swarm board?
+
+- Delete the old Swarm board (`Nzv8wkoUgl2V`).
+- Delete the federation board's 8 pre-redux cards. The full test of the queue and approvals runs as its own topic, `end-state/queue-approvals-test`.
+- Still open: whether the new Ops replaces the old one, and where the new board goes. These wait on the answers to "why migrate" and "what is the AWM book".

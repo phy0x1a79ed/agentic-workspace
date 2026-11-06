@@ -28,13 +28,14 @@ Procedure, from dfs-interview § Work the stack:
 ## Pending
 
 - **shogun-callers** (2026-11-06): Which of alcor's singletons may shogun call? Recommend operations only (approvals R100, board).
+- **cloud-delay** (2026-11-06): fleet-endstate holds its node changes until 15:05 PT Fri 2026-11-06 (Tony: 'delay them to start this friday at 305 PM')
 
 ## Stack
 
 - **install-loop** (2026-11-06): I want to start a session locally to iteratively dev on awm with cloud agent install tests so that the process is seamless and as close to 1 command as possible, including all core plugins (we can also discuss what that means, starting from the current definition, in that session) -> it would be good to do this for metasmith on altair as well
 - **ops-board** (2026-11-06): https://nexus.tony-xy-liu.com/trilium/#root/iF0A3SWEGqUx/P4ALwPiCSs6N?ntxId=CZkmWI ops board needs updating
   - [ ] Old AWM book: delete the old Ops password notes, carry Links into the new Ops, archive the old Swarm board?
-  - [ ] Federation board: archive all 8 pre-redux cards, then check the door and intake end to end?
+  - [x] Federation board: archive all 8 pre-redux cards, then check the door and intake end to end? (answered 2026-11-06)
   - [ ] Place the new Swarm board under the AWM book, next to the federation board?
 - **end-state** (2026-11-06): there are a few sessions that look left over. Please use the DFS interview skill so that we can review the end state and if there are anything left open for us to clean up and do.
   - **queue-approvals-test** (2026-11-06): lets hold a full test of the new queue and approvals workflow in 1 sitting, prolly with another agent
