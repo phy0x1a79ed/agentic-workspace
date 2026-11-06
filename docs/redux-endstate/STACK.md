@@ -30,7 +30,7 @@ end-state/deneb-link
   - **seat-lifecycle**: seats retire after the task with a report by DM, journal often, tags per user and one for seats; "the task should be resumable from debrief journals, even if the sessions are gone." Idle lab seats retire too.
   - **social-split**: social splits into write-only notifications, read/write channels (bots, seats) and personal automations (Teams, Slack browser). Browser joins core and keeps no browser warm.
   - **refresh-notices**: "message leaking..." The deploy refresh messages every session on a node ("awm on capella restarts in ~2 minutes ... reply hold"); a worker's reply about it showed up in Tony's view.
-  - **deploy-routine**: "change the deploy protocol to be deterministic with only agentic error handling". Spec pointer: journal e44b39dc.
+  - **deploy-routine**: "change the deploy protocol to be deterministic with only agentic error handling". Spec pointer: journal e44b39dc. State: routine service live, `routine deploy` runs R27; `routine list` empty (R30 test suite, R35 metasmith release not registered); awm's refresh uses a supervising agent per node (R32). Asked Tony: override R32 with a deterministic per-node refresh, agent only on failure?
   - **queue-approvals-test**: "a full test of the new queue and approvals workflow in 1 sitting, prolly with another agent".
   - **session-naming**: "naming by hand and omit agent renaming unless needed ... revise the naming scheme to include node."
   - **env-reload**: a changed config.toml [env] reaches plugins only after a full gateway restart, which stops the node's sessions. Tony: "can we make the gateway restart more seamless? what is it for anyways?" mizar's AWM_EDGE_URL (tailnet IP → name) waits on it. capella's took effect with its d5be934c restart.
@@ -38,13 +38,14 @@ end-state/deneb-link
 
 ## Workers
 
-- swarm-board/layout (8e2d9201): builds the ops-board decision (journal 7724ff11).
 - trilium-design/interview (c6adc424, talks with Tony directly): status-pages, new-agent-button, note-agent-button, seat-rc-toggle.
 - telegram/removal (edd4e880): stock project.
 - seats/pause (e11ce259, altair, talks with Tony directly).
 - install-loop (9fc4afc8 mizar), metasmith-install-loop (80f06e0c altair): hold until Sat 2026-11-07 15:05 PT.
 
 ## Closed
+
+- swarm-board layout (8e2d9201, awm d5be934c, journal 0d875664): AWM book holds tasks (5 column folders, read-only), Ops, and the page. Open with trilium-design: what feeds Swarm triage; Tony to view the page.
 
 - vault-copy (06933c40, cloud c4ee960, 1da2d74): deneb's nightly copy runs (the role never started its timer); mizar's 04:10 pull installed and run once, a third copy on altair. Left: mizar's ~/backups is outside the off-site backup.
 
