@@ -23,13 +23,10 @@ Procedure, from dfs-interview § Work the stack:
 
 ## Current topic
 
-**lifecycle**. Its result: `lifecycle/README.md`.
+**resume-from-journals**. Its result: `resume-from-journals/README.md`.
 
 ## Stack
 
-- **lifecycle** (2026-11-06): need to update seats to retire after task is done with report sent back through DM. ... even for seats of lab messages and DMs, they should retire and not just sit there.
-  - [x] When a client's agent retires, how does its seat go back to slack-main? Recommend: social gives each account a fallback holder (slack-main), so a push for a seat with no live holder goes to slack-main instead of being dropped. (answered 2026-11-06)
-  - [ ] How does the routine get the event? Recommend: add event triggers to the routine plugin ([trigger] event = social/message with a filter), passing the message to the steps. The step script checks for a live holder and starts the client's agent when there is none.
 - **resume-from-journals** (2026-11-06): the task should be resumable from debrief journals, even if the sessions are gone.
 - **journal-tags** (2026-11-06): Seats should also be instructed to journal often -> we should also add tags for each user, and one that marks seats. otherwise, these journals are debreif journals.
 - **speak-rule** (2026-11-06): steven chen contacted the client without first being asked, on a stale request.
@@ -43,3 +40,5 @@ Procedure, from dfs-interview § Work the stack:
 ## Parked
 
 ## Closed
+
+- **lifecycle** (closed 2026-11-06): `lifecycle/README.md`
