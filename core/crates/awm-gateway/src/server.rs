@@ -228,7 +228,16 @@ async fn invoke(State(gw): Gw, h: HeaderMap, body: Option<Json<Value>>) -> Resul
     };
     let args = body.get("args").cloned().filter(|a| !a.is_null()).unwrap_or_else(|| json!({}));
     let ctx = context(&gw, &h, Surface::Http).await?;
-    let result = gw.invoke(name, args, &ctx).await?;
+    let session = ctx.caller.lane == Lane::Local && matches!(ctx.surface, Surface::Mcp | Surface::Cli);
+    let mut args = args;
+    if session {
+        crate::files::inline_file_arg(name, &mut args).map_err(|e| ApiError::new(400, e))?;
+    }
+    let mut result = gw.invoke(name, args, &ctx).await?;
+    // The session's node is where inline file content lands; a plugin or a peer takes it as sent.
+    if session {
+        result = crate::files::localize(&result, &gw.node);
+    }
     Ok(Json(json!({"result": result})))
 }
 

@@ -23,6 +23,7 @@ import json
 import logging
 import time
 
+from awm.social.connectors.slack_blocks import slack_text
 from awm.social.connectors.base import (
     Account, Channel, Connector, Identity, InboundMessage, OnMessage,
     looks_like_slack_user_id, slack_attachments,
@@ -163,7 +164,7 @@ class SlackConnector(Connector):
                 sender_name=sender,
                 message_id=event.get("ts", ""),
                 ts=event.get("ts", ""),
-                text=event.get("text", "") or "",
+                text=slack_text(event),
                 attachments=slack_attachments(event),
             )
             await self.on_message(inbound)
@@ -191,7 +192,7 @@ class SlackConnector(Connector):
             sender_name=sender,
             message_id=m.get("ts", ""),
             ts=m.get("ts", ""),
-            text=m.get("text", "") or "",
+            text=slack_text(m),
             attachments=slack_attachments(m),
         )
 
@@ -457,7 +458,7 @@ class SlackConnector(Connector):
                 sender_name=sender,
                 message_id=m.get("ts", ""),
                 ts=m.get("ts", ""),
-                text=m.get("text", "") or "",
+                text=slack_text(m),
                 attachments=slack_attachments(m),
                 raw={"permalink": m.get("permalink", "")},
             ))

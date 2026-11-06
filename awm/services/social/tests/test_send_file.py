@@ -62,6 +62,14 @@ async def test_file_attaches_under_its_own_name(conn, plan):
                           [{"filename": "plan.md", "path": plan}])]
 
 
+async def test_inline_bytes_reach_the_connector_as_sent(conn):
+    """What the caller's gateway makes of `file=<path>`: a `files` entry with `b64`."""
+    entry = {"filename": "page.html", "b64": base64.b64encode(b"<p>" * 1000).decode()}
+    conn.max_file_bytes = 10_000
+    await _send(files=[entry], text="page")
+    assert conn.sent == [("D1", "page", None, [entry])]
+
+
 async def test_text_is_optional_with_a_file(conn, plan):
     await _send(file=plan)
     assert conn.sent[0][1] == ""

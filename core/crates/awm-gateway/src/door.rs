@@ -1,9 +1,10 @@
 //! The client for another host's singleton door (fleet.md R89, R98 item 2).
 //!
 //! A singleton runs on one host, and each of its callers reaches it through that host's door,
-//! never through an edge. One call is one `ssh -l <user> -p <port> <address> port <request>` with this
-//! node's service key, which the host forces to `awm port`. The door reads the request from
-//! `SSH_ORIGINAL_COMMAND` and prints one JSON line. A shared master connection keeps the link
+//! never through an edge. One call is one `ssh -l <user> -p <port> <address> port` with this
+//! node's service key, which the host forces to `awm port`. The request goes over stdin, since a
+//! request can carry a file and an argument list holds only a few hundred KB. The door prints one
+//! JSON line. A shared master connection keeps the link
 //! warm (R93). `AWM_DOOR_SSH` names another program to run in place of ssh, with the same
 //! arguments.
 
@@ -53,7 +54,7 @@ pub fn request(tool: String, envelope: Value, caller: &Caller, here: &str) -> Do
     }
 }
 
-fn ssh_args(route: &DoorRoute, request: &DoorRequest) -> Vec<String> {
+fn ssh_args(route: &DoorRoute) -> Vec<String> {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/".into());
     let key = format!("{}/{SERVICE_KEY}", home.trim_end_matches('/'));
     let opts = [
@@ -66,7 +67,7 @@ fn ssh_args(route: &DoorRoute, request: &DoorRequest) -> Vec<String> {
         args.extend(["-l".into(), user.clone()]);
     }
     args.extend(["-i".into(), key, "-p".into(), route.port.to_string(), route.address.clone()]);
-    args.push(format!("port {}", serde_json::to_string(request).expect("json")));
+    args.push("port".into());
     args
 }
 
@@ -77,19 +78,27 @@ pub async fn call(route: &DoorRoute, request: &DoorRequest) -> Result<String, Pe
         peer: route.host.clone(),
         reason: format!("{} did not answer for {}: {reason}", route.where_(), route.tool),
     };
-    let child = tokio::process::Command::new(&program)
-        .args(ssh_args(route, request))
-        .stdin(Stdio::null())
+    let mut child = tokio::process::Command::new(&program)
+        .args(ssh_args(route))
+        .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true)
         .spawn()
         .map_err(|e| unreachable(format!("{program}: {e}")))?;
+    let mut stdin = child.stdin.take().expect("stdin was piped");
+    let body = serde_json::to_vec(request).expect("json");
+    // The write runs beside the read of the reply: a reply can fill its pipe before the request is sent.
+    let sent = tokio::spawn(async move {
+        use tokio::io::AsyncWriteExt;
+        let _ = stdin.write_all(&body).await;
+    });
     let out = match tokio::time::timeout(TIMEOUT, child.wait_with_output()).await {
         Err(_) => return Err(unreachable(format!("no reply within {TIMEOUT:?}"))),
         Ok(Err(e)) => return Err(unreachable(e.to_string())),
         Ok(Ok(out)) => out,
     };
+    sent.abort();
     let reply = String::from_utf8_lossy(&out.stdout)
         .lines()
         .find_map(|l| serde_json::from_str::<Value>(l).ok().filter(|v| v.get("ok").is_some()));
@@ -137,15 +146,15 @@ mod tests {
     }
 
     #[test]
-    fn the_request_rides_in_the_ssh_command() {
+    fn the_request_rides_on_stdin_not_the_ssh_command() {
         let route = DoorRoute { tool: "vault".into(), host: "h".into(), address: "203.0.113.7".into(), port: 2201, user: None };
         let req = DoorRequest { name: "vault".into(), args: json!({"verb": "get"}), ..empty() };
-        let args = ssh_args(&route, &req);
+        let args = ssh_args(&route);
         let n = args.len();
         assert_eq!(&args[n - 4..n - 1], ["-p", "2201", "203.0.113.7"]);
-        assert_eq!(args[n - 1], r#"port {"name":"vault","args":{"verb":"get"}}"#);
+        assert_eq!(args[n - 1], "port", "the request is not on the command line");
         assert!(args.iter().any(|a| a.ends_with(SERVICE_KEY)));
-        let parsed = awm_trust::port::parse(&args[n - 1]).unwrap();
+        let parsed = awm_trust::port::parse(&serde_json::to_string(&req).unwrap()).unwrap();
         assert_eq!((parsed.name.as_str(), parsed.origin), ("vault", None));
         assert!(!args.iter().any(|a| a == "-l"), "no user named, so ssh logs in as the caller");
     }
@@ -153,8 +162,7 @@ mod tests {
     #[test]
     fn the_door_user_is_the_login_name() {
         let route = DoorRoute { tool: "vault".into(), host: "h".into(), address: "100.1.1.1".into(), port: 2201, user: Some("awm".into()) };
-        let req = DoorRequest { name: "vault".into(), args: json!({}), ..empty() };
-        let args = ssh_args(&route, &req);
+        let args = ssh_args(&route);
         let at = args.iter().position(|a| a == "-l").expect("-l");
         assert_eq!(args[at + 1], "awm");
         assert!(at < args.len() - 2, "the login precedes the address and the command");

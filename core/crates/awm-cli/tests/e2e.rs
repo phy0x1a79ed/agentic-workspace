@@ -1057,7 +1057,7 @@ fn a_caller_reaches_a_peers_singleton_through_its_door() {
         assert_eq!(who["as"], "peer:alcor");
     }
     let args = std::fs::read_to_string(&door.args).unwrap();
-    assert!(args.contains("\n-p\n2201\n127.0.0.1\nport {"), "the door listens on deneb's public address: {args}");
+    assert!(args.contains("\n-p\n2201\n127.0.0.1\nport\n"), "the door listens on deneb's public address, and the request is not on the command line: {args}");
     assert!(args.contains("\n-l\nawm\n"), "the caller logs in as the door's user: {args}");
     // operations' own call to trilium takes the same door.
     let resp = http().post(format!("{}/invoke", alcor.url))

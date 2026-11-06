@@ -1,8 +1,8 @@
 //! The service door: the forced command of a service key (fleet.md R92 item 3, R98 item 2).
 //!
 //! A service key's `authorized_keys` line reads
-//! `restrict,command="awm port --key awm:<holder>:service" ssh-ed25519 …`. sshd
-//! puts what the caller asked for in `SSH_ORIGINAL_COMMAND`. The door takes one
+//! `restrict,command="awm port --key awm:<holder>:service" ssh-ed25519 …`. The caller
+//! sends the request on stdin, and sshd sets `SSH_ORIGINAL_COMMAND` to `port`. The door takes one
 //! JSON request `{"name","args","origin"?,"session"?,"trust"?,"scope"?,"job"?,"session_name"?}`, answers any tool outside its set as unknown, logs every
 //! call, and hands the rest to the local gateway at the service lane.
 
@@ -35,7 +35,7 @@ pub struct DoorRequest {
     pub session_name: Option<String>,
 }
 
-/// Parse `SSH_ORIGINAL_COMMAND`: `port <json>` or the bare JSON.
+/// Parse a request: the JSON, with an optional leading `port`.
 pub fn parse(original: &str) -> Result<DoorRequest, String> {
     let body = original.trim().strip_prefix("port").map(str::trim).unwrap_or(original.trim());
     serde_json::from_str(body).map_err(|e| format!("bad door request: {e}"))
