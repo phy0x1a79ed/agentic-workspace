@@ -27,7 +27,6 @@ Procedure, from dfs-interview § Work the stack:
 
 ## Pending
 
-- **M10b** (2026-11-05): Tailnet admin console, DNS page: turn on HTTPS Certificates, so each node's <machine>.tail080e54.ts.net portal can get a certificate. Each name then shows in the public Certificate Transparency logs (you chose ts.net names knowing that; say if not).
 - **rc-rows** (2026-11-05): On claude.ai/code, archive the 31 dead Remote Control rows: 7 redux-build-* (alcor, clean-plugins, search, channels, queue, deploy, integrate), 14 finished (awm redux, core-redux-gateway-plugins-bootstrap, fleet-board-rework, fxdiff-design, retire-full-close, owner-dm-defaults, discord dm previews, multi-admin machine access, plan-bypass-mode, science-bash-stall, capellaz cc mem cleanup, avatar, lit kb, cloud/homelab), representative x5, secretary x5. Your call on: engcyc pipeline plan, msm-*, fosdb, cyanoverse, treesapp, ecspr, job application system, 4 offline seat rows, 4 cloud sessions.
 - **Q-deneb-retry** (2026-11-05): The deneb cutover rolled back cleanly: backups verified, 2b kept. The release lacked door-client, so deneb couldn't load plugins that need alcor's operations and social. The retry needs a new release with door-client, about 10 minutes of vault downtime again. I'll bring you the plan and a window once dev's release candidate is green.
 - **M-cosmos-invite** (2026-11-05): Tether is back on deneb, but compute-budget's COSMOS session (slot 1) dropped at 23:50 UTC. When you're at COSMOS, ask compute-budget for a new invite and accept it there.
