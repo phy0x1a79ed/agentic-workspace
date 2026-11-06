@@ -62,6 +62,8 @@ Procedure, from dfs-interview § Work the stack:
 
 From journal 6a98c0c6 (awm/redux) and walkthrough's handover (manual-steps.md at feat/redux-walkthrough a12a5f6e, M-numbers). Live workers: dev, singleton-callers, rt-container, reflect-selfstop.
 
+- **join-403** (2026-11-05): from redux-build/tether-keepalive (journal 9e7eeb2c): a hop in front of deneb's relay (Cloudflare, nginx or httpsfront's bridge) answers a tether /join redial with 403 at about 182 s. v0.4.1 no longer releases the slot on it, but the hop is unknown.
+
 - **edge-forward** (2026-11-05): Tony: "ssh needs to be just plain ssh". Replace `awm edge-serve` on the far node with a plain ssh forward to its loopback gateway (R92: an awm request inside ssh to the other node's loopback gateway). Delete edge-serve and its AWM_DIR lookup. dev, after R147.
 
 - **alcor-pass-2** (2026-11-05): leftovers of redux-build/alcor-open (journal 73dd9ef5): (1) lyra's edge key into alcor's ssh_edges once recorded; (2) operations gets AWM_APPROVER_GRANT_PUBKEY through singleton_needs or secrets, not config.toml [env], so spawn orders turn on; (3) singletons_sandbox stops a singleton that leaves the list; (4) deneb out of alcor's singleton callers (with deneb-board); (5) tailnet_portal on mizar, capella and lyra.
