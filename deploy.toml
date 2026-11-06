@@ -21,14 +21,12 @@ backup = "github"
 kind = "queue"
 sync = "scripts/refresh-checkout.sh"
 prompt = """This node's awm checkout already holds the new release. Restart awm \
-on it under supervision, as FEDERATION.md § Deploy says. First find the other \
-sessions on this node with ListAgents. Tell each live one that awm restarts, and \
-wait until none is mid-call to an awm tool or holds a tether or ssh session it \
-cannot lose. Then run `scripts/awm-deploy.sh` \
+on it, as FEDERATION.md § Deploy says. Do not message other sessions: each one \
+reconnects to awm on its own after the restart. Run `scripts/awm-deploy.sh` \
 (it places the core binary that scripts/core.pin names, unpacks the page dists that \
 scripts/pages.pin names, builds nothing, stops on a sha256 mismatch, and installs the plugins \
-this node's config.toml enables), and confirm every enabled service came back. If one did not, fix it before you stop. Tell the sessions \
-you warned that awm is back."""
+this node's config.toml enables), and confirm every enabled service came back. If one did \
+not, fix it before you stop. Then retire."""
 
 [artifacts]
 # Built files the release pins. Before a push node refreshes, the landing node
