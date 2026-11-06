@@ -28,6 +28,7 @@ Procedure, from dfs-interview § Work the stack:
 ## Stack
 
 - **resume-from-journals** (2026-11-06): the task should be resumable from debrief journals, even if the sessions are gone.
+  - [ ] Where does the routine start a client's agent, so that its journals are always in one place? Recommend: a fixed home scope per client, metasmith/lab/<client-slug>, created on first message. The agent journals there even when the work happens in another scope.
 - **journal-tags** (2026-11-06): Seats should also be instructed to journal often -> we should also add tags for each user, and one that marks seats. otherwise, these journals are debreif journals.
 - **speak-rule** (2026-11-06): steven chen contacted the client without first being asked, on a stale request.
 - **lost-pushes** (2026-11-06): it looks like there is a bug in how seats work. retired seats came back
