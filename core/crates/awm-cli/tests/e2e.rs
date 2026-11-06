@@ -594,7 +594,15 @@ fn gateway_end_to_end() {
         .env("AWM_HUB_TOKEN_FILE", node.state.join("ext.token"))
         .spawn()
         .unwrap();
-    let (code, out, errout) = cli(&url, &["ext", "echo", "--text", "from outside"]);
+    // The external process registers on its own clock, so the first calls may land before it.
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let (code, out, errout) = loop {
+        let got = cli(&url, &["ext", "echo", "--text", "from outside"]);
+        if got.0 == 0 || Instant::now() >= deadline || !got.2.contains("Unknown tool \"ext\"") {
+            break got;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    };
     let _ = ext.kill();
     let _ = ext.wait();
     assert!(code == 0 && out.contains("from outside"), "{}", fail(&format!("external echo: {out} {errout}")));
