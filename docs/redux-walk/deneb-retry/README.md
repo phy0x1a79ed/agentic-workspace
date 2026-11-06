@@ -16,3 +16,7 @@ The second attempt at deneb's cutover after the first rolled back on 2026-11-05:
 - deneb-board's view, adopted: the retry is one window. mizar on 60a1e5f8 would lose trilium and zotero once they sit behind deneb's door. The order is mizar, then alcor (operations serving), then deneb's cutover.
 - The release candidate must have: the door login user from `singleton_doors.<host>.user`, needs holding at install while a door is down, a met search need for deneb's journal, and the awm-deploy.sh chmod fix.
 - The cutover's rollback repoints trilium's node-bin by script. The avatar relay moved to a unix socket in 2b, so capella's client must switch (Tony's M44).
+- R79 governs deneb's plugin set: "deneb runs no agent session and opens no outbound ssh." deneb therefore makes no door call. Its needs on operations, social and search become contract needs that may have no provider (dev), and its plugin list drops the agent machinery (deneb-board). deneb leaves every singleton's callers list.
+- Door login user: door-client reads `singleton_doors.<host>.user` (e4e66e6b). A need on a door singleton holds at load, and the door is never contacted at load (Rust test `a_singleton_behind_a_door_strands_no_plugin`).
+- Each caller pins each door's host key, recorded from the host itself, never by keyscan (deneb-board's role).
+- mizar's edge-off.conf comes off in the retry window, after alcor runs the release.
