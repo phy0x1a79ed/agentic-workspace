@@ -70,3 +70,15 @@ What the line lacks:
 > here's a prefix i see: "slack from Steven Chen ↳1793825822.808289 [channel=D0CAGBM8ACQ message_id=1793916761.608339]: ' useless: "slack from" "↳1793825822.808289" "channel=D0CAGBM8ACQ" -> should be just DM "message_id=1793916761.608339"
 
 What the ids do today: the agent copies `channel` and `thread` into `social send` to answer in the same chat and thread, and `channel` with `message_id` into `social react` (`awm/social/hub_adapter.py:237-294`). Dropping them from the line means social must fill them in.
+
+## Decision: the pushed line
+
+Tony, 2026-11-06: "thread needs id for lookup", "access level is said once in the beginning?" and "if we do channel or user, we report the other per message. seat steven -> DM, etc / seat arbutus [Ryan] etc".
+
+1. The line carries only what the seat does not already fix. A person seat names the chat. A channel seat names the sender.
+   - Person seat (Steven): `[DM] can you update my analyses ...`, `[#arbutus] ...`
+   - Channel seat (#arbutus): `[Ryan] approve`
+2. A thread reply keeps its thread id for lookup: `[DM ↳1793825822.808289] just using a strict ...`, `[Ryan ↳1792715091.033399] ...`.
+3. The trust level is stated once, in the agent's starting brief, not on each line.
+4. No platform word, no `from`, no channel id and no message id. `send` and `react` from a seat's agent default to the chat, thread and message of its latest line. The agent names another chat by its label (`DM`, `#arbutus`) or a thread by its id. `social history` still returns all ids.
+5. Seat names follow the same keys: `seat:<app>/<server>/@<person-slug>` and `seat:<app>/<server>/#<channel-slug>`. `<person-slug>` matches scope `seats/<person>` and tag `user:<person>`.
