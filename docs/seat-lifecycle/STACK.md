@@ -23,13 +23,10 @@ Procedure, from dfs-interview § Work the stack:
 
 ## Current topic
 
-**journal-tags**. Its result: `journal-tags/README.md`.
+**speak-rule**. Its result: `speak-rule/README.md`.
 
 ## Stack
 
-- **journal-tags** (2026-11-06): Seats should also be instructed to journal often -> we should also add tags for each user, and one that marks seats. otherwise, these journals are debreif journals.
-  - [ ] Tag scheme: every seat journal carries journal + seat + user:<person-slug>, and the new-seat routine adds the user tag on first contact? Recommend yes.
-  - [ ] How often is 'journal often'? Recommend: after each result or decision sent in the DM, and at retire.
 - **speak-rule** (2026-11-06): steven chen contacted the client without first being asked, on a stale request.
 - **lost-pushes** (2026-11-06): it looks like there is a bug in how seats work. retired seats came back
 - **rc-toggle** (2026-11-06): about the seats, it would be great if on the new fleet status dashboard, I can turn remote control on and off for seats
@@ -46,3 +43,4 @@ Procedure, from dfs-interview § Work the stack:
 
 - **lifecycle** (closed 2026-11-06): `lifecycle/README.md`
 - **resume-from-journals** (closed 2026-11-06): `resume-from-journals/README.md`
+- **journal-tags** (closed 2026-11-06): `journal-tags/README.md`
