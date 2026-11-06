@@ -25,3 +25,16 @@ social has two parts today:
 - **The keeper** (`keeper.py`, 1091 lines). It covers only chats declared as `[seat.*]` in social.toml. Every 60 s it checks that each declared seat's agent runs. It starts, resumes or replaces the agent through `reflection start_other`, remounts the seat's chats, and stops retrying after repeated failures (a breaker). It asks a witness node whether a host is really down before it posts a down notice to the operator DM.
 
 The new design already gives seats states, a queue and the cold start. The keeper's start, breaker and down-notice code is what that needs. Two components would duplicate it.
+
+## Decision: merge
+
+Tony, 2026-11-06: "yes, as long as awm is on a cold seat will be triggered? sounds like the keeper is obsolete. merge".
+
+1. The keeper merges into seats. One seats component in social owns every declared seat: state, queue, routing, cold start, 4-hour reclaim, retry limit and down notices. The word "keeper" goes.
+2. A hand mount still works, for temporary seats like Kalen's and Patrik's.
+3. No new-seat routine and no routine event trigger in this build.
+
+## Survey: a message while social is down
+
+- While social runs (on alcor) and the seat's node answers, every inbound message reaches seats, so a cold seat starts.
+- While social is down, Slack still keeps the message. On restart the Slack connector's resync (`connectors/slack_bot_conn.py:196-238`) writes the missed messages to history from the last sync point. It does not hand them to seats, so today they start no agent and reach no holder.
