@@ -167,6 +167,6 @@ API_MANIFEST = {
     "description": "Your task's card on Tony's Swarm board, and Tony's approvals (queue.md, "
                    "fleet.md R97, R106). Call request_human when you need Tony. Tony answers "
                    "in your session, not on the card.",
-    "functions": [{**v, "tool": TOOL} for v in VERBS],
+    "functions": [{**v, "tool": f"{TOOL}_{v['name']}"} for v in VERBS],
     "emitters": [], "sessions": [],
 }
