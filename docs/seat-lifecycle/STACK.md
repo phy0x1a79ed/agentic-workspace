@@ -23,13 +23,9 @@ Procedure, from dfs-interview § Work the stack:
 
 ## Current topic
 
-**seat-brief**. Its result: `seat-brief/README.md`.
+(none: the stack is empty)
 
 ## Stack
-
-- **unpause** (2026-11-06): can we pause and shutdown seats on altiar?
-- **seat-brief** (2026-11-06): need to consolidate previous decsions into brief for seats on altair. need to also have a more general version for other seats like discord
-  - [ ] Two layers composed by the routine? Recommend: a general seat SOP for every platform (lifecycle, journaling, speak rule, trust levels, first contact, reaching Tony) plus one deployment brief per server (Slack Hallam lab on altair: clusters, tools, tether, voice; Discord servers their own), both in agentic-commons docs. The routine adds the seat facts: person or channel, trust level, scope, queued messages, previous-agent note.
 
 ## Parked
 
@@ -43,3 +39,5 @@ Procedure, from dfs-interview § Work the stack:
 - **seat-states** (closed 2026-11-06): `seat-states/README.md`
 - **rc-toggle** (closed 2026-11-06): `rc-toggle/README.md`
 - **edge-cases** (closed 2026-11-06): `edge-cases/README.md`
+- **seat-brief** (closed 2026-11-06): `seat-brief/README.md`
+- **unpause** (closed 2026-11-06): `unpause/README.md`

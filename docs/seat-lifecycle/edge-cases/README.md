@@ -82,3 +82,15 @@ Tony, 2026-11-06: "thread needs id for lookup", "access level is said once in th
 3. The trust level is stated once, in the agent's starting brief, not on each line.
 4. No platform word, no `from`, no channel id and no message id. `send` and `react` from a seat's agent default to the chat, thread and message of its latest line. The agent names another chat by its label (`DM`, `#arbutus`) or a thread by its id. `social history` still returns all ids.
 5. Seat names follow the same keys: `seat:<app>/<server>/@<person-slug>` and `seat:<app>/<server>/#<channel-slug>`. `<person-slug>` matches scope `seats/<person>` and tag `user:<person>`.
+
+## Revision: the line always names chat and sender
+
+Tony, 2026-11-06: "maybe have name and channel always, otherwise may get lost. -> maybe ew need to actually do something like [slack/DM/steven chen, cooperative], or [Hallam hive/#general/some name here]"
+
+This replaces item 1 and item 3 of the pushed-line decision. Every line opens with one bracket: `[<server>/<chat>/<sender>, <level>]`, then the thread mark when there is one, then the text.
+
+- `[slack/DM/Steven Chen, cooperative] is it running?`
+- `[slack/DM/Steven Chen, cooperative] ↳1793825822.808289 just using a strict ...`
+- `[Hallam Hive/#general/beefboff, untrusted] ...`
+
+`<server>` is the platform for a Slack DM and the server's name for a channel. Items 2, 4 and 5 stand.
