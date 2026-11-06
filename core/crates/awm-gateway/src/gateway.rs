@@ -986,7 +986,7 @@ impl Gateway {
             }
             let envelope = json!({"verb": verb, "args": inner});
             if let Some(route) = door {
-                let request = awm_trust::port::DoorRequest { name: tool, args: envelope, origin: ctx.caller.relayed_origin(&self.node) };
+                let request = crate::door::request(tool, envelope, &ctx.caller, &self.node);
                 return Ok(crate::door::call(&route, &request).await?);
             }
             return Ok(self.peers.invoke(&peer, &tool, envelope, ctx).await?);
@@ -1074,7 +1074,8 @@ impl Gateway {
         failed.map_or(Ok(None), Err)
     }
 
-    /// A call from an isolated session: its whitelist, this node only, its own scope.
+    /// A call from an isolated session: its whitelist, this node only or a singleton's door,
+    /// its own scope.
     pub async fn invoke_isolated(&self, holder: &Holder, tool: &str, envelope: &Value) -> Result<String, ApiError> {
         let refuse = |why: String| ApiError::new(403, why);
         let Some(verb) = envelope.get("verb").and_then(Value::as_str) else {
@@ -1108,6 +1109,16 @@ impl Gateway {
         }
         if !holder.may(tool, verb) {
             return Err(refuse(format!("{tool}.{verb} is not on this isolated session's whitelist")));
+        }
+        if !tools.contains_key(tool) {
+            if let Some(route) = self.door_route(tool, None)? {
+                // The host never sees this node's specs, so only the scope check of `pin` applies here;
+                // the host stamps the session, its level and scope from the request.
+                crate::isolated::pin(holder, &json!({}), &mut inner).map_err(refuse)?;
+                let envelope = json!({"verb": verb, "args": strip_stamps(&inner)});
+                let request = crate::door::request(tool.to_string(), envelope, &ctx.caller, &self.node);
+                return Ok(crate::door::call(&route, &request).await?);
+            }
         }
         let started = Instant::now();
         let result = async {
@@ -1159,7 +1170,7 @@ impl Gateway {
         let (service, found) = self.wait_for_verb(tool, verb).await?;
         check_arguments(tool, verb, &found.spec, &inner)?;
         let mut inner = inner;
-        crate::caller::stamp(&mut inner, &ctx.caller, ctx.pid);
+        crate::caller::stamp(&mut inner, &ctx.caller, ctx.pid, &self.node);
         let timeout = found.spec.get("timeout").and_then(Value::as_f64).unwrap_or(DEFAULT_CALL_TIMEOUT_S);
         let value = self
             .hub

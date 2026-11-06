@@ -1082,6 +1082,68 @@ fn a_caller_reaches_a_peers_singleton_through_its_door() {
     drop((mizar, shogun, alcor, deneb));
 }
 
+/// A door call carries the calling session, its level and scope, and deneb stamps them as
+/// alcor's word (fleet.md R98). An isolated session on alcor reaches the same singleton through
+/// the door, as itself (channels.md R111).
+#[test]
+fn a_door_call_carries_the_calling_session() {
+    let tmp = tempfile::tempdir().unwrap();
+    let base = tmp.path();
+    let edges = "nodes:\n  alcor: {role: standby}\n  deneb: {role: station, addresses: {public: 127.0.0.1}}\n\
+                 edges:\n  alcor: {}\n\
+                 singleton_doors:\n  deneb: {port: 2201, network: internet}\n\
+                 singletons:\n  - {tool: hall, host: deneb, callers: [alcor]}\n";
+    let deneb_state = edge_node(base, "deneb", &["hall"], edges);
+    let deneb = Gateway::start(&deneb_state);
+    let alcor_state = edge_node(base, "alcor", &[], edges);
+    let core = base.join("alcor/core");
+    let fake = fake_bin();
+    write(&core.join("reflection/awm-plugin.toml"), "[plugin]\nname = \"reflection\"\n\n[[service]]\nname = \"reflection\"\n\n[[tool]]\nname = \"reflection\"\n");
+    write(&core.join("reflection/run.sh"),
+          &format!("export FAKE_TOOL=reflection FAKE_SESSIONS_FILE='{}'\nexec '{}'\n", alcor_state.join("sessions.json").display(), fake.display()));
+    let tokens = json!({"good": {"session_id": SESSION, "name": "iso", "project": "awm", "scope": "iso",
+        "trust": "untrusted", "tools": {"hall": ["whoami"]}}});
+    write(&core.join("cch/awm-plugin.toml"),
+          "[plugin]\nname = \"cch\"\n\n[[service]]\nname = \"cch\"\n\n[[tool]]\nname = \"harness-cc\"\nservice = \"cch\"\nimplements = [\"harness@1\"]\n");
+    write(&core.join("cch/run.sh"), &format!("export FAKE_TOOL=harness-cc FAKE_TOKENS='{tokens}'\nexec '{}'\n", fake.display()));
+    let cfg = std::fs::read_to_string(alcor_state.join("config.toml")).unwrap();
+    write(&alcor_state.join("config.toml"), &format!("{cfg}isolated_listen = \"127.0.0.1:0\"\n"));
+    let r9 = "cc0f1e2d3c4b5a69788796a5b4c3d2e1f0";
+    write(&alcor_state.join("sessions.json"),
+          &json!({"4242": {"ok": true, "known": true, "session_id": r9, "trust": "cooperative", "mode": null, "cwd": "/"}}).to_string());
+    let door = fake_door(base, "alcor", "deneb", &deneb_state, &deneb.url);
+    let alcor = Gateway::start_with(&alcor_state, &[("AWM_DOOR_SSH", door.ssh.to_str().unwrap()), ("AWM_EDGE_SSH", "false")]);
+    let fail = || format!("{}\ndeneb: {}", log(&alcor_state), log(&deneb_state));
+    let who_of = |reply: &Value| -> Value { serde_json::from_str(reply["result"].as_str().unwrap_or("null")).unwrap_or(Value::Null) };
+
+    // A session on alcor: deneb sees its id as the claim, and its own level.
+    let reply: Value = http().post(format!("{}/invoke", alcor.url)).header("X-Awm-Session-Pid", "4242")
+        .json(&json!({"name": "hall", "args": {"verb": "whoami", "args": {"_caller_session": {"session_id": "cc99"}}}}))
+        .send().unwrap().json().unwrap();
+    let who = who_of(&reply);
+    assert_eq!(who["claim"], json!({"session_id": r9}), "{reply} {}", fail());
+    assert_eq!((who["trust"].as_str(), who["caller"]["lane"].as_str(), who["as"].as_str()), (Some("cooperative"), Some("service"), Some("peer:alcor")), "{who}");
+
+    // alcor's own service, with no session, claims none and stays trusted.
+    let reply: Value = http().post(format!("{}/invoke", alcor.url))
+        .json(&json!({"name": "hall", "args": {"verb": "whoami"}})).send().unwrap().json().unwrap();
+    let who = who_of(&reply);
+    assert_eq!((who["claim"].clone(), who["trust"].as_str()), (Value::Null, Some("trusted")), "{who}");
+
+    // An isolated session reaches the singleton through the door, as itself.
+    let info: Value = serde_json::from_str(&std::fs::read_to_string(alcor_state.join("gateway.json")).unwrap()).unwrap();
+    let iso = info["isolated_url"].as_str().expect("isolated_url").to_string();
+    rpc(&iso, Some("good"), "initialize", json!({"protocolVersion": "2025-06-18", "capabilities": {}}));
+    let (text, err) = door_call(&iso, "hall", json!({"verb": "whoami"}));
+    assert!(!err, "{text} {}", fail());
+    let who: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(who["claim"], json!({"session_id": SESSION}), "{who}");
+    assert_eq!((who["trust"].as_str(), who["scope"].as_str()), (Some("untrusted"), Some("awm/iso")), "{who}");
+    let (text, err) = door_call(&iso, "hall", json!({"verb": "echo", "args": {"text": "x"}}));
+    assert!(err && text.contains("whitelist"), "{text}");
+    drop((alcor, deneb));
+}
+
 #[test]
 fn bootstrap_writes_a_config_the_gateway_accepts() {
     let tmp = tempfile::tempdir().unwrap();

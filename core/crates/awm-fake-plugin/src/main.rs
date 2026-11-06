@@ -94,7 +94,7 @@ async fn main() -> anyhow::Result<()> {
             },
             "whoami" => Ok(json!({"caller": frame["caller"], "as": frame["as"],
                 "trust": args["_caller_trust"], "scope": args["_caller_scope"], "session_id": args["_caller_session_id"],
-                "pid": args["_caller_pid"]})),
+                "pid": args["_caller_pid"], "claim": args["_caller_session"]})),
             "caller_of_token" => Ok(match args["token"].as_str().and_then(|t| tokens.get(t)).and_then(Value::as_object) {
                 Some(rec) => {
                     let mut answer = rec.clone();

@@ -111,8 +111,16 @@ pub async fn port(key: &str) -> anyhow::Result<i32> {
     let result = match &req {
         Ok(r) if allowed.contains(&r.name) => {
             // The gateway checks the node a relayed call started from against the callers too.
+            // The calling session, its level and scope are the calling node's word, as on an edge.
             let origin = r.origin.clone().filter(|o| *o != holder);
-            let caller = Caller { node: holder.clone(), lane: Lane::Service, origin, ..Caller::default() };
+            let caller = Caller {
+                node: holder.clone(),
+                lane: Lane::Service,
+                origin,
+                session: r.session.clone(),
+                trust: r.trust.clone(),
+                scope: r.scope.clone(),
+            };
             Some(invoke_local(&dir, &r.name, r.args.clone(), &caller).await)
         }
         _ => None,

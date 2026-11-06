@@ -10,6 +10,7 @@
 use std::process::Stdio;
 use std::time::Duration;
 
+use awm_proto::Caller;
 use awm_trust::port::DoorRequest;
 use serde_json::{json, Value};
 
@@ -34,6 +35,19 @@ pub struct DoorRoute {
 impl DoorRoute {
     fn where_(&self) -> String {
         format!("{}'s singleton door at {}:{}", self.host, self.address, self.port)
+    }
+}
+
+/// The door request for one call by `caller`: the node it started from, and the calling
+/// session's id, level and scope, which the host stamps as the calling node's word.
+pub fn request(tool: String, envelope: Value, caller: &Caller, here: &str) -> DoorRequest {
+    DoorRequest {
+        name: tool,
+        args: envelope,
+        origin: caller.relayed_origin(here),
+        session: caller.session.clone(),
+        trust: caller.trust.clone(),
+        scope: caller.scope.clone(),
     }
 }
 
@@ -103,7 +117,7 @@ mod tests {
     #[test]
     fn the_request_rides_in_the_ssh_command() {
         let route = DoorRoute { tool: "vault".into(), host: "h".into(), address: "203.0.113.7".into(), port: 2201, user: None };
-        let req = DoorRequest { name: "vault".into(), args: json!({"verb": "get"}), origin: None };
+        let req = DoorRequest { name: "vault".into(), args: json!({"verb": "get"}), origin: None, session: None, trust: None, scope: None };
         let args = ssh_args(&route, &req);
         let n = args.len();
         assert_eq!(&args[n - 4..n - 1], ["-p", "2201", "203.0.113.7"]);
@@ -117,7 +131,7 @@ mod tests {
     #[test]
     fn the_door_user_is_the_login_name() {
         let route = DoorRoute { tool: "vault".into(), host: "h".into(), address: "100.1.1.1".into(), port: 2201, user: Some("awm".into()) };
-        let req = DoorRequest { name: "vault".into(), args: json!({}), origin: None };
+        let req = DoorRequest { name: "vault".into(), args: json!({}), origin: None, session: None, trust: None, scope: None };
         let args = ssh_args(&route, &req);
         let at = args.iter().position(|a| a == "-l").expect("-l");
         assert_eq!(args[at + 1], "awm");

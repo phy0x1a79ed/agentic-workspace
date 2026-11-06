@@ -19,7 +19,8 @@ pub const SESSION_KEY: &str = "_caller_session_id";
 /// The calling session's pid on this node: reflection, operations and cch find the session
 /// by it (contract § Caller arguments).
 pub const PID_KEY: &str = "_caller_pid";
-/// A session claim `{kind, job, name}` from another node. It survives only on an edge call.
+/// A session claim from another node. A borrower's `{kind, job, name}` survives an edge call,
+/// and a door call carries `{session_id}`, the calling session the calling gateway stamped.
 pub const CLAIM_KEY: &str = "_caller_session";
 /// Where `resolve_caller` records which pid of the walk the session answered for.
 pub const FOUND_PID: &str = "_found_pid";
@@ -109,8 +110,9 @@ pub fn fill(caller: &mut Caller, lookup: &Lookup, projects: &Path) -> Option<Str
 }
 
 /// Write the caller's trust and scope into a call's arguments, for services that predate the
-/// `caller` frame. Any value the caller sent is dropped first.
-pub fn stamp(args: &mut Value, caller: &Caller, pid: Option<u32>) {
+/// `caller` frame. Any value the caller sent is dropped first. A door call, which comes on the
+/// service lane from another node, also gets the calling session as its claim.
+pub fn stamp(args: &mut Value, caller: &Caller, pid: Option<u32>, here: &str) {
     let Some(map) = args.as_object_mut() else { return };
     map.remove(TRUST_KEY);
     map.remove(SCOPE_KEY);
@@ -118,6 +120,10 @@ pub fn stamp(args: &mut Value, caller: &Caller, pid: Option<u32>) {
     map.remove(PID_KEY);
     if caller.lane != awm_proto::Lane::Edge {
         map.remove(CLAIM_KEY);
+    }
+    let door = caller.lane == awm_proto::Lane::Service && caller.node != here;
+    if let Some(session) = caller.session.as_ref().filter(|_| door) {
+        map.insert(CLAIM_KEY.into(), serde_json::json!({"session_id": session}));
     }
     if let Some(pid) = pid.filter(|_| caller.lane == awm_proto::Lane::Local) {
         map.insert(PID_KEY.into(), Value::from(pid));
@@ -262,14 +268,33 @@ mod tests {
     fn stamp_replaces_what_the_caller_sent() {
         let caller = Caller { trust: Some("untrusted".into()), scope: Some("awm/x".into()), ..Caller::default() };
         let mut args = json!({"text": "hi", "_caller_trust": "trusted", "_caller_scope": "a/b", "_caller_pid": 1, "_caller_session": {"job": "x"}});
-        stamp(&mut args, &caller, Some(42));
+        stamp(&mut args, &caller, Some(42), "");
         assert_eq!(args, json!({"text": "hi", "_caller_trust": "untrusted", "_caller_scope": "awm/x", "_caller_pid": 42}));
         let mut args = json!({"_caller_trust": "trusted", "_caller_pid": 7});
-        stamp(&mut args, &Caller::default(), None);
+        stamp(&mut args, &Caller::default(), None, "");
         assert_eq!(args, json!({}));
         let edge = Caller { lane: awm_proto::Lane::Edge, ..Caller::default() };
         let mut args = json!({"_caller_session": {"job": "x"}});
-        stamp(&mut args, &edge, Some(42));
+        stamp(&mut args, &edge, Some(42), "");
         assert_eq!(args, json!({"_caller_session": {"job": "x"}}), "a claim survives on an edge call, a pid never crosses");
+    }
+
+    #[test]
+    fn a_door_call_carries_the_calling_session_and_its_level() {
+        let door = Caller {
+            node: "alcor".into(),
+            lane: awm_proto::Lane::Service,
+            session: Some("cc12".into()),
+            trust: Some("cooperative".into()),
+            ..Caller::default()
+        };
+        let mut args = json!({"_caller_session": {"session_id": "cc99", "job": "forged"}, "_caller_trust": "trusted"});
+        stamp(&mut args, &door, None, "deneb");
+        assert_eq!(args, json!({"_caller_session": {"session_id": "cc12"}, "_caller_trust": "cooperative"}));
+        // A service of this node on its own account claims no session.
+        let own = Caller { node: "deneb".into(), session: Some("cc12".into()), ..door.clone() };
+        let mut args = json!({});
+        stamp(&mut args, &own, None, "deneb");
+        assert_eq!(args, json!({"_caller_trust": "cooperative"}));
     }
 }
