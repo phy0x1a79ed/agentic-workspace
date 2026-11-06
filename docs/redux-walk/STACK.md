@@ -69,7 +69,7 @@ From journal 6a98c0c6 (awm/redux) and walkthrough's handover (manual-steps.md at
 
 - **deneb-pass-2** (2026-11-05): leftovers of redux-build/deneb-board (journal f4ed07ad): (1) move the relay seats and keep's claude daemon off deneb (R79, R129), then set deneb_agents_moved: true; (2) capella's avatar forward uses the socket (M44); (3) lyra's edge key on deneb; (4) derived relay callers (`members`) with dev.
 
-- **join-403** (2026-11-05): from redux-build/tether-keepalive (journal 9e7eeb2c): a hop in front of deneb's relay (Cloudflare, nginx or httpsfront's bridge) answers a tether /join redial with 403 at about 182 s. v0.4.1 no longer releases the slot on it, but the hop is unknown.
+- **tether-dial-timeout** (2026-11-05): from redux-build/tether-redial (journal 8947612e; join-403 solved there: the edge bridge turned upstream 404 into 403, fixed in awm bd764a6f, tether v0.4.2). lyra's slot-343 owner redialled for 10 min and no dial reached deneb. Add a bounded per-dial timeout to the owner client if it repeats.
 
 - **edge-forward** (2026-11-05): Tony: "ssh needs to be just plain ssh". Replace `awm edge-serve` on the far node with a plain ssh forward to its loopback gateway (R92: an awm request inside ssh to the other node's loopback gateway). Delete edge-serve and its AWM_DIR lookup. dev, after R147.
 
