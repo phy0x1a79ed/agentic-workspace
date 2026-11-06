@@ -106,6 +106,9 @@ pub struct LoadInput<'a> {
     /// The singletons this node reaches through their hosts' doors (fleet.md R89). A need for
     /// one holds whether or not the door answers now.
     pub doors: &'a [String],
+    /// `{tool: host}` for each singleton another node hosts. Its name is taken there, so no
+    /// plugin here may claim it (fleet.md R117.2, R117.3).
+    pub elsewhere: &'a BTreeMap<String, String>,
 }
 
 struct Candidate {
@@ -171,7 +174,7 @@ pub fn load(input: &LoadInput) -> LoadResult {
                 continue;
             }
         };
-        if let Err(reason) = claim(&plugin, &reserved, &tool_names, &service_names) {
+        if let Err(reason) = claim(&plugin, &reserved, input.elsewhere, &tool_names, &service_names) {
             out.refused.push(Refusal { plugin: name, dir: cand.dir, reason });
             continue;
         }
@@ -375,6 +378,7 @@ fn stamp(dir: &Path) -> String {
 fn claim(
     p: &Plugin,
     reserved: &BTreeSet<&str>,
+    elsewhere: &BTreeMap<String, String>,
     tool_names: &HashMap<String, String>,
     service_names: &HashMap<String, String>,
 ) -> Result<(), String> {
@@ -385,6 +389,9 @@ fn claim(
         }
         if reserved.contains(t.name.as_str()) && !p.core {
             return Err(format!("tool {:?} is reserved for core plugins", t.name));
+        }
+        if let Some(host) = elsewhere.get(&t.name) {
+            return Err(format!("tool {:?} is already served by {host}", t.name));
         }
         if let Some(owner) = tool_names.get(&t.name) {
             return Err(format!("tool {:?} is already served by plugin {owner:?}", t.name));
@@ -505,6 +512,8 @@ mod tests {
         let reserved = vec!["2fa".to_string()];
         let wants = move |p: &str| p != "elsewhere" || node == "altair";
         let enabled = HashMap::from([("off-svc".to_string(), false)]);
+        let elsewhere: BTreeMap<String, String> =
+            if node == "alcor" { BTreeMap::new() } else { BTreeMap::from([("ibkr".to_string(), "alcor".to_string())]) };
         load(&LoadInput {
             wants: &wants,
             core_roots: &[core.to_path_buf()],
@@ -514,7 +523,25 @@ mod tests {
             enabled: &enabled,
             peer_tools: peers,
             doors,
+            elsewhere: &elsewhere,
         })
+    }
+
+    /// A singleton loads from any root on its host. Every other node refuses its name, and a
+    /// trust name stays core-only everywhere.
+    #[test]
+    fn a_singleton_name_is_taken_by_its_host() {
+        let t = tempfile::tempdir().unwrap();
+        let (core, other) = (t.path().join("core"), t.path().join("other"));
+        fs::create_dir_all(&core).unwrap();
+        single(&other, "ibkr", "ibkr", "");
+        single(&other, "takes-2fa", "2fa", "");
+        let none = BTreeMap::new();
+        let r = run_with(&core, &other, "alcor", &none, &[]);
+        assert_eq!(r.plugins.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["ibkr"]);
+        assert!(r.refused.iter().any(|f| f.plugin == "takes-2fa" && f.reason.contains("reserved")));
+        let r = run_with(&core, &other, "mizar", &none, &[]);
+        assert!(r.refused.iter().any(|f| f.plugin == "ibkr" && f.reason.contains("already served by alcor")));
     }
 
     #[test]

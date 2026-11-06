@@ -1320,13 +1320,15 @@ fn load_plugins(state: &Path, cfg: &Config, peer_tools: &BTreeMap<String, Vec<Re
         .ok()
         .and_then(|t| serde_json::from_str(&t).ok())
         .unwrap_or_default();
-    let reserved = cfg.reserved_names(state);
+    let reserved = cfg.reserved.clone();
     let wants = |p: &str| cfg.wants(p);
     let core_roots = cfg.core_root_dirs(state);
     let mut plugin_roots = cfg.plugin_roots.clone();
     plugin_roots.push(crate::install::installed_root(state));
     let peer_tools = &edge_tools(peer_tools, edges);
     let doors: Vec<String> = edges.door_singletons(node).iter().map(|s| s.tool.clone()).collect();
+    let elsewhere: BTreeMap<String, String> =
+        edges.singletons.iter().filter(|s| s.host != node).map(|s| (s.tool.clone(), s.host.clone())).collect();
     loader::load(&loader::LoadInput {
         wants: &wants,
         core_roots: &core_roots,
@@ -1336,6 +1338,7 @@ fn load_plugins(state: &Path, cfg: &Config, peer_tools: &BTreeMap<String, Vec<Re
         enabled: &enabled,
         peer_tools,
         doors: &doors,
+        elsewhere: &elsewhere,
     })
 }
 

@@ -10,7 +10,8 @@ pub const CONFIG_FILE: &str = "config.toml";
 pub const DEFAULT_LISTEN: &str = "127.0.0.1:7819";
 /// The awm tree's plugin roots, below its `awm/` folder. Every in-tree plugin is in one of them.
 pub const TREE_ROOTS: [&str; 2] = ["services", "plugins"];
-pub const DEFAULT_RESERVED: [&str; 6] = ["awm", "auth", "2fa", "approver", "queue-store", "journal"];
+/// The tools that gate trust. Only a core plugin may serve one (install.md R115, R116.5).
+pub const DEFAULT_RESERVED: [&str; 5] = ["awm", "auth", "2fa", "operations", "journal"];
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -166,19 +167,6 @@ impl Config {
         }
         tree_roots(&self.workspace_dir(state).join("awm"))
     }
-
-    /// The reserved list plus the singleton tools of the edges file.
-    pub fn reserved_names(&self, state: &Path) -> Vec<String> {
-        let mut names = self.reserved.clone();
-        let path = self.edges_path(state);
-        match awm_trust::edges::EdgeList::load(&path) {
-            Ok(edges) => names.extend(edges.singleton_tools()),
-            Err(e) => tracing::warn!("edges file {}: {e:#}", path.display()),
-        }
-        names.sort();
-        names.dedup();
-        names
-    }
 }
 
 /// The plugin roots of the awm tree at `awm`.
@@ -213,21 +201,12 @@ mod tests {
     }
 
     #[test]
-    fn defaults_and_singletons() {
+    fn defaults() {
         let dir = tempfile::tempdir().unwrap();
-        let edges = dir.path().join("edges.yml");
-        std::fs::write(
-            &edges,
-            "nodes:\n  alcor: {role: standby}\nsingleton_doors:\n  alcor: {port: 2201, network: lan}\n\
-             singletons:\n  - {tool: browser, host: alcor, callers: []}\n  - {tool: 2fa, host: alcor, callers: []}\n",
-        )
-        .unwrap();
         let cfg = Config { exclude: vec!["engcyc".into()], ..Config::default() };
         assert_eq!(cfg.listen, DEFAULT_LISTEN);
         assert!(cfg.wants("journal") && !cfg.wants("engcyc"));
-        assert_eq!(cfg.edges_path(dir.path()), edges);
-        let names = cfg.reserved_names(dir.path());
-        assert!(names.contains(&"browser".to_string()));
-        assert_eq!(names.iter().filter(|n| *n == "2fa").count(), 1);
+        assert_eq!(cfg.edges_path(dir.path()), dir.path().join("edges.yml"));
+        assert!(cfg.reserved.contains(&"2fa".to_string()) && !cfg.reserved.contains(&"browser".to_string()));
     }
 }

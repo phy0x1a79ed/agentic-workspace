@@ -148,10 +148,6 @@ impl EdgeList {
         self.edges.get(src).and_then(|t| t.get(dst)).copied()
     }
 
-    pub fn singleton_tools(&self) -> Vec<String> {
-        self.singletons.iter().map(|s| s.tool.clone()).collect()
-    }
-
     /// Whether `node` may call `tool`. A tool that is no singleton is not held here. A
     /// singleton admits its host and its callers, less any planned node, and no one else.
     pub fn may_call(&self, node: &str, tool: &str) -> bool {

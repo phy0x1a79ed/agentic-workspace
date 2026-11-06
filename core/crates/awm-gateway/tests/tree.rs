@@ -21,6 +21,7 @@ fn every_plugin_of_the_tree_loads() {
         enabled: &HashMap::new(),
         peer_tools: &BTreeMap::new(),
         doors: &[],
+        elsewhere: &BTreeMap::new(),
     });
     let refused: Vec<String> = got.refused.iter().map(|r| format!("{}: {}", r.plugin, r.reason)).collect();
     assert!(refused.is_empty(), "refused:\n{}", refused.join("\n"));
@@ -44,6 +45,7 @@ fn a_singleton_behind_a_door_strands_no_plugin() {
         enabled: &HashMap::new(),
         peer_tools: &BTreeMap::new(),
         doors: &["trilium".to_string()],
+        elsewhere: &BTreeMap::new(),
     });
     let refused: Vec<String> = got.refused.iter().map(|r| format!("{}: {}", r.plugin, r.reason)).collect();
     assert!(refused.is_empty(), "refused:\n{}", refused.join("\n"));
@@ -69,6 +71,7 @@ fn denebs_plugins_load_with_no_door_and_no_peer() {
         enabled: &HashMap::new(),
         peer_tools: &BTreeMap::new(),
         doors: &[],
+        elsewhere: &BTreeMap::new(),
     });
     let refused: Vec<String> = got.refused.iter().map(|r| format!("{}: {}", r.plugin, r.reason)).collect();
     assert!(refused.is_empty(), "refused:\n{}", refused.join("\n"));
