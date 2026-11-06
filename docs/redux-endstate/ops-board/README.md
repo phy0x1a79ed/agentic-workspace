@@ -38,3 +38,11 @@
 
 - Cause: after 5aff3f26, alcor's writer created `awmSwarmBoard` under `root` at 17:58Z and wrote the cards. `board-install` had never run, so the root had no page to render and each card showed as a bare note. Ran `python -m awm.operations.cli board-install` on alcor at about 18:20Z. The root now has `renderNote` → `awmSwarmBoardPage`.
 - Ops (`awmSwarmOps`) becomes the swarm status page: a roster of every node, stations included, each registered with its stats. That absorbs `end-state/node-roster`.
+
+## Round 3 (2026-11-06)
+
+> yes, delete old ops password notes. they are auto generated and stale anyways -> I need the updated version... Im trying to use claude science on altair through those links
+
+- The node portals on 443 come from cloud's `tailnet_portal` role, and it had run only on alcor. altair got it by hand (`tailscale serve`, plus one `tailscale cert` retry after an ACME set-dns timeout), and claude-science is enabled there. https://altair.tail080e54.ts.net/ answers 401, so it asks for the passkey.
+- Worker portals-ops (f6cd1c4b, Sonnet) applies the portal to mizar and the rest, finds the claude-science URL, deletes the old Ops password notes, and moves Links into the new Ops.
+- The spec pointer is journal e44b39dc (tag `spec`).

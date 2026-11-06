@@ -32,7 +32,7 @@ Procedure, from dfs-interview § Work the stack:
 ## Stack
 
 - **ops-board** (2026-11-06): https://nexus.tony-xy-liu.com/trilium/#root/iF0A3SWEGqUx/P4ALwPiCSs6N?ntxId=CZkmWI ops board needs updating
-  - [ ] Old AWM book: delete the old Ops password notes, carry Links into the new Ops, archive the old Swarm board?
+  - [x] Old AWM book: delete the old Ops password notes, carry Links into the new Ops, archive the old Swarm board? (answered 2026-11-06)
   - [x] Federation board: archive all 8 pre-redux cards, then check the door and intake end to end? (answered 2026-11-06)
   - [ ] Place the new Swarm board under the AWM book, next to the federation board?
 - **end-state** (2026-11-06): there are a few sessions that look left over. Please use the DFS interview skill so that we can review the end state and if there are anything left open for us to clean up and do.
@@ -56,6 +56,7 @@ Procedure, from dfs-interview § Work the stack:
 - **9fc4afc8** (2026-11-06): took install-loop
 - **80f06e0c** (2026-11-06): took install-loop
 - [x] tell daae3825 how shogun-singletons was solved (told 2026-11-06)
+- **f6cd1c4b** (2026-11-06): took ops-board
 
 ## Closed
 
