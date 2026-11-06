@@ -33,6 +33,9 @@ Procedure, from dfs-interview § Work the stack:
 - **speak-rule** (2026-11-06): steven chen contacted the client without first being asked, on a stale request.
 - **lost-pushes** (2026-11-06): it looks like there is a bug in how seats work. retired seats came back
 - **rc-toggle** (2026-11-06): about the seats, it would be great if on the new fleet status dashboard, I can turn remote control on and off for seats
+  - [ ] How is a seat marked in the roster that list_other and claudedaemon report (pin plus trust, or a role tag)? Asked by trilium-design/interview.
+  - [ ] Is turning Remote Control off and on for a seat passkey-gated (sessions R68), or free inside an open window? Asked by trilium-design/interview.
+  - [ ] Tony's question 'can we sort natively in claude?' as it bears on seats. Asked by trilium-design/interview.
 - **unpause** (2026-11-06): can we pause and shutdown seats on altiar?
 
 ## Parked
