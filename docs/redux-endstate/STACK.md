@@ -8,7 +8,7 @@ end-state/deneb-link
 
 ## Waiting on Tony
 
-- awm 50040b96 (prompt prefix + retire suffix) waits to deploy until deploy-routine/refresh releases the deploy-refresh scope.
+- Undeployed, waiting on the deploy rework (deploy-routine/refresh with Tony): awm feat/redux-fixes 50040b96 (prompt prefix + retire suffix); awm feat/social-attachments after 1d761c7e (gateway 64 MiB body limit, needed for sends over ~2 MB). Nodes not on afedffa0: altair, shogun, lyra.
 
 - science-idle: the idle timeout for claude-science. Recommended: start on demand, stop after 30 min idle.
 
@@ -45,6 +45,8 @@ end-state/deneb-link
 - install-loop (9fc4afc8 mizar), metasmith-install-loop (80f06e0c altair): hold until Sat 2026-11-07 15:05 PT.
 
 ## Closed
+
+- social-attachments (fc77ff44, release afedffa0): downloads land on the caller's node, Slack block text extracted, sends go over stdin; verified from mizar. social restarted on alcor by hand.
 
 - telegram-token (edd4e880, stock cffd561 + 7ba534c, ticket 247d53144cf9): Telegram code and grant removed, exit_validate posts to Discord; token gone from alcor's secrets.env and ps. Left: alcor's /home/rt/rt/stock/live is not a release checkout, so the inert old code stays until the rt pin runs; Tony may revoke the bot in BotFather.
 
