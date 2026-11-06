@@ -484,6 +484,31 @@ def ws_headers(ws: WebSocket) -> dict[str, str]:
     return fwd
 
 
+def upstream_refusal(exc: Exception) -> int:
+    """The status to answer a client whose upstream handshake failed with ``exc``.
+
+    The upstream's own 4xx or 5xx goes through unchanged. The tether relay's
+    clients read it: a 404 on a held slot means the relay restarted and the
+    operator must restore the slot, while any other answer is a path to redial.
+    """
+    if isinstance(exc, websockets.exceptions.InvalidStatus):
+        status = exc.response.status_code
+        if 400 <= status < 600:
+            return status
+    return 502
+
+
+async def refuse_handshake(ws: WebSocket, status: int) -> None:
+    """Reject the handshake outright with ``status``, never accept-then-close.
+
+    Without the ASGI denial extension the server can only answer 403.
+    """
+    if "websocket.http.response" in ws.scope.get("extensions", {}):
+        await ws.send_denial_response(Response(status_code=status))
+    else:
+        await ws.close(code=1011)
+
+
 async def bridge(ws: WebSocket, up_url: str, fwd: dict[str, str]) -> None:
     """Open ``up_url`` and pump text and binary frames both ways until either
     side closes."""
@@ -499,9 +524,7 @@ async def bridge(ws: WebSocket, up_url: str, fwd: dict[str, str]) -> None:
     except Exception as exc:  # noqa: BLE001 — upstream refused / bad path
         # Path only, never the query string — see the log_level note in serve_app().
         log.debug("ws upstream connect failed for %s: %s", ws.url.path, exc)
-        # Reject the handshake outright rather than accept-then-close, so the
-        # client sees a clean failure instead of a socket that opens and dies.
-        await ws.close(code=1011)
+        await refuse_handshake(ws, upstream_refusal(exc))
         return
     await ws.accept(subprotocol=getattr(upstream, "subprotocol", None))
 

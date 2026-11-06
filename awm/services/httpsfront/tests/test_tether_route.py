@@ -262,3 +262,40 @@ def test_a_room_reaches_the_relay_with_its_path_unchanged():
     with _client(_app(), handler) as c:
         c.get("/room/acre-anchor-kettle")
         assert seen["url"] == "http://127.0.0.1:12520/room/acre-anchor-kettle"
+
+
+# -- the relay's refusal reaches the client -----------------------------------
+
+def _refused_socket(monkeypatch, refusal: Exception) -> int:
+    """The status a client sees when the relay's handshake fails with ``refusal``."""
+    from starlette.testclient import WebSocketDenialResponse
+
+    async def _fake_connect(url, **kw):
+        raise refusal
+
+    monkeypatch.setattr(tlsproxy.websockets, "connect", _fake_connect)
+    _, handler = _recorder()
+    with _client(_app(), handler) as c:
+        with pytest.raises(WebSocketDenialResponse) as denied:
+            with c.websocket_connect(f"/tether/join/7/{TICKET}"):
+                pass
+    return denied.value.status_code
+
+
+def _relay_answered(status: int) -> Exception:
+    from websockets.datastructures import Headers
+    from websockets.exceptions import InvalidStatus
+    from websockets.http11 import Response
+
+    return InvalidStatus(Response(status, "", Headers()))
+
+
+@pytest.mark.parametrize("status", [404, 409, 410])
+def test_the_relays_own_refusal_reaches_the_client_unchanged(monkeypatch, status):
+    """A held slot's 404 after a relay restart is what sends the operator to its
+    issuer to put the slot back. Masked as a 403, the operator only redials."""
+    assert _refused_socket(monkeypatch, _relay_answered(status)) == status
+
+
+def test_a_relay_that_cannot_be_reached_is_a_502_on_the_socket(monkeypatch):
+    assert _refused_socket(monkeypatch, ConnectionRefusedError()) == 502
