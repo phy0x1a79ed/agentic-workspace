@@ -44,3 +44,23 @@ Tony: "can we review how the keyed prefix looks today? I think it can be improve
 - The Remote Control name swaps each `/` for `-`: `seat-slack-DM-Steven-Chen`.
 - The person's slug differs between places: `Steven Chen` in the name, `steven-chen` in the scope and the tag.
 - A kept seat in social.toml has a third name, its `[seat.<name>]` key.
+
+## The pushed line today (survey, 2026-11-06)
+
+Tony: "Can you pull some examples of the prefix from actual messages?"
+
+Real lines from seat transcripts:
+
+- `slack from Steven Chen [channel=D0CAGBM8ACQ message_id=1793340591.584919]: is it running?`
+- `slack from Steven Chen ↳1793825822.808289 [channel=D0CAGBM8ACQ message_id=1793916761.608339]: can you update my analyses ...`
+- `slack from Beth Davenport [channel=D0C9RM3JTDJ message_id=1793814379.554989]: [+1 file]`
+- `slack from Tony [channel=C0C9XNR77ML message_id=1792715091.033399]: approve` (a channel, #arbutus)
+- `discord from john-shaula-agent#1257 [bot] [channel=1560400515630760049 message_id=1564718010223038596]: Opal, I don't hold ...`
+- `discord from phyberosis [channel=1560400515630760049 message_id=1564721115358564405]: no worries, we can run tests then.`
+
+The deployed code (`awm/social/seats.py:79-96`) adds the seat's trust level, `slack [cooperative] from ...`. No transcript shows it yet.
+
+What the line lacks:
+- The chat's name and kind. `D0C...` is a DM and `C0C...` a channel only by Slack's id convention. A Discord channel is a bare number.
+- The workspace or server.
+- A stable person key. The sender is a display name (`Steven Chen`, `phyberosis`), not the `<person-slug>` of the scope and tag.
