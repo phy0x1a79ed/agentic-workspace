@@ -21,6 +21,9 @@ class Outbound(Protocol):
         """Start a background session, in the lobby when ``scope`` is empty.
         Returns at least ``{"job": ...}``."""
 
+    async def find_session(self, name: str) -> str:
+        """The job of a session named ``name`` on this node, or ``""``."""
+
     async def notify_operator(self, text: str) -> None:
         """Send the operator a Discord DM."""
 
@@ -61,6 +64,12 @@ class GatewayOutbound:
         if not isinstance(res, dict) or not res.get("job"):
             raise RuntimeError(f"start_other returned no job: {res!r}"[:400])
         return res
+
+    async def find_session(self, name: str) -> str:
+        res = await self.invoke("reflection", "list_other", {}, timeout=30.0)
+        sessions = res.get("sessions", []) if isinstance(res, dict) else []
+        return next((str(s.get("job") or "") for s in sessions
+                     if isinstance(s, dict) and s.get("name") == name), "")
 
     async def notify_operator(self, text: str) -> None:
         from awm.config import operator_dm

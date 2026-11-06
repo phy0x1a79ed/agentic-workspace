@@ -25,6 +25,10 @@ log = logging.getLogger("awm.routine.refresh")
 
 MANIFEST = "awm-plugin.toml"
 
+# What a peer's gateway answers while its routine service restarts.
+RESTARTING = ("closed its control connection", "is not up")
+PEER_ATTEMPTS = 7
+
 
 def default_checkout_root(workspace: Path) -> Callable[[str], Path]:
     """The live checkout of a project on this node.
@@ -114,6 +118,7 @@ class Refresher:
         self.checkout_root = checkout_root
         self.fleet_config = fleet_config
         self.artifact_store = artifact_store
+        self.peer_retry_wait = 10.0
 
     def _env(self, frm: str, to: str) -> dict[str, str]:
         return {"AWM_REFRESH_FROM": frm, "AWM_REFRESH_TO": to, "AWM_NODE_NAME": self.node}
@@ -166,6 +171,15 @@ class Refresher:
                   f"{frm[:12] or '(none)'} to {to[:12]} on node {self.node}. Its live "
                   f"checkout here is `{root}`: run the refresh from there. Refresh it "
                   f"here and confirm the services run the new commit.")
+        name = f"refresh-{project}-{to[:8]}"
+        try:
+            running = await self.out.find_session(name)
+        except Exception as e:  # noqa: BLE001
+            log.warning("queue: cannot list this node's sessions: %s", e)
+            running = ""
+        if running:
+            return NodeResult(self.node, True, f"supervising session {running}, already started",
+                              [{"hook": "queue", "job": running}])
         has_scopes = self.holds_project(project)
         if not has_scopes:
             prompt += (f"\n\nThis node holds no `{project}` project to make a scope in, "
@@ -176,7 +190,7 @@ class Refresher:
                 peer="local", project=project if has_scopes else "",
                 scope="deploy-refresh" if has_scopes else "",
                 prompt=prompt, started_by=f"deploy of {project} {to[:12]}",
-                name=f"refresh-{project}-{to[:8]}")
+                name=name)
         except Exception as e:  # noqa: BLE001
             return NodeResult(self.node, False, f"queue: the supervising session did not start: {e}")
         return NodeResult(self.node, True, f"supervising session {res.get('job', '')}",
@@ -294,12 +308,23 @@ class Refresher:
         return NodeResult(node, True, res.output[-2000:])
 
     async def _peer(self, node: str, project: str, frm: str, to: str) -> NodeResult:
-        try:
-            res = await self.out.invoke("routine", "refresh",
-                                        {"project": project, "from": frm, "to": to},
-                                        peer=node, timeout=1800.0)
-        except Exception as e:  # noqa: BLE001
-            return NodeResult(node, False, f"peer call failed: {e}")
+        """Call ``node``'s refresh, again while its routine service restarts.
+
+        The sync can move the code the peer's routine service runs from, and a
+        reload then restarts that service mid-call and loses its reply. A
+        refresh is idempotent, so the call runs again once the service is back."""
+        for attempt in range(PEER_ATTEMPTS):
+            try:
+                res = await self.out.invoke("routine", "refresh",
+                                            {"project": project, "from": frm, "to": to},
+                                            peer=node, timeout=1800.0)
+                break
+            except Exception as e:  # noqa: BLE001
+                if attempt + 1 == PEER_ATTEMPTS or not any(m in str(e) for m in RESTARTING):
+                    return NodeResult(node, False, f"peer call failed: {e}")
+                log.info("refresh on %s: %s; calling again in %.0fs", node, e,
+                         self.peer_retry_wait)
+                await asyncio.sleep(self.peer_retry_wait)
         if not isinstance(res, dict):
             return NodeResult(node, False, f"peer returned {res!r}"[:300])
         return NodeResult(node, bool(res.get("ok")), str(res.get("detail", "")),
