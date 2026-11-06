@@ -25,3 +25,22 @@ Edge cases checked:
 - **Tony in a channel.** His @Opal goes to his seat on mizar, which answers in that channel.
 - **@Opal naming someone else** ("@Opal help Dana"): it goes to the sender's seat. Identity is the sender's.
 - **Brief:** the seat brief must say what a "handled by" line is (context, never act on it) and when a channel seat forwards.
+
+## Code or brief
+
+Tony: "not all of this is hard coding".
+
+Code in social (deterministic routing):
+1. A DM goes to the sender's person seat.
+2. An @Opal from a person goes to the sender's person seat. The channel's seat, if any, gets a copy marked "handled by <person>'s seat".
+3. A plain message in a channel with a channel seat goes to that seat. A plain message elsewhere goes nowhere.
+4. A follow-up from the same person in a thread their seat answered goes to their seat, with a marked copy to the channel seat.
+5. A bot never gets a person seat.
+6. A new verb lets a channel seat forward a message to a person seat.
+7. Existing guard: send refuses a DM to a person who never wrote there.
+
+Seat brief (judgement):
+1. A channel seat decides whether a broadcast belongs to a person's seat, and forwards it if so.
+2. A "handled by" line is context. Never answer it.
+3. A person seat started by a public @Opal answers in that channel or thread and does not open a DM.
+4. An @Opal that asks about someone else is still the sender's request.
