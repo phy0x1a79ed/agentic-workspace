@@ -20,7 +20,8 @@ end-state/deneb-link
 
 - **end-state**: "review the end state and if there are anything left open for us to clean up and do."
   - **node-access**: Tony: "we need to not conflate teh ssh with the services door. even if there is edges access, we still set up service doors. mizar also needs root access to deneb, along with typical user access, following the arbutus paradigm -> we need this dev/use split for our personal nodes as well". Trigger: mizar's edge to deneb fails since ~06:05Z (`ssh deneb awm edge-serve` lands as tony; deneb's awm runs as user awm). Survey running.
-  - **seats-pause**: "retired seats came back and steven chen contacted the client without first being asked, on a stale request." Five revived seats stopped ~19:10Z; seats/pause (e11ce259 on altair) keeps them paused, finds the cause and discusses seats with Tony (takes seat-lifecycle). Cause found: a human-path prompt to slack-main at 18:37Z asked it to restart the seats; Steven had replied at 18:32Z but the push never reached his old seat; the restart brief says "Answer anything unanswered".
+  - **seats-pause**: "retired seats came back and steven chen contacted the client without first being asked, on a stale request." Five revived seats stopped ~19:10Z; pause in place (pins cleared, job records removed, PAUSED banner on altair's opal-seat-holder skill); seats/pause (e11ce259 on altair) keeps them paused, finds the cause and discusses seats with Tony (takes seat-lifecycle). Cause found: a human-path prompt to slack-main at 18:37Z asked it to restart the seats; Steven had replied at 18:32Z but the push never reached his old seat; the restart brief says "Answer anything unanswered".
+  - **cloud-dev-split**: cloud's dev lives on altair (origin) and in mizar's redux-dev-apply worktree. They diverged (mizar f4ec5f4, altair b2598dc); reconciled to c17e328 on both, 2026-11-06. Pick one home for dev.
   - **telegram-token**: Tony: "ok, delete the telegram token". Worker telegram/removal (edd4e880) removes the token and the Telegram code from the stock stack.
   - **skill-sync**: "we need a way to sync skills across the fleet..."
   - **agent-lifecycle**: "retire doesn seem to always work ... session full stop and closed (not visible anywhere), but transcripts kept (I guess transcripts should also be a plugin that runs on any node with agents)."
@@ -36,7 +37,7 @@ end-state/deneb-link
 
 ## Workers
 
-- fleet-endstate (daae3825, uds:/run/user/1000/cc-socks/226644.sock): shogun callers incl. trilium and zotero, capella service_key, Arbutus time zones.
+- vault-copy/timer (06933c40): deneb's awm-trilium-copy.timer is enabled but inactive, so the nightly vault copy is not running.
 - swarm-board/layout (8e2d9201): builds the ops-board decision (journal 7724ff11).
 - trilium-design/interview (c6adc424, talks with Tony directly): status-pages, new-agent-button, note-agent-button, seat-rc-toggle.
 - telegram/removal (edd4e880): stock project.
@@ -46,5 +47,6 @@ end-state/deneb-link
 ## Closed
 
 - ops-board, board-kanban: journal 7724ff11.
+- refresh-all, node-time, shogun-singletons done by fleet-endstate (journal f0d653aa, cloud f4ec5f4): every node on d5be934c (altair rolling), every node on America/Vancouver, shogun in the fleet and calling its singletons, capella's awm at boot. Left: showtime unreachable (zone unset); altair and capella timers still name America/Los_Angeles; container tests' mira and lyra stand-ins fail on dev.
 - fir-ssh, refresh-all, node-time, nexus-signin, install-loop, shogun-singletons, session-cleanup, zerotier-to-tailnet: journal be712cac.
 - zerotier-to-tailnet pass 2 (tailnet-sweep a2f9b042, cloud b2598dc on dev, journal 0f78d8bb): applied on alcor, deneb, capella (env only), altair in inventory. claude-science at https://altair.tail080e54.ts.net:12201 and https://alcor.tail080e54.ts.net:12201. Left on ZeroTier: ltz and macpro (10.74.81.208, .214), ZeroTier-only devices.
