@@ -23,13 +23,10 @@ Procedure, from dfs-interview § Work the stack:
 
 ## Current topic
 
-**speak-rule**. Its result: `speak-rule/README.md`.
+**lost-pushes**. Its result: `lost-pushes/README.md`.
 
 ## Stack
 
-- **speak-rule** (2026-11-06): steven chen contacted the client without first being asked, on a stale request.
-  - [ ] What may a started agent say? Recommend: it answers the message that started it and reports on that task only. It raises an older thread or promise only when the person asks about it. This narrows precedence d6654d87.
-  - [ ] Build R126 item 1 now: social's send refuses a DM to a person who has never written to Opal? Recommend yes.
 - **lost-pushes** (2026-11-06): it looks like there is a bug in how seats work. retired seats came back
 - **rc-toggle** (2026-11-06): about the seats, it would be great if on the new fleet status dashboard, I can turn remote control on and off for seats
   - [ ] How is a seat marked in the roster that list_other and claudedaemon report (pin plus trust, or a role tag)? Asked by trilium-design/interview.
@@ -46,3 +43,4 @@ Procedure, from dfs-interview § Work the stack:
 - **lifecycle** (closed 2026-11-06): `lifecycle/README.md`
 - **resume-from-journals** (closed 2026-11-06): `resume-from-journals/README.md`
 - **journal-tags** (closed 2026-11-06): `journal-tags/README.md`
+- **speak-rule** (closed 2026-11-06): `speak-rule/README.md`
