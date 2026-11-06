@@ -14,11 +14,18 @@ On 2026-11-06, relayed by redux-endstate/review, about his 18:37Z message to sla
 
 ## Design
 
-1. slack-main is the one long-lived receiver. It holds every `slack-bot` seat that no per-client agent holds, DMs and lab channels alike.
-2. No per-client agent runs idle.
-3. slack-main starts a client's agent only when a new message from that client arrives. It hands that message to the new agent. A backlog sweep, a restart or a handoff journal never starts an agent.
-4. The client's agent does the task. It sends its report in the client's DM, journals and retires.
-5. When the agent retires, the client's seat goes back to slack-main.
+Tony, 2026-11-06 19:28Z:
+
+> can we register triggers? the design should be: slack DM -> if agent exists -> agent seat/ else triggers new seat routine -> starts agent with brief and instructing to look for previous journals for context if needed.
+
+1. A Slack DM arrives on a `slack-bot` seat.
+2. If a live agent holds the seat, social pushes the message to that agent.
+3. Otherwise the message triggers the new-seat routine. The routine is deterministic code, not a Claude session.
+4. The routine starts an agent for that client with the seat brief and the message. The brief tells the agent to read the client's previous journals for context when it needs them.
+5. The agent does the task. It sends its report in the client's DM, journals and retires.
+6. No per-client agent runs idle. A backlog, a restart or a handoff journal never starts an agent. Only a new message does.
+
+This replaces the long-lived slack-main receiver from Tony's 18:37Z intent ("swtich the reciever back to slack main"). The routine takes slack-main's routing role.
 
 ## Incident this design prevents
 
@@ -39,3 +46,9 @@ Tony: "we can actually make this a deterministic routine, check that the awm too
 - Triggers are a systemd timer or a call (`routine trigger`). No event trigger exists. Social would have to call `routine trigger` itself.
 - A `condition` step that exits 0 dispatches one agent. Its scope is fixed by the definition (`runner.py:157-168`), so it cannot pick the client's scope. A plain step script can call `awm reflection start_other` with the client's scope and message instead.
 - A run is refused while the routine has a live run (`trigger` verb).
+
+## Event triggers (survey, 2026-11-06)
+
+- Social already emits every inbound message on its `message` topic, before it pushes to the holder (`awm/social/hub_adapter.py:134-152`).
+- A service can subscribe to a topic with `gatewayclient.subscribe(service, topic)`. events, 2fa, search, ssh and operations already do.
+- The routine plugin registers only timer and call triggers. An event trigger is a new routine feature: subscribe to a topic, filter the payload, and hand the payload to the steps.
