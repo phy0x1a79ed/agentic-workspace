@@ -162,6 +162,20 @@ API_MANIFEST: dict[str, Any] = {
             ],
             "timeout": 3600,
         },
+        {
+            "name": "order",
+            "tool": "zotero_order",
+            "description": (
+                "Take a Sync now order that alcor's approver signed, and start "
+                "the sync. Refuses an envelope that does not verify, and runs "
+                "each order once. The sync's outcome goes on the status note."
+            ),
+            "params": [
+                {"name": "envelope", "type": "object", "required": True,
+                 "description": "The signed order envelope."},
+            ],
+            "timeout": 60,
+        },
     ],
     "emitters": [],
     "sessions": [],
@@ -289,12 +303,39 @@ async def _h_sync(args: dict, as_: str | None = None) -> dict:
         only=(args.get("only") or None))
 
 
+#: Sync now orders, once the config names alcor's public key.
+ORDERS: orders.Orders | None = None
+_ORDER_TASKS: set[asyncio.Task] = set()
+
+
+async def _start_ordered_sync(args: dict) -> None:
+    async def run() -> None:
+        try:
+            await _h_sync(args, None)
+        except Exception:  # noqa: BLE001 — the status note and the log carry it
+            log.exception("zotero: ordered sync failed")
+    task = asyncio.create_task(run())
+    _ORDER_TASKS.add(task)
+    task.add_done_callback(_ORDER_TASKS.discard)
+
+
+async def _h_order(args: dict, as_: str | None = None) -> dict:
+    """The signature is the gate, so any caller the door admits may deliver an order."""
+    if ORDERS is None:
+        return {"status": "refused", "reason": "Sync now orders are not configured on this node"}
+    envelope = args.get("envelope")
+    if not isinstance(envelope, dict):
+        return {"status": "refused", "reason": "`envelope` must be the signed order object"}
+    return await ORDERS.take(envelope)
+
+
 HANDLERS = {
     "status": _h_status,
     "items": _h_items,
     "pull": _h_pull,
     "apply": _h_apply,
     "sync": _h_sync,
+    "order": _h_order,
 }
 
 
@@ -423,13 +464,11 @@ async def _on_start() -> None:
     spawn_supervised("zotero:sync", _sync_loop)
     spawn_supervised("zotero:push", _push_loop)
     spawn_supervised("zotero:stream", STREAM.run)
+    global ORDERS
     try:
-        puller = orders.from_env(lambda a: _h_sync(a, None))
+        ORDERS = orders.from_env(_start_ordered_sync)
     except ImportError as e:
         log.warning("zotero: Sync now orders are configured but grantlib is missing: %s", e)
-        puller = None
-    if puller is not None:
-        spawn_supervised("zotero:orders", puller.run)
 
 
 async def main() -> None:

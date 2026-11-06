@@ -35,6 +35,7 @@ CALLS: dict[str, set[tuple[str, str]]] = {
     "channel": {("reflection", "session_of"), ("reflection", "message"), ("reflection", "list_other")},
     # gatewayclient sessions and push
     "operations": {  # GatewayTool("<tool>").call(verb)
+        ("zotero", "order"),
         ("reflection", "session_of"), ("reflection", "message"), ("reflection", "start_other"), ("social", "send"),
         *{("2fa", v) for v in ("burst", "approve_all", "approve", "deny", "devices", "pending")},
         *{("trilium", v) for v in ("note_get", "note_create", "note_update", "attr_delete", "attr_set",
@@ -64,8 +65,7 @@ CALLS: dict[str, set[tuple[str, str]]] = {
                *{("harness-cc", v) for v in ("list", "probe", "resume", "adopt")}},  # push, sessions, Cx._call
     "trilium": {("operations", "approval_request")},  # trustpolicy.requests
     "zotero": {("trilium", v) for v in ("note_search", "note_get", "note_upsert", "note_create", "note_update", "attr_set",
-                                        "note_place", "note_delete", "attachment_get", "attachment_put")}  # vault.call_sync(SERVICE, fn)
-              | {("operations", "order_pull"), ("operations", "order_done")},  # orders.py operations_call
+                                        "note_place", "note_delete", "attachment_get", "attachment_put")},  # vault.call_sync(SERVICE, fn)
 }
 
 #: Recorded calls no manifest can list yet, since no plugin serves them, each with why.
@@ -141,8 +141,12 @@ def test_the_gateway_admits_each_recorded_call(folder):
 @pytest.mark.parametrize("folder", FOLDERS, ids=lambda f: f.name)
 def test_each_declared_verb_is_a_recorded_call(folder):
     needs = _manifest(folder).get("needs", {})
+    providers = _contract_providers()
+    recorded = _recorded(folder)
+    # A contract need is made by a call to any of its providers by tool name, too.
+    recorded |= {(c, v) for c, tools in providers.items() for t, v in recorded if t in tools}
     declared = {(d["name"], v) for d in needs.get("tool", []) for v in d["verbs"]}
     declared |= {(f"{d['name']}@{d.get('major', 1)}", v) for d in needs.get("contract", []) for v in d["verbs"]}
-    stale = declared - _recorded(folder)
+    stale = declared - recorded
     assert not stale, f"{folder.name} declares calls its code does not make: {sorted(stale)}"
 

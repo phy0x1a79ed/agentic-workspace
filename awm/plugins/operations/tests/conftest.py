@@ -27,6 +27,7 @@ class Clock:
 class FakeTools:
     def __init__(self) -> None:
         self.twofa_calls: list[tuple[str, dict]] = []
+        self.zotero_calls: list[tuple[str, dict]] = []
 
     async def twofa(self, verb: str, args: dict[str, Any]) -> Any:
         self.twofa_calls.append((verb, args))
@@ -35,6 +36,10 @@ class FakeTools:
         if verb == "pending":
             return {"phone": [{"urgid": "u1", "app": "UBC"}]}
         return {"ok": True}
+
+    async def zotero(self, verb: str, args: dict[str, Any]) -> Any:
+        self.zotero_calls.append((verb, args))
+        return {"status": "started", "order_id": args["envelope"]["order"]["order_id"]}
 
 
 @pytest.fixture

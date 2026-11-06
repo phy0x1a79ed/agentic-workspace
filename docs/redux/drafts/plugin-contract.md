@@ -116,6 +116,9 @@ An interface that several plugins serve is a contract (`install.md` R117 item 4)
 3. A dependent names the contract, never a provider: `[[needs.contract]] name, major`.
 4. The contract resolves to every provider in the live table, zero or more. A contract name never clashes, because many providers are its purpose.
 5. `GET /hub/contract/<name>@<major>` lists the providers now, as `[{name, major, plugin, peer}, ...]`.
+6. A contract need that has no provider refuses nothing. A tool that a node may lack implements a contract of its own name, such as `search@1`, and its dependents need that contract. deneb runs this way with no search, reflection or operations (`fleet.md` R79). Such a dependent waits with `gatewayclient.until_provided` or degrades when a call fails.
+
+**CAUTION** A contract's providers come from the local plugins and the peer tables. A singleton behind its host's door is in neither. A contract need on a door singleton therefore finds no provider, and the needs guard refuses each call to it. Need a door singleton as a `[[needs.tool]]`.
 
 Example: cch serves `harness-cc` and dsh serves `harness-ds`. Each implements the `harness` contract at major 1. reflection needs that contract and dispatches on the platform code of the session.
 
