@@ -23,14 +23,10 @@ Procedure, from dfs-interview § Work the stack:
 
 ## Current topic
 
-**rc-toggle**. Its result: `rc-toggle/README.md`.
+**unpause**. Its result: `unpause/README.md`.
 
 ## Stack
 
-- **rc-toggle** (2026-11-06): about the seats, it would be great if on the new fleet status dashboard, I can turn remote control on and off for seats
-  - [ ] How is a seat marked in the roster that list_other and claudedaemon report (pin plus trust, or a role tag)? Asked by trilium-design/interview.
-  - [ ] Is turning Remote Control off and on for a seat passkey-gated (sessions R68), or free inside an open window? Asked by trilium-design/interview.
-  - [ ] Tony's question 'can we sort natively in claude?' as it bears on seats. Asked by trilium-design/interview.
 - **unpause** (2026-11-06): can we pause and shutdown seats on altiar?
 - **edge-cases** (2026-11-06): the current system works. a main slack seat monitors for new DMs. it notifies me and spawns a seat on first DM by someone else. ... slack main handles those edges cases and uses judgement. can also ask me (users.md R126, 2026-11-02)
 - **seat-brief** (2026-11-06): need to consolidate previous decsions into brief for seats on altair. need to also have a more general version for other seats like discord
@@ -45,3 +41,4 @@ Procedure, from dfs-interview § Work the stack:
 - **speak-rule** (closed 2026-11-06): `speak-rule/README.md`
 - **lost-pushes** (closed 2026-11-06): `lost-pushes/README.md`
 - **seat-states** (closed 2026-11-06): `seat-states/README.md`
+- **rc-toggle** (closed 2026-11-06): `rc-toggle/README.md`
