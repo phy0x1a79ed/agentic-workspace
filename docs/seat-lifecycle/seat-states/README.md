@@ -17,3 +17,11 @@ A seat has three states: **empty**, **occupied** and **retiring**.
 7. The retire instruction is short: write a handoff journal and retire. It is not a full debrief.
 
 This replaces lifecycle item 5 ("does the task, reports, journals and retires"): an agent now compacts and waits after its report, and retires only through step 4.
+
+## Decisions
+
+Tony, 2026-11-06:
+
+1. "1 yes": a new DM to an agent marked done clears the mark and restarts the 4-hour clock.
+2. "but the journal... we can start the new agent and tehm whats going on (the previous agent is at ... vs search jouirnals for hand off)": when retiring runs past the deadline, social does not kill the old agent. It starts the new agent with the queued messages and a note that the previous agent is still retiring. The note names the previous agent's job and transcript path, and tells the new agent to look for the handoff journal and to read that transcript if the journal is not there yet.
+3. "whatever service does teh seats -> socials? sure. and verb needs to be indicate this seat done or something": social holds the states, the queue and the 4-hour reclaim. The done verb is a social verb whose name says it marks the caller's seat done, such as `mark_seat_done`.
