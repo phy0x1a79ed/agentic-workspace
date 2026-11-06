@@ -8,6 +8,7 @@ end-state/deneb-link
 
 ## Waiting on Tony
 
+- deneb-link: let the edge key log in as awm on deneb, or drop the edge.
 - science-idle: the idle timeout for claude-science. Recommended: start on demand, stop after 30 min idle.
 
 ## Preferences
@@ -19,7 +20,8 @@ end-state/deneb-link
 ## Stack
 
 - **end-state**: "review the end state and if there are anything left open for us to clean up and do."
-  - **deneb-link**: mizar's peer link to deneb shows 'link dropped' since 06:12 (tailnet-sweep, 2026-11-06).
+  - **deneb-link**: mizar's edge to deneb fails since ~06:05Z. The edge is `ssh deneb awm edge-serve`; it lands as tony, who has no awm on deneb (deneb's awm runs as user awm). Fix needs the edge key to log in as awm on the public station (R79/R88), or drop mizar→deneb from edges.yml. Waiting on Tony. The awm-edge-fwd forwards and peers.json edge_urls are ZeroTier-era leftovers to retire.
+  - **seats-pause**: "retired seats came back and steven chen contacted the client without first being asked, on a stale request." Five revived seats stopped ~19:10Z; seats/pause (e11ce259 on altair) keeps them paused, finds the cause and discusses seats with Tony (takes seat-lifecycle).
   - **telegram-token**: a Telegram bot token shows in `ps` on alcor (a bwrap command line). Tony deletes it if rt no longer uses Telegram; a subagent checks.
   - **skill-sync**: "we need a way to sync skills across the fleet..."
   - **agent-lifecycle**: "retire doesn seem to always work ... session full stop and closed (not visible anywhere), but transcripts kept (I guess transcripts should also be a plugin that runs on any node with agents)."
@@ -38,6 +40,7 @@ end-state/deneb-link
 - fleet-endstate (daae3825, uds:/run/user/1000/cc-socks/226644.sock): shogun callers incl. trilium and zotero, capella service_key, Arbutus time zones.
 - swarm-board/layout (8e2d9201): builds the ops-board decision (journal 7724ff11).
 - trilium-design/interview (c6adc424, talks with Tony directly): status-pages, new-agent-button, note-agent-button, seat-rc-toggle.
+- seats/pause (e11ce259, altair, talks with Tony directly).
 - install-loop (9fc4afc8 mizar), metasmith-install-loop (80f06e0c altair): hold until Sat 2026-11-07 15:05 PT.
 
 ## Closed
