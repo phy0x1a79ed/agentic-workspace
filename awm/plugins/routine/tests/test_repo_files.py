@@ -1,4 +1,4 @@
-"""awm's own deploy.toml, the full-tests routine and its known-failures script."""
+"""awm's own deploy.toml and its scripts, and the full-tests known-failures script."""
 
 from __future__ import annotations
 
@@ -80,11 +80,6 @@ def test_refresh_checkout_keeps_a_local_commit(tmp_path):
 def test_awm_deploy_toml_names_no_host():
     # fleet.md R140: the node list lives in each node's install config.
     assert "[fleet]" not in (REPO / "deploy.toml").read_text()
-
-
-def test_full_tests_routine_parses():
-    r = definitions.load(REPO / "routines" / "full-tests.toml")
-    assert r.timer and [s.run for s in r.steps] == ["scripts/full-tests.sh"]
 
 
 FAKE_RUN_TESTS = """#!/usr/bin/env bash

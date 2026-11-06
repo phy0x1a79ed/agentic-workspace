@@ -1,7 +1,7 @@
 """The failure chain of routines.md R47 and R48.
 
-1. Start the fixing agent on the declared peer.
-2. When that fails, DM the operator on Discord.
+1. Start the fixing agent on the declared peer, when the routine declares one.
+2. Otherwise, or when that fails, post a notice to the operator's channel.
 3. When that fails too, log locally and stop.
 
 The chain never raises: a failure path that throws would hide the failure it
@@ -21,7 +21,7 @@ log = logging.getLogger("awm.routine.escalate")
 
 @dataclass
 class Escalation:
-    via: str                 # "agent" | "dm" | "log"
+    via: str                 # "agent" | "notice" | "log"
     job: str = ""
     peer: str = ""
     errors: tuple[str, ...] = ()
@@ -43,12 +43,18 @@ async def escalate(out: Outbound, *, peer: str, project: str, scope: str,
     except Exception as e:  # noqa: BLE001 — every failure moves down the chain
         errors.append(f"start on {peer or 'local'}: {e}")
         log.warning("fixer start failed on %s: %s", peer, e)
+    return await notice(out, f"{summary}\nThe fixing agent could not start on "
+                             f"{peer or 'local'}: {errors[-1]}", peer=peer, errors=errors)
+
+
+async def notice(out: Outbound, text: str, *, peer: str = "",
+                 errors: list[str] | None = None) -> Escalation:
+    """Post `text` to the operator's channel, or log it when that fails."""
+    errors = list(errors or ())
     try:
-        await out.notify_operator(
-            f"{summary}\nThe fixing agent could not start on {peer or 'local'}: "
-            f"{errors[-1]}")
-        return Escalation(via="dm", peer=peer, errors=tuple(errors))
+        await out.notify_operator(text)
+        return Escalation(via="notice", peer=peer, errors=tuple(errors))
     except Exception as e:  # noqa: BLE001
-        errors.append(f"operator DM: {e}")
-    log.error("routine failure with no agent and no DM: %s | %s", summary, errors)
+        errors.append(f"operator notice: {e}")
+    log.error("routine failure with no agent and no notice: %s | %s", text, errors)
     return Escalation(via="log", peer=peer, errors=tuple(errors))

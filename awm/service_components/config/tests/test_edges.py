@@ -132,7 +132,7 @@ def test_operator_dm_falls_back_to_tonys_dm(monkeypatch):
     import awm.config as config
     for var in ("AWM_OPERATOR_DM_ACCOUNT", "AWM_OPERATOR_DM_CHANNEL"):
         monkeypatch.delenv(var, raising=False)
-    assert config.operator_dm() == ("discord-bot", "dm:188743359983124480")
+    assert config.operator_dm() == ("discord-bot", "1522674357762261112")
     monkeypatch.setenv("AWM_OPERATOR_DM_CHANNEL", " dm:1 ")
     monkeypatch.setenv("AWM_OPERATOR_DM_ACCOUNT", "other-bot")
     assert config.operator_dm() == ("other-bot", "dm:1")

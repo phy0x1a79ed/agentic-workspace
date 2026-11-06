@@ -10,21 +10,22 @@ This doc holds awm's registered routines: what a routine is, what triggers it, a
 
 - **R34.** awm keeps a set of registered routines. A routine makes a recurring process deterministic. A timer or an agent triggers it. Tony: "we can maybe have a series of registerable automations that makes these things deterministic. automations can be trigged by a timer or by agents."
   - A routine tests its conditions, then dispatches agents when one holds. The agents and tasks can run on remote peers. Tony: "On a timer do this and on any of these conditions, dispatch agents [...] agents and tasks can be on remote peers."
-  - `deploy`, the full test suite and a public release are each a routine. Tony: "We can now use this abstraction to also describe  deployments."
+  - A public release is a routine. A routine also runs on an event. Tony: "we need routine for other things and routines can be triggered by an event" (2026-11-06).
+  - The full test suite runs by hand only, never as an everyday action. Tony: "please no full tests as part of "routine" (everyday) actions" (2026-11-06).
 - **R36.** A routine is defined by its project. Tony: "keeping the scripts with the parent project works [...] this encourages repos for them which adds version tracking which is encouraging good behaviour."
   - It has a name.
   - It runs on the node where it is installed. Its definition names no node.
   - It has triggers: a timer, a call, or both. Tony runs one through a call, the same as an agent does. Tony: "by hand = agent call."
-  - It has deterministic steps, a failure that dispatches a session, and a report of one mark (R27).
+  - It has deterministic steps, a failure notice (R47), and a report of one mark (R27).
   - Its definition lives in its project's repo. Work with no project gets a new repo (R4).
-- **R47.** A failed run of any routine starts an agent to fix the error. It does not wait for Tony. Landing is not a routine: its failures go to the merger (R23). Tony: "the expected error handling for routines is to start an agent to address and fix the error" (2026-10-31).
-  - The `routine` service starts it through the same API that the MCP tool calls.
+- **R47.** A failed run of a routine posts a notice to the operator's channel, unimatrix0#notifications, and starts no agent. The agent that triggered the run is already watching it. Tony: "the only thing we change is remove the agentic error handling since an agent is already watching" and "maybe we do unimatrix0 notifications channel instead? [...] this would also clear up the DM for actual conversation" (2026-11-06).
+  - A routine keeps the option to declare a `[fixer]`. No routine declares one.
   - Lineage traces through the run. The run records the session that triggered it. The fixing agent records the run as its parent (R13). Tony: "parent should somehow trace through agent -> deploy routine -> fail -> error handler agent" (2026-10-31).
-- **R48.** A routine declares the peer that its fixing agent runs on. The routine itself still runs where it is installed (R36). When the fixing agent cannot start, the service falls back in order. Tony: "routines should also declare the peer that the error handler agent runs on. if peer not reachable -> discord DM notice (crucial failures should all attmpt to notify me through discord) -> finally just give up and log locally" (2026-10-31).
+- **R48.** A routine that declares a fixer names the peer that its fixing agent runs on. The routine itself still runs where it is installed (R36). When the fixing agent cannot start, the service falls back in order. Tony: "routines should also declare the peer that the error handler agent runs on. if peer not reachable -> discord DM notice (crucial failures should all attmpt to notify me through discord) -> finally just give up and log locally" (2026-10-31).
   1. Start the fixing agent on the declared peer.
-  2. When that peer is unreachable, send Tony a notice in his Discord DM.
+  2. When that peer is unreachable, post the notice to unimatrix0#notifications.
   3. When the notice fails too, log the failure locally and stop.
-  - Every crucial failure tries the Discord DM notice. This matches its use for urgent notices today (precedence `40040e7a1ec36442`).
+  - Every crucial failure tries the notice. Every awm operator notice goes to that channel, and Tony's DM stays for conversation.
 - **R37.** The service is an MCP service. `trigger` and `cancel` run and stop a routine. `schedule` and `unschedule` set and clear its timer. Tony: "awm <the service> trigger/cancel (manual trigger), or schedule/unschedule for timers."
 - **R38.** systemd timers drive the timed triggers. Tony: "Good to use established robust mechanisms where possible." A timer fires by calling `trigger`. The service keeps the record of each run, allows one live run per routine, and watches each run to its verdict.
 - **R39.** The service is named `routine`. Each registered process is a routine. Tony: "this is fine, I will use awm routine to clarify and context should be sufficient." Claude Code also calls its scheduled cloud agents routines. Write `awm routine` wherever the context leaves doubt.
