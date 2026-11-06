@@ -18,9 +18,6 @@ pub struct Plugin {
     pub tools: Vec<ToolSpec>,
     pub pages: Vec<PageSpec>,
     pub needs: Needs,
-    /// A digest of the folder's files, names, sizes and mtimes. A reload restarts a plugin
-    /// whose stamp moved (R144).
-    pub stamp: String,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -339,41 +336,11 @@ fn build_plugin(cand: &Candidate, input: &LoadInput, warnings: &mut Vec<String>)
         tools,
         pages,
         needs: m.needs.clone(),
-        stamp: stamp(&cand.dir),
     })
 }
 
-/// Folders a stamp skips: build output, caches and VCS state, which change without the
-/// plugin changing.
+/// Folders an install copy skips: build output, caches and VCS state.
 pub const UNSTAMPED: [&str; 6] = [".git", "node_modules", "target", "__pycache__", ".venv", ".pytest_cache"];
-
-fn stamp(dir: &Path) -> String {
-    use std::hash::{Hash, Hasher};
-    fn walk(dir: &Path, h: &mut std::collections::hash_map::DefaultHasher) {
-        let Ok(entries) = std::fs::read_dir(dir) else { return };
-        let mut entries: Vec<_> = entries.filter_map(|e| e.ok()).collect();
-        entries.sort_by_key(|e| e.file_name());
-        for e in entries {
-            let name = e.file_name();
-            let Ok(meta) = e.metadata() else { continue };
-            if meta.is_dir() {
-                if !UNSTAMPED.iter().any(|u| name == *u) {
-                    name.hash(h);
-                    walk(&e.path(), h);
-                }
-                continue;
-            }
-            name.hash(h);
-            meta.len().hash(h);
-            if let Ok(t) = meta.modified() {
-                t.hash(h);
-            }
-        }
-    }
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    walk(dir, &mut h);
-    format!("{:016x}", h.finish())
-}
 
 fn claim(
     p: &Plugin,

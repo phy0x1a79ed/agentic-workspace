@@ -26,6 +26,8 @@ pub struct Supervisor {
     groups: Mutex<HashMap<String, i32>>,
     /// Each running service's loop, with the flag that retires it on a plugin change.
     tasks: Mutex<HashMap<String, (Arc<AtomicBool>, JoinHandle<()>)>>,
+    /// The `[env]` each running service was spawned with.
+    env: Mutex<HashMap<String, std::collections::BTreeMap<String, String>>>,
     /// Services that crash-looped and stay down.
     failed: Mutex<Vec<String>>,
 }
@@ -33,6 +35,12 @@ pub struct Supervisor {
 impl Supervisor {
     fn groups(&self) -> std::sync::MutexGuard<'_, HashMap<String, i32>> {
         self.groups.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// The `[env]` of every service that has a live process.
+    pub fn env_of_running(&self) -> HashMap<String, std::collections::BTreeMap<String, String>> {
+        let live = self.groups();
+        self.env.lock().unwrap_or_else(|p| p.into_inner()).iter().filter(|(n, _)| live.contains_key(*n)).map(|(n, e)| (n.clone(), e.clone())).collect()
     }
 
     pub fn failed(&self) -> Vec<String> {
@@ -56,7 +64,7 @@ pub fn start(gw: &Arc<Gateway>, spec: ServiceSpec) {
     if !spec.enabled {
         return;
     }
-    if gw.cfg.external(&spec.name).is_some() {
+    if gw.cfg().external(&spec.name).is_some() {
         tracing::info!("service {}: external, waiting for it to register", spec.name);
         return;
     }
@@ -108,7 +116,7 @@ pub async fn stop(gw: &Arc<Gateway>, names: &[String]) {
 async fn run_service(gw: Arc<Gateway>, spec: ServiceSpec, retired: Arc<AtomicBool>) {
     let mut exits: VecDeque<Instant> = VecDeque::new();
     let mut backoff = Duration::from_secs(1);
-    let window = Duration::from_secs_f64(gw.cfg.reconnect_window_s);
+    let window = Duration::from_secs_f64(gw.cfg().reconnect_window_s);
     let done = || gw.stopping() || retired.load(Ordering::SeqCst);
     while !done() {
         let mut child = match spawn(&gw, &spec) {
@@ -120,6 +128,7 @@ async fn run_service(gw: Arc<Gateway>, spec: ServiceSpec, retired: Arc<AtomicBoo
             }
         };
         let pid = child.id().map(|p| p as i32);
+        gw.supervisor.env.lock().unwrap_or_else(|p| p.into_inner()).insert(spec.name.clone(), gw.cfg().env.clone());
         if let Some(pid) = pid {
             gw.supervisor.groups().insert(spec.name.clone(), pid);
         }
@@ -176,8 +185,8 @@ fn spawn(gw: &Gateway, spec: &ServiceSpec) -> std::io::Result<tokio::process::Ch
     }
     cmd.arg(&spec.run)
         .current_dir(&spec.cwd)
-        .envs(&gw.cfg.env)
-        .envs(granted_secrets(&gw.cfg.secrets_path(&gw.state), &spec.secrets))
+        .envs(&gw.cfg().env)
+        .envs(granted_secrets(&gw.cfg().secrets_path(&gw.state), &spec.secrets))
         .env("AWM_HUB_URL", gw.hub_url())
         .env("AWM_SERVICE_NAME", &spec.name)
         .env("AWM_PLUGIN", &spec.plugin)
@@ -193,12 +202,12 @@ fn spawn(gw: &Gateway, spec: &ServiceSpec) -> std::io::Result<tokio::process::Ch
     if let Some(port) = gw.hub_url().rsplit(':').next() {
         cmd.env("AWM_PORT", port);
     }
-    if let Some(ws) = &gw.cfg.workspace {
+    if let Some(ws) = &gw.cfg().workspace {
         cmd.env("AWM_WORKSPACE", ws);
     }
     {
         let port = gw.egress.port_for(gw.weak(), &spec.plugin)?;
-        let exempt = crate::egress::exempt_hosts(&gw.cfg.edges_path(&gw.state), &gw.hub_url());
+        let exempt = crate::egress::exempt_hosts(&gw.cfg().edges_path(&gw.state), &gw.hub_url());
         cmd.envs(crate::egress::proxy_env(port, &exempt));
     }
     cmd.spawn()
@@ -255,7 +264,7 @@ fn kill_group(pgid: i32, signal: i32) {
 /// then SIGTERM and SIGKILL. An external service has its own unit and only reconnects.
 pub async fn stop_all(gw: &Arc<Gateway>) {
     gw.stopping.store(true, Ordering::SeqCst);
-    gw.hub.broadcast(&json!({"kind": "shutdown"}), |name| gw.cfg.external(name).is_none());
+    gw.hub.broadcast(&json!({"kind": "shutdown"}), |name| gw.cfg().external(name).is_none());
     let deadline = Instant::now() + GRACE;
     while !gw.supervisor.groups().is_empty() && Instant::now() < deadline {
         tokio::time::sleep(Duration::from_millis(100)).await;

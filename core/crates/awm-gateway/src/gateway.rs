@@ -1,6 +1,6 @@
 //! Gateway state and the catalog: which tools exist, how they describe themselves, and dispatch.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock, RwLock, Weak};
@@ -34,7 +34,7 @@ const NATIVE_VERBS: [(&str, &str); 15] = [
     ("config_set", "Save `values` to the config contract `key`, through its service's config_set."),
     ("usage", "Usage per plugin and surface over the last `days` days (default 60)."),
     ("table", "The live name table: each tool's owner plugin and node, and each contract's providers."),
-    ("reload", "Read the plugin roots and the install config again. Starts added plugins, restarts changed ones and stops removed ones, with no gateway restart."),
+    ("reload", "Read the plugin roots and the install config again, with no gateway restart. Starts added plugins and stops removed or disabled ones. It restarts nothing unless `restart` (a list of plugin names) names it, with `force` to bypass the crash breaker. The result lists the running plugins whose `[env]` is stale."),
     ("install", "Install or update plugins from `sources` (a list) or `source`: each a plugin folder or git:<url>@<commit>. All of them load as one change, or none does. A git change asks for Tony's passkey approval first; run it again with `approval`=<request_id> once approved."),
     ("uninstall", "Remove an installed plugin by `name` and stop its services."),
 ];
@@ -63,7 +63,7 @@ struct DoorVerbs {
 
 pub struct Gateway {
     pub state: PathBuf,
-    pub cfg: Config,
+    cfg: RwLock<Arc<Config>>,
     pub node: String,
     pub load: RwLock<LoadResult>,
     pub hub: Hub,
@@ -93,6 +93,35 @@ pub struct Gateway {
     /// The node's edge list, whose singletons each name their callers (fleet.md R98 item 3).
     pub edges: RwLock<EdgeList>,
     me: Weak<Gateway>,
+}
+
+/// What the caller of a reload wants restarted. A reload never restarts a plugin on its own.
+#[derive(Debug, Default, Clone)]
+pub struct ReloadRequest {
+    /// Plugins to restart, even if no file changed.
+    pub restart: Vec<String>,
+    /// Bypass the crash breaker for the named plugins.
+    pub force: bool,
+}
+
+impl ReloadRequest {
+    /// `restart` is a list or a comma-separated string.
+    pub fn from_args(args: &Value) -> Self {
+        let names = |v: &Value| -> Vec<String> {
+            match v {
+                Value::Array(a) => a.iter().filter_map(Value::as_str).map(str::to_string).collect(),
+                Value::String(s) => s.split(',').map(str::trim).filter(|n| !n.is_empty()).map(str::to_string).collect(),
+                _ => vec![],
+            }
+        };
+        Self { restart: names(args.get("restart").unwrap_or(&Value::Null)), force: args.get("force").and_then(Value::as_bool).unwrap_or(false) }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Scope {
+    Everything,
+    Needs,
 }
 
 /// An error with the HTTP status `/invoke` answers it with.
@@ -180,7 +209,7 @@ impl Gateway {
             edges: RwLock::new(edges),
             usage: UsageStore::new(state.join("usage")),
             state,
-            cfg,
+            cfg: RwLock::new(Arc::new(cfg)),
             node,
             load: RwLock::new(load),
             hub: Hub::default(),
@@ -204,6 +233,12 @@ impl Gateway {
         Ok(gw)
     }
 
+    /// The install config as the last reload read it. `listen` and `isolated_listen` are
+    /// read once at start, so a change to them needs a gateway restart.
+    pub fn cfg(&self) -> Arc<Config> {
+        self.cfg.read().unwrap_or_else(|p| p.into_inner()).clone()
+    }
+
     pub fn weak(&self) -> Weak<Gateway> {
         self.me.clone()
     }
@@ -213,7 +248,7 @@ impl Gateway {
     }
 
     pub fn hub_url(&self) -> String {
-        self.url.get().cloned().unwrap_or_else(|| format!("http://{}", self.cfg.listen))
+        self.url.get().cloned().unwrap_or_else(|| format!("http://{}", self.cfg().listen))
     }
 
     pub fn read_load(&self) -> std::sync::RwLockReadGuard<'_, LoadResult> {
@@ -224,7 +259,7 @@ impl Gateway {
     /// The file holding the token `service` proves itself with: its external config's, else
     /// the one the supervisor minted for its spawn. None when it has neither.
     pub fn token_file_of(&self, service: &str) -> Option<PathBuf> {
-        match self.cfg.external(service) {
+        match self.cfg().external(service) {
             Some(external) => external.token_file.clone(),
             None => Some(crate::supervisor::service_token_path(&self.state, service)).filter(|p| p.exists()),
         }
@@ -374,8 +409,8 @@ impl Gateway {
                 if !gw.refresh_peer(&peer).await || gw.cached_table_of(&peer) == before {
                     return;
                 }
-                if let Err(e) = gw.reload().await {
-                    tracing::warn!("peer {peer}: reload after its table: {}", e.detail);
+                if let Err(e) = gw.reload_needs().await {
+                    tracing::warn!("peer {peer}: needs after its table: {}", e.detail);
                 }
             });
         }
@@ -414,14 +449,14 @@ impl Gateway {
     /// lookup holds and retries until it answers. Only a definite answer is kept: an `unknown`
     /// mode or a failure is asked again on the next call.
     pub async fn session_of(&self, pid: u32) -> Option<Value> {
-        let ttl = Duration::from_secs_f64(self.cfg.session_cache_s);
+        let ttl = Duration::from_secs_f64(self.cfg().session_cache_s);
         if let Some((at, v)) = self.sessions.lock().unwrap_or_else(|p| p.into_inner()).get(&pid) {
             if at.elapsed() < ttl {
                 return Some(v.clone());
             }
         }
         let caller = awm_proto::Caller { node: self.node.clone(), lane: Lane::Service, ..Default::default() };
-        let deadline = Instant::now() + Duration::from_secs_f64(self.cfg.lookup_wait_s);
+        let deadline = Instant::now() + Duration::from_secs_f64(self.cfg().lookup_wait_s);
         let answer = loop {
             let notified = self.hub.changed.notified();
             let tried = match self.lookup_target() {
@@ -464,7 +499,7 @@ impl Gateway {
             if !load.plugins.iter().any(|p| p.tools.iter().any(|t| t.name == crate::caller::LOOKUP_TOOL)) {
                 // A node that runs no reflection runs no harness, so no pid is a session's. One
                 // that should run it may be restarting it: wait for it below.
-                if !crate::caller::lookup_expected(&load, &self.cfg) {
+                if !crate::caller::lookup_expected(&load, &self.cfg()) {
                     return Lookup::NoOwner { mode: None };
                 }
             }
@@ -555,7 +590,9 @@ impl Gateway {
             moved.push((f.name.clone(), live, old, had));
         }
         cleanup(&stage);
-        let report = self.reload().await?;
+        // The install names what it replaced: those plugins restart, and no other.
+        let replaced = ReloadRequest { restart: moved.iter().filter(|m| m.3).map(|m| m.0.clone()).collect(), force: false };
+        let report = self.reload(&replaced).await?;
         let refused: Vec<String> = report["refused"]
             .as_array()
             .into_iter()
@@ -570,7 +607,7 @@ impl Gateway {
                     let _ = std::fs::rename(old, live);
                 }
             }
-            self.reload().await?;
+            self.reload(&replaced).await?;
             return Err(ApiError::new(409, format!("install refused, nothing changed: {}", refused.join("; "))));
         }
         let mut pins = Pins::load(&self.state);
@@ -587,7 +624,8 @@ impl Gateway {
     /// request and answer what to do next.
     async fn approve(&self, change: &[crate::install::Pending], approval: Option<&str>) -> Result<Option<Value>, ApiError> {
         use crate::install::{check_grant, commits_of, grant_key, request_payload, APPROVER_TOOL, COMMITS_KIND};
-        let key = grant_key(&self.cfg.secrets_path(&self.state), &self.cfg.env).map_err(|e| ApiError::new(403, e))?;
+        let cfg = self.cfg();
+        let key = grant_key(&cfg.secrets_path(&self.state), &cfg.env).map_err(|e| ApiError::new(403, e))?;
         let ctx = CallContext { plugin: Some(NATIVE_TOOL.into()), ..CallContext::local(self.node.clone(), Surface::Plugin) };
         let call = |verb: &'static str, args: Value| {
             let ctx = &ctx;
@@ -630,63 +668,109 @@ impl Gateway {
         }
         pins.plugin.retain(|p| p.name != name);
         pins.save(&self.state).map_err(|e| ApiError::new(500, e.to_string()))?;
-        Ok(json!({"uninstalled": name, "reload": self.reload().await?}))
+        Ok(json!({"uninstalled": name, "reload": self.reload(&ReloadRequest::default()).await?}))
     }
 
     /// Load the plugins again and apply the difference, with no gateway restart (R144).
-    /// Only a plugin that was added, removed or changed has its services started or stopped.
-    pub async fn reload(&self) -> Result<Value, ApiError> {
+    /// The caller decides what restarts: a plain reload starts the plugins that were added or
+    /// enabled and stops the ones that were removed or disabled. A changed folder restarts
+    /// nothing. `request.restart` names the plugins to restart as well.
+    pub async fn reload(&self, request: &ReloadRequest) -> Result<Value, ApiError> {
+        self.apply_load(request, Scope::Everything).await
+    }
+
+    /// A peer's table changed: start the plugins whose `needs` now resolve and stop those whose
+    /// `needs` no longer do. It reads no config, restarts nothing and tells no peer.
+    pub async fn reload_needs(&self) -> Result<Value, ApiError> {
+        self.apply_load(&ReloadRequest::default(), Scope::Needs).await
+    }
+
+    async fn apply_load(&self, request: &ReloadRequest, scope: Scope) -> Result<Value, ApiError> {
         let Some(gw) = self.me.upgrade() else { return Err(ApiError::new(503, "the gateway is stopping")) };
         if self.stopping() {
             return Err(ApiError::new(503, "the gateway is stopping"));
         }
         let _one_at_a_time = self.reloading.lock().await;
-        let cfg = Config::load(&self.state).map_err(|e| ApiError::new(400, e.to_string()))?;
-        let edges = EdgeList::load(&cfg.edges_path(&self.state)).map_err(|e| ApiError::new(400, format!("{e:#}")))?;
-        *self.edges.write().unwrap_or_else(|p| p.into_inner()) = edges;
+        let cfg = match scope {
+            Scope::Everything => {
+                let cfg = Arc::new(Config::load(&self.state).map_err(|e| ApiError::new(400, e.to_string()))?);
+                *self.cfg.write().unwrap_or_else(|p| p.into_inner()) = cfg.clone();
+                cfg
+            }
+            Scope::Needs => self.cfg(),
+        };
+        if scope == Scope::Everything {
+            let edges = EdgeList::load(&cfg.edges_path(&self.state)).map_err(|e| ApiError::new(400, format!("{e:#}")))?;
+            *self.edges.write().unwrap_or_else(|p| p.into_inner()) = edges;
+        }
         let peers = self.peer_tools.read().unwrap_or_else(|p| p.into_inner()).clone();
-        let new = load_plugins(&self.state, &cfg, &peers, &self.edges.read().unwrap_or_else(|p| p.into_inner()), &self.node);
-        let old: BTreeMap<String, loader::Plugin> =
-            self.read_load().plugins.iter().map(|p| (p.name.clone(), p.clone())).collect();
-        let fresh: BTreeMap<String, &loader::Plugin> = new.plugins.iter().map(|p| (p.name.clone(), p)).collect();
+        let mut new = load_plugins(&self.state, &cfg, &peers, &self.edges.read().unwrap_or_else(|p| p.into_inner()), &self.node);
+        let (old, was_refused): (BTreeMap<String, loader::Plugin>, BTreeSet<String>) = {
+            let before = self.read_load();
+            (before.plugins.iter().map(|p| (p.name.clone(), p.clone())).collect(), before.refused.iter().map(|r| r.plugin.clone()).collect())
+        };
 
-        let (mut added, mut updated, mut removed) = (Vec::new(), Vec::new(), Vec::new());
-        for (name, p) in &fresh {
-            match old.get(name) {
-                None => added.push(name.clone()),
-                Some(o) if o.stamp != p.stamp || o.services != p.services || o.dir != p.dir => updated.push(name.clone()),
-                Some(_) => {}
+        if scope == Scope::Needs {
+            // Only a refusal can come from `needs`. Every other difference on disk waits for a reload.
+            let now_refused: BTreeSet<&str> = new.refused.iter().map(|r| r.plugin.as_str()).collect();
+            new.plugins.retain(|p| old.contains_key(&p.name) || was_refused.contains(&p.name));
+            for (name, o) in &old {
+                if !new.plugins.iter().any(|p| &p.name == name) && !now_refused.contains(name.as_str()) {
+                    new.plugins.push(o.clone());
+                }
             }
         }
-        removed.extend(old.keys().filter(|n| !fresh.contains_key(*n)).cloned());
+        let fresh: BTreeMap<String, &loader::Plugin> = new.plugins.iter().map(|p| (p.name.clone(), p)).collect();
 
-        let going: Vec<String> = removed
+        let added: Vec<String> = fresh.keys().filter(|n| !old.contains_key(*n)).cloned().collect();
+        let removed: Vec<String> = old.keys().filter(|n| !fresh.contains_key(*n)).cloned().collect();
+        let (restarted, unknown): (Vec<String>, Vec<String>) =
+            request.restart.iter().cloned().partition(|n| old.contains_key(n) && fresh.contains_key(n));
+
+        let services = |plugins: &BTreeMap<String, &loader::Plugin>| -> BTreeMap<String, bool> {
+            plugins.values().flat_map(|p| p.services.iter().map(|s| (s.name.clone(), s.enabled))).collect()
+        };
+        let old_refs: BTreeMap<String, &loader::Plugin> = old.iter().map(|(k, v)| (k.clone(), v)).collect();
+        let (was, now) = (services(&old_refs), services(&fresh));
+        let restarting: BTreeSet<&str> =
+            restarted.iter().flat_map(|n| old[n].services.iter().map(|s| s.name.as_str())).collect();
+        let stopping: Vec<String> = was
             .iter()
-            .chain(updated.iter())
-            .flat_map(|n| old[n].services.iter().map(|s| s.name.clone()))
+            .filter(|(n, was_on)| restarting.contains(n.as_str()) || (**was_on && now.get(*n) != Some(&true)))
+            .map(|(n, _)| n.clone())
             .collect();
-        crate::supervisor::stop(&gw, &going).await;
-        for s in &going {
-            if self.cfg.external(s).is_none() {
+        let starting: Vec<loader::ServiceSpec> = fresh
+            .values()
+            .flat_map(|p| p.services.iter())
+            .filter(|s| s.enabled && (restarting.contains(s.name.as_str()) || was.get(&s.name) != Some(&true)))
+            .cloned()
+            .collect();
+
+        if !request.restart.is_empty() || !stopping.is_empty() || !starting.is_empty() {
+            tracing::info!(
+                "reload: restart {:?} (force {}), stop {stopping:?}, start {:?}",
+                request.restart, request.force, starting.iter().map(|s| &s.name).collect::<Vec<_>>()
+            );
+        }
+        crate::supervisor::stop(&gw, &stopping).await;
+        for s in &stopping {
+            if cfg.external(s).is_none() {
                 self.hub.forget(s);
             }
         }
-        let starting: Vec<loader::ServiceSpec> = added
-            .iter()
-            .chain(updated.iter())
-            .flat_map(|n| fresh[n].services.iter().cloned())
-            .collect();
         for r in &new.refused {
             tracing::error!("plugin {} refused: {}", r.plugin, r.reason);
         }
         let refused: Vec<Value> = new.refused.iter().map(|r| json!({"plugin": r.plugin, "reason": r.reason})).collect();
         *self.load.write().unwrap_or_else(|p| p.into_inner()) = new;
         self.hub.changed.notify_waiters();
-        for spec in starting {
+        for spec in starting.clone() {
             crate::supervisor::start(&gw, spec);
         }
-        if !(added.is_empty() && updated.is_empty() && removed.is_empty()) {
-            tracing::info!("reload: added {added:?}, updated {updated:?}, removed {removed:?}");
+        let stale_env = self.stale_env(&cfg.env);
+        let tell_peers = scope == Scope::Everything && !(added.is_empty() && removed.is_empty() && restarted.is_empty() && stopping.is_empty());
+        if tell_peers {
+            tracing::info!("reload: added {added:?}, removed {removed:?}, restarted {restarted:?}");
             let peers = self.peers.clone();
             let node = self.node.clone();
             tokio::spawn(async move {
@@ -697,7 +781,22 @@ impl Gateway {
                 }
             });
         }
-        Ok(json!({"added": added, "updated": updated, "removed": removed, "refused": refused}))
+        Ok(json!({
+            "added": added, "removed": removed, "restarted": restarted, "unknown": unknown, "refused": refused,
+            "stopped": stopping, "started": starting.iter().map(|s| s.name.clone()).collect::<Vec<_>>(),
+            "stale_env": stale_env,
+        }))
+    }
+
+    /// The running plugins that carry an `[env]` older than the config's: each restarts to take it.
+    fn stale_env(&self, env: &BTreeMap<String, String>) -> Vec<String> {
+        let ran = self.supervisor.env_of_running();
+        let load = self.read_load();
+        load.plugins
+            .iter()
+            .filter(|p| p.services.iter().any(|s| ran.get(&s.name).is_some_and(|e| e != env)))
+            .map(|p| p.name.clone())
+            .collect()
     }
 
     /// Every public tool: declared by a loaded plugin, or published by a service the loader
@@ -912,7 +1011,7 @@ impl Gateway {
                 }
                 let name = || args.get("name").and_then(Value::as_str).filter(|n| !n.is_empty()).map(str::to_string);
                 match verb {
-                    "reload" => self.reload().await,
+                    "reload" => self.reload(&ReloadRequest::from_args(args)).await,
                     "start" | "stop" | "restart" | "enable" | "disable" => {
                         let Some(name) = name() else { return Err(ApiError::new(400, format!("{verb} needs `name`"))) };
                         self.service_control(verb, &name).await
@@ -950,7 +1049,7 @@ impl Gateway {
 
     /// `<workspace>/projects`. The workspace defaults to the parent of the state dir, `<workspace>/.awm`.
     pub fn projects_dir(&self) -> PathBuf {
-        self.cfg.workspace_dir(&self.state).join("projects")
+        self.cfg().workspace_dir(&self.state).join("projects")
     }
 
     pub fn status(&self) -> Value {
@@ -970,7 +1069,7 @@ impl Gateway {
 
     /// Wait for `tool`'s `verb` to be served, up to the configured wait (R117 item 7).
     async fn wait_for_verb(&self, tool: &str, verb: &str) -> Result<(String, Verb), ApiError> {
-        let deadline = Instant::now() + Duration::from_secs_f64(self.cfg.tool_wait_s);
+        let deadline = Instant::now() + Duration::from_secs_f64(self.cfg().tool_wait_s);
         loop {
             let notified = self.hub.changed.notified();
             let tools = self.tools();
@@ -989,7 +1088,7 @@ impl Gateway {
             }
             let left = deadline.saturating_duration_since(Instant::now());
             if left.is_zero() {
-                return Err(ApiError::new(503, format!("tool {tool:?} is not up after {:.0}s", self.cfg.tool_wait_s)));
+                return Err(ApiError::new(503, format!("tool {tool:?} is not up after {:.0}s", self.cfg().tool_wait_s)));
             }
             let _ = tokio::time::timeout(left.min(Duration::from_millis(500)), notified).await;
         }
