@@ -131,7 +131,7 @@ class Refresher:
         if cfg.kind == "restart":
             return await self._command(root, cfg, env, "project")
         if cfg.kind == "queue":
-            return await self._queue(project, cfg, frm, to)
+            return await self._queue(project, root, cfg, frm, to)
         return await self._hot(root, cfg, env, frm, to)
 
     async def _command(self, root: Path, cfg: Refresh, env: dict[str, str],
@@ -147,13 +147,26 @@ class Refresher:
             return NodeResult(self.node, False, f"{label} {_why(res)}\n{res.output}", [hook])
         return NodeResult(self.node, True, "", [hook])
 
-    async def _queue(self, project: str, cfg: Refresh, frm: str, to: str) -> NodeResult:
+    async def _queue(self, project: str, root: Path, cfg: Refresh, frm: str,
+                     to: str) -> NodeResult:
+        """Start a session that restarts the project under supervision.
+
+        It works in the project's `deploy-refresh` scope, or in the lobby on a
+        node that holds no bare repo of the project, such as one that runs awm
+        from its workspace root."""
         prompt = (f"{cfg.prompt}\n\nThe deploy of `{project}` moved release from "
-                  f"{frm[:12] or '(none)'} to {to[:12]} on node {self.node}. Refresh it "
+                  f"{frm[:12] or '(none)'} to {to[:12]} on node {self.node}. Its live "
+                  f"checkout here is `{root}`: run the refresh from there. Refresh it "
                   f"here and confirm the services run the new commit.")
+        has_scopes = (root.parent / ".bare").is_dir()
+        if not has_scopes:
+            prompt += (f"\n\nThis node holds no `{project}` project to make a scope in, "
+                       f"so you start in the lobby. Stay there and work on `{root}` by "
+                       f"its path. Commit nothing in it.")
         try:
             res = await self.out.start_session(
-                peer="local", project=project, scope="deploy-refresh",
+                peer="local", project=project if has_scopes else "",
+                scope="deploy-refresh" if has_scopes else "",
                 prompt=prompt, started_by=f"deploy of {project} {to[:12]}",
                 name=f"refresh-{project}-{to[:8]}")
         except Exception as e:  # noqa: BLE001

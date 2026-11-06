@@ -224,6 +224,19 @@ async def test_queue_refresh_starts_supervising_session(store, out, ws):
     assert t["state"] == "landed"
     [start] = out.starts
     assert start["scope"] == "deploy-refresh" and "Restart awm." in start["prompt"]
+    assert str(ws.proj / "release") in start["prompt"]
+
+
+async def test_queue_refresh_without_a_bare_repo_starts_in_the_lobby(out, tmp_path):
+    root = tmp_path / "workspace"
+    root.mkdir()
+    (root / "deploy.toml").write_text('[refresh]\nkind = "queue"\nprompt = "Restart awm."\n')
+    ref = Refresher(out, node="alcor", checkout_root=lambda p: root)
+    r = await ref.local("awm", "a" * 40, "b" * 40)
+    assert r.ok
+    [start] = out.starts
+    assert start["scope"] == "" and start["project"] == ""
+    assert str(root) in start["prompt"] and "lobby" in start["prompt"]
 
 
 HOT = '[refresh]\nkind = "hot"\ncommand = "echo project >> {log}"\n'
