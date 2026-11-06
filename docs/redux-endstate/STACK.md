@@ -1,78 +1,49 @@
-# redux-endstate: stack
+# redux-endstate
 
-## Purpose
+Review the end state of the awm redux rollout on every node, and clean up what is left open. Protocol: the `dfs-interview` skill. Decisions: journals tagged `decision` in awm/redux-fixes (`search` "redux-endstate decision").
 
-Review the end state of the redux rollout across all awm nodes, find what is left open (leftover sessions, cards, follow-ups) and clean it up; first fix Slack seats on altair failing to ssh into fir.
+## Current
 
-Procedure, from dfs-interview § Work the stack:
+ops-board
 
-1. Run `stack.py <folder> current` for the top topic. Ask only its own questions.
-2. Dispatch read-only subagents to survey what already exists for the topic.
-3. Record each difference between the survey and the user's description.
-4. Ask the user about each difference with an unclear answer.
-5. Put one question per message to the user, or a small set of closely related questions. Give your recommendation with it.
-6. Queue the other questions with `stack.py <folder> ask`.
-7. Match each answer to the message it replies to. Ask when a reply could answer more than one message.
-8. Record each answer in the topic's `README.md`. Copy the user's words from `quote.py`.
-9. Write the result as the current design.
-10. Tick each answered question with `stack.py <folder> answer`.
-11. Run `stack.py <folder> close` when the topic's question queue is empty.
-12. Commit.
-13. Compact only when the closed topic ran long, with many exchanges or large reads. After a short topic, present the next topic in the same turn.
-14. To compact, run `reflection(verb="compact", args={followup:...})`. Write a followup that invokes `dfs-interview` by name. Name the discussion folder, the closed topic, its commit and the new top topic in it.
+## Waiting on Tony
 
-## Current topic
+- science-idle: the idle timeout for claude-science. Recommended: start on demand, stop after 30 min idle.
 
-**ops-board**. Its result: `ops-board/README.md`.
+## Preferences
 
-## Pending
-
-- **install-hold** (2026-11-06): install-loop 9fc4afc8 (mizar) and metasmith-install-loop 80f06e0c (altair) hold until Sat 2026-11-07 15:05 PT (Tony: 'Change to 305 PM Saturday, when my subscription refreshes')
+- Quote Tony only where his exact words are the decision. Never reprint the conversation. (2026-11-06)
+- Use Sonnet workers for straightforward tasks, so this session stays free to coordinate. (2026-11-06)
+- Keep the ceremony small: one file, written when a topic closes and before a compaction. (2026-11-06)
 
 ## Stack
 
-- **ops-board** (2026-11-06): https://nexus.tony-xy-liu.com/trilium/#root/iF0A3SWEGqUx/P4ALwPiCSs6N?ntxId=CZkmWI ops board needs updating
-  - [x] Old AWM book: delete the old Ops password notes, carry Links into the new Ops, archive the old Swarm board? (answered 2026-11-06)
-  - [x] Federation board: archive all 8 pre-redux cards, then check the door and intake end to end? (answered 2026-11-06)
-  - [x] Place the new Swarm board under the AWM book, next to the federation board? (answered 2026-11-06)
-  - **board-kanban** (2026-11-06): also should discuss harmonizing with my tasks kanban, then not all cards will need an agent -> or we have a manual section
-- **end-state** (2026-11-06): there are a few sessions that look left over. Please use the DFS interview skill so that we can review the end state and if there are anything left open for us to clean up and do.
-  - **agent-lifecycle** (2026-11-06): need to review agent lifecycle. retire doesn seem to always work. need to consider what this means -> session full stop and closed (not visible anywhere), but transcripts kept (I guess transcripts should also be a plugin that runs on any node with agents).
-  - **agent-core** (2026-11-06): deneb has no reflection plugin? I think if a node can run agents, reflection + search should be mandatory
-  - **seat-rc-toggle** (2026-11-06): about the seats, it would be great if on the new fleet status dashboard, I can turn remote control on and off for seats, then seats dont have to show up constantly on the left -> can we sort natively in claude?
-  - **science-idle** (2026-11-06): also, do we have an idle timeout to stop claude science from just being always on?
-  - **seat-lifecycle** (2026-11-06): need to update seats to retire after task is done with report sent back through DM. Seats should also be instructed to journal often -> we should also add tags for each user, and one that marks seats. otherwise, these journals are debreif journals. ... the task should be resumable from debrief journals, even if the sessions are gone.
-  - **social-split** (2026-11-06): I think socials needs to be split into 2 access channels, maybe even 3. for write only -> notifications, read/write on channels (bots/seats), personal automations (old teams and slack browser stuff). browser is a utility and stays separate -> it can be part of core actually, it just doesnt keep any brwosers warm
-  - **deploy-routine** (2026-11-06): we should change the deploy protocol to be deterministic with only agentic error handling, so that it becomes a (was it called routine?) like what was discussed during the initial redux spec -> do we have a journal for the redux spec so that future agents can refer to it? and can we edit it incrementally rather than full rewrite?
-  - **queue-approvals-test** (2026-11-06): lets hold a full test of the new queue and approvals workflow in 1 sitting, prolly with another agent
-  - **node-roster** (2026-11-06): can I get a board for this on awm? like an automatically updated roster with stats for each node? awm install has this as opt in, since not all installs will be for our swarm
-  - **session-naming** (2026-11-06): we should maybe to naming by hand and omit agent renaming unless needed. and we can revise the naming scheme to include node. please push this onto tthe stack ... the job ids dont match up. -> yea, need to revise session naming.
-  - **env-reload** (2026-11-06): (from nexus-signin) a changed config.toml [env] reaches plugins only after a gateway restart
-    - [ ] Tony: 'can we make the gateway restart more seamless? what is it for anyways?' Pass a changed [env] to plugins without a restart, and keep sessions alive across one?
-  - **search-mcp** (2026-11-06): one thing we should review is that all nodes are using the new search service and MCP.
-    - [x] Refresh shogun to b1e85c50 now? (answered 2026-11-06)
-
-## Parked
+- **ops-board**: "ops board needs updating"; "clean up the federation board and prepare for use".
+  - Decided: the AWM book (`iF0A3SWEGqUx`) becomes the board's root: "AWM/tasks/working, etc/swarm triage. then ops and board page can be at level with tasks." Tony adds a card by making a note in a column folder. Ops (`awmSwarmOps`) is the swarm status page, every node and station registers to it (absorbs node-roster). Old Ops, its password notes and the old Swarm board are deleted; the 8 federation cards are deleted; Links sit under Ops.
+  - Survey (2026-11-06): cards are flat under `awmSwarmBoard`, column = label `#section` (operations `writer.py:79-118`). The writer is write-only (R66): a hand-made note or a folder move never reaches the queue. Cards match the queue; they look stale because the card shows only title and chips, its reason and todos sit in the `record` child and the body is never rewritten. Layout code: `board.py` (ROOT_ID, install), `writer.py:96-101,171`, `hub_adapter.py:49,576-620`, `board.js:17-40`. Writer roots on the whole AWM book would open Major updates and the federation board to it.
+  - **board-kanban**: "harmonizing with my tasks kanban, then not all cards will need an agent -> or we have a manual section". Tony's kanban is the Tasks book `EB6Mr07BifE5`: a folder-driven board (`#board:columnsFrom=folders`), columns Proposed, Planned, Active, Blocked, Pending review, Done, Cancelled.
+- **end-state**: "review the end state and if there are anything left open for us to clean up and do."
+  - **deneb-link**: mizar's peer link to deneb shows 'link dropped' since 06:12 (tailnet-sweep, 2026-11-06).
+  - **telegram-token**: a Telegram bot token shows in `ps` on alcor (a bwrap command line). Rotate it and pass it by env file.
+  - **skill-sync**: "we need a way to sync skills across the fleet..."
+  - **agent-lifecycle**: "retire doesn seem to always work ... session full stop and closed (not visible anywhere), but transcripts kept (I guess transcripts should also be a plugin that runs on any node with agents)."
+  - **agent-core**: "if a node can run agents, reflection + search should be mandatory". deneb has neither.
+  - **seat-rc-toggle**: "on the new fleet status dashboard, I can turn remote control on and off for seats ... can we sort natively in claude?"
+  - **science-idle**: "do we have an idle timeout to stop claude science from just being always on?"
+  - **seat-lifecycle**: seats retire after the task with a report by DM, journal often, tags per user and one for seats; "the task should be resumable from debrief journals, even if the sessions are gone." Idle lab seats retire too.
+  - **social-split**: social splits into write-only notifications, read/write channels (bots, seats) and personal automations (Teams, Slack browser). Browser joins core and keeps no browser warm.
+  - **deploy-routine**: "change the deploy protocol to be deterministic with only agentic error handling". Spec pointer: journal e44b39dc.
+  - **queue-approvals-test**: "a full test of the new queue and approvals workflow in 1 sitting, prolly with another agent".
+  - **session-naming**: "naming by hand and omit agent renaming unless needed ... revise the naming scheme to include node."
+  - **env-reload**: a changed config.toml [env] reaches plugins only after a full gateway restart, which stops the node's sessions. Tony: "can we make the gateway restart more seamless? what is it for anyways?" mizar's AWM_EDGE_URL (tailnet IP → name) and capella's new AWM_EDGE_URL wait on it.
+  - **search-mcp**: "all nodes are using the new search service and MCP." Done except: stale scope worktrees carry a tracked `.mcp.json` naming the Python `awm-mcp` (22 on mizar, 77 on altair); a session started there gets a dead MCP.
 
 ## Workers
 
-- **daae3825** (2026-11-06): took refresh-all
-- **daae3825** (2026-11-06): took node-time
-- **9fc4afc8** (2026-11-06): took install-loop
-- **80f06e0c** (2026-11-06): took install-loop
-- [x] tell daae3825 how shogun-singletons was solved (told 2026-11-06)
-- **f6cd1c4b** (2026-11-06): took ops-board
-- **f6cd1c4b** (2026-11-06): took zerotier-to-tailnet
-- **f6cd1c4b** (2026-11-06): took zerotier-to-tailnet
-- **a2f9b042** (2026-11-06): took zerotier-to-tailnet
+- fleet-endstate (daae3825, uds:/run/user/1000/cc-socks/226644.sock): shogun callers incl. trilium and zotero, capella service_key, Arbutus time zones.
+- install-loop (9fc4afc8 mizar), metasmith-install-loop (80f06e0c altair): hold until Sat 2026-11-07 15:05 PT.
 
 ## Closed
 
-- **fir-ssh** (closed 2026-11-06): `fir-ssh/README.md`
-- **refresh-all** (closed 2026-11-06): `end-state/refresh-all/README.md`
-- **node-time** (closed 2026-11-06): `end-state/node-time/README.md`
-- **nexus-signin** (closed 2026-11-06): `nexus-signin/README.md`
-- **install-loop** (closed 2026-11-06): `install-loop/README.md`
-- **shogun-singletons** (closed 2026-11-06): `end-state/shogun-singletons/README.md`
-- **session-cleanup** (closed 2026-11-06): `end-state/session-cleanup/README.md`
-- **zerotier-to-tailnet** (closed 2026-11-06): `zerotier-to-tailnet/README.md`
+- fir-ssh, refresh-all, node-time, nexus-signin, install-loop, shogun-singletons, session-cleanup, zerotier-to-tailnet: journal be712cac.
+- zerotier-to-tailnet pass 2 (tailnet-sweep a2f9b042, cloud b2598dc on dev, journal 0f78d8bb): applied on alcor, deneb, capella (env only), altair in inventory. claude-science at https://altair.tail080e54.ts.net:12201 and https://alcor.tail080e54.ts.net:12201. Left on ZeroTier: ltz and macpro (10.74.81.208, .214), ZeroTier-only devices.
