@@ -104,13 +104,16 @@ steps() {
 
 step_sync() { (cd "$root" && AWM_REFRESH_TO=$1 sh scripts/refresh-checkout.sh); }
 
-# The landing agents name what restarts ($AWM_REFRESH_RESTART): plugin names, or gateway.
+# The landing agents name what restarts ($AWM_REFRESH_RESTART, comma separated):
+# `gateway` restarts the unit, and plugin names restart those plugins.
 step_deploy() {
-    local args=() restart=${AWM_REFRESH_RESTART:-}
-    if [[ $restart == gateway ]]; then
-        args=(--restart)
-    elif [[ -n $restart ]]; then
-        args=(--reload-restart "$restart")
+    local args=() names=() name restart
+    IFS=, read -ra restart <<< "${AWM_REFRESH_RESTART:-}"
+    for name in "${restart[@]}"; do
+        [[ $name == gateway ]] && args+=(--restart) || names+=("$name")
+    done
+    if (( ${#names[@]} )); then
+        args+=(--reload-restart "$(IFS=,; echo "${names[*]}")")
     fi
     (cd "$root" && bash scripts/awm-deploy.sh "${args[@]}")
 }

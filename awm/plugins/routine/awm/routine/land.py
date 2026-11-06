@@ -507,9 +507,9 @@ def restart_list(text: str) -> list[str]:
 
 
 def batch_restart(tickets: list[dict[str, Any]]) -> str:
-    """The union of the batch's restart lists. `gateway` restarts everything."""
-    names = sorted({n for t in tickets for n in t.get("restart", [])})
-    return "gateway" if "gateway" in names else ",".join(names)
+    """The union of the batch's restart lists. A gateway restart adopts the running
+    plugins, so `gateway` and plugin names both stay in the list."""
+    return ",".join(sorted({n for t in tickets for n in t.get("restart", [])}))
 
 
 def run(cmd: str, cwd: Path, label: str, log: Path, timeout: float,
