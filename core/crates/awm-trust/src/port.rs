@@ -3,7 +3,7 @@
 //! A service key's `authorized_keys` line reads
 //! `restrict,command="awm port --key awm:<holder>:service" ssh-ed25519 …`. sshd
 //! puts what the caller asked for in `SSH_ORIGINAL_COMMAND`. The door takes one
-//! JSON request `{"name","args","origin"?,"session"?,"trust"?,"scope"?}`, answers any tool outside its set as unknown, logs every
+//! JSON request `{"name","args","origin"?,"session"?,"trust"?,"scope"?,"job"?,"session_name"?}`, answers any tool outside its set as unknown, logs every
 //! call, and hands the rest to the local gateway at the service lane.
 
 use std::io::Write;
@@ -28,6 +28,11 @@ pub struct DoorRequest {
     pub trust: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scope: Option<String>,
+    /// The calling session's job and name on the calling node.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub job: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_name: Option<String>,
 }
 
 /// Parse `SSH_ORIGINAL_COMMAND`: `port <json>` or the bare JSON.

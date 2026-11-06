@@ -39,7 +39,7 @@ impl DoorRoute {
 }
 
 /// The door request for one call by `caller`: the node it started from, and the calling
-/// session's id, level and scope, which the host stamps as the calling node's word.
+/// session's id, level, scope, job and name, which the host stamps as the calling node's word.
 pub fn request(tool: String, envelope: Value, caller: &Caller, here: &str) -> DoorRequest {
     DoorRequest {
         name: tool,
@@ -48,6 +48,8 @@ pub fn request(tool: String, envelope: Value, caller: &Caller, here: &str) -> Do
         session: caller.session.clone(),
         trust: caller.trust.clone(),
         scope: caller.scope.clone(),
+        job: caller.job.clone(),
+        session_name: caller.name.clone(),
     }
 }
 
@@ -114,10 +116,30 @@ pub async fn call(route: &DoorRoute, request: &DoorRequest) -> Result<String, Pe
 mod tests {
     use super::*;
 
+    fn empty() -> DoorRequest {
+        DoorRequest { name: String::new(), args: Value::Null, origin: None, session: None, trust: None, scope: None, job: None, session_name: None }
+    }
+
+    #[test]
+    fn the_request_carries_the_calling_session() {
+        let caller = Caller {
+            node: "mizar".into(),
+            session: Some("cc12".into()),
+            job: Some("0dcd4e0c".into()),
+            name: Some("redux/x".into()),
+            ..Caller::default()
+        };
+        let req = request("operations".into(), json!({"verb": "request_human"}), &caller, "mizar");
+        assert_eq!((req.session.as_deref(), req.job.as_deref(), req.session_name.as_deref()), (Some("cc12"), Some("0dcd4e0c"), Some("redux/x")));
+        assert_eq!(req.origin, None, "a call from this node names no origin");
+        let parsed = awm_trust::port::parse(&serde_json::to_string(&req).unwrap()).unwrap();
+        assert_eq!((parsed.job.as_deref(), parsed.session_name.as_deref()), (Some("0dcd4e0c"), Some("redux/x")));
+    }
+
     #[test]
     fn the_request_rides_in_the_ssh_command() {
         let route = DoorRoute { tool: "vault".into(), host: "h".into(), address: "203.0.113.7".into(), port: 2201, user: None };
-        let req = DoorRequest { name: "vault".into(), args: json!({"verb": "get"}), origin: None, session: None, trust: None, scope: None };
+        let req = DoorRequest { name: "vault".into(), args: json!({"verb": "get"}), ..empty() };
         let args = ssh_args(&route, &req);
         let n = args.len();
         assert_eq!(&args[n - 4..n - 1], ["-p", "2201", "203.0.113.7"]);
@@ -131,7 +153,7 @@ mod tests {
     #[test]
     fn the_door_user_is_the_login_name() {
         let route = DoorRoute { tool: "vault".into(), host: "h".into(), address: "100.1.1.1".into(), port: 2201, user: Some("awm".into()) };
-        let req = DoorRequest { name: "vault".into(), args: json!({}), origin: None, session: None, trust: None, scope: None };
+        let req = DoorRequest { name: "vault".into(), args: json!({}), ..empty() };
         let args = ssh_args(&route, &req);
         let at = args.iter().position(|a| a == "-l").expect("-l");
         assert_eq!(args[at + 1], "awm");

@@ -1,7 +1,8 @@
-"""The ``operations`` verbs a session calls on its own node (queue.md R145, fleet.md R106).
+"""The ``operations`` verbs a session calls (queue.md R145, fleet.md R106).
 
-A verb names the calling session by the pid the gateway stamped on the call, which
-reflection turns into the session's R9 id (sessions.md R9). A service with no session
+A verb names the calling session by what the gateway stamped on the call: on this node the
+pid, which reflection turns into the session's R9 id (sessions.md R9); through alcor's
+singleton door the claim the door stamped, with the node it verified. A service with no session
 passes ``session_id`` instead, except where only the session itself may act: an approval
 request records the calling session, and only that session cancels it (fleet.md R97
 item 1). Every write goes through the relay, so it waits in the outbox while alcor is
@@ -61,6 +62,8 @@ class Caller:
     session_id: str | None
     job: str | None = None
     name: str | None = None
+    # The session's own node, when it is not this one.
+    node: str | None = None
 
 
 @dataclass
@@ -75,19 +78,35 @@ class Front:
 
     # -- who is calling --------------------------------------------------------
 
-    async def _caller(self, args: dict) -> Caller:
+    async def _identify(self, args: dict) -> Caller:
         pid = args.pop("_caller_pid", None)
         # An isolated session has no host pid: the gateway's isolated door stamps its R9 id.
         isolated = args.pop("_caller_session_id", None)
+        claim = args.pop("_caller_session", None)
         if isolated:
             return Caller(normalise(isolated))
+        if isinstance(claim, dict) and claim.get("session_id"):
+            node = str(claim.get("node") or "") or None
+            return Caller(normalise(str(claim["session_id"])), claim.get("job") or None,
+                          claim.get("name") or None, None if node == self.node else node)
         rec = await self.session_of(pid) if isinstance(pid, int) else None
         if not rec:
             return Caller(None)
-        caller = Caller(normalise(rec["session_id"]), rec.get("job"), rec.get("name"))
+        return Caller(normalise(rec["session_id"]), rec.get("job"), rec.get("name"))
+
+    def _job_key(self, caller: Caller) -> str:
+        return f"job:{caller.node}:{caller.job}" if caller.node else f"job:{caller.job}"
+
+    async def _caller(self, args: dict) -> Caller:
+        caller = await self._identify(args)
         if caller.job:
-            self.relay.mark(f"job:{caller.job}", caller.session_id)
+            self.relay.mark(self._job_key(caller), caller.session_id)
         return caller
+
+    @staticmethod
+    def _where(caller: Caller) -> dict:
+        """The node a write records for the caller's session, when it is not this one."""
+        return {"node": caller.node} if caller.node else {}
 
     async def _session(self, args: dict, *, required: bool = False) -> tuple[str | None, Caller]:
         caller = await self._caller(args)
@@ -120,7 +139,7 @@ class Front:
         out = await self.relay.write("task_open", {
             "title": title, "session_id": session, "peer": args.get("peer"),
             "tags": args.get("tags"), "name": args.get("name") or caller.name,
-            "rc_url": args.get("rc_url")})
+            "rc_url": args.get("rc_url"), **self._where(caller)})
         return {"ok": True, **out}
 
     async def task_attach(self, args: dict) -> dict:
@@ -128,13 +147,13 @@ class Front:
         out = await self.relay.write("task_attach", {
             "task_id": args.get("task_id"), "session_id": session,
             "role": args.get("role") or "worker", "name": args.get("name") or caller.name,
-            "rc_url": args.get("rc_url")})
+            "rc_url": args.get("rc_url"), **self._where(caller)})
         return {"ok": True, **out}
 
     async def task_join(self, args: dict) -> dict:
-        session, _ = await self._session(args, required=True)
+        session, caller = await self._session(args, required=True)
         out = await self.relay.write("task_join", {"task_id": args.get("task_id"),
-                                                   "session_id": session})
+                                                   "session_id": session, **self._where(caller)})
         main = out.get("main_session_id")
         told = False
         if main and main != session and out.get("main_name"):
@@ -189,7 +208,7 @@ class Front:
             return task_id
         out = await self.relay.write("task_open", {
             "title": caller.name or _title(reason) or "A session needs Tony",
-            "session_id": session, "name": caller.name})
+            "session_id": session, "name": caller.name, **self._where(caller)})
         return out["task_id"]
 
     async def request_human(self, args: dict) -> dict:
@@ -210,9 +229,10 @@ class Front:
                                       "reason": text})
         out["panel_url"] = api.panel_url(task_id)
         if kind == "blocked" and args.get("urgent") is True:
-            message = (f"**{caller.name or task_id}** on **{self.node}** needs you.\n{text}\n"
+            node = caller.node or self.node
+            message = (f"**{caller.name or task_id}** on **{node}** needs you.\n{text}\n"
                        f"Card {task_id}. Attach: `claude attach "
-                       f"{caller.job or caller.name or '<job>'}` on {self.node}")
+                       f"{caller.job or caller.name or '<job>'}` on {node}")
             out["notified"] = await self.dm(message)
             self.relay.mark(f"remind:{task_id}", json.dumps(
                 {"due": self.clock() + remind_s(), "text": message}))
@@ -249,7 +269,7 @@ class Front:
             raise ValueError("this node takes no admin approvals")
         req = await self.arbutus.open(str(args.get("bundle") or ""),
                                       agent=caller.name or caller.job or "a session",
-                                      node=self.node, job=caller.job or "")
+                                      node=caller.node or self.node, job=caller.job or "")
         reason = f"Admin approval {req['name']} (ref {req['ref']}) waits for Tony or Ryan in Slack."
         task_id = await self._card_for(session, caller, reason)
         out = await self.task_report({"task_id": task_id, "session_id": session,
@@ -283,8 +303,8 @@ class Front:
         if task_id:
             return task_id, False
         out = await self.relay.write("task_open", {
-            "title": _title(title) or caller.name or f"Work on {self.node}",
-            "session_id": session, "name": caller.name})
+            "title": _title(title) or caller.name or f"Work on {caller.node or self.node}",
+            "session_id": session, "name": caller.name, **self._where(caller)})
         return out["task_id"], True
 
     def _opened(self, out: dict, task_id: str, opened: bool) -> dict:
@@ -336,16 +356,14 @@ class Front:
         The new id has no card, so the job's next plan opens one of its own. The old id is
         the last one this relay saw for the job, or the one the harness still reports.
         """
-        pid = args.pop("_caller_pid", None)
-        args.pop("_caller_session_id", None)
-        rec = await self.session_of(pid) if isinstance(pid, int) else None
-        if not rec or not rec.get("job"):
+        caller = await self._identify(args)
+        if not caller.job or not caller.session_id:
             return {"ok": True, "ended": None}
-        new = normalise(str(args.get("new_session_id") or rec["session_id"]))
-        seen = self.relay.mark(f"job:{rec['job']}")
-        reported = normalise(rec["session_id"])
-        old = next((s for s in (seen, reported) if s and s != new), None)
-        self.relay.mark(f"job:{rec['job']}", new)
+        new = normalise(str(args.get("new_session_id") or caller.session_id))
+        key = self._job_key(caller)
+        seen = self.relay.mark(key)
+        old = next((s for s in (seen, caller.session_id) if s and s != new), None)
+        self.relay.mark(key, new)
         task_id = await self._task_of(old)
         if not task_id:
             return {"ok": True, "ended": None}
@@ -360,7 +378,7 @@ class Front:
         if not ref:
             raise ValueError("task_id is required")
         out = await self.relay.write("task_claim", {"task_id": ref[0], "session_id": session,
-                                                    "name": caller.name})
+                                                    "name": caller.name, **self._where(caller)})
         self.relay.mark(f"needs:{session}", clear=True)
         return {"ok": True, **out}
 
@@ -375,7 +393,8 @@ class Front:
         session, caller = await self._session(args)
         out = await self.relay.write("task_message", {
             "task_id": args.get("card_id"), "body": str(args.get("body") or ""),
-            "author": caller.name or session or "a service", "session_id": session})
+            "author": caller.name or session or "a service", "session_id": session,
+            **self._where(caller)})
         return {"ok": True, **out}
 
     async def swarm_messages(self, args: dict) -> dict:
@@ -437,7 +456,7 @@ class Front:
 
     @staticmethod
     def _service_only(args: dict) -> None:
-        if args.pop("_caller_pid", None) or args.pop("_caller_session_id", None):
+        if any([args.pop(k, None) for k in ("_caller_pid", "_caller_session_id", "_caller_session")]):
             raise ValueError("intake takes the board door's own posts, not a session's")
 
     @staticmethod

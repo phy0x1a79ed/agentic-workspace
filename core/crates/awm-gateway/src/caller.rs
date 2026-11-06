@@ -20,7 +20,8 @@ pub const SESSION_KEY: &str = "_caller_session_id";
 /// by it (contract § Caller arguments).
 pub const PID_KEY: &str = "_caller_pid";
 /// A session claim from another node. A borrower's `{kind, job, name}` survives an edge call,
-/// and a door call carries `{session_id}`, the calling session the calling gateway stamped.
+/// and a door call carries `{session_id, node, job?, name?}`: the calling session as the calling
+/// gateway stamped it, on the node the door verified.
 pub const CLAIM_KEY: &str = "_caller_session";
 /// Where `resolve_caller` records which pid of the walk the session answered for.
 pub const FOUND_PID: &str = "_found_pid";
@@ -87,6 +88,8 @@ pub fn fill(caller: &mut Caller, lookup: &Lookup, projects: &Path) -> Option<Str
             caller.session = text(a, "session_id");
             caller.trust = Some(text(a, "trust").unwrap_or_else(|| FAILED_LOOKUP_TRUST.to_string()));
             caller.scope = text(a, "cwd").and_then(|cwd| scope_of(Path::new(&cwd), projects));
+            caller.job = text(a, "job");
+            caller.name = text(a, "name");
             // reflection says `null` for a session no restricted mode started, and leaves the
             // key out only when it could not tell.
             match a.get("mode") {
@@ -96,12 +99,16 @@ pub fn fill(caller: &mut Caller, lookup: &Lookup, projects: &Path) -> Option<Str
         }
         Lookup::NoOwner { mode } => {
             caller.session = None;
+            caller.job = None;
+            caller.name = None;
             caller.trust = Some(NO_SESSION_TRUST.to_string());
             caller.scope = None;
             mode.clone()
         }
         Lookup::Failed => {
             caller.session = None;
+            caller.job = None;
+            caller.name = None;
             caller.trust = Some(FAILED_LOOKUP_TRUST.to_string());
             caller.scope = None;
             Some(crate::modes::UNKNOWN.to_string())
@@ -123,7 +130,15 @@ pub fn stamp(args: &mut Value, caller: &Caller, pid: Option<u32>, here: &str) {
     }
     let door = caller.lane == awm_proto::Lane::Service && caller.node != here;
     if let Some(session) = caller.session.as_ref().filter(|_| door) {
-        map.insert(CLAIM_KEY.into(), serde_json::json!({"session_id": session}));
+        let node = caller.origin.as_deref().unwrap_or(&caller.node);
+        let mut claim = serde_json::json!({"session_id": session, "node": node});
+        if let Some(job) = &caller.job {
+            claim["job"] = Value::String(job.clone());
+        }
+        if let Some(name) = &caller.name {
+            claim["name"] = Value::String(name.clone());
+        }
+        map.insert(CLAIM_KEY.into(), claim);
     }
     if let Some(pid) = pid.filter(|_| caller.lane == awm_proto::Lane::Local) {
         map.insert(PID_KEY.into(), Value::from(pid));
@@ -154,20 +169,23 @@ mod tests {
     fn a_session_gets_its_level_mode_and_scope() {
         let (_tmp, projects) = projects();
         let cwd = projects.join("awm/redux-x/core/src");
-        let answer = json!({"ok": true, "known": true, "session_id": "cc0f1e", "trust": "cooperative", "mode": null, "cwd": cwd});
+        let answer = json!({"ok": true, "known": true, "session_id": "cc0f1e", "trust": "cooperative", "mode": null, "cwd": cwd,
+                            "job": "0f1e", "name": "redux/x"});
         let unread = json!({"known": true, "session_id": "cc0f1e", "trust": "cooperative", "cwd": cwd});
         let mut c = Caller::default();
         let mode = fill(&mut c, &Lookup::Session(answer), &projects);
         assert_eq!((c.session.as_deref(), c.trust.as_deref(), c.scope.as_deref()), (Some("cc0f1e"), Some("cooperative"), Some("awm/redux-x")));
         assert_eq!(mode, None, "a session no restricted mode started is ungated");
+        assert_eq!((c.job.as_deref(), c.name.as_deref()), (Some("0f1e"), Some("redux/x")));
         assert_eq!(fill(&mut c, &Lookup::Session(unread), &projects).as_deref(), Some(crate::modes::UNKNOWN), "an unreadable mode is gated hardest");
     }
 
     #[test]
     fn a_shell_no_harness_claims_is_trusted_and_ungated() {
         let (_tmp, projects) = projects();
-        let mut c = Caller::default();
+        let mut c = Caller { job: Some("stale".into()), ..Caller::default() };
         assert_eq!(fill(&mut c, &Lookup::NoOwner { mode: None }, &projects), None);
+        assert_eq!(c.job, None);
         assert_eq!((c.session.as_deref(), c.trust.as_deref(), c.scope.as_deref()), (None, Some("trusted"), None));
     }
 
@@ -290,7 +308,12 @@ mod tests {
         };
         let mut args = json!({"_caller_session": {"session_id": "cc99", "job": "forged"}, "_caller_trust": "trusted"});
         stamp(&mut args, &door, None, "deneb");
-        assert_eq!(args, json!({"_caller_session": {"session_id": "cc12"}, "_caller_trust": "cooperative"}));
+        assert_eq!(args, json!({"_caller_session": {"session_id": "cc12", "node": "alcor"}, "_caller_trust": "cooperative"}));
+        // A relayed call names the node it started from, and the session's job and name ride along.
+        let relayed = Caller { origin: Some("mizar".into()), job: Some("0dcd".into()), name: Some("redux/x".into()), ..door.clone() };
+        let mut args = json!({"_caller_session": {"session_id": "cc99", "node": "lyra"}});
+        stamp(&mut args, &relayed, None, "deneb");
+        assert_eq!(args["_caller_session"], json!({"session_id": "cc12", "node": "mizar", "job": "0dcd", "name": "redux/x"}));
         // A service of this node on its own account claims no session.
         let own = Caller { node: "deneb".into(), session: Some("cc12".into()), ..door.clone() };
         let mut args = json!({});

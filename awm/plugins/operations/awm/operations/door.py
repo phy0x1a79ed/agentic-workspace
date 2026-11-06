@@ -157,13 +157,14 @@ class DoorClient:
 
 
 class LocalClient:
-    """The home node's relay calls its own Home in-process."""
+    """The home node's relay calls its own Home in-process. Its writes name their node: its
+    own, or the node of a session that alcor's gateway verified at its singleton door."""
 
     def __init__(self, home: Home, node: str) -> None:
         self.home, self.node = home, node
 
     async def call(self, verb: str, args: dict[str, Any]) -> Any:
         try:
-            return await self.home.call(verb, args, node=self.node)
+            return await self.home.call(verb, args)
         except ValueError as exc:
             raise Refused(str(exc)) from None

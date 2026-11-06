@@ -98,6 +98,10 @@ def operator_dm():
     return dm
 
 
+def _from_session(args: dict) -> bool:
+    return any(args.get(k) for k in ("_caller_pid", "_caller_session_id", "_caller_session"))
+
+
 def handlers(front: Front, home: Any | None) -> dict[str, Any]:
     out: dict[str, Any] = {v: (lambda verb: lambda args: front.call(verb, args))(v)
                            for v in Front.VERBS}
@@ -106,14 +110,14 @@ def handlers(front: Front, home: Any | None) -> dict[str, Any]:
         def h(args: dict, as_: str | None = None) -> Any:
             if home is None:
                 return {"ok": False, "error": "devices live on the home node (alcor)"}
-            if as_ is not None or args.get("_caller_pid") or args.get("_caller_session_id"):
+            if as_ is not None or _from_session(args):
                 return {"ok": False, "error": "an operator verb: run awm-operations on alcor"}
             return fn(args)
         return h
 
     async def ops_post(args: dict, as_: str | None = None) -> dict:
         """A service's notice in the Ops book. Not for sessions."""
-        if as_ is not None or args.get("_caller_pid") or args.get("_caller_session_id"):
+        if as_ is not None or _from_session(args):
             return {"ok": False, "error": "ops_post takes this node's own services only"}
         fields = {k: args.get(k) for k in ("kind", "node", "title", "body")}
         if not all(isinstance(v, str) and v.strip() for v in fields.values()):

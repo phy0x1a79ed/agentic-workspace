@@ -39,15 +39,27 @@ const NATIVE_VERBS: [(&str, &str); 15] = [
     ("uninstall", "Remove an installed plugin by `name` and stop its services."),
 ];
 const DEFAULT_CALL_TIMEOUT_S: f64 = 120.0;
-/// Verbs that act on the calling session itself. Sent to a peer, one would find no calling
-/// session there, so the call is refused before it leaves the node.
-const SESSION_BOUND: [(&str, &[&str]); 2] = [
-    ("reflection", &["message_self", "compact", "mode", "whoami"]),
-    ("operations", &["hook_plan", "hook_plan_approved", "hook_todos", "hook_prompt", "hook_session_clear",
-                     "claim_task", "track_task", "request_human", "approval_cancel"]),
-];
+/// Verbs that drive the calling session's own process. Sent to a peer, one would find no
+/// calling session there, so the call is refused before it leaves the node. A singleton's verb
+/// that acts on the session goes through the door, which carries the session's identity.
+const SESSION_BOUND: [(&str, &[&str]); 1] = [("reflection", &["message_self", "compact", "mode", "whoami"])];
 /// Native verbs that change this node, so only a trusted caller here may run them.
 const NATIVE_WRITES: [&str; 9] = ["reload", "install", "uninstall", "start", "stop", "restart", "enable", "disable", "config_set"];
+/// How long a singleton's verb list, read through its host's door, stands before it is read
+/// again, and how soon a failed read is tried again.
+const DOOR_VERBS_TTL: Duration = Duration::from_secs(600);
+const DOOR_VERBS_RETRY: Duration = Duration::from_secs(60);
+
+/// One verb as the MCP list shows it: name, summary and required arguments.
+type VerbLine = (String, String, Vec<String>);
+
+/// A singleton's verbs as its host's door last described them.
+#[derive(Default)]
+struct DoorVerbs {
+    verbs: Option<Vec<VerbLine>>,
+    read: Option<(Instant, bool)>,
+    reading: bool,
+}
 
 pub struct Gateway {
     pub state: PathBuf,
@@ -67,6 +79,8 @@ pub struct Gateway {
     reloading: tokio::sync::Mutex<()>,
     /// reflection's `session_of` answers by pid, with when they were fetched.
     sessions: std::sync::Mutex<HashMap<u32, (Instant, Value)>>,
+    /// The verbs of each singleton another host serves, for the MCP list.
+    door_verbs: std::sync::Mutex<HashMap<String, DoorVerbs>>,
     installing: tokio::sync::Mutex<()>,
     /// Each guarded plugin's egress proxy port (R116 item 1).
     pub egress: crate::egress::Egress,
@@ -179,6 +193,7 @@ impl Gateway {
             peer_tools: RwLock::new(peer_tools),
             reloading: tokio::sync::Mutex::new(()),
             sessions: std::sync::Mutex::new(HashMap::new()),
+            door_verbs: std::sync::Mutex::new(HashMap::new()),
             installing: tokio::sync::Mutex::new(()),
             egress: Default::default(),
             topics: Default::default(),
@@ -722,9 +737,11 @@ impl Gateway {
     }
 
     /// The domain tools, cut to a holder's whitelist when one is given. A holder sees no peers.
+    /// A singleton another host serves lists with the verbs its door last described.
     pub fn domain_tools_for(&self, holder: Option<&Holder>) -> Vec<Value> {
         let peers = if holder.is_some() { vec!["local".to_string()] } else { self.peer_names() };
-        self.tools()
+        let tools = self.tools();
+        let mut out: Vec<Value> = tools
             .values()
             .filter(|e| e.tier == Tier::On && holder.is_none_or(|h| h.may_use(&e.name)))
             .map(|e| {
@@ -732,37 +749,67 @@ impl Gateway {
                 if let Some(h) = holder {
                     verbs.retain(|(v, _, _)| h.may(&e.name, v));
                 }
-                let mut lines: Vec<String> = verbs
-                    .iter()
-                    .map(|(v, s, req)| format!("- {v}({}): {}", req.join(", "), one_line(s)))
-                    .collect();
-                if lines.is_empty() {
-                    lines.push("- (its service is starting; call verb='describe' again shortly)".into());
-                }
-                let mut verb_enum: Vec<String> = verbs.into_iter().map(|(v, _, _)| v).collect();
-                verb_enum.push(DESCRIBE.into());
-                json!({
-                    "name": e.name,
-                    "description": format!(
-                        "The '{}' tool. Call with {{verb, args}}; verb='describe' (optionally args={{verbs:[<name>, ...]}}) returns full parameter schemas. Verbs, with required arguments:\n{}\n{}",
-                        e.name, lines.join("\n"),
-                        if peers.len() > 1 { format!("Runs on this node by default; also on {} via peer=<name>.", peers[1..].join(", ")) }
-                        else { "Runs on this node only.".to_string() }),
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "verb": {"type": "string", "enum": verb_enum,
-                                     "description": "The operation to run. verb='describe' (optionally args={verbs:[<name>, ...]}) returns parameter schemas."},
-                            "args": {"type": "object",
-                                     "description": "Arguments for the chosen verb. An unknown argument is an error that returns the verb's schema."},
-                            "peer": {"type": "string", "enum": peers,
-                                     "description": format!("Optional. Default: local (this node, {}). Valid: {}.", self.node, peers.join(", "))},
-                        },
-                        "required": ["verb"],
-                    },
-                })
+                let runs = if peers.len() > 1 {
+                    format!("Runs on this node by default; also on {} via peer=<name>.", peers[1..].join(", "))
+                } else {
+                    "Runs on this node only.".to_string()
+                };
+                let peer = json!({"type": "string", "enum": peers,
+                                  "description": format!("Optional. Default: local (this node, {}). Valid: {}.", self.node, peers.join(", "))});
+                domain_tool(&e.name, Some(verbs), &runs, Some(peer))
             })
-            .collect()
+            .collect();
+        let doors: Vec<(String, String)> = {
+            let edges = self.edges.read().unwrap_or_else(|p| p.into_inner());
+            edges.door_singletons(&self.node).iter().map(|s| (s.tool.clone(), s.host.clone())).collect()
+        };
+        for (tool, host) in doors {
+            if tools.contains_key(&tool) || holder.is_some_and(|h| !h.may_use(&tool)) {
+                continue;
+            }
+            let mut verbs = self.door_verbs_of(&tool);
+            if let (Some(h), Some(v)) = (holder, verbs.as_mut()) {
+                v.retain(|(name, _, _)| h.may(&tool, name));
+            }
+            let runs = format!("A singleton on {host}: every call goes through {host}'s singleton door.");
+            out.push(domain_tool(&tool, verbs, &runs, None));
+        }
+        out.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
+        out
+    }
+
+    /// The verbs `tool`'s door last described, or None before the first answer. A stale or
+    /// missing list is read again in the background, and the MCP proxy's poll sees the change.
+    fn door_verbs_of(&self, tool: &str) -> Option<Vec<VerbLine>> {
+        let mut cache = self.door_verbs.lock().unwrap_or_else(|p| p.into_inner());
+        let entry = cache.entry(tool.to_string()).or_default();
+        let stale = entry.read.is_none_or(|(at, ok)| at.elapsed() >= if ok { DOOR_VERBS_TTL } else { DOOR_VERBS_RETRY });
+        if stale && !entry.reading {
+            if let (Ok(rt), Some(gw)) = (tokio::runtime::Handle::try_current(), self.me.upgrade()) {
+                entry.reading = true;
+                let tool = tool.to_string();
+                rt.spawn(async move { gw.read_door_verbs(tool).await });
+            }
+        }
+        entry.verbs.clone()
+    }
+
+    async fn read_door_verbs(&self, tool: String) {
+        let read = async {
+            let route = self.door_route(&tool, None).ok().flatten()?;
+            let caller = Caller { node: self.node.clone(), lane: Lane::Service, trust: Some(crate::caller::TRUSTED.into()), ..Caller::default() };
+            let request = crate::door::request(tool.clone(), json!({"verb": DESCRIBE, "args": {}}), &caller, &self.node);
+            let text = crate::door::call(&route, &request).await.map_err(|e| tracing::warn!("{tool}: verbs not read through the door: {e}")).ok()?;
+            serde_json::from_str::<Value>(&text).ok().map(|v| described_verbs(&v))
+        }
+        .await;
+        let mut cache = self.door_verbs.lock().unwrap_or_else(|p| p.into_inner());
+        let entry = cache.entry(tool).or_default();
+        entry.reading = false;
+        entry.read = Some((Instant::now(), read.is_some()));
+        if read.is_some() {
+            entry.verbs = read;
+        }
     }
 
     /// `GET /tools`: one tool per verb, named `<tool>_<verb>`, for the CLI. Includes tier-off tools.
@@ -807,7 +854,11 @@ impl Gateway {
                         .collect()
                 })
                 .unwrap_or_default();
-            verbs.push(json!({"verb": verb, "description": desc, "params": params}));
+            let mut v = json!({"verb": verb, "description": desc, "params": params});
+            if let Some(surfaces) = spec.get("surfaces") {
+                v["surfaces"] = surfaces.clone();
+            }
+            verbs.push(v);
         }
         json!({"tool": entry.name, "plugin": entry.plugin, "verbs": verbs})
     }
@@ -984,7 +1035,10 @@ impl Gateway {
                 return Err(ApiError::new(400, format!(
                     "{tool}.{verb} acts on your own session on this node, so it cannot run on peer {peer:?}; call it without peer")));
             }
-            let envelope = json!({"verb": verb, "args": inner});
+            // The far node takes a session claim in the args as this node's word, so a
+            // session's own call carries none: its identity rides in the caller this node stamps.
+            let from_session = ctx.caller.lane == Lane::Local && ctx.caller.session.is_some();
+            let envelope = json!({"verb": verb, "args": if from_session { strip_stamps(&inner) } else { inner }});
             if let Some(route) = door {
                 let request = crate::door::request(tool, envelope, &ctx.caller, &self.node);
                 return Ok(crate::door::call(&route, &request).await?);
@@ -1186,6 +1240,56 @@ pub fn render(v: &Value) -> String {
         Value::String(s) => s.clone(),
         other => serde_json::to_string_pretty(other).unwrap_or_default(),
     }
+}
+
+/// One `{verb, args, peer}` tool of the MCP list. `verbs` is None while a door's list is unread:
+/// the verb is then left open, so a call still reaches the door.
+fn domain_tool(name: &str, verbs: Option<Vec<VerbLine>>, runs: &str, peer: Option<Value>) -> Value {
+    let mut lines: Vec<String> = verbs
+        .iter()
+        .flatten()
+        .map(|(v, s, req)| format!("- {v}({}): {}", req.join(", "), one_line(s)))
+        .collect();
+    if lines.is_empty() {
+        lines.push("- (its verbs are not read yet; call verb='describe' for them)".into());
+    }
+    let mut verb = json!({"type": "string",
+                          "description": "The operation to run. verb='describe' (optionally args={verbs:[<name>, ...]}) returns parameter schemas."});
+    if let Some(verbs) = &verbs {
+        let mut names: Vec<&str> = verbs.iter().map(|(v, _, _)| v.as_str()).collect();
+        names.push(DESCRIBE);
+        verb["enum"] = json!(names);
+    }
+    let mut properties = json!({
+        "verb": verb,
+        "args": {"type": "object",
+                 "description": "Arguments for the chosen verb. An unknown argument is an error that returns the verb's schema."},
+    });
+    if let Some(peer) = peer {
+        properties["peer"] = peer;
+    }
+    json!({
+        "name": name,
+        "description": format!(
+            "The '{name}' tool. Call with {{verb, args}}; verb='describe' (optionally args={{verbs:[<name>, ...]}}) returns full parameter schemas. Verbs, with required arguments:\n{}\n{runs}",
+            lines.join("\n")),
+        "inputSchema": {"type": "object", "properties": properties, "required": ["verb"]},
+    })
+}
+
+/// The MCP verbs of a `describe` answer: each verb its `surfaces` lets onto MCP.
+fn described_verbs(answer: &Value) -> Vec<VerbLine> {
+    answer
+        .get("verbs")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|v| on_mcp(v))
+        .filter_map(|v| {
+            let name = v.get("verb").and_then(Value::as_str)?.to_string();
+            Some((name, summary(v), required(v)))
+        })
+        .collect()
 }
 
 /// Whether a verb lists on MCP: a manifest `surfaces` list that leaves out `mcp` hides it.

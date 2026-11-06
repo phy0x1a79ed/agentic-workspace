@@ -130,6 +130,39 @@ async def test_an_isolated_session_is_known_by_the_id_the_door_stamped(h):
     assert h.store.task_get(out["task_id"])["sessions"][0]["session_id"] == B
 
 
+def _door(session, job="job-d", name="remote-work", node="lyra"):
+    """The claim alcor's gateway stamps on a door call: the session as its node sent it."""
+    return {"_caller_session": {"session_id": session, "node": node, "job": job, "name": name}}
+
+
+async def test_a_session_through_the_door_acts_on_its_own_card(h):
+    """A session on another node reaches operations through the door, as itself, on its node."""
+    d = "cc" + "d" * 32
+    out = await h.front.call("request_human", {**_door(d), "kind": "blocked",
+                                               "reason": "needs a key", "urgent": True})
+    assert out["ok"] and out["status"] == "blocked"
+    card = h.store.task_get(out["task_id"])
+    assert card["sessions"][0]["session_id"] == d and card["sessions"][0]["node"] == "lyra"
+    assert "on **lyra**" in h.dms[0] and "job-d` on lyra" in h.dms[0]
+    plan = await h.front.call("hook_plan", {**_door(d), "plan_text": "# Next"})
+    assert plan["task_id"] == out["task_id"] and plan["opened"] is False
+    new = "cc" + "e" * 32
+    cleared = await h.front.call("hook_session_clear", {**_door(new), "new_session_id": new})
+    assert cleared["ended"] == d and cleared["task_id"] == out["task_id"]
+
+
+async def test_a_door_claim_from_this_node_records_no_other_node(h):
+    d = "cc" + "d" * 32
+    out = await h.front.call("track_task", {**_door(d, node="mizar"), "title": "here"})
+    assert h.store.task_get(out["task_id"])["sessions"][0]["node"] == "mizar"
+
+
+async def test_intake_refuses_a_session_through_the_door(h):
+    out = await h.front.call("intake_post", {**_door("cc" + "d" * 32), "board_card": "b1",
+                                             "sender": "x", "title": "t"})
+    assert out["ok"] is False and "not a session's" in out["error"]
+
+
 async def test_a_plan_opens_a_planned_card_and_approval_moves_it_to_working(h):
     out = await h.call("hook_plan", 11, session_id=A, plan_text="# Fix the tunnel\n\nsteps")
     assert out["opened"] is True and out["blocked"] is True and out["task_id"] in out["notice"]

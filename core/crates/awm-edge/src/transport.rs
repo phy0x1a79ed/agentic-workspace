@@ -43,7 +43,8 @@ impl EdgePeers {
     /// This node as the caller, carrying the node a relayed call started from.
     fn caller(&self, ctx: &CallContext) -> Caller {
         Caller { node: self.here.clone(), lane: Lane::Edge, session: ctx.caller.session.clone(), trust: ctx.caller.trust.clone(),
-                 scope: ctx.caller.scope.clone(), origin: ctx.caller.relayed_origin(&self.here) }
+                 scope: ctx.caller.scope.clone(), origin: ctx.caller.relayed_origin(&self.here),
+                 job: ctx.caller.job.clone(), name: ctx.caller.name.clone() }
     }
 
     fn map(peer: &str, e: EdgeError) -> PeerError {

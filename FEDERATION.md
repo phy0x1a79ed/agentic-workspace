@@ -56,7 +56,10 @@ A singleton service fronts one external resource for the fleet, such as the 2FA 
 - `/hub/table` gives no singleton to another node, and a peer's table loses any singleton it lists. `awm table` shows each singleton this node reaches as a `door` row.
 - A plugin's need for a singleton this node reaches through a door holds from `edges.yml` alone. So a door that is down at boot refuses no plugin. A call while it is down fails with the door's address and ssh's error.
 - The door carries no reflection, no shell and no stream (R98, R104 item 4). An emit stream or a direct session on a singleton still crosses an edge.
-- A door call carries the calling session's R9 id, level and scope. The host takes them as the calling node's word, as it does across an edge. Its gate checks the level, and a service reads the session as `_caller_session`. A node's own service calls with no session, as trusted.
+- A door call carries the calling session's R9 id, level, scope, job and name. The host takes them as the calling node's word, as it does across an edge. Its gate checks the level. A service reads the session as `_caller_session`: `{session_id, node, job, name}`, where `node` is the node the door verified. A node's own service calls with no session, as trusted.
+- A singleton's verb that acts on the calling session, such as `operations request_human` or a plan hook, goes through the door like any other. Only reflection's own-session verbs refuse a `peer`.
+- **CAUTION** The far node takes a `_caller_session` in a call's args as the calling node's word. So a gateway strips every `_caller_*` key from a session's own args before it relays them to another node.
+- A session's MCP list shows each singleton this node reaches, with the verbs its host's door last described.
 - An isolated session reaches a singleton on its whitelist through the door, as itself (`channels.md` R111).
 - The host sees the caller stamped `peer:<node>`.
 
