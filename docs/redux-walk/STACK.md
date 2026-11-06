@@ -33,7 +33,6 @@ Procedure, from dfs-interview § Work the stack:
 ## Stack
 
 - **windows-nodes** (2026-11-05): Tony (2026-11-05): is there a session for setting up the ssh edges? lets fix capella and lyra in one go, including tailscale, etc / they also need the new awm isntall in their wsl instances
-- **tether-issue-door** (2026-11-05): from redux-build/dev: dev (2026-11-05): member nodes that open machine channels hold the relay's AWM_TETHER_ISSUE_TOKEN (mints slots and rooms, reads nothing). End state: relay gains a door-gated issue verb, tether-operator mints and restores through it, and the bearer never leaves deneb. Cross-project (tether Rust release), so not in tonight's window.
 - **rt-teach** (2026-11-05): Tony (2026-11-05): we need the rooms service to be up so that the Alcor agent can teach the RT agent, which was the original session that created the RT stock stuff, how to actually use the new system and edit.
   - [x] Which machine and session was the original RT agent? rt-container found no trace on mira or mizar. Leads point to your Mac, or capella or lyra over ssh. (answered 2026-11-05)
   - **rooms** (2026-11-05): from redux-build/dev: dev (2026-11-05): the RC does not support the rooms check: the door carries no caller session, members receive only by an outbound push from deneb (R79), isolated sessions cannot reach a door singleton, a room has no second member, and remote holders are never pruned. About a day of build.
@@ -108,6 +107,7 @@ From journal 6a98c0c6 (awm/redux) and walkthrough's handover (manual-steps.md at
 - **redux-build/rooms** (2026-11-05): took rooms
 - **redux-build/windows-nodes** (2026-11-05): took windows-nodes
 - **redux-build/tether-issue** (2026-11-05): took tether-issue-door
+- [ ] tell redux-build/dev how tether-issue-door was solved
 
 ## Closed
 
@@ -120,3 +120,4 @@ From journal 6a98c0c6 (awm/redux) and walkthrough's handover (manual-steps.md at
 - **pin-refresh** (closed 2026-11-05): `dispatch-mode/parallel-uptime/board/deneb-board/pin-refresh/README.md`
 - **session-list** (closed 2026-11-05): `session-list/README.md`
 - **tarball-backup** (closed 2026-11-05): `dispatch-mode/parallel-uptime/board/tarball-backup/README.md`
+- **tether-issue-door** (closed 2026-11-05): `tether-issue-door/README.md`
