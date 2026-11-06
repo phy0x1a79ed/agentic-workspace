@@ -52,3 +52,11 @@ Tony: "we can actually make this a deterministic routine, check that the awm too
 - Social already emits every inbound message on its `message` topic, before it pushes to the holder (`awm/social/hub_adapter.py:134-152`).
 - A service can subscribe to a topic with `gatewayclient.subscribe(service, topic)`. events, 2fa, search, ssh and operations already do.
 - The routine plugin registers only timer and call triggers. An event trigger is a new routine feature: subscribe to a topic, filter the payload, and hand the payload to the steps.
+
+## Decision: event triggers
+
+Tony, 2026-11-06, to "should I add event triggers to the routine plugin?": "yes".
+
+- The routine plugin gains an event trigger: a definition registers `[trigger] event = "social/message"` with a filter (slack-bot DMs).
+- The plugin subscribes to the topic and hands each message to the routine's steps.
+- The new-seat routine's script checks for a live holder on the seat. When there is none, it starts the client's agent with the seat brief and the message.
