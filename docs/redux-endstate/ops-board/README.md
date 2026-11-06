@@ -46,3 +46,14 @@
 - The node portals on 443 come from cloud's `tailnet_portal` role, and it had run only on alcor. altair got it by hand (`tailscale serve`, plus one `tailscale cert` retry after an ACME set-dns timeout), and claude-science is enabled there. https://altair.tail080e54.ts.net/ answers 401, so it asks for the passkey.
 - Worker portals-ops (f6cd1c4b, Sonnet) applies the portal to mizar and the rest, finds the claude-science URL, deletes the old Ops password notes, and moves Links into the new Ops.
 - The spec pointer is journal e44b39dc (tag `spec`).
+
+## Round 4 (2026-11-06)
+
+> swarm board shows cards -> can these cards be organized in folders? like proposed has a new note button, but the more natural trillium interaction is just me making a note in the prposed foder. and the cards dont look updated... also should discuss harmonizing with my tasks kanban, then not all cards will need an agent -> or we have a manual section
+
+> no, it should become the awm book. which is why we cant have the task folders be top level. should be AWM/tasks/working, etc/swarm triage. then ops and board page can be at level with tasks.
+
+- The Swarm board renders cards now.
+- The vault's AWM book becomes the board's root. Under it sit `tasks`, `Ops` and the board page, side by side. `tasks` holds one folder per column (proposed, working, …, swarm triage), and each card is a note in its column's folder.
+- Tony adds a card by creating a note in a column's folder, the native Trilium way, not through the page's new-note button.
+- The cards do not show their current state.

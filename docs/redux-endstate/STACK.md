@@ -34,7 +34,8 @@ Procedure, from dfs-interview § Work the stack:
 - **ops-board** (2026-11-06): https://nexus.tony-xy-liu.com/trilium/#root/iF0A3SWEGqUx/P4ALwPiCSs6N?ntxId=CZkmWI ops board needs updating
   - [x] Old AWM book: delete the old Ops password notes, carry Links into the new Ops, archive the old Swarm board? (answered 2026-11-06)
   - [x] Federation board: archive all 8 pre-redux cards, then check the door and intake end to end? (answered 2026-11-06)
-  - [ ] Place the new Swarm board under the AWM book, next to the federation board?
+  - [x] Place the new Swarm board under the AWM book, next to the federation board? (answered 2026-11-06)
+  - **board-kanban** (2026-11-06): also should discuss harmonizing with my tasks kanban, then not all cards will need an agent -> or we have a manual section
 - **end-state** (2026-11-06): there are a few sessions that look left over. Please use the DFS interview skill so that we can review the end state and if there are anything left open for us to clean up and do.
   - **agent-lifecycle** (2026-11-06): need to review agent lifecycle. retire doesn seem to always work. need to consider what this means -> session full stop and closed (not visible anywhere), but transcripts kept (I guess transcripts should also be a plugin that runs on any node with agents).
   - **agent-core** (2026-11-06): deneb has no reflection plugin? I think if a node can run agents, reflection + search should be mandatory
