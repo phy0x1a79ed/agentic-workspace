@@ -63,6 +63,8 @@ Procedure, from dfs-interview § Work the stack:
 
 From journal 6a98c0c6 (awm/redux) and walkthrough's handover (manual-steps.md at feat/redux-walkthrough a12a5f6e, M-numbers). Live workers: dev, singleton-callers, rt-container, reflect-selfstop.
 
+- **altair-pass-2** (2026-11-05): leftovers of redux-build/dev (journal 8d757654): (1) the three old env.bak copies in altair ~/handoff/altair-rc-backup-20261105-1928/old-env-baks may hold the issuing token, which R147 keeps on deneb only: delete them with the rollback env once altair has run clean; (2) search's v2 database is set aside as search.db.pre-rc-v2 with no migration, so check that altair's search reindexed.
+
 - **windows-pass-2** (2026-11-05): leftovers of redux-build/windows-nodes (journal eb625841, cloud dev 3d406e0): (1) lyra: elevated run of awm-wsl-bridge.ps1 over a v0.4.1 tether with Tony, then ssh_edges, its key into edge_keys.yml, mizar and capella, its altair line, and the awm install; (2) lyra aw: drop the aw-migrate key, export aw to A:\linux\aw-backup.tar, unregister with Tony's OK (8.7 GB copied to ubuntu ~/from-aw); (3) capella: elevated awm-wsl-bridge.ps1 for the 10022 forward; (4) tailnet_portal for capella and lyra through Windows' tailscale.exe; (5) capella's avatar plugin to the new manifest; (6) capella: close the 16122 forward with its Any rule, and Chrome port 19222; (7) capella→altair waits on shogun pass 2 and Tony's Host altair edit.
 
 - **deneb-pass-2** (2026-11-05): leftovers of redux-build/deneb-board (journal f4ed07ad): (1) move the relay seats and keep's claude daemon off deneb (R79, R129), then set deneb_agents_moved: true; (2) capella's avatar forward uses the socket (M44); (3) lyra's edge key on deneb; (4) derived relay callers (`members`) with dev.
