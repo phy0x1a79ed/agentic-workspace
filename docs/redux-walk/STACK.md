@@ -106,6 +106,7 @@ From journal 6a98c0c6 (awm/redux) and walkthrough's handover (manual-steps.md at
 - **redux-build/deneb-board** (2026-11-05): took tarball-backup
 - **redux-build/rooms** (2026-11-05): took rooms
 - **redux-build/windows-nodes** (2026-11-05): took windows-nodes
+- **redux-build/tether-issue** (2026-11-05): took tether-issue-door
 
 ## Closed
 
