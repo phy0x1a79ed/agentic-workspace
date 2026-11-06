@@ -24,15 +24,11 @@ end-state/deneb-link
   - **skill-sync**: "we need a way to sync skills across the fleet..."
   - **agent-lifecycle**: "retire doesn seem to always work ... session full stop and closed (not visible anywhere), but transcripts kept (I guess transcripts should also be a plugin that runs on any node with agents)."
   - **agent-core**: "if a node can run agents, reflection + search should be mandatory". deneb has neither.
-  - **seat-rc-toggle**: "on the new fleet status dashboard, I can turn remote control on and off for seats ... can we sort natively in claude?"
   - **science-idle**: "do we have an idle timeout to stop claude science from just being always on?"
   - **seat-lifecycle**: seats retire after the task with a report by DM, journal often, tags per user and one for seats; "the task should be resumable from debrief journals, even if the sessions are gone." Idle lab seats retire too.
   - **social-split**: social splits into write-only notifications, read/write channels (bots, seats) and personal automations (Teams, Slack browser). Browser joins core and keeps no browser warm.
   - **deploy-routine**: "change the deploy protocol to be deterministic with only agentic error handling". Spec pointer: journal e44b39dc.
   - **queue-approvals-test**: "a full test of the new queue and approvals workflow in 1 sitting, prolly with another agent".
-  - **status-pages**: "we gotta discuss the swarm status page(s) at some point". Ops (`awmSwarmOps`) becomes the swarm status page: an automatically updated roster with stats for each node, stations included, opt-in at install.
-    - **new-agent-button**: "new note for proposed simplifies to new agent -> which honestly should actually be a button on the board page, which lets me start an agent with remote control on a specific node. nodes can be sorted by usage."
-    - **note-agent-button**: "a new button on trillium (left of the  button, per note) that is a bot icon that opens a drop down for available nodes. This button starts an agent with the note as context and asks to await further instructions for me. a new note is added as a child for this note indicating that an agent is attached. this note is deleted once the agent  retires." Then: "that goes in parallel to the existing task system".
   - **session-naming**: "naming by hand and omit agent renaming unless needed ... revise the naming scheme to include node."
   - **env-reload**: a changed config.toml [env] reaches plugins only after a full gateway restart, which stops the node's sessions. Tony: "can we make the gateway restart more seamless? what is it for anyways?" mizar's AWM_EDGE_URL (tailnet IP → name) and capella's new AWM_EDGE_URL wait on it.
   - **search-mcp**: "all nodes are using the new search service and MCP." Done except: stale scope worktrees carry a tracked `.mcp.json` naming the Python `awm-mcp` (22 on mizar, 77 on altair); a session started there gets a dead MCP.
@@ -41,6 +37,7 @@ end-state/deneb-link
 
 - fleet-endstate (daae3825, uds:/run/user/1000/cc-socks/226644.sock): shogun callers incl. trilium and zotero, capella service_key, Arbutus time zones.
 - swarm-board/layout (8e2d9201): builds the ops-board decision (journal 7724ff11).
+- trilium-design/interview (c6adc424, talks with Tony directly): status-pages, new-agent-button, note-agent-button, seat-rc-toggle.
 - install-loop (9fc4afc8 mizar), metasmith-install-loop (80f06e0c altair): hold until Sat 2026-11-07 15:05 PT.
 
 ## Closed
