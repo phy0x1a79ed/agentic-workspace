@@ -20,3 +20,7 @@ Unknown. rt-container (job 39eba8f8, mizar) is not the original. No Claude trans
 ## Who teaches
 
 The agent on alcor teaches. The room opens once channel's persistent rooms pass the window check (deneb-retry).
+
+## Student, settled
+
+Tony talks with the rt stock session himself: "I will talk with rt stock session" (2026-11-05).

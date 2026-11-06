@@ -28,3 +28,5 @@ The second attempt at deneb's cutover after the first rolled back on 2026-11-05:
 - deneb leaves every callers list and holds no service key. Each caller pins each door's host key from `door_host_keys.yml`. The door's forced command sets AWM_NODE_NAME. deneb_cutover_rollback.yml scripts the rollback (cloud feat/redux-deneb-board 1342716).
 - A push node is refreshed over inbound ssh from mizar (`awm deploy --bin … --no-build`), so deneb runs no routine plugin. The peer `routine refresh` path for push nodes goes.
 - An encrypted room's keys, decryption and transcript live on the member's node, never on deneb (channels.md R73 item 3). A plaintext room may keep its transcript on deneb. Assigned to redux-build/rooms.
+- deneb's sshd goes keys-only in the cutover branch (Tony approved Q-deneb-pwauth). Browser access to Trilium goes through Cloudflare and the auth gate, not sshd.
+- `fork-release` stays on the public Trilium fork (Tony: "keep"). Seats stay on today's opus at high (Tony: "current config is fine").

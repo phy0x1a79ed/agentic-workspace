@@ -27,17 +27,15 @@ Procedure, from dfs-interview § Work the stack:
 
 ## Pending
 
-- **Q-seat-models** (2026-11-05): Seats: after spawn-tuning, each Slack/Discord seat names its model and effort. dev sets them to today's opus at high. Want any seat lighter, such as sonnet at medium for plain Q&A seats? Optional, no rush.
 - **M10b** (2026-11-05): Tailnet admin console, DNS page: turn on HTTPS Certificates, so each node's <machine>.tail080e54.ts.net portal can get a certificate. Each name then shows in the public Certificate Transparency logs (you chose ts.net names knowing that; say if not).
 - **rc-rows** (2026-11-05): On claude.ai/code, archive the 31 dead Remote Control rows: 7 redux-build-* (alcor, clean-plugins, search, channels, queue, deploy, integrate), 14 finished (awm redux, core-redux-gateway-plugins-bootstrap, fleet-board-rework, fxdiff-design, retire-full-close, owner-dm-defaults, discord dm previews, multi-admin machine access, plan-bypass-mode, science-bash-stall, capellaz cc mem cleanup, avatar, lit kb, cloud/homelab), representative x5, secretary x5. Your call on: engcyc pipeline plan, msm-*, fosdb, cyanoverse, treesapp, ecspr, job application system, 4 offline seat rows, 4 cloud sessions.
-- **Q-deneb-pwauth** (2026-11-05): deneb's sshd still allows password logins: 50-cloud-init.conf sets PasswordAuthentication yes and wins over the hardening file (true before today; tony's and awm's passwords are locked). OK for deneb-board to turn it off (drop the cloud-init override, keys only) after the cutover? Recommended: yes.
 - **Q-deneb-retry** (2026-11-05): The deneb cutover rolled back cleanly: backups verified, 2b kept. The release lacked door-client, so deneb couldn't load plugins that need alcor's operations and social. The retry needs a new release with door-client, about 10 minutes of vault downtime again. I'll bring you the plan and a window once dev's release candidate is green.
 - **M-cosmos-invite** (2026-11-05): Tether is back on deneb, but compute-budget's COSMOS session (slot 1) dropped at 23:50 UTC. When you're at COSMOS, ask compute-budget for a new invite and accept it there.
 
 ## Stack
 
 - **rt-teach** (2026-11-05): Tony (2026-11-05): we need the rooms service to be up so that the Alcor agent can teach the RT agent, which was the original session that created the RT stock stuff, how to actually use the new system and edit.
-  - [ ] Which machine and session was the original RT agent? rt-container found no trace on mira or mizar. Leads point to your Mac, or capella or lyra over ssh.
+  - [x] Which machine and session was the original RT agent? rt-container found no trace on mira or mizar. Leads point to your Mac, or capella or lyra over ssh. (answered 2026-11-05)
   - **rooms** (2026-11-05): from redux-build/dev: dev (2026-11-05): the RC does not support the rooms check: the door carries no caller session, members receive only by an outbound push from deneb (R79), isolated sessions cannot reach a door singleton, a room has no second member, and remote holders are never pruned. About a day of build.
     - [ ] Does the door-client window wait for rooms? Recommended: no. Run the window when the RC is green; rooms gate the mira-to-alcor rt move, where the alcor agent teaches the rt agent.
 - **board-intake-invert** (2026-11-05): from redux-build/dev: dev (2026-11-05): board intake (R77) needs operations on alcor, so with the board host on deneb intake never delivers; events queue in deneb's board log. Inverted shape: alcor's operations pulls from deneb's board door. R77's door and intake are slated for deletion (T18 feat/redux-r77).
