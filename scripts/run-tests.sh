@@ -43,6 +43,7 @@ declare -A DISTS=(
   [kept]="$WS/awm/service_components/kept::$WS/awm/service_components/kept/tests"
   [tlsfront]="$WS/awm/service_components/tlsfront::$WS/awm/service_components/tlsfront/tests"
   [dvcdata]="$WS/awm/service_components/dvcdata::$WS/awm/service_components/dvcdata/tests"
+  [tether]="$WS/awm/service_components/tether::$WS/awm/service_components/tether/tests"
   [scopes]="$WS/awm/services/scopes::$WS/awm/services/scopes/tests"
   [journal]="$WS/awm/services/journal::$WS/awm/services/journal/tests"
   [search]="$WS/awm/services/search::$WS/awm/services/search/tests"
@@ -66,7 +67,8 @@ declare -A DISTS=(
   [zotero]="$WS/awm/services/zotero::$WS/awm/services/zotero/tests"
   [cch]="$WS/awm/services/cch::$WS/awm/services/cch/tests"
   [dev]="$WS/awm/services/dev::$WS/awm/services/dev/tests"
-  [channel]="$WS/awm/plugins/channel::$WS/awm/plugins/channel/tests"
+  [channel]="$WS/awm/plugins/channel:$WS/awm/plugins/relay:$WS/awm/service_components/tether::$WS/awm/plugins/channel/tests"
+  [relay]="$WS/awm/plugins/relay:$WS/awm/service_components/tether::$WS/awm/plugins/relay/tests"
   [kb]="$WS/awm/services/kb::$WS/awm/services/kb/tests"
   [board]="$WS/awm/services/board::$WS/awm/services/board/tests"
   [transcripts]="$WS/awm/services/transcripts::$WS/awm/services/transcripts/tests"
@@ -78,7 +80,7 @@ declare -A DISTS=(
 )
 
 # Stable run order.
-ORDER=(contract gatewayclient config persistence grantlib telemetry usage claudedaemon kept tlsfront dvcdata scopes journal search events social 2fa ssh auth httpsfront rlm-browser rlm-factorio fileviewer mic vpn reflection dvc claude-science dsh engcyc trilium zotero cch dev channel kb board transcripts routine trustpolicy browser wake)
+ORDER=(contract gatewayclient config persistence grantlib telemetry usage claudedaemon kept tlsfront dvcdata tether scopes journal search events social 2fa ssh auth httpsfront rlm-browser rlm-factorio fileviewer mic vpn reflection dvc claude-science dsh engcyc trilium zotero cch dev channel relay kb board transcripts routine trustpolicy browser wake)
 
 CHANGED_BASE=""
 SMOKE=0

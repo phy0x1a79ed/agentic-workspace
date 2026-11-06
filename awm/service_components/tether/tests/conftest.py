@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from awm.channel.tether import daemon, paths
+from awm.tether import daemon, paths
 
 
 @pytest.fixture(autouse=True)

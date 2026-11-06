@@ -1,4 +1,10 @@
-"""The relay's room routes, as our side uses them: the host's half."""
+"""The tether relay's room routes, as the host side uses them.
+
+The relay binary runs beside this service on the public host, so the routes are
+on loopback. A room's link names the public edge, which carries ``/room`` beside
+the tether's ``/tether`` mount, so a link spells out its kind (R72 item 1). The
+bearer is the one the tether operator uses.
+"""
 
 from __future__ import annotations
 
@@ -7,11 +13,9 @@ from typing import Any
 
 import httpx
 
-#: Where rooms are served: the edge root, which carries ``/room`` beside the
-#: tether's ``/tether`` mount, so a link spells out its kind (R72 item 1). The
-#: bearer is the one the tether operator uses.
 BASE_ENV = "AWM_ROOM_RELAY"
-DEFAULT_BASE = "https://nexus.tony-xy-liu.com"
+LINK_ENV = "AWM_ROOM_LINK"
+DEFAULT_LINK = "https://nexus.tony-xy-liu.com"
 BEARER_ENV = "AWM_TETHER_ISSUE_TOKEN"
 
 #: How long a room lasts: for one task, or until its session ends.
@@ -19,6 +23,10 @@ LASTS = ("task", "persistent")
 
 #: How long one receive waits at the relay. The relay caps it at 25 s.
 WAIT_S = 25
+
+
+def default_base() -> str:
+    return f"http://127.0.0.1:{os.environ.get('AWM_TETHER_PORT') or 12520}"
 
 
 class RoomGone(Exception):
@@ -32,13 +40,14 @@ class RelayError(Exception):
 
 class Rooms:
     def __init__(self, base: str | None = None, bearer: str | None = None,
-                 client: httpx.AsyncClient | None = None) -> None:
-        self.base = (base or os.environ.get(BASE_ENV) or DEFAULT_BASE).rstrip("/")
+                 client: httpx.AsyncClient | None = None, link: str | None = None) -> None:
+        self.base = (base or os.environ.get(BASE_ENV) or default_base()).rstrip("/")
+        self.link_base = (link or os.environ.get(LINK_ENV) or DEFAULT_LINK).rstrip("/")
         self._bearer = bearer if bearer is not None else os.environ.get(BEARER_ENV, "")
         self._client = client or httpx.AsyncClient(timeout=httpx.Timeout(10.0, read=WAIT_S + 15))
 
     def link(self, name: str) -> str:
-        return f"{self.base}/room/{name}"
+        return f"{self.link_base}/room/{name}"
 
     async def open(self, lasts: str = "task") -> tuple[str, str]:
         """Open a room: its name and our host token."""

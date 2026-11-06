@@ -56,7 +56,7 @@ fn a_singleton_behind_a_door_strands_no_plugin() {
 /// homelab/inventory/host_vars/deneb.yml `awm_plugins`.
 #[test]
 fn denebs_plugins_load_with_no_door_and_no_peer() {
-    const DENEB: [&str; 7] = ["auth", "board", "channel", "fileviewer", "httpsfront", "trilium", "zotero"];
+    const DENEB: [&str; 7] = ["auth", "board", "fileviewer", "httpsfront", "relay", "trilium", "zotero"];
     let awm = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../awm");
     let roots = awm_gateway::config::tree_roots(&awm);
     let reserved: Vec<String> = awm_gateway::config::DEFAULT_RESERVED.iter().map(|s| s.to_string()).collect();

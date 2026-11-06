@@ -1,6 +1,6 @@
 [plugin]
 name = "channel"
-version = "0.2.0"
+version = "0.3.0"
 
 [[service]]
 name = "channel"
@@ -19,11 +19,15 @@ secrets = ["AWM_TETHER_ISSUE_TOKEN"]
 network = ["nexus.tony-xy-liu.com", "github.com", "*.githubusercontent.com"]
 platform = ["linux"]
 
+# The host half of every room, the public host's singleton, through its door.
+[[needs.tool]]
+name = "relay"
+verbs = ["open", "join", "write", "close", "feed"]
+
 # reflection, through awm.gatewayclient.holders and push: `session_of` and
-# `list_other` name the holder and tell when it is gone, and `message` pushes
-# each line into its prompt.
-[[needs.contract]]   # deneb runs no sessions, so it has no reflection (fleet.md R79)
+# `list_other` name the holder and tell when it is gone, and `message` types
+# each line into its prompt. All three are local.
+[[needs.contract]]
 name = "reflection"
 major = 1
 verbs = ["list_other", "session_of", "message"]
-

@@ -32,8 +32,9 @@ CALLS: dict[str, set[tuple[str, str]]] = {
     "board": {("operations", "intake_post"), ("operations", "intake_message"),  # hub_adapter._operations
               *{("trilium", v) for v in ("note_get", "note_search", "note_create", "note_update", "note_place",
                                          "attr_set", "attr_delete")}},  # vault.gateway_transport
-    "channel": {("reflection", "session_of"), ("reflection", "message"), ("reflection", "list_other")},
-    # gatewayclient sessions and push
+    "channel": {("reflection@1", "session_of"), ("reflection@1", "message"), ("reflection@1", "list_other"),
+                # gatewayclient sessions and push
+                *{("relay", v) for v in ("open", "join", "write", "close", "feed")}},  # RelayClient
     "operations": {  # GatewayTool("<tool>").call(verb)
         ("zotero", "order"),
         ("reflection", "session_of"), ("reflection", "message"), ("reflection", "start_other"), ("social", "send"),

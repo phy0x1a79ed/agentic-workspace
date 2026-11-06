@@ -15,7 +15,7 @@ from awm.config import AWM_DIR
 from awm.gatewayclient import ServiceAdapter, spawn_supervised
 
 from awm.channel import lines
-from awm.channel.relay import Rooms
+from awm.channel.relayclient import RelayClient
 from awm.gatewayclient import holders, ids, push
 from awm.channel.service import ChannelError, Channels
 from awm.channel.store import Store
@@ -48,7 +48,8 @@ API_MANIFEST: dict[str, Any] = {
         "You may hold several channels at once. Each closes when you `close` it, "
         "when the other side leaves, or when your session ends; a task room also "
         "ends after 10 idle minutes or 24 hours, and a persistent room does not. "
-        "Only a background session can hold a channel."
+        "Another of our sessions may `join` a plain room you hold. "
+        "Only a background or isolated session can hold a channel."
     ),
     "functions": [
         {
@@ -75,6 +76,17 @@ API_MANIFEST: dict[str, Any] = {
                                 "are `unix`. Do not guess."},
             ],
             "timeout": 90,
+        },
+        {
+            "name": "join",
+            "tool": "channel_join",
+            "description": (
+                "Join a plain room another of our sessions holds, by its name, as one "
+                "more member. Every member gets what the guest and the other members "
+                "write. An encrypted room has one member and refuses a join."
+            ),
+            "params": [{**NAME, "required": True, "description": "The room's name."}],
+            "timeout": 60,
         },
         {
             "name": "write",
@@ -204,6 +216,10 @@ async def open_(args: dict, as_: str | None = None) -> dict:
                                   args.get("os") or None, _yes(args, "persistent"))
 
 
+async def join(args: dict, as_: str | None = None) -> dict:
+    return await _channels().join(await _holder(args, as_), str(args.get("name") or ""))
+
+
 async def write(args: dict, as_: str | None = None) -> dict:
     return await _channels().write(
         await _holder(args, as_), str(args.get("text") or ""), args.get("name") or None,
@@ -233,7 +249,7 @@ async def encrypt(args: dict, as_: str | None = None) -> dict:
     return await _channels().encrypt(await _holder(args, as_), args.get("name") or None)
 
 
-HANDLERS = {"open": open_, "write": write, "drain": drain, "status": status,
+HANDLERS = {"open": open_, "join": join, "write": write, "drain": drain, "status": status,
             "close": close, "encrypt": encrypt}
 
 #: The supervised loops, held so they can be inspected.
@@ -241,19 +257,20 @@ LOOPS: list[asyncio.Task] = []
 
 
 def build(state_dir: Path = STATE_DIR, **kw: Any) -> Channels:
-    return Channels(Store(state_dir / "channels.db"), kw.pop("rooms", None) or Rooms(),
+    return Channels(Store(state_dir / "channels.db"), kw.pop("relay", None) or RelayClient(),
                     kw.pop("pusher", None) or push.Pusher(),
                     lines.Transcripts(state_dir / "transcripts"), **kw)
 
 
 def _on_start() -> None:
-    """Start the tether binary and its stream, follow every open channel again,
-    and start the prune. Returns None: the adapter awaits whatever this returns,
-    and these loops never finish."""
+    """Start the tether daemon and its stream, follow every open machine again,
+    feed the rooms and start the prune. Returns None: the adapter awaits whatever
+    this returns, and these loops never finish."""
     channels = _channels()
     LOOPS.append(spawn_supervised("channel-tether", channels.machines.supervise_forever))
     LOOPS.append(spawn_supervised("channel-tether-watch", channels.machines.watch_forever))
     channels.resume()
+    LOOPS.append(spawn_supervised("channel-feed", channels.feed_forever))
     LOOPS.append(spawn_supervised("channel-prune", channels.prune_forever))
 
 

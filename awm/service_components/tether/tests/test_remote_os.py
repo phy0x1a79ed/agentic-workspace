@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from awm.channel.tether import remote_os
+from awm.tether import remote_os
 
 pytestmark = [pytest.mark.unit, pytest.mark.smoke]
 

@@ -15,7 +15,7 @@ import asyncio
 import json
 from typing import Any
 
-from awm.channel.tether import paths
+from awm.tether import paths
 
 #: Generous, because a verb may be waiting on the owner to answer a prompt at
 #: their keyboard. The manifest declares matching per-verb ceilings.

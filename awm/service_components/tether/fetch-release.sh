@@ -19,7 +19,7 @@
 #
 # A GitHub outage must not take the relay down. A fetch that cannot complete
 # leaves the binaries already in place untouched and leaves the VERSION stamp
-# behind the pin, which `channel status` on a machine reports as a version lag. The node
+# behind the pin, which `channel status` on a machine or `relay status` reports as a version lag. The node
 # keeps serving the version it has.
 #
 # # Which files each role takes
@@ -62,7 +62,7 @@ awm_dir() {
     printf '%s\n' "$PWD/.awm"
 }
 
-STATE_DIR="$(awm_dir)/services/channel/tether"
+STATE_DIR="$(awm_dir)/services/tether"
 ASSETS_DIR="${AWM_TETHER_ASSETS:-$STATE_DIR/assets}"
 BIN_DIR="$STATE_DIR/bin"
 VERSION_FILE="$BIN_DIR/VERSION"

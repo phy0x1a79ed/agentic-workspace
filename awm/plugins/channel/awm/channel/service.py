@@ -1,13 +1,19 @@
-"""Channels: open, write, drain, status and close, and the loops that keep them.
+"""Channels: open, join, write, drain, status and close, and the loops that keep them.
 
 Every channel has one shape (``channels.md`` R69, R110). One background or
-isolated session holds it (R111), and may hold several at once. Each message from the other side is
-pushed into that session's prompt as one capped line, and the session answers
-with ``write``. A channel closes when either side leaves, when its holder closes
-it, or when the holding session ends. A task room also ends at the relay's idle
-and age limits, and a persistent room has neither (R72 item 5). The other side
-of every channel is untrusted (R70): what it sends is data, and the pushed line
-says so.
+isolated session on this node holds it (R111), and may hold several at once.
+Each message from the other side is typed into that session's prompt as one
+capped line, and the session answers with ``write``. A channel closes when
+either side leaves, when its holder closes it, or when the holding session ends.
+A task room also ends at the relay's idle and age limits, and a persistent room
+has neither (R72 item 5). The other side of every channel is untrusted (R70):
+what it sends is data, and the pushed line says so.
+
+A room lives on the public host's ``relay`` singleton, which opens nothing
+toward us (``fleet.md`` R79). This node holds one ``feed`` long-poll through
+the relay's door for every room its sessions hold, types what arrives, and so
+renews each holder's lease. An encrypted room's keys, its plaintext and its
+transcript stay on this node: the relay carries only the sealed text (R73).
 
 A machine adds a shell. A ``shell`` write runs a command or types keys, and what
 it prints is a tool log that only ``drain`` reads: it is never pushed and never
@@ -19,9 +25,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import secrets
-from typing import Any, Awaitable, Callable
-
-import httpx
+from typing import Any, Callable
 
 from awm import config
 from awm.channel import crypto, lines
@@ -29,7 +33,7 @@ from awm.gatewayclient import holders, ids, push
 from awm.gatewayclient.holders import HolderError as ChannelError
 from awm.channel import machines as machine_kind
 from awm.channel.machines import MachineError, MachineGone, Machines
-from awm.channel.relay import LASTS, RelayError, RoomGone, Rooms
+from awm.channel.relayclient import RelayClient, RelayError
 from awm.channel.store import UNTRUSTED, Store
 
 log = logging.getLogger("awm.channel.service")
@@ -40,25 +44,28 @@ PRUNE_S = 60.0
 
 #: How long one follow of a machine's conversation waits on the stream.
 FOLLOW_WAIT_S = 60.0
+#: How long one feed of the rooms waits at the relay.
+FEED_WAIT_S = 25.0
 
-ListJobs = Callable[[str], Awaitable["set[str] | None"]]
 ListSessions = Callable[[], "set[str] | None"]
 
 
 class Channels:
-    def __init__(self, store: Store, rooms: Rooms, pusher: push.Pusher,
+    def __init__(self, store: Store, relay: RelayClient, pusher: push.Pusher,
                  transcripts: lines.Transcripts,
-                 list_jobs: ListJobs = push.live_jobs,
                  list_sessions: ListSessions = holders.live_sessions,
-                 machines: Machines | None = None) -> None:
+                 machines: Machines | None = None, feed_wait_s: float = FEED_WAIT_S,
+                 here: str | None = None) -> None:
+        self.here = here or config.node_name()
         self.store = store
-        self.rooms = rooms
+        self.relay = relay
         self.machines = machines or Machines()
         self.pusher = pusher
         self.transcripts = transcripts
-        self._list_jobs = list_jobs
         self._list_sessions = list_sessions
+        self._feed_wait_s = feed_wait_s
         self._following: dict[str, asyncio.Task] = {}
+        self._rooms_held = asyncio.Event()
         self._stopping = False
         pusher.on_gone = self._holder_gone
 
@@ -66,11 +73,7 @@ class Channels:
 
     async def open(self, holder: dict, kind: str, os_name: str | None = None,
                    persistent: bool = False) -> dict:
-        if (holder.get("level") or UNTRUSTED) == UNTRUSTED and not holder.get("isolated"):
-            # A failed lookup runs untrusted (fleet.md R103 item 2). Only an isolated
-            # session opens a channel at that level, for its own task (channels.md R111).
-            raise ChannelError("an untrusted session opens a channel only when it is "
-                               "isolated, for its own task")
+        self._may_hold(holder)
         if kind not in KINDS:
             raise ChannelError(f"kind is one of {', '.join(KINDS)}, not {kind!r}")
         if kind == "machine":
@@ -78,16 +81,14 @@ class Channels:
                 raise ChannelError("only a room can be persistent; a machine channel "
                                    "is held for one task")
             return await self._open_machine(holder, os_name)
-        lasts = LASTS[1] if persistent else LASTS[0]
         try:
-            name, token = await self.rooms.open(lasts)
-        except httpx.HTTPError as exc:
-            raise ChannelError(f"the relay at {self.rooms.base} is unreachable: {exc}") from exc
+            opened = await self.relay.open(holder, persistent)
         except RelayError as exc:
             raise ChannelError(str(exc)) from exc
+        name, lasts = opened["name"], opened["lasts"]
         row = self.store.add(name=name, kind="room", trust=UNTRUSTED, holder=holder,
-                             link=self.rooms.link(name), token=token, lasts=lasts)
-        self._follow(name, "room")
+                             link=opened["link"], token="", lasts=lasts)
+        self._rooms_held.set()
         ends = ("It has no time limit and ends when you close it or your session ends."
                 if persistent else
                 "It ends after 10 minutes without your side reading it, after 24 hours, "
@@ -108,6 +109,26 @@ class Channels:
             ),
         }
 
+    async def join(self, holder: dict, name: str) -> dict:
+        """Join a plain room another of our sessions holds, as one more member."""
+        self._may_hold(holder)
+        if not name:
+            raise ChannelError("join names the room, as its holder's `status` gives it")
+        if (self.store.get(name) or {}).get("open"):
+            raise ChannelError(f"a session on this node holds room {name} already")
+        try:
+            joined = await self.relay.join(holder, name)
+        except RelayError as exc:
+            raise ChannelError(str(exc)) from exc
+        self.store.add(name=name, kind="room", trust=UNTRUSTED, holder=holder,
+                       link=joined["link"], token="", lasts=joined["lasts"])
+        self._rooms_held.set()
+        return {"name": name, "kind": "room", "lasts": joined["lasts"], "trust": UNTRUSTED,
+                "link": joined["link"], "transcript": str(self.transcripts.path(name)),
+                "next": (f"Each message in the room arrives in your prompt as a line that "
+                         f"starts `room {name}`, with the sender's level in brackets. Answer "
+                         "with `channel write`, and `channel close` when you are done.")}
+
     async def write(self, holder: dict, text: str, name: str | None = None, *,
                     target: str = "say", keys: bool = False, task: int | None = None,
                     terminal: bool = False, limit_s: int | None = None,
@@ -125,24 +146,22 @@ class Channels:
         if target == "shell":
             return {"name": row["name"], "sent": False,
                     "note": "a room has no shell, so a shell write does nothing"}
-        message: dict = {"from": holder.get("name") or "host"}
         crypt = row["crypto"] if row["crypto"] and row["crypto"].get("out") else None
         if crypt:
             n = crypt["n_out"]
             self.store.set_crypto(row["name"], {**crypt, "n_out": n + 1})
-            message.update(n=n, sealed=crypto.seal(crypt["out"], n, row["name"], text))
+            message: dict = {"n": n, "sealed": crypto.seal(crypt["out"], n, row["name"], text)}
         else:
-            message["text"] = text
+            message = {"text": text}
         try:
-            seq = await self.rooms.send(row["name"], row["token"], message)
-        except RoomGone:
-            await self._ended(row["name"], "the relay no longer has this room", push=False)
-            raise ChannelError(f"room {row['name']} has ended; open a new one") from None
-        except httpx.HTTPError as exc:
-            raise ChannelError(f"the relay is unreachable, nothing was sent: {exc}") from exc
+            sent = await self.relay.write(holder, row["name"], message)
         except RelayError as exc:
+            if "has ended" in str(exc):
+                await self._ended(row["name"], str(exc), push=False)
             raise ChannelError(str(exc)) from exc
-        return {"name": row["name"], "sent": seq, "sealed": bool(crypt)}
+        self.transcripts.append(row["name"], seq=int(sent["sent"]), by="host",
+                                who=holder.get("name") or "host", text=text)
+        return {"name": row["name"], "sent": sent["sent"], "sealed": bool(crypt)}
 
     async def drain(self, holder: dict, name: str | None = None, *, wait: float = 0.0,
                     until: int | None = None, task: int | None = None,
@@ -183,9 +202,8 @@ class Channels:
         ours, state = crypto.offer(row["name"], password)
         self.store.set_crypto(row["name"], {"phase": "offered", "state": state})
         try:
-            await self.rooms.send(row["name"], row["token"],
-                                  {"from": holder.get("name") or "host", "spake2": ours})
-        except (RoomGone, RelayError, httpx.HTTPError) as exc:
+            await self.relay.write(holder, row["name"], {"spake2": ours})
+        except RelayError as exc:
             self.store.set_crypto(row["name"], None)
             raise ChannelError(f"the offer did not reach the room: {exc}") from exc
         return {
@@ -233,39 +251,64 @@ class Channels:
     # -- lifecycle -----------------------------------------------------------
 
     def resume(self) -> None:
-        """Follow every open channel again, from its saved cursor."""
+        """Follow every open machine again, from its saved cursor, and feed the rooms."""
         for row in self.store.open_rows():
-            self._follow(row["name"], row["kind"])
+            if row["kind"] == "machine":
+                self._follow(row["name"], "machine")
+            else:
+                self._rooms_held.set()
 
     async def prune(self) -> list[str]:
         """Close every channel whose holding session has ended. Returns their names.
 
-        A session on this node is checked by its R9 id. A holder on another node,
-        or one known only by its job, is checked by whether its job still runs.
+        "Could not tell" closes nothing. A room whose holder ended also lapses at
+        the relay once this node stops renewing it.
         """
-        here = config.node_name()
-        rows = self.store.open_rows()
-        by_id = [r for r in rows if r["node"] == here and ids.is_r9(r["session"])]
+        rows = [r for r in self.store.open_rows() if ids.is_r9(r["session"])]
+        if not rows:
+            return []
+        live = await asyncio.to_thread(self._list_sessions)
+        if live is None:
+            return []
         closed: list[str] = []
-        if by_id:
-            live = await asyncio.to_thread(self._list_sessions)
-            if live is not None:
-                for row in by_id:
-                    if row["session"] not in live:
-                        await self._shut(row, "its holding session ended")
-                        closed.append(row["name"])
-        by_node: dict[str, set[str]] = {}
         for row in rows:
-            if row in by_id:
-                continue
-            by_node.setdefault(row["node"], set()).add(row["job"])
-        for node, jobs in by_node.items():
-            live_jobs = await self._list_jobs(node)
-            if live_jobs is None:
-                continue
-            for job in sorted(jobs - live_jobs):
-                closed += await self._close_job(node, job)
+            if row["session"] not in live:
+                await self._shut(row, "its holding session ended")
+                closed.append(row["name"])
         return closed
+
+    async def feed_forever(self) -> None:
+        """Hold the relay's feed for the rooms this node's sessions hold. Never returns.
+
+        Each message is typed into its holder, then acknowledged on the next feed,
+        so a line lost in a restart of either side comes again.
+        """
+        acks: list[dict] = []
+        backoff = 1.0
+        while not self._stopping:
+            held = {r["session"] for r in self.store.open_rows() if r["kind"] == "room"}
+            if not held and not acks:
+                self._rooms_held.clear()
+                await self._rooms_held.wait()
+                continue
+            running = await asyncio.to_thread(self._list_sessions)
+            live = None if running is None else sorted(held & running)
+            try:
+                batch = await self.relay.feed(live, acks, self._feed_wait_s)
+            except RelayError as exc:
+                log.info("room feed failed, retrying: %s", exc)
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, 30.0)
+                continue
+            backoff, acks = 1.0, []
+            for message in batch.get("messages") or []:
+                try:
+                    await self._take(message)
+                except Exception:  # noqa: BLE001 — one bad message must not stop the feed
+                    log.exception("room %s: could not take message %s",
+                                  message.get("room"), message.get("id"))
+                acks.append({"room": message["room"], "session": message["session"],
+                             "through": message["id"]})
 
     async def prune_forever(self, every_s: float = PRUNE_S) -> None:
         while True:
@@ -277,12 +320,23 @@ class Channels:
 
     async def stop(self) -> None:
         self._stopping = True
+        self._rooms_held.set()
         for task in self._following.values():
             task.cancel()
         await asyncio.gather(*self._following.values(), return_exceptions=True)
         self._following.clear()
 
     # -- internals -----------------------------------------------------------
+
+    def _may_hold(self, holder: dict) -> None:
+        if (holder.get("level") or UNTRUSTED) == UNTRUSTED and not holder.get("isolated"):
+            # A failed lookup runs untrusted (fleet.md R103 item 2). Only an isolated
+            # session holds a channel at that level, for its own task (channels.md R111).
+            raise ChannelError("an untrusted session holds a channel only when it is "
+                               "isolated, for its own task")
+        if holder["node"] != self.here:
+            raise ChannelError("a channel is held by a session on its own node: call "
+                               "`channel` there, without peer")
 
     def _pick(self, holder: dict, name: str | None) -> dict:
         rows = self.store.of_holder(holder["node"], holder["session"])
@@ -310,40 +364,8 @@ class Channels:
         }
 
     def _follow(self, name: str, kind: str) -> None:
-        loop = self._follow_machine if kind == "machine" else self._follow_room
         if name not in self._following or self._following[name].done():
-            self._following[name] = asyncio.create_task(loop(name))
-
-    async def _follow_room(self, name: str) -> None:
-        backoff = 1.0
-        try:
-            while not self._stopping:
-                row = self.store.get(name)
-                if not row or not row["open"]:
-                    return
-                try:
-                    batch = await self.rooms.recv(name, row["token"], row["cursor"])
-                except RoomGone:
-                    await self._ended(name, "the relay no longer has this room")
-                    return
-                except httpx.HTTPError as exc:
-                    # A cancel that lands inside httpx's read can surface as an
-                    # httpx error instead. Retrying it would outlive `stop`.
-                    if self._stopping or asyncio.current_task().cancelling():
-                        raise asyncio.CancelledError from exc
-                    log.info("room %s: receive failed, retrying: %s", name, exc)
-                    await asyncio.sleep(backoff)
-                    backoff = min(backoff * 2, 30.0)
-                    continue
-                backoff = 1.0
-                for message in batch.get("messages") or []:
-                    await self._take(row, message)
-                self.store.set_cursor(name, int(batch.get("next") or 0))
-                if batch.get("ended"):
-                    await self._ended(name, batch["ended"])
-                    return
-        finally:
-            self._following.pop(name, None)
+            self._following[name] = asyncio.create_task(self._follow_machine(name))
 
     async def _open_machine(self, holder: dict, os_name: str | None) -> dict:
         if not os_name:
@@ -498,19 +520,39 @@ class Channels:
                 kind="machine", name=name, text="the owner connected."))
         return None
 
-    async def _take(self, row: dict, message: dict) -> None:
-        """Record one message, and push it when the other side sent it."""
-        name = row["name"]
+    async def _take(self, message: dict) -> None:
+        """Record one message the feed brought, and type it into its holder."""
+        name = str(message["room"])
+        row = self.store.get(name)
+        if not row or row["session"] != message["session"] or not row["open"]:
+            return
+        if int(message["id"]) <= row["fed"]:
+            return
+        self.store.set_fed(name, int(message["id"]))
+        body = message.get("body") or {}
+        if message["by"] == "notice":
+            if body.get("ended"):
+                await self._ended(name, str(body.get("text") or "the room ended"))
+            return
         seq = int(message.get("seq") or 0)
-        by = str(message.get("by") or "guest")
-        who = str(message.get("from") or "?")
-        state = (self.store.get(name) or {}).get("crypto") or {}
-        text, notice, says = self._read(name, by, message, state)
-        path = self.transcripts.append(name, seq=seq, by=by, who=who, text=text)
+        who = str(message.get("who") or "?")
+        if message["by"] == "member":
+            # Another of our sessions: a plain room only, at the level its node stamped.
+            text = str(body.get("text") or "")
+            path = self.transcripts.append(name, seq=seq, by="member", who=who, text=text)
+            self.store.set_cursor(name, seq)
+            self.pusher.push(row["node"], row["job"], lines.push_line(
+                kind="room", name=name, trust=str(message.get("level") or UNTRUSTED),
+                who=who, text=text, seq=seq, transcript=path))
+            return
+        state = row.get("crypto") or {}
+        text, notice, says = self._read(name, "guest", body, state)
+        path = self.transcripts.append(name, seq=seq, by="guest", who=who, text=text)
+        self.store.set_cursor(name, seq)
         if notice:
             self.pusher.push(row["node"], row["job"],
                              lines.notice(kind=row["kind"], name=name, text=notice))
-        if by == "host" or not says:
+        if not says:
             return
         self.pusher.push(row["node"], row["job"], lines.push_line(
             kind=row["kind"], name=name, trust=row["trust"], who=who,
@@ -589,7 +631,13 @@ class Channels:
         if task is not None:
             task.cancel()
         if row["kind"] == "room":
-            await self.rooms.leave(row["name"], token)
+            try:
+                holder = {"session": row["session"], "name": row["holder"],
+                          "level": row["holder_level"]}
+                await self.relay.close(holder, row["name"])
+            except RelayError as exc:
+                # The relay lets the lease lapse instead.
+                log.info("room %s: leave failed: %s", row["name"], exc)
         elif token.isdigit():
             sid = row["ref"] or self.machines.session_of(int(token))
             if sid:

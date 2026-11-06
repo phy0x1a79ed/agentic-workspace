@@ -29,7 +29,7 @@ async def _encrypted(channels, pushed, guest: Guest, opened) -> None:
     await eventually(lambda: any("is encrypted now" in t for t in pushed.texts()))
 
 
-async def test_a_live_room_moves_to_encryption_and_carries_on(channels, pushed):
+async def test_a_live_room_moves_to_encryption_and_carries_on(channels, pushed, host):
     opened = await channels.open(HOLDER, "room")
     guest = Guest(opened["link"])
     try:
@@ -57,6 +57,10 @@ async def test_a_live_room_moves_to_encryption_and_carries_on(channels, pushed):
         assert row["open"] and row["encrypted"]
         transcript = channels.transcripts.path(opened["name"]).read_text()
         assert "the secret plan" in transcript and "sealed hello" in transcript
+        # The public host keeps only the sealed text: no file of its state holds either.
+        for path in host.files():
+            data = path.read_bytes()
+            assert b"the secret plan" not in data and b"sealed hello" not in data, path
     finally:
         await guest.aclose()
 
@@ -112,6 +116,23 @@ async def test_an_encrypted_room_does_not_offer_again(channels, pushed):
             await channels.encrypt(HOLDER)
     finally:
         await guest.aclose()
+
+
+async def test_an_encrypted_room_has_one_member(channels, pushed, tmp_path, sessions):
+    from .conftest import FAR, member_node, stop_node, Sessions
+
+    opened = await channels.open(HOLDER, "room")
+    far = member_node(tmp_path, "farnode", pushed, Sessions({FAR["session"]}))
+    try:
+        await far.join(FAR, opened["name"])
+        with pytest.raises(ChannelError, match="more than one member"):
+            await channels.encrypt(HOLDER)
+        await far.close(FAR, opened["name"])
+        await channels.encrypt(HOLDER)
+        with pytest.raises(ChannelError, match="encrypted"):
+            await far.join(FAR, opened["name"])
+    finally:
+        await stop_node(far)
 
 
 def test_a_sealed_message_opens_only_with_its_key_count_and_room():

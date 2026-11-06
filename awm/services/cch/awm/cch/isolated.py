@@ -51,7 +51,7 @@ WHITELIST: dict[str, tuple[str, ...]] = {
     "operations": ("track", "status", "request_human", "done"),
     # Rooms and machine channels for its own task (channels.md R111). A machine
     # channel acts on the other machine; nothing on it reaches this one.
-    "channel": ("open", "write", "drain", "status", "close", "encrypt"),
+    "channel": ("open", "join", "write", "drain", "status", "close", "encrypt"),
 }
 
 ROOTFUL_SOCKETS = ("/var/run/docker.sock", "/run/docker.sock")

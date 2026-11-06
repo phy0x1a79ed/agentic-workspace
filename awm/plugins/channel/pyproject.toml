@@ -4,11 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "awm-channel"
-version = "0.2.0"
+version = "0.3.0"
 requires-python = ">=3.11"
-description = "AWM channel plugin: rooms and machines through the tether, pushed into the holding session."
+description = "AWM channel plugin: rooms through the public host's relay and machines through the tether, typed into the holding session."
 dependencies = [
     "awm-gatewayclient",
+    "awm-tether",
     "httpx",
     "cryptography",
     "spake2>=0.9",

@@ -1,12 +1,14 @@
 """Every channel this node holds, in one SQLite file the gateway's respawn survives.
 
-The file holds each room's host token, so it lives in a directory only this
-user can read. A holder is a session: ``node`` and ``session`` name it, and
-``job`` is where its lines are typed. For a machine, ``token`` is the tether
+It holds an encrypted room's keys, so it lives in a directory only this user
+can read. A room's host token stays on the public host's relay. A holder is a
+session on this node: ``node`` and ``session`` name it, and ``job`` is where its
+lines are typed. For a machine, ``token`` is the tether
 slot and ``ref`` the session id the stream gave its mint. ``trust`` is the
 other side's level, always untrusted, and ``holder_level`` the holder's own. ``cursor`` follows
 the conversation and ``log_cursor`` the tool log, each in the daemon epoch
-beside it.
+beside it. ``fed`` is the relay's id of the last room message typed, so a
+message the relay sends again after a restart is typed once.
 """
 
 from __future__ import annotations
@@ -41,7 +43,8 @@ CREATE TABLE IF NOT EXISTS channels (
     epoch     INTEGER,
     log_cursor INTEGER NOT NULL DEFAULT 0,
     log_epoch INTEGER,
-    holder_level TEXT NOT NULL DEFAULT 'untrusted'
+    holder_level TEXT NOT NULL DEFAULT 'untrusted',
+    fed       INTEGER NOT NULL DEFAULT 0
 )
 """
 
@@ -54,6 +57,7 @@ ADDED = (
     ("log_cursor", "INTEGER NOT NULL DEFAULT 0"),
     ("log_epoch", "INTEGER"),
     ("holder_level", "TEXT NOT NULL DEFAULT 'untrusted'"),
+    ("fed", "INTEGER NOT NULL DEFAULT 0"),
 )
 
 
@@ -73,7 +77,7 @@ class Store:
             token: str, lasts: str = "task", ref: str = "",
             epoch: int | None = None) -> dict:
         self._db.execute(
-            "INSERT INTO channels (name, kind, trust, node, session, job, holder, link, token,"
+            "INSERT OR REPLACE INTO channels (name, kind, trust, node, session, job, holder, link, token,"
             " opened_at, lasts, ref, epoch, log_epoch, holder_level)"
             " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (name, kind, trust, holder["node"], holder["session"], holder["job"],
@@ -104,6 +108,11 @@ class Store:
     def set_cursor(self, name: str, cursor: int) -> None:
         self._db.execute("UPDATE channels SET cursor = ? WHERE name = ? AND cursor < ?",
                          (cursor, name, cursor))
+
+    def set_fed(self, name: str, fed: int) -> None:
+        """The relay's id of the last room message typed into the holder."""
+        self._db.execute("UPDATE channels SET fed = ? WHERE name = ? AND fed < ?",
+                         (fed, name, fed))
 
     def set_follow(self, name: str, cursor: int, epoch: int | None) -> None:
         """A machine's conversation cursor, which starts again in a new epoch."""

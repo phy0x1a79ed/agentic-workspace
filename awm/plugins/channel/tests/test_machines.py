@@ -18,8 +18,8 @@ from awm.channel import hub_adapter
 from awm.channel.service import ChannelError
 from awm.gatewayclient.push import Pusher
 from awm.channel.machines import Machines
-from awm.channel.relay import Rooms
-from awm.channel.tether import paths, stream
+from awm.channel.relayclient import RelayClient
+from awm.tether import paths, stream
 
 from .conftest import HOLDER, OTHER, eventually
 
@@ -96,25 +96,24 @@ def daemon(machines, monkeypatch) -> FakeDaemon:
     return fake
 
 
-def _build(tmp_path, machines, pushed, live, sessions):
-    async def list_jobs(node):
-        return live.get(node)
+async def _no_relay(verb, args, timeout):
+    raise AssertionError(f"a machine channel never calls the relay: {verb}")
 
-    return hub_adapter.build(tmp_path / "state",
-                             rooms=Rooms("http://127.0.0.1:9", "unused"),
-                             pusher=Pusher(send=pushed.send), list_jobs=list_jobs,
-                             list_sessions=sessions, machines=machines)
+
+def _build(tmp_path, machines, pushed, sessions):
+    return hub_adapter.build(tmp_path / "state", relay=RelayClient(_no_relay),
+                             pusher=Pusher(send=pushed.send),
+                             list_sessions=sessions, machines=machines, here="testnode")
 
 
 @pytest.fixture
-async def chans(tmp_path, machines, daemon, pushed, live, sessions, monkeypatch):
+async def chans(tmp_path, machines, daemon, pushed, sessions, monkeypatch):
     from awm.gatewayclient import holders
 
     monkeypatch.setattr(holders.config, "node_name", lambda: "testnode")
-    built = _build(tmp_path, machines, pushed, live, sessions)
+    built = _build(tmp_path, machines, pushed, sessions)
     yield built
     await asyncio.wait_for(built.stop(), 5)
-    await built.rooms.aclose()
 
 
 def _sent(daemon, verb):
@@ -285,7 +284,7 @@ async def test_drain_says_when_the_daemon_restarted_under_it(chans, daemon):
 
 
 async def test_a_restart_resumes_without_pushing_anything_twice(
-        tmp_path, machines, daemon, pushed, live, sessions, chans):
+        tmp_path, machines, daemon, pushed, sessions, chans):
     await chans.open(HOLDER, "machine", "unix")
     daemon.event(7, "owner.said", text="before")
     await eventually(lambda: pushed.texts())
@@ -293,13 +292,12 @@ async def test_a_restart_resumes_without_pushing_anything_twice(
     await chans.stop()
     daemon.event(7, "owner.said", text="during")
 
-    again = _build(tmp_path, machines, pushed, live, sessions)
+    again = _build(tmp_path, machines, pushed, sessions)
     again.resume()
     await eventually(lambda: len(pushed.texts()) == 2)
     await again.pusher.idle()
     assert [t.rsplit(": ", 1)[1] for t in pushed.texts()] == ["before", "during"]
     await again.stop()
-    await again.rooms.aclose()
 
 
 async def test_the_relay_host_mints_no_machine(chans, daemon, monkeypatch):

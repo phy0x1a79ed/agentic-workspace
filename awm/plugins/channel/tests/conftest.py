@@ -1,7 +1,11 @@
-"""A real tether relay on loopback, and a channel service with its push captured.
+"""A real tether relay on loopback, the public host's relay service beside it, and
+member nodes that reach it through a stand-in for its door, with their pushes captured.
 
-The relay is the binary the tether repository builds. ``AWM_TETHER_RELAY_BIN``
+The tether relay is the binary the tether repository builds. ``AWM_TETHER_RELAY_BIN``
 names one, else the tests look in each local tether checkout's cargo target.
+
+The door stand-in calls the relay plugin's own handlers as the core's door
+stamps them: the calling node as ``peer:<node>`` and its service as trusted.
 """
 
 from __future__ import annotations
@@ -15,18 +19,20 @@ from pathlib import Path
 import httpx
 import pytest
 
+from awm import gatewayclient
 from awm.channel import hub_adapter
+from awm.channel.relayclient import RelayClient, RelayError
 from awm.gatewayclient import holders
-from awm.channel.relay import Rooms
 from awm.gatewayclient.push import Pusher
 
 BEARER = "a-test-bearer-nothing-guards"
-HOLDER = {"node": "testnode", "session": "cc" + "a" * 32, "job": "job-aaaa",
+NODE = "testnode"
+HOLDER = {"node": NODE, "session": "cc" + "a" * 32, "job": "job-aaaa",
           "name": "tester", "level": "trusted"}
-OTHER = {"node": "testnode", "session": "cc" + "b" * 32, "job": "job-bbbb",
+OTHER = {"node": NODE, "session": "cc" + "b" * 32, "job": "job-bbbb",
          "name": "someone-else", "level": "cooperative"}
-#: A holder on another node, known by its job.
-FAR = {"node": "farnode", "session": "job:job-cccc", "job": "job-cccc", "name": "far",
+#: A session on a second member node.
+FAR = {"node": "farnode", "session": "cc" + "c" * 32, "job": "job-cccc", "name": "far",
        "level": "trusted"}
 
 
@@ -53,6 +59,7 @@ def _free_port() -> int:
 
 @pytest.fixture
 def relay():
+    """The tether relay binary's base URL."""
     port = _free_port()
     env = {"PATH": "/usr/bin:/bin", "AWM_TETHER_ISSUE_TOKEN": BEARER,
            "AWM_TETHER_PORT": str(port)}
@@ -76,6 +83,65 @@ def relay():
     assert b"secret-body-marker" not in err, err
 
 
+@pytest.fixture(autouse=True)
+def no_outbound(monkeypatch):
+    """Nothing in these tests calls through a gateway: the relay never calls out
+    (fleet.md R79), and a member node reaches the relay only through the door below."""
+    def refuse(*a, **kw):
+        raise AssertionError(f"an outbound gateway call: {a}")
+
+    monkeypatch.setattr(gatewayclient, "call", refuse)
+    monkeypatch.setattr(gatewayclient, "call_sync", refuse)
+
+
+class Host:
+    """The public host: the relay service over the tether relay, with its state on disk."""
+
+    def __init__(self, base: str, state: Path, lease_s: float = 180.0) -> None:
+        self.base, self.state, self.lease_s = base, state, lease_s
+        self.service = None
+
+    def start(self):
+        from awm.relay import hub_adapter as relay_adapter
+        from awm.relay.rooms import Rooms
+
+        self.service = relay_adapter.build(self.state, rooms=Rooms(self.base, BEARER, link=self.base),
+                                           lease_s=self.lease_s)
+        relay_adapter.RELAY = self.service
+        self.service.resume()
+        return self.service
+
+    async def stop(self) -> None:
+        if self.service is not None:
+            import asyncio
+
+            await asyncio.wait_for(self.service.stop(), 5)
+            await self.service.rooms.aclose()
+            self.service = None
+
+    def files(self) -> list[Path]:
+        return [p for p in self.state.rglob("*") if p.is_file()]
+
+
+class Door:
+    """deneb's door as one member node dials it: the node's service, stamped trusted."""
+
+    def __init__(self, node: str) -> None:
+        self.node = node
+        self.calls: list[str] = []
+
+    async def __call__(self, verb: str, args: dict, timeout: float):
+        from awm.relay import hub_adapter as relay_adapter
+        from awm.relay.service import RelayRefused
+
+        self.calls.append(verb)
+        stamped = {**args, "_caller_trust": "trusted"}
+        try:
+            return await relay_adapter.HANDLERS[verb](stamped, f"peer:{self.node}")
+        except RelayRefused as exc:
+            raise RelayError(str(exc)) from exc
+
+
 class Captured:
     """Stands in for ``reflection message``: records each pushed line."""
 
@@ -93,37 +159,31 @@ class Captured:
         return [line for _, j, line in self.lines if j == job]
 
 
-@pytest.fixture
-def pushed() -> Captured:
-    return Captured()
-
-
-@pytest.fixture
-def live() -> dict[str, set[str] | None]:
-    """The live jobs each other node reports. Edit it to end a far holder's job."""
-    return {"farnode": {FAR["job"]}}
-
-
 class Sessions:
-    """The sessions running on this node. Set ``ids`` to None for "cannot tell"."""
+    """The sessions running on one node. Set ``ids`` to None for "cannot tell"."""
 
-    def __init__(self) -> None:
-        self.ids: set[str] | None = {HOLDER["session"], OTHER["session"]}
+    def __init__(self, ids: set[str]) -> None:
+        self.ids: set[str] | None = ids
 
     def __call__(self) -> set[str] | None:
         return None if self.ids is None else set(self.ids)
 
 
 @pytest.fixture
+def pushed() -> Captured:
+    return Captured()
+
+
+@pytest.fixture
 def sessions() -> Sessions:
-    return Sessions()
+    return Sessions({HOLDER["session"], OTHER["session"]})
 
 
 @pytest.fixture
 def machines(tmp_path):
     """The machine kind, on a stream and mark of its own, with no daemon."""
     from awm.channel.machines import Machines
-    from awm.channel.tether import stream
+    from awm.tether import stream
 
     mark = stream.Mark(tmp_path / "stream.json")
     return Machines(journal=stream.Journal(), mark=mark,
@@ -131,20 +191,46 @@ def machines(tmp_path):
 
 
 @pytest.fixture
-async def channels(tmp_path, relay, pushed, live, sessions, machines, monkeypatch):
-    async def list_jobs(node):
-        return live.get(node)
+async def host(tmp_path, relay):
+    h = Host(relay, tmp_path / "deneb")
+    h.start()
+    yield h
+    await h.stop()
 
-    monkeypatch.setattr(holders.config, "node_name", lambda: "testnode")
-    built = hub_adapter.build(tmp_path / "state", rooms=Rooms(relay, BEARER),
-                              pusher=Pusher(send=pushed.send),
-                              list_jobs=list_jobs, list_sessions=sessions,
-                              machines=machines)
-    yield built
+
+def member_node(tmp_path: Path, node: str, pushed: Captured, sessions: Sessions,
+                machines=None, feed_wait_s: float = 2.0):
+    """One member node's channel service, reaching the relay through its door."""
     import asyncio
+
+    from awm.gatewayclient import spawn_supervised
+
+    door = Door(node)
+    built = hub_adapter.build(tmp_path / node, relay=RelayClient(door),
+                              pusher=Pusher(send=pushed.send), list_sessions=sessions,
+                              machines=machines, feed_wait_s=feed_wait_s, here=node)
+    built.door = door
+    built.feeding = spawn_supervised(f"feed-{node}", built.feed_forever, respawn_delay=0.1)
+    built.resume()
+    assert isinstance(built.feeding, asyncio.Task)
+    return built
+
+
+async def stop_node(built) -> None:
+    import asyncio
+
+    built.feeding.cancel()
+    await asyncio.gather(built.feeding, return_exceptions=True)
     # Bounded, so a follow loop that ignores its cancel fails the test.
     await asyncio.wait_for(built.stop(), 5)
-    await built.rooms.aclose()
+
+
+@pytest.fixture
+async def channels(tmp_path, host, pushed, sessions, machines, monkeypatch):
+    monkeypatch.setattr(holders.config, "node_name", lambda: NODE)
+    built = member_node(tmp_path, NODE, pushed, sessions, machines)
+    yield built
+    await stop_node(built)
 
 
 async def eventually(check, timeout: float = 5.0):

@@ -56,6 +56,8 @@ A singleton service fronts one external resource for the fleet, such as the 2FA 
 - `/hub/table` gives no singleton to another node, and a peer's table loses any singleton it lists. `awm table` shows each singleton this node reaches as a `door` row.
 - A plugin's need for a singleton this node reaches through a door holds from `edges.yml` alone. So a door that is down at boot refuses no plugin. A call while it is down fails with the door's address and ssh's error.
 - The door carries no reflection, no shell and no stream (R98, R104 item 4). An emit stream or a direct session on a singleton still crosses an edge.
+- A door call carries the calling session's R9 id, level and scope. The host takes them as the calling node's word, as it does across an edge. Its gate checks the level, and a service reads the session as `_caller_session`. A node's own service calls with no session, as trusted.
+- An isolated session reaches a singleton on its whitelist through the door, as itself (`channels.md` R111).
 - The host sees the caller stamped `peer:<node>`.
 
 The callers list fails closed. A node it leaves out gets the answer an unknown tool gets, at every point where a call can enter:
@@ -67,7 +69,7 @@ The callers list fails closed. A node it leaves out gets the answer an unknown t
 
 **CAUTION** Each gateway reads `callers` from its own `edges.yml`. A relay with a stale copy checks against its stale list, and only the host's check stands behind it.
 
-alcor hosts `2fa`, `operations` (the task queue and the approver), `browser` and `social`, and its ssh service is the slot arbiter. deneb hosts `trilium`, the vault, and `channel`, the public relays. The cloud project's `edges.yml` is the record.
+alcor hosts `2fa`, `operations` (the task queue and the approver), `browser` and `social`, and its ssh service is the slot arbiter. deneb hosts `trilium`, the vault, and `relay`, the host half of the channel rooms beside the tether relay. The cloud project's `edges.yml` is the record.
 
 ## People
 
@@ -117,7 +119,8 @@ A post that arrives across an edge carries the stamp `peer:<node>` as its author
 ## Messaging
 
 - Agents on one node message each other through the harness's own channel, Claude's `SendMessage`. `reflection message` carries a message that crosses an edge. On an agent's first `reflection message` to a local session, the reply asks it to use `SendMessage`.
-- An agent outside the swarm talks to ours through a room on deneb's relay (`channel open kind=room`). A persistent room keeps a six-word link until it closes.
+- An agent outside the swarm talks to ours through a room on deneb's relay (`channel open kind=room`). A persistent room keeps a six-word link until it closes. Another of our sessions may `channel join` a plain room.
+- Each member node's `channel` holds one `relay feed` long-poll through deneb's door, and types what arrives into the holding sessions. deneb never pushes (R79). Each feed renews its members' leases, and a member whose node stops renewing it lapses.
 - `journal post` is passive mail that wakes no one.
 
 **CAUTION** Claude Code holds a `SendMessage` to a session in another permission mode until that session's user approves it. A background session then waits on the approval prompt and does nothing else.

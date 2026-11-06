@@ -1,7 +1,7 @@
 """The machine kind of channel: one tether session, driven in this process.
 
 The channel plugin supervises this host's tether binary and reads its event
-stream itself (``awm.channel.tether``). No other tool reaches the operator
+stream itself (``awm.tether``). No other tool reaches the operator
 daemon, so the channel store is the one record of who holds which session, and
 a session answers only to the channel that minted it.
 
@@ -22,7 +22,8 @@ import base64
 import logging
 from typing import Any, Awaitable, Callable
 
-from awm.channel.tether import control, daemon, paths, remote_os, stream
+from awm.tether import control, daemon, paths, remote_os, stream
+from awm.tether.report import release_report
 
 log = logging.getLogger("awm.channel.machines")
 
@@ -258,26 +259,6 @@ class Machines:
 
 async def _no_emit(topic: str, payload: dict) -> None:
     """The channel pushes what matters itself, so nothing is announced."""
-
-
-def release_report() -> dict[str, Any]:
-    """The release this host is pinned to, and the one it runs.
-
-    A developer pointing ``AWM_TETHER_BIN`` at their own build runs no fetch, so
-    there is no version to compare. Otherwise an installed version behind the pin
-    means the last fetch did not finish, and the fetch log's last line says why.
-    """
-    pinned = paths.pinned_release()
-    if paths.BIN_OVERRIDE:
-        return {"pinned": pinned, "source": f"AWM_TETHER_BIN={paths.BIN_OVERRIDE}"}
-    installed = paths.installed_release()
-    report: dict[str, Any] = {"pinned": pinned, "installed": installed,
-                              "in_sync": pinned == installed}
-    if not report["in_sync"]:
-        tail = daemon.tail(paths.FETCH_LOG, 1)
-        if tail:
-            report["last_fetch"] = tail[-1]
-    return report
 
 
 def decoded(events: list[dict], raw: bool = False) -> list[dict]:

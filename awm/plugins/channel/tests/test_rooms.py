@@ -7,10 +7,8 @@ import pytest
 
 from awm.channel import hub_adapter, lines
 from awm.channel.service import ChannelError
-from awm.gatewayclient.push import Pusher
-from awm.channel.relay import Rooms
 
-from .conftest import BEARER, FAR, HOLDER, OTHER, eventually, needs_relay
+from .conftest import FAR, HOLDER, OTHER, eventually, needs_relay
 from .guest import Guest
 
 pytestmark = [pytest.mark.integration, needs_relay]
@@ -30,7 +28,7 @@ async def test_a_guest_with_only_the_link_talks_with_the_holder(channels, pushed
         await channels.write(HOLDER, "hello back")
         heard = await guest.hear()
         assert [m["text"] for m in heard["messages"]] == ["hello back"]
-        assert heard["messages"][0]["from"] == "tester"
+        assert heard["messages"][0]["from"] == "tester@testnode", "the sender is the stamped member"
     finally:
         await guest.aclose()
 
@@ -150,17 +148,9 @@ async def test_a_session_that_cannot_be_checked_keeps_its_channels(channels, ses
     assert await channels.prune() == []
 
 
-async def test_a_holder_on_another_node_is_checked_by_its_job(channels, live):
-    opened = await channels.open(FAR, "room")
-    assert await channels.prune() == []
-    live["farnode"] = set()
-    assert await channels.prune() == [opened["name"]]
-
-
-async def test_a_node_that_cannot_list_its_jobs_keeps_its_channels(channels, live):
-    await channels.open(FAR, "room")
-    live["farnode"] = None
-    assert await channels.prune() == []
+async def test_a_holder_on_another_node_is_refused(channels):
+    with pytest.raises(ChannelError, match="on its own node"):
+        await channels.open(FAR, "room")
 
 
 async def test_one_session_holds_a_task_room_and_a_persistent_room(channels):
@@ -229,34 +219,6 @@ async def test_a_holder_of_two_channels_names_one(channels):
         await channels.write(HOLDER, "which?")
     assert (await channels.write(HOLDER, "this one", b["name"]))["name"] == b["name"]
     assert a["name"] != b["name"]
-
-
-async def test_a_restarted_service_resumes_without_pushing_anything_twice(
-        tmp_path, relay, pushed, live, channels):
-    opened = await channels.open(HOLDER, "room")
-    guest = Guest(opened["link"])
-    try:
-        await guest.say("before the restart")
-        await eventually(lambda: pushed.texts())
-        await channels.pusher.idle()
-        await channels.stop()
-
-        await guest.say("during the restart")
-
-        async def list_jobs(node):
-            return live.get(node)
-
-        again = hub_adapter.build(tmp_path / "state", rooms=Rooms(relay, BEARER),
-                                  pusher=Pusher(send=pushed.send), list_jobs=list_jobs)
-        again.resume()
-        await eventually(lambda: len(pushed.texts()) == 2)
-        await again.pusher.idle()
-        assert [line.rsplit(": ", 1)[1] for line in pushed.texts()] == [
-            "before the restart", "during the restart"]
-        await again.stop()
-        await again.rooms.aclose()
-    finally:
-        await guest.aclose()
 
 
 def test_lines_cap_is_the_one_the_tool_promises():
