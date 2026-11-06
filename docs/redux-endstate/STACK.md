@@ -8,7 +8,6 @@ end-state/deneb-link
 
 ## Waiting on Tony
 
-- deneb-link: let the edge key log in as awm on deneb, or drop the edge.
 - science-idle: the idle timeout for claude-science. Recommended: start on demand, stop after 30 min idle.
 
 ## Preferences
@@ -20,8 +19,8 @@ end-state/deneb-link
 ## Stack
 
 - **end-state**: "review the end state and if there are anything left open for us to clean up and do."
-  - **deneb-link**: mizar's edge to deneb fails since ~06:05Z. The edge is `ssh deneb awm edge-serve`; it lands as tony, who has no awm on deneb (deneb's awm runs as user awm). Fix needs the edge key to log in as awm on the public station (R79/R88), or drop mizar→deneb from edges.yml. Waiting on Tony. The awm-edge-fwd forwards and peers.json edge_urls are ZeroTier-era leftovers to retire.
-  - **seats-pause**: "retired seats came back and steven chen contacted the client without first being asked, on a stale request." Five revived seats stopped ~19:10Z; seats/pause (e11ce259 on altair) keeps them paused, finds the cause and discusses seats with Tony (takes seat-lifecycle).
+  - **node-access**: Tony: "we need to not conflate teh ssh with the services door. even if there is edges access, we still set up service doors. mizar also needs root access to deneb, along with typical user access, following the arbutus paradigm -> we need this dev/use split for our personal nodes as well". Trigger: mizar's edge to deneb fails since ~06:05Z (`ssh deneb awm edge-serve` lands as tony; deneb's awm runs as user awm). Survey running.
+  - **seats-pause**: "retired seats came back and steven chen contacted the client without first being asked, on a stale request." Five revived seats stopped ~19:10Z; seats/pause (e11ce259 on altair) keeps them paused, finds the cause and discusses seats with Tony (takes seat-lifecycle). Cause found: a human-path prompt to slack-main at 18:37Z asked it to restart the seats; Steven had replied at 18:32Z but the push never reached his old seat; the restart brief says "Answer anything unanswered".
   - **telegram-token**: Tony: "ok, delete the telegram token". Worker telegram/removal (edd4e880) removes the token and the Telegram code from the stock stack.
   - **skill-sync**: "we need a way to sync skills across the fleet..."
   - **agent-lifecycle**: "retire doesn seem to always work ... session full stop and closed (not visible anywhere), but transcripts kept (I guess transcripts should also be a plugin that runs on any node with agents)."
