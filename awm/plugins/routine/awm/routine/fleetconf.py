@@ -16,12 +16,17 @@ its `[fleet]` table says which node is home base and the order nodes refresh in:
     url = "<node>:<workspace>/projects/{project}/.bare"   # with projects, for a node
     projects = ["<name>", ...]                             # that cannot fetch from home
     artifacts = "<node>:<awm dir>/artifacts"               # for a node that builds nothing
+    refresh = "<command>"                                  # with url: how home refreshes it
 
 The node that lands a project leads its rollout. Before a node refreshes, the
 landing node pushes the new release into its repo as `refs/<landing node>/release`,
 fast-forward only (routines.md R31), when the node names a url. It pushes the
 files the release pins (artifacts.py) when the node names an `artifacts`
-directory. A node that fetches its release names only `artifacts`.
+directory. A node that fetches its release names only `artifacts`, and home calls
+its `routine refresh`. A push node needs no routine plugin: home refreshes it by
+running its `refresh` command, an ssh into the node such as deneb's (fleet.md
+R79), with `AWM_REFRESH_NODE`, `AWM_REFRESH_PROJECT`, `AWM_REFRESH_FROM` and
+`AWM_REFRESH_TO` set.
 A sleeper that does not answer is skipped and reported, and the rollout goes on.
 An absent file or table is a fleet of this node alone.
 """
@@ -51,6 +56,7 @@ class Push:
     url: str
     projects: tuple[str, ...]
     artifacts: str = ""
+    refresh: str = ""
 
 
 @dataclass(frozen=True)
@@ -70,6 +76,11 @@ class Fleet:
         """Where ``node`` takes pinned artifacts by push. Empty means it takes none."""
         p = self.push.get(node)
         return p.artifacts if p else ""
+
+    def refresh_command(self, node: str) -> str:
+        """The command home runs to refresh push node ``node``."""
+        p = self.push.get(node)
+        return p.refresh if p else ""
 
     def canonical(self, project: str) -> str:
         """The node that lands ``project``. Empty means wherever deploy is called."""
@@ -120,18 +131,23 @@ def parse(text: str, *, source: str = FILE) -> Fleet:
     for node, body in (raw.get("push") or {}).items():
         where = f"{source}: [fleet.push.{node}]"
         keys = set(body) if isinstance(body, dict) else set()
-        if (not isinstance(body, dict) or keys - {"url", "projects", "artifacts"}
-                or ("url" in keys) != ("projects" in keys) or not keys & {"url", "artifacts"}):
-            raise FleetConfigError(f"{where} takes url and projects, or artifacts, or all three")
+        if (not isinstance(body, dict) or keys - {"url", "projects", "artifacts", "refresh"}
+                or not ({"url", "projects", "refresh"} <= keys or keys == {"artifacts"}
+                        or keys == {"url", "projects", "refresh", "artifacts"})):
+            raise FleetConfigError(f"{where} takes url, projects and refresh, and optionally "
+                                   f"artifacts, or artifacts alone")
         url, names = body.get("url", ""), body.get("projects", [])
         artifacts = body.get("artifacts", "")
         if not isinstance(artifacts, str) or ("artifacts" in keys and not artifacts):
             raise FleetConfigError(f"{where} artifacts must be a directory as <host>:<path>")
+        refresh = body.get("refresh", "")
+        if not isinstance(refresh, str) or ("refresh" in keys and not refresh.strip()):
+            raise FleetConfigError(f"{where} refresh must be a command")
         if "url" in keys and (not isinstance(url, str) or "{project}" not in url):
             raise FleetConfigError(f"{where} url must name the repo with {{project}}")
         if not isinstance(names, list) or not all(isinstance(n, str) and n for n in names):
             raise FleetConfigError(f"{where} projects must be a list of project names")
-        push[node] = Push(url, tuple(names), artifacts)
+        push[node] = Push(url, tuple(names), artifacts, refresh)
     return Fleet(home=home, nodes=nodes, projects=projects, push=push, sleepers=sleepers)
 
 

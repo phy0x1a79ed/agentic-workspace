@@ -194,9 +194,10 @@ class Refresher:
         """Refresh each node in order, stopping at the first failure (R31).
 
         The install config names the nodes, home base first (fleetconf). An
-        empty list means this node only. A node with a push url first takes
-        the release from ``bare``. A node that names an artifacts directory
-        then takes the files the release pins."""
+        empty list means this node only. A push node takes the release from
+        ``bare``, the pinned files when it names an artifacts directory, then
+        home runs its refresh command. A node that fetches takes the pinned
+        files when it names a directory, then refreshes itself."""
         fleet = self.fleet_config()
         nodes = list(fleet.rollout(project)) or [self.node]
         done: list[dict[str, Any]] = []
@@ -216,6 +217,9 @@ class Refresher:
                         pinned, r = await self._pinned(node, bare, to)
                     if r is None:
                         r = await self._push_artifacts(node, dest, pinned)
+                if r is None and url:
+                    r = await self._refresh_by_command(node, project, fleet.refresh_command(node),
+                                                       frm, to)
                 if r is None:
                     r = await self._peer(node, project, frm, to)
             done.append(r.to_dict())
@@ -258,6 +262,15 @@ class Refresher:
                 return NodeResult(node, False,
                                   f"artifacts: push of {art.file} to {dest} {_why(res)}\n{res.output}")
         return None
+
+    async def _refresh_by_command(self, node: str, project: str, cmd: str, frm: str,
+                                  to: str) -> NodeResult:
+        """Refresh push node ``node`` with the command its entry names, run here."""
+        env = {**self._env(frm, to), "AWM_REFRESH_NODE": node, "AWM_REFRESH_PROJECT": project}
+        res = await proc.run(cmd, cwd="/", timeout=1800.0, env=env)
+        if not res.ok:
+            return NodeResult(node, False, f"refresh command {_why(res)}\n{res.output}")
+        return NodeResult(node, True, res.output[-2000:])
 
     async def _peer(self, node: str, project: str, frm: str, to: str) -> NodeResult:
         try:
