@@ -208,7 +208,7 @@ The gateway finds the session from a pid: `X-Awm-Session-Pid`, which `awm mcp` s
 3. A lookup that fails reads as `untrusted`, with mode `unknown` (`fleet.md` R103 item 2). cch records each session at its start, so a session Tony starts by hand is found.
 4. A call with no pid reads as `trusted`. Only a loopback caller can send one, and the gateway logs a warning.
 5. A call with a valid service token is lane `service` and `trusted`, unless it also names a pid.
-6. The gateway keeps a positive answer `session_cache_s` seconds (install config, default 5). It never keeps a failed lookup.
+6. The gateway keeps a definite answer `session_cache_s` seconds (install config, default 5). It never keeps a failed lookup or an `unknown` mode. While reflection is not registered or does not answer, the call waits up to `lookup_wait_s` seconds (default 10), then refuses with 403. The refusal says either that reflection is unreachable or that it could not tell the session's mode.
 
 The gateway drops the two keys a caller sends. A service that finds no `_caller_trust` reads the call as `untrusted`.
 
