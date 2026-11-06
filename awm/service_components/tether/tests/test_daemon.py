@@ -86,11 +86,22 @@ def _launch(binary) -> int:
     return pid
 
 
-def test_the_operator_role_adopts_and_the_relay_role_parents(monkeypatch):
+def test_both_roles_adopt_their_binary(monkeypatch):
+    for role in (paths.OPERATOR, paths.RELAY):
+        monkeypatch.setattr(paths, "ROLE", role)
+        assert isinstance(daemon.for_role(), daemon.Adopted)
+    assert paths.unit_name() == paths.RELAY_UNIT
     monkeypatch.setattr(paths, "ROLE", paths.OPERATOR)
-    assert isinstance(daemon.for_role(), daemon.Adopted)
+    assert paths.unit_name() == paths.OPERATOR_UNIT
+
+
+def test_a_binary_with_its_own_probe_is_attached_to_and_never_launched_over(monkeypatch):
     monkeypatch.setattr(paths, "ROLE", paths.RELAY)
-    assert isinstance(daemon.for_role(), daemon.Child)
+    up = lambda timeout=1.0: ("answering", {"sessions": []})  # noqa: E731
+    child = daemon.for_role(up)
+    assert child.reconcile() == {"action": "none"}
+    child.shutdown()
+    assert daemon.for_role(up).reconcile() == {"action": "none"}
 
 
 def test_with_nothing_running_a_daemon_is_launched_in_its_own_session(binary):

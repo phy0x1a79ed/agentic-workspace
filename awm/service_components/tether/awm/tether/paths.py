@@ -73,6 +73,9 @@ DAEMON_LOG = STATE_DIR / "daemon.log"
 #: daemon a deployed gateway is keeping.
 OPERATOR_UNIT = "awm-tether-operator-" + hashlib.sha1(str(STATE_DIR).encode()).hexdigest()[:8]
 
+#: The relay's transient user unit, named the same way.
+RELAY_UNIT = "awm-tether-relay-" + hashlib.sha1(str(STATE_DIR).encode()).hexdigest()[:8]
+
 #: What the adapter last launched: pid, release and when. Read back to decide
 #: whether a daemon that is already answering is the one the pin asks for.
 LAUNCH_FILE = STATE_DIR / "daemon.json"
@@ -114,3 +117,8 @@ RELAY = "relay"
 def role_binary() -> Path:
     """The binary this host's role supervises."""
     return RELAY_BIN if ROLE == RELAY else OPERATOR_BIN
+
+
+def unit_name() -> str:
+    """The transient unit this host's role runs its binary in."""
+    return RELAY_UNIT if ROLE == RELAY else OPERATOR_UNIT

@@ -62,10 +62,10 @@ class Machines:
         self.mark = mark or stream.Mark()
         self.logs = logs or stream.SessionLogs(mark=self.mark)
         self._call = call
-        self._child: daemon.Child | daemon.Adopted | None = None
+        self._child: daemon.Adopted | None = None
 
     @property
-    def child(self) -> daemon.Child | daemon.Adopted:
+    def child(self) -> daemon.Adopted:
         if self._child is None:
             self._child = daemon.for_role()
         return self._child
