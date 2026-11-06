@@ -409,8 +409,10 @@ impl Gateway {
         }
     }
 
-    /// Who owns `pid`: reflection's `session_of` answer, or `None` when reflection is down or
-    /// does not answer. The call carries no session pid, so it is neither looked up nor gated.
+    /// Who owns `pid`: reflection's `session_of` answer, or `None` when reflection stays down or
+    /// silent for `lookup_wait_s`. While it restarts (not registered, or its call fails) the
+    /// lookup holds and retries until it answers. Only a definite answer is kept: an `unknown`
+    /// mode or a failure is asked again on the next call.
     pub async fn session_of(&self, pid: u32) -> Option<Value> {
         let ttl = Duration::from_secs_f64(self.cfg.session_cache_s);
         if let Some((at, v)) = self.sessions.lock().unwrap_or_else(|p| p.into_inner()).get(&pid) {
@@ -419,18 +421,39 @@ impl Gateway {
             }
         }
         let caller = awm_proto::Caller { node: self.node.clone(), lane: Lane::Service, ..Default::default() };
-        // reflection may still be starting: wait for it as a call to its tool would.
-        let (service, verb) = self.wait_for_verb(crate::caller::LOOKUP_TOOL, crate::caller::LOOKUP_VERB).await.ok()?;
-        let answer =
-            self.hub.call(&service, &verb.function, json!({"pid": pid}), None, &caller, Duration::from_secs(5)).await.ok()?;
+        let deadline = Instant::now() + Duration::from_secs_f64(self.cfg.lookup_wait_s);
+        let answer = loop {
+            let notified = self.hub.changed.notified();
+            let tried = match self.lookup_target() {
+                Some((service, verb)) => {
+                    self.hub.call(&service, &verb.function, json!({"pid": pid}), None, &caller, Duration::from_secs(5)).await.ok()
+                }
+                None => None,
+            };
+            if let Some(answer) = tried {
+                break answer;
+            }
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return None;
+            }
+            let _ = tokio::time::timeout(left.min(Duration::from_millis(250)), notified).await;
+        };
         let answer = match answer {
             Value::String(s) => serde_json::from_str(&s).unwrap_or(Value::String(s)),
             v => v,
         };
-        if !ttl.is_zero() {
+        if !ttl.is_zero() && crate::caller::is_definite(&answer) {
             self.sessions.lock().unwrap_or_else(|p| p.into_inner()).insert(pid, (Instant::now(), answer.clone()));
         }
         Some(answer)
+    }
+
+    /// The service and verb that answer `session_of`, once reflection is registered and ready.
+    fn lookup_target(&self) -> Option<(String, Verb)> {
+        let tools = self.tools();
+        let entry = tools.get(crate::caller::LOOKUP_TOOL)?;
+        entry.verbs.iter().find(|(_, v)| v.verb == crate::caller::LOOKUP_VERB).map(|(s, v)| (s.clone(), v.clone()))
     }
 
     /// Walk from `pid` up its ancestors to the nearest session a harness claims (`caller.rs`).
@@ -440,15 +463,17 @@ impl Gateway {
             let load = self.read_load();
             if !load.plugins.iter().any(|p| p.tools.iter().any(|t| t.name == crate::caller::LOOKUP_TOOL)) {
                 // A node that runs no reflection runs no harness, so no pid is a session's. One
-                // that should run it cannot tell, so the caller is untrusted (R103 item 2).
-                return if crate::caller::lookup_expected(&load, &self.cfg) { Lookup::Failed } else { Lookup::NoOwner { mode: None } };
+                // that should run it may be restarting it: wait for it below.
+                if !crate::caller::lookup_expected(&load, &self.cfg) {
+                    return Lookup::NoOwner { mode: None };
+                }
             }
         }
         let mut first_mode = None;
         let mut at = Some(pid);
         for hop in 0..crate::caller::MAX_HOPS {
             let Some(p) = at.filter(|p| *p > 1) else { break };
-            let Some(answer) = self.session_of(p).await.filter(Value::is_object) else { return Lookup::Failed };
+            let Some(answer) = self.session_of(p).await.filter(Value::is_object) else { return Lookup::Unreachable };
             if answer.get("known").and_then(Value::as_bool) == Some(true) {
                 let mut answer = answer;
                 answer[crate::caller::FOUND_PID] = json!(p);

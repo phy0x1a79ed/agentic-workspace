@@ -69,7 +69,10 @@ pub struct Config {
     /// Seconds a call waits for a tool that is not up yet (R117 item 7).
     #[serde(default = "default_wait")]
     pub tool_wait_s: f64,
-    /// Seconds a positive `reflection session_of` answer is kept. A failed lookup is never kept.
+    /// Seconds a call waits for reflection to answer `session_of` while it restarts.
+    #[serde(default = "default_wait")]
+    pub lookup_wait_s: f64,
+    /// Seconds a definite `reflection session_of` answer is kept. A failed or `unknown` one is never kept.
     #[serde(default = "default_session_cache")]
     pub session_cache_s: f64,
     /// Seconds a service may stay off its control WebSocket before a respawn.
