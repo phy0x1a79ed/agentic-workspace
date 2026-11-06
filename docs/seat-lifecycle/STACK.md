@@ -28,7 +28,8 @@ Procedure, from dfs-interview § Work the stack:
 ## Stack
 
 - **tony-dm** (2026-11-06): Open from the plan: Tony's own DM with Opal (D0C9GMGRSFP, trusted). Is it a person seat like the others, where does its agent run, and what can it reach?
-  - [ ] Tony's DM is a person seat like the others (seat:slack/slack/@tony, trusted, agentic-commons seats/tony, same start and 4-hour reclaim), with R67/R68 in its brief? Recommend yes.
+  - [x] Tony's DM is a person seat like the others (seat:slack/slack/@tony, trusted, agentic-commons seats/tony, same start and 4-hour reclaim), with R67/R68 in its brief? Recommend yes. (answered 2026-11-06)
+  - [ ] Notifications stay bot posts in the Discord DM and start nothing; when Tony writes, his seat's agent reads the DM's recent history, notices included, so a reply to a notice has its context? Recommend yes.
 - **keeper** (2026-11-06): Open from the plan: the social keeper keeps long-lived seats from social.toml [seat.*] (Tony's Discord DM butler, #bots, Hallam general). Does the new lifecycle replace it?
 - **group-dms** (2026-11-06): Open from the plan: a group DM with two lab members routes each sender to their own person seat, so two agents may answer in one chat.
 
