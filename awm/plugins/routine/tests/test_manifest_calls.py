@@ -101,6 +101,10 @@ async def test_every_gateway_call_is_in_the_manifest(store, ws, gateway, monkeyp
     await dep.drain()
     # A deploy forwarded to the canonical node.
     await DeployVerbs(_deployer(store, ws, FORWARD)).deploy({"project": "proj", "scope": "a"})
+    # A peer's queue refresh: it looks for its supervising session, then starts one.
+    (ws.proj / "release" / "deploy.toml").write_text('[refresh]\nkind = "queue"\nprompt = "Restart."\n')
+    await DeployVerbs(_deployer(store, ws, INSTALL, node="alcor")).refresh(
+        {"project": "proj", "from": "a" * 40, "to": "b" * 40})
 
     needed, own = _needs()
     called = {(t, v) for t, v, _, _ in gateway.calls}

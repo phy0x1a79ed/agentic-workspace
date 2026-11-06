@@ -12,7 +12,7 @@ from awm.routine.deploy import Deployer
 from awm.routine.hub_adapter import DEPLOY_FUNCTIONS, DeployVerbs
 from awm.routine.refresh import Refresher, default_checkout_root, plugin_folders
 
-from tests.conftest import git
+from tests.conftest import FakeOutbound, git
 
 pytestmark = pytest.mark.smoke
 
@@ -247,6 +247,50 @@ async def test_queue_refresh_without_a_bare_repo_starts_in_the_lobby(out, tmp_pa
     [start] = out.starts
     assert start["scope"] == "" and start["project"] == ""
     assert str(root) in start["prompt"] and "lobby" in start["prompt"]
+
+
+async def test_queue_refresh_reuses_the_session_it_already_started(out, tmp_path):
+    (tmp_path / "deploy.toml").write_text('[refresh]\nkind = "queue"\nprompt = "Restart awm."\n')
+    out.sessions["refresh-awm-bbbbbbbb"] = "job9"
+    ref = Refresher(out, node="alcor", checkout_root=lambda p: tmp_path)
+    r = await ref.local("awm", "a" * 40, "b" * 40)
+    assert r.ok and r.hooks == [{"hook": "queue", "job": "job9"}]
+    assert out.starts == []
+
+
+class FlakyPeer(FakeOutbound):
+    """A peer whose routine service restarts under the first refresh calls."""
+
+    def __init__(self, losses: int, error: str) -> None:
+        super().__init__()
+        self.losses, self.error = losses, error
+
+    async def invoke(self, tool, verb, args, *, peer=None, timeout=60.0):
+        self.calls.append((tool, verb, args, peer))
+        if self.losses:
+            self.losses -= 1
+            raise RuntimeError(self.error)
+        return {"ok": True, "hooks": [{"hook": "queue", "job": "j"}]}
+
+
+LOST = ('routine refresh: HTTP 502: {"detail":"service \\"routine\\" closed its '
+        'control connection during the call"}')
+
+
+async def test_peer_refresh_runs_again_when_the_peer_routine_restarts(tmp_path):
+    out = FlakyPeer(2, LOST)
+    ref = Refresher(out, node="mizar", checkout_root=lambda p: tmp_path)
+    ref.peer_retry_wait = 0
+    r = await ref._peer("alcor", "awm", "a" * 40, "b" * 40)
+    assert r.ok and len(out.calls) == 3
+
+
+async def test_peer_refresh_fails_at_once_on_any_other_error(tmp_path):
+    out = FlakyPeer(1, "routine refresh: HTTP 403: refused")
+    ref = Refresher(out, node="mizar", checkout_root=lambda p: tmp_path)
+    ref.peer_retry_wait = 0
+    r = await ref._peer("alcor", "awm", "a" * 40, "b" * 40)
+    assert not r.ok and "403" in r.detail and len(out.calls) == 1
 
 
 HOT = '[refresh]\nkind = "hot"\ncommand = "echo project >> {log}"\n'

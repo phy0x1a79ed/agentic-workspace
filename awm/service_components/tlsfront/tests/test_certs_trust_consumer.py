@@ -96,6 +96,16 @@ def test_an_empty_ca_dir_still_mints_a_root(dirs):
 
 
 @needs_openssl
+def test_a_second_start_leaves_the_cert_dir_untouched(dirs):
+    """A rewrite moves the plugin's stamp, and the gateway restarts the plugin."""
+    ca_dir, cert_dir = dirs
+    certs.ensure_certs(cert_dir, ca_dir=ca_dir, sans=["IP:127.0.0.1"])
+    before = {p.name: p.stat().st_mtime_ns for p in cert_dir.iterdir()}
+    certs.ensure_certs(cert_dir, ca_dir=ca_dir, sans=["IP:127.0.0.1"])
+    assert {p.name: p.stat().st_mtime_ns for p in cert_dir.iterdir()} == before
+
+
+@needs_openssl
 def test_an_existing_root_is_reused_not_replaced(dirs):
     ca_dir, cert_dir = dirs
     certs.ensure_certs(cert_dir, ca_dir=ca_dir, sans=["IP:127.0.0.1"])
