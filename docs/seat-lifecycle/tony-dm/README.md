@@ -25,3 +25,10 @@ Yes. `config.operator_dm()` (`awm/service_components/config/awm/config/operator.
 - ssh's lock alerts and notify self-test (`ssh/service.py:1733`)
 
 These are the bot's own messages. They are not inbound, so they never start the seat agent.
+
+## Decision: notifications and /new-agent
+
+Tony, 2026-11-06: "yes -> so we can remove the new agent command, which trillium take over teh functionality of".
+
+1. Notices stay bot posts in Tony's Discord DM and start nothing. When Tony writes, his seat's agent reads the DM's recent history, notices included.
+2. The Discord `/new-agent` slash command goes. trilium-design's new-agent button on the board takes over starting a fresh agent. The command is not in the awm tree on altair. The build finds it (likely deneb's relay project) and removes it.
