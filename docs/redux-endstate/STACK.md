@@ -32,12 +32,13 @@ Procedure, from dfs-interview § Work the stack:
 ## Stack
 
 - **zerotier-to-tailnet** (2026-11-06): cloud science on altair (and possibly other nodes) still point to old zerotier IP, so we have sign in to "10.74.81.84" for entering claude science and it just breaks. Need to move services to new tailscale system.
-  - [ ] When to restart mizar's gateway to apply the tailnet names (it stops mizar's sessions)?
+  - [x] When to restart mizar's gateway to apply the tailnet names (it stops mizar's sessions)? (answered 2026-11-06)
 - **ops-board** (2026-11-06): https://nexus.tony-xy-liu.com/trilium/#root/iF0A3SWEGqUx/P4ALwPiCSs6N?ntxId=CZkmWI ops board needs updating
   - [x] Old AWM book: delete the old Ops password notes, carry Links into the new Ops, archive the old Swarm board? (answered 2026-11-06)
   - [x] Federation board: archive all 8 pre-redux cards, then check the door and intake end to end? (answered 2026-11-06)
   - [ ] Place the new Swarm board under the AWM book, next to the federation board?
 - **end-state** (2026-11-06): there are a few sessions that look left over. Please use the DFS interview skill so that we can review the end state and if there are anything left open for us to clean up and do.
+  - **agent-lifecycle** (2026-11-06): need to review agent lifecycle. retire doesn seem to always work. need to consider what this means -> session full stop and closed (not visible anywhere), but transcripts kept (I guess transcripts should also be a plugin that runs on any node with agents).
   - **agent-core** (2026-11-06): deneb has no reflection plugin? I think if a node can run agents, reflection + search should be mandatory
   - **seat-rc-toggle** (2026-11-06): about the seats, it would be great if on the new fleet status dashboard, I can turn remote control on and off for seats, then seats dont have to show up constantly on the left -> can we sort natively in claude?
   - **science-idle** (2026-11-06): also, do we have an idle timeout to stop claude science from just being always on?

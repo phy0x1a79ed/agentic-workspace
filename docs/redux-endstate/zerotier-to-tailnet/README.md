@@ -24,3 +24,9 @@ Every service a node publishes, and every route one node takes to another, uses 
 - shogun's inventory holds altair's hand changes (443 serve, 12201→12211 and 12202→12212 serve, FRONT_PORT/SANDBOX ports, EXTRA_ORIGINS, AWM_EDGE_URL).
 - claude-science on capella and alcor: check their origins.
 - capella and lyra portals wait on the Windows-side Tailscale (R95/R96). lyra is unreachable.
+
+## mizar's restart (2026-11-06)
+
+> do we need the gateway restart for anything? -> can we make the gateway restart more seamless? what is it for anyways?
+
+mizar's AWM_EDGE_URL was already a tailnet address (`https://100.125.95.5:12100`), not ZeroTier. The change to `https://mizar.tail080e54.ts.net` only makes the links mizar mints use the name its certificate covers. Nothing breaks without it, so the restart waits. It applies with the next gateway start. Making that restart seamless is the topic env-reload.
