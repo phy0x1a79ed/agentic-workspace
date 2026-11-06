@@ -26,3 +26,21 @@ Tony: "lets thing through 1 dm channel per seat. I dont want to arbitrarily cons
 
 - Per chat (one DM or one channel per seat): simple, but a person who writes in a DM and also @mentions Opal in a channel gets two agents with split context.
 - Per person (all of one person's DMs, group DMs and @Opal mentions go to their one agent, which answers in the chat the message came from): it matches the per-person home scope `seats/<person>`, the `user:<person>` tag, and R126 item 3 ("A person's replies go to their own seat from the first message").
+
+## Decision: both seat kinds
+
+Tony, 2026-11-06: "lets make both possible. since there are places like the bot channel and hallam-hive general on discord. both are needed."
+
+1. A **person seat** takes every message from one person: DMs, group DMs and @Opal mentions. Its agent answers where the message came from.
+2. A **channel seat** takes every message in one channel, such as the Discord bot channel or Hallam Hive #general.
+
+## Seat names today (survey, 2026-11-06)
+
+Tony: "can we review how the keyed prefix looks today? I think it can be improved."
+
+- social names a holder `seat:<app>/<server>/<channel>`, or `seat:<app>/DM/<person>` for a DM (`awm/social/seats.py:28-31`). `<person>` is the platform display name, with spaces and capitals.
+- Names in use: `seat:slack/DM/Steven Chen`, `seat:slack/slack-main`, `seat:slack/arbutus`, `seat:discord/unimatrix0/notifications`.
+- A Slack DM name carries no workspace, while a channel name does.
+- The Remote Control name swaps each `/` for `-`: `seat-slack-DM-Steven-Chen`.
+- The person's slug differs between places: `Steven Chen` in the name, `steven-chen` in the scope and the tag.
+- A kept seat in social.toml has a third name, its `[seat.<name>]` key.

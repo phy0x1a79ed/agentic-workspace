@@ -30,7 +30,8 @@ Procedure, from dfs-interview § Work the stack:
 - **unpause** (2026-11-06): can we pause and shutdown seats on altiar?
 - **edge-cases** (2026-11-06): the current system works. a main slack seat monitors for new DMs. it notifies me and spawns a seat on first DM by someone else. ... slack main handles those edges cases and uses judgement. can also ask me (users.md R126, 2026-11-02)
   - [x] Drop slack-main entirely and give its jobs to the routine? Recommend: every chat is a seat with its own agent (a DM per person, a channel per channel, started only on an @Opal mention); a first DM from a new person notifies Tony and starts the agent; a sender outside the lab gets no agent, and the routine holds the message and asks Tony. (answered 2026-11-06)
-  - [ ] Key a seat by person instead of by chat? Recommend yes: every message from one person (DM, group DM, @Opal in a channel) goes to that person's one agent, which replies where the message came from. A channel message with no @Opal starts nothing.
+  - [x] Key a seat by person instead of by chat? Recommend yes: every message from one person (DM, group DM, @Opal in a channel) goes to that person's one agent, which replies where the message came from. A channel message with no @Opal starts nothing. (answered 2026-11-06)
+  - [ ] Seat name format: person seat seat:<app>/<server>/@<person-slug>, channel seat seat:<app>/<server>/#<channel-slug>, with the same <person-slug> as scope seats/<person> and tag user:<person>? Recommend yes.
 - **seat-brief** (2026-11-06): need to consolidate previous decsions into brief for seats on altair. need to also have a more general version for other seats like discord
 
 ## Parked
