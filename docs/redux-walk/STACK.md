@@ -31,6 +31,7 @@ Procedure, from dfs-interview § Work the stack:
 
 ## Stack
 
+- **windows-nodes** (2026-11-05): Tony (2026-11-05): is there a session for setting up the ssh edges? lets fix capella and lyra in one go, including tailscale, etc / they also need the new awm isntall in their wsl instances
 - **tether-issue-door** (2026-11-05): from redux-build/dev: dev (2026-11-05): member nodes that open machine channels hold the relay's AWM_TETHER_ISSUE_TOKEN (mints slots and rooms, reads nothing). End state: relay gains a door-gated issue verb, tether-operator mints and restores through it, and the bearer never leaves deneb. Cross-project (tether Rust release), so not in tonight's window.
 - **rt-teach** (2026-11-05): Tony (2026-11-05): we need the rooms service to be up so that the Alcor agent can teach the RT agent, which was the original session that created the RT stock stuff, how to actually use the new system and edit.
   - [x] Which machine and session was the original RT agent? rt-container found no trace on mira or mizar. Leads point to your Mac, or capella or lyra over ssh. (answered 2026-11-05)
@@ -104,6 +105,7 @@ From journal 6a98c0c6 (awm/redux) and walkthrough's handover (manual-steps.md at
 - **redux-build/dev** (2026-11-05): took mizar-backup
 - **redux-build/deneb-board** (2026-11-05): took tarball-backup
 - **redux-build/rooms** (2026-11-05): took rooms
+- **redux-build/windows-nodes** (2026-11-05): took windows-nodes
 
 ## Closed
 
