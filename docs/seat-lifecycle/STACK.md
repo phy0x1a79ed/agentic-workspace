@@ -23,12 +23,11 @@ Procedure, from dfs-interview § Work the stack:
 
 ## Current topic
 
-**lost-pushes**. Its result: `lost-pushes/README.md`.
+**seat-states**. Its result: `seat-states/README.md`.
 
 ## Stack
 
-- **lost-pushes** (2026-11-06): it looks like there is a bug in how seats work. retired seats came back
-  - [ ] What happens when a push fails or finds its holder gone? Recommend: social treats the seat as having no live holder and emits the message to the new-seat routine, which starts a fresh agent with it. No message is dropped. The build reads alcor's social.log to confirm Steven's case.
+- **seat-states** (2026-11-06): agent in seat, DM comes, agent works, agent reports, agent compacts and waits. if left for 4 hours -> agent idle with task done (so agent needs some indicator for task done that seats service can see (awm seat indicate_done?) seats reclaim the agent -> ask it to journal and retire. seat occupied -> retireing (only possible on agent indiacted done for over 4hrs) -> emtpy. if DM comes in while retireing, awm responds instead with a system message (agent is changing shift, will respond within 5mins) and message gets queued. DMs when retiring and empty start new sessions, but retiring must wait for empty since journals. instructions for retire should be prolly faster than debrief, just write a handoff journal and retire is enough.
 - **rc-toggle** (2026-11-06): about the seats, it would be great if on the new fleet status dashboard, I can turn remote control on and off for seats
   - [ ] How is a seat marked in the roster that list_other and claudedaemon report (pin plus trust, or a role tag)? Asked by trilium-design/interview.
   - [ ] Is turning Remote Control off and on for a seat passkey-gated (sessions R68), or free inside an open window? Asked by trilium-design/interview.
@@ -45,3 +44,4 @@ Procedure, from dfs-interview § Work the stack:
 - **resume-from-journals** (closed 2026-11-06): `resume-from-journals/README.md`
 - **journal-tags** (closed 2026-11-06): `journal-tags/README.md`
 - **speak-rule** (closed 2026-11-06): `speak-rule/README.md`
+- **lost-pushes** (closed 2026-11-06): `lost-pushes/README.md`

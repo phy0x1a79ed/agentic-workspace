@@ -11,3 +11,13 @@
 - Steven's holder 31bd528d was alive and idle until 18:37Z, yet got no push. The altair gateway restarted at 18:33:25Z, inside the push's 120 s retry window. The altair gateway logs no inbound peer calls, so its side shows nothing. social runs on alcor (redux R129), and its `social.log` there holds the outcome.
 - At 18:41:23Z Steven's new agent got `mode "unknown" may not run a verb on a peer` on its first `social.send`. Its retry at 18:41:47Z succeeded.
 - Today a push that fails is dropped silently: social logs one line, and only `social history` keeps the message.
+
+## Decision
+
+Tony, 2026-11-06: "this is sensible" and "we should also consider some queing".
+
+1. A push that fails, or finds its holder gone, never drops the message.
+2. social treats that seat as having no live holder. The message goes into the seat's queue, and the new-seat routine starts a fresh agent with it.
+3. The build reads alcor's `social.log` to confirm why Steven's 18:32Z push to a live holder failed.
+
+The queue and the seat states belong to the `seat-states` topic.
