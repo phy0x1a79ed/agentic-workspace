@@ -28,6 +28,7 @@ Procedure, from dfs-interview § Work the stack:
 ## Pending
 
 - **rc-rows** (2026-11-05): On claude.ai/code, archive the 31 dead Remote Control rows: 7 redux-build-* (alcor, clean-plugins, search, channels, queue, deploy, integrate), 14 finished (awm redux, core-redux-gateway-plugins-bootstrap, fleet-board-rework, fxdiff-design, retire-full-close, owner-dm-defaults, discord dm previews, multi-admin machine access, plan-bypass-mode, science-bash-stall, capellaz cc mem cleanup, avatar, lit kb, cloud/homelab), representative x5, secretary x5. Your call on: engcyc pipeline plan, msm-*, fosdb, cyanoverse, treesapp, ecspr, job application system, 4 offline seat rows, 4 cloud sessions.
+- **Q-altair-gate** (2026-11-05): capella and lyra reach altair over its tailnet address (R96), but the ssh admin gate's Match on altair keys on today's address, so a tailnet login would fall outside it. The gate is yours (M29). Options: you adjust the gate's Match for the tailnet address, or capella and lyra keep today's 192.168.100.142 route to altair.
 
 ## Stack
 
