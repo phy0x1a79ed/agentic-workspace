@@ -547,6 +547,49 @@ async def test_a_fetching_node_takes_the_pinned_artifact_and_no_push(store, out,
     assert [c[3] for c in out.calls] == ["alcor", "capella"]
 
 
+def make_sleepy(store, out, ws, fleet, art_store, awake):
+    ref = Refresher(out, node="mizar", checkout_root=lambda p: ws.proj / "release",
+                    fleet_config=lambda: fleetconf.parse(fleet), artifact_store=art_store,
+                    awake=awake)
+    return Deployer(store, out, workspace=ws.root, refresher=ref)
+
+
+async def test_a_sleeper_that_does_not_answer_is_skipped_and_never_woken(store, out, ws, tmp_path):
+    art_store = _pinned_scope(ws, tmp_path, b"tarball")
+    dest = tmp_path / "alcor-artifacts"
+    fleet = ART_ONLY.format(dest=dest).replace("[fleet]\n", '[fleet]\nsleepers = ["alcor"]\n')
+    asked = []
+
+    async def asleep(node):
+        asked.append(node)
+        return False
+
+    [t] = await land(make_sleepy(store, out, ws, fleet, art_store, asleep), "a")
+    assert t["state"] == "landed"
+    assert asked == ["alcor"] and not dest.exists()
+    assert [c[3] for c in out.calls] == ["capella"], "the rollout goes on past the sleeper"
+
+
+async def test_a_sleeper_that_answers_refreshes_as_usual(store, out, ws, tmp_path):
+    art_store = _pinned_scope(ws, tmp_path, b"tarball")
+    dest = tmp_path / "alcor-artifacts"
+    fleet = ART_ONLY.format(dest=dest).replace("[fleet]\n", '[fleet]\nsleepers = ["alcor"]\n')
+
+    async def awake(node):
+        return True
+
+    [t] = await land(make_sleepy(store, out, ws, fleet, art_store, awake), "a")
+    assert t["state"] == "landed" and (dest / "server-v1.tar.xz").exists()
+    assert [c[3] for c in out.calls] == ["alcor", "capella"]
+
+
+def test_fleetconf_sleepers():
+    f = fleetconf.parse('[fleet]\nhome = "mizar"\nnodes = ["mizar", "capella"]\nsleepers = ["capella"]\n')
+    assert f.sleepers == ("capella",)
+    with pytest.raises(fleetconf.FleetConfigError, match="names home"):
+        fleetconf.parse('[fleet]\nhome = "mizar"\nsleepers = ["mizar"]\n')
+
+
 def test_fleetconf_artifacts_only():
     f = fleetconf.parse(ART_ONLY.format(dest="alcor:/w/.awm/artifacts"))
     assert f.artifacts_dest("alcor") == "alcor:/w/.awm/artifacts"

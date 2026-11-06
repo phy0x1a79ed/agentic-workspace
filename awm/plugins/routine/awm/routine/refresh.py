@@ -15,7 +15,7 @@ import subprocess
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Awaitable, Callable
 
 from awm.routine import artifacts, deployconf, fleetconf, proc
 from awm.routine.deployconf import Refresh
@@ -98,8 +98,10 @@ class Refresher:
     def __init__(self, out: Outbound, *, node: str,
                  checkout_root: Callable[[str], Path],
                  fleet_config: Callable[[], fleetconf.Fleet] = fleetconf.Fleet,
-                 artifact_store: Path | None = None) -> None:
+                 artifact_store: Path | None = None,
+                 awake: Callable[[str], Awaitable[bool]] | None = None) -> None:
         self.out = out
+        self.awake = awake or _answers
         self.node = node
         self.checkout_root = checkout_root
         self.fleet_config = fleet_config
@@ -202,6 +204,9 @@ class Refresher:
         for node in nodes:
             if node == self.node:
                 r = await self.local(project, frm, to)
+            elif node in fleet.sleepers and not await self.awake(node):
+                r = NodeResult(node, True, "asleep: skipped and not woken. It takes this "
+                                           "release at its next refresh.")
             else:
                 url = fleet.push_url(node, project)
                 r = await self._push(node, url, bare, to) if url else None
@@ -265,6 +270,13 @@ class Refresher:
             return NodeResult(node, False, f"peer returned {res!r}"[:300])
         return NodeResult(node, bool(res.get("ok")), str(res.get("detail", "")),
                           list(res.get("hooks", [])))
+
+
+async def _answers(node: str) -> bool:
+    """Whether ``node`` takes an ssh connection now. A connect never wakes a node."""
+    res = await proc.run(f"ssh -o BatchMode=yes -o ConnectTimeout=8 {shlex.quote(node)} true",
+                         cwd="/", timeout=20.0)
+    return res.ok
 
 
 def _why(res: proc.Result) -> str:

@@ -6,6 +6,7 @@ its `[fleet]` table says which node is home base and the order nodes refresh in:
     [fleet]
     home = "<node>"
     nodes = ["<home>", "<node>", ...]
+    sleepers = ["<node>", ...]    # optional: nodes that may be asleep and are never woken
 
     [fleet.project.<name>]        # optional, for a project not landed at home
     canonical = "<node>"
@@ -21,6 +22,7 @@ landing node pushes the new release into its repo as `refs/<landing node>/releas
 fast-forward only (routines.md R31), when the node names a url. It pushes the
 files the release pins (artifacts.py) when the node names an `artifacts`
 directory. A node that fetches its release names only `artifacts`.
+A sleeper that does not answer is skipped and reported, and the rollout goes on.
 An absent file or table is a fleet of this node alone.
 """
 
@@ -57,6 +59,7 @@ class Fleet:
     nodes: tuple[str, ...] = ()
     projects: dict[str, ProjectFleet] = field(default_factory=dict)
     push: dict[str, Push] = field(default_factory=dict)
+    sleepers: tuple[str, ...] = ()
 
     def push_url(self, node: str, project: str) -> str:
         """Where ``node`` takes ``project``'s release by push. Empty means it fetches."""
@@ -98,10 +101,13 @@ def parse(text: str, *, source: str = FILE) -> Fleet:
         raw = tomllib.loads(text).get("fleet") or {}
     except tomllib.TOMLDecodeError as e:
         raise FleetConfigError(f"{source}: {e}") from e
-    if extra := set(raw) - {"home", "nodes", "project", "push"}:
+    if extra := set(raw) - {"home", "nodes", "project", "push", "sleepers"}:
         raise FleetConfigError(f"{source}: unknown keys in [fleet]: {sorted(extra)}")
     home = str(raw.get("home", ""))
     nodes = _nodes(raw.get("nodes"), f"{source}: [fleet]", home)
+    sleepers = _nodes(raw.get("sleepers"), f"{source}: [fleet] sleepers", "")
+    if home in sleepers:
+        raise FleetConfigError(f"{source}: [fleet] sleepers names home, {home!r}")
     projects: dict[str, ProjectFleet] = {}
     for name, body in (raw.get("project") or {}).items():
         where = f"{source}: [fleet.project.{name}]"
@@ -126,7 +132,7 @@ def parse(text: str, *, source: str = FILE) -> Fleet:
         if not isinstance(names, list) or not all(isinstance(n, str) and n for n in names):
             raise FleetConfigError(f"{where} projects must be a list of project names")
         push[node] = Push(url, tuple(names), artifacts)
-    return Fleet(home=home, nodes=nodes, projects=projects, push=push)
+    return Fleet(home=home, nodes=nodes, projects=projects, push=push, sleepers=sleepers)
 
 
 def load(path: Path) -> Fleet:
