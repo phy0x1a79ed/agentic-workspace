@@ -1,25 +1,26 @@
-"""Attachment download sink — write fetched file bytes to a temp directory.
+"""Attachment replies — file bytes carried inline, and the temp sink for bucket downloads.
 
-Downloaded attachments deliberately land in a **system temp dir** (honoring
-``$TMPDIR``), NEVER under ``AWM_DIR``: the social service hoards no state, and a
-manuscript pulled from Slack is a transient artifact the caller copies elsewhere
-if they want to keep it. Each ``download_attachments`` call gets its own
-``mkdtemp`` subdir so concurrent downloads never collide on filenames.
+``download_attachments`` returns each file as ``{filename, mime, size, b64}``. It
+never names a path: ``social`` is a singleton that runs on one node, in a systemd
+unit with a private ``/tmp``, so a path it wrote is unreadable to a session on
+that node as much as to one on another. The gateway of the caller's node writes the
+bytes into the caller's own temp dir and rewrites the reply (``awm-gateway``'s
+``files`` module). The total is capped at :data:`MAX_INLINE_BYTES` so a reply stays
+a reasonable RPC payload.
 
-``path`` is only meaningful on the node that ran the download, and a borrowed
-``social`` runs on its owner — so every file also carries ``url``, the
-origin-relative address at which THIS node's ``fileviewer`` mount serves those
-same bytes. That is what lets a caller on another node turn the reply into a
-local file (``gatewayclient.fetch_peer_file``) instead of a path to nothing.
-Bytes still never inline into the RPC payload; only their address does.
+``bucket_get`` still writes into :func:`sink_dir`, because a folder is a tree.
 """
 
 from __future__ import annotations
 
+import base64
 import os
 import re
 import tempfile
 from urllib.parse import quote
+
+# What one reply carries inline, raw bytes before base64.
+MAX_INLINE_BYTES = 24 * 1024 * 1024
 
 _SAFE = re.compile(r"[^A-Za-z0-9._-]+")
 
@@ -60,39 +61,19 @@ def file_url(path: str) -> str | None:
     return f"{prefix}/{quote(rel.replace(os.sep, '/'))}"
 
 
-def write_attachments(
-    files: list[tuple[str, str, bytes]],
-) -> list[dict]:
-    """Write ``(filename, mime, bytes)`` tuples to a fresh temp dir.
+def inline_attachments(files: list[tuple[str, str, bytes]]) -> list[dict]:
+    """``(filename, mime, bytes)`` tuples as reply entries carrying their bytes.
 
-    Returns one metadata dict per file — ``{filename, mime, size, path, url}`` —
-    with ``path`` the absolute location on disk *of the node that ran this* and
-    ``url`` the same bytes' address on that node's ``fileviewer`` mount (see the
-    module docstring). De-duplicates colliding basenames by suffixing ``-1``,
-    ``-2`` … so two attachments named ``draft.docx`` both land.
+    Raises ``ValueError`` when the files together pass :data:`MAX_INLINE_BYTES`.
     """
-    if not files:
-        return []
-    out_dir = sink_dir()
-    used: set[str] = set()
-    out: list[dict] = []
-    for idx, (filename, mime, data) in enumerate(files):
-        name = safe_name(filename, idx)
-        candidate = name
-        n = 1
-        while candidate in used:
-            stem, dot, ext = name.partition(".")
-            candidate = f"{stem}-{n}{dot}{ext}"
-            n += 1
-        used.add(candidate)
-        path = os.path.join(out_dir, candidate)
-        with open(path, "wb") as fh:
-            fh.write(data)
-        out.append({
-            "filename": filename or candidate,
-            "mime": mime or "application/octet-stream",
-            "size": len(data),
-            "path": path,
-            "url": file_url(path),
-        })
-    return out
+    total = sum(len(data) for _, _, data in files)
+    if total > MAX_INLINE_BYTES:
+        raise ValueError(
+            f"the attachments come to {total} bytes, over the {MAX_INLINE_BYTES} "
+            "a reply carries; fetch one at a time with idx")
+    return [{
+        "filename": safe_name(filename, idx),
+        "mime": mime or "application/octet-stream",
+        "size": len(data),
+        "b64": base64.b64encode(data).decode("ascii"),
+    } for idx, (filename, mime, data) in enumerate(files)]

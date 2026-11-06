@@ -9,10 +9,11 @@ starts it, restarts it, and holds it down across a restore. A second writer
 reaching past that would write into a database being swapped out from under it,
 and would learn nothing from the gate that exists to stop exactly this.
 
-So everything below is `gatewayclient.call_sync("trilium", …)`. It is the note
-API that service grew for the purpose, and this is its first real consumer.
+So everything below is `gatewayclient.call_sync("trilium", …)`, the bundle
+included: it is an attachment on the library's root note, and only the
+`trilium` tool reads or writes the vault (`docs/redux/queue.md` R145).
 
-**Why the interface is this narrow.** A mirror needs eight verbs, not the
+**Why the interface is this narrow.** A mirror needs ten verbs, not the
 twenty-eight the trilium domain has. Naming them here is what lets the sync be
 tested against a dictionary, and what stops the sync growing a dependence on
 some corner of ETAPI that would then have to be carried across a node boundary.
@@ -20,9 +21,9 @@ some corner of ETAPI that would then have to be carried across a node boundary.
 
 from __future__ import annotations
 
+import base64
 import logging
 from collections import Counter
-from pathlib import Path
 from typing import Any
 
 from awm.gatewayclient import call_sync
@@ -162,10 +163,6 @@ class Vault:
             })
         return sorted(out, key=lambda n: n["note_id"])
 
-    def owned(self, root: str, label: str) -> dict[str, str]:
-        """The same, keeping one note per value."""
-        return {key: ids[0] for key, ids in self.owned_all(root, label).items()}
-
     def read(self, note_id: str) -> dict:
         return self._call("note_get", note_id=note_id)
 
@@ -216,18 +213,23 @@ class Vault:
         """
         return self._call("note_place", note_id=note_id, parents=sorted(set(parents)))
 
-    def attach(self, note_id: str, path: Path, *,
-               title: str | None = None) -> bool:
-        """Attach a file the *service* can read.
-
-        The path is sent rather than the bytes: an apply carries a hundred
-        megabytes of PDF, and base64 over the RPC envelope would carry it
-        twice. Both processes are on this host and the bundle is a committed
-        artifact of it, so a path is a shared reference rather than a guess.
-        """
-        out = self._call("attachment_put", note_id=note_id, path=str(path),
-                    title=title or path.name)
-        return bool(out.get("changed"))
-
     def delete(self, note_id: str) -> None:
         self._call("note_delete", note_id=note_id)
+
+    # -- the bundle ------------------------------------------------------------
+
+    def attachment(self, note_id: str, title: str) -> bytes | None:
+        """The bytes of the note's attachment with this title, or None."""
+        note = self._call("note_get", note_id=note_id, content=False)
+        for att in note.get("attachments") or []:
+            if att.get("title") == title:
+                got = self._call("attachment_get",
+                                 attachment_id=att["attachmentId"])
+                return base64.b64decode(got["content_b64"])
+        return None
+
+    def attach(self, note_id: str, title: str, blob: bytes, mime: str) -> None:
+        """Put these bytes on the note under this title, replacing what was
+        there."""
+        self._call("attachment_put", note_id=note_id, title=title, mime=mime,
+                   content_b64=base64.b64encode(blob).decode("ascii"))

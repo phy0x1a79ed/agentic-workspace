@@ -58,21 +58,19 @@ class TestSlackDriver:
         # before is threaded as the 4th JS arg (mapped to Slack's `latest`).
         assert '"9.5"' in page.exprs[-1]
 
-    async def test_send_returns_helper_payload(self):
-        page = FakePage({"window.__awmMira.slack.send":
-                         {"message_id": "1.2", "channel_id": "C1", "ts": "1.2"}})
-        out = await SlackDriver(page).send("C1", "yo")
-        assert out["message_id"] == "1.2"
-
-    async def test_upload_runs_once_with_a_long_window(self):
-        from mira_api.drivers import UPLOAD_TIMEOUT_S
-        page = FakePage({"window.__awmMira.slack.upload":
-                         {"channel_id": "D1", "files": [{"id": "F1"}]}})
-        files = [{"filename": "plan.md", "b64": "eA=="}]
-        out = await SlackDriver(page).upload("D1", files, "plan", "1.0")
-        assert out["files"] == [{"id": "F1"}]
-        assert json.dumps(files) in page.exprs[-1]
-        assert page.kw == {"timeout": UPLOAD_TIMEOUT_S, "retry": False}
+    async def test_slack_has_no_write_path(self):
+        # R127: awm never writes to Slack as Tony, so the driver has no send,
+        # upload or react, and the browser helpers carry none either.
+        from mira_api import drivers
+        page = FakePage({})
+        with pytest.raises(NotImplementedError):
+            await SlackDriver(page).send("C1", "yo")
+        with pytest.raises(NotImplementedError):
+            await SlackDriver(page).upload("D1", [], "x")
+        assert not hasattr(SlackDriver, "react")
+        for helper in ("S.send", "S.react", "S.upload", "chat.postMessage",
+                       "reactions.add", "files.completeUploadExternal"):
+            assert helper not in open(drivers.__file__).read(), helper
 
     async def test_list_channels_passthrough(self):
         page = FakePage({"window.__awmMira.slack.listChannels":

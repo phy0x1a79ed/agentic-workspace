@@ -1,6 +1,7 @@
 # Installing the `httpsfront` service (whole-gateway HTTPS front)
 
-A Python feature service in the `awm.httpsfront` namespace. It makes **all of
+A Python feature service in the `awm.httpsfront` namespace, built on the
+`awm.tlsfront` library (certs, the auth gate, the portal and the proxy core). It makes **all of
 awm reachable over HTTPS**: it terminates TLS on an off-host `0.0.0.0:<port>`
 listener (default **8443**) and transparently reverse-proxies every request —
 HTTP *and* WebSocket — to the loopback awm gateway (`AWM_HUB_URL`, normally
@@ -17,8 +18,8 @@ way; both have since been folded in. httpsfront is now the **only** off-host
 listener in awm, and everything else rides the gateway behind it — which is also
 why it is the only holder of the CA.
 
-Because every awm page makes *same-origin* relative calls (`/svc/*`, same-origin
-WebSockets), fronting the gateway wholesale is what makes those calls work under
+Because every awm page makes *same-origin* relative calls (`/invoke`, same-origin
+`/hub/*` WebSockets), fronting the gateway wholesale is what makes those calls work under
 HTTPS with no per-path allowlist to maintain.
 
 ## Install
@@ -26,7 +27,7 @@ HTTPS with no per-path allowlist to maintain.
     bash install.sh
 
 `install.sh` editable-installs the component libraries (`config`,
-`gatewayclient`) and this service into the `awm` env (override with
+`gatewayclient`, `tlsfront`, `grantlib`) and this service into the `awm` env (override with
 `AWM_ENV=<name>`) and writes a gitignored `.runtime-env` sidecar baking
 `AWM_PYTHON` = the env's absolute interpreter, so the gateway can respawn the
 service under systemd's minimal PATH (where `mamba` is not present).
@@ -40,8 +41,7 @@ service under systemd's minimal PATH (where `mamba` is not present).
 | `httpx` | async HTTP reverse-proxy client |
 | `websockets` | WebSocket reverse-proxy client (browser ⇄ gateway) |
 
-All four are already dependencies of the gateway, so in the `awm` env they
-resolve as already-satisfied.
+The `awm` env already holds all four.
 
 ## System dependencies (NOT pip-installable)
 
@@ -56,7 +56,7 @@ Both live in `/usr/bin`, on the minimal systemd PATH the supervisor uses.
 
 ## TLS — reuses the remote-audio CA
 
-Certs are minted by `awm.httpsfront.certs` into a gitignored `.certs/` next to
+Certs are minted by `awm.tlsfront.certs` into a gitignored `.certs/` next to
 the service, or into `AWM_EDGE_CERT_DIR` on a host whose app user cannot write
 the checkout. The **root CA is shared with remote-audio** at
 `~/.config/remote-audio/ca` (override with `REMOTE_AUDIO_CA_DIR`), so a device
@@ -93,24 +93,9 @@ explicitly and merged in:
 | `AWM_EDGE_TETHER` | `0` | `1`: mount the tether relay at `/tether`, reachable with **no session** |
 | `AWM_EDGE_BOARD` | `0` | `1`: mount the federation board at `/board/`, reachable with **no session** |
 | `AWM_BOARD_PORT` | `12521` | the board's loopback port, which the board mount forwards to |
-| `AWM_PEER_LEGACY_BEARER` | on | `0`: refuse the legacy shared bearer, so only a node token authenticates a peer |
-| `AWM_EDGE_PEERS` | on | `0`: refuse every peer. A node token gets 403 `peers not admitted`, the legacy bearer 401. A person's login still works |
-| `AWM_EDGE_MESH_HOST` | — | an address for a second, mesh-only listener (see below). Unset: no second listener |
-| `AWM_EDGE_MESH_PORT` | `12100` | the mesh listener's port |
+| `AWM_APPROVER_GRANT_PUBKEY` | — | alcor's grant key, b64url raw. Unset: no browser can sign in |
+| `AWM_APPROVER_ORIGIN` | `https://auth.tony-xy-liu.com` | where a browser with no session signs in |
 | `AWM_EDGE_CERT_DIR` | `.certs/` beside the service | where the leaf lives |
-
-A public node reaches its peers through a second listener. The public profile
-admits no peer: its listener honours no node token, and the public auth profile
-issues no legacy bearer. `AWM_EDGE_MESH_HOST` adds a listener bound to that one
-address, with TLS and the default profile, fronting the gateway and no app. Peer
-calls work there and stay 404 on the public listener beside it.
-
-- Bind the mesh listener to the overlay address only, never `0.0.0.0`.
-- Cut the leaf on the CA holder, with the mesh address in its SAN, and copy it
-  into the cert dir. A missing or bad leaf keeps the mesh listener off and the
-  public listener up.
-- Renew that leaf by hand before it expires. Nothing on a trust consumer renews
-  it, and the log warns 30 days ahead.
 
 `AWM_EDGE_TETHER` is the one flag here that widens the door rather than
 narrowing it, so it is off unless a host means it. The person redeeming a
@@ -118,32 +103,34 @@ tether invite is being helped with their own machine and has no account here;
 what keeps the mount narrow is the relay's own gating and an allow-list of
 exact path shapes, both described in `awm/httpsfront/tether.py`.
 
-`AWM_EDGE_BOARD` widens the door like the tether flag does, so it is off unless a host means it. The board authenticates its own parties with a bearer the board issued, so the mount answers before edge authentication. It forwards only the exact method-and-path shapes in `awm/httpsfront/board.py`. The mount **strips every `X-Awm-*` header**, `Cookie` and `X-Forwarded-*` from the request. It also removes a node token, a device token or the legacy bearer, so the board never holds a credential that is live elsewhere. The edge claims the whole `/board` mount on every node, wired or not, and a path under it never reaches the gateway.
+`AWM_EDGE_BOARD` widens the door like the tether flag does, so it is off unless a host means it. The board authenticates its own parties with a bearer the board issued, so the mount answers before edge authentication. It forwards only the exact method-and-path shapes in `awm/httpsfront/board.py`. The mount **strips every `X-Awm-*` header**, `Cookie` and `X-Forwarded-*` from the request. It also removes a device token, so the board never holds a credential that is live elsewhere. The edge claims the whole `/board` mount on every node, wired or not, and a path under it never reaches the gateway.
 
-On every profile the edge overwrites `X-Awm-As` with the session's verified subject (`user:<name>` for a session or a device token, `peer:<node>` for a node token, or the bare `peer` for the legacy bearer), so a downstream service may trust that header — except on the tether and board mounts, which have no verified subject and where the header is stripped rather than defaulted. A node that the peer book does not call domestic reaches only `/tools` and `/invoke` (`FEDERATION.md` § *The foreign gate*). `/__auth/login` takes `{username, password}`; a blank username is the shared password. The readable `awm_as` cookie is the username for the pages' user chip and carries no authority.
+On every profile the edge overwrites `X-Awm-As` with the session's verified subject (`user:<name>` for a session or a device token), so a downstream service may trust that header — except on the tether mount, which has no verified subject and where the header is stripped rather than defaulted. The edge admits people only. Another node reaches this one over its ssh edge, never through this door (`FEDERATION.md` § *A call across an edge*). The readable `awm_as` cookie is the username for the pages' user chip and carries no authority.
 
-`AWM_HTTPS_PORT` is a clean one-line port knob: set it in the workspace's
-gitignored `$AWM_WORKSPACE/.awm/env` (merged into the gateway env at startup,
-before any service spawns — see README § *Per-workspace env file*), so a port
-change is that single edit plus a `systemctl restart awm.service`, not a
-re-architecture.
+A browser with no session goes to alcor's approver, `AWM_APPROVER_ORIGIN/portal_login?next=<this page>`. After the passkey, the approver sends it to `/__auth/portal` with a `portal_login` grant. The edge checks the grant offline against `AWM_APPROVER_GRANT_PUBKEY`, for this node, this host and this path. It spends the grant once and mints the session cookie (`awm/httpsfront/portal.py`, fleet.md R84). No password login remains. The approver issues a grant only for a host its config's `portals` map lists.
+
+**CAUTION** `/__auth/portal` carries a live grant in its query string. Keep access logging off on every proxy in front of it.
+
+`AWM_HTTPS_PORT` is a clean one-line port knob: set it in the gateway's
+`config.toml` `[env]`, which every service gets at spawn, so a port change is
+that single edit plus a `systemctl restart awm.service`.
 
 **On the production ZeroTier host** this is set to `AWM_HTTPS_PORT=12100` — the
 port Windows forwards into WSL over ZeroTier (a phone reaching `10.74.81.110`
 lands on 12100). So the HTTPS front is the *sole* exposure of awm on that host;
-there is no plain-HTTP relay. A future port change is one line in `.awm/env`.
+there is no plain-HTTP relay. A future port change is one line in `[env]`.
 
 ## Exposure note
 
 Fronting the gateway wholesale means the **entire awm surface** — every page and
 every service, including the mic's audio session — is reachable from the
-LAN/ZeroTier on `:8443` behind this one password. The gateway remains
+LAN/ZeroTier on `:8443` behind this one sign-in. The gateway remains
 loopback-only for plain HTTP; this is the single TLS door in, and there is no
 longer any other.
 
 ## Reuse: fronting something that is not the gateway
 
-`proxy.serve(upstream=…, landing=False, extra_routes=…, rewrite_origin=…)` is the
+`awm.tlsfront.proxy.serve(upstream=…, landing=False, extra_routes=…, rewrite_origin=…)` is the
 whole reuse surface. `claude-science` and `dsh` both front their own loopback
 binaries with it rather than reimplementing TLS, the shared CA and the
 `awm_session` gate.

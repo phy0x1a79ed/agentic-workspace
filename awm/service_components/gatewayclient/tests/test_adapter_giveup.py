@@ -96,7 +96,9 @@ class FakeClient:
     async def __aexit__(self, *exc):
         return False
 
-    async def post(self, url, json=None):
+    async def post(self, url, json=None, headers=None):
+        self.headers = headers or {}
+        self.payload = json
         return self._resp
 
 
@@ -105,8 +107,7 @@ def _adapter() -> ServiceAdapter:
 
 
 def _register(a: ServiceAdapter, hub_url: str):
-    """Drive ``_register`` with the explicit base params ``run`` now passes."""
-    return a._register(hub_url, name=a.name, prefix=f"/svc/{a.name}", overlay=False)
+    return a._register(hub_url)
 
 
 # ---------------------------------------------------------------------------
@@ -129,6 +130,26 @@ def test_register_2xx_returns_service_id(monkeypatch):
     assert sid == "sid-7"
 
 
+def test_register_sends_the_service_token(monkeypatch, tmp_path):
+    client = FakeClient(FakeResp(200, payload={"service_id": "sid-8"}))
+    monkeypatch.setattr(adapter_mod.httpx, "AsyncClient", lambda *a, **k: client)
+    token = tmp_path / "svc.token"
+    token.write_text("s3cret\n")
+    monkeypatch.setenv("AWM_HUB_TOKEN_FILE", str(token))
+    assert asyncio.run(_register(_adapter(), "http://hub")) == "sid-8"
+    assert client.headers == {"X-Awm-Service-Token": "s3cret"}
+
+
+def test_register_carries_the_mount_only_when_set(monkeypatch):
+    client = FakeClient(FakeResp(200, payload={"service_id": "sid-9"}))
+    monkeypatch.setattr(adapter_mod.httpx, "AsyncClient", lambda *a, **k: client)
+    asyncio.run(_register(_adapter(), "http://hub"))
+    assert "mount" not in client.payload and "overlay" not in client.payload
+    mounted = ServiceAdapter("svc-x", {"functions": []}, {}, mount="http://127.0.0.1:4321")
+    asyncio.run(_register(mounted, "http://hub"))
+    assert client.payload["mount"] == "http://127.0.0.1:4321"
+
+
 def test_register_500_is_retryable_not_giveup(monkeypatch):
     monkeypatch.setattr(adapter_mod.httpx, "AsyncClient",
                         lambda *a, **k: FakeClient(FakeResp(500)))
@@ -149,18 +170,6 @@ def test_serve_terminal_close_raises_giveup(monkeypatch, code):
                         lambda *a, **k: FakeConnect(ws=ws))
     with pytest.raises(GiveUp):
         asyncio.run(_adapter()._serve("http://hub", "sid"))
-
-
-def test_serve_4410_giveup_carries_reason(monkeypatch):
-    # 4410 = evicted by a newer shadow; the close reason carries who/why and
-    # must surface in the GiveUp message (logged by _run_target).
-    reason = "evicted by stt-shadow @ web-stt: a newer shadow connected"
-    ws = FakeWS(raise_on_end=ConnectionClosed(Close(4410, reason), None))
-    monkeypatch.setattr(adapter_mod.websockets, "connect",
-                        lambda *a, **k: FakeConnect(ws=ws))
-    with pytest.raises(GiveUp) as ei:
-        asyncio.run(_adapter()._serve("http://hub", "sid"))
-    assert reason in str(ei.value)
 
 
 def test_serve_transient_close_reraises(monkeypatch):

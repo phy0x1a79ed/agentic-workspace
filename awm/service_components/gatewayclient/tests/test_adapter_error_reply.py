@@ -1,8 +1,7 @@
 """A failed call replies with the error text and the exception class.
 
-The gateway maps a foreign caller's ``PermissionError`` to the 404 an unknown
-tool gets, and the class name is the only thing that lets it tell that apart
-from any other service failure. Sync tests driving async work via ``asyncio.run``.
+The class name is the only thing that lets the gateway tell a service's own
+refusal (``PermissionError``) apart from any other service failure. Sync tests driving async work via ``asyncio.run``.
 """
 
 from __future__ import annotations

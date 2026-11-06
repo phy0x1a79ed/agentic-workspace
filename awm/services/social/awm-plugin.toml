@@ -1,0 +1,27 @@
+[plugin]
+name = "social"
+version = "0.1.0"
+
+[[service]]
+name = "social"
+
+[[tool]]
+name = "social"
+major = 1
+tier = "on"
+
+[needs]
+secrets = []
+network = ["slack.com", "*.slack.com", "*.slack-edge.com", "discord.com", "*.discord.com", "*.discord.gg", "*.discordapp.com", "*.discordapp.net", "imap.gmail.com:993", "smtp.gmail.com:465", "www.googleapis.com", "oauth2.googleapis.com", "172.16.0.24:7822", "tcp:22 mira, the creds_cmd"]
+platform = ["linux"]
+
+[[needs.tool]]
+name = "reflection"
+major = 1
+verbs = ["message", "list_other", "session_of", "start_other"]
+
+[[needs.tool]]
+name = "harness-cc"
+major = 1
+verbs = ["list", "probe", "resume", "adopt"]
+

@@ -148,7 +148,7 @@ def test_an_empty_export_does_not_replace_the_notes_tree(inst, monkeypatch):
 
 
 def test_a_scope_that_is_not_a_checkout_keeps_its_files_and_says_so(tmp_path):
-    """A node serving the published tarball has a plain directory here rather
+    """A node with no vault checkout has a plain directory here rather
     than a worktree, and pins nothing. The snapshot still lands; only the
     history is missing, and saying that beats a `git add` failure that reads as
     though the snapshot itself went wrong."""

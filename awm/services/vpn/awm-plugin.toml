@@ -1,0 +1,22 @@
+[plugin]
+name = "vpn"
+version = "0.1.0"
+
+[[service]]
+name = "vpn"
+
+[[tool]]
+name = "vpn"
+major = 1
+tier = "off"
+
+[needs]
+secrets = []
+network = ["api.ipify.org", "tcp:443 the VPN server, from openconnect in its container"]
+platform = ["linux"]
+
+[[needs.tool]]
+name = "2fa"
+major = 1
+verbs = ["burst"]
+

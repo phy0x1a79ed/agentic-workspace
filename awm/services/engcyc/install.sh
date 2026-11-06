@@ -16,6 +16,7 @@ PORTAL_ENV="${ENGCYC_ENV:-engcyc}"
 # REPO is the awm checkout; WS is the workspace holding `projects/` and `.awm/`.
 # They coincide only in the deployed tree.
 REPO="$(git -C "$HERE" rev-parse --show-toplevel)"
+AWM="${AWM_ROOT:-$REPO/awm}"
 workspace_root() {
     [ -n "${AWM_WORKSPACE:-}" ] && { printf '%s\n' "$AWM_WORKSPACE"; return; }
     local d="$1"
@@ -34,9 +35,9 @@ PORTAL_DIR="${ENGCYC_PORTAL_DIR:-$WS/projects/engcyc-portal/release}"
 
 run() { echo "+ pip install -e $*"; mamba run -n "$ENV" pip install -e "$@"; }
 
-run "$REPO/awm/service_components/config" --no-deps
-run "$REPO/awm/service_components/gatewayclient" --no-deps
-run "$REPO/awm/services/engcyc"
+run "$AWM/service_components/config" --no-deps
+run "$AWM/service_components/gatewayclient" --no-deps
+run "$HERE"
 
 PYBIN="$(mamba run -n "$ENV" python -c 'import sys; print(sys.executable)')"
 printf 'AWM_PYTHON=%s\nAWM_ENV_BIN=%s\n' "$PYBIN" "$(dirname "$PYBIN")" \

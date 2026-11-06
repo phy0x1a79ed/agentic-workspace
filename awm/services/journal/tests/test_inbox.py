@@ -18,7 +18,7 @@ def clock(monkeypatch):
 
 def _post(body, *, scope="dev", project="awm", author="agent:metasmith/engine", meta=None):
     from awm.journal import channel
-    return channel.post(project, scope, author=author, body=body, kind="message", meta=meta).id
+    return channel.post(project, scope, author=author, body=body, tags="message", meta=meta).id
 
 
 class TestFetchNeedsProject:
@@ -27,7 +27,7 @@ class TestFetchNeedsProject:
         _post("for awm")
         _post("for metasmith", project="metasmith")
         with pytest.raises(ValueError) as err:
-            _handle_fetch({"scope": "dev", "kind": "message"})
+            _handle_fetch({"scope": "dev", "tags": "message"})
         assert "needs project" in str(err.value)
         assert "awm, metasmith" in str(err.value)
         assert "inbox" in str(err.value)
@@ -36,7 +36,7 @@ class TestFetchNeedsProject:
         from awm.journal.operations.posts import _handle_fetch
         _post("for awm")
         _post("for metasmith", project="metasmith")
-        out = _handle_fetch({"project": "awm", "scope": "dev", "kind": "message"})
+        out = _handle_fetch({"project": "awm", "scope": "dev", "tags": "message"})
         assert [p["body"] for p in out["posts"]] == ["for awm"]
 
     def test_non_literal_channel_needs_no_project(self, journal_workspace, clock):
@@ -49,7 +49,7 @@ class TestFetchNeedsProject:
         from awm.journal.operations.posts import _handle_fetch
         _post("one")
         _post("two", project="metasmith")
-        assert _handle_fetch({"kind": "message"})["total"] == 2
+        assert _handle_fetch({"tags": "message"})["total"] == 2
 
 
 class TestDigest:
@@ -93,9 +93,8 @@ class TestDigest:
 
     def test_asks_flags_requests_not_reports(self):
         from awm.journal.inbox import asks
-        assert asks("", {"type": "bug"}, "scope create is slow")
-        assert asks("Can you look at the tether?", {}, "Can you look at the tether?")
-        assert not asks("Fixed in e7ca6ce1 and deployed.", {}, "Fixed in e7ca6ce1 and deployed.")
+        assert asks("Can you look at the tether?", "Can you look at the tether?")
+        assert not asks("Fixed in e7ca6ce1 and deployed.", "Fixed in e7ca6ce1 and deployed.")
 
 
 class TestCursor:
@@ -176,4 +175,4 @@ def test_v1_database_gains_the_cursor_table(tmp_path, monkeypatch):
     conn = sqlite3.connect(path)
     tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert "scope_cursors" in tables
-    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 2
+    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == dao.SCHEMA_VERSION

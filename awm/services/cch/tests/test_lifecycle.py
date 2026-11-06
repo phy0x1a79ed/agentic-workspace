@@ -1,0 +1,1922 @@
+"""start, list and stop: who may start a session, what it launches with, and
+what the lineage record lets `stop` and `mode_of` do.
+
+The launcher and the scopes call are mocked. The roster is a temporary file
+whose workers point at real live pids (the test process and its parent), since
+liveness is a pid plus that process's start time.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import re
+import os
+import time
+
+import pytest
+
+from awm.cch import config
+
+FIT = {"model": "opus", "effort": "high"}
+PARENT_JOB = "aaaaaaaa"
+CHILD_JOB = "bbbbbbbb"
+
+
+def _proc_start(pid: int) -> str:
+    with open(f"/proc/{pid}/stat") as fh:
+        return fh.read().partition(") ")[2].split()[19]
+
+
+def _worker(pid: int, seed_name: str, *, started_ms: int = 1_700_000_000_000) -> dict:
+    return {
+        "replPid": pid, "replProcStart": _proc_start(pid), "startedAt": started_ms,
+        "cliVersion": "2.1.268", "sessionId": f"sid-{pid}",
+        "dispatch": {"source": "shell", "seed": {"name": seed_name}},
+    }
+
+
+class Home:
+    """A temporary Claude home with a live roster the tests can add sessions to."""
+
+    def __init__(self, root):
+        self.root = root
+        self.roster = root / "daemon" / "roster.json"
+        self.jobs = root / "jobs"
+        self.projects = root / "projects"
+        self.sessions = root / "sessions"
+        self.roster.parent.mkdir(parents=True)
+        self.jobs.mkdir()
+        self.sessions.mkdir()
+        self.set_workers({})
+
+    def set_workers(self, workers: dict, supervisor: int | None = None) -> None:
+        sup = os.getpid() if supervisor is None else supervisor
+        self.roster.write_text(json.dumps({"supervisorPid": sup, "workers": workers}))
+
+    def workers(self) -> dict:
+        return json.loads(self.roster.read_text())["workers"]
+
+    def add(self, short: str, name: str, pid: int, *, cwd: str = "/home/tony",
+            state: str = "working", tokens: int = 0, intent: str = "",
+            started_ms: int = 1_700_000_000_000) -> None:
+        workers = self.workers()
+        workers[short] = _worker(pid, name, started_ms=started_ms)
+        self.set_workers(workers)
+        (self.jobs / short).mkdir(parents=True, exist_ok=True)
+        (self.jobs / short / "state.json").write_text(json.dumps({
+            "name": name, "tokens": tokens, "intent": intent, "cwd": cwd,
+            "state": state, "needs": None}))
+
+
+    def record(self, pid: int, kind: str, job: str | None = None,
+               name: str = "x") -> None:
+        """Claude Code's per-process record for a live pid."""
+        (self.sessions / f"{pid}.json").write_text(json.dumps({
+            "pid": pid, "procStart": _proc_start(pid), "kind": kind,
+            "jobId": job, "name": name, "sessionId": f"sid-{pid}", "cwd": "/home/tony",
+            "status": "idle", "startedAt": 1_650_000_000_000}))
+
+
+@pytest.fixture
+def home(tmp_path, monkeypatch):
+    h = Home(tmp_path / "claude")
+    (h.projects / "awm" / "demo").mkdir(parents=True)
+    trust = tmp_path / "claude.json"
+    trust.write_text(json.dumps({"projects": {str(tmp_path): {
+        "hasTrustDialogAccepted": True}}}))
+    monkeypatch.setenv("AWM_CX_ROSTER", str(h.roster))
+    monkeypatch.setenv("AWM_CX_JOBS", str(h.jobs))
+    monkeypatch.setenv("AWM_CX_STATE", str(h.root / "cx"))
+    monkeypatch.setenv("AWM_CX_SESSIONS", str(h.sessions))
+    monkeypatch.setenv("AWM_CX_PROJECTS", str(h.projects))
+    monkeypatch.setenv("AWM_CX_TRUST_FILE", str(trust))
+    h.mcp_source = tmp_path / "workspace.mcp.json"
+    h.mcp_source.write_text(json.dumps({"mcpServers": {
+        "awm": {"command": "/opt/awm/bin/awm-mcp", "args": [],
+                "env": {"AWM_WORKSPACE": "/ws"}, "extra": "dropped"},
+        "other": {"command": "npx"}}}))
+    monkeypatch.setenv("AWM_CX_MCP_SOURCE", str(h.mcp_source))
+    monkeypatch.setenv("AWM_NODE_NAME", "testnode")
+    return h
+
+
+@pytest.fixture(autouse=True)
+def no_link_wait(monkeypatch):
+    from awm.cch import lifecycle
+
+    monkeypatch.setattr(lifecycle, "LINK_WAIT_S", 0.0)
+
+
+def set_bridge(home, short, bridge):
+    path = home.jobs / short / "state.json"
+    rec = json.loads(path.read_text())
+    rec["bridgeSessionId"] = bridge
+    path.write_text(json.dumps(rec))
+
+
+@pytest.fixture
+def launched(home, monkeypatch):
+    """Replace the shared launcher with one that records its call and registers
+    a session under the child's pid, the way the daemon would."""
+    from awm.cch import lifecycle
+    from awm.claudedaemon import roster
+
+    calls: list[dict] = []
+
+    async def fake(**kw):
+        calls.append(kw)
+        from awm.cch import config
+
+        pending = [p for p in os.listdir(config.starts_dir())
+                   if p.startswith("pending-")]
+        kw["seen_pending"] = pending
+        home.add(CHILD_JOB, kw["name"], os.getppid(), cwd=str(kw["cwd"]))
+        return next(s for s in roster.load(kw["roster_path"], kw["jobs_dir"])
+                    if s.short == CHILD_JOB)
+
+    monkeypatch.setattr(lifecycle.launch, "launch", fake)
+    return calls
+
+
+def lineage(job, **over):
+    from awm.cch import lifecycle
+
+    lifecycle.ensure_starts_dir()
+    rec = {"job": job, "name": job, "project": "awm", "scope": "demo", "cwd": "/x",
+           "parent": None, "caller": "local", "mode": "worker",
+           "remote_control": None, "started_at": "2026-01-01T00:00:00+00:00",
+           **over}
+    lifecycle._write_lineage(job, rec)
+    return rec
+
+
+def parent_session(home, mode=None):
+    """The test process as a background session, optionally cx-started."""
+    home.add(PARENT_JOB, "caller", os.getpid())
+    home.record(os.getpid(), "bg", PARENT_JOB, "caller")
+    if mode:
+        lineage(PARENT_JOB, mode=mode, name="caller")
+
+
+@pytest.fixture
+def peers(fleet):
+    """capella reaches this node; john is in the fleet but holds no edge here."""
+    fleet({"testnode": "homebase", "capella": "homebase", "john": "homebase"},
+          {"capella": ["testnode"], "testnode": ["john"]})
+
+
+def start(args, as_=None):
+    from awm.cch import lifecycle
+
+    return asyncio.run(lifecycle.start({**FIT, **args}, as_))
+
+
+def start_raw(args, as_=None):
+    from awm.cch import lifecycle
+
+    return asyncio.run(lifecycle.start(args, as_))
+
+
+def stop(args, as_=None):
+    from awm.cch import lifecycle
+
+    return asyncio.run(lifecycle.stop(args, as_))
+
+
+BASE = {"project": "awm", "scope": "demo", **FIT}
+
+
+# --- a successful start ------------------------------------------------------
+
+
+def test_start_returns_the_contract_and_writes_lineage(home, launched):
+    parent_session(home)
+    out = start({**BASE, "prompt": "do it", "mode": "rep", "_caller_pid": os.getpid()})
+    assert out == {
+        "ok": True, "job": CHILD_JOB, "session_id": None, "name": "demo", "node": "testnode",
+        "project": "awm", "scope": "demo", "lobby": False, "cwd": str(home.projects / "awm" / "demo"),
+        "attach": f"claude attach {CHILD_JOB}", "parent": PARENT_JOB, "mode": "rep",
+        "pinned": False, "link": None,
+        "link_reason": out["link_reason"],
+    }
+    from awm.cch import lifecycle
+
+    rec = lifecycle.read_lineage(CHILD_JOB)
+    assert rec["parent"] == PARENT_JOB and rec["caller"] == "local"
+    assert rec["mode"] == "rep" and rec["project"] == "awm" and rec["scope"] == "demo"
+    assert rec["remote_control"] == "demo" and rec["started_at"]
+    assert launched[0]["prompt"] == "do it"
+
+
+def test_start_calls_the_shared_launcher_with_cx_settings(home, launched):
+    from awm.cch import config
+
+    start(BASE)
+    call = launched[0]
+    assert call["name"] == "demo" and call["cwd"] == home.projects / "awm" / "demo"
+    assert call["env"] == {}, "the model is a flag, not ANTHROPIC_MODEL"
+    assert call["unit_prefix"] == "awm-cx-start"
+    assert call["claude"] == config.claude_bin()
+    assert call["roster_path"] == config.roster_path()
+    assert call["jobs_dir"] == config.jobs_dir()
+    assert callable(call["accept"])
+
+
+def test_the_accept_filter_takes_only_the_named_session(home, launched):
+    start(BASE)
+    accept = launched[0]["accept"]
+
+    class S:
+        def __init__(self, seed_name, name):
+            self.seed_name, self.name = seed_name, name
+
+    assert accept(S("demo", "")) and accept(S(None, "demo"))
+    assert not accept(S("other", "other"))
+
+
+def test_a_start_launches_skip_permissions_with_the_model_and_effort_asked(home, launched):
+    start({**BASE, "model": "sonnet", "effort": "medium"})
+    flags = launched[0]["flags"]
+    assert "--dangerously-skip-permissions" in flags
+    assert "--effort=medium" in flags and "--model=sonnet" in flags
+    assert not any(f.startswith("--permission-mode") for f in flags)
+
+
+def test_arguments_override_the_defaults_in_equals_form(home, launched):
+    start({**BASE, "name": "worker one", "model": "opus", "effort": "high",
+           "permission": "plan", "disallowed_tools": ["Write", "Edit"],
+           "remote_control": True, "brief": False})
+    call = launched[0]
+    assert call["name"] == "worker one"
+    assert call["flags"] == ["--permission-mode=plan", "--allow-dangerously-skip-permissions",
+                             "--disallowedTools=Write,Edit",
+                             "--remote-control=worker-one", "--effort=high",
+                             "--model=opus"]
+
+
+@pytest.mark.parametrize("permission, head", [
+    (None, ["--dangerously-skip-permissions", "--allow-dangerously-skip-permissions"]),
+    ("plan", ["--permission-mode=plan", "--allow-dangerously-skip-permissions"]),
+    ("dontAsk", ["--permission-mode=dontAsk", "--allow-dangerously-skip-permissions"]),
+    ("bypassPermissions", ["--permission-mode=bypassPermissions",
+                           "--allow-dangerously-skip-permissions"]),
+])
+def test_bypass_stays_in_the_mode_cycle_for_every_start(home, launched, permission, head):
+    start({**BASE, **({"permission": permission} if permission else {})})
+    assert launched[0]["flags"][:2] == head
+
+
+def test_allowed_tools_become_one_equals_form_flag(home, launched):
+    start({**BASE, "permission": "dontAsk", "disallowed_tools": ["Bash"],
+           "allowed_tools": ["mcp__awm__*", "SendMessage"], "remote_control": "rc1",
+           "brief": False})
+    flags = launched[0]["flags"]
+    assert flags == ["--permission-mode=dontAsk", "--allow-dangerously-skip-permissions",
+                     "--disallowedTools=Bash", "--allowedTools=mcp__awm__*,SendMessage", "--remote-control=rc1",
+                     "--effort=high", "--model=opus"]
+    assert "--allowedTools" not in flags
+
+
+def test_allowed_tools_may_be_a_comma_string_and_default_to_none(home, launched):
+    start({**BASE, "allowed_tools": "Read,Skill"})
+    assert "--allowedTools=Read,Skill" in launched[0]["flags"]
+    start({**BASE, "name": "second"})
+    assert not any(f.startswith("--allowedTools") for f in launched[1]["flags"])
+
+
+def test_allowed_tools_must_be_a_list_of_names(home, launched):
+    out = start({**BASE, "allowed_tools": [1, 2]})
+    assert not out["ok"] and "allowed_tools" in out["reason"]
+
+
+def test_every_valued_flag_uses_the_equals_form(home, launched):
+    start({**BASE, "permission": "auto", "disallowed_tools": "Bash", "remote_control": "rc1",
+           "brief": False})
+    for flag in launched[0]["flags"]:
+        assert flag.startswith("--") and (flag.count("=") == 1 or "=" not in flag)
+    bare = {"--effort", "--model", "--permission-mode", "--disallowedTools",
+            "--remote-control"}
+    assert not bare & set(launched[0]["flags"])
+
+
+def test_system_prompt_and_autocompact_become_equals_form_flags(home, launched):
+    start({**BASE, "system_prompt": "--not a flag\nsecond line", "autocompact": 233_000,
+           "brief": False})
+    flags = launched[0]["flags"]
+    assert "--append-system-prompt=--not a flag\nsecond line" in flags
+    assert "--autocompact=233000" in flags
+    start({**BASE, "name": "second", "brief": False})
+    assert not any(f.startswith(("--append-system-prompt", "--autocompact"))
+                   for f in launched[1]["flags"])
+
+
+@pytest.mark.parametrize("value", [99_999, 1_000_001, "200000", True, 2.5e5])
+def test_autocompact_outside_the_cli_range_is_refused(home, launched, value):
+    out = start({**BASE, "autocompact": value})
+    assert not out["ok"] and "autocompact" in out["reason"] and not launched
+
+
+def test_system_prompt_must_be_a_string(home, launched):
+    out = start({**BASE, "system_prompt": ["a"]})
+    assert not out["ok"] and "system_prompt" in out["reason"]
+
+
+def test_a_model_supplied_parent_is_ignored(home, launched):
+    out = start({**BASE, "parent": "evil", "caller": "evil"})
+    assert out["ok"] and out["parent"] is None
+
+
+def test_a_started_session_is_not_a_pool_session(home, launched):
+    from awm.cch import config, sessions
+
+    start(BASE)
+    s = next(s for s in sessions.load() if s.short == CHILD_JOB)
+    assert not s.name.startswith(config.name_prefix())
+    assert not sessions.is_ours(s) and not sessions.was_ours(s)
+    assert not sessions.removable(s, version=None)
+
+
+def test_a_missing_worktree_is_created_once(home, launched, monkeypatch):
+    from awm.cch import lifecycle
+
+    made = []
+
+    async def fake_create(project, scope):
+        made.append((project, scope))
+        (home.projects / project / scope).mkdir(parents=True)
+
+    monkeypatch.setattr(lifecycle, "create_scope", fake_create)
+    assert start({"project": "awm", "scope": "fresh"})["ok"]
+    assert made == [("awm", "fresh")]
+    start({**BASE, "name": "another"})
+    assert made == [("awm", "fresh")], "an existing worktree is not created again"
+
+
+def test_a_failed_scope_create_is_a_refusal(home, launched, monkeypatch):
+    from awm.cch import lifecycle
+
+    async def boom(project, scope):
+        raise RuntimeError("no such project")
+
+    monkeypatch.setattr(lifecycle, "create_scope", boom)
+    out = start({"project": "nope", "scope": "x"})
+    assert out["ok"] is False and "no such project" in out["reason"]
+    assert launched == []
+
+
+def _scope_calls(monkeypatch, fail=None):
+    from awm.cch import lifecycle
+
+    calls = []
+
+    async def call(service, fn, args=None, **kw):
+        calls.append((service, fn, args))
+        if fail:
+            raise RuntimeError(fail)
+        return {}
+
+    monkeypatch.setattr(lifecycle.gatewayclient, "call", call)
+    return calls
+
+
+def test_tags_go_on_the_scope_and_into_the_lineage(home, launched, monkeypatch):
+    from awm.cch import lifecycle
+
+    calls = _scope_calls(monkeypatch)
+    out = start({**BASE, "tags": "lab, ana"})
+    assert out["ok"] and "warning" not in out
+    assert calls == [("scope", "tag",
+                      {"project": "awm", "scope": "demo", "tags": ["lab", "ana"]})]
+    assert lifecycle.read_lineage(CHILD_JOB)["tags"] == ["lab", "ana"]
+
+
+def test_a_start_without_tags_leaves_the_scope_alone(home, launched, monkeypatch):
+    calls = _scope_calls(monkeypatch)
+    assert start(BASE)["ok"]
+    assert calls == []
+
+
+def test_a_failed_tag_is_a_warning_not_a_refusal(home, launched, monkeypatch):
+    _scope_calls(monkeypatch, fail="invalid tag 'Bad Tag'")
+    out = start({**BASE, "tags": ["Bad Tag"]})
+    assert out["ok"] is True and "invalid tag" in out["warning"]
+    assert len(launched) == 1
+
+
+# --- refusals ----------------------------------------------------------------
+
+
+def test_a_station_refuses(home, launched, fleet):
+    fleet({"testnode": "station"})
+    out = start(BASE)
+    assert out["ok"] is False and "station" in out["reason"]
+    assert launched == []
+
+
+def test_the_legacy_bare_peer_is_refused(home, launched, peers):
+    out = start(BASE, "peer")
+    assert out["ok"] is False and "peer" in out["reason"]
+    assert launched == []
+
+
+def test_a_peer_with_no_edge_here_is_refused(home, launched, peers):
+    out = start(BASE, "peer:john")
+    assert out["ok"] is False and "no edge" in out["reason"]
+    assert launched == []
+
+
+def test_a_peer_outside_the_book_is_refused(home, launched, peers):
+    out = start(BASE, "peer:stranger")
+    assert out["ok"] is False and launched == []
+
+
+def test_a_peer_that_reaches_here_may_start_and_is_recorded_as_the_caller(home, launched, peers):
+    out = start(BASE, "peer:capella")
+    assert out["ok"] is True
+    from awm.cch import lifecycle
+
+    assert lifecycle.read_lineage(CHILD_JOB)["caller"] == "capella"
+
+
+def test_no_daemon_refuses(home, launched):
+    home.set_workers({}, supervisor=2 ** 22 + 12345)
+    out = start(BASE)
+    assert out["ok"] is False and "daemon" in out["reason"]
+    assert launched == []
+
+
+def test_the_shared_launcher_rechecks_the_daemon_and_its_refusal_is_mapped(
+        home, monkeypatch):
+    """The daemon can die between cx's check and the launch."""
+    from awm.cch import lifecycle
+
+    async def refuse(**kw):
+        raise lifecycle.launch.Refused("no claude code daemon is running")
+
+    monkeypatch.setattr(lifecycle.launch, "launch", refuse)
+    out = start(BASE)
+    assert out["ok"] is False and "daemon" in out["reason"]
+    from awm.cch import config
+
+    assert not [p for p in os.listdir(config.starts_dir()) if p.startswith("pending-")], \
+        "a launch that never ran leaves no pending record"
+
+
+def test_an_untrusted_worktree_refuses(home, launched, tmp_path, monkeypatch):
+    other = tmp_path / "other.json"
+    other.write_text(json.dumps({"projects": {}}))
+    monkeypatch.setenv("AWM_CX_TRUST_FILE", str(other))
+    out = start(BASE)
+    assert out["ok"] is False and "trust" in out["reason"]
+    assert launched == []
+
+
+def test_an_awm_worktree_is_trusted_before_its_start(home, launched, tmp_path, monkeypatch):
+    # A new project's `.bare` has no trust entry, and nobody is there to accept
+    # the dialog for a background start.
+    import subprocess
+
+    git = ["git", "-c", "user.name=t", "-c", "user.email=t@t"]
+    seed = tmp_path / "seed"
+    seed.mkdir()
+    subprocess.run([*git, "init", "-q"], cwd=seed, check=True)
+    subprocess.run([*git, "commit", "-q", "--allow-empty", "-m", "x"], cwd=seed, check=True)
+    bare = home.projects / "game" / ".bare"
+    subprocess.run([*git, "clone", "-q", "--bare", str(seed), str(bare)], check=True)
+    subprocess.run([*git, "worktree", "add", "-q", "-b", "feat/fx",
+                    str(home.projects / "game" / "fx")], cwd=bare, check=True)
+    empty = tmp_path / "empty.json"
+    empty.write_text(json.dumps({"projects": {}}))
+    monkeypatch.setenv("AWM_CX_TRUST_FILE", str(empty))
+    out = start({"project": "game", "scope": "fx"})
+    assert out["ok"], out
+    entries = json.loads(empty.read_text())["projects"]
+    assert entries[str(bare.resolve())] == {"hasTrustDialogAccepted": True}
+
+
+def test_a_taken_name_refuses(home, launched):
+    home.add(PARENT_JOB, "demo", os.getpid())
+    out = start(BASE)
+    assert out["ok"] is False and "named" in out["reason"]
+    assert launched == []
+
+
+@pytest.mark.parametrize("name", [
+    "<warm sneaky>", " <warm sneaky>", "\t<warm x>", "a<warm", "<WARM x>", "x <Warm y>",
+])
+def test_no_spelling_of_the_pool_prefix_is_a_name(home, launched, name):
+    out = start({**BASE, "name": name})
+    assert out["ok"] is False and launched == []
+
+
+def test_the_name_is_stripped_before_it_is_used(home, launched):
+    out = start({**BASE, "name": "  tidy  "})
+    assert out["ok"] and out["name"] == "tidy" and launched[0]["name"] == "tidy"
+
+
+@pytest.mark.parametrize("name", ["-x", "--evil", " -x"])
+def test_a_leading_dash_is_not_a_name(home, launched, name):
+    assert start({**BASE, "name": name})["ok"] is False and launched == []
+
+
+@pytest.mark.parametrize("rc", ["--evil", "-x", "a b", "x" * 65, "", " ", "a;b", 5])
+def test_remote_control_cannot_inject_flags(home, launched, rc):
+    out = start({**BASE, "remote_control": rc})
+    if rc in ("", " "):
+        return  # an empty value is "off" or refused; either way nothing is injected
+    assert out["ok"] is False and launched == []
+
+
+def test_a_start_turns_remote_control_on_named_from_the_session_name(home, launched):
+    start({**BASE, "name": "redux-build/gateway"})
+    assert "--remote-control=redux-build-gateway" in launched[0]["flags"]
+
+
+def test_remote_control_false_leaves_it_off_with_no_link(home, launched):
+    out = start({**BASE, "remote_control": False})
+    assert out["link"] is None and "link_reason" not in out
+    assert not any(f.startswith("--remote-control") for f in launched[0]["flags"])
+
+
+def test_a_start_with_remote_control_returns_the_link_once_the_bridge_appears(
+        home, launched, monkeypatch):
+    from awm.cch import lifecycle
+
+    real = lifecycle.roster.job_bridge_id
+    monkeypatch.setattr(lifecycle, "LINK_WAIT_S", 5.0)
+    monkeypatch.setattr(lifecycle, "LINK_POLL_S", 0.01)
+    polls = []
+
+    def appears_on_third_look(short, jobs):
+        polls.append(short)
+        if len(polls) == 3:
+            set_bridge(home, short, "cse_01Link")
+        return real(short, jobs)
+
+    monkeypatch.setattr(lifecycle.roster, "job_bridge_id", appears_on_third_look)
+    out = start({**BASE, "remote_control": True})
+    assert out["link"] == "https://claude.ai/code/session_01Link"
+    assert len(polls) == 3 and "link_reason" not in out
+
+
+def test_a_start_with_remote_control_says_why_there_is_no_link_yet(home, launched):
+    out = start({**BASE, "remote_control": True})
+    assert out["ok"] and out["link"] is None
+    assert CHILD_JOB in out["link_reason"]
+
+
+def test_remote_control_accepts_a_plain_label(home, launched):
+    assert start({**BASE, "remote_control": "rc-1.a"})["ok"]
+    assert "--remote-control=rc-1.a" in launched[0]["flags"]
+
+
+@pytest.mark.parametrize("args", [
+    {"project": "awm", "scope": "../escape"},
+    {"project": "..", "scope": "demo"},
+    {"project": "awm", "scope": "/abs"},
+    {"project": "awm", "scope": "demo", "effort": "ludicrous"},
+    {"project": "awm", "scope": "demo", "permission": "yolo"},
+    {"project": "awm", "scope": "demo", "model": "--evil"},
+    {"project": "awm", "scope": "demo", "mode": "has space"},
+    {"scope": "demo"},
+])
+def test_bad_arguments_refuse(home, launched, args):
+    out = start({**FIT, **args})
+    assert out["ok"] is False and launched == []
+
+
+@pytest.mark.parametrize("missing", ["model", "effort", "both"])
+def test_a_start_without_model_and_effort_is_refused_with_no_default(home, launched, missing):
+    args = {k: v for k, v in BASE.items() if missing == "both" or k != missing}
+    if missing == "both":
+        args = {k: v for k, v in args.items() if k not in FIT}
+    out = start_raw(args)
+    assert out["ok"] is False and launched == []
+    assert "model and effort are required" in out["reason"] and "fit the" in out["reason"]
+
+
+@pytest.mark.parametrize("effort", ["xhigh", "max"])
+@pytest.mark.parametrize("model", ["opus", "sonnet", "haiku", "fable"])
+def test_effort_above_high_is_refused_on_any_model(home, launched, model, effort):
+    out = start({**BASE, "model": model, "effort": effort})
+    assert out["ok"] is False and launched == []
+    assert "upper limit" in out["reason"]
+
+
+# --- a launch that outlives its timeout (M3) ---------------------------------
+
+
+def _pendings():
+    from awm.cch import config
+
+    return sorted(p for p in os.listdir(config.starts_dir()) if p.startswith("pending-"))
+
+
+def test_the_pending_record_exists_during_the_launch_and_is_replaced_after(home, launched):
+    out = start({**BASE, "mode": "representative"})
+    assert len(launched[0]["seen_pending"]) == 1, "written before the launch"
+    assert _pendings() == [], "dropped once the job record is written"
+    from awm.cch import lifecycle
+
+    assert lifecycle.read_lineage(out["job"])["mode"] == "representative"
+
+
+@pytest.mark.parametrize("exc", [TimeoutError("none appeared"), OSError("exec failed")])
+def test_a_failed_launch_leaves_the_pending_record(home, monkeypatch, exc):
+    from awm.cch import lifecycle
+
+    async def fail(**kw):
+        raise exc
+
+    monkeypatch.setattr(lifecycle.launch, "launch", fail)
+    out = start({**BASE, "mode": "representative"})
+    assert out["ok"] is False and "did not start" in out["reason"]
+    assert len(_pendings()) == 1
+
+
+def test_an_oserror_from_the_start_path_is_a_refusal_not_a_crash(home, monkeypatch):
+    from awm.cch import lifecycle
+
+    def boom():
+        raise OSError("disk gone")
+
+    monkeypatch.setattr(lifecycle, "_resolve_worktree", lambda *a, **k: boom())
+    out = start(BASE)
+    assert out["ok"] is False and "disk gone" in out["reason"]
+
+
+def test_a_pending_record_that_cannot_be_written_stops_the_launch(home, launched,
+                                                                  tmp_path, monkeypatch):
+    blocker = tmp_path / "state-file"
+    blocker.write_text("not a directory")
+    monkeypatch.setenv("AWM_CX_STATE", str(blocker))
+    out = start(BASE)
+    assert out["ok"] is False and "record" in out["reason"]
+    assert launched == []
+
+
+def test_a_pending_start_blocks_the_same_name(home, launched, monkeypatch):
+    from awm.cch import lifecycle
+
+    async def fail(**kw):
+        raise TimeoutError("late")
+
+    monkeypatch.setattr(lifecycle.launch, "launch", fail)
+    start(BASE)
+    out = start(BASE)
+    assert out["ok"] is False and "named" in out["reason"]
+
+
+def test_mode_of_applies_the_pending_mode_to_a_late_job(home, monkeypatch):
+    from awm.cch import lifecycle
+
+    async def fail(**kw):
+        raise TimeoutError("late")
+
+    monkeypatch.setattr(lifecycle.launch, "launch", fail)
+    start({**BASE, "mode": "representative"})
+    home.add(CHILD_JOB, "demo", os.getppid())
+    assert lifecycle.mode_of(os.getppid()) == "representative"
+
+
+def test_adopt_pending_gives_the_late_job_its_record(home, monkeypatch):
+    from awm.cch import lifecycle
+
+    async def fail(**kw):
+        raise TimeoutError("late")
+
+    monkeypatch.setattr(lifecycle.launch, "launch", fail)
+    start({**BASE, "mode": "representative"})
+    assert lifecycle.adopt_pending() == [], "no job has appeared yet"
+    home.add(CHILD_JOB, "demo", os.getppid(), started_ms=int(time.time() * 1000))
+    assert lifecycle.adopt_pending() == [CHILD_JOB]
+    assert _pendings() == []
+    assert lifecycle.read_lineage(CHILD_JOB)["mode"] == "representative"
+    assert lifecycle.mode_of(os.getppid()) == "representative"
+
+
+def test_a_job_is_recorded_only_once_cx_holds_its_lineage(home, monkeypatch):
+    """The keeper adopts only a recorded job, because cx refuses to stop or
+    resume one it has no record of."""
+    from awm.cch import lifecycle
+
+    async def fail(**kw):
+        raise TimeoutError("late")
+
+    monkeypatch.setattr(lifecycle.launch, "launch", fail)
+    start(BASE)
+    home.add(CHILD_JOB, "demo", os.getppid(), started_ms=int(time.time() * 1000))
+    row = next(r for r in lifecycle.collect() if r["job"] == CHILD_JOB)
+    assert row["recorded"] is False
+    lifecycle.adopt_pending()
+    row = next(r for r in lifecycle.collect() if r["job"] == CHILD_JOB)
+    assert row["recorded"] is True
+
+
+def test_adopt_pending_ignores_a_session_older_than_the_start(home, monkeypatch):
+    from awm.cch import lifecycle
+
+    async def fail(**kw):
+        raise TimeoutError("late")
+
+    monkeypatch.setattr(lifecycle.launch, "launch", fail)
+    start(BASE)
+    home.add(CHILD_JOB, "demo", os.getppid(), started_ms=1_000_000_000_000)
+    assert lifecycle.adopt_pending() == [] and len(_pendings()) == 1
+
+
+def test_an_expired_pending_record_is_dropped(home, monkeypatch):
+    from awm.cch import lifecycle
+
+    async def fail(**kw):
+        raise TimeoutError("never")
+
+    monkeypatch.setattr(lifecycle.launch, "launch", fail)
+    start(BASE)
+    assert lifecycle.adopt_pending(now=time.time() + 10) == [] and len(_pendings()) == 1
+    lifecycle.adopt_pending(now=time.time() + lifecycle.PENDING_TTL_S + 60)
+    assert _pendings() == []
+
+
+# --- stop --------------------------------------------------------------------
+
+
+@pytest.fixture
+def stops(monkeypatch):
+    from awm.cch import lifecycle
+
+    calls: list[str] = []
+
+    async def fake(job):
+        calls.append(job)
+        return True, ""
+
+    monkeypatch.setattr(lifecycle, "run_claude_stop", fake)
+    return calls
+
+
+def test_stop_refuses_a_job_without_lineage(home, stops):
+    home.add("cccccccc", "hand started", os.getpid())
+    out = stop({"job": "cccccccc"})
+    assert out["ok"] is False and "not started by reflection start_other" in out["reason"]
+    assert stops == []
+
+
+def test_stop_ends_a_job_start_created(home, launched, stops):
+    start(BASE)
+    assert stop({"job": CHILD_JOB}) == {"ok": True, "job": CHILD_JOB}
+    assert stops == [CHILD_JOB]
+
+
+def test_stop_records_the_stop_in_the_state_record(home, launched, stops):
+    start(BASE)
+    stop({"job": CHILD_JOB})
+    record = json.loads((home.jobs / CHILD_JOB / "state.json").read_text())
+    assert record["state"] == "stopped" and record["name"] == "demo"
+
+
+def test_stop_reports_a_failed_claude_stop(home, launched, monkeypatch):
+    from awm.cch import lifecycle
+
+    async def fail(job):
+        return False, "no such job"
+
+    monkeypatch.setattr(lifecycle, "run_claude_stop", fail)
+    start(BASE)
+    out = stop({"job": CHILD_JOB})
+    assert out["ok"] is False and out["reason"] == "no such job"
+    assert json.loads((home.jobs / CHILD_JOB / "state.json").read_text())["state"] == "working"
+
+
+@pytest.mark.parametrize("job", ["", "../x", "ZZZZZZZZ", None, 7, "aaaaaaaaa"])
+def test_stop_rejects_a_malformed_job(home, stops, job):
+    assert stop({"job": job})["ok"] is False
+    assert stops == []
+
+
+def test_a_peer_with_no_edge_here_cannot_stop(home, launched, stops, peers):
+    start(BASE)
+    assert stop({"job": CHILD_JOB}, "peer:john")["ok"] is False
+    assert stop({"job": CHILD_JOB}, "peer")["ok"] is False
+    assert stops == []
+
+
+def test_a_moded_session_stops_only_its_own_children(home, stops):
+    parent_session(home, mode="representative")
+    lineage(CHILD_JOB, parent="zzzzzzzz")
+    out = stop({"job": CHILD_JOB, "_caller_pid": os.getpid()})
+    assert out["ok"] is False and "started" in out["reason"]
+    lineage(CHILD_JOB, parent=PARENT_JOB)
+    assert stop({"job": CHILD_JOB, "_caller_pid": os.getpid()})["ok"] is True
+    assert stops == [CHILD_JOB]
+
+
+def test_a_worker_session_also_stops_only_its_own_children(home, stops):
+    parent_session(home, mode="worker")
+    lineage(CHILD_JOB, parent="zzzzzzzz")
+    assert stop({"job": CHILD_JOB, "_caller_pid": os.getpid()})["ok"] is False
+
+
+def test_a_caller_with_no_cx_mode_may_stop_any_cx_job(home, stops):
+    lineage(CHILD_JOB, parent="zzzzzzzz")
+    assert stop({"job": CHILD_JOB})["ok"] is True, "an operator or a service"
+    home.add("dddddddd", "<warm otter>", os.getpid())
+    home.record(os.getpid(), "bg", "dddddddd")
+    assert stop({"job": CHILD_JOB, "_caller_pid": os.getpid()})["ok"] is True
+
+
+def test_stop_refuses_a_caller_whose_mode_is_unknown(home, stops):
+    lineage(CHILD_JOB)
+    home.roster.write_text("{ not json")
+    out = stop({"job": CHILD_JOB, "_caller_pid": os.getpid()})
+    assert out["ok"] is False and "determined" in out["reason"]
+    assert stops == []
+
+
+def test_stop_never_deletes_the_conversation():
+    """`claude stop` keeps the conversation; `claude rm` would not."""
+    import inspect
+
+    from awm.cch import lifecycle
+
+    src = inspect.getsource(lifecycle.run_claude_stop)
+    assert '"stop"' in src and '"rm"' not in src
+
+
+# --- the caller's mode gates what it may start -------------------------------
+
+
+def test_every_caller_gets_the_same_plain_worker(home, launched):
+    for mode in ("representative", "secretary", "delegate", "worker", None):
+        launched.clear()
+        parent_session(home, mode=mode)
+        ok = start({**BASE, "name": f"w-{mode}", "prompt": "do it", "model": "opus", "effort": "high",
+                    "_caller_pid": os.getpid()})
+        assert ok["ok"] and ok["mode"] == "worker" and ok["parent"] == PARENT_JOB, mode
+        flags = launched[0]["flags"]
+        assert "--dangerously-skip-permissions" in flags and "--allow-dangerously-skip-permissions" in flags
+        assert not any(f.startswith(("--restricted", "--strict-mcp", "--tools", "--settings"))
+                       for f in flags)
+        assert "--model=opus" in flags and "--effort=high" in flags
+        for f in os.listdir(config.starts_dir()):
+            os.unlink(config.starts_dir() / f)
+        home.set_workers({})
+
+
+def test_a_caller_may_ask_for_the_options_the_verb_declares(home, launched):
+    parent_session(home, mode="worker")
+    ok = start({**BASE, "permission": "plan", "allowed_tools": ["Bash"], "disallowed_tools": ["Read"],
+                "tools": ["Bash", "Read"], "remote_control": True, "mode": "mine",
+                "_caller_pid": os.getpid()})
+    flags = launched[0]["flags"]
+    assert ok["ok"] and ok["mode"] == "mine"
+    assert "--permission-mode=plan" in flags and "--allow-dangerously-skip-permissions" in flags
+    assert "--tools=Bash,Read" in flags and "--allowedTools=Bash" in flags
+    assert "--disallowedTools=Read" in flags and any(f.startswith("--remote-control=") for f in flags)
+
+
+def test_a_restricted_start_omits_the_settings_when_the_file_is_missing(
+        home, launched, monkeypatch, tmp_path):
+    monkeypatch.setenv("AWM_CX_RESTRICTED_SETTINGS", str(tmp_path / "missing.json"))
+    start({**BASE, "restricted": True, "permission": "dontAsk"})
+    flags = launched[0]["flags"]
+    assert "--restricted" in flags and "--permission-mode=dontAsk" in flags
+    assert not any(f.startswith("--settings") for f in flags)
+
+
+def test_a_restricted_start_passes_the_reporting_settings_and_cannot_offer_bypass(
+        home, launched, monkeypatch, tmp_path):
+    settings = tmp_path / "reporting-settings.json"
+    settings.write_text("{}")
+    monkeypatch.setenv("AWM_CX_RESTRICTED_SETTINGS", str(settings))
+    start({**BASE, "restricted": True, "permission": "dontAsk"})
+    flags = launched[0]["flags"]
+    assert f"--settings={settings}" in flags
+    assert "--allow-dangerously-skip-permissions" not in flags, "the CLI refuses bypass under --restricted"
+
+
+def test_a_strict_start_loads_only_the_awm_server_from_the_workspace_config(home, launched):
+    start({**BASE, "strict_mcp": True})
+    flags = launched[0]["flags"]
+    path = next(f for f in flags if f.startswith("--mcp-config=")).split("=", 1)[1]
+    assert json.loads(open(path).read()) == {"mcpServers": {"awm": {
+        "command": "/opt/awm/bin/awm-mcp", "args": [],
+        "env": {"AWM_WORKSPACE": "/ws"}}}}
+
+
+def test_a_missing_awm_mcp_server_refuses_a_strict_start(home, launched):
+    home.mcp_source.write_text(json.dumps({"mcpServers": {}}))
+    out = start({**BASE, "strict_mcp": True})
+    assert out["ok"] is False and "awm server" in out["reason"]
+
+
+def test_a_caller_may_create_the_scope_it_starts_in(home, launched, monkeypatch):
+    from awm.cch import lifecycle
+
+    made = []
+
+    async def create(project, scope):
+        made.append((project, scope))
+        (config.projects_dir() / project / scope).mkdir(parents=True)
+
+    monkeypatch.setattr(lifecycle, "create_scope", create)
+    parent_session(home, mode="worker")
+    out = start({"project": "awm", "scope": "nowhere", "_caller_pid": os.getpid()})
+    assert out["ok"] and made == [("awm", "nowhere")]
+
+
+def test_the_old_persona_names_and_modes_are_plain_labels(home, launched):
+    parent_session(home, mode="worker")
+    for ask in ({"mode": "representative"}, {"name": "secretary"}, {"name": "representative - altair"}):
+        for f in os.listdir(config.starts_dir()):
+            os.unlink(config.starts_dir() / f)
+        home.set_workers({})
+        parent_session(home, mode="worker")
+        out = start({**BASE, "_caller_pid": os.getpid(), **ask})
+        assert out["ok"] is True, ask
+
+
+def test_a_worker_or_unmoded_caller_may_start_any_other_mode(home, launched):
+    parent_session(home, mode="worker")
+    assert start({**BASE, "mode": "rep2", "_caller_pid": os.getpid()})["ok"]
+    from awm.cch import config
+
+    for f in os.listdir(config.starts_dir()):
+        os.unlink(config.starts_dir() / f)
+    home.set_workers({})
+    parent_session(home)  # no lineage: an ordinary session
+    assert start({**BASE, "name": "other", "mode": "rep3",
+                  "_caller_pid": os.getpid()})["ok"]
+
+
+@pytest.mark.parametrize("field", ["tools", "allowed_tools", "disallowed_tools"])
+@pytest.mark.parametrize("bad", ["Bash;rm", "-x", "Read,Write(", "a b", ["ok", "--evil"],
+                                 "Bash(a,b)", 5])
+def test_tool_lists_are_validated(home, launched, field, bad):
+    out = start({**BASE, field: bad})
+    assert out["ok"] is False and field in out["reason"]
+
+
+def test_tool_rules_with_a_specifier_are_accepted(home, launched):
+    out = start({**BASE, "allowed_tools": ["Read(./**)", "mcp__awm__*", "Bash(git *)"]})
+    assert out["ok"]
+
+
+def test_a_caller_whose_mode_is_unknown_may_not_start(home, launched):
+    parent_session(home)
+    home.roster.write_text("{ not json")
+    out = start({**BASE, "_caller_pid": os.getpid()})
+    assert out["ok"] is False and "determined" in out["reason"]
+    assert launched == []
+
+
+def test_an_invalid_caller_pid_is_unknown_not_unrestricted(home, launched):
+    for bad in (0, -1, "12", True, 1.5):
+        out = start({**BASE, "_caller_pid": bad})
+        assert out["ok"] is False, bad
+    assert launched == []
+
+
+# --- the reconcile prune -----------------------------------------------------
+
+
+def _age(job):
+    from awm.cch import config
+
+    path = config.starts_dir() / f"{job}.json"
+    old = time.time() - 3600
+    os.utime(path, (old, old))
+    return path
+
+
+def test_prune_drops_lineage_only_after_the_job_is_removed(home, launched):
+    from awm.cch import lifecycle
+
+    start(BASE)
+    path = _age(CHILD_JOB)
+    home.set_workers({})
+    assert lifecycle.prune_lineage() == [], "stopped, but its conversation remains"
+    assert path.exists()
+    os.unlink(home.jobs / CHILD_JOB / "state.json")
+    assert lifecycle.prune_lineage() == [CHILD_JOB]
+    assert not path.exists()
+
+
+def test_a_stopped_and_reattached_session_keeps_its_mode(home, launched):
+    from awm.cch import lifecycle
+
+    start({**BASE, "mode": "representative"})
+    _age(CHILD_JOB)
+    home.set_workers({})
+    assert lifecycle.prune_lineage() == []
+    home.add(CHILD_JOB, "demo", os.getppid())  # `claude attach` brings it back
+    assert lifecycle.mode_of(os.getppid()) == "representative"
+
+
+def test_prune_keeps_lineage_of_a_held_job(home, launched):
+    from awm.cch import lifecycle
+
+    start(BASE)
+    path = _age(CHILD_JOB)
+    os.unlink(home.jobs / CHILD_JOB / "state.json")
+    assert lifecycle.prune_lineage() == [] and path.exists()
+
+
+def test_prune_leaves_a_fresh_record_alone(home, launched):
+    from awm.cch import config, lifecycle
+
+    start(BASE)
+    home.set_workers({})
+    os.unlink(home.jobs / CHILD_JOB / "state.json")
+    assert lifecycle.prune_lineage() == []
+    assert (config.starts_dir() / f"{CHILD_JOB}.json").exists()
+
+
+def test_prune_does_nothing_when_the_roster_is_unreadable(home, launched):
+    from awm.cch import lifecycle
+
+    start(BASE)
+    path = _age(CHILD_JOB)
+    os.unlink(home.jobs / CHILD_JOB / "state.json")
+    home.roster.write_text("{ not json")
+    assert lifecycle.prune_lineage() == [] and path.exists()
+
+
+def test_prune_does_nothing_when_the_roster_has_no_workers_table(home, launched):
+    from awm.cch import lifecycle
+
+    start(BASE)
+    path = _age(CHILD_JOB)
+    os.unlink(home.jobs / CHILD_JOB / "state.json")
+    home.roster.write_text(json.dumps({"supervisorPid": os.getpid()}))
+    assert lifecycle.prune_lineage() == [] and path.exists()
+
+
+def test_prune_does_nothing_when_the_jobs_directory_is_missing(home, launched):
+    import shutil
+
+    from awm.cch import lifecycle
+
+    start(BASE)
+    path = _age(CHILD_JOB)
+    home.set_workers({})
+    shutil.rmtree(home.jobs)
+    assert lifecycle.prune_lineage() == [] and path.exists()
+
+
+async def test_the_reconcile_tick_prunes_and_adopts(home, launched, monkeypatch):
+    from awm.cch import config, lifecycle, reconcile, remove, seed
+
+    assert (await lifecycle.start(BASE))["ok"]
+    path = _age(CHILD_JOB)
+    home.set_workers({})
+    os.unlink(home.jobs / CHILD_JOB / "state.json")
+    monkeypatch.setenv("AWM_CX_WANT", "0")
+
+    async def nothing(now=None):
+        return []
+
+    adopted = []
+    monkeypatch.setattr(lifecycle, "adopt_pending", lambda: adopted.append(1) or [])
+    monkeypatch.setattr(remove, "apply", nothing)
+    monkeypatch.setattr(seed, "seed_one", lambda: None)
+    await reconcile.Loop().tick()
+    assert not path.exists() and adopted == [1]
+
+
+# --- mode_of: three answers --------------------------------------------------
+
+
+def test_mode_of_reads_the_mode_through_the_roster(home, launched):
+    from awm.cch import lifecycle
+
+    start({**BASE, "mode": "representative"})
+    assert lifecycle.mode_of(os.getppid()) == "representative"
+
+
+def test_mode_of_is_none_only_for_a_pid_that_is_positively_not_cx_started(home, launched):
+    from awm.cch import lifecycle
+
+    start(BASE)
+    home.add("dddddddd", "<warm otter>", os.getpid())
+    assert lifecycle.mode_of(os.getpid()) is None, "a pool session has no lineage"
+    home.record(1, "interactive")
+    assert lifecycle.mode_of(1) is None, "an interactive terminal"
+
+
+def test_mode_of_is_none_for_a_pid_with_no_record_at_all(home, launched):
+    from awm.cch import lifecycle
+
+    lifecycle.ensure_starts_dir()
+    assert lifecycle.mode_of(os.getpid()) is None
+
+
+@pytest.mark.parametrize("bad", [None, 0, -3, True, "12", 1.5])
+def test_mode_of_an_invalid_pid_is_unknown(home, bad):
+    from awm.cch import lifecycle
+
+    assert lifecycle.mode_of(bad) == "unknown"
+
+
+def test_mode_of_is_unknown_when_the_roster_is_unreadable(home, launched, monkeypatch):
+    from awm.claudedaemon import sessionmode
+    from awm.cch import lifecycle
+
+    monkeypatch.setattr(sessionmode, "_may_be_a_session", lambda pid: True)
+    start({**BASE, "mode": "representative"})
+    home.roster.write_text("{ not json")
+    assert lifecycle.mode_of(os.getppid()) == "unknown"
+
+
+def test_mode_of_keeps_the_recorded_mode_when_the_roster_is_missing(home, launched):
+    from awm.cch import lifecycle
+
+    start({**BASE, "mode": "rep2"})
+    home.record(os.getppid(), "bg", CHILD_JOB)
+    home.roster.unlink()
+    assert lifecycle.mode_of(os.getppid()) == "rep2"
+
+
+def test_mode_of_is_unknown_for_a_bg_session_when_the_roster_is_missing_and_no_lineage(
+        home, launched):
+    from awm.cch import config, lifecycle
+
+    start(BASE)
+    home.record(os.getppid(), "bg", CHILD_JOB)
+    home.roster.unlink()
+    os.unlink(config.starts_dir() / f"{CHILD_JOB}.json")
+    assert lifecycle.mode_of(os.getppid()) == "unknown"
+
+
+def test_mode_of_is_unknown_when_a_cx_launched_job_lost_its_lineage(home, launched):
+    import shutil
+
+    from awm.cch import config, lifecycle
+
+    start(BASE)
+    workers = home.workers()
+    workers[CHILD_JOB]["dispatch"]["launch"] = {"args": ["--permission-mode=dontAsk"]}
+    home.set_workers(workers)
+    shutil.rmtree(config.starts_dir())
+    assert lifecycle.mode_of(os.getppid()) == "unknown"
+
+
+def test_mode_of_is_none_for_a_job_without_cx_launch_flags_and_no_lineage(home, launched):
+    import shutil
+
+    from awm.cch import config, lifecycle
+
+    start(BASE)
+    shutil.rmtree(config.starts_dir())
+    assert lifecycle.mode_of(os.getppid()) is None
+
+
+@pytest.mark.parametrize("what", ["jobs", "sessions"])
+def test_mode_of_survives_a_missing_jobs_or_sessions_directory(home, launched, what):
+    import shutil
+
+    from awm.cch import lifecycle
+
+    start({**BASE, "mode": "rep2"})
+    shutil.rmtree({"jobs": home.jobs, "sessions": home.sessions}[what])
+    assert lifecycle.mode_of(os.getppid()) == "rep2"
+
+
+def test_a_corrupt_record_of_another_job_does_not_change_the_answer(home, launched):
+    from awm.cch import config, lifecycle
+
+    start({**BASE, "mode": "rep2"})
+    (config.starts_dir() / "cccccccc.json").write_text("{ not json")
+    (config.starts_dir() / "pending-0123456789abcdef.json").write_text("{ not json")
+    assert lifecycle.mode_of(os.getppid()) == "rep2"
+
+
+def test_mode_of_is_unknown_when_the_callers_own_lineage_record_is_corrupt(home, launched):
+    from awm.cch import config, lifecycle
+
+    start(BASE)
+    (config.starts_dir() / f"{CHILD_JOB}.json").write_text("{ not json")
+    assert lifecycle.mode_of(os.getppid()) == "unknown"
+
+
+def test_mode_of_is_unknown_when_the_recorded_mode_is_not_valid(home, launched):
+    from awm.cch import config, lifecycle
+
+    start(BASE)
+    lineage(CHILD_JOB, mode="has space")
+    assert lifecycle.mode_of(os.getppid()) == "unknown"
+
+
+def test_mode_of_is_unknown_for_a_background_session_with_no_record(home):
+    from awm.cch import lifecycle
+
+    lifecycle.ensure_starts_dir()
+    home.record(os.getpid(), "bg", "eeeeeeee")  # not in the roster, no lineage
+    assert lifecycle.mode_of(os.getpid()) == "unknown"
+
+
+def test_mode_of_uses_the_lineage_of_a_bg_session_missing_from_the_roster(home):
+    from awm.cch import lifecycle
+
+    lineage("eeeeeeee", mode="representative")
+    home.record(os.getpid(), "bg", "eeeeeeee")
+    assert lifecycle.mode_of(os.getpid()) == "representative"
+
+
+def test_mode_of_is_unknown_for_a_stale_session_record(home):
+    from awm.cch import lifecycle
+
+    lifecycle.ensure_starts_dir()
+    home.record(os.getpid(), "interactive")
+    path = home.sessions / f"{os.getpid()}.json"
+    rec = json.loads(path.read_text())
+    rec["procStart"] = "1"
+    path.write_text(json.dumps(rec))
+    assert lifecycle.mode_of(os.getpid()) == "unknown"
+
+
+def test_mode_of_docstring_states_the_contract():
+    from awm.cch import lifecycle
+
+    doc = lifecycle.mode_of.__doc__
+    assert "positively not" in doc and '"unknown"' in doc
+
+
+# --- the lifecycle brief ----------------------------------------------------
+
+
+def system_prompt(call):
+    found = [f for f in call["flags"] if f.startswith("--append-system-prompt=")]
+    assert len(found) <= 1
+    return found[0].partition("=")[2] if found else None
+
+
+def test_a_start_appends_the_brief_after_the_callers_system_prompt(home, launched):
+    start({**BASE, "system_prompt": "be terse"})
+    text = system_prompt(launched[0])
+    assert text.startswith("be terse\n\nYou are a worker session, started by an awm service.")
+    assert "You started in awm/demo, the scope your starter chose." in text
+    assert 'reflection(verb="cd", args={path:<its worktree>})' in text
+    assert 'reflection(verb="stop", args={job:<your job>, confirm:true})' in text
+    from awm.cch import lifecycle
+
+    assert lifecycle.read_lineage(CHILD_JOB)["brief"] is True
+
+
+def test_started_by_names_who_started_a_session_with_no_caller(home, launched):
+    start({**BASE, "started_by": "Tony from Discord"})
+    text = system_prompt(launched[0])
+    assert "started by Tony from Discord." in text
+    assert "where your first prompt asks" in text
+
+
+def test_a_calling_session_is_the_parent_to_report_to(home, launched):
+    parent_session(home)
+    start({**BASE, "started_by": "Tony from Discord", "_caller_pid": os.getpid()})
+    text = system_prompt(launched[0])
+    assert f"started by the session caller ({PARENT_JOB})." in text
+    assert f'args={{job:"{PARENT_JOB}", text:…}}' in text
+    assert "Tony from Discord" not in text
+
+
+def test_an_interactive_parent_is_addressed_by_name(home, launched):
+    home.record(os.getpid(), "interactive", name="dev")
+    start({**BASE, "_caller_pid": os.getpid()})
+    assert 'args={job:"dev", text:…}' in system_prompt(launched[0])
+
+
+def test_a_job_lists_its_brief_before_its_launch_returns(home, monkeypatch):
+    from awm.cch import lifecycle
+    from awm.claudedaemon import roster
+
+    rows = []
+
+    async def fake(**kw):
+        home.add(CHILD_JOB, kw["name"], os.getppid(), cwd=str(kw["cwd"]),
+                 started_ms=int(time.time() * 1000))
+        rows.extend(r for r in lifecycle.collect() if r["job"] == CHILD_JOB)
+        return next(s for s in roster.load(kw["roster_path"], kw["jobs_dir"])
+                    if s.short == CHILD_JOB)
+
+    monkeypatch.setattr(lifecycle.launch, "launch", fake)
+    start(dict(BASE))
+    assert rows and rows[0]["brief"] is True and rows[0]["mode"] == "worker"
+
+
+def test_brief_false_leaves_the_brief_out(home, launched):
+    start({**BASE, "brief": False})
+    assert system_prompt(launched[0]) is None
+    from awm.cch import lifecycle
+
+    assert lifecycle.read_lineage(CHILD_JOB)["brief"] is False
+
+
+def test_a_pinned_start_gets_no_brief(home, launched, monkeypatch):
+    from awm.cch import lifecycle
+
+    async def no_pin(job):
+        return True
+
+    monkeypatch.setattr(lifecycle, "_pin", no_pin)
+    start({**BASE, "pin": True, "system_prompt": "seat brief"})
+    assert system_prompt(launched[0]) == "seat brief"
+
+
+@pytest.mark.parametrize("args", [{"brief": "yes"}, {"started_by": ""},
+                                  {"started_by": "x" * 121}, {"started_by": "a\nb"}])
+def test_brief_arguments_are_checked(home, launched, args):
+    out = start({**BASE, **args})
+    assert not out["ok"] and not launched
+
+
+# --- the parent comes from a verified session record -------------------------
+
+
+def test_parent_is_none_without_a_verified_record(home, launched):
+    # a roster match alone no longer names a parent
+    home.add(PARENT_JOB, "caller", os.getpid())
+    assert start({**BASE, "_caller_pid": os.getpid()})["parent"] is None
+
+
+def test_parent_of_an_interactive_caller_is_its_session_id(home, launched):
+    home.record(os.getpid(), "interactive")
+    assert start({**BASE, "_caller_pid": os.getpid()})["parent"] == f"sid-{os.getpid()}"
+
+
+def test_a_stale_record_names_no_parent(home, launched):
+    from awm.cch import lifecycle
+
+    home.record(os.getpid(), "bg", PARENT_JOB)
+    path = home.sessions / f"{os.getpid()}.json"
+    rec = json.loads(path.read_text())
+    rec["procStart"] = "1"
+    path.write_text(json.dumps(rec))
+    assert lifecycle._parent_of(os.getpid()) is None
+
+
+# --- list --------------------------------------------------------------------
+
+
+def test_list_merges_roster_lineage_and_interactive_sessions(home, launched, monkeypatch):
+    from awm.cch import lifecycle
+
+    home.add(PARENT_JOB, "<warm saiga>", os.getpid(), started_ms=1_600_000_000_000)
+    start({**BASE, "mode": "rep"})
+    me = os.getpid()
+    home.record(me, "interactive", name="dev")
+    rec = json.loads((home.sessions / f"{me}.json").read_text())
+    rec["cwd"] = str(home.projects / "awm" / "demo")
+    (home.sessions / f"{me}.json").write_text(json.dumps(rec))
+    monkeypatch.setattr(lifecycle, "_tmux_panes", lambda: {me: "main"})
+
+    rows = {(r["job"] or r["tmux"]): r for r in lifecycle.collect()}
+    pool_row = rows[PARENT_JOB]
+    assert pool_row["pool"] is True and pool_row["mode"] is None
+    child = rows[CHILD_JOB]
+    assert child["pool"] is False and child["mode"] == "rep"
+    assert child["parent"] is None and child["caller"] == "local"
+    assert child["project"] == "awm" and child["scope"] == "demo"
+    assert child["attach"] == f"claude attach {CHILD_JOB}" and child["node"] == "testnode"
+    tmux = rows["main"]
+    assert tmux["attach"] == "tmux attach -t main" and tmux["job"] is None
+    assert tmux["name"] == "dev" and tmux["scope"] == "demo"
+    assert list(rows) == [PARENT_JOB, "main", CHILD_JOB], "oldest first"
+
+
+def test_list_reports_the_live_remote_control_state_and_link(home, launched, monkeypatch):
+    from awm.cch import lifecycle
+
+    monkeypatch.setattr(lifecycle, "_tmux_panes", dict)
+    start({**BASE, "remote_control": "rc1"})
+    row = next(r for r in lifecycle.collect() if r["job"] == CHILD_JOB)
+    assert row["remote_control"] is False and row["link"] is None
+    assert row["remote_control_label"] == "rc1", "the launch label is kept apart"
+    set_bridge(home, CHILD_JOB, "cse_01AbC")
+    row = next(r for r in lifecycle.collect() if r["job"] == CHILD_JOB)
+    assert row["remote_control"] is True
+    assert row["link"] == "https://claude.ai/code/session_01AbC"
+
+
+def test_an_interactive_row_takes_its_link_from_the_session_record(home, monkeypatch):
+    from awm.cch import lifecycle
+
+    me = os.getpid()
+    home.record(me, "interactive", name="dev")
+    path = home.sessions / f"{me}.json"
+    rec = json.loads(path.read_text())
+    path.write_text(json.dumps({**rec, "bridgeSessionId": "cse_01Zz"}))
+    monkeypatch.setattr(lifecycle, "_tmux_panes", dict)
+    row = next(r for r in lifecycle.collect() if r["name"] == "dev")
+    assert row["remote_control"] is True
+    assert row["link"] == "https://claude.ai/code/session_01Zz"
+
+
+def test_list_carries_needs_and_detail_from_the_job_record(home, monkeypatch):
+    from awm.cch import lifecycle
+
+    monkeypatch.setattr(lifecycle, "_tmux_panes", dict)
+    home.add(PARENT_JOB, "<warm saiga>", os.getpid())
+    path = home.jobs / PARENT_JOB / "state.json"
+    rec = json.loads(path.read_text())
+    rec.update(state="blocked", needs="login required \u2014 run /login", detail="d" * 500,
+               tempo="blocked")
+    path.write_text(json.dumps(rec))
+    row = next(r for r in lifecycle.collect() if r["job"] == PARENT_JOB)
+    assert row["state"] == "blocked" and row["needs"] == "login required \u2014 run /login"
+    assert row["detail"] == "d" * 200 and row["tempo"] == "blocked"
+
+
+@pytest.mark.parametrize("recorded,reported", [("stopped", "stopped"), ("working", "gone")])
+def test_a_dead_job_reports_stopped_only_when_it_recorded_stopped(
+        home, monkeypatch, recorded, reported):
+    from awm.cch import lifecycle
+
+    monkeypatch.setattr(lifecycle, "_tmux_panes", dict)
+    home.add(PARENT_JOB, "<warm saiga>", os.getpid(), state=recorded)
+    workers = home.workers()
+    workers[PARENT_JOB]["replProcStart"] = "1"
+    home.set_workers(workers)
+    row = next(r for r in lifecycle.collect() if r["job"] == PARENT_JOB)
+    assert row["state"] == reported
+
+
+def test_list_filters_by_project_and_scope(home, launched, monkeypatch):
+    from awm.cch import lifecycle
+
+    monkeypatch.setattr(lifecycle, "_tmux_panes", dict)
+    home.add(PARENT_JOB, "<warm saiga>", os.getpid())
+    start(BASE)
+    assert [r["job"] for r in lifecycle.collect(project="awm")] == [CHILD_JOB]
+    assert [r["job"] for r in lifecycle.collect(scope="demo")] == [CHILD_JOB]
+    assert lifecycle.collect(project="other") == []
+
+
+def test_a_job_that_moved_lists_under_the_scope_it_is_in_now(home, launched, monkeypatch):
+    from awm.cch import lifecycle
+
+    monkeypatch.setattr(lifecycle, "_tmux_panes", dict)
+    home.add(PARENT_JOB, "<warm saiga>", os.getpid())
+    start(BASE)
+    there = home.projects / "metasmith" / "engine" / "presentation"
+    there.mkdir(parents=True)
+    (there / ".git").write_text("gitdir: x\n")
+    (there / "src").mkdir()
+    path = home.jobs / CHILD_JOB / "state.json"
+    rec = json.loads(path.read_text())
+    path.write_text(json.dumps({**rec, "cwd": str(there / "src")}))
+    row = next(r for r in lifecycle.collect() if r["job"] == CHILD_JOB)
+    assert (row["project"], row["scope"]) == ("metasmith", "engine/presentation")
+    assert [r["job"] for r in lifecycle.collect(project="metasmith")] == [CHILD_JOB]
+    path.write_text(json.dumps({**rec, "cwd": "/tmp"}))
+    row = next(r for r in lifecycle.collect() if r["job"] == CHILD_JOB)
+    assert (row["project"], row["scope"]) == (None, None), "outside every scope"
+
+
+async def test_the_list_verb_keeps_the_pool_summary(home, launched):
+    from awm.cch import cx_adapter as hub_adapter
+
+    out = await hub_adapter.HANDLERS["list"]({})
+    assert set(out) == {"sessions", "pool", "daemon"}
+    assert {"warm", "want", "daemon_pid", "loop"} <= set(out["pool"])
+    assert {"state", "pid", "since", "cause"} <= set(out["daemon"])
+
+
+async def test_the_list_verb_applies_the_peer_refusal(home, launched, peers):
+    from awm.cch import cx_adapter as hub_adapter
+
+    for who in ("peer", "peer:john", "peer:stranger"):
+        out = await hub_adapter.HANDLERS["list"]({}, who)
+        assert out["ok"] is False and "sessions" not in out, who
+    out = await hub_adapter.HANDLERS["list"]({}, "peer:capella")
+    assert "sessions" in out
+
+
+async def test_the_list_verb_hides_private_sessions_from_a_peer(
+        home, launched, peers, monkeypatch, tmp_path):
+    import awm.config as awm_config
+    from awm.config import privacy
+    from awm.cch import cx_adapter as hub_adapter, lifecycle
+
+    monkeypatch.setattr(awm_config, "AWM_DIR", tmp_path / ".awm")
+    monkeypatch.setattr(lifecycle, "_tmux_panes", dict)
+    home.add(PARENT_JOB, "<warm saiga>", os.getpid(), cwd=str(home.projects / "awm" / "demo"))
+    await lifecycle.start(BASE, None)
+    privacy.write_marks([{"project": "awm", "scope": None, "path": str(home.projects / "awm")}])
+
+    peer = await hub_adapter.HANDLERS["list"]({}, "peer:capella")
+    assert not {r["job"] for r in peer["sessions"]} & {PARENT_JOB, CHILD_JOB}
+    assert all(r["cwd"] != str(home.projects / "awm" / "demo") for r in peer["pool"]["sessions"])
+    assert PARENT_JOB not in peer["pool"]["warm"]
+    local = await hub_adapter.HANDLERS["list"]({}, None)
+    assert CHILD_JOB in {r["job"] for r in local["sessions"]}
+    assert PARENT_JOB in {r["session"] for r in local["pool"]["sessions"]}
+
+
+async def test_the_list_verb_hides_a_job_whose_transcript_entered_a_mark_from_a_peer(
+        home, launched, peers, monkeypatch, tmp_path):
+    import awm.config as awm_config
+    from awm.config import privacy
+    from awm.cch import cx_adapter as hub_adapter, lifecycle
+
+    monkeypatch.setattr(awm_config, "AWM_DIR", tmp_path / ".awm")
+    monkeypatch.setattr(lifecycle, "_tmux_panes", dict)
+    home.add("wander01", "folder setup", os.getpid(), cwd=str(home.projects))
+    transcript = tmp_path / "wander.jsonl"
+    inside = home.projects / "avatar" / "Avatar"
+    transcript.write_text(json.dumps({"cwd": str(home.projects)}) + "\n"
+                          + json.dumps({"cwd": str(inside)}) + "\n")
+    state = home.jobs / "wander01" / "state.json"
+    resumed = tmp_path / "resumed.jsonl"
+    resumed.write_text(json.dumps({"cwd": str(home.projects)}) + "\n")
+    state.write_text(json.dumps({**json.loads(state.read_text()), "linkScanPath": str(resumed),
+                                 "sessionId": "wander", "resumeSessionId": "resumed"}))
+
+    peer = await hub_adapter.HANDLERS["list"]({}, "peer:capella")
+    assert "wander01" in {r["job"] for r in peer["sessions"]}
+    privacy.write_marks([{"project": "avatar", "scope": None, "path": str(home.projects / "avatar")}])
+    peer = await hub_adapter.HANDLERS["list"]({}, "peer:capella")
+    assert "wander01" not in {r["job"] for r in peer["sessions"]}
+    local = await hub_adapter.HANDLERS["list"]({}, None)
+    assert "wander01" in {r["job"] for r in local["sessions"]}
+
+
+def test_the_old_launcher_is_gone():
+    from awm.cch import lifecycle
+
+    for name in ("launch_argv", "_user_manager_env", "launch_session"):
+        assert not hasattr(lifecycle, name), name
+
+
+# --- pins --------------------------------------------------------------------
+
+
+def _pins(home):
+    path = home.jobs / "pins.json"
+    return json.loads(path.read_text()) if path.exists() else []
+
+
+def test_a_pinned_start_pins_the_job_and_lists_it_pinned(home, launched, monkeypatch):
+    from awm.cch import lifecycle
+
+    monkeypatch.setattr(lifecycle, "_tmux_panes", dict)
+    out = start({**BASE, "pin": True})
+    assert out["ok"] and out["pinned"] is True
+    assert _pins(home) == [CHILD_JOB]
+    assert lifecycle.read_lineage(CHILD_JOB)["pinned"] is True
+    row = next(r for r in lifecycle.collect() if r["job"] == CHILD_JOB)
+    assert row["pinned"] is True
+
+
+def test_an_unpinned_start_leaves_the_pins_alone(home, launched):
+    out = start(BASE)
+    assert out["pinned"] is False and _pins(home) == []
+
+
+def test_pin_must_be_a_boolean(home, launched):
+    assert start({**BASE, "pin": "yes"})["ok"] is False
+
+
+def _fake_cli(monkeypatch, ran, rm_code=0):
+    import subprocess
+
+    from awm.cch import lifecycle
+
+    real = lifecycle.cli.stop_and_remove
+
+    def run(argv, **kw):
+        ran.append(argv[1:])
+        code = rm_code if argv[1] == "rm" else 0
+        return subprocess.CompletedProcess(argv, code, b"busy" if code else b"")
+
+    class Probe:
+        """A failed `rm` leaves the job in place."""
+
+        def worker_alive(self, job):
+            return False
+
+        def present(self, job):
+            return bool(rm_code)
+
+    monkeypatch.setattr(lifecycle.cli, "stop_and_remove",
+                        lambda job, **kw: real(job, **{**kw, "run": run, "probe": Probe(),
+                                                       "sleep": lambda s: None,
+                                                       "clock": iter(range(10**6)).__next__}))
+
+
+def test_stopping_a_pinned_job_unpins_and_removes_it(home, launched, monkeypatch):
+    ran: list[list[str]] = []
+    _fake_cli(monkeypatch, ran)
+    start({**BASE, "pin": True})
+    assert stop({"job": CHILD_JOB}) == {"ok": True, "job": CHILD_JOB, "removed": True}
+    assert ran == [["stop", CHILD_JOB], ["rm", CHILD_JOB]]
+    assert _pins(home) == []
+
+
+def test_a_failed_remove_of_a_pinned_job_is_reported(home, launched, monkeypatch):
+    ran: list[list[str]] = []
+    _fake_cli(monkeypatch, ran, rm_code=1)
+    start({**BASE, "pin": True})
+    out = stop({"job": CHILD_JOB})
+    assert out["ok"] is False and out["reason"] == "busy"
+
+
+def test_prune_pins_drops_only_jobs_that_are_gone(home, launched):
+    from awm.cch import lifecycle
+
+    start({**BASE, "pin": True})
+    (home.jobs / "pins.json").write_text(json.dumps([CHILD_JOB, "deadbeef"]))
+    assert lifecycle.prune_pins() == ["deadbeef"]
+    assert _pins(home) == [CHILD_JOB]
+
+
+# --- the manifest ------------------------------------------------------------
+
+
+def test_the_manifest_drops_status():
+    from awm.cch.cx_adapter import API_MANIFEST
+
+    fns = {f["name"]: f for f in API_MANIFEST["functions"]}
+    assert {"start", "list", "stop", "resume", "adopt", "probe", "claim", "seed", "remove"} == set(fns)
+    assert "status" not in fns and "wake" not in fns
+    assert not any("effect" in f for f in fns.values())
+    assert "tier" not in str(API_MANIFEST)
+
+
+# --- resume ------------------------------------------------------------------
+
+
+def resume(args, as_=None):
+    from awm.cch import lifecycle
+
+    return asyncio.run(lifecycle.resume(args, as_))
+
+
+def stopped_job(home, monkeypatch, job=CHILD_JOB, *, transcript=True, **over):
+    """A job cx started that has since stopped: lineage and state, no roster entry."""
+    lineage(job, name="seat - x", **over)
+    (home.jobs / job).mkdir(parents=True, exist_ok=True)
+    (home.jobs / job / "state.json").write_text(json.dumps({
+        "name": "seat - x", "sessionId": f"{job}-sid", "state": "done"}))
+    transcripts = home.root / "transcripts"
+    monkeypatch.setenv("AWM_CX_TRANSCRIPTS", str(transcripts))
+    if transcript:
+        (transcripts / "-some-cwd").mkdir(parents=True, exist_ok=True)
+        (transcripts / "-some-cwd" / f"{job}-sid.jsonl").write_text("{}\n")
+
+
+@pytest.fixture
+def respawned(home, monkeypatch):
+    from awm.cch import lifecycle
+    from awm.claudedaemon import roster
+
+    calls: list[tuple[str, dict]] = []
+
+    async def fake(job, **kw):
+        calls.append((job, kw))
+        home.add(job, "seat - x", os.getppid())
+        return next(s for s in roster.load(kw["roster_path"], kw["jobs_dir"])
+                    if s.short == job)
+
+    monkeypatch.setattr(lifecycle.launch, "respawn", fake)
+    return calls
+
+
+def test_resume_respawns_the_same_job_and_re_pins_it(home, respawned, monkeypatch):
+    stopped_job(home, monkeypatch, pinned=True)
+    out = resume({"job": CHILD_JOB})
+    assert out["ok"] and out["job"] == CHILD_JOB and out["pinned"] is True
+    assert out["name"] == "seat - x" and out["link"] is None
+    assert respawned[0][0] == CHILD_JOB
+    assert respawned[0][1]["unit_prefix"] == "awm-cx-resume"
+    assert _pins(home) == [CHILD_JOB]
+
+
+def test_an_unpinned_job_resumes_unpinned(home, respawned, monkeypatch):
+    stopped_job(home, monkeypatch)
+    out = resume({"job": CHILD_JOB})
+    assert out["ok"] and out["pinned"] is False and _pins(home) == []
+
+
+def test_resume_refuses_a_job_cx_did_not_start(home, respawned):
+    out = resume({"job": CHILD_JOB})
+    assert not out["ok"] and "not started by" in out["reason"] and not respawned
+
+
+@pytest.fixture
+def relaunched(home, monkeypatch):
+    """A launcher that registers a new job for a resume from the transcript."""
+    from awm.cch import lifecycle
+    from awm.claudedaemon import roster
+
+    calls: list[dict] = []
+
+    async def fake(**kw):
+        calls.append(kw)
+        home.add("feedface", kw["name"], os.getppid(), cwd=str(kw["cwd"]))
+        return next(s for s in roster.load(kw["roster_path"], kw["jobs_dir"])
+                    if s.short == "feedface")
+
+    monkeypatch.setattr(lifecycle.launch, "launch", fake)
+    return calls
+
+
+RETIRED = "0e380e38-0e38-0e38-0e38-0e380e380e38"
+
+
+def retired_transcript(home, monkeypatch, cwd):
+    transcripts = home.root / "transcripts"
+    monkeypatch.setenv("AWM_CX_TRANSCRIPTS", str(transcripts))
+    slug = transcripts / re.sub(r"[^A-Za-z0-9]", "-", str(cwd))
+    slug.mkdir(parents=True, exist_ok=True)
+    (slug / f"{RETIRED}.jsonl").write_text(
+        json.dumps({"type": "user", "cwd": str(cwd)}) + "\n"
+        + json.dumps({"type": "user", "cwd": "/somewhere/it/moved"}) + "\n")
+
+
+def test_a_retired_session_resumes_from_its_transcript_in_a_new_job(home, relaunched, monkeypatch):
+    cwd = home.projects / "awm" / "demo"
+    retired_transcript(home, monkeypatch, cwd)
+    out = resume({"job": RETIRED, "prompt": "carry on"})
+    assert out["ok"] and out["from_transcript"] and out["job"] == "feedface"
+    assert out["session_id"] == "cc" + RETIRED.replace("-", "")
+    call = relaunched[0]
+    assert f"--resume={RETIRED}" in call["flags"] and call["cwd"] == str(cwd)
+    assert call["prompt"] == "carry on" and call["name"] == "resumed-0e380e38"
+    from awm.cch import lifecycle
+
+    assert lifecycle.read_lineage("feedface")["session_id"] == RETIRED
+    # The gateway gates a session with no mode in its record as `unknown` and refuses its calls.
+    assert lifecycle.read_lineage("feedface")["mode"] == "worker"
+
+
+def test_a_removed_job_with_a_kept_lineage_resumes_from_the_transcript(home, relaunched, monkeypatch):
+    cwd = home.projects / "awm" / "demo"
+    retired_transcript(home, monkeypatch, cwd)
+    lineage(CHILD_JOB, name="redux/worker", session_id=RETIRED, remote_control="redux-worker",
+            brief_text="You are a worker session.")
+    out = resume({"job": CHILD_JOB})
+    assert out["ok"] and out["name"] == "redux/worker"
+    flags = relaunched[0]["flags"]
+    assert "--remote-control=redux-worker" in flags
+    assert "--append-system-prompt=You are a worker session." in flags
+
+
+def test_a_retired_session_with_no_transcript_is_refused(home, relaunched, monkeypatch):
+    monkeypatch.setenv("AWM_CX_TRANSCRIPTS", str(home.root / "transcripts"))
+    out = resume({"job": RETIRED})
+    assert not out["ok"] and "no transcript" in out["reason"] and not relaunched
+
+
+def test_resume_refuses_a_removed_job(home, respawned, monkeypatch):
+    stopped_job(home, monkeypatch)
+    (home.jobs / CHILD_JOB / "state.json").unlink()
+    out = resume({"job": CHILD_JOB})
+    assert not out["ok"] and "removed" in out["reason"] and not respawned
+
+
+def test_resume_refuses_a_job_whose_transcript_is_gone(home, respawned, monkeypatch):
+    stopped_job(home, monkeypatch, transcript=False)
+    out = resume({"job": CHILD_JOB})
+    assert not out["ok"] and "transcript" in out["reason"] and not respawned
+
+
+def test_resume_refuses_a_running_job(home, monkeypatch):
+    stopped_job(home, monkeypatch)
+    home.add(CHILD_JOB, "seat - x", os.getpid())
+    (home.jobs / CHILD_JOB / "state.json").write_text(json.dumps({
+        "name": "seat - x", "sessionId": f"{CHILD_JOB}-sid"}))
+    out = resume({"job": CHILD_JOB})
+    assert not out["ok"] and "running" in out["reason"]
+
+
+def test_resume_refuses_without_a_daemon(home, respawned, monkeypatch):
+    stopped_job(home, monkeypatch)
+    home.set_workers({}, supervisor=2**22 + 12345)
+    out = resume({"job": CHILD_JOB})
+    assert not out["ok"] and "no claude code daemon" in out["reason"] and not respawned
+
+
+def test_a_cx_session_may_resume_only_its_own_jobs(home, respawned, monkeypatch):
+    parent_session(home, mode="worker")
+    stopped_job(home, monkeypatch, parent="someone-else")
+    out = resume({"job": CHILD_JOB, "_caller_pid": os.getpid()})
+    assert not out["ok"] and "may resume only" in out["reason"] and not respawned
+
+
+def test_resume_without_a_daemon_asks_keep_and_says_daemon_down(home, respawned, monkeypatch,
+                                                                keep_calls):
+    stopped_job(home, monkeypatch)
+    home.set_workers({}, supervisor=2**22 + 12345)
+    out = resume({"job": CHILD_JOB})
+    assert out["ok"] is False and out["code"] == "daemon_down" and not respawned
+    assert keep_calls.calls[0][:2] == ("harness-cc", "daemon_ensure")
+
+
+def test_resume_goes_ahead_once_keep_brings_the_daemon_up(home, respawned, monkeypatch,
+                                                          keep_calls):
+    stopped_job(home, monkeypatch)
+    home.set_workers({}, supervisor=2**22 + 12345)
+    keep_calls.answer.update(ok=True, hook=lambda: home.set_workers({}))
+    out = resume({"job": CHILD_JOB})
+    assert out["ok"] is True and respawned[0][0] == CHILD_JOB
+
+
+def test_stop_without_a_daemon_keeps_the_pinned_job(home, launched, stops, monkeypatch):
+    from awm.cch import lifecycle
+
+    removed: list[str] = []
+    monkeypatch.setattr(lifecycle.cli, "stop_and_remove",
+                        lambda job, **kw: removed.append(job) or {"removed": True})
+    monkeypatch.setattr(lifecycle.pins, "unpin", lambda job: removed.append(f"unpin {job}"))
+    start(BASE)
+    home.set_workers(home.workers(), supervisor=2**22 + 12345)
+    out = stop({"job": CHILD_JOB})
+    assert out["ok"] is False and out["code"] == "daemon_down"
+    assert stops == [] and removed == []
+
+
+def _transcript(home, session_id: str, turns: list[tuple[str, str]]) -> None:
+    from awm.cch import config
+
+    folder = config.transcripts_dir() / "-proj"
+    folder.mkdir(parents=True, exist_ok=True)
+    with open(folder / f"{session_id}.jsonl", "w") as fh:
+        for role, text in turns:
+            fh.write(json.dumps({"type": role, "message": {"content": text}}) + "\n")
+
+
+def test_a_replacing_start_carries_the_old_tail_and_retires_the_old_job(home, launched, stops,
+                                                                         monkeypatch):
+    stopped_job(home, monkeypatch, job="dddddddd", transcript=False)
+    _transcript(home, "dddddddd-sid", [("user", "where were we"), ("assistant", "on step 3")])
+    out = start({**BASE, "prompt": "carry on", "replaces": "dddddddd"})
+    assert out["ok"] is True
+    prompt = launched[0]["prompt"]
+    assert prompt.startswith("carry on") and "job dddddddd" in prompt and "on step 3" in prompt
+    assert stops == ["dddddddd"]
+    assert json.loads((home.jobs / "dddddddd" / "state.json").read_text())["state"] == "stopped"
+    from awm.cch import lifecycle
+    assert lifecycle.read_lineage(CHILD_JOB)["replaces"] == "dddddddd"
+
+
+def test_replaces_must_be_a_job_id(home, launched):
+    out = start({**BASE, "replaces": "../x"})
+    assert out["ok"] is False and "replaces" in out["reason"]
+
+
+def test_adopt_records_lineage_for_a_hand_started_job(home, monkeypatch):
+    from awm.cch import lifecycle
+
+    home.add("eeeeeeee", "seat - slack main", os.getpid())
+    out = asyncio.run(lifecycle.adopt({"job": "eeeeeeee"}))
+    assert out["ok"] is True and lifecycle.read_lineage("eeeeeeee")["adopted"] is True
+    again = asyncio.run(lifecycle.adopt({"job": "eeeeeeee"}))
+    assert again["ok"] is False and "already" in again["reason"]
+
+
+def test_a_started_session_that_waits_can_be_resumed(home, launched, respawned,
+                                                              monkeypatch):
+    """start_other, a kept stop, resume_other: a wait keeps the job, so its lineage
+    survives the prune and the resume finds it (live a92d02bf and c63d29b9)."""
+    import functools
+    import threading
+
+    from awm.cch import control, hub_adapter, lifecycle
+    from awm.claudedaemon import cli
+
+    out = start({**BASE, "prompt": "do it"})
+    assert out["ok"] and out["job"] == CHILD_JOB
+    stopped = threading.Event()
+
+    def claude_stop(job, **kw):
+        stopped.set()
+        return {"stopped": True, "removed": False, "kept": True, "detail": ""}
+
+    monkeypatch.setattr(cli, "stop_keeping", claude_stop)
+    monkeypatch.setattr(control, "_sleep", lambda s: None)
+    # The own-session stop runs after the call returns: run it inline, so the stop and
+    # its lineage record land before the test reads them.
+    monkeypatch.setattr(control, "stop", functools.partial(control.stop, spawn=lambda fn: fn()))
+    monkeypatch.setattr(hub_adapter.control, "resolve", lambda ref, pid: control.Target(
+        pid=os.getppid(), kind="bg", job=CHILD_JOB, name="demo", alive=True,
+        is_self=True))
+    retired = asyncio.run(hub_adapter.HANDLERS["stop"](
+        {"ref": CHILD_JOB, "pid": os.getppid(), "confirm": True, "keep": True}, None))
+    assert retired["ok"] and retired["stopping"]
+    assert stopped.is_set()
+
+    # The daemon drops the stopped worker from its roster and keeps its state.
+    home.set_workers({})
+    state = home.jobs / CHILD_JOB / "state.json"
+    state.write_text(json.dumps({**json.loads(state.read_text()),
+                                 "sessionId": f"{CHILD_JOB}-sid", "state": "done"}))
+    transcripts = home.root / "transcripts"
+    monkeypatch.setenv("AWM_CX_TRANSCRIPTS", str(transcripts))
+    (transcripts / "-cwd").mkdir(parents=True)
+    (transcripts / "-cwd" / f"{CHILD_JOB}-sid.jsonl").write_text("{}\n")
+    assert lifecycle.prune_lineage(now=time.time() + 86_400) == []
+
+    back = asyncio.run(hub_adapter.HANDLERS["resume"]({"ref": CHILD_JOB}, None))
+    assert back["ok"] and back["job"] == CHILD_JOB
+    assert respawned[0][0] == CHILD_JOB

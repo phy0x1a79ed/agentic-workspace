@@ -5,8 +5,8 @@
 # Three halves, because this service has three kinds of dependency:
 #
 #   1. Python — the adapter, the supervisor and the mesh front. Installs the
-#      component libraries it imports first, then httpsfront (the front is a
-#      *configuration* of that component, not a copy of it), then the service.
+#      component libraries it imports first, tlsfront among them (the front is
+#      a *configuration* of that library, not a copy of it), then the service.
 #
 #   2. A node toolchain — its own mamba env pinned to node 24. The harness needs
 #      >= 22.19 and the node on the host PATH is older and carries no npm, so
@@ -19,7 +19,7 @@
 #      so it is stamped and skipped when the tree has not moved.
 #
 # Every step is idempotent and skips itself when already satisfied, because this
-# script runs on every deploy (awm/gateway/install.sh invokes each service's).
+# script runs on every deploy (awm/install.sh invokes each plugin's).
 #
 # Override the target env with AWM_ENV=<name>.
 set -euo pipefail
@@ -31,6 +31,7 @@ ENV="${AWM_ENV:-awm}"
 # and `.awm/`. Run from a scope worktree they differ, and using the git toplevel
 # for a `projects/` path silently addresses a directory that does not exist.
 REPO="$(git -C "$HERE" rev-parse --show-toplevel)"
+AWM="${AWM_ROOT:-$REPO/awm}"
 workspace_root() {
     [ -n "${AWM_WORKSPACE:-}" ] && { printf '%s\n' "$AWM_WORKSPACE"; return; }
     local d="$1"
@@ -53,10 +54,11 @@ FORK_DIR="${DSH_FORK_DIR:-$WS/projects/deepseek-harness/release}"
 
 run() { echo "+ pip install -e $*"; mamba run -n "$ENV" pip install -e "$@"; }
 
-run "$REPO/awm/service_components/config" --no-deps
-run "$REPO/awm/service_components/gatewayclient" --no-deps
-run "$REPO/awm/services/httpsfront" --no-deps
-run "$REPO/awm/services/dsh"
+run "$AWM/service_components/config" --no-deps
+run "$AWM/service_components/gatewayclient" --no-deps
+run "$AWM/service_components/grantlib" --no-deps
+run "$AWM/service_components/tlsfront" --no-deps
+run "$HERE"
 
 # Bake the target env's absolute interpreter into a gitignored `.runtime-env`
 # sidecar so the hub supervisor can respawn this service under systemd's
@@ -118,7 +120,8 @@ fi
 # lockfile the install resolved. Any of the three moving means the built
 # artifacts no longer describe the source, which is the whole point of stamping
 # rather than testing for the presence of a file.
-STAMP_DIR="$FORK_DIR/.awm"          # already excluded by the bare repo
+# It sits in the worktree's git dir, which never travels.
+STAMP_DIR="$(git -C "$FORK_DIR" rev-parse --absolute-git-dir)/awm"
 STAMP="$STAMP_DIR/dsh-build-stamp"
 HEAD_SHA="$(git -C "$FORK_DIR" rev-parse HEAD)"
 DIRTY=0

@@ -55,7 +55,6 @@ API_MANIFEST: dict[str, Any] = {
     "functions": [
         {
             "name": "status",
-            "effect": "read",
             "tool": "trilium_status",
             "description": (
                 "Whether the vault is up, whether it has a database yet, how "
@@ -68,7 +67,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "start",
-            "effect": "write",
             "tool": "trilium_start",
             "surfaces": _CLI_HTTP,
             "description": (
@@ -80,7 +78,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "stop",
-            "effect": "write",
             "tool": "trilium_stop",
             "surfaces": _CLI_HTTP,
             "description": (
@@ -92,7 +89,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "restart",
-            "effect": "write",
             "tool": "trilium_restart",
             "surfaces": _CLI_HTTP,
             "description": "Stop then start the vault's server. Operator only.",
@@ -101,7 +97,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "url",
-            "effect": "read",
             "tool": "trilium_url",
             "description": (
                 "Where the vault is served. A path, not a URL: it is on the "
@@ -110,20 +105,19 @@ API_MANIFEST: dict[str, Any] = {
             "params": [],
         },
         {
-            "name": "provision",
-            "effect": "write",
-            "tool": "trilium_provision",
+            "name": "init",
+            "tool": "trilium_init",
             "surfaces": _CLI_HTTP,
             "description": (
-                "Create the vault's database if it has none. Idempotent, and "
-                "the supervision loop does it unprompted — this verb is for "
-                "when it failed and you want the error. Operator only."
+                "Create an empty vault where the vault path holds no database, "
+                "and serve it. The service never makes one by itself: start "
+                "refuses a path with no database. Refuses where a vault "
+                "exists. Operator only."
             ),
             "params": [],
         },
         {
             "name": "snapshot",
-            "effect": "write",
             "tool": "trilium_snapshot",
             "surfaces": _CLI_HTTP,
             "description": (
@@ -144,7 +138,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "snapshots",
-            "effect": "read",
             "tool": "trilium_snapshots",
             "surfaces": _CLI_HTTP,
             "description": (
@@ -156,7 +149,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "restore",
-            "effect": "write",
             "tool": "trilium_restore",
             "surfaces": _CLI_HTTP,
             "description": (
@@ -175,7 +167,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "export",
-            "effect": "write",
             "tool": "trilium_export",
             "surfaces": _CLI_HTTP,
             "description": (
@@ -193,7 +184,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "logs",
-            "effect": "read",
             "tool": "trilium_logs",
             "surfaces": _CLI_HTTP,
             "description": (
@@ -207,7 +197,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "note_upsert",
-            "effect": "write",
             "tool": "trilium_note_upsert",
             "description": (
                 "Write a note: create it under a parent, or replace the body "
@@ -228,7 +217,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "note_get",
-            "effect": "read",
             "tool": "trilium_note_get",
             "description": (
                 "One note: its title, type, attributes, attachments, parents "
@@ -244,7 +232,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "note_children",
-            "effect": "read",
             "tool": "trilium_note_children",
             "description": (
                 "The direct children of a note, in tree order, without their "
@@ -257,7 +244,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "note_search",
-            "effect": "read",
             "tool": "trilium_note_search",
             "description": (
                 "Search the vault in Trilium's own search grammar — "
@@ -280,7 +266,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "note_create",
-            "effect": "write",
             "tool": "trilium_note_create",
             "description": (
                 "Create a note under a parent and return its id. Unlike "
@@ -290,6 +275,10 @@ API_MANIFEST: dict[str, Any] = {
                 "Operator only."
             ),
             "params": [
+                {"name": "note_id", "type": "string",
+                 "description": "A fixed id for the note, 4 to 128 of "
+                                "[A-Za-z0-9_], so a re-run finds it again. "
+                                "Default: Trilium picks one."},
                 {"name": "title", "type": "string", "required": True,
                  "description": "The note's title."},
                 {"name": "content", "type": "string",
@@ -308,7 +297,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "note_update",
-            "effect": "write",
             "tool": "trilium_note_update",
             "description": (
                 "Change a note in place: its title, type, mime, body, or any "
@@ -331,7 +319,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "note_place",
-            "effect": "write",
             "tool": "trilium_note_place",
             "description": (
                 "Make a note's parents exactly this set — one call for what "
@@ -352,7 +339,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "note_delete",
-            "effect": "write",
             "tool": "trilium_note_delete",
             "description": (
                 "Delete a note and everything under it. Operator only, and it "
@@ -365,7 +351,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "note_move",
-            "effect": "write",
             "tool": "trilium_note_move",
             "description": (
                 "Move a note under a new parent, leaving it in one place. "
@@ -380,7 +365,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "note_clone",
-            "effect": "write",
             "tool": "trilium_note_clone",
             "description": (
                 "Also show this note under another parent. One note in two "
@@ -396,7 +380,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "attrs_get",
-            "effect": "read",
             "tool": "trilium_attrs_get",
             "description": (
                 "Every label and relation on a note, including the ones it "
@@ -409,7 +392,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "attr_set",
-            "effect": "write",
             "tool": "trilium_attr_set",
             "description": (
                 "Give a note exactly one label or relation of this name. "
@@ -432,7 +414,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "attr_delete",
-            "effect": "write",
             "tool": "trilium_attr_delete",
             "description": (
                 "Remove every attribute of this name the note owns. An "
@@ -450,12 +431,11 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "attachment_put",
-            "effect": "write",
             "tool": "trilium_attachment_put",
             "description": (
                 "Attach a file to a note, from a path on this host or from "
                 "base64. Replaces an attachment of the same title, and skips "
-                "the upload when the size already matches. Operator only: it "
+                "the upload when the bytes already match. Operator only: it "
                 "reads a path the service can reach."
             ),
             "params": [
@@ -474,7 +454,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "attachment_get",
-            "effect": "read",
             "tool": "trilium_attachment_get",
             "description": (
                 "One attachment: its owner note, title, mime and size, and its "
@@ -488,7 +467,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "slice_expose",
-            "effect": "secret",
             "tool": "trilium_slice_expose",
             "surfaces": _CLI_HTTP,
             "description": (
@@ -514,7 +492,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "slice_list",
-            "effect": "secret",
             "tool": "trilium_slice_list",
             "surfaces": _CLI_HTTP,
             "description": (
@@ -528,7 +505,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "slice_revoke",
-            "effect": "write",
             "tool": "trilium_slice_revoke",
             "surfaces": _CLI_HTTP,
             "description": (
@@ -543,7 +519,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "slice_resolve",
-            "effect": "secret",
             "tool": "trilium_slice_resolve",
             "surfaces": _CLI_HTTP,
             "description": (
@@ -593,6 +568,82 @@ def _operator_only(as_: str | None, verb: str) -> None:
             f"run `awm trilium {verb}` on the host")
 
 
+#: The note and attribute verbs the operations home's board writer may call
+#: from across its door (fleet.md R87 item 3, queue.md R66).
+WRITER_VERBS = frozenset({
+    "note_get", "note_children", "note_search", "note_create", "note_update",
+    "note_upsert", "note_delete", "note_move", "attrs_get", "attr_set", "attr_delete"})
+WRITER_ROOTS_ENV = "AWM_TRILIUM_WRITER_ROOTS"
+#: The writer's three subtrees: tasks, Ops and the board page, as operations' `board` names them.
+DEFAULT_WRITER_ROOTS = "awmSwarmTasks,awmSwarmOps,awmSwarmBoard"
+#: How many notes one ancestry walk reads before it gives up and refuses.
+_WALK_MAX = 256
+
+
+def _writer_roots() -> frozenset[str]:
+    raw = os.environ.get(WRITER_ROOTS_ENV, DEFAULT_WRITER_ROOTS)
+    return frozenset(r.strip() for r in raw.split(",") if r.strip() and r.strip() != "root")
+
+
+def _is_writer(as_: str | None) -> bool:
+    """Whether ``as_`` is the operations home node, as its door stamps it."""
+    home = os.environ.get("AWM_OPERATIONS_HOME", "alcor").strip().lower()
+    stamp = (as_ or "").strip().lower()
+    return bool(home) and stamp.startswith("peer:") \
+        and stamp[len("peer:"):].split(".")[0] == home
+
+
+def _inside(c: Any, note_id: str, roots: frozenset[str],
+            parents: list[str] | None = None) -> bool:
+    """Whether any branch of ``note_id`` leads up to one of ``roots``.
+
+    A missing start note raises the client's own not-found error, so the
+    writer's existence check reads the same answer it would on the host.
+    """
+    if note_id in roots:
+        return True
+    frontier = list(parents if parents is not None
+                    else c.note(note_id).get("parentNoteIds") or [])
+    seen = {note_id}
+    while frontier and len(seen) < _WALK_MAX:
+        n = frontier.pop()
+        if n in roots:
+            return True
+        if n in seen or n in ("root", "none", ""):
+            continue
+        seen.add(n)
+        frontier.extend(c.note(n).get("parentNoteIds") or [])
+    return False
+
+
+def _note_caller(as_: str | None, verb: str) -> bool:
+    """`_operator_only` for the note verbs, which also admits the board writer.
+
+    Returns True for the writer, whose call must then pass `_writer_inside`.
+    """
+    if as_ is not None and not (verb in WRITER_VERBS and _is_writer(as_)):
+        _operator_only(as_, verb)
+    return as_ is not None
+
+
+async def _writer_inside(verb: str, *note_ids: str) -> None:
+    """Refuse the writer's call unless every note it names sits under a root that
+    this host's ``AWM_TRILIUM_WRITER_ROOTS`` lists. The caller's word never sets
+    the subtree."""
+    roots = _writer_roots()
+    if not roots:
+        raise PermissionError(f"{verb}: this vault names no writer subtree")
+
+    def _check() -> None:
+        c = etapi.client()
+        for note_id in note_ids:
+            if not _inside(c, note_id, roots):
+                raise PermissionError(
+                    f"{verb} on {note_id} refused: the board writer acts only "
+                    f"under {', '.join(sorted(roots))}")
+    await asyncio.to_thread(_check)
+
+
 async def _agent_gate(args: dict, verb: str, *note_ids: str) -> None:
     """Refuse a session's write to a note that is not labelled for agents.
 
@@ -613,7 +664,7 @@ async def _agent_gate(args: dict, verb: str, *note_ids: str) -> None:
                       if a.get("type") == "label"}
             if "agentManaged" in labels:
                 out.append(f"note {note_id} has #agentManaged: only the "
-                           f"reporting service writes it")
+                           f"operations board writer writes it")
             elif "agentWritable" not in labels:
                 out.append(f"note {note_id} has no effective #agentWritable label")
         return out
@@ -672,9 +723,9 @@ async def _h_restart(args: dict, as_: str | None = None) -> dict:
     return await asyncio.to_thread(CHILD.restart)
 
 
-async def _h_provision(args: dict, as_: str | None = None) -> dict:
-    _operator_only(as_, "provision")
-    return await asyncio.to_thread(CHILD.provision)
+async def _h_init(args: dict, as_: str | None = None) -> dict:
+    _operator_only(as_, "init")
+    return await asyncio.to_thread(CHILD.init)
 
 
 async def _h_url(args: dict, as_: str | None = None) -> dict:
@@ -744,8 +795,11 @@ async def _h_export(args: dict, as_: str | None = None) -> dict:
 
 
 async def _h_note_upsert(args: dict, as_: str | None = None) -> dict:
-    _operator_only(as_, "note_upsert")
-    await _agent_gate(args, "note_upsert", (args.get("parent") or "").strip() or "root")
+    writer = _note_caller(as_, "note_upsert")
+    parent = (args.get("parent") or "").strip() or "root"
+    if writer:
+        await _writer_inside("note_upsert", parent)
+    await _agent_gate(args, "note_upsert", parent)
     title = (args.get("title") or "").strip()
     if not title:
         raise ValueError("title is required, and is matched exactly")
@@ -754,8 +808,7 @@ async def _h_note_upsert(args: dict, as_: str | None = None) -> dict:
         raise ValueError("content is required")
     return await asyncio.to_thread(
         etapi.client().upsert_note,
-        parent_note_id=(args.get("parent") or "").strip() or "root",
-        title=title, content=str(content),
+        parent_note_id=parent, title=title, content=str(content),
         type=(args.get("type") or "").strip() or "text")
 
 
@@ -801,8 +854,10 @@ def _note_id(args: dict, key: str = "note_id", default: str | None = None) -> st
 
 
 async def _h_note_get(args: dict, as_: str | None = None) -> dict:
-    _operator_only(as_, "note_get")
+    writer = _note_caller(as_, "note_get")
     note_id = _note_id(args)
+    if writer:
+        await _writer_inside("note_get", note_id)
     want_content = args.get("content", True) is not False
 
     def _read() -> dict:
@@ -816,8 +871,10 @@ async def _h_note_get(args: dict, as_: str | None = None) -> dict:
 
 
 async def _h_note_children(args: dict, as_: str | None = None) -> dict:
-    _operator_only(as_, "note_children")
+    writer = _note_caller(as_, "note_children")
     note_id = _note_id(args, default="root")
+    if writer:
+        await _writer_inside("note_children", note_id)
 
     def _read() -> dict:
         kids = etapi.client().children(note_id)
@@ -832,7 +889,7 @@ async def _h_note_children(args: dict, as_: str | None = None) -> dict:
 
 
 async def _h_note_search(args: dict, as_: str | None = None) -> dict:
-    _operator_only(as_, "note_search")
+    writer = _note_caller(as_, "note_search")
     query = (args.get("query") or "").strip()
     if not query:
         raise ValueError("query is required")
@@ -841,6 +898,8 @@ async def _h_note_search(args: dict, as_: str | None = None) -> dict:
         "fastSearch": args.get("fast", True) is not False,
     }
     ancestor = (args.get("ancestor") or "").strip()
+    if writer and ancestor:
+        await _writer_inside("note_search", ancestor)
     if ancestor:
         params["ancestorNoteId"] = ancestor
     # Trilium's search context appends "not archived" to every expression, and
@@ -848,12 +907,27 @@ async def _h_note_search(args: dict, as_: str | None = None) -> dict:
     # from a caller that owns notes inside it. Off by default, as upstream.
     if args.get("archived") is True:
         params["includeArchivedNotes"] = True
-    return await asyncio.to_thread(etapi.client().search, query, **params)
+
+    def _search() -> dict:
+        c = etapi.client()
+        out = c.search(query, **params)
+        if writer and not ancestor:
+            roots = _writer_roots()
+            out["results"] = [n for n in out.get("results") or []
+                              if _inside(c, n.get("noteId", ""), roots,
+                                         n.get("parentNoteIds") or [])]
+        return out
+    return await asyncio.to_thread(_search)
 
 
 async def _h_note_create(args: dict, as_: str | None = None) -> dict:
-    _operator_only(as_, "note_create")
-    await _agent_gate(args, "note_create", (args.get("parent") or "").strip() or "root")
+    writer = _note_caller(as_, "note_create")
+    parent = (args.get("parent") or "").strip() or "root"
+    wanted_id = (args.get("note_id") or "").strip() or None
+    # The writer may make a root of its own subtree, wherever it goes.
+    if writer and wanted_id not in _writer_roots():
+        await _writer_inside("note_create", parent)
+    await _agent_gate(args, "note_create", parent)
     title = (args.get("title") or "").strip()
     if not title:
         raise ValueError("title is required")
@@ -863,10 +937,10 @@ async def _h_note_create(args: dict, as_: str | None = None) -> dict:
     def _write() -> dict:
         c = etapi.client()
         made = c.create_note(
-            parent_note_id=(args.get("parent") or "").strip() or "root",
+            parent_note_id=parent,
             title=title, type=(args.get("type") or "").strip() or "text",
             content=str(args.get("content") or ""),
-            mime=(args.get("mime") or "").strip() or None)
+            mime=(args.get("mime") or "").strip() or None, note_id=wanted_id)
         note_id = made["note"]["noteId"]
         # A second call each, because ETAPI's create-note whitelist takes no
         # attributes. Doing it here is the point of the verb: every caller
@@ -881,8 +955,10 @@ async def _h_note_create(args: dict, as_: str | None = None) -> dict:
 
 
 async def _h_note_update(args: dict, as_: str | None = None) -> dict:
-    _operator_only(as_, "note_update")
+    writer = _note_caller(as_, "note_update")
     note_id = _note_id(args)
+    if writer:
+        await _writer_inside("note_update", note_id)
     await _agent_gate(args, "note_update", note_id)
     fields = {k: args[k] for k in ("title", "type", "mime")
               if args.get(k) not in (None, "")}
@@ -956,8 +1032,10 @@ async def _h_note_place(args: dict, as_: str | None = None) -> dict:
 
 
 async def _h_note_delete(args: dict, as_: str | None = None) -> dict:
-    _operator_only(as_, "note_delete")
+    writer = _note_caller(as_, "note_delete")
     note_id = _note_id(args)
+    if writer:
+        await _writer_inside("note_delete", note_id)
     await _agent_gate(args, "note_delete", note_id)
     if note_id == "root":
         raise ValueError(
@@ -971,8 +1049,12 @@ async def _h_note_delete(args: dict, as_: str | None = None) -> dict:
 
 
 async def _h_note_move(args: dict, as_: str | None = None) -> dict:
-    _operator_only(as_, "note_move")
+    writer = _note_caller(as_, "note_move")
     note_id, parent = _note_id(args), _note_id(args, "parent")
+    if writer:
+        if note_id in _writer_roots():
+            raise PermissionError(f"note_move on {note_id} refused: a writer root stays put")
+        await _writer_inside("note_move", note_id, parent)
     await _agent_gate(args, "note_move", note_id, parent)
     return await asyncio.to_thread(etapi.client().move_note, note_id, parent)
 
@@ -990,8 +1072,10 @@ async def _h_note_clone(args: dict, as_: str | None = None) -> dict:
 
 
 async def _h_attrs_get(args: dict, as_: str | None = None) -> dict:
-    _operator_only(as_, "attrs_get")
+    writer = _note_caller(as_, "attrs_get")
     note_id = _note_id(args)
+    if writer:
+        await _writer_inside("attrs_get", note_id)
 
     def _read() -> dict:
         attrs = etapi.client().attributes(note_id)
@@ -1005,8 +1089,10 @@ async def _h_attrs_get(args: dict, as_: str | None = None) -> dict:
 
 
 async def _h_attr_set(args: dict, as_: str | None = None) -> dict:
-    _operator_only(as_, "attr_set")
+    writer = _note_caller(as_, "attr_set")
     note_id = _note_id(args)
+    if writer:
+        await _writer_inside("attr_set", note_id)
     await _agent_gate(args, "attr_set", note_id)
     name = (args.get("name") or "").strip().lstrip("#~")
     if not name:
@@ -1019,8 +1105,10 @@ async def _h_attr_set(args: dict, as_: str | None = None) -> dict:
 
 
 async def _h_attr_delete(args: dict, as_: str | None = None) -> dict:
-    _operator_only(as_, "attr_delete")
+    writer = _note_caller(as_, "attr_delete")
     note_id = _note_id(args)
+    if writer:
+        await _writer_inside("attr_delete", note_id)
     await _agent_gate(args, "attr_delete", note_id)
     name = (args.get("name") or "").strip().lstrip("#~")
     if not name:
@@ -1106,25 +1194,8 @@ def _slice_url(token: str, note_id: str, user: str | None) -> str:
     return f"{edge}/slice/{token}/{query}#root/{note_id}"
 
 
-def _fork_only(verb: str) -> None:
-    """Refuse a slice verb on a node serving the published tarball.
-
-    The mask that confines a slice to one subtree lives in the fork. Upstream's
-    build ignores the edge's slice headers entirely and answers every route, so a
-    token resolved against it would open the whole vault to whoever holds the
-    link. Refused at both ends -- minting and resolving -- because a database
-    that reaches such a node by sync carries tokens minted elsewhere.
-    """
-    entry = instances.entry_point()
-    if entry is not None and entry[1] != "fork":
-        raise PermissionError(
-            f"{verb} needs the Trilium fork: this node serves the published "
-            f"tarball, which has no slice mask and would expose the whole vault")
-
-
 async def _h_slice_expose(args: dict, as_: str | None = None) -> dict:
     _operator_only(as_, "slice_expose")
-    _fork_only("slice_expose")
     note_id = _note_id(args)
     user = (args.get("user") or "").strip() or None
     write = bool(args.get("write"))
@@ -1174,7 +1245,6 @@ async def _h_slice_revoke(args: dict, as_: str | None = None) -> dict:
 
 async def _h_slice_resolve(args: dict, as_: str | None = None) -> dict:
     _operator_only(as_, "slice_resolve")
-    _fork_only("slice_resolve")
     token = (args.get("token") or "").strip()
     row = await asyncio.to_thread(slices.resolve, token) if token else None
     if row is None:
@@ -1189,7 +1259,7 @@ HANDLERS = {
     "stop": _h_stop,
     "restart": _h_restart,
     "url": _h_url,
-    "provision": _h_provision,
+    "init": _h_init,
     "logs": _h_logs,
     "snapshot": _h_snapshot,
     "snapshots": _h_snapshots,
@@ -1221,7 +1291,7 @@ HANDLERS = {
 
 
 async def _health_loop() -> None:
-    """Respawn the child if it died, and provision it if it has no database.
+    """Respawn the child if it died, and settle the launchbar once it answers.
     Never exits.
 
     Watches process liveness rather than an HTTP probe: a slow probe while
@@ -1282,7 +1352,7 @@ async def _snapshot_loop() -> None:
 
 
 async def _on_start() -> None:
-    """Start the vault's server, give it a database if it has none, then loop.
+    """Start the vault's server, then loop.
 
     No failure here is fatal. The service still registers, so `status` can
     report *why* it is broken, and the loop keeps retrying.
@@ -1300,14 +1370,17 @@ async def _on_start() -> None:
             log.exception("trilium: sync tunnel failed to open; the loop will "
                           "retry")
     if instances.entry_point() is None:
-        log.warning("trilium: no server bundle at %s or %s — run install.sh; "
+        log.warning("trilium: no server release at %s — run install.sh; "
                     "the service will register and report this via status",
-                    instances.FORK_ENTRY, instances.TARBALL_ENTRY)
+                    instances.SERVER_DIR)
     elif not instances.VAULT.exists:
         log.warning("trilium: no vault directory at %s — run "
                     "awm/services/trilium/install.sh; the service will "
                     "register and report this via status",
                     instances.VAULT.scope)
+    elif not instances.VAULT.has_document:
+        log.error("trilium: %s; the service will register and report this "
+                  "via status", server.NoVault(instances.VAULT))
     else:
         try:
             res = await asyncio.to_thread(CHILD.start)
@@ -1320,19 +1393,13 @@ async def _on_start() -> None:
     # A dead supervision loop looks exactly like a vault that has not crashed,
     # so it is spawned supervised rather than as a bare task nobody reads.
     spawn_supervised("trilium:health", _health_loop)
-    # Only where a snapshot becomes a pin. A node serving the published tarball
-    # has no checkout to commit into, and its copy of the vault is covered by
-    # whichever node does.
+    # Only where a snapshot becomes a pin. A node with no vault checkout has
+    # nothing to commit into, and its copy of the vault is covered elsewhere.
     if instances.VAULT.is_checkout:
         spawn_supervised("trilium:snapshot", _snapshot_loop)
 
 
 async def main() -> None:
-    # Which node is the hub and which are spokes is declared in the workspace
-    # env file, and the gateway reads that file once at its own start. Reading
-    # it again here is what lets the declaration change with a restart of this
-    # service rather than of everything.
-    config.load_env_file()
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",

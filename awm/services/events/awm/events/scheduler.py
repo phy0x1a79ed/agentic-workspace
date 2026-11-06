@@ -28,7 +28,7 @@ import logging
 import random
 from time import time
 
-from awm.events import cron
+from awm.config import cron
 from awm.events.dao import EventsDAO
 
 log = logging.getLogger("awm.events.scheduler")

@@ -209,22 +209,18 @@ def test_write_marks_rejects_bad_entries_and_leaves_no_temp(awm_dir, projects):
     assert sorted(p.name for p in awm_dir.iterdir()) == ["private.json"]
 
 
-def test_legacy_journal_spellings_name_the_project(projects):
+def test_a_project_channel_names_the_project(projects):
     privacy.write_marks([_mark(projects, "avatar")])
-    assert privacy.hidden("task:avatar")
-    assert privacy.hidden("", "user:proj:avatar")
     assert privacy.hidden("", "project:avatar")
-    assert not privacy.hidden("", "user:proj:avatar2")
-    assert privacy.visible_rows([{"project": "task:avatar"}, {"project": "", "scope": "user:proj:avatar"},
+    assert not privacy.hidden("", "project:avatar2")
+    assert privacy.visible_rows([{"project": "", "scope": "project:avatar"},
                                  {"project": "", "scope": "workspace"}], "peer") == [{"project": "", "scope": "workspace"}]
-    assert privacy.hides_args({"scope": "user:proj:avatar"})
+    assert privacy.hides_args({"scope": "project:avatar"})
     assert not privacy.hides_args({"scope": "dev"})
 
 
 @pytest.mark.parametrize("project,scope,want", [
-    ("task:avatar", None, ("avatar", None)),
-    ("task:avatar", "dev", ("avatar", "dev")),
-    ("", "user:proj:avatar", ("avatar", None)),
+    ("task:avatar", None, ("task:avatar", None)),
     (None, "project:avatar", ("avatar", None)),
     ("", "project:", (None, None)),
     ("awm", "svc-a", ("awm", "svc-a")),

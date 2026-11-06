@@ -15,7 +15,17 @@ from awm.dsh.hub_adapter import API_MANIFEST, HANDLERS
 
 pytestmark = [pytest.mark.unit, pytest.mark.smoke]
 
-FUNCTIONS = API_MANIFEST["functions"]
+FUNCTIONS = [f for f in API_MANIFEST["functions"] if not f["name"].startswith("harness_")]
+HARNESS = [f for f in API_MANIFEST["functions"] if f["name"].startswith("harness_")]
+CONTRACT_VERBS = {"platform", "resolve", "find", "status", "list", "send",
+                  "interrupt", "start", "stop", "resume", "set", "compact"}
+
+
+def test_the_harness_contract_verbs_project_into_harness_ds_off_mcp():
+    assert {f["name"].removeprefix("harness_") for f in HARNESS} == CONTRACT_VERBS
+    for fn in HARNESS:
+        assert fn["tool"] == f"harness-ds_{fn['name'].removeprefix('harness_')}"
+        assert fn["surfaces"] == ["cli", "http"]
 
 
 def test_every_function_projects_into_a_single_domain():
@@ -33,7 +43,7 @@ def test_the_projected_verb_matches_the_internal_name():
 
 
 def test_every_declared_function_has_a_handler():
-    assert {fn["name"] for fn in FUNCTIONS} == set(HANDLERS)
+    assert {fn["name"] for fn in FUNCTIONS + HARNESS} == set(HANDLERS)
 
 
 def test_the_lifecycle_verbs_outlast_the_client_default():

@@ -52,8 +52,9 @@ class TestNewProject:
             project="fresh", scope="work", new_project=True, clone_url=str(seed_repo)))
         assert res.scope == "work"
         assert (projects_dir / "fresh" / ".bare" / "HEAD").exists()
-        assert (projects_dir / "fresh" / "main" / ".awm" / "context.md").exists()
-        assert (projects_dir / "fresh" / "work" / ".awm" / "context.md").exists()
+        assert (projects_dir / "fresh" / "main" / ".git").exists()
+        assert (projects_dir / "fresh" / "work" / ".git").exists()
+        assert not (projects_dir / "fresh" / "work" / ".awm").exists()
 
     def test_new_project_on_a_known_project_changes_nothing(self, scopes_workspace, seed_repo):
         scopes.create_scope(ScopeCreateRequest(
@@ -66,7 +67,7 @@ class TestNewProject:
         res = scopes.create_scope(ScopeCreateRequest(
             project="solo", new_project=True, clone_url=str(seed_repo)))
         assert (res.project, res.scope, res.status) == ("solo", "main", "active")
-        assert (projects_dir / "solo" / "main" / ".awm" / "context.md").exists()
+        assert (projects_dir / "solo" / "main" / ".git").exists()
         assert sorted(p.name for p in (projects_dir / "solo").iterdir() if p.name != ".bare") == ["main"]
 
     def test_create_tags_the_scope_or_the_project_made_alone(self, scopes_workspace, seed_repo):

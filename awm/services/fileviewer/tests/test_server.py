@@ -1,12 +1,5 @@
-"""Unit tests for the fileviewer static-mount config: the mask and the status
-snapshot.
-
-fileviewer no longer runs its own HTTP listener — the file bytes ride the
-gateway's ``kind=static`` mount, and mask *enforcement* is gateway-side (covered
-by ``awm/gateway/tests/test_hub_static.py``). Here we test the pieces this
-service owns: the default mask, the FILEVIEWER_MASK_FILE merge + self-hide, and
-the status shape.
-"""
+"""Unit tests for fileviewer's server: the mask, the status snapshot, and the
+loopback listener the gateway mounts at /s/fileviewer."""
 
 from __future__ import annotations
 
@@ -26,6 +19,29 @@ def test_default_mask_covers_the_usual_secrets():
     for glob in ("**/.ssh/**", "**/*.pem", "**/*.key", "**/.env", "**/*.token",
                  "**/.aws/**", "**/.git/**"):
         assert glob in m, f"default mask missing {glob!r}"
+
+
+@pytest.mark.parametrize("glob, path, hit", [
+    ("**/.git/**", ".git/config", True),
+    ("**/.git/**", "a/b/.git/config", True),
+    ("**/.git/**", "a/.github/x", False),
+    ("**/.ssh", "home/u/.ssh", True),
+    ("**/.ssh", "home/u/.ssh/id", False),
+    ("**/*.pem", "etc/tls/a.pem", True),
+    ("**/*.pem", "a.pem", True),
+    ("**/*.pem", "a.pem.bak", False),
+    ("*.pem", "etc/a.pem", False),
+    ("**/.env*", "srv/.env.local", True),
+    ("**/id_[re]*", "u/id_rsa", True),
+    ("**/id_[!re]*", "u/id_rsa", False),
+    ("a/?/c", "a/b/c", True),
+    ("a/?/c", "a/bb/c", False),
+    ("a/**", "a/b/c", True),
+    ("a/**/c", "a/c", True),
+    ("**", "anything/at/all", True),
+])
+def test_glob_matches_like_full_match(glob, path, hit):
+    assert bool(server._glob_regex(glob).fullmatch(path)) is hit
 
 
 @pytest.mark.smoke
@@ -89,12 +105,70 @@ def test_status_shape_before_mount():
 def test_status_shape_when_mounted():
     st = server._State()
     with st.lock:
-        st.prefix, st.root, st.deny = "/files", "/", server.DEFAULT_MASK
-        st.mounted, st.service_id = True, "abc123"
+        st.prefix, st.root, st.deny = "/s/fileviewer", "/", server.DEFAULT_MASK
+        st.mounted, st.url = True, "http://127.0.0.1:1234"
     snap = st.snapshot()
     assert snap["mounted"] is True
-    assert snap["prefix"] == "/files"
+    assert snap["prefix"] == "/s/fileviewer"
     assert snap["root"] == "/"
-    assert snap["service_id"] == "abc123"
+    assert snap["listen"] == "http://127.0.0.1:1234"
     assert snap["deny_globs"] == len(server.DEFAULT_MASK)
-    assert snap["url_shape"].startswith("/files/")
+    assert snap["url_shape"].startswith("/s/fileviewer/")
+
+
+# ---- the listener ---------------------------------------------------------
+
+
+@pytest.fixture
+def served(tmp_path: Path):
+    (tmp_path / "fig.svg").write_text("<svg/>")
+    (tmp_path / "secret.pem").write_text("KEY")
+    (tmp_path / "site").mkdir()
+    (tmp_path / "site" / "index.html").write_text("<p>hi</p>")
+    (tmp_path / "bare").mkdir()
+    (tmp_path / "link.txt").symlink_to(tmp_path / "secret.pem")
+    srv = server.FileServer(str(tmp_path), ("**/*.pem",))
+    import threading
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    yield srv
+    srv.shutdown()
+    srv.server_close()
+
+
+def _get(srv, path: str, method: str = "GET"):
+    import http.client
+    conn = http.client.HTTPConnection("127.0.0.1", srv.server_address[1], timeout=5)
+    conn.request(method, path)
+    resp = conn.getresponse()
+    return resp.status, resp.getheader("Content-Type"), resp.read()
+
+
+@pytest.mark.smoke
+def test_listener_serves_a_file_with_its_type(served):
+    status, ctype, body = _get(served, "/fig.svg")
+    assert (status, ctype, body) == (200, "image/svg+xml", b"<svg/>")
+
+
+@pytest.mark.smoke
+def test_listener_head_has_no_body(served):
+    status, _, body = _get(served, "/fig.svg", "HEAD")
+    assert (status, body) == (200, b"")
+
+
+@pytest.mark.smoke
+def test_listener_hides_masked_and_symlinked_secrets(served):
+    assert _get(served, "/secret.pem")[0] == 404
+    assert _get(served, "/link.txt")[0] == 404
+
+
+@pytest.mark.smoke
+def test_listener_refuses_traversal_and_missing(served):
+    assert _get(served, "/../../etc/passwd")[0] == 404
+    assert _get(served, "/%2e%2e/%2e%2e/etc/passwd")[0] == 404
+    assert _get(served, "/nope.txt")[0] == 404
+
+
+@pytest.mark.smoke
+def test_listener_serves_directory_index_only(served):
+    assert _get(served, "/site/")[2] == b"<p>hi</p>"
+    assert _get(served, "/bare/")[0] == 404

@@ -828,25 +828,3 @@ class Board:
                 log.exception("board sweep failed")
             pruned -= interval
             stop.wait(interval)
-
-    # -- migrations ------------------------------------------------------------
-
-    def migrate_columns(self, dry_run: bool = True) -> dict:
-        """Move every card still directly under the board into the folder for its status."""
-        from . import migrate
-        return migrate.columns(self, dry_run)
-
-    def migrate_archive(self, dry_run: bool = True) -> dict:
-        """Give Done and Rejected their Older folders, and file every archived card. See `migrate.archive`."""
-        from . import migrate
-        return migrate.archive(self, dry_run)
-
-    def migrate_homes(self, dry_run: bool = True) -> dict:
-        """Move each folded card under the card it was folded into. See `migrate.homes`."""
-        from . import migrate
-        return migrate.homes(self, dry_run)
-
-    def migrate_threads(self, dry_run: bool = True, proposal_path: str | Path | None = None) -> dict:
-        """Fold reply cards into the threads of their root cards. See `migrate.threads`."""
-        from . import migrate
-        return migrate.threads(self, dry_run, proposal_path)

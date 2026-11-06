@@ -6,12 +6,7 @@ its tables and stands them up via ``init_service_db`` at startup. The
 identity layer (projects/users/agents) is relational within this DB; all
 other cross-service refs use natural keys.
 
-**A scope IS the channel.** There is no separate rooms/messages/session_logs
-machinery: a scope owns one channel, and everything written to it — messages,
-journal (debrief) entries, system notices — is a row in ``scope_posts``
-differentiated by ``kind``. Subscribers (besides the owner scope) live in
-``scope_subscribers``. Raw agent acts are NOT here; a session's own transcript
-is read through the transcripts service.
+A scope's posts, brief and subscribers live in the journal service.
 """
 
 from __future__ import annotations
@@ -23,12 +18,9 @@ from awm.persistence.databases import init_service_db
 from awm.persistence.embeddings import EMBEDDINGS_DDL
 
 SERVICE = "scopes"
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
-# Tables owned by the scopes service. v2 collapsed the old rooms/messages/
-# session_logs trio into one ``scope_posts`` channel + ``scope_subscribers``;
-# v3 drops the vestigial ``agents.parent_id`` (rooms-era agent containment —
-# agents form no tree, a scope IS the channel); v4 adds ``tags``.
+# Tables owned by the scopes service.
 SCHEMA_SQL = """\
 -- Identity (kept relational — all in the scopes DB) -------------------
 CREATE TABLE IF NOT EXISTS projects (
@@ -58,43 +50,6 @@ CREATE TABLE IF NOT EXISTS agents (
     retired_at    INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_agents_project_status ON agents(project_id, status);
-
--- Scope channel (a scope IS the channel) ------------------------------
--- One append-only post log per scope. Messages, journal (debrief) entries,
--- and system notices are all rows here, differentiated by ``kind``. The
--- channel owner is a scope, addressed by natural key (owner_project,
--- owner_scope). For legacy non-agent targets (a user/project/workspace
--- inbox) the owner need not be a literal worktree scope: owner_project=''
--- marks a non-literal channel whose ref lives verbatim in owner_scope
--- (e.g. 'user:alice', 'project:awm', 'workspace').
---   author : natural-key ref ('agent:<project>/<scope>', 'user:<name>') or 'system'.
---   kind   : 'message' | 'journal' | 'system' | …
---   meta   : JSON; journal structure (decisions/issues/next_steps/outcome/…) lives here.
-CREATE TABLE IF NOT EXISTS scope_posts (
-    id             TEXT PRIMARY KEY,
-    owner_project  TEXT NOT NULL,
-    owner_scope    TEXT NOT NULL,
-    author         TEXT NOT NULL,
-    kind           TEXT NOT NULL DEFAULT 'message',
-    body           TEXT NOT NULL DEFAULT '',
-    meta           TEXT NOT NULL DEFAULT '{}',
-    ts             INTEGER NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_scope_posts_owner_ts ON scope_posts(owner_project, owner_scope, ts);
-CREATE INDEX IF NOT EXISTS idx_scope_posts_kind ON scope_posts(owner_project, owner_scope, kind, ts);
-CREATE INDEX IF NOT EXISTS idx_scope_posts_author ON scope_posts(author, ts);
-
--- Channel subscribers (besides the owner scope) -----------------------
-CREATE TABLE IF NOT EXISTS scope_subscribers (
-    owner_project  TEXT NOT NULL,
-    owner_scope    TEXT NOT NULL,
-    guest_kind     TEXT NOT NULL,       -- 'agent' | 'user'
-    guest_ref      TEXT NOT NULL,       -- natural key: 'project/scope' or 'user:<name>'
-    display_name   TEXT NOT NULL,
-    joined_at      INTEGER NOT NULL,
-    PRIMARY KEY (owner_project, owner_scope, guest_kind, guest_ref)
-);
-CREATE INDEX IF NOT EXISTS idx_scope_subscribers_ref ON scope_subscribers(guest_kind, guest_ref);
 
 -- Tags per project (scope '') or per scope or scope group path ----------
 -- Keyed by name, not agents row: a project, a main checkout or a group such
@@ -126,6 +81,43 @@ MIGRATIONS: dict[tuple[int, int], str] = {
     ),
 }
 
+# Scope claims (scopes.md R3, R42, R46) and the hygiene check's inputs (R45).
+CLAIMS_SQL = """\
+CREATE TABLE IF NOT EXISTS scope_claims (
+    project     TEXT NOT NULL,
+    scope       TEXT NOT NULL,
+    session     TEXT NOT NULL,
+    pid         INTEGER,
+    proc_start  TEXT,
+    job         TEXT,
+    claimed_at  INTEGER NOT NULL,
+    PRIMARY KEY (project, scope)
+);
+CREATE TABLE IF NOT EXISTS scope_waiters (
+    project     TEXT NOT NULL,
+    scope       TEXT NOT NULL,
+    session     TEXT NOT NULL,
+    pid         INTEGER,
+    proc_start  TEXT,
+    job         TEXT,
+    asked_at    INTEGER NOT NULL,
+    notified_at INTEGER,
+    PRIMARY KEY (project, scope, session)
+);
+CREATE TABLE IF NOT EXISTS scope_use (
+    project     TEXT NOT NULL,
+    scope       TEXT NOT NULL,
+    last_used   INTEGER NOT NULL,
+    PRIMARY KEY (project, scope)
+);
+CREATE TABLE IF NOT EXISTS scope_counters (
+    name   TEXT PRIMARY KEY,
+    value  INTEGER NOT NULL
+);
+"""
+
+MIGRATIONS[(4, 5)] = CLAIMS_SQL
+
 _initialized = False
 
 
@@ -135,7 +127,7 @@ def init() -> None:
     if not _initialized:
         init_service_db(
             SERVICE,
-            SCHEMA_SQL + EMBEDDINGS_DDL,
+            SCHEMA_SQL + CLAIMS_SQL + EMBEDDINGS_DDL,
             schema_version=SCHEMA_VERSION,
             migrations=MIGRATIONS,
         )

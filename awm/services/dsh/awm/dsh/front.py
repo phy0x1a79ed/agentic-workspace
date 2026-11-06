@@ -6,9 +6,9 @@ anywhere on the ZeroTier mesh without weakening that: a TLS listener on
 ``0.0.0.0:<port>`` that authenticates every request against awm's edge session
 and reverse-proxies the survivors to the loopback harness.
 
-Almost none of that is written here. ``awm.httpsfront`` already solves it and
-takes the upstream as a parameter, so this is a configuration of an existing
-component rather than a second implementation.
+Almost none of that is written here. ``awm.tlsfront`` already solves it and
+takes the upstream as a parameter, so this is a configuration of a shared
+library rather than a second implementation.
 
 **Why not a gateway mount.** ``kind=page`` and ``kind=static`` serve a dist
 directory and refuse WebSockets outright, so neither can host a SPA that needs
@@ -23,7 +23,7 @@ re-derive this.
 
 **Why the Origin rewrite.** Every ``/api`` request passes a browser-trust fence
 in the harness: the ``Host`` must be loopback or a ``--trusted-host`` grant, and
-a present ``Origin`` must equal it. httpsfront drops the inbound ``Host`` so
+a present ``Origin`` must equal it. The front drops the inbound ``Host`` so
 httpx derives it from the upstream URL, which satisfies the first half with no
 grant and no weakening of the harness's own posture. It forwards ``Origin``
 verbatim, though, which leaves the fence comparing a mesh origin to a loopback
@@ -47,11 +47,10 @@ import os
 import shutil
 import threading
 import time
-from pathlib import Path
 from typing import Any
 
 from awm import config
-from awm.httpsfront import certs, proxy
+from awm.tlsfront import certs, proxy
 
 from awm.dsh import harness
 
@@ -191,8 +190,6 @@ def _serve_forever() -> None:
                 key=str(paths["key"]),
                 ca=str(paths["ca"]),
                 upstream=upstream,
-                # `/` belongs to the harness's SPA, not to awm's page index.
-                landing=False,
                 # The harness's Origin-equals-Host fence; see the module docstring.
                 rewrite_origin=True,
             )

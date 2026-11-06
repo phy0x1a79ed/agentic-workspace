@@ -1,0 +1,33 @@
+# The plugin contract (docs/redux/drafts/plugin-contract.md).
+# The cloud project's install config places it on mizar and alcor (fleet.md R140).
+[plugin]
+name = "wake"
+version = "0.1.0"
+
+[[service]]
+name = "wake"
+path = "."
+run = "run.sh"
+install = "install.sh"
+
+[[tool]]
+name = "wake"
+major = 1
+service = "wake"
+tier = "on"
+
+[needs]
+secrets = []
+network = ["udp:9 broadcast", "tcp:22 lan"]
+
+[[needs.tool]]
+name = "reflection"
+major = 1
+verbs = ["start_other", "message"]
+
+# A harness plugin serves revive_pinned (harness-contract.md).
+[[needs.contract]]
+name = "harness"
+major = 1
+verbs = ["revive_pinned"]
+

@@ -1,0 +1,22 @@
+[plugin]
+name = "relay"
+version = "0.1.0"
+
+[[service]]
+name = "relay"
+path = "."
+run = "run.sh"
+install = "install.sh"
+
+[[tool]]
+name = "relay"
+major = 1
+service = "relay"
+tier = "on"
+
+# The public host calls out to nothing (fleet.md R79): no reflection, no door,
+# no edge. It fetches its pinned tether binaries from the release.
+[needs]
+secrets = ["AWM_TETHER_ISSUE_TOKEN"]
+network = ["github.com", "*.githubusercontent.com"]
+platform = ["linux"]

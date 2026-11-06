@@ -133,30 +133,4 @@ class ScopeActionResponse(BaseModel):
     status: str
     message: str
     session: int | None = None
-
-
-# ---------------------------------------------------------------------------
-# Scope channel (a scope IS the channel) — posts + subscribers.
-#   Messages and journal (debrief) entries are posts differentiated by `kind`.
-#   The wire shape is produced by channel.ScopePost.to_dict() /
-#   channel.Subscriber.to_dict(); these models mirror it for HTTP/typing.
-# ---------------------------------------------------------------------------
-
-class ScopePostInfo(BaseModel):
-    id: str
-    project: str
-    scope: str
-    author: str            # 'agent:proj/scope', 'user:name', or 'system'
-    kind: str              # 'message' | 'journal' | 'system' | …
-    body: str
-    meta: dict = Field(default_factory=dict)
-    ts: str
-
-
-class ScopeSubscriberInfo(BaseModel):
-    project: str
-    scope: str
-    guest_kind: str        # 'agent' | 'user'
-    guest_ref: str         # 'project/scope' or 'user:<name>'
-    display_name: str
-    joined_at: str
+    discarded: dict | None = None

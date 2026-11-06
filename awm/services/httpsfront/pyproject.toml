@@ -6,10 +6,12 @@ build-backend = "setuptools.build_meta"
 name = "awm-httpsfront"
 version = "0.1.0"
 requires-python = ">=3.11"
-description = "AWM httpsfront service: a whole-gateway HTTPS front — terminates TLS on an off-host 0.0.0.0 listener and reverse-proxies every HTTP/WebSocket request to the loopback awm gateway, so the entire awm surface (pages, /svc/*, /hub/*) is reachable over one HTTPS origin (the secure context getUserMedia et al. need off-localhost)."
+description = "AWM httpsfront service: a whole-gateway HTTPS front — terminates TLS on an off-host 0.0.0.0 listener and reverse-proxies every HTTP/WebSocket request to the loopback awm gateway, so the entire awm surface (pages at /p/*, /invoke, service mounts at /s/*, /hub/*) is reachable over one HTTPS origin (the secure context getUserMedia et al. need off-localhost)."
 dependencies = [
     "awm-config",
     "awm-gatewayclient",
+    "awm-grantlib",
+    "awm-tlsfront",
     "starlette",
     "uvicorn",
     "httpx",

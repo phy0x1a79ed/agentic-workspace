@@ -25,7 +25,6 @@ from __future__ import annotations
 import os
 import secrets
 import string
-from pathlib import Path
 from typing import Any
 
 import httpx
@@ -78,9 +77,6 @@ class Etapi:
             raise EtapiError(f"{method} {path} -> {r.status_code}: {r.text[:400]}")
         return r
 
-    def app_info(self) -> dict:
-        return self._request("GET", "/etapi/app-info").json()
-
     def backup(self, name: str) -> None:
         """Ask Trilium to copy its database. Returns nothing, because ETAPI
         answers 204 — the caller finds the file by looking."""
@@ -120,10 +116,13 @@ class Etapi:
         self._request("DELETE", f"/etapi/branches/{branch_id}")
 
     def create_note(self, *, parent_note_id: str, title: str, type: str,
-                    content: str, mime: str | None = None) -> dict:
+                    content: str, mime: str | None = None,
+                    note_id: str | None = None) -> dict:
+        """Create a note. Trilium picks the id unless ``note_id`` names one."""
         return self._request("POST", "/etapi/create-note", json={
             "parentNoteId": parent_note_id, "title": title, "type": type,
             "content": content, **({"mime": mime} if mime else {}),
+            **({"noteId": note_id} if note_id else {}),
         }).json()
 
     def note(self, note_id: str) -> dict:
@@ -319,12 +318,6 @@ class Etapi:
                 gone += 1
         return gone
 
-    def label_value(self, note_id: str, name: str) -> str | None:
-        for a in self.attributes(note_id):
-            if a.get("type") == "label" and a.get("name") == name:
-                return a.get("value") or ""
-        return None
-
     # -- attachments ---------------------------------------------------------
 
     def attachments(self, note_id: str) -> list[dict]:
@@ -361,15 +354,17 @@ class Etapi:
                           blob: bytes, role: str = "file") -> dict:
         """Attach these bytes to this note under this title, replacing what
         was there. Matched on title, because an attachment has no other stable
-        name — and re-uploaded only when the length differs, so a periodic sync
-        does not rewrite a 20 MB PDF every pass."""
+        name. Skipped only when the bytes are the same: a length check alone
+        rules most uploads in or out without a read, but a JSON document whose
+        one number moved keeps its length."""
         existing = [a for a in self.attachments(owner_id)
                     if a.get("title") == title]
         for extra in existing[1:]:
             self.delete_attachment(extra["attachmentId"])
         if existing:
             att = existing[0]
-            if att.get("contentLength") == stored_length(blob, mime):
+            if (att.get("contentLength") == stored_length(blob, mime)
+                    and self.attachment_content(att["attachmentId"]) == blob):
                 return {"attachment_id": att["attachmentId"], "created": False,
                         "changed": False}
             self.set_attachment_content(att["attachmentId"], blob)

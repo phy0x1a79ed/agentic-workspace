@@ -118,7 +118,7 @@ def resolve(scope_path: str) -> dict[str, Any]:
 
 def _open_remote_scope(scope_path: str) -> tuple[Path, Path]:
     """``open_scope``, refusing a scope whose project keeps no remote."""
-    from awm.dvc import data_dvc
+    from awm.dvcdata import data_dvc
 
     scope, cache = cachemod.open_scope(scope_path)
     if data_dvc.no_remote(scope):

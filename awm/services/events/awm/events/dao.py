@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from awm.persistence.dao import BaseDAO
 from awm.persistence.databases import init_service_db
 
-from awm.events import cron
+from awm.config import cron
 
 SERVICE = "events"
 SCHEMA_VERSION = 1

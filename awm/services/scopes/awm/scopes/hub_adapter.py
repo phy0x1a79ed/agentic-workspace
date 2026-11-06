@@ -7,7 +7,7 @@ loop (register → ready → serve → reconnect).
 The four **identity RPCs** — ``resolveScope``, ``resolveRef``,
 ``ensureProject``, ``ensureScope`` — are exposed in ``functions[]`` of the
 ready manifest, alongside the scope ops. Everything is published under the
-``scope`` tool; posts, goals and the history render live in the journal service.
+``scope`` tool; posts, briefs and the history render live in the journal service.
 
 Run via ``start.sh`` (which the hub spawns and respawns):
     python -m awm.scopes.hub_adapter
@@ -24,12 +24,10 @@ from awm.gatewayclient import ServiceAdapter, spawn_supervised
 from awm.persistence import embeddings
 from awm.scopes import dao, search_index, tags as _tags
 from awm.scopes.identity import (
-    agent_id_for_scope,
     agent_record_for_scope,
     ensure_agent,
     ensure_project,
     project_id_for_name,
-    project_scope_for_agent,
     resolve_ref,
     user_id_for_username,
     username_for_user_id,
@@ -174,7 +172,6 @@ _IDENTITY_FUNCTIONS = [
     {
         "name": "resolveScope",
         "tool": "scope_resolve",
-        "effect": "read",
         "description": (
             "Validate-only read: does this (project, scope) exist and "
             "what is its status? Returns {exists, project, scope, status, private} "
@@ -188,7 +185,6 @@ _IDENTITY_FUNCTIONS = [
     {
         "name": "resolveRef",
         "tool": "scope_ref_resolve",
-        "effect": "read",
         "description": (
             "Resolve a literal author/recipient string to its natural-key "
             "identity. Returns {kind, project?, scope?, username?} or null."
@@ -200,8 +196,7 @@ _IDENTITY_FUNCTIONS = [
     },
     {
         "name": "ensureProject",
-        "tool": "project_ensure",
-        "effect": "write",
+        "tool": "scope_project_ensure",
         "description": "Idempotent get-or-create of a project. Returns {project}.",
         "params": [
             {"name": "project", "type": "string", "required": True},
@@ -213,7 +208,6 @@ _IDENTITY_FUNCTIONS = [
     {
         "name": "ensureScope",
         "tool": "scope_ensure",
-        "effect": "write",
         "description": (
             "Idempotent get-or-create of an agent/scope record. An unknown "
             "project is refused unless new_project=true, which registers the "

@@ -9,8 +9,8 @@ import pytest
 pytestmark = [pytest.mark.scopes, pytest.mark.smoke]
 
 # NOTE: SessionLogCreateRequest was removed from the scopes models by the
-# rooms→scope-channel collapse (T4) — session logs are now ``scope_posts``
-# rows, not a dedicated request model. Its test class was dropped here.
+# rooms→scope-channel collapse (T4) — session logs are now journal posts,
+# not a dedicated request model. Its test class was dropped here.
 from awm.scopes.models import (
     ScopeCreateRequest,
     ScopeUpdateRequest,

@@ -1,0 +1,4 @@
+# The install test's images on quay.io, pinned by digest (install.md R119 item 3).
+# test/install/build-images.sh with AWM_TEST_PUSH=1 pushes new ones. Copy the digests it reports here.
+node=quay.io/hallamlab/awm-test-node@sha256:1982bd1ec5c1db0e55af29fe6c434e028e31bc1b67e13062269432b794fe5811
+stubs=quay.io/hallamlab/awm-test-stubs@sha256:f38e0067306b9e3afb95f770e7508973544051fce3e78a3e250cc2bb054a0a8f

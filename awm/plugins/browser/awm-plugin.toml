@@ -1,0 +1,27 @@
+# The browser singleton (fleet.md R102): one Chrome with Tony's profile and the
+# service window, a window per attached session, one viewer for all of them.
+# Which node runs it is node config: edges.yml names the host (R140).
+[plugin]
+name = "browser"
+version = "0.1.0"
+
+[[service]]
+name = "browser"
+path = "."
+run = "run.sh"
+install = "install.sh"
+
+[[tool]]
+name = "browser"
+major = 1
+service = "browser"
+tier = "on"
+
+[needs]
+network = ["*"]
+
+[[needs.tool]]   # operations: the approver, for captcha and sign-in requests (R102 item 7, R145)
+name = "operations"
+major = 2
+verbs = ["approval_request"]
+

@@ -103,7 +103,7 @@ line in the text sets the subject. UBC-webmail / WeChat later get their own path
 
 The external platforms are the source of truth, and every read below queries
 them live. Live receive *emits* each message arriving after connect on the
-`message` topic. Follow it with `awm services listen social message --peer
+`message` topic. Follow it with `awm listen social message --peer
 <owner>`, one JSON line per message.
 
 A bot account (Slack `xoxb-`) is the one exception: it keeps a synced history of
@@ -133,13 +133,12 @@ down stays out of history.
   search, so a client-side scan of recent messages per conversation); a Discord
   **bot** account cannot search at all — use `social_fetch`.
 - **`social_download_attachments account= channel= message_id= [idx=]`** pulls a
-  message's attachments to a **system temp dir outside the awm workspace**
-  (honoring `$TMPDIR`) and returns
-  `{files:[{filename, mime, size, path, url}], dir, node}`. It re-fetches the
-  message live so signed/expiring urls are always fresh (Discord CDN links, Slack
-  `url_private`). `idx` optionally selects one attachment. Returns paths, not
-  bytes — large files never bloat the RPC payload (the verb declares a generous
-  300s timeout for the download hop).
+  message's attachments and returns `{files:[{filename, mime, size, path}], dir,
+  node}`, with the files in a fresh temp dir on the node the **caller** runs on.
+  The plugin returns each file's bytes inline (`b64`, 24 MiB in all); the gateway
+  of the caller's node writes them (`core/crates/awm-gateway/src/files.rs`), because
+  the plugin's own `/tmp` is private to its unit. It re-fetches the message live so
+  signed/expiring urls are always fresh. `idx` selects one attachment.
 - **`social_channels account= [include_dms=true]`** lists channels; with
   `include_dms` it also enumerates direct/group DMs (`kind` `dm`/`group`) where
   the platform supports it (Slack `im`/`mpim`, Teams 1:1/group chats).
@@ -149,21 +148,15 @@ down stays out of history.
   Discord takes a user id only.
 
 On Discord, `channel` also accepts `dm:<user_id>`: `send` and `fetch` open that
-user's DM with the bot on first use. Fleet notifications (ssh lock alerts, the
-auth password push) target the operator this way, so they need no stored DM
+user's DM with the bot on first use. Fleet notifications (ssh lock alerts)
+target the operator this way, so they need no stored DM
 channel id. The bot reaches a user only while they share a guild.
 
 **The retrieval contract, when the call is borrowed.** `path` and `dir` are
-absolute on the node that ran the download — which for a borrowed `social` is not
-the caller's. That is what `url` is for: the same bytes' address on the serving
-node's `fileviewer` mount, which the MCP proxy uses to pull them down and rewrite
-`path` to a local copy (FEDERATION.md § *Cross-peer bytes*). Two consequences
-worth knowing. A file the mount's denylist hides — `*.pem`, `*.key`, `*.token`,
-`credentials`, anything under `secrets/` — cannot cross, and comes back as
-`path: null` with a named `error` rather than a path that does not exist. And a
-caller reaching the service by any other route (CLI, raw `/invoke`, a service
-calling `social` directly) gets the serving node's paths verbatim and must use
-`url` itself.
+absolute on the node that ran the download, which for a borrowed `social` is not
+the caller's. awm carries no file bytes across an edge, so a caller on another
+node gets the serving node's paths verbatim. Read the file there, with a session
+on that node.
 
 Slack and Teams run through the mira daemon; conversation enumeration, `open_dm`,
 `search`, and attachment `download` for those platforms live in `mira/mira_api/`
@@ -187,10 +180,9 @@ are skipped rather than erroring the whole call.
 
 ## Files
 
-`social_send` attaches a file with `file`, a path on the calling node, and
-inline text files with `files`, each `{filename, text}`. The gateway's file hop
-carries `file` to the node that runs social. A `send` that a borrower forwards to
-the owner carries the file inline as base64.
+`social_send` attaches a file with `file`, a path on the node that runs social, and
+inline text files with `files`, each `{filename, text}`. A `send` that a borrower
+forwards to the owner carries the file inline as base64.
 
 - **Discord.** The bot attaches up to 10 MB per message.
 - **Slack.** Every Slack account uploads through Slack's external upload, as a
@@ -218,7 +210,12 @@ line came from. Newlines become ` ⏎ `. Text past 1500 characters is cut, and a
 
 - **One holder.** A mount on a held seat is refused and names the holder.
   `force=true` takes it, and the old holder gets one line saying it lost the
-  seat. The swarm is cooperative, so force is the recovery path.
+  seat. Force is the recovery path for a trusted caller.
+- **Below trusted.** A cooperative or untrusted caller sends, reacts, fetches,
+  reads history and downloads only in the chats it holds. It never mounts a
+  trusted chat. It forces a held seat only from the session that started it,
+  as the main seat hands a person's DM over. A borrowing node forwards its
+  caller's level in `_caller_session`, and the owner only ever lowers to it.
 - **Release.** `social_unmount` frees one seat, or every seat the caller holds.
   The owner prunes every 60 s and frees each seat whose job is gone or stopped.
   An idle background session retires after about an hour, which frees its seats
@@ -227,7 +224,7 @@ line came from. Newlines become ` ⏎ `. Text past 1500 characters is cut, and a
   sits at a dialog) is retried with backoff for 2 minutes, then dropped.
   History still holds it.
 - **Quiet threads.** A bot send with `quiet=true` keeps the replies in that
-  message's thread from the holder, for good. `reporting` posts each admin
+  message's thread from the holder, for good. operations posts each Arbutus admin
   approval request this way, so the #arbutus holder never answers an
   `approve` meant for the approval handler.
 - **Discord DM.** A Discord DM carries the operator's notifications and slash
@@ -246,15 +243,11 @@ line came from. Newlines become ` ⏎ `. Text past 1500 characters is cut, and a
   says only "on it".
 
 The holder is the calling session, never an argument. On the owner node the
-gateway stamps `_caller_pid`. A caller on another node arrives through the
-owner's edge, and its MCP proxy adds `_caller_session` from its own session
-record.
-
-**CAUTION** Two lists must agree for a cross-node mount:
-`SESSION_CLAIM_VERBS` in `awm/gateway/awm/gateway/mcp_caller.py` and the
-`social` entry of `_CALLER_STAMPED` in `server.py` beside it. The owner strips
-`_caller_session` from any call that skips the edge. A proxy started before the deploy sends no
-claim, so restart the session after you deploy.
+gateway stamps `_caller_pid`. A caller on another node reaches the owner through
+its own node's `social`, which reads the caller's session record
+(`gatewayclient.holders.claim`) and forwards it as `_caller_session`. The owner's
+gateway drops `_caller_session` from any call that skips the edge
+(`core/crates/awm-gateway/src/caller.rs`).
 
 ### Kept seats
 
@@ -267,7 +260,8 @@ in the owner's `social.toml`:
     node    = "altair"                 # where the agent runs: it needs Claude Code
     scope   = "awm/seat-hallam-general"
     brief   = """…"""                  # the agent's standing instructions
-    # model = "opus"   effort = "high"  (optional)
+    model   = "opus"                   # required: fit it to the seat
+    effort  = "high"                   # required: high is the upper limit
     # compact_at = 200000              (optional: 200k to 960k tokens)
     # alert_after = 300                (optional: seconds down before the alert)
 
@@ -326,6 +320,17 @@ itself, to run `awm reflection probe-other --node <node>`:
 Name two witnesses, so that the seats on each witness have the other. With no
 `[keeper]` table the keeper's own view decides. `social keepers` shows a seat's
 `contact_lost_since`.
+
+Each tick first checks that the keeper's own box reaches the internet: any of
+the `online` targets accepts a TCP connection. A box that reaches none holds
+every seat in lost contact, restarts nothing and sends no alert, so a dropped
+home link raises no seat alarm. Alerts it held go out once the box is back.
+
+    [keeper]
+    online = ["1.1.1.1:443", "8.8.8.8:443", "9.9.9.9:443"]   # the default; [] turns it off
+
+Each node's keeper keeps only the seats on its own node, so social runs on
+every node that hosts a seat.
 
 Each outage writes a restart record: the cause, when the seat went down and
 came back, and how many messages arrived meanwhile. A daemon cause comes from
@@ -389,12 +394,10 @@ SharePoint's own permissions are the only boundary, and a refusal comes back as
 a permission error. Entries under the root come back relative, entries
 elsewhere absolute. `bucket_sites` finds the absolute paths.
 
-File arguments and results are paths **on the calling node**, whichever node
-runs social. `bucket_put` reads a local file or folder as `src`, and
-`bucket_get` and `download_attachments` return local paths. The gateway
-carries the bytes across the peer hop inside the one call (see `FEDERATION.md`
-§ *Cross-peer calls*). Bytes never inline into the RPC, and downloads land in a
-system temp dir outside the workspace.
+`bucket_put` reads a file or folder on the node that runs social as `src`, and
+`bucket_get` returns paths there; neither carries bytes across nodes. Only
+`send file=` and `download_attachments` do, through the caller's gateway
+(`attachments.py`).
 
 **CAUTION** `bucket_share` is outward-facing. Its description tells an agent to
 get Tony's confirmation of the item, the audience and the role first.
@@ -473,35 +476,26 @@ this folder (any folder with a `run.sh` under `awm/services/`), starts it with
 
 No auth — the registration handshake carries no token.
 
-To iterate against a running sandbox without installing, use
-`awm dev shadow awm/services/social`; it execs this same `run.sh` as an overlay.
-Under a shadow `AWM_WORKSPACE` is rewritten to a sandbox dir, so point the
-service at a real `social.toml` with **`AWM_SOCIAL_CONFIG=/abs/path/social.toml`**
+To iterate without installing, run the worktree's dev sandbox (`bash awm/services/dev/sandbox/run.sh start`); it runs this same `run.sh` from the worktree.
+The sandbox's `AWM_DIR` holds no `social.toml`, so point the service at a real
+one with **`AWM_SOCIAL_CONFIG=/abs/path/social.toml`** in the sandbox's `[env]`
 (the parallel of the 2fa service's `AWM_2FA_DIR`).
 
 ## Discord slash commands
 
-The Discord connector registers three application commands. Each works only as
-a **DM to the bot**, and only for a sender in the `social_operators` table.
-
-| Command | Consumer |
-|---|---|
-| `/approve [device]` | `2fa` and `ssh` arm a Duo approval burst (see their INSTALL) |
-| `/reject <ref> [reason]` | `reporting` rejects the federation card |
-| `/new-agent [prompt]` | `reporting` starts a session with Remote Control on and answers with its link |
+The Discord connector registers one application command, `/approve [device]`.
+The `2fa` and `ssh` services consume it to arm a Duo approval burst (see their
+INSTALL). It works only as a **DM to the bot**, and only for a sender in the
+`social_operators` table.
 
 The commands sync as *global* commands in `on_ready`, because global is the
 only kind that appears in a DM. The command tree allows the bot DM context only,
 so Discord hides the commands in servers and group DMs. On invocation the connector checks the sender,
 acks within Discord's 3s deadline and emits a normalised event on the `command`
-emitter topic (`/svc/social/emit/command`) with `{command, account,
+emitter topic (`/hub/emit/social/command`) with `{command, account,
 channel_id, operator, …}`. The service does nothing with a command itself.
 
-The `/new-agent` ack is public in the DM and carries an `ack_ref` in its event.
-A `send` with that `ack_ref` overwrites the ack with the answer. Discord allows
-the edit for 15 minutes, so after 14 the `send` posts a new message instead.
 Every message into a DM goes out with link previews suppressed.
-A `send` with an `ack_ref` attaches its files to the edited ack.
 
 A guild invocation that slips past the hidden context, or a sender absent from
 the operators table, gets an ephemeral refusal and emits nothing. Add an operator on the node that owns the

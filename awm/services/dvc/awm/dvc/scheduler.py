@@ -42,7 +42,8 @@ from datetime import datetime
 from time import time
 from typing import Any
 
-from awm.dvc import cron, globus, jobs, runs
+from awm.config import cron
+from awm.dvc import globus, jobs, runs
 from awm.dvc.config import load as load_config
 
 log = logging.getLogger("awm.dvc.scheduler")

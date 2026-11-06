@@ -21,15 +21,14 @@ Editable-installs the component libraries (`config`, `persistence`,
 and writes a gitignored `.runtime-env` baking `AWM_PYTHON` so the gateway can
 respawn it under systemd's minimal PATH.
 
-To iterate against a running sandbox without installing:
-
-    awm dev shadow --port 7871 awm/services/vpn   # the gamebot sandbox, NOT dev's :7821
+To iterate without installing, run a worktree's dev sandbox on its own port
+(`AWM_PORT=7871 bash awm/services/dev/sandbox/run.sh start`), NOT dev's :7821.
 
 > **Do not let this service auto-bootstrap on the canonical dev sandbox (`:7821`)
 > or prod.** Discovery is a global filesystem scan and Chrome-behind-VPN egress
 > must not come up there by accident. Keep it on `feat/svc-vpn` (or `awm services
-> disable vpn`) until the profile-aware discovery gate lands (a separate effort —
-> see `feat-gamebot/.awm/context.md` § *Deferred*). Only ever shadow it onto `:7871`.
+> disable vpn`) until the profile-aware discovery gate lands, a separate effort.
+> Only ever shadow it onto `:7871`.
 
 ## 2. Build the per-profile container images
 
@@ -68,7 +67,7 @@ until you actually bring an exit up.
 UBC requires Duo 2FA. The local awm **`2fa`** service (an in-process Duo
 auto-approver) handles it — no more mira/`virtual-auth`. Right before a UBC dial,
 the **host-side** `vpn_up` arms a burst on the configured device by POSTing
-`/svc/2fa/fn/burst {"device": "<twofa_device>"}` on this same gateway; the burst
+`POST /invoke {"name": "2fa_burst", "args": {"device": "<twofa_device>"}}` on this same gateway; the burst
 auto-approves the *first* pending login within ~1s, so the push `openconnect`
 triggers goes through unattended.
 
@@ -153,4 +152,4 @@ with `bash run.sh`, and injects only three env vars (`AWM_HUB_URL`,
 - **A browser session:** `browser acquire{game, opts:{vpn:"ubc"}}` — rlm-browser
   brings the exit up via `vpn_up` and launches Chrome with `--network=container:awm-vpn-ubc`.
   Implementing that `opts.vpn` handling is rlm-browser's job; this service ships the
-  descriptor + convention. See the scope's `.awm/context.md`.
+  descriptor + convention.

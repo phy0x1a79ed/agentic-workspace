@@ -42,12 +42,12 @@ import logging
 from time import time
 from typing import Any
 
-from awm.config import privacy
+from awm.config import cron, privacy
 from awm.gatewayclient import ServiceAdapter, spawn_supervised
 
 from awm.dvc import coverage as coveragemod
 from awm.dvc.cache import DvcScopeError
-from awm.dvc import cron, jobs, runs, scopedata, transfer
+from awm.dvc import jobs, runs, scopedata, transfer
 from awm.dvc.config import load as load_config
 from awm.dvc.globus import task_status, wait
 from awm.dvc.scheduler import Scheduler
@@ -86,7 +86,6 @@ API_MANIFEST: dict[str, Any] = {
     "functions": [
         {
             "name": "status",
-            "effect": "read",
             "tool": "dvc_status",
             "description": (
                 "Report a scope's DVC pin state against the local cache: pin count, "
@@ -99,7 +98,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "resolve",
-            "effect": "read",
             "tool": "dvc_resolve",
             "description": (
                 "List the exact object hashes a scope depends on, split into "
@@ -111,7 +109,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "pull",
-            "effect": "write",
             "tool": "dvc_pull",
             "description": (
                 "Fetch from chinook only the cache objects this scope pins and does "
@@ -127,7 +124,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "push",
-            "effect": "write",
             "tool": "dvc_push",
             "description": (
                 "Send the cache objects this scope pins up to chinook. Submits a "
@@ -140,7 +136,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "sync",
-            "effect": "write",
             "tool": "dvc_sync",
             "description": (
                 "Submit the daily sync of the shared DVC cache (data/.dvc_cache) to "
@@ -169,7 +164,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "coverage",
-            "effect": "read",
             "tool": "dvc_coverage",
             "description": (
                 "Report what would be lost if this machine died: per scope worktree, "
@@ -192,7 +186,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "task",
-            "effect": "read",
             "tool": "dvc_task",
             "description": (
                 "Status of a Globus task submitted by this service: state, files "
@@ -214,7 +207,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "jobs",
-            "effect": "read",
             "tool": "dvc_jobs",
             "description": (
                 "The two scheduled backups — cache_sync (append-only archive of "
@@ -230,7 +222,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "runs",
-            "effect": "read",
             "tool": "dvc_runs",
             "description": (
                 "Backup run history — one row per attempt, from every entry "
@@ -253,7 +244,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "run",
-            "effect": "write",
             "tool": "dvc_run",
             "description": (
                 "Trigger a backup job now, out of schedule. Submits and returns "
@@ -273,7 +263,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "schedule",
-            "effect": "write",
             "tool": "dvc_schedule",
             "description": (
                 "Change when a backup job runs, or disable it. Accepts a 5-field "
@@ -292,11 +281,10 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "scope_status",
-            "effect": "read",
             "tool": "dvc_scope_status",
             "description": (
-                "Report a scope's data view: mode (dvc | legacy shared symlink | "
-                "missing), the commit that pins the data, which chunks it pins, "
+                "Report a scope's data view: mode (dvc, or none for a project "
+                "with no DVC), the commit that pins the data, which chunks it pins, "
                 "which of those are materialised on disk, and whether the workspace "
                 "still matches the pins. There is no separate data branch to drift "
                 "— the code revision IS the data revision."
@@ -307,7 +295,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "mount",
-            "effect": "write",
             "tool": "dvc_mount",
             "description": (
                 "Choose which data chunks this scope materialises on disk, e.g. "
@@ -328,7 +315,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "gc",
-            "effect": "write",
             "tool": "dvc_gc",
             "description": (
                 "Reclaim shared-cache space by deleting objects no listed project "

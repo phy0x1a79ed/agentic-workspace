@@ -1,4 +1,3 @@
-import json
 import socket
 import sys
 
@@ -30,17 +29,23 @@ def kb_paths(tmp_path, monkeypatch):
     (checkout / "src" / "kb").mkdir(parents=True)
     (checkout / "src" / "kb" / "__init__.py").write_text("")
     (checkout / "src" / "kb" / "server.py").write_text(FAKE_SERVER)
-    auth = tmp_path / "auth.json"
-    auth.write_text(json.dumps({"openrouter": {"type": "api", "key": "sk-or-test"}}))
     port = _free_port()
     for name, value in {
-        "CHECKOUT": checkout, "LIVE": checkout / "live", "SNAPSHOT_DIR": checkout / "data" / "store",
+        "CHECKOUT": checkout, "LIVE": checkout / "live",
         "LOG_FILE": tmp_path / "state" / "logs" / "kb-server.log", "PORT": port,
-        "URL": f"http://127.0.0.1:{port}", "AUTH_JSON": auth,
-        "ZOTERO_LIBRARY": tmp_path / "library.json", "START_TIMEOUT_S": 20.0,
+        "URL": f"http://127.0.0.1:{port}",
+        "START_TIMEOUT_S": 20.0, "VECTORS": tmp_path / "state" / "w2" / "vectors",
     }.items():
         monkeypatch.setattr(instances, name, value)
     monkeypatch.setenv("KB_PYTHON", sys.executable)
-    monkeypatch.delenv("LLM_API_KEY", raising=False)
-    monkeypatch.delenv("KB_ZOTERO_LIBRARY", raising=False)
     return instances
+
+
+@pytest.fixture(autouse=True)
+def fresh_answers():
+    """kb_query and kb_library share an answer for a few seconds; no test may see another's."""
+    from awm.kb import hub_adapter
+
+    hub_adapter._answers.clear()
+    yield
+    hub_adapter._answers.clear()

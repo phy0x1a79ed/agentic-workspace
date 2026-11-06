@@ -9,7 +9,8 @@ before anything is proxied and before any session is opened.
 
 The grammars must agree exactly with what the relay parses, in
 ``tether-proto``'s ``Slot::parse`` (one to three digits, no leading zero, 1 to
-999) and ``tether-relay``'s ``Token::parse`` (thirty-two lowercase hex). The
+999), ``tether-relay``'s ``Token::parse`` (thirty-two lowercase hex) and its
+``room::parse_name`` (three or six lowercase list words joined by hyphens). The
 boundaries below are those two definitions written out, so a change on either
 side has to change this file too.
 """
@@ -42,8 +43,13 @@ TICKET = "0123456789abcdef0123456789abcdef"
     f"/tether/seat/{TICKET}/recv",              # and the three requests that hold it
     f"/tether/seat/{TICKET}/send",
     f"/tether/seat/{TICKET}/close",
-    "/tether/issue",                            # the operator's, gated at the relay
-    "/tether/status",
+    "/room/acre-anchor-kettle",                 # a task room's how-to, for its guest
+    "/room/acre-anchor-kettle/send",            # and its four requests
+    "/room/acre-anchor-kettle/recv",
+    "/room/acre-anchor-kettle/ws",
+    "/room/acre-anchor-kettle/leave",
+    "/room/acre-anchor-kettle-abbey-otter-lamp",       # a persistent room
+    "/room/acre-anchor-kettle-abbey-otter-lamp/recv",
 ])
 def test_the_mount_claims_the_relays_whole_public_surface(path):
     assert tether.owns(path)
@@ -81,6 +87,16 @@ def test_the_mount_claims_the_relays_whole_public_surface(path):
     ("/tether/win/", "a trailing slash is not a route the relay has"),
     ("/tether/windows", "the Windows launcher is at /win and only there"),
     ("/tether/invoke", "nothing else on the relay is a route at all"),
+    ("/room/acre-anchor", "a room name is three or six words"),
+    ("/room/acre-anchor-kettle-acre", "a room name is three or six words"),
+    ("/room/acre-anchor-kettle-acre-anchor", "a room name is three or six words"),
+    ("/room/acre-anchor-kettle-acre-anchor-kettle-acre", "a room name is three or six words"),
+    ("/room/Acre-anchor-kettle", "the relay mints lowercase names"),
+    ("/room/acre_anchor_kettle", "the words are joined by hyphens"),
+    ("/room/ab-anchor-kettle", "every list word is three to eight letters"),
+    ("/room/acre-anchor-kettle/", "a trailing slash is not a route the relay has"),
+    ("/room/acre-anchor-kettle/close", "a guest leaves, and leaving is the only close"),
+    ("/room/", "a room is named"),
 ])
 def test_a_near_miss_inside_the_mount_is_refused_rather_than_forwarded(path, why):
     assert not tether.owns(path), why
@@ -92,7 +108,8 @@ def test_a_near_miss_inside_the_mount_is_refused_rather_than_forwarded(path, why
     assert not policy.allows(path, "tony")
 
 
-@pytest.mark.parametrize("path", ["/tether-admin", "/tetherfoo", "/ui/tether"])
+@pytest.mark.parametrize("path", ["/tether-admin", "/tetherfoo", "/p/tether/tether",
+                                  "/rooms", "/roomy", "/p/room/room"])
 def test_a_name_that_merely_starts_the_same_is_not_this_mounts(path):
     """The mount is claimed by exact shape, so a future page called something
     beginning with these eight characters is still the gateway's — and reaching
@@ -109,9 +126,9 @@ def test_a_name_that_merely_starts_the_same_is_not_this_mounts(path):
     ("/tether/claim/7", "/claim/7"),
     (f"/tether/seat/{TICKET}/recv", f"/seat/{TICKET}/recv"),
     (f"/tether/join/7/{TICKET}", f"/join/7/{TICKET}"),
-    ("/tether/issue", "/issue"),
     ("/tether/bin/tether", "/bin/tether"),
     ("/tether/win", "/win"),
+    ("/room/acre-anchor-kettle/recv", "/room/acre-anchor-kettle/recv"),
 ])
 def test_the_mount_comes_off_the_same_way_in_text_and_in_bytes(path, inner):
     assert tether.upstream_path(path) == inner
@@ -138,3 +155,14 @@ def test_every_route_we_decline_to_forward_is_named_with_its_reason():
     for path, reason in tether.NOT_FORWARDED.items():
         assert reason, path
         assert tether.refused(tether.PREFIX + path), path
+    # A room is opened at the edge root, so its route is refused there as well.
+    assert tether.refused(tether.ROOMS)
+
+
+@pytest.mark.parametrize("path", ["/tether/issue", "/tether/status", "/room"])
+def test_the_bearers_routes_stay_on_the_relays_host(path):
+    """The bearer never leaves the relay's host (channels.md R147), so the
+    routes it gates are refused here, not forwarded for the relay to refuse."""
+    assert not tether.owns(path)
+    assert tether.refused(path)
+    assert policy.classify(path) is policy.Verdict.DENY

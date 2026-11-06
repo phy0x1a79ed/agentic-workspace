@@ -23,7 +23,6 @@ import hashlib
 import json
 import logging
 import os
-import re
 import shutil
 import socket
 import subprocess
@@ -52,7 +51,6 @@ GAME_PORT = int(os.environ.get("AWM_FACTORIO_GAME_PORT", "12140"))
 CONTROL_PORT = int(os.environ.get("AWM_FACTORIO_CONTROL_PORT", "12142"))
 RCON_PORT = 0                       # container-internal only, never published
                                     # (the supervisor owns RCON; see supervise.py)
-SAVES_VOL = "rlm-factorio-saves"    # named volume = the sacred-saves store
 REALM_NAME = "realm"
 REALM_VOLUME = f"{PROJECT}_factorio-saves"
 
@@ -60,8 +58,6 @@ REALM_VOLUME = f"{PROJECT}_factorio-saves"
 PORT_BASE = int(os.environ.get("AWM_FACTORIO_PORT_BASE", "12150"))
 PORT_SLOTS = 50
 
-KINDS = ("game", "lab")
-WORLD_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,39}$")
 
 # appliance/ sits at the service root, beside the awm/ package dir:
 #   awm/services/rlm-factorio/appliance/docker-compose.yml
@@ -362,16 +358,6 @@ def control_post(row: dict, path: str, body: dict,
             data.get("error") or f"control {path} failed (HTTP {resp.status_code})"
         )
     return data.get("result", {})
-
-
-def iface(row: dict, fn: str, args: dict,
-          *, timeout: float = CONTROL_TIMEOUT) -> dict:
-    """Call one ``game-bot-control`` interface function through the supervisor.
-
-    A single route carries every world verb, so adding a mod capability costs a
-    handler here and nothing in between.
-    """
-    return control_post(row, "/iface", {"fn": fn, "args": args}, timeout=timeout)
 
 
 # --- the camera ---------------------------------------------------------

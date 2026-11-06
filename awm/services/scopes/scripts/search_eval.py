@@ -7,7 +7,7 @@ recall@k, MRR@k and nDCG@k per subset plus the queries that missed.
 A query set is JSONL, one query per line::
 
     {"id": "q1", "subset": "journal-needle", "service": "post",
-     "query": "...", "filter": {"project": "awm", "kind": "journal"},
+     "query": "...", "filter": {"project": "awm", "tags": "journal"},
      "relevant": ["<doc id>", ...]}
 
 Query sets name real document ids and paraphrase private content, so they live
@@ -36,9 +36,6 @@ _LIVE = {
     "post": ("journal_fetch", lambda q, f, k: {"query": q, "limit": k, **f}, "posts"),
     "scope": ("scope_search", lambda q, f, k: {"query": q, "limit": k, **f}, "scopes"),
     "project": ("scope_search", lambda q, f, k: {"query": q, "limit": k, **f}, "projects"),
-    "note": ("notes_search", lambda q, f, k: {"semantic": q, "k": k, **f}, "results"),
-    "writing": ("writing_search", lambda q, f, k: {"semantic": q, "k": k, **f}, "results"),
-    "precedence": ("precedence_search", lambda q, f, k: {"context": q, "k": k, **f}, "results"),
 }
 
 

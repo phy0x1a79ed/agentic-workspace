@@ -7,7 +7,7 @@ account, and runs the shared :class:`awm.gatewayclient.ServiceAdapter` loop
 the control WS and projected into the gateway catalog as ``social_*`` tools.
 
 Inbound messages flow: connector → ``_on_message`` → **emit** on
-``/svc/social/emit/message``. The external platforms are the source of truth,
+``/hub/emit/social/message``. The external platforms are the source of truth,
 and ``fetch`` / ``search`` / ``download_attachments`` query them live. The one
 exception is a bot account, whose connector keeps a synced history that
 ``history`` reads (see :mod:`awm.social.history`). A small bounded in-memory set dedupes redelivered events (replacing
@@ -28,15 +28,17 @@ import time
 from typing import Any
 
 from awm import config
-from awm.gatewayclient import ServiceAdapter
+from awm.gatewayclient import ServiceAdapter, holders
+from awm.gatewayclient.push import Pusher
 from awm.social import buckets as buckets_mod
 from awm.social import config as social_config
 from awm.social import connectors
 from awm.social import keeper as keeper_mod
 from awm.social import seats
-from awm.social.attachments import file_url, sink_dir, write_attachments
+from awm.social.attachments import file_url, inline_attachments, sink_dir
 from awm.social.dao import SocialDAO, init as dao_init
 from awm.social.history import History
+from awm.trustpolicy import lower, rank
 
 log = logging.getLogger("awm.social.hub_adapter")
 
@@ -146,15 +148,16 @@ async def _on_message(inbound: connectors.InboundMessage) -> None:
     held = _dao.holder(inbound.account, inbound.channel_id) if inbound.to_holder else None
     if held and not _dao.is_quiet(inbound.account, inbound.channel_id,
                                   inbound.thread_id or inbound.message_id):
-        _pusher.push(held["node"], held["job"], seats.push_line(inbound))
+        level = seats.seat_trust(_accounts.get(inbound.account), inbound.channel_id)
+        _pusher.push(held["node"], held["job"], seats.push_line(inbound, level))
 
 
 async def _on_command(cmd: connectors.Command) -> None:
     """Emit a normalised slash-command invocation for live subscribers.
 
     Unlike messages these aren't persisted — a command is an ephemeral trigger,
-    not a record. Consumers subscribe to ``/svc/social/emit/command`` and react
-    to the commands they own (``approve``, ``reject``, ``new_agent``). The
+    not a record. Consumers subscribe to ``/hub/emit/social/command`` and react
+    to the commands they own (``approve``). The
     connector has already checked the sender against the operators table.
     """
     if _adapter is None:
@@ -248,10 +251,6 @@ async def _h_send(args: dict) -> dict:
                 f"the files come to {size} bytes, over the "
                 f"{conn.max_file_bytes} that {args['account']!r} takes per message")
     extra = {"files": files} if files else {}
-    if args.get("ack_ref"):
-        edited = await conn.edit_ack(str(args["ack_ref"]), text, **extra)
-        if edited is not None:
-            return {"ok": True, "edited": True, **edited}
     cfg = _accounts.get(args["account"])
     personal = cfg is not None and cfg.kind == "user"
     if not personal:
@@ -297,23 +296,76 @@ async def _h_react(args: dict) -> dict:
     return {"ok": True, **done}
 
 
-async def _h_history(args: dict) -> dict:
+def _level(args: dict) -> str:
+    """The caller's trust level: the gateway's stamp, lowered by the level a
+    borrowing node read for its own caller (``_caller_session``). A missing or
+    unknown level is untrusted."""
+    level = str(args.get("_caller_trust") or "untrusted")
+    claim = args.get(holders.CLAIM_KEY)
+    claimed = claim.get("trust") if isinstance(claim, dict) else None
+    try:
+        rank(level)
+        return lower(level, str(claimed)) if claimed else level
+    except ValueError:
+        return "untrusted"
+
+
+def _held_only(handler: Any) -> Any:
+    """Keep a caller below trusted to the chats it holds (channels.md R125 item 2)."""
+    async def _checked(args: dict, as_: str | None = None) -> Any:
+        level = _level(args)
+        if level != "trusted":
+            try:
+                who = holders.caller(args, as_, what="a seat")
+            except seats.SeatError as exc:
+                raise PermissionError(f"a {level} session answers only the chats it holds: {exc}") from None
+            held = seats.chat_bound(_dao, _accounts.get(args["account"]), who, level) or set()
+            if str(args.get("channel") or "") not in held:
+                raise PermissionError(
+                    f"a {level} session answers only the chats it holds, and it does not "
+                    f"hold {args.get('channel')!r}")
+        return await handler(args)
+
+    _checked.__name__ = getattr(handler, "__name__", "_checked")
+    _checked.__doc__ = handler.__doc__
+    return _checked
+
+
+async def _h_history(args: dict, as_: str | None = None) -> dict:
     """A bot account's synced history: the newest ``limit`` messages, or with
     ``since`` (a message ts) the ``limit`` right after it, oldest first. The
-    catch-up read for a listener that missed pushes."""
+    catch-up read for a listener that missed pushes. A seat holder reads only
+    the chats it holds (:func:`seats.chat_bound`)."""
     conn = _conn(args["account"])
     if not conn.keeps_history:
         raise RuntimeError(
             f"account {args['account']!r} keeps no history; use fetch")
-    msgs = _dao.history(
-        args["account"],
-        channel_id=args.get("channel") or None,
-        since=args.get("since") or None,
-        limit=int(args.get("limit", 100)),
-        include_deleted=bool(args.get("include_deleted")),
-    )
-    return {"messages": msgs, "count": len(msgs),
-            "chats": _dao.synced_channels(args["account"])}
+    try:
+        holder = holders.caller(args, as_, what="a seat")
+    except seats.SeatError:
+        holder = None
+    allowed = seats.chat_bound(_dao, _accounts.get(args["account"]), holder, _level(args))
+    channel = args.get("channel") or None
+    if allowed is not None and channel is not None and channel not in allowed:
+        raise PermissionError(f"chat {channel!r} is not a seat this session holds")
+    chats = [channel] if channel else (sorted(allowed) if allowed is not None else [None])
+    msgs: list[dict] = []
+    for chat in chats:
+        msgs.extend(_dao.history(
+            args["account"],
+            channel_id=chat,
+            since=args.get("since") or None,
+            limit=int(args.get("limit", 100)),
+            include_deleted=bool(args.get("include_deleted")),
+        ))
+    if len(chats) > 1:
+        msgs.sort(key=lambda m: float(m["ts"] or 0))
+        limit = int(args.get("limit", 100))
+        msgs = msgs[:limit] if args.get("since") else msgs[-limit:]
+    synced = _dao.synced_channels(args["account"])
+    if allowed is not None:
+        synced = [c for c in synced if c["channel_id"] in allowed]
+    return {"messages": msgs, "count": len(msgs), "chats": synced}
 
 
 async def _h_channels(args: dict) -> dict:
@@ -362,8 +414,8 @@ async def _h_accounts(args: dict) -> dict:
 
     by_name = {a["name"]: a for a in out}
     try:
-        remote = await gatewayclient.call_peer(peer, "social", "accounts", {})
-    except (gatewayclient.PeerError, gatewayclient.GatewayCallError) as exc:
+        remote = await gatewayclient.call("social", "accounts", {}, peer=peer)
+    except gatewayclient.GatewayCallError as exc:
         log.warning("could not list peer %s accounts: %s", peer, exc)
         return {"accounts": out, "peer": peer, "peer_error": str(exc)}
 
@@ -427,7 +479,7 @@ def _release_gone(node: str, job: str) -> None:
                  row["account"], row["channel_id"], seats.holder_label(row))
 
 
-_pusher = seats.Pusher(on_gone=_release_gone)
+_pusher = Pusher(on_gone=_release_gone)
 
 
 def _holder_dict(row: dict | None) -> dict | None:
@@ -502,7 +554,7 @@ def _keeper_forwarding(fn: str, handler: Any) -> Any:
 
         peer = gatewayclient.peer_env(_SOCIAL_PEER_ENV)
         if _keeper is None and peer:
-            return await gatewayclient.call_peer(peer, "social", fn, args)
+            return await gatewayclient.call("social", fn, args, peer=peer)
         return await handler(args)
 
     _wrapped.__name__ = getattr(handler, "__name__", f"_h_{fn}")
@@ -514,7 +566,7 @@ async def _h_mount(args: dict, as_: str | None = None) -> dict:
     account = args["account"]
     conn = _conn(account)
     try:
-        who = seats.caller(args, as_)
+        who = holders.caller(args, as_, what="a seat")
         seat = await _find_seat(conn, str(args["channel"]))
     except seats.SeatError as exc:
         return {"ok": False, "error": str(exc)}
@@ -533,6 +585,9 @@ async def _h_mount(args: dict, as_: str | None = None) -> dict:
             f"{label} is held by {seats.holder_label(evicted)} since "
             f"{evicted['mounted_at']}. Pass force=true to take it."),
             "holder": _holder_dict(evicted)}
+    refused = await asyncio.to_thread(_mount_refusal, _level(args), account, seat.id, who, evicted)
+    if refused:
+        return {"ok": False, "error": f"{label}: {refused}"}
     row = _dao.mount(account, seat.id, seat.name, who)
     if evicted:
         _pusher.push(evicted["node"], evicted["job"],
@@ -564,11 +619,46 @@ async def _h_mount(args: dict, as_: str | None = None) -> dict:
     }
 
 
+def _mount_refusal(level: str, account: str, channel_id: str, who: dict,
+                   evicted: dict | None) -> str | None:
+    """Why a caller below trusted may not mount this seat, or None.
+
+    It never mounts a trusted chat, so Tony's DM stays his (users.md R126 item 2).
+    It takes a held seat only from its own parent session, as the main seat
+    hands a person's DM to the seat it started; never from a sibling (item 3).
+    """
+    if level == "trusted":
+        return None
+    if seats.seat_trust(_accounts.get(account), channel_id) == "trusted":
+        return f"a {level} session cannot hold a trusted chat"
+    if evicted is None:
+        return None
+    try:
+        parent = _parent_job(who["node"], who["job"])
+    except Exception as exc:  # noqa: BLE001 - a lineage that cannot be read admits nothing
+        return f"cannot read this session's parent to take the seat over: {exc}"
+    if (evicted["node"], evicted["job"]) != (who["node"], parent):
+        return (f"a {level} session takes a held seat only from the session that "
+                f"started it, not from {seats.holder_label(evicted)}")
+    return None
+
+
+def _parent_job(node: str, job: str) -> str | None:
+    """The job that started ``job`` on ``node``, from reflection's lineage."""
+    from awm import gatewayclient
+    peer = None if node == config.node_name() else node
+    out = gatewayclient.call_sync("reflection", "list_other", {}, peer=peer, timeout=30.0)
+    for row in (out or {}).get("sessions") or []:
+        if isinstance(row, dict) and str(row.get("job") or "") == job:
+            return str(row.get("parent") or "") or None
+    raise LookupError(f"reflection on {node} does not list job {job}")
+
+
 async def _h_unmount(args: dict, as_: str | None = None) -> dict:
     account = args["account"]
     _conn(account)
     try:
-        who = seats.caller(args, as_)
+        who = holders.caller(args, as_, what="a seat")
     except seats.SeatError as exc:
         return {"ok": False, "error": str(exc)}
     rows = _dao.mounts(account)
@@ -592,12 +682,10 @@ async def _h_unmount(args: dict, as_: str | None = None) -> dict:
 
 
 def _written_reply(written: list[dict]) -> dict:
-    """The common shape both file-returning verbs answer with.
+    """The reply of ``bucket_get``: files already on disk on this node.
 
-    ``path`` and ``dir`` are absolute on **this** node, so the reply also names
-    which node that is: a caller that borrowed ``social`` from a peer needs that
-    to know the paths are not its own, and the per-file ``url`` to do something
-    about it (see ``attachments`` module docstring).
+    ``path`` and ``dir`` are absolute on **this** node, so the reply names the
+    node; ``url`` is the same bytes on this node's fileviewer mount.
     """
     return {
         "files": written,
@@ -609,18 +697,18 @@ def _written_reply(written: list[dict]) -> dict:
 
 
 async def _h_download_attachments(args: dict) -> dict:
-    """Download one message's attachments to a system temp dir (outside AWM_DIR).
+    """Download one message's attachments and return their bytes inline.
 
-    Re-fetches the message live via its connector, pulls each file's bytes, and
-    writes them to a fresh ``mkdtemp`` directory. Returns the absolute paths +
-    metadata; ``idx`` optionally restricts to a single attachment.
+    Re-fetches the message live via its connector and pulls each file. ``idx``
+    optionally restricts to a single attachment. The gateway of the calling
+    session's node writes the files (``attachments`` module docstring).
     """
     conn = _conn(args["account"])
     idx_raw = args.get("idx")
     idx = int(idx_raw) if idx_raw not in (None, "") else None
-    files = await conn.download_attachments(
-        args["channel"], str(args["message_id"]), idx=idx)
-    return _written_reply(write_attachments(files))
+    files = inline_attachments(await conn.download_attachments(
+        args["channel"], str(args["message_id"]), idx=idx))
+    return {"files": files, "count": len(files), "node": config.node_name()}
 
 
 def _h_list_operators(args: dict) -> dict:
@@ -834,14 +922,10 @@ API_MANIFEST: dict[str, Any] = {
     "functions": [
         {
             "name": "send",
-            "effect": "write",
             "tool": "social_send",
             "description": "Send a message as a configured account to a channel. "
-                           "`ack_ref`, from a slash command's event, replaces that "
-                           "command's acknowledgement while the platform still "
-                           "allows it, and sends a new message otherwise. "
-                           "`file` uploads a file from the calling node, such as "
-                           "a plan's .md, with `text` as its message; `text` is "
+                           "`file` uploads a file from your own node (an absolute path, up "
+                           "to 24 MiB), such as a plan's .md, with `text` as its message; `text` is "
                            "optional with a file. `files` attaches inline text "
                            "files, each {filename, text}. Discord and Slack take "
                            "files, up to 10 MB on Discord and 8 MB on Tony's "
@@ -855,16 +939,13 @@ API_MANIFEST: dict[str, Any] = {
                 {"name": "channel", "type": "string", "required": True},
                 {"name": "text", "type": "string", "required": False},
                 {"name": "thread", "type": "string", "required": False},
-                {"name": "ack_ref", "type": "string", "required": False},
-                {"name": "file", "type": "string", "required": False,
-                 "file": "in"},
+                {"name": "file", "type": "string", "required": False},
                 {"name": "files", "type": "array", "required": False},
                 {"name": "quiet", "type": "boolean", "required": False},
             ],
         },
         {
             "name": "react",
-            "effect": "write",
             "tool": "social_react",
             "description": "Put an emoji reaction on a message, or take it off "
                            "with `remove`. `emoji` is a character, a name or "
@@ -880,7 +961,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "fetch",
-            "effect": "read",
             "tool": "social_fetch",
             "description": "Fetch a channel's existing messages live from the "
                            "platform (incl. ones from before the service started), "
@@ -895,7 +975,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "history",
-            "effect": "read",
             "tool": "social_history",
             "description": "Read a bot account's synced history of every chat "
                            "the bot is in (edits applied, deletes hidden unless "
@@ -913,7 +992,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "seats",
-            "effect": "read",
             "tool": "social_seats",
             "description": "List the chats a bot account is in (its seats), each "
                            "with the session holding it or null. A session "
@@ -927,7 +1005,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "mount",
-            "effect": "write",
             "tool": "social_mount",
             "description": "Hold a seat: every new message in that chat, from "
                            "anyone but the bot, is typed into your prompt as one "
@@ -948,7 +1025,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "keepers",
-            "effect": "read",
             "tool": "social_keepers",
             "description": "List the kept seats ([seat.*] in social.toml): each "
                            "one's agent, health (running, waiting, resuming, "
@@ -959,7 +1035,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "keep_reset",
-            "effect": "write",
             "tool": "social_keep_reset",
             "description": "Clear a kept seat's breaker. A seat whose restarts "
                            "kept failing is broken and is not tried again until "
@@ -971,7 +1046,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "keep_adopt",
-            "effect": "write",
             "tool": "social_keep_adopt",
             "surfaces": _CLI_HTTP,
             "description": "Make a running background job the agent of a kept "
@@ -984,7 +1058,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "unmount",
-            "effect": "write",
             "tool": "social_unmount",
             "description": "Release a seat you hold, or every seat you hold on "
                            "the account when `channel` is omitted.",
@@ -995,7 +1068,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "search",
-            "effect": "read",
             "tool": "social_search",
             "description": "Search a platform's own message index live (Slack "
                            "search.messages, Gmail X-GM-RAW, Teams best-effort). "
@@ -1010,14 +1082,13 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "download_attachments",
-            "effect": "write",
             "tool": "social_download_attachments",
-            "description": "Download a message's attachments to a system temp dir "
-                           "(outside the awm workspace) on the calling node. "
-                           "Re-fetches the message live, returns the absolute "
-                           "file paths + metadata. "
+            "description": "Download a message's attachments to a fresh temp dir on "
+                           "the node you call from (outside the awm workspace). "
+                           "Re-fetches the message live; returns `dir` and each "
+                           "file's `path`, `filename`, `mime`, `size`. Files "
+                           "together may not pass 24 MiB. "
                            "`idx` optionally selects a single attachment.",
-            "returns_files": True,
             "timeout": 300,
             "params": [
                 {"name": "account", "type": "string", "required": True},
@@ -1028,13 +1099,11 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "accounts",
-            "effect": "read",
             "tool": "social_accounts",
             "description": "List configured accounts with platform, kind, and live status.",
         },
         {
             "name": "channels",
-            "effect": "read",
             "tool": "social_channels",
             "description": "List channels visible to a configured account. "
                            "`include_dms=true` also enumerates direct/group DMs "
@@ -1046,7 +1115,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "open_dm",
-            "effect": "write",
             "tool": "social_open_dm",
             "description": "Resolve a platform user (by id, or by name where the "
                            "platform supports it) to a direct-message channel and "
@@ -1058,7 +1126,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "list_operators",
-            "effect": "read",
             "tool": "social_operators",
             "description": "List whitelisted operators, optionally by platform.",
             "params": [
@@ -1067,7 +1134,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "add_operator",
-            "effect": "write",
             "tool": "social_operator_add",
             "surfaces": _CLI_HTTP,
             "description": "Whitelist a platform user and map them to an awm_user.",
@@ -1079,7 +1145,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "remove_operator",
-            "effect": "write",
             "tool": "social_operator_remove",
             "surfaces": _CLI_HTTP,
             "description": "Remove a platform user from the whitelist.",
@@ -1090,7 +1155,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "lookup",
-            "effect": "read",
             "tool": "social_lookup",
             "description": "Resolve a (platform, user id) to its awm_user (or null).",
             "params": [
@@ -1100,7 +1164,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "buckets",
-            "effect": "read",
             "tool": "social_buckets",
             "description": "List configured cloud file-store buckets (Google "
                            "Drive, OneDrive/SharePoint) with kind and root. Each "
@@ -1111,7 +1174,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "bucket_ls",
-            "effect": "read",
             "tool": "social_bucket_ls",
             "description": "List the immediate children of a folder in a bucket. "
                            "`path` is relative to the bucket root (omit for root). "
@@ -1134,7 +1196,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "bucket_stat",
-            "effect": "read",
             "tool": "social_bucket_stat",
             "description": "Return the entry for one file or folder in a bucket, "
                            "or a not-found error. Paths as for bucket_ls.",
@@ -1145,7 +1206,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "bucket_mkdir",
-            "effect": "write",
             "tool": "social_bucket_mkdir",
             "description": "Create the folder at `path` in a bucket, with every "
                            "missing parent. Succeeds on an existing folder. "
@@ -1157,10 +1217,9 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "bucket_get",
-            "effect": "write",
             "tool": "social_bucket_get",
             "description": "Download a file from a bucket to a system temp dir "
-                           "(outside the awm workspace) on the calling node and "
+                           "(outside the awm workspace) on the node social runs on and "
                            "return its absolute path + metadata. Any size; it "
                            "streams in chunks. Google-native docs are exported "
                            "(Docs→pdf, Sheets→csv). A folder downloads as a "
@@ -1169,7 +1228,6 @@ API_MANIFEST: dict[str, Any] = {
                            "10000). Files that fail are listed in `failures` "
                            "and the rest still download. `version` (a label from "
                            "bucket_versions) reads an older version of a file.",
-            "returns_files": True,
             "timeout": 3600,
             "params": [
                 {"name": "bucket", "type": "string", "required": True},
@@ -1180,10 +1238,9 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "bucket_put",
-            "effect": "write",
             "tool": "social_bucket_put",
-            "description": "Upload a local file (`src` = a path on the calling "
-                           "node; it travels with the call) to `path` in a "
+            "description": "Upload a file (`src` = a path on the node social "
+                           "runs on) to `path` in a "
                            "bucket, creating or overwriting it. Any size; it "
                            "streams in chunks. A local folder uploads as the "
                            "folder `path`, its tree inside it; files that fail "
@@ -1195,15 +1252,13 @@ API_MANIFEST: dict[str, Any] = {
             "params": [
                 {"name": "bucket", "type": "string", "required": True},
                 {"name": "path", "type": "string", "required": True},
-                {"name": "src", "type": "string", "required": True,
-                 "file": "in"},
+                {"name": "src", "type": "string", "required": True},
                 {"name": "mime", "type": "string", "required": False},
                 {"name": "parents", "type": "boolean", "required": False},
             ],
         },
         {
             "name": "bucket_rm",
-            "effect": "write",
             "tool": "social_bucket_rm",
             "description": "Delete the file/folder at `path` in a bucket.",
             "params": [
@@ -1213,7 +1268,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "bucket_mv",
-            "effect": "write",
             "tool": "social_bucket_mv",
             "description": "Move or rename the file or folder `src` to `dst` "
                            "in a bucket. `dst` is the full new path, not a "
@@ -1236,7 +1290,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "bucket_cp",
-            "effect": "write",
             "tool": "social_bucket_cp",
             "description": "Copy the file or folder `src` to `dst` in a bucket. "
                            "Arguments and errors as for bucket_mv. Returns the "
@@ -1252,7 +1305,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "bucket_sites",
-            "effect": "read",
             "tool": "social_bucket_sites",
             "description": "Discover where a OneDrive bucket can reach. Without "
                            "`site`: the personal OneDrive, the SharePoint sites "
@@ -1269,7 +1321,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "bucket_versions",
-            "effect": "read",
             "tool": "social_bucket_versions",
             "description": "List the versions of a file in a OneDrive bucket, "
                            "newest first: label, size, modified, author, and "
@@ -1282,7 +1333,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "bucket_restore",
-            "effect": "write",
             "tool": "social_bucket_restore",
             "description": "Undo in a OneDrive bucket. With `version`: make that "
                            "version of the file at `path` current again (the "
@@ -1302,7 +1352,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "bucket_share",
-            "effect": "write",
             "tool": "social_bucket_share",
             "description": "Share a file or folder in a OneDrive bucket. "
                            "CAUTION: this is outward-facing. Get Tony's explicit "
@@ -1324,7 +1373,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "bucket_shares",
-            "effect": "read",
             "tool": "social_bucket_shares",
             "description": "List the share links on a file or folder in a "
                            "OneDrive bucket (url, scope, role) and the people "
@@ -1336,7 +1384,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "bucket_unshare",
-            "effect": "write",
             "tool": "social_bucket_unshare",
             "description": "Revoke one share link (`link` = its url or share "
                            "id, from bucket_shares) or one person's access "
@@ -1351,7 +1398,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "bucket_resolve",
-            "effect": "read",
             "tool": "social_bucket_resolve",
             "description": "Turn a SharePoint/OneDrive share link "
                            "(https://<tenant>.sharepoint.com/:f:/t/<site>/<token>) "
@@ -1365,7 +1411,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "bucket_search",
-            "effect": "read",
             "tool": "social_bucket_search",
             "description": "Search a bucket for files matching `query` (Google "
                            "Drive: name match across the drive; OneDrive: "
@@ -1380,7 +1425,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "emit_probe",
-            "effect": "queue",
             "tool": "social_emit_probe",
             "surfaces": _CLI_HTTP,
             "description": "Emit a synthetic, inert `command` event carrying "
@@ -1421,9 +1465,8 @@ def _forwarding(fn: str, handler: Any, outbound: Any = None) -> Any:
         account = (args or {}).get("account")
         if peer and account and account not in _connectors:
             try:
-                return await gatewayclient.call_peer(
-                    peer, "social", fn, outbound(args) if outbound else args)
-            except gatewayclient.PeerError as exc:
+                return await gatewayclient.call("social", fn, outbound(args) if outbound else args, peer=peer)
+            except gatewayclient.GatewayCallError as exc:
                 # Distinguish "couldn't reach the owner" from "the owner said
                 # no" — they have completely different fixes, and a merged
                 # message sends the next incident down the wrong path.
@@ -1437,12 +1480,13 @@ def _forwarding(fn: str, handler: Any, outbound: Any = None) -> Any:
     return _wrapped
 
 
-def _seat_forwarding(fn: str, handler: Any) -> Any:
+def _seat_forwarding(fn: str, handler: Any, outbound: Any = None) -> Any:
     """:func:`_forwarding` for a verb that acts for the calling session.
 
     The owner cannot see a borrower's pid, so the borrower reads its own session
-    record and forwards the job as ``_caller_session``. The owner takes the node
-    from the edge's ``peer:<node>`` stamp, never from the call.
+    record and forwards the job as ``_caller_session``, with the trust level
+    stamped here: the owner sees the borrowing service, which is trusted. The
+    owner takes the node from the edge's ``peer:<node>`` stamp, never from the call.
     """
     async def _wrapped(args: dict, as_: str | None = None) -> Any:
         from awm import gatewayclient
@@ -1453,11 +1497,13 @@ def _seat_forwarding(fn: str, handler: Any) -> Any:
             fwd = {k: v for k, v in args.items()
                    if k not in ("_caller_pid", "_caller_session")}
             pid = args.get("_caller_pid")
-            if isinstance(pid, int):
-                fwd["_caller_session"] = seats.session_claim(pid)
+            claim = holders.claim(pid) if isinstance(pid, int) else None
+            level = _level(args)
+            if claim or level != "trusted":
+                fwd["_caller_session"] = {**(claim or {}), "trust": level}
             try:
-                return await gatewayclient.call_peer(peer, "social", fn, fwd)
-            except gatewayclient.PeerError as exc:
+                return await gatewayclient.call("social", fn, outbound(fwd) if outbound else fwd, peer=peer)
+            except gatewayclient.GatewayCallError as exc:
                 raise RuntimeError(
                     f"account {account!r} is a fleet singleton owned by peer "
                     f"{peer!r}, which could not be reached: {exc}") from exc
@@ -1469,8 +1515,8 @@ def _seat_forwarding(fn: str, handler: Any) -> Any:
 
 
 HANDLERS = {
-    "send": _forwarding("send", _h_send, outbound=_inline_file),
-    "react": _forwarding("react", _h_react),
+    "send": _seat_forwarding("send", _held_only(_h_send), outbound=_inline_file),
+    "react": _seat_forwarding("react", _held_only(_h_react)),
     "seats": _forwarding("seats", _h_seats),
     "mount": _seat_forwarding("mount", _h_mount),
     "unmount": _seat_forwarding("unmount", _h_unmount),
@@ -1480,11 +1526,11 @@ HANDLERS = {
     "channels": _forwarding("channels", _h_channels),
     "open_dm": _forwarding("open_dm", _h_open_dm),
     "accounts": _h_accounts,
-    "fetch": _forwarding("fetch", _h_fetch),
-    "history": _forwarding("history", _h_history),
+    "fetch": _seat_forwarding("fetch", _held_only(_h_fetch)),
+    "history": _seat_forwarding("history", _h_history),
     "search": _forwarding("search", _h_search),
-    "download_attachments": _forwarding(
-        "download_attachments", _h_download_attachments),
+    "download_attachments": _seat_forwarding(
+        "download_attachments", _held_only(_h_download_attachments)),
     "list_operators": _h_list_operators,
     "add_operator": _h_add_operator,
     "remove_operator": _h_remove_operator,
@@ -1521,7 +1567,6 @@ def _on_start() -> None:
     ``social.toml`` is logged and skipped — the service still serves its DB-only
     tools (the operator allowlist) with zero live connections.
     """
-    config.load_env_file()
     dao_init()
     try:
         accounts = social_config.load()
@@ -1620,16 +1665,19 @@ def _start_keeper() -> None:
     if not kept:
         return
     try:
-        witnesses = social_config.load_witnesses()
+        kc = social_config.load_keeper()
     except social_config.SocialConfigError as exc:
-        log.error("social.toml [keeper] invalid; the keeper asks no witness: %s", exc)
-        witnesses = []
+        log.error("social.toml [keeper] invalid; the keeper uses its defaults: %s", exc)
+        kc = social_config.KeeperConfig()
+    online = (lambda: keeper_mod.box_online(kc.online)) if kc.online else None
     _keeper = keeper_mod.Keeper(_dao, kept, _describe_account, _chat,
                                 push=_pusher.push, list_chats=_list_chats,
-                                alert=_alert_operator, witnesses=witnesses)
+                                alert=_alert_operator, witnesses=list(kc.witness),
+                                online=online, account=_accounts.get)
     spawn_supervised("social.keeper", _keeper.run)
-    log.info("keeping %d seat(s): %s; witnesses: %s", len(kept),
-             ", ".join(s.name for s in kept), ", ".join(witnesses) or "none")
+    log.info("keeping %d seat(s) on this node: %s; witnesses: %s; online check: %s",
+             len(_keeper.seats), ", ".join(s.name for s in _keeper.seats),
+             ", ".join(kc.witness) or "none", ", ".join(kc.online) or "off")
 
 
 async def main() -> None:

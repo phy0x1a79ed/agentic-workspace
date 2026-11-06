@@ -31,7 +31,6 @@ BOARD = "http://127.0.0.1:12521"
 CARD = "0123456789abcdef0123456789abcdef"
 BEARER = "party-bearer-token"
 SESSION = "signed.session"
-LEGACY = "legacy-node-wide-bearer"
 
 SHAPES = [
     ("POST", "/board/cards"),
@@ -53,14 +52,9 @@ SHAPES = [
 
 
 class _Gate:
-    """The edge's own gate. The board mount never asks it who a caller is; it
-    asks only which bearers are mesh credentials, so it can keep them out."""
+    """The edge's own gate, which the board mount never asks who a caller is."""
 
     consulted = 0
-    legacy: list[str] | None = [LEGACY]
-
-    async def peer_credentials(self):
-        return type(self).legacy
 
     async def authenticate(self, *, cookie=None, bearer=None, shape=None):
         type(self).consulted += 1
@@ -68,20 +62,14 @@ class _Gate:
             return True, None, "tony"
         return False, None, None
 
-    def peer_relation(self, node):
-        return None
-
     async def session_ttl_seconds(self):
         return 3600.0
 
-    async def verify_password(self, password):
-        return None
 
 
 @pytest.fixture(autouse=True)
 def _reset_gate():
     _Gate.consulted = 0
-    _Gate.legacy = [LEGACY]
 
 
 def _app(*, profile="public", upstream=BOARD):
@@ -357,48 +345,18 @@ def test_duplicate_awm_headers_are_all_dropped():
     assert not [k for k in seen[0]["headers"] if k.startswith("x-awm-")]
 
 
-def test_a_node_token_is_not_forwarded_to_the_board():
+def test_a_device_token_is_not_forwarded_to_the_board():
     seen, handler = _recorder()
     with _client(_app(), handler) as c:
-        c.get("/board/cards", headers={"Authorization": "Bearer awmpt1.abc.def"})
+        c.get("/board/cards", headers={"Authorization": "Bearer awmut1.abc.def"})
     assert "authorization" not in seen[0]["headers"]
     assert _Gate.consulted == 0
-
-
-def test_the_legacy_node_wide_bearer_is_not_forwarded_to_the_board():
-    seen, handler = _recorder()
-    with _client(_app(), handler) as c:
-        assert c.get("/board/cards", headers={"Authorization": f"Bearer {LEGACY}"}
-                     ).status_code == 200
-        c.get("/board/cards", headers={"Authorization": f"Bearer {BEARER}"})
-    assert "authorization" not in seen[0]["headers"]
-    assert seen[1]["headers"]["authorization"] == f"Bearer {BEARER}"
-
-
-def test_a_retired_legacy_bearer_is_still_kept_from_the_board():
-    """The bearer stays on file after the edge stops honouring it; the board
-    must not see it either way."""
-    seen, handler = _recorder()
-    with _client(_app(), handler) as c:
-        c.get("/board/cards", headers={"Authorization": f"bearer {LEGACY}"})
-    assert "authorization" not in seen[0]["headers"]
-
-
-def test_without_auth_material_the_edge_cannot_tell_and_refuses():
-    _Gate.legacy = None
-    seen, handler = _recorder()
-    with _client(_app(), handler) as c:
-        assert c.get("/board/cards", headers={"Authorization": f"Bearer {BEARER}"}
-                     ).status_code == 404
-        assert c.get("/board/cards").status_code == 200
-    assert len(seen) == 1
 
 
 @pytest.mark.parametrize("values", [
     [f"Bearer {BEARER}", f"Bearer {BEARER}"],
     [f"Bearer {BEARER}", "Bearer awmpt1.abc.def"],
     ["Bearer awmpt1.abc.def", f"Bearer {BEARER}"],
-    [f"Bearer {BEARER}", f"Bearer {LEGACY}"],
 ])
 def test_two_authorization_headers_are_refused(values):
     seen, handler = _recorder()

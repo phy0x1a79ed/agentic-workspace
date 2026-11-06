@@ -6,9 +6,9 @@ on the ZeroTier mesh without weakening that: TLS listeners on
 ``0.0.0.0:<port>`` that authenticate every request against awm's edge session
 and reverse-proxy the survivors to the loopback daemon.
 
-Almost none of that is written here. ``awm.httpsfront`` already solves it for
-the gateway and takes the upstream as a parameter, so this is a configuration
-of an existing component rather than a second implementation: ``ensure_certs``
+Almost none of that is written here. ``awm.tlsfront`` already solves it and
+takes the upstream as a parameter, so this is a configuration of a shared
+library rather than a second implementation: ``ensure_certs``
 mints a leaf off the shared root CA (devices that already trust awm need no new
 setup), ``AuthGate`` verifies the ``awm_session`` cookie offline and fails
 closed, and the proxy bridges HTTP and WebSockets alike, forwarding the
@@ -32,7 +32,7 @@ authentication on top of awm's, so a browser that has already logged into awm
 would still face a second, nonce-shaped gate that only the CLI can satisfy.
 ``/_signin`` mints a fresh single-use nonce server-side and auto-submits it, so
 the bookmark just works. It is registered through ``extra_routes``, which means
-httpsfront gates it with the edge session exactly like every proxied path —
+tlsfront gates it with the edge session exactly like every proxied path —
 the difference between a convenience and an open door on the mesh.
 """
 
@@ -46,7 +46,7 @@ import threading
 import time
 from typing import Any
 
-from awm.httpsfront import certs, proxy
+from awm.tlsfront import certs, proxy
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, Response
 
@@ -82,7 +82,7 @@ async def _signin(request: Request) -> Response:
     same-origin, to the workbench's own ``/api/auth/nonce`` — which sets the
     owner cookie and redirects into the app.
 
-    httpsfront has already authenticated this request (``extra_routes`` are
+    tlsfront has already authenticated this request (``extra_routes`` are
     gated), so the nonce is handed only to someone who could log into awm. That
     is the entire difference between this and the hand-rolled front it replaces,
     where the same route was reachable by anyone who could route to the port.
@@ -171,8 +171,6 @@ def _serve_forever(name: str, port: int, upstream_port: int,
                 key=str(paths["key"]),
                 ca=str(paths["ca"]),
                 upstream=upstream,
-                # `/` belongs to the workbench's SPA, not to awm's page index.
-                landing=False,
                 extra_routes=extra_routes,
             )
             state["serving"] = False

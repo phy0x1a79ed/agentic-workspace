@@ -241,27 +241,36 @@ class TestDeleteAndCompleteKeepTheBranch:
 
     def test_delete_keeps_it_by_default(self, repos):
         sha = self._scope(repos, "d")
-        result = mod.delete_scope(PROJECT, "d")
+        # The commit is on feat/d alone, so even a kept branch needs force (scopes.md R44 item 4).
+        with pytest.raises(RuntimeError, match="no other branch or remote holds"):
+            mod.delete_scope(PROJECT, "d")
+        result = mod.delete_scope(PROJECT, "d", force=True)
         assert not (repos["proj"] / "d").exists()
         assert _sha(repos, "refs/heads/feat/d") == sha
         assert "branch feat/d kept" in result.message
 
     def test_delete_branch_deletes_it_and_names_the_sha(self, repos):
         sha = self._scope(repos, "d")
-        result = mod.delete_scope(PROJECT, "d", delete_branch=True)
+        # The commit is on feat/d alone, so deleting the branch needs force (scopes.md R44 item 4).
+        with pytest.raises(RuntimeError, match="no other branch or remote holds"):
+            mod.delete_scope(PROJECT, "d", delete_branch=True)
+        result = mod.delete_scope(PROJECT, "d", delete_branch=True, force=True)
         assert _sha(repos, "refs/heads/feat/d") is None
         assert f"git branch feat/d {sha}" in result.message
 
     def test_complete_cleanup_keeps_it_by_default(self, repos):
         sha = self._scope(repos, "c")
-        mod.update_scope(PROJECT, "c", ScopeUpdateRequest(cleanup=True))
+        with pytest.raises(RuntimeError, match="no other branch or remote holds"):
+            mod.update_scope(PROJECT, "c", ScopeUpdateRequest(cleanup=True))
+        out = mod.update_scope(PROJECT, "c", ScopeUpdateRequest(cleanup=True, force=True))
         assert not (repos["proj"] / "c").exists()
         assert _sha(repos, "refs/heads/feat/c") == sha
+        assert out.discarded["commits"][0].startswith(sha[:7])
 
     def test_complete_delete_branch_deletes_it(self, repos):
         sha = self._scope(repos, "c")
         result = mod.update_scope(PROJECT, "c",
-                                  ScopeUpdateRequest(cleanup=True, delete_branch=True))
+                                  ScopeUpdateRequest(cleanup=True, delete_branch=True, force=True))
         assert _sha(repos, "refs/heads/feat/c") is None
         assert sha in result.message
 
@@ -274,7 +283,7 @@ class TestDeleteAndCompleteKeepTheBranch:
 
     def test_delete_branch_refuses_a_branch_checked_out_elsewhere(self, repos):
         self._scope(repos, "d")
-        mod.delete_scope(PROJECT, "d")
+        mod.delete_scope(PROJECT, "d", force=True)
         other = repos["tmp"] / "other"
         _git(repos["bare"], "worktree", "add", "-q", str(other), "feat/d")
         assert mod._settle_branch(repos["bare"], "feat/d", True).startswith(

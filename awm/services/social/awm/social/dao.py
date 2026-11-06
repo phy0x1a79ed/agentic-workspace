@@ -200,15 +200,6 @@ class SocialDAO(BaseDAO):
         )
         return {"name": name, "platform": platform, "kind": kind}
 
-    def list_accounts(self) -> list[dict]:
-        rows = self.query_all(
-            "SELECT name, platform, kind, display_name, enabled, added_at "
-            "FROM social_accounts ORDER BY name"
-        )
-        for r in rows:
-            r["enabled"] = bool(r["enabled"])
-        return rows
-
     # -- operators (platform-scoped) ---------------------------------------
 
     def add_operator(
@@ -328,6 +319,14 @@ class SocialDAO(BaseDAO):
             for flag in ("own", "edited", "deleted"):
                 r[flag] = bool(r[flag])
         return rows
+
+    def has_inbound(self, account: str, channel_id: str) -> bool:
+        """Whether a person, not this account, wrote in the chat (users.md R126)."""
+        row = self.query_one(
+            "SELECT 1 AS hit FROM social_history WHERE account = ? AND channel_id = ? "
+            "AND own = 0 AND (sender_id LIKE 'U%' OR sender_id LIKE 'W%') LIMIT 1",
+            (account, channel_id))
+        return row is not None
 
     def active_threads(self, account: str, channel_id: str,
                        since_ts: str) -> list[str]:

@@ -1,0 +1,23 @@
+[package]
+name = "awm-trust"
+description = "The fleet's edge list, trust per session, grant checks and the service door (fleet.md R87, R92, R97, R103, R104, R107)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+chrono.workspace = true
+ed25519-dalek = "2"
+sha2 = "0.10"
+base64 = "0.22"
+hex = "0.4"
+
+[dev-dependencies]
+tempfile.workspace = true
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+rand = "0.8"

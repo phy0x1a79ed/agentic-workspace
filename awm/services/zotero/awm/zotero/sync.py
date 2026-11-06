@@ -13,9 +13,9 @@ its note is skipped without a call. That is what makes "periodic" cheap enough t
 actually be periodic, and what makes a push cost one request.
 
 The order of work inside a pass is a latency decision. Somebody is standing over
-a push, so anything they are not waiting for — the pin, the commit, the
-whole-vault census — happens after the paper is in the vault. Anything added
-here belongs after it too.
+a push, so anything they are not waiting for — the whole-vault census, the
+status note — happens after the paper is in the vault. Anything added here
+belongs after it too.
 """
 
 from __future__ import annotations
@@ -34,20 +34,17 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
-from awm.config import autocommit
+from awm.config import AWM_DIR
 
 from awm.zotero import bundle as bundle_mod
 from awm.zotero import source
 
 log = logging.getLogger("awm.zotero.sync")
 
-#: The scope holding the vault, and so the bundle. The same default the trilium
-#: service resolves, spelled again rather than imported: these are separate
-#: dists, and a cross-dist import is what the per-service layout exists to stop.
-VAULT_SCOPE = Path(os.environ.get("TRILIUM_VAULT_SCOPE")
-                   or (Path(os.environ.get("AWM_WORKSPACE",
-                                           Path.home() / "agentic_workspace"))
-                       / "projects" / "trilium" / "release"))
+#: This service's own state: the sync lock and nothing else. The bundle lives in
+#: the vault, beside the notes it describes (`bundle.py`).
+STATE_DIR = Path(AWM_DIR) / "services" / "zotero"
+LOCK_FILE = STATE_DIR / "sync.lock"
 
 #: Where the library lands in the vault. One note, and everything under it.
 LIBRARY_NOTE = os.environ.get("ZOTERO_LIBRARY_NOTE", "Library")
@@ -110,8 +107,15 @@ STATUS_POINTER = "zoteroStatusNote"
 STATUS_NOTE = "Zotero mirror"
 
 
-def bundle(scope: Path | None = None) -> bundle_mod.Bundle:
-    return bundle_mod.Bundle(scope or VAULT_SCOPE)
+def held(vault) -> bundle_mod.Bundle:
+    """The bundle on the labelled root, without creating a root. Empty when no
+    note carries the label yet."""
+    hit = _labelled_root(vault, may_create=True)
+    return _bundle(vault, hit["note_id"] if hit else None)
+
+
+def _bundle(vault, root: str | None) -> bundle_mod.Bundle:
+    return bundle_mod.Bundle(bundle_mod.Attached(vault, root) if root else None)
 
 
 class Busy(RuntimeError):
@@ -141,7 +145,7 @@ class ZoteroLostItsLibrary(RuntimeError):
 
 
 @contextlib.contextmanager
-def exclusive(scope: Path | None = None):
+def exclusive():
     """Hold the mirror's lock for the length of a pull or an apply.
 
     Two applies running at once each read "what is already in the vault" before
@@ -155,10 +159,8 @@ def exclusive(scope: Path | None = None):
     is released by the kernel when the holder dies, so a killed sync does not
     wedge the next one.
     """
-    b = bundle(scope)
-    b.root.mkdir(parents=True, exist_ok=True)
-    path = b.root.parent / ".zotero-sync.lock"
-    handle = path.open("w")
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    handle = LOCK_FILE.open("w")
     try:
         try:
             fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -168,7 +170,7 @@ def exclusive(scope: Path | None = None):
             raise Busy(
                 "another zotero sync is running. Two at once each decide the "
                 "same paper is new and both create it.") from e
-        yield b
+        yield
     finally:
         with contextlib.suppress(OSError):
             fcntl.flock(handle, fcntl.LOCK_UN)
@@ -178,8 +180,8 @@ def exclusive(scope: Path | None = None):
 # -- pull --------------------------------------------------------------------
 
 
-def pull(scope: Path | None = None, *, force: bool = False,
-         commit: bool = True) -> dict[str, Any]:
+def pull(vault, *, force: bool = False, parent: str = "root",
+         may_create: bool = True) -> dict[str, Any]:
     """Bring the bundle up to every library: the personal one and each group.
 
     `force` re-reads a library whose version has not moved. It exists for the
@@ -193,8 +195,9 @@ def pull(scope: Path | None = None, *, force: bool = False,
     never existed.
     """
     phases = Phases()
-    with exclusive(scope) as b:
-        out = _pull(b, force=force, commit=commit, phases=phases)
+    with exclusive():
+        root, _, _ = _resolve_root(vault, parent=parent, may_create=may_create)
+        out = _pull(_bundle(vault, root), force=force, phases=phases)
         out["timings"] = {"total_s": phases.total, **phases.spans}
         log.info("zotero: pull in %.1fs — %s", phases.total, phases.summary())
         return out
@@ -331,7 +334,7 @@ def _libraries(only: Iterable[str] | None,
             for lib in wanted if lib in known or lib in named]
 
 
-def _pull(b: bundle_mod.Bundle, *, force: bool, commit: bool,
+def _pull(b: bundle_mod.Bundle, *, force: bool,
           only: Iterable[str] | None = None,
           phases: Phases | None = None) -> dict[str, Any]:
     at = phases.mark if phases else (lambda _name: None)
@@ -339,7 +342,7 @@ def _pull(b: bundle_mod.Bundle, *, force: bool, commit: bool,
     previous = b.read()
     whole_read = dict(previous.get("whole_read") or {})
     at("bundle_read")
-    out: dict[str, Any] = {"had": had, "path": str(b.root)}
+    out: dict[str, Any] = {"had": had, "where": b.where}
 
     libraries = _libraries(only, previous)
     by_library = {lib["id"]: lib["name"] for lib in libraries}
@@ -411,14 +414,6 @@ def _pull(b: bundle_mod.Bundle, *, force: bool, commit: bool,
                 # paper somebody is waiting for is not the eight hundredth note
                 # visited.
                 "touched": sorted(set().union(*(r.touched for r in moved)))})
-    # Built here because only here knows the version each library was read at,
-    # and handed back so that `run` can pin *after* the vault has been written.
-    out["commit_message"] = ("zotero: library at "
-                             + ", ".join(f"{by_library[k]} {v}"
-                                         for k, v in sorted(now.items())))
-    if commit:
-        out["git"] = _commit(b, out["commit_message"])
-        at("commit")
     return out
 
 
@@ -441,9 +436,8 @@ def _refuse_an_empty_whole_read(read: _Read, previous: dict[str, Any]) -> None:
             f"whole read is what deletes a note.")
 
 
-def run(vault, scope: Path | None = None, *, force: bool = False,
-        parent: str = "root", commit: bool = True, may_create: bool = True,
-        trigger: str = "hand",
+def run(vault, *, force: bool = False, parent: str = "root",
+        may_create: bool = True, trigger: str = "hand",
         only: Iterable[str] | None = None) -> dict[str, Any]:
     """Pull then apply, holding the lock across both.
 
@@ -457,25 +451,17 @@ def run(vault, scope: Path | None = None, *, force: bool = False,
     runs only when the pull moved something.
     """
     phases = Phases()
-    with exclusive(scope) as b:
+    with exclusive():
         phases.mark("lock")
-        # Pinning is deferred past the apply on purpose. Nothing in the apply
-        # reads git or DVC — it reads the bundle off the working tree, which the
-        # write has already produced — and somebody is waiting for the vault,
-        # not for the pin. Pinning afterwards also strengthens what the pin
-        # means: it now describes a bundle that was applied, not one that was
-        # about to be.
-        pulled = _pull(b, force=force, commit=False, only=only, phases=phases)
+        root = _resolve_root(vault, parent=parent, may_create=may_create)
+        phases.mark("resolve_root")
+        b = _bundle(vault, root[0])
+        pulled = _pull(b, force=force, only=only, phases=phases)
         out: dict[str, Any] = {"pull": pulled}
         if pulled.get("changed"):
-            out["apply"] = _apply(vault, b, parent=parent,
-                                  may_create=may_create, force=force,
+            out["apply"] = _apply(vault, b, root, force=force,
                                   trigger=trigger, phases=phases,
                                   first=set(pulled.get("touched") or ()))
-            if commit:
-                pulled["git"] = _commit(
-                    b, pulled.get("commit_message") or "zotero: library")
-                phases.mark("commit")
         out["timings"] = {"total_s": phases.total, **phases.spans}
         log.info("zotero: %s pass in %.1fs — %s", trigger, phases.total,
                  phases.summary())
@@ -498,23 +484,6 @@ def _kept(previous: dict[str, Any], reread: set[str]) -> dict[str, Any]:
         "collections": [c for c in previous.get("collections") or [] if mine(c)],
         "items": [i for i in previous.get("items") or [] if mine(i)],
     }
-
-
-def _commit(b: bundle_mod.Bundle, message: str) -> dict[str, Any]:
-    """Pin the chunk and commit it.
-
-    The pin is what carries the bytes: `library.json` is small enough for git,
-    but the PDFs are not, and DVC is how this workspace holds bytes. Both go in
-    one commit so a checkout can never have the metadata of one version and the
-    files of another.
-    """
-    if not (b.scope / ".git").exists():
-        return {"committed": False,
-                "detail": f"{b.scope} is not a git checkout — bundle written, "
-                          f"not committed"}
-    sha = autocommit.pin_chunk(b.scope, bundle_mod.CHUNK, "awm", message)
-    return {"committed": bool(sha), "rev": sha,
-            "detail": None if sha else "nothing changed"}
 
 
 # -- apply -------------------------------------------------------------------
@@ -650,7 +619,7 @@ def _resolve_root(vault, *, parent: str,
     return root, "title", {ROOT_LABEL: "1"}
 
 
-def apply(vault, scope: Path | None = None, *,
+def apply(vault, *,
           parent: str = "root", may_create: bool = True,
           force: bool = False, dry_run: bool = False,
           trigger: str = "hand") -> dict[str, Any]:
@@ -668,11 +637,13 @@ def apply(vault, scope: Path | None = None, *,
     itself moves. `force` is the way to repair it.
     """
     phases = Phases()
-    with exclusive(scope) as b:
+    with exclusive():
         if dry_run:
-            return _plan(vault, b, parent=parent, may_create=may_create)
-        out = _apply(vault, b, parent=parent, may_create=may_create,
-                     force=force, trigger=trigger, phases=phases)
+            return _plan(vault, may_create=may_create)
+        root = _resolve_root(vault, parent=parent, may_create=may_create)
+        phases.mark("resolve_root")
+        out = _apply(vault, _bundle(vault, root[0]), root, force=force,
+                     trigger=trigger, phases=phases)
         out["timings"] = {"total_s": phases.total, **phases.spans}
         log.info("zotero: apply in %.1fs — %s", phases.total, phases.summary())
         return out
@@ -1045,24 +1016,24 @@ def _retire(vault, known: dict[str, dict], seen: set[str]) -> int:
     return removed
 
 
-def _plan(vault, b: bundle_mod.Bundle, *, parent: str,
-          may_create: bool) -> dict[str, Any]:
+def _plan(vault, *, may_create: bool) -> dict[str, Any]:
     """What an apply would do, writing nothing.
 
-    Three searches and a file read. It can now say what it would *update* as
+    Three searches and the bundle. It can now say what it would *update* as
     well as what it would create, because the fingerprint that decides is
     already on the note and already in the scan — the render-and-compare this
     used to have to avoid is exactly the work the stamp removed.
     """
-    if not b.exists:
-        raise FileNotFoundError(f"no bundle at {b.root}")
-    library = b.read()
-    items = library.get("items") or []
     # Resolved without creating: a dry run that made the root note would be a
     # write, and the one thing this verb promises is that it makes none.
     hit = _labelled_root(vault, may_create=may_create)
     root = hit["note_id"] if hit else ""
     labels = hit["labels"] if hit else {}
+    b = _bundle(vault, root or None)
+    if not b.exists:
+        raise FileNotFoundError(f"no bundle at {b.where}")
+    library = b.read()
+    items = library.get("items") or []
     survey = (_survey(vault, root, "label", labels) if root
               else Survey(root="", root_from="would create"))
     known = _first(survey.items)
@@ -1106,21 +1077,18 @@ def _plan(vault, b: bundle_mod.Bundle, *, parent: str,
     }
 
 
-def _apply(vault, b: bundle_mod.Bundle, *, parent: str,
-           may_create: bool = True, force: bool = False,
+def _apply(vault, b: bundle_mod.Bundle,
+           root: tuple[str, str, dict[str, str]], *, force: bool = False,
            trigger: str = "hand", first: set[str] | None = None,
            phases: Phases | None = None) -> dict[str, Any]:
     at = phases.mark if phases else (lambda _name: None)
     if not b.exists:
         raise FileNotFoundError(
-            f"no bundle at {b.root} — run `awm zotero pull` on the node that "
-            f"can reach the library")
+            f"no bundle at {b.where} — run `awm zotero pull` first")
     library = b.read()
     items = library.get("items") or []
 
-    root, source_of_root, labels = _resolve_root(
-        vault, parent=parent, may_create=may_create)
-    at("resolve_root")
+    root, source_of_root, labels = root
     digest = b.digest
     at("digest")
     if not force and labels.get(APPLIED_LABEL) == digest:

@@ -89,13 +89,13 @@ def test_commit_subdir_touches_only_its_subdir(tmp_path):
     root = _repo(tmp_path / "wt")
     (root / "notes").mkdir()
     (root / "notes" / "a.md").write_text("hello")
-    (root / "drawio").mkdir()
-    (root / "drawio" / "half.drawio").write_text("<partial>")
+    (root / "other").mkdir()
+    (root / "other" / "half.txt").write_text("<partial>")
     sha = autocommit.commit_subdir(root, "notes", "tony", "notes: flush")
     assert sha
     out = _log(root)
     assert "Author-Handle: user:tony" in out
-    assert "notes/a.md" in out and "drawio" not in out
+    assert "notes/a.md" in out and "other" not in out
     assert autocommit.commit_subdir(root, "notes", "tony", "again") is None
     (root / "notes" / "a.md").unlink()
     assert autocommit.commit_subdir(root, "notes", "tony", "delete") is not None

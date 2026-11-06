@@ -2,13 +2,13 @@
 
 These drive the hub-adapter handlers with fake connectors (no live platform):
 ``fetch`` and ``search`` query the connector directly and surface attachment
-metadata; ``download_attachments`` writes the connector's bytes to a temp dir
-OUTSIDE the workspace and returns the paths. Nothing is persisted.
+metadata; ``download_attachments`` returns the connector's bytes inline (the gateway of
+the calling session's node writes the files). Nothing is persisted.
 """
 
 from __future__ import annotations
 
-import os
+import base64
 
 import pytest
 
@@ -136,7 +136,7 @@ class TestSearchHandler:
 
 
 class TestDownloadHandler:
-    async def test_writes_files_to_temp_dir_outside_awm(self, wired, awm_workspace):
+    async def test_returns_bytes_inline_with_no_path(self, wired):
         files = [("draft.docx", "application/vnd.x", b"PK\x03\x04 manuscript bytes")]
         wired._connectors["s"] = _FakeConn(files=files)
         out = await wired._h_download_attachments(
@@ -144,15 +144,26 @@ class TestDownloadHandler:
         assert out["count"] == 1
         f = out["files"][0]
         assert f["filename"] == "draft.docx" and f["size"] == len(files[0][2])
-        # The file really exists on disk with the right bytes …
-        assert os.path.isfile(f["path"])
-        with open(f["path"], "rb") as fh:
-            assert fh.read() == files[0][2]
-        # … and lives OUTSIDE the awm workspace (a system temp dir).
-        awm_dir = str(awm_workspace["awm_dir"].resolve())
-        assert not os.path.realpath(f["path"]).startswith(awm_dir)
+        assert base64.b64decode(f["b64"]) == files[0][2]
+        # Nothing was written here: the plugin's /tmp is private to the unit.
+        assert "path" not in f and "dir" not in out and "url" not in f
         # idx flowed through as absent (whole message).
         assert wired._connectors["s"].download_calls == [("D1", "1782341432", None)]
+
+    async def test_a_hostile_filename_is_reduced_to_a_basename(self, wired):
+        wired._connectors["s"] = _FakeConn(files=[("../../etc/x y.csv", "", b"1")])
+        out = await wired._h_download_attachments(
+            {"account": "s", "channel": "D1", "message_id": "m1"})
+        assert out["files"][0]["filename"] == "x_y.csv"
+        assert out["files"][0]["mime"] == "application/octet-stream"
+
+    async def test_files_over_the_cap_are_refused(self, wired, monkeypatch):
+        from awm.social import attachments
+        monkeypatch.setattr(attachments, "MAX_INLINE_BYTES", 4)
+        wired._connectors["s"] = _FakeConn(files=[("a", "x", b"123"), ("b", "x", b"45")])
+        with pytest.raises(ValueError, match="idx"):
+            await wired._h_download_attachments(
+                {"account": "s", "channel": "D1", "message_id": "m1"})
 
     async def test_idx_selects_single_attachment(self, wired):
         wired._connectors["s"] = _FakeConn(files=[("a.bin", "x", b"a")])
@@ -164,7 +175,7 @@ class TestDownloadHandler:
         wired._connectors["s"] = _FakeConn(files=[])
         out = await wired._h_download_attachments(
             {"account": "s", "channel": "D1", "message_id": "m1"})
-        assert out["count"] == 0 and out["files"] == [] and out["dir"] == ""
+        assert out["count"] == 0 and out["files"] == []
 
     async def test_unknown_account_raises(self, wired):
         with pytest.raises(RuntimeError):

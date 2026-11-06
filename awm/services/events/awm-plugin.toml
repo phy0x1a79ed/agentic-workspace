@@ -1,0 +1,16 @@
+[plugin]
+name = "events"
+version = "0.1.0"
+
+[[service]]
+name = "events"
+
+[[tool]]
+name = "events"
+major = 1
+tier = "off"
+
+[needs]
+secrets = []
+network = []
+platform = ["linux"]

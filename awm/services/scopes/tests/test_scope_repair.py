@@ -21,9 +21,8 @@ def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess:
 def split_brain_scope(scopes_workspace):
     """Build a real bare repo + worktree on disk, but DO NOT insert the DB row.
 
-    Mirrors the gapseq/dev state from inbox #232: worktree, branch, and
-    `.awm/context.md` present; `agents` table empty for the (project, scope)
-    pair.
+    Mirrors the gapseq/dev state from inbox #232: worktree and branch
+    present; `agents` table empty for the (project, scope) pair.
     """
     projects_dir = scopes_workspace["projects_dir"]
     project = "ghostproj"
@@ -45,10 +44,6 @@ def split_brain_scope(scopes_workspace):
 
     worktree = projects_dir / project / scope
     _git(bare, "worktree", "add", "-b", f"feat/{scope}", str(worktree), "main")
-
-    awm_dir = worktree / ".awm"
-    awm_dir.mkdir()
-    (awm_dir / "context.md").write_text(f"# {project}/{scope}\n\n(seeded by test)\n")
 
     return {"project": project, "scope": scope, "worktree": worktree, "bare": bare}
 
@@ -94,13 +89,17 @@ def test_repair_rejects_missing_worktree(scopes_workspace):
         scopes.repair_scope("p1", "nope")
 
 
-def test_repair_rejects_worktree_without_context(scopes_workspace, split_brain_scope):
+def test_repair_rejects_a_folder_that_is_no_worktree(scopes_workspace, split_brain_scope):
     from awm.scopes import scopes
 
-    # Delete .awm/context.md so the on-disk evidence is incomplete.
-    (split_brain_scope["worktree"] / ".awm" / "context.md").unlink()
+    git = split_brain_scope["worktree"] / ".git"
+    if git.is_dir():
+        import shutil
+        shutil.rmtree(git)
+    elif git.exists():
+        git.unlink()
 
-    with pytest.raises(FileNotFoundError, match="context.md"):
+    with pytest.raises(FileNotFoundError, match="not a git worktree"):
         scopes.repair_scope(split_brain_scope["project"], split_brain_scope["scope"])
 
 

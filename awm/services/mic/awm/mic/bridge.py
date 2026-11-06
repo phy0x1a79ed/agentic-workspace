@@ -1,10 +1,10 @@
 """Browser microphone → the PulseAudio ``virtmic`` null-sink.
 
 The service half of mic's ``stream`` session. The browser opens
-``POST /svc/mic/session/stream`` declaring its capture format, the gateway hands
-both sides a direct byte-relayed WebSocket, and every binary frame that arrives
-is s16le PCM written straight into a ``pacat`` playing into the sink — so
-whatever the phone hears, this machine records.
+``/hub/session/mic/stream`` and sends its capture format as the first frame;
+the gateway hands both sides a direct byte-relayed WebSocket, and every binary
+frame that arrives is s16le PCM written straight into a ``pacat`` playing into
+the sink — so whatever the phone hears, this machine records.
 
 This used to be an off-host HTTPS listener with a hand-rolled WebSocket, because
 ``getUserMedia`` needs a secure context and the hub is loopback-only. ``httpsfront``
@@ -12,11 +12,9 @@ now puts the whole of awm behind one CA-verified TLS door, so the listener,
 its TLS, and its copy of the cert-minting code are gone; what is left is the
 part that was always the point.
 
-mic does not own the audio plumbing — PulseAudio and the null-sink belong to the
-``virtmic`` service. The dependency is resolved per-stream rather than at boot
-(the gateway guarantees no start order between services, and a sink provisioned
-once at startup silently disappears when PulseAudio idle-exits), which is why
-``virtmic ensure`` runs immediately before ``pacat`` is spawned.
+The sink is ensured per stream as well as by the health loop in ``hub_adapter``:
+a sink provisioned once at startup silently disappears when PulseAudio
+idle-exits, so ``audio.ensure_once`` runs immediately before ``pacat`` is spawned.
 
 Single-stream policy: a new stream supersedes the old one so two phones can't
 mix into the sink. The loser is *told* rather than left to infer it from a
@@ -34,8 +32,7 @@ from typing import Any
 
 log = logging.getLogger("awm.mic.bridge")
 
-#: Which sink to feed. The *name* lives here because mic is what hands it to
-#: ``pacat``; creating the sink is virtmic's job.
+#: Which sink to feed and keep alive (see ``audio``).
 SINK = os.environ.get("MIC_SINK", "virtmic")
 
 #: The session handler starts as soon as the gateway accepts the open, which is
@@ -140,11 +137,9 @@ def pacat_env() -> dict:
     The gateway respawns services under systemd's minimal environment, which has
     no ``XDG_RUNTIME_DIR`` — and without it libpulse cannot locate
     ``$XDG_RUNTIME_DIR/pulse/native`` and fails with "Connection refused" even
-    when the daemon is perfectly healthy. That mismatch is invisible from
-    ``virtmic_status``, which reports on *its own* repaired environment.
-
-    This is about mic's subprocess environment, not about owning the audio
-    plumbing, so it stays here rather than moving to virtmic.
+    when the daemon is perfectly healthy. ``audio.ensure_runtime_env`` repairs
+    this process's environment too. The default here keeps ``pacat`` right
+    even when no ensure pass has run yet.
     """
     env = dict(os.environ)
     env.setdefault("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
@@ -177,17 +172,17 @@ def parse_init(init: dict[str, Any]) -> tuple[int, int]:
 
 
 async def _ensure_sink() -> None:
-    """Ask virtmic to guarantee the sink exists, right before we feed it.
+    """Guarantee the sink exists right before we feed it.
 
-    Best-effort: if virtmic is unreachable we still start ``pacat``, because the
-    sink may well already exist and refusing audio outright would be a worse
-    failure than a possibly-dead one.
+    Best-effort: on a failure we still start ``pacat``, because the sink may
+    well already exist and refusing audio outright would be a worse failure
+    than a possibly-dead one.
     """
+    from awm.mic import audio
     try:
-        from awm import gatewayclient
-        await gatewayclient.call("virtmic", "ensure", timeout=30.0)
+        await asyncio.to_thread(audio.ensure_once, STATE.sink)
     except Exception as exc:  # noqa: BLE001
-        log.warning("virtmic ensure failed (%s); starting pacat anyway", exc)
+        log.warning("sink ensure failed (%s); starting pacat anyway", exc)
 
 
 async def start_stream(rate: int, channels: int) -> _Stream:
@@ -286,9 +281,9 @@ async def _pump(bridge: Any, stream: _Stream) -> None:
 async def run_session(ctx: Any) -> None:
     """Drive one ``stream`` session: browser PCM in, control frames out."""
     # Open the bridge FIRST. The gateway drops the browser's socket if this side
-    # hasn't attached within five seconds, and the virtmic call below is allowed
-    # thirty — so ensuring the sink first fails precisely when virtmic is doing
-    # its job, which is the case the lazy call exists to serve.
+    # hasn't attached within five seconds, and a sink repair (a PulseAudio
+    # restart) can take longer, so ensuring the sink first fails precisely when
+    # the repair is needed.
     bridge = await ctx.open_bridge()
     try:
         try:

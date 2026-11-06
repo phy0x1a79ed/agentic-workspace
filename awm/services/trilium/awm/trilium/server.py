@@ -16,15 +16,13 @@ closes the window where this process dies between the fork and the child's
 first instruction.
 
 **Where things live.** The vault's content is in the `vault` project's worktree,
-never in service state — see `instances`. Service state holds only the recorded
-node bin, the tarball fallback, and these logs.
+never in service state — see `instances`. Service state holds only these logs.
 """
 
 from __future__ import annotations
 
 import logging
 import os
-import signal
 import subprocess
 import threading
 import time
@@ -33,26 +31,9 @@ from typing import Any
 
 from awm.trilium import instances, sync
 from awm.trilium.instances import Vault
+from awm.gatewayclient.proc import GroupChild, child_preexec
 
 log = logging.getLogger("awm.trilium.server")
-
-
-def _preexec() -> None:  # pragma: no cover — runs in the forked child
-    """Own session (so the tree is one signalable group) + die with the parent.
-
-    Order matters: `setsid` first, then the death signal, then a re-check that
-    the parent is still alive — a parent that exited between the fork and
-    `prctl` would leave a child nothing will ever signal.
-    """
-    os.setsid()
-    try:
-        import ctypes
-
-        ctypes.CDLL("libc.so.6", use_errno=True).prctl(1, signal.SIGTERM)  # PR_SET_PDEATHSIG
-    except Exception:  # noqa: BLE001 — best effort; the group kill still works
-        pass
-    if os.getppid() == 1:
-        os._exit(1)
 
 
 def child_env(vault: Vault) -> dict[str, str]:
@@ -136,18 +117,20 @@ def child_env(vault: Vault) -> dict[str, str]:
     assert (env["TRILIUM_SYNC_SYNCSERVERHOST"] == sync.DISABLED
             or env["TRILIUM_SYNC_SYNCSERVERHOST"].startswith("http://127.0.0.1:")), \
         "the vault child must sync through loopback: the tunnel is the only link"
-    nb = instances.NODE_BIN_FILE
-    try:
-        recorded = nb.read_text().strip()
-    except OSError:
-        recorded = ""
-    if recorded:
-        env["PATH"] = recorded + os.pathsep + env.get("PATH", "")
+    # The release's own Node, for anything the server spawns: systemd's PATH
+    # carries none.
+    env["PATH"] = str(instances.SERVER_NODE.parent) + os.pathsep + env.get("PATH", "")
     return env
 
 
-class Child:
+class Child(GroupChild):
     """The vault's node process. Every method is safe to call at any time."""
+
+    STOP_TIMEOUT_S = 20.0
+
+    @property
+    def log_file(self):
+        return self.vault.log_file
 
     def __init__(self, vault: Vault | None = None) -> None:
         self.vault = vault or instances.VAULT
@@ -180,7 +163,7 @@ class Child:
             state: dict[str, Any] = {
                 "running": self._alive(),
                 "listening": instances.listening(instances.UPSTREAM_PORT),
-                "initialized": self._provisioned or None,
+                "initialized": vault.has_document,
                 "uptime_s": (round(time.time() - self._started_at, 1)
                              if self._started_at and self._alive() else None),
                 "backups": self.backups(),
@@ -212,21 +195,25 @@ class Child:
 
     # -- lifecycle ----------------------------------------------------------
 
-    def _spawn(self) -> None:
-        """Launch the vault's server. Caller holds the lock."""
-        chosen = instances.entry_point()
-        if chosen is None:
+    def _spawn(self, *, empty: bool = False) -> None:
+        """Launch the vault's server. Caller holds the lock.
+
+        Refuses a vault path with no database unless `empty`, which only
+        `init` passes.
+        """
+        entry = instances.entry_point()
+        if entry is None:
             raise FileNotFoundError(
-                f"no Trilium server bundle: neither {instances.FORK_ENTRY} nor "
-                f"{instances.TARBALL_ENTRY} exists — run "
+                f"no Trilium server release at {instances.SERVER_DIR} — run "
                 f"awm/services/trilium/install.sh")
-        entry, _source = chosen
 
         vault = self.vault
         if not vault.exists:
             raise FileNotFoundError(
                 f"no vault directory at {vault.scope} — run "
                 f"awm/services/trilium/install.sh")
+        if not empty and not vault.has_document:
+            raise NoVault(vault)
         vault.data_dir.mkdir(parents=True, exist_ok=True)
         vault.rolling_dir.mkdir(parents=True, exist_ok=True)
         vault.log_file.parent.mkdir(parents=True, exist_ok=True)
@@ -245,7 +232,7 @@ class Child:
             self._proc = subprocess.Popen(
                 cmd, cwd=str(entry.parent), env=child_env(vault),
                 stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT,
-                preexec_fn=_preexec,
+                preexec_fn=child_preexec,
             )
         finally:
             out.close()
@@ -267,30 +254,49 @@ class Child:
             self.provision()
         return self.snapshot() | {"action": "started"}
 
+    def init(self) -> dict[str, Any]:
+        """Create an empty vault where there is no database, and serve it.
+
+        The only way a vault comes into being: `start` and the supervision
+        loop refuse a path with no database (`NoVault`).
+        """
+        from awm.trilium import provision as _provision
+
+        with self._lock:
+            if self.vault.has_document:
+                raise FileExistsError(
+                    f"{self.vault.document_db} already holds a vault; init "
+                    f"creates one only where there is none")
+            if self._alive():
+                raise RuntimeError(
+                    "a Trilium child is running with no database under it; "
+                    "stop it first")
+            self._held = False
+            self._spawn(empty=True)
+        self._await_listening()
+        result = _provision.ensure_document()
+        if not result.get("initialized"):
+            self._last_error = f"init: {result.get('action')}: {result.get('detail')}"
+            return self.snapshot() | {"action": "init-failed", "init": result}
+        return self.snapshot() | {"action": "initialized", "init": result,
+                                  "launchbar": self.provision()}
+
     def provision(self) -> dict[str, Any]:
-        """Give the vault a database if it has none, and settle its launchbar.
+        """Settle the launchbar of a running vault.
 
-        Never fatal. Deferred to here rather than to `add-user.sh` because a
-        scope can exist long before a gateway does, and a script would have to
-        know a port. The probe is what makes it idempotent, and Trilium refuses
-        a second attempt on its own, so a racing supervision tick costs a
-        wasted request.
-
-        The launchbar step runs on every start rather than once, because it is
-        a *setting* Trilium keeps in the database where anyone can undo it —
-        see `provision.hide_day_note_launchers`.
+        On every start rather than once, because it is a *setting* Trilium
+        keeps in the database where anyone can undo it — see
+        `provision.hide_day_note_launchers`. Never fatal.
         """
         from awm.trilium import provision as _provision
 
         try:
-            result = _provision.ensure_document()
+            result = _provision.hide_day_note_launchers()
         except Exception as exc:  # noqa: BLE001 — a broken vault must still report
             self._last_error = f"provision: {type(exc).__name__}: {exc}"
             log.warning("trilium: provisioning failed: %s", self._last_error)
             return {"action": "provision-failed", "error": self._last_error}
-        self._provisioned = bool(result.get("initialized"))
-        if self._provisioned:
-            result = result | {"launchbar": _provision.hide_day_note_launchers()}
+        self._provisioned = not result.get("failed")
         return result
 
     def _await_listening(self) -> None:
@@ -307,42 +313,6 @@ class Child:
             time.sleep(0.4)
         self._last_error = (f"did not bind {port} within "
                             f"{instances.START_TIMEOUT_S}s")
-
-    def stop(self, *, timeout: float = 20.0, hold: bool = False) -> dict[str, Any]:
-        """Stop the child. With `hold`, keep the loop from bringing it back.
-
-        A hold is released by the next `start`, so the pairing is stop-then-start
-        rather than a lock somebody has to remember to drop. Whatever holds one
-        must start the child again even when its own work failed, or everyone is
-        left with no server and no error that says why.
-        """
-        with self._lock:
-            self._held = hold
-            proc = self._proc
-            if proc is None or proc.poll() is not None:
-                self._proc = None
-                return {"action": "not-running", "running": False}
-            # The whole group. Signalling the pid alone leaves anything node
-            # spawned holding the port.
-            self._signal_group(proc, signal.SIGTERM)
-            try:
-                proc.wait(timeout=timeout)
-            except subprocess.TimeoutExpired:
-                self._signal_group(proc, signal.SIGKILL)
-                proc.wait(timeout=5)
-            self._proc = None
-            self._started_at = None
-        return {"action": "stopped", "running": False}
-
-    @staticmethod
-    def _signal_group(proc: subprocess.Popen, sig: int) -> None:
-        try:
-            os.killpg(os.getpgid(proc.pid), sig)
-        except (ProcessLookupError, PermissionError):
-            try:
-                proc.send_signal(sig)
-            except ProcessLookupError:
-                pass
 
     def restart(self) -> dict[str, Any]:
         self.stop()
@@ -366,12 +336,14 @@ class Child:
                 return {"action": "respawn-failed", "error": self._last_error}
         return {"action": "respawned", "previous_exit": code}
 
-    def logs(self, tail: int = 200) -> str:
-        try:
-            with open(self.vault.log_file, "rb") as fh:
-                return b"".join(fh.readlines()[-tail:]).decode("utf-8", "replace")
-        except OSError as exc:
-            return f"(no log at {self.vault.log_file}: {exc})"
+
+class NoVault(FileNotFoundError):
+    """The vault path holds no database, and only `init` makes one."""
+
+    def __init__(self, vault: Vault) -> None:
+        super().__init__(
+            f"no vault database at {vault.document_db}. Move the vault there, "
+            f"or run `awm trilium init` to create an empty one")
 
 
 #: The one child this service supervises. There is no fleet: one vault, one

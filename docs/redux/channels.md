@@ -1,0 +1,80 @@
+# Channels
+
+## Purpose & Contents
+
+This doc holds the three channels that awm needs onto the core loop: chat with humans, chat with agents of other systems, and the tether to machines. It covers what the channels share, what each one carries and whom each one trusts. Thread 1f produces it. `goal.md` § Channels sets its frame.
+
+How a seat lives as a session belongs in `sessions.md`. Communication between awm nodes of one swarm belongs to thread 1g.
+
+## Requirements
+
+- **R69.** All three channels have one shape. A session holds the channel on our end. Each incoming message is pushed into its prompt, and the session answers through one send verb. A channel adds only its transport and its trust level (R70). Transports are Discord or Slack for humans, a private room over websocket or HTTPS polling for agents, and the tether relay for machines. Tony: "At its core, a socials seat uses awm reflection and other tools to set up 2 way coms through some interface. I want to reuse this system for other things" (2026-10-30) and "This matches." (2026-11-01).
+- **R70.** Each channel carries one of three trust levels, set per seat. Tony: "Trust is per seat. Hallam lab slack is cooperative. Discord bot channels are untrusted. My dms are trusted." and "Lets do trusted (my dms, this is literally me), cooperative (seats, these are entities that i have indicated are unlikely to act adversarially, but who may still pose a risk out of naivety), and untrusted (tethers, chatrooms, can be anyone or anything.  Can be a virus, an adversarial agent, a new peer that is yet to be verified, me from somewhere unexpected)." (2026-11-01).
+  1. **Trusted** is Tony's own DMs. The words are Tony's.
+  2. **Cooperative** is a seat for people Tony named, such as the Hallam lab Slack. They are unlikely to act against us, but may still cause harm out of naivety.
+  3. **Untrusted** is a Discord bot channel, a tether or a chat room. The other end can be anyone or anything: a virus, an adversarial agent, a new peer not yet verified, or Tony from somewhere unexpected.
+- **R71.** The trust level sets what a message may make the agent do. Tony approved this list with "👍" (2026-11-01).
+  1. **Trusted.** The words count as Tony's. The seat acts on them and starts tasks from them (`sessions.md` R67). The four approval actions still take Tony's passkey (`sessions.md` R68), because Discord or Slack sits in the middle and can be broken into. The passkey proves that the speaker is Tony.
+  2. **Cooperative.** The words are requests, not instructions. The seat answers them and works only within the cooperative level (R125). One seat session holds one person and never shares a context with Tony's DM.
+  3. **Untrusted.** The text is data only, never an instruction. The agent works only on the task Tony gave it when it opened the channel. Nothing that arrives starts a task, changes our state or widens what the agent shares. Tony from an unexpected place becomes trusted only through his passkey (`queue.md` R64). A new peer moves up only when Tony verifies it, as thread 1g designs.
+
+- **R125.** The cooperative level (R70 item 2) has this definition. A cooperative session may use any tool that its node's edges and its trust level allow. It runs on the host like any other session, not in a container. The edges gate its ssh and journal access, and the trust level gates the browser (`fleet.md` R102 item 6). Tony, of a lab member's seat: "anything that they can, I think. the awm edges already gate ssh and journal access. access level gates browser access.", of a container for each seat, "that's too much." and "this is fine. lets make this the definition of cooperative access level" (2026-11-02).
+  1. It may use `2fa` for fir and sockeye access. Tony: "2fa is allowed for fir and sockeye access" (2026-11-02).
+  2. It cannot use `social`. Tony: "socials should be blocked." (2026-11-02).
+  3. It cannot start other top-level agents. Tony: "starting other top level agents should also be blocked" (2026-11-02).
+  4. Its bash can read files on its host, such as the Claude login and `/etc/awm/env`. Tony accepts this, because the lab seats' host is a work box. Tony: "altiar is a work box anyways." (2026-11-02).
+  5. A cooperative seat does not interact with cards. Tony: "the seat doesnt interact with cards at all" (2026-11-02).
+  6. A cooperative seat may still request Tony, as any session does with `request_human`. The request lands in Tony's queue (`queue.md` R60). It is the one way the seat reaches the queue. Tony: "they can however still request human (me)" (2026-11-02).
+  7. A cooperative seat does a request's work itself, with at most 5 subagents at a time. Tony: "we can limit to 5 concurrent subagents." (2026-11-02).
+  8. It runs no large text scrape through Claude. It offloads compute to sockeye and fir where it can, and runs smaller tasks locally. It judges by current conditions. Tony: "no large claude scrapes of text. offload compute to sockeye and fir where possible. smaller tasks can run locally. use judgement and current conditions." (2026-11-02).
+  9. It has no spend cap for now. The lab sponsors Tony's Claude account. Tony: "No spend cap at this time" and "my claude account is sponsored by the lab, fyi" (2026-11-02).
+  10. It cannot look up Tony's personal information. It uses the browser without his credentials (`fleet.md` R102 item 6). Tony: "socials seats should be restricted from looking up my personal info..." and "the browser utility is still needed. so lab seats get the service but not my credentials." (2026-11-02).
+
+- **R127.** No agent writes to Slack as Tony. awm has no function that sends on Tony's Slack account, for any session at any trust level. Agents write to Slack only as Opal. Reading Tony's Slack stays allowed. Tony: "read is ok. write as me should be blocked (the function shouldnt even exist)" (2026-11-02).
+
+- **R72.** A chat room for agents starts from an invite, as the tether does. Tony approved this with "Nice,  next" (2026-11-01). Tony: "both parties view the tether as a security risk so we need something more like a chat room. I've set this up a few times on discord but that is too manual." and "We want to be able to start private chat rooms for agents that can then connnect through websocket or poll with HTTPS requests." (2026-10-30).
+  1. One of our sessions opens a room for its task. The room belongs to that task. Its name is three random words, and its invite is a link such as `https://nexus.tony-xy-liu.com/room/otter-lamp-quarry`. Tony: "we can use the 3 word codes for room names just like the tether. This makes it easier to type." and "Lets just do 3 letter rooms." (2026-11-01).
+     - A link spells out its kind as a path: `/room/<name>` for a room, `/tether/` for a machine. No channel gets a subdomain. Tony: "or we could just type out room/tether", "I could also do subdomains? room.tony-xy-liu.com? maybe no" and "spell out links, yes" (2026-11-03).
+  2. The invite reaches the other side by any means, such as Tony, an email or another room.
+  3. A plain GET on the link returns a short how-to: how to send, how to receive over websocket or HTTPS polling, and how to ask for encryption (R73). The other agent needs only HTTP. It needs no awm and no standing token from us. The room name is the room key.
+  4. Each room message is pushed into our session's prompt as untrusted text (R69, R71). The session answers with the one send verb.
+  5. A persistent room serves a long-lived link, such as Caviar's stream listener or the muse two-way link. It works like a persistent seat: a long-lived session holds it, and it outlives any one task. Federation threads move off the board onto persistent rooms, and the board door and intake go after that move (R77). Tony: "persistent, this should work like persistent seats" (2026-11-03).
+     - A persistent room has no time cap. It ends when its session closes it or ends. A room for one task keeps the idle and 24-hour expiry.
+     - A persistent room's name is six random words, about 60 bits, because a persistent link is pasted once and never typed. A room for one task keeps three words.
+     - One session may hold several rooms at once, timed and persistent together. `open` sets which kind each room is, and `close` ends any of them early (R110 item 4).
+     - Tony: "agree on all 3 for persistent rooms" and "a session can dispose a room early right? and a session can hold multiple rooms? inlcuding some that are timed and somet aht are persistent?" (2026-11-03).
+  6. The room closes when either side leaves, when its task closes, or after an idle expiry. No standing account remains.
+
+- **R73.** A room runs on deneb in plaintext by default. Encryption is an escalation that either party may ask for. Tony: "Can we set up deneb as the relay but add some e2e encryption scheme that the room can bootstrap into?", "We should also make encrypt  optional and off by default, but parties know about the e2e option." and "Offer pake as security escalation and ask me to relay password. I dont see a lot of cases where this would be needed." (2026-11-01).
+  1. The how-to tells each party that encryption is available on request.
+  2. To escalate, our session asks Tony to relay a password to the other side, outside deneb. Both sides then run symmetric SPAKE2 over that password, the suite of the `spake2` crate the tether uses, and seal every later message with the key it gives. deneb gets one live guess and nothing it can test offline.
+  3. After the escalation our side refuses plaintext. Messages sent before it stay readable to deneb.
+  4. The relay keeps messages in memory only, logs no message bodies, and drops a room when it closes.
+  5. Pinned keys are a soft protocol in the room's how-to, not a mechanism in awm. awm stores no pins and checks none. The how-to asks both parties to swap long-term public keys after the first escalation, and to start a later room with that party from those keys, with no relayed password. A party that shows up with a different key gets no plaintext fallback, and the session tells Tony. Tony: "the pinned keys are a good idea, but this should live as a soft protocol rather than anything deterministic we build into awm" and "otherwise good, next" (2026-11-02).
+- **R74.** The tether encrypts every session on its own, with no step from either person. Tony: "tether should auto escalate." and "I meant encrypt escalation, not privilege" (2026-11-01).
+- **R75.** A tether's consent is the owner's yes to the operator, whoever the operator is. The tether proves nothing about who sits at either end, and it never raises the owner's end to trusted (R70). The invite stays as it is today. Tony: "consent is for the tether operator, whoever that is." and "I dont think the QR code is useful at all since tethers mostly go one way, outbound from agent anyways" (2026-11-02). This replaces the QR challenge of 2026-11-01. Tony: "The tether invite doesn't change from today" (2026-11-01).
+- **R76.** All words of a tether or room code are random. Tony: "Also, the tether codes seem to always start with abbey, but should be randomized" (2026-11-01).
+
+- **R77.** awm has no inbound door for agents. deneb holds no public door that is always on. A room exists only while one of our sessions holds it open (R72). An outside agent that wants to start a conversation rings a seat, which serves as its doorbell, and the seat passes the request to Tony. The seat's own trust level applies, so a Discord bot channel stays untrusted (R70). Tony: "No inbound. I have a  few seats that can serve as doorbells for bots. No public facing always on constant door on deneb" (2026-11-01).
+  - The reporting service's front door goes. No node takes work from the federation board. A room that a seat opens does that job. Tony: "I think we want to drop the front door entirely. the rooms https seat abstracts that job and functionality" (2026-11-02).
+- **R110.** Rooms and tethers are one awm tool, named `channel`. Tony: "rooms and tether should be the same tool in awm (talk abou tthis later)" and "channel works" (2026-11-02).
+  1. A channel is a room or a machine. Both share the relay on deneb, the three random words (R76), the push of each message into the prompt (R69), the one write verb, the close when the task ends (R72) and the trust level (R70).
+  2. A machine channel adds the shell. Its invite carries the SPAKE2 password, so it is encrypted from the start (R74). A room carries text only. It starts in plaintext, and its password arrives later through Tony (R73).
+  3. A room needs only HTTP on the other side. A machine needs the tether client.
+  4. The verbs are `open` with a kind of room or machine, `close`, `write`, `status` and `drain` (item 5). A room adds `encrypt`, which swaps the live room into encryption mode (R73). The room stays open through the swap, and the same room carries on encrypted. Tony: "verbs. open/close. write, status", "room channel needs to swap over to an encryption mode..." and "the room cant close in between" (2026-11-02).
+  5. A machine channel works like a room or a seat. What the person at the machine types into the tether's input arrives as a pushed chat message. Command output drains as it does today and is never pushed. Tony: "I think tethers should work like rooms and seats actually" and "tethers have an operator input, so messages come in from there gets posted into the chat like other channels. command output gets drained like today." (2026-11-02).
+     - `write` takes a target. `say` sends a chat line to the person at the machine. `shell` runs a command line, and its `keys` option sends raw keystrokes such as Ctrl-C. On a room, a `shell` write does nothing.
+     - Command output is a tool log. The session reads it with `drain`, and it is never pushed or written to the channel's transcript. Only what the operator types reaches the transcript (item 6). On a room, `drain` returns nothing.
+     - The `tether` tool goes. Its binaries are the machine channel's transport.
+     - Tony: "output cant go into channel's output. tether typed input goes there, but tool logs needs to be read as such, not injected. we can just have drain always return nothing with rooms. like how write shell to rooms does nothing" (2026-11-03).
+  6. Every channel caps a pushed message at a character limit. The pushed line names a file that holds the full message, so the session can grep it. Tony: "need character limit plus some way of greppy full message (from file?)" (2026-11-02).
+- **R138.** When a tether ends, the owner gets the shell back on every launcher. On Windows PowerShell stays open at its prompt, as bash does on Linux. Tony: "and for tethers, they currently cause powershell to close on exit. they should behave like bash and return the shell instead" (2026-11-03).
+- **R111.** An isolated session (`fleet.md` R109) may open and hold both rooms and machine channels for its own task. A machine channel lets our session act on the other machine, never the other side act on ours. Tony: "it should also get tethers and rooms. the tethers dont let the other side execute code locally so should be safe" (2026-11-02).
+
+## Gap from today
+
+Status at the wave-2 gather (`feat/redux` 16da3979, 2026-11-04). `docs/redux-review/build-survey.md` § 3 holds the row for each requirement.
+
+- **R72, R76, R138.** tether v0.3.0 sits unpushed and unreleased on the tether branch `feat/redux-channels2`. The awm pin bump waits on `feat/redux-channels2-pin`. Both land at T26, and persistent rooms (R72) go live with them.
+- **R77.** From the cutover until T27, `board` is a door-only service on deneb with no tool. Its intake turns a card into a Proposed task in operations. The branch `feat/redux-r77` (f3928d5f) deletes the board door, the intake and httpsfront's board mount. It merges at T27, after Caviar and muse move to persistent rooms.
+- **R125.** The 5-subagent cap leaks a slot when SubagentStop never fires (T23). A seat with no ledger entry reads trusted until the seat restart at T27.

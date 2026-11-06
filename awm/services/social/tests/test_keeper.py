@@ -21,13 +21,16 @@ channel = "C1"
 node = "altair"
 scope = "awm/seat-lab"
 brief = "Answer the lab."
+model = "opus"
+effort = "high"
 """
 
 
 def _seat(**kw):
     from awm.social.config import SeatConfig
     base = dict(name="lab", account="bot", channel="C1", node="altair",
-                project="awm", scope="seat-lab", brief="Answer the lab.")
+                project="awm", scope="seat-lab", brief="Answer the lab.",
+                model="opus", effort="high")
     return SeatConfig(**{**base, **kw})
 
 
@@ -125,6 +128,12 @@ class Clock:
         return self.t
 
 
+@pytest.fixture(autouse=True)
+def _on_the_seats_node(monkeypatch):
+    """The keeper keeps only its own node's seats, and the test seats are on altair."""
+    monkeypatch.setenv("AWM_NODE_NAME", "altair")
+
+
 @pytest.fixture()
 def kept(awm_workspace, tmp_path):
     from awm.social.dao import SocialDAO, init
@@ -156,7 +165,7 @@ def test_seat_tables_load_beside_the_accounts(tmp_path):
     path.write_text(SEAT_TOML)
     (seat,) = config.load_seats(path)
     assert (seat.name, seat.account, seat.channel, seat.node) == ("lab", "bot", "C1", "altair")
-    assert (seat.project, seat.scope, seat.model) == ("awm", "seat-lab", None)
+    assert (seat.project, seat.scope, seat.model) == ("awm", "seat-lab", "opus")
     assert seat.compact_at == 200_000
     assert [a.name for a in config.load(path)] == ["bot"]
 
@@ -366,20 +375,6 @@ async def test_a_changed_brief_recycles_only_between_turns(kept):
     assert k.status(k.seats[0])["restarts"] == 0
 
 
-async def test_a_seat_started_under_the_old_name_keeps_its_agent(kept):
-    from awm.social.keeper import launch_spec, legacy_hash, legacy_name
-    k, cx, dao, _ = kept
-    seat = k.seats[0]
-    old = {**launch_spec(seat, "discord", True, legacy_name(seat)), "node": "altair"}
-    cx.rows.append({"job": "old00001", "name": legacy_name(seat), "state": "idle",
-                    "parent": None, "caller": "mira"})
-    dao.set_keeper("lab", "altair", "old00001", legacy_hash(old, seat))
-    await k.tick()
-    await k.tick()
-    assert not cx.started and not cx.stopped
-    assert dao.keeper("lab")["job"] == "old00001"
-
-
 async def test_a_renamed_chat_renames_new_agents_only(kept):
     k, cx, dao, _ = kept
     await k.tick()
@@ -524,7 +519,7 @@ def test_a_bot_sender_is_tagged_in_the_pushed_line():
     from awm.social.seats import push_line
     m = InboundMessage(account="bot", platform="discord", channel_id="C1",
                        text="hello", sender_name="john-shaula-agent", sender_bot=True)
-    assert push_line(m) == "discord from john-shaula-agent [bot]: hello"
+    assert push_line(m) == "discord [untrusted] from john-shaula-agent [bot]: hello"
     assert "[bot]" not in push_line(InboundMessage(
         account="bot", platform="discord", channel_id="C1", text="hi", sender_name="john"))
 
@@ -767,6 +762,8 @@ node = "altair"
 scope = "awm/dev"
 brief = "Hold them all."
 alert_after = 60
+model = "sonnet"
+effort = "medium"
 ''')
     lab, main = config.load_seats(path)
     assert lab.single and not main.single
@@ -952,12 +949,13 @@ async def test_a_seat_that_ended_during_lost_contact_gets_a_real_outage(witnesse
     assert k.status(k.seats[0])["contact_lost_since"] is None
 
 
-async def test_lost_contact_survives_a_restart_of_social(witnessed, tmp_path):
+async def test_lost_contact_survives_a_restart_of_social(witnessed, tmp_path, monkeypatch):
     from awm.social.keeper import Keeper
     k, cx, dao, clock = witnessed
     cx.seen["deneb"] = SEEN_UP
     await _cut(k, cx, clock, 3)
     since = k.status(k.seats[0])["contact_lost_since"]
+    monkeypatch.setenv("AWM_NODE_NAME", "altair")
     k2 = Keeper(dao, k.seats, k._describe, k._chat, cx=cx,
                 lock_path=tmp_path / "keeper2.lock", clock=clock,
                 push=lambda *a: None, witnesses=k.witnesses)
@@ -980,3 +978,145 @@ def test_a_bad_keeper_table_is_refused(tmp_path, bad):
     path.write_text(SEAT_TOML + f"\n[keeper]\n{bad}\n")
     with pytest.raises(SocialConfigError):
         load_witnesses(path)
+
+
+# -- the box's own connection (sessions.md R78) ----------------------------------
+
+@pytest.fixture()
+def offline(kept):
+    k, cx, dao, clock = kept
+    k.online_now = True
+
+    async def online():
+        return k.online_now
+
+    k._online = online
+    return k, cx, dao, clock
+
+
+async def test_a_box_without_internet_raises_no_seat_alarm(offline):
+    k, cx, dao, clock = offline
+    await k.tick()
+    clock.t += 60
+    await k.tick()
+    k.online_now = False
+    cx.down = True
+    for _ in range(10):
+        clock.t += 60
+        await k.tick()
+    status = k.status(k.seats[0])
+    assert not k.alerts and status["down_since"] is None
+    assert "no internet connection" in status["reason"]
+    assert status["contact_lost_since"] is not None
+    assert not cx.probed and not cx.resumed and len(cx.started) == 1
+    _say(dao, "C1", clock.t - 100)
+    k.online_now, cx.down = True, False
+    clock.t += 60
+    await k.tick()
+    ((_, job, line),) = k.pushed
+    assert job == "job00001" and "This session was not down" in line
+    assert not k.alerts and k.status(k.seats[0])["last_outage"] is None
+
+
+async def test_an_offline_box_restarts_nothing_even_for_its_own_seats(offline):
+    k, cx, _, clock = offline
+    await k.tick()
+    k.online_now = False
+    cx.die("job00001")
+    for _ in range(5):
+        clock.t += 60
+        await k.tick()
+    assert not cx.resumed and len(cx.started) == 1 and not k.alerts
+    k.online_now = True
+    clock.t += 60
+    await k.tick()
+    assert cx.resumed == ["job00001"]
+
+
+async def test_a_held_alert_goes_out_on_return(offline):
+    k, cx, _, clock = offline
+    k.seats[0] = __import__("dataclasses").replace(k.seats[0], alert_after=60.0)
+    await k.tick()
+    cx.die("job00001")
+    cx.daemon = {"state": "down", "pid": None, "since": None, "cause": "killed"}
+    clock.t += 60
+    await k.tick()
+    k.online_now = False
+    for _ in range(3):
+        clock.t += 60
+        await k.tick()
+    assert not k.alerts
+    k.online_now = True
+    clock.t += 60
+    await k.tick()
+    (alert,) = k.alerts
+    assert "lab on altair is down since" in alert
+
+
+def test_the_keeper_keeps_only_this_nodes_seats(kept, monkeypatch, tmp_path):
+    from awm.social.keeper import Keeper
+    k, cx, dao, clock = kept
+    seats = [_seat(), _seat(name="far", channel="C2", node="deneb")]
+    assert [s.name for s in Keeper(dao, seats, k._describe, k._chat, cx=cx,
+                                   lock_path=tmp_path / "k.lock").seats] == ["lab"]
+
+
+def test_the_keeper_table_sets_the_online_targets(tmp_path):
+    from awm.social.config import ONLINE_TARGETS, load_keeper
+    path = tmp_path / "social.toml"
+    path.write_text(SEAT_TOML)
+    kc = load_keeper(path)
+    assert (kc.witness, kc.online) == ((), ONLINE_TARGETS)
+    path.write_text(SEAT_TOML + '\n[keeper]\nonline = ["10.0.0.1:53"]\n')
+    assert load_keeper(path).online == ("10.0.0.1:53",)
+    path.write_text(SEAT_TOML + '\n[keeper]\nonline = []\n')
+    assert load_keeper(path).online == ()
+
+
+@pytest.mark.parametrize("bad", ['local_only = true', 'online = ["nohost"]', 'online = [":53"]',
+                                 'online = 5'])
+def test_a_bad_online_target_or_a_dropped_key_is_refused(tmp_path, bad):
+    from awm.social.config import SocialConfigError, load_keeper
+    path = tmp_path / "social.toml"
+    path.write_text(SEAT_TOML + f"\n[keeper]\n{bad}\n")
+    with pytest.raises(SocialConfigError):
+        load_keeper(path)
+
+
+async def test_the_online_check_needs_one_target_to_accept():
+    import asyncio
+    from awm.social.keeper import box_online
+
+    server = await asyncio.start_server(lambda r, w: w.close(), "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    probe = await asyncio.start_server(lambda r, w: None, "127.0.0.1", 0)
+    closed = probe.sockets[0].getsockname()[1]
+    probe.close()
+    await probe.wait_closed()
+    try:
+        assert await box_online([f"127.0.0.1:{closed}", f"127.0.0.1:{port}"], timeout=1)
+        assert not await box_online([f"127.0.0.1:{closed}"], timeout=1)
+        assert await box_online([])
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+async def test_a_kept_seat_starts_through_reflection_with_its_level(monkeypatch):
+    """reflection records the level, so the gateway stamps it (fleet.md R103, channels.md R125)."""
+    from awm import config, gatewayclient
+    from awm.social.keeper import Cx
+
+    calls = []
+
+    async def call(tool, verb, args=None, *, peer=None, timeout=None):
+        calls.append((tool, verb, peer, args))
+        return {"ok": True, "job": "j1", "trust": args["trust"]}
+
+    monkeypatch.setattr(gatewayclient, "call", call)
+    monkeypatch.setattr(config, "node_name", lambda: "mira")
+    spec = {"name": "seat:slack/DM/beth", "trust": "cooperative"}
+    assert (await Cx().start("altair", spec))["trust"] == "cooperative"
+    assert calls == [("reflection", "start_other", "altair", spec)]
+    await Cx().start("mira", spec)
+    assert calls[-1][2] is None

@@ -2,7 +2,7 @@
 
 These resolve a scope from ``(project, scope)`` through the workspace layout
 and git, never the scopes database, so the dvc service answers without the
-scopes service. The engine itself lives in :mod:`awm.dvc.data_dvc`.
+scopes service. The engine itself lives in :mod:`awm.dvcdata.data_dvc`.
 """
 
 from __future__ import annotations
@@ -11,8 +11,8 @@ import subprocess
 from pathlib import Path
 
 from awm import config as _config
-from awm.dvc import data_dvc
-from awm.dvc.backup import has_cache_tag
+from awm.dvcdata import data_dvc
+from awm.dvcdata.cachetag import has_cache_tag
 
 
 def _git(*args: str) -> subprocess.CompletedProcess:
@@ -143,12 +143,8 @@ def mount(project: str, scope: str, chunks: list[str] | None = None) -> dict:
     _check_name(project, "project name")
     _check_name(scope, "scope name", nested=True)
     worktree = _scope_worktree(project, scope)
-    awm_dir = worktree / ".awm"
-    if chunks:
-        data_dvc.write_mounts(awm_dir, chunks)
-    else:
-        (awm_dir / data_dvc.MOUNTS_FILE).unlink(missing_ok=True)
-    report = data_dvc.provision_scope_data(project, scope, awm_dir)
+    data_dvc.write_mounts(worktree, chunks or None)
+    report = data_dvc.provision_scope_data(project, scope, worktree)
     return {"project": project, "scope": scope, **report}
 
 

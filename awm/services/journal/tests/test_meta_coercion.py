@@ -52,7 +52,7 @@ class TestWriteSideNormalization:
         """A harness that posts meta as a JSON string round-trips to a dict."""
         from awm.journal import channel
         p = channel.post("awm", "dev", author="agent:awm/dev", body="debrief",
-                         kind="journal", meta='{"title": "Did it", "outcome": "success"}')
+                         tags="journal", meta='{"title": "Did it", "outcome": "success"}')
         assert isinstance(p.meta, dict)
         assert p.meta["outcome"] == "success"
         got = channel.get_post(p.id)
@@ -61,27 +61,23 @@ class TestWriteSideNormalization:
     def test_dict_meta_unchanged(self, journal_workspace):
         from awm.journal import channel
         p = channel.post("awm", "dev", author="agent:awm/dev", body="b",
-                         kind="journal", meta={"title": "T"})
+                         tags="journal", meta={"title": "T"})
         assert channel.get_post(p.id).meta == {"title": "T"}
 
     def test_none_meta(self, journal_workspace):
         from awm.journal import channel
-        p = channel.post("awm", "dev", author="user:a", body="hi", kind="message")
+        p = channel.post("awm", "dev", author="user:a", body="hi", tags="message")
         assert p.meta == {}
 
 
 class TestReadSideResilience:
     def _insert_double_encoded(self, conn, project, scope):
-        from awm.journal.refs import now_ms
+        from awm.persistence.timestamps import now_ms
         inner = {"title": "Project setup with dev and factorio scopes",
                  "outcome": "success", "skill_path": "awm/debrief.md"}
-        conn.execute(
-            "INSERT INTO scope_posts "
-            "(id, owner_project, owner_scope, author, kind, body, meta, ts) "
-            "VALUES (?,?,?,?, 'journal', ?, ?, ?)",
-            ("poisoned", project, scope, f"agent:{project}/{scope}",
-             "did setup", json.dumps(json.dumps(inner)), now_ms()),
-        )
+        from tests.conftest import insert_post
+        insert_post(conn, "poisoned", project, scope, f"agent:{project}/{scope}", "journal",
+                    "did setup", json.dumps(json.dumps(inner)), now_ms())
         conn.commit()
         return inner
 

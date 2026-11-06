@@ -305,6 +305,20 @@ def test_a_changed_file_replaces_the_attachment_in_place(vault, tmp_path):
     assert len(vault.attachments) == 1
 
 
+def test_a_change_that_keeps_the_length_is_uploaded(vault):
+    """The zotero bundle is one JSON document whose version numbers move
+    without changing its length. A length check alone keeps the old bundle."""
+    note = call("note_create", title="Library")["note_id"]
+    first = call("attachment_put", note_id=note, title="library.json",
+                 mime="application/json", content_b64="eyJ2IjogMX0=")  # {"v": 1}
+    again = call("attachment_put", note_id=note, title="library.json",
+                 mime="application/json", content_b64="eyJ2IjogMn0=")  # {"v": 2}
+    assert again["attachment_id"] == first["attachment_id"]
+    assert again["changed"] is True
+    got = call("attachment_get", attachment_id=first["attachment_id"])
+    assert got["content_b64"] == "eyJ2IjogMn0="
+
+
 def test_a_text_attachment_with_a_multibyte_character_is_not_re_uploaded(
         vault, tmp_path):
     """The defect this fixes, and the reason it hid for so long.

@@ -8,7 +8,7 @@ import pytest
 from starlette.testclient import TestClient
 
 from awm.httpsfront import proxy, store
-from awm.httpsfront.auth import COOKIE_NAME
+from awm.tlsfront.auth import COOKIE_NAME
 
 pytestmark = [pytest.mark.unit, pytest.mark.smoke]
 
@@ -24,8 +24,6 @@ class _StubGate:
     async def session_ttl_seconds(self) -> float:
         return 3600.0
 
-    async def verify_password(self, password: str):
-        return None
 
 
 def _client(app, *, authed: bool = True) -> TestClient:
@@ -37,8 +35,7 @@ def _client(app, *, authed: bool = True) -> TestClient:
 
 
 def _app():
-    app = proxy.build_app("http://127.0.0.1:12203/", "/nonexistent/ca.pem",
-                          landing=True)
+    app = proxy.build_app("http://127.0.0.1:12203/", "/nonexistent/ca.pem")
     app.state.gate = _StubGate()
     return app
 
@@ -143,9 +140,12 @@ def test_root_renders_display_name_label_but_keeps_technical_href_and_key(awm_wo
     store.LandingDAO().set_display_name("science", "Science Lab")
 
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={
-            "services": [{"kind": "page", "prefix": "/ui/science/", "name": "science"}]
-        })
+        assert request.url.path == "/hub/plugins"
+        return httpx.Response(200, json={"plugins": [
+            {"name": "claude-science", "pages": [
+                {"name": "science", "dir": "/x/pages/science/dist", "entry": "index.html"}]},
+            {"name": "journal", "pages": []},
+        ]})
 
     app = _app()
     with _client(app) as c:
@@ -155,5 +155,5 @@ def test_root_renders_display_name_label_but_keeps_technical_href_and_key(awm_wo
     assert r.status_code == 200
     body = r.text
     assert 'data-page="science"' in body
-    assert 'href="/ui/science/"' in body
+    assert 'href="/p/claude-science/science/"' in body
     assert ">Science Lab<" in body

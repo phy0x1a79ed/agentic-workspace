@@ -1,0 +1,43 @@
+[plugin]
+name = "routine"
+version = "0.1.0"
+# No refresh hook: this plugin runs the deploy, so a hook that restarts it would
+# kill the batch that called it. It refreshes with the project (deploy.toml).
+
+
+[[service]]
+name = "routine"
+path = "."
+run = "run.sh"
+install = "install.sh"
+
+[[tool]]
+name = "routine"
+major = 1
+service = "routine"
+tier = "on"
+
+# The tools the routine plugin calls (install.md R117).
+[[needs.tool]]
+name = "reflection"   # start_other for fixing and refresh agents, session_of for the caller's card, list_other and message to find and retarget a live refresh agent
+major = 1
+verbs = ["start_other", "session_of", "list_other", "message"]
+
+[[needs.tool]]
+name = "social"       # send, for the operator's Discord DM
+major = 1
+verbs = ["send"]
+
+[[needs.tool]]
+name = "journal"      # post, for each deploy mark
+major = 1
+verbs = ["post"]
+
+[[needs.tool]]
+name = "operations"   # the card verdict
+major = 2
+verbs = ["task_for_session", "swarm_message_post"]
+
+[needs]
+secrets = []
+network = ["github.com", "api.github.com", "*.githubusercontent.com"]

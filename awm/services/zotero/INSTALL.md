@@ -36,7 +36,7 @@ awm zotero pull       # read the library into the bundle, without writing
 **One node runs this, and only one.** The vault is shared, so a second mirror
 against it sees the first one's notes and works from its own older bundle. Each
 pass then deletes what the other just wrote. Nothing reports an error and every
-note gains a revision. Today that node is sirius.
+note gains a revision. Today that node is deneb, beside the vault.
 
 **A pass reads only what moved. The bundle stays a full picture of the
 library.** Those are one decision rather than two, and the second is what makes
@@ -51,7 +51,7 @@ whenever a window cannot explain what changed. See *Reading only what moved*.
 **One sync at a time, enforced by a file lock.** Each pass reads what the vault
 already holds before it writes, so two passes overlapping each read "nothing is
 there yet" and both create every note: two concurrent runs left 216 doubled
-papers. The lock is `data/.zotero-sync.lock` and is taken with `flock`, because
+papers. The lock is `<AWM_DIR>/services/zotero/sync.lock` and is taken with `flock`, because
 the two callers are two processes — the service's own loops and `awm zotero
 sync` on the console — and an in-process lock cannot see across that. A pass
 that finds doubles collapses them, keeping the first.
@@ -317,13 +317,18 @@ connection. `trilium` supervises the Trilium child — it starts it, restarts it
 and holds it down across a restore — so a second writer would write into a
 database being swapped out from under it.
 
-Everything goes through that service's note verbs. `awm/zotero/vault.py` is the
-whole surface, named there so the sync can be tested against a dictionary.
+Everything goes through that service's verbs, the bundle included: it is the
+`library.json` attachment on the library's root note, since only the `trilium`
+tool reads or writes the vault (`docs/redux/queue.md` R145). It travels with the
+vault's backups, so a restored vault holds the bundle it was written from. A
+root note moved by hand starts with no bundle, and the next pass reads every
+library whole. `awm/zotero/vault.py` is the whole surface, named there so the
+sync can be tested against a dictionary.
 
 ## No files travel
 
-The vault holds citations, not PDFs. Nothing here fetches or attaches a file,
-and the pinned chunk is `library.json` alone.
+The vault holds citations, not PDFs. Nothing here fetches or attaches a file
+but the bundle.
 
 That is a change: the mirror used to copy attachment bytes off the machine
 holding the library, which needed a machine holding the library. Zotero's own
@@ -336,7 +341,7 @@ it was not before. It is not built.
 ./install.sh
 ```
 
-`awm/gateway/install.sh` runs this on every deploy. There is nothing to install
+`awm/install.sh` runs this on every deploy. There is nothing to install
 but the Python: the library is read over HTTPS from the standard library, and
 the vault is reached over the gateway.
 
@@ -361,6 +366,7 @@ Environment, read at start:
 | `ZOTERO_SYNC_ENABLED` | `1` | set `0` to stop the floor. |
 | `ZOTERO_BUSY_RETRY_S` | `5` | wait this long before retrying a push that found the lock held. |
 | `ZOTERO_RECONCILE_S` | `86400` | read a library whole when it has not been read whole for this long. This is the bound on how long a trashed paper can sit in the vault. |
+| `ZOTERO_ORDERS_PUBKEY` | empty | alcor's grant public key, b64url raw, from `operations keys`. Empty leaves the Sync now puller off. An order this key did not sign is dropped. Needs the `orders` extra. |
 
 ## Verify
 

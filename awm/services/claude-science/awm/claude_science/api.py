@@ -120,9 +120,6 @@ class Owner:
     def post(self, path: str, **kw: Any) -> Any:
         return self.request("POST", path, **kw)
 
-    def delete(self, path: str, **kw: Any) -> Any:
-        return self.request("DELETE", path, **kw)
-
 
 def connect(login_url: str, *, timeout: float = 60.0,
             transport: httpx.BaseTransport | None = None) -> Owner:

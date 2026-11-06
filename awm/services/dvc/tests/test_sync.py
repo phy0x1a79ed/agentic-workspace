@@ -87,10 +87,14 @@ def test_sync_never_deletes_on_the_remote(submitted):
     assert len(submitted["items"]) == 1
 
 
-def test_a_dry_run_submits_nothing_and_says_what_it_would_do(monkeypatch):
+def test_a_dry_run_submits_nothing_and_says_what_it_would_do(monkeypatch, tmp_path):
     def explode(*a, **k):
         raise AssertionError("dry run must not submit")
 
+    cache = tmp_path / "data" / ".dvc_cache"
+    cache.mkdir(parents=True)
+    monkeypatch.setattr(sync, "WORKSPACE_ROOT", tmp_path)
+    monkeypatch.setattr(sync, "SHARED_CACHE", cache)
     monkeypatch.setattr(sync.globus, "submit", explode)
     monkeypatch.setattr("awm.dvc.config.load", lambda: CFG)
 

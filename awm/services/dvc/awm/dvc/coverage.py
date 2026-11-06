@@ -27,8 +27,9 @@ from pathlib import Path
 from typing import Any
 
 from awm.config import privacy
+from awm.dvcdata import data_dvc
+
 from awm.dvc import cache as cachemod
-from awm.dvc import data_dvc
 from awm.dvc.config import SHARED_CACHE, WORKSPACE_ROOT
 
 log = logging.getLogger("awm.dvc.coverage")
@@ -229,7 +230,7 @@ def report(*, at_risk_only: bool = True, as_: str | None = None) -> dict[str, An
         # whole-workspace mirror that used to carry these was retired.
         "not_covered": (
             "anything in a worktree that is neither committed-and-pushed nor "
-            "DVC-pinned — scratch dirs, run outputs, and .awm/ service state. "
+            "DVC-pinned — scratch dirs and run outputs. "
             "This is deliberate; those are disposable by construction."
         ),
         "worktrees": at_risk if at_risk_only else rows,

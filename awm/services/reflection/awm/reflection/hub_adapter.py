@@ -1,380 +1,44 @@
-"""Hub adapter for the reflection service.
+"""Hub adapter for reflection, the one agent-facing session tool (`install.md` R135).
 
-Boots the service as a gateway-registered process and runs the shared
-:class:`awm.gatewayclient.ServiceAdapter` loop (register → ready → serve →
-reconnect). The service owns no database, so there is no ``on_start``.
+reflection holds what holds for every harness: who is calling, trust, the R9
+session id, the ledger of owed follow-ups and the alarm. Each verb's work
+happens in the harness plugin of the session it acts on, called through the
+gateway (:mod:`awm.reflection.harness`). The verbs and their published names are
+the ones the reflection, cx and keep services served (:mod:`awm.reflection.surface`).
 
-Surface: every verb projects onto MCP + CLI + HTTP — the MCP surface is the whole
-point (an agent calls ``reflection(verb="compact")`` on itself, with no arguments).
-
-- ``message_self`` — type any text/slash command into your own prompt and submit it.
-- ``compact`` — sugar for ``message_self`` with ``text="/compact"``.
-- ``mode``    — put your own session back into bypass-permissions mode.
-
-Those three act on the caller and on nobody else. The session-control verbs
-(``remote_control``, ``model``, ``effort``, ``rename``, ``cd``, ``interrupt``,
-``stop``, ``link``, ``message``; see :mod:`awm.reflection.control`) take an optional ``job``
-that names any other session on this node, and act on the caller's own without
-one. They never reach another node: the gateway's ``peer`` key does that. A
-``job`` this node does not know gets an error naming the peer that runs it.
-
-This process does not share the caller's environment, but it does not need to:
-the per-session ``awm-mcp`` proxy is a stdio child of the session calling it, so
-the gateway stamps that proxy's parent pid onto the call as the caller's identity
-before it arrives. ``awm.reflection.session_target`` turns that pid into either a
-tmux pane or a background session's PTY socket, and the matching backend does the
-typing. A caller the gateway cannot identify is refused rather than served with
-somebody else's session.
+The gateway stamps the caller's pid on every reflection call as ``_caller_pid``.
+reflection passes it to the harness plugin as ``pid``, which names the caller's
+own session when a verb names no other.
 
 Run via ``run.sh`` (which the hub spawns and respawns):
     python -m awm.reflection.hub_adapter
 """
-
 from __future__ import annotations
 
 import asyncio
+import functools
+import inspect
 import logging
-import os
+import threading
 import time
-from typing import Any
+from typing import Any, Optional
 
-from awm.gatewayclient import ServiceAdapter
-
-from awm import claudedaemon
-from awm.reflection import (
-    alarm,
-    control,
-    elsewhere,
-    inject,
-    oc_inject,
-    oc_session,
-    pending,
-    permission_mode,
-    session_target,
-    tmux_inject,
-)
+from awm.gatewayclient import ServiceAdapter, ids
+from awm.reflection import (alarm, elsewhere, harness, ledger, policy, surface,
+                             waits)
 
 log = logging.getLogger("awm.reflection.hub_adapter")
 
-
 API_MANIFEST: dict[str, Any] = {
-    "functions": [
-        {
-            "name": "message_self",
-            "effect": "write",
-            "tool": "reflection_message_self",
-            "description": (
-                "Type a command/text into YOUR OWN prompt and submit it (no Escape, "
-                "so it QUEUES behind the current turn). Use for self-directed slash "
-                "commands like /compact or /model opus. Works the same whether your "
-                "session runs in a terminal or as a background job — you do not need "
-                "to know which. It types only into your own session; `message` types "
-                "into another. "
-                "A submitted slash command is auto-trailed by a follow-up prompt "
-                "(override with `followup`) so the session has a next turn once "
-                "the command finishes — a bare command would otherwise go idle. "
-                "The follow-up is DEFERRED (injected after the command completes, "
-                "never queued behind it) so it can't run ahead of the command. "
-                "Modal commands (/mcp, /status, /model with no arg, …) are refused "
-                "— they trap input and freeze the session."
-            ),
-            "timeout": 60,
-            "params": [
-                {"name": "text", "type": "string", "required": True,
-                 "description": "The line to inject, e.g. '/compact' or '/model opus'."},
-                {"name": "enter", "type": "boolean",
-                 "description": "Press Enter to submit after pasting (default true)."},
-                {"name": "followup", "type": "string",
-                 "description": "Prompt injected after a slash command completes to "
-                                "keep the session alive (default 'Continue with what "
-                                "you were doing.'). Ignored for plain prompts."},
-                {"name": "delay_ms", "type": "integer",
-                 "description": "Wait this many ms before injecting (default 0)."},
-                {"name": "confirm", "type": "boolean",
-                 "description": "Required to send destructive commands (/clear, /quit, /exit)."},
-            ],
-        },
-        {
-            "name": "compact",
-            "effect": "write",
-            "tool": "reflection_compact",
-            "description": (
-                "Compact your own conversation: injects /compact into your own "
-                "prompt; it queues and runs the instant the current turn ends. A "
-                "resume prompt is then injected AFTER compaction completes (a "
-                "detached watcher waits for it — the resume is never queued behind "
-                "/compact, so it always lands on the freshly-compacted context) so "
-                "the session resumes instead of going idle. Returns immediately "
-                "with followup_deferred=true. Call with no arguments; works the "
-                "same in a terminal session and in a background one."
-            ),
-            "timeout": 60,
-            "params": [
-                {"name": "followup", "type": "string",
-                 "description": "Prompt queued after /compact to resume work "
-                                "(default 'Continue with what you were doing.')."},
-                {"name": "delay_ms", "type": "integer",
-                 "description": "Wait this many ms before injecting (default 0)."},
-            ],
-        },
-        {
-            "name": "mode",
-            "effect": "write",
-            "tool": "reflection_mode",
-            "description": (
-                "Put your own session back into bypass-permissions mode. Approving "
-                "a plan drops the session into whatever mode it was in before "
-                "planning — from a phone that is 'auto', where a classifier gates "
-                "every action. This cycles the permission mode (the Shift+Tab "
-                "cycle) until the session reads as bypass permissions, checking "
-                "after each step rather than assuming a starting point. Already in "
-                "bypass is a no-op. Acts only on your own session."
-            ),
-            "timeout": 60,
-            "params": [
-                {"name": "expect_session", "type": "string",
-                 "description": "Refuse unless the resolved session has this "
-                                "sessionId. For hooks, which reach us through an "
-                                "ancestry walk; agents never need it."},
-            ],
-        },
-        {
-            "name": "remote_control",
-            "effect": "write",
-            "tool": "reflection_remote_control",
-            "description": (
-                "Turn Remote Control on or off for a session on this node. On "
-                "types `/rc <name>` and returns the claude.ai link once it "
-                "connects, or link=null with a link_reason. Off types `/rc` and "
-                "selects 'Disconnect this session' in the modal it opens; it is "
-                "refused if the session is mid-turn or the modal is not the "
-                "expected one. Your own session cannot answer in the same turn: "
-                "the command runs when the turn ends and one follow-up prompt "
-                "resumes you, carrying the link when turning on."
-            ),
-            "timeout": 60,
-            "params": [
-                {"name": "on", "type": "boolean", "required": True,
-                 "description": "true to turn Remote Control on, false to turn it off."},
-                {"name": "name", "type": "string",
-                 "description": "The Remote Control name when turning on; a plain label."},
-                {"name": "job", "type": "string",
-                 "description": "A job id, or a session name as `list_other` shows "
-                                "it. Omit to act on your own session."},
-            ],
-        },
-        {
-            "name": "model",
-            "effect": "write",
-            "tool": "reflection_model",
-            "description": (
-                "Switch a session's model: types `/model <model>` and submits "
-                "it. Queues behind a running turn. Refused while a modal or "
-                "permission prompt is showing. Claude Code asks 'Switch "
-                "model?' when the conversation already has output; this verb "
-                "answers that dialog with 'Yes, switch to <model>' (it closes "
-                "it with Escape if the cursor is on No, and leaves a dialog a "
-                "PreModelSwitch hook raised alone). Claude Code saves the new "
-                "value as the default for new sessions; this verb puts the "
-                "saved default back in ~/.claude/settings.json, and the "
-                "running session keeps the new value. On your own session the "
-                "command runs when your turn ends, and exactly one follow-up "
-                "prompt then reports whether the change succeeded or did not "
-                "apply."
-            ),
-            "timeout": 60,
-            "params": [
-                {"name": "model", "type": "string", "required": True,
-                 "description": "A model alias or full name, e.g. opus or sonnet[1m]."},
-                {"name": "job", "type": "string",
-                 "description": "A job id, or a session name as `list_other` shows "
-                                "it. Omit to act on your own session."},
-            ],
-        },
-        {
-            "name": "effort",
-            "effect": "write",
-            "tool": "reflection_effort",
-            "description": (
-                "Set a session's effort: types `/effort <level>` and submits "
-                "it. Queues behind a running turn. Refused while a modal or "
-                "permission prompt is showing. Claude Code asks 'Change "
-                "effort level?' when the conversation already has output; "
-                "this verb answers that dialog with 'Yes, switch to <level>' "
-                "(it closes it with Escape if the cursor is on No, and leaves "
-                "a dialog a PreModelSwitch hook raised alone). Claude Code "
-                "saves the new level as the default for new sessions; this "
-                "verb puts the saved default back in ~/.claude/settings.json, "
-                "and the running session keeps the new level. On your own "
-                "session the command runs when your turn ends, and exactly "
-                "one follow-up prompt then reports whether the change "
-                "succeeded or did not apply."
-            ),
-            "timeout": 60,
-            "params": [
-                {"name": "level", "type": "string", "required": True,
-                 "description": "low, medium, high, xhigh or max."},
-                {"name": "job", "type": "string",
-                 "description": "A job id, or a session name as `list_other` shows "
-                                "it. Omit to act on your own session."},
-            ],
-        },
-        {
-            "name": "rename",
-            "effect": "write",
-            "tool": "reflection_rename",
-            "description": (
-                "Rename a session: types `/rename <name>` and submits it. "
-                "Queues behind a running turn. Refused while a modal or "
-                "permission prompt is showing. On your own session, one "
-                "follow-up prompt reports the rename (and any other "
-                "settings change still owed a report) when it has run."
-            ),
-            "timeout": 60,
-            "params": [
-                {"name": "name", "type": "string", "required": True,
-                 "description": "The new name, one short line."},
-                {"name": "job", "type": "string",
-                 "description": "A job id, or a session name as `list_other` shows "
-                                "it. Omit to act on your own session."},
-            ],
-        },
-        {
-            "name": "cd",
-            "effect": "write",
-            "tool": "reflection_cd",
-            "description": (
-                "Move a session to another directory: types `/cd <path>` and "
-                "submits it. Claude Code then runs the session's tools from "
-                "there, so later Bash calls stay in it, and loads that "
-                "directory's project settings, MCP servers, skills and "
-                "CLAUDE.md. `list_other` and the Swarm board show the session "
-                "under the scope it moved to. Queues behind a running turn. "
-                "Refused for a path that is not a directory, for one Claude "
-                "Code is not trusted in (the trust dialog would wait on a "
-                "person), and while a modal or permission prompt is showing. "
-                "A worktree of an awm project is trusted first, not refused. "
-                "Claude Code drops the session's MCP servers on a move, so the "
-                "verb types `/mcp reconnect awm` after it; any other MCP server "
-                "stays disconnected. CLAUDE.md files add up across moves: the "
-                "old one stays in context. On your own session, one follow-up "
-                "prompt reports the move when it has run."
-            ),
-            "timeout": 60,
-            "params": [
-                {"name": "path", "type": "string", "required": True,
-                 "description": "An absolute directory on this node."},
-                {"name": "job", "type": "string",
-                 "description": "A job id, or a session name as `list_other` shows "
-                                "it. Omit to act on your own session."},
-            ],
-        },
-        {
-            "name": "interrupt",
-            "effect": "write",
-            "tool": "reflection_interrupt",
-            "description": (
-                "Interrupt a session's running turn: presses Escape once, as a "
-                "person would. Refused while a modal or permission prompt is "
-                "showing."
-            ),
-            "timeout": 60,
-            "params": [{"name": "job", "type": "string",
-                 "description": "A job id, or a session name as `list_other` shows "
-                                "it. Omit to act on your own session."}],
-        },
-        {
-            "name": "stop",
-            "effect": "write",
-            "tool": "reflection_stop",
-            "description": (
-                "Stop a background session on this node and remove its job "
-                "(`claude stop`, then `claude rm`). Works on any session, not "
-                "only ones `start_other` created, and on a job whose session "
-                "has already exited, by its job id. Your own session is refused "
-                "unless confirm is true, and is then stopped after this call "
-                "returns. A terminal session is refused."
-            ),
-            "timeout": 60,
-            "params": [
-                {"name": "job", "type": "string", "required": True,
-                 "description": "A job id, or a session name as `list_other` shows it."},
-                {"name": "confirm", "type": "boolean",
-                 "description": "Required to stop your own session."},
-            ],
-        },
-        {
-            "name": "link",
-            "effect": "read",
-            "tool": "reflection_link",
-            "description": (
-                "Read a session's claude.ai link and whether Remote Control is "
-                "on, from its record. Types nothing."
-            ),
-            "timeout": 30,
-            "params": [{"name": "job", "type": "string",
-                 "description": "A job id, or a session name as `list_other` shows "
-                                "it. Omit to act on your own session."}],
-        },
-        {
-            "name": "message",
-            "effect": "write",
-            "tool": "reflection_message",
-            "description": (
-                "To talk to another agent, use your harness's own channel "
-                "first: in Claude Code, `SendMessage` to a session that "
-                "`ListAgents` shows, and the reply comes back the same way. Use "
-                "this verb when the harness has no such channel, or to drive "
-                "another session's prompt, such as a slash command. "
-                "Type text into another session's prompt and submit it (no "
-                "Escape, so it queues behind its current turn). Same guards as "
-                "`message_self`: destructive commands need confirm, modal "
-                "commands are refused, and so is a session showing a modal or "
-                "permission prompt. No follow-up is added."
-            ),
-            "timeout": 60,
-            "params": [
-                {"name": "job", "type": "string", "required": True,
-                 "description": "A job id, or a session name as `list_other` shows it."},
-                {"name": "text", "type": "string", "required": True,
-                 "description": "The line to type."},
-                {"name": "confirm", "type": "boolean",
-                 "description": "Required to send destructive commands (/clear, /quit, /exit)."},
-            ],
-        },
-        {
-            "name": "pending",
-            "effect": "read",
-            "tool": "reflection_pending",
-            "description": (
-                "List the deferred resumes this service still owes — one per "
-                "session that has a slash command in flight. A session that "
-                "compacted and then went idle forever is the visible symptom of "
-                "one of these being lost; this is how you tell whether the "
-                "promise is still being watched or vanished with a restart. "
-                "`lost` lists the newest resumes reflection gave up on, each "
-                "with its reason; each was also posted to the session's scope "
-                "journal. Reports on the whole node, not just the caller."
-            ),
-            "timeout": 30,
-            "params": [],
-        },
-        {
-            "name": "whoami",
-            "effect": "read",
-            "tool": "reflection_whoami",
-            "description": (
-                "Report which session reflection resolves you to, and how it would "
-                "reach you (a tmux pane, or a background session's PTY). Useful "
-                "when a reflection call refuses and you want to see why."
-            ),
-            "timeout": 30,
-            "params": [],
-        },
-    ],
+    "description": surface.DESCRIPTION,
+    "functions": surface.FUNCTIONS,
     "emitters": [],
     "sessions": [],
 }
+
+SWEEP_EVERY_S = 300
+#: The mode the gateway's gate restricts hardest (core modes.rs).
+UNKNOWN_MODE = "unknown"
 
 
 def _bool(v: Any, default: bool = False) -> bool:
@@ -391,217 +55,702 @@ def _int(v: Any, default: int = 0) -> int:
 
 
 def _caller_pid(args: dict) -> Any:
-    """The calling session's pid, stamped by the gateway from an observed header.
-
-    Never a model-supplied value: the gateway overwrites this key on every
-    reflection call and strips it when it has no header to stamp.
-    """
+    """The calling session's pid, stamped by the gateway. Never a model-supplied value."""
     return args.get("_caller_pid")
 
 
-# Every failure mode that means "we could not do this to you" surfaces the same
-# way — a result with ok=false and a readable reason, not an exception. The
-# distinction the caller cares about is whether their command ran, not which
-# layer declined.
-_FAILURES = (session_target.ResolveError, oc_session.ResolveError,
-             tmux_inject.TmuxError, claudedaemon.DaemonError,
-             oc_inject.OpencodeError, oc_inject.ServeError,
-             inject.DeliveryError)
+def _caller_sid(args: dict) -> Optional[str]:
+    """The R9 id of an isolated caller, which has no host pid. Stamped by the gateway's
+    isolated door and stripped from every other call (plugin-contract.md)."""
+    return ids.to_r9(args.get("_caller_session_id"))
 
 
-def _guarded(verb: str, fn):
-    """Wrap a handler so no failure leaves this service without saying so.
-
-    Every way a reflection call can fail used to end here as a plain result dict
-    and nothing else: no log line, no on-disk trace. So "reflection didn't
-    compact my session" was answerable only by reconstructing the moment from
-    ``/proc``, the daemon roster and Claude Code's per-session records — long
-    after the state that would have explained it had moved on.
-
-    Both kinds of failure funnel through this one seam, at levels that say which
-    is which. A transport or identity failure is a defect and logs at WARNING. A
-    guard refusal — a destructive command without ``confirm``, a modal one that
-    would freeze the session — is the service working as designed and logs at
-    INFO, but it still has to appear, because from the caller's side the two look
-    identical. Handling both here rather than inside each backend also means the
-    tmux and daemon paths cannot drift on it.
-    """
-    def run(args: dict) -> dict:
-        try:
-            result = fn(args)
-        except control.UnknownSession as exc:
-            # Only a session's own call looks further: a call from a peer has no
-            # caller pid, and must not fan out again from here.
-            reason = str(exc) + (elsewhere.hint(exc.ref) if _caller_pid(args) else "")
-            log.warning("reflection: %s failed for caller pid %s: %s",
-                        verb, _caller_pid(args), reason)
-            return {"ok": False, "error": reason}
-        except _FAILURES as exc:
-            log.warning("reflection: %s failed for caller pid %s: %s",
-                        verb, _caller_pid(args), exc)
-            return {"ok": False, "error": str(exc)}
-        if not result.get("ok"):
-            # Never log the rest of `args`: for `message_self`, `text` is the caller's
-            # own prompt content.
-            log.info("reflection: %s refused for caller pid %s: %s", verb,
-                     _caller_pid(args),
-                     result.get("reason") or result.get("error"))
-        return result
-    return run
+def _caller(args: dict) -> tuple[harness.Provider, dict]:
+    return harness.for_caller(_caller_pid(args), _caller_sid(args))
 
 
-def _handle_message_self(args: dict) -> dict:
-    return inject.send(
-        args["text"],
-        caller_pid=_caller_pid(args),
-        enter=_bool(args.get("enter"), True),
-        delay_ms=_int(args.get("delay_ms"), 0),
-        confirm=_bool(args.get("confirm"), False),
-        followup=args.get("followup"),
-    )
+def _me(args: dict) -> dict:
+    """How a plugin names the caller's own session: by session id when isolated, else by pid."""
+    sid = _caller_sid(args)
+    return {"session_id": sid} if sid else {"pid": _caller_pid(args)}
 
 
-def _handle_compact(args: dict) -> dict:
-    return inject.send(
-        "/compact",
-        caller_pid=_caller_pid(args),
-        delay_ms=_int(args.get("delay_ms"), 0),
-        followup=args.get("followup"),
-    )
-
-
-def _handle_mode(args: dict) -> dict:
-    return permission_mode.ensure_bypass(
-        caller_pid=_caller_pid(args),
-        expect_session=args.get("expect_session") or None)
-
-
-def _handle_whoami(args: dict) -> dict:
-    return {"ok": True, **inject.describe_caller(_caller_pid(args))}
-
-
-def _handle_pending(args: dict) -> dict:
-    now = int(time.time() * 1000)
-    return {"ok": True, "pending": [
-        {"session": p.name or p.session_id, "pid": p.repl_pid,
-         "hosting": p.hosting, "command": p.text, "resume": p.followup,
-         "waiting_for_s": max(0, (now - p.injected_at_ms) // 1000),
-         # A resume is held rather than typed into a session that would only
-         # queue it, so a promise sitting here is normal and these say whether it
-         # is progressing, and how many times the session has been asked to bring
-         # its turn to a close so the command it is sitting on can run.
-         "holds": p.holds, "nudges": p.nudges,
-         "last_outcome": p.last_outcome,
-         # awaiting_command until the resume is typed, then resume_sent until
-         # the session is seen to take it up.
-         "phase": p.phase, "reissues": p.reissues, "state": "pending"}
-        for p in pending.load_all()
-    ], "lost": [{**entry, "state": "lost"} for entry in alarm.recent()]}
-
-
-def _job(args: dict) -> Any:
+def _job(args: dict) -> Optional[str]:
     return args.get("job") or None
 
 
-def _handle_remote_control(args: dict) -> dict:
-    return control.remote_control(
-        _bool(args.get("on")), name=args.get("name") or None, job=_job(args),
-        caller_pid=_caller_pid(args))
+def _guarded(verb: str, fn):
+    """Turn every failure into ``ok: false`` with a reason, and log it once."""
+    def failed(args: dict, exc: Exception) -> dict:
+        reason = str(exc)
+        if isinstance(exc, harness.UnknownSession) and _caller_pid(args):
+            # Only a session's own call looks further: a peer's call has no
+            # caller pid, and must not fan out again from here.
+            reason += elsewhere.hint(exc.ref)
+        log.warning("reflection: %s failed for caller pid %s: %s",
+                    verb, _caller_pid(args), reason)
+        return {"ok": False, "error": reason}
+
+    def logged(args: dict, result: Any) -> Any:
+        if isinstance(result, dict) and not result.get("ok", True):
+            # Never log the rest of `args`: `text` is the caller's own prompt.
+            log.info("reflection: %s refused for caller pid %s: %s", verb,
+                     _caller_pid(args), result.get("reason") or result.get("error"))
+        return result
+
+    if inspect.iscoroutinefunction(fn):
+        @functools.wraps(fn)
+        async def run_async(*a):
+            try:
+                return logged(a[0], await fn(*a))
+            except (harness.HarnessError, policy.Refused) as exc:
+                return failed(a[0], exc)
+        return run_async
+
+    @functools.wraps(fn)
+    def run(*a):
+        try:
+            return logged(a[0], fn(*a))
+        except (harness.HarnessError, policy.Refused) as exc:
+            return failed(a[0], exc)
+    return run
 
 
-def _handle_model(args: dict) -> dict:
-    return control.model(args.get("model"), job=_job(args),
-                         caller_pid=_caller_pid(args))
+# --- the caller's own session -------------------------------------------------
 
 
-def _handle_effort(args: dict) -> dict:
-    return control.effort(args.get("level"), job=_job(args),
-                          caller_pid=_caller_pid(args))
+def _own(verb: str, args: dict, extra: dict) -> tuple[harness.Provider, dict, dict]:
+    p, who = _caller(args)
+    return p, who, harness.call(p, verb, {**_me(args), **extra})
 
 
-def _handle_rename(args: dict) -> dict:
-    return control.rename(args.get("name"), job=_job(args),
-                          caller_pid=_caller_pid(args))
+def _with_ticket(p: harness.Provider, who: dict, out: dict) -> dict:
+    if out.get("ticket"):
+        ledger.open_ticket(out["ticket"], session_id=who.get("session_id") or "",
+                           tool=p.tool, command=out.get("text") or "",
+                           followup=out.get("followup") or "",
+                           name=who.get("name") or "", cwd=who.get("cwd"))
+    return out
 
 
-def _handle_cd(args: dict) -> dict:
-    return control.cd(args.get("path"), job=_job(args), caller_pid=_caller_pid(args))
+def _message_self(args: dict) -> dict:
+    p, who, out = _own("send", args, {
+        "text": args["text"], "submit": _bool(args.get("enter"), True),
+        "delay_ms": _int(args.get("delay_ms")), "confirm": _bool(args.get("confirm")),
+        "followup": args.get("followup")})
+    return _with_ticket(p, who, out)
 
 
-def _handle_interrupt(args: dict) -> dict:
-    return control.interrupt(job=_job(args), caller_pid=_caller_pid(args))
+def _compact(args: dict) -> dict:
+    p, who, out = _own("compact", args, {"delay_ms": _int(args.get("delay_ms")),
+                                         "followup": args.get("followup")})
+    return _with_ticket(p, who, out)
 
 
-def _handle_stop(args: dict) -> dict:
-    return control.stop(_job(args), caller_pid=_caller_pid(args),
-                        confirm=_bool(args.get("confirm")))
+def _mode(args: dict) -> dict:
+    return _own("mode", args, {"expect_session": args.get("expect_session")})[2]
 
 
-def _handle_link(args: dict) -> dict:
-    return control.link(job=_job(args), caller_pid=_caller_pid(args))
+def _task_of(session_id: str) -> Optional[str]:
+    try:
+        from awm.gatewayclient import call_sync
+        out = call_sync("operations", "task_for_session", {"session_id": session_id},
+                        timeout=5.0)
+    except Exception:  # noqa: BLE001 - a missing operations service is no task
+        return None
+    return out.get("task_id") if isinstance(out, dict) else None
 
 
-def _handle_message(args: dict) -> dict:
-    return control.message(_job(args), args.get("text"),
-                           caller_pid=_caller_pid(args),
-                           confirm=_bool(args.get("confirm")))
+def _session_of(args: dict) -> dict:
+    """The session at ``pid``, with its mode and trust, for the gateway's gate and stamps.
+
+    A pid no harness plugin claims is ``known: false``. Its mode is what the
+    plugins say of it (None when it is positively not a started session), or
+    ``unknown`` when none could say.
+    """
+    pid = _int(args.get("pid"))
+    try:
+        p, who = harness.for_caller(pid)
+    except harness.Ambiguous:
+        raise
+    except harness.HarnessError as exc:
+        modes = [r["mode"] for _p, r in harness.everyone("resolve", {"pid": pid})
+                 if "mode" in r]
+        mode = next((m for m in modes if m is not None), None) if modes else UNKNOWN_MODE
+        return {"ok": True, "known": False, "mode": mode, "reason": str(exc)}
+    sid = who.get("session_id") or ""
+    return {**who, "ok": True, "known": True, "harness": p.tool, "platform": p.code,
+            "mode": who.get("mode", UNKNOWN_MODE), "trust": policy.level(who)}
+
+
+def _whoami(args: dict) -> dict:
+    p, who = _caller(args)
+    sid = who.get("session_id") or ""
+    return {**who, "ok": True, "harness": p.tool, "platform": p.code,
+            "trust": policy.level(who), "task_id": _task_of(sid) if sid else None,
+            "session": who.get("name") or sid}
+
+
+# --- a session named by `job`, or the caller's own ------------------------------
+
+
+def _actor(args: dict) -> Optional[dict]:
+    """The calling session as its harness describes it, or None for a caller that is no session."""
+    sid, pid = _caller_sid(args), _caller_pid(args)
+    if not sid and not pid:
+        return None
+    try:
+        who = harness.for_caller(pid, sid)[1]
+    except harness.HarnessError:
+        return {"session_id": sid, "known": False} if sid else None
+    return who if who.get("session_id") else None
+
+
+def _described(p: harness.Provider, named: dict) -> dict:
+    """The target ``named`` as its harness describes it, or ``named`` when it cannot."""
+    try:
+        who = harness.call(p, "status", named)
+    except harness.HarnessError:
+        return {**named, "known": False}
+    if who.get("ok") is False or not who.get("session_id"):
+        return {**named, "known": False}
+    return who
+
+
+def _check_steer(verb: str, args: dict, p: harness.Provider, named: dict) -> None:
+    policy.check_steer(_actor(args), verb, _described(p, named))
+
+
+def _on_target(verb: str, steer: Optional[str], args: dict, extra: dict) -> dict:
+    p, named = harness.target(_job(args), _caller_pid(args), _caller_sid(args))
+    if steer and _job(args):
+        _check_steer(steer, args, p, named)
+    return harness.call(p, verb, {**named, **extra})
+
+
+def _remote_control(args: dict) -> dict:
+    return _on_target("remote_control", "remote_control", args,
+                      {"on": _bool(args.get("on")), "name": args.get("name") or None})
+
+
+def _model(args: dict) -> dict:
+    return _on_target("set", "model", args, {"model": args.get("model")})
+
+
+#: High is the upper limit for any session reflection starts, resumes or retunes.
+OVER_LIMIT = ("xhigh", "max")
+
+
+def _over_limit(level: Any) -> dict | None:
+    if level in OVER_LIMIT:
+        return {"ok": False, "reason": f"effort {level} is above the limit. High is the "
+                                       "upper limit for any model."}
+    return None
+
+
+def _effort(args: dict) -> dict:
+    refused = _over_limit(args.get("level"))
+    if refused:
+        return refused
+    return _on_target("set", "effort", args, {"effort": args.get("level")})
+
+
+def _rename(args: dict) -> dict:
+    return _on_target("set", "rename", args, {"name": args.get("name")})
+
+
+def _mcp(args: dict) -> dict:
+    return _on_target("mcp", "mcp", args, {"action": args.get("action"),
+                                           "server": args.get("server")})
+
+
+def _interrupt(args: dict) -> dict:
+    return _on_target("interrupt", "interrupt", args, {})
+
+
+def _stop(args: dict) -> dict:
+    p, named = harness.target(_job(args), _caller_pid(args), _caller_sid(args))
+    if _job(args):
+        _check_steer("stop", args, p, named)
+    out = harness.call(p, "stop", {**named, "keep": False,
+                                   "confirm": _bool(args.get("confirm"))})
+    return _after_retire(out, named.get("session_id"))
+
+
+def _after_retire(out: dict, session_id: Optional[str]) -> dict:
+    """A retired session ends its scope claims, and wakes its waiters here and on each domestic peer (R51)."""
+    sid = out.get("session_id") or session_id
+    if out.get("ok") and isinstance(sid, str) and ids.is_r9(sid):
+        _release_claims(sid)
+        out = {**out, "woken": waits.retired(sid, wake=_wake)}
+        threading.Thread(target=_tell_peers, args=(sid,), name="reflection-retired",
+                         daemon=True).start()
+    return out
+
+
+def _tell_peers(session_id: str) -> None:
+    for peer in _peers():
+        try:
+            from awm import gatewayclient
+            gatewayclient.call_sync("reflection", "retired", {"session_id": session_id}, peer=peer, timeout=15.0)
+        except Exception as exc:  # noqa: BLE001 - that node checks again at its start
+            log.warning("reflection: could not tell %s that %s retired: %s",
+                        peer, session_id, exc)
+
+
+def _peers() -> list[str]:
+    try:
+        return elsewhere._domestic_peers()
+    except Exception as exc:  # noqa: BLE001
+        log.info("reflection: cannot read the peer book: %s", exc)
+        return []
+
+
+def _link(args: dict) -> dict:
+    return _on_target("link", None, args, {})
+
+
+def _message(args: dict) -> dict:
+    if not _job(args):
+        return {"ok": False, "reason": "job is required: the session to message"}
+    out = _on_target("send", None, args, {"text": args.get("text"),
+                                          "confirm": _bool(args.get("confirm"))})
+    actor = _actor(args) if out.get("ok") else None
+    hint = policy.first_message_hint(actor.get("session_id")) if actor else None
+    return {**out, "hint": hint} if hint else out
+
+
+def _scopes_call(verb: str, args: dict) -> Optional[dict]:
+    """The scope tool's answer, or None when it does not serve ``verb`` yet."""
+    try:
+        from awm.gatewayclient import call_sync
+        out = call_sync("scope", verb, args, timeout=10.0)
+    except Exception as exc:  # noqa: BLE001
+        log.info("reflection: scope %s unavailable: %s", verb, exc)
+        return None
+    return out if isinstance(out, dict) else None
+
+
+def _release_claims(session_id: str) -> None:
+    """End every scope claim ``session_id`` holds. A lost release never fails the stop."""
+    listing = _scopes_call("claims", {}) or {}
+    for row in listing.get("claims") or []:
+        if (row.get("holder") or {}).get("session_id") == session_id:
+            _scopes_call("release", {"project": row["project"], "scope": row["scope"],
+                                     "session_id": session_id})
+
+
+def _start_claim(p: harness.Provider, where: tuple[str, str], out: dict, pid: Any) -> dict:
+    """Claim the scope a started session runs in, or stop the session (scopes.md R42).
+
+    The claim carries the new session's pid, so it ends with the session's process.
+    """
+    project, scope = where
+    sid = out["session_id"]
+    try:
+        new_pid = harness.call(p, "status", {"session_id": sid}).get("pid")
+    except harness.HarnessError as exc:
+        log.warning("reflection: no pid for the new session %s: %s", sid, exc)
+        new_pid = None
+    got = _scopes_call("claim", {"project": project, "scope": scope, "session_id": sid,
+                                 "pid": new_pid, "job": out.get("job")})
+    if got is None:
+        return {**out, "claim": "unavailable"}
+    if got.get("ok", True) or got.get("claimed"):
+        return {**out, "claim": got}
+    try:
+        stopped = harness.call(p, "stop", {"session_id": sid, "pid": pid, "keep": False,
+                                           "confirm": True}).get("ok", True)
+    except harness.HarnessError as exc:
+        log.warning("reflection: could not stop %s after its claim was refused: %s", sid, exc)
+        stopped = False
+    return {"ok": False, "claim": got, "stopped": out.get("job") if stopped else None,
+            "reason": got.get("reason") or f"{project}/{scope} is held by {got.get('holder')}"}
+
+
+def _held_by(project: str, scope: str) -> Optional[dict]:
+    """The live session that holds the scope, or None when it is free or claims are unavailable."""
+    listing = _scopes_call("claims", {"project": project, "scope": scope}) or {}
+    return next((row.get("holder") for row in listing.get("claims") or []
+                 if row.get("scope") == scope and row.get("holder")), None)
+
+
+def _brief_line(project: str, scope: str) -> str:
+    """The line a move's follow-up carries: the brief of the scope it enters (scopes.md R143)."""
+    try:
+        from awm.gatewayclient import call_sync
+        got = call_sync("journal", "brief_read", {"project": project, "scope": scope}, timeout=5.0)
+    except Exception as exc:  # noqa: BLE001 - a move never waits on the brief
+        log.info("reflection: no brief for %s/%s: %s", project, scope, exc)
+        return ""
+    brief = got.get("brief") if isinstance(got, dict) else None
+    return (brief.get("line") or "") if isinstance(brief, dict) else ""
+
+
+def _cd(args: dict) -> dict:
+    """Move a session, claiming the scope it moves into (sessions lane, scope claims)."""
+    pid = _caller_pid(args)
+    p, named = harness.target(_job(args), pid, _caller_sid(args))
+    if _job(args):
+        _check_steer("cd", args, p, named)
+    before = harness.call(p, "status", named)
+    sid = before.get("session_id") or named.get("session_id") or ""
+    where = alarm.scope_of(args.get("path"))
+    claim: Any = "unavailable"
+    warning = None
+    if where and sid:
+        project, scope = where
+        got = _scopes_call("claim", {
+            "project": project, "scope": scope, "session_id": sid,
+            "pid": before.get("pid"), "job": before.get("job"),
+            "terminal": before.get("kind") == "interactive"})
+        if got is not None:
+            claim = got
+            if not got.get("ok", True) and not got.get("claimed"):
+                if before.get("kind") != "interactive":
+                    return {"ok": False, "claim": got,
+                            "reason": got.get("reason") or
+                            f"{project}/{scope} is held by {got.get('holder')}"}
+                warning = got.get("reason") or f"{project}/{scope} is held"
+    line = _brief_line(*where) if where else ""
+    out = harness.call(p, "set", {**named, "cwd": args.get("path"),
+                                  **({"brief": line} if line else {})})
+    old = alarm.scope_of(before.get("cwd"))
+    if out.get("ok") and old and old != where and sid and claim != "unavailable":
+        _scopes_call("release", {"project": old[0], "scope": old[1],
+                                       "session_id": sid})
+    out = {**out, "claim": claim}
+    if warning:
+        out["warning"] = warning
+    return out
+
+
+def _pending(args: dict) -> dict:
+    rows = []
+    for p, out in harness.everyone("pending", {}):
+        rows += [{**r, "harness": p.tool} for r in out.get("pending") or []]
+    return {"ok": True, "pending": rows,
+            "tickets": ledger.open_tickets(),
+            "lost": [{**entry, "state": "lost"} for entry in alarm.recent()]}
+
+
+# --- lifecycle ----------------------------------------------------------------
+
+
+#: The level an isolated session starts at when the caller names none (fleet.md R109).
+ISOLATED_TRUST = "untrusted"
+
+
+def _start_provider(args: dict) -> harness.Provider:
+    return harness.for_platform(args.get("platform") or ids.PLATFORM_CLAUDE)
+
+
+async def _start_other(args: dict, as_: str | None = None) -> dict:
+    pid = _caller_pid(args)
+    actor = await asyncio.to_thread(_actor, args)
+    policy.check_steer(actor, "start_other")
+    if not args.get("model") or not args.get("effort"):
+        return {"ok": False, "reason": "model and effort are required, with no default. Pick "
+                                       "both to fit the task: a smaller model and lower effort "
+                                       "for mechanical work, a larger model and high effort for "
+                                       "design or debugging. Fable needs Tony's consent first."}
+    refused = _over_limit(args.get("effort"))
+    if refused:
+        return refused
+    requested = args.get("trust") or (ISOLATED_TRUST if args.get("isolated") else None)
+    level = policy.start_level(actor, requested)
+    p = _start_provider(args)
+    # A lobby start claims nothing until its own `cd`.
+    where = ((args["project"], args["scope"])
+             if args.get("project") and args.get("scope") and not args.get("suggest") else None)
+    if where:
+        holder = await asyncio.to_thread(_held_by, *where)
+        if holder:
+            return {"ok": False, "holder": holder,
+                    "reason": f"session {holder.get('session_id')} holds {where[0]}/{where[1]}. "
+                              f"Start the session elsewhere, or ask Tony on the board (R7)."}
+    fwd = {k: v for k, v in args.items() if not k.startswith("_") and k != "platform"}
+    out = await asyncio.to_thread(harness.call, p, "start", {**fwd, "pid": pid},
+                                  as_=as_)
+    sid = out.get("session_id")
+    if out.get("ok") and sid and where:
+        out = await asyncio.to_thread(_start_claim, p, where, out, pid)
+        if not out.get("ok"):
+            return out
+    if out.get("ok") and sid and level:
+        name = str(args.get("name") or "")
+        origin = f"seat:{name[5:]}" if name.startswith("seat:") else (
+            f"session:{actor['session_id']}" if actor else (as_ or "service"))
+        policy.record(sid, level, origin, out.get("job"))
+        out = {**out, "trust": level}
+    if out.get("ok") and sid and actor:
+        await asyncio.to_thread(_record_parent, sid, actor["session_id"], "start")
+    return out
+
+
+def _record_parent(session_id: str, parent: str, how: str) -> bool:
+    """Give the journal a parent link (sessions.md R13, R16). A lost link never fails the call."""
+    try:
+        from awm.gatewayclient import call_sync
+        out = call_sync("journal", "session_parent",
+                        {"session_id": session_id, "parent": parent, "how": how}, timeout=30.0)
+    except Exception as exc:  # noqa: BLE001
+        log.info("reflection: parent link %s -> %s (%s) not recorded: %s",
+                 parent, session_id, how, exc)
+        return False
+    return bool(isinstance(out, dict) and out.get("ok", True))
+
+
+async def _list_other(args: dict, as_: str | None = None) -> dict:
+    fwd = {k: v for k, v in args.items() if not k.startswith("_")}
+    answers = await asyncio.to_thread(harness.everyone, "list", fwd, as_=as_)
+    out: dict[str, Any] = {"ok": True, "sessions": []}
+    for p, got in answers:
+        if got.get("ok") is False:
+            out.setdefault("errors", []).append({"harness": p.tool, **got})
+            continue
+        out["sessions"] += [{**r, "harness": p.tool} for r in got.get("sessions") or []]
+        for key in ("pool", "daemon"):
+            if key in got:
+                out[key] = got[key]
+    # `trust` is the recorded level, or None for a session with no record.
+    out["sessions"] = await asyncio.to_thread(lambda: [
+        {**r, "trust": policy.recorded_level(r.get("session_id"), r.get("job")) or r.get("trust")}
+        for r in out["sessions"]])
+    return out
+
+
+async def _on_job(verb: str, steer: str, args: dict, as_: str | None,
+                  extra: Optional[dict] = None) -> dict:
+    job = _job(args)
+    if not job:
+        return {"ok": False, "reason": "job is required"}
+    pid = _caller_pid(args)
+    p, named = await asyncio.to_thread(harness.for_ref, job)
+    await asyncio.to_thread(_check_steer, steer, args, p, named)
+    return await asyncio.to_thread(harness.call, p, verb,
+                                   {**named, "pid": pid, **(extra or {})}, as_=as_)
+
+
+async def _stop_other(args: dict, as_: str | None = None) -> dict:
+    job = _job(args)
+    named = {}
+    if job:
+        try:
+            named = (await asyncio.to_thread(harness.for_ref, job))[1]
+        except harness.HarnessError:
+            named = {}
+    out = await _on_job("stop", "stop_other", args, as_, {"keep": False})
+    return await asyncio.to_thread(_after_retire, out, named.get("session_id"))
+
+
+async def _resume_other(args: dict, as_: str | None = None) -> dict:
+    out = await _on_job("resume", "resume_other", args, as_,
+                        {"prompt": args.get("prompt")})
+    if out.get("ok"):
+        waits.drop_job(_job(args) or "")
+        if isinstance(out.get("session_id"), str):
+            waits.drop(out["session_id"])
+    return out
+
+
+async def _adopt_other(args: dict, as_: str | None = None) -> dict:
+    return await _on_job("adopt", "start_other", args, as_)
+
+
+def _wait(args: dict) -> dict:
+    until = args.get("until")
+    if isinstance(until, str):
+        until = [u for u in until.replace(",", " ").split() if u]
+    if not until:
+        return {"ok": False, "reason": "until is required: the session ids to wait for"}
+    try:
+        until = list(dict.fromkeys(ids.normalise(u) for u in until))
+    except ids.BadSessionId as exc:
+        return {"ok": False, "reason": f"{exc}; wait takes session ids, as "
+                                       f"start_other returns them"}
+    pid = _caller_pid(args)
+    p, who = _caller(args)
+    sid = who.get("session_id") or ""
+    if sid in until:
+        return {"ok": False, "reason": "a session cannot wait on itself"}
+    already = set(waits.retired_among(until)) | set(_retired_elsewhere(until))
+    if set(until) <= already:
+        return {"ok": True, "waiting": False, "until": until,
+                "reason": "every session in until has already retired; carry on"}
+    job = who.get("job")
+    row = waits.add(session_id=sid, until=until, tool=p.tool, job=job,
+                    name=who.get("name") or "", cwd=who.get("cwd"), retired=already)
+    if not job:
+        return {"ok": True, "waiting": True, "until": row["until"],
+                "retired": row["retired"], "terminal": True,
+                "note": "a terminal session stays open; the wake line is typed in "
+                        "when every listed session has retired. End your turn now"}
+    out = harness.call(p, "stop", {"ref": job, "pid": pid, "keep": True,
+                                   "confirm": True})
+    if not out.get("ok"):
+        waits.drop(sid)
+        return {**out, "waiting": False}
+    return {**out, "ok": True, "waiting": True, "until": row["until"],
+            "retired": row["retired"]}
+
+
+def _waits(args: dict) -> dict:
+    return {"ok": True, "waits": waits.load()}
+
+
+def _retired(args: dict) -> dict:
+    sid = ids.to_r9(args.get("session_id"))
+    if sid is None:
+        return {"ok": False, "reason": "session_id is required: an R9 session id"}
+    return {"ok": True, "woken": waits.retired(sid, wake=_wake, local=False)}
+
+
+def _retired_among(args: dict) -> dict:
+    asked = [i for i in (ids.to_r9(s) for s in args.get("session_ids") or []) if i]
+    gone = set(waits.retired_among(asked))
+    known = [s for s in asked if s not in gone and _session_state(s) in ("live", "stopped")]
+    return {"ok": True, "retired": sorted(gone), "known": known}
+
+
+def _ask_peers(session_ids: list[str]) -> list[dict]:
+    from awm import gatewayclient
+
+    out = []
+    for peer in _peers():
+        try:
+            reply = gatewayclient.call_sync("reflection", "retired_among", {"session_ids": session_ids}, peer=peer, timeout=10.0)
+        except Exception as exc:  # noqa: BLE001 - a silent peer cannot say
+            log.info("reflection: %s did not answer retired_among: %s", peer, exc)
+            out.append({"peer": peer, "answered": False})
+            continue
+        if isinstance(reply, dict):
+            out.append({**reply, "peer": peer, "answered": True})
+    return out
+
+
+def _retired_elsewhere(session_ids: list[str]) -> list[str]:
+    if not session_ids:
+        return []
+    return sorted({s for r in _ask_peers(session_ids) for s in r.get("retired") or []})
+
+
+def _state_anywhere(session_id: str) -> Optional[str]:
+    """``live`` or ``stopped`` when some node knows it, ``gone`` when every node said no."""
+    here = _session_state(session_id)
+    if here in ("live", "stopped"):
+        return here
+    replies = _ask_peers([session_id])
+    if any(session_id in (r.get("known") or []) for r in replies):
+        return "stopped"
+    if here is None or not all(r.get("answered") for r in replies):
+        return None
+    return "gone"
+
+
+def _session_state(session_id: str) -> Optional[str]:
+    try:
+        p = harness.for_platform(session_id[:2])
+        out = harness.call(p, "status", {"session_id": session_id})
+    except harness.HarnessError:
+        return None
+    if out.get("ok") is False:
+        return "gone" if out.get("unknown_ref") else None
+    return "live" if out.get("live") else "stopped"
+
+
+def _wake(row: dict) -> dict:
+    """Resume a waiter that kept its job, or type the line into a terminal waiter."""
+    p = harness.for_platform(row["session_id"][:2])
+    text = waits.wake_text(row)
+    if row.get("job"):
+        return harness.call(p, "resume", {"ref": row["job"], "adopt_lineage": True,
+                                          "prompt": text})
+    return harness.call(p, "send", {"session_id": row["session_id"], "text": text})
+
+
+def _harness_event(args: dict) -> dict:
+    event = {k: v for k, v in args.items() if not k.startswith("_")}
+    if event.get("kind") == "clear":
+        return _cleared(event)
+    return ledger.record(event)
+
+
+def _cleared(event: dict) -> dict:
+    """A session cleared itself: its new id takes the old one as its parent (sessions.md R13)."""
+    new, old = ids.to_r9(event.get("session_id")), ids.to_r9(event.get("parent"))
+    if not new or not old:
+        return {"ok": False, "error": "a clear needs session_id and parent as session ids"}
+    return {"ok": True, "recorded": _record_parent(new, old, "clear")}
 
 
 HANDLERS = {verb: _guarded(verb, fn) for verb, fn in {
-    "message_self": _handle_message_self,
-    "compact": _handle_compact,
-    "mode": _handle_mode,
-    "remote_control": _handle_remote_control,
-    "model": _handle_model,
-    "effort": _handle_effort,
-    "rename": _handle_rename,
-    "cd": _handle_cd,
-    "interrupt": _handle_interrupt,
-    "stop": _handle_stop,
-    "link": _handle_link,
-    "message": _handle_message,
-    "pending": _handle_pending,
-    "whoami": _handle_whoami,
+    "message_self": _message_self,
+    "compact": _compact,
+    "mode": _mode,
+    "remote_control": _remote_control,
+    "model": _model,
+    "effort": _effort,
+    "rename": _rename,
+    "cd": _cd,
+    "mcp": _mcp,
+    "interrupt": _interrupt,
+    "stop": _stop,
+    "link": _link,
+    "message": _message,
+    "pending": _pending,
+    "whoami": _whoami,
+    "session_of": _session_of,
+    "start_other": _start_other,
+    "list_other": _list_other,
+    "stop_other": _stop_other,
+    "resume_other": _resume_other,
+    "adopt_other": _adopt_other,
+    "wait": _wait,
+    "waits": _waits,
+    "retired": _retired,
+    "retired_among": _retired_among,
+    "harness_event": _harness_event,
 }.items()}
 
 
-def _on_start() -> None:
-    """Re-arm follow-ups promised by the process this one replaced.
+def _held(tool: str) -> Optional[list[str]]:
+    for p in harness.providers():
+        if p.tool == tool:
+            try:
+                out = harness.call(p, "pending", {})
+            except harness.HarnessError:
+                return None
+            return [r.get("ticket") for r in out.get("pending") or []]
+    return None
 
-    A deferred resume is a thread, and the gateway restarts this service often
-    enough — deploys, crash-respawns, an operator `awm services restart` — that
-    "the thread survives" was never a safe assumption. Cheap and non-blocking:
-    a directory scan plus a thread per promise, and it must stay that way (see
-    the ready-ASAP contract — a slow `on_start` reads as a broken service).
 
-    An **overlay** must not do this. A shadow does not replace the base process,
-    it only takes the prefix — so the base is still running, still holding its
-    own watcher for every promise in that directory, and replaying here arms a
-    second one. Both then fire, and the session gets the resume twice. Observed
-    while shadowing this service to test it: the overlay's boot re-armed a
-    promise a live base was already waiting on. Injecting a prompt a session did
-    not ask for is the one thing this service must never do, so the base keeps
-    sole ownership of promises it made.
-    """
-    if os.environ.get("AWM_SERVICE_OVERLAY"):
-        log.info("reflection: running as an overlay; leaving pending resumes to "
-                 "the base process that promised them")
-        return
+def _sweep_tickets() -> None:
+    while True:
+        time.sleep(SWEEP_EVERY_S)
+        try:
+            ledger.sweep(_held)
+        except Exception:  # noqa: BLE001 - a bad sweep must not end the loop
+            log.exception("reflection: ticket sweep failed")
+
+
+def _check_waits() -> None:
     try:
-        outcome = inject.replay_pending()
-    except Exception as exc:  # never let a bad record keep the service down
-        log.warning("reflection: could not replay pending resumes: %s", exc)
-        return
-    if outcome["pending"]:
-        log.info("reflection: %s pending resume(s) found on boot, %s re-armed",
-                 outcome["pending"], outcome["resumed"])
+        waits.check(state=_state_anywhere, retired_elsewhere=_retired_elsewhere,
+                    wake=_wake)
+    except Exception:  # noqa: BLE001
+        log.exception("reflection: the start check of the waits failed")
+
+
+def _on_start() -> None:
+    threading.Thread(target=_check_waits, name="reflection-waits", daemon=True).start()
+    threading.Thread(target=_sweep_tickets, name="reflection-tickets",
+                     daemon=True).start()
 
 
 async def main() -> None:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s %(message)s",
-    )
+    logging.basicConfig(level=logging.INFO,
+                        format="%(asctime)s %(levelname)s %(name)s %(message)s")
     await ServiceAdapter("reflection", API_MANIFEST, HANDLERS,
                          on_start=_on_start).run()
 

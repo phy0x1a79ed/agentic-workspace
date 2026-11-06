@@ -1,0 +1,22 @@
+[plugin]
+name = "2fa"
+version = "0.1.0"
+
+[[service]]
+name = "2fa"
+
+[[tool]]
+name = "2fa"
+major = 1
+tier = "off"
+
+[needs]
+secrets = ["AWM_2FA_KEY_PATH"]
+network = ["*.duosecurity.com"]
+platform = ["linux"]
+
+[[needs.tool]]
+name = "social"
+major = 1
+verbs = ["send"]
+

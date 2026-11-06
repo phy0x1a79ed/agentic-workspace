@@ -32,7 +32,7 @@ def require_scope(project: str, scope: str) -> None:
         return
     try:
         from awm.gatewayclient import call_sync
-        res = call_sync("scopes", "resolveScope", {"project": project, "scope": scope},
+        res = call_sync("scope", "resolve", {"project": project, "scope": scope},
                         timeout=TIMEOUT_S)
     except Exception as exc:  # noqa: BLE001 — see the module docstring
         log.warning("resolveScope %s/%s unavailable, accepting the post: %s", project, scope, exc)

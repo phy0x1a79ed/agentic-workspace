@@ -1,0 +1,48 @@
+[plugin]
+name = "claude-science"
+# Restarts this plugin alone after a deploy (routines.md R33).
+refresh = "awm services restart claude-science"
+version = "0.1.0"
+
+[[service]]
+name = "claude-science"
+profiles = ["claude-science"]
+
+[[tool]]
+name = "science"
+major = 1
+tier = "on"
+
+[[page]]
+name = "claude-science"
+dir = "pages/claude-science/dist"
+
+[needs]
+secrets = ["AWM_APPROVER_GRANT_PUBKEY"]  # the mesh front's passkey sign-in (awm.tlsfront.portal)
+network = ["api.anthropic.com", "*.anthropic.com", "claude.ai", "*.claude.ai", "storage.googleapis.com"]
+platform = ["linux"]
+
+[[needs.tool]]
+name = "scope"
+major = 1
+verbs = ["search", "resolve"]
+
+[[needs.tool]]
+name = "journal"
+major = 1
+verbs = ["fetch"]
+
+[[needs.tool]]
+name = "search"
+major = 1
+verbs = ["query", "get"]
+
+[[needs.tool]]
+name = "dvc"
+major = 1
+verbs = ["coverage", "scope_status"]
+
+[[needs.tool]]
+name = "auth"         # the mesh front's edge session check (awm.tlsfront.auth)
+major = 1
+verbs = ["edge_material"]

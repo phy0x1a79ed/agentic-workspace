@@ -12,6 +12,8 @@ import pytest
 
 from awm.zotero import bundle
 
+from .fakes import FakeVault, MemoryStore
+
 pytestmark = [pytest.mark.unit, pytest.mark.smoke]
 
 
@@ -122,100 +124,56 @@ def test_a_nested_collection_names_its_parent_the_same_way():
     assert out["collections"][0]["parent"] == "groups/1/TOP"
 
 
-# -- the file on disk --------------------------------------------------------
-
-
-def test_a_stored_file_is_filed_under_its_libraries_key(tmp_path):
-    """Zotero files everything under one flat `storage/<key>/` and relies on
-    keys not colliding, which holds inside a library and not between them."""
-    b = bundle.Bundle(tmp_path)
-    assert b.file_for("groups/1/AAA", "p.pdf") == \
-        tmp_path / bundle.CHUNK / "files" / "groups/1/AAA" / "p.pdf"
-
-
-def test_pruning_walks_to_whatever_depth_a_library_id_has(tmp_path):
-    """A library id is itself two segments. Assuming one directory level per
-    library made `users/0` look like an unwanted key and deleted every file
-    under it -- right after they were fetched."""
-    b = bundle.Bundle(tmp_path)
-    keep = b.file_for("users/0/KEEP", "p.pdf")
-    drop = b.file_for("users/0/DROP", "q.pdf")
-    for path in (keep, drop):
-        path.parent.mkdir(parents=True)
-        path.write_bytes(b"%PDF-")
-
-    assert b.prune_files({"users/0/KEEP"}) == 1
-    assert keep.is_file() and not drop.exists()
-
-
-def test_pruning_removes_a_library_that_has_gone_entirely(tmp_path):
-    b = bundle.Bundle(tmp_path)
-    gone = b.file_for("groups/9/OLD", "p.pdf")
-    gone.parent.mkdir(parents=True)
-    gone.write_bytes(b"%PDF-")
-    assert b.prune_files(set()) == 1
-    assert not (b.files / "groups").exists()
-
-
 # -- reading it back ---------------------------------------------------------
 
 
-def test_an_absent_bundle_reads_as_empty_rather_than_raising(tmp_path):
-    b = bundle.Bundle(tmp_path)
+def test_an_absent_bundle_reads_as_empty_rather_than_raising():
+    b = bundle.Bundle(MemoryStore())
     assert b.exists is False
     assert b.versions == {}
 
 
-def test_the_versions_survive_the_round_trip(tmp_path):
-    b = bundle.Bundle(tmp_path)
-    b.write(bundle.merge([bundle.normalize([], [], {})],
-                         {"users/0": 7, "groups/1": 9}))
-    assert b.versions == {"users/0": 7, "groups/1": 9}
+def test_a_library_with_no_root_note_holds_nothing_and_refuses_a_write():
+    b = bundle.Bundle(None)
+    assert b.exists is False and b.versions == {}
+    with pytest.raises(RuntimeError, match="no root note"):
+        b.write(bundle.merge([bundle.normalize([], [], {})], {"users/0": 1}))
 
 
-def test_the_file_is_written_sorted_so_the_diff_is_the_librarys(tmp_path):
-    """`git log -p` on the bundle should say what changed in the library, not
-    what order the API answered in."""
-    b = bundle.Bundle(tmp_path)
-    b.write(bundle.merge([bundle.normalize([], [], {})], {"b": 1, "a": 2}))
-    text = b.library_json.read_text()
+def test_the_versions_survive_the_round_trip():
+    store = MemoryStore()
+    bundle.Bundle(store).write(bundle.merge([bundle.normalize([], [], {})],
+                                            {"users/0": 7, "groups/1": 9}))
+    assert bundle.Bundle(store).versions == {"users/0": 7, "groups/1": 9}
+
+
+def test_the_document_is_written_sorted_so_a_diff_is_the_librarys():
+    """A diff of two copies should say what changed in the library, not what
+    order the API answered in."""
+    store = MemoryStore()
+    bundle.Bundle(store).write(bundle.merge([bundle.normalize([], [], {})],
+                                            {"b": 1, "a": 2}))
+    text = store.blob.decode("utf-8")
     assert text.index('"collections"') < text.index('"items"')
 
 
-def test_a_pinned_bundle_can_be_rewritten(tmp_path):
-    """Once DVC has pinned a pull, `library.json` is a read-only hardlink into
-    the shared cache. Writing into it fails, and the mirror then stops the
-    first time somebody adds a paper — which is the only time anyone looks."""
-    b = bundle.Bundle(tmp_path)
-    b.write(bundle.merge([bundle.normalize([], [], {})], {"users/0": 1}))
-    b.library_json.chmod(0o444)
-
-    b.write(bundle.merge([bundle.normalize([], [], {})], {"users/0": 2}))
-    assert b.versions == {"users/0": 2}
+def test_the_bundle_rides_on_the_root_note_through_the_vault():
+    v = FakeVault()
+    root = v.create(parent="root", title="Library")
+    bundle.Bundle(bundle.Attached(v, root)).write(
+        bundle.merge([bundle.normalize([], [], {})], {"users/0": 3}))
+    assert set(v.notes[root]["attachments"]) == {bundle.LIBRARY_JSON}
+    assert bundle.Bundle(bundle.Attached(v, root)).versions == {"users/0": 3}
 
 
-def test_rewriting_leaves_the_cached_object_alone(tmp_path):
-    """The hardlink is the cache object. A write that landed in it would
-    corrupt that object for every other scope and every commit pinning it."""
-    b = bundle.Bundle(tmp_path)
-    b.write(bundle.merge([bundle.normalize([], [], {})], {"users/0": 1}))
-    cached = tmp_path / "cached.json"
-    cached.hardlink_to(b.library_json)
-    b.library_json.chmod(0o444)
-
-    b.write(bundle.merge([bundle.normalize([], [], {})], {"users/0": 2}))
-    assert '"users/0": 1' in cached.read_text()
-    assert cached.stat().st_nlink == 1
-
-
-def test_two_reads_of_one_library_give_the_same_digest(tmp_path):
-    """Zotero does not answer in a stable order, and the digest is how an
-    apply-only node decides it has nothing to do. An order-sensitive one turns
-    every pull into a full re-walk of the mirror."""
+def test_two_reads_of_one_library_give_the_same_digest():
+    """Zotero does not answer in a stable order, and the digest is how a pass
+    decides it has nothing to do. An order-sensitive one turns every pull into
+    a full re-walk of the mirror."""
     items = [raw("AAA", "journalArticle", title="A"),
              raw("BBB", "journalArticle", title="B"),
              raw("CCC", "journalArticle", title="C")]
-    a, b = bundle.Bundle(tmp_path / "a"), bundle.Bundle(tmp_path / "b")
+    a, b = bundle.Bundle(MemoryStore()), bundle.Bundle(MemoryStore())
     a.write(bundle.merge([bundle.normalize(items, [], {})], {"users/0": 1}))
     b.write(bundle.merge([bundle.normalize(reversed(items), [], {})],
                          {"users/0": 1}))

@@ -1,4 +1,4 @@
-"""Fixtures for the search service tests: a private database, a fake gateway, fake plug-ins and peers."""
+"""Fixtures for the search service tests: a private database and store, a fake gateway, fake plug-ins and peers."""
 
 from __future__ import annotations
 
@@ -6,8 +6,13 @@ import asyncio
 from typing import Any, Callable
 
 import pytest
+import yaml
 
+from awm.config import edges
 from awm.search.archive import Archive
+
+#: This node's name in every test's edge list.
+HERE = "local"
 
 
 @pytest.fixture(autouse=True)
@@ -15,7 +20,7 @@ def stub_embedder():
     """Index and search with a deterministic stub, never the real model."""
     from awm.persistence import embeddings
     from awm.persistence.search_testing import StubEmbedder
-    emb = StubEmbedder()
+    emb = StubEmbedder(dim=384)
     embeddings.use_embedder(emb)
     yield emb
     embeddings.use_embedder(None)
@@ -23,11 +28,11 @@ def stub_embedder():
 
 @pytest.fixture(autouse=True)
 def node(monkeypatch, tmp_path):
-    """A named node with an empty peer book, so no test reads the live one."""
+    """A named node with an empty peer book and edge list, so no test reads the live ones."""
     import awm.config as cfg
     monkeypatch.setattr(cfg, "AWM_DIR", tmp_path / ".awm")
-    monkeypatch.setenv("AWM_NODE_NAME", "local")
-    monkeypatch.setenv("AWM_SWARM", "tony")
+    monkeypatch.setenv("AWM_NODE_NAME", HERE)
+    monkeypatch.setenv(edges.EDGES_FILE_ENV, str(tmp_path / "edges.yml"))
 
 
 @pytest.fixture()
@@ -43,28 +48,78 @@ def search_db(tmp_path, monkeypatch):
     return services_dir
 
 
-class Exporter:
-    """A plug-in's store behind the export contract: keys ascending, a keyset cursor, ids last."""
+#: The fields a test source declares unless it says otherwise: the journal's.
+FIELDS = {"title": "content", "text": "content", "ts": "datetime", "project": "categorical",
+          "scope": {"class": "categorical", "nested": "/"}, "tag": "categorical", "replies_to": "categorical"}
+HIT = ["title", "ts"]
+
+
+class _Docs(dict):
+    """A feed's documents: each write or delete bumps the key on the feed, as the journal's triggers do."""
+
+    def __init__(self, feed: "Feed") -> None:
+        super().__init__()
+        self.feed = feed
+
+    def __setitem__(self, key: str, value: dict[str, Any]) -> None:
+        super().__setitem__(key, value)
+        self.feed.bump(key)
+
+    def __delitem__(self, key: str) -> None:
+        super().__delitem__(key)
+        self.feed.bump(key)
+
+    def pop(self, key: str, *default: Any) -> Any:
+        out = super().pop(key, *default)
+        self.feed.bump(key)
+        return out
+
+
+class Feed:
+    """A plug-in's store behind the change-feed export contract: ``(seq, id)`` cursors, deletions without entry."""
 
     def __init__(self, docs: dict[str, dict[str, Any]] | None = None) -> None:
-        self.docs = docs or {}
+        self.seq: dict[str, int] = {}
+        self.head = 0
+        self.epoch = "epoch-1"
+        self.docs = _Docs(self)
+        for key, value in (docs or {}).items():
+            self.docs[key] = value
         self.fail: Exception | None = None
         self.calls = 0
+
+    def bump(self, key: str) -> None:
+        self.head += 1
+        self.seq[key] = self.head
 
     def __call__(self, args: dict[str, Any]) -> dict[str, Any]:
         self.calls += 1
         if self.fail:
             raise self.fail
         size = max(1, min(int(args.get("limit") or 200), 1000))
-        cursor = args.get("cursor")
-        keys = sorted(self.docs)
-        rest = [k for k in keys if not cursor or k > cursor]
-        page, more = rest[:size], len(rest) > size
-        out: dict[str, Any] = {"documents": [{"id": k, **self.docs[k]} for k in page],
-                               "next_cursor": page[-1] if more else None, "done": not more}
-        if not more:
-            out["ids"] = keys
-        return out
+        since = args.get("since")
+        seq, _, root = (since or "0:").partition(":")
+        if int(seq) > self.head:
+            return {"changes": [], "next": None, "done": True, "epoch": self.epoch, "reset": True}
+        rest = sorted((q, k) for k, q in self.seq.items() if (q, k) > (int(seq), root))
+        page, done = rest[:size], len(rest) <= size
+        changes = [{"id": k, **({"entry": self.docs[k]} if k in self.docs else {})} for _, k in page]
+        return {"changes": changes, "next": f"{page[-1][0]}:{page[-1][1]}" if page else since,
+                "done": done, "epoch": self.epoch}
+
+
+def every(result: dict[str, Any]) -> list[dict[str, Any]]:
+    """Every hit of a query answer: source by source, each source's ``exact`` then its ``related``."""
+    return [h for answer in result.values() for section in ("exact", "related") for h in answer.get(section, [])]
+
+
+def section(result: dict[str, Any], name: str) -> list[dict[str, Any]]:
+    """One section's hits across every source of a query answer, source by source."""
+    return [h for answer in result.values() for h in answer.get(name, [])]
+
+
+def ids(hits: list[dict[str, Any]]) -> list[str]:
+    return [h["id"] for h in hits]
 
 
 def doc(title: str, text: str, ts: str = "2026-03-01T10:00:00Z", **extra: Any) -> dict[str, Any]:
@@ -72,17 +127,17 @@ def doc(title: str, text: str, ts: str = "2026-03-01T10:00:00Z", **extra: Any) -
 
 
 def entry(service: str, tables: list[dict[str, Any]] | None = None, *, status: str = "ready",
-          verbs: tuple[str, ...] = ("export",), archive: bool = True) -> dict[str, Any]:
-    """One ``awm registry_list`` entry. A verb is published as ``<service>_<verb>``."""
-    out = {"name": service, "kind": "service", "backend_status": status,
-           "api": {"functions": [{"name": v, "tool": f"{service}_{v}"} for v in verbs]}}
+          tools: tuple[str, ...] | None = None, archive: bool = True) -> dict[str, Any]:
+    """One ``awm services`` row. The service publishes the tool named after it unless ``tools`` says otherwise."""
+    out = {"name": service, "plugin": service, "id": f"id-{service}", "status": status, "pid": 1,
+           "verbs": 1, "refusal": None, "enabled": True, "tools": list(tools or (service,))}
     if archive:
         out["archive"] = tables or []
     return out
 
 
 def index_table(name: str, service: str, **extra: Any) -> dict[str, Any]:
-    return {"name": name, "mode": "index", "export": f"{service}_export", **extra}
+    return {"name": name, "mode": "index", "export": f"{service}_export", "fields": FIELDS, "hit": HIT, **extra}
 
 
 class FakeGateway:
@@ -94,10 +149,10 @@ class FakeGateway:
         self.queues: dict[tuple[str, str], asyncio.Queue] = {}
 
     def plug(self, name: str, docs: dict[str, dict[str, Any]], *, service: str | None = None,
-             **table: Any) -> Exporter:
-        """Register an index source backed by an :class:`Exporter` and return the exporter."""
+             **table: Any) -> Feed:
+        """Register an index source backed by a :class:`Feed` and return the feed."""
         service = service or name
-        exporter = Exporter(docs)
+        exporter = Feed(docs)
         self.entries = [e for e in self.entries if e["name"] != service]
         self.entries.append(entry(service, [index_table(name, service, **table)]))
         self.handlers[(service, "export")] = exporter
@@ -107,7 +162,7 @@ class FakeGateway:
                   **table: Any) -> None:
         service = service or name
         self.entries.append(entry(service, [{"name": name, "mode": "live", "query": f"{service}_query",
-                                             **table}], verbs=("query",)))
+                                             **table}]))
         self.handlers[(service, "query")] = hits
 
     def stop(self, service: str) -> None:
@@ -121,6 +176,8 @@ class FakeGateway:
     async def call(self, service: str, fn: str, args: dict[str, Any], timeout: float) -> Any:
         self.calls.append((service, fn, args))
         result = self.handlers[(service, fn)](args)
+        if asyncio.iscoroutine(result):
+            result = await result
         if isinstance(result, Exception):
             raise result
         return result
@@ -138,20 +195,29 @@ class FakeGateway:
 
 
 class FakePeers:
-    """A peer book and one callable per peer standing in for its ``search_query``."""
+    """One callable per node standing in for its ``search_query``, and the edge list that reaches it.
 
-    def __init__(self) -> None:
-        self.book: dict[str, dict[str, Any]] = {}
+    Each peer added also enters the edge list, with an edge from this node unless ``edge`` is false.
+    """
+
+    def __init__(self, edges_file: Any) -> None:
+        self.edges_file = edges_file
         self.answers: dict[str, Callable[[dict], Any]] = {}
         self.calls: list[tuple[str, str, dict]] = []
+        self.fleet: dict[str, Any] = {"nodes": {HERE: {"role": "homebase"}}, "edges": {HERE: {}}}
 
-    def add(self, name: str, answer: Callable[[dict], Any], relation: str = "domestic",
-            swarm: str = "tony", role: str = "fleet") -> None:
-        self.book[name] = {"name": name, "relation": relation, "swarm": swarm, "role": role}
+    def add(self, name: str, answer: Callable[[dict], Any], *, edge: bool = True,
+            role: str = "homebase") -> None:
         self.answers[name] = answer
+        self.fleet["nodes"][name] = {"role": role}
+        if edge:
+            self.fleet["edges"][HERE][name] = "lan"
+        self.edges_file.write_text(yaml.safe_dump(self.fleet))
+        edges._load.cache_clear()
 
     def records(self) -> list[dict[str, Any]]:
-        return list(self.book.values())
+        """The nodes this one holds an edge to, as the real :class:`Peers` lists them."""
+        return [{"name": n} for n in edges.reachable_from(edges.here())]
 
     async def invoke(self, peer: str, name: str, args: dict[str, Any], timeout: float) -> Any:
         self.calls.append((peer, name, args))
@@ -182,8 +248,8 @@ def gateway() -> FakeGateway:
 
 
 @pytest.fixture()
-def peers() -> FakePeers:
-    return FakePeers()
+def peers(tmp_path) -> FakePeers:
+    return FakePeers(tmp_path / "edges.yml")
 
 
 @pytest.fixture()
@@ -194,7 +260,7 @@ async def archive(search_db, gateway, peers, clock):
 
 
 async def synced(arch: Archive, gateway: FakeGateway) -> Archive:
-    """Read the registry and run one pass over every index source."""
+    """Read the registry and run one feed read of every index source."""
     await arch.refresh()
     for name in arch._due_names():
         await arch.sweep(name)

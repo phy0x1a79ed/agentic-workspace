@@ -1,10 +1,9 @@
-"""Slack connector — wraps ``slack_sdk`` for one account, in two auth modes.
+"""Slack connector for Tony's own account, read only (R127), in two auth modes.
 
-**API mode** (a bot ``xoxb-`` or user ``xoxp-`` OAuth token): send + channel
-listing go through :class:`~slack_sdk.web.async_client.AsyncWebClient`; receive
+**API mode** (a user ``xoxp-`` OAuth token): channel listing goes through :class:`~slack_sdk.web.async_client.AsyncWebClient`; receive
 goes through Socket Mode (:class:`~slack_sdk.socket_mode.aiohttp.SocketModeClient`),
 which REQUIRES a separate app-level ``app_token`` (``xapp-``). With no ``app_token``
-the connector still sends but never receives.
+the connector never receives.
 
 **Session mode** (a web-session ``xoxc-`` token + the ``d`` cookie — the same pair
 the Slack web/desktop client uses): this acts as the *user* without an app. The
@@ -24,11 +23,11 @@ import json
 import logging
 import time
 
+from awm.social.connectors.slack_blocks import slack_text
 from awm.social.connectors.base import (
-    Account, Attachment, Channel, Connector, Identity, InboundMessage,
-    OnMessage, file_bytes, slack_reaction,
+    Account, Channel, Connector, Identity, InboundMessage, OnMessage,
+    looks_like_slack_user_id, slack_attachments,
 )
-from awm.social.emoji import to_name
 
 log = logging.getLogger("awm.social.connectors.slack")
 
@@ -51,39 +50,12 @@ def _slack_kind(ch: dict) -> str:
     return "channel"
 
 
-def _looks_like_user_id(s: str) -> bool:
-    """Slack user ids are ``U…`` (and ``W…`` on enterprise grid), all-caps
-    alphanumerics. Anything else is treated as a name to resolve."""
-    return bool(s) and s[0] in ("U", "W") and s[1:].isalnum() and s.isupper()
-
-
-def _attachments_of(m: dict) -> list[Attachment]:
-    """Map a Slack message's ``files[]`` to normalised attachment metadata.
-
-    ``url`` carries ``url_private`` (a stable but auth-gated link);
-    :meth:`SlackConnector.download_attachments` GETs it with the session's own
-    credentials. Hidden/tombstoned files (no ``url_private``) are skipped.
-    """
-    out: list[Attachment] = []
-    for i, f in enumerate(m.get("files", []) or []):
-        url = f.get("url_private_download") or f.get("url_private") or ""
-        if not url and f.get("mode") in ("hidden", "tombstone"):
-            continue
-        out.append(Attachment(
-            idx=i,
-            filename=f.get("name") or f.get("title") or f"attachment-{i}",
-            mime=f.get("mimetype", "") or "",
-            size=int(f.get("size", 0) or 0),
-            url=url,
-            ref={"id": f.get("id", ""), "url": url},
-        ))
-    return out
-
-
 class SlackConnector(Connector):
+    """Tony's own Slack account, read only. It has no send and no react:
+    awm never writes to Slack as Tony (R127). Agents write as Opal through
+    :class:`~awm.social.connectors.slack_bot_conn.SlackBotConnector`."""
+
     platform = "slack"
-    sends_files = True
-    max_file_bytes = 100 * 1024 * 1024
 
     def __init__(self, account: Account, on_message: OnMessage,
                  on_command=None) -> None:
@@ -192,8 +164,8 @@ class SlackConnector(Connector):
                 sender_name=sender,
                 message_id=event.get("ts", ""),
                 ts=event.get("ts", ""),
-                text=event.get("text", "") or "",
-                attachments=_attachments_of(event),
+                text=slack_text(event),
+                attachments=slack_attachments(event),
             )
             await self.on_message(inbound)
         except Exception as exc:  # noqa: BLE001 — one bad event never kills the loop
@@ -220,8 +192,8 @@ class SlackConnector(Connector):
             sender_name=sender,
             message_id=m.get("ts", ""),
             ts=m.get("ts", ""),
-            text=m.get("text", "") or "",
-            attachments=_attachments_of(m),
+            text=slack_text(m),
+            attachments=slack_attachments(m),
         )
 
     async def _emit_session_message(self, cid: str, m: dict) -> None:
@@ -357,48 +329,6 @@ class SlackConnector(Connector):
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 30.0)
 
-    async def send(
-        self, channel: str, text: str, *, thread: str | None = None,
-        files: list[dict] | None = None,
-    ) -> dict:
-        if files:
-            uploads = [{"content": file_bytes(f), "filename": f["filename"],
-                        "title": f["filename"]} for f in files]
-            resp = await self._auth_retry(
-                lambda: self._web_client().files_upload_v2(
-                    file_uploads=uploads, channel=channel, initial_comment=text or None,
-                    thread_ts=thread, request_file_info=False))
-            return {"message_id": "", "channel_id": channel, "ts": "",
-                    "files": [{"id": f.get("id", ""), "title": f.get("title", ""),
-                               "permalink": f.get("permalink", "")}
-                              for f in resp.get("files") or []]}
-        kwargs = {"channel": channel, "text": text}
-        if thread:
-            kwargs["thread_ts"] = thread
-        resp = await self._auth_retry(
-            lambda: self._web_client().chat_postMessage(**kwargs))
-        return {
-            "message_id": resp.get("ts", ""),
-            "channel_id": resp.get("channel", channel),
-            "ts": resp.get("ts", ""),
-        }
-
-    async def react(
-        self, channel: str, message_id: str, emoji: str, *, remove: bool = False,
-    ) -> dict:
-        from slack_sdk.errors import SlackApiError
-
-        name = to_name(emoji)
-        call = "reactions_remove" if remove else "reactions_add"
-        error = ""
-        try:
-            await self._auth_retry(lambda: getattr(self._web_client(), call)(
-                channel=channel, timestamp=message_id, name=name))
-        except SlackApiError as exc:
-            error = (exc.response or {}).get("error", "") or str(exc)
-        return slack_reaction(self, channel, message_id, name,
-                              remove=remove, error=error)
-
     async def list_channels(self, *, include_dms: bool = False) -> list[Channel]:
         if include_dms:
             # ``users.conversations`` (not ``conversations.list``) is the call
@@ -428,7 +358,7 @@ class SlackConnector(Connector):
         ``who`` that already looks like a user id (``U…``/``W…``) is returned
         as-is. Otherwise ``users.list`` is paged and matched case-insensitively.
         """
-        if _looks_like_user_id(who):
+        if looks_like_slack_user_id(who):
             return who
         want = who.lstrip("@").lower()
         cursor = ""
@@ -528,8 +458,8 @@ class SlackConnector(Connector):
                 sender_name=sender,
                 message_id=m.get("ts", ""),
                 ts=m.get("ts", ""),
-                text=m.get("text", "") or "",
-                attachments=_attachments_of(m),
+                text=slack_text(m),
+                attachments=slack_attachments(m),
                 raw={"permalink": m.get("permalink", "")},
             ))
         return out

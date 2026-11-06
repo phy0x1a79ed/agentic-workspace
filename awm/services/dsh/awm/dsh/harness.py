@@ -49,6 +49,7 @@ from typing import Any
 import yaml
 
 from awm.config import AWM_DIR, WORKSPACE_ROOT
+from awm.gatewayclient.proc import child_preexec, signal_group
 
 log = logging.getLogger("awm.dsh.harness")
 
@@ -73,10 +74,10 @@ FORK_DIR = Path(os.environ.get("DSH_FORK_DIR")
 CLI = FORK_DIR / "apps" / "cli" / "lib" / "bin.js"
 PKG_JSON = FORK_DIR / "package.json"
 
-#: What ``install.sh`` last built, written where the worktree already ignores
-#: it. Reported beside the live revision so a stale build is visible rather
-#: than something you infer from a symptom.
-BUILD_STAMP = FORK_DIR / ".awm" / "dsh-build-stamp"
+#: What ``install.sh`` last built, kept in ``<git-dir>/awm`` of the fork worktree
+#: (see :func:`build_stamp`). Reported beside the live revision so a stale build
+#: is visible rather than something you infer from a symptom.
+BUILD_STAMP_NAME = "dsh-build-stamp"
 
 #: Loopback port for the harness. Not the mesh port — the front owns that.
 PORT = int(os.environ.get("DSH_UPSTREAM_PORT", "12311"))
@@ -128,6 +129,12 @@ def _git(*args: str) -> str | None:
     return r.stdout.strip() if r.returncode == 0 else None
 
 
+def build_stamp() -> Path | None:
+    """The build stamp's path, in the fork worktree's git dir, which never travels."""
+    git_dir = _git("rev-parse", "--absolute-git-dir")
+    return Path(git_dir) / "awm" / BUILD_STAMP_NAME if git_dir else None
+
+
 def source_state() -> dict[str, Any]:
     """Which harness revision is on disk, and whether the build matches it.
 
@@ -138,11 +145,12 @@ def source_state() -> dict[str, Any]:
     """
     status = _git("status", "--porcelain")
     stamp = None
+    stamp_file = build_stamp()
     try:
         stamp = dict(
             line.split("=", 1) for line in
-            BUILD_STAMP.read_text().split() if "=" in line
-        )
+            stamp_file.read_text().split() if "=" in line
+        ) if stamp_file else None
     except (OSError, ValueError):
         pass
     head = _git("rev-parse", "HEAD")
@@ -196,24 +204,6 @@ def listening(port: int = PORT, *, timeout: float = 0.5) -> bool:
     with socket.socket() as s:
         s.settimeout(timeout)
         return s.connect_ex(("127.0.0.1", port)) == 0
-
-
-def _preexec() -> None:  # pragma: no cover — runs in the forked child
-    """Own session (so the tree is one signalable group) + die with the parent.
-
-    Order matters: ``setsid`` first, then the death signal, then a re-check
-    that the parent is still alive — a parent that exited between the fork and
-    ``prctl`` would leave a child nothing will ever signal.
-    """
-    os.setsid()
-    try:
-        import ctypes
-
-        ctypes.CDLL("libc.so.6", use_errno=True).prctl(1, signal.SIGTERM)  # PR_SET_PDEATHSIG
-    except Exception:  # noqa: BLE001 — best effort; the group kill still works
-        pass
-    if os.getppid() == 1:
-        os._exit(1)
 
 
 class Supervisor:
@@ -321,7 +311,7 @@ class Supervisor:
             self._proc = subprocess.Popen(
                 cmd, cwd=str(WORKDIR), env=env,
                 stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT,
-                preexec_fn=_preexec,
+                preexec_fn=child_preexec,
             )
         finally:
             out.close()
@@ -362,25 +352,15 @@ class Supervisor:
                 return {"action": "not-running", "running": False}
             # The whole group: the CLI shim, node, and anything node spawned.
             # Signalling the pid alone leaves the tree holding the port.
-            self._signal_group(proc, signal.SIGTERM)
+            signal_group(proc, signal.SIGTERM)
             try:
                 proc.wait(timeout=timeout)
             except subprocess.TimeoutExpired:
-                self._signal_group(proc, signal.SIGKILL)
+                signal_group(proc, signal.SIGKILL)
                 proc.wait(timeout=5)
             self._proc = None
             self._started_at = None
         return {"action": "stopped", "running": False}
-
-    @staticmethod
-    def _signal_group(proc: subprocess.Popen, sig: int) -> None:
-        try:
-            os.killpg(os.getpgid(proc.pid), sig)
-        except (ProcessLookupError, PermissionError):
-            try:
-                proc.send_signal(sig)
-            except ProcessLookupError:
-                pass
 
     def restart(self) -> dict[str, Any]:
         self.stop()

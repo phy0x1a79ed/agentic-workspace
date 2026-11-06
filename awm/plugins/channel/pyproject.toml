@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "awm-channel"
+version = "0.3.0"
+requires-python = ">=3.11"
+description = "AWM channel plugin: rooms through the public host's relay and machines through the tether, typed into the holding session."
+dependencies = [
+    "awm-gatewayclient",
+    "awm-tether",
+    "httpx",
+    "cryptography",
+    "spake2>=0.9",
+]
+
+# PEP 420 namespace package: no top-level awm/__init__.py.
+[tool.setuptools.packages.find]
+include = ["awm.channel*"]
+namespaces = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+asyncio_default_test_loop_scope = "function"
+markers = [
+    "smoke: fast unit tests; target <30s",
+    "unit: pure unit tests, no network or subprocesses",
+    "integration: runs a tether relay binary; slower",
+]

@@ -1,216 +1,49 @@
-"""Auth service orchestration — rotation policy, the verb handlers, and the
-``$AWM_PEER_CRED`` file the SSH peer-auth channel reads.
+"""Auth service orchestration: the session secret, device tokens and the verb handlers.
 
 The service owns one authoritative credential state (via :mod:`awm.auth.store`)
 and is the *authority*; the ``httpsfront`` edge only *enforces*, using material
-this service hands it (the signing secret + the currently-valid peer credentials)
-over loopback.
+this service hands it (the signing secret and the device token digests) over loopback.
 
-Rotation contract
------------------
-On startup, mint a pair if none is valid or the newest is older than the cadence
-(so a restart never leaves a stale-only state — ``events`` is not relied on).
-Then a background loop mints every cadence. Each mint:
-
-* a **loud** log line (so an operator/agent watching a dev session sees it),
-* a best-effort push of the *login* password to the operator's Discord DM
-  (never the peer credential, and never blocking the mint on social being up
-  — it runs detached, and retries a transient failure with backoff before
-  giving up; see ``h_status``'s ``push_last_*`` fields),
-* rewrites the ``$AWM_PEER_CRED`` file with the current peer credential,
-* prunes fully-expired generations.
-
-User accounts
--------------
-Beside the shared rotating password there are static per-user passwords
-(``store.awm_users``), scrypt-hashed, set only through the admin CLI verbs
-(``user_add`` / ``user_passwd`` generate the password server-side so it never
-travels as a shell argument). ``verify`` with a ``username`` takes that path and
-mints ``sub=<username>``. Failed logins count per username and per client IP;
-reaching the threshold locks the key for a while.
-
-Penpot credentials
-------------------
-Penpot keeps accounts of its own, so this service also holds one Penpot
-credential per person — recorded once when the account is created, exchanged
-for a Penpot session whenever the edge needs one, and replaced nightly. That is
-a *foreign* credential this service presents, not an awm claim it verifies, so
-it is stored in the clear and never touches the session-token codec. The
-mechanics are in :mod:`awm.auth.penpot`; the policy (when to rotate, what a
-failure means) is here.
+Logins
+------
+No login lives here. A person signs in with the passkey at alcor's approver,
+and the edge turns that grant into a session it signs with this service's
+secret (fleet.md R84, users.md R130).
 
 Device tokens
 -------------
-An unattended device or app that must act as a user without storing a password
-holds a device token (:mod:`awm.config.usertoken`) instead. This service mints
-it, keeps only the SHA-256 of its secret, and hands the edge the digests of the
-live tokens of enabled users in ``edge_material``; the edge verifies offline, so
-a revocation lands with the edge's next material refresh. The edge reports the
-tokens it saw on that same refresh, which makes ``last_used_at`` as coarse as
-the refresh interval. The operator (a call with no edge identity) manages
-anyone's tokens; a signed-in user manages only their own.
-
-``AWM_AUTH_PROFILE=public`` (the internet-facing host) turns the shared path
-off entirely: no minting, no Discord push, ``verify`` without a username fails,
-and the edge receives no peer credentials. It does **not** turn off the Penpot
-rotation — that guards per-user foreign credentials, which the public host is
-precisely the one that has.
+An unattended device or app that must not store a password holds a device token
+(:mod:`awm.config.usertoken`) instead. This service mints it, keeps only the
+SHA-256 of its secret, and hands the edge the digests of the live tokens in
+``edge_material``; the edge verifies offline, so a revocation lands with the
+edge's next material refresh. The edge reports the tokens it saw on that same
+refresh, which makes ``last_used_at`` as coarse as the refresh interval. Every
+token belongs to ``operator``, and only the operator (a call with no edge
+identity) may mint, list or revoke one.
 """
 
 from __future__ import annotations
 
-import asyncio
-import hashlib
-import hmac
 import logging
-import os
-import re
-import secrets
-import stat
-import time
-import urllib.parse
-from pathlib import Path
 from typing import Any
 
-from awm import config
-from awm.config import SERVICES_DIR, peertoken, tokens, usertoken
-from awm.config.userroot import user_of
+from awm.config import usertoken
 
-from awm.auth import penpot, store
+from awm.auth import store
 from awm.auth.config import CONTRACT
 
 log = logging.getLogger("awm.auth.service")
 
-# The current peer credential is mirrored to this file so a peer can fetch it
-# with `ssh <host> 'cat "$AWM_PEER_CRED"'` (see the T2 SSH peer-auth channel).
-# $AWM_PEER_CRED in the operator's shell rc points here.
-PEER_CRED_FILE = SERVICES_DIR / "auth" / "peer_cred.current"
-
 _HOUR = 3600.0
 _DAY = 86400.0
 
-_PROFILE_ENV = "AWM_AUTH_PROFILE"
-
-# While this is unset or anything but "0", the edge still accepts the shared
-# peer bearer next to node tokens. Setting it to "0" retires the bearer.
-LEGACY_BEARER_ENV = "AWM_PEER_LEGACY_BEARER"
-
-NODE_KEY_NAME = "node_ed25519.key"
-
-# Same shape ``awm.config.userroot`` accepts: the username doubles as a
-# directory name under projects/userdata/.
-USERNAME_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
-
-# scrypt cost. Tuned for a 2-vCPU host: ~50 ms per hash, 16 MiB memory.
-_SCRYPT_N, _SCRYPT_R, _SCRYPT_P = 2 ** 14, 8, 1
-_PW_PARAMS = f"scrypt:n={_SCRYPT_N},r={_SCRYPT_R},p={_SCRYPT_P}"
-_DUMMY_SALT = secrets.token_hex(16)
-
-# Singleton re-homing selector (federation). auth runs on every node (each mints
-# its own creds), but social is a singleton: a node without a local social
-# exports AWM_SOCIAL_PEER=<peer> so the daily password push routes to
-# social@<peer>. Unset/empty ⇒ local. Read fresh per push.
-_SOCIAL_PEER_ENV = "AWM_SOCIAL_PEER"
-# A node without a local reporting service exports AWM_REPORTING_PEER=<peer>.
-_REPORTING_PEER_ENV = "AWM_REPORTING_PEER"
-
-# Outcome of the most recent Discord push attempt, surfaced via h_status so an
-# operator can see a failure without grepping logs. In-memory only — a
-# restart naturally repopulates it via the next mint-if-stale push.
-_push_status: dict[str, Any] = {"ok": None, "at": None, "error": None}
-
-# Handle to the in-flight background push task (see _spawn_push), so a mint
-# that supersedes an in-progress retry can cancel it instead of racing it.
-_push_task: "asyncio.Task[None] | None" = None
+#: The owner of every device token.
+OPERATOR = "operator"
 
 
 def _settings() -> Any:
     """Current config values (defaults merged with stored overrides)."""
     return CONTRACT.load_model()
-
-
-def profile() -> str:
-    return (os.environ.get(_PROFILE_ENV) or "").strip().lower()
-
-
-def shared_password_enabled() -> bool:
-    """The rotating shared password (and everything hanging off it: minting,
-    the Discord push, peer credentials) is off on the public profile."""
-    return profile() != "public"
-
-
-def legacy_bearer_enabled() -> bool:
-    return (os.environ.get(LEGACY_BEARER_ENV) or "").strip() != "0"
-
-
-# ---------------------------------------------------------------------------
-# Node identity
-# ---------------------------------------------------------------------------
-
-
-def node_key_file() -> Path:
-    """Where the node's private key lives, beside the service database."""
-    return Path(config.SERVICES_DIR) / store.SERVICE / NODE_KEY_NAME
-
-
-class NodeKeyError(RuntimeError):
-    """The node key file is not something auth may sign with."""
-
-
-def _write_new_key_file(path: Path, private: str) -> None:
-    """Put ``private`` at ``path`` atomically, unless something is already there.
-
-    The key is written complete and flushed to disk under a private temporary
-    name, then linked into place. ``link`` fails if ``path`` exists, so a reader
-    never sees a partial key and two starts racing each other cannot mint two.
-    """
-    tmp = path.with_name(f".{path.name}.{os.getpid()}.{secrets.token_hex(4)}.tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    try:
-        os.fchmod(fd, 0o600)
-        with os.fdopen(fd, "w") as fh:
-            fh.write(private + "\n")
-            fh.flush()
-            os.fsync(fh.fileno())
-        try:
-            os.link(tmp, path)
-        except FileExistsError:
-            return
-        dir_fd = os.open(path.parent, os.O_RDONLY)
-        try:
-            os.fsync(dir_fd)
-        finally:
-            os.close(dir_fd)
-        log.info("auth: minted this node's ed25519 key (%s)",
-                 peertoken.fingerprint(peertoken.public_key_of(private)))
-    finally:
-        tmp.unlink(missing_ok=True)
-
-
-def _read_node_key(path: Path) -> str:
-    """The key in ``path``, after checking it is a private 32-byte seed."""
-    st = path.lstat()
-    if not stat.S_ISREG(st.st_mode):
-        raise NodeKeyError(f"{path} is not a regular file")
-    if stat.S_IMODE(st.st_mode) != 0o600:
-        raise NodeKeyError(
-            f"{path} has mode {stat.S_IMODE(st.st_mode):04o}; expected 0600. "
-            "Run chmod 600 on it, or move it aside to mint a new identity")
-    private = path.read_text().strip()
-    try:
-        peertoken.public_key_of(private)
-    except (peertoken.TokenError, ValueError) as exc:
-        raise NodeKeyError(f"{path} does not hold a 32-byte ed25519 key: {exc}") from exc
-    return private
-
-
-def ensure_node_key() -> str:
-    """The node's private key, minted once and kept in a 0600 file."""
-    path = node_key_file()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if not os.path.lexists(path):
-        _write_new_key_file(path, peertoken.generate_private_key())
-    return _read_node_key(path)
 
 
 def _operator_only(as_: str | None, verb: str) -> None:
@@ -225,483 +58,15 @@ def _operator_only(as_: str | None, verb: str) -> None:
             f"{verb} is an operator verb: run it on the host, not through an edge")
 
 
-def _edge_peers() -> list[dict[str, Any]]:
-    """Each book peer's name, public key and relation, for the edge to verify
-    node tokens against. Never carries a secret."""
-    return [{"name": r["name"], "public_key": r.get("public_key"),
-             "relation": r["relation"]} for r in config.list_records()]
-
-
-# ---------------------------------------------------------------------------
-# Per-user passwords
-# ---------------------------------------------------------------------------
-
-
-def _hash_password(password: str, salt_hex: str) -> str:
-    return hashlib.scrypt(
-        password.encode("utf-8"), salt=bytes.fromhex(salt_hex),
-        n=_SCRYPT_N, r=_SCRYPT_R, p=_SCRYPT_P, dklen=32,
-    ).hex()
-
-
-def _check_username(username: Any) -> str:
-    name = str(username or "").strip()
-    if not USERNAME_RE.match(name):
-        raise ValueError(
-            "username must match ^[a-z][a-z0-9_-]{0,31}$ (got %r)" % name)
-    return name
-
-
-def set_password(username: str, password: str | None = None) -> str:
-    """Create ``username`` or replace its password. Returns the password."""
-    name = _check_username(username)
-    password = password or secrets.token_urlsafe(12)
-    salt = secrets.token_hex(16)
-    store.user_upsert(name, pw_hash=_hash_password(password, salt),
-                      pw_salt=salt, pw_params=_PW_PARAMS)
-    return password
-
-
-def check_password(username: str, password: str) -> bool:
-    """Constant work whether or not the user exists or is disabled."""
-    user = store.user_get(username)
-    if user is None:
-        _hash_password(password, _DUMMY_SALT)
-        return False
-    computed = _hash_password(password, user["pw_salt"])
-    ok = hmac.compare_digest(computed, user["pw_hash"])
-    return ok and not user["disabled"]
-
-
-def _lock_keys(username: str | None, client_ip: str | None) -> list[str]:
-    keys = []
-    if username:
-        keys.append(f"u:{username}")
-    if client_ip:
-        keys.append(f"ip:{client_ip}")
-    return keys
-
-
-def _locked_for(keys: list[str], now: float) -> float:
-    """Seconds until every lock on ``keys`` has lapsed (0 when none holds)."""
-    remaining = 0.0
-    for key in keys:
-        remaining = max(remaining, store.fail_get(key)["locked_until"] - now)
-    return remaining
-
-
-def _autologin_link(login_password: str) -> str | None:
-    """A tappable ``/__auth/link`` URL for this node's own edge, or ``None``.
-
-    The password already travels in the message body; putting it in a URL as
-    well is what turns the push from a transcription job into a tap. The edge
-    route it points at never renders under that URL — it validates and 302s to a
-    clean path with the session cookie set (see ``httpsfront.proxy``).
-    """
-    base = config.edge_url()
-    if not base:
-        return None
-    return f"{base}/__auth/link?p={urllib.parse.quote(login_password, safe='')}"
-
-
-async def _push_password_to_discord_attempt(login_password: str) -> None:
-    """One attempt to send the day's login password to the operator's Discord DM.
-
-    Raises on failure — the caller (`_push_password_to_discord`) owns retry
-    and never-raise semantics. Every lookup that could fail (node name, edge
-    URL) is inside this function, not above it: with three nodes pushing into
-    one channel the message must say which node it came from, but a retry
-    must redo the whole message, not resume a half-built one.
-    """
-    s = _settings()
-    node = config.node_name()
-    link = _autologin_link(login_password)
-    text = (
-        f"🔑 **awm login password** minted on **{node}**\n"
-        f"`{login_password}`\n"
-        # Bare URL in angle brackets: clickable in every Discord surface
-        # (masked-link rendering is not), and the brackets stop Discord from
-        # trying to unfurl a URL that carries a live credential.
-        + (f"tap to open {node} signed in: <{link}>\n" if link else "")
-        + f"valid ~{s.validity_hours:.0f}h. Get it any time on {node} with "
-        f"`awm auth password`."
-    )
-    from awm import gatewayclient
-    if not s.push_discord:
-        result = await gatewayclient.call_maybe_peer(
-            gatewayclient.peer_env(_REPORTING_PEER_ENV),
-            "reporting", "ops_post", {
-                "kind": "password", "node": node,
-                "title": f"{node} login password", "body": text,
-            })
-        if not (isinstance(result, dict) and result.get("ok")):
-            raise RuntimeError(f"reporting ops_post refused the password: {result!r}")
-        log.info("auth: posted %s's login password to the Ops note", node)
-        return
-    operator = config.operator_dm() or ("", "")
-    account = s.discord_account or operator[0]
-    channel = s.discord_channel or operator[1]
-    if not (account and channel):
-        raise RuntimeError("no Discord target for the password push: set "
-                           "discord_channel or AWM_OPERATOR_DM_CHANNEL")
-    await gatewayclient.call_maybe_peer(
-        gatewayclient.peer_env(_SOCIAL_PEER_ENV),
-        "social", "send", {
-            "account": account,
-            "channel": channel,
-            "text": text,
-        })
-    log.info("auth: pushed %s's login password to Discord %s#%s",
-             node, account, channel)
-
-
-async def _push_password_to_discord(login_password: str, expires_at: float) -> None:
-    """Best-effort, with retries: push the day's login password to Discord.
-
-    Never raises into the mint — a social outage must not block rotation.
-    A single attempt failing is often transient (e.g. a VPN blip to the peer
-    hosting the singleton social service), so retry with doubling backoff for
-    a few minutes rather than leaving the operator without a password message
-    until the next scheduled mint (up to `mint_cadence_hours` later). The mint
-    itself has already succeeded by the time this runs (see mint_now) — all
-    that is at stake here is how fast the operator gets notified.
-    """
-    s = _settings()
-    if not s.push_enabled:
-        return
-    attempts = max(1, int(getattr(s, "push_retry_attempts", 1)))
-    backoff = float(getattr(s, "push_retry_backoff_seconds", 0.0))
-    last_exc: Exception | None = None
-    for attempt in range(attempts):
-        if attempt:
-            await asyncio.sleep(backoff * (2 ** (attempt - 1)))
-        try:
-            await _push_password_to_discord_attempt(login_password)
-        except Exception as exc:  # noqa: BLE001 — push is best-effort
-            last_exc = exc
-            log.warning(
-                "auth: Discord password push failed (attempt %d/%d): %s",
-                attempt + 1, attempts, exc)
-            continue
-        _push_status.update(ok=True, at=time.time(), error=None)
-        return
-    log.error(
-        "auth: Discord password push failed after %d attempt(s); giving up "
-        "until the next mint: %s", attempts, last_exc)
-    _push_status.update(
-        ok=False, at=time.time(),
-        error=str(last_exc) if last_exc else None)
-
-
-def _spawn_push(login_password: str, expires_at: float) -> None:
-    """Fire the Discord push (with its own retries) in the background.
-
-    A slow or retrying push must never delay mint_now's return or the
-    rotation loop's cadence timing — that invariant only holds if the push
-    runs detached. Cancels any still-in-flight push first, so a mint that
-    supersedes an in-progress retry does not end up racing it or notifying
-    about a since-superseded password.
-    """
-    global _push_task
-    if _push_task is not None and not _push_task.done():
-        _push_task.cancel()
-    _push_task = asyncio.create_task(
-        _push_password_to_discord(login_password, expires_at))
-
-
-def _write_peer_cred_file(peer_credential: str) -> None:
-    """Mirror the current peer credential to $AWM_PEER_CRED's target file."""
-    try:
-        PEER_CRED_FILE.parent.mkdir(parents=True, exist_ok=True)
-        PEER_CRED_FILE.write_text(peer_credential + "\n")
-        PEER_CRED_FILE.chmod(0o600)
-    except OSError as exc:
-        log.error("auth: could not write peer-cred file %s: %s", PEER_CRED_FILE, exc)
-
-
-async def mint_now(*, reason: str = "rotation") -> dict[str, Any]:
-    """Mint a fresh credential pair, announce it, refresh the peer file, prune."""
-    s = _settings()
-    gen = store.mint_generation(validity_seconds=s.validity_hours * _HOUR)
-    # LOUD — an operator or agent tailing logs must notice a new password.
-    log.warning(
-        "=== auth: minted credential generation %d (%s); login password valid ~%.0fh ===",
-        gen["generation"], reason, s.validity_hours,
-    )
-    _write_peer_cred_file(gen["peer_credential"])
-    removed = store.prune_expired()
-    if removed:
-        log.info("auth: pruned %d expired generation(s)", removed)
-    _spawn_push(gen["login_password"], gen["expires_at"])
-    return gen
-
-
-async def _mint_if_stale() -> None:
-    """Mint on startup unless a fresh-enough generation already exists."""
-    s = _settings()
-    latest = store.latest()
-    now = time.time()
-    if latest is None:
-        await mint_now(reason="startup (none existed)")
-        return
-    age = now - latest["minted_at"]
-    if age >= s.mint_cadence_hours * _HOUR:
-        await mint_now(reason=f"startup (newest was {age / _HOUR:.1f}h old)")
-    else:
-        # Still fresh — just make sure the peer-cred file matches the live value.
-        _write_peer_cred_file(latest["peer_credential"])
-        log.info("auth: newest generation %d is %.1fh old (< %.0fh cadence); no mint",
-                 latest["generation"], age / _HOUR, s.mint_cadence_hours)
-
-
-async def _rotation_loop() -> None:
-    """Sleep until the next cadence boundary, mint, repeat — forever."""
-    while True:
-        s = _settings()
-        latest = store.latest()
-        cadence = s.mint_cadence_hours * _HOUR
-        if latest is None:
-            delay = 0.0
-        else:
-            delay = max(0.0, (latest["minted_at"] + cadence) - time.time())
-        await asyncio.sleep(delay)
-        try:
-            await mint_now(reason="scheduled")
-        except Exception:  # noqa: BLE001 — never let the loop die on one mint
-            log.exception("auth: scheduled mint failed; retrying next cadence")
-            # Avoid a tight loop if mint_now itself keeps throwing.
-            await asyncio.sleep(60)
-
-
 async def on_start() -> None:
-    """Adapter ``on_start``: init DB, ensure secret, mint-if-stale, spawn loops."""
+    """Adapter ``on_start``: init the DB and make sure the signing secret exists."""
     store.init()
     store.ensure_secret()
-    ensure_node_key()
-    # Before the profile check, and supervised rather than bare: the Penpot
-    # credentials are per-user foreign credentials, so the public host — the
-    # one profile that switches the shared password off — is precisely the host
-    # that has them. The catch-up inside the loop talks to Penpot over the
-    # network, which is why it is spawned rather than awaited: a stack that is
-    # slow to come up must not hold up this service's registration.
-    from awm.gatewayclient import spawn_supervised
-    spawn_supervised("auth:penpot-rotation", _penpot_rotation_loop)
-    if not shared_password_enabled():
-        log.warning("auth: profile %r — shared password disabled, per-user "
-                    "accounts only (%d on file)", profile(), len(store.user_list()))
-        return
-    await _mint_if_stale()
-    asyncio.create_task(_rotation_loop())
-    log.info("auth: rotation loop started (peer-cred file: %s)", PEER_CRED_FILE)
-
-
-# ---------------------------------------------------------------------------
-# Penpot credentials
-# ---------------------------------------------------------------------------
-
-#: Rotation outcome, surfaced through ``h_status`` so a wedged credential is
-#: visible before somebody needs it. In-memory: a restart repopulates it on the
-#: catch-up rotation. ``failures`` is keyed by username and holds Penpot's own
-#: error code, which is the whole diagnosis (see ``penpot._error_code``).
-_penpot_status: dict[str, Any] = {
-    "last_rotation_at": None, "last_rotation_ok": None, "failures": {}}
-
-
-async def penpot_session(username: str, *, refresh: bool = False,
-                         stale_token: str | None = None) -> dict[str, Any]:
-    """A Penpot session token for ``username``, logging in if needed."""
-    name = _check_username(username)
-    cred = store.penpot_get(name)
-    if cred is None:
-        raise ValueError(f"no Penpot credential recorded for {name!r}")
-    token = await penpot.session_for(name, cred, refresh=refresh,
-                                     stale_token=stale_token)
-    return {"username": name, "email": cred["email"],
-            "cookie_name": penpot.COOKIE_NAME, "token": token}
-
-
-async def rotate_penpot_user(username: str, now: float | None = None) -> dict[str, Any]:
-    """Replace one person's Penpot password, storing it only once Penpot agrees.
-
-    The order is the whole point: Penpot is changed first and the store second,
-    because a store that ran ahead would hold a password Penpot never accepted
-    and there is no HTTP path back from that (see :mod:`awm.auth.penpot`).
-
-    Penpot's ``update-profile-password`` invalidates every *other* session for
-    the profile, so the token used to make the change is the one that survives —
-    it is left in the cache deliberately. What it invalidates is the cookie in
-    the person's browser, which the edge re-mints on their next page load.
-    """
-    cred = store.penpot_get(username)
-    if cred is None:
-        raise ValueError(f"no Penpot credential recorded for {username!r}")
-    new_password = penpot.new_password()
-    token = await penpot.session_for(username, cred)
-    try:
-        await penpot.change_password(token, cred["password"], new_password)
-    except penpot.PenpotError:
-        # The cached token may simply have stopped working; a stale session is
-        # a routine outcome here, a wrong stored password is not. Distinguish
-        # them by trying once with a session we know is fresh.
-        token = await penpot.session_for(username, cred, refresh=True)
-        await penpot.change_password(token, cred["password"], new_password)
-    store.penpot_set_password(username, new_password, now=now)
-    return {"username": username, "email": cred["email"]}
-
-
-async def rotate_penpot_all(*, reason: str = "scheduled",
-                            now: float | None = None,
-                            usernames: list[str] | None = None) -> dict[str, Any]:
-    """Rotate every recorded Penpot credential, one failure at a time.
-
-    Users are rotated independently: one account whose stored password has
-    drifted must not stop everyone else's from being replaced.
-    """
-    creds = store.penpot_list()
-    if usernames is not None:
-        wanted = set(usernames)
-        creds = [c for c in creds if c["username"] in wanted]
-    rotated: list[str] = []
-    failures: dict[str, str] = {}
-    for cred in creds:
-        name = cred["username"]
-        try:
-            await rotate_penpot_user(name, now=now)
-        except Exception as exc:  # noqa: BLE001 — per-user isolation is the point
-            failures[name] = str(exc)
-            log.error("auth: Penpot rotation failed for %s: %s", name, exc)
-        else:
-            rotated.append(name)
-    _penpot_status.update(last_rotation_at=time.time(),
-                          last_rotation_ok=not failures, failures=failures)
-    if creds:
-        log.warning("=== auth: rotated %d/%d Penpot credential(s) (%s) ===",
-                    len(rotated), len(creds), reason)
-    return {"rotated": rotated, "failed": failures, "total": len(creds)}
-
-
-def _next_rotation_at(hour: int, now: float) -> float:
-    """The next occurrence of ``hour``:00 *local* time, strictly after ``now``.
-
-    Local rather than UTC because the point of the hour is that nobody is
-    drawing at it, and that is a fact about where the people are.
-    ``mktime`` normalises a day-of-month one past the end of the month and
-    resolves the DST flag itself, so neither needs handling here.
-    """
-    lt = time.localtime(now)
-    hour = int(hour) % 24
-    target = time.mktime(
-        (lt.tm_year, lt.tm_mon, lt.tm_mday, hour, 0, 0, 0, 0, -1))
-    if target <= now:
-        target = time.mktime(
-            (lt.tm_year, lt.tm_mon, lt.tm_mday + 1, hour, 0, 0, 0, 0, -1))
-    return target
-
-
-def _penpot_overdue(now: float | None = None) -> list[str]:
-    """Credentials whose last rotation is over a day old.
-
-    A box that was off at the rotation hour must catch up on its next start
-    rather than skip a day — a credential that quietly stops rotating is worth
-    exactly as much as one that was never rotated at all.
-    """
-    now = time.time() if now is None else now
-    return [c["username"] for c in store.penpot_list()
-            if now - c["rotated_at"] >= _DAY]
-
-
-async def _penpot_rotation_loop() -> None:
-    """Catch up on anything overdue, then rotate at the configured hour."""
-    overdue = _penpot_overdue()
-    if overdue and _settings().penpot_rotation_enabled:
-        await rotate_penpot_all(reason="startup catch-up", usernames=overdue)
-    while True:
-        s = _settings()
-        now = time.time()
-        await asyncio.sleep(max(0.0, _next_rotation_at(s.penpot_rotation_hour, now) - now))
-        if not _settings().penpot_rotation_enabled:
-            log.info("auth: Penpot rotation is disabled; skipping this hour")
-            # Past the boundary but still inside the same hour — sleeping to
-            # the *next* boundary from here would land on this one again.
-            await asyncio.sleep(_HOUR)
-            continue
-        await rotate_penpot_all(reason="scheduled")
 
 
 # ---------------------------------------------------------------------------
 # Verb handlers
 # ---------------------------------------------------------------------------
-
-
-def h_password(args: dict) -> dict:
-    """Return the current (newest) login password + its window. Loopback/CLI —
-    `awm auth password`. Never reachable unauthenticated through the edge."""
-    latest = store.latest()
-    if latest is None:
-        return {"password": None, "generation": None}
-    return {
-        "password": latest["login_password"],
-        "generation": latest["generation"],
-        "minted_at": latest["minted_at"],
-        "expires_at": latest["expires_at"],
-    }
-
-
-def h_peer_credential(args: dict) -> dict:
-    """Return the current peer credential + the file path it is mirrored to."""
-    latest = store.latest()
-    return {
-        "peer_credential": latest["peer_credential"] if latest else None,
-        "path": str(PEER_CRED_FILE),
-    }
-
-
-def h_verify(args: dict) -> dict:
-    """Validate a login and mint a signed session token for the edge.
-
-    With ``username``: the static per-user password, ``sub=<username>``.
-    Without: the shared rotating password (every valid generation is scanned
-    with ``compare_digest``), ``sub="operator"`` — only while the shared path
-    is enabled. Failures count per username and per ``client_ip``; a locked
-    key answers ``{ok: false, retry_after}`` without checking the password.
-    """
-    args = args or {}
-    submitted = str(args.get("password") or "")
-    username = str(args.get("username") or "").strip() or None
-    client_ip = str(args.get("client_ip") or "").strip() or None
-    s = _settings()
-    now = time.time()
-
-    keys = _lock_keys(username, client_ip)
-    remaining = _locked_for(keys, now)
-    if remaining > 0:
-        return {"ok": False, "locked": True, "retry_after": int(remaining) + 1}
-
-    if username is not None:
-        ok = USERNAME_RE.match(username) is not None and check_password(username, submitted)
-        sub = username
-    elif shared_password_enabled():
-        ok = False
-        for gen in store.valid_generations(now):
-            if hmac.compare_digest(gen["login_password"], submitted):
-                ok = True
-        sub = "operator"
-    else:
-        ok = False
-        sub = ""
-
-    if not ok:
-        lock_seconds = s.lockout_minutes * 60.0
-        for key in keys:
-            store.fail_record(key, threshold=max(1, int(s.lockout_threshold)),
-                              lock_seconds=lock_seconds, now=now)
-        return {"ok": False}
-    for key in keys:
-        store.fail_clear(key)
-    secret = store.ensure_secret()
-    ttl = s.session_ttl_hours * _HOUR
-    token = tokens.mint(secret, sub=sub, ttl=ttl)
-    return {"ok": True, "sub": sub, "token": token, "session_ttl_seconds": ttl}
 
 
 def _record_device_use(used: Any) -> None:
@@ -731,240 +96,37 @@ def h_edge_material(args: dict, as_: str | None = None) -> dict:
     """Material the httpsfront edge caches to enforce auth offline.
 
     Returns the signing secret (to verify+slide cookies without an RPC per
-    request), the currently-valid peer credentials (to check peer bearers), the
-    book's peers with their public keys (to verify node tokens), the digests of
-    the live device tokens (to check user bearers), and the session-lifetime
-    knobs. ``device_used`` is the edge's report of the device tokens it has
-    accepted since its last fetch. ``token_scopes`` names the scopes the edge
-    enforces. A scoped token goes out only to an edge that names its scope,
-    because an edge that cannot read the scope would honour it everywhere. Operator-only: the edge itself fetches it with no
-    ``as_``, and a call that crossed an edge carries one and is refused.
-
-    The legacy bearers are withheld once ``AWM_PEER_LEGACY_BEARER=0``, and
-    always on the public profile. The keys are not secret and go out on every
-    profile: whether a listener honours a node token is the edge's call, because
-    a public node can also run a mesh listener that peers must reach.
+    request), the digests of the live device tokens (to check user bearers), and
+    the session-lifetime knobs. ``device_used`` is the edge's report of the device
+    tokens it has accepted since its last fetch. ``token_scopes`` names the scopes
+    the edge enforces. A scoped token goes out only to an edge that names its
+    scope, because an edge that cannot read the scope would honour it everywhere.
+    Operator-only: the edge itself fetches it with no ``as_``, and a call that
+    crossed an edge carries one and is refused.
     """
     _operator_only(as_, "edge_material")
     _record_device_use((args or {}).get("device_used"))
     s = _settings()
-    shared = shared_password_enabled()
-    legacy = ([g["peer_credential"] for g in store.valid_generations()]
-              if shared and legacy_bearer_enabled() else [])
     return {
         "secret": store.ensure_secret(),
-        "peer_credentials": legacy,
-        "peers": _edge_peers(),
         "device_tokens": _edge_devices((args or {}).get("token_scopes")),
-        "legacy_bearer": legacy_bearer_enabled(),
         "session_ttl_seconds": s.session_ttl_hours * _HOUR,
         "max_session_seconds": s.max_session_days * _DAY,
     }
 
 
-def h_node_key(args: dict) -> dict:
-    """This node's public key and its fingerprint, for pairing with a peer."""
-    public = peertoken.public_key_of(ensure_node_key())
-    return {"public_key": public, "fingerprint": peertoken.fingerprint(public)}
-
-
-def h_sign_peer_token(args: dict, as_: str | None = None) -> dict:
-    """A short-lived token naming this node, for the node called ``aud``.
-
-    Operator-only: whoever can ask for this speaks as this node to every other.
-    """
-    _operator_only(as_, "sign_peer_token")
-    aud = peertoken.node_label((args or {}).get("aud"))
-    if not aud:
-        raise ValueError("aud is required")
-    iss = peertoken.node_label(config.node_name())
-    token = peertoken.sign(ensure_node_key(), iss=iss, aud=aud)
-    return {"token": token, "iss": iss, "aud": aud,
-            "expires_in": peertoken.TOKEN_TTL_SECONDS}
-
-
-async def h_rotate(args: dict) -> dict:
-    """Force a mint now (ops/testing). Returns the new generation's window."""
-    if not shared_password_enabled():
-        raise ValueError("shared password is disabled on the %r profile" % profile())
-    gen = await mint_now(reason="manual rotate")
-    return {
-        "generation": gen["generation"],
-        "minted_at": gen["minted_at"],
-        "expires_at": gen["expires_at"],
-    }
-
-
 def h_status(args: dict) -> dict:
-    valid = store.valid_generations()
-    latest = store.latest()
     s = _settings()
-    return {
-        "valid_generations": len(valid),
-        "latest_generation": latest["generation"] if latest else None,
-        "latest_minted_at": latest["minted_at"] if latest else None,
-        "latest_expires_at": latest["expires_at"] if latest else None,
-        "mint_cadence_hours": s.mint_cadence_hours,
-        "validity_hours": s.validity_hours,
-        "push_enabled": s.push_enabled,
-        "push_last_ok": _push_status["ok"],
-        "push_last_attempt_at": _push_status["at"],
-        "push_last_error": _push_status["error"],
-        "peer_cred_path": str(PEER_CRED_FILE),
-        "profile": profile() or "default",
-        "shared_password_enabled": shared_password_enabled(),
-        "users": len(store.user_list()),
-        "penpot_credentials": len(store.penpot_list()),
-        "penpot_rotation_enabled": s.penpot_rotation_enabled,
-        "penpot_rotation_hour": s.penpot_rotation_hour,
-        "penpot_next_rotation_at": _next_rotation_at(
-            s.penpot_rotation_hour, time.time()),
-        "penpot_overdue": _penpot_overdue(),
-        "penpot_last_rotation_at": _penpot_status["last_rotation_at"],
-        "penpot_last_rotation_ok": _penpot_status["last_rotation_ok"],
-        "penpot_failures": dict(_penpot_status["failures"]),
-    }
-
-
-def _public_user(u: dict) -> dict:
-    return {"username": u["username"], "created_at": u["created_at"],
-            "disabled": u["disabled"]}
-
-
-def h_user_add(args: dict) -> dict:
-    """Create a user with a server-generated password, returned once."""
-    name = _check_username((args or {}).get("username"))
-    if store.user_get(name) is not None:
-        raise ValueError(f"user {name!r} exists; use user_passwd to reset")
-    password = set_password(name)
-    return {"username": name, "password": password}
-
-
-def h_user_passwd(args: dict) -> dict:
-    """Replace a user's password with a fresh server-generated one."""
-    name = _check_username((args or {}).get("username"))
-    if store.user_get(name) is None:
-        raise ValueError(f"no such user {name!r}")
-    password = set_password(name)
-    store.fail_clear(f"u:{name}")
-    return {"username": name, "password": password}
-
-
-def h_user_disable(args: dict) -> dict:
-    args = args or {}
-    name = _check_username(args.get("username"))
-    disabled = args.get("disabled", True)
-    if not isinstance(disabled, bool):
-        disabled = str(disabled).lower() not in ("0", "false", "no")
-    if not store.user_set_disabled(name, disabled):
-        raise ValueError(f"no such user {name!r}")
-    return _public_user(store.user_get(name))  # type: ignore[arg-type]
-
-
-def h_user_list(args: dict) -> dict:
-    return {"users": [_public_user(u) for u in store.user_list()]}
-
-
-# --- Penpot credential verbs -------------------------------------------------
-#
-# CLI/HTTP only, like the other credential verbs. ``penpot_session`` hands back
-# a live foreign credential and ``penpot_record`` takes one; neither belongs on
-# a surface an agent can reach.
-
-
-def h_penpot_record(args: dict) -> dict:
-    """Record the Penpot credential awm holds for a user.
-
-    Called once, by ``add-user.sh``, right after it creates the Penpot profile
-    with the same password. Re-recording is how a drifted credential is
-    repaired, so this deliberately overwrites. The password is never echoed
-    back: nothing downstream has a use for it, and the only guarantee worth
-    making about it is that no human ever sees it.
-    """
-    args = args or {}
-    name = _check_username(args.get("username"))
-    email = str(args.get("email") or "").strip()
-    password = str(args.get("password") or "")
-    if not email:
-        raise ValueError("email is required")
-    if not password:
-        raise ValueError("password is required")
-    cred = store.penpot_upsert(name, email=email, password=password)
-    penpot.forget(name)
-    return {"username": name, "email": cred["email"],
-            "rotated_at": cred["rotated_at"]}
-
-
-async def h_penpot_session(args: dict) -> dict:
-    """Hand the edge a usable Penpot session for a named user.
-
-    ``stale_token`` is the token the browser presented and the edge believes is
-    dead; it re-logs-in only if the cache still holds that same value, so a
-    page's worth of simultaneously-failing requests costs one login and not one
-    each. ``refresh`` is the unconditional form, for ops.
-    """
-    args = args or {}
-    refresh = args.get("refresh", False)
-    if not isinstance(refresh, bool):
-        refresh = str(refresh).lower() not in ("0", "false", "no", "")
-    stale = str(args.get("stale_token") or "") or None
-    return await penpot_session(str(args.get("username") or ""),
-                                refresh=refresh, stale_token=stale)
-
-
-async def h_penpot_rotate(args: dict) -> dict:
-    """Rotate one user's Penpot password, or everyone's."""
-    args = args or {}
-    username = str(args.get("username") or "").strip()
-    if username:
-        result = await rotate_penpot_user(_check_username(username))
-        return {"rotated": [result["username"]], "failed": {}, "total": 1}
-    return await rotate_penpot_all(reason="manual rotate")
-
-
-def h_penpot_list(args: dict) -> dict:
-    """The recorded Penpot credentials, without the passwords."""
-    return {"credentials": [
-        {"username": c["username"], "email": c["email"],
-         "rotated_at": c["rotated_at"], "created_at": c["created_at"]}
-        for c in store.penpot_list()]}
+    return {"session_ttl_hours": s.session_ttl_hours, "max_session_days": s.max_session_days,
+            "device_tokens": len(store.device_live())}
 
 
 # --- device tokens -----------------------------------------------------------
 #
-# CLI/HTTP only. A call with no edge identity is the operator and may name any
-# user; a ``user:<name>`` caller may name only itself. Every other identity — a
-# peer, the shared-password session — is refused.
+# CLI/HTTP only, and operator-only: every token belongs to ``operator``, and a
+# call that crossed an edge is refused.
 
-#: Identities the edge treats as machines; a device token never carries one.
-_MACHINE_NAMES = frozenset({"operator", "peer"})
 _LABEL_MAX = 64
-
-
-def _device_caller(as_: str | None) -> str | None:
-    """``None`` for the operator, else the user the caller is. Raises otherwise."""
-    if as_ is None:
-        return None
-    user = user_of(as_)
-    if user is None or user in _MACHINE_NAMES:
-        raise PermissionError("device tokens are managed by the operator or by "
-                              "the signed-in user they belong to")
-    return user
-
-
-def _device_target(args: dict, as_: str | None, *, required: bool) -> str | None:
-    """The username a device verb acts on, after the caller check."""
-    caller = _device_caller(as_)
-    given = str(args.get("username") or "").strip()
-    if caller is None:
-        if not given:
-            if required:
-                raise ValueError("username is required")
-            return None
-        return _check_username(given)
-    if given and given != caller:
-        raise PermissionError(f"{caller} may manage only their own device tokens")
-    return caller
 
 
 def _public_device(t: dict) -> dict:
@@ -974,51 +136,43 @@ def _public_device(t: dict) -> dict:
 
 
 def h_device_mint(args: dict, as_: str | None = None) -> dict:
-    """Mint a device token for a user. The token is returned once, here."""
+    """Mint a device token. The token is returned once, here.
+
+    A device token speaks for one device, as ``device:<id>``, never for the
+    operator, and it carries a scope that bounds what the device reaches.
+    """
+    _operator_only(as_, "device_mint")
     args = args or {}
-    name = _device_target(args, as_, required=True)
     label = str(args.get("label") or "").strip()
     if not label:
         raise ValueError("label is required")
     if len(label) > _LABEL_MAX:
         raise ValueError(f"label is longer than {_LABEL_MAX} characters")
-    if name in _MACHINE_NAMES:
-        raise ValueError(f"{name!r} is a machine identity, not a user")
-    user = store.user_get(name)
-    if user is None:
-        raise ValueError(f"no such user {name!r}")
-    if user["disabled"]:
-        raise ValueError(f"user {name!r} is disabled")
-    scope = str(args.get("scope") or "").strip() or None
-    if scope is not None and scope not in usertoken.SCOPES:
-        raise ValueError(f"unknown scope {scope!r}; known: "
+    scope = str(args.get("scope") or "").strip()
+    if scope not in usertoken.SCOPES:
+        raise ValueError(f"a device token needs a scope; known: "
                          f"{', '.join(sorted(usertoken.SCOPES))}")
     token_id, secret, token = usertoken.mint()
-    row = store.device_insert(token_id, username=name, label=label,
+    row = store.device_insert(token_id, username=f"device:{token_id}", label=label,
                               secret_sha256=usertoken.digest(secret), scope=scope)
-    log.warning("auth: minted device token %s for %s (%s, scope %s)",
-                token_id, name, label, scope or "none")
+    log.warning("auth: minted device token %s (%s, scope %s)", token_id, label, scope)
     return {**_public_device(row), "token": token}
 
 
 def h_device_list(args: dict, as_: str | None = None) -> dict:
-    """Device tokens: everyone's for the operator unless filtered, else the
-    caller's own. Never the digest."""
-    name = _device_target(args or {}, as_, required=False)
-    return {"tokens": [_public_device(t) for t in store.device_list(name)]}
+    """Every device token, revoked ones included. Never the digest."""
+    _operator_only(as_, "device_list")
+    return {"tokens": [_public_device(t) for t in store.device_list()]}
 
 
 def h_device_revoke(args: dict, as_: str | None = None) -> dict:
     """Revoke a device token by id. The edge drops it on its next refresh."""
+    _operator_only(as_, "device_revoke")
     args = args or {}
-    caller = _device_caller(as_)
     token_id = str(args.get("id") or "").strip()
     if not token_id:
         raise ValueError("id is required")
-    row = store.device_get(token_id)
-    # A user asking after someone else's id gets the same answer as for an id
-    # that does not exist, so ids cannot be probed across accounts.
-    if row is None or (caller is not None and row["username"] != caller):
+    if store.device_get(token_id) is None:
         raise ValueError(f"no such device token {token_id!r}")
     store.device_revoke(token_id)
     row = store.device_get(token_id)

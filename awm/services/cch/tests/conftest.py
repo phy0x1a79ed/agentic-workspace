@@ -1,0 +1,128 @@
+"""Keep every test off the live node: no gateway calls, no writes to the real state dir."""
+from __future__ import annotations
+
+import json
+import shutil
+import time
+from pathlib import Path
+
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def events_sent(monkeypatch, tmp_path):
+    """Every event cch sends reflection, kept here instead."""
+    from awm.cch import events, inject, pending
+    # A dead pid waits this long for a successor process; tests that care set it.
+    monkeypatch.setattr(inject, "SUCCESSOR_WAIT_S", 0.0)
+    posts: list[tuple[str, str, dict]] = []
+
+    def take(s, f, a):
+        posts.append((s, f, a))
+        return {"ok": True}
+
+    take.posts = posts
+    monkeypatch.setattr(events, "_call", take)
+    monkeypatch.setattr(pending, "PENDING_DIR", tmp_path / "pending-default")
+    return posts
+
+
+# Fixtures captured from a live box, replayed against a temporary home. The
+# roster records liveness as a pid plus its start time, so the capture carries
+# placeholders bound to the test process itself.
+FIXTURES = Path(__file__).parent / "fixtures" / "box"
+
+#: The version the captured sessions were seeded by.
+VERSION = "2.1.268"
+
+
+def _own_proc_start() -> str:
+    with open("/proc/self/stat") as fh:
+        raw = fh.read()
+    return raw.partition(") ")[2].split()[19]
+
+
+@pytest.fixture
+def box(tmp_path, monkeypatch):
+    """A copy of the captured box, with the live placeholders bound."""
+    import os
+
+    root = tmp_path / "claude"
+    shutil.copytree(FIXTURES, root)
+    roster = root / "daemon" / "roster.json"
+    text = (
+        roster.read_text()
+        .replace('"__ALIVE_PID__"', str(os.getpid()))
+        .replace('"__ALIVE_START__"', json.dumps(_own_proc_start()))
+    )
+    # The capture's start times age with the wall clock until every session is
+    # past the rotate age. Shift them together so the newest is seconds old and
+    # the spacing between sessions stays as captured.
+    data = json.loads(text)
+    newest = max(w["startedAt"] for w in data["workers"].values())
+    shift = int(time.time() * 1000) - 5000 - newest
+    for w in data["workers"].values():
+        w["startedAt"] += shift
+    roster.write_text(json.dumps(data))
+    monkeypatch.setenv("AWM_CX_ROSTER", str(roster))
+    monkeypatch.setenv("AWM_CX_JOBS", str(root / "jobs"))
+    monkeypatch.setenv("AWM_CX_STATE", str(root / "cx"))
+    # The pool reads the binary's version off the symlink rather than by running
+    # it, so a symlink into a directory named for a version is the whole fake.
+    (root / "versions" / VERSION).mkdir(parents=True)
+    (root / "bin").mkdir()
+    (root / "bin" / "claude").symlink_to(root / "versions" / VERSION)
+    monkeypatch.setenv("AWM_CX_CLAUDE", str(root / "bin" / "claude"))
+    return root
+
+
+@pytest.fixture
+def by_short(box):
+    """The captured sessions keyed by short id."""
+    from awm.cch import sessions
+
+    return {s.short: s for s in sessions.load()}
+
+
+@pytest.fixture(autouse=True)
+def keep_calls(monkeypatch):
+    """Every call cx makes to the keep service, answered here.
+
+    Without this a test with no daemon would ask the real gateway's keep
+    service to start one.
+    """
+    from awm.cch import lifecycle
+
+    calls: list[tuple] = []
+    answer: dict = {"ok": False, "reason": "daemon_down", "action": "held"}
+
+    async def fake(service, fn, args=None, **kw):
+        calls.append((service, fn, args))
+        hook = answer.get("hook")
+        if hook:
+            hook()
+        return {k: v for k, v in answer.items() if k != "hook"}
+
+    monkeypatch.setattr(lifecycle.gatewayclient, "call", fake)
+    return type("KeepCalls", (), {"calls": calls, "answer": answer})
+
+
+@pytest.fixture(autouse=True)
+def fleet(tmp_path, monkeypatch):
+    """Point the edge list at a temporary file: absent, an empty fleet, until written.
+
+    Call it with ``nodes`` ({name: role}) and ``edges`` ({src: [dst, ...]}).
+    """
+    import yaml
+
+    path = tmp_path / "edges.yml"
+    monkeypatch.setenv("AWM_EDGES_FILE", str(path))
+
+    def write(nodes: dict[str, str], edges: dict[str, list[str]] | None = None) -> Path:
+        path.write_text(yaml.safe_dump({
+            "nodes": {n: {"role": r} for n, r in nodes.items()},
+            "edges": {s: {d: "lan" for d in ds} for s, ds in (edges or {}).items()},
+        }))
+        return path
+
+    return write

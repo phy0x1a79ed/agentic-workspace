@@ -37,6 +37,13 @@ token(s). Shape::
     platform = "teams"
     source = "mira"
 
+``trust`` sets the level of every seat on an account, and ``trusted_chats`` lists
+Tony's own DMs on it, which are trusted (``channels.md`` R70)::
+
+    [account.slack-bot]
+    trust = "cooperative"
+    trusted_chats = ["D0TONYDM"]
+
 ``singleton = true`` marks an identity that is ONE session for the whole fleet —
 a Discord bot token, a mailbox — where a second login is not a second client but
 a collision (Discord hands interactions to one session, so the other answers with
@@ -62,11 +69,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from awm import config
+from awm.trustpolicy import LEVELS
 
 
 # Default config path. ``AWM_SOCIAL_CONFIG`` overrides it wholesale — needed
-# under ``awm dev shadow``, which rewrites ``AWM_WORKSPACE`` to a sandbox dir
-# that doesn't hold the real ``social.toml`` (the same shape as the 2fa
+# in a dev sandbox, whose ``AWM_DIR`` doesn't hold the real ``social.toml`` (the same shape as the 2fa
 # service's ``AWM_2FA_DIR`` override). Resolved at load() time, not import.
 CONFIG_FILE = config.AWM_DIR / "social.toml"
 
@@ -113,6 +120,11 @@ class AccountConfig:
     # selector treats the account as remote and forwards calls naming it. See
     # `_is_borrowed` in hub_adapter.py.
     singleton: bool = False
+    # Trust level of a seat on this account (channels.md R70). ``trust`` is the
+    # level of every chat on the account. ``trusted_chats`` names Tony's own DMs,
+    # which are trusted. Default: Discord bot chats untrusted, others cooperative.
+    trust: str = "cooperative"
+    trusted_chats: tuple[str, ...] = ()
     # mira-routed accounts: the connector is a thin client of the mira API
     # daemon. These are stamped from the service-level [mira] block at load time.
     source: str | None = None       # "mira" routes via MiraConnector
@@ -187,8 +199,8 @@ class SeatConfig:
     project: str
     scope: str
     brief: str
-    model: str | None = None
-    effort: str | None = None
+    model: str = ""
+    effort: str = ""
     compact_at: int = 200_000
     channels: tuple[str, ...] = ()
     every_chat: bool = False
@@ -391,6 +403,15 @@ def load(path: Path | None = None) -> list[AccountConfig]:
             raise SocialConfigError(
                 f"{path}: [account.{name}].singleton must be a boolean"
             )
+        trust = section.get("trust", "untrusted" if platform == "discord" else "cooperative")
+        if trust not in LEVELS:
+            raise SocialConfigError(
+                f"{path}: [account.{name}].trust must be one of {LEVELS}")
+        trusted_chats = section.get("trusted_chats", [])
+        if not (isinstance(trusted_chats, list)
+                and all(isinstance(c, str) for c in trusted_chats)):
+            raise SocialConfigError(
+                f"{path}: [account.{name}].trusted_chats must be a list of chat ids")
         accounts.append(AccountConfig(
             name=str(name).strip(),
             platform=platform,
@@ -402,6 +423,8 @@ def load(path: Path | None = None) -> list[AccountConfig]:
             address=address.strip() if address else None,
             enabled=enabled,
             singleton=singleton,
+            trust=trust,
+            trusted_chats=tuple(trusted_chats),
             source=source,
             mira_url=(mira or {}).get("url") if source == "mira" else None,
             mira_token=(mira or {}).get("token") if source == "mira" else None,
@@ -531,8 +554,8 @@ def load_seats(path: Path | None = None) -> list[SeatConfig]:
         node = "altair"                   # where the agent runs
         scope = "awm/seat-hallam-general" # project/scope it starts in
         brief = "You speak as Opal ..."
-        # model = "opus"                  # optional
-        # effort = "high"                 # optional
+        model = "opus"                    # required: fit it to the seat
+        effort = "high"                   # required: high is the upper limit
         # compact_at = 200000             # optional, tokens
         # alert_after = 300               # optional, seconds down before an alert
 
@@ -571,9 +594,11 @@ def load_seats(path: Path | None = None) -> list[SeatConfig]:
         optional = {}
         for key in ("model", "effort"):
             value = section.get(key)
-            if value is not None and (not isinstance(value, str) or not value.strip()):
-                raise SocialConfigError(f"{where}.{key} must be a string")
-            optional[key] = value.strip() if value else None
+            if not isinstance(value, str) or not value.strip():
+                raise SocialConfigError(f"{where}.{key} is required: pick it to fit the seat")
+            optional[key] = value.strip()
+        if optional["effort"] in ("xhigh", "max"):
+            raise SocialConfigError(f"{where}.effort is above the limit: high is the upper limit")
         compact_at = section.get("compact_at", SeatConfig.compact_at)
         if (not isinstance(compact_at, int) or isinstance(compact_at, bool)
                 or not COMPACT_AT_MIN <= compact_at <= COMPACT_AT_MAX):
@@ -599,18 +624,32 @@ def load_seats(path: Path | None = None) -> list[SeatConfig]:
     return seats
 
 
-def load_witnesses(path: Path | None = None) -> list[str]:
-    """The nodes the keeper asks, in order, before it calls a seat's node down.
+#: Where the keeper looks for its own box's internet: public anycast resolvers
+#: on ports they always serve. Any one that accepts a connection counts.
+ONLINE_TARGETS = ("1.1.1.1:443", "8.8.8.8:443", "9.9.9.9:443")
 
-    ``[keeper] witness = ["deneb", "altair"]``. The keeper's own node can lose
-    its network while the seats' nodes stay up, so a node that does not answer
-    is down only when a witness elsewhere cannot reach it either. Name nodes
-    off the keeper's network, and at least two, since the keeper never asks a
-    node about itself.
+
+@dataclass(frozen=True)
+class KeeperConfig:
+    """The ``[keeper]`` table."""
+
+    #: The nodes the keeper asks, in order, before it calls a seat's node down.
+    witness: tuple[str, ...] = ()
+    #: ``host:port`` targets for the box's own internet check. Empty turns it off.
+    online: tuple[str, ...] = ONLINE_TARGETS
+
+
+def load_keeper(path: Path | None = None) -> KeeperConfig:
+    """The ``[keeper]`` table of social.toml, or its defaults.
+
+    ``witness = ["deneb", "altair"]``: the keeper's own node can lose its network
+    while the seats' nodes stay up, so a node that does not answer is down only
+    when a witness elsewhere cannot reach it either. Name nodes off the keeper's
+    network, and at least two, since the keeper never asks a node about itself.
     """
     path = path if path is not None else _config_file()
     if not path.exists():
-        return []
+        return KeeperConfig()
     try:
         with open(path, "rb") as f:
             data = tomllib.load(f)
@@ -618,16 +657,28 @@ def load_witnesses(path: Path | None = None) -> list[str]:
         raise SocialConfigError(f"could not parse {path}: {exc}") from exc
     table = data.get("keeper")
     if table is None:
-        return []
-    if not isinstance(table, dict) or set(table) - {"witness"}:
-        raise SocialConfigError(f"{path}: [keeper] takes only witness")
-    witness = table.get("witness", [])
-    if isinstance(witness, str):
-        witness = [witness]
-    if not isinstance(witness, list) or not all(isinstance(w, str) and w.strip()
-                                                for w in witness):
-        raise SocialConfigError(f"{path}: [keeper].witness must be a list of node names")
-    return list(dict.fromkeys(w.strip() for w in witness))
+        return KeeperConfig()
+    if not isinstance(table, dict) or set(table) - {"witness", "online"}:
+        raise SocialConfigError(f"{path}: [keeper] takes only witness and online")
+    witness = _names(table.get("witness", []), f"{path}: [keeper].witness must be a list of node names")
+    online = _names(table.get("online", list(ONLINE_TARGETS)),
+                    f"{path}: [keeper].online must be a list of host:port targets")
+    if any(not t.rpartition(":")[2].isdigit() or not t.rpartition(":")[0] for t in online):
+        raise SocialConfigError(f"{path}: [keeper].online must be a list of host:port targets")
+    return KeeperConfig(witness=witness, online=online)
+
+
+def _names(value: object, error: str) -> tuple[str, ...]:
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, list) or not all(isinstance(v, str) and v.strip() for v in value):
+        raise SocialConfigError(error)
+    return tuple(dict.fromkeys(v.strip() for v in value))
+
+
+def load_witnesses(path: Path | None = None) -> list[str]:
+    """The ``[keeper]`` witnesses, in the order the keeper asks them."""
+    return list(load_keeper(path).witness)
 
 
 _SEAT_KEYS = {"account", "channel", "channels", "except", "node", "scope", "brief",

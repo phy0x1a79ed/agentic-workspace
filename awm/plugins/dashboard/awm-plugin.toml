@@ -1,0 +1,17 @@
+# The operator's pages: the dashboard, the settings page and the component
+# gallery. Pages only; no service.
+[plugin]
+name = "dashboard"
+version = "0.1.0"
+
+[[page]]
+name = "dashboard"
+dir = "pages/dashboard/dist"
+
+[[page]]
+name = "settings"
+dir = "pages/settings/dist"
+
+[[page]]
+name = "gallery"
+dir = "pages/gallery/dist"

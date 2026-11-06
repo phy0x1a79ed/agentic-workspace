@@ -64,7 +64,6 @@ RCON_PASSWORD = os.environ.get("RCON_PASSWORD") or secrets.token_hex(16)
 SERVER_SETTINGS = os.path.join(CONFIG_DIR, "server-settings.json")
 MAP_GEN_SETTINGS = os.path.join(CONFIG_DIR, "map-gen-settings.json")
 
-DEFAULT_WORLD = os.environ.get("DEFAULT_WORLD", "world")
 
 # The private scratch file the engine always runs on. Named saves are immutable
 # snapshots copied to/from this file; the engine never runs on a named save
@@ -358,30 +357,6 @@ class Engine:
             raise RuntimeError("engine/RCON not ready")
         return self.rcon.command(command)
 
-    def _lua_json_call(self, iface_fn, args=None):
-        """Run ``remote.call('game_bot', <fn>, <args>)`` and JSON-decode its
-        returned table. ``args`` is a plain dict, carried as JSON both ways
-        (decoded Lua-side with json_to_table) so no Lua-literal encoding of
-        nested/str args is ever needed. The json/table helpers are resolved
-        inline (2.0 moved them from ``game`` to ``helpers``) so the mod stays a
-        pure library."""
-        args_json = json.dumps(args or {})
-        lua_str = args_json.replace("\\", "\\\\").replace("'", "\\'")
-        lua = (
-            "local h=helpers or game; "
-            "local r=remote.call('game_bot','%s',h.json_to_table('%s') or {}); "
-            "rcon.print(h.table_to_json(r))"
-            % (iface_fn, lua_str)
-        )
-        out = self._rcon_cmd("/silent-command " + lua).strip()
-        try:
-            return json.loads(out)
-        except Exception:
-            # A lua error comes back as a plain (non-JSON) string on the channel.
-            raise RuntimeError(out or "empty rcon response")
-
-    # -- map creation --
-
     def _create_map(self, world, seed=None):
         """Generate a fresh map save with `--create` (uses freeplay defaults)."""
         mapgen = MAP_GEN_SETTINGS if os.path.exists(MAP_GEN_SETTINGS) else None
@@ -477,32 +452,9 @@ class Engine:
             self._connect_rcon()
             return {"world": name, "ready": ready}
 
-    # -- gameplay / perceive ops (RCON-backed; NOT under self.lock) --
-    #
-    # These reach the live engine over RCON and deliberately do NOT take
-    # self.lock -- that lock serializes world re-execs, and sharing it would make
-    # a gameplay call block on an in-flight new/load. The Rcon I/O lock already
+    # The pause op reaches the live engine over RCON and does NOT take
+    # self.lock: that lock serializes world re-execs. The Rcon I/O lock already
     # serializes the socket.
-
-    def op_events(self):
-        """Drain the mod's bounded events ring buffer (return + clear happen in
-        ONE Lua call, so nothing can slip between read and reset). An empty Lua
-        table JSON-encodes as ``{}``; normalize to a list either way."""
-        res = self._lua_json_call("drain_events")
-        ev = res.get("events") or []
-        if isinstance(ev, dict):        # defensive: sparse-array encoding
-            ev = [ev[k] for k in sorted(ev, key=int)]
-        return {"events": ev}
-
-    def op_exec_lua(self, code):
-        """Run arbitrary Lua via /silent-command; return whatever it printed.
-
-        To get a value back the caller's code must ``rcon.print(...)`` -- the
-        engine returns the console output verbatim (empty string if nothing was
-        printed)."""
-        if not code:
-            raise ValueError("exec_lua requires 'code'")
-        return {"output": self._rcon_cmd("/silent-command " + code)}
 
     def op_pause(self, paused):
         """Set game.tick_paused, or flip it when `paused` is None, and report
@@ -514,19 +466,6 @@ class Engine:
             "/silent-command game.tick_paused=%s rcon.print(game.tick_paused)" % val
         ).strip()
         return {"paused": out == "true"}
-
-    def op_iface(self, iface_fn, args):
-        """Call one game-bot-control interface function by name.
-
-        The ONE route every world verb travels: the function name and its
-        arguments both come from the request, so a new mod capability needs no
-        plumbing here, and argument validation stays mod-side where the world
-        state actually is. `iface_fn` is interpolated into Lua, so it is
-        restricted to a bare identifier.
-        """
-        if not iface_fn or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", iface_fn):
-            raise ValueError("iface fn must be a bare identifier: %r" % (iface_fn,))
-        return self._lua_json_call(iface_fn, args or {})
 
     # -- boot --
 
@@ -634,21 +573,10 @@ class ControlHandler(BaseHTTPRequestHandler):
                     return self._send(400, {"ok": False, "error": "missing 'name'"})
                 return self._send(200, {"ok": True, "result": ENGINE.op_load(name)})
             # ---- gameplay / perceive (RCON-backed) ----
-            if route == "/observe/events":
-                return self._send(200, {"ok": True, "result": ENGINE.op_events()})
-            if route == "/exec-lua":
-                return self._send(200, {"ok": True, "result": ENGINE.op_exec_lua(body.get("code"))})
             if route == "/pause":
                 paused = body.get("paused")
                 return self._send(200, {"ok": True, "result": ENGINE.op_pause(
                     None if paused is None else bool(paused))})
-            # Every remaining world verb is one mod-interface call. Naming the
-            # function in the body rather than in the path keeps the supervisor
-            # out of the business of knowing which verbs exist.
-            if route == "/iface":
-                fn = body.get("fn")
-                return self._send(200, {"ok": True,
-                                        "result": ENGINE.op_iface(fn, body.get("args"))})
             return self._send(404, {"ok": False, "error": "not found"})
         except FileNotFoundError as e:
             return self._send(404, {"ok": False, "error": str(e)})

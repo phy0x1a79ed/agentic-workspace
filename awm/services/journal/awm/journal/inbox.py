@@ -4,7 +4,10 @@ The cursor belongs to the scope, not to a session. Seats churn: a scope outlives
 many sessions, and the session that arrives next must not re-read what the last
 one already handled. A post the scope wrote itself is never unread.
 
-The cursor is a position ``(ts, id)`` in the channel, so it is the same order the
+A scope's inbox also holds each comment on a thread the scope started, in
+whatever channel that thread lives (fleet.md R107 item 5).
+
+The cursor is a position ``(ts, id)`` in time, so it is the same order the
 digest lists in. Acknowledging through a post marks it and everything before it
 read. The cursor only moves forward.
 """
@@ -13,9 +16,12 @@ from __future__ import annotations
 
 import re
 
+from typing import Any
+
+from awm.journal import tags as tagmod
 from awm.journal.channel import _author_to_display, _coerce_meta
 from awm.journal.dao import JournalDAO
-from awm.journal.refs import ms_to_iso, now_ms
+from awm.persistence.timestamps import ms_to_iso, now_ms
 
 DEFAULT_LIMIT = 20
 MAX_LIMIT = 50
@@ -28,7 +34,6 @@ _SENTENCE_END_RE = re.compile(r"(?<=[.!?])\s")
 _ASK_RE = re.compile(
     r"\?|\b(please|request(?:s|ed)?|can you|could you|would you|needs? you|"
     r"action required|todo|blocked|bug|broken|fix(?:es)?)\b", re.I)
-_ASK_TYPES = {"request", "bug", "question", "blocked"}
 
 
 def _one_line(text: str, width: int = GIST_WIDTH) -> str:
@@ -54,10 +59,8 @@ def gist(body: str, meta: dict) -> str:
     return _one_line(_SENTENCE_END_RE.split(" ".join(paragraph.split()), 1)[0])
 
 
-def asks(body: str, meta: dict, line: str) -> bool:
+def asks(body: str, line: str) -> bool:
     """Whether a post looks like it asks the reader to act. A keyword heuristic, not a judgement."""
-    if str(meta.get("type", "")).lower() in _ASK_TYPES:
-        return True
     return bool(_ASK_RE.search(f"{line} {(body or '')[:600]}"))
 
 
@@ -79,10 +82,28 @@ def cursor(project: str, scope: str) -> dict | None:
             "acked_at": ms_to_iso(row["acked_at"]), "acked_by": row["acked_by"] or None}
 
 
+def self_ref(project: str, scope: str) -> str:
+    """The author ref a channel's own posts carry: ``agent:<p>/<s>``, or a user channel's user."""
+    if not project and scope.startswith("user:"):
+        return scope
+    return f"agent:{project}/{scope}"
+
+
+def _mine(project: str, scope: str) -> tuple[str, list]:
+    """A WHERE fragment for the scope's inbox: its channel, and comments on threads it started."""
+    return ("((owner_project=? AND owner_scope=?) OR thread_id IN "
+            "(SELECT r.id FROM scope_posts r WHERE r.author=? AND r.thread_id IS NULL))",
+            [project, scope, self_ref(project, scope)])
+
+
+def _filter(tags: Any) -> tuple[str, list]:
+    return tagmod.filter_sql(tags if tags not in (None, "", []) else "message")
+
+
 def _unread_clause(project: str, scope: str) -> tuple[str, list]:
     """A WHERE fragment keeping posts after the scope's cursor and not by the scope itself."""
     sql = " AND author != ?"
-    params: list = [f"agent:{project}/{scope}"]
+    params: list = [self_ref(project, scope)]
     row = JournalDAO().query_one(
         "SELECT through_ts, through_id FROM scope_cursors WHERE owner_project=? AND owner_scope=?",
         (project, scope))
@@ -92,27 +113,32 @@ def _unread_clause(project: str, scope: str) -> tuple[str, list]:
     return sql, params
 
 
-def unread_count(project: str, scope: str, *, kind: str = "message",
+def unread_count(project: str, scope: str, *, tags: Any = None,
                  exclude: tuple[str, list] = ("", [])) -> int:
+    mine, mine_params = _mine(project, scope)
+    tag_sql, tag_params = _filter(tags)
     unread, unread_params = _unread_clause(project, scope)
     return JournalDAO().query_one(
-        "SELECT COUNT(*) AS n FROM scope_posts WHERE owner_project=? AND owner_scope=? "
-        f"AND kind=?{exclude[0]}{unread}",
-        (project, scope, kind, *exclude[1], *unread_params))["n"]
+        f"SELECT COUNT(*) AS n FROM scope_posts WHERE {mine}{tag_sql}{exclude[0]}{unread}",
+        (*mine_params, *tag_params, *exclude[1], *unread_params))["n"]
 
 
-def digest(project: str, scope: str, *, kind: str = "message", limit: int = DEFAULT_LIMIT,
-           include_read: bool = False, exclude: tuple[str, list] = ("", [])) -> dict:
-    """The newest ``limit`` unread posts of one channel, one line each, plus the counts around them.
+def digest(project: str, scope: str, *, tags: Any = None,
+           limit: int = DEFAULT_LIMIT, include_read: bool = False,
+           exclude: tuple[str, list] = ("", [])) -> dict:
+    """The newest ``limit`` unread posts of a scope's inbox, one line each, plus the counts around them.
 
+    ``tags`` is a tag filter, default ``message``.
     ``include_read`` lists read posts too, each marked ``read``. ``ack_through`` is the
     newest unread post listed: pass it to :func:`ack` so a post that arrives after
     this digest stays unread.
     """
     limit = max(1, min(int(limit), MAX_LIMIT))
     dao = JournalDAO()
-    base = "FROM scope_posts WHERE owner_project=? AND owner_scope=? AND kind=?" + exclude[0]
-    base_params = [project, scope, kind, *exclude[1]]
+    mine, mine_params = _mine(project, scope)
+    tag_sql, tag_params = _filter(tags)
+    base = f"FROM scope_posts WHERE {mine}{tag_sql}{exclude[0]}"
+    base_params = [*mine_params, *tag_params, *exclude[1]]
     unread_sql, unread_params = _unread_clause(project, scope)
     total = dao.query_one(f"SELECT COUNT(*) AS n {base}", base_params)["n"]
     unread = dao.query_one(f"SELECT COUNT(*) AS n {base}{unread_sql}",
@@ -134,14 +160,19 @@ def digest(project: str, scope: str, *, kind: str = "message", limit: int = DEFA
         line = gist(r["body"], meta)
         item = {"id": r["id"], "author": _author_to_display(r["author"]),
                 "age": _age(r["ts"], now), "gist": line,
-                "asks": asks(r["body"], meta, line), "chars": len(r["body"] or "")}
+                "asks": asks(r["body"], line), "chars": len(r["body"] or "")}
+        if r["reply_to"]:
+            item["reply_to"] = r["reply_to"]
+            if (r["owner_project"], r["owner_scope"]) != (project, scope):
+                item["channel"] = f"{r['owner_project']}/{r['owner_scope']}".lstrip("/")
         if unread_ids is not None:
             item["read"] = r["id"] not in unread_ids
         posts.append(item)
 
     listed_unread = [p for p in posts if not p.get("read")]
     out = {
-        "project": project, "scope": scope, "kind": kind,
+        "project": project, "scope": scope,
+        "tags": tags if tags not in (None, "", []) else "message",
         "unread": unread, "total": total, "posts": posts,
         "more": (total if include_read else unread) - len(posts),
         "cursor": cursor(project, scope),
@@ -159,16 +190,15 @@ def ack(project: str, scope: str, *, through: str | None = None, by: str | None 
     A ``through`` older than the cursor leaves the cursor where it is.
     """
     dao = JournalDAO()
+    mine, mine_params = _mine(project, scope)
     if through:
-        row = dao.query_one(
-            "SELECT id, ts FROM scope_posts WHERE id=? AND owner_project=? AND owner_scope=?",
-            (through, project, scope))
+        row = dao.query_one(f"SELECT id, ts FROM scope_posts WHERE id=? AND {mine}",
+                            (through, *mine_params))
         if row is None:
             raise ValueError(f"no post {through} in {project}/{scope}")
     else:
-        row = dao.query_one(
-            "SELECT id, ts FROM scope_posts WHERE owner_project=? AND owner_scope=? "
-            "ORDER BY ts DESC, id DESC LIMIT 1", (project, scope))
+        row = dao.query_one(f"SELECT id, ts FROM scope_posts WHERE {mine} "
+                            "ORDER BY ts DESC, id DESC LIMIT 1", mine_params)
     moved = False
     if row is not None:
         with dao.transaction() as conn:

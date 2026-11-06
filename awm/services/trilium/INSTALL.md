@@ -21,8 +21,8 @@ somebody with no account, which notes an agent session may write, why the kanban
 service's, why the document is replicated over an ssh forward rather than over
 the edge, why exactly one node may run a service that writes into the vault and when several may, why
 there are four kinds of database copy and only two of them survive a deletion,
-why a node that serves the tarball gets a directory where a node that builds the
-fork gets a checkout, and what a shared origin costs.
+why a node without a vault checkout gets a plain directory, how a fork release
+reaches the node that serves it, and what a shared origin costs.
 
 Trilium's own architecture belongs to `projects/trilium` and its upstream docs.
 The patches we carry to it are the exception, because nothing in that project
@@ -66,9 +66,14 @@ is a bug in the mount.
 shortcut.** Its own login existed to say *which person*, back when there was one
 instance each. With one shared vault it says nothing at all, and the awm edge
 already knows who signed in — so a second password would ask the same question
-twice and answer it worse. The child runs with `noAuthentication`, and a fresh
-vault is provisioned over loopback (`provision.py`) so nobody's first visit is a
-setup wizard.
+twice and answer it worse. The child runs with `noAuthentication`, and `awm trilium init` creates a fresh
+vault over loopback (`provision.py`) so nobody's first visit is a setup wizard.
+
+**The service never makes a vault by itself.** `start` and the supervision loop
+refuse a vault path whose `live/document.db` is missing or empty, and name
+`init`. A supervisor that created a vault whenever it found none turned a path
+mistake, such as a cutover that had not yet moved the data in, into a second
+empty vault that took writes. `init` refuses where a vault exists.
 
 What that setting costs, exactly: **protected notes stop working.** They are
 encrypted with the Trilium password, and there is not one.
@@ -123,7 +128,7 @@ host bound to the same edge — not one per person.
 **Read verbs are public; everything else is an operator's.** The vault is shared,
 so `restore` discards everyone's work and `snapshot` and `export` each rebuild
 the whole thing on a two-core box. `status`, `snapshots` and `url` are reachable
-from a browser; `start`, `stop`, `restart`, `provision`, `logs`, `snapshot`,
+from a browser; `start`, `stop`, `restart`, `init`, `logs`, `snapshot`,
 `export`, `restore` and `note_upsert` are refused for any caller that arrived
 through an edge. `tests/test_operator_only.py` holds the two lists and fails
 until a newly added verb is put in one of them.
@@ -136,16 +141,19 @@ edge** — it came from `/invoke` on loopback, which is the host's own CLI. That
 allow-list is defence in depth, and could not be the enforcement: a mesh node's
 edge runs no profile and never consults it.
 
+**One edge caller writes: the operations home's board writer.** alcor's writer
+reaches the vault through deneb's singleton door, stamped `peer:<AWM_OPERATIONS_HOME>`
+(default `alcor`). `_note_caller` admits it for the note and attribute verbs only,
+and `_writer_inside` then refuses any note outside the roots this host's
+`AWM_TRILIUM_WRITER_ROOTS` names (default `awmSwarmTasks,awmSwarmOps,awmSwarmBoard`:
+tasks, Ops and the board page). The writer moves a card between column folders with
+`note_move`, which needs both ends inside the roots and never moves a root. The
+caller's word never sets the subtree. Search without an ancestor answers only
+notes inside it. `tests/test_writer_subtree.py` pins the refusals.
+
 CAUTION: this is deliberately *not* `userroot.wrap_handlers`. That answers
 "whose store?", which a shared vault never asks, and under
 `AWM_USER_ROOT_STRICT=1` it raises for exactly the caller we need to admit.
-
-**The children are on `compute`'s PROTECTED list.** The child is spawned in its
-own session, so the `awm-service` pattern does not cover it, and a long-lived
-node process that is idle until someone types is exactly the shape of a reaper
-victim. The entry matches the bundle path, because nothing on the command line is
-called `trilium`. Changing how `server.py` spawns the child without changing that
-pattern makes it reapable again, and nothing reports it.
 
 **Backend scripting and the SQL console are switched off explicitly.** Both
 default off on a server build. They are set anyway, because a `config.ini` in the
@@ -248,13 +256,9 @@ had just written. This is the least obvious consequence of sharing the document
 and the easiest to trip over, because installing the mirror on a second node
 looks like the obvious next step.
 
-`reporting` runs on every fleet node and is the one exception, because each copy
-writes only notes no other copy writes: its own cards, its own Ledger note and
-its own Ops notes. The shared notes, the board and its books, come from one
-`board_ensure` run. A node that made a shared note on its own would race another
-node into a duplicate, as two Ops books once showed. The saved searches under
-"By tag" are the one shared note a sweep makes, because a tag can appear at any
-time. Every node keeps the lowest note id of a duplicate title and deletes the rest.
+The Swarm board has one writer too: operations on alcor, its home node. It
+writes each card under a fixed note id, so a retried write finds the note it
+made instead of a duplicate.
 
 WARNING: **a replica follows a deletion.** Within a minute of a note being
 deleted anywhere it is gone everywhere. Replication is not backup, which is why
@@ -298,8 +302,7 @@ absorbed here so that every caller does not meet them separately:
 - **A note's parent is a branch, not a field.** `note_place` sets the whole
   parent set in one call, and always adds before it removes: a note's last
   branch takes the note with it, so unplacing first deletes what you are moving.
-  With `remove` it drops only the branches named there. That is how `reporting`
-  moves a card between columns and leaves a clone of it on Tony's board alone.
+  With `remove` it drops only the branches named there, and leaves the others.
   `note_move` drops every other parent.
 - **An attachment's bytes do not travel in its JSON.** The create body's
   `content` is validated as a string. The row is made empty and the bytes are
@@ -330,7 +333,7 @@ host's shell passes. Reads are never gated.
 |---|---|
 | none | Tony only |
 | `#agentWritable` | agents and Tony |
-| `#agentManaged` | the `reporting` service only. It also sets `#readOnly`, so the GUI shows the note read-only |
+| `#agentManaged` | the operations board writer only. It also sets `#readOnly`, so the GUI shows the note read-only |
 
 Labels count when inherited, so label a subtree once with an inheritable
 `#agentWritable`. `#agentManaged` refuses a session even under a writable
@@ -496,15 +499,9 @@ CAUTION: a link is a credential, and anyone it is forwarded to has it. Expiry an
 `slice-revoke` exist for that reason; nothing can make a link identify a person. A
 bound token at least fixes the name, so attribution can be shared but not forged.
 
-CAUTION: the tarball install path carries none of the fork's slice code, so
-upstream's build would answer every route a token reached. `slice_expose` and
-`slice_resolve` therefore refuse outright on a node not serving the fork —
-resolving as well as minting, because a replicated database carries the notes a
-token was minted against. That is a live condition rather than a hypothetical
-one: capella serves the tarball and now holds the shared document, so slices are
-minted and resolved on sirius alone. `ship-bundle.sh` closes the gap, but it is
-written for sirius today — the `/opt/awm` paths and the `awm` service account in
-it are that host's, not a mesh node's.
+CAUTION: the slice mask lives in the fork. Upstream's build answers every route
+a token reaches, so a node must never serve anything but the pinned fork release.
+`install.sh` installs nothing else.
 
 ## The board
 
@@ -593,41 +590,28 @@ A delete or a rename can still flicker: between the bulk action stripping the
 label off the cards and the definition write landing, a refresh can resolve the
 old column and draw it. Nothing persists it, and it goes when the write arrives.
 
-CAUTION: the tarball install path serves upstream's build, which has neither
-patch. A node that installs from the tarball shows bare card titles, and loses a
-column change made while the board is open in a second browser. Only a node that
-builds the fork carries them.
+CAUTION: upstream's build has neither patch. It shows bare card titles, and loses
+a column change made while the board is open in a second browser.
 
 ## Where the vault's content lives
 
-`projects/trilium/release`, the same worktree the node serves. `live/` holds the
-database. `data/vault/` holds the pinned snapshots, the mirrored Zotero library
-and the markdown export. One path moves on a deploy instead of two, so nothing
-has to keep a second one in step.
+`projects/vault/release`, a checkout of the vault's own repository. `live/` holds
+the database. `data/vault/` holds the pinned snapshots and the markdown export. The fork is public and its release tags name
+code, so every nightly pin commits here and never in the fork.
 
-The path is the same on every node. What sits at it is not.
-
-- A node that builds the fork has a git worktree there with a DVC repository.
-  Its pins are committed on `release`.
-- A node that serves the published tarball has a plain directory. No `.git`, no
-  `.dvc`, no bare repository, no scope row. It holds no Trilium source, so git
-  has nothing to track and DVC has nothing to pin.
+- A node that pins has a git checkout there with a DVC repository. Its pins are
+  committed on the vault repository's `release`.
+- A node that only serves has a plain directory. No `.git`, no `.dvc`. Git has
+  nothing to track and DVC has nothing to pin.
 
 Every write asks `is_checkout` before it pins or commits. Without a checkout the
-service writes its files and reports that it committed nothing. That is what
-lets a deployment box run this service with no code of its own, so treat it as
-load-bearing rather than as a graceful degradation.
+service writes its files and reports that it committed nothing. Treat that as
+load-bearing: it lets a deployment box run this service with no repository.
 
-WARNING: the live database sits inside a git worktree on a build node. `git
+WARNING: the live database sits inside a git checkout on a pinning node. `git
 clean -fdx` there deletes it and nothing warns first.
 
-CAUTION: `live/` is excluded through the bare repository's `info/exclude`, never
-through the fork's root `.gitignore`. Upstream owns that file. Anything added to
-it conflicts at every version bump.
-
-The data tree is also excluded from the probe that decides whether to rebuild.
-`install.sh` and `instances.NOT_SOURCE` spell the same two exclusions. They have
-to agree, or a deploy alternates between rebuilding and not.
+CAUTION: the vault repository ignores `live/` through its own `.gitignore`.
 
 ## Four kinds of copy, and only one is a restore path
 
@@ -699,11 +683,11 @@ One, plus a page that appears on its own:
 
 | kind | name | prefix / port | what |
 |---|---|---|---|
-| `service` | `trilium` | `/svc/trilium` | the verbs and the supervisor |
-| — | (page) | `/ui/trilium` | the reception page, mounted where `dist/` exists |
+| `service` | `trilium` | — | the verbs and the supervisor |
+| — | (page) | `/p/trilium/trilium/` | the reception page, served where `dist/` exists |
 
 **This service binds no listener at all.** The vault answers on loopback
-`awm.config.VAULT_PORT` (12511), and `awm.httpsfront` proxies `/trilium/` to it —
+`awm.config.VAULT_PORT` (12511), and `httpsfront` proxies `/trilium/` to it —
 so the port is defined in `awm.config` rather than here, because two processes
 must agree on it and neither owns it. There is deliberately nothing in this
 package that could bind a socket; see the invariant above.
@@ -719,99 +703,42 @@ refused for a caller arriving through an edge.
 ./install.sh
 ```
 
-`awm/gateway/install.sh` runs this on every deploy. Every step is idempotent and
-skips itself when already satisfied. Two paths, and which one runs is the whole
-difference between a build node and a serving node:
+`awm/install.sh` runs this on every deploy, and so does the supervising session
+of awm's deploy refresh (`deploy.toml` at the repo root). Every step is
+idempotent.
 
-- **Build the fork.** `projects/trilium/release` *is* the runnable server, so
-  every line we change is tracked TypeScript on a branch rather than an edit to a
-  build artifact. Stamped on the fork's HEAD, its dirty flag and its lockfile
-  hash, and skipped when none of the three moved.
-- **Download the published tarball** for the pinned tag. Upstream ships a Node
-  runtime inside it, so this path needs no toolchain at all — which is what lets
-  sirius install in a minute instead of building TypeScript on two vCPUs. That
-  bundled runtime is also what a shipped fork bundle runs under.
+**The server is one fork release, and awm pins it.** `server.pin` names the
+release's version, its tarball's file name and its sha256 (install.md R115
+item 4). `install.sh` takes the tarball from `<AWM_DIR>/artifacts`, refuses it
+when the sha256 differs, and unpacks it into `server/`. The tarball carries its
+own Node runtime, so a serving node needs no toolchain. `install.sh` never builds
+the fork and never downloads. A node that holds no tarball installs the service
+without a server and says so. `TRILIUM_REQUIRE_SERVER=1` makes that fatal.
 
-`TRILIUM_INSTALL_MODE` forces one; the default picks the build when a fork is
-checked out. A missing fork is a warning and a clean exit, because the gateway
-runs every service's install under `set -e` and a hard failure aborts the whole
-deploy on a node that simply does not serve Trilium. `TRILIUM_REQUIRE_SERVER=1`
-makes it fatal where one is expected.
+**A fork change reaches the vault by one route.**
 
-**A node that cannot build can still serve the fork.** It takes
-`apps/server/dist/` from a node that can:
+1. Run the change on the fork's dev server on mizar, against a copy of a vault
+   snapshot: `apps/server/scripts/dev-server.sh` in a `projects/trilium` worktree.
+2. Merge it into the fork's `release`.
+3. Run `apps/server/scripts/release-fork.sh` in `projects/trilium/release`. It
+   builds the tarball in a container, puts it in mizar's `<AWM_DIR>/artifacts`,
+   tags `fork-<version>`, and prints the three pin lines.
+4. Write the three lines into `server.pin`.
+5. Deploy awm. Before a push node refreshes, the deploy pushes the tarball into
+   the node's artifact store, when the install config names one
+   (`FEDERATION.md` § Deploy). The node never fetches it.
 
-```
-./ship-bundle.sh [host]           # default: sirius
-```
+A change made as a note, such as the board page, a widget or a script, needs none
+of this. It goes live through the `trilium` tool.
 
-The script refuses a bundle that does not match the local HEAD, refuses a remote
-Node that does not match `.nvmrc`, copies the bundle and its build stamp, writes
-`node-bin`, swaps the directory, and restarts the unit. `entry_point()` tests for
-`dist/main.cjs` and prefers the fork whenever that file exists, so the copy is
-the switch and deleting `main.cjs` is the way back. sirius serves the fork this
-way, which is what lets it mint and resolve a slice.
+CAUTION: a rebuild of the same commit makes a tarball with another sha256. Keep
+the tarball a pin names in mizar's artifact store, or every deploy after it fails
+at the push.
 
-CAUTION: never give a serving node a fork checkout. `install.sh` picks its path
-by testing for `<fork>/.git`, so a checkout there turns every later deploy into a
-monorepo build the node cannot finish. A shipped bundle leaves that directory
-free of `.git`, which keeps the install on the tarball path while the fork bundle
-serves. That also leaves `source_state()` with no revision to report, so the
-build stamp the script copies is the only record of which commit is running.
-
-CAUTION: `node_exe()` returns the tarball's bundled Node only while the tarball
-is the chosen entry. The moment the fork entry exists it reads `node-bin` and
-falls back to a bare `node`, which systemd's PATH does not carry. The tarball's
-runtime and the fork's `.nvmrc` must name the same version. Both are 24.19.0 at
-v0.105.0, and a tag bump that moves one breaks the pairing with no warning.
-
-**The fork is a project, not a dependency.** Run this on a build node only, once.
-A serving node never runs it — that is what the CAUTION above forbids.
-
-```
-./bootstrap-fork.sh
-```
-
-CAUTION: `git clone --bare` turns every branch on the fork into a local head, and
-upstream maintains `release/v0.102.2`. Git stores refs as paths, so that head and
-a `release` branch cannot coexist and `scope create` fails on the collision. The
-script deletes the colliding heads; both remotes still carry them.
-
-**Install artifacts live beside the service, not in workspace state.** `server/`,
-`node-bin` and the tarball stamp are gitignored files under
-`awm/services/trilium/`. On sirius the install runs as the dev user while the
-gateway runs as the application account that owns the state root, so anything
-written at install time has to be on the install side of that line.
-
-## Deploy
-
-```
-./deploy.sh                       # this node's gateway
-
-# sirius is provisioned from its own repository, not this one
-VMs/digital_ocean/sirius/deploy.sh release
-```
-
-`deploy.sh` does three things `awm deploy` does not: it promotes the commits into
-the tree the editable install resolves `awm` to, it runs this service's
-`install.sh`, and it builds the page. The install matters because `awm deploy`
-re-runs a service's install script only when the *set* of installed dists
-changes — a rebuilt bundle never lands after the first deploy, the same trap that
-leaves drawio serving a stale client patch.
-
-`scripts/promote.sh` closes the same gap for a fleet promotion, and closes it
-*unconditionally* rather than on a pathspec: the fork lives in a separate
-repository, so no diff over the awm tree can see it move. The install is stamped
-and costs seconds when nothing did.
-
-`deploy.sh` makes the change live on this node and stops there. Pushing to
-GitHub, to altair's bare and to mira is fleet promotion, it is node-shape-
-specific, and a script that guesses at it ships something other than what was
-promoted.
-
-CAUTION: the merge commit is made in a throwaway worktree of the local bare,
-never in the release checkout. That checkout is a deploy target that gets
-`reset --hard`, so a commit authored there is discarded later with no warning.
+**Install artifacts live beside the service, not in workspace state.** `server/`
+and `tarball-stamp` are gitignored files under `awm/services/trilium/`. Where the
+install runs as one user and the gateway as an account that owns the state root,
+anything written at install time has to be on the install side of that line.
 
 ## sirius is not wired differently
 
@@ -862,10 +789,10 @@ An end-to-end check of the data verbs, on the host:
 ```
 awm trilium snapshot --name before-upgrade
 awm trilium export
-git -C projects/trilium/release log --oneline -2
+git -C projects/vault/release log --oneline -2
 ```
 
-Each commits one pin on `release`. `snapshot` adds a database copy under a name
+Each commits one pin on the vault repository's `release`. `snapshot` adds a database copy under a name
 no other snapshot has. `export` replaces the notes chunk wholesale. Neither is
 reachable from a browser — run them where you can ssh.
 

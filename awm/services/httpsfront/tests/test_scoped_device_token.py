@@ -20,20 +20,19 @@ from starlette.testclient import TestClient
 
 from awm.config import tokens, usertoken
 from awm.httpsfront import proxy
-from awm.httpsfront.auth import COOKIE_NAME, AuthGate, Shape
+from awm.tlsfront import proxy as tlsproxy
+from awm.tlsfront.auth import AuthGate, Shape
 
 pytestmark = [pytest.mark.unit, pytest.mark.smoke]
 
 SECRET = "edge-secret"
 GATEWAY = "http://127.0.0.1:7819"
-OPEN = "/svc/avatar/session/stage"
-SOCKET = "/svc/avatar/session/Ab3_-9xYz0Q"
+SESSION = "/hub/session/avatar/stage"
 
 
 @pytest.fixture(autouse=True)
-def node(monkeypatch, peer_book):
+def node(monkeypatch):
     monkeypatch.setenv("AWM_NODE_NAME", "capella")
-    peer_book({})
 
 
 def _device(scope=usertoken.AVATAR_STAGE, sub="tony"):
@@ -53,33 +52,27 @@ def _gate(devices) -> AuthGate:
     return gate
 
 
-def _shape(method="POST", path=OPEN, raw=None, query=b"", websocket=False):
+def _shape(method="GET", path=SESSION, raw=None, query=b"", websocket=True):
     return Shape(method, path, path.encode() if raw is None else raw, query, websocket)
 
 
 # -- the shapes -----------------------------------------------------------------
 
-ADMITTED = [_shape(), _shape("GET", SOCKET, websocket=True)]
+ADMITTED = [_shape()]
 
 REFUSED = [
-    _shape("GET"),
-    _shape("PUT"),
-    _shape("GET", OPEN, websocket=True),
-    _shape("POST", SOCKET),
-    _shape("GET", SOCKET),
-    _shape("POST", "/svc/avatar/session/other"),
-    _shape("POST", "/svc/avatar/fn/devices"),
-    _shape("POST", "/svc/notes/fn/list"),
-    _shape("POST", "/invoke"),
-    _shape("POST", OPEN + "/"),
-    _shape("POST", OPEN, query=b"x=1"),
-    _shape("POST", OPEN, raw=b"/svc/avatar/session/%73tage"),
-    _shape("GET", "/svc/avatar/session/short", websocket=True),
-    _shape("GET", "/svc/avatar/session/" + "a" * 65, websocket=True),
-    _shape("GET", SOCKET + "/x", websocket=True),
-    _shape("GET", "/svc/avatar/emit/live", websocket=True),
-    _shape("GET", "/svc/drawio/emit/abcdefghijk", websocket=True),
-    _shape("GET", SOCKET, query=b"a=b", websocket=True),
+    _shape(websocket=False),
+    _shape("POST", websocket=False),
+    _shape("POST"),
+    _shape(path="/hub/session/avatar/other"),
+    _shape(path="/hub/emit/avatar/live"),
+    _shape(path="/hub/session/journal/stage"),
+    _shape("POST", "/invoke", websocket=False),
+    _shape(path=SESSION + "/"),
+    _shape(query=b"peer=deneb"),
+    _shape(raw=b"/hub/session/avatar/%73tage"),
+    _shape(path="/s/avatar/stage"),
+    _shape(path="/svc/avatar/session/stage"),
 ]
 
 
@@ -127,7 +120,7 @@ def test_a_token_with_an_unknown_scope_is_refused_on_every_shape():
 def test_an_unscoped_token_still_needs_no_shape():
     token, entry = _device(scope=None)
     assert _auth(_gate([entry]), token) == (True, None, "tony")
-    assert _auth(_gate([entry]), token, _shape("GET", "/svc/notes/fn/list")) == (
+    assert _auth(_gate([entry]), token, _shape("POST", "/invoke", websocket=False)) == (
         True, None, "tony")
 
 
@@ -153,24 +146,10 @@ def _edge(gate, profile=None):
     return c, sent
 
 
-def test_the_session_open_is_forwarded_as_the_user_without_the_token():
-    token, entry = _device()
-    c, sent = _edge(_gate([entry]))
-    try:
-        r = c.post(OPEN, json={"deviceId": "phone"},
-                   headers={"Authorization": f"Bearer {token}"})
-    finally:
-        c.__exit__(None, None, None)
-    assert r.status_code == 200
-    ((method, raw, fwd),) = sent
-    assert (method, raw) == ("POST", OPEN.encode())
-    assert fwd["x-awm-as"] == "user:tony" and "authorization" not in fwd
-
-
 @pytest.mark.parametrize("method,path", [
-    ("GET", OPEN), ("POST", "/svc/avatar/fn/devices"), ("POST", "/invoke"),
-    ("GET", "/svc/notes/fn/list"), ("GET", "/tools"), ("GET", "/files/etc/hosts"),
-    ("POST", OPEN + "?x=1"), ("GET", "/__auth/whoami"), ("GET", "/"),
+    ("GET", SESSION), ("POST", SESSION), ("POST", "/invoke"),
+    ("GET", "/tools"), ("GET", "/s/fileviewer/etc/hosts"),
+    ("GET", "/__auth/whoami"), ("GET", "/"),
 ])
 def test_every_other_request_is_a_401_that_reaches_nothing(method, path):
     token, entry = _device()
@@ -184,30 +163,17 @@ def test_every_other_request_is_a_401_that_reaches_nothing(method, path):
     assert sent == []
 
 
-def test_on_the_public_profile_the_open_is_still_not_on_the_door():
-    """The public profile's allow-list stays the gate there: a scope widens
-    nothing."""
-    token, entry = _device()
-    c, sent = _edge(_gate([entry]), profile=proxy.PUBLIC_PROFILE)
-    try:
-        r = c.post(OPEN, headers={"Authorization": f"Bearer {token}"})
-    finally:
-        c.__exit__(None, None, None)
-    assert r.status_code == 404
-    assert sent == []
-
-
-def _ws(monkeypatch, gate, path):
+def _ws(monkeypatch, gate, path, profile=None):
     dialled: list = []
 
     async def connect(url, *, additional_headers=None, **kw):
         dialled.append((url, {k.lower(): v for k, v in (additional_headers or {}).items()}))
         raise RuntimeError("upstream refused")
 
-    monkeypatch.setattr(proxy.websockets, "connect", connect)
+    monkeypatch.setattr(tlsproxy.websockets, "connect", connect)
     token, entry = _device()
     gate._material["device_tokens"] = [entry]
-    c, _ = _edge(gate)
+    c, _ = _edge(gate, profile=profile)
     try:
         try:
             with c.websocket_connect(path, headers={"Authorization": f"Bearer {token}"}):
@@ -220,13 +186,18 @@ def _ws(monkeypatch, gate, path):
 
 
 def test_the_session_socket_is_dialled_as_the_user(monkeypatch):
-    dialled = _ws(monkeypatch, _gate([]), SOCKET)
+    dialled = _ws(monkeypatch, _gate([]), SESSION)
     ((url, hdrs),) = dialled
-    assert url.endswith(SOCKET)
+    assert url.endswith(SESSION)
     assert hdrs["x-awm-as"] == "user:tony" and "authorization" not in hdrs
 
 
-@pytest.mark.parametrize("path", ["/svc/avatar/emit/live", OPEN,
-                                  "/svc/drawio/emit/abcdefghijk", SOCKET + "?a=b"])
+@pytest.mark.parametrize("path", ["/hub/emit/avatar/live", "/hub/session/journal/stage",
+                                  SESSION + "?peer=deneb", "/svc/avatar/session/stage"])
 def test_no_other_socket_is_dialled(monkeypatch, path):
     assert _ws(monkeypatch, _gate([]), path) == []
+
+
+def test_on_the_public_profile_the_session_is_still_not_on_the_door(monkeypatch):
+    """The public profile's allow-list stays the gate there: a scope widens nothing."""
+    assert _ws(monkeypatch, _gate([]), SESSION, profile=proxy.PUBLIC_PROFILE) == []

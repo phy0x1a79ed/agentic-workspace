@@ -17,6 +17,7 @@ import pytest
 from starlette.testclient import TestClient
 
 from awm.httpsfront import proxy
+from awm.tlsfront import proxy as tlsproxy
 
 pytestmark = [pytest.mark.unit, pytest.mark.smoke]
 
@@ -35,8 +36,6 @@ class _Gate:
     async def session_ttl_seconds(self) -> float:
         return 3600.0
 
-    async def verify_password(self, password: str):
-        return None
 
 
 async def _body():
@@ -45,7 +44,7 @@ async def _body():
 
 def _app(*, profile="public", relay=RELAY):
     app = proxy.build_app(GATEWAY + "/", "/dev/null", profile=profile,
-                          tether_upstream=relay)
+                          relay_upstream=relay)
     app.state.gate = _Gate()
     return app
 
@@ -100,15 +99,15 @@ def test_a_client_download_reaches_the_relay():
 
 # -- what the relay is told ----------------------------------------------------
 
-def test_the_operators_bearer_rides_through_for_the_relay_to_check():
-    """The edge deliberately does not read it. It is a credential for the
-    upstream, not for awm, and an edge that checked it would be a second place
-    to get that check wrong."""
+@pytest.mark.parametrize("path", ["/tether/issue", "/tether/status", "/room"])
+def test_a_public_call_on_a_bearers_route_is_refused_at_the_edge(path):
+    """The bearer and the routes it gates stay on the relay's host (channels.md
+    R147): the edge answers 404 and the relay never sees the request."""
     seen, handler = _recorder()
     with _client(_app(), handler) as c:
-        c.post("/tether/issue", headers={"Authorization": "Bearer the-issue-token"})
-    assert seen["url"] == RELAY + "/issue"
-    assert seen["headers"]["authorization"] == "Bearer the-issue-token"
+        resp = c.post(path, headers={"Authorization": "Bearer the-issue-token"})
+    assert resp.status_code == 404
+    assert "url" not in seen
 
 
 def test_the_edge_asserts_no_identity_it_did_not_verify():
@@ -121,10 +120,6 @@ def test_the_edge_asserts_no_identity_it_did_not_verify():
 
 
 def test_the_callers_address_reaches_the_relay_on_the_plain_leg():
-    """The only leg where it can. The edge forwards no client address across a
-    WebSocket upgrade, so the relay's per-address budget is counted on this
-    request or on nothing — which is why the owner's client claims a ticket
-    before it opens a socket."""
     seen, handler = _recorder()
     with _client(_app(), handler) as c:
         c.post("/tether/claim/7", headers={"CF-Connecting-IP": "203.0.113.9"})
@@ -205,7 +200,7 @@ def _ws_target(monkeypatch, app, path: str) -> dict:
                                for k, v in (additional_headers or {}).items()}
         raise RuntimeError("upstream refused")  # closes the handshake cleanly
 
-    monkeypatch.setattr(proxy.websockets, "connect", _fake_connect)
+    monkeypatch.setattr(tlsproxy.websockets, "connect", _fake_connect)
     _, handler = _recorder()
     with _client(app, handler) as c:
         try:
@@ -234,3 +229,73 @@ def test_a_ticket_of_the_wrong_shape_never_becomes_a_socket(monkeypatch):
 def test_a_socket_on_a_path_the_mount_refuses_never_opens(monkeypatch):
     seen = _ws_target(monkeypatch, _app(), "/tether/health")
     assert seen == {}
+
+
+def test_a_rooms_socket_carries_the_callers_address(monkeypatch):
+    """The relay keys a room's miss budget on the address, so each guesser over
+    a websocket spends its own budget rather than one shared one."""
+    captured: dict = {}
+
+    async def _fake_connect(url, *, additional_headers=None, **kw):
+        captured["url"] = url
+        captured["headers"] = {k.lower(): v
+                               for k, v in (additional_headers or {}).items()}
+        raise RuntimeError("upstream refused")
+
+    monkeypatch.setattr(tlsproxy.websockets, "connect", _fake_connect)
+    _, handler = _recorder()
+    with _client(_app(), handler) as c:
+        try:
+            with c.websocket_connect("/room/acre-anchor-kettle/ws",
+                                     headers={"CF-Connecting-IP": "203.0.113.9"}):
+                pass
+        except Exception:  # noqa: BLE001 — the reject is the expected path
+            pass
+    assert captured["url"] == "ws://127.0.0.1:12520/room/acre-anchor-kettle/ws"
+    assert captured["headers"]["cf-connecting-ip"] == "203.0.113.9"
+    assert "x-forwarded-for" in captured["headers"]
+    assert "x-awm-as" not in captured["headers"]
+
+
+def test_a_room_reaches_the_relay_with_its_path_unchanged():
+    seen, handler = _recorder()
+    with _client(_app(), handler) as c:
+        c.get("/room/acre-anchor-kettle")
+        assert seen["url"] == "http://127.0.0.1:12520/room/acre-anchor-kettle"
+
+
+# -- the relay's refusal reaches the client -----------------------------------
+
+def _refused_socket(monkeypatch, refusal: Exception) -> int:
+    """The status a client sees when the relay's handshake fails with ``refusal``."""
+    from starlette.testclient import WebSocketDenialResponse
+
+    async def _fake_connect(url, **kw):
+        raise refusal
+
+    monkeypatch.setattr(tlsproxy.websockets, "connect", _fake_connect)
+    _, handler = _recorder()
+    with _client(_app(), handler) as c:
+        with pytest.raises(WebSocketDenialResponse) as denied:
+            with c.websocket_connect(f"/tether/join/7/{TICKET}"):
+                pass
+    return denied.value.status_code
+
+
+def _relay_answered(status: int) -> Exception:
+    from websockets.datastructures import Headers
+    from websockets.exceptions import InvalidStatus
+    from websockets.http11 import Response
+
+    return InvalidStatus(Response(status, "", Headers()))
+
+
+@pytest.mark.parametrize("status", [404, 409, 410])
+def test_the_relays_own_refusal_reaches_the_client_unchanged(monkeypatch, status):
+    """A held slot's 404 after a relay restart is what sends the operator to its
+    issuer to put the slot back. Masked as a 403, the operator only redials."""
+    assert _refused_socket(monkeypatch, _relay_answered(status)) == status
+
+
+def test_a_relay_that_cannot_be_reached_is_a_502_on_the_socket(monkeypatch):
+    assert _refused_socket(monkeypatch, ConnectionRefusedError()) == 502

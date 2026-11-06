@@ -5,7 +5,8 @@
 This file covers installing, building and running the Factorio realm, the two
 kinds of world it hosts and their headless toggle, the seat model the service is
 built around, how game calls reach the engine and what they cost, how a mod
-change ships, and how a person joins the world from their own Factorio client.
+change ships, how a person joins the world from their own Factorio client, and
+how an experiment driver counts its runs.
 
 It does not list verbs or their parameters. `awm factorio --help` answers that
 from the running manifest and cannot go stale. What is written here is what
@@ -116,10 +117,10 @@ while the wait runs on.
 
 ## Run
 
-You never start the service by hand. The gateway discovers any folder under
-`awm/services/` holding a `run.sh`, starts it with `bash run.sh`, and injects
-`AWM_HUB_URL`, `AWM_SERVICE_NAME` and `AWM_SERVICE_ID`. There is no auth — the
-registration handshake carries no token.
+You never start the service by hand. The gateway reads `awm-plugin.toml`,
+starts the service with `bash run.sh`, and sets `AWM_HUB_URL`, `AWM_SERVICE_NAME`
+and `AWM_HUB_TOKEN_FILE`. The adapter names itself to the gateway with the token
+in that file.
 
 The service ships `profiles = ["gamebot"]`, so a gateway without that profile
 skips it at bootstrap.
@@ -127,6 +128,26 @@ skips it at bootstrap.
 To drive it against a throwaway gateway, run `scratchpad/rlm_harness.sh
 --docker`. It boots an isolated gateway over a temp services tree holding only
 this service, then runs the live lifecycle against Docker.
+
+## Usage counts
+
+The gateway counts every tool call by itself. The service also counts each lab,
+from bring-up to release, as one background run named `lab`.
+
+An experiment driver that runs outside the service, such as an fxlab campaign,
+counts its own runs:
+
+1. Install the library into the driver's env:
+   `mamba run -n <env> pip install -e <awm>/service_components/usage`.
+2. Wrap each run:
+
+       from awm.usage import background_run
+
+       with background_run("fxlab", plugin="rlm-factorio"):
+           run_campaign()
+
+The block counts as failed when it raises. **CAUTION:** the library drops an
+event it cannot send, so a run made while the gateway is down is not counted.
 
 ## Seats
 

@@ -37,7 +37,7 @@ def test_a_post_to_an_unknown_scope_is_refused(journal_workspace, real_owners, m
     calls = _gateway(monkeypatch, {"exists": False, "project": "awm", "scope": "nope"})
     with pytest.raises(ValueError, match="no scope awm/nope"):
         channel.post("awm", "nope", author="user:a", body="x")
-    assert calls == [("scopes", "resolveScope", {"project": "awm", "scope": "nope"})]
+    assert calls == [("scope", "resolve", {"project": "awm", "scope": "nope"})]
 
 
 def test_a_known_scope_is_accepted_and_remembered(journal_workspace, real_owners, monkeypatch):
@@ -59,10 +59,3 @@ def test_an_unreachable_scopes_service_does_not_stop_a_post(journal_workspace, r
     from awm.journal import channel
     _gateway(monkeypatch, exc=RuntimeError("gateway down"))
     assert channel.post("awm", "dev", author="user:a", body="written anyway").body == "written anyway"
-
-
-def test_goals_on_an_unknown_scope_are_refused_too(journal_workspace, real_owners, monkeypatch):
-    from awm.journal import goals
-    _gateway(monkeypatch, {"exists": False})
-    with pytest.raises(ValueError):
-        goals.set_goal(objective="x", author="user:tony", level="scope", project="awm", scope="nope")

@@ -40,7 +40,7 @@ VAULT_PATHS = [
 #: these — or a future awm mount that fell inside the vault's — would shadow the
 #: other silently, which is the failure this module exists to prevent.
 AWM_PREFIXES = [
-    "/ui/", "/svc/", "/files/", "/__auth/", "/__landing/", "/drawio-app/",
+    "/p/", "/s/", "/__auth/", "/__landing/",
     "/hub/", "/invoke", "/tools", "/ca.crt", "/ca.pem", "/robots.txt",
     "/api/", "/assets/", "/src/", "/favicon.ico", "/bootstrap",
 ]
@@ -82,7 +82,7 @@ def test_the_root_level_names_are_awms_again():
 def test_the_vault_and_awm_do_not_overlap():
     """Containment in both directions, not set equality.
 
-    A near-miss is the dangerous shape: `/trilium/` against `/ui/trilium`, or a
+    A near-miss is the dangerous shape: `/trilium/` against `/p/trilium/`, or a
     future awm page mounted inside the vault. Checking only that the two differ
     would pass on both.
     """
@@ -92,14 +92,14 @@ def test_the_vault_and_awm_do_not_overlap():
 
 
 def test_the_management_page_is_not_the_application():
-    """`/ui/trilium` renders awm's own controls; `/trilium/` is Trilium itself.
+    """`/p/trilium/trilium/` renders awm's own controls; `/trilium/` is Trilium itself.
 
     Two things named for the same service on one origin, and only the leading
     segment tells them apart — so assert it rather than trust the eye.
     """
-    assert not vault.owns("/ui/trilium")
-    assert not vault.owns("/ui/trilium/")
-    assert policy.classify("/ui/trilium") is policy.Verdict.OPEN
+    assert not vault.owns(policy.TRILIUM_PAGE)
+    assert not vault.owns(policy.TRILIUM_PAGE + "/")
+    assert policy.classify(policy.TRILIUM_PAGE) is policy.Verdict.OPEN
 
 
 def test_root_is_never_the_vaults():
@@ -115,7 +115,7 @@ def test_root_is_never_the_vaults():
 def test_the_mount_is_stripped_and_nothing_else_is():
     assert vault.upstream_path(vault.SHELL) == "/"
     assert vault.upstream_path(vault.SHELL + "api/tree") == "/api/tree"
-    for path in ("/", "/ui/drawio/", "/svc/trilium/fn/status"):
+    for path in ("/", "/p/trilium/trilium/", "/invoke"):
         assert vault.upstream_path(path) == path
 
 
@@ -152,8 +152,8 @@ def test_a_peer_bearer_is_not_a_person():
     """The vault is a human's knowledge base; a peer is another node's process."""
     assert policy.allows(vault.SHELL, "tony")
     assert not policy.allows(vault.SHELL, "peer")
-    # …and a verified node is no more a person than the bearer was, domestic
-    # or foreign: the verdict is about machines, not about which swarm.
+    # …and a verified node is no more a person than the bearer was, edge or
+    # no edge: the verdict is about machines, not about which node.
     assert not policy.allows(vault.SHELL, "peer:mira")
     assert not policy.allows(vault.SHELL, "peer:shaula")
     assert not policy.allows(vault.SHELL, "operator")

@@ -34,13 +34,13 @@ from __future__ import annotations
 import json
 import logging
 import os
-import shutil
 import socket
 import subprocess
 import time
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
+from awm.gatewayclient.proc import user_manager_env
 
 log = logging.getLogger("awm.claude_science.daemon")
 
@@ -79,7 +79,7 @@ START_TIMEOUT_S = float(os.environ.get("CLAUDE_SCIENCE_START_TIMEOUT_S", "90"))
 _PROVISION_MARKERS = ("conda", "seed-assets")
 
 #: Transient user-manager unit the daemon is launched into where one is
-#: available. See :func:`_user_manager_env` for why it is not simply spawned.
+#: available. See :func:`user_manager_env` for why it is not simply spawned.
 TRANSIENT_UNIT = os.environ.get("CLAUDE_SCIENCE_TRANSIENT_UNIT",
                                 "claude-science-daemon")
 
@@ -189,35 +189,6 @@ def front_origin(port: int) -> str:
     return f"https://{_origin_host()}:{port}"
 
 
-def _user_manager_env() -> dict[str, str] | None:
-    """Env for reaching this user's systemd manager, or ``None`` if there is none.
-
-    Detaching is not enough to make the daemon outlive an awm restart, and this
-    is the correction to that assumption. ``serve --detached`` already puts the
-    daemon in its own session with ``PPID 1``, which defeats every *signal*-
-    based teardown — but on a node where awm runs under systemd, ``systemctl
-    restart awm`` kills by **cgroup** (``KillMode=control-group``, the default),
-    and a cgroup is inherited by every descendant no matter how it detaches. So
-    a daemon we spawned died on the deploy action it was supposed to survive,
-    while the daemon we *adopted* from its own unit sailed through — the bug was
-    invisible until this service became the one doing the spawning.
-
-    Launching into a transient unit of the *user* manager puts the daemon in a
-    cgroup awm.service does not own, which is the actual property wanted. The
-    unit is transient, so it does not survive a reboot — after one, this service
-    starts a fresh daemon exactly as it would on any cold node.
-    """
-    if not shutil.which("systemd-run"):
-        return None
-    runtime = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
-    if not Path(runtime, "bus").is_socket():
-        return None
-    return {
-        "XDG_RUNTIME_DIR": runtime,
-        "DBUS_SESSION_BUS_ADDRESS": f"unix:path={runtime}/bus",
-    }
-
-
 def allowed_origins(main_front_port: int) -> list[str]:
     """Exact origins the daemon accepts WebSocket upgrades and writes from.
 
@@ -274,7 +245,7 @@ class Supervisor:
             # between surviving `systemctl restart awm` and not, so it belongs
             # in status rather than in a log line nobody reads.
             "user_unit": (f"{TRANSIENT_UNIT}.service"
-                          if _user_manager_env() else None),
+                          if user_manager_env() else None),
             "adopted": self.adopted,
             "restarts_by_us": self.restarts,
             "supervised_since": self.started_at,
@@ -335,7 +306,7 @@ class Supervisor:
             "OPERON_SANDBOX_ORIGIN": front_origin(self.sandbox_front_port),
         }
         serve = [str(BIN), *args, "--data-dir", str(DATA_DIR)]
-        bus = _user_manager_env()
+        bus = user_manager_env()
         if bus:
             # A unit left over from a daemon that has already exited — or one
             # still deactivating from the `stop` half of a restart — would make
@@ -493,9 +464,3 @@ class Supervisor:
             "exit_code": proc.returncode,
         }
 
-
-def which_binary() -> str | None:
-    """Where a `claude-science` on PATH lives, for diagnosing a mismatch with
-    the configured one."""
-    found = shutil.which("claude-science")
-    return found or None

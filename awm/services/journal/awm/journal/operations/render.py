@@ -1,6 +1,9 @@
-"""History-render and index-maintenance operation definitions for the gateway manifest."""
+"""History-render and export operation definitions for the gateway manifest."""
 
-from awm.journal import export, private, render, search_index
+from pathlib import Path
+
+from awm.journal import feed, precedents, private, render
+from awm.persistence.databases import service_db_path
 
 _CLI_HTTP = ["cli", "http"]
 
@@ -8,73 +11,67 @@ RENDER_MANIFEST_FUNCTIONS = [
     {
         "name": "render",
         "tool": "journal_render",
-        "effect": "write",
         "description": (
-            "Render a scope's .awm/history.md from the journal: its own latest "
-            "entries first, then its project's. Returns the text and the path "
-            "written. write=false returns the text without storing it."
+            "A scope's history from the journal, as markdown: its own latest "
+            "journal entries first, then its project's. The startup ritual reads it."
         ),
         "params": [
             {"name": "project", "type": "string", "required": True},
             {"name": "scope", "type": "string", "required": True},
-            {"name": "write", "type": "boolean", "required": False,
-             "description": "Store the render at the scope's .awm/history.md. Default true."},
         ],
     },
     {
         "name": "export",
         "tool": "journal_export",
-        "effect": "read",
         "surfaces": _CLI_HTTP,
         "description": (
-            "Page the indexed posts as search documents. Pass the previous page's "
-            "next_cursor as cursor. The final page (done=true) also lists every id."
+            "The search archive's change feed: the indexed threads changed after `since`, each "
+            "with its entry, or without one when it was deleted. Pass the previous page's `next` "
+            "as `since`. A changed `epoch`, or `reset`, means read again from the start."
         ),
         "params": [
-            {"name": "cursor", "type": "string", "required": False},
+            {"name": "since", "type": "string", "required": False,
+             "description": "The cursor of the last change read. Default: the start."},
             {"name": "limit", "type": "integer", "required": False,
-             "description": "Documents per page. Default 200, at most 1000."},
+             "description": "Changes per page. Default 200, at most 1000."},
         ],
     },
     {
-        "name": "reindex",
-        "tool": "journal_reindex",
-        "effect": "write",
+        "name": "precedent_import",
+        "tool": "journal_precedent_import",
         "surfaces": _CLI_HTTP,
         "description": (
-            "Bring the post search index in line with the post table: embeds what "
-            "is missing, changed or made by another model, and drops what no longer "
-            "exists. dry_run reports without writing; force re-embeds everything."
+            "Import precedence.db once: each decision becomes a workspace post tagged "
+            "precedent, its notes comments, its supersedes replies. A rerun adds nothing. "
+            "dry_run reports without writing."
         ),
         "params": [
+            {"name": "path", "type": "string", "required": False,
+             "description": "The precedence.db to read. Default: this node's."},
             {"name": "dry_run", "type": "boolean", "required": False},
-            {"name": "force", "type": "boolean", "required": False},
         ],
-        "timeout": 3600.0,
+        "timeout": 600.0,
     },
 ]
 
 
 def _handle_render(args: dict, as_: str | None = None) -> dict:
-    project, scope = args["project"], args["scope"]
-    write = args.get("write")
-    return render.render(project, scope,
-                         write=True if write is None else write in (True, "true", "True", "1", 1),
-                         as_=as_)
+    return render.render(args["project"], args["scope"], as_=as_)
 
 
 def _handle_export(args: dict, as_: str | None = None) -> dict:
-    return export.export_page(args.get("cursor") or None, args.get("limit"),
-                              private.exclusion(as_))
+    from awm.journal.operations.posts import refuse_clashed
+    refuse_clashed(as_)
+    return feed.changes(args.get("since") or None, args.get("limit"), private.exclusion(as_))
 
 
-def _handle_reindex(args: dict) -> dict:
-    return search_index.run_reindex(force=bool(args.get("force", False)),
-                                    dry_run=bool(args.get("dry_run", False)))
+def _handle_precedent_import(args: dict) -> dict:
+    path = Path(args["path"]) if args.get("path") else service_db_path("precedence")
+    return precedents.import_db(path, dry_run=bool(args.get("dry_run", False)))
 
 
 RENDER_HANDLERS = {
+    "precedent_import": _handle_precedent_import,
     "render": _handle_render,
     "export": _handle_export,
-    "reindex": _handle_reindex,
 }

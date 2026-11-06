@@ -17,8 +17,7 @@ page is trusted for settings, how a forked source tree becomes a served GUI, and
 which of the harness's own configuration this repository tracks.
 
 The harness's own architecture belongs to `projects/deepseek-harness` and its
-upstream docs. Each scope's `.awm/context.md` there says which branch does what.
-This file covers only the boundary between awm and the harness.
+upstream docs. This file covers only the boundary between awm and the harness.
 
 ## The contract
 
@@ -91,17 +90,6 @@ opencode's `~/.local/share/opencode/auth.json` at spawn. The key stays in the on
 file that already owns it and never reaches a settings file, a git object, or
 this service's state.
 
-**The harness is on `compute`'s PROTECTED list.** The gateway inherits the
-session id of whichever agent's shell started it, so everything it spawns is
-attributable to that agent and therefore reapable. A long-lived node process
-that is idle until it streams is exactly the shape of a victim. Only the harness
-itself is listed. What it spawns to do work is work.
-
-CAUTION: the entry matches the launcher path
-`deepseek-harness/…/apps/cli/lib/bin.js`, because nothing on the command line is
-called `dsh` any more. Changing how `harness.py` spawns the child without
-changing that pattern makes the harness reapable again, and nothing reports it.
-
 ## Tracked configuration
 
 `config/` holds the hand-authored `$DSH_HOME` content, so both nodes run one
@@ -150,7 +138,7 @@ Two, from one process:
 
 | kind | name | prefix / port | what |
 |---|---|---|---|
-| `service` | `dsh` | `/svc/dsh` | the verbs, plus supervision and the model route |
+| `service` | `dsh` | — | the verbs, plus supervision and the model route |
 | — | (TLS front) | `0.0.0.0:12130` | the harness GUI, behind `awm_session` |
 
 The front is not a gateway registration — it is a listener this process owns,
@@ -164,7 +152,7 @@ from nowhere else, which is what `dsh url` reporting a loopback address means.
 Check the host's forwarding before blaming the front.
 
 A third thing appears without this process doing anything: the reception page at
-`/ui/dsh`, which the gateway mounts on any node where the page is *built*.
+`/p/dsh/dsh/`, which the gateway serves on any node where the page is *built*.
 It reports the harness, the front and the model route as three separate states,
 because those are three different failures with three different fixes.
 
@@ -176,10 +164,10 @@ The harness itself listens on loopback `12311`.
 ./install.sh
 ```
 
-`awm/gateway/install.sh` runs this on every deploy. Every step is idempotent and
+`awm/install.sh` runs this on every deploy. Every step is idempotent and
 skips itself when already satisfied. It does four things:
 
-- Installs the Python bits, including `httpsfront`, whose cert handling, auth
+- Installs the Python bits, including `awm.tlsfront`, whose cert handling, auth
   gate and reverse proxy the front is a *configuration* of.
 - Writes `.runtime-env`, the absolute interpreter the supervisor respawns with.
 - Creates the `dsh` mamba env pinned to nodejs 24 when it is missing.
@@ -222,8 +210,9 @@ The chain from an edit to a served GUI:
 4. `harness.py` spawns `node <release>/apps/cli/lib/bin.js --profile web` on
    loopback. The front puts it on the mesh.
 
-**Builds are stamped, not sniffed.** `<fork>/.awm/dsh-build-stamp` records the
-commit, the dirty flag and the lockfile hash the current `lib/` came from. A
+**Builds are stamped, not sniffed.** `dsh-build-stamp`, in the fork worktree's
+`<git-dir>/awm`, records the commit, the dirty flag and the lockfile hash the
+current `lib/` came from. A
 deploy whose tree stayed put costs 0.1 s instead of a 45 s incremental build or a
 2.5 min cold one. `awm dsh status` reports the same three facts under `source`,
 so a stale or hand-edited deployment is visible rather than something you infer
@@ -286,7 +275,7 @@ false means the built bundles are older than the commit that is checked out.
 Then, from a browser on the mesh:
 
 1. `https://<mesh-ip>:12100/` — the awm landing index lists `dsh`.
-2. `/ui/dsh` — the reception page. **Open harness** goes to `https://<mesh-ip>:12130/`.
+2. `/p/dsh/dsh/` — the reception page. **Open harness** goes to `https://<mesh-ip>:12130/`.
 3. Open **Settings → Models**. It must list the provider directory with an
    `openrouter` row. **Settings → Plugins** must render configuration cards.
    Both empty, or "settings are unavailable in this browser", means the page did
@@ -312,5 +301,6 @@ A device that has never talked to awm needs the root once:
 | `DSH_REQUIRE_HARNESS` | unset | `1` makes a missing fork fatal (install-time only) |
 | `DSH_AUTH_JSON` | `~/.local/share/opencode/auth.json` | where the OpenRouter key is read from |
 
-Point `DSH_FORK_DIR` at `projects/deepseek-harness/dev` in a sandbox's gitignored
-`awm/gateway/dev/.env` to run the hot loop against a supervised service.
+To run the hot loop against a supervised service, point `DSH_FORK_DIR` at
+`projects/deepseek-harness/dev` in the `[env]` that `awm/services/dev/sandbox/run.sh`
+writes. The gateway passes a service no variable outside `[env]`.

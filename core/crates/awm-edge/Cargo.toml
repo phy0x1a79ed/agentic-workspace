@@ -1,0 +1,17 @@
+[package]
+name = "awm-edge"
+description = "Cross-node calls over the ssh edge: one warm stdio channel per peer (fleet.md R92, R93)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+awm-proto.workspace = true
+awm-gateway.workspace = true
+awm-trust.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true

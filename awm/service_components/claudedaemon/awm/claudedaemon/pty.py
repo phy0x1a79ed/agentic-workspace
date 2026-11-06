@@ -43,12 +43,12 @@ constraint being forgotten.
 
 What *is* checkable is what the session did with the keystrokes, and that is not
 this module's business — it lives in the session's own status record, which
-:mod:`awm.reflection.inject` reads after the commit and which says the same thing
+:mod:`awm.cch.inject` reads after the commit and which says the same thing
 whichever pty the session is hosted on.
 
 This module knows the protocol and nothing else. Deciding which session a
 caller may reach belongs to the service that calls it — for ``reflection`` that
-is :mod:`awm.reflection.session_target`, and refusing a caller it cannot
+is :mod:`awm.cch.session_target`, and refusing a caller it cannot
 identify is that service's whole purpose. Retrying and waiting for completion
 are likewise the caller's.
 """
@@ -386,7 +386,7 @@ class Connection:
         return self.output.decode("utf-8", "replace")
 
     # -- the lane verbs ----------------------------------------------------
-    # The same ones :mod:`awm.reflection.inject` drives the tmux lane through.
+    # The same ones :mod:`awm.cch.inject` drives the tmux lane through.
     # It must not be able to tell which one it is holding.
 
     @property

@@ -1,0 +1,653 @@
+"""Reading a session's transcript: what it took in, and what it is busy with.
+
+These write real .jsonl files, because the thing under test is a parser for
+somebody else's format and a fake of that format would only prove the fake
+right. The event shapes here are copied from live transcripts.
+"""
+from __future__ import annotations
+
+import json
+
+import pytest
+
+pytestmark = [pytest.mark.smoke]
+
+from awm.cch import transcript
+
+
+SESSION = "11111111-2222-3333-4444-555555555555"
+
+
+@pytest.fixture
+def sessions(tmp_path, monkeypatch):
+    """A projects dir and a matching per-pid record, both redirected to tmp."""
+    from awm.cch import session_target
+
+    projects = tmp_path / "projects"
+    (projects / "-home-tony-somewhere").mkdir(parents=True)
+    monkeypatch.setattr(transcript, "PROJECTS_DIR", projects)
+
+    records = tmp_path / "sessions"
+    records.mkdir()
+    (records / "4242.json").write_text(json.dumps({"sessionId": SESSION}))
+    monkeypatch.setattr(session_target, "SESSIONS_DIR", records)
+
+    path = projects / "-home-tony-somewhere" / f"{SESSION}.jsonl"
+    path.write_text("")
+    return path
+
+
+def append(path, *entries):
+    with path.open("a", encoding="utf-8") as fp:
+        for entry in entries:
+            fp.write(json.dumps(entry) + "\n")
+
+
+def user_text(text):
+    return {"type": "user", "message": {"role": "user",
+                                        "content": [{"type": "text", "text": text}]}}
+
+
+def tool_use(call_id):
+    return {"type": "assistant",
+            "message": {"content": [{"type": "tool_use", "id": call_id,
+                                     "name": "Bash"}]}}
+
+
+def tool_result(call_id):
+    return {"type": "user",
+            "message": {"content": [{"type": "tool_result",
+                                     "tool_use_id": call_id}]}}
+
+
+def queue(op, content=None):
+    entry = {"type": "queue-operation", "operation": op}
+    if content is not None:
+        entry["content"] = content
+    return entry
+
+
+def queued_command(prompt):
+    return {"type": "attachment",
+            "attachment": {"type": "queued_command", "prompt": prompt}}
+
+
+def at(ms):
+    from datetime import datetime, timezone
+    return datetime.fromtimestamp(ms / 1000.0, timezone.utc).isoformat(
+        timespec="milliseconds").replace("+00:00", "Z")
+
+
+def prompt_taken_up(text, when_ms=2_000_000):
+    """The entry the CLI writes as it takes a prompt up and starts running it.
+
+    Copied from a live compaction: the content is a bare string, not a block
+    list, and it is stamped at the instant the command starts.
+    """
+    return {"type": "user", "timestamp": at(when_ms),
+            "message": {"role": "user", "content": text}}
+
+
+def compact_boundary(when_ms=2_000_000):
+    return {"type": "system", "subtype": "compact_boundary",
+            "timestamp": at(when_ms), "content": "Conversation compacted",
+            "compactMetadata": {"trigger": "manual", "preTokens": 180000,
+                                "postTokens": 20000, "durationMs": 120045}}
+
+
+# -- finding the file ------------------------------------------------------
+
+def test_the_transcript_is_found_by_id_not_by_guessing_the_directory(sessions):
+    assert transcript.path_for(SESSION) == sessions
+
+
+def test_an_unknown_session_has_no_transcript(sessions):
+    assert transcript.path_for("no-such-session") is None
+    assert transcript.path_for("") is None
+
+
+def test_of_two_files_for_one_session_the_newest_is_the_transcript(sessions):
+    import os
+    stale = sessions.parent.parent / "-a-sorts-first" / sessions.name
+    stale.parent.mkdir()
+    stale.write_text("")
+    os.utime(stale, (1_000_000, 1_000_000))
+    assert transcript.path_for(SESSION) == sessions
+
+
+def test_a_transcript_moved_to_a_new_directory_is_followed_from_where_it_stood(
+        sessions):
+    # A `/cd` keeps the session id and moves the file into the new cwd's slug.
+    # A rename keeps the content, so the tail carries on at the same offset.
+    tail = transcript.Tail(4242)
+    tail.watch("before the move")
+    tail.watch("after the move")
+    append(sessions, user_text("before the move"))
+    assert tail.poll() is True
+    moved = sessions.parent.parent / "-home-tony-elsewhere" / sessions.name
+    moved.parent.mkdir()
+    sessions.rename(moved)
+    append(moved, user_text("after the move"))
+    assert tail.poll() is True
+    assert tail.landed("after the move") is True
+    assert tail._offset == moved.stat().st_size, "nothing was read twice"
+
+
+def test_a_changed_cwd_re_resolves_even_while_the_old_file_remains(sessions):
+    import os
+    from awm.cch import session_target
+
+    record = session_target.SESSIONS_DIR / "4242.json"
+    record.write_text(json.dumps({"sessionId": SESSION, "cwd": "/home/tony/somewhere"}))
+    tail = transcript.Tail(4242)
+    tail.watch("in the new place")
+    append(sessions, user_text("old"))
+    assert tail.poll() is True
+    os.utime(sessions, (1_000_000, 1_000_000))
+    moved = sessions.parent.parent / "-home-tony-elsewhere" / sessions.name
+    moved.parent.mkdir()
+    moved.write_text(sessions.read_text())
+    record.write_text(json.dumps({"sessionId": SESSION, "cwd": "/home/tony/elsewhere"}))
+    append(moved, user_text("in the new place"))
+    assert tail.poll() is True
+    assert tail.landed("in the new place") is True
+
+
+# -- consumption -----------------------------------------------------------
+
+def test_a_plain_user_message_is_consumption(sessions):
+    tail = transcript.Tail(4242)
+    tail.watch("resume please")
+    append(sessions, user_text("resume please"))
+    tail.poll()
+    assert tail.consumed("resume please") is True
+    assert tail.landed("resume please") is True
+
+
+def test_an_enqueue_has_landed_but_is_not_yet_consumed(sessions):
+    tail = transcript.Tail(4242)
+    tail.watch("resume please")
+    append(sessions, queue("enqueue", "resume please"))
+    tail.poll()
+    assert tail.landed("resume please") is True
+    assert tail.queued("resume please") is True
+    assert tail.consumed("resume please") is False
+
+
+def test_remove_is_the_delivery_path_not_a_drop(sessions):
+    # The queue hands a line to the running turn by removing it and attaching it
+    # as a queued_command. Reading `remove` as a loss is how a delivered resume
+    # gets re-sent.
+    tail = transcript.Tail(4242)
+    tail.watch("resume please")
+    append(sessions,
+           queue("enqueue", "resume please"),
+           queue("remove", "resume please"),
+           queued_command("resume please"))
+    tail.poll()
+    assert tail.consumed("resume please") is True
+    assert tail.queued("resume please") is False
+
+
+def pasted(text, paste_id="c72d"):
+    """How the CLI records a long pasted prompt, copied from a live transcript."""
+    return (f'<pasted_content id="{paste_id}">\n{text}\n'
+            f'</pasted_content id="{paste_id}">')
+
+
+def test_a_pasted_resume_is_recognised_through_its_envelope(sessions):
+    # Matched literally, the envelope made every delivered resume look lost, and
+    # each verify miss typed the same resume into the session again.
+    resume = "continue with T7 of the plan.\nState: all three heads done."
+    tail = transcript.Tail(4242)
+    tail.watch(resume)
+    append(sessions, queue("enqueue", pasted(resume)))
+    tail.poll()
+    assert tail.landed(resume) is True
+    append(sessions, queue("remove", pasted(resume)),
+           queued_command(pasted(resume)), prompt_taken_up(pasted(resume)))
+    tail.poll()
+    assert tail.consumed(resume) is True
+    assert tail.started(resume, since_ms=1_000_000) is True
+
+
+def blind_enqueue(when_ms):
+    """How 2.1.295 records a pasted prompt joining the queue: no content at all."""
+    entry = queue("enqueue")
+    entry["timestamp"] = at(when_ms)
+    return entry
+
+
+def test_a_content_less_enqueue_after_we_typed_is_ours(sessions):
+    # 2026-10-09: the only trace of a resume queued behind `/compact` for the
+    # whole compaction. Unseen, the verify called it lost and re-sent it.
+    tail = transcript.Tail(4242)
+    tail.watch("resume please")
+    tail.expect("resume please", now_ms=2_000_000)
+    append(sessions, blind_enqueue(2_000_050))
+    tail.poll()
+    assert tail.landed("resume please") is True
+    assert tail.queued("resume please") is True
+    assert tail.landed("resume please", since_ms=1_000_000) is True
+
+
+def test_a_content_less_enqueue_from_before_we_typed_is_not_ours(sessions):
+    tail = transcript.Tail(4242)
+    tail.expect("resume please", now_ms=2_000_000)
+    append(sessions, blind_enqueue(1_999_000))
+    tail.poll()
+    assert tail.landed("resume please") is False
+
+
+def test_a_content_less_enqueue_is_not_ours_unless_we_are_typing(sessions):
+    # Watching for a resume due later is not typing it: a paste made by somebody
+    # else in the meantime must not count as its delivery.
+    tail = transcript.Tail(4242)
+    tail.watch("resume please")
+    append(sessions, blind_enqueue(2_000_050))
+    tail.poll()
+    assert tail.landed("resume please") is False
+
+
+def test_one_paste_claims_one_enqueue(sessions):
+    tail = transcript.Tail(4242)
+    tail.expect("resume please", now_ms=2_000_000)
+    append(sessions, blind_enqueue(2_000_050), queue("dequeue"))
+    tail.poll()
+    tail.watch("other")
+    append(sessions, blind_enqueue(2_000_090))
+    tail.poll()
+    assert tail.consumed("resume please") is True
+    assert tail.queued("resume please") is False
+
+
+def test_landed_since_ignores_an_identical_resume_from_an_earlier_compaction(
+        sessions):
+    tail = transcript.Tail(4242)
+    tail.watch("resume please")
+    append(sessions, prompt_taken_up("resume please", when_ms=1_000_000))
+    tail.poll()
+    assert tail.landed("resume please") is True
+    assert tail.landed("resume please", since_ms=1_500_000) is False
+    append(sessions, prompt_taken_up(pasted("resume please"), when_ms=2_000_000))
+    tail.poll()
+    assert tail.landed("resume please", since_ms=1_500_000) is True
+
+
+def test_an_envelope_around_other_text_is_not_a_match(sessions):
+    tail = transcript.Tail(4242)
+    tail.watch("resume please")
+    append(sessions, queue("enqueue", pasted("resume please, and more")),
+           queue("enqueue", '<pasted_content id="a">\nresume please\n'
+                            '</pasted_content id="b">'))
+    tail.poll()
+    assert tail.landed("resume please") is False
+
+
+def test_dequeue_drains_everything_outstanding(sessions):
+    # A dequeue carries no content: it is the whole queue going into the turn
+    # that is starting, which is how a followup queued behind /compact arrives.
+    tail = transcript.Tail(4242)
+    tail.watch("proceed with the plan")
+    append(sessions,
+           queue("enqueue", "proceed with the plan"),
+           queue("dequeue"))
+    tail.poll()
+    assert tail.consumed("proceed with the plan") is True
+
+
+def test_text_nobody_asked_about_is_not_retained(sessions):
+    tail = transcript.Tail(4242)
+    append(sessions, user_text("something else entirely"))
+    tail.poll()
+    assert tail.consumed("something else entirely") is False
+
+
+def test_matching_ignores_surrounding_whitespace(sessions):
+    tail = transcript.Tail(4242)
+    tail.watch("  resume please\n")
+    append(sessions, user_text("resume please"))
+    tail.poll()
+    assert tail.consumed("resume please\n") is True
+
+
+# -- execution: has the command actually begun? ---------------------------
+
+def test_a_prompt_taken_up_is_the_command_starting(sessions):
+    # The live shape: content is a bare string, and this line is stamped at the
+    # moment compaction begins — which is the whole signal the resume fires on.
+    tail = transcript.Tail(4242)
+    tail.watch("/compact")
+    append(sessions, prompt_taken_up("/compact"))
+    tail.poll()
+    assert tail.started("/compact") is True
+    assert tail.consumed("/compact") is True
+
+
+def test_an_enqueued_command_has_not_started(sessions):
+    tail = transcript.Tail(4242)
+    tail.watch("/compact")
+    append(sessions, queue("enqueue", "/compact"))
+    tail.poll()
+    assert tail.started("/compact") is False
+    assert tail.landed("/compact") is True
+
+
+def test_a_dequeue_alone_does_not_mean_the_command_started(sessions):
+    # The trap. A dequeue drains the whole queue into the turn that is starting,
+    # and that turn may run an ordinary prompt first and only reach the slash
+    # command at its end. Firing a resume here is "any earlier and it hits before
+    # the compact".
+    tail = transcript.Tail(4242)
+    tail.watch("/compact")
+    append(sessions, queue("enqueue", "/compact"), queue("dequeue"))
+    tail.poll()
+    assert tail.consumed("/compact") is True
+    assert tail.started("/compact") is False
+
+
+def test_the_queue_handing_a_line_over_is_not_execution_either(sessions):
+    tail = transcript.Tail(4242)
+    tail.watch("/compact")
+    append(sessions,
+           queue("enqueue", "/compact"),
+           queue("remove", "/compact"),
+           queued_command("/compact"))
+    tail.poll()
+    assert tail.consumed("/compact") is True
+    assert tail.started("/compact") is False
+
+
+def test_the_start_line_is_seen_even_when_the_queue_handed_it_over_first(sessions):
+    tail = transcript.Tail(4242)
+    tail.watch("/compact")
+    append(sessions, queue("enqueue", "/compact"), queue("dequeue"),
+           prompt_taken_up("/compact"))
+    tail.poll()
+    assert tail.started("/compact") is True
+
+
+def test_a_compaction_boundary_is_reported(sessions):
+    tail = transcript.Tail(4242)
+    tail.poll()
+    assert tail.compacted() is False
+    append(sessions, compact_boundary())
+    tail.poll()
+    assert tail.compacted() is True
+
+
+def test_an_earlier_compactions_start_line_is_not_this_command_starting(sessions):
+    # The false positive that would fire a resume before the command ran: the
+    # session compacted half an hour ago, so its transcript already holds the
+    # identical `/compact` start line and a boundary of its own.
+    tail = transcript.Tail(4242)
+    tail.watch("/compact")
+    append(sessions, prompt_taken_up("/compact", when_ms=1_000_000),
+           compact_boundary(when_ms=1_100_000))
+    tail.poll()
+    assert tail.started("/compact", since_ms=1_500_000) is False
+    assert tail.compacted(since_ms=1_500_000) is False
+    assert tail.started("/compact", since_ms=900_000) is True
+    assert tail.compacted(since_ms=900_000) is True
+
+
+def test_an_undated_start_line_cannot_answer_a_since_question(sessions):
+    tail = transcript.Tail(4242)
+    tail.watch("/compact")
+    append(sessions, {"type": "user",
+                      "message": {"role": "user", "content": "/compact"}})
+    tail.poll()
+    assert tail.started("/compact") is True
+    assert tail.started("/compact", since_ms=1) is False
+
+
+def test_an_unreadable_transcript_knows_nothing_about_starting(sessions):
+    sessions.unlink()
+    tail = transcript.Tail(4242)
+    tail.watch("/compact")
+    tail.poll()
+    assert tail.started("/compact") is None
+    assert tail.compacted() is None
+
+
+# -- what the session is busy with ----------------------------------------
+
+def test_an_unanswered_tool_call_is_a_foreground_call_in_flight(sessions):
+    tail = transcript.Tail(4242)
+    append(sessions, tool_use("toolu_1"))
+    tail.poll()
+    assert tail.tool_call_in_flight() is True
+
+
+def test_a_tool_call_that_came_back_leaves_nothing_in_flight(sessions):
+    tail = transcript.Tail(4242)
+    append(sessions, tool_use("toolu_1"), tool_result("toolu_1"))
+    tail.poll()
+    assert tail.tool_call_in_flight() is False
+
+
+def test_a_background_task_leaves_nothing_in_flight(sessions):
+    # This is the whole point: a Monitor or a backgrounded Bash hands its result
+    # straight back and reports later, so the session shows `shell` with a clean
+    # tail. Reading `shell` alone as "mid-turn" is what stalled every resume.
+    tail = transcript.Tail(4242)
+    append(sessions,
+           tool_use("toolu_bg"), tool_result("toolu_bg"),
+           tool_use("toolu_fg"), tool_result("toolu_fg"))
+    tail.poll()
+    assert tail.tool_call_in_flight() is False
+
+
+def test_a_subagents_own_turns_are_not_this_sessions_work(sessions):
+    tail = transcript.Tail(4242)
+    sidechain = dict(tool_use("toolu_side"), isSidechain=True)
+    append(sessions, sidechain)
+    tail.poll()
+    assert tail.tool_call_in_flight() is False
+
+
+# -- reading -------------------------------------------------------------
+
+def test_an_unreadable_transcript_answers_dont_know(sessions):
+    sessions.unlink()
+    tail = transcript.Tail(4242)
+    tail.watch("resume please")
+    assert tail.poll() is False
+    assert tail.readable is False
+    assert tail.consumed("resume please") is None
+    assert tail.landed("resume please") is None
+    assert tail.tool_call_in_flight() is None
+
+
+def test_polling_is_incremental_across_calls(sessions):
+    tail = transcript.Tail(4242)
+    tail.watch("second")
+    append(sessions, user_text("first"))
+    tail.poll()
+    assert tail.consumed("second") is False
+    append(sessions, user_text("second"))
+    tail.poll()
+    assert tail.consumed("second") is True
+
+
+def test_a_half_written_last_line_is_picked_up_once_it_is_complete(sessions):
+    tail = transcript.Tail(4242)
+    tail.watch("resume please")
+    line = json.dumps(user_text("resume please"))
+    with sessions.open("a", encoding="utf-8") as fp:
+        fp.write(line[:20])
+    tail.poll()
+    assert tail.consumed("resume please") is False
+    with sessions.open("a", encoding="utf-8") as fp:
+        fp.write(line[20:] + "\n")
+    tail.poll()
+    assert tail.consumed("resume please") is True
+
+
+def test_a_line_that_is_not_json_is_skipped(sessions):
+    tail = transcript.Tail(4242)
+    tail.watch("resume please")
+    with sessions.open("a", encoding="utf-8") as fp:
+        fp.write("{not json at all}\n")
+        fp.write(json.dumps(user_text("resume please")) + "\n")
+    tail.poll()
+    assert tail.consumed("resume please") is True
+
+
+def test_a_first_poll_reaches_back_far_enough_to_see_the_turn_in_progress(sessions):
+    # Opened against a session that is already mid-tool-call, which is the usual
+    # case: the tail must not start so late that the outstanding call is invisible.
+    append(sessions, tool_use("toolu_1"))
+    tail = transcript.Tail(4242)
+    tail.poll()
+    assert tail.tool_call_in_flight() is True
+
+
+def test_a_clear_mid_wait_is_followed_to_the_new_transcript(sessions, tmp_path,
+                                                            monkeypatch):
+    # /clear replaces the conversation in place and mints a new session id. The
+    # old file stops growing; following it would watch a dead conversation.
+    from awm.cch import session_target
+
+    tail = transcript.Tail(4242)
+    tail.watch("resume please")
+    tail.poll()
+
+    cleared = "99999999-8888-7777-6666-555555555555"
+    (session_target.SESSIONS_DIR / "4242.json").write_text(
+        json.dumps({"sessionId": cleared}))
+    fresh = transcript.PROJECTS_DIR / "-home-tony-somewhere" / f"{cleared}.jsonl"
+    fresh.write_text("")
+    append(fresh, user_text("resume please"))
+
+    tail.poll()
+    assert tail.consumed("resume please") is True
+
+
+def test_a_transcript_that_shrinks_is_re_read_from_the_top(sessions):
+    tail = transcript.Tail(4242, from_start=True)
+    tail.watch("resume please")
+    append(sessions, user_text("filler"), user_text("filler"))
+    tail.poll()
+    sessions.write_text(json.dumps(user_text("resume please")) + "\n")
+    tail.poll()
+    assert tail.consumed("resume please") is True
+
+
+# -- a /clear, end to end ----------------------------------------------------
+
+def command_entry(name, args="", when_ms=2_000_000, prompt_id="p1"):
+    """The entry the CLI writes for a local slash command, copied from a live /clear."""
+    return {"type": "user", "timestamp": at(when_ms), "promptId": prompt_id,
+            "message": {"role": "user", "content": (
+                f"<command-name>{name}</command-name>\n"
+                f"            <command-message>{name[1:]}</command-message>\n"
+                f"            <command-args>{args}</command-args>")}}
+
+
+def command_stdout(text, when_ms=2_000_000, prompt_id="p1"):
+    return {"type": "user", "timestamp": at(when_ms), "promptId": prompt_id,
+            "message": {"role": "user",
+                        "content": f"<local-command-stdout>{text}</local-command-stdout>"}}
+
+
+def _clear_session(sessions, *, when_ms):
+    """Write what a live /clear writes: the dequeue, a new id, a new file."""
+    from awm.cch import session_target
+
+    append(sessions, queue("dequeue") | {"timestamp": at(when_ms - 20)})
+    cleared = "99999999-8888-7777-6666-555555555555"
+    (session_target.SESSIONS_DIR / "4242.json").write_text(
+        json.dumps({"sessionId": cleared}))
+    fresh = transcript.PROJECTS_DIR / "-home-tony-somewhere" / f"{cleared}.jsonl"
+    append(fresh, command_entry("/clear", when_ms=when_ms),
+           {"type": "system", "subtype": "local_command", "timestamp": at(when_ms),
+            "content": "<local-command-stdout></local-command-stdout>"})
+    return cleared
+
+
+def test_a_self_cleared_session_with_a_background_task_gets_its_resume_at_once(
+        sessions, monkeypatch):
+    # Measured 2026-11-04 on redux-build/search-opt: the /clear ran at 23:00:37
+    # and its resume went in at 23:01:52. The /clear start line exists only in
+    # its <command-name> form, and the dequeue sits in the old file 22ms before
+    # the new id, so a tail polling every 2s switches files without reading it.
+    # A session holding a background task wears `shell`, and a `shell` with our
+    # command still queued never settles.
+    from awm.cch import watcher
+
+    injected = 1_000_000
+    append(sessions, tool_use("toolu_bg"), tool_result("toolu_bg"),
+           queue("enqueue", "/clear") | {"timestamp": at(injected + 100)})
+    tail = transcript.Tail(4242)
+    tail.watch("/clear")
+    tail.poll()
+    assert tail.queued("/clear") is True
+
+    cleared = _clear_session(sessions, when_ms=injected + 20_000)
+    monkeypatch.setattr(watcher, "now_ms", lambda: injected + 120_000)
+
+    class Clock:
+        t = 0.0
+
+        def __call__(self):
+            self.t += 50.0
+            return self.t
+
+    outcome = watcher.await_completion(
+        4242, injected_at_ms=injected, text="/clear", tail=tail,
+        read_status=lambda _pid: ("shell", injected + 20_000),
+        sleep=lambda _s: None, clock=Clock(), proc_start=lambda _p: "123")
+    assert outcome == watcher.STARTED_OUTCOME
+    assert tail.session_id == cleared
+    assert tail.queued("/clear") is False
+
+
+def test_a_clear_leaves_no_foreground_call_in_flight(sessions):
+    # A clear runs between turns. A tool call the old conversation never answered
+    # (an interrupted one) is not a call the new conversation is waiting on.
+    append(sessions, tool_use("toolu_orphan"))
+    tail = transcript.Tail(4242)
+    tail.poll()
+    assert tail.tool_call_in_flight() is True
+    _clear_session(sessions, when_ms=2_000_000)
+    tail.poll()
+    assert tail.tool_call_in_flight() is False
+
+
+def test_the_first_poll_does_not_count_as_a_clear(sessions):
+    # Opening a tail is not a session id changing under it: the catch-up window
+    # still applies, and nothing is reset.
+    append(sessions, tool_use("toolu_1"))
+    tail = transcript.Tail(4242)
+    tail.poll()
+    assert tail.session_id == SESSION
+    assert tail.tool_call_in_flight() is True
+
+
+def test_a_local_command_is_seen_to_start_from_its_command_name_entry(sessions):
+    tail = transcript.Tail(4242)
+    tail.watch("/mcp reconnect awm")
+    append(sessions, command_entry("/mcp", "reconnect awm", when_ms=2_000_000))
+    tail.poll()
+    assert tail.started("/mcp reconnect awm", since_ms=1_000_000) is True
+
+
+def test_a_local_commands_output_is_read_off_its_prompt(sessions):
+    tail = transcript.Tail(4242)
+    tail.watch("/mcp reconnect awm")
+    append(sessions, command_entry("/mcp", "reconnect awm", prompt_id="pA"),
+           command_stdout("Successfully reconnected to awm", prompt_id="pA"),
+           command_stdout("someone else's", prompt_id="pB"))
+    tail.poll()
+    assert tail.output("/mcp reconnect awm",
+                       since_ms=1_000_000) == "Successfully reconnected to awm"
+
+
+def test_an_earlier_runs_output_does_not_answer_for_this_one(sessions):
+    tail = transcript.Tail(4242)
+    tail.watch("/mcp reconnect awm")
+    append(sessions, command_entry("/mcp", "reconnect awm", when_ms=500_000),
+           command_stdout("Successfully reconnected to awm", when_ms=500_000))
+    tail.poll()
+    assert tail.output("/mcp reconnect awm", since_ms=1_000_000) is None

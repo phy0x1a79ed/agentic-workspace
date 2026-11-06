@@ -33,9 +33,10 @@ import logging
 
 import aiohttp
 
+from awm.social.connectors.slack_blocks import slack_text
 from awm.social.connectors.base import (
-    Account, Attachment, Channel, Connector, Identity, InboundMessage,
-    OnMessage, file_bytes, slack_reaction,
+    Account, Channel, Connector, Identity, InboundMessage, OnMessage,
+    file_bytes, looks_like_slack_user_id, slack_attachments, slack_reaction,
 )
 from awm.social.emoji import to_name
 
@@ -54,31 +55,16 @@ BACKFILL_MAX = 1000
 THREAD_WINDOW_S = 7 * 86400
 
 
+class FirstContactRefused(PermissionError):
+    """Opal never messages a person first (users.md R126 item 1)."""
+
+
 class SlackApiError(RuntimeError):
     """Slack answered ``ok: false``; ``error`` is Slack's error code."""
 
     def __init__(self, method: str, error: str) -> None:
         super().__init__(f"slack {method}: {error}")
         self.error = error
-
-
-def _attachments_of(m: dict) -> list[Attachment]:
-    out: list[Attachment] = []
-    for i, f in enumerate(m.get("files", []) or []):
-        url = f.get("url_private_download") or f.get("url_private") or ""
-        out.append(Attachment(
-            idx=i,
-            filename=f.get("name") or f.get("title") or f"attachment-{i}",
-            mime=f.get("mimetype", "") or "",
-            size=int(f.get("size", 0) or 0),
-            url=url,
-            ref={"id": f.get("id", ""), "url": url},
-        ))
-    return out
-
-
-def _looks_like_user_id(s: str) -> bool:
-    return bool(s) and s[0] in ("U", "W") and s[1:].isalnum() and s.isupper()
 
 
 def _chat_kind(ch: dict) -> str:
@@ -112,6 +98,7 @@ class SlackBotConnector(Connector):
         self._resync = asyncio.Event()
         self._sync_lock = asyncio.Lock()
         self._sync_task: asyncio.Task | None = None
+        self._spoken_to: set[str] = set()  # DMs where someone other than Opal wrote
 
     # -- Web API -------------------------------------------------------------
 
@@ -177,8 +164,8 @@ class SlackBotConnector(Connector):
             sender_bot=bool(m.get("bot_id")),
             message_id=m.get("ts", ""),
             ts=m.get("ts", ""),
-            text=m.get("text", "") or "",
-            attachments=_attachments_of(m),
+            text=slack_text(m),
+            attachments=slack_attachments(m),
         )
 
     def _is_own(self, m: dict) -> bool:
@@ -351,9 +338,9 @@ class SlackBotConnector(Connector):
         self, channel: str, text: str, *, thread: str | None = None,
         files: list[dict] | None = None,
     ) -> dict:
+        channel = await self._writable(channel)
         if files:
             return await self._upload(channel, text, thread, files)
-        # A user id as channel posts into the bot's DM with that user.
         r = await self._call("chat.postMessage", channel=channel, text=text,
                              thread_ts=thread)
         if self.history is not None and r.get("message"):
@@ -361,11 +348,40 @@ class SlackBotConnector(Connector):
         return {"message_id": r.get("ts", ""),
                 "channel_id": r.get("channel", channel), "ts": r.get("ts", "")}
 
+    async def _writable(self, channel: str) -> str:
+        """The chat id to write to, or :class:`FirstContactRefused`.
+
+        A user id resolves to the DM with that user. A DM or group DM is
+        writable only once someone other than Opal has written in it. A channel
+        is always writable: posting there reaches no one first.
+        """
+        if looks_like_slack_user_id(channel):
+            channel = (await self._call("conversations.open", users=channel))["channel"]["id"]
+        if channel in self._spoken_to:
+            return channel
+        info = (await self._call("conversations.info", channel=channel))["channel"]
+        if not (info.get("is_im") or info.get("is_mpim")):
+            return channel
+        if not await self._someone_wrote(channel):
+            raise FirstContactRefused(
+                f"slack {channel}: nobody has written to Opal here yet, and Opal "
+                "never messages a person first")
+        self._spoken_to.add(channel)
+        return channel
+
+    async def _someone_wrote(self, channel: str) -> bool:
+        if self.history is not None and self.history.has_inbound(channel):
+            return True
+        for m in await self._paged("conversations.history", "messages", cap=1000,
+                                   channel=channel):
+            if m.get("subtype", "") in _POSTED_SUBTYPES and not self._is_own(m) \
+                    and m.get("user"):
+                return True
+        return False
+
     async def _upload(self, channel: str, text: str, thread: str | None,
                       files: list[dict]) -> dict:
         try:
-            if _looks_like_user_id(channel):
-                channel = (await self.open_dm(channel)).id
             shared = []
             for f in files:
                 data = file_bytes(f)
@@ -434,7 +450,7 @@ class SlackBotConnector(Connector):
         return out
 
     async def _resolve_user_id(self, who: str) -> str:
-        if _looks_like_user_id(who):
+        if looks_like_slack_user_id(who):
             return who
         needle = who.lstrip("@").lower()
         for u in await self._paged("users.list", "members"):
@@ -461,7 +477,7 @@ class SlackBotConnector(Connector):
             raise ValueError(f"message {message_id} not found in {channel}")
         out: list[tuple[str, str, bytes]] = []
         headers = {"Authorization": f"Bearer {self.account.token}"}
-        for a in _attachments_of(msgs[0]):
+        for a in slack_attachments(msgs[0]):
             if idx is not None and a.idx != idx:
                 continue
             async with self._session().get(a.url, headers=headers) as resp:

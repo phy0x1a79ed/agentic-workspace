@@ -1,77 +1,116 @@
-"""The search service's database: the source registry, the document table, the corpus.
+"""The search service's own database: the source registry with each source's feed cursor, the judgements and
+the usage log. Each index source's entries live in LanceDB (:mod:`awm.search.lance_store`).
 
-Every archive document is one row in ``documents`` keyed ``source:id``, and one
-document in the retrieval engine under the single source type :data:`CORPUS`.
-One corpus matters because the engine normalises scores per call: ranking each
-source in its own corpus would make their scores incomparable.
+A source's ``layout`` names the engine version, field declarations and model its tables were built with. A
+stored layout that differs from the one the registry now asks for drops the tables, and the source reads its
+feed again from the start.
 """
 
 from __future__ import annotations
 
 import json
+import math
 import sqlite3
 import time
 from datetime import datetime, timezone
-from typing import Any, Iterable
+from typing import Any
 
-from awm.persistence import embeddings as engine
 from awm.persistence.databases import get_connection, init_service_db
 
 SERVICE = "search"
-SCHEMA_VERSION = 2
-CORPUS = "doc"
+SCHEMA_VERSION = 9
 
-SCHEMA_SQL = """\
+_SOURCES = """\
 CREATE TABLE IF NOT EXISTS sources (
     name        TEXT PRIMARY KEY,
     service     TEXT NOT NULL,
     mode        TEXT NOT NULL,
     spec        TEXT NOT NULL,       -- the Source as JSON, kept so a frozen source stays described
     present     INTEGER NOT NULL DEFAULT 1,
-    synced_at   REAL,                -- end of the last full pass that succeeded
+    synced_at   REAL,                -- end of the last feed read that succeeded
     attempt_at  REAL,
     last_error  TEXT,
     first_seen  REAL NOT NULL,
-    last_seen   REAL NOT NULL
+    last_seen   REAL NOT NULL,
+    cursor      TEXT,                -- the feed's `next` after the last page applied
+    epoch       TEXT,                -- the feed's epoch that cursor belongs to
+    layout      TEXT                 -- the layout the source's tables were built with
 );
+"""
 
-CREATE TABLE IF NOT EXISTS documents (
-    key      TEXT PRIMARY KEY,       -- source:id
-    source   TEXT NOT NULL,
-    doc_id   TEXT NOT NULL,
-    title    TEXT NOT NULL DEFAULT '',
-    text     TEXT NOT NULL DEFAULT '',
-    project  TEXT NOT NULL DEFAULT '',
-    scope    TEXT NOT NULL DEFAULT '',
-    kind     TEXT NOT NULL DEFAULT '',
-    ts       TEXT NOT NULL DEFAULT '', -- ISO 8601 UTC, second resolution, so text order is time order
-    url      TEXT NOT NULL DEFAULT '',
-    tags     TEXT NOT NULL DEFAULT ''  -- lowercased, one per line, newline-bracketed (tag_field)
+VERDICTS = ("relevant", "irrelevant")
+SECTIONS = ("exact", "related")
+
+_JUDGEMENTS = """
+CREATE TABLE IF NOT EXISTS judgements (
+    query       TEXT NOT NULL,
+    source      TEXT NOT NULL,
+    doc_id      TEXT NOT NULL,
+    verdict     TEXT NOT NULL CHECK (verdict IN ('relevant', 'irrelevant')),
+    section     TEXT NOT NULL DEFAULT '',  -- the section a relevant hit must answer in; '' for any
+    collection  TEXT NOT NULL DEFAULT '',  -- the set it was seeded from, or '' for a mark by hand
+    note        TEXT NOT NULL DEFAULT '',
+    judge       TEXT NOT NULL DEFAULT '',  -- the caller who recorded it
+    ts          REAL NOT NULL,
+    PRIMARY KEY (query, source, doc_id)
 );
-CREATE INDEX IF NOT EXISTS idx_documents_source ON documents(source, doc_id);
-CREATE INDEX IF NOT EXISTS idx_documents_filter ON documents(source, project, scope, kind, ts);
-""" + engine.EMBEDDINGS_DDL
+CREATE INDEX IF NOT EXISTS idx_judgements_collection ON judgements(collection);
+"""
 
-#: v2 adds ``tags``. Clearing ``synced_at`` makes every index source due at once, so the tags fill in.
-MIGRATIONS = {
-    (1, 2): "ALTER TABLE documents ADD COLUMN tags TEXT NOT NULL DEFAULT '';\n"
-            "UPDATE sources SET synced_at = NULL;",
-}
+#: Each ``search get``: who opened which hit for which query. No rank reads it until the journal replay shows
+#: a usage rank beats the plain order (fleet.md R136 item 6).
+_USAGE = """
+CREATE TABLE IF NOT EXISTS usage (
+    ts      REAL NOT NULL,
+    scope   TEXT NOT NULL DEFAULT '',  -- the caller's scope, within its project
+    query   TEXT NOT NULL DEFAULT '',
+    source  TEXT NOT NULL,
+    doc_id  TEXT NOT NULL,
+    node    TEXT NOT NULL DEFAULT '',  -- the node holding the document; 'local' for this one
+    project TEXT NOT NULL DEFAULT ''   -- the caller's project
+);
+CREATE INDEX IF NOT EXISTS idx_usage_scope ON usage(scope, ts);
+"""
+_USAGE_SCORE = """
+CREATE TABLE IF NOT EXISTS usage_score (
+    source TEXT NOT NULL, doc_id TEXT NOT NULL, node TEXT NOT NULL DEFAULT '', s REAL NOT NULL,
+    PRIMARY KEY (source, doc_id, node));
+CREATE INDEX IF NOT EXISTS idx_usage_score_rank ON usage_score(source, s DESC);
+"""
+
+#: v9 moves the documents to LanceDB: the SQLite copies, their text indexes and the embeddings go.
+_TO_LANCE = """
+DROP TRIGGER IF EXISTS documents_exact_ai;
+DROP TRIGGER IF EXISTS documents_exact_ad;
+DROP TRIGGER IF EXISTS documents_exact_au;
+DROP TRIGGER IF EXISTS passages_words_ai;
+DROP TRIGGER IF EXISTS passages_words_ad;
+DROP TRIGGER IF EXISTS doc_values_ad;
+DROP TABLE IF EXISTS documents_exact;
+DROP TABLE IF EXISTS passages_words;
+DROP TABLE IF EXISTS passages;
+DROP TABLE IF EXISTS doc_values;
+DROP TABLE IF EXISTS documents;
+DROP TABLE IF EXISTS embeddings_fts;
+DROP TABLE IF EXISTS embeddings;
+ALTER TABLE sources ADD COLUMN cursor TEXT;
+ALTER TABLE sources ADD COLUMN epoch TEXT;
+ALTER TABLE sources ADD COLUMN layout TEXT;
+UPDATE sources SET synced_at = NULL;
+"""
+
+SCHEMA_SQL = _SOURCES + _JUDGEMENTS + _USAGE + _USAGE_SCORE
+MIGRATIONS = {(8, 9): _TO_LANCE}
 
 _initialized = False
 
 
 def init() -> None:
-    """Idempotently create the search database and the engine's chunk store."""
+    """Idempotently create or migrate the search database."""
     global _initialized
     if not _initialized:
         init_service_db(SERVICE, SCHEMA_SQL, schema_version=SCHEMA_VERSION, migrations=MIGRATIONS)
         _initialized = True
-    conn = connect()
-    try:
-        engine.ensure_schema(conn)
-    finally:
-        conn.close()
 
 
 def connect() -> sqlite3.Connection:
@@ -109,11 +148,11 @@ def record_registry(conn: sqlite3.Connection, sources: dict[str, dict], present:
 
     ``sources`` maps a name to its ``{service, mode, ...}`` spec. A stored source
     the registry no longer shows is kept and marked absent, never deleted: its
-    documents stay searchable as frozen. An unchanged registry writes nothing,
-    because a query calls this and must not wait on a sweep's write lock.
+    entries stay searchable as frozen. An unchanged registry writes nothing, because a query calls this and must not
+    wait on a sweep's write lock.
     """
     now = time.time() if now is None else now
-    stored = {r["name"]: r for r in conn.execute("SELECT name, spec, present FROM sources")}
+    stored = {r["name"]: r for r in conn.execute("SELECT name, mode, spec, present FROM sources")}
     news = []
     for name, spec in sources.items():
         blob = json.dumps(spec, sort_keys=True)
@@ -135,20 +174,10 @@ def record_registry(conn: sqlite3.Connection, sources: dict[str, dict], present:
     return news
 
 
-def source_rows(conn: sqlite3.Connection, kept: tuple[str, list[Any]] = ("", [])) -> list[dict[str, Any]]:
-    """Every stored source with its document count, sorted by name.
-
-    ``kept`` is a SQL condition and its values; only the documents it keeps are counted.
-    """
-    where, params = kept
-    counts = dict(conn.execute(
-        f"SELECT source, COUNT(*) FROM documents {'WHERE ' + where if where else ''} GROUP BY source",
-        params).fetchall())
-    out = []
-    for r in conn.execute("SELECT * FROM sources ORDER BY name"):
-        out.append({**dict(r), "spec": json.loads(r["spec"]), "present": bool(r["present"]),
-                    "count": counts.get(r["name"], 0)})
-    return out
+def source_rows(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    """Every stored source, sorted by name."""
+    return [{**dict(r), "spec": json.loads(r["spec"]), "present": bool(r["present"])}
+            for r in conn.execute("SELECT * FROM sources ORDER BY name")]
 
 
 def mark_attempt(conn: sqlite3.Connection, name: str, error: str | None,
@@ -163,66 +192,70 @@ def mark_attempt(conn: sqlite3.Connection, name: str, error: str | None,
     conn.commit()
 
 
-# -- documents -------------------------------------------------------------
+def feed_state(conn: sqlite3.Connection, name: str) -> dict[str, Any]:
+    """``{cursor, epoch, layout}`` of a source; all ``None`` for one never read."""
+    row = conn.execute("SELECT cursor, epoch, layout FROM sources WHERE name=?", (name,)).fetchone()
+    return dict(row) if row else {"cursor": None, "epoch": None, "layout": None}
 
 
-def key_of(source: str, doc_id: str) -> str:
-    return f"{source}:{doc_id}"
-
-
-def engine_document(row: dict[str, Any]) -> engine.Document:
-    where = "/".join(x for x in (row["project"], row["scope"]) if x)
-    context = " · ".join(x for x in (row["source"], where, row["kind"]) if x)
-    return engine.Document(row["key"], row["text"], title=row["title"], context=context,
-                           date=row["ts"][:10])
-
-
-def tag_field(tags: Any) -> str:
-    """The stored form of a document's tags: lowercased, one per line, with a newline at each end."""
-    if isinstance(tags, str):
-        tags = [tags]
-    if not isinstance(tags, (list, tuple)):
-        return ""
-    names = sorted({" ".join(str(t).split()).lower() for t in tags if str(t).strip()})
-    return "\n" + "\n".join(names) + "\n" if names else ""
-
-
-def clean(source: str, raw: dict[str, Any]) -> dict[str, Any] | None:
-    """A stored row from one exported document, or ``None`` when it has no id or no content."""
-    doc_id = str(raw.get("id") or "")
-    title, text = str(raw.get("title") or ""), str(raw.get("text") or "")
-    if not doc_id or not (title.strip() or text.strip()):
-        return None
-    return {"key": key_of(source, doc_id), "source": source, "doc_id": doc_id, "title": title,
-            "text": text, "project": str(raw.get("project") or ""), "scope": str(raw.get("scope") or ""),
-            "kind": str(raw.get("kind") or ""), "ts": normalize_ts(raw.get("ts")),
-            "url": str(raw.get("url") or ""), "tags": tag_field(raw.get("tags"))}
-
-
-def put_documents(conn: sqlite3.Connection, rows: Iterable[dict[str, Any]]) -> None:
-    conn.executemany(
-        "INSERT INTO documents (key, source, doc_id, title, text, project, scope, kind, ts, url, tags)"
-        " VALUES (:key,:source,:doc_id,:title,:text,:project,:scope,:kind,:ts,:url,:tags)"
-        " ON CONFLICT(key) DO UPDATE SET title=excluded.title, text=excluded.text,"
-        " project=excluded.project, scope=excluded.scope, kind=excluded.kind, ts=excluded.ts,"
-        " url=excluded.url, tags=excluded.tags", list(rows))
+def save_feed_state(conn: sqlite3.Connection, name: str, cursor: str | None, epoch: str | None,
+                    layout: str | None) -> None:
+    conn.execute("UPDATE sources SET cursor=?, epoch=?, layout=? WHERE name=?", (cursor, epoch, layout, name))
     conn.commit()
 
 
-def document_ids(conn: sqlite3.Connection, source: str) -> set[str]:
-    return {r[0] for r in conn.execute("SELECT doc_id FROM documents WHERE source=?", (source,))}
+# -- feedback --------------------------------------------------------------
+
+#: ``usage_score`` counts a get as exp(LAMBDA * t), t in days since EPOCH, kept as a log so a score never overflows:
+#: a get 30 days later weighs twice as much, so the sum ranks by recency-weighted use.
+EPOCH = datetime(2026, 1, 1, tzinfo=timezone.utc).timestamp()
+LAMBDA = math.log(2) / 30
 
 
-def drop_documents(conn: sqlite3.Connection, source: str, doc_ids: Iterable[str]) -> int:
-    gone = list(doc_ids)
-    for doc_id in gone:
-        key = key_of(source, doc_id)
-        engine.delete_document(conn, CORPUS, key)
-        conn.execute("DELETE FROM documents WHERE key=?", (key,))
+def logaddexp(a: float, b: float) -> float:
+    hi, lo = (a, b) if a >= b else (b, a)
+    return hi + math.log1p(math.exp(lo - hi))
+
+
+def log_use(conn: sqlite3.Connection, row: dict[str, Any]) -> None:
+    """Append one get to the usage log and fold it into the document's ``usage_score``."""
+    row = {"ts": time.time(), "project": "", "scope": "", "query": "", "node": "", **row}
+    conn.execute("INSERT INTO usage (ts, project, scope, query, source, doc_id, node)"
+                 " VALUES (:ts, :project, :scope, :query, :source, :doc_id, :node)", row)
+    gain = LAMBDA * (row["ts"] - EPOCH) / 86400
+    held = conn.execute("SELECT s FROM usage_score WHERE source=? AND doc_id=? AND node=?",
+                        (row["source"], row["doc_id"], row["node"])).fetchone()
+    conn.execute("INSERT INTO usage_score (source, doc_id, node, s) VALUES (?,?,?,?)"
+                 " ON CONFLICT (source, doc_id, node) DO UPDATE SET s = excluded.s",
+                 (row["source"], row["doc_id"], row["node"],
+                  gain if held is None else logaddexp(held[0], gain)))
     conn.commit()
-    return len(gone)
 
 
-def get_document(conn: sqlite3.Connection, source: str, doc_id: str) -> dict[str, Any] | None:
-    row = conn.execute("SELECT * FROM documents WHERE key=?", (key_of(source, doc_id),)).fetchone()
-    return dict(row) if row else None
+def judge(conn: sqlite3.Connection, row: dict[str, Any]) -> dict[str, Any]:
+    """Record a verdict on one hit for one query, replacing any earlier verdict on the same pair."""
+    row = {"section": "", "collection": "", "note": "", "judge": "", "ts": time.time(), **row}
+    conn.execute(
+        "INSERT INTO judgements (query, source, doc_id, verdict, section, collection, note, judge, ts)"
+        " VALUES (:query, :source, :doc_id, :verdict, :section, :collection, :note, :judge, :ts)"
+        " ON CONFLICT (query, source, doc_id) DO UPDATE SET verdict=excluded.verdict,"
+        " section=excluded.section, collection=excluded.collection, note=excluded.note,"
+        " judge=excluded.judge, ts=excluded.ts", row)
+    conn.commit()
+    return row
+
+
+def unjudge(conn: sqlite3.Connection, query: str, source: str, doc_id: str) -> int:
+    gone = conn.execute("DELETE FROM judgements WHERE query=? AND source=? AND doc_id=?",
+                        (query, source, doc_id)).rowcount
+    conn.commit()
+    return gone
+
+
+def judgements(conn: sqlite3.Connection, collection: str = "", query: str = "") -> list[dict[str, Any]]:
+    sql, params = "SELECT * FROM judgements WHERE 1=1", []
+    if collection:
+        sql, params = sql + " AND collection=?", [*params, collection]
+    if query:
+        sql, params = sql + " AND query=?", [*params, query]
+    return [dict(r) for r in conn.execute(sql + " ORDER BY collection, query, source, doc_id", params)]

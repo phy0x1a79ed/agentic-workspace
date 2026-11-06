@@ -11,7 +11,7 @@ dependencies = [
     "awm-config",
     "awm-persistence",
     "awm-gatewayclient",
-    "awm-dvc",
+    "awm-dvcdata",
     "fastapi",
     "httpx",
     "pyyaml",

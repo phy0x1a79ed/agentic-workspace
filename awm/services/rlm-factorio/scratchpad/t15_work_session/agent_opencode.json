@@ -20,7 +20,8 @@
       "type": "local",
       "enabled": true,
       "command": [
-        "/home/tony/lib/miniforge3/envs/awm/bin/awm-mcp"
+        "/home/tony/.local/bin/awm",
+        "mcp"
       ],
       "environment": {
         "AWM_WORKSPACE": "/home/tony/.claude/jobs/9bf14ee0/tmp/t15rig/ws",

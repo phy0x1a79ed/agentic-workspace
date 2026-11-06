@@ -1,11 +1,11 @@
-"""Self-contained HTML the edge serves itself (never proxied): the sign-in
-screen shown to an unauthenticated browser, the landing page shown at ``/``
-after sign-in, and the "not answering yet" page the vault gets while it starts.
+"""Self-contained HTML the edge serves itself (never proxied): the landing page
+shown at ``/`` after sign-in, and the "not answering yet" page the vault gets
+while it starts. Sign-in itself is alcor's passkey page (:mod:`.portal`).
 
-All three are inline + dependency-free on purpose: the security edge must not
+Both are inline + dependency-free on purpose: the security edge must not
 depend on the frontend build being present or on any external asset (a strict
 rule for the one authenticated door into AWM). The landing page is *dynamic* —
-it lists the live ``/ui/*`` pages the gateway currently has registered.
+it lists the pages the gateway's loaded plugins serve at ``/p/<plugin>/<page>/``.
 
 They share one palette, taken from Trilium rather than invented — see
 :data:`_TOKENS`. On the public host the vault *is* the product, so a door drawn
@@ -18,6 +18,7 @@ from __future__ import annotations
 import html
 import json
 from typing import Any
+from urllib.parse import quote
 
 # Trilium's own theme, lifted from the build we serve — `theme-next-light.css`,
 # `theme-next-dark.css`, `theme-next/forms.css` and `setup.css`. The edge and
@@ -221,98 +222,33 @@ _STYLE = _TOKENS + """
 """
 
 
-def login_page(public: bool = False, name: str = "awm") -> str:
-    """The sign-in screen: a modal in Trilium's theme, on Trilium's backdrop.
+def page_entries(snapshot: Any) -> list[dict[str, str]]:
+    """``{name, href}`` for every page in the gateway's ``/hub/plugins`` snapshot.
 
-    It is drawn as the knowledge base behind it is drawn because it is the same
-    product to the person in front of it — the door and the room should not
-    look like two different builds. Everything is inline and dependency-free,
-    which is not a style choice: the one authenticated door into awm must not
-    need the frontend build, or any external asset, to render itself.
-
-    This screen covers *every* service, not only the vault. The gate is in the
-    catch-all proxy, before anything is forwarded, so any path that would answer
-    HTML to an unauthenticated browser answers this instead. It cannot appear
-    *over* the page it is guarding — the edge never renders a page it has
-    refused to serve — which is why the card sits on a backdrop of its own.
-
-    ``public`` drops the shared-password hint and the CA link: on the public
-    host there is no shared password and a real certificate. ``name`` is the
-    label at the top, so a person can see which node they are signing in to.
+    ``name`` is the page's own name, the key its tags and display name are kept
+    under, so a page keeps them when its plugin is renamed.
     """
-    title = html.escape(name)
-    if public:
-        extras = ""
-    else:
-        extras = """<p class="note">Leave the username blank to use the current day's
-shared password. Get it on the daemon host with <code>awm auth password</code>;
-it is also sent to the operator's Discord DM with the bot when minted.</p>
-<p class="note">A new device has to trust this node's CA once, or the browser
-blocks pages and sockets alike: <a href="/ca.crt">install the certificate</a>.
-(Served unauthenticated on purpose &mdash; a device that doesn't trust us yet
-can't sign in to fetch it.)</p>"""
-    return f"""<!doctype html>
-<html lang="en"><head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>{title} &mdash; sign in</title>
-<style>{_TOKENS}{_DOOR}</style>
-</head><body>
-<div class="backdrop">
-<main class="card" role="dialog" aria-labelledby="t" aria-modal="true">
-  <header>
-    <h1 id="t">{title}</h1>
-    <p class="muted">Sign in to continue.</p>
-  </header>
-  <form id="f" autocomplete="on">
-    <label for="u">Username</label>
-    <input id="u" name="username" type="text" autofocus
-           autocomplete="username" autocapitalize="none" />
-    <label for="p">Password</label>
-    <input id="p" name="password" type="password"
-           autocomplete="current-password" />
-    <div class="err" id="e" role="alert"></div>
-    <footer><button id="b" type="submit">Sign in</button></footer>
-  </form>
-  {extras}
-</main>
-</div>
-<script>
-const f=document.getElementById('f'),u=document.getElementById('u'),
-      p=document.getElementById('p'),b=document.getElementById('b'),
-      e=document.getElementById('e');
-f.addEventListener('submit',async(ev)=>{{
-  ev.preventDefault(); e.textContent=''; b.disabled=true;
-  try {{
-    const r=await fetch('/__auth/login',{{method:'POST',
-      headers:{{'Content-Type':'application/json'}},
-      body:JSON.stringify({{username:u.value.trim(),password:p.value}})}});
-    if(r.ok){{
-      // reload(), not replace(href): on a URL with a fragment, such as the
-      // vault's /trilium/#root/..., replacing it with itself only scrolls.
-      if(location.pathname==='/') location.replace('/'); else location.reload();
-      return;
-    }}
-    if(r.status===429){{
-      let s=60; try{{ s=(await r.json()).retry_after||s; }}catch(_){{}}
-      e.textContent='Too many attempts. Try again in '+Math.ceil(s/60)+' min.';
-    }} else e.textContent = r.status===401 ? 'Incorrect username or password.' : ('Error '+r.status);
-  }} catch(_){{ e.textContent='Network error.'; }}
-  b.disabled=false; p.select();
-}});
-</script>
-</body></html>"""
+    plugins = snapshot.get("plugins") if isinstance(snapshot, dict) else None
+    out = []
+    for plugin in plugins or []:
+        pname = str((plugin or {}).get("name") or "")
+        for page in (plugin or {}).get("pages") or []:
+            name = str((page or {}).get("name") or "")
+            if pname and name:
+                out.append({"name": name,
+                            "href": f"/p/{quote(pname, safe='')}/{quote(name, safe='')}/"})
+    return out
 
 
 def landing_page(
-    services: list[dict[str, Any]],
+    entries: list[dict[str, str]],
     tags_by_page: dict[str, list[str]] | None = None,
     tag_counts: dict[str, int] | None = None,
     selected_tags: list[str] | None = None,
     peer_name: str = "awm",
     display_names: dict[str, str] | None = None,
 ) -> str:
-    """Dynamic index of the registered ``/ui/*`` pages, taggable and
+    """Index of ``entries`` (from :func:`page_entries`), taggable and
     filterable by tag. ``tags_by_page``/``tag_counts``/``selected_tags``/
     ``display_names`` come from ``store.LandingDAO`` and are persisted
     server-side. ``display_names`` is a purely cosmetic label override keyed
@@ -323,23 +259,17 @@ def landing_page(
     selected_tags = selected_tags or []
     display_names = display_names or {}
 
-    pages = [
-        s for s in services
-        if s.get("kind") in ("page", "static", "url")
-        and str(s.get("prefix", "")).startswith("/ui/")
-    ]
-    def _label(s: dict[str, Any]) -> str:
-        name = str(s.get("name", s.get("prefix", "")))
-        return display_names.get(name) or name
+    def _label(s: dict[str, str]) -> str:
+        return display_names.get(s["name"]) or s["name"]
 
-    pages.sort(key=_label)
+    pages = sorted(entries, key=_label)
 
     if pages:
         cards = []
         for s in pages:
-            name = str(s.get("name", s.get("prefix", "")))
+            name = s["name"]
             label = display_names.get(name) or name
-            href = html.escape(str(s["prefix"]).rstrip("/") + "/")
+            href = html.escape(s["href"])
             page_tags = tags_by_page.get(name, [])
             data_tags = html.escape(",".join(page_tags))
             tag_chips = "\n".join(

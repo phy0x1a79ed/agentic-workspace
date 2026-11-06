@@ -9,10 +9,11 @@ import numpy as np
 
 
 class StubEmbedder:
-    """Bag-of-words hashed into 64 dims: texts that share words score high."""
+    """Bag-of-words hashed into ``dim`` dims: texts that share words score high."""
 
-    def __init__(self, name: str = "stub-a"):
+    def __init__(self, name: str = "stub-a", dim: int = 64):
         self.name = name
+        self.dim = dim
         self.encoded = 0
 
     def count_tokens(self, texts):
@@ -20,9 +21,9 @@ class StubEmbedder:
 
     def encode(self, texts, *, query):
         self.encoded += len(texts)
-        out = np.zeros((len(texts), 64), dtype=np.float32)
+        out = np.zeros((len(texts), self.dim), dtype=np.float32)
         for i, t in enumerate(texts):
             for w in re.findall(r"\w+", t.lower()):
-                out[i, int(hashlib.md5(w.encode()).hexdigest(), 16) % 64] += 1
+                out[i, int(hashlib.md5(w.encode()).hexdigest(), 16) % self.dim] += 1
         out /= np.maximum(np.linalg.norm(out, axis=1, keepdims=True), 1e-9)
         return out

@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "awm-routine"
+version = "0.1.0"
+requires-python = ">=3.11"
+description = "AWM routine plugin: registered routines, their timers and agent dispatch, and deploy."
+dependencies = [
+    "awm-config",
+    "awm-persistence",
+    "awm-gatewayclient",
+    "httpx",
+]
+
+[tool.setuptools.packages.find]
+include = ["awm.routine*"]
+namespaces = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+markers = [
+    "smoke: fast unit + tiny in-process tests; target <30s, run on every dev iteration",
+]

@@ -1,0 +1,42 @@
+[plugin]
+name = "reflection"
+version = "0.2.0"
+
+[[service]]
+name = "reflection"
+path = "."
+run = "run.sh"
+install = "install.sh"
+
+[[tool]]
+name = "reflection"
+major = 1
+service = "reflection"
+implements = ["reflection@1"]
+tier = "on"
+
+[needs]
+secrets = []
+network = []
+
+# Every harness plugin: cch (harness-cc), dsh (harness-ds). See harness-contract.md.
+[[needs.contract]]
+name = "harness"
+major = 1
+verbs = ["platform", "status", "resolve", "find", "list", "start", "stop", "resume", "adopt", "send", "compact", "mode", "set", "interrupt", "remote_control", "mcp", "link", "pending"]
+
+[[needs.tool]]
+name = "operations"
+major = 2
+verbs = ["task_for_session"]
+
+[[needs.tool]]
+name = "scope"
+major = 1
+verbs = ["claim", "release"]
+
+[[needs.tool]]
+name = "journal"
+major = 1
+verbs = ["brief_read", "post", "session_parent"]
+

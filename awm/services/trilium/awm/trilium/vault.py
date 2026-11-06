@@ -40,6 +40,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from awm.config.tools import dvc_bin
 from awm.trilium import etapi, instances
 from awm.trilium.instances import Vault
 
@@ -57,9 +58,8 @@ CONTAINER_EXT = ".tnbackup"
 #: The two chunks, relative to the scope worktree. Named once each, because
 #: the pin, the commit and the `.gitignore` DVC writes all have to agree.
 #:
-#: The export is a chunk rather than committed text because the fork is a
-#: public repository. A pin publishes a hash; the bytes stay in the local
-#: cache. The cost is that an export no longer shows up in a branch diff — the
+#: The export is a chunk rather than committed text, so a pushed vault history
+#: carries hashes and the bytes stay in the shared cache. The cost is that an export no longer shows up in a branch diff — the
 #: tree on disk is still diffable, and an older export is still reachable
 #: through its pin.
 CHUNK = "data/vault/backups"
@@ -80,30 +80,6 @@ DVC_TIMEOUT_S = 1800
 # merge driver, the hooks — lives in `awm/dvc/data_dvc.py` and is not
 # restated here. This is only the little that a service needs to run the two
 # binaries against one scope worktree.
-
-_DVC_FALLBACKS = (
-    Path.home() / "lib/miniforge3/envs/dvc/bin/dvc",
-    Path.home() / "lib/miniforge3/envs/awm/bin/dvc",
-    Path("/usr/local/bin/dvc"),
-    Path("/usr/bin/dvc"),
-)
-
-
-def dvc_bin() -> str | None:
-    """Absolute `dvc`, or None. Same order as the scopes service: override,
-    PATH, then the known env locations — a service under systemd has a minimal
-    PATH and dvc lives in its own mamba env."""
-    override = os.environ.get("AWM_DVC_BIN")
-    if override and Path(override).is_file() and os.access(override, os.X_OK):
-        return override
-    found = shutil.which("dvc")
-    if found:
-        return found
-    for cand in _DVC_FALLBACKS:
-        if cand.is_file() and os.access(cand, os.X_OK):
-            return str(cand)
-    return None
-
 
 def _env() -> dict[str, str]:
     env = dict(os.environ)
@@ -315,7 +291,7 @@ def snapshots(vault: Vault) -> dict[str, Any]:
 #
 # It runs where the vault is a git checkout, because that is what turns a
 # snapshot into a pin, and the pin's bytes into something the nightly archive
-# job already ships off-site. On a node serving the published tarball there is
+# job already ships off-site. On a node with no vault checkout there is
 # nothing to pin and the schedule stands down.
 
 #: How often the loop wakes. Cheap: it reads one directory and usually stops.

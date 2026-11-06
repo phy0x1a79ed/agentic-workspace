@@ -18,7 +18,8 @@ import pytest
 from starlette.testclient import TestClient
 
 from awm.httpsfront import proxy, vault
-from awm.httpsfront.auth import COOKIE_NAME
+from awm.tlsfront import proxy as tlsproxy
+from awm.tlsfront.auth import COOKIE_NAME
 
 pytestmark = [pytest.mark.unit, pytest.mark.smoke]
 
@@ -41,8 +42,6 @@ class _Gate:
     async def session_ttl_seconds(self) -> float:
         return 3600.0
 
-    async def verify_password(self, password: str):
-        return None
 
 
 async def _body():
@@ -114,7 +113,7 @@ def test_the_same_names_at_the_site_root_are_not_the_vaults(path):
         assert c.get(path).status_code == 404
 
 
-@pytest.mark.parametrize("path", ["/ui/drawio/", "/svc/drawio/fn/save"])
+@pytest.mark.parametrize("path", ["/p/trilium/trilium/", "/p/trilium/trilium/assets/x.js"])
 def test_awm_paths_still_go_to_the_gateway(path):
     seen, handler = _recorder()
     with _client(_app(), handler) as c:
@@ -141,10 +140,10 @@ def test_no_request_can_choose_the_upstream():
     seen, handler = _recorder()
     with _client(_app(), handler) as c:
         for req in (
-            {"url": "/ui/drawio/?upstream=" + VAULT},
-            {"url": "/ui/drawio/", "headers": {"X-Awm-As": "user:steven"}},
-            {"url": "/ui/drawio/", "headers": {"X-Forwarded-Host": "vault"}},
-            {"url": "/ui/drawio/", "headers": {"Host": "vault"}},
+            {"url": "/p/trilium/trilium/?upstream=" + VAULT},
+            {"url": "/p/trilium/trilium/", "headers": {"X-Awm-As": "user:steven"}},
+            {"url": "/p/trilium/trilium/", "headers": {"X-Forwarded-Host": "vault"}},
+            {"url": "/p/trilium/trilium/", "headers": {"Host": "vault"}},
         ):
             seen.clear()
             c.get(req["url"], headers=req.get("headers"))
@@ -214,16 +213,11 @@ def test_signed_out_the_vault_asks_for_a_login():
     _, handler = _recorder()
     with _client(_app(), handler, authed=False) as c:
         r = c.get(vault.SHELL, headers={"Accept": "text/html"})
-    assert r.status_code == 200 and "username" in r.text
+    assert r.status_code == 302 and "/portal_login?next=" in r.headers["location"]
 
 
-#: The legacy bearer, a domestic node's token, and a foreign node's.
+#: Names that read as a node, which no session may carry into the vault.
 PEERS = ["peer", "peer:mira", "peer:shaula"]
-
-
-@pytest.fixture(autouse=True)
-def _book(peer_book):
-    peer_book({"mira": {"relation": "domestic"}, "shaula": {"relation": "foreign"}})
 
 
 @pytest.mark.parametrize("sub", PEERS)
@@ -271,7 +265,7 @@ def test_the_gateway_being_down_is_still_a_502():
         raise httpx.ConnectError("refused", request=request)
 
     with _client(_app(), handler) as c:
-        r = c.get("/ui/drawio/")
+        r = c.get("/p/trilium/trilium/")
     assert r.status_code == 502
 
 
@@ -292,7 +286,7 @@ def _ws_target(monkeypatch, app, path: str) -> dict:
                                for k, v in (additional_headers or {}).items()}
         raise RuntimeError("upstream refused")  # closes the handshake cleanly
 
-    monkeypatch.setattr(proxy.websockets, "connect", _fake_connect)
+    monkeypatch.setattr(tlsproxy.websockets, "connect", _fake_connect)
     _, handler = _recorder()
     # TestClient does not apply its cookie jar to a WS handshake, so the edge
     # session goes on the request directly.
@@ -314,7 +308,7 @@ def test_the_vaults_socket_follows_its_shell(monkeypatch):
 
 
 def test_an_awm_socket_still_reaches_the_gateway(monkeypatch):
-    seen = _ws_target(monkeypatch, _app(profile=None), "/svc/drawio/emit/drawio:tony:x")
+    seen = _ws_target(monkeypatch, _app(profile=None), "/hub/emit/journal/posts")
     assert seen["url"].startswith("ws://127.0.0.1:7819")
 
 
@@ -361,7 +355,7 @@ def test_the_query_string_survives_alongside_it():
 @pytest.mark.parametrize("path", [
     "/trilium/api/%2e%2e/etapi/app-info",
     "/trilium/%2e%2e/%2e%2e/etc/passwd",
-    "/ui/drawio/%2e%2e/hub/services",
+    "/p/trilium/trilium/%2e%2e/hub/plugins",
 ])
 def test_a_path_that_climbs_out_is_refused(profile, path):
     """This was live. `/trilium/api/%2e%2e/etapi/app-info` decodes to a path
@@ -380,17 +374,17 @@ def test_an_unencoded_dot_dot_is_refused_too():
     client — the test client, and every browser — resolves a literal `../` away
     before it is ever sent. Only a hand-written request can carry one, which is
     exactly the caller the guard is for."""
-    assert proxy._re_segments(b"/trilium/api/../etapi/app-info",
+    assert tlsproxy.re_segments(b"/trilium/api/../etapi/app-info",
                               "/trilium/api/../etapi/app-info")
-    assert not proxy._re_segments(b"/trilium/api/notes/..x", "/trilium/api/notes/..x")
-    assert not proxy._re_segments(b"/trilium/api/search/%23x", "/trilium/api/search/#x")
+    assert not tlsproxy.re_segments(b"/trilium/api/notes/..x", "/trilium/api/notes/..x")
+    assert not tlsproxy.re_segments(b"/trilium/api/search/%23x", "/trilium/api/search/#x")
 
 
 @pytest.mark.parametrize("path", [
     "/trilium/api%2Fnotes",
     "/trilium/api%2fnotes",
     "/trilium/api%5cnotes",
-    "/ui/drawio%2f..%2fhub",
+    "/p/trilium/trilium%2f..%2fhub",
 ])
 def test_an_encoded_separator_is_refused(path):
     """One segment to the router, two to the upstream. Nothing this edge serves

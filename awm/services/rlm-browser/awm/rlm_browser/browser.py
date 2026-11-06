@@ -3,7 +3,7 @@ launch seam.
 
 Three layers, bottom-up:
 
-1. :class:`LaunchBackend` — the *only* thing that differs between simple/rendered
+1. :class:`LaunchBackend` — the *only* thing that differs between headless/rendered
    and host/docker. Its whole contract: launch a Chrome and hand back a CDP base
    URL on ``127.0.0.1:<port>``; stop it on release. :class:`HostSubprocessBackend`
    is the T2 implementation (a plain ``google-chrome`` subprocess); the docker
@@ -74,7 +74,7 @@ _CHROME_CANDIDATES = (
 _BACKEND = os.environ.get("RLM_BROWSER_BACKEND", "host").strip().lower()
 
 # Canonical modes, fixed for a session's life:
-#   headless  — launched, no display (was 'simple'); fast, for bots at scale.
+#   headless  — launched, no display; fast, for bots at scale.
 #   rendered  — launched headful + VNC; watchable live.
 #   attached  — NOT launched; drives an EXISTING real Chrome over CDP (e.g. the
 #               Windows desktop browser). Borrowed: release never closes it.
@@ -88,12 +88,8 @@ _ATTACH_CDP_URL = os.environ.get(
 
 
 def _norm_mode(mode: str | None) -> str:
-    """Canonicalize a mode string. Legacy ``simple`` maps to ``headless`` so old
-    DB rows and callers still resolve; anything unknown falls back to the
-    default."""
+    """Canonicalize a mode string; anything unknown falls back to the default."""
     m = (mode or "").strip().lower()
-    if m == "simple":
-        return "headless"
     return m if m in _VALID_MODES else _DEFAULT_MODE
 
 

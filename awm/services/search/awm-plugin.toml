@@ -1,0 +1,48 @@
+[plugin]
+name = "search"
+version = "0.1.0"
+
+[[service]]
+name = "search"
+
+# This node's tools, one entry per verb, read from the gateway's describe.
+[[service.archive]]
+name = "awm"
+mode = "index"
+export = "search_api_export"
+hit = ["title"]
+
+[service.archive.fields]
+title = "content"
+text = "content"
+tool = "categorical"
+verb = "categorical"
+plugin = "categorical"
+tier = "categorical"
+
+[[tool]]
+name = "search"
+major = 1
+implements = ["search@1"]
+tier = "on"
+
+[needs]
+secrets = []
+network = []
+platform = ["linux"]
+
+[[needs.tool]]
+name = "journal"
+major = 1
+verbs = ["export", "note_read", "tag_list"]
+
+[[needs.tool]]
+name = "kb"
+major = 1
+verbs = ["query", "get"]
+
+[[needs.tool]]
+name = "transcripts"
+major = 1
+verbs = ["query"]
+

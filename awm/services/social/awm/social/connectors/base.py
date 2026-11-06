@@ -149,6 +149,30 @@ def file_size(f: dict) -> int:
     return len(str(f.get("text", "")).encode())
 
 
+def slack_attachments(m: dict) -> list[Attachment]:
+    """A Slack message's ``files[]`` as attachments. ``url`` is the auth-gated
+    ``url_private``. A hidden or tombstoned file has none and is skipped."""
+    out: list[Attachment] = []
+    for i, f in enumerate(m.get("files", []) or []):
+        url = f.get("url_private_download") or f.get("url_private") or ""
+        if not url and f.get("mode") in ("hidden", "tombstone"):
+            continue
+        out.append(Attachment(
+            idx=i,
+            filename=f.get("name") or f.get("title") or f"attachment-{i}",
+            mime=f.get("mimetype", "") or "",
+            size=int(f.get("size", 0) or 0),
+            url=url,
+            ref={"id": f.get("id", ""), "url": url},
+        ))
+    return out
+
+
+def looks_like_slack_user_id(s: str) -> bool:
+    """Slack user ids are ``U…``, or ``W…`` on enterprise grid, in capitals."""
+    return bool(s) and s[0] in ("U", "W") and s[1:].isalnum() and s.isupper()
+
+
 def slack_reaction(
     conn: "Connector", channel: str, message_id: str, name: str, *,
     remove: bool, error: str = "",
@@ -180,7 +204,7 @@ class Connector(ABC):
     # the only reader of its chats). The adapter then injects ``history``.
     keeps_history: bool = False
     history = None  # awm.social.history.History, set by the adapter
-    # True for a connector whose ``send`` and ``edit_ack`` take ``files``: a list
+    # True for a connector whose ``send`` takes ``files``: a list
     # of attachments, each ``{"filename"}`` plus one of ``text``, ``b64`` or
     # ``path`` (see :func:`file_bytes`).
     sends_files: bool = False
@@ -206,24 +230,16 @@ class Connector(ABC):
         permanent, unrecoverable failure (e.g. missing dependency / bad token).
         """
 
-    @abstractmethod
     async def send(
         self, channel: str, text: str, *, thread: str | None = None
     ) -> dict:
         """Send ``text`` to ``channel`` (optionally in ``thread``).
 
         Returns a small dict describing the sent message (at least
-        ``message_id`` when the platform supplies one).
+        ``message_id`` when the platform supplies one). Non-abstract: a read
+        only connector, such as Tony's own Slack (R127), leaves this default.
         """
-
-    async def edit_ack(self, ref: str, text: str, *,
-                       files: list[dict] | None = None) -> dict | None:
-        """Rewrite the acknowledgement of the command carrying ``ack_ref=ref``.
-
-        Returns ``None`` when the platform can no longer edit it (expired,
-        unknown, or no command surface at all); the caller then sends anew.
-        """
-        return None
+        raise NotImplementedError(f"{self.platform} account {self.account.name!r} is read only")
 
     async def fetch(
         self, channel: str, *, limit: int = 50, before: str | None = None

@@ -1,0 +1,31 @@
+[plugin]
+name = "scopes"
+version = "0.1.0"
+
+[[service]]
+name = "scopes"
+
+[[tool]]
+name = "scope"
+major = 1
+tier = "on"
+
+[needs]
+secrets = []
+network = ["github.com", "api.github.com", "*.githubusercontent.com", "tcp:22 github.com, git over ssh"]
+platform = ["linux"]
+
+[[needs.tool]]
+name = "journal"
+major = 1
+verbs = ["brief_set", "brief_read"]
+
+[[needs.tool]]
+name = "operations"
+major = 2
+verbs = ["ops_post"]
+
+[[needs.tool]]
+name = "reflection"
+major = 1
+verbs = ["waits", "message"]

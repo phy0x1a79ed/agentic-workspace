@@ -6,16 +6,12 @@ build-backend = "setuptools.build_meta"
 name = "awm-auth"
 version = "0.1.0"
 requires-python = ">=3.11"
-description = "AWM auth service: the credential authority. Mints paired (login-password, peer-credential) generations on a 12h cadence with 24h overlapping validity, signs sliding session tokens, pushes the day's login password to Discord, and mirrors the current peer credential to $AWM_PEER_CRED for the SSH peer-auth channel. The httpsfront edge enforces auth using material this service hands it."
+description = "AWM auth service: holds the session-signing secret and the operator's device tokens. The httpsfront edge enforces auth using material this service hands it."
 dependencies = [
     "awm-config",
     "awm-persistence",
     "awm-gatewayclient",
     "pydantic>=2",
-    # Node identity: the ed25519 key behind peer tokens (awm.config.peertoken).
-    "cryptography",
-    # The Penpot credential is exchanged for a Penpot session over loopback.
-    "httpx",
 ]
 
 [project.optional-dependencies]

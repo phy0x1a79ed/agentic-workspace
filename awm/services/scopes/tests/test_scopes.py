@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import os
 import subprocess
-from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -21,10 +20,8 @@ import pytest
 from awm.scopes.models import ScopeCreateRequest, ScopeUpdateRequest
 from awm.scopes import scopes
 from awm.scopes.scopes import (
-    _CONTEXT_IMPORT_LINE,
     _heal_worktree,
     _is_tracked,
-    _strip_context_import,
     heal_scopes,
 )
 
@@ -118,7 +115,7 @@ class TestCreateScope:
             capture_output=True, text=True, check=True,
         ).stdout.strip()
         assert branch == "release"
-        assert (worktree / ".awm" / "context.md").exists()
+        assert not (worktree / ".awm").exists()
 
 
 class TestUpdateScope:
@@ -203,32 +200,6 @@ def _git_init_no_track(worktree: Path) -> None:
     subprocess.run(["git", "init", "-q"], cwd=worktree, check=True, env=env)
 
 
-class TestStripContextImport:
-    def test_strips_trailing_line(self):
-        text = "# title\n\nbody\n\n@.awm/context.md\n"
-        new, changed = _strip_context_import(text)
-        assert changed is True
-        assert new == "# title\n\nbody\n"
-
-    def test_no_op_when_absent(self):
-        text = "# title\n\nbody\n"
-        new, changed = _strip_context_import(text)
-        assert changed is False
-        assert new == text
-
-    def test_ignores_middle_occurrence(self):
-        text = "# title\n@.awm/context.md\nbody\n"
-        new, changed = _strip_context_import(text)
-        assert changed is False
-        assert new == text
-
-    def test_no_orphan_blank_line(self):
-        text = "# title\nbody\n@.awm/context.md\n"
-        new, changed = _strip_context_import(text)
-        assert changed is True
-        assert new == "# title\nbody\n"
-
-
 class TestIsTracked:
     def test_true_for_tracked(self, tmp_path):
         wt = tmp_path / "wt"
@@ -253,25 +224,9 @@ class TestIsTracked:
 class TestHealWorktree:
     @pytest.fixture(autouse=True)
     def _isolate(self, scopes_workspace):
-        """Heal reaches outside the worktree now — it also reconciles
-        ``.awm/data`` against the project's canonical data dir. Without the
-        workspace fixture these tests would create ``proj-a/`` in the REAL
-        ``data/``."""
+        """Heal provisions a DVC project's data view, which reaches outside the
+        worktree. The workspace fixture keeps that off the real workspace."""
         return scopes_workspace
-
-    def test_strips_leaked_import_from_tracked_agents(self, tmp_path):
-        wt = tmp_path / "wt"
-        wt.mkdir()
-        _git_init_tracked_agents(wt, body="# project AGENTS\nbody\n")
-        (wt / "AGENTS.md").write_text(
-            "# project AGENTS\nbody\n\n@.awm/context.md\n"
-        )
-
-        actions = _heal_worktree(wt, project="proj-a", scope="s1", dry_run=False)
-
-        assert actions["import_line"] == "stripped"
-        assert (wt / "AGENTS.md").read_text() == "# project AGENTS\nbody\n"
-        assert actions["agents_md"] is None
 
     def test_deletes_untracked_agents_md(self, tmp_path):
         wt = tmp_path / "wt"
@@ -315,140 +270,28 @@ class TestHealWorktree:
         assert actions["claude_md"] is None
         assert (wt / "CLAUDE.md").read_text() == "# real tracked claude\n"
 
-    def test_backfills_missing_context_md(self, tmp_path, scopes_workspace):
+    def test_heal_writes_no_context_md_and_no_opencode_config(self, tmp_path, scopes_workspace):
+        """The brief lives in the journal (scopes.md R143) and awm has no OpenCode lane (install.md R135)."""
         wt = tmp_path / "wt"
         wt.mkdir()
         _git_init_tracked_agents(wt)
-
         actions = _heal_worktree(wt, project="proj-a", scope="s1", dry_run=False)
-
-        assert actions["context_md"] == "created"
-        assert (wt / ".awm" / "context.md").exists()
-        body = (wt / ".awm" / "context.md").read_text()
-        assert "proj-a/s1" in body
-
-    def test_refreshes_stale_opencode_config(self, tmp_path, scopes_workspace):
-        wt = tmp_path / "wt"
-        wt.mkdir()
-        _git_init_tracked_agents(wt)
-        (scopes_workspace["workspace"] / "AGENTS.md").write_text("# orient\n")
-        awm = wt / ".awm"
-        awm.mkdir()
-        (awm / "mcp-opencode.json").write_text(
-            '{"$schema":"x","mcp":{},"instructions":["legacy.md"]}\n'
-        )
-
-        actions = _heal_worktree(wt, project="proj-a", scope="s1", dry_run=False)
-
-        assert actions["opencode_config"] == "rewritten"
-        import json
-        cfg = json.loads((awm / "mcp-opencode.json").read_text())
-        assert cfg["instructions"] == [
-            str(scopes_workspace["workspace"] / "AGENTS.md"),
-            ".awm/context.md",
-        ]
-
-    def test_creates_missing_opencode_config(self, tmp_path, scopes_workspace):
-        wt = tmp_path / "wt"
-        wt.mkdir()
-        _git_init_tracked_agents(wt)
-        (scopes_workspace["workspace"] / "AGENTS.md").write_text("# orient\n")
-
-        actions = _heal_worktree(wt, project="proj-a", scope="s1", dry_run=False)
-
-        assert actions["opencode_config"] == "created"
-        assert (wt / ".awm" / "mcp-opencode.json").is_file()
-
-    def test_opencode_config_dry_run_reports_would_create(self, tmp_path, scopes_workspace):
-        wt = tmp_path / "wt"
-        wt.mkdir()
-        _git_init_tracked_agents(wt)
-
-        actions = _heal_worktree(wt, project="proj-a", scope="s1", dry_run=True)
-
-        assert actions["opencode_config"] == "would-create"
-        assert not (wt / ".awm" / "mcp-opencode.json").exists()
-
-    def test_leaves_existing_context_md_alone(self, tmp_path):
-        wt = tmp_path / "wt"
-        wt.mkdir()
-        _git_init_tracked_agents(wt)
-        (wt / ".awm").mkdir()
-        original = "# my custom context\n"
-        (wt / ".awm" / "context.md").write_text(original)
-
-        actions = _heal_worktree(wt, project="proj-a", scope="s1", dry_run=False)
-
-        assert actions["context_md"] is None
-        assert (wt / ".awm" / "context.md").read_text() == original
-
-    def test_rewrites_the_legacy_inbox_step(self, tmp_path):
-        """The old template's step 3 fetched by scope alone, which reads every
-        project's channel of that name. Heal swaps that exact line for the inbox."""
-        from awm.scopes.scopes import _default_context, _legacy_inbox_step
-        wt = tmp_path / "wt"
-        (wt / ".awm").mkdir(parents=True)
-        current = _default_context("proj-a", "s1")
-        step = next(line for line in current.splitlines() if line.startswith("3. "))
-        legacy = current.replace(step, _legacy_inbox_step("s1"))
-        assert legacy != current
-        (wt / ".awm" / "context.md").write_text(legacy + "## Notes\nkeep me\n")
-
-        dry = _heal_worktree(wt, project="proj-a", scope="s1", dry_run=True)
-        assert dry["context_md"] == "updated:inbox-step"
-        assert (wt / ".awm" / "context.md").read_text().startswith(legacy)
-
-        actions = _heal_worktree(wt, project="proj-a", scope="s1", dry_run=False)
-        assert actions["context_md"] == "updated:inbox-step"
-        assert (wt / ".awm" / "context.md").read_text() == current + "## Notes\nkeep me\n"
-        again = _heal_worktree(wt, project="proj-a", scope="s1", dry_run=False)
-        assert again["context_md"] is None
-
-    def test_default_context_names_the_project_in_its_inbox_step(self):
-        from awm.scopes.scopes import _default_context
-        ctx = _default_context("proj-a", "s1")
-        assert 'journal(verb="inbox", args={project:"proj-a", scope:"s1"})' in ctx
-        assert 'verb="fetch"' not in ctx
-
-    def test_removes_skills_symlink(self, tmp_path):
-        wt = tmp_path / "wt"
-        (wt / ".awm").mkdir(parents=True)
-        (wt / ".awm" / "skills").symlink_to(tmp_path / "skills")
-
-        dry = _heal_worktree(wt, project="proj-a", scope="s1", dry_run=True)
-        assert dry["skills_link"] == "deleted:symlink"
-        assert (wt / ".awm" / "skills").is_symlink()
-
-        actions = _heal_worktree(wt, project="proj-a", scope="s1", dry_run=False)
-        assert actions["skills_link"] == "deleted:symlink"
-        assert not (wt / ".awm" / "skills").is_symlink()
-
-    def test_keeps_a_real_skills_dir(self, tmp_path):
-        wt = tmp_path / "wt"
-        (wt / ".awm" / "skills").mkdir(parents=True)
-
-        actions = _heal_worktree(wt, project="proj-a", scope="s1", dry_run=False)
-
-        assert actions["skills_link"] is None
-        assert (wt / ".awm" / "skills").is_dir()
+        assert "context_md" not in actions and "opencode_config" not in actions
+        assert not (wt / ".awm").exists()
 
     def test_dry_run_does_not_mutate(self, tmp_path):
         wt = tmp_path / "wt"
         wt.mkdir()
         _git_init_tracked_agents(wt, body="# project\n")
-        (wt / "AGENTS.md").write_text("# project\n\n@.awm/context.md\n")
         (wt / "CLAUDE.md").symlink_to("AGENTS.md")
 
         before_agents = (wt / "AGENTS.md").read_text()
 
         actions = _heal_worktree(wt, project="proj-a", scope="s1", dry_run=True)
 
-        assert actions["import_line"] == "stripped"
         assert actions["claude_md"] == "deleted:symlink"
-        assert actions["context_md"] == "created"
         assert (wt / "AGENTS.md").read_text() == before_agents
         assert (wt / "CLAUDE.md").is_symlink()
-        assert not (wt / ".awm" / "context.md").exists() if (wt / ".awm").exists() else True
 
     def test_idempotent(self, tmp_path, scopes_workspace):
         wt = tmp_path / "wt"
@@ -458,17 +301,11 @@ class TestHealWorktree:
 
         _heal_worktree(wt, project="proj-a", scope="s1", dry_run=False)
         agents_after = (wt / "AGENTS.md").read_text()
-        ctx_after = (wt / ".awm" / "context.md").read_text()
 
         second = _heal_worktree(wt, project="proj-a", scope="s1", dry_run=False)
 
-        assert second == {
-            "import_line": None, "agents_md": None,
-            "claude_md": None, "context_md": None,
-            "opencode_config": None, "data": None, "skills_link": None,
-        }
+        assert second == {"agents_md": None, "claude_md": None, "data": None}
         assert (wt / "AGENTS.md").read_text() == agents_after
-        assert (wt / ".awm" / "context.md").read_text() == ctx_after
 
 
 # ---------------------------------------------------------------------------
@@ -519,9 +356,9 @@ class TestHealScopes:
         ``Path("")`` is ``Path(".")``, which *exists*, so an existence check
         alone waves the row through and heal then operates on whatever
         directory the process happens to be standing in. In production this
-        repointed a live scope's ``.awm/data`` symlink and left a stray clone
-        inside the project's canonical data directory. It must fall back to the
-        scope's conventional location instead.
+        rewrote a live scope's data link and left a stray clone inside the
+        project's canonical data directory. It must fall back to the scope's
+        conventional location instead.
         """
         from awm.config import PROJECTS_DIR
         scopes_dao_conn.execute("UPDATE agents SET worktree='' WHERE scope='scope-1'")
@@ -581,10 +418,8 @@ class TestHealScopes:
         actions = report[0]["actions"]
         assert actions["agents_md"] == "deleted:untracked"
         assert actions["claude_md"] == "deleted:symlink"
-        assert actions["context_md"] == "created"
         assert not (wt / "AGENTS.md").exists()
         assert not (wt / "CLAUDE.md").exists()
-        assert (wt / ".awm" / "context.md").exists()
 
     def test_dry_run_reports_without_mutating(self, scopes_workspace, seeded_scopes):
         from awm.scopes import scopes as scopes_mod
@@ -609,8 +444,4 @@ class TestHealScopes:
 
         heal_scopes()
         second = heal_scopes()
-        assert second[0]["actions"] == {
-            "import_line": None, "agents_md": None,
-            "claude_md": None, "context_md": None,
-            "opencode_config": None, "data": None, "skills_link": None,
-        }
+        assert second[0]["actions"] == {"agents_md": None, "claude_md": None, "data": None}

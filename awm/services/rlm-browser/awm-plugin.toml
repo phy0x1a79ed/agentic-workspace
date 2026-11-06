@@ -1,0 +1,19 @@
+[plugin]
+name = "rlm-browser"
+version = "0.1.0"
+
+[[service]]
+name = "rlm-browser"
+profiles = ["gamebot"]
+
+# The browser seat singleton owns the name `browser` (fleet.md R102); each tool name is unique (R117 item 2).
+[[tool]]
+name = "rlm-browser"
+major = 1
+tier = "on"
+
+[needs]
+secrets = []
+network = ["*"]
+platform = ["linux"]
+

@@ -1,8 +1,8 @@
 """Tests for awm.scopes.projects — fresh and clone scaffolding + credential errors.
 
 Rewritten after ``_find_template`` (dead code) was removed and
-``create_project`` gained scope-style ``.awm/`` scaffolding (inbox bug report
-2026-07-01). Uses a local seed repo as the clone source so the clone path is
+``create_project`` registered its first worktree like a scope (inbox bug
+report 2026-07-01). Uses a local seed repo as the clone source so the clone path is
 exercised hermetically (no network, no ``gh``).
 """
 
@@ -57,12 +57,8 @@ class TestCreateProjectClone:
         head = _git(worktree, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
         assert head == "main"
 
-        # .awm/ scaffolded exactly like a scope.
-        awm_dir = worktree / ".awm"
-        assert (awm_dir / "context.md").exists()
-        assert (awm_dir / "history.md").exists()
-        assert (awm_dir / "data").is_symlink()
-        assert not (awm_dir / "skills").exists()
+        # A scope keeps no files outside git and DVC (scopes.md R142).
+        assert not (worktree / ".awm").exists()
 
         # Project is visible without a scope_repair.
         from awm.scopes import projects as p
@@ -97,7 +93,7 @@ class TestCreateProjectFresh:
         log = _git(bare, "log", "--format=%s", "main").stdout.strip()
         assert log == "Initial commit for freshproj"
         worktree = projects_dir / "freshproj" / "main"
-        assert (worktree / ".awm" / "context.md").exists()
+        assert not (worktree / ".awm").exists()
 
 
 class TestCloneBare:

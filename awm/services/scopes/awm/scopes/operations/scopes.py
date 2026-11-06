@@ -2,7 +2,7 @@
 
 from awm.config import privacy
 from awm.scopes.models import ScopeCreateRequest, ScopeUpdateRequest
-from awm.scopes import private, scopes, search_index, tags
+from awm.scopes import claims, private, scopes, search_index, tags
 
 
 # Manifest function descriptors (serializable dicts for API_MANIFEST["functions"])
@@ -16,9 +16,8 @@ SCOPE_MANIFEST_FUNCTIONS = [
     {
         "name": "scope_create",
         "tool": "scope_create",
-        "effect": "write",
         "description": (
-            "Create a new scope (worktree + .awm/ metadata) for a project. "
+            "Create a new scope (a worktree, its data view and its brief) for a project. "
             "The new branch defaults to feat/<scope>; pass branch_name to name "
             "it explicitly (e.g. a plain branch like 'release' or 'dev'). "
             "A branch that already exists is checked out, not recreated. A branch "
@@ -55,7 +54,10 @@ SCOPE_MANIFEST_FUNCTIONS = [
             {"name": "branch_name", "type": "string", "required": False,
              "description": "Branch to check out. Default feat/<scope>. It may "
                             "already exist locally or on a remote."},
-            {"name": "context", "type": "string", "required": False},
+            {"name": "context", "type": "string", "required": False,
+             "description": "The scope brief: what the scope is for, in at most two "
+                            "sentences and 400 characters. It goes to the journal as "
+                            "brief_set would write it; see brief_set for what it holds."},
             {"name": "new_project", "type": "boolean", "required": False,
              "description": "Create the project first when it does not exist. "
                             "Default false: an unknown project is an error."},
@@ -73,10 +75,9 @@ SCOPE_MANIFEST_FUNCTIONS = [
     {
         "name": "scope_search",
         "tool": "scope_search",
-        "effect": "read",
         "description": (
             "Search scopes: name matches first, then scopes ranked by the "
-            "meaning of their goals and context. Each project's main checkout "
+            "meaning of their brief and context. Each project's main checkout "
             "is a scope named for its default branch. "
             "Defaults to status='active'; pass status='all' for the full history. "
             "With no project, the reply also lists every project, matched and "
@@ -100,12 +101,10 @@ SCOPE_MANIFEST_FUNCTIONS = [
     {
         "name": "scope_reindex",
         "tool": "scope_reindex",
-        "effect": "write",
         "description": (
             "Bring the scopes service's search index of scopes and projects in line "
             "with the tables: embeds what is missing, changed or made by another "
             "model, and drops what no longer exists. Returns counts per type. "
-            "Posts are indexed by journal_reindex. "
             "dry_run reports without writing; force re-embeds everything."
         ),
         "params": [
@@ -118,17 +117,19 @@ SCOPE_MANIFEST_FUNCTIONS = [
     {
         "name": "scope_complete",
         "tool": "scope_complete",
-        "effect": "write",
         "description": (
             "Complete (retire) a scope. Optionally merge, and remove the worktree "
             "with cleanup=true. The branch stays unless delete_branch=true, which "
-            "needs cleanup=true. The reply then names the branch and its last SHA."
+            "needs cleanup=true. The reply then names the branch and its last SHA. "
+            "cleanup refuses as scope_delete does; force=true discards and lists "
+            "what it threw away."
         ),
         "params": [
             {"name": "project", "type": "string", "required": True},
             {"name": "scope", "type": "string", "required": True},
             {"name": "merge", "type": "boolean", "required": False},
             {"name": "cleanup", "type": "boolean", "required": False},
+            {"name": "force", "type": "boolean", "required": False},
             {"name": "delete_branch", "type": "boolean", "required": False,
              "description": "Also delete the scope's git branch. Default false: "
                             "the branch is kept."},
@@ -137,13 +138,14 @@ SCOPE_MANIFEST_FUNCTIONS = [
     {
         "name": "scope_delete",
         "tool": "scope_delete",
-        "effect": "write",
         "description": (
             "Delete a scope and remove its worktree. The branch stays unless "
             "delete_branch=true. The reply then names the branch and its last "
             "SHA. Refuses when the worktree has uncommitted changes -- which "
             "covers data as well as code, since a data chunk is committed via "
-            "its .dvc pin; pass force=true to discard them."
+            "its .dvc pin -- or the branch has commits no other branch or remote "
+            "holds, even when the branch is kept. force=true discards them and "
+            "the reply lists each one. A live session's claim always refuses."
         ),
         "params": [
             {"name": "project", "type": "string", "required": True},
@@ -157,17 +159,27 @@ SCOPE_MANIFEST_FUNCTIONS = [
         "timeout": 600.0,
     },
     {
+        "name": "scope_awm_sweep",
+        "tool": "scope_awm_sweep",
+        "surfaces": ["cli", "http"],
+        "description": (
+            "One-shot for the deploy (scopes.md R142): empty each worktree's .awm/ folder on "
+            "this node. Removes the data and skills links, history.md and mcp-opencode.json, "
+            "moves the DVC mount list and failure sentinel into the worktree's git dir, and "
+            "rewrites each DVC project's hooks to match. Leaves context.md for the scope "
+            "briefs one-shot and reports it. Idempotent."
+        ),
+        "params": [{"name": "dry_run", "type": "boolean", "required": False}],
+        "timeout": 600.0,
+    },
+    {
         "name": "scope_heal",
         "tool": "scope_heal",
-        "effect": "write",
         "description": (
-            "Idempotent repair pass over active scopes: enforce tier-3 = .awm/ "
-            "only (strip @.awm/context.md imports, drop untracked AGENTS.md / "
-            "CLAUDE.md, recreate context.md and the per-scope opencode config) "
-            "and bring the scope's data view to whatever its checkout implies "
-            "— installing the DVC merge driver + hooks and materialising the "
-            "pinned chunks, or leaving an unconverted project on the legacy "
-            "shared symlink. Pass dry_run=true to preview. "
+            "Idempotent repair pass over active scopes: drop an untracked AGENTS.md / "
+            "CLAUDE.md, and bring a DVC project's data view to whatever its checkout "
+            "implies — installing the DVC merge driver + hooks, materialising the "
+            "pinned chunks and building missing shared copies. Pass dry_run=true to preview. "
             "The reply also lists worktrees under projects/<project>/ that no scope "
             "row names (unregistered_worktrees) and active or allocated rows whose "
             "worktree is gone (orphaned_rows). Heal never registers or retires a "
@@ -183,7 +195,6 @@ SCOPE_MANIFEST_FUNCTIONS = [
     {
         "name": "scope_private",
         "tool": "scope_private",
-        "effect": "write",
         "description": (
             "Mark a project, or one scope of it, private on this node, or clear "
             "the mark. A private project or scope, with every scope nested under "
@@ -204,7 +215,6 @@ SCOPE_MANIFEST_FUNCTIONS = [
     {
         "name": "scope_tag",
         "tool": "scope_tag",
-        "effect": "write",
         "description": (
             "Read or set the tags of a project, a scope, or a scope group such as "
             "'metasmith/lab' (a group needs no scope of its own yet). A scope's "
@@ -228,7 +238,6 @@ SCOPE_MANIFEST_FUNCTIONS = [
     {
         "name": "scope_repair",
         "tool": "scope_repair",
-        "effect": "write",
         "description": "Reconcile an on-disk worktree with a missing agents DB row.",
         "params": [
             {"name": "project", "type": "string", "required": True},
@@ -238,7 +247,6 @@ SCOPE_MANIFEST_FUNCTIONS = [
     {
         "name": "scope_sync",
         "tool": "scope_sync",
-        "effect": "write",
         "description": "Sync a scope's feature branch with a base branch via merge or rebase.",
         "params": [
             {"name": "project", "type": "string", "required": True},
@@ -250,7 +258,6 @@ SCOPE_MANIFEST_FUNCTIONS = [
     {
         "name": "scope_gather",
         "tool": "scope_git_gather",
-        "effect": "write",
         "description": (
             "Fan-in: merge each peripheral scope's branch into a hub scope's "
             "branch (runs in the hub worktree, which must be clean and on the "
@@ -271,7 +278,6 @@ SCOPE_MANIFEST_FUNCTIONS = [
     {
         "name": "scope_scatter",
         "tool": "scope_git_scatter",
-        "effect": "write",
         "description": (
             "Fan-out: merge a hub scope's branch into each peripheral scope's "
             "branch (each merge runs in that peripheral's worktree). A dirty or "
@@ -290,6 +296,63 @@ SCOPE_MANIFEST_FUNCTIONS = [
         "timeout": 900.0,
     },
 ]
+
+
+_CLAIM_KEY = [
+    {"name": "project", "type": "string", "required": True},
+    {"name": "scope", "type": "string", "required": True},
+    {"name": "session_id", "type": "string", "required": True,
+     "description": "The session's id in R9 form (`cc` + hex of its Claude session UUID)."},
+]
+
+CLAIM_MANIFEST_FUNCTIONS = [
+    {
+        "name": "scope_claim",
+        "tool": "scope_claim",
+        "surfaces": ["cli", "http"],
+        "description": (
+            "Claim a scope for a live session (scopes.md R3, R42). reflection cd calls this "
+            "before it moves a session; agents use cd, not this verb. A scope holds at most one "
+            "live session, and the claim ends when the session's process ends, unless the "
+            "session waits on other sessions. A held scope answers ok=false with its holder. "
+            "queue=true joins the scope's first-come queue and returns queued_position. A "
+            "terminal session (terminal=true) is warned and never blocked."
+        ),
+        "params": [
+            *_CLAIM_KEY,
+            {"name": "pid", "type": "integer", "required": False,
+             "description": "The session's process id on this node. Default: the calling process."},
+            {"name": "job", "type": "string", "required": False,
+             "description": "The session's background job, which the queue notifies when the scope frees."},
+            {"name": "queue", "type": "boolean", "required": False},
+            {"name": "terminal", "type": "boolean", "required": False},
+        ],
+    },
+    {
+        "name": "scope_release",
+        "tool": "scope_release",
+        "surfaces": ["cli", "http"],
+        "description": "End a session's claim on a scope and notify the first session in its queue.",
+        "params": list(_CLAIM_KEY),
+    },
+    {
+        "name": "scope_withdraw",
+        "tool": "scope_withdraw",
+        "surfaces": ["cli", "http"],
+        "description": "Take a session out of a scope's queue (scopes.md R46).",
+        "params": list(_CLAIM_KEY),
+    },
+    {
+        "name": "scope_claims",
+        "tool": "scope_claims",
+        "description": "The live session holding each scope, and each scope's queue.",
+        "params": [
+            {"name": "project", "type": "string", "required": False},
+            {"name": "scope", "type": "string", "required": False},
+        ],
+    },
+]
+SCOPE_MANIFEST_FUNCTIONS = SCOPE_MANIFEST_FUNCTIONS + CLAIM_MANIFEST_FUNCTIONS
 
 
 def _handle_scope_create(args: dict) -> dict:
@@ -327,6 +390,7 @@ def _handle_scope_complete(args: dict) -> dict:
         action="complete",
         merge=bool(args.get("merge", False)),
         cleanup=bool(args.get("cleanup", False)),
+        force=bool(args.get("force", False)),
         delete_branch=bool(args.get("delete_branch", False)),
     )
     result = scopes.update_scope(args["project"], args["scope"], req)
@@ -339,6 +403,13 @@ def _handle_scope_delete(args: dict) -> dict:
         delete_branch=bool(args.get("delete_branch", False)),
     )
     return result.model_dump()
+
+
+def _handle_scope_awm_sweep(args: dict, as_: str | None = None) -> dict:
+    if privacy.from_peer(as_):
+        raise PermissionError("scope_awm_sweep runs on its own node")
+    from awm.scopes import awm_sweep
+    return awm_sweep.sweep(dry_run=bool(args.get("dry_run", False)))
 
 
 def _handle_scope_heal(args: dict, as_: str | None = None) -> dict:
@@ -412,22 +483,48 @@ def _handle_scope_scatter(args: dict) -> dict:
     return result.model_dump()
 
 
-def _handle_scope_reindex(args: dict) -> dict:
-    return search_index.run_reindex(force=bool(args.get("force", False)),
-                                    dry_run=bool(args.get("dry_run", False)))
+def _pid(args: dict) -> int | None:
+    pid = args.get("pid", args.get("_caller_pid"))
+    return int(pid) if isinstance(pid, (int, str)) and str(pid).isdigit() else None
+
+
+def _handle_scope_claim(args: dict) -> dict:
+    return claims.claim(args["project"], args["scope"], args["session_id"], pid=_pid(args),
+                        job=args.get("job") or None, queue=bool(args.get("queue", False)),
+                        terminal=bool(args.get("terminal", False)))
+
+
+def _handle_scope_release(args: dict) -> dict:
+    return claims.release(args["project"], args["scope"], args["session_id"])
+
+
+def _handle_scope_withdraw(args: dict) -> dict:
+    return claims.withdraw(args["project"], args["scope"], args["session_id"])
+
+
+def _handle_scope_claims(args: dict, as_: str | None = None) -> dict:
+    out = claims.listing(args.get("project"), args.get("scope"))
+    out["claims"] = privacy.visible_rows(out["claims"], as_)
+    out["count"] = len(out["claims"])
+    return out
 
 
 SCOPE_HANDLERS = {
     "scope_create": _handle_scope_create,
     "scope_search": _handle_scope_search,
-    "scope_reindex": _handle_scope_reindex,
+    "scope_reindex": search_index.INDEX.handle_reindex,
     "scope_complete": _handle_scope_complete,
     "scope_delete": _handle_scope_delete,
     "scope_heal": _handle_scope_heal,
+    "scope_awm_sweep": _handle_scope_awm_sweep,
     "scope_private": _handle_scope_private,
     "scope_tag": _handle_scope_tag,
     "scope_repair": _handle_scope_repair,
     "scope_sync": _handle_scope_sync,
     "scope_gather": _handle_scope_gather,
     "scope_scatter": _handle_scope_scatter,
+    "scope_claim": _handle_scope_claim,
+    "scope_release": _handle_scope_release,
+    "scope_withdraw": _handle_scope_withdraw,
+    "scope_claims": _handle_scope_claims,
 }

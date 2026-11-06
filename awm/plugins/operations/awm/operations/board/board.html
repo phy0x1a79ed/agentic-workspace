@@ -1,0 +1,36 @@
+<style>
+.awm-board { display: flex; flex-direction: column; gap: 8px; height: 100%; padding: 8px; box-sizing: border-box; font-size: 14px; }
+.awm-top { display: flex; gap: 12px; align-items: center; }
+.awm-search { flex: 1; max-width: 420px; padding: 4px 8px; }
+.awm-heartbeat { font-size: 12px; opacity: .75; }
+.awm-heartbeat[data-stale] { color: #c0392b; opacity: 1; font-weight: 600; }
+.awm-main { display: flex; gap: 12px; min-height: 0; flex: 1; }
+.awm-sections { flex: 1 1 55%; overflow: auto; min-width: 260px; }
+.awm-detail { flex: 1 1 45%; display: flex; flex-direction: column; gap: 8px; min-width: 320px; }
+.awm-sections details { margin-bottom: 6px; }
+.awm-sections summary { font-weight: 600; cursor: pointer; padding: 4px 0; }
+.awm-card { display: flex; gap: 6px; align-items: center; padding: 4px 6px; border-radius: 4px; cursor: pointer; }
+.awm-card:hover { background: var(--hover-item-background-color, rgba(127,127,127,.12)); }
+.awm-card[aria-selected="true"] { background: var(--active-item-background-color, rgba(80,130,220,.25)); }
+.awm-card .t { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.awm-chip { font-size: 11px; padding: 1px 6px; border-radius: 9px; border: 1px solid rgba(127,127,127,.5); white-space: nowrap; }
+.awm-chip.status { border-color: #d68910; }
+.awm-note { width: 100%; height: 44px; border: 0; }
+.awm-sentinel { height: 1px; }
+.awm-info table { border-collapse: collapse; width: 100%; font-size: 12px; }
+.awm-info td, .awm-info th { text-align: left; padding: 2px 6px; border-bottom: 1px solid rgba(127,127,127,.25); }
+.awm-panel { flex: 1; min-height: 420px; width: 100%; border: 1px solid rgba(127,127,127,.4); border-radius: 4px; }
+</style>
+<div class="awm-board">
+  <div class="awm-top">
+    <input class="awm-search" type="search" placeholder="Search cards">
+    <span class="awm-heartbeat"></span>
+  </div>
+  <div class="awm-main">
+    <div class="awm-sections"></div>
+    <aside class="awm-detail">
+      <div class="awm-info"><p>Select a card.</p></div>
+      <iframe class="awm-panel" title="approver" allow="publickey-credentials-get; publickey-credentials-create"></iframe>
+    </aside>
+  </div>
+</div>

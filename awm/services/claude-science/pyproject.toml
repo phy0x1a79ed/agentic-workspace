@@ -10,9 +10,10 @@ description = "AWM claude-science service: supervise the Claude Science workbenc
 dependencies = [
     "awm-config",
     "awm-gatewayclient",
-    # Service-on-service: the mesh fronts are a configuration of httpsfront's
-    # cert minting, auth gate and reverse proxy, not a second implementation.
-    "awm-httpsfront",
+    # The mesh front is a configuration of the shared TLS front library:
+    # its cert handling, edge session check and reverse proxy.
+    "awm-grantlib",
+    "awm-tlsfront",
 ]
 
 [project.optional-dependencies]

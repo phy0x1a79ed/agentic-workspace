@@ -38,10 +38,10 @@ in a `degraded` block.
 
 ## Optional dependency: `dvc`
 
-The data layer (`awm.dvc.data_dvc`) shells out to the `dvc` **binary**. It is
-deliberately optional: without it every data path falls back to the shared
-symlink rather than failing, so the service starts and scopes are created either
-way — they just don't get versioned, isolated data.
+The data layer (`awm.dvcdata`) shells out to the `dvc` **binary**. It is
+deliberately optional: without it a scope gets no data view rather than a
+failure, so the service starts and scopes are created either way — they just
+don't get versioned, isolated data.
 
 Install it into its own env (keeping it out of the `awm` env avoids a slow solve
 there):
@@ -56,7 +56,7 @@ lives anywhere unusual.
 | Env var | Default | Meaning |
 |---|---|---|
 | `AWM_DVC_BIN` | — | absolute path to `dvc`; wins over every other lookup |
-| `AWM_DATA_DVC` | `1` | global kill switch — `0` forces every project back to the shared symlink |
+| `AWM_DATA_DVC` | `1` | global kill switch — `0` provisions no project's data |
 
 The cache at `<workspace>/data/.dvc_cache` and `<workspace>/projects/` **must be
 on the same filesystem**: materialised files are hardlinks into that cache, and
@@ -67,5 +67,4 @@ The off-site half of the cache — the append-only sync to chinook and the
 per-scope selective restore — belongs to the `dvc` *service*, not here. See
 `awm/services/dvc/INSTALL.md`.
 
-To iterate against a running sandbox without installing, use
-`awm dev shadow awm/services/scopes`; it execs this same `run.sh` as an overlay.
+To iterate without installing, run the worktree's dev sandbox (`bash awm/services/dev/sandbox/run.sh start`); it runs this same `run.sh` from the worktree.

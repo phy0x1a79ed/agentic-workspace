@@ -21,8 +21,8 @@ does nothing without it. A slash-less mount is a page that paints, navigates,
 and then ignores every history entry it pushed.
 
 **Why not mount it at the site root.** Putting the shell at `/` would work for
-the browser and cost the edge its landing page, its ``/ui/*`` pages and its
-``/svc/*`` calls — one host cannot serve both from the root. Under a prefix the
+the browser and cost the edge its landing page, its ``/p/*`` pages and its
+``/invoke`` calls — one host cannot serve both from the root. Under a prefix the
 two surfaces are disjoint by construction rather than by a carefully-argued
 list, and the root-level names (`/api/`, `/assets/`, `/favicon.ico`) stay awm's.
 

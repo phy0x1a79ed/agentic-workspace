@@ -68,11 +68,12 @@ def canonical_workspace() -> Path:
 # Derived paths
 # ---------------------------------------------------------------------------
 
-AWM_DIR = WORKSPACE_ROOT / ".awm"
+# The gateway gives each service its state dir as AWM_DIR, and a singleton's unit
+# sets it outside any workspace.
+AWM_DIR = Path(os.environ["AWM_DIR"]).resolve() if os.environ.get("AWM_DIR", "").strip() else WORKSPACE_ROOT / ".awm"
 DB_PATH = AWM_DIR / "state.db"
 PID_FILE = AWM_DIR / "awm.pid"
 LOG_FILE = AWM_DIR / "awm.log"
-ENV_FILE = AWM_DIR / "env"
 
 PROJECTS_DIR = WORKSPACE_ROOT / "projects"
 DATA_DIR = WORKSPACE_ROOT / "data"
@@ -83,8 +84,8 @@ def scope_of(cwd: "str | Path | None",
              projects: "str | Path") -> tuple[str | None, str | None]:
     """Project and scope of a directory under ``projects``, else (None, None).
 
-    The scope is the deepest enclosing directory that holds a ``.awm/``, so a
-    session sitting in a subdirectory of a worktree still reads as that scope.
+    The scope is the deepest enclosing git worktree, the directory that holds a
+    ``.git``, so a session in a subdirectory of a worktree reads as that scope.
     A directory under no scope falls back to its own path below the project.
     """
     if not cwd:
@@ -97,7 +98,7 @@ def scope_of(cwd: "str | Path | None",
     if not parts:
         return None, None
     for depth in range(len(parts), 1, -1):
-        if (root.joinpath(*parts[:depth]) / ".awm").is_dir():
+        if (root.joinpath(*parts[:depth]) / ".git").exists():
             return parts[0], "/".join(parts[1:depth])
     return parts[0], "/".join(parts[1:]) or None
 
@@ -111,7 +112,7 @@ GITHUB_USER = os.environ.get("AWM_GITHUB_USER", "phy0x1a79ed")
 # to Discord, an SSH lockout alert — is ambiguous in a multi-node fleet unless it
 # names its sender, and the OS hostname is not that name: mira's hostname is
 # ``pavilion``, so its alerts named a machine nobody calls mira. The fleet name
-# is declared per node in ``<workspace>/.awm/env`` and read from there.
+# is declared per node in the gateway's config.toml ``[env]``.
 #
 # The edge URL is declared rather than discovered for a reason worth keeping:
 # capella's edge is reached at the *Windows* host's mesh address, which is
@@ -201,19 +202,12 @@ BASE_URL = f"http://{HOST}:{PORT}"
 VAULT_PORT = int(os.environ.get("AWM_VAULT_PORT", "12511"))
 VAULT_URL = f"http://{HOST}:{VAULT_PORT}"
 
-# Penpot's frontend nginx port, on the local production stack. Named here for
-# the same reason as VAULT_PORT: two processes have to agree on it and
-# neither owns it — the penpot service's stack supervisor publishes it, and
-# httpsfront proxies to it.
-PENPOT_PORT = int(os.environ.get("AWM_PENPOT_PORT", "9001"))
-PENPOT_URL = f"http://{HOST}:{PENPOT_PORT}"
-
-# The tether relay's loopback port, on the public host. Named here for the same
+# The channel relay's loopback port, on the public host. Named here for the same
 # reason again: the relay binds it and the edge proxies to it, and neither owns
 # it. The relay reads the same variable itself, so this constant and that binary
 # agree by reading one name rather than by two defaults that happen to match.
-TETHER_PORT = int(os.environ.get("AWM_TETHER_PORT", "12520"))
-TETHER_URL = f"http://{HOST}:{TETHER_PORT}"
+RELAY_PORT = int(os.environ.get("AWM_TETHER_PORT", "12520"))
+RELAY_URL = f"http://{HOST}:{RELAY_PORT}"
 
 IDLE_SHUTDOWN_SECONDS = int(os.environ.get("AWM_IDLE_SHUTDOWN", "1800"))  # 30 min
 
@@ -222,71 +216,8 @@ ALLOW_DESTRUCTIVE = os.environ.get("AWM_ALLOW_DESTRUCTIVE") == "1"
 
 
 # ---------------------------------------------------------------------------
-# Per-workspace env file
-# ---------------------------------------------------------------------------
-
-def load_env_file(path: Path = ENV_FILE) -> int:
-    """Merge KEY=VAL lines from `path` into os.environ. Missing file → 0.
-
-    Format: one KEY=VAL per line. Leading `export ` tolerated. Lines
-    starting with `#` are comments; blank lines skipped. VAL is taken
-    verbatim (no $VAR / ~ expansion); one layer of surrounding "..." or
-    '...' quotes is stripped. File values OVERRIDE existing os.environ
-    entries — the file is the explicit declaration.
-    """
-    try:
-        text = path.read_text()
-    except FileNotFoundError:
-        return 0
-    except OSError as e:
-        log.warning("env file %s unreadable: %s", path, e)
-        return 0
-
-    applied = 0
-    for lineno, raw in enumerate(text.splitlines(), 1):
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        if line.startswith("export "):
-            line = line[len("export "):].lstrip()
-        if "=" not in line:
-            log.warning("env file %s: malformed line %d (no '=')", path, lineno)
-            continue
-        key, _, val = line.partition("=")
-        key = key.strip()
-        if not key or not (key[0].isalpha() or key[0] == "_") or not key.replace("_", "").isalnum():
-            log.warning("env file %s: malformed line %d (bad key)", path, lineno)
-            continue
-        val = val.strip()
-        if len(val) >= 2 and val[0] == val[-1] and val[0] in ('"', "'"):
-            val = val[1:-1]
-        os.environ[key] = val
-        applied += 1
-    if applied:
-        log.info("loaded %d env vars from %s", applied, path)
-    return applied
-
-
-# ---------------------------------------------------------------------------
 # Federation reader contracts (re-exported; defined in submodules)
 # ---------------------------------------------------------------------------
 
-from awm.config.effects import (  # noqa: E402,F401
-    ARCHIVE_CATEGORY,
-    EFFECTS,
-    verb_category,
-    verb_effect,
-)
-from awm.config.peerbook import (  # noqa: E402,F401
-    LEGACY_GRANTS,
-    RELATIONS,
-    ROLES,
-    caller_peer,
-    list_records,
-    load_book,
-    node_role,
-    node_swarm,
-    operator_dm,
-    peer_record,
-    peer_relation,
-)
+from awm.config.edges import caller_peer  # noqa: E402,F401
+from awm.config.operator import operator_dm  # noqa: E402,F401

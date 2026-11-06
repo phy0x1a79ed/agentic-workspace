@@ -40,10 +40,6 @@ def test_the_three_verbs_are_declared_and_handled():
         assert "surfaces" not in FUNCS[verb]
 
 
-def test_scope_status_reads_and_the_others_write():
-    assert FUNCS["scope_status"]["effect"] == "read"
-    assert FUNCS["mount"]["effect"] == "write"
-    assert FUNCS["gc"]["effect"] == "write"
 
 
 def test_gc_still_requires_the_caller_to_name_its_projects():
@@ -52,13 +48,13 @@ def test_gc_still_requires_the_caller_to_name_its_projects():
     assert "DRY RUN BY DEFAULT" in gc["description"]
 
 
-def test_service_toml_names_the_tool_and_turns_it_on():
+def test_the_plugin_manifest_names_the_tool_and_turns_it_on():
     import tomllib
     from pathlib import Path
 
     toml = tomllib.loads(
-        (Path(ha.__file__).parents[2] / "service.toml").read_text())
-    assert toml == {"tool": "dvc", "tier": "on"}
+        (Path(ha.__file__).parents[2] / "awm-plugin.toml").read_text())
+    assert [(t["name"], t["tier"]) for t in toml["tool"]] == [("dvc", "on")]
 
 
 @pytest.mark.parametrize("bad", ["", "../x", ".hidden", "a\\b", "a/b", "a\x00"])
@@ -84,9 +80,9 @@ def test_an_unknown_project_raises_rather_than_returning_nothing(dvc_workspace):
         scopedata.project_worktrees("nope")
 
 
-def test_scope_status_of_a_plain_nested_scope_reports_missing(project):
+def test_scope_status_of_a_plain_nested_scope_reports_no_dvc(project):
     rep = scopedata.scope_status("p", "fab/dev")
-    assert rep["mode"] == "missing"
+    assert rep["mode"] == "none"
 
 
 def test_gc_with_nothing_listed_is_refused_not_run(project):

@@ -1,0 +1,35 @@
+[plugin]
+name = "transcripts"
+version = "0.1.0"
+
+[[service]]
+name = "transcripts"
+
+[[service.archive]]
+name = "transcripts"
+mode = "live"
+query = "transcripts_query"
+optin = true
+hit = ["title", "ts"]
+
+[service.archive.fields]
+title = "content"
+text = "content"
+ts = "datetime"
+project = "categorical"
+scope = { class = "categorical", nested = "/" }
+
+[[tool]]
+name = "transcripts"
+major = 1
+tier = "off"
+
+[needs]
+secrets = []
+network = []
+platform = ["linux"]
+
+[[needs.tool]]
+name = "harness-cc"
+major = 1
+verbs = ["live_session_ids"]

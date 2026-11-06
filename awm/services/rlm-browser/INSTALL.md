@@ -18,22 +18,13 @@ respawn the service under systemd's minimal PATH (where `mamba` is not present).
 
 ## Run
 
-You never invoke the service by hand in normal operation. The gateway discovers
-this folder (any folder with a `run.sh` under `awm/services/`), starts it with
-`bash run.sh`, and injects the only three env vars the adapter reads:
+You never invoke the service by hand in normal operation. The gateway reads
+`awm-plugin.toml`, starts the service with `bash run.sh`, and sets `AWM_HUB_URL`,
+`AWM_SERVICE_NAME` and `AWM_HUB_TOKEN_FILE`. The adapter names itself to the
+gateway with the token in that file.
 
-| Env var | Set by | Meaning |
-|---|---|---|
-| `AWM_HUB_URL` | gateway | base URL of the running gateway |
-| `AWM_SERVICE_NAME` | gateway | this service's name (= folder name, `rlm-browser`) |
-| `AWM_SERVICE_ID` | gateway | assigned on respawn so reconnect targets the same control URL |
-
-No auth — the registration handshake carries no token.
-
-To iterate against a running sandbox without installing, use
-`awm dev shadow awm/services/rlm-browser`; it execs this same `run.sh` as an overlay.
-A manifest change only takes effect on a **service restart** (the gateway caches
-the last `ready` frame) — there is no hot reload.
+To iterate without installing, run the worktree's dev sandbox (`bash awm/services/dev/sandbox/run.sh start`); it runs this same `run.sh` from the worktree.
+A manifest change takes effect on `awm reload` or a service restart.
 
 ## Configuration
 
@@ -76,8 +67,6 @@ Chrome.
     may be active at a time (single-window). A second `acquire(mode=attached)`
     while one is active is rejected.
 
-  (Legacy: a boolean `graphics` is still accepted — `true`→`rendered`,
-  `false`→`headless`.)
 - **tabs** — `tab_open(session_id, url?) -> {tab_id}` · `tab_close` · `tab_list` ·
   `tab_activate`. A tab is a live CDP page target, not a durable row.
 - **perceive** (conveniences over CDP) — `observe(session_id, tab_id?) ->

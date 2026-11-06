@@ -196,8 +196,7 @@ class TwoFAService:
         def _stream():
             # peer selector read per connection, so a re-home takes effect on
             # the next reconnect without a restart.
-            return gatewayclient.subscribe_maybe_peer(
-                gatewayclient.peer_env(_SOCIAL_PEER_ENV), "social", "command")
+            return gatewayclient.subscribe("social", "command", peer=gatewayclient.peer_env(_SOCIAL_PEER_ENV))
 
         self._social_sub = gatewayclient.SupervisedSubscription(
             "2fa/social.command", _stream, self._handle_social_command)
@@ -239,10 +238,7 @@ class TwoFAService:
             return
         try:
             from awm import gatewayclient
-            await gatewayclient.call_maybe_peer(
-                gatewayclient.peer_env(_SOCIAL_PEER_ENV),
-                "social", "send",
-                {"account": account, "channel": str(channel), "text": text})
+            await gatewayclient.call("social", "send", {"account": account, "channel": str(channel), "text": text}, peer=gatewayclient.peer_env(_SOCIAL_PEER_ENV))
         except Exception as exc:  # noqa: BLE001 — confirmation is non-critical
             log.debug("2fa: social reply failed: %s", exc)
 

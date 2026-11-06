@@ -1,11 +1,10 @@
 """Commit a service's writes into a user's worktree, and pin figures with DVC.
 
-A per-user store (notes, drawio, …) lives as a subdirectory of the user's
-scope worktree. After a flush the service calls :func:`commit_subdir` for its
-own subdirectory only — never ``git add -A`` at the root, which would sweep
-another service's half-written files into this commit. The commit carries the
-same ``Author-Handle:`` trailer the drawio store uses, so history stays
-attributable after the user branches are merged.
+A per-user store lives as a subdirectory of the user's scope worktree. After a
+flush the service calls :func:`commit_subdir` for its own subdirectory only — never ``git add -A`` at the root, which would sweep
+another service's half-written files into this commit. The commit carries an
+``Author-Handle:`` trailer, so history stays attributable after the user
+branches are merged.
 
 :func:`pin_chunk` is the DVC half: when a chunk changed since its ``.dvc``
 pin, re-add and commit the pin. Nothing pushes; the cache is local.
@@ -18,23 +17,16 @@ from __future__ import annotations
 
 import logging
 import os
-import shutil
 import subprocess
 import time
 from pathlib import Path
 
+from awm.config.tools import dvc_bin
+
 log = logging.getLogger("awm.config.autocommit")
 
 GIT_IDENTITY = ("-c", "user.name=awm", "-c", "user.email=awm@localhost")
-DVC_ENV = "AWM_DVC_BIN"
 FIGURES = Path("data") / "figures"
-# Same known locations scopes' data_dvc looks in: a service under systemd
-# has a minimal PATH and dvc may live in its own env.
-DVC_FALLBACKS = (
-    Path.home() / "lib/miniforge3/envs/dvc/bin/dvc",
-    Path.home() / "lib/miniforge3/envs/awm/bin/dvc",
-    Path("/opt/miniforge3/envs/dvc/bin/dvc"),
-)
 
 # A chunk dvc refuses outright — one git already tracks, say — fails identically
 # on every tick, so back a failure off instead of retrying it every time. Two
@@ -71,19 +63,6 @@ def commit_subdir(root: Path, subdir: str, author: str, message: str) -> str | N
     if _git(root, "diff", "--cached", "--quiet", "--", subdir).returncode == 0:
         return None
     return _commit(root, [subdir], author, message)
-
-
-def dvc_bin() -> str | None:
-    override = os.environ.get(DVC_ENV)
-    if override and os.access(override, os.X_OK):
-        return override
-    found = shutil.which("dvc")
-    if found:
-        return found
-    for cand in DVC_FALLBACKS:
-        if os.access(cand, os.X_OK):
-            return str(cand)
-    return None
 
 
 def _newest_mtime(path: Path) -> float:

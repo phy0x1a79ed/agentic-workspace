@@ -138,15 +138,11 @@ def _scope_covers(mark_scope: str, scope: str) -> bool:
 
 
 def canonical(project: str | None, scope: str | None) -> tuple[str | None, str | None]:
-    """The ``(project, scope)`` a journal spelling names: ``task:<p>`` and an
-    empty project with scope ``user:proj:<p>`` or ``project:<p>`` all name
-    project ``<p>``. The project is ``None`` when the spelling names none."""
-    if not project and isinstance(scope, str):
-        for channel in ("user:proj:", "project:"):
-            if scope.startswith(channel):
-                return scope[len(channel):] or None, None
-    if isinstance(project, str) and project.startswith("task:"):
-        project = project[len("task:"):]
+    """The ``(project, scope)`` a journal spelling names: an empty project with
+    scope ``project:<p>`` names project ``<p>``. The project is ``None`` when
+    the spelling names none."""
+    if not project and isinstance(scope, str) and scope.startswith("project:"):
+        return scope[len("project:"):] or None, None
     return project or None, scope
 
 
@@ -154,8 +150,7 @@ def canonical(project: str | None, scope: str | None) -> tuple[str | None, str |
 def hidden(project: str, scope: str | None = None) -> bool:
     """Whether a mark covers this project, or this scope of it.
 
-    The journal spellings ``task:<p>`` and an empty project with scope
-    ``user:proj:<p>`` or ``project:<p>`` all name project ``<p>``."""
+    An empty project with scope ``project:<p>`` names project ``<p>``."""
     loaded = _load()
     if loaded is None:
         return True

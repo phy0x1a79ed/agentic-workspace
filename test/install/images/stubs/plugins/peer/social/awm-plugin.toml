@@ -1,0 +1,10 @@
+[plugin]
+name = "social"
+version = "0.0.0"
+
+[[service]]
+name = "social"
+
+[[tool]]
+name = "social"
+major = 1

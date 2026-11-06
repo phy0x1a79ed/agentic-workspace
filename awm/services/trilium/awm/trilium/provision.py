@@ -1,23 +1,18 @@
-"""Give the vault a database, so nobody's first visit is a setup wizard.
+"""Create an empty vault, and settle the launchbar of any vault.
 
-A fresh Trilium serves a setup screen and waits. That was right when the wizard
-was also where a person chose their password — it was the one step awm could
-not take for them. With the edge as the only way in there is no password to
-choose, so the wizard asks nothing and the right first visit is a working
-knowledge base.
+**Nothing here runs by itself.** `init` is the only caller of
+:func:`ensure_document`, and the service refuses to start on a vault path that
+holds no database. A supervisor that made a vault whenever it found none turned
+a path mistake — a moved scope, an unmounted disk, a cutover that had not yet
+moved the data in — into a second, empty vault that looked healthy and took
+writes.
 
-**Why this is safe to call on a loop.** `GET /api/setup/status` is
-unauthenticated and cheap, so the probe is the idempotency check and there is no
-flag to keep in step with the filesystem. Trilium guards the creation endpoint
-with `checkAppNotInitialized` on its own side, so a second attempt — two
-supervision ticks, or a tick racing a `start` — is refused by the server rather
-than doing anything twice. Both of those are upstream's checks, not ours, which
-is why this module holds no state.
-
-**Why it needs no credential.** The creation endpoint's other guard is
+**Why `init` needs no credential.** The creation endpoint's guard is
 `checkSetupAuth`, which stands down when Trilium's own authentication is off.
-That is the same setting `server.child_env` sets, and this call goes over
-loopback to a child that only the edge can reach.
+That is the same setting `server.child_env` sets, and the call goes over
+loopback to a child that only the edge can reach. Trilium guards the endpoint
+with `checkAppNotInitialized` as well, so a second attempt is refused by the
+server rather than doing anything twice.
 
 Provisioning also settles one thing about the launchbar — see
 :func:`hide_day_note_launchers`. It is here rather than in a config file
@@ -59,11 +54,10 @@ def status() -> dict[str, Any]:
 
 
 def ensure_document(*, demo: bool = False) -> dict[str, Any]:
-    """Create an empty knowledge base if there is none.
+    """Create an empty knowledge base in a child that has none. `init` only.
 
     Returns what happened and never raises for a vault that is merely not
-    ready: a child still binding its port is the normal case on a cold start,
-    and the supervision loop will be back in twenty seconds.
+    ready, so `init` can report it.
 
     `demo=False` skips the sample notes upstream ships. They are a tour of the
     features, and a shared vault that starts with somebody's demo content in it

@@ -35,7 +35,6 @@ import threading
 import time
 
 AUTH, AUTH_RESPONSE, EXECCOMMAND = 3, 2, 2
-COST_MARK = "\x1eCOST "
 COST_RE = re.compile(r"\x1eCOST [^\n]*?([0-9.]+)\s*ms\n?")
 WRAP_HEAD = ("local __gb_p=helpers.create_profiler() "
              "local __gb_ok,__gb_e=pcall(function(...) ")

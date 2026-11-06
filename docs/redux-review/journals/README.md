@@ -1,0 +1,101 @@
+# journals
+
+## Purpose & Contents
+
+This doc holds the review of the journal and of precedence: how they are built today, where the build and Tony's wishes disagree, and each decision Tony makes on them. Tony's wishes are comment threads, tags from a set ontology with editable descriptions, complaint posts such as bug reports, a closed state like an issue, and precedence folding into the journal. The settled decisions go into the `docs/redux` area docs as requirements.
+
+## As built
+
+Surveyed read only on mizar, 2026-11-03, against `origin/release` and the redux lanes.
+
+- **Store.** `journal.db` holds `scope_posts(id, owner_project, owner_scope, author, kind, body, meta, ts)`, subscribers, read cursors and embeddings (`awm/services/journal/awm/journal/dao.py:22-66`). A scope is the channel. Messages, journals, system notices and goals are all rows of `scope_posts`.
+- **Kinds are free strings.** The docs name message, journal, system and goal (`channel.py:16-21`). Nothing validates a kind (`operations/posts.py:163-170`). Search indexes only journal, message, goal, debrief and note (`search_index.py:25`).
+- **No threads, tags or status.** A post has no parent field. The only links sit in goal `meta`: `supersedes` and `retires` (`goals.py:95-120`). Posts are append only, and goals use tombstones.
+- **Verbs.** `post`, `fetch`, `subscribe`, `unsubscribe`, `inbox`, `ack`, the four goal verbs, `render`, `export` and `reindex`.
+- **Precedence is its own store and plugin** (`precedence.db`, `install.md` R115).
+  - A decision is a triple of context, question and decision, with status `active`, `superseded` or `retired`, `superseded_by`, votes and a seen count. It belongs to no project or scope.
+  - `notes` attach one level of comments to a decision, with a validated kind: amendment, context change, supersede or comment.
+  - `tags` are free text. A tag equal to a private project's name hides the decision from peers (`visibility.py:1-6`).
+  - Search blends a usefulness score with cosine. The curation verbs (`edit`, `supersede`, `remove`, `merge`, `import`, `embed`, `export`) are CLI and HTTP only.
+- **Redux lanes.**
+  - `feat/redux-sessions` stamps the R9 session in `meta.session`, adds `meta.cites` and a `session_reads` table.
+  - `feat/redux-trust` keeps edits as versions (`post_versions`), with `journal_edit`, `journal_history` and an addenda sweep (`fleet.md` R107 items 1 and 2).
+  - Release, sessions and trust each define schema migration (1,2). They collide on merge.
+
+## Differences from Tony's wishes
+
+- **Threads.** No post has a parent. Precedence notes are the nearest model, one level deep.
+- **Tags with an ontology.** The journal has no tags. Precedence tags are free text with no vocabulary and no descriptions. Kinds are free strings too.
+- **Complaint posts.** No kind exists for them. Search would skip a new kind until it joins the indexed list.
+- **Closed state.** Posts have no status. Precedence and goals each carry their own.
+- **Precedence in the journal.** No requirement plans it. A fold carries the triple, votes, the usefulness rank, notes, the visibility rule and the curation verbs.
+- **The docs.** No requirement in `docs/redux` covers threads, tags or a closed state. `fleet.md` R107 covers versions and addenda, and `scopes.md` R143 puts the brief next to the goal.
+
+## Multi-tag review
+
+Reviewed read only on 2026-11-03, against `origin/release` 266f4b29 and the lanes, for R107 items 5 to 7.
+
+- **Nothing blocks the change.** About 40 sites read or write `kind`. Each has a direct tag equivalent.
+  - The journal: the `kind` column and index (`dao.py:49,55`), the post filter (`channel.py:284-286`), `INDEXED_KINDS` and export (`search_index.py:25`, `export.py:33,48-58`), goals and tombstones (`goals.py:39,166,174,234,248`), the inbox, render, and `posts.py` defaults.
+  - Other services: the `posts` emit payload (`hub_adapter.py:66`), which `reporting/tasks.py:1136,1167` filters on. Also `reflection/alarm.py:100`, and search's `kind` filter (`search/query.py`, `index.py:92`, `store.py`, `federation.py:27`).
+  - Outside the repo: the `debrief` skill posts `kind:"journal"` (`SKILL.md:53`). No hook names a kind.
+- **The peer gate keys on kind.** `posts.py:217-225` lets a peer see only journal posts. If the gate keys on a tag anyone can change, adding `journal` to a message exposes it. `feat/redux-trust` replaces this gate with its `bounds`.
+- **Live data on mizar.** 65 posts: 58 journal and 7 message. No other kind. altair holds most of the journal and needs the same count before the cutover.
+- **Schema.** A `tags` table with id, name, description and origin node. A `tag_versions` table. A `post_tags(post_id, tag_id)` join. `scope_posts.reply_to`. Each kind maps to a fixed tag id. An unknown kind becomes a tag described as a migrated kind.
+- **Migration numbers collide.** Release has (1,2) for cursors and sessions has (2,3) for reads. Trust redefines (1,2) for versions, so it never runs on a node already at v2. That is a bug on the trust lane today. The order is cursors, reads, versions, tags.
+- **Compatibility.** Old peers, the `debrief` skill and the privacy probe send `kind`. The gateway refuses unknown arguments both ways. The journal accepts `kind` as an alias for one tag during the move, and returns a derived `kind`.
+- **Lanes.** The sessions lane's cites and reads key on `kind='journal'`. The trust lane's addenda fold rewrites `kind` to `folded`, which loses the original kind. The `feat/svc-kb` search filters `kind`. The harness lane does not depend on `kind`.
+- **Name clash.** `scopes.db` already has a `tags` table for project and scope tags. Search's privacy veil (`search/index.py:24-62`) hides any document with a tag equal to a private project's name.
+
+## Decisions
+
+- 2026-11-03: A comment is a post with `reply_to`, nested like reddit, kept in the scope of the thread's first post. Its author gets each comment in the inbox. Search returns the first post with a comment count, and `get` returns the thread (`fleet.md` R107 item 5). Tony: "agree with proposed  comment layout".
+- 2026-11-03: Tags come from one vocabulary the fleet shares and syncs. `tag_add` needs a description, and `tag_edit` changes the name or the description. A post links a tag by its id. Kinds fold into tags, and every kind filter reads tags (`fleet.md` R107 item 6). Tony: "tag edit also changes the name, so tags are linked to journals from some separate ID. changing name changes how the are rendered", "kinds get folded into tags -> existng filter/search functions now use multiclass tags" and "one synced vocab for whole fleet, yes".
+- 2026-11-03: Closed is a tag, with no `open` tag. Tag filters take negation and conjunction. One call adds and removes several tags on a post (`fleet.md` R107 item 7). Tony: "can we just make closed a tag? then we can do searches like !closed and complaint", "i want to avoid swapping open-closed. -> we also need a way to batch edit tags per journal".
+- 2026-11-03: A superseding post replies to the old one, and the old post gets the `superseded` tag. Goals, briefs and precedents share this (`fleet.md` R107 item 8). Tony: "we can make supersedes by just reply links, then add superseded tag to old precedent entrty".
+- 2026-11-03: Usage decays continuously with no sweep. Each item stores `s = ln Σ e^(λ·tᵢ)`, and the rank compares `s` directly. Steady use outranks a burst (`fleet.md` R136 item 6). The half-life is 30 days. Tony: "I want continuous decay, and continuous hits should outrank a burst in one day" and "30 days is fine".
+- 2026-11-03: Precedence folds into the journal as posts tagged `precedent` at workspace level. Notes become comments, votes go for the usage rank, and the `precedence` plugin and tool go (`fleet.md` R107 item 9, `install.md` R115 item 4). Tony: "fold in precedence. we discussed this".
+- 2026-11-03: Peer visibility follows R107 item 3, not a tag, so the old peer gate on `kind` goes (`fleet.md` R107 item 6). Settled by R107 item 3, which Tony set.
+- 2026-11-03: The code-named tags can be renamed, never deleted, and a type tag is set only at post time. An old kind becomes a tag only where posts of it exist (`fleet.md` R107 item 6). Tony: "agree with 1 and 3".
+- 2026-11-03: A name added on two nodes before they sync is two concepts. The newer tag is renamed by a dispatched agent, and search across the two peers is blocked while the clash stands (`fleet.md` R107 item 6). Tony: "when 2 nodes add the same name, this is actually 2 concepts so the newer one needs to be renamed. an agent can be dispatched to fix this."
+- 2026-11-03: Tony accepts the stored `s = ln(score) + λ·last` as the direct decay with its compute moved to update time (`fleet.md` R136 item 6). Tony: "I understand and accept "s = ln(score) + λ·last" now as an optimization to place compute at update time rather than search time."
+- 2026-11-03: The precedent protocol lives on the journal's `post` description and the tag's description, with one `AGENTS.md` line for when to search. There is no skill and no skills folder (`fleet.md` R107 item 9). Tony: "can we just move the old describe to teh new journal tool?" and "agree, next".
+- 2026-11-03: `reply_to` takes a list. A debrief journal's `reply_to` list holds its citations, and only debrief journals cite. Links point one way, with no reverse index. The journal holds lineage, and `reflection` records the parent links (`fleet.md` R107 item 5, `sessions.md` R14, R16). Tony: "ok, reply to should accept a list of previous journals used", "citations only needed for debrief journals, but we are using the reply_to field so that's fine for comments, etc." and "I do not want links both directions. search uncovers what the agent needed that session.".
+- 2026-11-03: A citation is a bare id in the `reply_to` list, with no reason (`sessions.md` R15). Old reasons stay on the citing post's meta. Tony: "No reason".
+- 2026-11-03: The goal log goes. Its 7 real goals become ordinary posts, and the goal verbs and the startup goal step go (`fleet.md` R107 item 10). This makes the goal-level question moot. Tony: "Goals are not used... check" and "Drop goals".
+
+## Build result
+
+Reported by the redux-journal lane on 2026-11-03. Local commits only, on `feat/redux-journal`: 9ec42129, dc6953a2, 52894a5e, 66b8690e.
+
+- **Built.** R107 items 5 to 10 and `sessions.md` R13 to R16.
+  - Tags with fixed ids for the code-named tags, `tag_add`, `tag_edit`, `tag_list` and `retag`. Filters take `!` and `and`. `kind` is an alias in and a derived field out.
+  - Tag sync pushes each add and edit to the peers and pulls every 6 hours. A clash gives the newer tag a provisional `<name>.clash-<id6>`, starts a `tag-clash-<id8>` agent in the lobby, and refuses journal fetch and export from the clashed peer until the rename.
+  - Comments, nested threads, citations in `reply_to` stored one way, lineage in the journal, briefs and precedents superseded by reply. The `precedence` plugin and tool and the goal log are gone.
+- **Tests pass.** journal 198, gateway 1305, scopes 292, cch 745, reporting 451, search 115, claude-science 101. The (4,5) migration ran on a copy of mizar's `journal.db`: 70 posts, 63 journal and 7 message, nothing untagged. No live database was touched.
+- **For the trust lane.**
+  - `dao.py:155` holds `MIGRATIONS[(3,4)] = "SELECT 1;"`. The trust merge puts `post_versions` there.
+  - The addenda fold writes `kind='folded'`, and no `kind` column exists now. It needs a tag.
+  - `peer_gate()` (`operations/posts.py:224`) keeps the foreign journal-only gate until trust bounds land.
+  - `tagsync.peers()` (`tagsync.py:44`) reads the peer book. It moves to the edge list.
+- **For the harness.** `reflection` records each parent link through `journal session_parent` at `start_other` and at clear. Today cch `lifecycle.py:316` and reporting `tasks.py:538` do it.
+- **For search-finish** (search-filters topic). A tags filter with `!` and `and`, the comment count, `get` returning the thread, the precedence source dropped, and federated search blocked while a clash between two peers stands.
+- **One-shots at cutover.** `awm journal precedent_import` on altair, where `precedence.db` lives, and `awm journal lineage_import --path <reporting work db>` on each node.
+- **Open for Tony.** Changes under `~/.claude`, which the lane did not make: the debrief skill posts with `tags=["journal"]` and bare ids in `reply_to`, goal-alignment writes an ordinary post, goal 50708f67 moves into `~/.claude/CLAUDE.md`, and the global `CLAUDE.md` points its precedence lines at precedent posts.
+- **For the cleanup pass.**
+  - The first-start copy from `scopes.db` (`journal/migrate.py`, `hub_adapter.py:53`), and the `scope_posts` DDL in `scopes/dao.py:74-86` and the kind rows in `scopes/seed.py`.
+  - Ignored params: `channel.py:295` `to_scope` and `operations/posts.py:65` `manifest`.
+  - `render.py:45` still says the file is auto-generated, but no file exists since R142.
+  - `private.py:72` legacy spellings, the `_ASK_TYPES` heuristic in `inbox.py:37`, the `INDEXED_TAGS` migrated kinds in `search_index.py:30-31`, and the name `kinds.py`.
+  - `channel.is_foreign` and `edge_origin` duplicate `gatewayclient/__init__.py:536`. Trust deletes both.
+  - reporting keeps an orphan `session_parents` table after `lineage_import`.
+  - Gateway tests use `goal_read` and `precedence` as synthetic names. `AGENTS.md:56` still says "precedence decisions".
+  - The brief guide in `operations/briefs.py` still mentions the goal.
+
+## Recall after compaction
+
+Tested on 2026-11-03. A fork of each stopped session was asked, with tools off, which journal posts it had read before compacting. The forks ran with `claude -p --resume <id> --fork-session --no-session-persistence`, so the originals were untouched.
+
+- **Compaction loses journal reads.** Only one session strictly qualified: 016a8908 in cloud/homelab, with 2 reads. Its fork recalled 0 of 2, by id or by topic, although the session had visibly used one of them. A relaxed case, 2ec1b21d with 1 read, recalled 0 of 1. Two control sessions with no reads made no false recalls.
+- **The summary keeps what a session wrote, not what it read.** Each fork named only its own posts and the reads made after its last compaction.
+- **The reads log closes the id gap at debrief** (`sessions.md` R15), because it does not depend on the context. It cannot show which reads mattered. The sample is small: two live sessions with more reads were excluded.

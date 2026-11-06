@@ -1,0 +1,34 @@
+[plugin]
+name = "channel"
+version = "0.3.0"
+
+[[service]]
+name = "channel"
+path = "."
+run = "run.sh"
+install = "install.sh"
+
+[[tool]]
+name = "channel"
+major = 1
+service = "channel"
+tier = "on"
+
+[needs]
+network = ["nexus.tony-xy-liu.com", "github.com", "*.githubusercontent.com"]
+platform = ["linux"]
+
+# The host half of every room, and the issuer of every machine slot: the public
+# host's singleton, through its door. The operator daemon's issuer calls `issue`
+# on this service's account.
+[[needs.tool]]
+name = "relay"
+verbs = ["open", "join", "write", "close", "feed", "issue"]
+
+# reflection, through awm.gatewayclient.holders and push: `session_of` and
+# `list_other` name the holder and tell when it is gone, and `message` types
+# each line into its prompt. All three are local.
+[[needs.contract]]
+name = "reflection"
+major = 1
+verbs = ["list_other", "session_of", "message"]
