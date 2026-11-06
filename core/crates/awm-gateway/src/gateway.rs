@@ -153,7 +153,7 @@ impl Gateway {
         let edges = EdgeList::load(&cfg.edges_path(&state))?;
         let workspace = cfg.workspace_dir(&state);
         let peer_tools = cached_peer_tools(&state, &peers.peers());
-        let load = load_plugins(&state, &cfg, &peer_tools);
+        let load = load_plugins(&state, &cfg, &peer_tools, &edges, &node);
         for r in &load.refused {
             tracing::error!("plugin {} refused: {}", r.plugin, r.reason);
         }
@@ -275,13 +275,16 @@ impl Gateway {
         caller.nodes_behind(&self.node).any(|n| !edges.may_call(n, tool))
     }
 
-    /// The tools this node's plugins serve, as `/hub/table` gives them to `caller`.
+    /// The tools this node's plugins serve, as `/hub/table` gives them to `caller`. Another
+    /// node reaches a singleton only through its door, so no singleton goes to one.
     pub fn local_table(&self, caller: &Caller) -> Vec<RemoteTool> {
+        let edges = self.edges.read().unwrap_or_else(|p| p.into_inner());
+        let other_node = caller.nodes_behind(&self.node).next().is_some();
         self.read_load()
             .plugins
             .iter()
             .flat_map(|p| p.tools.iter())
-            .filter(|t| !self.singleton_refuses(&t.name, caller))
+            .filter(|t| !(other_node && edges.singleton(&t.name).is_some()))
             .map(|t| RemoteTool {
                 name: t.name.clone(),
                 major: t.major,
@@ -293,7 +296,29 @@ impl Gateway {
 
     fn name_table(&self) -> Vec<loader::Provider> {
         let peers = self.peer_tools.read().unwrap_or_else(|p| p.into_inner());
-        loader::table(&self.read_load().plugins, &peers)
+        let edges = self.edges.read().unwrap_or_else(|p| p.into_inner());
+        loader::table(&self.read_load().plugins, &edge_tools(&peers, &edges))
+    }
+
+    /// Where `tool` runs when it is a singleton another host serves: its host's door. A node
+    /// the singleton does not name as a caller finds no such tool. A `peer` other than the host
+    /// is refused, since no edge carries a singleton call (fleet.md R89, R98).
+    fn door_route(&self, tool: &str, peer: Option<&str>) -> Result<Option<crate::door::DoorRoute>, ApiError> {
+        let edges = self.edges.read().unwrap_or_else(|p| p.into_inner());
+        let Some(s) = edges.singleton(tool).filter(|s| s.host != self.node) else { return Ok(None) };
+        if !edges.may_call(&self.node, tool) {
+            return Err(ApiError::new(404, format!("Unknown tool {tool:?}")));
+        }
+        if peer.is_some_and(|p| p != "local" && p != self.node && p != s.host) {
+            return Err(ApiError::new(400, format!(
+                "{tool} is a singleton on {host}, reached only through {host}'s singleton door; call it without peer, or with peer={host:?}",
+                host = s.host)));
+        }
+        let Some((address, port)) = edges.door_address(&s.host) else {
+            return Err(ApiError::new(502, format!("{tool}: edges.yml gives {}'s singleton door no address on its network", s.host)));
+        };
+        let user = edges.door_user(&s.host);
+        Ok(Some(crate::door::DoorRoute { tool: tool.into(), host: s.host.clone(), address, port, user }))
     }
 
     /// Who owns a tool name right now (R117 item 3).
@@ -316,7 +341,12 @@ impl Gateway {
                 contracts.entry(format!("{c}@{m}")).or_default().push(json!(p.owner));
             }
         }
-        json!({"tools": index.iter().map(|p| json!(p.owner)).collect::<Vec<_>>(), "contracts": contracts})
+        let mut tools: Vec<Value> = index.iter().map(|p| json!(p.owner)).collect();
+        if caller.nodes_behind(&self.node).next().is_none() {
+            let edges = self.edges.read().unwrap_or_else(|p| p.into_inner());
+            tools.extend(edges.door_singletons(&self.node).iter().map(|s| json!({"name": s.tool, "peer": s.host, "door": true})));
+        }
+        json!({"tools": tools, "contracts": contracts})
     }
 
     /// Ask every peer for its table, each in its own task, and reload when one changed. A
@@ -575,7 +605,7 @@ impl Gateway {
         let edges = EdgeList::load(&cfg.edges_path(&self.state)).map_err(|e| ApiError::new(400, format!("{e:#}")))?;
         *self.edges.write().unwrap_or_else(|p| p.into_inner()) = edges;
         let peers = self.peer_tools.read().unwrap_or_else(|p| p.into_inner()).clone();
-        let new = load_plugins(&self.state, &cfg, &peers);
+        let new = load_plugins(&self.state, &cfg, &peers, &self.edges.read().unwrap_or_else(|p| p.into_inner()), &self.node);
         let old: BTreeMap<String, loader::Plugin> =
             self.read_load().plugins.iter().map(|p| (p.name.clone(), p.clone())).collect();
         let fresh: BTreeMap<String, &loader::Plugin> = new.plugins.iter().map(|p| (p.name.clone(), p)).collect();
@@ -929,8 +959,12 @@ impl Gateway {
             tracing::info!("singleton gate: refused {tool}.{verb} to {:?}", ctx.caller.nodes_behind(&self.node).collect::<Vec<_>>());
             return Err(ApiError::new(404, format!("Unknown tool {tool:?}")));
         }
+        let door = if tools.contains_key(&tool) { None } else { self.door_route(&tool, peer.as_deref())? };
         // A tool no local plugin serves runs where the name table says it lives (R117 item 3).
-        let peer = peer.or_else(|| if tools.contains_key(&tool) { None } else { self.owner(&tool).and_then(|o| o.peer) });
+        let peer = match &door {
+            Some(route) => Some(route.host.clone()),
+            None => peer.or_else(|| if tools.contains_key(&tool) { None } else { self.owner(&tool).and_then(|o| o.peer) }),
+        };
         // A restricted session may not run a verb on another node, named or by the table.
         let remote = peer.as_deref().filter(|p| *p != "local" && *p != self.node);
         if let Some(why) = crate::modes::refusal(ctx.mode.as_deref(), &tool, &verb, remote) {
@@ -951,6 +985,10 @@ impl Gateway {
                     "{tool}.{verb} acts on your own session on this node, so it cannot run on peer {peer:?}; call it without peer")));
             }
             let envelope = json!({"verb": verb, "args": inner});
+            if let Some(route) = door {
+                let request = awm_trust::port::DoorRequest { name: tool, args: envelope, origin: ctx.caller.relayed_origin(&self.node) };
+                return Ok(crate::door::call(&route, &request).await?);
+            }
             return Ok(self.peers.invoke(&peer, &tool, envelope, ctx).await?);
         }
 
@@ -1258,7 +1296,15 @@ fn save_peer_cache(state: &Path, known: &BTreeMap<String, Vec<RemoteTool>>) {
     }
 }
 
-fn load_plugins(state: &Path, cfg: &Config, peer_tools: &BTreeMap<String, Vec<RemoteTool>>) -> LoadResult {
+/// The peers' tables less every singleton: no edge carries a singleton (fleet.md R89).
+fn edge_tools(peers: &BTreeMap<String, Vec<RemoteTool>>, edges: &EdgeList) -> BTreeMap<String, Vec<RemoteTool>> {
+    peers
+        .iter()
+        .map(|(peer, tools)| (peer.clone(), tools.iter().filter(|t| edges.singleton(&t.name).is_none()).cloned().collect()))
+        .collect()
+}
+
+fn load_plugins(state: &Path, cfg: &Config, peer_tools: &BTreeMap<String, Vec<RemoteTool>>, edges: &EdgeList, node: &str) -> LoadResult {
     let enabled: HashMap<String, bool> = std::fs::read_to_string(state.join("enabled.json"))
         .ok()
         .and_then(|t| serde_json::from_str(&t).ok())
@@ -1268,6 +1314,8 @@ fn load_plugins(state: &Path, cfg: &Config, peer_tools: &BTreeMap<String, Vec<Re
     let core_roots = cfg.core_root_dirs(state);
     let mut plugin_roots = cfg.plugin_roots.clone();
     plugin_roots.push(crate::install::installed_root(state));
+    let peer_tools = &edge_tools(peer_tools, edges);
+    let doors: Vec<String> = edges.door_singletons(node).iter().map(|s| s.tool.clone()).collect();
     loader::load(&loader::LoadInput {
         wants: &wants,
         core_roots: &core_roots,
@@ -1276,6 +1324,7 @@ fn load_plugins(state: &Path, cfg: &Config, peer_tools: &BTreeMap<String, Vec<Re
         reserved: &reserved,
         enabled: &enabled,
         peer_tools,
+        doors: &doors,
     })
 }
 

@@ -51,8 +51,11 @@ A singleton service fronts one external resource for the fleet, such as the 2FA 
 
 - The edge list's `singletons` names each singleton tool, its host and its `callers`. Its `singleton_doors` gives each host's door port and network.
 - `callers` lists the nodes that may call the singleton besides its host, as directed edges into it (R98 item 3). A planned caller counts once it exists.
-- On every other node the gateway reserves the tool name, so no local plugin can serve it. A call to it goes to the host's door through a service key.
-- The door carries no reflection and no shell (R98, R104 item 4).
+- On every other node the gateway reserves the tool name, so no local plugin can serve it.
+- A caller's gateway sends each call to the host's door, never over an edge. One call is one `ssh -l <user> -p <port> <address> port <request>` with the node's service key `~/.ssh/id_ed25519_awm_service`. `<user>` is the door's `user` in `edges.yml`, the account the host's door admits. The address is the host's address on the door's network in `edges.yml`, and an `internet` door uses the `public` address. A `peer` other than the host is refused.
+- `/hub/table` gives no singleton to another node, and a peer's table loses any singleton it lists. `awm table` shows each singleton this node reaches as a `door` row.
+- A plugin's need for a singleton this node reaches through a door holds from `edges.yml` alone. So a door that is down at boot refuses no plugin. A call while it is down fails with the door's address and ssh's error.
+- The door carries no reflection, no shell and no stream (R98, R104 item 4). An emit stream or a direct session on a singleton still crosses an edge.
 - The host sees the caller stamped `peer:<node>`.
 
 The callers list fails closed. A node it leaves out gets the answer an unknown tool gets, at every point where a call can enter:
@@ -60,7 +63,7 @@ The callers list fails closed. A node it leaves out gets the answer an unknown t
 1. `awm port` serves a key only the singletons that admit the key's holder.
 2. The gateway refuses the call, and leaves the tool out of its `/hub/table`, `awm table` and `describe` answers to that node.
 3. A direct session or an emit stream on the singleton's service is refused.
-4. A node that relays a call checks it against the node it started from, before it relays it. The call carries that node to the host as `caller.origin`, and the host checks it too. So mizar carries no call for a node the list leaves out.
+4. A node that relays a call checks it against the node it started from, before it relays it through its own door. The door request carries that node as `origin`, the host's gateway sees it as `caller.origin`, and the host checks it too. So mizar carries no call for a node the list leaves out.
 
 **CAUTION** Each gateway reads `callers` from its own `edges.yml`. A relay with a stale copy checks against its stale list, and only the host's check stands behind it.
 

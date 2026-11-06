@@ -103,6 +103,9 @@ pub struct LoadInput<'a> {
     pub enabled: &'a HashMap<String, bool>,
     /// Tools each peer serves, by peer name.
     pub peer_tools: &'a BTreeMap<String, Vec<RemoteTool>>,
+    /// The singletons this node reaches through their hosts' doors (fleet.md R89). A need for
+    /// one holds whether or not the door answers now.
+    pub doors: &'a [String],
 }
 
 struct Candidate {
@@ -186,7 +189,7 @@ pub fn load(input: &LoadInput) -> LoadResult {
         let index = table(&plugins, input.peer_tools);
         let mut refused_now = Vec::new();
         for (i, p) in plugins.iter().enumerate() {
-            if let Err(reason) = check_needs(&p.needs, &index) {
+            if let Err(reason) = check_needs(&p.needs, &index, input.doors) {
                 refused_now.push((i, reason));
             }
         }
@@ -438,11 +441,15 @@ pub fn providers(index: &[Provider], contract: &str, major: u32) -> Vec<Owner> {
         .collect()
 }
 
-/// A needed tool must exist at its major (R117 item 3). A contract may have no provider.
-fn check_needs(needs: &Needs, index: &[Provider]) -> Result<(), String> {
+/// A needed tool must exist at its major (R117 item 3), or be a singleton behind a door. A
+/// contract may have no provider.
+fn check_needs(needs: &Needs, index: &[Provider], doors: &[String]) -> Result<(), String> {
     for NeedTool { name, major, verbs } in &needs.tool {
         check_verbs("tool", name, verbs)?;
         let Some(o) = owner(index, name) else {
+            if doors.contains(name) {
+                continue;
+            }
             return Err(format!("needs tool {name:?}, which no plugin serves"));
         };
         if o.major != *major {
@@ -491,6 +498,10 @@ mod tests {
     }
 
     fn run_with_peers(core: &Path, other: &Path, node: &str, peers: &BTreeMap<String, Vec<RemoteTool>>) -> LoadResult {
+        run_with(core, other, node, peers, &[])
+    }
+
+    fn run_with(core: &Path, other: &Path, node: &str, peers: &BTreeMap<String, Vec<RemoteTool>>, doors: &[String]) -> LoadResult {
         let reserved = vec!["2fa".to_string()];
         let wants = move |p: &str| p != "elsewhere" || node == "altair";
         let enabled = HashMap::from([("off-svc".to_string(), false)]);
@@ -502,6 +513,7 @@ mod tests {
             reserved: &reserved,
             enabled: &enabled,
             peer_tools: peers,
+            doors,
         })
     }
 
@@ -594,6 +606,22 @@ mod tests {
         let index = table(&r.plugins, &peers);
         assert_eq!(owner(&index, "far").unwrap().peer.as_deref(), Some("altair"));
         assert_eq!(providers(&index, "harness", 1).len(), 1);
+    }
+
+    /// A singleton behind a door counts as served with no answer from the door, so a door
+    /// that is down refuses no plugin. A need for any other missing tool still refuses.
+    #[test]
+    fn a_need_for_a_door_singleton_holds_with_the_door_down() {
+        let t = tempfile::tempdir().unwrap();
+        let (core, other) = (t.path().join("core"), t.path().join("other"));
+        fs::create_dir_all(&core).unwrap();
+        plugin(&other, "ops", "[plugin]\nname='ops'\n[[service]]\nname='ops'\n[[tool]]\nname='ops'\n[[needs.tool]]\nname='vault'\nverbs=['get']\n");
+        plugin(&other, "board", "[plugin]\nname='board'\n[[needs.tool]]\nname='ops'\nverbs=['get']\n");
+        let r = run_with(&core, &other, "mizar", &BTreeMap::new(), &["vault".to_string()]);
+        assert!(r.refused.is_empty(), "{:?}", r.refused);
+        assert_eq!(r.plugins.len(), 2);
+        let r = run(&core, &other, "mizar");
+        assert_eq!(r.refused.len(), 2, "with no door, vault is unknown and ops strands board");
     }
 
     #[test]
