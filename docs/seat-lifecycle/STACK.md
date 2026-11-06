@@ -28,6 +28,9 @@ Procedure, from dfs-interview § Work the stack:
 ## Stack
 
 - **seat-states** (2026-11-06): agent in seat, DM comes, agent works, agent reports, agent compacts and waits. if left for 4 hours -> agent idle with task done (so agent needs some indicator for task done that seats service can see (awm seat indicate_done?) seats reclaim the agent -> ask it to journal and retire. seat occupied -> retireing (only possible on agent indiacted done for over 4hrs) -> emtpy. if DM comes in while retireing, awm responds instead with a system message (agent is changing shift, will respond within 5mins) and message gets queued. DMs when retiring and empty start new sessions, but retiring must wait for empty since journals. instructions for retire should be prolly faster than debrief, just write a handoff journal and retire is enough.
+  - [ ] Does a new DM to an agent marked done clear the mark and restart the 4-hour clock? Recommend yes.
+  - [ ] Retiring deadline: if the handoff and retire take more than 4 minutes, social stops the job and the seat becomes empty, so the 5-minute promise holds? Recommend yes.
+  - [ ] Where do the states, the queue, the done verb and the 4-hour reclaim live? Recommend social (it owns the mounts and already runs a 60 s prune loop): a social verb seat_done, not a new service.
 - **rc-toggle** (2026-11-06): about the seats, it would be great if on the new fleet status dashboard, I can turn remote control on and off for seats
   - [ ] How is a seat marked in the roster that list_other and claudedaemon report (pin plus trust, or a role tag)? Asked by trilium-design/interview.
   - [ ] Is turning Remote Control off and on for a seat passkey-gated (sessions R68), or free inside an open window? Asked by trilium-design/interview.
