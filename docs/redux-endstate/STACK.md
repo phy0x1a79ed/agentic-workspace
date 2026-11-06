@@ -23,13 +23,15 @@ Procedure, from dfs-interview § Work the stack:
 
 ## Current topic
 
-**search-mcp**, under **end-state**. Its result: `end-state/search-mcp/README.md`.
+**refresh-all**, under **end-state**. Its result: `end-state/refresh-all/README.md`.
 
 ## Stack
 
 - **end-state** (2026-11-06): there are a few sessions that look left over. Please use the DFS interview skill so that we can review the end state and if there are anything left open for us to clean up and do.
+  - **refresh-all** (2026-11-06): Is Shogun the only one? We should aim to refresh all.
+  - **node-time** (2026-11-06): Also, can you check the times across nodes? The time should be 10 a.m.
   - **search-mcp** (2026-11-06): one thing we should review is that all nodes are using the new search service and MCP.
-    - [ ] Refresh shogun to b1e85c50 now?
+    - [x] Refresh shogun to b1e85c50 now? (answered 2026-11-06)
 
 ## Parked
 
