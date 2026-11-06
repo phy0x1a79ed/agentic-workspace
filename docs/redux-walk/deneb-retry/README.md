@@ -32,3 +32,4 @@ The second attempt at deneb's cutover after the first rolled back on 2026-11-05:
 - `fork-release` stays on the public Trilium fork (Tony: "keep"). Seats stay on today's opus at high (Tony: "current config is fine").
 - Each node's portal (R84) is served over HTTPS by `tailscale serve` on the node's own <machine>.tail080e54.ts.net name. Tailscale holds and renews the certificate and proxies to the gateway on loopback. A cloud role, tailnet_portal, sets it (alcor-open). Tony enabled tailnet HTTPS certificates (M10b, 2026-11-05).
 - mizar pushes each update to altair: mizar's ssh runs altair's own supervised refresh, the `queue` kind that warns sessions. altair fetches nothing, so it needs no edge to mizar. Tony: "yes, mizar push" (2026-11-05).
+- altair's window runs from now until 09:00 Pacific on 2026-11-06. Tony: "altiar can cut across now until 9AM tmrw" (2026-11-05). dev plans and runs its one-time, hand-supervised first update to the release.
