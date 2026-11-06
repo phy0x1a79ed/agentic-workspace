@@ -28,6 +28,7 @@ Procedure, from dfs-interview § Work the stack:
 ## Stack
 
 - **fir-ssh** (2026-11-06): A pressing event is that Slack seats on Altair cannot SSH into FIR. That's FIR.
+  - [ ] When fir returns: watch it and reconnect the altair master, and have slack-main tell the lab? Or leave seats to reconnect on demand?
 - **end-state** (2026-11-06): there are a few sessions that look left over. Please use the DFS interview skill so that we can review the end state and if there are anything left open for us to clean up and do.
 
 ## Parked
