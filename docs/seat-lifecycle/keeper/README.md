@@ -6,3 +6,11 @@
 - `social keepers` returns no kept seats on 2026-11-06. The kept seats from October (Tony's Discord DM, unimatrix0 #bots, Hallam general, muse) no longer have tables. #bots is held by job 30bbc7a3 on deneb, which mounted it by hand.
 - Redux `channels.md` R72 item 5 keeps one long-lived holder on purpose: a persistent room, such as the muse two-way link or Caviar's stream listener.
 - The new lifecycle keeps no agent alive while it is idle. That is the opposite of what the keeper does.
+
+## Decision
+
+Tony, 2026-11-06: "the keeper design is functionally still the same, just that past 4hrs, the agent starts cold".
+
+1. The keeper stays as the mechanism that keeps every seat: person seats, channel seats and Tony's seat.
+2. The keeper changes in one way: an agent done for 4 hours retires with a handoff journal, and the seat's next message starts a new agent cold. The rest of the seat-states design applies.
+3. The keeper already starts agents through `reflection start_other` on the seat's node (`keeper.py:425`). It is deterministic code in social, not a Claude session.
