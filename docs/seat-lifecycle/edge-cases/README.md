@@ -64,3 +64,9 @@ What the line lacks:
 - The chat's name and kind. `D0C...` is a DM and `C0C...` a channel only by Slack's id convention. A Discord channel is a bare number.
 - The workspace or server.
 - A stable person key. The sender is a display name (`Steven Chen`, `phyberosis`), not the `<person-slug>` of the scope and tag.
+
+## The pushed line: Tony's review (2026-11-06)
+
+> here's a prefix i see: "slack from Steven Chen ↳1793825822.808289 [channel=D0CAGBM8ACQ message_id=1793916761.608339]: ' useless: "slack from" "↳1793825822.808289" "channel=D0CAGBM8ACQ" -> should be just DM "message_id=1793916761.608339"
+
+What the ids do today: the agent copies `channel` and `thread` into `social send` to answer in the same chat and thread, and `channel` with `message_id` into `social react` (`awm/social/hub_adapter.py:237-294`). Dropping them from the line means social must fill them in.
