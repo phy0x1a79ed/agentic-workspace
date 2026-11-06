@@ -20,3 +20,5 @@ The second attempt at deneb's cutover after the first rolled back on 2026-11-05:
 - Door login user: door-client reads `singleton_doors.<host>.user` (e4e66e6b). A need on a door singleton holds at load, and the door is never contacted at load (Rust test `a_singleton_behind_a_door_strands_no_plugin`).
 - Each caller pins each door's host key, recorded from the host itself, never by keyscan (deneb-board's role).
 - mizar's edge-off.conf comes off in the retry window, after alcor runs the release.
+- dev's code side (073c8874, in the RC as accc9460): search, operations and reflection implement contracts of their own name. journal, channel, board and zotero need contracts. trilium's stale operations need is gone. The backup-diff hold already runs on mizar (`awm.trilium.backup pull`). On deneb, board intake and zotero's order puller idle. The Rust test `denebs_plugins_load_with_no_door_and_no_peer` passes.
+- Two features need their direction inverted to satisfy R79. They are separate topics: zotero-order-invert and board-intake-invert. Neither blocks the retry: alcor's approver is not live yet, and board events queue without loss.

@@ -36,6 +36,8 @@ Procedure, from dfs-interview § Work the stack:
 
 ## Stack
 
+- **board-intake-invert** (2026-11-05): from redux-build/dev: dev (2026-11-05): board intake (R77) needs operations on alcor, so with the board host on deneb intake never delivers; events queue in deneb's board log. Inverted shape: alcor's operations pulls from deneb's board door. R77's door and intake are slated for deletion (T18 feat/redux-r77).
+- **zotero-order-invert** (2026-11-05): from redux-build/dev: dev (2026-11-05): with R79, zotero's Sync now (R83) never runs on deneb, because deneb's zotero long-polls alcor's approver (order_pull), which is outbound. Invert it: alcor's approver calls a zotero verb on deneb's door with the signed envelope.
 - **deneb-retry** (2026-11-05): from redux-build/deneb-board: deneb-board (2026-11-05): the cutover failed after the vault move. f5c5294d refuses deneb's plugins because they need operations/social, which only door-client lets a node meet through a singleton's door. Rolled back; 2b (sshd/ufw/SNI) kept. The retry needs a release with door-client.
 - **mizar-backup** (2026-11-05): from redux-build/rt-container: rt-container (2026-11-05): mizar had no dvc binary; data_dvc's fallbacks look under ~/lib/miniforge3 but mizar's miniforge is ~/miniforge3, so scope create/heal report mode none. Both nightly chinook jobs on mizar (cache_sync, workspace_backup) fail: .awm/dvc.toml [chinook] is missing, so nothing on mizar is backed up off-site.
 - **dispatch-mode** (2026-11-05): as tasks are decided and worked out, please dispatch top level agents to work on them / their issues can be pushed back to the stack / we will notify them once their issues are solved and how, rather than when we decide how to solve. / we can add this mode to dfs-interview skill
