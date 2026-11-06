@@ -23,7 +23,7 @@ Procedure, from dfs-interview § Work the stack:
 
 ## Current topic
 
-**ops-board**. Its result: `ops-board/README.md`.
+**session-cleanup**, under **end-state**. Its result: `end-state/session-cleanup/README.md`.
 
 ## Pending
 
@@ -37,6 +37,7 @@ Procedure, from dfs-interview § Work the stack:
   - [ ] Place the new Swarm board under the AWM book, next to the federation board?
 - **end-state** (2026-11-06): there are a few sessions that look left over. Please use the DFS interview skill so that we can review the end state and if there are anything left open for us to clean up and do.
   - **session-cleanup** (2026-11-06): I also want to clean up the current list of sessions to prevent churn from restarts
+    - [ ] Stop the five 'stop' items, and decide each 'ask' item as listed?
   - **seat-lifecycle** (2026-11-06): need to update seats to retire after task is done with report sent back through DM. Seats should also be instructed to journal often -> we should also add tags for each user, and one that marks seats. otherwise, these journals are debreif journals. ... the task should be resumable from debrief journals, even if the sessions are gone.
   - **social-split** (2026-11-06): I think socials needs to be split into 2 access channels, maybe even 3. for write only -> notifications, read/write on channels (bots/seats), personal automations (old teams and slack browser stuff). browser is a utility and stays separate -> it can be part of core actually, it just doesnt keep any brwosers warm
   - **deploy-routine** (2026-11-06): we should change the deploy protocol to be deterministic with only agentic error handling, so that it becomes a (was it called routine?) like what was discussed during the initial redux spec -> do we have a journal for the redux spec so that future agents can refer to it? and can we edit it incrementally rather than full rewrite?
