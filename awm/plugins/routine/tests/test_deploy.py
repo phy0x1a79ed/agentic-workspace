@@ -535,6 +535,28 @@ async def test_a_push_node_without_an_artifacts_dir_takes_none(store, out, ws, t
     assert t["state"] == "landed"
 
 
+ART_ONLY = INSTALL + '\n[fleet.push.alcor]\nartifacts = "{dest}"\n'
+
+
+async def test_a_fetching_node_takes_the_pinned_artifact_and_no_push(store, out, ws, tmp_path):
+    art_store = _pinned_scope(ws, tmp_path, b"tarball")
+    dest = tmp_path / "alcor-artifacts"
+    [t] = await land(make_art(store, out, ws, ART_ONLY.format(dest=dest), art_store), "a")
+    assert t["state"] == "landed"
+    assert (dest / "server-v1.tar.xz").read_bytes() == b"tarball"
+    assert [c[3] for c in out.calls] == ["alcor", "capella"]
+
+
+def test_fleetconf_artifacts_only():
+    f = fleetconf.parse(ART_ONLY.format(dest="alcor:/w/.awm/artifacts"))
+    assert f.artifacts_dest("alcor") == "alcor:/w/.awm/artifacts"
+    assert f.push_url("alcor", "proj") == ""
+    for bad in ('[fleet.push.a]\nprojects = ["p"]\nartifacts = "a:/x"',
+                '[fleet.push.a]\nartifacts = ""', '[fleet.push.a]\n'):
+        with pytest.raises(fleetconf.FleetConfigError):
+            fleetconf.parse(bad)
+
+
 def test_fleetconf_push_artifacts():
     f = fleetconf.parse(PUSH_ART.format(url="d:/w/projects/{project}/.bare", dest="d:/w/.awm/artifacts"))
     assert f.artifacts_dest("alcor") == "d:/w/.awm/artifacts" and f.artifacts_dest("capella") == ""

@@ -11,15 +11,16 @@ its `[fleet]` table says which node is home base and the order nodes refresh in:
     canonical = "<node>"
     nodes = ["<canonical>", ...]
 
-    [fleet.push.<node>]           # optional, for a node that cannot fetch from home
-    url = "<node>:<workspace>/projects/{project}/.bare"
-    projects = ["<name>", ...]
-    artifacts = "<node>:<awm dir>/artifacts"   # optional
+    [fleet.push.<node>]           # optional
+    url = "<node>:<workspace>/projects/{project}/.bare"   # with projects, for a node
+    projects = ["<name>", ...]                             # that cannot fetch from home
+    artifacts = "<node>:<awm dir>/artifacts"               # for a node that builds nothing
 
-The node that lands a project leads its rollout. Before a push node refreshes,
-the landing node pushes the new release into its repo as
-`refs/<landing node>/release`, fast-forward only (routines.md R31), and, when
-the node names an `artifacts` directory, the files the release pins (artifacts.py).
+The node that lands a project leads its rollout. Before a node refreshes, the
+landing node pushes the new release into its repo as `refs/<landing node>/release`,
+fast-forward only (routines.md R31), when the node names a url. It pushes the
+files the release pins (artifacts.py) when the node names an `artifacts`
+directory. A node that fetches its release names only `artifacts`.
 An absent file or table is a fleet of this node alone.
 """
 
@@ -112,14 +113,15 @@ def parse(text: str, *, source: str = FILE) -> Fleet:
     push: dict[str, Push] = {}
     for node, body in (raw.get("push") or {}).items():
         where = f"{source}: [fleet.push.{node}]"
-        if (not isinstance(body, dict) or not {"url", "projects"} <= set(body)
-                or set(body) - {"url", "projects", "artifacts"}):
-            raise FleetConfigError(f"{where} takes url and projects, and optionally artifacts")
-        url, names = body["url"], body["projects"]
+        keys = set(body) if isinstance(body, dict) else set()
+        if (not isinstance(body, dict) or keys - {"url", "projects", "artifacts"}
+                or ("url" in keys) != ("projects" in keys) or not keys & {"url", "artifacts"}):
+            raise FleetConfigError(f"{where} takes url and projects, or artifacts, or all three")
+        url, names = body.get("url", ""), body.get("projects", [])
         artifacts = body.get("artifacts", "")
-        if not isinstance(artifacts, str):
+        if not isinstance(artifacts, str) or ("artifacts" in keys and not artifacts):
             raise FleetConfigError(f"{where} artifacts must be a directory as <host>:<path>")
-        if not isinstance(url, str) or "{project}" not in url:
+        if "url" in keys and (not isinstance(url, str) or "{project}" not in url):
             raise FleetConfigError(f"{where} url must name the repo with {{project}}")
         if not isinstance(names, list) or not all(isinstance(n, str) and n for n in names):
             raise FleetConfigError(f"{where} projects must be a list of project names")

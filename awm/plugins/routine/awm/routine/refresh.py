@@ -192,9 +192,9 @@ class Refresher:
         """Refresh each node in order, stopping at the first failure (R31).
 
         The install config names the nodes, home base first (fleetconf). An
-        empty list means this node only. A push node first takes the release
-        from ``bare``, then the files the release pins when it names an
-        artifacts directory."""
+        empty list means this node only. A node with a push url first takes
+        the release from ``bare``. A node that names an artifacts directory
+        then takes the files the release pins."""
         fleet = self.fleet_config()
         nodes = list(fleet.rollout(project)) or [self.node]
         done: list[dict[str, Any]] = []
@@ -205,7 +205,7 @@ class Refresher:
             else:
                 url = fleet.push_url(node, project)
                 r = await self._push(node, url, bare, to) if url else None
-                dest = fleet.artifacts_dest(node) if url else ""
+                dest = fleet.artifacts_dest(node)
                 if r is None and dest:
                     if pinned is None:
                         pinned, r = await self._pinned(node, bare, to)
