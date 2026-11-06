@@ -8,12 +8,10 @@ node's committed config says (routines.md R25, R31, R33).
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import os
 import shlex
 import subprocess
-import time
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -26,20 +24,6 @@ from awm.routine.outbound import Outbound
 log = logging.getLogger("awm.routine.refresh")
 
 MANIFEST = "awm-plugin.toml"
-# The last line a detached refresh prints (scripts/node-refresh.sh).
-RESULT_MARK = "AWM-REFRESH-RESULT "
-
-
-def parse_result(output: str) -> dict[str, Any] | None:
-    """The result a detached refresh printed, or None when it printed none."""
-    for line in reversed(output.splitlines()):
-        if line.startswith(RESULT_MARK):
-            try:
-                res = json.loads(line[len(RESULT_MARK):])
-            except json.JSONDecodeError:
-                return None
-            return res if isinstance(res, dict) and "ok" in res else None
-    return None
 
 
 def default_checkout_root(workspace: Path) -> Callable[[str], Path]:
@@ -111,25 +95,17 @@ def plugin_folders(root: Path, paths: list[str]) -> tuple[dict[str, str | None],
 
 
 class Refresher:
-    """``retry_budget`` is how long a node that gave no answer is asked again. A
-    detached refresh restarts the awm that a peer call or a command reaches it through,
-    so the first call often dies with it. The refresh itself runs on, and a later call
-    for the same commit answers from its result."""
-
     def __init__(self, out: Outbound, *, node: str,
                  checkout_root: Callable[[str], Path],
                  fleet_config: Callable[[], fleetconf.Fleet] = fleetconf.Fleet,
                  artifact_store: Path | None = None,
-                 awake: Callable[[str], Awaitable[bool]] | None = None,
-                 retry_budget: float = 600.0, retry_every: float = 10.0) -> None:
+                 awake: Callable[[str], Awaitable[bool]] | None = None) -> None:
         self.out = out
         self.awake = awake or _answers
         self.node = node
         self.checkout_root = checkout_root
         self.fleet_config = fleet_config
         self.artifact_store = artifact_store
-        self.retry_budget = retry_budget
-        self.retry_every = retry_every
 
     def _env(self, frm: str, to: str) -> dict[str, str]:
         return {"AWM_REFRESH_FROM": frm, "AWM_REFRESH_TO": to, "AWM_NODE_NAME": self.node}
@@ -156,18 +132,7 @@ class Refresher:
             return await self._command(root, cfg, env, "project")
         if cfg.kind == "queue":
             return await self._queue(project, cfg, frm, to)
-        if cfg.kind == "detached":
-            return await self._detached(root, cfg, env, to)
         return await self._hot(root, cfg, env, frm, to)
-
-    async def _detached(self, root: Path, cfg: Refresh, env: dict[str, str],
-                        to: str) -> NodeResult:
-        """Run the node's refresh script, which runs its steps in a unit of their own
-        and prints their result. A call that this awm's restart kills is made again
-        for the same commit, and the script answers from the result."""
-        res = await proc.run(f"bash {shlex.quote(cfg.command)} {shlex.quote(to)}",
-                             cwd=str(root), timeout=cfg.timeout, env=env)
-        return _from_result(self.node, res)
 
     async def _command(self, root: Path, cfg: Refresh, env: dict[str, str],
                        label: str, cwd: Path | None = None,
@@ -225,13 +190,8 @@ class Refresher:
         return NodeResult(self.node, True, "" if hooks else "nothing to refresh", hooks)
 
     async def fleet(self, project: str, frm: str, to: str, *,
-                    bare: Path | None = None, done: list[dict[str, Any]] | None = None,
-                    progress: Callable[[list[dict[str, Any]]], None] | None = None,
-                    ) -> FleetResult:
+                    bare: Path | None = None) -> FleetResult:
         """Refresh each node in order, stopping at the first failure (R31).
-
-        ``done`` holds the nodes an earlier run of this rollout refreshed, which a
-        resumed rollout skips. ``progress`` takes the list after each node.
 
         The install config names the nodes, home base first (fleetconf). An
         empty list means this node only. A push node takes the release from
@@ -240,12 +200,9 @@ class Refresher:
         files when it names a directory, then refreshes itself."""
         fleet = self.fleet_config()
         nodes = list(fleet.rollout(project)) or [self.node]
-        done = [n for n in done or [] if n.get("ok")]
-        finished = {n["node"] for n in done}
+        done: list[dict[str, Any]] = []
         pinned: list[artifacts.Artifact] | None = None
         for node in nodes:
-            if node in finished:
-                continue
             if node == self.node:
                 r = await self.local(project, frm, to)
             elif node in fleet.sleepers and not await self.awake(node):
@@ -266,8 +223,6 @@ class Refresher:
                 if r is None:
                     r = await self._peer(node, project, frm, to)
             done.append(r.to_dict())
-            if progress:
-                progress(done)
             if not r.ok:
                 return FleetResult(False, done, node, r.detail)
         return FleetResult(True, done)
@@ -312,74 +267,22 @@ class Refresher:
                                   to: str) -> NodeResult:
         """Refresh push node ``node`` with the command its entry names, run here."""
         env = {**self._env(frm, to), "AWM_REFRESH_NODE": node, "AWM_REFRESH_PROJECT": project}
-
-        async def once() -> NodeResult | None:
-            res = await proc.run(cmd, cwd="/", timeout=1800.0, env=env)
-            if parse_result(res.output) is not None:
-                return _from_result(node, res)
-            answer = _json_dict(res.output)
-            if answer is not None and "ok" in answer:
-                return _from_dict(node, answer)
-            if res.ok:
-                return NodeResult(node, True, res.output[-2000:])
-            raise RuntimeError(f"refresh command {_why(res)}\n{res.output}")
-        return await self._until_answer(node, once)
+        res = await proc.run(cmd, cwd="/", timeout=1800.0, env=env)
+        if not res.ok:
+            return NodeResult(node, False, f"refresh command {_why(res)}\n{res.output}")
+        return NodeResult(node, True, res.output[-2000:])
 
     async def _peer(self, node: str, project: str, frm: str, to: str) -> NodeResult:
-        async def once() -> NodeResult:
-            try:
-                res = await self.out.invoke("routine", "refresh",
-                                            {"project": project, "from": frm, "to": to},
-                                            peer=node, timeout=1800.0)
-            except Exception as e:  # noqa: BLE001
-                raise RuntimeError(f"peer call failed: {e}") from e
-            if not isinstance(res, dict):
-                return NodeResult(node, False, f"peer returned {res!r}"[:300])
-            return _from_dict(node, res)
-        return await self._until_answer(node, once)
-
-    async def _until_answer(self, node: str,
-                            once: Callable[[], Awaitable[NodeResult | None]]) -> NodeResult:
-        """Call ``once`` until it answers. A raise is no answer, asked again every
-        ``retry_every`` seconds while the retry budget lasts."""
-        deadline = time.monotonic() + self.retry_budget
-        while True:
-            try:
-                r = await once()
-                if r is not None:
-                    return r
-                why = "no answer"
-            except RuntimeError as e:
-                why = str(e)
-            if time.monotonic() >= deadline:
-                return NodeResult(node, False, why)
-            log.info("refresh of %s gave no answer, asking again: %s", node, why[:200])
-            await asyncio.sleep(self.retry_every)
-
-
-def _from_result(node: str, res: proc.Result) -> NodeResult:
-    """A node's answer from its refresh script's output."""
-    result = parse_result(res.output)
-    if result is None:
-        return NodeResult(node, False, f"the refresh script {_why(res)} with no result"
-                                       f"\n{res.output}")
-    ok = bool(result.get("ok"))
-    detail = "" if ok else (f"step {result.get('failed_step') or '?'} failed; its log is "
-                            f"{result.get('log', '?')} on {node}\n{res.output}")
-    return NodeResult(node, ok, detail, [{"hook": "detached", **result}])
-
-
-def _from_dict(node: str, res: dict[str, Any]) -> NodeResult:
-    return NodeResult(node, bool(res.get("ok")), str(res.get("detail", "")),
-                      list(res.get("hooks", [])))
-
-
-def _json_dict(text: str) -> dict[str, Any] | None:
-    try:
-        res = json.loads(text)
-    except json.JSONDecodeError:
-        return None
-    return res if isinstance(res, dict) else None
+        try:
+            res = await self.out.invoke("routine", "refresh",
+                                        {"project": project, "from": frm, "to": to},
+                                        peer=node, timeout=1800.0)
+        except Exception as e:  # noqa: BLE001
+            return NodeResult(node, False, f"peer call failed: {e}")
+        if not isinstance(res, dict):
+            return NodeResult(node, False, f"peer returned {res!r}"[:300])
+        return NodeResult(node, bool(res.get("ok")), str(res.get("detail", "")),
+                          list(res.get("hooks", [])))
 
 
 async def _answers(node: str) -> bool:

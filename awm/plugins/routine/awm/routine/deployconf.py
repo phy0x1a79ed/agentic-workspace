@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 FILE = "deploy.toml"
-REFRESH_KINDS = ("restart", "detached", "queue", "hot", "none")
+REFRESH_KINDS = ("restart", "queue", "hot", "none")
 CHECK_BUDGET = 60.0
 REFRESH_BUDGET = 1800.0
 
@@ -73,8 +73,8 @@ def parse(text: str) -> DeployConfig:
     kind = r.get("kind", "none")
     if kind not in REFRESH_KINDS:
         raise ConfigError(f"{FILE}: [refresh] kind must be one of {REFRESH_KINDS}")
-    if kind in ("restart", "detached") and not r.get("command"):
-        raise ConfigError(f"{FILE}: a {kind} refresh needs a command")
+    if kind == "restart" and not r.get("command"):
+        raise ConfigError(f"{FILE}: a restart refresh needs a command")
     if kind == "queue" and not r.get("prompt"):
         raise ConfigError(f"{FILE}: a queue refresh needs a prompt")
     fx = raw.get("fixer", {})

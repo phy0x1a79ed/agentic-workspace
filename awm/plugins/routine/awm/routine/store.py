@@ -268,11 +268,8 @@ class Store:
                 " error='the routine service restarted mid-batch', ended_at=?"
                 " WHERE state='running'", (now(),)).rowcount
             # Tickets of an interrupted batch go back to the queue, so the next
-            # batch retries them rather than losing them. A batch that was refreshing
-            # had landed already: its rollout resumes (refreshing_batches).
-            c.execute("UPDATE tickets SET state='queued', batch_id='' WHERE state='batched'"
-                      " AND batch_id NOT IN (SELECT id FROM batches"
-                      " WHERE state='refreshing')")
+            # batch retries them rather than losing them.
+            c.execute("UPDATE tickets SET state='queued', batch_id='' WHERE state='batched'")
         return n
 
     # -- deploy tickets and batches --------------------------------------
@@ -318,9 +315,6 @@ class Store:
         bid = new_id()
         try:
             with self._tx() as c:
-                if c.execute("SELECT 1 FROM batches WHERE project=? AND state='refreshing'",
-                             (project,)).fetchone():
-                    raise LiveRunExists(f"{project} has a batch rolling out")
                 waiting = c.execute(
                     "SELECT id FROM tickets WHERE project=? AND state='queued'"
                     " ORDER BY created_at, rowid", (project,)).fetchall()
@@ -333,10 +327,6 @@ class Store:
         except sqlite3.IntegrityError as e:
             raise LiveRunExists(f"{project} already has a live deploy batch") from e
         return self.get_batch(bid), self.batch_tickets(bid)  # type: ignore[return-value]
-
-    def refreshing_batches(self) -> list[dict[str, Any]]:
-        """Landed batches whose rollout a previous process left unfinished."""
-        return self._all("SELECT * FROM batches WHERE state='refreshing' ORDER BY started_at")
 
     def get_batch(self, bid: str) -> dict[str, Any] | None:
         return self._one("SELECT * FROM batches WHERE id=?", (bid,))

@@ -6,10 +6,6 @@ pins, check, promote, backup, refresh and report. Only this engine writes `dev` 
 `release` (R29), so a ref that moved under a batch is a failure, never a
 force. The backup remote takes `release` the same way: a backup that diverged
 stops the batch before release moves (install.md R114).
-
-A landed batch is `refreshing` while its rollout runs, and the batch records each
-node as it finishes. The refresh of this node can restart the service that runs
-the engine, so a new process resumes every `refreshing` batch from its next node.
 """
 
 from __future__ import annotations
@@ -129,7 +125,6 @@ class Deployer:
     # -- worker -------------------------------------------------------------
 
     async def run_forever(self) -> None:
-        self.resume_rollouts()
         while True:
             self._start_waiting()
             self._wake.clear()
@@ -150,40 +145,8 @@ class Deployer:
         self._live.pop(project, None)
         self._wake.set()
 
-    def resume_rollouts(self) -> None:
-        """Finish the rollout of each batch a previous process left `refreshing`."""
-        for batch in self.store.refreshing_batches():
-            project = batch["project"]
-            if project in self._live:
-                continue
-            task = asyncio.create_task(self._resume(batch))
-            self._live[project] = task
-            task.add_done_callback(lambda _t, p=project: self._done(p))
-
-    async def _resume(self, batch: dict[str, Any]) -> None:
-        tickets = self.store.batch_tickets(batch["id"])
-        log.info("resuming the rollout of batch %s at %s", batch["id"],
-                 batch["release_after"][:12])
-        try:
-            bare = self.bare(batch["project"])
-            await self._rollout(batch, tickets, self._landed_config(bare, batch["release_after"]),
-                                bare, batch["release_before"], batch["release_after"],
-                                done=batch["nodes"])
-        except Exception as e:  # noqa: BLE001
-            log.exception("resumed batch %s crashed", batch["id"])
-            await self._fail(batch, tickets, "refresh", repr(e), landed=True)
-
-    @staticmethod
-    def _landed_config(bare: Path, head: str) -> DeployConfig:
-        r = _git(bare, "show", f"{head}:{deployconf.FILE}")
-        try:
-            return deployconf.parse(r.stdout) if r.returncode == 0 else DeployConfig()
-        except ConfigError:
-            return DeployConfig()
-
     async def drain(self) -> None:
         """Run batches until no ticket waits. For tests and the dry run."""
-        self.resume_rollouts()
         while True:
             self._start_waiting()
             if not self._live:
@@ -229,28 +192,19 @@ class Deployer:
             _git(bare, "worktree", "remove", "--force", str(wt))
             _git(bare, "worktree", "prune")
             shutil.rmtree(tmp, ignore_errors=True)
-        self.store.update_batch(bid, state="refreshing")
-        await self._rollout(batch, tickets, cfg or DeployConfig(), bare,
-                            state["release_before"], state["head"], done=[])
-
-    async def _rollout(self, batch: dict[str, Any], tickets: list[dict[str, Any]],
-                       cfg: DeployConfig, bare: Path, frm: str, to: str, *,
-                       done: list[dict[str, Any]]) -> None:
-        bid, project = batch["id"], batch["project"]
-        fleet = await self.refresher.fleet(
-            project, frm, to, bare=bare, done=done,
-            progress=lambda nodes: self.store.update_batch(bid, nodes=nodes))
+        fleet = await self.refresher.fleet(project, state["release_before"], state["head"],
+                                           bare=bare)
         self.store.update_batch(bid, nodes=fleet.nodes)
         self.store.record_batch_step(bid, {"step": "refresh", "ok": fleet.ok,
                                            "failed_node": fleet.failed_node})
         if not fleet.ok:
             await self._fail(batch, tickets, "refresh",
                              f"node {fleet.failed_node}: {fleet.error}", cfg=cfg,
-                             landed=True, node=fleet.failed_node, to=to)
+                             landed=True)
             return
-        mark = f"✓ landed in release {to[:12]}"
+        mark = f"✓ landed in release {state['head'][:12]}"
         self.store.finish_batch(bid, "landed", mark=mark)
-        await self._report(project, tickets, bid, f"{mark}\n{_node_lines(fleet.nodes)}")
+        await self._report(project, tickets, bid, mark)
 
     def _pin(self, bid: str, bare: Path, tickets: list[dict[str, Any]],
              state: dict[str, str]) -> None:
@@ -442,11 +396,9 @@ class Deployer:
 
     async def _fail(self, batch: dict[str, Any], tickets: list[dict[str, Any]],
                     step: str, error: str, *, cfg: DeployConfig | None = None,
-                    landed: bool = False, node: str = "", to: str = "") -> None:
+                    landed: bool = False) -> None:
         bid, project = batch["id"], batch["project"]
         cfg = cfg or DeployConfig()
-        if node:
-            return await self._fail_node(batch, tickets, error, cfg, node, to)
         branches = "\n".join(f"- {t['branch']} at {t['sha'][:12]} (scope {t['scope']}, "
                              f"ticket {t['id']})" for t in tickets)
         where = (("Release already holds these commits, but the backup remote does "
@@ -475,49 +427,3 @@ class Deployer:
         await self._report(project, tickets, bid,
                            f"{mark}. A fixing session took the batch "
                            f"({esc.via}{' ' + esc.job if esc.job else ''}).")
-
-    async def _fail_node(self, batch: dict[str, Any], tickets: list[dict[str, Any]],
-                         error: str, cfg: DeployConfig, node: str, to: str) -> None:
-        """A node's refresh failed: one fixing session starts on that node (R47) and
-        the nodes after it keep the old release (R31)."""
-        bid, project = batch["id"], batch["project"]
-        home = node == self.refresher.node
-        nodes = (self.store.get_batch(bid) or {}).get("nodes") or []
-        prompt = (
-            f"The deploy batch {bid} of `{project}` landed release {to[:12]}, and its "
-            f"refresh failed on node {node}. The nodes after {node} in the rollout still "
-            f"run the old release.\n\nThe failure, with the tail of the step's log:"
-            f"\n\n{error[-3000:]}\n\nFix {node} so it runs release {to}. The refresh "
-            f"keeps its result in <AWM_DIR>/state/refresh/{to}.json on {node} and answers "
-            f"from it, so delete that file before you run the refresh again with "
-            f"`bash scripts/node-refresh.sh {to}` in {node}'s awm checkout. A fix to the "
-            f"code lands like any other change, through `routine deploy` on mizar. A "
-            f"deploy refreshes every node again, and a node whose result for this release "
-            f"is ok answers at once. Read the batch with `routine deploys` id={bid}."
-            f"\n\nNodes so far:\n{_node_lines(nodes)}"
-            + (f"\n\n{cfg.fixer_prompt}" if cfg.fixer_prompt else ""))
-        submitters = sorted({t["caller"] for t in tickets if t["caller"]})
-        esc = await escalate(
-            self.out, peer="local" if home else node, project=project,
-            scope=f"deploy-fix-{bid}", name=f"deploy-fix-{bid}", prompt=prompt,
-            started_by=(f"deploy batch {project}/{bid}, refresh of {node}, submitted by "
-                        f"{', '.join(submitters) or 'unknown callers'}"),
-            summary=f"Deploy batch {project}/{bid} failed to refresh {node}.",
-            lobby=not home, fallback_peer="" if home else "local")
-        mark = f"✗ failed at refresh on {node}"
-        self.store.finish_batch(bid, "refresh-failed", mark=mark, failed_step="refresh",
-                                error=error, fixer=esc.job or esc.via)
-        await self._report(project, tickets, bid,
-                           f"{mark}. A fixing session took it ({esc.via}"
-                           f"{' ' + esc.job if esc.job else ''}"
-                           f"{' on ' + esc.peer if esc.peer else ''}).")
-
-
-def _node_lines(nodes: list[dict[str, Any]]) -> str:
-    """One line per node of a rollout, for the report."""
-    lines = []
-    for n in nodes:
-        first = (str(n.get("detail") or "").strip().splitlines() or [""])[0][:160]
-        lines.append(f"- {n.get('node')} {'✓' if n.get('ok') else '✗'}"
-                     f"{': ' + first if first else ''}")
-    return "\n".join(lines)
