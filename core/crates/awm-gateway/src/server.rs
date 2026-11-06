@@ -65,6 +65,9 @@ pub fn door_router(gw: Arc<Gateway>) -> Router {
 
 /// Bind, start the services, serve until SIGINT or SIGTERM, then stand everything down.
 pub async fn serve(gw: Arc<Gateway>) -> anyhow::Result<()> {
+    let _lock = crate::survival::StateLock::acquire(&gw.state)?;
+    let starts = crate::survival::log_start(&gw.state, crate::survival::unix_now());
+    let hold = starts > crate::survival::START_BUDGET;
     let listener = tokio::net::TcpListener::bind(&gw.cfg.listen).await?;
     let addr = listener.local_addr()?;
     let url = format!("http://{addr}");
@@ -94,21 +97,57 @@ pub async fn serve(gw: Arc<Gateway>) -> anyhow::Result<()> {
         serde_json::to_string_pretty(&json!({"url": url, "isolated_url": door_url, "pid": std::process::id(), "node": gw.node}))?,
     )?;
     tracing::info!("gateway on {url}, node {}", gw.node);
-    supervisor::start_all(&gw);
+    if hold {
+        tracing::error!(
+            "HOLD MODE: {starts} gateway starts within {}s (budget {}); adopting live services, spawning none. `awm hold leave` ends it",
+            crate::survival::START_WINDOW_S,
+            crate::survival::START_BUDGET
+        );
+        tokio::spawn(report_hold(gw.clone(), starts));
+    }
+    supervisor::start_all(&gw, hold).await;
     let app = router(gw.clone());
     axum::serve(listener, app).with_graceful_shutdown(shutdown_signal(gw.clone())).await?;
     let _ = std::fs::remove_file(gw.state.join("gateway.json"));
     Ok(())
 }
 
+/// SIGINT or SIGTERM is a restart: the services keep running. A drain request has stood them
+/// down already by the time it ends the gateway.
 async fn shutdown_signal(gw: Arc<Gateway>) {
     let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).expect("SIGTERM handler");
     tokio::select! {
-        _ = tokio::signal::ctrl_c() => {}
-        _ = term.recv() => {}
+        _ = tokio::signal::ctrl_c() => supervisor::leave_running(&gw),
+        _ = term.recv() => supervisor::leave_running(&gw),
+        _ = gw.supervisor.drained.notified() => {}
     }
-    tracing::info!("stopping: standing services down");
-    supervisor::stop_all(&gw).await;
+}
+
+/// Ask Tony for help through the operations card, once its tool is up. A gateway cannot always
+/// reach it, so the loud log above stands as the report.
+async fn report_hold(gw: Arc<Gateway>, starts: usize) {
+    let reason = format!(
+        "The awm gateway on {} restarted {starts} times within {} minutes and came up in hold mode: it adopted the live services and spawned none. Find why it restarts, then run `awm hold leave`.",
+        gw.node,
+        crate::survival::START_WINDOW_S / 60
+    );
+    let caller = Caller { node: gw.node.clone(), lane: Lane::Service, trust: Some(crate::caller::TRUSTED.into()), ..Default::default() };
+    let ctx = CallContext { caller, as_: None, surface: Surface::Http, plugin: None, mode: None, pid: None };
+    for _ in 0..12 {
+        tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+        if gw.stopping() {
+            return;
+        }
+        let args = json!({"verb": "request_human", "args": {"kind": "blocked", "reason": reason}});
+        match gw.invoke("operations", args, &ctx).await {
+            Ok(_) => {
+                tracing::warn!("hold mode: blocked card posted for Tony");
+                return;
+            }
+            Err(e) => tracing::debug!("hold mode: request_human not yet possible: {}", e.detail),
+        }
+    }
+    tracing::error!("HOLD MODE: no blocked card could be posted; the gateway log is the only report");
 }
 
 fn write_private(path: &std::path::Path, text: &str) -> std::io::Result<()> {
@@ -290,6 +329,7 @@ async fn register(State(gw): Gw, h: HeaderMap, Json(req): Json<RegisterReq>) -> 
         return Err(ApiError::new(409, format!("service {:?} already has a live instance connected", req.name)));
     };
     tracing::info!("registered service {} (plugin {plugin}) pid {:?}", req.name, req.pid);
+    gw.supervisor.journal.update_existing(&req.name, |e| e.service_id = Some(id.clone()));
     let workspace = gw.cfg.workspace.as_ref().map(|p| p.display().to_string()).unwrap_or_default();
     Ok(Json(json!({
         "service_id": id,
