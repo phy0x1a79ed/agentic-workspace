@@ -32,7 +32,6 @@ Procedure, from dfs-interview § Work the stack:
 
 ## Stack
 
-- **install-loop** (2026-11-06): I want to start a session locally to iteratively dev on awm with cloud agent install tests so that the process is seamless and as close to 1 command as possible, including all core plugins (we can also discuss what that means, starting from the current definition, in that session) -> it would be good to do this for metasmith on altair as well
 - **ops-board** (2026-11-06): https://nexus.tony-xy-liu.com/trilium/#root/iF0A3SWEGqUx/P4ALwPiCSs6N?ntxId=CZkmWI ops board needs updating
   - [ ] Old AWM book: delete the old Ops password notes, carry Links into the new Ops, archive the old Swarm board?
   - [x] Federation board: archive all 8 pre-redux cards, then check the door and intake end to end? (answered 2026-11-06)
@@ -52,6 +51,8 @@ Procedure, from dfs-interview § Work the stack:
 
 - **daae3825** (2026-11-06): took refresh-all
 - **daae3825** (2026-11-06): took node-time
+- **9fc4afc8** (2026-11-06): took install-loop
+- **80f06e0c** (2026-11-06): took install-loop
 
 ## Closed
 
@@ -59,3 +60,4 @@ Procedure, from dfs-interview § Work the stack:
 - **refresh-all** (closed 2026-11-06): `end-state/refresh-all/README.md`
 - **node-time** (closed 2026-11-06): `end-state/node-time/README.md`
 - **nexus-signin** (closed 2026-11-06): `nexus-signin/README.md`
+- **install-loop** (closed 2026-11-06): `install-loop/README.md`
