@@ -23,3 +23,10 @@ On 2026-11-06, relayed by redux-endstate/review, about his 18:37Z message to sla
 ## Incident this design prevents
 
 On 2026-11-06 slack-main read "restart seats on DM" as "start every per-client agent now". Its brief told each agent to "Answer anything unanswered". Steven's and Kalen's agents answered backlog messages, and Kalen's agent also sent an unrequested follow-up from 10-30.
+
+## What exists today (survey, 2026-11-06)
+
+- When a holder's job dies, the next push to it comes back "gone". That message is thrown away, and the seat is released (`awm/social/push.py:73-81`). A prune every 60 s also releases dead holders (`seats.py:100-125`).
+- A released seat pushes to nobody (`hub_adapter.py:148-152`). Only `social history` keeps its messages.
+- A per-client agent hands back with `social unmount`. slack-main took the seat again only through the hourly sweep cron (`SKILL.md:27-28, 65`). Tony dropped that sweep on 2026-11-02, so nothing takes a released seat back now.
+- A kept seat with `channels = "all"` remounts every chat its agent does not hold, every 60 s (`keeper.py:992-1001`). It also takes a seat back from a running per-client agent, and it refuses other sessions' mounts of its seats (`hub_adapter.py:574-580`). It cannot serve as slack-main in this design as it stands.
