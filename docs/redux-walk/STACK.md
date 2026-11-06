@@ -63,6 +63,8 @@ Procedure, from dfs-interview § Work the stack:
 
 From journal 6a98c0c6 (awm/redux) and walkthrough's handover (manual-steps.md at feat/redux-walkthrough a12a5f6e, M-numbers). Live workers: dev, singleton-callers, rt-container, reflect-selfstop.
 
+- **operator-restart** (2026-11-05): from redux-build/tether-redial: mizar's tether operator ends every live session when it stops, so each awm restart or deploy on a member drops its tethers and needs a fresh invite. Sessions should resume across an operator restart.
+
 - **altair-pass-2** (2026-11-05): leftovers of redux-build/dev (journal 8d757654): (1) the three old env.bak copies in altair ~/handoff/altair-rc-backup-20261105-1928/old-env-baks may hold the issuing token, which R147 keeps on deneb only: delete them with the rollback env once altair has run clean; (2) search's v2 database is set aside as search.db.pre-rc-v2 with no migration, so check that altair's search reindexed.
 
 - **windows-pass-2** (2026-11-05): leftovers of redux-build/windows-nodes (journal eb625841, cloud dev 3d406e0): (1) lyra: elevated run of awm-wsl-bridge.ps1 over a v0.4.1 tether with Tony, then ssh_edges, its key into edge_keys.yml, mizar and capella, its altair line, and the awm install; (2) lyra aw: drop the aw-migrate key, export aw to A:\linux\aw-backup.tar, unregister with Tony's OK (8.7 GB copied to ubuntu ~/from-aw); (3) capella: elevated awm-wsl-bridge.ps1 for the 10022 forward; (4) tailnet_portal for capella and lyra through Windows' tailscale.exe; (5) capella's avatar plugin to the new manifest; (6) capella: close the 16122 forward with its Any rule, and Chrome port 19222; (7) capella→altair waits on shogun pass 2 and Tony's Host altair edit.
