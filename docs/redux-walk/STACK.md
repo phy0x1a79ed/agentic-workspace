@@ -29,6 +29,7 @@ Procedure, from dfs-interview § Work the stack:
 
 - **rc-rows** (2026-11-05): On claude.ai/code, archive the 31 dead Remote Control rows: 7 redux-build-* (alcor, clean-plugins, search, channels, queue, deploy, integrate), 14 finished (awm redux, core-redux-gateway-plugins-bootstrap, fleet-board-rework, fxdiff-design, retire-full-close, owner-dm-defaults, discord dm previews, multi-admin machine access, plan-bypass-mode, science-bash-stall, capellaz cc mem cleanup, avatar, lit kb, cloud/homelab), representative x5, secretary x5. Your call on: engcyc pipeline plan, msm-*, fosdb, cyanoverse, treesapp, ecspr, job application system, 4 offline seat rows, 4 cloud sessions.
 - **M-zotero-ro** (2026-11-05): deneb's Zotero API key can write, and deneb only needs to read. At zotero.org (Settings → Feeds/API), create a read-only key for your library. Then replace ZOTERO_API_KEY in /etc/awm/secrets/zotero.env on deneb, or hand the key to deneb-board to place without printing it. Revoke the old key afterwards.
+- **M-tailnet-names** (2026-11-05): In the Tailscale admin console, delete the stale capella node (100.70.76.82) and rename xps-laptop to lyra. Then on capella run: "B:\Program Files\Tailscale\tailscale.exe" set --hostname=capella
 
 ## Stack
 
@@ -61,6 +62,8 @@ Procedure, from dfs-interview § Work the stack:
 ## Parked
 
 From journal 6a98c0c6 (awm/redux) and walkthrough's handover (manual-steps.md at feat/redux-walkthrough a12a5f6e, M-numbers). Live workers: dev, singleton-callers, rt-container, reflect-selfstop.
+
+- **windows-pass-2** (2026-11-05): leftovers of redux-build/windows-nodes (journal eb625841, cloud dev 3d406e0): (1) lyra: elevated run of awm-wsl-bridge.ps1 over a v0.4.1 tether with Tony, then ssh_edges, its key into edge_keys.yml, mizar and capella, its altair line, and the awm install; (2) lyra aw: drop the aw-migrate key, export aw to A:\linux\aw-backup.tar, unregister with Tony's OK (8.7 GB copied to ubuntu ~/from-aw); (3) capella: elevated awm-wsl-bridge.ps1 for the 10022 forward; (4) tailnet_portal for capella and lyra through Windows' tailscale.exe; (5) capella's avatar plugin to the new manifest; (6) capella: close the 16122 forward with its Any rule, and Chrome port 19222; (7) capella→altair waits on shogun pass 2 and Tony's Host altair edit.
 
 - **deneb-pass-2** (2026-11-05): leftovers of redux-build/deneb-board (journal f4ed07ad): (1) move the relay seats and keep's claude daemon off deneb (R79, R129), then set deneb_agents_moved: true; (2) capella's avatar forward uses the socket (M44); (3) lyra's edge key on deneb; (4) derived relay callers (`members`) with dev.
 
