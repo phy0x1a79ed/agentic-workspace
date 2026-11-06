@@ -20,8 +20,17 @@ main() {
     [[ $to =~ ^[0-9a-f]{40}$ ]] || { echo "usage: node-refresh.sh <release sha, 40 hex>" >&2; return 2; }
     root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
     export AWM_DIR=${AWM_DIR:-$root/.awm}
-    local conda=${AWM_CONDA_ROOT:-$HOME/miniforge3}
-    export PATH=$HOME/.local/bin:$conda/condabin:$conda/bin:$PATH
+    local conda root
+    # Nodes keep conda in different places. Take the first root that holds the awm env.
+    for root in ${AWM_CONDA_ROOT:-} ${MAMBA_ROOT_PREFIX:-} "$HOME/miniforge3" "$HOME/lib/miniforge3" /opt/miniforge3; do
+        [[ -d $root/envs/awm ]] && { conda=$root; break; }
+    done
+    if [[ -n ${conda:-} ]]; then
+        export MAMBA_ROOT_PREFIX=$conda
+        export PATH=$HOME/.local/bin:$conda/condabin:$conda/bin:$PATH
+    else
+        export PATH=$HOME/.local/bin:$PATH
+    fi
     dir=$AWM_DIR/state/refresh
     result=$dir/$to.json
     log=$dir/$to.log
