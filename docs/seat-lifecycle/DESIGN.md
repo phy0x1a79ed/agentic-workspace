@@ -14,13 +14,13 @@ On 2026-11-06 a seat restart started five per-person agents with a brief that sa
 2. Every message in a seated chat goes to that seat, @mentions included. A message in a chat with no seat goes nowhere, on purpose.
 3. A seat may forward a message to another seat, such as a channel seat to a person's DM seat. The receiving agent may read the source chat's history for context.
 4. A DM seat exists only for a person who wrote to Opal. Opal never messages a person first: `send` refuses a DM to a person who never wrote there (redux `users.md` R126 item 1).
-5. Seats are declared in config. On 2026-11-06 the declared channel seats are Discord unimatrix0 #bots and Hallam Hive #general. Slack #arbutus and #bioinformatics have none. #arbutus carries notifications only.
+5. Seats are declared in config: every Slack DM by rule, plus explicit seats. On 2026-11-06 the one channel seat is Discord Hallam Hive #general, at the cooperative level: it is invite-only, lab-only, and the lab's agentic group chat. Discord #bots, Slack #arbutus and #bioinformatics have none. #arbutus carries notifications only.
 6. A DM from a new person creates their DM seat, notifies Tony with `request_human`, and starts its agent.
 7. A sender from outside the lab gets no agent. The message is held and Tony is asked.
 
 ## Where agents run
 
-1. Every seat agent runs on altair, except the Discord #bots seat (mizar or alcor) and Tony's Discord DM seat (mizar).
+1. Every seat agent runs on altair, except Tony's Discord DM seat (mizar).
 2. Tony has two seats: his Slack DM on altair and his Discord DM on mizar. Both are trusted. Their briefs carry redux `sessions.md` R67 and R68.
 3. Agents run on Opus at high effort.
 4. Agents start through `reflection start_other` on the seat's node, which claims a warm spare. The first action comes about 7 s after the start.
@@ -83,6 +83,6 @@ The old keeper (`keeper.py`) merges into seats. One seats component in social ow
 
 ## State on 2026-11-06
 
-- Seats on altair are paused. The pause and how to undo it are in journal 214c7abd. The backups are at `~/.local/share/awm/seat-pause-backup` on altair.
+- Seats on altair are paused through the weekend. Whether the Python seats return before the Rust social lands is open on 2026-11-09. The pause and how to undo it are in journal 214c7abd. The backups are at `~/.local/share/awm/seat-pause-backup` on altair.
 - Temporary seats run for Kalen (job 9e22f611) and Patrik Star (job a1406294) on the old code.
 - `agentic-commons` exists only as a draft template at `docs/redux/drafts/agentic-commons`.
