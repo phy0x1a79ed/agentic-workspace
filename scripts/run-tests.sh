@@ -61,12 +61,10 @@ declare -A DISTS=(
   [reflection]="$WS/awm/services/reflection::$WS/awm/services/reflection/tests"
   [dvc]="$WS/awm/services/dvc::$WS/awm/services/dvc/tests"
   [claude-science]="$WS/awm/services/claude-science::$WS/awm/services/claude-science/tests"
-  [dsh]="$WS/awm/services/dsh::$WS/awm/services/dsh/tests"
   [engcyc]="$WS/awm/services/engcyc::$WS/awm/services/engcyc/tests"
   [trilium]="$WS/awm/services/trilium::$WS/awm/services/trilium/tests"
   [zotero]="$WS/awm/services/zotero::$WS/awm/services/zotero/tests"
   [cch]="$WS/awm/services/cch::$WS/awm/services/cch/tests"
-  [dev]="$WS/awm/services/dev::$WS/awm/services/dev/tests"
   [channel]="$WS/awm/plugins/channel:$WS/awm/plugins/relay:$WS/awm/service_components/tether::$WS/awm/plugins/channel/tests"
   [relay]="$WS/awm/plugins/relay:$WS/awm/service_components/tether::$WS/awm/plugins/relay/tests"
   [kb]="$WS/awm/services/kb::$WS/awm/services/kb/tests"
@@ -80,7 +78,7 @@ declare -A DISTS=(
 )
 
 # Stable run order.
-ORDER=(contract gatewayclient config persistence grantlib telemetry usage claudedaemon kept tlsfront dvcdata tether scopes journal search events social 2fa ssh auth httpsfront rlm-browser rlm-factorio fileviewer mic vpn reflection dvc claude-science dsh engcyc trilium zotero cch dev channel relay kb board transcripts routine trustpolicy browser wake)
+ORDER=(contract gatewayclient config persistence grantlib telemetry usage claudedaemon kept tlsfront dvcdata tether scopes journal search events social 2fa ssh auth httpsfront rlm-browser rlm-factorio fileviewer mic vpn reflection dvc claude-science engcyc trilium zotero cch channel relay kb board transcripts routine trustpolicy browser wake)
 
 CHANGED_BASE=""
 SMOKE=0

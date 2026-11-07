@@ -6,7 +6,7 @@
  * and the page never hand-rolls a fetch.
  *
  * Note where this page is served from: the *gateway* front (:12100), while the
- * harness GUI lives on :12301. That is deliberate — it means this page still
+ * harness GUI lives on :12130. That is deliberate — it means this page still
  * loads and still reports when the harness front is down, which is exactly when
  * someone is looking at it.
  */

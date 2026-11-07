@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Create the harness fork this node serves. Run once per node, deliberately.
 #
-# `install.sh` never does this: cloning 109 MB is not something a deploy may do
-# behind your back. It warns and leaves the service registered-but-unbuilt until
-# this script runs.
+# No deploy does this: cloning 109 MB is not something a deploy may do behind
+# your back. The dsh service registers and reports the harness unbuilt until the
+# fork exists and is built.
 #
 # The layout it produces:
 #
@@ -14,7 +14,6 @@
 # Override the base ref with DSH_BASE_REF=<tag>.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
-ENV="${AWM_ENV:-awm}"
 
 # The workspace holding `projects/`, not the git toplevel: run from a scope
 # worktree the two differ, and only this one has a `projects/` to create in.
@@ -38,19 +37,11 @@ UPSTREAM_URL="https://github.com/deepseek-ai/${PROJECT}"
 BASE_REF="${DSH_BASE_REF:-dsh-v0.1.1-rc.2}"
 BARE="$WS/projects/$PROJECT/.bare"
 
-awm_cli() {
-    if command -v awm >/dev/null 2>&1; then
-        awm "$@"
-    else
-        mamba run -n "$ENV" --no-capture-output awm "$@"
-    fi
-}
-
 if [ -d "$BARE" ]; then
     echo "Project '$PROJECT' exists at $BARE."
 else
     echo "Forking $UPSTREAM_URL …"
-    awm_cli scope create --project "$PROJECT" --new-project --fork-url "$UPSTREAM_URL"
+    awm scope create --project "$PROJECT" --new-project --fork-url "$UPSTREAM_URL"
 fi
 
 git -C "$BARE" fetch --tags --quiet origin
@@ -68,7 +59,7 @@ for scope in dev release; do
         echo "Scope '$scope' exists."
     else
         echo "Creating scope '$scope' at $BASE_REF …"
-        awm_cli scope create --project "$PROJECT" --scope "$scope" \
+        awm scope create --project "$PROJECT" --scope "$scope" \
             --branch-name "$scope" --from-branch "$BASE_REF"
     fi
 done
@@ -85,7 +76,7 @@ DEFAULT_BRANCH="$(git -C "$BARE" symbolic-ref --short HEAD 2>/dev/null || echo m
 if [ -d "$WS/projects/$PROJECT/$DEFAULT_BRANCH" ]; then
     DEFAULT_SHA="$(git -C "$BARE" rev-parse "$DEFAULT_BRANCH")"
     echo "Retiring the scaffolded '$DEFAULT_BRANCH' worktree …"
-    awm_cli scope delete --project "$PROJECT" --scope "$DEFAULT_BRANCH" --force
+    awm scope delete --project "$PROJECT" --scope "$DEFAULT_BRANCH" --force
     git -C "$BARE" rev-parse --verify --quiet "$DEFAULT_BRANCH" >/dev/null \
         || git -C "$BARE" branch "$DEFAULT_BRANCH" "$DEFAULT_SHA"
     git -C "$BARE" symbolic-ref HEAD "refs/heads/$DEFAULT_BRANCH"
@@ -106,4 +97,4 @@ echo
 echo "Project:  $WS/projects/$PROJECT"
 git -C "$BARE" branch -v
 echo
-echo "Next: ./install.sh builds 'release' and the dsh service serves it."
+echo "Next: build 'release' (core/plugins/dsh/INSTALL.md), and the dsh service serves it."
