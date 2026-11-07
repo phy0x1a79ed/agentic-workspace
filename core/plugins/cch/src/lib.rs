@@ -21,5 +21,22 @@ pub mod promises;
 pub mod resume;
 pub mod control;
 
+pub mod gateway;
+pub mod migrate;
+
+pub mod lifecycle;
+pub mod keeper;
+pub mod memwatch;
+pub mod isolated;
+
+pub mod pool;
+pub mod claim;
+pub mod seed;
+pub mod remove;
+pub mod reconcile;
+
+pub mod hooks;
+pub mod hooks_reconcile;
+
 pub mod verbs;
 pub mod app;

@@ -66,6 +66,57 @@ pub struct Paths {
     pub lobby_dir: PathBuf,
     /// The workspace; None asks the SDK at use, since the gateway names it only on register.
     pub workspace: Option<PathBuf>,
+    /// The daemon keeper's knobs.
+    pub keep: KeepKnobs,
+    /// The isolated sessions' knobs.
+    pub isolated: IsolatedKnobs,
+    /// False when `AWM_CCH_HOOKS` is `off`, so a sandbox copy leaves `settings.json` alone.
+    pub hooks_reconcile: bool,
+    /// `AWM_SOCIAL_PEER`: the node whose social plugin carries the low-memory notice.
+    pub social_peer: Option<String>,
+}
+
+/// The daemon keeper's knobs.
+#[derive(Debug, Clone, PartialEq)]
+pub struct KeepKnobs {
+    /// False when `AWM_KEEP` is `0`: this copy leaves the daemon alone.
+    pub enabled: bool,
+    /// `AWM_KEEP_CLAUDE`, else [`Paths::claude_bin`]'s default.
+    pub claude_bin: PathBuf,
+    /// `AWM_KEEP_UNIT`, else `awm-claude-daemon`.
+    pub unit: String,
+    /// `AWM_KEEP_MEMORY_LOW`, else 0.12: the free-memory fraction below which memwatch counts.
+    pub memory_low: f64,
+    /// `AWM_KEEP_MEMORY_HIGH`, the unit's `MemoryHigh`.
+    pub memory_high: Option<String>,
+    /// `AWM_KEEP_MEMORY_MAX`, the unit's `MemoryMax`.
+    pub memory_max: Option<String>,
+    /// `AWM_CONDA_ROOT`, else `MAMBA_ROOT_PREFIX`: the conda root every session's `PATH` needs.
+    /// None means the keeper reads it from the running daemon unit, never from a default.
+    pub conda_root: Option<PathBuf>,
+    /// `AWM_WORKSPACE` and `CLAUDE_CONFIG_DIR` as this process sees them, passed to the daemon.
+    pub passed_env: Vec<(String, String)>,
+}
+
+/// The isolated sessions' knobs.
+#[derive(Debug, Clone, PartialEq)]
+pub struct IsolatedKnobs {
+    /// `AWM_ISOLATED_DIR`, else `<service dir>/isolated`: tokens and one folder per session.
+    pub dir: PathBuf,
+    /// `AWM_ISOLATED_DOCKER_HOST`; None means the user's rootless socket.
+    pub docker_host: Option<String>,
+    /// `AWM_ISOLATED_HUB_URL`, else `http://host.docker.internal:8765`: the door, seen from inside.
+    pub hub_url: String,
+    /// `AWM_ISOLATED_IMAGE`, else `awm-isolated:1`.
+    pub image: String,
+    /// `AWM_ISOLATED_NETWORK`, else `bridge`.
+    pub network: String,
+    /// `AWM_ISOLATED_CPUS`, else `2`.
+    pub cpus: String,
+    /// `AWM_ISOLATED_MEMORY`, else `4g`.
+    pub memory: String,
+    /// `AWM_ISOLATED_PIDS`, else 512.
+    pub pids: u64,
 }
 
 /// `text` with Python's numeric-literal underscores removed, or None where Python would refuse them.
@@ -150,6 +201,31 @@ impl Paths {
             lobby_dir: path("AWM_CX_LOBBY")
                 .unwrap_or_else(|| user.join(".local").join("state").join("awm").join("lobby")),
             workspace: None,
+            keep: KeepKnobs {
+                enabled: var("AWM_KEEP").as_deref() != Some("0"),
+                claude_bin: path("AWM_KEEP_CLAUDE").unwrap_or_else(default_claude_bin),
+                unit: var("AWM_KEEP_UNIT").unwrap_or_else(|| "awm-claude-daemon".into()),
+                memory_low: seconds(var("AWM_KEEP_MEMORY_LOW"), 0.12),
+                memory_high: var("AWM_KEEP_MEMORY_HIGH").map(|v| v.trim().to_string()).filter(|v| !v.is_empty()),
+                memory_max: var("AWM_KEEP_MEMORY_MAX").map(|v| v.trim().to_string()).filter(|v| !v.is_empty()),
+                conda_root: path("AWM_CONDA_ROOT").or_else(|| path("MAMBA_ROOT_PREFIX")),
+                passed_env: ["AWM_WORKSPACE", "CLAUDE_CONFIG_DIR"]
+                    .into_iter()
+                    .filter_map(|k| var(k).map(|v| (k.to_string(), v)))
+                    .collect(),
+            },
+            isolated: IsolatedKnobs {
+                dir: path("AWM_ISOLATED_DIR").unwrap_or_else(|| awm_dir.join("services").join("cch").join("isolated")),
+                docker_host: var("AWM_ISOLATED_DOCKER_HOST"),
+                hub_url: var("AWM_ISOLATED_HUB_URL").unwrap_or_else(|| "http://host.docker.internal:8765".into()),
+                image: var("AWM_ISOLATED_IMAGE").unwrap_or_else(|| "awm-isolated:1".into()),
+                network: var("AWM_ISOLATED_NETWORK").unwrap_or_else(|| "bridge".into()),
+                cpus: var("AWM_ISOLATED_CPUS").unwrap_or_else(|| "2".into()),
+                memory: var("AWM_ISOLATED_MEMORY").unwrap_or_else(|| "4g".into()),
+                pids: count(var("AWM_ISOLATED_PIDS"), 512),
+            },
+            hooks_reconcile: var("AWM_CCH_HOOKS").as_deref() != Some("off"),
+            social_peer: var("AWM_SOCIAL_PEER"),
             awm_dir,
             home,
         }
@@ -180,6 +256,28 @@ impl Paths {
             mcp_source: None,
             lobby_dir: root.join(".local").join("state").join("awm").join("lobby"),
             workspace: Some(root.join("workspace")),
+            keep: KeepKnobs {
+                enabled: true,
+                claude_bin: root.join(".local").join("bin").join("claude"),
+                unit: "awm-claude-daemon".into(),
+                memory_low: 0.12,
+                memory_high: None,
+                memory_max: None,
+                conda_root: None,
+                passed_env: Vec::new(),
+            },
+            isolated: IsolatedKnobs {
+                dir: awm_dir.join("services").join("cch").join("isolated"),
+                docker_host: None,
+                hub_url: "http://host.docker.internal:8765".into(),
+                image: "awm-isolated:1".into(),
+                network: "bridge".into(),
+                cpus: "2".into(),
+                memory: "4g".into(),
+                pids: 512,
+            },
+            hooks_reconcile: true,
+            social_peer: None,
             awm_dir,
             home,
         }
@@ -204,9 +302,25 @@ impl Paths {
         self.starts_dir().join(format!("{job}.json"))
     }
 
-    /// The promise store: reflection's old `pending/` dir, where the Python cch kept it.
+    /// The promise store, `<service dir>/pending`. [`Paths::legacy_promises_dir`] is where the
+    /// Python cch kept it; the start-up migration copies it here once.
     pub fn promises_dir(&self) -> PathBuf {
+        self.service_dir.join("pending")
+    }
+
+    /// Reflection's old `pending/` dir, the promise store before the Rust cch.
+    pub fn legacy_promises_dir(&self) -> PathBuf {
         self.awm_dir.join("services").join("reflection").join("pending")
+    }
+
+    /// The keeper's hold record, `<service dir>/hold.json`.
+    pub fn hold_path(&self) -> PathBuf {
+        self.service_dir.join("hold.json")
+    }
+
+    /// The old keep service's hold record, which the start-up migration copies to [`Paths::hold_path`].
+    pub fn legacy_hold_path(&self) -> PathBuf {
+        self.awm_dir.join("services").join("keep").join("hold.json")
     }
 
     /// `<AWM_DIR>/services/enabled.json`, the gateway's `{service: enabled}` table.
