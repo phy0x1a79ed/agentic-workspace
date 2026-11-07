@@ -67,7 +67,7 @@ this folder (any folder with a `run.sh` under `awm/services/`), starts it with
 
 No auth — the control plane is loopback.
 
-To iterate without installing, run the worktree's dev sandbox (`bash awm/services/dev/sandbox/run.sh start`); it runs this same `run.sh` from the worktree.
+To iterate without installing, run the worktree's dev sandbox (`bash core/plugins/dev/sandbox/run.sh start`); it runs this same `run.sh` from the worktree.
 The sandbox's `AWM_DIR` holds no device creds, so set `AWM_2FA_DIR` in its `[env]`.
 
 ## Verbs

@@ -326,6 +326,6 @@ error rather than guessing.
 
 ## Iterating
 
-    bash awm/services/dev/sandbox/run.sh start
+    bash core/plugins/dev/sandbox/run.sh start
 
 runs the worktree's gateway, which runs this same `run.sh` from the worktree.

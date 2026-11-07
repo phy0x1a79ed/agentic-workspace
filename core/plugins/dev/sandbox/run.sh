@@ -19,7 +19,7 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# awm/services/dev/sandbox → up four to the worktree root.
+# core/plugins/dev/sandbox → up four to the worktree root.
 REPO_ROOT="$(cd "$HERE/../../../.." && pwd)"
 
 # Per-worktree overrides (gitignored), sourced before the port defaults so
@@ -44,6 +44,35 @@ LOG_FILE="$STATE/dev.log"
 BASE="http://127.0.0.1:${AWM_PORT}"
 # The sandbox does not run the dev service: a sandbox would drive sandboxes.
 DEV_EXCLUDE="${DEV_EXCLUDE:-dev}"
+
+# The built binary named $1: $2 if set, then the worktree's cargo target, then PATH.
+_built() {
+  local name="$1" pick="$2" b target
+  target="$("$REPO_ROOT/scripts/rust-build.sh" --target-dir)"
+  for b in "$pick" "$target/release/$name" "$target/debug/$name" "$target/x86_64-unknown-linux-musl/release/$name"; do
+    [ -n "$b" ] && [ -x "$b" ] && { printf '%s' "$b"; return 0; }
+  done
+  command -v "$name"
+}
+
+_dev_bin() {
+  _built dev "${DEV_BIN:-}" || { echo "[dev] no dev binary: run $REPO_ROOT/scripts/rust-build.sh build -p awm-plugin-dev" >&2; return 1; }
+}
+
+# Each core plugin's run.sh execs $AWM_DIR/bin/<name>, so link this worktree's build of each
+# into the sandbox's bin. A plugin not built stays down, and its log says so.
+_link_plugins() {
+  local dir name bin
+  for dir in "$REPO_ROOT"/core/plugins/*/; do
+    name="$(basename "$dir")"
+    [ "$name" = dev ] && continue
+    if bin="$(_built "$name" "" 2>/dev/null)"; then
+      ln -sfn "$bin" "$STATE/bin/$name"
+    else
+      echo "[dev] $name is not built: run $REPO_ROOT/scripts/rust-build.sh build -p awm-plugin-$name" >&2
+    fi
+  done
+}
 
 _awm_bin() {
   local b target
@@ -109,6 +138,7 @@ write_config() {
     printf '#!/usr/bin/env bash\nexit 0\n' >"$STATE/bin/gh"
     chmod +x "$STATE/bin/gh"
   fi
+  _link_plugins
   local py
   py="$(_python)"
   # shellcheck disable=SC2086
@@ -138,16 +168,7 @@ is_running() { [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; }
 
 # One "<name> <status> <pid>" line per service the gateway runs, from `awm services`.
 _services() {
-  curl -s -m3 -XPOST "$BASE/invoke" -H 'content-type: application/json' \
-      -d '{"name":"awm_services","args":{}}' 2>/dev/null \
-    | python3 -S -c '
-import json, sys
-try:
-    rows = json.loads(json.load(sys.stdin)["result"])
-except Exception:
-    rows = []
-for r in rows:
-    print(r.get("name") or "?", r.get("status") or "?", r.get("pid") or "-")'
+  "$(_dev_bin)" sandbox services --port "$AWM_PORT" 2>/dev/null
 }
 
 _port_listeners() {
@@ -227,8 +248,7 @@ do_status() {
 
 do_seed() {
   echo "[dev] seeding sandbox"
-  # seed.py is stdlib only.
-  AWM_WORKSPACE="$HERE" AWM_PORT="$AWM_PORT" python3 -I "$HERE/seed.py"
+  AWM_WORKSPACE="$HERE" "$(_dev_bin)" sandbox seed --port "$AWM_PORT" --sandbox "$HERE"
 }
 
 do_reset() {
