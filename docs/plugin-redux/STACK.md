@@ -10,6 +10,8 @@ Decisions: `search` for journals tagged `decision` in awm/plugin-redux.
 
 ## Waiting on the user
 
+- engine: Tony "I dont want 2 copies"; knowledge's plan adds a LanceDB vs libSQL (FTS5 + DiskANN) bench session (task CWPYAtyb) before journal, scopes and search port. Edits asked: data stays on its node, a mixed-writer/rollback check, a musl build check, fixed verdict criteria. If libSQL wins, awm-store gets a libSQL backend.
+
 - Pre-existing: the transcripts archive is 0664 in 0775 dirs (the live transcripts are 0600). knowledge's port writes it 0600/0700. Raise with Tony at the knowledge approval.
 
 - sites daemon: does "mira is going away" cover alcor's awm-sites (awm/services/social/mira/, port 7822; serves Slack, Teams and onedrive-ubc)? request_human filed. comms keeps it running until the answer.
