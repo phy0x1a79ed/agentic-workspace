@@ -31,7 +31,8 @@ pub struct Args {
     /// Restart the `awm` user unit even when neither the binary nor the unit changed.
     #[arg(long)]
     restart: bool,
-    /// Plugins the reload restarts, comma separated. Runs after the unit restart when both apply.
+    /// Plugins the reload restarts, comma separated, past a tripped crash breaker. Runs after the
+    /// unit restart when both apply.
     #[arg(long, value_delimiter = ',')]
     reload_restart: Vec<String>,
     /// Print the steps and change nothing.
@@ -107,6 +108,12 @@ fn plan(restart_unit: bool, names: &[String]) -> Vec<Apply> {
     }
 }
 
+/// The reload a deploy asks for. A plugin the deploy names restarts with force, since a stop
+/// keeps its crash breaker and a tripped plugin would otherwise stay down through the deploy.
+fn reload_args(names: &[String]) -> Value {
+    json!({"restart": names, "force": !names.is_empty()})
+}
+
 async fn native(verb: &str) -> anyhow::Result<Value> {
     native_with(verb, json!({})).await
 }
@@ -153,7 +160,7 @@ pub async fn run(args: Args) -> anyhow::Result<i32> {
     }
     println!("  config:  {}", if config_path.is_file() { "kept" } else { "written from this checkout's defaults" });
     println!("  unit:    {}", if unit_changes { "replaced from core/deploy/awm.service" } else { "current" });
-    println!("  apply:   {}", if restart { if args.reload_restart.is_empty() { "restart the awm user unit".to_string() } else { format!("restart the awm user unit, then awm reload --restart {}", args.reload_restart.join(",")) } } else if args.reload_restart.is_empty() { "awm reload".to_string() } else { format!("awm reload --restart {}", args.reload_restart.join(",")) });
+    println!("  apply:   {}", if restart { if args.reload_restart.is_empty() { "restart the awm user unit".to_string() } else { format!("restart the awm user unit, then awm reload --restart {} --force", args.reload_restart.join(",")) } } else if args.reload_restart.is_empty() { "awm reload".to_string() } else { format!("awm reload --restart {} --force", args.reload_restart.join(",")) });
     if args.dry_run {
         println!("--- dry run: nothing changed ---");
         return Ok(0);
@@ -197,7 +204,7 @@ pub async fn run(args: Args) -> anyhow::Result<i32> {
                 }
             }
             Apply::Reload(names) => {
-                let report = native_with("reload", json!({"restart": names})).await?;
+                let report = native_with("reload", reload_args(&names)).await?;
                 println!("-> reload: {}", serde_json::to_string(&report)?);
             }
         }
@@ -262,5 +269,7 @@ mod tests {
         assert_eq!(plan(true, &[]), vec![Apply::RestartUnit]);
         assert_eq!(plan(false, &names), vec![Apply::Reload(names)]);
         assert_eq!(plan(false, &[]), vec![Apply::Reload(vec![])]);
+        assert_eq!(reload_args(&["a".to_string()]), json!({"restart": ["a"], "force": true}));
+        assert_eq!(reload_args(&[]), json!({"restart": [], "force": false}), "a plain reload forces nothing");
     }
 }
