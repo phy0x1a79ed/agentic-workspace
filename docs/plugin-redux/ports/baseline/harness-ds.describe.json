@@ -1,0 +1,364 @@
+{
+  "plugin": "dsh",
+  "tool": "harness-ds",
+  "verbs": [
+    {
+      "description": "Harness contract verb `compact` for DeepSeek harness sessions.",
+      "params": [
+        {
+          "name": "session_id",
+          "required": false
+        },
+        {
+          "name": "ref",
+          "required": false
+        },
+        {
+          "name": "pid",
+          "required": false,
+          "type": "integer"
+        },
+        {
+          "name": "followup",
+          "required": false
+        },
+        {
+          "name": "delay_ms",
+          "required": false,
+          "type": "integer"
+        }
+      ],
+      "surfaces": [
+        "cli",
+        "http"
+      ],
+      "verb": "compact"
+    },
+    {
+      "description": "Harness contract verb `find` for DeepSeek harness sessions.",
+      "params": [
+        {
+          "name": "ref",
+          "required": true
+        }
+      ],
+      "surfaces": [
+        "cli",
+        "http"
+      ],
+      "verb": "find"
+    },
+    {
+      "description": "Harness contract verb `interrupt` for DeepSeek harness sessions.",
+      "params": [
+        {
+          "name": "session_id",
+          "required": false
+        },
+        {
+          "name": "ref",
+          "required": false
+        },
+        {
+          "name": "pid",
+          "required": false,
+          "type": "integer"
+        }
+      ],
+      "surfaces": [
+        "cli",
+        "http"
+      ],
+      "verb": "interrupt"
+    },
+    {
+      "description": "Harness contract verb `list` for DeepSeek harness sessions.",
+      "params": [
+        {
+          "name": "project",
+          "required": false
+        },
+        {
+          "name": "scope",
+          "required": false
+        },
+        {
+          "name": "include_stopped",
+          "required": false,
+          "type": "boolean"
+        }
+      ],
+      "surfaces": [
+        "cli",
+        "http"
+      ],
+      "verb": "list"
+    },
+    {
+      "description": "Harness contract verb `platform` for DeepSeek harness sessions.",
+      "params": [],
+      "surfaces": [
+        "cli",
+        "http"
+      ],
+      "verb": "platform"
+    },
+    {
+      "description": "Harness contract verb `resolve` for DeepSeek harness sessions.",
+      "params": [
+        {
+          "name": "pid",
+          "required": true,
+          "type": "integer"
+        }
+      ],
+      "surfaces": [
+        "cli",
+        "http"
+      ],
+      "verb": "resolve"
+    },
+    {
+      "description": "Harness contract verb `resume` for DeepSeek harness sessions.",
+      "params": [
+        {
+          "name": "session_id",
+          "required": false
+        },
+        {
+          "name": "ref",
+          "required": false
+        },
+        {
+          "name": "pid",
+          "required": false,
+          "type": "integer"
+        },
+        {
+          "name": "prompt",
+          "required": false
+        }
+      ],
+      "surfaces": [
+        "cli",
+        "http"
+      ],
+      "verb": "resume"
+    },
+    {
+      "description": "Harness contract verb `send` for DeepSeek harness sessions.",
+      "params": [
+        {
+          "name": "session_id",
+          "required": false
+        },
+        {
+          "name": "ref",
+          "required": false
+        },
+        {
+          "name": "pid",
+          "required": false,
+          "type": "integer"
+        },
+        {
+          "name": "text",
+          "required": false
+        },
+        {
+          "name": "submit",
+          "required": false,
+          "type": "boolean"
+        },
+        {
+          "name": "confirm",
+          "required": false,
+          "type": "boolean"
+        },
+        {
+          "name": "followup",
+          "required": false
+        },
+        {
+          "name": "delay_ms",
+          "required": false,
+          "type": "integer"
+        }
+      ],
+      "surfaces": [
+        "cli",
+        "http"
+      ],
+      "verb": "send"
+    },
+    {
+      "description": "Harness contract verb `set` for DeepSeek harness sessions.",
+      "params": [
+        {
+          "name": "session_id",
+          "required": false
+        },
+        {
+          "name": "ref",
+          "required": false
+        },
+        {
+          "name": "pid",
+          "required": false,
+          "type": "integer"
+        },
+        {
+          "name": "model",
+          "required": false
+        },
+        {
+          "name": "effort",
+          "required": false
+        },
+        {
+          "name": "name",
+          "required": false
+        },
+        {
+          "name": "cwd",
+          "required": false
+        }
+      ],
+      "surfaces": [
+        "cli",
+        "http"
+      ],
+      "verb": "set"
+    },
+    {
+      "description": "Harness contract verb `start` for DeepSeek harness sessions.",
+      "params": [
+        {
+          "name": "project",
+          "required": false
+        },
+        {
+          "name": "scope",
+          "required": false
+        },
+        {
+          "name": "prompt",
+          "required": false
+        },
+        {
+          "name": "name",
+          "required": false
+        },
+        {
+          "name": "model",
+          "required": false
+        },
+        {
+          "name": "effort",
+          "required": false
+        },
+        {
+          "name": "preset",
+          "required": false
+        },
+        {
+          "name": "trust",
+          "required": false
+        },
+        {
+          "name": "task_id",
+          "required": false
+        },
+        {
+          "name": "role",
+          "required": false
+        },
+        {
+          "name": "started_by",
+          "required": false
+        },
+        {
+          "name": "pin",
+          "required": false,
+          "type": "boolean"
+        },
+        {
+          "name": "suggest",
+          "required": false,
+          "type": "boolean"
+        },
+        {
+          "name": "isolated",
+          "required": false,
+          "type": "boolean"
+        },
+        {
+          "name": "pid",
+          "required": false,
+          "type": "integer"
+        }
+      ],
+      "surfaces": [
+        "cli",
+        "http"
+      ],
+      "verb": "start"
+    },
+    {
+      "description": "Harness contract verb `status` for DeepSeek harness sessions.",
+      "params": [
+        {
+          "name": "session_id",
+          "required": false
+        },
+        {
+          "name": "ref",
+          "required": false
+        },
+        {
+          "name": "pid",
+          "required": false,
+          "type": "integer"
+        }
+      ],
+      "surfaces": [
+        "cli",
+        "http"
+      ],
+      "verb": "status"
+    },
+    {
+      "description": "Harness contract verb `stop` for DeepSeek harness sessions.",
+      "params": [
+        {
+          "name": "session_id",
+          "required": false
+        },
+        {
+          "name": "ref",
+          "required": false
+        },
+        {
+          "name": "pid",
+          "required": false,
+          "type": "integer"
+        },
+        {
+          "name": "keep",
+          "required": false,
+          "type": "boolean"
+        },
+        {
+          "name": "confirm",
+          "required": false,
+          "type": "boolean"
+        }
+      ],
+      "surfaces": [
+        "cli",
+        "http"
+      ],
+      "verb": "stop"
+    }
+  ]
+}

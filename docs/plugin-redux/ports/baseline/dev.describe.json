@@ -1,0 +1,61 @@
+{
+  "plugin": "dev",
+  "tool": "dev",
+  "verbs": [
+    {
+      "description": "Restart the worktree's dev sandbox.",
+      "params": [
+        {
+          "description": "Absolute path of the worktree whose sandbox to drive, under the workspace's projects/.",
+          "name": "worktree",
+          "required": true
+        }
+      ],
+      "verb": "restart"
+    },
+    {
+      "description": "(Re)seed the worktree's dev sandbox without restarting.",
+      "params": [
+        {
+          "description": "Absolute path of the worktree whose sandbox to drive, under the workspace's projects/.",
+          "name": "worktree",
+          "required": true
+        }
+      ],
+      "verb": "seed"
+    },
+    {
+      "description": "Start the worktree's dev sandbox: its Rust gateway on the worktree's port band, which starts the worktree's services.",
+      "params": [
+        {
+          "description": "Absolute path of the worktree whose sandbox to drive, under the workspace's projects/.",
+          "name": "worktree",
+          "required": true
+        }
+      ],
+      "verb": "start"
+    },
+    {
+      "description": "Show what the worktree's dev sandbox is running.",
+      "params": [
+        {
+          "description": "Absolute path of the worktree whose sandbox to drive, under the workspace's projects/.",
+          "name": "worktree",
+          "required": true
+        }
+      ],
+      "verb": "status"
+    },
+    {
+      "description": "Stop the worktree's dev sandbox (gateway and services).",
+      "params": [
+        {
+          "description": "Absolute path of the worktree whose sandbox to drive, under the workspace's projects/.",
+          "name": "worktree",
+          "required": true
+        }
+      ],
+      "verb": "stop"
+    }
+  ]
+}
