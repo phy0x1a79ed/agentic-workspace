@@ -1,0 +1,78 @@
+{"case": "text", "input": "lantern repair", "ok": {"about": "lantern repair", "under_or": true, "contains": "lantern repair"}}
+{"case": "text", "input": "", "err": "query.text: text is empty"}
+{"case": "text", "input": {"$about": "how to fix a lamp"}, "ok": {"about": "how to fix a lamp", "under_or": false, "contains": null}}
+{"case": "text", "input": {"$about": ""}, "err": "query.text.$about: $about needs a non-empty string"}
+{"case": "text", "input": {"$contains": "brass lantern"}, "ok": {"about": null, "under_or": false, "contains": "brass lantern"}}
+{"case": "text", "input": {"$contains": "--"}, "err": "query.text.$contains: needs a string with a letter or digit"}
+{"case": "text", "input": {"$and": [{"$about": "lamps"}, {"$contains": "wick"}]}, "ok": {"about": "lamps", "under_or": false, "contains": "wick"}}
+{"case": "text", "input": {"$or": [{"$about": "lamps"}, {"$contains": "wick"}]}, "ok": {"about": "lamps", "under_or": true, "contains": "wick"}}
+{"case": "text", "input": {"$or": [{"$about": "a"}, {"$about": "b"}]}, "err": "query.text.$or: more than one $about"}
+{"case": "text", "input": {"$and": [{"$contains": "a1"}, {"$nor": [{"$contains": "b2"}, {"$contains": "c3"}]}]}, "ok": {"about": null, "under_or": false, "contains": {"and": ["a1", {"nor": ["b2", "c3"]}]}}}
+{"case": "text", "input": {"$or": [{"$contains": "x"}, {"$and": [{"$contains": "y"}, {"$contains": "z"}]}]}, "ok": {"about": null, "under_or": false, "contains": {"or": ["x", {"and": ["y", "z"]}]}}}
+{"case": "text", "input": {"$nor": [{"$contains": "only"}]}, "ok": {"about": null, "under_or": false, "contains": {"nor": ["only"]}}}
+{"case": "text", "input": {"$and": []}, "err": "query.text.$and: needs a non-empty list"}
+{"case": "text", "input": {"$contains": "a", "$about": "b"}, "err": "query.text: text is a string or an object with exactly one key; allowed: $contains, $about, $and, $or, $nor"}
+{"case": "text", "input": {"$sort": "ts"}, "err": "query.text.$sort: not allowed in text; allowed: $contains, $and, $or, $nor"}
+{"case": "text", "input": {"$and": [{"$contains": "a"}, {"$about": 3}]}, "err": "query.text.$and[1].$about: $about needs a non-empty string"}
+{"case": "text", "input": {"$or": [{"$contains": "a"}, {"$or": [{"$about": "nested"}]}]}, "err": "query.text.$or[1].$or[0]: $about sits only directly under the top $and or $or"}
+{"case": "text", "input": ["not", "an", "object"], "err": "query.text: text is a string or an object with exactly one key; allowed: $contains, $about, $and, $or, $nor"}
+{"case": "text", "input": 7, "err": "query.text: text is a string or an object with exactly one key; allowed: $contains, $about, $and, $or, $nor"}
+{"case": "filter", "input": {}, "ok": {"filter": {}, "sql": {"ok": "true"}}}
+{"case": "filter", "input": {"project": "alpha"}, "ok": {"filter": {"project": "alpha"}, "sql": {"ok": "array_has(project, 'alpha')"}}}
+{"case": "filter", "input": {"project": ["alpha", "beta"]}, "err": "query.posts.project: a bare list is not a value; allowed: a scalar, or an object with $in, $nin or $all"}
+{"case": "filter", "input": {"scope": "main"}, "ok": {"filter": {"scope": "main"}, "sql": {"ok": "regexp_like(array_to_string(scope, chr(31)), '(^|\\x1f)main(/[^\\x1f]*)?(\\x1f|$)')"}}}
+{"case": "filter", "input": {"scope": "main/*"}, "ok": {"filter": {"scope": "main/*"}, "sql": {"ok": "regexp_like(array_to_string(scope, chr(31)), '(^|\\x1f)main/[^\\x1f]*(\\x1f|$)')"}}}
+{"case": "filter", "input": {"scope": "ma*n"}, "ok": {"filter": {"scope": "ma*n"}, "sql": {"ok": "regexp_like(array_to_string(scope, chr(31)), '(^|\\x1f)ma[^\\x1f]*n(/[^\\x1f]*)?(\\x1f|$)')"}}}
+{"case": "filter", "input": {"tag": {"$ne": "draft"}}, "ok": {"filter": {"tag": {"$ne": "draft"}}, "sql": {"ok": "NOT (array_has(tag, 'draft'))"}}}
+{"case": "filter", "input": {"tag": {"$in": ["a", "b"]}}, "ok": {"filter": {"tag": {"$in": ["a", "b"]}}, "sql": {"ok": "(array_has(tag, 'a') OR array_has(tag, 'b'))"}}}
+{"case": "filter", "input": {"tag": {"$nin": ["a", "b"]}}, "ok": {"filter": {"tag": {"$nin": ["a", "b"]}}, "sql": {"ok": "NOT ((array_has(tag, 'a') OR array_has(tag, 'b')))"}}}
+{"case": "filter", "input": {"tag": {"$all": ["a", "b"]}}, "ok": {"filter": {"tag": {"$all": ["a", "b"]}}, "sql": {"ok": "(array_has(tag, 'a') AND array_has(tag, 'b'))"}}}
+{"case": "filter", "input": {"tag": {"$in": []}}, "err": "query.posts.tag.$in: needs a non-empty list"}
+{"case": "filter", "input": {"tag": {"$gt": "a"}}, "ok": {"filter": {"tag": {"$gt": "a"}}, "sql": {"unserved": "$gt on the categorical field 'tag'; use $eq, $ne, $in, $nin or $all"}}}
+{"case": "filter", "input": {"ts": {"$gte": "2026-01-01"}}, "ok": {"filter": {"ts": {"$gte": "2026-01-01T00:00:00Z"}}, "sql": {"ok": "ts >= timestamp '2026-01-01T00:00:00Z'"}}}
+{"case": "filter", "input": {"ts": {"$lt": "2026-03-01T10:00:00+02:00", "$gt": "2025-12-31T23:59:59.5Z"}}, "ok": {"filter": {"ts": {"$lt": "2026-03-01T08:00:00Z", "$gt": "2025-12-31T23:59:59Z"}}, "sql": {"ok": "(ts < timestamp '2026-03-01T08:00:00Z' AND ts > timestamp '2025-12-31T23:59:59Z')"}}}
+{"case": "filter", "input": {"ts": "2026-02-30"}, "err": "query.posts.ts: '2026-02-30' is not an ISO 8601 date or time; allowed: 2026-03-01, 2026-03-01T12:00:00Z"}
+{"case": "filter", "input": {"ts": {"$eq": "yesterday"}}, "err": "query.posts.ts.$eq: 'yesterday' is not an ISO 8601 date or time; allowed: 2026-03-01, 2026-03-01T12:00:00Z"}
+{"case": "filter", "input": {"score": 3}, "ok": {"filter": {"score": 3}, "sql": {"ok": "score = 3.0"}}}
+{"case": "filter", "input": {"score": {"$gte": 2.5, "$lt": 10}}, "ok": {"filter": {"score": {"$gte": 2.5, "$lt": 10}}, "sql": {"ok": "(score >= 2.5 AND score < 10.0)"}}}
+{"case": "filter", "input": {"score": {"$ne": 1}}, "ok": {"filter": {"score": {"$ne": 1}}, "sql": {"ok": "(score IS NULL OR NOT (score = 1.0))"}}}
+{"case": "filter", "input": {"score": "high"}, "err": "query.posts.score: 'high' is not a number; allowed: a number"}
+{"case": "filter", "input": {"score": true}, "err": "query.posts.score: bool is not a scalar; allowed: string, number"}
+{"case": "filter", "input": {"$or": [{"project": "a"}, {"tag": "b"}]}, "ok": {"filter": {"$or": [{"project": "a"}, {"tag": "b"}]}, "sql": {"ok": "(array_has(project, 'a') OR array_has(tag, 'b'))"}}}
+{"case": "filter", "input": {"$and": [{"project": "a"}, {"$nor": [{"tag": "x"}, {"scope": "s/t"}]}]}, "ok": {"filter": {"$and": [{"project": "a"}, {"$nor": [{"tag": "x"}, {"scope": "s/t"}]}]}, "sql": {"ok": "(array_has(project, 'a') AND NOT (array_has(tag, 'x') OR regexp_like(array_to_string(scope, chr(31)), '(^|\\x1f)s/t(/[^\\x1f]*)?(\\x1f|$)')))"}}}
+{"case": "filter", "input": {"$or": []}, "err": "query.posts.$or: needs a non-empty list"}
+{"case": "filter", "input": {"$sort": "-ts"}, "err": "query.posts.$sort: $sort sits only at the top of a source filter"}
+{"case": "filter", "input": {"title": "x"}, "err": "query.posts.title: title is content: search it with text; allowed: ts, score, project, scope, tag"}
+{"case": "filter", "input": {"nope": "x"}, "err": "query.posts.nope: posts has no field 'nope'; allowed: ts, score, project, scope, tag"}
+{"case": "filter", "input": {"$where": "1"}, "err": "query.posts.$where: operator not allowed at a field position; allowed: $and, $or, $nor, $sort, ts, score, project, scope, tag"}
+{"case": "filter", "input": {"$contains": "x"}, "err": "query.posts.$contains: $contains belongs in text, not in a source filter"}
+{"case": "filter", "input": {"project": {"$regex": "a"}}, "err": "query.posts.project.$regex: unknown operator; allowed: $eq, $ne, $gt, $gte, $lt, $lte, $in, $nin, $all"}
+{"case": "filter", "input": {"project": {"$in": "a"}}, "err": "query.posts.project.$in: needs a non-empty list"}
+{"case": "filter", "input": {"project": null}, "err": "query.posts.project: NoneType is not a scalar; allowed: string, number"}
+{"case": "filter", "input": {"project": ["a", ["b"]]}, "err": "query.posts.project: a bare list is not a value; allowed: a scalar, or an object with $in, $nin or $all"}
+{"case": "filter", "input": {"project": {"$eq": "it's"}}, "ok": {"filter": {"project": {"$eq": "it's"}}, "sql": {"ok": "array_has(project, 'it''s')"}}}
+{"case": "filter", "input": {"tag": "a.b+c*"}, "ok": {"filter": {"tag": "a.b+c*"}, "sql": {"ok": "regexp_like(array_to_string(tag, chr(31)), '(^|\\x1f)a\\.b\\+c[^\\x1f]*(\\x1f|$)')"}}}
+{"case": "filter", "input": "not a dict", "err": "query.posts: a source filter is an object"}
+{"case": "sort", "input": "ts", "ok": ["ts", false]}
+{"case": "sort", "input": "-ts", "ok": ["ts", true]}
+{"case": "sort", "input": "+title", "ok": ["title", false]}
+{"case": "sort", "input": "-nope", "err": "query.posts.$sort: '-nope' is not one field of posts with + or -; allowed: -title, -text, -ts, -score, -project, -scope, -tag"}
+{"case": "sort", "input": "ts desc", "err": "query.posts.$sort: 'ts desc' is not one field of posts with + or -; allowed: -title, -text, -ts, -score, -project, -scope, -tag"}
+{"case": "sort", "input": 5, "err": "query.posts.$sort: 5 is not one field of posts with + or -; allowed: -title, -text, -ts, -score, -project, -scope, -tag"}
+{"case": "max", "input": 1, "ok": 1}
+{"case": "max", "input": 10, "ok": 10}
+{"case": "max", "input": 100, "ok": 100}
+{"case": "max", "input": 0, "err": "max: 0 is not an integer; allowed: 1-100"}
+{"case": "max", "input": 101, "err": "max: 101 is not an integer; allowed: 1-100"}
+{"case": "max", "input": "7", "ok": 7}
+{"case": "max", "input": " 8 ", "ok": 8}
+{"case": "max", "input": "x", "err": "max: 'x' is not an integer; allowed: 1-100"}
+{"case": "max", "input": 3.5, "err": "max: 3.5 is not an integer; allowed: 1-100"}
+{"case": "max", "input": true, "err": "max: True is not an integer; allowed: 1-100"}
+{"case": "max", "input": null, "err": "max: None is not an integer; allowed: 1-100"}
+{"case": "max", "input": "-1", "err": "max: '-1' is not an integer; allowed: 1-100"}
+{"case": "veil", "input": null, "ok": "(cardinality(project) = 0 AND cardinality(scope) = 0 AND cardinality(tag) = 0)"}
+{"case": "veil", "input": [], "ok": "true"}
+{"case": "veil", "input": [{"project": "beta", "scope": null}], "ok": "NOT ((array_has(project, 'beta')) OR regexp_like(array_to_string(tag, chr(31)), '(?i)(^|\\x1f)beta(\\x1f|$)'))"}
+{"case": "veil", "input": [{"project": "alpha", "scope": "main/beds"}, {"project": "Beta", "scope": null}], "ok": "NOT ((array_has(project, 'alpha') AND regexp_like(array_to_string(scope, chr(31)), '(^|\\x1f)main/beds(/[^\\x1f]*)?(\\x1f|$)')) OR (array_has(project, 'Beta')) OR regexp_like(array_to_string(tag, chr(31)), '(?i)(^|\\x1f)Beta(\\x1f|$)') OR regexp_like(array_to_string(tag, chr(31)), '(?i)(^|\\x1f)alpha(\\x1f|$)'))"}
+{"case": "veil", "input": [{"project": "it's", "scope": "a.b"}], "ok": "NOT ((array_has(project, 'it''s') AND regexp_like(array_to_string(scope, chr(31)), '(^|\\x1f)a\\.b(/[^\\x1f]*)?(\\x1f|$)')) OR regexp_like(array_to_string(tag, chr(31)), '(?i)(^|\\x1f)it''s(\\x1f|$)'))"}
