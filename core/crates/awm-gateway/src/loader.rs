@@ -480,7 +480,7 @@ pub fn providers(index: &[Provider], contract: &str, major: u32) -> Vec<Owner> {
 }
 
 /// A needed tool must exist at its major (R117 item 3), or be a singleton behind a door. A
-/// contract may have no provider.
+/// needed contract must have a provider at its major, here or on a peer (R117 item 8).
 fn check_needs(needs: &Needs, index: &[Provider], doors: &[String]) -> Result<(), String> {
     for NeedTool { name, major } in &needs.tool {
         let Some(o) = owner(index, name) else {
@@ -493,8 +493,13 @@ fn check_needs(needs: &Needs, index: &[Provider], doors: &[String]) -> Result<()
             return Err(format!("needs tool {name:?} at major {major}, plugin {:?} serves major {}", o.plugin, o.major));
         }
     }
-    if let Some(bad) = needs.contract.iter().find(|n| !valid_tool_name(&n.name)) {
-        return Err(format!("needs contract {:?}, which is not a valid name", bad.name));
+    for NeedTool { name, major } in &needs.contract {
+        if !valid_tool_name(name) {
+            return Err(format!("needs contract {name:?}, which is not a valid name"));
+        }
+        if providers(index, name, *major).is_empty() {
+            return Err(format!("needs contract \"{name}@{major}\", which no plugin implements"));
+        }
     }
     Ok(())
 }
@@ -669,6 +674,42 @@ mod tests {
         assert_eq!(r.plugins.len(), 2);
         let r = run(&core, &other, "mizar");
         assert_eq!(r.refused.len(), 2, "with no door, vault is unknown and ops strands board");
+    }
+
+    /// A contract need is a hard dependency: no provider refuses the plugin, and a provider on
+    /// a peer satisfies it. A door singleton implements nothing the loader can see.
+    #[test]
+    fn a_contract_need_with_no_provider_refuses() {
+        let t = tempfile::tempdir().unwrap();
+        let (core, other) = (t.path().join("core"), t.path().join("other"));
+        fs::create_dir_all(&core).unwrap();
+        plugin(&other, "reflection", "[plugin]\nname='reflection'\n[[needs.contract]]\nname='harness'\nmajor=1\n");
+        plugin(&other, "channel", "[plugin]\nname='channel'\n[[service]]\nname='channel'\n[[tool]]\nname='channel'\n[[needs.contract]]\nname='harness'\nmajor=2\n");
+        let r = run_with(&core, &other, "mizar", &BTreeMap::new(), &["harness".to_string()]);
+        let refused: BTreeMap<_, _> = r.refused.iter().map(|x| (x.plugin.as_str(), x.reason.as_str())).collect();
+        assert!(refused["reflection"].contains("\"harness@1\", which no plugin implements"), "{refused:?}");
+        assert!(refused["channel"].contains("harness@2"));
+
+        let peers = BTreeMap::from([(
+            "altair".to_string(),
+            vec![RemoteTool { name: "harness-cc".into(), major: 1, plugin: "cch".into(), implements: vec!["harness@1".into()] }],
+        )]);
+        let r = run_with_peers(&core, &other, "mizar", &peers);
+        assert_eq!(r.plugins.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["reflection"], "{:?}", r.refused);
+        assert!(r.refused.iter().any(|f| f.plugin == "channel"), "a provider at another major does not count");
+    }
+
+    /// A plugin that needs a contract whose only provider is refused goes with it.
+    #[test]
+    fn a_refused_contract_provider_cascades() {
+        let t = tempfile::tempdir().unwrap();
+        let (core, other) = (t.path().join("core"), t.path().join("other"));
+        fs::create_dir_all(&core).unwrap();
+        plugin(&other, "cch", "[plugin]\nname='cch'\n[[service]]\nname='cch'\n[[tool]]\nname='harness-cc'\nimplements=['harness@1']\n[[needs.tool]]\nname='gone'\n");
+        plugin(&other, "reflection", "[plugin]\nname='reflection'\n[[needs.contract]]\nname='harness'\nmajor=1\n");
+        let r = run(&core, &other, "mizar");
+        assert!(r.plugins.is_empty(), "{:?}", r.plugins.iter().map(|p| &p.name).collect::<Vec<_>>());
+        assert_eq!(r.refused.len(), 2);
     }
 
     #[test]

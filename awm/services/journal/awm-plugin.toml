@@ -35,10 +35,6 @@ platform = ["linux"]
 name = "scope"
 major = 1
 
-[[needs.contract]]   # a node without search answers by keyword
-name = "search"
-major = 1
-
 [[needs.tool]]
 name = "reflection"
 major = 1

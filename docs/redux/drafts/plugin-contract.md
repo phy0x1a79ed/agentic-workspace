@@ -4,7 +4,7 @@
 
 This file is the contract between a plugin and the Rust gateway of the redux (`install.md` R112, R115 to R117, R132). It holds the manifest format, the wire protocol a service speaks, the call interface a plugin uses to reach another plugin, and the usage event. The plugin-redux scope owns it. Other lanes build against it.
 
-Status: draft v1.12. Build against it. The git log of this file holds what each version changed.
+Status: draft v1.13. Build against it. The git log of this file holds what each version changed.
 
 ## Plugin folder
 
@@ -70,7 +70,7 @@ Rules the loader enforces:
 
 1. A tool name is letters, digits and hyphens. It holds no dot and no underscore. Use `harness-cc`, never `harness.cc`.
 2. A tool name is unique across the fleet and is the tool's permanent id (R117 item 2). A name that two plugins claim refuses the second plugin and names the owner (R116 item 5). A fork settles a clash by renaming the tool in its own manifest. The install config renames nothing.
-3. A need is a hard dependency (R117 item 8). A `needs.tool` name that no plugin serves, on this node or a peer, refuses the plugin. The refusal names the tool. A need has no `optional` key and no `verbs` key.
+3. A need is a hard dependency (R117 item 8). A `needs.tool` name that no plugin serves, on this node or a peer, refuses the plugin. The refusal names the tool. A `needs.contract` with no provider refuses the plugin the same way (§ Contracts). A need has no `optional` key and no `verbs` key.
 4. A `needs.tool` major that differs from the owner's major refuses the plugin.
 5. Refusals cascade: a plugin that needs a refused plugin's tool is refused too.
 6. `tier = "off"` keeps a tool off the MCP surface. Plugins and the CLI still call it through the gateway.
@@ -111,9 +111,9 @@ An interface that several plugins serve is a contract (`install.md` R117 item 4)
 3. A dependent names the contract, never a provider: `[[needs.contract]] name, major`.
 4. The contract resolves to every provider in the live table, zero or more. A contract name never clashes, because many providers are its purpose.
 5. `GET /hub/contract/<name>@<major>` lists the providers now, as `[{name, major, plugin, peer}, ...]`.
-6. A contract need that has no provider refuses nothing. A tool that a node may lack implements a contract of its own name, such as `search@1`, and its dependents need that contract. deneb runs this way with no search, reflection or operations (`fleet.md` R79). Such a dependent waits with `gatewayclient.until_provided` or degrades when a call fails.
+6. A contract need is a hard dependency (R117 item 8). A contract with no provider at its major, on this node or a peer, refuses the plugin, and the refusal names `<name>@<major>`. A plugin that works without the contract declares no need. It waits with `gatewayclient.until_provided` or degrades when a call fails.
 
-**CAUTION** A contract's providers come from the local plugins and the peer tables. A singleton behind its host's door is in neither. A contract need on a door singleton therefore finds no provider. Need a door singleton as a `[[needs.tool]]`.
+**CAUTION** A contract's providers come from the local plugins and the peer tables. A singleton behind its host's door is in neither. A contract need on a door singleton therefore refuses the plugin. Need a door singleton as a `[[needs.tool]]`.
 
 Example: cch serves `harness-cc` and dsh serves `harness-ds`. Each implements the `harness` contract at major 1. reflection needs that contract and dispatches on the platform code of the session.
 
