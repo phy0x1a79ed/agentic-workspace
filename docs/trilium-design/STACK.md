@@ -7,7 +7,7 @@ Related: journal 7724ff11 (ops-board decision), spec `docs/redux/*.md` (queue R6
 
 ## Current
 
-status-pages/seat-rc-toggle
+status-pages (page owner question, then dispatch the build)
 
 ## Waiting on the user
 
@@ -23,8 +23,7 @@ status-pages/seat-rc-toggle
 
 ## Stack
 
-- status-pages — own questions closed (f421ff25; spec fleet.md R147). Build waits on seat-rc-toggle. Spec sweep 2026-11-07: Ops page has no owning plugin yet (R115 item 1: a page is a plugin). "ops can be the new swarm status page I requested and all of our nodes including stations register to it." Roster with stats per node; opt-in at awm install.
-  - seat-rc-toggle — "on the new fleet status dashboard, I can turn remote control on and off for seats ... can we sort natively in claude?" Tony moved the whole topic here (seats/pause handoff). Seat context, settled in docs/seat-lifecycle (feat/seat-pause): no idle per-client agents; a DM goes to the seat's live agent, or an event routine starts one in agentic-commons seats/<person>; social holds seat state empty/occupied/retiring, reclaim after 4h done; names seat:slack/DM/<person>; reflection remote_control(job,on,name) works, refuses mid-turn. Open, with seats/pause recs: (a) dashboard reads `social seats` as source so empty seats show; (b) no passkey for RC toggle; (c) "sort natively in claude?" ours.
+- status-pages — own questions closed (f421ff25; spec fleet.md R147). Children closed. Open: which plugin owns the Ops page. Then dispatch the build. Spec sweep 2026-11-07: Ops page has no owning plugin yet (R115 item 1: a page is a plugin). "ops can be the new swarm status page I requested and all of our nodes including stations register to it." Roster with stats per node; opt-in at awm install.
 - note-agent-button — "a new button on trillium (left of the button, per note) that is a bot icon that opens a drop down for available nodes." Child note marks the attached agent; deleted on retire. Parallel to the task system.
 
 - board-layout-followups — from redux-endstate/review after swarm-board/layout landed (awm d5be934c, journal 0d875664).
@@ -39,4 +38,5 @@ status-pages/seat-rc-toggle
 ## Closed
 
 - status-pages (own questions) — f421ff25. Spec fleet.md R147, install.md R115 item 4.
+- seat-rc-toggle — 83668c7e. Spec fleet.md R147 item 7, sessions.md R146.
 - new-agent-button — 46a610c5. Spec queue.md R61/R63/R65/R66, fleet.md R106/R147. Proposed dropped; scope awm/lobby.
