@@ -4,10 +4,12 @@
 //! The marks live in `<AWM_DIR>/private.json` as `{"version": 1, "marks": [{project, scope?,
 //! path}]}`. The scopes plugin writes the file and every process rereads it when it changes.
 //! A caller stamped `peer` or `peer:<node>` sees nothing a mark covers. A file that exists but
-//! does not parse fails closed: every test answers "hidden".
+//! does not parse fails closed: every test answers "hidden". So does a marks path that is a
+//! dangling link, or whose state dir is missing: neither proves that no mark exists.
 
 use std::collections::HashSet;
 use std::io::Write;
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Mutex;
 use std::time::SystemTime;
@@ -16,6 +18,9 @@ use serde_json::{json, Value};
 
 pub const FILENAME: &str = "private.json";
 const VERSION: u64 = 1;
+/// The marks file is readable by the node's own group, as other users' units need it.
+const FILE_MODE: u32 = 0o640;
+const DIR_MODE: u32 = 0o750;
 /// Row keys whose value is a filesystem path a mark can cover.
 pub const PATH_KEYS: [&str; 6] = ["path", "cwd", "worktree", "worktree_path", "repo_path", "dir"];
 /// Argument keys whose absolute-path value a mark can cover.
@@ -72,13 +77,20 @@ fn parse(raw: &str) -> Result<Vec<Mark>, MarksUnreadable> {
     entries.iter().map(check).collect()
 }
 
-/// `None` is a marks file that exists and does not parse.
+/// `None` is a marks file that cannot be read as "these marks": one that does not parse, a
+/// dangling link, or a path whose state dir is missing. Only an absent file in a present state
+/// dir is "no marks".
 fn load() -> Option<std::sync::Arc<Loaded>> {
     let path = marks_path();
     let meta = match std::fs::metadata(&path) {
         Ok(m) => m,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return Some(std::sync::Arc::new(Loaded { marks: vec![], roots: vec![], slugs: vec![] }))
+            let dangling = std::fs::symlink_metadata(&path).is_ok();
+            let dir_present = path.parent().is_some_and(Path::is_dir);
+            if dangling || !dir_present {
+                return None;
+            }
+            return Some(std::sync::Arc::new(Loaded { marks: vec![], roots: vec![], slugs: vec![] }));
         }
         Err(_) => return None,
     };
@@ -100,7 +112,9 @@ fn load() -> Option<std::sync::Arc<Loaded>> {
 
 /// The marks in force, or an error when the file is broken.
 pub fn marks() -> Result<Vec<Mark>, MarksUnreadable> {
-    load().map(|l| l.marks.clone()).ok_or_else(|| MarksUnreadable(format!("{} exists but is not a valid marks file", marks_path().display())))
+    load().map(|l| l.marks.clone()).ok_or_else(|| {
+        MarksUnreadable(format!("{} is no valid marks file: a broken file, a dangling link or a missing state dir", marks_path().display()))
+    })
 }
 
 /// Replace the marks file atomically with `entries`, and return them as written.
@@ -109,11 +123,15 @@ pub fn write_marks(entries: &[Value]) -> Result<Vec<Mark>, MarksUnreadable> {
     let path = marks_path();
     let dir = path.parent().unwrap_or(Path::new("."));
     let io = |e: std::io::Error| MarksUnreadable(format!("{}: {e}", path.display()));
-    std::fs::create_dir_all(dir).map_err(io)?;
+    std::fs::DirBuilder::new().recursive(true).mode(DIR_MODE).create(dir).map_err(io)?;
     let body = serde_json::to_string_pretty(&json!({"version": VERSION, "marks": checked})).unwrap_or_default() + "\n";
     let tmp = dir.join(format!(".{FILENAME}.{}", std::process::id()));
-    let mut f = std::fs::File::create(&tmp).map_err(io)?;
-    let written = f.write_all(body.as_bytes()).and_then(|_| f.sync_all()).and_then(|_| std::fs::rename(&tmp, &path));
+    let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(FILE_MODE).open(&tmp).map_err(io)?;
+    // The umask may widen or narrow the mode the open asked for.
+    let written = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(FILE_MODE))
+        .and_then(|_| f.write_all(body.as_bytes()))
+        .and_then(|_| f.sync_all())
+        .and_then(|_| std::fs::rename(&tmp, &path));
     if let Err(e) = written {
         let _ = std::fs::remove_file(&tmp);
         return Err(io(e));
@@ -266,6 +284,28 @@ mod tests {
         assert!(slug_covers("-home-t", "-home-t-x") && !slug_covers("-home-t", "-home-tx"));
         assert_eq!(canonical(Some(""), Some("project:p")), (Some("p"), None));
         assert!(from_peer(Some(" Peer:x")) && from_peer(Some("peer")) && !from_peer(Some("tony")) && !from_peer(None));
+    }
+
+    /// One test, since `marks_path` reads the process-wide `AWM_DIR`.
+    #[test]
+    fn the_marks_file_and_its_failures() {
+        let t = tempfile::tempdir().unwrap();
+        let state = t.path().join("state");
+        std::env::set_var("AWM_DIR", &state);
+        assert!(marks().is_err(), "a missing state dir is no proof of no marks");
+        let mark = json!({"project": "p", "path": "/x"});
+        assert_eq!(write_marks(&[mark]).unwrap().len(), 1);
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&marks_path()), 0o640);
+        assert_eq!(mode(&state), 0o750);
+        assert_eq!(marks().unwrap()[0].project, "p");
+
+        std::fs::remove_file(marks_path()).unwrap();
+        assert!(marks().unwrap().is_empty(), "no file in a present state dir is no marks");
+        std::os::unix::fs::symlink(t.path().join("gone.json"), marks_path()).unwrap();
+        assert!(marks().is_err(), "a dangling link reads as an error");
+        assert!(hidden("q", None), "a caller refuses peers while the marks are unreadable");
+        std::env::remove_var("AWM_DIR");
     }
 
     #[test]
