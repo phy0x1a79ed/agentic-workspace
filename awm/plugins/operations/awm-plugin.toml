@@ -9,7 +9,6 @@ version = "0.2.0"
 name = "operations"
 path = "."
 run = "run.sh"
-install = "install.sh"
 
 [[tool]]
 name = "operations"

@@ -8,7 +8,6 @@ version = "0.1.0"
 name = "wake"
 path = "."
 run = "run.sh"
-install = "install.sh"
 
 [[tool]]
 name = "wake"
