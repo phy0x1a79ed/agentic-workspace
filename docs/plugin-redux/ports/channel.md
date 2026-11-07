@@ -10,7 +10,7 @@ Replaces `awm/plugins/{channel,relay}/` and `service_components/tether/` (3880 l
 - `channel` runs on member nodes.
 - `relay` runs on deneb through `profiles = ["relay-host"]`, with deneb excluding `channel/channel`. The unit instance stays `awm-plugin@relay`, since its `AWM_DIR`, user, tokens and `relay.env` derive from `%i`. Only its `WorkingDirectory` moves, to `core/plugins/channel`.
 
-`channel issue` replaces `python -m awm.tether.issuer`. tether stays the prebuilt binaries at the `RELEASE` pin, fetched, checked and supervised in their systemd units as before. The SDK's `proc` covers this.
+`channel issue` replaces `python -m awm.tether.issuer`. tether stays the prebuilt binaries at the `RELEASE` pin, now `core/plugins/channel/RELEASE`, which the binary embeds. The binary does the fetch and the check itself, so `fetch-release.sh` is gone, and supervises the binaries in their systemd units as before. `daemon.env` is written from an allowlist with no secret in it. A secret reaches the unit through `systemd-run --setenv`.
 
 Surfaces are unchanged. State is read in place: both `channels.db` files, transcripts and `services/tether/`. The unit names keep `sha1(STATE_DIR)[:8]`, so the running binaries are adopted.
 
@@ -20,8 +20,8 @@ Tests: port the channel, relay and tether suites against a real loopback `tether
 
 Rollout, said in the land brief:
 - deneb's rooms end at the cutover for certain. tether-relay runs inside `awm-plugin@relay`'s cgroup, with no user-manager linger, so the unit restart stops it. Each holder gets the room-ended notice. `offered` crypto rows reset too, since Rust spake2 cannot resume them.
-- If deneb later gets a user manager, `daemon.env` is written from an allowlist, so `AWM_TETHER_ISSUE_TOKEN` never reaches disk.
-- Machine sessions end once per node, because the operator daemon's issuer argv names deleted Python. That needs a quiet window.
+- The running operator daemon's `TETHER_ISSUER` names the deleted Python module, so the Rust plugin counts it stale and replaces it once it is idle. No live machine session is cut. Until the swap, an invite on that node fails.
+- An encryption offer open at the cutover is dropped, and its holder gets a line saying so. Keyed and sealed rooms carry over as they are.
 - The order is deneb first, then mizar, then the rest.
 
 Gotchas:

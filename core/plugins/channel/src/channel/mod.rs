@@ -139,10 +139,6 @@ impl Channels {
         self.pusher.push(&row.node, &row.job, &line);
     }
 
-    pub async fn idle(&self) {
-        self.pusher.idle().await;
-    }
-
     // -- verbs ---------------------------------------------------------------
 
     pub async fn open(self: &Arc<Self>, holder: &Holder, kind: &str, os: Option<&str>, persistent: bool) -> Res<Value> {
@@ -569,6 +565,11 @@ impl Channels {
                 break;
             }
             let batch = self.machines.events(&sid, row.cursor, machines::TALK, FOLLOW_WAIT_S, None, None).await;
+            if batch["epoch"].as_i64() != Some(epoch) {
+                // The daemon changed during the wait: this cursor means nothing in the new
+                // stream, and the next round ends the channel.
+                continue;
+            }
             for event in batch["events"].as_array().into_iter().flatten() {
                 if let Some(why) = self.take_event(&row, event) {
                     self.ended(name, &why, true);
