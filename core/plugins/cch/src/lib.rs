@@ -22,3 +22,4 @@ pub mod resume;
 pub mod control;
 
 pub mod verbs;
+pub mod app;
