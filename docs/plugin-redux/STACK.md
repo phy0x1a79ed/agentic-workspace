@@ -6,12 +6,14 @@ Decisions: `search` for journals tagged `decision` in awm/plugin-redux.
 
 ## Current
 
-- `build` — executing docs/plugin-redux/PLAN.md. T1 landed on release (49232bf9; rollout stuck at lyra). T2's three parts are committed on feat/plugin-redux and unpushed (see `t2-finish`). T3 is done. T4 is under way: each worker's plan is checked here, then submitted for Tony's approval.
+- `build` — executing docs/plugin-redux/PLAN.md. T1 landed on release (49232bf9; rollout stuck at lyra). T2's three parts are committed on feat/plugin-redux and unpushed (see `t2-finish`). T3 is done. T4: all four plans checked and told to submit; awaiting Tony's approvals.
 
 ## Waiting on the user
 
-- disk: mizar / is at 100% (548 MB free on 2026-11-07). Asked Tony to delete the core/target folders of idle scopes (~60 GB) and the docker build cache plus dangling images (keep awm-rust-build:1.99.1). A disk-full write truncated this file once.
-- lyra: land batch 9a59ed8ad3de (ticket b3b597e326e0) is stuck at lyra, which has no edges.yml and was never provisioned. Choose (a) provision it with cloud awm_config and edges, or (b) shut lyra's WSL so the rollout skips it as an asleep sleeper. request_human is filed and the lease is held. deneb, shogun and altair still run the old release.
+- isolated/ tag: dvc's nightly Globus mirror copies .awm/ off-site, skipping only CACHEDIR.TAG folders. statecheck now tags every .pre-rust/ and .rust-<ts>/. Pre-existing: .awm/services/cch/isolated/<uuid>/claude/.credentials.json is mirrored too. Asked Tony whether to tag isolated/.
+- lyra edges: Tony is fixing lyra's ssh edges himself. After that, run the cloud roles (homelab/site.yml --limit lyra --tags awm_config,ssh_edges,journal,service_key, from the ansible mamba env with -e ansible_ssh_private_key_file=$HOME/.ssh/id_ed25519_awm_edge; the check-mode diff is clean), then journal_move.yml -l lyra and awm reload. Then resume batch 9a59ed8ad3de (`land.sh batch --ticket b3b597e326e0`). Uncommitted cloud edit: redux-dev-apply host_vars/lyra.yml (awm_miniforge, awm_env).
+
+- (superseded by `lyra edges` above) lyra: land batch 9a59ed8ad3de (ticket b3b597e326e0) is stuck at lyra, which has no edges.yml and was never provisioned. Choose (a) provision it with cloud awm_config and edges, or (b) shut lyra's WSL so the rollout skips it as an asleep sleeper. request_human is filed and the lease is held. deneb, shogun and altair still run the old release.
 - Plan questions for Tony at each approval, in the plan's "Still unsure about": comms D2 (the mira daemon) and D3 (rlm-browser); harness Q1 (the dsh fork build); knowledge (search off LanceDB, the model artifact, kb's Python child and kb's tool vs R134, the journal embeddings tables, transcripts' sweep); ops (deneb as an operations caller in edges.yml).
 
 ## Preferences
@@ -37,6 +39,9 @@ Decisions: `search` for journals tagged `decision` in awm/plugin-redux.
   - the gateway's call frame carries `plugin` (SDK Call.plugin);
   - the SDK's privacy module re-exports awm_trust::privacy once ops moves it there;
   - awm-trust's door far end answers `not installed`, not "Unknown tool".
+  - disk regrowth: each worktree's core/target holds 4-5 GB. On 2026-11-07 mizar filled to 100%, and deleting 26 idle scopes' targets plus the docker build cache freed 82 GB. Fix: rust-build.sh defaults CARGO_TARGET_DIR to ~/.cache/awm-target/<worktree>, and a gc removes the targets of worktrees with no live session.
+  - Wire awm_statecheck::snapshot_once into Service::run after ops lands the crate (shape: ~/.cache/plugin-redux-briefs/statecheck-shape.md; size_only/extra accept outside paths and write nothing there; CACHEDIR.TAG in every .pre-rust).
+  - SDK asks from ops: a /hub/plugins accessor with a change notice (auth fronts), operator_dm (routine), a page usage event (operations). After ops lands awm-statecheck, Service::run calls awm_statecheck::snapshot_once before on_start.
   The isolated-door e2e test flaked once (it listed only describe).
 - `cross-group` — settled so far:
   - social calls only reflection. reflection gains probe, the `gone` code, transcript paths, include_stopped and typed start codes. list_other answers ok:true with errors[].
@@ -52,7 +57,8 @@ Decisions: `search` for journals tagged `decision` in awm/plugin-redux.
   - claude-science declares [[service.front]].
   - The T11 operations cutover holds the batch before alcor.
   - R135 item 6 needs amending: social calls reflection only.
-- `seat-redesign` — seats/pause handed social's seat redesign (items 1–8) to the comms port. Settled by Tony: #bots gets no seat; Hallam Hive #general is cooperative on altair; seats stay paused over the weekend, with the Python social question reopened Monday 2026-11-09. Asked seats/pause S1–S5 (brief root, values, outside-lab test, down-notice target, crash rule): S1 and S4 are pending. Answers are in ~/.cache/plugin-redux-briefs/seat-side-answers.md. Not ours: agentic-commons, the brief texts, /new-agent, the RC toggle.
+- `seat-redesign` — seats/pause (now retiring) handed social's seat redesign to the comms port. Settled: S1–S5 answered; seat folders live at projects/agentic-commons/seats/<slug>, each its own registered scope; start with a plain start_other on that scope (no cwd/claim params); briefs are passed as absolute paths into main/docs/. New seat: `scope create` with peer runs a project-declared create hook (agentic-commons: scripts/new-seat.sh). knowledge adds the hook support in scopes and the declaration in agentic-commons. Cutover list: awm feat/seat-pause docs/seat-lifecycle/handoff/README.md. Open with Tony: tag isolated/ (pre-existing login copies mirrored off-site).
+- `state-safety` — Tony 2026-11-07: "they must not leak pre-redux state". Common rule in ~/.cache/plugin-redux-briefs/state-safety.txt. ops builds core/crates/awm-statecheck (inventory, snapshot, check, restore; .pre-rust/ via the SQLite backup API), the one shared crate for all groups. Five read-only audits are running as subagents: the four plans plus the T2 diff. Their results arrive as task notifications. Every plan's submit is held until its audit is back. comms already submitted once before the audit; tell Tony if its audit finds anything. On each result: send the fixes to the worker, then "submit", and the worker must re-send any later change to its plan for a new "submit". The T2 finish subagent (items in `t2-finish`) is also running. When it reports: push feat/plugin-redux, tell all four workers to merge it, submit T2 through land.sh (after T1's batch clears), and tell workers when the SDK has landed.
 - `live-bugs` — from the knowledge plan:
   - the scatter-gather skill calls gather/scatter, but the verbs are git_gather/git_scatter;
   - goal-alignment calls removed journal verbs;
@@ -63,11 +69,14 @@ Decisions: `search` for journals tagged `decision` in awm/plugin-redux.
 
 ## Workers
 
+The worker branches build on feat/plugin-redux (merged at 6ee5a267 on 2026-11-07, after Tony noticed they branched from release). Each time feat/plugin-redux moves, push it and tell the four workers to merge it again, until T2 lands.
+
 Briefs: ~/.cache/plugin-redux-briefs/full-<group>.md. All Opus high, task CWPYAtyb, in plan mode.
 - comms — job e44d901a, plugin-redux/port-comms, https://claude.ai/code/session_012TZ1zwTFfh7Txjdm2h5Rma. Plan /home/tony/.claude/plans/kind-stargazing-falcon.md: checked, told to submit.
 - harness — job eecc2448, plugin-redux/port-harness, https://claude.ai/code/session_012TZ1zx4PnARsz9Am5dpp85. Plan /home/tony/.claude/plans/sparkling-sniffing-sonnet.md: checked, told to submit.
-- knowledge — job 2a70a96d, plugin-redux/port-knowledge, https://claude.ai/code/session_012TZ1zwibR5V8A9BD4Hq2tt. Plan /home/tony/.claude/plans/hidden-rolling-bentley.md: fix list sent.
-- ops — job 8efddb16, plugin-redux/port-ops, https://claude.ai/code/session_012TZ1zxbfDVLySsTQCPp1rq. Plan /home/tony/.claude/plans/abundant-singing-moon.md: fix list sent.
+- knowledge — job 2a70a96d, plugin-redux/port-knowledge, https://claude.ai/code/session_012TZ1zwibR5V8A9BD4Hq2tt. Plan /home/tony/.claude/plans/hidden-rolling-bentley.md: checked, told to submit.
+- (all four plans now carry: the T0 merge of feat/plugin-redux, state-safety.txt, awm-statecheck state.toml files; every revision returns here for "submit")
+- ops — job 8efddb16, plugin-redux/port-ops, https://claude.ai/code/session_012TZ1zxbfDVLySsTQCPp1rq. Plan /home/tony/.claude/plans/abundant-singing-moon.md: APPROVED by Tony, executing (awm-trust first; no plugin lands before the SDK; T11 announced first).
 
 ## Closed
 
