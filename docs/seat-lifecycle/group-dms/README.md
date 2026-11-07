@@ -44,3 +44,28 @@ Seat brief (judgement):
 2. A "handled by" line is context. Never answer it.
 3. A person seat started by a public @Opal answers in that channel or thread and does not open a DM.
 4. An @Opal that asks about someone else is still the sender's request.
+
+## Tony's revision (2026-11-06)
+
+> for number 2, agent needs to be able to read channel chat context if needed
+> 7 -> @mentions can count as DMs. so mention, then opal responds with DM is acceptable, but prefer same channel response, depending on situation
+> brief 1 ok
+> 2 never is too strong, I think actually DMs should stay DMs, but channel seats can forward mentions to DM seats. so this changes things
+> 3 this makes 3 cleaner and clarifies/tightens 7 back up
+> 4 -> this would be why channel seats are needed, for collaborative work. so help Dana, means help Dana _here_
+
+## Revised routing (draft for confirmation)
+
+Code in social:
+1. A DM goes to the sender's person seat. DMs stay DMs.
+2. In a channel with a channel seat, every message goes to the channel seat, @Opal included. The channel seat may forward a message to the sender's person seat.
+3. In a channel or group DM without a channel seat, an @Opal goes to the sender's person seat. A plain message goes nowhere. The sender's later replies in a thread their seat answered also go to their seat.
+4. A person seat may read the history of a channel where its person mentioned Opal, or where a message was forwarded from, for context.
+5. A bot never gets a person seat.
+6. A new verb lets a channel seat forward a message to a person seat.
+7. Send refuses a DM to a person who never wrote to Opal. An @Opal counts as writing to Opal, so a DM reply to a mention is allowed. The brief prefers answering in the same channel.
+
+Seat brief:
+1. A channel seat decides whether a message belongs to a person's seat, and forwards it if so.
+2. A channel seat is for collaborative work. "@Opal help Dana" means help Dana here, in the channel.
+3. A person seat that gets a forwarded or mentioned message answers in that channel by preference. It moves to the DM only when the situation calls for it.
