@@ -282,6 +282,14 @@ fn build_plugin(cand: &Candidate, input: &LoadInput, warnings: &mut Vec<String>)
         return Err(format!("needs {bad}"));
     }
 
+    let retired = m.needs.retired_keys();
+    if !retired.is_empty() {
+        warnings.push(format!(
+            "plugin {}: retired needs keys ignored: {}. A plugin may call any tool, and every need is hard (R117 item 8)",
+            m.plugin.name,
+            retired.join(", ")
+        ));
+    }
     if !m.needs.platform.is_empty() && !m.needs.platform.iter().any(|p| p == std::env::consts::OS) {
         return Err(format!("needs platform {:?}, this node is {}", m.needs.platform, std::env::consts::OS));
     }
@@ -498,7 +506,7 @@ pub fn providers(index: &[Provider], contract: &str, major: u32) -> Vec<Owner> {
 /// A needed tool must exist at its major (R117 item 3), or be a singleton behind a door. A
 /// needed contract must have a provider at its major, here or on a peer (R117 item 8).
 fn check_needs(needs: &Needs, index: &[Provider], doors: &[String]) -> Result<(), String> {
-    for NeedTool { name, major } in &needs.tool {
+    for NeedTool { name, major, .. } in &needs.tool {
         let Some(o) = owner(index, name) else {
             if doors.contains(name) {
                 continue;
@@ -509,7 +517,7 @@ fn check_needs(needs: &Needs, index: &[Provider], doors: &[String]) -> Result<()
             return Err(format!("needs tool {name:?} at major {major}, plugin {:?} serves major {}", o.plugin, o.major));
         }
     }
-    for NeedTool { name, major } in &needs.contract {
+    for NeedTool { name, major, .. } in &needs.contract {
         if !valid_tool_name(name) {
             return Err(format!("needs contract {name:?}, which is not a valid name"));
         }
@@ -603,7 +611,7 @@ mod tests {
         plugin(&other, "dup-name", "[plugin]\nname='dup-name'\n[[service]]\nname='dup-name'\n[[tool]]\nname='prov'\n");
         plugin(&other, "takes-auth", "[plugin]\nname='takes-auth'\n[[service]]\nname='takes-auth'\n[[tool]]\nname='auth'\n");
         plugin(&other, "missing", "[plugin]\nname='missing'\n[[needs.tool]]\nname='nobody-serves'\n");
-        plugin(&other, "lists-verbs", "[plugin]\nname='lists-verbs'\n[[needs.tool]]\nname='prov'\nmajor=2\nverbs=['get']\n");
+        plugin(&other, "lists-verbs", "[plugin]\nname='lists-verbs'\n[[needs.tool]]\nname='prov'\nmajor=2\nverbs=['get']\noptional=true\n");
         plugin(&other, "bad-contract", "[plugin]\nname='bad-contract'\n[[needs.contract]]\nname='har.ness'\n");
         plugin(&other, "bad-host", "[plugin]\nname='bad-host'\n[needs]\nnetwork=['https://x.org']\n");
         plugin(&other, "wrong-major", "[plugin]\nname='wrong-major'\n[[needs.tool]]\nname='prov'\nmajor=1\n");
@@ -622,7 +630,7 @@ mod tests {
 
         let r = run(&core, &other, "mizar");
         let names: Vec<_> = r.plugins.iter().map(|p| p.name.as_str()).collect();
-        assert_eq!(names, ["cx", "dependent", "game", "journal", "off-svc", "ops", "provider"]);
+        assert_eq!(names, ["cx", "dependent", "game", "journal", "off-svc", "ops", "provider", "lists-verbs"]);
         let ops = r.plugins.iter().find(|p| p.name == "ops").unwrap();
         assert_eq!(ops.services.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), ["board"], "the config leaves reporting off");
         assert_eq!(ops.services[0].tools, ["operations"]);
@@ -632,7 +640,9 @@ mod tests {
         assert!(refused["takes-auth"].contains("reserved"));
         assert!(refused["missing"].contains("\"nobody-serves\""));
         assert!(refused["wrong-major"].contains("major 1"));
-        assert!(refused["lists-verbs"].contains("verbs"), "a need lists no verbs: {}", refused["lists-verbs"]);
+        assert_eq!(r.warnings.iter().filter(|w| w.contains("lists-verbs")).collect::<Vec<_>>(),
+            ["plugin lists-verbs: retired needs keys ignored: verbs, optional. A plugin may call any tool, and every need is hard (R117 item 8)"],
+            "a retired key warns once and refuses nothing");
         assert!(refused["bad-contract"].contains("not a valid name"));
         assert!(refused["bad-host"].contains("network entry \"https://x.org\""), "{}", refused["bad-host"]);
         assert!(refused["escape"].contains("leaves the plugin folder"));

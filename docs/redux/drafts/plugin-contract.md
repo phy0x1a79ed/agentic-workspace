@@ -72,7 +72,7 @@ Rules the loader enforces:
 
 1. A tool name is letters, digits and hyphens. It holds no dot and no underscore. Use `harness-cc`, never `harness.cc`.
 2. A tool name is unique across the fleet and is the tool's permanent id (R117 item 2). A name that two plugins claim refuses the second plugin and names the owner (R116 item 5). A fork settles a clash by renaming the tool in its own manifest. The install config renames nothing.
-3. A need is a hard dependency (R117 item 8). A `needs.tool` name that no plugin serves, on this node or a peer, refuses the plugin. The refusal names the tool. A `needs.contract` with no provider refuses the plugin the same way (§ Contracts). A need has no `optional` key and no `verbs` key.
+3. A need is a hard dependency (R117 item 8). A `needs.tool` name that no plugin serves, on this node or a peer, refuses the plugin. The refusal names the tool. A `needs.contract` with no provider refuses the plugin the same way (§ Contracts). A need has no `optional` key and no `verbs` key. The loader ignores either key on an older manifest and warns once for the plugin.
 4. A `needs.tool` major that differs from the owner's major refuses the plugin.
 5. Refusals cascade: a plugin that needs a refused plugin's tool is refused too.
 6. `tier = "off"` keeps a tool off the MCP surface. Plugins and the CLI still call it through the gateway.
