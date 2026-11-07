@@ -191,6 +191,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "awm-plugin-browser"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "awm-cdp",
+ "awm-plugin-sdk",
+ "base64 0.22.1",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "awm-plugin-sdk"
 version = "0.1.0"
 dependencies = [

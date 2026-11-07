@@ -75,12 +75,11 @@ declare -A DISTS=(
   [routine]="$WS/awm/plugins/routine::$WS/awm/plugins/routine/tests"
   [grantlib]="$WS/awm/service_components/grantlib::$WS/awm/service_components/grantlib/tests"
   [trustpolicy]="$WS/awm/service_components/trustpolicy::$WS/awm/service_components/trustpolicy/tests"
-  [browser]="$WS/awm/plugins/browser::$WS/awm/plugins/browser/tests"
   [wake]="$WS/awm/plugins/wake::$WS/awm/plugins/wake/tests"
 )
 
 # Stable run order.
-ORDER=(contract gatewayclient config persistence grantlib telemetry usage claudedaemon kept tlsfront dvcdata tether scopes journal search events social 2fa ssh auth httpsfront rlm-browser rlm-factorio fileviewer mic vpn reflection dvc claude-science dsh engcyc trilium zotero cch dev channel relay kb board transcripts routine trustpolicy browser wake)
+ORDER=(contract gatewayclient config persistence grantlib telemetry usage claudedaemon kept tlsfront dvcdata tether scopes journal search events social 2fa ssh auth httpsfront rlm-browser rlm-factorio fileviewer mic vpn reflection dvc claude-science dsh engcyc trilium zotero cch dev channel relay kb board transcripts routine trustpolicy wake)
 
 CHANGED_BASE=""
 SMOKE=0
