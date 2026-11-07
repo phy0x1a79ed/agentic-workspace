@@ -473,7 +473,7 @@ impl Gateway {
             let notified = self.hub.changed.notified();
             let tried = match self.lookup_target() {
                 Some((service, verb)) => {
-                    self.hub.call(&service, &verb.function, json!({"pid": pid}), None, &caller, Duration::from_secs(5)).await.ok()
+                    self.hub.call(&service, &verb.function, json!({"pid": pid}), None, None, &caller, Duration::from_secs(5)).await.ok()
                 }
                 None => None,
             };
@@ -1301,7 +1301,7 @@ impl Gateway {
             check_arguments(tool, verb, &found.spec, &declared)?;
             let timeout = found.spec.get("timeout").and_then(Value::as_f64).unwrap_or(DEFAULT_CALL_TIMEOUT_S);
             let value =
-                self.hub.call(&service, &found.function, inner, None, &ctx.caller, Duration::from_secs_f64(timeout)).await?;
+                self.hub.call(&service, &found.function, inner, None, ctx.plugin.as_deref(), &ctx.caller, Duration::from_secs_f64(timeout)).await?;
             Ok::<_, ApiError>(render(&value))
         }
         .await;
@@ -1347,7 +1347,7 @@ impl Gateway {
         let timeout = found.spec.get("timeout").and_then(Value::as_f64).unwrap_or(DEFAULT_CALL_TIMEOUT_S);
         let value = self
             .hub
-            .call(&service, &found.function, inner, ctx.as_.as_deref(), &ctx.caller, Duration::from_secs_f64(timeout))
+            .call(&service, &found.function, inner, ctx.as_.as_deref(), ctx.plugin.as_deref(), &ctx.caller, Duration::from_secs_f64(timeout))
             .await?;
         Ok(render(&value))
     }

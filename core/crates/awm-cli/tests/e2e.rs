@@ -490,6 +490,7 @@ fn gateway_end_to_end() {
     let (code, out, errout) = cli(&url, &["caller", "call_needed", "--verb", "whoami"]);
     assert!(code == 0, "{errout}");
     assert!(out.contains(r#"\"lane\": \"service\""#) && out.contains(r#"\"trust\": \"trusted\""#), "a service call: {out}");
+    assert!(out.contains(r#"\"plugin\": \"caller\""#), "the call frame names the calling plugin: {out}");
     let forged = http()
         .post(format!("{url}/invoke"))
         .header("X-Awm-Service-Token", "not-a-token")
@@ -514,6 +515,16 @@ fn gateway_end_to_end() {
     assert_eq!(from_page("fake"), 200, "a page may call its own tool");
     assert_eq!(from_page("caller"), 200, "a page may call a tool its plugin does not need");
     assert_eq!(from_page("nobody"), 404, "a tool no plugin serves is not installed");
+    let page_who: Value = http()
+        .post(format!("{url}/invoke"))
+        .header("Referer", format!("{url}/p/fake/ui/"))
+        .json(&json!({"name": "fake", "args": {"verb": "whoami"}}))
+        .send()
+        .unwrap()
+        .json()
+        .unwrap();
+    let page_who: Value = serde_json::from_str(page_who["result"].as_str().unwrap()).unwrap();
+    assert_eq!(page_who["plugin"], "fake", "a page's call names its plugin: {page_who}");
     let gone = http().post(format!("{url}/svc/fake/fn/echo")).json(&json!({"text": "x"})).send().unwrap();
     assert_eq!(gone.status().as_u16(), 404, "the /svc door still answers");
 

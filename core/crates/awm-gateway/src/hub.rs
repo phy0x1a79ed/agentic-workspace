@@ -328,13 +328,16 @@ impl Hub {
         self.lock().values().filter(|s| s.tx.is_some()).count()
     }
 
-    /// Call `function` on `service`. Dropping the future sends `cancel` to the service.
+    /// Call `function` on `service`. `plugin` is the calling plugin, when the gateway knows it.
+    /// Dropping the future sends `cancel` to the service.
+    #[allow(clippy::too_many_arguments)]
     pub async fn call(
         &self,
         service: &str,
         function: &str,
         args: Value,
         as_: Option<&str>,
+        plugin: Option<&str>,
         caller: &Caller,
         timeout: Duration,
     ) -> Result<Value, CallError> {
@@ -343,6 +346,9 @@ impl Hub {
         let mut frame = json!({"kind": "call", "id": id, "fn": function, "args": args, "caller": caller});
         if let Some(as_) = as_ {
             frame["as"] = json!(as_);
+        }
+        if let Some(plugin) = plugin {
+            frame["plugin"] = json!(plugin);
         }
         let ctl = {
             let mut map = self.lock();
@@ -404,10 +410,11 @@ mod tests {
         assert!(verbs.contains(&"post".to_string()) && verbs.contains(&"fetch".to_string()));
 
         let caller = Caller::default();
-        let call = hub.call("journal", "post", json!({"body": "hi"}), None, &caller, Duration::from_secs(5));
+        let call = hub.call("journal", "post", json!({"body": "hi"}), None, Some("search"), &caller, Duration::from_secs(5));
         let answer = async {
             let frame: Value = serde_json::from_str(&rx.recv().await.unwrap()).unwrap();
             assert_eq!(frame["kind"], "call");
+            assert_eq!(frame["plugin"], "search", "the frame names the calling plugin");
             hub.reply("journal", &json!({"kind": "reply", "id": frame["id"], "ok": true, "result": {"id": 7}}));
         };
         let (res, _) = tokio::join!(call, answer);
