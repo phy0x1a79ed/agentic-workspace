@@ -195,6 +195,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "awm-plugin-fileviewer"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "awm-plugin-sdk",
+ "awm-statecheck",
+ "clap",
+ "futures-util",
+ "libc",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "awm-plugin-sdk"
 version = "0.1.0"
 dependencies = [

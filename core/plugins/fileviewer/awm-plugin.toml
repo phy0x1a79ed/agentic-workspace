@@ -1,6 +1,6 @@
 [plugin]
 name = "fileviewer"
-version = "0.1.0"
+version = "0.2.0"
 
 [[service]]
 name = "fileviewer"
