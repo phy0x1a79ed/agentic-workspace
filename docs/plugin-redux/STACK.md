@@ -10,7 +10,7 @@ Decisions: `search` for journals tagged `decision` in awm/plugin-redux.
 
 ## Waiting on the user
 
-- engine: Tony "I dont want 2 copies"; knowledge's plan adds a LanceDB vs libSQL (FTS5 + DiskANN) bench session (task CWPYAtyb) before journal, scopes and search port. Edits asked: data stays on its node, a mixed-writer/rollback check, a musl build check, fixed verdict criteria. If libSQL wins, awm-store gets a libSQL backend.
+- engine: bench done (journal 6939906b, awm/engine-bench). libSQL fails 4 of 5 criteria (cold p95 6.2x, appends 0.13 s p50, mixed writers and old-Python rollback fail); only recall passes (1.00 vs LanceDB 0.93). Recommended: keep LanceDB as search's engine (knowledge's default). Tony chooses; T14/T15/T17 wait.
 
 - Pre-existing: the transcripts archive is 0664 in 0775 dirs (the live transcripts are 0600). knowledge's port writes it 0600/0700. Raise with Tony at the knowledge approval.
 
@@ -76,7 +76,7 @@ Decisions: `search` for journals tagged `decision` in awm/plugin-redux.
 
 ## Workers
 
-- engine-bench — job 5367f4a7, plugin-redux/engine-bench, scope awm/engine-bench, Opus high, https://claude.ai/code/session_012TZ1zx2Aqin2tp18ZYJSQo. Brief ~/.cache/plugin-redux-briefs/engine-bench.md (+ engine-bench-spec.md from knowledge's T6). Started 2026-11-07 at Tony's ask. Reports to knowledge and here, then retires.
+- engine-bench — job 5367f4a7, plugin-redux/engine-bench, scope awm/engine-bench, Opus high, https://claude.ai/code/session_012TZ1zx2Aqin2tp18ZYJSQo. Brief ~/.cache/plugin-redux-briefs/engine-bench.md (+ engine-bench-spec.md from knowledge's T6). Started 2026-11-07 at Tony's ask. Reported 2026-11-07; retiring.
 
 The worker branches build on feat/plugin-redux (merged at 6ee5a267 on 2026-11-07, after Tony noticed they branched from release). CAUTION: this worktree's `origin` is altair's bare, not mizar's. All scopes share mizar's bare, so tell workers to merge the local branch `feat/plugin-redux`, not origin/. Each time feat/plugin-redux moves, push it to github and tell the four workers to merge it again, until T2 lands.
 
