@@ -292,6 +292,14 @@ The gateway keeps one live table from each tool name to the plugin that owns it,
 
 `GET /hub/table` lists this node's tools as `[{name, major, plugin, implements}]`. The `awm` tool's `table` verb shows the whole live table, peers included.
 
+### Plugin events
+
+The gateway emits each change in the loaded plugin set on its own topic, `awm/plugins` (`GET /hub/emit/awm/plugins`). A payload is `{plugin, event, version, root}`. `event` is one of `installed`, `updated`, `enabled`, `disabled`, `removed` and `refused`. `version` is the core pin's `version=` for a core plugin, else the folder's install stamp. `root` is the plugin root the folder sits in.
+
+1. Each reload diffs the plugin set before and after it, and emits one event per plugin that changed. A plugin that is the same on both sides emits nothing.
+2. Boot emits nothing. A subscriber reads `GET /hub/plugins` when it connects, then applies the events.
+3. A peer's needs-only reload (step 5 above) emits through the same diff.
+
 ## MCP and CLI surface
 
 Each tool is one MCP tool with input `{verb, args, peer}`. `verb = "describe"` returns the verb schemas. `peer` names the node to run on. The MCP proxy (`awm mcp`) reads `GET /tools?view=domains` and posts `POST /invoke` with `X-Awm-Surface: mcp`. The CLI (`awm <tool> <verb> [--key value]...`) posts the same call with `X-Awm-Surface: cli`. `--help` prints the verb's schema. A verb word may spell `_` as `-`.

@@ -10,6 +10,7 @@ pub mod gateway;
 pub mod hub;
 pub mod install;
 pub mod isolated;
+pub mod lifecycle;
 pub mod loader;
 pub mod modes;
 pub mod mount;

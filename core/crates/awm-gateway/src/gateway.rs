@@ -40,6 +40,8 @@ const NATIVE_VERBS: [(&str, &str); 17] = [
     ("hold_leave", "Leave hold mode, which a gateway enters when it restarts too often: spawn the services that are down and clear the start log."),
 ];
 const DEFAULT_CALL_TIMEOUT_S: f64 = 120.0;
+/// Where the workspace keeps each core plugin's pin (plugin-contract § Runtime).
+const PLUGIN_PINS: &str = "scripts/plugins";
 /// Verbs that drive the calling session's own process. Sent to a peer, one would find no
 /// calling session there, so the call is refused before it leaves the node. A singleton's verb
 /// that acts on the session goes through the door, which carries the session's identity.
@@ -720,9 +722,13 @@ impl Gateway {
         let peers = self.peer_tools.read().unwrap_or_else(|p| p.into_inner()).clone();
         let failed = self.hooks.failed();
         let mut new = load_plugins(&self.state, &cfg, &peers, &self.edges.read().unwrap_or_else(|p| p.into_inner()), &self.node, &failed);
-        let (old, was_refused): (BTreeMap<String, loader::Plugin>, BTreeSet<String>) = {
+        let (old, was_refused, old_stamps): (BTreeMap<String, loader::Plugin>, BTreeSet<String>, BTreeMap<String, String>) = {
             let before = self.read_load();
-            (before.plugins.iter().map(|p| (p.name.clone(), p.clone())).collect(), before.refused.iter().map(|r| r.plugin.clone()).collect())
+            (
+                before.plugins.iter().map(|p| (p.name.clone(), p.clone())).collect(),
+                before.refused.iter().map(|r| r.plugin.clone()).collect(),
+                before.stamps.clone(),
+            )
         };
 
         if scope == Scope::Needs {
@@ -732,6 +738,9 @@ impl Gateway {
             for (name, o) in &old {
                 if !new.plugins.iter().any(|p| &p.name == name) && !now_refused.contains(name.as_str()) {
                     new.plugins.push(o.clone());
+                    if let Some(v) = old_stamps.get(name) {
+                        new.stamps.insert(name.clone(), v.clone());
+                    }
                 }
             }
         }
@@ -777,7 +786,12 @@ impl Gateway {
             tracing::error!("plugin {} refused: {}", r.plugin, r.reason);
         }
         let refused: Vec<Value> = new.refused.iter().map(|r| json!({"plugin": r.plugin, "reason": r.reason})).collect();
-        *self.load.write().unwrap_or_else(|p| p.into_inner()) = new;
+        let changes = {
+            let mut load = self.load.write().unwrap_or_else(|p| p.into_inner());
+            let changes = crate::lifecycle::diff(&load, &new);
+            *load = new;
+            changes
+        };
         self.hub.changed.notify_waiters();
         for spec in starting.clone() {
             if request.force && restarting.contains(spec.name.as_str()) {
@@ -785,6 +799,11 @@ impl Gateway {
             } else {
                 crate::supervisor::start(&gw, spec);
             }
+        }
+        for change in &changes {
+            tracing::info!("plugin {} {:?} ({})", change.plugin, change.event, change.version);
+            let payload = serde_json::to_value(change).unwrap_or(Value::Null);
+            self.topics.publish(self, crate::lifecycle::SERVICE, crate::lifecycle::TOPIC, &payload);
         }
         let stale_env = self.stale_env(&cfg.env);
         let tell_peers = scope == Scope::Everything && !(added.is_empty() && removed.is_empty() && restarted.is_empty() && stopping.is_empty());
@@ -1560,7 +1579,7 @@ fn load_plugins(
     let doors: Vec<String> = edges.door_singletons(node).iter().map(|s| s.tool.clone()).collect();
     let elsewhere: BTreeMap<String, String> =
         edges.singletons.iter().filter(|s| s.host != node).map(|s| (s.tool.clone(), s.host.clone())).collect();
-    loader::load(&loader::LoadInput {
+    let mut load = loader::load(&loader::LoadInput {
         wants: &wants,
         wants_service: &wants_service,
         core_roots: &core_roots,
@@ -1572,7 +1591,9 @@ fn load_plugins(
         doors: &doors,
         elsewhere: &elsewhere,
         failed_installs,
-    })
+    });
+    crate::lifecycle::stamp_all(&mut load, &core_roots, &cfg.workspace_dir(state).join(PLUGIN_PINS));
+    load
 }
 
 #[cfg(test)]
