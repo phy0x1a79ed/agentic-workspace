@@ -204,6 +204,11 @@ impl Paths {
         self.starts_dir().join(format!("{job}.json"))
     }
 
+    /// The promise store: reflection's old `pending/` dir, where the Python cch kept it.
+    pub fn promises_dir(&self) -> PathBuf {
+        self.awm_dir.join("services").join("reflection").join("pending")
+    }
+
     /// `<AWM_DIR>/services/enabled.json`, the gateway's `{service: enabled}` table.
     pub fn enabled_file(&self) -> PathBuf {
         self.awm_dir.join("services").join("enabled.json")
