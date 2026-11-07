@@ -10,11 +10,15 @@ pages_version() {
         | sha256sum | cut -c1-12)"
 }
 
-# The id of the core binary's inputs: every committed entry of core/ but plugins/, which
-# Cargo.lock, Cargo.toml and the Dockerfile are among. A core plugin's change leaves it alone.
+# The id of the core binary's inputs: awm-cli and the local crates it builds from, plus core/'s
+# build files (build_id). A crate only a core plugin builds from leaves it alone.
 core_version() {
-    echo "core-$(git -C "$1" ls-tree HEAD:core | awk -F'\t' '$2 != "plugins"' | sha256sum | cut -c1-12)"
+    local paths
+    paths="$(core_closure "$1")" || return 1
+    echo "core-$(build_id "$1" "$paths")"
 }
+
+core_closure() { crate_closure "$1" core/crates/awm-cli; }
 
 # The core plugins at HEAD: each folder of core/plugins/ that holds a Cargo.toml. The folder
 # name is the plugin's name and its binary's; its crate is awm-plugin-<name>.
@@ -57,12 +61,12 @@ cargo_path_deps() {
         }'
 }
 
-# plugin_closure <root> <name>: the repo paths of the plugin's folder and of every local crate
-# it builds from, at HEAD, one per line.
-plugin_closure() {
+# crate_closure <root> <dir>: the repo paths of the crate at <dir> and of every local crate it
+# builds from, at HEAD, one per line.
+crate_closure() {
     local root="$1" todo seen="" dir deps defs
     defs="$(git -C "$root" show HEAD:core/Cargo.toml | cargo_path_deps | awk '$1 == "define" {print $2, $3}')"
-    todo="core/plugins/$2"
+    todo="$2"
     while [ -n "$todo" ]; do
         dir="${todo%%$'\n'*}"
         [ "$todo" = "$dir" ] && todo="" || todo="${todo#*$'\n'}"
@@ -87,14 +91,25 @@ plugin_closure() {
     printf '%s\n' "$seen" | LC_ALL=C sort
 }
 
-# The id of a core plugin binary's inputs: its folder, the local crates it builds from, and
-# core/'s Cargo.lock, Cargo.toml (profile, workspace dependencies) and Dockerfile (toolchain).
+plugin_closure() { crate_closure "$1" "core/plugins/$2"; }
+
+# The files besides a crate closure that every core binary builds from: the lock, the workspace
+# manifest (profile, workspace dependencies) and the Dockerfile (toolchain).
+BUILD_FILES="core/Cargo.lock core/Cargo.toml core/Dockerfile"
+
+# build_id <root> <closure>: 12 hex of the HEAD object ids of the closure's paths and BUILD_FILES.
+build_id() {
+    { printf '%s\n' "$2"; printf '%s\n' $BUILD_FILES; } \
+        | while read -r p; do printf '%s %s\n' "$p" "$(git -C "$1" rev-parse "HEAD:$p")"; done \
+        | sha256sum | cut -c1-12
+}
+
+# The id of a core plugin binary's inputs: its folder and the local crates it builds from, plus
+# core/'s build files (build_id).
 plugin_version() {
     local paths
     paths="$(plugin_closure "$1" "$2")" || return 1
-    echo "$2-$( { printf '%s\n' "$paths"; printf '%s\n' core/Cargo.lock core/Cargo.toml core/Dockerfile; } \
-        | while read -r p; do printf '%s %s\n' "$p" "$(git -C "$1" rev-parse "HEAD:$p")"; done \
-        | sha256sum | cut -c1-12)"
+    echo "$2-$(build_id "$1" "$paths")"
 }
 
 plugin_pin() { printf '%s\n' "$1/scripts/plugins/$2.pin"; }

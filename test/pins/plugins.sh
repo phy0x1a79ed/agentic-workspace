@@ -17,6 +17,7 @@ deploy() { AWM_DIR="$node/.awm" bash "$node/scripts/awm-deploy.sh" "$@"; }
 release() { AWM_DIR="$node/.awm" bash "$node/scripts/release-plugins.sh" "$@"; }
 
 mkdir -p "$node/scripts" "$node/core/crates/awm-proto" "$node/core/crates/awm-base" "$node/core/crates/awm-gateway" \
+    "$node/core/crates/awm-cli" "$node/core/crates/awm-sdk" \
     "$node/awm/services/svc/pages/ui" "$node/.awm/artifacts"
 cp "$repo"/scripts/{pins.sh,awm-deploy.sh,release-plugins.sh} "$node/scripts/"
 cat > "$node/scripts/rust-build.sh" <<'EOF'
@@ -33,13 +34,15 @@ done
 echo "$*" >> "$here/.awm/builds"
 EOF
 chmod +x "$node/scripts/rust-build.sh"
-printf '[workspace]\nmembers = ["crates/*", "plugins/*"]\n\n[workspace.dependencies]\nserde = "1"\nawm-proto = { path = "crates/awm-proto" }\nawm-gateway = { path = "crates/awm-gateway" }\n' > "$node/core/Cargo.toml"
+printf '[workspace]\nmembers = ["crates/*", "plugins/*"]\n\n[workspace.dependencies]\nserde = "1"\nawm-proto = { path = "crates/awm-proto" }\nawm-gateway = { path = "crates/awm-gateway" }\nawm-sdk = { path = "crates/awm-sdk" }\n' > "$node/core/Cargo.toml"
 printf 'lock one\n' > "$node/core/Cargo.lock"
 printf 'FROM rust\n' > "$node/core/Dockerfile"
 printf '[package]\nname = "awm-proto"\n\n[dependencies]\nawm-base = { path = "../awm-base" }\nserde.workspace = true\n\n[dev-dependencies]\nawm-gateway.workspace = true\n' > "$node/core/crates/awm-proto/Cargo.toml"
 printf '[package]\nname = "awm-base"\n' > "$node/core/crates/awm-base/Cargo.toml"
 printf '[package]\nname = "awm-gateway"\n\n[dependencies]\nawm-proto.workspace = true\n' > "$node/core/crates/awm-gateway/Cargo.toml"
-for c in awm-proto awm-base awm-gateway; do mkdir -p "$node/core/crates/$c/src"; echo one > "$node/core/crates/$c/src/lib.rs"; done
+printf '[package]\nname = "awm-cli"\n\n[dependencies]\nawm-gateway.workspace = true\n' > "$node/core/crates/awm-cli/Cargo.toml"
+printf '[package]\nname = "awm-sdk"\n\n[dependencies]\nawm-proto.workspace = true\n' > "$node/core/crates/awm-sdk/Cargo.toml"
+for c in awm-proto awm-base awm-gateway awm-cli awm-sdk; do mkdir -p "$node/core/crates/$c/src"; echo one > "$node/core/crates/$c/src/lib.rs"; done
 printf 'pins = ["scripts/core.pin", "scripts/pages.pin"]\n' > "$node/deploy.toml"
 printf '/.awm/\n' > "$node/.gitignore"
 echo src > "$node/awm/services/svc/pages/ui/index.html"
@@ -51,17 +54,23 @@ check "no core/plugins lists no plugin" '[ -z "$(v core_plugins)" ]'
 check "release-plugins with no plugin builds nothing" 'release >/dev/null && [ ! -e "$node/.awm/builds" ]'
 core0="$(v core_version)"
 check "core version format" '[[ $core0 =~ ^core-[0-9a-f]{12}$ ]]'
+check "the core closure is awm-cli and its local crates" \
+    '[ "$(v core_closure | tr "\n" " ")" = "core/crates/awm-base core/crates/awm-cli core/crates/awm-gateway core/crates/awm-proto " ]'
+echo two > "$node/core/crates/awm-sdk/src/lib.rs"; commit "sdk two"
+check "a crate outside awm-cli's closure leaves the core version" '[ "$(v core_version)" = "$core0" ]'
+mkdir -p "$node/core/deploy"; echo unit > "$node/core/deploy/awm.service"; commit "a unit"
+check "a core/ file outside the closure leaves the core version" '[ "$(v core_version)" = "$core0" ]'
 
-# One plugin, depending on awm-proto through the workspace, and awm-base through it.
+# One plugin, depending on awm-sdk through the workspace, and awm-proto and awm-base through it.
 mkdir -p "$node/core/plugins/hello/src"
-printf '[package]\nname = "awm-plugin-hello"\n\n[[bin]]\nname = "hello"\n\n[dependencies]\nawm-proto = { workspace = true }\n' > "$node/core/plugins/hello/Cargo.toml"
+printf '[package]\nname = "awm-plugin-hello"\n\n[[bin]]\nname = "hello"\n\n[dependencies]\nawm-sdk = { workspace = true }\n' > "$node/core/plugins/hello/Cargo.toml"
 printf '[plugin]\nname = "hello"\n' > "$node/core/plugins/hello/awm-plugin.toml"
 echo one > "$node/core/plugins/hello/src/main.rs"
 commit hello
 check "a new plugin leaves the core version" '[ "$(v core_version)" = "$core0" ]'
 check "core_plugins lists hello" '[ "$(v core_plugins)" = hello ]'
 check "the closure is the plugin and its local crates" \
-    '[ "$(cd "$node" && . scripts/pins.sh && plugin_closure . hello | tr "\n" " ")" = "core/crates/awm-base core/crates/awm-proto core/plugins/hello " ]'
+    '[ "$(cd "$node" && . scripts/pins.sh && plugin_closure . hello | tr "\n" " ")" = "core/crates/awm-base core/crates/awm-proto core/crates/awm-sdk core/plugins/hello " ]'
 hello0="$(pv hello)"
 check "plugin version format" '[[ $hello0 =~ ^hello-[0-9a-f]{12}$ ]]'
 
@@ -77,6 +86,9 @@ check "a transitive crate edit moves the plugin version" '[ "$(pv hello)" != "$h
 hello2="$(pv hello)"
 printf 'lock two\n' > "$node/core/Cargo.lock"; commit "lock two"
 check "a Cargo.lock change moves the plugin version" '[ "$(pv hello)" != "$hello2" ]'
+core1="$(v core_version)"
+printf 'FROM rust:2\n' > "$node/core/Dockerfile"; commit "toolchain two"
+check "a Dockerfile change moves the core version" '[ "$(v core_version)" != "$core1" ]'
 
 # The pins: release-plugins refuses an unlisted pin, builds a stale one, and keeps a current one.
 check "release-plugins refuses a pin deploy.toml does not list" '! release --dry-run 2>/dev/null'

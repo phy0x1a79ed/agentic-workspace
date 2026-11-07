@@ -45,7 +45,7 @@ packages=()
 for i in "${!stale[@]}"; do
     name="${stale[$i]}"
     # cargo builds the working tree: a change not committed would ship under the wrong version.
-    dirty="$(git -C "$root" status --porcelain -- $(plugin_closure "$root" "$name") core/Cargo.lock core/Cargo.toml core/Dockerfile)"
+    dirty="$(git -C "$root" status --porcelain -- $(plugin_closure "$root" "$name") $BUILD_FILES)"
     [ -z "$dirty" ] || {
         echo "$name builds from uncommitted changes: commit them, so the pin names a tree that exists" >&2
         printf '%s\n' "$dirty" >&2; exit 1; }
