@@ -1,5 +1,7 @@
-# Seat lifecycle build plan
+# Seat lifecycle build plan (superseded)
 
+
+Superseded on 2026-11-06 by later decisions (keeper merged into seats, seats are chats, no routine) and by delegation of the build. See DESIGN.md.
 ## Context
 
 On 2026-11-06 stopped Slack seats came back and two of them answered old messages without Tony. Seats on altair are paused. The interview in this folder settled how seats work from now on (decision journals 87836740 through 5660abb4). This plan builds that design on `feat/seat-pause`. It does not deploy: Tony deploys once the deploy protocol update lands.
