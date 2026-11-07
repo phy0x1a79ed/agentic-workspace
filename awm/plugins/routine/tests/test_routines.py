@@ -166,13 +166,13 @@ async def test_failure_starts_fixer_on_declared_peer(store, out, project_repo):
     assert out.dms == []
 
 
-async def test_failure_falls_back_to_dm(store, out, project_repo):
+async def test_failure_falls_back_to_a_notice(store, out, project_repo):
     out.fail_start = True
     runner = Runner(store, out)
     runner.install("proj", str(write_routine(project_repo, "nightly", FAILING)))
     run = await runner.trigger("proj", "nightly", wait=True)
     [d] = run["dispatched"]
-    assert d["via"] == "dm" and "peer unreachable" in d["errors"][0]
+    assert d["via"] == "notice" and "peer unreachable" in d["errors"][0]
     assert len(out.dms) == 1 and "failed at two" in out.dms[0]
 
 
@@ -183,7 +183,19 @@ async def test_failure_falls_back_to_log(store, out, project_repo, caplog):
     run = await runner.trigger("proj", "nightly", wait=True)
     [d] = run["dispatched"]
     assert d["via"] == "log" and len(d["errors"]) == 2
-    assert "no agent and no DM" in caplog.text
+    assert "no agent and no notice" in caplog.text
+
+
+async def test_a_routine_without_a_fixer_posts_a_notice(store, out, project_repo):
+    body = FAILING[:FAILING.index("[fixer]")]
+    runner = Runner(store, out)
+    runner.install("proj", str(write_routine(project_repo, "nightly", body)))
+    run = await runner.trigger("proj", "nightly", wait=True)
+    assert out.starts == []
+    assert run["dispatched"] == [{"for": "two", "role": "notice", "via": "notice",
+                                  "job": "", "peer": "", "errors": []}]
+    [msg] = out.dms
+    assert "failed at two" in msg and "boom" in msg
 
 
 async def test_step_timeout_is_a_failure(store, out, project_repo):
@@ -239,7 +251,7 @@ async def test_condition_error_code_is_failure(store, out, project_repo):
         project_repo, "watch", CONDITIONS.replace("exit 1", "exit 7"))))
     run = await runner.trigger("proj", "watch", wait=True)
     assert run["state"] == "failed" and run["failed_step"] == "quiet"
-    assert [d["role"] for d in run["dispatched"]] == ["agent", "fixer"]
+    assert [d["role"] for d in run["dispatched"]] == ["agent", "notice"]
 
 
 def test_orphaned_runs_close_on_restart(store):

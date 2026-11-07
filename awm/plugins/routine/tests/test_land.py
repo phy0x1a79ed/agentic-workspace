@@ -189,3 +189,8 @@ def test_the_batch_restarts_the_union_of_what_its_agents_name(ws, tmp_path):
     assert Path(f"{log}.restart").read_text().split() == ["restart=journal,scopes,search"]
     with pytest.raises(SystemExit, match="--restart"):
         submit(ln, ws.scope("d", {"d.txt": "d\n"}, base="release"), restart=" , ")
+
+
+def test_gateway_and_plugin_names_both_stay_in_the_restart():
+    from awm.routine.land import batch_restart
+    assert batch_restart([{"restart": ["gateway"]}, {"restart": ["channel"]}]) == "channel,gateway"

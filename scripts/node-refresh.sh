@@ -104,15 +104,33 @@ steps() {
 
 step_sync() { (cd "$root" && AWM_REFRESH_TO=$1 sh scripts/refresh-checkout.sh); }
 
-# The landing agents name what restarts ($AWM_REFRESH_RESTART): plugin names, or gateway.
+# The landing agents name what restarts ($AWM_REFRESH_RESTART, comma separated):
+# `gateway` restarts the unit, and plugin names restart those plugins.
 step_deploy() {
-    local args=() restart=${AWM_REFRESH_RESTART:-}
-    if [[ $restart == gateway ]]; then
-        args=(--restart)
-    elif [[ -n $restart ]]; then
-        args=(--reload-restart "$restart")
+    local args=() names=() name restart
+    IFS=, read -ra restart <<< "${AWM_REFRESH_RESTART:-}"
+    for name in "${restart[@]}"; do
+        [[ $name == gateway ]] && args+=(--restart) || names+=("$name")
+    done
+    if (( ${#names[@]} )); then
+        args+=(--reload-restart "$(IFS=,; echo "${names[*]}")")
     fi
-    (cd "$root" && bash scripts/awm-deploy.sh "${args[@]}")
+    local stamp
+    stamp=$(install_stamp "$1")
+    [[ $stamp == "$(cat "$dir/installed" 2>/dev/null)" ]] && args+=(--no-install)
+    (cd "$root" && bash scripts/awm-deploy.sh "${args[@]}") || return
+    echo "$stamp" > "$dir/installed"
+}
+
+# What the Python install depends on: the install inputs in the tree, and the node's
+# config, which picks the plugins. An unchanged stamp skips awm/install.sh. A code
+# change needs no install, because every package is installed editable.
+install_stamp() {
+    {
+        git -C "$root" ls-tree -r "$1" -- awm | grep -E \
+            '/(pyproject\.toml|setup\.(py|cfg)|requirements[^/]*\.txt|install[^/]*\.sh)$'
+        cat "$AWM_DIR/config.toml" 2>/dev/null
+    } | sha256sum | cut -c1-64
 }
 
 # awm deploy already waits for the services; this asks the gateway again, as a check
