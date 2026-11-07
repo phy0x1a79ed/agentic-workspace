@@ -43,7 +43,16 @@ pub struct Args {
     timeout: u64,
 }
 
-const STATIC_BUILD: &str = "core/target/x86_64-unknown-linux-musl/release/awm";
+const STATIC_BUILD: &str = "x86_64-unknown-linux-musl/release/awm";
+
+/// The static build `scripts/rust-build.sh` leaves for this tree: under `AWM_CARGO_TARGET_DIR`,
+/// else `~/.cache/awm-target/<tree folder>`.
+fn static_build(root: &Path, home: &Path) -> PathBuf {
+    let target = std::env::var_os("AWM_CARGO_TARGET_DIR").map(PathBuf::from).unwrap_or_else(|| {
+        home.join(".cache/awm-target").join(root.file_name().unwrap_or_default())
+    });
+    target.join(STATIC_BUILD)
+}
 const UNIT: &str = "core/deploy/awm.service";
 
 fn find_root(explicit: Option<PathBuf>) -> anyhow::Result<PathBuf> {
@@ -143,7 +152,7 @@ pub async fn run(args: Args) -> anyhow::Result<i32> {
     let bin_src = args
         .bin
         .or_else(|| std::env::var_os("AWM_BIN").map(PathBuf::from))
-        .or_else(|| Some(root.join(STATIC_BUILD)).filter(|p| p.is_file()));
+        .or_else(|| Some(static_build(&root, &home)).filter(|p| p.is_file()));
     let config_path = state.join(awm_gateway::config::CONFIG_FILE);
 
     let bin_changes = bin_src.as_ref().is_some_and(|src| !same_bytes(src, &bin_dest));
@@ -156,7 +165,7 @@ pub async fn run(args: Args) -> anyhow::Result<i32> {
     match &bin_src {
         Some(src) if bin_changes => println!("  binary:  {} -> {}", src.display(), bin_dest.display()),
         Some(_) => println!("  binary:  {} is current", bin_dest.display()),
-        None => println!("  binary:  none given and no static build at {STATIC_BUILD}; {} stays", bin_dest.display()),
+        None => println!("  binary:  none given and no static build at {}; {} stays", static_build(&root, &home).display(), bin_dest.display()),
     }
     println!("  config:  {}", if config_path.is_file() { "kept" } else { "written from this checkout's defaults" });
     println!("  unit:    {}", if unit_changes { "replaced from core/deploy/awm.service" } else { "current" });
@@ -271,5 +280,9 @@ mod tests {
         assert_eq!(plan(false, &[]), vec![Apply::Reload(vec![])]);
         assert_eq!(reload_args(&["a".to_string()]), json!({"restart": ["a"], "force": true}));
         assert_eq!(reload_args(&[]), json!({"restart": [], "force": false}), "a plain reload forces nothing");
+        if std::env::var_os("AWM_CARGO_TARGET_DIR").is_none() {
+            assert_eq!(static_build(Path::new("/w/plugin-redux"), Path::new("/h")),
+                Path::new("/h/.cache/awm-target/plugin-redux/x86_64-unknown-linux-musl/release/awm"));
+        }
     }
 }
