@@ -47,7 +47,6 @@ declare -A DISTS=(
   [journal]="$WS/awm/services/journal::$WS/awm/services/journal/tests"
   [search]="$WS/awm/services/search::$WS/awm/services/search/tests"
   [events]="$WS/awm/services/events::$WS/awm/services/events/tests"
-  [social]="$WS/awm/services/social::$WS/awm/services/social/tests"
   [2fa]="$WS/awm/services/2fa::$WS/awm/services/2fa/tests"
   [ssh]="$WS/awm/services/ssh::$WS/awm/services/ssh/tests"
   [auth]="$WS/awm/services/auth::$WS/awm/services/auth/tests"
@@ -75,7 +74,7 @@ declare -A DISTS=(
 )
 
 # Stable run order.
-ORDER=(contract gatewayclient config persistence grantlib telemetry usage claudedaemon kept tlsfront dvcdata scopes journal search events social 2fa ssh auth httpsfront rlm-factorio fileviewer mic vpn reflection dvc claude-science dsh engcyc trilium zotero cch dev kb board transcripts routine trustpolicy wake)
+ORDER=(contract gatewayclient config persistence grantlib telemetry usage claudedaemon kept tlsfront dvcdata scopes journal search events 2fa ssh auth httpsfront rlm-factorio fileviewer mic vpn reflection dvc claude-science dsh engcyc trilium zotero cch dev kb board transcripts routine trustpolicy wake)
 
 CHANGED_BASE=""
 SMOKE=0

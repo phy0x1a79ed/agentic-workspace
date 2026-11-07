@@ -159,7 +159,6 @@ impl SeatsConfig {
 /// accounts up, as a bad `[bucket]` table leaves them up.
 #[derive(Debug, Clone, Default)]
 pub struct Loaded {
-    pub path: PathBuf,
     pub accounts: Vec<AccountConfig>,
     pub buckets: Vec<BucketConfig>,
     pub seats: SeatsConfig,
@@ -185,7 +184,7 @@ fn parse(path: &Path) -> R<Option<Table>> {
 
 /// Read the whole file. An account error fails the load. A bucket or seats error is a note.
 pub fn load(path: &Path) -> R<Loaded> {
-    let mut out = Loaded { path: path.to_path_buf(), ..Default::default() };
+    let mut out = Loaded::default();
     let Some(data) = parse(path)? else { return Ok(out) };
     let (accounts, notes) = accounts(&data, path)?;
     out.accounts = accounts;

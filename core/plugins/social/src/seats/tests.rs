@@ -397,10 +397,10 @@ async fn paused_seats_record_and_start_nothing_and_unpause_lists_the_chats() {
 async fn a_paused_occupied_seat_still_delivers() {
     let mut t = T::new(true);
     let seat = t.seats.declared("opal", "D0TEST", &line::Place { platform: "slack".into(), kind: ChatKind::Dm, person: "tester".into(), ..Default::default() }).await.unwrap();
-    t.world.w().up.insert("kalen".into());
-    t.seats.adopt(seat, "altair", "kalen", "").await;
+    t.world.w().up.insert("agent-k".into());
+    t.seats.adopt(seat, "altair", "agent-k", "").await;
     t.send("to the adopted seat").await;
-    assert_eq!(t.world.got("kalen"), ["to the adopted seat"]);
+    assert_eq!(t.world.got("agent-k"), ["to the adopted seat"]);
 }
 
 #[tokio::test]
@@ -446,14 +446,14 @@ async fn live_mounts_on_declared_chats_become_adopted_seats() {
     let t = T::new(true);
     let dm = |ch: &str, job: &str| crate::db::Mount { account: "opal".into(), channel_id: ch.into(), channel_name: "".into(), node: "altair".into(), job: job.into(), session_name: "s".into(), mounted_at: "".into() };
     let place = |kind| line::Place { platform: "slack".into(), kind, person: "tester".into(), chat_name: "general".into(), ..Default::default() };
-    t.db.mount(dm("D0TEST", "patrik")).await.unwrap();
+    t.db.mount(dm("D0TEST", "agent-a")).await.unwrap();
     t.db.mount(dm("C0OTHER", "hand")).await.unwrap();
-    let n = t.seats.adopt_mounts(vec![(dm("D0TEST", "patrik"), place(ChatKind::Dm)), (dm("C0OTHER", "hand"), place(ChatKind::Channel))]).await;
+    let n = t.seats.adopt_mounts(vec![(dm("D0TEST", "agent-a"), place(ChatKind::Dm)), (dm("C0OTHER", "hand"), place(ChatKind::Channel))]).await;
     assert_eq!(n, 1, "only the declared chat is a seat");
     let s = t.seat().await;
-    assert_eq!((s.state, s.job.as_str(), s.adopted), (State::Occupied, "patrik", true));
+    assert_eq!((s.state, s.job.as_str(), s.adopted), (State::Occupied, "agent-a", true));
     assert!(t.seats.store.get("opal", "C0OTHER").await.is_none(), "an undeclared mount stays a hand mount");
-    assert_eq!(t.seats.adopt_mounts(vec![(dm("D0TEST", "patrik"), place(ChatKind::Dm))]).await, 0, "once");
+    assert_eq!(t.seats.adopt_mounts(vec![(dm("D0TEST", "agent-a"), place(ChatKind::Dm))]).await, 0, "once");
 }
 
 #[tokio::test]

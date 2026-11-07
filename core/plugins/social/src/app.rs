@@ -942,6 +942,9 @@ impl Social {
 
     pub async fn bucket_rm(&self, call: Call) -> Result<Value, VerbError> {
         let path = s(&call.args, "path");
+        if path.trim_matches('/').is_empty() {
+            return Err(VerbError::value("bucket_rm: name the file or folder to delete; the bucket root is never deleted"));
+        }
         self.bucket(&s(&call.args, "bucket"))?.rm(&path).await?;
         Ok(json!({"ok": true, "path": path}))
     }

@@ -181,7 +181,8 @@ fn migration(from: i64) -> String {
         5 => "ALTER TABLE social_keepers ADD COLUMN seen_at TEXT NOT NULL DEFAULT '';\n".into(),
         6 => KEEPER_STATE.into(),
         7 => QUIET.into(),
-        8 => SEATS.into(),
+        // Every message the Python saw counts as routed, so the first resync replays none.
+        8 => format!("{SEATS}INSERT OR IGNORE INTO seat_routed (account, channel_id, message_id, routed_at) SELECT account, channel_id, message_id, 0 FROM social_history;\n"),
         _ => String::new(),
     }
 }
@@ -565,6 +566,7 @@ mod tests {
             c.execute_batch(&format!("{SCHEMA}{HISTORY}{MOUNTS}{KEEPERS_V5}{KEEPER_STATE}{QUIET}")).unwrap();
             c.execute_batch("ALTER TABLE social_keepers ADD COLUMN seen_at TEXT NOT NULL DEFAULT '';CREATE TABLE schema_version (version INTEGER NOT NULL);INSERT INTO schema_version VALUES (8);").unwrap();
             c.execute("INSERT INTO social_mounts (account, channel_id, node, job) VALUES ('a', 'c', 'n', 'j')", []).unwrap();
+            c.execute("INSERT INTO social_history (account, channel_id, message_id) VALUES ('a', 'c', 'm1')", []).unwrap();
         }
         let before: Vec<String> = Connection::open(&old).unwrap().prepare("SELECT name FROM sqlite_master WHERE type = 'table'").unwrap().query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect();
         let c = open_conn(&old).unwrap();
@@ -572,6 +574,7 @@ mod tests {
         let after: Vec<String> = c.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").unwrap().query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect();
         assert!(before.iter().all(|t| after.contains(t)), "no table dropped");
         assert_eq!(c.query_row("SELECT count(*) FROM social_mounts", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+        assert_eq!(c.query_row("SELECT count(*) FROM seat_routed WHERE message_id = 'm1'", [], |r| r.get::<_, i64>(0)).unwrap(), 1, "seen messages are routed");
         drop(c);
         assert_eq!(version(&open_conn(&old).unwrap()).unwrap(), Some(9), "reopening is a no-op");
     }

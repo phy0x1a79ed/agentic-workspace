@@ -1,0 +1,45 @@
+# What awm-statecheck copies to .pre-rust/ before social's first Rust start. Paths resolve
+# against AWM_DIR (/var/lib/awm/social on alcor). The Rust start opens social.db v8 in place
+# and adds the v9 seat tables only. social.toml is Ansible's: social reads it and never writes.
+dirs = ["services/social"]
+
+[[additive]]
+path = "social.toml"
+
+# Every table the Python wrote. The keeper's two stay, unread.
+[[additive]]
+path = "services/social/social.db"
+table = "social_history"
+
+[[additive]]
+path = "services/social/social.db"
+table = "social_sync"
+
+[[additive]]
+path = "services/social/social.db"
+table = "social_operators"
+
+[[additive]]
+path = "services/social/social.db"
+table = "social_accounts"
+
+[[additive]]
+path = "services/social/social.db"
+table = "social_quiet_threads"
+
+[[additive]]
+path = "services/social/social.db"
+table = "social_keepers"
+
+[[additive]]
+path = "services/social/social.db"
+table = "social_keeper_state"
+
+# The first start adopts each live mount as its seat's agent and keeps the rest.
+[[additive]]
+path = "services/social/social.db"
+table = "social_mounts"
+
+# The tokens: checked in place, never copied.
+[[size_only]]
+path = "secrets"

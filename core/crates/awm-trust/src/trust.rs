@@ -120,7 +120,7 @@ pub struct Call<'a> {
 pub const START_VERBS: [&str; 3] = ["start_other", "resume_other", "adopt_other"];
 /// The `social` verbs a seat holds and answers its own chats with (R69). social keeps them
 /// to the chats the session holds, and a mount to chats below trusted that no sibling holds.
-pub const SEAT_CHAT_VERBS: [&str; 7] = ["send", "react", "fetch", "history", "download_attachments", "mount", "unmount"];
+pub const SEAT_CHAT_VERBS: [&str; 9] = ["send", "react", "fetch", "history", "download_attachments", "mount", "unmount", "mark_seat_done", "forward"];
 /// The `2fa` verbs that only read. ssh arms the approver itself for fir and sockeye.
 pub const TWOFA_READS: [&str; 5] = ["devices", "ping", "reachability", "status", "pending"];
 const DESCRIBE: &str = "describe";

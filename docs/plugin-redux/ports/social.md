@@ -13,7 +13,8 @@ This lands together with the seats component.
 Replaces `awm/services/social/` (11,283 lines). It runs on alcor as `awm-plugin@social` with `AWM_DIR=/var/lib/awm/social`.
 
 Surface changes, listed:
-- Removed `keepers`, `keep_reset` and `keep_adopt`, and the seven OneDrive-only bucket verbs.
+- Removed `keepers`, `keep_reset` and `keep_adopt`, the seven OneDrive-only bucket verbs, and `bucket_get`'s `version` (Drive keeps none).
+- `bucket_rm` refuses the bucket root.
 - Added `mark_seat_done`, `forward`, `seat_reset`, `seat_adopt` (on CLI and HTTP) and `seat_admit`.
 - `seats` shows each seat's state.
 - `send` and `react` ids default to the caller's latest pushed line.
@@ -30,7 +31,7 @@ Connectors and buckets:
 
 Borrower mode goes, because the cloud role strips `AWM_SOCIAL_PEER`. `seed.py` goes. `gdrive_auth.py` becomes `social gdrive-auth`.
 
-`social.db` v8 opens in place. v9 adds tables only. The keeper tables stay, unread.
+`social.db` v8 opens in place. v9 adds tables only. The keeper tables stay, unread. `awm/service_components/kept` stays until cch drops its `transcript_tail` import.
 
 social needs `reflection`. It calls `reflection` (`start_other`, `message`, `list_other`, `probe`), `operations request_human` and `journal tag_add`.
 
@@ -51,7 +52,7 @@ One module owns every seat in `social.db`: `seat_registry`, a durable `seat_queu
 1. **empty**, message: queue it, react 👀, run `ensure_seat` (`scopes create` on the seat's node), then `start_other {project, scope: "seats/<slug>"}` with `peer`. → starting. The rows go into the brief but stay undelivered.
 2. **starting**: the agent's first live `list_other` row or social call marks the briefed rows delivered. → occupied. If the agent is not up within 3 min, requeue the rows and count one breaker attempt: 4 per hour, backoff 60, 120, 300 and 600 s, then a 6 h hold and a down notice.
 3. **occupied**: each message is pushed. A Gone or exhausted push returns its rows → empty, then step 1.
-4. `mark_seat_done`, or 4 h with no message: send the retire line → retiring.
+4. `mark_seat_done`, then 4 h with no message: send the retire line → retiring. An agent is started unpinned and never with `replaces`.
 5. **retiring**: reply once "agent is changing shift, will respond within 5 mins" and queue. When the agent is gone → empty. After 4 min, start the next agent beside it with the previous job's transcript path, without `replaces`, and unbind the old agent.
 6. An agent that dies before done gets a down notice and no restart. Its undelivered rows start the next agent.
 7. **After a restart**: undelivered rows go to a live agent, or cold-start. Slack resync routes only messages after `synced_ts` that are not in `seat_routed`. Discord gets a per-chat cursor. Nothing older starts an agent.
@@ -67,7 +68,7 @@ One module owns every seat in `social.db`: `seat_registry`, a durable `seat_queu
 - Hand mounts on chats that no rule declares keep routing to their holder.
 - The `social_quiet_threads` gate (`send quiet=`) carries over.
 - The 60 s mount prune loop carries over.
-- `paused` records messages as routed, so unpause replays nothing. At unpause, social sends Tony's DM one line per seat chat that got messages while paused, with the chat and the count but no text, so no one waits unanswered without his knowing.
+- `paused` records each message to an empty seat as routed, so unpause replays nothing. An occupied seat, such as an adopted mount, still gets its lines. At unpause, social sends Tony's DM one line per seat chat that got messages while paused, with the chat and the count but no text, so no one waits unanswered without his knowing.
 - An outside-lab sender (Slack restricted, or a foreign team) is held with a `blocked` card until `seat_admit`.
 - A new DM files a `review` card and starts.
 - A forward to an empty seat cold-starts it, except into a DM nobody opened, and grants a 24 h read of the source.

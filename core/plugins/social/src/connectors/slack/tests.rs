@@ -331,7 +331,8 @@ async fn receive_sync_and_send() {
     until("three acks", || f.lock().unwrap().acks.len() == 3).await;
     let h = e.hooks.history.clone();
     for _ in 0..200 {
-        if h.synced_ts("D1").await.is_some() && rows(&e, None).await.len() >= 3 {
+        let r = rows(&e, None).await;
+        if h.synced_ts("D1").await.is_some() && r.len() >= 3 && r.iter().any(|r| r["edited"] == true) {
             break;
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
@@ -413,6 +414,7 @@ async fn a_live_event_after_a_reconnect_never_skips_the_gap() {
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
+    until("the gap handed on", || e.got.lock().unwrap().iter().any(|m| m.text == "missed")).await;
     conn.close().await;
     task.await.unwrap().unwrap();
     assert_eq!(h.synced_ts("D1").await.as_deref(), Some("200.000001"));
@@ -726,16 +728,16 @@ const DEFAULT: &str = api::DEFAULT_API;
 
 // -- Tony's account --------------------------------------------------------------
 
-fn tony(f: &Fake, e: &Env, cfg: AccountConfig) -> Arc<SlackUser> {
+fn own_account(f: &Fake, e: &Env, cfg: AccountConfig) -> Arc<SlackUser> {
     Arc::new(SlackUser::new(cfg, e.hooks.clone(), &base(f)))
 }
 
 #[tokio::test]
-async fn tonys_slack_is_read_only() {
+async fn own_slack_is_read_only() {
     let f = fake().await;
     let e = env();
-    for cfg in [account("tony", "xoxp-1", Some("xapp-1")), AccountConfig { cookie: Some("xoxd-1".into()), ..account("tony", "xoxc-1", None) }] {
-        let c = tony(&f, &e, cfg);
+    for cfg in [account("own-slack", "xoxp-1", Some("xapp-1")), AccountConfig { cookie: Some("xoxd-1".into()), ..account("own-slack", "xoxc-1", None) }] {
+        let c = own_account(&f, &e, cfg);
         let err = c.send("D1", "hi", None, &[]).await.unwrap_err();
         assert_eq!(err.error_class, "NotImplementedError");
         assert!(err.message.contains("read only"), "{}", err.message);
@@ -748,7 +750,7 @@ async fn tonys_slack_is_read_only() {
 async fn an_inline_xoxc_rides_with_its_cookie() {
     let f = fake().await;
     let e = env();
-    let c = tony(&f, &e, AccountConfig { cookie: Some("xoxd-ck".into()), ..account("tony", "xoxc-tok", None) });
+    let c = own_account(&f, &e, AccountConfig { cookie: Some("xoxd-ck".into()), ..account("own-slack", "xoxc-tok", None) });
     assert!(c.session);
     c.identity().await.unwrap();
     assert_eq!(f.lock().unwrap().cookies, ["d=xoxd-ck"]);
@@ -759,17 +761,17 @@ async fn an_inline_xoxc_rides_with_its_cookie() {
 async fn creds_cmd_runs_through_sh_and_a_failure_raises() {
     let f = fake().await;
     let e = env();
-    let c = tony(&f, &e, AccountConfig { creds_cmd: Some(r#"printf '{"token":"xoxc-AA","cookie":"xoxd-BB"}'"#.into()), ..account("tony", "", None) });
+    let c = own_account(&f, &e, AccountConfig { creds_cmd: Some(r#"printf '{"token":"xoxc-AA","cookie":"xoxd-BB"}'"#.into()), ..account("own-slack", "", None) });
     c.api.fetch_creds().await.unwrap();
     assert_eq!(c.api.token().await, "xoxc-AA");
     c.identity().await.unwrap();
     assert_eq!(f.lock().unwrap().cookies, ["d=xoxd-BB"]);
 
-    let c = tony(&f, &e, AccountConfig { creds_cmd: Some("echo nope >&2; exit 2".into()), ..account("tony", "", None) });
+    let c = own_account(&f, &e, AccountConfig { creds_cmd: Some("echo nope >&2; exit 2".into()), ..account("own-slack", "", None) });
     let err = c.api.fetch_creds().await.unwrap_err();
     assert_eq!(err.error_class, "RuntimeError");
     assert_eq!(err.message, "creds_cmd exited 2: nope");
-    let c = tony(&f, &e, AccountConfig { creds_cmd: Some("echo '{}'".into()), ..account("tony", "", None) });
+    let c = own_account(&f, &e, AccountConfig { creds_cmd: Some("echo '{}'".into()), ..account("own-slack", "", None) });
     assert!(c.api.fetch_creds().await.unwrap_err().message.contains("missing token/cookie"));
 }
 
@@ -779,14 +781,14 @@ async fn stale_session_creds_are_refetched_once() {
     f.lock().unwrap().valid_token = Some("xoxc-NEW".into());
     let e = env();
     let cmd = r#"printf '{"token":"xoxc-NEW","cookie":"xoxd-NEW"}'"#;
-    let c = tony(&f, &e, AccountConfig { cookie: Some("xoxd-OLD".into()), creds_cmd: Some(cmd.into()), ..account("tony", "xoxc-OLD", None) });
+    let c = own_account(&f, &e, AccountConfig { cookie: Some("xoxd-OLD".into()), creds_cmd: Some(cmd.into()), ..account("own-slack", "xoxc-OLD", None) });
     let me = c.identity().await.unwrap();
     assert_eq!(me.id, "UBOT");
     assert_eq!(f.lock().unwrap().auths, ["Bearer xoxc-OLD", "Bearer xoxc-NEW"]);
     assert_eq!(f.lock().unwrap().cookies.last().unwrap(), "d=xoxd-NEW");
 
     // With no creds_cmd there is nothing to refresh.
-    let c = tony(&f, &e, AccountConfig { cookie: Some("xoxd-OLD".into()), ..account("tony", "xoxc-OLD", None) });
+    let c = own_account(&f, &e, AccountConfig { cookie: Some("xoxd-OLD".into()), ..account("own-slack", "xoxc-OLD", None) });
     assert_eq!(c.identity().await.unwrap_err().message, "slack auth.test: invalid_auth");
 }
 
@@ -795,7 +797,7 @@ async fn the_session_poll_baselines_then_hands_on_only_new() {
     let f = fake().await;
     f.lock().unwrap().history.insert("D1".into(), vec![json!({"ts": "100.0", "user": "UOTHER", "text": "history"})]);
     let e = env();
-    let c = tony(&f, &e, AccountConfig { cookie: Some("xoxd-1".into()), ..account("tony", "xoxc-1", None) });
+    let c = own_account(&f, &e, AccountConfig { cookie: Some("xoxd-1".into()), ..account("own-slack", "xoxc-1", None) });
     *c.self_id.lock().unwrap() = "UME".into();
     let mut baseline = HashMap::new();
     c.poll_once(&mut baseline, true).await.unwrap();
@@ -827,7 +829,7 @@ async fn the_api_mode_socket_hands_on_plain_messages_only() {
         json!({"type": "events_api", "envelope_id": "e4", "payload": {"event": {"type": "reaction_added"}}}),
     ];
     let e = env();
-    let c = tony(&f, &e, account("tony", "xoxp-1", Some("xapp-1")));
+    let c = own_account(&f, &e, account("own-slack", "xoxp-1", Some("xapp-1")));
     let task = tokio::spawn(c.clone().start());
     until("four acks", || f.lock().unwrap().acks.len() == 4).await;
     until("the message", || !e.got.lock().unwrap().is_empty()).await;
@@ -839,7 +841,7 @@ async fn the_api_mode_socket_hands_on_plain_messages_only() {
 }
 
 #[tokio::test]
-async fn tonys_channels_dms_and_users() {
+async fn own_channels_dms_and_users() {
     let f = fake().await;
     {
         let mut st = f.lock().unwrap();
@@ -854,7 +856,7 @@ async fn tonys_channels_dms_and_users() {
         st.dm_for.insert("U0PEER".into(), "D1".into());
     }
     let e = env();
-    let c = tony(&f, &e, AccountConfig { cookie: Some("x".into()), ..account("tony", "xoxc-x", None) });
+    let c = own_account(&f, &e, AccountConfig { cookie: Some("x".into()), ..account("own-slack", "xoxc-x", None) });
     f.lock().unwrap().page = 200;
     let chans = c.list_channels(false).await.unwrap();
     assert_eq!(methods(&f), ["conversations.list"]);
@@ -877,7 +879,7 @@ async fn tonys_channels_dms_and_users() {
 }
 
 #[tokio::test]
-async fn tonys_search_and_download() {
+async fn own_search_and_download() {
     let f = fake().await;
     let url = format!("{}/files/F1", f.lock().unwrap().base);
     {
@@ -886,7 +888,7 @@ async fn tonys_search_and_download() {
         st.history.insert("C1".into(), vec![json!({"ts": "5.0", "user": "U2", "text": "x", "files": [{"id": "F1", "title": "t.txt", "mimetype": "text/plain", "url_private": url}]})]);
     }
     let e = env();
-    let c = tony(&f, &e, AccountConfig { cookie: Some("xoxd-1".into()), ..account("tony", "xoxc-1", None) });
+    let c = own_account(&f, &e, AccountConfig { cookie: Some("xoxd-1".into()), ..account("own-slack", "xoxc-1", None) });
     let got = c.search("found", 10, Some("general")).await.unwrap();
     assert_eq!((got[0].channel_id.as_str(), got[0].channel_name.as_str(), got[0].text.as_str(), got[0].sender_name.as_str()), ("C1", "general", "found it", "U2"));
     assert_eq!(call(&f, "search.messages")[0], HashMap::from([("query".to_string(), "found in:general".to_string()), ("count".to_string(), "10".to_string())]));
@@ -895,7 +897,7 @@ async fn tonys_search_and_download() {
     assert_eq!((d[0].filename.as_str(), d[0].mime.as_str(), d[0].data.as_slice()), ("t.txt", "text/plain", &b"bytes-F1"[..]));
     assert_eq!(f.lock().unwrap().cookies.last().unwrap(), "d=xoxd-1");
     let err = c.download_attachments("C1", "6.0", None).await.unwrap_err();
-    assert_eq!(err.message, "slack[tony] message '6.0' not found in 'C1'");
+    assert_eq!(err.message, "slack[own-slack] message '6.0' not found in 'C1'");
 
     f.lock().unwrap().errors.insert("search.messages".into(), "not_allowed_token_type".into());
     let err = c.search("x", 10, None).await.unwrap_err();
