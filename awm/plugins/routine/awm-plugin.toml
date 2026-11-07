@@ -9,7 +9,6 @@ version = "0.1.0"
 name = "routine"
 path = "."
 run = "run.sh"
-install = "install.sh"
 
 [[tool]]
 name = "routine"
@@ -21,12 +20,10 @@ tier = "on"
 [[needs.tool]]
 name = "reflection"   # start_other, for the agent that fixes a failed routine
 major = 1
-verbs = ["start_other"]
 
 [[needs.tool]]
 name = "social"       # send, for the operator's Discord DM
 major = 1
-verbs = ["send"]
 
 [needs]
 secrets = []

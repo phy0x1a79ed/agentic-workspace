@@ -44,9 +44,10 @@ frontend/node_modules/
 # through the MCP surface.
 node_modules
 packages/**/dist/
-# Plugin pages build to <plugin>/pages/<name>/dist/ under awm/services/ and
-# awm/plugins/, not committed.
+# Plugin pages build to <plugin>/pages/<name>/dist/ under awm/services/,
+# awm/plugins/ and core/plugins/, not committed.
 awm/*/*/pages/*/dist/
+core/plugins/*/pages/*/dist/
 
 # Python
 __pycache__/

@@ -9,6 +9,7 @@ from ``AWM_APPROVER_DIR/config.json``; see ``settings()``.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
 import os
@@ -16,6 +17,7 @@ import socket
 from pathlib import Path
 from typing import Any
 
+from awm.gatewayclient.adapter import PLUGIN_KEY
 from awm.operations import door
 from awm.operations.api import API_MANIFEST
 from awm.operations.board import BOOK_ID
@@ -103,6 +105,21 @@ def _from_session(args: dict) -> bool:
     return any(args.get(k) for k in ("_caller_pid", "_caller_session_id", "_caller_session"))
 
 
+#: Verbs no plugin may call: the approver's devices and the spawn orders. Any plugin may call any
+#: tool, so these name the callers they admit, and no plugin's needs listed them on release.
+NO_PLUGIN = ("devices", "device_revoke", "order_pull", "order_done")
+
+
+def _refuse_plugins(verb: str, fn: Any) -> Any:
+    takes_as = _takes_as(fn)
+
+    def h(args: dict, as_: str | None = None) -> Any:
+        if plugin := (args or {}).get(PLUGIN_KEY):
+            return {"ok": False, "error": f"{verb} is not open to plugin {plugin!r}"}
+        return fn(args, as_) if takes_as else fn(args)
+    return h
+
+
 def handlers(front: Front, home: Any | None) -> dict[str, Any]:
     out: dict[str, Any] = {v: (lambda verb: lambda args: front.call(verb, args))(v)
                            for v in Front.VERBS}
@@ -128,7 +145,16 @@ def handlers(front: Front, home: Any | None) -> dict[str, Any]:
     out["ops_post"] = ops_post
     out["devices"] = operator_only(lambda a: home.approver.devices())
     out["device_revoke"] = operator_only(lambda a: home.approver.device_revoke(a["device_id"]))
+    for verb in NO_PLUGIN:
+        out[verb] = _refuse_plugins(verb, out[verb])
     return out
+
+
+def _takes_as(fn: Any) -> bool:
+    try:
+        return len(inspect.signature(fn).parameters) >= 2
+    except (TypeError, ValueError):
+        return False
 
 
 async def main() -> None:

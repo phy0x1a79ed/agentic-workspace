@@ -9,7 +9,7 @@ set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 repo="$(cd "$here/../.." && pwd)"
 reg="${AWM_TEST_REGISTRY:-quay.io/hallamlab}"
-bin="${AWM_TEST_BIN:-$repo/core/target/x86_64-unknown-linux-musl/release/awm}"
+bin="${AWM_TEST_BIN:-$("$repo/scripts/rust-build.sh" --target-dir)/x86_64-unknown-linux-musl/release/awm}"
 # The pinned digests, or the images build-images.sh tagged when AWM_TEST_TAG names a tag.
 pin() { sed -n "s/^$1=//p" "$here/images.pin"; }
 if [ -n "${AWM_TEST_TAG:-}" ]; then

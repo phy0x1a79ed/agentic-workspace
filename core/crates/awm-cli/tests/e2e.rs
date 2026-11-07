@@ -110,7 +110,6 @@ service = "caller"
 [[needs.tool]]
 name = "fake"
 major = 1
-verbs = ["echo", "whoami"]
 "#,
     );
     write(&third.join("caller/run.sh"), &format!("exec '{}'\n", fake.display()));
@@ -415,7 +414,7 @@ fn gateway_end_to_end() {
     assert_eq!(who["trust"], "trusted", "{who}");
     let ungated: Value = http().post(format!("{url}/invoke")).header("X-Awm-Session-Pid", "4242")
         .json(&json!({"name": "trilium", "args": {"verb": "note_get"}})).send().unwrap().json().unwrap();
-    assert!(ungated.to_string().contains("Unknown tool"), "a trusted session passes the level gate: {ungated}");
+    assert!(ungated.to_string().contains("trilium not installed"), "a trusted session passes the level gate: {ungated}");
     write(&node.state.join("sessions.json"), "{}");
     let reply = as_session(json!({"verb": "whoami"}));
     let who: Value = serde_json::from_str(reply["result"].as_str().unwrap()).unwrap();
@@ -491,6 +490,7 @@ fn gateway_end_to_end() {
     let (code, out, errout) = cli(&url, &["caller", "call_needed", "--verb", "whoami"]);
     assert!(code == 0, "{errout}");
     assert!(out.contains(r#"\"lane\": \"service\""#) && out.contains(r#"\"trust\": \"trusted\""#), "a service call: {out}");
+    assert!(out.contains(r#"\"plugin\": \"caller\""#), "the call frame names the calling plugin: {out}");
     let forged = http()
         .post(format!("{url}/invoke"))
         .header("X-Awm-Service-Token", "not-a-token")
@@ -498,10 +498,10 @@ fn gateway_end_to_end() {
         .send()
         .unwrap();
     assert_eq!(forged.status().as_u16(), 401, "a wrong service token passed");
-    // A verb the manifest does not list is refused, by the service token (R116 item 3).
+    // A plugin may call any verb of any tool: its needs list no verbs (R116 item 3).
     let (code, out, errout) = cli(&url, &["caller", "call_needed", "--verb", "add", "--args", r#"{"a":1,"b":2}"#]);
-    assert!(code == 0 && out.contains("does not list fake.add"), "an undeclared verb passed: {out} {errout}");
-    // A page is held to its plugin's needs by the path it was served from.
+    assert!(code == 0 && out.contains(r#""result": "3"#), "a plugin's call to an unlisted verb: {out} {errout}");
+    // A page is known by the path it was served from, and calls any tool too.
     let from_page = |tool: &str| {
         http()
             .post(format!("{url}/invoke"))
@@ -513,7 +513,18 @@ fn gateway_end_to_end() {
             .as_u16()
     };
     assert_eq!(from_page("fake"), 200, "a page may call its own tool");
-    assert_eq!(from_page("caller"), 403, "a page called a tool its plugin does not need");
+    assert_eq!(from_page("caller"), 200, "a page may call a tool its plugin does not need");
+    assert_eq!(from_page("nobody"), 404, "a tool no plugin serves is not installed");
+    let page_who: Value = http()
+        .post(format!("{url}/invoke"))
+        .header("Referer", format!("{url}/p/fake/ui/"))
+        .json(&json!({"name": "fake", "args": {"verb": "whoami"}}))
+        .send()
+        .unwrap()
+        .json()
+        .unwrap();
+    let page_who: Value = serde_json::from_str(page_who["result"].as_str().unwrap()).unwrap();
+    assert_eq!(page_who["plugin"], "fake", "a page's call names its plugin: {page_who}");
     let gone = http().post(format!("{url}/svc/fake/fn/echo")).json(&json!({"text": "x"})).send().unwrap();
     assert_eq!(gone.status().as_u16(), 404, "the /svc door still answers");
 
@@ -602,7 +613,7 @@ fn gateway_end_to_end() {
     let deadline = Instant::now() + Duration::from_secs(20);
     let (code, out, errout) = loop {
         let got = cli(&url, &["ext", "echo", "--text", "from outside"]);
-        if got.0 == 0 || Instant::now() >= deadline || !got.2.contains("Unknown tool \"ext\"") {
+        if got.0 == 0 || Instant::now() >= deadline || !got.2.contains("ext not installed") {
             break got;
         }
         std::thread::sleep(Duration::from_millis(200));
@@ -682,7 +693,7 @@ fn gateway_end_to_end() {
     plugin_at(&src.join("fake"), "fake", "fake-again", "");
     let (code, out, _) = cli(&url, &["install", src.join("fake").to_str().unwrap()]);
     assert!(code != 0 && out.contains("already loaded"), "a core plugin's name must not install: {out}");
-    plugin_at(&src.join("inst"), "inst", "inst-three", "\n[[needs.tool]]\nname = \"nobody\"\nverbs = [\"get\"]\n");
+    plugin_at(&src.join("inst"), "inst", "inst-three", "\n[[needs.tool]]\nname = \"nobody\"\n");
     let (code, out, _) = cli(&url, &["install", src.join("inst").to_str().unwrap()]);
     assert!(code != 0 && out.contains("nobody"), "{out}");
     let (code, out, _) = cli(&url, &["inst-two", "echo", "--text", "still here"]);
@@ -901,7 +912,7 @@ fn a_singleton_admits_only_its_callers() {
     assert!(listed.contains(&"open") && !listed.contains(&"vault"), "{listed:?}");
     for verb in ["describe", "whoami"] {
         let (status, body) = call(&host.url, &headers(&host_state, from("outsider")), "vault", verb, None);
-        assert_eq!((status, body["detail"].as_str()), (404, Some("Unknown tool \"vault\"")), "{verb}: {body}");
+        assert_eq!((status, body["detail"].as_str()), (404, Some("vault not installed")), "{verb}: {body}");
     }
     let (status, body) = call(&host.url, &headers(&host_state, from("ally")), "vault", "whoami", None);
     assert_eq!(status, 200, "{body} {}", fail());
@@ -935,7 +946,7 @@ fn a_singleton_admits_only_its_callers() {
         (out.status.success(), serde_json::from_slice::<Value>(&out.stdout).unwrap_or(Value::Null))
     };
     let (ok_, reply) = door("outsider");
-    assert_eq!((ok_, reply["error"].as_str()), (false, Some("Unknown tool \"vault\"")), "{reply}");
+    assert_eq!((ok_, reply["error"].as_str()), (false, Some("vault not installed")), "{reply}");
     let (ok_, reply) = door("ally");
     assert!(ok_, "{reply} {}", fail());
     let who: Value = serde_json::from_str(reply["result"].as_str().unwrap()).unwrap();
@@ -978,7 +989,7 @@ fn a_node_outside_relays_callers_is_issued_no_slot() {
         (out.status.success(), serde_json::from_slice::<Value>(&out.stdout).unwrap_or(Value::Null))
     };
     let (ok, reply) = door("outsider", r#"{"name": "relay", "args": {"verb": "issue", "args": {}}}"#);
-    assert_eq!((ok, reply["error"].as_str()), (false, Some("Unknown tool \"relay\"")), "{reply}");
+    assert_eq!((ok, reply["error"].as_str()), (false, Some("relay not installed")), "{reply}");
     let (ok, reply) = door("mizar", r#"{"name": "relay", "args": {"verb": "whoami"}}"#);
     assert!(ok, "{reply} deneb: {}", log(&deneb_state));
     let who: Value = serde_json::from_str(reply["result"].as_str().unwrap()).unwrap();
@@ -1012,7 +1023,7 @@ fn fake_door(base: &Path, from: &str, host: &str, host_state: &Path, host_url: &
 fn ops_plugin(state: &Path) {
     let core = state.parent().unwrap().join("core/ops");
     write(&core.join("awm-plugin.toml"),
-          "[plugin]\nname = \"ops\"\n\n[[service]]\nname = \"ops\"\n\n[[tool]]\nname = \"ops\"\n\n[[needs.tool]]\nname = \"trilium\"\nverbs = [\"whoami\"]\n");
+          "[plugin]\nname = \"ops\"\n\n[[service]]\nname = \"ops\"\n\n[[tool]]\nname = \"ops\"\n\n[[needs.tool]]\nname = \"trilium\"\n");
     write(&core.join("run.sh"), &format!("export FAKE_TOOL=ops\nexec '{}'\n", fake_bin().display()));
 }
 
@@ -1105,7 +1116,7 @@ fn a_caller_reaches_a_peers_singleton_through_its_door() {
     assert!(!table(&shogun.url).iter().any(|t| t["name"] == "trilium"), "{:?}", table(&shogun.url));
     for peer in [None, Some("deneb")] {
         let (status, body) = invoke(&shogun.url, &[], "trilium", "whoami", peer);
-        assert_eq!((status, body["detail"].as_str()), (404, Some("Unknown tool \"trilium\"")), "{body}");
+        assert_eq!((status, body["detail"].as_str()), (404, Some("trilium not installed")), "{body}");
     }
     assert!(!shogun_door.args.exists(), "shogun never dials the door");
     let refused = plugins(&shogun.url)["refused"].clone();
@@ -1121,7 +1132,7 @@ fn a_caller_reaches_a_peers_singleton_through_its_door() {
     let who = result(&body);
     assert_eq!((who["caller"]["node"].as_str(), who["caller"]["origin"].as_str()), (Some("mizar"), Some("alcor")), "{who}");
     let (status, body) = invoke(&mizar.url, &edge_from(&mizar_state, json!({"node": "shogun", "lane": "edge", "trust": "trusted"})), "trilium", "whoami", None);
-    assert_eq!((status, body["detail"].as_str()), (404, Some("Unknown tool \"trilium\"")), "{body}");
+    assert_eq!((status, body["detail"].as_str()), (404, Some("trilium not installed")), "{body}");
     // deneb checks the origin a door call carries, too.
     let out = Command::new(awm_bin())
         .args(["port", "--key", "awm:mizar:service"])
@@ -1134,7 +1145,7 @@ fn a_caller_reaches_a_peers_singleton_through_its_door() {
         .unwrap();
     let reply: Value = serde_json::from_slice(&out.stdout).unwrap_or(Value::Null);
     assert_eq!(reply["ok"], false, "{reply}");
-    assert!(reply["error"].as_str().unwrap_or_default().contains("Unknown tool"), "{reply}");
+    assert_eq!(reply["error"].as_str(), Some("trilium not installed"), "{reply}");
     drop((mizar, shogun, alcor, deneb));
 }
 
@@ -1319,8 +1330,17 @@ fn isolated_door_end_to_end() {
     assert_eq!(rpc(&door, Some("good"), "notifications/initialized", json!({})).0, 202);
 
     // tools/list shows only the whitelist under the ceiling: no harness-cc, no awm, no peers.
-    let (_, list) = rpc(&door, Some("good"), "tools/list", json!({}));
-    let tools = list["result"]["tools"].as_array().cloned().unwrap_or_default();
+    // The fake plugin registers its verbs after the gateway is up, so wait for them.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let (list, tools) = loop {
+        let (_, list) = rpc(&door, Some("good"), "tools/list", json!({}));
+        let tools = list["result"]["tools"].as_array().cloned().unwrap_or_default();
+        let registered = tools.first().and_then(|t| t["inputSchema"]["properties"]["verb"]["enum"].as_array()).is_some_and(|v| v.len() > 1);
+        if registered || Instant::now() > deadline {
+            break (list, tools);
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    };
     let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
     assert_eq!(names, vec!["fake"], "{list}");
     let verbs = &tools[0]["inputSchema"]["properties"]["verb"]["enum"];
@@ -1390,4 +1410,129 @@ fn wants_follows_the_install_config() {
     write(&tmp.path().join("config.toml"), "plugins = [\"journal\"]\n");
     assert_eq!(wants("journal"), 0);
     assert_eq!(wants("search"), 1);
+}
+
+/// Any plugin may call any tool, so auth names the plugins that may read its secrets. The
+/// gateway names the calling plugin in the frame, and the Python adapter hands it to auth as
+/// `_caller_plugin`: an edge front reads `edge_material`, any other plugin is refused, and the
+/// CLI, which is no plugin, reads it.
+#[test]
+fn auth_gives_edge_material_only_to_an_edge_front_or_no_plugin() {
+    let Some(py) = awm_python() else {
+        eprintln!("no awm conda env (AWM_CONDA_ROOT): skipping the Python auth service");
+        return;
+    };
+    let tmp = tempfile::tempdir().unwrap();
+    let base = tmp.path();
+    let (core, state, ws) = (base.join("core"), base.join("state"), base.join("ws"));
+    std::fs::create_dir_all(&ws).unwrap();
+    std::fs::create_dir_all(&core).unwrap();
+    let (fake, repo) = (fake_bin(), repo());
+    std::os::unix::fs::symlink(repo.join("awm/services/auth"), core.join("auth")).unwrap();
+    // reflection is the fake: it answers session_of, so the CLI runs as the user's shell.
+    write(&core.join("reflection/awm-plugin.toml"), "[plugin]\nname = \"reflection\"\n\n[[service]]\nname = \"reflection\"\n\n[[tool]]\nname = \"reflection\"\n");
+    write(&core.join("reflection/run.sh"), &format!("export FAKE_TOOL=reflection\nexec '{}'\n", fake.display()));
+    // Two fake plugins that need auth: an edge front, and one that is not.
+    for (plugin, tool) in [("httpsfront", "front"), ("nosy", "nosy")] {
+        write(
+            &core.join(format!("{plugin}/awm-plugin.toml")),
+            &format!("[plugin]\nname = \"{plugin}\"\n\n[[service]]\nname = \"{plugin}\"\n\n[[tool]]\nname = \"{tool}\"\n\n[[needs.tool]]\nname = \"auth\"\nmajor = 1\n"),
+        );
+        write(&core.join(format!("{plugin}/run.sh")), &format!("export FAKE_TOOL={tool}\nexec '{}'\n", fake.display()));
+    }
+    let mut path = vec![repo.join("awm/services/auth")];
+    path.extend(std::fs::read_dir(repo.join("awm/service_components")).unwrap().flatten().map(|c| c.path()));
+    let path = path.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(":");
+    write(
+        &state.join("config.toml"),
+        &format!(
+            "node = \"e2e\"\nlisten = \"127.0.0.1:0\"\nworkspace = \"{}\"\ncore_roots = [\"{}\"]\ntool_wait_s = 90\nsession_cache_s = 0\n[env]\nAWM_PYTHON = \"{}\"\nPYTHONPATH = \"{path}\"\nPYTHONDONTWRITEBYTECODE = \"1\"\n",
+            ws.display(),
+            core.display(),
+            py.display()
+        ),
+    );
+    let gw = Gateway::start(&state);
+    let url = gw.url.clone();
+    let fail = || format!("{}\n--- auth log\n{}", log(&state), std::fs::read_to_string(state.join("logs/auth.log")).unwrap_or_default());
+
+    let (code, out, errout) = cli(&url, &["nosy", "call_needed", "--verb", "edge_material"]);
+    assert!(out.contains("not open to plugin") && out.contains("nosy") && !out.contains("session_ttl_seconds"),
+        "a plugin outside the fronts read edge_material: {code} {out} {errout} {}", fail());
+    let (code, out, errout) = cli(&url, &["front", "call_needed", "--verb", "edge_material"]);
+    assert!(code == 0 && out.contains("session_ttl_seconds"), "an edge front was refused: {out} {errout} {}", fail());
+    let (code, out, errout) = cli(&url, &["front", "call_needed", "--verb", "device_list"]);
+    assert!(out.contains("not open to plugin") && !out.contains("tokens"), "a plugin listed device tokens: {code} {out} {errout}");
+    let (code, out, errout) = cli(&url, &["auth", "edge_material"]);
+    assert!(code == 0 && out.contains("session_ttl_seconds"), "the CLI was refused: {out} {errout} {}", fail());
+    assert!(gw.stop().success());
+}
+
+/// A plugin subscribed to the gateway's own `awm/plugins` topic hears each change a reload
+/// makes: one event per plugin, with its install stamp and the root it loaded from.
+#[test]
+fn a_plugin_hears_the_plugin_lifecycle() {
+    let tmp = tempfile::tempdir().unwrap();
+    let base = tmp.path();
+    let (core, third, state) = (base.join("core"), base.join("third"), base.join("state"));
+    let fake = fake_bin();
+    write(&core.join("listener/awm-plugin.toml"), "[plugin]\nname = \"listener\"\n\n[[service]]\nname = \"listener\"\n\n[[tool]]\nname = \"listener\"\n");
+    write(&core.join("listener/run.sh"), &format!("export FAKE_TOOL=listener FAKE_SUBSCRIBE=awm/plugins\nexec '{}'\n", fake.display()));
+    std::fs::create_dir_all(&third).unwrap();
+    write(&state.join("config.toml"), &format!(
+        "node = \"e2e\"\nlisten = \"127.0.0.1:0\"\nworkspace = \"{}\"\ncore_roots = [\"{}\"]\nplugin_roots = [\"{}\"]\ntool_wait_s = 30\nsession_cache_s = 0\n",
+        base.display(), core.display(), third.display()));
+    let gw = Gateway::start(&state);
+    let url = gw.url.clone();
+    let heard = || -> Value {
+        let (code, out, errout) = cli(&url, &["listener", "heard"]);
+        assert_eq!(code, 0, "listener heard: {out} {errout}\n{}", log(&state));
+        serde_json::from_str(&out).unwrap()
+    };
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while heard()["subscribed"] != true {
+        assert!(Instant::now() < deadline, "the listener never subscribed: {}", log(&state));
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let reload = || {
+        let (code, out, errout) = cli(&url, &["reload"]);
+        assert_eq!(code, 0, "awm reload: {out} {errout}");
+    };
+    // The `n`th payload the listener heard, once it arrives.
+    let nth = |n: usize| -> Value {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            let got = heard();
+            if let Some(p) = got["payloads"].get(n) {
+                return p.clone();
+            }
+            assert!(Instant::now() < deadline, "event {n} never arrived: {got}\n{}", log(&state));
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    };
+    assert_eq!(heard()["payloads"], json!([]), "a first boot reports nothing");
+
+    let hot = third.join("hot");
+    write(&hot.join("awm-plugin.toml"), "[plugin]\nname = \"hot\"\n\n[[service]]\nname = \"hot\"\n\n[[tool]]\nname = \"hot\"\n");
+    write(&hot.join("run.sh"), &format!("export FAKE_TOOL=hot\nexec '{}'\n", fake.display()));
+    reload();
+    let installed = nth(0);
+    assert_eq!((&installed["plugin"], &installed["event"]), (&json!("hot"), &json!("installed")), "{installed}");
+    assert_eq!(installed["root"], json!(third.display().to_string()), "{installed}");
+    assert!(installed["version"].as_str().is_some_and(|v| !v.is_empty()), "{installed}");
+
+    write(&hot.join("notes.txt"), "a change to the folder moves its stamp\n");
+    reload();
+    let updated = nth(1);
+    assert_eq!((&updated["plugin"], &updated["event"]), (&json!("hot"), &json!("updated")), "{updated}");
+    assert_ne!(updated["version"], installed["version"], "{updated}");
+
+    std::fs::remove_dir_all(&hot).unwrap();
+    reload();
+    let removed = nth(2);
+    assert_eq!((&removed["plugin"], &removed["event"], &removed["version"]), (&json!("hot"), &json!("removed"), &updated["version"]), "{removed}");
+    reload();
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(heard()["payloads"].as_array().map(Vec::len), Some(3), "a reload that changes nothing reports nothing");
+    assert!(gw.stop().success());
 }

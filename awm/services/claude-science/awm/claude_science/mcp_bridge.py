@@ -7,8 +7,8 @@ minimal JSON-RPC endpoint speaking MCP's ``initialize`` /
 ``GET /tools`` and ``POST /invoke``. Its loopback listener is the service's
 ``mount``, which the gateway serves at ``/s/claude-science/``, so httpsfront
 gives it TLS and the edge session and there is no second listener to secure.
-Each call carries the service token, so the gateway also holds it to the verbs
-the manifest's ``[[needs.tool]]`` declares.
+Each call carries the service token, so the gateway stamps this plugin as its
+caller. The allowlist is the only check on which verbs it reaches.
 
 **This is not the Claude Science workbench's connector, and cannot be.** It was
 built to be one, on the reasoning that a *remote* connector is called by the app
@@ -66,9 +66,6 @@ PROTOCOL_VERSION = "2025-06-18"
 #:
 #: Excluded on purpose, and worth naming so the omissions read as decisions:
 #:   ssh / vpn / 2fa / social  — act on the fleet's credentials and channels
-#:
-#: Every verb here must also be in the manifest's ``[[needs.tool]]``: the gateway
-#: refuses a verb the plugin did not declare.
 #:
 #: WARNING for anyone widening this via CLAUDE_SCIENCE_MCP_ALLOW: the catalog
 #: below is read from the EXPANDED ``GET /tools``, which is unfiltered by

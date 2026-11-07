@@ -78,11 +78,11 @@ The control plane binds loopback only. A plugin proves itself with its service t
 
 Each plugin folder declares itself in `awm-plugin.toml`: its services, the tools it publishes by unique name with major and tier, its pages, and what it needs (secrets, network, platform, the tools and contracts it calls). The plugin contract defines the format (`docs/redux/drafts/plugin-contract.md`). A manifest names no host. The install config places plugins on nodes.
 
-The loader (`loader.rs`) scans the core roots first, then the plugin roots, then `<AWM_DIR>/installed/`. The core roots default to the tree's `awm/services` and `awm/plugins` under the workspace (`config.rs` `TREE_ROOTS`), so a node's `config.toml` names only the roots outside the tree. The first root that holds a name wins, and a later folder of that name is reported as shadowed. It refuses a plugin for bad TOML or an unknown key, a path outside its folder, a missing `run.sh`, a wrong platform, a tool another plugin serves, a reserved name outside a core root, or a need nothing satisfies. A refusal cascades to every plugin that needs the refused one. `awm plugins` lists what loaded, what was refused and why.
+The loader (`loader.rs`) scans the core roots first, then the plugin roots, then `<AWM_DIR>/installed/`. The core roots default to the tree's `core/plugins`, `awm/services` and `awm/plugins` under the workspace (`config.rs` `TREE_ROOTS`), so a node's `config.toml` names only the roots outside the tree. The first root that holds a name wins, and a later folder of that name is reported as shadowed. It refuses a plugin for bad TOML or an unknown key, a path outside its folder, a missing `run.sh`, a wrong platform, a tool another plugin serves, a reserved name outside a core root, or a need nothing satisfies. A refusal cascades to every plugin that needs the refused one. `awm plugins` lists what loaded, what was refused and why.
 
 - **Reserved names.** `config.rs` `DEFAULT_RESERVED` plus every singleton tool in the edge list. A node that does not host a singleton can therefore never serve it locally.
 - **Enable state.** `<AWM_DIR>/enabled.json` maps a service to true or false and overrides its profile. A service absent from it follows its profile. A disabled service's tools leave the catalog.
-- **The guard.** `test/contract/test_plugin_contract.py` walks the tree and fails a manifest that breaks the contract, a secret the code reads but `[needs]` does not declare, and an import of another plugin's code. `test/contract/test_plugin_calls.py` replays every plugin's calls against the manifests. A plugin whose calls change changes its manifest in the same commit.
+- **The guard.** `test/contract/test_plugin_contract.py` walks the tree and fails a manifest that breaks the contract, a secret the code reads but `[needs]` does not declare, and an import of another plugin's code.
 
 **CAUTION** A plugin's `install.sh` and `run.sh` find their own folder from `$0`, and awm's tree from `$AWM_ROOT`. A path such as `$WS/awm/services/<name>` breaks the plugin the moment it loads from a root outside the tree.
 
@@ -150,12 +150,11 @@ A cancel travels one hop at a time. When the gateway drops a call, it sends `{ki
 
 ## Verb gating
 
-`Gateway::dispatch` (`gateway.rs`) applies four gates, in this order, to every call:
+`Gateway::dispatch` (`gateway.rs`) applies three gates, in this order, to every call:
 
 1. **Mode.** A session that cch started carries a mode, and `modes.rs` lists what each mode may call. The one restricted mode is `unknown`: it may run `reflection compact` and `whoami`, name no `peer` and open no stream. Every other mode, `worker` included, is unrestricted.
 2. **Level.** `awm_trust::call_refusal` (`core/crates/awm-trust/src/trust.rs`) holds a cooperative or untrusted caller to its list (`docs/redux/channels.md` R125). A trusted caller passes.
-3. **Needs.** A plugin's call, known by its service token or a page's `Referer`, runs only its own tools, `awm`, and the tools and verbs its `[[needs.tool]]` and `[[needs.contract]]` list. Streams follow the same lists.
-4. **Private marks.** `privacy.rs` refuses a call from another node that names a project, scope or path this node marks private (`FEDERATION.md` § *Private projects*). It filters emits and session init frames the same way.
+3. **Private marks.** `privacy.rs` refuses a call from another node that names a project, scope or path this node marks private (`FEDERATION.md` § *Private projects*). It filters emits and session init frames the same way.
 
 The native writes (`reload`, `install`, `uninstall`, the service lifecycle and `config_set`) also need a trusted caller on this node.
 
@@ -196,7 +195,7 @@ The gateway appends each event to `<AWM_DIR>/usage/<YYYY-MM-DD>.jsonl` and prune
 
 `search` owns the `search` tool and the archive: a registry of plug-ins, each index source in its own LanceDB store. Agents get one search over everything the swarm knows, on this node and across its edges, and a new source joins without a change to `search`. `awm/services/search/INSTALL.md` § *Joining the archive* is the contract a plug-in meets. `docs/search-opt/` holds the spec and the engine's decisions. This section holds the reasons.
 
-- **Plug-ins.** A service joins with one `[[service.archive]]` table per source in its manifest. A caller names the source as `name`, or `name@node` on another node. The `mode` is `index` or `live`. `awm services` lists the tables under `archive` in each row, and `search` reads them there.
+- **Plug-ins.** A service joins with one `[[service.archive]]` table per source in its manifest. A caller names the source as `name`, or `name@node` on another node. The `mode` is `index` or `live`. `awm services` lists the tables under `archive` in each row, and `search` reads them there. `/hub/plugins` (`awm plugins`) lists every plugin's tables under `archives`, as `{plugin, service, archive}`, whether the plugin loaded, was skipped or was refused. It holds the fields of a kind that only another node serves.
 - **Declared fields.** Each table declares its fields with a class and the fields a hit shows. The declaration is the query schema, so a new field needs no code in `search`. A change to it rebuilds the source.
 - **index mode.** The service's hidden `<tool>_export` verb is a change feed: the entries changed after a cursor, with deletions. `search` stores the cursor per page, so a read costs only the changes since the last one. A push topic, when the table names one, brings the next read forward, and an hourly read runs regardless.
 - **The awm source.** `search` indexes this node's own tools, one entry per verb, so an agent finds a verb by what it does. The gateway's `describe` is the one copy of each verb's text: the feed reads it, and `get` returns it, so the index never answers with a stale schema.
@@ -353,4 +352,4 @@ It reports pass or fail per dist and exits non-zero if any failed. The `contract
 - Make cross-dist imports in a test lazy, inside a fixture or function. A top-level cross-dist import brings back the namespace shadowing the runner avoids.
 - Add a new plugin with tests to both `DISTS` and `ORDER` in the runner. A dist missing from `DISTS` reports `unknown dist` and never runs. `reflection` sat that way for months.
 
-Run the Rust tests with `scripts/rust-build.sh test --workspace`, which runs cargo in a container. `test/install/run.sh` installs awm in a rootless container and joins it to a fleet. Run it when a change touches install, reload or the isolated door.
+Run the Rust tests with `scripts/rust-build.sh test --workspace`, which runs cargo in a container. Its build output goes to `~/.cache/awm-target/<worktree>`, outside the worktree, because each target holds 4 to 5 GB. Run `scripts/rust-build.sh --gc` to list the target dirs of worktrees with no live session, and add `--yes` to delete them. `test/install/run.sh` installs awm in a rootless container and joins it to a fleet. Run it when a change touches install, reload or the isolated door.

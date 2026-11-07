@@ -1,6 +1,8 @@
 [workspace]
 resolver = "2"
-members = ["crates/*"]
+# crates/* and plugins/*, as one glob: cargo reads a glob that matches nothing as a literal
+# path, so a separate "plugins/*" fails while core/plugins is empty or missing.
+members = ["[cp]*/*"]
 
 [workspace.package]
 version = "0.1.0"
@@ -36,6 +38,7 @@ awm-mcp = { path = "crates/awm-mcp" }
 awm-cli = { path = "crates/awm-cli" }
 awm-trust = { path = "crates/awm-trust" }
 awm-edge = { path = "crates/awm-edge" }
+awm-plugin-sdk = { path = "crates/awm-plugin-sdk" }
 
 [profile.release]
 opt-level = 3

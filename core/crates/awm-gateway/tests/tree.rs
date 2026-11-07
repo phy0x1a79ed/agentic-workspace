@@ -8,12 +8,13 @@ use awm_gateway::loader::{load, LoadInput};
 
 #[test]
 fn every_plugin_of_the_tree_loads() {
-    let awm = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../awm");
-    let roots = awm_gateway::config::tree_roots(&awm);
+    let tree = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");
+    let roots = awm_gateway::config::tree_roots(&tree);
     let profiles = ["claude-science", "gamebot"].map(String::from);
     let reserved: Vec<String> = awm_gateway::config::DEFAULT_RESERVED.iter().map(|s| s.to_string()).collect();
     let got = load(&LoadInput {
         wants: &|_| true,
+        wants_service: &|_, _| true,
         core_roots: &roots,
         plugin_roots: &[],
         profiles: &profiles,
@@ -22,6 +23,7 @@ fn every_plugin_of_the_tree_loads() {
         peer_tools: &BTreeMap::new(),
         doors: &[],
         elsewhere: &BTreeMap::new(),
+        failed_installs: &BTreeMap::new(),
     });
     let refused: Vec<String> = got.refused.iter().map(|r| format!("{}: {}", r.plugin, r.reason)).collect();
     assert!(refused.is_empty(), "refused:\n{}", refused.join("\n"));
@@ -32,12 +34,13 @@ fn every_plugin_of_the_tree_loads() {
 /// no trilium plugin here and the door unasked, no plugin of the tree is refused.
 #[test]
 fn a_singleton_behind_a_door_strands_no_plugin() {
-    let awm = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../awm");
-    let roots = awm_gateway::config::tree_roots(&awm);
+    let tree = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");
+    let roots = awm_gateway::config::tree_roots(&tree);
     let profiles = ["claude-science", "gamebot"].map(String::from);
     let reserved: Vec<String> = awm_gateway::config::DEFAULT_RESERVED.iter().map(|s| s.to_string()).collect();
     let got = load(&LoadInput {
         wants: &|p| p != "trilium",
+        wants_service: &|_, _| true,
         core_roots: &roots,
         plugin_roots: &[],
         profiles: &profiles,
@@ -46,6 +49,7 @@ fn a_singleton_behind_a_door_strands_no_plugin() {
         peer_tools: &BTreeMap::new(),
         doors: &["trilium".to_string()],
         elsewhere: &BTreeMap::new(),
+        failed_installs: &BTreeMap::new(),
     });
     let refused: Vec<String> = got.refused.iter().map(|r| format!("{}: {}", r.plugin, r.reason)).collect();
     assert!(refused.is_empty(), "refused:\n{}", refused.join("\n"));
@@ -59,11 +63,12 @@ fn a_singleton_behind_a_door_strands_no_plugin() {
 #[test]
 fn denebs_plugins_load_with_no_door_and_no_peer() {
     const DENEB: [&str; 7] = ["auth", "board", "fileviewer", "httpsfront", "relay", "trilium", "zotero"];
-    let awm = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../awm");
-    let roots = awm_gateway::config::tree_roots(&awm);
+    let tree = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");
+    let roots = awm_gateway::config::tree_roots(&tree);
     let reserved: Vec<String> = awm_gateway::config::DEFAULT_RESERVED.iter().map(|s| s.to_string()).collect();
     let got = load(&LoadInput {
         wants: &|p| DENEB.contains(&p),
+        wants_service: &|_, _| true,
         core_roots: &roots,
         plugin_roots: &[],
         profiles: &[],
@@ -72,6 +77,7 @@ fn denebs_plugins_load_with_no_door_and_no_peer() {
         peer_tools: &BTreeMap::new(),
         doors: &[],
         elsewhere: &BTreeMap::new(),
+        failed_installs: &BTreeMap::new(),
     });
     let refused: Vec<String> = got.refused.iter().map(|r| format!("{}: {}", r.plugin, r.reason)).collect();
     assert!(refused.is_empty(), "refused:\n{}", refused.join("\n"));
