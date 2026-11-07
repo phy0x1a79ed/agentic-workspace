@@ -206,7 +206,7 @@ def test_start_returns_the_contract_and_writes_lineage(home, launched):
     assert rec["parent"] == PARENT_JOB and rec["caller"] == "local"
     assert rec["mode"] == "rep" and rec["project"] == "awm" and rec["scope"] == "demo"
     assert rec["remote_control"] == "demo" and rec["started_at"]
-    assert launched[0]["prompt"] == "do it"
+    assert "\n\ndo it\n\n" in launched[0]["prompt"]
 
 
 def test_start_calls_the_shared_launcher_with_cx_settings(home, launched):
@@ -1304,6 +1304,19 @@ def test_a_job_lists_its_brief_before_its_launch_returns(home, monkeypatch):
     assert rows and rows[0]["brief"] is True and rows[0]["mode"] == "worker"
 
 
+def test_a_briefed_prompt_carries_the_common_prefix_and_retire_suffix(home, launched):
+    start({**BASE, "prompt": "fix the deploy", "started_by": "the deploy of awm"})
+    prompt = launched[0]["prompt"]
+    assert prompt.startswith("Your task, from the deploy of awm:\n\nfix the deploy")
+    assert "sign off with the `retire` skill" in prompt
+    assert prompt.endswith("message no other session.")
+
+
+def test_an_unbriefed_prompt_is_left_as_given(home, launched):
+    start({**BASE, "prompt": "fix the deploy", "brief": False})
+    assert launched[0]["prompt"] == "fix the deploy"
+
+
 def test_brief_false_leaves_the_brief_out(home, launched):
     start({**BASE, "brief": False})
     assert system_prompt(launched[0]) is None
@@ -1853,7 +1866,7 @@ def test_a_replacing_start_carries_the_old_tail_and_retires_the_old_job(home, la
     out = start({**BASE, "prompt": "carry on", "replaces": "dddddddd"})
     assert out["ok"] is True
     prompt = launched[0]["prompt"]
-    assert prompt.startswith("carry on") and "job dddddddd" in prompt and "on step 3" in prompt
+    assert "carry on" in prompt and "job dddddddd" in prompt and "on step 3" in prompt
     assert stops == ["dddddddd"]
     assert json.loads((home.jobs / "dddddddd" / "state.json").read_text())["state"] == "stopped"
     from awm.cch import lifecycle
