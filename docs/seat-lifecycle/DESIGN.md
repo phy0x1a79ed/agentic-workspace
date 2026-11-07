@@ -47,10 +47,11 @@ The old keeper (`keeper.py`) merges into seats. One seats component in social ow
 
 ## Homes and journals
 
-1. Seat work lives in `agentic-commons`, an awm project apart from awm and metasmith (redux `users.md` R128). A DM seat's scope is `seats/<person-slug>`. A channel seat has its own scope under `seats/`.
-2. The agent starts in its seat's scope and reads that scope's journals for context when it needs them. A task stays resumable after its session is gone.
-3. Every seat journal carries the tags `journal`, `seat` and `user:<person-slug>`. A person's continuity across seats comes from the user tag.
-4. An agent journals after each result or decision it sends, and once at retire.
+1. Seat work lives in `agentic-commons`, an awm project apart from awm and metasmith (redux `users.md` R128). Its one main checkout holds every seat folder at `seats/<slug>/`, a gitignored local git repo with DVC and no remote.
+2. Each seat folder is registered as scope `seats/<slug>` with `scope ensure`, its worktree set to the folder. The journal refuses posts to an unregistered scope. `scripts/new-seat.sh <slug>` makes the folder and registers it. Run it on the seat's node before the first start.
+3. The agent starts in the main checkout with its cwd at `seats/<slug>/` and claims no scope, because many seats share the checkout. It reads its scope's journals for context when it needs them. A task stays resumable after its session is gone.
+4. Every seat journal carries the tags `journal`, `seat` and `user:<person-slug>`. A person's continuity across seats comes from the user tag.
+5. An agent journals after each result or decision it sends, and once at retire.
 
 ## The pushed line
 
@@ -81,8 +82,7 @@ The old keeper (`keeper.py`) merges into seats. One seats component in social ow
 2. The Discord `/new-agent` command goes. The board's new-agent button (trilium-design) takes over.
 3. Remote Control on and off for seats belongs to the fleet dashboard (trilium-design/interview).
 
-## State on 2026-11-06
+## State on 2026-11-07
 
-- Seats on altair are paused through the weekend. Whether the Python seats return before the Rust social lands is open on 2026-11-09. The pause and how to undo it are in journal 214c7abd. The backups are at `~/.local/share/awm/seat-pause-backup` on altair.
-- Temporary seats run for Kalen (job 9e22f611) and Patrik Star (job a1406294) on the old code.
-- `agentic-commons` exists only as a draft template at `docs/redux/drafts/agentic-commons`.
+- Seats on altair are paused until the Rust social port (plugin-redux) lands. The pause and how to undo it are in journal 214c7abd. The backups are at `~/.local/share/awm/seat-pause-backup` on altair.
+- No temporary seat runs. `agentic-commons` exists on altair with 15 seeded seats. The cutover steps are in `handoff/README.md`.
