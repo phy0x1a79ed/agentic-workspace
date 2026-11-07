@@ -93,7 +93,7 @@ pub fn proxy_env(port: u16, exempt: &[String]) -> Vec<(&'static str, String)> {
 
 /// Why `plugin` may not reach `host:port`, or None when its manifest lists it.
 pub fn refusal(gw: &Gateway, plugin: &str, host: &str, port: u16) -> Option<String> {
-    let exempt = exempt_hosts(&gw.cfg.edges_path(&gw.state), &gw.hub_url());
+    let exempt = exempt_hosts(&gw.cfg().edges_path(&gw.state), &gw.hub_url());
     if exempt.iter().any(|h| h.eq_ignore_ascii_case(host)) {
         return None;
     }

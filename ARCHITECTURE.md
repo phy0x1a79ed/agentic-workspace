@@ -37,7 +37,7 @@ A plugin keeps its state in SQLite, so the gateway's respawn brings it back whol
 
 **CAUTION** A keeper must read `daemon_down` and `daemon.state` as "wait", never as "the session is gone". Stopping a pinned job runs `claude rm` and loses its conversation. That reading is what destroyed a seat on 2026-10-20.
 
-The gateway's crash-loop breaker lives in memory on purpose: `awm services start` is the operator's way back. A keeper's breaker persists in its plugin's DB, because a deploy restarts the gateway and must not reset a session's restart budget.
+The gateway's crash-loop breaker persists in `<AWM_DIR>/services.json`, because a gateway restart must not reset a crash-looping plugin's budget. `awm services start` is the operator's way back. A keeper's breaker persists in its plugin's DB for the same reason.
 
 ### The journal is the channel
 
@@ -102,13 +102,13 @@ The owning repo provides the rest of the contract. A Python plugin ships an `ins
 
 ### Installed plugins
 
-`awm install <source>…` installs or updates plugins as one change. A source is a folder or `git:<url>@<40-hex commit>`. A git source needs a passkey grant: an `operations approval_request` of kind `plugin_commits`, which the gateway checks against `AWM_APPROVER_GRANT_PUBKEY`. The plugins land in `<AWM_DIR>/installed/<name>`, pinned in `installed.toml`. When the reload refuses any of them, the whole change rolls back. `awm reload` applies a changed tree with no gateway restart.
+`awm install <source>…` installs or updates plugins as one change. A source is a folder or `git:<url>@<40-hex commit>`. A git source needs a passkey grant: an `operations approval_request` of kind `plugin_commits`, which the gateway checks against `AWM_APPROVER_GRANT_PUBKEY`. The plugins land in `<AWM_DIR>/installed/<name>`, pinned in `installed.toml`. When the reload refuses any of them, the whole change rolls back. `awm reload` applies a changed tree with no gateway restart and restarts only the plugins the caller names, and `install` names the plugins it replaced. `awm deploy --reload-restart <names>` hands its names to `awm reload --restart`. When the unit restarts too, the names restart after the new gateway answers.
 
 ### The service contract
 
 The gateway starts each service as `bash run.sh` with a cleared environment. It passes an allow-list of inherited variables, `config.toml` `[env]`, the secrets the manifest declares, the proxy variables of § *Egress*, and these: `AWM_HUB_URL`, `AWM_SERVICE_NAME`, `AWM_PLUGIN`, `AWM_NODE_NAME`, `AWM_DIR`, `AWM_PORT`, `AWM_WORKSPACE` and `AWM_HUB_TOKEN_FILE`. `supervisor.rs` `spawn` is the list.
 
-`AWM_HUB_TOKEN_FILE` names a fresh service token per spawn, at `<AWM_DIR>/tokens/<service>.token`. The service registers with it as `X-Awm-Service-Token`, opens its control WebSocket and sends `ready` with its API manifest. Every call it makes to `/invoke` carries the same token, which tells the gateway which plugin is calling.
+`AWM_HUB_TOKEN_FILE` names a fresh service token per spawn, at `<AWM_DIR>/tokens/<service>.token`. An adopted service (§ *Service lifecycle*) keeps the token of its spawn. The service registers with it as `X-Awm-Service-Token`, opens its control WebSocket and sends `ready` with its API manifest. Every call it makes to `/invoke` carries the same token, which tells the gateway which plugin is calling.
 
 - **Python services** build on `awm.gatewayclient.ServiceAdapter`, which handles register, ready, dispatch and reconnect. `call`, `subscribe` and `acquire_lease` take `peer=<node>` to run across an edge. `awm/services/dev/` is the smallest complete example to copy.
 - **Per-service DBs.** `awm.persistence.databases` gives each service a DB at `<AWM_DIR>/services/<svc>/<svc>.db`. Each service seeds itself through its own `seed.py`.
@@ -143,7 +143,7 @@ An unanswered request is not an unreachable daemon. Each number answers its own 
 
 1. A function's `"timeout"` is how long the verb may run, 120 s by default. The gateway answers 504 past it.
 2. `tool_wait_s` (10 s) is how long a call waits for a tool whose service is still starting. The gateway answers 503 past it.
-3. `reconnect_window_s` (10 s) is how long a service may stay off its control socket before the supervisor restarts it.
+3. `reconnect_window_s` (10 s) is how long a service the gateway spawned may stay off its control socket before the supervisor restarts it. `adopt_window_s` (60 s) is the same limit for a service the gateway adopted, and it matches the adapter's give-up deadline.
 4. An edge call times out at 60 s in `awm-edge`.
 
 A cancel travels one hop at a time. When the gateway drops a call, it sends `{kind: "cancel", id}` to the service. The Python adapter trips the call's `awm.gatewayclient.cancel` token, which kills the process group of every subprocess started through `cancel.run`. A sync handler thread cannot be interrupted, so a handler is cancellable only where it runs subprocesses that way. A timeout is not a cancel: work that outlives its budget still finishes in the service.
@@ -208,12 +208,23 @@ The gateway appends each event to `<AWM_DIR>/usage/<YYYY-MM-DD>.jsonl` and prune
 
 ## Service lifecycle
 
-`supervisor.rs` starts every enabled service once the gateway binds, and holds it up.
+`supervisor.rs` starts every enabled service once the gateway binds, and holds it up. `survival.rs` holds what lets a service outlive the gateway.
 
-- **Respawn.** A service that exits restarts after a backoff that starts at 1 s and doubles up to 30 s. A service that stays off its control socket longer than `reconnect_window_s` gets SIGTERM, then restarts.
-- **The breaker.** Five exits inside 60 s leave the service down, shown as `failed` in `awm services list`. `awm services start` clears it. There is no auto-retry, so a wedged service stays visibly wedged.
+A gateway restart is not a stop. `awm.service` sets `KillMode=process`, SIGTERM ends only the gateway, and the services keep running. `awm stop` is the one deliberate stop. It calls the `drain` verb, which stands every service down, empties the journal and ends the gateway. A plain `systemctl stop awm` therefore leaves the services running too, and each exits on its own after the adapter's deadline.
+
+- **The journal.** `<AWM_DIR>/services.json` holds, per service, its pid, process group, process start time (`/proc/<pid>/stat` field 22, which guards against pid reuse), service id and breaker state. The supervisor writes it on spawn and on register. A deliberate stop removes the entry before it signals anything. Teardown writes use update-if-exists, so a loop that reports its exit late cannot bring a removed entry back.
+- **Adoption.** Before it spawns anything, the gateway matches each journaled pid and start time against `/proc`. A live match becomes a hub record with no lease and keeps its token file. The service's own register, with the correct token, takes the record over. A 409 answers only while a live control socket holds the name. An adopted pid cannot be waited on, so the supervisor polls `/proc`. A service with no live journal entry spawns fresh. A journaled pid is never spawned a second time.
+- **Silence.** An adopted service off its control socket past `adopt_window_s` gets its process group SIGTERM, then SIGKILL, and the supervisor waits until the group is gone. Only then does it respawn. Any respawn clears the old group first, so a leftover child cannot double.
+- **Respawn.** A service that exits restarts after a backoff that starts at 1 s and doubles up to 30 s. A spawned service off its control socket past `reconnect_window_s` gets SIGTERM, then restarts.
+- **The breaker.** Five exits inside 60 s trip the service. It stays down, shown as `failed` and `tripped` in `awm services list`, and the trip survives a gateway restart. A stop that names the service, `awm services start` and `awm services restart` clear it. Each is a deliberate act.
+- **Hold mode.** The gateway logs each start in `<AWM_DIR>/gateway-starts.log`. The fourth start inside 10 minutes comes up in hold mode: it adopts live services and spawns none, and it posts a blocked card through `operations request_human` once that tool is up. `awm hold` shows the flag and `awm hold leave` ends it, clears the log and starts the services that are down. `StartLimitBurst` on the unit is the outer backstop. `awm stop` clears the log.
+- **One gateway per state dir.** `<AWM_DIR>/gateway.lock` is an exclusive lock opened close-on-exec, so a service never inherits it. A second gateway on the same dir refuses to start.
 - **Duplicates.** A register under a name whose instance is live gets 409. A second socket on a held control channel closes with 4409, and an unknown id with 4404.
-- **Teardown.** On SIGTERM the gateway sends `{"kind":"shutdown"}` on every control socket, waits 8 s, sends SIGTERM to each service's process group, waits 2 s, then sends SIGKILL.
+- **Teardown.** On `drain` the gateway sends `{"kind":"shutdown"}` on every control socket, waits 8 s, sends SIGTERM to each service's process group, waits 2 s, then sends SIGKILL.
+
+**CAUTION** The first restart onto a build with this lifecycle still runs the old binary's stop path, so every service restarts once. Later restarts leave the services alone.
+
+**CAUTION** A new gateway adopts a service only if its journal entry names a live pid that started when the entry says. A reboot clears every pid in the journal and keeps the breakers.
 
 Each service runs in its own process group. Anything that acts on a service's pid has to think in groups: a Python service is `run.sh`, then its interpreter, and the gateway knows only the first.
 
@@ -225,13 +236,13 @@ A Python service registers and sends `ready` before `on_start` runs, then finish
 
 ### Service-side give-up
 
-`ServiceAdapter.run()` exits 0 without retry on a stand-down signal: a 409 on register, a control close 4409 or 4404, or a `shutdown` frame. It also exits when the gateway stays unreachable past `AWM_RECONNECT_DEADLINE_S` (default 10 s). The deadline counts from the first failure of the outage, not from the last inbound frame. An idle service receives no frames, so a deadline counted from the last frame let a single keepalive blip end it with zero retries.
+`ServiceAdapter.run()` exits 0 without retry on a stand-down signal: a 409 on register, a control close 4409 or 4404, or a `shutdown` frame. It also exits when the gateway stays unreachable past `AWM_RECONNECT_DEADLINE_S` (default 60 s, the gateway's `adopt_window_s`). The deadline counts from the first failure of the outage, not from the last inbound frame. An idle service receives no frames, so a control socket that stayed up for 5 s counts as a confirmed link, and a new outage starts its own clock and its backoff from 1 s. Without that, a second gateway restart inherited the first outage's clock and ended the service at once.
 
 ### Gotchas
 
 - **Use `gatewayclient.SupervisedSubscription` for every emit subscription.** When an emitter restarts, its subscribers' streams can stay open on a connection whose keepalives still pass, because they only prove the gateway is alive. Three services once shipped the same naive loop and went deaf together. The helper reconnects, bounds staleness with a jittered idle deadline and reports `healthy`. Show `healthy` in the service's `status`.
 - **Use `gatewayclient.spawn_supervised` for every long-lived background task.** A bare `asyncio.create_task` whose handle nobody reads leaves the service looking healthy with that capability gone if the task raised on its first line. The wrapper logs at ERROR and respawns. It treats a return as a defect, so a supervised loop must never exit. Check the shutdown flag and skip the tick.
-- **A child that must outlive awm needs its own cgroup.** `systemctl --user restart awm` kills by control group, and every descendant inherits the cgroup however it forks or `setsid`s. Place a survivor outside the `awm` unit with `systemd-run --user` in a transient unit, as `claude-science` does. The inverse trap is the Claude daemon: a background session inherits the cgroup and environment of whichever process first started the node's `claude daemon`. `cch` refuses to start a session unless its keep unit's daemon runs (`claudedaemon.launch`). Either failure is invisible in dev: the process is simply gone after the next restart.
+- **A child that must outlive a drain or a reboot needs its own cgroup.** `KillMode=process` spares a restart, but `awm stop`'s process-group kill does not spare a child in the service's group, and every descendant inherits the cgroup however it forks or `setsid`s. Place a survivor outside the `awm` unit with `systemd-run --user` in a transient unit, as `claude-science` does. The inverse trap is the Claude daemon: a background session inherits the cgroup and environment of whichever process first started the node's `claude daemon`. `cch` refuses to start a session unless its keep unit's daemon runs (`claudedaemon.launch`). Either failure is invisible in dev: the process is simply gone after the next drain.
 - **One gateway per port.** Sandboxes run in parallel on distinct ports.
 
 ## Dev sandboxes
@@ -299,7 +310,7 @@ Read `FEDERATION.md` before you touch anything cross-node. The loopback gateway 
 - This is not the retired federations: neither the v0 one (cr-sqlite replication, leader election, a `peers` registry) nor the peer book with node tokens and a private CA. The git history of their deletion is not a guide to the current system.
 - The gateway trusts `X-Awm-Caller` from `awm edge-serve` only beside the edge token in `<AWM_DIR>/edge.token`, which it rewrites at each start. It trusts `X-Awm-As` because `httpsfront` strips every inbound caller header (`X-Awm-As`, `X-Awm-Caller-Pid`, `X-Awm-Session-Pid`) and stamps its own. A new edge mount must do the same.
 - A cross-node call from a service passes `peer=<node>` to `awm.gatewayclient`. A hand-rolled local POST skips that branch, and the call silently runs on the wrong node.
-- A reload sends `_table_changed` across each edge, so the other nodes refetch this node's table. They cache it in `<AWM_DIR>/peer-tools.json`.
+- A reload that adds, removes or restarts a plugin sends `_table_changed` across each edge, so the other nodes refetch this node's table. They cache it in `<AWM_DIR>/peer-tools.json`. A peer that gets the notice re-resolves `needs` only: it starts the plugins whose `needs` now resolve and stops those whose `needs` no longer do. It never runs a full reload and never forwards the notice.
 
 ## File map
 

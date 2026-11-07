@@ -1,6 +1,6 @@
-# awm's deploy config, read by the routine plugin's deploy engine from the
-# commit it is about to land (docs/redux/routines.md R27, R31, R32). It names no
-# host: each node's install config lists the fleet (fleet.md R140).
+# awm's deploy config, read by the land batch (scripts/land.sh) from the tree it is
+# about to land (docs/redux/routines.md R27, R31, R32). It names no host: each
+# node's install config lists the fleet (fleet.md R140).
 
 [deploy]
 # Only the dists the batch touched, only their smoke tests. Exit 5 (nothing
@@ -15,20 +15,11 @@ check_timeout = 600
 backup = "github"
 
 [refresh]
-# A restart hook would restart the routine plugin that runs this deploy, so a
-# supervising session restarts awm and watches the services come back (R32).
-# The checkout moves first, without a restart.
-kind = "queue"
+# The land rollout (scripts/land.sh) runs these on each node, in the checkout awm
+# runs from: sync moves it to the release, then node-refresh.sh deploys it and
+# checks every enabled service, with no agent.
 sync = "scripts/refresh-checkout.sh"
-prompt = """This node's awm checkout already holds the new release. Restart awm \
-on it under supervision, as FEDERATION.md § Deploy says. First find the other \
-sessions on this node with ListAgents. Tell each live one that awm restarts, and \
-wait until none is mid-call to an awm tool or holds a tether or ssh session it \
-cannot lose. Then run `scripts/awm-deploy.sh` \
-(it places the core binary that scripts/core.pin names, unpacks the page dists that \
-scripts/pages.pin names, builds nothing, stops on a sha256 mismatch, and installs the plugins \
-this node's config.toml enables), and confirm every enabled service came back. If one did not, fix it before you stop. Tell the sessions \
-you warned that awm is back."""
+command = "scripts/node-refresh.sh"
 
 [artifacts]
 # Built files the release pins. Before a push node refreshes, the landing node

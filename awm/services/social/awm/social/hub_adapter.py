@@ -35,7 +35,7 @@ from awm.social import config as social_config
 from awm.social import connectors
 from awm.social import keeper as keeper_mod
 from awm.social import seats
-from awm.social.attachments import file_url, sink_dir, write_attachments
+from awm.social.attachments import file_url, inline_attachments, sink_dir
 from awm.social.dao import SocialDAO, init as dao_init
 from awm.social.history import History
 from awm.trustpolicy import lower, rank
@@ -682,12 +682,10 @@ async def _h_unmount(args: dict, as_: str | None = None) -> dict:
 
 
 def _written_reply(written: list[dict]) -> dict:
-    """The common shape both file-returning verbs answer with.
+    """The reply of ``bucket_get``: files already on disk on this node.
 
-    ``path`` and ``dir`` are absolute on **this** node, so the reply also names
-    which node that is: a caller that borrowed ``social`` from a peer needs that
-    to know the paths are not its own, and the per-file ``url`` to do something
-    about it (see ``attachments`` module docstring).
+    ``path`` and ``dir`` are absolute on **this** node, so the reply names the
+    node; ``url`` is the same bytes on this node's fileviewer mount.
     """
     return {
         "files": written,
@@ -699,18 +697,18 @@ def _written_reply(written: list[dict]) -> dict:
 
 
 async def _h_download_attachments(args: dict) -> dict:
-    """Download one message's attachments to a system temp dir (outside AWM_DIR).
+    """Download one message's attachments and return their bytes inline.
 
-    Re-fetches the message live via its connector, pulls each file's bytes, and
-    writes them to a fresh ``mkdtemp`` directory. Returns the absolute paths +
-    metadata; ``idx`` optionally restricts to a single attachment.
+    Re-fetches the message live via its connector and pulls each file. ``idx``
+    optionally restricts to a single attachment. The gateway of the calling
+    session's node writes the files (``attachments`` module docstring).
     """
     conn = _conn(args["account"])
     idx_raw = args.get("idx")
     idx = int(idx_raw) if idx_raw not in (None, "") else None
-    files = await conn.download_attachments(
-        args["channel"], str(args["message_id"]), idx=idx)
-    return _written_reply(write_attachments(files))
+    files = inline_attachments(await conn.download_attachments(
+        args["channel"], str(args["message_id"]), idx=idx))
+    return {"files": files, "count": len(files), "node": config.node_name()}
 
 
 def _h_list_operators(args: dict) -> dict:
@@ -926,8 +924,8 @@ API_MANIFEST: dict[str, Any] = {
             "name": "send",
             "tool": "social_send",
             "description": "Send a message as a configured account to a channel. "
-                           "`file` uploads a file from the node social runs on, such as "
-                           "a plan's .md, with `text` as its message; `text` is "
+                           "`file` uploads a file from your own node (an absolute path, up "
+                           "to 24 MiB), such as a plan's .md, with `text` as its message; `text` is "
                            "optional with a file. `files` attaches inline text "
                            "files, each {filename, text}. Discord and Slack take "
                            "files, up to 10 MB on Discord and 8 MB on Tony's "
@@ -1085,10 +1083,11 @@ API_MANIFEST: dict[str, Any] = {
         {
             "name": "download_attachments",
             "tool": "social_download_attachments",
-            "description": "Download a message's attachments to a system temp dir "
-                           "(outside the awm workspace) on the node social runs on. "
-                           "Re-fetches the message live, returns the absolute "
-                           "file paths + metadata. "
+            "description": "Download a message's attachments to a fresh temp dir on "
+                           "the node you call from (outside the awm workspace). "
+                           "Re-fetches the message live; returns `dir` and each "
+                           "file's `path`, `filename`, `mime`, `size`. Files "
+                           "together may not pass 24 MiB. "
                            "`idx` optionally selects a single attachment.",
             "timeout": 300,
             "params": [

@@ -6,11 +6,16 @@
 /// The mode of a session whose mode could not be established. The most restricted.
 pub const UNKNOWN: &str = "unknown";
 
+/// The mode of a caller whose lookup found reflection down or silent past the wait. It is
+/// gated as [`UNKNOWN`] is, and refused with its own message.
+pub const UNREACHABLE: &str = "unreachable";
+
 /// Each restricted mode with the exact `(tool, verb)` pairs it may call.
-const MODES: [(&str, &[(&str, &str)]); 1] = [
+const MODES: [(&str, &[(&str, &str)]); 2] = [
     // A session whose mode could not be established can compact itself and nothing else.
     // `reflection mode`, which changes the session's permission mode, is left out on purpose.
     (UNKNOWN, &[("reflection", "compact"), ("reflection", "whoami")]),
+    (UNREACHABLE, &[("reflection", "compact"), ("reflection", "whoami")]),
 ];
 
 fn policy(mode: Option<&str>) -> Option<&'static [(&'static str, &'static str)]> {
@@ -27,7 +32,11 @@ pub fn is_restricted(mode: Option<&str>) -> bool {
 /// passes for a tool the mode can use at all. A restricted mode may not name a peer.
 pub fn refusal(mode: Option<&str>, tool: &str, verb: &str, peer: Option<&str>) -> Option<String> {
     let pairs = policy(mode)?;
-    let label = format!("mode {:?}", mode.unwrap_or_default());
+    let label = match mode {
+        Some(UNREACHABLE) => "reflection is unreachable, so this session's mode cannot be read; retry in a few seconds. This session".to_string(),
+        Some(UNKNOWN) => "reflection answered but could not tell this session's mode (mode \"unknown\"); this session".to_string(),
+        _ => format!("mode {:?}", mode.unwrap_or_default()),
+    };
     if peer.is_some_and(|p| p != "local") {
         return Some(format!("{label} may not run a verb on a peer"));
     }
@@ -51,6 +60,15 @@ mod tests {
         assert!(refusal(m, "journal", "post", None).is_some());
         assert!(refusal(m, "journal", "describe", None).is_some());
         assert!(refusal(m, "reflection", "compact", Some("alcor")).is_some());
+    }
+
+    #[test]
+    fn each_refusal_names_its_cause() {
+        let down = refusal(Some(UNREACHABLE), "channel", "write", None).unwrap();
+        assert!(down.contains("unreachable") && !down.contains("mode \"unknown\""), "{down}");
+        assert_eq!(refusal(Some(UNREACHABLE), "reflection", "compact", None), None);
+        let unk = refusal(Some(UNKNOWN), "channel", "write", None).unwrap();
+        assert!(unk.contains("could not tell") && unk.contains("channel.write"), "{unk}");
     }
 
     #[test]

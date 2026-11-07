@@ -45,8 +45,16 @@ pub enum Lookup {
     /// reflection answered for every pid and no harness claims any: a user's shell. `mode` is
     /// what the harnesses said of the first pid.
     NoOwner { mode: Option<String> },
-    /// reflection did not answer, or answered nonsense.
+    /// reflection answered nonsense.
     Failed,
+    /// reflection is not registered, or did not answer within the lookup wait.
+    Unreachable,
+}
+
+/// Whether a `session_of` answer is worth keeping: it names a session with a readable mode, or
+/// says a pid is nobody's. An `unknown` or missing mode may be a harness mid-restart.
+pub fn is_definite(answer: &Value) -> bool {
+    answer.is_object() && answer.get("mode").is_some_and(|m| m.as_str() != Some(crate::modes::UNKNOWN))
 }
 
 /// Whether the node's plugin set holds the lookup plugin: the install config names it, or the
@@ -105,13 +113,13 @@ pub fn fill(caller: &mut Caller, lookup: &Lookup, projects: &Path) -> Option<Str
             caller.scope = None;
             mode.clone()
         }
-        Lookup::Failed => {
+        Lookup::Failed | Lookup::Unreachable => {
             caller.session = None;
             caller.job = None;
             caller.name = None;
             caller.trust = Some(FAILED_LOOKUP_TRUST.to_string());
             caller.scope = None;
-            Some(crate::modes::UNKNOWN.to_string())
+            Some(if matches!(lookup, Lookup::Unreachable) { crate::modes::UNREACHABLE } else { crate::modes::UNKNOWN }.to_string())
         }
     }
 }
@@ -319,5 +327,21 @@ mod tests {
         let mut args = json!({});
         stamp(&mut args, &own, None, "deneb");
         assert_eq!(args, json!({"_caller_trust": "cooperative"}));
+    }
+
+    #[test]
+    fn only_a_definite_answer_is_kept() {
+        assert!(is_definite(&json!({"known": true, "mode": "worker"})));
+        assert!(is_definite(&json!({"known": true, "mode": null})));
+        assert!(!is_definite(&json!({"known": true, "mode": "unknown"})));
+        assert!(!is_definite(&json!({"known": true})));
+        assert!(!is_definite(&json!("nonsense")));
+    }
+
+    #[test]
+    fn an_unreachable_lookup_gets_its_own_mode() {
+        let projects = std::path::PathBuf::from("/p");
+        let mut c = Caller::default();
+        assert_eq!(fill(&mut c, &Lookup::Unreachable, &projects).as_deref(), Some(crate::modes::UNREACHABLE));
     }
 }

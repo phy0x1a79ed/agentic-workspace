@@ -18,6 +18,7 @@ from typing import Any
 
 from awm.operations import door
 from awm.operations.api import API_MANIFEST
+from awm.operations.board import BOOK_ID
 from awm.operations.front import Front
 from awm.operations.gateway import ApproverTools, GatewayTool, usage
 from awm.operations.relay import Relay, Unreachable, order_loop
@@ -46,7 +47,7 @@ def settings() -> dict[str, Any]:
         # The pages that may ask for a passkey sign-in: {host: node} (fleet.md R84).
         "portals": cfg.get("portals", {}),
         "board_peer": os.environ.get("AWM_BOARD_PEER", cfg.get("board_peer", "deneb")),
-        "board_parent": os.environ.get("AWM_TRILIUM_BOARD_PARENT", cfg.get("board_parent", "root")),
+        "board_parent": os.environ.get("AWM_TRILIUM_BOARD_PARENT", cfg.get("board_parent", BOOK_ID)),
     }
 
 

@@ -24,8 +24,8 @@ reqwest.workspace = true
 tracing.workspace = true
 mime_guess.workspace = true
 libc.workspace = true
+base64 = "0.22"
 
 [dev-dependencies]
 tempfile.workspace = true
 ed25519-dalek = "2"
-base64 = "0.22"

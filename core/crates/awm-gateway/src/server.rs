@@ -5,7 +5,7 @@ use std::sync::Arc;
 use awm_proto::{CallContext, Caller, Lane, Surface, UsageEvent};
 use axum::body::Body;
 use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{Path, Query, State};
+use axum::extract::{DefaultBodyLimit, Path, Query, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{any, get, post};
@@ -54,6 +54,8 @@ pub fn router(gw: Arc<Gateway>) -> Router {
         .route("/p/{plugin}/{page}", get(page_root))
         .route("/p/{plugin}/{page}/", get(page_root))
         .route("/p/{plugin}/{page}/{*path}", get(page_file))
+        // A call can carry a file inline (`files.rs`), and a door host receives it here.
+        .layer(DefaultBodyLimit::max(crate::files::MAX_REQUEST_BYTES))
         .with_state(gw)
 }
 
@@ -65,14 +67,17 @@ pub fn door_router(gw: Arc<Gateway>) -> Router {
 
 /// Bind, start the services, serve until SIGINT or SIGTERM, then stand everything down.
 pub async fn serve(gw: Arc<Gateway>) -> anyhow::Result<()> {
-    let listener = tokio::net::TcpListener::bind(&gw.cfg.listen).await?;
+    let _lock = crate::survival::StateLock::acquire(&gw.state)?;
+    let starts = crate::survival::log_start(&gw.state, crate::survival::unix_now());
+    let hold = starts > crate::survival::START_BUDGET;
+    let listener = tokio::net::TcpListener::bind(&gw.cfg().listen).await?;
     let addr = listener.local_addr()?;
     let url = format!("http://{addr}");
     let _ = gw.url.set(url.clone());
     let token = uuid::Uuid::new_v4().simple().to_string();
     write_private(&gw.state.join("edge.token"), &token)?;
     let mut door_url = Value::Null;
-    if let Some(addr) = &gw.cfg.isolated_listen {
+    if let Some(addr) = &gw.cfg().isolated_listen {
         let door = tokio::net::TcpListener::bind(addr).await?;
         door_url = json!(format!("http://{}", door.local_addr()?));
         tracing::info!("isolated door on {door_url}");
@@ -94,21 +99,57 @@ pub async fn serve(gw: Arc<Gateway>) -> anyhow::Result<()> {
         serde_json::to_string_pretty(&json!({"url": url, "isolated_url": door_url, "pid": std::process::id(), "node": gw.node}))?,
     )?;
     tracing::info!("gateway on {url}, node {}", gw.node);
-    supervisor::start_all(&gw);
+    if hold {
+        tracing::error!(
+            "HOLD MODE: {starts} gateway starts within {}s (budget {}); adopting live services, spawning none. `awm hold leave` ends it",
+            crate::survival::START_WINDOW_S,
+            crate::survival::START_BUDGET
+        );
+        tokio::spawn(report_hold(gw.clone(), starts));
+    }
+    supervisor::start_all(&gw, hold).await;
     let app = router(gw.clone());
     axum::serve(listener, app).with_graceful_shutdown(shutdown_signal(gw.clone())).await?;
     let _ = std::fs::remove_file(gw.state.join("gateway.json"));
     Ok(())
 }
 
+/// SIGINT or SIGTERM is a restart: the services keep running. A drain request has stood them
+/// down already by the time it ends the gateway.
 async fn shutdown_signal(gw: Arc<Gateway>) {
     let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).expect("SIGTERM handler");
     tokio::select! {
-        _ = tokio::signal::ctrl_c() => {}
-        _ = term.recv() => {}
+        _ = tokio::signal::ctrl_c() => supervisor::leave_running(&gw),
+        _ = term.recv() => supervisor::leave_running(&gw),
+        _ = gw.supervisor.drained.notified() => {}
     }
-    tracing::info!("stopping: standing services down");
-    supervisor::stop_all(&gw).await;
+}
+
+/// Ask Tony for help through the operations card, once its tool is up. A gateway cannot always
+/// reach it, so the loud log above stands as the report.
+async fn report_hold(gw: Arc<Gateway>, starts: usize) {
+    let reason = format!(
+        "The awm gateway on {} restarted {starts} times within {} minutes and came up in hold mode: it adopted the live services and spawned none. Find why it restarts, then run `awm hold leave`.",
+        gw.node,
+        crate::survival::START_WINDOW_S / 60
+    );
+    let caller = Caller { node: gw.node.clone(), lane: Lane::Service, trust: Some(crate::caller::TRUSTED.into()), ..Default::default() };
+    let ctx = CallContext { caller, as_: None, surface: Surface::Http, plugin: None, mode: None, pid: None };
+    for _ in 0..12 {
+        tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+        if gw.stopping() {
+            return;
+        }
+        let args = json!({"verb": "request_human", "args": {"kind": "blocked", "reason": reason}});
+        match gw.invoke("operations", args, &ctx).await {
+            Ok(_) => {
+                tracing::warn!("hold mode: blocked card posted for Tony");
+                return;
+            }
+            Err(e) => tracing::debug!("hold mode: request_human not yet possible: {}", e.detail),
+        }
+    }
+    tracing::error!("HOLD MODE: no blocked card could be posted; the gateway log is the only report");
 }
 
 fn write_private(path: &std::path::Path, text: &str) -> std::io::Result<()> {
@@ -228,7 +269,16 @@ async fn invoke(State(gw): Gw, h: HeaderMap, body: Option<Json<Value>>) -> Resul
     };
     let args = body.get("args").cloned().filter(|a| !a.is_null()).unwrap_or_else(|| json!({}));
     let ctx = context(&gw, &h, Surface::Http).await?;
-    let result = gw.invoke(name, args, &ctx).await?;
+    let session = ctx.caller.lane == Lane::Local && matches!(ctx.surface, Surface::Mcp | Surface::Cli);
+    let mut args = args;
+    if session {
+        crate::files::inline_file_arg(name, &mut args).map_err(|e| ApiError::new(400, e))?;
+    }
+    let mut result = gw.invoke(name, args, &ctx).await?;
+    // The session's node is where inline file content lands; a plugin or a peer takes it as sent.
+    if session {
+        result = crate::files::localize(&result, &gw.node);
+    }
     Ok(Json(json!({"result": result})))
 }
 
@@ -281,7 +331,8 @@ async fn register(State(gw): Gw, h: HeaderMap, Json(req): Json<RegisterReq>) -> 
         return Err(ApiError::new(409, format!("service {:?} already has a live instance connected", req.name)));
     };
     tracing::info!("registered service {} (plugin {plugin}) pid {:?}", req.name, req.pid);
-    let workspace = gw.cfg.workspace.as_ref().map(|p| p.display().to_string()).unwrap_or_default();
+    gw.supervisor.journal.update_existing(&req.name, |e| e.service_id = Some(id.clone()));
+    let workspace = gw.cfg().workspace.as_ref().map(|p| p.display().to_string()).unwrap_or_default();
     Ok(Json(json!({
         "service_id": id,
         "name": req.name,
@@ -406,13 +457,14 @@ struct TableChanged {
     node: String,
 }
 
-/// A peer says its table changed: read it again, then reload, since a need may now resolve.
+/// A peer says its table changed: read it again and re-resolve `needs`. A full reload would
+/// change plugins on this node's own disk, and a peer's notice must not.
 async fn table_changed(State(gw): Gw, h: HeaderMap, Json(body): Json<TableChanged>) -> Result<Json<Value>, ApiError> {
     refuse_token(&h)?;
     if !gw.refresh_peer(&body.node).await {
         return Err(ApiError::new(404, format!("{:?} is not a peer of this node", body.node)));
     }
-    gw.reload().await.map(Json)
+    gw.reload_needs().await.map(Json)
 }
 
 /// The owner of a tool name, looked up now.
@@ -433,9 +485,10 @@ async fn plugins(State(gw): Gw) -> Json<Value> {
     Json(gw.load_snapshot())
 }
 
-async fn reload(State(gw): Gw, h: HeaderMap) -> Result<Json<Value>, ApiError> {
+async fn reload(State(gw): Gw, h: HeaderMap, body: Option<Json<Value>>) -> Result<Json<Value>, ApiError> {
     refuse_token(&h)?;
-    gw.reload().await.map(Json)
+    let request = crate::gateway::ReloadRequest::from_args(&body.map(|b| b.0).unwrap_or(Value::Null));
+    gw.reload(&request).await.map(Json)
 }
 
 #[derive(Deserialize)]

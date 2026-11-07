@@ -96,14 +96,26 @@ pub async fn open_local_stream(dir: &Path, path: &str, caller: &Caller) -> Resul
     awm_gateway::peer::connect_ws(&url, &headers).await
 }
 
-/// `awm port --key awm:<holder>:service`: one door call from `SSH_ORIGINAL_COMMAND`, for
+/// The request text: stdin when the caller asked for the bare `port`, else what the command
+/// line carried (a node still on the older door client sends it there).
+fn door_request_text() -> String {
+    let original = std::env::var("SSH_ORIGINAL_COMMAND").unwrap_or_default();
+    if original.trim().is_empty() || original.trim() == "port" {
+        let mut body = String::new();
+        let _ = std::io::Read::read_to_string(&mut std::io::stdin().lock(), &mut body);
+        return body;
+    }
+    original
+}
+
+/// `awm port --key awm:<holder>:service`: one door call, read by `door_request_text`, for
 /// a singleton here that admits the key's holder.
 pub async fn port(key: &str) -> anyhow::Result<i32> {
     let dir = awm_dir();
     let here = node_name();
     let holder = key.split(':').nth(1).unwrap_or_default().to_string();
     let allowed = EdgeList::load(&edges_path(&dir))?.door_tools(&here, &holder);
-    let original = std::env::var("SSH_ORIGINAL_COMMAND").unwrap_or_default();
+    let original = door_request_text();
     let req = awm_trust::port::parse(&original);
     let result = match &req {
         Ok(r) if allowed.contains(&r.name) => {

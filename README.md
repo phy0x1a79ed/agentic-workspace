@@ -123,7 +123,8 @@ awm services restart <name>
 awm services enable <name>        # writes .awm/enabled.json, then starts it
 awm services disable <name>       # stops it and keeps it down across restarts
 awm plugins                       # what loaded, what was refused and why
-awm reload                        # load a changed tree with no gateway restart
+awm reload [--restart a,b]        # start added plugins, stop removed ones; restart only the named
+awm restart <plugin> [--force]    # restart one plugin through the reload path
 awm listen <service> <topic>      # print each payload a service emits
 ```
 
@@ -178,7 +179,7 @@ systemctl --user restart awm      # restart the gateway and every service
 awm status                        # gateway and service health
 ```
 
-The gateway reads its configuration from `.awm/config.toml` only. Put an environment variable that the services need, such as `SSH_AUTH_SOCK` for `scope create --clone-url git@github.com:…`, in its `[env]` table, then restart the gateway. `awm reload` does not pass a changed `[env]` to a running service.
+The gateway reads its configuration from `.awm/config.toml` only. Put an environment variable that the services need, such as `SSH_AUTH_SOCK` for `scope create --clone-url git@github.com:…`, in its `[env]` table, then run `awm reload --restart <plugin>` for each plugin that needs it. `awm reload` reads the changed `[env]` but a running service keeps its old one until it restarts, and the reload result lists these under `stale_env`.
 
 ### The CLI
 

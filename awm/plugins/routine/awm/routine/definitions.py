@@ -46,7 +46,8 @@ class Routine:
     call: bool = True        # triggerable by a call (Tony's "by hand = agent call")
     steps: tuple[Step, ...] = ()
     agent: AgentSpec = field(default_factory=AgentSpec)
-    fixer: AgentSpec = field(default_factory=AgentSpec)
+    # A routine without a fixer posts its failure as a notice and starts no agent.
+    fixer: AgentSpec | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -60,7 +61,7 @@ class Routine:
             call=bool(d.get("call", True)),
             steps=tuple(Step(**s) for s in d.get("steps", ())),
             agent=AgentSpec(**d.get("agent", {})),
-            fixer=AgentSpec(**d.get("fixer", {})),
+            fixer=AgentSpec(**d["fixer"]) if d.get("fixer") else None,
         )
 
 
@@ -138,7 +139,7 @@ def parse(text: str, *, source: str = "<string>") -> Routine:
         call=call,
         steps=tuple(steps),
         agent=agent,
-        fixer=_agent(raw.get("fixer"), "fixer"),
+        fixer=_agent(raw["fixer"], "fixer") if "fixer" in raw else None,
     )
 
 

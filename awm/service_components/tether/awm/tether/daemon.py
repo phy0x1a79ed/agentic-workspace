@@ -4,24 +4,23 @@ One service folder, two kinds of host: the operator's node runs
 ``tether-operator``, the public host runs ``tether-relay``. Which one is
 ``paths.ROLE``, and the two are kept differently.
 
-**The relay is parented.** It is put in its own session so the whole tree can
-be signalled as a group, and ``PR_SET_PDEATHSIG`` closes the window where this
-process dies between the fork and the child's first instruction.
-
-**The operator daemon is adopted, not owned.** Sessions are sockets held by
-tasks inside it, and the gateway restarts this service on every deploy, so a
-daemon parented here ended every live session several times an hour. It runs
+**Both binaries are adopted, not owned.** The operator daemon holds sessions as
+sockets inside tasks. The relay holds every room's backlog in memory
+(``PROTOCOL.md`` § What the relay keeps), and a restart of it hands a guest an
+empty room. The gateway restarts this service on every deploy, so a binary
+parented here lost all of that several times an hour. Each runs
 instead in a transient unit of the user's systemd manager. Detaching alone
 would not do: ``systemctl restart awm`` kills by control group, and every
 descendant of the gateway inherits that group however it forks. On start the
-adapter attaches to a daemon that answers on the control socket and launches
-one only when none does. It replaces a running daemon only when the binary
-under it was replaced by a new release and no session is live. Stopping the service leaves the daemon running. A
+adapter attaches to a binary that answers (the operator on its control socket,
+the relay on ``/health``) and launches one only when none does. It replaces a
+running one only when the binary under it was replaced by a new release and no
+session or room is live. Stopping the service leaves the binary running. A
 reboot ends it, because the unit is transient. Nothing about the owner's side
 changes: either person can still cut a session, and the owner's client keeps
 nothing.
 
-Without a user manager the daemon starts in its own session instead. It then
+Without a user manager the binary starts in its own session instead. It then
 outlives a restart of this service but not a cgroup kill of the gateway, and
 ``status`` says so with a null ``unit``.
 
@@ -42,7 +41,7 @@ import subprocess
 import threading
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from awm.tether import paths
 from awm.gatewayclient.proc import child_preexec, signal_group, user_manager_env
@@ -136,6 +135,9 @@ def probe(timeout: float = PROBE_TIMEOUT_S) -> tuple[str, dict[str, Any]]:
         return "busy", {}
 
 
+Probe = Callable[..., tuple[str, dict[str, Any]]]
+
+
 def live_sessions(report: dict[str, Any]) -> list[dict]:
     return [s for s in report.get("sessions") or [] if s.get("phase") != "ended"]
 
@@ -189,114 +191,17 @@ def _environment_file(env: dict[str, str]) -> str:
     return "\n".join(lines) + "\n"
 
 
-class Child:
-    """The relay binary, parented to this process. Every method is safe to call."""
-
-    def __init__(self) -> None:
-        self._proc: subprocess.Popen | None = None
-        self._started_at: float | None = None
-        self._error: str | None = None
-
-    def alive(self) -> bool:
-        return self._proc is not None and self._proc.poll() is None
-
-    def snapshot(self) -> dict[str, Any]:
-        """What this host can say about its child without asking the child."""
-        binary = paths.role_binary()
-        proc = self._proc
-        return {
-            "role": paths.ROLE,
-            "binary": str(binary),
-            "built": binary.is_file(),
-            "built_at": (round(binary.stat().st_mtime) if binary.is_file() else None),
-            "running": self.alive(),
-            "pid": proc.pid if self.alive() else None,
-            "exit_code": proc.poll() if proc else None,
-            "uptime_s": (round(time.time() - self._started_at)
-                         if self._started_at and self.alive() else None),
-            "log": str(paths.DAEMON_LOG),
-            "error": self._error,
-        }
-
-    def start(self) -> dict[str, Any]:
-        if self.alive():
-            return self.snapshot() | {"action": "already-running"}
-
-        binary = paths.role_binary()
-        if not binary.is_file():
-            self._error = (
-                f"{binary} is not present on this host; fetch-release.sh pulls "
-                f"the binary pinned in RELEASE into {paths.BIN_DIR} on start, so "
-                f"this usually means that fetch failed — see the service log"
-            )
-            return self.snapshot() | {"action": "not-built"}
-
-        _private_dir()
-        # Appended, never truncated: this log is the only account of a crash
-        # that happened between two `status` calls.
-        out = open(paths.DAEMON_LOG, "ab", buffering=0)  # noqa: SIM115 — the child owns it
-        try:
-            self._proc = subprocess.Popen(
-                [str(binary)],
-                cwd=str(paths.SERVICE_DIR),
-                env=_env(),
-                stdin=subprocess.DEVNULL,
-                stdout=out,
-                stderr=subprocess.STDOUT,
-                preexec_fn=child_preexec,
-            )
-        except OSError as exc:
-            self._error = f"{type(exc).__name__}: {exc}"
-            return self.snapshot() | {"action": "failed"}
-        finally:
-            out.close()
-
-        self._started_at = time.time()
-        self._error = None
-        log.info("tether: started %s (pid %s)", binary.name, self._proc.pid)
-        return self.snapshot() | {"action": "started"}
-
-    def stop(self, *, timeout: float = 10.0) -> dict[str, Any]:
-        proc = self._proc
-        if proc is None or proc.poll() is not None:
-            self._proc = None
-            return {"action": "not-running", "running": False}
-        # The group, not the pid: the child may have spawned its own children
-        # and signalling one of them leaves the rest holding the socket.
-        signal_group(proc, signal.SIGTERM)
-        try:
-            proc.wait(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            signal_group(proc, signal.SIGKILL)
-            proc.wait(timeout=5)
-        self._proc = None
-        self._started_at = None
-        return {"action": "stopped", "running": False}
-
-    def reconcile(self) -> dict[str, Any]:
-        """Start the child if it is not there. Cheap; called on a loop."""
-        if self.alive():
-            return {"action": "none"}
-        previous = self._proc.poll() if self._proc else None
-        if previous not in (None, 0):
-            log.warning("tether: the %s child exited with %s; restarting — see %s",
-                        paths.ROLE, previous, paths.DAEMON_LOG)
-        return self.start() | {"previous_exit": previous}
-
-    def shutdown(self) -> None:
-        """The child dies with this process either way. Stopping it here makes a
-        clean shutdown look clean in the log rather than like a kill."""
-        self.stop()
-
 class Adopted:
-    """The operator daemon, attached to if it is running and launched if not.
+    """The operator daemon or the relay, attached to if it is running and launched if not.
 
     Holds almost nothing in memory. Whether a daemon is there is asked of its
     socket, and what was launched is read back from LAUNCH_FILE, so an adapter
     that has just restarted reaches the same answers as the one before it.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, probe_fn: Probe | None = None) -> None:
+        """``probe_fn`` answers for a binary with no control socket, as the relay's does."""
+        self._probe = probe_fn or probe
         self._lock = threading.Lock()
         self._proc: subprocess.Popen | None = None
         self._error: str | None = None
@@ -318,13 +223,13 @@ class Adopted:
         if bus is None:
             return None
         try:
-            proc = _systemctl(bus, "show", f"{paths.OPERATOR_UNIT}.service",
+            proc = _systemctl(bus, "show", f"{paths.unit_name()}.service",
                               "-p", "MainPID", "-p", "ActiveState", timeout=10)
         except (OSError, subprocess.TimeoutExpired):
             return None
         fields = dict(line.partition("=")[::2] for line in proc.stdout.splitlines())
         return {
-            "name": f"{paths.OPERATOR_UNIT}.service",
+            "name": f"{paths.unit_name()}.service",
             "active_state": fields.get("ActiveState"),
             "main_pid": int(fields.get("MainPID") or 0) or None,
         }
@@ -361,7 +266,7 @@ class Adopted:
         return None
 
     def alive(self) -> bool:
-        return probe()[0] != "absent"
+        return self._probe()[0] != "absent"
 
     def snapshot(self) -> dict[str, Any]:
         binary = paths.role_binary()
@@ -401,7 +306,7 @@ class Adopted:
             self._lock.release()
 
     def _reconcile(self) -> dict[str, Any]:
-        state, report = probe()
+        state, report = self._probe()
         now = time.monotonic()
         young = self._started is not None and now - self._started < SETTLE_S
         if state != "absent":
@@ -475,7 +380,7 @@ class Adopted:
             return {"action": "failed", "error": self._error}
 
         deadline = time.monotonic() + START_TIMEOUT_S
-        while probe(timeout=1.0)[0] == "absent":
+        while self._probe(timeout=1.0)[0] == "absent":
             if time.monotonic() > deadline or (self._proc and self._proc.poll() is not None):
                 self._error = (f"the daemon did not answer on {paths.CONTROL_SOCKET} "
                                f"within {START_TIMEOUT_S:.0f}s; see {paths.DAEMON_LOG}")
@@ -485,7 +390,7 @@ class Adopted:
         pid = self.pid(self._unit(bus)) or (self._proc.pid if self._proc else None)
         record = {"pid": pid, "release": paths.installed_release(),
                   "binary": str(binary), "started_at": time.time(),
-                  "unit": f"{paths.OPERATOR_UNIT}.service" if bus else None}
+                  "unit": f"{paths.unit_name()}.service" if bus else None}
         tmp = paths.LAUNCH_FILE.with_suffix(".tmp")
         tmp.write_text(json.dumps(record))
         tmp.replace(paths.LAUNCH_FILE)
@@ -497,7 +402,7 @@ class Adopted:
         return {"action": "started", "pid": pid}
 
     def _launch_unit(self, binary: Path, bus: dict[str, str]) -> None:
-        unit = paths.OPERATOR_UNIT
+        unit = paths.unit_name()
         # Only reached when nothing answers on the socket, so a unit still
         # holding the name is a corpse; systemd-run refuses the name until it
         # is cleared.
@@ -536,7 +441,7 @@ class Adopted:
         bus = user_manager_env()
         pid = self.pid(self._unit(bus))
         if bus is not None:
-            _systemctl(bus, "stop", paths.OPERATOR_UNIT, timeout=timeout + 15)
+            _systemctl(bus, "stop", paths.unit_name(), timeout=timeout + 15)
         # A daemon outside the unit — launched with no user manager, or by an
         # adapter from before units — is not stopped by stopping the unit.
         if _alive(pid):
@@ -562,8 +467,8 @@ class Adopted:
             self._proc = None
 
 
-def for_role() -> Child | Adopted:
-    return Adopted() if paths.ROLE == paths.OPERATOR else Child()
+def for_role(probe_fn: Probe | None = None) -> Adopted:
+    return Adopted(probe_fn)
 
 
 def tail(path: Path, lines: int) -> list[str]:

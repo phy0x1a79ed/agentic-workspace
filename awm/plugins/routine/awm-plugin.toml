@@ -19,24 +19,14 @@ tier = "on"
 
 # The tools the routine plugin calls (install.md R117).
 [[needs.tool]]
-name = "reflection"   # start_other for fixing and refresh agents, session_of for the caller's card, list_other and message to find and retarget a live refresh agent
+name = "reflection"   # start_other, for the agent that fixes a failed routine
 major = 1
-verbs = ["start_other", "session_of", "list_other", "message"]
+verbs = ["start_other"]
 
 [[needs.tool]]
 name = "social"       # send, for the operator's Discord DM
 major = 1
 verbs = ["send"]
-
-[[needs.tool]]
-name = "journal"      # post, for each deploy mark
-major = 1
-verbs = ["post"]
-
-[[needs.tool]]
-name = "operations"   # the card verdict
-major = 2
-verbs = ["task_for_session", "swarm_message_post"]
 
 [needs]
 secrets = []

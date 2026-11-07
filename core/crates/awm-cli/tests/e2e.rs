@@ -318,6 +318,10 @@ fn gateway_end_to_end() {
     let state = node.state.clone();
     let fail = |what: &str| -> String { format!("{what}\n--- gateway log ---\n{}", log(&state)) };
 
+    // A call carrying an inline file is bigger than axum's default 2 MiB body.
+    let big = http().post(format!("{url}/invoke")).json(&json!({"name": "fake", "args": {"verb": "echo", "args": {"text": "x".repeat(3 << 20)}}})).send().unwrap().status();
+    assert_eq!(big.as_u16(), 200, "a 3 MiB call is refused: {}", fail("big invoke"));
+
     // MCP: the catalog collapses each tool to {verb, args, peer}, and calls route to the plugin.
     let mut mcp = Mcp::start(&url);
     let init = mcp.request("initialize", json!({"protocolVersion": "2025-06-18", "capabilities": {}}));
@@ -629,8 +633,19 @@ fn gateway_end_to_end() {
     assert!(code == 0 && out.contains("installed hot"), "{}", fail(&format!("hot echo: {out} {errout}")));
     write(&hot.join("awm-plugin.toml"), "[plugin]\nname = \"hot\"\n\n[[service]]\nname = \"hot\"\n\n[[tool]]\nname = \"hot-two\"\n");
     write(&hot.join("run.sh"), &format!("export FAKE_TOOL=hot-two\nexec '{}'\n", fake_bin().display()));
+    let hot_pid = |url: &str| -> i64 {
+        let (_, out, _) = cli(url, &["awm", "services"]);
+        let list: Value = serde_json::from_str(&out).unwrap();
+        list.as_array().unwrap().iter().find(|s| s["name"] == "hot").and_then(|s| s["pid"].as_i64()).unwrap()
+    };
+    let hot_before = hot_pid(&url);
     let r = reload();
-    assert_eq!(r["updated"], json!(["hot"]), "{r}");
+    assert_eq!((r["restarted"].as_array().map(Vec::len), r["added"].as_array().map(Vec::len)), (Some(0), Some(0)), "a changed folder alone restarts nothing: {r}");
+    assert_eq!(hot_pid(&url), hot_before, "a reload restarted a plugin nobody named");
+    let (code, out, errout) = cli(&url, &["reload", "--restart", "hot,nobody"]);
+    assert_eq!(code, 0, "{out} {errout}");
+    let r: Value = serde_json::from_str(&out).unwrap();
+    assert_eq!((r["restarted"].clone(), r["unknown"].clone()), (json!(["hot"]), json!(["nobody"])), "{r}");
     let (code, out, _) = cli(&url, &["hot-two", "echo", "--text", "renamed hot"]);
     assert!(code == 0 && out.contains("renamed hot"), "{out}");
     let (code, _, _) = cli(&url, &["hot", "echo", "--text", "x"]);
@@ -640,7 +655,7 @@ fn gateway_end_to_end() {
     assert_eq!(r["removed"], json!(["hot"]), "{r}");
     assert_eq!(http().get(format!("{url}/hub/tool/hot-two")).send().unwrap().status().as_u16(), 404);
     let r = reload();
-    assert_eq!((r["added"].as_array().map(Vec::len), r["updated"].as_array().map(Vec::len)), (Some(0), Some(0)), "{r}");
+    assert_eq!((r["added"].as_array().map(Vec::len), r["restarted"].as_array().map(Vec::len)), (Some(0), Some(0)), "{r}");
     assert_eq!(fake_pid(&url), before, "a reload restarted a plugin it did not change");
 
     // An install copies a folder into the state's installed root, pins it and loads it hot.
@@ -1057,7 +1072,7 @@ fn a_caller_reaches_a_peers_singleton_through_its_door() {
         assert_eq!(who["as"], "peer:alcor");
     }
     let args = std::fs::read_to_string(&door.args).unwrap();
-    assert!(args.contains("\n-p\n2201\n127.0.0.1\nport {"), "the door listens on deneb's public address: {args}");
+    assert!(args.contains("\n-p\n2201\n127.0.0.1\nport\n"), "the door listens on deneb's public address, and the request is not on the command line: {args}");
     assert!(args.contains("\n-l\nawm\n"), "the caller logs in as the door's user: {args}");
     // operations' own call to trilium takes the same door.
     let resp = http().post(format!("{}/invoke", alcor.url))

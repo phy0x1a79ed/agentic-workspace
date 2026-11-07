@@ -35,25 +35,47 @@ impl Gateway {
                 "name": spec.name, "plugin": spec.plugin, "enabled": spec.enabled, "status": status,
                 "id": hub.map(|h| h.id.clone()), "pid": hub.and_then(|h| h.pid), "verbs": hub.map_or(0, |h| h.verbs),
                 "refusal": hub.and_then(|h| h.refusal.clone()), "mount": hub.and_then(|h| h.mount.clone()),
-                "tools": spec.tools, "archive": spec.archive, "external": self.cfg.external(&spec.name).is_some(),
-                "failed": failed.contains(&spec.name),
+                "tools": spec.tools, "archive": spec.archive, "external": self.cfg().external(&spec.name).is_some(),
+                "failed": failed.contains(&spec.name), "tripped": self.supervisor.journal.tripped(&spec.name),
             }));
         }
         for (name, h) in live.iter().filter(|(n, _)| !seen.contains(n)) {
             rows.push(json!({
                 "name": name, "plugin": h.plugin, "enabled": true, "status": h.status, "id": h.id, "pid": h.pid,
                 "verbs": h.verbs, "refusal": h.refusal, "mount": h.mount, "tools": [], "archive": [],
-                "external": false, "failed": false,
+                "external": false, "failed": false, "tripped": false,
             }));
         }
         json!(rows)
+    }
+
+    /// `drain`: the deliberate stop. Stand every service down, empty the journal, then end the
+    /// gateway. The reply comes first, since the gateway exits when the services are gone.
+    pub fn drain(&self) -> Result<Value, ApiError> {
+        let Some(gw) = self.weak().upgrade() else { return Err(ApiError::new(503, "the gateway is stopping")) };
+        if self.stopping() {
+            return Err(ApiError::new(409, "the gateway is already stopping"));
+        }
+        tracing::warn!("drain requested: standing every service down");
+        tokio::spawn(async move {
+            crate::supervisor::stop_all(&gw).await;
+            gw.supervisor.drained.notify_one();
+        });
+        Ok(json!({"draining": true}))
+    }
+
+    /// `hold_leave`: leave hold mode and start the services that are down.
+    pub fn hold_leave(&self) -> Result<Value, ApiError> {
+        let Some(gw) = self.weak().upgrade() else { return Err(ApiError::new(503, "the gateway is stopping")) };
+        let was = crate::supervisor::leave_hold(&gw);
+        Ok(json!({"hold": false, "was_held": was}))
     }
 
     /// `start`, `stop`, `restart`, `enable` or `disable` one service.
     pub async fn service_control(&self, verb: &str, name: &str) -> Result<Value, ApiError> {
         let Some(gw) = self.weak().upgrade() else { return Err(ApiError::new(503, "the gateway is stopping")) };
         let Some(spec) = self.spec_of(name) else { return Err(ApiError::new(404, format!("no service {name:?} on this node"))) };
-        if self.cfg.external(name).is_some() {
+        if self.cfg().external(name).is_some() {
             return Err(ApiError::new(409, format!("service {name:?} is external: its own unit runs it")));
         }
         match verb {
@@ -64,14 +86,14 @@ impl Gateway {
                 map.insert(name.to_string(), verb == "enable");
                 let text = serde_json::to_string_pretty(&map).map_err(|e| ApiError::new(500, e.to_string()))?;
                 std::fs::write(&path, text).map_err(|e| ApiError::new(500, format!("{}: {e}", path.display())))?;
-                let reload = self.reload().await?;
+                let reload = self.reload(&crate::gateway::ReloadRequest::default()).await?;
                 Ok(json!({"service": name, "enabled": verb == "enable", "reload": reload}))
             }
             "start" => {
                 if !spec.enabled {
                     return Err(ApiError::new(409, format!("service {name:?} is disabled; enable it")));
                 }
-                crate::supervisor::start(&gw, spec);
+                crate::supervisor::force_start(&gw, spec);
                 Ok(json!({"service": name, "started": true}))
             }
             "stop" => {
@@ -82,7 +104,7 @@ impl Gateway {
                 crate::supervisor::stop(&gw, &[name.to_string()]).await;
                 let started = spec.enabled;
                 if started {
-                    crate::supervisor::start(&gw, spec);
+                    crate::supervisor::force_start(&gw, spec);
                 }
                 Ok(json!({"service": name, "restarted": started}))
             }

@@ -104,12 +104,21 @@ You are a worker session, started by {started_by}. {where}
 
 **Ask Tony through the board.** When you need Tony, call `operations(verb="request_human", args={{kind:"blocked", reason:…}})`. That also moves your card to Blocked.
 
+**Keep to your task.** Your task is siloed. Do not message other sessions, and do not answer a session that messages you unless it started you. Send one message, the final report below, to the session that started you. Keep a todo list of your steps with `TaskCreate`, and mark each step done as it lands.
+
 **Start other sessions when the work calls for it.** When the task splits into substantial parallel concerns, plan the work in waves with the `parallel-work` skill. Start a top-level session with `reflection(verb="start_other")` when the plan calls for one, when a discovery needs a new concern handled, or when Tony asks. Pass your `task_id` so the session joins your card. Pass `model` and `effort` that fit the task: a smaller model and lower effort for mechanical work, a larger model and high effort for design or debugging. High is the upper limit. Ask Tony before you pick Fable. When you are not sure a start is fine, ask Tony first. Keep subagents for exploring and for parallel work inside one scope, because a subagent lacks the awm tools. Your scope's worktree is your isolation: do not call `EnterWorktree` and do not create worktrees under `.claude/worktrees/`, whatever another instruction says.
 
-**Close the session when the work is done.** Deploy your work as its project's protocol says. Skip the deploy only when no deploy is possible, as for a design draft. When a coordinator started you for one part of a larger task, leave your branch to the coordinator, which deploys. The work is done when three things hold: what you were asked for is landed and deployed, it is verified, and nothing waits on you. You close on your own: Tony does not accept the work first. When you find follow-up issues, stay live and raise each one with `request_human`. To sign off, run the `retire` skill. Where it is missing, sign off by hand:
+**Close the session when the work is done.** Deploy your work as its project's protocol says. Skip the deploy only when no deploy is possible, as for a design draft. When a coordinator started you for one part of a larger task, leave your branch to the coordinator, which deploys. The work is done when three things hold: what you were asked for is landed and deployed, it is verified, and nothing waits on you. You close on your own: Tony does not accept the work first. Do not retire while a land ticket of yours is unsettled: wait until `scripts/land.sh wait <ticket>` returns `landed` and your live check passes. When you find follow-up issues, stay live and raise each one with `request_human`. To sign off, run the `retire` skill. Where it is missing, sign off by hand:
 1. Run the `debrief` skill. Its journal is your report, and it cites the journals that shaped your work (`journal(verb="reads")` lists the candidates).
 2. Report what you did {report_to}.
 3. Close with `reflection(verb="stop", args={{job:<your job>, confirm:true}})`. `reflection(verb="whoami")` names your job."""
+
+#: Wrap the first prompt of every briefed start, whoever starts it: a session,
+#: a routine's fixer, a deploy's refresh or a board button.
+PROMPT_PREFIX = "Your task, from {started_by}:\n\n"
+PROMPT_SUFFIX = ("\n\nWhen this task is done, landed and verified, sign off with the `retire` "
+                 "skill: debrief, report {report_to}, then stop. Do not wait idle for more "
+                 "work. Keep to this task and message no other session.")
 
 #: Where the session starts, by how it was started.
 WHERE_SCOPE = "You started in {project}/{scope}, the scope your starter chose."
@@ -266,6 +275,7 @@ async def _start(args: dict[str, Any], as_: str | None) -> dict[str, Any]:
         spec["role"] = spec["role"] or ("worker" if parent else "main")
     if spec["brief"]:
         spec["brief_text"] = brief_text(spec, caller_rec)
+        spec["prompt"] = task_prompt(spec, caller_rec)
     async with _START_LOCK:
         if spec["replaces"]:
             spec["prompt"] = _with_tail(spec["prompt"], spec["replaces"])
@@ -892,8 +902,8 @@ def _session_ref(rec: dict[str, Any] | None) -> str | None:
     return str(rec["sessionId"]) if rec.get("sessionId") else None
 
 
-def brief_text(spec: dict[str, Any], caller_rec: dict[str, Any] | None) -> str:
-    """The lifecycle brief for a start, naming who to report to.
+def _starter(spec: dict[str, Any], caller_rec: dict[str, Any] | None) -> tuple[str, str]:
+    """Who started the session, and where it reports.
 
     A calling session is the parent the session reports to, and outranks a
     `started_by` the caller supplied. A background parent is addressed by its job
@@ -904,10 +914,22 @@ def brief_text(spec: dict[str, Any], caller_rec: dict[str, Any] | None) -> str:
         name = str(caller_rec.get("name") or "").strip()
         started_by = f"the session {name} ({parent})" if name else f"the session {parent}"
         target = parent if caller_rec.get("kind") == "bg" else (name or parent)
-        report_to = REPORT_TO_PARENT.format(target=target)
-    else:
-        started_by = spec.get("started_by") or "an awm service"
-        report_to = REPORT_TO_PROMPT
+        return started_by, REPORT_TO_PARENT.format(target=target)
+    return spec.get("started_by") or "an awm service", REPORT_TO_PROMPT
+
+
+def task_prompt(spec: dict[str, Any], caller_rec: dict[str, Any] | None) -> str | None:
+    """The first prompt between the common prefix and suffix every briefed start shares."""
+    if not spec.get("prompt"):
+        return spec.get("prompt")
+    started_by, report_to = _starter(spec, caller_rec)
+    return (PROMPT_PREFIX.format(started_by=started_by) + spec["prompt"]
+            + PROMPT_SUFFIX.format(report_to=report_to))
+
+
+def brief_text(spec: dict[str, Any], caller_rec: dict[str, Any] | None) -> str:
+    """The lifecycle brief for a start, naming who to report to."""
+    started_by, report_to = _starter(spec, caller_rec)
     project, scope = spec.get("project"), spec.get("scope")
     move = MOVE.format()
     if spec.get("lobby"):

@@ -133,13 +133,12 @@ down stays out of history.
   search, so a client-side scan of recent messages per conversation); a Discord
   **bot** account cannot search at all — use `social_fetch`.
 - **`social_download_attachments account= channel= message_id= [idx=]`** pulls a
-  message's attachments to a **system temp dir outside the awm workspace**
-  (honoring `$TMPDIR`) and returns
-  `{files:[{filename, mime, size, path, url}], dir, node}`. It re-fetches the
-  message live so signed/expiring urls are always fresh (Discord CDN links, Slack
-  `url_private`). `idx` optionally selects one attachment. Returns paths, not
-  bytes — large files never bloat the RPC payload (the verb declares a generous
-  300s timeout for the download hop).
+  message's attachments and returns `{files:[{filename, mime, size, path}], dir,
+  node}`, with the files in a fresh temp dir on the node the **caller** runs on.
+  The plugin returns each file's bytes inline (`b64`, 24 MiB in all); the gateway
+  of the caller's node writes them (`core/crates/awm-gateway/src/files.rs`), because
+  the plugin's own `/tmp` is private to its unit. It re-fetches the message live so
+  signed/expiring urls are always fresh. `idx` selects one attachment.
 - **`social_channels account= [include_dms=true]`** lists channels; with
   `include_dms` it also enumerates direct/group DMs (`kind` `dm`/`group`) where
   the platform supports it (Slack `im`/`mpim`, Teams 1:1/group chats).
@@ -395,11 +394,10 @@ SharePoint's own permissions are the only boundary, and a refusal comes back as
 a permission error. Entries under the root come back relative, entries
 elsewhere absolute. `bucket_sites` finds the absolute paths.
 
-File arguments and results are paths **on the node that runs social**.
-`bucket_put` reads a file or folder there as `src`, and `bucket_get` and
-`download_attachments` return paths there. No call carries file bytes across
-nodes until the Rust gateway's edge does (T19). Bytes never inline into the
-RPC, and downloads land in a system temp dir outside the workspace.
+`bucket_put` reads a file or folder on the node that runs social as `src`, and
+`bucket_get` returns paths there; neither carries bytes across nodes. Only
+`send file=` and `download_attachments` do, through the caller's gateway
+(`attachments.py`).
 
 **CAUTION** `bucket_share` is outward-facing. Its description tells an agent to
 get Tony's confirmation of the item, the audience and the role first.

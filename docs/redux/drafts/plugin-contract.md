@@ -2,9 +2,9 @@
 
 ## Purpose & Contents
 
-This file is the contract between a plugin and the Rust gateway of the redux (`install.md` R112, R115 to R117, R132). It holds the manifest format, the wire protocol a service speaks, the call interface a plugin uses to reach another plugin, and the usage event. The redux-core lane (job a92d02bf) owns it. Other lanes build against it. Send a change request to `redux-build/core` with `SendMessage`.
+This file is the contract between a plugin and the Rust gateway of the redux (`install.md` R112, R115 to R117, R132). It holds the manifest format, the wire protocol a service speaks, the call interface a plugin uses to reach another plugin, and the usage event. The plugin-redux scope owns it. Other lanes build against it.
 
-Status: draft v1.11. Build against it. v1.11 is the cutover (T19): the Rust gateway is the only gateway, the legacy loader goes, streams and sessions get their own routes and cross the edge, a service may mount its own HTTP server, a page names its bundle, the gateway stamps `_caller_pid` and hides private marks from peers. v1.9 enforced `needs.secrets` and added the install from a folder with its pin record (R116 items 1 and 2). v1.10 drops `trust` (R116 item 4), adds `verbs` to each need and enforces it (R116 item 3), enforces `needs.network`, adds the git install with its signed approval (R115, R116 items 1 and 2), replaces `X-Awm-Plugin` and the `/svc` door with the service token, makes a failed caller lookup untrusted (`fleet.md` R103 item 2) and sends every peer call through the local gateway (R86, R92).
+Status: draft v1.12. Build against it. The git log of this file holds what each version changed.
 
 ## Plugin folder
 
@@ -14,7 +14,7 @@ A folder with no `awm-plugin.toml` is not a plugin. The gateway ignores it.
 
 Plugin roots are an ordered list in the gateway config. The built-in core roots are `awm/services` then `awm/plugins`. Put a new core plugin at `awm/plugins/<name>/`. The first root that holds a plugin name wins. The gateway logs and ignores a shadowed folder.
 
-A tool name on the reserved list of the gateway config belongs only to a plugin from a core root. Any other claim refuses the plugin. A plugin's trust is where it loads from, never a manifest key. The `awm` tool belongs to the core: the gateway serves its verbs itself. The default list is `awm`, `auth`, `2fa`, `approver`, `queue-store` and `journal`, plus the singleton tools of the edge list (§ Install config).
+A tool name on the reserved list of the gateway config belongs only to a plugin from a core root. Any other claim refuses the plugin. A plugin's trust is where it loads from, never a manifest key. The `awm` tool belongs to the core: the gateway serves its verbs itself. The default list is `awm`, `auth`, `operations` and `journal`, plus the singleton tools of the edge list (§ Install config).
 
 ## Manifest
 
@@ -30,7 +30,7 @@ Example, for a plugin that serves one MCP tool, one hidden tool and one page:
 > name = "journal"
 > path = "."               # folder that holds run.sh, relative to the plugin
 > run = "run.sh"
-> install = "install.sh"   # default. The deploy runs it, as today
+> install = "install.sh"   # optional. Builds the runtime (§ Runtime)
 >
 > [[service.archive]]      # today's service.toml [[archive]], unchanged
 > name = "journals"
@@ -62,16 +62,15 @@ Example, for a plugin that serves one MCP tool, one hidden tool and one page:
 > gpu = false              # optional. Recorded, not enforced yet
 >
 > [[needs.tool]]
-> name = "precedence"      # the tool this plugin calls
+> name = "precedence"      # a tool this plugin cannot work without
 > major = 2
-> verbs = ["search", "add"] # every verb it calls, describe excepted
 > ```
 
 Rules the loader enforces:
 
 1. A tool name is letters, digits and hyphens. It holds no dot and no underscore. Use `harness-cc`, never `harness.cc`.
 2. A tool name is unique across the fleet and is the tool's permanent id (R117 item 2). A name that two plugins claim refuses the second plugin and names the owner (R116 item 5). A fork settles a clash by renaming the tool in its own manifest. The install config renames nothing.
-3. A `needs.tool` name that no plugin serves, on this node or a peer, refuses the plugin. The refusal names the tool. A `needs.tool` or `needs.contract` with no `verbs`, or with a verb that breaks the tool name rule, refuses the plugin too.
+3. A need is a hard dependency (R117 item 8). A `needs.tool` name that no plugin serves, on this node or a peer, refuses the plugin. The refusal names the tool. A need has no `optional` key and no `verbs` key.
 4. A `needs.tool` major that differs from the owner's major refuses the plugin.
 5. Refusals cascade: a plugin that needs a refused plugin's tool is refused too.
 6. `tier = "off"` keeps a tool off the MCP surface. Plugins and the CLI still call it through the gateway.
@@ -81,17 +80,13 @@ Rules the loader enforces:
 10. A service gets only the secrets its plugin's `needs.secrets` lists (§ Service wire protocol, step 1).
 11. Each `needs.network` entry must parse (§ Network). A bad entry refuses the plugin.
 
-### Verbs
+### Calls
 
-A plugin calls only the verbs its needs list (R116 item 3). Both gateways check each call at dispatch, after the mode gate.
+A plugin may call any tool (R116 item 3). The needs are its dependencies, never a list of what it may call.
 
 1. The gateway knows the calling plugin from the service token (§ Service wire protocol, step 2), or from the `Referer` of a page under `/p/<plugin>/<page>/`. A token that no spawn got gets 401.
-2. The plugin's own tools pass. `describe` passes on any tool it needs.
-3. A verb that no `[[needs.tool]]` or `[[needs.contract]]` lists gets 403. The refusal names the plugin, the tool and the verb, and says to add the verb to the manifest.
-4. A call with no service token and no page `Referer`, such as a session's or the CLI's, is not checked. The core's own `awm` tool needs no entry.
-5. A stream (§ Streams and sessions) from a plugin needs a `[[needs.tool]]` of a tool the streamed service serves, with any verb.
-
-**CAUTION** A missing verb breaks a plugin only at the call. `test/contract/test_plugin_calls.py` replays every plugin's recorded calls against its manifest. Add each new call to its table.
+2. The tool tier, the mode gate and the grants decide a call. The caller stamp tells the called plugin who called.
+3. A call to a tool that no plugin serves, on this node or a peer, fails at once with 404 and `{"detail": "<tool> not installed"}`.
 
 ### Network
 
@@ -118,7 +113,7 @@ An interface that several plugins serve is a contract (`install.md` R117 item 4)
 5. `GET /hub/contract/<name>@<major>` lists the providers now, as `[{name, major, plugin, peer}, ...]`.
 6. A contract need that has no provider refuses nothing. A tool that a node may lack implements a contract of its own name, such as `search@1`, and its dependents need that contract. deneb runs this way with no search, reflection or operations (`fleet.md` R79). Such a dependent waits with `gatewayclient.until_provided` or degrades when a call fails.
 
-**CAUTION** A contract's providers come from the local plugins and the peer tables. A singleton behind its host's door is in neither. A contract need on a door singleton therefore finds no provider, and the needs guard refuses each call to it. Need a door singleton as a `[[needs.tool]]`.
+**CAUTION** A contract's providers come from the local plugins and the peer tables. A singleton behind its host's door is in neither. A contract need on a door singleton therefore finds no provider. Need a door singleton as a `[[needs.tool]]`.
 
 Example: cch serves `harness-cc` and dsh serves `harness-ds`. Each implements the `harness` contract at major 1. reflection needs that contract and dispatches on the platform code of the session.
 
@@ -141,6 +136,17 @@ Only a trusted caller on this node may install or uninstall.
 3. Tony approves on his passkey. Run the same install again with `approval=<request_id>` (`awm install --approval`, the HTTP body's `approval`).
 4. The gateway reads `operations approval_get` and checks the grant itself. The signature must verify under the key. The kind must be `plugin_commits`, the node this node, the payload digest this change's, the commits exactly this change's `name@commit` list, and now inside the grant's window. Any other grant loads nothing, and the refusal names the check that failed.
 
+## Runtime
+
+A plugin owns its runtime (R115 item 3). awm runs no package manager for it.
+
+1. A core plugin is one static musl binary, built in mizar's container (R113). `run` names the binary. A pin file in `scripts/` names each binary by its version, the git tree id of its folder, the way `scripts/core.pin` names the core. A deploy places only the binaries whose pins changed.
+2. Any other plugin builds its runtime in its `install` hook, with any tool it chooses, inside its own folder or its state dir. The hook runs in the plugin folder with `AWM_DIR`, `AWM_PLUGIN` and `AWM_NODE_NAME` set.
+3. The gateway runs a plugin's `install` hook before the plugin's first start, and again only when the plugin's install stamp changes. The stamp covers the plugin folder and skips the folders the reload stamp skips (§ The name table and hot reload). A failed hook refuses that plugin alone and names the hook's last output lines.
+4. A plugin with no `install` key needs no install step.
+
+**CAUTION** A hook that writes outside its folder and its state dir breaks the one-plugin-one-runtime rule. A shared conda env or a global pip install is such a write.
+
 ## Refresh hook
 
 The deploy runs a plugin's `refresh` command when the files of the plugin folder changed between two releases (`routines.md` R33).
@@ -162,7 +168,7 @@ The keys that place plugins:
 4. `[[external]]` names a service the gateway serves but does not spawn, as `{service, token_file?}`. Another user's systemd unit runs it (R99, R107). See § External services.
 5. `isolated_listen` is a second address that serves only the isolated door. See § Isolated sessions.
 
-A reload reads the keys that place plugins again: `plugins`, `exclude`, the roots, `profiles` and `reserved`. A change to `listen`, `isolated_listen`, `peer`, `env` or `[[external]]` takes a gateway restart.
+A reload reads the keys that place plugins again: `plugins`, `exclude`, the roots, `profiles` and `reserved`. It also reads `[env]` and `[[external]]`. A running plugin keeps the env it started with until it restarts, and the reload result lists these plugins under `stale_env`. A change to `listen`, `isolated_listen` or `peer` takes a gateway restart.
 
 The `[fleet]` table holds the rollout order: `home`, `nodes` (starting with `home`), and an optional `[fleet.project.<name>]` with `canonical` and `nodes`. The routine plugin reads it. The gateway ignores it. The routine plugin also honours `AWM_INSTALL_CONFIG` as an override of the path, for tests and dry runs. The gateway reads only `<AWM_DIR>/config.toml`.
 
@@ -208,7 +214,7 @@ The gateway finds the session from a pid: `X-Awm-Session-Pid`, which `awm mcp` s
 3. A lookup that fails reads as `untrusted`, with mode `unknown` (`fleet.md` R103 item 2). cch records each session at its start, so a session Tony starts by hand is found.
 4. A call with no pid reads as `trusted`. Only a loopback caller can send one, and the gateway logs a warning.
 5. A call with a valid service token is lane `service` and `trusted`, unless it also names a pid.
-6. The gateway keeps a positive answer `session_cache_s` seconds (install config, default 5). It never keeps a failed lookup.
+6. The gateway keeps a definite answer `session_cache_s` seconds (install config, default 5). It never keeps a failed lookup or an `unknown` mode. While reflection is not registered or does not answer, the call waits up to `lookup_wait_s` seconds (default 10), then refuses with 403. The refusal says either that reflection is unreachable or that it could not tell the session's mode.
 
 The gateway drops the two keys a caller sends. A service that finds no `_caller_trust` reads the call as `untrusted`.
 
@@ -248,7 +254,7 @@ The loopback listener serves `/mcp` too. `isolated_listen` in the install config
 
 A plugin calls another plugin only through the gateway (R117 item 1).
 
-1. Call each tool you need by the name your `[[needs.tool]]` gives it, with a verb its `verbs` lists (§ Verbs). For a contract, read its providers from `GET /hub/contract/<name>@<major>` at call time.
+1. Call any tool by its name (§ Calls). For a contract, read its providers from `GET /hub/contract/<name>@<major>` at call time.
 2. Call `POST $AWM_HUB_URL/invoke` with `{"name":"<tool>","args":{"verb":"<verb>","args":{...},"peer":"<node>"?}}`.
 3. Send `X-Awm-Service-Token` with the token from `AWM_HUB_TOKEN_FILE`. The gateway names your plugin from it and counts the call as surface `plugin`. A wrong token gets 401. `awm.gatewayclient.call` does steps 2 and 3.
 4. Send `X-Awm-As: <principal>` when you act for someone, as today.
@@ -267,17 +273,17 @@ A call to another node goes to the local gateway with `peer` (`fleet.md` R86, R9
 5. A file path in a peer call is a path on the far node. No call carries file bytes across nodes.
 6. A call or stream from another node never names a project, scope or path this node marks private (`<AWM_DIR>/private.json`, `awm.config.privacy`). It is answered as an unknown tool, and an emitted payload a mark covers never reaches a peer.
 
-A call to a tool that is not up yet waits up to 10 s, then fails with 503 and names the tool (R117 item 7).
+A call to a tool that the table holds but that is not up yet waits up to 10 s, then fails with 503 and names the tool (R117 item 7). A tool the table does not hold fails at once with `not installed` (§ Calls).
 
 ## The name table and hot reload
 
 The gateway keeps one live table from each tool name to the plugin that owns it, on this node and its peers (R117 item 3). Every call looks its name up in that table, so a plugin change takes effect at the next call (R144).
 
 1. `awm reload`, the `awm` tool's `reload` verb or `POST /hub/reload` reads the roots and the install config again. Only a trusted caller on this node may reload.
-2. The reload compares each plugin with the loaded one. It starts an added plugin, restarts a changed one and stops a removed one. Every other service keeps its process.
-3. A plugin is changed when its folder's stamp moved or its services differ. The stamp covers the names, sizes and mtimes of the folder's files. It skips `.git`, `node_modules`, `target`, `__pycache__`, `.venv` and `.pytest_cache`.
-4. To install a plugin, put its folder in a root and reload. To update it, change its files and reload. To rename a tool, edit the manifest and reload. To remove a plugin, delete its folder or add it to `exclude`, then reload.
-5. After a change, the gateway posts `{node}` to each peer's `POST /hub/table/changed`. The peer reads `GET /hub/table` again, then reloads, because a need may now resolve or break.
+2. The reload compares the loaded plugins with the roots. It starts an added or enabled service and stops a removed or disabled one. It never restarts a plugin because its files, stamp or manifest changed. Every other service keeps its process.
+3. The caller decides what restarts. `awm reload --restart <a,b>` restarts exactly the named plugins, and the result lists any name no plugin carries under `unknown`. `awm restart <plugin>` takes the same path for one plugin. `--force` bypasses the crash breaker. `awm deploy --reload-restart <a,b>` hands its names to `awm reload --restart`. The deploy request names the plugins, even when it disagrees with the file changes.
+4. To install a plugin, put its folder in a root and reload. To update it, change its files, then reload with `--restart <name>`. To rename a tool, edit the manifest, then reload with `--restart <name>`. To remove a plugin, delete its folder or add it to `exclude`, then reload. A page never restarts a plugin: the gateway reads its `dist` on each request.
+5. After a change, the gateway posts `{node}` to each peer's `POST /hub/table/changed`. The peer reads `GET /hub/table` again and re-resolves `needs` only. It starts the plugins whose `needs` now resolve and stops those whose `needs` no longer do. It runs no full reload and does not forward the notice.
 
 `GET /hub/table` lists this node's tools as `[{name, major, plugin, implements}]`. The `awm` tool's `table` verb shows the whole live table, peers included.
 

@@ -11,7 +11,7 @@ from typing import Any, Callable
 
 from awm.routine import definitions, proc
 from awm.routine.definitions import Routine, Step
-from awm.routine.escalate import escalate
+from awm.routine.escalate import escalate, notice
 from awm.routine.outbound import Outbound
 from awm.routine.store import LiveRunExists, Store
 
@@ -173,6 +173,13 @@ class Runner:
                               run: dict[str, Any], step: Step | None, why: str,
                               output: str) -> None:
         sname = step.name if step else "(service)"
+        summary = (f"Routine {rec['project']}/{routine.name} failed at {sname} "
+                   f"(run {run['id']}): {why}.")
+        if routine.fixer is None:
+            esc = await notice(self.out, f"{summary}\n```\n{output[-1500:]}\n```")
+            self.store.record_dispatch(run["id"], {"for": sname, "role": "notice",
+                                                   **esc.to_dict()})
+            return
         prompt = (
             f"The routine `{rec['project']}/{routine.name}` failed (run {run['id']}). "
             f"Step `{sname}` {why}.\n\nIts output:\n\n{output[-3000:]}\n\n"
@@ -185,9 +192,7 @@ class Runner:
             self.out, peer=routine.fixer.peer, project=rec["project"],
             scope=routine.fixer.scope or f"fix-{routine.name}",
             name=f"fix-{routine.name}-{run['id']}", prompt=prompt,
-            started_by=self._started_by(rec, run),
-            summary=(f"Routine {rec['project']}/{routine.name} failed at {sname} "
-                     f"(run {run['id']}): {why}."))
+            started_by=self._started_by(rec, run), summary=summary)
         self.store.record_dispatch(run["id"], {"for": sname, "role": "fixer",
                                                **esc.to_dict()})
 

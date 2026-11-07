@@ -1,22 +1,26 @@
-"""The board writer: mirror the store's cards into Trilium on deneb (queue.md R61, R66; fleet.md R106).
+"""The board writer: mirror the store's cards into Trilium on deneb (queue.md R61, R66, R67; fleet.md R106).
 
 It reads ``events`` after its mark and upserts one note per changed card, through the
-``trilium`` tool. The board is write-only from here: the writer never reads a card's
-section or tags back. It writes a note's body only when it creates the note, because a
-Proposed note's body is Tony's. It never makes a Ledger or Older note.
+``trilium`` tool. A card sits in the folder of its section under ``tasks`` and moves when the
+section changes. The board is write-only from here: the writer never reads a card's section
+or tags back. It rewrites a card's body on each update, except a Proposed note's body, which
+is Tony's and which the writer writes only when it creates the note. It never makes a Ledger
+or Older note.
 """
 
 from __future__ import annotations
 
 import asyncio
+import html
 import json
 import logging
 import time
 from datetime import datetime, timezone
 from typing import Any
 
-from awm.operations.board import (OPS_ID, ROOT_ID, card_note_id, ensure_ops, ensure_root,
-                                  messages_note_id, record_note_id)
+from awm.operations.board import (BOOK_ID, COLUMN_IDS, OPS_ID, ROOT_ID, card_note_id,
+                                  ensure_ops, ensure_root, ensure_tasks, messages_note_id,
+                                  record_note_id)
 from awm.operations.store import Store
 from awm.operations.trilium import TriliumTool
 
@@ -31,7 +35,7 @@ MANAGED = {"agentManaged": "", "readOnly": ""}
 
 
 class Writer:
-    def __init__(self, store: Store, api: TriliumTool, *, parent: str = "root",
+    def __init__(self, store: Store, api: TriliumTool, *, parent: str = BOOK_ID,
                  portals: dict[str, str] | None = None, clock=time.time) -> None:
         self.store, self.api, self.parent, self.clock = store, api, parent, clock
         self.portals = dict(portals or {})
@@ -49,7 +53,8 @@ class Writer:
     def _ensure_root(self) -> None:
         if not self._root_ok:
             ensure_root(self.api, self.parent)
-            ensure_ops(self.api, self.portals)
+            ensure_tasks(self.api, self.parent)
+            ensure_ops(self.api, self.portals, self.parent)
             self._root_ok = True
 
     # -- the Ops book ----------------------------------------------------------------
@@ -70,27 +75,67 @@ class Writer:
     # -- one card ----------------------------------------------------------------------
 
     @staticmethod
-    def _labels(card: dict[str, Any]) -> dict[str, str | None]:
-        values = {"swarmCard": "", "taskId": card["task_id"], "section": card["section"],
+    def _tonys(card: dict[str, Any]) -> bool:
+        """Whether the note's body is Tony's: a Proposed note, and the task spawned from it."""
+        return card["kind"] == "note" or card["body_ref"] == card_note_id(card["task_id"])
+
+    @classmethod
+    def _labels(cls, card: dict[str, Any]) -> dict[str, str | None]:
+        values = {"swarmCard": "", "readOnly": None if cls._tonys(card) else "",
+                  "taskId": card["task_id"], "section": card["section"],
                   "status": card["status"], "peer": card["peer"], "cardKind": card["kind"],
                   "updatedAt": int(card["updated"]),
                   "doneAt": int(card["done_at"]) if card["done_at"] else None}
         return {k: None if v is None else str(v) for k, v in values.items()}
 
+    @staticmethod
+    def _body(card: dict[str, Any]) -> str:
+        """The card's current state as HTML, so the note reads fresh in the vault."""
+        e = html.escape
+        meta = card["meta"]
+        head = " · ".join(x for x in (card["section"].replace("_", " "), card["status"],
+                                      card["peer"]) if x)
+        parts = [f"<h3>{e(head)}</h3>",
+                 f"<p>Task {e(card['task_id'])}, updated "
+                 f"{datetime.fromtimestamp(card['updated'], timezone.utc).isoformat(timespec='seconds')}"
+                 "</p>"]
+        if meta.get("reason"):
+            parts.append(f"<h4>Reason</h4><p>{e(str(meta['reason']))}</p>")
+        todos = meta.get("todos") or []
+        if todos:
+            rows = "".join(f"<li>[{'x' if t.get('status') == 'completed' else ' '}] "
+                           f"{e(str(t.get('subject') or t.get('content') or ''))}</li>"
+                           for t in todos)
+            parts.append(f"<h4>Todos</h4><ul>{rows}</ul>")
+        sessions = card.get("sessions") or []
+        if sessions:
+            rows = "".join(f"<li>{e(str(s.get('name') or s.get('session_id')))} "
+                           f"({e(str(s.get('role') or ''))}, "
+                           f"{'active' if s.get('active') else 'ended'})</li>" for s in sessions)
+            parts.append(f"<h4>Sessions</h4><ul>{rows}</ul>")
+        return "".join(parts)
+
+    def _column(self, card: dict[str, Any]) -> str:
+        return COLUMN_IDS.get(card["section"], COLUMN_IDS["working"])
+
     def upsert(self, card: dict[str, Any]) -> None:
         tid, nid = card["task_id"], card_note_id(card["task_id"])
-        want = self._labels(card)
+        want, column = self._labels(card), self._column(card)
         labels = {k: v for k, v in want.items() if v is not None}
+        body = None if self._tonys(card) else self._body(card)
         note = self.api.note(nid)
         if note is None:
             if card["kind"] == "note":
-                self.api.create_note(ROOT_ID, card["title"], "code", note_id=nid,
+                self.api.create_note(column, card["title"], "code", note_id=nid,
                                      mime="text/x-markdown", labels=labels)
             else:
-                self.api.create_note(ROOT_ID, card["title"], "text", note_id=nid, labels=labels)
+                self.api.create_note(column, card["title"], "text", body or "", note_id=nid,
+                                     labels=labels)
         else:
             self.api.update(nid, title=card["title"] if note.get("title") != card["title"] else None,
-                            labels=labels)
+                            content=body, labels=labels)
+            if note.get("parentNoteIds") != [column]:
+                self.api.move(nid, column)
             have = {a["name"] for a in note.get("attributes", [])
                     if a.get("type") == "label" and a.get("noteId", nid) == nid}
             for name in sorted(k for k, v in want.items() if v is None and k in have):

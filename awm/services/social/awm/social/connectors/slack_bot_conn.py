@@ -33,6 +33,7 @@ import logging
 
 import aiohttp
 
+from awm.social.connectors.slack_blocks import slack_text
 from awm.social.connectors.base import (
     Account, Channel, Connector, Identity, InboundMessage, OnMessage,
     file_bytes, looks_like_slack_user_id, slack_attachments, slack_reaction,
@@ -163,7 +164,7 @@ class SlackBotConnector(Connector):
             sender_bot=bool(m.get("bot_id")),
             message_id=m.get("ts", ""),
             ts=m.get("ts", ""),
-            text=m.get("text", "") or "",
+            text=slack_text(m),
             attachments=slack_attachments(m),
         )
 

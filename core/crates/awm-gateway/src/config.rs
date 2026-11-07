@@ -69,12 +69,19 @@ pub struct Config {
     /// Seconds a call waits for a tool that is not up yet (R117 item 7).
     #[serde(default = "default_wait")]
     pub tool_wait_s: f64,
-    /// Seconds a positive `reflection session_of` answer is kept. A failed lookup is never kept.
+    /// Seconds a call waits for reflection to answer `session_of` while it restarts.
+    #[serde(default = "default_wait")]
+    pub lookup_wait_s: f64,
+    /// Seconds a definite `reflection session_of` answer is kept. A failed or `unknown` one is never kept.
     #[serde(default = "default_session_cache")]
     pub session_cache_s: f64,
     /// Seconds a service may stay off its control WebSocket before a respawn.
     #[serde(default = "default_reconnect")]
     pub reconnect_window_s: f64,
+    /// Seconds an adopted service may stay silent before its process group is killed and respawned.
+    /// The adapter waits as long for a gateway, so the two give up together.
+    #[serde(default = "default_adopt_window")]
+    pub adopt_window_s: f64,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -111,6 +118,9 @@ fn default_session_cache() -> f64 {
 }
 fn default_reconnect() -> f64 {
     10.0
+}
+fn default_adopt_window() -> f64 {
+    60.0
 }
 
 impl Default for Config {

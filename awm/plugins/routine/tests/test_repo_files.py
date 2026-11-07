@@ -1,4 +1,4 @@
-"""awm's own deploy.toml, the full-tests routine and its known-failures script."""
+"""awm's own deploy.toml and its scripts, and the full-tests known-failures script."""
 
 from __future__ import annotations
 
@@ -21,12 +21,10 @@ REPO = Path(__file__).resolve().parents[4]
 def test_awm_deploy_toml_parses():
     cfg = deployconf.parse((REPO / "deploy.toml").read_text())
     assert cfg.check_timeout == 600 and "--smoke" in cfg.check
-    assert cfg.refresh.kind == "queue"
     assert cfg.refresh.sync == "scripts/refresh-checkout.sh"
-    assert (REPO / cfg.refresh.sync).is_file()
-    assert "FEDERATION.md § Deploy" in cfg.refresh.prompt
+    assert cfg.refresh.command == "scripts/node-refresh.sh"
+    assert (REPO / cfg.refresh.sync).is_file() and (REPO / cfg.refresh.command).is_file()
     assert cfg.backup == "github"
-    assert cfg.fixer_peer == "local"
 
 
 def _node(tmp_path):
@@ -82,11 +80,6 @@ def test_refresh_checkout_keeps_a_local_commit(tmp_path):
 def test_awm_deploy_toml_names_no_host():
     # fleet.md R140: the node list lives in each node's install config.
     assert "[fleet]" not in (REPO / "deploy.toml").read_text()
-
-
-def test_full_tests_routine_parses():
-    r = definitions.load(REPO / "routines" / "full-tests.toml")
-    assert r.timer and [s.run for s in r.steps] == ["scripts/full-tests.sh"]
 
 
 FAKE_RUN_TESTS = """#!/usr/bin/env bash
@@ -169,7 +162,6 @@ def test_move_canonical_repoints_the_checkout_and_adds_github(tmp_path):
 def test_awm_deploy_toml_pins_the_built_files():
     cfg = deployconf.parse((REPO / "deploy.toml").read_text())
     assert {"scripts/core.pin", "scripts/pages.pin"} <= set(cfg.artifact_pins)
-    assert "scripts/core.pin" in cfg.refresh.prompt
     assert cfg.artifact_refresh == "scripts/refresh-pins.sh" and cfg.artifact_refresh_timeout > 600
     from awm.routine import artifacts
     pin = artifacts.parse_pin((REPO / "scripts/core.pin").read_text(), "scripts/core.pin")
