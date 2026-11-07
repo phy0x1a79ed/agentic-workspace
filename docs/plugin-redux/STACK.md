@@ -6,7 +6,7 @@ Decisions: `search` for journals tagged `decision` in awm/plugin-redux.
 
 ## Current
 
-- `build` — executing docs/plugin-redux/PLAN.md. T1 landed on release (49232bf9; rollout stuck at lyra). T2's three parts are committed on feat/plugin-redux and unpushed (see `t2-finish`). T3 is done. T4 DONE 2026-11-07: all four plans approved by Tony (comms, harness and ops paused for his go; knowledge executing T1). Now T6: land T2 once T1's batch clears lyra, then each port as merger. A gateway subagent is adding the awm/plugins lifecycle event on feat/plugin-redux (give knowledge the sha).
+- `build` — executing docs/plugin-redux/PLAN.md. T1 landed (49232bf9) and T2 landed (38bcdafe, with the awm/plugins lifecycle event and fleet-gap-edges' doc fix), both live on every node but lyra, which slept and takes the release at its next refresh. Now T6: land each port as merger. Tony holds all messages to the workers: ask him before telling them T2 is in, so knowledge can submit T3 (014f580c, 077442b6 preserve_order, b3797021 protoc + image gc) and then T4 marks (06d8dbe8, `--restart scopes`).
 
 ## Waiting on the user
 
@@ -17,7 +17,9 @@ Decisions: `search` for journals tagged `decision` in awm/plugin-redux.
 - sites daemon: does "mira is going away" cover alcor's awm-sites (awm/services/social/mira/, port 7822; serves Slack, Teams and onedrive-ubc)? request_human filed. comms keeps it running until the answer.
 
 - isolated/ tag: dvc's nightly Globus mirror copies .awm/ off-site, skipping only CACHEDIR.TAG folders. statecheck now tags every .pre-rust/ and .rust-<ts>/. Pre-existing: .awm/services/cch/isolated/<uuid>/claude/.credentials.json is mirrored too. Asked Tony whether to tag isolated/.
-- lyra edges: Tony is fixing lyra's ssh edges himself. After that, run the cloud roles (homelab/site.yml --limit lyra --tags awm_config,ssh_edges,journal,service_key, from the ansible mamba env with -e ansible_ssh_private_key_file=$HOME/.ssh/id_ed25519_awm_edge; the check-mode diff is clean), then journal_move.yml -l lyra and awm reload. Then resume batch 9a59ed8ad3de (`land.sh batch --ticket b3b597e326e0`). Uncommitted cloud edit: redux-dev-apply host_vars/lyra.yml (awm_miniforge, awm_env).
+- lyra: cloud roles applied 2026-11-07 (cloud dev 8b774a6 on mizar's bare: host_vars plus lyra's service key; altair's origin rejects the push while a worktree holds dev). lyra is asleep now. When it wakes: run journal_move.yml -l lyra, then awm reload, then site.yml --tags service_key on the doors so they admit lyra's key; re-run lyra's roles in check mode clean before cloud dev goes to release.
+- mizar's awm-edge-fwd@deneb was hand-installed (no repo writes it) and looped since ssh_edges turned on ControlMaster. Fixed in place with ControlMaster=no and ControlPath=none. Follow-up: move the unit into a cloud role.
+- Worker notes held for Tony: harness's reflection waits on ops' awm-trust; harness ports all of `kept` into awm-harness (comms' plan gave it to comms); dsh's three decisions for comms; knowledge's lancedb binaries are ~238 MB each (budget?); ~/.claude.json is 664 on capella and altair.
 
 - (superseded by `lyra edges` above) lyra: land batch 9a59ed8ad3de (ticket b3b597e326e0) is stuck at lyra, which has no edges.yml and was never provisioned. Choose (a) provision it with cloud awm_config and edges, or (b) shut lyra's WSL so the rollout skips it as an asleep sleeper. request_human is filed and the lease is held. deneb, shogun and altair still run the old release.
 - Plan questions for Tony at each approval, in the plan's "Still unsure about": comms D2 (the mira daemon) and D3 (rlm-browser); harness Q1 (the dsh fork build); knowledge (search off LanceDB, the model artifact, kb's Python child and kb's tool vs R134, the journal embeddings tables, transcripts' sweep); ops (deneb as an operations caller in edges.yml).

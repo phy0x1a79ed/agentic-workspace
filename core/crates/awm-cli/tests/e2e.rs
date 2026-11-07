@@ -1330,8 +1330,17 @@ fn isolated_door_end_to_end() {
     assert_eq!(rpc(&door, Some("good"), "notifications/initialized", json!({})).0, 202);
 
     // tools/list shows only the whitelist under the ceiling: no harness-cc, no awm, no peers.
-    let (_, list) = rpc(&door, Some("good"), "tools/list", json!({}));
-    let tools = list["result"]["tools"].as_array().cloned().unwrap_or_default();
+    // The fake plugin registers its verbs after the gateway is up, so wait for them.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let (list, tools) = loop {
+        let (_, list) = rpc(&door, Some("good"), "tools/list", json!({}));
+        let tools = list["result"]["tools"].as_array().cloned().unwrap_or_default();
+        let registered = tools.first().and_then(|t| t["inputSchema"]["properties"]["verb"]["enum"].as_array()).is_some_and(|v| v.len() > 1);
+        if registered || Instant::now() > deadline {
+            break (list, tools);
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    };
     let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
     assert_eq!(names, vec!["fake"], "{list}");
     let verbs = &tools[0]["inputSchema"]["properties"]["verb"]["enum"];
@@ -1456,5 +1465,74 @@ fn auth_gives_edge_material_only_to_an_edge_front_or_no_plugin() {
     assert!(out.contains("not open to plugin") && !out.contains("tokens"), "a plugin listed device tokens: {code} {out} {errout}");
     let (code, out, errout) = cli(&url, &["auth", "edge_material"]);
     assert!(code == 0 && out.contains("session_ttl_seconds"), "the CLI was refused: {out} {errout} {}", fail());
+    assert!(gw.stop().success());
+}
+
+/// A plugin subscribed to the gateway's own `awm/plugins` topic hears each change a reload
+/// makes: one event per plugin, with its install stamp and the root it loaded from.
+#[test]
+fn a_plugin_hears_the_plugin_lifecycle() {
+    let tmp = tempfile::tempdir().unwrap();
+    let base = tmp.path();
+    let (core, third, state) = (base.join("core"), base.join("third"), base.join("state"));
+    let fake = fake_bin();
+    write(&core.join("listener/awm-plugin.toml"), "[plugin]\nname = \"listener\"\n\n[[service]]\nname = \"listener\"\n\n[[tool]]\nname = \"listener\"\n");
+    write(&core.join("listener/run.sh"), &format!("export FAKE_TOOL=listener FAKE_SUBSCRIBE=awm/plugins\nexec '{}'\n", fake.display()));
+    std::fs::create_dir_all(&third).unwrap();
+    write(&state.join("config.toml"), &format!(
+        "node = \"e2e\"\nlisten = \"127.0.0.1:0\"\nworkspace = \"{}\"\ncore_roots = [\"{}\"]\nplugin_roots = [\"{}\"]\ntool_wait_s = 30\nsession_cache_s = 0\n",
+        base.display(), core.display(), third.display()));
+    let gw = Gateway::start(&state);
+    let url = gw.url.clone();
+    let heard = || -> Value {
+        let (code, out, errout) = cli(&url, &["listener", "heard"]);
+        assert_eq!(code, 0, "listener heard: {out} {errout}\n{}", log(&state));
+        serde_json::from_str(&out).unwrap()
+    };
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while heard()["subscribed"] != true {
+        assert!(Instant::now() < deadline, "the listener never subscribed: {}", log(&state));
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let reload = || {
+        let (code, out, errout) = cli(&url, &["reload"]);
+        assert_eq!(code, 0, "awm reload: {out} {errout}");
+    };
+    // The `n`th payload the listener heard, once it arrives.
+    let nth = |n: usize| -> Value {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            let got = heard();
+            if let Some(p) = got["payloads"].get(n) {
+                return p.clone();
+            }
+            assert!(Instant::now() < deadline, "event {n} never arrived: {got}\n{}", log(&state));
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    };
+    assert_eq!(heard()["payloads"], json!([]), "a first boot reports nothing");
+
+    let hot = third.join("hot");
+    write(&hot.join("awm-plugin.toml"), "[plugin]\nname = \"hot\"\n\n[[service]]\nname = \"hot\"\n\n[[tool]]\nname = \"hot\"\n");
+    write(&hot.join("run.sh"), &format!("export FAKE_TOOL=hot\nexec '{}'\n", fake.display()));
+    reload();
+    let installed = nth(0);
+    assert_eq!((&installed["plugin"], &installed["event"]), (&json!("hot"), &json!("installed")), "{installed}");
+    assert_eq!(installed["root"], json!(third.display().to_string()), "{installed}");
+    assert!(installed["version"].as_str().is_some_and(|v| !v.is_empty()), "{installed}");
+
+    write(&hot.join("notes.txt"), "a change to the folder moves its stamp\n");
+    reload();
+    let updated = nth(1);
+    assert_eq!((&updated["plugin"], &updated["event"]), (&json!("hot"), &json!("updated")), "{updated}");
+    assert_ne!(updated["version"], installed["version"], "{updated}");
+
+    std::fs::remove_dir_all(&hot).unwrap();
+    reload();
+    let removed = nth(2);
+    assert_eq!((&removed["plugin"], &removed["event"], &removed["version"]), (&json!("hot"), &json!("removed"), &updated["version"]), "{removed}");
+    reload();
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(heard()["payloads"].as_array().map(Vec::len), Some(3), "a reload that changes nothing reports nothing");
     assert!(gw.stop().success());
 }
