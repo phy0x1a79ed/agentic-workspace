@@ -293,7 +293,7 @@ mod tests {
     }
 
     #[test]
-    fn the_default_paths_sit_under_the_claude_home() {
+    fn test_the_default_paths_sit_under_the_claude_home() {
         let p = Paths::under(Path::new("/r"));
         assert_eq!(p.starts_dir(), Path::new("/r/.claude/cx/starts"));
         assert_eq!(p.home.roster(), Path::new("/r/.claude/daemon/roster.json"));
@@ -304,7 +304,7 @@ mod tests {
     }
 
     #[test]
-    fn the_paths_follow_cx_environment_overrides() {
+    fn test_the_paths_follow_cx_environment_overrides() {
         let vars: std::collections::HashMap<&str, &str> = [
             ("AWM_CX_STATE", "/t/st"),
             ("AWM_CX_CLAUDE", "/t/claude"),

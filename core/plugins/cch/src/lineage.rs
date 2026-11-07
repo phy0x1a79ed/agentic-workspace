@@ -570,18 +570,27 @@ mod tests {
         std::process::id()
     }
 
+    /// A made-up parent with a made-up start time. The real parent will not do: in the build
+    /// container it is init, where the walk stops.
+    const PARENT: u32 = 987_600;
+    const PARENT_START: &str = "4242";
+
     fn parent() -> u32 {
-        procfs::ppid(me()).unwrap()
+        PARENT
+    }
+
+    fn start_of(pid: u32) -> Option<String> {
+        if pid == PARENT { Some(PARENT_START.into()) } else { procfs::start_ticks(pid) }
     }
 
     fn proc_start(pid: u32) -> String {
-        procfs::start_ticks(pid).unwrap()
+        start_of(pid).unwrap()
     }
 
-    /// The real start times, with the parent walk and the session heuristic faked. By default
-    /// the walk goes from this process to its real parent and then to init, and no ancestor
-    /// looks like a Claude Code process: the tests may run under a real session, whose records
-    /// must not leak in.
+    /// The real start times plus the made-up parent's, with the parent walk and the session
+    /// heuristic faked. By default the walk goes from this process to its parent and then to
+    /// init, and no ancestor looks like a Claude Code process: the tests may run under a real
+    /// session, whose records must not leak in.
     struct Procs<'a> {
         ppid: Box<dyn Fn(u32) -> Option<u32> + 'a>,
         may: Box<dyn Fn(u32) -> bool + 'a>,
@@ -618,7 +627,7 @@ mod tests {
 
     impl Processes for Procs<'_> {
         fn start(&self, pid: u32) -> Option<String> {
-            procfs::start_ticks(pid)
+            start_of(pid)
         }
         fn ppid(&self, pid: u32) -> Option<u32> {
             (self.ppid)(pid)
