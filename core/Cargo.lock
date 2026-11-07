@@ -127,6 +127,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "awm-embed"
+version = "0.1.0"
+dependencies = [
+ "awm-pycompat",
+ "regex",
+ "serde_json",
+ "sha1",
+]
+
+[[package]]
 name = "awm-fake-plugin"
 version = "0.1.0"
 dependencies = [

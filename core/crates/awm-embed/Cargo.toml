@@ -1,0 +1,12 @@
+[package]
+name = "awm-embed"
+description = "The chunker, chunk headers and the MiniLM embedder that journal, guide and search share."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+awm-pycompat.workspace = true
+regex = "1"
+sha1 = "0.10"
+serde_json.workspace = true
