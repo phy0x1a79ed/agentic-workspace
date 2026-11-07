@@ -23,9 +23,14 @@ Procedure, from dfs-interview § Work the stack:
 
 ## Current topic
 
-(none: the stack is empty)
+**handoff**. Its result: `handoff/README.md`.
 
 ## Stack
+
+- **handoff** (2026-11-06): just coordinate with them and split work, submit a formal plan for your part when ready. their implementation agetns will do the same
+  - [ ] Unpause timing: Rust social lands in days. Keep seats paused until then (temporary seats on request), or bring the Python social seats back meanwhile?
+  - [ ] Discord #bots seat: mizar or alcor?
+  - [ ] Hallam Hive #general level: untrusted (Discord default) or cooperative?
 
 ## Parked
 
