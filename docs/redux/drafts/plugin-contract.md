@@ -140,7 +140,8 @@ Only a trusted caller on this node may install or uninstall.
 
 A plugin owns its runtime (R115 item 3). awm runs no package manager for it.
 
-1. A core plugin is one static musl binary, built in mizar's container (R113). `run` names the binary. A pin file in `scripts/` names each binary by its version, the git tree id of its folder, the way `scripts/core.pin` names the core. A deploy places only the binaries whose pins changed.
+1. A core plugin is one static musl binary, built in mizar's container (R113) by `scripts/release-plugins.sh`. `scripts/plugins/<name>.pin` pins it the way `scripts/core.pin` pins the core. `scripts/pins.sh` holds the version formula: it covers the plugin folder, the shared crates it builds from, and the workspace build files. The deploy places the binary at `<AWM_DIR>/bin/<name>` and restarts only the plugins whose binary changed. The manifest keeps `run = "run.sh"`, and `run.sh` holds one line: `exec "$AWM_DIR/bin/<name>" "$@"`.
+   - **CAUTION** `deploy.toml` lists each plugin's pin. Add the line in the commit that adds the plugin, or the deploy batch refuses it.
 2. Any other plugin builds its runtime in its `install` hook, with any tool it chooses, inside its own folder or its state dir. The hook runs in the plugin folder with `AWM_DIR`, `AWM_PLUGIN` and `AWM_NODE_NAME` set.
 3. The gateway runs a plugin's `install` hook before the plugin's first start, and again only when the plugin's install stamp changes. The stamp covers the plugin folder and skips the folders the reload stamp skips (§ The name table and hot reload). A failed hook refuses that plugin alone and names the hook's last output lines.
 4. A plugin with no `install` key needs no install step.

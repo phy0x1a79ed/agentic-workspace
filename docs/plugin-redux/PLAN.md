@@ -129,14 +129,9 @@ Gotchas: workers plan while T2 builds, but none executes before the SDK lands. C
 
 ### T4. Merge the port plans and release the workers to execute
 
-Read the four sets of plans against each other and against the SDK. Look for:
-- shared code that belongs in a crate
-- call shapes that two groups disagree on, such as harness ↔ reflection ↔ operations, and knowledge ↔ every caller of journal and scopes
-- migrations that touch another group's store
+Revised 2026-11-07 (Tony: "each worker proposes plan I ok each individually" and "you can check plans too before they submit to me"). Each worker sends this session its plan path and its cross-group questions. This session checks that plan on its own, against the spec rules and the other groups' call shapes, and answers. When the plan holds, this session tells the worker "submit", and the worker submits it with ExitPlanMode. Tony approves each plan individually. This session answers each cross-group question in the worker's thread and settles conflicts between plans as they surface, such as harness ↔ reflection ↔ social and knowledge ↔ every caller of journal and scopes.
 
-Answer each worker with approval or with changes. Then release each worker to execute its plugins in the order its plan names. Each worker builds, tests and submits one plugin at a time with `scripts/land.sh submit --brief <file> --restart <plugin>`, and does not merge.
-
-Gotchas: knowledge's store and embed crates and ops' trust-policy crate are needed by other groups. Those crates land first, ahead of any plugin that uses them.
+Gotchas: knowledge's store and embed crates and ops' trust-policy crate are needed by other groups. Those crates land first, ahead of any plugin that uses them. No port executes against the SDK before the SDK lands.
 
 ### T5. Compact
 
