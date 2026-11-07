@@ -60,7 +60,7 @@ def test_no_token_file_sends_no_token(gateway, monkeypatch):
 
 
 def test_a_refusal_raises_with_its_status(monkeypatch):
-    transport = httpx.MockTransport(lambda r: httpx.Response(403, text="not declared"))
+    transport = httpx.MockTransport(lambda r: httpx.Response(403, text="refused"))
     monkeypatch.setattr(httpx, "Client", lambda **kw: _REAL_SYNC(transport=transport))
     with pytest.raises(gc.GatewayCallError) as exc:
         gc.call_sync("journal", "post")

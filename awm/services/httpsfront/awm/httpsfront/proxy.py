@@ -669,8 +669,7 @@ async def _resolve_slice(app, token: str) -> dict | None:
     service, by its token and with no ``X-Awm-As``: the gateway runs it on the
     service lane with no identity, which is what that service's
     ``_operator_only`` admits, and the identity is absent because this call did
-    not cross an edge. The token is also what holds the call to this plugin's
-    ``[[needs.tool]]`` entry for ``trilium.slice_resolve``.
+    not cross an edge.
 
     The answer is ``{"found": bool, "note_id", "user", "write"}``, which the
     gateway delivers as JSON or as a JSON string; anything that is not a
