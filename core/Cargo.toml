@@ -39,6 +39,7 @@ awm-cli = { path = "crates/awm-cli" }
 awm-trust = { path = "crates/awm-trust" }
 awm-edge = { path = "crates/awm-edge" }
 awm-plugin-sdk = { path = "crates/awm-plugin-sdk" }
+awm-cdp = { path = "crates/awm-cdp" }
 
 [profile.release]
 opt-level = 3
