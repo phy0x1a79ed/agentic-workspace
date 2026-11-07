@@ -247,6 +247,28 @@ impl Browser {
     }
 }
 
+/// Page-level domains a confined session may drive on its own tabs.
+const SEAT_DOMAINS: [&str; 11] = ["Page", "Runtime", "Input", "DOM", "DOMSnapshot", "Accessibility", "Emulation", "Log", "CSS", "Overlay", "Network"];
+/// Methods inside those domains that reach past the tab.
+const SEAT_DENIED: [&str; 10] = [
+    "Network.getAllCookies",
+    "Network.getCookies",
+    "Network.setCookie",
+    "Network.setCookies",
+    "Network.deleteCookies",
+    "Network.clearBrowserCookies",
+    "Network.clearBrowserCache",
+    "Network.loadNetworkResource",
+    "Page.close",
+    "Page.navigateToHistoryEntry",
+];
+
+/// Whether a session confined to its own tabs may run `method`: a page-level domain, and
+/// none of the methods inside those domains that reach past the tab, such as other sites' cookies.
+pub fn page_method_allowed(method: &str) -> bool {
+    SEAT_DOMAINS.contains(&method.split('.').next().unwrap_or("")) && !SEAT_DENIED.contains(&method)
+}
+
 /// A free TCP port on loopback. Racy by nature: a collision fails the launch.
 pub fn free_port() -> std::io::Result<u16> {
     Ok(TcpListener::bind("127.0.0.1:0")?.local_addr()?.port())

@@ -17,25 +17,7 @@ use tokio::sync::Mutex;
 
 pub const PROFILES: [&str; 2] = ["tony", "blank"];
 
-/// Page-level domains a seat may drive on its own tabs.
-const SEAT_DOMAINS: [&str; 11] = ["Page", "Runtime", "Input", "DOM", "DOMSnapshot", "Accessibility", "Emulation", "Log", "CSS", "Overlay", "Network"];
-/// Methods inside those domains that reach past the tab.
-const SEAT_DENIED: [&str; 10] = [
-    "Network.getAllCookies",
-    "Network.getCookies",
-    "Network.setCookie",
-    "Network.setCookies",
-    "Network.deleteCookies",
-    "Network.clearBrowserCookies",
-    "Network.clearBrowserCache",
-    "Network.loadNetworkResource",
-    "Page.close",
-    "Page.navigateToHistoryEntry",
-];
-
-pub fn seat_may_run(method: &str) -> bool {
-    SEAT_DOMAINS.contains(&method.split('.').next().unwrap_or("")) && !SEAT_DENIED.contains(&method)
-}
+pub use awm_cdp::page_method_allowed as seat_may_run;
 
 /// A refusal the verb answers as `{"error": ...}`, as the Python plugin did.
 #[derive(Debug)]
