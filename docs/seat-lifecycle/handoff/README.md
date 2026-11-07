@@ -22,7 +22,8 @@ Tony: "approaching weekend so that is safe. I doubt rust social will land in day
 - 15 seats are seeded on altair: the 13 lab DM people, `tony` and `hallam-hive-general`. Each has a local git repo with DVC at `projects/agentic-commons/seats/<slug>` (beside the checkout, Tony 2026-11-07), registered as scope `seats/<slug>`, and a seed journal tagged `journal`, `seat`, `user:<slug>`.
 - Tags `seat` and `user:<slug>` (14 people) are in the vocabulary.
 - The temporary seats are retired. Kalen's handoff is 7e3766bd (metasmith aspire/dev), Patrik's is 353bb3fe (metasmith lab/patrik-star, with his unanswered request).
-- Start shape agreed with plugin-redux: a plain `start_other` on scope `seats/<slug>`, after `new-seat.sh` on the seat's node.
+- Start shape agreed with plugin-redux: a plain `start_other` on scope `seats/<slug>`. For a new seat, `scope create` with `peer=<seat node>` runs a project-declared create hook, `main/scripts/new-seat.sh`, in place of a git worktree. The scopes port adds hook support. Until then social refuses an unbootstrapped seat with `request_human` and keeps the message queued.
+- Seat DVC data uses the workspace's shared cache (`config.local`), so the nightly cache sync backs it up. The nightly mirror backs up the rest of each seat folder.
 
 ## Cutover, when the Rust social goes live
 
@@ -30,4 +31,5 @@ Tony: "approaching weekend so that is safe. I doubt rust social will land in day
 2. On altair, delete the PAUSED banner, then the `opal-seat-holder` skill (`~/.claude/skills/opal-seat-holder`) and its draft under `docs/redux/drafts/claude-home/`.
 3. Remove `docs/redux/drafts/agentic-commons/` from the awm repo. The live copy is the agentic-commons repo.
 4. Unmount the dead holders still on slack-bot seats, such as Patrik's (job a1406294, gone).
-5. Keep `~/.local/share/awm/seat-pause-backup` until the new seats run a week clean, then delete it.
+5. Add the create-hook declaration plugin-redux names to the agentic-commons repo, if its scopes worker has not.
+6. Keep `~/.local/share/awm/seat-pause-backup` until the new seats run a week clean, then delete it.
