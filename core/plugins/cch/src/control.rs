@@ -66,8 +66,7 @@ pub const WRONG_OFFER_GRACE: Duration = Duration::from_secs(6);
 pub const DISCONNECT_OPTION: &str = "disconnect this session";
 /// What the caller's own session is told once its Remote Control is off.
 pub const SELF_OFF_FOLLOWUP: &str = "Remote Control is now off. Continue with what you were doing.";
-/// The line that reconnects a session's awm server, which a move drops.
-pub const RECONNECT_AFTER_MOVE: &str = "/mcp reconnect awm";
+pub use crate::resume::RECONNECT_AFTER_MOVE;
 
 const HOOK_ASKED: &str = "a premodelswitch hook asked you to confirm";
 const NO_CALLER: &str = "could not tell which session is calling, so there is no session of your own to act on. \
@@ -1671,17 +1670,6 @@ async fn answer_on<E: Effects>(
 
 // --- the live effects ----------------------------------------------------------
 
-// `trust` holds the process environment across an await, so its futures are not `Send`; run them
-// to completion on a blocking thread instead.
-async fn off_runtime<T, F>(job: impl FnOnce() -> F + Send + 'static) -> T
-where
-    T: Send + 'static,
-    F: Future<Output = T>,
-{
-    let handle = tokio::runtime::Handle::current();
-    blocking(move || handle.block_on(job())).await
-}
-
 struct LiveParts<W> {
     paths: Paths,
     host: Host,
@@ -1774,13 +1762,11 @@ impl<W: ResumeWatch<Tail> + Clone + Send + Sync + 'static> Effects for Live<W> {
     }
 
     async fn trusted(&self, dir: &Path) -> bool {
-        let (dir, home) = (dir.to_path_buf(), self.home().clone());
-        off_runtime(move || async move { trust::trusted(dir, &home).await }).await
+        trust::trusted(dir, self.home()).await
     }
 
     async fn grant_awm_worktree(&self, dir: &Path, projects_root: &Path) -> Vec<String> {
-        let (dir, root, home) = (dir.to_path_buf(), projects_root.to_path_buf(), self.home().clone());
-        off_runtime(move || async move { trust::grant_awm_worktree(dir, root, &home).await }).await
+        trust::grant_awm_worktree(dir, projects_root, self.home()).await
     }
 
     fn spawn(&self, job: Detached) {

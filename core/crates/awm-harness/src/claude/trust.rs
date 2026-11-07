@@ -81,7 +81,7 @@ pub async fn start_refusal(path: impl AsRef<Path>, home: &ClaudeHome) -> Option<
 /// The git repository Claude Code keys workspace trust on: the repository root for an ordinary
 /// repository, the bare directory for worktrees of a bare clone, or None outside git.
 pub async fn workspace_key(path: impl AsRef<Path>) -> Option<PathBuf> {
-    workspace_key_in(path.as_ref(), std::env::vars_os()).await
+    workspace_key_in(path.as_ref(), std::env::vars_os().collect::<Vec<_>>()).await
 }
 
 /// [`workspace_key`] with `env` standing in for this process's environment.
