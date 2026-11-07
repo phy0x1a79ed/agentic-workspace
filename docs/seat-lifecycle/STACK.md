@@ -23,15 +23,9 @@ Procedure, from dfs-interview § Work the stack:
 
 ## Current topic
 
-**group-dms**. Its result: `group-dms/README.md`.
+(none: the stack is empty)
 
 ## Stack
-
-- **group-dms** (2026-11-06): Open from the plan: a group DM with two lab members routes each sender to their own person seat, so two agents may answer in one chat.
-  - [x] Treat a group DM like a channel without a channel seat: only a message that @mentions Opal goes to the sender's person seat, and that agent answers only its sender's request? Recommend yes. (answered 2026-11-06)
-  - [x] Adopt Tony's routing with these edge rules: thread ownership by the answering person seat, no person seats for bots, a group DM treated as a channel without a channel seat, first contact by public @Opal answered in place, and the handled-by and forward rules in the seat brief? Recommend yes. (answered 2026-11-06)
-  - [x] Confirm the revised routing: in a channel with a channel seat everything (mentions included) goes to the channel seat, which may forward; without one, a mention goes to the sender's person seat; an @Opal counts as writing to Opal for the DM guard? (answered 2026-11-06)
-  - [ ] An @Opal in a chat with no seat (Slack #bioinformatics, #arbutus) is forwarded by social to the sender's DM seat when they have one, which answers in that chat; otherwise it goes nowhere? Recommend yes.
 
 ## Parked
 
@@ -53,3 +47,4 @@ Procedure, from dfs-interview § Work the stack:
 - **seat-start** (closed 2026-11-06): `seat-start/README.md`
 - **tony-dm** (closed 2026-11-06): `tony-dm/README.md`
 - **keeper** (closed 2026-11-06): `keeper/README.md`
+- **group-dms** (closed 2026-11-06): `group-dms/README.md`

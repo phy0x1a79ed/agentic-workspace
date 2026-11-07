@@ -85,3 +85,14 @@ A seat is a chat again: a DM, a group DM or a channel. Person seats go. Checked 
 - Tony's seat spans his Slack DM and his Discord DM. So a seat is one chat by default, and a declared seat may list several chats.
 
 Not covered: an @Opal in a chat with no seat, such as Slack #bioinformatics or #arbutus. Today it goes nowhere.
+
+## Decision: channel seats only
+
+Tony, 2026-11-06: "I dont even need an exception. just start a slack one on altair for me, and a discord one on mizar for discord" and "mentions in a channel just goes to the channel. if the channel doesnt have a seat, it goes nowhere and that's intended."
+
+1. A seat is one chat: a DM, a group DM or a channel. There are no person seats. A seat never spans chats.
+2. Every message in a seated chat goes to that seat, mentions included. A message in a chat with no seat goes nowhere, on purpose.
+3. A seat may forward a message to another seat. The receiving agent may read the source chat's history.
+4. Tony has two seats: his Slack DM on altair and his Discord DM on mizar. This replaces tony-dm item 1.
+5. A person's continuity across seats comes from the `user:<person>` journal tag.
+6. This replaces the person-seat parts of edge-cases (items 1-2 of "both seat kinds") and of resume-from-journals: a DM seat's scope is `seats/<person>`. A channel seat gets its own scope under `seats/`.
