@@ -25,13 +25,15 @@ pub mod cancel;
 pub mod config;
 pub mod holders;
 pub mod hub;
-pub mod ids;
 pub mod privacy;
 pub mod proc;
+pub mod procfs;
 pub mod service;
 pub mod sessions;
 pub mod supervise;
 pub mod telemetry;
+
+pub use awm_proto::ids;
 
 pub use awm_proto::{Caller, Lane, Surface, UsageEvent, WsMsg};
 pub use awm_trust::Level;

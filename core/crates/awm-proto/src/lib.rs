@@ -1,5 +1,6 @@
 //! Shared types of the awm core, as `docs/redux/drafts/plugin-contract.md` defines them.
 
+pub mod ids;
 pub mod manifest;
 pub mod network;
 pub mod usage;
