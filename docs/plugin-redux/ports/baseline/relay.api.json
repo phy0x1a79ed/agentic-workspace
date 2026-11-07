@@ -1,0 +1,177 @@
+{
+  "description": "The host half of the channel rooms and the issuer of every machine slot, on the public host. Member nodes' `channel` plugins call it through this host's door; sessions use `channel`.",
+  "functions": [
+    {
+      "name": "open",
+      "tool": "relay_open",
+      "surfaces": [
+        "cli",
+        "http"
+      ],
+      "description": "Open a room at the tether relay with the member as its first member.",
+      "params": [
+        {
+          "name": "member",
+          "type": "object",
+          "required": true,
+          "description": "The session this call acts for: `session` (its R9 id), `name` and `level`."
+        },
+        {
+          "name": "persistent",
+          "type": "boolean"
+        }
+      ],
+      "timeout": 60
+    },
+    {
+      "name": "join",
+      "tool": "relay_join",
+      "surfaces": [
+        "cli",
+        "http"
+      ],
+      "description": "Add the member to an open plain room.",
+      "params": [
+        {
+          "name": "member",
+          "type": "object",
+          "required": true,
+          "description": "The session this call acts for: `session` (its R9 id), `name` and `level`."
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "required": true,
+          "description": "The room."
+        }
+      ]
+    },
+    {
+      "name": "write",
+      "tool": "relay_write",
+      "surfaces": [
+        "cli",
+        "http"
+      ],
+      "description": "Send one message into a room the member is in.",
+      "params": [
+        {
+          "name": "member",
+          "type": "object",
+          "required": true,
+          "description": "The session this call acts for: `session` (its R9 id), `name` and `level`."
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "required": true,
+          "description": "The room."
+        },
+        {
+          "name": "message",
+          "type": "object",
+          "required": true
+        }
+      ],
+      "timeout": 60
+    },
+    {
+      "name": "close",
+      "tool": "relay_close",
+      "surfaces": [
+        "cli",
+        "http"
+      ],
+      "description": "The member leaves the room; the last to leave ends it.",
+      "params": [
+        {
+          "name": "member",
+          "type": "object",
+          "required": true,
+          "description": "The session this call acts for: `session` (its R9 id), `name` and `level`."
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "required": true,
+          "description": "The room."
+        }
+      ]
+    },
+    {
+      "name": "status",
+      "tool": "relay_status",
+      "surfaces": [
+        "cli",
+        "http"
+      ],
+      "description": "The rooms the member is or was in.",
+      "params": [
+        {
+          "name": "member",
+          "type": "object",
+          "required": true,
+          "description": "The session this call acts for: `session` (its R9 id), `name` and `level`."
+        }
+      ]
+    },
+    {
+      "name": "feed",
+      "tool": "relay_feed",
+      "surfaces": [
+        "cli",
+        "http"
+      ],
+      "description": "What waits for the calling node's members, after their cursors. Renews the leases of the sessions in `live`.",
+      "params": [
+        {
+          "name": "live",
+          "type": "array"
+        },
+        {
+          "name": "acks",
+          "type": "array"
+        },
+        {
+          "name": "wait",
+          "type": "number"
+        }
+      ],
+      "timeout": 90
+    },
+    {
+      "name": "issue",
+      "tool": "relay_issue",
+      "surfaces": [
+        "cli",
+        "http"
+      ],
+      "description": "A machine-channel slot for the calling node's operator daemon: `{slot, token, expires_in}`. With `slot`, `token` and `owner`, put that held slot back on a relay that restarted: `{restored: true}` or `{refused: taken|ended}`.",
+      "params": [
+        {
+          "name": "slot",
+          "type": "string"
+        },
+        {
+          "name": "token",
+          "type": "string"
+        },
+        {
+          "name": "owner",
+          "type": "string"
+        }
+      ],
+      "timeout": 60
+    },
+    {
+      "name": "tether",
+      "tool": "relay_tether",
+      "surfaces": [
+        "cli",
+        "http"
+      ],
+      "description": "This host's tether relay: its release and child.",
+      "params": []
+    }
+  ]
+}

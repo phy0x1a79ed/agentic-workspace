@@ -28,7 +28,7 @@ Order: shared crates, browser, rlm-browser, channel, social. social lands with i
 - Build and test only through `scripts/rust-build.sh`, with targets in `$HOME/.cache/awm-target/port-comms`.
 - Merge `feat/plugin-redux` from mizar's bare repo, never rebase. Use WIP commits, never `git stash`.
 - On ENOSPC, stop and delete nothing.
-- Capture each tool's `describe` before its port, as `core/plugins/<name>/tests/golden/describe.json`. A parity test diffs the Rust manifest against it.
+- `baseline/<service>.api.json` holds each Python service's `API_MANIFEST` at release 49232bf9, the `ready` api it sends the gateway. A port commit moves it to `core/plugins/<name>/tests/golden/`, where a parity test diffs the Rust `ready` api against it. Only the plan's listed changes may differ.
 - Inventory each node's state before the first land with `awm-statecheck inventory`. The first Rust start snapshots it to `<dir>/.pre-rust/`.
 - Leave this state untouched, and list it in the inventory:
   - rlm-browser's DB and profiles on altair and capella;
