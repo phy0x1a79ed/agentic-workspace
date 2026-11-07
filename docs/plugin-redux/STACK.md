@@ -32,7 +32,7 @@ Decisions: `search` for journals tagged `decision` in awm/plugin-redux.
 ## Stack
 
 - `build` — the approved plan, T1–T10. The todo list mirrors it.
-- `t2-finish` — T2 commits on feat/plugin-redux: pins 891e8692, gateway 0e423392, SDK 29900ddb. Before T2 lands:
+- `t2-finish` — DONE at 95a2f71c (all ten items plus seven audit fixes; Rust 145 pass, Python run-tests.sh green; workers told via ~/.cache/plugin-redux-briefs/t2-done.txt). Waiting to land: T1 batch 9a59ed8ad3de is held at lyra (no edges.yml, gateway inactive; Tony fixing edges). Open: an unauthenticated loopback POST reads as trusted with no plugin, so it passes auth's caller gate (existing open-loopback caveat). Earlier notes: T2 commits on feat/plugin-redux: pins 891e8692, gateway 0e423392, SDK 29900ddb. Before T2 lands:
   - delete test/contract/test_plugin_calls.py and awm/services/search/tests/test_needs.py (they test the removed guard), and fix the guard mentions in the INSTALL.md of rlm-factorio and search;
   - make a [[needs.contract]] with no provider refuse (R117 item 8), and fix contract § Contracts item 6 and its CAUTION;
   - contract doc: the core roots include core/plugins; the install stamp skips UNSTAMPED; the plugin state dir is <AWM_DIR>/plugins/<plugin>/;
