@@ -47,11 +47,12 @@ The old keeper (`keeper.py`) merges into seats. One seats component in social ow
 
 ## Homes and journals
 
-1. Seat work lives in `agentic-commons`, an awm project apart from awm and metasmith (redux `users.md` R128). Its one main checkout holds every seat folder at `seats/<slug>/`, a gitignored local git repo with DVC and no remote.
-2. Each seat folder is registered as scope `seats/<slug>` with `scope ensure`, its worktree set to the folder. The journal refuses posts to an unregistered scope. `scripts/new-seat.sh <slug>` makes the folder and registers it. Run it on the seat's node before the first start.
-3. The agent starts in the main checkout with its cwd at `seats/<slug>/` and claims no scope, because many seats share the checkout. It reads its scope's journals for context when it needs them. A task stays resumable after its session is gone.
-4. Every seat journal carries the tags `journal`, `seat` and `user:<person-slug>`. A person's continuity across seats comes from the user tag.
-5. An agent journals after each result or decision it sends, and once at retire.
+1. Seat work lives in `agentic-commons`, an awm project apart from awm and metasmith (redux `users.md` R128). Its checkout `projects/agentic-commons/main/` holds the SOP, the briefs and `scripts/new-seat.sh`.
+2. Each seat has a folder beside the checkout, `projects/agentic-commons/seats/<slug>/`: a local git repo with DVC and no remote. It is registered as the awm scope `seats/<slug>`, with the folder as its worktree. Tony, 2026-11-07: "Beside the checkout".
+3. `scripts/new-seat.sh <slug>` makes the folder and registers the scope. Run it on the seat's node before the seat's first start. Without it, `start_other` would make a full worktree of the repo, and the journal refuses posts to the scope.
+4. social starts the agent with a plain `start_other` on project `agentic-commons`, scope `seats/<slug>`. The agent claims its seat scope, so one agent holds a seat at a time. It reads its scope's journals for context when it needs them. A task stays resumable after its session is gone.
+5. Every seat journal carries the tags `journal`, `seat` and `user:<person-slug>`. A person's continuity across seats comes from the user tag.
+6. An agent journals after each result or decision it sends, and once at retire.
 
 ## The pushed line
 

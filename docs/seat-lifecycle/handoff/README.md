@@ -19,10 +19,10 @@ Tony: "approaching weekend so that is safe. I doubt rust social will land in day
 ## Seat side done (2026-11-07)
 
 - `agentic-commons` exists on altair: GitHub `phy0x1a79ed/agentic-commons` (private), main checkout `projects/agentic-commons/main`. It holds `docs/seat-sop.md`, `docs/briefs/{slack-hallam-lab,discord-hallam-hive,discord-dm}.md` and `scripts/new-seat.sh`.
-- 15 seats are seeded on altair: the 13 lab DM people, `tony` and `hallam-hive-general`. Each has a local git repo with DVC at `main/seats/<slug>`, a scope `seats/<slug>` registered with `scope ensure`, and a seed journal tagged `journal`, `seat`, `user:<slug>`.
+- 15 seats are seeded on altair: the 13 lab DM people, `tony` and `hallam-hive-general`. Each has a local git repo with DVC at `projects/agentic-commons/seats/<slug>` (beside the checkout, Tony 2026-11-07), registered as scope `seats/<slug>`, and a seed journal tagged `journal`, `seat`, `user:<slug>`.
 - Tags `seat` and `user:<slug>` (14 people) are in the vocabulary.
 - The temporary seats are retired. Kalen's handoff is 7e3766bd (metasmith aspire/dev), Patrik's is 353bb3fe (metasmith lab/patrik-star, with his unanswered request).
-- plugin-redux confirmed the start shape: `start_other` gains `cwd` and `claim`, and social runs `new-seat.sh` before a new seat's first start.
+- Start shape agreed with plugin-redux: a plain `start_other` on scope `seats/<slug>`, after `new-seat.sh` on the seat's node.
 
 ## Cutover, when the Rust social goes live
 
