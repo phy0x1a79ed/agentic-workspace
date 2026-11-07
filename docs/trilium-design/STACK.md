@@ -7,7 +7,7 @@ Related: journal 7724ff11 (ops-board decision), spec `docs/redux/*.md` (queue R6
 
 ## Current
 
-status-pages/new-agent-button
+status-pages/seat-rc-toggle
 
 ## Waiting on the user
 
@@ -19,12 +19,11 @@ status-pages/new-agent-button
 - 2026-11-06: one question per message, with a recommendation.
 - 2026-11-06: Sonnet workers for straightforward builds; build for the end state, no compat shims.
 - 2026-11-06 (via redux-endstate/review): message no session but the starter, and only with the final report. Answer no session except the starter. Take everything to Tony.
-- 2026-11-06: land with routine(verb="deploy"); no PRs, no force-push. Never ssh to fir. Never print password note bodies.
+- 2026-11-06: land via the ci/land skill (scripts/land.sh submit on mizar); no PRs, no force-push. Never ssh to fir. Never print password note bodies.
 
 ## Stack
 
-- status-pages — own questions closed (f421ff25; spec fleet.md R147). Build waits on its children. "ops can be the new swarm status page I requested and all of our nodes including stations register to it." Roster with stats per node; opt-in at awm install.
-  - new-agent-button — "new note for proposed simplifies to new agent -> ... a button on the board page, which lets me start an agent with remote control on a specific node. nodes can be sorted by usage."
+- status-pages — own questions closed (f421ff25; spec fleet.md R147). Build waits on seat-rc-toggle. Spec sweep 2026-11-07: Ops page has no owning plugin yet (R115 item 1: a page is a plugin). "ops can be the new swarm status page I requested and all of our nodes including stations register to it." Roster with stats per node; opt-in at awm install.
   - seat-rc-toggle — "on the new fleet status dashboard, I can turn remote control on and off for seats ... can we sort natively in claude?" Tony moved the whole topic here (seats/pause handoff). Seat context, settled in docs/seat-lifecycle (feat/seat-pause): no idle per-client agents; a DM goes to the seat's live agent, or an event routine starts one in agentic-commons seats/<person>; social holds seat state empty/occupied/retiring, reclaim after 4h done; names seat:slack/DM/<person>; reflection remote_control(job,on,name) works, refuses mid-turn. Open, with seats/pause recs: (a) dashboard reads `social seats` as source so empty seats show; (b) no passkey for RC toggle; (c) "sort natively in claude?" ours.
 - note-agent-button — "a new button on trillium (left of the button, per note) that is a bot icon that opens a drop down for available nodes." Child note marks the attached agent; deleted on retire. Parallel to the task system.
 
@@ -35,8 +34,9 @@ status-pages/new-agent-button
 ## Workers
 
 - swarm-board/layout — landed awm d5be934c (journal 0d875664); done.
-- seats/pause — on altair, bridge:session_012TZ1zzdZdBqRvgc4NA7dfK. Runs Tony's Slack seat redesign; owns the seat side of seat-rc-toggle. Not ours.
+- seats/pause — on altair. Runs Tony's Slack seat redesign (docs/seat-lifecycle, feat/seat-pause); handed seat-rc-toggle to us. Not ours; do not message (standing instruction).
 
 ## Closed
 
-(none)
+- status-pages (own questions) — f421ff25. Spec fleet.md R147, install.md R115 item 4.
+- new-agent-button — 46a610c5. Spec queue.md R61/R63/R65/R66, fleet.md R106/R147. Proposed dropped; scope awm/lobby.
