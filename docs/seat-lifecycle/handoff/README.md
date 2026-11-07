@@ -31,5 +31,5 @@ Tony: "approaching weekend so that is safe. I doubt rust social will land in day
 2. On altair, delete the PAUSED banner, then the `opal-seat-holder` skill (`~/.claude/skills/opal-seat-holder`) and its draft under `docs/redux/drafts/claude-home/`.
 3. Remove `docs/redux/drafts/agentic-commons/` from the awm repo. The live copy is the agentic-commons repo.
 4. Unmount the dead holders still on slack-bot seats, such as Patrik's (job a1406294, gone).
-5. Add the create-hook declaration plugin-redux names to the agentic-commons repo, if its scopes worker has not.
+5. Check that agentic-commons main has `awm-project.toml` at its root with `[scope] create_hook = "scripts/new-seat.sh"` and `create_hook_prefix = "seats/"`. plugin-redux's knowledge port worker commits it once altair runs the Rust scopes.
 6. Keep `~/.local/share/awm/seat-pause-backup` until the new seats run a week clean, then delete it.
