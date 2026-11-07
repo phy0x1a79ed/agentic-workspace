@@ -42,7 +42,7 @@ The `table_changed` frame tells the nodes across each edge that this node's tool
 Machines reach each other through ssh keys at three levels (R92). Each `authorized_keys` line carries a comment `awm:<holder>:<level>`, so a log line names the holder and the level.
 
 - **User.** Tony's account, with a shell and agent access. A user key is an edge. Its forced command is `awm edge-serve` for awm traffic.
-- **Service.** A key locked to `awm port`, with no shell and no forwarding. `awm port` reads the verb from `SSH_ORIGINAL_COMMAND`, runs only the host's singletons that admit the key's holder, and logs each call to `<AWM_DIR>/port.log`. A service key from outside the edges carries an `expiry-time`: the timed invite.
+- **Service.** A key locked to `awm port`, with no shell and no forwarding. `awm port` reads the request from stdin (the caller's command is the bare `port`; the older form with the JSON on the command line is still accepted), runs only the host's singletons that admit the key's holder, and logs each call to `<AWM_DIR>/port.log`. A service key from outside the edges carries an `expiry-time`: the timed invite.
 - **Admin.** A separate account with sudo, for config and installs. shogun holds it on the Arbutus nodes.
 
 ## Singletons
@@ -52,7 +52,7 @@ A singleton service fronts one external resource for the fleet, such as the 2FA 
 - The edge list's `singletons` names each singleton tool, its host and its `callers`. Its `singleton_doors` gives each host's door port and network.
 - `callers` lists the nodes that may call the singleton besides its host, as directed edges into it (R98 item 3). A planned caller counts once it exists.
 - On every other node the gateway reserves the tool name, so no local plugin can serve it.
-- A caller's gateway sends each call to the host's door, never over an edge. One call is one `ssh -l <user> -p <port> <address> port <request>` with the node's service key `~/.ssh/id_ed25519_awm_service`. `<user>` is the door's `user` in `edges.yml`, the account the host's door admits. The address is the host's address on the door's network in `edges.yml`, and an `internet` door uses the `public` address. A `peer` other than the host is refused.
+- A caller's gateway sends each call to the host's door, never over an edge. One call is one `ssh -l <user> -p <port> <address> port`, the request JSON on stdin so a file can ride in it, with the node's service key `~/.ssh/id_ed25519_awm_service`. `<user>` is the door's `user` in `edges.yml`, the account the host's door admits. The address is the host's address on the door's network in `edges.yml`, and an `internet` door uses the `public` address. A `peer` other than the host is refused.
 - `/hub/table` gives no singleton to another node, and a peer's table loses any singleton it lists. `awm table` shows each singleton this node reaches as a `door` row.
 - A plugin's need for a singleton this node reaches through a door holds from `edges.yml` alone. So a door that is down at boot refuses no plugin. A call while it is down fails with the door's address and ssh's error.
 - The door carries no reflection, no shell and no stream (R98, R104 item 4). An emit stream or a direct session on a singleton still crosses an edge.

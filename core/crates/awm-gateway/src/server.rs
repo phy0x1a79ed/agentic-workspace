@@ -5,7 +5,7 @@ use std::sync::Arc;
 use awm_proto::{CallContext, Caller, Lane, Surface, UsageEvent};
 use axum::body::Body;
 use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{Path, Query, State};
+use axum::extract::{DefaultBodyLimit, Path, Query, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{any, get, post};
@@ -54,6 +54,8 @@ pub fn router(gw: Arc<Gateway>) -> Router {
         .route("/p/{plugin}/{page}", get(page_root))
         .route("/p/{plugin}/{page}/", get(page_root))
         .route("/p/{plugin}/{page}/{*path}", get(page_file))
+        // A call can carry a file inline (`files.rs`), and a door host receives it here.
+        .layer(DefaultBodyLimit::max(crate::files::MAX_REQUEST_BYTES))
         .with_state(gw)
 }
 

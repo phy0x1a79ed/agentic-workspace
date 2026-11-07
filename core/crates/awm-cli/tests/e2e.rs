@@ -318,6 +318,10 @@ fn gateway_end_to_end() {
     let state = node.state.clone();
     let fail = |what: &str| -> String { format!("{what}\n--- gateway log ---\n{}", log(&state)) };
 
+    // A call carrying an inline file is bigger than axum's default 2 MiB body.
+    let big = http().post(format!("{url}/invoke")).json(&json!({"name": "fake", "args": {"verb": "echo", "args": {"text": "x".repeat(3 << 20)}}})).send().unwrap().status();
+    assert_eq!(big.as_u16(), 200, "a 3 MiB call is refused: {}", fail("big invoke"));
+
     // MCP: the catalog collapses each tool to {verb, args, peer}, and calls route to the plugin.
     let mut mcp = Mcp::start(&url);
     let init = mcp.request("initialize", json!({"protocolVersion": "2025-06-18", "capabilities": {}}));
