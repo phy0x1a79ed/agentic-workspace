@@ -40,7 +40,7 @@ async fn main() -> anyhow::Result<()> {
             })
         .verb(t, "whoami", "The caller the gateway stamped.", json!([]), |c: Call| async move {
             let a = &c.args;
-            Reply::Ok(json!({"caller": c.caller, "as": c.as_, "trust": a["_caller_trust"], "scope": a["_caller_scope"],
+            Reply::Ok(json!({"caller": c.caller, "as": c.as_, "plugin": c.plugin, "trust": a["_caller_trust"], "scope": a["_caller_scope"],
                 "session_id": a["_caller_session_id"], "pid": a["_caller_pid"], "claim": a["_caller_session"]}))
         })
         // A hook-only verb: off the MCP surface, on the CLI and HTTP.

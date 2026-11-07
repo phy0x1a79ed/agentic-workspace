@@ -136,6 +136,27 @@ pub struct NeedTool {
     pub name: String,
     #[serde(default = "one")]
     pub major: u32,
+    /// Retired keys that a manifest written before R117 item 8 still carries. The loader
+    /// ignores them and warns, so such a plugin still loads.
+    #[serde(default, skip_serializing)]
+    pub verbs: Option<toml::Value>,
+    #[serde(default, skip_serializing)]
+    pub optional: Option<toml::Value>,
+}
+
+impl Needs {
+    /// The retired keys any of the needs carries, in the order `verbs`, `optional`.
+    pub fn retired_keys(&self) -> Vec<&'static str> {
+        let all = || self.tool.iter().chain(&self.contract);
+        let mut keys = Vec::new();
+        if all().any(|n| n.verbs.is_some()) {
+            keys.push("verbs");
+        }
+        if all().any(|n| n.optional.is_some()) {
+            keys.push("optional");
+        }
+        keys
+    }
 }
 
 /// Parse `"<contract>@<major>"`.
@@ -215,10 +236,11 @@ major = 1
     }
 
     #[test]
-    fn a_need_has_no_verbs_and_no_optional_form() {
-        for key in ["verbs=['get']", "optional=true"] {
-            assert!(Manifest::parse(&format!("[plugin]\nname='x'\n[[needs.tool]]\nname='y'\n{key}\n")).is_err(), "{key}");
-        }
+    fn a_need_parses_its_retired_keys_for_a_warning() {
+        let m = Manifest::parse("[plugin]\nname='x'\n[[needs.tool]]\nname='y'\nverbs=['get']\n[[needs.contract]]\nname='z'\noptional=true\n").unwrap();
+        assert_eq!(m.needs.retired_keys(), ["verbs", "optional"]);
+        assert!(Manifest::parse("[plugin]\nname='x'\n[[needs.tool]]\nname='y'\n").unwrap().needs.retired_keys().is_empty());
+        assert!(Manifest::parse("[plugin]\nname='x'\n[[needs.tool]]\nname='y'\nbogus=1\n").is_err(), "any other key is still unknown");
     }
 
     #[test]

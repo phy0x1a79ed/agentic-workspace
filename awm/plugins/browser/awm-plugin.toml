@@ -9,7 +9,6 @@ version = "0.1.0"
 name = "browser"
 path = "."
 run = "run.sh"
-install = "install.sh"
 
 [[tool]]
 name = "browser"

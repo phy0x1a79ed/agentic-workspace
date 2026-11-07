@@ -549,7 +549,7 @@ mod tests {
 
     #[test]
     fn errors_classify_by_status() {
-        let e = HubError::from_status("x.y", 404, &json!({"detail": "Unknown tool \"x\""}));
+        let e = HubError::from_status("x.y", 404, &json!({"detail": "x not installed"}));
         assert!(matches!(e, HubError::NotInstalled { .. }) && e.status() == Some(404));
         assert!(matches!(HubError::from_status("x.y", 503, &json!({"detail": "not up"})), HubError::NotUp { .. }));
         let v = HubError::from_status("x.y", 500, &json!({"detail": {"error": "boom", "error_class": "ValueError"}}));

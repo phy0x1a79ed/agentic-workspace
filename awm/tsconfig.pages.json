@@ -1,6 +1,6 @@
 {
-  // ADVISORY type-check scope: the plugin pages under services/*/pages/* and
-  // plugins/*/pages/*.
+  // ADVISORY type-check scope: the plugin pages under services/*/pages/*,
+  // plugins/*/pages/* and the checkout's core/plugins/*/pages/*.
   //
   // Run via `npm run typecheck:pages` (NOT part of the gating `typecheck`).
   // Pages use SvelteKit-style page-local `$lib/...` aliases that resolve only
@@ -13,7 +13,9 @@
     "services/*/pages/**/*.ts",
     "services/*/pages/**/*.svelte",
     "plugins/*/pages/**/*.ts",
-    "plugins/*/pages/**/*.svelte"
+    "plugins/*/pages/**/*.svelte",
+    "../core/plugins/*/pages/**/*.ts",
+    "../core/plugins/*/pages/**/*.svelte"
   ],
   "exclude": [
     "**/node_modules",

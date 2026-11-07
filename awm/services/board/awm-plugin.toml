@@ -8,7 +8,6 @@ version = "0.2.0"
 name = "board"
 path = "."
 run = "run.sh"
-install = "install.sh"
 
 [needs]
 secrets = ["AWM_BOARD_TOKEN"]

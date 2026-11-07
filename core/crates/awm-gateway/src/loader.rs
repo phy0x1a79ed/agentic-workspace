@@ -89,6 +89,17 @@ pub struct LoadResult {
     /// Folders a same-named folder in an earlier root shadows.
     pub shadowed: Vec<PathBuf>,
     pub warnings: Vec<String>,
+    /// The archive tables of every plugin the roots hold, loaded, skipped or refused, so a
+    /// reader such as search knows a kind that only another node serves.
+    pub archives: Vec<ArchiveDecl>,
+}
+
+/// One service's `[[service.archive]]` tables.
+#[derive(Debug, Clone, Serialize)]
+pub struct ArchiveDecl {
+    pub plugin: String,
+    pub service: String,
+    pub archive: Vec<toml::Value>,
 }
 
 pub struct LoadInput<'a> {
@@ -156,6 +167,11 @@ pub fn load(input: &LoadInput) -> LoadResult {
                 out.shadowed.push(dir);
                 continue;
             }
+            out.archives.extend(manifest.service.iter().filter(|s| !s.archive.is_empty()).map(|s| ArchiveDecl {
+                plugin: manifest.plugin.name.clone(),
+                service: s.name.clone(),
+                archive: s.archive.clone(),
+            }));
             candidates.push(Candidate { dir, core, manifest });
         }
     }
@@ -266,6 +282,14 @@ fn build_plugin(cand: &Candidate, input: &LoadInput, warnings: &mut Vec<String>)
         return Err(format!("needs {bad}"));
     }
 
+    let retired = m.needs.retired_keys();
+    if !retired.is_empty() {
+        warnings.push(format!(
+            "plugin {}: retired needs keys ignored: {}. A plugin may call any tool, and every need is hard (R117 item 8)",
+            m.plugin.name,
+            retired.join(", ")
+        ));
+    }
     if !m.needs.platform.is_empty() && !m.needs.platform.iter().any(|p| p == std::env::consts::OS) {
         return Err(format!("needs platform {:?}, this node is {}", m.needs.platform, std::env::consts::OS));
     }
@@ -482,7 +506,7 @@ pub fn providers(index: &[Provider], contract: &str, major: u32) -> Vec<Owner> {
 /// A needed tool must exist at its major (R117 item 3), or be a singleton behind a door. A
 /// needed contract must have a provider at its major, here or on a peer (R117 item 8).
 fn check_needs(needs: &Needs, index: &[Provider], doors: &[String]) -> Result<(), String> {
-    for NeedTool { name, major } in &needs.tool {
+    for NeedTool { name, major, .. } in &needs.tool {
         let Some(o) = owner(index, name) else {
             if doors.contains(name) {
                 continue;
@@ -493,7 +517,7 @@ fn check_needs(needs: &Needs, index: &[Provider], doors: &[String]) -> Result<()
             return Err(format!("needs tool {name:?} at major {major}, plugin {:?} serves major {}", o.plugin, o.major));
         }
     }
-    for NeedTool { name, major } in &needs.contract {
+    for NeedTool { name, major, .. } in &needs.contract {
         if !valid_tool_name(name) {
             return Err(format!("needs contract {name:?}, which is not a valid name"));
         }
@@ -587,7 +611,7 @@ mod tests {
         plugin(&other, "dup-name", "[plugin]\nname='dup-name'\n[[service]]\nname='dup-name'\n[[tool]]\nname='prov'\n");
         plugin(&other, "takes-auth", "[plugin]\nname='takes-auth'\n[[service]]\nname='takes-auth'\n[[tool]]\nname='auth'\n");
         plugin(&other, "missing", "[plugin]\nname='missing'\n[[needs.tool]]\nname='nobody-serves'\n");
-        plugin(&other, "lists-verbs", "[plugin]\nname='lists-verbs'\n[[needs.tool]]\nname='prov'\nmajor=2\nverbs=['get']\n");
+        plugin(&other, "lists-verbs", "[plugin]\nname='lists-verbs'\n[[needs.tool]]\nname='prov'\nmajor=2\nverbs=['get']\noptional=true\n");
         plugin(&other, "bad-contract", "[plugin]\nname='bad-contract'\n[[needs.contract]]\nname='har.ness'\n");
         plugin(&other, "bad-host", "[plugin]\nname='bad-host'\n[needs]\nnetwork=['https://x.org']\n");
         plugin(&other, "wrong-major", "[plugin]\nname='wrong-major'\n[[needs.tool]]\nname='prov'\nmajor=1\n");
@@ -606,7 +630,7 @@ mod tests {
 
         let r = run(&core, &other, "mizar");
         let names: Vec<_> = r.plugins.iter().map(|p| p.name.as_str()).collect();
-        assert_eq!(names, ["cx", "dependent", "game", "journal", "off-svc", "ops", "provider"]);
+        assert_eq!(names, ["cx", "dependent", "game", "journal", "off-svc", "ops", "provider", "lists-verbs"]);
         let ops = r.plugins.iter().find(|p| p.name == "ops").unwrap();
         assert_eq!(ops.services.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), ["board"], "the config leaves reporting off");
         assert_eq!(ops.services[0].tools, ["operations"]);
@@ -616,7 +640,9 @@ mod tests {
         assert!(refused["takes-auth"].contains("reserved"));
         assert!(refused["missing"].contains("\"nobody-serves\""));
         assert!(refused["wrong-major"].contains("major 1"));
-        assert!(refused["lists-verbs"].contains("verbs"), "a need lists no verbs: {}", refused["lists-verbs"]);
+        assert_eq!(r.warnings.iter().filter(|w| w.contains("lists-verbs")).collect::<Vec<_>>(),
+            ["plugin lists-verbs: retired needs keys ignored: verbs, optional. A plugin may call any tool, and every need is hard (R117 item 8)"],
+            "a retired key warns once and refuses nothing");
         assert!(refused["bad-contract"].contains("not a valid name"));
         assert!(refused["bad-host"].contains("network entry \"https://x.org\""), "{}", refused["bad-host"]);
         assert!(refused["escape"].contains("leaves the plugin folder"));
@@ -697,6 +723,26 @@ mod tests {
         let r = run_with_peers(&core, &other, "mizar", &peers);
         assert_eq!(r.plugins.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["reflection"], "{:?}", r.refused);
         assert!(r.refused.iter().any(|f| f.plugin == "channel"), "a provider at another major does not count");
+    }
+
+    /// Every plugin's archive tables are listed, whether it loaded, was skipped or was refused.
+    /// A shadowed folder's are not.
+    #[test]
+    fn archives_list_every_plugin_in_the_roots() {
+        let t = tempfile::tempdir().unwrap();
+        let (core, other) = (t.path().join("core"), t.path().join("other"));
+        let table = |kind: &str| format!("[[service.archive]]\nname='{kind}'\nmode='index'\nexport='x_export'\n");
+        single(&core, "journal", "journal", &table("journals"));
+        single(&core, "elsewhere", "elsewhere", &table("far"));
+        single(&core, "kb", "kb", &format!("{}[[needs.tool]]\nname='nobody-serves'\n", table("papers")));
+        single(&other, "journal", "journal-2", &table("shadowed"));
+        let r = run(&core, &other, "mizar");
+        assert_eq!(r.skipped, ["elsewhere"]);
+        assert!(r.refused.iter().any(|f| f.plugin == "kb"));
+        let kinds: Vec<(&str, &str, &str)> = r.archives.iter()
+            .flat_map(|a| a.archive.iter().map(move |t| (a.plugin.as_str(), a.service.as_str(), t["name"].as_str().unwrap())))
+            .collect();
+        assert_eq!(kinds, [("elsewhere", "elsewhere", "far"), ("journal", "journal", "journals"), ("kb", "kb", "papers")]);
     }
 
     /// A plugin that needs a contract whose only provider is refused goes with it.

@@ -5,7 +5,7 @@ here="$(cd "$(dirname "$0")" && pwd)"
 repo="$(cd "$here/../.." && pwd)"
 reg="${AWM_TEST_REGISTRY:-quay.io/hallamlab}"
 tag="${AWM_TEST_TAG:-dev}"
-bin="${AWM_TEST_BIN_DIR:-$repo/core/target/x86_64-unknown-linux-musl/release}"
+bin="${AWM_TEST_BIN_DIR:-$("$repo/scripts/rust-build.sh" --target-dir)/x86_64-unknown-linux-musl/release}"
 
 if [ ! -x "$bin/awm-fake-plugin" ]; then
     "$repo/scripts/rust-build.sh" build --release --target x86_64-unknown-linux-musl --workspace

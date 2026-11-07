@@ -25,6 +25,7 @@ cat > "$node/scripts/rust-build.sh" <<'EOF'
 # Fake cargo: each -p awm-plugin-<name> leaves a binary that prints its name and source.
 set -euo pipefail
 here="$(cd "$(dirname "$0")/.." && pwd)"
+[ "${1:-}" != --target-dir ] || { echo "${AWM_CARGO_TARGET_DIR:-$here/core/target}"; exit 0; }
 out="${AWM_CARGO_TARGET_DIR:-$here/core/target}/x86_64-unknown-linux-musl/release"
 mkdir -p "$out"
 while [ $# -gt 0 ]; do

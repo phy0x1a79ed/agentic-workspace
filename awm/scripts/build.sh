@@ -3,7 +3,8 @@
 #
 # A page is a plugin's pages/<name>/ dir with an index.html; the plugin's
 # awm-plugin.toml names it in a [[page]] with dir = "pages/<name>/dist". A
-# plugin is a folder with an awm-plugin.toml under services/ or plugins/. Each
+# plugin is a folder with an awm-plugin.toml under services/, plugins/ or the
+# checkout's core/plugins/. Each
 # page is built with cwd = the page dir, so outDir:'dist' and $lib resolve
 # page-locally.
 #
@@ -31,8 +32,11 @@ fi
 
 built=0
 IFS=: read -ra extra <<<"${AWM_PLUGIN_ROOTS:-}"
-for root in "$ROOT/services" "$ROOT/plugins" "${extra[@]}"; do
+core_plugins="$(dirname "$ROOT")/core/plugins"
+for root in "$core_plugins" "$ROOT/services" "$ROOT/plugins" "${extra[@]}"; do
   [ -n "$root" ] || continue
+  # A tree with no Rust plugin yet has no core/plugins.
+  [ "$root" != "$core_plugins" ] || [ -d "$root" ] || continue
   if [ ! -d "$root" ]; then
     echo "skipping plugin root ${root}: not a directory" >&2
     continue

@@ -6,9 +6,10 @@
 # differs from a pin, or a pin older than the tree, stops the deploy.
 #
 # A plugin binary is replaced only when its bytes differ from the pin's, and the reload then
-# restarts that plugin: the gateway restarts only the plugins a deploy names, and a running
-# service outlives a gateway restart. Arguments pass through to `awm deploy`; --dry-run also
-# keeps the plugin binaries in place.
+# restarts that plugin with force, past a tripped crash breaker (`awm deploy --reload-restart`):
+# the gateway restarts only the plugins a deploy names, and a running service outlives a
+# gateway restart. Arguments pass through to `awm deploy`; --dry-run also keeps the plugin
+# binaries in place.
 set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 . "$root/scripts/pins.sh"

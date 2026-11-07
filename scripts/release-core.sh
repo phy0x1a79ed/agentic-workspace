@@ -13,7 +13,7 @@ root="$(cd "$(dirname "$0")/.." && pwd)"
 . "$root/scripts/pins.sh"
 store="${AWM_DIR:-$root/.awm}/artifacts"
 target=x86_64-unknown-linux-musl
-target_dir="${AWM_CARGO_TARGET_DIR:-$root/core/target}"
+target_dir="$("$root/scripts/rust-build.sh" --target-dir)"
 
 dirty="$(git -C "$root" status --porcelain -- $(core_closure "$root") $BUILD_FILES)"
 [ -z "$dirty" ] || {
@@ -22,7 +22,7 @@ dirty="$(git -C "$root" status --porcelain -- $(core_closure "$root") $BUILD_FIL
 version="$(core_version "$root")"
 file="awm-$version-linux-x86_64-musl"
 
-"$root/scripts/rust-build.sh" build --release --target "$target" -p awm-cli
+"$root/scripts/rust-build.sh" build --locked --release --target "$target" -p awm-cli
 store_artifact "$target_dir/$target/release/awm" "$file" "$store"
 write_pin "$root/scripts/core.pin" "The awm core binary (static musl) that a deploy places at ~/.local/bin/awm." \
     "$version" "$file" "$store"

@@ -61,6 +61,19 @@ from awm.gatewayclient import cancel
 
 log = logging.getLogger("awm.gatewayclient.adapter")
 
+#: The calling plugin, which the gateway names in the call frame when it knows it by the
+#: caller's service token or page. A call from an agent or the CLI carries none.
+PLUGIN_KEY = "_caller_plugin"
+
+
+def with_caller_plugin(args: Any, plugin: str | None) -> dict[str, Any]:
+    """``args`` with ``PLUGIN_KEY`` set from the frame alone, so no caller can claim a plugin."""
+    out = dict(args or {})
+    out.pop(PLUGIN_KEY, None)
+    if plugin:
+        out[PLUGIN_KEY] = plugin
+    return out
+
 # How long (seconds) the run loop keeps retrying after losing the control WS
 # before concluding the gateway is gone for good and exiting cleanly. Matches
 # the gateway's ``adopt_window_s``: a restarted gateway adopts a service that
@@ -320,14 +333,15 @@ class ServiceAdapter:
         return " ".join([f"{fn}: missing required argument(s): "
                          f"{', '.join(missing)}.", *hints])
 
-    async def _dispatch(self, fn: str | None, args: Any, as_: str | None) -> Any:
+    async def _dispatch(self, fn: str | None, args: Any, as_: str | None,
+                        plugin: str | None = None) -> Any:
         handler = self.handlers.get(fn or "")
         if handler is None:
             raise RuntimeError(f"unknown function {fn!r}")
         # Buffer until initialisation finishes — the service announced itself
         # ready before running it, so a call can legitimately land first.
         await self._await_init(f"call {fn!r}")
-        args = args or {}
+        args = with_caller_plugin(args, plugin)
         missing = self._missing_required_params(fn or "", args)
         if missing:
             raise ValueError(self._missing_error(fn or "", missing))
@@ -467,7 +481,7 @@ class ServiceAdapter:
         cancel.activate(token)
         try:
             result = await self._dispatch(
-                env.get("fn"), env.get("args"), env.get("as"))
+                env.get("fn"), env.get("args"), env.get("as"), env.get("plugin"))
             await ws.send(json.dumps({
                 "kind": "reply", "id": env.get("id"),
                 "ok": True, "result": result,
@@ -489,7 +503,7 @@ class ServiceAdapter:
 
     async def _handle_notify(self, env: dict[str, Any]) -> None:
         try:
-            await self._dispatch(env.get("fn"), env.get("args"), env.get("as"))
+            await self._dispatch(env.get("fn"), env.get("args"), env.get("as"), env.get("plugin"))
         except Exception as exc:
             log.warning("%s: notify %s failed: %s",
                         self.name, env.get("fn"), exc)
