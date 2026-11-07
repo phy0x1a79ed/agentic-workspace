@@ -10,8 +10,110 @@ pages_version() {
         | sha256sum | cut -c1-12)"
 }
 
-# The id of the core binary's inputs: the git tree of core/.
-core_version() { echo "core-$(git -C "$1" rev-parse --short=12 HEAD:core)"; }
+# The id of the core binary's inputs: awm-cli and the local crates it builds from, plus core/'s
+# build files (build_id). A crate only a core plugin builds from leaves it alone.
+core_version() {
+    local paths
+    paths="$(core_closure "$1")" || return 1
+    echo "core-$(build_id "$1" "$paths")"
+}
+
+core_closure() { crate_closure "$1" core/crates/awm-cli; }
+
+# The core plugins at HEAD: each folder of core/plugins/ that holds a Cargo.toml. The folder
+# name is the plugin's name and its binary's; its crate is awm-plugin-<name>.
+core_plugins() {
+    local name
+    git -C "$1" ls-tree HEAD:core/plugins 2>/dev/null | awk -F'\t' '$1 ~ / tree / {print $2}' | while read -r name; do
+        git -C "$1" cat-file -e "HEAD:core/plugins/$name/Cargo.toml" 2>/dev/null && printf '%s\n' "$name"
+    done
+}
+
+# cargo_path_deps <Cargo.toml text on stdin>: one line per local dependency of the build, as
+# `path <dir>` or `workspace <name>`, and `define <name> <dir>` per [workspace.dependencies]
+# path entry. dev-dependencies are left out: the release binary does not link them.
+cargo_path_deps() {
+    awk '
+        function dep(name, rest,   p) {
+            if (match(rest, /path *= *"[^"]*"/)) { p = substr(rest, RSTART, RLENGTH); sub(/^path *= *"/, "", p); sub(/"$/, "", p); print "path " p }
+            else if (rest ~ /workspace *= *true/) print "workspace " name
+        }
+        /^[ \t]*\[/ {
+            sec = $0; gsub(/^[ \t]*\[+[ \t]*|[ \t]*\]+.*$/, "", sec); gsub(/[ \t"]/, "", sec)
+            table = ""
+            if (sec ~ /(^|\.)(dependencies|build-dependencies)\.[^.]+$/) { table = sec; sub(/^.*\./, "", table) }
+            if (sec ~ /^workspace\.dependencies\.[^.]+$/) { defn = sec; sub(/^.*\./, "", defn) } else defn = ""
+            next
+        }
+        /^[ \t]*(#|$)/ { next }
+        defn != "" { if (match($0, /^[ \t]*path *= *"[^"]*"/)) { p = $0; sub(/^[ \t]*path *= *"/, "", p); sub(/".*$/, "", p); print "define " defn " " p }; next }
+        sec == "workspace.dependencies" {
+            name = $0; sub(/^[ \t]*/, "", name); sub(/[ \t.=].*$/, "", name)
+            if (match($0, /path *= *"[^"]*"/)) { p = substr($0, RSTART, RLENGTH); sub(/^path *= *"/, "", p); sub(/"$/, "", p); print "define " name " " p }
+            next
+        }
+        table != "" { dep(table, $0); next }
+        sec ~ /(^|\.)(dependencies|build-dependencies)$/ {
+            name = $0; sub(/^[ \t]*/, "", name); sub(/[ \t.=].*$/, "", name); gsub(/"/, "", name)
+            rest = $0; sub(/^[^=]*=/, "", rest)
+            if ($0 ~ /^[ \t]*[A-Za-z0-9_"-]+\.workspace *= *true/) print "workspace " name
+            else dep(name, rest)
+        }'
+}
+
+# crate_closure <root> <dir>: the repo paths of the crate at <dir> and of every local crate it
+# builds from, at HEAD, one per line.
+crate_closure() {
+    local root="$1" todo seen="" dir deps defs
+    defs="$(git -C "$root" show HEAD:core/Cargo.toml | cargo_path_deps | awk '$1 == "define" {print $2, $3}')"
+    todo="$2"
+    while [ -n "$todo" ]; do
+        dir="${todo%%$'\n'*}"
+        [ "$todo" = "$dir" ] && todo="" || todo="${todo#*$'\n'}"
+        case $'\n'"$seen"$'\n' in *$'\n'"$dir"$'\n'*) continue ;; esac
+        seen="${seen:+$seen$'\n'}$dir"
+        deps="$(git -C "$root" show "HEAD:$dir/Cargo.toml" | cargo_path_deps | while read -r kind arg; do
+            case "$kind" in
+                path) resolved="$(realpath -ms "/@repo/$dir/$arg")" ;;
+                workspace)
+                    resolved="$(printf '%s\n' "$defs" | awk -v n="$arg" '$1 == n {print $2}')"
+                    [ -n "$resolved" ] || continue
+                    resolved="$(realpath -ms "/@repo/core/$resolved")" ;;
+                *) continue ;;
+            esac
+            case "$resolved" in
+                /@repo/*) printf '%s\n' "${resolved#/@repo/}" ;;
+                *) echo "error: $dir depends on $arg, outside the repository" >&2; exit 1 ;;
+            esac
+        done)" || return 1
+        [ -z "$deps" ] || todo="${todo:+$todo$'\n'}$deps"
+    done
+    printf '%s\n' "$seen" | LC_ALL=C sort
+}
+
+plugin_closure() { crate_closure "$1" "core/plugins/$2"; }
+
+# The files besides a crate closure that every core binary builds from: the lock, the workspace
+# manifest (profile, workspace dependencies) and the Dockerfile (toolchain).
+BUILD_FILES="core/Cargo.lock core/Cargo.toml core/Dockerfile"
+
+# build_id <root> <closure>: 12 hex of the HEAD object ids of the closure's paths and BUILD_FILES.
+build_id() {
+    { printf '%s\n' "$2"; printf '%s\n' $BUILD_FILES; } \
+        | while read -r p; do printf '%s %s\n' "$p" "$(git -C "$1" rev-parse "HEAD:$p")"; done \
+        | sha256sum | cut -c1-12
+}
+
+# The id of a core plugin binary's inputs: its folder and the local crates it builds from, plus
+# core/'s build files (build_id).
+plugin_version() {
+    local paths
+    paths="$(plugin_closure "$1" "$2")" || return 1
+    echo "$2-$(build_id "$1" "$paths")"
+}
+
+plugin_pin() { printf '%s\n' "$1/scripts/plugins/$2.pin"; }
+plugin_file() { printf 'awm-plugin-%s-linux-x86_64-musl\n' "$1"; }
 
 pin_field() { sed -n "s/^$2=//p" "$1" | head -1; }
 

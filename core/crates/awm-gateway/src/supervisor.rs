@@ -2,7 +2,7 @@
 //! the ones that outlived the last gateway (see `survival.rs`).
 
 use std::path::{Path, PathBuf};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -18,7 +18,7 @@ use crate::survival::{self, Journal};
 const GRACE: Duration = Duration::from_secs(8);
 /// The gateway's own variables a service inherits. Everything else, secrets the gateway
 /// was started with included, stays out of the service (R116 item 1).
-const INHERITED: [&str; 12] =
+pub(crate) const INHERITED: [&str; 12] =
     ["PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "LC_ALL", "TZ", "TMPDIR", "XDG_RUNTIME_DIR", "TERM", "AWM_CONDA_ROOT"];
 
 /// A service process a past gateway started and this one found alive.
@@ -35,7 +35,7 @@ pub struct Supervisor {
     /// Each running service's loop, with the flag that retires it on a plugin change.
     tasks: Mutex<HashMap<String, (Arc<AtomicBool>, JoinHandle<()>)>>,
     /// The `[env]` each running service was spawned with.
-    env: Mutex<HashMap<String, std::collections::BTreeMap<String, String>>>,
+    env: Mutex<HashMap<String, BTreeMap<String, String>>>,
     /// Services that crash-looped and stay down.
     failed: Mutex<Vec<String>>,
     /// Pid, start time and breaker of each service, kept on disk across gateway restarts.
@@ -64,7 +64,7 @@ impl Supervisor {
     }
 
     /// The `[env]` of every service that has a live process.
-    pub fn env_of_running(&self) -> HashMap<String, std::collections::BTreeMap<String, String>> {
+    pub fn env_of_running(&self) -> HashMap<String, BTreeMap<String, String>> {
         let live = self.groups();
         self.env.lock().unwrap_or_else(|p| p.into_inner()).iter().filter(|(n, _)| live.contains_key(*n)).map(|(n, e)| (n.clone(), e.clone())).collect()
     }
@@ -127,6 +127,9 @@ async fn rehydrate(gw: &Arc<Gateway>, specs: &[ServiceSpec]) -> HashMap<String, 
             Some(spec) => {
                 tracing::info!("service {name}: adopting pid {pid}");
                 gw.hub.rehydrate(&name, &spec.plugin, Some(pid as i64));
+                if let Some(env) = e.env.clone() {
+                    gw.supervisor.env.lock().unwrap_or_else(|p| p.into_inner()).insert(name.clone(), env);
+                }
                 out.insert(name, Adopted { pid, pgid, start });
             }
             None => {
@@ -204,10 +207,11 @@ fn start_inner(gw: &Arc<Gateway>, spec: ServiceSpec, adopted: Option<Adopted>, f
 }
 
 /// Stand some services down for a plugin change: `shutdown`, a grace period, then signals.
-/// Their journal entries go first, so nothing re-adopts them.
+/// Their journaled processes go first, so nothing re-adopts them. The breaker stays, so only a
+/// forced start passes a tripped one.
 pub async fn stop(gw: &Arc<Gateway>, names: &[String]) {
     for name in names {
-        gw.supervisor.journal.remove(name);
+        gw.supervisor.journal.update_existing(name, |e| (e.pid, e.pgid, e.start_time, e.service_id) = (None, None, None, None));
     }
     gw.supervisor.failed.lock().unwrap_or_else(|p| p.into_inner()).retain(|n| !names.contains(n));
     let mut handles = Vec::new();
@@ -255,7 +259,22 @@ async fn run_service(gw: Arc<Gateway>, spec: ServiceSpec, retired: Arc<AtomicBoo
                 a.pgid
             }
             None => {
-                let mut child = match spawn(&gw, &spec) {
+                if let Err(why) = crate::hooks::ensure(&gw, &spec.plugin).await {
+                    tracing::error!("plugin {}: refused: {why}", spec.plugin);
+                    // Its own task stands this one down, so the reload never waits on itself.
+                    let gw = gw.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = gw.reload_needs().await {
+                            tracing::warn!("reload after a failed install hook: {}", e.detail);
+                        }
+                    });
+                    break;
+                }
+                if done() {
+                    break;
+                }
+                let env = gw.cfg().env.clone();
+                let mut child = match spawn(&gw, &spec, &env) {
                     Ok(c) => c,
                     Err(e) => {
                         tracing::error!("service {}: spawn failed: {e}", spec.name);
@@ -266,13 +285,14 @@ async fn run_service(gw: Arc<Gateway>, spec: ServiceSpec, retired: Arc<AtomicBoo
                 let pid = child.id().map(|p| p as i32);
                 if let Some(pid) = pid {
                     gw.supervisor.groups().insert(spec.name.clone(), pid);
-                    gw.supervisor.env.lock().unwrap_or_else(|p| p.into_inner()).insert(spec.name.clone(), gw.cfg().env.clone());
+                    gw.supervisor.env.lock().unwrap_or_else(|p| p.into_inner()).insert(spec.name.clone(), env.clone());
                     let start = survival::start_time(pid);
                     gw.supervisor.journal.upsert(&spec.name, |e| {
                         e.pid = Some(pid);
                         e.pgid = Some(pid);
                         e.start_time = start;
                         e.service_id = None;
+                        e.env = Some(env);
                     });
                 }
                 tracing::info!("service {} started, pid {:?}", spec.name, pid);
@@ -371,7 +391,7 @@ async fn clear_group(pgid: i32) {
     tracing::error!("process group {pgid} survived SIGKILL");
 }
 
-fn spawn(gw: &Gateway, spec: &ServiceSpec) -> std::io::Result<tokio::process::Child> {
+fn spawn(gw: &Gateway, spec: &ServiceSpec, env: &BTreeMap<String, String>) -> std::io::Result<tokio::process::Child> {
     let logs = gw.state.join("logs");
     std::fs::create_dir_all(&logs)?;
     let log = std::fs::OpenOptions::new().create(true).append(true).open(logs.join(format!("{}.log", spec.name)))?;
@@ -385,7 +405,7 @@ fn spawn(gw: &Gateway, spec: &ServiceSpec) -> std::io::Result<tokio::process::Ch
     }
     cmd.arg(&spec.run)
         .current_dir(&spec.cwd)
-        .envs(&gw.cfg().env)
+        .envs(env)
         .envs(granted_secrets(&gw.cfg().secrets_path(&gw.state), &spec.secrets))
         .env("AWM_HUB_URL", gw.hub_url())
         .env("AWM_SERVICE_NAME", &spec.name)

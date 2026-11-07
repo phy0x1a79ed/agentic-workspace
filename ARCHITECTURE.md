@@ -78,11 +78,11 @@ The control plane binds loopback only. A plugin proves itself with its service t
 
 Each plugin folder declares itself in `awm-plugin.toml`: its services, the tools it publishes by unique name with major and tier, its pages, and what it needs (secrets, network, platform, the tools and contracts it calls). The plugin contract defines the format (`docs/redux/drafts/plugin-contract.md`). A manifest names no host. The install config places plugins on nodes.
 
-The loader (`loader.rs`) scans the core roots first, then the plugin roots, then `<AWM_DIR>/installed/`. The core roots default to the tree's `awm/services` and `awm/plugins` under the workspace (`config.rs` `TREE_ROOTS`), so a node's `config.toml` names only the roots outside the tree. The first root that holds a name wins, and a later folder of that name is reported as shadowed. It refuses a plugin for bad TOML or an unknown key, a path outside its folder, a missing `run.sh`, a wrong platform, a tool another plugin serves, a reserved name outside a core root, or a need nothing satisfies. A refusal cascades to every plugin that needs the refused one. `awm plugins` lists what loaded, what was refused and why.
+The loader (`loader.rs`) scans the core roots first, then the plugin roots, then `<AWM_DIR>/installed/`. The core roots default to the tree's `core/plugins`, `awm/services` and `awm/plugins` under the workspace (`config.rs` `TREE_ROOTS`), so a node's `config.toml` names only the roots outside the tree. The first root that holds a name wins, and a later folder of that name is reported as shadowed. It refuses a plugin for bad TOML or an unknown key, a path outside its folder, a missing `run.sh`, a wrong platform, a tool another plugin serves, a reserved name outside a core root, or a need nothing satisfies. A refusal cascades to every plugin that needs the refused one. `awm plugins` lists what loaded, what was refused and why.
 
 - **Reserved names.** `config.rs` `DEFAULT_RESERVED` plus every singleton tool in the edge list. A node that does not host a singleton can therefore never serve it locally.
 - **Enable state.** `<AWM_DIR>/enabled.json` maps a service to true or false and overrides its profile. A service absent from it follows its profile. A disabled service's tools leave the catalog.
-- **The guard.** `test/contract/test_plugin_contract.py` walks the tree and fails a manifest that breaks the contract, a secret the code reads but `[needs]` does not declare, and an import of another plugin's code. `test/contract/test_plugin_calls.py` replays every plugin's calls against the manifests. A plugin whose calls change changes its manifest in the same commit.
+- **The guard.** `test/contract/test_plugin_contract.py` walks the tree and fails a manifest that breaks the contract, a secret the code reads but `[needs]` does not declare, and an import of another plugin's code.
 
 **CAUTION** A plugin's `install.sh` and `run.sh` find their own folder from `$0`, and awm's tree from `$AWM_ROOT`. A path such as `$WS/awm/services/<name>` breaks the plugin the moment it loads from a root outside the tree.
 
@@ -150,12 +150,11 @@ A cancel travels one hop at a time. When the gateway drops a call, it sends `{ki
 
 ## Verb gating
 
-`Gateway::dispatch` (`gateway.rs`) applies four gates, in this order, to every call:
+`Gateway::dispatch` (`gateway.rs`) applies three gates, in this order, to every call:
 
 1. **Mode.** A session that cch started carries a mode, and `modes.rs` lists what each mode may call. The one restricted mode is `unknown`: it may run `reflection compact` and `whoami`, name no `peer` and open no stream. Every other mode, `worker` included, is unrestricted.
 2. **Level.** `awm_trust::call_refusal` (`core/crates/awm-trust/src/trust.rs`) holds a cooperative or untrusted caller to its list (`docs/redux/channels.md` R125). A trusted caller passes.
-3. **Needs.** A plugin's call, known by its service token or a page's `Referer`, runs only its own tools, `awm`, and the tools and verbs its `[[needs.tool]]` and `[[needs.contract]]` list. Streams follow the same lists.
-4. **Private marks.** `privacy.rs` refuses a call from another node that names a project, scope or path this node marks private (`FEDERATION.md` § *Private projects*). It filters emits and session init frames the same way.
+3. **Private marks.** `privacy.rs` refuses a call from another node that names a project, scope or path this node marks private (`FEDERATION.md` § *Private projects*). It filters emits and session init frames the same way.
 
 The native writes (`reload`, `install`, `uninstall`, the service lifecycle and `config_set`) also need a trusted caller on this node.
 

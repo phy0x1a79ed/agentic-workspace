@@ -2,8 +2,9 @@
 //!
 //! A service names a loopback URL as `mount` when it registers. The gateway forwards each
 //! request under `/s/<service>/` to it, with the method, the query, the body and the headers
-//! but the hop-by-hop ones, and relays a WebSocket upgrade both ways. A mount answers only
-//! while its service is ready.
+//! but the hop-by-hop ones, and relays a WebSocket upgrade both ways. The response streams
+//! through chunk by chunk, so server-sent events reach the client as they are sent. A mount
+//! answers only while its service is ready.
 
 use std::sync::Arc;
 
@@ -72,8 +73,7 @@ pub async fn handle(State(gw): State<Arc<Gateway>>, req: Request) -> Response {
                     builder = builder.header(k.as_str(), v.as_bytes());
                 }
             }
-            let body = resp.bytes().await.unwrap_or_default();
-            builder.body(Body::from(body)).unwrap_or_else(|_| StatusCode::BAD_GATEWAY.into_response())
+            builder.body(Body::from_stream(resp.bytes_stream())).unwrap_or_else(|_| StatusCode::BAD_GATEWAY.into_response())
         }
         Err(e) => (StatusCode::BAD_GATEWAY, format!("mount of {service:?}: {e}")).into_response(),
     }

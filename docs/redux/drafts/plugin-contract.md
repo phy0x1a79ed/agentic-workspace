@@ -4,7 +4,7 @@
 
 This file is the contract between a plugin and the Rust gateway of the redux (`install.md` R112, R115 to R117, R132). It holds the manifest format, the wire protocol a service speaks, the call interface a plugin uses to reach another plugin, and the usage event. The plugin-redux scope owns it. Other lanes build against it.
 
-Status: draft v1.12. Build against it. The git log of this file holds what each version changed.
+Status: draft v1.13. Build against it. The git log of this file holds what each version changed.
 
 ## Plugin folder
 
@@ -12,7 +12,9 @@ A plugin is a folder. Its top level holds one manifest file, `awm-plugin.toml`. 
 
 A folder with no `awm-plugin.toml` is not a plugin. The gateway ignores it.
 
-Plugin roots are an ordered list in the gateway config. The built-in core roots are `awm/services` then `awm/plugins`. Put a new core plugin at `awm/plugins/<name>/`. The first root that holds a plugin name wins. The gateway logs and ignores a shadowed folder.
+Plugin roots are an ordered list in the gateway config. The built-in core roots are `core/plugins`, `awm/services` and `awm/plugins`, in that order, under the workspace. Put a new core plugin at `core/plugins/<name>/` (§ Runtime). The first root that holds a plugin name wins. The gateway logs and ignores a shadowed folder. An absent root is skipped.
+
+Each plugin owns a state dir, `<AWM_DIR>/plugins/<plugin>/`. The gateway keeps the plugin's `install.stamp` there (§ Runtime).
 
 A tool name on the reserved list of the gateway config belongs only to a plugin from a core root. Any other claim refuses the plugin. A plugin's trust is where it loads from, never a manifest key. The `awm` tool belongs to the core: the gateway serves its verbs itself. The default list is `awm`, `auth`, `operations` and `journal`, plus the singleton tools of the edge list (§ Install config).
 
@@ -30,7 +32,7 @@ Example, for a plugin that serves one MCP tool, one hidden tool and one page:
 > name = "journal"
 > path = "."               # folder that holds run.sh, relative to the plugin
 > run = "run.sh"
-> install = "install.sh"   # optional. Builds the runtime (§ Runtime)
+> install = "install.sh"   # optional. Relative to path. Builds the runtime (§ Runtime)
 >
 > [[service.archive]]      # today's service.toml [[archive]], unchanged
 > name = "journals"
@@ -70,7 +72,7 @@ Rules the loader enforces:
 
 1. A tool name is letters, digits and hyphens. It holds no dot and no underscore. Use `harness-cc`, never `harness.cc`.
 2. A tool name is unique across the fleet and is the tool's permanent id (R117 item 2). A name that two plugins claim refuses the second plugin and names the owner (R116 item 5). A fork settles a clash by renaming the tool in its own manifest. The install config renames nothing.
-3. A need is a hard dependency (R117 item 8). A `needs.tool` name that no plugin serves, on this node or a peer, refuses the plugin. The refusal names the tool. A need has no `optional` key and no `verbs` key.
+3. A need is a hard dependency (R117 item 8). A `needs.tool` name that no plugin serves, on this node or a peer, refuses the plugin. The refusal names the tool. A `needs.contract` with no provider refuses the plugin the same way (§ Contracts). A need has no `optional` key and no `verbs` key.
 4. A `needs.tool` major that differs from the owner's major refuses the plugin.
 5. Refusals cascade: a plugin that needs a refused plugin's tool is refused too.
 6. `tier = "off"` keeps a tool off the MCP surface. Plugins and the CLI still call it through the gateway.
@@ -111,15 +113,15 @@ An interface that several plugins serve is a contract (`install.md` R117 item 4)
 3. A dependent names the contract, never a provider: `[[needs.contract]] name, major`.
 4. The contract resolves to every provider in the live table, zero or more. A contract name never clashes, because many providers are its purpose.
 5. `GET /hub/contract/<name>@<major>` lists the providers now, as `[{name, major, plugin, peer}, ...]`.
-6. A contract need that has no provider refuses nothing. A tool that a node may lack implements a contract of its own name, such as `search@1`, and its dependents need that contract. deneb runs this way with no search, reflection or operations (`fleet.md` R79). Such a dependent waits with `gatewayclient.until_provided` or degrades when a call fails.
+6. A contract need is a hard dependency (R117 item 8). A contract with no provider at its major, on this node or a peer, refuses the plugin, and the refusal names `<name>@<major>`. A plugin that works without the contract declares no need. It waits with `gatewayclient.until_provided` or degrades when a call fails.
 
-**CAUTION** A contract's providers come from the local plugins and the peer tables. A singleton behind its host's door is in neither. A contract need on a door singleton therefore finds no provider. Need a door singleton as a `[[needs.tool]]`.
+**CAUTION** A contract's providers come from the local plugins and the peer tables. A singleton behind its host's door is in neither. A contract need on a door singleton therefore refuses the plugin. Need a door singleton as a `[[needs.tool]]`.
 
 Example: cch serves `harness-cc` and dsh serves `harness-ds`. Each implements the `harness` contract at major 1. reflection needs that contract and dispatches on the platform code of the session.
 
 ## Install
 
-1. `awm install <folder>...` (`POST /hub/install {sources}`, the `awm` tool's `install` verb) copies each folder into `<AWM_DIR>/installed/<plugin>`. The copy leaves out `.git` and the folders a stamp skips. A later edit of the source changes nothing until the next install.
+1. `awm install <folder>...` (`POST /hub/install {sources}`, the `awm` tool's `install` verb) copies each folder into `<AWM_DIR>/installed/<plugin>`. The copy leaves out `.git` and the folders the install stamp skips (§ Runtime). A later edit of the source changes nothing until the next install.
 2. All the folders of one install load as one change. A plugin the loader refuses rolls the whole change back, and the refusal names the reason.
 3. A plugin name that a core root or another plugin root already loads is refused.
 4. `<AWM_DIR>/installed.toml` pins each installed plugin: `name`, `source`, `commit` (the folder's git HEAD, when it has one), `image` and `installed_at`.
@@ -140,9 +142,10 @@ Only a trusted caller on this node may install or uninstall.
 
 A plugin owns its runtime (R115 item 3). awm runs no package manager for it.
 
-1. A core plugin is one static musl binary, built in mizar's container (R113). `run` names the binary. A pin file in `scripts/` names each binary by its version, the git tree id of its folder, the way `scripts/core.pin` names the core. A deploy places only the binaries whose pins changed.
-2. Any other plugin builds its runtime in its `install` hook, with any tool it chooses, inside its own folder or its state dir. The hook runs in the plugin folder with `AWM_DIR`, `AWM_PLUGIN` and `AWM_NODE_NAME` set.
-3. The gateway runs a plugin's `install` hook before the plugin's first start, and again only when the plugin's install stamp changes. The stamp covers the plugin folder and skips the folders the reload stamp skips (§ The name table and hot reload). A failed hook refuses that plugin alone and names the hook's last output lines.
+1. A core plugin is one static musl binary, built in mizar's container (R113) by `scripts/release-plugins.sh`. `scripts/plugins/<name>.pin` pins it the way `scripts/core.pin` pins the core. `scripts/pins.sh` holds the version formula: it covers the plugin folder, the shared crates it builds from, and the workspace build files. The deploy places the binary at `<AWM_DIR>/bin/<name>` and restarts only the plugins whose binary changed. The manifest keeps `run = "run.sh"`, and `run.sh` holds one line: `exec "$AWM_DIR/bin/<name>" "$@"`.
+   - **CAUTION** `deploy.toml` lists each plugin's pin. Add the line in the commit that adds the plugin, or the deploy batch refuses it.
+2. Any other plugin builds its runtime in its `install` hook, with any tool it chooses, inside its own folder or its state dir. The `install` key sits on a `[[service]]` and names a file relative to that service's `path`. The hook runs in the plugin folder with `AWM_DIR`, `AWM_PLUGIN` and `AWM_NODE_NAME` set. A plugin with several hooks runs them in manifest order.
+3. The gateway runs a plugin's `install` hooks before the plugin's first start, and again only when the plugin's install stamp changes. The stamp digests the names, sizes and mtimes of the plugin folder's files. It skips every folder named on the `UNSTAMPED` list of `loader.rs`: `.git`, `node_modules`, `target`, `__pycache__`, `.venv` and `.pytest_cache`. The gateway writes the stamp to `<AWM_DIR>/plugins/<plugin>/install.stamp` after the hooks succeed. A failed hook refuses that plugin and its dependents, and the refusal names the hook's last output lines. The refusal holds until the plugin folder's stamp changes, or until a restart names the plugin.
 4. A plugin with no `install` key needs no install step.
 
 **CAUTION** A hook that writes outside its folder and its state dir breaks the one-plugin-one-runtime rule. A shared conda env or a global pip install is such a write.

@@ -342,11 +342,11 @@ working MCP-over-HTTP endpoint for awm — usable by any MCP client that is not
 this workbench.
 
 **The allowlist is a security control.** A caller of this bridge carries no
-session mode. It calls with this plugin's service token, so the gateway admits
-every verb the manifest's `[[needs.tool]]` lists. The bridge ships an explicit
+session mode. It calls with this plugin's service token, and the gateway admits
+any verb of any tool from it. The bridge ships an explicit
 `{domain: verbs}` list, enforced on `tools/call` and not merely on `tools/list`
 (hiding a tool is not refusing it). It defaults to read/query verbs of `scope`,
-`journal`, `search` and `dvc`. Widen it in `CLAUDE_SCIENCE_MCP_ALLOW`, deliberately, and add each verb to the manifest's `[[needs.tool]]`: the bridge calls with the service token, so the gateway refuses a verb the plugin did not declare.
+`journal`, `search` and `dvc`. Widen it in `CLAUDE_SCIENCE_MCP_ALLOW`, deliberately. The allowlist is the only check on what the bridge calls.
 
 ## Host file access
 

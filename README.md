@@ -168,7 +168,7 @@ Use `@awm/client`. Never hand-roll a `fetch`.
 - `openSession('mic', 'stream', {...})` opens the WebSocket `/hub/session/mic/stream` and sends the init as its first frame.
 - `apiFetch(path, init?)` JSON-encodes object bodies and turns a non-2xx reply into a typed `HttpError`.
 
-A page calls only the tools its plugin's manifest lists in `[[needs.tool]]`. The gateway knows the page's plugin by its `Referer`.
+A page may call any tool. The gateway knows the page's plugin by its `Referer` and stamps it on the call.
 
 ## Running the gateway
 
