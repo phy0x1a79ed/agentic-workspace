@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Rebuild each stale pin of this tree: the core binary (scripts/release-core.sh) and the plugin
-# pages (scripts/release-pages.sh). A pin is stale when its version differs from the tree's, or
-# when its file is missing from, or differs in, the artifact store. awm's deploy runs this in the
-# batch's temp worktree (deploy.toml [artifacts] refresh) and commits the pins it rewrote.
+# Rebuild each stale pin of this tree: the core binary (scripts/release-core.sh), each core
+# plugin binary (scripts/release-plugins.sh) and the plugin pages (scripts/release-pages.sh).
+# A pin is stale when its version differs from the tree's, or when its file is missing from, or
+# differs in, the artifact store. awm's deploy runs this in the batch's temp worktree
+# (deploy.toml [artifacts] refresh) and commits the pins it rewrote.
 #
 # The service runs this with the gateway's environment, so it sets the toolchains itself:
 # npm from the dsh conda env, cargo through the Rust container. The caches survive the temp
@@ -22,6 +23,14 @@ if ! verify_pin "$root/scripts/core.pin" "$(core_version "$root")" "$store" >/de
     echo "── core pin is stale"
     AWM_CARGO_TARGET_DIR="$cache/cargo-target" "$root/scripts/release-core.sh"
 fi
+
+for name in $(core_plugins "$root"); do
+    if ! verify_pin "$(plugin_pin "$root" "$name")" "$(plugin_version "$root" "$name")" "$store" >/dev/null 2>&1; then
+        echo "── core plugin pins are stale"
+        AWM_CARGO_TARGET_DIR="$cache/cargo-target" "$root/scripts/release-plugins.sh"
+        break
+    fi
+done
 
 if ! verify_pin "$root/scripts/pages.pin" "$(pages_version "$root")" "$store" >/dev/null 2>&1; then
     echo "── pages pin is stale"

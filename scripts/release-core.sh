@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Build the static musl core binary in mizar's Rust container and pin it in scripts/core.pin.
 #
-# The binary goes into <AWM_DIR>/artifacts under a name that carries its version, which is the
-# git tree id of core/. The pin is stale exactly when core/ changed since this ran.
+# The binary goes into <AWM_DIR>/artifacts under a name that carries its version, the id of
+# core/ without core/plugins/ (scripts/pins.sh core_version). The pin is stale exactly when
+# that part of core/ changed since this ran; a core plugin has its own pin (release-plugins.sh).
 # scripts/refresh-pins.sh runs this for awm's deploy and commits the pin; the deploy then pushes
 # the binary to each push node (deploy.toml [artifacts]) and scripts/awm-deploy.sh refuses a pin
 # that does not match core/. AWM_CARGO_TARGET_DIR names a persistent cargo target dir.
@@ -13,7 +14,7 @@ store="${AWM_DIR:-$root/.awm}/artifacts"
 target=x86_64-unknown-linux-musl
 target_dir="${AWM_CARGO_TARGET_DIR:-$root/core/target}"
 
-[ -z "$(git -C "$root" status --porcelain -- core)" ] || {
+[ -z "$(git -C "$root" status --porcelain -- core ':!core/plugins')" ] || {
     echo "core/ has uncommitted changes: commit them, so the pin names a tree that exists" >&2; exit 1; }
 version="$(core_version "$root")"
 file="awm-$version-linux-x86_64-musl"
