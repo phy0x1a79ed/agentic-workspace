@@ -69,3 +69,19 @@ Seat brief:
 1. A channel seat decides whether a message belongs to a person's seat, and forwards it if so.
 2. A channel seat is for collaborative work. "@Opal help Dana" means help Dana here, in the channel.
 3. A person seat that gets a forwarded or mentioned message answers in that channel by preference. It moves to the DM only when the situation calls for it.
+
+## Tony: channel seats only (2026-11-06)
+
+> we can make this less complicated then, and just do channel seats again. I think that makes the most sense actually. does that work? I think that also accepts these items?
+
+A seat is a chat again: a DM, a group DM or a channel. Person seats go. Checked against the items:
+
+- A DM is its own seat. DMs stay DMs.
+- A channel seat takes every message in its channel, mentions included, and does the collaborative work there ("help Dana" means here).
+- A seat may forward a message to another seat, such as a channel seat to Chris's DM seat. The receiving agent may read the source chat's history for context.
+- A bot never has a DM seat, so #bots is a plain channel seat.
+- The DM guard stays: send refuses a DM to a person who never wrote there. A DM seat exists only after the person wrote.
+- One person's continuity across seats comes from the `user:<person>` journal tag, not from routing.
+- Tony's seat spans his Slack DM and his Discord DM. So a seat is one chat by default, and a declared seat may list several chats.
+
+Not covered: an @Opal in a chat with no seat, such as Slack #bioinformatics or #arbutus. Today it goes nowhere.
