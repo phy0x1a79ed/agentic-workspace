@@ -117,7 +117,7 @@ pub async fn call(route: &DoorRoute, request: &DoorRequest) -> Result<String, Pe
         Value::String(s) => s,
         other => other.to_string(),
     };
-    let status = if error.starts_with("Unknown tool") || error.ends_with(" not installed") { 404 } else { 502 };
+    let status = if error.ends_with(" not installed") { 404 } else { 502 };
     Err(PeerError::Refused { peer: route.host.clone(), status, body: json!({"detail": error}).to_string() })
 }
 

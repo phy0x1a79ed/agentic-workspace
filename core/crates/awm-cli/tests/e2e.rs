@@ -946,7 +946,7 @@ fn a_singleton_admits_only_its_callers() {
         (out.status.success(), serde_json::from_slice::<Value>(&out.stdout).unwrap_or(Value::Null))
     };
     let (ok_, reply) = door("outsider");
-    assert_eq!((ok_, reply["error"].as_str()), (false, Some("Unknown tool \"vault\"")), "{reply}");
+    assert_eq!((ok_, reply["error"].as_str()), (false, Some("vault not installed")), "{reply}");
     let (ok_, reply) = door("ally");
     assert!(ok_, "{reply} {}", fail());
     let who: Value = serde_json::from_str(reply["result"].as_str().unwrap()).unwrap();
@@ -989,7 +989,7 @@ fn a_node_outside_relays_callers_is_issued_no_slot() {
         (out.status.success(), serde_json::from_slice::<Value>(&out.stdout).unwrap_or(Value::Null))
     };
     let (ok, reply) = door("outsider", r#"{"name": "relay", "args": {"verb": "issue", "args": {}}}"#);
-    assert_eq!((ok, reply["error"].as_str()), (false, Some("Unknown tool \"relay\"")), "{reply}");
+    assert_eq!((ok, reply["error"].as_str()), (false, Some("relay not installed")), "{reply}");
     let (ok, reply) = door("mizar", r#"{"name": "relay", "args": {"verb": "whoami"}}"#);
     assert!(ok, "{reply} deneb: {}", log(&deneb_state));
     let who: Value = serde_json::from_str(reply["result"].as_str().unwrap()).unwrap();
