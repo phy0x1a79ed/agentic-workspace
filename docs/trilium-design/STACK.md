@@ -7,7 +7,7 @@ Related: journal 7724ff11 (ops-board decision), spec `docs/redux/*.md` (queue R6
 
 ## Current
 
-status-pages (page owner question, then dispatch the build)
+signin-harmonize
 
 ## Waiting on the user
 
@@ -19,16 +19,17 @@ status-pages (page owner question, then dispatch the build)
 - 2026-11-06: one question per message, with a recommendation.
 - 2026-11-06: Sonnet workers for straightforward builds; build for the end state, no compat shims.
 - 2026-11-06 (via redux-endstate/review): message no session but the starter, and only with the final report. Answer no session except the starter. Take everything to Tony.
-- 2026-11-06: land via the ci/land skill (scripts/land.sh submit on mizar); no PRs, no force-push. Never ssh to fir. Never print password note bodies.
+- 2026-11-07: before any build, submit a formal plan (planning style) to Tony. Build only in this scope (awm/trilium-design), so nothing can collide. Last step: submit the work to plugin-redux/interview, which merges it with its ports. Tony: "please submit formal plan before starting and work in your own scope so you literally can not collide. the last step would be to just submit work to plugin-redux/interview agent, who will merge along with their work".
+- 2026-11-06: no PRs, no force-push. Never ssh to fir. Never print password note bodies.
 
 ## Stack
 
-- status-pages — own questions closed (f421ff25; spec fleet.md R147). Children closed. Open: which plugin owns the Ops page. Then dispatch the build. Spec sweep 2026-11-07: Ops page has no owning plugin yet (R115 item 1: a page is a plugin). "ops can be the new swarm status page I requested and all of our nodes including stations register to it." Roster with stats per node; opt-in at awm install.
-- note-agent-button — "a new button on trillium (left of the button, per note) that is a bot icon that opens a drop down for available nodes." Child note marks the attached agent; deleted on retire. Parallel to the task system.
-
+- signin-harmonize — "I will try and harmonize the signin processes next as well, which may bring back some embedded frames." Tony leads. Context: page-origin first pass (da0f35b6, queue.md R64 item 5). Sign-ins today: vault passkey (R84), portal login grant via httpsfront (journal 9929bd81), approver passkey on auth.*, tailnet portal on alcor.
+- note-agent-button — "a new button on trillium (left of the button, per note) that is a bot icon that opens a drop down for available nodes." Child note marks the attached agent; deleted on retire. Parallel to the task system. Partly settled by da0f35b6: it is an everyday action (deneb JS, reference only, agent waits on RC); "new task from this card" is the same button. Open from the spec sweep: child note outside writer roots; R106 item 3 "a session that needs Tony has a card".
 - board-layout-followups — from redux-endstate/review after swarm-board/layout landed (awm d5be934c, journal 0d875664).
   - swarm-triage — the tasks/Swarm triage folder is empty: no queue section feeds it. What belongs there?
   - board-look — nobody has viewed the new page in a browser (passkey). Tony to look.
+- PLAN — once the stack is empty: one formal plan for the whole build, then submit to plugin-redux/interview. Must fit plugin-redux ports: operations/front/routine in awm/port-ops, social in awm/port-comms (job e44d901a); the SDK carries a Rust `telemetry` library (today awm/service_components/telemetry, an event-sync layer, unused).
 
 ## Workers
 
@@ -37,6 +38,7 @@ status-pages (page owner question, then dispatch the build)
 
 ## Closed
 
+- status-pages/page-origin — da0f35b6 (first pass). deneb serves all pages as notes; alcor = API backend + one identity page; device credential cookie; everyday actions carry no instruction/grant; R65 chain and frames gone. Supersedes the "operations owns the Ops page" answer.
 - status-pages (own questions) — f421ff25. Spec fleet.md R147, install.md R115 item 4.
 - seat-rc-toggle — 83668c7e. Spec fleet.md R147 item 7, sessions.md R146.
 - new-agent-button — 46a610c5. Spec queue.md R61/R63/R65/R66, fleet.md R106/R147. Proposed dropped; scope awm/lobby.
