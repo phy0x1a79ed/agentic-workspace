@@ -76,6 +76,8 @@ Decisions: `search` for journals tagged `decision` in awm/plugin-redux.
 
 ## Workers
 
+- engine-bench — job 5367f4a7, plugin-redux/engine-bench, scope awm/engine-bench, Opus high, https://claude.ai/code/session_012TZ1zx2Aqin2tp18ZYJSQo. Brief ~/.cache/plugin-redux-briefs/engine-bench.md (+ engine-bench-spec.md from knowledge's T6). Started 2026-11-07 at Tony's ask. Reports to knowledge and here, then retires.
+
 The worker branches build on feat/plugin-redux (merged at 6ee5a267 on 2026-11-07, after Tony noticed they branched from release). CAUTION: this worktree's `origin` is altair's bare, not mizar's. All scopes share mizar's bare, so tell workers to merge the local branch `feat/plugin-redux`, not origin/. Each time feat/plugin-redux moves, push it to github and tell the four workers to merge it again, until T2 lands.
 
 Briefs: ~/.cache/plugin-redux-briefs/full-<group>.md. All Opus high, task CWPYAtyb, in plan mode.
