@@ -22,7 +22,7 @@ dirty="$(git -C "$root" status --porcelain -- $(core_closure "$root") $BUILD_FIL
 version="$(core_version "$root")"
 file="awm-$version-linux-x86_64-musl"
 
-"$root/scripts/rust-build.sh" build --release --target "$target" -p awm-cli
+"$root/scripts/rust-build.sh" build --locked --release --target "$target" -p awm-cli
 store_artifact "$target_dir/$target/release/awm" "$file" "$store"
 write_pin "$root/scripts/core.pin" "The awm core binary (static musl) that a deploy places at ~/.local/bin/awm." \
     "$version" "$file" "$store"

@@ -1,6 +1,8 @@
 [workspace]
 resolver = "2"
-members = ["crates/*"]
+# crates/* and plugins/*, as one glob: cargo reads a glob that matches nothing as a literal
+# path, so a separate "plugins/*" fails while core/plugins is empty or missing.
+members = ["[cp]*/*"]
 
 [workspace.package]
 version = "0.1.0"
