@@ -14,7 +14,7 @@ A folder with no `awm-plugin.toml` is not a plugin. The gateway ignores it.
 
 Plugin roots are an ordered list in the gateway config. The built-in core roots are `core/plugins`, `awm/services` and `awm/plugins`, in that order, under the workspace. Put a new core plugin at `core/plugins/<name>/` (§ Runtime). The first root that holds a plugin name wins. The gateway logs and ignores a shadowed folder. An absent root is skipped.
 
-Each plugin owns a state dir, `<AWM_DIR>/plugins/<plugin>/`. The gateway keeps the plugin's `install.stamp` there (§ Runtime).
+The gateway keeps each plugin's install stamp at `<AWM_DIR>/plugins/<plugin>/install.stamp` (§ Runtime). That folder holds nothing else. A service keeps its state in its state dir, `<AWM_DIR>/services/<service>/`, which the SDK's `state_dir` names.
 
 A tool name on the reserved list of the gateway config belongs only to a plugin from a core root. Any other claim refuses the plugin. A plugin's trust is where it loads from, never a manifest key. The `awm` tool belongs to the core: the gateway serves its verbs itself. The default list is `awm`, `auth`, `operations` and `journal`, plus the singleton tools of the edge list (§ Install config).
 
@@ -144,11 +144,11 @@ A plugin owns its runtime (R115 item 3). awm runs no package manager for it.
 
 1. A core plugin is one static musl binary, built in mizar's container (R113) by `scripts/release-plugins.sh`. `scripts/plugins/<name>.pin` pins it the way `scripts/core.pin` pins the core. `scripts/pins.sh` holds the version formula: it covers the plugin folder, the shared crates it builds from, and the workspace build files. The deploy places the binary at `<AWM_DIR>/bin/<name>` and restarts only the plugins whose binary changed. The manifest keeps `run = "run.sh"`, and `run.sh` holds one line: `exec "$AWM_DIR/bin/<name>" "$@"`.
    - **CAUTION** `deploy.toml` lists each plugin's pin. Add the line in the commit that adds the plugin, or the deploy batch refuses it.
-2. Any other plugin builds its runtime in its `install` hook, with any tool it chooses, inside its own folder or its state dir. The `install` key sits on a `[[service]]` and names a file relative to that service's `path`. The hook runs in the plugin folder with `AWM_DIR`, `AWM_PLUGIN` and `AWM_NODE_NAME` set. A plugin with several hooks runs them in manifest order.
-3. The gateway runs a plugin's `install` hooks before the plugin's first start, and again only when the plugin's install stamp changes. The stamp digests the names, sizes and mtimes of the plugin folder's files. It skips every folder named on the `UNSTAMPED` list of `loader.rs`: `.git`, `node_modules`, `target`, `__pycache__`, `.venv` and `.pytest_cache`. The gateway writes the stamp to `<AWM_DIR>/plugins/<plugin>/install.stamp` after the hooks succeed. A failed hook refuses that plugin and its dependents, and the refusal names the hook's last output lines. The refusal holds until the plugin folder's stamp changes, or until a restart names the plugin.
+2. Any other plugin builds its runtime in its `install` hook, with any tool it chooses, inside its own folder or its services' state dirs. The `install` key sits on a `[[service]]` and names a file relative to that service's `path`. The hook runs in the plugin folder with `AWM_DIR`, `AWM_PLUGIN` and `AWM_NODE_NAME` set. A plugin with several hooks runs them in manifest order.
+3. The gateway runs a plugin's `install` hooks before the plugin's first start, and again only when the plugin's install stamp changes. The stamp digests the names, sizes and mtimes of the plugin folder's files. It skips every folder named on the `UNSTAMPED` list of `loader.rs`: `.git`, `node_modules`, `target`, `__pycache__`, `.venv` and `.pytest_cache`. The gateway writes the stamp after the hooks succeed. A failed hook refuses that plugin and its dependents, and the refusal names the hook's last output lines. The refusal holds until the plugin folder's stamp changes, or until a restart names the plugin.
 4. A plugin with no `install` key needs no install step.
 
-**CAUTION** A hook that writes outside its folder and its state dir breaks the one-plugin-one-runtime rule. A shared conda env or a global pip install is such a write.
+**CAUTION** A hook that writes outside its folder and its services' state dirs breaks the one-plugin-one-runtime rule. A shared conda env or a global pip install is such a write.
 
 ## Refresh hook
 
