@@ -23,6 +23,9 @@ pub const PID_KEY: &str = "_caller_pid";
 /// and a door call carries `{session_id, node, job?, name?}`: the calling session as the calling
 /// gateway stamped it, on the node the door verified.
 pub const CLAIM_KEY: &str = "_caller_session";
+/// The calling plugin, as a Python service's adapter sets it from the call frame. The gateway
+/// drops any copy in the args, since only the frame's `plugin` names the caller.
+pub const PLUGIN_KEY: &str = "_caller_plugin";
 /// Where `resolve_caller` records which pid of the walk the session answered for.
 pub const FOUND_PID: &str = "_found_pid";
 pub const FAILED_LOOKUP_TRUST: &str = "untrusted";
@@ -133,6 +136,7 @@ pub fn stamp(args: &mut Value, caller: &Caller, pid: Option<u32>, here: &str) {
     map.remove(SCOPE_KEY);
     map.remove(SESSION_KEY);
     map.remove(PID_KEY);
+    map.remove(PLUGIN_KEY);
     if caller.lane != awm_proto::Lane::Edge {
         map.remove(CLAIM_KEY);
     }

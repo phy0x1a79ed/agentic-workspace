@@ -210,6 +210,7 @@ The gateway also writes the caller's trust and scope into the args of every call
 - `_caller_pid` is the pid of the calling session on this node: the pid the gateway's walk ended on. Only a local call from a session carries it. The gateway replaces any `_caller_pid` a caller sends.
 - `_caller_session` keeps its meaning: the `{kind, job, name}` claim of a session on another node. It survives only on an edge call.
 - `_caller_session_id` is the R9 id of an isolated session. Only the isolated door writes it (§ Isolated sessions). The gateway drops it from every other call.
+- `_caller_plugin` is the calling plugin. `awm.gatewayclient`'s adapter sets it from the call frame's `plugin` (§ Service wire protocol, step 4), and the gateway and the adapter both drop a copy a caller sends. A call from an agent or the CLI carries none. A verb that hands out a secret admits plugins by this key: auth gives `edge_material` only to httpsfront, dsh and claude-science, and refuses its device verbs to every plugin.
 
 The gateway finds the session from a pid: `X-Awm-Session-Pid`, which `awm mcp` sends, or `X-Awm-Caller-Pid`, which the CLI sends for itself. It walks that pid's ancestors and asks `reflection session_of {pid}` for each, in-process through the hub, so the lookup is neither gated nor looked up itself. reflection asks the harness plugins (`install.md` R135 item 6). The gateway reads no harness's files.
 

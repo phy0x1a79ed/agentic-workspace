@@ -287,3 +287,26 @@ def test_the_v5_db_drops_the_users_and_the_plaintext_penpot_tables(awm_workspace
     conn.close()
     assert not tables & {"awm_penpot", "awm_users"}
     assert version == 7
+
+
+# --- plugin callers ------------------------------------------------------------
+
+
+@pytest.mark.parametrize("front", ["httpsfront", "dsh", "claude-science"])
+def test_an_edge_front_reads_edge_material(auth, front):
+    assert "secret" in auth.h_edge_material({"_caller_plugin": front})
+
+
+def test_any_other_plugin_is_refused_edge_material(auth):
+    with pytest.raises(PermissionError, match="search"):
+        auth.h_edge_material({"_caller_plugin": "search"})
+
+
+def test_no_plugin_manages_device_tokens(auth):
+    token_id = _mint(auth)["id"]
+    for call in (lambda a: auth.h_device_mint({**a, "label": "x", "scope": usertoken.AVATAR_STAGE}),
+                 auth.h_device_list,
+                 lambda a: auth.h_device_revoke({**a, "id": token_id})):
+        with pytest.raises(PermissionError, match="httpsfront"):
+            call({"_caller_plugin": "httpsfront"})
+    assert token_id in _live(auth), "the refused revoke changed nothing"

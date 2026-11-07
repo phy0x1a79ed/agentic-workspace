@@ -1402,3 +1402,59 @@ fn wants_follows_the_install_config() {
     assert_eq!(wants("journal"), 0);
     assert_eq!(wants("search"), 1);
 }
+
+/// Any plugin may call any tool, so auth names the plugins that may read its secrets. The
+/// gateway names the calling plugin in the frame, and the Python adapter hands it to auth as
+/// `_caller_plugin`: an edge front reads `edge_material`, any other plugin is refused, and the
+/// CLI, which is no plugin, reads it.
+#[test]
+fn auth_gives_edge_material_only_to_an_edge_front_or_no_plugin() {
+    let Some(py) = awm_python() else {
+        eprintln!("no awm conda env (AWM_CONDA_ROOT): skipping the Python auth service");
+        return;
+    };
+    let tmp = tempfile::tempdir().unwrap();
+    let base = tmp.path();
+    let (core, state, ws) = (base.join("core"), base.join("state"), base.join("ws"));
+    std::fs::create_dir_all(&ws).unwrap();
+    std::fs::create_dir_all(&core).unwrap();
+    let (fake, repo) = (fake_bin(), repo());
+    std::os::unix::fs::symlink(repo.join("awm/services/auth"), core.join("auth")).unwrap();
+    // reflection is the fake: it answers session_of, so the CLI runs as the user's shell.
+    write(&core.join("reflection/awm-plugin.toml"), "[plugin]\nname = \"reflection\"\n\n[[service]]\nname = \"reflection\"\n\n[[tool]]\nname = \"reflection\"\n");
+    write(&core.join("reflection/run.sh"), &format!("export FAKE_TOOL=reflection\nexec '{}'\n", fake.display()));
+    // Two fake plugins that need auth: an edge front, and one that is not.
+    for (plugin, tool) in [("httpsfront", "front"), ("nosy", "nosy")] {
+        write(
+            &core.join(format!("{plugin}/awm-plugin.toml")),
+            &format!("[plugin]\nname = \"{plugin}\"\n\n[[service]]\nname = \"{plugin}\"\n\n[[tool]]\nname = \"{tool}\"\n\n[[needs.tool]]\nname = \"auth\"\nmajor = 1\n"),
+        );
+        write(&core.join(format!("{plugin}/run.sh")), &format!("export FAKE_TOOL={tool}\nexec '{}'\n", fake.display()));
+    }
+    let mut path = vec![repo.join("awm/services/auth")];
+    path.extend(std::fs::read_dir(repo.join("awm/service_components")).unwrap().flatten().map(|c| c.path()));
+    let path = path.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(":");
+    write(
+        &state.join("config.toml"),
+        &format!(
+            "node = \"e2e\"\nlisten = \"127.0.0.1:0\"\nworkspace = \"{}\"\ncore_roots = [\"{}\"]\ntool_wait_s = 90\nsession_cache_s = 0\n[env]\nAWM_PYTHON = \"{}\"\nPYTHONPATH = \"{path}\"\nPYTHONDONTWRITEBYTECODE = \"1\"\n",
+            ws.display(),
+            core.display(),
+            py.display()
+        ),
+    );
+    let gw = Gateway::start(&state);
+    let url = gw.url.clone();
+    let fail = || format!("{}\n--- auth log\n{}", log(&state), std::fs::read_to_string(state.join("logs/auth.log")).unwrap_or_default());
+
+    let (code, out, errout) = cli(&url, &["nosy", "call_needed", "--verb", "edge_material"]);
+    assert!(out.contains("not open to plugin") && out.contains("nosy") && !out.contains("session_ttl_seconds"),
+        "a plugin outside the fronts read edge_material: {code} {out} {errout} {}", fail());
+    let (code, out, errout) = cli(&url, &["front", "call_needed", "--verb", "edge_material"]);
+    assert!(code == 0 && out.contains("session_ttl_seconds"), "an edge front was refused: {out} {errout} {}", fail());
+    let (code, out, errout) = cli(&url, &["front", "call_needed", "--verb", "device_list"]);
+    assert!(out.contains("not open to plugin") && !out.contains("tokens"), "a plugin listed device tokens: {code} {out} {errout}");
+    let (code, out, errout) = cli(&url, &["auth", "edge_material"]);
+    assert!(code == 0 && out.contains("session_ttl_seconds"), "the CLI was refused: {out} {errout} {}", fail());
+    assert!(gw.stop().success());
+}

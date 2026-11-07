@@ -1492,8 +1492,8 @@ fn strip_stamps(args: &Value) -> Value {
 fn check_arguments(tool: &str, verb: &str, spec: &Value, args: &Value) -> Result<(), ApiError> {
     let Some(params) = spec.get("params").and_then(Value::as_array) else { return Ok(()) };
     let known: Vec<&str> = params.iter().filter_map(|p| p.get("name").and_then(Value::as_str)).collect();
-    // The stamp replaces or drops these two, so a caller that sends one is not refused for it.
-    let restamped = [crate::caller::PID_KEY, crate::caller::CLAIM_KEY];
+    // The stamp replaces or drops these, so a caller that sends one is not refused for it.
+    let restamped = [crate::caller::PID_KEY, crate::caller::CLAIM_KEY, crate::caller::PLUGIN_KEY];
     let unknown: Vec<&String> = args
         .as_object()
         .into_iter()
