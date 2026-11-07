@@ -1,0 +1,39 @@
+# Private channels (channels.md R110): a room at the public host's relay, or a machine
+# through the tether. One binary serves both halves and picks one by AWM_SERVICE_NAME.
+# `channel` runs on every member node and supervises tether-operator. `relay` runs only
+# on the public host (profile relay-host), keeps every room and issues every machine slot,
+# and supervises tether-relay. The public host excludes `channel/channel`.
+[plugin]
+name = "channel"
+version = "0.4.0"
+
+[[service]]
+name = "channel"
+run = "run.sh"
+
+[[service]]
+name = "relay"
+run = "run.sh"
+profiles = ["relay-host"]
+
+[[tool]]
+name = "channel"
+major = 1
+service = "channel"
+tier = "on"
+
+# Callers name the singleton `relay` in edges.yml, so the tool keeps its name.
+[[tool]]
+name = "relay"
+major = 1
+service = "relay"
+tier = "on"
+
+# No contract need: the public host has no reflection (fleet.md R79), and a need would
+# refuse the plugin there. The channel half waits for reflection with until_provided.
+[needs]
+# The tether relay's bearer. Only the public host holds it (channels.md R147).
+secrets = ["AWM_TETHER_ISSUE_TOKEN"]
+# The release fetch, and the operator daemon's relay mount.
+network = ["nexus.tony-xy-liu.com", "github.com", "*.githubusercontent.com"]
+platform = ["linux"]
