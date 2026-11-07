@@ -40,6 +40,18 @@ sha2 = "0.10"
 sha1 = "0.10"
 hex = "0.4"
 rand = "0.9"
+async-trait = "0.1"
+# social: Discord, Gmail's IMAP and SMTP, all rustls.
+twilight-gateway = { version = "0.16", default-features = false, features = ["rustls-webpki-roots", "zlib-stock"] }
+twilight-http = { version = "0.16", default-features = false, features = ["rustls-webpki-roots", "decompression"] }
+twilight-model = "0.16"
+twilight-util = { version = "0.16", features = ["builder"] }
+async-imap = { version = "0.10", default-features = false, features = ["runtime-tokio"] }
+tokio-rustls = "0.26"
+webpki-roots = "0.26"
+mail-parser = "0.9"
+lettre = { version = "0.11", default-features = false, features = ["builder", "smtp-transport", "tokio1", "tokio1-rustls-tls", "hostname"] }
+urlencoding = "2"
 
 awm-proto = { path = "crates/awm-proto" }
 awm-gateway = { path = "crates/awm-gateway" }
