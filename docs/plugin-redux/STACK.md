@@ -6,7 +6,7 @@ Decisions: `search` for journals tagged `decision` in awm/plugin-redux.
 
 ## Current
 
-- `build` — executing docs/plugin-redux/PLAN.md. T1 landed on release (49232bf9; rollout stuck at lyra). T2's three parts are committed on feat/plugin-redux and unpushed (see `t2-finish`). T3 is done. T4 DONE 2026-11-07: all four plans approved by Tony (comms and harness paused for his go; knowledge executing T1; ops executing). Now T6: land T2 once T1's batch clears lyra, then each port as merger. A gateway subagent is adding the awm/plugins lifecycle event on feat/plugin-redux (give knowledge the sha).
+- `build` — executing docs/plugin-redux/PLAN.md. T1 landed on release (49232bf9; rollout stuck at lyra). T2's three parts are committed on feat/plugin-redux and unpushed (see `t2-finish`). T3 is done. T4 DONE 2026-11-07: all four plans approved by Tony (comms, harness and ops paused for his go; knowledge executing T1). Now T6: land T2 once T1's batch clears lyra, then each port as merger. A gateway subagent is adding the awm/plugins lifecycle event on feat/plugin-redux (give knowledge the sha).
 
 ## Waiting on the user
 
@@ -85,7 +85,7 @@ Briefs: ~/.cache/plugin-redux-briefs/full-<group>.md. All Opus high, task CWPYAt
 - harness — job eecc2448, plugin-redux/port-harness, https://claude.ai/code/session_012TZ1zx4PnARsz9Am5dpp85. Plan /home/tony/.claude/plans/sparkling-sniffing-sonnet.md: APPROVED by Tony. Paused at Tony's ask after compacting; T0 waits for his go. Submits no land until T2 lands.
 - knowledge — job 2a70a96d, plugin-redux/port-knowledge, https://claude.ai/code/session_012TZ1zwibR5V8A9BD4Hq2tt. Plan /home/tony/.claude/plans/hidden-rolling-bentley.md: APPROVED by Tony (federated search, guide, awm-index). Executing from T1. Holds every land until the T2 SDK and awm-statecheck are in, and guide's land until the awm/plugins event sha (gateway subagent building it on feat/plugin-redux).
 - (all four plans now carry: the T0 merge of feat/plugin-redux, state-safety.txt, awm-statecheck state.toml files; every revision returns here for "submit")
-- ops — job 8efddb16, plugin-redux/port-ops, https://claude.ai/code/session_012TZ1zxbfDVLySsTQCPp1rq. Plan /home/tony/.claude/plans/abundant-singing-moon.md: APPROVED by Tony, executing (awm-trust first; no plugin lands before the SDK; T11 announced first).
+- ops — job 8efddb16, plugin-redux/port-ops, https://claude.ai/code/session_012TZ1zxbfDVLySsTQCPp1rq. Plan /home/tony/.claude/plans/abundant-singing-moon.md: APPROVED by Tony, revision too. Merged feat/plugin-redux at 136c1022. Paused at Tony's ask after compacting; then port-docs refresh, T1 awm-trust, T14 awm-statecheck.
 
 ## Closed
 
