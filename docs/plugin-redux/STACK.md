@@ -10,7 +10,7 @@ Decisions: `search` for journals tagged `decision` in awm/plugin-redux.
 
 ## Waiting on the user
 
-- engine: bench done (journal 6939906b, awm/engine-bench). libSQL fails 4 of 5 criteria (cold p95 6.2x, appends 0.13 s p50, mixed writers and old-Python rollback fail); only recall passes (1.00 vs LanceDB 0.93). Recommended: keep LanceDB as search's engine (knowledge's default). Tony chooses; T14/T15/T17 wait.
+- engine: DECIDED by Tony 2026-11-07, after the bench (journal 6939906b, libSQL failed). search becomes a federator with no content store; each source owns its engine through a new awm-index crate (LanceDB, event-driven maintenance, yearly sections); journal's posts move into its own Lance tables, with relational state staying in journal.db; scopes drops its vector table. "I really dont want multiple copies", "I really hate timers ... make this event based". knowledge is rewriting the plan. Check it for: posts tables kept read-only plus export-back rollback, cross-store write order plus reconcile, peer-sync dedup, per-source privacy, the section trigger, the down-source errors[], and the describe changes.
 
 - Pre-existing: the transcripts archive is 0664 in 0775 dirs (the live transcripts are 0600). knowledge's port writes it 0600/0700. Raise with Tony at the knowledge approval.
 
