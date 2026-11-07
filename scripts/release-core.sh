@@ -13,7 +13,7 @@ root="$(cd "$(dirname "$0")/.." && pwd)"
 . "$root/scripts/pins.sh"
 store="${AWM_DIR:-$root/.awm}/artifacts"
 target=x86_64-unknown-linux-musl
-target_dir="${AWM_CARGO_TARGET_DIR:-$root/core/target}"
+target_dir="$("$root/scripts/rust-build.sh" --target-dir)"
 
 dirty="$(git -C "$root" status --porcelain -- $(core_closure "$root") $BUILD_FILES)"
 [ -z "$dirty" ] || {

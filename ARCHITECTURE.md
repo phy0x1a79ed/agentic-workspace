@@ -352,4 +352,4 @@ It reports pass or fail per dist and exits non-zero if any failed. The `contract
 - Make cross-dist imports in a test lazy, inside a fixture or function. A top-level cross-dist import brings back the namespace shadowing the runner avoids.
 - Add a new plugin with tests to both `DISTS` and `ORDER` in the runner. A dist missing from `DISTS` reports `unknown dist` and never runs. `reflection` sat that way for months.
 
-Run the Rust tests with `scripts/rust-build.sh test --workspace`, which runs cargo in a container. `test/install/run.sh` installs awm in a rootless container and joins it to a fleet. Run it when a change touches install, reload or the isolated door.
+Run the Rust tests with `scripts/rust-build.sh test --workspace`, which runs cargo in a container. Its build output goes to `~/.cache/awm-target/<worktree>`, outside the worktree, because each target holds 4 to 5 GB. Run `scripts/rust-build.sh --gc` to list the target dirs of worktrees with no live session, and add `--yes` to delete them. `test/install/run.sh` installs awm in a rootless container and joins it to a fleet. Run it when a change touches install, reload or the isolated door.
