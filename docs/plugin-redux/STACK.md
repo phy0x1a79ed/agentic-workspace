@@ -83,7 +83,7 @@ The worker branches build on feat/plugin-redux (merged at 6ee5a267 on 2026-11-07
 Briefs: ~/.cache/plugin-redux-briefs/full-<group>.md. All Opus high, task CWPYAtyb, in plan mode.
 - comms — job e44d901a, plugin-redux/port-comms, https://claude.ai/code/session_012TZ1zwTFfh7Txjdm2h5Rma. Plan /home/tony/.claude/plans/kind-stargazing-falcon.md: checked, told to submit.
 - harness — job eecc2448, plugin-redux/port-harness, https://claude.ai/code/session_012TZ1zx4PnARsz9Am5dpp85. Plan /home/tony/.claude/plans/sparkling-sniffing-sonnet.md: checked, told to submit.
-- knowledge — job 2a70a96d, plugin-redux/port-knowledge, https://claude.ai/code/session_012TZ1zwibR5V8A9BD4Hq2tt. Plan /home/tony/.claude/plans/hidden-rolling-bentley.md: checked, told to submit.
+- knowledge — job 2a70a96d, plugin-redux/port-knowledge, https://claude.ai/code/session_012TZ1zwibR5V8A9BD4Hq2tt. Plan /home/tony/.claude/plans/hidden-rolling-bentley.md: APPROVED by Tony (federated search, guide, awm-index). Executing from T1. Holds every land until the T2 SDK and awm-statecheck are in, and guide's land until the awm/plugins event sha (gateway subagent building it on feat/plugin-redux).
 - (all four plans now carry: the T0 merge of feat/plugin-redux, state-safety.txt, awm-statecheck state.toml files; every revision returns here for "submit")
 - ops — job 8efddb16, plugin-redux/port-ops, https://claude.ai/code/session_012TZ1zxbfDVLySsTQCPp1rq. Plan /home/tony/.claude/plans/abundant-singing-moon.md: APPROVED by Tony, executing (awm-trust first; no plugin lands before the SDK; T11 announced first).
 
