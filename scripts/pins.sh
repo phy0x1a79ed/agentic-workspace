@@ -5,7 +5,7 @@
 # The id of the page build's inputs: every tracked page source, the shared components and the
 # toolchain files. The pages pin is stale exactly when this id moved.
 pages_version() {
-    echo "pages-$(git -C "$1" ls-files -s -- awm/ui_components 'awm/services/*/pages/*' 'awm/plugins/*/pages/*' \
+    echo "pages-$(git -C "$1" ls-files -s -- awm/ui_components 'awm/services/*/pages/*' 'awm/plugins/*/pages/*' 'core/plugins/*/pages/*' \
         awm/scripts/build.sh awm/package.json awm/package-lock.json awm/vite.config.ts awm/svelte.config.js 'awm/tsconfig*.json' \
         | sha256sum | cut -c1-12)"
 }
