@@ -121,6 +121,14 @@ def _script_paths(folder: Path) -> set[str]:
 
 
 @pytest.mark.parametrize("folder", FOLDERS, ids=lambda f: f.name)
+def test_no_python_plugin_names_an_install_hook(folder):
+    """awm/install.sh runs a Python plugin's install.sh in the awm env. The gateway would run an
+    `install` key's hook without conda on PATH, fail it and refuse the plugin."""
+    assert all("install" not in s for s in _manifest(folder).get("service", [])), \
+        "drop the install key: awm/install.sh runs install.sh"
+
+
+@pytest.mark.parametrize("folder", FOLDERS, ids=lambda f: f.name)
 def test_each_manifest_names_its_folder_and_no_host(folder):
     m = _manifest(folder)
     assert "placement" not in m, "the install config places plugins"

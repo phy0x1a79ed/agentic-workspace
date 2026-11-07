@@ -6,7 +6,6 @@ version = "0.3.0"
 name = "channel"
 path = "."
 run = "run.sh"
-install = "install.sh"
 
 [[tool]]
 name = "channel"
@@ -23,7 +22,6 @@ platform = ["linux"]
 # on this service's account.
 [[needs.tool]]
 name = "relay"
-verbs = ["open", "join", "write", "close", "feed", "issue"]
 
 # reflection, through awm.gatewayclient.holders and push: `session_of` and
 # `list_other` name the holder and tell when it is gone, and `message` types
@@ -31,4 +29,3 @@ verbs = ["open", "join", "write", "close", "feed", "issue"]
 [[needs.contract]]
 name = "reflection"
 major = 1
-verbs = ["list_other", "session_of", "message"]

@@ -6,8 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock, RwLock, Weak};
 use std::time::{Duration, Instant};
 
-use awm_proto::manifest::NeedTool;
-use awm_proto::{CallContext, Caller, Lane, Surface, Tier, UsageEvent, MANIFEST_FILE};
+use awm_proto::{CallContext, Caller, Lane, Surface, Tier, UsageEvent};
 use awm_trust::edges::EdgeList;
 use serde_json::{json, Value};
 
@@ -85,6 +84,8 @@ pub struct Gateway {
     /// The verbs of each singleton another host serves, for the MCP list.
     door_verbs: std::sync::Mutex<HashMap<String, DoorVerbs>>,
     installing: tokio::sync::Mutex<()>,
+    /// Each plugin's install hook runs and failures (plugin-contract § Runtime).
+    pub hooks: crate::hooks::Hooks,
     /// Each guarded plugin's egress proxy port (R116 item 1).
     pub egress: crate::egress::Egress,
     /// Emit subscribers by service and topic.
@@ -137,6 +138,12 @@ pub struct ApiError {
 impl ApiError {
     pub fn new(status: u16, detail: impl Into<String>) -> Self {
         Self { status, detail: Value::String(detail.into()) }
+    }
+
+    /// A tool that no plugin serves on this node or a peer (plugin-contract § Calls). A gate
+    /// that hides a tool answers the same, so a caller cannot tell hidden from absent.
+    pub fn not_installed(tool: &str) -> Self {
+        Self::new(404, format!("{tool} not installed"))
     }
 }
 
@@ -199,7 +206,7 @@ impl Gateway {
         let edges = EdgeList::load(&cfg.edges_path(&state))?;
         let workspace = cfg.workspace_dir(&state);
         let peer_tools = cached_peer_tools(&state, &peers.peers());
-        let load = load_plugins(&state, &cfg, &peer_tools, &edges, &node);
+        let load = load_plugins(&state, &cfg, &peer_tools, &edges, &node, &BTreeMap::new());
         for r in &load.refused {
             tracing::error!("plugin {} refused: {}", r.plugin, r.reason);
         }
@@ -228,6 +235,7 @@ impl Gateway {
             sessions: std::sync::Mutex::new(HashMap::new()),
             door_verbs: std::sync::Mutex::new(HashMap::new()),
             installing: tokio::sync::Mutex::new(()),
+            hooks: Default::default(),
             egress: Default::default(),
             topics: Default::default(),
             stream_sessions: Default::default(),
@@ -361,7 +369,7 @@ impl Gateway {
         let edges = self.edges.read().unwrap_or_else(|p| p.into_inner());
         let Some(s) = edges.singleton(tool).filter(|s| s.host != self.node) else { return Ok(None) };
         if !edges.may_call(&self.node, tool) {
-            return Err(ApiError::new(404, format!("Unknown tool {tool:?}")));
+            return Err(ApiError::not_installed(tool));
         }
         if peer.is_some_and(|p| p != "local" && p != self.node && p != s.host) {
             return Err(ApiError::new(400, format!(
@@ -465,7 +473,7 @@ impl Gateway {
             let notified = self.hub.changed.notified();
             let tried = match self.lookup_target() {
                 Some((service, verb)) => {
-                    self.hub.call(&service, &verb.function, json!({"pid": pid}), None, &caller, Duration::from_secs(5)).await.ok()
+                    self.hub.call(&service, &verb.function, json!({"pid": pid}), None, None, &caller, Duration::from_secs(5)).await.ok()
                 }
                 None => None,
             };
@@ -707,8 +715,11 @@ impl Gateway {
             let edges = EdgeList::load(&cfg.edges_path(&self.state)).map_err(|e| ApiError::new(400, format!("{e:#}")))?;
             *self.edges.write().unwrap_or_else(|p| p.into_inner()) = edges;
         }
+        // A restart names a plugin to try again, its failed install hook included.
+        self.hooks.forget(&request.restart);
         let peers = self.peer_tools.read().unwrap_or_else(|p| p.into_inner()).clone();
-        let mut new = load_plugins(&self.state, &cfg, &peers, &self.edges.read().unwrap_or_else(|p| p.into_inner()), &self.node);
+        let failed = self.hooks.failed();
+        let mut new = load_plugins(&self.state, &cfg, &peers, &self.edges.read().unwrap_or_else(|p| p.into_inner()), &self.node, &failed);
         let (old, was_refused): (BTreeMap<String, loader::Plugin>, BTreeSet<String>) = {
             let before = self.read_load();
             (before.plugins.iter().map(|p| (p.name.clone(), p.clone())).collect(), before.refused.iter().map(|r| r.plugin.clone()).collect())
@@ -769,7 +780,11 @@ impl Gateway {
         *self.load.write().unwrap_or_else(|p| p.into_inner()) = new;
         self.hub.changed.notify_waiters();
         for spec in starting.clone() {
-            crate::supervisor::start(&gw, spec);
+            if request.force && restarting.contains(spec.name.as_str()) {
+                crate::supervisor::force_start(&gw, spec);
+            } else {
+                crate::supervisor::start(&gw, spec);
+            }
         }
         let stale_env = self.stale_env(&cfg.env);
         let tell_peers = scope == Scope::Everything && !(added.is_empty() && removed.is_empty() && restarted.is_empty() && stopping.is_empty());
@@ -1082,7 +1097,7 @@ impl Gateway {
             let notified = self.hub.changed.notified();
             let tools = self.tools();
             let Some(entry) = tools.get(tool) else {
-                return Err(ApiError::new(404, format!("Unknown tool {tool:?}")));
+                return Err(ApiError::not_installed(tool));
             };
             if let Some(found) = entry.verbs.iter().find(|(_, v)| v.verb == verb) {
                 return Ok(found.clone());
@@ -1140,7 +1155,7 @@ impl Gateway {
         // Checked before the call is relayed, so a node carries no call its origin may not make.
         if self.singleton_refuses(&tool, &ctx.caller) {
             tracing::info!("singleton gate: refused {tool}.{verb} to {:?}", ctx.caller.nodes_behind(&self.node).collect::<Vec<_>>());
-            return Err(ApiError::new(404, format!("Unknown tool {tool:?}")));
+            return Err(ApiError::not_installed(&tool));
         }
         let door = if tools.contains_key(&tool) { None } else { self.door_route(&tool, peer.as_deref())? };
         // A tool no local plugin serves runs where the name table says it lives (R117 item 3).
@@ -1156,10 +1171,6 @@ impl Gateway {
         }
         if let Some(why) = self.level_refusal(&tool, &verb, &inner, ctx) {
             tracing::info!("level gate: refused {tool}.{verb}: {why}");
-            return Err(ApiError::new(403, why));
-        }
-        if let Some(why) = ctx.plugin.as_deref().and_then(|p| self.undeclared(p, &tool, &verb)) {
-            tracing::info!("needs guard: refused {tool}.{verb}: {why}");
             return Err(ApiError::new(403, why));
         }
         if let Some(peer) = peer.filter(|p| p != "local" && *p != self.node) {
@@ -1191,30 +1202,6 @@ impl Gateway {
         let harness = self.providers(contract, major).iter().any(|o| o.name == tool);
         let names_other = args.get("job").and_then(Value::as_str).is_some_and(|j| !j.is_empty());
         awm_trust::call_refusal(level, &awm_trust::Call { tool, verb, harness, names_other })
-    }
-
-    /// Why `plugin` may not call `tool`'s `verb`, or None when it may (R116 item 3). A plugin
-    /// may call its own tools, and each tool or contract provider its manifest's needs list
-    /// with that verb. A plugin with no manifest, or one this node does not load, is not held.
-    pub fn undeclared(&self, plugin: &str, tool: &str, verb: &str) -> Option<String> {
-        let load = self.read_load();
-        let p = load.plugins.iter().find(|p| p.name == plugin)?;
-        // The core's own tool needs no manifest entry: its writes take a trusted local caller.
-        if p.tools.iter().any(|t| t.name == tool) || tool == NATIVE_TOOL {
-            return None;
-        }
-        let lists = |n: &NeedTool| verb == DESCRIBE || n.verbs.iter().any(|v| v == verb);
-        if p.needs.tool.iter().any(|n| n.name == tool && lists(n)) {
-            return None;
-        }
-        let contracts: Vec<NeedTool> = p.needs.contract.iter().filter(|n| lists(n)).cloned().collect();
-        drop(load);
-        if contracts.iter().any(|n| self.providers(&n.name, n.major).iter().any(|o| o.name == tool)) {
-            return None;
-        }
-        Some(format!(
-            "plugin {plugin:?} does not list {tool}.{verb} in its {MANIFEST_FILE}; add the verb to its [[needs.tool]] or [[needs.contract]]"
-        ))
     }
 
     fn record_call(&self, tools: &BTreeMap<String, ToolEntry>, tool: &str, verb: &str, ctx: &CallContext, ok: bool, started: Instant) {
@@ -1314,7 +1301,7 @@ impl Gateway {
             check_arguments(tool, verb, &found.spec, &declared)?;
             let timeout = found.spec.get("timeout").and_then(Value::as_f64).unwrap_or(DEFAULT_CALL_TIMEOUT_S);
             let value =
-                self.hub.call(&service, &found.function, inner, None, &ctx.caller, Duration::from_secs_f64(timeout)).await?;
+                self.hub.call(&service, &found.function, inner, None, ctx.plugin.as_deref(), &ctx.caller, Duration::from_secs_f64(timeout)).await?;
             Ok::<_, ApiError>(render(&value))
         }
         .await;
@@ -1330,7 +1317,7 @@ impl Gateway {
         ctx: &CallContext,
         tools: &BTreeMap<String, ToolEntry>,
     ) -> Result<String, ApiError> {
-        let Some(entry) = tools.get(tool) else { return Err(ApiError::new(404, format!("Unknown tool {tool:?}"))) };
+        let Some(entry) = tools.get(tool) else { return Err(ApiError::not_installed(tool)) };
         if verb == DESCRIBE {
             let entry = if entry.verbs.is_empty() && tool != NATIVE_TOOL {
                 // A caller asking for the schema of a starting tool waits for it like a call would.
@@ -1351,7 +1338,7 @@ impl Gateway {
         }
         if self.marks.refuses(ctx, &inner) {
             tracing::info!("private gate: refused {tool}.{verb} to {}", ctx.caller.node);
-            return Err(ApiError::new(404, format!("Unknown tool {tool:?}")));
+            return Err(ApiError::not_installed(tool));
         }
         let (service, found) = self.wait_for_verb(tool, verb).await?;
         check_arguments(tool, verb, &found.spec, &inner)?;
@@ -1360,7 +1347,7 @@ impl Gateway {
         let timeout = found.spec.get("timeout").and_then(Value::as_f64).unwrap_or(DEFAULT_CALL_TIMEOUT_S);
         let value = self
             .hub
-            .call(&service, &found.function, inner, ctx.as_.as_deref(), &ctx.caller, Duration::from_secs_f64(timeout))
+            .call(&service, &found.function, inner, ctx.as_.as_deref(), ctx.plugin.as_deref(), &ctx.caller, Duration::from_secs_f64(timeout))
             .await?;
         Ok(render(&value))
     }
@@ -1505,8 +1492,8 @@ fn strip_stamps(args: &Value) -> Value {
 fn check_arguments(tool: &str, verb: &str, spec: &Value, args: &Value) -> Result<(), ApiError> {
     let Some(params) = spec.get("params").and_then(Value::as_array) else { return Ok(()) };
     let known: Vec<&str> = params.iter().filter_map(|p| p.get("name").and_then(Value::as_str)).collect();
-    // The stamp replaces or drops these two, so a caller that sends one is not refused for it.
-    let restamped = [crate::caller::PID_KEY, crate::caller::CLAIM_KEY];
+    // The stamp replaces or drops these, so a caller that sends one is not refused for it.
+    let restamped = [crate::caller::PID_KEY, crate::caller::CLAIM_KEY, crate::caller::PLUGIN_KEY];
     let unknown: Vec<&String> = args
         .as_object()
         .into_iter()
@@ -1551,13 +1538,21 @@ fn edge_tools(peers: &BTreeMap<String, Vec<RemoteTool>>, edges: &EdgeList) -> BT
         .collect()
 }
 
-fn load_plugins(state: &Path, cfg: &Config, peer_tools: &BTreeMap<String, Vec<RemoteTool>>, edges: &EdgeList, node: &str) -> LoadResult {
+fn load_plugins(
+    state: &Path,
+    cfg: &Config,
+    peer_tools: &BTreeMap<String, Vec<RemoteTool>>,
+    edges: &EdgeList,
+    node: &str,
+    failed_installs: &BTreeMap<String, (String, String)>,
+) -> LoadResult {
     let enabled: HashMap<String, bool> = std::fs::read_to_string(state.join("enabled.json"))
         .ok()
         .and_then(|t| serde_json::from_str(&t).ok())
         .unwrap_or_default();
     let reserved = cfg.reserved.clone();
     let wants = |p: &str| cfg.wants(p);
+    let wants_service = |p: &str, s: &str| cfg.wants_service(p, s);
     let core_roots = cfg.core_root_dirs(state);
     let mut plugin_roots = cfg.plugin_roots.clone();
     plugin_roots.push(crate::install::installed_root(state));
@@ -1567,6 +1562,7 @@ fn load_plugins(state: &Path, cfg: &Config, peer_tools: &BTreeMap<String, Vec<Re
         edges.singletons.iter().filter(|s| s.host != node).map(|s| (s.tool.clone(), s.host.clone())).collect();
     loader::load(&loader::LoadInput {
         wants: &wants,
+        wants_service: &wants_service,
         core_roots: &core_roots,
         plugin_roots: &plugin_roots,
         profiles: &cfg.profiles,
@@ -1575,6 +1571,7 @@ fn load_plugins(state: &Path, cfg: &Config, peer_tools: &BTreeMap<String, Vec<Re
         peer_tools,
         doors: &doors,
         elsewhere: &elsewhere,
+        failed_installs,
     })
 }
 

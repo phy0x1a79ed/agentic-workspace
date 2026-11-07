@@ -3,7 +3,7 @@
 //! A service key's `authorized_keys` line reads
 //! `restrict,command="awm port --key awm:<holder>:service" ssh-ed25519 …`. The caller
 //! sends the request on stdin, and sshd sets `SSH_ORIGINAL_COMMAND` to `port`. The door takes one
-//! JSON request `{"name","args","origin"?,"session"?,"trust"?,"scope"?,"job"?,"session_name"?}`, answers any tool outside its set as unknown, logs every
+//! JSON request `{"name","args","origin"?,"session"?,"trust"?,"scope"?,"job"?,"session_name"?}`, answers any tool outside its set as `<tool> not installed`, as the local gateway answers an absent tool, logs every
 //! call, and hands the rest to the local gateway at the service lane.
 
 use std::io::Write;
@@ -55,7 +55,7 @@ where
         Err(e) => (("?".to_string(), String::new(), "refused"), json!({"ok": false, "error": e})),
         Ok(req) if !allowed.iter().any(|t| t == &req.name) => (
             (req.name.clone(), verb(&req).to_string(), "refused"),
-            json!({"ok": false, "error": format!("Unknown tool {:?}", req.name)}),
+            json!({"ok": false, "error": format!("{} not installed", req.name)}),
         ),
         Ok(req) => match invoke(&req) {
             Ok(v) => ((req.name.clone(), verb(&req).to_string(), "ok"), json!({"ok": true, "result": v})),
@@ -82,7 +82,7 @@ mod tests {
         let out = serve(r#"port {"name":"reflection","args":{"verb":"start_other"}}"#, "awm:work:service", &allowed, &log, |_| {
             panic!("must not invoke")
         });
-        assert!(out.contains(r#"Unknown tool \"reflection\""#), "{out}");
+        assert!(out.contains(r#""error":"reflection not installed""#), "{out}");
         let out = serve(r#"{"name":"2fa","args":{"verb":"arm"}}"#, "awm:work:service", &allowed, &log, |r| {
             Ok(json!({"armed": r.args["verb"]}))
         });

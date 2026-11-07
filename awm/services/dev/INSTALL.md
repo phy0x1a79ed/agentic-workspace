@@ -17,10 +17,11 @@ respawn the service under systemd's minimal PATH (where `mamba` is not present).
 
 `sandbox/run.sh` runs a worktree's own Rust gateway (`awm gateway serve`) on the
 worktree's port band, with `sandbox/.awm/` as its state dir. It writes
-`sandbox/.awm/config.toml` on every start: the worktree's `awm/services` and
-`awm/plugins` as core roots, and the worktree's dist roots as each service's
-`PYTHONPATH`. It uses `core/target/{release,debug}/awm` when built, else the
-`awm` on PATH; set `AWM_BIN` to choose. Put overrides such as `AWM_PORT` in the
+`sandbox/.awm/config.toml` on every start: the worktree's `core/plugins`,
+`awm/services` and `awm/plugins` as core roots, and the worktree's dist roots as
+each service's `PYTHONPATH`. It uses `{release,debug}/awm` under
+`scripts/rust-build.sh --target-dir` when built, else the `awm` on PATH. Set
+`AWM_BIN` to choose. Put overrides such as `AWM_PORT` in the
 gitignored `sandbox/.env`. Every `.env` key also reaches the services through the
 config's `[env]`, such as `DSH_FORK_DIR` for dsh.
 

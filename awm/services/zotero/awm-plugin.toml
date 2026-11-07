@@ -20,4 +20,3 @@ platform = ["linux"]
 [[needs.tool]]
 name = "trilium"
 major = 1
-verbs = ["note_search", "note_get", "note_upsert", "note_create", "note_update", "attr_set", "note_place", "note_delete", "attachment_get", "attachment_put"]

@@ -46,11 +46,12 @@ BASE="http://127.0.0.1:${AWM_PORT}"
 DEV_EXCLUDE="${DEV_EXCLUDE:-dev}"
 
 _awm_bin() {
-  local b
-  for b in "${AWM_BIN:-}" "$REPO_ROOT/core/target/release/awm" "$REPO_ROOT/core/target/debug/awm"; do
+  local b target
+  target="$("$REPO_ROOT/scripts/rust-build.sh" --target-dir)"
+  for b in "${AWM_BIN:-}" "$target/release/awm" "$target/debug/awm"; do
     [ -n "$b" ] && [ -x "$b" ] && { printf '%s' "$b"; return 0; }
   done
-  command -v awm || { echo "[dev] no awm binary: run cargo build in $REPO_ROOT/core" >&2; return 1; }
+  command -v awm || { echo "[dev] no awm binary: run $REPO_ROOT/scripts/rust-build.sh build" >&2; return 1; }
 }
 
 # Every dist root of the worktree, so each service the sandbox starts imports
@@ -116,7 +117,7 @@ write_config() {
 node = "$(hostname -s)-dev"
 listen = "127.0.0.1:${AWM_PORT}"
 workspace = "$HERE"
-core_roots = $(_toml_list "$REPO_ROOT/awm/services" "$REPO_ROOT/awm/plugins")
+core_roots = $(_toml_list "$REPO_ROOT/core/plugins" "$REPO_ROOT/awm/services" "$REPO_ROOT/awm/plugins")
 exclude = $(_toml_list $DEV_EXCLUDE)
 
 [env]

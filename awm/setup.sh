@@ -18,7 +18,7 @@ fi
 
 if [ -z "${AWM_BIN:-}" ]; then
     "$WORKSPACE_ROOT/scripts/rust-build.sh" build --release --target x86_64-unknown-linux-musl -p awm-cli
-    AWM_BIN="$WORKSPACE_ROOT/core/target/x86_64-unknown-linux-musl/release/awm"
+    AWM_BIN="$("$WORKSPACE_ROOT/scripts/rust-build.sh" --target-dir)/x86_64-unknown-linux-musl/release/awm"
 fi
 AWM_ENV=awm AWM_BIN="$AWM_BIN" bash "$HERE/install.sh"
 

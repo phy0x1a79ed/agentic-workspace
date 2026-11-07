@@ -34,15 +34,12 @@ platform = ["linux"]
 [[needs.tool]]
 name = "journal"
 major = 1
-verbs = ["export", "note_read", "tag_list"]
 
 [[needs.tool]]
 name = "kb"
 major = 1
-verbs = ["query", "get"]
 
 [[needs.tool]]
 name = "transcripts"
 major = 1
-verbs = ["query"]
 

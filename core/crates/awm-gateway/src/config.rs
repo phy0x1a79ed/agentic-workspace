@@ -8,10 +8,11 @@ use serde::{Deserialize, Serialize};
 
 pub const CONFIG_FILE: &str = "config.toml";
 pub const DEFAULT_LISTEN: &str = "127.0.0.1:7819";
-/// The awm tree's plugin roots, below its `awm/` folder. Every in-tree plugin is in one of them.
-pub const TREE_ROOTS: [&str; 2] = ["services", "plugins"];
-/// The tools that gate trust. Only a core plugin may serve one (install.md R115, R116.5).
-pub const DEFAULT_RESERVED: [&str; 5] = ["awm", "auth", "2fa", "operations", "journal"];
+/// The awm tree's plugin roots, below the workspace, in order. `core/plugins` holds the Rust
+/// core plugins (install.md R115 item 3). Every in-tree plugin is in one of them.
+pub const TREE_ROOTS: [&str; 3] = ["core/plugins", "awm/services", "awm/plugins"];
+/// The tools that gate trust. Only a core plugin may serve one (install.md R116 item 5).
+pub const DEFAULT_RESERVED: [&str; 4] = ["awm", "auth", "operations", "journal"];
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -29,7 +30,7 @@ pub struct Config {
     #[serde(default)]
     pub workspace: Option<PathBuf>,
     /// Core plugin roots, in order. Only these may hold reserved tool names. Default: the awm
-    /// tree's own roots under the workspace, `awm/services` and `awm/plugins` ([`TREE_ROOTS`]).
+    /// tree's own roots under the workspace ([`TREE_ROOTS`]).
     #[serde(default)]
     pub core_roots: Vec<PathBuf>,
     /// Further plugin roots, after the core roots.
@@ -41,7 +42,7 @@ pub struct Config {
     /// Plugin names this node loads. `"*"` loads every plugin in the roots.
     #[serde(default = "every_plugin")]
     pub plugins: Vec<String>,
-    /// Plugin names this node never loads.
+    /// What this node never runs: a plugin name, or `<plugin>/<service>` for one of its services.
     #[serde(default)]
     pub exclude: Vec<String>,
     #[serde(default = "default_reserved")]
@@ -150,6 +151,11 @@ impl Config {
         !self.exclude.iter().any(|p| p == plugin) && self.plugins.iter().any(|p| p == "*" || p == plugin)
     }
 
+    /// Whether this node runs `service` of a plugin it loads.
+    pub fn wants_service(&self, plugin: &str, service: &str) -> bool {
+        !self.exclude.iter().any(|e| e.split_once('/') == Some((plugin, service)))
+    }
+
     pub fn external(&self, service: &str) -> Option<&ExternalService> {
         self.external.iter().find(|e| e.service == service)
     }
@@ -175,13 +181,13 @@ impl Config {
         if !self.core_roots.is_empty() {
             return self.core_roots.clone();
         }
-        tree_roots(&self.workspace_dir(state).join("awm"))
+        tree_roots(&self.workspace_dir(state))
     }
 }
 
-/// The plugin roots of the awm tree at `awm`.
-pub fn tree_roots(awm: &Path) -> Vec<PathBuf> {
-    TREE_ROOTS.iter().map(|r| awm.join(r)).collect()
+/// The plugin roots of the awm tree checked out at `workspace`.
+pub fn tree_roots(workspace: &Path) -> Vec<PathBuf> {
+    TREE_ROOTS.iter().map(|r| workspace.join(r)).collect()
 }
 
 pub fn hostname() -> String {
@@ -203,11 +209,14 @@ mod tests {
     fn the_core_roots_default_to_the_tree_under_the_workspace() {
         let none: Config = toml::from_str("").unwrap();
         let state = Path::new("/w/.awm");
-        assert_eq!(none.core_root_dirs(state), vec![PathBuf::from("/w/awm/services"), PathBuf::from("/w/awm/plugins")]);
+        assert_eq!(
+            none.core_root_dirs(state),
+            ["/w/core/plugins", "/w/awm/services", "/w/awm/plugins"].map(PathBuf::from).to_vec()
+        );
         let named: Config = toml::from_str("workspace = \"/x\"\ncore_roots = [\"/r\"]").unwrap();
         assert_eq!(named.core_root_dirs(state), vec![PathBuf::from("/r")]);
         let ws: Config = toml::from_str("workspace = \"/x\"").unwrap();
-        assert_eq!(ws.core_root_dirs(state)[0], PathBuf::from("/x/awm/services"));
+        assert_eq!(ws.core_root_dirs(state)[1], PathBuf::from("/x/awm/services"));
     }
 
     #[test]
@@ -216,7 +225,10 @@ mod tests {
         let cfg = Config { exclude: vec!["engcyc".into()], ..Config::default() };
         assert_eq!(cfg.listen, DEFAULT_LISTEN);
         assert!(cfg.wants("journal") && !cfg.wants("engcyc"));
+        let cfg = Config { exclude: vec!["channel/relay".into()], ..Config::default() };
+        assert!(cfg.wants("channel") && cfg.wants_service("channel", "channel") && !cfg.wants_service("channel", "relay"));
+        assert!(cfg.wants_service("relay", "relay"), "the entry names channel's service only");
         assert_eq!(cfg.edges_path(dir.path()), dir.path().join("edges.yml"));
-        assert!(cfg.reserved.contains(&"2fa".to_string()) && !cfg.reserved.contains(&"browser".to_string()));
+        assert_eq!(cfg.reserved, ["awm", "auth", "operations", "journal"]);
     }
 }

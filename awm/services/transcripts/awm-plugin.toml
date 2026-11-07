@@ -32,4 +32,3 @@ platform = ["linux"]
 [[needs.tool]]
 name = "harness-cc"
 major = 1
-verbs = ["live_session_ids"]

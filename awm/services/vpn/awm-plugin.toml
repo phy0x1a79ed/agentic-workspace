@@ -18,5 +18,4 @@ platform = ["linux"]
 [[needs.tool]]
 name = "2fa"
 major = 1
-verbs = ["burst"]
 

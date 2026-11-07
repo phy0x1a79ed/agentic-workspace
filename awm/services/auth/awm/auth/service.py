@@ -20,6 +20,13 @@ edge's next material refresh. The edge reports the tokens it saw on that same
 refresh, which makes ``last_used_at`` as coarse as the refresh interval. Every
 token belongs to ``operator``, and only the operator (a call with no edge
 identity) may mint, list or revoke one.
+
+Plugin callers
+--------------
+Any plugin may call any tool, so a verb that hands out this node's secrets names
+the plugins that may call it. The gateway names the calling plugin in the call
+frame, and the adapter passes it as ``_caller_plugin``. A call from an agent or
+the CLI carries none.
 """
 
 from __future__ import annotations
@@ -28,6 +35,7 @@ import logging
 from typing import Any
 
 from awm.config import usertoken
+from awm.gatewayclient.adapter import PLUGIN_KEY
 
 from awm.auth import store
 from awm.auth.config import CONTRACT
@@ -39,6 +47,9 @@ _DAY = 86400.0
 
 #: The owner of every device token.
 OPERATOR = "operator"
+
+#: The plugins that run an edge front, which caches ``edge_material``. No other plugin may read it.
+EDGE_FRONTS = frozenset({"httpsfront", "dsh", "claude-science"})
 
 
 def _settings() -> Any:
@@ -56,6 +67,13 @@ def _operator_only(as_: str | None, verb: str) -> None:
     if as_ is not None:
         raise PermissionError(
             f"{verb} is an operator verb: run it on the host, not through an edge")
+
+
+def _plugins_only(args: dict | None, verb: str, allowed: frozenset[str] = frozenset()) -> None:
+    """Refuse a call from any plugin outside ``allowed``. A call that names no plugin passes."""
+    plugin = (args or {}).get(PLUGIN_KEY)
+    if plugin and plugin not in allowed:
+        raise PermissionError(f"{verb} is not open to plugin {plugin!r}")
 
 
 async def on_start() -> None:
@@ -105,6 +123,7 @@ def h_edge_material(args: dict, as_: str | None = None) -> dict:
     crossed an edge carries one and is refused.
     """
     _operator_only(as_, "edge_material")
+    _plugins_only(args, "edge_material", EDGE_FRONTS)
     _record_device_use((args or {}).get("device_used"))
     s = _settings()
     return {
@@ -142,6 +161,7 @@ def h_device_mint(args: dict, as_: str | None = None) -> dict:
     operator, and it carries a scope that bounds what the device reaches.
     """
     _operator_only(as_, "device_mint")
+    _plugins_only(args, "device_mint")
     args = args or {}
     label = str(args.get("label") or "").strip()
     if not label:
@@ -162,12 +182,14 @@ def h_device_mint(args: dict, as_: str | None = None) -> dict:
 def h_device_list(args: dict, as_: str | None = None) -> dict:
     """Every device token, revoked ones included. Never the digest."""
     _operator_only(as_, "device_list")
+    _plugins_only(args, "device_list")
     return {"tokens": [_public_device(t) for t in store.device_list()]}
 
 
 def h_device_revoke(args: dict, as_: str | None = None) -> dict:
     """Revoke a device token by id. The edge drops it on its next refresh."""
     _operator_only(as_, "device_revoke")
+    _plugins_only(args, "device_revoke")
     args = args or {}
     token_id = str(args.get("id") or "").strip()
     if not token_id:

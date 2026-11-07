@@ -147,7 +147,7 @@ impl Gateway {
 
     async fn config_call(&self, service: &str, function: &str, args: Value) -> Result<Value, ApiError> {
         let caller = Caller { node: self.node.clone(), lane: awm_proto::Lane::Service, trust: Some(crate::caller::TRUSTED.into()), ..Default::default() };
-        let v = self.hub.call(service, function, args, None, &caller, CONFIG_TIMEOUT).await?;
+        let v = self.hub.call(service, function, args, None, None, &caller, CONFIG_TIMEOUT).await?;
         Ok(match v {
             Value::String(s) => serde_json::from_str(&s).unwrap_or(Value::String(s)),
             other => other,
