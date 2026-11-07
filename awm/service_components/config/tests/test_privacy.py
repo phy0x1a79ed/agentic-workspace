@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -146,7 +148,7 @@ def test_reloads_when_the_file_changes(projects, awm_dir):
     privacy.write_marks([_mark(projects, "awm")])
     assert not privacy.hidden("avatar")
     assert privacy.hidden("awm")
-    path = awm_dir / "private.json"
+    path = awm_dir / "marks" / "private.json"
     doc = json.loads(path.read_text())
     doc["marks"][0]["project"] = "aw"
     path.write_text(json.dumps(doc))
@@ -206,7 +208,43 @@ def test_write_marks_rejects_bad_entries_and_leaves_no_temp(awm_dir, projects):
     written = privacy.write_marks([_mark(projects, "avatar")])
     assert privacy.marks() == written
     assert json.loads((awm_dir / "private.json").read_text())["version"] == 1
-    assert sorted(p.name for p in awm_dir.iterdir()) == ["private.json"]
+    assert sorted(p.name for p in awm_dir.iterdir()) == ["marks", "private.json"]
+    assert sorted(p.name for p in (awm_dir / "marks").iterdir()) == ["private.json"]
+
+
+def test_write_marks_puts_the_file_in_marks_and_links_the_old_path(awm_dir, projects):
+    (awm_dir / "private.json").write_text(json.dumps({"version": 1, "marks": []}))
+    privacy.write_marks([_mark(projects, "avatar")])
+    legacy, file = awm_dir / "private.json", awm_dir / "marks" / "private.json"
+    assert legacy.is_symlink() and os.readlink(legacy) == "marks/private.json"
+    assert legacy.samefile(file)
+    assert file.stat().st_mode & 0o777 == 0o640
+    assert (awm_dir / "marks").stat().st_mode & 0o777 == 0o750
+    assert privacy.marks_path() == file and privacy.hidden("avatar")
+
+
+def test_a_node_not_yet_moved_reads_the_old_file(awm_dir, projects):
+    (awm_dir / "private.json").write_text(json.dumps({"version": 1, "marks": [_mark(projects, "avatar")]}))
+    assert privacy.marks_path() == awm_dir / "private.json"
+    assert privacy.hidden("avatar")
+
+
+def test_an_empty_marks_dir_means_no_marks(awm_dir):
+    (awm_dir / "marks").mkdir()
+    assert privacy.marks() == []
+
+
+@pytest.mark.parametrize("where", ["legacy", "marks"])
+def test_a_dangling_link_fails_closed(awm_dir, where):
+    if where == "marks":
+        (awm_dir / "marks").mkdir()
+        (awm_dir / "marks" / "private.json").symlink_to(awm_dir / "gone.json")
+    else:
+        (awm_dir / "private.json").symlink_to("marks/private.json")
+    assert privacy.hidden("anything")
+    assert privacy.visible_rows([{"project": "awm"}], "peer") == []
+    with pytest.raises(privacy.MarksUnreadable):
+        privacy.marks()
 
 
 def test_a_project_channel_names_the_project(projects):
@@ -240,3 +278,34 @@ def test_transcript_entered_reads_every_cwd(projects, tmp_path):
         fh.write(json.dumps({"cwd": str(projects / "avatar" / "Avatar" / "dev")}) + "\n")
     assert privacy.transcript_entered(t)
     assert not privacy.transcript_entered(tmp_path / "missing.jsonl")
+
+
+SCRIPT = Path(__file__).resolve().parents[4] / "scripts" / "marks-dir.sh"
+
+
+def test_the_deploy_step_moves_the_file_and_is_idempotent(awm_dir, projects):
+    legacy = awm_dir / "private.json"
+    legacy.write_text(json.dumps({"version": 1, "marks": [_mark(projects, "avatar")]}))
+    for _ in range(2):
+        subprocess.run([str(SCRIPT), str(awm_dir)], check=True)
+        assert legacy.is_symlink() and os.readlink(legacy) == "marks/private.json"
+        assert (awm_dir / "marks" / "private.json").stat().st_mode & 0o777 == 0o640
+        assert privacy.marks_path() == awm_dir / "marks" / "private.json"
+        assert privacy.hidden("avatar")
+
+
+def test_the_deploy_step_on_a_node_with_no_marks_leaves_no_link(awm_dir):
+    subprocess.run([str(SCRIPT), str(awm_dir)], check=True)
+    assert (awm_dir / "marks").is_dir() and not os.path.lexists(awm_dir / "private.json")
+    assert privacy.marks() == []
+
+
+def test_the_deploy_step_takes_an_old_writer_s_file_over_a_stale_copy(awm_dir, projects):
+    subprocess.run([str(SCRIPT), str(awm_dir)], check=True)
+    privacy.write_marks([_mark(projects, "awm")])
+    legacy = awm_dir / "private.json"
+    legacy.unlink()
+    legacy.write_text(json.dumps({"version": 1, "marks": [_mark(projects, "avatar")]}))
+    subprocess.run([str(SCRIPT), str(awm_dir)], check=True)
+    assert legacy.is_symlink()
+    assert privacy.hidden("avatar") and not privacy.hidden("awm")
