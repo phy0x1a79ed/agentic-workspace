@@ -120,6 +120,9 @@ CREATE TABLE IF NOT EXISTS seat_registry (
     previous     TEXT NOT NULL DEFAULT '{}',
     breaker      TEXT NOT NULL DEFAULT '{}',
     held         TEXT NOT NULL DEFAULT '',
+    replied      INTEGER NOT NULL DEFAULT 0,
+    missed       INTEGER NOT NULL DEFAULT 0,
+    name         TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (account, channel_id)
 );
 CREATE TABLE IF NOT EXISTS seat_queue (
@@ -152,12 +155,12 @@ CREATE TABLE IF NOT EXISTS seat_lines (
     PRIMARY KEY (node, job)
 );
 CREATE TABLE IF NOT EXISTS seat_reads (
-    node         TEXT NOT NULL,
-    job          TEXT NOT NULL,
+    seat_account TEXT NOT NULL,
+    seat_channel TEXT NOT NULL,
     account      TEXT NOT NULL,
     channel_id   TEXT NOT NULL,
     until        REAL NOT NULL,
-    PRIMARY KEY (node, job, account, channel_id)
+    PRIMARY KEY (seat_account, seat_channel, account, channel_id)
 );
 CREATE TABLE IF NOT EXISTS seat_cursor (
     account      TEXT NOT NULL,

@@ -1,0 +1,10 @@
+From: Tester <tester@example.test>
+To: tester@example.test
+Subject: html only
+Date: Fri, 06 Nov 2026 08:00:00 +0000
+Message-ID: <html.4@example.test>
+MIME-Version: 1.0
+Content-Type: text/html; charset="utf-8"
+Content-Transfer-Encoding: quoted-printable
+
+<html><body><p>Only HTML, caf=C3=A9</p></body></html>

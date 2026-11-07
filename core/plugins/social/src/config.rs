@@ -118,13 +118,15 @@ pub struct SeatsConfig {
     pub effort: String,
     pub paused: bool,
     pub notice: Option<Notice>,
+    /// The seat docs on the agents' nodes: `seat-sop.md` and `briefs/`.
+    pub docs: String,
     pub rules: Vec<SeatRule>,
     pub chats: Vec<SeatChat>,
 }
 
 impl Default for SeatsConfig {
     fn default() -> Self {
-        Self { project: "agentic-commons".into(), model: "opus".into(), effort: "high".into(), paused: true, notice: None, rules: vec![], chats: vec![] }
+        Self { project: "agentic-commons".into(), model: "opus".into(), effort: "high".into(), paused: true, notice: None, docs: "/home/tony/agentic_workspace/projects/agentic-commons/main/docs".into(), rules: vec![], chats: vec![] }
     }
 }
 
@@ -351,7 +353,7 @@ fn buckets(data: &Table, cfg: &Path) -> R<(Vec<BucketConfig>, Vec<String>)> {
     Ok((out, notes))
 }
 
-const SEATS_KEYS: [&str; 7] = ["project", "model", "effort", "paused", "notice", "rule", "chat"];
+const SEATS_KEYS: [&str; 8] = ["project", "model", "effort", "paused", "notice", "docs", "rule", "chat"];
 const RULE_KEYS: [&str; 6] = ["account", "kind", "node", "level", "scope", "except"];
 const CHAT_KEYS: [&str; 5] = ["account", "channel", "node", "level", "scope"];
 
@@ -383,7 +385,7 @@ fn seats(data: &Table, cfg: &Path) -> R<SeatsConfig> {
     let p = cfg.display();
     let Some(t) = v.as_table() else { return err(format!("{p}: [seats] must be a table")) };
     keys(t, &SEATS_KEYS, "[seats]")?;
-    for (key, slot) in [("project", &mut out.project), ("model", &mut out.model), ("effort", &mut out.effort)] {
+    for (key, slot) in [("project", &mut out.project), ("model", &mut out.model), ("effort", &mut out.effort), ("docs", &mut out.docs)] {
         if t.contains_key(key) {
             *slot = need(t, key, "[seats]")?;
         }

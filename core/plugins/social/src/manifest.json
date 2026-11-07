@@ -1,0 +1,720 @@
+{
+  "functions": [
+    {
+      "name": "send",
+      "tool": "social_send",
+      "description": "Send a message as a configured account. With no `account` and `channel` it answers the chat of your latest pushed line, in its thread. A seat names another of its chats by its label, such as `DM` or `#general`. `file` uploads a file from your own node (an absolute path, up to 24 MiB), such as a plan's .md, with `text` as its message; `text` is optional with a file. `files` attaches inline text files, each {filename, text}. Discord takes files up to 10 MB, and the Opal Slack bot up to the 24 MiB a call carries. Gmail and Tony's own Slack refuse files, and Tony's own Slack sends nothing. A DM where nobody but the bot has written is refused. `quiet` keeps the replies in the sent message's thread from its chat's seat holder.",
+      "timeout": 300,
+      "params": [
+        {
+          "name": "account",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "channel",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "text",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "thread",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "file",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "files",
+          "type": "array",
+          "required": false
+        },
+        {
+          "name": "quiet",
+          "type": "boolean",
+          "required": false
+        }
+      ]
+    },
+    {
+      "name": "react",
+      "tool": "social_react",
+      "description": "Put an emoji reaction on a message, or take it off with `remove`. With no ids it reacts to your latest pushed line. `emoji` is a character, a name or :name:. Discord and the Opal Slack bot react. Gmail and Tony's own Slack refuse.",
+      "params": [
+        {
+          "name": "account",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "channel",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "message_id",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "emoji",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "remove",
+          "type": "boolean",
+          "required": false
+        }
+      ]
+    },
+    {
+      "name": "fetch",
+      "tool": "social_fetch",
+      "description": "Fetch a channel's existing messages live from the platform (incl. ones from before the service started), with attachment metadata. `before` pages backwards. Nothing is stored — the platform is the source of truth.",
+      "params": [
+        {
+          "name": "account",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "channel",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "limit",
+          "type": "number",
+          "required": false
+        },
+        {
+          "name": "before",
+          "type": "string",
+          "required": false
+        }
+      ]
+    },
+    {
+      "name": "history",
+      "tool": "social_history",
+      "description": "Read a bot account's synced history of every chat the bot is in (edits applied, deletes hidden unless `include_deleted`). Newest `limit` messages, or with `since` (a message ts) the ones after it, oldest first — the catch-up read after `awm services listen social message`. Also lists each chat's sync cursor.",
+      "params": [
+        {
+          "name": "account",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "channel",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "since",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "limit",
+          "type": "number",
+          "required": false
+        },
+        {
+          "name": "include_deleted",
+          "type": "boolean",
+          "required": false
+        }
+      ]
+    },
+    {
+      "name": "seats",
+      "tool": "social_seats",
+      "description": "List the chats a bot account is in, each with the session holding it or null. A chat that [seats] in social.toml declares a seat also shows its seat: the state (empty, starting, occupied, retiring), its agent's job and node, its level and its queued lines. Social starts a seat's agent on the seat's first new message, and retires it 4 hours after the agent marks its task done.",
+      "params": [
+        {
+          "name": "account",
+          "type": "string",
+          "required": true
+        }
+      ]
+    },
+    {
+      "name": "mount",
+      "tool": "social_mount",
+      "description": "Hold a seat: every new message in that chat, from anyone but the bot, is typed into your prompt as one line '[<server>/<chat>/<sender>, <level>] ↳<thread> <text>'. Background sessions only. One holder per seat: a held seat is refused unless `force`, which takes it and tells the old holder. A session below trusted never holds a trusted chat. A Discord DM is a seat only for an operator. Mounting a declared seat makes you its agent. The result's `rename` gives the seat's session name, seat:<app>/<server>/<chat>.",
+      "params": [
+        {
+          "name": "account",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "channel",
+          "type": "string",
+          "required": true,
+          "description": "A seat's id or name, as `seats` lists it."
+        },
+        {
+          "name": "force",
+          "type": "boolean",
+          "required": false
+        }
+      ]
+    },
+    {
+      "name": "unmount",
+      "tool": "social_unmount",
+      "description": "Release a seat you hold, or every seat you hold on the account when `channel` is omitted.",
+      "params": [
+        {
+          "name": "account",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "channel",
+          "type": "string",
+          "required": false
+        }
+      ]
+    },
+    {
+      "name": "mark_seat_done",
+      "tool": "social_mark_seat_done",
+      "description": "Mark your seat's task done, after its handoff journal. Social tells your agent to retire once 4 hours pass with no new message, and a new message clears the mark. A seat's agent only.",
+      "params": []
+    },
+    {
+      "name": "forward",
+      "tool": "social_forward",
+      "description": "Forward a message from a chat you hold to another seat. Its agent gets the line, and may read your chat's history for 24 hours. An empty seat starts its agent, except a DM nobody has opened. With no `message_id` it forwards your latest pushed line.",
+      "params": [
+        {
+          "name": "channel",
+          "type": "string",
+          "required": true,
+          "description": "The seat to forward to: its id or name, as `seats` lists it."
+        },
+        {
+          "name": "account",
+          "type": "string",
+          "required": false,
+          "description": "The target seat's account. Default: the source chat's."
+        },
+        {
+          "name": "message_id",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "note",
+          "type": "string",
+          "required": false,
+          "description": "One line for the receiving agent."
+        }
+      ]
+    },
+    {
+      "name": "seat_reset",
+      "tool": "social_seat_reset",
+      "description": "Clear a seat's start breaker. A seat whose agent failed to come up 4 times in an hour holds for 6 hours, or until this.",
+      "params": [
+        {
+          "name": "account",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "channel",
+          "type": "string",
+          "required": true
+        }
+      ]
+    },
+    {
+      "name": "seat_adopt",
+      "tool": "social_seat_adopt",
+      "description": "Make a running background job the agent of a declared seat, keeping its conversation. Its level must be at least the seat's, and a session below trusted never takes a trusted seat.",
+      "surfaces": [
+        "cli",
+        "http"
+      ],
+      "params": [
+        {
+          "name": "account",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "channel",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "job",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "node",
+          "type": "string",
+          "required": false
+        }
+      ]
+    },
+    {
+      "name": "seat_admit",
+      "tool": "social_seat_admit",
+      "description": "Admit a sender from outside the lab whose messages a seat holds: the held lines go to the seat's agent, and the sender's later messages reach it as any other.",
+      "params": [
+        {
+          "name": "account",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "channel",
+          "type": "string",
+          "required": true
+        }
+      ]
+    },
+    {
+      "name": "search",
+      "tool": "social_search",
+      "description": "Search a platform's own message index live (Slack search.messages, Gmail X-GM-RAW). Returns matches with attachment metadata. Not supported for Discord bot accounts (use fetch).",
+      "params": [
+        {
+          "name": "account",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "query",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "channel",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "limit",
+          "type": "number",
+          "required": false
+        }
+      ]
+    },
+    {
+      "name": "download_attachments",
+      "tool": "social_download_attachments",
+      "description": "Download a message's attachments to a fresh temp dir on the node you call from (outside the awm workspace). Re-fetches the message live; returns `dir` and each file's `path`, `filename`, `mime`, `size`. Files together may not pass 24 MiB. `idx` optionally selects a single attachment.",
+      "timeout": 300,
+      "params": [
+        {
+          "name": "account",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "channel",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "message_id",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "idx",
+          "type": "number",
+          "required": false
+        }
+      ]
+    },
+    {
+      "name": "accounts",
+      "tool": "social_accounts",
+      "description": "List configured accounts with platform, kind, and live status."
+    },
+    {
+      "name": "channels",
+      "tool": "social_channels",
+      "description": "List channels visible to a configured account. `include_dms=true` also enumerates direct/group DMs (kind 'dm'/'group') where the platform supports it.",
+      "params": [
+        {
+          "name": "account",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "include_dms",
+          "type": "boolean",
+          "required": false
+        }
+      ]
+    },
+    {
+      "name": "open_dm",
+      "tool": "social_open_dm",
+      "description": "Resolve a platform user (by id, or by name where the platform supports it) to a direct-message channel and open it. Returns the channel for use with fetch/send.",
+      "params": [
+        {
+          "name": "account",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "user",
+          "type": "string",
+          "required": true
+        }
+      ]
+    },
+    {
+      "name": "list_operators",
+      "tool": "social_operators",
+      "description": "List whitelisted operators, optionally by platform.",
+      "params": [
+        {
+          "name": "platform",
+          "type": "string",
+          "required": false
+        }
+      ]
+    },
+    {
+      "name": "add_operator",
+      "tool": "social_operator_add",
+      "surfaces": [
+        "cli",
+        "http"
+      ],
+      "description": "Whitelist a platform user and map them to an awm_user.",
+      "params": [
+        {
+          "name": "platform",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "platform_user_id",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "awm_user",
+          "type": "string",
+          "required": true
+        }
+      ]
+    },
+    {
+      "name": "remove_operator",
+      "tool": "social_operator_remove",
+      "surfaces": [
+        "cli",
+        "http"
+      ],
+      "description": "Remove a platform user from the whitelist.",
+      "params": [
+        {
+          "name": "platform",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "platform_user_id",
+          "type": "string",
+          "required": true
+        }
+      ]
+    },
+    {
+      "name": "lookup",
+      "tool": "social_lookup",
+      "description": "Resolve a (platform, user id) to its awm_user (or null).",
+      "params": [
+        {
+          "name": "platform",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "platform_user_id",
+          "type": "string",
+          "required": true
+        }
+      ]
+    },
+    {
+      "name": "buckets",
+      "tool": "social_buckets",
+      "description": "List configured cloud file-store buckets (Google Drive) with kind and root. Each is probed now: `live` is false, with an `error`, when the store does not answer.",
+      "timeout": 60
+    },
+    {
+      "name": "bucket_ls",
+      "tool": "social_bucket_ls",
+      "description": "List the immediate children of a folder in a bucket. `path` is relative to the bucket root (omit for root). A missing path is a not-found error, a file is a not-a-folder error. Returns entries with name, path, is_dir, size, mime, web_url. `recursive=true` walks the whole tree instead, stopping at `limit` entries (default 1000) and setting `truncated` when more exist.",
+      "timeout": 600,
+      "params": [
+        {
+          "name": "bucket",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "path",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "recursive",
+          "type": "boolean",
+          "required": false
+        },
+        {
+          "name": "limit",
+          "type": "number",
+          "required": false
+        }
+      ]
+    },
+    {
+      "name": "bucket_stat",
+      "tool": "social_bucket_stat",
+      "description": "Return the entry for one file or folder in a bucket, or a not-found error. Paths as for bucket_ls.",
+      "params": [
+        {
+          "name": "bucket",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "path",
+          "type": "string",
+          "required": true
+        }
+      ]
+    },
+    {
+      "name": "bucket_mkdir",
+      "tool": "social_bucket_mkdir",
+      "description": "Create the folder at `path` in a bucket, with every missing parent. Succeeds on an existing folder. Paths as for bucket_ls.",
+      "params": [
+        {
+          "name": "bucket",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "path",
+          "type": "string",
+          "required": true
+        }
+      ]
+    },
+    {
+      "name": "bucket_get",
+      "tool": "social_bucket_get",
+      "description": "Download a file from a bucket to a system temp dir (outside the awm workspace) on the node social runs on and return its absolute path + metadata. Any size; it streams in chunks. Google-native docs are exported (Docs→pdf, Sheets→csv). A folder downloads as a local folder tree (files[0].is_dir, with `count` files), refusing one over `limit` entries (default 10000). Files that fail are listed in `failures` and the rest still download.",
+      "timeout": 3600,
+      "params": [
+        {
+          "name": "bucket",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "path",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "limit",
+          "type": "number",
+          "required": false
+        }
+      ]
+    },
+    {
+      "name": "bucket_put",
+      "tool": "social_bucket_put",
+      "description": "Upload a file (`src` = a path on the node social runs on) to `path` in a bucket, creating or overwriting it. Any size; it streams in chunks. A local folder uploads as the folder `path`, its tree inside it; files that fail are listed in `failures` and the rest still upload. `parents=true` creates missing folders above `path`; without it a missing folder is a not-found error. Returns the resulting entry.",
+      "timeout": 3600,
+      "params": [
+        {
+          "name": "bucket",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "path",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "src",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "mime",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "parents",
+          "type": "boolean",
+          "required": false
+        }
+      ]
+    },
+    {
+      "name": "bucket_rm",
+      "tool": "social_bucket_rm",
+      "description": "Delete the file/folder at `path` in a bucket.",
+      "params": [
+        {
+          "name": "bucket",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "path",
+          "type": "string",
+          "required": true
+        }
+      ]
+    },
+    {
+      "name": "bucket_mv",
+      "tool": "social_bucket_mv",
+      "description": "Move or rename the file or folder `src` to `dst` in a bucket. `dst` is the full new path, not a folder to move into. Paths as for bucket_ls. Sharing goes with the item. An existing `dst` is an error unless `overwrite=true`, which first moves it to the trash. `parents=true` creates missing folders above `dst`. Returns the new entry.",
+      "timeout": 3600,
+      "params": [
+        {
+          "name": "bucket",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "src",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "dst",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "overwrite",
+          "type": "boolean",
+          "required": false
+        },
+        {
+          "name": "parents",
+          "type": "boolean",
+          "required": false
+        }
+      ]
+    },
+    {
+      "name": "bucket_cp",
+      "tool": "social_bucket_cp",
+      "description": "Copy the file or folder `src` to `dst` in a bucket. Arguments and errors as for bucket_mv. Returns the new entry.",
+      "timeout": 3600,
+      "params": [
+        {
+          "name": "bucket",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "src",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "dst",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "overwrite",
+          "type": "boolean",
+          "required": false
+        },
+        {
+          "name": "parents",
+          "type": "boolean",
+          "required": false
+        }
+      ]
+    },
+    {
+      "name": "bucket_search",
+      "tool": "social_bucket_search",
+      "description": "Search a bucket for files whose name contains `query`, across the whole drive. Returns matching entries. A `path` scope is refused.",
+      "params": [
+        {
+          "name": "bucket",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "query",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "limit",
+          "type": "number",
+          "required": false
+        },
+        {
+          "name": "path",
+          "type": "string",
+          "required": false
+        }
+      ]
+    },
+    {
+      "name": "emit_probe",
+      "tool": "social_emit_probe",
+      "surfaces": [
+        "cli",
+        "http"
+      ],
+      "description": "Emit a synthetic, inert `command` event carrying only `nonce`, so a subscriber can prove on demand that it can still receive. Opens no window, arms nothing, sends no message.",
+      "params": [
+        {
+          "name": "nonce",
+          "type": "string",
+          "required": true
+        }
+      ]
+    }
+  ],
+  "emitters": [
+    {
+      "topic": "message"
+    },
+    {
+      "topic": "command"
+    }
+  ],
+  "sessions": []
+}
