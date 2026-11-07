@@ -22,4 +22,3 @@ platform = ["linux"]
 [[needs.contract]]   # backup.py pull files the diff hold, on mizar's nightly copy (fleet.md R105)
 name = "operations"
 major = 2
-verbs = ["approval_request"]

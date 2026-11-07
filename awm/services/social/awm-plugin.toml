@@ -18,10 +18,8 @@ platform = ["linux"]
 [[needs.tool]]
 name = "reflection"
 major = 1
-verbs = ["message", "list_other", "session_of", "start_other"]
 
 [[needs.tool]]
 name = "harness-cc"
 major = 1
-verbs = ["list", "probe", "resume", "adopt"]
 

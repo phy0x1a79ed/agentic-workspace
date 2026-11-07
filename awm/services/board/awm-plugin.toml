@@ -18,9 +18,7 @@ platform = ["linux"]
 [[needs.tool]]   # the cards and their chat notes in the vault
 name = "trilium"
 major = 1
-verbs = ["note_get", "note_search", "note_create", "note_update", "note_place", "attr_set", "attr_delete", "note_children"]
 
 [[needs.contract]]   # intake: posts to this swarm become Proposed cards, where operations is served
 name = "operations"
 major = 2
-verbs = ["intake_post", "intake_message"]

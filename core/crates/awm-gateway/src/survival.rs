@@ -39,6 +39,10 @@ pub struct Entry {
     pub exits: Vec<i64>,
     #[serde(default)]
     pub tripped: bool,
+    /// The install config's `[env]` the process was spawned with, so an adopted process is
+    /// judged by `stale_env` like a spawned one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub env: Option<BTreeMap<String, String>>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
