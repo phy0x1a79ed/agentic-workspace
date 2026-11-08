@@ -126,6 +126,8 @@ fn seeding_creates_a_row_for_every_job_we_know_about() {
     let names: HashSet<&str> = rows.iter().map(|r| r["name"].as_str().unwrap()).collect();
     assert_eq!(names, JOBS.iter().map(|j| j.name).collect::<HashSet<_>>());
     assert!(rows.iter().all(|r| !r["cron"].as_str().unwrap().is_empty()));
+    let enabled = |name: &str| rows.iter().find(|r| r["name"] == name).unwrap()["enabled"].as_i64().unwrap();
+    assert_eq!((enabled(CACHE_SYNC), enabled(WORKSPACE_BACKUP)), (1, 0), "the mirror starts off on a new node");
 }
 
 #[test]

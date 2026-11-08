@@ -30,6 +30,8 @@ pub struct JobSpec {
     pub busy_note: &'static str,
     /// The routine that fires it.
     pub routine: &'static str,
+    /// Whether a new node starts with the job on.
+    pub seed_enabled: bool,
 }
 
 pub const JOBS: [JobSpec; 2] = [
@@ -43,6 +45,7 @@ pub const JOBS: [JobSpec; 2] = [
         catchup_window_s: 20 * 3600,
         busy_note: "sync task {task} is still running — a second full-cache scan would only duplicate its work. Pass force=true to submit anyway.",
         routine: "dvc-cache-sync",
+        seed_enabled: true,
     },
     JobSpec {
         name: WORKSPACE_BACKUP,
@@ -54,6 +57,7 @@ pub const JOBS: [JobSpec; 2] = [
         catchup_window_s: 20 * 3600,
         busy_note: "backup task {task} is still running — a second whole-tree scan would only duplicate its work. Pass force=true to submit anyway.",
         routine: "dvc-workspace-backup",
+        seed_enabled: false,
     },
 ];
 
@@ -127,7 +131,7 @@ fn adopt_legacy_state(paths: &Paths, dao: &RunsDao) {
 /// Create each job's `dvc_jobs` row, once.
 pub fn ensure_seeded(paths: &Paths, dao: &RunsDao) -> crate::runs::Result<()> {
     for j in &JOBS {
-        dao.seed_job(j.name, j.cron, j.catchup_window_s, true)?;
+        dao.seed_job(j.name, j.cron, j.catchup_window_s, j.seed_enabled)?;
     }
     adopt_legacy_state(paths, dao);
     Ok(())
