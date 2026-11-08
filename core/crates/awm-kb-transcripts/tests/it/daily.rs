@@ -1,18 +1,15 @@
-//! The in-plugin daily sweep: when it runs, and what it records.
+//! The in-plugin sweep: when it runs, and what it records.
 
 use awm_kb_transcripts::{daily, runs};
 use crate::common::*;
 use serde_json::json;
 
 #[test]
-fn the_next_run_is_the_next_local_0330() {
-    std::env::set_var("TZ", "UTC");
-    let day = 86400.0;
-    let base = 20_000.0 * day; // a midnight UTC
-    let at = 3.0 * 3600.0 + 1800.0;
-    assert_eq!(daily::next_at(base, 3, 30), base + at);
-    assert_eq!(daily::next_at(base + at, 3, 30), base + day + at, "at 03:30 exactly, the next is tomorrow's");
-    assert_eq!(daily::next_at(base + 12.0 * 3600.0, 3, 30), base + day + at);
+fn a_sweep_is_due_with_none_yet_or_past_the_gap() {
+    let gap = daily::SWEEP_GAP_S;
+    assert!(daily::due(None, 1000.0));
+    assert!(daily::due(Some(0.0), gap + 1.0));
+    assert!(!daily::due(Some(0.0), gap - 1.0));
 }
 
 #[tokio::test]
