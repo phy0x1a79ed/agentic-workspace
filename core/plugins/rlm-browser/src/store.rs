@@ -5,9 +5,9 @@
 //! guest of an attached Chrome is confined to.
 
 use std::path::Path;
-use std::sync::{Arc, Mutex};
 
-use rusqlite::{params, Connection, OptionalExtension};
+use awm_store::rusqlite::{self, params, Connection, OptionalExtension};
+use awm_store::{InitOutcome, Migration, StoreError};
 use serde_json::{json, Value};
 
 pub const SCHEMA_VERSION: i64 = 3;
@@ -29,23 +29,26 @@ CREATE TABLE IF NOT EXISTS rlm_sessions (
     guest_context   TEXT NOT NULL DEFAULT ''
 );";
 
-/// Each step takes the database from its index + 1 to the next version.
-const MIGRATIONS: [&str; 2] = [
-    "ALTER TABLE rlm_sessions ADD COLUMN mode TEXT NOT NULL DEFAULT 'headless';
+/// Each step takes the database from version `from` to the next.
+const MIGRATIONS: [Migration; 2] = [
+    Migration {
+        from: 1,
+        sql: "ALTER TABLE rlm_sessions ADD COLUMN mode TEXT NOT NULL DEFAULT 'headless';
 ALTER TABLE rlm_sessions ADD COLUMN backend TEXT NOT NULL DEFAULT 'host';
 ALTER TABLE rlm_sessions ADD COLUMN cdp_port INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE rlm_sessions ADD COLUMN user_data_dir TEXT NOT NULL DEFAULT '';
 ALTER TABLE rlm_sessions ADD COLUMN container_name TEXT NOT NULL DEFAULT '';
 ALTER TABLE rlm_sessions ADD COLUMN vnc_port INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE rlm_sessions ADD COLUMN egress TEXT NOT NULL DEFAULT '';",
-    "ALTER TABLE rlm_sessions ADD COLUMN guest_context TEXT NOT NULL DEFAULT '';",
+    },
+    Migration { from: 2, sql: "ALTER TABLE rlm_sessions ADD COLUMN guest_context TEXT NOT NULL DEFAULT '';" },
 ];
 
 const COLS: &str = "session_id, game, status, mode, backend, cdp_port, user_data_dir, container_name, vnc_port, egress, created_at, updated_at";
 
 #[derive(Clone)]
 pub struct Store {
-    conn: Arc<Mutex<Connection>>,
+    db: awm_store::Store,
 }
 
 /// Python's `datetime.now(timezone.utc).isoformat()`.
@@ -53,68 +56,28 @@ pub fn now() -> String {
     chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.6f+00:00").to_string()
 }
 
-fn version(conn: &Connection) -> rusqlite::Result<Option<i64>> {
-    match conn.query_row("SELECT version FROM schema_version", [], |r| r.get(0)).optional() {
-        Ok(v) => Ok(v),
-        Err(rusqlite::Error::SqliteFailure(_, Some(msg))) if msg.contains("no such table") => Ok(None),
-        Err(e) => Err(e),
-    }
-}
-
-fn tables(conn: &Connection) -> rusqlite::Result<i64> {
-    conn.query_row("SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'", [], |r| r.get(0))
-}
-
-/// Run a step's statements one by one, as Python's `executescript` does. A statement that
-/// fails because a crash already applied it counts as done.
-fn step(conn: &Connection, sql: &str) -> rusqlite::Result<()> {
-    for stmt in sql.split(';').map(str::trim).filter(|s| !s.is_empty()) {
-        if let Err(e) = conn.execute_batch(stmt) {
-            let msg = e.to_string();
-            if !(msg.contains("duplicate column name") || msg.contains("no such table")) {
-                return Err(e);
-            }
-        }
-    }
-    Ok(())
+/// Whether the file holds the sessions table but no `schema_version`. Its version cannot be
+/// told, and awm-store would stamp it current.
+fn unversioned(conn: &Connection) -> rusqlite::Result<bool> {
+    let has = |name: &str| conn.query_row("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1", [name], |_| Ok(())).optional().map(|r| r.is_some());
+    Ok(has("rlm_sessions")? && !has("schema_version")?)
 }
 
 impl Store {
     /// Open the database, create it when it is new, and migrate an older one after a backup.
     pub fn open(path: &Path) -> anyhow::Result<Self> {
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)?;
+        let db = awm_store::Store::open(path)?;
+        if db.blocking_read(|c| unversioned(c).map_err(StoreError::from))? {
+            anyhow::bail!("{} holds rlm_sessions but no schema_version: refusing to guess its version", path.display());
         }
-        let conn = Connection::open(path)?;
-        conn.pragma_update(None, "journal_mode", "WAL")?;
-        conn.busy_timeout(std::time::Duration::from_secs(10))?;
-        match version(&conn)? {
-            None if tables(&conn)? > 0 && conn.query_row("SELECT 1 FROM sqlite_master WHERE name = 'rlm_sessions'", [], |_| Ok(())).optional()?.is_some() => {
-                anyhow::bail!("{} holds rlm_sessions but no schema_version: refusing to guess its version", path.display())
-            }
-            None => {
-                conn.execute_batch(SCHEMA_SQL)?;
-                conn.execute_batch("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)")?;
-                conn.execute("INSERT INTO schema_version (version) VALUES (?1)", [SCHEMA_VERSION])?;
-            }
-            Some(v) if v > SCHEMA_VERSION => anyhow::bail!("{} is at schema {v}, newer than this build's {SCHEMA_VERSION}", path.display()),
-            Some(v) if v < SCHEMA_VERSION => {
-                let backup = path.with_extension(format!("db.v{v}.bak"));
-                conn.execute("VACUUM INTO ?1", [backup.to_string_lossy()])?;
-                for (i, sql) in MIGRATIONS.iter().enumerate().skip((v - 1).max(0) as usize) {
-                    step(&conn, sql)?;
-                    conn.execute("UPDATE schema_version SET version = ?1", [i as i64 + 2])?;
-                }
-                tracing::info!(from = v, to = SCHEMA_VERSION, backup = %backup.display(), "migrated rlm-browser.db");
-            }
-            Some(_) => {}
+        if let InitOutcome::Migrated { from, to, backup } = db.init(SCHEMA_SQL, SCHEMA_VERSION, &MIGRATIONS)? {
+            tracing::info!(from, to, backup = %backup.display(), "migrated rlm-browser.db");
         }
-        Ok(Store { conn: Arc::new(Mutex::new(conn)) })
+        Ok(Store { db })
     }
 
     async fn run<T: Send + 'static>(&self, f: impl FnOnce(&Connection) -> rusqlite::Result<T> + Send + 'static) -> anyhow::Result<T> {
-        let conn = self.conn.clone();
-        Ok(tokio::task::spawn_blocking(move || f(&conn.lock().unwrap_or_else(|p| p.into_inner()))).await??)
+        Ok(self.db.write(move |tx| f(tx).map_err(StoreError::from)).await?)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -208,7 +171,7 @@ mod tests {
         let row = s.get("rlm-browser-old").await.unwrap().unwrap();
         assert_eq!((row["game"].as_str(), row["cdp_port"].as_i64(), row["_guest_context"].as_str()), (Some("chess"), Some(9333), Some("")));
         assert!(tmp.path().join("rlm-browser.db.v2.bak").exists());
-        let v: i64 = s.conn.lock().unwrap().query_row("SELECT version FROM schema_version", [], |r| r.get(0)).unwrap();
+        let v: i64 = s.db.blocking_read(|c| c.query_row("SELECT version FROM schema_version", [], |r| r.get(0)).map_err(StoreError::from)).unwrap();
         assert_eq!(v, 3);
     }
 
