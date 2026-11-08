@@ -57,7 +57,6 @@ declare -A DISTS=(
   [mic]="$WS/awm/services/mic::$WS/awm/services/mic/tests"
   [vpn]="$WS/awm/services/vpn::$WS/awm/services/vpn/tests"
   [reflection]="$WS/awm/services/reflection::$WS/awm/services/reflection/tests"
-  [dvc]="$WS/awm/services/dvc::$WS/awm/services/dvc/tests"
   [claude-science]="$WS/awm/services/claude-science::$WS/awm/services/claude-science/tests"
   [dsh]="$WS/awm/services/dsh::$WS/awm/services/dsh/tests"
   [engcyc]="$WS/awm/services/engcyc::$WS/awm/services/engcyc/tests"

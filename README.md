@@ -234,14 +234,14 @@ Operational notes:
 ## Off-site backup
 
 Chinook is the remote for the cache the way GitHub is the remote for the code.
-A daily timer runs `awm-dvc-sync`, which pushes `data/.dvc_cache` to the chinook
-Globus collection and blocks until the transfer reaches a terminal state. It is
+A daily routine timer runs `dvc run-job`, which pushes `data/.dvc_cache` to the
+chinook Globus collection and blocks until the transfer reaches a terminal state. It is
 **append-only**: nothing this service does deletes on the remote, which is what
 makes a local `dvc gc` recoverable rather than permanent.
 
 `awm dvc pull --scope <path>` is the selective inverse — it resolves one scope's
 pins to their exact objects and fetches only those, then `dvc checkout`
-materialises them. See `awm/services/dvc/INSTALL.md`.
+materialises them. See `core/plugins/dvc/INSTALL.md`.
 
 **What is not backed up.** Only the cache travels. Code is covered by GitHub;
 anything in a worktree that is neither committed-and-pushed nor DVC-pinned —

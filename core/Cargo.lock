@@ -195,6 +195,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "awm-plugin-dvc"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "awm-dvcdata",
+ "awm-plugin-sdk",
+ "awm-statecheck",
+ "base64 0.22.1",
+ "chrono",
+ "clap",
+ "libc",
+ "rand 0.8.8",
+ "reqwest",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "sha2",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "toml",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "awm-plugin-fileviewer"
 version = "0.1.0"
 dependencies = [

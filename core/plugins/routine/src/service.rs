@@ -40,6 +40,7 @@ pub fn functions() -> Vec<(&'static str, &'static str, Value)> {
                 p("timer", "string", false, "A systemd OnCalendar expression."),
                 p("jitter_s", "integer", false, "The timer's random delay (RandomizedDelaySec), in seconds. Default 30."),
                 p("catchup_s", "integer", false, "How late a fire may come after its slot, such as after the node was down, and still run. A later fire, or a second fire for one slot, records a `skipped` run. Unset, every fire runs."),
+                p("last_slot", "string", false, "An ISO-8601 time: the last slot another clock already served, such as for a job moving onto this timer. A slot at or before it counts as run. It never moves the slot back."),
             ]),
         ),
         ("unschedule", "Clear a routine's timer.", json!([project(), name()])),
@@ -164,6 +165,10 @@ impl RoutineService {
         }
         let jitter = int_arg(args, "jitter_s")?.unwrap_or(timers::DEFAULT_JITTER_S);
         let catchup = int_arg(args, "catchup_s")?;
+        let seed = match str_arg(args, "last_slot") {
+            None => None,
+            Some(s) => Some(chrono::DateTime::parse_from_rfc3339(s.trim()).map_err(|e| VerbError::value(format!("last_slot must be an ISO-8601 time with an offset: {e}")))?.with_timezone(&chrono::Utc)),
+        };
         if jitter < 0 {
             return Err(VerbError::value("jitter_s must not be negative"));
         }
@@ -173,6 +178,9 @@ impl RoutineService {
         let res = self.timers().schedule(project, name, &spec, jitter, catchup).map_err(|e| VerbError::value(format!("{e:#}")))?;
         let store = &self.runner.store;
         store.put_timer(project, name, &spec, jitter, catchup).map_err(|e| err(e.into()))?;
+        if let Some(seed) = seed {
+            store.raise_last_slot(project, name, &crate::iso(seed)).map_err(|e| err(e.into()))?;
+        }
         store.set_scheduled(project, name, true).map_err(|e| err(e.into()))?;
         Ok(res)
     }
