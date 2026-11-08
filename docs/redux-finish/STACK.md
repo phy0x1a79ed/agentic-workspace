@@ -26,12 +26,14 @@ Sources: the worker debrief journals 389a0111 (ops), 8caec34d (knowledge), 449af
 - 2026-11-07: remove and rewrite, not only add. Tony: "dont just add code, remove stuff that's no longer needed and rewrite, change. Adding is safe but costly in the long run for bloat. this is out chance."
 - 2026-11-07: lean tests. Unit tests run in about 10 s; the full run at the end takes at most 1 min. Consolidate, curate and change tests, not only add them.
 - 2026-11-07: transition states are fine. Tony: "we are going to land in plenty of transitions states throughout this work. that is ok. lets just keep our head down and work through it." The aim is to get through, then check and refine, and return to normal operations.
+- 2026-11-07: trim tests first. Each batch curates its crates' tests before it builds and lands them. Tony: "the real problem is 2k tests. surely this is excessive." Keep a test that guards a wire format, stored state, a security gate or a shared golden vector. Fold the rest into table-driven tests or delete it. 10 s is a guideline, not a target.
 - 2026-11-07: deneb is out of scope. Only mizar, and alcor when needed. Stay focused: optional work waits.
 
 ## Stack
 
 Phase 1 scopes each plugin; phase 2 does the work in this order. Each topic lists its known questions and issues.
 
+- `lean-tests` — 1,929 Rust tests on release + ops (cch 897, operations 212, dvc 179, harness 140, gateway 77). operations and dvc trim in the ops batch. Then cch, harness and gateway; the slow suites gateway runtime.rs (33 s), cli e2e.rs (15 s), operations hook.rs (7 s); one integration-test binary per crate.
 - `scoping` — the plugin-by-plugin walk.
   - `operations` — feat/port-ops (212 tests, no code left) + cloud feat/ops-units on alcor. Merge conflicts: deploy-hooks.sh, Cargo.lock, deploy.toml, fleet.md. Edges still redirect to `/portal_login` (now 404) until `operations,httpsfront` restart; cloud `deneb_passkey_login_url` still names `/portal_login`. Issues: the cloud dev drift (github 8f79bec ahead of mizar's bare 6c01e03); `run-containers.sh` lacks the community.docker collection; two order pullers once reflection lands.
   - `opt-in` — Tony: "an opt in mechanism for prototype features like the deploy queue and the board. this way we can try features in a few select sessions rather than fleet wide". Before trilium-board, its first user.
@@ -54,6 +56,8 @@ Phase 1 scopes each plugin; phase 2 does the work in this order. Each topic list
 Read-only survey subagents (Sonnet medium), one group at a time. Brief /home/tony/.claude/jobs/b8680c94/tmp/survey/COMMON.md; reports beside it as <group>.md. Done: ops. None running.
 
 ## Closed
+
+- `remote-build` — shelved (Tony: "lets shelf remote-build. we may not need it."). capella has 16 cores and 68 GB; mizar has 4.
 
 - `dvc` — merge t7 with operations; mizar live checks; altair and capella later.
 - `queue-unblock` — no land queue this session; merge by hand, refresh mizar and alcor only.
