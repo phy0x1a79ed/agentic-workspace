@@ -9,18 +9,7 @@ use awm_index::grammar::Node;
 use awm_index::Veil;
 use awm_plugin_sdk::privacy;
 use serde_json::{json, Map, Value};
-
-/// Python truthiness.
-pub fn truthy(v: &Value) -> bool {
-    match v {
-        Value::Null => false,
-        Value::Bool(b) => *b,
-        Value::Number(n) => n.as_f64() != Some(0.0),
-        Value::String(s) => !s.is_empty(),
-        Value::Array(a) => !a.is_empty(),
-        Value::Object(o) => !o.is_empty(),
-    }
-}
+pub use awm_pycompat::repr::truthy;
 
 /// Whether a private mark covers a hit by its project and scope. Unreadable marks cover any hit
 /// that names either.

@@ -6,7 +6,7 @@
 //! picks its citations from. A parent link is a hard edge, "started by"; a citation is a soft
 //! one, "built on". Both point one way, and the walk goes only forward.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::Path;
 
 use awm_plugin_sdk::ids::to_r9;
@@ -279,15 +279,5 @@ impl Journals {
             }
         }
         Ok(json!({"status": "imported", "source": shown, "rows": rows.len(), "recorded": made}))
-    }
-
-    /// Each post's own read state, by id, for tests and the export-back.
-    pub fn read_counts(&self, session: &str) -> Result<HashMap<String, i64>> {
-        let s = session.to_string();
-        self.db.blocking_read(move |c| {
-            let mut stmt = c.prepare("SELECT post_id, times FROM session_reads WHERE session=?")?;
-            let out = stmt.query_map([s], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<std::result::Result<HashMap<_, _>, _>>()?;
-            Ok::<_, Fail>(out)
-        })
     }
 }

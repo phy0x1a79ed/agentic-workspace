@@ -28,6 +28,7 @@ use serde_json::{json, Value};
 
 use crate::index::TxIndex;
 use crate::layout::{sessions, Side, Tree};
+pub use awm_pycompat::repr::{py_str, truthy};
 
 const TOOL: &str = "transcripts";
 
@@ -152,29 +153,6 @@ pub fn ready(ctx: &Context, app: Arc<App>) {
         }
         Ok(())
     });
-}
-
-/// Python's `str()` of a JSON value.
-pub fn py_str(v: &Value) -> String {
-    match v {
-        Value::String(s) => s.clone(),
-        Value::Null => "None".into(),
-        Value::Bool(true) => "True".into(),
-        Value::Bool(false) => "False".into(),
-        other => awm_pycompat::repr::repr(other),
-    }
-}
-
-/// Python truthiness.
-pub fn truthy(v: &Value) -> bool {
-    match v {
-        Value::Null => false,
-        Value::Bool(b) => *b,
-        Value::Number(n) => n.as_f64() != Some(0.0),
-        Value::String(s) => !s.is_empty(),
-        Value::Array(a) => !a.is_empty(),
-        Value::Object(o) => !o.is_empty(),
-    }
 }
 
 fn py_float(v: &Value) -> Result<f64, Fail> {

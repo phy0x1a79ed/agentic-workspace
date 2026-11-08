@@ -262,11 +262,6 @@ impl Db {
         tokio::task::spawn_blocking(move || f(&me.lock().unwrap_or_else(|p| p.into_inner()))).await.expect("a db call panicked")
     }
 
-    /// Run on the calling thread, for startup and tests.
-    pub fn now_sync<R>(&self, f: impl FnOnce(&Connection) -> R) -> R {
-        f(&self.0.lock().unwrap_or_else(|p| p.into_inner()))
-    }
-
     // -- operators ----------------------------------------------------------
 
     pub async fn add_operator(&self, platform: &str, uid: &str, user: &str) -> rusqlite::Result<Value> {

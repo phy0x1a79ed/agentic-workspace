@@ -12,7 +12,7 @@
 use std::collections::HashSet;
 
 use awm_index::grammar::{parse_source, parse_text, SourceFilter, Text};
-use awm_index::sql::{quote, Veil};
+use awm_index::sql::Veil;
 use awm_index::{Answer, Fields};
 use awm_kb_source::{Ask as SourceAsk, Source, SourceError};
 use awm_pycompat::pystr::norm;
@@ -192,10 +192,6 @@ impl Journals {
         let waiting = self.index.count(Some("_chunked IS NULL")).await.unwrap_or(0);
         let sections: Vec<String> = self.index.sections().iter().map(|s| s.key.clone()).collect();
         json!({"posts": posts, "waiting": waiting, "sections": sections, "cutover": self.cutover.to_json()})
-    }
-
-    pub fn quote_id(id: &str) -> String {
-        quote(id)
     }
 }
 

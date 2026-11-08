@@ -14,6 +14,7 @@ use lancedb::arrow::arrow_array::{Array, ArrayRef, RecordBatch};
 use lancedb::arrow::arrow_schema::{DataType, Field as ArrowField, Schema, SchemaRef, TimeUnit};
 use serde_json::{Map, Value};
 use std::sync::Arc;
+use awm_pycompat::repr::py_str;
 
 /// How a column is stored.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -83,16 +84,6 @@ pub fn parse_ts(value: &Value) -> Option<i64> {
         return None;
     }
     fromisoformat(s).map(|dt| dt.utc_us())
-}
-
-fn py_str(value: &Value) -> String {
-    match value {
-        Value::String(s) => s.clone(),
-        Value::Bool(true) => "True".into(),
-        Value::Bool(false) => "False".into(),
-        Value::Null => "None".into(),
-        other => awm_pycompat::repr::repr(other),
-    }
 }
 
 /// `_cell`: a caller's value coerced to the column's kind.

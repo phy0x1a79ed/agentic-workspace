@@ -13,7 +13,6 @@ use regex::Regex;
 use serde_json::{json, Value};
 
 use crate::posts::Names;
-use crate::schema::TYPE_TAGS;
 use crate::{py_repr, py_str, Fail, Journals, Result};
 
 static NAME_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[a-z0-9][a-z0-9_.:+/-]{0,63}$").unwrap());
@@ -199,11 +198,6 @@ pub fn names_of(names: &Names, ids: &[String]) -> Vec<String> {
     ids.iter().filter_map(|i| names.get(i).cloned()).collect()
 }
 
-/// The tag-name check of `tagsync.provisional`.
-pub fn provisional(name: &str) -> bool {
-    crate::tagsync::provisional(name)
-}
-
 impl Journals {
     pub fn tag_names(&self) -> Result<Names> {
         self.db.blocking_read(names)
@@ -254,7 +248,7 @@ impl Journals {
         if self.tag_by_name(&name)?.is_some() {
             return Err(Fail::tag(format!("tag {} exists already; change it with tag_edit", str_repr(&name))));
         }
-        if provisional(&name) {
+        if crate::tagsync::provisional(&name) {
             return Err(Fail::tag(format!("{} has the shape of a clash rename; choose another name", str_repr(&name))));
         }
         let id = uuid::Uuid::new_v4().simple().to_string();
@@ -352,10 +346,5 @@ impl Journals {
 
     fn unknown_tag(&self, name: &str) -> Fail {
         self.db.blocking_read(|c| Ok::<_, Fail>(unknown(c, &[name.to_string()]))).unwrap_or_else(|e| e)
-    }
-
-    /// The ids of the type tags among `ids`.
-    pub fn type_tags_in(ids: &[String]) -> Vec<String> {
-        ids.iter().filter(|t| TYPE_TAGS.contains(&t.as_str())).cloned().collect()
     }
 }
