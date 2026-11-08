@@ -1,0 +1,20 @@
+[plugin]
+name = "routine"
+version = "0.2.0"
+# No refresh hook: the land batch that refreshes a node runs outside this service, and a
+# hook that restarted it mid-batch would kill the run that called it.
+
+[[service]]
+name = "routine"
+
+[[tool]]
+name = "routine"
+major = 1
+tier = "on"
+
+# No needs. reflection (the fixer) and social (the notice) are plain calls, and a failed
+# run falls back from the fixer to the notice, then to the log.
+[needs]
+secrets = []
+# dvc's run-job step inherits routine's egress.
+network = ["*.globus.org"]

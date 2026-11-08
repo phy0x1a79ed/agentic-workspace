@@ -212,6 +212,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "awm-plugin-routine"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "awm-plugin-sdk",
+ "awm-statecheck",
+ "chrono",
+ "clap",
+ "libc",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "toml",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "awm-plugin-sdk"
 version = "0.1.0"
 dependencies = [

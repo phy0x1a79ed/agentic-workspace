@@ -21,3 +21,11 @@ path = "land/*/tickets/*.json"
 
 [[transient]]
 path = "land/*/batch.json"
+
+# A batch's worktree is a checkout the next batch rebuilds: recorded, not copied, and gone
+# once the batch settles.
+[[size_only]]
+path = "land/*/tree"
+
+[[transient]]
+path = "land/*/tree"

@@ -49,7 +49,7 @@ pub fn check(decl: &Decl) -> anyhow::Result<Report> {
             }
         }
         for s in &inv.size_only {
-            if s.exists && s.path.symlink_metadata().is_err() {
+            if s.exists && s.path.symlink_metadata().is_err() && !decl.is_transient_file(&s.path) {
                 r.lost.push(format!("{}: size_only path is gone", s.path.display()));
             }
         }
