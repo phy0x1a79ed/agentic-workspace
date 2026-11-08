@@ -1,0 +1,23 @@
+# kb takes over the state of three Python plugins and opens each in place. Its own LanceDB
+# databases live in services/kb/lance/, beside the Python papers plugin's state in services/kb/
+# (about 170 GB on altair), so services/kb is never declared here.
+dirs = ["services/journal", "services/search", "services/transcripts"]
+
+# The Python search's derived LanceDB tables: Lance maintenance rewrites their files, and the
+# land removes them once kb answers. .pre-rust/ keeps the copy.
+[[transient]]
+path = "services/search/lance/**"
+
+# The transcripts archive lives in Claude Code's tree. It is large, so it is recorded by size
+# only and nothing is written there.
+[[size_only]]
+path = "${HOME}/.claude/projects-archive"
+
+# The systemd timer that kb's daily sweep replaces. The deploy removes the units after this copy.
+[[extra]]
+name = "claude-archive-sessions.service"
+path = "${HOME}/.config/systemd/user/claude-archive-sessions.service"
+
+[[extra]]
+name = "claude-archive-sessions.timer"
+path = "${HOME}/.config/systemd/user/claude-archive-sessions.timer"

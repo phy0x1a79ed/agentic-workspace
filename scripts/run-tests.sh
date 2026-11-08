@@ -14,7 +14,7 @@
 #
 # Usage:
 #   scripts/run-tests.sh                 # run all dists
-#   scripts/run-tests.sh scopes contract # run only the named dists
+#   scripts/run-tests.sh kb contract     # run only the named dists
 #   PYTEST_ARGS="-x -q" scripts/run-tests.sh   # pass extra args to pytest
 #   scripts/run-tests.sh --changed <base>  # only dists touched since <base>
 #   scripts/run-tests.sh --smoke           # only tests marked smoke
@@ -44,9 +44,6 @@ declare -A DISTS=(
   [tlsfront]="$WS/awm/service_components/tlsfront::$WS/awm/service_components/tlsfront/tests"
   [dvcdata]="$WS/awm/service_components/dvcdata::$WS/awm/service_components/dvcdata/tests"
   [tether]="$WS/awm/service_components/tether::$WS/awm/service_components/tether/tests"
-  [scopes]="$WS/awm/services/scopes::$WS/awm/services/scopes/tests"
-  [journal]="$WS/awm/services/journal::$WS/awm/services/journal/tests"
-  [search]="$WS/awm/services/search::$WS/awm/services/search/tests"
   [social]="$WS/awm/services/social::$WS/awm/services/social/tests"
   [2fa]="$WS/awm/services/2fa::$WS/awm/services/2fa/tests"
   [ssh]="$WS/awm/services/ssh::$WS/awm/services/ssh/tests"
@@ -75,7 +72,7 @@ declare -A DISTS=(
 )
 
 # Stable run order.
-ORDER=(contract gatewayclient config persistence grantlib telemetry usage claudedaemon kept tlsfront dvcdata tether scopes journal search social 2fa ssh auth httpsfront rlm-browser rlm-factorio vpn reflection dvc claude-science dsh engcyc trilium zotero cch dev channel relay kb board trustpolicy browser wake)
+ORDER=(contract gatewayclient config persistence grantlib telemetry usage claudedaemon kept tlsfront dvcdata tether social 2fa ssh auth httpsfront rlm-browser rlm-factorio vpn reflection dvc claude-science dsh engcyc trilium zotero cch dev channel relay kb board trustpolicy browser wake)
 
 CHANGED_BASE=""
 SMOKE=0

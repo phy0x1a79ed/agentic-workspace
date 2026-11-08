@@ -579,6 +579,98 @@ dependencies = [
 ]
 
 [[package]]
+name = "awm-kb-guide"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "awm-embed",
+ "awm-index",
+ "awm-kb-source",
+ "awm-plugin-sdk",
+ "awm-pycompat",
+ "futures-util",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "awm-kb-journals"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "awm-embed",
+ "awm-index",
+ "awm-kb-source",
+ "awm-plugin-sdk",
+ "awm-pycompat",
+ "awm-store",
+ "awm-trust",
+ "futures-util",
+ "lancedb",
+ "regex",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "awm-kb-search"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "awm-embed",
+ "awm-index",
+ "awm-kb-source",
+ "awm-plugin-sdk",
+ "awm-pycompat",
+ "awm-store",
+ "futures-util",
+ "indexmap 2.14.2",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "tempfile",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "awm-kb-source"
+version = "0.1.0"
+dependencies = [
+ "awm-index",
+ "futures-util",
+ "serde_json",
+]
+
+[[package]]
+name = "awm-kb-transcripts"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "awm-index",
+ "awm-kb-source",
+ "awm-plugin-sdk",
+ "awm-pycompat",
+ "awm-store",
+ "fancy-regex",
+ "flate2",
+ "futures-util",
+ "lancedb",
+ "libc",
+ "regex",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "awm-mcp"
 version = "0.1.0"
 dependencies = [
@@ -602,6 +694,25 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "awm-plugin-kb"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "awm-embed",
+ "awm-kb-guide",
+ "awm-kb-journals",
+ "awm-kb-search",
+ "awm-kb-source",
+ "awm-kb-transcripts",
+ "awm-plugin-sdk",
+ "awm-statecheck",
+ "clap",
+ "serde_json",
  "tokio",
  "tracing",
 ]
@@ -638,6 +749,27 @@ dependencies = [
  "sha2 0.10.9",
  "tempfile",
  "thiserror",
+ "tokio",
+ "toml",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "awm-plugin-scopes"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "awm-dvcdata",
+ "awm-plugin-sdk",
+ "awm-pycompat",
+ "awm-statecheck",
+ "awm-store",
+ "clap",
+ "libc",
+ "regex",
+ "serde_json",
+ "tempfile",
  "tokio",
  "toml",
  "tracing",
@@ -690,24 +822,6 @@ dependencies = [
  "awm-plugin-sdk",
  "awm-plugin-telemetry",
  "tokio",
-]
-
-[[package]]
-name = "awm-plugin-transcripts"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "awm-plugin-sdk",
- "awm-pycompat",
- "awm-store",
- "fancy-regex",
- "flate2",
- "libc",
- "regex",
- "serde_json",
- "tempfile",
- "tokio",
- "tracing",
 ]
 
 [[package]]

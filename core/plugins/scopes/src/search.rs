@@ -24,7 +24,8 @@ const SCOPE_ROW_SQL: &str = "SELECT a.id, a.scope, a.status, a.branch, a.worktre
 /// How many brief hits to ask the journal for: enough to fill a page past superseded
 /// versions of the same brief and a tag filter.
 const MIN_ASK: usize = 50;
-const MAX_ASK: usize = 500;
+// journal_query answers at most awm-index's `MAX_MAX` hits.
+const MAX_ASK: usize = 100;
 
 /// What `search` was asked.
 #[derive(Debug, Clone, Default)]
@@ -110,10 +111,11 @@ pub fn brief_hits(answer: &Value) -> (Vec<(String, String)>, Option<Value>) {
 impl Op {
     /// Ask the journal which scopes' briefs match `query`.
     fn ask_journal(&self, query: &str, project: Option<&str>, want: usize) -> Result<(Vec<(String, String)>, Option<Value>), String> {
-        let mut args = json!({"query": query, "tag": "brief", "limit": want.clamp(MIN_ASK, MAX_ASK)});
+        let mut filter = json!({"tag": "brief"});
         if let Some(p) = project {
-            args["project"] = json!(p);
+            filter["project"] = json!(p);
         }
+        let args = json!({"query": query, "filter": filter, "max": want.clamp(MIN_ASK, MAX_ASK)});
         let answer = self.out.call("journal", "journal_query", args, Duration::from_secs(30))?;
         Ok(brief_hits(&answer))
     }

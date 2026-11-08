@@ -1,6 +1,7 @@
 """Write grammar.jsonl: search's Python answers to the per-source grammar and the SQL it compiles.
 
-Run in the awm env from the worktree root:
+It imports the Python search, which the kb port deleted. Run it from a checkout of a commit that
+still holds awm/services/search (the parent of the deletion), in the awm env, from the root:
     mamba run -n awm python -I core/crates/awm-index/tests/fixtures/capture.py
 Every input is synthetic.
 """
