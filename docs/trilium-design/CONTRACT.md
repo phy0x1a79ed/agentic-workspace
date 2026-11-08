@@ -106,6 +106,7 @@ telemetry, as two core plugins on one library. The loader refuses a whole plugin
 - `core/plugins/telemetry/`, on alcor: the singleton tool `telemetry` with the verbs `nodes`, `services` and `seats`.
 - On alcor, the topic `telemetry/roster`, a change notice `{rev, node, changed: [nodes|sessions|services|usage|seats], ts}`. A consumer reads the verbs for the data.
 - On alcor, the topic `telemetry/sessions`, at each session that goes live or goes: `{event: "live" | "gone", session_id, job, task_id?, node, ts}`.
+- `telemetry nodes` lists each node's live sessions, so a subscriber reconciles at each reconnect: `{rev, nodes: [{node, ..., sessions: [{job, session_id?, task_id?, started?, link?, remote_control, name?, project?, scope?, kind?}]}]}`. `session_id` is absent until the session's first turn. A row matches an event on `session_id`, else on `job`, as `telemetry/sessions` names it.
 
 trilium, in `awm/services/trilium/`:
 - the writer, the board page, the Ops note and the per-note bot button;
