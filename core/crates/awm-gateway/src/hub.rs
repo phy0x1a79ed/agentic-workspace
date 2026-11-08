@@ -229,16 +229,20 @@ impl Hub {
 
     /// The control WebSocket of service `id` closed. Pending calls fail at once. A socket of an
     /// older instance that closes after a restart under the same name touches nothing.
-    pub fn disconnected(&self, name: &str, id: &str) {
+    /// Returns the service's plugin and pid when this socket was the live one, else None.
+    pub fn disconnected(&self, name: &str, id: &str) -> Option<(String, Option<i64>)> {
         let mut map = self.lock();
+        let mut was = None;
         if let Some(svc) = map.get_mut(name).filter(|s| s.id == id) {
             svc.tx = None;
             svc.status = Status::Down;
             svc.down_since = Some(Instant::now());
             svc.pending.clear();
+            was = Some((svc.plugin.clone(), svc.pid));
         }
         drop(map);
         self.changed.notify_waiters();
+        was
     }
 
     /// How long a known service has been off its control WebSocket.

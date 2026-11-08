@@ -29,12 +29,16 @@ impl UsageStore {
         Self { dir, write: Mutex::new(()) }
     }
 
-    pub fn record(&self, event: UsageEvent) {
+    /// Append `event` to its day's file. Returns the event as written, with `v` and `ts` filled.
+    pub fn record(&self, event: UsageEvent) -> UsageEvent {
         let event = event.stamped();
         let path = self.dir.join(format!("{}.jsonl", event.day()));
         let line = match serde_json::to_string(&event) {
             Ok(l) => l,
-            Err(e) => return tracing::warn!("usage event not encoded: {e}"),
+            Err(e) => {
+                tracing::warn!("usage event not encoded: {e}");
+                return event;
+            }
         };
         let _guard = self.write.lock().unwrap_or_else(|p| p.into_inner());
         let result = std::fs::create_dir_all(&self.dir).and_then(|_| {
@@ -44,6 +48,7 @@ impl UsageStore {
         if let Err(e) = result {
             tracing::warn!("usage event not written to {}: {e}", path.display());
         }
+        event
     }
 
     /// Count the last `days` days of events. Files past the 60-day window are deleted.

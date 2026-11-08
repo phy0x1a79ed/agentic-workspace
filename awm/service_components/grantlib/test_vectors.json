@@ -291,6 +291,156 @@
     "key_id": "86c5ff3b0804a502"
    },
    "expect": "not 'altair'"
+  },
+  {
+   "name": "no not_before means valid from 0",
+   "check": "grant",
+   "now": 1800000060,
+   "envelope": {
+    "grant": {
+     "grant_id": "gTESTTRU03",
+     "request_id": "qTESTREQ02",
+     "kind": "trust_raise",
+     "node": "mizar",
+     "subject": "cc-0002",
+     "payload_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+     "not_after": 1800000900,
+     "approved_by_device": "dTESTDEV1"
+    },
+    "sig": "qtMMxx37Z9IpC00k4BD5Utboey7TcDE532pPsB2DG2GG2FrAQYTZjBvUdBLYuNvKcpZc-5DgcFGYO-lTI1fSAA",
+    "key_id": "86c5ff3b0804a502"
+   },
+   "expect": "ok"
+  },
+  {
+   "name": "an order checked as a grant",
+   "check": "grant",
+   "now": 1800000010,
+   "envelope": {
+    "order": {
+     "order_id": "oTESTORD01",
+     "kind": "zotero_sync",
+     "node": "deneb",
+     "payload": {},
+     "not_after": 1800000600
+    },
+    "sig": "4H_XMju3Cck09MzHTIEHas-mPtD7Mk2_5ZsQ73k_T0iLD-gOykiIkWZAESZEbgNl_6ASkSaEGND6TX_6JvLACQ",
+    "key_id": "86c5ff3b0804a502"
+   },
+   "expect": "no grant in the envelope"
+  },
+  {
+   "name": "a float is named before the signature",
+   "check": "grant",
+   "now": 1800000060,
+   "envelope": {
+    "grant": {
+     "grant_id": "gTESTTRU01",
+     "request_id": "qTESTREQ02",
+     "kind": "trust_raise",
+     "node": "mizar",
+     "subject": "cc-0002",
+     "payload_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+     "not_before": 1800000000,
+     "not_after": 1800000900.5,
+     "approved_by_device": "dTESTDEV1"
+    },
+    "sig": "AAAA",
+    "key_id": "86c5ff3b0804a502"
+   },
+   "expect": "not_after is a float, and signed times are integers"
+  },
+  {
+   "name": "wrong subject",
+   "check": "grant",
+   "subject": "cc-9999",
+   "now": 1800000060,
+   "envelope": {
+    "grant": {
+     "grant_id": "gTESTTRU01",
+     "request_id": "qTESTREQ02",
+     "kind": "trust_raise",
+     "node": "mizar",
+     "subject": "cc-0002",
+     "payload_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+     "not_before": 1800000000,
+     "not_after": 1800000900,
+     "approved_by_device": "dTESTDEV1"
+    },
+    "sig": "sFka5Lq7MSZEf7NZVy8e-L_vpPelJ-ml1y3DgQ6NKw98IEtEsB-_ZTxqsEsxvWGobTpHm6HuOi8PClrQAxqdCw",
+    "key_id": "86c5ff3b0804a502"
+   },
+   "expect": "the grant is for 'cc-0002', not 'cc-9999'"
+  },
+  {
+   "name": "payload not covered",
+   "check": "grant",
+   "payload": {
+    "session_id": "cc-0002"
+   },
+   "now": 1800000060,
+   "envelope": {
+    "grant": {
+     "grant_id": "gTESTTRU01",
+     "request_id": "qTESTREQ02",
+     "kind": "trust_raise",
+     "node": "mizar",
+     "subject": "cc-0002",
+     "payload_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+     "not_before": 1800000000,
+     "not_after": 1800000900,
+     "approved_by_device": "dTESTDEV1"
+    },
+    "sig": "sFka5Lq7MSZEf7NZVy8e-L_vpPelJ-ml1y3DgQ6NKw98IEtEsB-_ZTxqsEsxvWGobTpHm6HuOi8PClrQAxqdCw",
+    "key_id": "86c5ff3b0804a502"
+   },
+   "expect": "the grant does not cover this request"
+  },
+  {
+   "name": "control characters in the payload",
+   "check": "grant",
+   "subject": "cc-0003",
+   "payload": {
+    "session_id": "cc-0003",
+    "from": "cooperative",
+    "to": "trusted",
+    "note": "\u0001 del\u007f sep\u2028 \\ /"
+   },
+   "now": 1800000060,
+   "envelope": {
+    "grant": {
+     "grant_id": "gTESTTRU04",
+     "request_id": "qTESTREQ02",
+     "kind": "trust_raise",
+     "node": "mizar",
+     "subject": "cc-0003",
+     "payload_sha256": "55fd58885a8722f31997fa3eafbba143b1fbd050221c1530b69bc85f0ccab781",
+     "not_before": 1800000000,
+     "not_after": 1800000900,
+     "approved_by_device": "dTESTDEV1"
+    },
+    "sig": "StH0hltj7tziMJBRjJ3trfxgvT-Ju7JJkeHfwtbtjK3vsqo0jbGRtVtqjjdPjJuKDcQAm2d3fJbBbh4yzlGCBA",
+    "key_id": "86c5ff3b0804a502"
+   },
+   "expect": "ok"
+  },
+  {
+   "name": "order expired",
+   "check": "order",
+   "node": "deneb",
+   "now": 1800000600,
+   "envelope": {
+    "order": {
+     "order_id": "oTESTORD01",
+     "kind": "zotero_sync",
+     "node": "deneb",
+     "payload": {},
+     "not_after": 1800000600
+    },
+    "sig": "4H_XMju3Cck09MzHTIEHas-mPtD7Mk2_5ZsQ73k_T0iLD-gOykiIkWZAESZEbgNl_6ASkSaEGND6TX_6JvLACQ",
+    "key_id": "86c5ff3b0804a502"
+   },
+   "expect": "expired"
   }
  ]
 }

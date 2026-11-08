@@ -1536,3 +1536,71 @@ fn a_plugin_hears_the_plugin_lifecycle() {
     assert_eq!(heard()["payloads"].as_array().map(Vec::len), Some(3), "a reload that changes nothing reports nothing");
     assert!(gw.stop().success());
 }
+
+/// A plugin subscribed to `awm/services` hears a service come up and go down, and one subscribed
+/// to `awm/usage` hears each usage event the gateway appends, the same object it writes.
+#[test]
+fn a_plugin_hears_service_and_usage_events() {
+    let tmp = tempfile::tempdir().unwrap();
+    let base = tmp.path();
+    let (core, third, state) = (base.join("core"), base.join("third"), base.join("state"));
+    let fake = fake_bin();
+    for (name, topic) in [("svclisten", "awm/services"), ("uselisten", "awm/usage")] {
+        write(&core.join(format!("{name}/awm-plugin.toml")), &format!("[plugin]\nname = \"{name}\"\n\n[[service]]\nname = \"{name}\"\n\n[[tool]]\nname = \"{name}\"\n"));
+        write(&core.join(format!("{name}/run.sh")), &format!("export FAKE_TOOL={name} FAKE_SUBSCRIBE={topic}\nexec '{}'\n", fake.display()));
+    }
+    std::fs::create_dir_all(&third).unwrap();
+    write(&state.join("config.toml"), &format!(
+        "node = \"e2e\"\nlisten = \"127.0.0.1:0\"\nworkspace = \"{}\"\ncore_roots = [\"{}\"]\nplugin_roots = [\"{}\"]\ntool_wait_s = 30\nsession_cache_s = 0\n",
+        base.display(), core.display(), third.display()));
+    let gw = Gateway::start(&state);
+    let url = gw.url.clone();
+    let heard = |tool: &str| -> Value {
+        let (code, out, errout) = cli(&url, &[tool, "heard"]);
+        assert_eq!(code, 0, "{tool} heard: {out} {errout}\n{}", log(&state));
+        serde_json::from_str(&out).unwrap()
+    };
+    let until = |what: &str, tool: &str, found: &dyn Fn(&[Value]) -> bool| {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            let got = heard(tool);
+            let payloads = got["payloads"].as_array().cloned().unwrap_or_default();
+            if got["subscribed"] == true && found(&payloads) {
+                return payloads;
+            }
+            assert!(Instant::now() < deadline, "{what} never arrived: {got}\n{}", log(&state));
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    };
+    until("the subscription", "svclisten", &|_| true);
+    until("the subscription", "uselisten", &|_| true);
+
+    let hot = third.join("hot");
+    write(&hot.join("awm-plugin.toml"), "[plugin]\nname = \"hotp\"\n\n[[service]]\nname = \"hot\"\n\n[[tool]]\nname = \"hot\"\n");
+    write(&hot.join("run.sh"), &format!("export FAKE_TOOL=hot\nexec '{}'\n", fake.display()));
+    let (code, out, errout) = cli(&url, &["reload"]);
+    assert_eq!(code, 0, "awm reload: {out} {errout}");
+    let of_hot = |event: &'static str| move |ps: &[Value]| ps.iter().any(|p| p["service"] == "hot" && p["event"] == event);
+    let events = until("the up event", "svclisten", &of_hot("up"));
+    let up = events.iter().find(|p| p["service"] == "hot" && p["event"] == "up").unwrap();
+    assert_eq!(up["plugin"], json!("hotp"), "{up}");
+    assert!(up["pid"].as_i64().is_some_and(|p| p > 0), "{up}");
+    assert!(up["ts"].as_str().is_some_and(|t| t.ends_with('Z') && t.contains('T')), "{up}");
+    assert!(events.iter().all(|p| p["service"] != "svclisten"), "boot emits nothing: {events:?}");
+
+    std::fs::remove_dir_all(&hot).unwrap();
+    let (code, out, errout) = cli(&url, &["reload"]);
+    assert_eq!(code, 0, "awm reload: {out} {errout}");
+    let events = until("the down event", "svclisten", &of_hot("down"));
+    let down = events.iter().find(|p| p["service"] == "hot" && p["event"] == "down").unwrap();
+    assert_eq!(down["plugin"], json!("hotp"), "{down}");
+
+    // The listener's own `heard` calls are usage events; the next read hears the first.
+    let _ = heard("uselisten");
+    let payloads = until("the usage event", "uselisten", &|ps| ps.iter().any(|p| p["tool"] == "uselisten" && p["verb"] == "heard"));
+    let ev = payloads.iter().find(|p| p["tool"] == "uselisten" && p["verb"] == "heard").unwrap();
+    assert_eq!((&ev["plugin"], &ev["surface"], &ev["ok"]), (&json!("uselisten"), &json!("cli"), &json!(true)), "{ev}");
+    let written: String = std::fs::read_dir(state.join("usage")).unwrap().flatten().map(|e| std::fs::read_to_string(e.path()).unwrap()).collect();
+    assert!(written.lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()).any(|l| &l == ev), "the event differs from the line written: {ev}");
+    assert!(gw.stop().success());
+}

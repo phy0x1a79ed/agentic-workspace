@@ -1223,6 +1223,19 @@ impl Gateway {
         awm_trust::call_refusal(level, &awm_trust::Call { tool, verb, harness, names_other })
     }
 
+    /// Append `ev` to the usage log and publish it, as written, on `awm/usage`.
+    pub fn record_usage(&self, ev: UsageEvent) {
+        let written = self.usage.record(ev);
+        let payload = serde_json::to_value(&written).unwrap_or(Value::Null);
+        self.topics.publish(self, crate::telemetry::SERVICE, crate::telemetry::USAGE_TOPIC, &payload);
+    }
+
+    /// Publish a service's register or disconnect on `awm/services`.
+    pub fn publish_service_event(&self, service: &str, plugin: &str, pid: Option<i64>, event: crate::telemetry::ServiceEvent) {
+        let payload = crate::telemetry::service_payload(service, plugin, pid, event);
+        self.topics.publish(self, crate::telemetry::SERVICE, crate::telemetry::SERVICES_TOPIC, &payload);
+    }
+
     fn record_call(&self, tools: &BTreeMap<String, ToolEntry>, tool: &str, verb: &str, ctx: &CallContext, ok: bool, started: Instant) {
         let Some(plugin) = tools.get(tool).map(|e| e.plugin.clone()).filter(|_| verb != DESCRIBE) else { return };
         let mut ev = UsageEvent::new(plugin, ctx.surface);
@@ -1231,7 +1244,7 @@ impl Gateway {
         ev.name = ctx.plugin.clone();
         ev.ok = Some(ok);
         ev.ms = Some(started.elapsed().as_millis() as u64);
-        self.usage.record(ev);
+        self.record_usage(ev);
     }
 
     /// The isolated session that holds `token`, from the harness plugin, or None for a token
