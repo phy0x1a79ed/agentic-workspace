@@ -8,13 +8,11 @@ Sources: the worker debrief journals 389a0111 (ops), 8caec34d (knowledge), 449af
 
 ## Current
 
-- `ops` batch closed. Release 5ebadb0a on github, mizar and alcor. dvc, operations and auth run as Rust on both. Next: plan the `comms` batch.
-- `comms` batch (social, browser, channel, rlm-browser) — survey done, /home/tony/.claude/jobs/b8680c94/tmp/survey/comms.md. feat/port-comms b77274c2 is 30 commits behind release, with mechanical conflicts only. 251 plugin tests to curate first (about 83 kept). Cloud dev needs `social` and `browser` back in `singleton_rust`, without relay. Plan by default: delete `awm/service_components/kept` (nothing imports it now); skip the live gamebot run for rlm-browser (no node runs it).
+- Batch 2, seven packages: social, browser, channel, rlm-browser, kb, scopes, telemetry roster. Plan: `~/.claude/plans/noble-splashing-nygaard.md`. Batch 1's plan: `~/.claude/plans/redux-finish-batch1-ops.md`. The comms merge (4eed0581) and the `kept` delete (a973f58b) are on feat/redux-finish, not promoted. The cloud `singleton_rust` edit is uncommitted in `projects/cloud/redux-dev-apply`.
 
 ## Waiting on the user
 
 - When you are at a device: one passkey sign-in on a node edge, and open a node's portal on your phone. Neither gates the work. The Rust edge offers only HTTP/1.1, so an HTTP/2-only client fails.
-- comms: the channel cutover on mizar and alcor comes before deneb's relay moves, so the Rust member half talks to deneb's Python relay until `later-nodes`. Recommended and planned: cut over with a rollback ready (revert the pin, keep `channels.db`). If the first room check fails, stop and hold channel for deneb. Say so if you want it held instead.
 
 ## Preferences
 
@@ -31,6 +29,8 @@ Sources: the worker debrief journals 389a0111 (ops), 8caec34d (knowledge), 449af
 - 2026-11-07: trim tests first. Each batch curates its crates' tests before it builds and lands them. Tony: "the real problem is 2k tests. surely this is excessive." Keep a test that guards a wire format, stored state, a security gate or a shared golden vector. Fold the rest into table-driven tests or delete it. 10 s is a guideline, not a target.
 - 2026-11-07: the stack holds large-scale items only, such as which plugin group comes next. Tony: "use the dfs-interview for large scale items like what plugin to work on. for the tests, trim them now". Smaller work is done in place, not pushed as a topic.
 - 2026-11-07: deneb is out of scope. Only mizar, and alcor when needed. Stay focused: optional work waits.
+- 2026-11-08: state an estimate before any step likely to pass a minute, set its timeout to about twice that, run chained steps separately, and check in when a step passes twice its estimate. Tony: "dont just accept long runtimes... Estimate how fast something should take and check in if it takes significantly longer".
+- 2026-11-08: build for the end state in `DECISIONS.md`. Tony: "for comms, I'd just dev for end state rather than implementing a fallback." and "Order doesn't really matter since we aim for endstate."
 
 ## Stack
 
