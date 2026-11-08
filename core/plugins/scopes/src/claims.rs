@@ -111,6 +111,7 @@ impl Op {
 
     /// Claim a scope for a session, or say who holds it. A terminal session (R41) is warned,
     /// never blocked or queued. With `queue` a refused session joins the queue.
+    #[allow(clippy::too_many_arguments)]
     pub fn claim(&self, project: &str, scope: &str, session_id: &str, pid: Option<i64>, job: Option<&str>, queue: bool, terminal: bool) -> Result<Value, Fail> {
         if session_id.is_empty() {
             return Err(Fail::value("session_id is required"));

@@ -281,6 +281,7 @@ impl Op {
 
     /// The R44 checks before a scope's worktree goes. A live session's claim refuses always;
     /// data that differs from its pin and commits no other ref holds refuse unless `force`.
+    #[allow(clippy::too_many_arguments)]
     fn removal_guard(&self, bare: &Path, worktree: &Path, project: &str, scope: &str, branch: &str, force: bool, commits: bool) -> Result<Removal, Fail> {
         if let Some(holder) = self.live_holder(project, scope)? {
             return Err(Fail::runtime(format!(

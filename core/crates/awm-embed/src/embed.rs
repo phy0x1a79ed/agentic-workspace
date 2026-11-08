@@ -221,5 +221,5 @@ pub fn to_blob(v: &[f32]) -> Vec<u8> {
 
 /// A stored blob as a vector, or `None` when its length is not a multiple of 4.
 pub fn from_blob(b: &[u8]) -> Option<Vec<f32>> {
-    (b.len() % 4 == 0).then(|| b.chunks_exact(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect())
+    b.len().is_multiple_of(4).then(|| b.as_chunks::<4>().0.iter().map(|c| f32::from_le_bytes(*c)).collect())
 }

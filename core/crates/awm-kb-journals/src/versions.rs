@@ -34,6 +34,7 @@ impl Journals {
 
     /// The edit, with `crash_before_post` stopping it between its two writes (tests only).
     #[doc(hidden)]
+    #[allow(clippy::too_many_arguments)]
     pub async fn edit_locked(
         &self,
         post_id: &str,

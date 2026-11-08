@@ -114,7 +114,7 @@ impl Journals {
             .into_iter()
             .filter(|p| !exclude.hides(p, &names))
             .collect();
-        journals.sort_by(|a, b| (b.ms, b.seq).cmp(&(a.ms, a.seq)));
+        journals.sort_by_key(|p| std::cmp::Reverse((p.ms, p.seq)));
         let (own, others): (Vec<&Post>, Vec<&Post>) = journals.iter().partition(|p| p.scope == scope);
         let omitted = |shown: usize, total: usize| -> Option<String> {
             (total > shown).then(|| {

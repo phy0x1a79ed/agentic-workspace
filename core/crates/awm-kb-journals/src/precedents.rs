@@ -76,7 +76,9 @@ struct Note {
     created: Option<String>,
 }
 
-fn read_source(path: &Path) -> Result<(Vec<Decision>, Vec<(String, String)>, Vec<Note>)> {
+type Source = (Vec<Decision>, Vec<(String, String)>, Vec<Note>);
+
+fn read_source(path: &Path) -> Result<Source> {
     let src = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     let mut stmt = src.prepare("SELECT * FROM decisions ORDER BY created, added, id")?;
     let decisions = stmt

@@ -55,7 +55,7 @@ async fn a_source_that_omits_the_veil_is_refused_to_a_peer_and_served_locally() 
     let r = loaded(vec![fake.clone()]).await;
     let local = r.ask(json!({"query": {"text": "x", "careless": {}}})).await;
     assert_eq!(ids(&local["careless"]["exact"]), ["f1"]);
-    let peer = r.ask_as(json!({"query": {"text": "x", "careless": {}, "journals": {}}}), PEER).await.unwrap();
+    let peer = r.ask_as(json!({"query": {"text": "kitchen sink", "careless": {}, "journals": {}}}), PEER).await.unwrap();
     assert_eq!(peer["careless"]["exact"], json!([]));
     assert!(peer["careless"]["error"].as_str().unwrap().starts_with("refused: "));
     assert_eq!(ids(&peer["journals"]["exact"]), ["j1"], "a source that applies the veil still answers");

@@ -262,6 +262,7 @@ impl Journals {
             return Ok(json!({"status": "no-source", "source": shown}));
         }
         let src = Connection::open_with_flags(source, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        #[allow(clippy::type_complexity)]
         let rows: std::result::Result<Vec<(String, String, String, Option<String>, f64)>, _> = src
             .prepare("SELECT session, parent, how, node, at FROM session_parents")
             .and_then(|mut s| s.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))?.collect());

@@ -413,7 +413,7 @@ impl Journals {
                     .into_iter()
                     .filter(|p| like(&p.body, &query) || bodies.get(&p.id).is_some_and(|bs| bs.iter().any(|b| like(b, &query))))
                     .collect();
-                found.sort_by(|a, b| (b.ms, b.seq).cmp(&(a.ms, a.seq)));
+                found.sort_by_key(|p| std::cmp::Reverse((p.ms, p.seq)));
                 found.into_iter().skip(q.offset).take(q.limit).collect()
             }
             Some(ids) => {

@@ -22,9 +22,8 @@ use lancedb::DistanceType;
 use serde_json::{Map, Value};
 use std::collections::HashSet;
 
-/// Probes and refine factor of a vector search over an IVF index.
+/// Probes of a vector search over an IVF index.
 pub const NPROBES: usize = 20;
-pub const REFINE: u32 = 0;
 /// How many phrase matches an `$about` ranks, or a sort orders, at most.
 pub const CANDIDATES: usize = 1000;
 const BATCH: usize = 500;
@@ -247,9 +246,6 @@ impl Index {
             .nprobes(NPROBES)?
             .select(Select::columns(&["id", "_distance"]))
             .limit(depth * 3);
-        if REFINE > 0 {
-            q = q.refine_factor(REFINE);
-        }
         if cond != "true" {
             q = q.only_if(cond);
         }

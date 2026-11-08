@@ -196,6 +196,7 @@ fn digest<'a>(parts: impl IntoIterator<Item = &'a str>) -> String {
     h.finalize().iter().map(|b| format!("{b:02x}")).collect()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn row(id: String, title: &str, text: &str, section: &str, plugin: &str, file: &str, heading: &str, tool: &str, verb: &str) -> Map<String, Value> {
     let mut m = Map::new();
     m.insert("id".into(), json!(id));

@@ -16,6 +16,9 @@ use crate::lifecycle::ScopeInfo;
 use crate::tags::{normalise, resolve, Table};
 use crate::{Fail, Op};
 
+/// The (project, scope) of each hit, and the journal's `degraded` block.
+pub type Briefs = (Vec<(String, String)>, Option<Value>);
+
 const SCOPE_ROW_SQL: &str = "SELECT a.id, a.scope, a.status, a.branch, a.worktree, a.created_at, p.name AS project_name, \
      (SELECT COUNT(*) FROM agents a2 JOIN projects p2 ON p2.id = a2.project_id \
       WHERE p2.name = p.name AND a2.scope = a.scope AND a2.created_at <= a.created_at) AS session \
@@ -79,7 +82,7 @@ fn slice<T: Clone>(items: &[T], start: i64, end: Option<i64>) -> Vec<T> {
 
 /// The journal's brief hits as distinct `(project, scope)` in rank order, with its
 /// `degraded` block when it sent one.
-pub fn brief_hits(answer: &Value) -> (Vec<(String, String)>, Option<Value>) {
+pub fn brief_hits(answer: &Value) -> Briefs {
     let mut hits: Vec<&Value> = vec![];
     fn section(v: Option<&Value>) -> Vec<&Value> {
         match v {
@@ -110,7 +113,7 @@ pub fn brief_hits(answer: &Value) -> (Vec<(String, String)>, Option<Value>) {
 
 impl Op {
     /// Ask the journal which scopes' briefs match `query`.
-    fn ask_journal(&self, query: &str, project: Option<&str>, want: usize) -> Result<(Vec<(String, String)>, Option<Value>), String> {
+    fn ask_journal(&self, query: &str, project: Option<&str>, want: usize) -> Result<Briefs, String> {
         let mut filter = json!({"tag": "brief"});
         if let Some(p) = project {
             filter["project"] = json!(p);

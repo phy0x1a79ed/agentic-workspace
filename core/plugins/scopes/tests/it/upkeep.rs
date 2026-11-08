@@ -105,3 +105,11 @@ fn a_project_with_a_create_hook_is_left_alone() {
     assert_eq!((report["removed"].clone(), report["held"].clone()), (json!([]), json!([])));
     assert!(wt.exists());
 }
+
+#[test]
+fn a_peer_may_not_sweep() {
+    let r = rig();
+    let e = r.call("awm_sweep", json!({"dry_run": true}), Some("peer:altair")).unwrap_err();
+    assert_eq!((e.error_class.as_str(), e.message.as_str()), ("PermissionError", "scope_awm_sweep runs on its own node"));
+    assert_eq!(r.call("awm_sweep", json!({"dry_run": true}), None).unwrap()["dry_run"], json!(true));
+}

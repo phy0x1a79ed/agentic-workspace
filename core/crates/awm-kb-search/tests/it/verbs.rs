@@ -5,7 +5,7 @@
 use awm_kb_search::store;
 use awm_plugin_sdk::{Caller, Env, Service};
 use crate::common::*;
-use serde_json::{json, Map, Value};
+use serde_json::{json, Value};
 
 fn env(dir: &std::path::Path) -> Env {
     Env { hub_url: "http://127.0.0.1:1".into(), service: "kb".into(), plugin: "kb".into(), node: HERE.into(), awm_dir: dir.into(), token_file: None }
@@ -90,7 +90,7 @@ async fn sources_lists_fields_default_and_health() {
     ]));
     r.search.refresh().await;
     let out = r.search.sources(None).await;
-    let rows: Map<String, Value> = out["sources"].as_array().unwrap().iter().map(|s| (s["name"].as_str().unwrap().to_string(), s.clone())).collect();
+    let rows: std::collections::BTreeMap<String, Value> = out["sources"].as_array().unwrap().iter().map(|s| (s["name"].as_str().unwrap().to_string(), s.clone())).collect();
     assert_eq!(rows.keys().collect::<Vec<_>>(), ["guide", "journals", "kb"]);
     let j = &rows["journals"];
     assert_eq!((j["kind"].clone(), j["node"].clone(), j["count"].clone(), j["default"].clone()), (json!("journals"), json!(HERE), json!(1), json!(true)));
@@ -158,13 +158,13 @@ async fn a_get_is_logged_with_the_callers_project_and_scope() {
     r.journals.put(&[("j1", doc("Sink", "kitchen sink journal", "2026-03-01T10:00:00Z"))]).await;
     r.search.get(&json!({"source": "journals", "id": "j1", "query": " sink ", "_caller_scope": "awm/redux/search"}), None, None).await.unwrap();
     r.search.get(&json!({"source": "journals", "id": "j1"}), None, None).await.unwrap();
-    let rows = r.search.store().read(|c| store::usage(c)).await.unwrap();
+    let rows = r.search.store().read(store::usage).await.unwrap();
     assert_eq!(Value::Object(rows[0].clone()), json!({"project": "awm", "scope": "redux/search", "query": "sink", "source": "journals", "doc_id": "j1", "node": "local"}));
     assert_eq!(Value::Object(rows[1].clone()), json!({"project": "", "scope": "", "query": "", "source": "journals", "doc_id": "j1", "node": "local"}));
     // A get that finds nothing is still feedback, as the Python logged it first.
     let e = r.search.get(&json!({"source": "nonesuch", "id": "x"}), None, None).await.unwrap_err();
     assert_eq!(e.message, "no source 'nonesuch'");
-    assert_eq!(r.search.store().read(|c| store::usage(c)).await.unwrap().len(), 3);
+    assert_eq!(r.search.store().read(store::usage).await.unwrap().len(), 3);
 }
 
 #[test]

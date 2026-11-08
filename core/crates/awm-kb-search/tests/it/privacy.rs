@@ -122,7 +122,7 @@ async fn a_peer_never_sees_what_a_mark_covers() {
     // Usage: a local get is logged with the caller's scope and query; a peer's relayed get is not.
     r.search.get(&json!({"source": "journals", "id": "j1", "query": "kitchen sink", "_caller_scope": "awm/dev"}), None, None).await.unwrap();
     r.search.get(&json!({"source": "journals", "id": "j1", "_caller_scope": "awm/dev"}), PEER, None).await.unwrap();
-    let rows = r.search.store().read(|c| awm_kb_search::store::usage(c)).await.unwrap();
+    let rows = r.search.store().read(awm_kb_search::store::usage).await.unwrap();
     let rows: Vec<Value> = rows.into_iter().map(Value::Object).filter(|u| u["doc_id"] == "j1").collect();
     assert_eq!(rows, [json!({"project": "awm", "scope": "dev", "query": "kitchen sink", "source": "journals", "doc_id": "j1", "node": "local"})]);
 
