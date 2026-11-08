@@ -116,9 +116,13 @@ pub struct Seat {
     pub missed: i64,
     /// The agent's session name, `seat:<app>/<server>/<chat>`.
     pub name: String,
+    /// The seat's Remote Control switch, which every agent it starts follows.
+    pub remote_control: bool,
+    /// The live agent's claude.ai link, while the switch is on.
+    pub rc_url: String,
 }
 
-const COLS: &str = "account, channel_id, channel_name, kind, server, slug, node, scope, level, state, job, job_node, adopted, since, last_message, done_at, deadline, previous, breaker, held, replied, missed, name";
+const COLS: &str = "account, channel_id, channel_name, kind, server, slug, node, scope, level, state, job, job_node, adopted, since, last_message, done_at, deadline, previous, breaker, held, replied, missed, name, remote_control, rc_url";
 
 impl Seat {
     fn from_row(r: &Row) -> rusqlite::Result<Self> {
@@ -148,11 +152,36 @@ impl Seat {
             replied: r.get::<_, i64>(20)? != 0,
             missed: r.get(21)?,
             name: r.get(22)?,
+            remote_control: r.get::<_, i64>(23)? != 0,
+            rc_url: r.get(24)?,
         })
     }
 
     pub fn key(&self) -> (String, String) {
         (self.account.clone(), self.channel_id.clone())
+    }
+
+    /// The seat's id outside social: `<account>/<channel_id>`, which holds no other `/`.
+    pub fn id(&self) -> String {
+        format!("{}/{}", self.account, self.channel_id)
+    }
+
+    /// The fields a `social/seats` event reports, to tell whether a save changed one.
+    fn evented(&self) -> (&str, &str, &str, bool, &str, &str) {
+        (self.name.as_str(), self.state.as_str(), self.node.as_str(), self.remote_control, self.job.as_str(), self.rc_url.as_str())
+    }
+
+    /// The `social/seats` event of this row.
+    pub fn event(&self, ts: &str) -> Value {
+        let mut e = json!({"seat": self.id(), "label": self.name, "state": self.state.as_str(), "remote_control": self.remote_control, "node": self.node});
+        if !self.job.is_empty() {
+            e["job"] = json!(self.job);
+        }
+        if !self.rc_url.is_empty() {
+            e["rc_url"] = json!(self.rc_url);
+        }
+        e["ts"] = json!(ts);
+        e
     }
 
     /// What `seats` shows of the seat.
@@ -162,6 +191,7 @@ impl Seat {
             "node": self.node, "level": self.level, "scope": self.scope, "adopted": self.adopted,
             "queued": queued, "done": self.done_at > 0.0, "held": if self.held.is_empty() || self.held == "admitted" { Value::Null } else { json!(self.held) },
             "breaker": if self.breaker.hold_until > 0.0 { json!({"hold_until": self.breaker.hold_until}) } else { Value::Null },
+            "id": self.id(), "remote_control": self.remote_control, "rc_url": self.rc_url,
         })
     }
 }
@@ -176,20 +206,24 @@ pub struct Queued {
     pub briefed_to: String,
 }
 
-fn save(c: &Connection, s: &Seat) -> rusqlite::Result<()> {
+/// Write the row. True when it is new or a field its event reports changed.
+fn save(c: &Connection, s: &Seat) -> rusqlite::Result<bool> {
+    let before = c.query_row(&format!("SELECT {COLS} FROM seat_registry WHERE account = ?1 AND channel_id = ?2"), params![s.account, s.channel_id], Seat::from_row).optional()?;
     let prev = serde_json::to_string(&s.previous).unwrap_or_default();
     c.execute(
-        &format!("INSERT INTO seat_registry ({COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23) \
+        &format!("INSERT INTO seat_registry ({COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25) \
          ON CONFLICT (account, channel_id) DO UPDATE SET channel_name = excluded.channel_name, kind = excluded.kind, server = excluded.server, slug = excluded.slug, \
          node = excluded.node, scope = excluded.scope, level = excluded.level, state = excluded.state, job = excluded.job, job_node = excluded.job_node, \
          adopted = excluded.adopted, since = excluded.since, last_message = excluded.last_message, done_at = excluded.done_at, deadline = excluded.deadline, \
-         previous = excluded.previous, breaker = excluded.breaker, held = excluded.held, replied = excluded.replied, missed = excluded.missed, name = excluded.name"),
+         previous = excluded.previous, breaker = excluded.breaker, held = excluded.held, replied = excluded.replied, missed = excluded.missed, name = excluded.name, \
+         remote_control = excluded.remote_control, rc_url = excluded.rc_url"),
         params![
             s.account, s.channel_id, s.channel_name, s.kind, s.server, s.slug, s.node, s.scope, s.level, s.state.as_str(), s.job, s.job_node, s.adopted as i64,
-            s.since, s.last_message, s.done_at, s.deadline, prev, serde_json::to_string(&s.breaker).unwrap_or_default(), s.held, s.replied as i64, s.missed, s.name
+            s.since, s.last_message, s.done_at, s.deadline, prev, serde_json::to_string(&s.breaker).unwrap_or_default(), s.held, s.replied as i64, s.missed, s.name,
+            s.remote_control as i64, s.rc_url
         ],
     )?;
-    Ok(())
+    Ok(before.is_none_or(|b| b.evented() != s.evented()))
 }
 
 /// The seat tables, over the plugin's `Db`.
@@ -206,10 +240,15 @@ impl Store {
         self.0.run(|c| c.prepare(&format!("SELECT {COLS} FROM seat_registry ORDER BY account, channel_id")).and_then(|mut s| s.query_map([], Seat::from_row)?.collect()).unwrap_or_default()).await
     }
 
-    pub async fn save(&self, s: &Seat) {
+    /// Write the row. True when its `social/seats` event changed.
+    pub async fn save(&self, s: &Seat) -> bool {
         let s = s.clone();
-        if let Err(e) = self.0.run(move |c| save(c, &s)).await {
-            tracing::warn!("seat save failed: {e}");
+        match self.0.run(move |c| save(c, &s)).await {
+            Ok(changed) => changed,
+            Err(e) => {
+                tracing::warn!("seat save failed: {e}");
+                false
+            }
         }
     }
 

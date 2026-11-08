@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use awm_plugin_sdk::push::{self, Outcome};
-use awm_plugin_sdk::{CallOpts, Hub};
+use awm_plugin_sdk::{CallOpts, Context, Hub};
 use serde_json::{json, Value};
 
 use super::{Started, World};
@@ -16,6 +16,8 @@ pub struct Live {
     pub hub: Hub,
     pub here: String,
     pub conns: Conns,
+    /// The service's context, for `social/seats`. None in a test.
+    pub ctx: Option<Context>,
 }
 
 impl Live {
@@ -94,5 +96,25 @@ impl World for Live {
 
     async fn tag(&self, name: &str, description: &str) {
         let _ = self.hub.call_with("journal", "tag_add", json!({"name": name, "description": description}), &self.opts(&self.here, 30)).await;
+    }
+
+    fn emit(&self, event: Value) {
+        if let Some(ctx) = &self.ctx {
+            ctx.emit("seats", event);
+        }
+    }
+
+    async fn remote_control(&self, node: &str, job: &str, on: bool, name: &str) -> Result<Option<String>, String> {
+        match self.hub.call_with("reflection", "remote_control", json!({"job": job, "on": on, "name": name}), &self.opts(node, 60)).await {
+            Ok(v) if v.get("ok") != Some(&json!(false)) => Ok(v.get("rc_url").and_then(Value::as_str).filter(|u| !u.is_empty()).map(str::to_string)),
+            Ok(v) => Err(reason(&v)),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+
+    async fn rc_url(&self, node: &str, job: &str) -> Option<String> {
+        let v = self.hub.call_with("reflection", "list_other", json!({}), &self.opts(node, 30)).await.ok()?;
+        let row = v.get("sessions")?.as_array()?.iter().find(|r| r.get("job").and_then(Value::as_str) == Some(job))?;
+        row.get("rc_url").and_then(Value::as_str).filter(|u| !u.is_empty()).map(str::to_string)
     }
 }

@@ -15,7 +15,7 @@ fn norm(v: &Value) -> Value {
 
 /// The surface changes the port plan lists; every other verb is the Python's byte for byte.
 const REMOVED: [&str; 10] = ["keepers", "keep_reset", "keep_adopt", "bucket_sites", "bucket_versions", "bucket_restore", "bucket_share", "bucket_shares", "bucket_unshare", "bucket_resolve"];
-const ADDED: [&str; 5] = ["mark_seat_done", "forward", "seat_reset", "seat_adopt", "seat_admit"];
+const ADDED: [&str; 6] = ["mark_seat_done", "forward", "seat_reset", "seat_adopt", "seat_admit", "seat_remote_control"];
 const REWORDED: [&str; 10] = ["send", "react", "seats", "mount", "search", "buckets", "bucket_ls", "bucket_get", "bucket_mv", "bucket_search"];
 
 #[test]
@@ -26,7 +26,9 @@ fn the_surface_is_the_python_one_but_the_listed_changes() {
     let (g, o) = (names(&golden), names(&ours));
     assert_eq!(g.difference(&o).cloned().collect::<BTreeSet<_>>(), REMOVED.iter().map(|s| s.to_string()).collect());
     assert_eq!(o.difference(&g).cloned().collect::<BTreeSet<_>>(), ADDED.iter().map(|s| s.to_string()).collect());
-    assert_eq!((ours["emitters"].clone(), ours["sessions"].clone()), (golden["emitters"].clone(), golden["sessions"].clone()));
+    let mut emitters = golden["emitters"].as_array().unwrap().clone();
+    emitters.push(json!({"topic": "seats"}));
+    assert_eq!((ours["emitters"].clone(), ours["sessions"].clone()), (json!(emitters), golden["sessions"].clone()));
     for f in golden["functions"].as_array().unwrap() {
         let name = f["name"].as_str().unwrap();
         let Some(mine) = ours["functions"].as_array().unwrap().iter().find(|x| x["name"] == name) else { continue };
@@ -66,7 +68,7 @@ async fn test_app() -> std::sync::Arc<crate::app::Social> {
     let db = crate::db::Db::open(&tmp.join("social.db")).unwrap();
     let hub = awm_plugin_sdk::Hub::new("http://127.0.0.1:1", None);
     let conns: crate::app::Conns = Default::default();
-    let world = std::sync::Arc::new(crate::seats::world::Live { hub: hub.clone(), here: "testnode".into(), conns: conns.clone() });
+    let world = std::sync::Arc::new(crate::seats::world::Live { hub: hub.clone(), here: "testnode".into(), conns: conns.clone(), ctx: None });
     let seats = crate::seats::Seats::new(db.clone(), Default::default(), vec![], world);
     crate::app::Social::new("testnode".into(), hub, db, vec![], conns, vec![], seats)
 }
@@ -241,6 +243,23 @@ mod verbs {
         r.app.seats.store.grant_read(("opal", "C0TEST"), ("opal", "D0TEST"), crate::db::now() + 60.0).await;
         assert_eq!(r.call("history", "j1", "cooperative", json!({"account": "opal"})).await.unwrap()["count"], 2);
         assert_eq!(r.call("history", "x", "trusted", json!({"account": "opal"})).await.unwrap()["count"], 2, "an unbound trusted read");
+    }
+
+    #[test]
+    fn only_operations_on_this_node_flips_remote_control() {
+        use crate::app::switch_caller;
+        assert!(switch_caller(Some("operations"), false));
+        assert!(!switch_caller(Some("operations"), true), "a peer");
+        assert!(!switch_caller(None, false), "the CLI");
+        assert!(!switch_caller(Some("trilium"), false), "another plugin");
+    }
+
+    #[tokio::test]
+    async fn the_cli_and_a_peer_cannot_flip_remote_control() {
+        let r = rig().await;
+        let args = json!({"seat": "opal/D0OPER", "on": true});
+        assert_eq!(r.svc.call("seat_remote_control", args.clone()).await.unwrap_err().error_class, "PermissionError");
+        assert_eq!(r.call("seat_remote_control", "op", "trusted", args).await.unwrap_err().error_class, "PermissionError");
     }
 
     #[tokio::test]

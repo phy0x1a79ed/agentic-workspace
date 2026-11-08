@@ -1,8 +1,8 @@
 //! `social.db` (`dao.py`): operators, a bot's synced history, mounts, quiet threads, and the
 //! seats' tables.
 //!
-//! The Python schema is v8. v9 adds the seat tables and nothing else: the keeper's tables and
-//! `social_accounts` stay, unread. Every query runs on the blocking pool, off the async loop.
+//! The Python schema is v8. v9 adds the seat tables and v10 the seats' Remote Control columns,
+//! and nothing else: the keeper's tables and `social_accounts` stay, unread. Every query runs on the blocking pool, off the async loop.
 
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
 
-pub const SCHEMA_VERSION: i64 = 9;
+pub const SCHEMA_VERSION: i64 = 10;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS social_accounts (
@@ -170,6 +170,12 @@ CREATE TABLE IF NOT EXISTS seat_cursor (
 );
 ";
 
+/// v10: each seat's Remote Control switch, and its live session's claude.ai link.
+pub const SEATS_V10: &str = "
+ALTER TABLE seat_registry ADD COLUMN remote_control INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE seat_registry ADD COLUMN rc_url TEXT NOT NULL DEFAULT '';
+";
+
 /// The Python migrations, kept so a DB of any old version opens. Each is additive except
 /// 1 -> 2, which dropped a table v1 had and nothing since reads.
 fn migration(from: i64) -> String {
@@ -183,6 +189,7 @@ fn migration(from: i64) -> String {
         7 => QUIET.into(),
         // Every message the Python saw counts as routed, so the first resync replays none.
         8 => format!("{SEATS}INSERT OR IGNORE INTO seat_routed (account, channel_id, message_id, routed_at) SELECT account, channel_id, message_id, 0 FROM social_history;\n"),
+        9 => SEATS_V10.into(),
         _ => String::new(),
     }
 }
@@ -207,7 +214,7 @@ fn tables(conn: &Connection) -> rusqlite::Result<i64> {
     conn.query_row("SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'", [], |r| r.get(0))
 }
 
-/// Open `social.db`, creating it at v9 or carrying an older one forward by its migrations.
+/// Open `social.db`, creating it at the current version or carrying an older one forward by its migrations.
 pub fn open_conn(path: &Path) -> anyhow::Result<Connection> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
@@ -218,7 +225,7 @@ pub fn open_conn(path: &Path) -> anyhow::Result<Connection> {
     conn.pragma_update(None, "foreign_keys", "ON")?;
     match version(&conn)? {
         None if tables(&conn)? == 0 => {
-            conn.execute_batch(&format!("{SCHEMA}{HISTORY}{MOUNTS}{KEEPERS_V5}{KEEPER_STATE}{QUIET}{SEATS}"))?;
+            conn.execute_batch(&format!("{SCHEMA}{HISTORY}{MOUNTS}{KEEPERS_V5}{KEEPER_STATE}{QUIET}{SEATS}{SEATS_V10}"))?;
             conn.execute_batch("ALTER TABLE social_keepers ADD COLUMN seen_at TEXT NOT NULL DEFAULT '';")?;
             conn.execute_batch("CREATE TABLE schema_version (version INTEGER NOT NULL);")?;
             conn.execute("INSERT INTO schema_version (version) VALUES (?1)", [SCHEMA_VERSION])?;
@@ -554,11 +561,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_fresh_db_is_v9_and_a_v8_db_gains_only_the_seat_tables() {
+    fn a_fresh_db_is_current_and_a_v8_db_gains_only_the_seat_tables() {
         let tmp = tempfile::tempdir().unwrap();
         let fresh = tmp.path().join("fresh.db");
         let c = open_conn(&fresh).unwrap();
-        assert_eq!(version(&c).unwrap(), Some(9));
+        assert_eq!(version(&c).unwrap(), Some(SCHEMA_VERSION));
 
         let old = tmp.path().join("old.db");
         {
@@ -570,13 +577,29 @@ mod tests {
         }
         let before: Vec<String> = Connection::open(&old).unwrap().prepare("SELECT name FROM sqlite_master WHERE type = 'table'").unwrap().query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect();
         let c = open_conn(&old).unwrap();
-        assert_eq!(version(&c).unwrap(), Some(9));
+        assert_eq!(version(&c).unwrap(), Some(SCHEMA_VERSION));
         let after: Vec<String> = c.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").unwrap().query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect();
         assert!(before.iter().all(|t| after.contains(t)), "no table dropped");
         assert_eq!(c.query_row("SELECT count(*) FROM social_mounts", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
         assert_eq!(c.query_row("SELECT count(*) FROM seat_routed WHERE message_id = 'm1'", [], |r| r.get::<_, i64>(0)).unwrap(), 1, "seen messages are routed");
         drop(c);
-        assert_eq!(version(&open_conn(&old).unwrap()).unwrap(), Some(9), "reopening is a no-op");
+        assert_eq!(version(&open_conn(&old).unwrap()).unwrap(), Some(SCHEMA_VERSION), "reopening is a no-op");
+    }
+
+    #[test]
+    fn a_v9_seat_gains_the_switch_off_and_no_link() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("v9.db");
+        {
+            let c = Connection::open(&p).unwrap();
+            c.execute_batch(&format!("{SCHEMA}{HISTORY}{MOUNTS}{KEEPERS_V5}{KEEPER_STATE}{QUIET}{SEATS}")).unwrap();
+            c.execute_batch("ALTER TABLE social_keepers ADD COLUMN seen_at TEXT NOT NULL DEFAULT '';CREATE TABLE schema_version (version INTEGER NOT NULL);INSERT INTO schema_version VALUES (9);").unwrap();
+            c.execute("INSERT INTO seat_registry (account, channel_id, state, job) VALUES ('a', 'c', 'occupied', 'j')", []).unwrap();
+        }
+        let c = open_conn(&p).unwrap();
+        assert_eq!(version(&c).unwrap(), Some(SCHEMA_VERSION));
+        let (rc, url, state): (i64, String, String) = c.query_row("SELECT remote_control, rc_url, state FROM seat_registry", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap();
+        assert_eq!((rc, url.as_str(), state.as_str()), (0, "", "occupied"));
     }
 
     #[test]

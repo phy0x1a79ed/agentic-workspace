@@ -2,7 +2,7 @@
 
 ## Purpose & Contents
 
-This file holds the approved port plan for social and its seats component, from the comms group's plan (task CWPYAtyb), approved by Tony on 2026-11-06. It names only what the Python does not make obvious. The Python at release 49232bf9 is the reference for everything kept. The rules every comms port follows are in `comms.md`.
+This file holds the approved port plan for social and its seats component, from the comms group's plan (task CWPYAtyb), approved by Tony on 2026-11-06. The Remote Control switch comes from the port-comms items of `docs/trilium-design/CONTRACT.md`, approved by plugin-redux/interview on 2026-11-07. It names only what the Python does not make obvious. The Python at release 49232bf9 is the reference for everything kept. The rules every comms port follows are in `comms.md`.
 
 ## Plan
 
@@ -87,9 +87,23 @@ Tests:
 
 Gotchas: save the deadlines as timestamps so they survive a restart. Until knowledge's scope create hook lands, `ensure_seat` refuses a seat whose folder is missing and files `request_human`, and the message stays queued.
 
+### Remote Control switch
+
+Ops on the vault shows each seat with a Remote Control switch (`fleet.md` R147 item 7). The switch belongs to the seat, holds across empty spells and restarts, and starts off.
+
+- **State.** Schema v10 adds `remote_control` and `rc_url` to `seat_registry`. Python social stops at v8 and never read the seat tables, so a rollback is unchanged.
+- **Seat id.** `<account>/<channel_id>`, the table's key. The session name is the seat's `label`, because a chat rename changes it.
+- **Verb.** `seat_remote_control {seat, on}` has no MCP tool. Only operations on this node may call it. On a seat whose agent was started or is up, it also calls reflection `remote_control` with the session name, each `/` written as `-` (`sessions.md` R146). A failed live call keeps the switch, and the next start carries it.
+- **Start.** `start_other` passes the seat's switch.
+- **Adoption.** Adoption leaves the live session alone. An occupied seat records its switch as on, because every seat session before the switch started with Remote Control on.
+- **Link.** `rc_url` comes from reflection's answer or the job's `list_other` row. It is empty until harness adds `rc_url` to those rows.
+- **Event.** `social/seats` carries `{seat, label, state, remote_control, node, job?, rc_url?, ts}`. The seat's save emits it when one of those fields changed. No event goes out at boot, so a subscriber reads `social seats` once when it connects.
+
+**CAUTION** A start emits `starting` twice: once before reflection answers, and once with the job id.
+
 ### Land
 
-It lands after awm-store, the alcor drop-in, reflection's `probe`, `gone` and transcript path. Ansible owns alcor's `social.toml` (`mira_copy` with `social_for_alcor`, and `discord_seats` rewriting `node =` lines). A cloud change in the same batch therefore does three things:
+It lands after awm-store, the alcor drop-in, reflection's `probe`, `gone` and transcript path, and after ops' first land, which carries awm-statecheck. Ansible owns alcor's `social.toml` (`mira_copy` with `social_for_alcor`, and `discord_seats` rewriting `node =` lines). A cloud change in the same batch therefore does three things:
 - emits `[seats]` with `paused = true`, plus `[[seats.rule]]` and `[[seats.chat]]`;
 - backs up the file;
 - retires `discord_seats`.
@@ -101,6 +115,8 @@ Check:
 2. Tony's live DM test through his adopted seat: it reaches exactly one job, and the reply comes back.
 3. `awm-statecheck check`, gated on `social_history` row counts per chat, which must not drop.
 4. Only social restarted.
+5. Each occupied adopted row shows `remote_control: true`, and its session is untouched. Each empty row shows `false`.
+6. A `seat_remote_control` from the CLI is refused. The DM test of step 2 shows the seat's events on `awm services listen social seats`.
 
 From the cutover on, down notices go to Tony's Discord DM. #notifications was only the Python code's default.
 

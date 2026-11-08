@@ -1,6 +1,7 @@
 # What awm-statecheck copies to .pre-rust/ before social's first Rust start. Paths resolve
 # against AWM_DIR (/var/lib/awm/social on alcor). The Rust start opens social.db v8 in place
-# and adds the v9 seat tables only. social.toml is Ansible's: social reads it and never writes.
+# and adds the seat tables only (v9, and their v10 columns). social.toml is Ansible's: social
+# reads it and never writes.
 dirs = ["services/social"]
 
 [[additive]]

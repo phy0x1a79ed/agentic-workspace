@@ -68,6 +68,35 @@ pub trait World: Send + Sync {
     async fn ask(&self, kind: &str, text: &str);
     /// `journal tag_add`, for a person's `user:<slug>` tag.
     async fn tag(&self, name: &str, description: &str);
+    /// Publish one `social/seats` event.
+    fn emit(&self, _event: Value) {}
+    /// `reflection remote_control` on `job`: its claude.ai link when the answer carries one, or why it failed.
+    async fn remote_control(&self, _node: &str, _job: &str, _on: bool, _name: &str) -> Result<Option<String>, String> {
+        Err("no reflection".into())
+    }
+    /// The live job's claude.ai link, from its `list_other` row.
+    async fn rc_url(&self, _node: &str, _job: &str) -> Option<String> {
+        None
+    }
+}
+
+/// What a switch did to the seat's live session.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Live {
+    /// The seat has no live session to switch.
+    None,
+    Applied,
+    Failed(String),
+}
+
+impl Live {
+    pub fn as_str(&self) -> String {
+        match self {
+            Live::None => "none".into(),
+            Live::Applied => "applied".into(),
+            Live::Failed(why) => format!("failed: {why}"),
+        }
+    }
 }
 
 /// What became of one inbound message.
@@ -115,6 +144,18 @@ impl Seats {
         Arc::new(Self { store: Store(db.clone()), db, cfg, accounts, world, locks: Mutex::new(HashMap::new()) })
     }
 
+    /// Write the row, and publish its `social/seats` event when the save changed one.
+    async fn save(&self, s: &Seat) {
+        if self.store.save(s).await {
+            self.world.emit(s.event(&crate::db::now_iso()));
+        }
+    }
+
+    /// The session name a seat's agent gets: Remote Control writes each `/` as `-` (R146).
+    fn rc_name(s: &Seat) -> String {
+        s.name.replace('/', "-")
+    }
+
     fn lock(&self, key: &Key) -> Arc<tokio::sync::Mutex<()>> {
         self.locks.lock().unwrap().entry(key.clone()).or_default().clone()
     }
@@ -140,7 +181,11 @@ impl Seats {
             if (!m.channel_name.is_empty() && m.channel_name != s.channel_name) || (!m.server.is_empty() && m.server != s.server) {
                 s.channel_name = if m.channel_name.is_empty() { s.channel_name } else { m.channel_name.clone() };
                 s.server = if m.server.is_empty() { s.server } else { m.server.clone() };
-                self.store.save(&s).await;
+                if s.kind != "dm" {
+                    let kind = if s.kind == "group" { ChatKind::Group } else { ChatKind::Channel };
+                    s.name = Place { platform: self.platform(&s.account), server: s.server.clone(), kind, chat_name: s.channel_name.clone(), person: String::new() }.session_name();
+                }
+                self.save(&s).await;
             }
             return Some((s, false));
         }
@@ -160,7 +205,7 @@ impl Seats {
             name: place.session_name(),
             ..Default::default()
         };
-        self.store.save(&seat).await;
+        self.save(&seat).await;
         Some((seat, true))
     }
 
@@ -173,7 +218,7 @@ impl Seats {
         }
         if self.cfg.paused && seat.state == State::Empty {
             seat.missed += 1;
-            self.store.save(&seat).await;
+            self.save(&seat).await;
             return Routed::Seat;
         }
         let line = line::push_line(m, &seat.level);
@@ -182,11 +227,11 @@ impl Seats {
         seat.done_at = 0.0;
         if m.outside && seat.held != "admitted" && !seat.held.starts_with("outside") {
             seat.held = format!("outside:{}", if m.sender_name.is_empty() { &m.sender_id } else { &m.sender_name });
-            self.store.save(&seat).await;
+            self.save(&seat).await;
             self.world.ask("blocked", &format!("A sender outside the lab wrote in the seat {}. Its messages wait until `social seat_admit account={} channel={}`.", label(&seat), seat.account, seat.channel_id)).await;
             return Routed::Seat;
         }
-        self.store.save(&seat).await;
+        self.save(&seat).await;
         if new && seat.kind == "dm" {
             self.world.tag(&format!("user:{}", seat.slug), &format!("journals of the seat agent for {}", seat.slug)).await;
             self.world.ask("review", &format!("A new DM seat opened: {} on {}. Its agent starts now.", label(&seat), seat.node)).await;
@@ -257,7 +302,7 @@ impl Seats {
                     seat.state = State::Retiring;
                     seat.deadline = now + RETIRE_S;
                     seat.replied = false;
-                    self.store.save(&seat).await;
+                    self.save(&seat).await;
                     if self.world.push(&seat.job_node, &seat.job, RETIRE_LINE).await == Outcome::Gone {
                         self.vacate(&mut seat).await;
                     }
@@ -279,7 +324,7 @@ impl Seats {
                 }
                 if !seat.replied {
                     seat.replied = true;
-                    self.store.save(&seat).await;
+                    self.save(&seat).await;
                     let first = &pending[0];
                     let thread = if first.thread_id.is_empty() { None } else { Some(first.thread_id.as_str()) };
                     self.world.say(&seat.account, &seat.channel_id, thread, SHIFT_REPLY).await;
@@ -303,7 +348,10 @@ impl Seats {
         self.store.deliver_briefed(&seat.account, &seat.channel_id, &seat.job, now).await;
         seat.state = State::Occupied;
         seat.since = now;
-        self.store.save(&seat).await;
+        if seat.remote_control {
+            seat.rc_url = self.world.rc_url(&seat.job_node, &seat.job).await.unwrap_or_default();
+        }
+        self.save(&seat).await;
         true
     }
 
@@ -315,10 +363,11 @@ impl Seats {
         }
         seat.state = State::Empty;
         seat.job.clear();
+        seat.rc_url.clear();
         seat.adopted = false;
         seat.done_at = 0.0;
         self.store.unbrief(&seat.account, &seat.channel_id).await;
-        self.store.save(seat).await;
+        self.save(seat).await;
     }
 
     async fn unbind(&self, seat: &Seat) {
@@ -342,7 +391,7 @@ impl Seats {
         seat.state = State::Empty;
         seat.job.clear();
         let tripped = seat.breaker.fail(now);
-        self.store.save(&seat).await;
+        self.save(&seat).await;
         if tripped {
             self.notice(&format!(
                 "the seat {} could not start an agent 4 times in an hour ({why}). It holds its messages for 6 hours, or until `social seat_reset account={} channel={}`.",
@@ -361,7 +410,7 @@ impl Seats {
         if self.world.scope_ready(&seat.node, &project, &seat.scope).await == Some(false) {
             if seat.held != "scope" {
                 seat.held = "scope".into();
-                self.store.save(&seat).await;
+                self.save(&seat).await;
                 self.world.ask("blocked", &format!("The seat {} has no scope {project}/{} on {}. Create it, then run `social seat_reset account={} channel={}`.", label(&seat), seat.scope, seat.node, seat.account, seat.channel_id)).await;
             }
             return;
@@ -397,19 +446,20 @@ impl Seats {
         };
         let spec = json!({
             "project": project, "scope": seat.scope, "name": seat.name, "prompt": line::brief(&facts, &lines),
-            "trust": seat.level, "model": self.cfg.model, "effort": self.cfg.effort, "remote_control": true,
+            "trust": seat.level, "model": self.cfg.model, "effort": self.cfg.effort, "remote_control": seat.remote_control,
         });
         let ids: Vec<i64> = pending.iter().map(|q| q.id).collect();
         seat.state = State::Starting;
         seat.since = now;
         seat.deadline = now + UP_S;
         seat.job.clear();
+        seat.rc_url.clear();
         seat.job_node = seat.node.clone();
         seat.replied = false;
         if seat.held == "scope" {
             seat.held.clear();
         }
-        self.store.save(&seat).await;
+        self.save(&seat).await;
         self.store.brief_to(ids.clone(), "starting").await;
         match self.world.start(&seat.node, spec).await {
             Started::Job(job) => {
@@ -417,7 +467,7 @@ impl Seats {
                 if let Some(p) = previous {
                     seat.previous = p;
                 }
-                self.store.save(&seat).await;
+                self.save(&seat).await;
                 self.store.brief_to(ids, &job).await;
                 let _ = self
                     .db
@@ -435,7 +485,7 @@ impl Seats {
                     back.replied = true;
                     self.store.unbrief(&back.account, &back.channel_id).await;
                     back.breaker.fail(now);
-                    self.store.save(&back).await;
+                    self.save(&back).await;
                     return;
                 }
                 self.failed_start(seat, &why).await;
@@ -519,7 +569,7 @@ impl Seats {
         for mut s in self.store.of_job(node, job).await {
             if matches!(s.state, State::Occupied | State::Starting) {
                 s.done_at = now;
-                self.store.save(&s).await;
+                self.save(&s).await;
                 out.push(s);
             }
         }
@@ -532,7 +582,7 @@ impl Seats {
         if s.held == "scope" {
             s.held.clear();
         }
-        self.store.save(&s).await;
+        self.save(&s).await;
         self.drive(&s.key(), None).await;
         self.store.get(account, channel).await
     }
@@ -540,7 +590,7 @@ impl Seats {
     pub async fn admit(self: &Arc<Self>, account: &str, channel: &str) -> Option<Seat> {
         let mut s = self.store.get(account, channel).await?;
         s.held = "admitted".into();
-        self.store.save(&s).await;
+        self.save(&s).await;
         self.drive(&s.key(), None).await;
         self.store.get(account, channel).await
     }
@@ -563,7 +613,10 @@ impl Seats {
         seat.adopted = true;
         seat.since = now;
         seat.done_at = 0.0;
-        self.store.save(&seat).await;
+        // Every seat session so far started with Remote Control on, and adoption leaves it so.
+        seat.remote_control = true;
+        seat.rc_url = self.world.rc_url(node, job).await.unwrap_or_default();
+        self.save(&seat).await;
         self.store.deliver_briefed(&seat.account, &seat.channel_id, job, now).await;
         let name = if session_name.is_empty() { seat.name.clone() } else { session_name.to_string() };
         let _ = self.db.mount(Mount { account: seat.account.clone(), channel_id: seat.channel_id.clone(), channel_name: seat.channel_name.clone(), node: node.into(), job: job.into(), session_name: name, mounted_at: String::new() }).await;
@@ -577,8 +630,9 @@ impl Seats {
                 s.previous = Previous { job: s.job.clone(), node: s.job_node.clone() };
                 s.state = State::Empty;
                 s.job.clear();
+                s.rc_url.clear();
                 s.adopted = false;
-                self.store.save(&s).await;
+                self.save(&s).await;
             }
         }
     }
@@ -591,7 +645,7 @@ impl Seats {
         let mut t = target;
         t.last_message = now;
         t.done_at = 0.0;
-        self.store.save(&t).await;
+        self.save(&t).await;
         let me = self.clone();
         let key = t.key();
         tokio::spawn(async move { me.drive(&key, None).await });
@@ -629,8 +683,42 @@ impl Seats {
         self.notice(&format!("the seats are on again. These chats got messages while they were paused, and nobody answered them:\n{}", lines.join("\n"))).await;
         for mut s in missed {
             s.missed = 0;
-            self.store.save(&s).await;
+            self.save(&s).await;
         }
+    }
+
+    /// Set the seat's Remote Control switch, and switch its live session too.
+    pub async fn set_remote_control(&self, account: &str, channel: &str, on: bool) -> Option<(Seat, Live)> {
+        let key = (account.to_string(), channel.to_string());
+        let lock = self.lock(&key);
+        let _held = lock.lock().await;
+        let mut seat = self.store.get(account, channel).await?;
+        seat.remote_control = on;
+        if !on {
+            seat.rc_url.clear();
+        }
+        self.save(&seat).await;
+        let live_job = !seat.job.is_empty() && matches!(seat.state, State::Starting | State::Occupied);
+        if !live_job {
+            return Some((seat, Live::None));
+        }
+        let live = match self.world.remote_control(&seat.job_node, &seat.job, on, &Self::rc_name(&seat)).await {
+            Ok(url) => {
+                if on {
+                    seat.rc_url = match url {
+                        Some(u) => u,
+                        None => self.world.rc_url(&seat.job_node, &seat.job).await.unwrap_or_default(),
+                    };
+                    self.save(&seat).await;
+                }
+                Live::Applied
+            }
+            Err(why) => {
+                tracing::info!("seat {}: Remote Control {} for {} failed: {why}", label(&seat), if on { "on" } else { "off" }, seat.job);
+                Live::Failed(why)
+            }
+        };
+        Some((seat, live))
     }
 
     /// The pending lines of a seat, for `seats`.

@@ -34,6 +34,10 @@ struct W {
     reacts: Vec<String>,
     said: Vec<(String, String)>,
     asked: Vec<(String, String)>,
+    events: Vec<Value>,
+    /// Each `remote_control` call: job, on, name.
+    switched: Vec<(String, bool, String)>,
+    switch_fails: bool,
 }
 
 #[derive(Clone, Default)]
@@ -125,6 +129,20 @@ impl World for Fake {
         self.w().asked.push((kind.into(), text.into()));
     }
     async fn tag(&self, _n: &str, _d: &str) {}
+    fn emit(&self, event: Value) {
+        self.w().events.push(event);
+    }
+    async fn remote_control(&self, _node: &str, job: &str, on: bool, name: &str) -> Result<Option<String>, String> {
+        let mut w = self.w();
+        if w.switch_fails {
+            return Err("no such session".into());
+        }
+        w.switched.push((job.into(), on, name.into()));
+        Ok(on.then(|| format!("https://claude.ai/code/{job}")))
+    }
+    async fn rc_url(&self, _node: &str, job: &str) -> Option<String> {
+        self.w().up.contains(job).then(|| format!("https://claude.ai/code/{job}"))
+    }
 }
 
 fn cfg(paused: bool) -> SeatsConfig {
@@ -539,4 +557,98 @@ async fn no_line_is_lost_or_doubled_under_faults() {
         got.sort();
         assert_eq!(got, sent, "every line once");
     }
+}
+
+// -- the Remote Control switch and the social/seats event (trilium CONTRACT.md) --
+
+#[tokio::test]
+async fn a_seat_starts_off_and_its_agent_follows_the_switch() {
+    let mut t = T::new(false);
+    t.send("first").await;
+    assert_eq!(t.world.w().specs[0]["remote_control"], false, "a seat starts with Remote Control off");
+    let s = t.seat().await;
+    assert_eq!((s.state, s.remote_control, s.rc_url.as_str()), (State::Occupied, false, ""));
+
+    let (s, live) = t.seats.set_remote_control("opal", "D0TEST", true).await.unwrap();
+    assert_eq!(live, Live::Applied);
+    assert_eq!(t.world.w().switched, [("job-1".to_string(), true, "seat:slack-dm-tester".to_string())], "the session name with each / as -");
+    assert_eq!(s.rc_url, "https://claude.ai/code/job-1");
+    assert_eq!(t.seat().await.rc_url, "https://claude.ai/code/job-1");
+
+    t.seats.set_remote_control("opal", "D0TEST", false).await.unwrap();
+    assert_eq!(t.seat().await.rc_url, "", "off clears the link");
+    t.seats.set_remote_control("opal", "D0TEST", true).await.unwrap();
+
+    t.world.w().up.clear();
+    t.tick().await;
+    let s = t.seat().await;
+    assert_eq!((s.state, s.remote_control, s.rc_url.as_str()), (State::Empty, true, ""), "the switch holds across an empty spell");
+    t.send("again").await;
+    assert_eq!(t.world.w().specs.last().unwrap()["remote_control"], true, "the next agent starts with it");
+    assert_eq!(t.seat().await.rc_url, "https://claude.ai/code/job-2", "an agent that comes up on reports its link");
+}
+
+#[tokio::test]
+async fn an_empty_seat_switches_without_a_call_and_a_restart_keeps_it() {
+    let mut t = T::new(true);
+    t.send("while paused").await;
+    let (_, live) = t.seats.set_remote_control("opal", "D0TEST", true).await.unwrap();
+    assert_eq!(live, Live::None);
+    assert!(t.world.w().switched.is_empty(), "no session to switch");
+    t.restart(false);
+    assert!(t.seat().await.remote_control);
+    assert!(t.seats.set_remote_control("opal", "D0NONE", true).await.is_none(), "no such seat");
+}
+
+#[tokio::test]
+async fn a_failed_live_switch_keeps_the_setting() {
+    let mut t = T::new(false);
+    t.send("first").await;
+    t.world.w().switch_fails = true;
+    let (s, live) = t.seats.set_remote_control("opal", "D0TEST", true).await.unwrap();
+    assert_eq!(live, Live::Failed("no such session".into()));
+    assert!(s.remote_control && t.seat().await.remote_control);
+}
+
+#[tokio::test]
+async fn adoption_keeps_the_live_session_on_and_calls_no_reflection() {
+    let t = T::new(true);
+    let m = crate::db::Mount { account: "opal".into(), channel_id: "D0TEST".into(), channel_name: "".into(), node: "altair".into(), job: "agent-a".into(), session_name: "s".into(), mounted_at: "".into() };
+    t.world.w().up.insert("agent-a".into());
+    let place = line::Place { platform: "slack".into(), kind: ChatKind::Dm, person: "tester".into(), ..Default::default() };
+    t.seats.adopt_mounts(vec![(m, place)]).await;
+    let s = t.seat().await;
+    assert_eq!((s.state, s.remote_control, s.rc_url.as_str()), (State::Occupied, true, "https://claude.ai/code/agent-a"));
+    assert!(t.world.w().switched.is_empty(), "the live session is untouched");
+    let general = t.seats.declared("opal", "C0TEST", &line::Place { platform: "slack".into(), server: "Test Lab".into(), kind: ChatKind::Channel, chat_name: "general".into(), ..Default::default() }).await.unwrap();
+    assert!(!general.remote_control, "a seat empty at adoption starts off");
+}
+
+#[tokio::test]
+async fn each_change_emits_one_event_and_a_rename_is_one() {
+    let mut t = T::new(false);
+    t.send("first").await;
+    let states: Vec<String> = t.world.w().events.iter().map(|e| e["state"].as_str().unwrap().to_string()).collect();
+    assert_eq!(states, ["empty", "starting", "starting", "occupied"], "a start, then the job it got");
+    assert!(t.world.w().events[1].get("job").is_none() && t.world.w().events[2]["job"] == "job-1");
+    let e = t.world.w().events[3].clone();
+    assert_eq!((e["seat"].as_str(), e["label"].as_str(), e["node"].as_str(), e["job"].as_str(), e["remote_control"].as_bool()), (Some("opal/D0TEST"), Some("seat:slack/dm/tester"), Some("altair"), Some("job-1"), Some(false)));
+    assert!(e.get("rc_url").is_none() && e["ts"].as_str().is_some_and(|ts| ts.ends_with("+00:00")));
+
+    let n = t.world.w().events.len();
+    t.send("second").await;
+    assert_eq!(t.world.w().events.len(), n, "a message that changes no reported field emits nothing");
+    t.seats.set_remote_control("opal", "D0TEST", true).await.unwrap();
+    let ev = t.world.w().events[n..].to_vec();
+    assert_eq!(ev.len(), 2, "the switch, then its link: {ev:?}");
+    assert_eq!(ev[1]["rc_url"], "https://claude.ai/code/job-1");
+
+    let general = line::Place { platform: "slack".into(), server: "Test Lab".into(), kind: ChatKind::Channel, chat_name: "general".into(), ..Default::default() };
+    t.seats.declared("opal", "C0TEST", &general).await.unwrap();
+    let n = t.world.w().events.len();
+    let renamed = line::Place { chat_name: "lab-general".into(), ..general };
+    t.seats.declared("opal", "C0TEST", &renamed).await.unwrap();
+    let ev = t.world.w().events[n..].to_vec();
+    assert_eq!(ev.len(), 1);
+    assert_eq!(ev[0]["label"], "seat:slack/test-lab/lab-general");
 }

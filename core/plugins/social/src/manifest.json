@@ -288,6 +288,28 @@
       ]
     },
     {
+      "name": "seat_remote_control",
+      "tool": "social_seat_remote_control",
+      "description": "Set a seat's Remote Control switch, which every agent the seat starts follows, and switch its live session too. Only operations on this node calls it, for the Remote Control switch on Ops.",
+      "surfaces": [
+        "cli",
+        "http"
+      ],
+      "params": [
+        {
+          "name": "seat",
+          "type": "string",
+          "required": true,
+          "description": "<account>/<channel_id>, as `seats` shows it."
+        },
+        {
+          "name": "on",
+          "type": "boolean",
+          "required": true
+        }
+      ]
+    },
+    {
       "name": "search",
       "tool": "social_search",
       "description": "Search a platform's own message index live (Slack search.messages, Gmail X-GM-RAW). Returns matches with attachment metadata. Not supported for Discord bot accounts (use fetch).",
@@ -714,6 +736,9 @@
     },
     {
       "topic": "command"
+    },
+    {
+      "topic": "seats"
     }
   ],
   "sessions": []

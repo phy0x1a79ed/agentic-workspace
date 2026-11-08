@@ -55,6 +55,11 @@ fn s(v: &Value, key: &str) -> String {
     }
 }
 
+/// Whether a call may flip a seat's Remote Control: operations on this node, and nobody else.
+pub(crate) fn switch_caller(plugin: Option<&str>, from_peer: bool) -> bool {
+    plugin == Some("operations") && !from_peer
+}
+
 fn truthy(v: Option<&Value>) -> bool {
     match v {
         None | Some(Value::Null) => false,
@@ -798,6 +803,21 @@ impl Social {
         }
         let st = self.seats.adopt(seat, &node, &job, "").await;
         Ok(json!({"ok": true, "seat": st.public(self.seats.queued(&st.account, &st.channel_id).await)}))
+    }
+
+    /// The Remote Control switch on Ops: operations on this node is the one caller.
+    pub async fn seat_remote_control(&self, call: Call) -> Result<Value, VerbError> {
+        if !switch_caller(call.plugin.as_deref(), call.from_peer()) {
+            return Err(VerbError::permission("seat_remote_control: only operations on this node runs this"));
+        }
+        let seat = s(&call.args, "seat");
+        if call.args.get("on").is_none_or(Value::is_null) {
+            return Err(VerbError::value("seat_remote_control: missing required argument(s): on."));
+        }
+        let on = truthy(call.args.get("on"));
+        let (account, channel) = seat.split_once('/').filter(|(a, c)| !a.is_empty() && !c.is_empty()).ok_or_else(|| VerbError::value(format!("seat {seat:?} is not <account>/<channel_id>")))?;
+        let (st, live) = self.seats.set_remote_control(account, channel, on).await.ok_or_else(|| VerbError::value(format!("{seat} is no seat social has seen; `seats` lists them")))?;
+        Ok(json!({"ok": true, "seat": st.id(), "remote_control": st.remote_control, "live": live.as_str()}))
     }
 
     // -- operators -------------------------------------------------------------------
