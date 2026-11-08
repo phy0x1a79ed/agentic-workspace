@@ -1,10 +1,10 @@
 //! The verb table and the handlers have to agree, and the write verbs stay off MCP.
 
-mod common;
-
 use std::collections::BTreeSet;
+use std::path::Path;
 use std::sync::Arc;
 
+use crate::common;
 use awm_plugin_dvc::jobs::JOBS;
 use awm_plugin_dvc::service::{self, verbs, Dvc, VerbSpec};
 use awm_plugin_dvc::watcher;
@@ -15,62 +15,45 @@ fn verb(name: &str) -> VerbSpec {
 }
 
 #[test]
-fn the_verb_names_are_the_python_manifests() {
+fn the_verb_table_is_the_wire_contract() {
     let names: BTreeSet<&str> = verbs().iter().map(|v| v.name).collect();
     let want: BTreeSet<&str> =
         ["status", "resolve", "pull", "push", "sync", "coverage", "task", "jobs", "runs", "run", "schedule", "scope_status", "mount", "gc"].into();
     assert_eq!(names, want);
-    assert_eq!(verbs().len(), want.len());
-}
 
-#[test]
-fn every_verb_has_a_description_and_a_timeout() {
+    let off: BTreeSet<&str> = verbs().iter().filter(|v| v.cli_http_only).map(|v| v.name).collect();
+    assert_eq!(off, ["run", "schedule"].into(), "only the write verbs stay off MCP");
+
     for v in verbs() {
-        assert!(v.description.len() > 40, "{}", v.name);
-        assert!(v.timeout > 0.0, "{}", v.name);
-        assert!(v.params.is_array(), "{}", v.name);
+        assert!(v.description.len() > 40 && v.timeout > 0.0 && v.params.is_array(), "{}", v.name);
         for p in v.params.as_array().unwrap() {
             assert!(p["name"].is_string() && p["type"].is_string() && p["required"].is_boolean(), "{}: {p}", v.name);
         }
     }
-}
-
-#[test]
-fn the_write_verbs_are_kept_off_the_mcp_surface() {
-    assert!(verb("run").cli_http_only);
-    assert!(verb("schedule").cli_http_only);
-    let off: BTreeSet<&str> = verbs().iter().filter(|v| v.cli_http_only).map(|v| v.name).collect();
-    assert_eq!(off, ["run", "schedule"].into());
-}
-
-#[test]
-fn the_read_verbs_are_on_every_surface() {
-    for name in ["jobs", "runs"] {
-        assert!(!verb(name).cli_http_only, "{name}");
+    for name in ["sync", "run", "pull", "push", "task"] {
+        assert!(verb(name).timeout >= 300.0, "{name}");
     }
-}
 
-#[test]
-fn the_job_status_emitter_is_declared() {
+    let params = verb("run").params;
+    let described = params[0]["description"].as_str().unwrap();
+    assert!(JOBS.iter().all(|j| described.contains(j.name)));
+
+    let gc = verb("gc");
+    let req: Vec<bool> = gc.params.as_array().unwrap().iter().filter(|p| p["name"] == "projects").map(|p| p["required"].as_bool().unwrap()).collect();
+    assert_eq!(req, [true], "gc requires the caller to name its projects");
+    assert!(gc.description.contains("DRY RUN BY DEFAULT"));
+
     assert_eq!(watcher::TOPIC, "job.status");
     assert!(service::EMITTER.contains("succeeded"));
 }
 
 #[test]
-fn every_verb_that_moves_bytes_declares_a_timeout() {
-    for name in ["sync", "run", "pull", "push", "task"] {
-        assert!(verb(name).timeout >= 300.0, "{name}");
-    }
-}
-
-#[test]
-fn the_run_verb_names_the_jobs_that_actually_exist() {
-    let params = verb("run").params;
-    assert_eq!(params[0]["name"], "job");
-    let described = params[0]["description"].as_str().unwrap();
-    for j in &JOBS {
-        assert!(described.contains(j.name), "{}", j.name);
-    }
+fn the_plugin_manifest_names_the_tool_and_turns_it_on() {
+    let text = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("awm-plugin.toml")).unwrap();
+    let doc: toml::Table = text.parse().unwrap();
+    let tools: Vec<(String, String)> =
+        doc["tool"].as_array().unwrap().iter().map(|t| (t["name"].as_str().unwrap().to_string(), t["tier"].as_str().unwrap().to_string())).collect();
+    assert_eq!(tools, [("dvc".to_string(), "on".to_string())]);
 }
 
 #[tokio::test]

@@ -1,6 +1,6 @@
 //! The inventory of what neither remote holds.
 
-mod common;
+use crate::common;
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -34,16 +34,16 @@ fn first_row(w: &common::Ws) -> Value {
 }
 
 #[test]
-fn scopes_are_found_at_project_scope_depth_and_no_deeper() {
+fn scopes_are_found_at_project_scope_depth_nested_included() {
     let (w, scope) = scoped();
     let vendored = scope.join("vendor/someone-elses-repo");
     std::fs::create_dir_all(&vendored).unwrap();
     git(&vendored, &["init", "-q"]);
 
     assert_eq!(coverage::find_worktrees(w.ws()), vec![scope]);
+    nested_scopes_are_found();
 }
 
-#[test]
 fn nested_scopes_are_found() {
     let w = common::workspace();
     let proj = w.projects().join("metasmith");
@@ -79,6 +79,10 @@ fn a_committed_pushed_scope_with_no_pins_is_not_at_risk() {
     assert_eq!(out["worktrees"], serde_json::json!([]));
     assert_eq!(out["truncated"], true);
     assert_eq!(out["cache_exists"], true);
+
+    let all = coverage::report(&w.paths, false, false);
+    assert_eq!(all["worktrees"].as_array().unwrap().len(), 1, "all includes the scopes with nothing at risk");
+    assert_eq!(all["truncated"], false);
 }
 
 #[test]
@@ -97,27 +101,19 @@ fn untracked_and_modified_files_put_a_scope_at_risk() {
 
 #[test]
 fn a_branch_with_no_upstream_is_as_lost_as_one_never_pushed() {
-    let (w, _scope) = scoped();
+    let (w, scope) = scoped();
 
     let row = first_row(&w);
 
     assert_eq!(row["unpushed"]["branch"], "feat/dev");
     assert_eq!(row["unpushed"]["no_upstream"], true);
     assert_eq!(row["at_risk"], true);
-}
 
-#[test]
-fn commits_ahead_of_the_upstream_are_counted() {
-    let (w, scope) = scoped();
     push_upstream(&w, &scope);
     std::fs::write(scope.join("README"), "more\n").unwrap();
     git(&scope, &["commit", "-qam", "second"]);
-
     let row = first_row(&w);
-
-    assert_eq!(row["unpushed"]["ahead"], 1);
-    assert_eq!(row["unpushed"]["behind"], 0);
-    assert_eq!(row["at_risk"], true);
+    assert_eq!((row["unpushed"]["ahead"].as_i64(), row["unpushed"]["behind"].as_i64()), (Some(1), Some(0)));
 }
 
 #[test]
@@ -131,27 +127,10 @@ fn a_pin_the_shared_cache_cannot_satisfy_is_reported_missing() {
     assert_eq!(row["pins"]["dvc"], true);
     assert_eq!(row["pins"]["pins"], 1);
     assert_eq!(row["pins"]["missing"], 1);
-}
 
-#[test]
-fn a_missing_dir_manifest_is_reported_separately_from_missing_leaves() {
-    let (w, scope) = scoped();
-    std::fs::create_dir_all(scope.join(".dvc")).unwrap();
     common::touch(&scope.join("data/tree.dvc"), &format!("outs:\n- md5: {}.dir\n  path: tree\n", "b".repeat(32)));
-
     let row = first_row(&w);
-
-    assert_eq!(row["pins"]["unresolved_manifests"], 1);
+    assert_eq!(row["pins"]["unresolved_manifests"], 1, "a missing dir manifest is reported apart from missing leaves");
     assert_eq!(row["at_risk"], true);
 }
 
-#[test]
-fn all_includes_the_scopes_with_nothing_at_risk() {
-    let (w, _scope) = scoped();
-
-    let out = coverage::report(&w.paths, false, false);
-
-    assert_eq!(out["worktrees"].as_array().unwrap().len(), 1);
-    assert_eq!(out["scopes"], 1);
-    assert_eq!(out["truncated"], false);
-}

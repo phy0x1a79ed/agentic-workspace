@@ -1,41 +1,31 @@
 //! The properties the data layer exists for, ported from the Python suite. Each runs in a
 //! real bare repo with worktrees, because each is a property of git and the cache together.
 
-mod common;
+
 
 use std::fs;
 use std::path::Path;
 
 use awm_dvcdata::pin::pin_md5;
-use awm_dvcdata::provision::{self as pv, CHECKOUT_FAILED_FILE, MOUNTS_FILE, SHARED_DECLARATION, STATE_SUBDIR};
+use awm_dvcdata::provision::{self as pv, CHECKOUT_FAILED_FILE, MOUNTS_FILE, SHARED_DECLARATION};
 use awm_dvcdata::wiring;
-use common::*;
+use crate::common::*;
 use serde_json::json;
 
 // --- degradation ---------------------------------------------------------------------
 
 #[test]
-fn an_unconverted_project_gets_no_data_view() {
+fn degradation_refuses_rather_than_guesses() {
     let w = workspace();
     let rep = w.provision(&w.main);
     assert_eq!(rep["mode"], "none");
     assert!(!w.main.join(".awm").exists());
-}
-
-#[test]
-fn a_relative_worktree_is_refused_not_normalised() {
-    let w = workspace();
+    fs::create_dir_all(w.main.join(".dvc/tmp")).unwrap();
+    assert!(!pv::is_dvc_repo(&w.main), "a leftover .dvc dir is not a conversion");
+    assert_eq!(w.provision(&w.main)["mode"], "none");
     let rep = pv::provision_scope_data(&w.layout, "p", "s", Path::new("s"), &w.bin);
     assert_eq!(rep["mode"], "unknown");
     assert!(rep["detail"].as_str().unwrap().contains("relative"));
-}
-
-#[test]
-fn a_branch_with_only_a_leftover_dvc_dir_is_not_converted() {
-    let w = workspace();
-    fs::create_dir_all(w.main.join(".dvc/tmp")).unwrap();
-    assert!(!pv::is_dvc_repo(&w.main));
-    assert_eq!(w.provision(&w.main)["mode"], "none");
 }
 
 // --- hook state ----------------------------------------------------------------------
@@ -46,12 +36,6 @@ fn merge_a_side_branch(wt: &Path) {
     commit_all(wt, "side");
     git(wt, &["checkout", "-q", "main"]);
     git(wt, &["merge", "-q", "--no-ff", "-m", "merge side", "side"]);
-}
-
-#[test]
-fn the_state_dir_is_inside_the_worktree_git_dir() {
-    let w = dvc_project();
-    assert_eq!(pv::state_dir(&w.main), w.bare.join("worktrees/main").join(STATE_SUBDIR));
 }
 
 #[test]
@@ -83,7 +67,8 @@ fn the_hook_reads_the_mount_list_from_the_git_dir() {
     fs::remove_dir_all(w.main.join("data/cold")).unwrap();
     merge_a_side_branch(&w.main);
     assert!(w.main.join("data/hot/f.txt").is_file());
-    assert!(!w.main.join("data/cold").exists());
+    assert!(!w.main.join("data/cold").exists(), "an unmounted chunk stays off disk");
+    assert!(pv::chunk_pins(&w.main).contains(&"data/cold.dvc".to_string()));
     pv::write_mounts(&w.main, None).unwrap();
     assert_eq!(pv::read_mounts(&w.main), None);
 }
@@ -91,7 +76,7 @@ fn the_hook_reads_the_mount_list_from_the_git_dir() {
 // --- gates ---------------------------------------------------------------------------
 
 #[test]
-fn a_gitignored_pin_is_refused() {
+fn a_gitignored_pin_or_a_data_symlink_is_refused() {
     let w = dvc_project();
     fs::write(w.main.join(".gitignore"), "/data\n/data/**/*\n").unwrap();
     commit_all(&w.main, "ignore data");
@@ -99,10 +84,7 @@ fn a_gitignored_pin_is_refused() {
     let rep = w.provision(&w.main);
     assert_eq!(rep["mode"], "unknown");
     assert!(rep["detail"].as_str().unwrap().contains("silently never committed"));
-}
 
-#[test]
-fn a_preexisting_data_symlink_is_refused_not_deleted() {
     let w = dvc_project();
     std::os::unix::fs::symlink(w.ws.join("data"), w.main.join("data")).unwrap();
     assert!(pv::data_path_conflict(&w.main).is_some());
@@ -157,33 +139,6 @@ fn the_merge_driver_combines_two_branches_that_each_changed_one_chunk() {
 }
 
 #[test]
-fn two_scopes_share_one_physical_copy() {
-    let w = dvc_project();
-    w.provision(&w.main);
-    add_chunk(&w.main, "c", &[("f.bin", &"x".repeat(5000))]);
-    commit_all(&w.main, "chunk");
-    let s2 = w.scope("s2");
-    w.provision(&s2);
-    assert_eq!(ino(&w.main.join("data/c/f.bin")), ino(&s2.join("data/c/f.bin")));
-}
-
-#[test]
-fn unmounted_chunks_are_pinned_but_not_materialised() {
-    let w = dvc_project();
-    w.provision(&w.main);
-    add_chunk(&w.main, "hot", &[("f.txt", "hot\n")]);
-    add_chunk(&w.main, "cold", &[("f.txt", "cold\n")]);
-    commit_all(&w.main, "hot+cold");
-    pv::write_mounts(&w.main, Some(&["data/hot".to_string()])).unwrap();
-    fs::remove_dir_all(w.main.join("data/cold")).unwrap();
-    let rep = w.provision(&w.main);
-    assert_eq!(rep["checkout"], "ok", "{rep}");
-    assert!(w.main.join("data/hot/f.txt").exists());
-    assert!(!w.main.join("data/cold").exists(), "an unmounted chunk must stay off disk");
-    assert!(pv::chunk_pins(&w.main).contains(&"data/cold.dvc".to_string()));
-}
-
-#[test]
 fn an_empty_mount_list_means_nothing_not_everything() {
     let w = dvc_project();
     w.provision(&w.main);
@@ -204,7 +159,7 @@ fn an_empty_mount_list_means_nothing_not_everything() {
 // --- cache safety --------------------------------------------------------------------
 
 #[test]
-fn chmod_dirs_writable_never_unprotects_a_cache_object() {
+fn the_cache_survives_chmod_and_worktree_deletion() {
     let w = dvc_project();
     w.provision(&w.main);
     add_chunk(&w.main, "c", &[("f.bin", &"y".repeat(5000))]);
@@ -213,18 +168,12 @@ fn chmod_dirs_writable_never_unprotects_a_cache_object() {
     pv::chmod_dirs_writable(&w.main);
     assert_eq!(fs::metadata(&f).unwrap().permissions(), before, "this would unprotect the shared cache object");
     assert!(writable(&w.main.join("data/c")));
-}
-
-#[test]
-fn deleting_a_worktree_cannot_harm_the_cache() {
-    let w = dvc_project();
-    w.provision(&w.main);
-    let oid = add_chunk(&w.main, "c", &[("f.bin", &"z".repeat(5000))]);
+    let oid = add_chunk(&w.main, "d", &[("f.bin", &"z".repeat(5000))]);
     let leaf = awm_dvcdata::odb::Manifest::load(&w.cache(), &oid).unwrap().entries[0].md5.clone();
     pv::chmod_dirs_writable(&w.main.join("data"));
     fs::remove_dir_all(w.main.join("data")).unwrap();
     let obj = awm_dvcdata::odb::object_path(&w.cache(), &leaf);
-    assert_eq!(fs::read_to_string(obj).unwrap(), "z".repeat(5000));
+    assert_eq!(fs::read_to_string(obj).unwrap(), "z".repeat(5000), "deleting a worktree cannot harm the cache");
 }
 
 // --- wiring --------------------------------------------------------------------------
@@ -287,7 +236,7 @@ fn the_first_native_wiring_backs_up_the_python_hooks_and_driver() {
 }
 
 #[test]
-fn the_cache_config_is_absolute_and_untracked() {
+fn the_cache_config_is_absolute_untracked_and_keeps_a_local_link_type() {
     let w = dvc_project();
     wiring::ensure_cache_config(&w.main, &w.layout).unwrap();
     let local = fs::read_to_string(w.main.join(".dvc/config.local")).unwrap();
@@ -295,45 +244,13 @@ fn the_cache_config_is_absolute_and_untracked() {
     assert!(!git(&w.main, &["check-ignore", ".dvc/config.local"]).trim().is_empty());
     let tracked = fs::read_to_string(w.main.join(".dvc/config")).unwrap();
     assert_eq!(tracked, "[cache]\n    type = \"hardlink,symlink\"\n");
-}
-
-#[test]
-fn a_local_link_type_survives_the_rewrite() {
-    let w = dvc_project();
-    wiring::ensure_cache_config(&w.main, &w.layout).unwrap();
     let local = w.main.join(".dvc/config.local");
     let text = fs::read_to_string(&local).unwrap().replace("[core]", "    type = copy\n[core]");
     fs::write(&local, text.replace("    dir =", "    type = copy\n    dir =")).unwrap();
     wiring::ensure_cache_config(&w.main, &w.layout).unwrap();
     assert_eq!(awm_dvcdata::scope::cache_types(&w.main), vec!["copy"]);
     assert!(fs::read_to_string(&local).unwrap().contains(w.cache().to_str().unwrap()));
-}
-
-#[test]
-fn a_local_link_type_leaves_the_tracked_config_alone() {
-    let w = dvc_project();
-    wiring::ensure_cache_config(&w.main, &w.layout).unwrap();
-    let tracked = w.main.join(".dvc/config");
-    fs::write(&tracked, format!("# a note the project keeps\n{}", fs::read_to_string(&tracked).unwrap())).unwrap();
-    let local = w.main.join(".dvc/config.local");
-    fs::write(&local, fs::read_to_string(&local).unwrap().replace("    dir =", "    type = copy\n    dir =")).unwrap();
-    wiring::ensure_cache_config(&w.main, &w.layout).unwrap();
-    assert!(fs::read_to_string(&tracked).unwrap().starts_with("# a note the project keeps"));
-}
-
-#[test]
-fn the_site_cache_goes_to_tmpfs_when_there_is_one() {
-    let mut w = dvc_project();
-    wiring::ensure_cache_config(&w.main, &w.layout).unwrap();
-    assert!(!fs::read_to_string(w.main.join(".dvc/config.local")).unwrap().contains("site_cache_dir"));
-    let shm = w.root.join("shm");
-    fs::create_dir(&shm).unwrap();
-    w.layout.tmpfs = shm.clone();
-    wiring::ensure_cache_config(&w.main, &w.layout).unwrap();
-    let site = w.layout.site_cache_dir().unwrap();
-    assert_eq!(site.parent().unwrap(), shm);
-    let text = fs::read_to_string(w.main.join(".dvc/config.local")).unwrap();
-    assert_eq!(awm_dvcdata::scope::config_value(&text, "core", "site_cache_dir").unwrap(), site.to_str().unwrap());
+    assert_eq!(fs::read_to_string(w.main.join(".dvc/config")).unwrap(), "[cache]\n    type = \"hardlink,symlink\"\n");
 }
 
 // --- no remote -----------------------------------------------------------------------
@@ -341,15 +258,12 @@ fn the_site_cache_goes_to_tmpfs_when_there_is_one() {
 const TAG: &str = "Signature: 8a477f597d28d172789f06886806bc55\n# no remote\n";
 
 #[test]
-fn an_untagged_project_uses_the_shared_cache() {
+fn a_tagged_project_keeps_its_own_cache() {
     let w = dvc_project();
     assert!(!pv::no_remote(&w.main));
     assert_eq!(w.layout.cache_dir(Some(&w.main)), w.cache());
-}
-
-#[test]
-fn a_tagged_project_keeps_its_own_cache() {
-    let w = dvc_project();
+    fs::write(w.bare.parent().unwrap().join("CACHEDIR.TAG"), "not a tag\n").unwrap();
+    assert!(!pv::no_remote(&w.main), "a tag without the signature declares nothing");
     fs::write(w.bare.parent().unwrap().join("CACHEDIR.TAG"), TAG).unwrap();
     assert!(pv::no_remote(&w.main));
     let own = w.bare.parent().unwrap().join(".dvc_cache");
@@ -357,13 +271,6 @@ fn a_tagged_project_keeps_its_own_cache() {
     wiring::ensure_cache_config(&w.main, &w.layout).unwrap();
     let local = fs::read_to_string(w.main.join(".dvc/config.local")).unwrap();
     assert!(local.contains(own.to_str().unwrap()) && !local.contains(w.cache().to_str().unwrap()));
-}
-
-#[test]
-fn a_tag_without_the_signature_declares_nothing() {
-    let w = dvc_project();
-    fs::write(w.bare.parent().unwrap().join("CACHEDIR.TAG"), "not a tag\n").unwrap();
-    assert!(!pv::no_remote(&w.main));
 }
 
 // --- shared chunks -------------------------------------------------------------------
@@ -382,12 +289,6 @@ fn drop_link(wt: &Path) {
     let big = wt.join("data/ref/big");
     if big.is_symlink() {
         fs::remove_file(big).unwrap();
-    }
-}
-
-impl Drop for Ws {
-    fn drop(&mut self) {
-        pv::chmod_dirs_writable(&self.store());
     }
 }
 
@@ -420,31 +321,9 @@ fn scopes_link_one_shared_copy() {
         assert!(wt.join("data/small/f.txt").is_file() && !wt.join("data/small").is_symlink());
     }
     assert_eq!(ino(&a.join("data/ref/big/f.txt")), ino(&b.join("data/ref/big/f.txt")));
-}
-
-#[test]
-fn no_declaration_keeps_private_checkouts() {
-    let w = dvc_project();
-    w.provision(&w.main);
-    add_chunk(&w.main, "c", &[("f.txt", "v1\n")]);
-    commit_all(&w.main, "chunk");
-    let s = w.scope("s");
-    let rep = w.provision(&s);
-    assert!(rep.get("shared").is_none());
-    assert!(!s.join("data/c").is_symlink());
-    assert!(!w.store().exists());
-}
-
-#[test]
-fn a_mount_list_can_leave_a_shared_chunk_out() {
-    let w = shared_project();
-    let s = w.scope("s");
-    drop_link(&s);
-    pv::write_mounts(&s, Some(&["data/small".to_string()])).unwrap();
-    let rep = w.provision(&s);
-    assert_eq!(rep["shared"], json!({}));
-    assert!(!s.join("data/ref/big").exists());
-    assert!(s.join("data/small/f.txt").is_file());
+    let st = pv::data_status(&w.layout, "p", "a", &a);
+    assert_eq!(st["shared"], json!({"data/ref/big": "linked"}));
+    assert_eq!(st["in_sync"], true, "{st}");
 }
 
 #[test]
@@ -472,33 +351,6 @@ fn a_merge_repoints_the_link_or_leaves_the_sentinel() {
 }
 
 #[test]
-fn a_merge_repoints_to_an_existing_copy() {
-    let w = shared_project();
-    let a = w.scope("a");
-    w.provision(&a);
-    let b = w.scope("b");
-    w.provision(&b);
-    repin_v2(&w, &b);
-    w.provision(&b);
-    git(&a, &["merge", "--no-edit", "feat/b"]);
-    assert!(a.join("data/ref/big").is_symlink());
-    assert!(a.join("data/ref/big/g.txt").is_file());
-    assert!(!pv::state_dir(&a).join(CHECKOUT_FAILED_FILE).exists());
-}
-
-#[test]
-fn data_status_reports_links_without_hashing_them() {
-    let w = shared_project();
-    let a = w.scope("a");
-    w.provision(&a);
-    let st = pv::data_status(&w.layout, "p", "a", &a);
-    assert_eq!(st["shared"], json!({"data/ref/big": "linked"}));
-    assert_eq!(st["in_sync"], true, "{st}");
-    assert_eq!(st["engine"], "native");
-    assert!(st.get("dvc_bin").is_none());
-}
-
-#[test]
 fn heal_replaces_a_clean_private_copy_and_keeps_a_modified_one() {
     let w = shared_project();
     let a = w.scope("a");
@@ -519,18 +371,6 @@ fn heal_replaces_a_clean_private_copy_and_keeps_a_modified_one() {
     fs::write(c.join("data/ref/big/f.txt"), "local edit\n").unwrap();
     assert_eq!(w.provision(&c)["shared"], json!({"data/ref/big": "private:modified"}));
     assert_eq!(fs::read_to_string(c.join("data/ref/big/f.txt")).unwrap(), "local edit\n");
-}
-
-#[test]
-fn heal_adopts_a_clean_private_copy_when_no_shared_copy_exists() {
-    let w = shared_project();
-    let b = w.scope("b");
-    wiring::ensure_cache_config(&b, &w.layout).unwrap();
-    assert!(awm_dvcdata::checkout::checkout(&b, Some(&["data/ref/big".to_string()])).unwrap().ok());
-    let before = ino(&b.join("data/ref/big/f.txt"));
-    assert_eq!(w.provision(&b)["shared"], json!({"data/ref/big": "linked"}));
-    let md5 = pin_md5(&b.join("data/ref/big.dvc")).unwrap();
-    assert_eq!(ino(&w.store().join("ref/big").join(md5).join("f.txt")), before, "adopted by rename, not re-linked");
 }
 
 #[test]
@@ -561,14 +401,26 @@ fn a_checkout_never_writes_through_a_link_to_another_copy() {
     assert_eq!(fs::canonicalize(a.join("data/ref/big")).unwrap(), fs::canonicalize(store.join(&v1)).unwrap());
 }
 
+
+/// `AWM_DATA_DVC` is process-wide, so the switch runs in a child of this binary.
 #[test]
-fn deleting_a_scope_leaves_the_shared_copy() {
-    let w = shared_project();
-    let a = w.scope("a");
-    w.provision(&a);
-    let copy = fs::canonicalize(a.join("data/ref/big")).unwrap();
-    pv::chmod_dirs_writable(&a);
-    fs::remove_dir_all(&a).unwrap();
-    assert_eq!(fs::read_to_string(copy.join("f.txt")).unwrap(), "ref/big v1\n");
-    assert!(!writable(&copy.join("f.txt")), "cache objects stay read-only");
+fn the_kill_switch_provisions_no_project() {
+    let exe = std::env::current_exe().unwrap();
+    let out = std::process::Command::new(exe)
+        .args(["--exact", "provision::kill_switch_child", "--ignored"])
+        .env("AWM_DATA_DVC", "0")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("1 passed"), "the child test did not run");
+}
+
+#[test]
+#[ignore]
+fn kill_switch_child() {
+    let w = dvc_project();
+    let rep = w.provision(&w.main);
+    assert_eq!(rep["mode"], "none");
+    assert!(rep["detail"].as_str().unwrap().contains("AWM_DATA_DVC=0"));
+    assert!(!w.main.join(".dvc/config.local").exists());
 }

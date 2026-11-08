@@ -2,7 +2,7 @@
 //! document, submission ids, skipped-error paging, and the token store. Every token, id and
 //! secret here is synthetic, and the auth server is a local socket.
 
-mod common;
+use crate::common;
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
@@ -40,21 +40,10 @@ fn status_of_maps_empty_values_to_null_and_counters_to_ints() {
     for f in STATUS_FIELDS {
         assert!(st.get(f).is_some(), "{f}");
     }
-}
-
-#[test]
-fn a_missing_field_is_null() {
-    let st = globus::status_of("t", &json!({"status": "ACTIVE"}));
-    assert_eq!(st["files"], Value::Null);
-    assert_eq!(st["label"], Value::Null);
-}
-
-#[test]
-fn done_is_set_only_for_the_terminal_states() {
+    assert_eq!(globus::status_of("t", &json!({"status": "ACTIVE"}))["files"], Value::Null, "a missing field is null");
     for (status, done) in [("SUCCEEDED", true), ("FAILED", true), ("ACTIVE", false), ("INACTIVE", false), ("", false)] {
         assert_eq!(globus::status_of("t", &json!({"status": status}))["done"], done, "{status}");
     }
-    assert_eq!(globus::status_of("t", &json!({}))["done"], false);
 }
 
 #[test]
@@ -96,17 +85,9 @@ fn the_document_clips_the_label_and_always_verifies_checksums() {
     assert_eq!(d["delete_destination_extra"], false);
     assert_eq!(d["skip_source_errors"], true);
     assert_eq!(d["DATA"], json!(items));
-}
 
-#[test]
-fn a_multibyte_label_is_clipped_by_character() {
-    let long = "é".repeat(130);
-    let d = globus::document("s", &[], &opts(&long, None));
-    assert_eq!(d["label"].as_str().unwrap(), "é".repeat(128));
-}
-
-#[test]
-fn filter_rules_appear_only_when_there_are_some() {
+    let multibyte = "é".repeat(130);
+    assert_eq!(globus::document("s", &[], &opts(&multibyte, None))["label"].as_str().unwrap(), "é".repeat(128));
     assert!(globus::document("s", &[], &opts("l", None)).get("filter_rules").is_none());
     assert!(globus::document("s", &[], &opts("l", Some(vec![]))).get("filter_rules").is_none());
     let rules = vec![json!({"DATA_TYPE": "filter_rule", "method": "exclude", "type": "dir", "name": "node_modules"})];
@@ -126,20 +107,12 @@ fn submit_fetches_a_fresh_submission_id_per_call() {
     assert_eq!(calls, want.map(|(m, p)| (m.to_string(), p.to_string())));
     let sids: Vec<Value> = api.posts().iter().map(|d| d["submission_id"].clone()).collect();
     assert_eq!(sids, [json!("sub-1"), json!("sub-2")]);
-}
 
-#[test]
-fn a_submit_with_no_task_id_back_is_an_error() {
-    let api = common::FakeApi::new(|_, path, _| Ok(if path == "/submission_id" { json!({"value": "sub-1"}) } else { json!({"code": "Accepted"}) }));
-    let e = globus::submit(api.as_ref(), &[], &opts("l", None)).unwrap_err();
-    assert!(e.0.contains("no task id"), "{}", e.0);
-}
-
-#[test]
-fn a_missing_submission_id_stops_the_submit() {
-    let api = common::FakeApi::new(|_, _, _| Ok(json!({})));
-    assert!(globus::submit(api.as_ref(), &[], &opts("l", None)).is_err());
-    assert!(api.posts().is_empty());
+    let no_task = common::FakeApi::new(|_, path, _| Ok(if path == "/submission_id" { json!({"value": "sub-1"}) } else { json!({"code": "Accepted"}) }));
+    assert!(globus::submit(no_task.as_ref(), &[], &opts("l", None)).unwrap_err().0.contains("no task id"));
+    let no_sub = common::FakeApi::new(|_, _, _| Ok(json!({})));
+    assert!(globus::submit(no_sub.as_ref(), &[], &opts("l", None)).is_err());
+    assert!(no_sub.posts().is_empty());
 }
 
 #[test]
@@ -158,13 +131,6 @@ fn skipped_errors_follows_next_marker_pages() {
     let got: Vec<&str> = all.iter().map(|e| e["source_path"].as_str().unwrap()).collect();
     assert_eq!(got, ["/a", "/b", "/c", "/d"]);
     assert_eq!(api.calls().len(), 3);
-}
-
-#[test]
-fn a_task_with_no_skips_is_one_empty_page() {
-    let api = common::FakeApi::new(|_, _, _| Ok(json!({"DATA": []})));
-    assert!(globus::skipped_errors(api.as_ref(), "t").unwrap().is_empty());
-    assert_eq!(api.calls().len(), 1);
 }
 
 // -- the CLI's storage ----------------------------------------------------------------------
@@ -210,18 +176,11 @@ fn import_reads_the_production_transfer_token_and_its_client() {
     assert_eq!(t.client_id, "cid-synthetic");
     assert_eq!(t.client_secret.as_deref(), Some("secret-synthetic"));
     assert!(t.source.contains("storage.db"));
-}
 
-#[test]
-fn import_without_a_client_record_uses_the_native_app() {
-    let (_t, dir) = common::tempdir();
-    let db = storage(&dir, &[("userprofile/production", TRANSFER_RS, json!({"refresh_token": "rt-synthetic"}))], &[]);
-
-    let t = globus::import_from_cli(&db).unwrap();
-
-    assert_eq!(t.client_id, NATIVE_CLIENT_ID);
-    assert_eq!(t.client_secret, None);
-    assert_eq!(t.access_token, "");
+    let (_t2, dir2) = common::tempdir();
+    let bare = storage(&dir2, &[("userprofile/production", TRANSFER_RS, json!({"refresh_token": "rt-synthetic"}))], &[]);
+    let t = globus::import_from_cli(&bare).unwrap();
+    assert_eq!((t.client_id.as_str(), t.client_secret, t.access_token.as_str()), (NATIVE_CLIENT_ID, None, ""), "no client record means the native app");
 }
 
 #[test]

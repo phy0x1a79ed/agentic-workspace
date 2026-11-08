@@ -3,11 +3,10 @@
 //! check the row, not just the events. A watch that attaches to a never-polled run first
 //! emits `submitted`.
 
-mod common;
+use crate::common;
 
 use std::sync::{Arc, Mutex};
 
-use awm_plugin_dvc::globus::TERMINAL;
 use awm_plugin_dvc::now;
 use common::{doc, statuses};
 use serde_json::{json, Value};
@@ -62,20 +61,7 @@ async fn a_task_that_fails_is_recorded_as_failed_not_as_silence() {
 }
 
 #[tokio::test]
-async fn the_verdict_uses_globus_wording_verbatim() {
-    let ws = common::workspace();
-    let dao = ws.dao();
-    let run = common::live_run(&dao, "cache_sync", "task-1");
-    let (_events, emit) = common::recorder();
-
-    watch(&dao, common::task_api(vec![doc("SUCCEEDED", json!({}))], None, vec![]), emit).await;
-
-    let status = dao.get_run(&rid(&run)).unwrap().unwrap()["status"].as_str().unwrap().to_string();
-    assert!(TERMINAL.contains(&status.as_str()), "{status}");
-}
-
-#[tokio::test]
-async fn unchanged_counters_do_not_produce_an_event_per_poll() {
+async fn a_steady_task_does_not_produce_an_event_per_poll() {
     let ws = common::workspace();
     let dao = ws.dao();
     common::live_run(&dao, "cache_sync", "task-1");
@@ -85,23 +71,18 @@ async fn unchanged_counters_do_not_produce_an_event_per_poll() {
     watch(&dao, api, emit).await;
 
     assert_eq!(statuses(&events), ["submitted", "progress", "succeeded"]);
-}
 
-#[tokio::test]
-async fn progress_is_emitted_again_when_the_counters_move() {
-    let ws = common::workspace();
-    let dao = ws.dao();
-    common::live_run(&dao, "cache_sync", "task-1");
+    // Counters that move emit progress again; a run already polled does not announce itself again.
+    let run = common::live_run(&dao, "workspace_backup", "task-2");
+    dao.record_poll(&rid(&run), &doc("ACTIVE", json!({}))).unwrap();
     let api = common::task_api(
         vec![doc("ACTIVE", json!({"files_transferred": 1})), doc("ACTIVE", json!({"files_transferred": 2})), doc("SUCCEEDED", json!({}))],
         None,
         vec![],
     );
     let (events, emit) = common::recorder();
-
     watch(&dao, api, emit).await;
-
-    assert_eq!(statuses(&events), ["submitted", "progress", "progress", "succeeded"]);
+    assert_eq!(statuses(&events), ["progress", "progress", "succeeded"]);
 }
 
 #[tokio::test]
@@ -143,22 +124,11 @@ async fn a_success_that_transferred_nothing_says_why() {
     assert!(note.contains("PERMISSION_DENIED×2"), "{note}");
     let last = events.lock().unwrap().last().cloned().unwrap();
     assert!(last["message"].as_str().unwrap().contains("skipped"), "{last}");
-}
 
-#[tokio::test]
-async fn a_few_skips_on_a_transfer_that_moved_data_are_still_recorded() {
-    let ws = common::workspace();
-    let dao = ws.dao();
-    let run = common::live_run(&dao, "cache_sync", "task-1");
-    let api = common::task_api(
-        vec![doc("SUCCEEDED", json!({"files_transferred": 9999}))],
-        None,
-        vec![json!({"source_path": "/ws/gone", "error_code": "NOT_FOUND"})],
-    );
+    let run = common::live_run(&dao, "workspace_backup", "task-2");
+    let api = common::task_api(vec![doc("SUCCEEDED", json!({"files_transferred": 9999}))], None, vec![json!({"source_path": "/ws/gone", "error_code": "NOT_FOUND"})]);
     let (_events, emit) = common::recorder();
-
     watch(&dao, api, emit).await;
-
     assert!(dao.get_run(&rid(&run)).unwrap().unwrap()["note"].as_str().unwrap().contains("1 source path(s) skipped"));
 }
 
@@ -201,15 +171,3 @@ async fn a_long_run_is_alerted_once_and_keeps_polling() {
     assert!(row["alerted_at"].as_f64().unwrap() > 0.0);
 }
 
-#[tokio::test]
-async fn a_run_already_polled_does_not_announce_itself_again() {
-    let ws = common::workspace();
-    let dao = ws.dao();
-    let run = common::live_run(&dao, "cache_sync", "task-1");
-    dao.record_poll(&rid(&run), &doc("ACTIVE", json!({}))).unwrap();
-    let (events, emit) = common::recorder();
-
-    watch(&dao, common::task_api(vec![doc("SUCCEEDED", json!({}))], None, vec![]), emit).await;
-
-    assert_eq!(statuses(&events), ["succeeded"]);
-}

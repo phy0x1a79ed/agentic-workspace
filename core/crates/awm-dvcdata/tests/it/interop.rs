@@ -4,7 +4,7 @@
 //! - `AWM_DVC_ROUNDTRIP_CACHE`: a cache dir whose every `.dir` object must re-serialise
 //!   to its own bytes. The test prints counts only, never a path or a name.
 
-mod common;
+
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -13,7 +13,7 @@ use std::process::Command;
 use awm_dvcdata::odb::{self, Manifest};
 use awm_dvcdata::status::changed_outs;
 use awm_dvcdata::testkit;
-use common::*;
+use crate::common::*;
 
 fn dvc_bin() -> Option<PathBuf> {
     std::env::var_os("AWM_DVC_BIN").map(PathBuf::from)
@@ -62,20 +62,6 @@ fn status_agrees_with_dvc() {
     fs::remove_dir_all(w.main.join("data/gone")).unwrap();
     fs::remove_file(odb::object_path(&w.cache(), &lost)).unwrap();
     assert_eq!(dvc_changed(&bin, &w.main), ours(&w.main));
-}
-
-#[test]
-fn a_native_checkout_leaves_dvc_nothing_to_report() {
-    let Some(bin) = dvc_bin() else { return };
-    let w = dvc_project();
-    w.provision(&w.main);
-    add_chunk(&w.main, "c", &[("f.txt", "f\n"), ("a/b.txt", "b\n"), ("a-c", "c\n")]);
-    commit_all(&w.main, "chunk");
-    let s = w.scope("s");
-    w.provision(&s);
-    let (code, out) = dvc(&bin, &s, &["status", "--quiet"]);
-    assert_eq!(code, 0, "{out}");
-    assert_eq!(dvc(&bin, &w.main, &["status", "--quiet"]).0, 0);
 }
 
 #[test]

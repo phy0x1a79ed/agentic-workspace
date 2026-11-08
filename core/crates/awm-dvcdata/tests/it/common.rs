@@ -1,7 +1,6 @@
 //! A throwaway workspace: a bare repo with one DVC worktree, in the real awm layout,
 //! where `.git` is a file and every hook lives in the common dir.
 
-#![allow(dead_code)]
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -12,7 +11,6 @@ use serde_json::Value;
 
 pub struct Ws {
     pub _tmp: tempfile::TempDir,
-    pub root: PathBuf,
     pub ws: PathBuf,
     pub layout: Layout,
     pub bare: PathBuf,
@@ -31,11 +29,7 @@ pub fn git(repo: &Path, args: &[&str]) -> String {
     sh(repo, &v)
 }
 
-pub fn git_ok(repo: &Path, args: &[&str]) -> bool {
-    Command::new("git").arg("-C").arg(repo).args(args).output().map(|o| o.status.success()).unwrap_or(false)
-}
-
-fn identity(wt: &Path) {
+pub fn identity(wt: &Path) {
     git(wt, &["config", "user.email", "t@t"]);
     git(wt, &["config", "user.name", "t"]);
 }
@@ -71,7 +65,7 @@ pub fn workspace() -> Ws {
     identity(&main);
     let mut layout = Layout::new(&ws);
     layout.tmpfs = root.join("no-shm");
-    Ws { _tmp: tmp, root, ws, layout, bare, main, bin: PathBuf::from(env!("CARGO_BIN_EXE_awm-dvcdata")) }
+    Ws { _tmp: tmp, ws, layout, bare, main, bin: PathBuf::from(env!("CARGO_BIN_EXE_awm-dvcdata")) }
 }
 
 pub fn dvc_project() -> Ws {
@@ -127,4 +121,10 @@ pub fn ino(p: &Path) -> u64 {
 pub fn writable(p: &Path) -> bool {
     let c = std::ffi::CString::new(p.to_str().unwrap()).unwrap();
     unsafe { libc::access(c.as_ptr(), libc::W_OK) == 0 }
+}
+
+impl Drop for Ws {
+    fn drop(&mut self) {
+        awm_dvcdata::provision::chmod_dirs_writable(&self.store());
+    }
 }

@@ -1,7 +1,6 @@
 //! A throwaway workspace and a scripted Globus, shared by the integration tests. Every id
 //! here is synthetic, and nothing reaches the live workspace or the network.
 
-#![allow(dead_code)]
 
 use std::collections::VecDeque;
 use std::fs;

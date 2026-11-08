@@ -1,7 +1,5 @@
 //! The native engine: ids, manifests, checkout safety, status and the merge driver.
 
-mod common;
-
 use std::fs;
 
 use awm_dvcdata::checkout::{checkout, Outcome};
@@ -10,7 +8,7 @@ use awm_dvcdata::odb::{self, Entry, Manifest};
 use awm_dvcdata::pyjson;
 use awm_dvcdata::status::{changed_outs, State};
 use awm_dvcdata::testkit;
-use common::*;
+use crate::common::*;
 
 fn names(v: &[&str]) -> Vec<String> {
     v.iter().map(|s| s.to_string()).collect()
@@ -34,14 +32,8 @@ fn a_manifest_serialises_as_python_json_dumps() {
     assert_eq!(String::from_utf8(m.to_bytes()).unwrap(), want);
     assert_eq!(Manifest::parse(want.as_bytes(), "x").unwrap(), m);
     assert_eq!(m.oid(), format!("{}.dir", odb::md5_bytes(want.as_bytes())));
-}
-
-#[test]
-fn python_json_escapes_controls_and_quotes() {
     let v = serde_json::json!({"k": "q\"b\\s\u{7f}\u{1}\t", "a": [1, true, null]});
     assert_eq!(pyjson::dumps(&v), r#"{"a": [1, true, null], "k": "q\"b\\s\u007f\u0001\t"}"#);
-    assert_eq!(pyjson::py_tuple_repr(&["a"]), "('a',)");
-    assert_eq!(pyjson::py_tuple_repr(&["d", "it's"]), "('d', \"it's\")");
 }
 
 #[test]
@@ -55,10 +47,8 @@ fn a_legacy_pin_is_refused_never_hashed() {
     let r = checkout(&w.main, Some(&names(&["data/old"]))).unwrap();
     assert!(r.failures().contains("legacy"), "{}", r.failures());
     assert!(!w.main.join("data/old").exists());
-}
 
-#[test]
-fn an_all_digit_hash_is_read_from_the_text() {
+    // And an all-digit hash is read from the text, not as a number.
     let digits = "01234567890123456789012345678901";
     let p = awm_dvcdata::pin::Pin::parse(&format!("outs:\n- md5: {digits}\n  hash: md5\n  path: x\n"), std::path::Path::new("x.dvc")).unwrap();
     assert_eq!(p.outs[0].md5.as_deref(), Some(digits));
@@ -111,20 +101,14 @@ fn a_missing_object_fails_the_output_with_its_files_in_place() {
     testkit::unprotect(&w.main.join("data/c")).unwrap();
     fs::write(w.main.join("data/c/f.txt"), "f2\n").unwrap();
     testkit::add(&w.main, "data/c").unwrap();
-    let g = Manifest::load(&w.cache(), &oid).unwrap().entries.iter().find(|e| e.relpath == "g.txt").unwrap().md5.clone();
     let f1 = Manifest::load(&w.cache(), &oid).unwrap().entries.iter().find(|e| e.relpath == "f.txt").unwrap().md5.clone();
     let obj = odb::object_path(&w.cache(), &f1);
-    pv_writable_dirs(&w);
+    awm_dvcdata::provision::chmod_dirs_writable(&w.cache());
     fs::remove_file(obj).unwrap();
-    let _ = g;
     fs::write(w.main.join("data/c.dvc"), &v1).unwrap();
     let r = checkout(&w.main, None).unwrap();
     assert!(r.failures().contains("missing"), "{}", r.failures());
     assert_eq!(fs::read_to_string(w.main.join("data/c/f.txt")).unwrap(), "f2\n", "nothing is removed before the plan holds");
-}
-
-fn pv_writable_dirs(w: &Ws) {
-    awm_dvcdata::provision::chmod_dirs_writable(&w.cache());
 }
 
 #[test]

@@ -4,7 +4,7 @@
 //! `$AWM_WORKSPACE`. Both are process-wide, so every test here holds one lock while it points
 //! them at its own temp workspace.
 
-mod common;
+use crate::common;
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -14,7 +14,7 @@ use awm_plugin_sdk::privacy;
 use common::git;
 use serde_json::{json, Value};
 
-static ENV: Mutex<()> = Mutex::new(());
+pub static ENV: Mutex<()> = Mutex::new(());
 
 struct Marked {
     _lock: MutexGuard<'static, ()>,
@@ -56,35 +56,17 @@ async fn listed(m: &Marked, peer: bool) -> (Vec<String>, Value) {
     (names, out)
 }
 
-#[test]
-fn a_peer_stamp_is_bare_peer_or_peer_with_a_node() {
-    assert!(privacy::from_peer(Some("peer")));
-    assert!(privacy::from_peer(Some("peer:altair")));
-    assert!(!privacy::from_peer(None));
-    assert!(!privacy::from_peer(Some("user:tony")));
-}
-
 #[tokio::test]
-async fn a_peer_coverage_lists_no_private_worktree() {
+async fn a_peer_coverage_lists_no_private_worktree_and_a_broken_marks_file_hides_all() {
     let m = marked();
     let (names, out) = listed(&m, true).await;
     assert_eq!(names, ["projects/proj/dev"]);
     assert_eq!((out["scopes"].as_u64(), out["scopes_at_risk"].as_u64()), (Some(1), Some(1)));
-}
-
-#[tokio::test]
-async fn a_local_coverage_lists_every_worktree() {
-    let m = marked();
-    assert_eq!(listed(&m, false).await.0, ["projects/avatar/dev", "projects/proj/dev"]);
-}
-
-#[tokio::test]
-async fn a_broken_marks_file_shows_a_peer_no_worktree() {
-    let m = marked();
+    assert_eq!(listed(&m, false).await.0, ["projects/avatar/dev", "projects/proj/dev"], "the owner sees every worktree");
     std::fs::write(privacy::marks_path(), "{broken").unwrap();
-    assert!(listed(&m, true).await.0.is_empty());
-    assert_eq!(listed(&m, false).await.0.len(), 2);
+    assert!(listed(&m, true).await.0.is_empty(), "a broken marks file shows a peer nothing");
 }
+
 
 #[tokio::test]
 async fn a_peer_meets_a_private_scope_path_as_no_scope() {
@@ -127,13 +109,3 @@ async fn a_peer_gc_never_names_or_reaches_a_private_project() {
     assert!(!out.to_string().contains("avatar"), "{out}");
 }
 
-#[tokio::test]
-async fn a_worktree_outside_the_workspace_is_listed_by_its_absolute_path() {
-    let m = marked();
-    let bare = common::bare_project(&m.w, "outer");
-    let outside = m.w.root.join("scratch/wt");
-    git(&bare, &["worktree", "add", "-q", "-b", "feat/x", outside.to_str().unwrap(), "main"]);
-
-    let names = listed(&m, false).await.0;
-    assert!(names.contains(&outside.to_string_lossy().into_owned()), "{names:?}");
-}

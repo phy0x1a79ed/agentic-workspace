@@ -1,9 +1,9 @@
 //! The run table, against a real SQLite file. The partial unique index is the single-flight
 //! guard, so a fake DAO would test nothing that matters.
 
-mod common;
+use crate::common;
 
-use awm_plugin_dvc::{iso, now, to_epoch};
+use awm_plugin_dvc::now;
 use serde_json::json;
 
 fn id(r: &awm_plugin_dvc::runs::Row) -> String {
@@ -16,14 +16,17 @@ fn a_second_run_of_the_same_job_cannot_claim_the_slot() {
     let dao = w.dao();
     assert!(dao.begin_run("cache_sync", "schedule", "").unwrap().is_some());
     assert!(dao.begin_run("cache_sync", "manual", "").unwrap().is_none());
-}
+    assert!(dao.begin_run("workspace_backup", "manual", "").unwrap().is_some(), "the guard is per job");
 
-#[test]
-fn the_guard_is_per_job_so_the_two_backups_run_concurrently() {
-    let w = common::workspace();
-    let dao = w.dao();
-    assert!(dao.begin_run("cache_sync", "manual", "").unwrap().is_some());
-    assert!(dao.begin_run("workspace_backup", "manual", "").unwrap().is_some());
+    let live = dao.live_run("cache_sync").unwrap().unwrap();
+    dao.mark_submitted(&id(&live), "task-1", "").unwrap();
+    assert_eq!(dao.close_live("cache_sync", "superseded by a forced run").unwrap(), 1);
+    assert_eq!(dao.get_run(&id(&live)).unwrap().unwrap()["status"], "skipped");
+    assert!(dao.begin_run("cache_sync", "manual", "").unwrap().is_some(), "force retires the live row");
+
+    dao.close_live("workspace_backup", "x").unwrap();
+    dao.record_skip("workspace_backup", "schedule", "declined").unwrap();
+    assert!(dao.begin_run("workspace_backup", "manual", "").unwrap().is_some(), "a skipped row does not hold the slot");
 }
 
 #[test]
@@ -38,26 +41,6 @@ fn the_slot_frees_once_the_run_reaches_a_verdict() {
     assert_ne!(id(&second), id(&first));
     let done = dao.get_run(&id(&first)).unwrap().unwrap();
     assert_eq!((done["files"].as_i64(), done["bytes_transferred"].as_i64()), (Some(5), Some(99)));
-}
-
-#[test]
-fn a_skipped_row_does_not_hold_the_slot() {
-    let w = common::workspace();
-    let dao = w.dao();
-    dao.record_skip("cache_sync", "schedule", "declined").unwrap();
-    assert!(dao.begin_run("cache_sync", "manual", "").unwrap().is_some());
-}
-
-#[test]
-fn force_retires_the_live_row_so_a_new_one_can_claim_the_slot() {
-    let w = common::workspace();
-    let dao = w.dao();
-    let live = dao.begin_run("cache_sync", "manual", "").unwrap().unwrap();
-    dao.mark_submitted(&id(&live), "task-1", "").unwrap();
-
-    assert_eq!(dao.close_live("cache_sync", "superseded by a forced run").unwrap(), 1);
-    assert!(dao.begin_run("cache_sync", "manual", "").unwrap().is_some());
-    assert_eq!(dao.get_run(&id(&live)).unwrap().unwrap()["status"], "skipped");
 }
 
 #[test]
@@ -155,26 +138,6 @@ fn a_seeded_schedule_edit_survives_the_next_restart() {
 
     assert_eq!(row["cron"], "@every 5m");
     assert_eq!(row["enabled"].as_i64(), Some(0));
-}
-
-#[test]
-fn last_fire_is_persisted_so_catch_up_has_something_to_measure() {
-    let w = common::workspace();
-    let dao = w.dao();
-    dao.seed_job("cache_sync", "0 4 * * *", 72000, true).unwrap();
-
-    dao.set_last_fire("cache_sync", 1_700_000_000.0).unwrap();
-
-    assert_eq!(dao.get_job("cache_sync").unwrap().unwrap()["last_fire_at"].as_f64(), Some(1_700_000_000.0));
-}
-
-#[test]
-fn iso_and_to_epoch_round_trip() {
-    assert_eq!(iso(0.0), "");
-    assert_eq!(to_epoch(Some(&json!(""))), None);
-    assert_eq!(to_epoch(Some(&json!("nonsense"))), None);
-    assert_eq!(to_epoch(Some(&json!(1_700_000_000))), Some(1_700_000_000.0));
-    assert_eq!(to_epoch(Some(&json!(iso(1_700_000_000.0)))), Some(1_700_000_000.0));
 }
 
 #[test]

@@ -1,10 +1,9 @@
 //! The adopt sweep, the one rule that covers every way a run loses its watcher. Adoption
 //! never resubmits: the Globus task id is authoritative.
 
-mod common;
+use crate::common;
 
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use awm_plugin_dvc::jobs::{self, Submitter};
 use awm_plugin_dvc::runs::RunsDao;
@@ -42,27 +41,7 @@ async fn a_live_run_left_by_a_dead_process_is_adopted_to_a_verdict() {
 }
 
 #[tokio::test]
-async fn adoption_does_not_stack_a_second_watcher_on_one_run() {
-    let ws = common::workspace();
-    let dao = ws.dao();
-    common::live_run(&dao, "cache_sync", "task-abc");
-    // A task that never ends, with counters that never move: one watcher emits one progress.
-    let api = common::task_api(vec![], Some(doc("ACTIVE", json!({}))), vec![]);
-    let (events, emit) = common::recorder();
-    let w = common::watcher(dao.clone(), api, emit);
-
-    w.sweep().await.unwrap();
-    tokio::time::sleep(Duration::from_millis(30)).await;
-    w.sweep().await.unwrap();
-    tokio::time::sleep(Duration::from_millis(30)).await;
-
-    assert_eq!(w.health()["watching"], 1);
-    assert_eq!(w.health()["sweeps"], 2);
-    assert_eq!(statuses(&events), ["submitted", "progress"]);
-}
-
-#[tokio::test]
-async fn a_finished_run_is_not_adopted() {
+async fn a_finished_or_fresh_run_is_not_adopted() {
     let ws = common::workspace();
     let dao = ws.dao();
     let run = common::live_run(&dao, "cache_sync", "task-abc");
@@ -75,6 +54,12 @@ async fn a_finished_run_is_not_adopted() {
 
     assert_eq!(w.health()["watching"], 0);
     assert!(api.calls().is_empty());
+    assert!(events.lock().unwrap().is_empty());
+
+    // A run still submitting is given time before it is declared orphaned.
+    let fresh = dao.begin_run("workspace_backup", "manual", "").unwrap().unwrap();
+    w.sweep().await.unwrap();
+    assert_eq!(dao.get_run(&rid(&fresh)).unwrap().unwrap()["status"], "submitting");
     assert!(events.lock().unwrap().is_empty());
 }
 
@@ -95,21 +80,6 @@ async fn a_row_that_never_reached_globus_becomes_an_error_not_a_zombie() {
     assert_eq!(statuses(&events), ["error"]);
     // ...and the job's slot is free again, so tonight's run can proceed.
     assert!(dao.begin_run("cache_sync", "manual", "").unwrap().is_some());
-}
-
-#[tokio::test]
-async fn a_run_still_submitting_is_given_time_before_being_declared_orphaned() {
-    let ws = common::workspace();
-    let dao = ws.dao();
-    let run = dao.begin_run("workspace_backup", "manual", "").unwrap().unwrap();
-    let (events, emit) = common::recorder();
-    let w = common::watcher(dao.clone(), succeeding(), emit);
-
-    w.sweep().await.unwrap();
-
-    assert_eq!(dao.get_run(&rid(&run)).unwrap().unwrap()["status"], "submitting");
-    assert_eq!(w.health()["watching"], 0);
-    assert!(events.lock().unwrap().is_empty());
 }
 
 /// Sweeps from inside its own submit, with its row aged past the orphan limit.

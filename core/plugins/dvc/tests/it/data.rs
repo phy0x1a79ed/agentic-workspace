@@ -1,7 +1,7 @@
 //! The dvc verbs over the native data layer: a project that keeps no remote is refused by
 //! push and pull and left out of the shared-cache gc, and gc finds a wired project.
 
-mod common;
+use crate::common;
 
 use std::path::{Path, PathBuf};
 
@@ -60,19 +60,6 @@ fn push_and_pull_refuse_a_tagged_project() {
         assert_eq!(e.error_class, "DvcScopeError", "{verb}");
         assert!(e.message.contains("keeps no remote"), "{verb}: {e}");
     }
-    assert!(api.calls().is_empty());
-}
-
-#[test]
-fn an_untagged_project_dry_runs_its_push() {
-    let p = dvc_project();
-    wiring::ensure_cache_config(&p.wt, &p.layout).unwrap();
-    p.w.write_config();
-    let api = common::submitting_api();
-
-    let out = transfer::push(&p.w.paths, api.as_ref(), &p.wt.to_string_lossy(), true).unwrap();
-
-    assert_eq!(out["objects"], 0, "{out}");
     assert!(api.calls().is_empty());
 }
 

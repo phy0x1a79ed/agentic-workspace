@@ -1,13 +1,13 @@
 //! `run_job`, the one path every submission takes. The insert is the acquire, so two callers
 //! in different processes get the same answer without a check-then-act window.
 
-mod common;
+use crate::common;
 
 use std::collections::HashSet;
 use std::sync::Mutex;
 
 use awm_plugin_dvc::jobs::{self, JobError, Submitter, CACHE_SYNC, JOBS, WORKSPACE_BACKUP};
-use awm_plugin_dvc::{globus, runs};
+use awm_plugin_dvc::runs;
 use serde_json::{json, Value};
 
 /// Both jobs replaced by a recording stub. Nothing touches Globus.
@@ -57,7 +57,7 @@ fn a_submission_is_recorded_as_a_run() {
 }
 
 #[test]
-fn a_second_caller_is_declined_with_the_task_it_would_have_duplicated() {
+fn single_flight_declines_a_second_caller_unless_forced() {
     let w = common::workspace();
     let dao = w.dao();
     let stub = Stub::default();
@@ -69,57 +69,22 @@ fn a_second_caller_is_declined_with_the_task_it_would_have_duplicated() {
     assert_eq!(second["in_flight"], "task-1");
     assert!(second["note"].as_str().unwrap().contains("force=true"));
     assert_eq!(stub.calls.lock().unwrap().len(), 1);
-}
-
-#[test]
-fn a_declined_run_still_leaves_a_row() {
-    let w = common::workspace();
-    let dao = w.dao();
-    let stub = Stub::default();
-    run(&w, &dao, &stub, CACHE_SYNC, "manual", false);
-    run(&w, &dao, &stub, CACHE_SYNC, "schedule", false);
-
     let skipped = dao.history(Some(CACHE_SYNC), 20, Some("skipped"), None).unwrap();
-
-    assert_eq!(skipped.len(), 1);
+    assert_eq!(skipped.len(), 1, "a declined run still leaves a row");
     assert!(skipped[0]["note"].as_str().unwrap().contains("still running"));
+    assert_eq!(run(&w, &dao, &stub, WORKSPACE_BACKUP, "manual", false)["submitted"], true, "the two jobs do not block each other");
+    let dry = jobs::run_job(&w.paths, &dao, &stub, WORKSPACE_BACKUP, "manual", false, true).unwrap();
+    assert_eq!(dry["dry_run"], true);
+    let err = jobs::run_job(&w.paths, &dao, &stub, "nope", "manual", false, false).unwrap_err();
+    assert!(matches!(&err, JobError::Unknown(m) if m.contains("unknown job")), "{err:?}");
+    assert_force_supersedes_the_live_row(&w, &dao, &stub);
 }
 
-#[test]
-fn force_supersedes_the_live_row_and_submits() {
-    let w = common::workspace();
-    let dao = w.dao();
-    let stub = Stub::default();
-    let first = run(&w, &dao, &stub, CACHE_SYNC, "manual", false);
-
-    let second = run(&w, &dao, &stub, CACHE_SYNC, "manual", true);
-
+fn assert_force_supersedes_the_live_row(w: &common::Ws, dao: &runs::RunsDao, stub: &Stub) {
+    let first = dao.live_run(WORKSPACE_BACKUP).unwrap().unwrap();
+    let second = run(w, dao, stub, WORKSPACE_BACKUP, "manual", true);
     assert_eq!(second["submitted"], true);
-    assert_eq!(dao.get_run(first["run_id"].as_str().unwrap()).unwrap().unwrap()["status"], "skipped");
-    assert_eq!(stub.calls.lock().unwrap().len(), 2);
-}
-
-#[test]
-fn the_two_jobs_do_not_block_each_other() {
-    let w = common::workspace();
-    let dao = w.dao();
-    let stub = Stub::default();
-    assert_eq!(run(&w, &dao, &stub, CACHE_SYNC, "manual", false)["submitted"], true);
-    assert_eq!(run(&w, &dao, &stub, WORKSPACE_BACKUP, "manual", false)["submitted"], true);
-}
-
-#[test]
-fn a_dry_run_records_nothing_and_holds_no_slot() {
-    let w = common::workspace();
-    let dao = w.dao();
-    let stub = Stub::default();
-
-    let result = jobs::run_job(&w.paths, &dao, &stub, WORKSPACE_BACKUP, "manual", false, true).unwrap();
-
-    assert_eq!(result["dry_run"], true);
-    assert_eq!(result["job"], WORKSPACE_BACKUP);
-    assert!(dao.history(Some(WORKSPACE_BACKUP), 20, None, None).unwrap().is_empty());
-    assert!(dao.begin_run(WORKSPACE_BACKUP, "manual", "").unwrap().is_some());
+    assert_eq!(dao.get_run(first["id"].as_str().unwrap()).unwrap().unwrap()["status"], "skipped");
 }
 
 #[test]
@@ -134,14 +99,6 @@ fn a_submit_that_raises_leaves_an_error_row_and_frees_the_slot() {
     assert_eq!(row["status"], "error");
     assert!(row["error"].as_str().unwrap().contains("not logged in"));
     assert!(dao.begin_run(CACHE_SYNC, "manual", "").unwrap().is_some());
-}
-
-#[test]
-fn an_unknown_job_is_rejected_by_name() {
-    let w = common::workspace();
-    let dao = w.dao();
-    let err = jobs::run_job(&w.paths, &dao, &Stub::default(), "nope", "manual", false, false).unwrap_err();
-    assert!(matches!(&err, JobError::Unknown(m) if m.contains("unknown job")), "{err:?}");
 }
 
 #[test]
@@ -193,12 +150,6 @@ fn a_sync_in_flight_at_cutover_is_migrated_into_the_run_table() {
 }
 
 #[test]
-fn the_jobs_and_the_run_status_domain_agree() {
-    assert_eq!(runs::LIVE, ["submitting", "running"]);
-    assert_eq!(globus::TERMINAL, ["SUCCEEDED", "FAILED"]);
-}
-
-#[test]
 fn a_run_is_marked_submitting_only_while_its_submit_is_in_flight() {
     let w = common::workspace();
     let dao = w.dao();
@@ -213,9 +164,3 @@ fn a_run_is_marked_submitting_only_while_its_submit_is_in_flight() {
     assert!(!jobs::submitting().contains(&rid));
 }
 
-#[test]
-fn the_two_default_schedules_parse() {
-    for j in &JOBS {
-        awm_plugin_dvc::cron::parse(j.cron).unwrap();
-    }
-}

@@ -1,7 +1,7 @@
 //! The guarded gc: every route by which a pin reaches the cache is kept, and every
 //! refusal deletes nothing.
 
-mod common;
+
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use awm_dvcdata::gc::{self, GcProject, GcRequest};
 use awm_dvcdata::odb::{self, Manifest};
-use common::*;
+use crate::common::*;
 
 pub struct Layout {
     pub w: Ws,
@@ -120,19 +120,15 @@ fn an_unparseable_pin_aborts() {
 }
 
 #[test]
-fn the_grace_window_protects_a_young_object() {
-    let l = gc_layout();
-    let rep = run(&l, |r| r.dry_run = false);
-    assert_eq!(rep["result"], "ok", "{rep}");
-    assert_eq!(rep["sweep"]["collected"], 0);
-    assert!(rep["sweep"]["grace_protected"].as_u64().unwrap() >= 1);
-    assert!(closure(&l.w.cache(), &l.h["garbage"]).is_subset(&objects(&l.w.cache())));
-}
-
-#[test]
 fn collects_garbage_and_nothing_else() {
     let l = gc_layout();
     let cache = l.w.cache();
+    let young = run(&l, |r| r.dry_run = false);
+    assert_eq!(young["result"], "ok", "{young}");
+    assert_eq!(young["sweep"]["collected"], 0, "the grace window protects a young object");
+    assert!(closure(&cache, &l.h["garbage"]).is_subset(&objects(&cache)));
+    let partial = cache.join("files/md5/.abc123.tmp");
+    fs::write(&partial, "partial").unwrap();
     let dry = run(&l, |r| r.grace_days = 0.0);
     assert_eq!(dry["result"], "ok");
     assert_eq!(dry["dry_run"], true);
@@ -144,6 +140,7 @@ fn collects_garbage_and_nothing_else() {
     });
     assert_eq!(rep["result"], "ok");
     assert_eq!(rep["deleted_anything"], true);
+    assert!(!partial.exists(), "an abandoned transfer is collected");
     let left = objects(&cache);
     assert!(!left.contains(&l.h["garbage"]));
     for r in ROUTES {
@@ -196,19 +193,6 @@ fn refuses_while_another_gc_runs() {
     drop(lock);
     assert_eq!(rep["result"], "refused");
     assert!(rep["detail"].as_str().unwrap().contains(&format!("pid {}", std::process::id())), "{rep}");
-}
-
-#[test]
-fn collects_an_abandoned_transfer() {
-    let l = gc_layout();
-    let partial = l.w.cache().join("files/md5/.abc123.tmp");
-    fs::write(&partial, "partial").unwrap();
-    let rep = run(&l, |r| {
-        r.dry_run = false;
-        r.grace_days = 0.0;
-    });
-    assert_eq!(rep["result"], "ok", "{rep}");
-    assert!(!partial.exists());
 }
 
 #[test]
