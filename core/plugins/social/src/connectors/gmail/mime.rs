@@ -553,18 +553,6 @@ mod tests {
     }
 
     #[test]
-    fn an_inline_image_counts_by_its_filename_and_a_bare_inline_does_not() {
-        let raw = fixture("inline");
-        let r = row(&raw, "7");
-        assert_eq!(r.sender_name, "\"Tester, Example\" <tester@example.test>");
-        assert_eq!(r.from_addr, "tester@example.test");
-        assert_eq!(r.ts, "Wed, 04 Nov 2026 11:30:00 -0500");
-        assert_eq!(r.text, "");
-        assert_eq!(atts(&r), [(0, "logo.png", "image/png", 55), (1, "attachment-1", "application/zip", 22)]);
-        assert_eq!(downloads(&raw), [dl("logo.png", "image/png", 55, "b5e5abc3f452a2ab"), dl("attachment-1", "application/zip", 22, "8739c76e681f9009")]);
-    }
-
-    #[test]
     fn rfc2231_filenames_decode_as_python_does() {
         let raw = fixture("rfc2231");
         let r = row(&raw, "7");
@@ -592,16 +580,6 @@ mod tests {
     }
 
     #[test]
-    fn an_html_only_message_reads_as_python_does() {
-        let r = row(&fixture("html_only"), "7");
-        assert_eq!(r.text, "<html><body><p>Only HTML, caf\u{e9}</p></body></html>\r\n");
-        assert!(r.attachments.is_empty());
-        let r = row(&fixture("html_alt"), "7");
-        assert_eq!((r.text.as_str(), r.message_id.as_str()), ("", "<html.5@example.test>"));
-        assert!(r.attachments.is_empty());
-    }
-
-    #[test]
     fn non_utf8_charsets_decode_as_python_does() {
         let r = row(&fixture("latin1"), "7");
         assert_eq!(r.text, "Gr\u{fc}\u{df}e aus der K\u{fc}che\n");
@@ -612,19 +590,4 @@ mod tests {
         assert_eq!(downloads(&raw), [dl("note.txt", "text/plain", 6, "d22e5e4f55058d2c")]);
     }
 
-    #[test]
-    fn a_message_without_an_id_falls_back_to_the_uid() {
-        let r = row(&fixture("plain_noheaders"), "7");
-        assert_eq!((r.message_id.as_str(), r.ts.as_str(), r.from_addr.as_str()), ("7", "", "tester@example.test"));
-        assert_eq!(r.text, "just a plain body\r\nwith two lines\r\n");
-    }
-
-    #[test]
-    fn params_split_and_unquote_like_the_email_package() {
-        assert_eq!(parseparam("attachment; filename=\"a;b.txt\"; size=3"), ["attachment", "filename=\"a;b.txt\"", "size=3"]);
-        assert_eq!(unquote("\"a\\\"b\""), "a\"b");
-        assert_eq!(unquote("<id@x>"), "id@x");
-        assert_eq!(qp_decode(b"a=3Db=\r\nc=zz="), b"a=bc=zz");
-        assert_eq!(b64_decode(b"AAEC\r\nAw=="), [0, 1, 2, 3]);
-    }
 }

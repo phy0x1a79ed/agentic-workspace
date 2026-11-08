@@ -88,10 +88,6 @@ impl Client {
         &self.http
     }
 
-    pub async fn token(&self) -> String {
-        self.creds.read().await.token.clone()
-    }
-
     async fn auth_headers(&self, token: Option<&str>) -> Vec<(&'static str, String)> {
         let c = self.creds.read().await.clone();
         let mut h = vec![("Authorization", format!("Bearer {}", token.unwrap_or(&c.token)))];

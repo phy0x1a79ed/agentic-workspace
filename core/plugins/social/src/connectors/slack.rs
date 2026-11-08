@@ -1,7 +1,7 @@
 //! Slack: one Web API client serves both the Opal bot and Tony's read-only account
 //! (`slack_bot_conn.py`, `slack_conn.py`).
 //!
-//! [`SlackConnector::new`] routes by the token: an `xoxb-` token is the bot, anything else is a
+//! [`SlackConnector::create`] routes by the token: an `xoxb-` token is the bot, anything else is a
 //! person's own account (see [`user`]). The API base is `AWM_SLACK_API`, default
 //! `https://slack.com/api`.
 //!
@@ -190,7 +190,7 @@ pub struct SlackConnector {
 
 impl SlackConnector {
     /// The Slack connector for this account: the bot for an `xoxb-` token, else the read-only user.
-    pub fn new(cfg: AccountConfig, hooks: Hooks) -> anyhow::Result<Arc<dyn Connector>> {
+    pub fn create(cfg: AccountConfig, hooks: Hooks) -> anyhow::Result<Arc<dyn Connector>> {
         let base = Client::base_from_env();
         Ok(if cfg.token.starts_with("xoxb-") { Arc::new(Self::bot(cfg, hooks, &base)) } else { Arc::new(user::SlackUser::new(cfg, hooks, &base)) })
     }

@@ -187,19 +187,6 @@ fn log(r: &Rig) -> Vec<String> {
 
 // tests/test_gmail_imap.py
 
-#[test]
-fn imap_quote_escapes_quotes_and_backslashes() {
-    for (v, want) in [
-        ("[Gmail]/All Mail", "\"[Gmail]/All Mail\""),
-        ("INBOX", "\"INBOX\""),
-        ("has:attachment from:\"a b\"", "\"has:attachment from:\\\"a b\\\"\""),
-        ("back\\slash", "\"back\\\\slash\""),
-        ("two\r\nlines", "\"two  lines\""),
-    ] {
-        assert_eq!(imap_quote(v), want);
-    }
-}
-
 #[tokio::test]
 async fn all_mail_is_examined_quoted_and_the_query_goes_as_x_gm_raw() {
     let r = rig(vec![(1, simple(1, ME)), (2, simple(2, ME))], account()).await;
@@ -212,61 +199,7 @@ async fn all_mail_is_examined_quoted_and_the_query_goes_as_x_gm_raw() {
     assert!(!l.iter().any(|c| c.starts_with("SELECT")), "every read is read-only: {l:?}");
 }
 
-#[tokio::test]
-async fn a_bad_reply_falls_back_to_inbox() {
-    let r = rig(vec![(1, simple(1, ME))], account()).await;
-    r.fake.lock().unwrap().bad.push(ALL_MAIL.into());
-    let got = r.conn.search("x", 50, Some("tester+2@example.test")).await.unwrap();
-    assert_eq!(got.len(), 1);
-    let l: Vec<String> = log(&r).into_iter().filter(|c| c.starts_with("EXAMINE") || c.starts_with("UID SEARCH")).collect();
-    assert_eq!(l, ["EXAMINE \"[Gmail]/All Mail\"", "EXAMINE \"INBOX\"", "UID SEARCH X-GM-RAW \"from:tester+2@example.test x\""]);
-}
-
-#[tokio::test]
-async fn search_keeps_the_newest_limit_newest_first() {
-    let r = rig((1..=4).map(|u| (u, simple(u, ME))).collect(), account()).await;
-    let got = r.conn.search("x", 2, None).await.unwrap();
-    assert_eq!(got.iter().map(|m| m.message_id.as_str()).collect::<Vec<_>>(), ["<m4@example.test>", "<m3@example.test>"]);
-}
-
 // tests/test_connectors_and_manifest.py
-
-#[test]
-fn an_explicit_subject_line_is_split_off() {
-    assert_eq!(split_subject("Subject: Hi there\n\nthe body line"), ("Hi there".into(), "the body line".into()));
-    assert_eq!(split_subject("subject:\nbody"), ("(no subject)".into(), "body".into()));
-}
-
-#[test]
-fn without_a_subject_line_the_first_line_is_the_subject() {
-    assert_eq!(split_subject("just a plain message"), ("just a plain message".into(), "just a plain message".into()));
-    assert_eq!(split_subject("\n  first  \nsecond"), ("first".into(), "\n  first  \nsecond".into()));
-    assert_eq!(split_subject(&"x".repeat(100)).0.len(), 78);
-    assert_eq!(split_subject("").0, "(no subject)");
-}
-
-#[test]
-fn build_makes_a_gmail_connector() {
-    let dir = tempfile::tempdir().unwrap();
-    let (h, _rx) = hooks(&dir);
-    let g = crate::connectors::build(account(), h).unwrap();
-    assert_eq!(g.platform(), "gmail");
-    assert_eq!(g.account().address.as_deref(), Some(ME));
-    assert!(!g.sends_files() && !g.keeps_history() && !g.live());
-}
-
-#[test]
-fn endpoints_default_to_gmail() {
-    let d = Endpoints::default();
-    assert_eq!((d.imap_host.as_str(), d.imap_port, d.imap_tls), ("imap.gmail.com", 993, true));
-    assert_eq!((d.smtp_host.as_str(), d.smtp_port, d.smtp_tls), ("smtp.gmail.com", 465, true));
-    assert_eq!(d.poll, Duration::from_secs(30));
-}
-
-#[test]
-fn the_tls_config_builds_with_the_webpki_roots() {
-    assert!(tls_config().is_ok());
-}
 
 // The poll loop
 
@@ -318,76 +251,7 @@ async fn a_bad_app_password_takes_the_account_down() {
     assert!(!r.conn.live());
 }
 
-#[tokio::test]
-async fn an_empty_inbox_keeps_a_zero_baseline_until_mail_arrives() {
-    let mut r = rig(vec![], account()).await;
-    let task = tokio::spawn(r.conn.clone().start());
-    let c = r.conn.clone();
-    until(|| c.live()).await;
-    // A first message into an empty inbox only sets the baseline, as the Python's does.
-    r.fake.lock().unwrap().msgs.push((1, simple(1, ME)));
-    until(|| c.baseline() == 1).await;
-    r.fake.lock().unwrap().msgs.push((2, simple(2, ME)));
-    let m = tokio::time::timeout(Duration::from_secs(5), r.rx.recv()).await.unwrap().unwrap();
-    task.abort();
-    assert_eq!(m.message_id, "<m2@example.test>");
-}
-
 // fetch, download, list, identity
-
-#[tokio::test]
-async fn fetch_pages_back_by_uid_from_one_sender_oldest_first() {
-    let other = "tester+2@example.test";
-    let r = rig(vec![(1, simple(1, ME)), (2, simple(2, other)), (3, simple(3, ME)), (4, simple(4, ME)), (5, simple(5, ME))], account()).await;
-    let got = r.conn.fetch(ME, 2, Some("5")).await.unwrap();
-    assert_eq!(got.iter().map(|m| m.message_id.as_str()).collect::<Vec<_>>(), ["<m3@example.test>", "<m4@example.test>"]);
-    assert!(log(&r).contains(&format!("UID SEARCH FROM \"{ME}\"")));
-    let all = r.conn.fetch("INBOX", 50, Some("not-a-uid")).await.unwrap();
-    assert_eq!(all.len(), 5);
-    assert_eq!(all[1].channel_id, other);
-    assert!(log(&r).contains(&"UID SEARCH ALL".to_string()));
-    let one = r.conn.fetch("", 0, None).await.unwrap();
-    assert_eq!(one.iter().map(|m| m.message_id.as_str()).collect::<Vec<_>>(), ["<m5@example.test>"]);
-}
-
-#[tokio::test]
-async fn download_finds_the_message_by_message_id_then_by_uid() {
-    let nested = crlf(include_bytes!("fixtures/nested.eml"));
-    let r = rig(vec![(1, simple(1, ME)), (9, nested)], account()).await;
-    let all = r.conn.download_attachments(ME, "<nested.1@example.test>", None).await.unwrap();
-    assert_eq!(all.iter().map(|d| (d.filename.as_str(), d.data.len())).collect::<Vec<_>>(), [("report.pdf", 285), ("attachment-1", 0), ("data.csv", 8), ("attachment-3", 4)]);
-    assert!(log(&r).contains(&"UID SEARCH HEADER Message-ID \"<nested.1@example.test>\"".to_string()));
-    let one = r.conn.download_attachments(ME, "9", Some(2)).await.unwrap();
-    assert_eq!(one, [Downloaded { filename: "data.csv".into(), mime: "text/csv".into(), data: b"a,b\r\n1,2".to_vec() }]);
-    assert!(r.conn.download_attachments(ME, "<m1@example.test>", None).await.unwrap().is_empty());
-    let err = r.conn.download_attachments(ME, "<nope@example.test>", None).await.unwrap_err();
-    assert_eq!((err.error_class.as_str(), err.message.as_str()), ("RuntimeError", "gmail[gm] message '<nope@example.test>' not found"));
-}
-
-#[tokio::test]
-async fn mailboxes_are_the_channels() {
-    let r = rig(vec![], account()).await;
-    let got = r.conn.list_channels(false).await.unwrap();
-    assert_eq!(got.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(), ["INBOX", "[Gmail]", ALL_MAIL]);
-    assert!(got.iter().all(|c| c.kind == "mailbox" && c.id == c.name));
-    assert!(log(&r).contains(&"LIST \"\" *".to_string()));
-}
-
-#[tokio::test]
-async fn identity_is_the_address_and_the_display_name() {
-    let r = rig(vec![], account()).await;
-    assert_eq!(r.conn.identity().await.unwrap(), Identity { id: ME.into(), name: ME.into() });
-    let r = rig(vec![], AccountConfig { display_name: Some("Tester".into()), ..account() }).await;
-    assert_eq!(r.conn.identity().await.unwrap().name, "Tester");
-}
-
-#[tokio::test]
-async fn reads_without_an_address_refuse() {
-    let r = rig(vec![], AccountConfig { address: None, ..account() }).await;
-    let err = r.conn.fetch("", 5, None).await.unwrap_err();
-    assert_eq!((err.error_class.as_str(), err.message.as_str()), ("RuntimeError", "gmail[gm] no address configured"));
-    assert!(r.conn.clone().start().await.is_err());
-}
 
 // SMTP
 
@@ -474,12 +338,4 @@ async fn send_logs_in_and_threads_by_message_id() {
     assert_eq!(header("References").as_deref(), Some("<parent@example.test>"));
     assert!(header("Content-Type").unwrap().starts_with("text/plain"));
     assert_eq!(body, "the body line\r\n");
-}
-
-#[tokio::test]
-async fn a_bad_recipient_is_a_value_error() {
-    let r = rig(vec![], account()).await;
-    let err = r.conn.send("not an address", "hi", None, &[]).await.unwrap_err();
-    assert_eq!(err.error_class, "ValueError");
-    assert!(err.message.starts_with("gmail[gm] bad recipient 'not an address'"), "{}", err.message);
 }

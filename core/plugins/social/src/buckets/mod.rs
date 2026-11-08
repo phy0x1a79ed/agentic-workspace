@@ -197,7 +197,7 @@ pub async fn put_tree(b: &dyn Bucket, path: &str, src: &Path, parents: bool) -> 
 /// Build one configured bucket.
 pub fn build(cfg: &crate::config::BucketConfig) -> anyhow::Result<std::sync::Arc<dyn Bucket>> {
     match cfg.kind.as_str() {
-        "google_drive" => gdrive::GoogleDrive::new(cfg.clone()),
+        "google_drive" => gdrive::GoogleDrive::create(cfg.clone()),
         other => anyhow::bail!("no bucket backend for kind {other:?}"),
     }
 }

@@ -325,6 +325,7 @@ impl Store {
     }
 
     /// The latest line pushed to `(node, job)`: what `send` and `react` default to.
+    #[allow(clippy::too_many_arguments)]
     pub async fn set_line(&self, node: &str, job: &str, account: &str, channel: &str, thread: &str, message_id: &str, at: f64) {
         let v = [node, job, account, channel, thread, message_id].map(str::to_string);
         let _ = self

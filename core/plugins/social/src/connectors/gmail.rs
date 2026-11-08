@@ -223,7 +223,7 @@ pub struct GmailConnector {
 
 impl GmailConnector {
     /// The connector for `cfg`, at Gmail's endpoints or the `AWM_GMAIL_*` overrides.
-    pub fn new(cfg: AccountConfig, hooks: Hooks) -> anyhow::Result<Arc<dyn Connector>> {
+    pub fn create(cfg: AccountConfig, hooks: Hooks) -> anyhow::Result<Arc<dyn Connector>> {
         Ok(Self::with_endpoints(cfg, hooks, Endpoints::from_env()))
     }
 

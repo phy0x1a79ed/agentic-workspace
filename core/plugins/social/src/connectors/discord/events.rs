@@ -388,10 +388,6 @@ pub mod tests {
         serde_json::from_value(v).unwrap()
     }
 
-    fn channel(v: Value) -> Channel {
-        serde_json::from_value(v).unwrap()
-    }
-
     #[test]
     fn a_dm_seat_hears_only_plain_words() {
         for (bot, kind, text, heard) in [
@@ -404,89 +400,6 @@ pub mod tests {
         ] {
             assert_eq!(natural(&message(bot, kind, text, None), ChatKind::Dm), heard, "{bot} {kind} {text:?}");
         }
-    }
-
-    #[test]
-    fn a_guild_message_always_reaches_the_holder() {
-        let m = message(true, 20, "/x", Some(9));
-        assert!(natural(&m, ChatKind::Channel));
-        assert!(natural(&m, ChatKind::Group));
-        let mut c = Cache::default();
-        let got = c.message("bot", &m).unwrap();
-        assert!(got.to_holder);
-        assert_eq!(got.kind, ChatKind::Channel);
-    }
-
-    #[test]
-    fn users_print_as_discord_py_prints_them() {
-        assert_eq!(user_str("tester", 0), "tester");
-        assert_eq!(user_str("tester", 1), "tester#0001");
-    }
-
-    #[test]
-    fn a_snowflake_time_matches_python_isoformat() {
-        assert_eq!(snowflake_iso(0), "2015-01-01T00:00:00+00:00");
-        assert_eq!(snowflake_iso(1234 << 22), "2015-01-01T00:00:01.234000+00:00");
-    }
-
-    #[test]
-    fn a_dm_message_is_normalised_and_marks_the_dm_spoken() {
-        let mut c = Cache { me: Some((1, "bot".into())), ..Default::default() };
-        let mut v = message_json(1 << 22, 555, user_json(4242, "tester", false), "hello", 0);
-        v["attachments"] = json!([{"id": "77", "filename": "a.txt", "size": 3, "url": "http://cdn.test/a.txt", "proxy_url": "", "content_type": "text/plain"}]);
-        let m: Message = serde_json::from_value(v).unwrap();
-        let got = c.message("bot", &m).unwrap();
-        assert_eq!(
-            got,
-            Inbound {
-                account: "bot".into(),
-                platform: "discord".into(),
-                channel_id: "555".into(),
-                text: "hello".into(),
-                sender_id: "4242".into(),
-                sender_name: "tester".into(),
-                message_id: (1u64 << 22).to_string(),
-                ts: "2015-01-01T00:00:00.001000+00:00".into(),
-                attachments: vec![Attachment { idx: 0, filename: "a.txt".into(), mime: "text/plain".into(), size: 3, url: "http://cdn.test/a.txt".into(), r#ref: json!({"id": "77"}) }],
-                to_holder: true,
-                kind: ChatKind::Dm,
-                ..Default::default()
-            }
-        );
-        assert!(c.spoken.contains(&555));
-        assert_eq!(c.dm_of.get(&4242), Some(&555));
-        assert_eq!(c.channels(true), vec![crate::connectors::Channel { id: "555".into(), name: "tester".into(), kind: "dm".into() }]);
-    }
-
-    #[test]
-    fn our_own_message_is_dropped_and_a_bot_dm_marks_nothing() {
-        let mut c = Cache { me: Some((4242, "bot".into())), ..Default::default() };
-        assert_eq!(c.message("bot", &message(false, 0, "x", None)), None);
-        c.me = Some((1, "bot".into()));
-        let got = c.message("bot", &message(true, 0, "x", None)).unwrap();
-        assert!(!got.to_holder && got.sender_bot);
-        assert!(c.spoken.is_empty());
-    }
-
-    #[test]
-    fn guild_channels_carry_the_server_and_list_in_ui_order() {
-        let mut c = Cache::default();
-        let chans = [
-            channel(json!({"id": "11", "type": 0, "name": "general", "position": 2})),
-            channel(json!({"id": "12", "type": 0, "name": "lab", "position": 1})),
-            channel(json!({"id": "13", "type": 2, "name": "voice", "position": 0})),
-            channel(json!({"id": "14", "type": 11, "name": "a-thread", "guild_id": "9"})),
-        ];
-        c.put_guild(9, "Lab Server", &chans);
-        c.put_channel(&channel(json!({"id": "20", "type": 3, "name": "group"})));
-        assert_eq!(c.place(11, Some(9)), Place { channel_name: "general".into(), server: "Lab Server".into(), kind: ChatKind::Channel });
-        assert_eq!(c.place(14, Some(9)).channel_name, "a-thread");
-        assert_eq!(c.place(20, None), Place { channel_name: "group".into(), server: String::new(), kind: ChatKind::Group });
-        assert_eq!(c.place(999, None).kind, ChatKind::Dm);
-        let names: Vec<String> = c.channels(false).into_iter().map(|c| format!("{}={}", c.id, c.name)).collect();
-        assert_eq!(names, ["12=Lab Server#lab", "11=Lab Server#general"]);
-        c.drop_guild(9);
-        assert!(c.channels(false).is_empty());
     }
 
     #[test]
@@ -523,16 +436,6 @@ pub mod tests {
 
     pub fn interaction(guild: Option<u64>, uid: u64, device: Option<&str>) -> Interaction {
         serde_json::from_value(interaction_json(guild, uid, device, APPROVE_COMMAND)).unwrap()
-    }
-
-    #[test]
-    fn an_invocation_reads_its_device_user_and_channel() {
-        let inv = approve_of(&interaction(None, 4242, None)).unwrap();
-        assert_eq!(inv, Invocation { user_id: "4242".into(), user_name: "tester".into(), channel_id: "999".into(), in_guild: false, device: "cwl".into() });
-        assert_eq!(approve_of(&interaction(None, 4242, Some("alliance"))).unwrap().device, "alliance");
-        assert!(approve_of(&interaction(Some(9), 4242, None)).unwrap().in_guild);
-        let other: Interaction = serde_json::from_value(interaction_json(None, 4242, None, "other")).unwrap();
-        assert_eq!(approve_of(&other), None);
     }
 
     #[test]

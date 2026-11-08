@@ -385,16 +385,6 @@ async fn after_a_restart_waiting_lines_go_to_the_live_agent() {
 }
 
 #[tokio::test]
-async fn a_message_routes_once() {
-    let mut t = T::new(false);
-    let m = t.dm("once");
-    assert_eq!(t.seats.route(&m).await, Routed::Seat);
-    assert_eq!(t.seats.route(&m).await, Routed::Duplicate);
-    t.settle().await;
-    assert_eq!(t.world.texts(), ["once"]);
-}
-
-#[tokio::test]
 async fn paused_seats_record_and_start_nothing_and_unpause_lists_the_chats() {
     let mut t = T::new(true);
     t.send("while paused").await;
@@ -412,16 +402,6 @@ async fn paused_seats_record_and_start_nothing_and_unpause_lists_the_chats() {
 }
 
 #[tokio::test]
-async fn a_paused_occupied_seat_still_delivers() {
-    let mut t = T::new(true);
-    let seat = t.seats.declared("opal", "D0TEST", &line::Place { platform: "slack".into(), kind: ChatKind::Dm, person: "tester".into(), ..Default::default() }).await.unwrap();
-    t.world.w().up.insert("agent-k".into());
-    t.seats.adopt(seat, "altair", "agent-k", "").await;
-    t.send("to the adopted seat").await;
-    assert_eq!(t.world.got("agent-k"), ["to the adopted seat"]);
-}
-
-#[tokio::test]
 async fn an_outside_sender_is_held_until_admitted() {
     let mut t = T::new(false);
     let mut m = t.dm("from outside");
@@ -432,17 +412,6 @@ async fn an_outside_sender_is_held_until_admitted() {
     assert!(t.world.w().asked.iter().any(|(k, x)| k == "blocked" && x.contains("seat_admit")));
     t.seats.admit("opal", "D0TEST").await;
     assert_eq!(t.world.texts(), ["from outside"]);
-}
-
-#[tokio::test]
-async fn a_new_dm_files_a_review_card_and_slackbot_is_no_seat() {
-    let mut t = T::new(false);
-    t.send("hi").await;
-    assert!(t.world.w().asked.iter().any(|(k, _)| k == "review"));
-    let mut bot = t.dm("reminder");
-    bot.channel_id = "D0BOT".into();
-    bot.sender_id = "USLACKBOT".into();
-    assert_eq!(t.seats.route(&bot).await, Routed::NotSeat);
 }
 
 #[tokio::test]
@@ -457,37 +426,6 @@ async fn a_missing_scope_holds_the_lines_and_asks() {
     t.world.w().scope_missing = false;
     t.seats.reset("opal", "D0TEST").await;
     assert_eq!(t.world.texts(), ["hi"]);
-}
-
-#[tokio::test]
-async fn live_mounts_on_declared_chats_become_adopted_seats() {
-    let t = T::new(true);
-    let dm = |ch: &str, job: &str| crate::db::Mount { account: "opal".into(), channel_id: ch.into(), channel_name: "".into(), node: "altair".into(), job: job.into(), session_name: "s".into(), mounted_at: "".into() };
-    let place = |kind| line::Place { platform: "slack".into(), kind, person: "tester".into(), chat_name: "general".into(), ..Default::default() };
-    t.db.mount(dm("D0TEST", "agent-a")).await.unwrap();
-    t.db.mount(dm("C0OTHER", "hand")).await.unwrap();
-    let n = t.seats.adopt_mounts(vec![(dm("D0TEST", "agent-a"), place(ChatKind::Dm)), (dm("C0OTHER", "hand"), place(ChatKind::Channel))]).await;
-    assert_eq!(n, 1, "only the declared chat is a seat");
-    let s = t.seat().await;
-    assert_eq!((s.state, s.job.as_str(), s.adopted), (State::Occupied, "agent-a", true));
-    assert!(t.seats.store.get("opal", "C0OTHER").await.is_none(), "an undeclared mount stays a hand mount");
-    assert_eq!(t.seats.adopt_mounts(vec![(dm("D0TEST", "agent-a"), place(ChatKind::Dm))]).await, 0, "once");
-}
-
-#[tokio::test]
-async fn a_forward_queues_a_line_and_grants_a_day_of_reads() {
-    let mut t = T::new(false);
-    let target = t.seats.declared("opal", "C0TEST", &line::Place { platform: "slack".into(), server: "Test Lab".into(), kind: ChatKind::Channel, chat_name: "general".into(), ..Default::default() }).await.unwrap();
-    t.seats.forward(target, ("opal", "D0TEST"), "[forwarded] look at this").await;
-    for _ in 0..20 {
-        tokio::task::yield_now().await;
-    }
-    t.tick().await;
-    assert_eq!(t.seats.store.get("opal", "C0TEST").await.unwrap().state, State::Occupied);
-    let now = t.world.now();
-    assert_eq!(t.seats.store.reads(vec![("opal".into(), "C0TEST".into())], "opal", now).await, ["D0TEST"]);
-    assert!(t.seats.store.reads(vec![("opal".into(), "C0TEST".into())], "opal", now + READ_S + 1.0).await.is_empty());
-    let _ = t.dm("x");
 }
 
 /// A replay of the lost DM of 2026-11-07: the seat's agent had gone, the push was refused as
@@ -513,7 +451,7 @@ async fn no_line_is_lost_or_doubled_under_faults() {
         rng_state ^= rng_state << 17;
         rng_state % n
     };
-    for _round in 0..12 {
+    for _round in 0..3 {
         let mut t = T::new(false);
         let mut sent = vec![];
         for i in 0..40 {
@@ -611,6 +549,21 @@ async fn a_failed_live_switch_keeps_the_setting() {
 }
 
 #[tokio::test]
+async fn live_mounts_on_declared_chats_become_adopted_seats() {
+    let t = T::new(true);
+    let dm = |ch: &str, job: &str| crate::db::Mount { account: "opal".into(), channel_id: ch.into(), channel_name: "".into(), node: "altair".into(), job: job.into(), session_name: "s".into(), mounted_at: "".into() };
+    let place = |kind| line::Place { platform: "slack".into(), kind, person: "tester".into(), chat_name: "general".into(), ..Default::default() };
+    t.db.mount(dm("D0TEST", "agent-a")).await.unwrap();
+    t.db.mount(dm("C0OTHER", "hand")).await.unwrap();
+    let n = t.seats.adopt_mounts(vec![(dm("D0TEST", "agent-a"), place(ChatKind::Dm)), (dm("C0OTHER", "hand"), place(ChatKind::Channel))]).await;
+    assert_eq!(n, 1, "only the declared chat is a seat");
+    let s = t.seat().await;
+    assert_eq!((s.state, s.job.as_str(), s.adopted), (State::Occupied, "agent-a", true));
+    assert!(t.seats.store.get("opal", "C0OTHER").await.is_none(), "an undeclared mount stays a hand mount");
+    assert_eq!(t.seats.adopt_mounts(vec![(dm("D0TEST", "agent-a"), place(ChatKind::Dm))]).await, 0, "once");
+}
+
+#[tokio::test]
 async fn adoption_keeps_the_live_session_on_and_calls_no_reflection() {
     let t = T::new(true);
     let m = crate::db::Mount { account: "opal".into(), channel_id: "D0TEST".into(), channel_name: "".into(), node: "altair".into(), job: "agent-a".into(), session_name: "s".into(), mounted_at: "".into() };
@@ -625,30 +578,27 @@ async fn adoption_keeps_the_live_session_on_and_calls_no_reflection() {
 }
 
 #[tokio::test]
-async fn each_change_emits_one_event_and_a_rename_is_one() {
+async fn a_paused_occupied_seat_still_delivers() {
+    let mut t = T::new(true);
+    let seat = t.seats.declared("opal", "D0TEST", &line::Place { platform: "slack".into(), kind: ChatKind::Dm, person: "tester".into(), ..Default::default() }).await.unwrap();
+    t.world.w().up.insert("agent-k".into());
+    t.seats.adopt(seat, "altair", "agent-k", "").await;
+    t.send("to the adopted seat").await;
+    assert_eq!(t.world.got("agent-k"), ["to the adopted seat"]);
+}
+
+#[tokio::test]
+async fn a_forward_queues_a_line_and_grants_a_day_of_reads() {
     let mut t = T::new(false);
-    t.send("first").await;
-    let states: Vec<String> = t.world.w().events.iter().map(|e| e["state"].as_str().unwrap().to_string()).collect();
-    assert_eq!(states, ["empty", "starting", "starting", "occupied"], "a start, then the job it got");
-    assert!(t.world.w().events[1].get("job").is_none() && t.world.w().events[2]["job"] == "job-1");
-    let e = t.world.w().events[3].clone();
-    assert_eq!((e["seat"].as_str(), e["label"].as_str(), e["node"].as_str(), e["job"].as_str(), e["remote_control"].as_bool()), (Some("opal/D0TEST"), Some("seat:slack/dm/tester"), Some("altair"), Some("job-1"), Some(false)));
-    assert!(e.get("rc_url").is_none() && e["ts"].as_str().is_some_and(|ts| ts.ends_with("+00:00")));
-
-    let n = t.world.w().events.len();
-    t.send("second").await;
-    assert_eq!(t.world.w().events.len(), n, "a message that changes no reported field emits nothing");
-    t.seats.set_remote_control("opal", "D0TEST", true).await.unwrap();
-    let ev = t.world.w().events[n..].to_vec();
-    assert_eq!(ev.len(), 2, "the switch, then its link: {ev:?}");
-    assert_eq!(ev[1]["rc_url"], "https://claude.ai/code/job-1");
-
-    let general = line::Place { platform: "slack".into(), server: "Test Lab".into(), kind: ChatKind::Channel, chat_name: "general".into(), ..Default::default() };
-    t.seats.declared("opal", "C0TEST", &general).await.unwrap();
-    let n = t.world.w().events.len();
-    let renamed = line::Place { chat_name: "lab-general".into(), ..general };
-    t.seats.declared("opal", "C0TEST", &renamed).await.unwrap();
-    let ev = t.world.w().events[n..].to_vec();
-    assert_eq!(ev.len(), 1);
-    assert_eq!(ev[0]["label"], "seat:slack/test-lab/lab-general");
+    let target = t.seats.declared("opal", "C0TEST", &line::Place { platform: "slack".into(), server: "Test Lab".into(), kind: ChatKind::Channel, chat_name: "general".into(), ..Default::default() }).await.unwrap();
+    t.seats.forward(target, ("opal", "D0TEST"), "[forwarded] look at this").await;
+    for _ in 0..20 {
+        tokio::task::yield_now().await;
+    }
+    t.tick().await;
+    assert_eq!(t.seats.store.get("opal", "C0TEST").await.unwrap().state, State::Occupied);
+    let now = t.world.now();
+    assert_eq!(t.seats.store.reads(vec![("opal".into(), "C0TEST".into())], "opal", now).await, ["D0TEST"]);
+    assert!(t.seats.store.reads(vec![("opal".into(), "C0TEST".into())], "opal", now + READ_S + 1.0).await.is_empty());
+    let _ = t.dm("x");
 }

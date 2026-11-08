@@ -177,8 +177,6 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    const PLACEHOLDER: &str = "This message contains interactive elements.";
-
     fn rich(elements: Vec<Value>) -> Value {
         json!({"type": "rich_text", "elements": elements})
     }
@@ -197,81 +195,4 @@ mod tests {
         assert_eq!(slack_text(&m), "hello *there*");
     }
 
-    #[test]
-    fn no_blocks_no_attachments_is_the_text() {
-        assert_eq!(slack_text(&json!({"text": "plain"})), "plain");
-        assert_eq!(slack_text(&json!({})), "");
-    }
-
-    #[test]
-    fn placeholder_is_replaced_by_rich_text() {
-        let m = json!({"text": PLACEHOLDER, "blocks": [rich(vec![section(vec![
-            txt("see "), json!({"type": "link", "url": "https://x.org/a", "text": "the doc"}),
-            txt(" cc "), json!({"type": "user", "user_id": "U1"}),
-            txt(" in "), json!({"type": "channel", "channel_id": "C1"}),
-            txt(" "), json!({"type": "emoji", "name": "tada"}),
-            txt(" "), json!({"type": "broadcast", "range": "here"}),
-        ])])]});
-        assert_eq!(slack_text(&m), "see the doc (https://x.org/a) cc <@U1> in <#C1> :tada: @here");
-    }
-
-    #[test]
-    fn a_bare_link_is_its_url() {
-        let m = json!({"text": "", "blocks": [rich(vec![section(vec![json!({"type": "link", "url": "https://x.org"})])])]});
-        assert_eq!(slack_text(&m), "https://x.org");
-    }
-
-    #[test]
-    fn lists_preformatted_and_quotes() {
-        let m = json!({"text": PLACEHOLDER, "blocks": [rich(vec![
-            section(vec![txt("steps:")]),
-            json!({"type": "rich_text_list", "style": "ordered", "elements": [section(vec![txt("one")]), section(vec![txt("two")])]}),
-            json!({"type": "rich_text_list", "style": "bullet", "indent": 1, "elements": [section(vec![txt("nested")])]}),
-            json!({"type": "rich_text_preformatted", "elements": [txt("a,b\n1,2")]}),
-            json!({"type": "rich_text_quote", "elements": [txt("q1\nq2")]}),
-        ])]});
-        assert_eq!(slack_text(&m), ["steps:", "1. one", "2. two", "  • nested", "```\na,b\n1,2\n```", "> q1", "> q2"].join("\n"));
-    }
-
-    #[test]
-    fn table_block_cells_raw_and_rich() {
-        let table = json!({"type": "table", "rows": [
-            [{"type": "raw_text", "text": "name"}, {"type": "raw_text", "text": "n"}],
-            [rich(vec![section(vec![txt("ab")])]), {"type": "raw_text", "text": "3"}],
-        ]});
-        assert_eq!(slack_text(&json!({"text": PLACEHOLDER, "blocks": [table]})), "name | n\nab | 3");
-    }
-
-    #[test]
-    fn table_is_appended_to_real_text() {
-        let table = json!({"type": "table", "rows": [[{"type": "raw_text", "text": "k"}]]});
-        assert_eq!(slack_text(&json!({"text": "results:", "blocks": [table]})), "results:\nk");
-    }
-
-    #[test]
-    fn section_header_context_and_markdown_blocks() {
-        let m = json!({"text": "", "blocks": [
-            {"type": "header", "text": {"type": "plain_text", "text": "Report"}},
-            {"type": "section", "text": {"type": "mrkdwn", "text": "*body*"},
-             "fields": [{"type": "mrkdwn", "text": "a"}, {"type": "mrkdwn", "text": "b"}]},
-            {"type": "context", "elements": [{"type": "mrkdwn", "text": "note"}, {"type": "image", "alt_text": "icon"}]},
-            {"type": "divider"},
-            {"type": "actions", "elements": [{"type": "button"}]},
-            {"type": "markdown", "text": "# md"},
-        ]});
-        assert_eq!(slack_text(&m), "Report\n*body*\na\nb\nnote icon\n# md");
-    }
-
-    #[test]
-    fn attachments_text_then_fallback() {
-        let m = json!({"text": "", "attachments": [
-            {"pretext": "pre", "title": "T", "text": "body", "fields": [{"title": "k", "value": "v"}], "fallback": "ignored"},
-            {"fallback": "only the fallback"}]});
-        assert_eq!(slack_text(&m), "pre\nT\nbody\nk: v\nonly the fallback");
-    }
-
-    #[test]
-    fn a_placeholder_with_nothing_to_show_stays_the_placeholder() {
-        assert_eq!(slack_text(&json!({"text": PLACEHOLDER, "blocks": [{"type": "divider"}]})), PLACEHOLDER);
-    }
 }

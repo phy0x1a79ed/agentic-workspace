@@ -58,7 +58,7 @@ pub struct DiscordConnector {
 
 impl DiscordConnector {
     /// Build the connector. Nothing connects until `start`.
-    pub fn new(cfg: AccountConfig, hooks: Hooks) -> anyhow::Result<Arc<dyn Connector>> {
+    pub fn create(cfg: AccountConfig, hooks: Hooks) -> anyhow::Result<Arc<dyn Connector>> {
         let api = std::env::var("AWM_DISCORD_API").ok().filter(|s| !s.trim().is_empty());
         let gateway = std::env::var("AWM_DISCORD_GATEWAY").ok().filter(|s| !s.trim().is_empty());
         Ok(Arc::new(Self::build(cfg, hooks, api.as_deref(), gateway, true)?))

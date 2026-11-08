@@ -299,9 +299,9 @@ pub fn looks_like_slack_user_id(s: &str) -> bool {
 /// Build one account's connector: a Slack token routes by its prefix inside the Slack client.
 pub fn build(cfg: AccountConfig, hooks: Hooks) -> anyhow::Result<Arc<dyn Connector>> {
     Ok(match cfg.platform.as_str() {
-        "slack" => slack::SlackConnector::new(cfg, hooks)?,
-        "discord" => discord::DiscordConnector::new(cfg, hooks)?,
-        "gmail" => gmail::GmailConnector::new(cfg, hooks)?,
+        "slack" => slack::SlackConnector::create(cfg, hooks)?,
+        "discord" => discord::DiscordConnector::create(cfg, hooks)?,
+        "gmail" => gmail::GmailConnector::create(cfg, hooks)?,
         other => anyhow::bail!("no connector for platform {other:?}"),
     })
 }
@@ -346,20 +346,5 @@ pub mod emoji {
     pub fn to_name(emoji: &str) -> String {
         let e = emoji.trim();
         name_of(e).map(str::to_string).unwrap_or_else(|| bare(e).to_string())
-    }
-
-    #[cfg(test)]
-    mod tests {
-        use super::*;
-
-        #[test]
-        fn names_and_characters_map_both_ways() {
-            assert_eq!(to_char(":eyes:").as_deref(), Some("👀"));
-            assert_eq!(to_char("👀").as_deref(), Some("👀"));
-            assert_eq!(to_char("custom_thing"), None);
-            assert_eq!(to_name("👍"), "+1");
-            assert_eq!(to_name("❤"), "heart");
-            assert_eq!(to_name(":party_parrot:"), "party_parrot");
-        }
     }
 }

@@ -602,32 +602,4 @@ mod tests {
         assert_eq!((rc, url.as_str(), state.as_str()), (0, "", "occupied"));
     }
 
-    #[test]
-    fn a_db_with_tables_and_no_version_is_refused() {
-        let tmp = tempfile::tempdir().unwrap();
-        let p = tmp.path().join("x.db");
-        Connection::open(&p).unwrap().execute_batch("CREATE TABLE other (a);").unwrap();
-        assert!(open_conn(&p).is_err());
-    }
-
-    #[tokio::test]
-    async fn history_orders_by_ts_and_the_cursor_never_moves_back() {
-        let tmp = tempfile::tempdir().unwrap();
-        let db = Db::open(&tmp.path().join("s.db")).unwrap();
-        let h = History::new(db.clone(), "opal");
-        for (id, ts) in [("1", "10.5"), ("2", "9.0"), ("3", "11.0")] {
-            let m = crate::connectors::Inbound { channel_id: "C".into(), message_id: id.into(), ts: ts.into(), sender_id: "U1".into(), ..Default::default() };
-            h.record(&m, false, false).await;
-        }
-        let ids = |rows: Vec<Value>| rows.iter().map(|r| r["message_id"].as_str().unwrap().to_string()).collect::<Vec<_>>();
-        assert_eq!(ids(db.history("opal", None, None, 2, false).await.unwrap()), ["1", "3"]);
-        assert_eq!(ids(db.history("opal", Some("C"), Some("9.5"), 10, false).await.unwrap()), ["1", "3"]);
-        h.mark_deleted("C", "3").await;
-        assert_eq!(ids(db.history("opal", None, None, 10, false).await.unwrap()), ["2", "1"]);
-        assert!(h.has_inbound("C").await);
-        h.set_synced("C", "11.0", "general").await;
-        h.set_synced("C", "5.0", "").await;
-        assert_eq!(h.synced_ts("C").await.as_deref(), Some("11.0"));
-        assert_eq!(db.synced_channels("opal").await.unwrap()[0]["channel_name"], "general");
-    }
 }

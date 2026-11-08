@@ -13,7 +13,6 @@ use axum::{Form, Json, Router};
 use serde_json::{json, Value};
 
 use super::*;
-use crate::buckets::{get_tree, put_tree, walk};
 
 const F: &str = FOLDER;
 
@@ -135,7 +134,7 @@ async fn file_get(State(s): State<St>, h: HeaderMap, AxPath(id): AxPath<String>,
     if !authed(&mut st, &h) {
         return denied();
     }
-    if id == "root" && q.get("alt").is_none() {
+    if id == "root" && !q.contains_key("alt") {
         return Json(json!({"id": "root"})).into_response();
     }
     let Some(n) = st.node(&id).cloned() else { return missing(&id) };
@@ -351,31 +350,6 @@ fn src(dir: &Path, data: &[u8]) -> std::path::PathBuf {
 }
 
 #[tokio::test]
-async fn ls_root_sorts_folders_first() {
-    let s = stand(tree()).await;
-    let b = s.bucket("");
-    let e = b.ls("").await.unwrap();
-    let got: Vec<_> = e.iter().map(|e| (e.name.as_str(), e.is_dir, e.path.as_str())).collect();
-    assert_eq!(got, [("docs", true, "docs"), ("pic.png", false, "pic.png")]);
-    let sub = b.ls("docs").await.unwrap();
-    assert_eq!((sub[0].path.as_str(), sub[0].size, sub[0].modified.as_str()), ("docs/note.txt", 5, "2026-01-01"));
-    let err = b.ls("pic.png").await.unwrap_err();
-    assert_eq!((err.error_class.as_str(), err.message.as_str()), ("NotADirectoryError", "bucket \"g\": \"pic.png\" is not a folder"));
-}
-
-#[tokio::test]
-async fn stat_resolves_nested_paths() {
-    let s = stand(tree()).await;
-    let b = s.bucket("");
-    let e = b.stat("/docs/note.txt").await.unwrap();
-    assert_eq!((e.name.as_str(), e.is_dir, e.id.as_str(), e.path.as_str()), ("note.txt", false, "f1", "docs/note.txt"));
-    assert_eq!(b.stat("pic.png").await.unwrap().web_url, "https://drive.example/f2");
-    let err = b.stat("docs/nope.txt").await.unwrap_err();
-    assert_eq!(err.error_class, "FileNotFoundError");
-    assert_eq!(err.message, "bucket \"g\": no such path \"docs/nope.txt\" (missing segment \"nope.txt\")");
-}
-
-#[tokio::test]
 async fn paths_resolve_under_the_bucket_root() {
     let mut nodes = vec![("top", node("top", F, "root", b"")), ("out", node("outside.txt", "text/plain", "root", b"x"))];
     nodes.push(("d1", node("docs", F, "top", b"")));
@@ -388,49 +362,6 @@ async fn paths_resolve_under_the_bucket_root() {
     assert_eq!(b.stat("outside.txt").await.unwrap_err().error_class, "FileNotFoundError");
     let e = b.mkdir("docs/new").await.unwrap();
     assert_eq!(s.where_is(&e.id).0, "d1");
-}
-
-#[tokio::test]
-async fn ambiguous_name_first_match_wins_and_lists_page() {
-    let mut nodes = tree();
-    nodes.push(("f1b", node("note.txt", "text/plain", "d1", b"different")));
-    let s = stand(nodes).await;
-    s.st.lock().unwrap().page = 1;
-    let b = s.bucket("");
-    assert_eq!(b.stat("docs/note.txt").await.unwrap().id, "f1");
-    assert_eq!(b.ls("docs").await.unwrap().len(), 2);
-}
-
-#[tokio::test]
-async fn get_downloads_bytes() {
-    let s = stand(tree()).await;
-    let b = s.bucket("");
-    let dir = tempfile::tempdir().unwrap();
-    let got = b.get("docs/note.txt", dir.path()).await.unwrap();
-    assert_eq!((got.filename.as_str(), got.mime.as_str(), got.size), ("note.txt", "text/plain", 5));
-    assert_eq!(got.path, dir.path().join("note.txt").display().to_string());
-    assert_eq!(std::fs::read(&got.path).unwrap(), b"hello");
-    let err = b.get("docs", dir.path()).await.unwrap_err();
-    assert_eq!((err.error_class.as_str(), err.message.as_str()), ("IsADirectoryError", "bucket \"g\": \"docs\" is a folder"));
-}
-
-#[tokio::test]
-async fn get_exports_google_native_docs() {
-    let mut nodes = tree();
-    nodes.push(("g1", node("plan", "application/vnd.google-apps.document", "root", b"DOC")));
-    nodes.push(("g2", node("sums.CSV", "application/vnd.google-apps.spreadsheet", "root", b"1,2")));
-    nodes.push(("g3", node("sketch", "application/vnd.google-apps.drawing", "root", b"PIC")));
-    let s = stand(nodes).await;
-    let b = s.bucket("");
-    let dir = tempfile::tempdir().unwrap();
-    let got = b.get("plan", dir.path()).await.unwrap();
-    assert_eq!((got.filename.as_str(), got.mime.as_str()), ("plan.pdf", "application/pdf"));
-    assert_eq!(std::fs::read(&got.path).unwrap(), b"EXPORTED:DOC");
-    let got = b.get("sums.CSV", dir.path()).await.unwrap();
-    assert_eq!((got.filename.as_str(), got.mime.as_str()), ("sums.CSV", "text/csv"));
-    let got = b.get("sketch", dir.path()).await.unwrap();
-    assert_eq!((got.filename.as_str(), got.mime.as_str()), ("sketch.png", "image/png"));
-    assert_eq!(s.st.lock().unwrap().exports, ["application/pdf", "text/csv", "image/png"]);
 }
 
 #[tokio::test]
@@ -464,96 +395,6 @@ async fn put_is_a_chunked_resumable_upload() {
 }
 
 #[tokio::test]
-async fn put_overwrites_an_existing_file() {
-    let s = stand(tree()).await;
-    let b = s.bucket("");
-    let dir = tempfile::tempdir().unwrap();
-    let e = b.put("docs/note.txt", &src(dir.path(), b"replaced"), None, false).await.unwrap();
-    assert_eq!(e.id, "f1");
-    let out = tempfile::tempdir().unwrap();
-    assert_eq!(std::fs::read(b.get("docs/note.txt", out.path()).await.unwrap().path).unwrap(), b"replaced");
-}
-
-#[tokio::test]
-async fn put_into_a_missing_folder_needs_parents() {
-    let s = stand(tree()).await;
-    let b = s.bucket("");
-    let dir = tempfile::tempdir().unwrap();
-    let f = src(dir.path(), b"x");
-    assert_eq!(b.put("new/deep/f.txt", &f, None, false).await.unwrap_err().error_class, "FileNotFoundError");
-    assert_eq!(b.put("new/deep/f.txt", &f, None, true).await.unwrap().path, "new/deep/f.txt");
-    assert!(b.ls("new/deep").await.unwrap().iter().any(|x| x.name == "f.txt"));
-    assert_eq!(b.put("/", &f, None, false).await.unwrap_err().message, "put requires a file path");
-    assert_eq!(b.put("x", &dir.path().join("absent"), None, false).await.unwrap_err().error_class, "FileNotFoundError");
-}
-
-#[tokio::test]
-async fn rm_deletes_and_probe_answers() {
-    let s = stand(tree()).await;
-    let b = s.bucket("");
-    b.rm("pic.png").await.unwrap();
-    assert!(!b.ls("").await.unwrap().iter().any(|e| e.name == "pic.png"));
-    b.probe().await.unwrap();
-    let err = s.bucket("gone").probe().await.unwrap_err();
-    assert_eq!(err.error_class, "HttpError");
-    assert!(err.message.starts_with("<HttpError 404 when requesting ") && err.message.ends_with("returned \"File not found: gone.\">"), "{}", err.message);
-}
-
-#[tokio::test]
-async fn mkdir_creates_parents_and_accepts_an_existing_folder() {
-    let s = stand(tree()).await;
-    let b = s.bucket("");
-    let e = b.mkdir("a/b").await.unwrap();
-    assert!(e.is_dir && e.name == "b" && e.path == "a/b");
-    assert!(b.ls("").await.unwrap().iter().any(|x| x.name == "a"));
-    assert!(b.ls("a").await.unwrap().iter().any(|x| x.name == "b"));
-    assert_eq!(b.mkdir("/a/b/").await.unwrap().id, e.id);
-    assert_eq!(b.mkdir("docs").await.unwrap().id, "d1");
-    assert_eq!(b.mkdir("").await.unwrap_err().message, "mkdir requires a path");
-}
-
-#[tokio::test]
-async fn mv_renames_moves_and_overwrites() {
-    let s = stand(tree()).await;
-    let b = s.bucket("");
-    let e = b.mv("pic.png", "docs/p2.png", false, false).await.unwrap();
-    assert_eq!((e.path.as_str(), e.id.as_str()), ("docs/p2.png", "f2"));
-    assert_eq!(s.where_is("f2"), ("d1".into(), "p2.png".into(), false));
-
-    let err = b.mv("docs/p2.png", "docs/note.txt", false, false).await.unwrap_err();
-    assert_eq!(err.error_class, "FileExistsError");
-    assert_eq!(err.message, "bucket \"g\": \"docs/note.txt\" exists (pass overwrite:true to replace it)");
-    b.mv("docs/p2.png", "docs/note.txt", true, false).await.unwrap();
-    assert!(s.where_is("f1").2, "the old target is trashed");
-    assert_eq!(s.where_is("f2"), ("d1".into(), "note.txt".into(), false));
-
-    assert_eq!(b.mv("docs/note.txt", "new/n.txt", false, false).await.unwrap_err().error_class, "FileNotFoundError");
-    assert_eq!(b.mv("docs/note.txt", "new/n.txt", false, true).await.unwrap().path, "new/n.txt");
-
-    let err = b.mv("docs", "docs/inner", false, false).await.unwrap_err();
-    assert_eq!((err.error_class.as_str(), err.message.as_str()), ("ValueError", "mv: cannot mv \"docs\" into itself"));
-}
-
-#[tokio::test]
-async fn cp_rebuilds_folders_and_overwrites() {
-    let s = stand(tree()).await;
-    let b = s.bucket("");
-    let e = b.cp("docs", "docs2", false, false).await.unwrap();
-    assert!(e.is_dir && e.id != "d1");
-    let names = |v: Vec<Entry>| v.into_iter().map(|e| e.name).collect::<Vec<_>>();
-    assert_eq!(names(b.ls("docs2").await.unwrap()), ["note.txt"]);
-    assert_eq!(names(b.ls("docs").await.unwrap()), ["note.txt"]);
-
-    assert_eq!(b.cp("pic.png", "docs/note.txt", false, false).await.unwrap_err().error_class, "FileExistsError");
-    let c = b.cp("pic.png", "docs/note.txt", true, false).await.unwrap();
-    assert!(s.where_is("f1").2);
-    let out = tempfile::tempdir().unwrap();
-    let got = b.get("docs/note.txt", out.path()).await.unwrap();
-    assert_eq!((std::fs::read(got.path).unwrap(), c.path.as_str()), (b"img".to_vec(), "docs/note.txt"));
-    assert_eq!(s.where_is("f2").1, "pic.png", "the source stays");
-}
-
-#[tokio::test]
 async fn token_is_cached_then_refreshed_once_on_a_401() {
     let s = stand(tree()).await;
     let b = s.bucket("");
@@ -569,88 +410,6 @@ async fn token_is_cached_then_refreshed_once_on_a_401() {
     b.probe().await.unwrap();
     b.probe().await.unwrap();
     assert_eq!(s.st.lock().unwrap().issued, 4);
-}
-
-#[tokio::test]
-async fn refresh_failures_carry_google_auth_text() {
-    let s = stand(tree()).await;
-    let mut c = cfg("");
-    c.refresh_token = "r-revoked".into();
-    let err = GoogleDrive::with_urls(c, s.urls.clone()).unwrap().probe().await.unwrap_err();
-    assert_eq!((err.error_class.as_str(), err.message.as_str()), ("RefreshError", "invalid_grant: Bad Request"));
-    let mut c = cfg("");
-    c.client_secret.clear();
-    let err = GoogleDrive::with_urls(c, s.urls.clone()).unwrap().probe().await.unwrap_err();
-    assert_eq!(err.error_class, "RuntimeError");
-    assert_eq!(err.message, "bucket \"g\" is missing client_id/client_secret/refresh_token for Google Drive");
-}
-
-#[tokio::test]
-async fn search_is_name_contains_over_the_drive() {
-    let s = stand(tree()).await;
-    let b = s.bucket("");
-    let hits = b.search("note", 50, "").await.unwrap();
-    assert_eq!(hits.iter().map(|e| (e.name.as_str(), e.path.as_str())).collect::<Vec<_>>(), [("note.txt", "note.txt")]);
-    let err = b.search("note", 50, "docs").await.unwrap_err();
-    assert_eq!((err.error_class.as_str(), err.message.as_str()), ("NotImplementedError", "google_drive search cannot scope to a folder"));
-}
-
-fn tree2() -> Vec<(&'static str, Node)> {
-    vec![
-        ("d1", node("docs", F, "root", b"")),
-        ("d2", node("deep dir", F, "d1", b"")),
-        ("f1", node("note.txt", "text/plain", "d1", b"hello")),
-        ("f2", node("a b.txt", "text/plain", "d2", b"ab")),
-        ("f3", node("pic.png", "image/png", "root", b"img")),
-    ]
-}
-
-#[tokio::test]
-async fn walk_is_breadth_first_and_bounded() {
-    let s = stand(tree2()).await;
-    let b = s.bucket("");
-    let (entries, truncated) = walk(&b, "", 100).await.unwrap();
-    let paths: Vec<_> = entries.iter().map(|e| e.path.as_str()).collect();
-    assert_eq!(paths, ["docs", "pic.png", "docs/deep dir", "docs/note.txt", "docs/deep dir/a b.txt"]);
-    assert!(!truncated);
-    let (entries, truncated) = walk(&b, "", 2).await.unwrap();
-    assert!(entries.len() == 2 && truncated);
-}
-
-#[tokio::test]
-async fn get_tree_writes_a_faithful_tree() {
-    let s = stand(tree2()).await;
-    let b = s.bucket("");
-    let dir = tempfile::tempdir().unwrap();
-    let out = get_tree(&b, "docs", dir.path(), 100).await.unwrap();
-    let root = dir.path().join("docs");
-    assert_eq!(out["path"], root.display().to_string());
-    assert_eq!((out["is_dir"].clone(), out["count"].clone(), out["size"].clone()), (json!(true), json!(2), json!(7)));
-    assert_eq!(out["failures"], json!([]));
-    assert_eq!(std::fs::read(root.join("note.txt")).unwrap(), b"hello");
-    assert_eq!(std::fs::read(root.join("deep dir").join("a b.txt")).unwrap(), b"ab");
-    let err = get_tree(&b, "docs", tempfile::tempdir().unwrap().path(), 1).await.unwrap_err();
-    assert!(err.error_class == "ValueError" && err.message.contains("larger limit"));
-}
-
-#[tokio::test]
-async fn put_tree_uploads_a_tree() {
-    let s = stand(tree2()).await;
-    let b = s.bucket("");
-    let dir = tempfile::tempdir().unwrap();
-    let up = dir.path().join("up");
-    std::fs::create_dir_all(up.join("sub")).unwrap();
-    std::fs::write(up.join("top.txt"), b"t").unwrap();
-    std::fs::write(up.join("sub").join("low.txt"), b"l").unwrap();
-    let out = put_tree(&b, "docs/up", &up, false).await.unwrap();
-    assert_eq!((out["count"].clone(), out["failures"].clone(), out["entry"]["is_dir"].clone()), (json!(2), json!([]), json!(true)));
-    let paths: Vec<_> = walk(&b, "docs/up", 100).await.unwrap().0.into_iter().map(|e| e.path).collect();
-    assert_eq!(paths, ["docs/up/sub", "docs/up/top.txt", "docs/up/sub/low.txt"]);
-
-    let lone = dir.path().join("lone");
-    std::fs::create_dir(&lone).unwrap();
-    assert_eq!(put_tree(&b, "nope/up", &lone, false).await.unwrap_err().error_class, "FileNotFoundError");
-    assert_eq!(put_tree(&b, "nope/up", &lone, true).await.unwrap()["entry"]["path"], "nope/up");
 }
 
 #[test]

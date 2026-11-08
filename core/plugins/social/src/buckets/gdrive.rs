@@ -156,7 +156,7 @@ async fn http_error(resp: Response) -> VerbError {
 
 impl GoogleDrive {
     /// Build the bucket. Credentials are checked on first use, so a bad one shows in `probe`.
-    pub fn new(cfg: BucketConfig) -> anyhow::Result<Arc<dyn Bucket>> {
+    pub fn create(cfg: BucketConfig) -> anyhow::Result<Arc<dyn Bucket>> {
         Ok(Arc::new(Self::with_urls(cfg, Urls::from_env())?))
     }
 

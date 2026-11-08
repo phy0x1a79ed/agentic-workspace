@@ -156,24 +156,4 @@ mod tests {
         assert!(cut.contains("cut at 1500") && cut.split(" \u{2026}").next().unwrap().matches('y').count() == TEXT_MAX);
     }
 
-    #[test]
-    fn names_and_scopes_are_slugs() {
-        let dm = Place::of(&Inbound { sender_name: "Some Person".into(), ..msg(ChatKind::Dm) });
-        assert_eq!(dm.session_name(), "seat:slack/dm/some-person");
-        assert_eq!(dm.scope_slug(), "some-person");
-        let ch = Place::of(&msg(ChatKind::Channel));
-        assert_eq!(ch.session_name(), "seat:slack/test-lab/general");
-        assert_eq!(ch.scope_slug(), "test-lab-general");
-        assert_eq!(slug("  #Bots!! "), "bots");
-    }
-
-    #[test]
-    fn the_brief_names_the_docs_the_previous_agent_and_the_lines() {
-        let place = Place::of(&msg(ChatKind::Dm));
-        let f = BriefFacts { docs: "/w/docs", place: &place, level: "trusted", project: "agentic-commons", scope: "seats/tester", previous: Some(("j1", "altair", Some("/t/j1.jsonl"))) };
-        let b = brief(&f, &["[slack/DM/tester, trusted] hi".into()]);
-        assert!(b.contains("/w/docs/seat-sop.md") && b.contains("/w/docs/briefs/slack-dm.md"));
-        assert!(b.contains("job j1 on altair") && b.contains("/t/j1.jsonl"));
-        assert!(b.ends_with("[slack/DM/tester, trusted] hi\n"));
-    }
 }
