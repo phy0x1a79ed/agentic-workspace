@@ -35,8 +35,8 @@ None.
 - fleet-route — mizar and alcor first, then altair, shogun, capella, lyra together; deneb apart; cloud dev moves to mizar
 - r79-writer — alcor pushes to deneb's vault writer; R79 stands
 - deneb — no further decision; its own cutover per fleet-route, writer per r79-writer
-- node-checkout — every node clone-free this pass; release = manifest + hash-addressed binaries + small tar; mizar pushes, GitHub Release for fresh machines; ten non-core plugins in own projects, pushed as folders
-- open-for-tony — warm pool on a trusted seed dir; dvc mirror stopped; science idle 2 h; lyra vpn from capella; sites daemon kept as own project; per-node edges everywhere
+- node-checkout — nodes keep the clone this pass; the clone-free install is deferred past the redux
+- open-for-tony — warm pool on a trusted seed dir; dvc mirror stopped; science idle 2 h; lyra vpn from capella; sites daemon kept, stays in the clone; per-node edges everywhere
 - close-out — `.pre-rust` goes after each node's checks; retire merged scopes, audit unmerged; seats on last
 
 ## Survey state (2026-11-08)
