@@ -37,6 +37,21 @@ This file holds the approved port plan for reflection, from the harness group's 
 - `list_other` rows gain `rc_url` and `task_id`. `rc_url` is the provider row's `link` while Remote Control is on, and is absent otherwise. `task_id` comes only from the provider row, and stays absent when the row has none. reflection makes no `operations` call for it: `list_other` is called often, and operations already keeps the session-to-task map in `board_changes`.
 - Tests: each lifecycle kind gives exactly one emit with the added fields. A failed scope lookup still emits, with `project` and `scope` null. A restart emits nothing.
 
+**Sender names** (Tony's decision, through plugin-redux/interview).
+- Every line that reflection hands a provider to type, as opposed to a slash command such as `/compact`, `/cd` or `/rc`, starts with a sender prefix and then the text: `from <session name>@<node> [job <id>]: <text>`. This covers `message`, the `prompt` of `start_other` and `resume_other`, `message_self`, and the follow-ups of `compact` and `message_self`. The caller's own session gets the prefix too, so no agent-typed line reads as Tony's.
+- reflection builds the prefix from the caller frame the gateway stamps, never from an argument:
+  - a local session: the name and job from `session_of` on `_caller_pid`, or from `_caller_session_id` for an isolated session, plus this node;
+  - a session on another node: the door-verified `_caller_session {session_id, node, job, name}`, using the `node` the door verified;
+  - a plugin's service: `from <plugin>@<node>: `, with no job, from `_caller_plugin`;
+  - a session with no name: its job id is used as the name.
+  - a caller with no session and no plugin, such as a shell on the node: `from shell@<node>: `.
+  A service relaying a person's words, such as trilium's note button or social's seat line, reads as the service. A service that vouches for a person says so inside its text, as social does with `slack from <sender>`.
+  A `text` that already starts with `from ` is typed as given after the real prefix, so a sender cannot forge another prefix.
+- `message` takes `to`, which replaces `job` and the `peer` key: `"<session name>@<node>"` or `"<job id>@<node>"`. A bare name or job means this node. The address splits at the last `@`, because names hold `/`. reflection forwards a `to` on another node to that node's reflection, whose door stamps the caller claim. A name that matches two sessions is refused, and the refusal lists the matching jobs. `resume_other` takes `to` the same way.
+- Tony's own typed input reaches the session directly and is never prefixed.
+- describe: `message` drops `job` and gains a required `to`. `resume_other` takes `to` in place of `job`. The descriptions of `message`, `message_self`, `start_other`, `resume_other` and `compact` state the prefix. These are listed changes in the describe diff.
+- Tests: the prefix for each caller kind (local, isolated, peer claim, plugin, no name); an argument cannot set it; a forged leading `from ` is still prefixed; `to` parsing for `a/b@mizar`, a bare name, a bare job and `x@y@z`; an ambiguous name is refused with its jobs; a `to` on another node is forwarded.
+
 **Tests.** Port the 78 dispatch tests behind a fake-gateway trait. Add tests for the fixes and the re-entrant claim. Add a gateway e2e test of the caller lookup. For live parity in the sandbox, compare the read-only verbs and `session_of`.
 
 **Landing.** Alone, after the ops `awm-trust` and `awm-statecheck` lands. While reflection is down, every session call waits on it, so keep the rollback ready. Check `whoami`, `list_other` and a `wait` round trip on mizar and capella, then on altair, shogun and lyra when they answer. On mizar, start a throwaway session, rename it, turn its Remote Control on, then `kill -9` it. Each step shows one `reflection/sessions` event within 5 s.

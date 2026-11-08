@@ -97,6 +97,8 @@ Gotchas: every path goes through `ClaudeHome`.
 
 **Remote Control at turn end** (item 3). `remote_control` on another session that is `busy` takes the path a self call takes today. cch types the command, which queues behind the turn, and answers at once with `{applies: "turn_end", link: null}`. It does not wait out the link timeout. The link arrives as the `remote_control` event when the command runs. `remote_control` off on a busy session reuses the promise that runs the self path's disconnect modal at turn end.
 
+**Sender prefix on cch's own notices** (the reflection sender-names rule). Each line cch types into a session on its own account starts with `from cch@<node>: `. That covers the lost follow-up notice, the resume prompt after Remote Control turns on or off, and every other notice in `promises.rs`, `resume.rs` and `control.rs`. A follow-up that reflection passed in already carries its prefix, so cch types it as given. Test each notice for the prefix.
+
 **Tests.** Port the part-2 tests and the hook tests, which run the binary against a fake gateway. Add tests for the reconcile and the migration. Add watcher tests on a temp sessions dir: a create, a rename, a bridge change, a pid exit, a worker swap inside the grace window, and silence at boot. Add a test of `remote_control` on a busy fake target.
 
 **Parity.** Run the Rust cch in the sandbox against the live `~/.claude`, with hooks, revive, keeper launch and sync off. Compare the read-only verbs and `mode_of` for every live pid.
