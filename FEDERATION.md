@@ -76,7 +76,7 @@ alcor hosts `2fa`, `operations` (the task queue and the approver), `browser` and
 
 ## People
 
-A node's HTTPS lane (`httpsfront`) admits people only, with the passkey. It admits no other node (R92).
+A node's HTTPS lane (the `auth` plugin's edge) admits people only, with the passkey. It admits no other node (R92).
 
 1. A browser with no session goes to `<AWM_APPROVER_ORIGIN>/signin`, the approver on alcor.
 2. Tony confirms with his passkey. The approver issues a 60-second grant bound to the node, host and path, for a host listed in its `portals`.
@@ -84,7 +84,7 @@ A node's HTTPS lane (`httpsfront`) admits people only, with the passkey. It admi
 
 The cookie slides on each authenticated request, up to a hard maximum session age. No password login exists.
 
-**CAUTION** `/__auth/portal?grant=…` carries a live, single-use grant. It stays safe only while the route is never a page. It validates, answers 302 to a clean local path with the cookie set, and sends `no-store` and `no-referrer`. uvicorn's `log_level="warning"` in `awm.tlsfront.proxy` keeps query strings out of the logs. Keep both.
+**CAUTION** `/__auth/portal?grant=…` carries a live, single-use grant. It stays safe only while the route is never a page. It validates, answers 302 to a clean local path with the cookie set, and sends `no-store` and `no-referrer`. The edge writes no access log, which keeps query strings out of the logs. Keep both.
 
 ## Trust across nodes
 

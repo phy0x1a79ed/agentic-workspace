@@ -40,7 +40,7 @@ fn the_tree_loads_whole_behind_a_door_and_as_deneb() {
     let got = load_tree(&|p| p != "trilium", &profiles, &["trilium".to_string()]);
     assert!(got.plugins.iter().any(|p| p.name == "operations"), "operations loads");
 
-    const DENEB: [&str; 7] = ["auth", "board", "fileviewer", "httpsfront", "relay", "trilium", "zotero"];
+    const DENEB: [&str; 6] = ["auth", "board", "fileviewer", "relay", "trilium", "zotero"];
     let got = load_tree(&|p| DENEB.contains(&p), &[], &[]);
     let mut loaded: Vec<&str> = got.plugins.iter().map(|p| p.name.as_str()).collect();
     loaded.sort();

@@ -49,8 +49,6 @@ declare -A DISTS=(
   [social]="$WS/awm/services/social::$WS/awm/services/social/tests"
   [2fa]="$WS/awm/services/2fa::$WS/awm/services/2fa/tests"
   [ssh]="$WS/awm/services/ssh::$WS/awm/services/ssh/tests"
-  [auth]="$WS/awm/services/auth::$WS/awm/services/auth/tests"
-  [httpsfront]="$WS/awm/services/httpsfront::$WS/awm/services/httpsfront/tests"
   [rlm-browser]="$WS/awm/services/rlm-browser::$WS/awm/services/rlm-browser/tests"
   [rlm-factorio]="$WS/awm/services/rlm-factorio::$WS/awm/services/rlm-factorio/tests"
   [vpn]="$WS/awm/services/vpn::$WS/awm/services/vpn/tests"
@@ -71,7 +69,7 @@ declare -A DISTS=(
 )
 
 # Stable run order.
-ORDER=(contract gatewayclient config persistence grantlib telemetry usage kept tlsfront dvcdata tether scopes journal search social 2fa ssh auth httpsfront rlm-browser rlm-factorio vpn reflection claude-science engcyc trilium zotero channel relay kb board transcripts trustpolicy browser wake)
+ORDER=(contract gatewayclient config persistence grantlib telemetry usage kept tlsfront dvcdata tether scopes journal search social 2fa ssh rlm-browser rlm-factorio vpn reflection claude-science engcyc trilium zotero channel relay kb board transcripts trustpolicy browser wake)
 
 CHANGED_BASE=""
 SMOKE=0
