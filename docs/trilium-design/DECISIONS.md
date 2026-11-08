@@ -66,7 +66,7 @@ Design:
 - The sign-in leaves a device credential, a cookie on alcor's address that page code cannot read. The vault's pages call alcor's API with it. alcor checks the credential and the request's origin.
 - An everyday action carries no instruction and no grant: a read, New agent, a task from a note, a seat switch, closing or rejecting a card. An agent takes instructions only from Tony over Remote Control. The worst a hostile deneb does is a nuisance Tony sees and undoes.
 - The R65 hash chain and the panel frames are gone.
-- Approvals are open: see board-look.
+- An approval is no everyday action. Approve opens alcor's modal in the vault with the passkey. Changed by board-look, which replaced approval windows that Tony opened himself.
 
 Landed: `queue.md` R64 item 5, R65, R137; `fleet.md` R97 item 2, R106 item 2, R147 items 2, 3 and 7.
 
@@ -100,3 +100,32 @@ Design:
 - The writer's reach outside its roots widens by two acts only: its own labelled marker notes under any note, and a clone of a source note under a card.
 
 Landed: `queue.md` R63 item 3; `fleet.md` R106 item 2.
+
+## swarm-triage (2026-11-07)
+
+Question: what the `tasks/Swarm triage` folder holds.
+
+Tony: "this was a previous session name. I meant to look into it as context. I dont want it as a folder".
+
+Design: no Swarm triage folder. The build removes it from the vault.
+
+Landed: `queue.md` R61.
+
+## board-look (2026-11-07)
+
+Question: what Tony's first look at the live board changes.
+
+Tony: "lets make a stale category for cards with no active sessions that didnt complete. ending it moves it to done. Done should be 'History'", "need to be able to resize horizontally between rows and info", "the title is already indicated by the highlight so saying it again in info is redundant", "open a window is not my concern. agent asks and I approve or reject. I dont select the type of window to open and open it myself. -> this should be a serparate approvals list/queue/history per task", "ok".
+
+Design:
+
+- The sections are Needs you, Working, Stale and History. History replaces Done.
+- Stale holds each card with no active session that did not complete. A returning session moves its card to Working. Ending a stale card moves it to History.
+- A divider between the card rows and the info panel drags to resize them. The panel does not repeat the title. A card's chips are its status and its node.
+- Clicking a card's id copies it.
+- Each task's panel holds its approvals: pending first, then history. A pending request tags the card in Needs you.
+- An agent asks, and Tony approves or rejects. Approve opens alcor's modal in the vault, which shows the request and takes the passkey. Reject needs no passkey. Tony never opens a window. A request states any batch or window it needs.
+- 2fa presses use the same modal. One tap arms a burst.
+- Bugs for the build: a card body shows "null", cards stay Working after their sessions die, and the claude.ai links do not show.
+
+Landed: `queue.md` R61, R62, R64 item 5, R137; `fleet.md` R97 item 2.

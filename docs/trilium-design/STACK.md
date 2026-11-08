@@ -7,11 +7,11 @@ Related: journal 7724ff11 (ops-board decision), spec `docs/redux/*.md` (queue R6
 
 ## Current
 
-board-layout-followups/board-look
+PLAN
 
 ## Waiting on the user
 
-- Approvals design: per-task Approvals list (pending, then history); Approve opens alcor's modal in the vault (sign-in frame) with passkey; Reject needs none; no Tony-opened windows.
+(none)
 
 ## Preferences
 
@@ -24,8 +24,6 @@ board-layout-followups/board-look
 
 ## Stack
 
-- board-layout-followups — from redux-endstate/review after swarm-board/layout landed (awm d5be934c, journal 0d875664).
-  - board-look — Tony viewed the board 2026-11-07. Settled, not yet in spec: sections Needs you, Working, Stale, History (Done renamed); Stale = no active session and not completed; ending moves to History; a returning session goes back to Working. Draggable divider between rows and info panel. Info panel drops the title. Card id click-to-copy (in spec R62). No new-task button on cards (in spec R63 item 3). Bugs for the plan: "null" in card body; stale cards; no claude.ai links. Chips = status + node. Open: approvals (Waiting on the user).
 - PLAN — once the stack is empty: one formal plan for the whole build, then submit to plugin-redux/interview. Must fit plugin-redux ports: operations/front/routine in awm/port-ops, social in awm/port-comms (job e44d901a); the SDK carries a Rust `telemetry` library (today awm/service_components/telemetry, an event-sync layer, unused).
 
 ## Workers
@@ -43,4 +41,5 @@ Decisions: DECISIONS.md.
 - page-origin (first pass)
 - signin-harmonize
 - note-agent-button
-- swarm-triage — no folder: "swarm triage" named an earlier session. In spec queue.md R61.
+- swarm-triage
+- board-look
