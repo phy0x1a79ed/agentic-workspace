@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use awm_harness::claude::launch::{self, LaunchError, LaunchSpec, ProcessSpawner, SystemHost};
 use awm_harness::claude::roster::{self, Job};
+use awm_harness::claude::trust;
 use awm_harness::claude::ClaudeHome;
 
 use crate::lineage::Processes;
@@ -124,6 +125,10 @@ where
         return Err(LaunchError::Refused(refusal));
     }
     let paths = &*pool.paths;
+    if let Err(e) = tokio::fs::create_dir_all(&paths.seed_dir).await {
+        return Err(LaunchError::Refused(format!("cannot make the seed directory {}: {e}", paths.seed_dir.display())));
+    }
+    trust::grant_plain_dir(&paths.seed_dir, &paths.home).await;
     let mut spec = LaunchSpec::new(&paths.claude_bin, &paths.seed_dir, format!("{}{}>", paths.name_prefix, noun()));
     spec.flags = paths.seed_flags();
     spec.env = paths.seed_env();
@@ -203,6 +208,7 @@ pub(crate) mod tests {
         let b = TestBox::new();
         let launcher = FakeLauncher::default();
         let pool = b.pool_with(|p| p.rotate_age_s = 999_999.0);
+        std::fs::write(&b.paths.home.trust_file, r#"{"projects":{}}"#).unwrap();
         assert_eq!(seed_one(&pool, &launcher).await.unwrap(), "warmfresh");
         let spec = launcher.launched.lock().unwrap()[0].clone();
         let noun = spec.name.strip_prefix("<warm ").and_then(|n| n.strip_suffix('>')).unwrap();
@@ -212,6 +218,8 @@ pub(crate) mod tests {
         assert_eq!(spec.cwd, b.paths.seed_dir);
         assert_eq!(spec.flags, b.paths.seed_flags());
         assert_eq!(spec.env, b.paths.seed_env());
+        let trust = std::fs::read_to_string(&b.paths.home.trust_file).unwrap();
+        assert!(trust.contains(b.paths.seed_dir.to_str().unwrap()), "{trust}");
     }
 
 }

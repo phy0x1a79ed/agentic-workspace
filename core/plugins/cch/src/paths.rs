@@ -37,8 +37,8 @@ pub struct Paths {
     /// takes it. Claude Code titles only a session whose record has no name, so the rename also
     /// lets the built-in namer replace it later.
     pub claimed_prefix: String,
-    /// `AWM_CX_SEED_DIR`, else the user's home. It must hold no CLAUDE.md: a move adds the
-    /// destination's file and keeps the origin's, so seeding beside one carries it everywhere.
+    /// `AWM_CX_SEED_DIR`, else `~/.local/state/awm/seed`. It must hold no CLAUDE.md: a move adds
+    /// the destination's file and keeps the origin's, so seeding beside one carries it everywhere.
     pub seed_dir: PathBuf,
     /// `AWM_CX_MODEL`, else `opus`.
     pub model: String,
@@ -189,7 +189,7 @@ impl Paths {
             claude_bin: path("AWM_CX_CLAUDE").unwrap_or_else(default_claude_bin),
             name_prefix: var("AWM_CX_PREFIX").unwrap_or_else(|| "<warm ".into()),
             claimed_prefix: var("AWM_CX_CLAIMED_PREFIX").unwrap_or_else(|| "claimed ".into()),
-            seed_dir: path("AWM_CX_SEED_DIR").unwrap_or_else(|| user.clone()),
+            seed_dir: path("AWM_CX_SEED_DIR").unwrap_or_else(|| user.join(".local").join("state").join("awm").join("seed")),
             model: var("AWM_CX_MODEL").unwrap_or_else(|| "opus".into()),
             effort: var("AWM_CX_EFFORT").unwrap_or_else(|| "high".into()),
             restricted_settings: path("AWM_CX_RESTRICTED_SETTINGS")
@@ -436,7 +436,7 @@ mod tests {
         assert_eq!(p.claude_bin, Path::new("/t/claude"));
         assert_eq!((p.rotate_age_s, p.loop_enabled, p.name_prefix.as_str()), (60.0, false, "<warm "));
         assert_eq!(p.service_dir, Path::new("/a/services/cch"));
-        assert_eq!((p.seed_dir.as_path(), p.lobby_dir.as_path()), (Path::new("/u"), Path::new("/u/.local/state/awm/lobby")));
+        assert_eq!((p.seed_dir.as_path(), p.lobby_dir.as_path()), (Path::new("/u/.local/state/awm/seed"), Path::new("/u/.local/state/awm/lobby")));
     }
 
     #[test]
