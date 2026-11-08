@@ -28,6 +28,7 @@ PLAN
 
 ## Workers
 
+- plugin-redux/interview — the coordinator this session now works for, as plugin-redux/port-trilium (Tony, 2026-11-07: "talk to plugin redux interview, please essentially register yourself as one of their workers and rename accordingly"). Asked 2026-11-07: C1 ownership, submission route, conventions.
 - swarm-board/layout — landed awm d5be934c (journal 0d875664); done.
 - seats/pause — on altair. Runs Tony's Slack seat redesign (docs/seat-lifecycle, feat/seat-pause); handed seat-rc-toggle to us. Not ours; do not message (standing instruction).
 
