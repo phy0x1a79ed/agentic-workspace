@@ -16,7 +16,7 @@ A new mount at `/s/dsh/` proxies to the fork, rewrites `Origin`, streams bodies 
 
 **Needs and calls.** None. reflection and `auth` are plain calls: `harness_event` (spooled when it fails) and `auth front {service}` for the `front` block of `status`.
 
-**What it needs from auth.** A TLS origin front on port 12130, proxying to `/s/dsh/`, behind the same login. It is declared in dsh's manifest (§ Callouts). The front leaves dsh, and so do the `AWM_APPROVER_GRANT_PUBKEY` secret and `edge_material`.
+**What it needs from auth.** A TLS origin front on port 12130, relaying to the fork on 12311, behind the same login. It is declared in dsh's manifest (§ Callouts). The front leaves dsh, and so do the `AWM_APPROVER_GRANT_PUBKEY` secret and `edge_material`.
 
 **Fixes.** `stop` sticks, `send` with no text answers `ok: false`, and events get spooled.
 

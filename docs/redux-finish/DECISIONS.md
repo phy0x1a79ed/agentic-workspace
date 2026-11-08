@@ -122,3 +122,20 @@ Still open from the original interview (shelved by Tony, "shelf all decisions to
 3. `feat/trilium-vault` stays unmerged, because the next deneb deploy would pick it up and fail to load.
 
 **Landed.** awm 7c6dcc06 and cloud dev 83930ad. The roster's `seats` view stays empty until seat events arrive, as its catch-up call does not match social's verb.
+
+## batch-3 (2026-11-08)
+
+**Question.** What finishes mizar and alcor, and what do the plugins left over become?
+
+**Decided.**
+
+1. auth opens every `[[service.front]]` listener, so no other awm service holds a TLS port. dsh's front relays straight to the fork.
+2. claude-science's fronts bind 12211 and 12212. Tailscale serve holds 12201 and 12202 on the nodes that run the workbench.
+3. Opt-in is dropped. Tony: "Drop opt in, do not implement."
+4. rlm-factorio and engcyc stay as they are, on the shared env. Tony: "Keep factorio as is" and "Keep engcyc as is".
+5. A user-key edge client names its node with `AWM_EDGE_FROM`, because an older server refuses `--from`. The key-comment lookup for an older client goes once every node has refreshed.
+6. Each plugin's pin hashes its own locked dependencies, so a lockfile change rebuilds only the plugins it touches.
+7. cch reports plans, todos and prompts to operations. operations ships no hook.
+8. The ports track stays on `feat/port-harness`, unmerged, until Tony chooses to land it.
+
+**Landed.** Journal of awm/redux-batch3 names the release. cch's warm pool is left as it was and waits on Tony, because a fix extends trust to sessions that skip permissions.

@@ -8,15 +8,15 @@ Sources: the worker debrief journals 389a0111 (ops), 8caec34d (knowledge), 449af
 
 ## Current
 
-- Batch 2, seven packages: social, browser, channel, rlm-browser, kb, scopes, telemetry roster. Plan: `~/.claude/plans/noble-splashing-nygaard.md`. Batch 1's plan: `~/.claude/plans/redux-finish-batch1-ops.md`. T18 is now retire (Tony, 2026-11-08), so batch 3 is not planned in this session.
-- Comms is live on mizar and alcor at release 8cde8e40. Checked: rooms through deneb's Python relay in both directions, delivery into a session, `channel state check`, 17 of 17 Slack seats adopted, `paused = true`, the remote-control gate, a browser seat, an outbound Slack DM. The inbound Slack path is unconfirmed until a person replies.
-- The knowledge merge is on `wip/redux-knowledge` in worktree `projects/awm/redux-knowledge`, branched at d63ee920. Merge `feat/redux-finish` into it, then fast-forward. It holds the kb and scopes trims (never compiled except awm-kb-journals), 31 journal tests (green, 8.2 s), and the tag sync at start that replaced the six-hour pull. Left for T7: restore scopes' `a_peer_may_not_sweep`, clippy in `awm-embed/src/embed.rs:224`, the process-wide env race in search's `privacy` and guide's veil test.
-- T10 is mostly done. Cloud `dev` has a local merge 9a3d3b9 of `feat/kb-journal-unit` in `projects/cloud/redux-dev-apply`, not pushed. The model files are in `.awm/models` on mizar and alcor, and they match the pinned hashes. **CAUTION** `--tags awm_config` also applies pending `edges.yml` changes: strict `host_keys` and deneb as an `operations` caller. Check how the edge treats `host_keys` before applying it.
-- A refresh restarts every plugin whose binary changed, not only `AWM_REFRESH_RESTART`. A lockfile change therefore restarts every plugin on the node.
+- Batches 1 to 3 are live on mizar and alcor. Each `core/plugins` plugin except reflection runs from `<AWM_DIR>/bin/<plugin>`, and auth alone holds the TLS ports.
+- `feat/port-harness` holds the Rust reflection, session events, the order puller, the non-core runtimes and the clean-install script. It is unmerged, and journal ace5dab4 lists its landing steps.
+- Cloud `feat/redux-batch3` f6d8279 is unmerged, because cloud `dev` is checked out in `redux-dev-apply`. Until it lands, the next `--tags awm_config` apply brings back `board` and alcor's old env.
+- A refresh restarts every plugin whose binary changed, not only `AWM_REFRESH_RESTART`. A lockfile change restarts only the plugins whose locked dependencies changed.
 
 ## Waiting on the user
 
-- When you are at a device: one passkey sign-in on a node edge, and open a node's portal on your phone. Neither gates the work. The Rust edge offers only HTTP/1.1, so an HTTP/2-only client fails.
+- When you are at a device: one passkey sign-in on a node edge, a visit to a node's portal on your phone, the claude-science browser sign-in on alcor, and a dashboard render. None gates the work. The Rust edge offers only HTTP/1.1, so an HTTP/2-only client fails.
+- Decide cch's warm pool. A seed session dies every 50 s on mizar and alcor, because Claude Code will not trust the home directory without a prompt. The options are in the batch 3 journal.
 
 ## Preferences
 
@@ -41,20 +41,10 @@ Sources: the worker debrief journals 389a0111 (ops), 8caec34d (knowledge), 449af
 Phase 1 scopes each plugin; phase 2 does the work in this order. Each topic lists its known questions and issues.
 
 - `scoping` — the plugin-by-plugin walk.
-  - `opt-in` — Tony: "an opt in mechanism for prototype features like the deploy queue and the board. this way we can try features in a few select sessions rather than fleet wide". Before trilium-board, its first user.
   - `trilium-board` — telemetry landed (acadb279); vault feat/trilium-vault 92a7d431 not submitted; cloud feat/telemetry-optin unrun; R79 (deneb's outbound calls) first. Needs the Rust operations, the vault API and reflection's `reflection/sessions`.
-  - `social` + `browser` — feat/port-comms + cloud feat/rust-singletons on alcor. Seats stay paused until Tony turns them on.
-  - `channel` — on feat/port-comms; the relay half runs on deneb.
-  - `rlm-browser` — on feat/port-comms.
-  - `kb` — journal, search, transcripts folded in; feat/port-knowledge passes cargo check only, journals has no tests, clippy fails; cloud feat/kb-journal-unit; model files; the agent-comms tag clash between mizar and alcor.
-  - `scopes` — feat/port-knowledge, after kb.
-  - `front-declarations` — auth does not open `[[service.front]]` listeners yet, and `auth front` does not exist. Build them when dsh moves behind the edge; dsh then drops out of `EDGE_MATERIAL_PLUGINS`.
-  - `reflection` — wip/port-harness-reflection compiles, tests unfinished; dsh session events ride with it; the order-puller handover with operations.
-  - `python-out` — plan T8: drop the core Python install path; each non-core Python plugin gets its own env. Before removing the conda `dvc` env: the stock project's git hooks still call it (the Rust dvc rewires hooks only at provisioning). Delete alcor's untracked `awm/plugins/{operations,routine,dashboard}` leftovers. `awm/service_components/tlsfront` and `awm.config.tokens` stay until claude-science stops importing them.
-  - `landed` — cch, dsh, dev, mic, fileviewer, routine, dashboard, telemetry: confirm each is healthy on mizar and alcor. Issue: statecheck cannot copy a directory `[[extra]]` (took mizar's cch down 4 minutes).
-  - `cross-cutting` — ticket 3e3bc12a2040's branch (plain-ssh edge, SDK snapshot, workspace root); SDK clippy `result_large_err`; routine with `AWM_DIR` unset takes a scope as the workspace; the stale land lease; the shelved decisions (R79, per-node-edges, lyra vpn.toml, `isolated/` tag, alcor's sites daemon).
-- `verify` — plan T9 on mizar and alcor. Check: dvc's mirror sends a dir holding only a symlink (e.g. `awm/` -> `data`) as a recursive Globus item; confirm Globus does not follow it into an excluded tree. From the test trim: gateway `stop` waits the full 8 s grace for a service that never registered; a crash-looping plugin may respawn once during a reload; cch's `shout_lost` log line is untested under load; the operations hook's dead-port retry is untested. From auth: the public profile has no live parity run, because only deneb serves it; `run.sh stop` leaves a sandbox's services running when the `dev` binary is not built.
-- `later-nodes` — capella, lyra, deneb, shogun, altair; hpc-ssh-guard apply. deneb's `awm_plugins` must drop httpsfront in the same pass.
+  - `reflection` — on `feat/port-harness`, tests pass, unmerged. dsh session events and the order-puller handover ride with it.
+  - `python-out` — each non-core Python plugin has its own runtime on `feat/port-harness`. `awm/install.sh` and the shared `awm` env go at its landing.
+- `later-nodes` — capella, lyra, deneb, shogun, altair; hpc-ssh-guard apply. deneb's `awm_plugins` must drop httpsfront in the same pass. Two checks wait here: dvc's mirror sending a symlink-only dir to Globus, which needs a node with `dvc.toml`, and the public profile's parity, which needs deneb.
 
 ## Workers
 
@@ -63,6 +53,11 @@ Read-only survey subagents (Sonnet medium), one group at a time. Brief /home/ton
 Test trimmers (Sonnet medium, in this worktree, no commits), brief /home/tony/.claude/jobs/b8680c94/tmp/trim/BRIEF.md, started 2026-11-07: operations; dvc + awm-dvcdata; cch; harness + gateway + cli; the other landed crates.
 
 ## Closed
+
+- `opt-in` — dropped. Tony: "Drop opt in, do not implement."
+- `social`, `browser`, `channel`, `rlm-browser`, `kb`, `scopes`, `landed`, `cross-cutting` — live on mizar and alcor.
+- `front-declarations` — auth opens every `[[service.front]]`, see DECISIONS.md § batch-3.
+- `verify` — run in batch 3. The two checks that cannot run here moved to `later-nodes`.
 
 - `remote-build` — shelved (Tony: "lets shelf remote-build. we may not need it."). capella has 16 cores and 68 GB; mizar has 4.
 

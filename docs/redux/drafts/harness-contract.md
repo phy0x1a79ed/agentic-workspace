@@ -56,15 +56,15 @@ Every verb takes JSON and returns JSON with `ok`. *target* below is `session_id`
 | `platform` | none | `{code, name, capabilities: [verb]}`. `capabilities` lists the optional verbs it serves. |
 | `resolve` | `pid` | `{mine, session_id, name, hosting, job, cwd}`. `hosting` is `terminal`, `background` or `web`. A plugin that owns the pid but cannot tell which session called answers `session_id: null` with an `error`. |
 | `find` | `ref` | `{matches: [{session_id, name, job, live}]}` |
-| `status` | target | `{live, state, cwd, name, model, effort, mode}`. `state` is `idle`, `busy`, `waiting` (a dialog holds the session) or `stopped`. |
-| `list` | `project?`, `scope?`, `include_stopped?` | `{sessions: [status + {session_id, job, parent, pinned, started_by}]}` |
-| `send` | target, `text`, `submit?`, `confirm?`, `followup?`, `delay_ms?` | `{submitted, confirmed, ticket?}`. `confirmed` says what the submit rests on, such as `record` or `enqueued`. Plain text and a slash command alike. A `followup` is typed once the command ends, and the answer carries its `ticket` (§ Events). |
+| `status` | target | `{session_id, job, name, pid, live, kind, state, cwd}`. `state` is `idle`, `busy`, `waiting` (a dialog holds the session), `stopped`, or `unknown` when a live session's state cannot be read. |
+| `list` | `project?`, `scope?`, `include_stopped?` | `{sessions: [status + {session_id, job, parent, alive, kind, transcript, pinned, started_by, task_id?}]}`. Every row carries `session_id`, null before the session's first turn. `task_id` appears only when the session joined a task. |
+| `send` | target, `text`, `submit?`, `confirm?`, `followup?`, `delay_ms?` | `{submitted, confirmed, ticket?}`. `confirmed` says what the submit rests on, such as `record` or `enqueued`. Plain text and a slash command alike. The `text` and `followup` that reflection passes already start with the sender prefix `from <sender>@<node>: `. The plugin types them as given, never adding or stripping a prefix. A line the plugin types on its own account starts with `from <plugin>@<node>: `. A `followup` is typed once the command ends, and the answer carries its `ticket` (§ Events). |
 | `interrupt` | target | `{interrupted}` |
 | `start` | `project?`, `scope?`, `prompt?`, `name?`, `model?`, `effort?`, `trust?`, `task_id?`, `role?`, `started_by?`, `pin?`, `suggest?`, `isolated?`, `pid?` | `{session_id, job, name, cwd}` |
-| `stop` | target, `keep?`, `confirm?` | `{stopped}`. With `keep` (the default) the session stays resumable by its id (`sessions.md` R10). Without it, the plugin removes the session's job. The caller's own session needs `confirm`. |
+| `stop` | target, `keep?`, `confirm?` | `{stopped}`. The plugin removes the session's job. With `keep`, the job stays and a `resume` brings the session back by its id (`sessions.md` R10). The caller's own session needs `confirm`. |
 | `resume` | target, `prompt?` | `{session_id, job, live}`. Brings back a stopped session from its transcript. The target may be the session id of a retired session, whose job is gone (`sessions.md` R10 item 3). |
 | `set` | target, `model?`, `effort?`, `name?`, `cwd?`, `brief?` | `{applied: {key: outcome}}`. With `cwd`, `brief` is the line the caller's own follow-up carries once the move applied: reflection passes the new scope's brief (`scopes.md` R143). |
-| `compact` | target, `followup?`, `delay_ms?` | `{submitted, ticket?}`. The plugin runs the compaction, then delivers `followup`, and signals the end with a `harness_event` (§ Events). |
+| `compact` | target, `followup?`, `delay_ms?` | `{submitted, ticket?}`. The target must be the caller's own session: a plugin refuses to compact another one. The plugin runs the compaction, then delivers `followup`, and signals the end with a `harness_event` (§ Events). |
 
 Optional verbs, listed in `capabilities` when served:
 
@@ -72,11 +72,14 @@ Optional verbs, listed in `capabilities` when served:
 |---|---|---|
 | `pending` | cc | The follow-ups the plugin still owes, each with its `ticket`. |
 | `mode` | cc | Put a session back into bypass permissions. |
-| `remote_control` | cc | Turn Remote Control on or off. |
+| `remote_control` | cc | Turn Remote Control on or off. On another session that is `busy`, the command queues behind the turn and the answer is `{applies: "turn_end", link: null}` at once. The link arrives as a `remote_control` event. |
 | `mcp` | cc | Reconnect, enable or disable a session's MCP servers: target, `action`, `server`. |
 | `link` | cc | Read a session's claude.ai link. |
 | `adopt` | cc | Take on a job that `start` did not create. |
 | `revive_pinned` | cc | Resume each pinned session whose process is gone, after a reboot. |
+| `probe` | cc | `node`: whether the plugin on that node answers `list` from this node, and its daemon state. It returns no sessions. reflection forwards the caller's `X-Awm-As`, so the peer gate applies. |
+| `live_session_ids` | cc | The harness's own session ids that a running process holds. It refuses when a record cannot be read, so a caller never acts on a shorter list. |
+| `caller_of_token` | cc | `token`: the isolated session that holds a caller token, and the verbs it may call. The gateway's isolated door calls it. |
 | `daemon_status`, `daemon_ensure`, `daemon_hold`, `daemon_release` | cc | The Claude Code daemon unit. |
 | `pool_claim`, `pool_seed`, `pool_remove` | cc | The warm session that the `cx` command attaches to. |
 
@@ -98,7 +101,18 @@ A session that clears itself gets a new session id. The plugin reports it with a
 > {"session_id": "<new>", "parent": "<old>", "kind": "clear"}
 > ```
 
-A plugin that cannot reach reflection keeps the event and sends it again when it next starts. reflection asks each plugin's `pending` for the tickets it still holds. A settled ticket that its plugin no longer holds and that got no event is lost too.
+A plugin reports each session's lifecycle as it happens, with the kinds `started`, `stopped`, `renamed` and `remote_control`:
+
+> ```
+> {"kind": "started", "session_id": "cc0e38…", "job": "…", "name": "…",
+>  "cwd": "…", "session_kind": "interactive", "task_id": "…", "rc_url": "…"}
+> ```
+
+`session_kind` is the `kind` of the session's `list` row, because `kind` names the event. `task_id` and `rc_url` are optional. `rc_url` is null on a `remote_control` event that turns Remote Control off. A lifecycle event carries no ticket. reflection keeps no ledger row for it, and a plugin never resends one it failed to deliver. A plugin sends no lifecycle event at its own start.
+
+**CAUTION** A plugin sends lifecycle events only while reflection's `harness_event` describe lists the param `session_kind`. A reflection without it writes every kind except `clear` into its ledger. While the param is missing, the plugin reads the describe again before each event.
+
+A plugin that cannot reach reflection keeps a `done`, `lost` or `clear` event and sends it again when it next starts. reflection asks each plugin's `pending` for the tickets it still holds. A settled ticket that its plugin no longer holds and that got no event is lost too.
 
 **CAUTION** "Typed" is not "delivered". A Claude Code worker holds its prompt queue in memory, and the daemon can swap the worker for a new process mid-command. cch therefore reports `done` only when the transcript shows the follow-up taken up and, for `/compact`, the `compact_boundary`.
 
@@ -115,6 +129,7 @@ A plugin that cannot reach reflection keeps the event and sends it again when it
 | `set` | yes | model, effort and name. `cwd` is unsupported. |
 | `compact` | yes | yes, for a preset that mounts compaction |
 | optional verbs | all in the table above | none |
+| lifecycle events | all four | `started`, `stopped` and `renamed`, diffed from the fork's event stream. A session started and stopped between two reads goes unreported. |
 
 ## dsh
 

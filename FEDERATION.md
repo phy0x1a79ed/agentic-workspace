@@ -29,8 +29,8 @@ Nodes also differ by design in their own projects and keys. `awm/scripts/node-in
 A cross-node call is an ordinary awm request carried inside plain ssh to the other node's loopback gateway (`fleet.md` R92). `ssh <node>` works unchanged, and no node needs an sshd setting for the edge.
 
 1. An agent names the node in a tool's `peer` argument. A service passes `peer=<node>` to its local gateway. The `peer` enum lists the nodes this node has an edge to, and its description names the default.
-2. The local gateway checks the edge, then sends the call down `ssh -T <node> awm edge-serve --from <here>`. It keeps one such channel open per edge it uses, with `ControlMaster` and `ControlPersist` passed as its own ssh options, and sends every call down it as one JSON line (`core/crates/awm-edge`).
-3. On the other node, `awm edge-serve` takes the calling node from `--from`. It refuses a node that holds no edge to it. It hands each call to the loopback gateway with the calling node in `X-Awm-Caller`. The gateway honours that header only beside the edge token in `<AWM_DIR>/edge.token`.
+2. The local gateway checks the edge, then sends the call down `ssh -T <node> AWM_EDGE_FROM=<here> awm edge-serve`. It keeps one such channel open per edge it uses, with `ControlMaster` and `ControlPersist` passed as its own ssh options, and sends every call down it as one JSON line (`core/crates/awm-edge`).
+3. On the other node, `awm edge-serve` takes the calling node from `AWM_EDGE_FROM`, or from a service key's forced `--from`. It refuses a node that holds no edge to it. It hands each call to the loopback gateway with the calling node in `X-Awm-Caller`. The gateway honours that header only beside the edge token in `<AWM_DIR>/edge.token`.
 4. The service sees the caller stamped `peer:<node>`.
 
 A dropped link fails the calls in flight, and the next call reopens it. A sleeping node fails like any unreachable node, and callers treat that as normal (R93). A call to a node with no edge fails with `no edge from <here> to <node>`. It never runs locally.
@@ -41,7 +41,7 @@ The `table_changed` frame tells the nodes across each edge that this node's tool
 
 Machines reach each other through ssh keys at three levels (R92). Each `authorized_keys` line carries a comment `awm:<holder>:<level>`, so a log line names the holder and the level.
 
-- **User.** Tony's account, with a shell and agent access. A user key is an edge, and carries no forced command. awm traffic runs `awm edge-serve --from <holder>` in that shell.
+- **User.** Tony's account, with a shell and agent access. A user key is an edge, and carries no forced command. awm traffic runs `AWM_EDGE_FROM=<holder> awm edge-serve` in that shell.
 - **Service.** A key locked to `awm port`, with no shell and no forwarding. `awm port` reads the request from stdin (the caller's command is the bare `port`; the older form with the JSON on the command line is still accepted), runs only the host's singletons that admit the key's holder, and logs each call to `<AWM_DIR>/port.log`. A service key from outside the edges carries an `expiry-time`: the timed invite.
 - **Service-only edge.** An edge that edges.yml writes as `{network: <net>, key: service}`. The caller logs in with its service key. The target's `authorized_keys` line forces `awm edge-serve --from <holder> --level service`, with `restrict`. The forced command names the node and the level, never the client. A service-level call runs on the service lane, reaches only the host's singletons that admit the holder, and logs to `<AWM_DIR>/port.log`.
 - **Admin.** A separate account with sudo, for config and installs. shogun holds it on the Arbutus nodes.

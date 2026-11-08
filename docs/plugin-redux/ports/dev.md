@@ -10,7 +10,7 @@ This file holds the approved port plan for dev, from the harness group's plan (t
 
 **Changes.**
 - `seed.py` becomes `dev sandbox seed`.
-- The `python3` one-liner in `run.sh` becomes `dev sandbox services`.
+- The `python3` one-liner in `run.sh` becomes `awm services` piped through `jq`.
 - The sandbox script moves to `core/plugins/dev/sandbox/run.sh`.
 - The sandbox runs the worktree's own Rust plugins. It adds `core/plugins` to `core_roots` and links each built binary into `sandbox/.awm/bin/`. T4, T6 and T10 run their parity checks there.
 

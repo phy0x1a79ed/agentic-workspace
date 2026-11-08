@@ -39,7 +39,7 @@ Changes:
   - it rewrites `Origin` when the declaration asks.
 - On WSL, `url` falls back to the mesh address in `sans`.
 
-The dsh change belongs to harness and comes after T9. claude-science (C2b) declares `gui` on 12201 and `sandbox` on 12202, and `/_signin` moves behind `paths`. Its own front and its grant code go.
+The dsh change belongs to harness and comes after T9. claude-science (C2b) declares `gui` on 12211 and `sandbox` on 12212, which Tailscale serve publishes as 12201 and 12202, and `/_signin` moves behind `paths`. Its own front and its grant code go.
 
 State:
 - `services/auth/auth.db`, schema 7, read in place. Its `awm_settings` table holds the session TTL rows on capella and altair.

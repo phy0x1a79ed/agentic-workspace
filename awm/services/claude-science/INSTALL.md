@@ -16,13 +16,10 @@ what the code cannot show: why the service has its shape, the upstream
 behaviour each part works around, and how to check a node. Per-verb behaviour
 belongs in the manifest descriptions and the module docstrings.
 
-## What this replaces
+## Why `/_signin` sits behind the front
 
-Three hand-written systemd units and a 300-line fork of `awm/services/httpsfront`
-living in `$HOME`, with an `ExecStartPre` that copied awm's TLS material to a
-second location. The fork had no auth gate, so its zero-click `/_signin` route
-handed workbench ownership to anything that could route to the port. Moving to
-the real front is a security fix first and tidiness second.
+The zero-click `/_signin` route hands workbench ownership to its caller. auth's
+front gates it with the edge session, so only a signed-in browser reaches it.
 
 ## The contract
 
@@ -95,18 +92,19 @@ Neither applies here.
 
 ## Registrations
 
-Four, from one process:
+Two from this process, and two fronts that auth opens:
 
 | kind | name | prefix / port | what |
 |---|---|---|---|
 | `service` | `claude-science` | — | the verbs, plus supervision |
-| — | (TLS front) | `0.0.0.0:12201` | the workbench UI, behind `awm_session` |
-| — | (TLS front) | `0.0.0.0:12202` | generated-HTML previews, separate origin |
+| front | `gui` | `:12211`, published as `:12201` | the workbench UI, behind `awm_session`. `/_signin` relays to `127.0.0.1:12210` |
+| front | `sandbox` | `:12212`, published as `:12202` | generated-HTML previews, separate origin |
 | mount | `claude-science` | `/s/claude-science/mcp` | the MCP bridge's loopback listener, the service's mount |
 
-The two fronts are not gateway registrations — they are listeners this process
-owns, the same shape as `httpsfront`'s own. They die with the service; the
-daemon does not.
+The fronts are `[[service.front]]` tables in `awm-plugin.toml`. auth opens their
+TLS listeners and closes them when the service goes away. Tailscale serve
+publishes them on the nodes that run the workbench. `auth front` reports their
+state. The daemon outlives them.
 
 A fifth thing appears without this process doing anything: the control panel at
 `/p/claude-science/claude-science/`, which the gateway serves on any node where
@@ -187,8 +185,7 @@ on it.
 ./install.sh
 ```
 
-Installs the Python bits (including `httpsfront`, whose cert minting, auth gate
-and reverse proxy the fronts are a *configuration* of), writes `.runtime-env`,
+Installs the Python bits, writes `.runtime-env`,
 and installs the workbench binary via upstream's own installer if it is absent.
 It does **not** build the binary and does **not** provision the data directory:
 the binary's own `update --to <version>` already downloads, sha256-verifies and
@@ -229,26 +226,7 @@ profiles = ["claude-science"]
 CLAUDE_SCIENCE_EXTRA_ORIGINS = "..."
 ```
 
-**On a trust-consumer node, provision the fronts' leaf by hand.** The fronts
-mint their own certificate under `<service>/.certs/`, which works only where the
-CA *key* is (capella). Anywhere else they come up `serving: false` with a
-`TrustConsumerError` naming the exact SAN set they need — a node holding
-`ca.pem` without `ca-key.pem` must not mint, because minting would replace the
-fleet's trust root and surface as a certificate error on every peer. The node's
-`httpsfront` already holds a leaf for the same host with the same
-auto-enumerated SANs, so copy that pair across rather than minting a second one
-elsewhere and moving a private key over the network:
-
-```
-cp -p awm/services/httpsfront/.certs/{cert,key,ca}.pem \
-      awm/services/claude-science/.certs/
-```
-
-Both are gitignored host state, so a deploy's `git clean -fd` leaves them alone.
-Nothing re-cuts a consumer's leaf when it expires — check `fronts[*].san` and
-the expiry if the fronts ever stop serving.
-
-Then run `awm deploy`. It asks the gateway which services are enabled, so it
+Run `awm deploy`. It asks the gateway which services are enabled, so it
 waits for the workbench too.
 
 ## Environment
@@ -257,10 +235,6 @@ waits for the workbench too.
 |---|---|---|
 | `CLAUDE_SCIENCE_BIN` | `~/.local/bin/claude-science` | the binary to supervise |
 | `CLAUDE_SCIENCE_DATA_DIR` | `~/.claude-science` | the workbench's data dir |
-| `CLAUDE_SCIENCE_UPSTREAM_PORT` | `12203` | loopback UI port |
-| `CLAUDE_SCIENCE_SANDBOX_PORT` | `12204` | loopback preview port |
-| `CLAUDE_SCIENCE_FRONT_PORT` | `12201` | mesh TLS port, UI |
-| `CLAUDE_SCIENCE_SANDBOX_FRONT_PORT` | `12202` | mesh TLS port, previews |
 | `CLAUDE_SCIENCE_PUBLIC_HOST` | from `AWM_EDGE_URL` | host a browser reaches this node at |
 | `CLAUDE_SCIENCE_EXTRA_ORIGINS` | — | comma-separated extra allowed origins |
 | `CLAUDE_SCIENCE_MCP_ALLOW` | built-in list | JSON `{domain: [verb, …]}` for the bridge |

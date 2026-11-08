@@ -10,10 +10,10 @@ The plugin is one static binary, `dsh`, which the deploy places at `<AWM_DIR>/bi
 
 The harness is a node web server bound to loopback `12311` with no auth of its own. dsh parents it in its own process group, so it dies with dsh. Its sessions persist under `$DSH_HOME`, so a dsh restart costs a browser reconnect, not a conversation. A `stop` keeps it down until the next `start`.
 
-The path from a browser is: the `auth` origin front on port 12130 (TLS and the edge session), then the gateway's `/s/dsh/`, then dsh's mount, then the fork.
+The path from a browser is: the `auth` origin front on port 12130 (TLS and the edge session), then the fork. dsh declares the front in its manifest, and holds no TLS and no mount of its own.
 
 - The fork needs an origin of its own: its frontend builds with an absolute asset base and has no base-path option.
-- The fork fences every `/api` call: `Host` must be loopback and a present `Origin` must equal it. The mount lets its client set `Host` from the upstream URL and rewrites `Origin` to `http://127.0.0.1:<port>`.
+- The fork fences every `/api` call: `Host` must be loopback and a present `Origin` must equal it. The front drops `Host`, so its client sets it from the upstream URL. `rewrite_origin` in the manifest swaps `Origin` for `http://127.0.0.1:12311`.
 
 **CAUTION** The rewrite covers the WebSocket upgrade too. A rewrite on HTTP alone gives a GUI that loads and never streams.
 
@@ -75,7 +75,6 @@ How a node builds the fork after the port is an open decision. Until it is settl
 | `DSH_STATE_DIR` | `<AWM_DIR>/services/dsh` | `home/`, `node-bin`, `dsh.log`, `unsent.jsonl` |
 | `DSH_HOME` | `<state>/home` | the harness's own data dir |
 | `DSH_FORK_DIR` | `<workspace>/projects/deepseek-harness/release` | the fork worktree dsh serves |
-| `DSH_UPSTREAM_PORT` | `12311` | the loopback port the harness binds and the mount proxies to |
 | `DSH_WORKDIR` | the workspace root | the harness's cwd, so any project is pickable |
 | `DSH_HEALTH_INTERVAL_S` | `20` | how often a dead, wanted harness is respawned |
 | `DSH_START_TIMEOUT_S` | `60` | how long `start` waits for the port to bind |
