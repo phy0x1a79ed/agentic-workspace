@@ -73,7 +73,7 @@ This session writes `docs/trilium-design/CONTRACT.md`. It lists, per port, what 
 - **port-ops, auth:** the 12-hour sign-in page on alcor's public address, the signed links, the redirect and return, the vault's sign-in frame, and the device-credential cookie.
 - **port-comms, social:** the seat's Remote Control switch, held with the seat state and applied when the seat's session starts.
 - **port-harness, reflection:** session start, stop and Remote Control change as gateway emit topics. Also a no-brief start in `awm/lobby`.
-The contract holds one item per port, so each port lands its item on its own. The contract's items never go in this branch: plugin-redux/interview hands each to its port owner. The plugin up and down topic needs no item, because the gateway already emits it on `awm/plugins` (`plugin-contract.md` § Plugin events). plugin-redux/interview agreed on 2026-11-07 that T4 takes item C1 from the operations port. It tells port-ops itself, and this session never messages port-ops.
+The contract holds one item per port, so each port lands its item on its own. The contract's items never go in this branch: plugin-redux/interview hands each to its port owner. `awm/plugins` covers only a plugin's install changes, so a fifth item asks the gateway, which plugin-redux/interview owns, for a service's up and down and for usage events. plugin-redux/interview agreed on 2026-11-07 that T4 takes item C1 from the operations port. It tells port-ops itself, and this session never messages port-ops.
 
 Gotchas: the contract restates no spec text. It points at the R-items and adds only names and shapes. A shape that a port plan already fixes, such as `board_changes`, is reused, not renamed.
 
