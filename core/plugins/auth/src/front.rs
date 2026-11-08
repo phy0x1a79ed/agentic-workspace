@@ -583,7 +583,7 @@ fn gate(edge: &Edge, req: &Req) -> Result<Option<String>, Response> {
 }
 
 fn internal() -> Response {
-    text(500, "Internal Server Error")
+    edge::plain_text(500, "Internal Server Error")
 }
 
 fn wants_html(req: &Req) -> bool {

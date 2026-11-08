@@ -1,4 +1,5 @@
 mod certs;
+mod edge;
 mod gate;
 mod landing;
 mod pages;

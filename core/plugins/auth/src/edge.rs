@@ -158,7 +158,7 @@ impl Edge {
             return own;
         }
         if !METHODS.contains(&req.parts.method.as_str()) {
-            return with_header(text(405, "Method Not Allowed"), "allow", "DELETE, GET, HEAD, OPTIONS, PATCH, POST, PUT");
+            return with_header(plain_text(405, "Method Not Allowed"), "allow", "DELETE, GET, HEAD, OPTIONS, PATCH, POST, PUT");
         }
         self.dispatch.http(&self, req).await
     }
@@ -189,7 +189,8 @@ impl Edge {
         let html = req.header("accept").is_some_and(|a| a.contains("text/html"));
         if req.parts.method == Method::GET && html {
             let host = req.header("host").unwrap_or_default();
-            let path = portal::local_path(Some(&req.path)).unwrap_or("/");
+            let raw = String::from_utf8_lossy(&req.raw);
+            let path = portal::local_path(Some(&raw)).unwrap_or("/");
             return redirect(302, &portal::login_url(&format!("https://{host}{path}")), &[("cache-control", "no-store")]);
         }
         json_reply(401, &json!({"error": "unauthenticated"}))
@@ -449,11 +450,13 @@ pub async fn start(edge: Arc<Edge>, port: u16, tls: Option<Arc<rustls::ServerCon
             let listener = crate::tls::bind_tls(port).await?;
             tokio::spawn(crate::tls::serve_tls(listener, config, move |s, peer| connection(edge.clone(), s, peer)))
         }
-        None => {
-            let listener = crate::tls::bind_plain(port).await?;
-            tokio::spawn(crate::tls::serve_plain(listener, move |s, peer| connection(edge.clone(), s, peer)))
-        }
+        None => serve_plain(edge, crate::tls::bind_plain(port).await?),
     })
+}
+
+/// Serve the edge in plain HTTP on a listener the caller bound.
+pub fn serve_plain(edge: Arc<Edge>, listener: tokio::net::TcpListener) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(crate::tls::serve_plain(listener, move |s, peer| connection(edge.clone(), s, peer)))
 }
 
 async fn connection<I: EdgeStream>(edge: Arc<Edge>, io: I, peer: SocketAddr) {
@@ -585,7 +588,15 @@ pub fn reply(status: u16, content_type: &str, body: impl Into<Bytes>) -> Respons
     r
 }
 
+/// A bare text body with no content type, as Starlette's plain `Response` sent.
 pub fn text(status: u16, body: &str) -> Response {
+    let mut r = hyper::Response::new(full(body.to_string()));
+    *r.status_mut() = StatusCode::from_u16(status).expect("a valid status");
+    r
+}
+
+/// Starlette's own `PlainTextResponse`, which its 405 and 500 used.
+pub fn plain_text(status: u16, body: &str) -> Response {
     reply(status, "text/plain; charset=utf-8", body.to_string())
 }
 
