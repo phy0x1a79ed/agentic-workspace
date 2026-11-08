@@ -1,0 +1,23 @@
+[plugin]
+name = "reflection"
+version = "0.3.0"
+
+[[service]]
+name = "reflection"
+
+[[tool]]
+name = "reflection"
+major = 1
+tier = "on"
+implements = ["reflection@1"]
+
+# Plain calls to operations, scope and journal each degrade when they fail, so they declare
+# nothing (decision a5f837ac).
+[needs]
+secrets = []
+network = []
+
+# Every harness plugin: cch (harness-cc), dsh (harness-ds). See harness-contract.md.
+[[needs.contract]]
+name = "harness"
+major = 1

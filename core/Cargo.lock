@@ -288,6 +288,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "awm-plugin-reflection"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "awm-harness",
+ "awm-plugin-sdk",
+ "awm-statecheck",
+ "awm-trust",
+ "clap",
+ "futures-util",
+ "libc",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "awm-plugin-routine"
 version = "0.1.0"
 dependencies = [

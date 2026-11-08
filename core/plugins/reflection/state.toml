@@ -1,0 +1,24 @@
+# What awm-statecheck copies to .pre-rust/ before reflection's first Rust start (harness-state.md
+# rule 3). Relative paths resolve against AWM_DIR. Every file stays in place, in its format.
+dirs = ["services/reflection"]
+
+# An open ticket goes away when its event arrives, and a .closed marker after 7 days.
+[[transient]]
+path = "services/reflection/tickets/*.json"
+
+[[transient]]
+path = "services/reflection/tickets/*.closed"
+
+# A JSON file is written through <name>.tmp and a rename.
+[[transient]]
+path = "services/reflection/*.tmp"
+
+# cch's old promise store, which cch migrates and removes. reflection never reads it.
+[[transient]]
+path = "services/reflection/pending"
+
+[[additive]]
+path = "services/reflection/events.jsonl"
+
+[[additive]]
+path = "services/reflection/lost.jsonl"
