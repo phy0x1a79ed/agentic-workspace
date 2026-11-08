@@ -91,13 +91,16 @@ async fn run(awm_dir: &Path, snapshot: awm_statecheck::snapshot::Outcome) -> any
     let svc = awm_kb_journals::register(svc, journals.clone());
     let svc = awm_kb_search::register(svc, Arc::new(search));
     let svc = awm_kb_transcripts::register(svc, transcripts.clone());
-    let start_tx = transcripts.clone();
-    svc.on_start(async move { awm_kb_transcripts::start(&start_tx).await })
-        .on_ready(async move {
-            journals.start(ctx.clone());
-            guide.follow(hub);
-            awm_kb_transcripts::ready(&ctx, transcripts);
-        })
+    let start_ctx = ctx.clone();
+    svc.on_start(async move {
+        awm_kb_transcripts::start(&transcripts).await?;
+        awm_kb_transcripts::ready(&start_ctx, transcripts);
+        Ok(())
+    })
+    .on_ready(async move {
+        journals.start(ctx);
+        guide.follow(hub);
+    })
         .run()
         .await
 }

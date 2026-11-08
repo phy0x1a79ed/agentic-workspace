@@ -33,6 +33,9 @@ const BATCH: usize = 500;
 #[derive(Debug, Clone)]
 pub struct Ask {
     pub cond: String,
+    /// The part of `cond` the chunk rows can answer, when `cond` names columns only the entries
+    /// hold. Near neighbours are filtered by this, then checked against `cond`.
+    pub chunk_cond: Option<String>,
     pub tree: Option<Tree>,
     pub about: Option<String>,
     pub under_or: bool,
@@ -54,6 +57,7 @@ impl Ask {
         let content = fields.content();
         Ok(Ask {
             cond: where_sql(fields, &source.filter, veil)?,
+            chunk_cond: None,
             tree: text.and_then(|t| t.contains.as_ref()).map(|n| compile_tree(n, &content)),
             about: text.and_then(|t| t.about.clone()),
             under_or: text.is_some_and(|t| t.under_or),
@@ -257,20 +261,40 @@ impl Index {
         Ok(best)
     }
 
+    /// The entries of `near` that pass `cond`.
+    async fn keep(&self, sec: &Section, mut near: IndexMap<String, f64>, cond: &str) -> Result<IndexMap<String, f64>> {
+        let ids: Vec<String> = near.keys().cloned().collect();
+        let mut passing = HashSet::new();
+        for batch in ids.chunks(BATCH) {
+            let q = sec.entries.query().select(Select::columns(&["id"])).only_if(and(&[cond, &id_list(batch)]));
+            passing.extend(collect(q).await?.iter().map(|r| cells::text(r, "id")));
+        }
+        near.retain(|id, _| passing.contains(id));
+        Ok(near)
+    }
+
     /// `ranked`: ids passing `cond` (and in `within`), best first by the `$about`.
-    pub async fn ranked(&self, vector: Option<&[f32]>, about: &str, cond: &str, depth: usize, within: Option<&[String]>) -> Result<Vec<String>> {
-        let cond = match within {
-            Some([]) => return Ok(vec![]),
-            Some(ids) => and(&[cond, &id_list(ids)]),
-            None => cond.to_string(),
-        };
+    pub async fn ranked(&self, vector: Option<&[f32]>, about: &str, ask: &Ask, depth: usize, within: Option<&[String]>) -> Result<Vec<String>> {
+        if within.is_some_and(<[String]>::is_empty) {
+            return Ok(vec![]);
+        }
+        let restrict = |c: &str| within.map_or_else(|| c.to_string(), |ids| and(&[c, &id_list(ids)]));
+        let cond = restrict(&ask.cond);
+        let chunk_cond = ask.chunk_cond.as_deref().map(restrict);
         let reach = depth.max(FUSION_DEPTH);
         let content = self.spec.fields.content();
         let keyword = about_query(about, &content);
         let mut all: IndexMap<String, f64> = IndexMap::new();
         for sec in self.sections() {
             let dense = match vector {
-                Some(v) => self.dense(&sec, v, &cond, reach).await?,
+                Some(v) => {
+                    let near = self.dense(&sec, v, chunk_cond.as_deref().unwrap_or(&cond), reach).await?;
+                    if chunk_cond.is_some() {
+                        self.keep(&sec, near, &cond).await?
+                    } else {
+                        near
+                    }
+                }
                 None => IndexMap::new(),
             };
             let bm25: IndexMap<String, f64> = match &keyword {
@@ -372,15 +396,15 @@ impl Index {
         };
         let vector = ask.vector.as_deref();
         let exact = match &ask.tree {
-            None => self.ranked(vector, about, &ask.cond, ask.limit, None).await?,
+            None => self.ranked(vector, about, ask, ask.limit, None).await?,
             Some(_) => {
                 let within = self.candidates(ask).await?;
-                self.ranked(vector, about, &ask.cond, ask.limit, Some(&within)).await?
+                self.ranked(vector, about, ask, ask.limit, Some(&within)).await?
             }
         };
         let mut out = Answer { exact: self.hits(&self.resorted(exact, &ask.sort).await?).await?, related: None };
         if ask.under_or {
-            let near = self.ranked(vector, about, &ask.cond, ask.limit * 3, None).await?;
+            let near = self.ranked(vector, about, ask, ask.limit * 3, None).await?;
             let inside: HashSet<String> = match &ask.tree {
                 Some(t) => self.matching(t, &near).await?,
                 None => near.iter().cloned().collect(),

@@ -71,6 +71,16 @@ pub async fn rig() -> Rig {
     rig_on("home").await
 }
 
+/// A journal with an embedder loaded, so its posts have chunks to search.
+pub async fn rig_with_model() -> Rig {
+    state();
+    let dir = tempfile::tempdir().unwrap();
+    let j = Journals::open(dir.path(), Some(Arc::new(awm_embed::Stub::default())), Opts { node: "home".into(), other_dbs: vec![] }).await.expect("open");
+    let out = Arc::new(Fake::default());
+    j.set_outside(out.clone());
+    Rig { dir, j, out }
+}
+
 pub async fn rig_on(node: &str) -> Rig {
     from_dir(tempfile::tempdir().unwrap(), node).await
 }
