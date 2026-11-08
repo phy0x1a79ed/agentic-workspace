@@ -35,6 +35,7 @@ pub const RETIRE_S: f64 = 240.0;
 pub const PUSH_RETRY_S: f64 = 120.0;
 /// How long a forward lets the receiving seat read the source chat.
 pub const READ_S: f64 = 24.0 * 3600.0;
+/// The shortest wait before a seat's overdue clock is looked at again.
 pub const TICK_S: u64 = 15;
 
 pub const SHIFT_REPLY: &str = "agent is changing shift, will respond within 5 mins";
@@ -120,6 +121,7 @@ pub struct Seats {
     accounts: Vec<AccountConfig>,
     world: Arc<dyn World>,
     locks: Mutex<HashMap<Key, Arc<tokio::sync::Mutex<()>>>>,
+    wake: tokio::sync::Notify,
 }
 
 fn kind_str(k: ChatKind) -> &'static str {
@@ -142,7 +144,7 @@ fn label(s: &Seat) -> String {
 
 impl Seats {
     pub fn new(db: Db, cfg: SeatsConfig, accounts: Vec<AccountConfig>, world: Arc<dyn World>) -> Arc<Self> {
-        Arc::new(Self { store: Store(db.clone()), db, cfg, accounts, world, locks: Mutex::new(HashMap::new()) })
+        Arc::new(Self { store: Store(db.clone()), db, cfg, accounts, world, locks: Mutex::new(HashMap::new()), wake: tokio::sync::Notify::new() })
     }
 
     /// Write the row, and publish its `social/seats` event when the save changed one.
@@ -545,10 +547,37 @@ impl Seats {
         }
     }
 
+    /// A session started or stopped somewhere: look at every seat now.
+    pub fn wake(&self) {
+        self.wake.notify_one();
+    }
+
+    /// Seconds until the next moment a seat's own clock needs a look: a start deadline, a retire
+    /// deadline, the quiet hour of a finished task, or the end of a breaker pause. A moment already
+    /// past that `tick` did not clear is looked at again after `TICK_S`.
+    async fn next_due(&self) -> Option<f64> {
+        let now = self.world.now();
+        let mut due: Option<f64> = None;
+        for s in self.store.all().await {
+            let at = match s.state {
+                State::Starting | State::Retiring => s.deadline,
+                State::Occupied if s.done_at > 0.0 => s.done_at.max(s.last_message) + DONE_S,
+                State::Empty => s.breaker.next_try.max(s.breaker.hold_until),
+                State::Occupied => continue,
+            };
+            due = Some(due.map_or(at, |d| d.min(at)));
+        }
+        due.map(|at| (at - now).max(TICK_S as f64))
+    }
+
     pub async fn tick_forever(self: Arc<Self>) {
         loop {
-            tokio::time::sleep(std::time::Duration::from_secs(TICK_S)).await;
             self.tick().await;
+            let wait = self.next_due().await.map(std::time::Duration::from_secs_f64);
+            tokio::select! {
+                _ = self.wake.notified() => {}
+                _ = async { match wait { Some(w) => tokio::time::sleep(w).await, None => std::future::pending().await } } => {}
+            }
         }
     }
 

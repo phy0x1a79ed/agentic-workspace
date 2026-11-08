@@ -34,7 +34,6 @@ use store::{New, Row, Store, UNTRUSTED};
 
 const KINDS: [&str; 2] = ["room", "machine"];
 const TARGETS: [&str; 2] = ["say", "shell"];
-pub const PRUNE: Duration = Duration::from_secs(60);
 /// How long one follow of a machine's conversation waits on the stream.
 const FOLLOW_WAIT_S: f64 = 60.0;
 /// How long one feed of the rooms waits at the relay.
@@ -391,13 +390,6 @@ impl Channels {
                 self.take(message).await;
                 acks.push(json!({"room": message["room"], "session": message["session"], "through": message["id"]}));
             }
-        }
-    }
-
-    pub async fn prune_forever(self: Arc<Self>) {
-        loop {
-            tokio::time::sleep(PRUNE).await;
-            self.prune().await;
         }
     }
 

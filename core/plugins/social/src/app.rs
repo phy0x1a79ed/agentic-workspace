@@ -4,7 +4,7 @@
 //! takes it through [`Seats::route`], else a hand mount's holder gets it pushed, else nobody.
 //! A caller below trusted reaches only the chats it holds, plus the chats a forward let it read.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::{Duration, Instant};
@@ -27,7 +27,6 @@ const SEEN_MAX: usize = 4096;
 const RELAYED_MAX: usize = 4096;
 const PROBE_TIMEOUT_S: u64 = 20;
 pub const PROBE_COMMAND: &str = "__awm_probe__";
-pub const PRUNE_S: u64 = 60;
 
 pub type Conns = Arc<RwLock<BTreeMap<String, Arc<dyn Connector>>>>;
 
@@ -41,6 +40,7 @@ pub struct Social {
     pub seats: Arc<Seats>,
     pub ctx: OnceLock<Context>,
     pusher: OnceLock<Pusher>,
+    watch: OnceLock<Arc<awm_plugin_sdk::sessions::SessionWatch>>,
     seen: Mutex<HashSet<(String, String, String)>>,
     relayed: Mutex<HashMap<(String, String, String), Instant>>,
     relaying: Mutex<HashMap<String, i64>>,
@@ -147,6 +147,7 @@ impl Social {
             seats,
             ctx: OnceLock::new(),
             pusher: OnceLock::new(),
+            watch: OnceLock::new(),
             seen: Mutex::new(HashSet::new()),
             relayed: Mutex::new(HashMap::new()),
             relaying: Mutex::new(HashMap::new()),
@@ -665,6 +666,7 @@ impl Social {
         }
         let place = self.place(&account, &seat);
         let row = self.db.mount(Mount { account: account.clone(), channel_id: seat.id.clone(), channel_name: seat.name.clone(), node: who.node.clone(), job: who.job.clone(), session_name: who.name.clone(), mounted_at: String::new() }).await.map_err(|e| VerbError::runtime(e.to_string()))?;
+        self.watch_node(&who.node);
         let declared = match self.seats.store.get(&account, &seat.id).await {
             Some(st) => Some(st),
             None => self.seats.declared(&account, &seat.id, &place).await,
@@ -1005,12 +1007,34 @@ impl Social {
         freed
     }
 
-    pub async fn prune_forever(self: Arc<Self>) {
-        loop {
-            tokio::time::sleep(Duration::from_secs(PRUNE_S)).await;
-            for m in self.prune().await {
-                tracing::info!("released seat {}/{}: holder {} is gone", m.account, m.channel_id, holder_label(&m));
+    /// Watch `node`'s sessions: a start or stop there wakes the seats and prunes the hand mounts.
+    pub fn watch_node(&self, node: &str) {
+        if let Some(w) = self.watch.get() {
+            w.ensure(node);
+        }
+    }
+
+    /// Start watching reflection on this node, on every node a seat or a mount lives on.
+    pub async fn watch_sessions(self: &Arc<Self>) {
+        let me = Arc::downgrade(self);
+        let watch = awm_plugin_sdk::sessions::SessionWatch::new(self.hub.clone(), "social", move |_node| {
+            let me = me.clone();
+            async move {
+                let Some(me) = me.upgrade() else { return };
+                me.seats.wake();
+                for m in me.prune().await {
+                    tracing::info!("released seat {}/{}: holder {} is gone", m.account, m.channel_id, holder_label(&m));
+                }
             }
+        });
+        let _ = self.watch.set(watch);
+        let mut nodes: BTreeSet<String> = BTreeSet::from([self.here.clone()]);
+        nodes.extend(self.seats.cfg.rules.iter().map(|r| r.node.clone()));
+        nodes.extend(self.seats.cfg.chats.iter().map(|c| c.node.clone()));
+        nodes.extend(self.db.mounts(None).await.into_iter().map(|m| m.node));
+        nodes.extend(self.seats.store.all().await.into_iter().map(|s| s.job_node).filter(|n| !n.is_empty()));
+        for n in nodes {
+            self.watch_node(&n);
         }
     }
 

@@ -360,6 +360,39 @@ async fn a_retiring_agent_that_leaves_empties_the_seat_and_a_new_message_clears_
 }
 
 #[tokio::test]
+async fn a_session_event_wakes_the_loop_with_no_timer_behind_it() {
+    let mut t = T::new(false);
+    t.send("task").await;
+    assert_eq!(t.seat().await.state, State::Occupied);
+    assert_eq!(t.seats.next_due().await, None, "an occupied seat has no clock of its own");
+    let looping = tokio::spawn(t.seats.clone().tick_forever());
+    t.world.w().up.remove("job-1");
+    t.seats.wake();
+    for _ in 0..200 {
+        if t.seat().await.state == State::Empty {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(t.seat().await.state, State::Empty, "the stop was seen on the event");
+    looping.abort();
+}
+
+#[tokio::test]
+async fn a_seat_with_a_deadline_is_due_at_it() {
+    let mut t = T::new(false);
+    t.send("task").await;
+    t.world.w().up.clear();
+    t.seats.tick().await;
+    t.world.w().down_on_start = true;
+    t.send("again").await;
+    let s = t.seat().await;
+    assert_eq!(s.state, State::Starting);
+    let due = t.seats.next_due().await.unwrap();
+    assert!((due - (s.deadline - t.world.now()).max(TICK_S as f64)).abs() < 1e-6, "{due}");
+}
+
+#[tokio::test]
 async fn an_agent_that_dies_before_done_gets_a_notice_and_no_restart() {
     let mut t = T::new(false);
     t.send("task").await;

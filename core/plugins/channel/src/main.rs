@@ -173,7 +173,6 @@ async fn run_channel(svc: Service) -> anyhow::Result<()> {
     });
     let (ready, down) = (channels.clone(), channels.clone());
     let socket = paths.control_socket();
-    let ready_ctx = ctx.clone();
     supervise(&ctx, paths, child);
     let svc = channel_service(svc, channels)
         .on_ready(async move {
@@ -181,11 +180,14 @@ async fn run_channel(svc: Service) -> anyhow::Result<()> {
             ready.resume();
             tokio::spawn(ready.clone().feed_forever());
             let prune = ready.clone();
-            ready_ctx.spawn("channel-prune", async move {
-                hub.until_provided("reflection", 1, Duration::from_secs(5)).await;
-                prune.prune_forever().await;
-                Ok(())
+            let watch = awm_plugin_sdk::sessions::SessionWatch::new(hub, "channel", move |_node| {
+                let prune = prune.clone();
+                async move {
+                    prune.prune().await;
+                }
             });
+            watch.ensure(&awm_plugin_sdk::config::node_name());
+
         })
         .on_shutdown(async move {
             down.stop();

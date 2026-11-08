@@ -159,7 +159,7 @@ async fn run() -> anyhow::Result<()> {
     let ready = app.clone();
     service(svc, app.clone())
         .on_ready(async move {
-            tokio::spawn(ready.clone().prune_forever());
+            ready.watch_sessions().await;
             tokio::time::sleep(Duration::from_secs(20)).await;
             ready.adopt_mounts().await;
             ready.seats.unpause_summary().await;
