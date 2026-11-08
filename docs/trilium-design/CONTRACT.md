@@ -20,6 +20,8 @@ C1 moves to this scope (plugin-redux/interview, 2026-11-07). The operations port
    - `source_note`, the note id of a task started from a note;
    - the task's approvals, each with `request_id`, `state` (pending, approved, rejected, expired or cancelled), the request's summary, and its times.
 
+5. operations emits on `operations/board` at each card event it appends: `{task_id, seq, ts}`, where `seq` is the event's `board_changes` mark. No event at boot. trilium on deneb subscribes at peer alcor and drains `board_changes` after its own mark on each message, so the writer needs no poll.
+
 Stale (R61 item 4):
 - operations on alcor subscribes to `telemetry/sessions`.
 - A Working or Needs you card whose last live session goes moves to Stale.
@@ -59,7 +61,7 @@ Removed:
 - the hash chain: `/api/act`, `/api/resume` and `approver/chain.py`, with the device chain state that only it reads;
 - the signed-read headers `x-awm-device`, `x-awm-ts` and `x-awm-sig`, which the cookie replaces.
 
-Cloud batch: add deneb to the `telemetry` callers in `edges.yml`, beside the operations callers, so trilium on deneb reads alcor's roster.
+Cloud batch: add `telemetry` to the `singletons` of `edges.yml`, hosted on alcor. Its `callers` are every node that opts in, stations included, and deneb, so each node part reports to alcor and trilium on deneb reads the roster.
 
 ## port-comms: social
 
@@ -96,7 +98,8 @@ Both stay local to the node, under the privacy rules of `drafts/plugin-contract.
 ## What this scope provides
 
 telemetry, in `core/plugins/telemetry/`:
-- on alcor, the verbs `telemetry nodes`, `telemetry services` and `telemetry seats`;
+- on each node that opts in, a part with no tool of its own, which follows the node's emit topics and reports to alcor through the hidden verb `telemetry report`;
+- on alcor, the singleton tool `telemetry` with the verbs `nodes`, `services` and `seats`;
 - on alcor, the topics `telemetry/roster`, at each change of the roster, and `telemetry/sessions`, at each session that goes live or goes: `{event: "live" | "gone", session_id, task_id?, node, ts}`.
 
 trilium, in `awm/services/trilium/`:
