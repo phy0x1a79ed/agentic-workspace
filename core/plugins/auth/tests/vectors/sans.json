@@ -1,0 +1,2652 @@
+{
+ "normalize": [
+  {
+   "input": "",
+   "output": null
+  },
+  {
+   "input": " ",
+   "output": null
+  },
+  {
+   "input": "\t",
+   "output": null
+  },
+  {
+   "input": "  \n ",
+   "output": null
+  },
+  {
+   "input": "10.74.81.213",
+   "output": "IP:10.74.81.213"
+  },
+  {
+   "input": " 10.74.81.213 ",
+   "output": "IP:10.74.81.213"
+  },
+  {
+   "input": "192.168.1.20",
+   "output": "IP:192.168.1.20"
+  },
+  {
+   "input": "0.0.0.0",
+   "output": "IP:0.0.0.0"
+  },
+  {
+   "input": "255.255.255.255",
+   "output": "IP:255.255.255.255"
+  },
+  {
+   "input": "127.0.0.1",
+   "output": "IP:127.0.0.1"
+  },
+  {
+   "input": "01.2.3.4",
+   "output": "DNS:01.2.3.4"
+  },
+  {
+   "input": "1.2.3",
+   "output": "DNS:1.2.3"
+  },
+  {
+   "input": "1.2.3.4.5",
+   "output": "DNS:1.2.3.4.5"
+  },
+  {
+   "input": "256.1.1.1",
+   "output": "DNS:256.1.1.1"
+  },
+  {
+   "input": "1.2.3.04",
+   "output": "DNS:1.2.3.04"
+  },
+  {
+   "input": "::1",
+   "output": "IP:::1"
+  },
+  {
+   "input": "fe80::1",
+   "output": "IP:fe80::1"
+  },
+  {
+   "input": "FE80::1",
+   "output": "IP:FE80::1"
+  },
+  {
+   "input": "2001:db8::42",
+   "output": "IP:2001:db8::42"
+  },
+  {
+   "input": "2001:DB8:0:0:0:0:0:42",
+   "output": "IP:2001:DB8:0:0:0:0:0:42"
+  },
+  {
+   "input": "::ffff:10.0.0.1",
+   "output": "IP:::ffff:10.0.0.1"
+  },
+  {
+   "input": "fe80::1%eth0",
+   "output": "IP:fe80::1%eth0"
+  },
+  {
+   "input": "fe80::1%",
+   "output": "DNS:fe80::1%"
+  },
+  {
+   "input": "[::1]",
+   "output": "DNS:[::1]"
+  },
+  {
+   "input": "::",
+   "output": "IP:::"
+  },
+  {
+   "input": "node.example.test",
+   "output": "DNS:node.example.test"
+  },
+  {
+   "input": "NODE.Example.TEST",
+   "output": "DNS:NODE.Example.TEST"
+  },
+  {
+   "input": "localhost",
+   "output": "DNS:localhost"
+  },
+  {
+   "input": "notes.zt",
+   "output": "DNS:notes.zt"
+  },
+  {
+   "input": "a_b.example.test",
+   "output": "DNS:a_b.example.test"
+  },
+  {
+   "input": "IP:10.74.81.5",
+   "output": "IP:10.74.81.5"
+  },
+  {
+   "input": "ip:10.74.81.5",
+   "output": "IP:10.74.81.5"
+  },
+  {
+   "input": "Ip:10.74.81.5",
+   "output": "IP:10.74.81.5"
+  },
+  {
+   "input": "IP: 10.74.81.5",
+   "output": "IP:10.74.81.5"
+  },
+  {
+   "input": "IP:",
+   "output": null
+  },
+  {
+   "input": "IP: ",
+   "output": null
+  },
+  {
+   "input": "IP:node.example.test",
+   "output": "IP:node.example.test"
+  },
+  {
+   "input": "IP:fe80::1",
+   "output": "IP:fe80::1"
+  },
+  {
+   "input": "IP::1",
+   "output": "IP::1"
+  },
+  {
+   "input": "DNS:node.example.test",
+   "output": "DNS:node.example.test"
+  },
+  {
+   "input": "dns:node.example.test",
+   "output": "DNS:node.example.test"
+  },
+  {
+   "input": "Dns:Node.Example.Test",
+   "output": "DNS:Node.Example.Test"
+  },
+  {
+   "input": "DNS:",
+   "output": null
+  },
+  {
+   "input": "DNS:  ",
+   "output": null
+  },
+  {
+   "input": "DNS:10.0.0.1",
+   "output": "DNS:10.0.0.1"
+  },
+  {
+   "input": "DNS:a:b",
+   "output": "DNS:a:b"
+  },
+  {
+   "input": "IP:a:b",
+   "output": "IP:a:b"
+  },
+  {
+   "input": "URI:https://node.example.test",
+   "output": "DNS:URI:https://node.example.test"
+  },
+  {
+   "input": "email:operator@example.test",
+   "output": "DNS:email:operator@example.test"
+  },
+  {
+   "input": "IPX:1.2.3.4",
+   "output": "DNS:IPX:1.2.3.4"
+  },
+  {
+   "input": "D NS:x",
+   "output": "DNS:D NS:x"
+  },
+  {
+   "input": ":10.0.0.1",
+   "output": "DNS::10.0.0.1"
+  },
+  {
+   "input": "10.0.0.1:443",
+   "output": "DNS:10.0.0.1:443"
+  },
+  {
+   "input": "node.example.test:443",
+   "output": "DNS:node.example.test:443"
+  },
+  {
+   "input": "\u00a010.0.0.9\u3000",
+   "output": "IP:10.0.0.9"
+  },
+  {
+   "input": "\u0131p:10.0.0.7",
+   "output": "IP:10.0.0.7"
+  },
+  {
+   "input": "\u0131P:10.0.0.7",
+   "output": "IP:10.0.0.7"
+  },
+  {
+   "input": "\u00dfnode.example.test",
+   "output": "DNS:\u00dfnode.example.test"
+  },
+  {
+   "input": "n\u00f6de.example.test",
+   "output": "DNS:n\u00f6de.example.test"
+  }
+ ],
+ "extra": [
+  {
+   "env": "",
+   "file": null,
+   "output": []
+  },
+  {
+   "env": "",
+   "file": "",
+   "output": []
+  },
+  {
+   "env": "",
+   "file": "10.74.81.5\n",
+   "output": [
+    "IP:10.74.81.5"
+   ]
+  },
+  {
+   "env": "",
+   "file": "# the windows-side address\n10.74.81.5\n",
+   "output": [
+    "IP:10.74.81.5"
+   ]
+  },
+  {
+   "env": "",
+   "file": "10.74.81.5 # windows zerotier\nnode.example.test\n\n  \n",
+   "output": [
+    "IP:10.74.81.5",
+    "DNS:node.example.test"
+   ]
+  },
+  {
+   "env": "",
+   "file": "10.74.81.5, 10.74.81.6,\tnode.example.test\n",
+   "output": [
+    "IP:10.74.81.5",
+    "IP:10.74.81.6",
+    "DNS:node.example.test"
+   ]
+  },
+  {
+   "env": "",
+   "file": "IP:10.74.81.5\nDNS:node.example.test\nip:10.74.81.5\n",
+   "output": [
+    "IP:10.74.81.5",
+    "DNS:node.example.test"
+   ]
+  },
+  {
+   "env": "",
+   "file": "10.74.81.5\r\nnode.example.test\r\n",
+   "output": [
+    "IP:10.74.81.5",
+    "DNS:node.example.test"
+   ]
+  },
+  {
+   "env": "",
+   "file": "10.74.81.5\rnode.example.test\r",
+   "output": [
+    "IP:10.74.81.5",
+    "DNS:node.example.test"
+   ]
+  },
+  {
+   "env": "",
+   "file": "# only comments\n#10.0.0.1\n   # 10.0.0.2\n",
+   "output": []
+  },
+  {
+   "env": "",
+   "file": "10.0.0.1#inline\n10.0.0.2 #x 10.0.0.3\n",
+   "output": [
+    "IP:10.0.0.1",
+    "IP:10.0.0.2"
+   ]
+  },
+  {
+   "env": "",
+   "file": "10.0.0.1\u000b# after vt\n10.0.0.2\f#after ff\n10.0.0.3\u001c#after fs\n",
+   "output": [
+    "IP:10.0.0.1",
+    "IP:10.0.0.2",
+    "IP:10.0.0.3"
+   ]
+  },
+  {
+   "env": "",
+   "file": "10.0.0.4\u0085# after nel\n10.0.0.5\u2028# after ls\n10.0.0.6\u2029#after ps\n",
+   "output": [
+    "IP:10.0.0.4",
+    "IP:10.0.0.5",
+    "IP:10.0.0.6"
+   ]
+  },
+  {
+   "env": "",
+   "file": "10.0.0.7\u001d#gs\n10.0.0.8\u001e#rs\n10.0.0.9\u001f#us is not a line break 10.0.0.10\n",
+   "output": [
+    "IP:10.0.0.7",
+    "IP:10.0.0.8",
+    "IP:10.0.0.9"
+   ]
+  },
+  {
+   "env": "",
+   "file": "IP:\nDNS:\nDNS: x\n",
+   "output": [
+    "DNS:x"
+   ]
+  },
+  {
+   "env": "",
+   "file": "127.0.0.1\nlocalhost\n",
+   "output": [
+    "IP:127.0.0.1",
+    "DNS:localhost"
+   ]
+  },
+  {
+   "env": "",
+   "file": "no-trailing-newline.example.test",
+   "output": [
+    "DNS:no-trailing-newline.example.test"
+   ]
+  },
+  {
+   "env": " ",
+   "file": null,
+   "output": []
+  },
+  {
+   "env": " ",
+   "file": "",
+   "output": []
+  },
+  {
+   "env": " ",
+   "file": "10.74.81.5\n",
+   "output": [
+    "IP:10.74.81.5"
+   ]
+  },
+  {
+   "env": " ",
+   "file": "# the windows-side address\n10.74.81.5\n",
+   "output": [
+    "IP:10.74.81.5"
+   ]
+  },
+  {
+   "env": " ",
+   "file": "10.74.81.5 # windows zerotier\nnode.example.test\n\n  \n",
+   "output": [
+    "IP:10.74.81.5",
+    "DNS:node.example.test"
+   ]
+  },
+  {
+   "env": " ",
+   "file": "10.74.81.5, 10.74.81.6,\tnode.example.test\n",
+   "output": [
+    "IP:10.74.81.5",
+    "IP:10.74.81.6",
+    "DNS:node.example.test"
+   ]
+  },
+  {
+   "env": " ",
+   "file": "IP:10.74.81.5\nDNS:node.example.test\nip:10.74.81.5\n",
+   "output": [
+    "IP:10.74.81.5",
+    "DNS:node.example.test"
+   ]
+  },
+  {
+   "env": " ",
+   "file": "10.74.81.5\r\nnode.example.test\r\n",
+   "output": [
+    "IP:10.74.81.5",
+    "DNS:node.example.test"
+   ]
+  },
+  {
+   "env": " ",
+   "file": "10.74.81.5\rnode.example.test\r",
+   "output": [
+    "IP:10.74.81.5",
+    "DNS:node.example.test"
+   ]
+  },
+  {
+   "env": " ",
+   "file": "# only comments\n#10.0.0.1\n   # 10.0.0.2\n",
+   "output": []
+  },
+  {
+   "env": " ",
+   "file": "10.0.0.1#inline\n10.0.0.2 #x 10.0.0.3\n",
+   "output": [
+    "IP:10.0.0.1",
+    "IP:10.0.0.2"
+   ]
+  },
+  {
+   "env": " ",
+   "file": "10.0.0.1\u000b# after vt\n10.0.0.2\f#after ff\n10.0.0.3\u001c#after fs\n",
+   "output": [
+    "IP:10.0.0.1",
+    "IP:10.0.0.2",
+    "IP:10.0.0.3"
+   ]
+  },
+  {
+   "env": " ",
+   "file": "10.0.0.4\u0085# after nel\n10.0.0.5\u2028# after ls\n10.0.0.6\u2029#after ps\n",
+   "output": [
+    "IP:10.0.0.4",
+    "IP:10.0.0.5",
+    "IP:10.0.0.6"
+   ]
+  },
+  {
+   "env": " ",
+   "file": "10.0.0.7\u001d#gs\n10.0.0.8\u001e#rs\n10.0.0.9\u001f#us is not a line break 10.0.0.10\n",
+   "output": [
+    "IP:10.0.0.7",
+    "IP:10.0.0.8",
+    "IP:10.0.0.9"
+   ]
+  },
+  {
+   "env": " ",
+   "file": "IP:\nDNS:\nDNS: x\n",
+   "output": [
+    "DNS:x"
+   ]
+  },
+  {
+   "env": " ",
+   "file": "127.0.0.1\nlocalhost\n",
+   "output": [
+    "IP:127.0.0.1",
+    "DNS:localhost"
+   ]
+  },
+  {
+   "env": " ",
+   "file": "no-trailing-newline.example.test",
+   "output": [
+    "DNS:no-trailing-newline.example.test"
+   ]
+  },
+  {
+   "env": ",",
+   "file": null,
+   "output": []
+  },
+  {
+   "env": ",",
+   "file": "",
+   "output": []
+  },
+  {
+   "env": ",",
+   "file": "10.74.81.5\n",
+   "output": [
+    "IP:10.74.81.5"
+   ]
+  },
+  {
+   "env": ",",
+   "file": "# the windows-side address\n10.74.81.5\n",
+   "output": [
+    "IP:10.74.81.5"
+   ]
+  },
+  {
+   "env": ",",
+   "file": "10.74.81.5 # windows zerotier\nnode.example.test\n\n  \n",
+   "output": [
+    "IP:10.74.81.5",
+    "DNS:node.example.test"
+   ]
+  },
+  {
+   "env": ",",
+   "file": "10.74.81.5, 10.74.81.6,\tnode.example.test\n",
+   "output": [
+    "IP:10.74.81.5",
+    "IP:10.74.81.6",
+    "DNS:node.example.test"
+   ]
+  },
+  {
+   "env": ",",
+   "file": "IP:10.74.81.5\nDNS:node.example.test\nip:10.74.81.5\n",
+   "output": [
+    "IP:10.74.81.5",
+    "DNS:node.example.test"
+   ]
+  },
+  {
+   "env": ",",
+   "file": "10.74.81.5\r\nnode.example.test\r\n",
+   "output": [
+    "IP:10.74.81.5",
+    "DNS:node.example.test"
+   ]
+  },
+  {
+   "env": ",",
+   "file": "10.74.81.5\rnode.example.test\r",
+   "output": [
+    "IP:10.74.81.5",
+    "DNS:node.example.test"
+   ]
+  },
+  {
+   "env": ",",
+   "file": "# only comments\n#10.0.0.1\n   # 10.0.0.2\n",
+   "output": []
+  },
+  {
+   "env": ",",
+   "file": "10.0.0.1#inline\n10.0.0.2 #x 10.0.0.3\n",
+   "output": [
+    "IP:10.0.0.1",
+    "IP:10.0.0.2"
+   ]
+  },
+  {
+   "env": ",",
+   "file": "10.0.0.1\u000b# after vt\n10.0.0.2\f#after ff\n10.0.0.3\u001c#after fs\n",
+   "output": [
+    "IP:10.0.0.1",
+    "IP:10.0.0.2",
+    "IP:10.0.0.3"
+   ]
+  },
+  {
+   "env": ",",
+   "file": "10.0.0.4\u0085# after nel\n10.0.0.5\u2028# after ls\n10.0.0.6\u2029#after ps\n",
+   "output": [
+    "IP:10.0.0.4",
+    "IP:10.0.0.5",
+    "IP:10.0.0.6"
+   ]
+  },
+  {
+   "env": ",",
+   "file": "10.0.0.7\u001d#gs\n10.0.0.8\u001e#rs\n10.0.0.9\u001f#us is not a line break 10.0.0.10\n",
+   "output": [
+    "IP:10.0.0.7",
+    "IP:10.0.0.8",
+    "IP:10.0.0.9"
+   ]
+  },
+  {
+   "env": ",",
+   "file": "IP:\nDNS:\nDNS: x\n",
+   "output": [
+    "DNS:x"
+   ]
+  },
+  {
+   "env": ",",
+   "file": "127.0.0.1\nlocalhost\n",
+   "output": [
+    "IP:127.0.0.1",
+    "DNS:localhost"
+   ]
+  },
+  {
+   "env": ",",
+   "file": "no-trailing-newline.example.test",
+   "output": [
+    "DNS:no-trailing-newline.example.test"
+   ]
+  },
+  {
+   "env": ",,, ,",
+   "file": null,
+   "output": []
+  },
+  {
+   "env": ",,, ,",
+   "file": "",
+   "output": []
+  },
+  {
+   "env": ",,, ,",
+   "file": "10.74.81.5\n",
+   "output": [
+    "IP:10.74.81.5"
+   ]
+  },
+  {
+   "env": ",,, ,",
+   "file": "# the windows-side address\n10.74.81.5\n",
+   "output": [
+    "IP:10.74.81.5"
+   ]
+  },
+  {
+   "env": ",,, ,",
+   "file": "10.74.81.5 # windows zerotier\nnode.example.test\n\n  \n",
+   "output": [
+    "IP:10.74.81.5",
+    "DNS:node.example.test"
+   ]
+  },
+  {
+   "env": ",,, ,",
+   "file": "10.74.81.5, 10.74.81.6,\tnode.example.test\n",
+   "output": [
+    "IP:10.74.81.5",
+    "IP:10.74.81.6",
+    "DNS:node.example.test"
+   ]
+  },
+  {
+   "env": ",,, ,",
+   "file": "IP:10.74.81.5\nDNS:node.example.test\nip:10.74.81.5\n",
+   "output": [
+    "IP:10.74.81.5",
+    "DNS:node.example.test"
+   ]
+  },
+  {
+   "env": ",,, ,",
+   "file": "10.74.81.5\r\nnode.example.test\r\n",
+   "output": [
+    "IP:10.74.81.5",
+    "DNS:node.example.test"
+   ]
+  },
+  {
+   "env": ",,, ,",
+   "file": "10.74.81.5\rnode.example.test\r",
+   "output": [
+    "IP:10.74.81.5",
+    "DNS:node.example.test"
+   ]
+  },
+  {
+   "env": ",,, ,",
+   "file": "# only comments\n#10.0.0.1\n   # 10.0.0.2\n",
+   "output": []
+  },
+  {
+   "env": ",,, ,",
+   "file": "10.0.0.1#inline\n10.0.0.2 #x 10.0.0.3\n",
+   "output": [
+    "IP:10.0.0.1",
+    "IP:10.0.0.2"
+   ]
+  },
+  {
+   "env": ",,, ,",
+   "file": "10.0.0.1\u000b# after vt\n10.0.0.2\f#after ff\n10.0.0.3\u001c#after fs\n",
+   "output": [
+    "IP:10.0.0.1",
+    "IP:10.0.0.2",
+    "IP:10.0.0.3"
+   ]
+  },
+  {
+   "env": ",,, ,",
+   "file": "10.0.0.4\u0085# after nel\n10.0.0.5\u2028# after ls\n10.0.0.6\u2029#after ps\n",
+   "output": [
+    "IP:10.0.0.4",
+    "IP:10.0.0.5",
+    "IP:10.0.0.6"
+   ]
+  },
+  {
+   "env": ",,, ,",
+   "file": "10.0.0.7\u001d#gs\n10.0.0.8\u001e#rs\n10.0.0.9\u001f#us is not a line break 10.0.0.10\n",
+   "output": [
+    "IP:10.0.0.7",
+    "IP:10.0.0.8",
+    "IP:10.0.0.9"
+   ]
+  },
+  {
+   "env": ",,, ,",
+   "file": "IP:\nDNS:\nDNS: x\n",
+   "output": [
+    "DNS:x"
+   ]
+  },
+  {
+   "env": ",,, ,",
+   "file": "127.0.0.1\nlocalhost\n",
+   "output": [
+    "IP:127.0.0.1",
+    "DNS:localhost"
+   ]
+  },
+  {
+   "env": ",,, ,",
+   "file": "no-trailing-newline.example.test",
+   "output": [
+    "DNS:no-trailing-newline.example.test"
+   ]
+  },
+  {
+   "env": "10.74.81.5",
+   "file": null,
+   "output": [
+    "IP:10.74.81.5"
+   ]
+  },
+  {
+   "env": "10.74.81.5",
+   "file": "",
+   "output": [
+    "IP:10.74.81.5"
+   ]
+  },
+  {
+   "env": "10.74.81.5",
+   "file": "10.74.81.5\n",
+   "output": [
+    "IP:10.74.81.5"
+   ]
+  },
+  {
+   "env": "10.74.81.5",
+   "file": "# the windows-side address\n10.74.81.5\n",
+   "output": [
+    "IP:10.74.81.5"
+   ]
+  },
+  {
+   "env": "10.74.81.5",
+   "file": "10.74.81.5 # windows zerotier\nnode.example.test\n\n  \n",
+   "output": [
+    "IP:10.74.81.5",
+    "DNS:node.example.test"
+   ]
+  },
+  {
+   "env": "10.74.81.5",
+   "file": "10.74.81.5, 10.74.81.6,\tnode.example.test\n",
+   "output": [
+    "IP:10.74.81.5",
+    "IP:10.74.81.6",
+    "DNS:node.example.test"
+   ]
+  },
+  {
+   "env": "10.74.81.5",
+   "file": "IP:10.74.81.5\nDNS:node.example.test\nip:10.74.81.5\n",
+   "output": [
+    "IP:10.74.81.5",
+    "DNS:node.example.test"
+   ]
+  },
+  {
+   "env": "10.74.81.5",
+   "file": "10.74.81.5\r\nnode.example.test\r\n",
+   "output": [
+    "IP:10.74.81.5",
+    "DNS:node.example.test"
+   ]
+  },
+  {
+   "env": "10.74.81.5",
+   "file": "10.74.81.5\rnode.example.test\r",
+   "output": [
+    "IP:10.74.81.5",
+    "DNS:node.example.test"
+   ]
+  },
+  {
+   "env": "10.74.81.5",
+   "file": "# only comments\n#10.0.0.1\n   # 10.0.0.2\n",
+   "output": [
+    "IP:10.74.81.5"
+   ]
+  },
+  {
+   "env": "10.74.81.5",
+   "file": "10.0.0.1#inline\n10.0.0.2 #x 10.0.0.3\n",
+   "output": [
+    "IP:10.74.81.5",
+    "IP:10.0.0.1",
+    "IP:10.0.0.2"
+   ]
+  },
+  {
+   "env": "10.74.81.5",
+   "file": "10.0.0.1\u000b# after vt\n10.0.0.2\f#after ff\n10.0.0.3\u001c#after fs\n",
+   "output": [
+    "IP:10.74.81.5",
+    "IP:10.0.0.1",
+    "IP:10.0.0.2",
+    "IP:10.0.0.3"
+   ]
+  },
+  {
+   "env": "10.74.81.5",
+   "file": "10.0.0.4\u0085# after nel\n10.0.0.5\u2028# after ls\n10.0.0.6\u2029#after ps\n",
+   "output": [
+    "IP:10.74.81.5",
+    "IP:10.0.0.4",
+    "IP:10.0.0.5",
+    "IP:10.0.0.6"
+   ]
+  },
+  {
+   "env": "10.74.81.5",
+   "file": "10.0.0.7\u001d#gs\n10.0.0.8\u001e#rs\n10.0.0.9\u001f#us is not a line break 10.0.0.10\n",
+   "output": [
+    "IP:10.74.81.5",
+    "IP:10.0.0.7",
+    "IP:10.0.0.8",
+    "IP:10.0.0.9"
+   ]
+  },
+  {
+   "env": "10.74.81.5",
+   "file": "IP:\nDNS:\nDNS: x\n",
+   "output": [
+    "IP:10.74.81.5",
+    "DNS:x"
+   ]
+  },
+  {
+   "env": "10.74.81.5",
+   "file": "127.0.0.1\nlocalhost\n",
+   "output": [
+    "IP:10.74.81.5",
+    "IP:127.0.0.1",
+    "DNS:localhost"
+   ]
+  },
+  {
+   "env": "10.74.81.5",
+   "file": "no-trailing-newline.example.test",
+   "output": [
+    "IP:10.74.81.5",
+    "DNS:no-trailing-newline.example.test"
+   ]
+  },
+  {
+   "env": "10.74.81.5,node.example.test",
+   "file": null,
+   "output": [
+    "IP:10.74.81.5",
+    "DNS:node.example.test"
+   ]
+  },
+  {
+   "env": "10.74.81.5,node.example.test",
+   "file": "",
+   "output": [
+    "IP:10.74.81.5",
+    "DNS:node.example.test"
+   ]
+  },
+  {
+   "env": "10.74.81.5,node.example.test",
+   "file": "10.74.81.5\n",
+   "output": [
+    "IP:10.74.81.5",
+    "DNS:node.example.test"
+   ]
+  },
+  {
+   "env": "10.74.81.5,node.example.test",
+   "file": "# the windows-side address\n10.74.81.5\n",
+   "output": [
+    "IP:10.74.81.5",
+    "DNS:node.example.test"
+   ]
+  },
+  {
+   "env": "10.74.81.5,node.example.test",
+   "file": "10.74.81.5 # windows zerotier\nnode.example.test\n\n  \n",
+   "output": [
+    "IP:10.74.81.5",
+    "DNS:node.example.test"
+   ]
+  },
+  {
+   "env": "10.74.81.5,node.example.test",
+   "file": "10.74.81.5, 10.74.81.6,\tnode.example.test\n",
+   "output": [
+    "IP:10.74.81.5",
+    "DNS:node.example.test",
+    "IP:10.74.81.6"
+   ]
+  },
+  {
+   "env": "10.74.81.5,node.example.test",
+   "file": "IP:10.74.81.5\nDNS:node.example.test\nip:10.74.81.5\n",
+   "output": [
+    "IP:10.74.81.5",
+    "DNS:node.example.test"
+   ]
+  },
+  {
+   "env": "10.74.81.5,node.example.test",
+   "file": "10.74.81.5\r\nnode.example.test\r\n",
+   "output": [
+    "IP:10.74.81.5",
+    "DNS:node.example.test"
+   ]
+  },
+  {
+   "env": "10.74.81.5,node.example.test",
+   "file": "10.74.81.5\rnode.example.test\r",
+   "output": [
+    "IP:10.74.81.5",
+    "DNS:node.example.test"
+   ]
+  },
+  {
+   "env": "10.74.81.5,node.example.test",
+   "file": "# only comments\n#10.0.0.1\n   # 10.0.0.2\n",
+   "output": [
+    "IP:10.74.81.5",
+    "DNS:node.example.test"
+   ]
+  },
+  {
+   "env": "10.74.81.5,node.example.test",
+   "file": "10.0.0.1#inline\n10.0.0.2 #x 10.0.0.3\n",
+   "output": [
+    "IP:10.74.81.5",
+    "DNS:node.example.test",
+    "IP:10.0.0.1",
+    "IP:10.0.0.2"
+   ]
+  },
+  {
+   "env": "10.74.81.5,node.example.test",
+   "file": "10.0.0.1\u000b# after vt\n10.0.0.2\f#after ff\n10.0.0.3\u001c#after fs\n",
+   "output": [
+    "IP:10.74.81.5",
+    "DNS:node.example.test",
+    "IP:10.0.0.1",
+    "IP:10.0.0.2",
+    "IP:10.0.0.3"
+   ]
+  },
+  {
+   "env": "10.74.81.5,node.example.test",
+   "file": "10.0.0.4\u0085# after nel\n10.0.0.5\u2028# after ls\n10.0.0.6\u2029#after ps\n",
+   "output": [
+    "IP:10.74.81.5",
+    "DNS:node.example.test",
+    "IP:10.0.0.4",
+    "IP:10.0.0.5",
+    "IP:10.0.0.6"
+   ]
+  },
+  {
+   "env": "10.74.81.5,node.example.test",
+   "file": "10.0.0.7\u001d#gs\n10.0.0.8\u001e#rs\n10.0.0.9\u001f#us is not a line break 10.0.0.10\n",
+   "output": [
+    "IP:10.74.81.5",
+    "DNS:node.example.test",
+    "IP:10.0.0.7",
+    "IP:10.0.0.8",
+    "IP:10.0.0.9"
+   ]
+  },
+  {
+   "env": "10.74.81.5,node.example.test",
+   "file": "IP:\nDNS:\nDNS: x\n",
+   "output": [
+    "IP:10.74.81.5",
+    "DNS:node.example.test",
+    "DNS:x"
+   ]
+  },
+  {
+   "env": "10.74.81.5,node.example.test",
+   "file": "127.0.0.1\nlocalhost\n",
+   "output": [
+    "IP:10.74.81.5",
+    "DNS:node.example.test",
+    "IP:127.0.0.1",
+    "DNS:localhost"
+   ]
+  },
+  {
+   "env": "10.74.81.5,node.example.test",
+   "file": "no-trailing-newline.example.test",
+   "output": [
+    "IP:10.74.81.5",
+    "DNS:node.example.test",
+    "DNS:no-trailing-newline.example.test"
+   ]
+  },
+  {
+   "env": "10.74.81.5 node.example.test",
+   "file": null,
+   "output": [
+    "IP:10.74.81.5",
+    "DNS:node.example.test"
+   ]
+  },
+  {
+   "env": "10.74.81.5 node.example.test",
+   "file": "",
+   "output": [
+    "IP:10.74.81.5",
+    "DNS:node.example.test"
+   ]
+  },
+  {
+   "env": "10.74.81.5 node.example.test",
+   "file": "10.74.81.5\n",
+   "output": [
+    "IP:10.74.81.5",
+    "DNS:node.example.test"
+   ]
+  },
+  {
+   "env": "10.74.81.5 node.example.test",
+   "file": "# the windows-side address\n10.74.81.5\n",
+   "output": [
+    "IP:10.74.81.5",
+    "DNS:node.example.test"
+   ]
+  },
+  {
+   "env": "10.74.81.5 node.example.test",
+   "file": "10.74.81.5 # windows zerotier\nnode.example.test\n\n  \n",
+   "output": [
+    "IP:10.74.81.5",
+    "DNS:node.example.test"
+   ]
+  },
+  {
+   "env": "10.74.81.5 node.example.test",
+   "file": "10.74.81.5, 10.74.81.6,\tnode.example.test\n",
+   "output": [
+    "IP:10.74.81.5",
+    "DNS:node.example.test",
+    "IP:10.74.81.6"
+   ]
+  },
+  {
+   "env": "10.74.81.5 node.example.test",
+   "file": "IP:10.74.81.5\nDNS:node.example.test\nip:10.74.81.5\n",
+   "output": [
+    "IP:10.74.81.5",
+    "DNS:node.example.test"
+   ]
+  },
+  {
+   "env": "10.74.81.5 node.example.test",
+   "file": "10.74.81.5\r\nnode.example.test\r\n",
+   "output": [
+    "IP:10.74.81.5",
+    "DNS:node.example.test"
+   ]
+  },
+  {
+   "env": "10.74.81.5 node.example.test",
+   "file": "10.74.81.5\rnode.example.test\r",
+   "output": [
+    "IP:10.74.81.5",
+    "DNS:node.example.test"
+   ]
+  },
+  {
+   "env": "10.74.81.5 node.example.test",
+   "file": "# only comments\n#10.0.0.1\n   # 10.0.0.2\n",
+   "output": [
+    "IP:10.74.81.5",
+    "DNS:node.example.test"
+   ]
+  },
+  {
+   "env": "10.74.81.5 node.example.test",
+   "file": "10.0.0.1#inline\n10.0.0.2 #x 10.0.0.3\n",
+   "output": [
+    "IP:10.74.81.5",
+    "DNS:node.example.test",
+    "IP:10.0.0.1",
+    "IP:10.0.0.2"
+   ]
+  },
+  {
+   "env": "10.74.81.5 node.example.test",
+   "file": "10.0.0.1\u000b# after vt\n10.0.0.2\f#after ff\n10.0.0.3\u001c#after fs\n",
+   "output": [
+    "IP:10.74.81.5",
+    "DNS:node.example.test",
+    "IP:10.0.0.1",
+    "IP:10.0.0.2",
+    "IP:10.0.0.3"
+   ]
+  },
+  {
+   "env": "10.74.81.5 node.example.test",
+   "file": "10.0.0.4\u0085# after nel\n10.0.0.5\u2028# after ls\n10.0.0.6\u2029#after ps\n",
+   "output": [
+    "IP:10.74.81.5",
+    "DNS:node.example.test",
+    "IP:10.0.0.4",
+    "IP:10.0.0.5",
+    "IP:10.0.0.6"
+   ]
+  },
+  {
+   "env": "10.74.81.5 node.example.test",
+   "file": "10.0.0.7\u001d#gs\n10.0.0.8\u001e#rs\n10.0.0.9\u001f#us is not a line break 10.0.0.10\n",
+   "output": [
+    "IP:10.74.81.5",
+    "DNS:node.example.test",
+    "IP:10.0.0.7",
+    "IP:10.0.0.8",
+    "IP:10.0.0.9"
+   ]
+  },
+  {
+   "env": "10.74.81.5 node.example.test",
+   "file": "IP:\nDNS:\nDNS: x\n",
+   "output": [
+    "IP:10.74.81.5",
+    "DNS:node.example.test",
+    "DNS:x"
+   ]
+  },
+  {
+   "env": "10.74.81.5 node.example.test",
+   "file": "127.0.0.1\nlocalhost\n",
+   "output": [
+    "IP:10.74.81.5",
+    "DNS:node.example.test",
+    "IP:127.0.0.1",
+    "DNS:localhost"
+   ]
+  },
+  {
+   "env": "10.74.81.5 node.example.test",
+   "file": "no-trailing-newline.example.test",
+   "output": [
+    "IP:10.74.81.5",
+    "DNS:node.example.test",
+    "DNS:no-trailing-newline.example.test"
+   ]
+  },
+  {
+   "env": "10.74.81.5,\tnode.example.test\n DNS:other.example.test",
+   "file": null,
+   "output": [
+    "IP:10.74.81.5",
+    "DNS:node.example.test",
+    "DNS:other.example.test"
+   ]
+  },
+  {
+   "env": "10.74.81.5,\tnode.example.test\n DNS:other.example.test",
+   "file": "",
+   "output": [
+    "IP:10.74.81.5",
+    "DNS:node.example.test",
+    "DNS:other.example.test"
+   ]
+  },
+  {
+   "env": "10.74.81.5,\tnode.example.test\n DNS:other.example.test",
+   "file": "10.74.81.5\n",
+   "output": [
+    "IP:10.74.81.5",
+    "DNS:node.example.test",
+    "DNS:other.example.test"
+   ]
+  },
+  {
+   "env": "10.74.81.5,\tnode.example.test\n DNS:other.example.test",
+   "file": "# the windows-side address\n10.74.81.5\n",
+   "output": [
+    "IP:10.74.81.5",
+    "DNS:node.example.test",
+    "DNS:other.example.test"
+   ]
+  },
+  {
+   "env": "10.74.81.5,\tnode.example.test\n DNS:other.example.test",
+   "file": "10.74.81.5 # windows zerotier\nnode.example.test\n\n  \n",
+   "output": [
+    "IP:10.74.81.5",
+    "DNS:node.example.test",
+    "DNS:other.example.test"
+   ]
+  },
+  {
+   "env": "10.74.81.5,\tnode.example.test\n DNS:other.example.test",
+   "file": "10.74.81.5, 10.74.81.6,\tnode.example.test\n",
+   "output": [
+    "IP:10.74.81.5",
+    "DNS:node.example.test",
+    "DNS:other.example.test",
+    "IP:10.74.81.6"
+   ]
+  },
+  {
+   "env": "10.74.81.5,\tnode.example.test\n DNS:other.example.test",
+   "file": "IP:10.74.81.5\nDNS:node.example.test\nip:10.74.81.5\n",
+   "output": [
+    "IP:10.74.81.5",
+    "DNS:node.example.test",
+    "DNS:other.example.test"
+   ]
+  },
+  {
+   "env": "10.74.81.5,\tnode.example.test\n DNS:other.example.test",
+   "file": "10.74.81.5\r\nnode.example.test\r\n",
+   "output": [
+    "IP:10.74.81.5",
+    "DNS:node.example.test",
+    "DNS:other.example.test"
+   ]
+  },
+  {
+   "env": "10.74.81.5,\tnode.example.test\n DNS:other.example.test",
+   "file": "10.74.81.5\rnode.example.test\r",
+   "output": [
+    "IP:10.74.81.5",
+    "DNS:node.example.test",
+    "DNS:other.example.test"
+   ]
+  },
+  {
+   "env": "10.74.81.5,\tnode.example.test\n DNS:other.example.test",
+   "file": "# only comments\n#10.0.0.1\n   # 10.0.0.2\n",
+   "output": [
+    "IP:10.74.81.5",
+    "DNS:node.example.test",
+    "DNS:other.example.test"
+   ]
+  },
+  {
+   "env": "10.74.81.5,\tnode.example.test\n DNS:other.example.test",
+   "file": "10.0.0.1#inline\n10.0.0.2 #x 10.0.0.3\n",
+   "output": [
+    "IP:10.74.81.5",
+    "DNS:node.example.test",
+    "DNS:other.example.test",
+    "IP:10.0.0.1",
+    "IP:10.0.0.2"
+   ]
+  },
+  {
+   "env": "10.74.81.5,\tnode.example.test\n DNS:other.example.test",
+   "file": "10.0.0.1\u000b# after vt\n10.0.0.2\f#after ff\n10.0.0.3\u001c#after fs\n",
+   "output": [
+    "IP:10.74.81.5",
+    "DNS:node.example.test",
+    "DNS:other.example.test",
+    "IP:10.0.0.1",
+    "IP:10.0.0.2",
+    "IP:10.0.0.3"
+   ]
+  },
+  {
+   "env": "10.74.81.5,\tnode.example.test\n DNS:other.example.test",
+   "file": "10.0.0.4\u0085# after nel\n10.0.0.5\u2028# after ls\n10.0.0.6\u2029#after ps\n",
+   "output": [
+    "IP:10.74.81.5",
+    "DNS:node.example.test",
+    "DNS:other.example.test",
+    "IP:10.0.0.4",
+    "IP:10.0.0.5",
+    "IP:10.0.0.6"
+   ]
+  },
+  {
+   "env": "10.74.81.5,\tnode.example.test\n DNS:other.example.test",
+   "file": "10.0.0.7\u001d#gs\n10.0.0.8\u001e#rs\n10.0.0.9\u001f#us is not a line break 10.0.0.10\n",
+   "output": [
+    "IP:10.74.81.5",
+    "DNS:node.example.test",
+    "DNS:other.example.test",
+    "IP:10.0.0.7",
+    "IP:10.0.0.8",
+    "IP:10.0.0.9"
+   ]
+  },
+  {
+   "env": "10.74.81.5,\tnode.example.test\n DNS:other.example.test",
+   "file": "IP:\nDNS:\nDNS: x\n",
+   "output": [
+    "IP:10.74.81.5",
+    "DNS:node.example.test",
+    "DNS:other.example.test",
+    "DNS:x"
+   ]
+  },
+  {
+   "env": "10.74.81.5,\tnode.example.test\n DNS:other.example.test",
+   "file": "127.0.0.1\nlocalhost\n",
+   "output": [
+    "IP:10.74.81.5",
+    "DNS:node.example.test",
+    "DNS:other.example.test",
+    "IP:127.0.0.1",
+    "DNS:localhost"
+   ]
+  },
+  {
+   "env": "10.74.81.5,\tnode.example.test\n DNS:other.example.test",
+   "file": "no-trailing-newline.example.test",
+   "output": [
+    "IP:10.74.81.5",
+    "DNS:node.example.test",
+    "DNS:other.example.test",
+    "DNS:no-trailing-newline.example.test"
+   ]
+  },
+  {
+   "env": "IP:10.74.81.5,10.74.81.5,ip:10.74.81.5",
+   "file": null,
+   "output": [
+    "IP:10.74.81.5"
+   ]
+  },
+  {
+   "env": "IP:10.74.81.5,10.74.81.5,ip:10.74.81.5",
+   "file": "",
+   "output": [
+    "IP:10.74.81.5"
+   ]
+  },
+  {
+   "env": "IP:10.74.81.5,10.74.81.5,ip:10.74.81.5",
+   "file": "10.74.81.5\n",
+   "output": [
+    "IP:10.74.81.5"
+   ]
+  },
+  {
+   "env": "IP:10.74.81.5,10.74.81.5,ip:10.74.81.5",
+   "file": "# the windows-side address\n10.74.81.5\n",
+   "output": [
+    "IP:10.74.81.5"
+   ]
+  },
+  {
+   "env": "IP:10.74.81.5,10.74.81.5,ip:10.74.81.5",
+   "file": "10.74.81.5 # windows zerotier\nnode.example.test\n\n  \n",
+   "output": [
+    "IP:10.74.81.5",
+    "DNS:node.example.test"
+   ]
+  },
+  {
+   "env": "IP:10.74.81.5,10.74.81.5,ip:10.74.81.5",
+   "file": "10.74.81.5, 10.74.81.6,\tnode.example.test\n",
+   "output": [
+    "IP:10.74.81.5",
+    "IP:10.74.81.6",
+    "DNS:node.example.test"
+   ]
+  },
+  {
+   "env": "IP:10.74.81.5,10.74.81.5,ip:10.74.81.5",
+   "file": "IP:10.74.81.5\nDNS:node.example.test\nip:10.74.81.5\n",
+   "output": [
+    "IP:10.74.81.5",
+    "DNS:node.example.test"
+   ]
+  },
+  {
+   "env": "IP:10.74.81.5,10.74.81.5,ip:10.74.81.5",
+   "file": "10.74.81.5\r\nnode.example.test\r\n",
+   "output": [
+    "IP:10.74.81.5",
+    "DNS:node.example.test"
+   ]
+  },
+  {
+   "env": "IP:10.74.81.5,10.74.81.5,ip:10.74.81.5",
+   "file": "10.74.81.5\rnode.example.test\r",
+   "output": [
+    "IP:10.74.81.5",
+    "DNS:node.example.test"
+   ]
+  },
+  {
+   "env": "IP:10.74.81.5,10.74.81.5,ip:10.74.81.5",
+   "file": "# only comments\n#10.0.0.1\n   # 10.0.0.2\n",
+   "output": [
+    "IP:10.74.81.5"
+   ]
+  },
+  {
+   "env": "IP:10.74.81.5,10.74.81.5,ip:10.74.81.5",
+   "file": "10.0.0.1#inline\n10.0.0.2 #x 10.0.0.3\n",
+   "output": [
+    "IP:10.74.81.5",
+    "IP:10.0.0.1",
+    "IP:10.0.0.2"
+   ]
+  },
+  {
+   "env": "IP:10.74.81.5,10.74.81.5,ip:10.74.81.5",
+   "file": "10.0.0.1\u000b# after vt\n10.0.0.2\f#after ff\n10.0.0.3\u001c#after fs\n",
+   "output": [
+    "IP:10.74.81.5",
+    "IP:10.0.0.1",
+    "IP:10.0.0.2",
+    "IP:10.0.0.3"
+   ]
+  },
+  {
+   "env": "IP:10.74.81.5,10.74.81.5,ip:10.74.81.5",
+   "file": "10.0.0.4\u0085# after nel\n10.0.0.5\u2028# after ls\n10.0.0.6\u2029#after ps\n",
+   "output": [
+    "IP:10.74.81.5",
+    "IP:10.0.0.4",
+    "IP:10.0.0.5",
+    "IP:10.0.0.6"
+   ]
+  },
+  {
+   "env": "IP:10.74.81.5,10.74.81.5,ip:10.74.81.5",
+   "file": "10.0.0.7\u001d#gs\n10.0.0.8\u001e#rs\n10.0.0.9\u001f#us is not a line break 10.0.0.10\n",
+   "output": [
+    "IP:10.74.81.5",
+    "IP:10.0.0.7",
+    "IP:10.0.0.8",
+    "IP:10.0.0.9"
+   ]
+  },
+  {
+   "env": "IP:10.74.81.5,10.74.81.5,ip:10.74.81.5",
+   "file": "IP:\nDNS:\nDNS: x\n",
+   "output": [
+    "IP:10.74.81.5",
+    "DNS:x"
+   ]
+  },
+  {
+   "env": "IP:10.74.81.5,10.74.81.5,ip:10.74.81.5",
+   "file": "127.0.0.1\nlocalhost\n",
+   "output": [
+    "IP:10.74.81.5",
+    "IP:127.0.0.1",
+    "DNS:localhost"
+   ]
+  },
+  {
+   "env": "IP:10.74.81.5,10.74.81.5,ip:10.74.81.5",
+   "file": "no-trailing-newline.example.test",
+   "output": [
+    "IP:10.74.81.5",
+    "DNS:no-trailing-newline.example.test"
+   ]
+  },
+  {
+   "env": "a,A,a",
+   "file": null,
+   "output": [
+    "DNS:a",
+    "DNS:A"
+   ]
+  },
+  {
+   "env": "a,A,a",
+   "file": "",
+   "output": [
+    "DNS:a",
+    "DNS:A"
+   ]
+  },
+  {
+   "env": "a,A,a",
+   "file": "10.74.81.5\n",
+   "output": [
+    "DNS:a",
+    "DNS:A",
+    "IP:10.74.81.5"
+   ]
+  },
+  {
+   "env": "a,A,a",
+   "file": "# the windows-side address\n10.74.81.5\n",
+   "output": [
+    "DNS:a",
+    "DNS:A",
+    "IP:10.74.81.5"
+   ]
+  },
+  {
+   "env": "a,A,a",
+   "file": "10.74.81.5 # windows zerotier\nnode.example.test\n\n  \n",
+   "output": [
+    "DNS:a",
+    "DNS:A",
+    "IP:10.74.81.5",
+    "DNS:node.example.test"
+   ]
+  },
+  {
+   "env": "a,A,a",
+   "file": "10.74.81.5, 10.74.81.6,\tnode.example.test\n",
+   "output": [
+    "DNS:a",
+    "DNS:A",
+    "IP:10.74.81.5",
+    "IP:10.74.81.6",
+    "DNS:node.example.test"
+   ]
+  },
+  {
+   "env": "a,A,a",
+   "file": "IP:10.74.81.5\nDNS:node.example.test\nip:10.74.81.5\n",
+   "output": [
+    "DNS:a",
+    "DNS:A",
+    "IP:10.74.81.5",
+    "DNS:node.example.test"
+   ]
+  },
+  {
+   "env": "a,A,a",
+   "file": "10.74.81.5\r\nnode.example.test\r\n",
+   "output": [
+    "DNS:a",
+    "DNS:A",
+    "IP:10.74.81.5",
+    "DNS:node.example.test"
+   ]
+  },
+  {
+   "env": "a,A,a",
+   "file": "10.74.81.5\rnode.example.test\r",
+   "output": [
+    "DNS:a",
+    "DNS:A",
+    "IP:10.74.81.5",
+    "DNS:node.example.test"
+   ]
+  },
+  {
+   "env": "a,A,a",
+   "file": "# only comments\n#10.0.0.1\n   # 10.0.0.2\n",
+   "output": [
+    "DNS:a",
+    "DNS:A"
+   ]
+  },
+  {
+   "env": "a,A,a",
+   "file": "10.0.0.1#inline\n10.0.0.2 #x 10.0.0.3\n",
+   "output": [
+    "DNS:a",
+    "DNS:A",
+    "IP:10.0.0.1",
+    "IP:10.0.0.2"
+   ]
+  },
+  {
+   "env": "a,A,a",
+   "file": "10.0.0.1\u000b# after vt\n10.0.0.2\f#after ff\n10.0.0.3\u001c#after fs\n",
+   "output": [
+    "DNS:a",
+    "DNS:A",
+    "IP:10.0.0.1",
+    "IP:10.0.0.2",
+    "IP:10.0.0.3"
+   ]
+  },
+  {
+   "env": "a,A,a",
+   "file": "10.0.0.4\u0085# after nel\n10.0.0.5\u2028# after ls\n10.0.0.6\u2029#after ps\n",
+   "output": [
+    "DNS:a",
+    "DNS:A",
+    "IP:10.0.0.4",
+    "IP:10.0.0.5",
+    "IP:10.0.0.6"
+   ]
+  },
+  {
+   "env": "a,A,a",
+   "file": "10.0.0.7\u001d#gs\n10.0.0.8\u001e#rs\n10.0.0.9\u001f#us is not a line break 10.0.0.10\n",
+   "output": [
+    "DNS:a",
+    "DNS:A",
+    "IP:10.0.0.7",
+    "IP:10.0.0.8",
+    "IP:10.0.0.9"
+   ]
+  },
+  {
+   "env": "a,A,a",
+   "file": "IP:\nDNS:\nDNS: x\n",
+   "output": [
+    "DNS:a",
+    "DNS:A",
+    "DNS:x"
+   ]
+  },
+  {
+   "env": "a,A,a",
+   "file": "127.0.0.1\nlocalhost\n",
+   "output": [
+    "DNS:a",
+    "DNS:A",
+    "IP:127.0.0.1",
+    "DNS:localhost"
+   ]
+  },
+  {
+   "env": "a,A,a",
+   "file": "no-trailing-newline.example.test",
+   "output": [
+    "DNS:a",
+    "DNS:A",
+    "DNS:no-trailing-newline.example.test"
+   ]
+  },
+  {
+   "env": "DNS:x,dns:x,x",
+   "file": null,
+   "output": [
+    "DNS:x"
+   ]
+  },
+  {
+   "env": "DNS:x,dns:x,x",
+   "file": "",
+   "output": [
+    "DNS:x"
+   ]
+  },
+  {
+   "env": "DNS:x,dns:x,x",
+   "file": "10.74.81.5\n",
+   "output": [
+    "DNS:x",
+    "IP:10.74.81.5"
+   ]
+  },
+  {
+   "env": "DNS:x,dns:x,x",
+   "file": "# the windows-side address\n10.74.81.5\n",
+   "output": [
+    "DNS:x",
+    "IP:10.74.81.5"
+   ]
+  },
+  {
+   "env": "DNS:x,dns:x,x",
+   "file": "10.74.81.5 # windows zerotier\nnode.example.test\n\n  \n",
+   "output": [
+    "DNS:x",
+    "IP:10.74.81.5",
+    "DNS:node.example.test"
+   ]
+  },
+  {
+   "env": "DNS:x,dns:x,x",
+   "file": "10.74.81.5, 10.74.81.6,\tnode.example.test\n",
+   "output": [
+    "DNS:x",
+    "IP:10.74.81.5",
+    "IP:10.74.81.6",
+    "DNS:node.example.test"
+   ]
+  },
+  {
+   "env": "DNS:x,dns:x,x",
+   "file": "IP:10.74.81.5\nDNS:node.example.test\nip:10.74.81.5\n",
+   "output": [
+    "DNS:x",
+    "IP:10.74.81.5",
+    "DNS:node.example.test"
+   ]
+  },
+  {
+   "env": "DNS:x,dns:x,x",
+   "file": "10.74.81.5\r\nnode.example.test\r\n",
+   "output": [
+    "DNS:x",
+    "IP:10.74.81.5",
+    "DNS:node.example.test"
+   ]
+  },
+  {
+   "env": "DNS:x,dns:x,x",
+   "file": "10.74.81.5\rnode.example.test\r",
+   "output": [
+    "DNS:x",
+    "IP:10.74.81.5",
+    "DNS:node.example.test"
+   ]
+  },
+  {
+   "env": "DNS:x,dns:x,x",
+   "file": "# only comments\n#10.0.0.1\n   # 10.0.0.2\n",
+   "output": [
+    "DNS:x"
+   ]
+  },
+  {
+   "env": "DNS:x,dns:x,x",
+   "file": "10.0.0.1#inline\n10.0.0.2 #x 10.0.0.3\n",
+   "output": [
+    "DNS:x",
+    "IP:10.0.0.1",
+    "IP:10.0.0.2"
+   ]
+  },
+  {
+   "env": "DNS:x,dns:x,x",
+   "file": "10.0.0.1\u000b# after vt\n10.0.0.2\f#after ff\n10.0.0.3\u001c#after fs\n",
+   "output": [
+    "DNS:x",
+    "IP:10.0.0.1",
+    "IP:10.0.0.2",
+    "IP:10.0.0.3"
+   ]
+  },
+  {
+   "env": "DNS:x,dns:x,x",
+   "file": "10.0.0.4\u0085# after nel\n10.0.0.5\u2028# after ls\n10.0.0.6\u2029#after ps\n",
+   "output": [
+    "DNS:x",
+    "IP:10.0.0.4",
+    "IP:10.0.0.5",
+    "IP:10.0.0.6"
+   ]
+  },
+  {
+   "env": "DNS:x,dns:x,x",
+   "file": "10.0.0.7\u001d#gs\n10.0.0.8\u001e#rs\n10.0.0.9\u001f#us is not a line break 10.0.0.10\n",
+   "output": [
+    "DNS:x",
+    "IP:10.0.0.7",
+    "IP:10.0.0.8",
+    "IP:10.0.0.9"
+   ]
+  },
+  {
+   "env": "DNS:x,dns:x,x",
+   "file": "IP:\nDNS:\nDNS: x\n",
+   "output": [
+    "DNS:x"
+   ]
+  },
+  {
+   "env": "DNS:x,dns:x,x",
+   "file": "127.0.0.1\nlocalhost\n",
+   "output": [
+    "DNS:x",
+    "IP:127.0.0.1",
+    "DNS:localhost"
+   ]
+  },
+  {
+   "env": "DNS:x,dns:x,x",
+   "file": "no-trailing-newline.example.test",
+   "output": [
+    "DNS:x",
+    "DNS:no-trailing-newline.example.test"
+   ]
+  },
+  {
+   "env": "127.0.0.1,localhost,DNS:localhost",
+   "file": null,
+   "output": [
+    "IP:127.0.0.1",
+    "DNS:localhost"
+   ]
+  },
+  {
+   "env": "127.0.0.1,localhost,DNS:localhost",
+   "file": "",
+   "output": [
+    "IP:127.0.0.1",
+    "DNS:localhost"
+   ]
+  },
+  {
+   "env": "127.0.0.1,localhost,DNS:localhost",
+   "file": "10.74.81.5\n",
+   "output": [
+    "IP:127.0.0.1",
+    "DNS:localhost",
+    "IP:10.74.81.5"
+   ]
+  },
+  {
+   "env": "127.0.0.1,localhost,DNS:localhost",
+   "file": "# the windows-side address\n10.74.81.5\n",
+   "output": [
+    "IP:127.0.0.1",
+    "DNS:localhost",
+    "IP:10.74.81.5"
+   ]
+  },
+  {
+   "env": "127.0.0.1,localhost,DNS:localhost",
+   "file": "10.74.81.5 # windows zerotier\nnode.example.test\n\n  \n",
+   "output": [
+    "IP:127.0.0.1",
+    "DNS:localhost",
+    "IP:10.74.81.5",
+    "DNS:node.example.test"
+   ]
+  },
+  {
+   "env": "127.0.0.1,localhost,DNS:localhost",
+   "file": "10.74.81.5, 10.74.81.6,\tnode.example.test\n",
+   "output": [
+    "IP:127.0.0.1",
+    "DNS:localhost",
+    "IP:10.74.81.5",
+    "IP:10.74.81.6",
+    "DNS:node.example.test"
+   ]
+  },
+  {
+   "env": "127.0.0.1,localhost,DNS:localhost",
+   "file": "IP:10.74.81.5\nDNS:node.example.test\nip:10.74.81.5\n",
+   "output": [
+    "IP:127.0.0.1",
+    "DNS:localhost",
+    "IP:10.74.81.5",
+    "DNS:node.example.test"
+   ]
+  },
+  {
+   "env": "127.0.0.1,localhost,DNS:localhost",
+   "file": "10.74.81.5\r\nnode.example.test\r\n",
+   "output": [
+    "IP:127.0.0.1",
+    "DNS:localhost",
+    "IP:10.74.81.5",
+    "DNS:node.example.test"
+   ]
+  },
+  {
+   "env": "127.0.0.1,localhost,DNS:localhost",
+   "file": "10.74.81.5\rnode.example.test\r",
+   "output": [
+    "IP:127.0.0.1",
+    "DNS:localhost",
+    "IP:10.74.81.5",
+    "DNS:node.example.test"
+   ]
+  },
+  {
+   "env": "127.0.0.1,localhost,DNS:localhost",
+   "file": "# only comments\n#10.0.0.1\n   # 10.0.0.2\n",
+   "output": [
+    "IP:127.0.0.1",
+    "DNS:localhost"
+   ]
+  },
+  {
+   "env": "127.0.0.1,localhost,DNS:localhost",
+   "file": "10.0.0.1#inline\n10.0.0.2 #x 10.0.0.3\n",
+   "output": [
+    "IP:127.0.0.1",
+    "DNS:localhost",
+    "IP:10.0.0.1",
+    "IP:10.0.0.2"
+   ]
+  },
+  {
+   "env": "127.0.0.1,localhost,DNS:localhost",
+   "file": "10.0.0.1\u000b# after vt\n10.0.0.2\f#after ff\n10.0.0.3\u001c#after fs\n",
+   "output": [
+    "IP:127.0.0.1",
+    "DNS:localhost",
+    "IP:10.0.0.1",
+    "IP:10.0.0.2",
+    "IP:10.0.0.3"
+   ]
+  },
+  {
+   "env": "127.0.0.1,localhost,DNS:localhost",
+   "file": "10.0.0.4\u0085# after nel\n10.0.0.5\u2028# after ls\n10.0.0.6\u2029#after ps\n",
+   "output": [
+    "IP:127.0.0.1",
+    "DNS:localhost",
+    "IP:10.0.0.4",
+    "IP:10.0.0.5",
+    "IP:10.0.0.6"
+   ]
+  },
+  {
+   "env": "127.0.0.1,localhost,DNS:localhost",
+   "file": "10.0.0.7\u001d#gs\n10.0.0.8\u001e#rs\n10.0.0.9\u001f#us is not a line break 10.0.0.10\n",
+   "output": [
+    "IP:127.0.0.1",
+    "DNS:localhost",
+    "IP:10.0.0.7",
+    "IP:10.0.0.8",
+    "IP:10.0.0.9"
+   ]
+  },
+  {
+   "env": "127.0.0.1,localhost,DNS:localhost",
+   "file": "IP:\nDNS:\nDNS: x\n",
+   "output": [
+    "IP:127.0.0.1",
+    "DNS:localhost",
+    "DNS:x"
+   ]
+  },
+  {
+   "env": "127.0.0.1,localhost,DNS:localhost",
+   "file": "127.0.0.1\nlocalhost\n",
+   "output": [
+    "IP:127.0.0.1",
+    "DNS:localhost"
+   ]
+  },
+  {
+   "env": "127.0.0.1,localhost,DNS:localhost",
+   "file": "no-trailing-newline.example.test",
+   "output": [
+    "IP:127.0.0.1",
+    "DNS:localhost",
+    "DNS:no-trailing-newline.example.test"
+   ]
+  },
+  {
+   "env": "\u00a010.0.0.9\u300010.0.0.10",
+   "file": null,
+   "output": [
+    "IP:10.0.0.9",
+    "IP:10.0.0.10"
+   ]
+  },
+  {
+   "env": "\u00a010.0.0.9\u300010.0.0.10",
+   "file": "",
+   "output": [
+    "IP:10.0.0.9",
+    "IP:10.0.0.10"
+   ]
+  },
+  {
+   "env": "\u00a010.0.0.9\u300010.0.0.10",
+   "file": "10.74.81.5\n",
+   "output": [
+    "IP:10.0.0.9",
+    "IP:10.0.0.10",
+    "IP:10.74.81.5"
+   ]
+  },
+  {
+   "env": "\u00a010.0.0.9\u300010.0.0.10",
+   "file": "# the windows-side address\n10.74.81.5\n",
+   "output": [
+    "IP:10.0.0.9",
+    "IP:10.0.0.10",
+    "IP:10.74.81.5"
+   ]
+  },
+  {
+   "env": "\u00a010.0.0.9\u300010.0.0.10",
+   "file": "10.74.81.5 # windows zerotier\nnode.example.test\n\n  \n",
+   "output": [
+    "IP:10.0.0.9",
+    "IP:10.0.0.10",
+    "IP:10.74.81.5",
+    "DNS:node.example.test"
+   ]
+  },
+  {
+   "env": "\u00a010.0.0.9\u300010.0.0.10",
+   "file": "10.74.81.5, 10.74.81.6,\tnode.example.test\n",
+   "output": [
+    "IP:10.0.0.9",
+    "IP:10.0.0.10",
+    "IP:10.74.81.5",
+    "IP:10.74.81.6",
+    "DNS:node.example.test"
+   ]
+  },
+  {
+   "env": "\u00a010.0.0.9\u300010.0.0.10",
+   "file": "IP:10.74.81.5\nDNS:node.example.test\nip:10.74.81.5\n",
+   "output": [
+    "IP:10.0.0.9",
+    "IP:10.0.0.10",
+    "IP:10.74.81.5",
+    "DNS:node.example.test"
+   ]
+  },
+  {
+   "env": "\u00a010.0.0.9\u300010.0.0.10",
+   "file": "10.74.81.5\r\nnode.example.test\r\n",
+   "output": [
+    "IP:10.0.0.9",
+    "IP:10.0.0.10",
+    "IP:10.74.81.5",
+    "DNS:node.example.test"
+   ]
+  },
+  {
+   "env": "\u00a010.0.0.9\u300010.0.0.10",
+   "file": "10.74.81.5\rnode.example.test\r",
+   "output": [
+    "IP:10.0.0.9",
+    "IP:10.0.0.10",
+    "IP:10.74.81.5",
+    "DNS:node.example.test"
+   ]
+  },
+  {
+   "env": "\u00a010.0.0.9\u300010.0.0.10",
+   "file": "# only comments\n#10.0.0.1\n   # 10.0.0.2\n",
+   "output": [
+    "IP:10.0.0.9",
+    "IP:10.0.0.10"
+   ]
+  },
+  {
+   "env": "\u00a010.0.0.9\u300010.0.0.10",
+   "file": "10.0.0.1#inline\n10.0.0.2 #x 10.0.0.3\n",
+   "output": [
+    "IP:10.0.0.9",
+    "IP:10.0.0.10",
+    "IP:10.0.0.1",
+    "IP:10.0.0.2"
+   ]
+  },
+  {
+   "env": "\u00a010.0.0.9\u300010.0.0.10",
+   "file": "10.0.0.1\u000b# after vt\n10.0.0.2\f#after ff\n10.0.0.3\u001c#after fs\n",
+   "output": [
+    "IP:10.0.0.9",
+    "IP:10.0.0.10",
+    "IP:10.0.0.1",
+    "IP:10.0.0.2",
+    "IP:10.0.0.3"
+   ]
+  },
+  {
+   "env": "\u00a010.0.0.9\u300010.0.0.10",
+   "file": "10.0.0.4\u0085# after nel\n10.0.0.5\u2028# after ls\n10.0.0.6\u2029#after ps\n",
+   "output": [
+    "IP:10.0.0.9",
+    "IP:10.0.0.10",
+    "IP:10.0.0.4",
+    "IP:10.0.0.5",
+    "IP:10.0.0.6"
+   ]
+  },
+  {
+   "env": "\u00a010.0.0.9\u300010.0.0.10",
+   "file": "10.0.0.7\u001d#gs\n10.0.0.8\u001e#rs\n10.0.0.9\u001f#us is not a line break 10.0.0.10\n",
+   "output": [
+    "IP:10.0.0.9",
+    "IP:10.0.0.10",
+    "IP:10.0.0.7",
+    "IP:10.0.0.8"
+   ]
+  },
+  {
+   "env": "\u00a010.0.0.9\u300010.0.0.10",
+   "file": "IP:\nDNS:\nDNS: x\n",
+   "output": [
+    "IP:10.0.0.9",
+    "IP:10.0.0.10",
+    "DNS:x"
+   ]
+  },
+  {
+   "env": "\u00a010.0.0.9\u300010.0.0.10",
+   "file": "127.0.0.1\nlocalhost\n",
+   "output": [
+    "IP:10.0.0.9",
+    "IP:10.0.0.10",
+    "IP:127.0.0.1",
+    "DNS:localhost"
+   ]
+  },
+  {
+   "env": "\u00a010.0.0.9\u300010.0.0.10",
+   "file": "no-trailing-newline.example.test",
+   "output": [
+    "IP:10.0.0.9",
+    "IP:10.0.0.10",
+    "DNS:no-trailing-newline.example.test"
+   ]
+  },
+  {
+   "env": "10.0.0.11\u001c10.0.0.12\u001f10.0.0.13\u008510.0.0.14",
+   "file": null,
+   "output": [
+    "IP:10.0.0.11",
+    "IP:10.0.0.12",
+    "IP:10.0.0.13",
+    "IP:10.0.0.14"
+   ]
+  },
+  {
+   "env": "10.0.0.11\u001c10.0.0.12\u001f10.0.0.13\u008510.0.0.14",
+   "file": "",
+   "output": [
+    "IP:10.0.0.11",
+    "IP:10.0.0.12",
+    "IP:10.0.0.13",
+    "IP:10.0.0.14"
+   ]
+  },
+  {
+   "env": "10.0.0.11\u001c10.0.0.12\u001f10.0.0.13\u008510.0.0.14",
+   "file": "10.74.81.5\n",
+   "output": [
+    "IP:10.0.0.11",
+    "IP:10.0.0.12",
+    "IP:10.0.0.13",
+    "IP:10.0.0.14",
+    "IP:10.74.81.5"
+   ]
+  },
+  {
+   "env": "10.0.0.11\u001c10.0.0.12\u001f10.0.0.13\u008510.0.0.14",
+   "file": "# the windows-side address\n10.74.81.5\n",
+   "output": [
+    "IP:10.0.0.11",
+    "IP:10.0.0.12",
+    "IP:10.0.0.13",
+    "IP:10.0.0.14",
+    "IP:10.74.81.5"
+   ]
+  },
+  {
+   "env": "10.0.0.11\u001c10.0.0.12\u001f10.0.0.13\u008510.0.0.14",
+   "file": "10.74.81.5 # windows zerotier\nnode.example.test\n\n  \n",
+   "output": [
+    "IP:10.0.0.11",
+    "IP:10.0.0.12",
+    "IP:10.0.0.13",
+    "IP:10.0.0.14",
+    "IP:10.74.81.5",
+    "DNS:node.example.test"
+   ]
+  },
+  {
+   "env": "10.0.0.11\u001c10.0.0.12\u001f10.0.0.13\u008510.0.0.14",
+   "file": "10.74.81.5, 10.74.81.6,\tnode.example.test\n",
+   "output": [
+    "IP:10.0.0.11",
+    "IP:10.0.0.12",
+    "IP:10.0.0.13",
+    "IP:10.0.0.14",
+    "IP:10.74.81.5",
+    "IP:10.74.81.6",
+    "DNS:node.example.test"
+   ]
+  },
+  {
+   "env": "10.0.0.11\u001c10.0.0.12\u001f10.0.0.13\u008510.0.0.14",
+   "file": "IP:10.74.81.5\nDNS:node.example.test\nip:10.74.81.5\n",
+   "output": [
+    "IP:10.0.0.11",
+    "IP:10.0.0.12",
+    "IP:10.0.0.13",
+    "IP:10.0.0.14",
+    "IP:10.74.81.5",
+    "DNS:node.example.test"
+   ]
+  },
+  {
+   "env": "10.0.0.11\u001c10.0.0.12\u001f10.0.0.13\u008510.0.0.14",
+   "file": "10.74.81.5\r\nnode.example.test\r\n",
+   "output": [
+    "IP:10.0.0.11",
+    "IP:10.0.0.12",
+    "IP:10.0.0.13",
+    "IP:10.0.0.14",
+    "IP:10.74.81.5",
+    "DNS:node.example.test"
+   ]
+  },
+  {
+   "env": "10.0.0.11\u001c10.0.0.12\u001f10.0.0.13\u008510.0.0.14",
+   "file": "10.74.81.5\rnode.example.test\r",
+   "output": [
+    "IP:10.0.0.11",
+    "IP:10.0.0.12",
+    "IP:10.0.0.13",
+    "IP:10.0.0.14",
+    "IP:10.74.81.5",
+    "DNS:node.example.test"
+   ]
+  },
+  {
+   "env": "10.0.0.11\u001c10.0.0.12\u001f10.0.0.13\u008510.0.0.14",
+   "file": "# only comments\n#10.0.0.1\n   # 10.0.0.2\n",
+   "output": [
+    "IP:10.0.0.11",
+    "IP:10.0.0.12",
+    "IP:10.0.0.13",
+    "IP:10.0.0.14"
+   ]
+  },
+  {
+   "env": "10.0.0.11\u001c10.0.0.12\u001f10.0.0.13\u008510.0.0.14",
+   "file": "10.0.0.1#inline\n10.0.0.2 #x 10.0.0.3\n",
+   "output": [
+    "IP:10.0.0.11",
+    "IP:10.0.0.12",
+    "IP:10.0.0.13",
+    "IP:10.0.0.14",
+    "IP:10.0.0.1",
+    "IP:10.0.0.2"
+   ]
+  },
+  {
+   "env": "10.0.0.11\u001c10.0.0.12\u001f10.0.0.13\u008510.0.0.14",
+   "file": "10.0.0.1\u000b# after vt\n10.0.0.2\f#after ff\n10.0.0.3\u001c#after fs\n",
+   "output": [
+    "IP:10.0.0.11",
+    "IP:10.0.0.12",
+    "IP:10.0.0.13",
+    "IP:10.0.0.14",
+    "IP:10.0.0.1",
+    "IP:10.0.0.2",
+    "IP:10.0.0.3"
+   ]
+  },
+  {
+   "env": "10.0.0.11\u001c10.0.0.12\u001f10.0.0.13\u008510.0.0.14",
+   "file": "10.0.0.4\u0085# after nel\n10.0.0.5\u2028# after ls\n10.0.0.6\u2029#after ps\n",
+   "output": [
+    "IP:10.0.0.11",
+    "IP:10.0.0.12",
+    "IP:10.0.0.13",
+    "IP:10.0.0.14",
+    "IP:10.0.0.4",
+    "IP:10.0.0.5",
+    "IP:10.0.0.6"
+   ]
+  },
+  {
+   "env": "10.0.0.11\u001c10.0.0.12\u001f10.0.0.13\u008510.0.0.14",
+   "file": "10.0.0.7\u001d#gs\n10.0.0.8\u001e#rs\n10.0.0.9\u001f#us is not a line break 10.0.0.10\n",
+   "output": [
+    "IP:10.0.0.11",
+    "IP:10.0.0.12",
+    "IP:10.0.0.13",
+    "IP:10.0.0.14",
+    "IP:10.0.0.7",
+    "IP:10.0.0.8",
+    "IP:10.0.0.9"
+   ]
+  },
+  {
+   "env": "10.0.0.11\u001c10.0.0.12\u001f10.0.0.13\u008510.0.0.14",
+   "file": "IP:\nDNS:\nDNS: x\n",
+   "output": [
+    "IP:10.0.0.11",
+    "IP:10.0.0.12",
+    "IP:10.0.0.13",
+    "IP:10.0.0.14",
+    "DNS:x"
+   ]
+  },
+  {
+   "env": "10.0.0.11\u001c10.0.0.12\u001f10.0.0.13\u008510.0.0.14",
+   "file": "127.0.0.1\nlocalhost\n",
+   "output": [
+    "IP:10.0.0.11",
+    "IP:10.0.0.12",
+    "IP:10.0.0.13",
+    "IP:10.0.0.14",
+    "IP:127.0.0.1",
+    "DNS:localhost"
+   ]
+  },
+  {
+   "env": "10.0.0.11\u001c10.0.0.12\u001f10.0.0.13\u008510.0.0.14",
+   "file": "no-trailing-newline.example.test",
+   "output": [
+    "IP:10.0.0.11",
+    "IP:10.0.0.12",
+    "IP:10.0.0.13",
+    "IP:10.0.0.14",
+    "DNS:no-trailing-newline.example.test"
+   ]
+  },
+  {
+   "env": "#notacomment,10.0.0.1",
+   "file": null,
+   "output": [
+    "DNS:#notacomment",
+    "IP:10.0.0.1"
+   ]
+  },
+  {
+   "env": "#notacomment,10.0.0.1",
+   "file": "",
+   "output": [
+    "DNS:#notacomment",
+    "IP:10.0.0.1"
+   ]
+  },
+  {
+   "env": "#notacomment,10.0.0.1",
+   "file": "10.74.81.5\n",
+   "output": [
+    "DNS:#notacomment",
+    "IP:10.0.0.1",
+    "IP:10.74.81.5"
+   ]
+  },
+  {
+   "env": "#notacomment,10.0.0.1",
+   "file": "# the windows-side address\n10.74.81.5\n",
+   "output": [
+    "DNS:#notacomment",
+    "IP:10.0.0.1",
+    "IP:10.74.81.5"
+   ]
+  },
+  {
+   "env": "#notacomment,10.0.0.1",
+   "file": "10.74.81.5 # windows zerotier\nnode.example.test\n\n  \n",
+   "output": [
+    "DNS:#notacomment",
+    "IP:10.0.0.1",
+    "IP:10.74.81.5",
+    "DNS:node.example.test"
+   ]
+  },
+  {
+   "env": "#notacomment,10.0.0.1",
+   "file": "10.74.81.5, 10.74.81.6,\tnode.example.test\n",
+   "output": [
+    "DNS:#notacomment",
+    "IP:10.0.0.1",
+    "IP:10.74.81.5",
+    "IP:10.74.81.6",
+    "DNS:node.example.test"
+   ]
+  },
+  {
+   "env": "#notacomment,10.0.0.1",
+   "file": "IP:10.74.81.5\nDNS:node.example.test\nip:10.74.81.5\n",
+   "output": [
+    "DNS:#notacomment",
+    "IP:10.0.0.1",
+    "IP:10.74.81.5",
+    "DNS:node.example.test"
+   ]
+  },
+  {
+   "env": "#notacomment,10.0.0.1",
+   "file": "10.74.81.5\r\nnode.example.test\r\n",
+   "output": [
+    "DNS:#notacomment",
+    "IP:10.0.0.1",
+    "IP:10.74.81.5",
+    "DNS:node.example.test"
+   ]
+  },
+  {
+   "env": "#notacomment,10.0.0.1",
+   "file": "10.74.81.5\rnode.example.test\r",
+   "output": [
+    "DNS:#notacomment",
+    "IP:10.0.0.1",
+    "IP:10.74.81.5",
+    "DNS:node.example.test"
+   ]
+  },
+  {
+   "env": "#notacomment,10.0.0.1",
+   "file": "# only comments\n#10.0.0.1\n   # 10.0.0.2\n",
+   "output": [
+    "DNS:#notacomment",
+    "IP:10.0.0.1"
+   ]
+  },
+  {
+   "env": "#notacomment,10.0.0.1",
+   "file": "10.0.0.1#inline\n10.0.0.2 #x 10.0.0.3\n",
+   "output": [
+    "DNS:#notacomment",
+    "IP:10.0.0.1",
+    "IP:10.0.0.2"
+   ]
+  },
+  {
+   "env": "#notacomment,10.0.0.1",
+   "file": "10.0.0.1\u000b# after vt\n10.0.0.2\f#after ff\n10.0.0.3\u001c#after fs\n",
+   "output": [
+    "DNS:#notacomment",
+    "IP:10.0.0.1",
+    "IP:10.0.0.2",
+    "IP:10.0.0.3"
+   ]
+  },
+  {
+   "env": "#notacomment,10.0.0.1",
+   "file": "10.0.0.4\u0085# after nel\n10.0.0.5\u2028# after ls\n10.0.0.6\u2029#after ps\n",
+   "output": [
+    "DNS:#notacomment",
+    "IP:10.0.0.1",
+    "IP:10.0.0.4",
+    "IP:10.0.0.5",
+    "IP:10.0.0.6"
+   ]
+  },
+  {
+   "env": "#notacomment,10.0.0.1",
+   "file": "10.0.0.7\u001d#gs\n10.0.0.8\u001e#rs\n10.0.0.9\u001f#us is not a line break 10.0.0.10\n",
+   "output": [
+    "DNS:#notacomment",
+    "IP:10.0.0.1",
+    "IP:10.0.0.7",
+    "IP:10.0.0.8",
+    "IP:10.0.0.9"
+   ]
+  },
+  {
+   "env": "#notacomment,10.0.0.1",
+   "file": "IP:\nDNS:\nDNS: x\n",
+   "output": [
+    "DNS:#notacomment",
+    "IP:10.0.0.1",
+    "DNS:x"
+   ]
+  },
+  {
+   "env": "#notacomment,10.0.0.1",
+   "file": "127.0.0.1\nlocalhost\n",
+   "output": [
+    "DNS:#notacomment",
+    "IP:10.0.0.1",
+    "IP:127.0.0.1",
+    "DNS:localhost"
+   ]
+  },
+  {
+   "env": "#notacomment,10.0.0.1",
+   "file": "no-trailing-newline.example.test",
+   "output": [
+    "DNS:#notacomment",
+    "IP:10.0.0.1",
+    "DNS:no-trailing-newline.example.test"
+   ]
+  }
+ ],
+ "resolve": [
+  {
+   "defaults": [
+    "IP:127.0.0.1",
+    "DNS:localhost"
+   ],
+   "env": "",
+   "file": null,
+   "output": [
+    "IP:127.0.0.1",
+    "DNS:localhost"
+   ]
+  },
+  {
+   "defaults": [
+    "IP:127.0.0.1",
+    "DNS:localhost"
+   ],
+   "env": "10.74.81.5",
+   "file": null,
+   "output": [
+    "IP:127.0.0.1",
+    "DNS:localhost",
+    "IP:10.74.81.5"
+   ]
+  },
+  {
+   "defaults": [
+    "IP:127.0.0.1",
+    "DNS:localhost"
+   ],
+   "env": "",
+   "file": "10.74.81.213\n10.74.81.5\n",
+   "output": [
+    "IP:127.0.0.1",
+    "DNS:localhost",
+    "IP:10.74.81.213",
+    "IP:10.74.81.5"
+   ]
+  },
+  {
+   "defaults": [
+    "IP:127.0.0.1",
+    "DNS:localhost"
+   ],
+   "env": "127.0.0.1,DNS:localhost,localhost",
+   "file": "IP:172.18.0.1\nnode.example.test\n",
+   "output": [
+    "IP:127.0.0.1",
+    "DNS:localhost",
+    "IP:172.18.0.1",
+    "DNS:node.example.test"
+   ]
+  },
+  {
+   "defaults": [
+    "IP:127.0.0.1",
+    "DNS:localhost"
+   ],
+   "env": "node.example.test",
+   "file": "node.example.test\n10.74.81.5\n",
+   "output": [
+    "IP:127.0.0.1",
+    "DNS:localhost",
+    "DNS:node.example.test",
+    "IP:10.74.81.5"
+   ]
+  },
+  {
+   "defaults": [
+    "IP:127.0.0.1",
+    "DNS:localhost",
+    "IP:10.74.81.213",
+    "IP:172.18.0.1"
+   ],
+   "env": "",
+   "file": null,
+   "output": [
+    "IP:127.0.0.1",
+    "DNS:localhost",
+    "IP:10.74.81.213",
+    "IP:172.18.0.1"
+   ]
+  },
+  {
+   "defaults": [
+    "IP:127.0.0.1",
+    "DNS:localhost",
+    "IP:10.74.81.213",
+    "IP:172.18.0.1"
+   ],
+   "env": "10.74.81.5",
+   "file": null,
+   "output": [
+    "IP:127.0.0.1",
+    "DNS:localhost",
+    "IP:10.74.81.213",
+    "IP:172.18.0.1",
+    "IP:10.74.81.5"
+   ]
+  },
+  {
+   "defaults": [
+    "IP:127.0.0.1",
+    "DNS:localhost",
+    "IP:10.74.81.213",
+    "IP:172.18.0.1"
+   ],
+   "env": "",
+   "file": "10.74.81.213\n10.74.81.5\n",
+   "output": [
+    "IP:127.0.0.1",
+    "DNS:localhost",
+    "IP:10.74.81.213",
+    "IP:172.18.0.1",
+    "IP:10.74.81.5"
+   ]
+  },
+  {
+   "defaults": [
+    "IP:127.0.0.1",
+    "DNS:localhost",
+    "IP:10.74.81.213",
+    "IP:172.18.0.1"
+   ],
+   "env": "127.0.0.1,DNS:localhost,localhost",
+   "file": "IP:172.18.0.1\nnode.example.test\n",
+   "output": [
+    "IP:127.0.0.1",
+    "DNS:localhost",
+    "IP:10.74.81.213",
+    "IP:172.18.0.1",
+    "DNS:node.example.test"
+   ]
+  },
+  {
+   "defaults": [
+    "IP:127.0.0.1",
+    "DNS:localhost",
+    "IP:10.74.81.213",
+    "IP:172.18.0.1"
+   ],
+   "env": "node.example.test",
+   "file": "node.example.test\n10.74.81.5\n",
+   "output": [
+    "IP:127.0.0.1",
+    "DNS:localhost",
+    "IP:10.74.81.213",
+    "IP:172.18.0.1",
+    "DNS:node.example.test",
+    "IP:10.74.81.5"
+   ]
+  }
+ ]
+}

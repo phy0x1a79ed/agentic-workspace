@@ -1,0 +1,485 @@
+{
+ "page_entries": [
+  {
+   "snapshot": {
+    "plugins": [
+     {
+      "name": "claude-science",
+      "pages": [
+       {
+        "name": "science",
+        "dir": "/x/pages/science/dist",
+        "entry": "index.html"
+       }
+      ]
+     },
+     {
+      "name": "journal",
+      "pages": []
+     },
+     {
+      "name": "trilium",
+      "pages": [
+       {
+        "name": "trilium"
+       },
+       {
+        "name": ""
+       },
+       {},
+       null
+      ]
+     },
+     {
+      "name": "a b/c?d",
+      "pages": [
+       {
+        "name": "p&q<r>\"s'"
+       },
+       {
+        "name": "café ☃"
+       }
+      ]
+     },
+     {
+      "name": "",
+      "pages": [
+       {
+        "name": "orphan"
+       }
+      ]
+     },
+     {
+      "pages": [
+       {
+        "name": "nameless"
+       }
+      ]
+     },
+     null,
+     {},
+     0,
+     {
+      "name": 7,
+      "pages": [
+       {
+        "name": 1.5
+       },
+       {
+        "name": true
+       },
+       {
+        "name": [
+         1,
+         "x"
+        ]
+       },
+       {
+        "name": {
+         "k": null
+        }
+       },
+       {
+        "name": 0
+       }
+      ]
+     },
+     {
+      "name": "x~y_z.w-v",
+      "pages": [
+       {
+        "name": "~ok"
+       }
+      ]
+     }
+    ]
+   },
+   "entries": [
+    {
+     "name": "science",
+     "href": "/p/claude-science/science/"
+    },
+    {
+     "name": "trilium",
+     "href": "/p/trilium/trilium/"
+    },
+    {
+     "name": "p&q<r>\"s'",
+     "href": "/p/a%20b%2Fc%3Fd/p%26q%3Cr%3E%22s%27/"
+    },
+    {
+     "name": "café ☃",
+     "href": "/p/a%20b%2Fc%3Fd/caf%C3%A9%20%E2%98%83/"
+    },
+    {
+     "name": "1.5",
+     "href": "/p/7/1.5/"
+    },
+    {
+     "name": "True",
+     "href": "/p/7/True/"
+    },
+    {
+     "name": "[1, 'x']",
+     "href": "/p/7/%5B1%2C%20%27x%27%5D/"
+    },
+    {
+     "name": "{'k': None}",
+     "href": "/p/7/%7B%27k%27%3A%20None%7D/"
+    },
+    {
+     "name": "~ok",
+     "href": "/p/x~y_z.w-v/~ok/"
+    }
+   ]
+  },
+  {
+   "snapshot": {
+    "plugins": []
+   },
+   "entries": []
+  },
+  {
+   "snapshot": {
+    "plugins": null
+   },
+   "entries": []
+  },
+  {
+   "snapshot": {},
+   "entries": []
+  },
+  {
+   "snapshot": [],
+   "entries": []
+  },
+  {
+   "snapshot": "plugins",
+   "entries": []
+  },
+  {
+   "snapshot": null,
+   "entries": []
+  },
+  {
+   "snapshot": {
+    "plugins": "ab"
+   },
+   "entries": []
+  },
+  {
+   "snapshot": {
+    "plugins": ""
+   },
+   "entries": []
+  },
+  {
+   "snapshot": {
+    "plugins": {
+     "k": 1
+    }
+   },
+   "entries": []
+  },
+  {
+   "snapshot": {
+    "plugins": {
+     "": 1
+    }
+   },
+   "entries": []
+  },
+  {
+   "snapshot": {
+    "plugins": 3
+   },
+   "entries": []
+  },
+  {
+   "snapshot": {
+    "plugins": [
+     {
+      "name": "p",
+      "pages": "x"
+     }
+    ]
+   },
+   "entries": []
+  },
+  {
+   "snapshot": {
+    "plugins": [
+     {
+      "name": "p",
+      "pages": 5
+     }
+    ]
+   },
+   "entries": []
+  },
+  {
+   "snapshot": {
+    "plugins": [
+     {
+      "name": "p",
+      "pages": [
+       [
+        1
+       ]
+      ]
+     }
+    ]
+   },
+   "entries": []
+  },
+  {
+   "snapshot": {
+    "plugins": [
+     {
+      "name": "p",
+      "pages": [
+       []
+      ]
+     }
+    ]
+   },
+   "entries": []
+  },
+  {
+   "snapshot": {
+    "plugins": [
+     [
+      1,
+      2
+     ]
+    ]
+   },
+   "entries": []
+  },
+  {
+   "snapshot": {
+    "plugins": [
+     {
+      "name": "p",
+      "pages": {
+       "": 1
+      }
+     }
+    ]
+   },
+   "entries": []
+  },
+  {
+   "snapshot": {
+    "plugins": [
+     {
+      "name": "p",
+      "pages": [
+       {
+        "name": "q"
+       }
+      ]
+     },
+     "bad"
+    ]
+   },
+   "entries": []
+  }
+ ],
+ "landing": [
+  {
+   "entries": [],
+   "tags_by_page": {},
+   "tag_counts": [],
+   "selected_tags": [],
+   "peer_name": "awm",
+   "display_names": [],
+   "html": "<!doctype html>\n<html lang=\"en\"><head>\n<meta charset=\"utf-8\" />\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />\n<title>awm</title>\n<style>\n  :root {\n    color-scheme: light dark;\n    --main-font-family: \"Inter\", ui-sans-serif, system-ui, -apple-system,\n        \"Segoe UI\", Roboto, Helvetica, Arial, sans-serif;\n    --main-background-color: white;\n    --left-pane-background-color: #f2f2f2;\n    --main-text-color: black;\n    --muted-text-color: #666;\n    --main-border-color: #dbdbdb;\n    --input-background-color: #00000012;\n    --input-text-color: black;\n    --input-placeholder-color: #06060682;\n    --input-hover-background: #00000020;\n    --input-focus-background: #ffffff80;\n    --input-focus-outline-color: #00000063;\n    --cmd-button-background-color: #0000000f;\n    --cmd-button-text-color: #000000ad;\n    --cmd-button-hover-background-color: #00000016;\n    --cmd-button-shadow-color: #00000040;\n    --link-color: #0076af;\n    --error-color: #c0392b;\n  }\n  @media (prefers-color-scheme: dark) {\n    :root {\n      --main-background-color: #242424;\n      --left-pane-background-color: #1f1f1f;\n      --main-text-color: #ccc;\n      --muted-text-color: #bbb;\n      --main-border-color: #454545;\n      --input-background-color: #ffffff12;\n      --input-text-color: #ffffffc7;\n      --input-placeholder-color: #b7b7b782;\n      --input-hover-background: #ffffff1f;\n      --input-focus-background: #ffffff1f;\n      --input-focus-outline-color: #ffffff57;\n      --cmd-button-background-color: #ffffff28;\n      --cmd-button-text-color: #ffffffc2;\n      --cmd-button-hover-background-color: #ffffff37;\n      --cmd-button-shadow-color: #00000080;\n      --link-color: #95c3d9;\n      --error-color: #e88;\n    }\n  }\n  body { font-family: var(--main-font-family); color: var(--main-text-color);\n         line-height: 1.55; }\n  a { color: var(--link-color); }\n  .muted { color: var(--muted-text-color); font-size: 0.92rem; }\n\n  body { max-width: 560px; margin: 64px auto; padding: 0 24px;\n         background: var(--main-background-color); }\n  h1 { font-size: 1.4rem; margin-bottom: 0.25rem; }\n  ul.svc { list-style: none; padding: 0; margin-top: 24px; }\n  ul.svc li { margin: 0; }\n  ul.svc a { display: block; padding: 12px 14px; margin-top: 8px;\n         border: 1px solid var(--main-border-color); border-radius: 8px;\n         text-decoration: none; color: inherit; }\n  ul.svc a:hover { border-color: var(--link-color); }\n  .top { display: flex; justify-content: space-between; align-items: baseline; }\n  a.logout { font-size: 0.85rem; }\n\n  .filterbar { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 20px; }\n  .chip { display: inline-flex; align-items: center; gap: 6px; padding: 4px 8px;\n         border: 1px solid var(--link-color); border-radius: 999px;\n         font-size: 0.82rem;\n         background: color-mix(in srgb, var(--link-color) 12%, transparent); }\n  .chip button { padding: 0; margin: 0; width: 16px; height: 16px; line-height: 1;\n         font-size: 0.85rem; border-radius: 50%; background: transparent;\n         color: inherit; opacity: 0.6; border: 0; cursor: pointer; }\n  .chip button:hover { opacity: 1;\n         background: color-mix(in srgb, var(--link-color) 20%, transparent); }\n  .filteradd { margin-top: 8px; display: flex; align-items: center; gap: 8px; }\n  select#addFilter { padding: 6px 8px; font-size: 0.85rem; border-radius: 6px;\n         border: 1px solid var(--main-border-color);\n         background: var(--main-background-color); color: var(--main-text-color); }\n  select#addFilter option { background: var(--main-background-color);\n         color: var(--main-text-color); }\n  .togglechip { display: inline-flex; align-items: center; padding: 5px 10px;\n         font-size: 0.82rem; border: 1px solid var(--main-border-color);\n         border-radius: 999px; background: transparent; color: inherit;\n         cursor: pointer; }\n  .togglechip:hover { border-color: var(--link-color); }\n  .togglechip.active { border-color: var(--link-color);\n         background: var(--link-color); color: var(--main-background-color); }\n  .status { margin-top: 6px; font-size: 0.8rem; color: var(--muted-text-color); }\n\n  .cards { list-style: none; padding: 0; margin-top: 20px; display: flex;\n         flex-direction: column; gap: 6px; }\n  .card { border: 1px solid var(--main-border-color); border-radius: 8px;\n         padding: 8px 10px; position: relative; }\n  .card.hidden { display: none; }\n  .card a.pagelink { text-decoration: none; color: inherit; font-weight: 500; }\n  .card a.pagelink:hover { color: var(--link-color); }\n  .card a.pagelink::before { content: \"\"; position: absolute; inset: 0; }\n  .cardfoot { display: flex; justify-content: flex-end; align-items: center;\n         gap: 6px; margin-top: 4px; position: relative; z-index: 1;\n         pointer-events: none; }\n  .cardtags { display: flex; flex-wrap: wrap; gap: 4px; justify-content: flex-end; }\n  .tagchip { display: inline-flex; align-items: center; gap: 4px; font-size: 0.76rem;\n         padding: 2px 4px 2px 7px; border-radius: 999px;\n         border: 1px solid var(--main-border-color);\n         opacity: 0.85; pointer-events: auto; }\n  .tagchip button { padding: 0; margin: 0; width: 13px; height: 13px; line-height: 1;\n         font-size: 0.75rem; border-radius: 50%; background: transparent;\n         color: inherit; opacity: 0.6; border: 0; cursor: pointer; }\n  .tagchip button:hover { opacity: 1; background: var(--input-hover-background); }\n  .dots { padding: 2px 6px; background: transparent; color: inherit; opacity: 0.55;\n         font-size: 0.95rem; border-radius: 6px; pointer-events: auto;\n         border: 0; cursor: pointer; }\n  .dots:hover { opacity: 1; background: var(--input-background-color); }\n  .tagmenu { display: none; position: absolute; right: 12px; bottom: 44px;\n         background: var(--main-background-color); color: var(--main-text-color);\n         border: 1px solid var(--main-border-color);\n         border-radius: 8px; padding: 10px; min-width: 180px; box-shadow:\n         0 4px 16px rgba(0, 0, 0, 0.25); z-index: 10; pointer-events: auto; }\n  .tagmenu.open { display: block; }\n  .tagmenu .opt { display: block; width: 100%; text-align: left; padding: 6px 8px;\n         background: transparent; color: inherit; border: 0; border-radius: 6px;\n         font-size: 0.85rem; cursor: pointer; }\n  .tagmenu .opt:hover {\n         background: color-mix(in srgb, var(--link-color) 12%, transparent); }\n  .tagmenu input[type=text] { width: 100%; margin-top: 8px; padding: 6px 8px;\n         font-size: 0.85rem; border: 1px solid var(--main-border-color);\n         border-radius: 6px; background: transparent; color: inherit;\n         box-sizing: border-box; }\n  .tagmenu .addbtn { margin-top: 6px; width: 100%; padding: 6px;\n         font-size: 0.82rem; border: 0; border-radius: 6px;\n         background: var(--cmd-button-background-color);\n         color: var(--cmd-button-text-color); cursor: pointer; }\n</style>\n</head><body>\n<div class=\"top\"><h1>awm</h1>\n  <a class=\"logout\" href=\"#\" onclick=\"fetch('/__auth/logout',{method:'POST'}).then(()=>location.reload());return false;\">sign out</a>\n</div>\n<div class=\"filterbar\" id=\"filterbar\">\n\n</div>\n<div class=\"filteradd\">\n  <select id=\"addFilter\" onchange=\"if(this.value){selectFilter(this.value);}\">\n    <option value=\"\">+ filter by tag&hellip;</option>\n\n  </select>\n  <button type=\"button\" id=\"showAllToggle\" class=\"togglechip\" onclick=\"toggleShowAll()\">show all</button>\n</div>\n<p class=\"status\" id=\"status\"></p>\n  <p class=\"muted\">No pages are registered.</p>\n<script>\nconst TAG_COUNTS = {};\nlet SELECTED = [];\nlet DISPLAY_NAMES = {};\nlet SHOW_ALL = false;\nconst TOTAL_PAGES = 0;\n\nfunction escapeHtml(s) {\n  return s.replace(/[&<>\"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'})[c]);\n}\n\nfunction cardTags(card) {\n  const v = card.dataset.tags || '';\n  return v ? v.split(',') : [];\n}\n\nfunction resortCards() {\n  const list = document.querySelector('.cards');\n  if (!list) return;\n  const cards = Array.from(list.querySelectorAll('.card'));\n  cards.sort((a, b) => a.querySelector('.pagelink').textContent\n    .localeCompare(b.querySelector('.pagelink').textContent));\n  cards.forEach(c => list.appendChild(c));\n}\n\nfunction applyFilter() {\n  const cards = document.querySelectorAll('.card');\n  let hidden = 0;\n  cards.forEach(card => {\n    const tags = cardTags(card);\n    const visible = SHOW_ALL || SELECTED.length === 0 || tags.some(t => SELECTED.includes(t));\n    card.classList.toggle('hidden', !visible);\n    if (!visible) hidden++;\n  });\n  const status = document.getElementById('status');\n  status.textContent = SHOW_ALL\n    ? `showing all ${TOTAL_PAGES}`\n    : `${hidden} of ${TOTAL_PAGES} hidden`;\n}\n\nfunction toggleShowAll() {\n  SHOW_ALL = !SHOW_ALL;\n  document.getElementById('showAllToggle').classList.toggle('active', SHOW_ALL);\n  applyFilter();\n}\n\nfunction renderFilterBar() {\n  const bar = document.getElementById('filterbar');\n  bar.innerHTML = SELECTED.map(t => {\n    const n = TAG_COUNTS[t] || 0;\n    const et = escapeHtml(t);\n    return `<span class=\"chip\" data-tag=\"${et}\">${et}:${n}`\n      + `<button type=\"button\" onclick=\"deselectFilter('${et.replace(/'/g,\"\\\\'\")}')\">&times;</button></span>`;\n  }).join('\\n');\n  const sel = document.getElementById('addFilter');\n  const unselected = Object.keys(TAG_COUNTS).sort().filter(t => !SELECTED.includes(t));\n  sel.innerHTML = '<option value=\"\">+ filter by tag&hellip;</option>' +\n    unselected.map(t => `<option value=\"${escapeHtml(t)}\">${escapeHtml(t)}:${TAG_COUNTS[t]}</option>`).join('');\n}\n\nasync function selectFilter(tag) {\n  const r = await fetch('/__landing/filter', {method:'POST',\n    headers:{'Content-Type':'application/json'}, body: JSON.stringify({tag})});\n  if (r.ok) {\n    const data = await r.json();\n    SELECTED = data.selected_tags;\n    renderFilterBar();\n    applyFilter();\n  }\n}\n\nasync function deselectFilter(tag) {\n  const r = await fetch('/__landing/filter', {method:'DELETE',\n    headers:{'Content-Type':'application/json'}, body: JSON.stringify({tag})});\n  if (r.ok) {\n    const data = await r.json();\n    SELECTED = data.selected_tags;\n    renderFilterBar();\n    applyFilter();\n  }\n}\n\nfunction closeAllMenus(except) {\n  document.querySelectorAll('.tagmenu.open').forEach(m => {\n    if (m !== except) m.classList.remove('open');\n  });\n}\n\nfunction toggleTagMenu(btn, page) {\n  const menu = btn.nextElementSibling;\n  const isOpen = menu.classList.contains('open');\n  closeAllMenus();\n  if (isOpen) { menu.classList.remove('open'); return; }\n  const card = btn.closest('.card');\n  const have = new Set(cardTags(card));\n  const opts = Object.keys(TAG_COUNTS).sort().filter(t => !have.has(t));\n  const ep = escapeHtml(page).replace(/'/g,\"\\\\'\");\n  const currentLabel = DISPLAY_NAMES[page] || page;\n  menu.innerHTML = opts.map(t =>\n    `<button type=\"button\" class=\"opt\" onclick=\"addTag('${ep}','${escapeHtml(t).replace(/'/g,\"\\\\'\")}')\">${escapeHtml(t)}</button>`\n  ).join('') +\n    `<input type=\"text\" placeholder=\"new tag\" onkeydown=\"if(event.key==='Enter'){addTag('${ep}',this.value);this.value='';}\" />`\n    + `<button type=\"button\" class=\"addbtn\" onclick=\"const i=this.previousElementSibling;addTag('${ep}',i.value);i.value='';\">add</button>`\n    + `<hr />`\n    + `<input type=\"text\" class=\"renameinput\" value=\"${escapeHtml(currentLabel)}\" placeholder=\"card name\"`\n    + ` onkeydown=\"if(event.key==='Enter'){renameCard('${ep}',this.value);}\" />`\n    + `<button type=\"button\" class=\"addbtn\" onclick=\"const i=this.previousElementSibling;renameCard('${ep}',i.value);\">rename</button>`\n    + `<button type=\"button\" class=\"opt\" onclick=\"renameCard('${ep}','')\">reset to default</button>`;\n  menu.classList.add('open');\n}\n\ndocument.addEventListener('click', ev => {\n  if (!ev.target.closest('.tagmenu') && !ev.target.closest('.dots')) closeAllMenus();\n});\n\nfunction renderCardTags(page, tags) {\n  const ep = escapeHtml(page).replace(/'/g,\"\\\\'\");\n  return tags.map(t => {\n    const et = escapeHtml(t);\n    return `<span class=\"tagchip\">${et}`\n      + `<button type=\"button\" onclick=\"removeTag('${ep}','${et.replace(/'/g,\"\\\\'\")}')\">&times;</button></span>`;\n  }).join('');\n}\n\nfunction applyTagUpdate(page, data) {\n  Object.assign(TAG_COUNTS, data.tag_counts);\n  Object.keys(TAG_COUNTS).forEach(k => { if (!(k in data.tag_counts)) delete TAG_COUNTS[k]; });\n  const card = document.querySelector(`.card[data-page=\"${CSS.escape(page)}\"]`);\n  if (card) {\n    card.dataset.tags = data.tags.join(',');\n    card.querySelector('.cardtags').innerHTML = renderCardTags(page, data.tags);\n    closeAllMenus();\n  }\n  renderFilterBar();\n  applyFilter();\n}\n\nasync function addTag(page, tag) {\n  tag = (tag || '').trim();\n  if (!tag) return;\n  const r = await fetch('/__landing/tags', {method:'POST',\n    headers:{'Content-Type':'application/json'},\n    body: JSON.stringify({page, tag})});\n  if (!r.ok) return;\n  applyTagUpdate(page, await r.json());\n}\n\nasync function removeTag(page, tag) {\n  const r = await fetch('/__landing/tags', {method:'DELETE',\n    headers:{'Content-Type':'application/json'},\n    body: JSON.stringify({page, tag})});\n  if (!r.ok) return;\n  applyTagUpdate(page, await r.json());\n}\n\nasync function renameCard(page, name) {\n  const r = await fetch('/__landing/name', {method:'POST',\n    headers:{'Content-Type':'application/json'},\n    body: JSON.stringify({page, name})});\n  if (!r.ok) return;\n  const data = await r.json();\n  if (data.display_name) { DISPLAY_NAMES[page] = data.display_name; }\n  else { delete DISPLAY_NAMES[page]; }\n  const card = document.querySelector(`.card[data-page=\"${CSS.escape(page)}\"]`);\n  if (card) {\n    card.querySelector('.pagelink').textContent = data.display_name || page;\n    closeAllMenus();\n    resortCards();\n  }\n}\n\napplyFilter();\n</script>\n</body></html>"
+  },
+  {
+   "entries": [
+    {
+     "name": "science",
+     "href": "/p/claude-science/science/"
+    },
+    {
+     "name": "trilium",
+     "href": "/p/trilium/trilium/"
+    },
+    {
+     "name": "p&q<r>\"s'",
+     "href": "/p/a%20b%2Fc%3Fd/p%26q%3Cr%3E%22s%27/"
+    },
+    {
+     "name": "café ☃",
+     "href": "/p/a%20b%2Fc%3Fd/caf%C3%A9%20%E2%98%83/"
+    },
+    {
+     "name": "1.5",
+     "href": "/p/7/1.5/"
+    },
+    {
+     "name": "True",
+     "href": "/p/7/True/"
+    },
+    {
+     "name": "[1, 'x']",
+     "href": "/p/7/%5B1%2C%20%27x%27%5D/"
+    },
+    {
+     "name": "{'k': None}",
+     "href": "/p/7/%7B%27k%27%3A%20None%7D/"
+    },
+    {
+     "name": "~ok",
+     "href": "/p/x~y_z.w-v/~ok/"
+    }
+   ],
+   "tags_by_page": {
+    "science": [
+     "lab",
+     "physics"
+    ],
+    "trilium": [
+     "notes"
+    ],
+    "p&q<r>\"s'": [
+     "a'b",
+     "<x>"
+    ]
+   },
+   "tag_counts": [
+    [
+     "<x>",
+     1
+    ],
+    [
+     "a'b",
+     1
+    ],
+    [
+     "lab",
+     1
+    ],
+    [
+     "notes",
+     1
+    ],
+    [
+     "physics",
+     2
+    ],
+    [
+     "unused",
+     0
+    ]
+   ],
+   "selected_tags": [
+    "physics",
+    "gone",
+    "a'b"
+   ],
+   "peer_name": "node.example.test",
+   "display_names": [
+    [
+     "science",
+     "Science Lab"
+    ],
+    [
+     "trilium",
+     "Zz été 😀 "
+    ],
+    [
+     "orphan",
+     "x"
+    ]
+   ],
+   "html": "<!doctype html>\n<html lang=\"en\"><head>\n<meta charset=\"utf-8\" />\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />\n<title>node.example.test</title>\n<style>\n  :root {\n    color-scheme: light dark;\n    --main-font-family: \"Inter\", ui-sans-serif, system-ui, -apple-system,\n        \"Segoe UI\", Roboto, Helvetica, Arial, sans-serif;\n    --main-background-color: white;\n    --left-pane-background-color: #f2f2f2;\n    --main-text-color: black;\n    --muted-text-color: #666;\n    --main-border-color: #dbdbdb;\n    --input-background-color: #00000012;\n    --input-text-color: black;\n    --input-placeholder-color: #06060682;\n    --input-hover-background: #00000020;\n    --input-focus-background: #ffffff80;\n    --input-focus-outline-color: #00000063;\n    --cmd-button-background-color: #0000000f;\n    --cmd-button-text-color: #000000ad;\n    --cmd-button-hover-background-color: #00000016;\n    --cmd-button-shadow-color: #00000040;\n    --link-color: #0076af;\n    --error-color: #c0392b;\n  }\n  @media (prefers-color-scheme: dark) {\n    :root {\n      --main-background-color: #242424;\n      --left-pane-background-color: #1f1f1f;\n      --main-text-color: #ccc;\n      --muted-text-color: #bbb;\n      --main-border-color: #454545;\n      --input-background-color: #ffffff12;\n      --input-text-color: #ffffffc7;\n      --input-placeholder-color: #b7b7b782;\n      --input-hover-background: #ffffff1f;\n      --input-focus-background: #ffffff1f;\n      --input-focus-outline-color: #ffffff57;\n      --cmd-button-background-color: #ffffff28;\n      --cmd-button-text-color: #ffffffc2;\n      --cmd-button-hover-background-color: #ffffff37;\n      --cmd-button-shadow-color: #00000080;\n      --link-color: #95c3d9;\n      --error-color: #e88;\n    }\n  }\n  body { font-family: var(--main-font-family); color: var(--main-text-color);\n         line-height: 1.55; }\n  a { color: var(--link-color); }\n  .muted { color: var(--muted-text-color); font-size: 0.92rem; }\n\n  body { max-width: 560px; margin: 64px auto; padding: 0 24px;\n         background: var(--main-background-color); }\n  h1 { font-size: 1.4rem; margin-bottom: 0.25rem; }\n  ul.svc { list-style: none; padding: 0; margin-top: 24px; }\n  ul.svc li { margin: 0; }\n  ul.svc a { display: block; padding: 12px 14px; margin-top: 8px;\n         border: 1px solid var(--main-border-color); border-radius: 8px;\n         text-decoration: none; color: inherit; }\n  ul.svc a:hover { border-color: var(--link-color); }\n  .top { display: flex; justify-content: space-between; align-items: baseline; }\n  a.logout { font-size: 0.85rem; }\n\n  .filterbar { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 20px; }\n  .chip { display: inline-flex; align-items: center; gap: 6px; padding: 4px 8px;\n         border: 1px solid var(--link-color); border-radius: 999px;\n         font-size: 0.82rem;\n         background: color-mix(in srgb, var(--link-color) 12%, transparent); }\n  .chip button { padding: 0; margin: 0; width: 16px; height: 16px; line-height: 1;\n         font-size: 0.85rem; border-radius: 50%; background: transparent;\n         color: inherit; opacity: 0.6; border: 0; cursor: pointer; }\n  .chip button:hover { opacity: 1;\n         background: color-mix(in srgb, var(--link-color) 20%, transparent); }\n  .filteradd { margin-top: 8px; display: flex; align-items: center; gap: 8px; }\n  select#addFilter { padding: 6px 8px; font-size: 0.85rem; border-radius: 6px;\n         border: 1px solid var(--main-border-color);\n         background: var(--main-background-color); color: var(--main-text-color); }\n  select#addFilter option { background: var(--main-background-color);\n         color: var(--main-text-color); }\n  .togglechip { display: inline-flex; align-items: center; padding: 5px 10px;\n         font-size: 0.82rem; border: 1px solid var(--main-border-color);\n         border-radius: 999px; background: transparent; color: inherit;\n         cursor: pointer; }\n  .togglechip:hover { border-color: var(--link-color); }\n  .togglechip.active { border-color: var(--link-color);\n         background: var(--link-color); color: var(--main-background-color); }\n  .status { margin-top: 6px; font-size: 0.8rem; color: var(--muted-text-color); }\n\n  .cards { list-style: none; padding: 0; margin-top: 20px; display: flex;\n         flex-direction: column; gap: 6px; }\n  .card { border: 1px solid var(--main-border-color); border-radius: 8px;\n         padding: 8px 10px; position: relative; }\n  .card.hidden { display: none; }\n  .card a.pagelink { text-decoration: none; color: inherit; font-weight: 500; }\n  .card a.pagelink:hover { color: var(--link-color); }\n  .card a.pagelink::before { content: \"\"; position: absolute; inset: 0; }\n  .cardfoot { display: flex; justify-content: flex-end; align-items: center;\n         gap: 6px; margin-top: 4px; position: relative; z-index: 1;\n         pointer-events: none; }\n  .cardtags { display: flex; flex-wrap: wrap; gap: 4px; justify-content: flex-end; }\n  .tagchip { display: inline-flex; align-items: center; gap: 4px; font-size: 0.76rem;\n         padding: 2px 4px 2px 7px; border-radius: 999px;\n         border: 1px solid var(--main-border-color);\n         opacity: 0.85; pointer-events: auto; }\n  .tagchip button { padding: 0; margin: 0; width: 13px; height: 13px; line-height: 1;\n         font-size: 0.75rem; border-radius: 50%; background: transparent;\n         color: inherit; opacity: 0.6; border: 0; cursor: pointer; }\n  .tagchip button:hover { opacity: 1; background: var(--input-hover-background); }\n  .dots { padding: 2px 6px; background: transparent; color: inherit; opacity: 0.55;\n         font-size: 0.95rem; border-radius: 6px; pointer-events: auto;\n         border: 0; cursor: pointer; }\n  .dots:hover { opacity: 1; background: var(--input-background-color); }\n  .tagmenu { display: none; position: absolute; right: 12px; bottom: 44px;\n         background: var(--main-background-color); color: var(--main-text-color);\n         border: 1px solid var(--main-border-color);\n         border-radius: 8px; padding: 10px; min-width: 180px; box-shadow:\n         0 4px 16px rgba(0, 0, 0, 0.25); z-index: 10; pointer-events: auto; }\n  .tagmenu.open { display: block; }\n  .tagmenu .opt { display: block; width: 100%; text-align: left; padding: 6px 8px;\n         background: transparent; color: inherit; border: 0; border-radius: 6px;\n         font-size: 0.85rem; cursor: pointer; }\n  .tagmenu .opt:hover {\n         background: color-mix(in srgb, var(--link-color) 12%, transparent); }\n  .tagmenu input[type=text] { width: 100%; margin-top: 8px; padding: 6px 8px;\n         font-size: 0.85rem; border: 1px solid var(--main-border-color);\n         border-radius: 6px; background: transparent; color: inherit;\n         box-sizing: border-box; }\n  .tagmenu .addbtn { margin-top: 6px; width: 100%; padding: 6px;\n         font-size: 0.82rem; border: 0; border-radius: 6px;\n         background: var(--cmd-button-background-color);\n         color: var(--cmd-button-text-color); cursor: pointer; }\n</style>\n</head><body>\n<div class=\"top\"><h1>node.example.test</h1>\n  <a class=\"logout\" href=\"#\" onclick=\"fetch('/__auth/logout',{method:'POST'}).then(()=>location.reload());return false;\">sign out</a>\n</div>\n<div class=\"filterbar\" id=\"filterbar\">\n  <span class=\"chip\" data-tag=\"physics\">physics:2<button type=\"button\" onclick=\"deselectFilter('physics')\">&times;</button></span>\n  <span class=\"chip\" data-tag=\"gone\">gone:0<button type=\"button\" onclick=\"deselectFilter('gone')\">&times;</button></span>\n  <span class=\"chip\" data-tag=\"a&#x27;b\">a&#x27;b:1<button type=\"button\" onclick=\"deselectFilter('a&#x27;b')\">&times;</button></span>\n</div>\n<div class=\"filteradd\">\n  <select id=\"addFilter\" onchange=\"if(this.value){selectFilter(this.value);}\">\n    <option value=\"\">+ filter by tag&hellip;</option>\n    <option value=\"&lt;x&gt;\">&lt;x&gt;:1</option>\n    <option value=\"lab\">lab:1</option>\n    <option value=\"notes\">notes:1</option>\n    <option value=\"unused\">unused:0</option>\n  </select>\n  <button type=\"button\" id=\"showAllToggle\" class=\"togglechip\" onclick=\"toggleShowAll()\">show all</button>\n</div>\n<p class=\"status\" id=\"status\"></p>\n  <ul class=\"cards\">\n  <li class=\"card\" data-page=\"1.5\" data-tags=\"\">\n    <a class=\"pagelink\" href=\"/p/7/1.5/\">1.5</a>\n    <div class=\"cardfoot\">\n      <span class=\"cardtags\">\n\n      </span>\n      <button class=\"dots\" type=\"button\" onclick=\"toggleTagMenu(this,'1.5')\">&#8942;</button>\n      <div class=\"tagmenu\"></div>\n    </div>\n  </li>\n  <li class=\"card\" data-page=\"science\" data-tags=\"lab,physics\">\n    <a class=\"pagelink\" href=\"/p/claude-science/science/\">Science Lab</a>\n    <div class=\"cardfoot\">\n      <span class=\"cardtags\">\n      <span class=\"tagchip\">lab<button type=\"button\" onclick=\"removeTag('science','lab')\">&times;</button></span>\n      <span class=\"tagchip\">physics<button type=\"button\" onclick=\"removeTag('science','physics')\">&times;</button></span>\n      </span>\n      <button class=\"dots\" type=\"button\" onclick=\"toggleTagMenu(this,'science')\">&#8942;</button>\n      <div class=\"tagmenu\"></div>\n    </div>\n  </li>\n  <li class=\"card\" data-page=\"True\" data-tags=\"\">\n    <a class=\"pagelink\" href=\"/p/7/True/\">True</a>\n    <div class=\"cardfoot\">\n      <span class=\"cardtags\">\n\n      </span>\n      <button class=\"dots\" type=\"button\" onclick=\"toggleTagMenu(this,'True')\">&#8942;</button>\n      <div class=\"tagmenu\"></div>\n    </div>\n  </li>\n  <li class=\"card\" data-page=\"trilium\" data-tags=\"notes\">\n    <a class=\"pagelink\" href=\"/p/trilium/trilium/\">Zz été 😀 </a>\n    <div class=\"cardfoot\">\n      <span class=\"cardtags\">\n      <span class=\"tagchip\">notes<button type=\"button\" onclick=\"removeTag('trilium','notes')\">&times;</button></span>\n      </span>\n      <button class=\"dots\" type=\"button\" onclick=\"toggleTagMenu(this,'trilium')\">&#8942;</button>\n      <div class=\"tagmenu\"></div>\n    </div>\n  </li>\n  <li class=\"card\" data-page=\"[1, &#x27;x&#x27;]\" data-tags=\"\">\n    <a class=\"pagelink\" href=\"/p/7/%5B1%2C%20%27x%27%5D/\">[1, &#x27;x&#x27;]</a>\n    <div class=\"cardfoot\">\n      <span class=\"cardtags\">\n\n      </span>\n      <button class=\"dots\" type=\"button\" onclick=\"toggleTagMenu(this,'[1, &#x27;x&#x27;]')\">&#8942;</button>\n      <div class=\"tagmenu\"></div>\n    </div>\n  </li>\n  <li class=\"card\" data-page=\"café ☃\" data-tags=\"\">\n    <a class=\"pagelink\" href=\"/p/a%20b%2Fc%3Fd/caf%C3%A9%20%E2%98%83/\">café ☃</a>\n    <div class=\"cardfoot\">\n      <span class=\"cardtags\">\n\n      </span>\n      <button class=\"dots\" type=\"button\" onclick=\"toggleTagMenu(this,'café ☃')\">&#8942;</button>\n      <div class=\"tagmenu\"></div>\n    </div>\n  </li>\n  <li class=\"card\" data-page=\"p&amp;q&lt;r&gt;&quot;s&#x27;\" data-tags=\"a&#x27;b,&lt;x&gt;\">\n    <a class=\"pagelink\" href=\"/p/a%20b%2Fc%3Fd/p%26q%3Cr%3E%22s%27/\">p&amp;q&lt;r&gt;&quot;s&#x27;</a>\n    <div class=\"cardfoot\">\n      <span class=\"cardtags\">\n      <span class=\"tagchip\">a&#x27;b<button type=\"button\" onclick=\"removeTag('p&amp;q&lt;r&gt;&quot;s&#x27;','a&#x27;b')\">&times;</button></span>\n      <span class=\"tagchip\">&lt;x&gt;<button type=\"button\" onclick=\"removeTag('p&amp;q&lt;r&gt;&quot;s&#x27;','&lt;x&gt;')\">&times;</button></span>\n      </span>\n      <button class=\"dots\" type=\"button\" onclick=\"toggleTagMenu(this,'p&amp;q&lt;r&gt;&quot;s&#x27;')\">&#8942;</button>\n      <div class=\"tagmenu\"></div>\n    </div>\n  </li>\n  <li class=\"card\" data-page=\"{&#x27;k&#x27;: None}\" data-tags=\"\">\n    <a class=\"pagelink\" href=\"/p/7/%7B%27k%27%3A%20None%7D/\">{&#x27;k&#x27;: None}</a>\n    <div class=\"cardfoot\">\n      <span class=\"cardtags\">\n\n      </span>\n      <button class=\"dots\" type=\"button\" onclick=\"toggleTagMenu(this,'{&#x27;k&#x27;: None}')\">&#8942;</button>\n      <div class=\"tagmenu\"></div>\n    </div>\n  </li>\n  <li class=\"card\" data-page=\"~ok\" data-tags=\"\">\n    <a class=\"pagelink\" href=\"/p/x~y_z.w-v/~ok/\">~ok</a>\n    <div class=\"cardfoot\">\n      <span class=\"cardtags\">\n\n      </span>\n      <button class=\"dots\" type=\"button\" onclick=\"toggleTagMenu(this,'~ok')\">&#8942;</button>\n      <div class=\"tagmenu\"></div>\n    </div>\n  </li>\n  </ul>\n<script>\nconst TAG_COUNTS = {\"<x>\": 1, \"a'b\": 1, \"lab\": 1, \"notes\": 1, \"physics\": 2, \"unused\": 0};\nlet SELECTED = [\"physics\", \"gone\", \"a'b\"];\nlet DISPLAY_NAMES = {\"science\": \"Science Lab\", \"trilium\": \"Zz \\u00e9t\\u00e9 \\ud83d\\ude00 \\u007f\", \"orphan\": \"x\"};\nlet SHOW_ALL = false;\nconst TOTAL_PAGES = 9;\n\nfunction escapeHtml(s) {\n  return s.replace(/[&<>\"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'})[c]);\n}\n\nfunction cardTags(card) {\n  const v = card.dataset.tags || '';\n  return v ? v.split(',') : [];\n}\n\nfunction resortCards() {\n  const list = document.querySelector('.cards');\n  if (!list) return;\n  const cards = Array.from(list.querySelectorAll('.card'));\n  cards.sort((a, b) => a.querySelector('.pagelink').textContent\n    .localeCompare(b.querySelector('.pagelink').textContent));\n  cards.forEach(c => list.appendChild(c));\n}\n\nfunction applyFilter() {\n  const cards = document.querySelectorAll('.card');\n  let hidden = 0;\n  cards.forEach(card => {\n    const tags = cardTags(card);\n    const visible = SHOW_ALL || SELECTED.length === 0 || tags.some(t => SELECTED.includes(t));\n    card.classList.toggle('hidden', !visible);\n    if (!visible) hidden++;\n  });\n  const status = document.getElementById('status');\n  status.textContent = SHOW_ALL\n    ? `showing all ${TOTAL_PAGES}`\n    : `${hidden} of ${TOTAL_PAGES} hidden`;\n}\n\nfunction toggleShowAll() {\n  SHOW_ALL = !SHOW_ALL;\n  document.getElementById('showAllToggle').classList.toggle('active', SHOW_ALL);\n  applyFilter();\n}\n\nfunction renderFilterBar() {\n  const bar = document.getElementById('filterbar');\n  bar.innerHTML = SELECTED.map(t => {\n    const n = TAG_COUNTS[t] || 0;\n    const et = escapeHtml(t);\n    return `<span class=\"chip\" data-tag=\"${et}\">${et}:${n}`\n      + `<button type=\"button\" onclick=\"deselectFilter('${et.replace(/'/g,\"\\\\'\")}')\">&times;</button></span>`;\n  }).join('\\n');\n  const sel = document.getElementById('addFilter');\n  const unselected = Object.keys(TAG_COUNTS).sort().filter(t => !SELECTED.includes(t));\n  sel.innerHTML = '<option value=\"\">+ filter by tag&hellip;</option>' +\n    unselected.map(t => `<option value=\"${escapeHtml(t)}\">${escapeHtml(t)}:${TAG_COUNTS[t]}</option>`).join('');\n}\n\nasync function selectFilter(tag) {\n  const r = await fetch('/__landing/filter', {method:'POST',\n    headers:{'Content-Type':'application/json'}, body: JSON.stringify({tag})});\n  if (r.ok) {\n    const data = await r.json();\n    SELECTED = data.selected_tags;\n    renderFilterBar();\n    applyFilter();\n  }\n}\n\nasync function deselectFilter(tag) {\n  const r = await fetch('/__landing/filter', {method:'DELETE',\n    headers:{'Content-Type':'application/json'}, body: JSON.stringify({tag})});\n  if (r.ok) {\n    const data = await r.json();\n    SELECTED = data.selected_tags;\n    renderFilterBar();\n    applyFilter();\n  }\n}\n\nfunction closeAllMenus(except) {\n  document.querySelectorAll('.tagmenu.open').forEach(m => {\n    if (m !== except) m.classList.remove('open');\n  });\n}\n\nfunction toggleTagMenu(btn, page) {\n  const menu = btn.nextElementSibling;\n  const isOpen = menu.classList.contains('open');\n  closeAllMenus();\n  if (isOpen) { menu.classList.remove('open'); return; }\n  const card = btn.closest('.card');\n  const have = new Set(cardTags(card));\n  const opts = Object.keys(TAG_COUNTS).sort().filter(t => !have.has(t));\n  const ep = escapeHtml(page).replace(/'/g,\"\\\\'\");\n  const currentLabel = DISPLAY_NAMES[page] || page;\n  menu.innerHTML = opts.map(t =>\n    `<button type=\"button\" class=\"opt\" onclick=\"addTag('${ep}','${escapeHtml(t).replace(/'/g,\"\\\\'\")}')\">${escapeHtml(t)}</button>`\n  ).join('') +\n    `<input type=\"text\" placeholder=\"new tag\" onkeydown=\"if(event.key==='Enter'){addTag('${ep}',this.value);this.value='';}\" />`\n    + `<button type=\"button\" class=\"addbtn\" onclick=\"const i=this.previousElementSibling;addTag('${ep}',i.value);i.value='';\">add</button>`\n    + `<hr />`\n    + `<input type=\"text\" class=\"renameinput\" value=\"${escapeHtml(currentLabel)}\" placeholder=\"card name\"`\n    + ` onkeydown=\"if(event.key==='Enter'){renameCard('${ep}',this.value);}\" />`\n    + `<button type=\"button\" class=\"addbtn\" onclick=\"const i=this.previousElementSibling;renameCard('${ep}',i.value);\">rename</button>`\n    + `<button type=\"button\" class=\"opt\" onclick=\"renameCard('${ep}','')\">reset to default</button>`;\n  menu.classList.add('open');\n}\n\ndocument.addEventListener('click', ev => {\n  if (!ev.target.closest('.tagmenu') && !ev.target.closest('.dots')) closeAllMenus();\n});\n\nfunction renderCardTags(page, tags) {\n  const ep = escapeHtml(page).replace(/'/g,\"\\\\'\");\n  return tags.map(t => {\n    const et = escapeHtml(t);\n    return `<span class=\"tagchip\">${et}`\n      + `<button type=\"button\" onclick=\"removeTag('${ep}','${et.replace(/'/g,\"\\\\'\")}')\">&times;</button></span>`;\n  }).join('');\n}\n\nfunction applyTagUpdate(page, data) {\n  Object.assign(TAG_COUNTS, data.tag_counts);\n  Object.keys(TAG_COUNTS).forEach(k => { if (!(k in data.tag_counts)) delete TAG_COUNTS[k]; });\n  const card = document.querySelector(`.card[data-page=\"${CSS.escape(page)}\"]`);\n  if (card) {\n    card.dataset.tags = data.tags.join(',');\n    card.querySelector('.cardtags').innerHTML = renderCardTags(page, data.tags);\n    closeAllMenus();\n  }\n  renderFilterBar();\n  applyFilter();\n}\n\nasync function addTag(page, tag) {\n  tag = (tag || '').trim();\n  if (!tag) return;\n  const r = await fetch('/__landing/tags', {method:'POST',\n    headers:{'Content-Type':'application/json'},\n    body: JSON.stringify({page, tag})});\n  if (!r.ok) return;\n  applyTagUpdate(page, await r.json());\n}\n\nasync function removeTag(page, tag) {\n  const r = await fetch('/__landing/tags', {method:'DELETE',\n    headers:{'Content-Type':'application/json'},\n    body: JSON.stringify({page, tag})});\n  if (!r.ok) return;\n  applyTagUpdate(page, await r.json());\n}\n\nasync function renameCard(page, name) {\n  const r = await fetch('/__landing/name', {method:'POST',\n    headers:{'Content-Type':'application/json'},\n    body: JSON.stringify({page, name})});\n  if (!r.ok) return;\n  const data = await r.json();\n  if (data.display_name) { DISPLAY_NAMES[page] = data.display_name; }\n  else { delete DISPLAY_NAMES[page]; }\n  const card = document.querySelector(`.card[data-page=\"${CSS.escape(page)}\"]`);\n  if (card) {\n    card.querySelector('.pagelink').textContent = data.display_name || page;\n    closeAllMenus();\n    resortCards();\n  }\n}\n\napplyFilter();\n</script>\n</body></html>"
+  },
+  {
+   "entries": [
+    {
+     "name": "science",
+     "href": "/p/claude-science/science/"
+    },
+    {
+     "name": "trilium",
+     "href": "/p/trilium/trilium/"
+    }
+   ],
+   "tags_by_page": {},
+   "tag_counts": [
+    [
+     "only",
+     3
+    ]
+   ],
+   "selected_tags": [
+    "only"
+   ],
+   "peer_name": "<b>&'\"",
+   "display_names": [
+    [
+     "science",
+     ""
+    ]
+   ],
+   "html": "<!doctype html>\n<html lang=\"en\"><head>\n<meta charset=\"utf-8\" />\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />\n<title>&lt;b&gt;&amp;&#x27;&quot;</title>\n<style>\n  :root {\n    color-scheme: light dark;\n    --main-font-family: \"Inter\", ui-sans-serif, system-ui, -apple-system,\n        \"Segoe UI\", Roboto, Helvetica, Arial, sans-serif;\n    --main-background-color: white;\n    --left-pane-background-color: #f2f2f2;\n    --main-text-color: black;\n    --muted-text-color: #666;\n    --main-border-color: #dbdbdb;\n    --input-background-color: #00000012;\n    --input-text-color: black;\n    --input-placeholder-color: #06060682;\n    --input-hover-background: #00000020;\n    --input-focus-background: #ffffff80;\n    --input-focus-outline-color: #00000063;\n    --cmd-button-background-color: #0000000f;\n    --cmd-button-text-color: #000000ad;\n    --cmd-button-hover-background-color: #00000016;\n    --cmd-button-shadow-color: #00000040;\n    --link-color: #0076af;\n    --error-color: #c0392b;\n  }\n  @media (prefers-color-scheme: dark) {\n    :root {\n      --main-background-color: #242424;\n      --left-pane-background-color: #1f1f1f;\n      --main-text-color: #ccc;\n      --muted-text-color: #bbb;\n      --main-border-color: #454545;\n      --input-background-color: #ffffff12;\n      --input-text-color: #ffffffc7;\n      --input-placeholder-color: #b7b7b782;\n      --input-hover-background: #ffffff1f;\n      --input-focus-background: #ffffff1f;\n      --input-focus-outline-color: #ffffff57;\n      --cmd-button-background-color: #ffffff28;\n      --cmd-button-text-color: #ffffffc2;\n      --cmd-button-hover-background-color: #ffffff37;\n      --cmd-button-shadow-color: #00000080;\n      --link-color: #95c3d9;\n      --error-color: #e88;\n    }\n  }\n  body { font-family: var(--main-font-family); color: var(--main-text-color);\n         line-height: 1.55; }\n  a { color: var(--link-color); }\n  .muted { color: var(--muted-text-color); font-size: 0.92rem; }\n\n  body { max-width: 560px; margin: 64px auto; padding: 0 24px;\n         background: var(--main-background-color); }\n  h1 { font-size: 1.4rem; margin-bottom: 0.25rem; }\n  ul.svc { list-style: none; padding: 0; margin-top: 24px; }\n  ul.svc li { margin: 0; }\n  ul.svc a { display: block; padding: 12px 14px; margin-top: 8px;\n         border: 1px solid var(--main-border-color); border-radius: 8px;\n         text-decoration: none; color: inherit; }\n  ul.svc a:hover { border-color: var(--link-color); }\n  .top { display: flex; justify-content: space-between; align-items: baseline; }\n  a.logout { font-size: 0.85rem; }\n\n  .filterbar { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 20px; }\n  .chip { display: inline-flex; align-items: center; gap: 6px; padding: 4px 8px;\n         border: 1px solid var(--link-color); border-radius: 999px;\n         font-size: 0.82rem;\n         background: color-mix(in srgb, var(--link-color) 12%, transparent); }\n  .chip button { padding: 0; margin: 0; width: 16px; height: 16px; line-height: 1;\n         font-size: 0.85rem; border-radius: 50%; background: transparent;\n         color: inherit; opacity: 0.6; border: 0; cursor: pointer; }\n  .chip button:hover { opacity: 1;\n         background: color-mix(in srgb, var(--link-color) 20%, transparent); }\n  .filteradd { margin-top: 8px; display: flex; align-items: center; gap: 8px; }\n  select#addFilter { padding: 6px 8px; font-size: 0.85rem; border-radius: 6px;\n         border: 1px solid var(--main-border-color);\n         background: var(--main-background-color); color: var(--main-text-color); }\n  select#addFilter option { background: var(--main-background-color);\n         color: var(--main-text-color); }\n  .togglechip { display: inline-flex; align-items: center; padding: 5px 10px;\n         font-size: 0.82rem; border: 1px solid var(--main-border-color);\n         border-radius: 999px; background: transparent; color: inherit;\n         cursor: pointer; }\n  .togglechip:hover { border-color: var(--link-color); }\n  .togglechip.active { border-color: var(--link-color);\n         background: var(--link-color); color: var(--main-background-color); }\n  .status { margin-top: 6px; font-size: 0.8rem; color: var(--muted-text-color); }\n\n  .cards { list-style: none; padding: 0; margin-top: 20px; display: flex;\n         flex-direction: column; gap: 6px; }\n  .card { border: 1px solid var(--main-border-color); border-radius: 8px;\n         padding: 8px 10px; position: relative; }\n  .card.hidden { display: none; }\n  .card a.pagelink { text-decoration: none; color: inherit; font-weight: 500; }\n  .card a.pagelink:hover { color: var(--link-color); }\n  .card a.pagelink::before { content: \"\"; position: absolute; inset: 0; }\n  .cardfoot { display: flex; justify-content: flex-end; align-items: center;\n         gap: 6px; margin-top: 4px; position: relative; z-index: 1;\n         pointer-events: none; }\n  .cardtags { display: flex; flex-wrap: wrap; gap: 4px; justify-content: flex-end; }\n  .tagchip { display: inline-flex; align-items: center; gap: 4px; font-size: 0.76rem;\n         padding: 2px 4px 2px 7px; border-radius: 999px;\n         border: 1px solid var(--main-border-color);\n         opacity: 0.85; pointer-events: auto; }\n  .tagchip button { padding: 0; margin: 0; width: 13px; height: 13px; line-height: 1;\n         font-size: 0.75rem; border-radius: 50%; background: transparent;\n         color: inherit; opacity: 0.6; border: 0; cursor: pointer; }\n  .tagchip button:hover { opacity: 1; background: var(--input-hover-background); }\n  .dots { padding: 2px 6px; background: transparent; color: inherit; opacity: 0.55;\n         font-size: 0.95rem; border-radius: 6px; pointer-events: auto;\n         border: 0; cursor: pointer; }\n  .dots:hover { opacity: 1; background: var(--input-background-color); }\n  .tagmenu { display: none; position: absolute; right: 12px; bottom: 44px;\n         background: var(--main-background-color); color: var(--main-text-color);\n         border: 1px solid var(--main-border-color);\n         border-radius: 8px; padding: 10px; min-width: 180px; box-shadow:\n         0 4px 16px rgba(0, 0, 0, 0.25); z-index: 10; pointer-events: auto; }\n  .tagmenu.open { display: block; }\n  .tagmenu .opt { display: block; width: 100%; text-align: left; padding: 6px 8px;\n         background: transparent; color: inherit; border: 0; border-radius: 6px;\n         font-size: 0.85rem; cursor: pointer; }\n  .tagmenu .opt:hover {\n         background: color-mix(in srgb, var(--link-color) 12%, transparent); }\n  .tagmenu input[type=text] { width: 100%; margin-top: 8px; padding: 6px 8px;\n         font-size: 0.85rem; border: 1px solid var(--main-border-color);\n         border-radius: 6px; background: transparent; color: inherit;\n         box-sizing: border-box; }\n  .tagmenu .addbtn { margin-top: 6px; width: 100%; padding: 6px;\n         font-size: 0.82rem; border: 0; border-radius: 6px;\n         background: var(--cmd-button-background-color);\n         color: var(--cmd-button-text-color); cursor: pointer; }\n</style>\n</head><body>\n<div class=\"top\"><h1>&lt;b&gt;&amp;&#x27;&quot;</h1>\n  <a class=\"logout\" href=\"#\" onclick=\"fetch('/__auth/logout',{method:'POST'}).then(()=>location.reload());return false;\">sign out</a>\n</div>\n<div class=\"filterbar\" id=\"filterbar\">\n  <span class=\"chip\" data-tag=\"only\">only:3<button type=\"button\" onclick=\"deselectFilter('only')\">&times;</button></span>\n</div>\n<div class=\"filteradd\">\n  <select id=\"addFilter\" onchange=\"if(this.value){selectFilter(this.value);}\">\n    <option value=\"\">+ filter by tag&hellip;</option>\n\n  </select>\n  <button type=\"button\" id=\"showAllToggle\" class=\"togglechip\" onclick=\"toggleShowAll()\">show all</button>\n</div>\n<p class=\"status\" id=\"status\"></p>\n  <ul class=\"cards\">\n  <li class=\"card\" data-page=\"science\" data-tags=\"\">\n    <a class=\"pagelink\" href=\"/p/claude-science/science/\">science</a>\n    <div class=\"cardfoot\">\n      <span class=\"cardtags\">\n\n      </span>\n      <button class=\"dots\" type=\"button\" onclick=\"toggleTagMenu(this,'science')\">&#8942;</button>\n      <div class=\"tagmenu\"></div>\n    </div>\n  </li>\n  <li class=\"card\" data-page=\"trilium\" data-tags=\"\">\n    <a class=\"pagelink\" href=\"/p/trilium/trilium/\">trilium</a>\n    <div class=\"cardfoot\">\n      <span class=\"cardtags\">\n\n      </span>\n      <button class=\"dots\" type=\"button\" onclick=\"toggleTagMenu(this,'trilium')\">&#8942;</button>\n      <div class=\"tagmenu\"></div>\n    </div>\n  </li>\n  </ul>\n<script>\nconst TAG_COUNTS = {\"only\": 3};\nlet SELECTED = [\"only\"];\nlet DISPLAY_NAMES = {\"science\": \"\"};\nlet SHOW_ALL = false;\nconst TOTAL_PAGES = 2;\n\nfunction escapeHtml(s) {\n  return s.replace(/[&<>\"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'})[c]);\n}\n\nfunction cardTags(card) {\n  const v = card.dataset.tags || '';\n  return v ? v.split(',') : [];\n}\n\nfunction resortCards() {\n  const list = document.querySelector('.cards');\n  if (!list) return;\n  const cards = Array.from(list.querySelectorAll('.card'));\n  cards.sort((a, b) => a.querySelector('.pagelink').textContent\n    .localeCompare(b.querySelector('.pagelink').textContent));\n  cards.forEach(c => list.appendChild(c));\n}\n\nfunction applyFilter() {\n  const cards = document.querySelectorAll('.card');\n  let hidden = 0;\n  cards.forEach(card => {\n    const tags = cardTags(card);\n    const visible = SHOW_ALL || SELECTED.length === 0 || tags.some(t => SELECTED.includes(t));\n    card.classList.toggle('hidden', !visible);\n    if (!visible) hidden++;\n  });\n  const status = document.getElementById('status');\n  status.textContent = SHOW_ALL\n    ? `showing all ${TOTAL_PAGES}`\n    : `${hidden} of ${TOTAL_PAGES} hidden`;\n}\n\nfunction toggleShowAll() {\n  SHOW_ALL = !SHOW_ALL;\n  document.getElementById('showAllToggle').classList.toggle('active', SHOW_ALL);\n  applyFilter();\n}\n\nfunction renderFilterBar() {\n  const bar = document.getElementById('filterbar');\n  bar.innerHTML = SELECTED.map(t => {\n    const n = TAG_COUNTS[t] || 0;\n    const et = escapeHtml(t);\n    return `<span class=\"chip\" data-tag=\"${et}\">${et}:${n}`\n      + `<button type=\"button\" onclick=\"deselectFilter('${et.replace(/'/g,\"\\\\'\")}')\">&times;</button></span>`;\n  }).join('\\n');\n  const sel = document.getElementById('addFilter');\n  const unselected = Object.keys(TAG_COUNTS).sort().filter(t => !SELECTED.includes(t));\n  sel.innerHTML = '<option value=\"\">+ filter by tag&hellip;</option>' +\n    unselected.map(t => `<option value=\"${escapeHtml(t)}\">${escapeHtml(t)}:${TAG_COUNTS[t]}</option>`).join('');\n}\n\nasync function selectFilter(tag) {\n  const r = await fetch('/__landing/filter', {method:'POST',\n    headers:{'Content-Type':'application/json'}, body: JSON.stringify({tag})});\n  if (r.ok) {\n    const data = await r.json();\n    SELECTED = data.selected_tags;\n    renderFilterBar();\n    applyFilter();\n  }\n}\n\nasync function deselectFilter(tag) {\n  const r = await fetch('/__landing/filter', {method:'DELETE',\n    headers:{'Content-Type':'application/json'}, body: JSON.stringify({tag})});\n  if (r.ok) {\n    const data = await r.json();\n    SELECTED = data.selected_tags;\n    renderFilterBar();\n    applyFilter();\n  }\n}\n\nfunction closeAllMenus(except) {\n  document.querySelectorAll('.tagmenu.open').forEach(m => {\n    if (m !== except) m.classList.remove('open');\n  });\n}\n\nfunction toggleTagMenu(btn, page) {\n  const menu = btn.nextElementSibling;\n  const isOpen = menu.classList.contains('open');\n  closeAllMenus();\n  if (isOpen) { menu.classList.remove('open'); return; }\n  const card = btn.closest('.card');\n  const have = new Set(cardTags(card));\n  const opts = Object.keys(TAG_COUNTS).sort().filter(t => !have.has(t));\n  const ep = escapeHtml(page).replace(/'/g,\"\\\\'\");\n  const currentLabel = DISPLAY_NAMES[page] || page;\n  menu.innerHTML = opts.map(t =>\n    `<button type=\"button\" class=\"opt\" onclick=\"addTag('${ep}','${escapeHtml(t).replace(/'/g,\"\\\\'\")}')\">${escapeHtml(t)}</button>`\n  ).join('') +\n    `<input type=\"text\" placeholder=\"new tag\" onkeydown=\"if(event.key==='Enter'){addTag('${ep}',this.value);this.value='';}\" />`\n    + `<button type=\"button\" class=\"addbtn\" onclick=\"const i=this.previousElementSibling;addTag('${ep}',i.value);i.value='';\">add</button>`\n    + `<hr />`\n    + `<input type=\"text\" class=\"renameinput\" value=\"${escapeHtml(currentLabel)}\" placeholder=\"card name\"`\n    + ` onkeydown=\"if(event.key==='Enter'){renameCard('${ep}',this.value);}\" />`\n    + `<button type=\"button\" class=\"addbtn\" onclick=\"const i=this.previousElementSibling;renameCard('${ep}',i.value);\">rename</button>`\n    + `<button type=\"button\" class=\"opt\" onclick=\"renameCard('${ep}','')\">reset to default</button>`;\n  menu.classList.add('open');\n}\n\ndocument.addEventListener('click', ev => {\n  if (!ev.target.closest('.tagmenu') && !ev.target.closest('.dots')) closeAllMenus();\n});\n\nfunction renderCardTags(page, tags) {\n  const ep = escapeHtml(page).replace(/'/g,\"\\\\'\");\n  return tags.map(t => {\n    const et = escapeHtml(t);\n    return `<span class=\"tagchip\">${et}`\n      + `<button type=\"button\" onclick=\"removeTag('${ep}','${et.replace(/'/g,\"\\\\'\")}')\">&times;</button></span>`;\n  }).join('');\n}\n\nfunction applyTagUpdate(page, data) {\n  Object.assign(TAG_COUNTS, data.tag_counts);\n  Object.keys(TAG_COUNTS).forEach(k => { if (!(k in data.tag_counts)) delete TAG_COUNTS[k]; });\n  const card = document.querySelector(`.card[data-page=\"${CSS.escape(page)}\"]`);\n  if (card) {\n    card.dataset.tags = data.tags.join(',');\n    card.querySelector('.cardtags').innerHTML = renderCardTags(page, data.tags);\n    closeAllMenus();\n  }\n  renderFilterBar();\n  applyFilter();\n}\n\nasync function addTag(page, tag) {\n  tag = (tag || '').trim();\n  if (!tag) return;\n  const r = await fetch('/__landing/tags', {method:'POST',\n    headers:{'Content-Type':'application/json'},\n    body: JSON.stringify({page, tag})});\n  if (!r.ok) return;\n  applyTagUpdate(page, await r.json());\n}\n\nasync function removeTag(page, tag) {\n  const r = await fetch('/__landing/tags', {method:'DELETE',\n    headers:{'Content-Type':'application/json'},\n    body: JSON.stringify({page, tag})});\n  if (!r.ok) return;\n  applyTagUpdate(page, await r.json());\n}\n\nasync function renameCard(page, name) {\n  const r = await fetch('/__landing/name', {method:'POST',\n    headers:{'Content-Type':'application/json'},\n    body: JSON.stringify({page, name})});\n  if (!r.ok) return;\n  const data = await r.json();\n  if (data.display_name) { DISPLAY_NAMES[page] = data.display_name; }\n  else { delete DISPLAY_NAMES[page]; }\n  const card = document.querySelector(`.card[data-page=\"${CSS.escape(page)}\"]`);\n  if (card) {\n    card.querySelector('.pagelink').textContent = data.display_name || page;\n    closeAllMenus();\n    resortCards();\n  }\n}\n\napplyFilter();\n</script>\n</body></html>"
+  },
+  {
+   "entries": [
+    {
+     "name": "b",
+     "href": "/p/x/b/"
+    },
+    {
+     "name": "a",
+     "href": "/p/x/a/"
+    },
+    {
+     "name": "c",
+     "href": "/p/x/c/"
+    }
+   ],
+   "tags_by_page": {
+    "a": [],
+    "b": [
+     "t"
+    ]
+   },
+   "tag_counts": [
+    [
+     "t",
+     1
+    ]
+   ],
+   "selected_tags": [],
+   "peer_name": "mesh",
+   "display_names": [
+    [
+     "c",
+     "a"
+    ],
+    [
+     "a",
+     "c"
+    ]
+   ],
+   "html": "<!doctype html>\n<html lang=\"en\"><head>\n<meta charset=\"utf-8\" />\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />\n<title>mesh</title>\n<style>\n  :root {\n    color-scheme: light dark;\n    --main-font-family: \"Inter\", ui-sans-serif, system-ui, -apple-system,\n        \"Segoe UI\", Roboto, Helvetica, Arial, sans-serif;\n    --main-background-color: white;\n    --left-pane-background-color: #f2f2f2;\n    --main-text-color: black;\n    --muted-text-color: #666;\n    --main-border-color: #dbdbdb;\n    --input-background-color: #00000012;\n    --input-text-color: black;\n    --input-placeholder-color: #06060682;\n    --input-hover-background: #00000020;\n    --input-focus-background: #ffffff80;\n    --input-focus-outline-color: #00000063;\n    --cmd-button-background-color: #0000000f;\n    --cmd-button-text-color: #000000ad;\n    --cmd-button-hover-background-color: #00000016;\n    --cmd-button-shadow-color: #00000040;\n    --link-color: #0076af;\n    --error-color: #c0392b;\n  }\n  @media (prefers-color-scheme: dark) {\n    :root {\n      --main-background-color: #242424;\n      --left-pane-background-color: #1f1f1f;\n      --main-text-color: #ccc;\n      --muted-text-color: #bbb;\n      --main-border-color: #454545;\n      --input-background-color: #ffffff12;\n      --input-text-color: #ffffffc7;\n      --input-placeholder-color: #b7b7b782;\n      --input-hover-background: #ffffff1f;\n      --input-focus-background: #ffffff1f;\n      --input-focus-outline-color: #ffffff57;\n      --cmd-button-background-color: #ffffff28;\n      --cmd-button-text-color: #ffffffc2;\n      --cmd-button-hover-background-color: #ffffff37;\n      --cmd-button-shadow-color: #00000080;\n      --link-color: #95c3d9;\n      --error-color: #e88;\n    }\n  }\n  body { font-family: var(--main-font-family); color: var(--main-text-color);\n         line-height: 1.55; }\n  a { color: var(--link-color); }\n  .muted { color: var(--muted-text-color); font-size: 0.92rem; }\n\n  body { max-width: 560px; margin: 64px auto; padding: 0 24px;\n         background: var(--main-background-color); }\n  h1 { font-size: 1.4rem; margin-bottom: 0.25rem; }\n  ul.svc { list-style: none; padding: 0; margin-top: 24px; }\n  ul.svc li { margin: 0; }\n  ul.svc a { display: block; padding: 12px 14px; margin-top: 8px;\n         border: 1px solid var(--main-border-color); border-radius: 8px;\n         text-decoration: none; color: inherit; }\n  ul.svc a:hover { border-color: var(--link-color); }\n  .top { display: flex; justify-content: space-between; align-items: baseline; }\n  a.logout { font-size: 0.85rem; }\n\n  .filterbar { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 20px; }\n  .chip { display: inline-flex; align-items: center; gap: 6px; padding: 4px 8px;\n         border: 1px solid var(--link-color); border-radius: 999px;\n         font-size: 0.82rem;\n         background: color-mix(in srgb, var(--link-color) 12%, transparent); }\n  .chip button { padding: 0; margin: 0; width: 16px; height: 16px; line-height: 1;\n         font-size: 0.85rem; border-radius: 50%; background: transparent;\n         color: inherit; opacity: 0.6; border: 0; cursor: pointer; }\n  .chip button:hover { opacity: 1;\n         background: color-mix(in srgb, var(--link-color) 20%, transparent); }\n  .filteradd { margin-top: 8px; display: flex; align-items: center; gap: 8px; }\n  select#addFilter { padding: 6px 8px; font-size: 0.85rem; border-radius: 6px;\n         border: 1px solid var(--main-border-color);\n         background: var(--main-background-color); color: var(--main-text-color); }\n  select#addFilter option { background: var(--main-background-color);\n         color: var(--main-text-color); }\n  .togglechip { display: inline-flex; align-items: center; padding: 5px 10px;\n         font-size: 0.82rem; border: 1px solid var(--main-border-color);\n         border-radius: 999px; background: transparent; color: inherit;\n         cursor: pointer; }\n  .togglechip:hover { border-color: var(--link-color); }\n  .togglechip.active { border-color: var(--link-color);\n         background: var(--link-color); color: var(--main-background-color); }\n  .status { margin-top: 6px; font-size: 0.8rem; color: var(--muted-text-color); }\n\n  .cards { list-style: none; padding: 0; margin-top: 20px; display: flex;\n         flex-direction: column; gap: 6px; }\n  .card { border: 1px solid var(--main-border-color); border-radius: 8px;\n         padding: 8px 10px; position: relative; }\n  .card.hidden { display: none; }\n  .card a.pagelink { text-decoration: none; color: inherit; font-weight: 500; }\n  .card a.pagelink:hover { color: var(--link-color); }\n  .card a.pagelink::before { content: \"\"; position: absolute; inset: 0; }\n  .cardfoot { display: flex; justify-content: flex-end; align-items: center;\n         gap: 6px; margin-top: 4px; position: relative; z-index: 1;\n         pointer-events: none; }\n  .cardtags { display: flex; flex-wrap: wrap; gap: 4px; justify-content: flex-end; }\n  .tagchip { display: inline-flex; align-items: center; gap: 4px; font-size: 0.76rem;\n         padding: 2px 4px 2px 7px; border-radius: 999px;\n         border: 1px solid var(--main-border-color);\n         opacity: 0.85; pointer-events: auto; }\n  .tagchip button { padding: 0; margin: 0; width: 13px; height: 13px; line-height: 1;\n         font-size: 0.75rem; border-radius: 50%; background: transparent;\n         color: inherit; opacity: 0.6; border: 0; cursor: pointer; }\n  .tagchip button:hover { opacity: 1; background: var(--input-hover-background); }\n  .dots { padding: 2px 6px; background: transparent; color: inherit; opacity: 0.55;\n         font-size: 0.95rem; border-radius: 6px; pointer-events: auto;\n         border: 0; cursor: pointer; }\n  .dots:hover { opacity: 1; background: var(--input-background-color); }\n  .tagmenu { display: none; position: absolute; right: 12px; bottom: 44px;\n         background: var(--main-background-color); color: var(--main-text-color);\n         border: 1px solid var(--main-border-color);\n         border-radius: 8px; padding: 10px; min-width: 180px; box-shadow:\n         0 4px 16px rgba(0, 0, 0, 0.25); z-index: 10; pointer-events: auto; }\n  .tagmenu.open { display: block; }\n  .tagmenu .opt { display: block; width: 100%; text-align: left; padding: 6px 8px;\n         background: transparent; color: inherit; border: 0; border-radius: 6px;\n         font-size: 0.85rem; cursor: pointer; }\n  .tagmenu .opt:hover {\n         background: color-mix(in srgb, var(--link-color) 12%, transparent); }\n  .tagmenu input[type=text] { width: 100%; margin-top: 8px; padding: 6px 8px;\n         font-size: 0.85rem; border: 1px solid var(--main-border-color);\n         border-radius: 6px; background: transparent; color: inherit;\n         box-sizing: border-box; }\n  .tagmenu .addbtn { margin-top: 6px; width: 100%; padding: 6px;\n         font-size: 0.82rem; border: 0; border-radius: 6px;\n         background: var(--cmd-button-background-color);\n         color: var(--cmd-button-text-color); cursor: pointer; }\n</style>\n</head><body>\n<div class=\"top\"><h1>mesh</h1>\n  <a class=\"logout\" href=\"#\" onclick=\"fetch('/__auth/logout',{method:'POST'}).then(()=>location.reload());return false;\">sign out</a>\n</div>\n<div class=\"filterbar\" id=\"filterbar\">\n\n</div>\n<div class=\"filteradd\">\n  <select id=\"addFilter\" onchange=\"if(this.value){selectFilter(this.value);}\">\n    <option value=\"\">+ filter by tag&hellip;</option>\n    <option value=\"t\">t:1</option>\n  </select>\n  <button type=\"button\" id=\"showAllToggle\" class=\"togglechip\" onclick=\"toggleShowAll()\">show all</button>\n</div>\n<p class=\"status\" id=\"status\"></p>\n  <ul class=\"cards\">\n  <li class=\"card\" data-page=\"c\" data-tags=\"\">\n    <a class=\"pagelink\" href=\"/p/x/c/\">a</a>\n    <div class=\"cardfoot\">\n      <span class=\"cardtags\">\n\n      </span>\n      <button class=\"dots\" type=\"button\" onclick=\"toggleTagMenu(this,'c')\">&#8942;</button>\n      <div class=\"tagmenu\"></div>\n    </div>\n  </li>\n  <li class=\"card\" data-page=\"b\" data-tags=\"t\">\n    <a class=\"pagelink\" href=\"/p/x/b/\">b</a>\n    <div class=\"cardfoot\">\n      <span class=\"cardtags\">\n      <span class=\"tagchip\">t<button type=\"button\" onclick=\"removeTag('b','t')\">&times;</button></span>\n      </span>\n      <button class=\"dots\" type=\"button\" onclick=\"toggleTagMenu(this,'b')\">&#8942;</button>\n      <div class=\"tagmenu\"></div>\n    </div>\n  </li>\n  <li class=\"card\" data-page=\"a\" data-tags=\"\">\n    <a class=\"pagelink\" href=\"/p/x/a/\">c</a>\n    <div class=\"cardfoot\">\n      <span class=\"cardtags\">\n\n      </span>\n      <button class=\"dots\" type=\"button\" onclick=\"toggleTagMenu(this,'a')\">&#8942;</button>\n      <div class=\"tagmenu\"></div>\n    </div>\n  </li>\n  </ul>\n<script>\nconst TAG_COUNTS = {\"t\": 1};\nlet SELECTED = [];\nlet DISPLAY_NAMES = {\"c\": \"a\", \"a\": \"c\"};\nlet SHOW_ALL = false;\nconst TOTAL_PAGES = 3;\n\nfunction escapeHtml(s) {\n  return s.replace(/[&<>\"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'})[c]);\n}\n\nfunction cardTags(card) {\n  const v = card.dataset.tags || '';\n  return v ? v.split(',') : [];\n}\n\nfunction resortCards() {\n  const list = document.querySelector('.cards');\n  if (!list) return;\n  const cards = Array.from(list.querySelectorAll('.card'));\n  cards.sort((a, b) => a.querySelector('.pagelink').textContent\n    .localeCompare(b.querySelector('.pagelink').textContent));\n  cards.forEach(c => list.appendChild(c));\n}\n\nfunction applyFilter() {\n  const cards = document.querySelectorAll('.card');\n  let hidden = 0;\n  cards.forEach(card => {\n    const tags = cardTags(card);\n    const visible = SHOW_ALL || SELECTED.length === 0 || tags.some(t => SELECTED.includes(t));\n    card.classList.toggle('hidden', !visible);\n    if (!visible) hidden++;\n  });\n  const status = document.getElementById('status');\n  status.textContent = SHOW_ALL\n    ? `showing all ${TOTAL_PAGES}`\n    : `${hidden} of ${TOTAL_PAGES} hidden`;\n}\n\nfunction toggleShowAll() {\n  SHOW_ALL = !SHOW_ALL;\n  document.getElementById('showAllToggle').classList.toggle('active', SHOW_ALL);\n  applyFilter();\n}\n\nfunction renderFilterBar() {\n  const bar = document.getElementById('filterbar');\n  bar.innerHTML = SELECTED.map(t => {\n    const n = TAG_COUNTS[t] || 0;\n    const et = escapeHtml(t);\n    return `<span class=\"chip\" data-tag=\"${et}\">${et}:${n}`\n      + `<button type=\"button\" onclick=\"deselectFilter('${et.replace(/'/g,\"\\\\'\")}')\">&times;</button></span>`;\n  }).join('\\n');\n  const sel = document.getElementById('addFilter');\n  const unselected = Object.keys(TAG_COUNTS).sort().filter(t => !SELECTED.includes(t));\n  sel.innerHTML = '<option value=\"\">+ filter by tag&hellip;</option>' +\n    unselected.map(t => `<option value=\"${escapeHtml(t)}\">${escapeHtml(t)}:${TAG_COUNTS[t]}</option>`).join('');\n}\n\nasync function selectFilter(tag) {\n  const r = await fetch('/__landing/filter', {method:'POST',\n    headers:{'Content-Type':'application/json'}, body: JSON.stringify({tag})});\n  if (r.ok) {\n    const data = await r.json();\n    SELECTED = data.selected_tags;\n    renderFilterBar();\n    applyFilter();\n  }\n}\n\nasync function deselectFilter(tag) {\n  const r = await fetch('/__landing/filter', {method:'DELETE',\n    headers:{'Content-Type':'application/json'}, body: JSON.stringify({tag})});\n  if (r.ok) {\n    const data = await r.json();\n    SELECTED = data.selected_tags;\n    renderFilterBar();\n    applyFilter();\n  }\n}\n\nfunction closeAllMenus(except) {\n  document.querySelectorAll('.tagmenu.open').forEach(m => {\n    if (m !== except) m.classList.remove('open');\n  });\n}\n\nfunction toggleTagMenu(btn, page) {\n  const menu = btn.nextElementSibling;\n  const isOpen = menu.classList.contains('open');\n  closeAllMenus();\n  if (isOpen) { menu.classList.remove('open'); return; }\n  const card = btn.closest('.card');\n  const have = new Set(cardTags(card));\n  const opts = Object.keys(TAG_COUNTS).sort().filter(t => !have.has(t));\n  const ep = escapeHtml(page).replace(/'/g,\"\\\\'\");\n  const currentLabel = DISPLAY_NAMES[page] || page;\n  menu.innerHTML = opts.map(t =>\n    `<button type=\"button\" class=\"opt\" onclick=\"addTag('${ep}','${escapeHtml(t).replace(/'/g,\"\\\\'\")}')\">${escapeHtml(t)}</button>`\n  ).join('') +\n    `<input type=\"text\" placeholder=\"new tag\" onkeydown=\"if(event.key==='Enter'){addTag('${ep}',this.value);this.value='';}\" />`\n    + `<button type=\"button\" class=\"addbtn\" onclick=\"const i=this.previousElementSibling;addTag('${ep}',i.value);i.value='';\">add</button>`\n    + `<hr />`\n    + `<input type=\"text\" class=\"renameinput\" value=\"${escapeHtml(currentLabel)}\" placeholder=\"card name\"`\n    + ` onkeydown=\"if(event.key==='Enter'){renameCard('${ep}',this.value);}\" />`\n    + `<button type=\"button\" class=\"addbtn\" onclick=\"const i=this.previousElementSibling;renameCard('${ep}',i.value);\">rename</button>`\n    + `<button type=\"button\" class=\"opt\" onclick=\"renameCard('${ep}','')\">reset to default</button>`;\n  menu.classList.add('open');\n}\n\ndocument.addEventListener('click', ev => {\n  if (!ev.target.closest('.tagmenu') && !ev.target.closest('.dots')) closeAllMenus();\n});\n\nfunction renderCardTags(page, tags) {\n  const ep = escapeHtml(page).replace(/'/g,\"\\\\'\");\n  return tags.map(t => {\n    const et = escapeHtml(t);\n    return `<span class=\"tagchip\">${et}`\n      + `<button type=\"button\" onclick=\"removeTag('${ep}','${et.replace(/'/g,\"\\\\'\")}')\">&times;</button></span>`;\n  }).join('');\n}\n\nfunction applyTagUpdate(page, data) {\n  Object.assign(TAG_COUNTS, data.tag_counts);\n  Object.keys(TAG_COUNTS).forEach(k => { if (!(k in data.tag_counts)) delete TAG_COUNTS[k]; });\n  const card = document.querySelector(`.card[data-page=\"${CSS.escape(page)}\"]`);\n  if (card) {\n    card.dataset.tags = data.tags.join(',');\n    card.querySelector('.cardtags').innerHTML = renderCardTags(page, data.tags);\n    closeAllMenus();\n  }\n  renderFilterBar();\n  applyFilter();\n}\n\nasync function addTag(page, tag) {\n  tag = (tag || '').trim();\n  if (!tag) return;\n  const r = await fetch('/__landing/tags', {method:'POST',\n    headers:{'Content-Type':'application/json'},\n    body: JSON.stringify({page, tag})});\n  if (!r.ok) return;\n  applyTagUpdate(page, await r.json());\n}\n\nasync function removeTag(page, tag) {\n  const r = await fetch('/__landing/tags', {method:'DELETE',\n    headers:{'Content-Type':'application/json'},\n    body: JSON.stringify({page, tag})});\n  if (!r.ok) return;\n  applyTagUpdate(page, await r.json());\n}\n\nasync function renameCard(page, name) {\n  const r = await fetch('/__landing/name', {method:'POST',\n    headers:{'Content-Type':'application/json'},\n    body: JSON.stringify({page, name})});\n  if (!r.ok) return;\n  const data = await r.json();\n  if (data.display_name) { DISPLAY_NAMES[page] = data.display_name; }\n  else { delete DISPLAY_NAMES[page]; }\n  const card = document.querySelector(`.card[data-page=\"${CSS.escape(page)}\"]`);\n  if (card) {\n    card.querySelector('.pagelink').textContent = data.display_name || page;\n    closeAllMenus();\n    resortCards();\n  }\n}\n\napplyFilter();\n</script>\n</body></html>"
+  }
+ ],
+ "vault_unavailable": [
+  {
+   "reason": "not listening yet",
+   "html": "<!doctype html>\n<html lang=\"en\"><head>\n<meta charset=\"utf-8\" />\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />\n<meta http-equiv=\"refresh\" content=\"5\" />\n<title>Trilium &mdash; starting</title>\n<style>\n  :root {\n    color-scheme: light dark;\n    --main-font-family: \"Inter\", ui-sans-serif, system-ui, -apple-system,\n        \"Segoe UI\", Roboto, Helvetica, Arial, sans-serif;\n    --main-background-color: white;\n    --left-pane-background-color: #f2f2f2;\n    --main-text-color: black;\n    --muted-text-color: #666;\n    --main-border-color: #dbdbdb;\n    --input-background-color: #00000012;\n    --input-text-color: black;\n    --input-placeholder-color: #06060682;\n    --input-hover-background: #00000020;\n    --input-focus-background: #ffffff80;\n    --input-focus-outline-color: #00000063;\n    --cmd-button-background-color: #0000000f;\n    --cmd-button-text-color: #000000ad;\n    --cmd-button-hover-background-color: #00000016;\n    --cmd-button-shadow-color: #00000040;\n    --link-color: #0076af;\n    --error-color: #c0392b;\n  }\n  @media (prefers-color-scheme: dark) {\n    :root {\n      --main-background-color: #242424;\n      --left-pane-background-color: #1f1f1f;\n      --main-text-color: #ccc;\n      --muted-text-color: #bbb;\n      --main-border-color: #454545;\n      --input-background-color: #ffffff12;\n      --input-text-color: #ffffffc7;\n      --input-placeholder-color: #b7b7b782;\n      --input-hover-background: #ffffff1f;\n      --input-focus-background: #ffffff1f;\n      --input-focus-outline-color: #ffffff57;\n      --cmd-button-background-color: #ffffff28;\n      --cmd-button-text-color: #ffffffc2;\n      --cmd-button-hover-background-color: #ffffff37;\n      --cmd-button-shadow-color: #00000080;\n      --link-color: #95c3d9;\n      --error-color: #e88;\n    }\n  }\n  body { font-family: var(--main-font-family); color: var(--main-text-color);\n         line-height: 1.55; }\n  a { color: var(--link-color); }\n  .muted { color: var(--muted-text-color); font-size: 0.92rem; }\n\n  html, body { height: 100%; }\n  body { margin: 0; background: var(--left-pane-background-color); }\n  .backdrop { min-height: 100dvh; display: flex; align-items: center;\n         justify-content: center; }\n  .card { background: var(--main-background-color); padding: 2em;\n         box-sizing: border-box; width: 100%; align-self: stretch;\n         display: flex; flex-direction: column; gap: 1rem; }\n  .card h1 { font-size: 1.4rem; margin: 0; }\n  .card > header p { margin: 0.25rem 0 0; }\n  form { display: flex; flex-direction: column; gap: 0.35rem; margin: 0; }\n  label { font-size: 0.85rem; color: var(--muted-text-color); }\n  input + label { margin-top: 0.6rem; }\n  input { font: inherit; font-size: 1rem; padding: 10px 12px; border: unset;\n         border-radius: 8px; background: var(--input-background-color);\n         color: var(--input-text-color); outline: 3px solid transparent;\n         outline-offset: 6px; }\n  input::placeholder { color: var(--input-placeholder-color); }\n  input:hover { background: var(--input-hover-background); }\n  input:focus { outline: 3px solid var(--input-focus-outline-color);\n         outline-offset: 0; background: var(--input-focus-background);\n         transition: outline-color 50ms linear, outline-offset 200ms ease-out; }\n  /* Reserved height: a failed attempt must not move the button out from under\n     the pointer that just pressed it. */\n  .err { color: var(--error-color); font-size: 0.85rem; min-height: 1.2em; }\n  form footer { border-top: 1px solid var(--main-border-color);\n         margin: 0.25rem -2em 0; padding: 1rem 2em 0; }\n  button { font: inherit; width: 100%; padding: 8px 16px; border: unset;\n         border-radius: 6px; background: var(--cmd-button-background-color);\n         color: var(--cmd-button-text-color); cursor: pointer;\n         box-shadow: 1px 1px 1px var(--cmd-button-shadow-color); }\n  button:hover { background: var(--cmd-button-hover-background-color); }\n  button:active { transform: scale(0.95); box-shadow: unset; }\n  button:disabled { opacity: 0.5; cursor: default; transform: none; }\n  .note { font-size: 0.85rem; color: var(--muted-text-color); margin: 0; }\n\n  /* Upstream's own breakpoint. Below it the gradients drop and the card goes\n     full-bleed, so a phone gets a page rather than a letterbox. These override\n     the rules above, so they have to come after them. */\n  @media (min-width: 700px) {\n    .backdrop {\n      padding: 2em; box-sizing: border-box;\n      background:\n        radial-gradient(ellipse at 20% 50%, rgba(99, 102, 241, 0.3) 0%, transparent 50%),\n        radial-gradient(ellipse at 80% 20%, rgba(168, 85, 247, 0.25) 0%, transparent 50%),\n        radial-gradient(ellipse at 60% 80%, rgba(59, 130, 246, 0.25) 0%, transparent 50%),\n        var(--left-pane-background-color);\n    }\n    /* Narrower than the setup wizard's 750px: that frame is sized for a\n       five-option chooser, and two fields would look lost in it. */\n    .card { width: min(420px, 100%); align-self: auto; border-radius: 16px;\n           box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1); }\n  }\n</style>\n</head><body>\n<div class=\"backdrop\">\n<main class=\"card\">\n  <header>\n    <h1>Trilium</h1>\n    <p class=\"muted\">The knowledge base is not answering yet.</p>\n  </header>\n  <p class=\"note\">not listening yet</p>\n  <p class=\"note\">A vault that has just been started takes up to two minutes to\n  come up. This page retries every five seconds.</p>\n</main>\n</div>\n</body></html>"
+  },
+  {
+   "reason": "",
+   "html": "<!doctype html>\n<html lang=\"en\"><head>\n<meta charset=\"utf-8\" />\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />\n<meta http-equiv=\"refresh\" content=\"5\" />\n<title>Trilium &mdash; starting</title>\n<style>\n  :root {\n    color-scheme: light dark;\n    --main-font-family: \"Inter\", ui-sans-serif, system-ui, -apple-system,\n        \"Segoe UI\", Roboto, Helvetica, Arial, sans-serif;\n    --main-background-color: white;\n    --left-pane-background-color: #f2f2f2;\n    --main-text-color: black;\n    --muted-text-color: #666;\n    --main-border-color: #dbdbdb;\n    --input-background-color: #00000012;\n    --input-text-color: black;\n    --input-placeholder-color: #06060682;\n    --input-hover-background: #00000020;\n    --input-focus-background: #ffffff80;\n    --input-focus-outline-color: #00000063;\n    --cmd-button-background-color: #0000000f;\n    --cmd-button-text-color: #000000ad;\n    --cmd-button-hover-background-color: #00000016;\n    --cmd-button-shadow-color: #00000040;\n    --link-color: #0076af;\n    --error-color: #c0392b;\n  }\n  @media (prefers-color-scheme: dark) {\n    :root {\n      --main-background-color: #242424;\n      --left-pane-background-color: #1f1f1f;\n      --main-text-color: #ccc;\n      --muted-text-color: #bbb;\n      --main-border-color: #454545;\n      --input-background-color: #ffffff12;\n      --input-text-color: #ffffffc7;\n      --input-placeholder-color: #b7b7b782;\n      --input-hover-background: #ffffff1f;\n      --input-focus-background: #ffffff1f;\n      --input-focus-outline-color: #ffffff57;\n      --cmd-button-background-color: #ffffff28;\n      --cmd-button-text-color: #ffffffc2;\n      --cmd-button-hover-background-color: #ffffff37;\n      --cmd-button-shadow-color: #00000080;\n      --link-color: #95c3d9;\n      --error-color: #e88;\n    }\n  }\n  body { font-family: var(--main-font-family); color: var(--main-text-color);\n         line-height: 1.55; }\n  a { color: var(--link-color); }\n  .muted { color: var(--muted-text-color); font-size: 0.92rem; }\n\n  html, body { height: 100%; }\n  body { margin: 0; background: var(--left-pane-background-color); }\n  .backdrop { min-height: 100dvh; display: flex; align-items: center;\n         justify-content: center; }\n  .card { background: var(--main-background-color); padding: 2em;\n         box-sizing: border-box; width: 100%; align-self: stretch;\n         display: flex; flex-direction: column; gap: 1rem; }\n  .card h1 { font-size: 1.4rem; margin: 0; }\n  .card > header p { margin: 0.25rem 0 0; }\n  form { display: flex; flex-direction: column; gap: 0.35rem; margin: 0; }\n  label { font-size: 0.85rem; color: var(--muted-text-color); }\n  input + label { margin-top: 0.6rem; }\n  input { font: inherit; font-size: 1rem; padding: 10px 12px; border: unset;\n         border-radius: 8px; background: var(--input-background-color);\n         color: var(--input-text-color); outline: 3px solid transparent;\n         outline-offset: 6px; }\n  input::placeholder { color: var(--input-placeholder-color); }\n  input:hover { background: var(--input-hover-background); }\n  input:focus { outline: 3px solid var(--input-focus-outline-color);\n         outline-offset: 0; background: var(--input-focus-background);\n         transition: outline-color 50ms linear, outline-offset 200ms ease-out; }\n  /* Reserved height: a failed attempt must not move the button out from under\n     the pointer that just pressed it. */\n  .err { color: var(--error-color); font-size: 0.85rem; min-height: 1.2em; }\n  form footer { border-top: 1px solid var(--main-border-color);\n         margin: 0.25rem -2em 0; padding: 1rem 2em 0; }\n  button { font: inherit; width: 100%; padding: 8px 16px; border: unset;\n         border-radius: 6px; background: var(--cmd-button-background-color);\n         color: var(--cmd-button-text-color); cursor: pointer;\n         box-shadow: 1px 1px 1px var(--cmd-button-shadow-color); }\n  button:hover { background: var(--cmd-button-hover-background-color); }\n  button:active { transform: scale(0.95); box-shadow: unset; }\n  button:disabled { opacity: 0.5; cursor: default; transform: none; }\n  .note { font-size: 0.85rem; color: var(--muted-text-color); margin: 0; }\n\n  /* Upstream's own breakpoint. Below it the gradients drop and the card goes\n     full-bleed, so a phone gets a page rather than a letterbox. These override\n     the rules above, so they have to come after them. */\n  @media (min-width: 700px) {\n    .backdrop {\n      padding: 2em; box-sizing: border-box;\n      background:\n        radial-gradient(ellipse at 20% 50%, rgba(99, 102, 241, 0.3) 0%, transparent 50%),\n        radial-gradient(ellipse at 80% 20%, rgba(168, 85, 247, 0.25) 0%, transparent 50%),\n        radial-gradient(ellipse at 60% 80%, rgba(59, 130, 246, 0.25) 0%, transparent 50%),\n        var(--left-pane-background-color);\n    }\n    /* Narrower than the setup wizard's 750px: that frame is sized for a\n       five-option chooser, and two fields would look lost in it. */\n    .card { width: min(420px, 100%); align-self: auto; border-radius: 16px;\n           box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1); }\n  }\n</style>\n</head><body>\n<div class=\"backdrop\">\n<main class=\"card\">\n  <header>\n    <h1>Trilium</h1>\n    <p class=\"muted\">The knowledge base is not answering yet.</p>\n  </header>\n  <p class=\"note\"></p>\n  <p class=\"note\">A vault that has just been started takes up to two minutes to\n  come up. This page retries every five seconds.</p>\n</main>\n</div>\n</body></html>"
+  },
+  {
+   "reason": "<script>alert('x')</script> & \"more\" é",
+   "html": "<!doctype html>\n<html lang=\"en\"><head>\n<meta charset=\"utf-8\" />\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />\n<meta http-equiv=\"refresh\" content=\"5\" />\n<title>Trilium &mdash; starting</title>\n<style>\n  :root {\n    color-scheme: light dark;\n    --main-font-family: \"Inter\", ui-sans-serif, system-ui, -apple-system,\n        \"Segoe UI\", Roboto, Helvetica, Arial, sans-serif;\n    --main-background-color: white;\n    --left-pane-background-color: #f2f2f2;\n    --main-text-color: black;\n    --muted-text-color: #666;\n    --main-border-color: #dbdbdb;\n    --input-background-color: #00000012;\n    --input-text-color: black;\n    --input-placeholder-color: #06060682;\n    --input-hover-background: #00000020;\n    --input-focus-background: #ffffff80;\n    --input-focus-outline-color: #00000063;\n    --cmd-button-background-color: #0000000f;\n    --cmd-button-text-color: #000000ad;\n    --cmd-button-hover-background-color: #00000016;\n    --cmd-button-shadow-color: #00000040;\n    --link-color: #0076af;\n    --error-color: #c0392b;\n  }\n  @media (prefers-color-scheme: dark) {\n    :root {\n      --main-background-color: #242424;\n      --left-pane-background-color: #1f1f1f;\n      --main-text-color: #ccc;\n      --muted-text-color: #bbb;\n      --main-border-color: #454545;\n      --input-background-color: #ffffff12;\n      --input-text-color: #ffffffc7;\n      --input-placeholder-color: #b7b7b782;\n      --input-hover-background: #ffffff1f;\n      --input-focus-background: #ffffff1f;\n      --input-focus-outline-color: #ffffff57;\n      --cmd-button-background-color: #ffffff28;\n      --cmd-button-text-color: #ffffffc2;\n      --cmd-button-hover-background-color: #ffffff37;\n      --cmd-button-shadow-color: #00000080;\n      --link-color: #95c3d9;\n      --error-color: #e88;\n    }\n  }\n  body { font-family: var(--main-font-family); color: var(--main-text-color);\n         line-height: 1.55; }\n  a { color: var(--link-color); }\n  .muted { color: var(--muted-text-color); font-size: 0.92rem; }\n\n  html, body { height: 100%; }\n  body { margin: 0; background: var(--left-pane-background-color); }\n  .backdrop { min-height: 100dvh; display: flex; align-items: center;\n         justify-content: center; }\n  .card { background: var(--main-background-color); padding: 2em;\n         box-sizing: border-box; width: 100%; align-self: stretch;\n         display: flex; flex-direction: column; gap: 1rem; }\n  .card h1 { font-size: 1.4rem; margin: 0; }\n  .card > header p { margin: 0.25rem 0 0; }\n  form { display: flex; flex-direction: column; gap: 0.35rem; margin: 0; }\n  label { font-size: 0.85rem; color: var(--muted-text-color); }\n  input + label { margin-top: 0.6rem; }\n  input { font: inherit; font-size: 1rem; padding: 10px 12px; border: unset;\n         border-radius: 8px; background: var(--input-background-color);\n         color: var(--input-text-color); outline: 3px solid transparent;\n         outline-offset: 6px; }\n  input::placeholder { color: var(--input-placeholder-color); }\n  input:hover { background: var(--input-hover-background); }\n  input:focus { outline: 3px solid var(--input-focus-outline-color);\n         outline-offset: 0; background: var(--input-focus-background);\n         transition: outline-color 50ms linear, outline-offset 200ms ease-out; }\n  /* Reserved height: a failed attempt must not move the button out from under\n     the pointer that just pressed it. */\n  .err { color: var(--error-color); font-size: 0.85rem; min-height: 1.2em; }\n  form footer { border-top: 1px solid var(--main-border-color);\n         margin: 0.25rem -2em 0; padding: 1rem 2em 0; }\n  button { font: inherit; width: 100%; padding: 8px 16px; border: unset;\n         border-radius: 6px; background: var(--cmd-button-background-color);\n         color: var(--cmd-button-text-color); cursor: pointer;\n         box-shadow: 1px 1px 1px var(--cmd-button-shadow-color); }\n  button:hover { background: var(--cmd-button-hover-background-color); }\n  button:active { transform: scale(0.95); box-shadow: unset; }\n  button:disabled { opacity: 0.5; cursor: default; transform: none; }\n  .note { font-size: 0.85rem; color: var(--muted-text-color); margin: 0; }\n\n  /* Upstream's own breakpoint. Below it the gradients drop and the card goes\n     full-bleed, so a phone gets a page rather than a letterbox. These override\n     the rules above, so they have to come after them. */\n  @media (min-width: 700px) {\n    .backdrop {\n      padding: 2em; box-sizing: border-box;\n      background:\n        radial-gradient(ellipse at 20% 50%, rgba(99, 102, 241, 0.3) 0%, transparent 50%),\n        radial-gradient(ellipse at 80% 20%, rgba(168, 85, 247, 0.25) 0%, transparent 50%),\n        radial-gradient(ellipse at 60% 80%, rgba(59, 130, 246, 0.25) 0%, transparent 50%),\n        var(--left-pane-background-color);\n    }\n    /* Narrower than the setup wizard's 750px: that frame is sized for a\n       five-option chooser, and two fields would look lost in it. */\n    .card { width: min(420px, 100%); align-self: auto; border-radius: 16px;\n           box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1); }\n  }\n</style>\n</head><body>\n<div class=\"backdrop\">\n<main class=\"card\">\n  <header>\n    <h1>Trilium</h1>\n    <p class=\"muted\">The knowledge base is not answering yet.</p>\n  </header>\n  <p class=\"note\">&lt;script&gt;alert(&#x27;x&#x27;)&lt;/script&gt; &amp; &quot;more&quot; é</p>\n  <p class=\"note\">A vault that has just been started takes up to two minutes to\n  come up. This page retries every five seconds.</p>\n</main>\n</div>\n</body></html>"
+  }
+ ]
+}

@@ -1,0 +1,81 @@
+
+  body { max-width: 560px; margin: 64px auto; padding: 0 24px;
+         background: var(--main-background-color); }
+  h1 { font-size: 1.4rem; margin-bottom: 0.25rem; }
+  ul.svc { list-style: none; padding: 0; margin-top: 24px; }
+  ul.svc li { margin: 0; }
+  ul.svc a { display: block; padding: 12px 14px; margin-top: 8px;
+         border: 1px solid var(--main-border-color); border-radius: 8px;
+         text-decoration: none; color: inherit; }
+  ul.svc a:hover { border-color: var(--link-color); }
+  .top { display: flex; justify-content: space-between; align-items: baseline; }
+  a.logout { font-size: 0.85rem; }
+
+  .filterbar { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 20px; }
+  .chip { display: inline-flex; align-items: center; gap: 6px; padding: 4px 8px;
+         border: 1px solid var(--link-color); border-radius: 999px;
+         font-size: 0.82rem;
+         background: color-mix(in srgb, var(--link-color) 12%, transparent); }
+  .chip button { padding: 0; margin: 0; width: 16px; height: 16px; line-height: 1;
+         font-size: 0.85rem; border-radius: 50%; background: transparent;
+         color: inherit; opacity: 0.6; border: 0; cursor: pointer; }
+  .chip button:hover { opacity: 1;
+         background: color-mix(in srgb, var(--link-color) 20%, transparent); }
+  .filteradd { margin-top: 8px; display: flex; align-items: center; gap: 8px; }
+  select#addFilter { padding: 6px 8px; font-size: 0.85rem; border-radius: 6px;
+         border: 1px solid var(--main-border-color);
+         background: var(--main-background-color); color: var(--main-text-color); }
+  select#addFilter option { background: var(--main-background-color);
+         color: var(--main-text-color); }
+  .togglechip { display: inline-flex; align-items: center; padding: 5px 10px;
+         font-size: 0.82rem; border: 1px solid var(--main-border-color);
+         border-radius: 999px; background: transparent; color: inherit;
+         cursor: pointer; }
+  .togglechip:hover { border-color: var(--link-color); }
+  .togglechip.active { border-color: var(--link-color);
+         background: var(--link-color); color: var(--main-background-color); }
+  .status { margin-top: 6px; font-size: 0.8rem; color: var(--muted-text-color); }
+
+  .cards { list-style: none; padding: 0; margin-top: 20px; display: flex;
+         flex-direction: column; gap: 6px; }
+  .card { border: 1px solid var(--main-border-color); border-radius: 8px;
+         padding: 8px 10px; position: relative; }
+  .card.hidden { display: none; }
+  .card a.pagelink { text-decoration: none; color: inherit; font-weight: 500; }
+  .card a.pagelink:hover { color: var(--link-color); }
+  .card a.pagelink::before { content: ""; position: absolute; inset: 0; }
+  .cardfoot { display: flex; justify-content: flex-end; align-items: center;
+         gap: 6px; margin-top: 4px; position: relative; z-index: 1;
+         pointer-events: none; }
+  .cardtags { display: flex; flex-wrap: wrap; gap: 4px; justify-content: flex-end; }
+  .tagchip { display: inline-flex; align-items: center; gap: 4px; font-size: 0.76rem;
+         padding: 2px 4px 2px 7px; border-radius: 999px;
+         border: 1px solid var(--main-border-color);
+         opacity: 0.85; pointer-events: auto; }
+  .tagchip button { padding: 0; margin: 0; width: 13px; height: 13px; line-height: 1;
+         font-size: 0.75rem; border-radius: 50%; background: transparent;
+         color: inherit; opacity: 0.6; border: 0; cursor: pointer; }
+  .tagchip button:hover { opacity: 1; background: var(--input-hover-background); }
+  .dots { padding: 2px 6px; background: transparent; color: inherit; opacity: 0.55;
+         font-size: 0.95rem; border-radius: 6px; pointer-events: auto;
+         border: 0; cursor: pointer; }
+  .dots:hover { opacity: 1; background: var(--input-background-color); }
+  .tagmenu { display: none; position: absolute; right: 12px; bottom: 44px;
+         background: var(--main-background-color); color: var(--main-text-color);
+         border: 1px solid var(--main-border-color);
+         border-radius: 8px; padding: 10px; min-width: 180px; box-shadow:
+         0 4px 16px rgba(0, 0, 0, 0.25); z-index: 10; pointer-events: auto; }
+  .tagmenu.open { display: block; }
+  .tagmenu .opt { display: block; width: 100%; text-align: left; padding: 6px 8px;
+         background: transparent; color: inherit; border: 0; border-radius: 6px;
+         font-size: 0.85rem; cursor: pointer; }
+  .tagmenu .opt:hover {
+         background: color-mix(in srgb, var(--link-color) 12%, transparent); }
+  .tagmenu input[type=text] { width: 100%; margin-top: 8px; padding: 6px 8px;
+         font-size: 0.85rem; border: 1px solid var(--main-border-color);
+         border-radius: 6px; background: transparent; color: inherit;
+         box-sizing: border-box; }
+  .tagmenu .addbtn { margin-top: 6px; width: 100%; padding: 6px;
+         font-size: 0.82rem; border: 0; border-radius: 6px;
+         background: var(--cmd-button-background-color);
+         color: var(--cmd-button-text-color); cursor: pointer; }
