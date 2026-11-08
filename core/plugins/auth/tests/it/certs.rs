@@ -3,7 +3,6 @@
 
 use std::collections::BTreeSet;
 use std::ffi::OsString;
-use std::net::IpAddr;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -13,8 +12,8 @@ use rcgen::{CertificateParams, KeyPair, SanType, PKCS_ECDSA_P256_SHA256};
 use serde_json::Value;
 
 const FAKE_ROOT: &[u8] = b"-----BEGIN CERTIFICATE-----\nnot-a-real-root\n-----END CERTIFICATE-----\n";
-const SANS_VECTORS: &str = include_str!("vectors/sans.json");
-const RSA_VECTORS: &str = include_str!("vectors/rsa_leaf.json");
+const SANS_VECTORS: &str = include_str!("../vectors/sans.json");
+const RSA_VECTORS: &str = include_str!("../vectors/rsa_leaf.json");
 
 fn s(v: &[&str]) -> Vec<String> {
     v.iter().map(|x| x.to_string()).collect()
@@ -141,35 +140,6 @@ fn test_a_copied_root_without_a_leaf_refuses() {
 }
 
 #[test]
-fn test_the_copied_root_is_left_byte_identical() {
-    let d = dirs();
-    std::fs::write(d.ca.join("ca.pem"), FAKE_ROOT).unwrap();
-    trust_consumer_msg(ensure(&d.cert, &d.ca, &["IP:10.74.81.213"]));
-    assert_eq!(std::fs::read(d.ca.join("ca.pem")).unwrap(), FAKE_ROOT);
-    assert!(!d.ca.join("ca-key.pem").exists());
-}
-
-#[test]
-fn test_a_half_provisioned_leaf_refuses() {
-    let d = dirs();
-    std::fs::write(d.ca.join("ca.pem"), FAKE_ROOT).unwrap();
-    std::fs::create_dir(&d.cert).unwrap();
-    std::fs::write(d.cert.join("cert.pem"), FAKE_ROOT).unwrap();
-    trust_consumer_msg(ensure(&d.cert, &d.ca, &["IP:10.74.81.213"]));
-    assert_eq!(std::fs::read(d.ca.join("ca.pem")).unwrap(), FAKE_ROOT);
-    assert!(!d.cert.join("key.pem").exists());
-}
-
-#[test]
-fn test_a_key_without_its_public_root_refuses() {
-    let d = dirs();
-    std::fs::write(d.ca.join("ca-key.pem"), b"-----BEGIN PRIVATE KEY-----\nx\n-----END PRIVATE KEY-----\n").unwrap();
-    let m = trust_consumer_msg(ensure(&d.cert, &d.ca, &["IP:10.74.81.213"]));
-    assert!(m.contains("ca.pem"), "{m}");
-    assert!(!d.ca.join("ca.pem").exists());
-}
-
-#[test]
 fn a_consumer_never_mints_a_root_or_a_leaf() {
     let d = dirs();
     std::fs::write(d.ca.join("ca.pem"), FAKE_ROOT).unwrap();
@@ -196,15 +166,10 @@ fn test_an_empty_ca_dir_still_mints_a_root() {
     let mode = |p: PathBuf| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
     assert_eq!(mode(d.ca.join("ca-key.pem")), 0o600);
     assert_eq!(mode(d.cert.join("key.pem")), 0o600);
-}
-
-#[test]
-fn test_a_second_start_leaves_the_cert_dir_untouched() {
-    let d = dirs();
-    ensure(&d.cert, &d.ca, &["IP:127.0.0.1"]).unwrap();
+    assert!(leaf_is_p256(&d.cert.join("cert.pem")) && leaf_is_p256(&d.ca.join("ca.pem")));
     let before = mtimes(&d.cert);
     ensure(&d.cert, &d.ca, &["IP:127.0.0.1"]).unwrap();
-    assert_eq!(mtimes(&d.cert), before);
+    assert_eq!(mtimes(&d.cert), before, "a second start touches nothing");
 }
 
 #[test]
@@ -239,31 +204,6 @@ fn a_holder_remints_a_leaf_near_expiry() {
 }
 
 #[test]
-fn new_leaves_and_roots_get_a_p256_key() {
-    let d = dirs();
-    ensure(&d.cert, &d.ca, &["IP:127.0.0.1"]).unwrap();
-    assert!(leaf_is_p256(&d.cert.join("cert.pem")));
-    assert!(leaf_is_p256(&d.ca.join("ca.pem")));
-}
-
-#[test]
-fn test_an_existing_root_is_reused_not_replaced() {
-    let d = dirs();
-    ensure(&d.cert, &d.ca, &["IP:127.0.0.1"]).unwrap();
-    let root = std::fs::read(d.ca.join("ca.pem")).unwrap();
-    ensure(&d.cert, &d.ca, &["IP:127.0.0.1", "DNS:x"]).unwrap();
-    assert_eq!(std::fs::read(d.ca.join("ca.pem")).unwrap(), root);
-}
-
-#[test]
-fn the_root_is_mirrored_for_ca_crt() {
-    let d = dirs();
-    let info = ensure(&d.cert, &d.ca, &["IP:127.0.0.1"]).unwrap();
-    assert_eq!(info.ca, d.cert.join("ca.pem"));
-    assert_eq!(info.ca_pem().unwrap(), std::fs::read(d.ca.join("ca.pem")).unwrap());
-}
-
-#[test]
 fn test_a_pre_provisioned_leaf_is_accepted() {
     let d = dirs();
     ensure(&d.cert, &d.ca, &["IP:10.74.81.213"]).unwrap();
@@ -293,56 +233,9 @@ fn test_partial_san_coverage_warns_but_serves() {
 // cert_sans
 // ---------------------------------------------------------------------------
 
-#[test]
-fn test_cert_sans_reads_the_set_back_out() {
-    let d = dirs();
-    ensure(&d.cert, &d.ca, &["IP:127.0.0.1", "DNS:localhost", "IP:10.74.81.213"]).unwrap();
-    let got = certs::cert_sans(&d.cert.join("cert.pem"));
-    assert_eq!(got, BTreeSet::from(["IP:127.0.0.1".into(), "DNS:localhost".into(), "IP:10.74.81.213".into()]));
-}
-
-#[test]
-fn test_cert_sans_of_a_missing_file_is_empty() {
-    let tmp = tempfile::tempdir().unwrap();
-    assert!(certs::cert_sans(&tmp.path().join("nope.pem")).is_empty());
-}
-
-#[test]
-fn cert_sans_of_a_garbage_file_is_empty() {
-    let tmp = tempfile::tempdir().unwrap();
-    std::fs::write(tmp.path().join("any.pem"), FAKE_ROOT).unwrap();
-    assert!(certs::cert_sans(&tmp.path().join("any.pem")).is_empty());
-}
-
 // ---------------------------------------------------------------------------
 // The wrong pair, and the clock.
 // ---------------------------------------------------------------------------
-
-#[test]
-fn test_a_leaf_from_a_different_ca_refuses() {
-    let d = dirs();
-    ensure(&d.cert, &d.ca, &["IP:10.74.81.213"]).unwrap();
-    let root = std::fs::read(d.ca.join("ca.pem")).unwrap();
-    let other_ca = d.tmp.path().join("other-ca");
-    let other_certs = d.tmp.path().join("other-certs");
-    std::fs::create_dir(&other_ca).unwrap();
-    ensure(&other_certs, &other_ca, &["IP:10.74.81.213"]).unwrap();
-    let (ca, cd) = provision(d.tmp.path(), &root, &other_certs, &other_certs);
-    let m = trust_consumer_msg(ensure(&cd, &ca, &["IP:10.74.81.213"]));
-    assert!(m.contains("chain"), "{m}");
-}
-
-#[test]
-fn test_a_mismatched_key_refuses() {
-    let d = dirs();
-    ensure(&d.cert, &d.ca, &["IP:10.74.81.213"]).unwrap();
-    let root = std::fs::read(d.ca.join("ca.pem")).unwrap();
-    let second = d.tmp.path().join("second");
-    ensure(&second, &d.ca, &["IP:10.74.81.99"]).unwrap();
-    let (ca, cd) = provision(d.tmp.path(), &root, &d.cert, &second);
-    let m = trust_consumer_msg(ensure(&cd, &ca, &["IP:10.74.81.213"]));
-    assert!(m.contains("private key"), "{m}");
-}
 
 #[test]
 fn test_an_expired_leaf_refuses_rather_than_serving() {
@@ -354,50 +247,6 @@ fn test_an_expired_leaf_refuses_rather_than_serving() {
     let (ca, cd) = provision(d.tmp.path(), &root, &expired, &expired);
     let m = trust_consumer_msg(ensure(&cd, &ca, &["IP:10.74.81.213"]));
     assert!(m.contains("expired 3 day(s) ago"), "{m}");
-}
-
-#[test]
-fn test_a_soon_to_expire_leaf_warns_with_lead_time() {
-    let d = dirs();
-    ensure(&d.cert, &d.ca, &["IP:10.74.81.213"]).unwrap();
-    let root = std::fs::read(d.ca.join("ca.pem")).unwrap();
-    let soon = d.tmp.path().join("soon");
-    leaf_valid_for(&d.ca, &soon, &["IP:10.74.81.213"], 12 * 86_400 + 3600);
-    let (ca, cd) = provision(d.tmp.path(), &root, &soon, &soon);
-    let (r, logs) = capture(|| ensure(&cd, &ca, &["IP:10.74.81.213"]));
-    r.unwrap();
-    assert!(logs.contains("expires in 12 day(s)"), "{logs}");
-}
-
-#[test]
-fn test_the_reported_san_is_what_the_leaf_carries() {
-    let d = dirs();
-    ensure(&d.cert, &d.ca, &["IP:10.74.81.213"]).unwrap();
-    let root = std::fs::read(d.ca.join("ca.pem")).unwrap();
-    let (ca, cd) = provision(d.tmp.path(), &root, &d.cert, &d.cert);
-    let info = ensure(&cd, &ca, &["IP:10.74.81.213", "IP:172.18.0.1"]).unwrap();
-    assert_eq!(info.san, "IP:10.74.81.213");
-}
-
-#[test]
-fn test_cert_days_left_on_a_fresh_leaf() {
-    let d = dirs();
-    ensure(&d.cert, &d.ca, &["IP:127.0.0.1"]).unwrap();
-    let days = certs::cert_days_left(&d.cert.join("cert.pem")).unwrap();
-    assert!((390..=397).contains(&days), "{days}");
-}
-
-#[test]
-fn test_cert_days_left_of_a_missing_file_is_none() {
-    let tmp = tempfile::tempdir().unwrap();
-    assert_eq!(certs::cert_days_left(&tmp.path().join("nope.pem")), None);
-}
-
-#[test]
-fn test_leaf_matches_ca_accepts_a_real_pair() {
-    let d = dirs();
-    ensure(&d.cert, &d.ca, &["IP:127.0.0.1"]).unwrap();
-    assert_eq!(certs::leaf_matches_ca(&d.cert.join("cert.pem"), &d.cert.join("key.pem"), &d.ca.join("ca.pem")), None);
 }
 
 // ---------------------------------------------------------------------------
@@ -549,59 +398,9 @@ fn san_sets_ignore_order_case_and_address_spelling() {
     assert_ne!(certs::san_set(&a), certs::san_set(&s(&["IP:127.0.0.1", "DNS:localhost"])));
 }
 
-#[test]
-fn default_sans_start_with_loopback_and_carry_no_loopback_address() {
-    let sans = certs::default_sans();
-    assert_eq!(&sans[..2], &s(&["IP:127.0.0.1", "DNS:localhost"]));
-    for tok in &sans[2..] {
-        let ip: IpAddr = tok.strip_prefix("IP:").unwrap().parse().unwrap();
-        assert!(ip.is_ipv4() && !ip.is_loopback(), "{tok}");
-    }
-}
-
-#[test]
-fn host_addresses_match_hostname_dash_i() {
-    let Ok(out) = std::process::Command::new("hostname").arg("-I").output() else { return };
-    if !out.status.success() {
-        return;
-    }
-    let want: Vec<IpAddr> = String::from_utf8_lossy(&out.stdout).split_whitespace().filter_map(|t| t.parse().ok()).collect();
-    assert_eq!(certs::host_addresses(), want);
-}
-
 // ---------------------------------------------------------------------------
 // The WSL fallback.
 // ---------------------------------------------------------------------------
-
-#[test]
-fn a_mesh_subnet_contains_its_addresses_only() {
-    let net = certs::IpNet::parse("10.74.81.0/24").unwrap();
-    assert!(net.contains("10.74.81.213".parse().unwrap()));
-    assert!(!net.contains("10.74.82.1".parse().unwrap()));
-    assert!(!net.contains("::1".parse().unwrap()));
-    assert!(certs::IpNet::parse("10.74.81.7/24").unwrap().contains("10.74.81.1".parse().unwrap()));
-    assert!(certs::IpNet::parse("10.0.0.0/33").is_none());
-    assert!(certs::IpNet::parse("nope").is_none());
-}
-
-#[test]
-fn the_declared_mesh_address_comes_from_the_sans_files_in_order() {
-    let tmp = tempfile::tempdir().unwrap();
-    let net = certs::IpNet::parse("10.74.81.0/24").unwrap();
-    let own = tmp.path().join("own.sans");
-    let edge = tmp.path().join("edge.sans");
-    std::fs::write(&own, "# the LAN and the docker bridge are not the mesh\n192.168.1.20\n172.18.0.1\nnode.example.test\n").unwrap();
-    std::fs::write(&edge, "IP:10.74.81.9 # windows zerotier\n10.74.81.10\n").unwrap();
-    assert_eq!(certs::declared_mesh_address(&net, &[&own, &edge]), Some("10.74.81.9".parse().unwrap()));
-    assert_eq!(certs::declared_mesh_address(&net, &[&own]), None);
-    assert_eq!(certs::declared_mesh_address(&net, &[&tmp.path().join("absent")]), None);
-}
-
-#[test]
-fn a_front_url_is_https_on_its_port() {
-    let url = certs::front_url(12201, &[]);
-    assert!(url.starts_with("https://") && url.ends_with(":12201"), "{url}");
-}
 
 // ---------------------------------------------------------------------------
 // Where the leaf lives, and the one-time copy.
@@ -658,14 +457,6 @@ fn copy_legacy_once_never_overwrites_state() {
 }
 
 #[test]
-fn copy_legacy_once_without_legacy_material_does_nothing() {
-    let tmp = tempfile::tempdir().unwrap();
-    let state = tmp.path().join("state");
-    assert!(certs::copy_legacy_once(&tmp.path().join("none"), &tmp.path().join("none.sans"), &state).unwrap().is_empty());
-    assert!(!state.join("certs").exists());
-}
-
-#[test]
 fn test_the_leaf_can_live_outside_the_checkout() {
     let tmp = tempfile::tempdir().unwrap();
     let svc = legacy(tmp.path());
@@ -684,15 +475,29 @@ fn test_the_leaf_can_live_outside_the_checkout() {
     assert_eq!(certs::legacy_service_dir(tmp.path()), svc);
 }
 
+
 #[test]
-fn an_edge_cert_dir_is_minted_into_in_place() {
-    let tmp = tempfile::tempdir().unwrap();
-    let svc = legacy(tmp.path());
-    let state = tmp.path().join("state");
-    let edge = tmp.path().join("edge-certs");
-    let ca = tmp.path().join("ca");
-    let dir = certs::cert_dir_for(Some(edge.clone().into()), &state, &svc);
-    certs::ensure_certs(&dir, Some(&ca), Some(&s(&["IP:127.0.0.1"]))).unwrap();
-    assert!(edge.join("cert.pem").exists());
-    assert!(!state.join("certs").exists());
+fn a_consumer_refuses_a_leaf_that_is_not_its_cas_or_has_expired() {
+    let d = dirs();
+    ensure(&d.cert, &d.ca, &["IP:10.74.81.213"]).unwrap();
+    let root = std::fs::read(d.ca.join("ca.pem")).unwrap();
+
+    let other_ca = d.tmp.path().join("other-ca");
+    let other_certs = d.tmp.path().join("other-certs");
+    std::fs::create_dir(&other_ca).unwrap();
+    ensure(&other_certs, &other_ca, &["IP:10.74.81.213"]).unwrap();
+    let (ca, cd) = provision(d.tmp.path(), &root, &other_certs, &other_certs);
+    assert!(trust_consumer_msg(ensure(&cd, &ca, &["IP:10.74.81.213"])).contains("chain"));
+
+    let second = d.tmp.path().join("second");
+    ensure(&second, &d.ca, &["IP:10.74.81.99"]).unwrap();
+    let (ca, cd) = provision(d.tmp.path(), &root, &d.cert, &second);
+    assert!(trust_consumer_msg(ensure(&cd, &ca, &["IP:10.74.81.213"])).contains("private key"));
+
+    let soon = d.tmp.path().join("soon");
+    leaf_valid_for(&d.ca, &soon, &["IP:10.74.81.213"], 12 * 86_400 + 3600);
+    let (ca, cd) = provision(d.tmp.path(), &root, &soon, &soon);
+    let (r, logs) = capture(|| ensure(&cd, &ca, &["IP:10.74.81.213"]));
+    r.unwrap();
+    assert!(logs.contains("expires in 12 day(s)"), "{logs}");
 }

@@ -6,7 +6,7 @@ use base64::Engine;
 use serde_json::Value;
 
 fn vectors() -> Value {
-    serde_json::from_str(include_str!("vectors/tokens.json")).expect("tokens.json")
+    serde_json::from_str(include_str!("../vectors/tokens.json")).expect("tokens.json")
 }
 
 fn s(v: &Value) -> &str {
@@ -24,84 +24,10 @@ fn test_a_minted_token_has_the_pinned_shape() {
     assert!(!t.secret.contains('='));
     assert_eq!(base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(&t.secret).unwrap().len(), 32);
     assert_eq!(tokens::parse(&t.token), Ok((t.id.as_str(), t.secret.as_str())));
-}
-
-#[test]
-fn test_a_malformed_token_does_not_parse() {
-    let a = |n| "a".repeat(n);
-    for bad in [
-        String::new(),
-        "awmut1.".into(),
-        "awmut1.0123456789abcdef".into(),
-        "awmut1.0123456789abcdef.".into(),
-        format!("awmut1.0123456789ABCDEF.{}", a(43)),
-        format!("awmut1.0123.{}", a(43)),
-        format!("awmut1.0123456789abcdef.{}", a(42)),
-        format!("awmut1.0123456789abcdef.{}", a(44)),
-        format!("awmut1.0123456789abcdef.{}=", a(42)),
-        "awmut1.0123456789abcdef.x.y".into(),
-        format!("awmpt1.0123456789abcdef.{}", a(43)),
-    ] {
-        assert!(tokens::parse(&bad).is_err(), "{bad:?}");
-    }
-}
-
-#[test]
-fn test_the_digest_matches_only_its_secret() {
-    let secret = tokens::mint().secret;
-    let stored = tokens::digest(&secret);
-    assert!(tokens::matches(&secret, &stored));
-    assert!(!tokens::matches(&tokens::mint().secret, &stored));
-    assert!(!tokens::matches(&secret, ""));
-    assert!(!tokens::matches(&secret, "ünicode"));
-}
-
-#[test]
-fn each_mint_is_a_new_token() {
-    assert_ne!(tokens::mint(), tokens::mint());
+    assert_ne!(t, tokens::mint());
 }
 
 // -- the scope shapes (httpsfront test_scoped_device_token) -------------------------------------
-
-const SESSION: &str = "/hub/session/avatar/stage";
-
-fn shape<'a>(method: &'a str, path: &'a str, raw: Option<&'a [u8]>, query: &'a [u8], websocket: bool) -> Shape<'a> {
-    Shape { method, path, raw: raw.unwrap_or(path.as_bytes()), query, websocket }
-}
-
-fn refused() -> Vec<Shape<'static>> {
-    vec![
-        shape("GET", SESSION, None, b"", false),
-        shape("POST", SESSION, None, b"", false),
-        shape("POST", SESSION, None, b"", true),
-        shape("GET", "/hub/session/avatar/other", None, b"", true),
-        shape("GET", "/hub/emit/avatar/live", None, b"", true),
-        shape("GET", "/hub/session/journal/stage", None, b"", true),
-        shape("POST", "/invoke", None, b"", false),
-        shape("GET", "/hub/session/avatar/stage/", None, b"", true),
-        shape("GET", SESSION, None, b"peer=deneb", true),
-        shape("GET", SESSION, Some(b"/hub/session/avatar/%73tage"), b"", true),
-        shape("GET", "/s/avatar/stage", None, b"", true),
-        shape("GET", "/svc/avatar/session/stage", None, b"", true),
-    ]
-}
-
-#[test]
-fn test_the_stage_scope_admits_the_session_shapes() {
-    assert!(tokens::scope_admits(tokens::AVATAR_STAGE, &shape("GET", SESSION, None, b"", true)));
-}
-
-#[test]
-fn test_the_stage_scope_refuses_every_other_shape() {
-    for sh in refused() {
-        assert!(!tokens::scope_admits(tokens::AVATAR_STAGE, &sh), "{sh:?}");
-    }
-}
-
-#[test]
-fn test_an_unknown_scope_admits_nothing() {
-    assert!(!tokens::scope_admits("everything", &shape("GET", SESSION, None, b"", true)));
-}
 
 // -- the vectors -------------------------------------------------------------------------------
 

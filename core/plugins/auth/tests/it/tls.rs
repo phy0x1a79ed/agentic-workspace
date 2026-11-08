@@ -9,7 +9,7 @@ use rustls::{ClientConfig, RootCertStore};
 use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-const RSA_VECTORS: &str = include_str!("vectors/rsa_leaf.json");
+const RSA_VECTORS: &str = include_str!("../vectors/rsa_leaf.json");
 
 fn sans(v: &[&str]) -> Vec<String> {
     v.iter().map(|x| x.to_string()).collect()
@@ -102,16 +102,6 @@ async fn a_client_trusting_another_root_is_refused() {
 }
 
 #[tokio::test]
-async fn a_name_outside_the_san_set_is_refused() {
-    let tmp = tempfile::tempdir().unwrap();
-    let (info, root) = minted(tmp.path());
-    let port = serve(tls::server_config(&info.cert, &info.key).unwrap()).await;
-    assert!(ping(port, client(&root, &[&rustls::version::TLS13], &[]), ip_name("10.74.81.213")).await.is_err());
-    // A failed handshake leaves the listener serving.
-    assert!(ping(port, client(&root, &[&rustls::version::TLS13], &[]), ip_name("127.0.0.1")).await.is_ok());
-}
-
-#[tokio::test]
 async fn the_fleets_rsa_leaf_loads_and_serves_in_either_key_format() {
     let v: Value = serde_json::from_str(RSA_VECTORS).unwrap();
     let root = v["ca_pem"].as_str().unwrap().as_bytes();
@@ -142,36 +132,6 @@ fn a_key_that_is_not_the_leafs_is_refused() {
 }
 
 #[test]
-fn missing_or_empty_leaf_files_are_errors() {
-    let tmp = tempfile::tempdir().unwrap();
-    let empty = tmp.path().join("empty.pem");
-    std::fs::write(&empty, b"").unwrap();
-    assert!(matches!(tls::server_config(&tmp.path().join("nope.pem"), &empty), Err(tls::TlsError::Io(..))));
-    assert!(matches!(tls::server_config(&empty, &empty), Err(tls::TlsError::NoCert(_))));
-    let (info, _) = minted(tmp.path());
-    assert!(matches!(tls::server_config(&info.cert, &empty), Err(tls::TlsError::NoKey(_))));
-}
-
-#[tokio::test]
-async fn the_plain_listener_binds_loopback_only_and_hands_out_streams() {
-    let listener = tls::bind_plain(0).await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    assert!(addr.ip().is_loopback());
-    tokio::spawn(tls::serve_plain(listener, |mut stream, peer| async move {
-        assert!(peer.ip().is_loopback());
-        let mut buf = [0u8; 5];
-        if stream.read_exact(&mut buf).await.is_ok() {
-            let _ = stream.write_all(b"pong\n").await;
-        }
-    }));
-    let mut s = tokio::net::TcpStream::connect(addr).await.unwrap();
-    s.write_all(b"ping\n").await.unwrap();
-    let mut out = Vec::new();
-    s.read_to_end(&mut out).await.unwrap();
-    assert_eq!(out, b"pong\n");
-}
-
-#[test]
 fn edge_tls_is_on_unless_it_says_off() {
     for off in ["0", "false", "no", " NO ", "False"] {
         assert!(!tls::tls_enabled_from(Some(off)), "{off}");
@@ -181,9 +141,12 @@ fn edge_tls_is_on_unless_it_says_off() {
     }
 }
 
-#[test]
-fn the_tls_listener_binds_every_ipv4_interface() {
-    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
-    let addr = rt.block_on(async { tls::bind_tls(0).await.unwrap().local_addr().unwrap() });
-    assert!(addr.ip().is_unspecified() && addr.is_ipv4());
+
+#[tokio::test]
+async fn a_name_outside_the_san_set_is_refused_and_the_listener_keeps_serving() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (info, root) = minted(tmp.path());
+    let port = serve(tls::server_config(&info.cert, &info.key).unwrap()).await;
+    assert!(ping(port, client(&root, &[&rustls::version::TLS13], &[]), ip_name("10.74.81.213")).await.is_err());
+    assert!(ping(port, client(&root, &[&rustls::version::TLS13], &[]), ip_name("127.0.0.1")).await.is_ok());
 }

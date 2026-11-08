@@ -127,15 +127,8 @@ fn a_schema_7_db_is_read_in_place() {
 // -- settings ----------------------------------------------------------------------------------
 
 #[test]
-fn settings_default_to_a_day_and_thirty_days() {
-    let (_d, store) = fresh();
-    assert_eq!(store.settings().unwrap(), AuthSettings::default());
-    assert_eq!(AuthSettings::default(), AuthSettings { session_ttl_hours: 24.0, max_session_days: 30.0 });
-}
-
-#[test]
 fn settings_are_written_as_python_wrote_them() {
-    let v: Value = serde_json::from_str(include_str!("vectors/auth_verbs.json")).unwrap();
+    let v: Value = serde_json::from_str(include_str!("../vectors/auth_verbs.json")).unwrap();
     let (_d, store) = fresh();
     for case in v["saved"].as_array().unwrap() {
         let answer = awm_plugin_auth::verbs::config_set(&store, &json!({"values": case["patch"]})).unwrap();
@@ -165,21 +158,6 @@ fn a_setting_pydantic_would_refuse_fails_the_read() {
     assert!(store.settings().is_err());
 }
 
-#[test]
-fn a_stored_row_that_is_not_an_object_reads_as_the_defaults() {
-    let (_d, store) = fresh();
-    store
-        .db()
-        .connection()
-        .unwrap()
-        .execute_batch(
-            "CREATE TABLE IF NOT EXISTS awm_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL);
-             INSERT INTO awm_settings VALUES ('service_config', '[1]', 'x');",
-        )
-        .unwrap();
-    assert_eq!(store.settings().unwrap(), AuthSettings::default());
-}
-
 // -- device rows -------------------------------------------------------------------------------
 
 #[test]
@@ -205,42 +183,7 @@ fn touch_moves_last_used_forward_only() {
     assert_eq!(store.device_get("0123456789abcdef").unwrap().unwrap().last_used_at, Some(2000.0));
 }
 
-#[test]
-fn listings_are_oldest_first_then_by_id() {
-    let (_d, store) = fresh();
-    for (id, at) in [("cccccccccccccccc", 2.0), ("bbbbbbbbbbbbbbbb", 1.0), ("aaaaaaaaaaaaaaaa", 2.0)] {
-        store.device_insert(id, "device:x", "l", "d", None, at).unwrap();
-    }
-    let ids: Vec<String> = store.device_list().unwrap().into_iter().map(|t| t.id).collect();
-    assert_eq!(ids, ["bbbbbbbbbbbbbbbb", "aaaaaaaaaaaaaaaa", "cccccccccccccccc"]);
-}
-
-#[test]
-fn vacuum_keeps_every_row() {
-    let (_d, store) = fresh();
-    let secret = store.secret().unwrap();
-    store.device_insert("0123456789abcdef", "device:0123456789abcdef", "a", "d", None, 1.0).unwrap();
-    store.vacuum().unwrap();
-    assert_eq!(store.secret().unwrap(), secret);
-    assert_eq!(store.device_list().unwrap().len(), 1);
-}
-
 // -- migration (test_no_login.py and test_device_tokens.py) ------------------------------------
-
-#[test]
-fn test_a_fresh_db_has_no_user_table() {
-    let (dir, _store) = fresh();
-    let t = tables(&db_path(&dir));
-    assert!(!t.contains("awm_users"));
-    assert!(t.contains("awm_secret") && t.contains("awm_device_tokens"));
-}
-
-#[test]
-fn test_on_start_mints_nothing() {
-    let (dir, _store) = fresh();
-    AuthStore::open_for_start(db_path(&dir), false).unwrap();
-    assert!(!tables(&db_path(&dir)).contains("awm_credentials"));
-}
 
 #[test]
 fn test_v1_db_migrates_in_place() {

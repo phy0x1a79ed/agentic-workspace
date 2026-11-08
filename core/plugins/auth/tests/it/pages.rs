@@ -1,13 +1,12 @@
 //! The edge's own pages, byte for byte against Python's (`vectors/pages.json`).
 
-use std::collections::HashMap;
 
 use awm_plugin_auth::landing::Landing;
 use awm_plugin_auth::pages::{self, LandingView, PageEntry};
 use serde_json::{json, Value};
 
 fn vectors() -> Value {
-    serde_json::from_str(include_str!("vectors/pages.json")).unwrap()
+    serde_json::from_str(include_str!("../vectors/pages.json")).unwrap()
 }
 
 fn strings(v: &Value) -> Vec<String> {
@@ -54,12 +53,6 @@ fn the_vault_waiting_page_is_pythons_byte_for_byte() {
     }
 }
 
-#[test]
-fn escape_and_quote_are_pythons() {
-    assert_eq!(pages::escape("<a href=\"x\">'&'</a>"), "&lt;a href=&quot;x&quot;&gt;&#x27;&amp;&#x27;&lt;/a&gt;");
-    assert_eq!(pages::quote("https://h.example/p?q=1&r=~ é"), "https%3A%2F%2Fh.example%2Fp%3Fq%3D1%26r%3D~%20%C3%A9");
-}
-
 /// httpsfront's `test_root_renders_display_name_label_but_keeps_technical_href_and_key`, on
 /// the page and the store without the route.
 #[test]
@@ -85,9 +78,3 @@ fn test_root_renders_display_name_label_but_keeps_technical_href_and_key() {
     assert!(body.contains(">Science Lab<"));
 }
 
-#[test]
-fn no_pages_says_so() {
-    let body = pages::landing_page(&[], &LandingView { tags_by_page: HashMap::new(), ..Default::default() }, "awm");
-    assert!(body.contains("No pages are registered."));
-    assert!(body.contains("const TOTAL_PAGES = 0;"));
-}

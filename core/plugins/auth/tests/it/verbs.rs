@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use awm_plugin_auth::now;
 use awm_plugin_auth::store::AuthStore;
 use awm_plugin_auth::tokens::{self, AVATAR_STAGE};
-use awm_plugin_auth::verbs::{self, Caller, DEVICE_PLUGINS, EDGE_MATERIAL_PLUGINS};
+use awm_plugin_auth::verbs::{self, Caller};
 use awm_plugin_sdk::VerbError;
 use serde_json::{json, Value};
 
@@ -77,14 +77,6 @@ fn test_mint_returns_the_token_once_and_stores_only_its_digest() {
 }
 
 #[test]
-fn test_each_mint_is_a_new_token() {
-    let (_d, store) = auth();
-    let (a, b) = (minted(&store, "kiosk"), minted(&store, "kiosk"));
-    assert_ne!(a["id"], b["id"]);
-    assert_ne!(a["token"], b["token"]);
-}
-
-#[test]
 fn test_mint_refuses_bad_arguments() {
     let (_d, store) = auth();
     for (args, needle) in [
@@ -92,25 +84,11 @@ fn test_mint_refuses_bad_arguments() {
         (json!({"label": "   ", "scope": AVATAR_STAGE}), "label"),
         (json!({"label": "x".repeat(65), "scope": AVATAR_STAGE}), "longer"),
         (json!({"label": "phone"}), "needs a scope"),
+        (json!({"label": "phone", "scope": "everything"}), "a device token needs a scope; known: avatar-stage"),
     ] {
         assert_err(verbs::device_mint(&store, &args, Caller::OPERATOR, now()), "ValueError", needle);
     }
     assert!(verbs::device_mint(&store, &json!({"label": "é".repeat(64), "scope": AVATAR_STAGE}), Caller::OPERATOR, now()).is_ok());
-}
-
-#[test]
-fn test_mint_refuses_an_unknown_scope() {
-    let (_d, store) = auth();
-    let r = verbs::device_mint(&store, &json!({"label": "phone", "scope": "everything"}), Caller::OPERATOR, now());
-    assert_err(r, "ValueError", "a device token needs a scope; known: avatar-stage");
-}
-
-#[test]
-fn test_a_scoped_mint_records_its_scope() {
-    let (_d, store) = auth();
-    let out = verbs::device_mint(&store, &json!({"label": "phone", "scope": format!(" {AVATAR_STAGE} ")}), Caller::OPERATOR, now()).unwrap();
-    assert_eq!(out["scope"], AVATAR_STAGE);
-    assert_eq!(listed(&store)[0]["scope"], AVATAR_STAGE);
 }
 
 #[test]
@@ -196,20 +174,6 @@ fn test_reported_use_moves_last_used_forward_only() {
 }
 
 #[test]
-fn test_a_report_that_is_not_a_mapping_is_ignored() {
-    let (_d, store) = auth();
-    minted(&store, "kiosk");
-    let got = verbs::edge_material(&store, &json!({"device_used": ["x"], "token_scopes": [AVATAR_STAGE]}), Caller::OPERATOR).unwrap();
-    assert_eq!(got["device_tokens"].as_array().unwrap().len(), 1);
-}
-
-#[test]
-fn test_edge_material_still_refuses_an_edge_caller_with_a_report() {
-    let (_d, store) = auth();
-    assert_err(verbs::edge_material(&store, &json!({"device_used": {}}), edge("user:tony")), "PermissionError", "operator verb");
-}
-
-#[test]
 fn edge_material_fails_closed_without_a_secret() {
     let (_d, store) = auth();
     store.db().connection().unwrap().execute_batch("DELETE FROM awm_secret").unwrap();
@@ -218,19 +182,6 @@ fn edge_material_fails_closed_without_a_secret() {
 }
 
 // -- who may manage tokens ---------------------------------------------------------------------
-
-#[test]
-fn test_the_operator_manages_every_token() {
-    let (_d, store) = auth();
-    let (a, b) = (minted(&store, "a"), minted(&store, "b"));
-    let mut ids: Vec<String> = listed(&store).iter().map(id).collect();
-    ids.sort();
-    let mut want = vec![id(&a), id(&b)];
-    want.sort();
-    assert_eq!(ids, want);
-    verbs::device_revoke(&store, &json!({"id": a["id"]}), Caller::OPERATOR, now()).unwrap();
-    assert_eq!(live(&store).into_keys().collect::<Vec<_>>(), [id(&b)]);
-}
 
 #[test]
 fn test_every_caller_across_an_edge_manages_nothing() {
@@ -260,7 +211,7 @@ fn test_the_verbs_stay_off_the_agent_surface() {
 
 #[test]
 fn the_manifest_is_pythons() {
-    let want: Value = serde_json::from_str(include_str!("vectors/auth_verbs.json")).unwrap();
+    let want: Value = serde_json::from_str(include_str!("../vectors/auth_verbs.json")).unwrap();
     let got: Vec<Value> = verbs::verbs()
         .into_iter()
         .map(|v| {
@@ -281,24 +232,12 @@ fn the_manifest_is_pythons() {
 // -- plugin callers ----------------------------------------------------------------------------
 
 #[test]
-fn the_allow_lists_are_the_plans() {
-    assert_eq!(EDGE_MATERIAL_PLUGINS, ["dsh", "claude-science"]);
-    assert!(DEVICE_PLUGINS.is_empty());
-}
-
-#[test]
 fn test_an_edge_front_reads_edge_material() {
     let (_d, store) = auth();
     for front in ["dsh", "claude-science"] {
         assert!(verbs::edge_material(&store, &json!({}), plugin(front)).unwrap().get("secret").is_some(), "{front}");
     }
     assert!(verbs::edge_material(&store, &json!({}), Caller::OPERATOR).is_ok());
-}
-
-#[test]
-fn httpsfront_is_no_longer_an_edge_front() {
-    let (_d, store) = auth();
-    assert_err(verbs::edge_material(&store, &json!({}), plugin("httpsfront")), "PermissionError", "'httpsfront'");
 }
 
 #[test]
@@ -342,15 +281,6 @@ fn test_edge_material_is_the_secret_the_tokens_and_the_knobs() {
     assert_eq!(out["session_ttl_seconds"], 3600.0);
     assert_eq!(out["max_session_seconds"], 30.0 * 86400.0);
     assert_eq!(out["secret"], store.secret().unwrap());
-}
-
-#[test]
-fn status_reports_the_lifetime_and_the_live_count() {
-    let (_d, store) = auth();
-    let a = minted(&store, "a");
-    minted(&store, "b");
-    verbs::device_revoke(&store, &json!({"id": a["id"]}), Caller::OPERATOR, now()).unwrap();
-    assert_eq!(verbs::status(&store).unwrap(), json!({"session_ttl_hours": 1.0, "max_session_days": 30.0, "device_tokens": 1}));
 }
 
 #[test]

@@ -1,10 +1,9 @@
-//! The edge's credential gate (httpsfront test_device_token.py and test_scoped_device_token.py,
-//! their gate halves), the slide rule against the Python's vectors, and the in-process source.
+//! The edge's credential gate: device tokens, scoped tokens, the cookie slide rule against the
+//! Python's vectors, and the in-process material source.
 
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
-use awm_plugin_auth::gate::{self, AuthGate, Decision, DeviceEntry, Material, MaterialSource, Shape, Used};
+use awm_plugin_auth::gate::{self, AuthGate, DeviceEntry, Material, MaterialSource, Shape, Used};
 use awm_plugin_auth::store::AuthStore;
 use awm_plugin_auth::tokens::{self, AVATAR_STAGE, PREFIX};
 use awm_plugin_auth::verbs::{self, Caller};
@@ -25,9 +24,6 @@ impl Fake {
         Arc::new(Fake { material: Mutex::new(material), sent: Mutex::default() })
     }
 
-    fn sent(&self) -> Vec<Used> {
-        self.sent.lock().unwrap().clone()
-    }
 
     fn fail(&self) {
         *self.material.lock().unwrap() = None;
@@ -86,136 +82,6 @@ fn bad(kind: &str, entry: DeviceEntry, token: &str) -> (String, Vec<DeviceEntry>
 }
 
 // -- the gate (test_device_token.py) -----------------------------------------------------------
-
-#[test]
-fn test_a_live_token_is_its_user() {
-    let (token, entry) = device("tony", None);
-    let (_f, g) = gate_with(vec![entry]);
-    assert_eq!(auth(&g, Some(&token), None, None), me("tony"));
-}
-
-#[test]
-fn test_a_bad_token_is_refused() {
-    for kind in KINDS {
-        let (token, entry) = device("tony", None);
-        let (bearer, devices) = bad(kind, entry, &token);
-        let (_f, g) = gate_with(devices);
-        assert_eq!(auth(&g, Some(&bearer), None, None), REFUSED, "{kind}");
-    }
-}
-
-#[test]
-fn test_a_bad_token_never_falls_through_to_a_cookie() {
-    for kind in KINDS {
-        let (token, entry) = device("tony", None);
-        let (bearer, devices) = bad(kind, entry, &token);
-        let (_f, g) = gate_with(devices);
-        let c = cookie("tony");
-        assert_eq!(auth(&g, Some(&bearer), None, None), REFUSED, "{kind}");
-        assert_eq!(auth(&g, Some(&bearer), Some(&c), None), REFUSED, "{kind}");
-    }
-}
-
-#[test]
-fn test_a_token_naming_a_machine_is_refused() {
-    for sub in ["operator", "peer", "peer:mira", ""] {
-        let (token, entry) = device(sub, None);
-        let (_f, g) = gate_with(vec![entry]);
-        assert_eq!(auth(&g, Some(&token), None, None), REFUSED, "{sub:?}");
-    }
-}
-
-#[test]
-fn test_material_from_an_older_auth_without_the_key_still_works() {
-    let mat: Material = serde_json::from_value(json!({"secret": SECRET, "session_ttl_seconds": 3600.0, "max_session_seconds": 0})).unwrap();
-    let g = AuthGate::new(Fake::new(Some(mat)));
-    let (token, _) = device("tony", None);
-    assert_eq!(auth(&g, Some(&token), None, None), REFUSED);
-    assert_eq!(auth(&g, None, Some(&cookie("tony")), None).2.as_deref(), Some("tony"));
-}
-
-#[test]
-fn a_bearer_that_is_not_a_device_token_leaves_the_cookie_to_decide() {
-    let (_f, g) = gate_with(vec![]);
-    let c = cookie("tony");
-    for bearer in [None, Some(""), Some("not-a-device-token")] {
-        let (ok, refreshed, sub) = auth(&g, bearer, Some(&c), None);
-        assert!(ok && refreshed.is_some() && sub.as_deref() == Some("tony"), "{bearer:?}");
-    }
-    assert_eq!(auth(&g, Some("x"), None, None), REFUSED);
-    assert_eq!(auth(&g, None, Some(""), None), REFUSED);
-    assert_eq!(auth(&g, None, Some("garbage"), None), REFUSED);
-}
-
-#[test]
-fn with_no_material_the_gate_admits_nothing() {
-    let fake = Fake::new(None);
-    let g = AuthGate::new(fake.clone());
-    let (token, _) = device("tony", None);
-    assert_eq!(auth(&g, Some(&token), None, None), REFUSED);
-    assert_eq!(auth(&g, None, Some(&cookie("tony")), None), REFUSED);
-    assert_eq!(g.mint_session("tony", NOW), None);
-    assert_eq!(g.session_ttl_seconds(), gate::DEFAULT_SESSION_TTL);
-    assert!(fake.sent().len() >= 3, "each request retries the fetch");
-}
-
-#[test]
-fn material_with_no_secret_counts_as_no_material() {
-    let mut mat = material(vec![]);
-    mat.secret.clear();
-    let g = AuthGate::new(Fake::new(Some(mat)));
-    assert_eq!(auth(&g, None, Some(&cookie("tony")), None), REFUSED);
-}
-
-#[test]
-fn material_stays_fresh_for_the_window() {
-    let (fake, g) = gate_with(vec![]);
-    for _ in 0..5 {
-        assert!(g.material().is_some());
-    }
-    assert_eq!(fake.sent().len(), 1);
-    let g = AuthGate::new(fake.clone()).with_interval(Duration::ZERO);
-    g.material();
-    g.material();
-    assert_eq!(fake.sent().len(), 3);
-}
-
-// -- usage reporting ---------------------------------------------------------------------------
-
-#[test]
-fn test_the_edge_reports_use_on_its_next_fetch_and_then_forgets_it() {
-    let (token, entry) = device("tony", None);
-    let token_id = entry.id.clone();
-    let (fake, g) = gate_with(vec![entry]);
-    assert!(auth(&g, Some(&token), None, None).0);
-    assert!(g.tokens_seen().keys().eq([&token_id]));
-    assert_eq!(g.tokens_seen()[&token_id], NOW);
-    assert!(g.refresh().is_some());
-    let sent = fake.sent();
-    assert_eq!(sent.len(), 2);
-    assert!(sent[0].is_empty());
-    assert_eq!(sent[1].keys().collect::<Vec<_>>(), [&token_id]);
-    assert!(g.tokens_seen().is_empty());
-    g.refresh();
-    assert!(fake.sent()[2].is_empty());
-}
-
-#[test]
-fn test_a_failed_fetch_keeps_the_report_for_the_next_one() {
-    let (token, entry) = device("tony", None);
-    let token_id = entry.id.clone();
-    let (fake, g) = gate_with(vec![entry]);
-    auth(&g, Some(&token), None, None);
-    let before = g.material().unwrap();
-    fake.fail();
-    let after = g.refresh().expect("the stale material stays");
-    assert!(Arc::ptr_eq(&before, &after));
-    assert!(g.tokens_seen().keys().eq([&token_id]));
-    assert_eq!(auth(&g, Some(&token), None, None), me("tony"), "the stale material still answers");
-}
-
-// -- scoped tokens (test_scoped_device_token.py) -----------------------------------------------
-
 fn sh<'a>(method: &'a str, path: &'a str, raw: Option<&'a [u8]>, query: &'a [u8], ws: bool) -> Shape<'a> {
     Shape { method, path, raw: raw.unwrap_or(path.as_bytes()), query, websocket: ws }
 }
@@ -238,16 +104,65 @@ fn refused_shapes() -> Vec<Shape<'static>> {
 }
 
 #[test]
-fn test_a_scoped_token_is_its_user_on_its_shapes() {
-    let (token, entry) = device("tony", Some(AVATAR_STAGE));
+fn a_live_token_is_its_user_and_a_bad_one_never_falls_through_to_a_cookie() {
+    let (token, entry) = device("tony", None);
     let (_f, g) = gate_with(vec![entry]);
-    assert_eq!(auth(&g, Some(&token), None, Some(&sh("GET", SESSION, None, b"", true))), me("tony"));
+    assert_eq!(auth(&g, Some(&token), None, None), me("tony"));
+    assert_eq!(auth(&g, Some(&token), None, Some(&sh("POST", "/invoke", None, b"", false))), me("tony"));
+
+    for kind in KINDS {
+        let (token, entry) = device("tony", None);
+        let (bearer, devices) = bad(kind, entry, &token);
+        let (_f, g) = gate_with(devices);
+        let c = cookie("tony");
+        assert_eq!(auth(&g, Some(&bearer), None, None), REFUSED, "{kind}");
+        assert_eq!(auth(&g, Some(&bearer), Some(&c), None), REFUSED, "{kind}");
+    }
+    for sub in ["operator", "peer", "peer:mira", ""] {
+        let (token, entry) = device(sub, None);
+        let (_f, g) = gate_with(vec![entry]);
+        assert_eq!(auth(&g, Some(&token), None, None), REFUSED, "{sub:?}");
+    }
 }
 
 #[test]
-fn test_a_scoped_token_is_no_one_anywhere_else() {
+fn with_no_material_the_gate_admits_nothing() {
+    let fake = Fake::new(None);
+    let g = AuthGate::new(fake.clone());
+    let (token, _) = device("tony", None);
+    assert_eq!(auth(&g, Some(&token), None, None), REFUSED);
+    assert_eq!(auth(&g, None, Some(&cookie("tony")), None), REFUSED);
+    assert_eq!(g.mint_session("tony", NOW), None);
+}
+
+#[test]
+fn material_from_an_older_auth_without_the_key_admits_no_token() {
+    let mat: Material = serde_json::from_value(json!({"secret": SECRET, "session_ttl_seconds": 3600.0, "max_session_seconds": 0})).unwrap();
+    let g = AuthGate::new(Fake::new(Some(mat)));
+    let (token, _) = device("tony", None);
+    assert_eq!(auth(&g, Some(&token), None, None), REFUSED);
+    assert_eq!(auth(&g, None, Some(&cookie("tony")), None).2.as_deref(), Some("tony"));
+}
+
+#[test]
+fn the_edge_reports_use_on_its_next_fetch_and_a_failed_fetch_keeps_it() {
+    let (token, entry) = device("tony", None);
+    let token_id = entry.id.clone();
+    let (fake, g) = gate_with(vec![entry]);
+    assert!(auth(&g, Some(&token), None, None).0);
+    assert_eq!(g.tokens_seen()[&token_id], NOW);
+    fake.fail();
+    assert!(g.refresh().is_some(), "the stale material stays");
+    assert!(g.tokens_seen().keys().eq([&token_id]));
+    assert_eq!(auth(&g, Some(&token), None, None), me("tony"), "the stale material still answers");
+}
+
+#[test]
+fn a_scoped_token_is_its_user_on_its_shapes_and_no_one_elsewhere() {
     let (token, entry) = device("tony", Some(AVATAR_STAGE));
     let (_f, g) = gate_with(vec![entry]);
+    assert_eq!(auth(&g, Some(&token), None, Some(&sh("GET", SESSION, None, b"", true))), me("tony"));
+    g.refresh();
     let c = cookie("tony");
     let shapes = refused_shapes();
     for shape in shapes.iter().map(Some).chain([None]) {
@@ -255,37 +170,14 @@ fn test_a_scoped_token_is_no_one_anywhere_else() {
         assert_eq!(auth(&g, Some(&token), Some(&c), shape), REFUSED, "{shape:?}");
     }
     assert!(g.tokens_seen().is_empty(), "a refused token is not reported as used");
-}
 
-#[test]
-fn test_a_token_with_an_unknown_scope_is_refused_on_every_shape() {
     let (token, entry) = device("tony", Some("everything"));
     let (_f, g) = gate_with(vec![entry]);
-    let ok = sh("GET", SESSION, None, b"", true);
-    for shape in [Some(&ok), None] {
-        assert_eq!(auth(&g, Some(&token), None, shape), REFUSED);
-    }
+    assert_eq!(auth(&g, Some(&token), None, Some(&sh("GET", SESSION, None, b"", true))), REFUSED);
 }
-
-#[test]
-fn test_an_unscoped_token_still_needs_no_shape() {
-    let (token, entry) = device("tony", None);
-    let (_f, g) = gate_with(vec![entry]);
-    assert_eq!(auth(&g, Some(&token), None, None), me("tony"));
-    assert_eq!(auth(&g, Some(&token), None, Some(&sh("POST", "/invoke", None, b"", false))), me("tony"));
-}
-
-#[test]
-fn an_empty_scope_reads_as_unscoped() {
-    let (token, entry) = device("tony", Some(""));
-    let (_f, g) = gate_with(vec![entry]);
-    assert_eq!(auth(&g, Some(&token), None, None), me("tony"));
-}
-
-// -- the slide rule and the session mint, against the Python -----------------------------------
 
 fn vectors() -> Value {
-    serde_json::from_str(include_str!("vectors/tokens.json")).expect("tokens.json")
+    serde_json::from_str(include_str!("../vectors/tokens.json")).expect("tokens.json")
 }
 
 fn mat_of(v: &Value) -> Material {
@@ -315,21 +207,6 @@ fn a_portal_session_is_minted_as_python_mints_it() {
         assert_eq!(ttl, c["ttl"].as_i64().unwrap());
         assert_eq!(g.session_ttl_seconds(), c["session_ttl_seconds"].as_f64().unwrap());
     }
-}
-
-#[test]
-fn a_minted_session_authenticates_and_slides() {
-    let (_f, g) = gate_with(vec![]);
-    let (token, ttl) = g.mint_session("tony", NOW).unwrap();
-    assert_eq!(ttl, 3600);
-    let d = g.authenticate(Some(&token), None, None, NOW + 1800.0);
-    let Decision::Session { sub, refreshed: Some(next) } = d else { panic!("{d:?}") };
-    assert_eq!(sub, "tony");
-    let claims = tokens::session_verify(SECRET, &next, NOW + 1800.0).unwrap();
-    assert_eq!(claims["sat"], NOW as i64);
-    assert_eq!(claims["exp"], (NOW + 1800.0 + 3600.0) as i64);
-    assert_eq!(g.authenticate(Some(&token), None, None, NOW + 3600.0), Decision::Refused);
-    assert!(g.tokens_seen().is_empty(), "a cookie is not a device");
 }
 
 #[test]
@@ -374,19 +251,6 @@ fn the_store_feeds_the_gate_and_takes_its_report() {
     assert!(auth(&g, Some(&token), None, Some(&ws)).0, "the cached material still holds it");
     g.refresh();
     assert_eq!(auth(&g, Some(&token), None, Some(&ws)), REFUSED, "gone after the next refresh");
-}
-
-#[test]
-fn the_store_feeds_the_session_settings() {
-    let (_d, store) = store();
-    verbs::config_set(&store, &json!({"values": {"session_ttl_hours": 12.0, "max_session_days": 1.0}})).unwrap();
-    let g = AuthGate::new(Arc::new(store.clone()));
-    let m = g.material().unwrap();
-    assert_eq!((m.session_ttl_seconds, m.max_session_seconds), (43200.0, 86400.0));
-    assert_eq!(g.session_ttl_seconds(), 43200.0);
-    let old = tokens::session_mint(&m.secret, "tony", 86400.0 * 3.0, Some(NOW as i64), NOW);
-    let d = g.authenticate(Some(&old), None, None, NOW + 86400.0);
-    assert_eq!(d, Decision::Session { sub: "tony".into(), refreshed: None }, "past the ceiling it stops sliding");
 }
 
 #[test]

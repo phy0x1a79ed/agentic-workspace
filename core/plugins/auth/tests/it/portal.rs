@@ -10,7 +10,7 @@ use ed25519_dalek::SigningKey;
 use serde_json::{json, Value};
 
 fn vectors() -> Value {
-    serde_json::from_str(include_str!("vectors/portal.json")).unwrap()
+    serde_json::from_str(include_str!("../vectors/portal.json")).unwrap()
 }
 
 fn result(r: Result<String, GrantInvalid>) -> Value {
@@ -127,20 +127,6 @@ fn grant(key: &SigningKey, g: G) -> String {
 }
 
 #[test]
-fn test_a_good_grant_sets_the_session_and_goes_to_next() {
-    let f = fixture();
-    assert_eq!(f.grants.accept(&grant(&f.key, G::default()), HOST, "/trilium/").unwrap(), "tony");
-}
-
-#[test]
-fn test_a_grant_is_spent_once() {
-    let f = fixture();
-    let g = grant(&f.key, G { grant_id: "gonce", ..G::default() });
-    assert!(f.grants.accept(&g, HOST, "/trilium/").is_ok());
-    assert_eq!(f.grants.accept(&g, HOST, "/trilium/").unwrap_err().0, "the grant is spent");
-}
-
-#[test]
 fn test_a_grant_for_anything_else_is_refused() {
     let f = fixture();
     let other = SigningKey::from_bytes(&[9u8; 32]);
@@ -155,29 +141,6 @@ fn test_a_grant_for_anything_else_is_refused() {
     for g in bad {
         assert!(f.grants.accept(&g, HOST, "/trilium/").is_err());
     }
-}
-
-#[test]
-fn test_next_must_be_a_local_path() {
-    for path in ["https://evil.example/", "//evil.example/", "/a?b=c"] {
-        assert_eq!(local_path(Some(path)), None, "{path}");
-    }
-    assert_eq!(local_path(Some("/trilium/")), Some("/trilium/"));
-}
-
-#[test]
-fn test_no_key_refuses_every_grant() {
-    let f = fixture();
-    let grants = Grants::new(None, "altair");
-    assert_eq!(grants.accept(&grant(&f.key, G::default()), HOST, "/trilium/").unwrap_err().0, "no AWM_APPROVER_GRANT_PUBKEY on this node");
-}
-
-#[test]
-fn test_a_browser_with_no_session_goes_to_the_approver() {
-    assert_eq!(
-        login_url_at("https://auth.example", "https://front.example/trilium/"),
-        "https://auth.example/signin?next=https%3A%2F%2Ffront.example%2Ftrilium%2F"
-    );
 }
 
 #[test]

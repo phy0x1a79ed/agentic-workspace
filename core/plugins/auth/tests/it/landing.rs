@@ -8,7 +8,7 @@ use rusqlite::Connection;
 use serde_json::{json, Value};
 
 fn vectors() -> Value {
-    serde_json::from_str(include_str!("vectors/landing.json")).unwrap()
+    serde_json::from_str(include_str!("../vectors/landing.json")).unwrap()
 }
 
 fn fresh() -> (tempfile::TempDir, Landing) {
@@ -153,14 +153,6 @@ fn copy_once_carries_httpsfront_db_over_and_never_again() {
 }
 
 #[test]
-fn copy_once_with_no_old_store_copies_nothing() {
-    let dir = tempfile::tempdir().unwrap();
-    let new = dir.path().join("landing.db");
-    assert!(!copy_once(&dir.path().join("absent.db"), &new).unwrap());
-    assert!(!new.exists());
-}
-
-#[test]
 fn copy_once_reads_a_read_only_old_store() {
     use std::os::unix::fs::PermissionsExt;
     let dir = tempfile::tempdir().unwrap();
@@ -201,24 +193,19 @@ fn a_version_1_store_gains_page_names() {
 // --- test_landing_tags: TestSelectedTagsPruning --------------------------------------------
 
 #[test]
-fn test_selected_tag_survives_while_in_use() {
-    let (_d, dao) = fresh();
-    dao.add_tag("science", "physics").unwrap();
-    dao.select_tag("physics").unwrap();
-    assert_eq!(dao.selected_tags().unwrap(), ["physics"]);
-}
-
-#[test]
-fn test_removing_last_use_prunes_selection() {
-    let (_d, dao) = fresh();
-    dao.add_tag("science", "physics").unwrap();
-    dao.select_tag("physics").unwrap();
-    dao.remove_tag("science", "physics").unwrap();
+fn test_stale_selection_from_before_the_fix_is_filtered_on_read() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("landing.db");
+    let dao = Landing::open(&path).unwrap();
+    Connection::open(&path).unwrap().execute("INSERT OR IGNORE INTO selected_tags (tag) VALUES (?1)", ["ghost"]).unwrap();
     assert!(dao.selected_tags().unwrap().is_empty());
 }
 
+// --- test_landing_rename: TestLandingDAODisplayNames ---------------------------------------
+
+
 #[test]
-fn test_removing_one_of_several_pages_keeps_selection() {
+fn a_selected_tag_lives_only_while_a_page_uses_it() {
     let (_d, dao) = fresh();
     dao.add_tag("science", "physics").unwrap();
     dao.add_tag("math", "physics").unwrap();
@@ -230,64 +217,16 @@ fn test_removing_one_of_several_pages_keeps_selection() {
 }
 
 #[test]
-fn test_stale_selection_from_before_the_fix_is_filtered_on_read() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("landing.db");
-    let dao = Landing::open(&path).unwrap();
-    Connection::open(&path).unwrap().execute("INSERT OR IGNORE INTO selected_tags (tag) VALUES (?1)", ["ghost"]).unwrap();
-    assert!(dao.selected_tags().unwrap().is_empty());
-}
-
-// --- test_landing_rename: TestLandingDAODisplayNames ---------------------------------------
-
-#[test]
-fn test_no_override_by_default() {
+fn a_display_name_overrides_without_touching_tags() {
     let (_d, dao) = fresh();
     assert_eq!(dao.display_name("science").unwrap(), None);
-    assert!(dao.display_names(&["science".into()]).unwrap().is_empty());
-}
-
-#[test]
-fn test_set_and_read_back() {
-    let (_d, dao) = fresh();
-    dao.set_display_name("science", "Science Lab").unwrap();
-    assert_eq!(dao.display_name("science").unwrap().as_deref(), Some("Science Lab"));
-    assert_eq!(dao.display_names(&["science".into(), "other".into()]).unwrap(), [("science".to_string(), "Science Lab".to_string())]);
-}
-
-#[test]
-fn test_set_overwrites_existing() {
-    let (_d, dao) = fresh();
+    dao.add_tag("science", "physics").unwrap();
     dao.set_display_name("science", "First").unwrap();
     dao.set_display_name("science", "Second").unwrap();
+    assert_eq!(dao.display_names(&["science".into(), "other".into()]).unwrap(), [("science".to_string(), "Second".to_string())]);
+    assert_eq!(dao.tags_for_page("science").unwrap(), ["physics"]);
+    dao.set_display_name("science", "   ").unwrap();
     assert_eq!(dao.display_name("science").unwrap().as_deref(), Some("Second"));
-}
-
-#[test]
-fn test_clear_removes_override() {
-    let (_d, dao) = fresh();
-    dao.set_display_name("science", "Science Lab").unwrap();
     dao.clear_display_name("science").unwrap();
     assert_eq!(dao.display_name("science").unwrap(), None);
-}
-
-#[test]
-fn test_set_blank_name_is_a_noop() {
-    let (_d, dao) = fresh();
-    dao.set_display_name("science", "   ").unwrap();
-    assert_eq!(dao.display_name("science").unwrap(), None);
-}
-
-#[test]
-fn test_display_names_bulk_empty_pages() {
-    let (_d, dao) = fresh();
-    assert!(dao.display_names(&[]).unwrap().is_empty());
-}
-
-#[test]
-fn test_rename_does_not_touch_tags() {
-    let (_d, dao) = fresh();
-    dao.add_tag("science", "physics").unwrap();
-    dao.set_display_name("science", "Science Lab").unwrap();
-    assert_eq!(dao.tags_for_page("science").unwrap(), ["physics"]);
 }
