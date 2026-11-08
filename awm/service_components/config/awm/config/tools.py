@@ -27,9 +27,8 @@ def conda_bases() -> list[Path]:
 
     prefix = Path(sys.prefix)
     add(prefix.parent.parent if prefix.parent.name == "envs" else prefix)
-    for var in ("AWM_CONDA_ROOT", "MAMBA_ROOT_PREFIX"):
-        if value := os.environ.get(var):
-            add(Path(value))
+    if value := os.environ.get("MAMBA_ROOT_PREFIX"):
+        add(Path(value))
     # CONDA_EXE and MAMBA_EXE name <base>/bin/<launcher> or <base>/condabin/<launcher>.
     for var in ("CONDA_EXE", "MAMBA_EXE"):
         if value := os.environ.get(var):

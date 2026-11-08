@@ -12,7 +12,7 @@ use serde_json::{json, Value};
 #[derive(clap::Args, Debug)]
 pub struct Args {
     /// The checkout to deploy from. Default: $AWM_WORKSPACE, else the first parent of the
-    /// working directory that holds awm/install.sh.
+    /// working directory that holds core/deploy/awm.service.
     #[arg(long)]
     root: Option<PathBuf>,
     /// The gateway's state directory. Default: $AWM_DIR, else <root>/.awm.
@@ -22,9 +22,6 @@ pub struct Args {
     /// static build (core/target/x86_64-unknown-linux-musl/release/awm) when there is one.
     #[arg(long)]
     bin: Option<PathBuf>,
-    /// Skip awm/install.sh.
-    #[arg(long)]
-    no_install: bool,
     /// Skip the page build.
     #[arg(long)]
     no_build: bool,
@@ -64,9 +61,9 @@ fn static_build(root: &Path, home: &Path) -> PathBuf {
 const UNIT: &str = "core/deploy/awm.service";
 
 fn find_root(explicit: Option<PathBuf>) -> anyhow::Result<PathBuf> {
-    let holds = |p: &Path| p.join("awm/install.sh").is_file();
+    let holds = |p: &Path| p.join(UNIT).is_file();
     if let Some(r) = explicit.or_else(|| std::env::var_os("AWM_WORKSPACE").map(PathBuf::from)) {
-        anyhow::ensure!(holds(&r), "{} holds no awm/install.sh", r.display());
+        anyhow::ensure!(holds(&r), "{} holds no {UNIT}", r.display());
         return Ok(r);
     }
     let cwd = std::env::current_dir()?;
@@ -168,7 +165,6 @@ pub async fn run(args: Args) -> anyhow::Result<i32> {
     let restart = args.restart || bin_changes || unit_changes;
 
     println!("deploy target: {} (state {})", root.display(), state.display());
-    println!("  install: {}", if args.no_install { "no" } else { "awm/install.sh" });
     println!("  build:   {}", if args.no_build { "no" } else { "awm/scripts/build.sh" });
     match &bin_src {
         Some(src) if bin_changes => println!("  binary:  {} -> {}", src.display(), bin_dest.display()),
@@ -183,16 +179,6 @@ pub async fn run(args: Args) -> anyhow::Result<i32> {
         return Ok(0);
     }
 
-    if !args.no_install {
-        step(
-            "install",
-            std::process::Command::new("bash")
-                .arg(root.join("awm/install.sh"))
-                .current_dir(&root)
-                .env("AWM_DIR", &state)
-                .env("AWM_CORE", std::env::current_exe()?),
-        )?;
-    }
     if !args.no_build {
         step("build pages", std::process::Command::new("bash").arg(root.join("awm/scripts/build.sh")).current_dir(&root))?;
     }

@@ -18,8 +18,8 @@ use crate::survival::{self, Journal};
 const GRACE: Duration = Duration::from_secs(8);
 /// The gateway's own variables a service inherits. Everything else, secrets the gateway
 /// was started with included, stays out of the service (R116 item 1).
-pub(crate) const INHERITED: [&str; 12] =
-    ["PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "LC_ALL", "TZ", "TMPDIR", "XDG_RUNTIME_DIR", "TERM", "AWM_CONDA_ROOT"];
+pub(crate) const INHERITED: [&str; 11] =
+    ["PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "LC_ALL", "TZ", "TMPDIR", "XDG_RUNTIME_DIR", "TERM"];
 
 /// A service process a past gateway started and this one found alive.
 #[derive(Debug, Clone, Copy)]

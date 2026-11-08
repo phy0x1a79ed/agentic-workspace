@@ -1,7 +1,10 @@
 # Sourced by a plugin's install hook, with $ENV naming the plugin's own conda env and $HERE its folder.
 if ! command -v mamba >/dev/null; then
-    conda_root="${AWM_CONDA_ROOT:-$HOME/miniforge3}"
-    export PATH="$conda_root/condabin:$conda_root/bin:$PATH"
+    for conda_root in "$HOME/miniforge3" "$HOME/lib/miniforge3" /opt/miniforge3; do
+        [ -x "$conda_root/bin/mamba" ] || continue
+        export PATH="$conda_root/condabin:$conda_root/bin:$PATH"
+        break
+    done
 fi
 mamba run -n "$ENV" true 2>/dev/null || mamba create -y -n "$ENV" -c conda-forge python=3.12 pip
 

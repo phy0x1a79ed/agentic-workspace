@@ -33,15 +33,13 @@ WS="$(workspace_root "$HERE")"
 STATE_DIR="${ENGCYC_STATE:-$WS/.awm/services/engcyc}"
 PORTAL_DIR="${ENGCYC_PORTAL_DIR:-$WS/projects/engcyc-portal/release}"
 
-run() { echo "+ pip install -e $*"; mamba run -n "$ENV" pip install -e "$@"; }
+. "$AWM/plugin-env.sh"
 
 run "$AWM/service_components/config" --no-deps
 run "$AWM/service_components/gatewayclient" --no-deps
 run "$HERE"
 
-PYBIN="$(mamba run -n "$ENV" python -c 'import sys; print(sys.executable)')"
-printf 'AWM_PYTHON=%s\nAWM_ENV_BIN=%s\n' "$PYBIN" "$(dirname "$PYBIN")" \
-    > "$HERE/.runtime-env"
+bake_runtime_env
 
 if [ ! -f "$PORTAL_DIR/src/server/wsgi.py" ]; then
     echo "No portal checkout at $PORTAL_DIR — engcyc will register idle." >&2

@@ -23,7 +23,7 @@ main() {
     export AWM_DIR=${AWM_DIR:-$root/.awm}
     local conda cand
     # Nodes keep conda in different places. Take the first root that holds the awm env.
-    for cand in ${AWM_CONDA_ROOT:-} ${MAMBA_ROOT_PREFIX:-} "$HOME/miniforge3" "$HOME/lib/miniforge3" /opt/miniforge3; do
+    for cand in ${MAMBA_ROOT_PREFIX:-} "$HOME/miniforge3" "$HOME/lib/miniforge3" /opt/miniforge3; do
         [[ -d $cand/envs/awm ]] && { conda=$cand; break; }
     done
     if [[ -n ${conda:-} ]]; then
@@ -50,7 +50,7 @@ launch() {
         rm -f "$log"
         local env=(AWM_REFRESH_IN_UNIT=1 PATH="$PATH" AWM_DIR="$AWM_DIR" HOME="$HOME")
         local v
-        for v in AWM_WORKSPACE AWM_NODE_NAME MAMBA_ROOT_PREFIX MAMBA_EXE AWM_CONDA_ROOT AWM_REFRESH_RESTART; do
+        for v in AWM_WORKSPACE AWM_NODE_NAME MAMBA_ROOT_PREFIX MAMBA_EXE AWM_REFRESH_RESTART; do
             [[ -n ${!v:-} ]] && env+=("$v=${!v}")
         done
         if command -v systemd-run >/dev/null && systemctl --user show-environment >/dev/null 2>&1; then
@@ -115,22 +115,7 @@ step_deploy() {
     if (( ${#names[@]} )); then
         args+=(--reload-restart "$(IFS=,; echo "${names[*]}")")
     fi
-    local stamp
-    stamp=$(install_stamp "$1")
-    [[ $stamp == "$(cat "$dir/installed" 2>/dev/null)" ]] && args+=(--no-install)
-    (cd "$root" && bash scripts/awm-deploy.sh "${args[@]}") || return
-    echo "$stamp" > "$dir/installed"
-}
-
-# What the Python install depends on: the install inputs in the tree, and the node's
-# config, which picks the plugins. An unchanged stamp skips awm/install.sh. A code
-# change needs no install, because every package is installed editable.
-install_stamp() {
-    {
-        git -C "$root" ls-tree -r "$1" -- awm | grep -E \
-            '/(pyproject\.toml|setup\.(py|cfg)|requirements[^/]*\.txt|install[^/]*\.sh)$'
-        cat "$AWM_DIR/config.toml" 2>/dev/null
-    } | sha256sum | cut -c1-64
+    (cd "$root" && bash scripts/awm-deploy.sh "${args[@]}")
 }
 
 # awm deploy already waited for the services. This asks the gateway once more, as a check

@@ -7,6 +7,7 @@ version = "0.1.0"
 [[service]]
 name = "rlm-factorio"
 profiles = ["gamebot"]
+install = "install.sh"
 
 [[tool]]
 name = "factorio"
