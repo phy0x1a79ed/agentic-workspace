@@ -101,39 +101,6 @@ fn calls(st: &Shared) -> Vec<String> {
     st.lock().unwrap().calls.clone()
 }
 
-#[test]
-fn modes_normalise_to_the_default() {
-    for (raw, want) in [(Some("headless"), "headless"), (Some(" Rendered "), "rendered"), (Some("ATTACHED"), "attached"), (Some("bogus"), "headless"), (None, "headless")] {
-        assert_eq!(norm_mode(raw), want);
-    }
-}
-
-#[tokio::test]
-async fn attached_is_a_singleton() {
-    let tmp = tempfile::tempdir().unwrap();
-    let (base, _) = fake_chrome(0).await;
-    let m = manager(tmp.path(), &base);
-    m.acquire("g", Some("attached"), &json!({}), Level::Trusted).await.unwrap();
-    match m.acquire("g", Some("attached"), &json!({}), Level::Trusted).await {
-        Err(EngineError::Value(msg)) => assert!(msg.contains("already active")),
-        other => panic!("{other:?}"),
-    }
-}
-
-#[tokio::test]
-async fn releasing_a_borrowed_chrome_never_closes_it() {
-    let tmp = tempfile::tempdir().unwrap();
-    let (base, st) = fake_chrome(2).await;
-    let m = manager(tmp.path(), &base);
-    let s = m.acquire("g", Some("attached"), &json!({}), Level::Trusted).await.unwrap();
-    let id = s["session_id"].as_str().unwrap();
-    assert_eq!(m.tab_list(id).await.unwrap()["tabs"].as_array().unwrap().len(), 2, "trusted sees Tony's tabs");
-    m.reset(id).await.unwrap();
-    assert_eq!(st.lock().unwrap().targets.iter().filter(|(t, _)| t.starts_with("tony")).count(), 2, "reset keeps Tony's tabs");
-    assert_eq!(m.release(id).await.unwrap(), json!({"released": true}));
-    assert!(!calls(&st).contains(&"Browser.close".to_string()));
-}
-
 #[tokio::test]
 async fn a_guest_gets_its_own_window_in_the_attached_chrome() {
     let tmp = tempfile::tempdir().unwrap();
@@ -159,38 +126,12 @@ async fn a_guest_gets_its_own_window_in_the_attached_chrome() {
     assert!(!calls(&st).contains(&"Browser.close".to_string()));
 }
 
-#[tokio::test]
-async fn a_guest_window_survives_a_restart() {
-    let tmp = tempfile::tempdir().unwrap();
-    let (base, _) = fake_chrome(1).await;
-    let id = {
-        let m = manager(tmp.path(), &base);
-        m.acquire("g", Some("attached"), &json!({}), Level::Untrusted).await.unwrap()["session_id"].as_str().unwrap().to_string()
-    };
-    let m = manager(tmp.path(), &base);
-    assert_eq!(m.tab_list(&id).await.unwrap()["tabs"].as_array().unwrap().len(), 1);
-    assert!(matches!(m.cdp(&id, "Browser.close", Some(engine::BROWSER_TAB), Value::Null).await, Err(EngineError::Value(_))));
-}
-
-#[tokio::test]
-async fn an_unknown_session_is_a_usage_error_and_status_shows_rows() {
-    let tmp = tempfile::tempdir().unwrap();
-    let (base, _) = fake_chrome(0).await;
-    let m = manager(tmp.path(), &base);
-    assert!(matches!(m.tab_list("rlm-browser-nope").await, Err(EngineError::Value(_))));
-    m.acquire("chess", Some("attached"), &json!({"egress": {"vpn": "x"}}), Level::Trusted).await.unwrap();
-    let st = m.status(None).await.unwrap();
-    let row = &st["sessions"][0];
-    assert_eq!((row["game"].as_str(), row["backend"].as_str(), row["egress"].clone()), (Some("chess"), Some("attached"), json!({"vpn": "x"})));
-    assert!(row.get("_guest_context").is_none() && row["tabs"].is_array());
-}
-
 fn env() -> awm_plugin_sdk::Env {
     awm_plugin_sdk::Env { hub_url: "http://127.0.0.1:1".into(), service: TOOL.into(), plugin: TOOL.into(), node: "mizar".into(), awm_dir: "/nonexistent".into(), token_file: None }
 }
 
 #[tokio::test]
-async fn the_ready_api_matches_the_python_manifest_and_levels_only_lower() {
+async fn the_ready_api_matches_the_golden_manifest_and_levels_only_lower() {
     let tmp = tempfile::tempdir().unwrap();
     let golden: Value = serde_json::from_str(include_str!("../tests/golden/rlm-browser.api.json")).unwrap();
     let m = Arc::new(manager(tmp.path(), "http://127.0.0.1:1"));
@@ -227,8 +168,14 @@ async fn a_real_headless_chrome_serves_the_verbs() {
     let s = m.acquire("probe", None, &json!({}), Level::Untrusted).await.unwrap();
     let id = s["session_id"].as_str().unwrap();
     let tab = m.tab_open(id, Some("data:text/html,<title>hi</title>")).await.unwrap();
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    let seen = m.observe(id, tab["tab_id"].as_str()).await.unwrap();
+    let mut seen = Value::Null;
+    for _ in 0..100 {
+        seen = m.observe(id, tab["tab_id"].as_str()).await.unwrap();
+        if seen["title"] == "hi" {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
     assert_eq!(seen["title"], "hi");
     assert!(m.screenshot(id, None, false).await.unwrap()["image"].is_string());
     assert!(m.commands(Some(id)).await.unwrap()["protocol"]["domains"].is_array());

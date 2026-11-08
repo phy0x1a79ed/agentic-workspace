@@ -326,6 +326,3 @@ impl Docker {
         Ok(out.lines().map(str::trim).filter(|l| l.starts_with(prefix)).map(str::to_string).collect())
     }
 }
-
-#[cfg(test)]
-mod tests;

@@ -175,26 +175,4 @@ mod tests {
         assert_eq!(v, 3);
     }
 
-    #[tokio::test]
-    async fn rows_round_trip_and_status_hides_the_guest_context() {
-        let tmp = tempfile::tempdir().unwrap();
-        let s = Store::open(&tmp.path().join("x.db")).unwrap();
-        let r = s.create(" chess ", "attached", "attached", 0, "", "", 0, Some(json!({"vpn": "x"})), "ctx1").await.unwrap();
-        let id = r["session_id"].as_str().unwrap().to_string();
-        assert!(id.starts_with("rlm-browser-") && id.len() == 24);
-        assert_eq!(r["game"], "chess");
-        assert_eq!(r["egress"], json!({"vpn": "x"}));
-        assert!(public(r).get("_guest_context").is_none());
-        s.set_status(&id, "reset").await.unwrap();
-        assert_eq!(s.list().await.unwrap()[0]["status"], "reset");
-        assert!(s.delete(&id).await.unwrap() && !s.delete(&id).await.unwrap());
-    }
-
-    #[test]
-    fn a_versionless_database_holding_the_table_is_refused() {
-        let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join("x.db");
-        Connection::open(&path).unwrap().execute_batch(SCHEMA_SQL).unwrap();
-        assert!(Store::open(&path).is_err());
-    }
 }

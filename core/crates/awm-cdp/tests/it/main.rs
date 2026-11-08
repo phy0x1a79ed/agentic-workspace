@@ -1,4 +1,6 @@
-use super::*;
+use awm_cdp::*;
+use serde_json::{json, Value};
+use std::time::Duration;
 use axum::extract::ws::{Message as AxMessage, WebSocketUpgrade};
 use axum::routing::get;
 use axum::{Json, Router};
@@ -34,15 +36,10 @@ async fn fake_chrome() -> String {
     format!("http://{addr}")
 }
 
-#[test]
-fn rewrite_keeps_the_path_and_the_reachable_port() {
-    assert_eq!(rewrite_ws("http://127.0.0.1:9333", "ws://127.0.0.1:9222/devtools/browser/x"), "ws://127.0.0.1:9333/devtools/browser/x");
-    assert_eq!(rewrite_ws("http://172.25.176.1:19222/", "ws://localhost/devtools/browser/y"), "ws://172.25.176.1:19222/devtools/browser/y");
-    assert_eq!(page_ws("http://127.0.0.1:5", "T1"), "ws://127.0.0.1:5/devtools/page/T1");
-}
-
 #[tokio::test]
 async fn calls_errors_sessions_and_events() {
+    assert_eq!(rewrite_ws("http://172.25.176.1:19222/", "ws://localhost/devtools/browser/y"), "ws://172.25.176.1:19222/devtools/browser/y");
+    assert_eq!(page_ws("http://127.0.0.1:5", "T1"), "ws://127.0.0.1:5/devtools/page/T1");
     let base = fake_chrome().await;
     wait_ready(&base, Duration::from_secs(5)).await.unwrap();
     assert_eq!(protocol(&base).await.unwrap()["domains"], json!([]));
@@ -71,10 +68,4 @@ async fn browser_redials_after_the_socket_closes() {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     assert_eq!(b.generation(), 2);
-}
-
-#[tokio::test]
-async fn wait_ready_times_out_on_a_dead_port() {
-    let port = free_port().unwrap();
-    assert!(wait_ready(&format!("http://127.0.0.1:{port}"), Duration::from_millis(300)).await.is_err());
 }

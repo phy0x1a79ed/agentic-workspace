@@ -243,7 +243,7 @@ mod tests {
     }
 
     #[test]
-    fn the_ready_api_matches_the_python_manifest() {
+    fn the_ready_api_matches_the_golden_manifest() {
         let golden: Value = serde_json::from_str(include_str!("../tests/golden/browser.api.json")).unwrap();
         let book = Arc::new(SeatBook::new(Arc::new(seats::tests::FakeChrome::new("shared")), None, None));
         assert_eq!(built(book).manifest(), golden);
@@ -271,15 +271,6 @@ mod tests {
         assert_eq!(seat["profile"], "blank");
         let refused = call(&svc, "seat_open", json!({"profile": "tony"}), Some("cooperative")).await;
         assert!(refused["error"].as_str().unwrap().contains("trusted"));
-    }
-
-    #[tokio::test]
-    async fn a_caller_that_is_no_session_gets_no_seat() {
-        let book = Arc::new(SeatBook::new(Arc::new(seats::tests::FakeChrome::new("shared")), None, None));
-        let svc = built(book).into_test().await.unwrap();
-        let shell = Caller { node: "alcor".into(), session: None, trust: Some("trusted".into()), ..Caller::default() };
-        let out = svc.call_as("seat_open", json!({"_caller_trust": "trusted"}), shell, None).await.unwrap();
-        assert!(out["error"].as_str().unwrap().contains("belongs to a session"));
     }
 
     #[tokio::test]

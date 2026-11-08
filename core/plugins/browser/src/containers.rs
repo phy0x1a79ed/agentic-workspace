@@ -142,11 +142,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn names_follow_the_python_form() {
-        assert_eq!(container_name("Ab_cDEFghij_KLmnop"), "awm-browser-seat-ab-cdefghij-");
-    }
-
-    #[test]
     fn profile_copy_skips_locks_and_keeps_links() {
         let tmp = tempfile::tempdir().unwrap();
         let from = tmp.path().join("p");

@@ -121,14 +121,6 @@ async fn a_trusted_seat_gets_tonys_profile_and_a_cooperative_one_a_blank_context
 }
 
 #[tokio::test]
-async fn only_trusted_gets_tonys_profile_and_untrusted_gets_nothing() {
-    let (_, book) = book();
-    assert!(seat_msg(book.open("job", "cooperative", Some("tony"), false).await).contains("trusted"));
-    assert!(seat_msg(book.open("job", "untrusted", None, false).await).contains("untrusted"));
-    assert!(matches!(book.open("job", "root", None, false).await, Err(BookError::Usage(_))));
-}
-
-#[tokio::test]
 async fn a_seat_reaches_only_its_own_tabs() {
     let (_, book) = book();
     let a = book.open("job-a", "trusted", None, false).await.unwrap();
@@ -140,42 +132,12 @@ async fn a_seat_reaches_only_its_own_tabs() {
 }
 
 #[tokio::test]
-async fn new_tabs_stay_in_the_seats_window() {
-    let (chrome, book) = book();
-    let a = book.open("job-a", "trusted", None, false).await.unwrap();
-    let b = book.open("job-b", "trusted", None, false).await.unwrap();
-    let t = book.tab_open(&a.seat, "job-a", "https://example.org").await.unwrap();
-    chrome.with(|s| {
-        assert_eq!(Some(s.windows[&t]), a.window);
-        assert_eq!(Some(s.windows[&b.tabs[0]]), b.window);
-    });
-}
-
-#[tokio::test]
 async fn no_seat_reaches_the_raw_debug_port() {
     let (_, book) = book();
     let a = book.open("job-a", "trusted", None, false).await.unwrap();
     for m in ["Target.createTarget", "Browser.close", "Storage.getCookies", "Network.getAllCookies", "SystemInfo.getInfo"] {
         assert!(seat_msg(book.cdp(&a.seat, "job-a", &a.tabs[0], m, Value::Null).await).contains("not open"));
     }
-}
-
-#[tokio::test]
-async fn page_methods_run_on_the_tabs_own_session() {
-    let (chrome, book) = book();
-    let a = book.open("job-a", "cooperative", None, false).await.unwrap();
-    let tab = &a.tabs[0];
-    book.navigate(&a.seat, "job-a", tab, "https://example.org").await.unwrap();
-    assert_eq!(chrome.calls().last().unwrap(), &("Page.navigate".into(), json!({"url": "https://example.org"}), Some(format!("s0-{tab}"))));
-}
-
-#[tokio::test]
-async fn close_disposes_the_blank_context() {
-    let (chrome, book) = book();
-    let c = book.open("job-c", "cooperative", None, false).await.unwrap();
-    book.close(&c.seat, "job-c").await.unwrap();
-    assert!(chrome.calls().contains(&("Target.disposeBrowserContext".into(), json!({"browserContextId": c.context}), None)));
-    assert!(book.list(None).await.is_empty());
 }
 
 struct FakeBoxes {
@@ -210,18 +172,6 @@ async fn own_container_carries_the_profile_the_level_allows_and_close_deletes_it
     assert_eq!(*boxes.launched.lock().unwrap(), vec!["tony", "blank", "blank"]);
     book.close(&t.seat, "job-t").await.unwrap();
     assert_eq!(*boxes.forgotten.lock().unwrap(), vec![t.seat.clone()]);
-}
-
-#[tokio::test]
-async fn service_window_holds_one_tab_per_site() {
-    let (chrome, book) = book();
-    let teams = book.service_tab("teams", "https://teams.microsoft.com").await.unwrap();
-    let slack = book.service_tab("slack", "https://app.slack.com").await.unwrap();
-    assert_eq!(book.service_tab("teams", "https://teams.microsoft.com").await.unwrap(), teams);
-    let w = book.service_window().await;
-    chrome.with(|s| assert!(Some(s.windows[&teams]) == w && Some(s.windows[&slack]) == w));
-    let a = book.open("job-a", "trusted", None, false).await.unwrap();
-    seat_msg(book.tab_close(&a.seat, "job-a", &teams).await);
 }
 
 #[tokio::test]

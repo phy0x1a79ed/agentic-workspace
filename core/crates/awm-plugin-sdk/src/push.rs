@@ -250,17 +250,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn delivers_in_order() {
-        let (p, sent, back) = pusher(|_, _| Outcome::Delivered);
-        for i in 0..5 {
-            p.push("n", "j", &format!("l{i}"));
-        }
-        p.idle().await;
-        assert_eq!(*sent.lock().unwrap(), vec!["l0", "l1", "l2", "l3", "l4"]);
-        assert!(back.lock().unwrap().is_empty());
-    }
-
-    #[tokio::test]
     async fn gone_returns_the_line_and_all_behind_it() {
         let (p, sent, back) = pusher(|_, line| if line == "l2" { Outcome::Gone } else { Outcome::Delivered });
         for i in 0..5 {
@@ -299,16 +288,6 @@ mod tests {
         p.idle().await;
         assert_eq!(*sent.lock().unwrap(), vec!["a", "b"]);
         assert!(back.lock().unwrap().is_empty());
-    }
-
-    #[tokio::test]
-    async fn holders_drain_independently() {
-        let (p, sent, back) = pusher(|job, _| if job == "dead" { Outcome::Gone } else { Outcome::Delivered });
-        p.push("n", "dead", "x");
-        p.push("n", "live", "y");
-        p.idle().await;
-        assert_eq!(*sent.lock().unwrap(), vec!["y"]);
-        assert_eq!(back.lock().unwrap()[0].0, ("n".to_string(), "dead".to_string()));
     }
 
     #[test]

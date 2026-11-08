@@ -466,10 +466,6 @@ impl SeatBook {
         Ok(target)
     }
 
-    pub async fn service_window(&self) -> Option<i64> {
-        self.state.lock().await.service_window
-    }
-
     pub async fn list(&self, session: Option<&str>) -> Vec<Value> {
         let st = self.state.lock().await;
         st.seats.iter().filter(|s| session.is_none_or(|x| s.session == x)).map(Seat::view).collect()
