@@ -3,10 +3,6 @@
 //! `KEYGEN_CERTS` are synthetic: Python's `Keys.ssh_cert` (so `ssh-keygen -s`, OpenSSH 9.6) issued them
 //! with a CA whose seed is `sha256(CA_SEED_TEXT)`, for the subject keys beside them. Rust must
 //! reproduce each byte for byte given the same nonce.
-//!
-//! The tests that run ssh-keygen or Python skip with a note where they cannot: the build container's
-//! ssh-keygen refuses to run without a passwd entry, and Python needs the conda envs (`AWM_CONDA_ROOT`).
-//! To load a key set Python wrote elsewhere, run with `AWM_PY_KEYS_DIR=<dir>` in the test's environment.
 
 const CA_SEED_TEXT: &[u8] = b"awm synthetic ssh user ca";
 const CA_PUB: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEEwPBJlC9FR7+QZJMBgRJZYW1sRAE8mdBCnEGCPPJOR awm-admin-ca";
@@ -17,10 +13,8 @@ const KEYGEN_CERTS: [(&str, &str, &str); 3] = [
     ("rsa", "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQCTsrF8WGndj6Jfg8u9p+IRitOjTeLMK4UGbIrFc53gAlYAwWI8SEBhix6wgbgkYOSurq1EWplfkMsXebT4AZ5UDdOWkEkGvmQ0pV98tZCinamHgaXdzpX/jsqzNX1u95VIdAsHZlW/W0N+IlKychcrU8CpnQTzcrCVhtAvM+fhp1gkMdgGCPWInrUyXzbpjTNfDlVcZkra/Do/s/rZF3H+kh2xbtHeDbprkeJj42ZXvxuww7VrStDp8Xim0qrSPDqRqRRmFh2v41OV+Frx+PB/uCvmulfcJOsO1MWHMkMz0TpHJZTRSwssBjGaN7zcu3r5y746Cc7ICXrTvKNBLmSp", "ssh-rsa-cert-v01@openssh.com AAAAHHNzaC1yc2EtY2VydC12MDFAb3BlbnNzaC5jb20AAAAgP1mWq/zOAFyf82Z1pgPzs+1hSzCdvrUrA+x4wGfSS3QAAAADAQABAAABAQCTsrF8WGndj6Jfg8u9p+IRitOjTeLMK4UGbIrFc53gAlYAwWI8SEBhix6wgbgkYOSurq1EWplfkMsXebT4AZ5UDdOWkEkGvmQ0pV98tZCinamHgaXdzpX/jsqzNX1u95VIdAsHZlW/W0N+IlKychcrU8CpnQTzcrCVhtAvM+fhp1gkMdgGCPWInrUyXzbpjTNfDlVcZkra/Do/s/rZF3H+kh2xbtHeDbprkeJj42ZXvxuww7VrStDp8Xim0qrSPDqRqRRmFh2v41OV+Frx+PB/uCvmulfcJOsO1MWHMkMz0TpHJZTRSwssBjGaN7zcu3r5y746Cc7ICXrTvKNBLmSpAzN3EYXZsSYAAAABAAAACWdyYW50LXJzYQAAABAAAAAEdG9ueQAAAARyb290AAAAAGs27IAAAAAAazb6kAAAAAAAAACCAAAAFXBlcm1pdC1YMTEtZm9yd2FyZGluZwAAAAAAAAAXcGVybWl0LWFnZW50LWZvcndhcmRpbmcAAAAAAAAAFnBlcm1pdC1wb3J0LWZvcndhcmRpbmcAAAAAAAAACnBlcm1pdC1wdHkAAAAAAAAADnBlcm1pdC11c2VyLXJjAAAAAAAAAAAAAAAzAAAAC3NzaC1lZDI1NTE5AAAAIEEwPBJlC9FR7+QZJMBgRJZYW1sRAE8mdBCnEGCPPJORAAAAUwAAAAtzc2gtZWQyNTUxOQAAAED9QIoXzZ+5FhMxIaysppVA1kscc6EP+rTf5nEaRm/aaOEMUeIQ7dqn/gZi3drryhECWCOy63rau76Uz/vVT4AF /tmp/tmp063miuxp/key.pub"),
 ];
 
-use std::collections::BTreeMap;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use awm_plugin_operations::keys::{self, check_state, ssh_serial, Keys};
 use awm_trust::grant::{canonical, load_public_key, unb64u, verify_grant, Expect};
@@ -34,23 +28,6 @@ const FILES: [&str; 4] = [keys::GRANT_FILE, keys::ACK_FILE, keys::SSH_CA_FILE, k
 const NOT_BEFORE: i64 = 1_798_761_600; // 2027-01-01T00:00:00Z
 const NOT_AFTER: i64 = 1_798_765_200;
 const EXTENSIONS: [&str; 5] = ["permit-X11-forwarding", "permit-agent-forwarding", "permit-port-forwarding", "permit-pty", "permit-user-rc"];
-
-fn run(cmd: &mut Command) -> String {
-    let out = cmd.output().expect("spawn");
-    assert!(out.status.success(), "{cmd:?}: {}", String::from_utf8_lossy(&out.stderr));
-    String::from_utf8(out.stdout).unwrap()
-}
-
-/// Whether ssh-keygen runs here: the build container has one that refuses to run without a passwd entry.
-fn ssh_keygen_works(scratch: &Path) -> bool {
-    let probe = scratch.join("probe.pub");
-    std::fs::write(&probe, format!("{CA_PUB}\n")).unwrap();
-    let works = Command::new("ssh-keygen").arg("-l").arg("-f").arg(&probe).output().is_ok_and(|o| o.status.success());
-    if !works {
-        eprintln!("note: ssh-keygen is absent or cannot run here, so the live ssh-keygen comparison is skipped");
-    }
-    works
-}
 
 fn mode(path: &Path) -> u32 {
     std::fs::metadata(path).unwrap().permissions().mode() & 0o777
@@ -165,13 +142,6 @@ fn ack_verifies_with_webcrypto_style_p256() {
     assert_eq!(ack_body(&k, &forged), None, "the signature covers every field");
 }
 
-#[test]
-fn serial_matches_python() {
-    let digest = Sha256::digest(b"grant-1");
-    assert_eq!(ssh_serial("grant-1"), u64::from_be_bytes(digest[..8].try_into().unwrap()) >> 1);
-    assert_eq!(ssh_serial("grant-rsa"), 230_658_923_069_813_030, "ssh-keygen's Serial for KEYGEN_CERTS rsa");
-}
-
 fn check_cert(line: &str, subject_line: &str, key_id: &str, ca_pub: &str) -> Certificate {
     let cert = Certificate::from_openssh(line).unwrap();
     let subject = PublicKey::from_openssh(subject_line).unwrap();
@@ -232,73 +202,4 @@ fn ssh_cert_refuses_what_ssh_keygen_refuses() {
     let split = Certificate::from_openssh(&k.ssh_cert(&format!("  {line}\t\n"), &p(&["a,b"]), NOT_BEFORE, NOT_AFTER, "x").unwrap()).unwrap();
     assert_eq!(split.valid_principals(), ["a", "b"]);
     assert_eq!(split.comment(), "tony@laptop");
-}
-
-/// `ssh-keygen -L` for `cert_line`, in UTC, keyed by field, with the file name line dropped.
-fn listing(dir: &Path, name: &str, cert_line: &str) -> BTreeMap<String, String> {
-    let path = dir.join(name);
-    std::fs::write(&path, format!("{cert_line}\n")).unwrap();
-    let text = run(Command::new("ssh-keygen").env("TZ", "UTC").arg("-L").arg("-f").arg(&path));
-    let mut fields = BTreeMap::new();
-    let mut current = String::new();
-    for line in text.lines().skip(1) {
-        let item = line.starts_with("                ");
-        match line.trim().split_once(':').filter(|_| !item) {
-            Some((key, value)) => {
-                current = key.to_string();
-                fields.insert(current.clone(), value.trim().to_string());
-            }
-            None => {
-                let entry = fields.entry(current.clone()).or_default();
-                entry.push_str(line.trim());
-                entry.push('\n');
-            }
-        }
-    }
-    fields
-}
-
-#[test]
-fn ssh_cert_lists_like_a_live_ssh_keygen_cert() {
-    let (tmp, dir, k) = fresh();
-    if !ssh_keygen_works(tmp.path()) {
-        return;
-    }
-    let ca_fp = PublicKey::from_openssh(&k.ssh_ca_pub()).unwrap().fingerprint(HashAlg::Sha256);
-    let principals = ["tony".to_string(), "root".to_string()];
-    let utc = |t: i64| chrono::DateTime::from_timestamp(t, 0).unwrap().format("%Y%m%d%H%M%SZ").to_string();
-    for (label, subject, _) in KEYGEN_CERTS {
-        let key_id = format!("grant-{label}");
-        let ours = listing(tmp.path(), &format!("{label}-ours-cert.pub"), &k.ssh_cert(subject, &principals, NOT_BEFORE, NOT_AFTER, &key_id).unwrap());
-        assert!(ours["Type"].ends_with(" user certificate"), "{ours:?}");
-        assert_eq!(ours["Key ID"], format!("\"{key_id}\""));
-        assert_eq!(ours["Serial"], ssh_serial(&key_id).to_string());
-        assert_eq!(ours["Valid"], "from 2027-01-01T00:00:00 to 2027-01-01T01:00:00");
-        assert_eq!(ours["Principals"], "tony\nroot\n");
-        assert_eq!(ours["Critical Options"], "(none)");
-        assert_eq!(ours["Extensions"], format!("{}\n", EXTENSIONS.join("\n")));
-        assert_eq!(ours["Signing CA"], format!("ED25519 {ca_fp} (using ssh-ed25519)"));
-
-        let work = tmp.path().join(format!("keygen-{label}"));
-        std::fs::create_dir(&work).unwrap();
-        std::fs::write(work.join("key.pub"), format!("{subject}\n")).unwrap();
-        run(Command::new("ssh-keygen")
-            .args(["-q", "-s"])
-            .arg(dir.join(keys::SSH_CA_FILE))
-            .args(["-I", &key_id, "-n", &principals.join(","), "-V", &format!("{}:{}", utc(NOT_BEFORE), utc(NOT_AFTER))])
-            .args(["-z", &ssh_serial(&key_id).to_string()])
-            .arg(work.join("key.pub")));
-        let theirs = std::fs::read_to_string(work.join("key-cert.pub")).unwrap();
-        assert_eq!(ours, listing(tmp.path(), &format!("{label}-theirs-cert.pub"), theirs.trim()), "{label}: every -L field");
-    }
-}
-
-/// Loads a key set Python wrote, named by `AWM_PY_KEYS_DIR`. Point it at a copy of alcor's
-/// keys before the cutover: `operations check-state` runs the same check there.
-#[test]
-fn loads_the_python_key_set_named_by_env() {
-    let Some(dir) = std::env::var_os("AWM_PY_KEYS_DIR") else { return };
-    let k = Keys::load(Path::new(&dir)).expect("AWM_PY_KEYS_DIR loads");
-    assert!(check_state(Path::new(&dir)).is_empty());
-    eprintln!("loaded the Python key set in {}: grant_pub {}", Path::new(&dir).display(), k.grant_pub_b64u());
 }

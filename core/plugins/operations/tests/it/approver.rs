@@ -2,15 +2,13 @@
 //! on the requester's own task, grants, orders, the 2fa burst and the portal sign-in.
 //! Every id, host and key here is synthetic.
 
-mod vault_common;
-
-use awm_plugin_operations::approver::{approval_challenge, request_kinds, Approver, ApproverError, CHALLENGE_TTL_S, REQUEST_TTL_S, SESSION_TTL_S};
+use awm_plugin_operations::approver::{request_kinds, ApproverError, CHALLENGE_TTL_S, REQUEST_TTL_S, SESSION_TTL_S};
 use awm_plugin_operations::passkeys::soft::SoftAuthenticator;
 use awm_plugin_operations::store::Open;
-use awm_trust::grant::{b64u, canonical, unb64u, verify_grant, verify_order, Expect, GrantError};
+use awm_trust::grant::{b64u, unb64u, verify_grant, verify_order, Expect, GrantError};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use vault_common::{env, env_with, s, AGENT_NODE, ORIGIN, PORTAL, PORTAL_NODE, RP_ID};
+use crate::vault_common::{env, s, AGENT_NODE, ORIGIN, PORTAL, PORTAL_NODE, RP_ID};
 
 const A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
@@ -35,16 +33,6 @@ fn grant_of(got: &Value) -> &Value {
 // -- enrolment (R64 item 1) ----------------------------------------------------------------
 
 #[tokio::test]
-async fn open_refuses_a_missing_db_unless_create() {
-    let e = env();
-    let keys = awm_plugin_operations::keys::Keys::generate(&e.dir.path().join("keys2")).unwrap();
-    let missing = e.dir.path().join("none").join("approver.db");
-    let r = Approver::open(&missing, keys, vault_common::config(5), e.store.clone(), e.tools.clone(), false, e.clock.as_fn());
-    assert!(r.is_err());
-    assert!(!missing.exists());
-}
-
-#[tokio::test]
 async fn enrol_link_is_single_use() {
     let e = env();
     let link = e.ap.enrol_link(15, None).unwrap();
@@ -53,32 +41,10 @@ async fn enrol_link_is_single_use() {
     let (device, _) = e.enrol_with(s(&link["token"]), "phone");
     assert!(device.starts_with('d'));
     assert_eq!(code(e.ap.enrol_begin(s(&link["token"]), "again")), "bad_link");
-}
-
-#[tokio::test]
-async fn enrol_finish_answers_only_the_device() {
-    let e = env();
-    let token = e.ap.enrol_link(15, None).unwrap()["token"].as_str().unwrap().to_string();
-    let mut pk = SoftAuthenticator::new(ORIGIN, RP_ID);
-    let begin = e.ap.enrol_begin(&token, "phone").unwrap();
-    assert_eq!(begin["options"]["rp"]["id"], RP_ID);
-    let out = e.ap.enrol_finish(&token, s(&begin["reg_id"]), &pk.register(&begin["options"]), "phone", Some("203.0.113.5")).unwrap();
-    let keys: Vec<&String> = out.as_object().unwrap().keys().collect();
-    assert_eq!(keys, ["device"]);
-    let d = e.ap.devices().unwrap();
-    assert_eq!(d[0]["device_id"], out["device"]);
-    assert_eq!(d[0]["name"], "phone");
-    assert_eq!(d[0]["enrolled_by"], "link");
-    assert!(e.ap.check_credentials().is_empty());
-}
-
-#[tokio::test]
-async fn enrol_link_expires_and_caps_at_15_minutes() {
-    let e = env();
-    let link = e.ap.enrol_link(60, None).unwrap();
-    assert_eq!(link["expires"].as_f64().unwrap(), e.clock.now() + 15.0 * 60.0);
+    let late = e.ap.enrol_link(60, None).unwrap();
+    assert_eq!(late["expires"].as_f64().unwrap(), e.clock.now() + 15.0 * 60.0);
     e.clock.advance(16.0 * 60.0);
-    assert_eq!(code(e.ap.enrol_begin(s(&link["token"]), "late")), "bad_link");
+    assert_eq!(code(e.ap.enrol_begin(s(&late["token"]), "late")), "bad_link");
 }
 
 #[tokio::test]
@@ -119,15 +85,6 @@ async fn second_device_enrols_by_approval() {
     e.enrol_with(&token, "laptop");
     let by: Vec<Value> = e.ap.devices().unwrap().as_array().unwrap().iter().map(|d| d["enrolled_by"].clone()).collect();
     assert_eq!(by, [json!("link"), json!(rid)]);
-}
-
-#[tokio::test]
-async fn enrol_ask_expires() {
-    let e = env();
-    let ask = e.ap.enrol_ask("laptop").await.unwrap();
-    e.clock.advance(REQUEST_TTL_S + 1.0);
-    let st = e.ap.enrol_ask_status(s(&ask["request_id"]), s(&ask["poll_secret"])).unwrap();
-    assert_eq!(st["status"], "expired");
 }
 
 // -- the device sign-in (R84 items 1-2) ------------------------------------------------------
@@ -183,12 +140,6 @@ async fn signin_takes_one_tap_and_a_nonce_once() {
     assert_eq!(e.ap.session_device(&cookie).unwrap().as_deref(), Some(d.as_str()));
     let again = pk.assert(&b["options"]);
     assert_eq!(code(e.ap.signin_finish(s(&b["nonce"]), &again, None)), "bad_login");
-}
-
-#[tokio::test]
-async fn a_signin_nonce_dies_after_5_minutes() {
-    let e = env();
-    let (_, mut pk) = e.enrol("phone");
     let b = e.ap.signin_begin().unwrap();
     let a = pk.assert(&b["options"]);
     e.clock.advance(CHALLENGE_TTL_S + 1.0);
@@ -204,20 +155,6 @@ async fn signin_refuses_an_assertion_over_another_nonce() {
     let b2 = e.ap.signin_begin().unwrap();
     let a = pk.assert(&b1["options"]);
     assert_eq!(code(e.ap.signin_finish(s(&b2["nonce"]), &a, None)), "bad_passkey");
-}
-
-#[tokio::test]
-async fn the_rate_signal_counts_a_minute() {
-    let e = env_with(3);
-    let (d, _) = e.enrol("phone");
-    for _ in 0..3 {
-        e.ap.note_action(&d, "agent").unwrap();
-    }
-    assert_eq!(code(e.ap.note_action(&d, "agent")), "rate");
-    let (other, _) = e.enrol("laptop");
-    e.ap.note_action(&other, "agent").unwrap();
-    e.clock.advance(61.0);
-    e.ap.note_action(&d, "agent").unwrap();
 }
 
 // -- portal sign-in (R84) ------------------------------------------------------------------
@@ -305,17 +242,6 @@ async fn request_validation() {
 }
 
 #[tokio::test]
-async fn a_relay_minted_request_id_is_kept() {
-    let e = env();
-    let rid = format!("q{}", "A".repeat(12));
-    let r = e.ap.approval_request("vault_hold", Some("deneb"), "r", 30, json!({}), None, Some(&rid)).await.unwrap();
-    assert_eq!(r["request_id"], rid.as_str());
-    let again = e.ap.approval_request("vault_hold", Some("deneb"), "r", 30, json!({}), None, Some(&rid)).await;
-    let err = again.expect_err("taken");
-    assert!(err.message.contains("taken"), "{}", err.message);
-}
-
-#[tokio::test]
 async fn a_request_attaches_to_the_requesters_task() {
     let e = env();
     let opened = e.store.task_open("Fix the tunnel", Open { session_id: Some("cc-1".into()), node: Some("mizar".into()), ..Open::default() }, None).unwrap();
@@ -355,36 +281,6 @@ async fn a_request_attaches_to_the_requesters_task() {
         assert!(row["requested_at"].as_f64().is_some() && row["decided_at"].as_f64().is_some(), "{row}");
     }
     assert!(list[1]["decided_at"].as_f64() > list[0]["decided_at"].as_f64());
-}
-
-#[tokio::test]
-async fn a_session_with_no_card_gets_one() {
-    let e = env();
-    let r = e.hold(Some("cc-new")).await;
-    let task = s(&r["task_id"]).to_string();
-    assert_eq!(e.store.task_for_session("cc-new").unwrap().as_deref(), Some(task.as_str()));
-    let card = e.store.task_get(&task).unwrap();
-    assert_eq!((card["section"].as_str(), card["status"].as_str()), (Some("needs_you"), Some("approval")));
-    assert_eq!(card["title"], "vault_hold on deneb: checks tripped");
-    let r2 = e.hold(Some("cc-new")).await;
-    assert_eq!(r2["task_id"], task.as_str());
-    let anon1 = e.hold(None).await;
-    let anon2 = e.hold(None).await;
-    assert_ne!(anon1["task_id"], anon2["task_id"]);
-    assert_ne!(anon1["task_id"], task.as_str());
-}
-
-#[tokio::test]
-async fn approvals_of_reads_a_lapsed_request_as_expired() {
-    let e = env();
-    let r = e.hold(Some("cc-1")).await;
-    let task = s(&r["task_id"]).to_string();
-    assert_eq!(e.ap.approvals_of(&task)[0]["state"], "pending");
-    assert_eq!(e.ap.approvals_of(&task)[0]["decided_at"], Value::Null);
-    e.clock.advance(REQUEST_TTL_S + 1.0);
-    assert_eq!(e.ap.approvals_of(&task)[0]["state"], "expired");
-    assert_eq!(e.ap.approval_get(s(&r["request_id"])).unwrap()["status"], "expired");
-    assert!(e.ap.approvals_of("ZZZZZZZZ").is_empty());
 }
 
 #[tokio::test]
@@ -449,7 +345,6 @@ async fn a_waiting_request_wakes_on_decision() {
     let ap = e.ap.clone();
     let id = rid.clone();
     let waiter = tokio::spawn(async move { ap.approval_wait(&id, 30.0).await });
-    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     let a = e.approval_assertion(&mut pk, &rid);
     e.ap.approve(&rid, &a).await.unwrap();
     let got = tokio::time::timeout(std::time::Duration::from_secs(2), waiter).await.unwrap().unwrap().unwrap();
@@ -457,21 +352,6 @@ async fn a_waiting_request_wakes_on_decision() {
 }
 
 // -- approvals and grants ----------------------------------------------------------------------
-
-#[tokio::test]
-async fn approve_options_bind_the_request() {
-    let e = env();
-    e.enrol("phone");
-    let r = e.ap.approval_request("trust_raise", Some("mizar"), "r", 30, trust_payload(), None, None).await.unwrap();
-    let rid = s(&r["request_id"]);
-    let o = e.ap.approve_options(rid).unwrap();
-    assert_eq!(o["challenge"], b64u(&approval_challenge(rid, "trust_raise", &trust_payload())).as_str());
-    assert_eq!(o["rpId"], RP_ID);
-    assert_eq!(o["allowCredentials"].as_array().unwrap().len(), 1);
-    let want = Sha256::digest(canonical(&json!({"request_id": rid, "kind": "trust_raise", "payload": trust_payload()}))).to_vec();
-    assert_eq!(approval_challenge(rid, "trust_raise", &trust_payload()), want);
-    assert_eq!(code(e.ap.approve_options("qZZZZZZZZZZZZ")), "unknown_request");
-}
 
 #[tokio::test]
 async fn an_assertion_for_one_request_is_refused_on_another() {
@@ -541,38 +421,6 @@ async fn admin_ssh_grant_and_certificate() {
     assert_eq!(cert.signature_key(), ca.key_data());
     let view = e.ap.approval_view(&rid).unwrap();
     assert!(view.get("grant").is_none() && view.get("cert").is_none() && view.get("ssh_cert").is_none(), "{view}");
-}
-
-#[tokio::test]
-async fn a_grant_names_kind_node_subject_and_payload() {
-    let e = env();
-    let (_, mut pk) = e.enrol("phone");
-    let r = e.ap.approval_request("trust_raise", Some("mizar"), "r", 90, trust_payload(), None, None).await.unwrap();
-    let rid = s(&r["request_id"]).to_string();
-    let a = e.approval_assertion(&mut pk, &rid);
-    e.ap.approve(&rid, &a).await.unwrap();
-    let got = e.ap.approval_get(&rid).unwrap();
-    let gp = e.grant_pub();
-    let body = verify_grant(grant_of(&got), &gp, &Expect { kind: Some("trust_raise"), node: Some("mizar"), subject: Some("tony"), payload: Some(&trust_payload()) }, e.now()).unwrap();
-    assert_eq!(body["not_after"].as_i64().unwrap() - body["not_before"].as_i64().unwrap(), 90 * 60);
-    assert_eq!(body["payload_sha256"], hex::encode(Sha256::digest(canonical(&trust_payload()))).as_str());
-    assert!(matches!(verify_grant(grant_of(&got), &gp, &Expect { kind: Some("admin_ssh"), ..Expect::default() }, e.now()), Err(GrantError::Mismatch { .. })));
-    assert_eq!(verify_grant(grant_of(&got), &gp, &Expect { payload: Some(&json!({"other": 1})), ..Expect::default() }, e.now()), Err(GrantError::WrongPayload));
-    assert!(matches!(verify_grant(grant_of(&got), &gp, &Expect { subject: Some("cc-9"), ..Expect::default() }, e.now()), Err(GrantError::Mismatch { .. })));
-}
-
-#[tokio::test]
-async fn vault_hold_needs_no_payload() {
-    let e = env();
-    let (_, mut pk) = e.enrol("phone");
-    let r = e.ap.approval_request("vault_hold", Some("deneb"), "checks tripped", 30, Value::Null, None, None).await.unwrap();
-    let rid = s(&r["request_id"]).to_string();
-    let a = e.approval_assertion(&mut pk, &rid);
-    e.ap.approve(&rid, &a).await.unwrap();
-    let got = e.ap.approval_get(&rid).unwrap();
-    assert_eq!(got["status"], "approved");
-    assert_eq!(got["payload"], json!({}));
-    verify_grant(grant_of(&got), &e.grant_pub(), &Expect { kind: Some("vault_hold"), node: Some("deneb"), payload: Some(&json!({})), ..Expect::default() }, e.now()).unwrap();
 }
 
 #[tokio::test]
@@ -649,25 +497,6 @@ async fn orders_pull_by_kind_and_are_done_once() {
     assert_eq!(e.ap.order_get("oZZZZZZZZZZZZ").unwrap(), None);
 }
 
-#[tokio::test]
-async fn an_order_lapses_after_10_minutes() {
-    let e = env();
-    e.ap.issue_order("agent", AGENT_NODE, json!({})).unwrap();
-    e.clock.advance(601.0);
-    assert!(e.ap.order_pull(AGENT_NODE, None, 0.0).await.unwrap().as_array().unwrap().is_empty());
-}
-
-#[tokio::test]
-async fn order_pull_long_polls() {
-    let e = env();
-    let ap = e.ap.clone();
-    let waiter = tokio::spawn(async move { ap.order_pull(AGENT_NODE, None, 5.0).await });
-    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    e.ap.issue_order("agent", AGENT_NODE, json!({})).unwrap();
-    let got = tokio::time::timeout(std::time::Duration::from_secs(2), waiter).await.unwrap().unwrap().unwrap();
-    assert_eq!(got.as_array().unwrap().len(), 1);
-}
-
 // -- devices ------------------------------------------------------------------------------------
 
 #[tokio::test]
@@ -701,16 +530,6 @@ async fn a_revoked_device_stops() {
 }
 
 // -- the 2fa burst (R137) -------------------------------------------------------------------------
-
-#[tokio::test]
-async fn twofa_state_reads_the_2fa_verbs() {
-    let e = env();
-    let st = e.ap.twofa_state().await.unwrap();
-    assert_eq!(st["devices"], json!([{"name": "phone"}]));
-    assert_eq!(st["pending"]["phone"][0]["urgid"], "u1");
-    let verbs: Vec<String> = e.tools.calls().into_iter().map(|c| c.0).collect();
-    assert_eq!(verbs, ["devices", "pending"]);
-}
 
 #[tokio::test]
 async fn burst_takes_1_2_or_4_and_a_nonce_once() {

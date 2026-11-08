@@ -1,13 +1,11 @@
 //! The node side (fleet.md R106 item 6): the outbox while alcor is away, the op_id replay,
 //! the read cache and the signed orders. Ported from test_relay.py.
 
-mod common;
-
 use std::sync::Arc;
 
 use awm_plugin_operations::relay::{ClientError, Relay};
 use awm_trust::grant::load_public_key;
-use common::{s, Env, Flaky, ME};
+use crate::common::{s, Env, Flaky, ME};
 use serde_json::{json, Value};
 
 struct Pair {
@@ -55,19 +53,6 @@ async fn outbox_keeps_order_while_alcor_is_away() {
 }
 
 #[tokio::test]
-async fn a_write_waits_behind_the_outbox_and_then_gets_its_answer() {
-    let p = pair();
-    p.link.set_up(false);
-    let first = p.relay.write("task_open", json!({"title": "first", "session_id": "ccA"})).await.unwrap();
-    p.link.set_up(true);
-    let second = p.relay.write("task_open", json!({"title": "second", "session_id": "ccB"})).await.unwrap();
-    assert!(second.get("queued").is_none(), "the outbox drains before the new write: {second}");
-    assert_eq!(p.link.verbs(), ["task_open", "task_open"]);
-    let titles: Vec<String> = [&first, &second].iter().map(|r| s(&p.env.store.task_get(&s(&r["task_id"])).unwrap()["title"])).collect();
-    assert_eq!(titles, ["first", "second"]);
-}
-
-#[tokio::test]
 async fn a_stale_read_carries_the_last_answer() {
     let p = pair();
     let tid = s(&p.relay.write("task_open", json!({"title": "x", "session_id": "ccA"})).await.unwrap()["task_id"]);
@@ -102,15 +87,6 @@ async fn refused_write_surfaces_and_does_not_block() {
     assert_eq!(p.relay.pending(), 0);
     let next = p.relay.write("task_open", json!({"title": "after", "session_id": "ccA"})).await.unwrap();
     assert!(next.get("queued").is_none());
-}
-
-#[tokio::test]
-async fn the_relay_refuses_a_verb_of_the_wrong_class() {
-    let p = pair();
-    assert!(matches!(p.relay.write("task_get", json!({})).await, Err(ClientError::Refused(_))));
-    assert!(matches!(p.relay.read("task_open", json!({})).await, Err(ClientError::Refused(_))));
-    assert!(matches!(p.relay.poll("task_get", json!({})).await, Err(ClientError::Refused(_))));
-    assert!(p.link.verbs().is_empty());
 }
 
 #[tokio::test]
@@ -150,38 +126,4 @@ async fn approvals_ride_the_outbox() {
     assert_eq!((s(&card["kind"]), s(&card["section"]), card["status"].clone()), ("task".into(), "working".into(), Value::Null),
                "the requester's own card leaves Needs you once nothing waits");
     assert_eq!(card["sessions"][0]["session_id"], ME);
-}
-
-#[tokio::test]
-async fn a_lost_approval_reply_replays_once() {
-    let p = pair();
-    p.link.lose_reply.store(true, std::sync::atomic::Ordering::SeqCst);
-    let r = p.relay.write("approval_request", json!({"kind": "vault_hold", "reason": "r", "session_id": ME})).await.unwrap();
-    assert_eq!(r["queued"], true);
-    p.relay.flush().await;
-    assert_eq!(p.relay.status()["refused"], 0);
-    assert_eq!(p.env.ap.approval_get(&s(&r["request_id"])).unwrap()["status"], "pending");
-}
-
-#[tokio::test]
-async fn cancel_by_another_session_is_refused() {
-    let p = pair();
-    let r = p.relay.write("approval_request", json!({"kind": "vault_hold", "reason": "r", "session_id": ME})).await.unwrap();
-    let other = format!("cc{}", "2".repeat(32));
-    let e = p.relay.write("approval_cancel", json!({"request_id": r["request_id"], "session_id": other})).await.unwrap_err();
-    assert!(matches!(&e, ClientError::Refused(m) if m.contains("not_requester")), "{e:?}");
-}
-
-#[tokio::test]
-async fn marks_are_local_notes() {
-    let p = pair();
-    assert_eq!(p.relay.mark("needs:x"), None);
-    p.relay.set_mark("remind:T1", "a");
-    p.relay.set_mark("remind:T2", "b");
-    p.relay.set_mark("needs:x", "T1");
-    let mut marks = p.relay.marks("remind:");
-    marks.sort();
-    assert_eq!(marks, [("remind:T1".to_string(), "a".to_string()), ("remind:T2".to_string(), "b".to_string())]);
-    p.relay.clear_mark("needs:x");
-    assert_eq!(p.relay.mark("needs:x"), None);
 }

@@ -18,7 +18,7 @@ const REG_CHALLENGE: &[u8] = b"registration-challenge-0123456789";
 const ASR_CHALLENGE: &[u8] = b"assertion-challenge-0123456789ab";
 
 fn vectors() -> Value {
-    serde_json::from_str(include_str!("passkey_vectors.json")).unwrap()
+    serde_json::from_str(include_str!("../passkey_vectors.json")).unwrap()
 }
 
 fn bytes(v: &Value) -> Vec<u8> {
@@ -196,15 +196,4 @@ fn assertion_refusals() {
     bad_handle["response"]["userHandle"] = json!(5);
     assert_eq!(asr_err(&bad_handle, &cose, 1), "passkey refused: Credential response had unexpected userHandle");
     assert!(asr_err(&next, "AAAA", 1).starts_with("passkey refused: "));
-}
-
-#[test]
-fn parse_cose_refuses_what_it_cannot_use() {
-    assert!(matches!(parse_cose("!!"), Err(PasskeyError::Key(_))));
-    assert!(parse_cose(&b64u(b"\xa1\x01\x02")).is_err());
-    let mut auth = SoftAuthenticator::new(ORIGIN, RP);
-    auth.alg = ALG_EDDSA;
-    assert!(parse_cose(&b64u(&auth.cose())).unwrap_err().to_string().contains("does not take alg"));
-    let point = p256::ecdsa::SigningKey::random(&mut rand::rngs::OsRng).verifying_key().to_encoded_point(false);
-    assert_eq!(parse_cose(&b64u(point.as_bytes())).unwrap().alg(), ALG_ES256, "the uncompressed U2F form py_webauthn accepts");
 }

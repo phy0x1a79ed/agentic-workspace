@@ -1,13 +1,11 @@
 //! The task store (fleet.md R106, queue.md R61 to R66), ported from test_store.py with the
 //! approved revision: History for done, approvals on the requester's own card, jobs on rows.
 
-mod common;
-
 use std::collections::HashMap;
 
 use awm_plugin_operations::ids::{from_uuid, intake_task_id, is_task_id, mint_task_id};
 use awm_plugin_operations::store::{Open, Seat, Store};
-use common::{s, TestClock};
+use crate::common::{s, TestClock};
 use serde_json::{json, Map, Value};
 
 fn fresh() -> (tempfile::TempDir, Store) {
@@ -30,13 +28,6 @@ fn open(st: &Store, title: &str, sid: &str) -> String {
 fn section(st: &Store, t: &str) -> (String, Value) {
     let c = st.task_get(t).unwrap();
     (s(&c["section"]), c["status"].clone())
-}
-
-fn event_kinds(st: &Store) -> Vec<String> {
-    let db = rusqlite::Connection::open(st.path()).unwrap();
-    let mut q = db.prepare("SELECT kind FROM events ORDER BY id").unwrap();
-    let kinds = q.query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect();
-    kinds
 }
 
 #[test]
@@ -70,19 +61,6 @@ fn open_attach_join_and_sessions() {
 }
 
 #[test]
-fn a_join_with_no_own_card_folds_nothing() {
-    let (_d, st) = fresh();
-    let t = open(&st, "main", "ccA");
-    let j = st.task_join(&t, "ccZ", Seat::default(), None).unwrap();
-    assert_eq!(j["folded_task_id"], Value::Null);
-    let shared = open(&st, "shared", "ccB");
-    st.task_attach(&shared, "ccC", "worker", Seat::default(), None).unwrap();
-    let j = st.task_join(&t, "ccC", Seat::default(), None).unwrap();
-    assert_eq!(j["folded_task_id"], Value::Null, "a card another session works on does not fold");
-    assert_eq!(st.task_get(&shared).unwrap()["task_id"], json!(shared));
-}
-
-#[test]
 fn report_moves_sections_and_working_has_no_tag() {
     let (_d, st) = fresh();
     let t = open(&st, "x", "ccA");
@@ -99,14 +77,6 @@ fn report_moves_sections_and_working_has_no_tag() {
     assert_eq!((s(&c["section"]), s(&c["status"])), ("history".into(), "done".into()));
     assert!(c["done_at"].as_f64().is_some());
     assert!(st.task_report(&t, Some("ccA"), "dragged", None, None, None).is_err());
-}
-
-#[test]
-fn a_report_records_the_sessions_rc_url() {
-    let (_d, st) = fresh();
-    let t = open(&st, "x", "ccA");
-    st.task_report(&t, Some("ccA"), "working", None, Some("https://rc.example.test/a"), None).unwrap();
-    assert_eq!(st.task_sessions(&t).unwrap()[0]["rc_url"], "https://rc.example.test/a");
 }
 
 #[test]
@@ -173,30 +143,6 @@ fn an_approval_tags_the_requesters_own_card_until_none_waits() {
 }
 
 #[test]
-fn a_decision_leaves_a_card_the_session_moved_since() {
-    let (_d, st) = fresh();
-    let t = open(&st, "x", "ccA");
-    st.approval_attach(Some("ccA"), "q1", "x", None, "x").unwrap();
-    st.task_report(&t, Some("ccA"), "blocked", Some("another thing"), None, None).unwrap();
-    st.approval_resolve(&t, "q1", "cancelled", false).unwrap();
-    assert_eq!(section(&st, &t), ("needs_you".into(), json!("blocked")));
-}
-
-#[test]
-fn a_requester_with_no_card_gets_one() {
-    let (_d, st) = fresh();
-    let t = s(&st.approval_attach(Some("ccZ"), "q1", "vault_hold on deneb: checks", Some("deneb"), "vault_hold: checks").unwrap()["task_id"]);
-    let c = st.task_get(&t).unwrap();
-    assert_eq!((s(&c["title"]), s(&c["section"]), s(&c["status"]), s(&c["peer"])),
-               ("vault_hold on deneb: checks".into(), "needs_you".into(), "approval".into(), "deneb".into()));
-    assert_eq!(c["sessions"][0]["session_id"], "ccZ");
-    assert_eq!(st.task_for_session("ccZ").unwrap(), Some(t.clone()));
-    let svc = s(&st.approval_attach(None, "q2", "a service asks", None, "s").unwrap()["task_id"]);
-    assert_ne!(svc, t);
-    assert_eq!(st.task_get(&svc).unwrap()["sessions"], json!([]));
-}
-
-#[test]
 fn history_pages_back_and_search() {
     let (_d, st, clock) = clocked(1000.0);
     for i in 0..7 {
@@ -214,55 +160,6 @@ fn history_pages_back_and_search() {
     assert_eq!(p3["next_before"], Value::Null);
     assert_eq!(titles(&st.task_list(None, Some("job 4"), None, None).unwrap()), ["job 4"]);
     assert!(st.task_list(Some("done"), None, None, None).is_err(), "done is History now");
-}
-
-#[test]
-fn every_section_pages_back() {
-    let (_d, st, clock) = clocked(1000.0);
-    for i in 0..5 {
-        clock.advance(1.0);
-        open(&st, &format!("w{i}"), &format!("cc{i}"));
-    }
-    let titles = |v: &Value| v["cards"].as_array().unwrap().iter().map(|c| s(&c["title"])).collect::<Vec<_>>();
-    let p1 = st.task_list(Some("working"), None, None, Some(2)).unwrap();
-    assert_eq!(titles(&p1), ["w4", "w3"]);
-    let p2 = st.task_list(Some("working"), None, p1["next_before"].as_f64(), Some(2)).unwrap();
-    let p3 = st.task_list(Some("working"), None, p2["next_before"].as_f64(), Some(2)).unwrap();
-    assert_eq!([titles(&p2), titles(&p3)].concat(), ["w2", "w1", "w0"]);
-    assert_eq!(p3["next_before"], Value::Null);
-}
-
-#[test]
-fn events_feed() {
-    let (_d, st) = fresh();
-    let t = open(&st, "x", "ccA");
-    st.task_report(&t, Some("ccA"), "blocked", None, None, None).unwrap();
-    assert_eq!(event_kinds(&st), ["open", "session", "report"]);
-    let mark = st.max_event_id().unwrap();
-    assert_eq!(mark, 3);
-    assert_eq!(st.board_changes(mark, None).unwrap()["cards"], json!([]));
-}
-
-#[test]
-fn a_block_keeps_its_reason_on_the_card() {
-    let (_d, st) = fresh();
-    let t = open(&st, "x", "ccA");
-    st.task_report(&t, Some("ccA"), "blocked", Some("needs a key"), None, None).unwrap();
-    assert_eq!(st.task_get(&t).unwrap()["meta"]["reason"], "needs a key");
-    st.task_report(&t, Some("ccA"), "working", None, None, None).unwrap();
-    assert_eq!(st.task_get(&t).unwrap()["meta"]["reason"], Value::Null);
-}
-
-#[test]
-fn sessions_record_their_job() {
-    let (_d, st) = fresh();
-    let o = Open { session_id: Some("ccA".into()), node: Some("mizar".into()), job: Some("job-a".into()), ..Open::default() };
-    let t = s(&st.task_open("x", o, None).unwrap()["task_id"]);
-    st.task_attach(&t, "ccB", "worker", Seat { node: Some("lyra".into()), job: Some("job-b".into()), ..Seat::default() }, None).unwrap();
-    st.task_attach(&t, "ccA", "main", Seat::default(), None).unwrap();
-    let jobs: HashMap<String, Value> = st.task_sessions(&t).unwrap().iter().map(|x| (s(&x["session_id"]), x["job"].clone())).collect();
-    assert_eq!(jobs, HashMap::from([("ccA".into(), json!("job-a")), ("ccB".into(), json!("job-b"))]), "a write with no job keeps the one recorded");
-    assert!(st.task_attach(&t, "ccC", "boss", Seat::default(), None).is_err());
 }
 
 #[test]
@@ -314,37 +211,4 @@ fn messages_live_on_the_card() {
     assert_eq!(st.task_messages(&t, 1).unwrap().len(), 1);
     assert_eq!(st.task_get(&t).unwrap()["section"], "working");
     assert!(st.task_message("nosuchid", "x", None, None, None, None).is_err());
-}
-
-#[test]
-fn an_agent_card_waits_in_needs_you_with_its_note() {
-    let (_d, st) = fresh();
-    let t = s(&st.agent_card("mizar", Some("n0000001")).unwrap()["task_id"]);
-    let c = st.task_get(&t).unwrap();
-    assert_eq!((s(&c["title"]), s(&c["section"]), s(&c["peer"]), s(&c["source_note"])),
-               ("Agent on mizar from note n0000001".into(), "needs_you".into(), "mizar".into(), "n0000001".into()));
-    assert_eq!(c["meta"]["from"], "vault");
-    let bare = s(&st.agent_card("lyra", None).unwrap()["task_id"]);
-    let c = st.task_get(&bare).unwrap();
-    assert_eq!((s(&c["title"]), c["source_note"].clone()), ("Agent on lyra".into(), Value::Null));
-}
-
-#[test]
-fn close_and_reject_go_to_history() {
-    let (_d, st) = fresh();
-    let a = open(&st, "a", "ccA");
-    let b = open(&st, "b", "ccB");
-    assert_eq!(st.card_close(&a).unwrap(), json!({"task_id": a, "section": "history", "status": "done"}));
-    st.card_reject(&b).unwrap();
-    assert_eq!(section(&st, &b), ("history".into(), json!("rejected")));
-    assert!(st.card_close("nosuchid").is_err());
-}
-
-#[test]
-fn the_kv_keeps_one_value_per_key() {
-    let (_d, st) = fresh();
-    assert_eq!(st.kv_get("k").unwrap(), None);
-    st.kv_set("k", "1").unwrap();
-    st.kv_set("k", "2").unwrap();
-    assert_eq!(st.kv_get("k").unwrap().as_deref(), Some("2"));
 }

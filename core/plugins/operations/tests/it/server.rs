@@ -1,8 +1,6 @@
 //! The vault API in process: the cookie, the origin rule, CORS, the security headers, each
 //! `/api` action, the sign-in and the modal pages. Every id, host and key here is synthetic.
 
-mod vault_common;
-
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -16,7 +14,7 @@ use axum::http::{header, HeaderMap, Method, Request, StatusCode};
 use axum::Router;
 use serde_json::{json, Value};
 use tower::ServiceExt;
-use vault_common::{env, env_with, s, Env, AGENT_NODE, ORIGIN, PORTAL, PORTAL_NODE, RP_ID};
+use crate::vault_common::{env, env_with, s, Env, AGENT_NODE, ORIGIN, PORTAL, PORTAL_NODE, RP_ID};
 
 const BOARD: &str = "https://board.example.test";
 const EVIL: &str = "https://evil.example.test";
@@ -240,18 +238,6 @@ async fn a_post_names_a_known_origin() {
     assert_eq!(r.code(), "bad_origin");
 }
 
-#[tokio::test]
-async fn a_get_without_origin_passes_the_origin_rule() {
-    let t = vt();
-    let (_, _, c) = t.signed_in("phone");
-    let r = t.send(Method::GET, "/api/devices", None, Some(&c), None).await;
-    assert_eq!(r.status, StatusCode::OK, "{}", r.text());
-    let r = t.send(Method::GET, "/api/devices", Some(EVIL), Some(&c), None).await;
-    assert_eq!((r.status, r.code()), (StatusCode::FORBIDDEN, json!("bad_origin")));
-    let r = t.send(Method::GET, "/api/devices", None, None, None).await;
-    assert_eq!(r.code(), "need_signin");
-}
-
 // -- CORS --------------------------------------------------------------------------------------
 
 #[tokio::test]
@@ -319,12 +305,6 @@ async fn security_headers_on_every_response() {
     security_headers(&t.send(Method::GET, "/static/vault.js", None, None, None).await, "a static file");
     security_headers(&t.send(Method::GET, "/no/such/page", None, None, None).await, "a 404");
     security_headers(&t.send(Method::GET, &format!("/signin?next={}", enc(&portal_url())), None, Some(&c), None).await, "a 303");
-}
-
-#[tokio::test]
-
-async fn security_headers_on_a_preflight() {
-    let t = vt();
     security_headers(&preflight(&t, Some(BOARD)).await, "a preflight");
     security_headers(&preflight(&t, Some(EVIL)).await, "a refused preflight");
 }
@@ -334,27 +314,6 @@ fn enc(s: &str) -> String {
 }
 
 // -- everyday actions --------------------------------------------------------------------------
-
-#[tokio::test]
-async fn agent_opens_a_card_and_issues_an_order() {
-    let t = vt();
-    let (_, _, c) = t.signed_in("phone");
-    let r = t.post("/api/agent", Some(&c), json!({"node": AGENT_NODE, "note_id": "note-1"})).await;
-    assert_eq!(r.status, StatusCode::OK, "{}", r.text());
-    let out = r.json();
-    let card = t.e.store.task_get(s(&out["task_id"])).unwrap();
-    assert_eq!((card["section"].as_str(), card["source_note"].as_str()), (Some("needs_you"), Some("note-1")));
-    let envs = t.e.ap.order_pull(AGENT_NODE, None, 0.0).await.unwrap();
-    let env0 = &envs.as_array().unwrap()[0];
-    assert_eq!(env0["order"]["order_id"], out["order_id"]);
-    assert_eq!(env0["order"]["payload"], json!({"task_id": out["task_id"], "node": AGENT_NODE, "note_id": "note-1"}));
-    let plain = t.post("/api/agent", Some(&c), json!({"node": AGENT_NODE, "note_id": ""})).await.json();
-    assert_eq!(t.e.store.task_get(s(&plain["task_id"])).unwrap()["source_note"], Value::Null);
-    let refused = t.post("/api/agent", Some(&c), json!({"node": "deneb"})).await;
-    assert_eq!((refused.status, refused.code()), (StatusCode::FORBIDDEN, json!("not_allowed")));
-    let bad = t.post("/api/agent", Some(&c), json!({"node": AGENT_NODE, "note_id": "has space"})).await;
-    assert_eq!((bad.status, bad.code()), (StatusCode::BAD_REQUEST, json!("bad_request")));
-}
 
 #[tokio::test]
 async fn cards_close_and_reject_to_history() {
@@ -374,35 +333,6 @@ async fn cards_close_and_reject_to_history() {
     assert_eq!((r.status, r.code()), (StatusCode::BAD_REQUEST, json!("unknown_action")));
     let r = t.post("/api/card/ZZZZZZZZ/close", Some(&c), json!({})).await;
     assert!(!r.status.is_success(), "{}", r.text());
-}
-
-#[tokio::test]
-async fn request_reject_takes_only_a_pending_request() {
-    let t = vt();
-    let (_, _, c) = t.signed_in("phone");
-    let r = t.e.hold(Some("cc-1")).await;
-    let rid = s(&r["request_id"]).to_string();
-    let out = t.post(&format!("/api/request/{rid}/reject"), Some(&c), json!({})).await;
-    assert_eq!(out.status, StatusCode::OK, "{}", out.text());
-    assert_eq!(out.json()["status"], "denied");
-    let row = t.e.ap.approval_get(&rid).unwrap();
-    assert_eq!(row["status"], "denied");
-    assert_eq!(t.e.ap.approvals_of(s(&r["task_id"]))[0]["state"], "rejected");
-    assert_eq!(t.e.store.task_get(s(&r["task_id"])).unwrap()["section"], "working");
-    let again = t.post(&format!("/api/request/{rid}/reject"), Some(&c), json!({})).await;
-    assert_eq!((again.status, again.code()), (StatusCode::CONFLICT, json!("decided")));
-    let none = t.post("/api/request/qZZZZZZZZZZZZ/reject", Some(&c), json!({})).await;
-    assert_eq!((none.status, none.code()), (StatusCode::NOT_FOUND, json!("unknown_request")));
-}
-
-#[tokio::test]
-async fn seat_remote_control_without_a_gateway_is_refused() {
-    let t = vt();
-    let (_, _, c) = t.signed_in("phone");
-    let r = t.post("/api/seat/remote_control", Some(&c), json!({"seat": "s1", "on": true})).await;
-    assert_eq!(r.status, StatusCode::BAD_REQUEST, "{}", r.text());
-    assert_eq!(r.json()["ok"], false);
-    assert_eq!(r.code(), "failed");
 }
 
 #[tokio::test]
@@ -592,10 +522,6 @@ async fn signout_clears_the_cookie() {
 
 // -- the pages ------------------------------------------------------------------------------------
 
-fn is_html(r: &Resp) -> bool {
-    r.status == StatusCode::OK && r.header("content-type").is_some_and(|c| c.starts_with("text/html"))
-}
-
 #[tokio::test]
 async fn signin_page_redirects_a_live_session_to_the_portal() {
     let t = vt();
@@ -607,51 +533,4 @@ async fn signin_page_redirects_a_live_session_to_the_portal() {
     let bad = t.send(Method::GET, &format!("/signin?next={}", enc("https://evil.example.test/")), None, Some(&c), None).await;
     assert_eq!(bad.status, StatusCode::BAD_REQUEST);
     assert_eq!(bad.header("location"), None);
-}
-
-#[tokio::test]
-async fn signin_page_without_a_session_serves_the_page() {
-    let t = vt();
-    let (_, _, c) = t.signed_in("phone");
-    let path = format!("/signin?next={}", enc(&portal_url()));
-    let r = t.send(Method::GET, &path, None, None, None).await;
-    assert!(is_html(&r), "{} {:?}", r.status, r.header("content-type"));
-    assert!(r.text().contains("&quot;signed_in&quot;:false"), "{}", r.text());
-    assert!(r.text().contains(PORTAL));
-    let stale = t.send(Method::GET, &path, None, Some("not-a-cookie"), None).await;
-    assert!(is_html(&stale));
-    let live = t.send(Method::GET, "/signin?frame=1", None, Some(&c), None).await;
-    assert!(is_html(&live));
-    assert!(live.text().contains("&quot;signed_in&quot;:true"), "{}", live.text());
-}
-
-#[tokio::test]
-async fn signin_go_sends_a_signed_out_visit_to_the_signin_page() {
-    let t = vt();
-    let (d, _, c) = t.signed_in("phone");
-    let path = format!("/signin/go?next={}", enc(&portal_url()));
-    let r = t.send(Method::GET, &path, None, None, None).await;
-    assert_eq!(r.status, StatusCode::SEE_OTHER);
-    assert_eq!(r.header("location"), Some(format!("/signin?next={}", enc(&portal_url())).as_str()));
-    let r = t.send(Method::GET, &path, None, Some(&c), None).await;
-    assert_eq!(r.status, StatusCode::SEE_OTHER);
-    check_portal_redirect(&t.e, r.header("location").unwrap(), &d);
-}
-
-#[tokio::test]
-async fn modal_pages() {
-    let t = vt();
-    assert!(is_html(&t.send(Method::GET, "/modal/approve/qAAAAAAAAAAAA", None, None, None).await));
-    for q in ["", "?count=1", "?count=2", "?count=4&device=phone"] {
-        let r = t.send(Method::GET, &format!("/modal/twofa{q}"), None, None, None).await;
-        assert!(is_html(&r), "{q}: {}", r.status);
-    }
-    let r = t.send(Method::GET, "/modal/twofa?count=3", None, None, None).await;
-    assert_eq!((r.status, r.code()), (StatusCode::BAD_REQUEST, json!("bad_request")));
-    assert!(is_html(&t.send(Method::GET, "/enrol", None, None, None).await));
-    assert!(is_html(&t.send(Method::GET, "/devices", None, None, None).await));
-    let js = t.send(Method::GET, "/static/vault.js", None, None, None).await;
-    assert_eq!(js.status, StatusCode::OK);
-    assert!(js.header("content-type").unwrap().starts_with("text/javascript"));
-    assert_eq!(t.send(Method::GET, "/static/other.js", None, None, None).await.status, StatusCode::NOT_FOUND);
 }

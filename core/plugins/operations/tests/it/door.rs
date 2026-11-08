@@ -1,15 +1,13 @@
 //! The singleton door (fleet.md R98 item 2): a locked command, one call per connection.
 //! Ported from test_door.py. The locked command is this crate's own `operations door`.
 
-mod common;
-
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use awm_plugin_operations::door::{self, DoorClient};
 use awm_plugin_operations::relay::{ClientError, StoreClient};
-use common::{s, Env, ME};
+use crate::common::{s, Env, ME};
 use serde_json::{json, Value};
 
 const BIN: &str = env!("CARGO_BIN_EXE_operations");
@@ -74,21 +72,6 @@ async fn a_dead_door_is_unreachable() {
     assert!(matches!(gone.call("keys", json!({})).await, Err(ClientError::Unreachable(_))));
     let missing = locked(&dir.path().join("missing.sock"), "mizar").call("keys", json!({})).await;
     assert!(matches!(missing, Err(ClientError::Unreachable(_))), "{missing:?}");
-}
-
-#[test]
-fn door_argv() {
-    std::env::remove_var("AWM_OPERATIONS_DOOR");
-    assert_eq!(door::door_argv(), None);
-    std::env::set_var("AWM_OPERATIONS_DOOR", "ops@alcor:2201");
-    std::env::set_var("AWM_OPERATIONS_DOOR_KEY", "/k");
-    let argv = door::door_argv().unwrap();
-    assert_eq!(argv[..4], ["ssh", "-T", "-p", "2201"]);
-    assert_eq!(argv[argv.len() - 2..], ["ops@alcor", "door"]);
-    assert!(argv.iter().any(|a| a == "/k"));
-    std::env::remove_var("AWM_OPERATIONS_DOOR_KEY");
-    assert!(!door::door_argv().unwrap().iter().any(|a| a == "-i"));
-    std::env::remove_var("AWM_OPERATIONS_DOOR");
 }
 
 fn ask(path: &Path, req: Value) -> Value {

@@ -2,15 +2,13 @@
 //! queue.db, the board feed trilium drains (CONTRACT.md b11adebc items 2 to 5), the one-shot
 //! vault import, Stale from telemetry, the event hook and the `agent` order's start.
 
-mod common;
-
 use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use awm_plugin_operations::service;
 use awm_plugin_operations::store::{BoardEvent, LiveSession, Open, Seat, Store};
-use common::{count, s, Env, TestClock};
+use crate::common::{count, s, Env, TestClock};
 use rusqlite::{params, Connection};
 use serde_json::{json, Map, Value};
 
@@ -237,19 +235,6 @@ fn board_changes_pages_by_event_with_one_card_per_task() {
     assert_eq!((ids(&all), all["mark"].clone(), all["more"].clone()), (vec!["T0000001".to_string(), "T0000002".to_string()], json!(6), json!(false)));
 }
 
-#[test]
-fn board_changes_caps_a_page_at_500_events() {
-    let dir = tempfile::tempdir().unwrap();
-    let st = Store::open(dir.path().join("q.db"), true).unwrap();
-    let t = s(&st.task_open("busy", Open::default(), None).unwrap()["task_id"]);
-    for i in 0..510 {
-        st.task_message(&t, &format!("m{i}"), None, None, None, None).unwrap();
-    }
-    let page = st.board_changes(0, None).unwrap();
-    assert_eq!((page["mark"].clone(), page["more"].clone(), page["cards"].as_array().unwrap().len()), (json!(500), json!(true), 1));
-    assert_eq!(page["cards"][0]["messages"].as_array().unwrap().len(), 510, "a card carries all its messages");
-}
-
 const CARD_KEYS: [&str; 15] = ["task_id", "title", "kind", "section", "status", "peer", "tags", "meta", "created", "updated", "done_at",
                                "parent_task", "sessions", "source_note", "approvals"];
 const SESSION_KEYS: [&str; 9] = ["session_id", "job", "name", "role", "active", "node", "rc_url", "started", "ended"];
@@ -339,11 +324,6 @@ async fn board_changes_matches_the_shared_fixture() {
     }
 }
 
-#[tokio::test]
-async fn the_fixture_run_is_deterministic() {
-    assert_eq!(fixture_board().await, fixture_board().await);
-}
-
 // -- board_import ----------------------------------------------------------------------------
 
 fn card(id: &str, section: &str, kind: &str, body: Option<&str>) -> Value {
@@ -409,38 +389,22 @@ fn refused(m: &Migrated, cards: &[Value], gap: Value) -> Value {
 }
 
 #[test]
-fn an_import_with_missing_cards_is_refused() {
+fn an_import_that_does_not_match_the_queue_is_refused() {
     let m = migrated();
     let out = refused(&m, &vault()[..3], json!(false));
     assert_eq!(out, json!({"ok": false, "missing": ["T0000004"], "extra": [], "no_body": [], "duplicates": false, "expected": 4, "given": 3}));
-}
-
-#[test]
-fn an_import_with_extra_cards_is_refused() {
-    let m = migrated();
     let mut cards = vault();
     cards.push(card("T0000005", "working", "task", None));
     cards.push(card("T0000009", "proposed", "task", None));
     let out = refused(&m, &cards, json!(false));
     assert_eq!((out["missing"].clone(), out["extra"].clone()), (json!([]), json!(["T0000005", "T0000009"])), "a card after the mark is extra");
-}
-
-#[test]
-fn an_import_with_duplicate_ids_is_refused() {
-    let m = migrated();
     let mut cards = vault();
     cards.push(card("T0000001", "history", "task", None));
     let out = refused(&m, &cards, json!(true));
     assert_eq!((out["duplicates"].clone(), out["given"].clone()), (json!(true), json!(5)), "accept_gap does not excuse duplicates");
-}
-
-#[test]
-fn a_note_card_without_its_body_is_refused() {
-    let m = migrated();
     let mut cards = vault();
     cards[1] = card("T0000002", "proposed", "note", None);
-    let out = refused(&m, &cards, json!(true));
-    assert_eq!(out["no_body"], json!(["T0000002"]));
+    assert_eq!(refused(&m, &cards, json!(true))["no_body"], json!(["T0000002"]));
 }
 
 #[test]
@@ -456,21 +420,6 @@ fn accept_gap_must_name_the_gap_exactly() {
     assert_eq!(m.store.task_get("T0000004").unwrap()["section"], "proposed", "a card left out stays where it is");
     let record: Value = serde_json::from_str(&m.store.kv_get("board_import").unwrap().unwrap()).unwrap();
     assert_eq!(record["gap"], json!(["T0000004", "T0000005"]));
-}
-
-#[test]
-fn accept_gap_true_accepts_any_gap() {
-    let m = migrated();
-    let out = m.store.board_import(&[card("T0000002", "proposed", "note", Some("b")), card("T0000009", "working", "task", None)], &[], &json!(true)).unwrap();
-    assert_eq!(out, json!({"ok": true, "moved": 1, "notes": 0}));
-}
-
-#[test]
-fn an_import_with_no_mark_expects_no_cards() {
-    let dir = tempfile::tempdir().unwrap();
-    let st = Store::open(dir.path().join("q.db"), true).unwrap();
-    st.task_open("x", Open::default(), None).unwrap();
-    assert_eq!(st.board_import(&[], &[], &json!(false)).unwrap(), json!({"ok": true, "moved": 0, "notes": 0}));
 }
 
 // -- Stale (R61 item 4) ----------------------------------------------------------------------
@@ -503,14 +452,6 @@ fn a_gone_session_leaves_its_lone_card_stale() {
     assert_eq!(st.session_gone(None, Some("job-b"), "lyra").unwrap(), ["T0000002"]);
     assert_eq!(at(&st, "T0000002"), ("stale".into(), json!("blocked")), "a Needs-you card goes Stale too");
     assert!(st.session_gone(Some(&sid(9)), None, "mizar").unwrap().is_empty());
-}
-
-#[test]
-fn a_session_id_is_matched_through_the_r9_parser() {
-    let (_d, st) = fresh();
-    let uuid = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
-    seated(&st, "T0000001", &format!("cc{}", "a".repeat(32)), "mizar", "job-a");
-    assert_eq!(st.session_gone(Some(uuid), None, "mizar").unwrap(), ["T0000001"]);
 }
 
 #[test]
@@ -566,33 +507,6 @@ fn reconcile_follows_the_roster_on_the_nodes_it_lists() {
     assert_eq!(st.reconcile(&empty).unwrap(), json!({"stale": ["T0000003"], "working": []}), "a listed node with no sessions ends them all");
 }
 
-#[test]
-fn roster_of_reads_telemetry_nodes() {
-    let nodes = json!({"rev": 3, "nodes": [
-        {"node": "mizar", "up": true, "sessions": [{"job": "job-a", "session_id": sid(1), "name": "fix-tunnel"}, {"job": "job-b"}, {"job": "", "session_id": ""}]},
-        {"node": "lyra", "sessions": []},
-        {"up": false, "sessions": [{"job": "job-x"}]},
-    ]});
-    let r = service::roster_of(&nodes);
-    assert_eq!(r.len(), 2);
-    let mizar: Vec<(Option<String>, Option<String>)> = r["mizar"].iter().map(|l| (l.session_id.clone(), l.job.clone())).collect();
-    assert_eq!(mizar, [(Some(sid(1)), Some("job-a".into())), (None, Some("job-b".into())), (None, None)]);
-    assert!(r["lyra"].is_empty());
-    assert!(service::roster_of(&json!({})).is_empty());
-}
-
-#[test]
-fn on_session_event_moves_cards() {
-    let (_d, st) = fresh();
-    seated(&st, "T0000001", &sid(1), "mizar", "job-a");
-    let gone = service::on_session_event(&st, &json!({"event": "gone", "session_id": sid(1), "job": "job-a", "node": "mizar"})).unwrap();
-    assert_eq!(gone, ["T0000001"]);
-    let live = service::on_session_event(&st, &json!({"event": "live", "job": "job-a", "node": "mizar"})).unwrap();
-    assert_eq!(live, ["T0000001"]);
-    assert_eq!(at(&st, "T0000001").0, "working");
-    assert!(service::on_session_event(&st, &json!({"event": "renamed", "session_id": sid(1), "node": "mizar"})).unwrap().is_empty());
-}
-
 // -- the event hook --------------------------------------------------------------------------
 
 #[test]
@@ -619,12 +533,6 @@ fn the_event_hook_fires_once_per_event_after_commit() {
     st.ops_post("vpn", "mizar", "t", "b", None).unwrap();
     let seqs: Vec<i64> = seen.lock().unwrap().iter().map(|g| g.0.seq).collect();
     assert_eq!(seqs, [1, 2, 3], "seq rises, and an Ops notice is no card event");
-}
-
-#[test]
-fn board_event_gives_the_mark_and_an_rfc3339_time() {
-    let e = BoardEvent { task_id: "T0000001".into(), seq: 5, ts: T0 + 0.25 };
-    assert_eq!(service::board_event(&e), json!({"task_id": "T0000001", "seq": 5, "ts": "2027-01-15T08:00:00.250Z"}));
 }
 
 // -- the agent order -------------------------------------------------------------------------

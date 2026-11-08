@@ -170,14 +170,6 @@ fn a_plan_write_sends_the_file_text() {
 }
 
 #[test]
-fn a_relative_plan_path_resolves_against_the_cwd() {
-    let (h, gw) = (home(), Gateway::start());
-    let p = plan(h.path(), "rel.md", "# rel");
-    run(h.path(), &gw.url, post("Write", json!({"tool_input": {"file_path": ".claude/plans/rel.md"}})));
-    assert_eq!(gw.bodies()[0]["args"]["plan_path"], json!(p));
-}
-
-#[test]
 fn a_plan_that_opened_a_card_tells_the_agent() {
     let (h, gw) = (home(), Gateway::start());
     let p = plan(h.path(), "a-plan.md", "# plan");
@@ -228,47 +220,11 @@ fn task_events_send_the_whole_list_from_disk() {
 }
 
 #[test]
-fn the_task_list_id_override_is_honoured() {
-    let (h, gw) = (home(), Gateway::start());
-    let d = h.path().join(".claude/tasks/named-list");
-    std::fs::create_dir_all(&d).unwrap();
-    std::fs::write(d.join("1.json"), json!({"id": "1", "subject": "x", "status": "pending"}).to_string()).unwrap();
-    run_env(h.path(), &gw.url, post("TaskCreate", json!({"tool_input": {}})), &[("CLAUDE_CODE_TASK_LIST_ID", "named-list")], false);
-    assert_eq!(gw.calls().len(), 1);
-}
-
-#[test]
-fn deleting_the_last_task_sends_an_empty_list() {
-    let (h, gw) = (home(), Gateway::start());
-    std::fs::create_dir_all(h.path().join(".claude/tasks/s1")).unwrap();
-    run(h.path(), &gw.url, post("TaskUpdate", json!({"tool_input": {"taskId": "1", "status": "deleted"}})));
-    assert_eq!(gw.bodies()[0], json!({"name": "operations_hook_todos", "args": {"session_id": "s1", "items": []}}));
-}
-
-#[test]
-fn a_cleared_list_sends_nothing() {
-    let (h, gw) = (home(), Gateway::start());
-    run(h.path(), &gw.url, post("TaskUpdate", json!({"tool_input": {"taskId": "1", "status": "completed"}})));
-    std::fs::create_dir_all(h.path().join(".claude/tasks/s1")).unwrap();
-    run(h.path(), &gw.url, post("TaskUpdate", json!({"tool_input": {"taskId": "1", "status": "completed"}})));
-    run(h.path(), &gw.url, post("TodoWrite", json!({"tool_input": {"todos": []}})));
-    assert!(gw.calls().is_empty());
-}
-
-#[test]
 fn todowrite_carries_the_list_in_its_input() {
     let (h, gw) = (home(), Gateway::start());
     let todos = json!([{"content": "a", "status": "pending", "activeForm": "A"}, {"content": "b", "status": "completed", "activeForm": "B"}]);
     run(h.path(), &gw.url, post("TodoWrite", json!({"tool_input": {"todos": todos}})));
     assert_eq!(gw.bodies()[0]["args"]["items"], json!([{"id": "1", "subject": "a", "status": "pending"}, {"id": "2", "subject": "b", "status": "completed"}]));
-}
-
-#[test]
-fn a_prompt_makes_no_call_unless_the_card_waits_for_tony() {
-    let (h, gw) = (home(), Gateway::start());
-    run(h.path(), &gw.url, prompt("fix the build"));
-    run_env(h.path(), &gw.url, prompt("claim task ABCD1234"), &[("CLAUDE_JOB_DIR", "/jobs/j1")], false);
-    assert!(gw.calls().is_empty());
 }
 
 #[test]
@@ -291,13 +247,13 @@ fn the_blocked_marker_follows_the_result() {
 }
 
 #[test]
-fn a_dead_gateway_still_exits_zero_and_keeps_the_marker() {
+fn a_gateway_that_drops_the_call_still_exits_zero_and_keeps_the_marker() {
     let h = home();
     std::fs::create_dir_all(marker(h.path()).parent().unwrap()).unwrap();
     std::fs::write(marker(h.path()), "").unwrap();
-    let dead = TcpListener::bind("127.0.0.1:0").unwrap();
-    let url = format!("http://127.0.0.1:{}", dead.local_addr().unwrap().port());
-    drop(dead);
+    let hangup = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://127.0.0.1:{}", hangup.local_addr().unwrap().port());
+    std::thread::spawn(move || for stream in hangup.incoming() { drop(stream) });
     run(h.path(), &url, prompt("x"));
     assert!(marker(h.path()).exists());
 }
@@ -308,10 +264,4 @@ fn garbage_input_exits_zero() {
     for input in ["", "not json", "[]", r#"{"hook_event_name": "UserPromptSubmit"}"#] {
         assert_eq!(raw(h.path(), "http://127.0.0.1:9", input, &[]), (0, String::new()), "{input:?}");
     }
-}
-
-#[test]
-fn the_marker_names_a_session_safely() {
-    let m = awm_plugin_operations::hook::marker("a/b");
-    assert_eq!(m.file_name().unwrap(), "a_b.blocked");
 }

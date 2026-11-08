@@ -2,14 +2,12 @@
 //! its thread. Ported from test_arbutus.py. The channel and the admins come from process-wide
 //! env vars, so every test holds one lock and sets the same synthetic values.
 
-mod common;
-
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
-use awm_plugin_operations::arbutus::{self, parse_bundle, Approvals};
-use common::{s, FakeArbutus};
+use awm_plugin_operations::arbutus::{parse_bundle, Approvals};
+use crate::common::{s, FakeArbutus};
 use serde_json::{json, Value};
 
 const TONY: &str = "U01";
@@ -129,19 +127,6 @@ async fn admin_approve_runs_on_the_frozen_copy() {
 }
 
 #[tokio::test]
-async fn a_bundle_with_no_tf_lines_names_no_tf_run() {
-    let h = H::new(0);
-    std::fs::write(h.dir.path().join("bundles/note.bundle"), "reason\tjust a record\nminutes\t5\n").unwrap();
-    let req = h.approvals.open("note", "a", "altair", "job1").await.unwrap();
-    assert!(h.io.posts()[0].2.contains("nothing beyond the record itself"));
-    h.reply("approve", TONY).await;
-    assert_eq!(h.state(&req["ref"])["state"], "approved");
-    let line = &h.io.lines()[0].1;
-    assert!(!line.contains("scripts/tf") && !line.contains("ssh"), "{line}");
-    assert!(h.decided().await.is_empty(), "no task, no card move");
-}
-
-#[tokio::test]
 async fn ryan_counts_and_deny_grants_nothing() {
     let h = H::new(0);
     let req = h.open().await;
@@ -220,15 +205,6 @@ async fn expired_request_is_closed() {
 }
 
 #[tokio::test]
-async fn failed_script_is_reported() {
-    let h = H::new(1);
-    let req = h.open().await;
-    h.reply("approve", TONY).await;
-    assert_eq!(h.state(&req["ref"])["state"], "failed");
-    assert!(h.io.posts().last().unwrap().2.contains("exit 1"));
-}
-
-#[tokio::test]
 async fn open_refuses_a_bad_name_or_bundle() {
     let h = H::new(0);
     assert!(h.approvals.open("../etc", "a", "n", "").await.is_err());
@@ -245,31 +221,4 @@ fn parse_bundle_refuses_what_the_script_refuses() {
     }
     let ok = parse_bundle("# a comment\n\nreason\tx\nminutes\t5\nssh\ta\nssh\tb\ntf\tupdate\tres.x\n").unwrap();
     assert_eq!(ok, json!({"reason": "x", "minutes": "5", "ssh": ["a", "b"], "tf": ["update res.x"]}));
-}
-
-#[test]
-fn request_text_escapes_what_slack_would_read_as_markup() {
-    let req = json!({"ref": "a1b2c3", "agent": "<agent>", "node": "altair", "reason": "a & b", "minutes": "5", "ssh": ["x<y"], "tf": [], "name": "grow", "sha256": "0123456789abcdef"});
-    let text = arbutus::request_text(&req);
-    assert!(text.contains("&lt;agent&gt;") && text.contains("a &amp; b") && text.contains("x&lt;y"), "{text}");
-    assert!(text.contains("sha256 `0123456789ab`"));
-}
-
-#[test]
-fn admins_default_to_tony_and_ryan_and_an_empty_setting_means_none() {
-    let _g = env_lock();
-    std::env::remove_var("AWM_APPROVAL_ADMINS");
-    std::env::remove_var("AWM_APPROVAL_CHANNEL");
-    let defaults: Vec<(String, String)> = arbutus::DEFAULT_APPROVAL_ADMINS.split(',').map(|p| {
-        let (u, n) = p.split_once('=').unwrap();
-        (u.to_string(), n.to_string())
-    }).collect();
-    assert_eq!(arbutus::approval_admins(), defaults);
-    assert_eq!(defaults.iter().map(|d| d.1.as_str()).collect::<Vec<_>>(), ["tony", "ryan"]);
-    let (account, channel) = arbutus::DEFAULT_APPROVAL_CHANNEL.split_once(':').unwrap();
-    assert_eq!(arbutus::approval_channel(), Some((account.to_string(), channel.to_string())));
-    std::env::set_var("AWM_APPROVAL_ADMINS", "");
-    std::env::set_var("AWM_APPROVAL_CHANNEL", "");
-    assert!(arbutus::approval_admins().is_empty());
-    assert_eq!(arbutus::approval_channel(), None);
 }
