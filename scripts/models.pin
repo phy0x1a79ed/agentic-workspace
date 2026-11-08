@@ -1,0 +1,5 @@
+# The embedder's model files, which scripts/awm-deploy.sh unpacks into <AWM_DIR>/models.
+# Written by the deploy on mizar (scripts/refresh-pins.sh). Do not edit.
+version=models-ff6c7c9d5c2a
+file=awm-models-ff6c7c9d5c2a.tar
+sha256=f6b1e0338e053a800290819aa71f5fc6c9116ff16913c8f8339674318f778eda

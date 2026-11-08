@@ -1,9 +1,8 @@
 //! The dsh plugin: supervises the DeepSeek harness web fork on loopback, steers its model route,
-//! serves harness@1 over its sessions as `harness-ds`, and mounts the fork at `/s/dsh/`.
+//! serves harness@1 over its sessions as `harness-ds`, and declares the fork's front, which auth opens.
 
 mod fork;
 mod lifecycle;
-mod mount;
 mod paths;
 mod relink;
 mod sessions;
@@ -139,7 +138,6 @@ async fn main() -> anyhow::Result<()> {
     });
     let (boot, ready, down) = (app.clone(), app.clone(), app.clone());
     service(svc, app)
-        .mount(mount::router(paths.upstream()))
         .on_start(async move {
             boot.boot().await;
             Ok(())

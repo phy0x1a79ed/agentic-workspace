@@ -16,11 +16,9 @@ use crate::tokens::{self, py_str, truthy, SCOPES};
 
 pub const TOOL: &str = "auth";
 
-/// The plugins besides the operator that may read `edge_material`: the fronts that still cache
-/// it. The in-process edge reads it by a direct call. Each drops out when it moves behind the front.
-pub const EDGE_MATERIAL_PLUGINS: [&str; 2] = ["dsh", "claude-science"];
-/// The plugins that may mint, list or revoke a device token: none.
-pub const DEVICE_PLUGINS: [&str; 0] = [];
+/// The plugins that may read `edge_material` or mint, list or revoke a device token: none. The
+/// in-process edge reads the material by a direct call.
+pub const NO_PLUGINS: [&str; 0] = [];
 
 const HOUR: f64 = 3600.0;
 const DAY: f64 = 86400.0;
@@ -154,7 +152,7 @@ impl MaterialSource for AuthStore {
 /// `edge_material {device_used?, token_scopes?}`.
 pub fn edge_material(store: &AuthStore, args: &Value, caller: Caller<'_>) -> Result<Value, VerbError> {
     operator_only(caller, "edge_material")?;
-    plugins_only(caller, "edge_material", &EDGE_MATERIAL_PLUGINS)?;
+    plugins_only(caller, "edge_material", &NO_PLUGINS)?;
     let used = device_used(args.get("device_used"));
     let scopes: BTreeSet<String> = match args.get("token_scopes") {
         Some(Value::Array(a)) => a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect(),
@@ -186,7 +184,7 @@ pub fn public_device(t: &DeviceRow) -> Map<String, Value> {
 /// for the operator. The token is returned once, here.
 pub fn device_mint(store: &AuthStore, args: &Value, caller: Caller<'_>, now: f64) -> Result<Value, VerbError> {
     operator_only(caller, "device_mint")?;
-    plugins_only(caller, "device_mint", &DEVICE_PLUGINS)?;
+    plugins_only(caller, "device_mint", &NO_PLUGINS)?;
     let label = str_arg(args, "label");
     if label.is_empty() {
         return Err(VerbError::value("label is required"));
@@ -211,7 +209,7 @@ pub fn device_mint(store: &AuthStore, args: &Value, caller: Caller<'_>, now: f64
 /// `device_list`: every device token, revoked ones included.
 pub fn device_list(store: &AuthStore, caller: Caller<'_>) -> Result<Value, VerbError> {
     operator_only(caller, "device_list")?;
-    plugins_only(caller, "device_list", &DEVICE_PLUGINS)?;
+    plugins_only(caller, "device_list", &NO_PLUGINS)?;
     let rows = store.device_list().map_err(runtime)?;
     Ok(json!({"tokens": rows.iter().map(public_device).collect::<Vec<_>>()}))
 }
@@ -219,7 +217,7 @@ pub fn device_list(store: &AuthStore, caller: Caller<'_>) -> Result<Value, VerbE
 /// `device_revoke {id}`. The edge drops the token on its next refresh.
 pub fn device_revoke(store: &AuthStore, args: &Value, caller: Caller<'_>, now: f64) -> Result<Value, VerbError> {
     operator_only(caller, "device_revoke")?;
-    plugins_only(caller, "device_revoke", &DEVICE_PLUGINS)?;
+    plugins_only(caller, "device_revoke", &NO_PLUGINS)?;
     let id = str_arg(args, "id");
     if id.is_empty() {
         return Err(VerbError::value("id is required"));

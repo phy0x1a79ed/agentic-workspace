@@ -128,6 +128,9 @@ pub struct Forward<'a> {
     pub body: Option<Bytes>,
     /// The answer when the upstream cannot be reached, in place of the 502.
     pub unreachable: Option<&'a (dyn Fn() -> Response + Sync)>,
+    /// Replaces an `Origin` the browser sent. Never added where there was none: that would turn
+    /// a same-origin navigation into a cross-origin one.
+    pub origin: Option<HeaderValue>,
 }
 
 pub struct Edge {
@@ -273,6 +276,9 @@ impl Edge {
             return not_found();
         };
         let mut headers = self.upstream_headers(&req, Some(sub));
+        if let (Some(origin), true) = (opts.origin, headers.contains_key("origin")) {
+            headers.insert("origin", origin);
+        }
         let (path, method) = (req.path.clone(), req.parts.method.clone());
         let body = match opts.body {
             Some(read) => {

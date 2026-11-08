@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 awm-plugin-sdk.workspace = true
+awm-proto.workspace = true
 awm-trust.workspace = true
 awm-statecheck = { path = "../../crates/awm-statecheck" }
 anyhow.workspace = true

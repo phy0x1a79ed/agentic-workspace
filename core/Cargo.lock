@@ -816,6 +816,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "awm-plugin-sdk",
+ "awm-proto",
  "awm-pycompat",
  "awm-statecheck",
  "awm-store",

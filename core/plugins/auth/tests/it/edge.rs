@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 
 use awm_plugin_auth::edge::{self, Edge, EdgeConfig};
 use awm_plugin_auth::front::{Front, Upstreams};
+use awm_plugin_auth::fronts::{self, Base, Fronts};
 use awm_plugin_auth::gate::{AuthGate, Material, MaterialSource, Used};
 use awm_plugin_auth::landing::Landing;
 use awm_plugin_auth::policy::board;
@@ -16,6 +17,7 @@ use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
 use hyper::service::service_fn;
 use hyper_util::rt::TokioIo;
+use serde_json::json;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
@@ -300,4 +302,79 @@ async fn websocket_needs_a_session() {
     let mut echo = [0u8; 4];
     tcp.read_exact(&mut echo).await.unwrap();
     assert_eq!(&echo, b"ping");
+}
+
+#[tokio::test]
+async fn a_service_front_gates_relays_and_follows_the_table() {
+    let (up, mut seen) = upstream().await;
+    let (signin, mut signin_seen) = upstream().await;
+    let dir = tempfile::tempdir().unwrap();
+    let base = Base {
+        gate: Arc::new(AuthGate::new(Arc::new(Fixed))),
+        grants: Arc::new(Grants::new(None, "node")),
+        ca_path: dir.path().join("ca.pem"),
+        ca_download: true,
+        same_site: "lax",
+        tls: None,
+        san: None,
+        sans_file: dir.path().join("sans"),
+    };
+    let fronts = Fronts::new(base);
+    let taken = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let free = TcpListener::bind("127.0.0.1:0").await.unwrap().local_addr().unwrap();
+    let front = json!([{"port": free.port(), "upstream": format!("http://{up}/"), "rewrite_origin": true, "name": "gui", "paths": {"/_signin": format!("http://{signin}/")}}]);
+    let blocked = json!([{"port": taken.local_addr().unwrap().port(), "upstream": format!("http://{up}/"), "name": "gui"}]);
+    let off = json!([{"port": 1, "upstream": format!("http://{up}/"), "name": "gui"}]);
+    let table = json!([
+        {"name": "sci", "enabled": true, "front": front},
+        {"name": "blocked", "enabled": true, "front": blocked},
+        {"name": "off", "enabled": false, "front": off},
+    ]);
+    fronts.reconcile(fronts::declared(&table)).await;
+
+    let alice = session("alice");
+    let origin = "Origin: https://mesh:12201";
+    assert_eq!(send(free, request("GET", "/a", &["Accept: application/json", origin]), "").await.status, 401);
+    assert!(seen.try_recv().is_err(), "no session reaches the upstream");
+
+    let reply = send(free, request("GET", "/a%23b?x=1", &[alice.as_str(), origin, "X-Awm-As: user:root"]), "").await;
+    assert_eq!(reply.status, 200);
+    let got = seen.try_recv().unwrap();
+    assert_eq!(got.target, "/a%23b?x=1");
+    assert_eq!(got.header("x-awm-as"), ["user:alice"]);
+    assert_eq!(got.header("origin"), [format!("http://{up}").as_str()]);
+    assert_eq!(got.header("host"), [up.to_string().as_str()]);
+    assert_eq!(got.header("x-forwarded-host"), ["node.test"]);
+    assert_eq!(got.header("x-forwarded-for"), ["127.0.0.1"]);
+
+    send(free, request("GET", "/a", &[alice.as_str()]), "").await;
+    assert!(seen.try_recv().unwrap().header("origin").is_empty(), "an Origin is never minted");
+
+    send(free, request("GET", "/_signin/x", &[alice.as_str(), origin]), "").await;
+    let got = signin_seen.try_recv().unwrap();
+    assert_eq!((got.target.as_str(), got.header("origin")), ("/_signin/x", vec![format!("http://{signin}").as_str()]));
+    send(free, request("GET", "/_signinx", &[alice.as_str()]), "").await;
+    assert_eq!(seen.try_recv().unwrap().target, "/_signinx", "a prefix ends at a segment");
+
+    assert_eq!(send(free, request("GET", "/a/%2e%2e/b", &[alice.as_str()]), "").await.status, 404);
+    assert!(seen.try_recv().is_err());
+
+    let upgrade = ["Upgrade: websocket", "Connection: Upgrade", "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==", "Sec-WebSocket-Version: 13", origin];
+    let open = |cookie: &str| request("GET", "/ws", &[&upgrade[..], &[cookie]].concat()).replace("Connection: close\r\n", "");
+    assert!(handshake(free, open("X: y")).await.0.starts_with("HTTP/1.1 403"));
+    let (head, _tcp) = handshake(free, open(&alice)).await;
+    assert!(head.starts_with("HTTP/1.1 101"), "{head}");
+    let got = seen.recv().await.unwrap();
+    assert_eq!((got.header("x-awm-as"), got.header("origin")), (vec!["user:alice"], vec![format!("http://{up}").as_str()]));
+    assert_eq!(got.header("x-forwarded-for"), ["127.0.0.1"]);
+
+    let sci = fronts.state("sci", "gui").await;
+    assert_eq!((&sci["serving"], &sci["listener_port"], &sci["error"]), (&json!(true), &json!(free.port()), &json!(null)));
+    let blocked = fronts.state("blocked", "gui").await;
+    assert_eq!(blocked["serving"], false);
+    assert!(blocked["error"].as_str().unwrap().contains("could not listen"), "{blocked}");
+    assert_eq!(fronts.state("off", "gui").await["listener_port"], json!(null));
+
+    fronts.reconcile(Default::default()).await;
+    assert!(TcpStream::connect(free).await.is_err(), "a front no longer declared closes");
 }

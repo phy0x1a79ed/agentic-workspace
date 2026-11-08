@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Rebuild each stale pin of this tree: the core binary (scripts/release-core.sh), each core
-# plugin binary (scripts/release-plugins.sh) and the plugin pages (scripts/release-pages.sh).
+# plugin binary (scripts/release-plugins.sh), the plugin pages (scripts/release-pages.sh) and
+# the embedder's model files (scripts/release-models.sh).
 # A pin is stale when its version differs from the tree's, or when its file is missing from, or
 # differs in, the artifact store. awm's deploy runs this in the batch's temp worktree
 # (deploy.toml [artifacts] refresh) and commits the pins it rewrote.
@@ -18,6 +19,11 @@ store="$AWM_DIR/artifacts"
 cache="${AWM_BUILD_CACHE:-$AWM_DIR/build-cache}"
 conda="${AWM_CONDA_ROOT:-$HOME/miniforge3}"
 export PATH="$conda/envs/dsh/bin:$PATH"
+
+if ! verify_pin "$root/scripts/models.pin" "$(models_version "$root")" "$store" >/dev/null 2>&1; then
+    echo "── models pin is stale"
+    "$root/scripts/release-models.sh"
+fi
 
 if ! verify_pin "$root/scripts/core.pin" "$(core_version "$root")" "$store" >/dev/null 2>&1; then
     echo "── core pin is stale"

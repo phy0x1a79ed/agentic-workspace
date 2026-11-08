@@ -145,13 +145,13 @@ mod tests {
     #[test]
     fn a_503_and_a_not_up_body_read_as_down_and_the_rest_as_refused() {
         let call = Call::new("harness-ds", "list", json!({}), Duration::from_secs(1));
-        let not_up = HubError::NotUp { what: "x".into(), detail: "d".into(), body: json!({"detail": "d"}) };
+        let not_up = HubError::NotUp { what: "x".into(), detail: "d".into(), body: Box::new(json!({"detail": "d"})) };
         assert!(matches!(classify(&call, &not_up), CallError::Down(_)));
-        let slow = HubError::Http { what: "x".into(), status: 502, detail: "d".into(), body: json!({"detail": "harness-ds is not up"}) };
+        let slow = HubError::Http { what: "x".into(), status: 502, detail: "d".into(), body: Box::new(json!({"detail": "harness-ds is not up"})) };
         assert!(matches!(classify(&call, &slow), CallError::Down(_)));
         let gone = HubError::Transport { what: "x".into(), reason: "refused".into() };
         assert!(matches!(classify(&call, &gone), CallError::Down(_)));
-        let no = HubError::Http { what: "x".into(), status: 403, detail: "no".into(), body: json!({"detail": "no"}) };
+        let no = HubError::Http { what: "x".into(), status: 403, detail: "no".into(), body: Box::new(json!({"detail": "no"})) };
         assert_eq!(classify(&call, &no), CallError::Refused("harness-ds list: HTTP 403: {\"detail\":\"no\"}".into()));
     }
 }

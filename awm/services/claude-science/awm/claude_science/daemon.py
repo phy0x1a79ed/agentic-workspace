@@ -58,13 +58,17 @@ BIN = Path(os.environ.get("CLAUDE_SCIENCE_BIN")
 DATA_DIR = Path(os.environ.get("CLAUDE_SCIENCE_DATA_DIR")
                 or (Path.home() / ".claude-science"))
 
-#: Loopback port for the workbench UI. Not the mesh port — the front owns that.
-PORT = int(os.environ.get("CLAUDE_SCIENCE_UPSTREAM_PORT", "12203"))
+#: Loopback port for the workbench UI. The ``[[service.front]]`` tables in
+#: ``awm-plugin.toml`` name this port, the preview port and both front ports too.
+PORT = 12203
 
 #: Loopback port for generated-HTML previews. Upstream keeps this on a separate
 #: port on purpose: a previewed page must not be same-origin with the session
 #: that generated it. We preserve that separation all the way out to the mesh.
-SANDBOX_PORT = int(os.environ.get("CLAUDE_SCIENCE_SANDBOX_PORT", "12204"))
+SANDBOX_PORT = 12204
+
+FRONT_PORT = 12211
+SANDBOX_FRONT_PORT = 12212
 
 #: How often the reconcile loop checks that the daemon is still alive.
 HEALTH_INTERVAL_S = float(os.environ.get("CLAUDE_SCIENCE_HEALTH_INTERVAL_S", "20"))

@@ -15,12 +15,11 @@ Three things live under this one supervised process, and all three are things
 the gateway registration does not carry:
 
   - the workbench daemon (adopted; outlives us on purpose),
-  - two TLS fronts on the mesh, one per workbench origin, behind awm's edge
-    session — see ``front``,
+  - the sign-in route behind auth's front — see ``signin``,
   - an MCP bridge handing the workbench a curated slice of awm's verbs — see
     ``mcp_bridge``.
 
-The fronts and the bridge die with this process, which is right: they are pure
+The route and the bridge die with this process, which is right: they are pure
 plumbing and cost nothing to rebuild. The daemon does not, which is also right.
 
 Run via ``run.sh`` (which the gateway spawns and respawns):
@@ -34,16 +33,16 @@ import logging
 import time
 from typing import Any
 
-from awm.gatewayclient import ServiceAdapter, spawn_supervised
+from awm.gatewayclient import ServiceAdapter, call, spawn_supervised
 
-from awm.claude_science import (api, conversations, daemon, front, mcp_bridge,
-                                outputs)
+from awm.claude_science import (api, conversations, daemon, mcp_bridge, outputs,
+                                signin)
 
 log = logging.getLogger("awm.claude_science.hub_adapter")
 
 SUPERVISOR = daemon.Supervisor(
-    main_front_port=front.PORT,
-    sandbox_front_port=front.SANDBOX_PORT,
+    main_front_port=daemon.FRONT_PORT,
+    sandbox_front_port=daemon.SANDBOX_FRONT_PORT,
 )
 
 
@@ -291,15 +290,22 @@ def _active() -> dict:
         return {"error": str(exc)}
 
 
+async def _front(name: str) -> dict:
+    try:
+        return await call("auth", "front", {"service": "claude-science", "name": name}, timeout=5.0)
+    except Exception as exc:  # noqa: BLE001 — status reports, never fails
+        return {"serving": False, "error": f"auth did not answer: {exc}"}
+
+
 async def _h_status(args: dict) -> dict:
     snap = await asyncio.to_thread(SUPERVISOR.snapshot)
     install = await asyncio.to_thread(SUPERVISOR.install_state)
     return {
         "daemon": snap,
         "install": install,
-        "fronts": front.status(),
+        "fronts": {name: await _front(name) for name in ("gui", "sandbox")},
         "mcp_bridge": mcp_bridge.status(),
-        "origins": daemon.allowed_origins(front.PORT),
+        "origins": daemon.allowed_origins(daemon.FRONT_PORT),
         "active": await asyncio.to_thread(_active) if snap.get("running") else None,
         "outputs": {"root": str(outputs.OUTPUTS_ROOT), **_LAST_SYNC},
     }
@@ -327,7 +333,7 @@ async def _h_url(args: dict) -> dict:
 
 
 async def _h_signin_url(args: dict) -> dict:
-    return {"url": f"{daemon.front_origin(front.PORT)}/_signin",
+    return {"url": f"{daemon.front_origin(daemon.FRONT_PORT)}/_signin",
             "note": "requires an awm session; mints a workbench nonce server-side"}
 
 
@@ -518,14 +524,12 @@ async def _outputs_loop() -> None:
 
 
 async def _on_start() -> None:
-    """Adopt-or-start the daemon, raise the fronts and the bridge, then loop.
+    """Adopt-or-start the daemon, raise the sign-in route and the bridge, then loop.
 
     No failure here is fatal. The service still registers, so ``status`` can
     report *why* it is broken — which is the visibility the hand-managed units
     never had — and the loop keeps retrying the daemon.
     """
-    front.attach(SUPERVISOR)
-
     if not daemon.installed():
         log.warning("claude-science: binary missing at %s — run install.sh; the "
                     "service will register and report this via status", daemon.BIN)
@@ -540,9 +544,9 @@ async def _on_start() -> None:
                           "the loop will retry")
 
     try:
-        front.start()
-    except Exception:  # noqa: BLE001 — the workbench is still usable on loopback
-        log.exception("claude-science: mesh fronts failed to start")
+        signin.start(SUPERVISOR)
+    except OSError:  # the workbench is still usable with the CLI's sign-in link
+        log.exception("claude-science: the sign-in route failed to start")
 
     # Both are long-lived and both fail silently if left to a bare create_task
     # whose handle nobody reads: a bridge that died on its first line looks

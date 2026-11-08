@@ -3,10 +3,11 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-pub const DEFAULT_PORT: u16 = 12311;
+/// The harness's loopback port. The `[[service.front]]` upstream in `awm-plugin.toml` names it too.
+pub const PORT: u16 = 12311;
 
 /// The paths and knobs the Python service read from its environment, with the same names and
-/// defaults (`DSH_STATE_DIR`, `DSH_HOME`, `DSH_FORK_DIR`, `DSH_UPSTREAM_PORT`, `DSH_WORKDIR`,
+/// defaults (`DSH_STATE_DIR`, `DSH_HOME`, `DSH_FORK_DIR`, `DSH_WORKDIR`,
 /// `DSH_HEALTH_INTERVAL_S`, `DSH_START_TIMEOUT_S`, `DSH_AUTH_JSON`).
 #[derive(Debug, Clone)]
 pub struct Paths {
@@ -43,7 +44,7 @@ impl Paths {
             fork_dir: var("DSH_FORK_DIR")
                 .map(PathBuf::from)
                 .unwrap_or_else(|| workspace.join("projects").join("deepseek-harness").join("release")),
-            port: var("DSH_UPSTREAM_PORT").and_then(|p| p.trim().parse().ok()).unwrap_or(DEFAULT_PORT),
+            port: PORT,
             workdir: var("DSH_WORKDIR").map(PathBuf::from).unwrap_or_else(|| workspace.clone()),
             health_interval: secs("DSH_HEALTH_INTERVAL_S", 20.0),
             start_timeout: secs("DSH_START_TIMEOUT_S", 60.0),
@@ -95,10 +96,5 @@ impl Paths {
 
     pub fn pkg_json(&self) -> PathBuf {
         self.fork_dir.join("package.json")
-    }
-
-    /// The fork's own origin, which its Origin-equals-Host fence accepts.
-    pub fn upstream(&self) -> String {
-        format!("http://127.0.0.1:{}", self.port)
     }
 }

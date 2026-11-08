@@ -15,11 +15,10 @@ awm-plugin-sdk.workspace = true
 awm-harness.workspace = true
 anyhow.workspace = true
 awm-statecheck = { path = "../../crates/awm-statecheck" }
-axum.workspace = true
 clap.workspace = true
 futures-util.workspace = true
 libc.workspace = true
-reqwest = { workspace = true, features = ["stream"] }
+reqwest.workspace = true
 serde_json.workspace = true
 serde_yaml.workspace = true
 tempfile.workspace = true
@@ -28,3 +27,6 @@ tokio.workspace = true
 tokio-tungstenite.workspace = true
 tracing.workspace = true
 uuid.workspace = true
+
+[dev-dependencies]
+axum.workspace = true
