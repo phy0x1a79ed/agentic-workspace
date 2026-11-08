@@ -7,7 +7,7 @@ Related: journal 7724ff11 (ops-board decision), spec `docs/redux/*.md` (queue R6
 
 ## Current
 
-PLAN
+BUILD — PLAN.md approved by Tony 2026-11-07. Paused after the approval compact at Tony's request ("please pause after compact"). Next: T1 (CONTRACT.md) once Tony says go. Todo list holds T1-T10.
 
 ## Waiting on the user
 
@@ -24,12 +24,13 @@ PLAN
 
 ## Stack
 
-- PLAN — once the stack is empty: one formal plan for the whole build, then submit to plugin-redux/interview. Must fit plugin-redux ports: operations/front/routine in awm/port-ops, social in awm/port-comms (job e44d901a); the SDK carries a Rust `telemetry` library (today awm/service_components/telemetry, an event-sync layer, unused).
+- (empty: every topic closed; the build follows docs/trilium-design/PLAN.md)
 
 ## Workers
 
-- plugin-redux/interview — the coordinator this session now works for, as plugin-redux/port-trilium (Tony, 2026-11-07: "talk to plugin redux interview, please essentially register yourself as one of their workers and rename accordingly"). Asked 2026-11-07: C1 ownership, submission route, conventions.
+- plugin-redux/interview — the coordinator this session now works for, as plugin-redux/port-trilium (Tony, 2026-11-07: "talk to plugin redux interview, please essentially register yourself as one of their workers and rename accordingly"). Answered 2026-11-07: C1 is ours (it tells port-ops; never message port-ops). Each nested scope lands via scripts/land.sh submit --brief <file> --restart <names>; contract items go to plugin-redux/interview, not in this branch, one per port. Base on release (38bcdafe has the SDK). Plugin up/down already emits on awm/plugins. Build only via scripts/rust-build.sh; --gc --yes after each phase. Features only in core/Cargo.toml. Ask before adding a store/index engine (c2419412). deploy.toml pin + describe baseline in the adding commit. Push to `github`, not `origin`. trilium keeps its own install hook and env; statecheck first if it rewrites state. All folded into PLAN.md.
 - swarm-board/layout — landed awm d5be934c (journal 0d875664); done.
+- Session renamed plugin-redux/port-trilium 2026-11-07.
 - seats/pause — on altair. Runs Tony's Slack seat redesign (docs/seat-lifecycle, feat/seat-pause); handed seat-rc-toggle to us. Not ours; do not message (standing instruction).
 
 ## Closed

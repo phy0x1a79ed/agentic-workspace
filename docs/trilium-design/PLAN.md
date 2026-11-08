@@ -42,7 +42,8 @@ The trilium-design discussion settled a new board, a swarm status page, new agen
 - The Ops note renders node cards, a seats section with switches, a services section and a fuzzy search, from telemetry data.
 - Every ordinary note has a bot button beside Trilium's create-child button. A card's note has none. Each press calls the alcor API in the contract. The marker note and the clone appear as `queue.md` R63 item 3 says.
 - No vault page embeds a frame from alcor, except the sign-in and approval modal.
-- `docs/trilium-design/CONTRACT.md` names every endpoint, verb, event topic and spec item that each port must add, and plugin-redux/interview has it with the branch.
+- `docs/trilium-design/CONTRACT.md` names every endpoint, verb, event topic and spec item that each port must add, one item per port, and plugin-redux/interview has it.
+- Each nested scope's work reaches the land queue through `scripts/land.sh submit`.
 
 ## Tasks
 
@@ -51,8 +52,8 @@ The trilium-design discussion settled a new board, a swarm status page, new agen
 - T3. Build the telemetry plugin in Rust (G1)
 - T4. Build the vault side in the trilium plugin (G2)
 - T5. Compact
-- T6. Merge and verify both branches in this scope (G1, G2)
-- T7. Submit the branch and the contract to plugin-redux/interview (G4)
+- T6. Verify both workers' submissions (G1, G2)
+- T7. Send CONTRACT.md to plugin-redux/interview (G4)
 - T8. Post the discussion's decision journal (G4)
 - T9. Report to redux-endstate/review
 - T10. Debrief
@@ -72,9 +73,7 @@ This session writes `docs/trilium-design/CONTRACT.md`. It lists, per port, what 
 - **port-ops, auth:** the 12-hour sign-in page on alcor's public address, the signed links, the redirect and return, the vault's sign-in frame, and the device-credential cookie.
 - **port-comms, social:** the seat's Remote Control switch, held with the seat state and applied when the seat's session starts.
 - **port-harness, reflection:** session start, stop and Remote Control change as gateway emit topics. Also a no-brief start in `awm/lobby`.
-- **Core:** a plugin up or down emit topic from the gateway.
-
-The contract also asks plugin-redux/interview to drop item C1 from the operations port, because T4 moves the writer.
+The contract holds one item per port, so each port lands its item on its own. The contract's items never go in this branch: plugin-redux/interview hands each to its port owner. The plugin up and down topic needs no item, because the gateway already emits it on `awm/plugins` (`plugin-contract.md` § Plugin events). plugin-redux/interview agreed on 2026-11-07 that T4 takes item C1 from the operations port. It tells port-ops itself, and this session never messages port-ops.
 
 Gotchas: the contract restates no spec text. It points at the R-items and adds only names and shapes. A shape that a port plan already fixes, such as `board_changes`, is reused, not renamed.
 
@@ -89,7 +88,7 @@ Each brief carries the decisions, the spec items, the contract and the rules:
 - do not merge or deploy
 - report to this session
 
-Gotchas: the two scopes share no files. telemetry owns `core/plugins/telemetry/`, and vault owns `awm/services/trilium/` and the operations board files it moves out. Each worker starts from this branch, so both have the spec edits.
+Gotchas: the two scopes share no files. telemetry owns `core/plugins/telemetry/`, and vault owns `awm/services/trilium/` and the operations board files it moves out. Each worker starts from this branch, which is based on release, so both have the SDK and the spec edits. Each worker pushes to the `github` remote, because `origin` in these worktrees is altair's stale bare.
 
 ### T3. Build the telemetry plugin in Rust
 
@@ -97,8 +96,12 @@ The worker builds `core/plugins/telemetry/` in the port layout: `awm-plugin.toml
 - The node part subscribes to the emit topics in the contract with the SDK's supervised subscriber. It reads the starting state once at start.
 - The alcor part keeps the roster, the 7-day session counts and the service health. It serves `telemetry nodes` and `telemetry services`. It publishes a roster-changed topic.
 - Install opt-in is a config value that names the swarm.
+- It reads `GET /hub/plugins` at connect and follows `awm/plugins` for service up and down.
+- It builds only through `scripts/rust-build.sh`, with dependency features set only in the workspace `core/Cargo.toml`. It runs `rust-build.sh --gc --yes` at the end of each phase, because mizar's disk filled twice this week.
+- The commit that adds the plugin adds its `deploy.toml` pin line and a describe baseline under `docs/plugin-redux/ports/baseline/`.
+- It lands through `scripts/land.sh submit --brief <file> --restart telemetry` from its scope. plugin-redux/interview merges as merger.
 
-Gotchas: the SDK's `telemetry` module is only the tracing subscriber, so the plugin's tool name must not clash with a module name in a way the gateway's name table refuses. Until reflection and the gateway emit the contract's topics, test with a fake emitter. No timer and no poll loop may stand in for the missing topics.
+Gotchas: a store or an index engine needs plugin-redux/interview's yes first, because each heavy engine lives in one plugin (decision c2419412). The SDK's `telemetry` module is only the tracing subscriber, so the plugin's tool name must not clash with a module name in a way the gateway's name table refuses. Until reflection and the gateway emit the contract's topics, test with a fake emitter. No timer and no poll loop may stand in for the missing topics.
 
 ### T4. Build the vault side in the trilium plugin
 
@@ -110,7 +113,7 @@ The worker moves the writer, `board.py`, `board/` and `board-install` from opera
 - the bot button beside Trilium's create-child button on ordinary notes, with the marker note and the clone
 - the writer roots: `tasks`, `Ops` and the board page, plus the two acts of `fleet.md` R106 item 2
 
-Every press calls the contract's alcor API. The worker tests against a stub of that API and on the fork's dev server on mizar, against a vault snapshot, never the live vault.
+Every press calls the contract's alcor API. The worker tests against a stub of that API and on the fork's dev server on mizar, against a vault snapshot, never the live vault. trilium stays Python with its own install hook and env. The worker lands through `scripts/land.sh submit --brief <file> --restart trilium` from its scope. If the change rewrites existing state, it lands only after ops' `awm-statecheck`.
 
 Gotchas:
 - The writer still runs today in the Python operations on alcor. The move must not leave two writers live at once, so the old one goes in the same change.
@@ -122,20 +125,23 @@ Gotchas:
 Handoff for the resumed session:
 - the two worker job ids and their scopes
 - the paths of `PLAN.md`, `CONTRACT.md`, `DECISIONS.md` and `STACK.md`
+- plugin-redux/interview's conventions, which this plan's T2 to T7 carry
 - the todo list, which marks T1 to T4
 - facts a re-read does not give: what each worker last reported, and any contract change a worker asked for
 
 Run `reflection(verb="compact", args={followup:"continue with T6"})`.
 
-### T6. Merge and verify both branches in this scope
+The compact right after approval runs with a followup that pauses for Tony, at Tony's request.
 
-This session merges each worker's branch into `feat/trilium-design` once its report says its tests pass. Then it runs the tests of both plugins and the dev-server check again. It then retires the workers.
+### T6. Verify both workers' submissions
 
-Gotchas: merge the telemetry branch first, because the vault branch reads its verbs.
+This session checks each worker's report against the acceptance criteria before the worker submits. It runs the tests of each plugin and the dev-server check itself. It then retires each worker once plugin-redux/interview takes its submission.
 
-### T7. Submit the branch and the contract to plugin-redux/interview
+Gotchas: telemetry submits first, because the vault side reads its verbs.
 
-This session runs as plugin-redux/port-trilium, one of plugin-redux/interview's workers, at Tony's request. It submits `feat/trilium-design` and `CONTRACT.md` the way plugin-redux/interview names: `land.sh submit` like the other ports, or a branch handoff by `SendMessage`. plugin-redux/interview merges the branch with its ports and lands it. This scope does not land or deploy.
+### T7. Send CONTRACT.md to plugin-redux/interview
+
+This session runs as plugin-redux/port-trilium, one of plugin-redux/interview's workers, at Tony's request. It sends `CONTRACT.md` by `SendMessage`, with the commit that holds it. plugin-redux/interview hands each item to its port owner. This scope never lands or deploys outside `land.sh submit`.
 
 Gotchas: the branch carries spec edits across `queue.md`, `fleet.md`, `install.md` and `sessions.md`. The message names them, so the merger expects the overlap with port-ops' own spec edits.
 
@@ -150,10 +156,6 @@ One `SendMessage` with the decision journal ids, the workers started, and the br
 ### T10. Debrief
 
 Run the `retire` skill.
-
-## Still unsure about
-
-- Should this scope take item C1, the writer's move into trilium, away from the operations port, as T4 does? The alternative is that T4 waits for port-ops to move it first, which stalls the vault work until the operations port runs, its last step. This session asked plugin-redux/interview on 2026-11-07, and T4 follows its answer.
 
 ## Callouts
 
