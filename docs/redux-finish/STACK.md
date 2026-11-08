@@ -21,7 +21,7 @@ Sources: the worker debrief journals 389a0111 (ops), 8caec34d (knowledge), 449af
 - 2026-11-07: do not use the board; it is being remade. reflection and journals work.
 - 2026-11-07: mizar and alcor first. Other nodes later.
 - 2026-11-07: start from the original interview's decisions (DECISIONS.md § inherited). Work plugin by plugin. Related issues are prioritized case by case.
-- 2026-11-07: scope every plugin in the interview first; no work before its scope is settled.
+- 2026-11-07: scope every plugin in the interview first; no work before its scope is settled. Survey and discuss one set at a time.
 
 ## Stack
 
@@ -47,7 +47,7 @@ Phase 1 scopes each plugin; phase 2 does the work in this order. Each topic list
 
 ## Workers
 
-Read-only survey subagents (Sonnet medium), started 2026-11-07, reports to /home/tony/.claude/jobs/b8680c94/tmp/survey/<group>.md, brief COMMON.md there: ops (dvc, operations, auth), comms (social, browser, channel, rlm-browser), knowledge (kb, scopes), harness (reflection + landed plugins' health), trilium (board, Ops, telemetry), pyout-optin (python-out, opt-in hooks).
+Read-only survey subagents (Sonnet medium), one set at a time (Tony: "1 set at a time"). Brief /home/tony/.claude/jobs/b8680c94/tmp/survey/COMMON.md; reports beside it as <set>.md. Running: ops (dvc, operations, auth), started 2026-11-07. The first six were killed by the /cd move.
 
 ## Closed
 
