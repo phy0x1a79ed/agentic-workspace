@@ -29,7 +29,7 @@ set -uo pipefail
 WS="$(git -C "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" rev-parse --show-toplevel)"
 cd "$WS"
 
-COMP="$WS/awm/service_components/grantlib:$WS/awm/service_components/config:$WS/awm/service_components/persistence:$WS/awm/service_components/gatewayclient:$WS/awm/service_components/kept:$WS/awm/service_components/usage:$WS/awm/service_components/trustpolicy:$WS/awm/service_components/tlsfront:$WS/awm/service_components/dvcdata"
+COMP="$WS/awm/service_components/grantlib:$WS/awm/service_components/config:$WS/awm/service_components/persistence:$WS/awm/service_components/gatewayclient:$WS/awm/service_components/usage:$WS/awm/service_components/trustpolicy:$WS/awm/service_components/tlsfront:$WS/awm/service_components/dvcdata"
 
 # dist name -> "<source-root-dir>::<test-dir>"
 declare -A DISTS=(
@@ -39,41 +39,30 @@ declare -A DISTS=(
   [persistence]="$WS/awm/service_components/persistence::$WS/awm/service_components/persistence/tests"
   [telemetry]="$WS/awm/service_components/telemetry::$WS/awm/service_components/telemetry/tests"
   [usage]="$WS/awm/service_components/usage::$WS/awm/service_components/usage/tests"
-  [kept]="$WS/awm/service_components/kept::$WS/awm/service_components/kept/tests"
   [tlsfront]="$WS/awm/service_components/tlsfront::$WS/awm/service_components/tlsfront/tests"
   [dvcdata]="$WS/awm/service_components/dvcdata::$WS/awm/service_components/dvcdata/tests"
-  [tether]="$WS/awm/service_components/tether::$WS/awm/service_components/tether/tests"
   [scopes]="$WS/awm/services/scopes::$WS/awm/services/scopes/tests"
   [journal]="$WS/awm/services/journal::$WS/awm/services/journal/tests"
   [search]="$WS/awm/services/search::$WS/awm/services/search/tests"
-  [social]="$WS/awm/services/social::$WS/awm/services/social/tests"
   [2fa]="$WS/awm/services/2fa::$WS/awm/services/2fa/tests"
   [ssh]="$WS/awm/services/ssh::$WS/awm/services/ssh/tests"
-  [auth]="$WS/awm/services/auth::$WS/awm/services/auth/tests"
-  [httpsfront]="$WS/awm/services/httpsfront::$WS/awm/services/httpsfront/tests"
-  [rlm-browser]="$WS/awm/services/rlm-browser::$WS/awm/services/rlm-browser/tests"
   [rlm-factorio]="$WS/awm/services/rlm-factorio::$WS/awm/services/rlm-factorio/tests"
-  [mic]="$WS/awm/services/mic::$WS/awm/services/mic/tests"
   [vpn]="$WS/awm/services/vpn::$WS/awm/services/vpn/tests"
   [reflection]="$WS/awm/services/reflection::$WS/awm/services/reflection/tests"
-  [dvc]="$WS/awm/services/dvc::$WS/awm/services/dvc/tests"
   [claude-science]="$WS/awm/services/claude-science::$WS/awm/services/claude-science/tests"
   [engcyc]="$WS/awm/services/engcyc::$WS/awm/services/engcyc/tests"
   [trilium]="$WS/awm/services/trilium::$WS/awm/services/trilium/tests"
   [zotero]="$WS/awm/services/zotero::$WS/awm/services/zotero/tests"
-  [channel]="$WS/awm/plugins/channel:$WS/awm/plugins/relay:$WS/awm/service_components/tether::$WS/awm/plugins/channel/tests"
-  [relay]="$WS/awm/plugins/relay:$WS/awm/service_components/tether::$WS/awm/plugins/relay/tests"
   [kb]="$WS/awm/services/kb::$WS/awm/services/kb/tests"
   [board]="$WS/awm/services/board::$WS/awm/services/board/tests"
   [transcripts]="$WS/awm/services/transcripts::$WS/awm/services/transcripts/tests"
   [grantlib]="$WS/awm/service_components/grantlib::$WS/awm/service_components/grantlib/tests"
   [trustpolicy]="$WS/awm/service_components/trustpolicy::$WS/awm/service_components/trustpolicy/tests"
-  [browser]="$WS/awm/plugins/browser::$WS/awm/plugins/browser/tests"
   [wake]="$WS/awm/plugins/wake::$WS/awm/plugins/wake/tests"
 )
 
 # Stable run order.
-ORDER=(contract gatewayclient config persistence grantlib telemetry usage kept tlsfront dvcdata tether scopes journal search social 2fa ssh auth httpsfront rlm-browser rlm-factorio mic vpn reflection dvc claude-science engcyc trilium zotero channel relay kb board transcripts trustpolicy browser wake)
+ORDER=(contract gatewayclient config persistence grantlib telemetry usage tlsfront dvcdata scopes journal search 2fa ssh rlm-factorio vpn reflection claude-science engcyc trilium zotero kb board transcripts trustpolicy wake)
 
 CHANGED_BASE=""
 SMOKE=0

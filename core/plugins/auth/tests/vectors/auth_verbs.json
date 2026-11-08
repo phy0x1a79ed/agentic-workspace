@@ -1,0 +1,271 @@
+{
+ "functions": [
+  {
+   "name": "edge_material",
+   "tool": "auth_edge_material",
+   "surfaces": [
+    "cli",
+    "http"
+   ],
+   "description": "Signing secret + live device-token digests + session-lifetime knobs, for the httpsfront edge to enforce auth offline. device_used reports the device tokens the edge accepted since its last fetch; token_scopes names the scopes the edge enforces, and a scoped token goes only to an edge that names its scope.",
+   "params": [
+    {
+     "name": "device_used",
+     "type": "object"
+    },
+    {
+     "name": "token_scopes",
+     "type": "array"
+    }
+   ]
+  },
+  {
+   "name": "status",
+   "tool": "auth_status",
+   "surfaces": [
+    "cli",
+    "http"
+   ],
+   "description": "Report the session lifetime and the number of live device tokens.",
+   "params": []
+  },
+  {
+   "name": "device_mint",
+   "tool": "auth_device_mint",
+   "surfaces": [
+    "cli",
+    "http"
+   ],
+   "description": "Mint a revocable operator device token, for an unattended device or app that must not store a password. The token is returned once. Operator only. scope narrows the token to a few exact request shapes: avatar-stage admits only the avatar stage session (the WebSocket /hub/session/avatar/stage).",
+   "params": [
+    {
+     "name": "label",
+     "type": "string",
+     "required": true
+    },
+    {
+     "name": "scope",
+     "type": "string"
+    }
+   ]
+  },
+  {
+   "name": "device_list",
+   "tool": "auth_device_list",
+   "surfaces": [
+    "cli",
+    "http"
+   ],
+   "description": "List device tokens (no secrets). Operator only.",
+   "params": []
+  },
+  {
+   "name": "device_revoke",
+   "tool": "auth_device_revoke",
+   "surfaces": [
+    "cli",
+    "http"
+   ],
+   "description": "Revoke a device token by id. The edge stops honouring it within its ~30 s material refresh. Operator only.",
+   "params": [
+    {
+     "name": "id",
+     "type": "string",
+     "required": true
+    }
+   ]
+  }
+ ],
+ "config": {
+  "title": "Authentication",
+  "schema": {
+   "description": "User-settable auth knobs.",
+   "properties": {
+    "session_ttl_hours": {
+     "default": 24.0,
+     "description": "Sliding session lifetime: a browser cookie is refreshed to this many hours ahead on each authenticated request.",
+     "title": "Session Ttl Hours",
+     "type": "number"
+    },
+    "max_session_days": {
+     "default": 30.0,
+     "description": "Hard ceiling on total session age; sliding refresh stops past this and re-login is required.",
+     "title": "Max Session Days",
+     "type": "number"
+    }
+   },
+   "title": "AuthSettings",
+   "type": "object"
+  }
+ },
+ "handlers": [
+  "config_get",
+  "config_set",
+  "device_list",
+  "device_mint",
+  "device_revoke",
+  "edge_material",
+  "status"
+ ],
+ "saved": [
+  {
+   "patch": {},
+   "answer": {
+    "title": "Authentication",
+    "schema": {
+     "description": "User-settable auth knobs.",
+     "properties": {
+      "session_ttl_hours": {
+       "default": 24.0,
+       "description": "Sliding session lifetime: a browser cookie is refreshed to this many hours ahead on each authenticated request.",
+       "title": "Session Ttl Hours",
+       "type": "number"
+      },
+      "max_session_days": {
+       "default": 30.0,
+       "description": "Hard ceiling on total session age; sliding refresh stops past this and re-login is required.",
+       "title": "Max Session Days",
+       "type": "number"
+      }
+     },
+     "title": "AuthSettings",
+     "type": "object"
+    },
+    "values": {
+     "session_ttl_hours": 24.0,
+     "max_session_days": 30.0
+    }
+   },
+   "stored": "{\"session_ttl_hours\": 24.0, \"max_session_days\": 30.0}"
+  },
+  {
+   "patch": {
+    "session_ttl_hours": 12
+   },
+   "answer": {
+    "title": "Authentication",
+    "schema": {
+     "description": "User-settable auth knobs.",
+     "properties": {
+      "session_ttl_hours": {
+       "default": 24.0,
+       "description": "Sliding session lifetime: a browser cookie is refreshed to this many hours ahead on each authenticated request.",
+       "title": "Session Ttl Hours",
+       "type": "number"
+      },
+      "max_session_days": {
+       "default": 30.0,
+       "description": "Hard ceiling on total session age; sliding refresh stops past this and re-login is required.",
+       "title": "Max Session Days",
+       "type": "number"
+      }
+     },
+     "title": "AuthSettings",
+     "type": "object"
+    },
+    "values": {
+     "session_ttl_hours": 12.0,
+     "max_session_days": 30.0
+    }
+   },
+   "stored": "{\"session_ttl_hours\": 12.0, \"max_session_days\": 30.0}"
+  },
+  {
+   "patch": {
+    "session_ttl_hours": "6.5"
+   },
+   "answer": {
+    "title": "Authentication",
+    "schema": {
+     "description": "User-settable auth knobs.",
+     "properties": {
+      "session_ttl_hours": {
+       "default": 24.0,
+       "description": "Sliding session lifetime: a browser cookie is refreshed to this many hours ahead on each authenticated request.",
+       "title": "Session Ttl Hours",
+       "type": "number"
+      },
+      "max_session_days": {
+       "default": 30.0,
+       "description": "Hard ceiling on total session age; sliding refresh stops past this and re-login is required.",
+       "title": "Max Session Days",
+       "type": "number"
+      }
+     },
+     "title": "AuthSettings",
+     "type": "object"
+    },
+    "values": {
+     "session_ttl_hours": 6.5,
+     "max_session_days": 30.0
+    }
+   },
+   "stored": "{\"session_ttl_hours\": 6.5, \"max_session_days\": 30.0}"
+  },
+  {
+   "patch": {
+    "max_session_days": true
+   },
+   "answer": {
+    "title": "Authentication",
+    "schema": {
+     "description": "User-settable auth knobs.",
+     "properties": {
+      "session_ttl_hours": {
+       "default": 24.0,
+       "description": "Sliding session lifetime: a browser cookie is refreshed to this many hours ahead on each authenticated request.",
+       "title": "Session Ttl Hours",
+       "type": "number"
+      },
+      "max_session_days": {
+       "default": 30.0,
+       "description": "Hard ceiling on total session age; sliding refresh stops past this and re-login is required.",
+       "title": "Max Session Days",
+       "type": "number"
+      }
+     },
+     "title": "AuthSettings",
+     "type": "object"
+    },
+    "values": {
+     "session_ttl_hours": 6.5,
+     "max_session_days": 1.0
+    }
+   },
+   "stored": "{\"session_ttl_hours\": 6.5, \"max_session_days\": 1.0}"
+  },
+  {
+   "patch": {
+    "session_ttl_hours": 1.0,
+    "unknown": "dropped"
+   },
+   "answer": {
+    "title": "Authentication",
+    "schema": {
+     "description": "User-settable auth knobs.",
+     "properties": {
+      "session_ttl_hours": {
+       "default": 24.0,
+       "description": "Sliding session lifetime: a browser cookie is refreshed to this many hours ahead on each authenticated request.",
+       "title": "Session Ttl Hours",
+       "type": "number"
+      },
+      "max_session_days": {
+       "default": 30.0,
+       "description": "Hard ceiling on total session age; sliding refresh stops past this and re-login is required.",
+       "title": "Max Session Days",
+       "type": "number"
+      }
+     },
+     "title": "AuthSettings",
+     "type": "object"
+    },
+    "values": {
+     "session_ttl_hours": 1.0,
+     "max_session_days": 1.0
+    }
+   },
+   "stored": "{\"session_ttl_hours\": 1.0, \"max_session_days\": 1.0}"
+  }
+ ]
+}

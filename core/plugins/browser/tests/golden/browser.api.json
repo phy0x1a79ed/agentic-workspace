@@ -1,0 +1,221 @@
+{
+  "description": "alcor's browser (fleet.md R102): each session drives its own Chrome window, its seat. One viewer shows them all.",
+  "functions": [
+    {
+      "name": "seat_open",
+      "description": "Attach this session to its own browser window. A trusted session gets Tony's profile unless it asks for a blank one. A cooperative session always gets a blank one. Returns the seat id.",
+      "params": [
+        {
+          "name": "profile",
+          "type": "string",
+          "required": false,
+          "description": "tony or blank."
+        },
+        {
+          "name": "own_container",
+          "type": "boolean",
+          "required": false,
+          "description": "Run this seat in its own container."
+        }
+      ],
+      "tool": "browser_seat_open"
+    },
+    {
+      "name": "seat_close",
+      "description": "Close this seat's window, tabs and container.",
+      "params": [
+        {
+          "name": "seat",
+          "type": "string",
+          "required": true,
+          "description": "The seat id that seat_open returned."
+        }
+      ],
+      "tool": "browser_seat_close"
+    },
+    {
+      "name": "seats",
+      "description": "This session's seats.",
+      "params": [],
+      "tool": "browser_seats"
+    },
+    {
+      "name": "tab_open",
+      "description": "Open a tab in this seat's window.",
+      "params": [
+        {
+          "name": "seat",
+          "type": "string",
+          "required": true,
+          "description": "The seat id that seat_open returned."
+        },
+        {
+          "name": "url",
+          "type": "string",
+          "required": true,
+          "description": ""
+        }
+      ],
+      "tool": "browser_tab_open"
+    },
+    {
+      "name": "tab_close",
+      "description": "Close a tab of this seat.",
+      "params": [
+        {
+          "name": "seat",
+          "type": "string",
+          "required": true,
+          "description": "The seat id that seat_open returned."
+        },
+        {
+          "name": "tab",
+          "type": "string",
+          "required": true,
+          "description": "A tab id of this seat's window."
+        }
+      ],
+      "tool": "browser_tab_close"
+    },
+    {
+      "name": "tab_activate",
+      "description": "Switch to a tab of this seat.",
+      "params": [
+        {
+          "name": "seat",
+          "type": "string",
+          "required": true,
+          "description": "The seat id that seat_open returned."
+        },
+        {
+          "name": "tab",
+          "type": "string",
+          "required": true,
+          "description": "A tab id of this seat's window."
+        }
+      ],
+      "tool": "browser_tab_activate"
+    },
+    {
+      "name": "tab_list",
+      "description": "This seat's tabs.",
+      "params": [
+        {
+          "name": "seat",
+          "type": "string",
+          "required": true,
+          "description": "The seat id that seat_open returned."
+        }
+      ],
+      "tool": "browser_tab_list"
+    },
+    {
+      "name": "navigate",
+      "description": "Load a URL in a tab of this seat.",
+      "params": [
+        {
+          "name": "seat",
+          "type": "string",
+          "required": true,
+          "description": "The seat id that seat_open returned."
+        },
+        {
+          "name": "tab",
+          "type": "string",
+          "required": true,
+          "description": "A tab id of this seat's window."
+        },
+        {
+          "name": "url",
+          "type": "string",
+          "required": true,
+          "description": ""
+        }
+      ],
+      "tool": "browser_navigate"
+    },
+    {
+      "name": "cdp",
+      "description": "Run a page-level DevTools method on a tab of this seat. Target, Browser, Storage and cookie-wide methods are refused.",
+      "params": [
+        {
+          "name": "seat",
+          "type": "string",
+          "required": true,
+          "description": "The seat id that seat_open returned."
+        },
+        {
+          "name": "tab",
+          "type": "string",
+          "required": true,
+          "description": "A tab id of this seat's window."
+        },
+        {
+          "name": "method",
+          "type": "string",
+          "required": true,
+          "description": ""
+        },
+        {
+          "name": "params",
+          "type": "object",
+          "required": false,
+          "description": ""
+        }
+      ],
+      "tool": "browser_cdp"
+    },
+    {
+      "name": "screenshot",
+      "description": "A PNG of a tab, base64.",
+      "params": [
+        {
+          "name": "seat",
+          "type": "string",
+          "required": true,
+          "description": "The seat id that seat_open returned."
+        },
+        {
+          "name": "tab",
+          "type": "string",
+          "required": true,
+          "description": "A tab id of this seat's window."
+        }
+      ],
+      "tool": "browser_screenshot"
+    },
+    {
+      "name": "signin",
+      "description": "Ask Tony to pass a captcha or sign in on this seat's window. Files a request on the approvals queue and raises the window in the viewer.",
+      "params": [
+        {
+          "name": "seat",
+          "type": "string",
+          "required": true,
+          "description": "The seat id that seat_open returned."
+        },
+        {
+          "name": "site",
+          "type": "string",
+          "required": true,
+          "description": ""
+        },
+        {
+          "name": "reason",
+          "type": "string",
+          "required": true,
+          "description": ""
+        }
+      ],
+      "tool": "browser_signin"
+    },
+    {
+      "name": "viewer",
+      "description": "The one viewer that shows every window.",
+      "params": [],
+      "tool": "browser_viewer"
+    }
+  ],
+  "emitters": [],
+  "sessions": []
+}

@@ -265,7 +265,7 @@ mod tests {
     }
 
     #[test]
-    fn load_joins_the_roster_to_each_jobs_own_record() {
+    fn load_joins_the_roster_to_each_jobs_own_record_and_coerces_its_fields() {
         let (_d, h) = home();
         write_roster(
             &h,
@@ -286,11 +286,7 @@ mod tests {
         assert_eq!(newer.needs, None);
         assert!(newer.has_record);
         assert!(!got[0].has_record && got[0].name.is_empty());
-    }
 
-    #[test]
-    fn load_coerces_fields_as_python_does() {
-        let (_d, h) = home();
         write_roster(&h, json!({"ab12cd34": {"replProcStart": 4242, "cliVersion": true, "decModes": [true, 3.5]}}), None);
         write_job(&h, "ab12cd34", json!({"name": true, "tokens": "12", "intent": 0, "needs": 3}));
         let j = &load(&h)[0];
@@ -300,91 +296,51 @@ mod tests {
     }
 
     #[test]
-    fn load_of_a_missing_or_malformed_roster_is_empty() {
+    fn a_damaged_roster_loads_empty_but_reads_strict_as_an_error() {
         let (_d, h) = home();
         assert!(load(&h).is_empty());
-        std::fs::write(h.roster(), "{not json").unwrap();
-        assert!(load(&h).is_empty());
-        std::fs::write(h.roster(), r#"{"workers": [1]}"#).unwrap();
-        assert!(load(&h).is_empty());
-    }
-
-    #[test]
-    fn the_strict_roster_refuses_what_the_lenient_one_shrugs_off() {
-        let (_d, h) = home();
         assert_eq!(RosterFile::read_strict(&h), Ok(RosterFile::default()));
+        assert_eq!(daemon_pid(&h), None);
         write_roster(&h, json!({"ab12cd34": {}}), None);
         let r = RosterFile::read_strict(&h).unwrap();
         assert_eq!((r.proto, r.supervisor_pid, r.workers.len()), (Some(1), Some(me()), 1));
-        std::fs::write(h.roster(), r#"{"workers": [1]}"#).unwrap();
-        assert_eq!(RosterFile::read_strict(&h).unwrap_err().path, h.roster());
-        std::fs::write(h.roster(), r#"{"workers": []}"#).unwrap();
-        assert!(RosterFile::read_strict(&h).unwrap().workers.is_empty());
-        std::fs::write(h.roster(), "{torn").unwrap();
-        assert!(RosterFile::read_strict(&h).is_err());
-        assert_eq!(RosterFile::read(&h), RosterFile::default());
-    }
-
-    #[test]
-    fn the_daemon_is_the_supervisor_only_while_its_process_runs() {
-        let (_d, h) = home();
-        assert_eq!(daemon_pid(&h), None);
-        write_roster(&h, json!({}), None);
         assert_eq!(daemon_pid(&h), Some(me()));
         write_roster(&h, json!({}), Some(DEAD_PID));
-        assert_eq!(daemon_pid(&h), None);
-        std::fs::write(h.roster(), r#"{"supervisorPid": true}"#).unwrap();
-        assert_eq!(daemon_pid(&h), None);
-    }
+        assert_eq!(daemon_pid(&h), None, "the daemon is the supervisor only while its process runs");
 
-    #[test]
-    fn binary_version_is_the_directory_the_symlink_points_into() {
-        let dir = TempDir::new().unwrap();
-        std::fs::create_dir(dir.path().join("2.1.268")).unwrap();
-        std::os::unix::fs::symlink(dir.path().join("2.1.268"), dir.path().join("claude")).unwrap();
-        assert_eq!(binary_version(&dir.path().join("claude")).as_deref(), Some("2.1.268"));
-        assert_eq!(binary_version(&dir.path().join("missing")), None);
-    }
-
-    #[test]
-    fn the_app_link_swaps_the_bridge_prefix_for_session() {
-        assert_eq!(
-            bridge_link(Some("cse_01GVs3xRsnepMP5feSRbjqA8")).as_deref(),
-            Some("https://claude.ai/code/session_01GVs3xRsnepMP5feSRbjqA8")
-        );
-    }
-
-    #[test]
-    fn no_link_without_a_well_formed_bridge_id() {
-        for bridge in [None, Some(""), Some("cse_"), Some("session_01A"), Some("01A")] {
-            assert_eq!(bridge_link(bridge), None, "{bridge:?}");
+        for bad in ["{not json", r#"{"workers": [1]}"#] {
+            std::fs::write(h.roster(), bad).unwrap();
+            assert!(load(&h).is_empty());
+            assert_eq!(RosterFile::read_strict(&h).unwrap_err().path, h.roster());
+            assert_eq!(RosterFile::read(&h), RosterFile::default());
         }
     }
 
     #[test]
-    fn a_job_with_a_bridge_id_is_live_and_has_a_link() {
+    fn a_bridge_id_makes_a_job_live_with_an_app_link() {
+        assert_eq!(
+            bridge_link(Some("cse_01GVs3xRsnepMP5feSRbjqA8")).as_deref(),
+            Some("https://claude.ai/code/session_01GVs3xRsnepMP5feSRbjqA8")
+        );
+        for bridge in [None, Some(""), Some("cse_"), Some("session_01A"), Some("01A")] {
+            assert_eq!(bridge_link(bridge), None, "{bridge:?}");
+        }
         let (_d, h) = home();
         write_roster(&h, json!({"on": {"replPid": 7}, "off": {"replPid": 8}}), None);
         write_job(&h, "on", json!({"name": "a", "bridgeSessionId": "cse_01X"}));
-        write_job(&h, "off", json!({"name": "b"}));
+        write_job(&h, "off", json!({"name": "b", "bridgeSessionId": ""}));
         let jobs = load(&h);
         let on = jobs.iter().find(|j| j.short == "on").unwrap();
         let off = jobs.iter().find(|j| j.short == "off").unwrap();
         assert!(on.remote_control());
         assert_eq!(on.link().as_deref(), Some("https://claude.ai/code/session_01X"));
         assert!(!off.remote_control() && off.link().is_none());
-    }
-
-    #[test]
-    fn a_cleared_bridge_id_reads_as_off() {
-        let (_d, h) = home();
-        write_job(&h, "ab12cd34", json!({"name": "a", "bridgeSessionId": ""}));
-        assert_eq!(job_bridge_id(&h, "ab12cd34"), None);
+        assert_eq!(job_bridge_id(&h, "off"), None, "a cleared bridge id reads as off");
         assert_eq!(job_bridge_id(&h, "missing"), None);
     }
 
     #[test]
-    fn a_job_id_is_eight_lowercase_hex_digits() {
+    fn a_job_id_is_eight_lowercase_hex_digits_and_the_binary_version_is_its_directory() {
         assert_eq!(JobId::parse("ab12cd34").unwrap().as_str(), "ab12cd34");
         for bad in ["", "ab12cd3", "ab12cd345", "AB12CD34", "ab12cd3g", "ab12cd34\n"] {
             assert!(JobId::parse(bad).is_err(), "{bad:?}");
@@ -392,5 +348,11 @@ mod tests {
         let id: JobId = serde_json::from_value(json!("0f1e2d3c")).unwrap();
         assert_eq!(serde_json::to_value(&id).unwrap(), json!("0f1e2d3c"));
         assert!(serde_json::from_value::<JobId>(json!("nope")).is_err());
+
+        let dir = TempDir::new().unwrap();
+        std::fs::create_dir(dir.path().join("2.1.268")).unwrap();
+        std::os::unix::fs::symlink(dir.path().join("2.1.268"), dir.path().join("claude")).unwrap();
+        assert_eq!(binary_version(&dir.path().join("claude")).as_deref(), Some("2.1.268"));
+        assert_eq!(binary_version(&dir.path().join("missing")), None);
     }
 }

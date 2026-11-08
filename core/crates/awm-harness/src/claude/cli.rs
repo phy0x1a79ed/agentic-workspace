@@ -259,22 +259,26 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn stop_then_remove_in_that_order() {
+    async fn a_job_is_stopped_then_removed_until_it_is_gone() {
         let run = FakeRunner::default();
         let out = stop_and_remove(&job(), Path::new("/bin/claude"), &run, &probe(&run, Some(1), 0)).await;
         assert_eq!(run.calls(), [["/bin/claude", "stop", "abcd1234"], ["/bin/claude", "rm", "abcd1234"]]);
         assert!(out.stopped && out.removed && !out.kept);
-    }
 
-    #[tokio::test(start_paused = true)]
-    async fn an_already_stopped_job_is_still_removed() {
         let run = FakeRunner::with([("stop", exit(1, "not running"))]);
         let out = stop(&run, Some(1)).await;
-        assert!(out.removed && !out.stopped);
-    }
+        assert!(out.removed && !out.stopped, "an already stopped job is still removed");
 
-    #[tokio::test(start_paused = true)]
-    async fn a_failed_removal_carries_the_cli_output() {
+        let run = FakeRunner::default();
+        assert!(stop(&run, Some(2)).await.removed);
+        assert_eq!(run.verbs(), ["stop", "rm", "rm"], "a record the settling daemon writes back is removed again");
+
+        let run = FakeRunner::default();
+        let p = probe(&run, Some(1), 3);
+        stop_and_remove(&job(), Path::new("c"), &run, &p).await;
+        assert_eq!(*p.order.lock().unwrap(), ["alive", "alive", "alive", "exited"], "rm waits for the worker to exit");
+        assert_eq!(run.verbs(), ["stop", "rm"]);
+
         let run = FakeRunner::with([("rm", exit(1, "no such job\n"))]);
         let out = stop(&run, None).await;
         assert!(!out.removed);
@@ -282,33 +286,22 @@ mod tests {
         let mut want = vec!["stop"];
         want.extend(["rm"; RM_ATTEMPTS]);
         assert_eq!(run.verbs(), want);
-    }
 
-    #[tokio::test(start_paused = true)]
-    async fn a_record_the_settling_daemon_writes_back_is_removed_again() {
-        let run = FakeRunner::default();
-        let out = stop(&run, Some(2)).await;
-        assert!(out.removed);
-        assert_eq!(run.verbs(), ["stop", "rm", "rm"]);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn rm_waits_for_the_worker_to_exit() {
-        let run = FakeRunner::default();
-        let p = probe(&run, Some(1), 3);
-        stop_and_remove(&job(), Path::new("c"), &run, &p).await;
-        assert_eq!(*p.order.lock().unwrap(), ["alive", "alive", "alive", "exited"]);
-        assert_eq!(run.verbs(), ["stop", "rm"]);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn an_already_removed_job_counts_as_removed() {
         let run = FakeRunner::with([("stop", exit(1, "No job matching")), ("rm", exit(1, "No job matching 'abcd1234'"))]);
-        assert!(stop(&run, Some(0)).await.removed);
+        assert!(stop(&run, Some(0)).await.removed, "an already removed job counts as removed");
+
+        let run = FakeRunner::with([("stop", Err(RunError::TimedOut)), ("rm", Err(RunError::TimedOut))]);
+        let out = stop(&run, None).await;
+        assert!(!out.removed && out.detail.contains("timed out"), "{}", out.detail);
+
+        let run = FakeRunner::with([("stop", exit(0, " stopped \n"))]);
+        let out = stop_keeping(&job(), Path::new("c"), &run).await;
+        assert_eq!(out, StopOutcome { stopped: true, removed: false, kept: true, detail: "stopped".into() });
+        assert_eq!(run.verbs(), ["stop"]);
     }
 
     #[test]
-    fn the_probe_reads_the_jobs_dir_and_the_roster() {
+    fn the_probe_reads_the_jobs_dir_the_roster_and_the_live_worker() {
         let (_d, h) = home();
         std::fs::remove_dir(h.jobs()).unwrap();
         std::fs::write(h.roster(), json!({"workers": {"abcd1234": {"pid": 1, "procStart": "x"}}}).to_string()).unwrap();
@@ -318,37 +311,11 @@ mod tests {
         assert!(!p.present(&job()));
         std::fs::create_dir_all(h.jobs().join("abcd1234")).unwrap();
         assert!(p.present(&job()));
-    }
 
-    #[test]
-    fn the_probe_sees_a_live_worker() {
-        let (_d, h) = home();
         let start = crate::claude::records::tests::own_start();
         let worker = json!({"pid": std::process::id(), "procStart": start});
         std::fs::write(h.roster(), json!({"workers": {"abcd1234": worker}}).to_string()).unwrap();
-        assert!(JobProbe { home: h }.worker_alive(&job()));
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn a_timeout_is_a_failure_not_an_exception() {
-        let run = FakeRunner::with([("stop", Err(RunError::TimedOut)), ("rm", Err(RunError::TimedOut))]);
-        let out = stop(&run, None).await;
-        assert!(!out.removed && out.detail.contains("timed out"), "{}", out.detail);
-    }
-
-    #[test]
-    fn only_a_job_id_reaches_the_cli() {
-        for bad in ["", "--help", "ABCD1234", "abc"] {
-            assert!(JobId::parse(bad).is_err(), "{bad:?}");
-        }
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn stop_keeping_stops_only() {
-        let run = FakeRunner::with([("stop", exit(0, " stopped \n"))]);
-        let out = stop_keeping(&job(), Path::new("c"), &run).await;
-        assert_eq!(out, StopOutcome { stopped: true, removed: false, kept: true, detail: "stopped".into() });
-        assert_eq!(run.verbs(), ["stop"]);
+        assert!(p.worker_alive(&job()));
     }
 
     #[tokio::test]

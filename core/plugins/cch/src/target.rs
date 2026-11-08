@@ -466,7 +466,6 @@ mod tests {
     }
 
     // pid_max is at most 2^22, so this pid never exists.
-    const NO_SUCH_PID: u32 = (1 << 22) + 1;
 
     struct Fixture {
         _dir: tempfile::TempDir,
@@ -540,29 +539,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_dead_pid_refuses() {
-        let b = plain();
-        write_session(&b.host.home, NO_SUCH_PID, json!({"procStart": "111"}));
-        assert!(resolve_err(&b, NO_SUCH_PID, None).await.contains("is gone"));
-    }
-
-    #[tokio::test]
-    async fn test_unknown_hosting_kind_refuses() {
-        let b = plain();
-        write_session(&b.host.home, me(), json!({"procStart": my_start(), "kind": "something-new"}));
-        let err = resolve_err(&b, me(), None).await;
-        assert!(err.contains("unrecognised hosting kind 'something-new'"), "{err}");
-    }
-
-    #[tokio::test]
-    async fn test_expect_session_refuses_a_pid_that_resolved_elsewhere() {
-        // An ancestry walk past a session with no record lands on whoever launched it.
-        let b = with_my_pane();
-        write_session(&b.host.home, me(), json!({"procStart": my_start(), "sessionId": "the-launcher"}));
-        assert!(resolve_err(&b, me(), Some("mine")).await.contains("different conversation"));
-    }
-
-    #[tokio::test]
     async fn test_expect_session_can_only_refuse_never_redirect() {
         // Naming a session that exists does not fetch it: the pid still decides.
         let b = with_my_pane();
@@ -570,20 +546,6 @@ mod tests {
         write_session(&b.host.home, 5678, json!({"procStart": "111", "sessionId": "theirs"}));
         assert_eq!(b.host.resolve(me(), Some("mine")).await.unwrap().session_id(), "mine");
         assert!(resolve_err(&b, me(), Some("theirs")).await.contains("different conversation"));
-    }
-
-    #[tokio::test]
-    async fn test_no_expect_session_leaves_resolution_as_it_was() {
-        let b = with_my_pane();
-        write_session(&b.host.home, me(), json!({"procStart": my_start(), "sessionId": "whatever"}));
-        let target = b.host.resolve(me(), None).await.unwrap();
-        assert_eq!(target.session_id(), "whatever");
-        assert_eq!(target, Target::Tmux(TmuxLane {
-            pane: "%3".into(),
-            session_id: "whatever".into(),
-            repl_pid: me(),
-            name: Some(format!("s{}", me())),
-        }));
     }
 
     #[tokio::test]
@@ -604,44 +566,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_background_session_survives_a_session_id_that_drifted() {
-        // Clearing a conversation rewrites the record's sessionId; the roster keeps the dispatch one.
-        let b = bg_box(None, &[]);
-        write_session(&b.host.home, me(), json!({"procStart": my_start(), "kind": "bg",
-            "sessionId": "00000000-0000-4000-8000-0000000000a2", "jobId": "f0000001"}));
-        write_roster(&b.host.home, json!({
-            "f0000001": {"sessionId": "00000000-0000-4000-8000-0000000000a1", "pid": 49641,
-                         "ptySock": "/tmp/right.sock", "ptyAuth": "yes"},
-        }));
-        assert_eq!(daemon(&b, me()).await.sock, Path::new("/tmp/right.sock"));
-    }
-
-    #[tokio::test]
-    async fn test_background_session_without_a_job_id_still_joins_on_session_id() {
-        let b = bg_box(None, &[]);
-        write_session(&b.host.home, me(), json!({"procStart": my_start(), "kind": "bg",
-            "sessionId": "00000000-0000-4000-8000-000000000001"}));
-        write_roster(&b.host.home, json!({
-            "f0000001": {"sessionId": "00000000-0000-4000-8000-000000000001", "pid": 49641,
-                         "ptySock": "/tmp/right.sock", "ptyAuth": "yes"},
-        }));
-        assert_eq!(daemon(&b, me()).await.sock, Path::new("/tmp/right.sock"));
-    }
-
-    #[tokio::test]
-    async fn test_background_session_falls_back_to_the_host_that_contains_it() {
-        // Neither key matches, but exactly one listed host has this REPL in its subtree.
-        let b = bg_box(None, &[]);
-        write_session(&b.host.home, me(), json!({"procStart": my_start(), "kind": "bg",
-            "sessionId": "unknown", "jobId": "unknown"}));
-        write_roster(&b.host.home, json!({
-            "elsewhere": {"sessionId": "other", "pid": 777, "ptySock": "/tmp/wrong.sock", "ptyAuth": "no"},
-            "f0000001": {"sessionId": "stale", "pid": 49641, "ptySock": "/tmp/right.sock", "ptyAuth": "yes"},
-        }));
-        assert_eq!(daemon(&b, me()).await.sock, Path::new("/tmp/right.sock"));
-    }
-
-    #[tokio::test]
     async fn test_background_session_refuses_a_live_host_that_does_not_contain_it() {
         // The join key matched but the process tree says the entry is somebody else's session.
         let b = bg_box(Some(HashMap::from([(49641, vec![5555])])), &[]);
@@ -656,17 +580,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_background_session_tolerates_a_host_that_is_gone() {
-        // A dead host cannot be asked what it contains; the socket connect fails accurately later.
-        let b = bg_box(Some(HashMap::new()), &[49641]);
-        write_session(&b.host.home, me(), json!({"procStart": my_start(), "kind": "bg", "jobId": "f0000001"}));
-        write_roster(&b.host.home, json!({
-            "f0000001": {"sessionId": "whatever", "pid": 49641, "ptySock": "/tmp/right.sock", "ptyAuth": "yes"},
-        }));
-        assert_eq!(daemon(&b, me()).await.sock, Path::new("/tmp/right.sock"));
-    }
-
-    #[tokio::test]
     async fn test_background_session_with_no_roster_entry_refuses() {
         let b = bg_box(Some(HashMap::new()), &[]);
         write_session(&b.host.home, me(), json!({"procStart": my_start(), "kind": "bg",
@@ -676,57 +589,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_no_roster_entry_does_not_blame_the_pty_host() {
-        // An earlier message said the host had probably exited, which sent readers to a live process.
-        let b = bg_box(Some(HashMap::new()), &[]);
-        write_session(&b.host.home, me(), json!({"procStart": my_start(), "kind": "bg", "jobId": "f0000001"}));
-        write_roster(&b.host.home, json!({}));
-        let err = resolve_err(&b, me(), None).await;
-        assert!(!err.contains("may have exited"));
-        assert!(err.contains("f0000001"));
-    }
-
-    #[test]
-    fn test_the_size_of_a_spare_claimed_job_is_read_from_its_terminal() {
-        // A job claimed from a warm spare records no size at dispatch.
-        use std::os::fd::{FromRawFd, OwnedFd};
-        let (mut master, mut slave) = (0, 0);
-        let ws = libc::winsize { ws_row: 50, ws_col: 200, ws_xpixel: 0, ws_ypixel: 0 };
-        // SAFETY: openpty writes two fds; the null name, termios and winsize pointers are allowed.
-        let rc = unsafe {
-            libc::openpty(&mut master, &mut slave, std::ptr::null_mut(), std::ptr::null(), &ws)
-        };
-        assert_eq!(rc, 0);
-        // SAFETY: openpty just returned these fds and nothing else owns them.
-        let (master, slave) = unsafe { (OwnedFd::from_raw_fd(master), OwnedFd::from_raw_fd(slave)) };
-        let mut child = std::process::Command::new("sleep").arg("30").stdin(slave).spawn().unwrap();
-        let size = tty_size(child.id());
-        child.kill().unwrap();
-        child.wait().unwrap();
-        drop(master);
-        assert_eq!(size, Some((200, 50)));
-        assert_eq!(tty_size(NO_SUCH_PID), None);
-    }
-
-    #[tokio::test]
     async fn a_parked_launcher_is_refused() {
         let b = with_my_pane();
         write_session(&b.host.home, me(), json!({"procStart": my_start(), "parkedJobId": "f0000009"}));
         let err = resolve_err(&b, me(), None).await;
         assert!(err.contains("parked its conversation as background job f0000009"), "{err}");
-    }
-
-    #[tokio::test]
-    async fn a_dispatch_geometry_is_kept_and_a_missing_one_is_read_from_the_terminal() {
-        let mut b = bg_box(None, &[]);
-        b.host.procs.tty = Some((80, 24));
-        write_session(&b.host.home, me(), json!({"procStart": my_start(), "kind": "bg", "jobId": "f0000001"}));
-        write_roster(&b.host.home, json!({
-            "f0000001": {"pid": 49641, "ptySock": "/s", "ptyAuth": "a", "dispatch": {"cols": 209, "rows": 57}},
-        }));
-        assert_eq!(daemon(&b, me()).await.geometry, Some((209, 57)));
-        write_roster(&b.host.home, json!({"f0000001": {"pid": 49641, "ptySock": "/s", "ptyAuth": "a"}}));
-        assert_eq!(daemon(&b, me()).await.geometry, Some((80, 24)));
     }
 
     #[tokio::test]

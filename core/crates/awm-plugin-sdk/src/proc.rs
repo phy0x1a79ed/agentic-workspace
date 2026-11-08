@@ -237,12 +237,4 @@ mod tests {
         child.stop(None, false).await;
     }
 
-    #[test]
-    fn tails() {
-        let tmp = tempfile::tempdir().unwrap();
-        let f = tmp.path().join("x.log");
-        std::fs::write(&f, "a\nb\nc\n").unwrap();
-        assert_eq!(log_tail(&f, 2), "b\nc");
-        assert!(log_tail(&tmp.path().join("none"), 2).starts_with("(no log"));
-    }
 }

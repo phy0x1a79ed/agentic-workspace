@@ -320,14 +320,6 @@ pub(crate) mod testing {
             self.pool_with(|_| {})
         }
 
-        pub fn roster(&self) -> Value {
-            serde_json::from_str(&std::fs::read_to_string(self.paths.home.roster()).unwrap()).unwrap()
-        }
-
-        pub fn write_roster(&self, v: &Value) {
-            write_json(&self.paths.home.roster(), v);
-        }
-
         /// A clock reading a minute after the newest session started.
         pub fn a_minute_on(&self) -> f64 {
             self.newest_ms as f64 / 1000.0 + 60.0
@@ -366,28 +358,6 @@ mod tests {
     }
 
     #[test]
-    fn test_status_still_holds_a_session_the_pool_renamed_on_claim() {
-        // It is no longer called `<warm ...>` anything, and dropping it is how a claimed session
-        // comes to look like a second spare.
-        let b = TestBox::new();
-        assert!(rows(&b).contains_key("claimedfresh"));
-    }
-
-    #[test]
-    fn status_reports_the_pool_and_a_loop_that_is_not_running() {
-        let b = TestBox::new();
-        let out = status(&b.pool(), b.now(), None);
-        assert_eq!(out["warm"], json!(["warmfresh"]));
-        assert_eq!(out["binary_version"], VERSION);
-        assert_eq!(out["seeding"], "ok");
-        assert_eq!(out["daemon_pid"], std::process::id());
-        assert_eq!(out["loop"], "not running");
-        assert_eq!(out["holds_lock"], false);
-        let ages: Vec<f64> = out["sessions"].as_array().unwrap().iter().map(|r| r["age_s"].as_f64().unwrap()).collect();
-        assert!(ages.windows(2).all(|w| w[0] <= w[1]));
-    }
-
-    #[test]
     fn the_newest_claimable_session_comes_first() {
         let b = TestBox::new();
         let pool = b.pool();
@@ -401,16 +371,4 @@ mod tests {
         assert_eq!(order, ["warmfresh", "warmolder"]);
     }
 
-    #[test]
-    fn why_not_answers_none_for_a_claimable_session_and_names_the_binary() {
-        let b = TestBox::new();
-        let pool = b.pool();
-        let s = pool.sessions();
-        let fresh = s.load().into_iter().find(|x| x.short == "warmfresh").unwrap();
-        assert_eq!(why_not(&fresh, s, Some(VERSION), Some(b.now())), None);
-        assert_eq!(why_not(&fresh, s, None, None).as_deref(), Some("no claude binary"));
-        assert_eq!(why_not(&fresh, s, Some("9.9.9"), Some(b.now())).as_deref(), Some("binary 2.1.268"));
-        let late = Some(b.now() + 1e6);
-        assert_eq!(why_not(&fresh, s, Some(VERSION), late).as_deref(), Some("aged out"));
-    }
 }

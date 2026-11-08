@@ -1,7 +1,7 @@
 # SSH Service
 
-Manages headless ControlMaster SSH connections to managed hosts (sockeye,
-fir, chamois). Orchestrates VPN and 2FA burst automatically before
+Manages headless ControlMaster SSH connections to managed hosts (sockeye
+and fir). Orchestrates VPN and 2FA burst automatically before
 connecting, so the caller gets a seamless single-verb API.
 
 > **Never `ssh fir` directly.** `fir` (Alliance) locks the account after 10
@@ -25,11 +25,9 @@ connecting, so the caller gets a seamless single-verb API.
 |------|-------------|------------|----------|---------|
 | sockeye, sockeye1-3 | ubc | cwl | txyliu | no |
 | fir | — | alliance | phyberos | **yes** |
-| chamois | ubc | — | tliu | no |
 
 The 2FA column is the host's own `twofa_device`, which is what decides whether a
-connect goes through the fleet slot arbiter. `chamois` has none: it is reached
-over the `ubc` tunnel, and the *vpn* service arms `cwl` for its own dial.
+connect goes through the fleet slot arbiter.
 
 ## MFA-lockout hold (operator note)
 
@@ -88,7 +86,7 @@ a second Duo push at a host that was already down for maintenance.
 Non-guarded hosts live in a shared `~/.ssh/config` block:
 
 ```
-host sockeye* chamois shamwow
+host sockeye* shamwow
     ControlMaster auto
     ControlPath ~/.ssh/live_connections/%h_%p_%r
     ServerAliveInterval 60s
@@ -129,17 +127,21 @@ OpenSSH runs a `ProxyCommand` **only when no live master exists**. So:
   guard, which prints a loud "use the ssh service, never direct" message to
   stderr and exits non-zero **before any Duo push** — no MFA attempt is spent.
 
-The service is the sole caller allowed to create the master: its `-f -N -M`
-connect adds `-o ProxyCommand=none` for guarded hosts (command-line `-o` wins
-over config), bypassing the guard to lay down the socket. This is a *guardrail*,
+The service is the sole caller allowed to create the master. Its `-f -N -M`
+connect adds `-o ProxyCommand=none` for a guarded host with no vpn (command-line
+`-o` wins over config), bypassing the guard to lay down the socket. For a vpn
+host it passes `-J vpn_<profile>` instead. ssh sets the first of ProxyJump and
+ProxyCommand it sees, so the jump replaces the config's guard ProxyCommand. This is a *guardrail*,
 not an OS boundary — the same Unix user can still bypass with `-o
 ProxyCommand=none` — the point is to make the naive/default `ssh fir` safe.
 
 To guard another host, set `guarded=True` on its `HostConfig` in `config.py` and
 give it an equivalent `Host` block listing **every name it can be reached by**
-(alias and FQDN). (VPN-bounced hosts like `sockeye*` can't take
-this guard as-is — their `ProxyCommand` is the required tunnel; the circuit
-breaker still covers them at the service layer.)
+(alias and FQDN).
+
+`sockeye` carries the same guard as `fir`: a `ProxyCommand` guard in its config
+block. A bare `ssh sockeye` with no master hits the guard before any Duo push.
+The service's master bypasses the guard with `-J vpn_ubc`.
 
 ## Failure visibility
 

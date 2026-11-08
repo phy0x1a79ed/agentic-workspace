@@ -1,0 +1,446 @@
+{
+ "schema_version": 2,
+ "schema_sql": "CREATE TABLE IF NOT EXISTS page_tags (\n    page TEXT NOT NULL,\n    tag  TEXT NOT NULL,\n    PRIMARY KEY (page, tag)\n);\nCREATE TABLE IF NOT EXISTS selected_tags (\n    tag TEXT PRIMARY KEY\n);\nCREATE TABLE IF NOT EXISTS page_names (\n    page         TEXT PRIMARY KEY,\n    display_name TEXT NOT NULL\n);\n",
+ "sqlite_master": [
+  [
+   "table",
+   "page_names",
+   "page_names",
+   "CREATE TABLE page_names (\n    page         TEXT PRIMARY KEY,\n    display_name TEXT NOT NULL\n)"
+  ],
+  [
+   "table",
+   "page_tags",
+   "page_tags",
+   "CREATE TABLE page_tags (\n    page TEXT NOT NULL,\n    tag  TEXT NOT NULL,\n    PRIMARY KEY (page, tag)\n)"
+  ],
+  [
+   "table",
+   "schema_version",
+   "schema_version",
+   "CREATE TABLE schema_version (version INTEGER NOT NULL)"
+  ],
+  [
+   "table",
+   "selected_tags",
+   "selected_tags",
+   "CREATE TABLE selected_tags (\n    tag TEXT PRIMARY KEY\n)"
+  ],
+  [
+   "index",
+   "sqlite_autoindex_page_names_1",
+   "page_names",
+   null
+  ],
+  [
+   "index",
+   "sqlite_autoindex_page_tags_1",
+   "page_tags",
+   null
+  ],
+  [
+   "index",
+   "sqlite_autoindex_selected_tags_1",
+   "selected_tags",
+   null
+  ]
+ ],
+ "version_rows": [
+  [
+   2
+  ]
+ ],
+ "script": [
+  {
+   "call": [
+    "tags_for_page",
+    "science"
+   ],
+   "result": []
+  },
+  {
+   "call": [
+    "add_tag",
+    "science",
+    "physics"
+   ],
+   "result": null
+  },
+  {
+   "call": [
+    "add_tag",
+    "science",
+    "  lab   work \t"
+   ],
+   "result": null
+  },
+  {
+   "call": [
+    "add_tag",
+    "science",
+    "physics"
+   ],
+   "result": null
+  },
+  {
+   "call": [
+    "add_tag",
+    "math",
+    "physics"
+   ],
+   "result": null
+  },
+  {
+   "call": [
+    "add_tag",
+    "math",
+    "   "
+   ],
+   "result": null
+  },
+  {
+   "call": [
+    "add_tag",
+    "",
+    "x"
+   ],
+   "result": null
+  },
+  {
+   "call": [
+    "add_tag",
+    "café",
+    "été　hiver"
+   ],
+   "result": null
+  },
+  {
+   "call": [
+    "add_tag",
+    "trilium",
+    "notes"
+   ],
+   "result": null
+  },
+  {
+   "call": [
+    "tags_for_page",
+    "science"
+   ],
+   "result": [
+    "lab work",
+    "physics"
+   ]
+  },
+  {
+   "call": [
+    "tags_by_page",
+    [
+     "science",
+     "math",
+     "absent",
+     "café"
+    ]
+   ],
+   "result": {
+    "science": [
+     "lab work",
+     "physics"
+    ],
+    "math": [
+     "physics"
+    ],
+    "absent": [],
+    "café": [
+     "été hiver"
+    ]
+   }
+  },
+  {
+   "call": [
+    "tags_by_page",
+    []
+   ],
+   "result": {}
+  },
+  {
+   "call": [
+    "all_tag_counts"
+   ],
+   "result": {
+    "lab work": 1,
+    "notes": 1,
+    "physics": 2,
+    "été hiver": 1
+   }
+  },
+  {
+   "call": [
+    "select_tag",
+    "physics"
+   ],
+   "result": null
+  },
+  {
+   "call": [
+    "select_tag",
+    "  notes "
+   ],
+   "result": null
+  },
+  {
+   "call": [
+    "select_tag",
+    ""
+   ],
+   "result": null
+  },
+  {
+   "call": [
+    "select_tag",
+    "ghost"
+   ],
+   "result": null
+  },
+  {
+   "call": [
+    "selected_tags"
+   ],
+   "result": [
+    "notes",
+    "physics"
+   ]
+  },
+  {
+   "call": [
+    "remove_tag",
+    "science",
+    "physics"
+   ],
+   "result": null
+  },
+  {
+   "call": [
+    "selected_tags"
+   ],
+   "result": [
+    "notes",
+    "physics"
+   ]
+  },
+  {
+   "call": [
+    "remove_tag",
+    "math",
+    " physics"
+   ],
+   "result": null
+  },
+  {
+   "call": [
+    "selected_tags"
+   ],
+   "result": [
+    "notes"
+   ]
+  },
+  {
+   "call": [
+    "all_tag_counts"
+   ],
+   "result": {
+    "lab work": 1,
+    "notes": 1,
+    "été hiver": 1
+   }
+  },
+  {
+   "call": [
+    "deselect_tag",
+    "notes  "
+   ],
+   "result": null
+  },
+  {
+   "call": [
+    "selected_tags"
+   ],
+   "result": []
+  },
+  {
+   "call": [
+    "select_tag",
+    "notes"
+   ],
+   "result": null
+  },
+  {
+   "call": [
+    "display_name",
+    "science"
+   ],
+   "result": null
+  },
+  {
+   "call": [
+    "display_names",
+    [
+     "science"
+    ]
+   ],
+   "result": {}
+  },
+  {
+   "call": [
+    "set_display_name",
+    "science",
+    "  Science   Lab "
+   ],
+   "result": null
+  },
+  {
+   "call": [
+    "set_display_name",
+    "trilium",
+    "Notes"
+   ],
+   "result": null
+  },
+  {
+   "call": [
+    "set_display_name",
+    "math",
+    "   "
+   ],
+   "result": null
+  },
+  {
+   "call": [
+    "set_display_name",
+    "",
+    "x"
+   ],
+   "result": null
+  },
+  {
+   "call": [
+    "display_name",
+    "science"
+   ],
+   "result": "Science Lab"
+  },
+  {
+   "call": [
+    "display_names",
+    [
+     "trilium",
+     "science",
+     "other",
+     "math"
+    ]
+   ],
+   "result": {
+    "science": "Science Lab",
+    "trilium": "Notes"
+   }
+  },
+  {
+   "call": [
+    "display_names",
+    []
+   ],
+   "result": {}
+  },
+  {
+   "call": [
+    "set_display_name",
+    "science",
+    "Second"
+   ],
+   "result": null
+  },
+  {
+   "call": [
+    "display_name",
+    "science"
+   ],
+   "result": "Second"
+  },
+  {
+   "call": [
+    "clear_display_name",
+    "science"
+   ],
+   "result": null
+  },
+  {
+   "call": [
+    "display_name",
+    "science"
+   ],
+   "result": null
+  },
+  {
+   "call": [
+    "clear_display_name",
+    "never"
+   ],
+   "result": null
+  },
+  {
+   "call": [
+    "tags_for_page",
+    "math"
+   ],
+   "result": []
+  },
+  {
+   "call": [
+    "all_tag_counts"
+   ],
+   "result": {
+    "lab work": 1,
+    "notes": 1,
+    "été hiver": 1
+   }
+  },
+  {
+   "call": [
+    "selected_tags"
+   ],
+   "result": [
+    "notes"
+   ]
+  }
+ ],
+ "tables": {
+  "page_tags": [
+   [
+    "café",
+    "été hiver"
+   ],
+   [
+    "science",
+    "lab work"
+   ],
+   [
+    "trilium",
+    "notes"
+   ]
+  ],
+  "selected_tags": [
+   [
+    "ghost"
+   ],
+   [
+    "notes"
+   ]
+  ],
+  "page_names": [
+   [
+    "trilium",
+    "Notes"
+   ]
+  ]
+ }
+}

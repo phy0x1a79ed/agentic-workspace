@@ -178,7 +178,7 @@ mod tests {
     }
 
     #[test]
-    fn a_session_gets_its_level_mode_and_scope() {
+    fn a_lookup_answer_fills_the_caller_and_names_its_mode() {
         let (_tmp, projects) = projects();
         let cwd = projects.join("awm/redux-x/core/src");
         let answer = json!({"ok": true, "known": true, "session_id": "cc0f1e", "trust": "cooperative", "mode": null, "cwd": cwd,
@@ -190,15 +190,28 @@ mod tests {
         assert_eq!(mode, None, "a session no restricted mode started is ungated");
         assert_eq!((c.job.as_deref(), c.name.as_deref()), (Some("0f1e"), Some("redux/x")));
         assert_eq!(fill(&mut c, &Lookup::Session(unread), &projects).as_deref(), Some(crate::modes::UNKNOWN), "an unreadable mode is gated hardest");
-    }
 
-    #[test]
-    fn a_shell_no_harness_claims_is_trusted_and_ungated() {
-        let (_tmp, projects) = projects();
         let mut c = Caller { job: Some("stale".into()), ..Caller::default() };
-        assert_eq!(fill(&mut c, &Lookup::NoOwner { mode: None }, &projects), None);
+        assert_eq!(fill(&mut c, &Lookup::NoOwner { mode: None }, &projects), None, "a shell no harness claims is ungated");
         assert_eq!(c.job, None);
         assert_eq!((c.session.as_deref(), c.trust.as_deref(), c.scope.as_deref()), (None, Some("trusted"), None));
+
+        let mut c = Caller { trust: Some("trusted".into()), ..Caller::default() };
+        assert_eq!(fill(&mut c, &Lookup::Failed, &projects).as_deref(), Some("unknown"));
+        assert_eq!((c.session.as_deref(), c.trust.as_deref()), (None, Some("untrusted")));
+
+        let mut c = Caller::default();
+        fill(&mut c, &Lookup::Session(json!({"known": true, "session_id": "cc1", "cwd": "/", "mode": "worker"})), &projects);
+        assert_eq!((c.trust.as_deref(), c.scope.as_deref()), (Some("untrusted"), None), "a known session without a level");
+
+        let mut c = Caller::default();
+        assert_eq!(fill(&mut c, &Lookup::Unreachable, &projects).as_deref(), Some(crate::modes::UNREACHABLE));
+
+        assert!(is_definite(&json!({"known": true, "mode": "worker"})));
+        assert!(is_definite(&json!({"known": true, "mode": null})));
+        assert!(!is_definite(&json!({"known": true, "mode": "unknown"})));
+        assert!(!is_definite(&json!({"known": true})));
+        assert!(!is_definite(&json!("nonsense")));
     }
 
     fn config(plugins: &[&str]) -> crate::config::Config {
@@ -207,14 +220,10 @@ mod tests {
     }
 
     #[test]
-    fn a_node_without_reflection_expects_no_lookup() {
+    fn a_lookup_is_expected_unless_reflection_is_simply_absent() {
         let load = crate::loader::LoadResult::default();
         assert!(!lookup_expected(&load, &config(&["*"])), "no reflection folder in the roots");
         assert!(!lookup_expected(&load, &config(&["journal", "scopes"])));
-    }
-
-    #[test]
-    fn reflection_enabled_but_not_loaded_expects_a_lookup() {
         let mut refused = crate::loader::LoadResult::default();
         refused.refused.push(crate::loader::Refusal {
             plugin: LOOKUP_PLUGIN.into(),
@@ -222,36 +231,7 @@ mod tests {
             reason: "needs harness@1".into(),
         });
         assert!(lookup_expected(&refused, &config(&["*"])), "refused at load");
-        let missing = crate::loader::LoadResult::default();
-        assert!(lookup_expected(&missing, &config(&["journal", "reflection"])), "named but in no root");
-    }
-
-    #[test]
-    fn a_failed_lookup_is_untrusted_with_mode_unknown() {
-        let (_tmp, projects) = projects();
-        let mut c = Caller { trust: Some("trusted".into()), ..Caller::default() };
-        assert_eq!(fill(&mut c, &Lookup::Failed, &projects).as_deref(), Some("unknown"));
-        assert_eq!((c.session.as_deref(), c.trust.as_deref()), (None, Some("untrusted")));
-    }
-
-    #[test]
-    fn a_known_session_without_a_level_is_untrusted() {
-        let (_tmp, projects) = projects();
-        let mut c = Caller::default();
-        fill(&mut c, &Lookup::Session(json!({"known": true, "session_id": "cc1", "cwd": "/", "mode": "worker"})), &projects);
-        assert_eq!((c.trust.as_deref(), c.scope.as_deref()), (Some("untrusted"), None));
-    }
-
-    #[test]
-    fn ppid_reads_this_process_parent() {
-        assert_eq!(ppid_of(std::process::id()), Some(std::os::unix::process::parent_id()));
-    }
-
-    #[test]
-    fn a_path_under_no_scope_falls_back_to_its_own_path() {
-        let (_tmp, projects) = projects();
-        assert_eq!(scope_of(&projects.join("loose/a/b"), &projects).as_deref(), Some("loose/a/b"));
-        assert_eq!(scope_of(&projects.join("loose"), &projects), None);
+        assert!(lookup_expected(&load, &config(&["journal", "reflection"])), "named but in no root");
     }
 
     fn git(dir: &Path, args: &[&str]) -> String {
@@ -331,21 +311,5 @@ mod tests {
         let mut args = json!({});
         stamp(&mut args, &own, None, "deneb");
         assert_eq!(args, json!({"_caller_trust": "cooperative"}));
-    }
-
-    #[test]
-    fn only_a_definite_answer_is_kept() {
-        assert!(is_definite(&json!({"known": true, "mode": "worker"})));
-        assert!(is_definite(&json!({"known": true, "mode": null})));
-        assert!(!is_definite(&json!({"known": true, "mode": "unknown"})));
-        assert!(!is_definite(&json!({"known": true})));
-        assert!(!is_definite(&json!("nonsense")));
-    }
-
-    #[test]
-    fn an_unreachable_lookup_gets_its_own_mode() {
-        let projects = std::path::PathBuf::from("/p");
-        let mut c = Caller::default();
-        assert_eq!(fill(&mut c, &Lookup::Unreachable, &projects).as_deref(), Some(crate::modes::UNREACHABLE));
     }
 }

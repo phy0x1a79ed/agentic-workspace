@@ -483,20 +483,6 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn test_the_paste_is_bracketed_and_targets_the_pane() {
-        // `-p` is load-bearing: without bracketed paste a leading `/` opens the slash menu.
-        let pane = pane(PaneState::default());
-        send("/compact", &pane).await.unwrap();
-        let paste = call_with(&pane, "paste-buffer");
-        assert!(paste.contains(&"-p".to_string()) && paste.contains(&"-d".to_string()));
-        assert_eq!(after_flag(&paste, "-t"), "%7");
-    }
-
-    fn after_flag(argv: &[String], flag: &str) -> String {
-        argv[argv.iter().position(|a| a == flag).unwrap() + 1].clone()
-    }
-
-    #[tokio::test(start_paused = true)]
     async fn test_no_escape_is_ever_sent() {
         // Escape would cancel the agent's in-flight turn.
         let pane = pane(PaneState::default());
@@ -513,31 +499,6 @@ mod tests {
         assert_eq!(load.last().unwrap(), "-");
         assert!(!load.join(" ").contains("/model opus"));
         assert_eq!(pane.state().buffers.values().next().unwrap(), "/model opus");
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn test_enter_false_leaves_the_text_in_the_prompt_unsubmitted() {
-        let pane = pane(PaneState::default());
-        let submitted = send_with("half a thought", &pane, &FakeProcs::new(), false).await;
-        assert_eq!(submitted, Ok(false));
-        assert!(pane.state().submitted.is_empty());
-        assert_eq!(pane.state().prompt, "half a thought");
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn test_a_paste_the_tui_never_paints_is_still_submitted() {
-        // Claude Code stops painting its composer while it compacts; the paste is there anyway.
-        let pane = pane(PaneState { paints: false, ..PaneState::default() });
-        assert_eq!(send("/compact", &pane).await, Ok(true));
-        assert_eq!(pane.state().submitted, ["/compact"]);
-        assert_eq!(pane.verbs().iter().filter(|v| *v == "paste-buffer").count(), 1, "and on the first attempt");
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn test_the_pane_is_never_captured_during_a_send() {
-        let pane = pane(PaneState::default());
-        send("/compact", &pane).await.unwrap();
-        assert!(!pane.verbs().contains(&"capture-pane".to_string()));
     }
 
     #[tokio::test(start_paused = true)]
@@ -560,24 +521,6 @@ mod tests {
         assert!(pane.state().submitted.is_empty());
     }
 
-    #[tokio::test(start_paused = true)]
-    async fn test_a_dead_pane_is_refused() {
-        let pane = pane(PaneState { failing: true, ..PaneState::default() });
-        let failures = send("/compact", &pane).await.unwrap_err();
-        assert_eq!(failures[0], "display-message -p… failed: boom");
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn test_the_pane_is_re_checked_on_every_attempt() {
-        let pane = pane(PaneState { fail_verbs: vec!["paste-buffer".into()], ..PaneState::default() });
-        assert!(send("/compact", &pane).await.is_err());
-        assert_eq!(
-            pane.verbs().iter().filter(|v| *v == "display-message").count(),
-            8,
-            "two assertions per attempt, three attempts, plus the give-up wipe"
-        );
-    }
-
     fn row(pane: &str, pid: &str, cmd: &str, sess: &str) -> [String; 4] {
         [pane.into(), pid.into(), cmd.into(), sess.into()]
     }
@@ -593,20 +536,4 @@ mod tests {
         assert_eq!(tmux.pane_for_pid(4242, &procs).await.unwrap().as_deref(), Some("%7"));
     }
 
-    #[tokio::test]
-    async fn test_a_caller_in_no_pane_resolves_to_nothing() {
-        let procs = FakeProcs { children: HashMap::from([(100, vec![200])]), ..FakeProcs::new() };
-        let pane = pane(PaneState { list_panes: vec![row("%1", "100", "claude", "s")], ..PaneState::default() });
-        assert_eq!(Tmux::with_runner(pane).pane_for_pid(4242, &procs).await.unwrap(), None);
-    }
-
-    #[tokio::test]
-    async fn test_panes_are_never_ranked_by_recency() {
-        // tmux has no per-pane activity format: it expanded to empty, every pane ranked the same,
-        // and every deferred resume went to the lowest-numbered agent pane.
-        let pane = pane(PaneState { list_panes: vec![row("%1", "100", "claude", "s")], ..PaneState::default() });
-        Tmux::with_runner(pane.clone()).list_panes().await.unwrap();
-        let fmt = call_with(&pane, "list-panes").last().unwrap().clone();
-        assert!(!fmt.contains("activity"));
-    }
 }

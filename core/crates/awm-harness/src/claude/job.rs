@@ -127,61 +127,37 @@ mod tests {
     }
 
     #[test]
-    fn lane_for_addresses_a_live_job_from_the_roster() {
+    fn lane_for_addresses_a_live_idle_or_busy_job_from_the_roster() {
         let (_d, h) = seeded("idle");
         let lane = lane_for(&h, "abc12345").unwrap();
         assert_eq!(lane.sock, std::path::Path::new("/run/x.sock"));
         assert_eq!((lane.auth.as_str(), lane.session_id.as_str(), lane.name.as_deref()), ("tok", "sess-1", Some("front-door")));
         assert_eq!((lane.dec_modes.as_slice(), lane.repl_pid), (&[2004][..], me()));
-    }
-
-    #[test]
-    fn lane_for_refuses_an_unknown_job() {
-        let (_d, h) = seeded("idle");
         assert!(refusal(&h, "nope0000").contains("not in the daemon roster"));
+        let job = roster::load(&h).remove(0);
+        assert!(DaemonLane::from_job(&job).is_some());
+        assert!(DaemonLane::from_job(&roster::Job { pty_sock: None, ..job.clone() }).is_none());
+        assert!(DaemonLane::from_job(&roster::Job { pty_auth: Some(String::new()), ..job.clone() }).is_none());
+        assert!(DaemonLane::from_job(&roster::Job { repl_pid: None, ..job }).is_none());
+        let (_d, h) = seeded("busy");
+        assert_eq!(lane_for(&h, "abc12345").unwrap().session_id, "sess-1");
     }
 
     #[test]
-    fn lane_for_refuses_a_job_whose_process_is_gone() {
-        let (_d, h) = home();
-        seed(&h, "idle", Some("1"), "/run/x.sock");
-        assert!(refusal(&h, "abc12345").contains("no longer running"));
-    }
-
-    #[test]
-    fn lane_for_accepts_only_the_safe_statuses() {
-        for status in ["idle", "busy"] {
-            let (_d, h) = seeded(status);
-            assert_eq!(lane_for(&h, "abc12345").unwrap().session_id, "sess-1", "{status}");
-        }
-    }
-
-    #[test]
-    fn lane_for_refuses_every_other_status() {
-        for status in ["waiting", "", "needs-input", "shutting-down"] {
+    fn lane_for_refuses_a_job_that_is_gone_unsafe_or_without_a_pty() {
+        for status in ["waiting", "needs-input", "shutting-down"] {
             let (_d, h) = seeded(status);
             let why = refusal(&h, "abc12345");
             assert!(why.contains("not idle or busy"), "{status}: {why}");
         }
         let (_d, h) = seeded("");
         assert!(refusal(&h, "abc12345").contains("is in an unknown state"));
-    }
-
-    #[test]
-    fn lane_for_refuses_a_job_with_no_pty() {
+        let (_d, h) = home();
+        seed(&h, "idle", Some("1"), "/run/x.sock");
+        assert!(refusal(&h, "abc12345").contains("no longer running"));
         let (_d, h) = home();
         seed(&h, "idle", None, "");
         assert!(refusal(&h, "abc12345").contains("no reachable PTY"));
-    }
-
-    #[test]
-    fn a_job_lane_needs_a_socket_a_token_and_a_pid() {
-        let (_d, h) = seeded("idle");
-        let job = roster::load(&h).remove(0);
-        assert!(DaemonLane::from_job(&job).is_some());
-        assert!(DaemonLane::from_job(&roster::Job { pty_sock: None, ..job.clone() }).is_none());
-        assert!(DaemonLane::from_job(&roster::Job { pty_auth: Some(String::new()), ..job.clone() }).is_none());
-        assert!(DaemonLane::from_job(&roster::Job { repl_pid: None, ..job }).is_none());
     }
 
     // A host that greets as this process's REPL, then returns every frame the client sent.
@@ -202,8 +178,8 @@ mod tests {
         })
     }
 
-    #[tokio::test]
-    async fn send_line_pastes_then_commits() {
+    #[tokio::test(start_paused = true)]
+    async fn send_line_pastes_then_commits_and_refuses_multi_line_text() {
         let (_d, h) = seeded("idle");
         let (client, server) = UnixStream::pair().unwrap();
         let peer = host(server);
@@ -220,11 +196,7 @@ mod tests {
         assert_eq!(raws, [b"\x1b[200~3 new cards, run door list\x1b[201~".to_vec(), b"\r".to_vec()]);
         let auth: Value = serde_json::from_slice(&frames[1].1).unwrap();
         assert_eq!((auth["t"].as_str(), auth["token"].as_str()), (Some("auth"), Some("tok")));
-    }
 
-    #[tokio::test]
-    async fn send_line_refuses_multi_line_text_before_opening_anything() {
-        let (_d, h) = seeded("idle");
         for text in ["a\nb", "a\rb"] {
             let err = send_line_with(&h, "abc12345", text, |_| async { Err::<UnixStream, _>(DaemonError("opened".into())) })
                 .await

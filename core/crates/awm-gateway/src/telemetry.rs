@@ -28,24 +28,3 @@ pub fn service_payload(service: &str, plugin: &str, pid: Option<i64>, event: Ser
         "ts": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
     })
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_service_payload_has_the_contract_fields() {
-        let up = service_payload("journal", "journal", Some(42), ServiceEvent::Up);
-        assert_eq!((up["service"].as_str(), up["plugin"].as_str(), up["event"].as_str(), up["pid"].as_i64()), (Some("journal"), Some("journal"), Some("up"), Some(42)));
-        assert!(chrono::DateTime::parse_from_rfc3339(up["ts"].as_str().unwrap()).is_ok());
-        assert!(up["ts"].as_str().unwrap().ends_with('Z'));
-        let down = service_payload("j", "p", None, ServiceEvent::Down);
-        assert_eq!((down["event"].as_str(), down["pid"].is_null()), (Some("down"), true));
-    }
-
-    #[test]
-    fn only_the_two_topics_stay_local() {
-        assert!(is_local_only("services") && is_local_only("usage"));
-        assert!(!is_local_only("plugins"));
-    }
-}

@@ -1,0 +1,17 @@
+# The browser keeps its state in AWM_DIR itself (/var/lib/awm/browser on alcor).
+dirs = ["${AWM_DIR}"]
+
+[[additive]]
+path = "seats.json"
+
+[[size_only]]
+path = "profile"
+
+[[size_only]]
+path = "docker"
+
+[[size_only]]
+path = ".docker"
+
+[[size_only]]
+path = "bin"

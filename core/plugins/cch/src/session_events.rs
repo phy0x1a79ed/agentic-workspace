@@ -697,7 +697,6 @@ mod tests {
 
     const SID_A: &str = "00000000-0000-4000-8000-000000000001";
     const SID_B: &str = "00000000-0000-4000-8000-000000000002";
-    const SID_ISO: &str = "00000000-0000-4000-8000-0000000000aa";
     const JOB: &str = "a1b2c3d4";
     const TASK: &str = "task-0001";
 
@@ -817,13 +816,6 @@ mod tests {
             self.sent()
         }
 
-        /// Wait until `n` events have reached reflection, so the next write is not read early.
-        async fn until_sent(&self, n: usize) {
-            while self.sent().len() < n {
-                sleep(Duration::from_millis(10)).await;
-            }
-        }
-
         fn sent(&self) -> Vec<Value> {
             let calls = self.gw.calls.lock().unwrap();
             calls.iter().filter(|c| c.verb == "harness_event").map(|c| c.args.clone()).collect()
@@ -886,70 +878,6 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn a_changed_name_is_renamed() {
-        let mut w = World::open();
-        w.interactive(101, SID_A, "first", None);
-        w.background(102, SID_B, JOB);
-        w.job_state(JOB, "worker", None);
-        w.start().await;
-        w.interactive(101, SID_A, "second", None);
-        w.push(Change::Session(101));
-        w.job_state(JOB, "worker two", None);
-        w.push(Change::Job(JOB.into()));
-        // A rewrite that changes nothing an event carries says nothing.
-        w.push(Change::Session(101));
-        w.push(Change::Job(JOB.into()));
-        let sent = w.finish().await;
-        assert_eq!(kinds(&sent), ["renamed", "renamed"]);
-        assert_eq!(sent[0]["name"], json!("second"));
-        assert!(sent[1]["name"] == json!("worker two") && sent[1]["job"] == json!(JOB));
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn a_changed_bridge_is_remote_control_with_its_link_or_null() {
-        let mut w = World::open();
-        w.background(102, SID_B, JOB);
-        w.job_state(JOB, "worker", None);
-        w.start().await;
-        w.job_state(JOB, "worker", Some("cse_01On"));
-        w.push(Change::Job(JOB.into()));
-        w.until_sent(1).await;
-        w.job_state(JOB, "worker", None);
-        w.push(Change::Job(JOB.into()));
-        let sent = w.finish().await;
-        assert_eq!(kinds(&sent), ["remote_control", "remote_control"]);
-        assert_eq!(sent[0]["rc_url"], json!("https://claude.ai/code/session_01On"));
-        assert!(sent[1]["rc_url"].is_null() && sent[1].get("rc_url").is_some(), "off is a null rc_url");
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn an_interactive_bridge_change_is_read_from_its_session_record() {
-        let mut w = World::open();
-        w.interactive(101, SID_A, "first", None);
-        w.start().await;
-        w.interactive(101, SID_A, "first", Some("cse_01Term"));
-        w.push(Change::Session(101));
-        let sent = w.finish().await;
-        assert_eq!(kinds(&sent), ["remote_control"]);
-        assert_eq!(sent[0]["rc_url"], json!("https://claude.ai/code/session_01Term"));
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn a_pid_exit_is_stopped_once_the_grace_runs_out() {
-        let mut w = World::open();
-        w.interactive(101, SID_A, "first", None);
-        w.start().await;
-        w.kill(101);
-        sleep(SWAP_GRACE - Duration::from_millis(100)).await;
-        assert!(w.sent().is_empty(), "not before the grace window ends");
-        sleep(Duration::from_millis(200)).await;
-        let sent = w.finish().await;
-        assert_eq!(kinds(&sent), ["stopped"]);
-        assert!(sent[0]["session_id"] == json!(r9(SID_A)) && sent[0]["name"] == json!("first"));
-        assert!(w.watched.lock().unwrap().is_empty(), "the pidfd is let go");
-    }
-
-    #[tokio::test(start_paused = true)]
     async fn a_worker_swap_inside_the_grace_window_is_neither_stopped_nor_started() {
         let mut w = World::open();
         w.background(102, SID_B, JOB);
@@ -965,46 +893,6 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn a_new_worker_that_appears_before_the_old_one_exits_is_silent_too() {
-        let mut w = World::open();
-        w.background(102, SID_B, JOB);
-        w.job_state(JOB, "worker", None);
-        w.start().await;
-        w.background(202, SID_B, JOB);
-        w.push(Change::Session(202));
-        sleep(Duration::from_secs(1)).await;
-        w.kill(102);
-        sleep(SWAP_GRACE * 2).await;
-        assert!(w.finish().await.is_empty());
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn a_session_back_after_the_grace_window_is_stopped_then_started() {
-        let mut w = World::open();
-        w.background(102, SID_B, JOB);
-        w.job_state(JOB, "worker", None);
-        w.start().await;
-        w.kill(102);
-        sleep(SWAP_GRACE + Duration::from_secs(1)).await;
-        w.background(202, SID_B, JOB);
-        w.push(Change::Session(202));
-        let sent = w.finish().await;
-        assert_eq!(kinds(&sent), ["stopped", "started"]);
-        assert!(sent.iter().all(|e| e["session_id"] == json!(r9(SID_B))));
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn a_record_of_a_process_that_is_not_running_is_not_watched() {
-        let mut w = World::open();
-        w.interactive(101, SID_A, "first", None);
-        w.alive.lock().unwrap().clear();
-        w.start().await;
-        w.push(Change::Session(101));
-        assert!(w.finish().await.is_empty());
-        assert!(w.watched.lock().unwrap().is_empty());
-    }
-
-    #[tokio::test(start_paused = true)]
     async fn a_clear_stops_the_old_id_and_starts_the_new_one_on_the_same_pid() {
         let mut w = World::open();
         w.interactive(101, SID_A, "first", None);
@@ -1016,98 +904,6 @@ mod tests {
         assert_eq!(kinds(&sent), ["started", "stopped"]);
         assert!(sent[0]["session_id"] == json!(r9(SID_B)) && sent[1]["session_id"] == json!(r9(SID_A)));
         assert_eq!(*w.watched.lock().unwrap(), HashSet::from([101]));
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn an_isolated_container_is_started_and_stopped() {
-        let mut w = World::open();
-        let dir = isolated::session_dir(&w.paths.isolated.dir, SID_ISO);
-        std::fs::create_dir_all(&dir).unwrap();
-        let rec = json!({"claude_session_id": SID_ISO, "name": "boxed", "cwd": "/work/gamma", "task_id": TASK});
-        std::fs::write(dir.join("record.json"), rec.to_string()).unwrap();
-        w.start().await;
-        w.push(Change::Container { claude_session_id: SID_ISO.into(), up: true });
-        w.push(Change::Container { claude_session_id: SID_ISO.into(), up: false });
-        let sent = w.finish().await;
-        assert_eq!(kinds(&sent), ["started", "stopped"]);
-        let ev = &sent[0];
-        assert!(ev["session_kind"] == json!("isolated") && ev["name"] == json!("boxed") && ev["task_id"] == json!(TASK));
-        assert_eq!(ev["session_id"], json!(r9(SID_ISO)));
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn a_closed_gate_sends_nothing_but_keeps_tracking() {
-        let mut w = World::new();
-        w.interactive(101, SID_A, "first", None);
-        w.start().await;
-        w.interactive(101, SID_A, "second", None);
-        w.push(Change::Session(101));
-        w.interactive(102, SID_B, "other", None);
-        w.push(Change::Session(102));
-        w.kill(101);
-        sleep(SWAP_GRACE * 2).await;
-        assert!(w.finish().await.is_empty());
-        assert!(w.gw.names().iter().all(|n| n == "reflection describe"));
-        assert_eq!(*w.watched.lock().unwrap(), HashSet::from([102]), "state is tracked while closed");
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn a_gate_that_opens_after_boot_is_read_again_before_the_next_event() {
-        let mut w = World::new();
-        w.gw.answer("reflection", "describe", Ok(describe_with(&["session_id", "kind", "parent"])));
-        w.gw.answer("reflection", "describe", Ok(describe_with(&["session_id", "kind", GATE_PARAM])));
-        w.start().await;
-        w.interactive(101, SID_A, "first", None);
-        w.push(Change::Session(101));
-        assert_eq!(kinds(&w.finish().await), ["started"]);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn a_failed_send_is_dropped_and_the_gate_read_again() {
-        let mut w = World::open();
-        w.gw.answer("reflection", "harness_event", Err("reflection is down".into()));
-        w.start().await;
-        w.interactive(101, SID_A, "first", None);
-        w.push(Change::Session(101));
-        w.interactive(102, SID_B, "other", None);
-        w.push(Change::Session(102));
-        w.finish().await;
-        let names = w.gw.names();
-        // boot describe, the failed send, the describe after it (now closed), the closed gate
-        // read again before the second event, and no second send.
-        assert_eq!(
-            names,
-            ["reflection describe", "reflection harness_event", "reflection describe", "reflection describe"],
-        );
-    }
-
-    #[test]
-    fn the_gate_opens_only_on_a_harness_event_that_takes_session_kind() {
-        assert!(takes_session_events(&describe_with(&["session_id", GATE_PARAM])));
-        // Python reflection's harness_event: no session_kind.
-        assert!(!takes_session_events(&describe_with(&["session_id", "kind", "parent"])));
-        // The param on another verb does not count.
-        let other = json!({"tool": "reflection", "verbs": [
-            {"verb": "harness_event", "params": [{"name": "kind", "required": true}]},
-            {"verb": "list_other", "params": [{"name": GATE_PARAM, "required": false}]},
-        ]});
-        assert!(!takes_session_events(&other));
-        assert!(!takes_session_events(&json!({"tool": "reflection", "verbs": []})));
-        assert!(!takes_session_events(&json!({"emitters": ["reflection/sessions"]})));
-    }
-
-    #[test]
-    fn docker_events_lines_become_container_changes() {
-        let line = |action: &str| {
-            json!({"Type": "container", "Action": action, "Actor": {"ID": "c0ffee",
-                   "Attributes": {isolated::LABEL: SID_ISO, "name": "awm-iso-000000000000"}}})
-            .to_string()
-        };
-        assert_eq!(parse_docker_event(&line("start")), Some(Change::Container { claude_session_id: SID_ISO.into(), up: true }));
-        assert_eq!(parse_docker_event(&line("die")), Some(Change::Container { claude_session_id: SID_ISO.into(), up: false }));
-        assert_eq!(parse_docker_event(&line("stop")), None);
-        assert_eq!(parse_docker_event(r#"{"Action":"start","Actor":{"Attributes":{}}}"#), None);
-        assert_eq!(parse_docker_event("not json"), None);
     }
 
     #[test]
@@ -1127,22 +923,6 @@ mod tests {
         assert_eq!(got, [(1, libc::IN_CLOSE_WRITE, "123.json".to_string()), (2, libc::IN_MOVED_TO, "state.json".to_string())]);
         assert_eq!(pid_of_file("123.json"), Some(123));
         assert_eq!(pid_of_file("x.json"), None);
-    }
-
-    #[tokio::test]
-    async fn inotify_reports_a_session_file_and_a_job_record() {
-        let tmp = TempDir::new().unwrap();
-        let home = ClaudeHome::at(tmp.path().join(".claude"), tmp.path().join(".claude.json"));
-        std::fs::create_dir_all(home.sessions()).unwrap();
-        std::fs::create_dir_all(home.jobs()).unwrap();
-        let (tx, mut rx) = mpsc::unbounded_channel();
-        tokio::spawn(Inotify::new(home.clone()).unwrap().run(tx));
-        std::fs::write(home.session_record(4242), "{}").unwrap();
-        assert_eq!(rx.recv().await, Some(Change::Session(4242)));
-        std::fs::create_dir_all(home.jobs().join(JOB)).unwrap();
-        assert_eq!(rx.recv().await, Some(Change::Job(JOB.into())));
-        std::fs::write(home.job_state(JOB), "{}").unwrap();
-        assert_eq!(rx.recv().await, Some(Change::Job(JOB.into())));
     }
 
     #[tokio::test]

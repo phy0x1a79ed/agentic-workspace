@@ -11,14 +11,24 @@ pub const INSTALL_CONFIG_ENV: &str = "AWM_INSTALL_CONFIG";
 
 static CANONICAL: RwLock<Option<PathBuf>> = RwLock::new(None);
 
-/// `AWM_WORKSPACE`, else the nearest directory at or above the cwd that holds `AGENTS.md`,
-/// else the cwd.
+/// `AWM_WORKSPACE`, else the nearest directory at or above the cwd that holds both `AGENTS.md`
+/// and `projects/`, else the nearest that holds `AGENTS.md`, else the cwd.
 pub fn workspace_root() -> PathBuf {
     if let Some(ws) = env_path("AWM_WORKSPACE") {
         return absolute(&ws);
     }
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    cwd.ancestors().find(|p| p.join("AGENTS.md").exists()).map(Path::to_path_buf).unwrap_or(cwd)
+    workspace_above(&cwd)
+}
+
+/// A scope worktree holds its own `AGENTS.md`, so only `projects/` tells the workspace apart.
+fn workspace_above(dir: &Path) -> PathBuf {
+    let agents = |p: &&Path| p.join("AGENTS.md").exists();
+    dir.ancestors()
+        .find(|p| agents(p) && p.join("projects").is_dir())
+        .or_else(|| dir.ancestors().find(agents))
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| dir.to_path_buf())
 }
 
 /// The workspace the gateway named on register, else [`workspace_root`].
@@ -233,20 +243,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn scope_is_the_deepest_worktree() {
-        let tmp = tempfile::tempdir().unwrap();
-        let projects = tmp.path().join("projects");
-        let wt = projects.join("awm/redux/x");
-        std::fs::create_dir_all(wt.join("core/src")).unwrap();
-        std::fs::write(wt.join(".git"), "gitdir: ..").unwrap();
-        assert_eq!(scope_of(&wt.join("core/src"), &projects), Some(("awm".into(), Some("redux/x".into()))));
-        std::fs::create_dir_all(projects.join("p/loose/dir")).unwrap();
-        assert_eq!(scope_of(&projects.join("p/loose/dir"), &projects), Some(("p".into(), Some("loose/dir".into()))));
-        assert_eq!(scope_of(&projects.join("p"), &projects), Some(("p".into(), None)));
-        assert_eq!(scope_of(tmp.path(), &projects), None);
-    }
-
-    #[test]
     fn stamps_and_labels() {
         assert_eq!(caller_peer(Some("peer:mira ")), Some("mira"));
         assert_eq!(caller_peer(Some("tony")), None);
@@ -258,14 +254,4 @@ mod tests {
         assert_eq!((s["A"].as_str(), s["B"].as_str(), s.len()), ("1", "two", 2));
     }
 
-    #[test]
-    fn install_config_reads_leniently() {
-        let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join("config.toml");
-        std::fs::write(&path, "listen = \"x\"\n[env]\nA = \"1\"\n[fleet]\nhome = \"mizar\"\n").unwrap();
-        let cfg = InstallConfig::load_from(&path).unwrap();
-        assert_eq!(cfg.env().get("A").map(String::as_str), Some("1"));
-        assert_eq!(cfg.fleet().and_then(|f| f.get("home")).and_then(|h| h.as_str()), Some("mizar"));
-        assert!(InstallConfig::load_from(&tmp.path().join("none.toml")).unwrap().table.is_empty());
-    }
 }

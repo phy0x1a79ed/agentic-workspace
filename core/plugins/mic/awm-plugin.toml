@@ -1,0 +1,22 @@
+[plugin]
+name = "mic"
+version = "0.2.0"
+
+[[service]]
+name = "mic"
+path = "."
+run = "run.sh"
+
+[[tool]]
+name = "mic"
+major = 1
+tier = "off"
+
+[[page]]
+name = "mic"
+dir = "pages/mic/dist"
+
+[needs]
+secrets = []
+network = []
+platform = ["linux"]

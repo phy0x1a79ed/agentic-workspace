@@ -1,0 +1,17 @@
+[package]
+name = "awm-plugin-telemetry-node"
+description = "The telemetry-node plugin: reports each node's sessions, services and usage to the telemetry roster."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "telemetry-node"
+path = "src/main.rs"
+
+[dependencies]
+awm-plugin-telemetry.workspace = true
+awm-plugin-sdk.workspace = true
+anyhow.workspace = true
+tokio.workspace = true

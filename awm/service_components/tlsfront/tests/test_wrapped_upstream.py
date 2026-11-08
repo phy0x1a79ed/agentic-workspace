@@ -145,7 +145,7 @@ def test_anonymous_browser_goes_to_the_passkey_login_not_the_route():
     with _client(_app_with_extra(), authed=False) as c:
         r = c.get("/_signin", headers={"accept": "text/html"})
     # Same deny shape as the catch-all proxy: the approver's login, not a bare 401.
-    assert r.status_code == 302 and "/portal_login?next=" in r.headers["location"]
+    assert r.status_code == 302 and "/signin?next=" in r.headers["location"]
     assert "granted" not in r.text
 
 

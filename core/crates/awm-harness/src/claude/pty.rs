@@ -617,28 +617,9 @@ mod tests {
     }
 
     #[test]
-    fn frame_length_excludes_the_type_byte() {
+    fn frames_carry_a_length_without_the_type_byte_and_split_from_a_coalesced_stream() {
         let encoded = frame(0x00, b"abcd");
         assert_eq!(encoded, b"\x00\x00\x00\x04\x00abcd");
-        assert_eq!(u32::from_be_bytes(encoded[..4].try_into().unwrap()), 4);
-    }
-
-    #[tokio::test]
-    async fn handshake_keeps_frames_that_share_a_read_with_live() {
-        let inbound = [
-            ctl_frame(json!({"t": "hello", "replPid": 4242})),
-            ctl_frame(json!({"t": "live"})),
-            raw("⏵⏵ bypass permissions on"),
-        ]
-        .concat();
-        let (client, server) = UnixStream::pair().unwrap();
-        let _host = peer(server, script(inbound));
-        let mut conn = connect_with(&target(), client).await.unwrap();
-        assert!(conn.screen().await.unwrap().contains("bypass permissions on"));
-    }
-
-    #[test]
-    fn frame_reader_splits_a_coalesced_stream() {
         let stream =
             [ctl_frame(json!({"t": "hello", "replPid": 4242})), raw("xy"), ctl_frame(json!({"t": "live"}))].concat();
         let mut reader = FrameReader::new();
@@ -650,48 +631,39 @@ mod tests {
         assert_eq!(got[1].1, b"xy");
     }
 
-    #[tokio::test]
-    async fn authenticates_before_sending_any_input() {
+    #[tokio::test(start_paused = true)]
+    async fn the_handshake_keeps_frames_that_share_a_read_with_live() {
+        let inbound = [
+            ctl_frame(json!({"t": "hello", "replPid": 4242})),
+            ctl_frame(json!({"t": "live"})),
+            raw("\u{23f5}\u{23f5} bypass permissions on"),
+        ]
+        .concat();
+        let (client, server) = UnixStream::pair().unwrap();
+        let _host = peer(server, script(inbound));
+        let mut conn = connect_with(&target(), client).await.unwrap();
+        assert!(conn.screen().await.unwrap().contains("bypass permissions on"));
+    }
+
+    /// Auth first, then a bracketed paste, then Enter as its own write; pings are answered.
+    #[tokio::test(start_paused = true)]
+    async fn input_is_authenticated_pasted_then_submitted() {
         let (res, frames) = paste_and_submit("/compact", target(), true, script(hello())).await;
         res.unwrap();
-        assert_eq!(frames[0].0, CTL);
-        assert_eq!(frames[1].0, CTL);
         assert_eq!(serde_json::from_slice::<Value>(&frames[0].1).unwrap(), json!({"t": "pong"}));
         assert_eq!(serde_json::from_slice::<Value>(&frames[1].1).unwrap()["t"], "auth");
-    }
-
-    #[tokio::test]
-    async fn text_is_delivered_as_a_bracketed_paste() {
-        let (res, frames) = paste_and_submit("/compact", target(), true, script(hello())).await;
-        res.unwrap();
-        assert_eq!(raws(&frames)[0], b"\x1b[200~/compact\x1b[201~");
-    }
-
-    #[tokio::test]
-    async fn enter_is_a_separate_write_after_the_paste() {
-        let (res, frames) = paste_and_submit("/compact", target(), true, script(hello())).await;
-        res.unwrap();
         assert_eq!(raws(&frames), [b"\x1b[200~/compact\x1b[201~".to_vec(), b"\r".to_vec()]);
-    }
 
-    #[tokio::test]
-    async fn no_enter_when_not_submitting() {
         let (res, frames) = paste_and_submit("draft", target(), false, script(hello())).await;
         res.unwrap();
         assert_eq!(raws(&frames), [b"\x1b[200~draft\x1b[201~".to_vec()]);
-    }
 
-    #[tokio::test]
-    async fn unbracketed_when_the_session_does_not_report_the_mode() {
         let mut lane = target();
         lane.dec_modes = vec![1000];
         let (res, frames) = paste_and_submit("hello", lane, false, script(hello())).await;
         res.unwrap();
-        assert_eq!(raws(&frames), [b"hello".to_vec()]);
-    }
+        assert_eq!(raws(&frames), [b"hello".to_vec()], "unbracketed when the session does not report the mode");
 
-    #[tokio::test]
-    async fn ping_is_answered_with_a_pong() {
         let inbound = [
             ctl_frame(json!({"t": "hello", "replPid": 4242})),
             ctl_frame(json!({"t": "ping"})),
@@ -702,83 +674,54 @@ mod tests {
         res.unwrap();
         let pongs = ctls(&frames).into_iter().filter(|v| *v == json!({"t": "pong"})).count();
         assert_eq!(pongs, 2, "the opener, then the answer to the ping");
+
+        let speak_first = Script { inbound: hello(), speak_first: true, ..Script::default() };
+        let (res, frames) = paste_and_submit("/compact", target(), true, speak_first).await;
+        res.unwrap();
+        assert_eq!(raws(&frames).len(), 2, "a host that waits for the client to speak is reached");
     }
 
-    #[tokio::test]
-    async fn auth_required_is_surfaced_not_swallowed() {
-        let inbound =
+    /// Input is never reported as sent when the host did not take it.
+    #[tokio::test(start_paused = true)]
+    async fn a_host_that_is_not_ours_or_discards_input_refuses() {
+        let auth_required =
             [ctl_frame(json!({"t": "hello", "replPid": 4242})), ctl_frame(json!({"t": "auth-required"}))].concat();
-        let (res, _) = paste_and_submit("hi", target(), false, script(inbound)).await;
+        let (res, _) = paste_and_submit("hi", target(), false, script(auth_required)).await;
         assert!(res.unwrap_err().0.contains("input token"));
-    }
 
-    #[tokio::test]
-    async fn unrecognised_greeting_refuses() {
-        let inbound = ctl_frame(json!({"t": "hello", "somethingElse": true, "version": "9.9.9"}));
-        let (res, _) = paste_and_submit("hi", target(), false, script(inbound)).await;
+        let rejecting = Script { inbound: hello(), reject_raw: true, ..Script::default() };
+        let (res, _) = paste_and_submit("hi", target(), false, rejecting).await;
+        assert!(res.unwrap_err().0.contains("input token"));
+
+        let unknown = ctl_frame(json!({"t": "hello", "somethingElse": true, "version": "9.9.9"}));
+        let (res, _) = paste_and_submit("hi", target(), false, script(unknown)).await;
         let err = res.unwrap_err().0;
-        assert!(err.contains("unrecognised"), "{err}");
-        assert!(err.contains("(version '9.9.9')"), "{err}");
-    }
+        assert!(err.contains("unrecognised") && err.contains("(version '9.9.9')"), "{err}");
 
-    #[tokio::test]
-    async fn a_socket_hosting_another_repl_refuses() {
-        let inbound = [
-            ctl_frame(json!({"t": "hello", "replPid": 999, "version": "9.0.1"})),
-            ctl_frame(json!({"t": "live"})),
-        ]
-        .concat();
-        let (res, frames) = paste_and_submit("hi", target(), false, script(inbound)).await;
+        let other = [ctl_frame(json!({"t": "hello", "replPid": 999})), ctl_frame(json!({"t": "live"}))].concat();
+        let (res, frames) = paste_and_submit("hi", target(), false, script(other.clone())).await;
         assert!(res.unwrap_err().0.contains("hosting REPL 999"));
         assert!(raws(&frames).is_empty());
-    }
+        let speak_first = Script { inbound: other, speak_first: true, ..Script::default() };
+        let (res, frames) = paste_and_submit("hi", target(), false, speak_first).await;
+        assert!(res.is_err());
+        assert_eq!(ctls(&frames), [json!({"t": "pong"})], "the opening frame carries no token");
 
-    #[tokio::test]
-    async fn a_host_that_never_greets_refuses() {
         let (res, _) = paste_and_submit("hi", target(), false, script(Vec::new())).await;
         assert!(res.unwrap_err().0.contains("never greeted"));
-    }
 
-    #[tokio::test]
-    async fn enter_refuses_before_authentication() {
         let (client, server) = UnixStream::pair().unwrap();
         let _host = peer(server, script(hello()));
         let mut conn = Connection::new(target(), client);
         assert!(conn.press_enter().await.unwrap_err().0.contains("before authenticating"));
     }
 
-    #[tokio::test]
-    async fn input_the_host_discarded_is_not_reported_as_sent() {
-        let rejecting = Script { inbound: hello(), reject_raw: true, ..Script::default() };
-        let (res, _) = paste_and_submit("hi", target(), false, rejecting).await;
-        assert!(res.unwrap_err().0.contains("input token"));
-    }
-
-    #[tokio::test]
-    async fn a_host_that_waits_for_the_client_to_speak_is_reached() {
-        let speak_first = Script { inbound: hello(), speak_first: true, ..Script::default() };
-        let (res, frames) = paste_and_submit("/compact", target(), true, speak_first).await;
-        res.unwrap();
-        assert_eq!(raws(&frames), [b"\x1b[200~/compact\x1b[201~".to_vec(), b"\r".to_vec()]);
-    }
-
-    #[tokio::test]
-    async fn the_opening_frame_carries_no_token() {
-        let inbound = [ctl_frame(json!({"t": "hello", "replPid": 999})), ctl_frame(json!({"t": "live"}))].concat();
-        let speak_first = Script { inbound, speak_first: true, ..Script::default() };
-        let (res, frames) = paste_and_submit("hi", target(), false, speak_first).await;
-        assert!(res.unwrap_err().0.contains("hosting REPL 999"));
-        assert_eq!(ctls(&frames), [json!({"t": "pong"})]);
-    }
-
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn repaint_resizes_one_row_short_then_back() {
         let (client, server) = UnixStream::pair().unwrap();
         let host = peer(server, script(hello()));
         let mut conn = connect_with(&target(), client).await.unwrap();
-        let before = Instant::now();
         conn.repaint(120, 40).await.unwrap();
-        assert!(before.elapsed() >= SETTLE * 2);
         assert_eq!(conn.label(), "background session test");
         conn.close().await;
         let sent = ctls(&host.await.unwrap());

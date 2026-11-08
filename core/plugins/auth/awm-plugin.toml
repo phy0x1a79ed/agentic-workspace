@@ -1,0 +1,26 @@
+# auth (port T9): device tokens, the edge session secret and the node's browser edge. One
+# service runs the former auth, httpsfront and tlsfront.
+[plugin]
+name = "auth"
+version = "0.2.0"
+
+[[service]]
+name = "auth"
+
+[[tool]]
+name = "auth"
+major = 1
+tier = "on"
+
+[[tool]]
+name = "httpsfront"
+major = 1
+tier = "off"
+
+# No needs. The edge reads the credential store in process, and a slice path answers 404 while
+# trilium is absent.
+[needs]
+# Alcor's grant key, for the passkey sign-in (fleet.md R84).
+secrets = ["AWM_APPROVER_GRANT_PUBKEY"]
+network = []
+platform = ["linux"]

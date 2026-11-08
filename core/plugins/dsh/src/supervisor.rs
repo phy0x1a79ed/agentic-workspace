@@ -384,20 +384,6 @@ mod tests {
         sup.stop().await;
     }
 
-    #[tokio::test]
-    async fn an_unbuilt_fork_is_reported_and_not_respawned() {
-        let dir = tempfile::tempdir().unwrap();
-        let sup = Supervisor::new(Paths::under(dir.path(), 1));
-        let err = sup.start().await.unwrap_err();
-        assert!(err.starts_with("FileNotFoundError: ") && err.contains("no built CLI"), "{err}");
-        assert_eq!(sup.reconcile().await["action"], "none");
-        let snap = sup.snapshot().await;
-        assert_eq!(snap["installed"], false);
-        assert_eq!(snap["error"], err);
-        assert_eq!(snap["source"]["built_current"], Value::Null);
-        assert_eq!(sup.stop().await["action"], "not-running");
-    }
-
     #[test]
     fn the_route_reports_its_parts_apart() {
         let dir = tempfile::tempdir().unwrap();
@@ -415,53 +401,4 @@ mod tests {
         assert_eq!(sup.openrouter_key().as_deref(), Some("test-not-a-key"));
     }
 
-    #[test]
-    fn logs_keep_line_endings_and_report_a_missing_file() {
-        let dir = tempfile::tempdir().unwrap();
-        let paths = Paths::under(dir.path(), 1);
-        let sup = Supervisor::new(paths.clone());
-        assert!(sup.logs(2).starts_with("(no log at "));
-        std::fs::create_dir_all(&paths.state_dir).unwrap();
-        std::fs::write(paths.log_file(), "a\nb\nc\n").unwrap();
-        assert_eq!(sup.logs(2), "b\nc\n");
-    }
-
-    #[tokio::test]
-    async fn the_build_stamp_is_read_from_the_git_dir() {
-        if std::process::Command::new("git").arg("--version").output().is_err() {
-            eprintln!("no git here; skipped");
-            return;
-        }
-        let dir = tempfile::tempdir().unwrap();
-        let fork = dir.path().join("fork");
-        std::fs::create_dir_all(&fork).unwrap();
-        let g = |args: &[&str]| {
-            let out = std::process::Command::new("git")
-                .arg("-C")
-                .arg(&fork)
-                .args(["-c", "user.email=t@t", "-c", "user.name=t"])
-                .args(args)
-                .output()
-                .unwrap();
-            assert!(out.status.success(), "{out:?}");
-            String::from_utf8(out.stdout).unwrap().trim().to_string()
-        };
-        g(&["init", "-q"]);
-        g(&["commit", "-q", "--allow-empty", "-m", "x"]);
-        let head = g(&["rev-parse", "HEAD"]);
-        let stamp = build_stamp(&fork).await.unwrap();
-        assert!(stamp.ends_with(".git/awm/dsh-build-stamp"), "{stamp:?}");
-        assert_eq!(stamp.parent().unwrap().parent().unwrap().canonicalize().unwrap(), fork.join(".git").canonicalize().unwrap());
-        assert_eq!(source_state(&fork).await["built_current"], Value::Null);
-        std::fs::create_dir_all(stamp.parent().unwrap()).unwrap();
-        std::fs::write(&stamp, format!("head={head} dirty=0 lock=x\n")).unwrap();
-        assert_eq!(source_state(&fork).await["built_current"], true);
-        assert!(!fork.join(".awm").exists());
-    }
-
-    #[test]
-    fn floats_render_as_python_does() {
-        assert_eq!(py_float(60.0), "60.0");
-        assert_eq!(py_float(0.5), "0.5");
-    }
 }

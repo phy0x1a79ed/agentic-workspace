@@ -1,0 +1,32 @@
+From: "Tester, Example" <tester@example.test>
+To: tester@example.test
+Subject: inline image
+Date: Wed, 04 Nov 2026 11:30:00 -0500
+Message-ID: <inline.2@example.test>
+MIME-Version: 1.0
+Content-Type: multipart/related; boundary=rel; type="text/html"
+
+--rel
+Content-Type: text/html; charset=us-ascii
+
+<p>See <img src="cid:logo@example.test"></p>
+--rel
+Content-Type: image/png
+Content-ID: <logo@example.test>
+Content-Disposition: inline; filename="logo.png"
+Content-Transfer-Encoding: base64
+
+iVBORw0KGgpmYWtlcG5nAAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUmJw==
+--rel
+Content-Type: image/gif
+Content-Disposition: inline
+Content-Transfer-Encoding: base64
+
+R0lGODlhAQABAAAAACw=
+--rel
+Content-Type: application/zip
+Content-Disposition: ATTACHMENT
+Content-Transfer-Encoding: base64
+
+UEsFBgAAAAAAAAAAAAAAAAAAAAAAAA==
+--rel--

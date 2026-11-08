@@ -5,6 +5,11 @@
 awm/services/*/.runtime-env
 awm/plugins/*/.runtime-env
 
+# The edge's leaf and declared SANs. The auth plugin copies them to its state dir at its first
+# start, and a node without the CA key cannot mint them again. The deploy's git clean must spare them.
+awm/services/httpsfront/.certs/
+awm/services/httpsfront/.sans
+
 
 # Per-host orientation symlink. AGENTS.md is the canonical tracked source;
 # CLAUDE.md is a host-local symlink to it (see .awm/context.md for the

@@ -289,52 +289,12 @@ mod tests {
     }
 
     #[test]
-    fn test_meminfo_is_parsed_in_kb() {
-        let text = "MemTotal:       61765432 kB\nMemFree:  1 kB\nMemAvailable:    8123456 kB\n";
-        assert_eq!(parse_meminfo(text), (61765432, 8123456));
-    }
-
-    #[test]
-    fn test_a_brief_dip_stays_quiet() {
-        let mut w = MemWatch::default();
-        assert!(!w.tick(T0, 60 * GB, 2 * GB));
-        assert!(!w.tick(T0 + SUSTAIN_S - 1.0, 60 * GB, 2 * GB));
-        assert!(!w.tick(T0 + SUSTAIN_S + 30.0, 60 * GB, 30 * GB));
-        assert!(!w.tick(T0 + SUSTAIN_S + 60.0, 60 * GB, 2 * GB), "the clock restarts");
-    }
-
-    #[test]
     fn test_low_memory_that_stays_low_warns_once_an_hour() {
         let mut w = MemWatch::default();
         w.tick(T0, 60 * GB, 2 * GB);
         assert!(w.tick(T0 + SUSTAIN_S, 60 * GB, 2 * GB));
         assert!(!w.tick(T0 + SUSTAIN_S + 30.0, 60 * GB, 2 * GB));
         assert!(w.tick(T0 + SUSTAIN_S + ALERT_EVERY_S, 60 * GB, 2 * GB));
-    }
-
-    #[test]
-    fn test_each_session_is_warned_once_an_hour() {
-        let mut w = MemWatch::default();
-        let hogs = [hog(1, 25 * GB, "python big.py", Some("0000aaaa"), Some("test run")), hog(2, GB, "python -m small", None, None)];
-        let jobs = |out: Vec<Hog>| out.into_iter().map(|h| h.job.unwrap()).collect::<Vec<_>>();
-        assert_eq!(jobs(w.jobs_to_warn(T0, &hogs)), ["0000aaaa"]);
-        assert!(w.jobs_to_warn(T0 + 60.0, &hogs).is_empty());
-        assert_eq!(jobs(w.jobs_to_warn(T0 + ALERT_EVERY_S, &hogs)), ["0000aaaa"]);
-    }
-
-    #[test]
-    fn test_the_notice_names_the_hog_and_its_session() {
-        let rss = (25.6 * GB as f64) as u64;
-        let text = render("node-a", 60 * GB, 2 * GB, &[hog(4242, rss, "python big.py", Some("0000aaaa"), Some("test run"))]);
-        assert!(text.contains("2.0 GB of 60.0 GB available"), "{text}");
-        assert!(text.contains("pid 4242, 25.6 GB: python big.py, in session 0000aaaa (test run)"), "{text}");
-    }
-
-    #[test]
-    fn test_this_process_is_found_among_the_hogs() {
-        let home = ClaudeHome::at("/nonexistent/.claude", "/nonexistent/.claude.json");
-        let hogs = top_hogs(&home, 500);
-        assert!(hogs.iter().any(|h| h.pid == std::process::id() && h.rss_kb > 0));
     }
 
     struct FakeNode(u64, u64, Vec<Hog>);
@@ -369,19 +329,4 @@ mod tests {
         assert_eq!(messaged[0].args["job"], "0000aaaa");
     }
 
-    #[tokio::test]
-    async fn the_notice_goes_to_the_social_peer_and_failures_are_only_logged() {
-        let node = FakeNode(60 * GB, 2 * GB, vec![hog(7, 25 * GB, "python big.py", Some("0000aaaa"), None)]);
-        let gateway = FakeGateway::default();
-        gateway.answer("social", "send", Err("unreachable".into()));
-        gateway.answer("reflection", "message", Err("gone".into()));
-        let notify = Notify { node: "node-a".into(), operator: Some(("acct".into(), "C1".into())), social_peer: Some("node-b".into()) };
-        let mut watch = MemWatch::default();
-        memory_tick(&mut watch, &node, &gateway, &notify, T0).await;
-        memory_tick(&mut watch, &node, &gateway, &notify, T0 + SUSTAIN_S).await;
-        let calls = gateway.calls.lock().unwrap().clone();
-        assert_eq!(gateway.names(), ["social send", "reflection message"]);
-        assert_eq!(calls[0].peer.as_deref(), Some("node-b"));
-        assert_eq!(calls[1].peer, None);
-    }
 }

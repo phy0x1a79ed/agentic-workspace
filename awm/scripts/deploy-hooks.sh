@@ -21,13 +21,14 @@ CHECK=0
 
 # name | source under awm/ | file in ~/.claude/hooks | nodes | extra file (same dir as source)
 HOOKS=(
-  "operations|plugins/operations/hooks/operations_hook.py|awm-operations-hook.py|local|awm-operations-settings.json"
+  "operations|../core/plugins/operations/hooks/awm-operations-hook.sh|awm-operations-hook.sh|local|awm-operations-settings.json"
 )
 
 # Hooks that are gone, as file in ~/.claude/hooks, then nodes. Their settings.json
 # entries and files are removed.
 RETIRED=(
   "awm-reporting-hook.py|local|"
+  "awm-operations-hook.py|local|"
 )
 
 # settings.json entries per hook, as {event: entry}; @file reads the "hooks" of a shipped

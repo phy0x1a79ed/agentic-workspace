@@ -1,0 +1,174 @@
+{
+  "cards": [
+    {
+      "task_id": "T0000001",
+      "title": "Fix the tunnel",
+      "kind": "task",
+      "section": "needs_you",
+      "status": "approval",
+      "peer": "mizar",
+      "tags": [
+        "infra"
+      ],
+      "meta": {
+        "reason": "vault_hold: checks tripped (15 min)",
+        "plan": "# Fix the tunnel\n\nsteps",
+        "todos": [
+          {
+            "id": "1",
+            "subject": "port hooks",
+            "status": "in_progress"
+          }
+        ]
+      },
+      "created": 1800000001.0,
+      "updated": 1800000004.0,
+      "done_at": null,
+      "parent_task": null,
+      "sessions": [
+        {
+          "session_id": "cc0123456789abcdef0123456789abcdef",
+          "job": "job-a",
+          "name": "fix-tunnel",
+          "role": "main",
+          "active": true,
+          "node": "mizar",
+          "rc_url": "https://rc.example.test/s1",
+          "started": 1800000001.0,
+          "ended": null
+        },
+        {
+          "session_id": "cc3333333333333333333333333333333a",
+          "job": "job-c",
+          "name": null,
+          "role": "joined",
+          "active": true,
+          "node": "mizar",
+          "rc_url": null,
+          "started": 1800000007.0,
+          "ended": null
+        }
+      ],
+      "source_note": null,
+      "approvals": [
+        {
+          "request_id": "q000000000001",
+          "state": "pending",
+          "summary": "vault_hold: checks tripped (15 min)",
+          "requested_at": 1800000004.0,
+          "decided_at": null
+        }
+      ],
+      "messages": [
+        {
+          "seq": 1,
+          "ts": 1800000003.0,
+          "author": "fix-tunnel",
+          "node": "mizar",
+          "session_id": "cc0123456789abcdef0123456789abcdef",
+          "body": "deploy passed"
+        }
+      ]
+    },
+    {
+      "task_id": "T0000002",
+      "title": "An idea",
+      "kind": "note",
+      "section": "needs_you",
+      "status": null,
+      "peer": null,
+      "tags": [],
+      "meta": {
+        "reason": null,
+        "plan": null,
+        "todos": null
+      },
+      "created": 1800000005.0,
+      "updated": 1800000005.0,
+      "done_at": null,
+      "parent_task": null,
+      "sessions": [],
+      "source_note": null,
+      "approvals": [],
+      "body": "The idea, in full."
+    },
+    {
+      "task_id": "T0000003",
+      "title": "Side quest",
+      "kind": "task",
+      "section": "working",
+      "status": null,
+      "peer": "mizar",
+      "tags": [],
+      "meta": {
+        "reason": null,
+        "plan": null,
+        "todos": null
+      },
+      "created": 1800000007.0,
+      "updated": 1800000008.0,
+      "done_at": null,
+      "parent_task": null,
+      "sessions": [],
+      "source_note": null,
+      "approvals": [],
+      "folded_into": "T0000001"
+    },
+    {
+      "task_id": "T0000004",
+      "title": "Old work",
+      "kind": "task",
+      "section": "history",
+      "status": "done",
+      "peer": "lyra",
+      "tags": [],
+      "meta": {
+        "reason": null,
+        "plan": null,
+        "todos": null
+      },
+      "created": 1800000009.0,
+      "updated": 1800000011.0,
+      "done_at": 1800000011.0,
+      "parent_task": null,
+      "sessions": [
+        {
+          "session_id": "cc4444444444444444444444444444444b",
+          "job": "job-d",
+          "name": "old-work",
+          "role": "main",
+          "active": false,
+          "node": "lyra",
+          "rc_url": null,
+          "started": 1800000009.0,
+          "ended": 1800000010.0
+        }
+      ],
+      "source_note": null,
+      "approvals": []
+    },
+    {
+      "task_id": "T0000005",
+      "title": "Agent on mizar from note n0000005",
+      "kind": "task",
+      "section": "needs_you",
+      "status": null,
+      "peer": "mizar",
+      "tags": [],
+      "meta": {
+        "reason": null,
+        "plan": null,
+        "todos": null
+      },
+      "created": 1800000012.0,
+      "updated": 1800000012.0,
+      "done_at": null,
+      "parent_task": null,
+      "sessions": [],
+      "source_note": "n0000005",
+      "approvals": []
+    }
+  ],
+  "mark": 16,
+  "more": false
+}

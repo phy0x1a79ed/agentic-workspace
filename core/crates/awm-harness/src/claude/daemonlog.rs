@@ -301,7 +301,7 @@ mod tests {
     }
 
     #[test]
-    fn history_names_why_each_daemon_before_a_start_stopped() {
+    fn history_names_why_each_daemon_before_a_start_stopped_and_rounds_downtime_half_to_even() {
         let events = history(LOG, HISTORY);
         assert_eq!(
             serde_json::to_value(&events[0].after).unwrap(),
@@ -314,42 +314,30 @@ mod tests {
         assert_eq!(events[2].after.as_ref().unwrap().cause(), "signal");
         let trailing = serde_json::to_value(&events[2]).unwrap();
         assert!(trailing.get("down_s").is_none());
-    }
 
-    #[test]
-    fn summary_of_a_daemon_that_stopped_and_has_not_returned() {
-        assert_eq!(
-            serde_json::to_value(summary(None, LOG)).unwrap(),
-            json!({"state": "down", "pid": null, "since": "2026-10-20T03:00:00.000Z", "cause": "signal"})
-        );
-    }
-
-    #[test]
-    fn summary_of_a_daemon_killed_without_a_word() {
-        let out = summary(None, &without_last_stop());
-        assert_eq!(out.state, State::Down);
-        assert_eq!(out.cause.as_deref(), Some("killed"));
-    }
-
-    #[test]
-    fn summary_of_a_running_daemon() {
-        assert_eq!(
-            serde_json::to_value(summary(Some(3790938), &without_last_stop())).unwrap(),
-            json!({"state": "up", "pid": 3790938, "since": "2026-10-20T02:40:43.397Z", "cause": "killed"})
-        );
-    }
-
-    #[test]
-    fn downtime_rounds_half_to_even() {
         let log = "\
 [2026-10-19T10:00:00.000Z] [supervisor] shutting down (cause=upgrade, uptime=5s)
-[2026-10-19T10:00:10.500Z] [supervisor] ─── daemon start ─── version=9.0.1 pid=11 origin=service
+[2026-10-19T10:00:10.500Z] [supervisor] \u{2500}\u{2500}\u{2500} daemon start \u{2500}\u{2500}\u{2500} version=9.0.1 pid=11 origin=service
 [2026-10-19T10:01:00.000Z] [supervisor] shutting down (cause=upgrade)
-[2026-10-19T10:01:11.500Z] [supervisor] ─── daemon start ─── version=9.0.1 pid=12 origin=service
+[2026-10-19T10:01:11.500Z] [supervisor] \u{2500}\u{2500}\u{2500} daemon start \u{2500}\u{2500}\u{2500} version=9.0.1 pid=12 origin=service
 ";
         let events = history(log, HISTORY);
         assert_eq!(events[0].down_s, Some(10));
         assert_eq!(events[1].down_s, Some(12));
-        assert_eq!(events[1].after, Some(Stop::Logged { at: "2026-10-19T10:01:00.000Z".into(), cause: "upgrade".into(), uptime_s: None }));
+    }
+
+    #[test]
+    fn the_summary_says_down_with_a_cause_or_up_with_a_pid() {
+        assert_eq!(
+            serde_json::to_value(summary(None, LOG)).unwrap(),
+            json!({"state": "down", "pid": null, "since": "2026-10-20T03:00:00.000Z", "cause": "signal"})
+        );
+        let out = summary(None, &without_last_stop());
+        assert_eq!(out.state, State::Down);
+        assert_eq!(out.cause.as_deref(), Some("killed"));
+        assert_eq!(
+            serde_json::to_value(summary(Some(3790938), &without_last_stop())).unwrap(),
+            json!({"state": "up", "pid": 3790938, "since": "2026-10-20T02:40:43.397Z", "cause": "killed"})
+        );
     }
 }

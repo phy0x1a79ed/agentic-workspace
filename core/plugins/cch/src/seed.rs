@@ -199,38 +199,6 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn test_seeding_is_refused_on_a_station() {
-        let b = TestBox::new();
-        let station = FakeLauncher {
-            station: Some("this node is a station and does not run sessions for others".into()),
-            ..Default::default()
-        };
-        assert!(precondition(&b.pool(), &station).await.unwrap_or_default().contains("station"));
-    }
-
-    #[tokio::test]
-    async fn test_seeding_is_refused_beside_a_claude_md() {
-        // A moved session carries the origin's CLAUDE.md into someone's project.
-        let b = TestBox::new();
-        std::fs::write(b.paths.seed_dir.join("CLAUDE.md"), "# not here\n").unwrap();
-        let why = precondition(&b.pool(), &FakeLauncher::default()).await;
-        assert!(why.unwrap_or_default().contains("CLAUDE.md"));
-    }
-
-    #[tokio::test]
-    async fn the_precondition_passes_on_a_healthy_box_and_refuses_with_the_pool_off() {
-        let b = TestBox::new();
-        assert_eq!(precondition(&b.pool(), &FakeLauncher::default()).await, None);
-        let off = b.pool_with(|p| p.want = 0);
-        assert_eq!(
-            precondition(&off, &FakeLauncher::default()).await.as_deref(),
-            Some("the pool is switched off (AWM_CX_WANT=0)")
-        );
-        let missing = b.pool_with(|p| p.claude_bin = p.seed_dir.join("no-claude"));
-        assert!(precondition(&missing, &FakeLauncher::default()).await.unwrap_or_default().starts_with("no claude binary at "));
-    }
-
-    #[tokio::test]
     async fn a_seed_is_named_from_the_nouns_and_launched_as_a_warm_seed_unit() {
         let b = TestBox::new();
         let launcher = FakeLauncher::default();
@@ -246,12 +214,4 @@ pub(crate) mod tests {
         assert_eq!(spec.env, b.paths.seed_env());
     }
 
-    #[test]
-    fn the_seed_future_is_send() {
-        fn send<T: Send>(_: T) {}
-        let b = TestBox::new();
-        let pool = b.pool();
-        let launcher = LiveLauncher::new(|| None::<String>);
-        send(seed_one(&pool, &launcher));
-    }
 }

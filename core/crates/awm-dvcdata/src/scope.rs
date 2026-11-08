@@ -64,7 +64,7 @@ fn config_layers(scope: &Path, section: &str, key: &str) -> Option<String> {
 pub fn cache_dir_for(scope: &Path) -> PathBuf {
     match config_layers(scope, "cache", "dir") {
         Some(found) if Path::new(&found).is_absolute() => PathBuf::from(found),
-        Some(found) => std::fs::canonicalize(scope.join(".dvc").join(&found)).unwrap_or_else(|_| scope.join(".dvc").join(found)),
+        Some(found) => std::fs::canonicalize(scope.join(".dvc").join(&found)).unwrap_or_else(|_| crate::pin::normalize(&scope.join(".dvc").join(found))),
         None => scope.join(".dvc").join("cache"),
     }
 }

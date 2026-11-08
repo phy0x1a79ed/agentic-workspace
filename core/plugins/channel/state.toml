@@ -1,0 +1,55 @@
+# What awm-statecheck copies to .pre-rust/ before channel's first Rust start. Paths resolve
+# against AWM_DIR. A member node has services/channel and services/tether. The public host
+# has services/relay and services/tether. The tether binaries run on, adopted, across the cutover.
+dirs = ["services/channel", "services/relay", "services/tether"]
+
+# The member node's channels: one row per room or machine, keys of an encrypted room included.
+[[additive]]
+path = "services/channel/channels.db"
+table = "channels"
+
+[[additive]]
+path = "services/channel/transcripts"
+
+# The public host's rooms and members. A message leaves once every member fetched it.
+[[additive]]
+path = "services/relay/channels.db"
+table = "rooms"
+
+[[additive]]
+path = "services/relay/channels.db"
+table = "members"
+
+[[transient]]
+path = "services/relay/channels.db"
+table = "messages"
+
+# The tether stream mark and the per-session logs only grow.
+[[additive]]
+path = "services/tether/sessions"
+
+[[transient]]
+path = "services/tether/stream.json"
+
+[[transient]]
+path = "services/tether/daemon.*"
+
+[[transient]]
+path = "services/tether/fetch.log"
+
+[[transient]]
+path = "services/tether/operator.sock"
+
+[[size_only]]
+path = "services/tether/bin"
+
+[[size_only]]
+path = "services/tether/assets"
+
+[[size_only]]
+path = "services/tether/rooms"
+
+# The transient user units the adopted tether binaries run in.
+[[extra]]
+name = "tether-units"
+path = "/run/user/*/systemd/transient/awm-tether-*.service"

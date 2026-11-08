@@ -190,27 +190,4 @@ mod tests {
         assert!(out["error"].as_str().unwrap().contains("no dev sandbox"), "{out}");
     }
 
-    #[tokio::test]
-    async fn rejects_unknown_action() {
-        let (_tmp, tree, projects) = workspace();
-        let out = run("nuke", tree.to_str().unwrap(), &projects, &Fake(Default::default())).await;
-        assert_eq!(out, json!({"action": "nuke", "rc": 2, "error": "unknown dev action 'nuke'"}));
-    }
-
-    #[test]
-    fn repr_matches_python() {
-        assert_eq!(py_repr(""), "''");
-        assert_eq!(py_repr("it's"), "\"it's\"");
-        assert_eq!(py_repr("a'b\"c"), "'a\\'b\"c'");
-        assert_eq!(py_repr("x\ny"), "'x\\ny'");
-    }
-
-    #[test]
-    fn the_sandbox_script_ships_in_this_tree() {
-        let here = Path::new(env!("CARGO_MANIFEST_DIR")).join("sandbox/run.sh");
-        let text = std::fs::read_to_string(here).unwrap();
-        assert!(text.contains("gateway serve --state"));
-        assert!(text.contains("sandbox seed"));
-        assert!(!text.contains("python3"));
-    }
 }

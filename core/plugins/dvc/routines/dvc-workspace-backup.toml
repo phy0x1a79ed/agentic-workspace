@@ -1,0 +1,11 @@
+# dvc's workspace_backup job. The dvc service installs and schedules it on each start and on each
+# `dvc schedule`, from the job's dvc_jobs row: routine owns when, dvc owns what. The step
+# blocks to the transfer's verdict and leaves a run past its timeout live for dvc's watcher.
+[routine]
+name = "dvc-workspace-backup"
+description = "The mirror of the whole workspace to chinook, minus the DVC checkouts and the cache (dvc job workspace_backup)."
+
+[[step]]
+name = "run-job"
+run = '"$AWM_DIR/bin/dvc" run-job --job workspace_backup --trigger schedule --timeout 86400'
+timeout = 87000

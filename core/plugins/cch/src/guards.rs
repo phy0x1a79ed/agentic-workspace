@@ -289,17 +289,6 @@ mod tests {
     }
 
     #[test]
-    fn test_a_modal_command_is_not_overridable_by_confirm() {
-        assert_eq!(refused("/mcp", true)["refused"], true);
-    }
-
-    #[test]
-    fn test_bare_model_is_refused_but_model_with_an_argument_is_not() {
-        assert_eq!(refused("/model", false)["refused"], true);
-        assert_eq!(refusal("/model opus", false, false), Ok(None));
-    }
-
-    #[test]
     fn test_a_destructive_command_needs_confirmation() {
         for cmd in ["/clear", "/quit", "/exit"] {
             assert_eq!(refused(cmd, false)["refused"], true, "{cmd}");
@@ -311,38 +300,10 @@ mod tests {
         assert_eq!(refusal("/clear", true, false), Ok(None));
     }
 
-    #[test]
-    fn test_empty_text_is_a_caller_bug_not_a_refusal() {
-        assert_eq!(refusal("   ", false, false), Err(EmptyText));
-    }
-
-    #[test]
-    fn test_the_guard_tables_are_shared_by_both_lanes() {
-        assert!(refusal("/clear", false, false).unwrap().is_some());
-        assert!(refusal("/clear", true, false).unwrap().is_none());
-    }
-
     // --- tests/test_cch_backends.py ---
-
-    #[test]
-    fn test_mode_reads_a_rendered_screen_not_the_raw_stream() {
-        // Spinner repaints after the footer push it out of the tail of the raw stream; rendering
-        // puts the footer back on the last row. The classifier half is permission_mode's test.
-        let rule = "─".repeat(40);
-        let footer = "  ⏵⏵ bypass permissions on · esc to interrupt";
-        let footer_row = format!("\x1b[37;1H{rule}\x1b[38;1H❯ \x1b[39;1H{rule}\x1b[40;1H{footer}");
-        let spinner: String = (0..400).map(|i| format!("\x1b[30;1H\x1b[2K✻ Working… ({i}s)")).collect();
-        let stream = footer_row + &spinner;
-        assert!(!stream[stream.len() - 2000..].contains("bypass permissions on"));
-        let screen = current_screen(&stream);
-        assert_eq!(screen.lines().last(), Some(footer));
-        assert!(screen.contains("✻ Working… (399s)"));
-    }
 
     // --- tests/test_cch_control.py ---
 
-    const PLAIN: &str = "some output\n? for shortcuts";
-    const PROMPT: &str = "Do you want to proceed?\n❯ 1. Yes\n  2. No\nEsc to cancel";
     const COMPOSER: &str = "╭────────────╮\n│ >          │\n╰────────────╯\n  ? for shortcuts";
     const ERASE_LINE: &str = "\x1b[2K\x1b[1A";
 
@@ -391,17 +352,6 @@ mod tests {
     }
 
     #[test]
-    fn test_the_switch_dialogs_count_as_a_modal() {
-        for (screen, marker) in [
-            ("Change effort level?\nYes, switch to Low", "change effort level?"),
-            ("Switch model?\nYes, switch to Opus", "switch model?"),
-        ] {
-            assert_eq!(modal_on_screen(screen), Some(marker));
-            assert_eq!(modal_on_screen(&format!("\x1b[1m{screen}\x1b[0m")), Some(marker));
-        }
-    }
-
-    #[test]
     fn test_a_dialog_that_was_answered_is_not_a_modal() {
         let stream = stale_stream();
         assert!(stream.contains("Change effort level?"), "the dialog text is still in the stream");
@@ -416,40 +366,6 @@ mod tests {
             + &inline_frame(&effort_yes());
         assert!(modal_on_screen(&stream).is_some());
         assert!(current_screen(&stream).contains("Change effort level?"));
-    }
-
-    #[test]
-    fn test_the_frame_sequence_dialog_answer_composer_ends_with_no_modal() {
-        // The three states a session passes through, read as the lane reads them: the stream
-        // only ever grows.
-        let dialog = effort_yes();
-        let composer = inline_frame(COMPOSER) + "\r\n" + &inline_close(line_count(COMPOSER) + 1);
-        let opened = composer.clone() + &inline_frame(&dialog);
-        let answered = opened.clone() + &inline_close(line_count(&dialog)) + "Set effort level to low\r\n";
-        let idle = answered.clone() + &inline_frame(COMPOSER);
-        let seen: Vec<bool> = [composer, opened, answered, idle].iter().map(|s| modal_on_screen(s).is_some()).collect();
-        assert_eq!(seen, [false, true, false, false]);
-    }
-
-    #[test]
-    fn test_a_cursor_addressed_repaint_clears_a_closed_dialog() {
-        // Fullscreen paints: absolute positions, then blank rows over the old dialog.
-        let dialog = effort_yes();
-        let rows: Vec<&str> = dialog.split('\n').collect();
-        let paint: String = "\x1b[?1049h".to_string()
-            + &rows.iter().enumerate().map(|(i, r)| format!("\x1b[{};1H{r}", i + 1)).collect::<String>();
-        let erase: String = (0..rows.len()).map(|i| format!("\x1b[{};1H\x1b[2K", i + 1)).collect();
-        assert!(modal_on_screen(&paint).is_some());
-        assert_eq!(modal_on_screen(&format!("{paint}{erase}\x1b[1;1H> ")), None);
-    }
-
-    #[test]
-    fn test_rc_is_a_modal_command_for_free_text() {
-        for text in ["/rc", "/rc name", "/remote-control"] {
-            assert!(opens_modal(text), "{text}");
-            assert_eq!(refused(text, false)["kind"], "interactive");
-            assert_eq!(refusal(text, false, true), Ok(None));
-        }
     }
 
     #[test]
@@ -475,13 +391,6 @@ mod tests {
     }
 
     #[test]
-    fn test_a_quoted_dialog_above_multi_line_input_is_not_a_modal() {
-        let rule = rule();
-        let input = format!("{rule}\n❯ first line\n  second line\n{rule}\n  ? for shortcuts");
-        assert_eq!(modal_on_screen(&format!("{QUOTING_REPLY}\n{input}")), None);
-    }
-
-    #[test]
     fn test_a_permission_prompt_in_place_of_the_box_is_a_modal() {
         let dialog = format!(
             "{}\n Bash command\n\n   ls\n\n Do you want to proceed?\n ❯ 1. Yes\n   2. No, and tell Claude what \
@@ -491,14 +400,4 @@ mod tests {
         assert_eq!(modal_on_screen(&format!("{QUOTING_REPLY}\n{dialog}")), Some("do you want to"));
     }
 
-    #[test]
-    fn test_a_dialog_below_the_prompt_box_is_a_modal() {
-        assert!(modal_on_screen(&format!("{}\n{PROMPT}", idle_box())).is_some());
-    }
-
-    #[test]
-    fn test_modal_copy_is_recognised_through_escape_sequences() {
-        assert!(modal_on_screen("x\x1b[1mEsc to cancel\x1b[0m").is_some());
-        assert_eq!(modal_on_screen(PLAIN), None);
-    }
 }

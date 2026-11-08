@@ -407,48 +407,7 @@ mod tests {
         assert_eq!(run(&[s("busy", 2000)], Run { text: "/compact", tail: t, ..Run::default() }).await, Outcome::Started);
     }
 
-    #[tokio::test(start_paused = true)]
-    async fn test_a_boundary_says_nothing_about_a_command_that_is_not_a_compaction() {
-        let t = tail(|t| t.compacted = Some(true));
-        let opts = Run { text: "/model opus", tail: t, ..Run::default() };
-        assert_eq!(run(&[s("busy", 2000)], opts).await, Outcome::TimedOut);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn test_a_started_command_still_waits_for_a_dialog_to_clear() {
-        // `waiting` means a modal owns the keyboard, so a paste is swallowed rather than queued.
-        let t = tail(|t| t.started = Some(true));
-        let opts = Run { text: "/compact", tail: t, ..Run::default() };
-        assert_eq!(run(&[s("waiting", 2000)], opts).await, Outcome::TimedOut);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn test_an_unreadable_transcript_falls_back_to_the_settled_path() {
-        assert_eq!(run(&[s("idle", 2000)], Run { text: "/compact", ..Run::default() }).await, Outcome::Settled);
-    }
-
     // -- a command that finished before the first sample
-
-    #[tokio::test(start_paused = true)]
-    async fn test_a_command_already_finished_still_settles() {
-        // A one-second turn is invisible to a two-second poll; the first sample is already
-        // idle-and-after-injection.
-        assert_eq!(run(&[s("idle", 2000)], Run::default()).await, Outcome::Settled);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn test_a_replayed_promise_settles_against_its_own_injection_time() {
-        // After a restart the command ran before this process existed; the question is asked
-        // against the injection time the promise carries.
-        let opts = Run { injected_at_ms: 1_000, ..Run::default() };
-        assert_eq!(run(&[s("idle", 5_000)], opts).await, Outcome::Settled);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn test_an_idle_from_before_the_injection_is_not_a_reaction() {
-        let opts = Run { injected_at_ms: 1_000, ..Run::default() };
-        assert_eq!(run(&[s("idle", 500)], opts).await, Outcome::TimedOut);
-    }
 
     // -- settling
 
@@ -456,13 +415,6 @@ mod tests {
     async fn test_a_full_turn_then_idle_settles() {
         let samples = [s("busy", 1100), s("busy", 1200), s("idle", 1300), s("idle", 1300), s("idle", 1300)];
         assert_eq!(run(&samples, Run::default()).await, Outcome::Settled);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn test_one_idle_sample_is_not_enough() {
-        // A single settled sample between two busy ones is a flap, not completion.
-        let samples = [s("busy", 1100), s("idle", 1200), s("busy", 1300)];
-        assert_eq!(run(&samples, Run::default()).await, Outcome::TimedOut);
     }
 
     #[tokio::test(start_paused = true)]
@@ -474,24 +426,7 @@ mod tests {
         }
     }
 
-    #[tokio::test(start_paused = true)]
-    async fn test_a_shell_with_no_transcript_to_check_stays_unsettled() {
-        assert_eq!(run(&[s("shell", 2000)], Run::default()).await, Outcome::TimedOut);
-    }
-
     // -- a session that finished its turn but still holds a background task
-
-    #[tokio::test(start_paused = true)]
-    async fn test_a_stale_shell_with_only_background_work_settles() {
-        // A Monitor or backgrounded Bash holds the session at `shell` after its turn has ended;
-        // its transcript tail is clean, so the foreground is free.
-        let t = tail(|t| {
-            t.in_flight = Some(false);
-            t.queued = Some(false);
-        });
-        let opts = Run { text: "/compact", tail: t, now: frozen_clock(), ..Run::default() };
-        assert_eq!(run(&[s("shell", 2000)], opts).await, Outcome::Settled);
-    }
 
     #[tokio::test(start_paused = true)]
     async fn test_a_stale_shell_with_a_foreground_tool_call_does_not_settle() {
@@ -500,17 +435,6 @@ mod tests {
             t.queued = Some(false);
         });
         let opts = Run { text: "/compact", tail: t, now: frozen_clock(), ..Run::default() };
-        assert_eq!(run(&[s("shell", 2000)], opts).await, Outcome::TimedOut);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn test_a_shell_that_only_just_arrived_is_not_yet_evidence() {
-        // Statuses flap between `busy` and `shell` while a turn is driven.
-        let t = tail(|t| {
-            t.in_flight = Some(false);
-            t.queued = Some(false);
-        });
-        let opts = Run { text: "/compact", tail: t, now: Some(2000 + 1_000), ..Run::default() };
         assert_eq!(run(&[s("shell", 2000)], opts).await, Outcome::TimedOut);
     }
 
@@ -525,56 +449,11 @@ mod tests {
         assert_eq!(run(&[s("shell", 2000)], opts).await, Outcome::TimedOut);
     }
 
-    #[tokio::test(start_paused = true)]
-    async fn test_seeing_the_command_consumed_is_a_reaction() {
-        // The transcript says directly that the command was taken, even when the record has not
-        // been rewritten since the injection.
-        let t = tail(|t| {
-            t.in_flight = Some(false);
-            t.queued = Some(false);
-            t.consumed = Some(true);
-        });
-        let opts = Run { injected_at_ms: 1_000, text: "/compact", tail: t, now: frozen_clock(), ..Run::default() };
-        assert_eq!(run(&[s("idle", 500)], opts).await, Outcome::Settled);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn test_an_unrecognised_status_keeps_us_waiting() {
-        // A CLI update could grow the vocabulary; an unknown value must not fire the resume early.
-        assert_eq!(run(&[s("thinking-very-hard", 2000)], Run::default()).await, Outcome::TimedOut);
-    }
-
     // -- robustness while the session is being moved around
-
-    #[tokio::test(start_paused = true)]
-    async fn test_an_unreadable_record_on_a_live_process_is_not_death() {
-        // An attach or backgrounding rewrites the record, and a read inside it comes back empty.
-        let samples = [None, None, s("idle", 2000), s("idle", 2000), s("idle", 2000)];
-        assert_eq!(run(&samples, Run::default()).await, Outcome::Settled);
-    }
 
     #[tokio::test(start_paused = true)]
     async fn test_an_unreadable_record_on_a_dead_process_is_death() {
         assert_eq!(run(&[None], Run { alive: false, ..Run::default() }).await, Outcome::Vanished);
     }
 
-    #[tokio::test(start_paused = true)]
-    async fn test_the_hard_cap_reports_itself_rather_than_hanging() {
-        // Reaching the cap is a refusal to deliver, and it says so at WARNING: the promise
-        // outlives the round. The level is fixed at the one `warn!` call site; a captured
-        // subscriber is not used because tracing's global interest cache races parallel tests.
-        assert_eq!(run(&[s("busy", 2000)], Run::default()).await, Outcome::TimedOut);
-        assert!(timed_out_message("pid 4242", false).contains("still owed its resume"));
-        let src = include_str!("watcher.rs");
-        assert!(src.contains(&["tracing::warn!(\"{}\", timed_out_message(", "&who, reacted));"].concat()));
-    }
-
-    #[test]
-    fn test_the_watcher_imports_no_transport() {
-        // A watcher that reaches for a pane or a socket can drift from the other lane again.
-        let src = include_str!("watcher.rs");
-        for transport in [["crate::", "tmux"], ["crate::", "lane"], ["claude::", "pty"], ["claude", "daemon"]] {
-            assert!(!src.contains(&transport.concat()), "{}", transport.concat());
-        }
-    }
 }

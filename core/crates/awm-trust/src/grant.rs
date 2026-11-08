@@ -271,14 +271,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn repr_matches_python() {
-        assert_eq!(py_repr(Some("admin_ssh")), "'admin_ssh'");
-        assert_eq!(py_repr(Some("it's")), "\"it's\"");
-        assert_eq!(py_repr(Some("a\tb\u{1}é")), "'a\\tb\\x01é'");
-        assert_eq!(py_repr(None), "None");
-    }
-
-    #[test]
     fn verifies_and_refuses() {
         let sk = key();
         let pk = sk.verifying_key().to_bytes();

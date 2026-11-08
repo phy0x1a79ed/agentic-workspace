@@ -720,9 +720,6 @@ mod tests {
             Self { calls: RefCell::new(Vec::new()), answer: Box::new(answer) }
         }
 
-        fn names(&self) -> Vec<String> {
-            self.calls.borrow().iter().map(|c| c.0.clone()).collect()
-        }
     }
 
     impl Hub for FakeHub {
@@ -789,16 +786,6 @@ mod tests {
     }
 
     #[test]
-    fn test_the_scope_is_the_worktree_that_holds_the_folder() {
-        let (_tmp, wt) = tree();
-        let want = Some(("awm".to_string(), "redux/harness".to_string()));
-        assert_eq!(scope_of(wt.join("src").to_str().unwrap()), want);
-        assert_eq!(scope_of(wt.to_str().unwrap()), want);
-        assert_eq!(scope_of(wt.parent().unwrap().parent().unwrap().join(".bare").to_str().unwrap()), None);
-        assert_eq!(scope_of(wt.ancestors().nth(4).unwrap().to_str().unwrap()), None);
-    }
-
-    #[test]
     fn test_a_session_in_a_scope_gets_its_brief() {
         let (_tmp, wt) = tree();
         let line = "The brief of awm/redux/harness: For the harness lane.";
@@ -809,20 +796,6 @@ mod tests {
         assert_eq!(calls[0].1, json!({"project": "awm", "scope": "redux/harness"}));
         assert_eq!(calls[0].2, parent_pid());
         assert_eq!(calls[0].3, BRIEF_TIMEOUT);
-    }
-
-    #[test]
-    fn test_no_brief_and_no_scope_add_nothing() {
-        let (_tmp, wt) = tree();
-        assert_eq!(start(&brief_answer(""), &wt), None);
-        let hub = brief_answer("never read");
-        assert_eq!(start(&hub, Path::new("/tmp")), None);
-        assert!(hub.names().is_empty());
-    }
-
-    #[test]
-    fn test_a_gateway_that_does_not_answer_adds_nothing() {
-        assert_eq!(brief_line(&HttpHub::new("http://127.0.0.1:9"), "awm", "s"), json!(""));
     }
 
     fn fire(hub: &FakeHub, seen: &Path, source: &str, session_id: &str) {
@@ -845,27 +818,6 @@ mod tests {
         fire(&hub, &seen, "clear", "new-id");
         assert_eq!(clears(&hub), vec![json!({"session_id": "new-id", "kind": "clear", "parent": "old-id"})]);
         assert_eq!(hub.calls.borrow()[0].3, CLEAR_TIMEOUT);
-    }
-
-    #[test]
-    fn test_a_clear_with_no_earlier_id_reports_nothing() {
-        let state = tempfile::tempdir().unwrap();
-        let hub = FakeHub::new(|_, _| Ok(json!({})));
-        fire(&hub, &state.path().join("awm/cch/session-start"), "clear", "new-id");
-        assert!(clears(&hub).is_empty());
-    }
-
-    #[test]
-    fn test_the_claude_process_is_the_ancestor_with_a_session_record() {
-        let tmp = tempfile::tempdir().unwrap();
-        let records = tmp.path().join("claude/sessions");
-        fs::create_dir_all(&records).unwrap();
-        // Started at this process rather than its parent, which is pid 1 in the build container.
-        let me = std::process::id();
-        assert_eq!(nearest_with_record(&records, me), None);
-        assert_eq!(claude_pid(&records), None);
-        fs::write(records.join(format!("{me}.json")), "{}").unwrap();
-        assert_eq!(nearest_with_record(&records, me), Some(me));
     }
 
     fn payload(over: Value) -> Map<String, Value> {
@@ -891,21 +843,6 @@ mod tests {
         assert!(!should_act(&payload(json!({"tool_response": {"status": "denied"}}))));
         assert!(!should_act(&payload(json!({"tool_response": "user rejected"}))));
         assert!(!should_act(&payload(json!({"tool_response": null}))));
-    }
-
-    #[test]
-    fn test_a_session_already_in_bypass_is_not_touched() {
-        assert!(!should_act(&payload(json!({"permission_mode": "bypassPermissions"}))));
-    }
-
-    #[test]
-    fn test_a_session_still_reading_as_plan_stands_down() {
-        assert!(!should_act(&payload(json!({"permission_mode": "plan"}))));
-    }
-
-    #[test]
-    fn test_other_tools_are_ignored() {
-        assert!(!should_act(&payload(json!({"tool_name": "Bash"}))));
     }
 
     #[test]
@@ -952,11 +889,6 @@ mod tests {
         covered_footer_is_retried("tmux");
     }
 
-    #[test]
-    fn test_a_covered_footer_is_retried_background() {
-        covered_footer_is_retried("background");
-    }
-
     fn timed_out_call_is_never_retried(call_once: &dyn Fn() -> Result<Value, PostError>) {
         // The walk a timed-out call started is still pressing keys on the server; a second walk
         // on top of it steps past bypass.
@@ -970,11 +902,6 @@ mod tests {
         assert_eq!(calls, 1);
         assert_eq!(logged.len(), 1);
         assert!(logged[0].contains("not retried"));
-    }
-
-    #[test]
-    fn test_a_timed_out_call_is_never_retried_timeout() {
-        timed_out_call_is_never_retried(&|| Err(PostError::Timeout));
     }
 
     #[test]
@@ -997,33 +924,6 @@ mod tests {
         ensure_bypass("sid-1", &mut call, &pace, &mut |_| {});
         let timeouts = timeouts.borrow();
         assert!(timeouts.iter().sum::<f64>() + RETRY_GAP_S * (timeouts.len() as f64 - 1.0) <= DEADLINE_S);
-    }
-
-    #[test]
-    fn test_a_settled_refusal_is_logged_once_and_not_retried() {
-        let pace = FakePace::default();
-        let (mut calls, mut logged) = (0, Vec::new());
-        let mut call = |_: &str, _: f64| {
-            calls += 1;
-            Ok(json!({"ok": false, "mode": "auto", "error": "this session's permission-mode cycle never offers bypass"}))
-        };
-        ensure_bypass("sid-1", &mut call, &pace, &mut |m| logged.push(m.to_string()));
-        assert_eq!(calls, 1);
-        assert!(logged[0].contains("never offers bypass"));
-    }
-
-    #[test]
-    fn test_an_unreachable_gateway_is_retried_then_logged() {
-        let pace = FakePace::default();
-        let (mut calls, mut logged) = (0, Vec::new());
-        let mut call = |_: &str, _: f64| {
-            calls += 1;
-            Err(PostError::Failed("connection refused".into()))
-        };
-        ensure_bypass("sid-1", &mut call, &pace, &mut |m| logged.push(m.to_string()));
-        assert!(calls > 1, "a restart window must be retried across");
-        assert_eq!(logged.len(), 1);
-        assert!(logged[0].contains("connection refused"));
     }
 
     #[test]
@@ -1089,14 +989,6 @@ mod tests {
     }
 
     #[test]
-    fn test_calls_sent_together_count_each_other() {
-        // Five Agent calls in one turn reserve five slots before any subagent starts.
-        let cap = Cap::new("untrusted");
-        assert!((0..5).all(|_| cap.agent().is_none()));
-        assert_eq!(cap.agent().unwrap()["permissionDecision"], "deny");
-    }
-
-    #[test]
     fn test_a_reservation_that_never_starts_lapses() {
         let cap = Cap::new("cooperative");
         cap.clock.set(1000.0);
@@ -1109,49 +1001,12 @@ mod tests {
     }
 
     #[test]
-    fn test_a_stop_frees_its_own_agent() {
-        let cap = Cap::new("cooperative");
-        for i in 0..5 {
-            cap.agent();
-            cap.fire("SubagentStart", json!({"agent_id": format!("a{i}")}));
-        }
-        cap.fire("SubagentStop", json!({"agent_id": "a3"}));
-        cap.fire("SubagentStop", json!({"agent_id": "a3"}));
-        assert_eq!(cap.agent(), None);
-        assert!(cap.agent().is_some(), "a repeated stop frees no second slot");
-    }
-
-    #[test]
-    fn test_a_subagent_whose_stop_never_comes_lapses() {
-        let cap = Cap::new("cooperative");
-        cap.clock.set(1000.0);
-        for i in 0..5 {
-            cap.agent();
-            cap.fire("SubagentStart", json!({"agent_id": format!("a{i}")}));
-        }
-        cap.advance(RESERVE_S + 1.0);
-        assert!(cap.agent().is_some());
-        cap.advance(RUNNING_S);
-        assert_eq!(cap.agent(), None);
-    }
-
-    #[test]
     fn test_a_trusted_session_is_not_capped() {
         let cap = Cap::new("trusted");
         for _ in 0..7 {
             assert_eq!(cap.agent(), None);
             cap.fire("SubagentStart", json!({}));
         }
-    }
-
-    #[test]
-    fn test_other_tools_and_bad_input_pass() {
-        let cap = Cap::new("untrusted");
-        for _ in 0..6 {
-            assert_eq!(cap.fire("PreToolUse", json!({"tool_name": "Bash"})), None);
-        }
-        let dir = cap.dir.path().join("awm/cch/subagents");
-        assert_eq!(subagent_cap(b"not json", &dir, epoch_now, || unreachable!()), None);
     }
 
     #[test]

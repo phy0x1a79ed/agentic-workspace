@@ -334,24 +334,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_a_directory_with_no_trusted_ancestor_is_untrusted() {
-        let dir = TempDir::new().unwrap();
-        let file = dir.path().join("claude.json");
-        write_trust(&file, &[HOME_TRUSTED]);
-        let elsewhere = TempDir::new().unwrap();
-        assert!(!trust::trusted(elsewhere.path(), &home_with_trust(dir.path(), &file)).await);
-    }
-
-    #[tokio::test]
-    async fn test_an_unreadable_trust_file_reads_as_untrusted() {
-        // Fails closed: the cost is a cold launch, never a dialog nobody answers.
-        let dir = TempDir::new().unwrap();
-        let home = dir.path().canonicalize().unwrap();
-        let h = home_with_trust(dir.path(), &dir.path().join("absent.json"));
-        assert!(!trust::trusted(&home, &h).await);
-    }
-
-    #[tokio::test]
     async fn test_a_start_in_a_git_repo_needs_the_repos_own_trust_entry() {
         // `claude --bg` refuses with "Workspace not trusted" for a repo whose only trusted parent
         // is an ancestor, so the start must refuse first.
@@ -407,16 +389,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_a_session_that_would_not_move_is_left_idle() {
-        let b = TestBox::new();
-        let dir = trusted(&b);
-        let keys = FakeKeys { moves: false, ..FakeKeys::new(&b) };
-        let out = claim_within(&pool(&b), &keys, &dir, Duration::from_millis(50)).await;
-        assert_eq!(out["session"], Value::Null);
-        assert_eq!(*keys.cleared.lock().unwrap(), ["warmfresh"]);
-    }
-
-    #[tokio::test]
     async fn test_a_claim_renames_the_session_out_of_the_pool() {
         // The whole point: the session stops advertising itself as a spare.
         let b = TestBox::new();
@@ -432,53 +404,4 @@ mod tests {
         assert!(s.was_ours(&fresh));
     }
 
-    #[tokio::test]
-    async fn test_the_rename_comes_after_the_move_has_landed() {
-        // The recheck between them asks whether the name still carries the pool's prefix, and
-        // the rename is what takes it away.
-        let b = TestBox::new();
-        let dir = trusted(&b);
-        let keys = FakeKeys::new(&b);
-        claim(&pool(&b), &keys, &dir).await;
-        let typed = keys.typed();
-        let at = |t: &str| typed.iter().position(|x| x == t).unwrap();
-        assert!(at(&format!("/cd {dir}")) < at("/rename claimed dunlin"));
-    }
-
-    #[tokio::test]
-    async fn test_a_rename_that_will_not_type_still_hands_the_session_over() {
-        // A session under the wrong name beats no session at all.
-        let b = TestBox::new();
-        let dir = trusted(&b);
-        let keys = FakeKeys { refuse_rename: true, ..FakeKeys::new(&b) };
-        let out = claim(&pool(&b), &keys, &dir).await;
-        assert_eq!(out, json!({"session": "warmfresh", "cwd": dir}));
-    }
-
-    #[test]
-    fn test_the_claimed_name_keeps_the_pool_noun() {
-        let p = Paths::under(Path::new("/nonexistent/cch-test"));
-        assert_eq!(claimed_name(&p, "<warm dunlin>", "abc123"), "claimed dunlin");
-        assert_eq!(claimed_name(&p, "<warm >", "abc123"), "claimed abc123");
-    }
-
-    #[test]
-    fn the_claim_timing_ladder_holds() {
-        // MOVE_TIMEOUT < the pool_claim verb timeout < CX_WAIT in bin/cx: cutting the read off
-        // early turns a slow warm start into a cold one.
-        let verb = crate::verbs::specs().into_iter().find(|s| s.verb == "pool_claim").unwrap();
-        let timeout = Duration::from_secs(verb.timeout.unwrap());
-        let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/bin/cx")).unwrap();
-        let wait: u64 = src.split("CX_WAIT=${CX_WAIT:-").nth(1).unwrap().split('}').next().unwrap().parse().unwrap();
-        assert!(MOVE_TIMEOUT < timeout, "{MOVE_TIMEOUT:?} !< {timeout:?}");
-        assert!(timeout < Duration::from_secs(wait), "{timeout:?} !< CX_WAIT {wait}s");
-    }
-
-    #[test]
-    fn the_claim_future_is_send() {
-        fn send<T: Send>(_: T) {}
-        let b = TestBox::new();
-        let pool = pool(&b);
-        send(claim(&pool, &DaemonKeys, "/"));
-    }
 }

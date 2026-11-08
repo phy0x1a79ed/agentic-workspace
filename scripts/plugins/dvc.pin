@@ -1,0 +1,5 @@
+# The dvc core plugin binary (static musl) that a deploy places at <AWM_DIR>/bin/dvc.
+# Written by the deploy on mizar (scripts/refresh-pins.sh). Do not edit.
+version=dvc-542e22b915e4
+file=awm-plugin-dvc-542e22b915e4-linux-x86_64-musl
+sha256=15c11e39e162a6956ab6319f15fa872ba3f0f3d156795e53bce47f76c59a5271

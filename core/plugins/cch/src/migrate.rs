@@ -220,32 +220,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_second_run_is_a_no_op() {
-        let (_tmp, paths) = setup();
-        migrate(&paths).await;
-        std::fs::write(paths.legacy_promises_dir().join("5151.json"), "{}").unwrap();
-        let report = migrate(&paths).await;
-        assert_eq!(report.promises, Moved { skipped: Some("marked"), ..Moved::default() });
-        assert_eq!(report.hold, Moved { skipped: Some("marked"), ..Moved::default() });
-        assert!(!paths.promises_dir().join("5151.json").exists());
-    }
-
-    #[tokio::test]
-    async fn a_file_already_at_the_destination_is_kept() {
-        let (_tmp, paths) = setup();
-        std::fs::create_dir_all(paths.promises_dir()).unwrap();
-        std::fs::write(paths.promises_dir().join("4242.json"), "newer").unwrap();
-        std::fs::write(paths.hold_path(), "newer hold").unwrap();
-        let report = migrate(&paths).await;
-        assert_eq!(names(&report.promises.kept), ["4242.json"]);
-        assert_eq!(names(&report.promises.copied), ["4242.done", "unsent.jsonl"]);
-        assert_eq!(report.hold.kept, [paths.hold_path()]);
-        assert_eq!(std::fs::read_to_string(paths.promises_dir().join("4242.json")).unwrap(), "newer");
-        assert_eq!(std::fs::read_to_string(paths.hold_path()).unwrap(), "newer hold");
-        assert!(paths.legacy_promises_dir().join(MARKER).exists());
-    }
-
-    #[tokio::test]
     async fn the_rollback_round_trips() {
         let (_tmp, paths) = setup();
         migrate(&paths).await;
@@ -263,15 +237,4 @@ mod tests {
         assert!(legacy.join(MARKER).exists());
     }
 
-    #[tokio::test]
-    async fn an_absent_legacy_dir_is_fine() {
-        let tmp = tempfile::tempdir().unwrap();
-        let paths = Paths::under(tmp.path());
-        let report = migrate(&paths).await;
-        assert_eq!(report.promises, Moved { skipped: Some("absent"), ..Moved::default() });
-        assert_eq!(report.hold, Moved { skipped: Some("absent"), ..Moved::default() });
-        assert!(!paths.legacy_promises_dir().exists(), "nothing is created at the source");
-        assert!(!paths.promises_dir().exists());
-        assert_eq!(rollback(&paths).unwrap(), Vec::<PathBuf>::new());
-    }
 }

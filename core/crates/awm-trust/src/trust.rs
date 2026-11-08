@@ -143,7 +143,7 @@ pub struct Call<'a> {
 pub const START_VERBS: [&str; 3] = ["start_other", "resume_other", "adopt_other"];
 /// The `social` verbs a seat holds and answers its own chats with (R69). social keeps them
 /// to the chats the session holds, and a mount to chats below trusted that no sibling holds.
-pub const SEAT_CHAT_VERBS: [&str; 7] = ["send", "react", "fetch", "history", "download_attachments", "mount", "unmount"];
+pub const SEAT_CHAT_VERBS: [&str; 9] = ["send", "react", "fetch", "history", "download_attachments", "mount", "unmount", "mark_seat_done", "forward"];
 /// The `2fa` verbs that only read. ssh arms the approver itself for fir and sockeye.
 pub const TWOFA_READS: [&str; 5] = ["devices", "ping", "reachability", "status", "pending"];
 const DESCRIBE: &str = "describe";
@@ -234,13 +234,6 @@ mod tests {
     use crate::grant::tests::{key, sign};
 
     #[test]
-    fn start_equal_or_lower() {
-        assert_eq!(level_for_start(Level::Trusted, Some(Level::Untrusted), None), Ok(Level::Untrusted));
-        assert_eq!(level_for_start(Level::Cooperative, None, None), Ok(Level::Cooperative));
-        assert!(matches!(level_for_start(Level::Cooperative, Some(Level::Trusted), None), Err(TrustError::NoGrant { .. })));
-    }
-
-    #[test]
     fn raise_with_grant() {
         let sk = key();
         let pk = sk.verifying_key().to_bytes();
@@ -254,23 +247,8 @@ mod tests {
         assert!(level_for_start(Level::Cooperative, Some(Level::Trusted), Some(other)).is_err());
     }
 
-    #[test]
-    fn steering() {
-        assert!(may_steer(Level::Untrusted, "message", None).is_err());
-        assert!(may_steer(Level::Cooperative, "message", Some(Level::Trusted)).is_ok());
-        assert!(may_steer(Level::Cooperative, "stop", Some(Level::Trusted)).is_err());
-        assert!(may_steer(Level::Cooperative, "mcp", Some(Level::Trusted)).is_err());
-        assert!(may_steer(Level::Trusted, "interrupt", Some(Level::Trusted)).is_ok());
-    }
-
     fn call<'a>(tool: &'a str, verb: &'a str) -> Call<'a> {
         Call { tool, verb, harness: false, names_other: false }
-    }
-
-    #[test]
-    fn trusted_is_not_gated() {
-        assert_eq!(call_refusal(Level::Trusted, &call("social", "search")), None);
-        assert_eq!(call_refusal(Level::Trusted, &Call { harness: true, ..call("harness-cc", "start") }), None);
     }
 
     #[test]

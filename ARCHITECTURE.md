@@ -14,7 +14,7 @@ awm is one Rust binary, `awm`, plus a set of out-of-process **plugins**. The bin
 
 - **Core** — `core/crates/`, built into `~/.local/bin/awm`. `awm-gateway` is the gateway, `awm-cli` the command tree, `awm-mcp` the stdio MCP server, `awm-edge` the ssh transport between nodes, `awm-trust` the edge list, trust levels and the service door, and `awm-proto` the manifest and wire types.
 - **Plugins** — each folder under `core/plugins/`, `awm/services/` and `awm/plugins/` with an `awm-plugin.toml`. A plugin under `core/plugins/` is a static Rust binary that the deploy places at `<AWM_DIR>/bin/<name>`. `awm services list` reports the live set. Each folder's `INSTALL.md` is its contract.
-- **Shared Python components** — `awm/service_components/`: `awm.config`, `awm.persistence`, `awm.gatewayclient`, `awm.kept`, `awm.trustpolicy`, `awm.telemetry`, `awm.usage`, `awm.tlsfront` and `awm.dvcdata`. They are libraries, not plugins. A plugin imports a library, never another plugin's code.
+- **Shared Python components** — `awm/service_components/`: `awm.config`, `awm.persistence`, `awm.gatewayclient`, `awm.trustpolicy`, `awm.telemetry`, `awm.usage`, `awm.tlsfront` and `awm.dvcdata`. They are libraries, not plugins. A plugin imports a library, never another plugin's code.
 - **Frontend source** — `awm/ui_components/` and each plugin's `pages/`. See § *Frontend*.
 
 ### Ownership and identity
@@ -33,7 +33,7 @@ A plugin keeps its state in SQLite, so the gateway's respawn brings it back whol
 
 1. `cch`'s keep unit holds the daemon in its own user unit, outside awm's control group and outside every terminal (`core/plugins/cch/src/keeper.rs`).
 2. `cch`'s session layer ensures the daemon before a start, resume or stop. It refuses with `code: "daemon_down"` only when that fails. It revives pinned jobs once per boot.
-3. `awm.kept` holds the policy every keeper shares: the restart record, the decision (wait, resume, start fresh, give up) and the breaker. It does no I/O. Social's seat keeper is its first user.
+3. `social`'s seat keeper holds the keeper policy: the restart record, the decision (wait, resume, start fresh, give up) and the breaker.
 
 **CAUTION** A keeper must read `daemon_down` and `daemon.state` as "wait", never as "the session is gone". Stopping a pinned job runs `claude rm` and loses its conversation. That reading is what destroyed a seat on 2026-10-20.
 
@@ -307,7 +307,7 @@ A page reaches the gateway through `@awm/client`: `tool(name).call(verb, args)` 
 Read `FEDERATION.md` before you touch anything cross-node. The loopback gateway stays open and unauthenticated. A call to another node goes from the local gateway down an ssh channel to that node's loopback gateway (`core/crates/awm-edge`). The edge list (`awm.config.edges`, `awm_trust::edges`) is the only record of who reaches whom.
 
 - This is not the retired federations: neither the v0 one (cr-sqlite replication, leader election, a `peers` registry) nor the peer book with node tokens and a private CA. The git history of their deletion is not a guide to the current system.
-- The gateway trusts `X-Awm-Caller` from `awm edge-serve` only beside the edge token in `<AWM_DIR>/edge.token`, which it rewrites at each start. It trusts `X-Awm-As` because `httpsfront` strips every inbound caller header (`X-Awm-As`, `X-Awm-Caller-Pid`, `X-Awm-Session-Pid`) and stamps its own. A new edge mount must do the same.
+- The gateway trusts `X-Awm-Caller` from `awm edge-serve` only beside the edge token in `<AWM_DIR>/edge.token`, which it rewrites at each start. It trusts `X-Awm-As` because the edge (`auth`) strips every inbound caller header (`X-Awm-As`, `X-Awm-Caller-Pid`, `X-Awm-Session-Pid`) and stamps its own. A new edge mount must do the same.
 - A cross-node call from a service passes `peer=<node>` to `awm.gatewayclient`. A hand-rolled local POST skips that branch, and the call silently runs on the wrong node.
 - A reload that adds, removes or restarts a plugin sends `_table_changed` across each edge, so the other nodes refetch this node's table. They cache it in `<AWM_DIR>/peer-tools.json`. A peer that gets the notice re-resolves `needs` only: it starts the plugins whose `needs` now resolve and stops those whose `needs` no longer do. It never runs a full reload and never forwards the notice.
 

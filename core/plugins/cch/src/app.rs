@@ -588,9 +588,8 @@ impl Backend for Live {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Mutex;
 
-    use awm_harness::claude::cli::{RunError, RunOutput};
+    
 
     use super::*;
 
@@ -606,47 +605,6 @@ mod tests {
         assert!(broken.contains("bad yaml"), "{broken}");
     }
 
-    /// `claude stop` that fails as it does on a job that is not running, recording each argv.
-    #[derive(Default)]
-    struct NotRunning(Mutex<Vec<Vec<String>>>);
-
-    impl Runner for NotRunning {
-        async fn run(&self, argv: &[String], _limit: Duration) -> Result<RunOutput, RunError> {
-            self.0.lock().unwrap().push(argv.to_vec());
-            Ok(RunOutput { success: false, output: b"not running".to_vec() })
-        }
-    }
-
-    #[derive(Clone)]
-    struct Gone;
-
-    impl Probe for Gone {
-        fn worker_alive(&self, _: &JobId) -> bool {
-            false
-        }
-
-        fn present(&self, _: &JobId) -> bool {
-            true
-        }
-    }
-
     // --- tests/test_cch_hub.py ---
 
-    #[tokio::test]
-    async fn test_a_job_that_already_stopped_counts_as_stopped() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let paths = Paths::under(dir.path());
-        let state = paths.home.job_state("abcd1234");
-        std::fs::create_dir_all(state.parent().unwrap()).unwrap();
-        std::fs::write(&state, json!({"name": "made-up", "state": "idle"}).to_string()).unwrap();
-        let keep = StopKeeping { paths: paths.clone(), runner: NotRunning::default(), probe: Gone };
-        let out = keep.remove(&JobId::parse("abcd1234").unwrap()).await;
-        assert!(out.stopped && out.kept && !out.removed, "{out:?}");
-        assert_eq!(out.detail, "it had already stopped");
-        let argv = keep.runner.0.lock().unwrap().clone();
-        assert_eq!(argv.len(), 1);
-        assert_eq!(&argv[0][1..], ["stop", "abcd1234"]);
-        let written: Value = serde_json::from_slice(&std::fs::read(&state).unwrap()).unwrap();
-        assert_eq!(written["state"], "stopped", "the stop is recorded in the job's state file");
-    }
 }

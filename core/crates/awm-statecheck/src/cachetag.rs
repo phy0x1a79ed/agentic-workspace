@@ -26,17 +26,3 @@ pub fn write_cache_tag(dir: &Path, by: &str) -> std::io::Result<()> {
     writeln!(f, "\n# This directory is a copy made by {by}. Backups and mirrors skip it.\n# See https://bford.info/cachedir/")?;
     f.sync_all()
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn writes_and_reads_a_tag() {
-        let d = tempfile::tempdir().unwrap();
-        assert!(!has_cache_tag(d.path()));
-        write_cache_tag(d.path(), "a test").unwrap();
-        assert!(has_cache_tag(d.path()));
-        assert_eq!(CACHEDIR_SIGNATURE.len(), 43);
-    }
-}

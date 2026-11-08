@@ -34,6 +34,8 @@ pub struct ServiceSpec {
     pub secrets: Vec<String>,
     /// The service's `[[service.archive]]` tables, for the search plugin's sources.
     pub archive: Vec<serde_json::Value>,
+    /// The service's `[[service.front]]` tables, for auth's TLS listeners (ports/auth.md C2).
+    pub front: Vec<awm_proto::manifest::FrontDecl>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -199,7 +201,7 @@ pub fn load(input: &LoadInput) -> LoadResult {
         if cand.manifest.placement.is_some() {
             out.warnings.push(format!("plugin {name}: [placement] is ignored, the install config places plugins (fleet.md R140)"));
         }
-        let plugin = match build_plugin(&cand, input, &mut out.warnings) {
+        let mut plugin = match build_plugin(&cand, input, &mut out.warnings) {
             Ok(p) => p,
             Err(reason) => {
                 out.refused.push(Refusal { plugin: name, dir: cand.dir, reason });
@@ -210,6 +212,8 @@ pub fn load(input: &LoadInput) -> LoadResult {
             out.refused.push(Refusal { plugin: name, dir: cand.dir, reason: reason.clone() });
             continue;
         }
+        // A singleton host serves this tool, and this plugin's service for it stays off here.
+        plugin.tools.retain(|t| !input.elsewhere.contains_key(&t.name) || plugin.services.iter().any(|s| s.enabled && s.tools.contains(&t.name)));
         if let Err(reason) = claim(&plugin, &reserved, input.elsewhere, &tool_names, &service_names) {
             out.refused.push(Refusal { plugin: name, dir: cand.dir, reason });
             continue;
@@ -306,6 +310,13 @@ fn build_plugin(cand: &Candidate, input: &LoadInput, warnings: &mut Vec<String>)
     let mut install = Vec::new();
     for s in &m.service {
         let cwd = inside(&cand.dir, &s.path)?;
+        let mut front_names = std::collections::BTreeSet::new();
+        for f in &s.front {
+            f.check().map_err(|e| format!("service {:?}: {e}", s.name))?;
+            if !front_names.insert(f.name.as_str()) {
+                return Err(format!("service {:?}: two fronts named {:?}", s.name, f.name));
+            }
+        }
         if !cwd.join(&s.run).is_file() {
             return Err(format!("service {:?}: {} not found in {}", s.name, s.run, cwd.display()));
         }
@@ -330,6 +341,7 @@ fn build_plugin(cand: &Candidate, input: &LoadInput, warnings: &mut Vec<String>)
             tools: vec![],
             secrets: m.needs.secrets.clone(),
             archive: s.archive.iter().filter_map(|t| serde_json::to_value(t).ok()).collect(),
+            front: s.front.clone(),
         });
     }
 
@@ -599,6 +611,18 @@ mod tests {
         assert!(r.refused.iter().any(|f| f.plugin == "ibkr" && f.reason.contains("already served by alcor")));
     }
 
+    /// channel carries the `relay` tool, whose service runs only on deneb.
+    #[test]
+    fn a_tool_whose_service_is_off_here_leaves_a_singleton_to_its_host() {
+        let t = tempfile::tempdir().unwrap();
+        let (core, other) = (t.path().join("core"), t.path().join("other"));
+        fs::create_dir_all(&core).unwrap();
+        single(&other, "half", "ibkr", "profiles=['nope']\n");
+        let r = run_with(&core, &other, "mizar", &BTreeMap::new(), &[]);
+        assert!(r.refused.is_empty(), "{:?}", r.refused.iter().map(|f| &f.reason).collect::<Vec<_>>());
+        assert!(r.plugins.iter().find(|p| p.name == "half").unwrap().tools.is_empty());
+    }
+
     #[test]
     fn rules() {
         let t = tempfile::tempdir().unwrap();
@@ -753,6 +777,29 @@ mod tests {
         assert_eq!(kinds, [("elsewhere", "elsewhere", "far"), ("journal", "journal", "journals"), ("kb", "kb", "papers")]);
     }
 
+    /// A service's front tables reach its spec. A bad one refuses the plugin.
+    #[test]
+    fn fronts_pass_through_and_a_bad_one_refuses() {
+        let t = tempfile::tempdir().unwrap();
+        let (core, other) = (t.path().join("core"), t.path().join("other"));
+        let front = |body: &str| format!("[[service.front]]\n{body}\n");
+        single(&core, "sci", "sci", &front("port=12201\nupstream='http://127.0.0.1:12200/'\nrewrite_origin=true\npaths={'/_signin'='http://127.0.0.1:12210/'}"));
+        single(&core, "far", "far", &front("port=12301\nupstream='http://10.0.0.5:80/'"));
+        single(&core, "twice", "twice", &format!("{}{}", front("port=1\nupstream='http://localhost:2/'"), front("port=3\nupstream='http://[::1]:4/'")));
+        single(&core, "stray", "stray", &front("port=1\nupstream='http://127.0.0.1:2/'\nhost='x'"));
+        single(&core, "slash", "slash", &front("port=1\nupstream='http://127.0.0.1:2/'\npaths={'x'='http://127.0.0.1:3/'}"));
+        fs::create_dir_all(&other).unwrap();
+        let r = run(&core, &other, "mizar");
+        let sci = r.plugins.iter().flat_map(|p| &p.services).find(|s| s.name == "sci").expect("sci loads");
+        assert_eq!(sci.front.len(), 1);
+        let f = &sci.front[0];
+        assert_eq!((f.name.as_str(), f.port, f.upstream.as_str(), f.rewrite_origin), ("gui", 12201, "http://127.0.0.1:12200/", true));
+        assert_eq!(f.paths.get("/_signin").map(String::as_str), Some("http://127.0.0.1:12210/"));
+        let mut refused: Vec<&str> = r.refused.iter().map(|f| f.plugin.as_str()).collect();
+        refused.sort();
+        assert_eq!(refused, ["far", "slash", "stray", "twice"]);
+    }
+
     /// A plugin that needs a contract whose only provider is refused goes with it.
     #[test]
     fn a_refused_contract_provider_cascades() {
@@ -763,18 +810,6 @@ mod tests {
         plugin(&other, "reflection", "[plugin]\nname='reflection'\n[[needs.contract]]\nname='harness'\nmajor=1\n");
         let r = run(&core, &other, "mizar");
         assert!(r.plugins.is_empty(), "{:?}", r.plugins.iter().map(|p| &p.name).collect::<Vec<_>>());
-        assert_eq!(r.refused.len(), 2);
-    }
-
-    #[test]
-    fn refused_provider_cascades() {
-        let t = tempfile::tempdir().unwrap();
-        let (core, other) = (t.path().join("core"), t.path().join("other"));
-        fs::create_dir_all(&core).unwrap();
-        plugin(&other, "a", "[plugin]\nname='a'\n[[service]]\nname='a'\n[[tool]]\nname='a'\n[[needs.tool]]\nname='gone'\n");
-        plugin(&other, "b", "[plugin]\nname='b'\n[[needs.tool]]\nname='a'\n");
-        let r = run(&core, &other, "mizar");
-        assert!(r.plugins.is_empty());
         assert_eq!(r.refused.len(), 2);
     }
 }

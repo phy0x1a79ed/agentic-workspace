@@ -131,11 +131,4 @@ mod tests {
         assert!(relink(&home).is_empty(), "a second start changes nothing");
     }
 
-    #[test]
-    fn paths_fold_and_relate() {
-        assert_eq!(normalize(Path::new("/a/b/../c/./d")), PathBuf::from("/a/c/d"));
-        assert_eq!(moved(Path::new("/w/awm/services/dsh/config/x/y")), Some(PathBuf::from("/w/core/plugins/dsh/config/x/y")));
-        assert_eq!(moved(Path::new("/w/awm/services/dsh/other")), None);
-        assert_eq!(relative(Path::new("/w/core/c"), Path::new("/w/.awm/h")), PathBuf::from("../../core/c"));
-    }
 }

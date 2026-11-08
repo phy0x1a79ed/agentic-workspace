@@ -276,7 +276,7 @@ async fn listen(service: &str, topic: &str, peer: Option<String>, matches: &[Str
                 let v: Value = serde_json::from_str(&t).unwrap_or(Value::String(t.clone()));
                 let hit = wanted.iter().all(|(k, want)| match v.get(k) {
                     Some(Value::String(s)) => s == want,
-                    Some(other) => other.to_string() == *want,
+                    Some(other) => want.eq(&other.to_string()),
                     None => false,
                 });
                 if hit {

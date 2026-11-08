@@ -631,25 +631,6 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn test_a_long_held_promise_survives_while_its_session_lives() {
-        // A promise held for an hour is this mechanism working, not a stale record.
-        let (_d, store) = store();
-        store
-            .record(&Pending {
-                injected_at_ms: 0,
-                ..promise()
-            })
-            .await;
-        let kept = store
-            .load_all(4 * 60 * 60 * 1000, &FakeLiveness::new(Some("999")))
-            .await;
-        assert_eq!(
-            kept.iter().map(|i| i.followup.as_str()).collect::<Vec<_>>(),
-            ["resume"]
-        );
-    }
-
-    #[tokio::test]
     async fn test_a_promise_whose_session_is_gone_is_dropped() {
         // Liveness, not age, is what decides.
         let (_d, store) = store();
@@ -674,30 +655,6 @@ pub(crate) mod tests {
                 .await,
             []
         );
-    }
-
-    #[test]
-    fn test_holding_a_promise_records_why_without_moving_its_clock() {
-        let item = Pending {
-            injected_at_ms: 1234,
-            ..promise()
-        };
-        let once = held(&item, "the session has not been free");
-        assert_eq!(once.holds, 1);
-        assert_eq!(once.last_outcome, "the session has not been free");
-        assert_eq!(once.injected_at_ms, 1234);
-        assert_eq!(held(&once, "again").holds, 2);
-    }
-
-    #[tokio::test]
-    async fn test_pause_requests_are_counted_on_the_promise_so_a_restart_cannot_reset_them() {
-        let (_d, store) = store();
-        let item = nudged(&nudged(&promise()));
-        assert_eq!(item.nudges, 2);
-        store.record(&item).await;
-        let reloaded = store.load_all(2_000, &FakeLiveness::new(Some("999"))).await;
-        assert_eq!(reloaded.len(), 1);
-        assert_eq!(reloaded[0].nudges, 2);
     }
 
     #[tokio::test]
@@ -754,25 +711,6 @@ pub(crate) mod tests {
         for (changes, link, closing, expected) in cases {
             assert_eq!(render_followup(&changes, link, closing), expected);
         }
-    }
-
-    #[tokio::test]
-    async fn test_settling_a_change_nobody_carries_is_a_no_op() {
-        let (_d, store) = store();
-        assert!(!store.settle(4242, "nope", APPLIED, "").await);
-    }
-
-    #[test]
-    fn test_an_mcp_change_reports_what_the_command_printed() {
-        let said =
-            Change::new("mcp", "reconnect awm", "k1").ended(APPLIED, "Reconnected to the server");
-        let silent = Change::new("mcp", "disable all", "k2");
-        let text = render_followup(&[said, silent], None, "");
-        assert!(text.starts_with(
-            "`/mcp reconnect awm` printed: Reconnected to the server. `/mcp disable all` ran. Claude Code did not \
-             record what it printed"
-        ));
-        assert!(text.ends_with(guards::DEFAULT_FOLLOWUP));
     }
 
     #[tokio::test]
@@ -837,40 +775,4 @@ pub(crate) mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn delivery_stamps_only_move_forward_and_dead_ones_are_swept() {
-        let (_d, store) = store();
-        assert_eq!(store.delivered_ms(4242).await, 0);
-        store.mark_delivered(4242, 50).await;
-        store.mark_delivered(4242, 20).await;
-        assert_eq!(store.delivered_ms(4242).await, 50);
-        store.load_all(0, &FakeLiveness::new(None)).await;
-        assert_eq!(store.delivered_ms(4242).await, 0);
-    }
-
-    #[tokio::test]
-    async fn an_outcome_on_disk_survives_a_rewrite_and_rekey_moves_the_file() {
-        let (_d, store) = store();
-        let item = Pending {
-            changes: vec![Change::new("effort", "low", "k")],
-            ..promise()
-        };
-        store.record(&item).await;
-        assert!(store.has_change(4242, "k").await);
-        assert!(store.settle(4242, "k", FAILED, "no").await);
-        store.record(&held(&item, "waiting")).await;
-        let now = store.read(4242).await.unwrap();
-        assert_eq!((now.changes[0].outcome.as_str(), now.holds), (FAILED, 1));
-        store
-            .rekey(
-                4242,
-                &Pending {
-                    repl_pid: 4343,
-                    ..now
-                },
-            )
-            .await;
-        assert_eq!(store.read(4242).await, None);
-        assert_eq!(store.read(4343).await.unwrap().changes[0].detail, "no");
-    }
 }

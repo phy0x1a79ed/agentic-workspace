@@ -1,0 +1,44 @@
+[package]
+name = "awm-plugin-operations"
+description = "The operations plugin: the task queue, the approver and its vault API, request_human, and alcor's singleton door."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "operations"
+path = "src/main.rs"
+
+[dependencies]
+awm-plugin-sdk.workspace = true
+awm-trust.workspace = true
+awm-statecheck = { path = "../../crates/awm-statecheck" }
+anyhow.workspace = true
+thiserror.workspace = true
+axum.workspace = true
+base64.workspace = true
+chrono.workspace = true
+clap.workspace = true
+futures-util.workspace = true
+libc.workspace = true
+serde.workspace = true
+serde_json = { workspace = true, features = ["float_roundtrip"] }
+tokio.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+rusqlite = { version = "0.41", features = ["bundled"] }
+rand = "0.8"
+sha2 = "0.10"
+hex = "0.4"
+subtle = "2"
+url = "2"
+ed25519-dalek = { version = "2", features = ["pkcs8", "pem"] }
+p256 = { version = "0.13", features = ["ecdsa", "pkcs8", "pem"] }
+rsa = { version = "0.9", default-features = false, features = ["std", "sha2"] }
+ciborium = "0.2"
+ssh-key = { version = "0.6", default-features = false, features = ["std", "ed25519", "ecdsa", "alloc", "rand_core"] }
+
+[dev-dependencies]
+tempfile.workspace = true
+tower = { version = "0.5", features = ["util"] }

@@ -29,11 +29,13 @@ pub struct Adopted {
     pub start: u64,
 }
 
+/// A running service's loop, with the flag that retires it on a plugin change.
+type Task = (Arc<AtomicBool>, JoinHandle<()>);
+
 pub struct Supervisor {
     /// Live process group ids, by service name.
     groups: Mutex<HashMap<String, i32>>,
-    /// Each running service's loop, with the flag that retires it on a plugin change.
-    tasks: Mutex<HashMap<String, (Arc<AtomicBool>, JoinHandle<()>)>>,
+    tasks: Mutex<HashMap<String, Task>>,
     /// The `[env]` each running service was spawned with.
     env: Mutex<HashMap<String, BTreeMap<String, String>>>,
     /// Services that crash-looped and stay down.
@@ -80,7 +82,7 @@ impl Supervisor {
         }
     }
 
-    fn tasks(&self) -> std::sync::MutexGuard<'_, HashMap<String, (Arc<AtomicBool>, JoinHandle<()>)>> {
+    fn tasks(&self) -> std::sync::MutexGuard<'_, HashMap<String, Task>> {
         self.tasks.lock().unwrap_or_else(|p| p.into_inner())
     }
 

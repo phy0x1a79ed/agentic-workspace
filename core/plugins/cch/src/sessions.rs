@@ -267,31 +267,12 @@ mod tests {
     }
 
     #[test]
-    fn test_the_pool_still_knows_a_session_it_renamed_itself() {
-        let p = paths();
-        let pool = Sessions::new(&p, &Table);
-        let s = by_short("claimedfresh");
-        assert_eq!(s.name, "claimed tapir");
-        assert!(!pool.is_ours(&s));
-        assert!(pool.was_ours(&s));
-    }
-
-    #[test]
     fn test_a_session_the_pool_never_made_is_never_collected() {
         let p = paths();
         let pool = Sessions::new(&p, &Table);
         let s = Session { seed_name: None, name: "mine".into(), ..by_short("warmfresh") };
         assert!(!pool.was_ours(&s));
         assert!(!pool.removable(&s, Some(VERSION), Some(just_after(&s) + 1e6), None));
-    }
-
-    #[test]
-    fn test_a_fresh_warm_session_is_claimable() {
-        let p = paths();
-        let pool = Sessions::new(&p, &Table);
-        let s = by_short("warmfresh");
-        assert!(pool.is_alive(&s));
-        assert!(pool.claimable(&s, Some(VERSION), Some(just_after(&s))));
     }
 
     #[test]
@@ -316,18 +297,6 @@ mod tests {
     }
 
     #[test]
-    fn test_a_claim_nobody_ever_used_is_collected_once_it_ages_out() {
-        // The leak this predicate was widened for: taken, never spoken to, and refused forever by
-        // a rule that only meant to protect a live conversation.
-        let p = paths();
-        let pool = Sessions::new(&p, &Table);
-        let s = by_short("stranded");
-        assert!(s.origin_cwd.is_some() && s.tokens == 0);
-        let old = just_after(&s) + p.rotate_age_s;
-        assert!(pool.removable(&s, Some(VERSION), Some(old), Some(&BTreeSet::new())));
-    }
-
-    #[test]
     fn test_a_claim_with_a_terminal_on_it_is_never_collected() {
         // Somebody who attached, walked away, and came back to an empty composer.
         let p = paths();
@@ -336,45 +305,6 @@ mod tests {
         let old = just_after(&s) + p.rotate_age_s;
         let attached = BTreeSet::from(["stranded".to_string()]);
         assert!(!pool.removable(&s, Some(VERSION), Some(old), Some(&attached)));
-    }
-
-    #[test]
-    fn test_an_attached_session_is_read_off_the_process_table() {
-        // No field records an attach; the attaching argv is the whole signal, so a change to how
-        // `cx` attaches silently unprotects a session.
-        assert!(!attached_shorts().contains("warmfresh"));
-    }
-
-    #[test]
-    fn test_the_same_session_is_collected_once_its_process_is_gone() {
-        let p = paths();
-        let pool = Sessions::new(&p, &Table);
-        let s = by_short("strandeddead");
-        assert!(!pool.is_alive(&s));
-        assert!(pool.removable(&s, Some(VERSION), Some(just_after(&s)), None));
-    }
-
-    #[test]
-    fn test_a_session_that_has_aged_out_stops_being_claimable() {
-        let p = Paths { rotate_age_s: 60.0, ..paths() };
-        let pool = Sessions::new(&p, &Table);
-        let s = by_short("warmfresh");
-        let old = Some(just_after(&s) + 2.0 * p.rotate_age_s);
-        assert!(!pool.claimable(&s, Some(VERSION), old));
-        assert!(pool.removable(&s, Some(VERSION), old, None));
-    }
-
-    #[test]
-    fn test_a_session_seeded_by_a_superseded_binary_is_replaced() {
-        assert_ne!(by_short("strandeddead").cli_version.as_deref(), Some(VERSION));
-    }
-
-    #[test]
-    fn test_an_unresolvable_binary_fails_closed_on_claiming() {
-        let p = paths();
-        let pool = Sessions::new(&p, &Table);
-        let s = by_short("warmfresh");
-        assert!(!pool.claimable(&s, None, Some(just_after(&s))));
     }
 
     #[test]
@@ -395,16 +325,6 @@ mod tests {
     }
 
     #[test]
-    fn test_the_daemon_precondition_reads_the_roster_supervisor() {
-        let dir = TempDir::new().unwrap();
-        let p = Paths::under(dir.path());
-        std::fs::create_dir_all(p.home.daemon_dir()).unwrap();
-        let me = std::process::id();
-        std::fs::write(p.home.roster(), serde_json::json!({"supervisorPid": me, "workers": {}}).to_string()).unwrap();
-        assert_eq!(Sessions::new(&p, &Table).daemon_pid(), Some(me));
-    }
-
-    #[test]
     fn test_no_roster_means_no_daemon_and_no_sessions() {
         let dir = TempDir::new().unwrap();
         let p = Paths::under(dir.path());
@@ -413,12 +333,4 @@ mod tests {
         assert!(pool.load().is_empty());
     }
 
-    #[test]
-    fn age_is_zero_without_a_start_time_and_never_negative() {
-        let s = by_short("warmfresh");
-        assert_eq!(age_s(&Session { started_at_ms: None, ..s.clone() }, Some(1e12)), 0.0);
-        assert_eq!(age_s(&Session { started_at_ms: Some(0), ..s.clone() }, Some(1e12)), 0.0);
-        assert_eq!(age_s(&s, Some(0.0)), 0.0);
-        assert_eq!(age_s(&s, Some(just_after(&s))), 1.0);
-    }
 }

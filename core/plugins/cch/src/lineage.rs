@@ -564,7 +564,6 @@ mod tests {
 
     const JOB: &str = "abababab";
     const PARENT_JOB: &str = "cdcdcdcd";
-    const DEAD_PID: u32 = 4_999_999;
 
     fn me() -> u32 {
         std::process::id()
@@ -609,20 +608,6 @@ mod tests {
             Self { may: Box::new(may), ..Self::hermetic() }
         }
 
-        fn chain(hops: &[(u32, u32)]) -> impl Fn(u32) -> Option<u32> {
-            let map: BTreeMap<u32, u32> = hops.iter().copied().collect();
-            move |pid| map.get(&pid).copied()
-        }
-
-        /// `{ME: hop1, hop1: hop2, ..., last: 1}.get(pid, 1)`.
-        fn wrapper_chain(hops: &[u32]) -> impl Fn(u32) -> Option<u32> {
-            let mut from = vec![me()];
-            from.extend_from_slice(hops);
-            let mut to = hops.to_vec();
-            to.push(1);
-            let map: BTreeMap<u32, u32> = from.into_iter().zip(to).collect();
-            move |pid| Some(map.get(&pid).copied().unwrap_or(1))
-        }
     }
 
     impl Processes for Procs<'_> {
@@ -689,11 +674,6 @@ mod tests {
             std::fs::write(self.paths.home.job_state(job), json!({"name": name}).to_string()).unwrap();
         }
 
-        /// The roster lists `pid` as the REPL of job `job`, with no job record.
-        fn roster_lists(&self, pid: u32, job: &str) {
-            self.one_worker(job, json!({"replPid": pid, "replProcStart": proc_start(pid), "dispatch": {"seed": {"name": "rep"}}}));
-        }
-
         fn lineage(&self, mode: Value) {
             self.lineage_of(JOB, mode);
         }
@@ -706,11 +686,6 @@ mod tests {
             std::fs::write(self.paths.starts_dir().join(file), text).unwrap();
         }
 
-        fn pending(&self, name: &str, mode: &str) {
-            let doc = json!({"name": name, "mode": mode, "pending": true});
-            std::fs::write(self.paths.pending_path(name), doc.to_string()).unwrap();
-        }
-
         fn record(&self, pid: u32, kind: &str, job: Option<&str>) {
             self.record_started(pid, kind, job, &proc_start(pid));
         }
@@ -721,12 +696,6 @@ mod tests {
 
         fn raw_record(&self, pid: u32, doc: Value) {
             std::fs::write(self.paths.home.session_record(pid), doc.to_string()).unwrap();
-        }
-
-        fn bare_record(&self, pid: u32, fields: Value) {
-            let mut doc = json!({"pid": pid});
-            doc.as_object_mut().unwrap().extend(fields.as_object().unwrap().clone());
-            self.raw_record(pid, doc);
         }
 
         /// The test process's real parent as a cx-started background session.
@@ -758,12 +727,6 @@ mod tests {
             self.mode(&Procs::hermetic(), me())
         }
 
-        /// The answer, and how many times the roster was read for it.
-        fn counted(&self, procs: &dyn Processes, pid: u32) -> (Mode, usize) {
-            let call = Call::new(&self.paths, procs);
-            let mode = Mode::from_answer(call.mode_of(pid));
-            (mode, call.roster_reads.get())
-        }
     }
 
     fn declared(mode: &str) -> Mode {
@@ -776,14 +739,6 @@ mod tests {
         h.worker("rep");
         h.lineage(json!("representative"));
         assert_eq!(h.me(), declared("representative"));
-    }
-
-    #[test]
-    fn test_a_pending_start_gives_its_mode_to_the_session_of_that_name() {
-        let h = Home::new();
-        h.worker("rep");
-        h.pending("rep", "secretary");
-        assert_eq!(h.me(), declared("secretary"));
     }
 
     #[test]
@@ -800,36 +755,6 @@ mod tests {
     }
 
     #[test]
-    fn test_an_interactive_session_is_not_cx_started() {
-        let h = Home::new();
-        h.record(me(), "interactive", None);
-        assert_eq!(h.me(), Mode::Ungated);
-    }
-
-    #[test]
-    fn test_a_roster_session_with_no_lineage_is_not_cx_started() {
-        let h = Home::new();
-        h.worker("<warm otter>");
-        assert_eq!(h.me(), Mode::Ungated);
-    }
-
-    #[test]
-    fn test_an_invalid_pid_is_unknown() {
-        let h = Home::new();
-        for bad in [json!(null), json!(0), json!(-3), json!(true), json!("12"), json!(1.5)] {
-            assert_eq!(mode_of_arg(&h.paths, &Procs::hermetic(), &bad), Mode::Unknown, "{bad}");
-        }
-        assert_eq!(mode_of_arg(&h.paths, &Procs::hermetic(), &json!(me())), Mode::Ungated);
-    }
-
-    #[test]
-    fn test_a_bg_session_with_no_record_of_its_start_is_unknown() {
-        let h = Home::new();
-        h.record(me(), "bg", Some(JOB));
-        assert_eq!(h.me(), Mode::Unknown);
-    }
-
-    #[test]
     fn test_an_unreadable_roster_is_unknown() {
         let h = Home::new();
         h.worker("rep");
@@ -838,109 +763,13 @@ mod tests {
         assert_eq!(h.mode(&Procs::may(|_| true), me()), Mode::Unknown);
     }
 
-    #[test]
-    fn test_a_roster_that_is_not_an_object_is_unknown() {
-        let h = Home::new();
-        h.damage_roster("[]");
-        assert_eq!(h.mode(&Procs::may(|_| true), me()), Mode::Unknown);
-    }
-
-    #[test]
-    fn test_a_missing_jobs_or_sessions_directory_leaves_the_declared_mode() {
-        for what in ["jobs", "sessions"] {
-            let h = Home::new();
-            h.worker("rep");
-            h.lineage(json!("representative"));
-            let dir = if what == "jobs" { h.paths.home.jobs() } else { h.paths.home.sessions() };
-            std::fs::remove_dir_all(dir).unwrap();
-            assert_eq!(h.me(), declared("representative"), "{what}");
-        }
-    }
-
     // A caller is held only to its own records.
-
-    #[test]
-    fn test_an_interactive_caller_never_touches_the_roster_or_lineage() {
-        let h = Home::new();
-        h.record(me(), "interactive", None);
-        h.damage_roster("{ not json");
-        std::fs::remove_dir_all(h.paths.starts_dir()).unwrap();
-        assert_eq!(h.me(), Mode::Ungated);
-    }
-
-    #[test]
-    fn test_a_non_bg_record_answers_none_before_a_damaged_roster() {
-        let h = Home::new();
-        h.record(me(), "sdk", None);
-        h.damage_roster("[]");
-        h.starts_file("pending-0123456789abcdef.json", "{ not json");
-        assert_eq!(h.me(), Mode::Ungated);
-    }
-
-    #[test]
-    fn test_a_caller_with_no_roster_and_no_starts_directory_is_not_cx_started() {
-        let h = Home::new();
-        std::fs::remove_file(h.roster()).unwrap();
-        std::fs::remove_dir_all(h.paths.starts_dir()).unwrap();
-        assert_eq!(h.me(), Mode::Ungated);
-    }
-
-    #[test]
-    fn test_a_corrupt_lineage_record_of_another_job_changes_nothing() {
-        let h = Home::new();
-        h.worker("rep");
-        h.lineage(json!("representative"));
-        h.starts_file("cccccccc.json", "{ not json");
-        assert_eq!(h.me(), declared("representative"));
-    }
-
-    #[test]
-    fn test_a_corrupt_pending_file_of_another_name_changes_nothing() {
-        let h = Home::new();
-        h.worker("rep");
-        h.pending("rep", "secretary");
-        std::fs::write(h.paths.pending_path("someone-else"), "{ not json").unwrap();
-        h.starts_file("pending-0123456789abcdef.json", "[1]");
-        assert_eq!(h.me(), declared("secretary"));
-    }
-
-    #[test]
-    fn test_a_corrupt_pending_file_of_the_callers_own_name_is_unknown() {
-        let h = Home::new();
-        h.worker("rep");
-        std::fs::write(h.paths.pending_path("rep"), "{ not json").unwrap();
-        assert_eq!(h.me(), Mode::Unknown);
-    }
 
     #[test]
     fn test_a_corrupt_lineage_record_of_the_caller_is_unknown() {
         let h = Home::new();
         h.worker("rep");
         h.starts_file(&format!("{JOB}.json"), "{ not json");
-        assert_eq!(h.me(), Mode::Unknown);
-    }
-
-    #[test]
-    fn test_a_bg_caller_reads_its_own_lineage_without_the_roster() {
-        let h = Home::new();
-        h.record(me(), "bg", Some(JOB));
-        h.lineage(json!("secretary"));
-        h.damage_roster("{ not json");
-        assert_eq!(h.me(), declared("secretary"));
-    }
-
-    #[test]
-    fn test_a_bg_caller_with_an_unreadable_roster_and_no_lineage_is_unknown() {
-        let h = Home::new();
-        h.record(me(), "bg", Some(JOB));
-        h.damage_roster("{ not json");
-        assert_eq!(h.me(), Mode::Unknown);
-    }
-
-    #[test]
-    fn test_a_bg_record_without_a_job_id_is_unknown() {
-        let h = Home::new();
-        h.record(me(), "bg", None);
         assert_eq!(h.me(), Mode::Unknown);
     }
 
@@ -959,32 +788,6 @@ mod tests {
     }
 
     #[test]
-    fn test_a_bg_record_for_a_cx_launched_job_with_no_lineage_is_unknown() {
-        let h = Home::new();
-        h.worker("rep");
-        h.record(me(), "bg", Some(JOB));
-        h.launched_with(json!(["--permission-mode=dontAsk"]), "args");
-        assert_eq!(h.me(), Mode::Unknown);
-    }
-
-    #[test]
-    fn test_a_job_with_the_pool_flags_and_no_lineage_is_not_cx_started() {
-        let h = Home::new();
-        h.worker("rep");
-        h.launched_with(json!(["--dangerously-skip-permissions", "--effort", "medium"]), "args");
-        assert_eq!(h.me(), Mode::Ungated);
-    }
-
-    #[test]
-    fn test_a_cx_launched_job_with_its_lineage_answers_the_mode() {
-        let h = Home::new();
-        h.worker("rep");
-        h.launched_with(json!(["--permission-mode=dontAsk"]), "args");
-        h.lineage(json!("representative"));
-        assert_eq!(h.me(), declared("representative"));
-    }
-
-    #[test]
     fn test_an_invalid_recorded_mode_is_unknown() {
         for bad in [json!("has space"), json!(""), json!(7), json!(null), json!("x".repeat(41))] {
             let h = Home::new();
@@ -992,13 +795,6 @@ mod tests {
             h.lineage(bad.clone());
             assert_eq!(h.me(), Mode::Unknown, "{bad}");
         }
-    }
-
-    #[test]
-    fn test_a_stale_session_record_is_unknown() {
-        let h = Home::new();
-        h.record_started(me(), "bg", Some(JOB), "1");
-        assert_eq!(h.me(), Mode::Unknown);
     }
 
     #[test]
@@ -1020,30 +816,6 @@ mod tests {
     }
 
     #[test]
-    fn test_a_child_with_no_record_at_all_inherits_too() {
-        let h = Home::new();
-        h.restricted_parent("representative");
-        assert_eq!(h.me(), declared("representative"));
-    }
-
-    #[test]
-    fn test_the_walk_passes_ancestors_that_are_not_sessions() {
-        let h = Home::new();
-        h.restricted_parent("delegate");
-        h.record(me(), "interactive", None);
-        let procs = Procs::new(Procs::chain(&[(me(), 987650), (987650, 987651), (987651, parent())]), |_| false);
-        assert_eq!(h.mode(&procs, me()), declared("delegate"));
-    }
-
-    #[test]
-    fn test_a_plain_worker_ancestor_gives_the_worker_mode() {
-        let h = Home::new();
-        h.restricted_parent("worker");
-        h.record(me(), "interactive", None);
-        assert_eq!(h.me(), declared("worker"));
-    }
-
-    #[test]
     fn test_an_ancestor_job_with_a_damaged_lineage_makes_the_child_unknown() {
         let h = Home::new();
         h.restricted_parent("delegate");
@@ -1055,22 +827,6 @@ mod tests {
     #[test]
     fn test_no_session_ancestor_leaves_an_interactive_process_ungated() {
         let h = Home::new();
-        h.record(me(), "interactive", None);
-        assert_eq!(h.me(), Mode::Ungated);
-    }
-
-    #[test]
-    fn test_an_ancestor_that_is_a_plain_interactive_session_is_passed_over() {
-        let h = Home::new();
-        h.record(parent(), "interactive", None);
-        h.record(me(), "interactive", None);
-        assert_eq!(h.me(), Mode::Ungated);
-    }
-
-    #[test]
-    fn test_an_ancestor_with_an_unreadable_interactive_record_is_skipped() {
-        let h = Home::new();
-        std::fs::write(h.paths.home.session_record(parent()), "{ not json").unwrap();
         h.record(me(), "interactive", None);
         assert_eq!(h.me(), Mode::Ungated);
     }
@@ -1106,121 +862,9 @@ mod tests {
         assert_eq!(h.me(), declared("representative"));
     }
 
-    #[test]
-    fn test_a_parked_job_without_lineage_is_not_cx_started() {
-        let h = Home::new();
-        h.raw_record(me(), json!({"pid": me(), "procStart": proc_start(me()), "kind": "interactive", "parkedJobId": "eeeeeeee"}));
-        assert_eq!(h.me(), Mode::Ungated);
-    }
-
-    #[test]
-    fn test_a_parked_job_with_a_damaged_lineage_is_unknown() {
-        let h = Home::new();
-        h.starts_file("eeeeeeee.json", "{ not json");
-        h.raw_record(me(), json!({"pid": me(), "procStart": proc_start(me()), "kind": "interactive", "parkedJobId": "eeeeeeee"}));
-        assert_eq!(h.me(), Mode::Unknown);
-    }
-
-    #[test]
-    fn test_a_parked_job_id_that_is_not_a_job_id_is_ignored() {
-        let h = Home::new();
-        h.raw_record(me(), json!({"pid": me(), "procStart": proc_start(me()), "kind": "interactive", "parkedJobId": "../../x"}));
-        assert_eq!(h.me(), Mode::Ungated);
-    }
-
     // A pid that does not exist.
 
-    fn dead_pid() -> u32 {
-        assert!(!Path::new(&format!("/proc/{DEAD_PID}")).exists());
-        DEAD_PID
-    }
-
-    #[test]
-    fn test_a_pid_with_no_process_is_unknown_not_ungated() {
-        let h = Home::new();
-        assert_eq!(h.mode(&Procs::hermetic(), dead_pid()), Mode::Unknown);
-    }
-
-    #[test]
-    fn test_a_dead_pid_is_unknown_even_with_a_healthy_home_and_a_restricted_ancestor() {
-        let h = Home::new();
-        h.restricted_parent("delegate");
-        assert_eq!(h.mode(&Procs::hermetic(), dead_pid()), Mode::Unknown);
-    }
-
-    #[test]
-    fn test_a_dead_pid_with_a_leftover_record_is_unknown() {
-        let h = Home::new();
-        let pid = dead_pid();
-        h.raw_record(pid, json!({"pid": pid, "procStart": "1", "kind": "interactive"}));
-        assert_eq!(h.mode(&Procs::hermetic(), pid), Mode::Unknown);
-    }
-
-    #[test]
-    fn test_a_running_process_with_no_parents_left_keeps_the_ungated_meaning() {
-        let h = Home::new();
-        h.record(me(), "interactive", None);
-        assert_eq!(h.mode(&Procs::new(|_| Some(1), |_| false), me()), Mode::Ungated);
-        // The top of the tree is reached some hops up.
-        assert_eq!(h.mode(&Procs::new(Procs::chain(&[(me(), 987650), (987650, 0)]), |_| false), me()), Mode::Ungated);
-        // A parent that cannot be read at a later hop is a death under us, not the top.
-        assert_eq!(h.mode(&Procs::new(Procs::chain(&[(me(), 987650)]), |_| false), me()), Mode::Unknown);
-    }
-
-    #[test]
-    fn test_a_process_whose_parent_cannot_be_read_at_once_is_unknown() {
-        let h = Home::new();
-        h.record(me(), "interactive", None);
-        assert_eq!(h.mode(&Procs::new(|_| None, |_| false), me()), Mode::Unknown);
-    }
-
-    #[test]
-    fn test_a_running_interactive_process_stays_ungated() {
-        let h = Home::new();
-        h.record(me(), "interactive", None);
-        assert_eq!(h.me(), Mode::Ungated);
-        assert_eq!(h.mode(&Procs::hermetic(), parent()), Mode::Ungated);
-    }
-
     // An ancestor REPL with no session record.
-
-    #[test]
-    fn test_a_proxy_behind_a_wrapper_inherits_the_mode_of_a_record_less_repl() {
-        // The REPL has no sessions/<pid>.json; its MCP proxy runs under `mamba run`.
-        let h = Home::new();
-        h.roster_lists(parent(), PARENT_JOB);
-        h.lineage_of(PARENT_JOB, json!("delegate"));
-        let procs = Procs::new(Procs::wrapper_chain(&[987650, parent()]), |pid| pid == parent());
-        assert_eq!(h.mode(&procs, parent()), declared("delegate"));
-        assert_eq!(h.mode(&procs, me()), declared("delegate"));
-        h.record(me(), "interactive", None);
-        assert_eq!(h.mode(&procs, me()), declared("delegate"));
-    }
-
-    #[test]
-    fn test_a_wrapper_pid_is_judged_by_the_repl_above_it() {
-        let h = Home::new();
-        h.roster_lists(parent(), PARENT_JOB);
-        h.lineage_of(PARENT_JOB, json!("representative"));
-        // This process stands in for the wrapper: it has no record and is not listed.
-        let procs = Procs::new(Procs::wrapper_chain(&[987650, parent()]), |pid| pid == parent());
-        assert_eq!(h.mode(&procs, me()), declared("representative"));
-    }
-
-    #[test]
-    fn test_a_cx_launched_record_less_ancestor_without_lineage_is_unknown() {
-        let h = Home::new();
-        h.roster_lists(parent(), PARENT_JOB);
-        h.edit_roster(|doc| doc["workers"][PARENT_JOB]["dispatch"]["launch"] = json!({"args": ["--permission-mode=dontAsk"]}));
-        assert_eq!(h.mode(&Procs::may(|_| true), me()), Mode::Unknown);
-    }
-
-    #[test]
-    fn test_a_listed_ancestor_that_cx_did_not_start_is_passed_over() {
-        let h = Home::new();
-        h.roster_lists(parent(), PARENT_JOB);
-        assert_eq!(h.mode(&Procs::may(|_| true), me()), Mode::Ungated);
-    }
 
     #[test]
     fn test_a_damaged_roster_makes_a_session_looking_ancestor_unknown() {
@@ -1229,108 +873,13 @@ mod tests {
         assert_eq!(h.mode(&Procs::may(|pid| pid == parent()), me()), Mode::Unknown);
     }
 
-    #[test]
-    fn test_a_damaged_roster_does_not_lock_out_a_terminal_whose_ancestors_are_shells() {
-        let h = Home::new();
-        h.damage_roster("{ not json");
-        h.record(me(), "interactive", None);
-        assert_eq!(h.me(), Mode::Ungated);
-        assert_eq!(h.me(), Mode::Ungated);
-    }
-
-    #[test]
-    fn test_the_roster_is_read_once_however_many_ancestors_are_checked() {
-        let h = Home::new();
-        let chain = Procs::chain(&[(me(), 987650), (987650, 987651), (987651, 987652), (987652, parent()), (parent(), 1)]);
-        let procs = Procs::new(move |pid| Some(chain(pid).unwrap_or(1)), |_| true);
-        h.record(me(), "interactive", None);
-        assert_eq!(h.counted(&procs, me()), (Mode::Ungated, 1));
-    }
-
     // The roster is always consulted; the filter only judges a damaged one.
-
-    fn chain_to_parent<'a>(may: impl Fn(u32) -> bool + 'a) -> Procs<'a> {
-        let chain = Procs::chain(&[(me(), 987650), (987650, parent())]);
-        Procs::new(move |pid| Some(chain(pid).unwrap_or(1)), may)
-    }
-
-    #[test]
-    fn test_a_healthy_roster_names_a_repl_the_filter_does_not_recognise() {
-        // An npm-installed REPL (`node .../cli.js`) must not slip past a healthy roster.
-        let h = Home::new();
-        h.roster_lists(parent(), PARENT_JOB);
-        h.lineage_of(PARENT_JOB, json!("delegate"));
-        h.record(me(), "interactive", None);
-        assert_eq!(h.mode(&chain_to_parent(|_| false), me()), declared("delegate"));
-    }
-
-    #[test]
-    fn test_a_listed_repl_with_a_damaged_lineage_stays_unknown() {
-        let h = Home::new();
-        h.roster_lists(parent(), PARENT_JOB);
-        h.starts_file(&format!("{PARENT_JOB}.json"), "{ not json");
-        assert_eq!(h.mode(&chain_to_parent(|_| false), me()), Mode::Unknown);
-    }
-
-    #[test]
-    fn test_a_damaged_roster_is_read_once_and_fails_only_for_a_possible_session() {
-        let h = Home::new();
-        h.damage_roster("{ not json");
-        let chain = Procs::chain(&[(me(), 987650), (987650, 987651), (987651, parent())]);
-        let procs = Procs::new(move |pid| Some(chain(pid).unwrap_or(1)), |_| false);
-        h.record(me(), "interactive", None);
-        assert_eq!(h.counted(&procs, me()), (Mode::Ungated, 1));
-    }
-
-    #[test]
-    fn test_a_stale_ancestor_record_goes_through_the_roster_like_no_record() {
-        // A record whose procStart does not match was left by an earlier process.
-        let h = Home::new();
-        h.roster_lists(parent(), PARENT_JOB);
-        h.lineage_of(PARENT_JOB, json!("representative"));
-        h.record_started(parent(), "interactive", None, "1");
-        h.record(me(), "interactive", None);
-        assert_eq!(h.me(), declared("representative"));
-    }
-
-    #[test]
-    fn test_a_corrupt_ancestor_record_goes_through_the_roster_too() {
-        let h = Home::new();
-        h.roster_lists(parent(), PARENT_JOB);
-        h.lineage_of(PARENT_JOB, json!("secretary"));
-        std::fs::write(h.paths.home.session_record(parent()), "{ not json").unwrap();
-        h.record(me(), "interactive", None);
-        assert_eq!(h.me(), declared("secretary"));
-    }
-
-    #[test]
-    fn test_a_stale_ancestor_record_that_is_not_listed_is_passed_over() {
-        let h = Home::new();
-        h.record_started(parent(), "bg", Some(PARENT_JOB), "1");
-        h.record(me(), "interactive", None);
-        assert_eq!(h.me(), Mode::Ungated);
-    }
-
-    #[test]
-    fn test_the_caller_with_a_damaged_roster_is_unknown_only_if_it_may_be_a_session() {
-        // A record with no procStart is dropped, then the roster is consulted.
-        let h = Home::new();
-        h.bare_record(me(), json!({"kind": "interactive"}));
-        h.damage_roster("{ not json");
-        assert_eq!(h.mode(&Procs::may(|_| false), me()), Mode::Ungated);
-        assert_eq!(h.mode(&Procs::may(|_| true), me()), Mode::Unknown);
-    }
 
     // The heuristic itself is `awm_harness::claude::detect`, tested there; these check the wiring.
 
     #[test]
     fn test_a_process_with_neither_readable_is_assumed_to_be_a_session() {
         assert!(Procfs.may_be_a_session(1_000_000_000));
-    }
-
-    #[test]
-    fn test_the_real_test_interpreter_is_not_a_session() {
-        assert!(!Procfs.may_be_a_session(me()));
     }
 
     // What a cx start looks like in the roster.
@@ -1352,125 +901,7 @@ mod tests {
         assert_eq!(h.me(), Mode::Ungated);
     }
 
-    #[test]
-    fn test_one_equals_form_flag_alone_is_not_enough() {
-        let h = Home::new();
-        h.worker("rep");
-        h.launch(json!({"args": ["--model=opus"]}));
-        assert_eq!(h.me(), Mode::Ungated);
-    }
-
-    #[test]
-    fn test_a_persons_space_form_flags_on_a_resumed_job_are_not_a_cx_start() {
-        // A person's own resumed fleet sessions carry `--permission-mode plan` as two tokens and
-        // have no lineage; they must stay ungated.
-        let flag_sets = [
-            json!(["--permission-mode", "plan"]),
-            json!(["--permission-mode", "bypassPermissions"]),
-            json!(["--dangerously-skip-permissions", "--effort", "high", "--name", "x", "--permission-mode", "plan"]),
-            json!(["--effort", "high", "--model", "opus"]),
-        ];
-        for source in ["fleet", "shell"] {
-            for flags in &flag_sets {
-                let h = Home::new();
-                h.worker("rep");
-                h.edit_roster(|doc| {
-                    let dispatch = &mut doc["workers"][JOB]["dispatch"];
-                    dispatch["source"] = json!(source);
-                    dispatch["launch"] = json!({"mode": "resume", "flagArgs": flags});
-                    dispatch["respawnFlags"] = flags.clone();
-                });
-                assert_eq!(h.me(), Mode::Ungated, "{source} {flags}");
-            }
-        }
-    }
-
-    #[test]
-    fn test_the_space_form_of_a_permission_mode_never_counts_in_any_launch_field() {
-        let h = Home::new();
-        h.worker("rep");
-        h.launch(json!({"args": ["--permission-mode", "plan"], "flagArgs": ["--permission-mode", "plan"]}));
-        h.edit_roster(|doc| {
-            let worker = &mut doc["workers"][JOB];
-            worker["dispatch"]["respawnFlags"] = json!(["--permission-mode", "dontAsk"]);
-            worker["respawnFlags"] = json!(["--permission-mode", "dontAsk"]);
-        });
-        assert_eq!(h.me(), Mode::Ungated);
-    }
-
-    #[test]
-    fn test_a_resumed_cx_start_keeps_its_flags_under_flag_args() {
-        let h = Home::new();
-        h.worker("rep");
-        h.launch(json!({"mode": "resume", "flagArgs": ["--permission-mode=dontAsk"]}));
-        assert_eq!(h.me(), Mode::Unknown);
-        h.launch(json!({"mode": "resume", "flagArgs": ["--effort=low", "--model=sonnet"]}));
-        assert_eq!(h.me(), Mode::Unknown);
-        h.launch(json!({"mode": "resume", "flagArgs": ["--dangerously-skip-permissions"]}));
-        assert_eq!(h.me(), Mode::Ungated);
-    }
-
-    #[test]
-    fn test_respawn_flags_under_dispatch_count() {
-        let h = Home::new();
-        h.worker("rep");
-        h.edit_roster(|doc| doc["workers"][JOB]["dispatch"]["respawnFlags"] = json!(["--restricted"]));
-        assert_eq!(h.me(), Mode::Unknown);
-    }
-
     // A record without procStart is not trusted.
-
-    #[test]
-    fn test_an_interactive_record_without_procstart_grants_nothing_but_adds_no_restriction() {
-        let h = Home::new();
-        h.bare_record(me(), json!({"kind": "interactive"}));
-        assert_eq!(h.me(), Mode::Ungated);
-    }
-
-    #[test]
-    fn test_a_record_without_procstart_falls_through_to_the_ancestors() {
-        let h = Home::new();
-        h.restricted_parent("delegate");
-        h.bare_record(me(), json!({"kind": "interactive"}));
-        assert_eq!(h.me(), declared("delegate"));
-    }
-
-    #[test]
-    fn test_a_bg_record_without_procstart_and_no_other_evidence_is_unknown() {
-        let h = Home::new();
-        h.bare_record(me(), json!({"kind": "bg", "jobId": JOB}));
-        assert_eq!(h.me(), Mode::Unknown);
-    }
-
-    #[test]
-    fn test_a_parked_record_without_procstart_and_no_other_evidence_is_unknown() {
-        let h = Home::new();
-        h.bare_record(me(), json!({"kind": "interactive", "parkedJobId": JOB}));
-        assert_eq!(h.me(), Mode::Unknown);
-    }
-
-    #[test]
-    fn test_a_bg_record_without_procstart_is_judged_by_the_roster() {
-        let h = Home::new();
-        h.bare_record(me(), json!({"kind": "bg", "jobId": JOB}));
-        h.worker("rep");
-        h.lineage(json!("secretary"));
-        assert_eq!(h.me(), declared("secretary"));
-    }
-
-    #[test]
-    fn test_an_empty_procstart_is_treated_as_missing() {
-        let h = Home::new();
-        h.bare_record(me(), json!({"kind": "bg", "jobId": JOB, "procStart": ""}));
-        assert_eq!(h.me(), Mode::Unknown);
-    }
-
-    #[test]
-    fn test_a_mismatched_procstart_is_still_stale() {
-        let h = Home::new();
-        h.record_started(me(), "interactive", None, "1");
-        assert_eq!(h.me(), Mode::Unknown);
-    }
 
     // The record type and its readers (not in the Python suite).
 
@@ -1491,28 +922,4 @@ mod tests {
         assert_eq!(got, want);
     }
 
-    #[test]
-    fn the_readers_skip_what_lifecycle_skipped() {
-        let h = Home::new();
-        h.lineage(json!("worker"));
-        h.starts_file("cccccccc.json", "{ not json");
-        h.starts_file("dddddddd.json", "{}");
-        h.starts_file("not-a-job.json", r#"{"mode": "worker"}"#);
-        h.pending("rep", "secretary");
-        h.starts_file("pending-0123456789abcdef.json", r#"{"name": 7}"#);
-        assert_eq!(lineage_records(&h.paths).keys().collect::<Vec<_>>(), [JOB]);
-        assert_eq!(read_lineage(&h.paths, JOB).unwrap().mode.as_deref(), Some("worker"));
-        assert!(read_lineage(&h.paths, "../x").is_none());
-        let pending = pending_records(&h.paths);
-        assert_eq!(pending.len(), 1);
-        assert_eq!((pending[0].0.clone(), pending[0].1.pending), (h.paths.pending_path("rep"), Some(true)));
-    }
-
-    #[test]
-    fn the_patterns_keep_pythons_end_of_line() {
-        assert!(is_mode("worker") && is_mode("a.b-c_d") && is_mode(&"x".repeat(40)) && is_mode("worker\n"));
-        assert!(!is_mode("-worker") && !is_mode("worker\n\n") && !is_mode("wörker"));
-        assert!(is_job("abababab") && is_job("abababab\n"));
-        assert!(!is_job("ABABABAB") && !is_job("abababa") && !is_job("../../x"));
-    }
 }

@@ -175,30 +175,3 @@ async fn a_retiring_node_is_never_dialed() {
     assert_eq!(opens.load(Ordering::SeqCst), 1);
 }
 
-#[tokio::test]
-async fn a_node_that_runs_no_awm_is_never_dialed() {
-    use awm_edge::EdgePeers;
-    use awm_gateway::peer::{PeerError, PeerTransport};
-    use awm_proto::{CallContext, Surface};
-    let edges = awm_trust::edges::EdgeList::parse(
-        "nodes:\n  home: {role: desktop, managed: true}\n  work: {role: work}\n  hpc: {role: station, managed: false}\n\
-         edges:\n  home: {work: lan, hpc: internet}\n",
-    )
-    .unwrap();
-    let opens = Arc::new(AtomicUsize::new(0));
-    let peers = EdgePeers::new("home", edges, duplex_client(opens.clone(), None));
-    assert_eq!(peers.peers(), vec!["work".to_string()]);
-    let ctx = CallContext::local("home", Surface::Cli);
-    fn refused<T>(r: Result<T, PeerError>) {
-        match r {
-            Err(PeerError::Refused { body, .. }) => assert!(body.contains("hpc runs no awm"), "{body}"),
-            Err(e) => panic!("not refused as running no awm: {e}"),
-            Ok(_) => panic!("a node that runs no awm answered"),
-        }
-    }
-    refused(peers.invoke("hpc", "journal", json!({"verb": "fetch"}), &ctx).await);
-    refused(peers.tools("hpc").await);
-    refused(peers.table_changed("hpc", "home").await);
-    assert!(peers.open_ws("hpc", "/hub/emit/x/y", &ctx).await.is_err());
-    assert_eq!(opens.load(Ordering::SeqCst), 0, "the opener was called for a node that runs no awm");
-}

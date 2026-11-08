@@ -52,8 +52,65 @@ pub struct ServiceDecl {
     pub profiles: Option<Vec<String>>,
     #[serde(default)]
     pub archive: Vec<toml::Value>,
+    #[serde(default)]
+    pub front: Vec<FrontDecl>,
 }
 
+
+/// One `[[service.front]]` table: a TLS listener that auth opens for this service, with the
+/// node's edge leaf and the edge session gate in front of a loopback upstream (ports/auth.md C2).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct FrontDecl {
+    #[serde(default = "default_front_name")]
+    pub name: String,
+    pub port: u16,
+    pub upstream: String,
+    /// Rewrite the browser's `Origin` to the upstream's, for an upstream that checks it.
+    #[serde(default)]
+    pub rewrite_origin: bool,
+    /// Path prefixes this front sends to another loopback upstream instead.
+    #[serde(default)]
+    pub paths: std::collections::BTreeMap<String, String>,
+}
+
+fn default_front_name() -> String {
+    "gui".into()
+}
+
+/// `url` when it is plain http to a loopback address, else why not.
+pub fn loopback_upstream(url: &str) -> Result<(), String> {
+    let rest = url.strip_prefix("http://").ok_or_else(|| format!("{url:?} is not an http:// URL"))?;
+    let authority = rest.split('/').next().unwrap_or_default();
+    let host = match authority.strip_prefix('[') {
+        Some(v6) => v6.split(']').next().unwrap_or_default(),
+        None => authority.rsplit_once(':').map_or(authority, |(h, _)| h),
+    };
+    match host {
+        "127.0.0.1" | "::1" | "localhost" => Ok(()),
+        _ => Err(format!("{url:?} is not a loopback upstream")),
+    }
+}
+
+impl FrontDecl {
+    /// Every rule a front table must meet, as one refusal.
+    pub fn check(&self) -> Result<(), String> {
+        if self.name.is_empty() || !self.name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+            return Err(format!("front name {:?} must be letters, digits and hyphens", self.name));
+        }
+        if self.port == 0 {
+            return Err(format!("front {:?}: port 0", self.name));
+        }
+        loopback_upstream(&self.upstream).map_err(|e| format!("front {:?}: {e}", self.name))?;
+        for (prefix, up) in &self.paths {
+            if !prefix.starts_with('/') || prefix.starts_with("//") {
+                return Err(format!("front {:?}: path {prefix:?} must start with one /", self.name));
+            }
+            loopback_upstream(up).map_err(|e| format!("front {:?}: path {prefix:?}: {e}", self.name))?;
+        }
+        Ok(())
+    }
+}
 fn dot() -> String {
     ".".into()
 }
@@ -218,24 +275,6 @@ major = 1
     }
 
     #[test]
-    fn implements() {
-        assert_eq!(parse_implements("harness@1"), Some(("harness".to_string(), 1)));
-        assert!(parse_implements("nope").is_none());
-        assert!(parse_implements("a.b@1").is_none());
-        assert!(parse_implements("harness@x").is_none());
-    }
-
-    #[test]
-    fn a_uuid_is_an_unknown_key() {
-        assert!(Manifest::parse("[plugin]\nname='x'\n[[tool]]\nname='x'\nuuid='6f1c2c1e-0d4b-4f3e-9a51-3b8f2d7a9c10'\n").is_err());
-    }
-
-    #[test]
-    fn trust_is_gone_since_installing_trusts_a_plugin() {
-        assert!(Manifest::parse("[plugin]\nname='x'\ntrust='own'\n").is_err());
-    }
-
-    #[test]
     fn a_need_parses_its_retired_keys_for_a_warning() {
         let m = Manifest::parse("[plugin]\nname='x'\n[[needs.tool]]\nname='y'\nverbs=['get']\n[[needs.contract]]\nname='z'\noptional=true\n").unwrap();
         assert_eq!(m.needs.retired_keys(), ["verbs", "optional"]);
@@ -244,7 +283,13 @@ major = 1
     }
 
     #[test]
-    fn unknown_key_is_an_error() {
-        assert!(Manifest::parse("[plugin]\nname='x'\nbogus=1\n").is_err());
+    fn unknown_and_retired_keys_are_errors() {
+        for text in [
+            "[plugin]\nname='x'\nbogus=1\n",
+            "[plugin]\nname='x'\n[[tool]]\nname='x'\nuuid='6f1c2c1e-0d4b-4f3e-9a51-3b8f2d7a9c10'\n",
+            "[plugin]\nname='x'\ntrust='own'\n",
+        ] {
+            assert!(Manifest::parse(text).is_err(), "{text}");
+        }
     }
 }

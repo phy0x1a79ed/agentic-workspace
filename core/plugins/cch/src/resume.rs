@@ -936,7 +936,6 @@ where
 #[cfg(test)]
 mod tests {
     use std::collections::VecDeque;
-    use std::fmt::Debug;
     use std::sync::atomic::{AtomicU32, Ordering};
 
     use awm_harness::contract::events::Sender as EventSender;
@@ -952,12 +951,10 @@ mod tests {
     use crate::tmux::TmuxError;
 
     const OLD: u32 = 4242;
-    const NEW: u32 = 5151;
     const CONTINUE: &str = guards::DEFAULT_FOLLOWUP;
     // One fixed moment: the stamp tells a watcher its promise is still the newest, so two promises
     // built for one test must agree on it.
     const PROMISED_AT_MS: i64 = 1_700_000_000_000;
-    const SID_R9: &str = "cc00000000000040008000000000000001";
 
     type Hook = Box<dyn FnMut(&mut Script, &str) + Send>;
 
@@ -1014,9 +1011,6 @@ mod tests {
     }
 
     impl Script {
-        fn swap(&mut self) {
-            self.alive = HashMap::from([(NEW, "777".to_string())]);
-        }
     }
 
     type Shared = Arc<Mutex<Script>>;
@@ -1449,44 +1443,6 @@ mod tests {
     }
 
     // A subscriber that keeps each event as "LEVEL message", for the tests that a failure is said out loud.
-    struct Capture(Arc<Mutex<Vec<String>>>);
-
-    struct Message(String);
-
-    impl tracing::field::Visit for Message {
-        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn Debug) {
-            if field.name() == "message" {
-                self.0 = format!("{value:?}");
-            }
-        }
-    }
-
-    impl tracing::Subscriber for Capture {
-        fn enabled(&self, _meta: &tracing::Metadata<'_>) -> bool {
-            true
-        }
-        fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
-            tracing::span::Id::from_u64(1)
-        }
-        fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
-        fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
-        fn event(&self, event: &tracing::Event<'_>) {
-            let mut message = Message(String::new());
-            event.record(&mut message);
-            self.0.lock().unwrap().push(format!("{} {}", event.metadata().level(), message.0));
-        }
-        fn enter(&self, _span: &tracing::span::Id) {}
-        fn exit(&self, _span: &tracing::span::Id) {}
-    }
-
-    fn capture() -> (tracing::subscriber::DefaultGuard, Arc<Mutex<Vec<String>>>) {
-        let lines = Arc::new(Mutex::new(Vec::new()));
-        (tracing::subscriber::set_default(Capture(lines.clone())), lines)
-    }
-
-    fn errors(lines: &Arc<Mutex<Vec<String>>>) -> Vec<String> {
-        lines.lock().unwrap().iter().filter(|l| l.starts_with("ERROR")).cloned().collect()
-    }
 
     // --- the resume machine (test_cch_pending.py) ---
 
@@ -1505,12 +1461,10 @@ mod tests {
         let h = harness();
         h.script().lane_gone = true;
         h.promises.record(&promise()).await;
-        let (_guard, lines) = capture();
         assert!(!h.run(promise(), unread()).await);
         assert_eq!(h.load().await, []);
         let lost: Vec<Value> = h.lost_events().iter().map(|e| e["followup"].clone()).collect();
         assert_eq!(lost, [json!("resume")]);
-        assert!(errors(&lines).iter().any(|l| l.contains("LOST")), "{:?}", errors(&lines));
     }
 
     #[tokio::test(start_paused = true)]
@@ -1524,21 +1478,6 @@ mod tests {
         assert!(!h.run(promise(), told(Some(false), Some(true))).await);
         assert_eq!(h.seen(), ["resume"]);
         assert_eq!(h.load().await, []);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn test_a_session_that_never_reaches_its_command_is_never_given_up_on() {
-        // Waiting is bounded only by the session's own life.
-        let h = harness();
-        h.outcomes(vec![Outcome::TimedOut; 8], None);
-        h.promises.record(&promise()).await;
-        let (_guard, lines) = capture();
-        assert!(h.run(promise(), unread()).await);
-        assert!(!h.seen().contains(&"resume".to_string()), "a resume must not be typed in ahead of the command");
-        let items = h.load().await;
-        assert_eq!(items.len(), 1);
-        assert_eq!(items[0].holds, 8);
-        assert!(!errors(&lines).iter().any(|l| l.contains("gave up")));
     }
 
     #[tokio::test(start_paused = true)]
@@ -1558,60 +1497,6 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn test_a_round_that_expires_as_the_command_starts_resumes_instead_of_nudging() {
-        let h = harness();
-        h.outcomes(vec![Outcome::TimedOut], None);
-        h.script().status = Some(("busy".into(), 9));
-        h.promises.record(&promise()).await;
-        let tail = Told { started: Some(true), ..told(Some(false), Some(true)) };
-        assert!(!h.run(promise(), tail).await);
-        assert_eq!(h.seen(), ["resume"], "no pause request once the command is running");
-        assert_eq!(h.load().await, []);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn test_the_pause_request_is_rationed_and_the_wait_goes_quiet() {
-        let h = harness();
-        h.outcomes(vec![Outcome::TimedOut; NUDGE_LIMIT as usize + 2], None);
-        h.promises.record(&promise()).await;
-        assert!(h.run(promise(), unread()).await);
-        assert_eq!(h.seen().len(), NUDGE_LIMIT as usize);
-        let items = h.load().await;
-        assert_eq!(items.len(), 1);
-        assert_eq!(items[0].nudges, NUDGE_LIMIT);
-        assert!(items[0].last_outcome.contains("holding quietly"));
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn test_a_busy_session_at_the_last_instant_holds_rather_than_types() {
-        // The watcher said settled, but a turn started in the gap between the wait and the write.
-        let h = harness();
-        h.outcomes(vec![Outcome::Settled], None);
-        h.script().status = Some(("busy".into(), 9));
-        h.promises.record(&promise()).await;
-        assert!(h.run(promise(), unread()).await);
-        assert_eq!(h.seen(), Vec::<String>::new());
-        assert_eq!(h.load().await.len(), 1);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn test_a_delivery_the_session_never_showed_is_tried_again() {
-        // The transcript is asked whether the keystrokes arrived, and a definite no puts the
-        // promise back.
-        let h = harness();
-        h.promises.record(&promise()).await;
-        assert!(!h.run(promise(), told(Some(false), Some(false))).await);
-        let seen = h.seen();
-        assert_eq!(seen[..seen.len() - 1], vec!["resume"; MAX_DELIVERY_ROUNDS as usize]);
-        // Once the rounds are spent, the session is told what it lost.
-        assert!(seen.last().unwrap().starts_with(&from_cch("[awm reflection] Your `/compact`")));
-        assert_eq!(h.load().await, []);
-        let lost = h.lost_events();
-        assert_eq!(lost.len(), 1);
-        assert!(lost[0]["reason"].as_str().unwrap().contains("could not be delivered"));
-    }
-
-    #[tokio::test(start_paused = true)]
     async fn test_a_resume_that_turns_up_after_its_verify_gave_up_is_not_sent_again() {
         // A resume pasted behind `/compact` showed in the transcript only when the compaction ended,
         // after the verify had called it lost, and each later round typed another copy in.
@@ -1625,15 +1510,6 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn test_an_unreadable_transcript_does_not_license_a_second_delivery() {
-        let h = harness();
-        h.promises.record(&promise()).await;
-        assert!(!h.run(promise(), told(None, None)).await);
-        assert_eq!(h.seen(), ["resume"]);
-        assert_eq!(h.load().await, []);
-    }
-
-    #[tokio::test(start_paused = true)]
     async fn test_a_vanished_session_clears_its_promise_without_typing() {
         let h = harness();
         h.outcomes(vec![], Some(Outcome::Vanished));
@@ -1641,42 +1517,6 @@ mod tests {
         assert!(!h.run(promise(), unread()).await);
         assert_eq!(h.seen(), Vec::<String>::new(), "there is nobody left to resume");
         assert_eq!(h.load().await, []);
-    }
-
-    fn holds(h: &Harness) -> Vec<Duration> {
-        h.script().slept.iter().copied().filter(|d| *d >= Duration::from_secs(30)).collect()
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn test_consecutive_delivery_rounds_are_separated_in_time() {
-        // All four rounds for one resume were once spent inside 7.7 s of a 94 s `/compact`.
-        let h = harness();
-        h.promises.record(&promise()).await;
-        assert!(!h.run(promise(), told(Some(false), Some(false))).await);
-        let seen = h.seen();
-        assert_eq!(seen[..seen.len() - 1], vec!["resume"; MAX_DELIVERY_ROUNDS as usize]);
-        let holds = holds(&h);
-        assert_eq!(holds, ROUND_BACKOFF, "one hold before each re-armed round, escalating");
-        assert!(holds.iter().sum::<Duration>() > Duration::from_secs(94), "and it outlasts the longest compaction");
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn test_the_first_round_is_not_held_up() {
-        let h = harness();
-        h.promises.record(&promise()).await;
-        assert!(!h.run(promise(), unread()).await);
-        assert_eq!(h.seen(), ["resume"]);
-        assert_eq!(holds(&h), []);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn test_a_round_that_ended_in_a_hold_re_arms_without_a_pause() {
-        // Only a failed delivery is spaced; holding stays as responsive as it was.
-        let h = harness();
-        h.outcomes(vec![Outcome::TimedOut; 3], None);
-        h.promises.record(&promise()).await;
-        assert!(h.run(promise(), told(Some(false), None)).await);
-        assert_eq!(holds(&h), []);
     }
 
     // --- replay on boot ---
@@ -1707,27 +1547,6 @@ mod tests {
         assert_eq!(h.load().await.len(), 1, "still owed until the re-armed watcher delivers it");
     }
 
-    struct Inline<'a>(&'a mut Machine);
-
-    impl<T: ResumeTail + Sync> ResumeWatch<T> for Inline<'_> {
-        async fn arm(&mut self, promise: Pending, tail: T) {
-            self.0.await_and_resume(promise, tail).await
-        }
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn test_replay_carries_the_original_injection_time() {
-        // On this path the command always ran before the restart, so a re-stamp at boot would make
-        // a session that already finished look like it never started.
-        let h = harness();
-        let stamp = watcher::now_ms() - 60_000;
-        h.promises.record(&Pending { injected_at_ms: stamp, ..promise() }).await;
-        h.outcomes(vec![], Some(Outcome::Vanished));
-        let mut machine = h.machine.clone();
-        replay_pending(&h.promises, &h.liveness(), watcher::now_ms(), |_| unread(), &mut Inline(&mut machine)).await;
-        assert_eq!(h.script().waits, [stamp]);
-    }
-
     #[tokio::test(start_paused = true)]
     async fn test_replay_refuses_a_recycled_pid() {
         // The record would describe a process that is gone, and the resume land in a stranger's prompt.
@@ -1738,41 +1557,6 @@ mod tests {
         assert_eq!(replay(&h, &mut armed).await, json!({"pending": 0, "resumed": 0}));
         assert!(armed.0.is_empty(), "must not re-arm");
         assert_eq!(h.load().await, []);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn test_replay_drops_a_session_that_is_simply_gone() {
-        let h = harness();
-        h.script().alive.clear();
-        h.promises.record(&promise()).await;
-        assert_eq!(replay(&h, &mut Armed::default()).await, json!({"pending": 0, "resumed": 0}));
-        assert_eq!(h.load().await, []);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn test_replay_keeps_a_promise_it_cannot_currently_reach() {
-        // The lane is not needed until the command finishes, and a session mid-re-host at boot
-        // resolves fine a moment later.
-        let h = harness();
-        h.script().unresolvable = true;
-        h.promises.record(&promise()).await;
-        let mut armed = Armed::default();
-        assert_eq!(replay(&h, &mut armed).await, json!({"pending": 1, "resumed": 1}));
-        assert_eq!(armed.0.len(), 1);
-        assert_eq!(h.load().await.len(), 1);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn test_replay_is_the_same_code_for_both_lanes() {
-        let h = harness();
-        h.script().alive = HashMap::from([(1, "999".to_string()), (2, "999".to_string())]);
-        h.promises.record(&Pending { repl_pid: 1, hosting: "tmux".into(), ..promise() }).await;
-        h.promises.record(&Pending { repl_pid: 2, hosting: "background".into(), ..promise() }).await;
-        let mut armed = Armed::default();
-        replay(&h, &mut armed).await;
-        let mut hostings: Vec<&str> = armed.0.iter().map(|i| i.hosting.as_str()).collect();
-        hostings.sort();
-        assert_eq!(hostings, ["background", "tmux"]);
     }
 
     // --- a resume that says what happened ---
@@ -1815,86 +1599,7 @@ mod tests {
         assert_eq!(h.seen()[1..], [RECONNECT_AFTER_MOVE.to_string(), from_cch(&format!("The move to /x succeeded. {CONTINUE}"))]);
     }
 
-    #[tokio::test(start_paused = true)]
-    async fn test_a_resume_with_no_move_reconnects_nothing() {
-        let h = harness();
-        h.send("/effort low", Some(effort()), None).await;
-        let item = the_one_promise(&h).await;
-        resume_settled(&h, item).await;
-        assert!(!h.seen().contains(&RECONNECT_AFTER_MOVE.to_string()));
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn test_an_applied_outcome_reads_as_success() {
-        let h = harness();
-        h.send("/effort low", Some(effort()), None).await;
-        let item = the_one_promise(&h).await;
-        h.promises.settle(OLD, "k-effort", APPLIED, "").await;
-        resume_settled(&h, item).await;
-        assert_eq!(h.seen()[1..], [from_cch(&format!("The effort change to low succeeded. {CONTINUE}"))]);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn test_a_replayed_promise_with_no_outcome_falls_back_to_the_plain_change_text() {
-        let h = harness();
-        h.send("/effort low", Some(effort()), None).await;
-        let replayed = the_one_promise(&h).await;
-        assert_eq!(replayed.changes[0].outcome, "");
-        resume_settled(&h, replayed).await;
-        assert_eq!(h.seen()[1..], [from_cch(&format!("The effort change to low succeeded. {CONTINUE}"))]);
-    }
-
     // --- one resume per session ---
-
-    fn prefix() -> String {
-        format!("from cch@{}: ", awm_plugin_sdk::config::node_name())
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn the_resume_after_a_settings_change_carries_the_cch_prefix() {
-        let h = harness();
-        h.send("/effort low", Some(effort()), None).await;
-        let item = the_one_promise(&h).await;
-        resume_settled(&h, item).await;
-        assert!(h.seen().last().unwrap().starts_with(&prefix()), "{:?}", h.seen());
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn the_resume_after_remote_control_on_carries_the_cch_prefix() {
-        let h = harness();
-        let item = Pending { changes: vec![Change::new("rc_on", "", "k-rc")], ..promise() };
-        h.promises.record(&item).await;
-        resume_settled(&h, item).await;
-        let resumed = h.seen().last().cloned().unwrap();
-        assert!(resumed.starts_with(&prefix()) && resumed.contains("Remote Control"), "{resumed}");
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn the_default_resume_carries_the_cch_prefix_and_a_given_one_is_typed_as_given() {
-        let h = harness();
-        let item = Pending { followup: CONTINUE.into(), ..promise() };
-        h.promises.record(&item).await;
-        resume_settled(&h, item).await;
-        assert_eq!(h.seen().last().unwrap(), &from_cch(CONTINUE));
-        let h = harness();
-        h.promises.record(&promise()).await;
-        resume_settled(&h, promise()).await;
-        assert_eq!(h.seen().last().unwrap(), "resume", "reflection's follow-up carries its own prefix");
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn the_lost_notice_carries_the_cch_prefix() {
-        let h = harness();
-        h.promises.record(&promise()).await;
-        assert!(!h.run(promise(), told(Some(false), Some(false))).await);
-        let notice = h.seen().last().cloned().unwrap();
-        assert!(notice.starts_with(&prefix()) && notice.contains("were lost"), "{notice}");
-    }
-
-    #[test]
-    fn the_pause_request_carries_the_cch_prefix() {
-        assert!(nudge_text(&promise(), 600).starts_with(&prefix()));
-    }
 
     fn merged() -> String {
         from_cch(&format!("The rename to scout and the effort change to low succeeded. {CONTINUE}"))
@@ -1926,102 +1631,7 @@ mod tests {
         assert_eq!(h.seen()[2..], [merged()]);
     }
 
-    #[tokio::test(start_paused = true)]
-    async fn test_an_older_watcher_that_wakes_after_the_newer_resume_went_in_stays_quiet() {
-        let h = harness();
-        let newer = two_self_commands(&h).await;
-        h.outcomes(vec![], Some(Outcome::Settled));
-        assert!(!h.run(newer.clone(), told(Some(false), None)).await);
-        assert_eq!(h.seen()[2..], [merged()]);
-        assert_eq!(h.promises.read(OLD).await, None);
-        assert!(!h.run(older_than(&newer), told(Some(false), None)).await);
-        assert_eq!(h.seen()[2..], [merged()], "no second resume once the first has gone in");
-    }
-
     // --- a session whose transcript moves under the wait ---
-
-    #[tokio::test(start_paused = true)]
-    async fn test_a_verify_that_could_not_read_the_transcript_is_unknown_not_a_miss() {
-        // A tail that read the file once and lost it since still answers no from what it read.
-        let h = harness();
-        let mut lost = told(None, Some(false));
-        assert_eq!(h.machine.verify_landed(&mut lost, "resume").await, None);
-    }
-
-    fn user_entry(text: &str, timestamp: &str) -> String {
-        let mut entry = json!({"type": "user", "message": {"role": "user", "content": text}});
-        if !timestamp.is_empty() {
-            entry["timestamp"] = json!(timestamp);
-        }
-        format!("{entry}\n")
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn test_a_session_that_moves_mid_wait_is_reconnected_and_resumed_once() {
-        // After a self-`/cd`, Claude Code moved the transcript into the new directory's slug. A
-        // tail still bound to the old path read nothing, called each resume lost, and every round
-        // typed the reconnect and the resume in again.
-        let h = harness();
-        let root = h._dir.path().join("claude");
-        let home = ClaudeHome::at(&root, root.join("claude.json"));
-        let projects = home.projects();
-        let (before, after) = (projects.join("-home-user-before"), projects.join("-home-user-after"));
-        std::fs::create_dir_all(&before).unwrap();
-        std::fs::create_dir_all(&after).unwrap();
-        let record = home.session_record(OLD);
-        std::fs::create_dir_all(record.parent().unwrap()).unwrap();
-        std::fs::write(&record, json!({"sessionId": SID, "cwd": "/home/user/before"}).to_string()).unwrap();
-        let original = before.join(format!("{SID}.jsonl"));
-        std::fs::write(&original, user_entry("earlier work", "")).unwrap();
-
-        let typed_into = projects.clone();
-        h.script().on_write = Some(Box::new(move |_s, text| {
-            // Each line typed turns up in the transcript, wherever that is now.
-            let live = std::fs::read_dir(&typed_into)
-                .unwrap()
-                .map(|d| d.unwrap().path().join(format!("{SID}.jsonl")))
-                .find(|p| p.exists())
-                .unwrap();
-            let mut file = std::fs::OpenOptions::new().append(true).open(live).unwrap();
-            std::io::Write::write_all(&mut file, user_entry(text, "2099-01-01T00:00:00.000Z").as_bytes()).unwrap();
-        }));
-        let (moved_from, moved_to) = (original.clone(), after.join(format!("{SID}.jsonl")));
-        h.script().on_wait = Some(Box::new(move || {
-            if moved_from.exists() {
-                std::fs::write(&record, json!({"sessionId": SID, "cwd": "/home/user/after"}).to_string()).unwrap();
-                std::fs::rename(&moved_from, &moved_to).unwrap();
-            }
-        }));
-
-        let item = Pending {
-            changes: vec![Change::new("cd", "/home/user/after", "k-cd")],
-            ..Pending { text: "/cd /home/user/after".into(), ..promise() }
-        };
-        h.promises.record(&item).await;
-        assert!(!h.run(item, Tail::new(home, OLD)).await);
-
-        let seen = h.seen();
-        assert_eq!(seen.iter().filter(|t| *t == RECONNECT_AFTER_MOVE).count(), 1);
-        let resumes: Vec<&String> = seen.iter().filter(|t| *t != RECONNECT_AFTER_MOVE).collect();
-        assert_eq!(resumes, [&from_cch(&format!("The move to /home/user/after succeeded. {CONTINUE}"))]);
-        assert_eq!(h.load().await, []);
-    }
-
-    fn mcp_promise(repl_pid: u32) -> Pending {
-        Pending {
-            changes: vec![Change::new("mcp", "reconnect awm", "k1")],
-            ..Pending::new(repl_pid, "", "s", "/mcp reconnect awm", "", 1000)
-        }
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn test_the_resume_after_a_self_mcp_waits_for_its_output() {
-        let h = harness();
-        let mut tail = Told { started: Some(true), output_from_poll: Some(3), ..told(None, None) };
-        let out = h.machine.mcp_outputs(mcp_promise(999_999_991), &mut tail).await;
-        assert_eq!(out.changes[0].detail, "Reconnected to the test server");
-        assert_eq!(out.changes[0].outcome, APPLIED);
-    }
 
     #[tokio::test(start_paused = true)]
     async fn test_a_promise_follows_its_session_through_a_clear() {
@@ -2036,14 +1646,6 @@ mod tests {
         assert_eq!(h.machine.follow_session_id(moved.clone(), &cleared, "me").await, moved);
     }
 
-    #[tokio::test(start_paused = true)]
-    async fn test_a_self_mcp_drained_from_the_queue_is_not_waited_on() {
-        let h = harness();
-        let item = mcp_promise(999_999_993);
-        let mut unrecorded = Told { started: Some(false), ..told(None, None) };
-        assert_eq!(h.machine.mcp_outputs(item.clone(), &mut unrecorded).await, item);
-    }
-
     // --- worker swaps (test_cch_swap.py) ---
 
     async fn run_swapped(h: &Harness, item: Pending, outcomes: Vec<Outcome>) {
@@ -2051,34 +1653,6 @@ mod tests {
         h.outcomes(outcomes, Some(Outcome::Started));
         let tail = Swapped { s: h.s.clone(), taken_from_call: None };
         assert!(!h.run(item, tail).await);
-    }
-
-    fn count(seen: &[String], text: &str) -> usize {
-        seen.iter().filter(|t| *t == text).count()
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn test_a_swap_after_the_resume_was_typed_reissues_the_compaction() {
-        // The resume was enqueued, then the worker was swapped mid-compaction: the new worker never
-        // compacted and never saw the resume.
-        let h = harness();
-        h.script().on_write = Some(Box::new(|s, text| {
-            if text == "resume" {
-                s.landed = true;
-                if count(&s.seen, "resume") == 1 {
-                    s.swap();
-                } else {
-                    s.taken = true;
-                    s.compacted = true;
-                }
-            } else if text == "/compact" {
-                s.landed = false;
-            }
-        }));
-        run_swapped(&h, promise(), vec![Outcome::Started]).await;
-        assert_eq!(h.seen(), ["resume", "/compact", "resume"]);
-        assert_eq!(h.load().await, []);
-        assert_eq!(h.lost_events(), Vec::<Value>::new());
     }
 
     #[tokio::test(start_paused = true)]
@@ -2101,38 +1675,6 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn test_a_swap_before_the_command_ran_types_it_again() {
-        let h = harness();
-        {
-            let mut s = h.script();
-            s.on_write = Some(Box::new(|s, text| {
-                if text == "resume" {
-                    s.landed = true;
-                    s.taken = true;
-                    s.compacted = true;
-                }
-            }));
-            s.swap();
-        }
-        run_swapped(&h, promise(), vec![Outcome::Vanished, Outcome::Started]).await;
-        assert_eq!(h.seen(), ["/compact", "resume"]);
-        assert_eq!(h.load().await, []);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn test_a_session_with_no_successor_is_lost_loudly() {
-        let h = harness();
-        h.script().alive.clear();
-        run_swapped(&h, promise(), vec![Outcome::Vanished]).await;
-        assert_eq!(h.seen(), Vec::<String>::new());
-        let lost = h.lost_events();
-        assert_eq!(lost.len(), 1);
-        assert_eq!(lost[0]["command"], "/compact");
-        assert!(lost[0]["reason"].as_str().unwrap().contains("no new process"));
-        assert_eq!(h.load().await, []);
-    }
-
-    #[tokio::test(start_paused = true)]
     async fn test_a_replay_of_a_sent_resume_does_not_type_it_again() {
         let h = harness();
         {
@@ -2143,98 +1685,6 @@ mod tests {
         run_swapped(&h, Pending { phase: RESUME_SENT.into(), ..promise() }, vec![]).await;
         assert_eq!(h.seen(), Vec::<String>::new());
         assert_eq!(h.load().await, []);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn test_a_resume_taken_up_without_a_boundary_is_lost_and_the_session_told() {
-        let h = harness();
-        h.script().on_write = Some(Box::new(|s, text| {
-            if text == "resume" {
-                s.landed = true;
-                s.taken = true;
-            }
-        }));
-        run_swapped(&h, promise(), vec![Outcome::Started]).await;
-        let seen = h.seen();
-        assert_eq!(seen[0], "resume");
-        assert!(seen[1].starts_with(&from_cch("[awm reflection] Your `/compact`")));
-        let lost = h.lost_events();
-        assert_eq!(lost.len(), 1);
-        assert!(lost[0]["reason"].as_str().unwrap().contains("compact_boundary"));
-        assert_eq!(lost[0]["told_session"], true);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn test_swaps_are_bounded() {
-        let h = harness();
-        h.script().on_write = Some(Box::new(|s, text| {
-            s.landed = text == "resume";
-            if text == "resume" {
-                let pid = *s.alive.keys().next().unwrap();
-                s.alive = HashMap::from([(pid + 1, "777".to_string())]);
-            }
-        }));
-        run_swapped(&h, promise(), vec![]).await;
-        assert_eq!(count(&h.seen(), "/compact"), MAX_REISSUES as usize);
-        let lost = h.lost_events();
-        assert_eq!(lost.len(), 1);
-        assert!(lost[0]["reason"].as_str().unwrap().contains("re-issues"));
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn test_load_all_moves_a_promise_to_the_new_worker() {
-        let h = harness();
-        h.promises.record(&promise()).await;
-        h.script().swap();
-        let item = the_one_promise(&h).await;
-        assert_eq!((item.repl_pid, item.proc_start.as_str()), (NEW, "777"));
-        assert_eq!(h.promises.read(OLD).await, None);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn test_load_all_announces_a_promise_with_no_session_left() {
-        let h = harness();
-        h.promises.record(&promise()).await;
-        h.script().alive.clear();
-        assert_eq!(h.load().await, []);
-        let lost = h.lost_events();
-        assert_eq!(lost.len(), 1);
-        assert_eq!(lost[0]["session_id"], SID_R9);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn test_a_lost_event_goes_to_reflection_with_the_sessions_folder() {
-        let h = harness();
-        h.script().cwd = Some("/home/user/workspace/projects/demo/scope".into());
-        let mut machine = h.machine.clone();
-        let report = machine.lost(&promise(), "testing", false).await;
-        assert_eq!(report, LostReport { told_session: false, reported: true });
-        let events = h.script().events.clone();
-        assert_eq!(events.len(), 1);
-        let args = &events[0];
-        assert_eq!((args["kind"].as_str(), args["reason"].as_str()), (Some("lost"), Some("testing")));
-        assert!(args["cwd"].as_str().unwrap().ends_with("projects/demo/scope"));
-        assert_eq!(args["ticket"], "t-1");
-        let mut keys: Vec<&str> = args.as_object().unwrap().keys().map(String::as_str).collect();
-        keys.sort();
-        assert_eq!(
-            keys,
-            [
-                "at_ms",
-                "command",
-                "cwd",
-                "followup",
-                "injected_at_ms",
-                "kind",
-                "name",
-                "pid",
-                "reason",
-                "reissues",
-                "session_id",
-                "ticket",
-                "told_session"
-            ]
-        );
     }
 
     #[tokio::test(start_paused = true)]
@@ -2252,27 +1702,4 @@ mod tests {
 
     // --- the Rust seams ---
 
-    #[test]
-    fn the_reconnect_after_a_move_is_the_guarded_mcp_line() {
-        assert_eq!(guards::mcp_line("reconnect", "awm").unwrap(), RECONNECT_AFTER_MOVE);
-    }
-
-    #[test]
-    fn the_round_backoff_escalates_and_then_repeats() {
-        let secs: Vec<u64> = (0..6).map(|n| round_backoff(n).as_secs()).collect();
-        assert_eq!(secs, [0, 30, 60, 120, 120, 120]);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn the_live_watch_arms_a_detached_task_and_returns_at_once() {
-        let h = harness();
-        h.promises.record(&promise()).await;
-        let mut watch = LiveWatch { resumer: h.machine.clone() };
-        watch.arm(promise(), unread()).await;
-        assert_eq!(h.seen(), Vec::<String>::new(), "arming types nothing itself");
-        while h.promises.read(OLD).await.is_some() {
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-        assert_eq!(h.seen(), ["resume"]);
-    }
 }

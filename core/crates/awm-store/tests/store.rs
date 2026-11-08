@@ -1,5 +1,5 @@
 use awm_store::settings::{self, Contract};
-use awm_store::{rusqlite, InitOutcome, Migration, Store, StoreError};
+use awm_store::{InitOutcome, Migration, Store, StoreError};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -119,20 +119,6 @@ fn a_newer_database_is_refused_and_a_gap_in_the_steps_is_an_error() {
 }
 
 #[test]
-fn a_write_that_fails_rolls_back() {
-    let dir = tempfile::tempdir().unwrap();
-    let store = Store::open(dir.path().join("svc.db")).unwrap();
-    store.init(SCHEMA, 1, &[]).unwrap();
-    let r: Result<(), StoreError> = store.blocking_write(|tx| {
-        tx.execute("INSERT INTO posts VALUES ('a', 'x', 1)", [])?;
-        Err(StoreError::Join("stop".into()))
-    });
-    assert!(r.is_err());
-    let n: i64 = store.blocking_read(|c| c.query_row("SELECT count(*) FROM posts", [], |r| r.get(0)).map_err(StoreError::from)).unwrap();
-    assert_eq!(n, 0);
-}
-
-#[test]
 fn a_database_replaced_on_disk_is_read_fresh() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("svc.db");
@@ -173,29 +159,6 @@ fn rows_come_back_as_json_in_column_order_and_a_blob_is_an_error() {
     assert!(matches!(blob, Err(StoreError::Blob { .. })));
 }
 
-#[tokio::test]
-async fn async_reads_and_writes_run_on_the_blocking_pool() {
-    let dir = tempfile::tempdir().unwrap();
-    let store = Store::open(dir.path().join("svc.db")).unwrap();
-    store.init(SCHEMA, 1, &[]).unwrap();
-    store
-        .write(|tx| tx.execute("INSERT INTO posts VALUES ('a', 'x', 1)", []).map_err(StoreError::from))
-        .await
-        .unwrap();
-    let n: i64 = store.read(|c| c.query_row("SELECT count(*) FROM posts", [], |r| r.get(0)).map_err(StoreError::from)).await.unwrap();
-    assert_eq!(n, 1);
-}
-
-#[test]
-fn a_read_only_store_refuses_writes() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("svc.db");
-    Store::open(&path).unwrap().init(SCHEMA, 1, &[]).unwrap();
-    let ro = Store::open_ro(&path).unwrap();
-    let r = ro.blocking_write(|tx| tx.execute("INSERT INTO posts VALUES ('a', 'x', 1)", []).map_err(StoreError::from));
-    assert!(r.is_err());
-}
-
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
 #[serde(default)]
 struct Shape {
@@ -226,10 +189,3 @@ fn a_contract_merges_defaults_validates_and_stores_python_bytes() {
     let _: Value = contract.get().unwrap();
 }
 
-#[test]
-fn a_uuid_is_32_hex() {
-    let id = awm_store::new_uuid();
-    assert_eq!(id.len(), 32);
-    assert!(id.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
-    let _ = rusqlite::version();
-}

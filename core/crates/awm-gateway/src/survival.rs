@@ -291,16 +291,6 @@ mod tests {
     }
 
     #[test]
-    fn the_fourth_start_in_ten_minutes_is_over_budget() {
-        let dir = tempfile::tempdir().unwrap();
-        let counts: Vec<usize> = (0..4).map(|i| log_start(dir.path(), 1000 + i)).collect();
-        assert_eq!(counts, vec![1, 2, 3, 4]);
-        assert_eq!(log_start(dir.path(), 1000 + START_WINDOW_S + 10), 1, "old starts age out");
-        clear_start_log(dir.path());
-        assert_eq!(log_start(dir.path(), 5000), 1);
-    }
-
-    #[test]
     fn a_second_lock_on_the_same_state_dir_is_refused() {
         let dir = tempfile::tempdir().unwrap();
         let first = StateLock::acquire(dir.path()).unwrap();

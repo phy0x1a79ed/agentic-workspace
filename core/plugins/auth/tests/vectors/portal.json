@@ -1,0 +1,856 @@
+{
+ "node": "altair",
+ "key": "pmwOFOl4D16xjintOK_3xPPj5-UKh0vJWXdhPnaRzso",
+ "seed": "337543c31eda98c6b05bebb8ee0336909ad9da1f396a8193b1b74a31bc7e1f51",
+ "callback": "/__auth/portal",
+ "default_origin": "https://auth.tony-xy-liu.com",
+ "login_url": [
+  {
+   "origin": null,
+   "visit": "https://node.example.test/trilium/",
+   "url": "https://auth.tony-xy-liu.com/signin?next=https%3A%2F%2Fnode.example.test%2Ftrilium%2F"
+  },
+  {
+   "origin": null,
+   "visit": "https://node.example.test:8443/a b?x=1&y=é#f",
+   "url": "https://auth.tony-xy-liu.com/signin?next=https%3A%2F%2Fnode.example.test%3A8443%2Fa%20b%3Fx%3D1%26y%3D%C3%A9%23f"
+  },
+  {
+   "origin": null,
+   "visit": "https://h/~_.-!*'()",
+   "url": "https://auth.tony-xy-liu.com/signin?next=https%3A%2F%2Fh%2F~_.-%21%2A%27%28%29"
+  },
+  {
+   "origin": "",
+   "visit": "https://node.example.test/trilium/",
+   "url": "https://auth.tony-xy-liu.com/signin?next=https%3A%2F%2Fnode.example.test%2Ftrilium%2F"
+  },
+  {
+   "origin": "",
+   "visit": "https://node.example.test:8443/a b?x=1&y=é#f",
+   "url": "https://auth.tony-xy-liu.com/signin?next=https%3A%2F%2Fnode.example.test%3A8443%2Fa%20b%3Fx%3D1%26y%3D%C3%A9%23f"
+  },
+  {
+   "origin": "",
+   "visit": "https://h/~_.-!*'()",
+   "url": "https://auth.tony-xy-liu.com/signin?next=https%3A%2F%2Fh%2F~_.-%21%2A%27%28%29"
+  },
+  {
+   "origin": "https://auth.example",
+   "visit": "https://node.example.test/trilium/",
+   "url": "https://auth.example/signin?next=https%3A%2F%2Fnode.example.test%2Ftrilium%2F"
+  },
+  {
+   "origin": "https://auth.example",
+   "visit": "https://node.example.test:8443/a b?x=1&y=é#f",
+   "url": "https://auth.example/signin?next=https%3A%2F%2Fnode.example.test%3A8443%2Fa%20b%3Fx%3D1%26y%3D%C3%A9%23f"
+  },
+  {
+   "origin": "https://auth.example",
+   "visit": "https://h/~_.-!*'()",
+   "url": "https://auth.example/signin?next=https%3A%2F%2Fh%2F~_.-%21%2A%27%28%29"
+  },
+  {
+   "origin": "https://auth.example/",
+   "visit": "https://node.example.test/trilium/",
+   "url": "https://auth.example/signin?next=https%3A%2F%2Fnode.example.test%2Ftrilium%2F"
+  },
+  {
+   "origin": "https://auth.example/",
+   "visit": "https://node.example.test:8443/a b?x=1&y=é#f",
+   "url": "https://auth.example/signin?next=https%3A%2F%2Fnode.example.test%3A8443%2Fa%20b%3Fx%3D1%26y%3D%C3%A9%23f"
+  },
+  {
+   "origin": "https://auth.example/",
+   "visit": "https://h/~_.-!*'()",
+   "url": "https://auth.example/signin?next=https%3A%2F%2Fh%2F~_.-%21%2A%27%28%29"
+  },
+  {
+   "origin": "https://auth.example///",
+   "visit": "https://node.example.test/trilium/",
+   "url": "https://auth.example/signin?next=https%3A%2F%2Fnode.example.test%2Ftrilium%2F"
+  },
+  {
+   "origin": "https://auth.example///",
+   "visit": "https://node.example.test:8443/a b?x=1&y=é#f",
+   "url": "https://auth.example/signin?next=https%3A%2F%2Fnode.example.test%3A8443%2Fa%20b%3Fx%3D1%26y%3D%C3%A9%23f"
+  },
+  {
+   "origin": "https://auth.example///",
+   "visit": "https://h/~_.-!*'()",
+   "url": "https://auth.example/signin?next=https%3A%2F%2Fh%2F~_.-%21%2A%27%28%29"
+  }
+ ],
+ "encode_grant": [
+  {
+   "envelope": {
+    "grant": {
+     "grant_id": "g-0001",
+     "request_id": "",
+     "kind": "portal_login",
+     "node": "altair",
+     "subject": "operator",
+     "payload_sha256": "6bc347fa4a312eb34161ac4d844b8a7d9fa6aa6fc3743e78f355ab8939aab224",
+     "not_before": 1800000000,
+     "not_after": 1800000060,
+     "approved_by_device": "d1"
+    },
+    "sig": "oaGumKotItwNyKGShB516mBY54DQpAoQkIjTI7g6jlNetf6gFHQAMUxOFqSgQAQlCouzkQttIazvJiwZCliQCg",
+    "key_id": "a98c70d81cf2b753"
+   },
+   "raw": "eyJncmFudCI6eyJncmFudF9pZCI6ImctMDAwMSIsInJlcXVlc3RfaWQiOiIiLCJraW5kIjoicG9ydGFsX2xvZ2luIiwibm9kZSI6ImFsdGFpciIsInN1YmplY3QiOiJvcGVyYXRvciIsInBheWxvYWRfc2hhMjU2IjoiNmJjMzQ3ZmE0YTMxMmViMzQxNjFhYzRkODQ0YjhhN2Q5ZmE2YWE2ZmMzNzQzZTc4ZjM1NWFiODkzOWFhYjIyNCIsIm5vdF9iZWZvcmUiOjE4MDAwMDAwMDAsIm5vdF9hZnRlciI6MTgwMDAwMDA2MCwiYXBwcm92ZWRfYnlfZGV2aWNlIjoiZDEifSwic2lnIjoib2FHdW1Lb3RJdHdOeUtHU2hCNTE2bUJZNTREUXBBb1FrSWpUSTdnNmpsTmV0ZjZnRkhRQU1VeE9GcVNnUUFRbENvdXprUXR0SWF6dkppd1pDbGlRQ2ciLCJrZXlfaWQiOiJhOThjNzBkODFjZjJiNzUzIn0"
+  },
+  {
+   "envelope": {
+    "grant": {
+     "s": "café ☃ 😀  \u0001 \n \"q\" \\ /"
+    },
+    "n": [
+     1,
+     -2,
+     null,
+     true,
+     false
+    ]
+   },
+   "raw": "eyJncmFudCI6eyJzIjoiY2FmXHUwMGU5IFx1MjYwMyBcdWQ4M2RcdWRlMDAgXHUwMDdmIFx1MDAwMSBcbiBcInFcIiBcXCAvIn0sIm4iOlsxLC0yLG51bGwsdHJ1ZSxmYWxzZV19"
+  },
+  {
+   "envelope": {},
+   "raw": "e30"
+  }
+ ],
+ "decode": [
+  {
+   "raw": "eyJncmFudCI6eyJncmFudF9pZCI6ImctMDAwMSIsInJlcXVlc3RfaWQiOiIiLCJraW5kIjoicG9ydGFsX2xvZ2luIiwibm9kZSI6ImFsdGFpciIsInN1YmplY3QiOiJvcGVyYXRvciIsInBheWxvYWRfc2hhMjU2IjoiNmJjMzQ3ZmE0YTMxMmViMzQxNjFhYzRkODQ0YjhhN2Q5ZmE2YWE2ZmMzNzQzZTc4ZjM1NWFiODkzOWFhYjIyNCIsIm5vdF9iZWZvcmUiOjE4MDAwMDAwMDAsIm5vdF9hZnRlciI6MTgwMDAwMDA2MCwiYXBwcm92ZWRfYnlfZGV2aWNlIjoiZDEifSwic2lnIjoib2FHdW1Lb3RJdHdOeUtHU2hCNTE2bUJZNTREUXBBb1FrSWpUSTdnNmpsTmV0ZjZnRkhRQU1VeE9GcVNnUUFRbENvdXprUXR0SWF6dkppd1pDbGlRQ2ciLCJrZXlfaWQiOiJhOThjNzBkODFjZjJiNzUzIn0",
+   "envelope": {
+    "grant": {
+     "grant_id": "g-0001",
+     "request_id": "",
+     "kind": "portal_login",
+     "node": "altair",
+     "subject": "operator",
+     "payload_sha256": "6bc347fa4a312eb34161ac4d844b8a7d9fa6aa6fc3743e78f355ab8939aab224",
+     "not_before": 1800000000,
+     "not_after": 1800000060,
+     "approved_by_device": "d1"
+    },
+    "sig": "oaGumKotItwNyKGShB516mBY54DQpAoQkIjTI7g6jlNetf6gFHQAMUxOFqSgQAQlCouzkQttIazvJiwZCliQCg",
+    "key_id": "a98c70d81cf2b753"
+   }
+  },
+  {
+   "raw": "",
+   "error": "the grant is not base64url JSON"
+  },
+  {
+   "raw": "!!!!",
+   "error": "the grant is not base64url JSON"
+  },
+  {
+   "raw": "bm9wZQ",
+   "error": "the grant is not base64url JSON"
+  },
+  {
+   "raw": "W10",
+   "error": "the grant is not an envelope"
+  },
+  {
+   "raw": "e30",
+   "envelope": {}
+  },
+  {
+   "raw": "eyJhIjoxfQ",
+   "envelope": {
+    "a": 1
+   }
+  },
+  {
+   "raw": "eyJncmFudCI6eyJncmFudF9pZCI6ImctMDAwMSIsInJlcXVlc3RfaWQiOiIiLCJraW5kIjoicG9ydGFsX2xvZ2luIiwibm9kZSI6ImFsdGFpciIsInN1YmplY3QiOiJvcGVyYXRvciIsInBheWxvYWRfc2hhMjU2IjoiNmJjMzQ3ZmE0YTMxMmViMzQxNjFhYzRkODQ0YjhhN2Q5ZmE2YWE2ZmMzNzQzZTc4ZjM1NWFiODkzOWFhYjIyNCIsIm5vdF9iZWZvcmUiOjE4MDAwMDAwMDAsIm5vdF9hZnRlciI6MTgwMDAwMDA2MCwiYXBwcm92ZWRfYnlfZGV2aWNlIjoiZDEifSwic2lnIjoib2FHdW1Lb3RJdHdOeUtHU2hCNTE2bUJZNTREUXBBb1FrSWpUSTdnNmpsTmV0ZjZnRkhRQU1VeE9GcVNnUUFRbENvdXprUXR0SWF6dkppd1pDbGlRQ2ciLCJrZXlfaWQiOiJhOThjNzBkODFjZjJiNzUzIn",
+   "error": "the grant is not base64url JSON"
+  },
+  {
+   "raw": "a",
+   "error": "the grant is not base64url JSON"
+  },
+  {
+   "raw": "ab==",
+   "error": "the grant is not base64url JSON"
+  }
+ ],
+ "local_path": [
+  {
+   "raw": null,
+   "path": null
+  },
+  {
+   "raw": "",
+   "path": null
+  },
+  {
+   "raw": "/",
+   "path": "/"
+  },
+  {
+   "raw": "/trilium/",
+   "path": "/trilium/"
+  },
+  {
+   "raw": "//evil.example/",
+   "path": null
+  },
+  {
+   "raw": "https://evil.example/",
+   "path": null
+  },
+  {
+   "raw": "/a?b=c",
+   "path": null
+  },
+  {
+   "raw": "/a#b",
+   "path": null
+  },
+  {
+   "raw": "/a\\b",
+   "path": null
+  },
+  {
+   "raw": "/a\nb",
+   "path": null
+  },
+  {
+   "raw": "/a\rb",
+   "path": null
+  },
+  {
+   "raw": "/a\tb",
+   "path": null
+  },
+  {
+   "raw": "/a\u0000b",
+   "path": null
+  },
+  {
+   "raw": "relative",
+   "path": null
+  },
+  {
+   "raw": "/café",
+   "path": "/café"
+  },
+  {
+   "raw": "/%2F%2Fevil",
+   "path": "/%2F%2Fevil"
+  },
+  {
+   "raw": "/./x",
+   "path": "/./x"
+  },
+  {
+   "raw": "/ ",
+   "path": "/ "
+  },
+  {
+   "raw": "///x",
+   "path": null
+  }
+ ],
+ "host_of": [
+  {
+   "header": null,
+   "host": ""
+  },
+  {
+   "header": "",
+   "host": ""
+  },
+  {
+   "header": "node.example.test",
+   "host": "node.example.test"
+  },
+  {
+   "header": "Node.Example.TEST:8443",
+   "host": "node.example.test"
+  },
+  {
+   "header": "node.example.test.:443",
+   "host": "node.example.test."
+  },
+  {
+   "header": "[::1]:8443",
+   "host": "::1"
+  },
+  {
+   "header": "[FE80::1%ETH0]:1",
+   "host": "fe80::1%ETH0"
+  },
+  {
+   "header": "[fe80::1%]",
+   "host": "",
+   "python_raised": true
+  },
+  {
+   "header": "[fe80::1%a%b]",
+   "host": "",
+   "python_raised": true
+  },
+  {
+   "header": "user@host:1",
+   "host": "host"
+  },
+  {
+   "header": "a@b@c",
+   "host": "c"
+  },
+  {
+   "header": "host/path",
+   "host": "host"
+  },
+  {
+   "header": "host?x",
+   "host": "host"
+  },
+  {
+   "header": "host#f",
+   "host": "host"
+  },
+  {
+   "header": "[::1",
+   "host": "",
+   "python_raised": true
+  },
+  {
+   "header": "::1]",
+   "host": "",
+   "python_raised": true
+  },
+  {
+   "header": "[1.2.3.4]",
+   "host": "",
+   "python_raised": true
+  },
+  {
+   "header": "[v1.x]",
+   "host": "v1.x"
+  },
+  {
+   "header": "[V1.x]",
+   "host": "",
+   "python_raised": true
+  },
+  {
+   "header": "[vZ.x]",
+   "host": "",
+   "python_raised": true
+  },
+  {
+   "header": "[v1.]",
+   "host": "",
+   "python_raised": true
+  },
+  {
+   "header": "[::1]x",
+   "host": "",
+   "python_raised": true
+  },
+  {
+   "header": "[::1]:x",
+   "host": "::1"
+  },
+  {
+   "header": " host",
+   "host": " host"
+  },
+  {
+   "header": "ho\tst",
+   "host": "host"
+  },
+  {
+   "header": "h\nost",
+   "host": "host"
+  },
+  {
+   "header": "HÖST.example",
+   "host": "höst.example"
+  },
+  {
+   "header": "xn--bcher-kva.example",
+   "host": "xn--bcher-kva.example"
+  },
+  {
+   "header": "host:",
+   "host": "host"
+  },
+  {
+   "header": ":80",
+   "host": ""
+  },
+  {
+   "header": "[::1]:",
+   "host": "::1"
+  },
+  {
+   "header": "[]",
+   "host": "",
+   "python_raised": true
+  },
+  {
+   "header": "[::ffff:1.2.3.4]",
+   "host": "::ffff:1.2.3.4"
+  },
+  {
+   "header": "[1:2:3:4:5:6:7:8]",
+   "host": "1:2:3:4:5:6:7:8"
+  },
+  {
+   "header": "[1:2:3:4:5:6:7:8:9]",
+   "host": "",
+   "python_raised": true
+  },
+  {
+   "header": "[::01234]",
+   "host": "",
+   "python_raised": true
+  },
+  {
+   "header": "İstanbul",
+   "host": "i̇stanbul"
+  },
+  {
+   "header": "a:b:c",
+   "host": "a"
+  },
+  {
+   "header": "@",
+   "host": ""
+  },
+  {
+   "header": "u:p@[::2]:3",
+   "host": "::2"
+  }
+ ],
+ "accept": [
+  {
+   "name": "good",
+   "raw": "eyJncmFudCI6eyJncmFudF9pZCI6ImctMDAwMSIsInJlcXVlc3RfaWQiOiIiLCJraW5kIjoicG9ydGFsX2xvZ2luIiwibm9kZSI6ImFsdGFpciIsInN1YmplY3QiOiJvcGVyYXRvciIsInBheWxvYWRfc2hhMjU2IjoiNmJjMzQ3ZmE0YTMxMmViMzQxNjFhYzRkODQ0YjhhN2Q5ZmE2YWE2ZmMzNzQzZTc4ZjM1NWFiODkzOWFhYjIyNCIsIm5vdF9iZWZvcmUiOjE4MDAwMDAwMDAsIm5vdF9hZnRlciI6MTgwMDAwMDA2MCwiYXBwcm92ZWRfYnlfZGV2aWNlIjoiZDEifSwic2lnIjoib2FHdW1Lb3RJdHdOeUtHU2hCNTE2bUJZNTREUXBBb1FrSWpUSTdnNmpsTmV0ZjZnRkhRQU1VeE9GcVNnUUFRbENvdXprUXR0SWF6dkppd1pDbGlRQ2ciLCJrZXlfaWQiOiJhOThjNzBkODFjZjJiNzUzIn0",
+   "host": "node.example.test",
+   "path": "/trilium/",
+   "now": 1800000000,
+   "result": {
+    "subject": "operator"
+   }
+  },
+  {
+   "name": "good at not_before",
+   "raw": "eyJncmFudCI6eyJncmFudF9pZCI6ImctMDAwMSIsInJlcXVlc3RfaWQiOiIiLCJraW5kIjoicG9ydGFsX2xvZ2luIiwibm9kZSI6ImFsdGFpciIsInN1YmplY3QiOiJvcGVyYXRvciIsInBheWxvYWRfc2hhMjU2IjoiNmJjMzQ3ZmE0YTMxMmViMzQxNjFhYzRkODQ0YjhhN2Q5ZmE2YWE2ZmMzNzQzZTc4ZjM1NWFiODkzOWFhYjIyNCIsIm5vdF9iZWZvcmUiOjE4MDAwMDAwMDAsIm5vdF9hZnRlciI6MTgwMDAwMDA2MCwiYXBwcm92ZWRfYnlfZGV2aWNlIjoiZDEifSwic2lnIjoib2FHdW1Lb3RJdHdOeUtHU2hCNTE2bUJZNTREUXBBb1FrSWpUSTdnNmpsTmV0ZjZnRkhRQU1VeE9GcVNnUUFRbENvdXprUXR0SWF6dkppd1pDbGlRQ2ciLCJrZXlfaWQiOiJhOThjNzBkODFjZjJiNzUzIn0",
+   "host": "node.example.test",
+   "path": "/trilium/",
+   "now": 1800000000,
+   "result": {
+    "subject": "operator"
+   }
+  },
+  {
+   "name": "good mid-second",
+   "raw": "eyJncmFudCI6eyJncmFudF9pZCI6ImctMDAwMSIsInJlcXVlc3RfaWQiOiIiLCJraW5kIjoicG9ydGFsX2xvZ2luIiwibm9kZSI6ImFsdGFpciIsInN1YmplY3QiOiJvcGVyYXRvciIsInBheWxvYWRfc2hhMjU2IjoiNmJjMzQ3ZmE0YTMxMmViMzQxNjFhYzRkODQ0YjhhN2Q5ZmE2YWE2ZmMzNzQzZTc4ZjM1NWFiODkzOWFhYjIyNCIsIm5vdF9iZWZvcmUiOjE4MDAwMDAwMDAsIm5vdF9hZnRlciI6MTgwMDAwMDA2MCwiYXBwcm92ZWRfYnlfZGV2aWNlIjoiZDEifSwic2lnIjoib2FHdW1Lb3RJdHdOeUtHU2hCNTE2bUJZNTREUXBBb1FrSWpUSTdnNmpsTmV0ZjZnRkhRQU1VeE9GcVNnUUFRbENvdXprUXR0SWF6dkppd1pDbGlRQ2ciLCJrZXlfaWQiOiJhOThjNzBkODFjZjJiNzUzIn0",
+   "host": "node.example.test",
+   "path": "/trilium/",
+   "now": 1800000000.5,
+   "result": {
+    "subject": "operator"
+   }
+  },
+  {
+   "name": "another node",
+   "raw": "eyJncmFudCI6eyJncmFudF9pZCI6ImctMDAwMSIsInJlcXVlc3RfaWQiOiIiLCJraW5kIjoicG9ydGFsX2xvZ2luIiwibm9kZSI6ImNhcGVsbGEiLCJzdWJqZWN0Ijoib3BlcmF0b3IiLCJwYXlsb2FkX3NoYTI1NiI6IjZiYzM0N2ZhNGEzMTJlYjM0MTYxYWM0ZDg0NGI4YTdkOWZhNmFhNmZjMzc0M2U3OGYzNTVhYjg5MzlhYWIyMjQiLCJub3RfYmVmb3JlIjoxODAwMDAwMDAwLCJub3RfYWZ0ZXIiOjE4MDAwMDAwNjAsImFwcHJvdmVkX2J5X2RldmljZSI6ImQxIn0sInNpZyI6InI3YTc5bkFVbWpOS0wtY1c3c3pYZjlFOHBpc3RYaFIya1ZPbXJDeHpVNFpkaFZyWW1rTUdGakdKNXdLYUMtc0hYWXd6RXQ1NDZSeDBDeU5vQlh6U0JRIiwia2V5X2lkIjoiYTk4YzcwZDgxY2YyYjc1MyJ9",
+   "host": "node.example.test",
+   "path": "/trilium/",
+   "now": 1800000000,
+   "result": {
+    "error": "the grant does not cover node 'altair'"
+   }
+  },
+  {
+   "name": "a node list",
+   "raw": "eyJncmFudCI6eyJncmFudF9pZCI6ImctMDAwMSIsInJlcXVlc3RfaWQiOiIiLCJraW5kIjoicG9ydGFsX2xvZ2luIiwibm9kZSI6bnVsbCwic3ViamVjdCI6Im9wZXJhdG9yIiwicGF5bG9hZF9zaGEyNTYiOiI2YmMzNDdmYTRhMzEyZWIzNDE2MWFjNGQ4NDRiOGE3ZDlmYTZhYTZmYzM3NDNlNzhmMzU1YWI4OTM5YWFiMjI0Iiwibm90X2JlZm9yZSI6MTgwMDAwMDAwMCwibm90X2FmdGVyIjoxODAwMDAwMDYwLCJhcHByb3ZlZF9ieV9kZXZpY2UiOiJkMSIsIm5vZGVzIjpbImNhcGVsbGEiLCJhbHRhaXIiXX0sInNpZyI6InByM0l4RkNqNlY2MGttZ2wyT3BLNXh6Smc1aXZYN3EtcDVjYTh4djFWM1ZxeE55R0l2elV4VU80ck1jQlprS01aa0Vya2dWQ2pfLUdtd09EakRkX0J3Iiwia2V5X2lkIjoiYTk4YzcwZDgxY2YyYjc1MyJ9",
+   "host": "node.example.test",
+   "path": "/trilium/",
+   "now": 1800000000,
+   "result": {
+    "subject": "operator"
+   }
+  },
+  {
+   "name": "a node list without this node",
+   "raw": "eyJncmFudCI6eyJncmFudF9pZCI6ImctMDAwMSIsInJlcXVlc3RfaWQiOiIiLCJraW5kIjoicG9ydGFsX2xvZ2luIiwibm9kZSI6bnVsbCwic3ViamVjdCI6Im9wZXJhdG9yIiwicGF5bG9hZF9zaGEyNTYiOiI2YmMzNDdmYTRhMzEyZWIzNDE2MWFjNGQ4NDRiOGE3ZDlmYTZhYTZmYzM3NDNlNzhmMzU1YWI4OTM5YWFiMjI0Iiwibm90X2JlZm9yZSI6MTgwMDAwMDAwMCwibm90X2FmdGVyIjoxODAwMDAwMDYwLCJhcHByb3ZlZF9ieV9kZXZpY2UiOiJkMSIsIm5vZGVzIjpbImNhcGVsbGEiXX0sInNpZyI6IjRVcWM1dlR6aEdoNXVLb1pwV1pkX1liTWQzQ2g2SjcwcWdJclV3dWtpckRDY2dzc0otSTc2UGNyVkxIX2puRkNiV1M4QmZrbXQ4R09GR0xpN0dxWUNRIiwia2V5X2lkIjoiYTk4YzcwZDgxY2YyYjc1MyJ9",
+   "host": "node.example.test",
+   "path": "/trilium/",
+   "now": 1800000000,
+   "result": {
+    "error": "the grant does not cover node 'altair'"
+   }
+  },
+  {
+   "name": "another host",
+   "raw": "eyJncmFudCI6eyJncmFudF9pZCI6ImctMDAwMSIsInJlcXVlc3RfaWQiOiIiLCJraW5kIjoicG9ydGFsX2xvZ2luIiwibm9kZSI6ImFsdGFpciIsInN1YmplY3QiOiJvcGVyYXRvciIsInBheWxvYWRfc2hhMjU2IjoiNzExYjViM2Y4ODc3YWJiMGQ4NWE2NTQyM2Q0NzQ3OWE3MWRmYTdmZWQxOTEzZDkwM2I5NjJkMzU4MjY1NWYyMSIsIm5vdF9iZWZvcmUiOjE4MDAwMDAwMDAsIm5vdF9hZnRlciI6MTgwMDAwMDA2MCwiYXBwcm92ZWRfYnlfZGV2aWNlIjoiZDEifSwic2lnIjoiR1lBczRfNUdHSFM0Tm4tM1JTcldDRk9RS3JVUG52MVNNS1djM2VXXzVZb0NjV0szWjVudW1YazJETldCNWxCZkd2LXVLeVJuX29fYUg2N1BvbGoyRHciLCJrZXlfaWQiOiJhOThjNzBkODFjZjJiNzUzIn0",
+   "host": "node.example.test",
+   "path": "/trilium/",
+   "now": 1800000000,
+   "result": {
+    "error": "the grant does not cover this request"
+   }
+  },
+  {
+   "name": "asked for another host",
+   "raw": "eyJncmFudCI6eyJncmFudF9pZCI6ImctMDAwMSIsInJlcXVlc3RfaWQiOiIiLCJraW5kIjoicG9ydGFsX2xvZ2luIiwibm9kZSI6ImFsdGFpciIsInN1YmplY3QiOiJvcGVyYXRvciIsInBheWxvYWRfc2hhMjU2IjoiNmJjMzQ3ZmE0YTMxMmViMzQxNjFhYzRkODQ0YjhhN2Q5ZmE2YWE2ZmMzNzQzZTc4ZjM1NWFiODkzOWFhYjIyNCIsIm5vdF9iZWZvcmUiOjE4MDAwMDAwMDAsIm5vdF9hZnRlciI6MTgwMDAwMDA2MCwiYXBwcm92ZWRfYnlfZGV2aWNlIjoiZDEifSwic2lnIjoib2FHdW1Lb3RJdHdOeUtHU2hCNTE2bUJZNTREUXBBb1FrSWpUSTdnNmpsTmV0ZjZnRkhRQU1VeE9GcVNnUUFRbENvdXprUXR0SWF6dkppd1pDbGlRQ2ciLCJrZXlfaWQiOiJhOThjNzBkODFjZjJiNzUzIn0",
+   "host": "other.example.test",
+   "path": "/trilium/",
+   "now": 1800000000,
+   "result": {
+    "error": "the grant does not cover this request"
+   }
+  },
+  {
+   "name": "another path",
+   "raw": "eyJncmFudCI6eyJncmFudF9pZCI6ImctMDAwMSIsInJlcXVlc3RfaWQiOiIiLCJraW5kIjoicG9ydGFsX2xvZ2luIiwibm9kZSI6ImFsdGFpciIsInN1YmplY3QiOiJvcGVyYXRvciIsInBheWxvYWRfc2hhMjU2IjoiN2IyOWNiMzMwMDhlNjZlYWZjMjA1MDBmYjUxM2M5MDZiMDQxYTRlNWE3NjRlMjZkNGQ4YzFmNzhiMzUyNjMwNCIsIm5vdF9iZWZvcmUiOjE4MDAwMDAwMDAsIm5vdF9hZnRlciI6MTgwMDAwMDA2MCwiYXBwcm92ZWRfYnlfZGV2aWNlIjoiZDEifSwic2lnIjoiXzNOQXp6ZDNrMUNDTGNJb0JGeUgzaGZOMTd6YjRRYXBkQjZ4N3BycmNfbFZOa2xPUk5jUWFoOVNObGZhZVNieE1JMXNaRVdjZUNldjBtREZPb2oyQWciLCJrZXlfaWQiOiJhOThjNzBkODFjZjJiNzUzIn0",
+   "host": "node.example.test",
+   "path": "/trilium/",
+   "now": 1800000000,
+   "result": {
+    "error": "the grant does not cover this request"
+   }
+  },
+  {
+   "name": "asked for another path",
+   "raw": "eyJncmFudCI6eyJncmFudF9pZCI6ImctMDAwMSIsInJlcXVlc3RfaWQiOiIiLCJraW5kIjoicG9ydGFsX2xvZ2luIiwibm9kZSI6ImFsdGFpciIsInN1YmplY3QiOiJvcGVyYXRvciIsInBheWxvYWRfc2hhMjU2IjoiNmJjMzQ3ZmE0YTMxMmViMzQxNjFhYzRkODQ0YjhhN2Q5ZmE2YWE2ZmMzNzQzZTc4ZjM1NWFiODkzOWFhYjIyNCIsIm5vdF9iZWZvcmUiOjE4MDAwMDAwMDAsIm5vdF9hZnRlciI6MTgwMDAwMDA2MCwiYXBwcm92ZWRfYnlfZGV2aWNlIjoiZDEifSwic2lnIjoib2FHdW1Lb3RJdHdOeUtHU2hCNTE2bUJZNTREUXBBb1FrSWpUSTdnNmpsTmV0ZjZnRkhRQU1VeE9GcVNnUUFRbENvdXprUXR0SWF6dkppd1pDbGlRQ2ciLCJrZXlfaWQiOiJhOThjNzBkODFjZjJiNzUzIn0",
+   "host": "node.example.test",
+   "path": "/elsewhere",
+   "now": 1800000000,
+   "result": {
+    "error": "the grant does not cover this request"
+   }
+  },
+  {
+   "name": "another kind",
+   "raw": "eyJncmFudCI6eyJncmFudF9pZCI6ImctMDAwMSIsInJlcXVlc3RfaWQiOiIiLCJraW5kIjoiYWRtaW5fc3NoIiwibm9kZSI6ImFsdGFpciIsInN1YmplY3QiOiJvcGVyYXRvciIsInBheWxvYWRfc2hhMjU2IjoiNmJjMzQ3ZmE0YTMxMmViMzQxNjFhYzRkODQ0YjhhN2Q5ZmE2YWE2ZmMzNzQzZTc4ZjM1NWFiODkzOWFhYjIyNCIsIm5vdF9iZWZvcmUiOjE4MDAwMDAwMDAsIm5vdF9hZnRlciI6MTgwMDAwMDA2MCwiYXBwcm92ZWRfYnlfZGV2aWNlIjoiZDEifSwic2lnIjoiVk9ldDNIRS1ya3BOZVd0SXZ3V1VIZzdyWjJGZ0ZvSEdBdEtEbllIcGVsQktVdHVWVlZqY19JSi1SNHRDRHlOdWxSN0labkY3WXRqX25SV3QtZ1dIQ2ciLCJrZXlfaWQiOiJhOThjNzBkODFjZjJiNzUzIn0",
+   "host": "node.example.test",
+   "path": "/trilium/",
+   "now": 1800000000,
+   "result": {
+    "error": "the grant is for 'admin_ssh', not 'portal_login'"
+   }
+  },
+  {
+   "name": "no kind",
+   "raw": "eyJncmFudCI6eyJncmFudF9pZCI6ImctMDAwMSIsInJlcXVlc3RfaWQiOiIiLCJub2RlIjoiYWx0YWlyIiwic3ViamVjdCI6Im9wZXJhdG9yIiwicGF5bG9hZF9zaGEyNTYiOiI2YmMzNDdmYTRhMzEyZWIzNDE2MWFjNGQ4NDRiOGE3ZDlmYTZhYTZmYzM3NDNlNzhmMzU1YWI4OTM5YWFiMjI0Iiwibm90X2JlZm9yZSI6MTgwMDAwMDAwMCwibm90X2FmdGVyIjoxODAwMDAwMDYwLCJhcHByb3ZlZF9ieV9kZXZpY2UiOiJkMSJ9LCJzaWciOiJOSHNqVmtJc21vcjNMeHRpVzJpUHF2WWdkNGpqbmsyZmhEVkNKbGxHV3FFZmZzUmpxdUk4di1HZXd6ckk2d1NTWjA3ZkJWbTgta2lJUlNDRkZ1Z29EUSIsImtleV9pZCI6ImE5OGM3MGQ4MWNmMmI3NTMifQ",
+   "host": "node.example.test",
+   "path": "/trilium/",
+   "now": 1800000000,
+   "result": {
+    "error": "the grant is for None, not 'portal_login'"
+   }
+  },
+  {
+   "name": "expired",
+   "raw": "eyJncmFudCI6eyJncmFudF9pZCI6ImctMDAwMSIsInJlcXVlc3RfaWQiOiIiLCJraW5kIjoicG9ydGFsX2xvZ2luIiwibm9kZSI6ImFsdGFpciIsInN1YmplY3QiOiJvcGVyYXRvciIsInBheWxvYWRfc2hhMjU2IjoiNmJjMzQ3ZmE0YTMxMmViMzQxNjFhYzRkODQ0YjhhN2Q5ZmE2YWE2ZmMzNzQzZTc4ZjM1NWFiODkzOWFhYjIyNCIsIm5vdF9iZWZvcmUiOjE4MDAwMDAwMDAsIm5vdF9hZnRlciI6MTc5OTk5OTk5OSwiYXBwcm92ZWRfYnlfZGV2aWNlIjoiZDEifSwic2lnIjoiQ1hVZERBcmJNcDNsYlhYazVTMVA3ckg4bDNSX05TR0I3MmFwU1lwQnVNZ0dCVnBqR2trSFM5aURqUHZrX3RoMXpMeDIwelZKemJxNGhVVEljS1M5QnciLCJrZXlfaWQiOiJhOThjNzBkODFjZjJiNzUzIn0",
+   "host": "node.example.test",
+   "path": "/trilium/",
+   "now": 1800000000,
+   "result": {
+    "error": "expired"
+   }
+  },
+  {
+   "name": "expires now",
+   "raw": "eyJncmFudCI6eyJncmFudF9pZCI6ImctMDAwMSIsInJlcXVlc3RfaWQiOiIiLCJraW5kIjoicG9ydGFsX2xvZ2luIiwibm9kZSI6ImFsdGFpciIsInN1YmplY3QiOiJvcGVyYXRvciIsInBheWxvYWRfc2hhMjU2IjoiNmJjMzQ3ZmE0YTMxMmViMzQxNjFhYzRkODQ0YjhhN2Q5ZmE2YWE2ZmMzNzQzZTc4ZjM1NWFiODkzOWFhYjIyNCIsIm5vdF9iZWZvcmUiOjE4MDAwMDAwMDAsIm5vdF9hZnRlciI6MTgwMDAwMDAwMCwiYXBwcm92ZWRfYnlfZGV2aWNlIjoiZDEifSwic2lnIjoiencyWFF6UzhkZFBSSF9XRzd0YTFFemFEeXU3N0VXMmxwTUJuZEVZLUpIclg1cEpxMktTWDBYZ3E0ZGZEWlhVV1lRc29vUFF6WVJtb2hXcHNWbnktQVEiLCJrZXlfaWQiOiJhOThjNzBkODFjZjJiNzUzIn0",
+   "host": "node.example.test",
+   "path": "/trilium/",
+   "now": 1800000000,
+   "result": {
+    "error": "expired"
+   }
+  },
+  {
+   "name": "expires in half a second",
+   "raw": "eyJncmFudCI6eyJncmFudF9pZCI6ImctMDAwMSIsInJlcXVlc3RfaWQiOiIiLCJraW5kIjoicG9ydGFsX2xvZ2luIiwibm9kZSI6ImFsdGFpciIsInN1YmplY3QiOiJvcGVyYXRvciIsInBheWxvYWRfc2hhMjU2IjoiNmJjMzQ3ZmE0YTMxMmViMzQxNjFhYzRkODQ0YjhhN2Q5ZmE2YWE2ZmMzNzQzZTc4ZjM1NWFiODkzOWFhYjIyNCIsIm5vdF9iZWZvcmUiOjE4MDAwMDAwMDAsIm5vdF9hZnRlciI6MTgwMDAwMDAwMSwiYXBwcm92ZWRfYnlfZGV2aWNlIjoiZDEifSwic2lnIjoiemhPNi10bUxyeVZ2MlpCUWZqR2ZsY0FlM3c0aTJxci1ZNWlNZWk2RzFTeHFhUi1vcEFNaDFDbk5rSExFSXdILVdVRUV3bldXdk1NZmNLaFJWelJiRHciLCJrZXlfaWQiOiJhOThjNzBkODFjZjJiNzUzIn0",
+   "host": "node.example.test",
+   "path": "/trilium/",
+   "now": 1800000000.5,
+   "result": {
+    "subject": "operator"
+   }
+  },
+  {
+   "name": "not valid yet",
+   "raw": "eyJncmFudCI6eyJncmFudF9pZCI6ImctMDAwMSIsInJlcXVlc3RfaWQiOiIiLCJraW5kIjoicG9ydGFsX2xvZ2luIiwibm9kZSI6ImFsdGFpciIsInN1YmplY3QiOiJvcGVyYXRvciIsInBheWxvYWRfc2hhMjU2IjoiNmJjMzQ3ZmE0YTMxMmViMzQxNjFhYzRkODQ0YjhhN2Q5ZmE2YWE2ZmMzNzQzZTc4ZjM1NWFiODkzOWFhYjIyNCIsIm5vdF9iZWZvcmUiOjE4MDAwMDAwMTAsIm5vdF9hZnRlciI6MTgwMDAwMDA2MCwiYXBwcm92ZWRfYnlfZGV2aWNlIjoiZDEifSwic2lnIjoiNGtFVmRMUDhsYWlBbUR3ZDJkU0trLUhMOUVVMmpwNGNRVmdENXpLcGtCNUFNc0Job1BOYkdDVEdDVXduQWctTUdDX0Q0a1dKVVgxYW9scFM5MURsRHciLCJrZXlfaWQiOiJhOThjNzBkODFjZjJiNzUzIn0",
+   "host": "node.example.test",
+   "path": "/trilium/",
+   "now": 1800000000,
+   "result": {
+    "error": "not valid yet"
+   }
+  },
+  {
+   "name": "valid in half a second",
+   "raw": "eyJncmFudCI6eyJncmFudF9pZCI6ImctMDAwMSIsInJlcXVlc3RfaWQiOiIiLCJraW5kIjoicG9ydGFsX2xvZ2luIiwibm9kZSI6ImFsdGFpciIsInN1YmplY3QiOiJvcGVyYXRvciIsInBheWxvYWRfc2hhMjU2IjoiNmJjMzQ3ZmE0YTMxMmViMzQxNjFhYzRkODQ0YjhhN2Q5ZmE2YWE2ZmMzNzQzZTc4ZjM1NWFiODkzOWFhYjIyNCIsIm5vdF9iZWZvcmUiOjE4MDAwMDAwMDEsIm5vdF9hZnRlciI6MTgwMDAwMDA2MCwiYXBwcm92ZWRfYnlfZGV2aWNlIjoiZDEifSwic2lnIjoiVTlYNk8yY2F2VFZwcDNSTkFlWU9WY2lFNHFhMlVQVi10S0JCMm5reDJXZ29VZ0d6SUh0a29pSlJjWS13NmU2YW5TNk8yQnhQal96QUpINlZGZmFGRHciLCJrZXlfaWQiOiJhOThjNzBkODFjZjJiNzUzIn0",
+   "host": "node.example.test",
+   "path": "/trilium/",
+   "now": 1800000000.5,
+   "result": {
+    "error": "not valid yet"
+   }
+  },
+  {
+   "name": "no not_before",
+   "raw": "eyJncmFudCI6eyJncmFudF9pZCI6ImctMDAwMSIsInJlcXVlc3RfaWQiOiIiLCJraW5kIjoicG9ydGFsX2xvZ2luIiwibm9kZSI6ImFsdGFpciIsInN1YmplY3QiOiJvcGVyYXRvciIsInBheWxvYWRfc2hhMjU2IjoiNmJjMzQ3ZmE0YTMxMmViMzQxNjFhYzRkODQ0YjhhN2Q5ZmE2YWE2ZmMzNzQzZTc4ZjM1NWFiODkzOWFhYjIyNCIsIm5vdF9hZnRlciI6MTgwMDAwMDA2MCwiYXBwcm92ZWRfYnlfZGV2aWNlIjoiZDEifSwic2lnIjoiMk9HSUtBYzNqc3NkeXRaZENiZFdRWkxtbUtZeGZTZ21FYUUtajQxODlCSklpSWl6ZklYNHhyOGN6YkU2cGp0c2FMOHRrWE83c2lONlE0M0x2U0dVQmciLCJrZXlfaWQiOiJhOThjNzBkODFjZjJiNzUzIn0",
+   "host": "node.example.test",
+   "path": "/trilium/",
+   "now": 1800000000,
+   "result": {
+    "subject": "operator"
+   }
+  },
+  {
+   "name": "a float time",
+   "raw": "eyJncmFudCI6eyJncmFudF9pZCI6ImctMDAwMSIsInJlcXVlc3RfaWQiOiIiLCJraW5kIjoicG9ydGFsX2xvZ2luIiwibm9kZSI6ImFsdGFpciIsInN1YmplY3QiOiJvcGVyYXRvciIsInBheWxvYWRfc2hhMjU2IjoiNmJjMzQ3ZmE0YTMxMmViMzQxNjFhYzRkODQ0YjhhN2Q5ZmE2YWE2ZmMzNzQzZTc4ZjM1NWFiODkzOWFhYjIyNCIsIm5vdF9iZWZvcmUiOjE4MDAwMDAwMDAsIm5vdF9hZnRlciI6MTgwMDAwMDA2MC4wLCJhcHByb3ZlZF9ieV9kZXZpY2UiOiJkMSJ9LCJzaWciOiJjTEZLdWpOV3lkR3dfNDNwWkZadWRwb3FiU3Y1ZklPLVprUk9lT3BJWmVMUGYzVHpUTXRIYVBmeWtzcnN3Z3dOTUREU2hHcEVZV3NWclA5S1NDcGtDUSIsImtleV9pZCI6ImE5OGM3MGQ4MWNmMmI3NTMifQ",
+   "host": "node.example.test",
+   "path": "/trilium/",
+   "now": 1800000000,
+   "result": {
+    "error": "not_after is a float, and signed times are integers"
+   }
+  },
+  {
+   "name": "no subject",
+   "raw": "eyJncmFudCI6eyJncmFudF9pZCI6ImctMDAwMSIsInJlcXVlc3RfaWQiOiIiLCJraW5kIjoicG9ydGFsX2xvZ2luIiwibm9kZSI6ImFsdGFpciIsInBheWxvYWRfc2hhMjU2IjoiNmJjMzQ3ZmE0YTMxMmViMzQxNjFhYzRkODQ0YjhhN2Q5ZmE2YWE2ZmMzNzQzZTc4ZjM1NWFiODkzOWFhYjIyNCIsIm5vdF9iZWZvcmUiOjE4MDAwMDAwMDAsIm5vdF9hZnRlciI6MTgwMDAwMDA2MCwiYXBwcm92ZWRfYnlfZGV2aWNlIjoiZDEifSwic2lnIjoiN1dWU1pxNkFfNjZ4LUo4bS0wXzJmcVp4a2gwdEY3Zi1LQWNSTk4wNURLLWRlVmgxRHFJSDZtU3JtMzUxay03ZmRaUFdieGFUS3BPNDcyME5HaFhvQkEiLCJrZXlfaWQiOiJhOThjNzBkODFjZjJiNzUzIn0",
+   "host": "node.example.test",
+   "path": "/trilium/",
+   "now": 1800000000,
+   "result": {
+    "subject": ""
+   }
+  },
+  {
+   "name": "an empty subject",
+   "raw": "eyJncmFudCI6eyJncmFudF9pZCI6ImctMDAwMSIsInJlcXVlc3RfaWQiOiIiLCJraW5kIjoicG9ydGFsX2xvZ2luIiwibm9kZSI6ImFsdGFpciIsInN1YmplY3QiOiIiLCJwYXlsb2FkX3NoYTI1NiI6IjZiYzM0N2ZhNGEzMTJlYjM0MTYxYWM0ZDg0NGI4YTdkOWZhNmFhNmZjMzc0M2U3OGYzNTVhYjg5MzlhYWIyMjQiLCJub3RfYmVmb3JlIjoxODAwMDAwMDAwLCJub3RfYWZ0ZXIiOjE4MDAwMDAwNjAsImFwcHJvdmVkX2J5X2RldmljZSI6ImQxIn0sInNpZyI6Ijc1LTNIQ1h0MTFEcjExUF9ObFJfaFRXNVZueW1pTVpZUklGV3N0WG11WEVZNkRUS3YwVXFiZWZsakdXRENtekd6X3cwbjdaeVkyRVJ0d1RSWDh6N0JBIiwia2V5X2lkIjoiYTk4YzcwZDgxY2YyYjc1MyJ9",
+   "host": "node.example.test",
+   "path": "/trilium/",
+   "now": 1800000000,
+   "result": {
+    "subject": ""
+   }
+  },
+  {
+   "name": "a unicode path",
+   "raw": "eyJncmFudCI6eyJncmFudF9pZCI6ImctMDAwMSIsInJlcXVlc3RfaWQiOiIiLCJraW5kIjoicG9ydGFsX2xvZ2luIiwibm9kZSI6ImFsdGFpciIsInN1YmplY3QiOiJvcGVyYXRvciIsInBheWxvYWRfc2hhMjU2IjoiMjAxYjUyZWM2NDczZTk0YTJjMTg2YTA0ZDE3NzMyYTRmOTk1Y2IzMGI1NWE1Y2QwODIwNTA2NDAwMmU5MmQxMCIsIm5vdF9iZWZvcmUiOjE4MDAwMDAwMDAsIm5vdF9hZnRlciI6MTgwMDAwMDA2MCwiYXBwcm92ZWRfYnlfZGV2aWNlIjoiZDEifSwic2lnIjoiaWhRMHlUTloyUjJCSGxIR2JnNlJhTFEybVVCR0pLbUl4dG5uRmNoX0pZVXowWUxRNWNTcFowQTVpZF83c3F0Zzg3RGJjMFU4enRnZFRVYnFMY0l1RHciLCJrZXlfaWQiOiJhOThjNzBkODFjZjJiNzUzIn0",
+   "host": "node.example.test",
+   "path": "/café/☃",
+   "now": 1800000000,
+   "result": {
+    "subject": "operator"
+   }
+  },
+  {
+   "name": "signed by another key",
+   "raw": "eyJncmFudCI6eyJncmFudF9pZCI6ImctMDAwMSIsInJlcXVlc3RfaWQiOiIiLCJraW5kIjoicG9ydGFsX2xvZ2luIiwibm9kZSI6ImFsdGFpciIsInN1YmplY3QiOiJvcGVyYXRvciIsInBheWxvYWRfc2hhMjU2IjoiNmJjMzQ3ZmE0YTMxMmViMzQxNjFhYzRkODQ0YjhhN2Q5ZmE2YWE2ZmMzNzQzZTc4ZjM1NWFiODkzOWFhYjIyNCIsIm5vdF9iZWZvcmUiOjE4MDAwMDAwMDAsIm5vdF9hZnRlciI6MTgwMDAwMDA2MCwiYXBwcm92ZWRfYnlfZGV2aWNlIjoiZDEifSwic2lnIjoibFNBQk5yMkxPTWctRUlpcDFFVjVJdmxjZTNKWExIWlVneldjUEdHOXZIcV9hRlZYWlZocUlyQllUei0wWGVaZ1RaNGhhaDhWT0tTc3NpV3hHVS16Q1EiLCJrZXlfaWQiOiJjZTM0MWY1NmQ0Njc4M2ZhIn0",
+   "host": "node.example.test",
+   "path": "/trilium/",
+   "now": 1800000000,
+   "result": {
+    "error": "the envelope names another key"
+   }
+  },
+  {
+   "name": "naming this key, signed by another",
+   "raw": "eyJncmFudCI6eyJncmFudF9pZCI6ImctMDAwMSIsInJlcXVlc3RfaWQiOiIiLCJraW5kIjoicG9ydGFsX2xvZ2luIiwibm9kZSI6ImFsdGFpciIsInN1YmplY3QiOiJvcGVyYXRvciIsInBheWxvYWRfc2hhMjU2IjoiNmJjMzQ3ZmE0YTMxMmViMzQxNjFhYzRkODQ0YjhhN2Q5ZmE2YWE2ZmMzNzQzZTc4ZjM1NWFiODkzOWFhYjIyNCIsIm5vdF9iZWZvcmUiOjE4MDAwMDAwMDAsIm5vdF9hZnRlciI6MTgwMDAwMDA2MCwiYXBwcm92ZWRfYnlfZGV2aWNlIjoiZDEifSwic2lnIjoibFNBQk5yMkxPTWctRUlpcDFFVjVJdmxjZTNKWExIWlVneldjUEdHOXZIcV9hRlZYWlZocUlyQllUei0wWGVaZ1RaNGhhaDhWT0tTc3NpV3hHVS16Q1EiLCJrZXlfaWQiOiJhOThjNzBkODFjZjJiNzUzIn0",
+   "host": "node.example.test",
+   "path": "/trilium/",
+   "now": 1800000000,
+   "result": {
+    "error": "the signature does not verify"
+   }
+  },
+  {
+   "name": "a tampered body",
+   "raw": "eyJncmFudCI6eyJncmFudF9pZCI6ImctMDAwMSIsInJlcXVlc3RfaWQiOiIiLCJraW5kIjoicG9ydGFsX2xvZ2luIiwibm9kZSI6ImFsdGFpciIsInN1YmplY3QiOiJyb290IiwicGF5bG9hZF9zaGEyNTYiOiI2YmMzNDdmYTRhMzEyZWIzNDE2MWFjNGQ4NDRiOGE3ZDlmYTZhYTZmYzM3NDNlNzhmMzU1YWI4OTM5YWFiMjI0Iiwibm90X2JlZm9yZSI6MTgwMDAwMDAwMCwibm90X2FmdGVyIjoxODAwMDAwMDYwLCJhcHByb3ZlZF9ieV9kZXZpY2UiOiJkMSJ9LCJzaWciOiJvYUd1bUtvdEl0d055S0dTaEI1MTZtQlk1NERRcEFvUWtJalRJN2c2amxOZXRmNmdGSFFBTVV4T0ZxU2dRQVFsQ291emtRdHRJYXp2Sml3WkNsaVFDZyIsImtleV9pZCI6ImE5OGM3MGQ4MWNmMmI3NTMifQ",
+   "host": "node.example.test",
+   "path": "/trilium/",
+   "now": 1800000000,
+   "result": {
+    "error": "the signature does not verify"
+   }
+  },
+  {
+   "name": "no sig",
+   "raw": "eyJncmFudCI6eyJncmFudF9pZCI6ImctMDAwMSIsInJlcXVlc3RfaWQiOiIiLCJraW5kIjoicG9ydGFsX2xvZ2luIiwibm9kZSI6ImFsdGFpciIsInN1YmplY3QiOiJvcGVyYXRvciIsInBheWxvYWRfc2hhMjU2IjoiNmJjMzQ3ZmE0YTMxMmViMzQxNjFhYzRkODQ0YjhhN2Q5ZmE2YWE2ZmMzNzQzZTc4ZjM1NWFiODkzOWFhYjIyNCIsIm5vdF9iZWZvcmUiOjE4MDAwMDAwMDAsIm5vdF9hZnRlciI6MTgwMDAwMDA2MCwiYXBwcm92ZWRfYnlfZGV2aWNlIjoiZDEifSwia2V5X2lkIjoiYTk4YzcwZDgxY2YyYjc1MyJ9",
+   "host": "node.example.test",
+   "path": "/trilium/",
+   "now": 1800000000,
+   "result": {
+    "error": "the signature does not verify"
+   }
+  },
+  {
+   "name": "no grant",
+   "raw": "eyJvcmRlciI6eyJncmFudF9pZCI6ImctMDAwMSIsInJlcXVlc3RfaWQiOiIiLCJraW5kIjoicG9ydGFsX2xvZ2luIiwibm9kZSI6ImFsdGFpciIsInN1YmplY3QiOiJvcGVyYXRvciIsInBheWxvYWRfc2hhMjU2IjoiNmJjMzQ3ZmE0YTMxMmViMzQxNjFhYzRkODQ0YjhhN2Q5ZmE2YWE2ZmMzNzQzZTc4ZjM1NWFiODkzOWFhYjIyNCIsIm5vdF9iZWZvcmUiOjE4MDAwMDAwMDAsIm5vdF9hZnRlciI6MTgwMDAwMDA2MCwiYXBwcm92ZWRfYnlfZGV2aWNlIjoiZDEifSwic2lnIjoiIiwia2V5X2lkIjoiYTk4YzcwZDgxY2YyYjc1MyJ9",
+   "host": "node.example.test",
+   "path": "/trilium/",
+   "now": 1800000000,
+   "result": {
+    "error": "no grant in the envelope"
+   }
+  },
+  {
+   "name": "padded",
+   "raw": "eyJncmFudCI6eyJncmFudF9pZCI6ImctMDAwMSIsInJlcXVlc3RfaWQiOiIiLCJraW5kIjoicG9ydGFsX2xvZ2luIiwibm9kZSI6ImFsdGFpciIsInN1YmplY3QiOiJvcGVyYXRvciIsInBheWxvYWRfc2hhMjU2IjoiNmJjMzQ3ZmE0YTMxMmViMzQxNjFhYzRkODQ0YjhhN2Q5ZmE2YWE2ZmMzNzQzZTc4ZjM1NWFiODkzOWFhYjIyNCIsIm5vdF9iZWZvcmUiOjE4MDAwMDAwMDAsIm5vdF9hZnRlciI6MTgwMDAwMDA2MCwiYXBwcm92ZWRfYnlfZGV2aWNlIjoiZDEifSwic2lnIjoib2FHdW1Lb3RJdHdOeUtHU2hCNTE2bUJZNTREUXBBb1FrSWpUSTdnNmpsTmV0ZjZnRkhRQU1VeE9GcVNnUUFRbENvdXprUXR0SWF6dkppd1pDbGlRQ2ciLCJrZXlfaWQiOiJhOThjNzBkODFjZjJiNzUzIn0=",
+   "host": "node.example.test",
+   "path": "/trilium/",
+   "now": 1800000000,
+   "result": {
+    "subject": "operator"
+   }
+  },
+  {
+   "name": "the standard alphabet",
+   "raw": "eyJncmFudCI6eyJncmFudF9pZCI6ImctMDAwMSIsInJlcXVlc3RfaWQiOiIiLCJraW5kIjoicG9ydGFsX2xvZ2luIiwibm9kZSI6ImFsdGFpciIsInN1YmplY3QiOiJvcGVyYXRvciIsInBheWxvYWRfc2hhMjU2IjoiNmJjMzQ3ZmE0YTMxMmViMzQxNjFhYzRkODQ0YjhhN2Q5ZmE2YWE2ZmMzNzQzZTc4ZjM1NWFiODkzOWFhYjIyNCIsIm5vdF9iZWZvcmUiOjE4MDAwMDAwMDAsIm5vdF9hZnRlciI6MTgwMDAwMDA2MCwiYXBwcm92ZWRfYnlfZGV2aWNlIjoiZDEifSwic2lnIjoib2FHdW1Lb3RJdHdOeUtHU2hCNTE2bUJZNTREUXBBb1FrSWpUSTdnNmpsTmV0ZjZnRkhRQU1VeE9GcVNnUUFRbENvdXprUXR0SWF6dkppd1pDbGlRQ2ciLCJrZXlfaWQiOiJhOThjNzBkODFjZjJiNzUzIn0",
+   "host": "node.example.test",
+   "path": "/trilium/",
+   "now": 1800000000,
+   "result": {
+    "subject": "operator"
+   }
+  },
+  {
+   "name": "empty",
+   "raw": "",
+   "host": "node.example.test",
+   "path": "/trilium/",
+   "now": 1800000000,
+   "result": {
+    "error": "the grant is not base64url JSON"
+   }
+  },
+  {
+   "name": "not base64",
+   "raw": "!!!!",
+   "host": "node.example.test",
+   "path": "/trilium/",
+   "now": 1800000000,
+   "result": {
+    "error": "the grant is not base64url JSON"
+   }
+  },
+  {
+   "name": "not json",
+   "raw": "bm9wZQ",
+   "host": "node.example.test",
+   "path": "/trilium/",
+   "now": 1800000000,
+   "result": {
+    "error": "the grant is not base64url JSON"
+   }
+  },
+  {
+   "name": "a list",
+   "raw": "W10",
+   "host": "node.example.test",
+   "path": "/trilium/",
+   "now": 1800000000,
+   "result": {
+    "error": "the grant is not an envelope"
+   }
+  },
+  {
+   "name": "a string",
+   "raw": "ImdyYW50Ig",
+   "host": "node.example.test",
+   "path": "/trilium/",
+   "now": 1800000000,
+   "result": {
+    "error": "the grant is not an envelope"
+   }
+  }
+ ],
+ "sequence": [
+  {
+   "now": 1800000000,
+   "raw": "eyJncmFudCI6eyJncmFudF9pZCI6Imctb25jZSIsInJlcXVlc3RfaWQiOiIiLCJraW5kIjoicG9ydGFsX2xvZ2luIiwibm9kZSI6ImFsdGFpciIsInN1YmplY3QiOiJvcGVyYXRvciIsInBheWxvYWRfc2hhMjU2IjoiNmJjMzQ3ZmE0YTMxMmViMzQxNjFhYzRkODQ0YjhhN2Q5ZmE2YWE2ZmMzNzQzZTc4ZjM1NWFiODkzOWFhYjIyNCIsIm5vdF9iZWZvcmUiOjE4MDAwMDAwMDAsIm5vdF9hZnRlciI6MTgwMDAwMDAzMCwiYXBwcm92ZWRfYnlfZGV2aWNlIjoiZDEifSwic2lnIjoiMXRTR1RWeW9BUDJQbkVUcHd3Rm51TC1hbFF5Sll1YVBHNF9HRXNuNjNGa3Z5M2d5YnMxWTJkeWI4QXZoRHEzQTd3c3hvQXEzRmlqUE5PcG9kV051QVEiLCJrZXlfaWQiOiJhOThjNzBkODFjZjJiNzUzIn0",
+   "host": "node.example.test",
+   "path": "/trilium/",
+   "result": {
+    "subject": "operator"
+   },
+   "spent": [
+    "g-once"
+   ]
+  },
+  {
+   "now": 1800000001,
+   "raw": "eyJncmFudCI6eyJncmFudF9pZCI6Imctb25jZSIsInJlcXVlc3RfaWQiOiIiLCJraW5kIjoicG9ydGFsX2xvZ2luIiwibm9kZSI6ImFsdGFpciIsInN1YmplY3QiOiJvcGVyYXRvciIsInBheWxvYWRfc2hhMjU2IjoiNmJjMzQ3ZmE0YTMxMmViMzQxNjFhYzRkODQ0YjhhN2Q5ZmE2YWE2ZmMzNzQzZTc4ZjM1NWFiODkzOWFhYjIyNCIsIm5vdF9iZWZvcmUiOjE4MDAwMDAwMDAsIm5vdF9hZnRlciI6MTgwMDAwMDAzMCwiYXBwcm92ZWRfYnlfZGV2aWNlIjoiZDEifSwic2lnIjoiMXRTR1RWeW9BUDJQbkVUcHd3Rm51TC1hbFF5Sll1YVBHNF9HRXNuNjNGa3Z5M2d5YnMxWTJkeWI4QXZoRHEzQTd3c3hvQXEzRmlqUE5PcG9kV051QVEiLCJrZXlfaWQiOiJhOThjNzBkODFjZjJiNzUzIn0",
+   "host": "node.example.test",
+   "path": "/trilium/",
+   "result": {
+    "error": "the grant is spent"
+   },
+   "spent": [
+    "g-once"
+   ]
+  },
+  {
+   "now": 1800000002,
+   "raw": "eyJncmFudCI6eyJncmFudF9pZCI6Imctb3RoZXIiLCJyZXF1ZXN0X2lkIjoiIiwia2luZCI6InBvcnRhbF9sb2dpbiIsIm5vZGUiOiJhbHRhaXIiLCJzdWJqZWN0Ijoib3BlcmF0b3IiLCJwYXlsb2FkX3NoYTI1NiI6IjZiYzM0N2ZhNGEzMTJlYjM0MTYxYWM0ZDg0NGI4YTdkOWZhNmFhNmZjMzc0M2U3OGYzNTVhYjg5MzlhYWIyMjQiLCJub3RfYmVmb3JlIjoxODAwMDAwMDAwLCJub3RfYWZ0ZXIiOjE4MDAwMDAwNjAsImFwcHJvdmVkX2J5X2RldmljZSI6ImQxIn0sInNpZyI6IkYtSkZxWXJIeC1IV3hDUHNNWS0yRV9PaDBCVFM4SkhkZlRKOTRuNXF0M1hoSU5UR2N6ZkhuOHY3MW9BNUF2Wjl0cWQwaHNiRmJmZzE5b0tSc196b0F3Iiwia2V5X2lkIjoiYTk4YzcwZDgxY2YyYjc1MyJ9",
+   "host": "node.example.test",
+   "path": "/trilium/",
+   "result": {
+    "subject": "operator"
+   },
+   "spent": [
+    "g-once",
+    "g-other"
+   ]
+  },
+  {
+   "now": 1800000003,
+   "raw": "eyJncmFudCI6eyJncmFudF9pZCI6Imctb3RoZXIiLCJyZXF1ZXN0X2lkIjoiIiwia2luZCI6InBvcnRhbF9sb2dpbiIsIm5vZGUiOiJhbHRhaXIiLCJzdWJqZWN0Ijoib3BlcmF0b3IiLCJwYXlsb2FkX3NoYTI1NiI6IjZiYzM0N2ZhNGEzMTJlYjM0MTYxYWM0ZDg0NGI4YTdkOWZhNmFhNmZjMzc0M2U3OGYzNTVhYjg5MzlhYWIyMjQiLCJub3RfYmVmb3JlIjoxODAwMDAwMDAwLCJub3RfYWZ0ZXIiOjE4MDAwMDAwNjAsImFwcHJvdmVkX2J5X2RldmljZSI6ImQxIn0sInNpZyI6IkYtSkZxWXJIeC1IV3hDUHNNWS0yRV9PaDBCVFM4SkhkZlRKOTRuNXF0M1hoSU5UR2N6ZkhuOHY3MW9BNUF2Wjl0cWQwaHNiRmJmZzE5b0tSc196b0F3Iiwia2V5X2lkIjoiYTk4YzcwZDgxY2YyYjc1MyJ9",
+   "host": "node.example.test",
+   "path": "/trilium/",
+   "result": {
+    "error": "the grant is spent"
+   },
+   "spent": [
+    "g-once",
+    "g-other"
+   ]
+  },
+  {
+   "now": 1800000029,
+   "raw": "eyJncmFudCI6eyJncmFudF9pZCI6Imctb25jZSIsInJlcXVlc3RfaWQiOiIiLCJraW5kIjoicG9ydGFsX2xvZ2luIiwibm9kZSI6ImFsdGFpciIsInN1YmplY3QiOiJvcGVyYXRvciIsInBheWxvYWRfc2hhMjU2IjoiNmJjMzQ3ZmE0YTMxMmViMzQxNjFhYzRkODQ0YjhhN2Q5ZmE2YWE2ZmMzNzQzZTc4ZjM1NWFiODkzOWFhYjIyNCIsIm5vdF9iZWZvcmUiOjE4MDAwMDAwMDAsIm5vdF9hZnRlciI6MTgwMDAwMDAzMCwiYXBwcm92ZWRfYnlfZGV2aWNlIjoiZDEifSwic2lnIjoiMXRTR1RWeW9BUDJQbkVUcHd3Rm51TC1hbFF5Sll1YVBHNF9HRXNuNjNGa3Z5M2d5YnMxWTJkeWI4QXZoRHEzQTd3c3hvQXEzRmlqUE5PcG9kV051QVEiLCJrZXlfaWQiOiJhOThjNzBkODFjZjJiNzUzIn0",
+   "host": "node.example.test",
+   "path": "/trilium/",
+   "result": {
+    "error": "the grant is spent"
+   },
+   "spent": [
+    "g-once",
+    "g-other"
+   ]
+  },
+  {
+   "now": 1800000030,
+   "raw": "eyJncmFudCI6eyJncmFudF9pZCI6Imctb25jZSIsInJlcXVlc3RfaWQiOiIiLCJraW5kIjoicG9ydGFsX2xvZ2luIiwibm9kZSI6ImFsdGFpciIsInN1YmplY3QiOiJvcGVyYXRvciIsInBheWxvYWRfc2hhMjU2IjoiNmJjMzQ3ZmE0YTMxMmViMzQxNjFhYzRkODQ0YjhhN2Q5ZmE2YWE2ZmMzNzQzZTc4ZjM1NWFiODkzOWFhYjIyNCIsIm5vdF9iZWZvcmUiOjE4MDAwMDAwMDAsIm5vdF9hZnRlciI6MTgwMDAwMDAzMCwiYXBwcm92ZWRfYnlfZGV2aWNlIjoiZDEifSwic2lnIjoiMXRTR1RWeW9BUDJQbkVUcHd3Rm51TC1hbFF5Sll1YVBHNF9HRXNuNjNGa3Z5M2d5YnMxWTJkeWI4QXZoRHEzQTd3c3hvQXEzRmlqUE5PcG9kV051QVEiLCJrZXlfaWQiOiJhOThjNzBkODFjZjJiNzUzIn0",
+   "host": "node.example.test",
+   "path": "/trilium/",
+   "result": {
+    "error": "expired"
+   },
+   "spent": [
+    "g-once",
+    "g-other"
+   ]
+  }
+ ],
+ "no_key": {
+  "error": "no AWM_APPROVER_GRANT_PUBKEY on this node"
+ }
+}

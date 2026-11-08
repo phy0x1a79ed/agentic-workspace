@@ -39,7 +39,7 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn bools_accept_cli_strings() {
+    fn bools_and_ints_accept_cli_strings() {
         for t in [json!(true), json!("true"), json!("True"), json!("1"), json!(1)] {
             assert!(bool_lenient(Some(&t), false));
         }
@@ -48,10 +48,8 @@ mod tests {
         }
         assert!(bool_lenient(None, true));
         assert!(bool_lenient(Some(&Value::Null), true));
-    }
 
-    #[test]
-    fn ints_accept_strings() {
+
         assert_eq!(int_lenient(Some(&json!("42")), 0), 42);
         assert_eq!(int_lenient(Some(&json!(7)), 0), 7);
         assert_eq!(int_lenient(Some(&json!("x")), 3), 3);

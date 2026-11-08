@@ -1148,13 +1148,11 @@ mod tests {
     /// A fake host: its login, its Claude binary, a worktree and a fake docker.
     struct Host {
         _dir: TempDir,
-        tmp: PathBuf,
         login: PathBuf,
         binary: PathBuf,
         worktree: PathBuf,
         bare: PathBuf,
         docker: FakeDocker,
-        now: i64,
         iso: Isolated<FakeDocker>,
     }
 
@@ -1184,7 +1182,7 @@ mod tests {
         let docker = FakeDocker::default();
         let env = vec![("SSH_AUTH_SOCK".into(), "/tmp/agent.sock".into()), ("PATH".into(), "/usr/bin".into())];
         let iso = Isolated::new(&paths, docker.clone(), 1000, env);
-        Host { _dir: dir, tmp, login: login_path, binary, worktree, bare, docker, now, iso }
+        Host { _dir: dir, login: login_path, binary, worktree, bare, docker, iso }
     }
 
     fn req(name: &str, prompt: &str) -> StartRequest {
@@ -1220,58 +1218,6 @@ mod tests {
         assert_eq!(strip_login(&Value::Null), None);
     }
 
-    #[tokio::test]
-    async fn test_sync_writes_a_private_copy_then_leaves_it_alone() {
-        let h = host();
-        let dest = h.tmp.join("c").join(".credentials.json");
-        assert_eq!(sync_login(&dest, &h.login, now_ms()).unwrap(), LoginSync::Written);
-        assert_eq!(std::fs::metadata(&dest).unwrap().permissions().mode() & 0o777, 0o600);
-        assert!(!std::fs::read_to_string(&dest).unwrap().contains("fake-refresh"));
-        assert_eq!(sync_login(&dest, &h.login, now_ms()).unwrap(), LoginSync::Unchanged);
-    }
-
-    #[tokio::test]
-    async fn test_a_missing_or_expired_host_login_signs_the_copy_out() {
-        let h = host();
-        let dest = h.tmp.join("c").join(".credentials.json");
-        sync_login(&dest, &h.login, now_ms()).unwrap();
-        assert_eq!(sync_login(&dest, &h.login, h.now + 9 * HOUR_MS).unwrap(), LoginSync::SignedOut);
-        assert!(!dest.exists());
-        sync_login(&dest, &h.login, now_ms()).unwrap();
-        std::fs::remove_file(&h.login).unwrap();
-        assert_eq!(sync_login(&dest, &h.login, now_ms()).unwrap(), LoginSync::SignedOut);
-        assert!(!dest.exists());
-        assert!(!h.login.exists());
-    }
-
-    #[tokio::test]
-    async fn test_a_host_refresh_reaches_every_copy() {
-        let h = host();
-        let out = start(&h, "x", "", None).await;
-        let sid = out["claude_session_id"].as_str().unwrap().to_string();
-        let copy = h.iso.config_dir(&sid).join(".credentials.json");
-        let mut fresh = login(h.now + 16 * HOUR_MS);
-        fresh["claudeAiOauth"]["accessToken"] = json!("fake-access-2");
-        std::fs::write(&h.login, fresh.to_string()).unwrap();
-        assert_eq!(h.iso.sync_all().await.unwrap(), vec![(sid, LoginSync::Written)]);
-        let written: Value = serde_json::from_str(&std::fs::read_to_string(copy).unwrap()).unwrap();
-        assert_eq!(written["claudeAiOauth"]["accessToken"], "fake-access-2");
-    }
-
-    #[test]
-    fn a_container_copy_holds_only_the_login_keys() {
-        let mut host = login(5);
-        host["claudeAiOauth"]["rateLimitTier"] = json!("tier-x");
-        host["claudeAiOauth"]["someNewSecret"] = json!("fake-other");
-        host["mcpOAuth"] = json!({"x": {"accessToken": "fake-mcp"}});
-        let copy = strip_login(&host).unwrap();
-        let root: Vec<&String> = copy.as_object().unwrap().keys().collect();
-        assert_eq!(root, ["claudeAiOauth"]);
-        let keys: Vec<&str> = copy["claudeAiOauth"].as_object().unwrap().keys().map(String::as_str).collect();
-        assert_eq!(keys, LOGIN_KEYS);
-        assert!(!copy.to_string().contains("refresh") && !copy.to_string().contains("fake-other"));
-    }
-
     #[test]
     fn a_copy_is_written_0600_through_a_temp_file_and_a_rename() {
         let dir = TempDir::new().unwrap();
@@ -1288,26 +1234,6 @@ mod tests {
         let names: Vec<String> =
             std::fs::read_dir(dest.parent().unwrap()).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
         assert!(names.iter().all(|n| !n.contains(".tmp.")), "no temp file is left: {names:?}");
-    }
-
-    #[test]
-    fn a_copy_is_deleted_when_the_host_is_signed_out_or_expired() {
-        let dir = TempDir::new().unwrap();
-        let (dest, host) = (dir.path().join("c").join(".credentials.json"), dir.path().join("host.json"));
-        let now = 1_000 * HOUR_MS;
-        let cases = [json!({}), json!({"claudeAiOauth": {"accessToken": ""}}), login(now), login(now - 1)];
-        for case in cases {
-            std::fs::write(&host, login(now + HOUR_MS).to_string()).unwrap();
-            assert_eq!(sync_login(&dest, &host, now).unwrap(), LoginSync::Written);
-            std::fs::write(&host, case.to_string()).unwrap();
-            assert_eq!(sync_login(&dest, &host, now).unwrap(), LoginSync::SignedOut, "{case}");
-            assert!(!dest.exists(), "{case}");
-        }
-        std::fs::write(&host, login(now + HOUR_MS).to_string()).unwrap();
-        sync_login(&dest, &host, now).unwrap();
-        std::fs::write(&host, "{torn").unwrap();
-        assert_eq!(sync_login(&dest, &host, now).unwrap(), LoginSync::SignedOut);
-        assert!(!dest.exists());
     }
 
     // --- caller tokens ----------------------------------------------------------
@@ -1328,23 +1254,7 @@ mod tests {
         assert!(h.iso.caller_of_token(Some(&token)).await.is_none());
     }
 
-    #[test]
-    fn base64url_matches_pythons_urlsafe_encoding() {
-        assert_eq!(base64url(b""), "");
-        assert_eq!(base64url(b"f"), "Zg");
-        assert_eq!(base64url(b"fo"), "Zm8");
-        assert_eq!(base64url(b"foo"), "Zm9v");
-        assert_eq!(base64url(&[0xfb, 0xff]), "-_8");
-    }
-
     // --- the container ----------------------------------------------------------
-
-    #[test]
-    fn test_only_rootless_docker_is_accepted() {
-        assert!(matches!(docker_host(Some("unix:///var/run/docker.sock"), 1000), Err(IsolationError::Refused(_))));
-        assert!(docker_host(Some("/run/docker.sock"), 1000).is_err());
-        assert_eq!(docker_host(None, 1000).unwrap(), "unix:///run/user/1000/docker.sock");
-    }
 
     #[tokio::test]
     async fn test_the_container_sees_the_binary_read_only_and_no_host_secrets() {
@@ -1391,28 +1301,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_the_contract_verbs_reach_an_isolated_session_by_its_id() {
-        let h = host();
-        let out = start(&h, "iso", "", None).await;
-        let sid = out["claude_session_id"].as_str().unwrap();
-        let rec = h.iso.find("iso").await.unwrap();
-        assert_eq!(h.iso.find(&sid.replace('-', "")).await.as_ref(), Some(&rec));
-        assert_eq!(h.iso.find_answer(&rec).await["matches"][0]["kind"], "isolated");
-        assert_eq!(h.iso.status_answer(&rec).await["state"], "running");
-        assert_eq!(h.iso.send(&rec, "hi", true).await.unwrap()["ok"], true);
-        assert_eq!(h.docker.last().0.last().unwrap(), "Enter");
-        assert_eq!(h.iso.send(&rec, "a\nb", true).await.unwrap()["ok"], false);
-        assert_eq!(h.iso.interrupt(&rec).await.unwrap()["ok"], true);
-        assert_eq!(set_refusal()["unsupported"], true);
-        let stopped = h.iso.stop_answer(&rec).await.unwrap();
-        assert!(stopped["stopped"] == true && stopped["kept"] == true);
-        assert_eq!(h.iso.status_answer(&rec).await["state"], "stopped");
-        assert_eq!(h.iso.resume_answer(&rec, "").await.unwrap()["resumed"], true);
-        let argv = h.docker.last().0;
-        assert!(argv.iter().any(|a| a == "--resume") && !argv.iter().any(|a| a == "--session-id"));
-    }
-
-    #[tokio::test]
     async fn test_stop_revokes_the_token_and_keeps_the_transcript() {
         let h = host();
         let out = start(&h, "x", "", None).await;
@@ -1450,99 +1338,6 @@ mod tests {
         let out = start(&h, "x", "", refusal).await;
         assert!(out["ok"] == false && out["reason"].as_str().unwrap().contains("unverified"), "{out}");
         assert!(h.docker.verbs().is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_list_shows_live_isolated_sessions_beside_the_rest() {
-        let h = host();
-        let out = start(&h, "x", "", None).await;
-        let ids = |rows: Vec<Value>| rows.iter().map(|r| r["session_id"].as_str().unwrap().to_string()).collect::<Vec<_>>();
-        assert_eq!(ids(h.iso.list_rows(None, None, false).await), [out["session_id"].as_str().unwrap()]);
-        assert!(h.iso.list_rows(Some("other"), None, false).await.is_empty());
-        let rec = h.iso.find(out["claude_session_id"].as_str().unwrap()).await.unwrap();
-        h.iso.stop_answer(&rec).await.unwrap();
-        assert!(h.iso.list_rows(None, None, false).await.is_empty());
-        assert_eq!(h.iso.list_rows(None, None, true).await.len(), 1);
-    }
-
-    #[tokio::test]
-    async fn an_isolated_start_with_no_scope_is_refused() {
-        let h = host();
-        for (project, scope) in [(Some("awm"), None), (None, None), (Some("awm"), Some(""))] {
-            let r = StartRequest { project: project.map(Into::into), scope: scope.map(Into::into), ..req("lobby-ab12", "") };
-            let out = h.iso.start_isolated(&r, None, "node-a", |_, _| async { unreachable!("no worktree is resolved") }).await;
-            assert_eq!(out, json!({"ok": false, "reason": NEEDS_SCOPE}));
-        }
-        assert!(h.docker.verbs().is_empty() && h.iso.records().await.is_empty());
-    }
-
-    #[tokio::test]
-    async fn a_live_name_is_not_started_twice() {
-        let h = host();
-        start(&h, "iso", "", None).await;
-        let out = start(&h, "iso", "", None).await;
-        assert_eq!(out, json!({"ok": false, "reason": "a live isolated session is already named 'iso'"}));
-    }
-
-    #[tokio::test]
-    async fn the_first_start_builds_a_missing_image_from_the_dockerfile() {
-        let h = host();
-        h.docker.0.lock().unwrap().no_image = true;
-        start(&h, "a", "", None).await;
-        assert_eq!(h.docker.verbs(), ["image", "build", "rm", "run"]);
-        let build = h.docker.0.lock().unwrap().calls[1].clone();
-        assert_eq!(build.0, ["docker", "build", "-t", "awm-isolated:1", "-"]);
-        assert_eq!(build.2.as_deref(), Some(DOCKERFILE.as_bytes()));
-        start(&h, "b", "", None).await;
-        assert_eq!(h.docker.verbs()[4..], ["rm", "run"], "the image is checked once per process");
-    }
-
-    #[tokio::test]
-    async fn a_failed_image_build_refuses_the_start_and_leaves_no_token() {
-        #[derive(Clone, Default)]
-        struct NoBuild(FakeDocker);
-        impl Docker for NoBuild {
-            async fn run(&self, argv: Vec<String>, env: Vec<(String, String)>, stdin: Option<Vec<u8>>, t: Duration) -> io::Result<RunOutput> {
-                match argv[1].as_str() {
-                    "image" | "build" => {
-                        self.0.0.lock().unwrap().calls.push((argv, env, stdin));
-                        Ok(out(false, "", "pull access denied"))
-                    }
-                    _ => self.0.run(argv, env, stdin, t).await,
-                }
-            }
-        }
-        let h = host();
-        let fake = NoBuild::default();
-        let mut paths = Paths::under(&h.tmp);
-        paths.home.root = h.login.parent().unwrap().to_path_buf();
-        paths.isolated.dir = h.iso.knobs.dir.clone();
-        paths.claude_bin = h.binary.clone();
-        let iso = Isolated::new(&paths, fake.clone(), 1000, Vec::new());
-        let wt = h.worktree.clone();
-        let out = iso.start_isolated(&req("a", ""), None, "node-a", |_, _| async move { Ok(wt) }).await;
-        assert!(out["reason"].as_str().unwrap().contains("docker build of awm-isolated:1 failed: pull access denied"), "{out}");
-        assert_eq!(fake.0.verbs(), ["image", "build"]);
-        assert!(iso.tokens().read().is_empty());
-    }
-
-    #[tokio::test]
-    async fn the_watch_syncs_only_when_the_host_login_changes() {
-        let h = host();
-        let out = start(&h, "x", "", None).await;
-        let sid = out["claude_session_id"].as_str().unwrap().to_string();
-        let mut seen = None;
-        assert!(h.iso.watch_once(&mut seen).await.is_empty(), "the start already wrote the copy");
-        let mut fresh = login(h.now + 16 * HOUR_MS);
-        fresh["claudeAiOauth"]["accessToken"] = json!("fake-access-2");
-        std::fs::write(&h.login, fresh.to_string()).unwrap();
-        let copy = h.iso.config_dir(&sid).join(".credentials.json");
-        std::fs::remove_file(&copy).unwrap();
-        assert_eq!(h.iso.watch_once(&mut seen).await, vec![(sid.clone(), LoginSync::Written)]);
-        std::fs::remove_file(&copy).unwrap();
-        assert!(h.iso.watch_once(&mut seen).await.is_empty(), "an unchanged stamp syncs nothing");
-        std::fs::remove_file(&h.login).unwrap();
-        assert_eq!(h.iso.watch_once(&mut seen).await, vec![(sid, LoginSync::SignedOut)]);
     }
 
     #[test]

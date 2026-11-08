@@ -87,7 +87,7 @@ mod tests {
     }
 
     #[test]
-    fn live_ids_come_from_all_three_places() {
+    fn live_ids_come_from_all_three_places_and_an_empty_home_has_none() {
         let (_d, h) = home();
         record(&h, me(), json!({"sessionId": "from-record"}));
         record(&h, (1 << 22) + 99, json!({"sessionId": "dead-pid"}));
@@ -95,10 +95,7 @@ mod tests {
         write_job(&h, "ab12cd34", json!({"sessionId": "job-sid", "resumeSessionId": "job-resume"}));
         std::fs::write(h.pins(), "not json, and not a job").unwrap();
         assert_eq!(live_session_ids(&h).unwrap(), set(&["from-record", "from-roster", "job-sid", "job-resume"]));
-    }
 
-    #[test]
-    fn a_home_with_nothing_in_it_has_no_live_ids() {
         let dir = TempDir::new().unwrap();
         let h = ClaudeHome::at(dir.path().join("none"), dir.path().join("none.json"));
         assert_eq!(live_session_ids(&h).unwrap(), BTreeSet::new());
