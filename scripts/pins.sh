@@ -18,6 +18,9 @@ core_version() {
     echo "core-$(build_id "$1" "$paths" awm-cli)"
 }
 
+# The id of the embedder's model files: the sha256 table that names them.
+models_version() { echo "models-$(git -C "$1" rev-parse HEAD:core/crates/awm-embed/src/model.rs | cut -c1-12)"; }
+
 core_closure() { crate_closure "$1" core/crates/awm-cli; }
 
 # The core plugins at HEAD: each folder of core/plugins/ that holds a Cargo.toml. The folder

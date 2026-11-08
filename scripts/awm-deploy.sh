@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # The node-local deploy. It runs the core binary that scripts/core.pin names, places each core
-# plugin binary that scripts/plugins/<name>.pin names at <AWM_DIR>/bin/<name>, and unpacks the
-# page dists that scripts/pages.pin names, all from <AWM_DIR>/artifacts, where mizar's deploy
+# plugin binary that scripts/plugins/<name>.pin names at <AWM_DIR>/bin/<name>, unpacks the page
+# dists that scripts/pages.pin names and the model files that scripts/models.pin names, all from
+# <AWM_DIR>/artifacts, where mizar's deploy
 # pushed them (scripts/refresh-pins.sh built them). This script builds nothing. A sha256 that
 # differs from a pin, or a pin older than the tree, stops the deploy.
 #
@@ -21,6 +22,7 @@ for arg in "$@"; do [ "$arg" != "--dry-run" ] || dry=1; done
 
 bin="$(verify_pin "$root/scripts/core.pin" "$(core_version "$root")" "$store")"
 pages="$(verify_pin "$root/scripts/pages.pin" "$(pages_version "$root")" "$store")"
+models="$(verify_pin "$root/scripts/models.pin" "$(models_version "$root")" "$store")"
 plugins=() sources=()
 for name in $(core_plugins "$root"); do
     pin="$(plugin_pin "$root" "$name")"
@@ -35,6 +37,13 @@ done
 # Replace each page folder the tarball holds, so a page that lost a file loses it here too.
 tar -tzf "$pages" | sed -n 's|^\(.*/dist\)/$|\1|p' | while read -r dist; do rm -rf "${root:?}/$dist"; done
 tar -xzf "$pages" -C "$root"
+
+models_sha="$(pin_field "$root/scripts/models.pin" sha256)"
+if [ -z "$dry" ] && [ "$(cat "$awm_dir/models/.pin" 2>/dev/null)" != "$models_sha" ]; then
+    mkdir -p "$awm_dir/models"
+    tar -xf "$models" -C "$awm_dir/models"
+    printf '%s\n' "$models_sha" > "$awm_dir/models/.pin"
+fi
 
 # A plugin restarts when this deploy replaced its binary, or when an earlier deploy did and
 # failed before its reload (the marker <AWM_DIR>/bin/.<name>.restart outlives that deploy).
