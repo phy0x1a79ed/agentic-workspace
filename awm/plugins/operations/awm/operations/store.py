@@ -91,6 +91,14 @@ CREATE TABLE IF NOT EXISTS messages (
     body TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS messages_task ON messages(task_id, seq);
+CREATE TABLE IF NOT EXISTS ops_notes (
+    kind TEXT NOT NULL,
+    node TEXT NOT NULL,
+    title TEXT NOT NULL,
+    body TEXT NOT NULL,
+    ts REAL NOT NULL,
+    PRIMARY KEY (kind, node)
+);
 CREATE TABLE IF NOT EXISTS kv (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -448,6 +456,20 @@ class Store:
         with self._lock:
             self._db.execute("INSERT INTO kv VALUES (?,?) ON CONFLICT(key) DO UPDATE SET "
                              "value=excluded.value", (key, value))
+
+    def ops_post(self, kind: str, node: str, title: str, body: str) -> dict[str, Any]:
+        """A service's notice, one per kind and node. The trilium plugin renders them into Ops."""
+        with self._lock:
+            self._db.execute(
+                "INSERT INTO ops_notes VALUES (?,?,?,?,?) ON CONFLICT(kind, node) DO UPDATE SET "
+                "title=excluded.title, body=excluded.body, ts=excluded.ts",
+                (kind, node, title, body, time.time()))
+        return {"kind": kind, "node": node}
+
+    def ops_list(self) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._db.execute("SELECT * FROM ops_notes ORDER BY kind, node").fetchall()
+        return [dict(r) for r in rows]
 
     # -- Tony's actions (R63), only through the approver --------------------
 

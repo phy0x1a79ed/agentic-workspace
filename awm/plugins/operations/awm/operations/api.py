@@ -152,10 +152,13 @@ VERBS: list[dict[str, Any]] = [
     {"name": "status", 
      "description": "This node's outbox and how long alcor has been unreachable.", "params": []},
     {"name": "ops_post", "surfaces": HIDDEN,
-     "description": "A service's notice in the Ops book, one note per kind and node. For this "
+     "description": "A service's notice, kept one per kind and node for the Ops note. For this "
      "node's services, not for sessions.",
      "params": [_p("kind", required=True), _p("node", required=True), _p("title", required=True),
                 _p("body", required=True)]},
+    {"name": "ops_list", "surfaces": HIDDEN,
+     "description": "Every stored service notice, for the trilium plugin's Ops renderer.",
+     "params": []},
     {"name": "devices", "surfaces": HIDDEN,
      "description": "Enrolled devices. On alcor, for its operator only.", "params": []},
     {"name": "device_revoke", "surfaces": HIDDEN,

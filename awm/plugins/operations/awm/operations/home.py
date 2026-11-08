@@ -22,8 +22,8 @@ def _call(fn: Callable, positional: tuple[str, ...], args: dict, drop: tuple[str
 
 
 class Home:
-    def __init__(self, store: Store, approver: Approver, writer: Any = None) -> None:
-        self.store, self.approver, self.writer = store, approver, writer
+    def __init__(self, store: Store, approver: Approver) -> None:
+        self.store, self.approver = store, approver
         s, a = store, approver
         self._sync: dict[str, Callable[[dict], Any]] = {
             "task_open": lambda x: _call(s.task_open, ("title",), x),
@@ -50,7 +50,7 @@ class Home:
              "task_claim", "task_detail", "task_message", "task_messages", "task_for_session",
              "task_sessions", "task_get", "task_list", "approval_request",
              "approval_get", "approval_wait", "approval_cancel", "order_pull", "order_done", "keys",
-             "ops_post")
+             "ops_post", "ops_list")
 
     async def call(self, verb: str, args: dict[str, Any], node: str | None = None) -> Any:
         """One verb from a relay. Raises ValueError for a refusal the relay must not replay."""
@@ -81,11 +81,10 @@ class Home:
                     return seen  # a replay after a lost reply
                 return await a.approval_cancel(args["request_id"], args.get("session_id"))
             if verb == "ops_post":
-                if self.writer is None:
-                    raise ValueError("no board writer on this node")
-                note = await asyncio.to_thread(self.writer.post_ops, args["kind"], args["node"],
+                return await asyncio.to_thread(self.store.ops_post, args["kind"], args["node"],
                                                args["title"], args["body"])
-                return {"note_id": note}
+            if verb == "ops_list":
+                return {"notes": await asyncio.to_thread(self.store.ops_list)}
             if verb == "order_pull":
                 if node and args.setdefault("node", node) != node:
                     raise ValueError(f"{node} pulls only its own orders, not {args['node']}'s")

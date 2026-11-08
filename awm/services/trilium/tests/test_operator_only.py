@@ -58,7 +58,7 @@ EDGE_VERBS = ["status", "snapshots", "url"]
 #: `note_get` would be that same surface wearing awm's name. The person reading
 #: the vault already has all of it in front of them, so nothing is lost by
 #: keeping these on the host.
-OPERATOR_VERBS = ["start", "stop", "restart", "init", "logs",
+OPERATOR_VERBS = ["start", "stop", "restart", "init", "logs", "board_install",
                   "snapshot", "export", "restore", "note_upsert",
                   "note_get", "note_children", "note_search",
                   "note_create", "note_update", "note_delete",
@@ -69,7 +69,7 @@ OPERATOR_VERBS = ["start", "stop", "restart", "init", "logs",
 
 #: What the edge stamps. `_as_header` never emits an empty value, so any of
 #: these means the call crossed an edge listener.
-EDGE_IDENTITIES = ["user:tony", "user:steven", "user:operator", "peer"]
+EDGE_IDENTITIES = ["user:tony", "user:steven", "user:operator", "peer", "peer:alcor"]
 
 
 def test_the_two_lists_are_the_whole_surface():

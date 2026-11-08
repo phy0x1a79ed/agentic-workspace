@@ -1,6 +1,6 @@
 # operations (queue.md R145): the task queue, the approver and request_human under one tool.
 # The relay runs on every node. On the home node (alcor) the same service also runs the
-# store, the approver with its panel origin, the board writer and the singleton door.
+# store, the approver with its panel origin and the singleton door (the board writer is trilium's).
 [plugin]
 name = "operations"
 version = "0.2.0"
@@ -38,8 +38,3 @@ major = 1
 [[needs.tool]]   # on alcor: the panel's 2fa strip (R137)
 name = "2fa"
 major = 1
-
-[[needs.tool]]   # on deneb: the board's cards and the spawn body check (fleet.md R105)
-name = "trilium"
-major = 1
-

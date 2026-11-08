@@ -1,0 +1,43 @@
+<style>
+/*COMMON*/
+.awm-board { display: flex; flex-direction: column; gap: 8px; height: 100%; padding: 8px; box-sizing: border-box; font-size: 14px; }
+.awm-top { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.awm-search { flex: 1; min-width: 160px; max-width: 360px; padding: 4px 8px; }
+.awm-live { font-size: 12px; opacity: .75; }
+.awm-live[data-down] { color: #c0392b; opacity: 1; font-weight: 600; }
+.awm-new { display: flex; gap: 4px; align-items: center; }
+.awm-main { display: flex; min-height: 0; flex: 1; }
+.awm-sections { flex: 0 0 var(--awm-left, 55%); overflow: auto; min-width: 220px; }
+.awm-divider { flex: 0 0 7px; cursor: col-resize; background: rgba(127,127,127,.25); border-radius: 3px; margin: 0 4px; touch-action: none; }
+.awm-divider:hover, .awm-divider[data-drag] { background: rgba(80,130,220,.6); }
+.awm-detail { flex: 1 1 0; overflow: auto; min-width: 240px; display: flex; flex-direction: column; gap: 10px; }
+.awm-sections details { margin-bottom: 6px; }
+.awm-sections summary { font-weight: 600; cursor: pointer; padding: 4px 0; }
+.awm-card { display: flex; gap: 6px; align-items: center; padding: 4px 6px; border-radius: 4px; cursor: pointer; }
+.awm-card:hover { background: var(--hover-item-background-color, rgba(127,127,127,.12)); }
+.awm-card[aria-selected="true"] { background: var(--active-item-background-color, rgba(80,130,220,.25)); }
+.awm-card .t { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.awm-sentinel { height: 1px; }
+.awm-empty { opacity: .6; padding: 2px 6px; }
+.awm-id { font-family: monospace; font-size: 12px; cursor: copy; border-bottom: 1px dotted currentColor; }
+.awm-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.awm-info h4 { margin: 8px 0 4px; font-size: 13px; }
+.awm-info table { border-collapse: collapse; width: 100%; font-size: 12px; }
+.awm-info td, .awm-info th { text-align: left; padding: 2px 6px; border-bottom: 1px solid rgba(127,127,127,.25); }
+.awm-info p { margin: 4px 0; }
+.awm-appr { border: 1px solid rgba(127,127,127,.35); border-radius: 6px; padding: 6px 8px; margin: 4px 0; }
+.awm-appr .sum { margin: 2px 0 4px; white-space: pre-wrap; }
+</style>
+<div class="awm-board">
+  <div class="awm-top">
+    <input class="awm-search" type="search" placeholder="Search cards">
+    <span class="awm-new"><select class="awm-node" title="Node for the new agent"></select><button class="awm-btn primary awm-newbtn" type="button">New agent</button></span>
+    <span class="awm-twofa">2fa <button class="awm-btn" data-count="1" type="button">1</button> <button class="awm-btn" data-count="2" type="button">2</button> <button class="awm-btn" data-count="4" type="button">4</button></span>
+    <span class="awm-live"></span>
+  </div>
+  <div class="awm-main">
+    <div class="awm-sections"></div>
+    <div class="awm-divider" role="separator" aria-orientation="vertical" title="Drag to resize"></div>
+    <aside class="awm-detail"><div class="awm-info"><p class="awm-empty">Select a card.</p></div></aside>
+  </div>
+</div>

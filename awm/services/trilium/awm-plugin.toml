@@ -1,6 +1,6 @@
 [plugin]
 name = "trilium"
-version = "0.1.0"
+version = "0.2.0"
 
 [[service]]
 name = "trilium"
@@ -18,3 +18,11 @@ dir = "pages/trilium/dist"
 secrets = []
 network = ["tcp:22 the sync hub and the backup host"]
 platform = ["linux"]
+
+[[needs.tool]]   # the board's cards and the Ops notices, on alcor (queue.md R145)
+name = "operations"
+major = 2
+
+[[needs.tool]]   # the roster that Ops and the New agent dropdown render (fleet.md R147)
+name = "telemetry"
+major = 1

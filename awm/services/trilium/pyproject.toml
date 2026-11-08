@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "awm-trilium"
-version = "0.1.0"
+version = "0.2.0"
 requires-python = ">=3.11"
 description = "AWM trilium service: supervise the shared Trilium knowledge base on loopback, and snapshot, restore and export it. The awm edge serves it at /vault; this service never binds a public port."
 dependencies = [
@@ -27,6 +27,9 @@ test = [
 [tool.setuptools.packages.find]
 include = ["awm.trilium*"]
 namespaces = true
+
+[tool.setuptools.package-data]
+"awm.trilium.board" = ["assets/*"]
 
 [tool.pytest.ini_options]
 markers = [

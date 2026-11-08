@@ -18,10 +18,9 @@ include = ["awm.operations*"]
 namespaces = true
 
 [tool.setuptools.package-data]
-"awm.operations" = ["board/*.html", "board/*.js"]
 "awm.operations.approver" = ["static/*"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
-markers = ["trilium: needs the local Trilium container (tests/trilium-up.sh)", "unit", "smoke"]
+markers = ["unit", "smoke"]
