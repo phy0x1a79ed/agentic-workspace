@@ -8,6 +8,7 @@ script note with ``#run=frontendStartup`` adds the bot button to every ordinary 
 
 from __future__ import annotations
 
+import json
 import os
 from importlib import resources
 from typing import Any
@@ -24,11 +25,15 @@ def alcor_origin() -> str:
 
 
 def _asset(name: str) -> str:
-    """A page, with the shared CSS in its stylesheet or the shared library in front of its script."""
+    """A page, with the shared CSS in its stylesheet or the shared library in front of its script.
+
+    The overlays, toasts and menus are appended to the document, outside the render note's own
+    container, so the script also puts the shared CSS in the document head."""
     text = (ASSETS / name).read_text()
     if name.endswith(".html"):
         return text.replace("/*COMMON*/", (ASSETS / "common.css").read_text())
-    return (ASSETS / "lib.js").read_text() + "\n" + text
+    css = json.dumps((ASSETS / "common.css").read_text())
+    return f"const AWM_COMMON_CSS = {css};\n" + (ASSETS / "lib.js").read_text() + "\n" + text
 
 
 def _code(fence: Fence, parent: str, note_id: str, title: str, mime: str, text: str,

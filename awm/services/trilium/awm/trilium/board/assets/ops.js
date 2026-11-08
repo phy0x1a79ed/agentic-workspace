@@ -69,12 +69,15 @@ function seatRow(s) {
     const want = sw.checked;
     sw.disabled = true;
     try {
-      await swarmCall(origin, `/api/seat/${encodeURIComponent(s.seat)}/remote_control`, { on: want });
-      toast(`${s.seat}: Remote Control ${want ? "on" : "off"}`);
+      // The seat id holds a slash, so it travels in the body (fleet.md R147 item 7).
+      const out = await swarmCall(origin, "/api/seat/remote_control", { seat: s.seat, on: want });
+      const live = show(out.live);
+      toast(`${s.label || s.seat}: Remote Control ${want ? "on" : "off"}${live.startsWith("failed") ? ` (${live})` : ""}`,
+            live.startsWith("failed"));
     } catch (e) { sw.checked = !want; toast(e.message, true); }
     sw.disabled = false;
   });
-  return el("tr", { "data-seat": s.seat }, el("td", {}, s.seat), el("td", {}, s.state || ""),
+  return el("tr", { "data-seat": s.seat }, el("td", {}, s.label || s.seat), el("td", {}, s.state || ""),
     el("td", {}, el("label", {}, sw, " Remote Control")), el("td", {}, s.remote_control ? rc(s.rc_url) : null));
 }
 
@@ -89,7 +92,7 @@ async function render() {
   const nodes = (roster.nodes || []).filter((n) => fuzzy(q, n.name) || (n.sessions || []).some((s) => fuzzy(q, s.name)));
   $(".awm-nodes").replaceChildren(...(nodes.length ? nodes.map((n) => nodeCard(n, q))
     : [el("div", { class: "none" }, "No node matches.")]));
-  const seats = (roster.seats || []).filter((s) => fuzzy(q, s.seat));
+  const seats = (roster.seats || []).filter((s) => fuzzy(q, s.label) || fuzzy(q, s.seat));
   $(".awm-seats").replaceChildren(table(["seat", "state", "", ""], seats.map(seatRow), "No seats."));
   const services = (roster.services || []).filter((s) => fuzzy(q, s.service) || fuzzy(q, s.host));
   $(".awm-services").replaceChildren(table(["service", "host", "health", "last response", "last used"],

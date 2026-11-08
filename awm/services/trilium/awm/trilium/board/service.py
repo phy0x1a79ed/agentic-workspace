@@ -59,7 +59,8 @@ class Board:
 
     def on_roster(self, event: Any) -> dict[str, Any]:
         self._ready()
-        return self.ops.render()
+        changed = event.get("changed") if isinstance(event, dict) else None
+        return self.ops.render(changed if isinstance(changed, list) else None)
 
     def live(self, up: bool) -> None:
         try:

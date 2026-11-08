@@ -37,11 +37,6 @@ async function openMenu(anchor, noteId) {
   document.body.append(menu);
 }
 
-const stylesheet = el("style", {}, `
-.awm-bot-button { cursor: pointer; }
-.awm-bot-button::before { content: "\\1F916"; font-size: 12px; }`);
-document.head.append(stylesheet);
-
 function decorate(add) {
   const row = add.closest(".fancytree-node, li");
   if (!row || row.querySelector(".awm-bot-button")) return;
@@ -49,7 +44,7 @@ function decorate(add) {
   try { node = window.$.ui.fancytree.getNode(add); } catch (e) { /* not a tree row */ }
   const noteId = node && node.data && node.data.noteId;
   if (!noteId || underTasks(node)) return;
-  const bot = el("span", { class: "tree-item-button tn-icon awm-bot-button", title: "New agent with this note as context" });
+  const bot = el("span", { class: "tree-item-button tn-icon awm-bot-button bx bx-bot", title: "New agent with this note as context" });
   bot.addEventListener("mousedown", (ev) => { ev.stopPropagation(); ev.preventDefault(); });
   bot.addEventListener("click", (ev) => {
     ev.stopPropagation();

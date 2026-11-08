@@ -4,6 +4,12 @@
 // Every press is a fetch to alcor's API with the device credential (queue.md R64 item 5). The only
 // frames from alcor are the sign-in and the approval modal.
 
+// Overlays, toasts and menus live on the document, outside the page's own container.
+if (!document.getElementById("awm-common-style")) {
+  document.head.append(el0("style", "awm-common-style", AWM_COMMON_CSS));
+}
+function el0(tag, id, text) { const e = document.createElement(tag); e.id = id; e.textContent = text; return e; }
+
 const SWARM_BOARD_ID = "awmSwarmBoard";
 const SWARM_ROSTER_ID = "awmSwarmRoster";
 const TASKS_ID = "awmSwarmTasks";

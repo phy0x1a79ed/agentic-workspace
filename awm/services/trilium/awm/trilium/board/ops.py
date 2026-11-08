@@ -33,21 +33,24 @@ def portals_from_env() -> dict[str, str]:
 
 
 def _node(row: dict[str, Any], portals: dict[str, str]) -> dict[str, Any]:
+    """One ``telemetry nodes`` row, as the pages read it. ``uses`` are the tools the node can use."""
     name = text(row.get("node") or row.get("name"))
     portal = text(row.get("portal"))
     if not portal:
         host = next((h for h, n in portals.items() if n == name), "")
         portal = f"https://{host}/" if host else ""
-    sessions = [{"name": text(s.get("name") or s.get("job")), "rc_url": text(s.get("rc_url")),
+    sessions = [{"name": text(s.get("name") or s.get("job")), "rc_url": text(s.get("link") or s.get("rc_url")),
                  "scope": text(s.get("scope")), "project": text(s.get("project")),
-                 "task_id": text(s.get("task_id")), "kind": text(s.get("kind"))}
+                 "task_id": text(s.get("task_id")), "kind": text(s.get("kind")),
+                 "remote_control": bool(s.get("remote_control"))}
                 for s in row.get("sessions") or [] if isinstance(s, dict)]
+    uses = row.get("uses") if row.get("uses") is not None else row.get("services")
     return {"name": name, "role": text(row.get("role")), "portal": portal,
             "last_seen": row.get("last_seen"), "sessions": sessions,
             "sessions_7d": int(row.get("sessions_7d") or 0),
-            "services": [{"service": text(s.get("service")), "last_checked": s.get("last_checked"),
-                          "last_used": s.get("last_used")}
-                         for s in row.get("services") or [] if isinstance(s, dict)]}
+            "services": [{"service": text(u.get("tool") or u.get("service")),
+                          "last_checked": u.get("last_checked"), "last_used": u.get("last_used")}
+                         for u in uses or [] if isinstance(u, dict) and u.get("available", True)]}
 
 
 def agent_nodes(nodes: list[dict[str, Any]]) -> list[str]:
@@ -64,11 +67,13 @@ def build_roster(nodes: list[dict], services: list[dict], seats: list[dict],
     return {
         "nodes": sorted(cards, key=lambda n: n["name"]),
         "agent_nodes": agent_nodes(cards),
-        "services": [{"service": text(s.get("service")), "host": text(s.get("host")),
+        "services": [{"service": text(s.get("tool") or s.get("service")), "host": text(s.get("host")),
                       "health": text(s.get("health")) or "unknown",
                       "last_response": s.get("last_response"), "last_used": s.get("last_used")}
                      for s in services],
-        "seats": [{"seat": text(s.get("seat")), "state": text(s.get("state")),
+        "seats": [{"seat": text(s.get("seat") or s.get("id")),
+                   "label": text(s.get("label") or s.get("name")) or text(s.get("seat") or s.get("id")),
+                   "state": text(s.get("state")),
                    "remote_control": bool(s.get("remote_control")),
                    "rc_url": text(s.get("rc_url")), "node": text(s.get("node"))}
                   for s in seats],
@@ -88,14 +93,26 @@ def portals_text(portals: dict[str, str], nodes: list[dict]) -> str:
             + ("\n".join(rows) or "No portal is configured.") + "\n")
 
 
+#: Which telemetry verb answers each part a ``telemetry/roster`` event can name.
+REFRESH = {"nodes": "nodes", "sessions": "nodes", "usage": "nodes", "services": "services",
+           "seats": "seats"}
+
+
 class OpsRenderer:
     def __init__(self, fence: Fence, remote: Remote, portals: dict[str, str] | None = None) -> None:
         self.fence, self.remote = fence, remote
         self.portals = dict(portals if portals is not None else portals_from_env())
+        self.rows: dict[str, list[dict[str, Any]]] = {}
 
-    def render(self) -> dict[str, Any]:
-        """Read the roster and write the vault: the JSON note, Portals and one note per notice."""
-        roster = build_roster(self.remote.nodes(), self.remote.services(), self.remote.seats(),
+    def render(self, changed: list[str] | None = None) -> dict[str, Any]:
+        """Read the changed parts of the roster and write the vault: the JSON note, Portals and one
+        note per notice. A roster event names what changed, and only those verbs are called; a
+        render with no ``changed`` (a fresh connection) reads everything."""
+        wanted = {REFRESH[c] for c in changed or [] if c in REFRESH}
+        for part in ("nodes", "services", "seats"):
+            if changed is None or part in wanted or part not in self.rows:
+                self.rows[part] = getattr(self.remote, part)()
+        roster = build_roster(self.rows["nodes"], self.rows["services"], self.rows["seats"],
                               self.remote.ops_list(), self.portals)
         self._upsert(ids.ROSTER_ID, "roster", "application/json",
                      json.dumps(roster, sort_keys=True))

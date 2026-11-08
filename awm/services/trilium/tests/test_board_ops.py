@@ -23,8 +23,11 @@ pytestmark = [pytest.mark.unit]
 
 NODES = [
     {"node": "mizar", "role": "compute", "last_seen": 1000, "sessions_7d": 12,
-     "sessions": [{"name": "plugin-redux/port-trilium", "rc_url": "https://claude.ai/code/s1", "scope": "awm/x"}],
-     "services": [{"service": "journal", "last_checked": 5, "last_used": 4}]},
+     "sessions": [{"job": "ab12", "name": "plugin-redux/port-trilium", "link": "https://claude.ai/code/s1",
+                   "scope": "awm/x", "remote_control": True}],
+     "services": [{"service": "trilium", "up": True}],
+     "uses": [{"tool": "journal", "host": "alcor", "available": True, "last_checked": 5, "last_used": 4},
+              {"tool": "zotero", "host": "deneb", "available": False}]},
     {"node": "capella", "role": "station", "sessions_7d": 0, "sessions": []},
     {"node": "deneb", "role": "front", "sessions_7d": 1, "sessions": []},
     {"node": "lyra", "role": "compute", "sessions_7d": 3, "sessions": []},
@@ -38,9 +41,10 @@ def world(monkeypatch):
     install.install(fence)
     alcor = Alcor()
     alcor.nodes = NODES
-    alcor.services = [{"service": "journal", "host": "alcor", "health": "up",
+    alcor.services = [{"tool": "journal", "host": "alcor", "service": "journal", "health": "up",
                        "last_response": 9, "last_used": 8}]
-    alcor.seats = [{"seat": "steward", "state": "empty", "remote_control": False}]
+    alcor.seats = [{"seat": "acct/123", "name": "seat:discord/lab/steward", "state": "empty",
+                    "remote_control": False}]
     alcor.notices = [{"kind": "scope-hygiene", "node": "mizar", "title": "Scope hygiene",
                       "body": "2 removed", "ts": 1}]
     return fake, fence, alcor
@@ -59,9 +63,11 @@ def test_render_writes_one_roster_note_that_the_pages_read(world):
     mizar = next(n for n in roster["nodes"] if n["name"] == "mizar")
     assert mizar["portal"] == "https://mizar.test/" and mizar["sessions_7d"] == 12
     assert mizar["sessions"][0]["rc_url"] == "https://claude.ai/code/s1"
-    assert roster["services"][0]["health"] == "up"
-    assert roster["seats"] == [{"seat": "steward", "state": "empty", "remote_control": False,
-                                "rc_url": "", "node": ""}]
+    assert roster["services"][0]["health"] == "up" and roster["services"][0]["service"] == "journal"
+    assert [u["service"] for u in mizar["services"]] == ["journal"]  # a tool it cannot use is not listed
+    assert mizar["sessions"][0]["remote_control"] is True
+    assert roster["seats"] == [{"seat": "acct/123", "label": "seat:discord/lab/steward",
+                                "state": "empty", "remote_control": False, "rc_url": "", "node": ""}]
 
 
 def test_render_keeps_the_portals_note_and_one_note_per_notice(world):
@@ -85,6 +91,19 @@ def test_a_second_render_with_the_same_roster_writes_nothing(world):
     fake.calls.clear()
     r.render()
     assert [c for c in fake.calls if c[0] in ("PATCH", "PUT", "POST", "DELETE")] == []
+
+
+def test_a_roster_event_reads_only_the_parts_it_names(world):
+    fake, fence, alcor = world
+    r = OpsRenderer(fence, remote(alcor), {})
+    r.render()
+    alcor.calls.clear()
+    r.render(["seats"])
+    verbs = [(t, v) for t, v, _ in alcor.calls if t == "telemetry"]
+    assert verbs == [("telemetry", "seats")]
+    alcor.calls.clear()
+    r.render(["sessions", "usage"])
+    assert [v for t, v, _ in alcor.calls if t == "telemetry"] == ["nodes"]
 
 
 def test_a_telemetry_verb_may_answer_a_bare_list(world):
@@ -145,7 +164,7 @@ def test_every_press_is_a_credentialed_fetch_to_the_contract_routes():
     lib, board, ops_js, bot = js("lib.js"), js("board.js"), js("ops.js"), js("bot.js")
     assert 'credentials: "include"' in lib
     assert "/api/agent" in board and "/api/agent" in bot
-    assert "/api/card/" in board and "/remote_control" in ops_js and "/api/request/" in board
+    assert "/api/card/" in board and "/api/seat/remote_control" in ops_js and "/api/request/" in board
     assert "note_id" in bot
 
 
@@ -237,7 +256,8 @@ def test_the_header_label_says_the_link_is_up_while_the_stream_runs(world, monke
 
 
 def test_a_roster_event_re_renders_ops(world, monkeypatch):
-    fake, alcor, b, stream = board_with(world, monkeypatch, **{"telemetry/roster": [{"changed": 1}]})
+    fake, alcor, b, stream = board_with(world, monkeypatch, **{
+        "telemetry/roster": [{"rev": 2, "node": "mizar", "changed": ["seats"], "ts": "x"}]})
     sub = {s.name: s for s in service.subscriptions(b)}["trilium:roster"]
     asyncio.run(run_stream(sub, 2))
     assert json.loads(fake.notes[ids.ROSTER_ID]["content"])["agent_nodes"][0] == "altair"
