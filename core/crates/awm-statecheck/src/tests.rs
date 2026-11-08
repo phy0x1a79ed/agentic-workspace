@@ -212,10 +212,12 @@ fn outside_trees_are_recorded_or_copied_but_never_written() {
     d.size_only.push(big.clone());
     d.size_only.push(dir.join("sub"));
     d.extra.push(Extra { name: "units".into(), path: units.join("awm-routine-*") });
+    d.extra.push(Extra { name: "whole".into(), path: units.clone() });
     let out = snapshot_with("svc", &d, &|_| Ok(1_000_000), &mut |_| Ok(())).unwrap();
     assert_eq!(out.taken.len(), 1);
     assert_eq!((tree_hash(&big), tree_hash(&units)), (big_before, units_before));
     let pre = dir.join(PRE_RUST);
+    assert!(pre.join("extra/whole/units/other.timer").is_file(), "a directory match copies with its contents");
     assert!(pre.join("extra/units/awm-routine-a.timer").is_file());
     assert!(!pre.join("extra/units/other.timer").exists());
     assert!(!pre.join("state/sub").exists(), "a size_only path inside a state dir is recorded, not copied");

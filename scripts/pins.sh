@@ -15,7 +15,7 @@ pages_version() {
 core_version() {
     local paths
     paths="$(core_closure "$1")" || return 1
-    echo "core-$(build_id "$1" "$paths")"
+    echo "core-$(build_id "$1" "$paths" awm-cli)"
 }
 
 core_closure() { crate_closure "$1" core/crates/awm-cli; }
@@ -97,11 +97,35 @@ plugin_closure() { crate_closure "$1" "core/plugins/$2"; }
 # manifest (profile, workspace dependencies) and the Dockerfile (toolchain).
 BUILD_FILES="core/Cargo.lock core/Cargo.toml core/Dockerfile"
 
-# build_id <root> <closure>: 12 hex of the HEAD object ids of the closure's paths and BUILD_FILES.
+# locked_deps <root> <package>: one line per package in the lock's closure of <package> at HEAD,
+# as `name version checksum`. The lock lists normal, build, proc-macro and dev dependencies alike.
+locked_deps() {
+    git -C "$1" show HEAD:core/Cargo.lock | awk -v root="$2" '
+        function flush() { if (name != "") { key = name " " version; sum[key] = checksum; deps[key] = list; only[name] = (name in only) ? "" : key } name = version = checksum = list = "" }
+        function resolve(d,   p) { split(d, p, " "); return (p[2] == "") ? only[p[1]] : p[1] " " p[2] }
+        function walk(key,   n, a, i, r) {
+            if (key == "" || key in seen) return
+            seen[key] = 1
+            print key, sum[key]
+            n = split(deps[key], a, ",")
+            for (i = 1; i <= n; i++) { r = resolve(a[i]); walk(r) }
+        }
+        /^\[\[package\]\]/ { flush(); next }
+        /^name = /     { name = $3; gsub(/"/, "", name); next }
+        /^version = /  { version = $3; gsub(/"/, "", version); next }
+        /^checksum = / { checksum = $3; gsub(/"/, "", checksum); next }
+        /^ "/          { d = $0; sub(/^ "/, "", d); sub(/",?$/, "", d); list = list (list == "" ? "" : ",") d }
+        END { flush(); walk(only[root]) }' | LC_ALL=C sort
+}
+
+# build_id <root> <closure> <package>: 12 hex of the HEAD object ids of the closure's paths and
+# the manifest and Dockerfile, and of the lock's entries for <package>'s dependencies.
 build_id() {
-    { printf '%s\n' "$2"; printf '%s\n' $BUILD_FILES; } \
-        | while read -r p; do printf '%s %s\n' "$p" "$(git -C "$1" rev-parse "HEAD:$p")"; done \
-        | sha256sum | cut -c1-12
+    {
+        { printf '%s\n' "$2"; printf '%s\n' core/Cargo.toml core/Dockerfile; } \
+            | while read -r p; do printf '%s %s\n' "$p" "$(git -C "$1" rev-parse "HEAD:$p")"; done
+        locked_deps "$1" "$3"
+    } | sha256sum | cut -c1-12
 }
 
 # The id of a core plugin binary's inputs: its folder and the local crates it builds from, plus
@@ -109,7 +133,7 @@ build_id() {
 plugin_version() {
     local paths
     paths="$(plugin_closure "$1" "$2")" || return 1
-    echo "$2-$(build_id "$1" "$paths")"
+    echo "$2-$(build_id "$1" "$paths" "awm-plugin-$2")"
 }
 
 plugin_pin() { printf '%s\n' "$1/scripts/plugins/$2.pin"; }

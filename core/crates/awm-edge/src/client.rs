@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use awm_gateway::peer::WsPipe;
 use awm_proto::{Caller, WsMsg};
+use awm_trust::edges::{EdgeKey, EdgeList};
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::process::Command;
@@ -24,9 +25,10 @@ pub enum EdgeError {
     Remote(String),
 }
 
-/// How to open the channel to a peer. The default is ssh with a shared master
-/// connection (`ControlMaster`, `ControlPersist`) and a keep-alive. `AWM_EDGE_SSH`
-/// names another program to run in its place, with the same arguments.
+/// How to open the channel to a peer: plain ssh, so `ssh <peer>` needs no setting of its own
+/// (fleet.md R92). The default adds a shared master connection (`ControlMaster`,
+/// `ControlPersist`) and a keep-alive. `AWM_EDGE_SSH` names another program to run in its
+/// place, with the same arguments.
 #[derive(Debug, Clone)]
 pub struct SshCommand {
     pub program: String,
@@ -34,14 +36,27 @@ pub struct SshCommand {
 }
 
 impl SshCommand {
-    pub fn ssh(peer: &str) -> Self {
+    /// `ssh <peer> awm edge-serve --from <here>`. A service-key edge logs in with this node's
+    /// service key only, and the far `authorized_keys` forces its command, so the `--from` it
+    /// sends is ignored there. Each key keeps its own master: a master reuses its first login's
+    /// key for every channel, so a user master must never carry a service edge.
+    pub fn ssh(peer: &str, here: &str, key: EdgeKey) -> Self {
+        let kind = match key {
+            EdgeKey::User => "user",
+            EdgeKey::Service => "service",
+        };
+        let control = format!("ControlPath=~/.ssh/cm-%C-{kind}");
         let opts = [
-            "-T", "-o", "BatchMode=yes", "-o", "ControlMaster=auto", "-o", "ControlPath=~/.ssh/cm-%C",
+            "-T", "-o", "BatchMode=yes", "-o", "ControlMaster=auto", "-o", control.as_str(),
             "-o", "ControlPersist=10m", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3",
         ];
         let mut args: Vec<String> = opts.iter().map(|s| s.to_string()).collect();
+        if key == EdgeKey::Service {
+            args.extend(["-i".into(), awm_gateway::door::service_key_path(), "-o".into(), "IdentitiesOnly=yes".into()]);
+        }
         // A non-interactive ssh shell often lacks ~/.local/bin, where the core binary lives.
         args.extend([peer.to_string(), "PATH=\"$HOME/.local/bin:$PATH\"".into(), "awm".into(), "edge-serve".into()]);
+        args.extend(["--from".into(), here.to_string()]);
         let program = std::env::var("AWM_EDGE_SSH").ok().filter(|p| !p.trim().is_empty()).unwrap_or_else(|| "ssh".into());
         Self { program, args }
     }
@@ -118,10 +133,14 @@ pub struct EdgeClient {
 }
 
 impl EdgeClient {
-    /// A client that reaches each peer by `ssh <peer> awm edge-serve`.
-    pub fn ssh() -> Self {
-        Self::with_opener(Arc::new(|peer: &str| {
-            let cmd = SshCommand::ssh(peer);
+    /// A client that reaches each peer by `ssh <peer> awm edge-serve --from <here>`, with the
+    /// key that `edges`' edge from `here` to the peer names.
+    pub fn ssh(here: &str, edges: &EdgeList) -> Self {
+        let here = here.to_string();
+        let keys: HashMap<String, EdgeKey> =
+            edges.edges.get(&here).map(|t| t.iter().map(|(p, e)| (p.clone(), e.key)).collect()).unwrap_or_default();
+        Self::with_opener(Arc::new(move |peer: &str| {
+            let cmd = SshCommand::ssh(peer, &here, keys.get(peer).copied().unwrap_or_default());
             let mut child = Command::new(&cmd.program)
                 .args(&cmd.args)
                 .stdin(std::process::Stdio::piped())
@@ -206,5 +225,31 @@ impl EdgeClient {
             Ok(Ok(resp)) if resp.ok => Ok(resp.result.unwrap_or(Value::Null)),
             Ok(Ok(resp)) => Err(EdgeError::Remote(resp.error.unwrap_or_default())),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_user_edge_names_this_node_and_keeps_a_user_master() {
+        let cmd = SshCommand::ssh("alcor", "mizar", EdgeKey::User);
+        let n = cmd.args.len();
+        assert_eq!(cmd.args[n - 6..], ["alcor", "PATH=\"$HOME/.local/bin:$PATH\"", "awm", "edge-serve", "--from", "mizar"]);
+        assert!(cmd.args.iter().any(|a| a == "ControlPath=~/.ssh/cm-%C-user"));
+        assert!(!cmd.args.iter().any(|a| a == "-i" || a == "IdentitiesOnly=yes"), "a user edge uses the login's own keys");
+    }
+
+    #[test]
+    fn a_service_edge_logs_in_with_the_service_key_only() {
+        let cmd = SshCommand::ssh("alcor", "altair", EdgeKey::Service);
+        let at = cmd.args.iter().position(|a| a == "-i").expect("-i");
+        assert!(cmd.args[at + 1].ends_with(awm_gateway::door::SERVICE_KEY));
+        assert!(cmd.args.iter().any(|a| a == "IdentitiesOnly=yes"));
+        assert!(cmd.args.iter().any(|a| a == "ControlPath=~/.ssh/cm-%C-service"), "a service master never shares a user master's socket");
+        let peer = cmd.args.iter().position(|a| a == "alcor").unwrap();
+        assert!(at < peer, "the options precede the host");
+        assert_eq!(cmd.args[cmd.args.len() - 2..], ["--from", "altair"]);
     }
 }

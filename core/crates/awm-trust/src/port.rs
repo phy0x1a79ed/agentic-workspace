@@ -63,11 +63,17 @@ where
         },
     };
     let (tool, verb, result) = outcome;
+    log_call(log, key, &tool, &verb, result);
+    reply.to_string()
+}
+
+/// Append one line to a service key's call log: when, which key, which tool and verb, and
+/// whether it ran (`ok`, `error` or `refused`).
+pub fn log_call(log: &Path, key: &str, tool: &str, verb: &str, result: &str) {
     let line = json!({"ts": chrono::Utc::now().to_rfc3339(), "key": key, "tool": tool, "verb": verb, "result": result});
     if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(log) {
         let _ = writeln!(f, "{line}");
     }
-    reply.to_string()
 }
 
 #[cfg(test)]

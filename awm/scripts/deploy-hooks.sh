@@ -21,7 +21,6 @@ CHECK=0
 
 # name | source under awm/ | file in ~/.claude/hooks | nodes | extra file (same dir as source)
 HOOKS=(
-  "operations|../core/plugins/operations/hooks/awm-operations-hook.sh|awm-operations-hook.sh|local|awm-operations-settings.json"
 )
 
 # Hooks that are gone, as file in ~/.claude/hooks, then nodes. Their settings.json
@@ -34,7 +33,6 @@ RETIRED=(
 # settings.json entries per hook, as {event: entry}; @file reads the "hooks" of a shipped
 # settings file. $HOME becomes the node's home.
 declare -A ENTRIES=(
-  [operations]='@awm-operations-settings.json'
 )
 
 on() {

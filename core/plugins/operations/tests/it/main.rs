@@ -6,7 +6,6 @@ mod board;
 mod common;
 mod door;
 mod front;
-mod hook;
 mod keys;
 mod passkeys;
 mod relay;

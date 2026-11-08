@@ -1,4 +1,4 @@
-//! The four Claude Code hooks, run as `cch hook <name>`: blocking work with no tokio runtime, and
+//! The five Claude Code hooks, run as `cch hook <name>`: blocking work with no tokio runtime, and
 //! an exit 0 on every path, a panic included, so a hook never costs a session a turn.
 
 use std::fs::{self, OpenOptions};
@@ -196,7 +196,7 @@ impl Hub for HttpHub {
 }
 
 /// The `result` of an `/invoke` answer, parsed once more when the gateway sent it as a string.
-fn result_of(payload: &Value) -> Option<Value> {
+pub(crate) fn result_of(payload: &Value) -> Option<Value> {
     match payload.get("result")? {
         Value::String(s) => serde_json::from_str(s).ok(),
         other => Some(other.clone()),
@@ -653,7 +653,7 @@ pub fn subagent_cap(input: &[u8], dir: &Path, now: impl FnOnce() -> f64, level: 
 }
 
 /// The hook names `cch hook <name>` accepts.
-pub const HOOKS: [&str; 4] = ["brief", "plan-mode", "name", "subagent-cap"];
+pub const HOOKS: [&str; 5] = ["brief", "plan-mode", "name", "subagent-cap", "report"];
 
 fn epoch_now() -> f64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0)
@@ -679,6 +679,11 @@ pub fn dispatch(name: &str, input: &[u8]) -> Option<String> {
             self::name(input, job.as_deref(), &Paths::from_env().claimed_prefix)
         }
         "subagent-cap" => subagent_cap(input, &subagents_dir(), epoch_now, || level(&HttpHub::from_env())),
+        "report" => {
+            let payload = serde_json::from_slice(input).ok()?;
+            let home = PathBuf::from(std::env::var_os("HOME")?);
+            crate::hook_report::handle(&HttpHub::from_env(), &home, &std::env::current_dir().ok()?, &payload)
+        }
         _ => None,
     }
 }
