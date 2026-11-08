@@ -107,7 +107,7 @@ exact path shapes, both described in `awm/httpsfront/tether.py`.
 
 On every profile the edge overwrites `X-Awm-As` with the session's verified subject (`user:<name>` for a session or a device token), so a downstream service may trust that header — except on the tether mount, which has no verified subject and where the header is stripped rather than defaulted. The edge admits people only. Another node reaches this one over its ssh edge, never through this door (`FEDERATION.md` § *A call across an edge*). The readable `awm_as` cookie is the username for the pages' user chip and carries no authority.
 
-A browser with no session goes to alcor's approver, `AWM_APPROVER_ORIGIN/portal_login?next=<this page>`. After the passkey, the approver sends it to `/__auth/portal` with a `portal_login` grant. The edge checks the grant offline against `AWM_APPROVER_GRANT_PUBKEY`, for this node, this host and this path. It spends the grant once and mints the session cookie (`awm/httpsfront/portal.py`, fleet.md R84). No password login remains. The approver issues a grant only for a host its config's `portals` map lists.
+A browser with no session goes to alcor's approver, `AWM_APPROVER_ORIGIN/signin?next=<this page>`. After the passkey, the approver sends it to `/__auth/portal` with a `portal_login` grant. The edge checks the grant offline against `AWM_APPROVER_GRANT_PUBKEY`, for this node, this host and this path. It spends the grant once and mints the session cookie (`awm/httpsfront/portal.py`, fleet.md R84). No password login remains. The approver issues a grant only for a host its config's `portals` map lists.
 
 **CAUTION** `/__auth/portal` carries a live grant in its query string. Keep access logging off on every proxy in front of it.
 

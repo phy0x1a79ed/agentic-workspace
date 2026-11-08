@@ -103,7 +103,7 @@ def test_no_key_refuses_every_grant(client, monkeypatch):
 def test_a_browser_with_no_session_goes_to_the_approver(client):
     r = client.get("/trilium/", headers={"Accept": "text/html"})
     assert r.status_code == 302
-    assert r.headers["location"] == ("https://auth.example/portal_login?next="
+    assert r.headers["location"] == ("https://auth.example/signin?next="
                                      "https%3A%2F%2Ffront.example%2Ftrilium%2F")
 
 

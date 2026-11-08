@@ -1,0 +1,44 @@
+# operations (port T11). On alcor HOME is /var/lib/awm/operations, so the queue sits in
+# its .awm/operations/ and the approver in AWM_APPROVER_DIR. snapshot.rs adds the Arbutus
+# pending dir as an extra, from the same setting the approval path reads.
+dirs = ["${HOME}/.awm/operations", "${AWM_APPROVER_DIR:-${HOME}/.awm/approver}"]
+
+[[additive]]
+path = "${HOME}/.awm/operations/queue.db"
+table = "tasks"
+column = "body"
+
+[[additive]]
+path = "${HOME}/.awm/operations/queue.db"
+table = "tasks"
+column = "source_note"
+
+[[additive]]
+path = "${HOME}/.awm/operations/queue.db"
+table = "sessions"
+column = "job"
+
+[[additive]]
+path = "${HOME}/.awm/operations/queue.db"
+table = "ops_notes"
+
+[[additive]]
+path = "${AWM_APPROVER_DIR:-${HOME}/.awm/approver}/approver.db"
+table = "device_sessions"
+
+# The relay's outbox drains, its read cache refreshes, and an order it saw expires.
+[[transient]]
+path = "${HOME}/.awm/operations/relay.db"
+table = "outbox"
+
+[[transient]]
+path = "${HOME}/.awm/operations/relay.db"
+table = "cache"
+
+[[transient]]
+path = "${HOME}/.awm/operations/relay.db"
+table = "seen_orders"
+
+# The door socket is remade at each start.
+[[transient]]
+path = "${HOME}/.awm/operations/door.sock"

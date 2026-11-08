@@ -1,0 +1,88 @@
+{
+  "_note": "Synthetic. Written once by py_webauthn 3.0.1 and tests/softauthn.py; see tests/passkeys.rs.",
+  "rp_id": "approver.example",
+  "origin": "https://approver.example",
+  "user_id": "AAECAwQFBgcICQoLDA0ODw",
+  "user_name": "tony",
+  "registration_challenge": "ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8",
+  "registration_options": {
+    "rp": {
+      "name": "awm approver",
+      "id": "approver.example"
+    },
+    "user": {
+      "id": "AAECAwQFBgcICQoLDA0ODw",
+      "name": "tony",
+      "displayName": "tony"
+    },
+    "challenge": "ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8",
+    "pubKeyCredParams": [
+      {
+        "type": "public-key",
+        "alg": -8
+      },
+      {
+        "type": "public-key",
+        "alg": -7
+      },
+      {
+        "type": "public-key",
+        "alg": -257
+      }
+    ],
+    "timeout": 60000,
+    "excludeCredentials": [],
+    "authenticatorSelection": {
+      "residentKey": "preferred",
+      "requireResidentKey": false,
+      "userVerification": "required"
+    },
+    "attestation": "none"
+  },
+  "assertion_challenge": "QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1xdXl8",
+  "cred_ids": [
+    "AQEBAQEBAQEBAQEBAQEBAQ",
+    "AgICAgICAgICAgICAgICAgICAgI"
+  ],
+  "assertion_options": {
+    "challenge": "QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1xdXl8",
+    "timeout": 60000,
+    "rpId": "approver.example",
+    "allowCredentials": [
+      {
+        "id": "AQEBAQEBAQEBAQEBAQEBAQ",
+        "type": "public-key"
+      },
+      {
+        "id": "AgICAgICAgICAgICAgICAgICAgI",
+        "type": "public-key"
+      }
+    ],
+    "userVerification": "required"
+  },
+  "python": {
+    "registration": {
+      "id": "nnDPlJpD6-UShfvQ_QUMkQ",
+      "rawId": "nnDPlJpD6-UShfvQ_QUMkQ",
+      "type": "public-key",
+      "response": {
+        "clientDataJSON": "eyJ0eXBlIjogIndlYmF1dGhuLmNyZWF0ZSIsICJjaGFsbGVuZ2UiOiAiSUNFaUl5UWxKaWNvS1NvckxDMHVMekF4TWpNME5UWTNPRGs2T3p3OVBqOCIsICJvcmlnaW4iOiAiaHR0cHM6Ly9hcHByb3Zlci5leGFtcGxlIiwgImNyb3NzT3JpZ2luIjogZmFsc2V9",
+        "attestationObject": "o2NmbXRkbm9uZWdhdHRTdG10oGhhdXRoRGF0YViUA6_xQQ1ysDYB29EbjW5hiwNsvSMCIZMFnHhRg_ZQkZ9FAAAAAAAAAAAAAAAAAAAAAAAAAAAAEJ5wz5SaQ-vlEoX70P0FDJGlAQIDJiABIVggM0vM4gIpgo22RvsvucMOlIdqzOO-CX0iG4JZsGGwRpwiWCDkgUVlgCsGGmC9qjtnRmEJYe6Z28YHTJjuPO9lQi3FAA"
+      }
+    },
+    "cred_id": "nnDPlJpD6-UShfvQ_QUMkQ",
+    "cose_pub": "pQECAyYgASFYIDNLzOICKYKNtkb7L7nDDpSHaszjvgl9IhuCWbBhsEacIlgg5IFFZYArBhpgvao7Z0ZhCWHumdvGB0yY7jzvZUItxQA",
+    "sign_count": 0,
+    "assertion": {
+      "id": "nnDPlJpD6-UShfvQ_QUMkQ",
+      "rawId": "nnDPlJpD6-UShfvQ_QUMkQ",
+      "type": "public-key",
+      "response": {
+        "clientDataJSON": "eyJ0eXBlIjogIndlYmF1dGhuLmdldCIsICJjaGFsbGVuZ2UiOiAiUUVGQ1EwUkZSa2RJU1VwTFRFMU9UMUJSVWxOVVZWWlhXRmxhVzF4ZFhsOCIsICJvcmlnaW4iOiAiaHR0cHM6Ly9hcHByb3Zlci5leGFtcGxlIiwgImNyb3NzT3JpZ2luIjogZmFsc2V9",
+        "authenticatorData": "A6_xQQ1ysDYB29EbjW5hiwNsvSMCIZMFnHhRg_ZQkZ8FAAAAAQ",
+        "signature": "MEYCIQDJw-te4bjQVw-VcZTpkGTR_PSw-U33zvDarufw0VOobwIhAI7GMUwqlSM1L6E96L1FjkUBiKZGJZ69BI9fb3yLolaX"
+      }
+    },
+    "new_sign_count": 1
+  }
+}
