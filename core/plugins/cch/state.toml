@@ -32,7 +32,7 @@ path = "${HOME}/.claude/settings.json"
 # The first start copies these two into the service dir (migrate.rs).
 [[extra]]
 name = "reflection-pending"
-path = "${AWM_DIR}/services/reflection/pending/*"
+path = "${AWM_DIR}/services/reflection/pending"
 
 [[extra]]
 name = "keep-hold"

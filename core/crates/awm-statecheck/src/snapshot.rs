@@ -165,8 +165,10 @@ fn snapshot_dir(dir: &Path, inv: &Inventory, notes: &mut Vec<String>, hook: &mut
         for m in &e.matches {
             let rel = m.path.strip_prefix(&base).unwrap_or(m.path.file_name().map(Path::new).unwrap_or(Path::new("match")));
             let dest = tmp.join("extra").join(&e.name).join(rel);
-            let parent = dest.parent().expect("under tmp");
-            DirBuilder::new().mode(0o700).recursive(true).create(parent).map_err(io_at(parent))?;
+            // A file match copies to `dest` itself. A directory match copies into it.
+            let is_file_match = m.entries.iter().any(|e| e.rel.as_os_str().is_empty());
+            let target = if is_file_match { dest.parent().expect("under tmp") } else { dest.as_path() };
+            DirBuilder::new().mode(0o700).recursive(true).create(target).map_err(io_at(target))?;
             copy_tree(m, &dest, notes, hook, &mut dirs)?;
         }
     }

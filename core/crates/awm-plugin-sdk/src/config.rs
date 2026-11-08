@@ -12,7 +12,7 @@ pub const INSTALL_CONFIG_ENV: &str = "AWM_INSTALL_CONFIG";
 static CANONICAL: RwLock<Option<PathBuf>> = RwLock::new(None);
 
 /// `AWM_WORKSPACE`, else the nearest directory at or above the cwd that holds both `AGENTS.md`
-/// and `projects/`, else the nearest that holds `AGENTS.md`, else the cwd.
+/// and `projects/`, else the cwd.
 pub fn workspace_root() -> PathBuf {
     if let Some(ws) = env_path("AWM_WORKSPACE") {
         return absolute(&ws);
@@ -23,10 +23,8 @@ pub fn workspace_root() -> PathBuf {
 
 /// A scope worktree holds its own `AGENTS.md`, so only `projects/` tells the workspace apart.
 fn workspace_above(dir: &Path) -> PathBuf {
-    let agents = |p: &&Path| p.join("AGENTS.md").exists();
     dir.ancestors()
-        .find(|p| agents(p) && p.join("projects").is_dir())
-        .or_else(|| dir.ancestors().find(agents))
+        .find(|p| p.join("AGENTS.md").exists() && p.join("projects").is_dir())
         .map(Path::to_path_buf)
         .unwrap_or_else(|| dir.to_path_buf())
 }

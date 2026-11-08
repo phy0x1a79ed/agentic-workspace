@@ -26,16 +26,16 @@ const PING_TIMEOUT: Duration = Duration::from_secs(20);
 pub enum HubError {
     /// 404: no plugin serves the tool, or the tool has no such verb.
     #[error("{what}: not installed: {detail}")]
-    NotInstalled { what: String, detail: String, body: Value },
+    NotInstalled { what: String, detail: String, body: Box<Value> },
     /// 503: the table holds the tool, but it did not come up in time.
     #[error("{what}: not up: {detail}")]
-    NotUp { what: String, detail: String, body: Value },
+    NotUp { what: String, detail: String, body: Box<Value> },
     /// The verb ran and failed.
     #[error("{what}: {error}")]
-    Verb { what: String, error: String, error_class: Option<String>, body: Value },
+    Verb { what: String, error: String, error_class: Option<String>, body: Box<Value> },
     /// Any other non-2xx answer: a refusal (400, 401, 403) or a gateway fault (502, 504).
     #[error("{what}: HTTP {status}: {detail}")]
-    Http { what: String, status: u16, detail: String, body: Value },
+    Http { what: String, status: u16, detail: String, body: Box<Value> },
     /// The gateway could not be reached, or its answer could not be read.
     #[error("{what}: {reason}")]
     Transport { what: String, reason: String },
@@ -69,15 +69,15 @@ impl HubError {
         let detail = body.get("detail").unwrap_or(body);
         let text = detail.as_str().map(str::to_string).unwrap_or_else(|| detail.to_string());
         match status {
-            404 => HubError::NotInstalled { what: what.into(), detail: text, body: body.clone() },
-            503 => HubError::NotUp { what: what.into(), detail: text, body: body.clone() },
+            404 => HubError::NotInstalled { what: what.into(), detail: text, body: Box::new(body.clone()) },
+            503 => HubError::NotUp { what: what.into(), detail: text, body: Box::new(body.clone()) },
             500 if detail.get("error").is_some() => HubError::Verb {
                 what: what.into(),
                 error: detail["error"].as_str().map(str::to_string).unwrap_or_else(|| detail["error"].to_string()),
                 error_class: detail.get("error_class").and_then(Value::as_str).map(str::to_string),
-                body: body.clone(),
+                body: Box::new(body.clone()),
             },
-            _ => HubError::Http { what: what.into(), status, detail: text, body: body.clone() },
+            _ => HubError::Http { what: what.into(), status, detail: text, body: Box::new(body.clone()) },
         }
     }
 }
@@ -326,12 +326,12 @@ impl Hub {
             Ok(Some(WsMsg::Text(t))) => serde_json::from_str::<Value>(&t).unwrap_or(Value::Null),
             Ok(Some(WsMsg::Close(reason))) => {
                 let detail = format!("lease grant not received: {}", reason.unwrap_or_default());
-                return Err(HubError::Http { what: bridge.what.clone(), status: 502, body: json!({"detail": detail}), detail })
+                return Err(HubError::Http { what: bridge.what.clone(), status: 502, body: Box::new(json!({"detail": detail})), detail })
             }
             Ok(_) => Value::Null,
             Err(_) => {
                 let detail = "lease grant not received: timed out".to_string();
-                return Err(HubError::Http { what: bridge.what.clone(), status: 502, body: json!({"detail": detail}), detail });
+                return Err(HubError::Http { what: bridge.what.clone(), status: 502, body: Box::new(json!({"detail": detail})), detail });
             }
         };
         Ok(Lease {
