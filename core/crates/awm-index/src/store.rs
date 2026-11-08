@@ -152,6 +152,11 @@ impl Store {
         Ok(Store { path: path.to_path_buf(), db })
     }
 
+    /// The connection itself, for a source's own plain tables beside its sections.
+    pub fn connection(&self) -> &Connection {
+        &self.db
+    }
+
     pub async fn table_names(&self) -> Result<Vec<String>> {
         Ok(self.db.table_names().execute().await?)
     }
@@ -648,6 +653,27 @@ impl Index {
         }
         drop(_w);
         Ok(held.section.len())
+    }
+
+    /// Remove the entries `cond` selects in every section, with their chunks, and return how
+    /// many went. `cond` may name any entry column; the chunks go by the ids it selects.
+    pub async fn delete_where(&self, cond: &str) -> Result<usize> {
+        let _w = self.write.lock().await;
+        let mut n = 0;
+        for sec in self.sections() {
+            let ids: Vec<String> = collect(sec.entries.query().only_if(cond).select(Select::columns(&["id"])))
+                .await?
+                .iter()
+                .map(|r| cells::text(r, "id"))
+                .collect();
+            if ids.is_empty() {
+                continue;
+            }
+            Self::delete_in(&sec.chunks, &ids).await?;
+            sec.entries.delete(cond).await?;
+            n += ids.len();
+        }
+        Ok(n)
     }
 
     /// Embed the entries whose chunks wait for the model. Run it when the model loads and at start.
