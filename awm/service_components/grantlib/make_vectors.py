@@ -47,6 +47,13 @@ def main() -> None:
     tampered = copy.deepcopy(env("grant", raise_))
     tampered["grant"]["subject"] = "cc-9999"
     floaty = dict(raise_, not_after=T0 + 900.5)
+    floaty_unsigned = {**env("grant", floaty), "sig": "AAAA"}
+    no_start = {k: v for k, v in raise_.items() if k != "not_before"}
+    no_start["grant_id"] = "gTESTTRU03"
+    ctrl_payload = {"session_id": "cc-0003", "from": "cooperative", "to": "trusted",
+                    "note": "\x01 del\x7f sep\u2028 \\ /"}
+    ctrl = dict(raise_, grant_id="gTESTTRU04", subject="cc-0003",
+                payload_sha256=hashlib.sha256(canon(ctrl_payload)).hexdigest())
     cases = [
         {"name": "admin_ssh grant, node in nodes", "check": "grant", "kind": "admin_ssh",
          "node": "altair", "now": T0 + 60, "envelope": env("grant", ssh), "expect": "ok"},
@@ -75,6 +82,21 @@ def main() -> None:
          "envelope": env("order", order), "expect": "ok"},
         {"name": "order for another node", "check": "order", "node": "altair", "now": T0 + 10,
          "envelope": env("order", order), "expect": "not 'altair'"},
+        {"name": "no not_before means valid from 0", "check": "grant", "now": T0 + 60,
+         "envelope": env("grant", no_start), "expect": "ok"},
+        {"name": "an order checked as a grant", "check": "grant", "now": T0 + 10,
+         "envelope": env("order", order), "expect": "no grant in the envelope"},
+        {"name": "a float is named before the signature", "check": "grant", "now": T0 + 60,
+         "envelope": floaty_unsigned, "expect": "not_after is a float, and signed times are integers"},
+        {"name": "wrong subject", "check": "grant", "subject": "cc-9999", "now": T0 + 60,
+         "envelope": env("grant", raise_), "expect": "the grant is for 'cc-0002', not 'cc-9999'"},
+        {"name": "payload not covered", "check": "grant", "payload": {"session_id": "cc-0002"},
+         "now": T0 + 60, "envelope": env("grant", raise_),
+         "expect": "the grant does not cover this request"},
+        {"name": "control characters in the payload", "check": "grant", "subject": "cc-0003",
+         "payload": ctrl_payload, "now": T0 + 60, "envelope": env("grant", ctrl), "expect": "ok"},
+        {"name": "order expired", "check": "order", "node": "deneb", "now": T0 + 600,
+         "envelope": env("order", order), "expect": "expired"},
     ]
     out = {"public_key_b64u": b64u(KEY.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)),
            "key_id": key_id(KEY.public_key()), "cases": cases}

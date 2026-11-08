@@ -57,16 +57,12 @@ pub fn request_payload(change: &[Pending]) -> Value {
 
 /// The approver's grant key, base64url: a node secret or the gateway's own environment,
 /// else the config's `[env]`, where the fleet's awm_config role writes it.
-pub const GRANT_KEY: &str = "AWM_APPROVER_GRANT_PUBKEY";
+pub const GRANT_KEY: &str = awm_trust::grant::GRANT_KEY_ENV;
 
 /// The key that signs approvals on this node. With none, no install that needs approval passes.
 pub fn grant_key(secrets_file: &Path, config_env: &std::collections::BTreeMap<String, String>) -> Result<[u8; 32], String> {
     let from_secrets = crate::supervisor::granted_secrets(secrets_file, &[GRANT_KEY.to_string()]).into_iter().map(|(_, v)| v);
-    let value = from_secrets
-        .chain(config_env.get(GRANT_KEY).cloned())
-        .find(|v| !v.trim().is_empty())
-        .ok_or_else(|| format!("{GRANT_KEY} is not set on this node, so no approval can be checked; enrol the passkey and set the approver's grant_pub as {GRANT_KEY} in the node's secrets"))?;
-    awm_trust::grant::load_public_key(&value).map_err(|e| format!("{GRANT_KEY}: {e}"))
+    awm_trust::grant::grant_key_env(from_secrets.chain(config_env.get(GRANT_KEY).cloned()))
 }
 
 /// Whether an `approval_get` answer approves exactly this change on `node`, now. The
@@ -83,7 +79,7 @@ pub fn check_grant(change: &[Pending], answer: &Value, key: &[u8; 32], node: &st
     let payload = request_payload(change);
     let expect = Expect { kind: Some(COMMITS_KIND), node: Some(node), payload: Some(&payload), ..Default::default() };
     verify_grant(envelope, key, &expect, now).map_err(|e| match e {
-        GrantError::Expired => "the grant is outside its window; ask for a new approval".to_string(),
+        GrantError::Expired | GrantError::NotYetValid => "the grant is outside its window; ask for a new approval".to_string(),
         e => e.to_string(),
     })?;
     let named: Vec<String> = envelope

@@ -1,0 +1,14 @@
+# dvc (port T7). Relative paths resolve against AWM_DIR.
+dirs = ["services/dvc"]
+
+[[extra]]
+name = "config"
+path = "dvc.toml"
+
+[[extra]]
+name = "hooks"
+path = "${AWM_WORKSPACE:-${HOME}/agentic_workspace}/projects/*/.bare/hooks/*"
+
+[[extra]]
+name = "gitconfig"
+path = "${AWM_WORKSPACE:-${HOME}/agentic_workspace}/projects/*/.bare/config"
