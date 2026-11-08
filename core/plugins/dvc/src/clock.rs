@@ -36,23 +36,25 @@ pub fn schedule_args(spec: &jobs::JobSpec, row: &Row) -> Result<Option<Value>, c
     Ok(Some(args))
 }
 
-/// Install each job's routine and set its timer from its row. Returns one line per job.
-pub async fn sync_all(hub: &Hub, plugin_dir: &Path, rows: &[Row]) -> Value {
+/// Install each job's routine and set its timer from its row. `unconfigured` is why this node
+/// cannot run a backup, such as a missing dvc.toml: then no job gets a timer, since each fire
+/// would fail and page. Returns one line per job.
+pub async fn sync_all(hub: &Hub, plugin_dir: &Path, rows: &[Row], unconfigured: Option<&str>) -> Value {
     let mut out = serde_json::Map::new();
     for spec in &JOBS {
         let row = rows.iter().find(|r| r.get("name").and_then(Value::as_str) == Some(spec.name)).cloned().unwrap_or_default();
-        out.insert(spec.name.into(), sync_one(hub, plugin_dir, spec, &row).await);
+        out.insert(spec.name.into(), sync_one(hub, plugin_dir, spec, &row, unconfigured).await);
     }
     Value::Object(out)
 }
 
-pub async fn sync_one(hub: &Hub, plugin_dir: &Path, spec: &jobs::JobSpec, row: &Row) -> Value {
+pub async fn sync_one(hub: &Hub, plugin_dir: &Path, spec: &jobs::JobSpec, row: &Row, unconfigured: Option<&str>) -> Value {
     let def = plugin_dir.join("routines").join(format!("{}.toml", spec.routine));
     if let Err(e) = hub.call("routine", "install", json!({"project": PROJECT, "path": def.to_string_lossy()}), None).await {
         return json!({"registered": false, "error": format!("routine install: {e}")});
     }
     let args = match schedule_args(spec, row) {
-        Ok(a) => a,
+        Ok(a) => a.filter(|_| unconfigured.is_none()),
         Err(e) => return json!({"registered": false, "error": e.0}),
     };
     match args {
@@ -60,10 +62,17 @@ pub async fn sync_one(hub: &Hub, plugin_dir: &Path, spec: &jobs::JobSpec, row: &
             Ok(_) => json!({"registered": true, "timer": a["timer"]}),
             Err(e) => json!({"registered": false, "error": format!("routine schedule: {e}")}),
         },
-        None => match hub.call("routine", "unschedule", json!({"project": PROJECT, "name": spec.routine}), None).await {
-            Ok(_) => json!({"registered": false, "disabled": true}),
-            Err(e) => json!({"registered": false, "disabled": true, "error": format!("routine unschedule: {e}")}),
-        },
+        None => {
+            let mut v = match hub.call("routine", "unschedule", json!({"project": PROJECT, "name": spec.routine}), None).await {
+                Ok(_) => json!({"registered": false}),
+                Err(e) => json!({"registered": false, "error": format!("routine unschedule: {e}")}),
+            };
+            match unconfigured {
+                Some(why) => v["unconfigured"] = json!(why),
+                None => v["disabled"] = json!(true),
+            }
+            v
+        }
     }
 }
 

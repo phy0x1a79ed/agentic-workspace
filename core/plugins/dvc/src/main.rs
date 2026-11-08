@@ -239,6 +239,7 @@ async fn serve(paths: Paths) -> anyhow::Result<()> {
         plugin_dir: plugin_dir.clone(),
         hook_bin: paths.awm_dir.join("bin").join("dvc"),
     });
+    let awm_dir = paths.awm_dir.clone();
     let hub = ctx.hub().clone();
     let ready = async move {
         tokio::spawn(watcher.run());
@@ -256,7 +257,8 @@ async fn serve(paths: Paths) -> anyhow::Result<()> {
                 Ok(r) => r,
                 Err(e) => return tracing::warn!("dvc: could not read dvc_jobs: {e}"),
             };
-            let out = clock::sync_all(&hub, &plugin_dir, &rows).await;
+            let unconfigured = config::load(&awm_dir).err().map(|e| e.0);
+            let out = clock::sync_all(&hub, &plugin_dir, &rows, unconfigured.as_deref()).await;
             tracing::info!("dvc: routine clock: {out}");
         });
     };

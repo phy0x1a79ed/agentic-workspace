@@ -248,6 +248,9 @@ impl Dvc {
         if let Err(e) = &reg {
             clock["error"] = json!(e);
         }
+        if let Err(e) = crate::config::load(&self.paths.awm_dir) {
+            clock["unconfigured"] = json!(e.0);
+        }
         let watcher = self.watcher.as_ref().map(|w| w.health()).unwrap_or(json!({"watching": 0, "sweeps": 0, "last_sweep_age_s": null, "stopped": true}));
         Ok(json!({"clock": "routine", "routine": clock, "watcher": watcher, "jobs": out}))
     }
@@ -271,7 +274,10 @@ impl Dvc {
         .await
         .map_err(db_err)?;
         let clock = match (&self.hub, &row) {
-            (Some(h), Some(r)) => clock::sync_one(h, &self.plugin_dir, spec, r).await,
+            (Some(h), Some(r)) => {
+                let unconfigured = crate::config::load(&self.paths.awm_dir).err().map(|e| e.0);
+                clock::sync_one(h, &self.plugin_dir, spec, r, unconfigured.as_deref()).await
+            }
             _ => json!({"registered": false, "error": "no gateway"}),
         };
         Ok(json!({"job": row, "clock": clock}))
