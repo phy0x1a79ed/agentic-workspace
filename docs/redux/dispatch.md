@@ -12,14 +12,14 @@ Timer and agent triggered processes belong in `routines.md`. How a session start
   - R49 states a given, not a protocol to build. It stays here as the record that the thread considered it. Tony: "this is a given. it doesnt need to be explicitly recorded as some protocol... but i guess leaving some record to indicate that we've thought this out is useful".
   1. When something unexpected comes up in a session, the agent deals with it as it sees fit. It uses the tools available, precedence among them. Tony: "in an agentic session, something unexpected comes up -> then the agent deals with it as it sees fit using the tools available like precedent."
   2. When a routine meets something unexpected, the routine raises an exception, because routines are deterministic. The exception starts an agent (`routines.md` R47), and step 1 applies. Tony: "exceptions route to agentic sessions, so what I just said applies."
-- **R50.** An agent may start other top-level sessions without Tony's permission. Guidelines in its brief govern when. Tony: "Yes, I've realized that subagents are insufficient and ill suited for the type of parallel dev work i want. So agents can spawn other agents without my permission." (2026-11-01).
-  1. The agent plans parallel implementation in waves, with the parallel work skill (thread 1p), when the task decomposes into substantial parallel concerns. Tony: "We can give guidelines like plan for parallel implementation in waves (using the skill) if the task can be decomposed into substantial parallel concerns."
-  2. It starts a top-level session when the plan calls for it, when an unexpected discovery needs a new concern dealt with, or when Tony asks. Tony: "Then spawning top level agents is fine when the plan calls for it, when an unexpected discovery requires a new concern to be dealt with, or when i ask."
-  3. When unsure, it asks Tony first. His answers go into precedence until they show when a start is fine. Tony: "We can err on the side of asking until we build up some precedent for when it is ok to spawn top level agents." Precedence `eea2745af7b0c9bf` records the rule.
-  - Each top-level session has the full awm tooling, which a subagent lacks. Tony: "This enables true parallel sessions that each has full awm tooling."
+- **R50.** An agent starts another top-level session only with a human's permission. Permission is a human's message to the agent, a plan a human approved that names the session, a task brief from a human that asks for it, or a human's precedent for that kind of start. A chat line counts only at level trusted (`channels.md` R70). A session passes on only what a human allowed. Tony: "Can we change the tool describe to require human permission? For the seat brief, chat inputs from humans in trusted or higher counts as permission." and, for a session with no chat, "Human words naming it" (2026-11-08).
+  1. The agent plans parallel implementation in waves, with the parallel work skill (thread 1p), when the task decomposes into substantial parallel concerns. The plan names the sessions, so that a human's approval of the plan is the permission. Tony: "We can give guidelines like plan for parallel implementation in waves (using the skill) if the task can be decomposed into substantial parallel concerns."
+  2. An unapproved plan or an unexpected discovery is a reason to ask, not permission. The agent asks in its chat, or with `operations request_human` in a background session.
+  3. Tony's answers go into precedence, so that a later start of the same kind has permission. Tony: "We can err on the side of asking until we build up some precedent for when it is ok to spawn top level agents."
+  - Top-level sessions remain the route for parallel dev work, because each has the full awm tooling, which a subagent lacks. Tony: "This enables true parallel sessions that each has full awm tooling."
   - Subagents stay for exploring and for parallel implementation inside one scope. Tony: "Sub agents are reserved for things like explore and parallel implementation tasks that can haplen" and "... that can happen in a single scope." (2026-11-01).
   - A routine exception still starts its agent through the `routine` service (`routines.md` R47).
-  - The guidelines live in the brief. Code cannot enforce them. Tony: "R50 is not enforceable by code since permission can be given through dialogue" (2026-10-31).
+  - The rule lives in the `start_other` description and the brief. Code cannot enforce it. Tony: "R50 is not enforceable by code since permission can be given through dialogue" (2026-10-31).
 - `sessions.md` R12 step 4 supplies the input: Tony's decisions on follow-up issues go into precedence.
 
 ## Decisions
@@ -30,4 +30,4 @@ Timer and agent triggered processes belong in `routines.md`. How a session start
 
 Status at the wave-2 gather (`feat/redux` 16da3979, 2026-11-04). `docs/redux-review/build-survey.md` § 3 holds the row for each requirement.
 
-Nothing in this doc is open. R49 is a given, and the lifecycle brief carries the R50 guidelines.
+Nothing in this doc is open. R49 is a given, and the `start_other` description and the lifecycle brief carry R50.
