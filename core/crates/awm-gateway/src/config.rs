@@ -67,6 +67,9 @@ pub struct Config {
     /// The fleet rollout table. The routine plugin reads it. The gateway ignores it.
     #[serde(default)]
     pub fleet: Option<toml::Value>,
+    /// The swarm this node reports to. The telemetry plugins read it. The gateway ignores it.
+    #[serde(default)]
+    pub telemetry: Option<toml::Value>,
     /// Seconds a call waits for a tool that is not up yet (R117 item 7).
     #[serde(default = "default_wait")]
     pub tool_wait_s: f64,
@@ -199,4 +202,16 @@ pub fn hostname() -> String {
     }
     let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
     String::from_utf8_lossy(&buf[..end]).into_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn plugin_tables_load_and_a_misspelt_table_is_refused() {
+        let cfg: Config = toml::from_str("[telemetry]\nswarm = \"tony\"\n[fleet]\nwave = 1\n").unwrap();
+        assert_eq!(cfg.telemetry.unwrap()["swarm"].as_str(), Some("tony"));
+        assert!(toml::from_str::<Config>("[telemetri]\nswarm = \"tony\"\n").is_err());
+    }
 }
