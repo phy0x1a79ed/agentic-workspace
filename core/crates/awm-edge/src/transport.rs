@@ -1,6 +1,6 @@
 //! The gateway's [`PeerTransport`] over the edges: a node reaches only the peers
 //! its edge list gives it an edge to, each over its warm ssh channel. A retiring
-//! node is never dialed.
+//! node and a node that runs no awm are never dialed.
 
 use awm_gateway::peer::{stream_path_allowed, BoxFuture, PeerError, PeerTransport, WsPipe};
 use awm_proto::{CallContext, Caller, Lane};
@@ -32,6 +32,9 @@ impl EdgePeers {
                 status: 403,
                 body: format!("{peer} is retiring: no call dials a retiring node"),
             });
+        }
+        if self.edges.runs_no_awm(peer) {
+            return Err(PeerError::Refused { peer: peer.into(), status: 400, body: format!("{peer} runs no awm") });
         }
         if self.edges.reaches(&self.here, peer) {
             Ok(())

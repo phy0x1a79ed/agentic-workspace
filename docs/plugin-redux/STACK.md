@@ -91,6 +91,8 @@ Decisions: `search` for journals tagged `decision` in awm/plugin-redux.
 
 ## Workers
 
+- hpc-ssh-guard — job a292efdb, plugin-redux/hpc-ssh-guard, scope cloud/hpc-ssh-guard, Opus high, plan mode, https://claude.ai/code/session_012TZ1zwzd4TMrMi4BprYchq. Brief ~/.cache/plugin-redux-briefs/hpc-ssh-guard.md. Started 2026-11-07 at Tony's ask ("lets put an agent on this"): one guard on every node so no process ssh's to fir or sockeye without the ssh/2fa (and vpn) flow. Plan comes here for "submit". Forward the guard survey's report to it.
+
 - engine-bench — job 5367f4a7, plugin-redux/engine-bench, scope awm/engine-bench, Opus high, https://claude.ai/code/session_012TZ1zx2Aqin2tp18ZYJSQo. Brief ~/.cache/plugin-redux-briefs/engine-bench.md (+ engine-bench-spec.md from knowledge's T6). Started 2026-11-07 at Tony's ask. Reported 2026-11-07; retiring.
 
 The worker branches build on feat/plugin-redux (merged at 6ee5a267 on 2026-11-07, after Tony noticed they branched from release). CAUTION: this worktree's `origin` is altair's bare, not mizar's. All scopes share mizar's bare, so tell workers to merge the local branch `feat/plugin-redux`, not origin/. Each time feat/plugin-redux moves, push it to github and tell the four workers to merge it again, until T2 lands.
