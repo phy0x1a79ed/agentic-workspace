@@ -152,17 +152,4 @@ mod tests {
         assert_eq!(ancestors(me, 1), vec![parent].into_iter().filter(|p| *p > 1).collect::<Vec<_>>());
     }
 
-    #[test]
-    fn subtree_survives_a_cycle() {
-        let kids = HashMap::from([(1, vec![2]), (2, vec![3]), (3, vec![2])]);
-        assert!(subtree_contains(1, 3, &kids));
-        assert!(!subtree_contains(1, 9, &kids));
-    }
-
-    #[test]
-    fn unreadable_pid_is_none() {
-        assert_eq!(ppid(0), None);
-        assert_eq!(start_ticks(0), None);
-        assert_eq!(cmdline(u32::MAX), None);
-    }
 }

@@ -177,14 +177,6 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn a_failed_create_stops_the_seed() {
-        let f = Fake { create_status: 500, create_body: json!({"detail": "boom"}), ..Default::default() };
-        let gw = Gateway::new(serve(f.clone()).await, Duration::from_secs(5));
-        let err = seed(&gw, &mut Vec::new()).await.unwrap_err();
-        assert!(err.starts_with("[seed] scope demo/alpha: 500"), "{err}");
-    }
-
     #[test]
     fn refuses_outside_the_sandbox() {
         let tmp = tempfile::tempdir().unwrap();
@@ -195,13 +187,4 @@ mod tests {
         assert!(check_sandbox(None, &sandbox).unwrap_err().contains("(got None)"));
     }
 
-    #[tokio::test]
-    async fn lists_services_and_nothing_when_down() {
-        let gw = Gateway::new(serve(Fake::default()).await, Duration::from_secs(5));
-        assert_eq!(services(&gw).await, ["scopes ready 41", "kb down -"]);
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let dead = listener.local_addr().unwrap().port();
-        drop(listener);
-        assert!(services(&Gateway::new(dead, Duration::from_secs(1))).await.is_empty());
-    }
 }

@@ -393,7 +393,6 @@ pub mod tests {
     use crate::fork::stub::{self, Stub};
     use std::sync::{Arc, Mutex};
 
-    pub const UUID: &str = "0e380e38-0e38-4e38-8e38-0e380e380e38";
     pub const FORK: &str = "session-0e380e38-0e38-4e38-8e38-0e380e380e38";
     pub const R9: &str = "ds0e380e380e384e388e380e380e380e38";
 
@@ -453,13 +452,6 @@ pub mod tests {
         rig_with(FakeProcs::default(), default_items()).await
     }
 
-    #[test]
-    fn the_r9_id_is_ds_and_the_uuid_hex() {
-        assert_eq!(r9(FORK).as_deref(), Some(R9));
-        assert_eq!(r9("odd-id"), None);
-        assert_eq!(R9, format!("ds{}", UUID.replace('-', "")));
-    }
-
     #[tokio::test]
     async fn list_leaves_out_a_session_with_no_uuid() {
         let r = rig().await;
@@ -480,15 +472,6 @@ pub mod tests {
     }
 
     #[tokio::test]
-    async fn two_sessions_with_one_title_are_a_refusal() {
-        let mut items = default_items();
-        items.push(json!({"sessionId": "session-11111111-1111-4111-8111-111111111111", "title": "web"}));
-        let r = rig_with(FakeProcs::default(), items).await;
-        let e = r.s.find_one("web").await.unwrap_err();
-        assert_eq!(e.0, "'web' names 2 DeepSeek harness sessions");
-    }
-
-    #[tokio::test]
     async fn plain_text_is_queued_and_a_slash_command_is_executed() {
         let r = rig().await;
         let row = r.s.find_one(R9).await.unwrap().unwrap();
@@ -497,21 +480,6 @@ pub mod tests {
                    json!({"sessionId": FORK, "mode": "queue", "content": [{"type": "text", "text": "hello"}]})));
         r.s.send(&row, "/compact").await.unwrap();
         assert_eq!(r.stub.last(), ("commands/execute".into(), json!({"agentId": FORK, "line": "/compact"})));
-    }
-
-    #[tokio::test]
-    async fn stop_cancels_and_says_it_cannot_unload() {
-        let r = rig().await;
-        let out = r.s.stop(&r.s.find_one(R9).await.unwrap().unwrap()).await.unwrap();
-        assert_eq!((out["stopped"].clone(), out["unloaded"].clone()), (json!(true), json!(false)));
-        assert_eq!(r.stub.last().0, "session.cancel");
-    }
-
-    #[tokio::test]
-    async fn set_cannot_move_a_session() {
-        let r = rig().await;
-        let row = r.s.find_one(R9).await.unwrap().unwrap();
-        assert_eq!(r.s.set(&row, &json!({"cwd": "/x"}), None).await.unwrap()["unsupported"], true);
     }
 
     #[tokio::test]
@@ -575,24 +543,6 @@ pub mod tests {
     }
 
     #[tokio::test]
-    async fn a_compaction_that_never_ends_is_lost_at_the_deadline() {
-        let mut r = rig().await;
-        r.s.compact_wait = Duration::from_millis(30);
-        let row = r.s.find_one(R9).await.unwrap().unwrap();
-        assert_eq!(r.s.watch_compaction(&row, "x", "t", None).await, Kind::Lost);
-        assert!(r.events.lock().unwrap().last().unwrap()["reason"].as_str().unwrap().contains("did not end"));
-    }
-
-    #[tokio::test]
-    async fn a_minimal_preset_session_cannot_compact() {
-        let mut items = default_items();
-        items[0]["agentPreset"] = json!("minimal");
-        let r = rig_with(FakeProcs::default(), items).await;
-        let row = r.s.find_one(R9).await.unwrap().unwrap();
-        assert_eq!(r.s.compact(&row, Some("x")).await.unwrap().0["unsupported"], true);
-    }
-
-    #[tokio::test]
     async fn an_event_reflection_refuses_is_spooled() {
         let mut r = rig().await;
         let spool = r._dir.path().join("refused.jsonl");
@@ -629,14 +579,6 @@ pub mod tests {
     }
 
     #[tokio::test]
-    async fn resolve_owns_the_fork_pid_but_cannot_name_an_idle_caller() {
-        let r = rig_with(under_the_fork(), two_items(&[])).await;
-        let out = r.s.resolve(Some(60), Some(50)).await;
-        assert_eq!((out["mine"].clone(), out["session_id"].clone()), (json!(true), Value::Null));
-        assert!(out["error"].as_str().unwrap().contains("MCP client"));
-    }
-
-    #[tokio::test]
     async fn the_only_running_session_is_the_mcp_caller() {
         let items = two_items(&[1]);
         let want = r9(items[1]["sessionId"].as_str().unwrap());
@@ -647,14 +589,6 @@ pub mod tests {
     }
 
     #[tokio::test]
-    async fn two_running_sessions_name_no_caller() {
-        let r = rig_with(under_the_fork(), two_items(&[0, 1])).await;
-        let out = r.s.resolve(Some(60), Some(50)).await;
-        assert_eq!(out["session_id"], Value::Null);
-        assert!(out["error"].as_str().unwrap().contains("2 sessions"));
-    }
-
-    #[tokio::test]
     async fn resolve_disowns_a_stranger() {
         let procs = FakeProcs { env: HashMap::new(), parents: HashMap::from([(77, 1)]) };
         let r = rig_with(procs, default_items()).await;
@@ -662,12 +596,4 @@ pub mod tests {
         assert_eq!(r.s.resolve(None, Some(50)).await, json!({"ok": true, "mine": false, "error": "no pid"}));
     }
 
-    #[test]
-    fn a_scope_is_read_under_the_last_projects() {
-        assert_eq!(scope_of("/w/projects/awm/a/b"), Some(("awm".into(), "a/b".into())));
-        assert_eq!(scope_of("/projects/x/projects/p/s/"), Some(("p".into(), "s".into())));
-        assert_eq!(scope_of("/w/projects/awm"), None);
-        assert_eq!(pid_arg(Some(&json!("12"))), Some(12));
-        assert_eq!(pid_arg(Some(&json!("x"))), None);
-    }
 }

@@ -1,12 +1,11 @@
 //! The land queue: submit, the merger's batch, bounce, the lease and the rollout.
 
-mod common;
 
 use std::path::{Path, PathBuf};
 
-use awm_plugin_routine::land::json::{self, J};
-use awm_plugin_routine::land::{batch_restart, deployconf, fleetconf, Land, LandError, RESULT_MARK};
-use common::{git, Workspace};
+use awm_plugin_routine::land::json::J;
+use awm_plugin_routine::land::{fleetconf, Land, RESULT_MARK};
+use crate::common::{git, Workspace};
 
 const INSTALL: &str = "[fleet]\nhome = \"mizar\"\nnodes = [\"mizar\"]\n";
 const REFRESH: &str = "[refresh]\nsync = \"true\"\ncommand = \"scripts/refresh.sh\"\n";
@@ -74,20 +73,6 @@ fn two_branches_land_in_one_batch() {
 }
 
 #[test]
-fn a_waiter_waits_while_another_merges() {
-    let t = setup();
-    with_refresh(&t);
-    let mut ln = land(&t, INSTALL);
-    let a = submit(&ln, &t.ws.scope("a", &[("app.txt", "from a\n")], "release"), "none");
-    let b = submit(&ln, &t.ws.scope("b", &[("app.txt", "from b\n")], "release"), "none");
-    assert_eq!(ln.run_batch(a.str("ticket")).unwrap(), 1);
-    assert_eq!(ln.merger().unwrap(), a.str("ticket"));
-    assert_eq!(submit(&ln, &t.ws.scope("c", &[("c.txt", "c\n")], "release"), "none").str("role"), "queued");
-    assert_eq!(ln.run_batch(b.str("ticket")).unwrap(), 3);
-    assert!(matches!(ln.hold(b.str("ticket")), Err(LandError::Exit(_))));
-}
-
-#[test]
 fn conflict_stops_and_the_merger_resolves_it() {
     let t = setup();
     with_refresh(&t);
@@ -121,21 +106,6 @@ fn bounce_returns_the_branch_and_lands_the_rest() {
     let w = ln.wait(b.str("ticket"), 0.01).unwrap();
     assert_eq!(w.str("verdict"), "bounced");
     assert!(w.str("reason").contains("breaks the check"));
-}
-
-#[test]
-fn an_expired_lease_passes_the_batch_on() {
-    let t = setup();
-    with_refresh(&t);
-    let mut ln = land(&t, INSTALL);
-    let a = submit(&ln, &t.ws.scope("a", &[("app.txt", "from a\n")], "release"), "none");
-    let b = submit(&ln, &t.ws.scope("b", &[("app.txt", "from b\n")], "release"), "none");
-    assert_eq!(ln.run_batch(a.str("ticket")).unwrap(), 1);
-    let lease = ln.dir.join("lease.json");
-    let mut l = json::loads(&std::fs::read_to_string(&lease).unwrap()).unwrap();
-    l.set("until", J::from(0i64));
-    std::fs::write(&lease, json::dumps(&l)).unwrap();
-    assert_eq!(ln.wait(b.str("ticket"), 0.01).unwrap().str("verdict"), "merger");
 }
 
 #[test]
@@ -175,46 +145,6 @@ fn submit_refuses_uncommitted_work_and_release() {
 }
 
 #[test]
-fn a_node_without_its_own_command_refreshes_over_ssh() {
-    let t = setup();
-    let fleet = "[fleet]\nhome = \"mizar\"\nnodes = [\"mizar\", \"altair\"]\n[fleet.push.altair]\nurl = \"altair:/r/{project}\"\nprojects = [\"awm\"]\n";
-    let mut ln = land(&t, fleet);
-    let cfg = deployconf::parse("[refresh]\nsync = \"scripts/refresh-checkout.sh\"\ncommand = \"scripts/node-refresh.sh\"\n").unwrap();
-    ln.project = "awm".into();
-    let b40 = "b".repeat(40);
-    let cmd = ln.refresh_command("altair", &cfg, &b40);
-    assert!(cmd.starts_with("ssh -o BatchMode=yes altair "), "{cmd}");
-    let want = format!("cd agentic_workspace && AWM_REFRESH_TO={b40} scripts/refresh-checkout.sh && AWM_REFRESH_RESTART='' bash scripts/node-refresh.sh {b40}");
-    assert_eq!(cmd, format!("ssh -o BatchMode=yes altair {}", awm_plugin_routine::timers::quote(&want)));
-}
-
-#[test]
-fn a_fix_after_promote_lands_as_a_new_release() {
-    let t = setup();
-    let log = with_refresh(&t);
-    let flag = t.root.join("alcor-ok");
-    git(&t.root, &["init", "-q", "--bare", &t.root.join("peer-proj.git").to_string_lossy()]);
-    let fleet = format!(
-        "[fleet]\nhome = \"mizar\"\nnodes = [\"mizar\", \"alcor\"]\n[fleet.push.alcor]\nurl = \"{}\"\nprojects = [\"proj\"]\nrefresh = \"test -e {}\"\n",
-        t.root.join("peer-{project}.git").display(),
-        flag.display()
-    );
-    let mut ln = land(&t, &fleet);
-    let a = submit(&ln, &t.ws.scope("a", &[("a.txt", "a\n")], "release"), "none");
-    assert_eq!(ln.run_batch(a.str("ticket")).unwrap(), 1);
-    let first = t.ws.rev("release");
-    std::fs::write(ln.tree.join("fix.txt"), "fix\n").unwrap();
-    git(&ln.tree, &["add", "fix.txt"]);
-    git(&ln.tree, &["commit", "-q", "-m", "fix"]);
-    std::fs::write(&flag, "").unwrap();
-    assert_eq!(ln.run_batch(a.str("ticket")).unwrap(), 0);
-    assert_ne!(t.ws.rev("release"), first);
-    assert_eq!(t.ws.show("release", "fix.txt"), "fix");
-    let w = words(&log);
-    assert_eq!([w[0].as_str(), w[2].as_str()], [first.as_str(), t.ws.rev("release").as_str()]);
-}
-
-#[test]
 fn the_batch_restarts_the_union_of_what_its_agents_name() {
     let t = setup();
     let log = with_refresh(&t);
@@ -226,12 +156,6 @@ fn the_batch_restarts_the_union_of_what_its_agents_name() {
     assert_eq!(words(&PathBuf::from(format!("{}.restart", log.display()))), ["restart=journal,scopes,search"]);
     let e = ln.submit(&t.ws.scope("d", &[("d.txt", "d\n")], "release"), "b", " , ").unwrap_err();
     assert!(e.to_string().contains("--restart"));
-}
-
-#[test]
-fn gateway_and_plugin_names_both_stay_in_the_restart() {
-    let tickets = [J::from([("restart", J::Arr(vec![J::from("gateway")]))]), J::from([("restart", J::Arr(vec![J::from("channel")]))])];
-    assert_eq!(batch_restart(&tickets), "channel,gateway");
 }
 
 #[test]

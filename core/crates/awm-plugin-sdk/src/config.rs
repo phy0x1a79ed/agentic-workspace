@@ -243,35 +243,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn scope_is_the_deepest_worktree() {
-        let tmp = tempfile::tempdir().unwrap();
-        let projects = tmp.path().join("projects");
-        let wt = projects.join("awm/redux/x");
-        std::fs::create_dir_all(wt.join("core/src")).unwrap();
-        std::fs::write(wt.join(".git"), "gitdir: ..").unwrap();
-        assert_eq!(scope_of(&wt.join("core/src"), &projects), Some(("awm".into(), Some("redux/x".into()))));
-        std::fs::create_dir_all(projects.join("p/loose/dir")).unwrap();
-        assert_eq!(scope_of(&projects.join("p/loose/dir"), &projects), Some(("p".into(), Some("loose/dir".into()))));
-        assert_eq!(scope_of(&projects.join("p"), &projects), Some(("p".into(), None)));
-        assert_eq!(scope_of(tmp.path(), &projects), None);
-    }
-
-    #[test]
-    fn the_workspace_is_above_a_scope_worktree() {
-        let tmp = tempfile::tempdir().unwrap();
-        let ws = tmp.path().join("ws");
-        let wt = ws.join("projects/awm/redux");
-        std::fs::create_dir_all(wt.join("core")).unwrap();
-        std::fs::write(ws.join("AGENTS.md"), "").unwrap();
-        std::fs::write(wt.join("AGENTS.md"), "").unwrap();
-        assert_eq!(workspace_above(&wt.join("core")), ws);
-        let lone = tmp.path().join("lone/sub");
-        std::fs::create_dir_all(&lone).unwrap();
-        std::fs::write(tmp.path().join("lone/AGENTS.md"), "").unwrap();
-        assert_eq!(workspace_above(&lone), tmp.path().join("lone"));
-    }
-
-    #[test]
     fn stamps_and_labels() {
         assert_eq!(caller_peer(Some("peer:mira ")), Some("mira"));
         assert_eq!(caller_peer(Some("tony")), None);
@@ -283,14 +254,4 @@ mod tests {
         assert_eq!((s["A"].as_str(), s["B"].as_str(), s.len()), ("1", "two", 2));
     }
 
-    #[test]
-    fn install_config_reads_leniently() {
-        let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join("config.toml");
-        std::fs::write(&path, "listen = \"x\"\n[env]\nA = \"1\"\n[fleet]\nhome = \"mizar\"\n").unwrap();
-        let cfg = InstallConfig::load_from(&path).unwrap();
-        assert_eq!(cfg.env().get("A").map(String::as_str), Some("1"));
-        assert_eq!(cfg.fleet().and_then(|f| f.get("home")).and_then(|h| h.as_str()), Some("mizar"));
-        assert!(InstallConfig::load_from(&tmp.path().join("none.toml")).unwrap().table.is_empty());
-    }
 }

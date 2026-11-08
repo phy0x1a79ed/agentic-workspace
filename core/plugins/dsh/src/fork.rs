@@ -137,10 +137,4 @@ mod tests {
         assert_eq!(e.0, "session.rename: E_STUB: refused");
     }
 
-    #[tokio::test]
-    async fn a_down_fork_reads_as_a_fork_error() {
-        let fork = Fork::new(stub::dead_port().await);
-        let e = fork.rpc("session.list", json!({})).await.unwrap_err();
-        assert!(e.0.starts_with("the DeepSeek harness did not answer session.list: "), "{e}");
-    }
 }

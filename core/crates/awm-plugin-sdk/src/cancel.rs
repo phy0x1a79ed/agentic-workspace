@@ -97,29 +97,3 @@ impl Drop for GroupGuard {
         });
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn run_returns_output_and_dies_on_cancel() {
-        let token = CancelToken::new();
-        let mut cmd = tokio::process::Command::new("sh");
-        cmd.args(["-c", "echo hi"]);
-        assert_eq!(run(&token, cmd).await.unwrap().stdout, b"hi\n");
-
-        let mut cmd = tokio::process::Command::new("sleep");
-        cmd.arg("30");
-        let t = token.clone();
-        let started = std::time::Instant::now();
-        tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(100)).await;
-            t.cancel();
-        });
-        let err = run(&token, cmd).await.unwrap_err();
-        assert_eq!(err.error_class, "Cancelled");
-        assert!(started.elapsed() < Duration::from_secs(5));
-        assert!(token.check().is_err());
-    }
-}

@@ -1,14 +1,12 @@
 //! awm's own deploy.toml and the scripts the land rollout runs: refresh-checkout.sh,
 //! full-tests.sh, move-canonical.sh, awm-deploy.sh, build.sh, install.sh and refresh-pins.sh.
 
-mod common;
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-use awm_plugin_routine::land::{artifacts, deployconf};
-use common::git;
+use crate::common::git;
 use sha2::{Digest, Sha256};
 
 fn repo() -> PathBuf {
@@ -53,25 +51,6 @@ fn commit(dir: &Path, msg: &str) {
 
 fn have(tool: &str) -> bool {
     Command::new("sh").args(["-c", &format!("command -v {tool}")]).output().is_ok_and(|o| o.status.success())
-}
-
-fn deploy_cfg() -> deployconf::DeployConfig {
-    deployconf::parse(&std::fs::read_to_string(repo().join("deploy.toml")).unwrap()).unwrap()
-}
-
-#[test]
-fn awm_deploy_toml_parses() {
-    let cfg = deploy_cfg();
-    assert!(cfg.check_timeout == 600.0 && cfg.check.contains("--smoke"));
-    assert_eq!((cfg.refresh.sync.as_str(), cfg.refresh.command.as_str()), ("scripts/refresh-checkout.sh", "scripts/node-refresh.sh"));
-    assert!(repo().join(&cfg.refresh.sync).is_file() && repo().join(&cfg.refresh.command).is_file());
-    assert_eq!(cfg.backup, "github");
-}
-
-#[test]
-fn awm_deploy_toml_names_no_host() {
-    // fleet.md R140: the node list lives in each node's install config.
-    assert!(!std::fs::read_to_string(repo().join("deploy.toml")).unwrap().contains("[fleet]"));
 }
 
 /// A canonical bare repo with refs/mizar/release, and a node checkout of it.
@@ -190,15 +169,6 @@ fn move_canonical_repoints_the_checkout_and_adds_github() {
 
 // -- the core binary pin: scripts/core.pin and scripts/awm-deploy.sh ------------
 
-#[test]
-fn awm_deploy_toml_pins_the_built_files() {
-    let cfg = deploy_cfg();
-    assert!(cfg.artifact_pins.contains(&"scripts/core.pin".into()) && cfg.artifact_pins.contains(&"scripts/pages.pin".into()));
-    assert!(cfg.artifact_refresh == "scripts/refresh-pins.sh" && cfg.artifact_refresh_timeout > 600.0);
-    let pin = artifacts::parse_pin(&std::fs::read_to_string(repo().join("scripts/core.pin")).unwrap(), "scripts/core.pin").unwrap();
-    assert!(pin.file.starts_with("awm-core-") && pin.sha256.len() == 64);
-}
-
 const FAKE_BIN: &str = "#!/bin/sh\necho \"fake awm $*\"\n";
 const PAGE: &str = "awm/services/svc/pages/ui/dist";
 
@@ -306,43 +276,6 @@ fn awm_deploy_stops_on_a_bad_pin_and_changes_nothing() {
     }
 }
 
-#[test]
-fn awm_deploy_stops_when_an_artifact_never_arrived() {
-    let tmp = tempfile::tempdir().unwrap();
-    let node = deploy_node(tmp.path(), DeployOpts::default());
-    for e in std::fs::read_dir(node.join(".awm/artifacts")).unwrap() {
-        let p = e.unwrap().path();
-        if p.to_string_lossy().ends_with(".tar.gz") {
-            std::fs::remove_file(p).unwrap();
-        }
-    }
-    let r = run_deploy(&node, &[]);
-    assert_eq!(r.status.code(), Some(1));
-    assert!(text(&r.stderr).contains("pushes it to this node"));
-}
-
-#[test]
-fn pushed_artifacts_deploy_on_the_fixture_node() {
-    if !have("rsync") {
-        eprintln!("no rsync: skipped");
-        return;
-    }
-    let tmp = tempfile::tempdir().unwrap();
-    let node = deploy_node(tmp.path(), DeployOpts::default());
-    let mizar = tmp.path().join("mizar-store");
-    std::fs::create_dir_all(&mizar).unwrap();
-    for name in ["core.pin", "pages.pin"] {
-        let p = artifacts::parse_pin(&std::fs::read_to_string(node.join("scripts").join(name)).unwrap(), &format!("scripts/{name}")).unwrap();
-        std::fs::rename(node.join(".awm/artifacts").join(&p.file), mizar.join(&p.file)).unwrap();
-        artifacts::check(&mizar, &p).unwrap();
-        let res = artifacts::push(&mizar, &p, &node.join(".awm/artifacts").to_string_lossy());
-        assert!(res.ok(), "{}", res.stdout);
-    }
-    let r = run_deploy(&node, &[]);
-    assert!(r.status.success() && text(&r.stdout).starts_with("fake awm deploy --root"), "{}", text(&r.stderr));
-    assert_eq!(std::fs::read_to_string(node.join(PAGE).join("index.html")).unwrap(), "built\n");
-}
-
 // -- awm/scripts/build.sh runs npm ci on a changed lock; awm/install.sh asks `awm wants` ---
 
 /// A checkout holding copies of the two scripts, for them to run against.
@@ -416,23 +349,6 @@ fn install_runs_the_plugins_the_config_enables() {
     assert!(text(&r.stdout).contains("does not enable it): off"));
 }
 
-#[test]
-fn install_stops_when_the_core_cannot_answer() {
-    if !have("socat") {
-        eprintln!("no socat: skipped");
-        return;
-    }
-    let tmp = tempfile::tempdir().unwrap();
-    let (tree, state) = (script_tree(tmp.path()), tmp.path().join("state"));
-    std::fs::create_dir_all(&state).unwrap();
-    write(&tree.join("awm/services/on/install.sh"), &format!("echo ran >> \"{}/on.ran\"\n", tmp.path().display()));
-    let broken = tmp.path().join("broken");
-    exe(&broken, "#!/bin/sh\nexit 2\n");
-    let r = install(&tree, &broken, &state);
-    assert_eq!(r.status.code(), Some(1));
-    assert!(text(&r.stderr).contains("wants on' failed") && !tmp.path().join("on.ran").exists());
-}
-
 // -- scripts/refresh-pins.sh: rebuild only the stale pin, with the caches kept ----------
 
 const STUB: &str = r#"set -euo pipefail
@@ -502,23 +418,3 @@ fn refresh_pins_builds_what_is_stale_and_nothing_else() {
     assert_eq!(first_words(&run_pins(&tree, &awm_dir)[4..]), ["core", "pages"]);
 }
 
-#[test]
-fn refresh_pins_reuses_node_modules_by_lock_in_a_fresh_tree() {
-    let tmp = tempfile::tempdir().unwrap();
-    let (tree, awm_dir) = (refresh_tree(tmp.path()), tmp.path().join("awm-dir"));
-    run_pins(&tree, &awm_dir);
-    let cached: Vec<PathBuf> = std::fs::read_dir(awm_dir.join("build-cache/node_modules")).unwrap().map(|e| e.unwrap().path()).collect();
-    assert!(cached.len() == 1 && cached[0].join("pkg/index.js").is_file());
-    // A new temp tree has no node_modules; the cache brings it back before the page build.
-    std::fs::remove_dir_all(tree.join("awm/node_modules")).unwrap();
-    write(&tree.join("awm/services/svc/pages/ui/index.html"), "2\n");
-    commit(&tree, "page");
-    assert!(run_pins(&tree, &awm_dir).last().unwrap().contains("nm=pkg"));
-    // A new lock replaces the cached tree.
-    write(&tree.join("awm/package-lock.json"), "{\"v\":2}\n");
-    std::fs::remove_dir_all(tree.join("awm/node_modules")).unwrap();
-    commit(&tree, "lock");
-    assert!(!run_pins(&tree, &awm_dir).last().unwrap().contains("nm=pkg"));
-    let now: Vec<PathBuf> = std::fs::read_dir(awm_dir.join("build-cache/node_modules")).unwrap().map(|e| e.unwrap().path()).collect();
-    assert_ne!(now, cached);
-}

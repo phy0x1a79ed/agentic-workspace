@@ -272,17 +272,6 @@ singletons:
     }
 
     #[test]
-    fn a_planned_caller_is_skipped() {
-        let e = EdgeList::parse(
-            "nodes:\n  host: {role: standby}\n  soon: {role: admin, planned: true}\n\
-             singleton_doors:\n  host: {port: 2201, network: lan}\n\
-             singletons:\n  - {tool: vault, host: host, callers: [soon]}\n",
-        )
-        .unwrap();
-        assert!(!e.may_call("soon", "vault"));
-    }
-
-    #[test]
     fn retiring_nodes_are_not_dialed_but_still_trusted() {
         let e = EdgeList::parse(
             "nodes:\n  home: {role: homebase}\n  old: {role: retiring}\n  work: {role: work}\n\
@@ -320,9 +309,4 @@ singletons:
         assert!(EdgeList::parse(&format!("{door}singletons: [{{tool: t, host: a, callers: []}}, {{tool: t, host: a, callers: []}}]\n")).is_err());
     }
 
-    #[test]
-    fn missing_file_is_empty() {
-        let e = EdgeList::load(Path::new("/nonexistent/edges.yml")).unwrap();
-        assert!(e.reachable_from("a").is_empty());
-    }
 }

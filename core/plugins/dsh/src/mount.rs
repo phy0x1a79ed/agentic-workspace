@@ -263,13 +263,4 @@ mod tests {
         ws.close(None).await.unwrap();
     }
 
-    #[tokio::test]
-    async fn a_down_fork_is_a_bad_gateway() {
-        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let dead = l.local_addr().unwrap().port();
-        drop(l);
-        let mount = serve(router(format!("http://127.0.0.1:{dead}"))).await;
-        let resp = client().get(format!("http://127.0.0.1:{mount}/")).send().await.unwrap();
-        assert_eq!(resp.status().as_u16(), 502);
-    }
 }

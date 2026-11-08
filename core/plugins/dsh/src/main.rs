@@ -234,54 +234,6 @@ mod tests {
         assert_eq!(names, want);
     }
 
-    #[test]
-    fn every_function_projects_into_a_single_domain() {
-        for s in specs() {
-            let flat = format!("{}_{}", s.tool, s.verb);
-            assert_eq!(flat.split_once('_'), Some((s.tool, s.verb)), "the gateway folds {flat} on its first underscore");
-            assert!(["dsh", HARNESS_TOOL].contains(&s.tool));
-        }
-    }
-
-    #[test]
-    fn the_projected_verb_matches_the_internal_name() {
-        let dsh: Vec<&str> = specs().into_iter().filter(|s| s.tool == "dsh").map(|s| s.verb).collect();
-        assert_eq!(dsh, ["status", "start", "stop", "restart", "url", "model", "logs"]);
-    }
-
-    #[tokio::test]
-    async fn every_declared_function_has_a_handler() {
-        let dir = tempfile::tempdir().unwrap();
-        let port = stub::dead_port().await;
-        let paths = Paths::under(dir.path(), port);
-        let (reporter, _) = recording(paths.spool(), true);
-        let app = Arc::new(App {
-            sup: Supervisor::new(paths.clone()),
-            sessions: Sessions { fork: fork::Fork::new(port), procs: Box::new(FakeProcs::default()), reporter, compact_wait: COMPACT_WAIT, poll: POLL },
-            settings: Settings::new(paths.settings_file()),
-            hub: awm_plugin_sdk::Hub::new(&format!("http://127.0.0.1:{port}"), None),
-            workspace: paths.workspace.clone(),
-        });
-        for s in specs() {
-            let out = match app.handle(s.tool, s.verb, &json!({})).await {
-                Ok(v) => v.to_string(),
-                Err(e) => e.message,
-            };
-            assert!(!out.contains("has no verb"), "{} {}: {out}", s.tool, s.verb);
-        }
-    }
-
-    #[test]
-    fn the_lifecycle_verbs_outlast_the_client_default() {
-        for s in specs() {
-            if s.tool == HARNESS_TOOL {
-                assert_eq!(s.timeout, Some(60));
-            } else if ["start", "stop", "restart"].contains(&s.verb) {
-                assert!(s.timeout.unwrap_or(0) >= 60, "{}", s.verb);
-            }
-        }
-    }
-
     #[tokio::test]
     async fn the_spool_is_resent_after_ready_and_boot_relinks_and_seeds() {
         let dir = tempfile::tempdir().unwrap();

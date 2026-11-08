@@ -21,7 +21,7 @@ fn describe_matches_the_baseline() {
         .collect();
     verbs.sort_by(|a, b| a["verb"].as_str().cmp(&b["verb"].as_str()));
     let got = json!({"plugin": "mic", "tool": "mic", "verbs": verbs});
-    let want: Value = serde_json::from_str(include_str!("../../../../docs/plugin-redux/ports/baseline/mic.describe.json")).unwrap();
+    let want: Value = serde_json::from_str(include_str!("../../../../../docs/plugin-redux/ports/baseline/mic.describe.json")).unwrap();
     assert_eq!(got, want);
     assert_eq!(api["sessions"], json!([{"kind": "stream", "transport": "direct"}]));
     assert_eq!(api["emitters"], json!([]));

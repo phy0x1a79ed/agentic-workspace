@@ -4,7 +4,6 @@
 //! gateway. The chain makes only plain calls, so the manifest declares no needs, and every call
 //! carries the service token.
 
-mod common;
 
 use std::sync::{Arc, Mutex};
 
@@ -12,7 +11,7 @@ use awm_plugin_routine::outbound::GatewayOutbound;
 use awm_plugin_routine::runner::Runner;
 use awm_plugin_routine::store::Store;
 use awm_plugin_sdk::axum::{self, extract::State, http::HeaderMap, routing::post, Json, Router};
-use common::{project_repo, write_routine};
+use crate::common::{project_repo, write_routine};
 use serde_json::{json, Value};
 
 const TOKEN: &str = "svc-token-test";

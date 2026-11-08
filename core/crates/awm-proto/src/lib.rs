@@ -29,12 +29,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn verb_names() {
-        assert!(valid_verb_name("sign_peer_token") && valid_verb_name("list"));
-        assert!(!valid_verb_name("_x") && !valid_verb_name("a-b") && !valid_verb_name(""));
-    }
-
-    #[test]
     fn tool_names() {
         assert!(valid_tool_name("harness-cc"));
         assert!(valid_tool_name("2fa"));

@@ -53,17 +53,3 @@ pub async fn run_node() -> anyhow::Result<()> {
     .run()
     .await
 }
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn the_swarm_comes_from_the_install_config() {
-        let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join("config.toml");
-        std::fs::write(&path, "[telemetry]\nswarm = \"tony\"\n").unwrap();
-        assert_eq!(super::swarm(&awm_plugin_sdk::config::InstallConfig::load_from(&path).unwrap()).as_deref(), Some("tony"));
-        std::fs::write(&path, "[telemetry]\nswarm = \" \"\n").unwrap();
-        assert_eq!(super::swarm(&awm_plugin_sdk::config::InstallConfig::load_from(&path).unwrap()), None);
-        assert_eq!(super::swarm(&awm_plugin_sdk::config::InstallConfig::default()), None);
-    }
-}

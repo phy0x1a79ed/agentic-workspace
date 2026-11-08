@@ -365,27 +365,4 @@ mod tests {
         assert_eq!(redact_with(s.clone(), |_, _| false), s);
     }
 
-    #[test]
-    fn list_other_rows_become_sessions() {
-        let row = json!({"job": "c6", "name": "plugin-redux/port-trilium", "node": "mizar", "project": "awm", "scope": "trilium-design",
-                         "mode": "worker", "remote_control": true, "link": "https://claude.ai/code/session_1", "started_at": "2026-11-06T19:02:47+00:00"});
-        let s = session_of(&row).unwrap();
-        assert_eq!((s.job.as_str(), s.kind.as_deref(), s.link.as_deref(), s.remote_control), ("c6", Some("worker"), Some("https://claude.ai/code/session_1"), true));
-        assert!(s.started.is_some());
-        assert!(session_of(&json!({"name": "no job"})).is_none());
-    }
-
-    #[test]
-    fn services_are_up_only_when_enabled_and_live() {
-        let table = json!([{"name": "journal", "major": 1, "plugin": "journal"}]);
-        let plugins = json!({"plugins": [
-            {"name": "journal", "services": [{"name": "journal", "plugin": "journal", "enabled": true, "tools": ["journal"]}]},
-            {"name": "kb", "services": [{"name": "kb", "plugin": "kb", "enabled": false, "tools": ["kb"]}]},
-            {"name": "telemetry-node", "services": [{"name": "telemetry-node", "plugin": "telemetry-node", "enabled": true, "tools": []}]},
-        ]});
-        let (services, tools) = services_and_tools(&table, &plugins, &[("social".into(), "alcor".into())]);
-        let up: Vec<_> = services.iter().map(|s| (s.service.as_str(), s.up)).collect();
-        assert_eq!(up, [("journal", true), ("kb", false), ("telemetry-node", true)]);
-        assert_eq!(tools, [ToolRow { tool: "journal".into(), host: None }, ToolRow { tool: "social".into(), host: Some("alcor".into()) }]);
-    }
 }

@@ -147,14 +147,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn keeps_the_tail() {
-        let (_tx, mut rx) = no_halt();
-        let out = run("head -c 50000 /dev/zero | tr '\\0' a; echo END", "/", 10.0, &HashMap::new(), &mut rx).await.unwrap().unwrap();
-        assert_eq!(out.output.chars().count(), TAIL);
-        assert!(out.output.ends_with("aEND\n"));
-    }
-
-    #[tokio::test]
     async fn a_timeout_kills_the_group() {
         let (_tx, mut rx) = no_halt();
         let tmp = tempfile::tempdir().unwrap();
@@ -163,7 +155,12 @@ mod tests {
         let out = run(&cmd, "/", 0.5, &HashMap::new(), &mut rx).await.unwrap().unwrap();
         assert!(out.timed_out && !out.ok());
         let child: i32 = std::fs::read_to_string(&pidfile).unwrap().trim().parse().unwrap();
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        for _ in 0..100 {
+            if gone(child) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
         assert!(gone(child), "the step's child died with it");
     }
 
@@ -172,7 +169,6 @@ mod tests {
         let (tx, mut rx) = no_halt();
         let t0 = Instant::now();
         let task = tokio::spawn(async move { run("sleep 30", "/", 60.0, &HashMap::new(), &mut rx).await });
-        tokio::time::sleep(Duration::from_millis(200)).await;
         tx.send(Some(Halt::Shutdown)).unwrap();
         assert_eq!(task.await.unwrap().unwrap(), None);
         assert!(t0.elapsed() < Duration::from_secs(4));

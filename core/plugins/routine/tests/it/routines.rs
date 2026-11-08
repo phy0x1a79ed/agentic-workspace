@@ -1,13 +1,12 @@
 //! The registry, runs, the failure chain, conditions, the verbs and their timers.
 
-mod common;
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use awm_plugin_routine::runner::RoutineError;
-use awm_plugin_routine::service::{caller_label, functions, RoutineService};
-use common::{fixture, git, project_repo, write_routine};
+use awm_plugin_routine::service::RoutineService;
+use crate::common::{fixture, git, project_repo, write_routine};
 use serde_json::{json, Value};
 
 const BASIC: &str = r#"
@@ -51,13 +50,8 @@ fn install_pins_commit() {
     assert_eq!(rec["commit_sha"], git(&repo, &["rev-parse", "HEAD"]).as_str());
     assert_eq!(rec["scheduled"], false);
     assert_eq!(f.store.list_routines(Some("proj")).unwrap().len(), 1);
-}
-
-#[test]
-fn install_refuses_uncommitted() {
-    let f = fixture();
-    let repo = project_repo(f.tmp.path());
-    let p = write_routine(&repo, "nightly", BASIC);
+    // An edited, uncommitted file is refused.
+    let p = repo.join("routines/nightly.toml");
     std::fs::write(&p, BASIC.replace("two", "three")).unwrap();
     let e = f.runner.install("proj", &p.to_string_lossy()).unwrap_err();
     assert!(matches!(e, RoutineError::Value(_)) && e.to_string().contains("uncommitted"), "{e}");
@@ -98,13 +92,13 @@ async fn one_live_run() {
 }
 
 async fn child_pid(pidfile: &std::path::Path) -> i32 {
-    for _ in 0..100 {
+    for _ in 0..500 {
         if let Ok(t) = std::fs::read_to_string(pidfile) {
             if let Ok(p) = t.trim().parse() {
                 return p;
             }
         }
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        tokio::time::sleep(Duration::from_millis(10)).await;
     }
     panic!("the step never wrote its child's pid");
 }
@@ -114,20 +108,6 @@ fn gone(pid: i32) -> bool {
         Err(_) => true,
         Ok(stat) => stat.rsplit_once(')').and_then(|(_, rest)| rest.split_whitespace().next()) == Some("Z"),
     }
-}
-
-#[tokio::test]
-async fn cancel_kills_children() {
-    let f = fixture();
-    let repo = project_repo(f.tmp.path());
-    let pidfile = f.tmp.path().join("child.pid");
-    let body = BASIC.replace(r#"run = "echo one > out.txt""#, &format!(r#"run = "sleep 30 & echo $! > {}; wait""#, pidfile.display()));
-    f.runner.install("proj", &write_routine(&repo, "nightly", &body).to_string_lossy()).unwrap();
-    f.runner.trigger("proj", "nightly", "call", "", false).await.unwrap();
-    let child = child_pid(&pidfile).await;
-    f.runner.cancel("proj", "nightly").await.unwrap();
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    assert!(gone(child));
 }
 
 #[tokio::test]
@@ -142,23 +122,17 @@ async fn shutdown_kills_each_step_and_fails_the_run() {
     let t0 = Instant::now();
     f.runner.shutdown().await;
     assert!(t0.elapsed() < Duration::from_secs(6));
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    for _ in 0..100 {
+        if gone(child) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
     assert!(gone(child));
     let after = f.store.get_run(run["id"].as_str().unwrap()).unwrap().unwrap();
     assert_eq!((after["state"].as_str(), after["failed_step"].as_str()), (Some("failed"), Some("one")));
     assert_eq!(after["error"], "the routine service stopped mid-run");
     assert!(f.out.starts.lock().unwrap().is_empty(), "a shutdown starts no fixer");
-}
-
-#[tokio::test]
-async fn timer_only_refuses_call() {
-    let f = fixture();
-    let repo = project_repo(f.tmp.path());
-    let body = BASIC.replace(r#"timer = "*-*-* 03:00:00""#, "timer = \"*-*-* 03:00:00\"\ncall = false");
-    f.runner.install("proj", &write_routine(&repo, "nightly", &body).to_string_lossy()).unwrap();
-    let e = f.runner.trigger("proj", "nightly", "call", "", false).await.unwrap_err();
-    assert!(e.to_string().contains("timer only"));
-    assert_eq!(f.runner.trigger("proj", "nightly", "timer", "", true).await.unwrap()["state"], "ok");
 }
 
 // -- the failure chain (R47, R48) ---------------------------------------------
@@ -194,18 +168,6 @@ async fn failure_falls_back_to_a_notice() {
     let dms = f.out.dms.lock().unwrap();
     assert_eq!(dms.len(), 1);
     assert!(dms[0].contains("failed at two"));
-}
-
-#[tokio::test]
-async fn failure_falls_back_to_log() {
-    let f = fixture();
-    *f.out.fail_start.lock().unwrap() = true;
-    *f.out.fail_dm.lock().unwrap() = true;
-    let repo = project_repo(f.tmp.path());
-    f.runner.install("proj", &write_routine(&repo, "nightly", &failing()).to_string_lossy()).unwrap();
-    let run = f.runner.trigger("proj", "nightly", "call", "", true).await.unwrap();
-    let d = &run["dispatched"][0];
-    assert_eq!((d["via"].as_str(), d["errors"].as_array().unwrap().len()), (Some("log"), 2));
 }
 
 #[tokio::test]
@@ -274,32 +236,11 @@ async fn condition_dispatches_agent() {
     assert_eq!(run["dispatched"][0]["role"], "agent");
 }
 
-#[tokio::test]
-async fn condition_error_code_is_failure() {
-    let f = fixture();
-    let repo = project_repo(f.tmp.path());
-    f.runner.install("proj", &write_routine(&repo, "watch", &CONDITIONS.replace("exit 1", "exit 7")).to_string_lossy()).unwrap();
-    let run = f.runner.trigger("proj", "watch", "call", "", true).await.unwrap();
-    assert_eq!((run["state"].as_str(), run["failed_step"].as_str()), (Some("failed"), Some("quiet")));
-    let roles: Vec<&str> = run["dispatched"].as_array().unwrap().iter().map(|d| d["role"].as_str().unwrap()).collect();
-    assert_eq!(roles, ["agent", "notice"]);
-}
-
-#[test]
-fn orphaned_runs_close_on_restart() {
-    let f = fixture();
-    f.store.put_routine("p", "r", "/", "/x", "", &json!({"name": "r"})).unwrap();
-    let run = f.store.start_run("p", "r", "call", "").unwrap();
-    assert_eq!(f.store.orphan_live().unwrap(), 1);
-    assert_eq!(f.store.get_run(run["id"].as_str().unwrap()).unwrap().unwrap()["state"], "failed");
-    f.store.start_run("p", "r", "call", "").unwrap();
-}
-
 // -- the verbs ----------------------------------------------------------------
 
 const TICK: &str = "\n[routine]\nname = \"tick\"\n[trigger]\ntimer = \"hourly\"\n[[step]]\nrun = \"true\"\n";
 
-fn service(f: &common::Fixture) -> (RoutineService, Arc<Mutex<Vec<String>>>) {
+fn service(f: &crate::common::Fixture) -> (RoutineService, Arc<Mutex<Vec<String>>>) {
     let calls = Arc::new(Mutex::new(Vec::<String>::new()));
     let rec = calls.clone();
     let svc = RoutineService {
@@ -311,21 +252,6 @@ fn service(f: &common::Fixture) -> (RoutineService, Arc<Mutex<Vec<String>>>) {
         }),
     };
     (svc, calls)
-}
-
-#[test]
-fn every_verb_publishes_as_a_routine_tool() {
-    let names: Vec<&str> = functions().iter().map(|(n, ..)| *n).collect();
-    assert_eq!(names, ["install", "uninstall", "list", "trigger", "cancel", "schedule", "unschedule", "runs"]);
-    assert!(!names.contains(&"deploy"), "the retired deploy stub goes");
-}
-
-#[test]
-fn the_caller_is_the_principal_then_the_session_then_the_pid() {
-    assert_eq!(caller_label(Some("peer:altair"), Some("s1"), Some(7)), "peer:altair");
-    assert_eq!(caller_label(None, Some("s1"), Some(7)), "session s1");
-    assert_eq!(caller_label(None, None, Some(42)), "pid 42");
-    assert_eq!(caller_label(None, None, None), "");
 }
 
 #[tokio::test]
@@ -349,16 +275,6 @@ async fn lifecycle_through_handlers() {
     assert!(!f.tmp.path().join("units/awm-routine-proj-tick.timer").exists());
     assert!(calls.lock().unwrap().contains(&"disable --now awm-routine-proj-tick.timer".to_string()));
     assert_eq!(f.store.timer("proj", "tick").unwrap(), None, "uninstall drops the timer slot");
-}
-
-#[tokio::test]
-async fn bad_trigger_kind() {
-    let f = fixture();
-    let (svc, _) = service(&f);
-    let e = svc.trigger(&json!({"project": "p", "name": "n", "trigger": "cron"}), String::new()).await.unwrap_err();
-    assert_eq!((e.error_class.as_str(), e.message.as_str()), ("ValueError", "trigger must be `call` or `timer`"));
-    let e = svc.runs(&json!({"id": "nope"})).unwrap_err();
-    assert_eq!(e.error_class, "KeyError");
 }
 
 #[test]

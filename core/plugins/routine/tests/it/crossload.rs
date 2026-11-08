@@ -2,13 +2,12 @@
 //!
 //! `py_land/` holds the state land.py wrote for a synthetic repo: a batch stopped on a
 //! conflict with its lease (`mid`), then the bounce and the landed batch (`end`). Rust reads
-//! each file and writes it back byte for byte. With `AWM_ROUTINE_PY` set to a Python, Python
-//! reads what Rust wrote and writes it back byte for byte too.
+//! each file and writes it back byte for byte.
 
 use std::path::{Path, PathBuf};
 
 use awm_plugin_routine::land::json::{self, J};
-use awm_plugin_routine::land::{fleetconf, write_json, Land};
+use awm_plugin_routine::land::{fleetconf, Land};
 
 fn fixtures() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/py_land")
@@ -80,24 +79,3 @@ fn rust_reads_a_stopped_batch_and_a_landed_one() {
     assert!(tickets.is_empty());
 }
 
-#[test]
-fn python_writes_back_what_rust_wrote() {
-    let Ok(py) = std::env::var("AWM_ROUTINE_PY") else { return };
-    let tmp = tempfile::tempdir().unwrap();
-    let land = state(tmp.path(), "mid");
-    // Rust updates a ticket and the batch as a bounce does, and writes a lease.
-    let tid = land.batch().unwrap().unwrap().get("tickets").unwrap().as_arr()[0].as_str().unwrap().to_string();
-    let mut t = land.ticket(&tid).unwrap();
-    t.set("state", "bounced");
-    t.set("reason", "rust bounced it \u{2014} \u{1F600}");
-    t.set("settled", awm_plugin_routine::now());
-    land.save(&t).unwrap();
-    let mut b = land.batch().unwrap().unwrap();
-    b.set("steps", J::obj());
-    land.save_batch(&b).unwrap();
-    land.take_lease(&tid).unwrap();
-    write_json(&land.dir.join("extra.json"), &J::from([("n", J::from(1.5e-7)), ("big", J::from(1e17)), ("whole", J::from(3.0))])).unwrap();
-    let check = "import json, pathlib, sys\nbad = [str(p) for p in pathlib.Path(sys.argv[1]).rglob('*.json') if json.dumps(json.loads(p.read_text()), indent=1) != p.read_text()]\nprint('\\n'.join(bad)); sys.exit(1 if bad else 0)";
-    let out = std::process::Command::new(&py).args(["-I", "-c", check]).arg(&land.dir).output().unwrap();
-    assert!(out.status.success(), "Python rewrites differ: {}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
-}

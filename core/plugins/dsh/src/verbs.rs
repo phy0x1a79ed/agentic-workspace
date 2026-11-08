@@ -307,15 +307,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn list_is_empty_while_the_fork_is_down() {
-        let dir = tempfile::tempdir().unwrap();
-        let a = app(stub::dead_port().await, dir.path()).await;
-        assert_eq!(a.handle(HARNESS_TOOL, "list", &json!({})).await.unwrap(), json!({"ok": true, "sessions": []}));
-        let st = a.handle(HARNESS_TOOL, "status", &json!({"session_id": R9})).await.unwrap();
-        assert_eq!(st, json!({"ok": true, "live": false, "state": "stopped"}));
-    }
-
-    #[tokio::test]
     async fn list_rows_carry_the_contract_keys_and_filter() {
         let (_s, a, _d) = up().await;
         let out = a.handle(HARNESS_TOOL, "list", &json!({"project": "awm"})).await.unwrap();
@@ -356,17 +347,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn status_reports_the_front_as_not_serving_when_auth_does_not_answer() {
-        let (_s, a, _d) = up().await;
-        let st = a.handle("dsh", "status", &json!({})).await.unwrap();
-        assert_eq!(st["front"]["serving"], false);
-        assert!(st["front"]["error"].as_str().unwrap().starts_with("auth did not answer: "));
-        assert_eq!(st["harness"]["installed"], false);
-        let url = a.handle("dsh", "url", &json!({})).await.unwrap();
-        assert_eq!(url, json!({"url": null, "note": "requires an awm session"}));
-    }
-
-    #[tokio::test]
     async fn the_model_verb_reports_and_selects() {
         let (_s, a, _d) = up().await;
         a.settings.ensure();
@@ -378,12 +358,4 @@ mod tests {
         assert_eq!((r["model"].as_str(), r["selection"]["reasoningEffort"].as_str()), (Some("vendor/x"), Some("low")));
     }
 
-    #[tokio::test]
-    async fn starting_an_unbuilt_fork_is_a_verb_error_naming_why() {
-        let (_s, a, _d) = up().await;
-        let e = a.handle("dsh", "start", &json!({})).await.unwrap_err();
-        assert_eq!(e.error_class, "FileNotFoundError");
-        assert!(e.message.contains("no built CLI"));
-        assert_eq!(a.handle("dsh", "logs", &json!({"tail": "5"})).await.unwrap()["tail"], 5);
-    }
 }

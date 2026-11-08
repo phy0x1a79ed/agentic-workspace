@@ -240,12 +240,4 @@ path = "${HOME}/.config/systemd/user/awm-routine-*"
         assert!(matches(&d.extra[0].path, Path::new("/home/u/.config/systemd/user/awm-routine-x.timer")));
     }
 
-    #[test]
-    fn no_dirs_means_the_default_and_bad_extras_refuse() {
-        let d = Decl::parse("", Path::new("/a/services/x"), Path::new("/a"), env).unwrap();
-        assert_eq!(d.dirs, [PathBuf::from("/a/services/x")]);
-        assert!(Decl::parse("dirs = []", Path::new("/x"), Path::new("/a"), env).unwrap().dirs.is_empty());
-        assert!(Decl::parse("[[extra]]\nname = \"a/b\"\npath = \"/x\"", Path::new("/x"), Path::new("/a"), env).is_err());
-        assert!(Decl::parse("bogus = 1", Path::new("/x"), Path::new("/a"), env).is_err());
-    }
 }

@@ -307,100 +307,64 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_settings_file_gets_the_provider() {
+    fn a_missing_file_is_seeded_once_with_the_credential_by_env_name() {
         let (_d, s) = fresh();
         assert_eq!(s.ensure()["changed"], true);
-        let p = &read(&s)[PLUGIN_KEY]["providers"]["openrouter"];
+        let doc = read(&s);
+        let p = &doc[PLUGIN_KEY]["providers"]["openrouter"];
         assert_eq!(p["baseURL"], y(json!(BASE_URL)));
         assert_eq!(p["api"], y(json!("openai-completions")));
-    }
-
-    #[test]
-    fn seeding_is_idempotent() {
-        let (_d, s) = fresh();
-        s.ensure();
+        assert_eq!(doc[DEFAULT_MODEL_KEY], y(json!({"provider": "openrouter", "model": MODELS[0]})));
         let before = std::fs::read_to_string(&s.file).unwrap();
+        assert!(before.contains("apiKeyEnv: OPENROUTER_API_KEY") && !before.contains("apiKey:"));
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(std::fs::metadata(&s.file).unwrap().permissions().mode() & 0o777, 0o600);
         assert_eq!(s.ensure()["changed"], false);
         assert_eq!(std::fs::read_to_string(&s.file).unwrap(), before);
     }
 
     #[test]
-    fn an_existing_provider_is_left_exactly_as_the_user_left_it() {
+    fn what_the_user_set_survives_the_seed() {
         let (_d, s) = fresh();
         let mine = json!({"providers": {"openrouter": {"models": [{"id": "mine"}]}}});
-        put(&s, json!({PLUGIN_KEY: mine.clone()}));
-        s.ensure();
-        assert_eq!(read(&s)[PLUGIN_KEY], y(mine));
+        put(&s, json!({PLUGIN_KEY: mine.clone(), "theme": "dark", DEFAULT_MODEL_KEY: {"provider": "openrouter", "model": "mine"}}));
+        assert_eq!(s.ensure()["changed"], false);
+        let doc = read(&s);
+        assert_eq!((&doc[PLUGIN_KEY], &doc["theme"], &doc[DEFAULT_MODEL_KEY]["model"]), (&y(mine), &y(json!("dark")), &y(json!("mine"))));
+        // The two sections seed independently.
+        put(&s, json!({DEFAULT_MODEL_KEY: {"provider": "openrouter", "model": "mine"}}));
+        assert_eq!(s.ensure()["seeded"], json!(["provider"]));
     }
 
     #[test]
-    fn unrelated_settings_survive_the_seed() {
-        let (_d, s) = fresh();
-        put(&s, json!({"theme": "dark"}));
-        s.ensure();
-        assert_eq!(read(&s)["theme"], y(json!("dark")));
-    }
-
-    #[test]
-    fn an_unparseable_file_is_reported_not_rewritten() {
+    fn an_unparseable_file_is_reported_and_never_rewritten() {
         let (_d, s) = fresh();
         std::fs::create_dir_all(s.file.parent().unwrap()).unwrap();
         std::fs::write(&s.file, "this: [is: not: yaml\n").unwrap();
         let res = s.ensure();
         assert_eq!(res["changed"], false);
         assert!(res["error"].as_str().is_some_and(|e| !e.is_empty()));
+        let err = s.set_default_model("anything", true, None).unwrap_err();
+        assert!(matches!(&err, SettingsError::Unavailable(m) if m.contains("does not parse")), "{err}");
         assert_eq!(std::fs::read_to_string(&s.file).unwrap(), "this: [is: not: yaml\n");
     }
 
     #[test]
-    fn the_credential_is_referenced_by_env_name_never_written() {
+    fn selecting_a_model_moves_only_the_default() {
         let (_d, s) = fresh();
         s.ensure();
-        let text = std::fs::read_to_string(&s.file).unwrap();
-        assert!(text.contains("apiKeyEnv: OPENROUTER_API_KEY"));
-        assert!(!text.contains("sk-"));
-        assert!(!text.contains("apiKey:"));
-        use std::os::unix::fs::PermissionsExt;
-        assert_eq!(std::fs::metadata(&s.file).unwrap().permissions().mode() & 0o777, 0o600);
-    }
-
-    #[test]
-    fn the_default_model_selection_is_seeded_too() {
-        let (_d, s) = fresh();
-        s.ensure();
-        assert_eq!(read(&s)[DEFAULT_MODEL_KEY], y(json!({"provider": "openrouter", "model": MODELS[0]})));
-    }
-
-    #[test]
-    fn a_chosen_default_model_is_not_overwritten() {
-        let (_d, s) = fresh();
-        put(&s, json!({DEFAULT_MODEL_KEY: {"provider": "openrouter", "model": "mine"}}));
-        s.ensure();
-        assert_eq!(read(&s)[DEFAULT_MODEL_KEY]["model"], y(json!("mine")));
-    }
-
-    #[test]
-    fn the_two_sections_are_seeded_independently() {
-        let (_d, s) = fresh();
-        put(&s, json!({DEFAULT_MODEL_KEY: {"provider": "openrouter", "model": "mine"}}));
-        assert_eq!(s.ensure()["seeded"], json!(["provider"]));
-    }
-
-    #[test]
-    fn selecting_a_declared_model_moves_the_default() {
-        let (_d, s) = fresh();
-        s.ensure();
+        let mut doc: Value = serde_json::to_value(read(&s)).unwrap();
+        doc["some-other-plugin"] = json!({"kept": true});
+        doc[DEFAULT_MODEL_KEY]["reasoningEffort"] = json!("high");
+        put(&s, doc);
         let res = s.set_default_model(MODELS[2], false, None).unwrap();
-        assert_eq!(res["changed"], true);
-        assert_eq!(res["previous"], MODELS[0]);
-        assert_eq!(read(&s)[DEFAULT_MODEL_KEY]["model"], y(json!(MODELS[2])));
-    }
-
-    #[test]
-    fn selecting_the_same_model_twice_reports_no_change() {
-        let (_d, s) = fresh();
-        s.ensure();
-        assert_eq!(s.set_default_model(MODELS[0], false, None).unwrap()["changed"], false);
+        assert_eq!((res["changed"].clone(), res["previous"].clone()), (json!(true), json!(MODELS[0])));
+        let doc = read(&s);
+        assert_eq!(doc[DEFAULT_MODEL_KEY], y(json!({"provider": "openrouter", "model": MODELS[2], "reasoningEffort": "high"})));
+        assert_eq!(doc["some-other-plugin"], y(json!({"kept": true})));
+        assert_eq!(s.set_default_model(MODELS[2], false, None).unwrap()["changed"], false);
+        s.set_default_model(MODELS[1], false, Some("low")).unwrap();
+        assert_eq!(read(&s)[DEFAULT_MODEL_KEY]["reasoningEffort"], y(json!("low")));
     }
 
     #[test]
@@ -426,48 +390,5 @@ mod tests {
         assert!(s.lock_path().exists(), "the contender must not remove somebody else's lock");
         std::fs::remove_file(s.lock_path()).unwrap();
         assert_eq!(read(&s)[DEFAULT_MODEL_KEY]["model"], y(json!(MODELS[0])));
-    }
-
-    #[test]
-    fn an_unparseable_document_is_never_partially_rewritten() {
-        let (_d, s) = fresh();
-        std::fs::create_dir_all(s.file.parent().unwrap()).unwrap();
-        std::fs::write(&s.file, "this: [is: not: yaml\n").unwrap();
-        let err = s.set_default_model("anything", true, None).unwrap_err();
-        assert!(matches!(&err, SettingsError::Unavailable(m) if m.contains("does not parse")), "{err}");
-        assert_eq!(std::fs::read_to_string(&s.file).unwrap(), "this: [is: not: yaml\n");
-    }
-
-    #[test]
-    fn unrelated_sections_survive_a_model_change() {
-        let (_d, s) = fresh();
-        s.ensure();
-        let mut doc: Value = serde_json::to_value(read(&s)).unwrap();
-        doc["some-other-plugin"] = json!({"kept": true});
-        put(&s, doc);
-        s.set_default_model(MODELS[1], false, None).unwrap();
-        assert_eq!(read(&s)["some-other-plugin"], y(json!({"kept": true})));
-    }
-
-    #[test]
-    fn a_model_change_keeps_the_reasoning_effort_the_harness_wrote() {
-        let (_d, s) = fresh();
-        s.ensure();
-        let mut doc: Value = serde_json::to_value(read(&s)).unwrap();
-        doc[DEFAULT_MODEL_KEY]["reasoningEffort"] = json!("high");
-        put(&s, doc);
-        s.set_default_model(MODELS[1], false, None).unwrap();
-        assert_eq!(
-            read(&s)[DEFAULT_MODEL_KEY],
-            y(json!({"provider": "openrouter", "model": MODELS[1], "reasoningEffort": "high"}))
-        );
-    }
-
-    #[test]
-    fn reasoning_is_set_when_asked() {
-        let (_d, s) = fresh();
-        s.ensure();
-        s.set_default_model(MODELS[1], false, Some("low")).unwrap();
-        assert_eq!(read(&s)[DEFAULT_MODEL_KEY]["reasoningEffort"], y(json!("low")));
     }
 }

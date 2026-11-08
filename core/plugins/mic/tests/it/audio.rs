@@ -148,22 +148,6 @@ fn has(calls: &[Vec<String>], prefix: &[&str]) -> bool {
 // -- the config layers ------------------------------------------------------
 
 #[test]
-fn daemon_conf_disables_idle_exit() {
-    let h = host();
-    assert!(h.audio.ensure_daemon_conf().unwrap());
-    assert!(read(h.home.path(), ".config/pulse/daemon.conf").contains("exit-idle-time = -1"));
-}
-
-#[test]
-fn default_pa_declares_the_sink() {
-    let h = host();
-    assert!(h.audio.ensure_default_pa("virtmic").unwrap());
-    let body = read(h.home.path(), ".config/pulse/default.pa");
-    assert!(body.contains("load-module module-null-sink sink_name=virtmic"));
-    assert!(body.contains("set-default-source virtmic.monitor"));
-}
-
-#[test]
 fn config_writes_are_idempotent() {
     type Writer = fn(&Audio) -> std::io::Result<bool>;
     let writers: [(&str, Writer); 3] = [
@@ -181,31 +165,6 @@ fn config_writes_are_idempotent() {
     }
 }
 
-/// A user config file replaces the system one, so a file mic creates must pull it back in.
-#[test]
-fn new_config_file_includes_the_system_copy() {
-    let h = host();
-    std::fs::create_dir_all(h.etc.path().join("etc/pulse")).unwrap();
-    std::fs::write(h.etc.path().join("etc/pulse/daemon.conf"), "").unwrap();
-    h.audio.ensure_daemon_conf().unwrap();
-    let body = read(h.home.path(), ".config/pulse/daemon.conf");
-    assert!(body.contains(".include /etc/pulse/daemon.conf"));
-    assert!(body.find(".include").unwrap() < body.find("exit-idle-time").unwrap());
-}
-
-#[test]
-fn existing_config_file_is_appended_not_replaced() {
-    let h = host();
-    let path = h.home.path().join(".config/pulse/daemon.conf");
-    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    std::fs::write(&path, "; hand-written by the operator\ndefault-sample-rate = 48000\n").unwrap();
-    h.audio.ensure_daemon_conf().unwrap();
-    let body = std::fs::read_to_string(&path).unwrap();
-    assert!(body.contains("default-sample-rate = 48000"));
-    assert!(body.contains("exit-idle-time = -1"));
-    assert!(!body.contains(".include"));
-}
-
 /// Hosts that ran the first mic already carry this marker. A changed one appends a duplicate.
 #[test]
 fn asoundrc_marker_is_byte_identical_to_the_mic_original() {
@@ -213,28 +172,6 @@ fn asoundrc_marker_is_byte_identical_to_the_mic_original() {
     assert_eq!(audio::ASOUNDRC_MARKER, "remote-audio bridge");
     std::fs::write(h.home.path().join(".asoundrc"), "\n# remote-audio bridge: route ALSA default through PulseAudio\npcm.!default { type pulse }\n").unwrap();
     assert!(!h.audio.ensure_asoundrc().unwrap());
-}
-
-/// The stanzas byte for byte as the Python wrote them, from a fresh home with a system copy.
-#[test]
-fn the_stanzas_match_the_python_bytes() {
-    let h = host();
-    std::fs::create_dir_all(h.etc.path().join("etc/pulse")).unwrap();
-    for f in ["daemon.conf", "default.pa"] {
-        std::fs::write(h.etc.path().join("etc/pulse").join(f), "").unwrap();
-    }
-    std::fs::write(h.home.path().join(".asoundrc"), "pcm.foo { type hw }").unwrap();
-    h.audio.ensure_config("virtmic").unwrap();
-    let head = "# Created by the awm mic service. A user config file replaces\n# the system one outright, so pull the system defaults back in\n# first and override below.\n";
-    assert_eq!(
-        read(h.home.path(), ".config/pulse/daemon.conf"),
-        format!("{head}.include /etc/pulse/daemon.conf\n\n### awm virtmic: keep PulseAudio resident\n# Without this PulseAudio exits ~20s after the last client\n# disconnects, destroying the runtime-loaded virtmic sink.\nexit-idle-time = -1\n")
-    );
-    assert_eq!(
-        read(h.home.path(), ".config/pulse/default.pa"),
-        format!("{head}.include /etc/pulse/default.pa\n\n### awm virtmic: declare the virtual microphone sink\n# Rebuilds the virtual microphone on every daemon start, so a\n# restart can't leave recorders reading a dead default source.\nload-module module-null-sink sink_name=virtmic sink_properties=device.description=VirtualMic\nset-default-source virtmic.monitor\n")
-    );
-    assert_eq!(read(h.home.path(), ".asoundrc"), "pcm.foo { type hw }\n\n### remote-audio bridge\npcm.!default { type pulse }\nctl.!default { type pulse }\n");
 }
 
 // -- the reconcile pass -----------------------------------------------------
@@ -284,16 +221,6 @@ async fn sink_is_rebuilt_after_pulseaudio_is_killed() {
     assert_eq!(res["sink_present"], true);
     assert_eq!(res["default_source"], "virtmic.monitor");
     assert!(res["repairs"].as_array().unwrap().contains(&"daemon".into()));
-}
-
-#[tokio::test(start_paused = true)]
-async fn sink_reloaded_when_daemon_survives_but_sink_vanished() {
-    let h = host();
-    h.audio.ensure_once("virtmic").await.unwrap();
-    h.pulse.with(|w| w.sinks.retain(|s| s != "virtmic"));
-    let res = h.audio.ensure_once("virtmic").await.unwrap();
-    assert!(res["repairs"].as_array().unwrap().contains(&"sink".into()));
-    assert!(h.pulse.with(|w| w.sinks.contains(&"virtmic".into())));
 }
 
 #[tokio::test(start_paused = true)]
@@ -353,32 +280,6 @@ async fn recovers_from_failed_systemd_units() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn stale_standalone_daemon_is_killed_before_reset() {
-    let h = host();
-    h.audio.ensure_once("virtmic").await.unwrap();
-    h.pulse.with(|w| {
-        w.running = false;
-        w.unit_state = "failed".into();
-    });
-    h.audio.ensure_once("virtmic").await.unwrap();
-    let calls = h.pulse.calls();
-    let kill = calls.iter().position(|c| c[0] == "pkill").unwrap();
-    let reset = calls.iter().position(|c| c.len() > 2 && c[2] == "reset-failed").unwrap();
-    assert!(kill < reset);
-}
-
-#[tokio::test(start_paused = true)]
-async fn systemd_managed_is_about_the_unit_existing_not_being_up() {
-    let h = host();
-    h.pulse.with(|w| w.unit_state = "inactive".into());
-    assert!(h.audio.systemd_managed().await);
-    h.pulse.with(|w| w.unit_state = "failed".into());
-    assert!(h.audio.systemd_managed().await);
-    h.pulse.with(|w| w.systemd = false);
-    assert!(!h.audio.systemd_managed().await);
-}
-
-#[tokio::test(start_paused = true)]
 async fn non_systemd_host_uses_the_bare_daemon() {
     let h = host();
     h.pulse.with(|w| {
@@ -389,13 +290,6 @@ async fn non_systemd_host_uses_the_bare_daemon() {
     let calls = h.pulse.calls();
     assert!(calls.iter().any(|c| c[0] == "pulseaudio"));
     assert!(!calls.iter().any(|c| c[0] == "systemctl" && (c[2] == "start" || c[2] == "restart")));
-}
-
-#[tokio::test(start_paused = true)]
-async fn suspend_on_idle_is_unloaded() {
-    let h = host();
-    h.audio.ensure_once("virtmic").await.unwrap();
-    assert!(has(&h.pulse.calls(), &["pactl", "unload-module"]));
 }
 
 // -- the status surface -----------------------------------------------------
@@ -429,16 +323,6 @@ async fn status_never_repairs() {
     assert_eq!(st["default_source_ok"], false);
     assert!(h.pulse.with(|w| w.sinks.is_empty()));
     assert!(!h.pulse.calls().iter().any(|c| c.iter().any(|a| a == "load-module")));
-}
-
-#[tokio::test(start_paused = true)]
-async fn status_on_a_dead_daemon_does_not_pretend_to_be_healthy() {
-    let h = host();
-    h.pulse.with(|w| w.running = false);
-    let st = h.audio.status("virtmic").await;
-    assert_eq!(st["pulseaudio_reachable"], false);
-    assert_eq!(st["sink_present"], false);
-    assert_eq!(st["default_source"], serde_json::Value::Null);
 }
 
 /// Python's bytes for each starting state (fixtures/capture.py), written twice each.

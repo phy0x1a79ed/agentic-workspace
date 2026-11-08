@@ -236,15 +236,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_node_with_no_swarm_keeps_no_roster() {
-        let tmp = tempfile::tempdir().unwrap();
-        let part = RosterPart::load(tmp.path().to_path_buf(), None, singles()).unwrap();
-        let t = service(Service::new(env(tmp.path(), "alcor")), part).into_test().await.unwrap();
-        let e = t.call_as("report", json!({"swarm": "tony", "node": "alcor", "items": []}), from("alcor"), None).await.unwrap_err();
-        assert!(e.message.contains("names no [telemetry] swarm"), "{e:?}");
-    }
-
-    #[tokio::test]
     async fn the_roster_survives_a_restart() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().join("state");

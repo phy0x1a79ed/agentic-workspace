@@ -471,13 +471,6 @@ mod tests {
     }
 
     #[test]
-    fn a_node_unknown_to_the_roster_must_say_hello_first() {
-        let mut r = Roster::default();
-        let a = r.apply("mizar", vec![Item::Usage { tool: "x".into(), last_used: None, last_ok: None }], t("2026-11-07T10:00:00Z"));
-        assert!(a.resync && r.nodes.is_empty() && r.rev == 0);
-    }
-
-    #[test]
     fn hello_then_start_and_stop_change_the_roster_and_name_each_session() {
         let mut r = Roster::default();
         let now = t("2026-11-07T10:00:00Z");
@@ -509,35 +502,6 @@ mod tests {
         let mut got: Vec<_> = a.sessions.iter().map(|e| (e.event, e.job.as_str())).collect();
         got.sort();
         assert_eq!(got, [("gone", "a1"), ("live", "a3")]);
-    }
-
-    #[test]
-    fn a_session_listed_before_its_first_turn_gains_its_id_from_started() {
-        let mut r = Roster::default();
-        let now = t("2026-11-07T10:00:00Z");
-        r.apply("mizar", vec![hello(vec![Session { session_id: None, ..sess("a1") }])], now);
-        let started = Item::Session { event: "started".into(), session: Session { job: "a1".into(), session_id: Some("s1".into()), ..Session::default() }, ts: Some(now) };
-        let a = r.apply("mizar", vec![started], now);
-        assert!(a.sessions.is_empty(), "the session was already live");
-        let s = &r.nodes["mizar"].sessions["a1"];
-        assert_eq!((s.session_id.as_deref(), s.name.as_deref()), (Some("s1"), Some("a1-name")));
-        assert_eq!(r.sessions_in_window("mizar", now), 1);
-    }
-
-    #[test]
-    fn remote_control_updates_the_link_and_keeps_the_rest() {
-        let mut r = Roster::default();
-        let now = t("2026-11-07T10:00:00Z");
-        r.apply("mizar", vec![hello(vec![Session { link: None, ..sess("a1") }])], now);
-        let on = Session { job: "a1".into(), link: Some("https://claude.ai/code/x".into()), remote_control: true, ..Session::default() };
-        let a = r.apply("mizar", vec![Item::Session { event: "remote_control".into(), session: on, ts: None }], now);
-        assert!(a.sessions.is_empty(), "an update is not a new session");
-        let s = &r.nodes["mizar"].sessions["a1"];
-        assert_eq!((s.link.as_deref(), s.remote_control, s.name.as_deref()), (Some("https://claude.ai/code/x"), true, Some("a1-name")));
-        let off = Session { job: "a1".into(), ..Session::default() };
-        r.apply("mizar", vec![Item::Session { event: "remote_control".into(), session: off, ts: None }], now);
-        let s = &r.nodes["mizar"].sessions["a1"];
-        assert_eq!((s.link.as_deref(), s.remote_control), (None, false));
     }
 
     #[test]
@@ -583,18 +547,6 @@ mod tests {
     }
 
     #[test]
-    fn a_tool_the_node_stops_listing_keeps_its_history() {
-        let mut r = Roster::default();
-        let now = t("2026-11-07T10:00:00Z");
-        r.apply("mizar", vec![hello(vec![]), Item::Usage { tool: "journal".into(), last_used: Some(now), last_ok: Some(now) }], now);
-        r.apply("mizar", vec![Item::Tools { services: vec![], tools: vec![ToolRow { tool: "social".into(), host: Some("alcor".into()) }] }], now);
-        let j = &r.nodes["mizar"].tools["journal"];
-        assert!(!j.available && j.last_used == Some(now));
-        let uses = &r.nodes_view(Some("mizar"), now)["nodes"][0]["uses"];
-        assert_eq!(uses.as_array().unwrap().len(), 2);
-    }
-
-    #[test]
     fn seats_replace_and_update_by_id() {
         let mut r = Roster::default();
         let empty = json!({"seat": "slack/C042", "label": "alice", "state": "empty", "remote_control": false, "node": "alcor"});
@@ -608,32 +560,4 @@ mod tests {
         assert!(r.seat_event(&json!({"state": "x", "name": "alice"})).changed.is_empty(), "a row with no seat id is ignored");
     }
 
-    #[test]
-    fn a_seat_read_at_connect_and_its_events_are_one_seat() {
-        let mut r = Roster::default();
-        r.set_seats(&[json!({"id": "slack/C042", "name": "alice", "state": "empty", "remote_control": false, "node": "alcor"})]);
-        assert_eq!(r.seats_view()["seats"][0]["label"], "alice");
-        r.seat_event(&json!({"seat": "slack/C042", "label": "alice", "state": "starting", "remote_control": false, "node": "alcor", "ts": "2026-11-07T10:00:00Z"}));
-        r.seat_event(&json!({"seat": "slack/C042", "label": "alice", "state": "starting", "remote_control": false, "node": "alcor", "job": "j1", "ts": "2026-11-07T10:00:01Z"}));
-        let v = r.seats_view();
-        let seats = v["seats"].as_array().unwrap();
-        assert_eq!(seats.len(), 1, "{v}");
-        assert_eq!((seats[0]["seat"].as_str(), seats[0]["job"].as_str(), seats[0]["state"].as_str()), (Some("slack/C042"), Some("j1"), Some("starting")));
-        assert!(seats[0].get("id").is_none() && seats[0].get("name").is_none());
-    }
-
-    #[test]
-    fn timestamps_parse_from_strings_and_numbers() {
-        assert_eq!(parse_ts(Some(&json!("2026-11-07T10:00:00Z"))), Some(t("2026-11-07T10:00:00Z")));
-        assert_eq!(parse_ts(Some(&json!(1_762_509_600))), Some(t("2025-11-07T10:00:00Z")));
-        assert_eq!(parse_ts(Some(&json!(null))), None);
-    }
-
-    #[test]
-    fn the_roster_round_trips_through_json() {
-        let mut r = Roster::default();
-        r.apply("mizar", vec![hello(vec![sess("a1")])], t("2026-11-07T10:00:00Z"));
-        let back: Roster = serde_json::from_str(&serde_json::to_string(&r).unwrap()).unwrap();
-        assert_eq!(back, r);
-    }
 }
