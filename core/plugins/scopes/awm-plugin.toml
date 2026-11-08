@@ -1,0 +1,18 @@
+[plugin]
+name = "scopes"
+version = "0.2.0"
+
+[[service]]
+name = "scopes"
+path = "."
+run = "run.sh"
+
+[[tool]]
+name = "scope"
+major = 1
+tier = "on"
+
+[needs]
+secrets = []
+network = ["github.com", "api.github.com", "*.githubusercontent.com", "tcp:22 github.com, git over ssh"]
+platform = ["linux"]
