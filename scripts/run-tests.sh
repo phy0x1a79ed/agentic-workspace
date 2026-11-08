@@ -29,7 +29,7 @@ set -uo pipefail
 WS="$(git -C "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" rev-parse --show-toplevel)"
 cd "$WS"
 
-COMP="$WS/awm/service_components/grantlib:$WS/awm/service_components/config:$WS/awm/service_components/persistence:$WS/awm/service_components/gatewayclient:$WS/awm/service_components/claudedaemon:$WS/awm/service_components/kept:$WS/awm/service_components/usage:$WS/awm/service_components/trustpolicy:$WS/awm/service_components/tlsfront:$WS/awm/service_components/dvcdata"
+COMP="$WS/awm/service_components/grantlib:$WS/awm/service_components/config:$WS/awm/service_components/persistence:$WS/awm/service_components/gatewayclient:$WS/awm/service_components/kept:$WS/awm/service_components/usage:$WS/awm/service_components/trustpolicy:$WS/awm/service_components/tlsfront:$WS/awm/service_components/dvcdata"
 
 # dist name -> "<source-root-dir>::<test-dir>"
 declare -A DISTS=(
@@ -39,7 +39,6 @@ declare -A DISTS=(
   [persistence]="$WS/awm/service_components/persistence::$WS/awm/service_components/persistence/tests"
   [telemetry]="$WS/awm/service_components/telemetry::$WS/awm/service_components/telemetry/tests"
   [usage]="$WS/awm/service_components/usage::$WS/awm/service_components/usage/tests"
-  [claudedaemon]="$WS/awm/service_components/claudedaemon::$WS/awm/service_components/claudedaemon/tests"
   [kept]="$WS/awm/service_components/kept::$WS/awm/service_components/kept/tests"
   [tlsfront]="$WS/awm/service_components/tlsfront::$WS/awm/service_components/tlsfront/tests"
   [dvcdata]="$WS/awm/service_components/dvcdata::$WS/awm/service_components/dvcdata/tests"
@@ -62,7 +61,6 @@ declare -A DISTS=(
   [engcyc]="$WS/awm/services/engcyc::$WS/awm/services/engcyc/tests"
   [trilium]="$WS/awm/services/trilium::$WS/awm/services/trilium/tests"
   [zotero]="$WS/awm/services/zotero::$WS/awm/services/zotero/tests"
-  [cch]="$WS/awm/services/cch::$WS/awm/services/cch/tests"
   [channel]="$WS/awm/plugins/channel:$WS/awm/plugins/relay:$WS/awm/service_components/tether::$WS/awm/plugins/channel/tests"
   [relay]="$WS/awm/plugins/relay:$WS/awm/service_components/tether::$WS/awm/plugins/relay/tests"
   [kb]="$WS/awm/services/kb::$WS/awm/services/kb/tests"
@@ -75,7 +73,7 @@ declare -A DISTS=(
 )
 
 # Stable run order.
-ORDER=(contract gatewayclient config persistence grantlib telemetry usage claudedaemon kept tlsfront dvcdata tether scopes journal search social 2fa ssh auth httpsfront rlm-browser rlm-factorio mic vpn reflection dvc claude-science engcyc trilium zotero cch channel relay kb board transcripts trustpolicy browser wake)
+ORDER=(contract gatewayclient config persistence grantlib telemetry usage kept tlsfront dvcdata tether scopes journal search social 2fa ssh auth httpsfront rlm-browser rlm-factorio mic vpn reflection dvc claude-science engcyc trilium zotero channel relay kb board transcripts trustpolicy browser wake)
 
 CHANGED_BASE=""
 SMOKE=0

@@ -27,7 +27,7 @@ command = "scripts/node-refresh.sh"
 # (install.md R115 item 4). Each core plugin core/plugins/<name> adds its pin,
 # "scripts/plugins/<name>.pin", in the commit that adds the plugin: scripts/release-plugins.sh
 # refuses a plugin whose pin is not listed here, and the refresh writes the pin.
-pins = ["scripts/core.pin", "scripts/pages.pin", "awm/services/trilium/server.pin", "scripts/plugins/dev.pin", "scripts/plugins/dsh.pin", "scripts/plugins/fileviewer.pin", "scripts/plugins/routine.pin"]
+pins = ["scripts/core.pin", "scripts/pages.pin", "awm/services/trilium/server.pin", "scripts/plugins/dev.pin", "scripts/plugins/dsh.pin", "scripts/plugins/fileviewer.pin", "scripts/plugins/routine.pin", "scripts/plugins/cch.pin"]
 # Runs in the batch's temp tree after the merge. It rebuilds each stale pin into the landing
 # node's artifact store, and the engine commits the pins it rewrote as `deploy: refresh pins`.
 # A cold musl build takes minutes, so it has its own budget.

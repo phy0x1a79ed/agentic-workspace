@@ -2,8 +2,9 @@
 # The dir holds home/, whose .credentials.yaml and settings.yaml carry the secrets.
 dirs = ["${AWM_DIR}/services/dsh"]
 
-[[additive]]
-path = "unsent.jsonl"
+# Relative paths resolve against AWM_DIR. The spool empties once reflection takes its events.
+[[transient]]
+path = "services/dsh/unsent.jsonl"
 
 [[transient]]
-path = "home/settings.yaml.lock"
+path = "services/dsh/home/settings.yaml.lock"

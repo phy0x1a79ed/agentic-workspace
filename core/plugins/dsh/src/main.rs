@@ -7,6 +7,7 @@ mod paths;
 mod relink;
 mod sessions;
 mod settings;
+mod snapshot;
 mod supervisor;
 mod verbs;
 
@@ -15,12 +16,20 @@ use std::time::Duration;
 
 use awm_harness::contract::Reporter;
 use awm_plugin_sdk::{Call, Service};
+use clap::Parser;
 
 use crate::paths::Paths;
 use crate::sessions::{ProcFs, Sessions, COMPACT_WAIT, POLL};
 use crate::settings::Settings;
 use crate::supervisor::Supervisor;
 use crate::verbs::{specs, App, HARNESS_TOOL};
+
+/// `dsh state <cmd>`: the pre-redux state check.
+#[derive(clap::Parser)]
+struct StateCli {
+    #[command(subcommand)]
+    cmd: awm_statecheck::cli::StateCmd,
+}
 
 /// Every verb of [`specs`], bound to `app`.
 fn service(svc: Service, app: Arc<App>) -> Service {
@@ -97,6 +106,13 @@ fn health(app: Arc<App>) -> awm_plugin_sdk::Supervised {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     awm_plugin_sdk::telemetry::init();
+    let awm_dir = awm_plugin_sdk::config::awm_dir();
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().map(String::as_str) == Some("state") {
+        let cli = StateCli::parse_from(std::iter::once("dsh state".to_string()).chain(args.into_iter().skip(1)));
+        std::process::exit(awm_statecheck::cli::run(&cli.cmd, "dsh", &snapshot::decl(&awm_dir)?)?);
+    }
+    snapshot::take(&awm_dir)?;
     let svc = Service::from_env()?;
     let paths = Paths::from_env();
     let app = Arc::new(App {

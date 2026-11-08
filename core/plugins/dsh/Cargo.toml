@@ -14,7 +14,9 @@ path = "src/main.rs"
 awm-plugin-sdk.workspace = true
 awm-harness.workspace = true
 anyhow.workspace = true
+awm-statecheck = { path = "../../crates/awm-statecheck" }
 axum.workspace = true
+clap.workspace = true
 futures-util.workspace = true
 libc.workspace = true
 reqwest = { workspace = true, features = ["stream"] }

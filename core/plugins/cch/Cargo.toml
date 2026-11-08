@@ -18,7 +18,9 @@ path = "src/main.rs"
 awm-plugin-sdk.workspace = true
 awm-harness = { workspace = true, features = ["claude"] }
 anyhow.workspace = true
+awm-statecheck = { path = "../../crates/awm-statecheck" }
 chrono.workspace = true
+clap.workspace = true
 libc.workspace = true
 regex = "1"
 serde.workspace = true

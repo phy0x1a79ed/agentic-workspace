@@ -4,8 +4,8 @@
 #   deploy-hooks.sh           back up each stale target, then deploy
 #
 # Deploy the hooks BEFORE the services they pair with: a node that runs the
-# service without its hook behaves worse than one that has neither (the cx
-# naming hook is the sharp case: `claimed <noun>` stays as a session's name).
+# service without its hook behaves worse than one that has neither.
+# cch's four hooks are not here: cch writes their entries itself at start.
 #
 # Hooks are copied, never symlinked into the awm tree: a copy works on a node
 # whose checkout does not carry the hook yet, and its md5 is checkable.
@@ -21,10 +21,6 @@ CHECK=0
 
 # name | source under awm/ | file in ~/.claude/hooks | nodes | extra file (same dir as source)
 HOOKS=(
-  "cx-name|services/cch/hooks/name_on_prompt.py|awm-cx-name-hook.py|local altair|"
-  "reflection|services/cch/hooks/plan_mode_hook.py|awm-reflection-mode.py|local|"
-  "brief|services/cch/hooks/brief_on_start.py|awm-brief-hook.py|local|"
-  "subagent-cap|services/cch/hooks/subagent_cap.py|awm-subagent-cap.py|local altair|"
   "operations|plugins/operations/hooks/operations_hook.py|awm-operations-hook.py|local|awm-operations-settings.json"
 )
 
@@ -37,10 +33,6 @@ RETIRED=(
 # settings.json entries per hook, as {event: entry}; @file reads the "hooks" of a shipped
 # settings file. $HOME becomes the node's home.
 declare -A ENTRIES=(
-  [cx-name]='{"UserPromptSubmit":{"hooks":[{"type":"command","command":"python3 -S $HOME/.claude/hooks/awm-cx-name-hook.py 2>/dev/null || true","timeout":5}]}}'
-  [reflection]='{"PostToolUse":{"matcher":"ExitPlanMode","hooks":[{"type":"command","command":"python3 -S $HOME/.claude/hooks/awm-reflection-mode.py 2>/dev/null || true","timeout":20}]}}'
-  [brief]='{"SessionStart":{"hooks":[{"type":"command","command":"python3 -S $HOME/.claude/hooks/awm-brief-hook.py 2>/dev/null || true","timeout":6}]}}'
-  [subagent-cap]='{"PreToolUse":{"matcher":"Agent|Task","hooks":[{"type":"command","command":"python3 -S $HOME/.claude/hooks/awm-subagent-cap.py 2>/dev/null || true","timeout":5}]},"SubagentStart":{"hooks":[{"type":"command","command":"python3 -S $HOME/.claude/hooks/awm-subagent-cap.py 2>/dev/null || true","timeout":5}]},"SubagentStop":{"hooks":[{"type":"command","command":"python3 -S $HOME/.claude/hooks/awm-subagent-cap.py 2>/dev/null || true","timeout":5}]}}'
   [operations]='@awm-operations-settings.json'
 )
 

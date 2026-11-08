@@ -23,6 +23,7 @@ pub mod control;
 
 pub mod gateway;
 pub mod migrate;
+pub mod snapshot;
 
 pub mod lifecycle;
 pub mod keeper;

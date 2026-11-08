@@ -87,8 +87,7 @@ def _imported_plugins(folder: Path) -> set[str]:
     """The other plugins whose ``awm.<package>`` this folder's code imports.
 
     A library under ``awm/service_components`` is no plugin, so importing it
-    passes (R117 item 5). That includes claudedaemon, which the cch harness
-    plugin retires (R135).
+    passes (R117 item 5).
     """
     found = set()
     for _, tree in _sources(folder):
