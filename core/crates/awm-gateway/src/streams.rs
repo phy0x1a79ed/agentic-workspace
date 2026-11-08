@@ -124,30 +124,6 @@ fn parts(path: &str) -> Option<(&str, &str, &str)> {
 }
 
 impl Gateway {
-    /// Why `plugin` may not stream from `service`, or None. A plugin streams from its own
-    /// services and from the services of each tool its `[[needs.tool]]` lists.
-    fn stream_refusal(&self, plugin: &str, service: &str) -> Option<String> {
-        let load = self.read_load();
-        let p = load.plugins.iter().find(|p| p.name == plugin)?;
-        if p.services.iter().any(|s| s.name == service) {
-            return None;
-        }
-        let served: Vec<&str> = load
-            .plugins
-            .iter()
-            .flat_map(|q| q.tools.iter())
-            .filter(|t| t.services.iter().any(|s| s == service))
-            .map(|t| t.name.as_str())
-            .collect();
-        if p.needs.tool.iter().any(|n| served.contains(&n.name.as_str())) {
-            return None;
-        }
-        Some(format!(
-            "plugin {plugin:?} does not list a tool of service {service:?} ({}) in its [[needs.tool]]",
-            served.join(", ")
-        ))
-    }
-
     /// The tools `service` answers for: its name, the tools its plugin declares for it, and
     /// the tools it registered.
     fn service_tools(&self, service: &str) -> Vec<String> {
@@ -166,12 +142,10 @@ impl Gateway {
     /// Open a stream path on this node for `ctx`. Refusals come back before any socket opens.
     pub fn open_local(&self, path: &str, ctx: &CallContext) -> Result<WsPipe, ApiError> {
         let Some((what, service, name)) = parts(path) else { return Err(ApiError::new(404, format!("no stream at {path}"))) };
-        if !self.knows_service(service) || self.service_tools(service).iter().any(|t| self.singleton_refuses(t, &ctx.caller)) {
+        // The gateway's own topics, such as `awm/plugins`, have no service behind them.
+        let own = what == "emit" && service == crate::lifecycle::SERVICE;
+        if !own && (!self.knows_service(service) || self.service_tools(service).iter().any(|t| self.singleton_refuses(t, &ctx.caller))) {
             return Err(ApiError::new(404, format!("Unknown service {service:?}")));
-        }
-        if let Some(why) = ctx.plugin.as_deref().and_then(|p| self.stream_refusal(p, service)) {
-            tracing::info!("needs guard: refused a stream from {service}: {why}");
-            return Err(ApiError::new(403, why));
         }
         let peer = crate::privacy::from_peer(ctx);
         match what {

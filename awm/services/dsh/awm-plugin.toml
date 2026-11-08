@@ -28,9 +28,7 @@ platform = ["linux"]
 [[needs.tool]]
 name = "reflection"   # dsh sends it harness_event
 major = 1
-verbs = ["harness_event"]
 
 [[needs.tool]]
 name = "auth"         # the mesh front's edge session check (awm.tlsfront.auth)
 major = 1
-verbs = ["edge_material"]

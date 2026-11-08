@@ -1,0 +1,502 @@
+{
+  "plugin": "journal",
+  "tool": "journal",
+  "verbs": [
+    {
+      "description": "Mark a scope's posts read through one post: it and every post before it. Pass the ack_through id that inbox returned, so a post that arrived after you read the digest stays unread. Without through, marks everything in the channel read. The cursor never moves back.",
+      "params": [
+        {
+          "name": "project",
+          "required": true
+        },
+        {
+          "name": "scope",
+          "required": true
+        },
+        {
+          "description": "A post id of this channel. Default: its newest post.",
+          "name": "through",
+          "required": false
+        }
+      ],
+      "verb": "ack"
+    },
+    {
+      "description": "List the posts that open as an addendum or correction to an earlier post of the same scope, with the post each corrects. With apply, fold each into its target as a new version and retire the addendum from reads.",
+      "params": [
+        {
+          "name": "project",
+          "required": false
+        },
+        {
+          "name": "scope",
+          "required": false
+        },
+        {
+          "name": "apply",
+          "required": false,
+          "type": "boolean"
+        }
+      ],
+      "verb": "addenda"
+    },
+    {
+      "description": "The scope brief tells an agent what this scope is for within its project. It informs. It does not instruct: write no steps, commands or rules. Write at most two sentences, such as \"for <the work this scope holds>\". Name the scope's role: what its branch is for, the part of the project it works on, or whom it serves. When the work lives in a narrower part of the repo than the whole, give that path relative to the worktree. Do not describe the project, the plan or what done looks like. The repo's docs, AGENTS.md and the journal hold those. This is not a log. Change the brief only when the scope's role changes. A brief over 400 characters is refused. brief_edit replaces one passage, old, with new.",
+      "params": [
+        {
+          "name": "project",
+          "required": true
+        },
+        {
+          "name": "scope",
+          "required": true
+        },
+        {
+          "description": "Who writes it. Defaults to agent:<project>/<scope>.",
+          "name": "author",
+          "required": false
+        },
+        {
+          "description": "The passage to replace. It must occur exactly once.",
+          "name": "old",
+          "required": true
+        },
+        {
+          "description": "Its replacement. Pass this argument last.",
+          "name": "new",
+          "required": true
+        }
+      ],
+      "verb": "brief_edit"
+    },
+    {
+      "description": "Every version of the scope's brief, oldest first; the last is in force.",
+      "params": [
+        {
+          "name": "project",
+          "required": true
+        },
+        {
+          "name": "scope",
+          "required": true
+        }
+      ],
+      "verb": "brief_history"
+    },
+    {
+      "description": "The scope's brief: what the scope is for. The harness hands it to a session when the session enters the scope, so read it only to look again. Returns brief null when the scope has none.",
+      "params": [
+        {
+          "name": "project",
+          "required": true
+        },
+        {
+          "name": "scope",
+          "required": true
+        }
+      ],
+      "verb": "brief_read"
+    },
+    {
+      "description": "The scope brief tells an agent what this scope is for within its project. It informs. It does not instruct: write no steps, commands or rules. Write at most two sentences, such as \"for <the work this scope holds>\". Name the scope's role: what its branch is for, the part of the project it works on, or whom it serves. When the work lives in a narrower part of the repo than the whole, give that path relative to the worktree. Do not describe the project, the plan or what done looks like. The repo's docs, AGENTS.md and the journal hold those. This is not a log. Change the brief only when the scope's role changes. A brief over 400 characters is refused. brief_set replaces the whole brief.",
+      "params": [
+        {
+          "name": "project",
+          "required": true
+        },
+        {
+          "name": "scope",
+          "required": true
+        },
+        {
+          "description": "Who writes it. Defaults to agent:<project>/<scope>.",
+          "name": "author",
+          "required": false
+        },
+        {
+          "description": "The whole brief. Pass this argument last.",
+          "name": "text",
+          "required": true
+        }
+      ],
+      "verb": "brief_set"
+    },
+    {
+      "description": "Correct a post in place. Give old and new to replace one passage, or body for the whole text. The journal keeps every earlier version with its diff; reads show the latest. Use this instead of posting an addendum.",
+      "params": [
+        {
+          "name": "post_id",
+          "required": true
+        },
+        {
+          "name": "reason",
+          "required": false
+        },
+        {
+          "description": "A passage that occurs exactly once in the post.",
+          "name": "old",
+          "required": false
+        },
+        {
+          "name": "new",
+          "required": false
+        },
+        {
+          "description": "The whole new text. Pass this argument LAST.",
+          "name": "body",
+          "required": false
+        }
+      ],
+      "verb": "edit"
+    },
+    {
+      "description": "The search archive's change feed: the indexed threads changed after `since`, each with its entry, or without one when it was deleted. Pass the previous page's `next` as `since`. A changed `epoch`, or `reset`, means read again from the start.",
+      "params": [
+        {
+          "description": "The cursor of the last change read. Default: the start.",
+          "name": "since",
+          "required": false
+        },
+        {
+          "description": "Changes per page. Default 200, at most 1000.",
+          "name": "limit",
+          "required": false,
+          "type": "integer"
+        }
+      ],
+      "surfaces": [
+        "cli",
+        "http"
+      ],
+      "verb": "export"
+    },
+    {
+      "description": "Fetch or search a scope's posts — messages and journal entries. Pass project and scope for one channel (a literal scope needs its project: scope names repeat across projects); add query to rank posts by relevance (the search service's meaning and keyword match over each post's full text, best first, each hit with match.snippet — a limit of ~10 is plenty; the reply's `semantic` says what ranked them: search, or none for a substring match); omit scope to search across scopes; a query returns each thread's first post with its comment count. tags filters with 'and' and '!' (e.g. tags='journal' for session logs, '!closed and complaint' for open complaints); post_id fetches one with its thread of comments. Without a query, tags='journal' reads newest-first (e.g. last 5 awm session logs: project='awm', tags='journal', limit=5).",
+      "params": [
+        {
+          "name": "project",
+          "required": false
+        },
+        {
+          "name": "scope",
+          "required": false
+        },
+        {
+          "description": "A tag filter: names joined by 'and', '!' negates one.",
+          "name": "tags",
+          "required": false
+        },
+        {
+          "name": "query",
+          "required": false
+        },
+        {
+          "name": "author",
+          "required": false
+        },
+        {
+          "name": "post_id",
+          "required": false
+        },
+        {
+          "name": "limit",
+          "required": false,
+          "type": "integer"
+        },
+        {
+          "name": "offset",
+          "required": false,
+          "type": "integer"
+        },
+        {
+          "name": "before_ts",
+          "required": false
+        },
+        {
+          "description": "'asc' (oldest-first) or 'desc' (newest-first). Default: 'desc' for tags='journal', else 'asc' within one scope.",
+          "name": "order",
+          "required": false
+        }
+      ],
+      "verb": "fetch"
+    },
+    {
+      "description": "Every version of a post, oldest first, each with its diff from the one before.",
+      "params": [
+        {
+          "name": "post_id",
+          "required": true
+        }
+      ],
+      "verb": "history"
+    },
+    {
+      "description": "What a scope has not read yet: one line per post, newest first, bounded. Each line has the post id, author, age, a gist (its title, leading heading or first sentence), whether it looks like it asks for action, and its length. It also lists comments on threads the scope started, wherever they live. Read one in full with fetch(post_id=…). The read cursor belongs to the scope, so the next session there starts where this one acknowledged. Posts the scope wrote itself are never unread. Mark read with ack(through=<ack_through>).",
+      "params": [
+        {
+          "name": "project",
+          "required": true
+        },
+        {
+          "name": "scope",
+          "required": true
+        },
+        {
+          "description": "A tag filter. Default 'message'.",
+          "name": "tags",
+          "required": false
+        },
+        {
+          "description": "Posts to list. Default 20, at most 50.",
+          "name": "limit",
+          "required": false,
+          "type": "integer"
+        },
+        {
+          "description": "List read posts too, each marked read. Default false.",
+          "name": "all",
+          "required": false,
+          "type": "boolean"
+        }
+      ],
+      "verb": "inbox"
+    },
+    {
+      "description": "A session's lineage, walked forward only: the session that started it (or that it was before a clear), that session's parent and so on, and the journals its debrief cites, then what those sessions came from. session defaults to yours.",
+      "params": [
+        {
+          "name": "session",
+          "required": false
+        }
+      ],
+      "verb": "lineage"
+    },
+    {
+      "description": "Copy the parent links reporting kept (its session_parents table) once.",
+      "params": [
+        {
+          "description": "The reporting work database to read.",
+          "name": "path",
+          "required": true
+        }
+      ],
+      "surfaces": [
+        "cli",
+        "http"
+      ],
+      "verb": "lineage_import"
+    },
+    {
+      "description": "Record that the calling session read one journal post through another service, such as search get (sessions.md R15). For services, not agents.",
+      "params": [
+        {
+          "name": "post_id",
+          "required": true
+        }
+      ],
+      "surfaces": [
+        "cli",
+        "http"
+      ],
+      "verb": "note_read"
+    },
+    {
+      "description": "Post to a scope's channel. tags come from the vocabulary (tag_list); a post with none is a message. tags=[journal] is the scope's own debrief; structured fields go in meta. reply_to=[<post id>] makes the post a comment: it lands in the channel of its thread's first post, and that post's author gets it in its inbox. On a journal, reply_to lists the journals it built on. Tag a post precedent when it records a decision Tony made or overrode that holds beyond the session: post it at project='' scope='workspace', with a body that holds the context, the question and the decision. Search precedents before you ask Tony a preference question. Pass all structured params (tags, meta, reply_to) BEFORE the free-text body, which must be the LAST argument — see the body param note.",
+      "params": [
+        {
+          "description": "Required unless reply_to is given.",
+          "name": "project",
+          "required": false
+        },
+        {
+          "description": "Required unless reply_to is given.",
+          "name": "scope",
+          "required": false
+        },
+        {
+          "name": "author",
+          "required": true
+        },
+        {
+          "description": "Tag names from the vocabulary. An unknown tag is refused.",
+          "name": "tags",
+          "required": false,
+          "type": "array"
+        },
+        {
+          "description": "Post ids. A comment names the one post it answers. A debrief journal names every earlier journal it built on: its citations, picked from journal reads. A journal stays in its own scope.",
+          "name": "reply_to",
+          "required": false,
+          "type": "array"
+        },
+        {
+          "description": "Structured fields. meta.session names the session a journal covers; omit it for your own session.",
+          "name": "meta",
+          "required": false,
+          "type": "object"
+        },
+        {
+          "description": "Free-text post content. Pass this argument LAST — emit every other parameter before it.",
+          "name": "body",
+          "required": true
+        }
+      ],
+      "verb": "post"
+    },
+    {
+      "description": "Import precedence.db once: each decision becomes a workspace post tagged precedent, its notes comments, its supersedes replies. A rerun adds nothing. dry_run reports without writing.",
+      "params": [
+        {
+          "description": "The precedence.db to read. Default: this node's.",
+          "name": "path",
+          "required": false
+        },
+        {
+          "name": "dry_run",
+          "required": false,
+          "type": "boolean"
+        }
+      ],
+      "surfaces": [
+        "cli",
+        "http"
+      ],
+      "verb": "precedent_import"
+    },
+    {
+      "description": "The journals a session read through fetch, newest first: the candidates to cite at debrief. Also lists the citations its own journals already make. session defaults to yours.",
+      "params": [
+        {
+          "name": "session",
+          "required": false
+        },
+        {
+          "name": "limit",
+          "required": false,
+          "type": "integer"
+        }
+      ],
+      "verb": "reads"
+    },
+    {
+      "description": "A scope's history from the journal, as markdown: its own latest journal entries first, then its project's. The startup ritual reads it.",
+      "params": [
+        {
+          "name": "project",
+          "required": true
+        },
+        {
+          "name": "scope",
+          "required": true
+        }
+      ],
+      "verb": "render"
+    },
+    {
+      "description": "Add and remove several tags on one post at once, such as add=[closed]. A type tag (message, journal, brief, precedent) is set only when the post is made; closed and superseded change freely.",
+      "params": [
+        {
+          "name": "post_id",
+          "required": true
+        },
+        {
+          "name": "add",
+          "required": false,
+          "type": "array"
+        },
+        {
+          "name": "remove",
+          "required": false,
+          "type": "array"
+        }
+      ],
+      "verb": "retag"
+    },
+    {
+      "description": "Record who started a session, or which session it was before a clear. For reflection and the harness, not agents. The first link wins.",
+      "params": [
+        {
+          "name": "session_id",
+          "required": true
+        },
+        {
+          "name": "parent",
+          "required": true
+        },
+        {
+          "description": "start or clear. Default start.",
+          "name": "how",
+          "required": false
+        },
+        {
+          "name": "node",
+          "required": false
+        }
+      ],
+      "surfaces": [
+        "cli",
+        "http"
+      ],
+      "verb": "session_parent"
+    },
+    {
+      "description": "Add a tag to the vocabulary that every node shares. Check tag_list first: add only a concept no tag covers. The description is required and says what a post with this tag is. The add reaches every node by itself.",
+      "params": [
+        {
+          "description": "Lowercase letters, digits and _ . : + / -, at most 64 characters.",
+          "name": "name",
+          "required": true
+        },
+        {
+          "name": "description",
+          "required": true
+        }
+      ],
+      "verb": "tag_add"
+    },
+    {
+      "description": "Change a tag's name or description. Posts link a tag by its id, so a rename shows on every post. The earlier versions stay; tag_list with tag shows them.",
+      "params": [
+        {
+          "description": "The tag's id or current name.",
+          "name": "tag",
+          "required": true
+        },
+        {
+          "name": "name",
+          "required": false
+        },
+        {
+          "name": "description",
+          "required": false
+        }
+      ],
+      "verb": "tag_edit"
+    },
+    {
+      "description": "The tag vocabulary: each tag with its id and description, and any open clash between two nodes that added one name. With tag, that tag's versions.",
+      "params": [
+        {
+          "description": "A tag's id or name, to list its earlier versions.",
+          "name": "tag",
+          "required": false
+        }
+      ],
+      "verb": "tag_list"
+    },
+    {
+      "description": "A peer node's pushed tags, merged into this node's vocabulary.",
+      "params": [
+        {
+          "name": "tags",
+          "required": true,
+          "type": "array"
+        }
+      ],
+      "surfaces": [
+        "http"
+      ],
+      "verb": "tag_receive"
+    }
+  ]
+}

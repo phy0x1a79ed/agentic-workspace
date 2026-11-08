@@ -1,0 +1,27 @@
+[package]
+name = "awm-plugin-sdk"
+description = "The Rust side of a plugin service: the wire protocol to the gateway, calls to other plugins, and the node config a plugin reads."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+awm-proto.workspace = true
+awm-trust.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+tokio.workspace = true
+axum.workspace = true
+futures-util.workspace = true
+reqwest.workspace = true
+tokio-tungstenite.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+libc.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

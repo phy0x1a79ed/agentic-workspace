@@ -22,9 +22,7 @@ platform = ["linux"]
 [[needs.tool]]
 name = "auth"
 major = 1
-verbs = ["edge_material"]
 
 [[needs.tool]]
 name = "trilium"
 major = 1
-verbs = ["slice_resolve"]

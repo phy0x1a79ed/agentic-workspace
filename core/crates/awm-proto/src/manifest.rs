@@ -44,8 +44,10 @@ pub struct ServiceDecl {
     pub path: String,
     #[serde(default = "default_run")]
     pub run: String,
-    #[serde(default = "default_install")]
-    pub install: String,
+    /// The hook that builds the plugin's runtime, relative to `path` (plugin-contract § Runtime).
+    /// None: the plugin needs no install step.
+    #[serde(default)]
+    pub install: Option<String>,
     #[serde(default)]
     pub profiles: Option<Vec<String>>,
     #[serde(default)]
@@ -57,9 +59,6 @@ fn dot() -> String {
 }
 fn default_run() -> String {
     DEFAULT_RUN.into()
-}
-fn default_install() -> String {
-    "install.sh".into()
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
@@ -128,6 +127,8 @@ pub struct Needs {
     pub gpu: Option<bool>,
 }
 
+/// A hard dependency (install.md R117 item 8): the loader refuses the plugin while it is
+/// unmet. It lists no verbs, since a plugin may call any tool.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct NeedTool {
@@ -135,10 +136,27 @@ pub struct NeedTool {
     pub name: String,
     #[serde(default = "one")]
     pub major: u32,
-    /// Every verb the plugin calls on the tool, or on each provider of the contract. The
-    /// gateway refuses any other (R116 item 3). `describe` needs no entry.
-    #[serde(default)]
-    pub verbs: Vec<String>,
+    /// Retired keys that a manifest written before R117 item 8 still carries. The loader
+    /// ignores them and warns, so such a plugin still loads.
+    #[serde(default, skip_serializing)]
+    pub verbs: Option<toml::Value>,
+    #[serde(default, skip_serializing)]
+    pub optional: Option<toml::Value>,
+}
+
+impl Needs {
+    /// The retired keys any of the needs carries, in the order `verbs`, `optional`.
+    pub fn retired_keys(&self) -> Vec<&'static str> {
+        let all = || self.tool.iter().chain(&self.contract);
+        let mut keys = Vec::new();
+        if all().any(|n| n.verbs.is_some()) {
+            keys.push("verbs");
+        }
+        if all().any(|n| n.optional.is_some()) {
+            keys.push("optional");
+        }
+        keys
+    }
 }
 
 /// Parse `"<contract>@<major>"`.
@@ -192,6 +210,7 @@ major = 1
         .unwrap();
         assert_eq!(m.plugin.name, "mic");
         assert_eq!(m.service[0].run, "run.sh");
+        assert!(m.service[0].install.is_none(), "no install key, no install step");
         assert_eq!(m.tool[0].tier, Tier::Off);
         assert!(m.page[0].dir.is_none());
         assert_eq!(m.needs.tool.len(), 1);
@@ -214,6 +233,14 @@ major = 1
     #[test]
     fn trust_is_gone_since_installing_trusts_a_plugin() {
         assert!(Manifest::parse("[plugin]\nname='x'\ntrust='own'\n").is_err());
+    }
+
+    #[test]
+    fn a_need_parses_its_retired_keys_for_a_warning() {
+        let m = Manifest::parse("[plugin]\nname='x'\n[[needs.tool]]\nname='y'\nverbs=['get']\n[[needs.contract]]\nname='z'\noptional=true\n").unwrap();
+        assert_eq!(m.needs.retired_keys(), ["verbs", "optional"]);
+        assert!(Manifest::parse("[plugin]\nname='x'\n[[needs.tool]]\nname='y'\n").unwrap().needs.retired_keys().is_empty());
+        assert!(Manifest::parse("[plugin]\nname='x'\n[[needs.tool]]\nname='y'\nbogus=1\n").is_err(), "any other key is still unknown");
     }
 
     #[test]

@@ -20,7 +20,7 @@ tokio.workspace = true
 axum.workspace = true
 futures-util.workspace = true
 tokio-tungstenite.workspace = true
-reqwest.workspace = true
+reqwest = { workspace = true, features = ["stream"] }
 tracing.workspace = true
 mime_guess.workspace = true
 libc.workspace = true

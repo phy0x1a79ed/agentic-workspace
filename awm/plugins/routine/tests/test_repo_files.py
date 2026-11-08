@@ -201,15 +201,22 @@ def _pages_tar(tmp_path, body: str) -> bytes:
     return buf.getvalue()
 
 
+def _awm_cli(tree):
+    """The crate core_version starts its closure from (scripts/pins.sh)."""
+    (tree / "core/crates/awm-cli").mkdir(parents=True)
+    (tree / "core/crates/awm-cli/Cargo.toml").write_text('[package]\nname = "awm-cli"\n')
+
+
 def _deploy_node(tmp_path, *, core_sha=None, pages_sha=None, core_changed=False, pages_changed=False):
     """A checkout holding awm-deploy.sh and both pins, and the artifact store its node holds."""
     node = tmp_path / "node"
     (node / "scripts").mkdir(parents=True)
     (node / "core").mkdir()
     (node / "awm/services/svc/pages/ui").mkdir(parents=True)
-    for f in ("awm-deploy.sh", "pins.sh"):
+    for f in ("awm-deploy.sh", "pins.sh", "marks-dir.sh"):
         shutil.copy(REPO / "scripts" / f, node / "scripts" / f)
     (node / "core/Cargo.toml").write_text("x\n")
+    _awm_cli(node)
     (node / ".gitignore").write_text("awm/*/*/pages/*/dist/\n")
     (node / "awm/services/svc/pages/ui/index.html").write_text("src\n")
     git(tmp_path, "init", "-q", str(node))
@@ -408,6 +415,7 @@ write_pin "$root/scripts/%(name)s.pin" d "$version" "$version" "$AWM_DIR/artifac
     for f in ("release-core.sh", "release-pages.sh"):
         (tree / "scripts" / f).chmod(0o755)
     (tree / "core/Cargo.toml").write_text("1\n")
+    _awm_cli(tree)
     (tree / "awm/package-lock.json").write_text("{}\n")
     (tree / "awm/services/svc/pages/ui/index.html").write_text("1\n")
     (tree / ".gitignore").write_text("node_modules\n.awm/\n")

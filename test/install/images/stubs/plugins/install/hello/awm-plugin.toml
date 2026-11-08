@@ -12,9 +12,7 @@ major = 1
 [[needs.tool]]
 name = "2fa"
 major = 1
-verbs = ["echo"]
 
 [[needs.tool]]
 name = "social"
 major = 1
-verbs = ["echo"]

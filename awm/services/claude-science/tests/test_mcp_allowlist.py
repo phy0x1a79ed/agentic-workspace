@@ -241,7 +241,7 @@ def test_the_served_app_refuses_a_non_allowlisted_verb():
 # ---------------------------------------------------------------------------
 
 def test_a_call_carries_the_service_token(monkeypatch, tmp_path):
-    """The token names the plugin, so the gateway's [[needs.tool]] guard applies."""
+    """The token names the plugin, so the gateway stamps it as the caller."""
     token = tmp_path / "svc.token"
     token.write_text("tok\n")
     monkeypatch.setenv("AWM_HUB_TOKEN_FILE", str(token))
@@ -256,13 +256,12 @@ def test_a_call_carries_the_service_token(monkeypatch, tmp_path):
     assert seen == ["tok"]
 
 
-def test_every_default_verb_is_declared_in_the_manifest():
+def test_every_default_domain_is_a_need_of_the_manifest():
     import tomllib
     from pathlib import Path
     manifest = tomllib.loads((Path(__file__).resolve().parents[1] / "awm-plugin.toml").read_text())
-    declared = {(n["name"], v) for n in manifest["needs"]["tool"] for v in n["verbs"]}
-    allowed = {(d, v) for d, verbs in mcp_bridge.DEFAULT_ALLOWLIST.items() for v in verbs}
-    assert allowed <= declared, allowed - declared
+    needed = {n["name"] for n in manifest["needs"]["tool"]}
+    assert set(mcp_bridge.DEFAULT_ALLOWLIST) <= needed, set(mcp_bridge.DEFAULT_ALLOWLIST) - needed
 
 
 def test_the_listener_serves_on_the_port_it_registered(monkeypatch):

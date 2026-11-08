@@ -1,9 +1,8 @@
-"""Replay the routine plugin's real gateway calls against its manifest (plugin-contract v1.10).
+"""Replay the routine plugin's real gateway calls against its manifest (plugin-contract § Calls).
 
 A failed routine runs its failure chain through the real GatewayOutbound, on an
-httpx transport that answers like the gateway. Every call must name a verb that the
-manifest's `[[needs.tool]]` lists, or one of the plugin's own tools, and carry
-the service token.
+httpx transport that answers like the gateway. Each tool the manifest's
+`[[needs.tool]]` names is one the chain calls, and every call carries the service token.
 """
 
 from __future__ import annotations
@@ -37,10 +36,9 @@ peer = "alcor"
 """
 
 
-def _needs() -> tuple[set[tuple[str, str]], set[str]]:
+def _needs() -> set[str]:
     m = tomllib.loads(MANIFEST.read_text())
-    needed = {(t["name"], v) for t in m["needs"]["tool"] for v in t["verbs"]}
-    return needed, {t["name"] for t in m["tool"]}
+    return {t["name"] for t in m["needs"]["tool"]}
 
 
 class Gateway:
@@ -86,7 +84,7 @@ def gateway(monkeypatch, tmp_path) -> Gateway:
     return gw
 
 
-async def test_every_gateway_call_is_in_the_manifest(store, gateway, project_repo):
+async def test_each_needed_tool_is_one_the_failure_chain_calls(store, gateway, project_repo):
     runner = Runner(store, outbound.GatewayOutbound())
     runner.install("proj", str(write_routine(project_repo, "nightly", FAILING)))
     # A failed run starts its fixer. A fixer that cannot start falls back to the DM.
@@ -94,8 +92,7 @@ async def test_every_gateway_call_is_in_the_manifest(store, gateway, project_rep
     gateway.fail_start = True
     await runner.trigger("proj", "nightly", wait=True)
 
-    needed, own = _needs()
     called = {(t, v) for t, v, _, _ in gateway.calls}
-    assert {(t, v) for t, v in called if t not in own} <= needed
+    assert _needs() <= {t for t, _ in called}
     assert ("reflection", "start_other") in called
     assert all(tok == TOKEN for *_, tok in gateway.calls)

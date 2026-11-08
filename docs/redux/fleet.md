@@ -215,9 +215,10 @@ This doc holds the nodes of the fleet, the role of each, and how each node is ha
 
 Status at the wave-2 gather (`feat/redux` 16da3979, 2026-11-04). `docs/redux-review/build-survey.md` § 3 holds the row for each requirement.
 
-- **R79, R81, R82, R87, R88, R90, R95, R98, R100, R101, R105, R108.** Their roles and config sit on cloud `feat/redux-fleet` and are not applied. The old Ops book goes at T27 (R81).
+- **R87.** The edges are live (2026-11-06). `ssh_edges` runs on every managed node, and shogun's pass admits altair's edges. Each route pins its target's host key, and every node admits keys only. mira's edges keep their old routes.
+- **R79, R81, R82, R88, R90, R95, R98, R100, R101, R105, R108.** Their roles and config sit on cloud `feat/redux-fleet` and are not applied. The old Ops book goes at T27 (R81).
 - **R84.** The passkey portal login is built, and its vault login role is not applied. `approver_portals` lists only nexus. Tony names the other portal hosts at walkthrough M9, and the coordinator writes them at T27.
-- **R91, R94, R96.** The shogun, lyra and tailnet roles are not applied. `lyra_setup` refuses until lyra has a tailnet address. Tony joins the nodes to Tailscale and finishes lyra at the keyboard (`drafts/edges.md`). T27 creates the shogun VM.
+- **R91, R94, R96.** shogun exists and is on the tailnet. lyra is on the tailnet, runs one WSL distro (`ubuntu`) and has its roles applied.
 - **R92, R93.** `awm-edge` is built and not live. The avatar relay still relies on the fleet CA that R92 retires. A cloud change moves it off the CA, and the avatar stage client on capella changes at walkthrough M10.
 - **R99.** alcor's units carry memory caps and OOM scores and are not applied. The OOM order is unverified.
 - **R83, R139.** The Zotero key's read-only state is unchecked. Wake-on-LAN on alcor is untested.

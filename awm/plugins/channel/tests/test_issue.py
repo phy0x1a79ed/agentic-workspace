@@ -113,8 +113,7 @@ def test_no_member_node_reads_the_issuing_token():
     operator side of the tether component never name it."""
     manifest = tomllib.loads((PLUGINS / "channel" / "awm-plugin.toml").read_text())
     assert "secrets" not in manifest["needs"]
-    [relay] = [t for t in manifest["needs"]["tool"] if t["name"] == "relay"]
-    assert "issue" in relay["verbs"]
+    assert [t for t in manifest["needs"]["tool"] if t["name"] == "relay"]
     member_side = [*(PLUGINS / "channel" / "awm").rglob("*.py"), *(TETHER / "awm").rglob("*.py")]
     assert member_side
     for path in member_side:
