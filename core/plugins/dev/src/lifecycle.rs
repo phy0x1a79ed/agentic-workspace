@@ -95,7 +95,7 @@ impl Runner for Bash {
         Box::pin(async move {
             let mut cmd = tokio::process::Command::new(&argv[0]);
             cmd.args(&argv[1..]).current_dir(cwd).stdin(std::process::Stdio::null());
-            // The script finds this binary for `sandbox seed` and `sandbox services`.
+            // The script finds this binary for `sandbox seed`.
             if let Ok(me) = std::env::current_exe() {
                 cmd.env("DEV_BIN", me);
             }

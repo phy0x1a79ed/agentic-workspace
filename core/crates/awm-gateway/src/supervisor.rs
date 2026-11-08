@@ -224,12 +224,13 @@ pub async fn stop(gw: &Arc<Gateway>, names: &[String]) {
                 flag.store(true, Ordering::SeqCst);
                 handles.push(handle);
             }
-            gw.hub.send(name, &json!({"kind": "shutdown"}));
         }
     }
-    let live = |gw: &Gateway| names.iter().any(|n| gw.supervisor.groups().contains_key(n));
+    // Only a service on its control connection hears `shutdown`; any other goes straight to signals.
+    let told: Vec<String> = names.iter().filter(|n| gw.hub.send(n, &json!({"kind": "shutdown"}))).cloned().collect();
+    let live = |of: &[String]| of.iter().any(|n| gw.supervisor.groups().contains_key(n));
     let deadline = Instant::now() + GRACE;
-    while live(gw) && Instant::now() < deadline {
+    while live(&told) && Instant::now() < deadline {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     for signal in [libc::SIGTERM, libc::SIGKILL] {
@@ -239,7 +240,7 @@ pub async fn stop(gw: &Arc<Gateway>, names: &[String]) {
             }
         }
         let deadline = Instant::now() + Duration::from_secs(2);
-        while live(gw) && Instant::now() < deadline {
+        while live(names) && Instant::now() < deadline {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
     }

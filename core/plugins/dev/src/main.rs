@@ -39,11 +39,6 @@ enum SandboxCmd {
         #[arg(long)]
         sandbox: PathBuf,
     },
-    /// Print `<name> <status> <pid>` per service the sandbox gateway runs.
-    Services {
-        #[arg(long, env = "AWM_PORT", default_value_t = 7821)]
-        port: u16,
-    },
 }
 
 const DESCRIPTIONS: [(&str, &str); 5] = [
@@ -87,12 +82,6 @@ async fn main() -> anyhow::Result<()> {
             if let Err(e) = sandbox::seed(&gw, &mut std::io::stdout()).await {
                 eprintln!("{e}");
                 std::process::exit(1);
-            }
-            Ok(())
-        }
-        Some(Cmd::Sandbox { cmd: SandboxCmd::Services { port } }) => {
-            for line in sandbox::services(&sandbox::Gateway::new(port, Duration::from_secs(3))).await {
-                println!("{line}");
             }
             Ok(())
         }

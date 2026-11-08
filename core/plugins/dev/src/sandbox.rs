@@ -1,5 +1,4 @@
-//! The subcommands `sandbox/run.sh` runs against its own gateway's `POST /invoke`: seed it, and
-//! list the services it runs.
+//! The subcommand `sandbox/run.sh` runs against its own gateway's `POST /invoke`: seed it.
 
 use std::path::Path;
 use std::time::Duration;
@@ -99,19 +98,6 @@ pub async fn seed(gw: &Gateway, out: &mut impl std::io::Write) -> Result<(), Str
     Ok(())
 }
 
-/// One `<name> <status> <pid>` line per service the gateway runs, or none when it does not answer.
-pub async fn services(gw: &Gateway) -> Vec<String> {
-    let Ok(rows) = gw.result("awm_services", json!({})).await else { return vec![] };
-    let field = |r: &Value, k: &str, dflt: &str| match r.get(k) {
-        Some(Value::String(s)) if !s.is_empty() => s.clone(),
-        Some(Value::Number(n)) if n.as_f64() != Some(0.0) => n.to_string(),
-        _ => dflt.to_string(),
-    };
-    rows.as_array()
-        .map(|a| a.iter().map(|r| format!("{} {} {}", field(r, "name", "?"), field(r, "status", "?"), field(r, "pid", "-"))).collect())
-        .unwrap_or_default()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -133,10 +119,6 @@ mod tests {
             "scope_create" => (axum::http::StatusCode::from_u16(f.create_status).unwrap(), Json(f.create_body.clone())),
             "journal_fetch" => (ok, Json(json!({"result": json!({"total": f.total}).to_string()}))),
             "journal_post" => (ok, Json(json!({"result": "{\"ok\": true}"}))),
-            "awm_services" => (
-                ok,
-                Json(json!({"result": json!([{"name": "scopes", "status": "ready", "pid": 41}, {"name": "kb", "status": "down", "pid": null}]).to_string()})),
-            ),
             _ => (axum::http::StatusCode::NOT_FOUND, Json(json!({}))),
         }
     }

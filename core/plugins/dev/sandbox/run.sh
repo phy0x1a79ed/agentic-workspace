@@ -168,7 +168,8 @@ is_running() { [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; }
 
 # One "<name> <status> <pid>" line per service the gateway runs, from `awm services`.
 _services() {
-  "$(_dev_bin)" sandbox services --port "$AWM_PORT" 2>/dev/null
+  AWM_GATEWAY_URL="$BASE" "$(_awm_bin)" services 2>/dev/null |
+    jq -r '.[] | "\(.name) \(.status) \(if (.pid // 0) == 0 then "-" else .pid end)"'
 }
 
 _port_listeners() {
