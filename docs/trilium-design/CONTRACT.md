@@ -13,14 +13,15 @@ Spec: `queue.md` R61-R66 and R137, `fleet.md` R84, R97 item 2 and R147 items 2 a
 C1 moves to this scope (plugin-redux/interview, 2026-11-07). The operations port does not port `writer.py`, `board.py`, `board/` or `board-install`. trilium owns them. The hidden verbs of the operations port plan stay with operations, with these changes:
 
 1. `card_body_set` goes, because Proposed is gone.
-2. `board_import` maps each Proposed card to History, with its body kept in `tasks.body`. It still imports every Ops note.
+2. `board_import {cards, ops_notes, accept_gap?}` maps each Proposed card to History, with its body kept in `tasks.body`. It still imports every Ops note. A card is `{task_id, section, kind, title, body?}`, with `body` on note-kind cards only. An Ops note is `{kind, node, title, body}`. It answers `{ok}`, or `{ok: false, missing, extra}`.
 3. The sections are `needs_you`, `working`, `stale` and `history`. `history` replaces `done`, and its cursor label is `historyAt`.
-4. `board_changes` carries, per card:
+4. `board_changes {after, limit}` answers `{cards, mark, more}`. A card holds `task_id, title, kind, section, status, peer, tags, meta {reason, plan, todos}, created, updated, done_at, parent_task`, with `body` and `messages` when present and `folded_into` on a folded card. A rename of any field goes to trilium first. Per card it also carries:
    - each session row with `node` and `rc_url`, so the board shows its claude.ai links;
    - `source_note`, the note id of a task started from a note;
    - the task's approvals, each with `request_id`, `state` (pending, approved, rejected, expired or cancelled), the request's summary, and its times.
 
-5. operations emits on `operations/board` at each card event it appends: `{task_id, seq, ts}`, where `seq` is the event's `board_changes` mark. No event at boot. trilium on deneb subscribes at peer alcor and drains `board_changes` after its own mark on each message, so the writer needs no poll.
+5. `ops_list` answers `{notes: [{kind, node, title, body, ts}]}`. It is the only path by which the Ops notices of `ops_post` reach the vault.
+6. operations emits on `operations/board` at each card event it appends: `{task_id, seq, ts}`, where `seq` is the event's `board_changes` mark. No event at boot. trilium on deneb subscribes at peer alcor and drains `board_changes` after its own mark on each message, so the writer needs no poll.
 
 Stale (R61 item 4):
 - operations on alcor subscribes to `telemetry/sessions`.
