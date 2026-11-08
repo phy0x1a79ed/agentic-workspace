@@ -8,7 +8,11 @@ Sources: the worker debrief journals 389a0111 (ops), 8caec34d (knowledge), 449af
 
 ## Current
 
-- Batch 2, seven packages: social, browser, channel, rlm-browser, kb, scopes, telemetry roster. Plan: `~/.claude/plans/noble-splashing-nygaard.md`. Batch 1's plan: `~/.claude/plans/redux-finish-batch1-ops.md`. The comms merge (4eed0581) and the `kept` delete (a973f58b) are on feat/redux-finish, not promoted. The cloud `singleton_rust` edit is uncommitted in `projects/cloud/redux-dev-apply`.
+- Batch 2, seven packages: social, browser, channel, rlm-browser, kb, scopes, telemetry roster. Plan: `~/.claude/plans/noble-splashing-nygaard.md`. Batch 1's plan: `~/.claude/plans/redux-finish-batch1-ops.md`. T18 is now retire (Tony, 2026-11-08), so batch 3 is not planned in this session.
+- Comms is live on mizar and alcor at release 8cde8e40. Checked: rooms through deneb's Python relay in both directions, delivery into a session, `channel state check`, 17 of 17 Slack seats adopted, `paused = true`, the remote-control gate, a browser seat, an outbound Slack DM. The inbound Slack path is unconfirmed until a person replies.
+- The knowledge merge is on `wip/redux-knowledge` in worktree `projects/awm/redux-knowledge`, branched at d63ee920. Merge `feat/redux-finish` into it, then fast-forward. It holds the kb and scopes trims (never compiled except awm-kb-journals), 31 journal tests (green, 8.2 s), and the tag sync at start that replaced the six-hour pull. Left for T7: restore scopes' `a_peer_may_not_sweep`, clippy in `awm-embed/src/embed.rs:224`, the process-wide env race in search's `privacy` and guide's veil test.
+- T10 is mostly done. Cloud `dev` has a local merge 9a3d3b9 of `feat/kb-journal-unit` in `projects/cloud/redux-dev-apply`, not pushed. The model files are in `.awm/models` on mizar and alcor, and they match the pinned hashes. **CAUTION** `--tags awm_config` also applies pending `edges.yml` changes: strict `host_keys` and deneb as an `operations` caller. Check how the edge treats `host_keys` before applying it.
+- A refresh restarts every plugin whose binary changed, not only `AWM_REFRESH_RESTART`. A lockfile change therefore restarts every plugin on the node.
 
 ## Waiting on the user
 
