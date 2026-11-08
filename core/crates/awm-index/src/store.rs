@@ -61,6 +61,16 @@ pub struct Spec {
     pub section_by: Option<String>,
 }
 
+/// Run the CPU-bound encode without starving the runtime: on a multi-thread runtime the worker
+/// hands its queue to another thread first. `spawn_blocking` cannot borrow the embedder.
+fn encode_off_worker(e: &dyn Embedder, texts: &[&str]) -> Result<Vec<Vec<f32>>, awm_embed::EmbedError> {
+    use tokio::runtime::{Handle, RuntimeFlavor};
+    match Handle::try_current() {
+        Ok(h) if h.runtime_flavor() == RuntimeFlavor::MultiThread => tokio::task::block_in_place(|| e.encode(texts)),
+        _ => e.encode(texts),
+    }
+}
+
 impl Spec {
     /// `lead`: the content field that heads each chunk.
     pub fn head(&self) -> Result<&str> {
@@ -568,7 +578,7 @@ impl Index {
         todo.sort_unstable();
         todo.dedup();
         if let (false, Some(e)) = (todo.is_empty(), embedder) {
-            match e.encode(&todo) {
+            match encode_off_worker(e, &todo) {
                 Ok(vs) => {
                     out.embedded += todo.len();
                     for (t, v) in todo.iter().zip(vs) {
