@@ -389,10 +389,8 @@ pub async fn serve() -> anyhow::Result<()> {
         }
         if let (Some(h), Some(ap)) = (home, approver_handle) {
             follow_sessions(h2.clone(), h.store.clone());
-            if awm_plugin_sdk::config::edges().is_ok_and(|e| e.singletons.iter().any(|t| t.tool == "trilium")) {
-                let vault = Arc::new(crate::vault_push::HubVault { hub: h2.clone() });
-                tokio::spawn(crate::vault_push::Pusher::attach(h.store.clone(), vault).run());
-            }
+            let vault = Arc::new(crate::vault_push::HubVault { hub: h2.clone() });
+            tokio::spawn(crate::vault_push::Pusher::attach(h.store.clone(), vault).run());
             tokio::spawn(sweep_loop(ap.clone()));
             let vault = Arc::new(crate::server::Vault {
                 approver: ap, board_origins: s.board_origins.clone(),
