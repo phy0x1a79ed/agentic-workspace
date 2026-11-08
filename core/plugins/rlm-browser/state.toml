@@ -1,0 +1,8 @@
+# rlm-browser.db and the per-game Chrome profiles under services/rlm-browser.
+[[additive]]
+path = "rlm-browser.db"
+table = "rlm_sessions"
+column = "guest_context"
+
+[[size_only]]
+path = "profiles"

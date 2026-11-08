@@ -1,0 +1,60 @@
+From: Tester <tester@example.test>
+To: tester@example.test
+Subject: nested parts
+Date: Tue, 03 Nov 2026 10:00:00 +0000
+Message-ID: <nested.1@example.test>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="outer"
+
+This is a preamble.
+--outer
+Content-Type: multipart/alternative; boundary="inner"
+
+--inner
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: quoted-printable
+
+Hello caf=C3=A9,
+a soft=
+ break and a trailing line.
+
+--inner
+Content-Type: text/html; charset="utf-8"
+
+<p>Hello</p>
+--inner--
+--outer
+Content-Type: application/pdf; name="report.pdf"
+Content-Disposition: attachment; filename="report.pdf"
+Content-Transfer-Encoding: base64
+
+JVBERi0xLjQKJWZha2UgdGVzdCBkb2N1bWVudAoAAQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRob
+HB0eHyAhIiMkJSYnKCkqKywtLi8wMTIzNDU2Nzg5Ojs8PT4/QEFCQ0RFRkdISUpLTE1OT1BRUlNU
+VVZXWFlaW1xdXl9gYWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXp7fH1+f4CBgoOEhYaHiImKi4yN
+jo+QkZKTlJWWl5iZmpucnZ6foKGio6SlpqeoqaqrrK2ur7CxsrO0tba3uLm6u7y9vr/AwcLDxMXG
+x8jJysvMzc7P0NHS09TV1tfY2drb3N3e3+Dh4uPk5ebn6Onq6+zt7u/w8fLz9PX29/j5+vv8/f7/
+--outer
+Content-Type: message/rfc822
+Content-Disposition: attachment
+
+From: tester@example.test
+Subject: forwarded
+Content-Type: multipart/mixed; boundary="fwd"
+
+--fwd
+Content-Type: text/plain
+
+forwarded body
+--fwd
+Content-Type: text/csv; name="data.csv"
+
+a,b
+1,2
+--fwd--
+--outer
+Content-Type: application/octet-stream
+Content-Disposition: attachment
+
+AAAA
+--outer--
+An epilogue.

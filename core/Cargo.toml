@@ -33,6 +33,27 @@ mime_guess = "2"
 libc = "0.2"
 tempfile = "3"
 base64 = "0.22"
+rusqlite = { version = "0.41", features = ["bundled"] }
+# The room crypto, the suite the tether how-to names: spake2 0.4, HKDF-SHA256, ChaCha20-Poly1305.
+spake2 = "0.4"
+hkdf = "0.12"
+chacha20poly1305 = "0.10"
+sha2 = "0.10"
+sha1 = "0.10"
+hex = "0.4"
+rand = "0.9"
+async-trait = "0.1"
+# social: Discord, Gmail's IMAP and SMTP, all rustls.
+twilight-gateway = { version = "0.16", default-features = false, features = ["rustls-webpki-roots", "zlib-stock"] }
+twilight-http = { version = "0.16", default-features = false, features = ["rustls-webpki-roots", "decompression"] }
+twilight-model = "0.16"
+twilight-util = { version = "0.16", features = ["builder"] }
+async-imap = { version = "0.10", default-features = false, features = ["runtime-tokio"] }
+tokio-rustls = "0.26"
+webpki-roots = "0.26"
+mail-parser = "0.9"
+lettre = { version = "0.11", default-features = false, features = ["builder", "smtp-transport", "tokio1", "tokio1-rustls-tls", "hostname"] }
+urlencoding = "2"
 
 awm-proto = { path = "crates/awm-proto" }
 awm-gateway = { path = "crates/awm-gateway" }
@@ -45,6 +66,7 @@ awm-store = { path = "crates/awm-store" }
 awm-plugin-sdk = { path = "crates/awm-plugin-sdk" }
 awm-plugin-telemetry = { path = "plugins/telemetry" }
 awm-harness = { path = "crates/awm-harness", default-features = false }
+awm-cdp = { path = "crates/awm-cdp" }
 
 [profile.release]
 opt-level = 3

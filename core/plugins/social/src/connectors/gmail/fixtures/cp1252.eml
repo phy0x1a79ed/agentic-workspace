@@ -1,0 +1,19 @@
+From: tester@example.test
+To: tester@example.test
+Subject: windows-1252 multipart
+Date: Sat, 07 Nov 2026 07:10:00 +0000
+Message-ID: <cp1252.7@example.test>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="w"
+
+--w
+Content-Type: text/plain; charset="windows-1252"
+Content-Transfer-Encoding: quoted-printable
+
+Price: 5 =80, =93quoted=94 =3D done
+--w
+Content-Type: text/plain; charset=koi8-r; name="note.txt"
+Content-Transfer-Encoding: 8bit
+
+Привет
+--w--

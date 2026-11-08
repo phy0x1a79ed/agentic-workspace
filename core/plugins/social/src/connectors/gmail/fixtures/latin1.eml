@@ -1,0 +1,10 @@
+From: Tester <tester@example.test>
+To: tester@example.test
+Subject: latin-1 body
+Date: Sat, 07 Nov 2026 07:00:00 +0000
+Message-ID: <latin1.6@example.test>
+MIME-Version: 1.0
+Content-Type: text/plain; charset=ISO-8859-1
+Content-Transfer-Encoding: base64
+
+R3L832UgYXVzIGRlciBL/GNoZQo=
