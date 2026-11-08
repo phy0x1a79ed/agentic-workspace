@@ -1,7 +1,7 @@
 //! The operations service, the singleton door's locked command, the operator's commands on
-//! alcor, the Claude Code hook and the state checks.
+//! alcor and the state checks.
 
-use awm_plugin_operations::{door, hook, settings::Settings, snapshot, store::Store};
+use awm_plugin_operations::{door, settings::Settings, snapshot, store::Store};
 use awm_statecheck::cli::StateCmd;
 use clap::{Parser, Subcommand};
 use std::os::unix::fs::PermissionsExt;
@@ -31,8 +31,6 @@ enum Cmd {
     },
     /// List the enrolled devices.
     Devices,
-    /// The Claude Code hook: reads one hook payload on stdin, always exits 0.
-    Hook,
     /// Parse every stored key and passkey, and open each store read-only. Exits 1 on a fault.
     CheckState {
         /// Copy the live state into this new directory instead, by VACUUM INTO, and stop.
@@ -169,9 +167,6 @@ fn control(req: serde_json::Value) -> i32 {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cmd = Cli::parse().cmd;
-    if matches!(cmd, Some(Cmd::Hook)) {
-        std::process::exit(hook::run());
-    }
     awm_plugin_sdk::telemetry::init();
     let awm_dir = awm_plugin_sdk::config::awm_dir();
     match cmd {
@@ -185,7 +180,6 @@ async fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Some(Cmd::State { cmd }) => std::process::exit(awm_statecheck::cli::run(&cmd, "operations", &snapshot::decl(&awm_dir)?)?),
-        Some(Cmd::Hook) => unreachable!(),
         Some(Cmd::Serve) | None => awm_plugin_operations::service::serve().await,
     }
 }

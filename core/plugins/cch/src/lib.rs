@@ -36,6 +36,7 @@ pub mod seed;
 pub mod remove;
 pub mod reconcile;
 
+pub mod hook_report;
 pub mod hooks;
 pub mod hooks_reconcile;
 pub mod session_events;

@@ -27,8 +27,8 @@ pub struct Hook {
     pub entries: &'static [(&'static str, Option<&'static str>, u64)],
 }
 
-/// The four hooks, with the events, matchers and timeouts `deploy-hooks.sh` installed.
-pub const HOOKS: [Hook; 4] = [
+/// The hooks, with the events, matchers and timeouts `deploy-hooks.sh` installed.
+pub const HOOKS: [Hook; 5] = [
     Hook { name: "name", legacy_file: "awm-cx-name-hook.py", entries: &[("UserPromptSubmit", None, 5)] },
     Hook {
         name: "plan-mode",
@@ -41,7 +41,20 @@ pub const HOOKS: [Hook; 4] = [
         legacy_file: "awm-subagent-cap.py",
         entries: &[("PreToolUse", Some("Agent|Task"), 5), ("SubagentStart", None, 5), ("SubagentStop", None, 5)],
     },
+    Hook {
+        name: "report",
+        legacy_file: LEGACY_REPORT,
+        entries: &[
+            ("PostToolUse", Some("Write|Edit|ExitPlanMode|TaskCreate|TaskUpdate|TodoWrite"), 15),
+            ("UserPromptSubmit", None, 15),
+            ("SessionStart", Some("clear"), 15),
+        ],
+    },
 ];
+
+/// The hook script operations shipped. A running session keeps the hook set it read at start,
+/// so the script execs `cch hook report` until it is retired.
+const LEGACY_REPORT: &str = "awm-operations-hook.sh";
 
 /// How many of its own `settings.json` backups the reconcile keeps.
 pub const KEPT_BACKUPS: usize = 5;
@@ -257,6 +270,25 @@ async fn replaced_at(marker: &Path) -> Option<DateTime<Utc>> {
     DateTime::parse_from_rfc3339(text.trim()).ok().map(|t| t.with_timezone(&Utc))
 }
 
+/// Points what still names the report hook at this binary: the old script, for sessions that
+/// read their hooks before this start, and the settings a restricted session starts with.
+async fn keep_report_paths(paths: &Paths) -> io::Result<()> {
+    let hook = HOOKS.iter().find(|h| h.name == "report").expect("the report hook is listed");
+    let script = paths.home.root.join("hooks").join(LEGACY_REPORT);
+    if tokio::fs::symlink_metadata(&script).await.is_ok() {
+        tokio::fs::write(&script, format!("#!/bin/sh\nexec {}\n", command(paths, hook.name))).await?;
+    }
+    let mut events = Map::new();
+    for &(event, matcher, timeout) in hook.entries {
+        events.insert(event.to_string(), json!([entry(paths, hook, matcher, timeout)]));
+    }
+    let doc = json!({"awaySummaryEnabled": false, "hooks": events});
+    if let Some(dir) = paths.restricted_settings.parent() {
+        tokio::fs::create_dir_all(dir).await?;
+    }
+    tokio::fs::write(&paths.restricted_settings, format!("{}\n", serde_json::to_string_pretty(&doc).unwrap_or_default())).await
+}
+
 /// Records the first replacement, then removes each old script no entry names once
 /// [`RETIRE_AFTER`] has passed since. Touches no other file in `hooks/`.
 async fn retire(paths: &Paths, doc: &Map<String, Value>, replaced_legacy: bool, now: DateTime<Utc>) -> io::Result<Vec<PathBuf>> {
@@ -340,6 +372,7 @@ async fn run(paths: &Paths, now: DateTime<Utc>, out: &mut Reconciled) -> Result<
         replace(&settings, &render(&doc, &text), mode.unwrap_or(0o600)).await.map_err(fail)?;
         out.changes = changes;
     }
+    keep_report_paths(paths).await.map_err(|e| format!("the report hook's files: {e}"))?;
     out.removed = retire(paths, &doc, replaced_legacy, now).await.map_err(|e| format!("retiring the old hooks: {e}"))?;
     Ok(())
 }
@@ -365,6 +398,21 @@ mod tests {
             e = json!({"matcher": m, "hooks": e["hooks"]});
         }
         e
+    }
+
+    #[tokio::test]
+    async fn the_report_hook_keeps_old_sessions_and_restricted_ones_working() {
+        let (_t, paths) = setup();
+        let hooks = paths.home.root.join("hooks");
+        std::fs::create_dir_all(&hooks).unwrap();
+        std::fs::write(hooks.join(LEGACY_REPORT), "#!/bin/sh\nexec old\n").unwrap();
+        write(&paths, &json!({"hooks": {"UserPromptSubmit": [legacy_entry(LEGACY_REPORT, None, 15)]}}));
+        reconcile_at(&paths, Utc::now()).await;
+        assert!(std::fs::read_to_string(hooks.join(LEGACY_REPORT)).unwrap().contains("hook report"), "the old path now runs cch");
+        let restricted: Value = serde_json::from_str(&std::fs::read_to_string(&paths.restricted_settings).unwrap()).unwrap();
+        for event in ["PostToolUse", "UserPromptSubmit", "SessionStart"] {
+            assert!(restricted["hooks"][event][0]["hooks"][0]["command"].as_str().unwrap().contains("hook report"), "{event}");
+        }
     }
 
     fn foreign(command: &str) -> Value {
@@ -413,17 +461,18 @@ mod tests {
         write(&paths, &deployed());
         let done = reconcile_at(&paths, day(0)).await;
         assert_eq!(done.error, None);
-        assert_eq!(done.changes.len(), 6, "{:?}", done.changes);
-        assert!(done.changes.iter().all(|c| c.ends_with("replaced")));
+        let (added, replaced): (Vec<_>, Vec<_>) = done.changes.iter().partition(|c| c.contains(" report: added"));
+        assert_eq!((added.len(), replaced.len()), (3, 6), "{:?}", done.changes);
+        assert!(replaced.iter().all(|c| c.ends_with("replaced")));
         let doc = read(&paths);
         let hooks = &doc["hooks"];
-        assert_eq!(commands(&hooks["SessionStart"]), [command(&paths, "brief"), "echo started".into()]);
-        assert_eq!(commands(&hooks["PostToolUse"]), ["/usr/local/bin/notify".to_string(), command(&paths, "plan-mode")]);
+        assert_eq!(commands(&hooks["SessionStart"]), [command(&paths, "brief"), "echo started".into(), command(&paths, "report")]);
+        assert_eq!(commands(&hooks["PostToolUse"]), ["/usr/local/bin/notify".to_string(), command(&paths, "plan-mode"), command(&paths, "report")]);
         assert_eq!(hooks["PostToolUse"][1]["matcher"], "ExitPlanMode");
         assert_eq!(hooks["PostToolUse"][1]["hooks"][0]["timeout"], 20);
         assert_eq!(hooks["PreToolUse"][0]["matcher"], "Agent|Task");
-        for event in ["SubagentStart", "SubagentStop", "UserPromptSubmit"] {
-            assert_eq!(hooks[event].as_array().unwrap().len(), 1, "{event}");
+        for (event, entries) in [("SubagentStart", 1), ("SubagentStop", 1), ("UserPromptSubmit", 2)] {
+            assert_eq!(hooks[event].as_array().unwrap().len(), entries, "{event}");
         }
         let text = doc.to_string();
         for hook in &HOOKS {
@@ -442,7 +491,7 @@ mod tests {
         let done = reconcile_at(&paths, day(0)).await;
         assert_eq!(done.error, None);
         assert_eq!(done.backup, None);
-        assert_eq!(read(&paths)["hooks"]["SessionStart"], json!([entry(&paths, &HOOKS[2], None, 6)]));
+        assert_eq!(read(&paths)["hooks"]["SessionStart"], json!([entry(&paths, &HOOKS[2], None, 6), entry(&paths, &HOOKS[4], Some("clear"), 15)]));
     }
 
     #[tokio::test]
