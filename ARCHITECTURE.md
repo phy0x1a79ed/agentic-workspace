@@ -14,7 +14,7 @@ awm is one Rust binary, `awm`, plus a set of out-of-process **plugins**. The bin
 
 - **Core** — `core/crates/`, built into `~/.local/bin/awm`. `awm-gateway` is the gateway, `awm-cli` the command tree, `awm-mcp` the stdio MCP server, `awm-edge` the ssh transport between nodes, `awm-trust` the edge list, trust levels and the service door, and `awm-proto` the manifest and wire types.
 - **Plugins** — each folder under `awm/services/` and `awm/plugins/` with an `awm-plugin.toml`. `awm services list` reports the live set. Each folder's `INSTALL.md` is its contract.
-- **Shared Python components** — `awm/service_components/`: `awm.config`, `awm.persistence`, `awm.gatewayclient`, `awm.claudedaemon`, `awm.kept`, `awm.trustpolicy`, `awm.telemetry`, `awm.usage`, `awm.tlsfront` and `awm.dvcdata`. They are libraries, not plugins. A plugin imports a library, never another plugin's code.
+- **Shared Python components** — `awm/service_components/`: `awm.config`, `awm.persistence`, `awm.gatewayclient`, `awm.trustpolicy`, `awm.telemetry`, `awm.usage`, `awm.tlsfront` and `awm.dvcdata`. They are libraries, not plugins. A plugin imports a library, never another plugin's code.
 - **Frontend source** — `awm/ui_components/` and each plugin's `pages/`. See § *Frontend*.
 
 ### Ownership and identity
@@ -33,7 +33,7 @@ A plugin keeps its state in SQLite, so the gateway's respawn brings it back whol
 
 1. `cch`'s keep unit holds the daemon in its own user unit, outside awm's control group and outside every terminal (`awm/services/cch/DAEMON.md`).
 2. `cch`'s session layer ensures the daemon before a start, resume or stop. It refuses with `code: "daemon_down"` only when that fails. It revives pinned jobs once per boot.
-3. `awm.kept` holds the policy every keeper shares: the restart record, the decision (wait, resume, start fresh, give up) and the breaker. It does no I/O. Social's seat keeper is its first user.
+3. `social`'s seat keeper holds the keeper policy: the restart record, the decision (wait, resume, start fresh, give up) and the breaker.
 
 **CAUTION** A keeper must read `daemon_down` and `daemon.state` as "wait", never as "the session is gone". Stopping a pinned job runs `claude rm` and loses its conversation. That reading is what destroyed a seat on 2026-10-20.
 
