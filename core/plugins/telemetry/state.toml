@@ -1,0 +1,2 @@
+# The roster telemetry keeps: <state_dir>/roster.json, rewritten whole on each change.
+dirs = ["${AWM_DIR}/services/telemetry"]

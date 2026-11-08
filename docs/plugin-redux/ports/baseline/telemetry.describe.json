@@ -1,0 +1,52 @@
+{
+  "plugin": "telemetry",
+  "tool": "telemetry",
+  "verbs": [
+    {
+      "description": "Each node of the swarm that reports to this roster: its role, portal link and when it last reported; its live sessions, each with its claude.ai link and task id; its count of sessions in the last 7 days; its services with whether each is up; and the tools it can use, each with when it was last checked and last used.",
+      "params": [
+        {
+          "name": "node",
+          "type": "string",
+          "required": false,
+          "description": "Only this node."
+        }
+      ],
+      "verb": "nodes"
+    },
+    {
+      "description": "Take a batch of facts from one node's telemetry-node part: a hello with its whole state, or session, service, usage and tool changes. Answers resync true when the roster needs a hello first. Only that node may report for itself.",
+      "params": [
+        {
+          "name": "swarm",
+          "type": "string",
+          "required": true,
+          "description": "The swarm the node opted in to, from its install config's [telemetry] swarm."
+        },
+        {
+          "name": "node",
+          "type": "string",
+          "required": true,
+          "description": "The reporting node."
+        },
+        {
+          "name": "items",
+          "type": "array",
+          "required": true,
+          "description": "The facts, each {type: hello | session | service | usage | tools, ...}."
+        }
+      ],
+      "verb": "report"
+    },
+    {
+      "description": "Every seat on social's roster, as social last reported it: its state, node, Remote Control switch and claude.ai link.",
+      "params": [],
+      "verb": "seats"
+    },
+    {
+      "description": "Each singleton service of the edge list, with its host node, its health there (up, down, or unknown while the host has not reported it), when its host last answered a call to it, and when any node last used it.",
+      "params": [],
+      "verb": "services"
+    }
+  ]
+}
