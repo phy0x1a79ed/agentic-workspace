@@ -37,7 +37,6 @@ declare -A DISTS=(
   [gatewayclient]="$WS/awm/service_components/gatewayclient::$WS/awm/service_components/gatewayclient/tests"
   [config]="$WS/awm/service_components/config::$WS/awm/service_components/config/tests"
   [persistence]="$WS/awm/service_components/persistence::$WS/awm/service_components/persistence/tests"
-  [telemetry]="$WS/awm/service_components/telemetry::$WS/awm/service_components/telemetry/tests"
   [usage]="$WS/awm/service_components/usage::$WS/awm/service_components/usage/tests"
   [tlsfront]="$WS/awm/service_components/tlsfront::$WS/awm/service_components/tlsfront/tests"
   [dvcdata]="$WS/awm/service_components/dvcdata::$WS/awm/service_components/dvcdata/tests"
@@ -62,7 +61,7 @@ declare -A DISTS=(
 )
 
 # Stable run order.
-ORDER=(contract gatewayclient config persistence grantlib telemetry usage tlsfront dvcdata scopes journal search 2fa ssh rlm-factorio vpn reflection claude-science engcyc trilium zotero kb board transcripts trustpolicy wake)
+ORDER=(contract gatewayclient config persistence grantlib usage tlsfront dvcdata scopes journal search 2fa ssh rlm-factorio vpn reflection claude-science engcyc trilium zotero kb board transcripts trustpolicy wake)
 
 CHANGED_BASE=""
 SMOKE=0
