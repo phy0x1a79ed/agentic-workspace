@@ -44,3 +44,13 @@ Tony: "Push makes the most sense here". This replaces a mistaken "Amend R79" ans
 Decided: alcor pushes. operations and telemetry on alcor call hidden trilium verbs on deneb (`board_apply`, `ops_render`) on each event, through the door alcor already uses. deneb holds no service key and makes no outbound call. The writer's note code on feat/trilium-vault stays, and only its input changes from a pull to a push. R79 and its cloud test stand unchanged.
 
 Landed: to be done by the plan.
+
+## node-checkout (2026-11-08, design part 1)
+
+Question: under the post-Rust redux, do nodes still need the awm git clone? (Tony's question, raised during the walk.)
+
+Tony: "Lets also design an install system so that running awm with core plugins doesnt need a git clone".
+
+Decided so far: every node goes clone-free in this pass, built before the fleet refresh so the fleet deploys once, on the final route. Only mizar keeps awm source, plus any scope worktree an agent works in. A release is a manifest of hash-addressed binaries plus a small tar of plugin manifests, `run.sh` files, page dists and agent docs, unpacked by an `awm` command with no git. mizar checks source against pins when it builds a release, and a node checks only sha256. One release format, two carriers: mizar pushes to fleet nodes as it does now, and each release also goes to a GitHub Release so a fresh machine can install with one command. Non-core plugins move to their own project homes (plugin_homes, R115).
+
+Landed: to be done by the plan.
