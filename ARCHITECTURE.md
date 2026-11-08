@@ -13,8 +13,8 @@ Keep what the code cannot show: why a shape was chosen, which two things must ag
 awm is one Rust binary, `awm`, plus a set of out-of-process **plugins**. The binary is the only gateway. It serves the CLI, HTTP and MCP, loads and supervises the plugins, and owns no tables. Feature surfaces appear as plugins register.
 
 - **Core** — `core/crates/`, built into `~/.local/bin/awm`. `awm-gateway` is the gateway, `awm-cli` the command tree, `awm-mcp` the stdio MCP server, `awm-edge` the ssh transport between nodes, `awm-trust` the edge list, trust levels and the service door, and `awm-proto` the manifest and wire types.
-- **Plugins** — each folder under `awm/services/` and `awm/plugins/` with an `awm-plugin.toml`. `awm services list` reports the live set. Each folder's `INSTALL.md` is its contract.
-- **Shared Python components** — `awm/service_components/`: `awm.config`, `awm.persistence`, `awm.gatewayclient`, `awm.trustpolicy`, `awm.telemetry`, `awm.usage`, `awm.tlsfront` and `awm.dvcdata`. They are libraries, not plugins. A plugin imports a library, never another plugin's code.
+- **Plugins** — each folder under `core/plugins/`, `awm/services/` and `awm/plugins/` with an `awm-plugin.toml`. `awm services list` reports the live set. Each folder's `INSTALL.md` is its contract.
+- **Shared Python components** — `awm/service_components/`: `awm.config`, `awm.persistence`, `awm.gatewayclient`, `awm.trustpolicy`, `awm.telemetry`, `awm.usage` and `awm.tlsfront`. They are libraries, not plugins. A plugin imports a library, never another plugin's code.
 - **Frontend source** — `awm/ui_components/` and each plugin's `pages/`. See § *Frontend*.
 
 ### Ownership and identity
@@ -41,7 +41,7 @@ The gateway's crash-loop breaker persists in `<AWM_DIR>/services.json`, because 
 
 ### The journal is the channel
 
-The `journal` plugin owns every post, in its own database. It split out of `scopes` so that worktree lifecycle and messaging deploy and fail apart. One `scope_posts` table and `scope_subscribers`, addressed by `(project, scope)`, carry everything. Tags from one fleet-wide vocabulary tell posts apart (`message`, `journal`, `brief`, `precedent`, …). A comment is a post with `reply_to`, kept in its thread's channel. A non-agent inbox (`user:`, `project:`, `workspace`) is a non-literal channel with `owner_project=''`.
+The `kb` plugin serves the `journal` tool (`core/crates/awm-kb-journals`). Every post lives once, as one row of the `journals` LanceDB source, so a post and its search entry cannot disagree. `services/journal/journal.db` keeps the relational state: the tag registry and its clashes, edit history, inbox cursors, read receipts and session lineage. Its post tables are frozen. They are the pre-Rust record that `kb export-back` writes to on a rollback. The journal split out of `scopes` so that worktree lifecycle and messaging deploy and fail apart. A channel is addressed by `(project, scope)`. Tags from one fleet-wide vocabulary tell posts apart (`message`, `journal`, `brief`, `precedent`, …). A comment is a post with `reply_to`, kept in its thread's channel. A non-agent inbox (`user:`, `project:`, `workspace`) is a non-literal channel with `owner_project=''`.
 
 `journal` validates a literal scope through the `resolveScope` RPC to `scopes`, and an unreachable `scopes` never blocks a post. The plugin publishes the `posts` topic with payload `{project, scope, post}`.
 
@@ -193,17 +193,16 @@ The gateway appends each event to `<AWM_DIR>/usage/<YYYY-MM-DD>.jsonl` and prune
 
 ## The search archive
 
-`search` owns the `search` tool and the archive: a registry of plug-ins, each index source in its own LanceDB store. Agents get one search over everything the swarm knows, on this node and across its edges, and a new source joins without a change to `search`. `awm/services/search/INSTALL.md` § *Joining the archive* is the contract a plug-in meets. `docs/search-opt/` holds the spec and the engine's decisions. This section holds the reasons.
+The `kb` plugin serves the `search` tool (`core/crates/awm-kb-search`). Agents get one search over everything the swarm knows, on this node and across its edges. search is a federator with no content store, because a second copy of each source drifted from the first. `core/plugins/kb/INSTALL.md` covers a node's install. `docs/search-opt/` holds the engine's decisions. This section holds the reasons.
 
-- **Plug-ins.** A service joins with one `[[service.archive]]` table per source in its manifest. A caller names the source as `name`, or `name@node` on another node. The `mode` is `index` or `live`. `awm services` lists the tables under `archive` in each row, and `search` reads them there. `/hub/plugins` (`awm plugins`) lists every plugin's tables under `archives`, as `{plugin, service, archive}`, whether the plugin loaded, was skipped or was refused. It holds the fields of a kind that only another node serves.
-- **Declared fields.** Each table declares its fields with a class and the fields a hit shows. The declaration is the query schema, so a new field needs no code in `search`. A change to it rebuilds the source.
-- **index mode.** The service's hidden `<tool>_export` verb is a change feed: the entries changed after a cursor, with deletions. `search` stores the cursor per page, so a read costs only the changes since the last one. A push topic, when the table names one, brings the next read forward, and an hourly read runs regardless.
-- **The awm source.** `search` indexes this node's own tools, one entry per verb, so an agent finds a verb by what it does. The gateway's `describe` is the one copy of each verb's text: the feed reads it, and `get` returns it, so the index never answers with a stale schema.
-- **live mode.** The table names a query verb that `search` calls at query time. A source marked `optin` runs only when a caller names it. `transcripts` is the live source.
+- **kb's sources.** journals, guide and transcripts answer in-process through `awm_kb_source::Source`. Each owns its LanceDB store under `services/kb/lance/<source>`, through `awm-index`, and applies the caller's veil itself. No caller sees a row a mark covers.
+- **Plug-ins.** Another plugin joins with one `[[service.archive]]` table per source in its manifest, with `mode = "live"`. The table names the verb search calls at query time, so a new source needs no change to search. A caller names the source as `name`, or `name@node` on another node. A source marked `optin` runs only when a caller names it. `awm services` lists the tables under `archive` in each row. An `index` table stays listed with an error, because search no longer reads change feeds.
+- **Declared fields.** Each table declares its fields with a class and the fields a hit shows. The declaration is the query schema, so a new field needs no code in search.
+- **The guide source.** It indexes this node's tools, one entry per verb, so an agent finds a verb by what it does. It follows the gateway's `plugins` and `services` topics, so a new plugin's verbs appear with no timer.
 - **One store per source.** Each source answers apart, so no score has to compare across sources. A source's `$about` ranking fuses its own vector and keyword lists by score.
-- **Frozen sources.** A source whose service stops registering keeps its last entries, marked frozen, and a read never takes an absent service as "every entry deleted".
+- **Maintenance.** Each write counts the rows it leaves outside the indexes. The count starts maintenance, not a clock.
 
-**CAUTION** A feed must show every write that changes an entry. The journal bumps its feed with triggers in the same transaction as the write, so no code path can skip it.
+**CAUTION** An open tag clash between two nodes stops every search between them until an agent renames the tag. Delete a peer's duplicate tag rows before a node's first start, or that start raises the clash.
 
 ## Service lifecycle
 
@@ -260,7 +259,7 @@ A gitignored `sandbox/.env` can pin `AWM_PORT`. The CLI targets `AWM_GATEWAY_URL
 
 ## Data-layer internals
 
-`awm.dvcdata` wires DVC into scopes. The `dvc` plugin owns its verbs and `scopes` imports it for provisioning. `PROTOCOLS.md` § *Data* and `AGENTS.md` § *Data* cover usage. `provision_scope_data` is the only entry point.
+The `awm-dvcdata` crate wires DVC into scopes. The `dvc` plugin owns its verbs and `scopes` links it for provisioning. `PROTOCOLS.md` § *Data* and `AGENTS.md` § *Data* cover usage. `provision_scope_data` is the only entry point.
 
 awm wires and DVC operates. Wiring is the cache path, the merge driver, the hooks and the mount list. `dvc add`, `dvc checkout`, `git commit` and `git merge` run unwrapped.
 
@@ -324,7 +323,7 @@ Paths are under `core/crates/`.
 - **Edges** — `awm-trust/src/edges.rs` reads the edge list, `awm-gateway/src/peer.rs` routes a call to another node, `awm-edge` carries it, and `awm-cli/src/edge.rs` serves `awm edge-serve` and `awm port`.
 - **CLI and MCP** — `awm-cli/src/lib.rs`, `deploy.rs`, `bootstrap.rs`. `awm-mcp/src/lib.rs`.
 - **Wire and manifest types** — `awm-proto`.
-- **Search archive** — `awm/services/search/`. `registry.py` reads the plug-in tables, `index.py` and `store.py` hold the corpus, `merge.py` fuses and `federation.py` asks each other node across its edge.
+- **Search archive** — `awm-kb-search`. `registry.rs` reads the plug-in tables, `merge.rs` fuses and `federation.rs` asks each other node across its edge. `awm-index` is the engine each source links.
 - **Frontend** — `awm/vite.config.ts`, `awm/scripts/build.sh`, `awm/package.json`.
 
 ## The editable install
