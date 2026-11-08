@@ -1,4 +1,4 @@
-//! Every drafted state.toml parses, and its paths land where the Python plugin keeps its state.
+//! Every core plugin's state.toml parses, and its paths land where the Python plugin kept its state.
 
 use std::path::{Path, PathBuf};
 
@@ -9,15 +9,21 @@ fn env(k: &str) -> Option<String> {
 }
 
 fn load(name: &str) -> Decl {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("decls").join(format!("{name}.toml"));
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugins").join(name).join("state.toml");
     let text = std::fs::read_to_string(&path).unwrap();
     Decl::parse(&text, &Path::new("/a/services").join(name), Path::new("/a"), env).unwrap()
 }
 
 #[test]
 fn every_decl_parses() {
+    let plugins = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugins");
+    for e in std::fs::read_dir(&plugins).unwrap() {
+        let name = e.unwrap().file_name().into_string().unwrap();
+        if plugins.join(&name).join("state.toml").exists() {
+            load(&name);
+        }
+    }
     assert!(load("fileviewer").dirs.is_empty());
-    assert!(load("dashboard").dirs.is_empty());
     let r = load("routine");
     assert_eq!(r.dirs, ["/a/services/routine", "/a/land", "/a/services/events"].map(PathBuf::from));
     assert!(r.is_transient_file(Path::new("/a/land/awm/lease.json")));
@@ -26,7 +32,7 @@ fn every_decl_parses() {
     let d = load("dvc");
     assert_eq!(d.extra[0].path, PathBuf::from("/a/dvc.toml"));
     let a = load("auth");
-    assert_eq!(a.extra[0].path, PathBuf::from("/home/u/agentic_workspace/awm/services/httpsfront/.certs"));
+    assert_eq!(a.extra[0].path, PathBuf::from("/home/u/agentic_workspace/awm/services/httpsfront/.certs/*"));
     assert!(a.is_size_only(Path::new("/home/u/.config/remote-audio/ca/ca.key")));
     let o = load("operations");
     assert_eq!(o.dirs, ["/home/u/.awm/operations", "/home/u/.awm/approver"].map(PathBuf::from));

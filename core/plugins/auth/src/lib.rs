@@ -7,6 +7,9 @@ pub mod tokens;
 pub mod verbs;
 
 pub mod certs;
+pub mod edge;
+pub mod service;
+pub mod snapshot;
 pub mod tls;
 
 pub mod landing;
