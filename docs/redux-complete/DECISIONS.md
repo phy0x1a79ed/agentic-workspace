@@ -67,3 +67,15 @@ The end-state journals' open items not settled above.
 - **per-node-edges.** Every edge on every node. Each node's installed `edges.yml` holds only the peers it can reach, rendered from `homelab/edges.yml`. Fleet-wide lists such as the land rollout come from mizar's install config. Singleton callers and relays read what their own node has.
 
 Landed: to be done by the plan.
+
+## close-out (2026-11-08)
+
+Questions: when do the `.pre-rust` snapshots go, what happens to the old scopes, and do seats come back on?
+
+Decided:
+
+- **`.pre-rust` and `.rust-<ts>`.** Tony's OK, dated 2026-11-08, is conditional: each node's copies are deleted only once that node has passed its live checks at the end of this pass.
+- **Old scopes.** Scopes whose branches are fully in release are completed and their worktrees removed. Branches stay in git. Each unmerged branch is audited for anything the end state still needs, and the audit goes to Tony before anything unmerged is touched.
+- **Seats.** Unpaused as the last step, after the fleet is verified, with one live inbound and outbound message confirmed.
+
+Landed: to be done by the plan.

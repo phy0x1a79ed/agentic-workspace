@@ -8,11 +8,11 @@ Decisions: `DECISIONS.md` beside this file.
 
 ## Current
 
-- close-out
+None. The stack is empty, and the plan is next.
 
 ## Waiting on the user
 
-- close-out: `.pre-rust`, old branches and scopes, seats.
+None.
 
 ## Preferences
 
@@ -22,7 +22,7 @@ Tony (2026-11-08): this session does the work itself; Sonnet agents at medium ef
 
 ## Stack
 
-- close-out — `.pre-rust` deletion, unreviewed branches, retiring the redux scopes
+Empty.
 
 ## Workers
 
@@ -37,6 +37,7 @@ None.
 - deneb — no further decision; its own cutover per fleet-route, writer per r79-writer
 - node-checkout — every node clone-free this pass; release = manifest + hash-addressed binaries + small tar; mizar pushes, GitHub Release for fresh machines; ten non-core plugins in own projects, pushed as folders
 - open-for-tony — warm pool on a trusted seed dir; dvc mirror stopped; science idle 2 h; lyra vpn from capella; sites daemon kept as own project; per-node edges everywhere
+- close-out — `.pre-rust` goes after each node's checks; retire merged scopes, audit unmerged; seats on last
 
 ## Survey state (2026-11-08)
 
