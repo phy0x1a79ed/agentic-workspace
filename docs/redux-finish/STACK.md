@@ -47,7 +47,7 @@ Phase 1 scopes each plugin; phase 2 does the work in this order. Each topic list
 
 ## Workers
 
-(none)
+Read-only survey subagents (Sonnet medium), started 2026-11-07, reports to /home/tony/.claude/jobs/b8680c94/tmp/survey/<group>.md, brief COMMON.md there: ops (dvc, operations, auth), comms (social, browser, channel, rlm-browser), knowledge (kb, scopes), harness (reflection + landed plugins' health), trilium (board, Ops, telemetry), pyout-optin (python-out, opt-in hooks).
 
 ## Closed
 
