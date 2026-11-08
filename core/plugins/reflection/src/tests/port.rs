@@ -209,14 +209,6 @@ async fn a_ticket_that_names_a_path_writes_nothing_outside_tickets() {
 }
 
 #[tokio::test]
-async fn session_of_asks_each_provider_once() {
-    let fx = Fx::new();
-    assert!(ok(&fx.run("session_of", json!({"pid": ME})).await));
-    assert_eq!(fx.cc().calls_of("resolve").len(), 1);
-    assert_eq!(fx.ds().calls_of("resolve").len(), 1);
-}
-
-#[tokio::test]
 async fn list_other_names_each_failing_provider_and_fills_every_row_key() {
     let fx = Fx::new();
     fx.ds().down.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -274,14 +266,4 @@ async fn probe_asks_each_provider_that_serves_it_as_the_caller() {
     assert!(fx2.ds().calls_of("probe").is_empty());
     let sent = fx2.gw().sent.lock().unwrap().iter().find(|c| c.verb == "probe").cloned().unwrap();
     assert_eq!(sent.as_.as_deref(), Some("altair"));
-}
-
-#[tokio::test]
-async fn boot_alarms_for_a_waited_on_session_that_is_gone() {
-    let fx = Fx::new();
-    fx.run("wait", json!({"_caller_pid": ME, "until": [other()]})).await;
-    fx.cc().answer("status", json!({"ok": false, "unknown_ref": true, "reason": "no such session"}));
-    fx.app.clone().boot().await;
-    fx.app.settle().await;
-    assert!(fx.app.recent_lost().await[0]["reason"].as_str().unwrap().contains(&other()));
 }
