@@ -312,9 +312,7 @@ async fn a_service_front_gates_relays_and_follows_the_table() {
     let base = Base {
         gate: Arc::new(AuthGate::new(Arc::new(Fixed))),
         grants: Arc::new(Grants::new(None, "node")),
-        ca_path: dir.path().join("ca.pem"),
-        ca_download: true,
-        same_site: "lax",
+        config: EdgeConfig { upstream: String::new(), ca_path: dir.path().join("ca.pem"), ca_download: true, same_site: "lax", behind_proxy: true, identity_cookies: &[] },
         tls: None,
         san: None,
         sans_file: dir.path().join("sans"),

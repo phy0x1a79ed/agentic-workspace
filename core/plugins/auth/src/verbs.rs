@@ -16,10 +16,6 @@ use crate::tokens::{self, py_str, truthy, SCOPES};
 
 pub const TOOL: &str = "auth";
 
-/// The plugins that may read `edge_material` or mint, list or revoke a device token: none. The
-/// in-process edge reads the material by a direct call.
-pub const NO_PLUGINS: [&str; 0] = [];
-
 const HOUR: f64 = 3600.0;
 const DAY: f64 = 86400.0;
 const LABEL_MAX: usize = 64;
@@ -82,20 +78,14 @@ fn runtime(e: AuthStoreError) -> VerbError {
     VerbError::runtime(e.to_string())
 }
 
-/// Refuse a call that arrived through an edge listener.
+/// Refuse a call that arrived through an edge listener or from any plugin. The in-process edge
+/// reads its material by a direct call.
 fn operator_only(caller: Caller<'_>, verb: &str) -> Result<(), VerbError> {
     if caller.as_.is_some() {
         return Err(VerbError::permission(format!("{verb} is an operator verb: run it on the host, not through an edge")));
     }
-    Ok(())
-}
-
-/// Refuse a call from any plugin outside `allowed`. A call that names no plugin passes.
-fn plugins_only(caller: Caller<'_>, verb: &str, allowed: &[&str]) -> Result<(), VerbError> {
     match caller.plugin {
-        Some(p) if !p.is_empty() && !allowed.contains(&p) => {
-            Err(VerbError::permission(format!("{verb} is not open to plugin {}", str_repr(p))))
-        }
+        Some(p) if !p.is_empty() => Err(VerbError::permission(format!("{verb} is not open to plugin {}", str_repr(p)))),
         _ => Ok(()),
     }
 }
@@ -152,7 +142,6 @@ impl MaterialSource for AuthStore {
 /// `edge_material {device_used?, token_scopes?}`.
 pub fn edge_material(store: &AuthStore, args: &Value, caller: Caller<'_>) -> Result<Value, VerbError> {
     operator_only(caller, "edge_material")?;
-    plugins_only(caller, "edge_material", &NO_PLUGINS)?;
     let used = device_used(args.get("device_used"));
     let scopes: BTreeSet<String> = match args.get("token_scopes") {
         Some(Value::Array(a)) => a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect(),
@@ -184,7 +173,6 @@ pub fn public_device(t: &DeviceRow) -> Map<String, Value> {
 /// for the operator. The token is returned once, here.
 pub fn device_mint(store: &AuthStore, args: &Value, caller: Caller<'_>, now: f64) -> Result<Value, VerbError> {
     operator_only(caller, "device_mint")?;
-    plugins_only(caller, "device_mint", &NO_PLUGINS)?;
     let label = str_arg(args, "label");
     if label.is_empty() {
         return Err(VerbError::value("label is required"));
@@ -209,7 +197,6 @@ pub fn device_mint(store: &AuthStore, args: &Value, caller: Caller<'_>, now: f64
 /// `device_list`: every device token, revoked ones included.
 pub fn device_list(store: &AuthStore, caller: Caller<'_>) -> Result<Value, VerbError> {
     operator_only(caller, "device_list")?;
-    plugins_only(caller, "device_list", &NO_PLUGINS)?;
     let rows = store.device_list().map_err(runtime)?;
     Ok(json!({"tokens": rows.iter().map(public_device).collect::<Vec<_>>()}))
 }
@@ -217,7 +204,6 @@ pub fn device_list(store: &AuthStore, caller: Caller<'_>) -> Result<Value, VerbE
 /// `device_revoke {id}`. The edge drops the token on its next refresh.
 pub fn device_revoke(store: &AuthStore, args: &Value, caller: Caller<'_>, now: f64) -> Result<Value, VerbError> {
     operator_only(caller, "device_revoke")?;
-    plugins_only(caller, "device_revoke", &NO_PLUGINS)?;
     let id = str_arg(args, "id");
     if id.is_empty() {
         return Err(VerbError::value("id is required"));

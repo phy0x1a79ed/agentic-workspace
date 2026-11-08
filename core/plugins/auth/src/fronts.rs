@@ -76,9 +76,7 @@ impl Relay {
         };
         let door = self.door(&req.path);
         let mut fwd = edge::ws_headers(&req);
-        if let (Some(origin), true) = (door.origin.clone(), fwd.contains_key("origin")) {
-            fwd.insert("origin", origin);
-        }
+        edge::replace_origin(&mut fwd, door.origin.clone());
         fwd.insert("x-awm-as", edge::as_header(&sub));
         if let Ok(ip) = HeaderValue::from_str(&edge.client_ip(&req)) {
             fwd.insert("x-forwarded-for", ip);
@@ -102,9 +100,8 @@ impl Dispatch for Relay {
 pub struct Base {
     pub gate: Arc<AuthGate>,
     pub grants: Arc<Grants>,
-    pub ca_path: PathBuf,
-    pub ca_download: bool,
-    pub same_site: &'static str,
+    /// The main edge's settings. A front replaces only the upstream.
+    pub config: EdgeConfig,
     /// `None` is plain HTTP on loopback, behind a TLS-terminating proxy.
     pub tls: Option<Arc<ServerConfig>>,
     pub san: Option<String>,
@@ -113,8 +110,7 @@ pub struct Base {
 
 struct Open {
     decl: FrontDecl,
-    task: Option<JoinHandle<()>>,
-    error: Option<String>,
+    listening: Result<JoinHandle<()>, String>,
 }
 
 type Key = (String, String);
@@ -145,14 +141,7 @@ impl Fronts {
 
     fn edge(&self, decl: &FrontDecl) -> Arc<Edge> {
         let b = &self.base;
-        let config = EdgeConfig {
-            upstream: decl.upstream.trim_end_matches('/').to_string(),
-            ca_path: b.ca_path.clone(),
-            ca_download: b.ca_download,
-            same_site: b.same_site,
-            behind_proxy: b.tls.is_none(),
-            identity_cookies: &[],
-        };
+        let config = EdgeConfig { upstream: decl.upstream.trim_end_matches('/').to_string(), identity_cookies: &[], ..b.config.clone() };
         Arc::new(Edge::new(b.gate.clone(), b.grants.clone(), config, Box::new(Relay::new(decl))))
     }
 
@@ -162,27 +151,22 @@ impl Fronts {
         let mut open = self.open.lock().await;
         let stale: Vec<Key> = open.iter().filter(|(k, o)| declared.get(*k) != Some(&o.decl)).map(|(k, _)| k.clone()).collect();
         for key in stale {
-            if let Some(Open { task: Some(task), .. }) = open.remove(&key) {
+            if let Some(Open { listening: Ok(task), .. }) = open.remove(&key) {
                 task.abort();
                 let _ = task.await;
                 tracing::info!("auth: front {}/{} closed", key.0, key.1);
             }
         }
         for (key, decl) in declared {
-            if open.get(&key).is_some_and(|o| o.task.is_some()) {
+            if open.get(&key).is_some_and(|o| o.listening.is_ok()) {
                 continue;
             }
-            let (task, error) = match edge::start(self.edge(&decl), decl.port, self.base.tls.clone()).await {
-                Ok(task) => {
-                    tracing::info!("auth: front {}/{} on :{} -> {}", key.0, key.1, decl.port, decl.upstream);
-                    (Some(task), None)
-                }
-                Err(e) => {
-                    tracing::warn!("auth: front {}/{} could not listen on :{}: {e}", key.0, key.1, decl.port);
-                    (None, Some(format!("could not listen on :{}: {e}", decl.port)))
-                }
-            };
-            open.insert(key, Open { decl, task, error });
+            let listening = edge::start(self.edge(&decl), decl.port, self.base.tls.clone()).await.map_err(|e| format!("could not listen on :{}: {e}", decl.port));
+            match &listening {
+                Ok(_) => tracing::info!("auth: front {}/{} on :{} -> {}", key.0, key.1, decl.port, decl.upstream),
+                Err(why) => tracing::warn!("auth: front {}/{} {why}", key.0, key.1),
+            }
+            open.insert(key, Open { decl, listening });
         }
     }
 
@@ -192,7 +176,7 @@ impl Fronts {
         match open.get(&(service.to_string(), name.to_string())) {
             Some(o) => json!({
                 "listener_port": o.decl.port, "upstream": o.decl.upstream, "tls": self.base.tls.is_some(), "san": self.base.san,
-                "serving": o.task.is_some(), "error": o.error, "url": certs::front_url(o.decl.port, &[self.base.sans_file.as_path()]),
+                "serving": o.listening.is_ok(), "error": o.listening.as_ref().err(), "url": certs::front_url(o.decl.port, &[self.base.sans_file.as_path()]),
             }),
             None => json!({"listener_port": null, "upstream": null, "tls": false, "san": null, "serving": false,
                            "error": format!("{service} has no front named {name} on this node"), "url": null}),

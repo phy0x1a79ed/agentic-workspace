@@ -13,11 +13,11 @@ const DEADLINE: Duration = Duration::from_secs(8);
 const RETRY_GAP: Duration = Duration::from_secs(1);
 
 fn plans_dir(home: &Path) -> PathBuf {
-    home.join(".claude/plans")
+    home.join("plans")
 }
 
 fn marker_dir(home: &Path) -> PathBuf {
-    home.join(".claude/awm-operations")
+    home.join("awm-operations")
 }
 
 /// The marker that says a session's card waits in Needs you.
@@ -73,7 +73,7 @@ fn item_id(v: Option<&Value>) -> Option<String> {
 /// The full task list on disk: TaskCreate and TaskUpdate payloads are deltas.
 fn task_items(home: &Path, session_id: &str) -> Vec<Value> {
     let list = std::env::var("CLAUDE_CODE_TASK_LIST_ID").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| session_id.to_string());
-    let Ok(dir) = std::fs::read_dir(home.join(".claude/tasks").join(list)) else { return vec![] };
+    let Ok(dir) = std::fs::read_dir(home.join("tasks").join(list)) else { return vec![] };
     let mut items: Vec<(String, Value)> = dir
         .filter_map(Result::ok)
         .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
@@ -101,7 +101,8 @@ fn todowrite_items(todos: Option<&Value>) -> Vec<Value> {
         .collect()
 }
 
-/// One hook payload, against the gateway `hub` and the user's `home`. Answers what to print.
+/// One hook payload, against the gateway `hub` and the Claude config root `home`. Answers what
+/// to print.
 pub fn handle(hub: &dyn Hub, home: &Path, cwd: &Path, p: &Value) -> Option<String> {
     let sid = p.get("session_id").and_then(Value::as_str).filter(|s| !s.is_empty())?;
     let tool = p.get("tool_name").and_then(Value::as_str).unwrap_or_default();

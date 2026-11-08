@@ -681,8 +681,7 @@ pub fn dispatch(name: &str, input: &[u8]) -> Option<String> {
         "subagent-cap" => subagent_cap(input, &subagents_dir(), epoch_now, || level(&HttpHub::from_env())),
         "report" => {
             let payload = serde_json::from_slice(input).ok()?;
-            let home = PathBuf::from(std::env::var_os("HOME")?);
-            crate::hook_report::handle(&HttpHub::from_env(), &home, &std::env::current_dir().ok()?, &payload)
+            crate::hook_report::handle(&HttpHub::from_env(), &ClaudeHome::from_env().root, &std::env::current_dir().ok()?, &payload)
         }
         _ => None,
     }

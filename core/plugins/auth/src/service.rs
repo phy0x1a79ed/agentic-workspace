@@ -59,29 +59,16 @@ pub async fn serve() -> anyhow::Result<()> {
     let gate = Arc::new(AuthGate::new(Arc::new(store.clone())));
     let grants = Arc::new(Grants::new(grant_key, env.node.clone()));
     let same_site = if public { "strict" } else { "lax" };
+    let config = EdgeConfig { upstream: env.hub_url.clone(), ca_path, ca_download: !public, same_site, behind_proxy: !tls_on, identity_cookies: &["trilium.sid", "trilium-csrf"] };
     let fronts = Arc::new(Fronts::new(fronts::Base {
         gate: gate.clone(),
         grants: grants.clone(),
-        ca_path: ca_path.clone(),
-        ca_download: !public,
-        same_site,
+        config: config.clone(),
         tls: tls_config.clone(),
         san: san.clone(),
         sans_file,
     }));
-    let edge = Arc::new(Edge::new(
-        gate,
-        grants,
-        EdgeConfig {
-            upstream: env.hub_url.clone(),
-            ca_path,
-            ca_download: !public,
-            same_site,
-            behind_proxy: !tls_on,
-            identity_cookies: &["trilium.sid", "trilium-csrf"],
-        },
-        Box::new(front),
-    ));
+    let edge = Arc::new(Edge::new(gate, grants, config, Box::new(front)));
     edge::start(edge, port, tls_config).await.map_err(|e| anyhow::anyhow!("the edge could not listen on :{port}: {e}"))?;
     tracing::info!("auth: edge on :{port} -> {} (tls {}, profile {})", env.hub_url, if tls_on { "on" } else { "off" }, profile.as_deref().unwrap_or("default"));
 
@@ -120,10 +107,9 @@ fn register(mut service: Service, store: Arc<AuthStore>, status: Value, fronts: 
     service = service.verb(verbs::TOOL, "front", FRONT, json!([{"name": "service", "type": "string", "required": true}, {"name": "name", "type": "string"}]), move |call: Call| {
         let fronts = fronts.clone();
         async move {
-            let args = call.declared_args();
-            let text = |key: &str| args.get(key).and_then(Value::as_str).filter(|s| !s.is_empty()).map(str::to_string);
+            let text = |key: &str| call.str_arg(key).filter(|s| !s.is_empty());
             let service = text("service").ok_or_else(|| VerbError::value("service is required"))?;
-            Ok::<Value, VerbError>(fronts.state(&service, &text("name").unwrap_or_else(|| "gui".into())).await)
+            Ok::<Value, VerbError>(fronts.state(service, text("name").unwrap_or("gui")).await)
         }
     });
     service

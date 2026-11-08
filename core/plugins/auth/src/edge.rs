@@ -64,6 +64,7 @@ const WS_OPEN_TIMEOUT: Duration = Duration::from_secs(10);
 /// uvicorn's keep-alive timeout.
 const KEEP_ALIVE: Duration = Duration::from_secs(75);
 
+#[derive(Clone)]
 pub struct EdgeConfig {
     /// The gateway's origin, with no trailing slash.
     pub upstream: String,
@@ -128,8 +129,7 @@ pub struct Forward<'a> {
     pub body: Option<Bytes>,
     /// The answer when the upstream cannot be reached, in place of the 502.
     pub unreachable: Option<&'a (dyn Fn() -> Response + Sync)>,
-    /// Replaces an `Origin` the browser sent. Never added where there was none: that would turn
-    /// a same-origin navigation into a cross-origin one.
+    /// See [`replace_origin`].
     pub origin: Option<HeaderValue>,
 }
 
@@ -276,9 +276,7 @@ impl Edge {
             return not_found();
         };
         let mut headers = self.upstream_headers(&req, Some(sub));
-        if let (Some(origin), true) = (opts.origin, headers.contains_key("origin")) {
-            headers.insert("origin", origin);
-        }
+        replace_origin(&mut headers, opts.origin);
         let (path, method) = (req.path.clone(), req.parts.method.clone());
         let body = match opts.body {
             Some(read) => {
@@ -560,6 +558,14 @@ pub fn as_header(sub: &str) -> HeaderValue {
 
 /// The handshake headers a socket carries upstream, before any identity. Only these are copied,
 /// so no caller header rides along.
+/// Swaps an `Origin` the browser sent for `origin`. Never adds one where there was none: that
+/// would turn a same-origin navigation into a cross-origin one.
+pub fn replace_origin(headers: &mut HeaderMap, origin: Option<HeaderValue>) {
+    if let (Some(origin), true) = (origin, headers.contains_key("origin")) {
+        headers.insert("origin", origin);
+    }
+}
+
 pub fn ws_headers(req: &Req) -> HeaderMap {
     let mut fwd = HeaderMap::new();
     for name in ["cookie", "authorization", "origin"] {
