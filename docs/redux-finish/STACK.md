@@ -53,7 +53,9 @@ Phase 1 scopes each plugin; phase 2 does the work in this order. Each topic list
 
 ## Workers
 
-Read-only survey subagents (Sonnet medium), one group at a time. Brief /home/tony/.claude/jobs/b8680c94/tmp/survey/COMMON.md; reports beside it as <group>.md. Done: ops. None running.
+Read-only survey subagents (Sonnet medium), one group at a time. Brief /home/tony/.claude/jobs/b8680c94/tmp/survey/COMMON.md; reports beside it as <group>.md. Done: ops.
+
+Test trimmers (Sonnet medium, in this worktree, no commits), brief /home/tony/.claude/jobs/b8680c94/tmp/trim/BRIEF.md, started 2026-11-07: operations; dvc + awm-dvcdata.
 
 ## Closed
 
