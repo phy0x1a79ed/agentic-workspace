@@ -7,7 +7,7 @@ Related: journal 7724ff11 (ops-board decision), spec `docs/redux/*.md` (queue R6
 
 ## Current
 
-BUILD — PLAN.md approved 2026-11-07. T1 done (CONTRACT.md, cf30928e; adds a gateway item for awm/services and awm/usage). T2 done: workers plugin-redux/trilium-telemetry (job 4196b8cb, scope awm/trilium-telemetry, Opus high) and plugin-redux/trilium-vault (job daf676e8, scope awm/trilium-vault, Sonnet high), both from feat/trilium-design at cf30928e. Flat scopes, because a branch feat/trilium-design/<x> cannot sit beside feat/trilium-design. Parked for mizar's /home cutover 2026-11-07 and resumed. Contract amended at 1331f17a: `operations/board` topic (vault asked), and the telemetry singleton on alcor with every opted-in node as callers; the node part has no tool (fallback `telemetry-node`). Next: wait for both reports, then T6.
+BUILD — PLAN.md approved 2026-11-07. T1, T2, T5, T7, T8 done (decision journal a7d480e6). Contract at b11adebc. telemetry (job 4196b8cb) verified: land ticket f53295a154e7 at 82072cf6; the worker merges it when port-ops' lease frees and bounces stale c4a9ae6d1401 first. vault (job daf676e8) verified at 7bcd7394; plugin-redux/interview chose to land it after port-ops' Rust operations, with every awm/plugins/operations edit reverted; at its go, check release for the Python writer and re-add the deletion only if it is still there. Next: telemetry's release commit, then interview's go for vault, then T9, T10.
 
 ## Waiting on the user
 
