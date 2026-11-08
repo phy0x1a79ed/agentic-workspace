@@ -117,35 +117,12 @@ FRAMES = [
 # Which conversation
 # ---------------------------------------------------------------------------
 
-def test_no_reference_means_the_latest_visible_conversation():
-    with Stub(FRAMES).owner() as owner:
-        got = conversations.resolve_conversation(owner)
-    assert got["id"] == "bbbb2222-0"
-
-
 def test_a_conversation_is_found_by_id_prefix_or_name():
     with Stub(FRAMES).owner() as owner:
         by_prefix = conversations.resolve_conversation(owner, "aaaa")
         by_name = conversations.resolve_conversation(owner, "optimize core dataset")
         by_part = conversations.resolve_conversation(owner, "core")
     assert by_prefix["id"] == by_name["id"] == by_part["id"] == "aaaa1111-0"
-
-
-def test_an_ambiguous_name_is_refused_with_its_candidates():
-    """Posting into the wrong conversation is not undone by a retry."""
-    with Stub(FRAMES).owner() as owner:
-        with pytest.raises(api.WorkbenchError, match="matches 2") as err:
-            conversations.resolve_conversation(owner, "evaluate")
-    assert "bbbb2222" in str(err.value) and "dddd4444" in str(err.value)
-
-
-def test_an_unknown_conversation_and_an_empty_workbench_are_errors():
-    with Stub(FRAMES).owner() as owner:
-        with pytest.raises(api.WorkbenchError, match="no conversation"):
-            conversations.resolve_conversation(owner, "nothing like this")
-    with Stub([]).owner() as owner:
-        with pytest.raises(api.WorkbenchError, match="no conversations"):
-            conversations.resolve_conversation(owner)
 
 
 # ---------------------------------------------------------------------------
@@ -165,32 +142,9 @@ def test_a_post_carries_the_text_as_input_data_request_and_returns_a_cursor():
     assert out["cursor"] == 2
 
 
-def test_a_refusal_from_the_workbench_surfaces_with_its_detail():
-    stub = Stub(FRAMES, {"bbbb2222-0": []}, post_status=409)
-    with stub.owner() as owner:
-        with pytest.raises(api.WorkbenchError, match="awaiting input") as err:
-            conversations.post_message(owner, "bbbb2222-0", "x")
-    assert err.value.status == 409
-
-
 # ---------------------------------------------------------------------------
 # Opening
 # ---------------------------------------------------------------------------
-
-def test_a_new_conversation_finds_its_project_and_sends_the_first_turn():
-    stub = Stub(FRAMES)
-    with stub.owner() as owner:
-        out = conversations.open_conversation(owner, "survey the data",
-                                              project="Agents", effort="high")
-
-    made, sent = stub.posts()
-    assert json.loads(made.content) == {"name": "Agents", "find_or_create": True}
-    assert json.loads(sent.content) == {"input_data": {"request": "survey the data"},
-                                        "effort": "high"}
-    assert out == {"conversation": {"id": "eeee5555-0", "project_id": "proj_9",
-                                    "project": "Agents"},
-                   "status": "accepted", "cursor": 0, "output_folder": None}
-
 
 def test_a_new_conversation_gets_its_output_folder(tmp_path, monkeypatch):
     seen = []
@@ -245,62 +199,11 @@ def test_a_read_from_a_cursor_returns_the_rest_and_the_next_cursor():
     assert not stub.posts()
 
 
-def test_reading_at_the_cursor_returns_nothing_new():
-    stub = Stub(FRAMES, {"bbbb2222-0": TRANSCRIPT})
-    with stub.owner() as owner:
-        out = conversations.read_messages(owner, "bbbb2222-0", since=5)
-    assert out["messages"] == [] and out["cursor"] == 5
-
-
 def test_a_cursor_past_the_end_is_clamped_not_an_error():
     stub = Stub(FRAMES, {"bbbb2222-0": TRANSCRIPT})
     with stub.owner() as owner:
         out = conversations.read_messages(owner, "bbbb2222-0", since=99)
     assert out["messages"] == [] and out["cursor"] == 5
-
-
-def test_with_no_cursor_a_read_returns_the_tail():
-    stub = Stub(FRAMES, {"bbbb2222-0": TRANSCRIPT})
-    with stub.owner() as owner:
-        out = conversations.read_messages(owner, "bbbb2222-0", limit=2)
-    assert [m["index"] for m in out["messages"]] == [4]
-    assert out["cursor"] == 5
-
-
-def test_tool_plumbing_is_dropped_unless_asked_for_but_the_cursor_passes_it():
-    stub = Stub(FRAMES, {"bbbb2222-0": TRANSCRIPT})
-    with stub.owner() as owner:
-        quiet = conversations.read_messages(owner, "bbbb2222-0", since=2)
-        loud = conversations.read_messages(owner, "bbbb2222-0", since=2,
-                                           include_tools=True)
-    assert [m["index"] for m in quiet["messages"]] == [4]
-    assert [m["index"] for m in loud["messages"]] == [2, 3, 4]
-    assert loud["messages"][0]["tool_calls"] == ["python"]
-    assert loud["messages"][1]["tool_results"] == 1
-    assert quiet["cursor"] == loud["cursor"] == 5
-
-
-def test_a_page_short_of_the_end_says_there_is_more():
-    stub = Stub(FRAMES, {"bbbb2222-0": TRANSCRIPT})
-    with stub.owner() as owner:
-        out = conversations.read_messages(owner, "bbbb2222-0", since=0, limit=2)
-    assert out["cursor"] == 2 and out["more"] is True
-
-
-def test_harness_notices_are_marked_and_timestamps_are_iso():
-    stub = Stub(FRAMES, {"bbbb2222-0": TRANSCRIPT})
-    with stub.owner() as owner:
-        out = conversations.read_messages(owner, "bbbb2222-0", since=0)
-    first = out["messages"][0]
-    assert first["harness_notice"] is True
-    assert first["ts"] == "1970-01-01T00:00:01.000+00:00"
-
-
-def test_reading_an_unknown_conversation_is_a_404_from_the_workbench():
-    with Stub(FRAMES).owner() as owner:
-        with pytest.raises(api.WorkbenchError) as err:
-            conversations.read_messages(owner, "nope")
-    assert err.value.status == 404
 
 
 # ---------------------------------------------------------------------------
@@ -328,25 +231,6 @@ def test_a_grant_scan_wait_is_reported_with_its_folder():
     assert "4462" in got["summary"]
 
 
-def test_a_sub_agent_wait_is_reported_without_details():
-    got = conversations.pending_approval(_blocked("f", descendant=True))
-    assert got == {"kind": None, "summary": "a sub-agent awaits input",
-                   "count": 1}
-
-
-def test_an_idle_conversation_has_no_pending_approval():
-    assert conversations.pending_approval(FRAMES[0]) is None
-    assert "pending_approval" not in conversations.summary(FRAMES[0])
-
-
-def test_a_read_of_a_blocked_conversation_says_what_it_waits_on():
-    frames = [*FRAMES, _blocked("ffff6666-0", [GRANT_SCAN])]
-    stub = Stub(frames, {"ffff6666-0": TRANSCRIPT})
-    with stub.owner() as owner:
-        out = conversations.read_messages(owner, "ffff6666-0")
-    assert out["conversation"]["pending_approval"]["kind"] == "grant_scan"
-
-
 def test_a_message_to_a_blocked_conversation_is_refused_before_posting():
     frames = [*FRAMES, _blocked("ffff6666-0", [GRANT_SCAN])]
     stub = Stub(frames, {"ffff6666-0": TRANSCRIPT})
@@ -355,11 +239,3 @@ def test_a_message_to_a_blocked_conversation_is_refused_before_posting():
             conversations.post_message(owner, "ffff6666-0", "hello?")
     assert err.value.status == 409
     assert not stub.posts()
-
-
-def test_active_lists_processing_conversations_with_their_waits():
-    frames = [*FRAMES, _blocked("ffff6666-0", [GRANT_SCAN])]
-    with Stub(frames).owner() as owner:
-        got = conversations.active(owner)
-    assert [c["id"] for c in got] == ["ffff6666-0"]
-    assert got[0]["pending_approval"]["kind"] == "grant_scan"

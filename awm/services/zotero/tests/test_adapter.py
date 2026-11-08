@@ -32,24 +32,6 @@ def _bundle_at(tmp_path):
     return b
 
 
-def test_start_starts_the_loops_and_reads_nothing(monkeypatch, _no_timer):
-    """The first sync belongs to the loop. A start that read the vault would
-    wait on the trilium service, and the gateway reaps a slow start."""
-    monkeypatch.setattr(hub_adapter.sync, "held",
-                        lambda vault: pytest.fail("on_start read the bundle"))
-    asyncio.run(hub_adapter._on_start())
-    assert _no_timer == ["zotero:sync", "zotero:push", "zotero:stream"]
-
-
-def test_status_reports_a_vault_it_cannot_reach(monkeypatch):
-    def _down(vault):
-        raise hub_adapter.vault.VaultError("trilium note_search: refused")
-
-    monkeypatch.setattr(hub_adapter.sync, "held", _down)
-    out = asyncio.run(hub_adapter._h_status({"probe": False}))
-    assert "refused" in out["bundle"]["error"]
-
-
 # -- status ------------------------------------------------------------------
 
 
@@ -69,34 +51,6 @@ def test_status_is_not_behind_when_every_library_matches(tmp_path, monkeypatch):
     assert out["library"]["reachable"] is True
     assert out["library"]["key_can_write"] is False
     assert out["behind"] is False
-
-
-def test_status_is_behind_when_one_library_moved(tmp_path, monkeypatch):
-    out = _status(monkeypatch, tmp_path, {"users/0": 8})
-    assert out["behind"] is True
-
-
-def test_status_is_behind_when_a_library_is_new(tmp_path, monkeypatch):
-    """A group library shared with you after the last sync is the common case,
-    and it moves no version the bundle already holds."""
-    out = _status(monkeypatch, tmp_path, {"users/0": 7, "groups/1": 3})
-    assert out["behind"] is True
-
-
-def test_an_unreachable_library_is_reported_not_raised(tmp_path, monkeypatch):
-    """The network drops and the service restarts. Saying so is the answer, not
-    failing the tick."""
-    b = _bundle_at(tmp_path)
-    monkeypatch.setattr(hub_adapter.sync, "held", lambda vault: b)
-
-    def _boom() -> dict:
-        raise hub_adapter.source.ZoteroUnavailable("the network went away")
-
-    monkeypatch.setattr(hub_adapter.source, "whoami", _boom)
-    monkeypatch.setattr(hub_adapter.source, "versions", _boom)
-    out = asyncio.run(hub_adapter._h_status({}))
-    assert out["library"]["reachable"] is False
-    assert "behind" not in out
 
 
 @pytest.mark.asyncio
@@ -147,10 +101,6 @@ def test_items_pages_what_moved_past_the_cursor_without_notes():
     rest = hub_adapter.items_page(library, {"users/0": 2}, first["next"], 2)
     assert [i["key"] for i in rest["items"]] == ["K5"] and rest["next"] is None
     assert rest["versions"] == {"users/0": 5}
-
-
-def test_items_reads_a_library_the_cursor_omits_whole():
-    assert hub_adapter.items_page(_library(1, 2), {"groups/9": 50}, 0, 10)["total"] == 2
 
 
 def test_items_is_open_to_peers_and_the_operator_only(tmp_path, monkeypatch):

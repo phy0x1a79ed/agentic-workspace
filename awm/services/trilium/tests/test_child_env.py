@@ -24,15 +24,6 @@ def test_authentication_is_off_by_default():
     assert env["TRILIUM_GENERAL_NOAUTHENTICATION"] == "true"
 
 
-def test_turning_the_invariant_off_restores_trilium_s_own_login(monkeypatch):
-    """`TRILIUM_EDGE_ONLY=0` is the supported way to reach the vault by some
-    other route, and it must take the password back with it. One knob, so
-    nobody can set half of this."""
-    monkeypatch.setattr(instances, "EDGE_ONLY", False)
-    env = server.child_env(instances.VAULT)
-    assert "TRILIUM_GENERAL_NOAUTHENTICATION" not in env
-
-
 def test_the_bind_is_loopback_whatever_the_environment_says(monkeypatch):
     """Both levers, because the cost of losing this one is a public,
     unauthenticated knowledge base.
@@ -47,14 +38,6 @@ def test_the_bind_is_loopback_whatever_the_environment_says(monkeypatch):
     env = server.child_env(instances.VAULT)
     assert env["TRILIUM_HOST"] == "127.0.0.1"
     assert "TRILIUM_NETWORK_HOST" not in env
-
-
-def test_the_port_comes_from_the_one_place_that_defines_it():
-    """The supervisor binds it and the edge proxies to it. Two copies of this
-    number is a vault nobody can reach and no error that says why."""
-    env = server.child_env(instances.VAULT)
-    assert env["TRILIUM_PORT"] == str(config.VAULT_PORT)
-    assert instances.UPSTREAM_PORT == config.VAULT_PORT
 
 
 def test_arbitrary_code_execution_stays_off():

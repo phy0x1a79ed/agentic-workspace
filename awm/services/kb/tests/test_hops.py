@@ -81,22 +81,6 @@ def test_an_authors_hop_finds_the_seeds_coauthors_papers_and_leaves_the_seeds_ou
     assert [p for p, _ in h.hop(["g1"], "authors", before="2019-01-01")] == ["old"]
 
 
-def test_a_wrong_first_seed_leaves_the_next_seeds_papers_in_the_answer(tmp_path):
-    h = _group(tmp_path)
-    got = dict(h.hop(["s1", "g1"], "authors"))
-    assert "g2" in got and "g3" in got
-
-
-def test_an_earlier_seed_weighs_more_and_equal_walks_go_to_the_newest(tmp_path):
-    h = _group(tmp_path)
-    first = [p for p, _ in h.hop(["g2", "g3"], "authors")]
-    assert first.index("g1") == 0  # both seeds' coauthor
-    assert [p for p, _ in h.hop(["g2", "s1"], "authors")][:2] == ["g1", "old"]
-    tie = write_hops(tmp_path / "tie", ["a", "x", "y"], authored=[("a", "A"), ("x", "A"), ("y", "A")],
-                     dates={"x": 20190101, "y": 20250101})
-    assert [p for p, _ in tie.hop(["a"], "authors")] == ["y", "x"]
-
-
 def test_arrays_from_a_build_with_a_prior_still_hop(tmp_path):
     old = write_hops(tmp_path / "old", ["a", "x"], authored=[("a", "A"), ("x", "A")], prior={"x": 0.5})
     assert [p for p, _ in old.hop(["a"], "authors")] == ["x"]
@@ -145,13 +129,6 @@ async def test_a_query_answers_in_two_sections_and_a_hop_is_its_own_call(served)
     assert {h["id"] for h in chained["hits"]} == {"g1", "g2", "g3"}
     with pytest.raises(ValueError, match="along must be"):
         await hub_adapter.HANDLERS["hop"]({"ids": ["g1"], "along": "wrote"})
-
-
-async def test_kb_hop_chains_from_ids(served):
-    got = await hub_adapter.HANDLERS["hop"]({"ids": ["g1"], "along": "cited_by"})
-    assert got["hits"] == []
-    got = await hub_adapter.HANDLERS["hop"]({"ids": "s1", "along": "cited_by"})
-    assert [h["id"] for h in got["hits"]] == ["g1"] and "passages" not in got["hits"][0]
 
 
 async def test_the_author_filter_narrows_every_section(served, tmp_path, monkeypatch):

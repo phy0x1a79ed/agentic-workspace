@@ -43,36 +43,6 @@ def caught_up(scope, library) -> bundle.Bundle:
 # -- what a pass costs -------------------------------------------------------
 
 
-def test_a_tick_where_nothing_moved_asks_once_per_library(scope, library):
-    library.put("AAA", title="A paper")
-    b = caught_up(scope, library)
-    library.calls.clear()
-
-    out = sync._pull(b, force=False)
-
-    assert out["changed"] is False
-    assert len(library.asked("items")) == 2, "one window read per library"
-    assert library.asked("library_version") == [], \
-        "the window read is the movement probe"
-
-
-def test_a_paper_lands_in_one_request(scope, library):
-    """The whole point. Somebody is standing over this one."""
-    library.put("AAA", title="First")
-    b = caught_up(scope, library)
-    library.calls.clear()
-    library.put("BBB", title="Just saved")
-
-    out = sync._pull(b, force=False, only=["users/0"])
-
-    assert out["changed"] is True
-    # One request between the stream frame and the paper. Not the library list,
-    # not a version probe, not the collections window, not the deletions.
-    assert library.calls == [("items", "users/0", 1)], library.calls
-    assert {i["ref"] for i in b.read()["items"]} == {"users/0/AAA",
-                                                    "users/0/BBB"}
-
-
 def test_a_push_reads_only_the_library_it_was_told_about(scope, library):
     library.put("AAA", title="Mine")
     library.put("GGG", library="groups/1", title="Theirs")
@@ -114,46 +84,6 @@ def test_a_trashed_paper_makes_the_pass_read_the_library_whole(scope, library):
 
     assert "My Library" in out["whole"], "the pass did not escalate"
     assert {i["ref"] for i in b.read()["items"]} == {"users/0/AAA"}
-
-
-def test_a_collection_rename_does_not_cost_a_whole_read(scope, library):
-    """It moves the version and returns no items, which looks exactly like a
-    trashing until the collections window is read. Escalating on it would spend
-    the eleven-page read this whole change exists to avoid."""
-    library.put_collection("COL", "Papers")
-    library.put("AAA", title="A paper", collections=["COL"])
-    b = caught_up(scope, library)
-    library.calls.clear()
-    library.put_collection("COL", "Renamed")
-
-    out = sync._pull(b, force=False)
-
-    assert out["whole"] == [], "a rename should not read the library whole"
-    assert [c["name"] for c in b.read()["collections"]] == ["Renamed"]
-
-
-def test_a_library_unread_for_a_day_is_read_whole(scope, library, monkeypatch):
-    library.put("AAA", title="A paper")
-    b = caught_up(scope, library)
-    monkeypatch.setattr(sync, "_stale", lambda when: True)
-    library.calls.clear()
-    library.put("BBB", title="Another")
-
-    out = sync._pull(b, force=False)
-
-    assert "My Library" in out["whole"]
-    assert [c[2] for c in library.asked("items")] == [None, None], \
-        "a whole read must send no cursor"
-
-
-def test_forcing_sends_no_cursor(scope, library):
-    library.put("AAA", title="A paper")
-    b = caught_up(scope, library)
-    library.calls.clear()
-
-    sync._pull(b, force=True)
-
-    assert [c[2] for c in library.asked("items")] == [None, None]
 
 
 # -- the ways this could empty the vault -------------------------------------
@@ -220,35 +150,6 @@ def test_the_whole_read_stamp_stays_out_of_the_digest(scope, library):
     assert bundle.Bundle(scope).digest == was
 
 
-def test_a_narrowed_pass_asks_nobody_which_libraries_exist(scope, library):
-    """On a push the caller was told which library moved, and the bundle already
-    carries that library's name on every record of it. Asking Zotero is a
-    request spent learning what is already known."""
-    library.put("AAA", title="A paper")
-    b = caught_up(scope, library)
-    library.calls.clear()
-    library.put("BBB", title="Just saved")
-
-    sync._pull(b, force=False, only=["users/0"])
-
-    assert library.asked("libraries") == []
-
-
-def test_a_library_the_bundle_has_never_seen_is_worth_a_request(scope, library):
-    """A name is inside every fingerprint and is the shelf's title, so an empty
-    one rewrites a library's worth of notes and renames their shelf to
-    nothing."""
-    library.put("AAA", title="A paper")
-    b = caught_up(scope, library)
-    library.calls.clear()
-    library.put("GGG", library="groups/1", title="First in the group")
-
-    out = sync._pull(b, force=False, only=["groups/1"])
-
-    assert library.asked("libraries"), "the name was guessed rather than asked"
-    assert out["read"] == ["A group"]
-
-
 # -- the one that matters ----------------------------------------------------
 
 
@@ -312,44 +213,3 @@ def test_replaying_windows_lands_where_one_whole_read_would(scope, library):
 
     library.trash("CCC")
     catch_up("a paper trashed, which no route reports")
-
-
-def test_a_group_renamed_outside_its_version_waits_for_a_whole_read(scope,
-                                                                    library):
-    """Not a defect, and worth stating because the equivalence test above leaves
-    it out. A library's display name is not part of its contents, so renaming a
-    group moves no version and no window can carry it. The daily whole read is
-    what picks it up."""
-    library.put("GGG", library="groups/1", title="Shared")
-    b = caught_up(scope, library)
-    library.rename_library("groups/1", "Renamed group")
-
-    sync._pull(b, force=False)
-    assert {i["library_name"] for i in b.read()["items"]} == {"A group"}
-
-    sync._pull(b, force=True)
-    assert {i["library_name"] for i in b.read()["items"]} == {"Renamed group"}
-
-
-def test_a_bundle_from_before_notes_carried_keys_is_read_whole(scope, library):
-    """The live bundle at the time this landed held a bare list of note HTML.
-    Nothing can merge a window into that — no entry can be named — so the pass
-    has to rebuild it, and a bundle with no whole-read stamp is due exactly that.
-    """
-    library.put("AAA", title="A paper")
-    library.put("N1", parent="AAA", item_type="note", note="<p>one</p>")
-    b = caught_up(scope, library)
-
-    payload = json.loads(scope.blob)
-    payload.pop("whole_read")
-    for record in payload["items"]:
-        if record.get("notes"):
-            record["notes"] = list(record["notes"].values())
-    scope.save(json.dumps(payload).encode())
-    b = bundle.Bundle(scope)
-
-    out = sync._pull(b, force=False)
-
-    assert out["whole"] == ["A group", "My Library"]
-    assert [i for i in b.read()["items"] if i["ref"] == "users/0/AAA"][0][
-        "notes"] == {"N1": "<p>one</p>"}

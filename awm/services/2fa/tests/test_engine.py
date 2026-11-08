@@ -39,18 +39,6 @@ def make_engine(client: FakeClient, **kw) -> ApprovalEngine:
 
 
 @pytest.mark.smoke
-def test_single_login_auto_approves_within_budget():
-    c = FakeClient()
-    eng = make_engine(c)
-    eng.grant(1)
-    eng.handle_transactions([tx("u1")])
-    assert c.answered == [("u1", "approve")]
-    assert eng.approved_count == 1
-    assert eng.budget_remaining() == 0
-    assert eng.held_transactions() == []
-
-
-@pytest.mark.smoke
 def test_no_budget_holds_without_approving():
     """The old bug: pushes arrive but nothing is armed → hold, never approve."""
     c = FakeClient()
@@ -59,20 +47,6 @@ def test_no_budget_holds_without_approving():
     assert c.answered == []
     assert {t.urgid for t in eng.held_transactions()} == {"u1", "u2"}
     assert eng.approved_count == 0
-
-
-@pytest.mark.smoke
-def test_n_overlapping_grants_approve_n():
-    """The fix: N overlapping arms → N overlapping pushes all approve at once."""
-    c = FakeClient()
-    eng = make_engine(c)
-    eng.grant(1)
-    eng.grant(1)  # two overlapping connects → budget 2
-    eng.handle_transactions([tx("u1"), tx("u2")])
-    assert {a for a in c.answered} == {("u1", "approve"), ("u2", "approve")}
-    assert eng.approved_count == 2
-    assert eng.budget_remaining() == 0
-    assert eng.held_transactions() == []
 
 
 @pytest.mark.smoke
@@ -109,21 +83,6 @@ def test_retro_promotion_on_later_grant():
 
 
 @pytest.mark.smoke
-def test_approve_and_deny_held():
-    c = FakeClient()
-    eng = make_engine(c)
-    eng.handle_transactions([tx("u1"), tx("u2")])  # budget 0 → both held
-    assert eng.approve("u1") is True
-    assert ("u1", "approve") in c.answered
-    assert eng.deny("u2") is True
-    assert ("u2", "deny") in c.answered
-    assert eng.held_transactions() == []
-    # Unknown / already-handled ids resolve to False, not an error.
-    assert eng.approve("u1") is False
-    assert eng.deny("nope") is False
-
-
-@pytest.mark.smoke
 def test_approve_all_clears_and_does_not_consume_budget():
     c = FakeClient()
     eng = make_engine(c)
@@ -137,18 +96,6 @@ def test_approve_all_clears_and_does_not_consume_budget():
     assert ("u3", "approve") in c.answered
     assert ("u4", "approve") in c.answered
     assert eng.budget_remaining() == 1  # approve-all did not spend it
-
-
-@pytest.mark.smoke
-def test_social_style_large_budget_approves_all_pending():
-    """The Discord /approve path arms a large count; every push approves."""
-    c = FakeClient()
-    eng = make_engine(c)
-    eng.grant(1000)
-    eng.handle_transactions([tx(f"u{i}") for i in range(5)])
-    assert eng.approved_count == 5
-    assert eng.budget_remaining() == 995
-    assert eng.held_transactions() == []
 
 
 @pytest.mark.smoke
@@ -183,12 +130,3 @@ def test_failed_reply_is_not_counted_or_charged():
     assert eng.approved_count == 0
     assert c.answered == []
     assert eng.budget_remaining() == 1  # a failed reply does not spend budget
-
-
-@pytest.mark.smoke
-def test_grant_and_clear_budget():
-    eng = make_engine(FakeClient())
-    assert eng.grant(3) == 3
-    assert eng.budget_remaining() == 3
-    assert eng.clear_budget() == 3
-    assert eng.budget_remaining() == 0

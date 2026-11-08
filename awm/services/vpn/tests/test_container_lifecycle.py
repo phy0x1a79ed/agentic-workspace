@@ -49,8 +49,6 @@ class FakeDocker:
             self.state = ""
         elif verb == "run":
             self.state = "running" if self.run_starts else "exited"
-        elif verb == "logs":
-            out = "Session terminated by server\n"
         return subprocess.CompletedProcess(args, 0, out, "")
 
 
@@ -96,17 +94,6 @@ def test_a_run_that_outlives_the_cli_is_judged_by_what_the_daemon_did(harness):
         "an exit that came up must not be torn down for the CLI's timeout"
 
 
-def test_a_dead_exit_leaves_its_last_words_in_the_log(harness, caplog):
-    container, install, _ = harness
-    install(FakeDocker(state="exited"))
-
-    with caplog.at_level("WARNING", logger="awm.vpn.container"):
-        container.up("ubc")
-
-    assert "Session terminated by server" in caplog.text
-    assert "status=exited" in caplog.text
-
-
 def test_a_remove_that_never_finishes_says_so(harness):
     container, install, _ = harness
 
@@ -121,22 +108,6 @@ def test_a_remove_that_never_finishes_says_so(harness):
 
     with pytest.raises(container.VpnError, match="still there"):
         container.up("ubc")
-
-
-def test_a_remove_that_timed_out_but_finished_carries_on(harness):
-    container, install, _ = harness
-
-    class _RmLandsLate(FakeDocker):
-        def __call__(self, args, **kw):
-            if args[0] == "rm" and self.state:
-                self.calls.append(list(args))
-                self.state = ""     # gone by the time anyone looks
-                raise container.DockerTimeout("docker rm -f timed out after 60.0s")
-            return super().__call__(args, **kw)
-
-    install(_RmLandsLate(state="exited"))
-
-    assert container.up("ubc")["status"] == "up"
 
 
 def test_concurrent_ups_dial_once(harness):

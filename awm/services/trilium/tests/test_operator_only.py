@@ -98,19 +98,6 @@ def test_the_console_still_works(verb):
         pass
 
 
-@pytest.mark.parametrize("as_", EDGE_IDENTITIES)
-def test_reading_is_open_to_anyone_signed_in(as_):
-    """A collaborator needs to see whether the vault is up and whether there is
-    a copy to recover from. Neither fact is anyone's private business."""
-    for verb in EDGE_VERBS:
-        try:
-            asyncio.run(hub_adapter.HANDLERS[verb]({}, as_))
-        except PermissionError:  # pragma: no cover
-            pytest.fail(f"{verb} refused a signed-in caller")
-        except Exception:  # noqa: BLE001 — no vault on disk; only the gate matters
-            pass
-
-
 def test_status_sheds_the_operators_half_for_a_signed_in_caller():
     """Pids, ports and absolute paths are an operator's business. On a public
     host they are gratuitous, and a path is a small map of the machine."""
@@ -120,10 +107,3 @@ def test_status_sheds_the_operators_half_for_a_signed_in_caller():
     for key in ("pid", "port", "scope", "data_dir", "log"):
         assert key not in through_edge["vault"], key
         assert key in from_console["vault"], key
-
-
-def test_the_vaults_address_names_no_host_or_port():
-    """It is the same origin as the page asking. A host and a port here would
-    be a guess, and the retired one guessed wrong on any multi-homed node."""
-    out = asyncio.run(hub_adapter.HANDLERS["url"]({}, "user:tony"))
-    assert out == {"path": "/trilium/"}

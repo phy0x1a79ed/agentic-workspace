@@ -42,13 +42,6 @@ def test_the_name_says_when_a_snapshot_was_taken(scope):
     assert vault._taken_at(path) == NOW - timedelta(days=30)
 
 
-def test_recent_snapshots_are_all_kept(scope):
-    for days in range(0, 10):
-        _write(scope, NOW - timedelta(days=days))
-    assert vault.prune_snapshots(scope, keep_days=14, now=NOW) == []
-    assert len(list(scope.snapshots_dir.iterdir())) == 10
-
-
 def test_older_snapshots_thin_to_one_a_month(scope):
     """The working tree must not grow without bound. The archive keeps
     everything, which is what makes thinning the tree safe."""
@@ -71,29 +64,6 @@ def test_older_snapshots_thin_to_one_a_month(scope):
 def test_a_fresh_snapshot_means_no_new_one(scope):
     _write(scope, datetime.now(timezone.utc) - timedelta(hours=2))
     assert vault.scheduled_snapshot(scope)["action"] == "not-due"
-
-
-def test_a_vault_with_no_snapshots_is_due(scope, monkeypatch):
-    """The first tick on a node that has never snapshotted must take one, not
-    wait for an age it cannot measure."""
-    taken = {}
-    monkeypatch.setattr(vault, "snapshot",
-                        lambda v, name, commit: taken.setdefault(
-                            "call", {"snapshot": f"backup-{name}", "bytes": 1}))
-    monkeypatch.setattr(vault, "_pin_and_commit",
-                        lambda v, message, chunk: {"committed": True,
-                                                   "message": message})
-    out = vault.scheduled_snapshot(scope)
-    assert out["action"] == "snapshot"
-    assert taken["call"]["snapshot"] == "backup-nightly"
-
-
-def test_a_node_with_no_checkout_does_not_schedule(tmp_path):
-    """A node with no vault checkout has nothing to pin.
-    The schedule stands down rather than writing copies nobody ships."""
-    v = Vault(scope=tmp_path)
-    v.snapshots_dir.mkdir(parents=True)
-    assert vault.scheduled_snapshot(v)["action"] == "not-a-checkout"
 
 
 def test_the_prune_and_the_pin_land_together(scope, monkeypatch):

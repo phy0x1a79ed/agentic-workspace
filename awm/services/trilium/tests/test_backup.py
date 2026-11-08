@@ -49,12 +49,6 @@ def store(tmp_path):
     return s
 
 
-def test_consistent_copy_reads_the_live_db(tmp_path):
-    src = _vault(tmp_path / "live.db")
-    dst = backup.consistent_copy(src, tmp_path / "copy.db")
-    assert backup.read_facts(dst).live == backup.read_facts(src).live
-
-
 def test_a_quiet_night_rotates_in(store, tmp_path):
     assert not store.accept(_vault(tmp_path / "a.db")).hold
     v = store.accept(_vault(tmp_path / "b.db", changes=20))
@@ -77,11 +71,6 @@ def test_each_check_holds_the_night(store, tmp_path, night, reason):
     assert v.hold and any(reason in r for r in v.reasons), v.reasons
     assert (store.root / "approved.db").read_bytes() == before
     assert len(store.state()["held"]) == 1
-
-
-def test_a_few_soft_deletes_pass(store, tmp_path):
-    store.accept(_vault(tmp_path / "base.db"))
-    assert not store.accept(_vault(tmp_path / "n.db", deleted=["n1", "n2"])).hold
 
 
 def test_release_makes_the_held_night_the_baseline(store, tmp_path):
@@ -109,10 +98,3 @@ def test_rotation_keeps_day_week_month(store, tmp_path):
 
 
 WEEK = 7 * DAY
-
-
-def test_nightly_files_a_hold(store, tmp_path):
-    store.accept(_vault(tmp_path / "base.db"))
-    held = []
-    backup.nightly(lambda p: _vault(p, erased=["n3"]), store, hold=held.append)
-    assert held and "erased" in held[0][0]

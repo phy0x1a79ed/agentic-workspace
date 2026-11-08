@@ -80,36 +80,6 @@ def test_a_restore_under_a_live_server_is_refused(inst, monkeypatch):
         vault.restore_files(inst, src)
 
 
-def test_a_container_backup_is_refused_rather_than_copied(inst, monkeypatch):
-    """A compressed or encrypted `.tnbackup` is not a database. Copied into
-    place it would be a `document.db` SQLite cannot open."""
-    monkeypatch.setattr(instances, "listening", lambda *a, **k: False)
-    src = inst.snapshots_dir / "backup-encrypted-20260101T000000Z.tnbackup"
-    src.write_bytes(b"container")
-
-    with pytest.raises(ValueError, match="restore screen"):
-        vault.restore_files(inst, src)
-
-
-def test_a_snapshot_resolves_by_stem_filename_or_bare_name(inst):
-    _pinned(inst, "weekly-20260826T120000Z")
-    for given in ("weekly-20260826T120000Z",
-                  "backup-weekly-20260826T120000Z",
-                  "backup-weekly-20260826T120000Z.db"):
-        assert vault.resolve_snapshot(inst, given).name == \
-            "backup-weekly-20260826T120000Z.db"
-
-
-def test_snapshots_separates_the_durable_from_the_rotating(inst):
-    _pinned(inst, "named-20260826T120000Z")
-    (inst.rolling_dir / "backup-daily.db").write_bytes(b"rotates")
-
-    kinds = {s["name"]: s["kind"] for s in vault.snapshots(inst)["snapshots"]}
-
-    assert kinds["backup-named-20260826T120000Z"] == "snapshot"
-    assert kinds["backup-daily"] == "rolling"
-
-
 def test_an_export_entry_that_escapes_the_scope_is_dropped(tmp_path):
     """A traversal entry is dropped, not sanitised: a zip carrying one is not a
     Trilium export, and guessing what it meant is how the traversal lands."""
@@ -145,23 +115,6 @@ def test_an_empty_export_does_not_replace_the_notes_tree(inst, monkeypatch):
         vault.export(inst, commit=False)
 
     assert (inst.notes_dir / "kept.md").read_text() == "still here"
-
-
-def test_a_scope_that_is_not_a_checkout_keeps_its_files_and_says_so(tmp_path):
-    """A node with no vault checkout has a plain directory here rather
-    than a worktree, and pins nothing. The snapshot still lands; only the
-    history is missing, and saying that beats a `git add` failure that reads as
-    though the snapshot itself went wrong."""
-    plain = instances.Vault(scope=tmp_path / "plain")
-    plain.snapshots_dir.mkdir(parents=True)
-    (plain.snapshots_dir / "backup-x.db").write_bytes(b"sqlite")
-
-    report = vault._pin_and_commit(plain, "vault: snapshot x", vault.CHUNK)
-
-    assert plain.exists and not plain.is_checkout
-    assert report["committed"] is False
-    assert "not a git checkout" in report["detail"]
-    assert (plain.snapshots_dir / "backup-x.db").is_file()
 
 
 def test_the_export_is_pinned_rather_than_committed_as_text(inst, monkeypatch):

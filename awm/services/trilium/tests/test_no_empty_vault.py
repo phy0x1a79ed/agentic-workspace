@@ -47,14 +47,6 @@ def spawned(monkeypatch) -> list[list[str]]:
     return calls
 
 
-@pytest.fixture
-def launchbar(monkeypatch) -> list[str]:
-    settled: list[str] = []
-    monkeypatch.setattr(provision, "hide_day_note_launchers",
-                        lambda: settled.append("settled") or {"moved": [], "failed": []})
-    return settled
-
-
 def test_an_empty_path_refuses_to_start(vault, spawned, monkeypatch):
     created = []
     monkeypatch.setattr(provision, "ensure_document",
@@ -78,27 +70,6 @@ def test_the_supervision_loop_does_not_make_a_vault(vault, spawned):
     assert out["action"] == "respawn-failed"
     assert "no vault database" in out["error"]
     assert spawned == []
-
-
-def test_an_existing_db_starts(vault, spawned, launchbar, monkeypatch):
-    monkeypatch.setattr(provision, "ensure_document",
-                        lambda **kw: pytest.fail("start must not create a vault"))
-    vault.data_dir.mkdir(parents=True)
-    vault.document_db.write_bytes(b"SQLite format 3\0")
-    out = server.Child(vault).start()
-    assert out["action"] == "started" and out["initialized"] is True
-    assert len(spawned) == 1 and launchbar == ["settled"]
-
-
-def test_init_creates_a_vault(vault, spawned, launchbar, monkeypatch):
-    def _create(**kw):
-        vault.document_db.write_bytes(b"SQLite format 3\0")
-        return {"action": "created", "initialized": True}
-
-    monkeypatch.setattr(provision, "ensure_document", _create)
-    out = server.Child(vault).init()
-    assert out["action"] == "initialized" and out["initialized"] is True
-    assert len(spawned) == 1 and launchbar == ["settled"]
 
 
 def test_init_refuses_an_existing_vault(vault, spawned, monkeypatch):

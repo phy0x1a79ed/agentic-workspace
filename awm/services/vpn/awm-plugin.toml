@@ -4,6 +4,7 @@ version = "0.1.0"
 
 [[service]]
 name = "vpn"
+install = "install.sh"
 
 [[tool]]
 name = "vpn"

@@ -1,16 +1,15 @@
 #!/usr/bin/env bash
-# Install the awm-kb service into the awm env, and the `kb` env its server runs in.
+# Build the papers plugin's own runtime (conda env awm-papers, or AWM_ENV), and the `kb` env its server runs in.
 #
-# The server's dependencies (fastembed, faiss, PyMuPDF) never enter the awm
-# env. They live in a separate env built from the kb checkout's own
-# envs/kb/base.yml, and this script records that env's interpreter for the
-# supervisor. A node with no kb checkout installs the service and warns: it
-# registers, and `kb status` says why it has no server.
+# The server's dependencies (fastembed, faiss, PyMuPDF) never enter the adapter env. They live in
+# a separate env built from the kb checkout's own envs/kb/base.yml, and this script records that
+# env's interpreter for the supervisor. A node with no kb checkout installs the service and warns:
+# it registers, and `kb status` says why it has no server.
 #
-# Override the awm env with AWM_ENV, the kb env with KB_ENV, the checkout with KB_CHECKOUT.
+# Override the kb env with KB_ENV, the checkout with KB_CHECKOUT.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
-ENV="${AWM_ENV:-awm}"
+ENV="${AWM_ENV:-awm-papers}"
 KB_ENV="${KB_ENV:-kb}"
 REPO="$(git -C "$HERE" rev-parse --show-toplevel)"
 AWM="${AWM_ROOT:-$REPO/awm}"
@@ -29,6 +28,12 @@ workspace_root() {
 WS="$(workspace_root "$HERE")"
 CHECKOUT="${KB_CHECKOUT:-$WS/projects/kb/release}"
 ENV_FILE="$CHECKOUT/envs/kb/base.yml"
+
+if ! command -v mamba >/dev/null; then
+    conda_root="${AWM_CONDA_ROOT:-$HOME/miniforge3}"
+    export PATH="$conda_root/condabin:$conda_root/bin:$PATH"
+fi
+mamba run -n "$ENV" true 2>/dev/null || mamba create -y -n "$ENV" -c conda-forge python=3.12 pip
 
 run() { echo "+ pip install -e $*"; mamba run -n "$ENV" pip install -e "$@"; }
 
@@ -61,5 +66,5 @@ else
 fi
 
 mamba run -n "$KB_ENV" python -c 'import sys; print(sys.executable)' > "$HERE/kb-python"
-echo "Installed awm-kb into env '$ENV'."
+echo "Installed awm-papers into env '$ENV'."
 echo "Server:  $CHECKOUT (env '$KB_ENV': $(cat "$HERE/kb-python"))"

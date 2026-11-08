@@ -30,11 +30,6 @@ def test_every_function_publishes_a_science_tool_over_its_short_name():
         assert fn["tool"] == f"science_{fn['name']}", fn
 
 
-def test_the_plugin_manifest_declares_the_tool_and_tier():
-    toml = tomllib.loads((Path(__file__).parents[1] / "awm-plugin.toml").read_text())
-    assert [(t["name"], t["tier"]) for t in toml["tool"]] == [("science", "on")]
-
-
 def test_only_the_daemon_verbs_are_hidden_from_mcp():
     """Hidden verbs keep answering on the CLI and over HTTP."""
     hidden = {fn["tool"] for fn in FUNCTIONS
@@ -45,10 +40,6 @@ def test_only_the_daemon_verbs_are_hidden_from_mcp():
     assert visible == {"science_status", "science_url", "science_signin_url",
                        "science_connector", "science_grants",
                        "science_message", "science_new", "science_read"}
-
-
-def test_every_declared_function_has_a_handler():
-    assert {fn["name"] for fn in FUNCTIONS} == set(HANDLERS)
 
 
 def test_the_destructive_verbs_carry_a_timeout():

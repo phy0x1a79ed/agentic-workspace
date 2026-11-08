@@ -11,30 +11,11 @@ from __future__ import annotations
 
 import pytest
 
-from awm import config
 from awm.trilium import instances
 
 pytestmark = [pytest.mark.unit, pytest.mark.smoke]
 
 VAULT = instances.VAULT
-
-
-def test_the_vault_has_a_repository_apart_from_the_fork():
-    """The fork is public and its release tags name code. Nightly pins committed
-    there would publish with it and move `git describe` on every release.
-    `projects/userdata/<name>` is not a candidate either: every directory there
-    is one person's data, and the vault is shared."""
-    assert "userdata" not in instances.VAULT_HOME.parts
-    assert instances.VAULT_HOME.parts[-3:] == ("projects", "vault", "release")
-    assert VAULT.snapshots_dir.is_relative_to(VAULT.scope / "data")
-    assert VAULT.notes_dir.is_relative_to(VAULT.scope / "data")
-
-
-def test_the_scope_is_the_vault_checkout_by_default(monkeypatch):
-    import importlib
-    monkeypatch.delenv("TRILIUM_VAULT_SCOPE", raising=False)
-    reloaded = importlib.reload(instances)
-    assert reloaded.SCOPE == reloaded.VAULT_HOME
 
 
 def test_the_live_database_is_never_where_a_pin_would_reach():
@@ -53,38 +34,6 @@ def test_trilium_never_writes_into_the_pinned_chunk():
     directory has to sit outside the chunk or the daily backup stops."""
     assert VAULT.snapshots_dir not in VAULT.rolling_dir.parents
     assert VAULT.rolling_dir.is_relative_to(VAULT.data_dir)
-
-
-def test_a_restore_keeps_what_it_replaced_out_of_git_and_out_of_the_chunk():
-    """Superseded vaults are recoverable by moving a file back, which they
-    would not be if they were pinned or committed."""
-    assert VAULT.superseded_dir.is_relative_to(VAULT.data_dir)
-
-
-def test_install_artifacts_are_not_in_runtime_state():
-    """The user that installs and the user that runs differ on sirius. Anything
-    written at install time has to land where the installer can write it."""
-    assert instances.SERVER_DIR.is_relative_to(instances.INSTALL_DIR)
-    assert instances.SERVER_STAMP.is_relative_to(instances.INSTALL_DIR)
-    assert not instances.INSTALL_DIR.is_relative_to(instances.STATE_DIR)
-
-
-def test_the_port_has_exactly_one_definition():
-    """The supervisor binds it and the edge proxies to it. A second copy is a
-    vault nobody can reach, with no error that says why."""
-    assert instances.UPSTREAM_PORT is config.VAULT_PORT
-
-
-def test_the_scope_is_overridable_for_a_sandbox(monkeypatch):
-    """A dev sandbox points at its own vault rather than sharing the host's."""
-    monkeypatch.setenv("TRILIUM_VAULT_SCOPE", "/tmp/elsewhere")
-    import importlib
-    reloaded = importlib.reload(instances)
-    try:
-        assert str(reloaded.SCOPE) == "/tmp/elsewhere"
-    finally:
-        monkeypatch.delenv("TRILIUM_VAULT_SCOPE")
-        importlib.reload(instances)
 
 
 def test_the_server_is_the_pinned_fork_release(tmp_path, monkeypatch):

@@ -6,6 +6,7 @@ version = "0.1.0"
 
 [[service]]
 name = "claude-science"
+install = "install.sh"
 profiles = ["claude-science"]
 
 [[tool]]

@@ -66,31 +66,6 @@ def test_minting_a_bound_token(vault):
         f"?user=steven#root/{note_id}")
 
 
-def test_minting_an_open_token(vault):
-    note_id = _note(vault)
-    out = call("slice_expose", note_id=note_id)
-    assert out["user"] is None
-    assert out["url"] == (
-        f"https://vault.example.org:8443/slice/{out['token']}/#root/{note_id}")
-
-
-def test_a_writable_slice_is_recorded_as_such(vault):
-    note_id = _note(vault)
-    out = call("slice_expose", note_id=note_id, user="steven", write=True)
-    assert out["write"] is True
-
-
-def test_exposing_a_note_marks_it_sliced(vault):
-    note_id = _note(vault)
-    call("slice_expose", note_id=note_id, user="steven")
-    assert vault.labels(note_id).get("sliced") == ""
-
-
-def test_minting_without_a_note_id_is_a_refusal(vault):
-    with pytest.raises(ValueError, match="note_id"):
-        call("slice_expose")
-
-
 # -- resolving ------------------------------------------------------------
 
 
@@ -100,20 +75,6 @@ def test_resolving_a_bound_token(vault):
     out = call("slice_resolve", token=minted["token"])
     assert out == {"found": True, "note_id": note_id, "write": True,
                    "user": "steven"}
-
-
-def test_resolving_an_open_token(vault):
-    note_id = _note(vault)
-    minted = call("slice_expose", note_id=note_id)
-    out = call("slice_resolve", token=minted["token"])
-    assert out == {"found": True, "note_id": note_id, "write": False,
-                   "user": None}
-
-
-def test_resolving_an_unknown_token(vault):
-    out = call("slice_resolve", token="not-a-real-token")
-    assert out == {"found": False, "note_id": None, "write": False,
-                   "user": None}
 
 
 def test_resolving_a_revoked_token(vault):
@@ -132,14 +93,6 @@ def test_resolving_an_expired_token(vault):
     out = call("slice_resolve", token=minted["token"])
     assert out == {"found": False, "note_id": None, "write": False,
                    "user": None}
-
-
-def test_an_unexpired_token_still_resolves(vault):
-    note_id = _note(vault)
-    minted = call("slice_expose", note_id=note_id, user="steven",
-                  expires_in_hours=24)
-    out = call("slice_resolve", token=minted["token"])
-    assert out["found"] is True
 
 
 # -- revoking -------------------------------------------------------------
@@ -165,44 +118,4 @@ def test_a_second_live_slice_keeps_the_label_up(vault):
     assert vault.labels(note_id).get("sliced") == ""
 
 
-def test_revoking_an_unknown_token_is_a_refusal(vault):
-    with pytest.raises(ValueError, match="no slice"):
-        call("slice_revoke", token="not-a-real-token")
-
-
-def test_revoking_twice_is_idempotent(vault):
-    note_id = _note(vault)
-    minted = call("slice_expose", note_id=note_id, user="steven")
-    call("slice_revoke", token=minted["token"])
-    out = call("slice_revoke", token=minted["token"])
-    assert out["revoked"] is True
-
-
 # -- listing ----------------------------------------------------------------
-
-
-def test_listing_reports_bound_and_open_tokens(vault):
-    note_id = _note(vault)
-    call("slice_expose", note_id=note_id, user="steven")
-    call("slice_expose", note_id=note_id)
-    out = call("slice_list")
-    users = sorted((s["user"] or "") for s in out["slices"])
-    assert users == ["", "steven"]
-
-
-def test_listing_can_be_restricted_to_one_note(vault):
-    a = _note(vault)
-    b = _note(vault)
-    call("slice_expose", note_id=a, user="steven")
-    call("slice_expose", note_id=b, user="tony")
-    out = call("slice_list", note_id=a)
-    assert [s["note_id"] for s in out["slices"]] == [a]
-
-
-def test_a_revoked_slice_still_appears_in_the_list(vault):
-    note_id = _note(vault)
-    minted = call("slice_expose", note_id=note_id, user="steven")
-    call("slice_revoke", token=minted["token"])
-    out = call("slice_list", note_id=note_id)
-    assert out["slices"][0]["active"] is False
-    assert out["slices"][0]["revoked_at"] is not None

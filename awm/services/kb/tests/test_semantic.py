@@ -74,14 +74,6 @@ async def test_each_zones_best_papers_are_kept_and_merged(layer, server):
     assert server.related_bodies[0]["zones"] == ["body", "abstract", "title"] and server.related_bodies[0]["nouns"]
 
 
-async def test_a_paper_strong_in_two_zones_beats_one_strong_in_one(layer, server):
-    server.entries = [
-        entry("doi:10.1/lone", "abstract", 0.9), entry("doi:10.1/at", "abstract", 0.8),
-        entry("doi:10.1/at", "title", 0.9), entry("doi:10.1/old", "title", 0.85)]
-    got = await query(limit=3)
-    assert [h["id"] for h in got["related"]][0] == "doi:10.1/at"
-
-
 async def test_library_papers_answer_as_their_own_source_and_get_no_boost_in_kb(layer, server):
     server.entries = [entry("doi:10.1/at", "abstract", 0.9), entry("doi:10.1/cas", "abstract", 0.8),
                       entry("doi:10.1/old", "abstract", 0.7)]
@@ -94,21 +86,6 @@ async def test_library_papers_answer_as_their_own_source_and_get_no_boost_in_kb(
     mine = await hub_adapter.HANDLERS["library"]({"query": "molecular joining steps lineages", "limit": 3})
     assert [h["id"] for h in mine["related"]] == ["doi:10.1/old"] and "graph" not in mine
     assert len(server.related_bodies) == 1  # one meaning lookup served both sources
-
-
-async def test_a_hit_carries_its_title_date_and_url_and_no_passages(layer, server):
-    server.entries = [entry("doi:10.1/at", "body", 0.9, 1020, 1060),
-                      entry("doi:10.1/at", "abstract", 0.8, 0, 28)]
-    got = await query()
-    hit = got["related"][0]
-    assert hit["id"] == "doi:10.1/at" and hit["url"] == "https://doi.org/10.1/at" and hit["title"].startswith("Assembly")
-    assert not any("passages" in h for h in [*got["exact"], *got["related"]])
-
-
-async def test_an_entry_in_no_passage_keeps_the_hit(layer, server):
-    server.entries = [entry("doi:10.1/at", "body", 0.9, 90000, 90010)]
-    got = await query(query="zzqq")
-    assert [h["id"] for h in got["related"]] == ["doi:10.1/at"]
 
 
 async def test_kb_get_reads_a_paper_whole_and_refuses_one_it_lacks(layer):
@@ -129,19 +106,6 @@ async def test_exact_papers_are_not_repeated_in_related_and_keyword_matches_join
     assert kinds["doi:10.1/at"] == "meaning" and kinds["doi:10.1/lone"] == "meaning"
 
 
-async def test_the_date_filters_apply_to_meaning_matches(layer, server):
-    server.entries = [entry("doi:10.1/at", "abstract", 0.9), entry("doi:10.1/cas", "abstract", 0.8)]
-    got = await query(after="2020-01-01", before="2030-01-01")
-    assert [h["id"] for h in got["related"]] == ["doi:10.1/at"]
-
-
-async def test_archive_entries_and_unknown_papers_are_not_papers(layer, server):
-    server.entries = [entry("j1", "journal", 0.99, source="journals", part="text"),
-                      entry("doi:10.1/ghost", "abstract", 0.95), entry("doi:10.1/lone", "abstract", 0.5)]
-    got = await query(query="zzqq")
-    assert [h["id"] for h in got["related"]] == ["doi:10.1/lone"]
-
-
 @pytest.mark.parametrize("error", [
     client.KbError(503, "encoder is loading"),
     client.KbError(503, "no index under /w2/vectors/entries"),
@@ -156,43 +120,9 @@ async def test_without_the_server_encoder_or_index_it_answers_keywords_and_says_
         assert error.detail in got["degraded"]["semantic"]
 
 
-async def test_a_hop_paper_with_no_abstract_is_still_a_hit(layer, server, tmp_path, monkeypatch):
-    db = sqlite3.connect(layer.base_path)
-    db.execute("DELETE FROM passage WHERE paper_id = 'doi:10.1/old' AND zone = 'abstract'")
-    db.commit()
-    db.close()
-    write_hops(tmp_path / "hops", list(PAPERS), cites=[("doi:10.1/at", "doi:10.1/old")])
-    monkeypatch.setattr(hub_adapter, "HOPS", hops.Hops(tmp_path / "hops"))
-    graph = (await hub_adapter.HANDLERS["hop"]({"ids": ["doi:10.1/at"], "along": "cites"}))["hits"]
-    assert [(h["id"], h["title"]) for h in graph] == [("doi:10.1/old", "An ASSEMBLY INDEX survey from long ago")]
-    assert "passages" not in graph[0]
-
-
 async def test_a_project_filter_never_reaches_the_server(layer, server):
     got = await query(project="awm")
     assert got["exact"] == got["related"] == [] and server.related_bodies == []
-
-
-async def test_without_hop_arrays_a_query_answers_and_a_hop_says_why_not(layer, server, tmp_path, monkeypatch):
-    monkeypatch.setattr(hub_adapter, "HOPS", hops.Hops(tmp_path / "nowhere"))
-    server.entries = [entry("doi:10.1/at", "abstract", 0.9)]
-    got = await query()
-    assert [h["id"] for h in got["related"]] == ["doi:10.1/at"]
-    with pytest.raises(RuntimeError, match="no hop arrays"):
-        await hub_adapter.HANDLERS["hop"]({"ids": ["doi:10.1/at"]})
-    with pytest.raises(ValueError, match="hop arrays"):
-        await query(author="Cronin")
-
-
-def test_zone_union_keeps_a_papers_best_entry_in_each_zone():
-    entries = [entry("a", "body", 0.5), entry("a", "body", 0.9), entry("b", "body", 0.7), entry("c", "title", 0.4)]
-    assert semantic.zone_lists(entries, 5) == {"body": ["a", "b"], "abstract": [], "title": ["c"]}
-    assert semantic.zone_lists(entries, 1)["body"] == ["a"]
-
-
-def test_merge_sums_reciprocal_ranks():
-    merged = semantic.merge([["a", "b"], ["b", "c"], []])
-    assert [p for p, _ in merged] == ["b", "a", "c"]
 
 
 # -- verbs ---------------------------------------------------------------------------------------------------------

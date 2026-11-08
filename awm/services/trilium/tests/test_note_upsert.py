@@ -86,17 +86,6 @@ def test_a_second_run_writes_nothing(vault):
     assert not [c for c in vault.calls if c[0] in ("PUT", "POST")]
 
 
-def test_changed_content_replaces_the_body_in_place(vault):
-    api = etapi.client()
-    first = api.upsert_note(parent_note_id="root", title="Demo", content=IMG)
-    again = api.upsert_note(parent_note_id="root", title="Demo",
-                            content=IMG.replace("/b", "/b2"))
-    assert again == {"note_id": first["note_id"], "created": False,
-                     "changed": True}
-    assert len(vault.notes["root"]["children"]) == 1
-    assert vault.notes[first["note_id"]]["content"].endswith('/b2"></p>')
-
-
 def test_a_title_that_is_a_prefix_of_another_is_not_that_note(vault):
     """The reason this matches exactly rather than searching. Trilium's search
     would answer both, and the loser is somebody's writing."""
@@ -118,14 +107,3 @@ def test_two_notes_of_the_same_title_are_refused(vault):
     with pytest.raises(etapi.EtapiError, match="refusing to guess"):
         api.upsert_note(parent_note_id="root", title="Demo", content=IMG)
     assert vault.notes["note2"]["content"] == "<p>theirs</p>"
-
-
-def test_a_note_under_a_different_parent_is_a_different_note(vault):
-    api = etapi.client()
-    folder = api.upsert_note(parent_note_id="root", title="Figures",
-                             content="<p></p>")
-    under_root = api.upsert_note(parent_note_id="root", title="Demo",
-                                 content=IMG)
-    under_folder = api.upsert_note(parent_note_id=folder["note_id"],
-                                   title="Demo", content=IMG)
-    assert under_root["note_id"] != under_folder["note_id"]

@@ -1,31 +1,15 @@
 #!/usr/bin/env bash
-# Canonical install for the awm-claude-science service (editable, into the `awm`
-# env), plus a check that the workbench binary this service supervises is there.
+# Build the claude-science plugin's own runtime: the conda env awm-claude-science, or AWM_ENV.
 #
-# Two halves, because this service has two kinds of dependency:
-#
-#   1. Python — the adapter, the supervisor, the mesh fronts and the MCP bridge.
-#      Installs the component libraries it imports first, tlsfront among them
-#      (the fronts are a *configuration* of that library, not a copy of it),
-#      then the service.
-#
-#   2. The workbench binary — NOT built here. Upstream ships a single
-#      self-contained binary with its own installer, and its `update` subcommand
-#      already downloads, sha256-verifies and atomically swaps, with `--to
-#      <version>` for pinning and rollback. Reimplementing any of that would be
-#      strictly worse. So this script installs it if missing and otherwise
-#      leaves it alone, reporting what it found.
-#
-# Deliberately NOT here: provisioning the ~6 GB conda/R environments in
-# ~/.claude-science. The daemon does that on first run, in the background, and
-# it is the daemon's business. `awm claude-science status` reports whether it
-# has happened, so a half-set-up node explains itself.
-#
-# Override the target env with AWM_ENV=<name>.
+# The workbench binary is not built here. Upstream ships a self-contained binary whose
+# `update` subcommand downloads, verifies and swaps it, so this script installs it only
+# when missing and otherwise reports what it found. The ~6 GB conda/R environments in
+# ~/.claude-science are the daemon's business on first run; `awm claude-science status`
+# reports whether that has happened.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 AWM="${AWM_ROOT:-$(git -C "$HERE" rev-parse --show-toplevel)/awm}"
-ENV="${AWM_ENV:-awm}"
+ENV="${AWM_ENV:-awm-claude-science}"
 
 # The release this service has been verified against. Bumping it is a deliberate
 # step: the binary self-updates by default, so this is a floor and a record, not
@@ -33,6 +17,12 @@ ENV="${AWM_ENV:-awm}"
 PINNED_VERSION="${CLAUDE_SCIENCE_VERSION:-0.1.27}"
 BIN="${CLAUDE_SCIENCE_BIN:-$HOME/.local/bin/claude-science}"
 INSTALLER_URL="https://claude.ai/install-claude-science.sh"
+
+if ! command -v mamba >/dev/null; then
+    conda_root="${AWM_CONDA_ROOT:-$HOME/miniforge3}"
+    export PATH="$conda_root/condabin:$conda_root/bin:$PATH"
+fi
+mamba run -n "$ENV" true 2>/dev/null || mamba create -y -n "$ENV" -c conda-forge python=3.12 pip
 
 run() { echo "+ pip install -e $*"; mamba run -n "$ENV" pip install -e "$@"; }
 
@@ -42,12 +32,9 @@ run "$AWM/service_components/grantlib" --no-deps
 run "$AWM/service_components/tlsfront" --no-deps
 run "$HERE"
 
-# Bake the target env's absolute interpreter into a gitignored `.runtime-env`
-# sidecar so the hub supervisor can respawn this service under systemd's
-# minimal PATH (no `mamba`).
+# The gateway respawns this service under systemd's minimal PATH, which has no mamba.
 PYBIN="$(mamba run -n "$ENV" python -c 'import sys; print(sys.executable)')"
-printf 'AWM_PYTHON=%s\nAWM_ENV_BIN=%s\n' "$PYBIN" "$(dirname "$PYBIN")" \
-    > "$HERE/.runtime-env"
+printf 'AWM_PYTHON=%s\nAWM_ENV_BIN=%s\n' "$PYBIN" "$(dirname "$PYBIN")" > "$HERE/.runtime-env"
 
 # -- the workbench binary ---------------------------------------------------
 if [ "${CLAUDE_SCIENCE_SKIP_BINARY:-}" = "1" ]; then

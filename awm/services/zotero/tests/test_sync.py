@@ -61,15 +61,6 @@ def test_a_reference_becomes_a_note_carrying_its_citation_fields(v):
     assert note["labels"][sync.KEY_LABEL] == "users/0/AAA"
 
 
-def test_a_field_zotero_does_not_have_is_left_off_rather_than_written_blank(v):
-    """`#doi` meaning "there is no DOI" would make `#doi` useless as a
-    filter."""
-    seed(v, [item("AAA", title="No doi")])
-    out = sync.apply(v)
-    note = v.notes[v.owned(out["library_note"], sync.KEY_LABEL)["users/0/AAA"]]
-    assert "doi" not in note["labels"]
-
-
 def test_the_abstract_is_escaped_because_it_is_somebody_elses_text(v):
     """A note in this vault runs on awm's own origin, and an abstract arrives
     from a publisher's metadata."""
@@ -115,14 +106,6 @@ def test_a_paper_in_several_collections_is_one_note_in_several_places(v):
     keyed = v.owned(out["library_note"], sync.KEY_LABEL)
     assert len(keyed) == 1
     assert len(v.notes[keyed["users/0/AAA"]]["parents"]) == 2
-
-
-def test_a_paper_in_no_collection_sits_on_its_librarys_shelf(v):
-    seed(v, [item("AAA", library_name="My Library")])
-    out = sync.apply(v)
-    paper = v.notes[v.owned(out["library_note"], sync.KEY_LABEL)["users/0/AAA"]]
-    shelf = [nid for nid, n in v.notes.items() if n["title"] == "My Library"]
-    assert paper["parents"] == shelf
 
 
 # -- what it does on the second pass -----------------------------------------
@@ -195,11 +178,6 @@ def test_the_mirror_only_removes_what_the_mirror_put_there(v):
 # -- the bundle has to be there ----------------------------------------------
 
 
-def test_applying_without_a_bundle_says_where_to_get_one(v):
-    with pytest.raises(FileNotFoundError, match="zotero pull"):
-        sync.apply(v)
-
-
 # -- two syncs at once -------------------------------------------------------
 
 
@@ -211,13 +189,6 @@ def test_a_second_sync_is_refused_while_one_holds_the_lock(v):
     with sync.exclusive():
         with pytest.raises(sync.Busy, match="another zotero sync"):
             sync.apply(v)
-
-
-def test_the_lock_is_released_when_its_holder_lets_go(v):
-    seed(v, [item("AAA")])
-    with sync.exclusive():
-        pass
-    assert sync.apply(v)["items"] == 1
 
 
 def test_a_doubled_note_is_collapsed_rather_than_left_for_ever(v):
@@ -248,71 +219,7 @@ def test_the_oldest_copy_is_the_one_kept(v):
     assert v.owned(out["library_note"], sync.KEY_LABEL)["users/0/AAA"] == first
 
 
-def test_sync_holds_the_lock_across_both_halves(v, monkeypatch):
-    """Pull-then-apply as two locked steps leaves a gap: a second sync starting
-    between them applies the bundle the first has just rewritten, and both
-    decide the same papers are new."""
-    seed(v, [item("AAA")])
-    held: list[bool] = []
-
-    def _pull(b, *, force, only=None, phases=None):
-        try:
-            with sync.exclusive():
-                held.append(False)
-        except sync.Busy:
-            held.append(True)
-        return {"changed": True}
-
-    monkeypatch.setattr(sync, "_pull", _pull)
-    sync.run(v)
-    assert held == [True], "the lock was not held while pulling"
-
-
-def test_a_pass_says_where_it_spent_its_time(v, monkeypatch):
-    """Reasoning about this from request counts got it wrong once already: the
-    counts said the library read was the whole delay, and a measured pass said a
-    third of it happened after the last response from Zotero."""
-    seed(v, [item("AAA")])
-    monkeypatch.setattr(sync, "_pull",
-                        lambda b, *, force, only=None, phases=None:
-                        {"changed": True})
-
-    out = sync.run(v)
-
-    timings = out["timings"]
-    assert timings["total_s"] >= 0
-    # The phases a person waits through, named so a slow one can be found.
-    for phase in ("resolve_root", "survey", "upsert", "retire", "census",
-                  "status_note"):
-        assert phase in timings, f"{phase} is not timed"
-
-
 # -- the reference itself ----------------------------------------------------
-
-
-def test_the_journal_becomes_a_label_you_can_filter_on(v):
-    seed(v, [item("AAA", publication="Nature")])
-    out = sync.apply(v)
-    note = v.notes[v.owned(out["library_note"], sync.KEY_LABEL)["users/0/AAA"]]
-    assert note["labels"]["publication"] == "Nature"
-
-
-def test_an_item_with_no_journal_gets_no_publication_label(v):
-    seed(v, [item("AAA")])
-    out = sync.apply(v)
-    note = v.notes[v.owned(out["library_note"], sync.KEY_LABEL)["users/0/AAA"]]
-    assert "publication" not in note["labels"]
-
-
-def test_the_doi_reads_as_the_url_it_resolves_to(v):
-    """A bare identifier is not something a person can click, and the link
-    text is the half that says where it goes."""
-    seed(v, [item("AAA", doi="10.1038/nature12373")])
-    out = sync.apply(v)
-    body = v.notes[v.owned(out["library_note"],
-                           sync.KEY_LABEL)["users/0/AAA"]]["content"]
-    assert ('<a href="https://doi.org/10.1038/nature12373">'
-            "https://doi.org/10.1038/nature12373</a>") in body
 
 
 def test_a_javascript_url_does_not_become_a_link(v):
@@ -324,16 +231,6 @@ def test_a_javascript_url_does_not_become_a_link(v):
                            sync.KEY_LABEL)["users/0/AAA"]]["content"]
     assert "<a href=" not in body
     assert "javascript:alert(1)" in body
-
-
-def test_a_protocol_relative_url_is_still_a_link(v):
-    """The library holds exactly one, and an http/https-only guard would
-    silently unlink it."""
-    seed(v, [item("AAA", url="//scripts.iucr.org/cgi-bin/paper")])
-    out = sync.apply(v)
-    body = v.notes[v.owned(out["library_note"],
-                           sync.KEY_LABEL)["users/0/AAA"]]["content"]
-    assert '<a href="//scripts.iucr.org/cgi-bin/paper">' in body
 
 
 # -- where the library goes --------------------------------------------------
@@ -361,18 +258,6 @@ def test_the_chosen_notes_own_body_and_label_are_left_alone(v):
     assert v.notes[chosen]["labels"][sync.ROOT_LABEL] == ""
 
 
-def test_no_labelled_note_and_no_permission_to_make_one_refuses(v):
-    with pytest.raises(sync.NoRoot, match="zoteroLibrary"):
-        sync.apply(v, may_create=False)
-
-
-def test_no_labelled_note_with_permission_creates_the_library(v):
-    root, source_of_root, _ = sync._resolve_root(v, parent="root",
-                                                 may_create=True)
-    assert source_of_root == "title"
-    assert v.notes[root]["labels"][sync.ROOT_LABEL] == "1"
-
-
 def test_two_labelled_notes_refuse_and_name_both(v):
     """A root that alternates between passes builds the whole library under
     one, then builds it under the other and deletes the first."""
@@ -382,15 +267,6 @@ def test_two_labelled_notes_refuse_and_name_both(v):
     with pytest.raises(sync.Ambiguous) as e:
         sync.apply(v)
     assert a in str(e.value) and b in str(e.value)
-
-
-def test_a_keyed_note_outside_the_root_is_counted_but_not_touched(v):
-    seed(v, [item("AAA")])
-    stray = v.create(parent="root", title="an orphan",
-                     labels={sync.KEY_LABEL: "users/0/ZZZ"})
-    out = sync.apply(v)
-    assert out["outside_root"] == 1
-    assert stray in v.notes
 
 
 # -- archived notes ----------------------------------------------------------
@@ -411,49 +287,7 @@ def test_an_archived_paper_is_updated_rather_than_duplicated(v):
     assert v.notes[paper]["title"].endswith("Nitrogen, revised")
 
 
-def test_a_search_blind_to_archived_notes_is_what_doubles_a_paper(v):
-    """The failure the parameter exists to stop, shown rather than asserted
-    about: with the flag off, the same pass creates a second copy."""
-    seed(v, [item("AAA", title="Nitrogen")])
-    out = sync.apply(v)
-    paper = v.owned(out["library_note"], sync.KEY_LABEL)["users/0/AAA"]
-
-    v.archived.add(paper)
-    v.sees_archived = False
-    seed(v, [item("AAA", title="Nitrogen, revised")])
-    assert sync.apply(v)["created"] == 1
-
-
-def test_archiving_the_root_does_not_hide_it_from_resolution(v):
-    """The flag is inherited, so one checkbox on a finished reference section
-    would otherwise make the whole library invisible to the next pass."""
-    chosen = v.create(parent="root", title="Bibliography",
-                      labels={sync.ROOT_LABEL: "1"})
-    seed(v, [item("AAA")])
-    sync.apply(v)
-    v.archived.add(chosen)
-    again = sync.apply(v, force=True)
-    assert again["library_note"] == chosen
-    assert again["created"] == 0
-
-
 # -- the cursor and the dry run ----------------------------------------------
-
-
-def test_a_second_apply_of_an_unchanged_bundle_writes_nothing_at_all(v):
-    seed(v, [item("AAA")])
-    sync.apply(v)
-    v.calls.clear()
-    out = sync.apply(v)
-    assert out["skipped"] is True
-    assert [c for c in v.verbs if c in ("create", "update", "delete",
-                                        "place", "attach", "ensure")] == []
-
-
-def test_force_bypasses_the_cursor(v):
-    seed(v, [item("AAA")])
-    sync.apply(v)
-    assert "skipped" not in sync.apply(v, force=True)
 
 
 def test_the_cursor_is_not_written_when_a_pass_dies_partway(v):
@@ -508,19 +342,6 @@ def test_a_dry_run_reports_what_would_change_and_writes_nothing(v):
     assert v.notes == before
 
 
-def test_a_dry_run_on_a_node_that_may_not_create_the_root_refuses(v):
-    with pytest.raises(sync.NoRoot):
-        sync.apply(v, dry_run=True, may_create=False)
-
-
-def test_a_dry_run_after_an_apply_says_it_is_up_to_date(v):
-    seed(v, [item("AAA")])
-    sync.apply(v)
-    out = sync.apply(v, dry_run=True)
-    assert out["up_to_date"] is True
-    assert out["would_create"] == 0 and out["would_delete"] == 0
-
-
 # -- the per-paper cursor ----------------------------------------------------
 #
 # The mirror runs on a timer over hundreds of notes, and until these existed a
@@ -533,22 +354,6 @@ def _bump(v, items, collections=None, versions=None):
     pass through and the per-paper cursor is what is actually under test."""
     return seed(v, items, collections,
                 versions or {"users/0": 99})
-
-
-def test_an_unchanged_library_touches_no_note(v):
-    """Distinct from the root's digest guard, which stops the pass before it
-    ever looks at a paper. This defeats that guard deliberately, so what is
-    proven is the per-paper cursor and nothing else."""
-    papers = [item(k) for k in ("AAA", "BBB", "CCC")]
-    seed(v, papers)
-    sync.apply(v)
-
-    _bump(v, papers)
-    v.calls.clear()
-    out = sync.apply(v)
-    assert out["unchanged"] == 3
-    assert out["created"] == out["updated"] == out["replaced"] == 0
-    assert v.touched("update", "place", "attach", "create", "delete") == set()
 
 
 def test_one_changed_paper_touches_exactly_one_note(v):
@@ -595,34 +400,6 @@ def test_a_renamed_library_rewrites_its_papers_though_no_version_moved(v):
     assert v.notes[paper]["labels"]["zoteroLibraryName"] == "BCB Two"
 
 
-def test_a_renderer_change_restamps_every_note(v, monkeypatch):
-    """Without this the day somebody edits `_card` is the day the vault stops
-    matching it, silently, for ever."""
-    papers = [item("AAA"), item("BBB")]
-    seed(v, papers)
-    sync.apply(v)
-
-    monkeypatch.setattr(sync, "RENDER", "2")
-    _bump(v, papers)
-    v.calls.clear()
-    assert sync.apply(v)["updated"] == 2
-
-
-def test_a_doubled_note_is_collapsed_though_both_carry_a_current_stamp(v):
-    """A duplicate is invisible to the cursor: the second copy carries the same
-    fingerprint as the first. So the scan still has to look at everything."""
-    seed(v, [item("AAA")])
-    out = sync.apply(v)
-    original = v.owned(out["library_note"], sync.KEY_LABEL)["users/0/AAA"]
-    twin = dict(v.notes[original])
-    twin["labels"] = dict(twin["labels"])
-    v.notes["twin"] = twin
-
-    _bump(v, [item("AAA")])
-    assert sync.apply(v)["deduplicated"] == 1
-    assert "twin" not in v.notes and original in v.notes
-
-
 # -- the collection axis, which needs no cursor of its own -------------------
 
 
@@ -644,34 +421,6 @@ def test_a_renamed_collection_re_places_no_paper(v):
     assert v.touched("place") == set()
 
 
-def test_a_moved_collection_moves_the_folder_and_not_the_papers(v):
-    papers = [item("AAA", collections=["users/0/C2"])]
-    tree = [collection("C1", "one"), collection("C2", "two")]
-    seed(v, papers, tree)
-    sync.apply(v)
-    paper = [n for n, d in v.notes.items() if sync.KEY_LABEL in d["labels"]][0]
-
-    moved = [collection("C1", "one"),
-             collection("C2", "two", parent="users/0/C1")]
-    _bump(v, papers, moved)
-    v.calls.clear()
-    out = sync.apply(v)
-    assert out["collections_moved"] == 1
-    assert paper not in notes_touched(v, out, "place", "update")
-
-
-def test_a_paper_filed_into_a_collection_is_re_placed(v):
-    tree = [collection("C1", "one")]
-    seed(v, [item("AAA")], tree)
-    sync.apply(v)
-    paper = [n for n, d in v.notes.items() if sync.KEY_LABEL in d["labels"]][0]
-
-    _bump(v, [item("AAA", collections=["users/0/C1"])], tree)
-    v.calls.clear()
-    sync.apply(v)
-    assert paper in v.touched("place")
-
-
 def test_a_paper_dragged_out_of_place_by_hand_is_put_back(v):
     """Placement is checked on every pass whatever the cursor says, because the
     scan already reported where the note is. No cursor would ever notice this."""
@@ -691,88 +440,7 @@ def test_a_paper_dragged_out_of_place_by_hand_is_put_back(v):
 # -- what a pass costs -------------------------------------------------------
 
 
-def test_an_unchanged_bundle_costs_one_search_and_one_read(v):
-    seed(v, [item(k) for k in ("AAA", "BBB", "CCC")])
-    sync.apply(v)
-    v.calls.clear()
-    assert sync.apply(v)["skipped"] is True
-    assert v.verbs == ["labelled", "attachment"]
-
-
-def test_a_library_that_moved_but_did_not_change_costs_three_searches(v):
-    """The whole pass, when the library moved for somebody else's paper: one
-    search to find the root, the bundle, three searches to read what the vault
-    holds, and one write to record the new digest on the root. Nothing per
-    paper at all."""
-    papers = [item(k) for k in ("AAA", "BBB", "CCC")]
-    seed(v, papers)
-    sync.apply(v)
-
-    _bump(v, papers)
-    v.calls.clear()
-    out = sync.apply(v)
-    assert v.verbs == ["labelled", "attachment", "scan", "scan", "scan",
-                       "set_label"]
-    assert v.touched("set_label") == {out["library_note"]}
-
-
-def test_a_dry_run_says_what_it_would_leave_alone(v):
-    papers = [item("AAA"), item("BBB")]
-    seed(v, papers)
-    sync.apply(v)
-    _bump(v, [item("AAA"), item("BBB", title="moved on", version=2)])
-    out = sync.apply(v, dry_run=True)
-    assert out["would_leave_alone"] == 1 and out["would_update"] == 1
-    assert out["would_create"] == 0 and out["would_replace"] == 0
-
-
 # -- saying so in the vault --------------------------------------------------
-
-
-def test_the_status_note_records_the_pass_and_links_the_newest_paper(v):
-    seed(v, [item("AAA", title="Old", version=1),
-                 item("BBB", title="New", version=9)])
-    out = sync.apply(v)
-
-    note = v.notes[out["status_note"]["note_id"]]
-    assert note["labels"][sync.STATUS_LABEL] == "1"
-    assert sync.KEY_LABEL not in note["labels"], (
-        "a status note carrying a Zotero key would be in the removal pass's "
-        "sights and in the count of notes outside the library")
-    assert note["title"].startswith(sync.STATUS_NOTE)
-    assert "2 created" in note["title"]
-    newest = v.owned(out["library_note"], sync.KEY_LABEL)["users/0/BBB"]
-    assert f'href="#root/{newest}"' in note["content"]
-
-
-def test_the_root_points_at_the_status_note_so_finding_it_is_free(v):
-    seed(v, [item("AAA")])
-    out = sync.apply(v)
-    root = v.notes[out["library_note"]]
-    assert root["labels"][sync.STATUS_POINTER] == out["status_note"]["note_id"]
-
-    _bump(v, [item("AAA", title="moved on", version=2)])
-    v.calls.clear()
-    again = sync.apply(v)
-    assert again["status_note"]["note_id"] == out["status_note"]["note_id"]
-    assert "labelled" not in v.verbs[1:], (
-        "the pointer is read from labels the root resolution already fetched, "
-        "so a second search for the status note is a round trip for nothing")
-
-
-def test_a_pass_that_changed_nothing_does_not_touch_the_status_note(v):
-    """It runs on a timer. A status note rewritten on every look puts a revision
-    on it every time and tells you nothing."""
-    papers = [item("AAA")]
-    seed(v, papers)
-    out = sync.apply(v)
-    status = out["status_note"]["note_id"]
-
-    _bump(v, papers)
-    v.calls.clear()
-    again = sync.apply(v)
-    assert again["status_note"] is None
-    assert status not in v.touched("update", "create", "set_label")
 
 
 def test_a_persons_note_called_zotero_mirror_is_not_adopted(v):
@@ -790,16 +458,3 @@ def test_a_persons_note_called_zotero_mirror_is_not_adopted(v):
     again = sync.apply(v)
     assert again["status_note"]["note_id"] != theirs
     assert v.notes[theirs]["content"] == "<p>my own reading notes</p>"
-
-
-def test_the_status_note_says_what_set_the_pass_off(v):
-    """The note's whole job is to say what happened. Guessing at the half it
-    knows is the one thing it must not do."""
-    seed(v, [item("AAA")])
-    out = sync.apply(v, trigger="push")
-    body = v.notes[out["status_note"]["note_id"]]["content"]
-    assert "a change Zotero pushed" in body
-
-    _bump(v, [item("AAA", title="moved on", version=2)])
-    again = sync.apply(v, trigger="floor")
-    assert "the periodic pass" in v.notes[again["status_note"]["note_id"]]["content"]

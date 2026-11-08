@@ -4,6 +4,7 @@ version = "0.1.0"
 
 [[service]]
 name = "ssh"
+install = "install.sh"
 
 [[tool]]
 name = "ssh"
