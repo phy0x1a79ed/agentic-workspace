@@ -1,13 +1,16 @@
 """Private marks: projects and scopes this node hides from every peer caller.
 
 A mark names a project, or one scope of it, and the absolute path it covers.
-The marks live in ``AWM_DIR/private.json`` as ``{"version": 1, "marks": [...]}``;
-the scopes service writes the file and every process reads it, rereading when
-the file changes. A caller stamped ``peer`` or ``peer:<node>`` sees nothing a
+The marks live in ``AWM_DIR/marks/private.json`` as ``{"version": 1, "marks": [...]}``,
+where a plugin unit can bind the directory read-only. ``AWM_DIR/private.json``
+is a relative symlink to that file, and on a node not yet moved it is the file
+itself. The scopes service writes the file and every process reads it, rereading
+when the file changes. A caller stamped ``peer`` or ``peer:<node>`` sees nothing a
 mark covers. Every other caller, local or ``user:*``, sees everything.
 
 A file that exists but does not parse fails closed: each test below then answers
 "hidden" for anything it is asked about, and ``visible_rows`` gives a peer nothing.
+So does a marks path that is a dangling link: it does not prove that no mark exists.
 """
 
 from __future__ import annotations
@@ -23,6 +26,7 @@ from typing import Any, Iterable
 from awm import config as _cfg
 
 FILENAME = "private.json"
+DIRNAME = "marks"
 VERSION = 1
 
 #: Row keys whose value is a filesystem path a mark can cover.
@@ -41,8 +45,9 @@ _cache: tuple[Any, list[dict] | None] = (None, [])
 
 
 def marks_path() -> Path:
-    """The marks file on this node."""
-    return Path(_cfg.AWM_DIR) / FILENAME
+    """The marks file on this node: in ``marks/`` once that directory exists."""
+    marks_dir = Path(_cfg.AWM_DIR) / DIRNAME
+    return marks_dir / FILENAME if marks_dir.is_dir() else Path(_cfg.AWM_DIR) / FILENAME
 
 
 def from_peer(as_: str | None) -> bool:
@@ -91,7 +96,7 @@ def _load() -> list[dict] | None:
     try:
         st = path.stat()
     except FileNotFoundError:
-        return []
+        return None if path.is_symlink() else []
     except OSError:
         return None
     key = (str(path), st.st_ino, st.st_mtime_ns, st.st_size)
@@ -117,11 +122,13 @@ def marks() -> list[dict]:
 def write_marks(entries: Iterable[dict]) -> list[dict]:
     """Replace the marks file atomically with ``entries`` and return them as written."""
     checked = [_check_entry(e) for e in entries]
-    path = marks_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
+    marks_dir = Path(_cfg.AWM_DIR) / DIRNAME
+    marks_dir.mkdir(mode=0o750, parents=True, exist_ok=True)
+    path = marks_dir / FILENAME
     body = json.dumps({"version": VERSION, "marks": checked}, indent=2) + "\n"
-    fd, tmp = tempfile.mkstemp(prefix=f".{FILENAME}.", dir=path.parent)
+    fd, tmp = tempfile.mkstemp(prefix=f".{FILENAME}.", dir=marks_dir)
     try:
+        os.fchmod(fd, 0o640)
         with os.fdopen(fd, "w") as fh:
             fh.write(body)
             fh.flush()
@@ -130,7 +137,20 @@ def write_marks(entries: Iterable[dict]) -> list[dict]:
     except BaseException:
         Path(tmp).unlink(missing_ok=True)
         raise
+    _link_legacy()
     return checked
+
+
+def _link_legacy() -> None:
+    """Point ``AWM_DIR/private.json`` at ``marks/private.json``, for readers of the old path."""
+    legacy = Path(_cfg.AWM_DIR) / FILENAME
+    target = f"{DIRNAME}/{FILENAME}"
+    if legacy.is_symlink() and os.readlink(legacy) == target:
+        return
+    tmp = legacy.with_name(f".{FILENAME}.link.{os.getpid()}")
+    tmp.unlink(missing_ok=True)
+    os.symlink(target, tmp)
+    os.replace(tmp, legacy)
 
 
 def _scope_covers(mark_scope: str, scope: str) -> bool:
