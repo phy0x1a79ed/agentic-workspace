@@ -35,6 +35,12 @@ node = "clean-node"
 listen = "127.0.0.1:7819"
 workspace = "/ws"
 core_roots = ["/ws/core/plugins"]
+
+# What a new node's install config carries: auth may mint its first signing secret, and this node
+# reaches the operations home through a door, which nothing here dials.
+[env]
+AWM_AUTH_INIT = "1"
+AWM_OPERATIONS_DOOR = "clean@127.0.0.1:1"
 EOF
 # Throwaway values: a plugin with a declared secret starts only when the secret is set.
 sed -n 's/^secrets = \[\(.*\)\].*/\1/p' "$work"/core/plugins/*/awm-plugin.toml | tr -d '" ' | tr ',' '\n' | sort -u |
@@ -59,7 +65,8 @@ jq -e "$waiting | length == 0" <<<"${table:-[]}" >/dev/null || failed="not every
 loaded="$(awm_in plugins)"
 jq -e '.refused | length == 0' <<<"$loaded" >/dev/null || failed="a plugin was refused"
 for name in "${plugins[@]}"; do
-    jq -e --arg n "$name" 'any(.[]; .plugin == $n and .status == "ready")' <<<"$table" >/dev/null || failed="$name is not ready"
+    # A service off by profile, such as rlm-browser, is disabled by design.
+    jq -e --arg n "$name" 'any(.[]; .plugin == $n and (.status == "ready" or (.enabled | not)))' <<<"$table" >/dev/null || failed="$name is not ready"
 done
 
 if [ -n "$failed" ]; then
@@ -67,6 +74,10 @@ if [ -n "$failed" ]; then
     jq -r '.[] | [.name, .status, (.refusal // "")] | @tsv' <<<"${table:-[]}" >&2
     jq -c '.refused' <<<"$loaded" >&2
     tail -30 "$work/.awm/gateway.log" >&2
+    jq -r '.[] | select(.enabled and .status != "ready") | .name' <<<"${table:-[]}" | while read -r name; do
+        echo "--- $name" >&2
+        tail -5 "$work/.awm/logs/$name.log" >&2 || true
+    done
     exit 1
 fi
 printf 'PASS: %d core plugins ready with no conda and no Python\n' "${#plugins[@]}"
