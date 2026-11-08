@@ -1,9 +1,12 @@
+# The Python papers plugin: the paper corpus and the Zotero library, until their move into kb's
+# LanceDB. Its tool stays `kb`, so search asks it as today. The Rust plugin `kb` serves journal,
+# search and transcripts.
 [plugin]
-name = "kb"
+name = "papers"
 version = "0.1.0"
 
 [[service]]
-name = "kb"
+name = "papers"
 
 [[service.archive]]
 name = "kb"
