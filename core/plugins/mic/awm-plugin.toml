@@ -1,9 +1,11 @@
 [plugin]
 name = "mic"
-version = "0.1.0"
+version = "0.2.0"
 
 [[service]]
 name = "mic"
+path = "."
+run = "run.sh"
 
 [[tool]]
 name = "mic"
@@ -18,4 +20,3 @@ dir = "pages/mic/dist"
 secrets = []
 network = []
 platform = ["linux"]
-

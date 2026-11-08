@@ -176,6 +176,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "awm-plugin-mic"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "awm-plugin-sdk",
+ "awm-pycompat",
+ "libc",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "awm-plugin-sdk"
 version = "0.1.0"
 dependencies = [
