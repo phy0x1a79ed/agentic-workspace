@@ -1,8 +1,8 @@
 """Run operations on a node: ``python -m awm.operations.hub_adapter``.
 
 Every node runs the relay and the session verbs. The home node, alcor by default
-(``AWM_OPERATIONS_HOME``), also runs the store, the approver with its panel origin and the
-singleton door's socket. Settings come from the environment and
+(``AWM_OPERATIONS_HOME``), also runs the store, the approver with its panel origin, the
+board writer and the singleton door's socket. Settings come from the environment and
 from ``AWM_APPROVER_DIR/config.json``; see ``settings()``.
 """
 
@@ -20,6 +20,7 @@ from typing import Any
 from awm.gatewayclient.adapter import PLUGIN_KEY
 from awm.operations import door
 from awm.operations.api import API_MANIFEST
+from awm.operations.board import BOOK_ID
 from awm.operations.front import Front
 from awm.operations.gateway import ApproverTools, GatewayTool, usage
 from awm.operations.relay import Relay, Unreachable, order_loop
@@ -47,6 +48,8 @@ def settings() -> dict[str, Any]:
         "peers": cfg.get("peers", []),
         # The pages that may ask for a passkey sign-in: {host: node} (fleet.md R84).
         "portals": cfg.get("portals", {}),
+        "board_peer": os.environ.get("AWM_BOARD_PEER", cfg.get("board_peer", "deneb")),
+        "board_parent": os.environ.get("AWM_TRILIUM_BOARD_PARENT", cfg.get("board_parent", BOOK_ID)),
     }
 
 
@@ -59,18 +62,23 @@ def is_home(node: str) -> bool:
 
 
 def build_home(s: dict[str, Any]):
-    """The store and the approver, wired together. The vault side lives in the trilium plugin."""
+    """The store, the approver and the writer, wired together."""
     from awm.operations.approver.core import Approver, Config
     from awm.operations.approver.keys import Keys
     from awm.operations.home import Home
     from awm.operations.store import Store
+    from awm.operations.trilium import TriliumTool
+    from awm.operations.writer import Writer
 
     store = Store(Path(os.environ.get("AWM_QUEUE_DB",
                                       Path.home() / ".awm" / "operations" / "queue.db")))
     ap = Approver(s["dir"] / "approver.db", Keys.load_or_create(s["dir"] / "keys"),
                   Config(origin=s["origin"], allowed_orders=s["allowed_orders"],
                          portals=s["portals"], rate_max=s["rate_max"]), store, ApproverTools())
-    return Home(store, ap)
+    writer = Writer(store, TriliumTool(peer=s["board_peer"]), parent=s["board_parent"],
+                    portals=s["portals"])
+    store.body_reader = writer.read_body
+    return Home(store, ap, writer), writer
 
 
 def operator_dm():
@@ -154,9 +162,9 @@ async def main() -> None:
                         format="%(asctime)s %(levelname)s %(name)s %(message)s")
     node = node_name()
     s = settings()
-    home = None
+    home = writer = None
     if is_home(node):
-        home = build_home(s)
+        home, writer = build_home(s)
         client: Any = door.LocalClient(home, node)
     else:
         argv = door.door_argv()
@@ -208,7 +216,7 @@ async def main() -> None:
         if arbutus is not None:
             bg.append(asyncio.create_task(arbutus.run()))
         if home is not None:
-            await start_home(home, s, bg)
+            await start_home(home, writer, s, bg)
         pub = os.environ.get("AWM_APPROVER_GRANT_PUBKEY")
         if not pub:
             log.warning("no AWM_APPROVER_GRANT_PUBKEY: spawn orders stay off on this node")
@@ -232,7 +240,7 @@ async def main() -> None:
     await ServiceAdapter("operations", API_MANIFEST, handlers(front, home), on_start=on_start).run()
 
 
-async def start_home(home, s: dict[str, Any], bg: list[asyncio.Task]) -> None:
+async def start_home(home, writer, s: dict[str, Any], bg: list[asyncio.Task]) -> None:
     import uvicorn
 
     from awm.operations.approver.server import create_app
@@ -253,6 +261,7 @@ async def start_home(home, s: dict[str, Any], bg: list[asyncio.Task]) -> None:
             await asyncio.sleep(60)
 
     bg.append(asyncio.create_task(sweep_loop()))
+    bg.append(asyncio.create_task(writer.run_forever()))
     await door.serve(home, door.socket_path())
 
 
