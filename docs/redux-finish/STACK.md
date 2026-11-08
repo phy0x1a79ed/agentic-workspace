@@ -8,11 +8,11 @@ Sources: the worker debrief journals 389a0111 (ops), 8caec34d (knowledge), 449af
 
 ## Current
 
-- `done-and-rollout` — what "post-redux" means for mizar and alcor, and how lands roll out while the other nodes wait.
+- `queue-unblock` — the land queue is held by the dead batch cffff968f16f. Closing it needs a rollout choice: narrow `[fleet] nodes` to mizar and alcor, or roll on to the rest.
 
 ## Waiting on the user
 
-- `done-and-rollout` questions (asked 2026-11-07).
+- `queue-unblock`: narrow the rollout to mizar and alcor? (asked 2026-11-07)
 
 ## Preferences
 
@@ -20,22 +20,27 @@ Sources: the worker debrief journals 389a0111 (ops), 8caec34d (knowledge), 449af
 - 2026-11-07: track the walk with dfs-interview. New issues go to `ISSUES.md`, not a question each turn.
 - 2026-11-07: do not use the board; it is being remade. reflection and journals work.
 - 2026-11-07: mizar and alcor first. Other nodes later.
+- 2026-11-07: start from the original interview's decisions (DECISIONS.md § inherited). Work plugin by plugin. Related issues are prioritized case by case.
 
 ## Stack
 
-- `done-and-rollout` — define done for mizar and alcor; narrow the rollout.
-- `batch-close` — the stalled batch cffff968f16f (lease on dead harness ticket 675643a19fdb; rollout stopped at capella).
-- `land-dvc` — ticket 68647284ec63 (feat/port-ops-t7), then T7 live checks.
-- `land-plain-ssh` — ticket 3e3bc12a2040 (feat/plugin-redux: plain-ssh edge, SDK snapshot, workspace root). Old and new nodes refuse each other's `--from` until both refresh.
-- `land-operations` — feat/port-ops + cloud feat/ops-units on alcor; order-loop owner vs reflection.
-- `land-comms` — social, browser, channel, rlm-browser + cloud feat/rust-singletons (alcor, deneb relay).
-- `land-kb` — kb + scopes: untested, journals has no tests, clippy fails; cloud feat/kb-journal-unit; model files; tag clash.
-- `finish-reflection` — wip/port-harness-reflection: R1 tests, R2; dsh session events ride with it.
-- `finish-auth` — feat/port-ops-t9: front plugin (auth + httpsfront + tlsfront) about half ported.
+Plugin by plugin, in land order. Each topic: finish what is left, land, live-check on mizar and alcor.
+
+- `queue-unblock` — close batch cffff968f16f; decide the rollout set.
+- `dvc` — ticket 68647284ec63 (feat/port-ops-t7) is ready; T7 live checks.
+- `operations` — feat/port-ops (built, 212 tests) + cloud feat/ops-units on alcor. Needs the cloud dev merge first.
+- `social` + `browser` — feat/port-comms + cloud feat/rust-singletons on alcor.
+- `channel` — on feat/port-comms; relay half on deneb (later-nodes).
+- `rlm-browser` — on feat/port-comms.
+- `kb` — journal, search, transcripts folded in; feat/port-knowledge untested; cloud feat/kb-journal-unit.
+- `scopes` — feat/port-knowledge, after kb.
+- `reflection` — wip/port-harness-reflection; dsh session events ride with it; order-puller handover with operations.
+- `auth` — feat/port-ops-t9, about half ported (front: auth + httpsfront + tlsfront).
 - `python-out` — plan T8: drop the core Python install path; non-core Python plugins get their own envs.
-- `verify` — plan T9 checks on mizar and alcor.
-- `shelved-decisions` — R79 vs vault, per-node-edges, lyra vpn.toml, isolated/ tag, alcor's sites daemon.
+- `verify` — plan T9 on mizar and alcor.
 - `later-nodes` — capella, lyra, deneb, shogun, altair; trilium vault; telemetry cloud batch; hpc-ssh-guard apply.
+
+Related, taken case by case: ticket 3e3bc12a2040 (plain-ssh edge, SDK snapshot, workspace root), the SDK clippy lint, statecheck's directory extra, the shelved decisions.
 
 ## Workers
 
@@ -43,4 +48,4 @@ Sources: the worker debrief journals 389a0111 (ops), 8caec34d (knowledge), 449af
 
 ## Closed
 
-(none)
+- `inherited` — the original interview's decisions are the starting point.
