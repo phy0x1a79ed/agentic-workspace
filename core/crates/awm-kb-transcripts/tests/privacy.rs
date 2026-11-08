@@ -6,6 +6,13 @@ mod common;
 
 use std::collections::{BTreeSet, HashSet};
 use std::path::Path;
+use std::sync::Arc;
+
+use awm_index::grammar::{parse_source, parse_text};
+use awm_index::sql::{Mark, Veil};
+use awm_kb_source::Ask;
+use awm_kb_source::Source;
+use awm_kb_transcripts::source::Transcripts;
 
 use awm_plugin_sdk::privacy;
 use awm_kb_transcripts::{sweep, App};
@@ -33,14 +40,15 @@ impl Slugs {
     }
 }
 
-/// Four project slugs with one aged session each, live and archived.
-fn tree(s: &Slugs) -> Rig {
+/// Four project slugs with one aged session each, live and archived and indexed.
+async fn tree(s: &Slugs) -> Rig {
     let r = rig();
     for name in s.all() {
         let sid = format!("s-{}", &name[name.len() - 6..]);
-        write(&r.projects().join(&name).join(format!("{sid}.jsonl")), "{\"text\":\"the deep kitchen sink\"}\n", 30.0);
-        write_gz(&r.archive().join(&name).join(format!("{sid}.jsonl.gz")), "{\"text\":\"the deep kitchen sink\"}\n", 30.0);
+        write(&r.projects().join(&name).join(format!("{sid}.jsonl")), &msgs(&["the deep kitchen sink"]), 30.0);
+        write_gz(&r.archive().join(&name).join(format!("{sid}.jsonl.gz")), &msgs(&["the deep kitchen sink"]), 30.0);
     }
+    r.indexed().await;
     r
 }
 
@@ -65,15 +73,16 @@ fn wandered(r: &Rig, root: &Path) -> String {
     let folder = privacy::slug(&root.to_string_lossy());
     let lines = |v: Vec<Value>| v.iter().map(|l| format!("{l}\n")).collect::<String>();
     let home = root.to_string_lossy().to_string();
+    let m = |text: &str| json!({"content": text});
     write_gz(&r.archive().join(&folder).join("a-wander.jsonl.gz"), &lines(vec![
-        json!({"cwd": home, "text": "kitchen sink before"}),
-        json!({"text": "kitchen sink with no cwd"}),
-        json!({"cwd": root.join("avatar/Avatar").to_string_lossy(), "text": "inside"}),
-        json!({"cwd": home, "text": "kitchen sink after"}),
+        json!({"cwd": home, "message": m("kitchen sink before")}),
+        json!({"message": m("kitchen sink with no cwd")}),
+        json!({"cwd": root.join("avatar/Avatar").to_string_lossy(), "message": m("inside")}),
+        json!({"cwd": home, "message": m("kitchen sink after")}),
     ]), 30.0);
     write_gz(&r.archive().join(&folder).join("s-stay.jsonl.gz"), &lines(vec![
-        json!({"cwd": home, "text": "kitchen sink at home"}),
-        json!({"cwd": root.join("avatar2").to_string_lossy(), "text": "kitchen sink next door"}),
+        json!({"cwd": home, "message": m("kitchen sink at home")}),
+        json!({"cwd": root.join("avatar2").to_string_lossy(), "message": m("kitchen sink next door")}),
     ]), 30.0);
     folder
 }
@@ -88,7 +97,7 @@ async fn a_peer_never_sees_what_a_mark_covers() {
     let s = Slugs { marked: slug(&root.join("avatar")), nested: slug(&root.join("avatar/Avatar/dev")), sibling: slug(&root.join("avatar2")), open: slug(&root.join("awm")), root };
 
     // A peer search drops the marked sessions and keeps the sibling whose name only starts alike.
-    let r = tree(&s);
+    let r = tree(&s).await;
     for (verb, key, q) in [("search", "pattern", "(?i)kitchen"), ("query", "query", "kitchen")] {
         assert_eq!(projects(&call(&r.app, verb, json!({key: q}), PEER).await.unwrap()), s.visible(), "{verb}");
         for as_ in [LOCAL, USER] {
@@ -127,8 +136,9 @@ async fn a_peer_never_sees_what_a_mark_covers() {
     assert_eq!(left, BTreeSet::from([s.marked.clone(), s.nested.clone()]));
 
     // A peer never sees a session that entered a marked path, and its limit counts only the rest.
-    let r = tree(&s);
+    let r = tree(&s).await;
     let folder = wandered(&r, &s.root);
+    r.reconcile().await;
     for (verb, key) in [("search", "pattern"), ("query", "query")] {
         let sessions = |out: Value| -> BTreeSet<String> {
             out["hits"].as_array().unwrap().iter().filter(|h| h["project"] == json!(folder)).map(|h| if verb == "search" { h["session"].as_str().unwrap().to_string() } else { h["id"].as_str().unwrap().split(':').next().unwrap().to_string() }).collect()
@@ -154,8 +164,37 @@ async fn a_peer_never_sees_what_a_mark_covers() {
         }
     }
 
+    // The search source applies the same veil for a peer, and its max fills with visible hits.
+    let r = tree(&s).await;
+    let folder = wandered(&r, &s.root);
+    r.reconcile().await;
+    let Rig { dir: _kept, app } = r;
+    let src = Transcripts::new(Arc::new(app));
+    let fields = awm_kb_transcripts::index::spec().fields;
+    let ask = |veil: Veil, max: usize| Ask {
+        text: Some(parse_text(&json!({"$contains": "kitchen"})).unwrap()),
+        source: parse_source(&json!({}), &fields, "transcripts", "query").unwrap(),
+        max,
+        vector: None,
+        veil,
+        session: None,
+    };
+    let marks = || Veil::Marks { marks: vec![Mark { project: "avatar".into(), scope: None }], tags: None };
+    let sid = |slug: &String| format!("s-{}", &slug[slug.len() - 6..]);
+    let ids = |out: Value| -> BTreeSet<String> { out["exact"].as_array().unwrap().iter().map(|h| h["id"].as_str().unwrap().to_string()).collect() };
+    let mut want: BTreeSet<String> = s.visible().iter().map(|v| format!("{}:1", sid(v))).collect();
+    want.extend(["s-stay:1".to_string(), "s-stay:2".to_string()]);
+    assert_eq!(ids(src.query(ask(marks(), 50)).await.unwrap()), want, "peer");
+    assert_eq!(ids(src.query(ask(Veil::None, 50)).await.unwrap()).len(), want.len() + 2 + 3, "local: the marked two and a-wander's three");
+    assert_eq!(src.query(ask(marks(), 2)).await.unwrap()["exact"].as_array().unwrap().len(), 2);
+    assert!(src.get("a-wander:1", &marks(), None).await.unwrap().is_none());
+    assert!(src.get(&format!("{}:1", sid(&s.marked)), &marks(), None).await.unwrap().is_none());
+    assert!(src.get("s-stay:1", &marks(), None).await.unwrap().is_some());
+    assert!(src.get("a-wander:1", &Veil::None, None).await.unwrap().is_some());
+    let _ = folder;
+
     // An unreadable marks file hides every session from a peer.
-    let r = tree(&s);
+    let r = tree(&s).await;
     std::fs::write(privacy::marks_path(), "{not json").unwrap();
     assert_eq!(r.app.query(&json!({"query": "kitchen"}), PEER).await.unwrap()["hits"], json!([]));
     assert_eq!(r.app.status(&json!({}), PEER).await.unwrap()["live"]["sessions"], 0);

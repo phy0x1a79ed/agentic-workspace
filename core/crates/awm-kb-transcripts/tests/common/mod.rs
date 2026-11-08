@@ -10,6 +10,7 @@ use std::time::{Duration, SystemTime};
 use awm_kb_transcripts::layout::Tree;
 use awm_kb_transcripts::{App, BoxFut, Live};
 use awm_store::Store;
+use serde_json::{json, Value};
 
 pub struct Fixed(pub Result<HashSet<String>, String>);
 
@@ -41,7 +42,40 @@ pub fn rig_with(live: Result<HashSet<String>, String>) -> Rig {
     std::fs::create_dir_all(&tree.archive).unwrap();
     let store = Store::open(dir.path().join("transcripts.db")).unwrap();
     awm_kb_transcripts::runs::open(&store).unwrap();
-    Rig { dir, app: App { tree, store, live: Box::new(Fixed(live)) } }
+    let lance = dir.path().join("lance");
+    Rig { dir, app: App::new(tree, store, Box::new(Fixed(live)), lance) }
+}
+
+impl Rig {
+    /// Open the index, as kb's start step does.
+    pub async fn start(&self) {
+        awm_kb_transcripts::start(&self.app).await.unwrap();
+    }
+
+    /// Level the index with the archive, reading on a plain thread.
+    pub async fn reconcile(&self) -> Value {
+        self.app.reconcile(|f| {
+            std::thread::spawn(f);
+        })
+        .await
+        .unwrap()
+    }
+
+    /// Open the index and level it.
+    pub async fn indexed(&self) -> Value {
+        self.start().await;
+        self.reconcile().await
+    }
+}
+
+/// A user message line carrying `text`, as Claude Code writes one.
+pub fn msg(text: &str) -> String {
+    json!({"type": "user", "message": {"role": "user", "content": text}}).to_string()
+}
+
+/// Lines of user messages, newline-terminated.
+pub fn msgs(texts: &[&str]) -> String {
+    texts.iter().map(|t| msg(t) + "\n").collect()
 }
 
 pub fn rig() -> Rig {

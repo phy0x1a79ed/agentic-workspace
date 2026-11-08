@@ -1,4 +1,4 @@
-//! Grep the archive without unpacking it, and the live `transcripts` search source.
+//! Reading gzipped transcripts as the Python did, and the `cwd`s their lines name.
 //!
 //! A session is filed under the directory it started in, but it can `cd` anywhere. Each line
 //! records its `cwd`, so a caller that may not see some paths is shown nothing from a session
@@ -11,13 +11,10 @@ use std::path::Path;
 use std::sync::LazyLock;
 
 use flate2::read::MultiGzDecoder;
-use serde_json::{json, Value};
-
-use crate::layout::{sessions, Side, Tree};
 
 pub const MAX_HITS: i64 = 200;
 pub const QUERY_MAX_HITS: i64 = 20;
-const LINE_CHARS: usize = 400;
+pub const LINE_CHARS: usize = 400;
 
 static CWD: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r#""cwd"\s*:\s*"((?:[^"\\]|\\.)*)""#).expect("the cwd pattern"));
 
@@ -30,6 +27,17 @@ pub struct Entered<'a> {
 impl<'a> Entered<'a> {
     pub fn new(hide_path: &'a dyn Fn(&str) -> bool) -> Self {
         Self { hide_path, seen: HashMap::new() }
+    }
+
+    /// Call `each` with every `cwd` the line names, anywhere in it.
+    pub fn cwds(line: &str, mut each: impl FnMut(&str)) {
+        if !line.contains("\"cwd\"") {
+            return;
+        }
+        for m in CWD.captures_iter(line) {
+            let raw = &m[1];
+            each(&serde_json::from_str::<String>(&format!("\"{raw}\"")).unwrap_or_else(|_| raw.to_string()));
+        }
     }
 
     pub fn test(&mut self, line: &str) -> bool {
@@ -122,66 +130,4 @@ pub type Pattern = fancy_regex::Regex;
 /// Compile a Python pattern. `fancy-regex` covers its lookarounds and backreferences.
 pub fn compile(pattern: &str) -> Result<Pattern, String> {
     fancy_regex::Regex::new(pattern).map_err(|e| e.to_string())
-}
-
-/// Archived lines matching `rx`, at most `limit`, as `{project, session, line, text}`. With
-/// `hide_path`, a session that ever entered a hidden path gives no hit, so the limit fills
-/// with lines the caller may see.
-pub fn find(tree: &Tree, pattern: &str, rx: &Pattern, project: Option<&str>, limit: i64, hide: Option<&dyn Fn(&str) -> bool>, hide_path: Option<&dyn Fn(&str) -> bool>) -> Value {
-    let mut hits: Vec<Value> = vec![];
-    for s in sessions(&tree.archive, Side::Archive, hide) {
-        if project.is_some_and(|p| !p.is_empty() && !s.project.contains(p)) {
-            continue;
-        }
-        let Some(transcript) = &s.transcript else { continue };
-        let room = limit - hits.len() as i64;
-        let mut found: Vec<Value> = vec![];
-        let mut test = hide_path.map(Entered::new);
-        let mut tainted = false;
-        match Lines::open(transcript) {
-            Ok(lines) => {
-                for (i, line) in lines.enumerate() {
-                    let Ok(line) = line else {
-                        tainted |= test.is_some();
-                        break;
-                    };
-                    if test.as_mut().is_some_and(|t| t.test(&line)) {
-                        tainted = true;
-                        break;
-                    }
-                    if (found.len() as i64) < room && rx.is_match(&line).unwrap_or(false) {
-                        let text = awm_pycompat::pystr::rstrip(awm_pycompat::pystr::head(&line, LINE_CHARS));
-                        found.push(json!({"project": s.project, "session": s.session_id, "line": i + 1, "text": text}));
-                        if found.len() as i64 >= room && test.is_none() {
-                            break;
-                        }
-                    }
-                }
-            }
-            Err(_) => tainted |= test.is_some(),
-        }
-        if tainted {
-            continue;
-        }
-        hits.extend(found);
-        if hits.len() as i64 >= limit {
-            return json!({"pattern": pattern, "hits": hits, "truncated": true});
-        }
-    }
-    json!({"pattern": pattern, "hits": hits, "truncated": false})
-}
-
-/// The live source: archived lines that hold `query` as typed, ignoring case, as search hits.
-pub fn query(tree: &Tree, query: &str, project: Option<&str>, limit: i64, hide: Option<&dyn Fn(&str) -> bool>, hide_path: Option<&dyn Fn(&str) -> bool>) -> Value {
-    let words = awm_pycompat::pystr::strip(query);
-    let pattern = format!("(?i){}", regex::escape(words));
-    let rx = compile(&pattern).expect("an escaped literal compiles");
-    let found = find(tree, &pattern, &rx, project, limit, hide, hide_path);
-    let hits: Vec<Value> = found["hits"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .map(|h| json!({"id": format!("{}:{}", h["session"].as_str().unwrap_or(""), h["line"]), "title": h["project"], "snippet": h["text"], "project": h["project"]}))
-        .collect();
-    json!({"hits": hits, "truncated": found["truncated"]})
 }

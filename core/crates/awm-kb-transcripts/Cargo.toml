@@ -10,7 +10,11 @@ publish = false
 awm-plugin-sdk.workspace = true
 awm-pycompat.workspace = true
 awm-store.workspace = true
+awm-index.workspace = true
+awm-kb-source = { path = "../awm-kb-source" }
 anyhow.workspace = true
+futures-util.workspace = true
+lancedb = { version = "0.41", default-features = false }
 fancy-regex = "0.17"
 flate2 = "1"
 libc.workspace = true

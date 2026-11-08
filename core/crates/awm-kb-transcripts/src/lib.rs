@@ -1,19 +1,22 @@
-//! transcripts: Claude Code session logs swept from `~/.claude/projects` into a gzipped mirror
-//! at `~/.claude/projects-archive`, restored and pruned, and served as the opt-in live search
-//! source `transcripts`.
+//! transcripts inside kb: Claude Code session logs swept from `~/.claude/projects` into a
+//! gzipped mirror at `~/.claude/projects-archive`, restored and pruned, and the archive's
+//! full-text index, which serves `search`, `query` and the opt-in search source `transcripts`.
 //!
 //! `prune` is the one verb that destroys data, so it stays off the MCP surface and dry-runs
 //! unless told otherwise. A peer may not sweep or prune, and sees nothing of a privately
 //! marked project, nor of a session that ever worked under a marked path.
 
 pub mod daily;
+pub mod index;
 pub mod layout;
 pub mod runs;
 pub mod search;
+pub mod source;
 pub mod sweep;
 
 use std::collections::HashSet;
 use std::future::Future;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
@@ -23,6 +26,7 @@ use awm_plugin_sdk::{Call, CallOpts, Context, Service, VerbError};
 use awm_store::Store;
 use serde_json::{json, Value};
 
+use crate::index::TxIndex;
 use crate::layout::{sessions, Side, Tree};
 
 const TOOL: &str = "transcripts";
@@ -49,6 +53,12 @@ impl From<Fail> for VerbError {
 impl From<awm_store::StoreError> for Fail {
     fn from(e: awm_store::StoreError) -> Self {
         Fail::new("OperationalError", e.to_string())
+    }
+}
+
+impl From<awm_index::IndexError> for Fail {
+    fn from(e: awm_index::IndexError) -> Self {
+        Fail::new("RuntimeError", format!("the transcripts index: {e}"))
     }
 }
 
@@ -92,11 +102,56 @@ pub fn live_ids(out: &Value) -> Result<HashSet<String>, String> {
     Ok(out["session_ids"].as_array().into_iter().flatten().map(py_str).collect())
 }
 
-/// The plugin's state: the trees, the run history and cch.
+/// The state: the trees, the run history, cch and the archive's index.
 pub struct App {
     pub tree: Tree,
     pub store: Store,
     pub live: Box<dyn Live>,
+    /// The index's LanceDB directory, `<AWM_DIR>/services/kb/lance/transcripts`.
+    pub lance: PathBuf,
+    /// Open once [`start`] has run.
+    pub index: tokio::sync::OnceCell<TxIndex>,
+}
+
+/// The index's directory under an AWM dir.
+pub fn lance_dir(awm_dir: &Path) -> PathBuf {
+    awm_dir.join("services").join("kb").join("lance").join(index::SOURCE)
+}
+
+/// The state over `~/.claude`, with the run history in `state_dir` (transcripts' own,
+/// `<AWM_DIR>/services/transcripts`) and the index under `awm_dir`. Opens nothing slow.
+pub fn open(awm_dir: &Path, state_dir: &Path, ctx: Context) -> anyhow::Result<Arc<App>> {
+    std::fs::create_dir_all(state_dir)?;
+    let store = Store::open(state_dir.join("transcripts.db"))?;
+    Ok(Arc::new(App::new(Tree::home(), store, Box::new(Cch(ctx)), lance_dir(awm_dir))))
+}
+
+/// The start step: the run history at schema v2, and the index.
+pub async fn start(app: &App) -> anyhow::Result<()> {
+    let store = app.store.clone();
+    tokio::task::spawn_blocking(move || runs::open(&store)).await??;
+    let ix = TxIndex::open(&app.lance).await?;
+    let _ = app.index.set(ix);
+    Ok(())
+}
+
+/// The ready step: the daily sweep, and a reconcile of the index with the archive, both in
+/// the background.
+pub fn ready(ctx: &Context, app: Arc<App>) {
+    let (c, a) = (ctx.clone(), app.clone());
+    ctx.spawn("daily", async move {
+        daily::daily(c, a).await;
+        Ok(())
+    });
+    let c = ctx.clone();
+    ctx.spawn("transcripts-reconcile", async move {
+        let out = c.background("transcripts-reconcile", app.reconcile(daily::idle_thread)).await;
+        match out {
+            Ok(v) => tracing::info!("transcripts: the index is level with the archive: {v}"),
+            Err(e) => tracing::error!("transcripts: the index reconcile failed: {}", e.message),
+        }
+        Ok(())
+    });
 }
 
 /// Python's `str()` of a JSON value.
@@ -230,6 +285,57 @@ pub fn status_report(tree: &Tree, days: f64, prune_days: Option<f64>, hide: Opti
 }
 
 impl App {
+    pub fn new(tree: Tree, store: Store, live: Box<dyn Live>, lance: PathBuf) -> Self {
+        App { tree, store, live, lance, index: tokio::sync::OnceCell::new() }
+    }
+
+    /// The open index, or why there is none yet.
+    pub fn ix(&self) -> Result<&TxIndex, Fail> {
+        self.index.get().ok_or_else(|| Fail::new("RuntimeError", "the transcripts index is not open yet"))
+    }
+
+    /// Level the index with the archive, reading on `reader`.
+    pub async fn reconcile(&self, reader: impl Fn(Box<dyn FnOnce() + Send>) + Send + Sync) -> Result<Value, Fail> {
+        Ok(self.ix()?.reconcile(&self.tree.archive, reader).await?)
+    }
+
+    /// Index the sessions a sweep archived. A failure is logged: the next start's reconcile
+    /// indexes them.
+    pub async fn index_moved(&self, moved: Vec<(String, String)>) {
+        if moved.is_empty() {
+            return;
+        }
+        let todo = moved
+            .into_iter()
+            .map(|(p, s)| {
+                let t = self.tree.archive.join(&p).join(format!("{s}.jsonl.gz"));
+                (p, s, t)
+            })
+            .collect();
+        match self.ix() {
+            Ok(ix) => {
+                if let Err(e) = ix.index_sessions(todo).await {
+                    tracing::warn!("transcripts: the swept sessions are not indexed yet: {e}");
+                }
+            }
+            Err(e) => tracing::warn!("transcripts: the swept sessions are not indexed yet: {}", e.message),
+        }
+    }
+
+    /// Forget the sessions a prune deleted.
+    async fn forget(&self, gone: Vec<(String, String)>) {
+        if gone.is_empty() {
+            return;
+        }
+        let out = match self.ix() {
+            Ok(ix) => ix.forget(&gone).await.map(|_| ()).map_err(|e| e.to_string()),
+            Err(e) => Err(e.message),
+        };
+        if let Err(e) = out {
+            tracing::warn!("transcripts: the pruned sessions keep their rows until the next start: {e}");
+        }
+    }
+
     pub async fn status(&self, a: &Value, as_: Option<&str>) -> Result<Value, Fail> {
         let days = float_or(a, "days", sweep::DEFAULT_RETENTION_DAYS)?;
         let prune_days = match a.get("prune_days") {
@@ -247,7 +353,8 @@ impl App {
         let dry_run = a.get("dry_run").is_some_and(truthy);
         let live = self.live.session_ids().await.map_err(|m| Fail::new("Unknown", m))?;
         let tree = self.tree.clone();
-        let mut result = blocking(move || sweep::archive(&tree, days, dry_run, &live, None)).await?;
+        let (mut result, moved) = blocking(move || sweep::archive_sessions(&tree, days, dry_run, &live, None)).await?;
+        self.index_moved(moved).await;
         let trigger = a.get("_trigger").and_then(Value::as_str).unwrap_or(trigger).to_string();
         result["run"] = json!(runs::record(&self.store, "sweep", &result, &trigger).await?);
         Ok(result)
@@ -258,25 +365,65 @@ impl App {
         let days = py_float(required(a, "days")?)?;
         let dry_run = a.get("dry_run") != Some(&json!(false));
         let tree = self.tree.clone();
-        let mut result = blocking(move || sweep::prune(&tree, days, dry_run, None)).await?;
+        let (mut result, gone) = blocking(move || sweep::prune_sessions(&tree, days, dry_run, None)).await?;
+        self.forget(gone).await;
         let trigger = a.get("_trigger").and_then(Value::as_str).unwrap_or("manual").to_string();
         result["run"] = json!(runs::record(&self.store, "prune", &result, &trigger).await?);
         Ok(result)
     }
 
+    /// Archived lines whose message text the pattern matches, in archive order.
     pub async fn search(&self, a: &Value, as_: Option<&str>) -> Result<Value, Fail> {
         let pattern = py_str(required(a, "pattern")?);
         let rx = search::compile(&pattern).map_err(|e| Fail::new("error", e))?;
         let (project, limit) = (str_arg(a, "project"), int_or(a, "limit", search::MAX_HITS)?);
-        let (tree, h, hp) = (self.tree.clone(), hide(as_), hide_path(as_));
-        blocking(move || search::find(&tree, &pattern, &rx, project.as_deref(), limit, dynref(&h), dynref(&hp))).await
+        let ix = self.ix()?;
+        let Some(cond) = ix.narrow(project.as_deref(), privacy::from_peer(as_)) else {
+            return Ok(json!({"pattern": pattern, "hits": [], "truncated": false}));
+        };
+        let (lines, truncated) = ix.scan(Arc::new(rx), &cond, limit.max(0) as usize).await?;
+        Ok(json!({"pattern": pattern, "hits": lines.iter().map(index::Line::to_json).collect::<Vec<_>>(), "truncated": truncated}))
     }
 
+    /// The source as search asked it live: archived lines that hold `query` as typed, ignoring
+    /// case. The full-text index finds the lines that hold its words in order; the literal
+    /// match then keeps those that hold it as typed.
     pub async fn query(&self, a: &Value, as_: Option<&str>) -> Result<Value, Fail> {
-        let words = py_str(required(a, "query")?);
+        let query = py_str(required(a, "query")?);
         let (project, limit) = (str_arg(a, "project"), int_or(a, "limit", search::QUERY_MAX_HITS)?);
-        let (tree, h, hp) = (self.tree.clone(), hide(as_), hide_path(as_));
-        blocking(move || search::query(&tree, &words, project.as_deref(), limit, dynref(&h), dynref(&hp))).await
+        let words = awm_pycompat::pystr::strip(&query);
+        let literal = search::compile(&format!("(?i){}", regex::escape(words))).map_err(|e| Fail::new("error", e))?;
+        let ix = self.ix()?;
+        let Some(cond) = ix.narrow(project.as_deref(), privacy::from_peer(as_)) else {
+            return Ok(json!({"hits": [], "truncated": false}));
+        };
+        let room = limit.max(0) as usize;
+        let hit = |project: &str, session: &str, line: i64, text: &str| {
+            json!({"id": format!("{session}:{line}"), "title": project, "snippet": index::title_of(text), "project": project})
+        };
+        let phrase = awm_index::fts::words(words).join(" ");
+        let mut hits: Vec<Value> = vec![];
+        if phrase.is_empty() {
+            let (lines, _) = ix.scan(Arc::new(literal), &cond, room).await?;
+            hits = lines.iter().map(|l| json!({"id": format!("{}:{}", l.session, l.line), "title": l.project, "snippet": l.text, "project": l.project})).collect();
+        } else {
+            let found = ix.phrase(&phrase, &cond).await?;
+            for part in found.chunks(500) {
+                if hits.len() >= room {
+                    break;
+                }
+                let ids: Vec<String> = part.iter().map(|(_, _, _, id)| id.clone()).collect();
+                let texts = ix.texts(&ids).await?;
+                for (project, session, line, id) in part {
+                    let text = texts.get(id).map_or("", String::as_str);
+                    if hits.len() < room && literal.is_match(text).unwrap_or(false) {
+                        hits.push(hit(project, session, *line, text));
+                    }
+                }
+            }
+        }
+        let truncated = limit <= 0 || hits.len() >= room;
+        Ok(json!({"hits": hits, "truncated": truncated}))
     }
 
     /// A peer gets the answer for a session that was never archived, for a marked project or a
@@ -329,7 +476,7 @@ macro_rules! verb {
 }
 
 /// transcripts' verbs on `svc`.
-pub fn service(svc: Service, app: Arc<App>) -> Service {
+pub fn register(svc: Service, app: Arc<App>) -> Service {
     let svc = verb!(svc, app, "status",
         "Report the live session tree and the archive: session count, orphaned sidecars, bytes, and how many sessions are past the retention and still unswept. past_retention is the backlog — a sweep that runs while that number grows is not working.",
         json!([days_param(), p("prune_days", "number", false, "Also report how much of the archive is older than this many days.")]), 120,

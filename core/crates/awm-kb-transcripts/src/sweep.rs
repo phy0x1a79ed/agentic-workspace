@@ -231,19 +231,30 @@ fn remove_empty_dirs(dir: &Path) {
 /// Archive every live session older than `days` that no Claude Code process holds. A failure
 /// on one session is logged and the sweep goes on.
 pub fn archive(tree: &Tree, days: f64, dry_run: bool, live: &HashSet<String>, hide: Option<&dyn Fn(&str) -> bool>) -> Value {
+    archive_sessions(tree, days, dry_run, live, hide).0
+}
+
+/// [`archive`], with the `(project, session)` of each transcript it archived and checked.
+pub fn archive_sessions(tree: &Tree, days: f64, dry_run: bool, live: &HashSet<String>, hide: Option<&dyn Fn(&str) -> bool>) -> (Value, Vec<(String, String)>) {
     let started = Instant::now();
     let mut done: Vec<Moved> = vec![];
+    let mut moved: Vec<(String, String)> = vec![];
     let mut failed: Vec<Value> = vec![];
     for s in aged(&tree.projects, Side::Live, days, hide).into_iter().filter(|s| !live.contains(&s.session_id)) {
         match archive_one(tree, &s, dry_run) {
-            Ok(m) => done.push(m),
+            Ok(m) => {
+                if !dry_run && !m.orphan {
+                    moved.push((s.project.clone(), s.session_id.clone()));
+                }
+                done.push(m)
+            }
             Err(error) => {
                 tracing::warn!("transcripts: could not archive {}/{}: {error}", s.project, s.session_id);
                 failed.push(json!({"project": s.project, "session": s.session_id, "error": error}));
             }
         }
     }
-    json!({
+    let out = json!({
         "dry_run": dry_run,
         "retention_days": days,
         "sessions": done.len(),
@@ -254,11 +265,17 @@ pub fn archive(tree: &Tree, days: f64, dry_run: bool, live: &HashSet<String>, hi
         "bytes_after": done.iter().map(|d| d.bytes_after).sum::<u64>(),
         "failed": failed,
         "seconds": round2(started.elapsed().as_secs_f64()),
-    })
+    });
+    (out, moved)
 }
 
 /// Delete archived sessions older than `days`: the one irreversible operation here.
 pub fn prune(tree: &Tree, days: f64, dry_run: bool, hide: Option<&dyn Fn(&str) -> bool>) -> Value {
+    prune_sessions(tree, days, dry_run, hide).0
+}
+
+/// [`prune`], with the `(project, session)` of each session it deleted.
+pub fn prune_sessions(tree: &Tree, days: f64, dry_run: bool, hide: Option<&dyn Fn(&str) -> bool>) -> (Value, Vec<(String, String)>) {
     let started = Instant::now();
     let victims = aged(&tree.archive, Side::Archive, days, hide);
     let freed: u64 = victims.iter().map(Session::bytes).sum();
@@ -272,13 +289,15 @@ pub fn prune(tree: &Tree, days: f64, dry_run: bool, hide: Option<&dyn Fn(&str) -
             }
         }
     }
-    json!({
+    let out = json!({
         "dry_run": dry_run,
         "retention_days": days,
         "sessions": victims.len(),
         "bytes_freed": freed,
         "seconds": round2(started.elapsed().as_secs_f64()),
-    })
+    });
+    let gone = if dry_run { vec![] } else { victims.into_iter().map(|s| (s.project, s.session_id)).collect() };
+    (out, gone)
 }
 
 /// A name that stays inside its directory.

@@ -2,7 +2,7 @@
 //!
 //! It runs at about 03:30 local time, and once at start when the last timer sweep is more than
 //! 26 h old, so a node that was off catches up. The sweep runs on its own thread at idle IO
-//! priority and nice 19, and records `trigger = "timer"`.
+//! priority and nice 19, records `trigger = "timer"`, and indexes the sessions it archived.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -44,20 +44,31 @@ pub fn due(last: Option<f64>, now: f64) -> bool {
     last.is_some_and(|t| now - t > CATCH_UP_AFTER_S)
 }
 
-/// Run `f` on a fresh thread at idle IO priority and nice 19, so the sweep yields the disk.
+fn lower_priority() {
+    // SAFETY: both calls only change this thread's own scheduling.
+    unsafe {
+        const IOPRIO_WHO_PROCESS: libc::c_long = 1;
+        const IOPRIO_CLASS_IDLE: libc::c_long = 3;
+        libc::syscall(libc::SYS_ioprio_set, IOPRIO_WHO_PROCESS, 0 as libc::c_long, IOPRIO_CLASS_IDLE << 13);
+        let tid = libc::syscall(libc::SYS_gettid) as libc::id_t;
+        libc::setpriority(libc::PRIO_PROCESS, tid, 19);
+    }
+}
+
+/// Run `f` on a fresh thread at idle IO priority and nice 19, so it yields the disk.
+pub fn idle_thread(f: Box<dyn FnOnce() + Send>) {
+    std::thread::spawn(move || {
+        lower_priority();
+        f();
+    });
+}
+
+/// Run `f` on a fresh idle thread and wait for its answer.
 async fn idle<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> Option<T> {
     let (tx, rx) = tokio::sync::oneshot::channel();
-    std::thread::spawn(move || {
-        // SAFETY: both calls only change this thread's own scheduling.
-        unsafe {
-            const IOPRIO_WHO_PROCESS: libc::c_long = 1;
-            const IOPRIO_CLASS_IDLE: libc::c_long = 3;
-            libc::syscall(libc::SYS_ioprio_set, IOPRIO_WHO_PROCESS, 0 as libc::c_long, IOPRIO_CLASS_IDLE << 13);
-            let tid = libc::syscall(libc::SYS_gettid) as libc::id_t;
-            libc::setpriority(libc::PRIO_PROCESS, tid, 19);
-        }
+    idle_thread(Box::new(move || {
         let _ = tx.send(f());
-    });
+    }));
     rx.await.ok()
 }
 
@@ -71,9 +82,10 @@ pub async fn run_once(ctx: &Context, app: &App) {
         }
         Ok(live) => {
             let tree = app.tree.clone();
-            match idle(move || sweep::archive(&tree, sweep::DEFAULT_RETENTION_DAYS, false, &live, None)).await {
+            match idle(move || sweep::archive_sessions(&tree, sweep::DEFAULT_RETENTION_DAYS, false, &live, None)).await {
                 None => false,
-                Some(result) => {
+                Some((result, moved)) => {
+                    app.index_moved(moved).await;
                     if let Err(e) = runs::record(&app.store, "sweep", &result, "timer").await {
                         tracing::error!("transcripts: the daily sweep ran but its row was not written: {e}");
                     }
