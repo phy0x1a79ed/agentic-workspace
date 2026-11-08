@@ -305,8 +305,10 @@ async fn run_service(gw: Arc<Gateway>, spec: ServiceSpec, retired: Arc<AtomicBoo
                     tokio::select! {
                         status = child.wait() => break status,
                         _ = tokio::time::sleep(Duration::from_secs(1)) => {
-                            let silent = gw.hub.down_for(&spec.name).is_some_and(|d| d > window);
-                            if !done() && silent && spawned.elapsed() > window {
+                            // A connection lost before this spawn is the last process's: this one
+                            // may still be in a long first start and has not connected yet.
+                            let silent = gw.hub.down_for(&spec.name).is_some_and(|d| d > window && d < spawned.elapsed());
+                            if !done() && silent {
                                 match (signalled, pid) {
                                     (None, Some(pid)) => {
                                         tracing::warn!("service {} off its control connection past {:?}; restarting", spec.name, window);

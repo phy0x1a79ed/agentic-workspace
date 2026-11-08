@@ -38,9 +38,17 @@ pub struct Args {
     /// Print the steps and change nothing.
     #[arg(long)]
     dry_run: bool,
-    /// How long to wait for the services to come up, in seconds.
+    /// How long to wait for the services to come up, in seconds. kb's first start gets an hour.
     #[arg(long, default_value_t = 90)]
     timeout: u64,
+}
+
+/// kb's first start copies every post into LanceDB, which took up to 11 minutes on a small node.
+const KB_FIRST_START_S: u64 = 3600;
+
+/// True until kb has written the marker its first start ends with.
+fn kb_first_start_pending(state: &Path) -> bool {
+    !state.join("services/kb/lance/journals/cutover.json").exists()
 }
 
 const STATIC_BUILD: &str = "x86_64-unknown-linux-musl/release/awm";
@@ -219,23 +227,27 @@ pub async fn run(args: Args) -> anyhow::Result<i32> {
         }
     }
 
-    let deadline = Instant::now() + Duration::from_secs(args.timeout);
+    let budget = if kb_first_start_pending(&state) { KB_FIRST_START_S } else { args.timeout };
+    let deadline = Instant::now() + Duration::from_secs(budget);
     loop {
-        let waiting: Vec<String> = match native("services").await {
-            Ok(rows) => rows
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter(|r| r["enabled"] == json!(true) && r["external"] != json!(true) && r["status"] != json!("ready"))
-                .map(|r| format!("{} ({})", r["name"].as_str().unwrap_or("?"), r["status"].as_str().unwrap_or("?")))
-                .collect(),
-            Err(e) => vec![format!("gateway: {e}")],
-        };
+        let rows = native("services").await;
+        let rows = rows.as_ref().ok().and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
+        let is_down = |r: &Value| r["enabled"] == json!(true) && r["external"] != json!(true) && r["status"] != json!("ready");
+        let name = |r: &Value| format!("{} ({})", r["name"].as_str().unwrap_or("?"), r["status"].as_str().unwrap_or("?"));
+        let gave_up: Vec<String> = rows.iter().filter(|r| is_down(r) && (r["failed"] == json!(true) || r["tripped"] == json!(true))).map(name).collect();
+        if !gave_up.is_empty() {
+            eprintln!("gave up starting: {}", gave_up.join(", "));
+            return Ok(1);
+        }
+        let mut waiting: Vec<String> = rows.iter().filter(|r| is_down(r)).map(name).collect();
+        if rows.is_empty() {
+            waiting.push("the gateway".to_string());
+        }
         if waiting.is_empty() {
             break;
         }
         if Instant::now() > deadline {
-            eprintln!("not up after {}s: {}", args.timeout, waiting.join(", "));
+            eprintln!("not up after {budget}s: {}", waiting.join(", "));
             return Ok(1);
         }
         tokio::time::sleep(Duration::from_secs(1)).await;

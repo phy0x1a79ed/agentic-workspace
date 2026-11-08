@@ -216,6 +216,7 @@ fn deploy_node(tmp: &Path, o: DeployOpts) -> PathBuf {
         copy(&format!("scripts/{f}"), &node.join("scripts").join(f));
     }
     write(&node.join("core/Cargo.toml"), "x\n");
+    write(&node.join("core/crates/awm-embed/src/model.rs"), "1\n");
     awm_cli(&node);
     write(&node.join(".gitignore"), "awm/*/*/pages/*/dist/\n");
     write(&node.join("awm/services/svc/pages/ui/index.html"), "src\n");
@@ -223,8 +224,10 @@ fn deploy_node(tmp: &Path, o: DeployOpts) -> PathBuf {
     commit(&node, "one");
     let store = node.join(".awm/artifacts");
     std::fs::create_dir_all(&store).unwrap();
-    let (cv, pv) = (pins_sh(&node, "core_version"), pins_sh(&node, "pages_version"));
+    let (cv, pv, mv) = (pins_sh(&node, "core_version"), pins_sh(&node, "pages_version"), pins_sh(&node, "models_version"));
     let pages = pages_tar(tmp, "built\n");
+    pin(&node, "models.pin", &mv, &format!("awm-{mv}.tar"), &pages, None);
+    std::fs::write(store.join(format!("awm-{mv}.tar")), &pages).unwrap();
     pin(&node, "core.pin", &cv, &format!("awm-{cv}"), FAKE_BIN.as_bytes(), o.core_sha);
     pin(&node, "pages.pin", &pv, &format!("awm-{pv}.tar.gz"), &pages, o.pages_sha);
     std::fs::write(store.join(format!("awm-{cv}")), FAKE_BIN).unwrap();
@@ -369,12 +372,14 @@ fn refresh_tree(tmp: &Path) -> PathBuf {
         copy(&format!("scripts/{f}"), &tree.join("scripts").join(f));
     }
     let stub = |name: &str, ver: &str, extra: &str| STUB.replace("NAME", name).replace("VER", ver).replace("EXTRA", extra);
+    exe(&tree.join("scripts/release-models.sh"), &stub("models", "models_version", ""));
     exe(&tree.join("scripts/release-core.sh"), &stub("core", "core_version", ""));
     exe(
         &tree.join("scripts/release-pages.sh"),
         &stub("pages", "pages_version", "mkdir -p \"$root/awm/node_modules/pkg\"; echo ok > \"$root/awm/node_modules/pkg/index.js\""),
     );
     write(&tree.join("core/Cargo.toml"), "1\n");
+    write(&tree.join("core/crates/awm-embed/src/model.rs"), "1\n");
     awm_cli(&tree);
     write(&tree.join("awm/package-lock.json"), "{}\n");
     write(&tree.join("awm/services/svc/pages/ui/index.html"), "1\n");
@@ -399,22 +404,22 @@ fn refresh_pins_builds_what_is_stale_and_nothing_else() {
     let tmp = tempfile::tempdir().unwrap();
     let (tree, awm_dir) = (refresh_tree(tmp.path()), tmp.path().join("awm-dir"));
     let first = run_pins(&tree, &awm_dir);
-    assert_eq!(first_words(&first), ["core", "pages"]);
-    assert!(first[0].contains(&format!("target={}/build-cache/cargo-target", awm_dir.display())), "{}", first[0]);
+    assert_eq!(first_words(&first), ["models", "core", "pages"]);
+    assert!(first[1].contains(&format!("target={}/build-cache/cargo-target", awm_dir.display())), "{}", first[1]);
     assert_eq!(std::fs::read_to_string(tree.join("scripts/core.pin")).unwrap().matches("version=core-").count(), 1);
     // Nothing changed, so nothing builds.
     assert_eq!(run_pins(&tree, &awm_dir), first);
     // A core change rebuilds the core only.
     write(&tree.join("core/Cargo.toml"), "2\n");
     commit(&tree, "core");
-    assert_eq!(first_words(&run_pins(&tree, &awm_dir)[2..]), ["core"]);
+    assert_eq!(first_words(&run_pins(&tree, &awm_dir)[3..]), ["core"]);
     // A page change rebuilds the pages only, and a missing artifact rebuilds its pin.
     write(&tree.join("awm/services/svc/pages/ui/index.html"), "2\n");
     commit(&tree, "page");
-    assert_eq!(first_words(&run_pins(&tree, &awm_dir)[3..]), ["pages"]);
+    assert_eq!(first_words(&run_pins(&tree, &awm_dir)[4..]), ["pages"]);
     for e in std::fs::read_dir(awm_dir.join("artifacts")).unwrap() {
         std::fs::remove_file(e.unwrap().path()).unwrap();
     }
-    assert_eq!(first_words(&run_pins(&tree, &awm_dir)[4..]), ["core", "pages"]);
+    assert_eq!(first_words(&run_pins(&tree, &awm_dir)[5..]), ["models", "core", "pages"]);
 }
 

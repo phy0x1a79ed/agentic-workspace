@@ -9,13 +9,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use awm_proto::{Caller, Surface, UsageEvent};
-use futures_util::{FutureExt, Sin/// Take the pre-redux snapshot of what the plugin declares, before its first Rust write. A failure
-/// refuses the start. Only a declaration is copied: a service dir can hold data that is not
-/// pre-redux state, such as kb's LanceDB.
-fn snapshot_state(env: &Env, toml: Option<&str>) -> anyhow::Result<()> {
-    let Some(text) = toml else { return Ok(()) };
-    let decl = awm_statecheck::decl::Decl::parse(text, &env.state_dir(), &env.awm_dir, |k| std::env::var(k).ok())?;
-Ext, StreamExt};
+use futures_util::{FutureExt, SinkExt, StreamExt};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::{json, Value};

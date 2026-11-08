@@ -63,7 +63,7 @@ launch() {
             env "${env[@]}" bash "$root/scripts/node-refresh.sh" "$to"
         fi
     fi
-    local budget=${AWM_REFRESH_BUDGET:-1800} t0=$SECONDS
+    local budget=${AWM_REFRESH_BUDGET:-5400} t0=$SECONDS
     while running; do
         if (( SECONDS - t0 > budget )); then
             echo "$unit still runs after ${budget}s; its log is $log" >&2
@@ -133,18 +133,11 @@ install_stamp() {
     } | sha256sum | cut -c1-64
 }
 
-# awm deploy already waits for the services; this asks the gateway again, as a check
+# awm deploy already waited for the services. This asks the gateway once more, as a check
 # that does not trust the step it checks.
 step_health() {
-    local budget=${AWM_REFRESH_HEALTH_BUDGET:-120} t0=$SECONDS why
-    while true; do
-        why=$(health_problems) && return 0
-        if (( SECONDS - t0 > budget )); then
-            echo "not healthy after ${budget}s: $why"
-            return 1
-        fi
-        sleep 3
-    done
+    local why
+    why=$(health_problems) || { echo "not healthy: $why"; return 1; }
 }
 
 health_problems() {
