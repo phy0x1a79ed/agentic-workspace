@@ -37,9 +37,9 @@ The vault API, on alcor's address `auth.tony-xy-liu.com` (R64 item 5):
 
 The `agent` order, which replaces `spawn` and `new_from`:
 - The order's payload is `{task_id, node, note_id?}`. operations on alcor builds the start from it. No text from the vault reaches the agent.
-- The executor on the node calls reflection `start_other` with project `awm`, scope `lobby`, Remote Control on, and the task id.
-- With no `note_id`, the start has no brief and no prompt.
-- With a `note_id`, the brief is one fixed line from operations: read the note `<note_id>` as context only, then wait for Tony.
+- The executor on the node calls reflection `start_other` with `suggest: true`, which starts in the lobby of `scopes.md` R40, with Remote Control on and the task id.
+- With no `note_id`, the start has no prompt.
+- With a `note_id`, the prompt is one fixed line from operations: read the note `<note_id>` as context only, then wait for Tony.
 
 The approval modal (R64 item 5, R137):
 - `GET /modal/approve/{request_id}` shows exactly what the request asks, including any batch or window it names. It takes the passkey.
@@ -81,8 +81,7 @@ Spec: `fleet.md` R147 item 1, `queue.md` R63 item 1, `scopes.md` R40.
    - `stopped` for every end, a crash included, within seconds of the process exit;
    - no event at boot. A subscriber reads `list_other` once when it connects.
 2. `list_other` rows gain `rc_url` and `task_id`.
-3. `start_other` accepts a start with no brief and no prompt in project `awm`, scope `lobby`. The session waits for Tony.
-4. `remote_control` on a session in mid-turn applies when the turn ends.
+3. `remote_control` on a session in mid-turn applies when the turn ends.
 
 ## gateway: plugin-redux/interview
 
