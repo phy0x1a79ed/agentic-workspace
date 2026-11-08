@@ -8,11 +8,11 @@ Decisions: `DECISIONS.md` beside this file.
 
 ## Current
 
-- deneb
+- node-checkout
 
 ## Waiting on the user
 
-- deneb: remaining cutover questions.
+- node-checkout: do nodes keep the awm git clone?
 
 ## Preferences
 
@@ -22,7 +22,7 @@ Tony (2026-11-08): this session does the work itself; Sonnet agents at medium ef
 
 ## Stack
 
-- deneb — the public host's cutover
+- node-checkout — Tony: "under the post rust redux, do nodes still need the awm git clone?"
 - open-for-tony — the end-state journals' open items not reached above: per-node-edges, lyra vpn.toml, isolated/ mirror tag, alcor sites daemon, cch warm pool, science idle
 - close-out — `.pre-rust` deletion, unreviewed branches, retiring the redux scopes
 
@@ -36,6 +36,7 @@ None.
 - land-port-harness — lands, per ace5dab4
 - fleet-route — mizar and alcor first, then altair, shogun, capella, lyra together; deneb apart; cloud dev moves to mizar
 - r79-writer — alcor pushes to deneb's vault writer; R79 stands
+- deneb — no further decision; its own cutover per fleet-route, writer per r79-writer
 
 ## Survey state (2026-11-08)
 
