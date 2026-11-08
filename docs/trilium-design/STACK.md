@@ -7,7 +7,7 @@ Related: journal 7724ff11 (ops-board decision), spec `docs/redux/*.md` (queue R6
 
 ## Current
 
-BUILD — PLAN.md approved 2026-11-07. T1 done (CONTRACT.md, cf30928e; adds a gateway item for awm/services and awm/usage). T2 done: workers plugin-redux/trilium-telemetry (job 4196b8cb, scope awm/trilium-telemetry, Opus high) and plugin-redux/trilium-vault (job daf676e8, scope awm/trilium-vault, Sonnet high), both from feat/trilium-design at cf30928e. Flat scopes, because a branch feat/trilium-design/<x> cannot sit beside feat/trilium-design. Parked for mizar's /home cutover 2026-11-07 and resumed. Contract amended at 1331f17a: `operations/board` topic (vault asked), and the telemetry singleton on alcor with every opted-in node as callers; the node part has no tool (fallback `telemetry-node`). Next: wait for both reports, then T6.
+BUILD — wrapped up 2026-11-08 at Tony's word. telemetry landed (release acadb279). vault, the cloud batch and the merges belong to a merge session: see HANDOFF.md, which opens with a decision for Tony (deneb's outbound calls, R79).
 
 ## Waiting on the user
 
