@@ -38,3 +38,13 @@ Still open from the original interview (shelved by Tony, "shelf all decisions to
 **Decided.** This session does not use `scripts/land.sh`. The stale lease and the queued tickets 3e3bc12a2040 and 68647284ec63 stay untouched; their branches merge by hand. Per plugin: merge the branch into `feat/redux-finish` (from release), run the tests it touches and `deploy.toml`'s check, rebuild stale pins with `scripts/refresh-pins.sh` and commit them, promote `feat/redux-finish → dev → release`, push `release` to `github` fast-forward, then refresh mizar and alcor with `deploy.toml` § refresh (`refresh-checkout.sh`, then `node-refresh.sh` with `AWM_REFRESH_RESTART`). Other nodes are not refreshed until `later-nodes`.
 
 **Landed.** This file; no code.
+
+## dvc (2026-11-07)
+
+**Question.** What is dvc's scope for mizar and alcor?
+
+**Survey** (`/home/tony/.claude/jobs/b8680c94/tmp/survey/ops.md`). The port is done on feat/port-ops-t7 (34521995); its crates' tests pass merged onto release. Neither node has `dvc.toml`; mizar's two jobs are disabled; alcor has no Globus token and no jobs. No question for Tony.
+
+**Decided.** Merge feat/port-ops-t7 with the known conflict resolutions (deploy.toml pins union plus dvc.pin; run-tests ORDER minus dvc; fleet.md R97 item 1 from t7, item 2 from release). Run the dvc tests and refresh pins. Restart `dvc,routine` on mizar and alcor. Live checks on mizar: `describe`, `status`, `scope_status`, gc dry run, `coverage`, the mirror dry run listing every `.pre-rust/` as excluded; then hooks name the Rust binary, `.awm-py.bak` copies exist, `pgrep globus` is empty. altair's live job and capella's checks wait for `later-nodes`. dvc lands together with operations (one merge of feat/port-ops, which carries t7).
+
+**Landed.** Not yet.
