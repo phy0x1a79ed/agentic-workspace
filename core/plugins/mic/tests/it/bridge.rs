@@ -180,6 +180,8 @@ async fn a_new_phone_supersedes_the_old_one_and_tells_it() {
     let mut a = Phone::open(&r.mic, json!({}));
     assert!(a.next().await.unwrap().contains(r#""type": "ready""#));
     let first = r.mic.current().unwrap();
+    // The fake ignores SIGTERM only once its trap is set, and writes nothing if killed before.
+    eventually("the first pacat starts", || !recorded(r.dir.path(), "pcm.").is_empty()).await;
     let mut b = Phone::open(&r.mic, json!({}));
     assert!(b.next().await.unwrap().contains(r#""type": "ready""#));
     assert_eq!(a.next().await.unwrap(), r#"{"type": "superseded", "message": "another device took the microphone"}"#);

@@ -63,6 +63,8 @@ awm-trust = { path = "crates/awm-trust" }
 awm-edge = { path = "crates/awm-edge" }
 awm-pycompat = { path = "crates/awm-pycompat" }
 awm-store = { path = "crates/awm-store" }
+awm-embed = { path = "crates/awm-embed" }
+awm-index = { path = "crates/awm-index" }
 awm-plugin-sdk = { path = "crates/awm-plugin-sdk" }
 awm-plugin-telemetry = { path = "plugins/telemetry" }
 awm-harness = { path = "crates/awm-harness", default-features = false }

@@ -1,0 +1,258 @@
+//! The verbs as the gateway sees them, the judgements, the usage log and score, and the fusion of
+//! a live source's sections. Ported from `test_hub_adapter.py`, `test_store_v9.py`,
+//! `test_merge.py` and `test_journal_reads.py`.
+
+mod common;
+
+use awm_kb_search::{merge, store};
+use awm_plugin_sdk::{Caller, Env, Service};
+use common::*;
+use serde_json::{json, Map, Value};
+
+fn env(dir: &std::path::Path) -> Env {
+    Env { hub_url: "http://127.0.0.1:1".into(), service: "kb".into(), plugin: "kb".into(), node: HERE.into(), awm_dir: dir.into(), token_file: None }
+}
+
+#[tokio::test]
+async fn describe_matches_the_baseline_with_the_listed_changes() {
+    let r = rig().await;
+    let api = awm_kb_search::register(Service::new(env(r.dir.path())), r.search.clone()).manifest();
+    let functions = api["functions"].as_array().unwrap();
+    let mut verbs: Vec<Value> = functions
+        .iter()
+        .map(|f| {
+            let verb = f["tool"].as_str().unwrap().strip_prefix("search_").unwrap();
+            let mut v = json!({"description": f["description"], "params": f["params"], "verb": verb});
+            if let Some(s) = f.get("surfaces") {
+                v["surfaces"] = s.clone();
+            }
+            v
+        })
+        .collect();
+    verbs.sort_by(|a, b| a["verb"].as_str().cmp(&b["verb"].as_str()));
+    let mut want: Value = serde_json::from_str(include_str!("../../../../docs/plugin-redux/ports/baseline/search.describe.json")).unwrap();
+    // The listed changes: reindex and api_export go; sources and status describe the live
+    // sources; query and get name guide where they named the retired awm source.
+    let list = want["verbs"].as_array_mut().unwrap();
+    list.retain(|v| v["verb"] != "reindex" && v["verb"] != "api_export");
+    for v in list.iter_mut() {
+        let d = v["description"].as_str().unwrap().to_string();
+        let d = match v["verb"].as_str().unwrap() {
+            "query" => d.replace("such as journals, or awm for the node's tools;", "such as journals, or guide for how to use awm;"),
+            "get" => d.replace("and an awm hit is its verb's describe.", "and a guide hit is its section of a doc or its verb's describe."),
+            "sources" | "status" => functions.iter().find(|f| f["tool"] == format!("search_{}", v["verb"].as_str().unwrap())).unwrap()["description"].as_str().unwrap().to_string(),
+            _ => d,
+        };
+        v["description"] = json!(d);
+    }
+    assert_eq!(json!({"plugin": "search", "tool": "search", "verbs": verbs}), want);
+    let text = functions[0]["description"].as_str().unwrap();
+    assert_eq!(text.lines().count(), 13);
+    assert!(text.starts_with("search query \u{2014} rank items from named sources.\n") && text.ends_with("Open one with `get`.\n"));
+    for name in ["sources", "status"] {
+        let d = functions.iter().find(|f| f["tool"] == format!("search_{name}")).unwrap()["description"].as_str().unwrap();
+        for gone in ["sync", "frozen", "sweep", "subscription"] {
+            assert!(!d.contains(gone), "{name}: {d}");
+        }
+        assert!(d.contains("last answer and error"));
+    }
+    assert!(functions.iter().find(|f| f["tool"] == "search_sources").unwrap()["description"].as_str().unwrap().contains("`default`"));
+    assert_eq!(functions[0]["timeout"], json!(60.0));
+    let mcp: Vec<&str> = functions.iter().filter(|f| f.get("surfaces").is_none()).map(|f| f["name"].as_str().unwrap()).collect();
+    assert_eq!(mcp, ["query", "get", "sources"]);
+}
+
+#[tokio::test]
+async fn the_handlers_answer_through_the_service() {
+    let r = rig().await;
+    r.journals.put(&[("j1", doc("Sink", "kitchen sink journal", "2026-03-01T10:00:00Z"))]).await;
+    let t = awm_kb_search::register(Service::new(env(r.dir.path())), r.search.clone()).into_test().await.unwrap();
+    let out = t.call("query", json!({"query": {"text": "sink", "journals": {"tag": {"$ne": "x"}}}, "max": 3})).await.unwrap();
+    assert_eq!(ids(&out["journals"]["exact"]), ["j1"]);
+    let e = t.call("query", json!({"query": {"journals": {"nonesuch": 1}}})).await.unwrap_err();
+    assert!(e.error_class == "QueryError" && e.message.contains("journals"), "{e:?}");
+    let e = t.call("query", json!({"query": "sink", "sources": ["journals"], "limit": 5})).await.unwrap_err();
+    assert_eq!(e.error_class, "QueryError");
+
+    let peer = Caller { node: "shaula".into(), ..Caller::default() };
+    let out = t.call_as("query", json!({"query": "kitchen sink"}), peer.clone(), Some("peer:shaula")).await.unwrap();
+    assert_eq!(ids(&out["journals"]["exact"]), ["j1"]);
+    let got = t.call_as("get", json!({"source": "journals", "id": "j1"}), peer, Some("peer:shaula")).await.unwrap();
+    assert_eq!(got["document"]["origin"], json!({"node": HERE}));
+    assert_eq!(got["document"]["frozen"], false);
+}
+
+#[tokio::test]
+async fn sources_lists_fields_default_and_health() {
+    let r = rig_with(vec![Fake::new("guide", Act::Hits(json!([])))]).await;
+    r.journals.put(&[("j1", doc("Sink", "kitchen sink journal", "2026-03-01T10:00:00Z"))]).await;
+    r.gateway.live("papers", "kb", json!([
+        {"name": "kb", "mode": "live", "query": "kb_query", "get": "kb_get", "hit": ["title", "ts"], "fields": {"title": "content", "author": "categorical"}},
+        {"name": "precedence", "mode": "live", "query": "kb_query"},
+    ]));
+    r.search.refresh().await;
+    let out = r.search.sources(None).await;
+    let rows: Map<String, Value> = out["sources"].as_array().unwrap().iter().map(|s| (s["name"].as_str().unwrap().to_string(), s.clone())).collect();
+    assert_eq!(rows.keys().collect::<Vec<_>>(), ["guide", "journals", "kb"]);
+    let j = &rows["journals"];
+    assert_eq!((j["kind"].clone(), j["node"].clone(), j["count"].clone(), j["default"].clone()), (json!("journals"), json!(HERE), json!(1), json!(true)));
+    assert_eq!((j["fields"]["tag"].clone(), j["fields"]["text"].clone()), (json!("categorical"), json!("content")));
+    assert_eq!((j["fields"]["scope"].clone(), j["hit"].clone()), (json!({"class": "categorical", "nested": "/"}), json!(["title", "ts"])));
+    for gone in ["last_sync", "frozen", "cursor", "epoch", "layout", "rebuilt"] {
+        assert!(j.get(gone).is_none(), "{gone}");
+    }
+    assert!(j.get("last_answer").is_some() && j.get("last_error").is_some());
+    assert_eq!(rows["guide"]["default"], false);
+    assert_eq!((rows["kb"]["mode"].clone(), rows["kb"]["service"].clone(), rows["kb"]["default"].clone()), (json!("live"), json!("papers"), json!(false)));
+    for key in ["registry", "semantic", "documents"] {
+        assert!(out.get(key).is_some(), "{key}");
+    }
+    let status = r.search.status(None).await;
+    assert_eq!(status["sources"], json!({"journals": 1, "guide": null}));
+    assert_eq!(status["semantic"], true);
+}
+
+#[tokio::test]
+async fn judgements_are_recorded_replaced_and_cleared() {
+    let r = rig().await;
+    let s = &r.search;
+    let mark = json!({"query": "kitchen sink", "source": "journals", "id": "j1", "verdict": "relevant", "section": "exact", "set": "gold"});
+    s.judge(&mark, Some("scope:awm/svc-kb")).await.unwrap();
+    let mut m2 = mark.clone();
+    m2["verdict"] = json!("irrelevant");
+    m2["section"] = json!("");
+    let got = s.judge(&m2, Some("tony")).await.unwrap();
+    assert_eq!(got["judged"]["judge"], "tony");
+    let mut m3 = mark.clone();
+    m3["id"] = json!("j2");
+    s.judge(&m3, None).await.unwrap();
+    let rows = s.judgements(&json!({"set": "gold"})).await.unwrap()["judgements"].clone();
+    let got: Vec<(String, String, String, String)> = rows
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| [r["doc_id"].clone(), r["verdict"].clone(), r["section"].clone(), r["judge"].clone()].map(|v| v.as_str().unwrap().to_string()).into())
+        .collect();
+    assert_eq!(got, [("j1".into(), "irrelevant".into(), "".into(), "tony".into()), ("j2".into(), "relevant".into(), "exact".into(), "".into())]);
+    let mut clear = mark.clone();
+    clear["verdict"] = json!("clear");
+    assert_eq!(s.judge(&clear, None).await.unwrap()["cleared"], 1);
+    assert_eq!(ids(&json!(s.judgements(&json!({})).await.unwrap()["judgements"].as_array().unwrap().iter().map(|r| json!({"id": r["doc_id"]})).collect::<Vec<_>>())), ["j2"]);
+    assert_eq!(s.judgements(&json!({"set": "t5"})).await.unwrap()["judgements"], json!([]));
+
+    let base = json!({"query": "q", "source": "journals", "id": "j1", "verdict": "relevant"});
+    let with_ = |k: &str, v: &str| {
+        let mut b = base.clone();
+        b[k] = json!(v);
+        b
+    };
+    let e = s.judge(&with_("verdict", "maybe"), None).await.unwrap_err();
+    assert_eq!(e.message, "verdict: 'maybe' is not relevant, irrelevant or clear");
+    let e = s.judge(&with_("section", "abstract"), None).await.unwrap_err();
+    assert_eq!(e.message, "section: 'abstract' is not exact or related");
+    let e = s.judge(&with_("id", ""), None).await.unwrap_err();
+    assert_eq!((e.class.as_str(), e.message.as_str()), ("ValueError", "search judge needs a query, a source and an id"));
+}
+
+#[tokio::test]
+async fn a_get_is_logged_with_the_callers_project_and_scope() {
+    let r = rig().await;
+    r.journals.put(&[("j1", doc("Sink", "kitchen sink journal", "2026-03-01T10:00:00Z"))]).await;
+    r.search.get(&json!({"source": "journals", "id": "j1", "query": " sink ", "_caller_scope": "awm/redux/search"}), None, None).await.unwrap();
+    r.search.get(&json!({"source": "journals", "id": "j1"}), None, None).await.unwrap();
+    let rows = r.search.store().read(|c| store::usage(c)).await.unwrap();
+    assert_eq!(Value::Object(rows[0].clone()), json!({"project": "awm", "scope": "redux/search", "query": "sink", "source": "journals", "doc_id": "j1", "node": "local"}));
+    assert_eq!(Value::Object(rows[1].clone()), json!({"project": "", "scope": "", "query": "", "source": "journals", "doc_id": "j1", "node": "local"}));
+    // A get that finds nothing is still feedback, as the Python logged it first.
+    let e = r.search.get(&json!({"source": "nonesuch", "id": "x"}), None, None).await.unwrap_err();
+    assert_eq!(e.message, "no source 'nonesuch'");
+    assert_eq!(r.search.store().read(|c| store::usage(c)).await.unwrap().len(), 3);
+}
+
+#[tokio::test]
+async fn a_get_hands_the_session_to_the_source_for_its_read_record() {
+    let r = rig().await;
+    r.journals.put(&[("j1", with(doc("Journal", "a session journal", "2026-03-01T10:00:00Z"), json!({"tag": ["journal"]})))]).await;
+    let got = r.search.get(&json!({"source": "journals", "id": "j1"}), None, Some("ccab".into())).await.unwrap();
+    assert_eq!(got["document"]["tag"], json!(["journal"]));
+    r.search.get(&json!({"source": "journals", "id": "j1"}), Some("peer:vega"), Some("ccab".into())).await.unwrap();
+    let gets = r.journals.gets.lock().unwrap().clone();
+    assert_eq!(gets, [("j1".to_string(), Some("ccab".to_string())), ("j1".to_string(), None)]);
+}
+
+#[tokio::test]
+async fn a_live_get_keeps_the_fields_a_reader_shows() {
+    let r = rig().await;
+    r.gateway.live("papers", "kb", json!([{"name": "kb", "mode": "live", "query": "kb_query", "get": "kb_get"},
+                                          {"name": "library", "mode": "live", "query": "kb_library"}]));
+    r.gateway.on("kb", "get", |a| Ok(json!({"document": {"title": "Paper", "authors": ["A", "B"], "secret": "x", "id": a["id"], "url": ""}})));
+    r.search.refresh().await;
+    let got = r.search.get(&json!({"source": "kb", "id": "doi:1"}), None, None).await.unwrap();
+    assert_eq!(got, json!({"document": {"title": "Paper", "authors": ["A", "B"], "source": "kb", "id": "doi:1", "frozen": false, "origin": {"node": HERE}}}));
+    let e = r.search.get(&json!({"source": "library", "id": "z"}), None, None).await.unwrap_err();
+    assert_eq!(e.message, "'library' is a live source that reads no document whole");
+}
+
+#[test]
+fn store_scores() {
+    assert!((store::logaddexp(1000.0, 1000.0) - (1000.0 + std::f64::consts::LN_2)).abs() < 1e-9);
+    assert!((store::logaddexp(-1000.0, 0.0)).abs() < 1e-9);
+    assert_eq!(store::epoch(), 1_767_225_600.0);
+    let dir = tempfile::tempdir().unwrap();
+    let st = store::open(dir.path()).unwrap();
+    let s = |st: &awm_store::Store| st.blocking_read(|c| c.query_row("SELECT s FROM usage_score", [], |r| r.get::<_, f64>(0)).map_err(awm_store::StoreError::from)).unwrap();
+    let t0 = store::epoch() + 10.0 * 86400.0;
+    let u = |ts: f64, id: &str| store::Use { ts: Some(ts), source: "journals".into(), doc_id: id.into(), ..Default::default() };
+    st.blocking_write(|c| store::log_use(c, &u(t0, "a"))).unwrap();
+    assert!((s(&st) - store::lambda() * 10.0).abs() < 1e-9);
+    st.blocking_write(|c| store::log_use(c, &u(t0, "a"))).unwrap();
+    assert!((s(&st) - (store::lambda() * 10.0 + std::f64::consts::LN_2)).abs() < 1e-9);
+    // A get thirty days later weighs twice as much.
+    let st2 = store::open(tempfile::tempdir().unwrap().path()).unwrap();
+    st2.blocking_write(|c| store::log_use(c, &u(t0 + 30.0 * 86400.0, "b"))).unwrap();
+    assert!((s(&st2) - s(&st)).abs() < 1e-9, "one get 30 days on equals two gets now");
+}
+
+#[test]
+fn the_database_keeps_the_python_schema_at_v9() {
+    let dir = tempfile::tempdir().unwrap();
+    let st = store::open(dir.path()).unwrap();
+    let tables: Vec<String> = st
+        .blocking_read(|c| {
+            let mut q = c.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")?;
+            let rows = q.query_map([], |r| r.get(0))?.collect::<Result<Vec<String>, _>>();
+            rows.map_err(awm_store::StoreError::from)
+        })
+        .unwrap();
+    assert_eq!(tables, ["judgements", "schema_version", "sources", "usage", "usage_score"]);
+    let v: i64 = st.blocking_read(|c| c.query_row("SELECT version FROM schema_version", [], |r| r.get(0)).map_err(awm_store::StoreError::from)).unwrap();
+    assert_eq!(v, 9);
+    drop(st);
+    store::open(dir.path()).unwrap();
+}
+
+#[test]
+fn reciprocal_rank_fusion() {
+    let hit = |id: &str, ts: &str| json!({"id": id, "title": id, "ts": ts}).as_object().unwrap().clone();
+    let (a, b, c) = (hit("a", "2026-01-01T00:00:00Z"), hit("b", "2026-01-01T00:00:00Z"), hit("c", "2026-01-01T00:00:00Z"));
+    let ids = |v: Vec<Map<String, Value>>| v.iter().map(|h| h["id"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+    assert_eq!(ids(merge::fuse(&[vec![a.clone(), b.clone()], vec![c, b]], 10)), ["b", "a", "c"]);
+    assert_eq!(merge::fuse(&[vec![a.clone()], vec![a.clone()]], 10), vec![a]);
+    let (old, new) = (hit("old", "2025-01-01T00:00:00Z"), hit("new", "2026-01-01T00:00:00Z"));
+    assert_eq!(ids(merge::fuse(&[vec![old], vec![new]], 10)), ["new", "old"]);
+    assert_eq!(merge::fuse(&[(0..20).map(|i| hit(&i.to_string(), "")).collect()], 5).len(), 5);
+    assert!(merge::fuse(&[vec![], vec![]], 10).is_empty());
+}
+
+#[tokio::test]
+async fn a_lone_about_fuses_a_live_sources_sections() {
+    let r = rig().await;
+    r.gateway.live("papers", "kb", json!([{"name": "kb", "mode": "live", "query": "kb_query"}]));
+    r.gateway.on("kb", "query", |_| Ok(json!({"exact": [{"id": "a"}, {"id": "b"}], "related": [{"id": "c"}, {"id": "b"}]})));
+    r.search.refresh().await;
+    let got = r.ask(json!({"query": {"text": {"$about": "x"}, "kb": {}}})).await;
+    assert_eq!(ids(&got["kb"]["exact"]), ["b", "a", "c"]);
+    assert!(got["kb"].get("related").is_none());
+    let got = r.ask(json!({"query": {"text": "x", "kb": {}}, "max": 1})).await;
+    assert_eq!((ids(&got["kb"]["exact"]), ids(&got["kb"]["related"])), (vec!["a".to_string()], vec!["c".to_string()]));
+}

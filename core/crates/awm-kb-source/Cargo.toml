@@ -1,0 +1,12 @@
+[package]
+name = "awm-kb-source"
+description = "The source interface inside kb: what search asks each of kb's LanceDB databases, and what each answers."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+awm-index = { path = "../awm-index" }
+futures-util.workspace = true
+serde_json.workspace = true

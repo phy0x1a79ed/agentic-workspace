@@ -1,0 +1,30 @@
+[package]
+name = "awm-plugin-scopes"
+description = "The scope lifecycle on git: worktrees, claims and queues, tags, the private marks, the project index, the create hook and the hygiene pass."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "scopes"
+path = "src/main.rs"
+
+[dependencies]
+awm-plugin-sdk.workspace = true
+awm-pycompat.workspace = true
+awm-store.workspace = true
+awm-dvcdata = { path = "../../crates/awm-dvcdata" }
+awm-statecheck = { path = "../../crates/awm-statecheck" }
+anyhow.workspace = true
+clap.workspace = true
+libc.workspace = true
+regex = "1"
+serde_json.workspace = true
+tokio.workspace = true
+toml.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

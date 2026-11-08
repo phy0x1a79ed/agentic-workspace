@@ -1,6 +1,6 @@
-# Port plan: guide
+# Source plan: guide
 
-guide answers how to use awm. It is listed in `sources` with `default: false`, so a query reaches it only by naming it. It replaces search's `awm` tool-catalog source. search serves it in-process through awm-index (*Still unsure about*).
+guide answers how to use awm. It is listed in `sources` with `default: false`, so a query reaches it only by naming it. It replaces search's `awm` tool-catalog source. kb holds it as its own LanceDB database, `lance/guide/`.
 
 Contents, by section:
 - **docs:** the workspace docs (`AGENTS.md`, `PROTOCOLS.md`, `FEDERATION.md`, `ARCHITECTURE.md`, `README.md`) and awm's `docs/`, from the deployed checkout.
@@ -20,7 +20,7 @@ guide subscribes to the gateway's `awm/plugins` topic with `hub.subscribe("awm",
 - `event` is one of installed, updated, enabled, disabled, removed and refused.
 - `version` is the install stamp, or the pin for a core plugin.
 
-On each connect, and on search's start, guide reads `/hub/plugins` and reconciles each plugin's version against what it indexed, so a dropped socket loses nothing. plugin-redux/interview adds the topic on `feat/plugin-redux` and names the sha.
+On each connect, and on kb's start, guide reads `/hub/plugins` and reconciles each plugin's version against what it indexed, so a dropped socket loses nothing. plugin-redux/interview adds the topic on `feat/plugin-redux` and names the sha.
 
 Tests:
 - Port the suite.

@@ -14,7 +14,7 @@
 #
 # Usage:
 #   scripts/run-tests.sh                 # run all dists
-#   scripts/run-tests.sh scopes contract # run only the named dists
+#   scripts/run-tests.sh kb contract     # run only the named dists
 #   PYTEST_ARGS="-x -q" scripts/run-tests.sh   # pass extra args to pytest
 #   scripts/run-tests.sh --changed <base>  # only dists touched since <base>
 #   scripts/run-tests.sh --smoke           # only tests marked smoke
@@ -41,9 +41,6 @@ declare -A DISTS=(
   [usage]="$WS/awm/service_components/usage::$WS/awm/service_components/usage/tests"
   [tlsfront]="$WS/awm/service_components/tlsfront::$WS/awm/service_components/tlsfront/tests"
   [dvcdata]="$WS/awm/service_components/dvcdata::$WS/awm/service_components/dvcdata/tests"
-  [scopes]="$WS/awm/services/scopes::$WS/awm/services/scopes/tests"
-  [journal]="$WS/awm/services/journal::$WS/awm/services/journal/tests"
-  [search]="$WS/awm/services/search::$WS/awm/services/search/tests"
   [2fa]="$WS/awm/services/2fa::$WS/awm/services/2fa/tests"
   [ssh]="$WS/awm/services/ssh::$WS/awm/services/ssh/tests"
   [rlm-factorio]="$WS/awm/services/rlm-factorio::$WS/awm/services/rlm-factorio/tests"
@@ -55,14 +52,13 @@ declare -A DISTS=(
   [zotero]="$WS/awm/services/zotero::$WS/awm/services/zotero/tests"
   [kb]="$WS/awm/services/kb::$WS/awm/services/kb/tests"
   [board]="$WS/awm/services/board::$WS/awm/services/board/tests"
-  [transcripts]="$WS/awm/services/transcripts::$WS/awm/services/transcripts/tests"
   [grantlib]="$WS/awm/service_components/grantlib::$WS/awm/service_components/grantlib/tests"
   [trustpolicy]="$WS/awm/service_components/trustpolicy::$WS/awm/service_components/trustpolicy/tests"
   [wake]="$WS/awm/plugins/wake::$WS/awm/plugins/wake/tests"
 )
 
 # Stable run order.
-ORDER=(contract gatewayclient config persistence grantlib telemetry usage tlsfront dvcdata scopes journal search 2fa ssh rlm-factorio vpn reflection claude-science engcyc trilium zotero kb board transcripts trustpolicy wake)
+ORDER=(contract gatewayclient config persistence grantlib telemetry usage tlsfront dvcdata 2fa ssh rlm-factorio vpn reflection claude-science engcyc trilium zotero kb board trustpolicy wake)
 
 CHANGED_BASE=""
 SMOKE=0
