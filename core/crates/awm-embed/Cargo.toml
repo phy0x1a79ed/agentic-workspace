@@ -1,0 +1,20 @@
+[package]
+name = "awm-embed"
+description = "The chunker, chunk headers and the MiniLM embedder that journal, guide and search share."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+awm-pycompat.workspace = true
+regex = "1"
+sha1 = "0.10"
+sha2 = "0.10"
+serde_json.workspace = true
+thiserror.workspace = true
+tokenizers = { version = "0.23.2", default-features = false, features = ["unstable_wasm"] }
+tract-onnx = "0.23.10"
+tract-linalg = { version = "0.23.10", features = ["multithread-mm"] }
+
+[dev-dependencies]
+tempfile.workspace = true

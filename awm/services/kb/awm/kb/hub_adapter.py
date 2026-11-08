@@ -415,7 +415,7 @@ async def _on_start() -> None:
 
 async def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
-    await ServiceAdapter("kb", API_MANIFEST, HANDLERS, on_start=_on_start).run()
+    await ServiceAdapter("papers", API_MANIFEST, HANDLERS, on_start=_on_start).run()
 
 
 if __name__ == "__main__":

@@ -1,0 +1,26 @@
+[package]
+name = "awm-plugin-kb"
+description = "awm's knowledge base: the journal, search and transcripts tools, each search source in its own LanceDB database."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "kb"
+path = "src/main.rs"
+
+[dependencies]
+awm-embed.workspace = true
+awm-kb-guide = { path = "../../crates/awm-kb-guide" }
+awm-kb-journals = { path = "../../crates/awm-kb-journals" }
+awm-kb-search = { path = "../../crates/awm-kb-search" }
+awm-kb-source = { path = "../../crates/awm-kb-source" }
+awm-kb-transcripts = { path = "../../crates/awm-kb-transcripts" }
+awm-plugin-sdk.workspace = true
+awm-statecheck = { path = "../../crates/awm-statecheck" }
+anyhow.workspace = true
+clap.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true

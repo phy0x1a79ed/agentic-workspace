@@ -1,0 +1,20 @@
+[package]
+name = "awm-index"
+description = "The LanceDB search engine a source links: yearly sections, the query grammar, fusion, and maintenance on write events."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+awm-pycompat.workspace = true
+awm-embed.workspace = true
+futures = "0.3"
+indexmap = "2"
+lancedb = { version = "0.41", default-features = false }
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

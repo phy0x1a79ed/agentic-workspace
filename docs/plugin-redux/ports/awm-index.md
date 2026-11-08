@@ -12,3 +12,5 @@ The search engine each source links, built from search's `lance_store.py` and `l
 - **The freeze:** with no model, a write stores the entry and marks its chunks waiting. The model loading is the event that embeds them. No vector is ever written as NULL.
 
 Tests: the redux's engine suite ported, a section boundary, a counter crossing each threshold, no maintenance with no writes, and the freeze.
+
+The T6 spike built `lancedb` 0.41 (no default features) as a static musl binary and checked it against a copy of capella's search store with its IVF_RQ index. It matched the Python's answers: the FTS top 10 with equal scores, the label-list ids, and the vector top 30 in the same order. The vector `_distance` is half the Python's, because Rust reports `1 - cos` and pylance 14.0.2 through lancedb 0.39 twice that. Min-max fusion cancels the scale. The build needs `protoc` and the well-known protos in the build image. The spike binary is 238 MB stripped.

@@ -1,17 +1,14 @@
 # Port plan: kb
 
-kb serves papers to search as the live sources `kb` and `library`, plus `get`, the hop arrays and the encoder child. It keeps its 10 verbs, all on cli and http only.
+kb is `core/plugins/kb`, crate `awm-plugin-kb`, binary `kb`. It replaces the journal, search and transcripts plugins and serves their tools, `journal`, `search` and `transcripts`, with the same verbs. The describe of each tool equals its baseline, apart from the changes listed under Acceptance criteria.
 
-Keep exactly:
-- The fast layer, from SQLite alone:
-  - stems from SQLite's own `porter unicode61` through `fts5vocab`, which bundled rusqlite gives for free
-  - the trigram literal leg with its budgets, the AND and OR legs, and champion lists on schema 4
-  - the 12 lookup threads and 32 reads in flight that altair's disk needs
-- Hops: `.npy` arrays read by `memmap2` with a small header parser, personalized PageRank, and the surname filter by a hand-ported difflib `ratio`.
-- The 5 s shared answer between `query` and `library`, the error texts, and the operator-only and local-only refusals.
-- `indexmap` wherever Python iterates a dict, so float sums and ties match.
-- `papers.db` stays read-only. The delta keeps its unversioned DDL. The library copy keeps its sha1 signature.
+Shape:
+- **Sources.** Each source is a module behind one trait: its name, `default`, `query` with the caller and an optional vector, and `get`. A source applies the marks for its caller and returns its sections with `veiled: true`.
+- **One LanceDB per source** under `<AWM_DIR>/services/kb/lance/<source>/`, each in yearly sections through awm-index. A source that grows too large gets a new section, never a second engine.
+- **State in place.** kb opens each old plugin's state dir where it is: `services/journal/journal.db`, `services/search/search.db` and `services/transcripts/transcripts.db`. Nothing moves on a node that runs these plugins as the user today.
+- **One embedder.** awm-embed loads once in kb. journals and guide embed their writes. transcripts and the query path of a source with no vectors skip it.
+- **Where kb runs.** kb runs on every node as the user, like the other plugins. A node holds the databases whose data it has: transcripts on every node with `~/.claude`, journals where journal runs today, guide everywhere, papers later on the node the migration picks.
+- **The singleton journal goes.** Where journal runs today as the `awm-journal` unit (`/var/lib/awm/journal`), the cloud playbook `homelab/journal_return.yml` stops the unit, copies `journal.db` with SQLite's backup API into `<AWM_DIR>/services/journal/`, checks the post count, and keeps the original as a root-owned rollback copy. It then removes the unit, its token and the `awm-journal` user. It runs on each node before kb's land.
+- **papers stays Python.** The Python plugin at `awm/services/kb` is renamed `papers` and keeps the tool `kb` and the sources `kb` and `library` until their migration into kb's LanceDB on sockeye. search asks it live over the hub.
 
-Changes: zotero is called with no `peer` unless `KB_ZOTERO_PEER` is set, which fixes the 400s, and an absent zotero logs once per state change. No needs.
-
-Tests: port the 63 tests with fixture bases built in Rust. The golden replay runs on altair (real base) and mizar (empty shapes). The dual-run takes one zotero page set through `take_items`, `remap` and `library_copy`. Keep the slowest query within 1.2 times the Python's time.
+Gotchas: one binary carries LanceDB (about 238 MB), so its pin and build time grow once, not per plugin. The `kb` tool name stays with the Python plugin until the papers migration. The Rust kb serves no tool named `kb`.

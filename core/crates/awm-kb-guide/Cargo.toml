@@ -1,0 +1,23 @@
+[package]
+name = "awm-kb-guide"
+description = "The guide source inside kb: awm's docs, each plugin's README, INSTALL and skills, and each tool's describe, kept in its own LanceDB and following the gateway's plugin events."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+awm-embed.workspace = true
+awm-index.workspace = true
+awm-kb-source = { path = "../awm-kb-source" }
+awm-plugin-sdk.workspace = true
+awm-pycompat.workspace = true
+anyhow.workspace = true
+futures-util.workspace = true
+serde_json.workspace = true
+sha2 = "0.10"
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
