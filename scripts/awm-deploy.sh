@@ -29,6 +29,9 @@ for name in $(core_plugins "$root"); do
     sources+=("$(verify_pin "$pin" "$(plugin_version "$root" "$name")" "$store")")
 done
 
+# Plugins read the private marks from <AWM_DIR>/marks/, so it is in place before any restart.
+[ -n "$dry" ] || "$root/scripts/marks-dir.sh" "$awm_dir"
+
 # Replace each page folder the tarball holds, so a page that lost a file loses it here too.
 tar -tzf "$pages" | sed -n 's|^\(.*/dist\)/$|\1|p' | while read -r dist; do rm -rf "${root:?}/$dist"; done
 tar -xzf "$pages" -C "$root"

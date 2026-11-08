@@ -1,0 +1,168 @@
+{
+  "plugin": "search",
+  "tool": "search",
+  "verbs": [
+    {
+      "description": "The awm source's change feed: one entry per tool and verb this node's gateway describes. The epoch is a digest of the whole table.",
+      "params": [
+        {
+          "description": "The cursor of the last page read.",
+          "name": "since",
+          "required": false
+        },
+        {
+          "description": "Changes per page. Default 200.",
+          "name": "limit",
+          "required": false,
+          "type": "integer"
+        }
+      ],
+      "surfaces": [
+        "cli",
+        "http"
+      ],
+      "verb": "api_export"
+    },
+    {
+      "description": "One document in full: every field its source declares; a paper adds its authors and journal, and an awm hit is its verb's describe. Take `source` and `id` from a hit. For a hit from another node, set `node` to the node of its source. Pass the `query` the hit answered: each get is logged with the caller's scope as feedback on search.",
+      "params": [
+        {
+          "description": "The hit's source.",
+          "name": "source",
+          "required": true
+        },
+        {
+          "description": "The hit's id.",
+          "name": "id",
+          "required": true
+        },
+        {
+          "description": "The node that holds the document. Default: this node.",
+          "name": "node",
+          "required": false
+        },
+        {
+          "description": "The query whose hit this is.",
+          "name": "query",
+          "required": false
+        }
+      ],
+      "verb": "get"
+    },
+    {
+      "description": "Record whether one hit answers one query, for the judgement set that every change to search is replayed against. A later verdict on the same query and hit replaces the earlier one, and `clear` removes it.",
+      "params": [
+        {
+          "description": "The query, as asked.",
+          "name": "query",
+          "required": true
+        },
+        {
+          "description": "The hit's source.",
+          "name": "source",
+          "required": true
+        },
+        {
+          "description": "The hit's id.",
+          "name": "id",
+          "required": true
+        },
+        {
+          "description": "relevant, irrelevant, or clear.",
+          "name": "verdict",
+          "required": true
+        },
+        {
+          "description": "For a relevant hit, the section it must answer in: exact or related. Default: any.",
+          "name": "section",
+          "required": false
+        },
+        {
+          "description": "The set the judgement belongs to, such as gold or t5. Default: none, a mark by hand.",
+          "name": "set",
+          "required": false
+        },
+        {
+          "description": "Why.",
+          "name": "note",
+          "required": false
+        }
+      ],
+      "surfaces": [
+        "cli",
+        "http"
+      ],
+      "verb": "judge"
+    },
+    {
+      "description": "The recorded judgements, optionally of one set or one query.",
+      "params": [
+        {
+          "description": "Only this set.",
+          "name": "set",
+          "required": false
+        },
+        {
+          "description": "Only this query.",
+          "name": "query",
+          "required": false
+        }
+      ],
+      "surfaces": [
+        "cli",
+        "http"
+      ],
+      "verb": "judgements"
+    },
+    {
+      "description": "search query — rank items from named sources.\n  query: string | {\"text\"?: T, \"<source>\": F, ...}    max: hits per source per section, default 10\n\n<source>: a kind `sources` lists, such as journals, or awm for the node's tools; @node for another node.\nF: MongoDB filter on the source's fields: $and $or $nor $eq $ne $gt $gte $lt $lte $in $nin $all.\n   {} matches all. * in a value globs. A scope covers its nested scopes. ts is ISO-8601.\n$sort in F: one field, +/-. On content, by match score.\nT: string | {\"$contains\": s} | {\"$about\": s} | {\"$and\"|\"$or\": [...]}, shared by all sources.\n   $contains: case-insensitive phrase of whole words. Nests under $and $or $nor.\n   $about: rank by meaning. At most one, directly under the top $and or $or.\n   Under $and or alone it only ranks the matches. Under $or it also adds the nearest others, as `related`.\nShort forms: query s = {\"text\": s}. No source = this node's journals. T s = {\"$or\": [{\"$about\": s}, {\"$contains\": s}]}.\nReturns {source: {exact, related}}. A hit is the id and the fields `sources` marks. Open one with `get`.\n",
+      "params": [
+        {
+          "description": "A string, or an object {\"text\"?: T, \"<source>\": F, ...}.",
+          "name": "query",
+          "required": true,
+          "type": [
+            "string",
+            "object"
+          ]
+        },
+        {
+          "description": "Hits per source per section, 1-100. Default 10.",
+          "name": "max",
+          "required": false,
+          "type": "integer"
+        }
+      ],
+      "verb": "query"
+    },
+    {
+      "description": "Rebuild one index source, or every index source, from the start of its change feed.",
+      "params": [
+        {
+          "description": "Only this source.",
+          "name": "source",
+          "required": false
+        }
+      ],
+      "surfaces": [
+        "cli",
+        "http"
+      ],
+      "verb": "reindex"
+    },
+    {
+      "description": "Every source the archive holds, with its kind, node, fields and their classes, the fields a hit shows, document count, last successful sync, whether it is frozen (its service is not running, so its last documents are served) and its last error; and the archive's health: whether semantic ranking is available, the registry's last read, running sweeps and push subscriptions.",
+      "params": [],
+      "verb": "sources"
+    },
+    {
+      "description": "The archive's health: documents per source, whether semantic ranking is available, the registry's last read, running sweeps and push subscriptions.",
+      "params": [],
+      "surfaces": [
+        "cli",
+        "http"
+      ],
+      "verb": "status"
+    }
+  ]
+}

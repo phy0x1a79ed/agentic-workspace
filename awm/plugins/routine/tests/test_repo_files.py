@@ -213,7 +213,7 @@ def _deploy_node(tmp_path, *, core_sha=None, pages_sha=None, core_changed=False,
     (node / "scripts").mkdir(parents=True)
     (node / "core").mkdir()
     (node / "awm/services/svc/pages/ui").mkdir(parents=True)
-    for f in ("awm-deploy.sh", "pins.sh"):
+    for f in ("awm-deploy.sh", "pins.sh", "marks-dir.sh"):
         shutil.copy(REPO / "scripts" / f, node / "scripts" / f)
     (node / "core/Cargo.toml").write_text("x\n")
     _awm_cli(node)

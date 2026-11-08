@@ -14,7 +14,7 @@ rust-version = "1.85"
 anyhow = "1"
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
 serde_yaml = "0.9"
 toml = "0.8"
 uuid = { version = "1", features = ["v4", "v5", "serde"] }
@@ -59,6 +59,8 @@ awm-mcp = { path = "crates/awm-mcp" }
 awm-cli = { path = "crates/awm-cli" }
 awm-trust = { path = "crates/awm-trust" }
 awm-edge = { path = "crates/awm-edge" }
+awm-pycompat = { path = "crates/awm-pycompat" }
+awm-store = { path = "crates/awm-store" }
 awm-plugin-sdk = { path = "crates/awm-plugin-sdk" }
 awm-cdp = { path = "crates/awm-cdp" }
 
