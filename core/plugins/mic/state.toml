@@ -1,0 +1,13 @@
+# mic keeps no state of its own. It appends one marker-fenced stanza to each of the three
+# files PulseAudio and ALSA read from the home directory.
+[[extra]]
+name = "pulse-daemon.conf"
+path = "${HOME}/.config/pulse/daemon.conf"
+
+[[extra]]
+name = "pulse-default.pa"
+path = "${HOME}/.config/pulse/default.pa"
+
+[[extra]]
+name = "asoundrc"
+path = "${HOME}/.asoundrc"

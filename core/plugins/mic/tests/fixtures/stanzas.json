@@ -1,0 +1,282 @@
+[
+ {
+  "include": true,
+  "start": null,
+  "sink": "virtmic",
+  "changed": [
+   true,
+   false
+  ],
+  "files": {
+   ".config/pulse/daemon.conf": "# Created by the awm mic service. A user config file replaces\n# the system one outright, so pull the system defaults back in\n# first and override below.\n.include /etc/pulse/daemon.conf\n\n### awm virtmic: keep PulseAudio resident\n# Without this PulseAudio exits ~20s after the last client\n# disconnects, destroying the runtime-loaded virtmic sink.\nexit-idle-time = -1\n",
+   ".config/pulse/default.pa": "# Created by the awm mic service. A user config file replaces\n# the system one outright, so pull the system defaults back in\n# first and override below.\n.include /etc/pulse/default.pa\n\n### awm virtmic: declare the virtual microphone sink\n# Rebuilds the virtual microphone on every daemon start, so a\n# restart can't leave recorders reading a dead default source.\nload-module module-null-sink sink_name=virtmic sink_properties=device.description=VirtualMic\nset-default-source virtmic.monitor\n",
+   ".asoundrc": "\n### remote-audio bridge\npcm.!default { type pulse }\nctl.!default { type pulse }\n"
+  }
+ },
+ {
+  "include": true,
+  "start": null,
+  "sink": "othersink",
+  "changed": [
+   true,
+   false
+  ],
+  "files": {
+   ".config/pulse/daemon.conf": "# Created by the awm mic service. A user config file replaces\n# the system one outright, so pull the system defaults back in\n# first and override below.\n.include /etc/pulse/daemon.conf\n\n### awm virtmic: keep PulseAudio resident\n# Without this PulseAudio exits ~20s after the last client\n# disconnects, destroying the runtime-loaded virtmic sink.\nexit-idle-time = -1\n",
+   ".config/pulse/default.pa": "# Created by the awm mic service. A user config file replaces\n# the system one outright, so pull the system defaults back in\n# first and override below.\n.include /etc/pulse/default.pa\n\n### awm virtmic: declare the virtual microphone sink\n# Rebuilds the virtual microphone on every daemon start, so a\n# restart can't leave recorders reading a dead default source.\nload-module module-null-sink sink_name=othersink sink_properties=device.description=VirtualMic\nset-default-source othersink.monitor\n",
+   ".asoundrc": "\n### remote-audio bridge\npcm.!default { type pulse }\nctl.!default { type pulse }\n"
+  }
+ },
+ {
+  "include": true,
+  "start": "",
+  "sink": "virtmic",
+  "changed": [
+   true,
+   false
+  ],
+  "files": {
+   ".config/pulse/daemon.conf": "\n### awm virtmic: keep PulseAudio resident\n# Without this PulseAudio exits ~20s after the last client\n# disconnects, destroying the runtime-loaded virtmic sink.\nexit-idle-time = -1\n",
+   ".config/pulse/default.pa": "\n### awm virtmic: declare the virtual microphone sink\n# Rebuilds the virtual microphone on every daemon start, so a\n# restart can't leave recorders reading a dead default source.\nload-module module-null-sink sink_name=virtmic sink_properties=device.description=VirtualMic\nset-default-source virtmic.monitor\n",
+   ".asoundrc": "\n### remote-audio bridge\npcm.!default { type pulse }\nctl.!default { type pulse }\n"
+  }
+ },
+ {
+  "include": true,
+  "start": "",
+  "sink": "othersink",
+  "changed": [
+   true,
+   false
+  ],
+  "files": {
+   ".config/pulse/daemon.conf": "\n### awm virtmic: keep PulseAudio resident\n# Without this PulseAudio exits ~20s after the last client\n# disconnects, destroying the runtime-loaded virtmic sink.\nexit-idle-time = -1\n",
+   ".config/pulse/default.pa": "\n### awm virtmic: declare the virtual microphone sink\n# Rebuilds the virtual microphone on every daemon start, so a\n# restart can't leave recorders reading a dead default source.\nload-module module-null-sink sink_name=othersink sink_properties=device.description=VirtualMic\nset-default-source othersink.monitor\n",
+   ".asoundrc": "\n### remote-audio bridge\npcm.!default { type pulse }\nctl.!default { type pulse }\n"
+  }
+ },
+ {
+  "include": true,
+  "start": "; operator line",
+  "sink": "virtmic",
+  "changed": [
+   true,
+   false
+  ],
+  "files": {
+   ".config/pulse/daemon.conf": "; operator line\n\n### awm virtmic: keep PulseAudio resident\n# Without this PulseAudio exits ~20s after the last client\n# disconnects, destroying the runtime-loaded virtmic sink.\nexit-idle-time = -1\n",
+   ".config/pulse/default.pa": "; operator line\n\n### awm virtmic: declare the virtual microphone sink\n# Rebuilds the virtual microphone on every daemon start, so a\n# restart can't leave recorders reading a dead default source.\nload-module module-null-sink sink_name=virtmic sink_properties=device.description=VirtualMic\nset-default-source virtmic.monitor\n",
+   ".asoundrc": "; operator line\n\n### remote-audio bridge\npcm.!default { type pulse }\nctl.!default { type pulse }\n"
+  }
+ },
+ {
+  "include": true,
+  "start": "; operator line",
+  "sink": "othersink",
+  "changed": [
+   true,
+   false
+  ],
+  "files": {
+   ".config/pulse/daemon.conf": "; operator line\n\n### awm virtmic: keep PulseAudio resident\n# Without this PulseAudio exits ~20s after the last client\n# disconnects, destroying the runtime-loaded virtmic sink.\nexit-idle-time = -1\n",
+   ".config/pulse/default.pa": "; operator line\n\n### awm virtmic: declare the virtual microphone sink\n# Rebuilds the virtual microphone on every daemon start, so a\n# restart can't leave recorders reading a dead default source.\nload-module module-null-sink sink_name=othersink sink_properties=device.description=VirtualMic\nset-default-source othersink.monitor\n",
+   ".asoundrc": "; operator line\n\n### remote-audio bridge\npcm.!default { type pulse }\nctl.!default { type pulse }\n"
+  }
+ },
+ {
+  "include": true,
+  "start": "; operator line\n",
+  "sink": "virtmic",
+  "changed": [
+   true,
+   false
+  ],
+  "files": {
+   ".config/pulse/daemon.conf": "; operator line\n\n### awm virtmic: keep PulseAudio resident\n# Without this PulseAudio exits ~20s after the last client\n# disconnects, destroying the runtime-loaded virtmic sink.\nexit-idle-time = -1\n",
+   ".config/pulse/default.pa": "; operator line\n\n### awm virtmic: declare the virtual microphone sink\n# Rebuilds the virtual microphone on every daemon start, so a\n# restart can't leave recorders reading a dead default source.\nload-module module-null-sink sink_name=virtmic sink_properties=device.description=VirtualMic\nset-default-source virtmic.monitor\n",
+   ".asoundrc": "; operator line\n\n### remote-audio bridge\npcm.!default { type pulse }\nctl.!default { type pulse }\n"
+  }
+ },
+ {
+  "include": true,
+  "start": "; operator line\n",
+  "sink": "othersink",
+  "changed": [
+   true,
+   false
+  ],
+  "files": {
+   ".config/pulse/daemon.conf": "; operator line\n\n### awm virtmic: keep PulseAudio resident\n# Without this PulseAudio exits ~20s after the last client\n# disconnects, destroying the runtime-loaded virtmic sink.\nexit-idle-time = -1\n",
+   ".config/pulse/default.pa": "; operator line\n\n### awm virtmic: declare the virtual microphone sink\n# Rebuilds the virtual microphone on every daemon start, so a\n# restart can't leave recorders reading a dead default source.\nload-module module-null-sink sink_name=othersink sink_properties=device.description=VirtualMic\nset-default-source othersink.monitor\n",
+   ".asoundrc": "; operator line\n\n### remote-audio bridge\npcm.!default { type pulse }\nctl.!default { type pulse }\n"
+  }
+ },
+ {
+  "include": true,
+  "start": "### awm virtmic: keep PulseAudio resident\n### awm virtmic: declare the virtual microphone sink\n# remote-audio bridge\n",
+  "sink": "virtmic",
+  "changed": [
+   false,
+   false
+  ],
+  "files": {
+   ".config/pulse/daemon.conf": "### awm virtmic: keep PulseAudio resident\n### awm virtmic: declare the virtual microphone sink\n# remote-audio bridge\n",
+   ".config/pulse/default.pa": "### awm virtmic: keep PulseAudio resident\n### awm virtmic: declare the virtual microphone sink\n# remote-audio bridge\n",
+   ".asoundrc": "### awm virtmic: keep PulseAudio resident\n### awm virtmic: declare the virtual microphone sink\n# remote-audio bridge\n"
+  }
+ },
+ {
+  "include": true,
+  "start": "### awm virtmic: keep PulseAudio resident\n### awm virtmic: declare the virtual microphone sink\n# remote-audio bridge\n",
+  "sink": "othersink",
+  "changed": [
+   false,
+   false
+  ],
+  "files": {
+   ".config/pulse/daemon.conf": "### awm virtmic: keep PulseAudio resident\n### awm virtmic: declare the virtual microphone sink\n# remote-audio bridge\n",
+   ".config/pulse/default.pa": "### awm virtmic: keep PulseAudio resident\n### awm virtmic: declare the virtual microphone sink\n# remote-audio bridge\n",
+   ".asoundrc": "### awm virtmic: keep PulseAudio resident\n### awm virtmic: declare the virtual microphone sink\n# remote-audio bridge\n"
+  }
+ },
+ {
+  "include": false,
+  "start": null,
+  "sink": "virtmic",
+  "changed": [
+   true,
+   false
+  ],
+  "files": {
+   ".config/pulse/daemon.conf": "\n### awm virtmic: keep PulseAudio resident\n# Without this PulseAudio exits ~20s after the last client\n# disconnects, destroying the runtime-loaded virtmic sink.\nexit-idle-time = -1\n",
+   ".config/pulse/default.pa": "\n### awm virtmic: declare the virtual microphone sink\n# Rebuilds the virtual microphone on every daemon start, so a\n# restart can't leave recorders reading a dead default source.\nload-module module-null-sink sink_name=virtmic sink_properties=device.description=VirtualMic\nset-default-source virtmic.monitor\n",
+   ".asoundrc": "\n### remote-audio bridge\npcm.!default { type pulse }\nctl.!default { type pulse }\n"
+  }
+ },
+ {
+  "include": false,
+  "start": null,
+  "sink": "othersink",
+  "changed": [
+   true,
+   false
+  ],
+  "files": {
+   ".config/pulse/daemon.conf": "\n### awm virtmic: keep PulseAudio resident\n# Without this PulseAudio exits ~20s after the last client\n# disconnects, destroying the runtime-loaded virtmic sink.\nexit-idle-time = -1\n",
+   ".config/pulse/default.pa": "\n### awm virtmic: declare the virtual microphone sink\n# Rebuilds the virtual microphone on every daemon start, so a\n# restart can't leave recorders reading a dead default source.\nload-module module-null-sink sink_name=othersink sink_properties=device.description=VirtualMic\nset-default-source othersink.monitor\n",
+   ".asoundrc": "\n### remote-audio bridge\npcm.!default { type pulse }\nctl.!default { type pulse }\n"
+  }
+ },
+ {
+  "include": false,
+  "start": "",
+  "sink": "virtmic",
+  "changed": [
+   true,
+   false
+  ],
+  "files": {
+   ".config/pulse/daemon.conf": "\n### awm virtmic: keep PulseAudio resident\n# Without this PulseAudio exits ~20s after the last client\n# disconnects, destroying the runtime-loaded virtmic sink.\nexit-idle-time = -1\n",
+   ".config/pulse/default.pa": "\n### awm virtmic: declare the virtual microphone sink\n# Rebuilds the virtual microphone on every daemon start, so a\n# restart can't leave recorders reading a dead default source.\nload-module module-null-sink sink_name=virtmic sink_properties=device.description=VirtualMic\nset-default-source virtmic.monitor\n",
+   ".asoundrc": "\n### remote-audio bridge\npcm.!default { type pulse }\nctl.!default { type pulse }\n"
+  }
+ },
+ {
+  "include": false,
+  "start": "",
+  "sink": "othersink",
+  "changed": [
+   true,
+   false
+  ],
+  "files": {
+   ".config/pulse/daemon.conf": "\n### awm virtmic: keep PulseAudio resident\n# Without this PulseAudio exits ~20s after the last client\n# disconnects, destroying the runtime-loaded virtmic sink.\nexit-idle-time = -1\n",
+   ".config/pulse/default.pa": "\n### awm virtmic: declare the virtual microphone sink\n# Rebuilds the virtual microphone on every daemon start, so a\n# restart can't leave recorders reading a dead default source.\nload-module module-null-sink sink_name=othersink sink_properties=device.description=VirtualMic\nset-default-source othersink.monitor\n",
+   ".asoundrc": "\n### remote-audio bridge\npcm.!default { type pulse }\nctl.!default { type pulse }\n"
+  }
+ },
+ {
+  "include": false,
+  "start": "; operator line",
+  "sink": "virtmic",
+  "changed": [
+   true,
+   false
+  ],
+  "files": {
+   ".config/pulse/daemon.conf": "; operator line\n\n### awm virtmic: keep PulseAudio resident\n# Without this PulseAudio exits ~20s after the last client\n# disconnects, destroying the runtime-loaded virtmic sink.\nexit-idle-time = -1\n",
+   ".config/pulse/default.pa": "; operator line\n\n### awm virtmic: declare the virtual microphone sink\n# Rebuilds the virtual microphone on every daemon start, so a\n# restart can't leave recorders reading a dead default source.\nload-module module-null-sink sink_name=virtmic sink_properties=device.description=VirtualMic\nset-default-source virtmic.monitor\n",
+   ".asoundrc": "; operator line\n\n### remote-audio bridge\npcm.!default { type pulse }\nctl.!default { type pulse }\n"
+  }
+ },
+ {
+  "include": false,
+  "start": "; operator line",
+  "sink": "othersink",
+  "changed": [
+   true,
+   false
+  ],
+  "files": {
+   ".config/pulse/daemon.conf": "; operator line\n\n### awm virtmic: keep PulseAudio resident\n# Without this PulseAudio exits ~20s after the last client\n# disconnects, destroying the runtime-loaded virtmic sink.\nexit-idle-time = -1\n",
+   ".config/pulse/default.pa": "; operator line\n\n### awm virtmic: declare the virtual microphone sink\n# Rebuilds the virtual microphone on every daemon start, so a\n# restart can't leave recorders reading a dead default source.\nload-module module-null-sink sink_name=othersink sink_properties=device.description=VirtualMic\nset-default-source othersink.monitor\n",
+   ".asoundrc": "; operator line\n\n### remote-audio bridge\npcm.!default { type pulse }\nctl.!default { type pulse }\n"
+  }
+ },
+ {
+  "include": false,
+  "start": "; operator line\n",
+  "sink": "virtmic",
+  "changed": [
+   true,
+   false
+  ],
+  "files": {
+   ".config/pulse/daemon.conf": "; operator line\n\n### awm virtmic: keep PulseAudio resident\n# Without this PulseAudio exits ~20s after the last client\n# disconnects, destroying the runtime-loaded virtmic sink.\nexit-idle-time = -1\n",
+   ".config/pulse/default.pa": "; operator line\n\n### awm virtmic: declare the virtual microphone sink\n# Rebuilds the virtual microphone on every daemon start, so a\n# restart can't leave recorders reading a dead default source.\nload-module module-null-sink sink_name=virtmic sink_properties=device.description=VirtualMic\nset-default-source virtmic.monitor\n",
+   ".asoundrc": "; operator line\n\n### remote-audio bridge\npcm.!default { type pulse }\nctl.!default { type pulse }\n"
+  }
+ },
+ {
+  "include": false,
+  "start": "; operator line\n",
+  "sink": "othersink",
+  "changed": [
+   true,
+   false
+  ],
+  "files": {
+   ".config/pulse/daemon.conf": "; operator line\n\n### awm virtmic: keep PulseAudio resident\n# Without this PulseAudio exits ~20s after the last client\n# disconnects, destroying the runtime-loaded virtmic sink.\nexit-idle-time = -1\n",
+   ".config/pulse/default.pa": "; operator line\n\n### awm virtmic: declare the virtual microphone sink\n# Rebuilds the virtual microphone on every daemon start, so a\n# restart can't leave recorders reading a dead default source.\nload-module module-null-sink sink_name=othersink sink_properties=device.description=VirtualMic\nset-default-source othersink.monitor\n",
+   ".asoundrc": "; operator line\n\n### remote-audio bridge\npcm.!default { type pulse }\nctl.!default { type pulse }\n"
+  }
+ },
+ {
+  "include": false,
+  "start": "### awm virtmic: keep PulseAudio resident\n### awm virtmic: declare the virtual microphone sink\n# remote-audio bridge\n",
+  "sink": "virtmic",
+  "changed": [
+   false,
+   false
+  ],
+  "files": {
+   ".config/pulse/daemon.conf": "### awm virtmic: keep PulseAudio resident\n### awm virtmic: declare the virtual microphone sink\n# remote-audio bridge\n",
+   ".config/pulse/default.pa": "### awm virtmic: keep PulseAudio resident\n### awm virtmic: declare the virtual microphone sink\n# remote-audio bridge\n",
+   ".asoundrc": "### awm virtmic: keep PulseAudio resident\n### awm virtmic: declare the virtual microphone sink\n# remote-audio bridge\n"
+  }
+ },
+ {
+  "include": false,
+  "start": "### awm virtmic: keep PulseAudio resident\n### awm virtmic: declare the virtual microphone sink\n# remote-audio bridge\n",
+  "sink": "othersink",
+  "changed": [
+   false,
+   false
+  ],
+  "files": {
+   ".config/pulse/daemon.conf": "### awm virtmic: keep PulseAudio resident\n### awm virtmic: declare the virtual microphone sink\n# remote-audio bridge\n",
+   ".config/pulse/default.pa": "### awm virtmic: keep PulseAudio resident\n### awm virtmic: declare the virtual microphone sink\n# remote-audio bridge\n",
+   ".asoundrc": "### awm virtmic: keep PulseAudio resident\n### awm virtmic: declare the virtual microphone sink\n# remote-audio bridge\n"
+  }
+ }
+]

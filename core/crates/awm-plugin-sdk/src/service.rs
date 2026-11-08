@@ -485,7 +485,8 @@ impl Service {
         self
     }
 
-    fn manifest(&self) -> Value {
+    /// The `ready` api this service sends: `functions`, `sessions` and each [`Service::api`] key.
+    pub fn manifest(&self) -> Value {
         let mut api = self.api.clone();
         api.insert("functions".into(), Value::Array(self.verbs.iter().map(|v| v.spec.clone()).collect()));
         if !self.sessions.is_empty() {
