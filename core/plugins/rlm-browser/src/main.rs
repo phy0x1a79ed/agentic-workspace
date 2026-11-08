@@ -106,6 +106,8 @@ fn service(svc: Service, manager: Arc<Manager>) -> Service {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     awm_plugin_sdk::telemetry::init();
+    let awm_dir = awm_plugin_sdk::config::awm_dir();
+    awm_statecheck::cli::entry(TOOL, include_str!("../state.toml"), &awm_plugin_sdk::config::service_dir(TOOL), &awm_dir)?;
     let svc = Service::from_env()?;
     let dir = awm_plugin_sdk::config::service_dir(TOOL);
     let store = store::Store::open(&dir.join("rlm-browser.db"))?;
