@@ -92,6 +92,13 @@ pub struct LoadResult {
     /// The archive tables of every plugin the roots hold, loaded, skipped or refused, so a
     /// reader such as search knows a kind that only another node serves.
     pub archives: Vec<ArchiveDecl>,
+    /// The folder of each skipped plugin, by name.
+    #[serde(skip)]
+    pub skipped_dirs: BTreeMap<String, PathBuf>,
+    /// The lifecycle version of each loaded, refused and skipped plugin, by name. The gateway
+    /// fills it ([`crate::lifecycle::stamp_all`]).
+    #[serde(skip)]
+    pub stamps: BTreeMap<String, String>,
 }
 
 /// One service's `[[service.archive]]` tables.
@@ -185,6 +192,7 @@ pub fn load(input: &LoadInput) -> LoadResult {
     for cand in candidates {
         let name = cand.manifest.plugin.name.clone();
         if !(input.wants)(&name) {
+            out.skipped_dirs.insert(name.clone(), cand.dir);
             out.skipped.push(name);
             continue;
         }

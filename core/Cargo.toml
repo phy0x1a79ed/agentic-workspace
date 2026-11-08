@@ -3,6 +3,8 @@ resolver = "2"
 # crates/* and plugins/*, as one glob: cargo reads a glob that matches nothing as a literal
 # path, so a separate "plugins/*" fails while core/plugins is empty or missing.
 members = ["[cp]*/*"]
+# A core plugin with no service, such as dashboard, holds no crate.
+exclude = ["plugins/dashboard"]
 
 [workspace.package]
 version = "0.1.0"
@@ -14,7 +16,7 @@ rust-version = "1.85"
 anyhow = "1"
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }
-serde_json = { version = "1", features = ["preserve_order"] }
+serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
 serde_yaml = "0.9"
 toml = "0.8"
 uuid = { version = "1", features = ["v4", "v5", "serde"] }
@@ -38,6 +40,8 @@ awm-mcp = { path = "crates/awm-mcp" }
 awm-cli = { path = "crates/awm-cli" }
 awm-trust = { path = "crates/awm-trust" }
 awm-edge = { path = "crates/awm-edge" }
+awm-pycompat = { path = "crates/awm-pycompat" }
+awm-store = { path = "crates/awm-store" }
 awm-plugin-sdk = { path = "crates/awm-plugin-sdk" }
 awm-harness = { path = "crates/awm-harness", default-features = false }
 

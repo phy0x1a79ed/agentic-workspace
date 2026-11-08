@@ -47,7 +47,6 @@ declare -A DISTS=(
   [scopes]="$WS/awm/services/scopes::$WS/awm/services/scopes/tests"
   [journal]="$WS/awm/services/journal::$WS/awm/services/journal/tests"
   [search]="$WS/awm/services/search::$WS/awm/services/search/tests"
-  [events]="$WS/awm/services/events::$WS/awm/services/events/tests"
   [social]="$WS/awm/services/social::$WS/awm/services/social/tests"
   [2fa]="$WS/awm/services/2fa::$WS/awm/services/2fa/tests"
   [ssh]="$WS/awm/services/ssh::$WS/awm/services/ssh/tests"
@@ -55,7 +54,6 @@ declare -A DISTS=(
   [httpsfront]="$WS/awm/services/httpsfront::$WS/awm/services/httpsfront/tests"
   [rlm-browser]="$WS/awm/services/rlm-browser::$WS/awm/services/rlm-browser/tests"
   [rlm-factorio]="$WS/awm/services/rlm-factorio::$WS/awm/services/rlm-factorio/tests"
-  [fileviewer]="$WS/awm/services/fileviewer::$WS/awm/services/fileviewer/tests"
   [mic]="$WS/awm/services/mic::$WS/awm/services/mic/tests"
   [vpn]="$WS/awm/services/vpn::$WS/awm/services/vpn/tests"
   [reflection]="$WS/awm/services/reflection::$WS/awm/services/reflection/tests"
@@ -70,7 +68,6 @@ declare -A DISTS=(
   [kb]="$WS/awm/services/kb::$WS/awm/services/kb/tests"
   [board]="$WS/awm/services/board::$WS/awm/services/board/tests"
   [transcripts]="$WS/awm/services/transcripts::$WS/awm/services/transcripts/tests"
-  [routine]="$WS/awm/plugins/routine::$WS/awm/plugins/routine/tests"
   [grantlib]="$WS/awm/service_components/grantlib::$WS/awm/service_components/grantlib/tests"
   [trustpolicy]="$WS/awm/service_components/trustpolicy::$WS/awm/service_components/trustpolicy/tests"
   [browser]="$WS/awm/plugins/browser::$WS/awm/plugins/browser/tests"
@@ -78,7 +75,7 @@ declare -A DISTS=(
 )
 
 # Stable run order.
-ORDER=(contract gatewayclient config persistence grantlib telemetry usage claudedaemon kept tlsfront dvcdata tether scopes journal search events social 2fa ssh auth httpsfront rlm-browser rlm-factorio fileviewer mic vpn reflection dvc claude-science engcyc trilium zotero cch channel relay kb board transcripts routine trustpolicy browser wake)
+ORDER=(contract gatewayclient config persistence grantlib telemetry usage claudedaemon kept tlsfront dvcdata tether scopes journal search social 2fa ssh auth httpsfront rlm-browser rlm-factorio mic vpn reflection dvc claude-science engcyc trilium zotero cch channel relay kb board transcripts trustpolicy browser wake)
 
 CHANGED_BASE=""
 SMOKE=0

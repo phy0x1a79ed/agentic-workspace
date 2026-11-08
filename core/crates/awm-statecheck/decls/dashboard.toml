@@ -1,0 +1,2 @@
+# dashboard keeps no state: its pages call the gateway.
+dirs = []

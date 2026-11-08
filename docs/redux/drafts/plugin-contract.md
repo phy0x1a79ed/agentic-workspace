@@ -292,6 +292,23 @@ The gateway keeps one live table from each tool name to the plugin that owns it,
 
 `GET /hub/table` lists this node's tools as `[{name, major, plugin, implements}]`. The `awm` tool's `table` verb shows the whole live table, peers included.
 
+### Plugin events
+
+The gateway emits each change in the loaded plugin set on its own topic, `awm/plugins` (`GET /hub/emit/awm/plugins`). A payload is `{plugin, event, version, root}`. `event` is one of `installed`, `updated`, `enabled`, `disabled`, `removed` and `refused`. `version` is the core pin's `version=` for a core plugin, else the folder's install stamp. `root` is the plugin root the folder sits in.
+
+1. Each reload diffs the plugin set before and after it, and emits one event per plugin that changed. A plugin that is the same on both sides emits nothing.
+2. Boot emits nothing. A subscriber reads `GET /hub/plugins` when it connects, then applies the events.
+3. A peer's needs-only reload (step 5 above) emits through the same diff.
+
+### Service and usage events
+
+The gateway emits two more topics of its own, `awm/services` and `awm/usage`.
+
+1. `awm/services`: `{service, plugin, event, pid, ts}` at each service register (`event` is `up`) and each disconnect of its control socket (`down`). `ts` is RFC 3339 UTC.
+2. `awm/usage`: each usage event, as the gateway appends it to `<AWM_DIR>/usage/`. The payload is the same JSON object as the file line (§ Usage event). A call that arrives through a singleton's door runs on the host as a service-lane call, so its event carries the called `tool`.
+3. Boot emits nothing. A subscriber reads `GET /hub/table` when it connects, then applies the events.
+4. Both topics stay on this node. A stream request from a peer for either is answered as an unknown stream, and no peer receives their payloads (§ Peer calls, item 6).
+
 ## MCP and CLI surface
 
 Each tool is one MCP tool with input `{verb, args, peer}`. `verb = "describe"` returns the verb schemas. `peer` names the node to run on. The MCP proxy (`awm mcp`) reads `GET /tools?view=domains` and posts `POST /invoke` with `X-Awm-Surface: mcp`. The CLI (`awm <tool> <verb> [--key value]...`) posts the same call with `X-Awm-Surface: cli`. `--help` prints the verb's schema. A verb word may spell `_` as `-`.

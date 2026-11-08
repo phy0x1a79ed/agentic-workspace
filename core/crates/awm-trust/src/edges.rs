@@ -20,8 +20,9 @@ pub enum Network {
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct Node {
     pub role: String,
+    /// `false` marks a node that runs no awm. Absent is not `false`.
     #[serde(default)]
-    pub managed: bool,
+    pub managed: Option<bool>,
     #[serde(default)]
     pub addresses: BTreeMap<String, Option<String>>,
     /// The node does not exist yet. Nothing it names takes effect.
@@ -131,9 +132,14 @@ impl EdgeList {
         self.nodes.get(node).is_some_and(|n| n.role == "retiring")
     }
 
-    /// The nodes `src` may dial: its edges, less every retiring node.
+    /// Whether `node` is marked `managed: false`: it runs no awm, so no call dials it.
+    pub fn runs_no_awm(&self, node: &str) -> bool {
+        self.nodes.get(node).is_some_and(|n| n.managed == Some(false))
+    }
+
+    /// The nodes `src` may dial: its edges, less every retiring node and every node that runs no awm.
     pub fn dialable_from(&self, src: &str) -> Vec<String> {
-        self.reachable_from(src).into_iter().filter(|n| !self.retiring(n)).collect()
+        self.reachable_from(src).into_iter().filter(|n| !self.retiring(n) && !self.runs_no_awm(n)).collect()
     }
 
     pub fn reached_by(&self, dst: &str) -> Vec<String> {
@@ -289,6 +295,18 @@ singletons:
         assert_eq!(e.dialable_from("home"), vec!["work"]);
         assert!(e.reaches("home", "old"));
         assert_eq!(e.reached_by("home"), vec!["old"]);
+    }
+
+    #[test]
+    fn a_node_that_runs_no_awm_is_not_dialable() {
+        let e = EdgeList::parse(
+            "nodes:\n  home: {role: homebase, managed: true}\n  hpc: {role: station, managed: false}\n  work: {role: work}\n\
+             edges:\n  home: {hpc: internet, work: lan}\n",
+        )
+        .unwrap();
+        assert!(e.runs_no_awm("hpc") && !e.runs_no_awm("work") && !e.runs_no_awm("home"));
+        assert_eq!(e.reachable_from("home"), vec!["hpc", "work"]);
+        assert_eq!(e.dialable_from("home"), vec!["work"]);
     }
 
     #[test]

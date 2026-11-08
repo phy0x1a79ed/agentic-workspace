@@ -12,7 +12,11 @@
 //! request to the file at `FAKE_APPROVAL_FILE` and `approval_get` answers that file.
 //! `emit(topic, payload)` sends one emit frame. It serves the direct session kind `echo`:
 //! its bridge sends `{"init": <init>}` first, then echoes each message. With `FAKE_MOUNT` set
-//! it registers an HTTP mount that answers `mount <method> <path>`.
+//! it registers an HTTP mount that answers `mount <method> <path>`. With `FAKE_SUBSCRIBE` set to
+//! `<service>/<topic>` it subscribes once ready, and `heard()` answers
+//! `{"subscribed": bool, "payloads": [...]}`.
+
+use std::sync::{Arc, Mutex};
 
 use awm_plugin_sdk::axum::{http::Method, http::Uri, Router};
 use awm_plugin_sdk::{Call, CallOpts, Service, Session, VerbError, WsMsg};
@@ -27,6 +31,11 @@ async fn main() -> anyhow::Result<()> {
     let tool = std::env::var("FAKE_TOOL").unwrap_or_else(|_| svc.context().env().service.clone());
     let tokens: Value = std::env::var("FAKE_TOKENS").ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or(json!({}));
     let t = tool.as_str();
+    // `None` until the subscription opens.
+    let heard: Arc<Mutex<Option<Vec<Value>>>> = Arc::default();
+    let subscribe = std::env::var("FAKE_SUBSCRIBE").ok().and_then(|s| s.split_once('/').map(|(a, b)| (a.to_string(), b.to_string())));
+    let hub = svc.context().hub().clone();
+    let heard_verb = heard.clone();
     let mut svc = svc
         .verb(t, "echo", "Return the text.", json!([{"name": "text", "type": "string", "required": true}]), |c: Call| async move {
             Reply::Ok(c.args["text"].clone())
@@ -95,7 +104,27 @@ async fn main() -> anyhow::Result<()> {
             c.ctx.emit(c.str_arg("topic").unwrap_or_default(), &c.args["payload"]);
             Reply::Ok(json!("emitted"))
         })
+        .verb(t, "heard", "What the FAKE_SUBSCRIBE subscription received.", json!([]), move |_c: Call| {
+            let got = heard_verb.lock().unwrap().clone();
+            async move { Reply::Ok(json!({"subscribed": got.is_some(), "payloads": got.unwrap_or_default()})) }
+        })
         .session("echo", echo_session);
+    if let Some((service, topic)) = subscribe {
+        svc = svc.on_ready(async move {
+            loop {
+                match hub.subscribe(&service, &topic, None, None).await {
+                    Ok(mut sub) => {
+                        heard.lock().unwrap().get_or_insert_with(Vec::new);
+                        while let Some(payload) = sub.next().await {
+                            heard.lock().unwrap().get_or_insert_with(Vec::new).push(payload);
+                        }
+                    }
+                    Err(e) => eprintln!("subscribe {service}/{topic}: {e}"),
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            }
+        });
+    }
     if std::env::var_os("FAKE_MOUNT").is_some() {
         svc = svc.mount(Router::new().fallback(|method: Method, uri: Uri| async move {
             format!("mount {method} {}", uri.path_and_query().map(|p| p.as_str()).unwrap_or("?"))

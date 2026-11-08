@@ -10,6 +10,7 @@ pub mod gateway;
 pub mod hub;
 pub mod install;
 pub mod isolated;
+pub mod lifecycle;
 pub mod loader;
 pub mod modes;
 pub mod mount;
@@ -20,6 +21,7 @@ pub mod server;
 pub mod streams;
 pub mod supervisor;
 pub mod survival;
+pub mod telemetry;
 pub mod usage;
 
 pub use gateway::Gateway;
