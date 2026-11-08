@@ -29,20 +29,13 @@ WS="$(workspace_root "$HERE")"
 CHECKOUT="${KB_CHECKOUT:-$WS/projects/kb/release}"
 ENV_FILE="$CHECKOUT/envs/kb/base.yml"
 
-if ! command -v mamba >/dev/null; then
-    conda_root="${AWM_CONDA_ROOT:-$HOME/miniforge3}"
-    export PATH="$conda_root/condabin:$conda_root/bin:$PATH"
-fi
-mamba run -n "$ENV" true 2>/dev/null || mamba create -y -n "$ENV" -c conda-forge python=3.12 pip
-
-run() { echo "+ pip install -e $*"; mamba run -n "$ENV" pip install -e "$@"; }
+. "$AWM/plugin-env.sh"
 
 run "$AWM/service_components/config" --no-deps
 run "$AWM/service_components/gatewayclient" --no-deps
 run "$HERE"
 
-PYBIN="$(mamba run -n "$ENV" python -c 'import sys; print(sys.executable)')"
-printf 'AWM_PYTHON=%s\nAWM_ENV_BIN=%s\n' "$PYBIN" "$(dirname "$PYBIN")" > "$HERE/.runtime-env"
+bake_runtime_env
 
 if [ ! -f "$ENV_FILE" ]; then
     echo "warning: no $ENV_FILE — kb will register without a server." >&2

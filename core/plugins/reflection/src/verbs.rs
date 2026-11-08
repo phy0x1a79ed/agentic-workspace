@@ -9,7 +9,8 @@ use awm_plugin_sdk::ids;
 use futures_util::future::join_all;
 use serde_json::{json, Map, Value};
 
-use crate::app::{declared, is_false, is_ok, merged, object, ok_or_absent, py_repr, text, truthy, App, Failure};
+use awm_pycompat::repr::str_repr;
+use crate::app::{declared, is_false, is_ok, merged, object, ok_or_absent, text, truthy, App, Failure};
 use crate::caller::Frame;
 use crate::gateway::{Call, Gateway};
 use crate::ledger::Ticket;
@@ -136,7 +137,7 @@ impl<G: Gateway> App<G> {
             "retired" => Ok(self.retired(args).await),
             "retired_among" => Ok(self.retired_among(args).await),
             "harness_event" => Ok(self.harness_event(args).await),
-            _ => Ok(json!({"ok": false, "error": format!("unknown verb {}", py_repr(verb))})),
+            _ => Ok(json!({"ok": false, "error": format!("unknown verb {}", str_repr(verb))})),
         };
         self.guarded(verb, frame, out).await
     }
@@ -675,7 +676,7 @@ impl<G: Gateway> App<G> {
                 _ => {
                     return Ok(reason(&format!(
                         "{} is not an R9 session id; wait takes session ids, as start_other returns them",
-                        py_repr(&text_u)
+                        str_repr(&text_u)
                     )))
                 }
             }
@@ -730,12 +731,9 @@ impl<G: Gateway> App<G> {
             .map(|a| a.iter().filter_map(|s| ids::to_r9(s.as_str())).collect())
             .unwrap_or_default();
         let mut gone = self.retired_here(&asked).await;
-        let mut known = vec![];
-        for s in asked.iter().filter(|s| !gone.contains(s)) {
-            if matches!(self.session_state(s).await.as_deref(), Some("live" | "stopped")) {
-                known.push(s.clone());
-            }
-        }
+        let unretired: Vec<&String> = asked.iter().filter(|s| !gone.contains(s)).collect();
+        let states = join_all(unretired.iter().map(|s| self.session_state(s))).await;
+        let known: Vec<&String> = unretired.into_iter().zip(states).filter(|(_, st)| matches!(st.as_deref(), Some("live" | "stopped"))).map(|(s, _)| s).collect();
         gone.sort();
         gone.dedup();
         json!({"ok": true, "retired": gone, "known": known})

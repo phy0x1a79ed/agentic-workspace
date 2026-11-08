@@ -4,21 +4,16 @@
 
 use std::time::Duration;
 
-use awm_plugin_sdk::config::EdgeList;
 use futures_util::future::join_all;
 use serde_json::{json, Value};
 
-use crate::app::{is_false, py_repr, text, truthy, App};
+use awm_pycompat::repr::str_repr;
+use crate::app::{is_false, text, truthy, App};
 use crate::gateway::{Call, Gateway};
 
 pub const LIST_TIMEOUT: Duration = Duration::from_secs(5);
 pub const RETIRED_TIMEOUT: Duration = Duration::from_secs(15);
 pub const AMONG_TIMEOUT: Duration = Duration::from_secs(10);
-
-/// The nodes `here` holds an edge to.
-pub fn reached_peers(edges: &EdgeList, here: &str) -> Vec<String> {
-    edges.reachable_from(here)
-}
 
 /// Whether a session row of a peer answers to `reference`.
 pub fn names(row: &Value, reference: &str) -> bool {
@@ -36,7 +31,7 @@ pub fn names(row: &Value, reference: &str) -> bool {
 pub fn hint_text(found: &[String]) -> String {
     match found {
         [] => String::new(),
-        [one] => format!(". It runs on {one}: call again with peer={}", py_repr(one)),
+        [one] => format!(". It runs on {one}: call again with peer={}", str_repr(one)),
         many => format!(". Sessions on {} answer to it: call again with peer=<one of them> and the job id", many.join(", ")),
     }
 }
@@ -83,11 +78,13 @@ impl<G: Gateway> App<G> {
     /// Tell every peer that `session_id` retired, so a wait there wakes. A peer that misses it
     /// checks again at its start.
     pub async fn tell_peers(&self, session_id: &str) {
-        for peer in self.peer_list() {
-            if let Err(e) = self.ask_peer(&peer, "retired", json!({"session_id": session_id}), RETIRED_TIMEOUT).await {
+        let peers = self.peer_list();
+        join_all(peers.iter().map(|peer| async move {
+            if let Err(e) = self.ask_peer(peer, "retired", json!({"session_id": session_id}), RETIRED_TIMEOUT).await {
                 tracing::warn!("reflection: could not tell {peer} that {session_id} retired: {e}");
             }
-        }
+        }))
+        .await;
     }
 
     /// Each peer's `retired_among` answer, with `peer` and whether it `answered`.

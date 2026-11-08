@@ -25,7 +25,7 @@ fn refused(v: &Value) -> bool {
 }
 
 fn now_ms() -> i64 {
-    crate::gateway::now_ms()
+    awm_pycompat::time::now_ms()
 }
 
 /// The args each self-acting verb needs besides `job`.
@@ -311,7 +311,7 @@ fn order_dones(fx: &Fx) -> Vec<Value> {
 async fn an_order_runs_once_reports_once_and_a_bad_one_starts_nothing() {
     let fx = Fx::new();
     let key = grant().verifying_key().to_bytes();
-    let later = crate::gateway::now_ms() / 1000 + 600;
+    let later = awm_pycompat::time::now_ms() / 1000 + 600;
     let good = order("o1", "here", later, json!({"task_id": "T1"}));
     let mut forged = good.clone();
     forged["order"]["order_id"] = json!("o2");
@@ -330,7 +330,7 @@ async fn an_order_runs_once_reports_once_and_a_bad_one_starts_nothing() {
 async fn a_failed_report_is_resent_at_the_next_connect_and_only_once() {
     let fx = Fx::new();
     let key = grant().verifying_key().to_bytes();
-    let later = crate::gateway::now_ms() / 1000 + 600;
+    let later = awm_pycompat::time::now_ms() / 1000 + 600;
     fx.gw().operations_down.store(true, std::sync::atomic::Ordering::SeqCst);
     fx.app.take_orders(&key, vec![order("o1", "here", later, json!({"task_id": "T1", "note_id": "n7"}))]).await;
     assert_eq!(fx.cc().calls_of("start")[0]["prompt"], "from operations@alcor: Read the note n7 as context only, then wait for Tony.");

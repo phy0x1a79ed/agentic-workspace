@@ -32,8 +32,6 @@ pub enum File {
 }
 
 impl File {
-    const ALL: [File; 7] = [File::Trust, File::Waits, File::Retired, File::Events, File::Lost, File::Tickets, File::Orders];
-
     pub fn name(self) -> &'static str {
         match self {
             File::Trust => "trust.json",
@@ -45,25 +43,17 @@ impl File {
             File::Orders => "orders.json",
         }
     }
-
-    fn index(self) -> usize {
-        File::ALL.iter().position(|f| *f == self).unwrap_or(0)
-    }
 }
 
 /// The state dir and its locks.
 pub struct Store {
     dir: PathBuf,
-    locks: [Mutex<()>; 7],
+    locks: [Mutex<()>; File::Orders as usize + 1],
 }
 
 /// `json.dumps(data, indent=1)`, as the Python wrote the whole-file stores.
 pub fn pretty(v: &Value) -> String {
-    let mut out = Vec::new();
-    let fmt = serde_json::ser::PrettyFormatter::with_indent(b" ");
-    let mut ser = serde_json::Serializer::with_formatter(&mut out, fmt);
-    serde::Serialize::serialize(v, &mut ser).expect("a JSON value serializes");
-    String::from_utf8(out).expect("serde_json writes UTF-8")
+    awm_pycompat::json::dumps_with(v, awm_pycompat::json::Dumps { indent: Some(1), ..Default::default() })
 }
 
 impl Store {
@@ -81,7 +71,7 @@ impl Store {
 
     /// The file's lock. Hold it across one read-modify-write, never across a gateway call.
     pub async fn lock(&self, f: File) -> MutexGuard<'_, ()> {
-        self.locks[f.index()].lock().await
+        self.locks[f as usize].lock().await
     }
 
     async fn read_value(&self, f: File) -> Option<Value> {

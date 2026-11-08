@@ -1,6 +1,7 @@
 //! The plain calls to scope, journal and operations, each of which degrades when it fails, and
 //! the scope a directory names.
 
+use futures_util::future::join_all;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -44,12 +45,9 @@ impl<G: Gateway> App<G> {
     /// End every scope claim `session_id` holds. A lost release never fails the stop.
     pub async fn release_claims(&self, session_id: &str) {
         let listing = self.scopes_call("claims", json!({})).await.unwrap_or_default();
-        for row in listing.get("claims").and_then(Value::as_array).cloned().unwrap_or_default() {
-            if row.get("holder").and_then(|h| h.get("session_id")).and_then(Value::as_str) == Some(session_id) {
-                let args = json!({"project": row.get("project"), "scope": row.get("scope"), "session_id": session_id});
-                self.scopes_call("release", args).await;
-            }
-        }
+        let rows = listing.get("claims").and_then(Value::as_array).cloned().unwrap_or_default();
+        let held = rows.iter().filter(|r| r.get("holder").and_then(|h| h.get("session_id")).and_then(Value::as_str) == Some(session_id));
+        join_all(held.map(|r| self.scopes_call("release", json!({"project": r.get("project"), "scope": r.get("scope"), "session_id": session_id})))).await;
     }
 
     /// The live session that holds the scope, or None when it is free or claims are unavailable.

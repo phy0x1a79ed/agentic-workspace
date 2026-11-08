@@ -45,24 +45,15 @@ PIN_VERSION="$(pin version)"; PIN_FILE="$(pin file)"; PIN_SHA="$(pin sha256)"
 [ -n "$PIN_VERSION" ] && [ -n "$PIN_FILE" ] && [ -n "$PIN_SHA" ] || {
     echo "error: server.pin needs version, file and sha256." >&2; exit 1; }
 
-if ! command -v mamba >/dev/null; then
-    conda_root="${AWM_CONDA_ROOT:-$HOME/miniforge3}"
-    export PATH="$conda_root/condabin:$conda_root/bin:$PATH"
-fi
-mamba run -n "$ENV" true 2>/dev/null || mamba create -y -n "$ENV" -c conda-forge python=3.12 pip
-
-run() { echo "+ pip install -e $*"; mamba run -n "$ENV" pip install -e "$@"; }
+. "$AWM/plugin-env.sh"
 
 run "$AWM/service_components/config" --no-deps
 run "$AWM/service_components/persistence" --no-deps
 run "$AWM/service_components/gatewayclient" --no-deps
 run "$HERE"
 
-# The gateway respawns this service under systemd's minimal PATH, which has no mamba.
 # Written before the server unpack, whose no-tarball path exits early.
-PYBIN="$(mamba run -n "$ENV" python -c 'import sys; print(sys.executable)')"
-printf 'AWM_PYTHON=%s\nAWM_ENV_BIN=%s\n' "$PYBIN" "$(dirname "$PYBIN")" \
-    > "$HERE/.runtime-env"
+bake_runtime_env
 
 # Best effort: where the state root belongs to another account, the service
 # creates what it needs at runtime, as that account.

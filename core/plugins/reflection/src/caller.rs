@@ -30,6 +30,8 @@ pub struct Frame {
     pub trust: Option<String>,
     /// The `X-Awm-As` principal, `peer:<node>` for a call from another node.
     pub as_: Option<String>,
+    /// The caller as its harness described it, so one call asks the providers once.
+    actor: tokio::sync::OnceCell<Option<Value>>,
 }
 
 impl Frame {
@@ -102,10 +104,13 @@ impl<G: Gateway> App<G> {
         if frame.session_id.is_none() && frame.pid.is_none() {
             return None;
         }
-        match self.resolve_caller(frame).await {
-            Ok((_, who)) => text(&who, "session_id").is_some().then_some(who),
-            Err(_) => frame.session_id.as_ref().map(|sid| json!({"session_id": sid, "known": false})),
-        }
+        let resolve = || async {
+            match self.resolve_caller(frame).await {
+                Ok((_, who)) => text(&who, "session_id").is_some().then_some(who),
+                Err(_) => frame.session_id.as_ref().map(|sid| json!({"session_id": sid, "known": false})),
+            }
+        };
+        frame.actor.get_or_init(resolve).await.clone()
     }
 
     /// The text a provider is handed to type on behalf of `frame`'s caller. Every typed line

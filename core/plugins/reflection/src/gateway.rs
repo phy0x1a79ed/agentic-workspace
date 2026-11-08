@@ -3,7 +3,7 @@
 
 use std::future::Future;
 use std::path::PathBuf;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use awm_plugin_sdk::service::Context;
 use awm_plugin_sdk::{config, CallOpts, Hub, HubError};
@@ -117,7 +117,7 @@ impl Node for LiveNode {
 
     fn peers(&self) -> Result<Vec<String>, String> {
         let edges = config::edges().map_err(|e| e.to_string())?;
-        Ok(crate::peers::reached_peers(&edges, &config::here()))
+        Ok(edges.reachable_from(&config::here()))
     }
 
     fn projects_dir(&self) -> PathBuf {
@@ -129,12 +129,8 @@ impl Node for LiveNode {
     }
 
     fn now_ms(&self) -> i64 {
-        now_ms()
+        awm_pycompat::time::now_ms()
     }
-}
-
-pub(crate) fn now_ms() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
 }
 
 #[cfg(test)]

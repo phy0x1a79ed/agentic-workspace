@@ -10,7 +10,8 @@ use awm_plugin_sdk::ids;
 use futures_util::future::join_all;
 use serde_json::{json, Map, Value};
 
-use crate::app::{is_false, py_repr, text, truthy, App};
+use awm_pycompat::repr::str_repr;
+use crate::app::{is_false, text, truthy, App};
 use crate::caller::Frame;
 use crate::gateway::{Call, CallError, Gateway};
 
@@ -50,7 +51,7 @@ pub enum HarnessError {
     #[error("{0}")]
     Ambiguous(String),
     /// A job id or a name no provider on this node knows.
-    #[error("no session on this node has the job id or name {}; `list_other` shows them", py_repr(.0))]
+    #[error("no session on this node has the job id or name {}; `list_other` shows them", str_repr(.0))]
     Unknown(String),
 }
 
@@ -175,24 +176,24 @@ impl<G: Gateway> App<G> {
 
     /// Every provider reflection may call, and the tools left out because a call failed lately.
     pub async fn providers_and_down(&self) -> (Vec<Provider>, Vec<String>) {
-        let (mut live, mut down) = (vec![], vec![]);
-        for row in self.contract_rows().await {
-            let tool = text(&row, "name").unwrap_or_default().to_string();
-            let peer = text(&row, "peer");
-            if self.is_down(&tool) {
-                down.push(tool);
-                continue;
-            }
-            let Some(platform) = self.platform_of(&tool, peer).await else { continue };
-            let mut p = Provider::new(&tool, platform.get("code").and_then(Value::as_str), peer);
-            p.capabilities = platform
-                .get("capabilities")
-                .and_then(Value::as_array)
-                .map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect())
-                .unwrap_or_default();
-            live.push(p);
-        }
-        (live, down)
+        let tool = |row: &Value| text(row, "name").unwrap_or_default().to_string();
+        let (up, down): (Vec<Value>, Vec<Value>) = self.contract_rows().await.into_iter().partition(|r| !self.is_down(&tool(r)));
+        let platforms = join_all(up.iter().map(|r| async move { self.platform_of(&tool(r), text(r, "peer")).await })).await;
+        let live = up
+            .iter()
+            .zip(platforms)
+            .filter_map(|(row, platform)| {
+                let platform = platform?;
+                let mut p = Provider::new(&tool(row), platform.get("code").and_then(Value::as_str), text(row, "peer"));
+                p.capabilities = platform
+                    .get("capabilities")
+                    .and_then(Value::as_array)
+                    .map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect())
+                    .unwrap_or_default();
+                Some(p)
+            })
+            .collect();
+        (live, down.iter().map(tool).collect())
     }
 
     /// Every provider reflection may call, the ones marked down left out.
@@ -206,7 +207,7 @@ impl<G: Gateway> App<G> {
             .await
             .into_iter()
             .find(|p| p.code.as_deref() == Some(code))
-            .ok_or_else(|| HarnessError::Failed(format!("no harness plugin for platform {} runs on this node", py_repr(code))))
+            .ok_or_else(|| HarnessError::Failed(format!("no harness plugin for platform {} runs on this node", str_repr(code))))
     }
 
     /// `verb` on provider `p`. A transport failure marks the provider down. A result that is not
@@ -293,7 +294,7 @@ impl<G: Gateway> App<G> {
             }
             many => {
                 let tools: Vec<&str> = many.iter().map(|p| p.tool.as_str()).collect();
-                Err(HarnessError::Ambiguous(format!("{} names sessions under {}; pass the session id", py_repr(text_ref), tools.join(", "))))
+                Err(HarnessError::Ambiguous(format!("{} names sessions under {}; pass the session id", str_repr(text_ref), tools.join(", "))))
             }
         }
     }

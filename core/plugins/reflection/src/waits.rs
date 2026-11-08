@@ -139,17 +139,13 @@ impl<G: Gateway> App<G> {
         }
         let reason = text(&out, "reason").or_else(|| text(&out, "error")).unwrap_or("no reason given").to_string();
         tracing::warn!("reflection: could not wake waiter {}: {reason}", waiter(row));
-        let mut event = Map::new();
-        event.insert("session_id".into(), json!(waiter(row)));
-        event.insert("name".into(), row.get("name").cloned().unwrap_or(Value::Null));
-        event.insert("command".into(), json!("wait"));
-        event.insert("followup".into(), json!(wake_text(row)));
-        event.insert(
-            "reason".into(),
-            json!(format!("every session it waited on retired, but the wake failed: {reason}. The wait is kept; resume the session by hand")),
-        );
-        self.raise_alarm(&event, scope_of_row(row)).await;
+        self.wait_alarm(row, format!("every session it waited on retired, but the wake failed: {reason}. The wait is kept; resume the session by hand")).await;
         false
+    }
+
+    async fn wait_alarm(&self, row: &Value, reason: String) {
+        let event = json!({"session_id": waiter(row), "name": row.get("name"), "command": "wait", "followup": wake_text(row), "reason": reason});
+        self.raise_alarm(event.as_object().expect("an object literal"), scope_of_row(row)).await;
     }
 
     /// `session_id` retired. Answers the waiters woken.
@@ -220,18 +216,7 @@ impl<G: Gateway> App<G> {
                 if state(sid.clone()).await.as_deref() != Some("gone") {
                     continue;
                 }
-                let mut event = Map::new();
-                event.insert("session_id".into(), json!(waiter(&row)));
-                event.insert("name".into(), row.get("name").cloned().unwrap_or(Value::Null));
-                event.insert("command".into(), json!("wait"));
-                event.insert("followup".into(), json!(wake_text(&row)));
-                event.insert(
-                    "reason".into(),
-                    json!(format!(
-                        "it waits on {sid}, which is neither live nor retired on any node. Recover it by hand: resume {sid}, or wake the waiter and drop the wait"
-                    )),
-                );
-                self.raise_alarm(&event, scope_of_row(&row)).await;
+                self.wait_alarm(&row, format!("it waits on {sid}, which is neither live nor retired on any node. Recover it by hand: resume {sid}, or wake the waiter and drop the wait")).await;
                 lost.push(sid);
             }
         }

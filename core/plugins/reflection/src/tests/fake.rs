@@ -377,7 +377,7 @@ impl Node for FakeNode {
     }
 
     fn now_ms(&self) -> i64 {
-        lock(&self.now).unwrap_or_else(crate::gateway::now_ms)
+        lock(&self.now).unwrap_or_else(awm_pycompat::time::now_ms)
     }
 }
 

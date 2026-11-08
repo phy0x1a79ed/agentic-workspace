@@ -17,7 +17,8 @@ use std::time::{Duration, UNIX_EPOCH};
 
 use serde_json::{json, Map, Value};
 
-use crate::app::{object, py_repr, text, truthy, App};
+use awm_pycompat::repr::str_repr;
+use crate::app::{object, text, truthy, App};
 use crate::gateway::{Call, Gateway};
 use crate::store::File;
 
@@ -139,7 +140,7 @@ impl<G: Gateway> App<G> {
         match kind.as_str() {
             Some("lost") => json!({"ok": true, "alarm": self.raise_alarm(&full, None).await}),
             Some("done") => json!({"ok": true}),
-            Some(k) => json!({"ok": false, "error": format!("unknown event kind {}", py_repr(k))}),
+            Some(k) => json!({"ok": false, "error": format!("unknown event kind {}", str_repr(k))}),
             None if kind.is_null() => json!({"ok": false, "error": "unknown event kind None"}),
             None => json!({"ok": false, "error": format!("unknown event kind {kind}")}),
         }
