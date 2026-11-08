@@ -48,3 +48,16 @@ Still open from the original interview (shelved by Tony, "shelf all decisions to
 **Decided.** Merge feat/port-ops-t7 with the known conflict resolutions (deploy.toml pins union plus dvc.pin; run-tests ORDER minus dvc; fleet.md R97 item 1 from t7, item 2 from release). Run the dvc tests and refresh pins. Restart `dvc,routine` on mizar and alcor. Live checks on mizar: `describe`, `status`, `scope_status`, gc dry run, `coverage`, the mirror dry run listing every `.pre-rust/` as excluded; then hooks name the Rust binary, `.awm-py.bak` copies exist, `pgrep globus` is empty. altair's live job and capella's checks wait for `later-nodes`. dvc lands together with operations (one merge of feat/port-ops, which carries t7).
 
 **Landed.** Not yet.
+
+## ops-questions (2026-11-07)
+
+**Question.** Four questions from the ops-group survey: the vault board freeze on deneb (Q1), deneb as an operations caller against R79 (Q2), cutovers whose last checks need Tony at a device (Q3), and claude-science's front behind auth (Q4).
+
+**Tony:** Q1 "this is about deneb. only worry about mizar (and alcor when needed)". Q2 "same". Q3 "we are going to land in plenty of transitions states throughout this work. that is ok. lets just keep our head down and work through it." Q4 "focus".
+
+**Decided.**
+1. deneb's board and its R79 question are not this session's work. The deneb caller line in cloud feat/ops-units stays; Tony allowed it on 2026-11-06 ("deneb can join operations callers for now"), and it does nothing until deneb's service key is recorded.
+2. Cut over without waiting for Tony. A transition state is acceptable. The passkey and 2fa checks are not gates.
+3. claude-science's C2b is out of scope.
+
+**Landed.** Cloud dev 47f8d98: feat/ops-units with the `singleton_rust` map cut to operations only (social and browser join with the comms batch), and Python social's `awm/services/social` folder restored.

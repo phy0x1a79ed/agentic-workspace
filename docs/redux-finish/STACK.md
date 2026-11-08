@@ -8,14 +8,11 @@ Sources: the worker debrief journals 389a0111 (ops), 8caec34d (knowledge), 449af
 
 ## Current
 
-- `ops` batch (dvc, operations, auth) — plan /home/tony/.claude/plans/noble-splashing-nygaard.md, approved 2026-11-07. Survey: /home/tony/.claude/jobs/b8680c94/tmp/survey/ops.md. T2 (cloud) and T3 (merge, tests) go ahead; T4 (cutover) waits on Q1–Q3.
+- `ops` batch (dvc, operations, auth) — plan /home/tony/.claude/plans/noble-splashing-nygaard.md, approved 2026-11-07. Survey: /home/tony/.claude/jobs/b8680c94/tmp/survey/ops.md. Q1–Q4 answered (DECISIONS § ops-questions). T2 done: cloud dev 47f8d98 on mizar, altair and github; alcor not yet applied.
 
 ## Waiting on the user
 
-- Q1 `operations`: the vault board on deneb stops updating from the Rust operations land until trilium's writer lands. Recommend: accept, since the board is being remade. (asked 2026-11-07)
-- Q2 `operations`: cloud feat/ops-units adds deneb as an operations caller, which fleet.md R79 forbids. Recommend: drop that line now, settle R79 in `trilium-board`. (asked 2026-11-07)
-- Q3 `operations`, `auth`: the passkey close, the 2fa burst and the passkey sign-in need Tony at a device. Recommend: cut over while Tony is away with rollback ready; the checks wait here under Checks for Tony. (asked 2026-11-07)
-- Q4 `auth`: claude-science's front behind auth (C2b) is optional, claude-science is not core. Recommend: leave it for later. (asked 2026-11-07)
+- Nothing.
 
 ## Preferences
 
@@ -25,6 +22,11 @@ Sources: the worker debrief journals 389a0111 (ops), 8caec34d (knowledge), 449af
 - 2026-11-07: mizar and alcor first. Other nodes later.
 - 2026-11-07: start from the original interview's decisions (DECISIONS.md § inherited). Work plugin by plugin. Related issues are prioritized case by case.
 - 2026-11-07: work in the old worker groups, one batch at a time: survey, plan the completion, implement, then return to this stack. Tony: "we can use the same groups as before rather than 1 plugin at a time. for each batch, we will survey and plan out the completion of the redux, then implement, then return to teh dfs interview stack. use stack.md for any questions to me." Groups in order: ops, comms, trilium-board + opt-in, knowledge, harness.
+
+- 2026-11-07: remove and rewrite, not only add. Tony: "dont just add code, remove stuff that's no longer needed and rewrite, change. Adding is safe but costly in the long run for bloat. this is out chance."
+- 2026-11-07: lean tests. Unit tests run in about 10 s; the full run at the end takes at most 1 min. Consolidate, curate and change tests, not only add them.
+- 2026-11-07: transition states are fine. Tony: "we are going to land in plenty of transitions states throughout this work. that is ok. lets just keep our head down and work through it." The aim is to get through, then check and refine, and return to normal operations.
+- 2026-11-07: deneb is out of scope. Only mizar, and alcor when needed. Stay focused: optional work waits.
 
 ## Stack
 
