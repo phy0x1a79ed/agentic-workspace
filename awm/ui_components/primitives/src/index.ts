@@ -10,7 +10,7 @@ export { default as Tag } from './Tag.svelte';
 export { default as Tooltip } from './Tooltip.svelte';
 export { default as UserChip } from './UserChip.svelte';
 
-// Gallery is a built-in demo surface; the plugins/dashboard/pages/gallery page
+// Gallery is a built-in demo surface; the core/plugins/dashboard/pages/gallery page
 // imports and mounts it (via the additive `flat` prop). Not a normal
 // "primitive" component, but re-exporting here lets pages compose it via the
 // workspace-symlink dep just like any other primitive.
