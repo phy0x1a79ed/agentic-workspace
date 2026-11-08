@@ -216,16 +216,16 @@ impl Roster {
 
     /// Replace the seats with social's roster.
     pub fn set_seats(&mut self, rows: &[Value]) -> Applied {
-        let seats: BTreeMap<String, Value> = rows.iter().filter_map(|r| Some((seat_key(r)?, r.clone()))).collect();
+        let seats: BTreeMap<String, Value> = rows.iter().filter_map(seat_row).collect();
         self.seat_change(seats != self.seats, |s| s.seats = seats)
     }
 
     /// One `social/seats` event.
     pub fn seat_event(&mut self, row: &Value) -> Applied {
-        let Some(key) = seat_key(row) else { return Applied::default() };
-        let changed = self.seats.get(&key) != Some(row);
+        let Some((key, row)) = seat_row(row) else { return Applied::default() };
+        let changed = self.seats.get(&key) != Some(&row);
         self.seat_change(changed, |s| {
-            s.seats.insert(key, row.clone());
+            s.seats.insert(key, row);
         })
     }
 
@@ -305,8 +305,17 @@ impl Roster {
     }
 }
 
-fn seat_key(row: &Value) -> Option<String> {
-    row.get("seat").or_else(|| row.get("name")).and_then(Value::as_str).map(str::to_string)
+/// One seat in one shape, keyed by its id. A `social seats` row names the id `id` and the
+/// label `name`; a `social/seats` event names them `seat` and `label`.
+fn seat_row(row: &Value) -> Option<(String, Value)> {
+    let mut m = row.as_object()?.clone();
+    let key = m.get("seat").or_else(|| m.get("id")).and_then(Value::as_str)?.to_string();
+    m.remove("id");
+    m.insert("seat".into(), json!(key));
+    if let Some(name) = m.remove("name") {
+        m.entry("label").or_insert(name);
+    }
+    Some((key, Value::Object(m)))
 }
 
 fn live(node: &str, s: &Session, ts: Ts) -> SessionEvent {
@@ -503,6 +512,19 @@ mod tests {
     }
 
     #[test]
+    fn a_session_listed_before_its_first_turn_gains_its_id_from_started() {
+        let mut r = Roster::default();
+        let now = t("2026-11-07T10:00:00Z");
+        r.apply("mizar", vec![hello(vec![Session { session_id: None, ..sess("a1") }])], now);
+        let started = Item::Session { event: "started".into(), session: Session { job: "a1".into(), session_id: Some("s1".into()), ..Session::default() }, ts: Some(now) };
+        let a = r.apply("mizar", vec![started], now);
+        assert!(a.sessions.is_empty(), "the session was already live");
+        let s = &r.nodes["mizar"].sessions["a1"];
+        assert_eq!((s.session_id.as_deref(), s.name.as_deref()), (Some("s1"), Some("a1-name")));
+        assert_eq!(r.sessions_in_window("mizar", now), 1);
+    }
+
+    #[test]
     fn remote_control_updates_the_link_and_keeps_the_rest() {
         let mut r = Roster::default();
         let now = t("2026-11-07T10:00:00Z");
@@ -573,7 +595,7 @@ mod tests {
     }
 
     #[test]
-    fn seats_replace_and_update_by_name() {
+    fn seats_replace_and_update_by_id() {
         let mut r = Roster::default();
         let empty = json!({"seat": "slack/C042", "label": "alice", "state": "empty", "remote_control": false, "node": "alcor"});
         let a = r.set_seats(std::slice::from_ref(&empty));
@@ -583,7 +605,21 @@ mod tests {
                              "job": "j1", "rc_url": "https://claude.ai/code/s", "ts": "2026-11-07T10:00:00Z"}));
         let v = r.seats_view();
         assert_eq!((v["seats"].as_array().unwrap().len(), v["seats"][0]["state"].as_str()), (1, Some("occupied")), "keyed on the seat id, not the label");
-        assert!(r.seat_event(&json!({"state": "x"})).changed.is_empty(), "a row with no seat name is ignored");
+        assert!(r.seat_event(&json!({"state": "x", "name": "alice"})).changed.is_empty(), "a row with no seat id is ignored");
+    }
+
+    #[test]
+    fn a_seat_read_at_connect_and_its_events_are_one_seat() {
+        let mut r = Roster::default();
+        r.set_seats(&[json!({"id": "slack/C042", "name": "alice", "state": "empty", "remote_control": false, "node": "alcor"})]);
+        assert_eq!(r.seats_view()["seats"][0]["label"], "alice");
+        r.seat_event(&json!({"seat": "slack/C042", "label": "alice", "state": "starting", "remote_control": false, "node": "alcor", "ts": "2026-11-07T10:00:00Z"}));
+        r.seat_event(&json!({"seat": "slack/C042", "label": "alice", "state": "starting", "remote_control": false, "node": "alcor", "job": "j1", "ts": "2026-11-07T10:00:01Z"}));
+        let v = r.seats_view();
+        let seats = v["seats"].as_array().unwrap();
+        assert_eq!(seats.len(), 1, "{v}");
+        assert_eq!((seats[0]["seat"].as_str(), seats[0]["job"].as_str(), seats[0]["state"].as_str()), (Some("slack/C042"), Some("j1"), Some("starting")));
+        assert!(seats[0].get("id").is_none() && seats[0].get("name").is_none());
     }
 
     #[test]
