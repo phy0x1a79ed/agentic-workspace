@@ -7,7 +7,7 @@ Related: journal 7724ff11 (ops-board decision), spec `docs/redux/*.md` (queue R6
 
 ## Current
 
-BUILD — PLAN.md approved by Tony 2026-11-07. Paused after the approval compact at Tony's request ("please pause after compact"). Next: T1 (CONTRACT.md) once Tony says go. Todo list holds T1-T10.
+BUILD — PLAN.md approved 2026-11-07. T1 done (CONTRACT.md, cf30928e; adds a gateway item for awm/services and awm/usage). T2 done: workers plugin-redux/trilium-telemetry (job 4196b8cb, scope awm/trilium-telemetry, Opus high) and plugin-redux/trilium-vault (job daf676e8, scope awm/trilium-vault, Sonnet high), both from feat/trilium-design at cf30928e. Flat scopes, because a branch feat/trilium-design/<x> cannot sit beside feat/trilium-design. Next: wait for both reports, then T6.
 
 ## Waiting on the user
 

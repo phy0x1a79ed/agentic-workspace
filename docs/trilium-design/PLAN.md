@@ -43,12 +43,12 @@ The trilium-design discussion settled a new board, a swarm status page, new agen
 - Every ordinary note has a bot button beside Trilium's create-child button. A card's note has none. Each press calls the alcor API in the contract. The marker note and the clone appear as `queue.md` R63 item 3 says.
 - No vault page embeds a frame from alcor, except the sign-in and approval modal.
 - `docs/trilium-design/CONTRACT.md` names every endpoint, verb, event topic and spec item that each port must add, one item per port, and plugin-redux/interview has it.
-- Each nested scope's work reaches the land queue through `scripts/land.sh submit`.
+- Each worker scope's work reaches the land queue through `scripts/land.sh submit`.
 
 ## Tasks
 
 - T1. Write the contract for the ports (G3, G4)
-- T2. Start the two build workers in nested scopes (G1, G2)
+- T2. Start the two build workers in scopes of their own (G1, G2)
 - T3. Build the telemetry plugin in Rust (G1)
 - T4. Build the vault side in the trilium plugin (G2)
 - T5. Compact
@@ -77,11 +77,11 @@ The contract holds one item per port, so each port lands its item on its own. Th
 
 Gotchas: the contract restates no spec text. It points at the R-items and adds only names and shapes. A shape that a port plan already fixes, such as `board_changes`, is reused, not renamed.
 
-### T2. Start the two build workers in nested scopes
+### T2. Start the two build workers in scopes of their own
 
-Two top-level sessions start with `reflection(verb="start_other")`, joined to task CWPYAtyb, each in a nested scope of this one:
-- `awm/trilium-design/telemetry` on Opus at high effort, because it is a new Rust plugin with cross-node events.
-- `awm/trilium-design/vault` on Sonnet at high effort, because it is Python and note JavaScript that follow written specs.
+Two top-level sessions start with `reflection(verb="start_other")`, joined to task CWPYAtyb, each in a scope of its own, branched from this one:
+- `awm/trilium-telemetry` on Opus at high effort, because it is a new Rust plugin with cross-node events.
+- `awm/trilium-vault` on Sonnet at high effort, because it is Python and note JavaScript that follow written specs.
 
 Each brief carries the decisions, the spec items, the contract and the rules:
 - build only in its own scope
