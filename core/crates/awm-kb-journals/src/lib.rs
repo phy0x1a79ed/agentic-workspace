@@ -299,10 +299,7 @@ impl Journals {
         self.set_outside(Arc::new(HubOutside { ctx: ctx.clone(), awm_dir: self.awm_dir.clone(), here }));
         let _ = self.ctx.set(ctx);
         let me = self.clone();
-        awm_plugin_sdk::spawn_supervised("journal:tag-pull", Duration::from_secs(30), move || {
-            let me = me.clone();
-            async move { me.pull_loop().await }
-        });
+        tokio::spawn(async move { me.sync_at_start().await });
         if self.embedder().is_some() {
             let me = self.clone();
             tokio::spawn(async move {

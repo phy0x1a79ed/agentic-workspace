@@ -1,7 +1,7 @@
 //! The fleet's one tag vocabulary: each node's copy, kept in step.
 //!
-//! An add or an edit goes to every peer by itself, and a pull at start and every six hours heals
-//! a push that failed. A tag keeps its id everywhere; the higher version of an id wins. Two
+//! An add or an edit goes to every peer by itself. Each start pulls every peer's vocabulary and
+//! sends this node's, so a push that failed heals when either node next starts. A tag keeps its id everywhere; the higher version of an id wins. Two
 //! nodes that add one name before they sync hold two concepts: on every node the newer tag takes
 //! a provisional name, and the node that added it dispatches an agent to choose the real one.
 //! While the clash stands the two nodes refuse each other's journal reads.
@@ -11,7 +11,6 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
-use std::time::Duration;
 
 use awm_plugin_sdk::privacy;
 use awm_pycompat::pystr::norm;
@@ -25,7 +24,6 @@ use crate::schema::BUILTINS;
 use crate::tags::{normalize_name, Tag};
 use crate::{caller, py_str, Fail, Journals, Result};
 
-pub const PULL_EVERY: Duration = Duration::from_secs(6 * 3600);
 static PROVISIONAL_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\.clash-[0-9a-f]{6}$").unwrap());
 
 pub fn provisional(name: &str) -> bool {
@@ -344,14 +342,31 @@ reaches every node and ends the clash. Change nothing else, then stop.",
         Ok(Value::Object(out))
     }
 
-    /// Pull now and every six hours.
-    pub async fn pull_loop(&self) -> anyhow::Result<()> {
-        loop {
-            match self.pull().await {
-                Ok(counts) => tracing::info!("tag pull: {counts}"),
-                Err(e) => tracing::warn!("tag pull failed: {e}"),
+    /// Take each peer's vocabulary, then send this node's, once at start.
+    pub async fn sync_at_start(&self) {
+        match self.pull().await {
+            Ok(counts) => tracing::info!("tag pull: {counts}"),
+            Err(e) => tracing::warn!("tag pull failed: {e}"),
+        }
+        let hidden = match self.hidden_tags().await {
+            Ok(Some(h)) => h,
+            Ok(None) => return,
+            Err(e) => {
+                tracing::warn!("tag send skipped, the hidden tags are unknown: {e}");
+                return;
             }
-            tokio::time::sleep(PULL_EVERY).await;
+        };
+        let vocabulary = match self.vocabulary() {
+            Ok(tags) => tags,
+            Err(e) => {
+                tracing::warn!("tag send skipped: {e}");
+                return;
+            }
+        };
+        let tags: Vec<Value> = vocabulary.iter().filter(|t| !hidden.contains(&t.id)).map(Tag::to_dict).collect();
+        let out = self.outside();
+        for peer in out.peers() {
+            out.tag_receive(&peer, tags.clone());
         }
     }
 

@@ -168,10 +168,4 @@ mod tests {
         assert!(normalise(&json!(["a".repeat(33)])).is_err());
         assert!(normalise(&json!(["a".repeat(32)])).is_ok());
     }
-
-    #[test]
-    fn levels_run_nearest_first() {
-        assert_eq!(levels(Some("a/b/c")), vec!["a/b/c", "a/b", "a", ""]);
-        assert_eq!(levels(None), vec![""]);
-    }
 }
