@@ -1,0 +1,23 @@
+# operations (queue.md R145): the task queue, the approver and request_human under one tool.
+# It runs on alcor only, as the singleton edges.yml names. The one service serves the store,
+# the approver's vault API on auth.tony-xy-liu.com and the singleton door's socket.
+[plugin]
+name = "operations"
+version = "0.3.0"
+
+[[service]]
+name = "operations"
+
+[[tool]]
+name = "operations"
+major = 2
+implements = ["operations@2"]
+tier = "on"
+
+# No needs. reflection, social, 2fa and telemetry are plain calls, and each degrades: no
+# session record, no DM, no 2fa strip, no Stale moves.
+[needs]
+# The door key into alcor's singleton door (fleet.md R98 item 2) and alcor's grant key, to
+# check orders. The approver's own keys live in AWM_APPROVER_DIR.
+secrets = ["AWM_OPERATIONS_DOOR_KEY", "AWM_APPROVER_GRANT_PUBKEY"]
+network = ["alcor"]

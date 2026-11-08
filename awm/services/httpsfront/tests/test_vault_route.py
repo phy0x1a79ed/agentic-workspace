@@ -213,7 +213,7 @@ def test_signed_out_the_vault_asks_for_a_login():
     _, handler = _recorder()
     with _client(_app(), handler, authed=False) as c:
         r = c.get(vault.SHELL, headers={"Accept": "text/html"})
-    assert r.status_code == 302 and "/portal_login?next=" in r.headers["location"]
+    assert r.status_code == 302 and "/signin?next=" in r.headers["location"]
 
 
 #: Names that read as a node, which no session may carry into the vault.

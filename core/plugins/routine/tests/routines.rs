@@ -379,6 +379,12 @@ fn schedule_takes_jitter_and_catchup() {
     svc.schedule(&json!({"project": "proj", "name": "tick"})).unwrap();
     let slot = f.store.timer("proj", "tick").unwrap().unwrap();
     assert_eq!((slot.on_calendar.as_str(), slot.jitter_s, slot.catchup_s, slot.last_slot.as_str()), ("hourly", 30, None, "2026-11-01T07:00:00+00:00"));
+    // A seed from another clock moves the slot forward, never back.
+    svc.schedule(&json!({"project": "proj", "name": "tick", "last_slot": "2026-11-02T04:00:00.0076+00:00"})).unwrap();
+    assert_eq!(f.store.timer("proj", "tick").unwrap().unwrap().last_slot, "2026-11-02T04:00:00+00:00");
+    svc.schedule(&json!({"project": "proj", "name": "tick", "last_slot": "2026-11-01T21:00:00-07:00"})).unwrap();
+    assert_eq!(f.store.timer("proj", "tick").unwrap().unwrap().last_slot, "2026-11-02T04:00:00+00:00");
+    assert!(svc.schedule(&json!({"project": "proj", "name": "tick", "last_slot": "yesterday"})).unwrap_err().message.contains("last_slot"));
 }
 
 fn has_base_time() -> bool {

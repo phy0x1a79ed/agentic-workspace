@@ -191,6 +191,12 @@ impl Store {
             .optional()
     }
 
+    /// Move the last slot served forward to `slot`, never back. Slots compare as text: both are
+    /// `iso` UTC strings.
+    pub fn raise_last_slot(&self, project: &str, name: &str, slot: &str) -> rusqlite::Result<()> {
+        self.tx(|c| c.execute("UPDATE timer_slots SET last_slot=? WHERE project=? AND name=? AND last_slot < ?", params![slot, project, name, slot]).map(|_| ()))
+    }
+
     pub fn set_last_slot(&self, project: &str, name: &str, slot: &str) -> rusqlite::Result<()> {
         self.tx(|c| c.execute("UPDATE timer_slots SET last_slot=? WHERE project=? AND name=?", params![slot, project, name]).map(|_| ()))
     }

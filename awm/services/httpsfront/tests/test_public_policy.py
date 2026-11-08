@@ -192,7 +192,7 @@ def test_allowed_paths_want_a_login_when_signed_out():
     with _client(_app("public"), token=None) as c:
         r = c.get("/p/trilium/trilium/", headers={"Accept": "text/html"})
         assert r.status_code == 302 and r.headers["location"].endswith(
-            "/portal_login?next=https%3A%2F%2Ffront.example%2Fp%2Ftrilium%2Ftrilium%2F")
+            "/signin?next=https%3A%2F%2Ffront.example%2Fp%2Ftrilium%2Ftrilium%2F")
         assert c.post("/invoke", json=_call("status")).status_code == 401
 
 
@@ -282,7 +282,7 @@ def test_root_redirects_to_the_vault_or_asks_for_login():
         assert r.status_code == 302 and r.headers["location"] == "/trilium/"
     with _client(_app("public"), token=None) as c:
         r = c.get("/", headers={"Accept": "text/html"})
-        assert r.status_code == 302 and "/portal_login?next=" in r.headers["location"]
+        assert r.status_code == 302 and "/signin?next=" in r.headers["location"]
 
 
 def test_serve_without_tls_binds_loopback(monkeypatch):

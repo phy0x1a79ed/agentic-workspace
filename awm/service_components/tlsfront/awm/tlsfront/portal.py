@@ -1,6 +1,6 @@
 """Sign-in through alcor's approver with the passkey (fleet.md R84, users.md R130).
 
-A browser with no session goes to the approver's ``/portal_login`` with this page
+A browser with no session goes to the approver's ``/signin`` with this page
 as ``next``. After the passkey the approver sends it back to :data:`CALLBACK` with
 a ``portal_login`` grant that alcor signed for this node, this host and this path.
 The edge checks the grant offline against alcor's grant key, spends it once, and
@@ -31,7 +31,7 @@ def approver_origin() -> str:
 
 def login_url(public_url: str) -> str:
     """The approver's login page, sending the browser back to ``public_url`` after."""
-    return f"{approver_origin()}/portal_login?next={quote(public_url, safe='')}"
+    return f"{approver_origin()}/signin?next={quote(public_url, safe='')}"
 
 
 def encode_grant(envelope: dict) -> str:

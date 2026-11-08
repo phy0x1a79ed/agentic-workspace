@@ -2,14 +2,15 @@
 
 ## Purpose & Contents
 
-This file holds the approved port plan for auth, from task T9 of the ops group's plan (task CWPYAtyb), revised and approved on 2026-11-06. It names only what changes. The Python code and its manifests are the reference for everything the port keeps. The rules that hold for every ops port are in [README.md](README.md). Later changes go in the port commits and the journal.
+This file holds the approved port plan for auth, from task T9 of the ops group's plan (task CWPYAtyb), revised and approved on 2026-11-06, and amended on 2026-11-08 from CONTRACT.md b11adebc. It names only what changes. The Python code and its manifests are the reference for everything the port keeps. The rules that hold for every ops port are in [README.md](README.md). Later changes go in the port commits and the journal.
 
 ## Port auth, absorbing httpsfront and tlsfront, and move claude-science behind it
 
 **C1.** httpsfront, auth and tlsfront become one plugin and one process, the `auth` service. It serves the tools `auth` and `httpsfront`. The edge keeps:
 - port 12100, and every `AWM_EDGE_*`, `AWM_HTTPS_PORT` and CA env var;
 - every route and session rule, byte for byte;
-- the offline `portal_login` grant check;
+- the offline `portal_login` grant check, and the redirect of a browser with no session to `{approver}/signin?next=<the visit>`, which T11 set in the Python edge;
+- the 24-hour sliding edge session on each node. The 12-hour session is alcor's sign-in only (CONTRACT.md b11adebc);
 - leaves from the private CA, with no ACME.
 
 **C3.** The vault, slice, tether and board mounts stay built in as reviewed constants.

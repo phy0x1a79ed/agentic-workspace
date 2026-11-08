@@ -1,0 +1,11 @@
+# dvc's cache_sync job. The dvc service installs and schedules it on each start and on each
+# `dvc schedule`, from the job's dvc_jobs row: routine owns when, dvc owns what. The step
+# blocks to the transfer's verdict and leaves a run past its timeout live for dvc's watcher.
+[routine]
+name = "dvc-cache-sync"
+description = "The append-only push of the shared DVC cache to chinook (dvc job cache_sync)."
+
+[[step]]
+name = "run-job"
+run = '"$AWM_DIR/bin/dvc" run-job --job cache_sync --trigger schedule --timeout 86400'
+timeout = 87000

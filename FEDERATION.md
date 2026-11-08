@@ -78,7 +78,7 @@ alcor hosts `2fa`, `operations` (the task queue and the approver), `browser` and
 
 A node's HTTPS lane (`httpsfront`) admits people only, with the passkey. It admits no other node (R92).
 
-1. A browser with no session goes to `<AWM_APPROVER_ORIGIN>/portal_login`, the approver on alcor.
+1. A browser with no session goes to `<AWM_APPROVER_ORIGIN>/signin`, the approver on alcor.
 2. Tony confirms with his passkey. The approver issues a 60-second grant bound to the node, host and path, for a host listed in its `portals`.
 3. The browser returns to the edge's `/__auth/portal`. The edge checks the grant offline against `AWM_APPROVER_GRANT_PUBKEY`, spends it once, and sets a signed session cookie.
 

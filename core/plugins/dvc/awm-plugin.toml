@@ -1,0 +1,18 @@
+[plugin]
+name = "dvc"
+version = "0.2.0"
+
+[[service]]
+name = "dvc"
+
+[[tool]]
+name = "dvc"
+major = 1
+tier = "on"
+
+# No needs. routine keeps the two backup timers through plain calls, and a routine outage
+# shows in `jobs` as registered: false.
+[needs]
+secrets = []
+network = ["*.globus.org"]
+platform = ["linux"]

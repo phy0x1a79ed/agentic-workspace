@@ -55,7 +55,6 @@ declare -A DISTS=(
   [rlm-factorio]="$WS/awm/services/rlm-factorio::$WS/awm/services/rlm-factorio/tests"
   [vpn]="$WS/awm/services/vpn::$WS/awm/services/vpn/tests"
   [reflection]="$WS/awm/services/reflection::$WS/awm/services/reflection/tests"
-  [dvc]="$WS/awm/services/dvc::$WS/awm/services/dvc/tests"
   [claude-science]="$WS/awm/services/claude-science::$WS/awm/services/claude-science/tests"
   [engcyc]="$WS/awm/services/engcyc::$WS/awm/services/engcyc/tests"
   [trilium]="$WS/awm/services/trilium::$WS/awm/services/trilium/tests"
