@@ -705,9 +705,10 @@ def _board() -> Board:
 
 
 def _service_only(args: dict, as_: str | None, verb: str) -> None:
-    """Refuse a person or a session. The gateway stamps a session's pid on a local call and its
+    """Admit only alcor's services, which reach this singleton through its door as `peer:alcor`.
+    The gateway stamps a session's pid on a local call and its
     claim on a door call, so a service's push carries neither."""
-    if as_ is not None or args.get("_caller_pid") or args.get("_caller_session"):
+    if as_ != "peer:alcor" or args.get("_caller_pid") or args.get("_caller_session"):
         raise PermissionError(f"{verb} takes alcor's services only")
 
 

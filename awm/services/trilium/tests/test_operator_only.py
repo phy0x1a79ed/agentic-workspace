@@ -114,7 +114,17 @@ def test_status_sheds_the_operators_half_for_a_signed_in_caller():
     ({"_caller_pid": 77}, None),
     ({"_caller_session": {"session_id": "s", "node": "alcor"}}, None),
     ({}, "tony"),
+    ({}, None),
+    ({"_caller_session": {"session_id": "s", "node": "alcor"}}, "peer:alcor"),
 ])
 def test_a_push_verb_refuses_a_person_or_a_session(verb, args, as_):
     with pytest.raises(PermissionError):
         asyncio.run(hub_adapter.HANDLERS[verb](dict(args), as_))
+
+
+def test_a_push_verb_admits_alcors_service_through_the_door(monkeypatch):
+    class Board:
+        def apply(self, args):
+            return {"mark": 7}
+    monkeypatch.setattr(hub_adapter, "_board", lambda: Board())
+    assert asyncio.run(hub_adapter.HANDLERS["board_apply"]({}, "peer:alcor")) == {"mark": 7}
