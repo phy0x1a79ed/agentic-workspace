@@ -607,6 +607,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "awm-plugin-transcripts"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "awm-plugin-sdk",
+ "awm-pycompat",
+ "awm-store",
+ "fancy-regex",
+ "flate2",
+ "libc",
+ "regex",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "awm-proto"
 version = "0.1.0"
 dependencies = [

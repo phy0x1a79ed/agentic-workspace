@@ -1,0 +1,29 @@
+[package]
+name = "awm-plugin-transcripts"
+description = "Claude Code session logs: the gzipped archive at ~/.claude/projects-archive, its daily sweep, and the live `transcripts` search source."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "transcripts"
+path = "src/main.rs"
+
+[dependencies]
+awm-plugin-sdk.workspace = true
+awm-pycompat.workspace = true
+awm-store.workspace = true
+anyhow.workspace = true
+fancy-regex = "0.17"
+flate2 = "1"
+libc.workspace = true
+regex = "1"
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
+flate2 = "1"

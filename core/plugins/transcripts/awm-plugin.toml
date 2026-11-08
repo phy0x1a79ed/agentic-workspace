@@ -1,9 +1,11 @@
 [plugin]
 name = "transcripts"
-version = "0.1.0"
+version = "0.2.0"
 
 [[service]]
 name = "transcripts"
+path = "."
+run = "run.sh"
 
 [[service.archive]]
 name = "transcripts"
@@ -28,7 +30,3 @@ tier = "off"
 secrets = []
 network = []
 platform = ["linux"]
-
-[[needs.tool]]
-name = "harness-cc"
-major = 1

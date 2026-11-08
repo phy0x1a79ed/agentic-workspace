@@ -1,0 +1,14 @@
+# transcripts.db in the default state dir is copied whole. The archive is large and lives in
+# Claude Code's tree, so it is recorded by size only and nothing is written there.
+[[size_only]]
+path = "${HOME}/.claude/projects-archive"
+
+# The systemd timer the plugin's daily sweep replaces. The deploy removes the units after
+# this copy.
+[[extra]]
+name = "claude-archive-sessions.service"
+path = "${HOME}/.config/systemd/user/claude-archive-sessions.service"
+
+[[extra]]
+name = "claude-archive-sessions.timer"
+path = "${HOME}/.config/systemd/user/claude-archive-sessions.timer"

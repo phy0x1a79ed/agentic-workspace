@@ -70,7 +70,6 @@ declare -A DISTS=(
   [relay]="$WS/awm/plugins/relay:$WS/awm/service_components/tether::$WS/awm/plugins/relay/tests"
   [kb]="$WS/awm/services/kb::$WS/awm/services/kb/tests"
   [board]="$WS/awm/services/board::$WS/awm/services/board/tests"
-  [transcripts]="$WS/awm/services/transcripts::$WS/awm/services/transcripts/tests"
   [routine]="$WS/awm/plugins/routine::$WS/awm/plugins/routine/tests"
   [grantlib]="$WS/awm/service_components/grantlib::$WS/awm/service_components/grantlib/tests"
   [trustpolicy]="$WS/awm/service_components/trustpolicy::$WS/awm/service_components/trustpolicy/tests"
@@ -79,7 +78,7 @@ declare -A DISTS=(
 )
 
 # Stable run order.
-ORDER=(contract gatewayclient config persistence grantlib telemetry usage claudedaemon kept tlsfront dvcdata tether scopes journal search events social 2fa ssh auth httpsfront rlm-browser rlm-factorio fileviewer vpn reflection dvc claude-science dsh engcyc trilium zotero cch dev channel relay kb board transcripts routine trustpolicy browser wake)
+ORDER=(contract gatewayclient config persistence grantlib telemetry usage claudedaemon kept tlsfront dvcdata tether scopes journal search events social 2fa ssh auth httpsfront rlm-browser rlm-factorio fileviewer vpn reflection dvc claude-science dsh engcyc trilium zotero cch dev channel relay kb board routine trustpolicy browser wake)
 
 CHANGED_BASE=""
 SMOKE=0
