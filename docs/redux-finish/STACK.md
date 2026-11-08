@@ -29,6 +29,7 @@ Plugin by plugin, in land order. Each topic: finish what is left, land, live-che
 - `queue-unblock` — close batch cffff968f16f; decide the rollout set.
 - `dvc` — ticket 68647284ec63 (feat/port-ops-t7) is ready; T7 live checks.
 - `operations` — feat/port-ops (built, 212 tests) + cloud feat/ops-units on alcor. Needs the cloud dev merge first.
+- `trilium-board` — the vault board and Ops, unfinished. Telemetry landed (acadb279); vault feat/trilium-vault 92a7d431 built, not submitted; cloud feat/telemetry-optin unrun (telemetry singleton on alcor); R79 decision first. Needs the Rust operations, the vault API and reflection's `reflection/sessions`.
 - `social` + `browser` — feat/port-comms + cloud feat/rust-singletons on alcor.
 - `channel` — on feat/port-comms; relay half on deneb (later-nodes).
 - `rlm-browser` — on feat/port-comms.
@@ -38,7 +39,7 @@ Plugin by plugin, in land order. Each topic: finish what is left, land, live-che
 - `auth` — feat/port-ops-t9, about half ported (front: auth + httpsfront + tlsfront).
 - `python-out` — plan T8: drop the core Python install path; non-core Python plugins get their own envs.
 - `verify` — plan T9 on mizar and alcor.
-- `later-nodes` — capella, lyra, deneb, shogun, altair; trilium vault; telemetry cloud batch; hpc-ssh-guard apply.
+- `later-nodes` — capella, lyra, deneb, shogun, altair; hpc-ssh-guard apply.
 
 Related, taken case by case: ticket 3e3bc12a2040 (plain-ssh edge, SDK snapshot, workspace root), the SDK clippy lint, statecheck's directory extra, the shelved decisions.
 
