@@ -7,7 +7,7 @@ Related: journal 7724ff11 (ops-board decision), spec `docs/redux/*.md` (queue R6
 
 ## Current
 
-note-agent-button
+board-layout-followups/swarm-triage
 
 ## Waiting on the user
 
@@ -24,7 +24,6 @@ note-agent-button
 
 ## Stack
 
-- note-agent-button — "a new button on trillium (left of the button, per note) that is a bot icon that opens a drop down for available nodes." Child note marks the attached agent; deleted on retire. Parallel to the task system. Partly settled by da0f35b6: it is an everyday action (deneb JS, reference only, agent waits on RC); "new task from this card" is the same button. Open from the spec sweep: child note outside writer roots; R106 item 3 "a session that needs Tony has a card".
 - board-layout-followups — from redux-endstate/review after swarm-board/layout landed (awm d5be934c, journal 0d875664).
   - swarm-triage — the tasks/Swarm triage folder is empty: no queue section feeds it. What belongs there?
   - board-look — nobody has viewed the new page in a browser (passkey). Tony to look.
@@ -37,6 +36,7 @@ note-agent-button
 
 ## Closed
 
+- note-agent-button — b12f7bb4. Bot button beside Trilium +; task with card; source note cloned under card; marker link note under source; writer reach +2. Spec queue.md R63 item 3, fleet.md R106 item 2.
 - signin-harmonize — 321e8ff2. One 12h sign-in page on auth.*; signed links; redirect + back; vault gets an alcor sign-in frame (same site); nodes keep tailnet names. Spec fleet.md R84 items 1-2.
 - status-pages/page-origin — da0f35b6 (first pass). deneb serves all pages as notes; alcor = API backend + one identity page; device credential cookie; everyday actions carry no instruction/grant; R65 chain and frames gone. Supersedes the "operations owns the Ops page" answer.
 - status-pages (own questions) — f421ff25. Spec fleet.md R147, install.md R115 item 4.
