@@ -8,7 +8,10 @@ Sources: the worker debrief journals 389a0111 (ops), 8caec34d (knowledge), 449af
 
 ## Current
 
-- `ops` batch (dvc, operations, auth) — plan /home/tony/.claude/plans/noble-splashing-nygaard.md, approved 2026-11-07. Survey: /home/tony/.claude/jobs/b8680c94/tmp/survey/ops.md. Q1–Q4 answered (DECISIONS § ops-questions). T2 done: cloud dev 47f8d98 on mizar, altair and github; alcor not yet applied.
+- `ops` batch (dvc, operations, auth) — plan /home/tony/.claude/plans/noble-splashing-nygaard.md. T1–T4 done; next T6 (auth).
+  - Tests trimmed workspace-wide: 1,929 -> 849 Rust tests, full run 1m41s -> 36 s; clippy clean under -D warnings.
+  - release 4052097d on github, mizar and alcor. dvc runs Rust on both; operations runs Rust on alcor (`awm-plugin@operations` -> `.awm/bin/operations`), check-state and state check exit 0, 3 passkeys parse, task_list answers from mizar, `/signin` 200. mizar's Claude hook is the Rust shim (deploy-hooks.sh).
+  - Cloud dev 47f8d98 applied to alcor (singletons, singleton_door; social_seats skipped).
 
 ## Waiting on the user
 
@@ -45,10 +48,10 @@ Phase 1 scopes each plugin; phase 2 does the work in this order. Each topic list
   - `scopes` — feat/port-knowledge, after kb.
   - `reflection` — wip/port-harness-reflection compiles, tests unfinished; dsh session events ride with it; the order-puller handover with operations.
   - `auth` — feat/port-ops-t9 does not build: ~3,600 lines of Rust written (certs, tls done), ~3,500 lines of Python left (proxy core, httpsfront app, wiring) plus 257 tests and a live-parity matrix. Size L. auth.tony-xy-liu.com on alcor is nginx + tunnel to deneb, not this plugin.
-  - `python-out` — plan T8: drop the core Python install path; each non-core Python plugin gets its own env.
+  - `python-out` — plan T8: drop the core Python install path; each non-core Python plugin gets its own env. Before removing the conda `dvc` env: the stock project's git hooks still call it (the Rust dvc rewires hooks only at provisioning). Delete alcor's untracked `awm/plugins/{operations,routine,dashboard}` leftovers.
   - `landed` — cch, dsh, dev, mic, fileviewer, routine, dashboard, telemetry: confirm each is healthy on mizar and alcor. Issue: statecheck cannot copy a directory `[[extra]]` (took mizar's cch down 4 minutes).
   - `cross-cutting` — ticket 3e3bc12a2040's branch (plain-ssh edge, SDK snapshot, workspace root); SDK clippy `result_large_err`; routine with `AWM_DIR` unset takes a scope as the workspace; the stale land lease; the shelved decisions (R79, per-node-edges, lyra vpn.toml, `isolated/` tag, alcor's sites daemon).
-- `verify` — plan T9 on mizar and alcor. Check: dvc's mirror sends a dir holding only a symlink (e.g. `awm/` -> `data`) as a recursive Globus item; confirm Globus does not follow it into an excluded tree.
+- `verify` — plan T9 on mizar and alcor. Check: dvc's mirror sends a dir holding only a symlink (e.g. `awm/` -> `data`) as a recursive Globus item; confirm Globus does not follow it into an excluded tree. From the test trim: gateway `stop` waits the full 8 s grace for a service that never registered; a crash-looping plugin may respawn once during a reload; cch's `shout_lost` log line is untested under load; the operations hook's dead-port retry is untested.
 - `later-nodes` — capella, lyra, deneb, shogun, altair; hpc-ssh-guard apply.
 
 ## Workers
