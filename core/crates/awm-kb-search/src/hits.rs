@@ -4,6 +4,7 @@
 //! sends is cut down to those keys, so neither can inject fields nor quote text.
 
 use serde_json::{Map, Value};
+pub use awm_pycompat::repr::py_str;
 
 /// The sections of one source's answer, in the order they are read.
 pub const SECTIONS: [&str; 2] = ["exact", "related"];
@@ -12,17 +13,6 @@ const VALUES: usize = 50;
 
 fn head(s: &str, n: usize) -> String {
     s.chars().take(n).collect()
-}
-
-/// Python's `str()` of a JSON scalar.
-pub fn py_str(v: &Value) -> String {
-    match v {
-        Value::String(s) => s.clone(),
-        Value::Null => "None".into(),
-        Value::Bool(true) => "True".into(),
-        Value::Bool(false) => "False".into(),
-        other => awm_pycompat::repr::repr(other),
-    }
 }
 
 fn value(raw: Option<&Value>) -> Value {

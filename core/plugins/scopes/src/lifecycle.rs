@@ -9,7 +9,6 @@ use std::path::{Path, PathBuf};
 
 use awm_dvcdata::provision::{self, Layout};
 use awm_dvcdata::status::State;
-use awm_pycompat::repr::str_repr;
 use awm_store::rusqlite::OptionalExtension;
 use serde_json::{json, Map, Value};
 
@@ -1159,7 +1158,3 @@ pub fn dvc_drift(worktree: &Path) -> Vec<String> {
     out
 }
 
-/// The repr Python gives a list of strings.
-pub fn str_list_repr(items: &[String]) -> String {
-    format!("[{}]", items.iter().map(|s| str_repr(s)).collect::<Vec<_>>().join(", "))
-}

@@ -3,6 +3,7 @@
 use awm_pycompat::pystr::strip;
 use serde_json::Value;
 use std::collections::HashMap;
+use awm_pycompat::repr::truthy;
 
 /// One part of a file: the text under one heading, up to the next heading of any level.
 #[derive(Debug, Clone, PartialEq)]
@@ -131,17 +132,6 @@ fn py(v: &Value) -> String {
         Value::Null => "None".into(),
         Value::Bool(b) => if *b { "True" } else { "False" }.into(),
         other => awm_pycompat::repr::repr(other),
-    }
-}
-
-fn truthy(v: &Value) -> bool {
-    match v {
-        Value::Null => false,
-        Value::Bool(b) => *b,
-        Value::Number(n) => n.as_f64() != Some(0.0),
-        Value::String(s) => !s.is_empty(),
-        Value::Array(a) => !a.is_empty(),
-        Value::Object(o) => !o.is_empty(),
     }
 }
 

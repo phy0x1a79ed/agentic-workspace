@@ -178,7 +178,6 @@ impl Store {
             sections: RwLock::new(sections),
             write: Arc::new(Mutex::new(())),
             work: StdMutex::new(Vec::new()),
-            runs: Arc::new(AtomicUsize::new(0)),
         })
     }
 
@@ -293,7 +292,6 @@ pub struct Index {
     sections: RwLock<BTreeMap<String, Arc<Section>>>,
     write: Arc<Mutex<()>>,
     work: StdMutex<Vec<JoinHandle<()>>>,
-    runs: Arc<AtomicUsize>,
 }
 
 /// An entry as written: its cells in `entry_cols` order, its date and section.
@@ -338,11 +336,6 @@ impl Index {
             _ => b.key.cmp(&a.key),
         });
         out
-    }
-
-    /// How many maintenance runs have finished.
-    pub fn maintenance_runs(&self) -> usize {
-        self.runs.load(Ordering::SeqCst)
     }
 
     /// Wait for the maintenance that writes have started.
@@ -727,28 +720,16 @@ impl Index {
             }
             sec.pending.store(0, Ordering::SeqCst);
             sec.pending_chunks.store(0, Ordering::SeqCst);
-            let (spec, root, write, runs) = (self.spec.clone(), self.store.path.clone(), self.write.clone(), self.runs.clone());
+            let (spec, root, write) = (self.spec.clone(), self.store.path.clone(), self.write.clone());
             let task = tokio::spawn(async move {
                 if let Err(err) = maintain(&spec, &sec, &root, &write).await {
                     tracing::warn!(section = %sec.key, "maintenance of {} failed: {err}", spec.name);
                 }
-                runs.fetch_add(1, Ordering::SeqCst);
             });
             let mut work = self.work.lock().unwrap();
             work.retain(|h| !h.is_finished());
             work.push(task);
         }
-    }
-
-    /// Maintain every section now, whatever its counters say.
-    pub async fn maintain_all(&self) -> Result<()> {
-        for sec in self.sections() {
-            sec.pending.store(0, Ordering::SeqCst);
-            sec.pending_chunks.store(0, Ordering::SeqCst);
-            maintain(&self.spec, &sec, &self.store.path, &self.write).await?;
-            self.runs.fetch_add(1, Ordering::SeqCst);
-        }
-        Ok(())
     }
 }
 

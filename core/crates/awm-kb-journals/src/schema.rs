@@ -376,7 +376,3 @@ pub static MIGRATIONS: LazyLock<Vec<Migration>> = LazyLock::new(|| {
     ]
 });
 
-/// `dao.SCHEMA_SQL` less the cursors table: the v1 shape, for migration tests.
-pub fn v1_schema_sql() -> String {
-    schema_sql().replace(CURSORS_SQL, "")
-}

@@ -21,6 +21,7 @@ use std::time::Duration;
 use awm_plugin_sdk::VerbError;
 use serde_json::{json, Value};
 
+use crate::channel::text;
 use rooms::{Rooms, RoomsError};
 use store::{Member, Room, Store, GUEST, MEMBER, NOTICE};
 
@@ -337,6 +338,3 @@ fn public(row: &Room) -> Value {
     json!({"name": row.name, "lasts": row.lasts, "link": row.link, "open": row.open, "ended": row.ended, "encrypted": row.sealed == SEALED})
 }
 
-fn text(v: &Value, key: &str) -> String {
-    crate::channel::text(v, key)
-}

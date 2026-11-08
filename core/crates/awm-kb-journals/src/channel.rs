@@ -18,7 +18,7 @@ use crate::caller::Exclusion;
 use crate::posts::{author_stored, coerce_meta, eq, and, Names, Post};
 use crate::schema::{FOLDED, INDEXED_TAGS, JOURNAL, KIND_TAGS, MESSAGE, MIGRATED_PREFIX, TYPE_TAGS};
 use crate::tags::{names_arg, parse_filter, Filter};
-use crate::{py_str, Fail, Journals, Result};
+use crate::{Fail, Journals, Result};
 
 /// The most hits a search asks for.
 pub const SEARCH_MAX: usize = 100;
@@ -398,7 +398,7 @@ impl Journals {
                     hits = Some(h);
                     semantic = "search";
                 }
-                Err(e) => degraded = Some(degraded_block(&e)),
+                Err(e) => degraded = Some(self::degraded(&e)),
             }
         }
         let mut posts: Vec<Post> = match hits {
@@ -474,11 +474,3 @@ impl Journals {
     }
 }
 
-fn degraded_block(e: &str) -> Value {
-    degraded(e)
-}
-
-/// `py_str` of a value, for messages.
-pub fn shown(v: &Value) -> String {
-    py_str(v)
-}

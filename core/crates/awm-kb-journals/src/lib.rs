@@ -44,6 +44,7 @@ use tokio::sync::Mutex;
 pub use caller::Who;
 pub use cutover::{export_back, Cutover};
 pub use verbs::register;
+pub use awm_pycompat::repr::{py_str, truthy};
 
 /// A verb's failure as the Python raised it: the exception's class and its text.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -230,7 +231,7 @@ pub struct Journals {
     pub db: Store,
     pub index: Index,
     pub node: String,
-    embedder: RwLock<Option<Arc<dyn Embedder>>>,
+    embedder: Option<Arc<dyn Embedder>>,
     write: Mutex<()>,
     seq: AtomicI64,
     ctx: OnceLock<Context>,
@@ -277,7 +278,7 @@ impl Journals {
             db,
             index,
             node: opts.node.clone(),
-            embedder: RwLock::new(embedder),
+            embedder,
             write: Mutex::new(()),
             seq: AtomicI64::new(0),
             ctx: OnceLock::new(),
@@ -320,13 +321,7 @@ impl Journals {
     }
 
     pub fn embedder(&self) -> Option<Arc<dyn Embedder>> {
-        self.embedder.read().unwrap_or_else(|p| p.into_inner()).clone()
-    }
-
-    /// The model loaded: keep it, and embed every post whose chunks wait for it.
-    pub async fn set_embedder(&self, embedder: Arc<dyn Embedder>) -> Result<awm_index::Written> {
-        *self.embedder.write().unwrap_or_else(|p| p.into_inner()) = Some(embedder);
-        self.embed_waiting().await
+        self.embedder.clone()
     }
 
     pub async fn embed_waiting(&self) -> Result<awm_index::Written> {
@@ -377,29 +372,6 @@ impl Journals {
             }
             Ok(_) => Err(Fail::value(format!("no scope {project}/{scope}"))),
         }
-    }
-}
-
-/// Python truthiness.
-pub fn truthy(v: &Value) -> bool {
-    match v {
-        Value::Null => false,
-        Value::Bool(b) => *b,
-        Value::Number(n) => n.as_f64() != Some(0.0),
-        Value::String(s) => !s.is_empty(),
-        Value::Array(a) => !a.is_empty(),
-        Value::Object(o) => !o.is_empty(),
-    }
-}
-
-/// Python's `str()` of a JSON value.
-pub fn py_str(v: &Value) -> String {
-    match v {
-        Value::String(s) => s.clone(),
-        Value::Null => "None".into(),
-        Value::Bool(true) => "True".into(),
-        Value::Bool(false) => "False".into(),
-        other => awm_pycompat::repr::repr(other),
     }
 }
 

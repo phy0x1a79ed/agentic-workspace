@@ -41,8 +41,9 @@ pub struct Connection {
     closed: Arc<std::sync::atomic::AtomicBool>,
 }
 
-fn http() -> reqwest::Client {
-    reqwest::Client::builder().no_proxy().timeout(Duration::from_secs(10)).build().expect("reqwest client builds")
+fn http() -> &'static reqwest::Client {
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    CLIENT.get_or_init(|| reqwest::Client::builder().no_proxy().timeout(Duration::from_secs(10)).build().expect("reqwest client builds"))
 }
 
 fn endpoint(e: impl std::fmt::Display) -> CdpError {
