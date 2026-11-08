@@ -438,6 +438,7 @@ fn gateway_end_to_end() {
     let who: Value = serde_json::from_str(as_cli(json!({"verb": "whoami"}))["result"].as_str().unwrap()).unwrap();
     assert_eq!(who["trust"], "trusted", "a shell with no harness ancestor: {who}");
     let _ = cli_proc.kill();
+    let _ = cli_proc.wait();
 
     // A lookup that fails runs untrusted with mode `unknown`, which may only compact and ask
     // reflection who it is (fleet.md R103 item 2).
@@ -563,6 +564,7 @@ fn gateway_end_to_end() {
     assert_eq!(serde_json::from_str::<Value>(&line).unwrap()["n"], 1);
     heard.store(true, std::sync::atomic::Ordering::SeqCst);
     let _ = listen.kill();
+    let _ = listen.wait();
     poker.join().unwrap();
     assert!(Stream::open(&format!("{url}/hub/emit/nobody/news")).is_err(), "an unknown service has no topics");
 
