@@ -4,7 +4,8 @@
 //! A cursor belongs to one daemon: the daemon stamps its stream with the epoch it minted at
 //! start, and a new epoch resets this side. The daemon outlives the plugin, so a restarted
 //! plugin asks it for its whole ring again under the same epoch. The mark keeps how far the
-//! session logs got, so nothing is written twice.
+//! session logs got. It is saved once a second, so a crash can re-append that second's events,
+//! which keep their `seq`.
 //!
 //! A slot is not an identity: the relay hands a number out again once its session ends. Every
 //! mint gets a session id `<slot>-<seq>-<epoch & 0xFFFF as 4 hex>`, and each event is stamped
@@ -27,6 +28,8 @@ pub const MAX_EVENTS: usize = 4096;
 pub const MAX_BYTES: usize = 8 * 1024 * 1024;
 /// The daemon sends its own idle line well inside this, so silence this long is a dead socket.
 const IDLE_DEADLINE: Duration = Duration::from_secs(90);
+/// How often the mark is saved while events flow.
+const MARK_INTERVAL: Duration = Duration::from_secs(1);
 const MAX_LOG_BYTES: u64 = 64 * 1024 * 1024;
 const GENS_PER_SLOT: usize = 8;
 
@@ -415,11 +418,12 @@ impl SessionLogs {
 pub struct Stream {
     pub journal: Journal,
     pub book: Mutex<(Mark, SessionLogs)>,
+    saved: Mutex<Option<Instant>>,
 }
 
 impl Stream {
     pub fn new(mark: Mark, logs: SessionLogs) -> Arc<Self> {
-        Arc::new(Self { journal: Journal::default(), book: Mutex::new((mark, logs)) })
+        Arc::new(Self { journal: Journal::default(), book: Mutex::new((mark, logs)), saved: Mutex::new(None) })
     }
 
     pub fn book(&self) -> std::sync::MutexGuard<'_, (Mark, SessionLogs)> {
@@ -427,7 +431,13 @@ impl Stream {
     }
 
     /// Take one event from the wire: stamp it, ring it, and log it unless it was logged before.
-    pub fn take(&self, epoch: Option<i64>, mut event: Value) {
+    pub fn take(&self, epoch: Option<i64>, event: Value) {
+        self.take_at(Instant::now(), epoch, event);
+    }
+
+    /// `take` at a given moment. The mark is saved by the event that crosses `MARK_INTERVAL`
+    /// and by `flush`, so a crash replays at most that interval's events into the logs.
+    fn take_at(&self, now: Instant, epoch: Option<i64>, mut event: Value) {
         if event.get("type").and_then(Value::as_str) == Some("watch.idle") {
             return;
         }
@@ -445,10 +455,24 @@ impl Stream {
             }
         }
         logs.write(mark, &event);
-        if let Some(s) = seq {
-            mark.next = s + 1;
-            mark.save();
+        let Some(s) = seq else { return };
+        mark.next = s + 1;
+        let mut saved = self.saved.lock().unwrap_or_else(|p| p.into_inner());
+        if saved.is_some_and(|t| now.duration_since(t) < MARK_INTERVAL) {
+            return;
         }
+        *saved = Some(now);
+        let snapshot = mark.clone();
+        drop(saved);
+        drop(book);
+        snapshot.save();
+    }
+
+    /// Save the mark now, off the book lock.
+    pub fn flush(&self) {
+        let snapshot = self.book().0.clone();
+        *self.saved.lock().unwrap_or_else(|p| p.into_inner()) = Some(Instant::now());
+        snapshot.save();
     }
 
     /// The opening line of a watch: adopt its epoch.
@@ -487,6 +511,7 @@ impl Stream {
         }
         .await;
         self.journal.connected(false);
+        self.flush();
         out
     }
 
@@ -505,9 +530,8 @@ impl Stream {
     }
 
     pub fn shutdown(&self) {
-        let mut book = self.book();
-        book.1.close();
-        book.0.save();
+        self.book().1.close();
+        self.flush();
     }
 }
 
@@ -573,6 +597,26 @@ mod tests {
         assert!(again.book().0.gens.is_empty());
         let mode = std::fs::metadata(tmp.path().join("sessions")).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o700);
+    }
+
+    #[test]
+    fn the_mark_is_saved_once_an_interval_and_on_close() {
+        let tmp = tempfile::tempdir().unwrap();
+        let st = tmp.path().join("stream.json");
+        let s = Stream::new(Mark::load(&st), SessionLogs::new(tmp.path().join("sessions")));
+        s.begin(9);
+        let next = || Mark::load(&st).next;
+        let t0 = Instant::now();
+        for i in 0..50 {
+            s.take_at(t0 + Duration::from_millis(i * 10), Some(9), ev(i as i64, 1, "owner.said"));
+        }
+        assert_eq!(next(), 1, "fifty events inside one interval wrote once");
+        s.take_at(t0 + MARK_INTERVAL, Some(9), ev(50, 1, "owner.said"));
+        assert_eq!(next(), 51, "the event that crosses the interval saves");
+        s.take_at(t0 + MARK_INTERVAL + Duration::from_millis(5), Some(9), ev(51, 1, "owner.said"));
+        assert_eq!(next(), 51);
+        s.shutdown();
+        assert_eq!(next(), 52, "close writes the final mark");
     }
 
 }
