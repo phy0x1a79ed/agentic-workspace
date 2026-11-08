@@ -5,6 +5,12 @@ version = "0.3.0"
 [[service]]
 name = "dsh"
 
+# The harness's Origin-equals-Host fence is why the front rewrites Origin.
+[[service.front]]
+port = 12130
+upstream = "http://127.0.0.1:12311"
+rewrite_origin = true
+
 [[tool]]
 name = "dsh"
 major = 1

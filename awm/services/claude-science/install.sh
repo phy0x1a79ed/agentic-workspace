@@ -4,10 +4,8 @@
 #
 # Two halves, because this service has two kinds of dependency:
 #
-#   1. Python — the adapter, the supervisor, the mesh fronts and the MCP bridge.
-#      Installs the component libraries it imports first, tlsfront among them
-#      (the fronts are a *configuration* of that library, not a copy of it),
-#      then the service.
+#   1. Python — the adapter, the supervisor and the MCP bridge. Installs the
+#      component libraries it imports first, then the service.
 #
 #   2. The workbench binary — NOT built here. Upstream ships a single
 #      self-contained binary with its own installer, and its `update` subcommand
@@ -38,8 +36,6 @@ run() { echo "+ pip install -e $*"; mamba run -n "$ENV" pip install -e "$@"; }
 
 run "$AWM/service_components/config" --no-deps
 run "$AWM/service_components/gatewayclient" --no-deps
-run "$AWM/service_components/grantlib" --no-deps
-run "$AWM/service_components/tlsfront" --no-deps
 run "$HERE"
 
 # Bake the target env's absolute interpreter into a gitignored `.runtime-env`

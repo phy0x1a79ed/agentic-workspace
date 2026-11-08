@@ -8,6 +8,19 @@ version = "0.1.0"
 name = "claude-science"
 profiles = ["claude-science"]
 
+# Two origins on purpose: a page Claude wrote must not be same-origin with the session that wrote
+# it. Tailscale serve publishes these as :12201 and :12202 on the nodes that run the workbench.
+[[service.front]]
+name = "gui"
+port = 12211
+upstream = "http://127.0.0.1:12203"
+paths = { "/_signin" = "http://127.0.0.1:12210" }
+
+[[service.front]]
+name = "sandbox"
+port = 12212
+upstream = "http://127.0.0.1:12204"
+
 [[tool]]
 name = "science"
 major = 1
@@ -18,7 +31,7 @@ name = "claude-science"
 dir = "pages/claude-science/dist"
 
 [needs]
-secrets = ["AWM_APPROVER_GRANT_PUBKEY"]  # the mesh front's passkey sign-in (awm.tlsfront.portal)
+secrets = []
 network = ["api.anthropic.com", "*.anthropic.com", "claude.ai", "*.claude.ai", "storage.googleapis.com"]
 platform = ["linux"]
 
@@ -36,8 +49,4 @@ major = 1
 
 [[needs.tool]]
 name = "dvc"
-major = 1
-
-[[needs.tool]]
-name = "auth"         # the mesh front's edge session check (awm.tlsfront.auth)
 major = 1

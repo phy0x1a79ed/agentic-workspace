@@ -816,6 +816,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "awm-plugin-sdk",
+ "awm-proto",
  "awm-pycompat",
  "awm-statecheck",
  "awm-store",
@@ -947,7 +948,6 @@ dependencies = [
  "awm-statecheck",
  "axum",
  "clap",
- "futures-util",
  "libc",
  "reqwest",
  "serde_json",
@@ -955,7 +955,6 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
- "tokio-tungstenite 0.26.2",
  "tracing",
  "uuid",
 ]

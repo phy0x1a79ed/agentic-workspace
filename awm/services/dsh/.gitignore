@@ -1,7 +1,0 @@
-# dsh moved to core/plugins/dsh. This folder keeps only the mesh front's host state,
-# which auth takes over (docs/plugin-redux/ports/harness-state.md). Without this file a
-# deploy's `git clean -fd` deletes it, private key included. Remove this file once auth
-# serves dsh's front and the state is gone from every node.
-.certs/
-.sans
-.runtime-env

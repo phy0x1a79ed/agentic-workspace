@@ -8,6 +8,7 @@ use serde_json::{json, Value};
 
 use crate::edge::{self, Edge, EdgeConfig};
 use crate::front::{Front, Upstreams};
+use crate::fronts::{self, Fronts};
 use crate::gate::AuthGate;
 use crate::portal::{Grants, GRANT_KEY_ENV};
 use crate::store::{AuthStore, INIT_ENV};
@@ -18,6 +19,8 @@ use crate::{certs, policy, snapshot, tls};
 const PUBLIC_PROFILE: &str = "public";
 
 const STATUS: &str = "Report the HTTPS front's listener port, TLS state, the SAN set of the leaf cert, the loopback gateway it fronts, and the /ca.crt URL shape for installing the root CA on a device.";
+
+const FRONT: &str = "Report one service's front: the TLS port auth opened for its [[service.front]] declaration, the loopback upstream, the leaf's SAN set, whether it is serving and the URL to open. name defaults to gui.";
 
 pub async fn serve() -> anyhow::Result<()> {
     let service = Service::from_env()?;
@@ -36,9 +39,10 @@ pub async fn serve() -> anyhow::Result<()> {
     let profile = std::env::var("AWM_EDGE_PROFILE").ok().map(|p| p.trim().to_lowercase()).filter(|p| !p.is_empty());
     let public = profile.as_deref() == Some(PUBLIC_PROFILE);
     let tls_on = tls::tls_enabled();
+    let sans_file = certs::sans_file(&state);
     let (tls_config, ca_path, san) = if tls_on {
         let cert_dir = certs::cert_dir(&state, &certs::legacy_service_dir(&awm_plugin_sdk::config::workspace_root()));
-        let sans = certs::resolve_sans(None, Some(&certs::sans_file(&state)))?;
+        let sans = certs::resolve_sans(None, Some(&sans_file))?;
         let info = certs::ensure_certs(&cert_dir, None, Some(&sans))?;
         tracing::info!("auth: certs ready (SAN={})", info.san);
         (Some(tls::server_config(&info.cert, &info.key)?), info.ca, Some(info.san))
@@ -52,14 +56,27 @@ pub async fn serve() -> anyhow::Result<()> {
     let front = Front::new(public, upstreams.clone(), hub, Landing::open(&state.join("landing.db"))?);
 
     let grant_key = std::env::var(GRANT_KEY_ENV).ok();
+    let gate = Arc::new(AuthGate::new(Arc::new(store.clone())));
+    let grants = Arc::new(Grants::new(grant_key, env.node.clone()));
+    let same_site = if public { "strict" } else { "lax" };
+    let fronts = Arc::new(Fronts::new(fronts::Base {
+        gate: gate.clone(),
+        grants: grants.clone(),
+        ca_path: ca_path.clone(),
+        ca_download: !public,
+        same_site,
+        tls: tls_config.clone(),
+        san: san.clone(),
+        sans_file,
+    }));
     let edge = Arc::new(Edge::new(
-        Arc::new(AuthGate::new(Arc::new(store.clone()))),
-        Arc::new(Grants::new(grant_key, env.node.clone())),
+        gate,
+        grants,
         EdgeConfig {
             upstream: env.hub_url.clone(),
             ca_path,
             ca_download: !public,
-            same_site: if public { "strict" } else { "lax" },
+            same_site,
             behind_proxy: !tls_on,
             identity_cookies: &["trilium.sid", "trilium-csrf"],
         },
@@ -76,10 +93,11 @@ pub async fn serve() -> anyhow::Result<()> {
         "relay_mounts": upstreams.tether.as_ref().map(|_| [policy::tether::PREFIX, policy::tether::ROOMS]),
         "board_mount": upstreams.board.as_ref().map(|_| policy::board::PREFIX),
     });
-    register(service, Arc::new(store), status).run().await
+    let _watch = fronts::watch(fronts.clone(), service.context().hub().clone());
+    register(service, Arc::new(store), status, fronts).run().await
 }
 
-fn register(mut service: Service, store: Arc<AuthStore>, status: Value) -> Service {
+fn register(mut service: Service, store: Arc<AuthStore>, status: Value, fronts: Arc<Fronts>) -> Service {
     let specs = verbs::verbs().into_iter().map(|v| (v.name, v.description, v.params)).chain([
         ("config_get", "The settings contract and its live values.", json!([])),
         ("config_set", "Merge values into the settings and answer as config_get.", json!([{"name": "values", "type": "object"}])),
@@ -99,7 +117,17 @@ fn register(mut service: Service, store: Arc<AuthStore>, status: Value) -> Servi
         });
         service = service.hidden();
     }
+    service = service.verb(verbs::TOOL, "front", FRONT, json!([{"name": "service", "type": "string", "required": true}, {"name": "name", "type": "string"}]), move |call: Call| {
+        let fronts = fronts.clone();
+        async move {
+            let args = call.declared_args();
+            let text = |key: &str| args.get(key).and_then(Value::as_str).filter(|s| !s.is_empty()).map(str::to_string);
+            let service = text("service").ok_or_else(|| VerbError::value("service is required"))?;
+            Ok::<Value, VerbError>(fronts.state(&service, &text("name").unwrap_or_else(|| "gui".into())).await)
+        }
+    });
     service
+        .hidden()
         .api("config", verbs::config_fragment(&store))
         .verb("httpsfront", "status", STATUS, json!([]), move |_: Call| {
             let st = status_with_urls(&status);

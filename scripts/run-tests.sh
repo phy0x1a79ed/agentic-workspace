@@ -29,7 +29,7 @@ set -uo pipefail
 WS="$(git -C "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" rev-parse --show-toplevel)"
 cd "$WS"
 
-COMP="$WS/awm/service_components/grantlib:$WS/awm/service_components/config:$WS/awm/service_components/persistence:$WS/awm/service_components/gatewayclient:$WS/awm/service_components/usage:$WS/awm/service_components/trustpolicy:$WS/awm/service_components/tlsfront"
+COMP="$WS/awm/service_components/grantlib:$WS/awm/service_components/config:$WS/awm/service_components/persistence:$WS/awm/service_components/gatewayclient:$WS/awm/service_components/usage:$WS/awm/service_components/trustpolicy"
 
 # dist name -> "<source-root-dir>::<test-dir>"
 declare -A DISTS=(
@@ -38,7 +38,6 @@ declare -A DISTS=(
   [config]="$WS/awm/service_components/config::$WS/awm/service_components/config/tests"
   [persistence]="$WS/awm/service_components/persistence::$WS/awm/service_components/persistence/tests"
   [usage]="$WS/awm/service_components/usage::$WS/awm/service_components/usage/tests"
-  [tlsfront]="$WS/awm/service_components/tlsfront::$WS/awm/service_components/tlsfront/tests"
   [2fa]="$WS/awm/services/2fa::$WS/awm/services/2fa/tests"
   [ssh]="$WS/awm/services/ssh::$WS/awm/services/ssh/tests"
   [rlm-factorio]="$WS/awm/services/rlm-factorio::$WS/awm/services/rlm-factorio/tests"
@@ -56,7 +55,7 @@ declare -A DISTS=(
 )
 
 # Stable run order.
-ORDER=(contract gatewayclient config persistence grantlib usage tlsfront 2fa ssh rlm-factorio vpn reflection claude-science engcyc trilium zotero kb board trustpolicy wake)
+ORDER=(contract gatewayclient config persistence grantlib usage 2fa ssh rlm-factorio vpn reflection claude-science engcyc trilium zotero kb board trustpolicy wake)
 
 CHANGED_BASE=""
 SMOKE=0

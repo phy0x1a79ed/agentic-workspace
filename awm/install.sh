@@ -30,7 +30,7 @@ if [ ${#missing[@]} -gt 0 ]; then
     exit 1
 fi
 
-for lib in config persistence gatewayclient grantlib trustpolicy tlsfront; do
+for lib in config persistence gatewayclient grantlib trustpolicy; do
     [ -f "$WS/awm/service_components/$lib/pyproject.toml" ] && run "$WS/awm/service_components/$lib" --no-deps
 done
 

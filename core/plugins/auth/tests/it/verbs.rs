@@ -232,20 +232,14 @@ fn the_manifest_is_pythons() {
 // -- plugin callers ----------------------------------------------------------------------------
 
 #[test]
-fn test_an_edge_front_reads_edge_material() {
+fn test_no_plugin_reads_edge_material() {
     let (_d, store) = auth();
-    for front in ["dsh", "claude-science"] {
-        assert!(verbs::edge_material(&store, &json!({}), plugin(front)).unwrap().get("secret").is_some(), "{front}");
+    for p in ["dsh", "claude-science", "search"] {
+        assert_err(verbs::edge_material(&store, &json!({}), plugin(p)), "PermissionError", &format!("edge_material is not open to plugin '{p}'"));
     }
-    assert!(verbs::edge_material(&store, &json!({}), Caller::OPERATOR).is_ok());
-}
-
-#[test]
-fn test_any_other_plugin_is_refused_edge_material() {
-    let (_d, store) = auth();
-    assert_err(verbs::edge_material(&store, &json!({}), plugin("search")), "PermissionError", "edge_material is not open to plugin 'search'");
-    let both = Caller { as_: Some("user:tony"), plugin: Some("dsh") };
-    assert_err(verbs::edge_material(&store, &json!({}), both), "PermissionError", "operator verb");
+    assert!(verbs::edge_material(&store, &json!({}), Caller::OPERATOR).unwrap().get("secret").is_some());
+    let edge = Caller { as_: Some("user:tony"), plugin: None };
+    assert_err(verbs::edge_material(&store, &json!({}), edge), "PermissionError", "operator verb");
 }
 
 #[test]
