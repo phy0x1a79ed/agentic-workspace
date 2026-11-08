@@ -51,7 +51,6 @@ CREATE TABLE IF NOT EXISTS outbox (seq INTEGER PRIMARY KEY AUTOINCREMENT, verb T
     args TEXT NOT NULL, ts REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS dead (seq INTEGER PRIMARY KEY, verb TEXT, args TEXT, error TEXT, ts REAL);
 CREATE TABLE IF NOT EXISTS cache (key TEXT PRIMARY KEY, value TEXT NOT NULL, ts REAL NOT NULL);
-CREATE TABLE IF NOT EXISTS seen_orders (order_id TEXT PRIMARY KEY, ts REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT);
 ";
 
@@ -311,13 +310,5 @@ impl Relay {
     pub fn status(&self) -> Value {
         let dead: i64 = self.conn().query_row("SELECT COUNT(*) FROM dead", [], |r| r.get(0)).unwrap_or(0);
         json!({"node": self.node, "outbox": self.pending(), "refused": dead, "alcor_down_since": self.down_since()})
-    }
-
-    /// The order body if the envelope is valid, for this node, and new. None for a replay.
-    pub fn take_order(&self, envelope: &Value, grant_pub: &[u8; 32]) -> Result<Option<Value>, awm_trust::grant::GrantError> {
-        let body = awm_trust::grant::verify_order(envelope, grant_pub, &self.node, self.now() as i64)?;
-        let id = body.get("order_id").and_then(Value::as_str).unwrap_or_default().to_string();
-        let fresh = self.conn().execute("INSERT OR IGNORE INTO seen_orders VALUES (?,?)", params![id, self.now()]).unwrap_or(0);
-        Ok((fresh == 1).then_some(body))
     }
 }

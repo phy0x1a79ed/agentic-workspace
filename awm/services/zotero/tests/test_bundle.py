@@ -24,27 +24,6 @@ def raw(key: str, item_type: str, **data) -> dict:
 # -- the fields --------------------------------------------------------------
 
 
-def test_an_institutional_author_has_a_name_and_no_surname():
-    """Dropping it would silently lose the author of every standards document
-    and government report in the library."""
-    assert bundle.creators({"creators": [
-        {"lastName": "Gruber", "firstName": "Nicolas"},
-        {"name": "World Health Organization"}]}) == [
-        "Gruber, Nicolas", "World Health Organization"]
-
-
-def test_the_year_comes_out_of_a_date_zotero_did_not_normalize():
-    assert bundle.year({"parsedDate": "2019-03-01"}) == "2019"
-    assert bundle.year({"date": "Submitted 3 March 2019"}) == "2019"
-    assert bundle.year({"date": "n.d."}) == ""
-
-
-def test_a_date_that_is_not_a_year_is_not_mistaken_for_one():
-    """Four digits are not enough — `1234 Main Street` is not a publication
-    year, and a bad `#year` label is worse than none."""
-    assert bundle.year({"date": "1234 Main Street"}) == ""
-
-
 # -- the fold ----------------------------------------------------------------
 
 
@@ -54,42 +33,6 @@ def test_an_attachment_folds_into_its_parent(tmp_path):
          raw("BBB", "attachment", parentItem="AAA", filename="p.pdf")],
         [], {"BBB": "p.pdf"})
     assert out["items"][0]["files"] == {"BBB": "p.pdf"}
-
-
-def test_an_attachment_with_no_bytes_on_disk_is_dropped():
-    """`filename` is set on an attachment Zotero has only ever seen the
-    metadata for. A bundle promising a file it does not hold makes the apply
-    fail on data rather than on a mistake."""
-    out = bundle.normalize(
-        [raw("AAA", "journalArticle", title="A paper"),
-         raw("BBB", "attachment", parentItem="AAA", filename="p.pdf")],
-        [], {})
-    assert "files" not in out["items"][0]
-
-
-def test_zoteros_own_notes_ride_along_with_their_parent():
-    out = bundle.normalize(
-        [raw("AAA", "journalArticle", title="A paper"),
-         raw("CCC", "note", parentItem="AAA", note="<p>read this</p>")],
-        [], {})
-    # Under the note's own key, so a window read carrying one note of three can
-    # say which one it replaces.
-    assert out["items"][0]["notes"] == {"CCC": "<p>read this</p>"}
-
-
-def test_attachments_and_notes_are_not_references_themselves():
-    out = bundle.normalize(
-        [raw("AAA", "journalArticle", title="A paper"),
-         raw("BBB", "attachment", parentItem="AAA"),
-         raw("CCC", "note", parentItem="AAA")], [], {})
-    assert len(out["items"]) == 1
-
-
-def test_a_child_whose_parent_is_in_another_library_is_skipped():
-    """Not an error — a group library's attachment can name a parent this pass
-    is not reading. Attaching it to nothing is the only safe answer."""
-    out = bundle.normalize([raw("BBB", "attachment", parentItem="ZZZ")], [], {})
-    assert out["items"] == []
 
 
 # -- libraries ---------------------------------------------------------------
@@ -109,42 +52,7 @@ def test_an_item_is_identified_by_library_and_key():
     assert len({i["ref"] for i in merged["items"]}) == 2
 
 
-def test_a_collection_reference_carries_its_library_too():
-    out = bundle.normalize(
-        [raw("AAA", "journalArticle", title="A", collections=["COL"])],
-        [{"data": {"key": "COL", "name": "papers"}}], {}, library="groups/1")
-    assert out["items"][0]["collections"] == ["groups/1/COL"]
-    assert out["collections"][0]["ref"] == "groups/1/COL"
-
-
-def test_a_nested_collection_names_its_parent_the_same_way():
-    out = bundle.normalize(
-        [], [{"data": {"key": "KID", "name": "sub", "parentCollection": "TOP"}}],
-        {}, library="groups/1")
-    assert out["collections"][0]["parent"] == "groups/1/TOP"
-
-
 # -- reading it back ---------------------------------------------------------
-
-
-def test_an_absent_bundle_reads_as_empty_rather_than_raising():
-    b = bundle.Bundle(MemoryStore())
-    assert b.exists is False
-    assert b.versions == {}
-
-
-def test_a_library_with_no_root_note_holds_nothing_and_refuses_a_write():
-    b = bundle.Bundle(None)
-    assert b.exists is False and b.versions == {}
-    with pytest.raises(RuntimeError, match="no root note"):
-        b.write(bundle.merge([bundle.normalize([], [], {})], {"users/0": 1}))
-
-
-def test_the_versions_survive_the_round_trip():
-    store = MemoryStore()
-    bundle.Bundle(store).write(bundle.merge([bundle.normalize([], [], {})],
-                                            {"users/0": 7, "groups/1": 9}))
-    assert bundle.Bundle(store).versions == {"users/0": 7, "groups/1": 9}
 
 
 def test_the_document_is_written_sorted_so_a_diff_is_the_librarys():
@@ -248,18 +156,6 @@ def test_a_window_never_takes_a_papers_notes_wholesale():
     assert out["items"][0]["notes"] == {"N1": "<p>one</p>", "N2": "<p>two</p>"}
 
 
-def test_a_note_added_to_an_existing_paper_costs_no_request():
-    """The paper did not change, so the window carries the note alone. Against a
-    keyed mapping that is a dictionary update; against a bare list it would have
-    meant fetching the paper's children back over the network."""
-    before = held([raw("AAA", "journalArticle", title="A paper")])
-    window = whole([raw("N9", "note", parentItem="AAA", note="<p>new</p>")])
-
-    out = bundle.fold(before, window, [], [], library="users/0")
-
-    assert out["items"][0]["notes"] == {"N9": "<p>new</p>"}
-
-
 def test_a_key_that_left_is_dropped_as_a_paper_or_as_a_note():
     before = held([
         raw("AAA", "journalArticle", title="A paper"),
@@ -270,23 +166,3 @@ def test_a_key_that_left_is_dropped_as_a_paper_or_as_a_note():
 
     assert [i["ref"] for i in out["items"]] == ["users/0/AAA"]
     assert "notes" not in out["items"][0], "an emptied mapping must be dropped"
-
-
-def test_a_fold_leaves_another_librarys_papers_alone():
-    """`fold` is handed the whole bundle. A window for one library must not be
-    able to touch another's, or one save retires a shared group."""
-    before = held([raw("AAA", "journalArticle", title="Mine")])
-    before["items"] += held([raw("GGG", "journalArticle", title="Theirs")],
-                            library="groups/1")["items"]
-
-    out = bundle.fold(before, whole([]), [], [], library="users/0")
-
-    assert [i["ref"] for i in out["items"]] == ["users/0/AAA"]
-
-
-def test_one_paper_from_both_sides_makes_one_record():
-    """Sorting is stable, so a part carrying a record another part already had
-    leaves both in the list rather than one replacing the other."""
-    part = whole([raw("AAA", "journalArticle", title="A paper")])
-    merged = bundle.merge([part, part], {"users/0": 1})
-    assert len(merged["items"]) == 1

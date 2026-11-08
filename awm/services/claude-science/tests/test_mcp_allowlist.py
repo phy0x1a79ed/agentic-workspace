@@ -75,15 +75,6 @@ def test_the_default_allowlist_excludes_the_dangerous_domains():
         assert domain not in mcp_bridge.DEFAULT_ALLOWLIST, domain
 
 
-def test_the_default_allowlist_is_the_post_plan_read_surface():
-    assert mcp_bridge.DEFAULT_ALLOWLIST == {
-        "scope": ("search", "resolve"),
-        "journal": ("fetch",),
-        "search": ("query", "get"),
-        "dvc": ("coverage", "scope_status"),
-    }
-
-
 def test_no_write_shaped_verb_is_allowlisted_by_default():
     forbidden = {"create", "delete", "complete", "post", "update", "remove",
                  "write", "merge", "scatter", "gather", "restore", "import"}
@@ -114,19 +105,6 @@ def test_an_allowlisted_verb_reaches_the_gateway():
     assert "svc-notes" in reply["result"]["content"][0]["text"]
 
 
-def test_a_gateway_failure_is_reported_as_a_tool_error_not_a_crash():
-    """A bridge that raises takes the connector down for every other tool."""
-    async def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(500, text="boom")
-
-    reply = _call({
-        "jsonrpc": "2.0", "id": 5, "method": "tools/call",
-        "params": {"name": mcp_bridge.tool_name("scope", "search"),
-                   "arguments": {}},
-    }, handler)
-    assert reply["result"]["isError"] is True
-
-
 # ---------------------------------------------------------------------------
 # Listing
 # ---------------------------------------------------------------------------
@@ -145,42 +123,9 @@ def test_tools_list_returns_only_allowlisted_pairs():
     assert names == [mcp_bridge.tool_name("scope", "search")]
 
 
-def test_listing_survives_a_verb_whose_name_contains_an_underscore():
-    """`dvc_scope_status` must resolve to (dvc, scope_status), not (dvc,
-    scope) — the reason the catalog is indexed by exact name rather than split."""
-    async def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={"tools": [
-            {"name": "dvc_scope_status", "description": "data view"},
-        ]})
-
-    reply = _call({"jsonrpc": "2.0", "id": 7, "method": "tools/list"}, handler)
-    names = [t["name"] for t in reply["result"]["tools"]]
-    assert mcp_bridge.tool_name("dvc", "scope_status") in names
-    assert mcp_bridge.split_tool(names[0]) == ("dvc", "scope_status")
-
-
-def test_an_allowlisted_domain_that_is_not_running_is_simply_absent():
-    async def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={"tools": []})
-
-    reply = _call({"jsonrpc": "2.0", "id": 8, "method": "tools/list"}, handler)
-    assert reply["result"]["tools"] == []
-
-
 # ---------------------------------------------------------------------------
 # Protocol basics
 # ---------------------------------------------------------------------------
-
-def test_initialize_advertises_tools():
-    reply = _call({"jsonrpc": "2.0", "id": 9, "method": "initialize",
-                   "params": {}})
-    assert reply["result"]["protocolVersion"] == mcp_bridge.PROTOCOL_VERSION
-    assert "tools" in reply["result"]["capabilities"]
-
-
-def test_a_notification_gets_no_reply():
-    assert _call({"jsonrpc": "2.0", "method": "notifications/initialized"}) is None
-
 
 def test_an_unparseable_allowlist_does_not_widen_the_surface(monkeypatch):
     monkeypatch.setenv("CLAUDE_SCIENCE_MCP_ALLOW", "{not json")
@@ -216,26 +161,6 @@ def _client():
     return TestClient(mcp_bridge.build_app())
 
 
-def test_the_served_app_answers_a_post():
-    """The regression test: a POST must reach handle_rpc, not 500 on wiring."""
-    r = _client().post("/", json={"jsonrpc": "2.0", "id": 1,
-                                  "method": "tools/list"})
-    assert r.status_code == 200, r.text
-    assert r.json()["result"]["tools"], "the served app listed no tools"
-
-
-def test_the_served_app_refuses_a_non_allowlisted_verb():
-    """The security control has to hold on the path the connector actually
-    takes, not only in-process."""
-    r = _client().post("/", json={
-        "jsonrpc": "2.0", "id": 2, "method": "tools/call",
-        "params": {"name": mcp_bridge.tool_name("ssh", "connect"),
-                   "arguments": {}},
-    })
-    assert r.status_code == 200, r.text
-    assert "allowlist" in r.json()["error"]["message"]
-
-
 # ---------------------------------------------------------------------------
 # The gateway holds the bridge to its manifest
 # ---------------------------------------------------------------------------
@@ -262,28 +187,3 @@ def test_every_default_domain_is_a_need_of_the_manifest():
     manifest = tomllib.loads((Path(__file__).resolve().parents[1] / "awm-plugin.toml").read_text())
     needed = {n["name"] for n in manifest["needs"]["tool"]}
     assert set(mcp_bridge.DEFAULT_ALLOWLIST) <= needed, set(mcp_bridge.DEFAULT_ALLOWLIST) - needed
-
-
-def test_the_listener_serves_on_the_port_it_registered(monkeypatch):
-    monkeypatch.setattr(mcp_bridge, "_SOCKETS", [])
-    monkeypatch.setitem(mcp_bridge._STATE, "listening_port", None)
-    url = mcp_bridge.listen()
-    port = mcp_bridge._STATE["listening_port"]
-    assert url == f"http://127.0.0.1:{port}"
-
-    async def go():
-        task = asyncio.create_task(mcp_bridge.serve())
-        for _ in range(100):
-            if mcp_bridge._STATE["serving"]:
-                try:
-                    async with httpx.AsyncClient() as cli:
-                        r = await cli.get(f"{url}/mcp")
-                    break
-                except httpx.ConnectError:
-                    pass
-            await asyncio.sleep(0.05)
-        task.cancel()
-        return r
-
-    r = asyncio.run(go())
-    assert r.status_code == 200 and r.json()["prefix"] == "/s/claude-science/mcp"

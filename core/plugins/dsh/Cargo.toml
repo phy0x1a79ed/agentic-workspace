@@ -16,6 +16,7 @@ awm-harness.workspace = true
 anyhow.workspace = true
 awm-statecheck = { path = "../../crates/awm-statecheck" }
 clap.workspace = true
+futures-util.workspace = true
 libc.workspace = true
 reqwest.workspace = true
 serde_json.workspace = true
@@ -23,6 +24,7 @@ serde_yaml.workspace = true
 tempfile.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
+tokio-tungstenite.workspace = true
 tracing.workspace = true
 uuid.workspace = true
 

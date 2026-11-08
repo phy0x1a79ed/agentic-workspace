@@ -17,7 +17,6 @@ tier = "on"
 # No needs. reflection, social, 2fa and telemetry are plain calls, and each degrades: no
 # session record, no DM, no 2fa strip, no Stale moves.
 [needs]
-# The door key into alcor's singleton door (fleet.md R98 item 2) and alcor's grant key, to
-# check orders. The approver's own keys live in AWM_APPROVER_DIR.
-secrets = ["AWM_OPERATIONS_DOOR_KEY", "AWM_APPROVER_GRANT_PUBKEY"]
+# The door key into alcor's singleton door (fleet.md R98 item 2).
+secrets = ["AWM_OPERATIONS_DOOR_KEY"]
 network = ["alcor"]

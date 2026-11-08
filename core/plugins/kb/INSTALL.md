@@ -10,7 +10,7 @@ kb is one static Rust process that serves the `journal`, `search` and `transcrip
 
 kb is a core plugin. The deploy places its binary at `<AWM_DIR>/bin/kb`, and `run.sh` runs that binary. The gateway starts it. Do not start it by hand.
 
-Place the model files in `<AWM_DIR>/models/all-MiniLM-L6-v2/<revision>/`. The revision and each file's sha256 are pinned in `core/crates/awm-embed/src/model.rs`. kb checks the hashes when it loads the model. Without valid files kb answers on keywords only, and it embeds the stored writes when the model loads.
+The deploy unpacks the model files from the artifact in `scripts/models.pin` to `<AWM_DIR>/models/all-MiniLM-L6-v2/<revision>/`. The revision and each file's sha256 are pinned in `core/crates/awm-embed/src/model.rs`. kb checks the hashes when it loads the model. Without valid files kb answers on keywords only, and it embeds the stored writes when the model loads.
 
 | Env var | Default | Meaning |
 |---|---|---|

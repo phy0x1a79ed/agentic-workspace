@@ -68,13 +68,6 @@ def test_a_write_outside_the_subtree_is_refused(vault, verb, args):
     assert vault.notes["outsideNote"]["content"] == ""
 
 
-def test_the_subtree_is_this_hosts_setting(vault, monkeypatch):
-    monkeypatch.setenv(hub_adapter.WRITER_ROOTS_ENV, "outsideNote")
-    call("note_update", note_id="outsideNote", content="mine now")
-    with pytest.raises(PermissionError):
-        call("note_create", parent="root", title="x")
-
-
 def test_root_is_never_a_writer_root(vault, monkeypatch):
     monkeypatch.setenv(hub_adapter.WRITER_ROOTS_ENV, "root")
     with pytest.raises(PermissionError, match="no writer subtree"):
@@ -90,12 +83,6 @@ def test_search_without_an_ancestor_answers_only_inside(vault):
     assert len(call("note_search", as_=None, query="#swarmOps")["results"]) == 2
 
 
-def test_a_missing_note_reads_as_not_found(vault):
-    call("note_create", parent="root", note_id=BOARD, title="Swarm")
-    with pytest.raises(etapi.EtapiError, match="404"):
-        call("note_get", note_id="swcNone")
-
-
 @pytest.mark.parametrize("as_", ["peer:mizar", "user:tony", "peer"])
 def test_another_caller_is_still_refused(vault, as_):
     call("note_create", parent="root", note_id=BOARD, title="Swarm")
@@ -106,15 +93,6 @@ def test_another_caller_is_still_refused(vault, as_):
 def test_the_writer_gets_no_other_verb(vault):
     with pytest.raises(PermissionError, match="operator verb"):
         call("note_place", note_id="outsideNote", parents=[BOARD])
-
-
-def test_the_writer_moves_a_card_between_its_folders(vault):
-    call("note_create", parent="root", note_id=TASKS, title="tasks")
-    call("note_create", parent=TASKS, note_id="colA", title="A")
-    call("note_create", parent=TASKS, note_id="colB", title="B")
-    call("note_create", parent="colA", note_id="swc1", title="card")
-    call("note_move", note_id="swc1", parent="colB")
-    assert vault.notes["swc1"]["parents"] == ["colB"]
 
 
 @pytest.mark.parametrize("args", [

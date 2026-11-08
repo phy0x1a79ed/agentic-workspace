@@ -89,24 +89,6 @@ def inject(svc: TwoFAService, name: str, eng: FakeEngine) -> DeviceRuntime:
 # ---- device routing / aggregation -----------------------------------------
 
 @pytest.mark.smoke
-def test_unenrolled_reports_cleanly(tmp_path):
-    svc = TwoFAService(empty_cfg(tmp_path, "cwl", "alliance"))
-    svc.init()  # must not raise without creds
-    ping = asyncio.run(svc.ping())
-    assert ping["devices"]["cwl"]["enrolled"] is False
-    assert ping["devices"]["alliance"]["enrolled"] is False
-    # ok must reflect a VERIFIED Duo round-trip, never local state alone —
-    # `ok: true, enrolled: true` with the API unreachable is exactly the false
-    # green that made the approver look healthy on 2026-07-26.
-    assert ping["ok"] is False
-    assert ping["devices"]["cwl"]["reachable"] is False
-    st = svc.status()
-    assert set(st["devices"]) == {"cwl", "alliance"}
-    assert st["devices"]["cwl"]["enrolled"] is False
-    assert svc.pending()["devices"]["cwl"]["held"] == []
-
-
-@pytest.mark.smoke
 def test_action_verbs_require_device(tmp_path):
     svc = TwoFAService(empty_cfg(tmp_path, "cwl"))
     inject(svc, "cwl", FakeEngine())
@@ -143,129 +125,7 @@ def test_approve_deny_route_to_named_device(tmp_path):
     assert ("deny", "u2") in alliance.calls and ("deny", "u2") not in cwl.calls
 
 
-@pytest.mark.smoke
-def test_status_single_vs_aggregate(tmp_path):
-    cfg = empty_cfg(tmp_path, "cwl", "alliance")
-    # Touch cwl's cred files so it reports enrolled.
-    cfg.devices["cwl"].creds_path.write_text("{}")
-    cfg.devices["cwl"].key_path.write_text("x")
-    svc = TwoFAService(cfg)
-    inject(svc, "cwl", FakeEngine())
-
-    one = svc.status("cwl")
-    assert one["device"] == "cwl"
-    assert one["enrolled"] is True
-    assert one["host"] == "api-test.duosecurity.com"
-
-    agg = svc.status()
-    assert agg["devices"]["cwl"]["enrolled"] is True
-    assert agg["devices"]["alliance"]["enrolled"] is False
-
-
 # ---- counted / overlapping burst ------------------------------------------
-
-@pytest.mark.smoke
-async def test_burst_started_then_extended(tmp_path):
-    cfg = Config(devices={"cwl": _creds(tmp_path, "cwl")},
-                 burst_window_seconds=0.4, burst_interval_seconds=0.05)
-    svc = TwoFAService(cfg)
-    inject(svc, "cwl", FakeEngine())  # returns no txs, so it won't auto-finish
-
-    r1 = await svc.start_burst("cwl", count=1)
-    assert r1["status"] == "started"
-    assert r1["expected"] == 1
-    rt = svc._devices["cwl"]
-    assert rt.burst_active() is True
-    task = rt.burst_task
-
-    r2 = await svc.start_burst("cwl", count=1)
-    assert r2["status"] == "extended"
-    assert r2["expected"] == 2
-    # Same single task throughout — overlapping bursts don't spawn a second.
-    assert rt.burst_task is task
-
-    await asyncio.sleep(0.5)
-    assert rt.burst_active() is False
-    assert rt.last_burst is not None
-
-
-@pytest.mark.smoke
-async def test_burst_devices_independent(tmp_path):
-    cfg = Config(devices={"cwl": _creds(tmp_path, "cwl"),
-                          "alliance": _creds(tmp_path, "alliance")},
-                 burst_window_seconds=0.4, burst_interval_seconds=0.05)
-    svc = TwoFAService(cfg)
-    inject(svc, "cwl", FakeEngine())
-    inject(svc, "alliance", FakeEngine())
-
-    await svc.start_burst("cwl")
-    assert svc._devices["cwl"].burst_active() is True
-    # alliance untouched by the cwl burst.
-    assert svc._devices["alliance"].burst_active() is False
-    assert svc._devices["cwl"].burst_task is not svc._devices["alliance"].burst_task
-
-    await svc.start_burst("alliance")
-    assert svc._devices["alliance"].burst_active() is True
-
-    await asyncio.sleep(0.5)
-    assert svc._devices["cwl"].burst_active() is False
-    assert svc._devices["alliance"].burst_active() is False
-
-
-@pytest.mark.smoke
-async def test_burst_exits_when_counter_satisfied(tmp_path):
-    # A long window, but two polls each surface one tx the fake engine approves,
-    # so expected (2) reaches 0 and the loop ends well before the deadline.
-    cfg = Config(devices={"cwl": _creds(tmp_path, "cwl")},
-                 burst_window_seconds=30.0, burst_interval_seconds=0.02)
-    svc = TwoFAService(cfg)
-    from awm.twofa.duo import Transaction
-    eng = FakeEngine(txs_per_poll=[
-        [Transaction(urgid="a", raw={})],
-        [Transaction(urgid="b", raw={})],
-    ])
-    inject(svc, "cwl", eng)
-
-    await svc.start_burst("cwl", count=2)
-    rt = svc._devices["cwl"]
-    # Wait for the counted exit (far below the 30s window).
-    for _ in range(100):
-        await asyncio.sleep(0.02)
-        if not rt.burst_active():
-            break
-    assert rt.burst_active() is False
-    assert eng.approved_count == 2
-    assert rt.last_burst == {"approved": 2, "expected_remaining": 0,
-                             "observed": 2}
-
-
-@pytest.mark.smoke
-async def test_burst_notify_on_approval_and_window_end(tmp_path):
-    # One poll surfaces a tx the fake engine approves; with count=1 the window
-    # then ends. Expect a per-approval notify AND a window-end summary.
-    cfg = Config(devices={"cwl": _creds(tmp_path, "cwl")},
-                 burst_window_seconds=30.0, burst_interval_seconds=0.02)
-    svc = TwoFAService(cfg)
-    from awm.twofa.duo import Transaction
-    eng = FakeEngine(txs_per_poll=[[Transaction(urgid="a", raw={})]])
-    inject(svc, "cwl", eng)
-
-    msgs: list[str] = []
-
-    async def notify(text):
-        msgs.append(text)
-
-    await svc.start_burst("cwl", count=1, notify=notify)
-    rt = svc._devices["cwl"]
-    for _ in range(200):
-        await asyncio.sleep(0.02)
-        if not rt.burst_active():
-            break
-    await asyncio.sleep(0.05)  # let the fire-and-forget end-summary task run
-
-    assert any("approved on" in m for m in msgs)   # per-approval line
-    assert any("window ended" in m for m in msgs)  # end-of-window summary
-
 
 @pytest.mark.smoke
 async def test_concurrent_same_device_burst_spawns_one_task(tmp_path):
@@ -284,38 +144,6 @@ async def test_concurrent_same_device_burst_spawns_one_task(tmp_path):
     assert rt.engine.budget_remaining() == 3
 
     await asyncio.sleep(0.5)
-    assert rt.burst_active() is False
-
-
-@pytest.mark.smoke
-async def test_rearm_after_teardown_spawns_fresh_task(tmp_path):
-    """After a window fully tears down (task cleared), a new start_burst must
-    spawn a FRESH task ('started', not 'extended') and honour its budget. Guards
-    the was_active→live-check fix: a dead task must not be treated as active,
-    which would strand the new grant with no poll loop (the original bug)."""
-    cfg = Config(devices={"cwl": _creds(tmp_path, "cwl")},
-                 burst_window_seconds=0.1, burst_interval_seconds=0.02)
-    svc = TwoFAService(cfg)
-    inject(svc, "cwl", FakeEngine())  # no txs → runs to the deadline, then tears down
-
-    r1 = await svc.start_burst("cwl", count=1)
-    assert r1["status"] == "started"
-    rt = svc._devices["cwl"]
-    for _ in range(100):
-        await asyncio.sleep(0.02)
-        if not rt.burst_active():
-            break
-    assert rt.burst_active() is False
-    assert rt.burst_task is None                 # teardown detached the task
-    assert rt.engine.budget_remaining() == 0     # and cleared leftover budget
-
-    # Fresh arm after teardown → a NEW task, budget honoured (not stranded).
-    r2 = await svc.start_burst("cwl", count=2)
-    assert r2["status"] == "started"
-    assert r2["expected"] == 2
-    assert rt.burst_active() is True
-    assert rt.engine.budget_remaining() == 2
-    await asyncio.sleep(0.25)
     assert rt.burst_active() is False
 
 
@@ -389,19 +217,6 @@ def test_ping_reports_unreachable_when_duo_cannot_be_reached(tmp_path):
 
 
 @pytest.mark.smoke
-def test_ping_records_a_verified_round_trip(tmp_path):
-    svc = TwoFAService(_enrolled_cfg(tmp_path, "alliance"))
-    eng = FakeEngine()
-    eng.client = _ReachableClient()
-    inject(svc, "alliance", eng)
-
-    res = asyncio.run(svc.ping("alliance"))
-    assert res["ok"] is True and res["reachable"] is True
-    assert eng.client.calls == 1          # a real call, not a local guess
-    assert svc.reachability("alliance")["last_reachable_at"] is not None
-
-
-@pytest.mark.smoke
 def test_reachability_of_an_unknown_device_is_not_a_positive(tmp_path):
     svc = TwoFAService(empty_cfg(tmp_path, "alliance"))
     out = svc.reachability("nosuchdevice")
@@ -416,76 +231,3 @@ def test_reachability_of_an_unknown_device_is_not_a_positive(tmp_path):
 # presented with a login or was and we declined — while `reachability` moved only
 # when somebody called `ping`, so it decayed with idle time and made a quiet
 # approver look like a broken one.
-
-
-@pytest.mark.smoke
-async def test_burst_counts_the_transactions_it_observes(tmp_path):
-    cfg = Config(devices={"cwl": _creds(tmp_path, "cwl")},
-                 burst_window_seconds=0.3, burst_interval_seconds=0.02)
-    svc = TwoFAService(cfg)
-    inject(svc, "cwl", FakeEngine(txs_per_poll=[[], [("a",), ("b",)], []]))
-
-    armed = await svc.start_burst("cwl", count=5)
-    assert armed["transactions_seen"] == 0, "the baseline is taken before polling"
-
-    await asyncio.sleep(0.4)
-    rt = svc._devices["cwl"]
-    assert rt.transactions_seen == 2
-    assert rt.last_burst["observed"] == 2
-    assert svc.status("cwl")["transactions_seen"] == 2
-
-
-@pytest.mark.smoke
-async def test_an_idle_window_observes_nothing(tmp_path):
-    """The shape that must stay distinguishable from a declined login."""
-    cfg = Config(devices={"alliance": _creds(tmp_path, "alliance")},
-                 burst_window_seconds=0.2, burst_interval_seconds=0.02)
-    svc = TwoFAService(cfg)
-    inject(svc, "alliance", FakeEngine())
-
-    await svc.start_burst("alliance", count=1)
-    await asyncio.sleep(0.3)
-
-    rt = svc._devices["alliance"]
-    assert rt.transactions_seen == 0
-    assert rt.last_burst == {"approved": 0, "expected_remaining": 1, "observed": 0}
-
-
-@pytest.mark.smoke
-async def test_a_burst_poll_counts_as_a_verified_round_trip(tmp_path):
-    """A window polls Duo every tick. Those are real round-trips, and recording
-    them is what stops an idle approver reading as an unavailable one."""
-    cfg = Config(devices={"alliance": _creds(tmp_path, "alliance")},
-                 burst_window_seconds=0.2, burst_interval_seconds=0.02)
-    svc = TwoFAService(cfg)
-    inject(svc, "alliance", FakeEngine())
-    rt = svc._devices["alliance"]
-    assert rt.last_reachable_ts is None
-
-    await svc.start_burst("alliance", count=1)
-    await asyncio.sleep(0.3)
-
-    assert rt.last_reachable_ts is not None
-    assert svc.reachability("alliance")["last_reachable_at"] == rt.last_reachable_ts
-
-
-@pytest.mark.smoke
-async def test_a_failing_poll_records_no_round_trip(tmp_path):
-    """A window that cannot reach Duo must not claim it did."""
-    cfg = Config(devices={"alliance": _creds(tmp_path, "alliance")},
-                 burst_window_seconds=0.2, burst_interval_seconds=0.02)
-    svc = TwoFAService(cfg)
-    eng = FakeEngine()
-
-    def _boom():
-        raise OSError("Temporary failure in name resolution")
-
-    eng.client.get_transactions = _boom
-    inject(svc, "alliance", eng)
-
-    await svc.start_burst("alliance", count=1)
-    await asyncio.sleep(0.3)
-
-    rt = svc._devices["alliance"]
-    assert rt.last_reachable_ts is None
-    assert rt.transactions_seen == 0

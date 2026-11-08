@@ -1,17 +1,15 @@
 #!/usr/bin/env bash
-# Install the awm-trilium service (editable, into the `awm` env) and unpack the
-# Trilium server release that server.pin names (install.md R115 item 4).
+# Build the trilium plugin's own runtime: the conda env awm-trilium, or AWM_ENV, and
+# unpack the Trilium server release that server.pin names (install.md R115 item 4).
 #
 # The release is a tarball that the fork (projects/trilium on mizar) built, with
 # its own Node runtime. awm's deploy pushes it into this node's artifact store
 # (<AWM_DIR>/artifacts); this script never builds the fork and never downloads.
 # A node the deploy pushed no tarball to installs the service without a server.
 # Every step is idempotent, because this script runs on every deploy.
-#
-# Override the target env with AWM_ENV=<name>.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
-ENV="${AWM_ENV:-awm}"
+ENV="${AWM_ENV:-awm-trilium}"
 
 # Two different roots, and they coincide only in the deployed tree. REPO is the
 # awm checkout this script belongs to. WS is the workspace holding `projects/`
@@ -47,18 +45,15 @@ PIN_VERSION="$(pin version)"; PIN_FILE="$(pin file)"; PIN_SHA="$(pin sha256)"
 [ -n "$PIN_VERSION" ] && [ -n "$PIN_FILE" ] && [ -n "$PIN_SHA" ] || {
     echo "error: server.pin needs version, file and sha256." >&2; exit 1; }
 
-run() { echo "+ pip install -e $*"; mamba run -n "$ENV" pip install -e "$@"; }
+. "$AWM/plugin-env.sh"
 
 run "$AWM/service_components/config" --no-deps
+run "$AWM/service_components/persistence" --no-deps
 run "$AWM/service_components/gatewayclient" --no-deps
 run "$HERE"
 
-# Bake the target env's absolute interpreter into a gitignored `.runtime-env`
-# sidecar so the hub supervisor can respawn this service under systemd's
-# minimal PATH (no `mamba`).
-PYBIN="$(mamba run -n "$ENV" python -c 'import sys; print(sys.executable)')"
-printf 'AWM_PYTHON=%s\nAWM_ENV_BIN=%s\n' "$PYBIN" "$(dirname "$PYBIN")" \
-    > "$HERE/.runtime-env"
+# Written before the server unpack, whose no-tarball path exits early.
+bake_runtime_env
 
 # Best effort: where the state root belongs to another account, the service
 # creates what it needs at runtime, as that account.

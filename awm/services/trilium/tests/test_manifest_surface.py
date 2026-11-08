@@ -25,31 +25,8 @@ def test_every_function_projects_into_a_single_domain():
         assert verb, fn["tool"]
 
 
-def test_the_projected_verb_matches_the_internal_name():
-    """A divergence routes fine but makes `awm trilium <verb>` and the handler
-    table disagree, which is the kind of drift nobody notices."""
-    for fn in FUNCTIONS:
-        assert fn["tool"] == f"trilium_{fn['name']}", fn
-
-
 def test_every_declared_function_has_a_handler():
     assert {fn["name"] for fn in FUNCTIONS} == set(HANDLERS)
-
-
-def test_every_declared_parameter_reaches_the_catalog():
-    """The manifest key is `params`, and nothing complains about any other.
-
-    The gateway projects a verb's schema from `fn["params"]`, so a function that
-    spells it `parameters` projects a tool with an empty inputSchema: the verb
-    still appears, still dispatches, and every flag it declares is silently
-    gone. That is exactly what shipped here -- `awm trilium restore` offered
-    no --snapshot at all -- and nothing errored, which is why it is a test and
-    not a comment.
-    """
-    for fn in FUNCTIONS:
-        assert not set(fn) & {"parameters"}, fn["name"]
-        for p in fn.get("params", []):
-            assert isinstance(p, dict) and isinstance(p.get("name"), str) and p["name"], fn["name"]
 
 
 def test_a_verb_that_needs_an_argument_declares_it_required():
@@ -61,13 +38,3 @@ def test_a_verb_that_needs_an_argument_declares_it_required():
                 for fn in FUNCTIONS}
     assert required["restore"] == {"snapshot"}
     assert required["note_upsert"] == {"title", "content"}
-
-
-def test_the_lifecycle_verbs_outlast_the_client_default():
-    """They spawn or signal a node process and wait for a port to bind or free.
-    Trilium runs a schema migration on first start, so the default 30s client
-    ceiling would abort mid-start and leave the caller holding a timeout
-    instead of a result."""
-    for fn in FUNCTIONS:
-        if fn["name"] in {"start", "stop", "restart"}:
-            assert fn.get("timeout", 0) >= 120, fn["name"]

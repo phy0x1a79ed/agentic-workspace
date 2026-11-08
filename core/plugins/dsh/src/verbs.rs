@@ -164,6 +164,14 @@ impl App {
         .map_err(settings_error)
     }
 
+    /// A `start` or `restart` answer; a harness that started gets its session stream opened.
+    fn started(&self, res: Result<Value, String>) -> Result<Value, VerbError> {
+        if res.is_ok() {
+            self.sessions.lifecycle.kick();
+        }
+        res.map_err(|e| verb_error(&e))
+    }
+
     fn provider(&self) -> Option<String> {
         self.settings.provider_name()
     }
@@ -178,9 +186,9 @@ impl App {
         }
         match verb {
             "status" => Ok(json!({"harness": self.sup.snapshot().await, "front": self.front().await})),
-            "start" => self.sup.start().await.map_err(|e| verb_error(&e)),
+            "start" => self.started(self.sup.start().await),
             "stop" => Ok(self.sup.stop().await),
-            "restart" => self.sup.restart().await.map_err(|e| verb_error(&e)),
+            "restart" => self.started(self.sup.restart().await),
             "url" => Ok(json!({"url": self.front().await["url"], "note": "requires an awm session"})),
             "model" => self.model(args).await,
             "logs" => {
@@ -282,6 +290,7 @@ mod tests {
     use super::*;
     use crate::fork::stub::{self, Stub};
     use crate::fork::Fork;
+    use crate::lifecycle::Lifecycle;
     use crate::paths::Paths;
     use crate::sessions::tests::{default_items, recording, FakeProcs, FORK, R9};
     use crate::sessions::{COMPACT_WAIT, POLL};
@@ -291,7 +300,7 @@ mod tests {
         let (reporter, _) = recording(paths.spool(), true);
         Arc::new(App {
             sup: Supervisor::new(paths.clone()),
-            sessions: Sessions { fork: Fork::new(fork_port), procs: Box::new(FakeProcs::default()), reporter, compact_wait: COMPACT_WAIT, poll: POLL },
+            sessions: Sessions { fork: Fork::new(fork_port), procs: Box::new(FakeProcs::default()), reporter, lifecycle: Lifecycle::new().0, compact_wait: COMPACT_WAIT, poll: POLL },
             settings: Settings::new(paths.settings_file()),
             hub: Hub::new(&format!("http://127.0.0.1:{}", stub::dead_port().await), None),
             workspace: paths.workspace.clone(),

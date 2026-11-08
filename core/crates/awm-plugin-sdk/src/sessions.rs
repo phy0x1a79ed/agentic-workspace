@@ -24,7 +24,7 @@ pub async fn session_of(hub: &Hub, pid: u32) -> Option<Value> {
 /// Type `text` into session `job` and submit it. An error says why it was not delivered.
 pub async fn tell(hub: &Hub, job: &str, text: &str) -> anyhow::Result<Value> {
     let opts = CallOpts { timeout: Duration::from_secs(30), ..CallOpts::default() };
-    let out = hub.call_with("reflection", "message", json!({"job": job, "text": text}), &opts).await?;
+    let out = hub.call_with("reflection", "message", json!({"to": job, "text": text}), &opts).await?;
     if out.get("ok").and_then(Value::as_bool) != Some(true) {
         let why = out.get("reason").or_else(|| out.get("error")).cloned().unwrap_or(out.clone());
         anyhow::bail!("could not type into session {job}: {why}");

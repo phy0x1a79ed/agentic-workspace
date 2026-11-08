@@ -1,47 +1,24 @@
-//! The daily sweep, inside the plugin: it replaces the `claude-archive-sessions` systemd timer.
+//! The sweep, inside the plugin: it replaces the `claude-archive-sessions` systemd timer.
 //!
-//! It runs at about 03:30 local time, and once at start when the last timer sweep is more than
-//! 26 h old, so a node that was off catches up. The sweep runs on its own thread at idle IO
+//! A session's stop on `reflection/sessions` triggers it, and a start catches up, at most once
+//! per [`SWEEP_GAP_S`]. A stop never archives that session early: the transcript stays for the
+//! retention days, so `resume_other` keeps working. The sweep runs on its own thread at idle IO
 //! priority and nice 19, records `trigger = "timer"`, and indexes the sessions it archived.
 
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
-use awm_plugin_sdk::Context;
+use awm_plugin_sdk::{Context, SubscriptionOpts, SupervisedSubscription};
+use serde_json::Value;
 
 use crate::{runs, sweep, App};
 
-pub const AT_HOUR: i32 = 3;
-pub const AT_MINUTE: i32 = 30;
-pub const CATCH_UP_AFTER_S: f64 = 26.0 * 3600.0;
+/// The shortest gap between two sweeps. A stop inside it does nothing.
+pub const SWEEP_GAP_S: f64 = 12.0 * 3600.0;
 
-/// The next local `hour:minute` after `now`, as Unix seconds, through the C library's zone rules.
-pub fn next_at(now: f64, hour: i32, minute: i32) -> f64 {
-    // SAFETY: localtime_r and mktime only read and write the tm passed to them.
-    unsafe {
-        let t = now.floor() as libc::time_t;
-        let mut base: libc::tm = std::mem::zeroed();
-        libc::localtime_r(&t, &mut base);
-        for add_days in 0..3 {
-            let mut tm = base;
-            tm.tm_mday += add_days;
-            tm.tm_hour = hour;
-            tm.tm_min = minute;
-            tm.tm_sec = 0;
-            tm.tm_isdst = -1;
-            let at = libc::mktime(&mut tm) as f64;
-            if at > now {
-                return at;
-            }
-        }
-        now + 86400.0
-    }
-}
-
-/// Whether the last timer sweep is old enough that this start catches up. A node with no timer
-/// sweep yet waits for 03:30.
+/// Whether a sweep runs now: none ran yet, or the last one is older than the gap.
 pub fn due(last: Option<f64>, now: f64) -> bool {
-    last.is_some_and(|t| now - t > CATCH_UP_AFTER_S)
+    last.is_none_or(|t| now - t > SWEEP_GAP_S)
 }
 
 fn lower_priority() {
@@ -99,19 +76,35 @@ pub async fn run_once(ctx: &Context, app: &App) {
     ctx.usage("nightly", ok, started.elapsed().as_millis() as u64);
 }
 
-/// Catch up if due, then sweep each day at 03:30 local time.
+/// Whether the last sweep leaves room for another.
+async fn sweep_due(app: &App) -> bool {
+    match runs::last_timer(&app.store).await {
+        Ok(last) => due(last, sweep::now()),
+        Err(e) => {
+            tracing::warn!("transcripts: could not read the last sweep: {e}");
+            false
+        }
+    }
+}
+
+/// Catch up if due, then sweep when a session stops and the last sweep is past the gap.
 pub async fn daily(ctx: Context, app: Arc<App>) {
-    let last = runs::last_timer(&app.store).await.unwrap_or_else(|e| {
-        tracing::warn!("transcripts: could not read the last timer sweep: {e}");
-        None
-    });
-    if due(last, sweep::now()) {
+    if sweep_due(&app).await {
         run_once(&ctx, &app).await;
     }
-    loop {
-        let now = sweep::now();
-        let wait = (next_at(now, AT_HOUR, AT_MINUTE) - now).max(1.0);
-        tokio::time::sleep(Duration::from_secs_f64(wait)).await;
-        run_once(&ctx, &app).await;
-    }
+    let hub = ctx.hub().clone();
+    let connect = move || {
+        let hub = hub.clone();
+        async move { hub.subscribe("reflection", "sessions", None, None).await }
+    };
+    let handler = move |event: Value| {
+        let (ctx, app) = (ctx.clone(), app.clone());
+        async move {
+            if event.get("event").and_then(Value::as_str) == Some("stopped") && sweep_due(&app).await {
+                run_once(&ctx, &app).await;
+            }
+            Ok(())
+        }
+    };
+    SupervisedSubscription::spawn("transcripts-sweep", SubscriptionOpts::default(), connect, handler);
 }

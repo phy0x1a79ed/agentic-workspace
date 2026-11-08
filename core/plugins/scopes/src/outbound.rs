@@ -42,7 +42,7 @@ pub fn waiting_sessions(out: &dyn Outbound) -> HashSet<String> {
 
 /// Type `text` into the waiting session's job. A notice that fails leaves the waiter queued.
 pub fn notify(out: &dyn Outbound, job: &str, text: &str) -> bool {
-    match out.call("reflection", "message", json!({"job": job, "text": text}), Duration::from_secs(60)) {
+    match out.call("reflection", "message", json!({"to": job, "text": text}), Duration::from_secs(60)) {
         Ok(v) => v.get("ok") != Some(&Value::Bool(false)),
         Err(e) => {
             tracing::warn!("scopes: could not tell {job} its scope is free: {e}");

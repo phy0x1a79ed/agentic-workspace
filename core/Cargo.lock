@@ -948,6 +948,7 @@ dependencies = [
  "awm-statecheck",
  "axum",
  "clap",
+ "futures-util",
  "libc",
  "reqwest",
  "serde_json",
@@ -955,6 +956,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
+ "tokio-tungstenite 0.26.2",
  "tracing",
  "uuid",
 ]
@@ -1071,6 +1073,29 @@ dependencies = [
  "tracing",
  "url",
  "uuid",
+]
+
+[[package]]
+name = "awm-plugin-reflection"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "awm-harness",
+ "awm-plugin-sdk",
+ "awm-pycompat",
+ "awm-statecheck",
+ "awm-trust",
+ "chrono",
+ "clap",
+ "ed25519-dalek",
+ "futures-util",
+ "libc",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

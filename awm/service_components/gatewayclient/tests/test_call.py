@@ -69,8 +69,8 @@ def test_a_refusal_raises_with_its_status(monkeypatch):
 
 def test_a_peer_call_names_the_peer_in_the_envelope(gateway):
     seen, _ = gateway
-    assert asyncio.run(gc.call("reflection", "message", {"job": "j"}, peer="alcor")) == {"ok": True}
-    assert seen[0][2] == {"name": "reflection", "args": {"verb": "message", "args": {"job": "j"}, "peer": "alcor"}}
+    assert asyncio.run(gc.call("reflection", "message", {"to": "j"}, peer="alcor")) == {"ok": True}
+    assert seen[0][2] == {"name": "reflection", "args": {"verb": "message", "args": {"to": "j"}, "peer": "alcor"}}
     gc.call_sync("journal", "render", peer="local")
     assert seen[1][2] == {"name": "journal_render", "args": {}}
 

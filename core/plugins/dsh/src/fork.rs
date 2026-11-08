@@ -56,9 +56,12 @@ impl Fork {
 pub mod stub {
     use std::sync::{Arc, Mutex};
 
+    use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
     use axum::extract::{Path, State};
+    use axum::response::Response;
     use axum::Json;
     use serde_json::{json, Value};
+    use tokio::sync::{mpsc, watch};
 
     #[derive(Default)]
     pub struct Inner {
@@ -67,6 +70,10 @@ pub mod stub {
         pub history: Vec<Value>,
         /// Methods the stub refuses, with `{code, message}`.
         pub refuse: Vec<String>,
+        /// One sender per open `events.mux` socket; `None` closes it.
+        pub feeds: Vec<mpsc::UnboundedSender<Option<Value>>>,
+        /// Set by [`Down::down`]: a call on a connection still open gets no answer.
+        pub down: bool,
     }
 
     #[derive(Clone, Default)]
@@ -88,6 +95,48 @@ pub mod stub {
         pub fn with<R>(&self, f: impl FnOnce(&mut Inner) -> R) -> R {
             f(&mut self.0.lock().unwrap())
         }
+
+        /// How many times `method` was called.
+        pub fn count(&self, method: &str) -> usize {
+            self.calls().iter().filter(|(m, _)| m == method).count()
+        }
+
+        /// How many `events.mux` sockets are open.
+        pub fn sockets(&self) -> usize {
+            self.with(|g| {
+                g.feeds.retain(|f| !f.is_closed());
+                g.feeds.len()
+            })
+        }
+
+        /// Push `frame` on every open `events.mux` socket.
+        pub fn push(&self, frame: Value) {
+            self.with(|g| g.feeds.iter().for_each(|f| _ = f.send(Some(frame.clone()))));
+        }
+
+        /// Close every open `events.mux` socket; the fork stays up.
+        pub fn hang_up(&self) {
+            self.with(|g| g.feeds.drain(..).for_each(|f| _ = f.send(None)));
+        }
+    }
+
+    async fn mux(State(stub): State<Stub>, ws: WebSocketUpgrade) -> Response {
+        ws.on_upgrade(move |socket| feed(stub, socket))
+    }
+
+    async fn feed(stub: Stub, mut socket: WebSocket) {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        stub.with(|g| g.feeds.push(tx));
+        loop {
+            tokio::select! {
+                frame = rx.recv() => match frame {
+                    Some(Some(v)) => if socket.send(Message::Text(v.to_string().into())).await.is_err() { break },
+                    _ => break,
+                },
+                got = socket.recv() => if !matches!(got, Some(Ok(_))) { break },
+            }
+        }
+        let _ = socket.send(Message::Close(None)).await;
     }
 
     async fn api(State(stub): State<Stub>, Path(method): Path<String>, Json(body): Json<Value>) -> Json<Value> {
@@ -95,6 +144,9 @@ pub mod stub {
         assert_eq!(body["method"], method);
         let mut g = stub.0.lock().unwrap();
         g.calls.push((method.clone(), body["payload"].clone()));
+        if g.down {
+            return Json(json!({}));
+        }
         if g.refuse.contains(&method) {
             return Json(json!({"result": {"ok": false, "error": {"code": "E_STUB", "message": "refused"}}}));
         }
@@ -108,11 +160,38 @@ pub mod stub {
 
     /// Serve the stub on an ephemeral loopback port and answer the port.
     pub async fn serve(stub: Stub) -> u16 {
-        let app = axum::Router::new().route("/api/{*method}", axum::routing::post(api)).with_state(stub);
+        serve_until(stub).await.0
+    }
+
+    /// Takes the stub's fork down: the port stops listening and every socket closes.
+    pub struct Down(watch::Sender<bool>, Stub);
+
+    impl Down {
+        pub fn down(&self) {
+            self.1.with(|g| g.down = true);
+            let _ = self.0.send(true);
+            self.1.hang_up();
+        }
+    }
+
+    /// [`serve`], with a handle that takes the fork down.
+    pub async fn serve_until(stub: Stub) -> (u16, Down) {
+        let app = axum::Router::new()
+            .route("/api/events.mux", axum::routing::get(mux))
+            .route("/api/{*method}", axum::routing::post(api))
+            .with_state(stub.clone());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
-        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-        port
+        let (tx, mut rx) = watch::channel(false);
+        tokio::spawn(async move {
+            let stop = async move {
+                if rx.wait_for(|down| *down).await.is_err() {
+                    std::future::pending::<()>().await;
+                }
+            };
+            axum::serve(listener, app).with_graceful_shutdown(stop).await.unwrap()
+        });
+        (port, Down(tx, stub))
     }
 
     /// A loopback port nothing listens on.

@@ -6,7 +6,6 @@ use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use awm_plugin_operations::service;
 use awm_plugin_operations::store::{BoardEvent, LiveSession, Open, Seat, Store};
 use crate::common::{count, s, Env, TestClock};
 use rusqlite::{params, Connection};
@@ -533,18 +532,4 @@ fn the_event_hook_fires_once_per_event_after_commit() {
     st.ops_post("vpn", "mizar", "t", "b", None).unwrap();
     let seqs: Vec<i64> = seen.lock().unwrap().iter().map(|g| g.0.seq).collect();
     assert_eq!(seqs, [1, 2, 3], "seq rises, and an Ops notice is no card event");
-}
-
-// -- the agent order -------------------------------------------------------------------------
-
-#[test]
-fn an_agent_order_starts_a_main_session_with_one_fixed_line() {
-    assert_eq!(service::agent_prompt(None), None);
-    assert_eq!(service::agent_prompt(Some("n0000001")).as_deref(), Some("Read the note n0000001 as context only, then wait for Tony."));
-    let bare = service::agent_start(&json!({"order_id": "o1", "kind": "agent", "payload": {"task_id": "T0000001", "node": "mizar"}}));
-    assert_eq!((bare["suggest"].clone(), bare["remote_control"].clone(), bare["task_id"].clone(), bare["role"].clone()),
-               (json!(true), json!(true), json!("T0000001"), json!("main")));
-    assert!(bare.get("prompt").is_none(), "no note, no prompt");
-    let noted = service::agent_start(&json!({"payload": {"task_id": "T0000001", "note_id": "n0000001"}}));
-    assert_eq!(noted["prompt"], "Read the note n0000001 as context only, then wait for Tony.");
 }

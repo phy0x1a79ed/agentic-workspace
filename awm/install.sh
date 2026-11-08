@@ -53,6 +53,7 @@ for root in "$WS/awm/services" "$WS/awm/plugins" "${extra_roots[@]}"; do
         [ -z "${seen[$name]:-}" ] || continue
         seen[$name]=1
         s="${d}install.sh"
+        grep -q "^install *=" "${d}awm-plugin.toml" 2>/dev/null && continue
         [ -f "$s" ] || continue
         if ! wanted "$name"; then
             echo "- skipping plugin (this node's config.toml does not enable it): $name"

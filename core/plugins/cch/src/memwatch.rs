@@ -269,7 +269,7 @@ pub async fn memory_tick(watch: &mut MemWatch, node: &impl Node, gateway: &impl 
     }
     for hog in watch.jobs_to_warn(now, &hogs) {
         let job = hog.job.clone().unwrap_or_default();
-        let args = json!({"job": job, "text": session_warning(&notify.node, &hog, available)});
+        let args = json!({"to": job, "text": session_warning(&notify.node, &hog, available)});
         if let Err(e) = gateway.call(Call::new("reflection", "message", args)).await {
             tracing::warn!("keep: could not warn {job}: {e}");
         }
@@ -326,7 +326,7 @@ mod tests {
         assert!(sent[0].args["text"].as_str().unwrap().contains("big.py"));
         assert_eq!(messaged.len(), 1);
         assert_eq!((messaged[0].tool.as_str(), messaged[0].verb.as_str()), ("reflection", "message"));
-        assert_eq!(messaged[0].args["job"], "0000aaaa");
+        assert_eq!(messaged[0].args["to"], "0000aaaa");
     }
 
 }

@@ -1,9 +1,14 @@
 #!/usr/bin/env bash
-# Install the wake plugin into the awm env (override with AWM_ENV=<name>).
+# Build the wake plugin's own runtime: the conda env awm-wake, or AWM_ENV.
 set -euo pipefail
-WS="$(git -C "$(dirname "$0")" rev-parse --show-toplevel)"
-ENV="${AWM_ENV:-awm}"
-mamba run -n "$ENV" pip install -e "$WS/awm/service_components/gatewayclient" --no-deps
-mamba run -n "$ENV" pip install -e "$(dirname "$0")"
-PYBIN="$(mamba run -n "$ENV" python -c 'import sys; print(sys.executable)')"
-printf 'AWM_PYTHON=%s\nAWM_ENV_BIN=%s\n' "$PYBIN" "$(dirname "$PYBIN")" > "$(dirname "$0")/.runtime-env"
+HERE="$(cd "$(dirname "$0")" && pwd)"
+AWM="${AWM_ROOT:-$(git -C "$HERE" rev-parse --show-toplevel)/awm}"
+ENV="${AWM_ENV:-awm-wake}"
+
+. "$AWM/plugin-env.sh"
+run "$AWM/service_components/gatewayclient" --no-deps
+run "$HERE"
+
+bake_runtime_env
+
+echo "Installed awm-wake into env '$ENV'."

@@ -1,16 +1,15 @@
 #!/usr/bin/env bash
-# Install the awm-kb service into the awm env, and the `kb` env its server runs in.
+# Build the papers plugin's own runtime (conda env awm-papers, or AWM_ENV), and the `kb` env its server runs in.
 #
-# The server's dependencies (fastembed, faiss, PyMuPDF) never enter the awm
-# env. They live in a separate env built from the kb checkout's own
-# envs/kb/base.yml, and this script records that env's interpreter for the
-# supervisor. A node with no kb checkout installs the service and warns: it
-# registers, and `kb status` says why it has no server.
+# The server's dependencies (fastembed, faiss, PyMuPDF) never enter the adapter env. They live in
+# a separate env built from the kb checkout's own envs/kb/base.yml, and this script records that
+# env's interpreter for the supervisor. A node with no kb checkout installs the service and warns:
+# it registers, and `kb status` says why it has no server.
 #
-# Override the awm env with AWM_ENV, the kb env with KB_ENV, the checkout with KB_CHECKOUT.
+# Override the kb env with KB_ENV, the checkout with KB_CHECKOUT.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
-ENV="${AWM_ENV:-awm}"
+ENV="${AWM_ENV:-awm-papers}"
 KB_ENV="${KB_ENV:-kb}"
 REPO="$(git -C "$HERE" rev-parse --show-toplevel)"
 AWM="${AWM_ROOT:-$REPO/awm}"
@@ -30,14 +29,13 @@ WS="$(workspace_root "$HERE")"
 CHECKOUT="${KB_CHECKOUT:-$WS/projects/kb/release}"
 ENV_FILE="$CHECKOUT/envs/kb/base.yml"
 
-run() { echo "+ pip install -e $*"; mamba run -n "$ENV" pip install -e "$@"; }
+. "$AWM/plugin-env.sh"
 
 run "$AWM/service_components/config" --no-deps
 run "$AWM/service_components/gatewayclient" --no-deps
 run "$HERE"
 
-PYBIN="$(mamba run -n "$ENV" python -c 'import sys; print(sys.executable)')"
-printf 'AWM_PYTHON=%s\nAWM_ENV_BIN=%s\n' "$PYBIN" "$(dirname "$PYBIN")" > "$HERE/.runtime-env"
+bake_runtime_env
 
 if [ ! -f "$ENV_FILE" ]; then
     echo "warning: no $ENV_FILE — kb will register without a server." >&2
@@ -61,5 +59,5 @@ else
 fi
 
 mamba run -n "$KB_ENV" python -c 'import sys; print(sys.executable)' > "$HERE/kb-python"
-echo "Installed awm-kb into env '$ENV'."
+echo "Installed awm-papers into env '$ENV'."
 echo "Server:  $CHECKOUT (env '$KB_ENV': $(cat "$HERE/kb-python"))"

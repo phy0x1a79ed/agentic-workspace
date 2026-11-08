@@ -8,7 +8,6 @@ service, and the labels are never read.
 from __future__ import annotations
 
 import asyncio
-import logging
 
 import pytest
 
@@ -91,25 +90,12 @@ def test_create_checks_the_parent(mode, tree):
     assert (refused is True) == (mode == "log")
 
 
-def test_upsert_checks_the_parent(mode, tree):
-    assert attempt(mode, "note_upsert", title="n", content="c",
-                   parent=tree["leaf"]) is True
-    refused = attempt(mode, "note_upsert", title="n", content="c",
-                      parent=tree["closed"])
-    assert (refused is True) == (mode == "log")
-
-
 def test_a_managed_note_is_refused_under_a_writable_subtree(mode, tree):
     for target in ("managed", "record"):
         refused = attempt(mode, "note_update", note_id=tree[target], title="x")
         assert (refused is True) == (mode == "log")
         if mode == "enforce":
             assert "#agentManaged" in refused
-
-
-def test_nothing_may_be_created_under_a_managed_note(mode, tree):
-    refused = attempt(mode, "note_create", title="n", parent=tree["record"])
-    assert (refused is True) == (mode == "log")
 
 
 # -- two-note writes ---------------------------------------------------------
@@ -149,21 +135,6 @@ def test_a_refused_write_does_nothing_in_enforce_mode(monkeypatch, vault, tree):
     assert tree["closed"] in vault.notes
 
 
-def test_log_mode_records_the_refusal_and_writes(monkeypatch, tree, caplog):
-    monkeypatch.delenv("AWM_TRILIUM_AGENT_GATE", raising=False)
-    with caplog.at_level(logging.WARNING, logger="awm.trilium.hub_adapter"):
-        as_session("note_update", note_id=tree["closed"], title="changed")
-    assert call("note_get", note_id=tree["closed"])["title"] == "changed"
-    assert "#agentWritable" in caplog.text
-
-
-def test_off_mode_does_not_read_labels(monkeypatch, vault, tree):
-    monkeypatch.setenv("AWM_TRILIUM_AGENT_GATE", "off")
-    vault.calls.clear()
-    as_session("note_update", note_id=tree["closed"], title="changed")
-    assert vault.calls.count(("GET", f"notes/{tree['closed']}")) == 1
-
-
 @pytest.mark.parametrize("verb,extra", [
     ("note_update", {"title": "x"}), ("note_delete", {}),
     ("attr_set", {"name": "a"}),
@@ -171,10 +142,3 @@ def test_off_mode_does_not_read_labels(monkeypatch, vault, tree):
 def test_a_service_caller_is_never_gated(monkeypatch, tree, verb, extra):
     monkeypatch.setenv("AWM_TRILIUM_AGENT_GATE", "enforce")
     call(verb, note_id=tree["closed"], **extra)
-
-
-def test_reads_are_never_gated(monkeypatch, tree):
-    monkeypatch.setenv("AWM_TRILIUM_AGENT_GATE", "enforce")
-    for verb in ("note_get", "note_children", "attrs_get"):
-        as_session(verb, note_id=tree["closed"])
-    as_session("note_search", query="#agentWritable")

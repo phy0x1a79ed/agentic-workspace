@@ -42,7 +42,6 @@ declare -A DISTS=(
   [ssh]="$WS/awm/services/ssh::$WS/awm/services/ssh/tests"
   [rlm-factorio]="$WS/awm/services/rlm-factorio::$WS/awm/services/rlm-factorio/tests"
   [vpn]="$WS/awm/services/vpn::$WS/awm/services/vpn/tests"
-  [reflection]="$WS/awm/services/reflection::$WS/awm/services/reflection/tests"
   [claude-science]="$WS/awm/services/claude-science::$WS/awm/services/claude-science/tests"
   [engcyc]="$WS/awm/services/engcyc::$WS/awm/services/engcyc/tests"
   [trilium]="$WS/awm/services/trilium::$WS/awm/services/trilium/tests"
@@ -55,7 +54,7 @@ declare -A DISTS=(
 )
 
 # Stable run order.
-ORDER=(contract gatewayclient config persistence grantlib usage 2fa ssh rlm-factorio vpn reflection claude-science engcyc trilium zotero kb board trustpolicy wake)
+ORDER=(contract gatewayclient config persistence grantlib usage 2fa ssh rlm-factorio vpn claude-science engcyc trilium zotero kb board trustpolicy wake)
 
 CHANGED_BASE=""
 SMOKE=0
@@ -139,6 +138,9 @@ if [ ! -x "$PY" ]; then
   exit 1
 fi
 
+# A plugin that owns its runtime runs its tests there. Its env appears when its install hook has run.
+declare -A PLUGIN_ENVS=([2fa]=awm-2fa [ssh]=awm-ssh [vpn]=awm-vpn [claude-science]=awm-claude-science [trilium]=awm-trilium [zotero]=awm-zotero [kb]=awm-papers [wake]=awm-wake)
+
 declare -A RESULT
 overall=0
 
@@ -157,8 +159,17 @@ for name in "${ORDER[@]}"; do
   echo ">>> $name  ($testdir)"
   echo "============================================================"
 
-  PYTHONPATH="$src:$COMP" \
-    "$PY" -m pytest "$testdir" -p no:cacheprovider ${PYTEST_ARGS}
+  py="$PY" pypath="$src:$COMP"
+  if [ -n "${PLUGIN_ENVS[$name]:-}" ]; then
+    py="$conda_root/envs/${PLUGIN_ENVS[$name]}/bin/python" pypath=""
+    if [ ! -x "$py" ]; then
+      RESULT[$name]="NO ENV"
+      continue
+    fi
+    "$py" -m pytest --version >/dev/null 2>&1 || "$py" -m pip install -q pytest pytest-asyncio
+  fi
+  PYTHONPATH="$pypath" \
+    "$py" -m pytest "$testdir" -p no:cacheprovider ${PYTEST_ARGS}
   rc=$?
   if [ "$rc" -eq 0 ]; then
     RESULT[$name]="PASS"

@@ -135,7 +135,7 @@ pub async fn start(app: &App) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// The ready step: the daily sweep, and a reconcile of the index with the archive, both in
+/// The ready step: the sweep, and a reconcile of the index with the archive, both in
 /// the background.
 pub fn ready(ctx: &Context, app: Arc<App>) {
     let (c, a) = (ctx.clone(), app.clone());

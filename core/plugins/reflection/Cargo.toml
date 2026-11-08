@@ -1,0 +1,39 @@
+[package]
+name = "awm-plugin-reflection"
+description = "The reflection plugin: the one agent-facing session tool, which acts on each session through its harness@1 provider."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+name = "reflection"
+path = "src/lib.rs"
+doctest = false
+
+[[bin]]
+name = "reflection"
+path = "src/main.rs"
+test = false
+
+[dependencies]
+awm-plugin-sdk.workspace = true
+awm-harness.workspace = true
+awm-pycompat.workspace = true
+awm-trust.workspace = true
+chrono.workspace = true
+awm-statecheck = { path = "../../crates/awm-statecheck" }
+anyhow.workspace = true
+clap.workspace = true
+futures-util.workspace = true
+libc.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+ed25519-dalek = "2"
+tempfile.workspace = true
+tracing-subscriber.workspace = true
+tokio = { workspace = true, features = ["test-util"] }

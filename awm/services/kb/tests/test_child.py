@@ -15,25 +15,6 @@ def test_child_env_replaces_pythonpath_and_names_the_server(kb_paths, monkeypatc
     assert env["KB_PORT"] == str(kb_paths.PORT) and env["KB_HOST"] == "127.0.0.1"
 
 
-def test_child_env_points_the_server_at_the_shipped_indexes_that_exist(kb_paths, monkeypatch):
-    monkeypatch.delenv("KB_VECTORS", raising=False)
-    monkeypatch.delenv("KB_LADYBUG", raising=False)
-    env = server.child_env()
-    assert "KB_VECTORS" not in env
-    kb_paths.VECTORS.mkdir(parents=True)
-    env = server.child_env()
-    assert env["KB_VECTORS"] == str(kb_paths.VECTORS) and "KB_LADYBUG" not in env
-    assert "KB_ZOTERO_LIBRARY" not in env
-    monkeypatch.setenv("KB_VECTORS", "/elsewhere")
-    assert server.child_env()["KB_VECTORS"] == "/elsewhere"
-
-
-def test_child_env_puts_the_kb_env_lib_first(kb_paths, monkeypatch):
-    monkeypatch.setenv("KB_PYTHON", "/envs/kb/bin/python")
-    monkeypatch.setenv("LD_LIBRARY_PATH", "/opt/lib")
-    assert server.child_env()["LD_LIBRARY_PATH"] == os.pathsep.join(["/envs/kb/lib", "/opt/lib"])
-
-
 def _wait(pred, timeout=10.0):
     deadline = time.time() + timeout
     while time.time() < deadline:

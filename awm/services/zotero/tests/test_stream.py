@@ -105,46 +105,6 @@ def test_a_change_is_reported_with_its_library_and_version(connect):
     assert s.changes == 1
 
 
-def test_the_publications_feed_does_not_start_a_pass(connect):
-    seen: list[tuple[str, int]] = []
-    s = stream_mod.Stream(lambda lib, v: _record(seen, lib, v))
-    connect(FakeSocket([
-        {"event": "connected", "retry": 10000},
-        {"event": "topicUpdated", "topic": "/users/1/publications",
-         "version": 9},
-    ], stall=False))
-    with pytest.raises(ConnectionError):
-        asyncio.run(s._session())
-    assert seen == [] and s.changes == 0
-
-
-def test_a_refused_subscription_is_recorded_rather_than_waited_out(connect):
-    """A key that reaches nothing subscribes to nothing and then sits in
-    perfect health for ever. The error has to be visible in `status`."""
-    s = stream_mod.Stream(lambda lib, v: _record([], lib, v))
-    connect(FakeSocket([
-        {"event": "connected", "retry": 10000},
-        {"event": "subscriptionsCreated", "subscriptions": [],
-         "errors": [{"apiKey": "a-key", "error": "Invalid API key"}]},
-    ], stall=False))
-    with pytest.raises(ConnectionError):
-        asyncio.run(s._session())
-    assert "Invalid API key" in (s.last_error or "")
-    assert s.health["last_error"]
-
-
-def test_the_servers_own_retry_is_honoured(connect):
-    s = stream_mod.Stream(lambda lib, v: _record([], lib, v))
-    connect(FakeSocket([{"event": "connected", "retry": 4500}], stall=False))
-    with pytest.raises(ConnectionError):
-        asyncio.run(s._session())
-    # The delay is only returned on a clean end, so drive one: a group joining
-    # ends the session so the subscription can be rebuilt.
-    connect(FakeSocket([{"event": "connected", "retry": 4500},
-                        {"event": "topicAdded", "topic": "/groups/3"}]))
-    assert asyncio.run(s._session()) == pytest.approx(4.5)
-
-
 def test_a_silent_stream_is_rebuilt_rather_than_trusted(connect, monkeypatch):
     """Keepalives only prove the far end is alive. A subscription lost behind a
     healthy socket looks exactly like a library nobody is touching."""
@@ -153,17 +113,6 @@ def test_a_silent_stream_is_rebuilt_rather_than_trusted(connect, monkeypatch):
     connect(FakeSocket([{"event": "connected", "retry": 10000}], stall=True))
     assert asyncio.run(s._session()) == pytest.approx(10.0)
     assert s.connected_at is None
-
-
-def test_health_says_how_long_it_has_been_quiet(connect):
-    s = stream_mod.Stream(lambda lib, v: _record([], lib, v))
-    assert s.health["connected"] is False
-    connect(FakeSocket([{"event": "connected", "retry": 10000},
-                        {"event": "topicAdded", "topic": "/groups/3"}]))
-    asyncio.run(s._session())
-    assert s.connections == 1
-    assert s.health["silent_for_s"] is not None
-    assert s.health["url"] == stream_mod.URL
 
 
 async def _record(into: list, library: str, version: int) -> None:

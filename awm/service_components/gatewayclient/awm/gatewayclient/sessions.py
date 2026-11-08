@@ -30,7 +30,7 @@ def tell(job: str, text: str, *, timeout: float = 30.0) -> dict:
     """Type ``text`` into session ``job`` and submit it. Raises when it was not delivered."""
     from awm.gatewayclient import call_sync
 
-    out = call_sync("reflection", "message", {"job": job, "text": text}, timeout=timeout)
+    out = call_sync("reflection", "message", {"to": job, "text": text}, timeout=timeout)
     if not isinstance(out, dict) or not out.get("ok"):
         why = (out or {}).get("reason") or (out or {}).get("error") if isinstance(out, dict) else out
         raise RuntimeError(f"could not type into session {job}: {why}")
