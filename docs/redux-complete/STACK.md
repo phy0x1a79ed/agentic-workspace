@@ -8,11 +8,11 @@ Decisions: `DECISIONS.md` beside this file.
 
 ## Current
 
-- deneb / r79-writer
+- deneb
 
 ## Waiting on the user
 
-- r79-writer: how the vault's writer gets alcor's cards.
+- deneb: remaining cutover questions.
 
 ## Preferences
 
@@ -23,7 +23,6 @@ Tony (2026-11-08): this session does the work itself; Sonnet agents at medium ef
 ## Stack
 
 - deneb — the public host's cutover
-  - r79-writer — R79 forbids deneb's outbound door calls, the vault writer drains alcor from deneb
 - open-for-tony — the end-state journals' open items not reached above: per-node-edges, lyra vpn.toml, isolated/ mirror tag, alcor sites daemon, cch warm pool, science idle
 - close-out — `.pre-rust` deletion, unreviewed branches, retiring the redux scopes
 
@@ -36,6 +35,7 @@ None.
 - done-line — everything: end-state code, every node, per-node hand items, quality backlog
 - land-port-harness — lands, per ace5dab4
 - fleet-route — mizar and alcor first, then altair, shogun, capella, lyra together; deneb apart; cloud dev moves to mizar
+- r79-writer — alcor pushes to deneb's vault writer; R79 stands
 
 ## Survey state (2026-11-08)
 

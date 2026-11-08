@@ -34,3 +34,13 @@ Decided: land on mizar and alcor and check them live, then refresh altair, shogu
 The cloud repo's canonical `dev` moves to mizar's bare repo. GitHub stays the backup and altair follows, the same rule as awm.
 
 Landed: to be done by the plan.
+
+## r79-writer (2026-11-08)
+
+Question: how does deneb's vault writer get alcor's cards and roster, given R79 ("deneb runs no agent session and opens no outbound ssh")?
+
+Tony: "Push makes the most sense here". This replaces a mistaken "Amend R79" answer given earlier in the same discussion.
+
+Decided: alcor pushes. operations and telemetry on alcor call hidden trilium verbs on deneb (`board_apply`, `ops_render`) on each event, through the door alcor already uses. deneb holds no service key and makes no outbound call. The writer's note code on feat/trilium-vault stays, and only its input changes from a pull to a push. R79 and its cloud test stand unchanged.
+
+Landed: to be done by the plan.
