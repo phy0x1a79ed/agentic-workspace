@@ -22,6 +22,10 @@ The unit dir is `AWM_ROUTINE_UNIT_DIR`, else `$XDG_CONFIG_HOME/systemd/user`. `s
 
 A timer only fires: its unit runs `awm routine trigger --trigger timer`. Every timer is `Persistent`, so a slot missed while the node was down fires at the next boot. With `catchup_s`, a fire more than `catchup_s` after its slot, or a second fire for a slot that already ran, records a `skipped` run. The slot check asks `systemd-analyze calendar --base-time`. Where systemd cannot answer, the fire runs.
 
+## Events
+
+A definition's `[trigger] events = ["<service>.<topic>"]` starts the routine on each event from this node's service. The service holds one subscription per distinct topic across installed routines and reconciles them at start, install and uninstall. An event while the routine has a live run queues one rerun, which later events replace. Events missed while the service is down are not replayed. Steps read the payload from `AWM_ROUTINE_EVENT`, left unset above 64 KiB.
+
 ## Verify
 
 1. Run `awm routine list`. It lists the routines installed on this node.

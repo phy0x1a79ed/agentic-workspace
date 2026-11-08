@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use awm_plugin_routine::land::{self, LandArgs};
+use awm_plugin_routine::events::Events;
 use awm_plugin_routine::outbound::GatewayOutbound;
 use awm_plugin_routine::runner::Runner;
 use awm_plugin_routine::service::{self, RoutineService};
@@ -56,7 +57,9 @@ async fn serve() -> anyhow::Result<()> {
     let usage = Arc::new(move |job: &str, ok: bool, ms: u64| ctx.usage(job, ok, ms));
     let out = Arc::new(GatewayOutbound { hub: svc.context().hub().clone() });
     let runner = Runner::new(store, out, Some(usage));
-    let routine = Arc::new(RoutineService { runner: runner.clone(), unit_dir: timers::unit_dir(), systemctl: Box::new(timers::real_systemctl) });
+    let events = Events::new(svc.context().hub().clone(), runner.clone());
+    events.reconcile();
+    let routine = Arc::new(RoutineService { runner: runner.clone(), unit_dir: timers::unit_dir(), systemctl: Box::new(timers::real_systemctl), events: Some(events) });
     service::mount(svc, routine)
         .on_shutdown(async move {
             runner.shutdown().await;

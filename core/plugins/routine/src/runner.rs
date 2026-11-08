@@ -73,7 +73,13 @@ pub struct Runner {
     out: Arc<dyn Outbound>,
     usage: Option<UsageHook>,
     live: Mutex<HashMap<String, Live>>,
+    /// The one rerun an event asked for while its routine was busy, by `<project>/<name>`:
+    /// the latest event's topic and payload.
+    pending: Mutex<HashMap<String, (String, Option<String>)>>,
 }
+
+/// The largest event payload a step receives in `AWM_ROUTINE_EVENT`.
+pub const MAX_EVENT_BYTES: usize = 64 * 1024;
 
 fn s<'a>(row: &'a Row, key: &str) -> &'a str {
     row.get(key).and_then(Value::as_str).unwrap_or("")
@@ -106,7 +112,7 @@ pub fn public(mut rec: Row) -> Row {
 
 impl Runner {
     pub fn new(store: Arc<Store>, out: Arc<dyn Outbound>, usage: Option<UsageHook>) -> Arc<Self> {
-        Arc::new(Self { store, out, usage, live: Mutex::new(HashMap::new()) })
+        Arc::new(Self { store, out, usage, live: Mutex::new(HashMap::new()), pending: Mutex::new(HashMap::new()) })
     }
 
     // -- registry -------------------------------------------------------------
@@ -171,6 +177,17 @@ impl Runner {
     }
 
     pub async fn trigger(self: &Arc<Self>, project: &str, name: &str, trigger: &str, caller: &str, wait: bool) -> Result<Row> {
+        let (run, done) = self.begin(project, name, trigger, caller, None)?;
+        if let (true, Some(mut done)) = (wait, done) {
+            let _ = done.wait_for(|d| *d).await;
+            return Ok(self.store.get_run(s(&run, "id"))?.unwrap_or(run));
+        }
+        Ok(run)
+    }
+
+    /// Start a run and return its record, with a receiver that turns true when it ends. A
+    /// skipped timer fire has no receiver.
+    fn begin(self: &Arc<Self>, project: &str, name: &str, trigger: &str, caller: &str, event: Option<String>) -> Result<(Row, Option<watch::Receiver<bool>>)> {
         let (rec, routine) = self.routine(project, name)?;
         if trigger == "call" && !routine.call {
             return Err(RoutineError::Value(format!("{project}/{name} runs on its timer only")));
@@ -181,7 +198,7 @@ impl Runner {
                 Ok(s) => slot = s,
                 Err(why) => {
                     tracing::info!("{project}/{name}: timer fire skipped: {why}");
-                    return Ok(self.store.skipped_run(project, name, caller, &why)?);
+                    return Ok((self.store.skipped_run(project, name, caller, &why)?, None));
                 }
             }
         }
@@ -191,20 +208,71 @@ impl Runner {
         }
         let rid = s(&run, "id").to_string();
         let (halt_tx, halt_rx) = watch::channel(None);
-        let (done_tx, mut done_rx) = watch::channel(false);
+        let (done_tx, done_rx) = watch::channel(false);
         self.live.lock().unwrap_or_else(|p| p.into_inner()).insert(rid.clone(), Live { halt: halt_tx, done: done_rx.clone() });
         let me = self.clone();
         let task_run = run.clone();
+        let (project, name) = (project.to_string(), name.to_string());
         tokio::spawn(async move {
-            me.execute(&rec, &routine, &task_run, halt_rx).await;
+            let halted = halt_rx.clone();
+            me.execute(&rec, &routine, &task_run, event.as_deref(), halt_rx).await;
+            // A cancelled or shut-down run leaves no rerun behind.
+            let key = format!("{project}/{name}");
+            let next = me.pending.lock().unwrap_or_else(|p| p.into_inner()).remove(&key);
+            let unhalted = halted.borrow().is_none();
+            if let (Some((topic, payload)), true) = (next, unhalted) {
+                if let Err(e) = me.begin(&project, &name, "event", &format!("event:{topic}"), payload) {
+                    tracing::warn!("{key}: cannot start the pending event rerun: {e}");
+                }
+            }
             me.live.lock().unwrap_or_else(|p| p.into_inner()).remove(s(&task_run, "id"));
             let _ = done_tx.send(true);
         });
-        if wait {
-            let _ = done_rx.wait_for(|d| *d).await;
-            return Ok(self.store.get_run(&rid)?.unwrap_or(run));
+        Ok((run, Some(done_rx)))
+    }
+
+    /// Start every installed routine that names `topic` (`<service>.<topic>`). A routine with a
+    /// live run keeps one pending rerun instead; further events replace its payload.
+    pub fn on_event(self: &Arc<Self>, topic: &str, event: &Value) {
+        let payload = match serde_json::to_string(event) {
+            Ok(j) if j.len() <= MAX_EVENT_BYTES => Some(j),
+            Ok(j) => {
+                tracing::warn!("event {topic}: payload is {} bytes, over {MAX_EVENT_BYTES}; the run gets no AWM_ROUTINE_EVENT", j.len());
+                None
+            }
+            Err(_) => None,
+        };
+        let rows = match self.store.list_routines(None) {
+            Ok(r) => r,
+            Err(e) => return tracing::error!("event {topic}: cannot list routines: {e}"),
+        };
+        for rec in rows {
+            let listens = rec.get("definition").and_then(|d| d.get("events")).and_then(Value::as_array).is_some_and(|a| a.iter().any(|e| e.as_str() == Some(topic)));
+            if listens {
+                self.fire_event(s(&rec, "project"), s(&rec, "name"), topic, payload.clone());
+            }
         }
-        Ok(run)
+    }
+
+    fn fire_event(self: &Arc<Self>, project: &str, name: &str, topic: &str, payload: Option<String>) {
+        let key = format!("{project}/{name}");
+        let caller = format!("event:{topic}");
+        // The live check and the pending insert share one lock, which a finishing run takes
+        // after it records its end, so a rerun is never lost between the two.
+        loop {
+            {
+                let mut pending = self.pending.lock().unwrap_or_else(|p| p.into_inner());
+                if matches!(self.store.live_run(project, name), Ok(Some(_))) {
+                    pending.insert(key, (topic.to_string(), payload));
+                    return;
+                }
+            }
+            match self.begin(project, name, "event", &caller, payload.clone()) {
+                Err(RoutineError::LiveRunExists(_)) => continue,
+                Err(e) => return tracing::warn!("{key}: event {topic} did not start a run: {e}"),
+                Ok(_) => return,
+            }
+        }
     }
 
     fn halt(&self, rid: &str, why: Halt) -> Option<watch::Receiver<bool>> {
@@ -255,9 +323,9 @@ impl Runner {
         }
     }
 
-    async fn execute(&self, rec: &Row, routine: &Routine, run: &Row, mut halt: proc::HaltRx) {
+    async fn execute(&self, rec: &Row, routine: &Routine, run: &Row, event: Option<&str>, mut halt: proc::HaltRx) {
         let (rid, project) = (s(run, "id"), s(rec, "project"));
-        let env: HashMap<String, String> = [
+        let mut env: HashMap<String, String> = [
             ("AWM_ROUTINE", routine.name.as_str()),
             ("AWM_ROUTINE_PROJECT", project),
             ("AWM_ROUTINE_RUN", rid),
@@ -266,6 +334,9 @@ impl Runner {
         .into_iter()
         .map(|(k, v)| (k.to_string(), v.to_string()))
         .collect();
+        if let Some(e) = event {
+            env.insert("AWM_ROUTINE_EVENT".into(), e.into());
+        }
         let t0 = Instant::now();
         let ok = self.steps(rec, routine, run, &env, &mut halt).await;
         if let Some(hook) = &self.usage {

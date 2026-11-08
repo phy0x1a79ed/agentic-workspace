@@ -236,6 +236,43 @@ async fn condition_dispatches_agent() {
     assert_eq!(run["dispatched"][0]["role"], "agent");
 }
 
+// -- events -----------------------------------------------------------------
+
+fn event_routine(step: &str) -> String {
+    format!("[routine]\nname = \"react\"\n[trigger]\nevents = [\"svc.news\"]\n[[step]]\nrun = \'\'\'{step}\'\'\'\n")
+}
+
+#[tokio::test]
+async fn an_event_starts_a_run_with_its_payload() {
+    let f = fixture();
+    let repo = project_repo(f.tmp.path());
+    f.runner.install("proj", &write_routine(&repo, "react", &event_routine(r#"printf %s "$AWM_ROUTINE_EVENT" > ev.json"#)).to_string_lossy()).unwrap();
+    f.runner.on_event("svc.other", &json!({"n": 0}));
+    f.runner.on_event("svc.news", &json!({"n": 1, "q": "a'b $x"}));
+    f.runner.drain().await;
+    let runs = f.store.list_runs(Some("proj"), Some("react"), 10).unwrap();
+    assert_eq!(runs.len(), 1);
+    assert_eq!((runs[0]["trigger"].as_str(), runs[0]["caller"].as_str(), runs[0]["state"].as_str()), (Some("event"), Some("event:svc.news"), Some("ok")));
+    assert_eq!(std::fs::read_to_string(repo.join("ev.json")).unwrap(), r#"{"n":1,"q":"a'b $x"}"#);
+}
+
+#[tokio::test]
+async fn events_during_a_live_run_give_one_rerun() {
+    let f = fixture();
+    let repo = project_repo(f.tmp.path());
+    let step = r#"echo "$AWM_ROUTINE_EVENT" >> seen; while [ ! -f go ]; do sleep 0.02; done"#;
+    f.runner.install("proj", &write_routine(&repo, "react", &event_routine(step)).to_string_lossy()).unwrap();
+    for n in 1..=3 {
+        f.runner.on_event("svc.news", &json!({"n": n}));
+    }
+    // A call while busy is still refused.
+    assert!(f.runner.trigger("proj", "react", "call", "t", false).await.is_err());
+    std::fs::write(repo.join("go"), "").unwrap();
+    f.runner.drain().await;
+    assert_eq!(f.store.list_runs(Some("proj"), Some("react"), 10).unwrap().len(), 2);
+    assert_eq!(std::fs::read_to_string(repo.join("seen")).unwrap(), "{\"n\":1}\n{\"n\":3}\n");
+}
+
 // -- the verbs ----------------------------------------------------------------
 
 const TICK: &str = "\n[routine]\nname = \"tick\"\n[trigger]\ntimer = \"hourly\"\n[[step]]\nrun = \"true\"\n";
@@ -250,6 +287,7 @@ fn service(f: &crate::common::Fixture) -> (RoutineService, Arc<Mutex<Vec<String>
             rec.lock().unwrap().push(a.join(" "));
             Ok(())
         }),
+        events: None,
     };
     (svc, calls)
 }

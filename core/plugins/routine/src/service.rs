@@ -6,6 +6,7 @@ use std::sync::Arc;
 use awm_plugin_sdk::{Call, Service, VerbError};
 use serde_json::{json, Value};
 
+use crate::events::Events;
 use crate::runner::{public, RoutineError, Runner};
 use crate::timers::{self, Systemctl, Timers};
 
@@ -24,11 +25,11 @@ pub fn functions() -> Vec<(&'static str, &'static str, Value)> {
             json!([project(), p("path", "string", true, "The definition file, such as <worktree>/routines/<name>.toml.")]),
         ),
         ("uninstall", "Remove an installed routine and its timer.", json!([project(), name()])),
-        ("list", "The routines installed on this node, with their timers and last run.", json!([p("project", "string", false, "Only this project.")])),
+        ("list", "The routines installed on this node, with their timers, events and last run.", json!([p("project", "string", false, "Only this project.")])),
         (
             "trigger",
-            "Run a routine now and return its run record at once. Refused while the routine has a live run. A failed run starts a fixing agent on the routine's declared peer.",
-            json!([project(), name(), p("wait", "boolean", false, "Return only when the run ends."), p("trigger", "string", false, "`call` (default) or `timer`.")]),
+            "Run a routine now and return its run record at once. Refused while the routine has a live run. An event starts a routine too, but only the service raises one. A failed run starts a fixing agent on the routine's declared peer.",
+            json!([project(), name(), p("wait", "boolean", false, "Return only when the run ends."), p("trigger", "string", false, "`call` (default) or `timer`. `event` is the service's alone.")]),
         ),
         ("cancel", "Stop a routine's live run and every process it started.", json!([project(), name()])),
         (
@@ -72,6 +73,8 @@ pub struct RoutineService {
     pub runner: Arc<Runner>,
     pub unit_dir: PathBuf,
     pub systemctl: Box<Systemctl>,
+    /// Absent where no hub exists, such as in tests.
+    pub events: Option<Arc<Events>>,
 }
 
 fn err(e: RoutineError) -> VerbError {
@@ -110,8 +113,16 @@ impl RoutineService {
         Timers { dir: &self.unit_dir, systemctl: self.systemctl.as_ref() }
     }
 
+    fn reconcile_events(&self) {
+        if let Some(e) = &self.events {
+            e.reconcile();
+        }
+    }
+
     pub fn install(&self, args: &Value) -> Result<Value, VerbError> {
-        self.runner.install(req(args, "project")?, req(args, "path")?).map(Value::Object).map_err(err)
+        let row = self.runner.install(req(args, "project")?, req(args, "path")?).map(Value::Object).map_err(err)?;
+        self.reconcile_events();
+        Ok(row)
     }
 
     pub fn uninstall(&self, args: &Value) -> Result<Value, VerbError> {
@@ -120,7 +131,9 @@ impl RoutineService {
         if rec.is_some_and(|r| r.get("scheduled").and_then(Value::as_i64).unwrap_or(0) != 0) {
             self.unschedule(args)?;
         }
-        Ok(json!({"removed": self.runner.uninstall(project, name).map_err(err)?}))
+        let removed = self.runner.uninstall(project, name).map_err(err)?;
+        self.reconcile_events();
+        Ok(json!({"removed": removed}))
     }
 
     pub fn list(&self, args: &Value) -> Result<Value, VerbError> {
@@ -137,6 +150,7 @@ impl RoutineService {
                 "project": project, "name": name,
                 "description": d.get("description").cloned().unwrap_or(json!("")),
                 "timer": d.get("timer").cloned().unwrap_or(json!("")),
+                "events": d.get("events").cloned().unwrap_or(json!([])),
                 "scheduled": rec["scheduled"], "commit": commit, "path": rec["path"], "last_run": last_run,
             }));
         }
@@ -146,7 +160,7 @@ impl RoutineService {
     pub async fn trigger(&self, args: &Value, caller: String) -> Result<Value, VerbError> {
         let trig = str_arg(args, "trigger").unwrap_or("call");
         if trig != "call" && trig != "timer" {
-            return Err(VerbError::value("trigger must be `call` or `timer`"));
+            return Err(VerbError::value("trigger must be `call` or `timer`; an event trigger comes only from a subscription"));
         }
         let run = self.runner.trigger(req(args, "project")?, req(args, "name")?, trig, &caller, truthy(args.get("wait"))).await.map_err(err)?;
         Ok(Value::Object(run))

@@ -66,6 +66,9 @@ pub struct Routine {
     pub timer: String,
     #[serde(default = "yes")]
     pub call: bool,
+    /// `<service>.<topic>` events, on this node, that start the routine.
+    #[serde(default)]
+    pub events: Vec<String>,
     #[serde(default)]
     pub steps: Vec<Step>,
     #[serde(default, deserialize_with = "null_default")]
@@ -151,8 +154,19 @@ pub fn parse(text: &str, source: &str) -> Result<Routine, DefinitionError> {
     let trig = table("trigger");
     let timer = get_str(trig, "timer", "").trim().to_string();
     let call = trig.get("call").map(truthy).unwrap_or(true);
-    if timer.is_empty() && !call {
-        return Err(err("a routine needs a timer, a call trigger or both".into()));
+    let events = match trig.get("events") {
+        None => vec![],
+        Some(Value::Array(a)) => a.iter().map(|v| v.as_str().map(str::to_string)).collect::<Option<Vec<_>>>().ok_or_else(|| err("[trigger] events must be strings".into()))?,
+        Some(_) => return Err(err("[trigger] events must be a list of strings".into())),
+    };
+    for e in &events {
+        let ok = e.split_once('.').is_some_and(|(s, t)| !s.is_empty() && !t.is_empty()) && !e.contains(['\n', '\r']);
+        if !ok {
+            return Err(err(format!("[trigger] event {e:?} must be <service>.<topic> on one line")));
+        }
+    }
+    if timer.is_empty() && !call && events.is_empty() {
+        return Err(err("a routine needs a timer, a call trigger, an event or any of them".into()));
     }
     if timer.contains(['\n', '\r']) {
         return Err(err("[trigger] timer must be one line".into()));
@@ -199,7 +213,7 @@ pub fn parse(text: &str, source: &str) -> Result<Routine, DefinitionError> {
         Some(v) => Some(agent(Some(v), "fixer")?),
         None => None,
     };
-    Ok(Routine { name, description: get_str(head, "description", ""), timer, call, steps, agent: agent_spec, fixer })
+    Ok(Routine { name, description: get_str(head, "description", ""), timer, call, events, steps, agent: agent_spec, fixer })
 }
 
 pub fn load(path: &std::path::Path) -> Result<Routine, DefinitionError> {
@@ -250,7 +264,13 @@ prompt = "Check the disk first."
         let r: Routine = serde_json::from_str(py).unwrap();
         assert_eq!((r.steps[0].timeout, r.fixer.is_none(), r.agent.peer.as_str()), (600.0, true, "local"));
         let sparse: Routine = serde_json::from_str(r#"{"name": "r"}"#).unwrap();
-        assert!(sparse.call && sparse.steps.is_empty() && sparse.agent == AgentSpec::default());
+        assert!(sparse.call && sparse.events.is_empty() && sparse.steps.is_empty() && sparse.agent == AgentSpec::default());
+    }
+
+    #[test]
+    fn an_event_alone_is_a_trigger() {
+        let r = parse("[routine]\nname='a'\n[trigger]\ncall=false\nevents=['social.message', 'telemetry.sessions']\n[[step]]\nrun='true'", "<string>").unwrap();
+        assert_eq!(r.events, ["social.message", "telemetry.sessions"]);
     }
 
     #[test]
@@ -259,6 +279,11 @@ prompt = "Check the disk first."
             ("[routine]\nname='X'\n[[step]]\nrun='true'", "lowercase"),
             ("[routine]\nname='a'\nnode='mizar'\n[[step]]\nrun='true'", "names no node"),
             ("[routine]\nname='a'\n[trigger]\ncall=false\n[[step]]\nrun='true'", "needs a timer"),
+            ("[routine]\nname='a'\n[trigger]\ncall=false\nevents=[]\n[[step]]\nrun='true'", "needs a timer"),
+            ("[routine]\nname='a'\n[trigger]\nevents=['nodot']\n[[step]]\nrun='true'", "<service>.<topic>"),
+            ("[routine]\nname='a'\n[trigger]\nevents=['.topic']\n[[step]]\nrun='true'", "<service>.<topic>"),
+            ("[routine]\nname='a'\n[trigger]\nevents=['svc.']\n[[step]]\nrun='true'", "<service>.<topic>"),
+            ("[routine]\nname='a'\n[trigger]\nevents=[3]\n[[step]]\nrun='true'", "strings"),
             ("[routine]\nname='a'", "at least one"),
             ("[routine]\nname='a'\n[[step]]\nrun='true'\nkind='maybe'", "kind must be"),
             ("[routine]\nname='a'\n[[step]]\nrun='true'\nkind='condition'", "needs a prompt"),
