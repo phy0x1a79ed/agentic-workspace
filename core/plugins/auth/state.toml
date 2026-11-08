@@ -1,15 +1,5 @@
-# auth, absorbing httpsfront and tlsfront (port T9). Relative paths resolve against AWM_DIR.
-dirs = ["services/auth", "services/httpsfront"]
-
-# The leaf and .sans sit in the Python checkout, outside both dirs. The leaf is named file by file:
-# statecheck cannot copy a directory named as an extra.
-[[extra]]
-name = "edge-certs"
-path = "${AWM_EDGE_CERT_DIR:-${AWM_WORKSPACE:-${HOME}/agentic_workspace}/awm/services/httpsfront/.certs}/*"
-
-[[extra]]
-name = "edge-sans"
-path = "${AWM_WORKSPACE:-${HOME}/agentic_workspace}/awm/services/httpsfront/.sans"
+# Relative paths resolve against AWM_DIR.
+dirs = ["services/auth"]
 
 # The CA is recorded, never copied: the nodes without its key never mint.
 [[size_only]]

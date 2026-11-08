@@ -32,7 +32,7 @@ fn every_decl_parses() {
     let d = load("dvc");
     assert_eq!(d.extra[0].path, PathBuf::from("/a/dvc.toml"));
     let a = load("auth");
-    assert_eq!(a.extra[0].path, PathBuf::from("/home/u/agentic_workspace/awm/services/httpsfront/.certs/*"));
+    assert!(a.extra.is_empty());
     assert!(a.is_size_only(Path::new("/home/u/.config/remote-audio/ca/ca.key")));
     let o = load("operations");
     assert_eq!(o.dirs, ["/home/u/.awm/operations", "/home/u/.awm/approver"].map(PathBuf::from));
