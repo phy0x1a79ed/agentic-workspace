@@ -116,4 +116,4 @@ Gotchas: every path goes through `ClaudeHome`.
 - the mirror dry run excludes `.pre-rust`;
 - no Python copy runs.
 
-Gotchas: the settings guard and the reconcile share one mutex. `build_flags` and `mode_of` change together. cch lands before the Rust reflection. Python reflection's `harness_event` writes any kind other than `clear` into its ledger, so the watcher sends only while reflection's describe lists the `reflection/sessions` emitter. It reads that once at boot and again after any failed send. The watcher must not hold a pidfd on a pid it does not own.
+Gotchas: the settings guard and the reconcile share one mutex. `build_flags` and `mode_of` change together. cch lands before the Rust reflection. Python reflection's `harness_event` writes any kind other than `clear` into its ledger, so the watcher sends only while reflection's describe lists `harness_event`'s `session_kind` param. While the gate is closed it reads the describe again before each event, and it reads it again after any failed send. The watcher must not hold a pidfd on a pid it does not own.
