@@ -20,8 +20,10 @@ A new mount at `/s/dsh/` proxies to the fork, rewrites `Origin`, streams bodies 
 
 **Fixes.** `stop` sticks, `send` with no text answers `ok: false`, and events get spooled.
 
+**Session events** (trilium-design `CONTRACT.md` § port-harness, item 1). This is an addition to the ported dsh, made before its land. dsh sends `started`, `stopped` and `renamed` to reflection `harness_event` when its `events.mux` stream shows a session change. It diffs `session.list` against what it last saw. It never sends `remote_control`, and its rows carry no `rc_url`. When the fork goes down, every live session gets one `stopped`. At boot dsh sends nothing. These events go to reflection once and never into the `unsent.jsonl` spool.
+
 **Tests.** Port the Python tests against a fork stub. For parity in the sandbox, use a copied state dir and the stub.
 
 **Landing.** After reflection, and after interview's pages-build change, because the page moves to `core/plugins/dsh/pages/`. It does not wait for the `auth` front or the fork build: until then, `status` reports the front as not serving.
 
-Gotchas: no node builds the fork today, so fork-RPC parity rests on the stub.
+Gotchas: no node builds the fork today, so fork-RPC parity rests on the stub. The fork's stream may carry no session-created event. Then a diff on each stream reconnect and on each `session.list` that dsh already makes is the only source, so a session started and stopped between two reads goes unreported.

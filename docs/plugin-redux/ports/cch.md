@@ -87,7 +87,17 @@ Gotchas: every path goes through `ClaudeHome`.
 - `_ensure_lineage` writes `mode: "worker"`.
 - A container login copy holds only `LOGIN_KEYS`, never `refreshToken`. It is written 0600 through a temp file, and deleted when the host is signed out or its login has expired. Each of the three has a test.
 
-**Tests.** Port the part-2 tests and the hook tests, which run the binary against a fake gateway. Add tests for the reconcile and the migration.
+**Session events** (trilium-design `CONTRACT.md` § port-harness, item 1). A new `watch` module reports each session's lifecycle to reflection `harness_event` as it happens, with no timer:
+- inotify on `~/.claude/sessions/` and the jobs dir. A new session file is `started`. A changed `name` is `renamed`. A changed bridge id is `remote_control`, with the new `rc_url`, null when the bridge is off.
+- One pidfd per live session pid. The pid's exit is `stopped`, a crash or a `kill -9` included. A session id that comes back under a new pid within 3 s is neither stopped nor started, because the daemon can swap the worker mid-command.
+- `docker events` filtered to cch's containers gives `started` and `stopped` for isolated sessions.
+- At boot the watcher reads its state from disk and sends nothing.
+- cch's own `start`, `stop` and `set name` reach reflection through the same watcher, so each event has one source. `task_id` comes from the lineage record.
+- `list` rows gain `task_id` from the lineage record. reflection names the existing `link` as `rc_url`.
+
+**Remote Control at turn end** (item 3). `remote_control` on another session that is `busy` takes the path a self call takes today. cch types the command, which queues behind the turn, and answers at once with `{applies: "turn_end", link: null}`. It does not wait out the link timeout. The link arrives as the `remote_control` event when the command runs. `remote_control` off on a busy session reuses the promise that runs the self path's disconnect modal at turn end.
+
+**Tests.** Port the part-2 tests and the hook tests, which run the binary against a fake gateway. Add tests for the reconcile and the migration. Add watcher tests on a temp sessions dir: a create, a rename, a bridge change, a pid exit, a worker swap inside the grace window, and silence at boot. Add a test of `remote_control` on a busy fake target.
 
 **Parity.** Run the Rust cch in the sandbox against the live `~/.claude`, with hooks, revive, keeper launch and sync off. Compare the read-only verbs and `mode_of` for every live pid.
 
@@ -104,4 +114,4 @@ Gotchas: every path goes through `ClaudeHome`.
 - the mirror dry run excludes `.pre-rust`;
 - no Python copy runs.
 
-Gotchas: the settings guard and the reconcile share one mutex. `build_flags` and `mode_of` change together.
+Gotchas: the settings guard and the reconcile share one mutex. `build_flags` and `mode_of` change together. cch lands before the Rust reflection. Python reflection's `harness_event` writes any kind other than `clear` into its ledger, so the watcher sends only while reflection's describe lists the `reflection/sessions` emitter. It reads that once at boot and again after any failed send. The watcher must not hold a pidfd on a pid it does not own.
