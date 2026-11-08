@@ -8,11 +8,11 @@ Decisions: `DECISIONS.md` beside this file.
 
 ## Current
 
-- fleet-route
+- deneb / r79-writer
 
 ## Waiting on the user
 
-- fleet-route: node order and cloud home.
+- r79-writer: how the vault's writer gets alcor's cards.
 
 ## Preferences
 
@@ -22,7 +22,6 @@ Tony (2026-11-08): this session does the work itself; Sonnet agents at medium ef
 
 ## Stack
 
-- fleet-route — the order and method to bring the other nodes up; capella and lyra are unreachable
 - deneb — the public host's cutover
   - r79-writer — R79 forbids deneb's outbound door calls, the vault writer drains alcor from deneb
 - open-for-tony — the end-state journals' open items not reached above: per-node-edges, lyra vpn.toml, isolated/ mirror tag, alcor sites daemon, cch warm pool, science idle
@@ -36,13 +35,14 @@ None.
 
 - done-line — everything: end-state code, every node, per-node hand items, quality backlog
 - land-port-harness — lands, per ace5dab4
+- fleet-route — mizar and alcor first, then altair, shogun, capella, lyra together; deneb apart; cloud dev moves to mizar
 
 ## Survey state (2026-11-08)
 
 - mizar and alcor run release 7fd92893, all services ready at the last refresh.
 - shogun and altair run acadb279, 180 commits behind, Rust gateway, ok at their 2026-11-07 refresh.
 - deneb has no `awm.service`. It runs `awm-plugin@relay`, `@trilium`, `@zotero` from `/opt/awm`. Disk 83%, 13 G free.
-- capella and lyra time out on the base and tailnet routes.
+- capella woke on request (2026-11-08): 139 behind, 292 G free. Tony wakes lyra.
 - feat/port-harness 60fce751 is 23 commits ahead of release, 4 behind. Landing steps: journal ace5dab4, plus c058b6e5 and 60fce751 (start needs a human's permission).
 - Code gaps that do not need Tony, to go in the plan: a83311d1 SDK snapshot is in no tree; `reflection.pin` is missing; `awm deploy` still calls `awm/install.sh`; `awm/services/board` tracked; routine has no event trigger; cloud f6d8279 unmerged and `redux-dev-apply` holds cloud dev; cloud `ExposeAuthInfo`, ZeroTier, conda dvc, `AWM_SESSION_PATH`; 90 s up-check against kb's first start; 02b25012 unmerged; scatter-gather verb names.
 - The journal's "mizar push not built", "opt-in open", "operations session hook" and the audit's gap 3 are out of date against code and DECISIONS batch-3 item 3.

@@ -24,3 +24,13 @@ Question: does feat/port-harness land? Decision 8 of redux-finish held it "until
 Decided: it lands. done-line's "Everything" names it. Landing follows journal ace5dab4's steps, with c058b6e5 and 60fce751 (a start needs a human's permission) on board. Reflection's order puller and the removal of operations' `order_loop` ship in one release.
 
 Landed: to be done by the plan.
+
+## fleet-route (2026-11-08)
+
+Question: how do the other nodes come up, and where does the cloud repo's `dev` live?
+
+Decided: land on mizar and alcor and check them live, then refresh altair, shogun, capella and lyra together and fix by patch. deneb is its own cutover, because it needs a layout change and carries the public relay. The refresh's 90 s up-check is fixed before this, since kb's first start takes 5 to 11 minutes.
+
+The cloud repo's canonical `dev` moves to mizar's bare repo. GitHub stays the backup and altair follows, the same rule as awm.
+
+Landed: to be done by the plan.
