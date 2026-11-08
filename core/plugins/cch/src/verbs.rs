@@ -560,14 +560,6 @@ pub fn first_start_this_boot(boot_id: &std::path::Path, mark: &std::path::Path) 
 
 // --- isolated sessions ---------------------------------------------------------
 
-/// Put `task_id` in the isolated record of `claude_session_id`, where the session events read it.
-fn record_task(root: &std::path::Path, claude_session_id: &str, task_id: &str) -> std::io::Result<()> {
-    let path = crate::isolated::session_dir(root, claude_session_id).join("record.json");
-    let mut rec: Map<String, Value> = serde_json::from_slice(&std::fs::read(&path)?)?;
-    rec.insert("task_id".into(), json!(task_id));
-    crate::isolated::write_private(&path, &serde_json::to_string_pretty(&rec)?)
-}
-
 // --- list ----------------------------------------------------------------------
 
 /// Whether job `job`'s transcripts ever ran with their cwd under a private mark. Reads files.
@@ -844,17 +836,11 @@ impl<B: Backend> App<B> {
             prompt: spec.prompt.clone().unwrap_or_default(),
             model: Some(spec.model.clone()),
             effort: Some(spec.effort.clone()),
+            task_id: spec.task_id.clone(),
         };
         let node = self.backend.node_name();
         let resolve = |project, scope| self.backend.resolve_worktree(project, scope);
         let out = self.backend.isolated().start_isolated(&req, None, &node, resolve).await;
-        let sid = out.get("claude_session_id").and_then(Value::as_str).map(str::to_string);
-        if let (Some(task), Some(sid), true) = (spec.task_id, sid, out["ok"] == true) {
-            let root = self.backend.paths().isolated.dir.clone();
-            if let Err(e) = blocking(move || record_task(&root, &sid, &task)).await {
-                tracing::warn!("cch: could not record the task of isolated session {}: {e}", req.name);
-            }
-        }
         out
     }
 

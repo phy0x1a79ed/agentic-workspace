@@ -651,6 +651,9 @@ pub struct StartRequest {
     pub prompt: String,
     pub model: Option<String>,
     pub effort: Option<String>,
+    /// The task the session joins. It goes into the record before the launch, so the first
+    /// session event already carries it.
+    pub task_id: Option<String>,
 }
 
 /// One node's isolated sessions, run on Docker through `docker`.
@@ -860,7 +863,7 @@ impl<D: Docker> Isolated<D> {
             effort: req.effort.clone(),
             claude_bin: None,
             started_ms: Some(now_ms()),
-            extra: Map::new(),
+            extra: req.task_id.iter().map(|t| ("task_id".to_string(), Value::from(t.as_str()))).collect(),
         };
         let (rec, binary) = blocking(move || -> Result<(Record, PathBuf), IsolationError> {
             let binary = resolve(&bin);
@@ -1192,6 +1195,7 @@ mod tests {
             prompt: prompt.into(),
             model: Some("opus".into()),
             effort: Some("high".into()),
+            task_id: None,
         }
     }
 
