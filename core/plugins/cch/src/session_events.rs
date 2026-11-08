@@ -34,9 +34,10 @@ use crate::resume::r9;
 /// worker mid-command: the same session comes back under a new pid, and that is neither a stop
 /// nor a start.
 pub const SWAP_GRACE: Duration = Duration::from_secs(3);
-/// The topic reflection emits these events on. Python reflection's `harness_event` writes any kind
-/// but `clear` into its ledger, so nothing is sent until reflection's describe lists it.
-pub const EMITTER: &str = "reflection/sessions";
+/// The `harness_event` param that marks a reflection taking these events. Python reflection's
+/// `harness_event` has none and writes any kind but `clear` into its ledger, so nothing is sent
+/// until reflection's describe lists it.
+pub const GATE_PARAM: &str = "session_kind";
 /// How long one `harness_event` or `describe` call may take.
 pub const SEND_TIMEOUT: Duration = Duration::from_secs(5);
 /// The longest wait before `docker events` is started again after it ends.
@@ -178,18 +179,20 @@ fn event(kind: &str, claude_session_id: &str, f: &Facts, task_id: Option<String>
     out
 }
 
-/// Whether a reflection `describe` answer lists [`EMITTER`], by its full name or its topic.
-pub fn lists_emitter(describe: &Value) -> bool {
-    let topic = EMITTER.rsplit('/').next().unwrap_or(EMITTER);
-    describe.get("emitters").and_then(Value::as_array).into_iter().flatten().any(|e| {
-        let name = e.as_str().or_else(|| e.get("topic").and_then(Value::as_str));
-        name == Some(EMITTER) || name == Some(topic)
+/// Whether a reflection `describe` answer lists the verb `harness_event` with a param named
+/// [`GATE_PARAM`].
+pub fn takes_session_events(describe: &Value) -> bool {
+    let verbs = describe.get("verbs").and_then(Value::as_array).into_iter().flatten();
+    verbs.filter(|v| v.get("verb").and_then(Value::as_str) == Some("harness_event")).any(|v| {
+        let params = v.get("params").and_then(Value::as_array).into_iter().flatten();
+        params.into_iter().any(|p| p.get("name").and_then(Value::as_str) == Some(GATE_PARAM))
     })
 }
 
 async fn gate<G: Gateway>(gw: &G) -> bool {
-    match gw.call(Call::new("reflection", "describe", json!({})).timeout(SEND_TIMEOUT)).await {
-        Ok(answer) => lists_emitter(&answer),
+    let args = json!({"verbs": ["harness_event"]});
+    match gw.call(Call::new("reflection", "describe", args).timeout(SEND_TIMEOUT)).await {
+        Ok(answer) => takes_session_events(&answer),
         Err(e) => {
             tracing::debug!("cch: session events: reflection describe failed: {e}");
             false
@@ -201,7 +204,7 @@ async fn gate<G: Gateway>(gw: &G) -> bool {
 async fn report<G: Gateway>(gw: Arc<G>, mut events: mpsc::UnboundedReceiver<Value>) {
     let mut open = gate(&*gw).await;
     while let Some(ev) = events.recv().await {
-        // A closed gate is read again before each event, else a reflection that gains the emitter
+        // A closed gate is read again before each event, else a reflection that gains the param
         // after cch booted would never be sent to.
         if !open {
             open = gate(&*gw).await;
@@ -754,10 +757,10 @@ mod tests {
             }
         }
 
-        /// A world whose reflection lists the emitter.
+        /// A world whose reflection takes session events.
         fn open() -> Self {
             let w = Self::new();
-            w.gw.answer("reflection", "describe", Ok(json!({"tool": "reflection", "emitters": [{"topic": "sessions"}]})));
+            w.gw.answer("reflection", "describe", Ok(describe_with(&["session_id", "kind", GATE_PARAM])));
             w
         }
 
@@ -825,6 +828,14 @@ mod tests {
             let calls = self.gw.calls.lock().unwrap();
             calls.iter().filter(|c| c.verb == "harness_event").map(|c| c.args.clone()).collect()
         }
+    }
+
+    /// A reflection describe answer whose `harness_event` takes `params`.
+    fn describe_with(params: &[&str]) -> Value {
+        let params: Vec<Value> = params.iter().map(|p| json!({"name": p, "required": false})).collect();
+        json!({"tool": "reflection", "plugin": "reflection", "verbs": [
+            {"verb": "harness_event", "description": "A provider reports an event.", "params": params},
+        ]})
     }
 
     fn kinds(events: &[Value]) -> Vec<&str> {
@@ -1043,8 +1054,8 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_gate_that_opens_after_boot_is_read_again_before_the_next_event() {
         let mut w = World::new();
-        w.gw.answer("reflection", "describe", Ok(json!({"emitters": []})));
-        w.gw.answer("reflection", "describe", Ok(json!({"emitters": [EMITTER]})));
+        w.gw.answer("reflection", "describe", Ok(describe_with(&["session_id", "kind", "parent"])));
+        w.gw.answer("reflection", "describe", Ok(describe_with(&["session_id", "kind", GATE_PARAM])));
         w.start().await;
         w.interactive(101, SID_A, "first", None);
         w.push(Change::Session(101));
@@ -1071,11 +1082,18 @@ mod tests {
     }
 
     #[test]
-    fn the_emitter_is_found_by_name_or_topic() {
-        assert!(lists_emitter(&json!({"emitters": ["reflection/sessions"]})));
-        assert!(lists_emitter(&json!({"emitters": [{"topic": "sessions", "description": "x"}]})));
-        assert!(!lists_emitter(&json!({"emitters": [{"topic": "other"}]})));
-        assert!(!lists_emitter(&json!({"tool": "reflection", "verbs": []})));
+    fn the_gate_opens_only_on_a_harness_event_that_takes_session_kind() {
+        assert!(takes_session_events(&describe_with(&["session_id", GATE_PARAM])));
+        // Python reflection's harness_event: no session_kind.
+        assert!(!takes_session_events(&describe_with(&["session_id", "kind", "parent"])));
+        // The param on another verb does not count.
+        let other = json!({"tool": "reflection", "verbs": [
+            {"verb": "harness_event", "params": [{"name": "kind", "required": true}]},
+            {"verb": "list_other", "params": [{"name": GATE_PARAM, "required": false}]},
+        ]});
+        assert!(!takes_session_events(&other));
+        assert!(!takes_session_events(&json!({"tool": "reflection", "verbs": []})));
+        assert!(!takes_session_events(&json!({"emitters": ["reflection/sessions"]})));
     }
 
     #[test]
