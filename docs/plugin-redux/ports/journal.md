@@ -1,4 +1,4 @@
-# Port plan: journal
+# Source plan: journals
 
 journal holds scope channels, tags with cross-node sync, briefs, precedents, versions, inbox cursors, lineage, and its own search engine for search.
 
@@ -43,6 +43,6 @@ Changes:
 - `tag_list` and the tag push omit, for a peer, each tag the marks hide: a tag named for a marked project, and a tag used only on posts in marked channels. The Python has no such filter, so peers would see these once sync goes live.
 - journal refuses to create a fresh DB when a `journal.db` exists at another known path on the node (`/var/lib/awm/journal/services/journal/`, `services/journal.moved/`), and names that path. mizar's empty `services/journal/` must not become a second journal.
 - The `scope`, `search@1` and `reflection` needs go, because every call fails soft.
-- journal answers search live through the `journal_query` and `journal_get` verbs, which are off MCP like kb's. Each answer applies the marks for the caller and returns `veiled: true`. Its archive entry becomes `mode = "live"`. `export` and the `search_feed` triggers go.
+- journals answers search in-process inside kb. The `journal_query` and `journal_get` verbs, off MCP, serve scopes and other callers over the hub. Each answer applies the marks for the caller and returns `veiled: true`. Its archive entry becomes `mode = "live"`. `export` and the `search_feed` triggers go.
 
 Tests: port the 163 tests. Add the write-order crash cases (kill between the two writes of an edit, and before the chunks), the reconcile, a peer replay of `journal_query`, a section boundary and the export-back. The golden replay covers 17 call groups, from a plain shell so `fetch` records no reads. The dual-run takes 13 write sequences on snapshots of mizar's and capella's DBs. It diffs the replies, the relational `.dump`, and the posts: Python's `scope_posts` against Rust's Lance rows, exported to the same shape. Ids and now-times are normalised.
