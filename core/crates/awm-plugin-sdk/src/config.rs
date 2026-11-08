@@ -11,14 +11,24 @@ pub const INSTALL_CONFIG_ENV: &str = "AWM_INSTALL_CONFIG";
 
 static CANONICAL: RwLock<Option<PathBuf>> = RwLock::new(None);
 
-/// `AWM_WORKSPACE`, else the nearest directory at or above the cwd that holds `AGENTS.md`,
-/// else the cwd.
+/// `AWM_WORKSPACE`, else the nearest directory at or above the cwd that holds both `AGENTS.md`
+/// and `projects/`, else the nearest that holds `AGENTS.md`, else the cwd.
 pub fn workspace_root() -> PathBuf {
     if let Some(ws) = env_path("AWM_WORKSPACE") {
         return absolute(&ws);
     }
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    cwd.ancestors().find(|p| p.join("AGENTS.md").exists()).map(Path::to_path_buf).unwrap_or(cwd)
+    workspace_above(&cwd)
+}
+
+/// A scope worktree holds its own `AGENTS.md`, so only `projects/` tells the workspace apart.
+fn workspace_above(dir: &Path) -> PathBuf {
+    let agents = |p: &&Path| p.join("AGENTS.md").exists();
+    dir.ancestors()
+        .find(|p| agents(p) && p.join("projects").is_dir())
+        .or_else(|| dir.ancestors().find(agents))
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| dir.to_path_buf())
 }
 
 /// The workspace the gateway named on register, else [`workspace_root`].
@@ -244,6 +254,21 @@ mod tests {
         assert_eq!(scope_of(&projects.join("p/loose/dir"), &projects), Some(("p".into(), Some("loose/dir".into()))));
         assert_eq!(scope_of(&projects.join("p"), &projects), Some(("p".into(), None)));
         assert_eq!(scope_of(tmp.path(), &projects), None);
+    }
+
+    #[test]
+    fn the_workspace_is_above_a_scope_worktree() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().join("ws");
+        let wt = ws.join("projects/awm/redux");
+        std::fs::create_dir_all(wt.join("core")).unwrap();
+        std::fs::write(ws.join("AGENTS.md"), "").unwrap();
+        std::fs::write(wt.join("AGENTS.md"), "").unwrap();
+        assert_eq!(workspace_above(&wt.join("core")), ws);
+        let lone = tmp.path().join("lone/sub");
+        std::fs::create_dir_all(&lone).unwrap();
+        std::fs::write(tmp.path().join("lone/AGENTS.md"), "").unwrap();
+        assert_eq!(workspace_above(&lone), tmp.path().join("lone"));
     }
 
     #[test]
