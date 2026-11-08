@@ -2215,3 +2215,24 @@ class TestMasterScope:
                                 "--unit=x", "--"]
         assert argvs[0][5:9] == ["ssh", "-f", "-N", "-M"]
         assert argvs[0][-1] == "chamois"
+
+
+class TestMasterArgv:
+    def test_a_vpn_host_jumps_through_its_profile(self):
+        argv = ssh_service.master_argv(ssh_config.KNOWN_HOSTS["sockeye"])
+        assert argv[-3:] == ["-J", "vpn_ubc", "sockeye"]
+        assert "ProxyCommand=none" not in argv
+
+    def test_a_guarded_host_overrides_the_guard(self):
+        argv = ssh_service.master_argv(ssh_config.KNOWN_HOSTS["fir"])
+        assert argv[-3:] == ["-o", "ProxyCommand=none", "fir"]
+        assert "-J" not in argv
+
+    def test_chamois_jumps_through_vpn_ubc(self):
+        argv = ssh_service.master_argv(ssh_config.KNOWN_HOSTS["chamois"])
+        assert argv[-3:] == ["-J", "vpn_ubc", "chamois"]
+
+    def test_a_plain_host_has_neither(self):
+        argv = ssh_service.master_argv(ssh_config.HostConfig("plain", "u"))
+        assert "-J" not in argv
+        assert "ProxyCommand=none" not in argv

@@ -257,6 +257,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "awm-plugin-telemetry"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "awm-plugin-sdk",
+ "chrono",
+ "futures-util",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "awm-plugin-telemetry-node"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "awm-plugin-sdk",
+ "awm-plugin-telemetry",
+ "tokio",
+]
+
+[[package]]
 name = "awm-proto"
 version = "0.1.0"
 dependencies = [
