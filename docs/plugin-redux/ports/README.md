@@ -1,12 +1,17 @@
-# Ops group port plans
+# Port plans
 
 ## Purpose & Contents
 
-This directory holds the approved port plans of the ops group (task CWPYAtyb), one file per plugin or shared crate, revised and approved on 2026-11-06. This file holds the rules that hold for every port of the group. Each plan names only what changes. The Python code and its manifests are the reference for everything kept, and a `describe` diff checks them.
+This folder holds one port plan per plugin or shared crate of the plugin redux, plus the `describe` baselines the ports are checked against. A plan names only what the Python does not make obvious: the byte formats and behaviours to keep exactly, the deliberate changes, and the tests. The Python at release 49232bf9 is the specification for everything else.
 
-Order: awm-trust, awm-statecheck, awm-dvcdata, fileviewer, dashboard, routine, dvc, auth, operations.
+- `<name>.md`: the port plan for a plugin or a shared crate.
+- `baseline/<tool>.describe.json`: each tool's `describe` at release 49232bf9. A port's describe must equal it, apart from the changes its plan lists.
 
-## Rules for every port
+Delete a plan once its port has landed and its crate's own README carries what still matters.
+
+## Ops group
+
+The ops group's plans (task CWPYAtyb) were approved on 2026-11-06. Order: awm-trust, awm-statecheck, awm-dvcdata, fileviewer, dashboard, routine, dvc, auth, operations. These rules hold for every port of the group.
 
 - **Layout.** A port commit adds `core/plugins/<name>/`. It holds the manifest, `state.toml` (T14), a one-line `run.sh` that execs `$AWM_DIR/bin/<name>`, and the crate `awm-plugin-<name>`. The same commit:
   - adds the pin to `deploy.toml` `pins`;
@@ -36,4 +41,3 @@ Order: awm-trust, awm-statecheck, awm-dvcdata, fileviewer, dashboard, routine, d
   - Before each `land.sh submit`, send plugin-redux/interview the brief, the plugin's inventory and a `state check` run on a copy.
   - Submit only after its OK, with `--restart <plugin>`.
   - After the land, run the live check on mizar and on one other node, and report it in one line.
-

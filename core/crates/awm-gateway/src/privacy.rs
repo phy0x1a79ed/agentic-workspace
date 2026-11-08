@@ -1,10 +1,10 @@
 //! Private marks: what a call from another node may not reach (`config/privacy.py`).
 //!
-//! The scopes service writes `<AWM_DIR>/private.json` as `{"version": 1, "marks": [{project,
-//! scope?, path}]}`. A call from a peer never names a marked project, scope or path, and an
+//! The scopes service writes `<AWM_DIR>/marks/private.json` as `{"version": 1, "marks":
+//! [{project, scope?, path}]}`, and `<AWM_DIR>/private.json` on a node not yet moved. A call from a peer never names a marked project, scope or path, and an
 //! emit stream to a peer never carries a payload a mark covers. A refusal reads as an unknown
 //! name, so it does not confirm the target exists. A marks file that does not parse fails
-//! closed: every test answers "hidden".
+//! closed: every test answers "hidden". So does a dangling link, which proves no absence.
 
 use std::path::{Component, Path, PathBuf};
 use std::sync::Mutex;
@@ -14,6 +14,7 @@ use awm_proto::{CallContext, Lane};
 use serde_json::Value;
 
 pub const FILENAME: &str = "private.json";
+pub const DIRNAME: &str = "marks";
 /// How deep nested arguments are searched for a path.
 const MAX_DEPTH: usize = 4;
 /// Argument keys whose absolute-path value a mark can cover.
@@ -32,9 +33,9 @@ struct Mark {
 type Loaded = Option<Vec<Mark>>;
 
 pub struct Marks {
-    file: PathBuf,
+    state: PathBuf,
     workspace: PathBuf,
-    cache: Mutex<Option<((SystemTime, u64), Loaded)>>,
+    cache: Mutex<Option<((PathBuf, SystemTime, u64), Loaded)>>,
 }
 
 /// Whether a call comes from another node: the edge lane, or a `peer` / `peer:<node>` stamp.
@@ -45,25 +46,42 @@ pub fn from_peer(ctx: &CallContext) -> bool {
 
 impl Marks {
     pub fn new(state: &Path, workspace: &Path) -> Self {
-        Self { file: state.join(FILENAME), workspace: workspace.to_path_buf(), cache: Mutex::new(None) }
+        Self { state: state.to_path_buf(), workspace: workspace.to_path_buf(), cache: Mutex::new(None) }
+    }
+
+    /// The marks file: in `marks/` once that directory exists.
+    fn file(&self) -> PathBuf {
+        let dir = self.state.join(DIRNAME);
+        if dir.is_dir() {
+            dir.join(FILENAME)
+        } else {
+            self.state.join(FILENAME)
+        }
     }
 
     fn load(&self) -> Loaded {
-        let meta = match std::fs::metadata(&self.file) {
+        let file = self.file();
+        let meta = match std::fs::metadata(&file) {
             Ok(m) => m,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Some(vec![]),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                if std::fs::symlink_metadata(&file).is_ok() {
+                    tracing::error!("{} is a dangling link; peers see nothing a mark could cover", file.display());
+                    return None;
+                }
+                return Some(vec![]);
+            }
             Err(_) => return None,
         };
-        let key = (meta.modified().unwrap_or(SystemTime::UNIX_EPOCH), meta.len());
+        let key = (file.clone(), meta.modified().unwrap_or(SystemTime::UNIX_EPOCH), meta.len());
         let mut cache = self.cache.lock().unwrap_or_else(|p| p.into_inner());
         if let Some((k, loaded)) = cache.as_ref() {
             if *k == key {
                 return loaded.clone();
             }
         }
-        let loaded = std::fs::read_to_string(&self.file).ok().and_then(|t| self.parse(&t));
+        let loaded = std::fs::read_to_string(&file).ok().and_then(|t| self.parse(&t));
         if loaded.is_none() {
-            tracing::error!("{} does not parse; peers see nothing a mark could cover", self.file.display());
+            tracing::error!("{} does not parse; peers see nothing a mark could cover", file.display());
         }
         *cache = Some((key, loaded.clone()));
         loaded
@@ -270,5 +288,20 @@ mod tests {
         std::fs::write(t.path().join(FILENAME), "not json").unwrap();
         assert!(marks.refuses(&p, &json!({"project": "open"})), "a broken file fails closed");
         assert!(marks.emit_hidden(&json!({"any": 1})));
+
+        std::fs::remove_file(t.path().join(FILENAME)).unwrap();
+        std::fs::create_dir(t.path().join(DIRNAME)).unwrap();
+        assert!(!marks.refuses(&p, &json!({"project": "secret"})), "an empty marks dir hides nothing");
+        std::fs::write(
+            t.path().join(DIRNAME).join(FILENAME),
+            json!({"version": 1, "marks": [{"project": "secret", "scope": null, "path": path}]}).to_string(),
+        )
+        .unwrap();
+        std::os::unix::fs::symlink("marks/private.json", t.path().join(FILENAME)).unwrap();
+        assert!(marks.refuses(&p, &json!({"project": "secret"})), "the marks dir is read first");
+        assert!(!marks.refuses(&p, &json!({"project": "open"})));
+        std::fs::remove_file(t.path().join(DIRNAME).join(FILENAME)).unwrap();
+        std::fs::remove_dir(t.path().join(DIRNAME)).unwrap();
+        assert!(marks.refuses(&p, &json!({"project": "open"})), "a dangling link fails closed");
     }
 }

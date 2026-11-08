@@ -295,7 +295,7 @@ async fn usage_post(State(gw): Gw, Json(ev): Json<UsageEvent>) -> Result<Json<Va
     if ev.plugin.trim().is_empty() {
         return Err(ApiError::new(400, "usage event needs a plugin"));
     }
-    gw.usage.record(ev);
+    gw.record_usage(ev);
     Ok(Json(json!({"ok": true})))
 }
 
@@ -332,6 +332,7 @@ async fn register(State(gw): Gw, h: HeaderMap, Json(req): Json<RegisterReq>) -> 
     };
     tracing::info!("registered service {} (plugin {plugin}) pid {:?}", req.name, req.pid);
     gw.supervisor.journal.update_existing(&req.name, |e| e.service_id = Some(id.clone()));
+    gw.publish_service_event(&req.name, &plugin, req.pid, crate::telemetry::ServiceEvent::Up);
     let workspace = gw.cfg().workspace.as_ref().map(|p| p.display().to_string()).unwrap_or_default();
     Ok(Json(json!({
         "service_id": id,
@@ -393,7 +394,7 @@ async fn control_socket(gw: Arc<Gateway>, id: String, socket: WebSocket) {
                 let mut f = frame.clone();
                 f["plugin"] = json!(gw.plugin_of_service(&name));
                 match serde_json::from_value::<UsageEvent>(f) {
-                    Ok(ev) => gw.usage.record(ev),
+                    Ok(ev) => gw.record_usage(ev),
                     Err(e) => tracing::warn!("{name}: bad usage frame: {e}"),
                 }
             }
@@ -401,7 +402,9 @@ async fn control_socket(gw: Arc<Gateway>, id: String, socket: WebSocket) {
             None => {}
         }
     }
-    gw.hub.disconnected(&name, &id);
+    if let Some((plugin, pid)) = gw.hub.disconnected(&name, &id) {
+        gw.publish_service_event(&name, &plugin, pid, crate::telemetry::ServiceEvent::Down);
+    }
     writer.abort();
     tracing::info!("control WS closed for {name}");
 }
@@ -543,7 +546,7 @@ fn serve_page(gw: &Gateway, plugin: &str, page: &str, path: &str) -> Response {
     if mime.essence_str() == "text/html" {
         let mut ev = UsageEvent::new(plugin, Surface::Page);
         ev.name = Some(page.to_string());
-        gw.usage.record(ev);
+        gw.record_usage(ev);
     }
     ([(header::CONTENT_TYPE, mime.to_string())], Body::from(bytes)).into_response()
 }

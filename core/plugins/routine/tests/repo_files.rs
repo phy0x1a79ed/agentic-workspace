@@ -242,7 +242,7 @@ fn pins_sh(node: &Path, f: &str) -> String {
 /// A checkout holding awm-deploy.sh and both pins, and the artifact store its node holds.
 fn deploy_node(tmp: &Path, o: DeployOpts) -> PathBuf {
     let node = tmp.join("node");
-    for f in ["awm-deploy.sh", "pins.sh"] {
+    for f in ["awm-deploy.sh", "pins.sh", "marks-dir.sh"] {
         copy(&format!("scripts/{f}"), &node.join("scripts").join(f));
     }
     write(&node.join("core/Cargo.toml"), "x\n");

@@ -1,8 +1,10 @@
 //! Private marks: the projects and scopes this node hides from every peer caller
 //! (`awm.config.privacy`).
 //!
-//! The marks live in `<AWM_DIR>/private.json` as `{"version": 1, "marks": [{project, scope?,
-//! path}]}`. The scopes plugin writes the file and every process rereads it when it changes.
+//! The marks live in `<AWM_DIR>/marks/private.json` as `{"version": 1, "marks": [{project,
+//! scope?, path}]}`, where a plugin unit can bind the directory read-only. `<AWM_DIR>/private.json`
+//! is a relative symlink to that file, and on a node not yet moved it is the file itself. The
+//! scopes plugin writes the file and every process rereads it when it changes.
 //! A caller stamped `peer` or `peer:<node>` sees nothing a mark covers. A file that exists but
 //! does not parse fails closed: every test answers "hidden". So does a marks path that is a
 //! dangling link, or whose state dir is missing: neither proves that no mark exists.
@@ -17,6 +19,7 @@ use std::time::SystemTime;
 use serde_json::{json, Value};
 
 pub const FILENAME: &str = "private.json";
+pub const DIRNAME: &str = "marks";
 const VERSION: u64 = 1;
 /// The marks file is readable by the node's own group, as other users' units need it.
 const FILE_MODE: u32 = 0o640;
@@ -46,8 +49,15 @@ struct Loaded {
 type Key = (PathBuf, SystemTime, u64);
 static CACHE: Mutex<Option<(Key, Option<std::sync::Arc<Loaded>>)>> = Mutex::new(None);
 
+/// The marks file on this node: in `marks/` once that directory exists.
 pub fn marks_path() -> PathBuf {
-    crate::config::awm_dir().join(FILENAME)
+    let awm_dir = crate::config::awm_dir();
+    let dir = awm_dir.join(DIRNAME);
+    if dir.is_dir() {
+        dir.join(FILENAME)
+    } else {
+        awm_dir.join(FILENAME)
+    }
 }
 
 /// Whether a caller stamp names another node: bare `peer` or `peer:<node>`.
@@ -120,10 +130,12 @@ pub fn marks() -> Result<Vec<Mark>, MarksUnreadable> {
 /// Replace the marks file atomically with `entries`, and return them as written.
 pub fn write_marks(entries: &[Value]) -> Result<Vec<Mark>, MarksUnreadable> {
     let checked: Vec<Mark> = entries.iter().map(check).collect::<Result<_, _>>()?;
-    let path = marks_path();
-    let dir = path.parent().unwrap_or(Path::new("."));
+    let awm_dir = crate::config::awm_dir();
+    let dir = awm_dir.join(DIRNAME);
+    let path = dir.join(FILENAME);
     let io = |e: std::io::Error| MarksUnreadable(format!("{}: {e}", path.display()));
-    std::fs::DirBuilder::new().recursive(true).mode(DIR_MODE).create(dir).map_err(io)?;
+    std::fs::DirBuilder::new().recursive(true).mode(DIR_MODE).create(&dir).map_err(io)?;
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(DIR_MODE)).map_err(io)?;
     let body = serde_json::to_string_pretty(&json!({"version": VERSION, "marks": checked})).unwrap_or_default() + "\n";
     let tmp = dir.join(format!(".{FILENAME}.{}", std::process::id()));
     let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(FILE_MODE).open(&tmp).map_err(io)?;
@@ -136,7 +148,21 @@ pub fn write_marks(entries: &[Value]) -> Result<Vec<Mark>, MarksUnreadable> {
         let _ = std::fs::remove_file(&tmp);
         return Err(io(e));
     }
+    link_legacy(&awm_dir).map_err(io)?;
     Ok(checked)
+}
+
+/// Point `<AWM_DIR>/private.json` at `marks/private.json`, for readers of the old path.
+fn link_legacy(awm_dir: &Path) -> std::io::Result<()> {
+    let legacy = awm_dir.join(FILENAME);
+    let target = Path::new(DIRNAME).join(FILENAME);
+    if std::fs::read_link(&legacy).is_ok_and(|t| t == target) {
+        return Ok(());
+    }
+    let tmp = awm_dir.join(format!(".{FILENAME}.link.{}", std::process::id()));
+    let _ = std::fs::remove_file(&tmp);
+    std::os::unix::fs::symlink(&target, &tmp)?;
+    std::fs::rename(&tmp, &legacy)
 }
 
 /// The `(project, scope)` a journal spelling names: an empty project with scope `project:<p>`
@@ -296,15 +322,28 @@ mod tests {
         let mark = json!({"project": "p", "path": "/x"});
         assert_eq!(write_marks(&[mark]).unwrap().len(), 1);
         let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(marks_path(), state.join("marks/private.json"));
         assert_eq!(mode(&marks_path()), 0o640);
-        assert_eq!(mode(&state), 0o750);
+        assert_eq!(mode(&state.join("marks")), 0o750);
+        assert_eq!(std::fs::read_link(state.join("private.json")).unwrap(), Path::new("marks/private.json"));
         assert_eq!(marks().unwrap()[0].project, "p");
 
         std::fs::remove_file(marks_path()).unwrap();
-        assert!(marks().unwrap().is_empty(), "no file in a present state dir is no marks");
+        assert!(marks().unwrap().is_empty(), "no file in a present marks dir is no marks");
         std::os::unix::fs::symlink(t.path().join("gone.json"), marks_path()).unwrap();
         assert!(marks().is_err(), "a dangling link reads as an error");
         assert!(hidden("q", None), "a caller refuses peers while the marks are unreadable");
+
+        std::fs::remove_dir_all(&state).unwrap();
+        std::fs::create_dir_all(&state).unwrap();
+        std::fs::write(state.join("private.json"), r#"{"version":1,"marks":[{"project":"old","path":"/o"}]}"#).unwrap();
+        assert_eq!(marks().unwrap()[0].project, "old", "a node not yet moved reads the old file");
+        write_marks(&[json!({"project": "new", "path": "/n"})]).unwrap();
+        assert_eq!(std::fs::read_link(state.join("private.json")).unwrap(), Path::new("marks/private.json"));
+        assert_eq!(marks().unwrap()[0].project, "new");
+        std::fs::remove_file(state.join("marks/private.json")).unwrap();
+        std::fs::remove_dir(state.join("marks")).unwrap();
+        assert!(marks().is_err(), "the old path left dangling reads as an error");
         std::env::remove_var("AWM_DIR");
     }
 
