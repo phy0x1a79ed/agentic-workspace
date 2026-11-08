@@ -52,8 +52,65 @@ pub struct ServiceDecl {
     pub profiles: Option<Vec<String>>,
     #[serde(default)]
     pub archive: Vec<toml::Value>,
+    #[serde(default)]
+    pub front: Vec<FrontDecl>,
 }
 
+
+/// One `[[service.front]]` table: a TLS listener that auth opens for this service, with the
+/// node's edge leaf and the edge session gate in front of a loopback upstream (ports/auth.md C2).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct FrontDecl {
+    #[serde(default = "default_front_name")]
+    pub name: String,
+    pub port: u16,
+    pub upstream: String,
+    /// Rewrite the browser's `Origin` to the upstream's, for an upstream that checks it.
+    #[serde(default)]
+    pub rewrite_origin: bool,
+    /// Path prefixes this front sends to another loopback upstream instead.
+    #[serde(default)]
+    pub paths: std::collections::BTreeMap<String, String>,
+}
+
+fn default_front_name() -> String {
+    "gui".into()
+}
+
+/// `url` when it is plain http to a loopback address, else why not.
+pub fn loopback_upstream(url: &str) -> Result<(), String> {
+    let rest = url.strip_prefix("http://").ok_or_else(|| format!("{url:?} is not an http:// URL"))?;
+    let authority = rest.split('/').next().unwrap_or_default();
+    let host = match authority.strip_prefix('[') {
+        Some(v6) => v6.split(']').next().unwrap_or_default(),
+        None => authority.rsplit_once(':').map_or(authority, |(h, _)| h),
+    };
+    match host {
+        "127.0.0.1" | "::1" | "localhost" => Ok(()),
+        _ => Err(format!("{url:?} is not a loopback upstream")),
+    }
+}
+
+impl FrontDecl {
+    /// Every rule a front table must meet, as one refusal.
+    pub fn check(&self) -> Result<(), String> {
+        if self.name.is_empty() || !self.name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+            return Err(format!("front name {:?} must be letters, digits and hyphens", self.name));
+        }
+        if self.port == 0 {
+            return Err(format!("front {:?}: port 0", self.name));
+        }
+        loopback_upstream(&self.upstream).map_err(|e| format!("front {:?}: {e}", self.name))?;
+        for (prefix, up) in &self.paths {
+            if !prefix.starts_with('/') || prefix.starts_with("//") {
+                return Err(format!("front {:?}: path {prefix:?} must start with one /", self.name));
+            }
+            loopback_upstream(up).map_err(|e| format!("front {:?}: path {prefix:?}: {e}", self.name))?;
+        }
+        Ok(())
+    }
+}
 fn dot() -> String {
     ".".into()
 }
