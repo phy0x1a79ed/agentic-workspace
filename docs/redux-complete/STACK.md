@@ -8,11 +8,11 @@ Decisions: `DECISIONS.md` beside this file.
 
 ## Current
 
-- node-checkout
+- open-for-tony
 
 ## Waiting on the user
 
-- node-checkout: do nodes keep the awm git clone?
+- open-for-tony: the six remaining items.
 
 ## Preferences
 
@@ -22,7 +22,6 @@ Tony (2026-11-08): this session does the work itself; Sonnet agents at medium ef
 
 ## Stack
 
-- node-checkout — Tony: "under the post rust redux, do nodes still need the awm git clone?"
 - open-for-tony — the end-state journals' open items not reached above: per-node-edges, lyra vpn.toml, isolated/ mirror tag, alcor sites daemon, cch warm pool, science idle
 - close-out — `.pre-rust` deletion, unreviewed branches, retiring the redux scopes
 
@@ -37,6 +36,7 @@ None.
 - fleet-route — mizar and alcor first, then altair, shogun, capella, lyra together; deneb apart; cloud dev moves to mizar
 - r79-writer — alcor pushes to deneb's vault writer; R79 stands
 - deneb — no further decision; its own cutover per fleet-route, writer per r79-writer
+- node-checkout — every node clone-free this pass; release = manifest + hash-addressed binaries + small tar; mizar pushes, GitHub Release for fresh machines; ten non-core plugins in own projects, pushed as folders
 
 ## Survey state (2026-11-08)
 
