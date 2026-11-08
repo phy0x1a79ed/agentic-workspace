@@ -1281,8 +1281,18 @@ async fn turn_on<E: Effects>(fx: &E, t: &Target, name: Option<&str>) -> Result<V
             }),
         ));
     }
+    let queued = mid_turn(fx, t).await;
     // One attempt: a second `/rc` would land in whatever the first opened.
     let sent = command(fx, t, Command { allow_modal: true, attempts: 1, ..Command::new(&text, what) }).await?;
+    if queued {
+        // The command queues behind the turn; the link arrives as the `remote_control` session
+        // event when it runs, so waiting out the link timeout here would only delay the answer.
+        if !is_true(&sent, "ok") {
+            return Ok(sent);
+        }
+        let why = format!("{} is mid-turn, so the command runs when that turn ends", t.label());
+        return Ok(with(sent, json!({"applies": "turn_end", "link": null, "link_reason": why})));
+    }
     let (found, why) = await_link(fx, t).await;
     let mut out = with(sent, json!({"remote_control": found.is_some(), "link": found}));
     if found.is_none() {
@@ -1303,15 +1313,23 @@ async fn await_link<E: Effects>(fx: &E, t: &Target) -> (Option<String>, String) 
         sleep(POLL).await;
     }
     let mut why = format!("no bridge id in the job record after {}s", secs(LINK_WAIT));
-    if matches!(fx.status(t).await.as_deref(), Some("busy" | "shell")) {
+    if mid_turn(fx, t).await {
         why.push_str("; the session is mid-turn, so the command may still be queued");
     }
     (None, why)
 }
 
+/// Whether the record says `t` is in a turn, so a typed command waits for it to end.
+async fn mid_turn<E: Effects>(fx: &E, t: &Target) -> bool {
+    matches!(fx.status(t).await.as_deref(), Some("busy" | "shell"))
+}
+
 async fn turn_off<E: Effects>(fx: &E, t: &Target) -> Result<Value, ControlError> {
     if t.is_self {
-        return turn_off_self(fx, t).await;
+        return turn_off_later(fx, t, true).await;
+    }
+    if mid_turn(fx, t).await {
+        return turn_off_later(fx, t, false).await;
     }
     if !fx.between_turns(t).await {
         let why = format!(
@@ -1329,26 +1347,40 @@ async fn turn_off<E: Effects>(fx: &E, t: &Target) -> Result<Value, ControlError>
     drive_disconnect(fx, t, Wait::INLINE, error).await
 }
 
-async fn turn_off_self<E: Effects>(fx: &E, t: &Target) -> Result<Value, ControlError> {
+/// Queue `/rc` behind the turn and answer its modal from a detached walk once the turn ends. Only
+/// the caller's own session (`resume`) gets the follow-up prompt.
+async fn turn_off_later<E: Effects>(fx: &E, t: &Target, resume: bool) -> Result<Value, ControlError> {
     if let Some(no) = check_clear(fx, t).await? {
         return Ok(no);
     }
     fx.deliver(t, "/rc", "the Remote Control command", 1).await?;
     let (fx2, t2) = (fx.clone(), t.clone());
+    let who = if resume { "self" } else { "turn-end" };
     fx.spawn(Box::pin(async move {
         match drive_disconnect(&fx2, &t2, Wait::SELF, None).await {
             Ok(out) => {
-                tracing::info!("reflection: self Remote Control off for {}: {}", t2.label(), summary(&out));
-                if is_true(&out, "modal_open") || is_true(&out, "refused") {
+                tracing::info!("reflection: {who} Remote Control off for {}: {}", t2.label(), summary(&out));
+                if !resume || is_true(&out, "modal_open") || is_true(&out, "refused") {
                     return;
                 }
                 if let Err(e) = fx2.deliver(&t2, SELF_OFF_FOLLOWUP, "the resume prompt", sender::ATTEMPTS).await {
                     tracing::warn!("reflection: self Remote Control off for {} failed: {e}", t2.label());
                 }
             }
-            Err(e) => tracing::warn!("reflection: self Remote Control off for {} failed: {e}", t2.label()),
+            Err(e) => tracing::warn!("reflection: {who} Remote Control off for {} failed: {e}", t2.label()),
         }
     }));
+    if !resume {
+        let detail = format!(
+            "{} is mid-turn, so `/rc` is queued behind that turn; when its modal opens the service selects \
+             'Disconnect this session'",
+            t.label()
+        );
+        return Ok(with(
+            ok_for(t),
+            json!({"changed": false, "remote_control": true, "applies": "turn_end", "detail": detail}),
+        ));
+    }
     Ok(with(
         ok_for(t),
         json!({
@@ -2824,6 +2856,60 @@ mod tests {
             w.typed().last().unwrap(),
             &(SELF_JOB.to_string(), SELF_OFF_FOLLOWUP.to_string(), sender::ATTEMPTS)
         );
+    }
+
+    // --- Remote Control on a busy session: applies at turn end ---
+
+    #[tokio::test(start_paused = true)]
+    async fn rc_on_for_a_busy_session_queues_and_answers_at_once() {
+        let w = World::new();
+        w.s().status = "busy".into();
+        let start = Instant::now();
+        let out = remote_control(&w, true, Some("phone-1"), Some(OTHER_JOB), me_()).await.unwrap();
+        assert!(ok(&out) && out["applies"] == json!("turn_end") && out["link"].is_null(), "{out}");
+        assert!(out["session"] == json!("other one") && out["job"] == json!(OTHER_JOB) && out["self"] == json!(false));
+        assert!(text(&out, "link_reason").contains("mid-turn"));
+        assert_eq!(w.typed(), [(OTHER_JOB.to_string(), "/rc phone-1".to_string(), 1)], "one attempt, no retry");
+        assert!(start.elapsed() < POLL, "the link timeout is not waited out");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn rc_on_for_a_session_running_a_shell_command_queues_too() {
+        let w = World::new();
+        w.s().status = "shell".into();
+        let out = remote_control(&w, true, None, Some(OTHER_JOB), me_()).await.unwrap();
+        assert!(ok(&out) && out["applies"] == json!("turn_end") && out["link"].is_null());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn rc_off_for_a_busy_session_queues_and_disconnects_at_turn_end_without_a_resume_prompt() {
+        let w = connected();
+        w.s().status = "busy".into();
+        w.s().settled = false;
+        let out = remote_control(&w, false, None, Some(OTHER_JOB), me_()).await.unwrap();
+        assert!(ok(&out) && out["applies"] == json!("turn_end") && out["remote_control"] == json!(true), "{out}");
+        assert!(w.typed() == [(OTHER_JOB.to_string(), "/rc".to_string(), 1)] && w.spawned_count() == 1);
+        let modal = FakeScreen::modal(&OPTIONS, 0);
+        w.set_screen(modal.clone());
+        let at = w.clone();
+        modal.on_press(move |key| {
+            if key == Key::Enter {
+                at.set_bridge(OTHER_JOB, "");
+            }
+        });
+        run_spawned(&w).await;
+        assert_eq!(modal.presses(), [Key::Down, Key::Enter]);
+        assert_eq!(w.typed_texts(), ["/rc"], "no follow-up prompt for another session");
+    }
+
+    #[tokio::test]
+    async fn rc_off_for_a_busy_session_showing_a_modal_types_nothing() {
+        let w = connected();
+        w.s().status = "busy".into();
+        w.set_screen(FakeScreen::new(&[PROMPT]));
+        let out = remote_control(&w, false, None, Some(OTHER_JOB), me_()).await.unwrap();
+        assert!(out["refused"] == json!(true) && out["kind"] == json!("modal"), "{out}");
+        assert!(w.typed().is_empty() && w.spawned_count() == 0);
     }
 
     // --- the effort / model confirm dialog ---

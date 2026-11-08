@@ -37,6 +37,7 @@ pub mod reconcile;
 
 pub mod hooks;
 pub mod hooks_reconcile;
+pub mod session_events;
 
 pub mod verbs;
 pub mod app;
