@@ -1,0 +1,23 @@
+[package]
+name = "awm-dvcdata"
+description = "The DVC data layer, natively: pins, the shared cache, checkout, status, the merge driver, the git hooks and the guarded gc."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+chrono.workspace = true
+clap.workspace = true
+libc.workspace = true
+md-5 = "0.10"
+hex = "0.4"
+ignore = "0.4"
+awm-statecheck = { path = "../awm-statecheck" }
+
+[dev-dependencies]
+tempfile.workspace = true

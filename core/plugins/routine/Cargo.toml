@@ -1,0 +1,33 @@
+[package]
+name = "awm-plugin-routine"
+description = "The routine plugin: registered routines, their timers, their runs and failure chain, and the land queue."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "routine"
+path = "src/main.rs"
+
+[dependencies]
+awm-plugin-sdk.workspace = true
+awm-statecheck = { path = "../../crates/awm-statecheck" }
+anyhow.workspace = true
+thiserror.workspace = true
+chrono.workspace = true
+clap.workspace = true
+libc.workspace = true
+serde.workspace = true
+# float_roundtrip: a lease time reads back to the same digits Python wrote.
+serde_json = { workspace = true, features = ["float_roundtrip"] }
+toml.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+# The same rusqlite as awm-statecheck, so the workspace links one SQLite.
+rusqlite = { version = "0.41", features = ["bundled"] }
+sha2 = "0.10"
+
+[dev-dependencies]
+tempfile.workspace = true

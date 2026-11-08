@@ -3,6 +3,8 @@ resolver = "2"
 # crates/* and plugins/*, as one glob: cargo reads a glob that matches nothing as a literal
 # path, so a separate "plugins/*" fails while core/plugins is empty or missing.
 members = ["[cp]*/*"]
+# A core plugin with no service, such as dashboard, holds no crate.
+exclude = ["plugins/dashboard"]
 
 [workspace.package]
 version = "0.1.0"
@@ -43,6 +45,7 @@ awm-store = { path = "crates/awm-store" }
 awm-embed = { path = "crates/awm-embed" }
 awm-index = { path = "crates/awm-index" }
 awm-plugin-sdk = { path = "crates/awm-plugin-sdk" }
+awm-plugin-telemetry = { path = "plugins/telemetry" }
 
 [profile.release]
 opt-level = 3

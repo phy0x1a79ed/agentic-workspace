@@ -144,6 +144,9 @@ impl Gateway {
         let Some((what, service, name)) = parts(path) else { return Err(ApiError::new(404, format!("no stream at {path}"))) };
         // The gateway's own topics, such as `awm/plugins`, have no service behind them.
         let own = what == "emit" && service == crate::lifecycle::SERVICE;
+        if own && crate::privacy::from_peer(ctx) && crate::telemetry::is_local_only(name) {
+            return Err(ApiError::new(404, format!("no stream at {path}")));
+        }
         if !own && (!self.knows_service(service) || self.service_tools(service).iter().any(|t| self.singleton_refuses(t, &ctx.caller))) {
             return Err(ApiError::new(404, format!("Unknown service {service:?}")));
         }

@@ -260,6 +260,21 @@ class _DependencyFailed(Exception):
 _DETACH_PREFIX = ["systemd-run", "--user", "--scope", "--quiet", "--collect"]
 
 
+def master_argv(cfg: HostConfig) -> list[str]:
+    """The ssh argv that lays down a host's ControlMaster."""
+    argv = ["ssh", "-f", "-N", "-M", "-o", "NumberOfPasswordPrompts=1"]
+    # ssh reads the command line before the config, and the first of ProxyJump
+    # and ProxyCommand set wins. A vpn host gets `-J vpn_<profile>`, so the
+    # service's master skips the config's guard ProxyCommand while every other
+    # caller hits it. A guarded host with no vpn gets `ProxyCommand=none` instead.
+    if cfg.needs_vpn and cfg.vpn_profile:
+        argv += ["-J", f"vpn_{cfg.vpn_profile}"]
+    elif cfg.guarded:
+        argv += ["-o", "ProxyCommand=none"]
+    argv.append(cfg.host)
+    return argv
+
+
 class SSHService:
     def __init__(self) -> None:
         self._lock = asyncio.Lock()
@@ -1137,15 +1152,7 @@ class SSHService:
         # Duo push. (Confirmed in the wild: fir.connect.stderr showed three
         # back-to-back kbd-interactive attempts inside a single ssh. #0317299.)
         # Harmless for pubkey-only hosts, which never enter kbd-interactive.
-        argv = ["ssh", "-f", "-N", "-M", "-o", "NumberOfPasswordPrompts=1"]
-        # A guarded host carries a ProxyCommand guard in ~/.ssh/config that
-        # blocks bare `ssh <host>` when no master exists. The service is the
-        # sole allowed master-creator, so it overrides the guard here.
-        # (Command-line `-o` is first-match-wins over config.) Do NOT do this
-        # for VPN-bounced hosts — their ProxyCommand is the required tunnel.
-        if cfg.guarded:
-            argv += ["-o", "ProxyCommand=none"]
-        argv.append(cfg.host)
+        argv = master_argv(cfg)
         argv = await self._detach_prefix(cfg) + argv
 
         # Capture ssh stderr to a file (NOT a PIPE — a PIPE makes the forked
