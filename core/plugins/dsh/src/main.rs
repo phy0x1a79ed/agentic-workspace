@@ -2,6 +2,7 @@
 //! serves harness@1 over its sessions as `harness-ds`, and mounts the fork at `/s/dsh/`.
 
 mod fork;
+mod lifecycle;
 mod mount;
 mod paths;
 mod relink;
@@ -18,6 +19,7 @@ use awm_harness::contract::Reporter;
 use awm_plugin_sdk::{Call, Service};
 use clap::Parser;
 
+use crate::lifecycle::{HubReflection, Lifecycle};
 use crate::paths::Paths;
 use crate::sessions::{ProcFs, Sessions, COMPACT_WAIT, POLL};
 use crate::settings::Settings;
@@ -70,7 +72,10 @@ impl App {
         let app = self.clone();
         tokio::spawn(async move {
             match app.sup.start().await {
-                Ok(snap) => tracing::info!("dsh: harness pid={} version={} listening={}", snap["pid"], snap["version"], snap["listening"]),
+                Ok(snap) => {
+                    tracing::info!("dsh: harness pid={} version={} listening={}", snap["pid"], snap["version"], snap["listening"]);
+                    app.sessions.lifecycle.kick();
+                }
                 Err(e) => tracing::error!("dsh: initial start failed, the health loop retries: {e}"),
             }
         });
@@ -97,6 +102,8 @@ fn health(app: Arc<App>) -> awm_plugin_sdk::Supervised {
                 let res = app.sup.reconcile().await;
                 if res["action"] == "respawned" {
                     tracing::warn!("dsh: harness respawned (previous exit {})", res["previous_exit"]);
+                    app.sup.await_listening().await;
+                    app.sessions.lifecycle.kick();
                 }
             }
         }
@@ -115,11 +122,13 @@ async fn main() -> anyhow::Result<()> {
     snapshot::take(&awm_dir)?;
     let svc = Service::from_env()?;
     let paths = Paths::from_env();
+    let (lc, session_events) = Lifecycle::new();
     let app = Arc::new(App {
         sessions: Sessions {
             fork: fork::Fork::new(paths.port),
             procs: Box::new(ProcFs),
             reporter: Reporter::new(svc.context().hub().clone(), paths.spool()),
+            lifecycle: lc.clone(),
             compact_wait: COMPACT_WAIT,
             poll: POLL,
         },
@@ -137,6 +146,8 @@ async fn main() -> anyhow::Result<()> {
         })
         .on_ready(async move {
             ready.after_ready().await;
+            let reflection = HubReflection(ready.hub.clone());
+            lifecycle::spawn(lc, session_events, ready.sessions.fork.clone(), reflection);
             health(ready);
         })
         .on_shutdown(async move {
@@ -150,6 +161,7 @@ async fn main() -> anyhow::Result<()> {
 mod tests {
     use super::*;
     use crate::fork::stub;
+    use crate::lifecycle::Lifecycle;
     use crate::sessions::tests::{recording, FakeProcs};
     use crate::verbs::CONTRACT_VERBS;
     use serde_json::{json, Value};
@@ -257,7 +269,7 @@ mod tests {
         let (reporter, _) = recording(paths.spool(), true);
         let app = Arc::new(App {
             sup: Supervisor::new(paths.clone()),
-            sessions: Sessions { fork: fork::Fork::new(port), procs: Box::new(FakeProcs::default()), reporter, compact_wait: COMPACT_WAIT, poll: POLL },
+            sessions: Sessions { fork: fork::Fork::new(port), procs: Box::new(FakeProcs::default()), reporter, lifecycle: Lifecycle::new().0, compact_wait: COMPACT_WAIT, poll: POLL },
             settings: Settings::new(paths.settings_file()),
             hub: awm_plugin_sdk::Hub::new(&format!("http://127.0.0.1:{port}"), None),
             workspace: paths.workspace.clone(),
@@ -292,7 +304,7 @@ mod tests {
         let (reporter, seen) = recording(paths.spool(), true);
         let app = Arc::new(App {
             sup: Supervisor::new(paths.clone()),
-            sessions: Sessions { fork: fork::Fork::new(port), procs: Box::new(FakeProcs::default()), reporter, compact_wait: COMPACT_WAIT, poll: POLL },
+            sessions: Sessions { fork: fork::Fork::new(port), procs: Box::new(FakeProcs::default()), reporter, lifecycle: Lifecycle::new().0, compact_wait: COMPACT_WAIT, poll: POLL },
             settings: Settings::new(paths.settings_file()),
             hub: awm_plugin_sdk::Hub::new(&format!("http://127.0.0.1:{port}"), None),
             workspace: paths.workspace.clone(),

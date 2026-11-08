@@ -5,6 +5,7 @@
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use awm_harness::contract::{self, HarnessEvent, Kind, Reporter};
@@ -12,6 +13,7 @@ use awm_plugin_sdk::ids;
 use serde_json::{json, Map, Value};
 
 use crate::fork::{Fork, ForkError};
+use crate::lifecycle::Lifecycle;
 
 pub const PLATFORM: &str = ids::PLATFORM_DEEPSEEK;
 pub const NAME: &str = "DeepSeek harness";
@@ -101,25 +103,35 @@ pub struct Sessions {
     pub fork: Fork,
     pub procs: Box<dyn Procs>,
     pub reporter: Reporter,
+    pub lifecycle: Arc<Lifecycle>,
     pub compact_wait: Duration,
     pub poll: Duration,
 }
 
-impl Sessions {
-    async fn all(&self) -> Result<Vec<Value>, ForkError> {
-        let (mut items, mut cursor) = (vec![], None::<String>);
-        for _ in 0..50 {
-            let payload = match &cursor {
-                Some(c) => json!({"cursor": c}),
-                None => json!({}),
-            };
-            let page = self.fork.rpc("session.list", payload).await?;
-            items.extend(page.get("items").and_then(Value::as_array).cloned().unwrap_or_default());
-            cursor = nonempty(page.get("nextCursor")).or_else(|| nonempty(page.get("cursor"))).map(str::to_string);
-            if cursor.is_none() {
-                break;
-            }
+/// Every `session.list` item, page by page.
+pub async fn list_all(fork: &Fork) -> Result<Vec<Value>, ForkError> {
+    let (mut items, mut cursor) = (vec![], None::<String>);
+    for _ in 0..50 {
+        let payload = match &cursor {
+            Some(c) => json!({"cursor": c}),
+            None => json!({}),
+        };
+        let page = fork.rpc("session.list", payload).await?;
+        items.extend(page.get("items").and_then(Value::as_array).cloned().unwrap_or_default());
+        cursor = nonempty(page.get("nextCursor")).or_else(|| nonempty(page.get("cursor"))).map(str::to_string);
+        if cursor.is_none() {
+            break;
         }
+    }
+    Ok(items)
+}
+
+impl Sessions {
+    /// Every item; each full listing also goes to the session-event diff.
+    async fn all(&self) -> Result<Vec<Value>, ForkError> {
+        let ticket = self.lifecycle.ticket();
+        let items = list_all(&self.fork).await?;
+        self.lifecycle.listed(ticket, &items);
         Ok(items)
     }
 
@@ -391,7 +403,7 @@ pub fn pid_arg(v: Option<&Value>) -> Option<i64> {
 pub mod tests {
     use super::*;
     use crate::fork::stub::{self, Stub};
-    use std::sync::{Arc, Mutex};
+    use std::sync::Mutex;
 
     pub const UUID: &str = "0e380e38-0e38-4e38-8e38-0e380e380e38";
     pub const FORK: &str = "session-0e380e38-0e38-4e38-8e38-0e380e380e38";
@@ -445,7 +457,14 @@ pub mod tests {
         let port = stub::serve(stub.clone()).await;
         let dir = tempfile::tempdir().unwrap();
         let (reporter, events) = recording(dir.path().join("unsent.jsonl"), true);
-        let s = Sessions { fork: Fork::new(port), procs: Box::new(procs), reporter, compact_wait: COMPACT_WAIT, poll: Duration::from_millis(5) };
+        let s = Sessions {
+            fork: Fork::new(port),
+            procs: Box::new(procs),
+            reporter,
+            lifecycle: Lifecycle::new().0,
+            compact_wait: COMPACT_WAIT,
+            poll: Duration::from_millis(5),
+        };
         Rig { stub, s, events, _dir: dir }
     }
 

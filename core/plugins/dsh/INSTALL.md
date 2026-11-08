@@ -2,7 +2,7 @@
 
 ## Purpose & Contents
 
-This file holds what a reader cannot recover from the code about the `dsh` plugin: how the DeepSeek harness fork reaches a browser, which harness configuration this repository tracks, where the fork and its node come from, and how to check a node. The harness's own architecture belongs to `projects/deepseek-harness` and its upstream docs.
+This file holds what a reader cannot recover from the code about the `dsh` plugin: how the DeepSeek harness fork reaches a browser, what dsh tells reflection about the fork's sessions, which harness configuration this repository tracks, where the fork and its node come from, and how to check a node. The harness's own architecture belongs to `projects/deepseek-harness` and its upstream docs.
 
 The plugin is one static binary, `dsh`, which the deploy places at `<AWM_DIR>/bin/dsh`. It needs no install step. It serves tool `dsh` (lifecycle and model route), tool `harness-ds` (harness@1) and page `dsh`.
 
@@ -30,6 +30,10 @@ dsh seeds two sections into `$DSH_HOME/settings.yaml` on start, each only when a
 The provider names the key's variable, `OPENROUTER_API_KEY`. dsh reads the value from opencode's `auth.json` at spawn and passes it to the harness. The key never reaches a settings file.
 
 Writes take `settings.yaml.lock`, the lock the fork's `dsh-settings-file` writes under, and never steal it. A write re-renders the document, so comments do not survive.
+
+## Session events
+
+dsh sends `started`, `stopped` and `renamed` to reflection `harness_event`, with the fork id as `job` and `session_kind` `web`, when its `events.mux` stream or a verb's own `session.list` shows the set changed. It sends only while reflection's describe lists the `session_kind` param of `harness_event`, and it drops a failed send instead of spooling it to `unsent.jsonl`. At boot dsh reads the current set and sends nothing.
 
 ## Tracked configuration
 

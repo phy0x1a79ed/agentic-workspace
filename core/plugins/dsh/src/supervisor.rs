@@ -251,7 +251,8 @@ impl Supervisor {
         Ok(with_action(self.snapshot().await, "started"))
     }
 
-    async fn await_listening(&self) {
+    /// Wait until the harness binds its port, it exits, or the start timeout passes.
+    pub async fn await_listening(&self) {
         let p = &self.paths;
         let deadline = Instant::now() + p.start_timeout;
         while Instant::now() < deadline {
