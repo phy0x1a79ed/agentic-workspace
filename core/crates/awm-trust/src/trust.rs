@@ -16,6 +16,8 @@ pub enum Level {
 }
 
 impl Level {
+    pub const ALL: [Level; 3] = [Level::Untrusted, Level::Cooperative, Level::Trusted];
+
     pub fn as_str(self) -> &'static str {
         match self {
             Level::Untrusted => "untrusted",
@@ -43,8 +45,8 @@ pub enum TrustError {
     UnknownLevel(String),
     #[error("a raise from {from} to {to} takes a grant Tony approves")]
     NoGrant { from: &'static str, to: &'static str },
-    #[error("raise refused: {0}")]
-    Grant(#[from] GrantError),
+    #[error("raise to {to} refused: {source}")]
+    Grant { to: &'static str, source: GrantError },
     #[error("{0}")]
     Refused(String),
 }
@@ -55,10 +57,31 @@ pub const STEER_VERBS: [&str; 13] = [
     "cd", "mcp", "compact", "mode", "remote_control",
 ];
 
+/// What a session reads the first time it sends `message` to a session on its own node.
+pub const FIRST_LOCAL_MESSAGE_HINT: &str = "This session runs on your own node. Next time, reach it with your harness's \
+own messaging tool (SendMessage in Claude Code). awm carries only messages that cross an edge to another node.";
+
+/// The effort levels a session may run at. High is the ceiling for any model.
+pub const EFFORTS: [&str; 3] = ["low", "medium", "high"];
+/// Effort levels that exist but lie above the ceiling.
+pub const OVER_CEILING: [&str; 2] = ["xhigh", "max"];
+
+/// Why `effort` may not be used, or `Ok` when it may. Twin of cch's `check_effort`.
+pub fn check_effort(effort: &str) -> Result<(), TrustError> {
+    if OVER_CEILING.contains(&effort) {
+        return Err(TrustError::Refused(format!("effort {effort} is above the limit. High is the upper limit for any model.")));
+    }
+    if !EFFORTS.contains(&effort) {
+        return Err(TrustError::Refused(format!("effort must be one of {}", EFFORTS.join(", "))));
+    }
+    Ok(())
+}
+
 /// A raise above the starter: the session, its alcor-signed grant and the check key.
 pub struct Raise<'a> {
     pub session_id: &'a str,
-    pub node: &'a str,
+    /// The node the grant must cover, or `None` for any.
+    pub node: Option<&'a str>,
     pub envelope: &'a Value,
     pub key: &'a [u8; 32],
     pub now: i64,
@@ -73,8 +96,8 @@ pub fn level_for_start(starter: Level, requested: Option<Level>, raise: Option<R
     }
     let r = raise.ok_or(TrustError::NoGrant { from: starter.as_str(), to: want.as_str() })?;
     let payload = json!({"session_id": r.session_id, "from": starter.as_str(), "to": want.as_str()});
-    let expect = Expect { kind: Some("trust_raise"), node: Some(r.node), subject: Some(r.session_id), payload: Some(&payload) };
-    verify_grant(r.envelope, r.key, &expect, r.now)?;
+    let expect = Expect { kind: Some("trust_raise"), node: r.node, subject: Some(r.session_id), payload: Some(&payload) };
+    verify_grant(r.envelope, r.key, &expect, r.now).map_err(|source| TrustError::Grant { to: want.as_str(), source })?;
     Ok(want)
 }
 
@@ -176,6 +199,20 @@ pub struct JournalBound {
     pub write_scope: Option<String>,
 }
 
+impl JournalBound {
+    pub fn may_read(&self, node: &str, project: Option<&str>, scope: Option<&str>) -> bool {
+        self.read_nodes.as_ref().is_none_or(|n| n.contains(node)) && self.read_scope.as_ref().is_none_or(|s| *s == scope_key(project, scope))
+    }
+
+    pub fn may_write(&self, project: Option<&str>, scope: Option<&str>) -> bool {
+        self.write_scope.as_ref().is_none_or(|s| *s == scope_key(project, scope))
+    }
+}
+
+fn scope_key(project: Option<&str>, scope: Option<&str>) -> String {
+    format!("{}/{}", project.unwrap_or(""), scope.unwrap_or(""))
+}
+
 pub fn journal_bound(edges: &EdgeList, level: Level, node: &str, project: &str, scope: &str) -> JournalBound {
     let own = format!("{project}/{scope}");
     let here: BTreeSet<String> = [node.to_string()].into();
@@ -211,7 +248,7 @@ mod tests {
         let env = sign(&sk, json!({"grant_id": "g", "request_id": "r", "kind": "trust_raise", "node": "home",
             "subject": "s1", "payload_sha256": payload_digest(&payload), "not_before": 0, "not_after": 10,
             "approved_by_device": "d"}));
-        let raise = || Raise { session_id: "s1", node: "home", envelope: &env, key: &pk, now: 5 };
+        let raise = || Raise { session_id: "s1", node: Some("home"), envelope: &env, key: &pk, now: 5 };
         assert_eq!(level_for_start(Level::Cooperative, Some(Level::Trusted), Some(raise())), Ok(Level::Trusted));
         let other = Raise { session_id: "s2", ..raise() };
         assert!(level_for_start(Level::Cooperative, Some(Level::Trusted), Some(other)).is_err());

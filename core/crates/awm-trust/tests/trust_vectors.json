@@ -1,0 +1,1996 @@
+{
+ "public_key_b64u": "AiMAX1kwLmGfa7JY6pdJj_cRFSn2kZeSvMCscSF8c_M",
+ "levels": [
+  "untrusted",
+  "cooperative",
+  "trusted"
+ ],
+ "steer_verbs": [
+  "cd",
+  "compact",
+  "effort",
+  "interrupt",
+  "mcp",
+  "mode",
+  "model",
+  "remote_control",
+  "rename",
+  "resume_other",
+  "start_other",
+  "stop",
+  "stop_other"
+ ],
+ "first_local_message_hint": "This session runs on your own node. Next time, reach it with your harness's own messaging tool (SendMessage in Claude Code). awm carries only messages that cross an edge to another node.",
+ "edges": {
+  "nodes": {
+   "home": {
+    "role": "homebase"
+   },
+   "laptop": {
+    "role": "laptop"
+   },
+   "work": {
+    "role": "work"
+   }
+  },
+  "edges": {
+   "home": {
+    "laptop": "tailscale",
+    "work": "tailscale"
+   },
+   "laptop": {
+    "home": "tailscale"
+   }
+  }
+ },
+ "starts": [
+  {
+   "starter": "trusted",
+   "requested": null,
+   "session_id": null,
+   "grant": null,
+   "node": null,
+   "now": 1800000060,
+   "level": "trusted"
+  },
+  {
+   "starter": "trusted",
+   "requested": "untrusted",
+   "session_id": null,
+   "grant": null,
+   "node": null,
+   "now": 1800000060,
+   "level": "untrusted"
+  },
+  {
+   "starter": "cooperative",
+   "requested": "cooperative",
+   "session_id": null,
+   "grant": null,
+   "node": null,
+   "now": 1800000060,
+   "level": "cooperative"
+  },
+  {
+   "starter": "untrusted",
+   "requested": "cooperative",
+   "session_id": null,
+   "grant": null,
+   "node": null,
+   "now": 1800000060,
+   "error": "a raise from untrusted to cooperative takes a grant Tony approves"
+  },
+  {
+   "starter": "cooperative",
+   "requested": "trusted",
+   "session_id": "cc-0001",
+   "grant": null,
+   "node": null,
+   "now": 1800000060,
+   "error": "a raise from cooperative to trusted takes a grant Tony approves"
+  },
+  {
+   "starter": "cooperative",
+   "requested": "trusted",
+   "session_id": "cc-0001",
+   "grant": {
+    "grant": {
+     "grant_id": "gTESTRAISE",
+     "request_id": "qTESTRAISE",
+     "kind": "trust_raise",
+     "node": "home",
+     "subject": "cc-0001",
+     "payload_sha256": "868da99354961c601e82fb0ef5770e04e2784a962c65d863ccc1a3be2aaefaca",
+     "not_before": 1800000000,
+     "not_after": 1800000900,
+     "approved_by_device": "dTESTDEV1"
+    },
+    "sig": "XWddk8H0cOPIdtX0HASeFI0dkkIM89-_TCxZd1xjGqXMHhIe-gyHbEmdpvB48aVV_OITUPHCncCs5a7xsIdkBA",
+    "key_id": "86c5ff3b0804a502"
+   },
+   "node": "home",
+   "now": 1800000060,
+   "level": "trusted"
+  },
+  {
+   "starter": "cooperative",
+   "requested": "trusted",
+   "session_id": "cc-0001",
+   "grant": {
+    "grant": {
+     "grant_id": "gTESTRAISE",
+     "request_id": "qTESTRAISE",
+     "kind": "trust_raise",
+     "node": "home",
+     "subject": "cc-0001",
+     "payload_sha256": "868da99354961c601e82fb0ef5770e04e2784a962c65d863ccc1a3be2aaefaca",
+     "not_before": 1800000000,
+     "not_after": 1800000900,
+     "approved_by_device": "dTESTDEV1"
+    },
+    "sig": "XWddk8H0cOPIdtX0HASeFI0dkkIM89-_TCxZd1xjGqXMHhIe-gyHbEmdpvB48aVV_OITUPHCncCs5a7xsIdkBA",
+    "key_id": "86c5ff3b0804a502"
+   },
+   "node": null,
+   "now": 1800000060,
+   "level": "trusted"
+  },
+  {
+   "starter": "cooperative",
+   "requested": "trusted",
+   "session_id": "cc-0001",
+   "grant": {
+    "grant": {
+     "grant_id": "gTESTRAISE",
+     "request_id": "qTESTRAISE",
+     "kind": "trust_raise",
+     "node": "home",
+     "subject": "cc-0001",
+     "payload_sha256": "868da99354961c601e82fb0ef5770e04e2784a962c65d863ccc1a3be2aaefaca",
+     "not_before": 1800000000,
+     "not_after": 1800000900,
+     "approved_by_device": "dTESTDEV1"
+    },
+    "sig": "XWddk8H0cOPIdtX0HASeFI0dkkIM89-_TCxZd1xjGqXMHhIe-gyHbEmdpvB48aVV_OITUPHCncCs5a7xsIdkBA",
+    "key_id": "86c5ff3b0804a502"
+   },
+   "node": "work",
+   "now": 1800000060,
+   "error": "raise to trusted refused: the grant does not cover node 'work'"
+  },
+  {
+   "starter": "cooperative",
+   "requested": "trusted",
+   "session_id": "cc-0002",
+   "grant": {
+    "grant": {
+     "grant_id": "gTESTRAISE",
+     "request_id": "qTESTRAISE",
+     "kind": "trust_raise",
+     "node": "home",
+     "subject": "cc-0001",
+     "payload_sha256": "868da99354961c601e82fb0ef5770e04e2784a962c65d863ccc1a3be2aaefaca",
+     "not_before": 1800000000,
+     "not_after": 1800000900,
+     "approved_by_device": "dTESTDEV1"
+    },
+    "sig": "XWddk8H0cOPIdtX0HASeFI0dkkIM89-_TCxZd1xjGqXMHhIe-gyHbEmdpvB48aVV_OITUPHCncCs5a7xsIdkBA",
+    "key_id": "86c5ff3b0804a502"
+   },
+   "node": "home",
+   "now": 1800000060,
+   "error": "raise to trusted refused: the grant is for 'cc-0001', not 'cc-0002'"
+  },
+  {
+   "starter": "untrusted",
+   "requested": "trusted",
+   "session_id": "cc-0001",
+   "grant": {
+    "grant": {
+     "grant_id": "gTESTRAISE",
+     "request_id": "qTESTRAISE",
+     "kind": "trust_raise",
+     "node": "home",
+     "subject": "cc-0001",
+     "payload_sha256": "868da99354961c601e82fb0ef5770e04e2784a962c65d863ccc1a3be2aaefaca",
+     "not_before": 1800000000,
+     "not_after": 1800000900,
+     "approved_by_device": "dTESTDEV1"
+    },
+    "sig": "XWddk8H0cOPIdtX0HASeFI0dkkIM89-_TCxZd1xjGqXMHhIe-gyHbEmdpvB48aVV_OITUPHCncCs5a7xsIdkBA",
+    "key_id": "86c5ff3b0804a502"
+   },
+   "node": "home",
+   "now": 1800000060,
+   "error": "raise to trusted refused: the grant does not cover this request"
+  },
+  {
+   "starter": "cooperative",
+   "requested": "trusted",
+   "session_id": "cc-0001",
+   "grant": {
+    "grant": {
+     "grant_id": "gTESTRAISE",
+     "request_id": "qTESTRAISE",
+     "kind": "trust_raise",
+     "node": "home",
+     "subject": "cc-0001",
+     "payload_sha256": "868da99354961c601e82fb0ef5770e04e2784a962c65d863ccc1a3be2aaefaca",
+     "not_before": 1800000000,
+     "not_after": 1800000900,
+     "approved_by_device": "dTESTDEV1"
+    },
+    "sig": "XWddk8H0cOPIdtX0HASeFI0dkkIM89-_TCxZd1xjGqXMHhIe-gyHbEmdpvB48aVV_OITUPHCncCs5a7xsIdkBA",
+    "key_id": "86c5ff3b0804a502"
+   },
+   "node": "home",
+   "now": 1800000900,
+   "error": "raise to trusted refused: expired"
+  },
+  {
+   "starter": "cooperative",
+   "requested": "trusted",
+   "session_id": "cc-0001",
+   "grant": {
+    "grant": {
+     "grant_id": "gTESTRAISE",
+     "request_id": "qTESTRAISE",
+     "kind": "trust_raise",
+     "node": "home",
+     "subject": "cc-0001",
+     "payload_sha256": "868da99354961c601e82fb0ef5770e04e2784a962c65d863ccc1a3be2aaefaca",
+     "not_before": 1800000000,
+     "not_after": 1800000900,
+     "approved_by_device": "dTESTDEV1"
+    },
+    "sig": "XWddk8H0cOPIdtX0HASeFI0dkkIM89-_TCxZd1xjGqXMHhIe-gyHbEmdpvB48aVV_OITUPHCncCs5a7xsIdkBA",
+    "key_id": "86c5ff3b0804a502"
+   },
+   "node": "home",
+   "now": 1799999999,
+   "error": "raise to trusted refused: not valid yet"
+  }
+ ],
+ "steers": [
+  {
+   "actor": "untrusted",
+   "verb": "message",
+   "target": null,
+   "ok": false,
+   "why": "an untrusted session cannot start, steer or message other sessions"
+  },
+  {
+   "actor": "untrusted",
+   "verb": "message",
+   "target": "untrusted",
+   "ok": false,
+   "why": "an untrusted session cannot start, steer or message other sessions"
+  },
+  {
+   "actor": "untrusted",
+   "verb": "message",
+   "target": "cooperative",
+   "ok": false,
+   "why": "an untrusted session cannot start, steer or message other sessions"
+  },
+  {
+   "actor": "untrusted",
+   "verb": "message",
+   "target": "trusted",
+   "ok": false,
+   "why": "an untrusted session cannot start, steer or message other sessions"
+  },
+  {
+   "actor": "untrusted",
+   "verb": "stop",
+   "target": null,
+   "ok": false,
+   "why": "an untrusted session cannot start, steer or message other sessions"
+  },
+  {
+   "actor": "untrusted",
+   "verb": "stop",
+   "target": "untrusted",
+   "ok": false,
+   "why": "an untrusted session cannot start, steer or message other sessions"
+  },
+  {
+   "actor": "untrusted",
+   "verb": "stop",
+   "target": "cooperative",
+   "ok": false,
+   "why": "an untrusted session cannot start, steer or message other sessions"
+  },
+  {
+   "actor": "untrusted",
+   "verb": "stop",
+   "target": "trusted",
+   "ok": false,
+   "why": "an untrusted session cannot start, steer or message other sessions"
+  },
+  {
+   "actor": "untrusted",
+   "verb": "mcp",
+   "target": null,
+   "ok": false,
+   "why": "an untrusted session cannot start, steer or message other sessions"
+  },
+  {
+   "actor": "untrusted",
+   "verb": "mcp",
+   "target": "untrusted",
+   "ok": false,
+   "why": "an untrusted session cannot start, steer or message other sessions"
+  },
+  {
+   "actor": "untrusted",
+   "verb": "mcp",
+   "target": "cooperative",
+   "ok": false,
+   "why": "an untrusted session cannot start, steer or message other sessions"
+  },
+  {
+   "actor": "untrusted",
+   "verb": "mcp",
+   "target": "trusted",
+   "ok": false,
+   "why": "an untrusted session cannot start, steer or message other sessions"
+  },
+  {
+   "actor": "untrusted",
+   "verb": "start_other",
+   "target": null,
+   "ok": false,
+   "why": "an untrusted session cannot start, steer or message other sessions"
+  },
+  {
+   "actor": "untrusted",
+   "verb": "start_other",
+   "target": "untrusted",
+   "ok": false,
+   "why": "an untrusted session cannot start, steer or message other sessions"
+  },
+  {
+   "actor": "untrusted",
+   "verb": "start_other",
+   "target": "cooperative",
+   "ok": false,
+   "why": "an untrusted session cannot start, steer or message other sessions"
+  },
+  {
+   "actor": "untrusted",
+   "verb": "start_other",
+   "target": "trusted",
+   "ok": false,
+   "why": "an untrusted session cannot start, steer or message other sessions"
+  },
+  {
+   "actor": "untrusted",
+   "verb": "journal_post",
+   "target": null,
+   "ok": false,
+   "why": "an untrusted session cannot start, steer or message other sessions"
+  },
+  {
+   "actor": "untrusted",
+   "verb": "journal_post",
+   "target": "untrusted",
+   "ok": false,
+   "why": "an untrusted session cannot start, steer or message other sessions"
+  },
+  {
+   "actor": "untrusted",
+   "verb": "journal_post",
+   "target": "cooperative",
+   "ok": false,
+   "why": "an untrusted session cannot start, steer or message other sessions"
+  },
+  {
+   "actor": "untrusted",
+   "verb": "journal_post",
+   "target": "trusted",
+   "ok": false,
+   "why": "an untrusted session cannot start, steer or message other sessions"
+  },
+  {
+   "actor": "cooperative",
+   "verb": "message",
+   "target": null,
+   "ok": true,
+   "why": ""
+  },
+  {
+   "actor": "cooperative",
+   "verb": "message",
+   "target": "untrusted",
+   "ok": true,
+   "why": ""
+  },
+  {
+   "actor": "cooperative",
+   "verb": "message",
+   "target": "cooperative",
+   "ok": true,
+   "why": ""
+  },
+  {
+   "actor": "cooperative",
+   "verb": "message",
+   "target": "trusted",
+   "ok": true,
+   "why": ""
+  },
+  {
+   "actor": "cooperative",
+   "verb": "stop",
+   "target": null,
+   "ok": true,
+   "why": ""
+  },
+  {
+   "actor": "cooperative",
+   "verb": "stop",
+   "target": "untrusted",
+   "ok": true,
+   "why": ""
+  },
+  {
+   "actor": "cooperative",
+   "verb": "stop",
+   "target": "cooperative",
+   "ok": true,
+   "why": ""
+  },
+  {
+   "actor": "cooperative",
+   "verb": "stop",
+   "target": "trusted",
+   "ok": false,
+   "why": "a cooperative session cannot stop a trusted session"
+  },
+  {
+   "actor": "cooperative",
+   "verb": "mcp",
+   "target": null,
+   "ok": true,
+   "why": ""
+  },
+  {
+   "actor": "cooperative",
+   "verb": "mcp",
+   "target": "untrusted",
+   "ok": true,
+   "why": ""
+  },
+  {
+   "actor": "cooperative",
+   "verb": "mcp",
+   "target": "cooperative",
+   "ok": true,
+   "why": ""
+  },
+  {
+   "actor": "cooperative",
+   "verb": "mcp",
+   "target": "trusted",
+   "ok": false,
+   "why": "a cooperative session cannot mcp a trusted session"
+  },
+  {
+   "actor": "cooperative",
+   "verb": "start_other",
+   "target": null,
+   "ok": true,
+   "why": ""
+  },
+  {
+   "actor": "cooperative",
+   "verb": "start_other",
+   "target": "untrusted",
+   "ok": true,
+   "why": ""
+  },
+  {
+   "actor": "cooperative",
+   "verb": "start_other",
+   "target": "cooperative",
+   "ok": true,
+   "why": ""
+  },
+  {
+   "actor": "cooperative",
+   "verb": "start_other",
+   "target": "trusted",
+   "ok": false,
+   "why": "a cooperative session cannot start_other a trusted session"
+  },
+  {
+   "actor": "cooperative",
+   "verb": "journal_post",
+   "target": null,
+   "ok": true,
+   "why": ""
+  },
+  {
+   "actor": "cooperative",
+   "verb": "journal_post",
+   "target": "untrusted",
+   "ok": true,
+   "why": ""
+  },
+  {
+   "actor": "cooperative",
+   "verb": "journal_post",
+   "target": "cooperative",
+   "ok": true,
+   "why": ""
+  },
+  {
+   "actor": "cooperative",
+   "verb": "journal_post",
+   "target": "trusted",
+   "ok": true,
+   "why": ""
+  },
+  {
+   "actor": "trusted",
+   "verb": "message",
+   "target": null,
+   "ok": true,
+   "why": ""
+  },
+  {
+   "actor": "trusted",
+   "verb": "message",
+   "target": "untrusted",
+   "ok": true,
+   "why": ""
+  },
+  {
+   "actor": "trusted",
+   "verb": "message",
+   "target": "cooperative",
+   "ok": true,
+   "why": ""
+  },
+  {
+   "actor": "trusted",
+   "verb": "message",
+   "target": "trusted",
+   "ok": true,
+   "why": ""
+  },
+  {
+   "actor": "trusted",
+   "verb": "stop",
+   "target": null,
+   "ok": true,
+   "why": ""
+  },
+  {
+   "actor": "trusted",
+   "verb": "stop",
+   "target": "untrusted",
+   "ok": true,
+   "why": ""
+  },
+  {
+   "actor": "trusted",
+   "verb": "stop",
+   "target": "cooperative",
+   "ok": true,
+   "why": ""
+  },
+  {
+   "actor": "trusted",
+   "verb": "stop",
+   "target": "trusted",
+   "ok": true,
+   "why": ""
+  },
+  {
+   "actor": "trusted",
+   "verb": "mcp",
+   "target": null,
+   "ok": true,
+   "why": ""
+  },
+  {
+   "actor": "trusted",
+   "verb": "mcp",
+   "target": "untrusted",
+   "ok": true,
+   "why": ""
+  },
+  {
+   "actor": "trusted",
+   "verb": "mcp",
+   "target": "cooperative",
+   "ok": true,
+   "why": ""
+  },
+  {
+   "actor": "trusted",
+   "verb": "mcp",
+   "target": "trusted",
+   "ok": true,
+   "why": ""
+  },
+  {
+   "actor": "trusted",
+   "verb": "start_other",
+   "target": null,
+   "ok": true,
+   "why": ""
+  },
+  {
+   "actor": "trusted",
+   "verb": "start_other",
+   "target": "untrusted",
+   "ok": true,
+   "why": ""
+  },
+  {
+   "actor": "trusted",
+   "verb": "start_other",
+   "target": "cooperative",
+   "ok": true,
+   "why": ""
+  },
+  {
+   "actor": "trusted",
+   "verb": "start_other",
+   "target": "trusted",
+   "ok": true,
+   "why": ""
+  },
+  {
+   "actor": "trusted",
+   "verb": "journal_post",
+   "target": null,
+   "ok": true,
+   "why": ""
+  },
+  {
+   "actor": "trusted",
+   "verb": "journal_post",
+   "target": "untrusted",
+   "ok": true,
+   "why": ""
+  },
+  {
+   "actor": "trusted",
+   "verb": "journal_post",
+   "target": "cooperative",
+   "ok": true,
+   "why": ""
+  },
+  {
+   "actor": "trusted",
+   "verb": "journal_post",
+   "target": "trusted",
+   "ok": true,
+   "why": ""
+  }
+ ],
+ "bounds": [
+  {
+   "level": "untrusted",
+   "node": "home",
+   "project": "awm",
+   "scope": "x",
+   "read_nodes": [
+    "home"
+   ],
+   "read_scope": "awm/x",
+   "write_scope": "awm/x",
+   "reads": [
+    [
+     "home",
+     "awm",
+     "x",
+     true
+    ],
+    [
+     "home",
+     "awm",
+     "other",
+     false
+    ],
+    [
+     "home",
+     null,
+     null,
+     false
+    ],
+    [
+     "home",
+     "",
+     "",
+     false
+    ],
+    [
+     "work",
+     "awm",
+     "x",
+     false
+    ],
+    [
+     "work",
+     "awm",
+     "other",
+     false
+    ],
+    [
+     "work",
+     null,
+     null,
+     false
+    ],
+    [
+     "work",
+     "",
+     "",
+     false
+    ],
+    [
+     "elsewhere",
+     "awm",
+     "x",
+     false
+    ],
+    [
+     "elsewhere",
+     "awm",
+     "other",
+     false
+    ],
+    [
+     "elsewhere",
+     null,
+     null,
+     false
+    ],
+    [
+     "elsewhere",
+     "",
+     "",
+     false
+    ]
+   ],
+   "writes": [
+    [
+     "awm",
+     "x",
+     true
+    ],
+    [
+     "awm",
+     "other",
+     false
+    ],
+    [
+     null,
+     null,
+     false
+    ],
+    [
+     "",
+     "",
+     false
+    ]
+   ]
+  },
+  {
+   "level": "untrusted",
+   "node": "home",
+   "project": null,
+   "scope": null,
+   "read_nodes": [
+    "home"
+   ],
+   "read_scope": "/",
+   "write_scope": "/",
+   "reads": [
+    [
+     "home",
+     null,
+     null,
+     true
+    ],
+    [
+     "home",
+     "awm",
+     "other",
+     false
+    ],
+    [
+     "home",
+     null,
+     null,
+     true
+    ],
+    [
+     "home",
+     "",
+     "",
+     true
+    ],
+    [
+     "work",
+     null,
+     null,
+     false
+    ],
+    [
+     "work",
+     "awm",
+     "other",
+     false
+    ],
+    [
+     "work",
+     null,
+     null,
+     false
+    ],
+    [
+     "work",
+     "",
+     "",
+     false
+    ],
+    [
+     "elsewhere",
+     null,
+     null,
+     false
+    ],
+    [
+     "elsewhere",
+     "awm",
+     "other",
+     false
+    ],
+    [
+     "elsewhere",
+     null,
+     null,
+     false
+    ],
+    [
+     "elsewhere",
+     "",
+     "",
+     false
+    ]
+   ],
+   "writes": [
+    [
+     null,
+     null,
+     true
+    ],
+    [
+     "awm",
+     "other",
+     false
+    ],
+    [
+     null,
+     null,
+     true
+    ],
+    [
+     "",
+     "",
+     true
+    ]
+   ]
+  },
+  {
+   "level": "untrusted",
+   "node": "work",
+   "project": "awm",
+   "scope": "x",
+   "read_nodes": [
+    "work"
+   ],
+   "read_scope": "awm/x",
+   "write_scope": "awm/x",
+   "reads": [
+    [
+     "home",
+     "awm",
+     "x",
+     false
+    ],
+    [
+     "home",
+     "awm",
+     "other",
+     false
+    ],
+    [
+     "home",
+     null,
+     null,
+     false
+    ],
+    [
+     "home",
+     "",
+     "",
+     false
+    ],
+    [
+     "work",
+     "awm",
+     "x",
+     true
+    ],
+    [
+     "work",
+     "awm",
+     "other",
+     false
+    ],
+    [
+     "work",
+     null,
+     null,
+     false
+    ],
+    [
+     "work",
+     "",
+     "",
+     false
+    ],
+    [
+     "elsewhere",
+     "awm",
+     "x",
+     false
+    ],
+    [
+     "elsewhere",
+     "awm",
+     "other",
+     false
+    ],
+    [
+     "elsewhere",
+     null,
+     null,
+     false
+    ],
+    [
+     "elsewhere",
+     "",
+     "",
+     false
+    ]
+   ],
+   "writes": [
+    [
+     "awm",
+     "x",
+     true
+    ],
+    [
+     "awm",
+     "other",
+     false
+    ],
+    [
+     null,
+     null,
+     false
+    ],
+    [
+     "",
+     "",
+     false
+    ]
+   ]
+  },
+  {
+   "level": "untrusted",
+   "node": "work",
+   "project": null,
+   "scope": null,
+   "read_nodes": [
+    "work"
+   ],
+   "read_scope": "/",
+   "write_scope": "/",
+   "reads": [
+    [
+     "home",
+     null,
+     null,
+     false
+    ],
+    [
+     "home",
+     "awm",
+     "other",
+     false
+    ],
+    [
+     "home",
+     null,
+     null,
+     false
+    ],
+    [
+     "home",
+     "",
+     "",
+     false
+    ],
+    [
+     "work",
+     null,
+     null,
+     true
+    ],
+    [
+     "work",
+     "awm",
+     "other",
+     false
+    ],
+    [
+     "work",
+     null,
+     null,
+     true
+    ],
+    [
+     "work",
+     "",
+     "",
+     true
+    ],
+    [
+     "elsewhere",
+     null,
+     null,
+     false
+    ],
+    [
+     "elsewhere",
+     "awm",
+     "other",
+     false
+    ],
+    [
+     "elsewhere",
+     null,
+     null,
+     false
+    ],
+    [
+     "elsewhere",
+     "",
+     "",
+     false
+    ]
+   ],
+   "writes": [
+    [
+     null,
+     null,
+     true
+    ],
+    [
+     "awm",
+     "other",
+     false
+    ],
+    [
+     null,
+     null,
+     true
+    ],
+    [
+     "",
+     "",
+     true
+    ]
+   ]
+  },
+  {
+   "level": "cooperative",
+   "node": "home",
+   "project": "awm",
+   "scope": "x",
+   "read_nodes": [
+    "home"
+   ],
+   "read_scope": null,
+   "write_scope": "awm/x",
+   "reads": [
+    [
+     "home",
+     "awm",
+     "x",
+     true
+    ],
+    [
+     "home",
+     "awm",
+     "other",
+     true
+    ],
+    [
+     "home",
+     null,
+     null,
+     true
+    ],
+    [
+     "home",
+     "",
+     "",
+     true
+    ],
+    [
+     "work",
+     "awm",
+     "x",
+     false
+    ],
+    [
+     "work",
+     "awm",
+     "other",
+     false
+    ],
+    [
+     "work",
+     null,
+     null,
+     false
+    ],
+    [
+     "work",
+     "",
+     "",
+     false
+    ],
+    [
+     "elsewhere",
+     "awm",
+     "x",
+     false
+    ],
+    [
+     "elsewhere",
+     "awm",
+     "other",
+     false
+    ],
+    [
+     "elsewhere",
+     null,
+     null,
+     false
+    ],
+    [
+     "elsewhere",
+     "",
+     "",
+     false
+    ]
+   ],
+   "writes": [
+    [
+     "awm",
+     "x",
+     true
+    ],
+    [
+     "awm",
+     "other",
+     false
+    ],
+    [
+     null,
+     null,
+     false
+    ],
+    [
+     "",
+     "",
+     false
+    ]
+   ]
+  },
+  {
+   "level": "cooperative",
+   "node": "home",
+   "project": null,
+   "scope": null,
+   "read_nodes": [
+    "home"
+   ],
+   "read_scope": null,
+   "write_scope": "/",
+   "reads": [
+    [
+     "home",
+     null,
+     null,
+     true
+    ],
+    [
+     "home",
+     "awm",
+     "other",
+     true
+    ],
+    [
+     "home",
+     null,
+     null,
+     true
+    ],
+    [
+     "home",
+     "",
+     "",
+     true
+    ],
+    [
+     "work",
+     null,
+     null,
+     false
+    ],
+    [
+     "work",
+     "awm",
+     "other",
+     false
+    ],
+    [
+     "work",
+     null,
+     null,
+     false
+    ],
+    [
+     "work",
+     "",
+     "",
+     false
+    ],
+    [
+     "elsewhere",
+     null,
+     null,
+     false
+    ],
+    [
+     "elsewhere",
+     "awm",
+     "other",
+     false
+    ],
+    [
+     "elsewhere",
+     null,
+     null,
+     false
+    ],
+    [
+     "elsewhere",
+     "",
+     "",
+     false
+    ]
+   ],
+   "writes": [
+    [
+     null,
+     null,
+     true
+    ],
+    [
+     "awm",
+     "other",
+     false
+    ],
+    [
+     null,
+     null,
+     true
+    ],
+    [
+     "",
+     "",
+     true
+    ]
+   ]
+  },
+  {
+   "level": "cooperative",
+   "node": "work",
+   "project": "awm",
+   "scope": "x",
+   "read_nodes": [
+    "work"
+   ],
+   "read_scope": null,
+   "write_scope": "awm/x",
+   "reads": [
+    [
+     "home",
+     "awm",
+     "x",
+     false
+    ],
+    [
+     "home",
+     "awm",
+     "other",
+     false
+    ],
+    [
+     "home",
+     null,
+     null,
+     false
+    ],
+    [
+     "home",
+     "",
+     "",
+     false
+    ],
+    [
+     "work",
+     "awm",
+     "x",
+     true
+    ],
+    [
+     "work",
+     "awm",
+     "other",
+     true
+    ],
+    [
+     "work",
+     null,
+     null,
+     true
+    ],
+    [
+     "work",
+     "",
+     "",
+     true
+    ],
+    [
+     "elsewhere",
+     "awm",
+     "x",
+     false
+    ],
+    [
+     "elsewhere",
+     "awm",
+     "other",
+     false
+    ],
+    [
+     "elsewhere",
+     null,
+     null,
+     false
+    ],
+    [
+     "elsewhere",
+     "",
+     "",
+     false
+    ]
+   ],
+   "writes": [
+    [
+     "awm",
+     "x",
+     true
+    ],
+    [
+     "awm",
+     "other",
+     false
+    ],
+    [
+     null,
+     null,
+     false
+    ],
+    [
+     "",
+     "",
+     false
+    ]
+   ]
+  },
+  {
+   "level": "cooperative",
+   "node": "work",
+   "project": null,
+   "scope": null,
+   "read_nodes": [
+    "work"
+   ],
+   "read_scope": null,
+   "write_scope": "/",
+   "reads": [
+    [
+     "home",
+     null,
+     null,
+     false
+    ],
+    [
+     "home",
+     "awm",
+     "other",
+     false
+    ],
+    [
+     "home",
+     null,
+     null,
+     false
+    ],
+    [
+     "home",
+     "",
+     "",
+     false
+    ],
+    [
+     "work",
+     null,
+     null,
+     true
+    ],
+    [
+     "work",
+     "awm",
+     "other",
+     true
+    ],
+    [
+     "work",
+     null,
+     null,
+     true
+    ],
+    [
+     "work",
+     "",
+     "",
+     true
+    ],
+    [
+     "elsewhere",
+     null,
+     null,
+     false
+    ],
+    [
+     "elsewhere",
+     "awm",
+     "other",
+     false
+    ],
+    [
+     "elsewhere",
+     null,
+     null,
+     false
+    ],
+    [
+     "elsewhere",
+     "",
+     "",
+     false
+    ]
+   ],
+   "writes": [
+    [
+     null,
+     null,
+     true
+    ],
+    [
+     "awm",
+     "other",
+     false
+    ],
+    [
+     null,
+     null,
+     true
+    ],
+    [
+     "",
+     "",
+     true
+    ]
+   ]
+  },
+  {
+   "level": "trusted",
+   "node": "home",
+   "project": "awm",
+   "scope": "x",
+   "read_nodes": [
+    "home",
+    "laptop",
+    "work"
+   ],
+   "read_scope": null,
+   "write_scope": null,
+   "reads": [
+    [
+     "home",
+     "awm",
+     "x",
+     true
+    ],
+    [
+     "home",
+     "awm",
+     "other",
+     true
+    ],
+    [
+     "home",
+     null,
+     null,
+     true
+    ],
+    [
+     "home",
+     "",
+     "",
+     true
+    ],
+    [
+     "work",
+     "awm",
+     "x",
+     true
+    ],
+    [
+     "work",
+     "awm",
+     "other",
+     true
+    ],
+    [
+     "work",
+     null,
+     null,
+     true
+    ],
+    [
+     "work",
+     "",
+     "",
+     true
+    ],
+    [
+     "elsewhere",
+     "awm",
+     "x",
+     false
+    ],
+    [
+     "elsewhere",
+     "awm",
+     "other",
+     false
+    ],
+    [
+     "elsewhere",
+     null,
+     null,
+     false
+    ],
+    [
+     "elsewhere",
+     "",
+     "",
+     false
+    ]
+   ],
+   "writes": [
+    [
+     "awm",
+     "x",
+     true
+    ],
+    [
+     "awm",
+     "other",
+     true
+    ],
+    [
+     null,
+     null,
+     true
+    ],
+    [
+     "",
+     "",
+     true
+    ]
+   ]
+  },
+  {
+   "level": "trusted",
+   "node": "home",
+   "project": null,
+   "scope": null,
+   "read_nodes": [
+    "home",
+    "laptop",
+    "work"
+   ],
+   "read_scope": null,
+   "write_scope": null,
+   "reads": [
+    [
+     "home",
+     null,
+     null,
+     true
+    ],
+    [
+     "home",
+     "awm",
+     "other",
+     true
+    ],
+    [
+     "home",
+     null,
+     null,
+     true
+    ],
+    [
+     "home",
+     "",
+     "",
+     true
+    ],
+    [
+     "work",
+     null,
+     null,
+     true
+    ],
+    [
+     "work",
+     "awm",
+     "other",
+     true
+    ],
+    [
+     "work",
+     null,
+     null,
+     true
+    ],
+    [
+     "work",
+     "",
+     "",
+     true
+    ],
+    [
+     "elsewhere",
+     null,
+     null,
+     false
+    ],
+    [
+     "elsewhere",
+     "awm",
+     "other",
+     false
+    ],
+    [
+     "elsewhere",
+     null,
+     null,
+     false
+    ],
+    [
+     "elsewhere",
+     "",
+     "",
+     false
+    ]
+   ],
+   "writes": [
+    [
+     null,
+     null,
+     true
+    ],
+    [
+     "awm",
+     "other",
+     true
+    ],
+    [
+     null,
+     null,
+     true
+    ],
+    [
+     "",
+     "",
+     true
+    ]
+   ]
+  },
+  {
+   "level": "trusted",
+   "node": "work",
+   "project": "awm",
+   "scope": "x",
+   "read_nodes": [
+    "work"
+   ],
+   "read_scope": null,
+   "write_scope": null,
+   "reads": [
+    [
+     "home",
+     "awm",
+     "x",
+     false
+    ],
+    [
+     "home",
+     "awm",
+     "other",
+     false
+    ],
+    [
+     "home",
+     null,
+     null,
+     false
+    ],
+    [
+     "home",
+     "",
+     "",
+     false
+    ],
+    [
+     "work",
+     "awm",
+     "x",
+     true
+    ],
+    [
+     "work",
+     "awm",
+     "other",
+     true
+    ],
+    [
+     "work",
+     null,
+     null,
+     true
+    ],
+    [
+     "work",
+     "",
+     "",
+     true
+    ],
+    [
+     "elsewhere",
+     "awm",
+     "x",
+     false
+    ],
+    [
+     "elsewhere",
+     "awm",
+     "other",
+     false
+    ],
+    [
+     "elsewhere",
+     null,
+     null,
+     false
+    ],
+    [
+     "elsewhere",
+     "",
+     "",
+     false
+    ]
+   ],
+   "writes": [
+    [
+     "awm",
+     "x",
+     true
+    ],
+    [
+     "awm",
+     "other",
+     true
+    ],
+    [
+     null,
+     null,
+     true
+    ],
+    [
+     "",
+     "",
+     true
+    ]
+   ]
+  },
+  {
+   "level": "trusted",
+   "node": "work",
+   "project": null,
+   "scope": null,
+   "read_nodes": [
+    "work"
+   ],
+   "read_scope": null,
+   "write_scope": null,
+   "reads": [
+    [
+     "home",
+     null,
+     null,
+     false
+    ],
+    [
+     "home",
+     "awm",
+     "other",
+     false
+    ],
+    [
+     "home",
+     null,
+     null,
+     false
+    ],
+    [
+     "home",
+     "",
+     "",
+     false
+    ],
+    [
+     "work",
+     null,
+     null,
+     true
+    ],
+    [
+     "work",
+     "awm",
+     "other",
+     true
+    ],
+    [
+     "work",
+     null,
+     null,
+     true
+    ],
+    [
+     "work",
+     "",
+     "",
+     true
+    ],
+    [
+     "elsewhere",
+     null,
+     null,
+     false
+    ],
+    [
+     "elsewhere",
+     "awm",
+     "other",
+     false
+    ],
+    [
+     "elsewhere",
+     null,
+     null,
+     false
+    ],
+    [
+     "elsewhere",
+     "",
+     "",
+     false
+    ]
+   ],
+   "writes": [
+    [
+     null,
+     null,
+     true
+    ],
+    [
+     "awm",
+     "other",
+     true
+    ],
+    [
+     null,
+     null,
+     true
+    ],
+    [
+     "",
+     "",
+     true
+    ]
+   ]
+  }
+ ],
+ "efforts": [
+  {
+   "effort": "low",
+   "error": null
+  },
+  {
+   "effort": "medium",
+   "error": null
+  },
+  {
+   "effort": "high",
+   "error": null
+  },
+  {
+   "effort": "xhigh",
+   "error": "effort xhigh is above the limit. High is the upper limit for any model."
+  },
+  {
+   "effort": "max",
+   "error": "effort max is above the limit. High is the upper limit for any model."
+  },
+  {
+   "effort": "bogus",
+   "error": "effort must be one of low, medium, high"
+  },
+  {
+   "effort": "",
+   "error": "effort must be one of low, medium, high"
+  }
+ ]
+}

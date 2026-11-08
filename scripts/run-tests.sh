@@ -46,13 +46,11 @@ declare -A DISTS=(
   [scopes]="$WS/awm/services/scopes::$WS/awm/services/scopes/tests"
   [journal]="$WS/awm/services/journal::$WS/awm/services/journal/tests"
   [search]="$WS/awm/services/search::$WS/awm/services/search/tests"
-  [events]="$WS/awm/services/events::$WS/awm/services/events/tests"
   [2fa]="$WS/awm/services/2fa::$WS/awm/services/2fa/tests"
   [ssh]="$WS/awm/services/ssh::$WS/awm/services/ssh/tests"
   [auth]="$WS/awm/services/auth::$WS/awm/services/auth/tests"
   [httpsfront]="$WS/awm/services/httpsfront::$WS/awm/services/httpsfront/tests"
   [rlm-factorio]="$WS/awm/services/rlm-factorio::$WS/awm/services/rlm-factorio/tests"
-  [fileviewer]="$WS/awm/services/fileviewer::$WS/awm/services/fileviewer/tests"
   [mic]="$WS/awm/services/mic::$WS/awm/services/mic/tests"
   [vpn]="$WS/awm/services/vpn::$WS/awm/services/vpn/tests"
   [reflection]="$WS/awm/services/reflection::$WS/awm/services/reflection/tests"
@@ -67,14 +65,13 @@ declare -A DISTS=(
   [kb]="$WS/awm/services/kb::$WS/awm/services/kb/tests"
   [board]="$WS/awm/services/board::$WS/awm/services/board/tests"
   [transcripts]="$WS/awm/services/transcripts::$WS/awm/services/transcripts/tests"
-  [routine]="$WS/awm/plugins/routine::$WS/awm/plugins/routine/tests"
   [grantlib]="$WS/awm/service_components/grantlib::$WS/awm/service_components/grantlib/tests"
   [trustpolicy]="$WS/awm/service_components/trustpolicy::$WS/awm/service_components/trustpolicy/tests"
   [wake]="$WS/awm/plugins/wake::$WS/awm/plugins/wake/tests"
 )
 
 # Stable run order.
-ORDER=(contract gatewayclient config persistence grantlib telemetry usage claudedaemon kept tlsfront dvcdata scopes journal search events 2fa ssh auth httpsfront rlm-factorio fileviewer mic vpn reflection dvc claude-science dsh engcyc trilium zotero cch dev kb board transcripts routine trustpolicy wake)
+ORDER=(contract gatewayclient config persistence grantlib telemetry usage claudedaemon kept tlsfront dvcdata scopes journal search 2fa ssh auth httpsfront rlm-factorio mic vpn reflection dvc claude-science dsh engcyc trilium zotero cch dev kb board transcripts trustpolicy wake)
 
 CHANGED_BASE=""
 SMOKE=0
