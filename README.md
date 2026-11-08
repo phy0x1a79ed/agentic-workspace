@@ -57,12 +57,13 @@ AWM drives Claude Code. A session loads three context tiers: the workspace `AGEN
 ### Set up Claude Code
 
 1. Put the `claude` CLI on `PATH`.
-2. Run `awm/scripts/deploy-hooks.sh`. It writes awm's hooks into `~/.claude/settings.json`, the brief hook among them.
+2. Start awm. On each start, `cch` writes its four hooks, the brief hook among them, into `~/.claude/settings.json` as `cch hook <name>`.
+3. Run `awm/scripts/deploy-hooks.sh`. It writes the other plugins' hooks.
 
 ### Verify the setup
 
 ```bash
-jq '.hooks.SessionStart' ~/.claude/settings.json   # expect awm-brief-hook.py
+jq '.hooks.SessionStart' ~/.claude/settings.json   # expect cch hook brief
 cd <scope> && claude -p "List the AGENTS.md files loaded into your context, by absolute path."
 ```
 

@@ -13,8 +13,8 @@ Keep what the code cannot show: why a shape was chosen, which two things must ag
 awm is one Rust binary, `awm`, plus a set of out-of-process **plugins**. The binary is the only gateway. It serves the CLI, HTTP and MCP, loads and supervises the plugins, and owns no tables. Feature surfaces appear as plugins register.
 
 - **Core** — `core/crates/`, built into `~/.local/bin/awm`. `awm-gateway` is the gateway, `awm-cli` the command tree, `awm-mcp` the stdio MCP server, `awm-edge` the ssh transport between nodes, `awm-trust` the edge list, trust levels and the service door, and `awm-proto` the manifest and wire types.
-- **Plugins** — each folder under `awm/services/` and `awm/plugins/` with an `awm-plugin.toml`. `awm services list` reports the live set. Each folder's `INSTALL.md` is its contract.
-- **Shared Python components** — `awm/service_components/`: `awm.config`, `awm.persistence`, `awm.gatewayclient`, `awm.claudedaemon`, `awm.kept`, `awm.trustpolicy`, `awm.telemetry`, `awm.usage`, `awm.tlsfront` and `awm.dvcdata`. They are libraries, not plugins. A plugin imports a library, never another plugin's code.
+- **Plugins** — each folder under `core/plugins/`, `awm/services/` and `awm/plugins/` with an `awm-plugin.toml`. A plugin under `core/plugins/` is a static Rust binary that the deploy places at `<AWM_DIR>/bin/<name>`. `awm services list` reports the live set. Each folder's `INSTALL.md` is its contract.
+- **Shared Python components** — `awm/service_components/`: `awm.config`, `awm.persistence`, `awm.gatewayclient`, `awm.kept`, `awm.trustpolicy`, `awm.telemetry`, `awm.usage`, `awm.tlsfront` and `awm.dvcdata`. They are libraries, not plugins. A plugin imports a library, never another plugin's code.
 - **Frontend source** — `awm/ui_components/` and each plugin's `pages/`. See § *Frontend*.
 
 ### Ownership and identity
@@ -25,13 +25,13 @@ Each plugin owns its own SQLite DB. There is no shared `state.db`. Plugins refer
 
 A harness plugin integrates one coding-agent harness: `cch` for Claude Code, `dsh` for the DeepSeek harness. Each serves a hidden tool that implements `harness@1` (`docs/redux/drafts/harness-contract.md`). `reflection` is the one agent-facing tool. It holds what holds for every harness: who is calling, trust and mode per session, the R9 session id, the owed resumes and `wait`. A harness plugin finds its own sessions, types into them, starts, stops and resumes them, and reports events back to `reflection`. The gateway asks `reflection session_of` who owns a caller's pid, and `reflection` asks the harness plugins.
 
-`cch` builds on `awm.claudedaemon`, everything awm knows about Claude Code's background sessions: the daemon roster and the per-job records (`roster`), the launch (`launch`), directory trust (`trust`), typing a line into a session over the daemon's PTY socket (`pty`, `lane`, `job`) and the restricted mode a session runs in (`sessionmode`). It decides nothing about whose session a caller may reach.
+The harness plugins share the `awm-harness` crate (`core/crates/awm-harness`). Its `contract` module holds the harness@1 target parsing, result types and the `harness_event` client, which cch, dsh and reflection all use. Its `claude` module holds what Claude Code owns: the daemon roster, the job and session records, the launch, directory trust and typing into a session over the daemon's PTY socket. It reads no `AWM_*` variable and never names cch, and a layering test enforces this. cch's own policy, such as its lineage records and the restricted mode, lives in the cch crate.
 
 ### Kept sessions
 
 A plugin keeps its state in SQLite, so the gateway's respawn brings it back whole. A Claude Code session keeps its state in its conversation, and only the daemon can bring that back. Three layers keep a session up:
 
-1. `cch`'s keep unit holds the daemon in its own user unit, outside awm's control group and outside every terminal (`awm/services/cch/DAEMON.md`).
+1. `cch`'s keep unit holds the daemon in its own user unit, outside awm's control group and outside every terminal (`core/plugins/cch/src/keeper.rs`).
 2. `cch`'s session layer ensures the daemon before a start, resume or stop. It refuses with `code: "daemon_down"` only when that fails. It revives pinned jobs once per boot.
 3. `awm.kept` holds the policy every keeper shares: the restart record, the decision (wait, resume, start fresh, give up) and the breaker. It does no I/O. Social's seat keeper is its first user.
 
@@ -241,7 +241,7 @@ A Python service registers and sends `ready` before `on_start` runs, then finish
 
 - **Use `gatewayclient.SupervisedSubscription` for every emit subscription.** When an emitter restarts, its subscribers' streams can stay open on a connection whose keepalives still pass, because they only prove the gateway is alive. Three services once shipped the same naive loop and went deaf together. The helper reconnects, bounds staleness with a jittered idle deadline and reports `healthy`. Show `healthy` in the service's `status`.
 - **Use `gatewayclient.spawn_supervised` for every long-lived background task.** A bare `asyncio.create_task` whose handle nobody reads leaves the service looking healthy with that capability gone if the task raised on its first line. The wrapper logs at ERROR and respawns. It treats a return as a defect, so a supervised loop must never exit. Check the shutdown flag and skip the tick.
-- **A child that must outlive a drain or a reboot needs its own cgroup.** `KillMode=process` spares a restart, but `awm stop`'s process-group kill does not spare a child in the service's group, and every descendant inherits the cgroup however it forks or `setsid`s. Place a survivor outside the `awm` unit with `systemd-run --user` in a transient unit, as `claude-science` does. The inverse trap is the Claude daemon: a background session inherits the cgroup and environment of whichever process first started the node's `claude daemon`. `cch` refuses to start a session unless its keep unit's daemon runs (`claudedaemon.launch`). Either failure is invisible in dev: the process is simply gone after the next drain.
+- **A child that must outlive a drain or a reboot needs its own cgroup.** `KillMode=process` spares a restart, but `awm stop`'s process-group kill does not spare a child in the service's group, and every descendant inherits the cgroup however it forks or `setsid`s. Place a survivor outside the `awm` unit with `systemd-run --user` in a transient unit, as `claude-science` does. The inverse trap is the Claude daemon: a background session inherits the cgroup and environment of whichever process first started the node's `claude daemon`. `cch` refuses to start a session unless its keep unit's daemon runs. Either failure is invisible in dev: the process is simply gone after the next drain.
 - **One gateway per port.** Sandboxes run in parallel on distinct ports.
 
 ## Dev sandboxes
