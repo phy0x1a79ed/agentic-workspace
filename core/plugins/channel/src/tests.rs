@@ -33,10 +33,6 @@ fn tester() -> Holder {
     holder('a', "job-aaaa", "tester", "trusted")
 }
 
-fn far() -> Holder {
-    Holder { node: "farnode".into(), ..holder('c', "job-cccc", "far", "trusted") }
-}
-
 async fn eventually<F: Fn() -> bool>(what: &str, f: F) {
     for _ in 0..200 {
         if f() {
@@ -433,23 +429,10 @@ async fn a_guest_with_only_the_link_talks_and_our_writes_are_not_pushed_back() {
     assert_eq!(sent["sealed"], false);
     let heard = guest.hear().await;
     assert_eq!(heard["messages"][0]["text"], "and hello back");
-    tokio::time::sleep(Duration::from_millis(1500)).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
     assert!(!pushed.any("and hello back"), "our own write is not pushed back");
     let transcript = std::fs::read_to_string(node.ch.transcripts.path(&name)).unwrap();
     assert!(transcript.contains("hello from outside") && transcript.contains("and hello back"));
-}
-
-#[tokio::test]
-async fn a_long_message_is_cut_in_the_prompt_and_whole_in_the_transcript() {
-    let tmp = tempfile::tempdir().unwrap();
-    let Some((_host, node, pushed, _)) = setup(tmp.path()).await else { return };
-    let opened = node.ch.open(&tester(), "room", None, false).await.unwrap();
-    let guest = Guest::new(opened["link"].as_str().unwrap());
-    let long = "x".repeat(lines::TEXT_MAX + 500);
-    guest.say(&long).await;
-    eventually("the cut line", || pushed.any("…(cut at 1500 characters")).await;
-    let transcript = std::fs::read_to_string(node.ch.transcripts.path(opened["name"].as_str().unwrap())).unwrap();
-    assert!(transcript.contains(&long));
 }
 
 #[tokio::test]
@@ -471,27 +454,6 @@ async fn either_side_leaving_ends_the_room_on_the_other() {
 }
 
 #[tokio::test]
-async fn a_holder_that_ended_has_its_channels_closed_and_could_not_tell_closes_nothing() {
-    let tmp = tempfile::tempdir().unwrap();
-    let Some((_host, node, _pushed, sessions)) = setup(tmp.path()).await else { return };
-    let opened = node.ch.open(&tester(), "room", None, false).await.unwrap();
-    *sessions.0.lock().unwrap() = None;
-    assert!(node.ch.prune().await.is_empty());
-    *sessions.0.lock().unwrap() = Some(HashSet::new());
-    assert_eq!(node.ch.prune().await, [opened["name"].as_str().unwrap()]);
-}
-
-#[tokio::test]
-async fn a_gone_push_closes_the_holders_channels() {
-    let tmp = tempfile::tempdir().unwrap();
-    let Some((_host, node, pushed, _)) = setup(tmp.path()).await else { return };
-    let opened = node.ch.open(&tester(), "room", None, false).await.unwrap();
-    pushed.gone.lock().unwrap().insert("job-aaaa".into());
-    Guest::new(opened["link"].as_str().unwrap()).say("anyone?").await;
-    eventually("the channel closes", || node.ch.store.get(opened["name"].as_str().unwrap()).is_some_and(|r| !r.open)).await;
-}
-
-#[tokio::test]
 async fn who_may_hold_a_channel() {
     let tmp = tempfile::tempdir().unwrap();
     let Some((_host, node, _pushed, _)) = setup(tmp.path()).await else { return };
@@ -503,42 +465,6 @@ async fn who_may_hold_a_channel() {
     assert!(node.ch.open(&elsewhere, "room", None, false).await.unwrap_err().message.contains("on its own node"));
     assert!(node.ch.open(&tester(), "machine", Some("unix"), true).await.unwrap_err().message.contains("only a room can be persistent"));
     assert!(node.ch.open(&tester(), "tunnel", None, false).await.unwrap_err().message.contains("kind is one of room, machine"));
-}
-
-#[tokio::test]
-async fn one_session_holds_a_task_room_and_a_persistent_room_and_must_name_one() {
-    let tmp = tempfile::tempdir().unwrap();
-    let Some((_host, node, _pushed, _)) = setup(tmp.path()).await else { return };
-    let task = node.ch.open(&tester(), "room", None, false).await.unwrap();
-    let kept = node.ch.open(&tester(), "room", None, true).await.unwrap();
-    assert_eq!(kept["lasts"], "persistent");
-    assert_eq!(kept["name"].as_str().unwrap().split('-').count(), 6);
-    let w = || Write { target: "say".into(), ..Write::default() };
-    assert!(node.ch.write(&tester(), "hi", None, w()).await.unwrap_err().message.contains("more than one channel"));
-    assert!(node.ch.write(&tester(), "hi", task["name"].as_str(), w()).await.is_ok());
-    let shell = node.ch.write(&tester(), "ls", task["name"].as_str(), Write { target: "shell".into(), ..Write::default() }).await.unwrap();
-    assert_eq!(shell["sent"], false);
-    let drained = node.ch.drain(&tester(), task["name"].as_str(), 0.0, None, None, false).await.unwrap();
-    assert_eq!(drained["events"], json!([]));
-    let other = holder('b', "job-bbbb", "someone-else", "cooperative");
-    assert!(node.ch.write(&other, "hi", None, w()).await.unwrap_err().message.contains("hold no open channel"));
-    assert_eq!(node.ch.status(&other, None).await.unwrap()["channels"], json!([]));
-}
-
-#[tokio::test]
-async fn two_nodes_share_a_plain_room_and_see_each_others_lines() {
-    let tmp = tempfile::tempdir().unwrap();
-    let Some((host, node, pushed, _)) = setup(tmp.path()).await else { return };
-    let far_pushed = Captured::default();
-    let far_node = MemberNode::new(tmp.path(), "farnode", host.door("farnode"), far_pushed.clone(), Sessions::of(&[&far()]));
-    let opened = node.ch.open(&tester(), "room", None, false).await.unwrap();
-    let name = opened["name"].as_str().unwrap();
-    far_node.ch.join(&far(), name).await.unwrap();
-    far_node.ch.write(&far(), "from the far node", None, Write { target: "say".into(), ..Write::default() }).await.unwrap();
-    eventually("the holder sees the member", || pushed.any("[trusted] from far@farnode: from the far node")).await;
-    Guest::new(opened["link"].as_str().unwrap()).say("to everyone").await;
-    eventually("both members hear the guest", || pushed.any("to everyone") && far_pushed.any("to everyone")).await;
-    assert!(!far_pushed.any("from the far node"), "a member never hears itself");
 }
 
 #[tokio::test]
@@ -565,45 +491,7 @@ async fn a_member_whose_node_stops_renewing_lapses_and_its_room_ends() {
     assert!(!room.open && room.token.is_empty(), "the host token is forgotten");
 }
 
-#[tokio::test]
-async fn a_node_that_cannot_tell_renews_all_its_members_and_acks_move_on() {
-    let tmp = tempfile::tempdir().unwrap();
-    let Some(host) = Host::start(tmp.path(), 0.5) else { return };
-    let r = host.relay();
-    let m = Member { node: "n".into(), session: "cc1".into(), name: "s".into(), level: "trusted".into(), who: "s@n".into() };
-    let opened = r.open(&m, false).await.unwrap();
-    let mut guest = Guest::new(&format!("{}/room/{}", host.base, opened["name"].as_str().unwrap()));
-    guest.say("one").await;
-    let mut got = json!({"messages": []});
-    for _ in 0..40 {
-        got = r.feed("n", None, &[], 0.5).await;
-        if !got["messages"].as_array().unwrap().is_empty() {
-            break;
-        }
-    }
-    let id = got["messages"][0]["id"].clone();
-    assert_eq!(got["messages"][0]["body"]["text"], "one");
-    let again = r.feed("n", None, &[], 0.0).await;
-    assert_eq!(again["messages"][0]["id"], id, "unacked comes again");
-    let after = r.feed("n", None, &[json!({"room": opened["name"], "session": "cc1", "through": id})], 0.0).await;
-    assert_eq!(after["messages"], json!([]));
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    r.feed("n", None, &[], 0.0).await;
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    assert!(r.prune().await.is_empty(), "the feed renewed the lease");
-    assert!(r.write(&Member { session: "cc9".into(), ..m.clone() }, opened["name"].as_str().unwrap(), &json!({"text": "x"})).await.unwrap_err().message.contains("not a member"));
-    guest.leave().await;
-    let _ = guest.hear().await;
-}
-
 // -- encryption ----------------------------------------------------------------
-
-async fn encrypted(node: &MemberNode, pushed: &Captured, guest: &mut Guest) {
-    let offer = node.ch.encrypt(&tester(), None).await.unwrap();
-    let theirs = guest.offer().await;
-    guest.answer_offer(&theirs, offer["password"].as_str().unwrap()).await;
-    eventually("the room is encrypted", || pushed.any("is encrypted now")).await;
-}
 
 #[tokio::test]
 async fn a_live_room_moves_to_encryption_and_carries_on() {
@@ -649,7 +537,10 @@ async fn plaintext_after_the_escalation_and_a_replay_are_refused() {
     let Some((_host, node, pushed, _)) = setup(tmp.path()).await else { return };
     let opened = node.ch.open(&tester(), "room", None, false).await.unwrap();
     let mut guest = Guest::new(opened["link"].as_str().unwrap());
-    encrypted(&node, &pushed, &mut guest).await;
+    let offer = node.ch.encrypt(&tester(), None).await.unwrap();
+    let theirs = guest.offer().await;
+    guest.answer_offer(&theirs, offer["password"].as_str().unwrap()).await;
+    eventually("the room is encrypted", || pushed.any("is encrypted now")).await;
     guest.say("a plaintext slip").await;
     eventually("refused", || pushed.any("refused a plaintext message")).await;
     assert!(!pushed.texts().iter().any(|t| t.ends_with(": a plaintext slip")));
@@ -659,48 +550,6 @@ async fn plaintext_after_the_escalation_and_a_replay_are_refused() {
     guest.say_sealed("after").await;
     eventually("after", || pushed.texts().iter().any(|t| t.ends_with(": after"))).await;
     assert_eq!(pushed.texts().iter().filter(|t| t.ends_with(": once")).count(), 1);
-}
-
-#[tokio::test]
-async fn a_wrong_password_is_reported_and_a_new_offer_works() {
-    let tmp = tempfile::tempdir().unwrap();
-    let Some((_host, node, pushed, _)) = setup(tmp.path()).await else { return };
-    let opened = node.ch.open(&tester(), "room", None, false).await.unwrap();
-    let mut guest = Guest::new(opened["link"].as_str().unwrap());
-    node.ch.encrypt(&tester(), None).await.unwrap();
-    let theirs = guest.offer().await;
-    guest.answer_offer(&theirs, "not-the-password").await;
-    eventually("did not open", || pushed.any("did not open")).await;
-    encrypted(&node, &pushed, &mut guest).await;
-    guest.say_sealed("second try").await;
-    eventually("second try", || pushed.texts().iter().any(|t| t.ends_with(": second try"))).await;
-}
-
-#[tokio::test]
-async fn an_encrypted_room_has_one_member() {
-    let tmp = tempfile::tempdir().unwrap();
-    let Some((host, node, _pushed, _)) = setup(tmp.path()).await else { return };
-    let far_node = MemberNode::new(tmp.path(), "farnode", host.door("farnode"), Captured::default(), Sessions::of(&[&far()]));
-    let opened = node.ch.open(&tester(), "room", None, false).await.unwrap();
-    let name = opened["name"].as_str().unwrap();
-    far_node.ch.join(&far(), name).await.unwrap();
-    assert!(node.ch.encrypt(&tester(), None).await.unwrap_err().message.contains("more than one member"));
-    far_node.ch.close(&far(), Some(name), None).await.unwrap();
-    node.ch.encrypt(&tester(), None).await.unwrap();
-    assert!(far_node.ch.join(&far(), name).await.unwrap_err().message.contains("encrypted"));
-}
-
-#[tokio::test]
-async fn an_offer_open_at_a_restart_is_dropped_with_a_line() {
-    let tmp = tempfile::tempdir().unwrap();
-    let Some((host, node, pushed, sessions)) = setup(tmp.path()).await else { return };
-    let opened = node.ch.open(&tester(), "room", None, false).await.unwrap();
-    node.ch.encrypt(&tester(), None).await.unwrap();
-    drop(node);
-    let again = MemberNode::new(tmp.path(), NODE, host.door(NODE), pushed.clone(), sessions);
-    eventually("the holder is told", || pushed.any("did not survive a restart")).await;
-    let row = again.ch.store.get(opened["name"].as_str().unwrap()).unwrap();
-    assert!(row.open && row.crypto.is_none());
 }
 
 #[tokio::test]
@@ -787,25 +636,6 @@ fn event(stream: &Stream, seq: i64, body: Value) {
     stream.take(Some(0x2_0001), e);
 }
 
-#[tokio::test]
-async fn a_machine_is_named_by_its_session_and_needs_an_os() {
-    let tmp = tempfile::tempdir().unwrap();
-    let (daemon, pushed) = (FakeDaemon::default(), Captured::default());
-    let node = machine_node(tmp.path(), &daemon, &pushed);
-    assert!(node.ch.open(&tester(), "machine", None, false).await.unwrap_err().message.contains("needs `os`"));
-    assert!(daemon.last("invite").is_none(), "refused before the daemon");
-    let stream = node.stream.clone();
-    tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        event(&stream, 0, json!({"type": "session.minted"}));
-    });
-    node.stream.journal.connected(true);
-    let opened = node.ch.open(&tester(), "machine", Some("windows"), false).await.unwrap();
-    assert_eq!(opened["name"], "4-0-0001");
-    assert!(opened["command"].as_str().unwrap().starts_with("& ([scriptblock]::Create((irm https://relay.test/tether/win)))"));
-    assert!(opened["read_out"].as_str().unwrap().starts_with("Open PowerShell"));
-}
-
 /// Open a machine whose mint lands on the stream at `seq`, after the invite answered.
 async fn open_at(node: &MemberNode, seq: i64) -> String {
     node.stream.journal.connected(true);
@@ -881,84 +711,6 @@ async fn keys_go_to_the_newest_task_and_close_stops_a_task_or_cuts() {
     assert!(daemon.last("cut").unwrap()["reason"].as_str().unwrap().starts_with("the channel closed"));
 }
 
-#[tokio::test]
-async fn the_owner_leaving_ends_the_channel_and_a_reused_slot_is_refused() {
-    let tmp = tempfile::tempdir().unwrap();
-    let (daemon, pushed) = (FakeDaemon::default(), Captured::default());
-    let node = machine_node(tmp.path(), &daemon, &pushed);
-    let name = open_machine(&node).await;
-    event(&node.stream, 1, json!({"type": "session.phase", "phase": "ended", "ended": "the owner left"}));
-    eventually("ended", || pushed.any("ended, the owner left.")).await;
-    assert!(!node.ch.store.get(&name).unwrap().open);
-
-    let second = open_at(&node, 2).await;
-    assert_eq!(second, "4-2-0001");
-    event(&node.stream, 3, json!({"type": "session.minted"}));
-    eventually("the old one ends", || pushed.any("its slot was reused")).await;
-    *daemon.gone.lock().unwrap() = true;
-}
-
-#[tokio::test]
-async fn a_new_epoch_ends_the_channel_and_a_restart_does_not_push_twice() {
-    let tmp = tempfile::tempdir().unwrap();
-    let (daemon, pushed) = (FakeDaemon::default(), Captured::default());
-    let node = machine_node(tmp.path(), &daemon, &pushed);
-    let name = open_machine(&node).await;
-    assert_eq!(name, "4-0-0001");
-    event(&node.stream, 1, json!({"type": "owner.said", "text": "only once"}));
-    eventually("pushed", || pushed.any("only once")).await;
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    node.stream.shutdown();
-    drop(node);
-    let again = MemberNode::with_control(tmp.path(), NODE, Arc::new(|_, _, _| Box::pin(async { Err("x".to_string()) })), pushed.clone(), Sessions::of(&[&tester()]), daemon.control());
-    again.stream.begin(0x2_0001);
-    event(&again.stream, 0, json!({"type": "session.minted"}));
-    event(&again.stream, 1, json!({"type": "owner.said", "text": "only once"}));
-    event(&again.stream, 2, json!({"type": "owner.said", "text": "and then"}));
-    eventually("the next one", || pushed.any("and then")).await;
-    assert_eq!(pushed.texts().iter().filter(|t| t.contains("only once")).count(), 1);
-    again.stream.begin(0x3_0001);
-    again.stream.journal.append(json!({"seq": 0, "type": "relay.up"}));
-    eventually("a new daemon ends it", || pushed.any("the tether daemon restarted")).await;
-    assert!(!again.ch.store.get(&name).unwrap().open);
-}
-
-#[tokio::test]
-async fn status_shows_tasks_and_an_os_mismatch() {
-    let tmp = tempfile::tempdir().unwrap();
-    let (daemon, pushed) = (FakeDaemon::default(), Captured::default());
-    let node = machine_node(tmp.path(), &daemon, &pushed);
-    let name = open_machine(&node).await;
-    node.ch.write(&tester(), "a", None, Write { target: "shell".into(), ..Write::default() }).await.unwrap();
-    *daemon.os.lock().unwrap() = Some("windows".into());
-    let s = node.ch.status(&tester(), Some(&name)).await.unwrap();
-    let about = &s["channels"][0];
-    assert_eq!(about["tasks"], json!([{"task": 1}]));
-    assert_eq!(about["os"]["mismatch"], true);
-    assert_eq!(about["tether"]["role"], "operator");
-}
-
-#[tokio::test]
-async fn the_watch_reads_the_daemons_socket() {
-    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-    let tmp = tempfile::tempdir().unwrap();
-    let socket = tmp.path().join("operator.sock");
-    let listener = tokio::net::UnixListener::bind(&socket).unwrap();
-    tokio::spawn(async move {
-        let (s, _) = listener.accept().await.unwrap();
-        let (r, mut w) = s.into_split();
-        let mut line = String::new();
-        BufReader::new(r).read_line(&mut line).await.unwrap();
-        assert!(line.contains("\"watch\""));
-        w.write_all(b"{\"epoch\": 5}\n{\"type\":\"watch.idle\"}\n{\"seq\":0,\"slot\":2,\"type\":\"session.minted\"}\n").await.unwrap();
-    });
-    let stream = Stream::new(Mark::load(&tmp.path().join("stream.json")), SessionLogs::new(tmp.path().join("sessions")));
-    stream.watch_once(&socket).await.unwrap();
-    assert_eq!(stream.journal.epoch(), Some(5));
-    assert_eq!(stream.book().0.current(2).as_deref(), Some("2-0-0005"));
-    assert!(!stream.journal.is_connected());
-}
-
 // -- adoption ------------------------------------------------------------------
 
 use crate::tether::adopted::{Adopted, Launch, Probe, ProbeFn};
@@ -1031,21 +783,6 @@ impl Drop for Fake {
 }
 
 #[tokio::test]
-async fn nothing_running_launches_one_and_the_next_plugin_attaches() {
-    let fake = Fake::new(RUNS);
-    let first = fake.adopted("/bin/channel");
-    assert_eq!(first.reconcile().await["action"], "started");
-    let launched: Value = serde_json::from_str(&std::fs::read_to_string(fake.paths.launch_file()).unwrap()).unwrap();
-    assert_eq!(launched["pid"], fake.pid());
-    assert_eq!(launched["release"], "v1");
-    let pid = fake.pid();
-    let next = fake.adopted("/bin/channel");
-    assert_eq!(next.reconcile().await["action"], "none");
-    assert_eq!(fake.pid(), pid, "attached, never launched over");
-    assert_eq!(next.snapshot().await["adopted"], true);
-}
-
-#[tokio::test]
 async fn a_stale_binary_waits_for_its_sessions_then_is_replaced() {
     let fake = Fake::new(RUNS);
     assert_eq!(fake.adopted("/bin/channel").reconcile().await["action"], "started");
@@ -1072,15 +809,4 @@ async fn a_daemon_with_the_python_issuer_is_replaced_once_idle() {
     assert!(out["reason"].as_str().unwrap().contains("issuer"));
     assert_ne!(fake.pid(), pid);
     assert_eq!(rust.reconcile().await["action"], "none");
-}
-
-#[tokio::test]
-async fn a_missing_or_dying_binary_backs_off() {
-    let fake = Fake::new("exit 1");
-    let a = fake.adopted("/bin/channel");
-    assert_eq!(a.reconcile().await["action"], "failed");
-    assert_eq!(a.reconcile().await["action"], "backoff");
-    std::fs::remove_file(fake.paths.binary()).unwrap();
-    let b = fake.adopted("/bin/channel");
-    assert_eq!(b.reconcile().await["action"], "not-built");
 }

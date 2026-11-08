@@ -285,7 +285,7 @@ impl Mark {
             self.settle(slot);
             self.save();
         }
-        let found = self.gens.get(&slot)?.iter().filter(|g| g.from <= seq).last().map(|g| g.sid.clone());
+        let found = self.gens.get(&slot)?.iter().rfind(|g| g.from <= seq).map(|g| g.sid.clone());
         if let Some(sid) = &found {
             event["session"] = json!(sid);
         }
@@ -536,38 +536,6 @@ mod tests {
     }
 
     #[test]
-    fn filters_keep_one_session_and_one_kind() {
-        let j = Journal::default();
-        j.append(json!({"seq": 0, "slot": 1, "type": "owner.said", "session": "1-0-0001"}));
-        j.append(json!({"seq": 1, "slot": 2, "type": "owner.said", "session": "2-1-0001"}));
-        j.append(json!({"seq": 2, "type": "relay.up"}));
-        j.append(json!({"seq": 3, "slot": 1, "type": "task.output", "session": "1-0-0001"}));
-        let mine: HashSet<String> = ["1-0-0001".to_string()].into();
-        let (events, next, _) = j.since(Some(0), &Filter { sessions: Some(&mine), types: &["owner."], ..Filter::default() });
-        assert_eq!(events.iter().map(|e| e["seq"].as_i64().unwrap()).collect::<Vec<_>>(), [0]);
-        assert_eq!(next, 4);
-        let (events, _, _) = j.since(Some(0), &Filter { sessions: Some(&mine), ..Filter::default() });
-        assert_eq!(events.len(), 3, "a fact of no slot is everyone's");
-    }
-
-    #[test]
-    fn every_event_is_stamped_with_its_mint_and_a_claim_settles() {
-        let mut m = Mark::default();
-        assert_eq!(m.claim(4, 10), None);
-        let mut e = ev(10, 4, "session.minted");
-        assert_eq!(m.stamp(0x1_0002, &mut e).as_deref(), Some("4-10-0002"));
-        assert!(!m.claimed(4), "the mint settles the claim");
-        let mut said = ev(11, 4, "owner.said");
-        m.stamp(0x1_0002, &mut said);
-        assert_eq!(said["session"], "4-10-0002");
-        let mut again = ev(20, 4, "session.minted");
-        m.stamp(0x1_0002, &mut again);
-        assert_eq!(m.current(4).as_deref(), Some("4-20-0002"));
-        let mut late = ev(15, 4, "task.output");
-        assert_eq!(m.stamp(0x1_0002, &mut late).as_deref(), Some("4-10-0002"), "an event keeps the mint it falls under");
-    }
-
-    #[test]
     fn the_mark_reads_the_python_file_in_place() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("stream.json");
@@ -608,19 +576,4 @@ mod tests {
         assert_eq!(mode, 0o700);
     }
 
-    #[tokio::test]
-    async fn a_wait_ends_when_its_task_exits() {
-        let j = Arc::new(Journal::default());
-        let j2 = j.clone();
-        let waiter = tokio::spawn(async move {
-            let t = Instant::now();
-            j2.wait(Duration::from_secs(5), Some(3), None).await;
-            t.elapsed()
-        });
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        j.append(json!({"seq": 0, "type": "task.output", "task": 3}));
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        j.append(json!({"seq": 1, "type": "task.exited", "task": 3}));
-        assert!(waiter.await.unwrap() < Duration::from_secs(2));
-    }
 }

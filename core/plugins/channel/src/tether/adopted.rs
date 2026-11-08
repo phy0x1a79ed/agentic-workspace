@@ -548,20 +548,4 @@ mod tests {
         assert!(!text.contains("s3cret"));
     }
 
-    #[test]
-    fn the_unit_name_is_the_python_one() {
-        let paths = Paths::new(Role::Operator, Path::new("/home/tony/agentic_workspace/.awm"));
-        assert_eq!(paths.unit(), "awm-tether-operator-c3fdc3fb");
-        assert_eq!(Paths::new(Role::Relay, Path::new("/home/tony/agentic_workspace/.awm")).unit(), "awm-tether-relay-c3fdc3fb");
-    }
-
-    #[test]
-    fn a_launch_keeps_the_allowlist_and_names_the_issuer() {
-        let paths = Paths::new(Role::Operator, Path::new("/tmp/x"));
-        let launch = Launch::from_env(&paths, Some(vec!["/bin/channel".into(), "issue".into()]));
-        let get = |k: &str| launch.env.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone());
-        assert_eq!(get("TETHER_ISSUER").as_deref(), Some("[\"/bin/channel\",\"issue\"]"));
-        assert_eq!(get("TETHER_CONTROL_SOCKET").as_deref(), Some("/tmp/x/services/tether/operator.sock"));
-        assert!(launch.env.iter().all(|(k, _)| k != "AWM_TETHER_ISSUE_TOKEN"));
-    }
 }

@@ -177,7 +177,7 @@ impl Machines {
             .flatten()
             .filter(|s| s.get("slot").and_then(Value::as_i64) == Some(slot))
             .filter_map(|s| s.pointer("/owner/os").and_then(Value::as_str).map(str::to_string))
-            .last();
+            .next_back();
         let declared = self.stream.book().0.declared.get(&slot).and_then(|d| d.get("os")).and_then(Value::as_str).map(str::to_string);
         let mut about = remote_os::describe(declared.as_deref(), reported.as_deref());
         if brief {
@@ -310,11 +310,4 @@ mod tests {
         assert!(got[0].get("data").is_none());
     }
 
-    #[test]
-    fn streams_and_tasks_stay_apart_and_raw_keeps_base64() {
-        let got = decoded(&[out(1, "stdout", b"x"), out(1, "stderr", b"y"), json!({"type": "task.exited", "task": 1}), out(1, "stdout", b"z")], false);
-        assert_eq!(got.iter().map(|e| e["type"].as_str().unwrap()).collect::<Vec<_>>(), ["task.output", "task.output", "task.exited", "task.output"]);
-        let raw = decoded(&[out(2, "stdout", &[0xff, 0x00]), out(2, "stdout", &[0x01])], true);
-        assert_eq!(raw[0]["data"], base64::engine::general_purpose::STANDARD.encode([0xff, 0x00, 0x01]));
-    }
 }

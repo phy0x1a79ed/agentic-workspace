@@ -171,7 +171,7 @@ impl Store {
     pub fn close_room(&self, name: &str, why: &str) -> bool {
         self.db()
             .execute("UPDATE rooms SET open = 0, ended = ?1, closed_at = ?2, token = '' WHERE name = ?3 AND open = 1", params![why, db::now(), name])
-            .map_or(false, |n| n == 1)
+            .is_ok_and(|n| n == 1)
     }
 
     // -- members -------------------------------------------------------------
@@ -247,7 +247,7 @@ impl Store {
     pub fn leave(&self, room: &str, node: &str, session: &str, why: &str) -> bool {
         self.db()
             .execute("UPDATE members SET left_at = ?1, left_why = ?2 WHERE room = ?3 AND node = ?4 AND session = ?5 AND left_at IS NULL", params![db::now(), why, room, node, session])
-            .map_or(false, |n| n == 1)
+            .is_ok_and(|n| n == 1)
     }
 
     pub fn lapsed(&self, before: f64) -> Vec<Membership> {

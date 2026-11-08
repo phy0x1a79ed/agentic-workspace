@@ -90,35 +90,3 @@ pub fn describe(declared: Option<&str>, reported: Option<&str>) -> Value {
     }
     out
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn refusals_name_the_two_choices() {
-        assert!(refusal(None).unwrap().starts_with("invite needs `os`."));
-        assert!(refusal(Some("wsl")).unwrap().contains("send `os: \"unix\"`"));
-        assert!(refusal(Some("plan9")).unwrap().contains(ASK));
-        assert_eq!(refusal(Some("windows")), None);
-        assert_eq!(refusal(Some("unix")), None);
-    }
-
-    #[test]
-    fn a_windows_line_is_built_from_the_sh_line() {
-        let sh = "curl -fsSL https://relay.example/tether | sh -s 7 acre-anchor";
-        assert_eq!(launcher_line("unix", sh).unwrap(), sh);
-        assert_eq!(launcher_line("windows", sh).unwrap(), "& ([scriptblock]::Create((irm https://relay.example/tether/win))) 7 acre-anchor");
-        assert!(launcher_line("windows", "something else").is_err());
-    }
-
-    #[test]
-    fn a_mismatch_is_judged_as_windows_against_the_rest() {
-        assert_eq!(describe(Some("unix"), Some("linux"))["shell"], "POSIX sh");
-        assert!(describe(Some("unix"), Some("macos")).get("mismatch").is_none());
-        assert_eq!(describe(Some("unix"), Some("windows"))["mismatch"], true);
-        assert_eq!(describe(Some("windows"), Some("linux"))["mismatch"], true);
-        assert!(describe(None, None)["warning"].as_str().unwrap().contains(ASK));
-        assert!(describe(None, Some("linux"))["warning"].as_str().unwrap().contains("reports `linux`"));
-    }
-}

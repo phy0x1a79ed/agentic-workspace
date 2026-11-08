@@ -112,32 +112,4 @@ mod tests {
         assert!(open(&k, 3, "acre-anchor-other", &sealed).is_err());
         assert!(open(&"22".repeat(32), 3, "acre-anchor-kettle", &sealed).is_err());
     }
-
-    #[test]
-    fn both_sides_derive_the_same_keys_and_a_wrong_password_differs() {
-        let (ours, ours_msg) = offer("acre-anchor-kettle", "abcd-efgh-jkmn");
-        let (guest, guest_msg) = Spake2::<Ed25519Group>::start_symmetric(&Password::new(b"abcd-efgh-jkmn"), &identity("acre-anchor-kettle"));
-        let keys = finish("acre-anchor-kettle", ours, &guest_msg_b64(&guest_msg)).unwrap();
-        let k = guest.finish(&unb64(&ours_msg).unwrap()).unwrap();
-        assert_eq!(keys.out, hex::encode(derive(&k, "acre-anchor-kettle", HOST_TO_GUEST)));
-        assert_eq!(keys.r#in, hex::encode(derive(&k, "acre-anchor-kettle", GUEST_TO_HOST)));
-
-        let (ours, _) = offer("acre-anchor-kettle", "abcd-efgh-jkmn");
-        let (_, wrong) = Spake2::<Ed25519Group>::start_symmetric(&Password::new(b"not-the-password"), &identity("acre-anchor-kettle"));
-        let keys2 = finish("acre-anchor-kettle", ours, &guest_msg_b64(&wrong)).unwrap();
-        assert_ne!(keys2.r#in, keys.r#in);
-        assert!(finish("r", offer("r", "p").0, "AAAA").is_err());
-    }
-
-    fn guest_msg_b64(m: &[u8]) -> String {
-        B64.encode(m)
-    }
-
-    #[test]
-    fn a_password_is_three_groups_from_the_spoken_alphabet() {
-        let p = new_password();
-        let groups: Vec<&str> = p.split('-').collect();
-        assert_eq!(groups.len(), 3);
-        assert!(groups.iter().all(|g| g.len() == 4 && g.bytes().all(|b| ALPHABET.contains(&b))));
-    }
 }

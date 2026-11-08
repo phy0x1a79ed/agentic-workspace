@@ -185,7 +185,7 @@ impl Store {
 
     /// The relay's id of the last room message typed into the holder. False when it was typed.
     pub fn set_fed(&self, name: &str, fed: i64) -> bool {
-        self.db().execute("UPDATE channels SET fed = ?1 WHERE name = ?2 AND fed < ?1", params![fed, name]).map_or(false, |n| n == 1)
+        self.db().execute("UPDATE channels SET fed = ?1 WHERE name = ?2 AND fed < ?1", params![fed, name]).is_ok_and(|n| n == 1)
     }
 
     /// A machine's conversation cursor, which starts again in a new epoch.
@@ -222,6 +222,6 @@ impl Store {
     pub fn close(&self, name: &str, why: &str) -> bool {
         self.db()
             .execute("UPDATE channels SET open = 0, ended = ?1, closed_at = ?2, token = '', crypto = NULL WHERE name = ?3 AND open = 1", params![why, db::now(), name])
-            .map_or(false, |n| n == 1)
+            .is_ok_and(|n| n == 1)
     }
 }

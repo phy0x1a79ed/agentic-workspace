@@ -125,7 +125,7 @@ impl Relay {
         } else if body.contains_key("text") && row.sealed == SEALED {
             return Err(refuse(format!("room {name} is encrypted, so plaintext is refused")));
         }
-        self.store.renew(&m.node, Some(&[m.session.clone()]));
+        self.store.renew(&m.node, Some(std::slice::from_ref(&m.session)));
         let mut wire = serde_json::Map::new();
         wire.insert("from".into(), json!(m.who));
         wire.extend(body.clone());

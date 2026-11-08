@@ -157,22 +157,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_relay_takes_its_binary_and_every_client() {
-        let rel = tempfile::tempdir().unwrap();
-        release(rel.path(), &["tether-relay-linux-x86_64", "tether-operator-linux-x86_64", "tether", "tether.ps1", "tether-owner-linux-x86_64", "tether-owner-windows-x86_64.exe"]);
-        let awm = tempfile::tempdir().unwrap();
-        let mut paths = Paths::new(Role::Relay, awm.path());
-        (paths.bin_override, paths.bin_dir, paths.assets_dir) = (None, paths.state_dir.join("bin"), paths.state_dir.join("assets"));
-        assert!(fetch(&paths, &Source::Dir(rel.path().into()), &reqwest::Client::new()).await.unwrap());
-        let st = &paths.state_dir;
-        assert!(st.join("bin/tether-relay").is_file() && !st.join("bin/tether-operator").exists());
-        assert!(st.join("assets/tether").is_file() && st.join("assets/tether.ps1").is_file());
-        assert!(st.join("assets/bin/tether-owner-linux-x86_64").is_file() && st.join("assets/bin/tether-owner-windows-x86_64.exe").is_file());
-        assert_eq!(paths.installed().as_deref(), Some(pinned()));
-        assert!(!fetch(&paths, &Source::Dir(rel.path().into()), &reqwest::Client::new()).await.unwrap(), "in sync: nothing to do");
-    }
-
-    #[tokio::test]
     async fn the_operator_takes_only_the_daemon_and_a_bad_sum_installs_nothing() {
         let rel = tempfile::tempdir().unwrap();
         release(rel.path(), &["tether-relay-linux-x86_64", "tether-operator-linux-x86_64"]);

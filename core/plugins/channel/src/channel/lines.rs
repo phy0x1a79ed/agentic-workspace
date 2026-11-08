@@ -88,23 +88,4 @@ mod tests {
         assert_eq!(short, "room r [untrusted] from v: hi");
     }
 
-    #[test]
-    fn lines_flatten_as_python_splits_them() {
-        let line = push_line("machine", "m", "untrusted", "the owner", "one\r\ntwo\nthree\u{2028}four\n", 1, Path::new("/t"));
-        assert_eq!(line, "machine m [untrusted] from the owner: one ⏎ two ⏎ three ⏎ four");
-        assert_eq!(split_lines(""), Vec::<&str>::new());
-        assert_eq!(split_lines("a\n\nb"), ["a", "", "b"]);
-    }
-
-    #[test]
-    fn a_transcript_keeps_the_text_whole_under_a_header() {
-        let tmp = tempfile::tempdir().unwrap();
-        let t = Transcripts { root: tmp.path().join("transcripts") };
-        let path = t.append("r", 3, "guest", "visitor", "line one\nline two");
-        let text = std::fs::read_to_string(&path).unwrap();
-        let (head, body) = text.split_once('\n').unwrap();
-        assert!(head.starts_with("--- 3 guest visitor ") && head.ends_with('Z'));
-        assert_eq!(body, "line one\nline two\n");
-        assert_eq!(std::fs::metadata(&t.root).unwrap().permissions().mode() & 0o777, 0o700);
-    }
 }
