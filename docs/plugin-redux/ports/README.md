@@ -6,6 +6,7 @@ This folder holds one port plan per plugin or shared crate of the plugin redux, 
 
 - `<name>.md`: the port plan for a plugin or a shared crate.
 - `baseline/<tool>.describe.json`: each tool's `describe` at release 49232bf9. A port's describe must equal it, apart from the changes its plan lists.
+- `<group>-handoff.md`: what a group's land session needs: branch heads, land order, rollout steps and checks.
 
 Delete a plan once its port has landed and its crate's own README carries what still matters.
 
