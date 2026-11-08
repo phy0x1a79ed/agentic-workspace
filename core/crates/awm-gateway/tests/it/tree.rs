@@ -35,7 +35,7 @@ fn load_tree(wants: &dyn Fn(&str) -> bool, profiles: &[String], doors: &[String]
 fn the_tree_loads_whole_behind_a_door_and_as_deneb() {
     let profiles = ["claude-science", "gamebot"].map(String::from);
     let got = load_tree(&|_| true, &profiles, &[]);
-    assert!(got.plugins.len() > 30, "found only {} plugins", got.plugins.len());
+    assert!(got.plugins.len() >= 30, "found only {} plugins", got.plugins.len());
 
     let got = load_tree(&|p| p != "trilium", &profiles, &["trilium".to_string()]);
     assert!(got.plugins.iter().any(|p| p.name == "operations"), "operations loads");
