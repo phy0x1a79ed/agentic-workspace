@@ -30,8 +30,11 @@ pub const SETTLE_S: f64 = 0.6;
 /// Every attempt fits inside the settings entry's 20 s timeout, or Claude Code kills the hook
 /// mid-POST.
 pub const HTTP_TIMEOUT_S: f64 = 15.0;
+/// The whole hook's budget, retries included.
 pub const DEADLINE_S: f64 = 17.0;
+/// The pause between two attempts.
 pub const RETRY_GAP_S: f64 = 1.5;
+/// No attempt starts with less than this left.
 pub const MIN_ATTEMPT_S: f64 = 3.0;
 
 /// What vendor Claude Code truncates an intent to.
@@ -43,7 +46,9 @@ pub const CAP: usize = 5;
 pub const RESERVE_S: f64 = 60.0;
 /// A running subagent whose stop never comes, because the session was killed, lapses.
 pub const RUNNING_S: f64 = 4.0 * 3600.0;
+/// The trust lookup's timeout.
 pub const WHOAMI_TIMEOUT: Duration = Duration::from_millis(3000);
+/// The tools that start a subagent.
 pub const AGENT_TOOLS: [&str; 2] = ["Agent", "Task"];
 
 /// Why a gateway call gave no answer.
@@ -229,7 +234,6 @@ fn state_home() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").unwrap_or_else(|| "/".into())).join(".local").join("state"))
 }
 
-
 /// `(project, scope)` of the git worktree under a `projects/` folder that holds `cwd`, or None.
 pub fn scope_of(cwd: &str) -> Option<(String, String)> {
     let path = fs::canonicalize(cwd).unwrap_or_else(|_| PathBuf::from(cwd));
@@ -262,7 +266,11 @@ pub fn brief_line(hub: &dyn Hub, project: &str, scope: &str) -> Value {
 
 /// The Claude Code process that ran this hook: the nearest ancestor with a session record.
 pub fn claude_pid(records: &Path) -> Option<u32> {
-    let mut pid = parent_pid();
+    nearest_with_record(records, parent_pid())
+}
+
+/// `pid` or the nearest of its first five ancestors with a record in `records`.
+fn nearest_with_record(records: &Path, mut pid: u32) -> Option<u32> {
     for _ in 0..6 {
         if pid <= 1 {
             return None;
@@ -320,10 +328,11 @@ pub fn brief(input: &[u8], hub: &dyn Hub, seen: &Path, claude_pid: impl FnOnce()
     })
 }
 
-
 /// The plan-mode hook's clock: monotonic seconds and a sleep.
 pub trait Pace {
+    /// Seconds since an arbitrary fixed start.
     fn monotonic(&self) -> f64;
+    /// Blocks for `secs`.
     fn sleep(&self, secs: f64);
 }
 
@@ -393,7 +402,7 @@ pub fn ensure_bypass(
     note: &mut dyn FnMut(&str),
 ) {
     let deadline = pace.monotonic() + DEADLINE_S;
-    let mut last = String::new();
+    let mut last: String;
     loop {
         let budget = HTTP_TIMEOUT_S.min(deadline - pace.monotonic());
         match call(session_id, budget) {
@@ -443,7 +452,6 @@ pub fn plan_mode(input: &[u8], pace: &dyn Pace, ensure: impl FnOnce(&str)) -> Op
     ensure(session_id);
     None
 }
-
 
 /// The part of the prompt the user typed, without injected context.
 pub fn spoken(prompt: Option<&Value>) -> String {
@@ -508,7 +516,6 @@ pub fn name(input: &[u8], job_dir: Option<&Path>, claimed_prefix: &str) -> Optio
     None
 }
 
-
 /// `$XDG_STATE_HOME/awm/cch/subagents`: one `<session id>.json` counter per session.
 pub fn subagents_dir() -> PathBuf {
     state_home().join("awm").join("cch").join("subagents")
@@ -527,7 +534,9 @@ pub fn level(hub: &dyn Hub) -> String {
 /// One session's subagents: the running ones by agent id with their start, and the reservations.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct CapState {
+    /// Agent id to start, in epoch seconds.
     pub running: Map<String, Value>,
+    /// When each reservation was made, oldest first.
     pub reserved: Vec<f64>,
 }
 
@@ -643,7 +652,6 @@ pub fn subagent_cap(input: &[u8], dir: &Path, now: impl FnOnce() -> f64, level: 
     }
 }
 
-
 /// The hook names `cch hook <name>` accepts.
 pub const HOOKS: [&str; 4] = ["brief", "plan-mode", "name", "subagent-cap"];
 
@@ -691,4 +699,463 @@ pub fn main(name: Option<&str>) -> i32 {
         }
     });
     0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::{Cell, RefCell};
+    use std::net::TcpListener;
+
+    type Answer = Box<dyn Fn(&str, &Value) -> Result<Value, PostError>>;
+
+    /// A [`Hub`] that records each call and answers from `answer`.
+    struct FakeHub {
+        calls: RefCell<Vec<(String, Value, u32, Duration)>>,
+        answer: Answer,
+    }
+
+    impl FakeHub {
+        fn new(answer: impl Fn(&str, &Value) -> Result<Value, PostError> + 'static) -> Self {
+            Self { calls: RefCell::new(Vec::new()), answer: Box::new(answer) }
+        }
+
+        fn names(&self) -> Vec<String> {
+            self.calls.borrow().iter().map(|c| c.0.clone()).collect()
+        }
+    }
+
+    impl Hub for FakeHub {
+        fn invoke(&self, name: &str, args: &Value, caller_pid: u32, timeout: Duration) -> Result<Value, PostError> {
+            self.calls.borrow_mut().push((name.into(), args.clone(), caller_pid, timeout));
+            (self.answer)(name, args)
+        }
+    }
+
+    /// A gateway on a local port that answers one request with `response` and hands back what it got.
+    fn serve_once(response: &'static str) -> (String, std::thread::JoinHandle<String>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            let mut got = Vec::new();
+            let mut buf = [0u8; 4096];
+            loop {
+                let n = stream.read(&mut buf).unwrap();
+                got.extend_from_slice(&buf[..n]);
+                let text = String::from_utf8_lossy(&got).into_owned();
+                if let Some(split) = text.find("\r\n\r\n") {
+                    let length = text[..split]
+                        .lines()
+                        .find_map(|l| l.to_ascii_lowercase().strip_prefix("content-length:").map(|v| v.trim().parse::<usize>().unwrap()))
+                        .unwrap_or(0);
+                    if got.len() >= split + 4 + length {
+                        break;
+                    }
+                }
+                if n == 0 {
+                    break;
+                }
+            }
+            let body = response.to_string();
+            let reply = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}", body.len());
+            stream.write_all(reply.as_bytes()).unwrap();
+            String::from_utf8_lossy(&got).into_owned()
+        });
+        (url, handle)
+    }
+
+    fn tree() -> (tempfile::TempDir, PathBuf) {
+        let tmp = tempfile::tempdir().unwrap();
+        let wt = tmp.path().join("ws/projects/awm/redux/harness");
+        fs::create_dir_all(wt.join("src")).unwrap();
+        fs::write(wt.join(".git"), "gitdir: x").unwrap();
+        fs::create_dir_all(tmp.path().join("ws/projects/awm/.bare")).unwrap();
+        (tmp, wt)
+    }
+
+    fn brief_answer(line: &'static str) -> FakeHub {
+        FakeHub::new(move |name, _| match name {
+            "journal_brief_read" => Ok(json!({"result": {"brief": {"line": line}}})),
+            _ => Ok(json!({})),
+        })
+    }
+
+    fn start(hub: &FakeHub, cwd: &Path) -> Option<String> {
+        let seen = tempfile::tempdir().unwrap();
+        let input = json!({"cwd": cwd, "source": "startup"}).to_string();
+        brief(input.as_bytes(), hub, seen.path(), || None)
+    }
+
+    #[test]
+    fn test_the_scope_is_the_worktree_that_holds_the_folder() {
+        let (_tmp, wt) = tree();
+        let want = Some(("awm".to_string(), "redux/harness".to_string()));
+        assert_eq!(scope_of(wt.join("src").to_str().unwrap()), want);
+        assert_eq!(scope_of(wt.to_str().unwrap()), want);
+        assert_eq!(scope_of(wt.parent().unwrap().parent().unwrap().join(".bare").to_str().unwrap()), None);
+        assert_eq!(scope_of(wt.ancestors().nth(4).unwrap().to_str().unwrap()), None);
+    }
+
+    #[test]
+    fn test_a_session_in_a_scope_gets_its_brief() {
+        let (_tmp, wt) = tree();
+        let line = "The brief of awm/redux/harness: For the harness lane.";
+        let hub = brief_answer(line);
+        let out: Value = serde_json::from_str(&start(&hub, &wt).unwrap()).unwrap();
+        assert_eq!(out["hookSpecificOutput"], json!({"hookEventName": "SessionStart", "additionalContext": line}));
+        let calls = hub.calls.borrow();
+        assert_eq!(calls[0].1, json!({"project": "awm", "scope": "redux/harness"}));
+        assert_eq!(calls[0].2, parent_pid());
+        assert_eq!(calls[0].3, BRIEF_TIMEOUT);
+    }
+
+    #[test]
+    fn test_no_brief_and_no_scope_add_nothing() {
+        let (_tmp, wt) = tree();
+        assert_eq!(start(&brief_answer(""), &wt), None);
+        let hub = brief_answer("never read");
+        assert_eq!(start(&hub, Path::new("/tmp")), None);
+        assert!(hub.names().is_empty());
+    }
+
+    #[test]
+    fn test_a_gateway_that_does_not_answer_adds_nothing() {
+        assert_eq!(brief_line(&HttpHub::new("http://127.0.0.1:9"), "awm", "s"), json!(""));
+    }
+
+    fn fire(hub: &FakeHub, seen: &Path, source: &str, session_id: &str) {
+        let input = json!({"cwd": "/tmp", "source": source, "session_id": session_id}).to_string();
+        assert_eq!(brief(input.as_bytes(), hub, seen, || Some(std::process::id())), None);
+    }
+
+    fn clears(hub: &FakeHub) -> Vec<Value> {
+        hub.calls.borrow().iter().filter(|c| c.0 == "reflection_harness_event").map(|c| c.1.clone()).collect()
+    }
+
+    #[test]
+    fn test_a_clear_reports_the_id_the_process_had_before() {
+        let state = tempfile::tempdir().unwrap();
+        let seen = state.path().join("awm/cch/session-start");
+        let hub = FakeHub::new(|_, _| Ok(json!({})));
+        fire(&hub, &seen, "startup", "old-id");
+        fire(&hub, &seen, "compact", "old-id");
+        assert!(clears(&hub).is_empty());
+        fire(&hub, &seen, "clear", "new-id");
+        assert_eq!(clears(&hub), vec![json!({"session_id": "new-id", "kind": "clear", "parent": "old-id"})]);
+        assert_eq!(hub.calls.borrow()[0].3, CLEAR_TIMEOUT);
+    }
+
+    #[test]
+    fn test_a_clear_with_no_earlier_id_reports_nothing() {
+        let state = tempfile::tempdir().unwrap();
+        let hub = FakeHub::new(|_, _| Ok(json!({})));
+        fire(&hub, &state.path().join("awm/cch/session-start"), "clear", "new-id");
+        assert!(clears(&hub).is_empty());
+    }
+
+    #[test]
+    fn test_the_claude_process_is_the_ancestor_with_a_session_record() {
+        let tmp = tempfile::tempdir().unwrap();
+        let records = tmp.path().join("claude/sessions");
+        fs::create_dir_all(&records).unwrap();
+        // Started at this process rather than its parent, which is pid 1 in the build container.
+        let me = std::process::id();
+        assert_eq!(nearest_with_record(&records, me), None);
+        assert_eq!(claude_pid(&records), None);
+        fs::write(records.join(format!("{me}.json")), "{}").unwrap();
+        assert_eq!(nearest_with_record(&records, me), Some(me));
+    }
+
+    fn payload(over: Value) -> Map<String, Value> {
+        let mut base = json!({"hook_event_name": "PostToolUse", "tool_name": "ExitPlanMode",
+            "session_id": "sid-1", "permission_mode": "acceptEdits",
+            "tool_response": {"plan": "# a plan", "isAgent": false}});
+        for (k, v) in over.as_object().unwrap() {
+            base[k] = v.clone();
+        }
+        base.as_object().unwrap().clone()
+    }
+
+    #[test]
+    fn test_an_approved_plan_is_acted_on() {
+        assert!(should_act(&payload(json!({}))));
+        assert!(should_act(&payload(json!({"permission_mode": "auto"}))));
+        assert!(should_act(&payload(json!({"permission_mode": "default"}))));
+    }
+
+    #[test]
+    fn test_a_rejected_plan_is_left_alone() {
+        // Cycling the mode after a rejection would kick the session out of plan mode.
+        assert!(!should_act(&payload(json!({"tool_response": {"status": "denied"}}))));
+        assert!(!should_act(&payload(json!({"tool_response": "user rejected"}))));
+        assert!(!should_act(&payload(json!({"tool_response": null}))));
+    }
+
+    #[test]
+    fn test_a_session_already_in_bypass_is_not_touched() {
+        assert!(!should_act(&payload(json!({"permission_mode": "bypassPermissions"}))));
+    }
+
+    #[test]
+    fn test_a_session_still_reading_as_plan_stands_down() {
+        assert!(!should_act(&payload(json!({"permission_mode": "plan"}))));
+    }
+
+    #[test]
+    fn test_other_tools_are_ignored() {
+        assert!(!should_act(&payload(json!({"tool_name": "Bash"}))));
+    }
+
+    #[test]
+    fn test_the_call_carries_the_hooks_own_pid_and_expected_session() {
+        let (url, got) = serve_once(r#"{"result": {"ok": true, "mode": "bypassPermissions"}}"#);
+        let result = call_mode(&HttpHub::new(&url), "sid-1", HTTP_TIMEOUT_S).unwrap();
+        assert_eq!(result, json!({"ok": true, "mode": "bypassPermissions"}));
+        let request = got.join().unwrap();
+        assert!(request.starts_with("POST /invoke HTTP/1.1\r\n"), "{request}");
+        // Without the header the gateway strips `_caller_pid` and the call refuses.
+        assert!(request.contains(&format!("\r\nX-Awm-Caller-Pid: {}\r\n", std::process::id())));
+        let body: Value = serde_json::from_str(request.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+        assert_eq!(body, json!({"name": "reflection_mode", "args": {"expect_session": "sid-1"}}));
+    }
+
+    /// A clock that moves only when slept on.
+    #[derive(Default)]
+    struct FakePace(Cell<f64>);
+
+    impl Pace for FakePace {
+        fn monotonic(&self) -> f64 {
+            self.0.get()
+        }
+
+        fn sleep(&self, secs: f64) {
+            self.0.set(self.0.get() + secs);
+        }
+    }
+
+    fn covered_footer_is_retried(hosting: &str) {
+        let pace = FakePace::default();
+        let calls = RefCell::new(Vec::new());
+        let results = [json!({"ok": false, "mode": "unknown", "hosting": hosting}), json!({"ok": true})];
+        let mut call = |sid: &str, _t: f64| {
+            calls.borrow_mut().push(sid.to_string());
+            Ok(results[calls.borrow().len() - 1].clone())
+        };
+        ensure_bypass("sid-1", &mut call, &pace, &mut |m| panic!("logged: {m}"));
+        assert_eq!(*calls.borrow(), ["sid-1", "sid-1"]);
+    }
+
+    #[test]
+    fn test_a_covered_footer_is_retried_tmux() {
+        covered_footer_is_retried("tmux");
+    }
+
+    #[test]
+    fn test_a_covered_footer_is_retried_background() {
+        covered_footer_is_retried("background");
+    }
+
+    fn timed_out_call_is_never_retried(call_once: &dyn Fn() -> Result<Value, PostError>) {
+        // The walk a timed-out call started is still pressing keys on the server; a second walk
+        // on top of it steps past bypass.
+        let pace = FakePace::default();
+        let (mut calls, mut logged) = (0, Vec::new());
+        let mut call = |_: &str, _: f64| {
+            calls += 1;
+            call_once()
+        };
+        ensure_bypass("sid-1", &mut call, &pace, &mut |m| logged.push(m.to_string()));
+        assert_eq!(calls, 1);
+        assert_eq!(logged.len(), 1);
+        assert!(logged[0].contains("not retried"));
+    }
+
+    #[test]
+    fn test_a_timed_out_call_is_never_retried_timeout() {
+        timed_out_call_is_never_retried(&|| Err(PostError::Timeout));
+    }
+
+    #[test]
+    fn test_a_timed_out_call_is_never_retried_socket() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let hub = HttpHub::new(&format!("http://{}", listener.local_addr().unwrap()));
+        timed_out_call_is_never_retried(&|| call_mode(&hub, "sid-1", 0.2));
+    }
+
+    #[test]
+    fn test_every_attempt_fits_inside_the_hook_budget() {
+        // Claude Code kills the hook at its settings timeout, so a late attempt gets less.
+        let pace = FakePace::default();
+        let timeouts = RefCell::new(Vec::new());
+        let mut call = |_: &str, t: f64| {
+            timeouts.borrow_mut().push(t);
+            pace.sleep(t);
+            Err(PostError::Failed("connection refused".into()))
+        };
+        ensure_bypass("sid-1", &mut call, &pace, &mut |_| {});
+        let timeouts = timeouts.borrow();
+        assert!(timeouts.iter().sum::<f64>() + RETRY_GAP_S * (timeouts.len() as f64 - 1.0) <= DEADLINE_S);
+    }
+
+    #[test]
+    fn test_a_settled_refusal_is_logged_once_and_not_retried() {
+        let pace = FakePace::default();
+        let (mut calls, mut logged) = (0, Vec::new());
+        let mut call = |_: &str, _: f64| {
+            calls += 1;
+            Ok(json!({"ok": false, "mode": "auto", "error": "this session's permission-mode cycle never offers bypass"}))
+        };
+        ensure_bypass("sid-1", &mut call, &pace, &mut |m| logged.push(m.to_string()));
+        assert_eq!(calls, 1);
+        assert!(logged[0].contains("never offers bypass"));
+    }
+
+    #[test]
+    fn test_an_unreachable_gateway_is_retried_then_logged() {
+        let pace = FakePace::default();
+        let (mut calls, mut logged) = (0, Vec::new());
+        let mut call = |_: &str, _: f64| {
+            calls += 1;
+            Err(PostError::Failed("connection refused".into()))
+        };
+        ensure_bypass("sid-1", &mut call, &pace, &mut |m| logged.push(m.to_string()));
+        assert!(calls > 1, "a restart window must be retried across");
+        assert_eq!(logged.len(), 1);
+        assert!(logged[0].contains("connection refused"));
+    }
+
+    #[test]
+    fn test_main_writes_nothing_to_stdout() {
+        // A PostToolUse hook's stdout is parsed as a JSON control object.
+        let pace = FakePace::default();
+        let ensured = RefCell::new(Vec::new());
+        let input = Value::Object(payload(json!({}))).to_string();
+        assert_eq!(plan_mode(input.as_bytes(), &pace, |sid| ensured.borrow_mut().push(sid.to_string())), None);
+        assert_eq!(*ensured.borrow(), ["sid-1"]);
+        assert_eq!(pace.monotonic(), SETTLE_S);
+    }
+
+    #[test]
+    fn test_main_survives_junk_on_stdin() {
+        let pace = FakePace::default();
+        assert_eq!(plan_mode(b"not json", &pace, |_| panic!("acted on junk")), None);
+        assert_eq!(dispatch("plan-mode", b"not json"), None);
+    }
+
+    struct Cap {
+        dir: tempfile::TempDir,
+        clock: Cell<f64>,
+        level: &'static str,
+    }
+
+    impl Cap {
+        fn new(level: &'static str) -> Self {
+            Self { dir: tempfile::tempdir().unwrap(), clock: Cell::new(epoch_now()), level }
+        }
+
+        fn fire(&self, event: &str, extra: Value) -> Option<Value> {
+            let mut input = json!({"session_id": "s1", "hook_event_name": event});
+            for (k, v) in extra.as_object().unwrap() {
+                input[k] = v.clone();
+            }
+            let dir = self.dir.path().join("awm/cch/subagents");
+            let out = subagent_cap(input.to_string().as_bytes(), &dir, || self.clock.get(), || self.level.to_string())?;
+            Some(serde_json::from_str::<Value>(&out).unwrap()["hookSpecificOutput"].clone())
+        }
+
+        fn agent(&self) -> Option<Value> {
+            self.fire("PreToolUse", json!({"tool_name": "Agent", "tool_input": {}}))
+        }
+
+        fn advance(&self, secs: f64) {
+            self.clock.set(self.clock.get() + secs);
+        }
+    }
+
+    #[test]
+    fn test_a_cooperative_session_gets_five_at_a_time() {
+        let cap = Cap::new("cooperative");
+        for _ in 0..5 {
+            assert_eq!(cap.agent(), None);
+            cap.fire("SubagentStart", json!({}));
+        }
+        let denied = cap.agent().unwrap();
+        assert_eq!(denied["permissionDecision"], "deny");
+        assert!(denied["permissionDecisionReason"].as_str().unwrap().contains("at most 5"));
+        cap.fire("SubagentStop", json!({}));
+        assert_eq!(cap.agent(), None);
+    }
+
+    #[test]
+    fn test_calls_sent_together_count_each_other() {
+        // Five Agent calls in one turn reserve five slots before any subagent starts.
+        let cap = Cap::new("untrusted");
+        assert!((0..5).all(|_| cap.agent().is_none()));
+        assert_eq!(cap.agent().unwrap()["permissionDecision"], "deny");
+    }
+
+    #[test]
+    fn test_a_reservation_that_never_starts_lapses() {
+        let cap = Cap::new("cooperative");
+        cap.clock.set(1000.0);
+        for _ in 0..5 {
+            cap.agent();
+        }
+        assert!(cap.agent().is_some());
+        cap.advance(RESERVE_S + 1.0);
+        assert_eq!(cap.agent(), None);
+    }
+
+    #[test]
+    fn test_a_stop_frees_its_own_agent() {
+        let cap = Cap::new("cooperative");
+        for i in 0..5 {
+            cap.agent();
+            cap.fire("SubagentStart", json!({"agent_id": format!("a{i}")}));
+        }
+        cap.fire("SubagentStop", json!({"agent_id": "a3"}));
+        cap.fire("SubagentStop", json!({"agent_id": "a3"}));
+        assert_eq!(cap.agent(), None);
+        assert!(cap.agent().is_some(), "a repeated stop frees no second slot");
+    }
+
+    #[test]
+    fn test_a_subagent_whose_stop_never_comes_lapses() {
+        let cap = Cap::new("cooperative");
+        cap.clock.set(1000.0);
+        for i in 0..5 {
+            cap.agent();
+            cap.fire("SubagentStart", json!({"agent_id": format!("a{i}")}));
+        }
+        cap.advance(RESERVE_S + 1.0);
+        assert!(cap.agent().is_some());
+        cap.advance(RUNNING_S);
+        assert_eq!(cap.agent(), None);
+    }
+
+    #[test]
+    fn test_a_trusted_session_is_not_capped() {
+        let cap = Cap::new("trusted");
+        for _ in 0..7 {
+            assert_eq!(cap.agent(), None);
+            cap.fire("SubagentStart", json!({}));
+        }
+    }
+
+    #[test]
+    fn test_other_tools_and_bad_input_pass() {
+        let cap = Cap::new("untrusted");
+        for _ in 0..6 {
+            assert_eq!(cap.fire("PreToolUse", json!({"tool_name": "Bash"})), None);
+        }
+        let dir = cap.dir.path().join("awm/cch/subagents");
+        assert_eq!(subagent_cap(b"not json", &dir, epoch_now, || unreachable!()), None);
+    }
+
+    #[test]
+    fn test_an_unreachable_gateway_reads_as_untrusted() {
+        assert_eq!(level(&HttpHub::new("http://127.0.0.1:9")), "untrusted");
+    }
 }
