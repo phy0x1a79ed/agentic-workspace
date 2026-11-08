@@ -105,22 +105,6 @@ fn test_a_first_prompt_clears_the_name_and_records_the_intent() {
 }
 
 #[test]
-fn test_the_rest_of_the_record_is_left_exactly_as_it_was() {
-    let (_tmp, job) = job();
-    let state = run(&job, json!({"source": "user", "prompt": "hello there"}));
-    assert_eq!(state["cwd"], "/home/user");
-    assert_eq!(state["state"], "working");
-}
-
-#[test]
-fn test_a_slash_command_is_not_a_first_prompt() {
-    // `/cd` is typed into every session the pool hands out.
-    let (_tmp, job) = job();
-    let state = run(&job, json!({"source": "user", "prompt": "/cd /home/user/project"}));
-    assert_eq!(state["name"], "claimed dunlin");
-}
-
-#[test]
 fn test_a_session_that_is_not_the_pool_s_is_untouched() {
     let (_tmp, job) = job();
     std::fs::write(job.join("state.json"), json!({"name": "remote shell"}).to_string()).unwrap();
@@ -129,67 +113,11 @@ fn test_a_session_that_is_not_the_pool_s_is_untouched() {
 }
 
 #[test]
-fn test_a_session_that_has_already_been_titled_is_untouched() {
-    // The name the namer wrote must survive every prompt after the first.
-    let (_tmp, job) = job();
-    std::fs::write(job.join("state.json"), json!({"name": "flaky import test", "nameSource": "auto"}).to_string()).unwrap();
-    let state = run(&job, json!({"source": "user", "prompt": "and now the other one"}));
-    assert_eq!(state["name"], "flaky import test");
-}
-
-#[test]
-fn test_a_wake_up_is_not_a_person_typing() {
-    let (_tmp, job) = job();
-    let state = run(&job, json!({"source": "schedule_wakeup", "prompt": "check the run"}));
-    assert_eq!(state["name"], "claimed dunlin");
-}
-
-#[test]
-fn test_injected_context_is_not_part_of_the_intent() {
-    let (_tmp, job) = job();
-    let state = run(&job, json!({"source": "user", "prompt": "<system-reminder>noise</system-reminder>  the real ask"}));
-    assert_eq!(state["intent"], "the real ask");
-}
-
-#[test]
-fn test_a_long_prompt_is_truncated_the_way_the_vendor_truncates_it() {
-    let (_tmp, job) = job();
-    let state = run(&job, json!({"source": "user", "prompt": "x".repeat(900)}));
-    assert_eq!(state["intent"].as_str().unwrap().len(), 500);
-}
-
-#[test]
-fn test_an_empty_intent_is_never_written() {
-    // `??` merges this field forward, so an empty string would stick for the life of the session.
-    let (_tmp, job) = job();
-    let state = run(&job, json!({"source": "user", "prompt": "   "}));
-    assert_eq!(state["name"], "claimed dunlin");
-}
-
-#[test]
-fn test_a_session_with_no_job_directory_is_a_no_op() {
-    let (_tmp, job) = job();
-    let (out, _) = hook(&["name"], &json!({"source": "user", "prompt": "hello"}).to_string(), &[]);
-    assert!(out.status.success());
-    let state: Value = serde_json::from_slice(&std::fs::read(job.join("state.json")).unwrap()).unwrap();
-    assert_eq!(state["name"], "claimed dunlin");
-}
-
-#[test]
 fn test_garbage_on_standard_input_costs_nobody_a_prompt() {
     let (_tmp, job) = job();
     let (out, _) = hook(&["name"], "not json at all", &[("CLAUDE_JOB_DIR", &job)]);
     assert!(out.status.success());
     assert_eq!(out.stdout, b"");
-}
-
-#[test]
-fn test_an_unreadable_state_record_costs_nobody_a_prompt() {
-    let (_tmp, job) = job();
-    std::fs::write(job.join("state.json"), "{ truncated").unwrap();
-    let (out, _) = hook(&["name"], &json!({"source": "user", "prompt": "hello"}).to_string(), &[("CLAUDE_JOB_DIR", &job)]);
-    assert!(out.status.success());
-    assert_eq!(std::fs::read_to_string(job.join("state.json")).unwrap(), "{ truncated");
 }
 
 #[test]

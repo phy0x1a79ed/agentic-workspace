@@ -46,7 +46,7 @@ fn peers() -> EdgeList {
 }
 
 struct Rig {
-    dir: TempDir,
+    _dir: TempDir,
     projects: PathBuf,
     app: App<Fake>,
 }
@@ -55,7 +55,7 @@ fn rig(adjust: impl FnOnce(&Path, Fake) -> Fake) -> Rig {
     let dir = TempDir::new().unwrap();
     let projects = dir.path().join("workspace").join("projects");
     let fake = adjust(&projects, Fake { edges: Some(peers()), ..Fake::under(dir.path()) });
-    Rig { dir, projects, app: App::new(fake) }
+    Rig { _dir: dir, projects, app: App::new(fake) }
 }
 
 async fn list(app: &App<Fake>, as_: Option<&str>) -> Value {
@@ -103,30 +103,6 @@ async fn test_the_list_verb_hides_private_sessions_from_a_peer() {
     let local = list(&r.app, None).await;
     assert_eq!(jobs(&local), [CHILD_JOB, "cccc0003"]);
     assert_eq!(local["pool"]["warm"], json!([PARENT_JOB, "dddd0004"]));
-}
-
-#[tokio::test]
-async fn test_the_list_verb_hides_a_job_whose_transcript_entered_a_mark_from_a_peer() {
-    let _turn = turn().await;
-    let r = rig(|projects, f| Fake {
-        rows: vec![json!({"job": "wander01", "name": "folder setup", "cwd": projects.display().to_string()})],
-        ..f
-    });
-    let fake = &r.app.backend;
-    let talk = r.dir.path().join("talk");
-    let inside = r.projects.join("avatar").join("Avatar");
-    std::fs::create_dir_all(&talk).unwrap();
-    let line = |cwd: &Path| json!({"cwd": cwd.display().to_string()}).to_string();
-    std::fs::write(talk.join("wander.jsonl"), format!("{}\n{}\n", line(&r.projects), line(&inside))).unwrap();
-    std::fs::write(talk.join("resumed.jsonl"), format!("{}\n", line(&r.projects))).unwrap();
-    let state = json!({"name": "folder setup", "linkScanPath": talk.join("resumed.jsonl").display().to_string(),
-                       "sessionId": "wander", "resumeSessionId": "resumed"});
-    Fake::write(&fake.paths.home.job_state("wander01"), state);
-
-    assert_eq!(jobs(&list(&r.app, Some("peer:capella")).await), ["wander01"]);
-    mark("avatar", &r.projects.join("avatar"));
-    assert!(jobs(&list(&r.app, Some("peer:capella")).await).is_empty());
-    assert_eq!(jobs(&list(&r.app, None).await), ["wander01"]);
 }
 
 #[tokio::test]

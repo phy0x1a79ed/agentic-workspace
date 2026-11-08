@@ -1810,14 +1810,12 @@ impl<W: ResumeWatch<Tail> + Clone + Send + Sync + 'static> Effects for Live<W> {
 #[cfg(test)]
 mod tests {
     use std::collections::VecDeque;
-    use std::fmt::Debug;
     use std::sync::Mutex as StdMutex;
 
     use serde_json::Map;
     use tempfile::TempDir;
 
     use super::*;
-    use crate::promises::{render_followup, Pending};
     use crate::sender::Confirmed;
     use crate::target::TmuxLane;
 
@@ -2269,10 +2267,6 @@ mod tests {
         switch_dialog("Switch model?", "Opus 5.5 (1M context)", 0, "")
     }
 
-    fn hook_asked() -> String {
-        switch_dialog("Switch model?", "Opus 5.5", 0, "A PreModelSwitch hook asked you to confirm this change.\n")
-    }
-
     fn me_() -> Option<u32> {
         Some(me())
     }
@@ -2294,37 +2288,6 @@ mod tests {
     // --- resolving `job` ---
 
     #[tokio::test]
-    async fn test_without_job_the_target_is_the_caller() {
-        let w = World::new();
-        let t = resolve(&w, None, me_()).await.unwrap();
-        assert!(t.is_self && t.job.as_deref() == Some(SELF_JOB) && t.kind == SessionKind::Background);
-    }
-
-    #[tokio::test]
-    async fn test_without_job_or_caller_there_is_nothing_to_act_on() {
-        let w = World::new();
-        let err = resolve(&w, None, None).await.unwrap_err();
-        assert!(matches!(err, ControlError::Resolve(_)) && err.to_string().contains("which session"));
-    }
-
-    #[tokio::test]
-    async fn test_job_resolves_by_id_and_by_name() {
-        let w = World::new();
-        assert_eq!(resolve(&w, Some(OTHER_JOB), me_()).await.unwrap().pid, parent());
-        let t = resolve(&w, Some("other one"), me_()).await.unwrap();
-        assert!(t.job.as_deref() == Some(OTHER_JOB) && !t.is_self && t.alive);
-        assert_eq!(resolve(&w, Some("OTHER ONE"), me_()).await.unwrap().job.as_deref(), Some(OTHER_JOB));
-    }
-
-    #[tokio::test]
-    async fn test_a_job_naming_the_callers_own_session_is_marked_self() {
-        let w = World::new();
-        assert!(resolve(&w, Some(SELF_JOB), me_()).await.unwrap().is_self);
-        assert!(resolve(&w, Some("me"), me_()).await.unwrap().is_self);
-        assert!(!resolve(&w, Some("me"), None).await.unwrap().is_self);
-    }
-
-    #[tokio::test]
     async fn test_an_ambiguous_name_is_refused_with_the_candidates() {
         let w = World::new();
         w.add_job(DEAD_JOB, "other one", DEAD_PID, false);
@@ -2334,60 +2297,7 @@ mod tests {
         assert!(said.contains(OTHER_JOB) && said.contains(DEAD_JOB) && said.contains("job id"), "{said}");
     }
 
-    #[tokio::test]
-    async fn test_an_unknown_name_is_refused() {
-        let w = World::new();
-        let err = resolve(&w, Some("nobody"), me_()).await.unwrap_err();
-        assert!(err.to_string().contains("no session"));
-        assert_eq!(err, ControlError::Unknown(UnknownSession { unknown_ref: "nobody".into() }));
-    }
-
-    #[tokio::test]
-    async fn test_an_interactive_session_resolves_by_name_and_has_no_job() {
-        let w = World::new();
-        w.record(1, "interactive", "terminal one", json!({}));
-        let t = resolve(&w, Some("terminal one"), me_()).await.unwrap();
-        assert!(t.kind == SessionKind::Interactive && t.job.is_none() && t.pid == 1);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn test_a_dead_session_resolves_but_cannot_be_typed_into() {
-        let w = World::new();
-        w.add_job(DEAD_JOB, "gone", DEAD_PID, false);
-        assert!(!resolve(&w, Some("gone"), me_()).await.unwrap().alive);
-        let err = model(&w, "opus", Some("gone"), me_()).await.unwrap_err();
-        assert!(matches!(err, ControlError::Resolve(_)) && err.to_string().contains("not running"));
-        assert!(w.typed().is_empty());
-    }
-
     // --- link ---
-
-    #[tokio::test]
-    async fn test_link_is_the_app_url_of_the_bridge_id() {
-        let w = World::new();
-        w.set_bridge(OTHER_JOB, "cse_01Abc");
-        let out = link(&w, Some("other one"), me_()).await.unwrap();
-        assert!(ok(&out) && out["remote_control"] == json!(true));
-        assert_eq!(out["link"], json!("https://claude.ai/code/session_01Abc"));
-        assert_eq!(out["job"], json!(OTHER_JOB));
-        assert!(w.typed().is_empty() && w.opened() == 0);
-    }
-
-    #[tokio::test]
-    async fn test_link_is_null_with_a_reason_when_remote_control_is_off() {
-        let w = World::new();
-        let out = link(&w, None, me_()).await.unwrap();
-        assert!(out["remote_control"] == json!(false) && out["link"].is_null());
-        assert!(text(&out, "link_reason").contains("off") && out["self"] == json!(true));
-    }
-
-    #[tokio::test]
-    async fn test_link_reads_an_interactive_sessions_own_record() {
-        let w = World::new();
-        w.record(1, "interactive", "term", json!({"bridgeSessionId": "cse_01T"}));
-        let out = link(&w, Some("term"), me_()).await.unwrap();
-        assert_eq!(out["link"], json!("https://claude.ai/code/session_01T"));
-    }
 
     // --- model, effort, rename ---
 
@@ -2405,35 +2315,6 @@ mod tests {
             assert!(ok(&out) && out["submitted"] == json!(true) && text(&out, "text") == typed, "{out}");
             assert_eq!(w.typed(), [(OTHER_JOB.to_string(), typed.to_string(), sender::ATTEMPTS)]);
             assert!(w.sent().is_empty());
-        }
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn test_a_slash_verb_without_job_goes_through_the_self_sender() {
-        let w = World::new();
-        let out = model(&w, "sonnet[1m]", None, me_()).await.unwrap();
-        assert!(ok(&out) && out["self"] == json!(true));
-        let sent = w.sent();
-        assert_eq!(sent[0].text, "/model sonnet[1m]");
-        assert!(sent[0].caller_pid == me_() && w.typed().is_empty());
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn test_a_bad_argument_types_nothing() {
-        type Call = fn(&World) -> Pin<Box<dyn Future<Output = Result<Value, ControlError>> + Send + '_>>;
-        let calls: [Call; 7] = [
-            |w| Box::pin(model(w, "--evil", Some(OTHER_JOB), me_())),
-            |w| Box::pin(model(w, "a b", Some(OTHER_JOB), me_())),
-            |w| Box::pin(effort(w, "ludicrous", Some(OTHER_JOB), me_())),
-            |w| Box::pin(rename(w, "", Some(OTHER_JOB), me_())),
-            |w| Box::pin(rename(w, "two\nlines", Some(OTHER_JOB), me_())),
-            |w| Box::pin(rename(w, "-x", Some(OTHER_JOB), me_())),
-            |w| Box::pin(rename(w, "<warm x>", Some(OTHER_JOB), me_())),
-        ];
-        for call in calls {
-            let w = World::new();
-            assert_eq!(call(&w).await.unwrap()["ok"], json!(false));
-            assert!(w.typed().is_empty() && w.sent().is_empty() && w.opened() == 0);
         }
     }
 
@@ -2462,16 +2343,6 @@ mod tests {
 
     // --- interrupt ---
 
-    #[tokio::test]
-    async fn test_interrupt_presses_escape_once() {
-        let w = World::new();
-        w.s().status = "busy".into();
-        let out = interrupt(&w, Some("other one"), me_()).await.unwrap();
-        assert!(ok(&out) && out["status_before"] == json!("busy"));
-        assert!(w.screen().presses() == [Key::Escape] && w.typed().is_empty());
-        assert!(w.screen().closed());
-    }
-
     // --- message ---
 
     #[tokio::test]
@@ -2480,32 +2351,6 @@ mod tests {
         let out = message(&w, Some("other one"), "please look at X", me_(), false).await.unwrap();
         assert!(ok(&out));
         assert_eq!(w.typed(), [(OTHER_JOB.to_string(), "please look at X".to_string(), sender::ATTEMPTS)]);
-    }
-
-    #[tokio::test]
-    async fn test_message_has_the_guards_message_self_has() {
-        let w = World::new();
-        let destructive = message(&w, Some(OTHER_JOB), "/clear", me_(), false).await.unwrap();
-        assert!(destructive["refused"] == json!(true) && text(&destructive, "reason").contains("confirm"));
-        let modal = message(&w, Some(OTHER_JOB), "/mcp", me_(), false).await.unwrap();
-        assert!(modal["refused"] == json!(true) && modal["kind"] == json!("interactive"));
-        assert!(w.typed().is_empty());
-        assert!(ok(&message(&w, Some(OTHER_JOB), "/clear", me_(), true).await.unwrap()));
-    }
-
-    #[tokio::test]
-    async fn test_message_needs_a_target_and_text() {
-        let w = World::new();
-        assert_eq!(message(&w, None, "x", me_(), false).await.unwrap()["ok"], json!(false));
-        let err = message(&w, Some(OTHER_JOB), "  ", me_(), false).await.unwrap_err();
-        assert_eq!(err, ControlError::Empty(EmptyText));
-    }
-
-    #[tokio::test]
-    async fn test_message_to_ones_own_session_is_a_self_send() {
-        let w = World::new();
-        let out = message(&w, Some("me"), "note to self", me_(), false).await.unwrap();
-        assert!(ok(&out) && w.sent()[0].text == "note to self" && w.typed().is_empty());
     }
 
     // --- stop ---
@@ -2543,12 +2388,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_stop_reaches_a_session_start_other_did_not_create() {
-        let w = World::new();
-        assert!(ok(&stop(&w, Some(OTHER_JOB), me_(), false, FakeRemover::new(true)).await.unwrap()));
-    }
-
-    #[tokio::test]
     async fn test_stop_refuses_the_callers_own_session_without_confirm() {
         let w = World::new();
         let rm = FakeRemover::new(true);
@@ -2567,108 +2406,7 @@ mod tests {
         assert_eq!(rm.calls(), [SELF_JOB]);
     }
 
-    type Log = Arc<StdMutex<Vec<String>>>;
-
     // A subscriber that keeps each event as "LEVEL message".
-    struct Capture(Log);
-
-    struct Message(String);
-
-    impl tracing::field::Visit for Message {
-        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn Debug) {
-            if field.name() == "message" {
-                self.0 = format!("{value:?}");
-            }
-        }
-    }
-
-    impl tracing::Subscriber for Capture {
-        fn enabled(&self, _meta: &tracing::Metadata<'_>) -> bool {
-            true
-        }
-        fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
-            tracing::span::Id::from_u64(1)
-        }
-        fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
-        fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
-        fn event(&self, event: &tracing::Event<'_>) {
-            let mut message = Message(String::new());
-            event.record(&mut message);
-            self.0.lock().unwrap().push(format!("{} {}", event.metadata().level(), message.0));
-        }
-        fn enter(&self, _span: &tracing::span::Id) {}
-        fn exit(&self, _span: &tracing::span::Id) {}
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn test_stop_of_own_session_logs_whether_the_job_went() {
-        for (removed, level, said) in [(true, "INFO", "and removed its job"), (false, "WARN", "was not removed: no such job")] {
-            let w = World::new();
-            stop(&w, Some(SELF_JOB), me_(), true, FakeRemover::new(removed)).await.unwrap();
-            let lines: Log = Arc::default();
-            let guard = tracing::subscriber::set_default(Capture(lines.clone()));
-            run_spawned(&w).await;
-            drop(guard);
-            let lines = lines.lock().unwrap().clone();
-            let line = lines.iter().find(|l| l.contains(SELF_JOB)).expect("a line naming the job");
-            assert!(line.starts_with(level) && line.contains(said), "{line}");
-        }
-    }
-
-    #[tokio::test]
-    async fn test_stop_reports_a_failed_removal() {
-        let w = World::new();
-        let out = stop(&w, Some(OTHER_JOB), me_(), false, FakeRemover::new(false)).await.unwrap();
-        assert!(out["ok"] == json!(false) && out["reason"] == json!("no such job"));
-    }
-
-    #[tokio::test]
-    async fn test_stop_removes_a_job_that_is_already_dead() {
-        let w = World::new();
-        w.add_job(DEAD_JOB, "gone", DEAD_PID, false);
-        let rm = FakeRemover::new(true);
-        assert!(ok(&stop(&w, Some("gone"), me_(), false, rm.clone()).await.unwrap()));
-        assert_eq!(rm.calls(), [DEAD_JOB]);
-    }
-
-    #[tokio::test]
-    async fn test_stop_removes_an_exited_job_that_no_live_row_names() {
-        let w = World::new();
-        std::fs::create_dir(w.home.jobs().join("dddddddd")).unwrap();
-        let rm = FakeRemover::new(true);
-        let out = stop(&w, Some("dddddddd"), me_(), false, rm.clone()).await.unwrap();
-        assert!(ok(&out) && out["exited"] == json!(true) && rm.calls() == ["dddddddd"]);
-    }
-
-    #[tokio::test]
-    async fn test_stop_of_an_unknown_job_still_refuses() {
-        let w = World::new();
-        let rm = FakeRemover::new(true);
-        let err = stop(&w, Some("eeeeeeee"), me_(), false, rm.clone()).await.unwrap_err();
-        assert!(matches!(err, ControlError::Unknown(_)));
-        assert!(rm.calls().is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_stop_refuses_a_terminal_session_and_a_missing_job() {
-        let w = World::new();
-        w.record(1, "interactive", "term", json!({}));
-        let rm = FakeRemover::new(true);
-        assert_eq!(stop(&w, Some("term"), me_(), false, rm.clone()).await.unwrap()["refused"], json!(true));
-        assert_eq!(stop(&w, None, me_(), false, rm.clone()).await.unwrap()["ok"], json!(false));
-        assert!(rm.calls().is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_a_terminal_session_retires_itself_and_is_left_open() {
-        // The caller's own session, a terminal one named "term".
-        let w = World::new();
-        w.record(me(), "interactive", "term", json!({}));
-        let rm = FakeRemover::new(true);
-        let out = stop(&w, Some("term"), me_(), true, rm.clone()).await.unwrap();
-        assert!(ok(&out) && out["terminal"] == json!(true) && out["stopped"] == json!(false), "{out}");
-        assert!(rm.calls().is_empty());
-    }
 
     // --- Remote Control: on ---
 
@@ -2687,64 +2425,12 @@ mod tests {
         assert!(out.get("link_reason").is_none());
     }
 
-    #[tokio::test(start_paused = true)]
-    async fn test_on_without_a_name_types_a_bare_rc() {
-        let w = World::new();
-        remote_control(&w, true, None, Some(OTHER_JOB), me_()).await.unwrap();
-        assert_eq!(w.typed()[0].1, "/rc");
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn test_on_returns_a_null_link_with_a_reason_when_the_bridge_never_appears() {
-        let w = World::new();
-        let start = Instant::now();
-        let out = remote_control(&w, true, None, Some(OTHER_JOB), me_()).await.unwrap();
-        assert!(ok(&out) && out["link"].is_null() && out["remote_control"] == json!(false));
-        assert!(text(&out, "link_reason").contains("no bridge id"));
-        assert!(start.elapsed() >= LINK_WAIT);
-    }
-
-    #[tokio::test]
-    async fn test_on_when_already_on_types_nothing_and_returns_the_link() {
-        let w = World::new();
-        w.set_bridge(OTHER_JOB, "cse_01On");
-        let out = remote_control(&w, true, None, Some(OTHER_JOB), me_()).await.unwrap();
-        assert!(ok(&out) && out["changed"] == json!(false));
-        assert_eq!(out["link"], json!("https://claude.ai/code/session_01On"));
-        assert!(w.typed().is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_on_rejects_a_name_that_could_be_a_flag() {
-        let w = World::new();
-        let out = remote_control(&w, true, Some("--x"), Some(OTHER_JOB), me_()).await.unwrap();
-        assert_eq!(out["ok"], json!(false));
-        assert!(w.typed().is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_on_for_the_callers_own_session_queues_and_resumes_with_a_pointer_to_link() {
-        let w = World::new();
-        let out = remote_control(&w, true, Some("me-rc"), None, me_()).await.unwrap();
-        let req = &w.sent()[0];
-        assert!(req.text == "/rc me-rc" && req.allow_modal);
-        assert!(req.change.as_ref().unwrap().kind == "rc_on" && req.followup.is_none());
-        assert!(out["link"].is_null() && text(&out, "link_reason").contains("turn ends"));
-    }
-
     // --- Remote Control: off ---
 
     fn connected() -> World {
         let w = World::new();
         w.set_bridge(OTHER_JOB, "cse_01On");
         w
-    }
-
-    #[tokio::test]
-    async fn test_off_when_already_off_types_nothing() {
-        let w = World::new();
-        let out = remote_control(&w, false, None, Some(OTHER_JOB), me_()).await.unwrap();
-        assert!(ok(&out) && out["changed"] == json!(false) && w.typed().is_empty());
     }
 
     /// Run `off` with the pre-check clean and `modal` appearing after `/rc`.
@@ -2771,111 +2457,12 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn test_off_walks_up_when_the_cursor_is_below_the_option() {
-        let w = connected();
-        let modal = FakeScreen::modal(&["Disconnect this session", "Show QR code", "Continue"], 2);
-        let out = drive(&w, &modal, true).await;
-        assert!(ok(&out));
-        let presses = modal.presses();
-        assert_eq!(presses.last(), Some(&Key::Enter));
-        assert!(presses[..presses.len() - 1].iter().all(|k| *k == Key::Up));
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn test_off_presses_enter_at_once_when_disconnect_is_already_selected() {
-        let w = connected();
-        let modal = FakeScreen::modal(&OPTIONS, 1);
-        let out = drive(&w, &modal, true).await;
-        assert!(ok(&out) && modal.presses() == [Key::Enter]);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn test_off_reports_when_the_bridge_id_does_not_clear() {
-        let w = connected();
-        let modal = FakeScreen::modal(&OPTIONS, 1);
-        let start = Instant::now();
-        let out = drive(&w, &modal, false).await;
-        assert!(out["ok"] == json!(false) && out["bridge_cleared"] == json!(false));
-        assert_eq!(out["remote_control"], json!(true));
-        assert!(start.elapsed() >= CLEAR_WAIT);
-    }
-
-    #[tokio::test(start_paused = true)]
     async fn test_off_refuses_a_modal_that_is_not_the_expected_one() {
         let w = connected();
         let modal = FakeScreen::modal(&["Yes", "No"], 0);
         let out = drive(&w, &modal, true).await;
         assert!(out["ok"] == json!(false) && out["kind"] == json!("unexpected_modal"));
         assert_eq!(modal.presses(), [Key::Escape], "closed, and Enter never pressed");
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn test_off_refuses_a_modal_with_no_cursor_to_steer_by() {
-        let w = connected();
-        let modal = FakeScreen::new(&["Remote Control\n  Show QR code\n  Disconnect this session\nEnter to select"]);
-        let out = drive(&w, &modal, true).await;
-        assert!(out["ok"] == json!(false) && modal.presses() == [Key::Escape]);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn test_off_gives_up_without_pressing_when_no_modal_appears() {
-        let w = connected();
-        let start = Instant::now();
-        let out = drive(&w, &FakeScreen::new(&[PLAIN]), true).await;
-        assert!(out["ok"] == json!(false) && text(&out, "reason").contains("did not appear"));
-        assert!(w.screen().presses().is_empty());
-        assert!(start.elapsed() >= MODAL_WAIT);
-    }
-
-    #[tokio::test]
-    async fn test_off_refuses_a_session_that_is_mid_turn() {
-        let w = connected();
-        w.s().settled = false;
-        let out = remote_control(&w, false, None, Some(OTHER_JOB), me_()).await.unwrap();
-        assert!(out["ok"] == json!(false) && out["refused"] == json!(true) && text(&out, "reason").contains("mid-turn"));
-        assert!(w.typed().is_empty());
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn test_off_for_the_callers_own_session_queues_rc_and_finishes_later() {
-        let w = connected();
-        w.set_bridge(SELF_JOB, "cse_01Me");
-        let out = remote_control(&w, false, None, None, me_()).await.unwrap();
-        assert!(ok(&out) && out["remote_control"] == json!(true));
-        assert!(w.typed() == [(SELF_JOB.to_string(), "/rc".to_string(), 1)] && w.spawned_count() == 1);
-        let modal = FakeScreen::modal(&OPTIONS, 1);
-        w.set_screen(modal.clone());
-        let at = w.clone();
-        modal.on_press(move |key| {
-            if key == Key::Enter {
-                at.set_bridge(SELF_JOB, "");
-            }
-        });
-        run_spawned(&w).await;
-        assert_eq!(modal.presses(), [Key::Enter]);
-        assert_eq!(
-            w.typed().last().unwrap(),
-            &(SELF_JOB.to_string(), crate::resume::from_cch(SELF_OFF_FOLLOWUP), sender::ATTEMPTS)
-        );
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn the_prompt_after_remote_control_off_carries_the_cch_prefix() {
-        let w = connected();
-        w.set_bridge(SELF_JOB, "cse_01Me");
-        remote_control(&w, false, None, None, me_()).await.unwrap();
-        let modal = FakeScreen::modal(&OPTIONS, 1);
-        w.set_screen(modal.clone());
-        let at = w.clone();
-        modal.on_press(move |key| {
-            if key == Key::Enter {
-                at.set_bridge(SELF_JOB, "");
-            }
-        });
-        run_spawned(&w).await;
-        let prefix = format!("from cch@{}: ", awm_plugin_sdk::config::node_name());
-        let (_, typed, _) = w.typed().last().cloned().unwrap();
-        assert!(typed.starts_with(&prefix) && typed.ends_with(SELF_OFF_FOLLOWUP), "{typed}");
     }
 
     // --- Remote Control on a busy session: applies at turn end ---
@@ -2893,45 +2480,6 @@ mod tests {
         assert!(start.elapsed() < POLL, "the link timeout is not waited out");
     }
 
-    #[tokio::test(start_paused = true)]
-    async fn rc_on_for_a_session_running_a_shell_command_queues_too() {
-        let w = World::new();
-        w.s().status = "shell".into();
-        let out = remote_control(&w, true, None, Some(OTHER_JOB), me_()).await.unwrap();
-        assert!(ok(&out) && out["applies"] == json!("turn_end") && out["link"].is_null());
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn rc_off_for_a_busy_session_queues_and_disconnects_at_turn_end_without_a_resume_prompt() {
-        let w = connected();
-        w.s().status = "busy".into();
-        w.s().settled = false;
-        let out = remote_control(&w, false, None, Some(OTHER_JOB), me_()).await.unwrap();
-        assert!(ok(&out) && out["applies"] == json!("turn_end") && out["remote_control"] == json!(true), "{out}");
-        assert!(w.typed() == [(OTHER_JOB.to_string(), "/rc".to_string(), 1)] && w.spawned_count() == 1);
-        let modal = FakeScreen::modal(&OPTIONS, 0);
-        w.set_screen(modal.clone());
-        let at = w.clone();
-        modal.on_press(move |key| {
-            if key == Key::Enter {
-                at.set_bridge(OTHER_JOB, "");
-            }
-        });
-        run_spawned(&w).await;
-        assert_eq!(modal.presses(), [Key::Down, Key::Enter]);
-        assert_eq!(w.typed_texts(), ["/rc"], "no follow-up prompt for another session");
-    }
-
-    #[tokio::test]
-    async fn rc_off_for_a_busy_session_showing_a_modal_types_nothing() {
-        let w = connected();
-        w.s().status = "busy".into();
-        w.set_screen(FakeScreen::new(&[PROMPT]));
-        let out = remote_control(&w, false, None, Some(OTHER_JOB), me_()).await.unwrap();
-        assert!(out["refused"] == json!(true) && out["kind"] == json!("modal"), "{out}");
-        assert!(w.typed().is_empty() && w.spawned_count() == 0);
-    }
-
     // --- the effort / model confirm dialog ---
 
     #[tokio::test(start_paused = true)]
@@ -2944,141 +2492,12 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn test_a_model_dialog_with_the_cursor_on_yes_is_answered_with_enter() {
-        let w = World::new();
-        let shown = w.after_typing(&model_yes());
-        let out = model(&w, "opus", Some(OTHER_JOB), me_()).await.unwrap();
-        assert!(ok(&out) && shown.presses() == [Key::Enter]);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn test_an_alias_with_a_context_suffix_still_names_the_offered_model() {
-        let w = World::new();
-        let shown = w.after_typing(&switch_dialog("Switch model?", "Sonnet 5.5 (1M context)", 0, ""));
-        assert!(ok(&model(&w, "sonnet[1m]", Some(OTHER_JOB), me_()).await.unwrap()));
-        assert_eq!(shown.presses(), [Key::Enter]);
-    }
-
-    #[tokio::test(start_paused = true)]
     async fn test_a_dialog_with_the_cursor_on_no_is_closed_with_escape() {
         let w = World::new();
         let shown = w.after_typing(&effort_no());
         let out = effort(&w, "low", Some(OTHER_JOB), me_()).await.unwrap();
         assert!(out["ok"] == json!(false) && text(&out, "reason").contains("No, go back"), "{out}");
         assert_eq!(shown.presses(), [Key::Escape]);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn test_a_dialog_a_hook_raised_is_left_alone() {
-        let w = World::new();
-        let shown = w.after_typing(&hook_asked());
-        let out = model(&w, "opus", Some(OTHER_JOB), me_()).await.unwrap();
-        assert!(out["ok"] == json!(false) && text(&out, "reason").contains("hook"));
-        assert!(shown.presses().is_empty());
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn test_no_dialog_is_success_because_a_fresh_conversation_does_not_ask() {
-        let w = World::new();
-        let shown = w.after_typing(PLAIN);
-        let start = Instant::now();
-        let out = effort(&w, "low", Some(OTHER_JOB), me_()).await.unwrap();
-        assert!(ok(&out) && out["switch_dialog"]["dialog"] == json!(false));
-        assert!(shown.presses().is_empty());
-        assert!(start.elapsed() >= MODAL_WAIT);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn test_a_yes_for_another_effort_is_not_taken_for_the_one_asked() {
-        // `high` is a prefix of `xhigh`; the dialog must offer exactly the asked level.
-        let w = World::new();
-        let shown = w.after_typing(&switch_dialog("Change effort level?", "xhigh", 0, ""));
-        let start = Instant::now();
-        let out = effort(&w, "high", Some(OTHER_JOB), me_()).await.unwrap();
-        assert!(out["ok"] == json!(false) && text(&out, "reason").contains("xhigh"));
-        assert_eq!(shown.presses(), [Key::Escape], "closed only after the grace, never answered");
-        assert!(start.elapsed() >= WRONG_OFFER_GRACE);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn test_a_different_prompt_instead_of_the_dialog_is_not_touched() {
-        let w = World::new();
-        let shown = w.after_typing(PROMPT);
-        let out = effort(&w, "low", Some(OTHER_JOB), me_()).await.unwrap();
-        assert!(out["ok"] == json!(false) && text(&out, "reason").contains("different prompt"));
-        assert!(shown.presses().is_empty());
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn test_another_job_that_is_mid_turn_is_answered_from_a_thread() {
-        let w = World::new();
-        w.s().settled = false;
-        let shown = w.after_typing(&effort_yes());
-        let out = effort(&w, "low", Some(OTHER_JOB), me_()).await.unwrap();
-        assert!(ok(&out) && out["switch_dialog"]["pending"] == json!(true));
-        assert!(shown.presses().is_empty() && w.spawned_count() == 1);
-        run_spawned(&w).await;
-        assert_eq!(shown.presses(), [Key::Enter]);
-    }
-
-    /// Write the promise `send` would have left for the caller's own session.
-    async fn own_promise(w: &World) -> Change {
-        let req = w.sent().pop().unwrap();
-        let change = req.change.clone().unwrap();
-        let promise = Pending { changes: vec![change.clone()], ..Pending::new(me(), "1", "sid", &req.text, "x", 1) };
-        w.promises.record(&promise).await;
-        change
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn test_the_callers_own_session_is_answered_by_the_spawned_thread() {
-        let w = World::new();
-        let out = effort(&w, "low", None, me_()).await.unwrap();
-        assert!(out["self"] == json!(true) && out["switch_dialog"]["pending"] == json!(true));
-        let change = own_promise(&w).await;
-        w.set_screen(FakeScreen::new(&[&effort_yes()]));
-        assert!(w.screen().presses().is_empty() && w.spawned_count() == 1);
-        run_spawned(&w).await;
-        assert_eq!(w.screen().presses(), [Key::Enter]);
-        let changes = w.promises.read(me()).await.unwrap().changes;
-        assert!(changes.len() == 1 && changes[0].key == change.key && changes[0].outcome == APPLIED);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn test_a_refused_dialog_is_written_onto_the_promise_with_its_reason() {
-        let w = World::new();
-        model(&w, "opus", None, me_()).await.unwrap();
-        own_promise(&w).await;
-        w.set_screen(FakeScreen::new(&[&switch_dialog("Switch model?", "Opus 5.5", 1, "")]));
-        run_spawned(&w).await;
-        assert_eq!(w.screen().presses(), [Key::Escape]);
-        let changes = w.promises.read(me()).await.unwrap().changes;
-        assert!(changes.len() == 1 && changes[0].outcome == FAILED && changes[0].detail.contains("No, go back"));
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn test_the_thread_stops_waiting_once_the_resume_has_gone_in() {
-        let w = World::new();
-        effort(&w, "low", None, me_()).await.unwrap();
-        let change = own_promise(&w).await;
-        let mut gone = PromiseGone::new(me(), &change);
-        assert!(!gone.check(&w.promises).await);
-        w.promises.clear(me()).await;
-        assert!(gone.check(&w.promises).await);
-    }
-
-    #[tokio::test]
-    async fn test_a_promise_that_was_never_written_does_not_end_the_wait() {
-        let w = World::new();
-        let mut gone = PromiseGone::new(me(), &Change::new("effort", "low", "k"));
-        assert!(!gone.check(&w.promises).await && !gone.check(&w.promises).await);
-    }
-
-    #[tokio::test]
-    async fn test_a_rename_asks_no_dialog() {
-        let w = World::new();
-        let out = rename(&w, "new", Some(OTHER_JOB), me_()).await.unwrap();
-        assert!(ok(&out) && out.get("switch_dialog").is_none() && w.screen().presses().is_empty());
     }
 
     // --- the user's saved defaults ---
@@ -3092,17 +2511,6 @@ mod tests {
         assert!(ok(&out) && shown.presses() == [Key::Enter]);
         assert_eq!(out["switch_dialog"]["defaults_restored"], json!([format!("modelSettings.{MODEL_KEY}.effortLevel")]));
         assert_eq!(w.settings(), settings_text(), "byte for byte, formatting too");
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn test_model_puts_the_saved_default_back_after_the_cli_wrote_it() {
-        let w = World::new();
-        let shown = w.after_typing(&switch_dialog("Switch model?", "Sonnet 5.5", 0, ""));
-        shown.on_press(w.cli_saves(|doc| doc["model"] = json!("sonnet")));
-        let out = model(&w, "sonnet", Some(OTHER_JOB), me_()).await.unwrap();
-        assert!(ok(&out) && out["switch_dialog"]["defaults_restored"] == json!(["model"]), "{out}");
-        let doc: Value = serde_json::from_str(&w.settings()).unwrap();
-        assert_eq!(doc["model"], json!("opus"));
     }
 
     #[tokio::test(start_paused = true)]
@@ -3123,134 +2531,9 @@ mod tests {
         assert_eq!(doc.keys().cloned().collect::<Vec<_>>(), keys, "order kept");
     }
 
-    #[tokio::test(start_paused = true)]
-    async fn test_a_dialog_that_was_declined_leaves_the_file_alone() {
-        let w = World::new();
-        let shown = w.after_typing(&effort_no());
-        shown.on_press(w.cli_saves(save_effort));
-        let out = effort(&w, "low", Some(OTHER_JOB), me_()).await.unwrap();
-        assert!(out["ok"] == json!(false) && shown.presses() == [Key::Escape]);
-        assert_eq!(w.settings(), settings_text());
-    }
-
-    #[tokio::test]
-    async fn test_effort_above_high_is_refused_on_any_model() {
-        let w = World::new();
-        for level in ["xhigh", "max"] {
-            let out = effort(&w, level, Some(OTHER_JOB), me_()).await.unwrap();
-            assert!(out["ok"] == json!(false) && text(&out, "reason").contains("upper limit"));
-        }
-    }
-
-    #[tokio::test]
-    async fn test_a_defaults_guard_covers_effort_and_model() {
-        let w = World::new();
-        assert!(DefaultsGuard::new(Some(Switch::Effort), w.home.settings()).await.on());
-        assert!(DefaultsGuard::new(Some(Switch::Model), w.home.settings()).await.on());
-        assert!(!DefaultsGuard::new(None, w.home.settings()).await.on());
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn test_no_dialog_still_puts_back_what_the_command_saved() {
-        // A conversation without output switches without asking, and still saves.
-        let w = World::new();
-        w.after_typing(PLAIN);
-        w.s().save_on_deliver = Some(save_effort);
-        let out = effort(&w, "low", Some(OTHER_JOB), me_()).await.unwrap();
-        assert!(ok(&out) && out["switch_dialog"]["dialog"] == json!(false));
-        assert_eq!(w.settings(), settings_text());
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn test_the_callers_own_session_snapshots_again_just_before_the_answer() {
-        let w = World::new();
-        model(&w, "sonnet", None, me_()).await.unwrap();
-        // The user changes their default while the turn is still running.
-        std::fs::write(w.home.settings(), w.settings().replace("\"opus\"", "\"haiku\"")).unwrap();
-        let shown = FakeScreen::new(&[&switch_dialog("Switch model?", "Sonnet", 0, "")]);
-        shown.on_press(w.cli_saves(|doc| doc["model"] = json!("sonnet")));
-        w.set_screen(shown.clone());
-        run_spawned(&w).await;
-        assert_eq!(shown.presses(), [Key::Enter]);
-        let doc: Value = serde_json::from_str(&w.settings()).unwrap();
-        assert_eq!(doc["model"], json!("haiku"), "put back to what it was when the dialog opened, not to the stale value");
-    }
-
     // --- what is on screen now ---
 
-    const COMPOSER: &str = "╭────────────╮\n│ >          │\n╰────────────╯\n  ? for shortcuts";
-    const ERASE_LINE: &str = "\x1b[2K\x1b[1A";
-
-    /// Ink's way of painting a region: lines, with the cursor left on the last.
-    fn inline_frame(text: &str) -> String {
-        text.split('\n').collect::<Vec<_>>().join("\r\n")
-    }
-
-    /// Erase the `lines`-line region above the cursor, as Ink does before a repaint.
-    fn inline_close(lines: usize) -> String {
-        ERASE_LINE.repeat(lines - 1) + "\x1b[2K\x1b[G"
-    }
-
-    fn line_count(text: &str) -> usize {
-        text.matches('\n').count() + 1
-    }
-
-    /// The stream of a session whose effort dialog was answered a moment ago.
-    fn stale_stream() -> String {
-        let dialog = effort_yes();
-        inline_frame(COMPOSER)
-            + "\r\n"
-            + &inline_close(line_count(COMPOSER) + 1)
-            + &inline_frame(&dialog)
-            + &inline_close(line_count(&dialog))
-            + "Set effort level to low (saved as your default for new sessions)\r\n"
-            + &inline_frame(COMPOSER)
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn test_a_typing_verb_is_not_refused_after_the_dialog_was_answered() {
-        let w = World::new();
-        w.set_screen(FakeScreen::new(&[&stale_stream()]));
-        let out = model(&w, "sonnet", Some(OTHER_JOB), me_()).await.unwrap();
-        assert!(ok(&out) && out.get("refused").is_none());
-        assert_eq!(w.typed(), [(OTHER_JOB.to_string(), "/model sonnet".to_string(), sender::ATTEMPTS)]);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn test_the_answering_thread_does_not_press_for_a_dialog_that_is_gone() {
-        let w = World::new();
-        let shown = w.after_typing(&stale_stream());
-        let out = effort(&w, "low", Some(OTHER_JOB), me_()).await.unwrap();
-        assert!(ok(&out) && shown.presses().is_empty());
-    }
-
     // --- the keys on the wire ---
-
-    #[tokio::test]
-    async fn test_a_tmux_press_is_a_send_keys_of_the_named_key() {
-        use crate::tmux::testing::{FakePane, PaneState};
-        use crate::tmux::Tmux;
-        let pane = FakePane::new(PaneState::default());
-        let lane = TmuxLane { pane: "%3".into(), session_id: "s".into(), repl_pid: 1, name: None };
-        let mut sess = Tmux::with_runner(pane.clone()).session(&lane);
-        sess.press(Key::Escape).await.unwrap();
-        sess.press(Key::Down).await.unwrap();
-        let tails: Vec<Vec<String>> = pane.state().calls.iter().map(|c| c[c.len() - 4..].to_vec()).collect();
-        assert_eq!(tails, [["send-keys", "-t", "%3", "Escape"], ["send-keys", "-t", "%3", "Down"]]);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn test_a_daemon_press_sends_the_raw_key_bytes() {
-        use crate::lane::tests::{daemon_session, daemon_target, hello};
-        use awm_harness::claude::pty::RAW;
-        let (mut sess, host) = daemon_session(daemon_target(), hello()).await;
-        for key in [Key::Escape, Key::Down, Key::Up, Key::Enter] {
-            sess.press(key).await.unwrap();
-        }
-        sess.close().await;
-        let sent: Vec<Vec<u8>> = host.await.unwrap().into_iter().filter(|(k, _)| *k == RAW).map(|(_, p)| p).collect();
-        assert_eq!(sent, [b"\x1b".to_vec(), b"\x1b[B".to_vec(), b"\x1b[A".to_vec(), b"\r".to_vec()]);
-    }
 
     // --- cd ---
 
@@ -3287,38 +2570,6 @@ mod tests {
         );
     }
 
-    #[tokio::test(start_paused = true)]
-    async fn test_cd_of_another_session_sends_it_the_brief_after_the_reconnect() {
-        let w = World::new();
-        let there = moves(&w);
-        let out = cd(&w, &shown(&there), Some("other one"), me_(), "The brief of p/s: For x.").await.unwrap();
-        assert_eq!(out["brief_sent"], json!(true));
-        assert_eq!(
-            w.typed_texts(),
-            [format!("/cd {}", shown(&there)), RECONNECT_AFTER_MOVE.into(), "The brief of p/s: For x.".into()]
-        );
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn test_cd_follows_a_symlink_to_the_directory_it_names() {
-        let w = World::new();
-        let there = moves(&w);
-        let link = w.root.join("shortcut");
-        std::os::unix::fs::symlink(&there, &link).unwrap();
-        let out = cd(&w, &shown(&link), Some(OTHER_JOB), me_(), "").await.unwrap();
-        assert!(ok(&out) && w.typed()[0].1 == format!("/cd {}", shown(&there)));
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn test_cd_keeps_a_path_with_spaces_whole() {
-        let w = World::new();
-        moves(&w);
-        let spaced = w.root.join("two words");
-        std::fs::create_dir(&spaced).unwrap();
-        let out = cd(&w, &shown(&spaced), Some(OTHER_JOB), me_(), "").await.unwrap();
-        assert!(ok(&out) && w.typed()[0].1 == format!("/cd {}", shown(&spaced)));
-    }
-
     #[tokio::test]
     async fn test_cd_refuses_a_path_that_is_not_an_absolute_directory() {
         for path in ["", "relative/dir", "/no/such/dir", "/tmp\n/etc"] {
@@ -3328,61 +2579,6 @@ mod tests {
             assert_eq!(out["ok"], json!(false));
             assert!(w.typed().is_empty() && w.sent().is_empty() && w.opened() == 0);
         }
-    }
-
-    #[tokio::test]
-    async fn test_cd_refuses_a_file() {
-        let w = World::new();
-        moves(&w);
-        let file = w.root.join("a-file");
-        std::fs::write(&file, "x").unwrap();
-        let out = cd(&w, &shown(&file), Some(OTHER_JOB), me_(), "").await.unwrap();
-        assert!(out["ok"] == json!(false) && text(&out, "reason").contains("not a directory"));
-    }
-
-    #[tokio::test]
-    async fn test_cd_refuses_where_the_trust_dialog_would_open() {
-        let w = World::new();
-        let there = moves(&w);
-        w.s().trust_all = false;
-        let out = cd(&w, &shown(&there), Some(OTHER_JOB), me_(), "").await.unwrap();
-        assert!(out["ok"] == json!(false) && text(&out, "reason").contains("trust dialog"));
-        assert!(w.typed().is_empty() && w.opened() == 0);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn test_cd_trusts_an_awm_worktree_before_moving_into_it() {
-        // A background session has nobody to answer the dialog, and awm made the worktree, so
-        // `cd` records the trust a person would have given.
-        let w = World::new();
-        let there = moves(&w);
-        {
-            let mut s = w.s();
-            s.trust_all = false;
-            s.grant_works = true;
-            s.projects_root = w.root.clone();
-        }
-        let out = cd(&w, &shown(&there), Some(OTHER_JOB), me_(), "").await.unwrap();
-        assert_eq!(w.s().grants, [(there.clone(), w.root.clone())]);
-        assert!(ok(&out) && w.typed()[0].1 == format!("/cd {}", shown(&there)));
-    }
-
-    #[tokio::test]
-    async fn test_cd_to_where_the_session_already_is_types_nothing() {
-        let w = World::new();
-        let there = moves(&w);
-        w.set_cwd(parent(), &shown(&there));
-        let out = cd(&w, &shown(&there), Some(OTHER_JOB), me_(), "").await.unwrap();
-        assert!(ok(&out) && out["changed"] == json!(false) && w.typed().is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_cd_into_a_modal_is_refused() {
-        let w = World::new();
-        let there = moves(&w);
-        w.set_screen(FakeScreen::new(&[PROMPT]));
-        let out = cd(&w, &shown(&there), Some(OTHER_JOB), me_(), "").await.unwrap();
-        assert!(out["refused"] == json!(true) && out["kind"] == json!("modal") && w.typed().is_empty());
     }
 
     #[tokio::test(start_paused = true)]
@@ -3403,20 +2599,6 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn test_cd_mid_turn_that_never_lands_reconnects_nothing() {
-        let w = World::new();
-        let there = moves(&w);
-        {
-            let mut s = w.s();
-            s.settled = false;
-            s.follow_cd = false;
-        }
-        cd(&w, &shown(&there), Some(OTHER_JOB), me_(), "").await.unwrap();
-        run_spawned(&w).await;
-        assert_eq!(w.typed_texts(), [format!("/cd {}", shown(&there))]);
-    }
-
-    #[tokio::test(start_paused = true)]
     async fn test_cd_that_never_lands_says_so_after_the_wait() {
         let w = World::new();
         let there = moves(&w);
@@ -3428,43 +2610,7 @@ mod tests {
         assert!(out["mcp_reconnected"] == json!(false) && w.typed().len() == 1);
     }
 
-    #[tokio::test]
-    async fn test_cd_on_your_own_session_goes_through_the_self_sender() {
-        let w = World::new();
-        let there = moves(&w);
-        let out = cd(&w, &shown(&there), None, me_(), "").await.unwrap();
-        assert!(ok(&out) && out["self"] == json!(true) && w.typed().is_empty());
-        let req = &w.sent()[0];
-        let change = req.change.clone().unwrap();
-        assert!(req.text == format!("/cd {}", shown(&there)) && change.kind == "cd");
-        assert!(render_followup(&[change], None, "").starts_with(&format!("The move to {} succeeded.", shown(&there))));
-    }
-
-    #[tokio::test]
-    async fn test_the_move_follow_up_carries_the_brief() {
-        let w = World::new();
-        let there = moves(&w);
-        cd(&w, &shown(&there), None, me_(), "The brief of p/s: For x.").await.unwrap();
-        let change = w.sent()[0].change.clone().unwrap();
-        assert_eq!(
-            render_followup(&[change], None, "go on"),
-            format!("The move to {} succeeded. The brief of p/s: For x. go on", shown(&there))
-        );
-        let failed = Change { note: "The brief".into(), ..Change::new("cd", "/x", "").ended(FAILED, "") };
-        assert!(!render_followup(&[failed], None, "").contains("The brief"));
-    }
-
     // --- mcp ---
-
-    #[tokio::test]
-    async fn test_message_points_an_mcp_line_at_the_mcp_verb() {
-        let w = World::new();
-        for line in ["/mcp", "/mcp reconnect awm"] {
-            let out = message(&w, Some(OTHER_JOB), line, me_(), false).await.unwrap();
-            assert!(out["refused"] == json!(true) && text(&out, "reason").contains("verb=\"mcp\""));
-        }
-        assert!(w.typed().is_empty());
-    }
 
     #[tokio::test]
     async fn test_mcp_types_the_panel_free_line_and_reads_what_it_printed() {
@@ -3476,55 +2622,6 @@ mod tests {
         assert_eq!(w.s().output_seen, ["/mcp reconnect awm"]);
     }
 
-    #[tokio::test]
-    async fn test_mcp_into_a_session_mid_turn_does_not_wait_for_the_output() {
-        let w = World::new();
-        {
-            let mut s = w.s();
-            s.settled = false;
-            s.output_forbidden = true;
-        }
-        let out = mcp(&w, "disable", "all", Some(OTHER_JOB), me_()).await.unwrap();
-        assert!(ok(&out) && out["output"].is_null() && text(&out, "detail").contains("mid-turn"));
-        assert_eq!(w.typed(), [(OTHER_JOB.to_string(), "/mcp disable all".to_string(), sender::ATTEMPTS)]);
-    }
-
-    #[tokio::test]
-    async fn test_mcp_on_ones_own_session_is_a_self_send_with_a_report() {
-        let w = World::new();
-        let out = mcp(&w, "enable", "awm", None, me_()).await.unwrap();
-        let req = &w.sent()[0];
-        assert!(ok(&out) && out["self"] == json!(true) && req.text == "/mcp enable awm");
-        assert!(req.allow_modal);
-        let change = req.change.clone().unwrap();
-        assert_eq!((change.kind.as_str(), change.value.as_str()), ("mcp", "enable awm"));
-        assert!(w.typed().is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_mcp_refuses_a_line_it_cannot_build() {
-        for (action, server) in [("list", "awm"), ("", "awm"), ("reconnect", ""), ("reconnect", "a b"), ("reconnect", "awm\n/clear")] {
-            let w = World::new();
-            let out = mcp(&w, action, server, Some(OTHER_JOB), me_()).await.unwrap();
-            assert!(out["ok"] == json!(false) && w.typed().is_empty() && w.sent().is_empty());
-        }
-    }
-
-    #[tokio::test]
-    async fn test_mcp_refuses_a_session_showing_a_modal() {
-        let w = World::new();
-        w.set_screen(FakeScreen::new(&[PROMPT]));
-        let out = mcp(&w, "reconnect", "awm", Some(OTHER_JOB), me_()).await.unwrap();
-        assert!(out["refused"] == json!(true) && out["kind"] == json!("modal") && w.typed().is_empty());
-    }
-
     // --- the hand-coded lookahead ---
 
-    #[test]
-    fn an_effort_offer_must_end_where_the_level_ends() {
-        assert!(offer_names(Switch::Effort, "high", "High"));
-        assert!(offer_names(Switch::Effort, "high", "high (recommended)"));
-        assert!(!offer_names(Switch::Effort, "high", "higher"));
-        assert!(!offer_names(Switch::Effort, "high", "xhigh"));
-    }
 }

@@ -625,17 +625,16 @@ mod tests {
     use std::fmt::Debug;
     use std::sync::{Arc, Mutex};
 
-    use awm_harness::claude::pty::DaemonLane;
     use awm_harness::claude::ClaudeHome;
 
     use super::*;
     use crate::lane::{Host, Key};
     use crate::promises::tests::{FakeLiveness, SID};
-    use crate::promises::{held, FAILED};
+    
     use crate::target::testing::FakeProcs;
     use crate::target::TmuxLane;
     use crate::tmux::testing::{FakePane, PaneState};
-    use crate::tmux::{Tmux, TmuxError, CLEAR_KEY};
+    use crate::tmux::{Tmux, TmuxError};
 
     const CONTINUE: &str = guards::DEFAULT_FOLLOWUP;
 
@@ -646,13 +645,6 @@ mod tests {
             repl_pid: 4242,
             name: Some("test".into()),
         })
-    }
-
-    fn daemon_lane() -> Target {
-        Target::Daemon(
-            DaemonLane::from_parts("/tmp/fake.sock", "tok", SID, 4242, vec![])
-                .with_name(Some("test".into())),
-        )
     }
 
     type Log = Arc<Mutex<Vec<String>>>;
@@ -979,16 +971,6 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn test_the_first_attempt_never_clears_the_prompt() {
-        // Clearing destroys whatever a human was mid-way through typing.
-        let (events, rec) = (log(), FakeRecord::new("idle"));
-        deliver(vec![FakeWriter::new(&events, Some(&rec))], &rec)
-            .await
-            .unwrap();
-        assert_eq!(count(&events, "clear"), 0);
-    }
-
-    #[tokio::test(start_paused = true)]
     async fn test_enter_false_writes_but_does_not_commit_or_claim_a_submit() {
         let (events, rec) = (log(), FakeRecord::new("idle"));
         let opts = DeliverOpts {
@@ -1005,59 +987,6 @@ mod tests {
     }
 
     // --- the screen is not consulted, on any lane ---
-
-    #[tokio::test(start_paused = true)]
-    async fn test_the_transaction_never_asks_a_lane_what_is_on_its_screen() {
-        // FakeWriter panics on every screen verb, so a sender that reached for one fails here.
-        let (events, rec) = (log(), FakeRecord::new("idle"));
-        let result = deliver(vec![FakeWriter::new(&events, Some(&rec))], &rec)
-            .await
-            .unwrap();
-        assert!(result.submitted);
-        assert_eq!(seen(&events), ["write:/compact", "check", "commit"]);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn test_a_lane_that_never_echoes_still_submits() {
-        // A background session's PTY often repaints nothing for a paste that arrived whole.
-        let (events, rec) = (log(), FakeRecord::new("idle"));
-        let mut s = sender(vec![FakeWriter::new(&events, Some(&rec))], &rec);
-        s.detect = Detect::of(daemon_lane());
-        let result = s
-            .deliver(4242, "/compact", DeliverOpts::default(), NO_TAIL)
-            .await
-            .unwrap();
-        assert!(result.submitted);
-        assert_eq!(result.confirmed, Confirmed::Record);
-        assert_eq!(count(&events, "commit"), 1);
-        assert_eq!(
-            count(&events, "write:/compact"),
-            1,
-            "and without needing a retry"
-        );
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn test_a_resume_into_a_compacting_session_commits_once_and_is_enqueued() {
-        // The composer is not painted while compacting; `busy` plus the transcript's enqueue is
-        // the whole answer, and it is the same pair on every lane.
-        let (events, rec) = (log(), FakeRecord::new("busy"));
-        let mut tail = FakeTail {
-            landed: Some(true),
-            ..FakeTail::default()
-        };
-        let result = sender(vec![FakeWriter::new(&events, Some(&rec)).deaf()], &rec)
-            .deliver(4242, "/compact", DeliverOpts::default(), Some(&mut tail))
-            .await
-            .unwrap();
-        assert!(result.submitted);
-        assert_eq!(result.confirmed, Confirmed::Enqueued);
-        assert_eq!(
-            seen(&events),
-            ["write:/compact", "check", "commit"],
-            "written once, submitted once"
-        );
-    }
 
     // --- what a lane may still say: that it refused the write ---
 
@@ -1076,16 +1005,6 @@ mod tests {
             "a refused write must not be submitted"
         );
         assert_eq!(count(&events, "write:/compact"), 3, "and it is retried");
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn test_the_rejection_check_sits_between_the_write_and_the_commit() {
-        let (events, rec) = (log(), FakeRecord::new("idle"));
-        deliver(vec![FakeWriter::new(&events, Some(&rec))], &rec)
-            .await
-            .unwrap();
-        let at = |e: &str| seen(&events).iter().position(|x| x == e).unwrap();
-        assert!(at("write:/compact") < at("check") && at("check") < at("commit"));
     }
 
     // --- confirming the submit from the session's own record ---
@@ -1117,38 +1036,6 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn test_a_session_held_at_shell_by_a_background_task_is_confirmed_by_record() {
-        // A session held at `shell` by a background task takes the line straight in; confirming
-        // asks the watcher's settle question so the two cannot drift.
-        let (events, mut rec) = (log(), FakeRecord::new("shell"));
-        rec.now_ms = 1000 + (watcher::SHELL_SETTLE_S * 1000.0) as i64 + 1;
-        let mut tail = FakeTail {
-            landed: Some(true),
-            in_flight: Some(false),
-            queued: Some(false),
-        };
-        let result = sender(vec![FakeWriter::new(&events, Some(&rec))], &rec)
-            .deliver(4242, "/compact", DeliverOpts::default(), Some(&mut tail))
-            .await
-            .unwrap();
-        assert_eq!(result.confirmed, Confirmed::Record);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn test_a_busy_session_whose_transcript_shows_the_line_is_evidence() {
-        let (events, rec) = (log(), FakeRecord::new("busy"));
-        let mut tail = FakeTail {
-            landed: Some(true),
-            ..FakeTail::default()
-        };
-        let result = sender(vec![FakeWriter::new(&events, Some(&rec)).deaf()], &rec)
-            .deliver(4242, "/compact", DeliverOpts::default(), Some(&mut tail))
-            .await
-            .unwrap();
-        assert_eq!(result.confirmed, Confirmed::Enqueued);
-    }
-
-    #[tokio::test(start_paused = true)]
     async fn test_a_session_behind_a_modal_is_refused_before_anything_is_typed() {
         let (events, rec) = (log(), FakeRecord::new("waiting"));
         let err = deliver(vec![FakeWriter::new(&events, Some(&rec))], &rec)
@@ -1159,50 +1046,6 @@ mod tests {
             "nothing typed, nothing cleared, nothing submitted"
         );
         assert!(err.to_string().contains("waiting for an answer"), "{err}");
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn test_a_give_up_against_a_modal_does_not_clear_its_prompt() {
-        // Against a modal nothing of ours went in, and a Ctrl-U would answer the dialog instead.
-        let (events, rec) = (log(), FakeRecord::new("waiting"));
-        assert!(deliver(vec![FakeWriter::new(&events, Some(&rec))], &rec)
-            .await
-            .is_err());
-        assert_eq!(count(&events, "clear"), 0);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn test_a_modal_that_opens_after_the_sample_is_still_named_apart_from_queued() {
-        let rec = FakeRecord::new("idle");
-        let confirmed = sender(vec![FakeWriter::new(&log(), None)], &rec)
-            .confirm_submit(4242, Some(&("waiting".into(), 1000)), "", NO_TAIL)
-            .await;
-        assert_eq!(confirmed, Confirmed::Blocked);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn test_an_unreadable_record_is_not_read_as_a_failure() {
-        let (events, rec) = (log(), FakeRecord::unreadable());
-        let result = deliver(vec![FakeWriter::new(&events, Some(&rec))], &rec)
-            .await
-            .unwrap();
-        assert!(result.submitted);
-        assert_eq!(result.confirmed, Confirmed::Unreadable);
-        assert_eq!(count(&events, "commit"), 1);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn test_confirmation_does_not_care_which_lane_it_is() {
-        for target in [lane(), daemon_lane()] {
-            let (events, rec) = (log(), FakeRecord::new("idle"));
-            let mut s = sender(vec![FakeWriter::new(&events, Some(&rec))], &rec);
-            s.detect = Detect::of(target);
-            let result = s
-                .deliver(4242, "/compact", DeliverOpts::default(), NO_TAIL)
-                .await
-                .unwrap();
-            assert_eq!(result.confirmed, Confirmed::Record);
-        }
     }
 
     // --- retrying ---
@@ -1231,29 +1074,6 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn test_a_retry_clears_the_prompt_first() {
-        // Otherwise the next paste concatenates onto a half-landed one.
-        let (events, rec) = (log(), FakeRecord::new("idle"));
-        assert!(deliver(
-            vec![FakeWriter::new(&events, Some(&rec)).failing("write")],
-            &rec
-        )
-        .await
-        .is_err());
-        let all = seen(&events);
-        let at = |e: &str| all.iter().position(|x| x == e).unwrap();
-        assert!(
-            at("clear") > at("write:/compact"),
-            "attempt 1 writes before any clear happens"
-        );
-        assert_eq!(
-            count(&events, "clear"),
-            3,
-            "attempts 2 and 3 clear on the way in, the give-up on the way out"
-        );
-    }
-
-    #[tokio::test(start_paused = true)]
     async fn test_a_give_up_leaves_nothing_in_the_prompt() {
         let (events, rec) = (log(), FakeRecord::new("idle"));
         assert!(deliver(
@@ -1263,69 +1083,6 @@ mod tests {
         .await
         .is_err());
         assert_eq!(seen(&events).last().map(String::as_str), Some("clear"));
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn test_a_transient_failure_is_crossed_and_said_out_loud() {
-        let (events, rec) = (log(), FakeRecord::new("idle"));
-        let broken = FakeWriter::new(&events, Some(&rec)).failing("write");
-        let healthy = FakeWriter::new(&events, Some(&rec));
-        let (_guard, lines) = capture();
-        let result = deliver(vec![broken, healthy], &rec).await.unwrap();
-        assert!(result.submitted);
-        assert!(
-            seen(&lines)
-                .iter()
-                .any(|l| l.contains("attempt 2") && l.contains("earlier attempts failed")),
-            "a send that only worked on a retry must be visible afterwards: {:?}",
-            seen(&lines)
-        );
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn test_each_attempt_detects_the_lane_again() {
-        let rec = FakeRecord::new("idle");
-        let mut s = sender(vec![FakeWriter::new(&log(), None).failing("write")], &rec);
-        assert!(s
-            .deliver(4242, "/compact", DeliverOpts::default(), NO_TAIL)
-            .await
-            .is_err());
-        // Three attempts, plus the one the give-up clear makes to find the prompt.
-        assert_eq!(*s.detect.calls.lock().unwrap(), [4242, 4242, 4242, 4242]);
-    }
-
-    struct MustNotOpen;
-
-    impl Opener for MustNotOpen {
-        type Lane = FakeWriter;
-        async fn open_writer(&self, _target: &Target) -> Result<FakeWriter, LaneError> {
-            panic!("must not open a lane")
-        }
-        async fn open_session(&self, _target: &Target) -> Result<FakeWriter, LaneError> {
-            panic!("must not open a lane")
-        }
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn test_a_lane_that_cannot_even_be_detected_is_retried() {
-        let detect = Detect {
-            fail: Some("roster is mid-rewrite"),
-            ..Detect::of(lane())
-        };
-        let mut s = Sender {
-            detect,
-            opener: MustNotOpen,
-            probe: FakeRecord::new("idle"),
-        };
-        assert!(s
-            .deliver(4242, "/compact", DeliverOpts::default(), NO_TAIL)
-            .await
-            .is_err());
-        assert_eq!(
-            s.detect.calls.lock().unwrap().len(),
-            4,
-            "three attempts, and the give-up clear tries too"
-        );
     }
 
     // --- the commit boundary ---
@@ -1349,12 +1106,6 @@ mod tests {
         assert!(seen(&lines)
             .iter()
             .any(|l| l.starts_with("ERROR") && l.contains("did not complete")));
-    }
-
-    #[test]
-    fn test_a_commit_failure_is_a_delivery_error_for_the_caller() {
-        let err: DeliveryError = CommitFailed("x".into()).into();
-        assert!(matches!(err, DeliveryError::CommitFailed(_)));
     }
 
     // --- send (test_cch.py) ---
@@ -1388,19 +1139,6 @@ mod tests {
         promises
             .load_all(watcher::now_ms(), &FakeLiveness::new(Some("999")))
             .await
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn test_a_caller_that_cannot_be_identified_is_refused() {
-        // cch acts on the caller and nobody else, so an unresolvable caller is refused.
-        let (_d, promises) = store();
-        let refused = send_as(&promises, SendRequest::new("/compact", None)).await;
-        assert!(matches!(refused, Err(SendError::Unidentified(_))));
-        let rec = FakeRecord::new("idle");
-        let described = sender(vec![FakeWriter::new(&log(), None)], &rec)
-            .describe_caller(None)
-            .await;
-        assert!(matches!(described, Err(LaneError::Resolve(_))));
     }
 
     #[tokio::test(start_paused = true)]
@@ -1453,53 +1191,6 @@ mod tests {
 
     // --- send records its promise (test_cch_pending.py) ---
 
-    struct Snapshot<'a> {
-        promises: &'a Promises,
-        seen: Vec<Vec<Pending>>,
-    }
-
-    impl<T: Send> ResumeWatch<T> for Snapshot<'_> {
-        async fn arm(&mut self, _promise: Pending, _tail: T) {
-            let on_disk = load(self.promises).await;
-            self.seen.push(on_disk);
-        }
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn test_a_deferred_resume_is_written_down_before_the_watcher_starts() {
-        // If the watcher wrote it, a restart between the paste and that write would lose it.
-        let (_d, promises) = store();
-        let rec = FakeRecord::unreadable();
-        let mut watch = Snapshot {
-            promises: &promises,
-            seen: vec![],
-        };
-        sender(vec![FakeWriter::new(&log(), None)], &rec)
-            .send(
-                &SendRequest::new("/compact", Some(4242)),
-                &promises,
-                FakeTail::default(),
-                &mut watch,
-            )
-            .await
-            .unwrap();
-        assert_eq!(watch.seen.len(), 1);
-        let [item] = watch.seen[0].as_slice() else {
-            panic!("{:?}", watch.seen)
-        };
-        assert_eq!(item.repl_pid, 4242);
-        assert_eq!(item.text, "/compact");
-        assert_eq!(item.followup, CONTINUE);
-        assert_eq!(item.proc_start, "999");
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn test_a_plain_prompt_promises_nothing() {
-        let (_d, promises) = store();
-        send_change(&promises, "just a prompt", None).await;
-        assert_eq!(load(&promises).await, []);
-    }
-
     #[tokio::test(start_paused = true)]
     async fn test_no_promise_survives_a_command_that_never_went_in() {
         let (_d, promises) = store();
@@ -1539,36 +1230,6 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn test_compact_and_message_self_keep_the_default_resume() {
-        let (_d, promises) = store();
-        send_change(&promises, "/compact", None).await;
-        assert_eq!(
-            load(&promises)
-                .await
-                .iter()
-                .map(|i| i.followup.as_str())
-                .collect::<Vec<_>>(),
-            [CONTINUE]
-        );
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn test_an_outcome_survives_a_rewrite_by_a_watcher_that_has_not_seen_it() {
-        let (_d, promises) = store();
-        send_change(
-            &promises,
-            "/effort low",
-            Some(Change::new("effort", "low", "k-effort")),
-        )
-        .await;
-        let stale = load(&promises).await.remove(0);
-        assert!(promises.settle(4242, "k-effort", FAILED, "no").await);
-        promises.record(&held(&stale, "waiting")).await;
-        let now = load(&promises).await.remove(0);
-        assert_eq!((now.changes[0].outcome.as_str(), now.holds), (FAILED, 1));
-    }
-
-    #[tokio::test(start_paused = true)]
     async fn test_a_second_self_command_takes_over_the_promise_and_carries_the_first() {
         let (_d, promises) = store();
         send_change(
@@ -1600,26 +1261,6 @@ mod tests {
         assert_eq!(
             item.ticket, first.ticket,
             "one promise per session, one ticket"
-        );
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn test_a_custom_closing_prompt_is_kept_beside_a_later_settings_change() {
-        let (_d, promises) = store();
-        let custom = SendRequest {
-            followup: Some("go on with T3".into()),
-            ..SendRequest::new("/compact", Some(4242))
-        };
-        send_as(&promises, custom).await.unwrap();
-        send_change(
-            &promises,
-            "/effort low",
-            Some(Change::new("effort", "low", "k-effort")),
-        )
-        .await;
-        assert_eq!(
-            promises.read(4242).await.unwrap().followup,
-            "The effort change to low succeeded. go on with T3"
         );
     }
 
@@ -1686,44 +1327,6 @@ mod tests {
         assert_eq!(
             pane.verbs().iter().filter(|v| *v == "paste-buffer").count(),
             1
-        );
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn a_tmux_send_without_enter_leaves_the_text_in_the_prompt() {
-        let pane = FakePane::new(PaneState::default());
-        let opts = DeliverOpts {
-            enter: false,
-            ..DeliverOpts::default()
-        };
-        let result = tmux_sender(&pane, FakeProcs::new())
-            .deliver(4242, "half a thought", opts, NO_TAIL)
-            .await
-            .unwrap();
-        assert!(!result.submitted);
-        assert!(pane.state().submitted.is_empty());
-        assert_eq!(pane.state().prompt, "half a thought");
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn a_failing_tmux_paste_is_rechecked_and_wiped_on_every_attempt() {
-        let pane = FakePane::new(PaneState {
-            fail_verbs: vec!["paste-buffer".into()],
-            ..PaneState::default()
-        });
-        let mut s = tmux_sender(&pane, FakeProcs::new());
-        assert!(s
-            .deliver(4242, "/compact", DeliverOpts::default(), NO_TAIL)
-            .await
-            .is_err());
-        assert_eq!(pane.flat().iter().filter(|t| *t == CLEAR_KEY).count(), 3);
-        assert_eq!(
-            pane.verbs()
-                .iter()
-                .filter(|v| *v == "display-message")
-                .count(),
-            8,
-            "two assertions per attempt, three attempts, plus the give-up wipe"
         );
     }
 

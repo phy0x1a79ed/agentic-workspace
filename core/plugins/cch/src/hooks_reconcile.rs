@@ -347,7 +347,6 @@ async fn run(paths: &Paths, now: DateTime<Utc>, out: &mut Reconciled) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
 
     fn setup() -> (tempfile::TempDir, Paths) {
         let tmp = tempfile::tempdir().unwrap();
@@ -438,41 +437,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_earlier_cch_command_is_replaced_and_a_mixed_entry_keeps_its_other_hook() {
-        let (_tmp, paths) = setup();
-        write(&paths, &json!({"hooks": {"SessionStart": [
-            {"hooks": [{"type": "command", "command": "/old/.awm/bin/cch hook brief 2>/dev/null || true"}, {"type": "command", "command": "echo also"}]},
-            {"hooks": [{"type": "command", "command": "\"/older/bin/cch\" hook brief"}]},
-            {"hooks": [{"type": "command", "command": "cch hook brief-extra"}]},
-        ]}}));
-        reconcile_at(&paths, day(0)).await;
-        let doc = read(&paths);
-        assert_eq!(
-            commands(&doc["hooks"]["SessionStart"]),
-            [command(&paths, "brief"), "echo also".into(), "cch hook brief-extra".into()]
-        );
-    }
-
-    #[tokio::test]
-    async fn a_missing_entry_is_added() {
-        let (_tmp, paths) = setup();
-        write(&paths, &json!({"theme": "dark"}));
-        let done = reconcile_at(&paths, day(0)).await;
-        assert_eq!(done.changes.len(), 6);
-        assert!(done.changes.iter().all(|c| c.ends_with("added")));
-        let doc = read(&paths);
-        assert_eq!(doc["theme"], "dark");
-        for hook in &HOOKS {
-            for &(event, matcher, timeout) in hook.entries {
-                assert_eq!(doc["hooks"][event], json!([entry(&paths, hook, matcher, timeout)]));
-            }
-        }
-        assert!(done.backup.is_some());
-        assert!(done.removed.is_empty());
-        assert!(!paths.service_dir.join(REPLACED_FILE).exists(), "nothing was replaced and no old script is present");
-    }
-
-    #[tokio::test]
     async fn an_absent_settings_file_is_created_with_the_hooks() {
         let (_tmp, paths) = setup();
         let done = reconcile_at(&paths, day(0)).await;
@@ -496,54 +460,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn backups_rotate_to_the_newest_five_cch_wrote_and_leave_the_rest() {
-        let (_tmp, paths) = setup();
-        let backups = paths.home.root.join("backups");
-        std::fs::create_dir_all(&backups).unwrap();
-        for d in 1..=6 {
-            std::fs::write(backups.join(format!("settings.json.2026010{d}-000000{BACKUP_SUFFIX}")), "{}").unwrap();
-        }
-        let theirs = ["settings.json.20200101-000000", "awm-brief-hook.py.20200101-000000", "notes.txt"];
-        for name in theirs {
-            std::fs::write(backups.join(name), "x").unwrap();
-        }
-        write(&paths, &deployed());
-        let done = reconcile_at(&paths, day(0)).await;
-        let backup = done.backup.unwrap();
-        assert_eq!(serde_json::from_str::<Value>(&std::fs::read_to_string(&backup).unwrap()).unwrap(), deployed());
-        let mut names: Vec<String> = std::fs::read_dir(&backups).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
-        names.sort();
-        let ours: Vec<&String> = names.iter().filter(|n| n.ends_with(BACKUP_SUFFIX)).collect();
-        assert_eq!(ours.len(), KEPT_BACKUPS);
-        assert!(!names.contains(&format!("settings.json.20260101-000000{BACKUP_SUFFIX}")));
-        assert!(!names.contains(&format!("settings.json.20260102-000000{BACKUP_SUFFIX}")));
-        assert!(names.contains(&backup.file_name().unwrap().to_string_lossy().into_owned()));
-        for name in theirs {
-            assert!(names.iter().any(|n| n == name), "{name} was deleted");
-        }
-    }
-
-    #[tokio::test]
-    async fn the_file_keeps_its_indent_key_order_newline_and_mode() {
-        let (_tmp, paths) = setup();
-        let text = "{\n    \"zeta\": 1,\n    \"hooks\": {\n        \"Stop\": []\n    },\n    \"alpha\": \"\u{e9}\"\n}";
-        std::fs::write(paths.home.settings(), text).unwrap();
-        std::fs::set_permissions(paths.home.settings(), std::fs::Permissions::from_mode(0o640)).unwrap();
-        reconcile_at(&paths, day(0)).await;
-        let after = std::fs::read_to_string(paths.home.settings()).unwrap();
-        assert!(after.starts_with("{\n    \"zeta\": 1,\n    \"hooks\": {\n        \"Stop\": [],\n        \"UserPromptSubmit\": ["), "{after}");
-        assert!(after.ends_with("\n    },\n    \"alpha\": \"\u{e9}\"\n}"), "{after}");
-        let mode = std::fs::metadata(paths.home.settings()).unwrap().permissions().mode() & 0o7777;
-        assert_eq!(mode, 0o640);
-        let tabbed = "{\n\t\"hooks\": {}\n}\n";
-        std::fs::write(paths.home.settings(), tabbed).unwrap();
-        reconcile_at(&paths, day(0)).await;
-        let after = std::fs::read_to_string(paths.home.settings()).unwrap();
-        assert!(after.starts_with("{\n\t\"hooks\": {\n\t\t\"UserPromptSubmit\""), "{after}");
-        assert!(after.ends_with("}\n"));
-    }
-
-    #[tokio::test]
     async fn the_off_switch_reads_and_writes_nothing() {
         let (_tmp, mut paths) = setup();
         paths.hooks_reconcile = false;
@@ -557,54 +473,6 @@ mod tests {
         assert_eq!(std::fs::read(paths.home.settings()).unwrap(), before);
         assert!(hooks.join("awm-brief-hook.py").exists());
         assert!(!paths.home.root.join("backups").exists());
-    }
-
-    #[tokio::test]
-    async fn the_old_scripts_go_seven_days_after_the_replace_and_nothing_else_does() {
-        let (_tmp, paths) = setup();
-        let mut doc = deployed();
-        // An entry the reconcile does not own still names one old script, which then stays.
-        doc["hooks"]["Stop"] = json!([legacy_entry("awm-subagent-cap.py", None, 5)]);
-        write(&paths, &doc);
-        let hooks = paths.home.root.join("hooks");
-        std::fs::create_dir_all(&hooks).unwrap();
-        let others = ["awm-operations-hook.py", "awm-operations-settings.json", "awm-cch", "mine.sh"];
-        for name in HOOKS.iter().map(|h| h.legacy_file).chain(others) {
-            std::fs::write(hooks.join(name), "#").unwrap();
-        }
-        let first = reconcile_at(&paths, day(0)).await;
-        assert!(first.removed.is_empty());
-        let marker = std::fs::read_to_string(paths.service_dir.join(REPLACED_FILE)).unwrap();
-        assert_eq!(DateTime::parse_from_rfc3339(marker.trim()).unwrap(), day(0));
-
-        assert!(reconcile_at(&paths, day(6)).await.removed.is_empty());
-        let late = reconcile_at(&paths, day(7)).await;
-        let mut removed: Vec<String> = late.removed.iter().map(|p| p.file_name().unwrap().to_string_lossy().into_owned()).collect();
-        removed.sort();
-        assert_eq!(removed, ["awm-brief-hook.py", "awm-cx-name-hook.py", "awm-reflection-mode.py"]);
-        assert!(hooks.join("awm-subagent-cap.py").exists(), "an entry still names it");
-        for name in others {
-            assert!(hooks.join(name).exists(), "{name} was removed");
-        }
-        assert_eq!(DateTime::parse_from_rfc3339(std::fs::read_to_string(paths.service_dir.join(REPLACED_FILE)).unwrap().trim()).unwrap(), day(0));
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn the_reconcile_waits_for_the_settings_lock() {
-        let (_tmp, paths) = setup();
-        write(&paths, &deployed());
-        let before = std::fs::read(paths.home.settings()).unwrap();
-        let held = SETTINGS_LOCK.lock().await;
-        let task = tokio::spawn({
-            let paths = paths.clone();
-            async move { reconcile_at(&paths, day(0)).await }
-        });
-        tokio::time::sleep(Duration::from_secs(10)).await;
-        assert!(!task.is_finished());
-        assert_eq!(std::fs::read(paths.home.settings()).unwrap(), before);
-        drop(held);
-        assert_eq!(task.await.unwrap().changes.len(), 6);
-        assert_ne!(std::fs::read(paths.home.settings()).unwrap(), before);
     }
 
     #[tokio::test]

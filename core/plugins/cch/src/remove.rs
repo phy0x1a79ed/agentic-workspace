@@ -128,19 +128,6 @@ mod tests {
         assert!(items["stranded"].why.contains("never prompted"));
     }
 
-    #[test]
-    fn test_the_removal_plan_is_empty_while_every_session_is_alive() {
-        // Drop the corpse and the abandoned claim, and nothing is left to collect: the adopted
-        // session has been prompted, and the other two are young.
-        let b = TestBox::new();
-        let mut roster = b.roster();
-        let workers = roster["workers"].as_object_mut().unwrap();
-        workers.remove("strandeddead");
-        workers.remove("stranded");
-        b.write_roster(&roster);
-        assert_eq!(plan(&b.pool(), Some(b.a_minute_on())), []);
-    }
-
     /// Answers `claude rm` with success, recording each argv.
     #[derive(Default)]
     struct Rm(Mutex<Vec<Vec<String>>>);

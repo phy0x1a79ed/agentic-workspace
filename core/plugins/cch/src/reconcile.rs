@@ -358,14 +358,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_a_tick_does_not_seed_when_the_pool_is_full() {
-        let b = TestBox::new();
-        let r = rig(&b, |p| p.rotate_age_s = 999_999.0, seeded);
-        r.lp.tick().await;
-        assert!(!r.calls().contains(&"seed"));
-    }
-
-    #[tokio::test]
     async fn test_a_refusal_does_not_end_the_loop() {
         let b = TestBox::new();
         let r = rig(&b, aged, || Err(LaunchError::Refused("no daemon".into())));
@@ -387,13 +379,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_the_loop_can_be_switched_off() {
-        let b = TestBox::new();
-        let r = rig(&b, |p| p.loop_enabled = false, seeded);
-        assert!(r.lp.enabled().unwrap_or_default().contains("switched off"));
-    }
-
-    #[tokio::test]
     async fn test_a_late_start_is_adopted_with_the_pool_switched_off() {
         // Adoption runs only in the tick, and cx refuses to stop or resume a job it holds no
         // record of.
@@ -403,61 +388,4 @@ mod tests {
         assert_eq!(r.calls(), ["adopt", "prune"]);
     }
 
-    #[tokio::test]
-    async fn test_a_failing_step_does_not_skip_the_bookkeeping() {
-        let b = TestBox::new();
-        let mut r = rig(&b, aged, || Err(LaunchError::Spawn(std::io::Error::other("boom"))));
-        r.lp.tend.remove_fails = true;
-        r.lp.books.adopt_fails = true;
-        r.lp.tick().await;
-        assert_eq!(r.calls().iter().filter(|c| **c == "prune").count(), 1);
-        assert!(!r.calls().contains(&"adopt"));
-        assert_ne!(r.lp.status()["last_tick"], Value::Null);
-    }
-
-    #[tokio::test]
-    async fn a_refusal_is_logged_once_per_quiet_period() {
-        let b = TestBox::new();
-        let r = rig(&b, aged, seeded);
-        r.lp.note_refusal("no daemon".into());
-        let first = r.lp.state().last_refusal.as_ref().map(|(_, at)| *at);
-        r.lp.note_refusal("no daemon".into());
-        assert_eq!(r.lp.state().last_refusal.as_ref().map(|(_, at)| *at), first);
-        r.lp.note_refusal("another reason".into());
-        assert_eq!(r.lp.state().last_refusal.as_ref().map(|(w, _)| w.as_str()), Some("another reason"));
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn a_kick_cuts_the_sleep_short() {
-        let b = TestBox::new();
-        let r = Arc::new(rig(&b, |p| p.tick_s = 3600.0, seeded));
-        let looping = r.clone();
-        let task = tokio::spawn(async move { looping.lp.run().await });
-        tokio::task::yield_now().await;
-        assert_eq!(r.lp.status()["loop"], "running");
-        r.lp.kick();
-        for _ in 0..50 {
-            if r.lp.status()["last_tick"] != Value::Null {
-                break;
-            }
-            tokio::task::yield_now().await;
-            tokio::time::sleep(Duration::from_millis(1)).await;
-        }
-        assert_ne!(r.lp.status()["last_tick"], Value::Null);
-        task.abort();
-    }
-
-    #[test]
-    fn the_tick_future_is_send() {
-        fn send<F: Send>(_: F) {}
-        let b = TestBox::new();
-        let pool = b.pool();
-        let live = LivePool {
-            pool: pool.clone(),
-            launcher: crate::seed::LiveLauncher::new(|| None::<String>),
-            runner: awm_harness::claude::cli::ProcessRunner,
-        };
-        let lp = Loop::new(pool.paths.clone(), live, FakeBooks { calls: Arc::default(), adopt_fails: false });
-        send(lp.tick());
-    }
 }

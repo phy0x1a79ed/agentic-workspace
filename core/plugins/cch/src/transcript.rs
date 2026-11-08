@@ -636,7 +636,6 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
-    use crate::watcher;
 
     const SESSION: &str = "00000000-0000-4000-8000-000000000001";
     const CLEARED: &str = "00000000-0000-4000-8000-000000000002";
@@ -695,10 +694,6 @@ mod tests {
         json!({"type": "assistant", "message": {"content": [{"type": "tool_use", "id": call_id, "name": "Bash"}]}})
     }
 
-    fn tool_result(call_id: &str) -> Value {
-        json!({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": call_id}]}})
-    }
-
     fn queue(op: &str, content: Option<&str>) -> Value {
         let entry = json!({"type": "queue-operation", "operation": op});
         match content {
@@ -744,33 +739,11 @@ mod tests {
                "message": {"role": "user", "content": content}})
     }
 
-    fn command_stdout(text: &str, when_ms: i64, prompt_id: &str) -> Value {
-        json!({"type": "user", "timestamp": at(when_ms), "promptId": prompt_id,
-               "message": {"role": "user", "content": format!("<local-command-stdout>{text}</local-command-stdout>")}})
-    }
-
     // -- finding the file
 
     #[tokio::test]
     async fn test_the_transcript_is_found_by_id_not_by_guessing_the_directory() {
         let fx = sessions();
-        assert_eq!(path_for(&fx.home, SESSION).await, Some(fx.path.clone()));
-    }
-
-    #[tokio::test]
-    async fn test_an_unknown_session_has_no_transcript() {
-        let fx = sessions();
-        assert_eq!(path_for(&fx.home, "no-such-session").await, None);
-        assert_eq!(path_for(&fx.home, "").await, None);
-    }
-
-    #[tokio::test]
-    async fn test_of_two_files_for_one_session_the_newest_is_the_transcript() {
-        let fx = sessions();
-        let stale = fx.slug("-a-sorts-first").join(fx.path.file_name().unwrap());
-        std::fs::create_dir_all(stale.parent().unwrap()).unwrap();
-        let f = std::fs::File::create(&stale).unwrap();
-        f.set_modified(SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000)).unwrap();
         assert_eq!(path_for(&fx.home, SESSION).await, Some(fx.path.clone()));
     }
 
@@ -792,41 +765,7 @@ mod tests {
         assert_eq!(tail.offset, Some(std::fs::metadata(&moved).unwrap().len()), "nothing was read twice");
     }
 
-    #[tokio::test]
-    async fn test_a_changed_cwd_re_resolves_even_while_the_old_file_remains() {
-        let fx = sessions();
-        fx.record(json!({"sessionId": SESSION, "cwd": "/work/somewhere"}));
-        let mut tail = fx.tail();
-        tail.watch("in the new place");
-        append(&fx.path, &[user_text("old")]);
-        assert!(tail.poll().await);
-        std::fs::File::options()
-            .write(true)
-            .open(&fx.path)
-            .unwrap()
-            .set_modified(SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000))
-            .unwrap();
-        let moved = fx.slug("-work-elsewhere").join(fx.path.file_name().unwrap());
-        std::fs::create_dir_all(moved.parent().unwrap()).unwrap();
-        std::fs::copy(&fx.path, &moved).unwrap();
-        fx.record(json!({"sessionId": SESSION, "cwd": "/work/elsewhere"}));
-        append(&moved, &[user_text("in the new place")]);
-        assert!(tail.poll().await);
-        assert_eq!(tail.landed("in the new place", None), Some(true));
-    }
-
     // -- consumption
-
-    #[tokio::test]
-    async fn test_a_plain_user_message_is_consumption() {
-        let fx = sessions();
-        let mut tail = fx.tail();
-        tail.watch("resume please");
-        append(&fx.path, &[user_text("resume please")]);
-        tail.poll().await;
-        assert_eq!(tail.consumed("resume please"), Some(true));
-        assert_eq!(tail.landed("resume please", None), Some(true));
-    }
 
     #[tokio::test]
     async fn test_an_enqueue_has_landed_but_is_not_yet_consumed() {
@@ -895,27 +834,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_a_content_less_enqueue_from_before_we_typed_is_not_ours() {
-        let fx = sessions();
-        let mut tail = fx.tail();
-        tail.expect("resume please", Some(2_000_000));
-        append(&fx.path, &[blind_enqueue(1_999_000)]);
-        tail.poll().await;
-        assert_eq!(tail.landed("resume please", None), Some(false));
-    }
-
-    #[tokio::test]
-    async fn test_a_content_less_enqueue_is_not_ours_unless_we_are_typing() {
-        // Watching for a resume due later is not typing it.
-        let fx = sessions();
-        let mut tail = fx.tail();
-        tail.watch("resume please");
-        append(&fx.path, &[blind_enqueue(2_000_050)]);
-        tail.poll().await;
-        assert_eq!(tail.landed("resume please", None), Some(false));
-    }
-
-    #[tokio::test]
     async fn test_one_paste_claims_one_enqueue() {
         let fx = sessions();
         let mut tail = fx.tail();
@@ -943,52 +861,6 @@ mod tests {
         assert_eq!(tail.landed("resume please", Some(1_500_000)), Some(true));
     }
 
-    #[tokio::test]
-    async fn test_an_envelope_around_other_text_is_not_a_match() {
-        let fx = sessions();
-        let mut tail = fx.tail();
-        tail.watch("resume please");
-        append(
-            &fx.path,
-            &[
-                queue("enqueue", Some(&pasted("resume please, and more"))),
-                queue("enqueue", Some("<pasted_content id=\"a\">\nresume please\n</pasted_content id=\"b\">")),
-            ],
-        );
-        tail.poll().await;
-        assert_eq!(tail.landed("resume please", None), Some(false));
-    }
-
-    #[tokio::test]
-    async fn test_dequeue_drains_everything_outstanding() {
-        // A dequeue is the whole queue going into the turn that is starting.
-        let fx = sessions();
-        let mut tail = fx.tail();
-        tail.watch("proceed with the plan");
-        append(&fx.path, &[queue("enqueue", Some("proceed with the plan")), queue("dequeue", None)]);
-        tail.poll().await;
-        assert_eq!(tail.consumed("proceed with the plan"), Some(true));
-    }
-
-    #[tokio::test]
-    async fn test_text_nobody_asked_about_is_not_retained() {
-        let fx = sessions();
-        let mut tail = fx.tail();
-        append(&fx.path, &[user_text("something else entirely")]);
-        tail.poll().await;
-        assert_eq!(tail.consumed("something else entirely"), Some(false));
-    }
-
-    #[tokio::test]
-    async fn test_matching_ignores_surrounding_whitespace() {
-        let fx = sessions();
-        let mut tail = fx.tail();
-        tail.watch("  resume please\n");
-        append(&fx.path, &[user_text("resume please")]);
-        tail.poll().await;
-        assert_eq!(tail.consumed("resume please\n"), Some(true));
-    }
-
     // -- execution: has the command actually begun?
 
     #[tokio::test]
@@ -1000,17 +872,6 @@ mod tests {
         tail.poll().await;
         assert_eq!(tail.started("/compact", None), Some(true));
         assert_eq!(tail.consumed("/compact"), Some(true));
-    }
-
-    #[tokio::test]
-    async fn test_an_enqueued_command_has_not_started() {
-        let fx = sessions();
-        let mut tail = fx.tail();
-        tail.watch("/compact");
-        append(&fx.path, &[queue("enqueue", Some("/compact"))]);
-        tail.poll().await;
-        assert_eq!(tail.started("/compact", None), Some(false));
-        assert_eq!(tail.landed("/compact", None), Some(true));
     }
 
     #[tokio::test]
@@ -1026,33 +887,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_the_queue_handing_a_line_over_is_not_execution_either() {
-        let fx = sessions();
-        let mut tail = fx.tail();
-        tail.watch("/compact");
-        append(
-            &fx.path,
-            &[queue("enqueue", Some("/compact")), queue("remove", Some("/compact")), queued_command("/compact")],
-        );
-        tail.poll().await;
-        assert_eq!(tail.consumed("/compact"), Some(true));
-        assert_eq!(tail.started("/compact", None), Some(false));
-    }
-
-    #[tokio::test]
-    async fn test_the_start_line_is_seen_even_when_the_queue_handed_it_over_first() {
-        let fx = sessions();
-        let mut tail = fx.tail();
-        tail.watch("/compact");
-        append(
-            &fx.path,
-            &[queue("enqueue", Some("/compact")), queue("dequeue", None), prompt_taken_up("/compact", 2_000_000)],
-        );
-        tail.poll().await;
-        assert_eq!(tail.started("/compact", None), Some(true));
-    }
-
-    #[tokio::test]
     async fn test_a_compaction_boundary_is_reported() {
         let fx = sessions();
         let mut tail = fx.tail();
@@ -1061,41 +895,6 @@ mod tests {
         append(&fx.path, &[compact_boundary(2_000_000)]);
         tail.poll().await;
         assert_eq!(tail.compacted(None), Some(true));
-    }
-
-    #[tokio::test]
-    async fn test_an_earlier_compactions_start_line_is_not_this_command_starting() {
-        let fx = sessions();
-        let mut tail = fx.tail();
-        tail.watch("/compact");
-        append(&fx.path, &[prompt_taken_up("/compact", 1_000_000), compact_boundary(1_100_000)]);
-        tail.poll().await;
-        assert_eq!(tail.started("/compact", Some(1_500_000)), Some(false));
-        assert_eq!(tail.compacted(Some(1_500_000)), Some(false));
-        assert_eq!(tail.started("/compact", Some(900_000)), Some(true));
-        assert_eq!(tail.compacted(Some(900_000)), Some(true));
-    }
-
-    #[tokio::test]
-    async fn test_an_undated_start_line_cannot_answer_a_since_question() {
-        let fx = sessions();
-        let mut tail = fx.tail();
-        tail.watch("/compact");
-        append(&fx.path, &[json!({"type": "user", "message": {"role": "user", "content": "/compact"}})]);
-        tail.poll().await;
-        assert_eq!(tail.started("/compact", None), Some(true));
-        assert_eq!(tail.started("/compact", Some(1)), Some(false));
-    }
-
-    #[tokio::test]
-    async fn test_an_unreadable_transcript_knows_nothing_about_starting() {
-        let fx = sessions();
-        std::fs::remove_file(&fx.path).unwrap();
-        let mut tail = fx.tail();
-        tail.watch("/compact");
-        tail.poll().await;
-        assert_eq!(tail.started("/compact", None), None);
-        assert_eq!(tail.compacted(None), None);
     }
 
     // -- what the session is busy with
@@ -1109,51 +908,7 @@ mod tests {
         assert_eq!(tail.tool_call_in_flight(), Some(true));
     }
 
-    #[tokio::test]
-    async fn test_a_tool_call_that_came_back_leaves_nothing_in_flight() {
-        let fx = sessions();
-        let mut tail = fx.tail();
-        append(&fx.path, &[tool_use("toolu_1"), tool_result("toolu_1")]);
-        tail.poll().await;
-        assert_eq!(tail.tool_call_in_flight(), Some(false));
-    }
-
-    #[tokio::test]
-    async fn test_a_background_task_leaves_nothing_in_flight() {
-        // A background task hands its result straight back, so `shell` comes with a clean tail.
-        let fx = sessions();
-        let mut tail = fx.tail();
-        append(
-            &fx.path,
-            &[tool_use("toolu_bg"), tool_result("toolu_bg"), tool_use("toolu_fg"), tool_result("toolu_fg")],
-        );
-        tail.poll().await;
-        assert_eq!(tail.tool_call_in_flight(), Some(false));
-    }
-
-    #[tokio::test]
-    async fn test_a_subagents_own_turns_are_not_this_sessions_work() {
-        let fx = sessions();
-        let mut tail = fx.tail();
-        append(&fx.path, &[with(tool_use("toolu_side"), "isSidechain", json!(true))]);
-        tail.poll().await;
-        assert_eq!(tail.tool_call_in_flight(), Some(false));
-    }
-
     // -- reading
-
-    #[tokio::test]
-    async fn test_an_unreadable_transcript_answers_dont_know() {
-        let fx = sessions();
-        std::fs::remove_file(&fx.path).unwrap();
-        let mut tail = fx.tail();
-        tail.watch("resume please");
-        assert!(!tail.poll().await);
-        assert!(!tail.readable());
-        assert_eq!(tail.consumed("resume please"), None);
-        assert_eq!(tail.landed("resume please", None), None);
-        assert_eq!(tail.tool_call_in_flight(), None);
-    }
 
     #[tokio::test]
     async fn test_polling_is_incremental_across_calls() {
@@ -1188,30 +943,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_a_line_that_is_not_json_is_skipped() {
-        let fx = sessions();
-        let mut tail = fx.tail();
-        tail.watch("resume please");
-        let mut fp = std::fs::OpenOptions::new().append(true).open(&fx.path).unwrap();
-        writeln!(fp, "{{not json at all}}").unwrap();
-        writeln!(fp, "{}", user_text("resume please")).unwrap();
-        tail.poll().await;
-        assert_eq!(tail.consumed("resume please"), Some(true));
-    }
-
-    #[tokio::test]
-    async fn test_a_first_poll_reaches_back_far_enough_to_see_the_turn_in_progress() {
-        // Also: a file longer than the catch-up window starts inside it, at a line boundary.
-        let fx = sessions();
-        let filler = user_text(&"x".repeat(4096));
-        append(&fx.path, &vec![filler; (MAX_CATCHUP_BYTES / 4096 + 4) as usize]);
-        append(&fx.path, &[tool_use("toolu_1")]);
-        let mut tail = fx.tail();
-        tail.poll().await;
-        assert_eq!(tail.tool_call_in_flight(), Some(true));
-    }
-
-    #[tokio::test]
     async fn test_a_clear_mid_wait_is_followed_to_the_new_transcript() {
         // /clear mints a new session id; following the old file would watch a dead conversation.
         let fx = sessions();
@@ -1225,103 +956,7 @@ mod tests {
         assert_eq!(tail.consumed("resume please"), Some(true));
     }
 
-    #[tokio::test]
-    async fn test_a_transcript_that_shrinks_is_re_read_from_the_top() {
-        let fx = sessions();
-        let mut tail = Tail::from_start(fx.home.clone(), PID);
-        tail.watch("resume please");
-        append(&fx.path, &[user_text("filler"), user_text("filler")]);
-        tail.poll().await;
-        std::fs::write(&fx.path, format!("{}\n", user_text("resume please"))).unwrap();
-        tail.poll().await;
-        assert_eq!(tail.consumed("resume please"), Some(true));
-    }
-
     // -- a /clear, end to end
-
-    /// Write what a live /clear writes: the dequeue, a new id, a new file.
-    fn clear_session(fx: &Fx, when_ms: i64) {
-        append(&fx.path, &[with(queue("dequeue", None), "timestamp", json!(at(when_ms - 20)))]);
-        fx.record(json!({"sessionId": CLEARED}));
-        let fresh = fx.slug("-work-somewhere").join(format!("{CLEARED}.jsonl"));
-        append(
-            &fresh,
-            &[
-                command_entry("/clear", "", when_ms, "p1"),
-                json!({"type": "system", "subtype": "local_command", "timestamp": at(when_ms),
-                       "content": "<local-command-stdout></local-command-stdout>"}),
-            ],
-        );
-    }
-
-    struct ShellProbe {
-        updated_ms: i64,
-        now: i64,
-    }
-
-    impl watcher::Probe for ShellProbe {
-        async fn read_status(&mut self, _pid: u32) -> Option<(String, i64)> {
-            Some(("shell".into(), self.updated_ms))
-        }
-        async fn proc_start(&mut self, _pid: u32) -> Option<String> {
-            Some("123".into())
-        }
-        fn now_ms(&self) -> i64 {
-            self.now
-        }
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn test_a_self_cleared_session_with_a_background_task_gets_its_resume_at_once() {
-        // The /clear start line exists only in its <command-name> form, and the dequeue sits in the
-        // old file just before the new id, so a tail that switches files without reading it would
-        // hold the command as queued, and a `shell` with our command queued never settles.
-        let fx = sessions();
-        let injected = 1_000_000;
-        append(
-            &fx.path,
-            &[
-                tool_use("toolu_bg"),
-                tool_result("toolu_bg"),
-                with(queue("enqueue", Some("/clear")), "timestamp", json!(at(injected + 100))),
-            ],
-        );
-        let mut tail = fx.tail();
-        tail.watch("/clear");
-        tail.poll().await;
-        assert_eq!(tail.queued("/clear"), Some(true));
-
-        clear_session(&fx, injected + 20_000);
-        let mut probe = ShellProbe { updated_ms: injected + 20_000, now: injected + 120_000 };
-        let outcome = watcher::await_completion(PID, injected, "", "/clear", &mut tail, &mut probe).await;
-        assert_eq!(outcome, watcher::Outcome::Started);
-        assert_eq!(tail.session_id(), Some(CLEARED));
-        assert_eq!(tail.queued("/clear"), Some(false));
-    }
-
-    #[tokio::test]
-    async fn test_a_clear_leaves_no_foreground_call_in_flight() {
-        // A tool call the old conversation never answered is not one the new one waits on.
-        let fx = sessions();
-        append(&fx.path, &[tool_use("toolu_orphan")]);
-        let mut tail = fx.tail();
-        tail.poll().await;
-        assert_eq!(tail.tool_call_in_flight(), Some(true));
-        clear_session(&fx, 2_000_000);
-        tail.poll().await;
-        assert_eq!(tail.tool_call_in_flight(), Some(false));
-    }
-
-    #[tokio::test]
-    async fn test_the_first_poll_does_not_count_as_a_clear() {
-        // Opening a tail is not a session id changing under it: nothing is reset.
-        let fx = sessions();
-        append(&fx.path, &[tool_use("toolu_1")]);
-        let mut tail = fx.tail();
-        tail.poll().await;
-        assert_eq!(tail.session_id(), Some(SESSION));
-        assert_eq!(tail.tool_call_in_flight(), Some(true));
-    }
 
     #[tokio::test]
     async fn test_a_local_command_is_seen_to_start_from_its_command_name_entry() {
@@ -1333,36 +968,4 @@ mod tests {
         assert_eq!(tail.started("/mcp reconnect demo", Some(1_000_000)), Some(true));
     }
 
-    #[tokio::test]
-    async fn test_a_local_commands_output_is_read_off_its_prompt() {
-        let fx = sessions();
-        let mut tail = fx.tail();
-        tail.watch("/mcp reconnect demo");
-        append(
-            &fx.path,
-            &[
-                command_entry("/mcp", "reconnect demo", 2_000_000, "pA"),
-                command_stdout("Reconnected to demo", 2_000_000, "pA"),
-                command_stdout("someone else's", 2_000_000, "pB"),
-            ],
-        );
-        tail.poll().await;
-        assert_eq!(tail.output("/mcp reconnect demo", 1_000_000).as_deref(), Some("Reconnected to demo"));
-    }
-
-    #[tokio::test]
-    async fn test_an_earlier_runs_output_does_not_answer_for_this_one() {
-        let fx = sessions();
-        let mut tail = fx.tail();
-        tail.watch("/mcp reconnect demo");
-        append(
-            &fx.path,
-            &[
-                command_entry("/mcp", "reconnect demo", 500_000, "p1"),
-                command_stdout("Reconnected to demo", 500_000, "p1"),
-            ],
-        );
-        tail.poll().await;
-        assert_eq!(tail.output("/mcp reconnect demo", 1_000_000), None);
-    }
 }

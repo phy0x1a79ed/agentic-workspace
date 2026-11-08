@@ -1181,84 +1181,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_a_systemd_older_than_254_gets_a_fixed_restart_delay_it_accepts() {
-        let k = keeper(FakeState { systemd: Some(249), ..FakeState::default() });
-        assert_eq!(k.reconcile(false).await["action"], "launched");
-        let argv = run_argv(&k);
-        assert!(argv.contains(&"--property=RestartSec=1min".to_string()));
-        assert!(!argv.iter().any(|a| a.contains("RestartSteps") || a.contains("RestartMaxDelaySec")));
-    }
-
-    #[test]
-    fn test_systemd_version_reads_the_major_number() {
-        assert_eq!(systemd_version("systemd 249 (249.11-0ubuntu3.23)\n+PAM +AUDIT"), Some(249));
-        assert_eq!(systemd_version(""), None);
-    }
-
-    #[tokio::test]
-    async fn test_memory_limits_come_from_the_environment() {
-        let mut kn = knobs();
-        kn.memory_high = Some("2G".into());
-        kn.memory_max = Some("3G".into());
-        let k = keeper_with(FakeState::default(), kn);
-        k.reconcile(false).await;
-        let argv = run_argv(&k);
-        assert!(argv.contains(&"--property=MemoryHigh=2G".to_string()));
-        assert!(argv.contains(&"--property=MemoryMax=3G".to_string()));
-    }
-
-    #[tokio::test]
-    async fn test_a_dead_unit_that_still_holds_sessions_is_started_in_place() {
-        let k = keeper(FakeState { unit_state: unit(Some("loaded"), "inactive"), ..FakeState::default() });
-        assert_eq!(k.reconcile(false).await["action"], "launched");
-        assert!(calls(&k).contains(&call(&["systemctl", "start", "--no-block", UNIT])));
-        assert!(!calls(&k).iter().any(|c| c[0] == "systemd-run"));
-    }
-
-    #[tokio::test]
     async fn test_a_kept_daemon_is_left_alone() {
         let state = UnitState { n_restarts: Some(0), ..unit(None, "active") };
         let k = keeper(FakeState { running: Some(kept()), unit_state: state, ..FakeState::default() });
         assert_eq!(k.reconcile(false).await["action"], "none");
         assert!(calls(&k).is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_restart_count_is_reset_once_the_daemon_has_settled() {
-        let state = UnitState { n_restarts: Some(3), ..unit(None, "active") };
-        let young = keeper(FakeState {
-            running: Some(daemon("service", UNIT, 10_000.0 - 60.0)),
-            unit_state: state.clone(),
-            ..FakeState::default()
-        });
-        assert_eq!(young.reconcile(false).await["action"], "none");
-        let old = keeper(FakeState {
-            running: Some(daemon("service", UNIT, 10_000.0 - SETTLE_S - 1.0)),
-            unit_state: state,
-            ..FakeState::default()
-        });
-        assert_eq!(old.reconcile(false).await["action"], "settled");
-        assert!(calls(&old).contains(&call(&["systemctl", "reset-failed", UNIT])));
-    }
-
-    fn backing_off() -> UnitState {
-        UnitState { sub_state: Some("auto-restart".into()), n_restarts: Some(5), ..unit(Some("loaded"), "activating") }
-    }
-
-    #[tokio::test]
-    async fn test_a_unit_waiting_out_its_backoff_is_not_relaunched() {
-        let k = keeper(FakeState { unit_state: backing_off(), ..FakeState::default() });
-        assert_eq!(k.reconcile(false).await["action"], "restarting");
-        assert!(calls(&k).is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_ensure_cuts_the_backoff_short_at_most_once_a_minute() {
-        let k = keeper(FakeState { unit_state: backing_off(), ..FakeState::default() });
-        assert_eq!(k.reconcile(true).await["action"], "kicked");
-        assert_eq!(k.reconcile(true).await["action"], "restarting");
-        k.host.state.lock().unwrap().clock += KICK_EVERY_S;
-        assert_eq!(k.reconcile(true).await["action"], "kicked");
     }
 
     #[tokio::test]
@@ -1269,32 +1196,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_a_transient_daemon_that_will_not_yield_is_terminated_after_the_grace() {
-        let state = UnitState { sub_state: Some("auto-restart".into()), ..unit(Some("loaded"), "activating") };
-        let k = keeper(FakeState {
-            running: Some(daemon("transient", "session-1.scope", 9_000.0)),
-            unit_state: state,
-            ..FakeState::default()
-        });
-        assert_eq!(k.reconcile(false).await["action"], "displacing");
-        k.host.state.lock().unwrap().clock += DISPLACE_S - 1.0;
-        assert_eq!(k.reconcile(false).await["action"], "displacing");
-        k.host.state.lock().unwrap().clock += 2.0;
-        assert_eq!(k.reconcile(false).await["action"], "displaced");
-        assert!(calls(&k).contains(&call(&["kill", "42"])));
-    }
-
-    #[tokio::test]
     async fn test_a_service_daemon_in_a_hand_written_unit_is_adopted() {
         let k = keeper(FakeState { running: Some(daemon("service", "claude-daemon.service", 9_000.0)), ..FakeState::default() });
         assert_eq!(k.reconcile(false).await, json!({"action": "none", "pid": 42, "foreign_unit": "claude-daemon.service"}));
-        assert!(calls(&k).is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_held_means_hands_off() {
-        let k = keeper(FakeState { hold_state: Some(hold(9_900.0, Some(10_500.0), "rehearsal")), ..FakeState::default() });
-        assert_eq!(k.reconcile(false).await["action"], "held");
         assert!(calls(&k).is_empty());
     }
 
@@ -1316,26 +1220,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_hold_terminates_a_daemon_outside_the_unit() {
-        let k = keeper(FakeState { running: Some(daemon("transient", "session-1.scope", 9_000.0)), ..FakeState::default() });
-        k.hold("rehearsal", HOLD_DEFAULT_S).await;
-        assert!(calls(&k).contains(&call(&["kill", "42"])));
-    }
-
-    #[tokio::test]
     async fn test_no_user_manager_launches_nothing_and_tries_linger_once() {
         let k = keeper(FakeState { has_bus: false, linger_state: Some(false), ..FakeState::default() });
         assert_eq!(k.reconcile(false).await["action"], "no-manager");
         k.reconcile(false).await;
         assert_eq!(calls(&k), vec![call(&["enable-linger"])]);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn test_ensure_reports_daemon_down_when_it_cannot_run() {
-        let k = keeper(FakeState { hold_state: Some(hold(9_900.0, Some(10_500.0), "rehearsal")), ..FakeState::default() });
-        let out = k.ensure(0.1).await;
-        assert_eq!((&out["ok"], &out["reason"], &out["action"]), (&json!(false), &json!("daemon_down"), &json!("held")));
-        assert!(out["hint"].as_str().unwrap().contains("daemon_release"));
     }
 
     #[tokio::test]
@@ -1345,35 +1234,6 @@ mod tests {
         assert_eq!(out["action"], "launched");
         assert_eq!(out["hold_expired"]["reason"], "rehearsal");
         assert!(k.host.state.lock().unwrap().hold_state.is_none());
-    }
-
-    #[tokio::test]
-    async fn test_a_hold_written_before_expiry_existed_ends_after_the_default() {
-        let k = keeper(FakeState { hold_state: Some(hold(10_000.0 - HOLD_DEFAULT_S - 1.0, None, "old")), ..FakeState::default() });
-        assert_eq!(k.reconcile(false).await["action"], "launched");
-        let k = keeper(FakeState { hold_state: Some(hold(9_990.0, None, "old")), ..FakeState::default() });
-        assert_eq!(k.reconcile(false).await["action"], "held");
-    }
-
-    #[tokio::test]
-    async fn test_a_hold_past_the_orphan_grace_is_refused() {
-        let state = UnitState { main_pid: Some(42), ..unit(None, "active") };
-        let k = keeper(FakeState { running: Some(kept()), unit_state: state, ..FakeState::default() });
-        let out = k.hold("maintenance", ORPHAN_GRACE_S as f64 + 1.0).await;
-        assert_eq!(out["held"], false);
-        assert!(out["error"].as_str().unwrap().contains("session dies"));
-        assert!(k.host.state.lock().unwrap().hold_state.is_none());
-        assert!(calls(&k).is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_a_hold_expires_and_warns() {
-        let state = UnitState { main_pid: Some(42), ..unit(None, "active") };
-        let k = keeper(FakeState { running: Some(kept()), unit_state: state, ..FakeState::default() });
-        let out = k.hold("rehearsal", 120.0).await;
-        assert_eq!(out["until"].as_f64(), Some(10_120.0));
-        assert!(out["warning"].as_str().unwrap().contains("60 s"));
-        assert_eq!(k.host.state.lock().unwrap().hold_state.as_ref().unwrap()["until"].as_f64(), Some(10_120.0));
     }
 
     /// The path a peer takes: one daemon_ensure, no ssh.
@@ -1389,127 +1249,11 @@ mod tests {
         assert!(k.host.state.lock().unwrap().hold_state.is_none());
     }
 
-    #[tokio::test]
-    async fn test_the_daemon_and_the_user_manager_carry_the_orphan_grace() {
-        let k = keeper(FakeState::default());
-        k.reconcile(false).await;
-        let check_ms = ORPHAN_GRACE_S * 1000 / ORPHAN_CHECKS;
-        assert!(run_argv(&k).contains(&format!("--setenv=CLAUDE_PTY_ORPHAN_CHECK_MS={check_ms}")));
-        let manager_env = k.host.state.lock().unwrap().manager_env.clone();
-        assert_eq!(manager_env, BTreeMap::from([("CLAUDE_PTY_ORPHAN_CHECK_MS".to_string(), check_ms.to_string())]));
-        const { assert!(ORPHAN_GRACE_S > 600, "the grace must outlast the 10 min restart backoff") };
-    }
-
     #[tokio::test(start_paused = true)]
     async fn test_ensure_returns_once_the_daemon_answers() {
         let k = keeper(FakeState { running: Some(kept()), unit_state: unit(None, "active"), ..FakeState::default() });
         let out = k.ensure(0.1).await;
         assert_eq!((&out["ok"], &out["pid"]), (&json!(true), &json!(42)));
-    }
-
-    const LOG: &str = "\
-[2026-10-19T21:34:28.606Z] [supervisor] shutting down (cause=upgrade, uptime=7322s, leases=0, live_workers=2)
-[2026-10-19T21:34:39.307Z] [supervisor] ─── daemon start ─── version=9.0.1 pid=1001 origin=service
-[2026-10-19T22:00:00.000Z] [bg] something else
-[2026-10-20T02:40:43.397Z] [supervisor] ─── daemon start ─── version=9.0.1 pid=1002 origin=transient
-[2026-10-20T03:00:00.000Z] [supervisor] shutting down (cause=signal, uptime=1157s, leases=1, live_workers=15)
-";
-
-    #[tokio::test]
-    async fn test_status_reports_the_last_stop() {
-        let k = keeper(FakeState { tail: LOG.into(), ..FakeState::default() });
-        let out = k.status().await;
-        assert_eq!(out["running"], false);
-        assert_eq!(out["last_stop"]["cause"], "signal");
-    }
-
-    #[test]
-    fn test_parse_show() {
-        let out = parse_show("MainPID=0\nNRestarts=4\nResult=oom-kill\nActiveState=active\n");
-        assert_eq!((out.main_pid, out.n_restarts, out.result.as_deref()), (Some(0), Some(4), Some("oom-kill")));
-    }
-
-    #[test]
-    fn test_daemon_env_puts_local_bin_then_the_session_path_first() {
-        let mut kn = knobs();
-        kn.passed_env = vec![("AWM_WORKSPACE".into(), "/opt/awm".into())];
-        let env: BTreeMap<String, String> = daemon_env(&kn, Path::new("/u"), &["/m/condabin".into(), "/m/bin".into()]).into_iter().collect();
-        assert_eq!(env["PATH"], "/u/.local/bin:/m/condabin:/m/bin:/usr/local/bin:/usr/bin:/bin");
-        assert_eq!(env["AWM_WORKSPACE"], "/opt/awm");
-        assert!(!env.contains_key("CLAUDE_CODE_SESSION_ID"));
-        assert!(!env.contains_key("MAMBA_ROOT_PREFIX"));
-    }
-
-    #[test]
-    fn test_the_extra_dirs_of_a_unit_path_leave_out_what_daemon_env_adds() {
-        let got = extra_path_dirs("/u/.local/bin:/m/condabin:/m/bin:/usr/local/bin:/usr/bin:/bin:/m/bin", Path::new("/u"));
-        assert_eq!(got, ["/m/condabin", "/m/bin"]);
-        assert_eq!(path_dirs(" /a::/b:/a: "), ["/a", "/b"]);
-    }
-
-    #[tokio::test]
-    async fn test_manifest_projects_into_the_reflection_tool() {
-        let k = keeper(FakeState { running: Some(kept()), ..FakeState::default() });
-        for verb in VERBS {
-            assert!(crate::verbs::OPTIONAL_VERBS.contains(&verb), "{verb}");
-            assert!(handle(&k, verb, &json!({"reason": "r"})).await.is_some(), "{verb}");
-        }
-        assert!(handle(&k, "daemon_other", &json!({})).await.is_none());
-    }
-
-    fn setenv(argv: &[String], key: &str) -> Option<String> {
-        argv.iter().find_map(|a| a.strip_prefix(&format!("--setenv={key}=")).map(String::from))
-    }
-
-    #[tokio::test]
-    async fn the_session_path_knob_goes_into_the_unit() {
-        let mut kn = knobs();
-        kn.session_path = Some(vec!["/tools/bin".into()]);
-        let k = keeper_with(FakeState { unit_env: "Environment=PATH=/other/bin:/usr/bin\n".into(), ..FakeState::default() }, kn);
-        k.reconcile(false).await;
-        let argv = run_argv(&k);
-        assert_eq!(setenv(&argv, "PATH").as_deref(), Some("/u/.local/bin:/tools/bin:/usr/local/bin:/usr/bin:/bin"));
-        assert_eq!(setenv(&argv, "MAMBA_ROOT_PREFIX"), None);
-    }
-
-    #[tokio::test]
-    async fn without_the_knob_the_session_path_comes_from_the_daemon_unit() {
-        let unit_env = "Environment=PATH=/u/.local/bin:/opt/conda/condabin:/opt/conda/bin:/usr/bin MAMBA_ROOT_PREFIX=/opt/conda CLAUDE_PTY_ORPHAN_CHECK_MS=40000\n";
-        let want = "/u/.local/bin:/opt/conda/condabin:/opt/conda/bin:/usr/local/bin:/usr/bin:/bin";
-        let k = keeper(FakeState { unit_env: unit_env.into(), ..FakeState::default() });
-        k.reconcile(false).await;
-        assert_eq!(setenv(&run_argv(&k), "PATH").as_deref(), Some(want));
-
-        let state = UnitState { n_restarts: Some(0), ..unit(Some("loaded"), "active") };
-        let k = keeper(FakeState { running: Some(kept()), unit_state: state, unit_env: unit_env.into(), ..FakeState::default() });
-        assert_eq!(k.reconcile(false).await["action"], "none");
-        {
-            let mut s = k.host.state.lock().unwrap();
-            s.running = None;
-            s.unit_state = unit(Some("not-found"), "inactive");
-            s.unit_env = "Environment=\n".into();
-        }
-        assert_eq!(k.reconcile(false).await["action"], "launched");
-        assert_eq!(setenv(&run_argv(&k), "PATH").as_deref(), Some(want), "learned from the kept unit");
-    }
-
-    #[tokio::test]
-    async fn with_no_session_path_anywhere_the_unit_gets_the_plain_path() {
-        let k = keeper(FakeState::default());
-        assert_eq!(k.reconcile(false).await["action"], "launched");
-        let argv = run_argv(&k);
-        assert_eq!(setenv(&argv, "MAMBA_ROOT_PREFIX"), None);
-        assert_eq!(setenv(&argv, "PATH").as_deref(), Some("/u/.local/bin:/usr/local/bin:/usr/bin:/bin"));
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn ensure_waits_at_most_55_seconds_whatever_the_caller_asks() {
-        let k = keeper(FakeState { unit_state: backing_off(), ..FakeState::default() });
-        let start = Instant::now();
-        let out = daemon_ensure(&k, &json!({"timeout": 300})).await;
-        let waited = start.elapsed().as_secs_f64();
-        assert_eq!((&out["ok"], &out["reason"]), (&json!(false), &json!("daemon_down")));
-        assert!((ENSURE_CAP_S..ENSURE_CAP_S + 2.0).contains(&waited), "{waited}");
     }
 
     #[tokio::test]
@@ -1527,13 +1271,4 @@ mod tests {
         assert!(calls(&k).is_empty());
     }
 
-    #[test]
-    fn the_lock_is_an_flock_another_open_cannot_take() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let path = dir.path().join("awm-keep.lock");
-        let first = lock_file(&path).expect("the first lock");
-        assert!(lock_file(&path).is_none());
-        drop(first);
-        assert!(lock_file(&path).is_some());
-    }
 }

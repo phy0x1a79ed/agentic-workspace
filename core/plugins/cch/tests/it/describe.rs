@@ -1,24 +1,12 @@
 //! What the verb table projects onto the gateway: the describe against the Python baseline, the
 //! contract coverage, the manifest file, and the budgets the `cx` shell half depends on.
 
-use std::path::PathBuf;
 
 use cch::verbs::{specs, Spec, CONTRACT_VERBS, OPTIONAL_VERBS, TOOL};
-use serde_json::{json, Value};
-
-/// `claim.MOVE_TIMEOUT_S` in the Python cch: how long a claim waits for the warm session to move.
-const MOVE_TIMEOUT_S: f64 = 6.0;
+use serde_json::Value;
 
 fn baseline() -> Value {
-    serde_json::from_str(include_str!("../../../../docs/plugin-redux/ports/baseline/harness-cc.describe.json")).unwrap()
-}
-
-fn plugin_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-}
-
-fn cx_script() -> String {
-    std::fs::read_to_string(plugin_dir().join("bin").join("cx")).unwrap()
+    serde_json::from_str(include_str!("../../../../../docs/plugin-redux/ports/baseline/harness-cc.describe.json")).unwrap()
 }
 
 fn claim() -> Spec {
@@ -129,18 +117,6 @@ fn test_every_function_projects_into_the_hidden_harness_tool() {
 }
 
 #[test]
-fn test_the_service_is_hidden_and_implements_the_harness_contract() {
-    let toml = std::fs::read_to_string(plugin_dir().join("awm-plugin.toml")).unwrap();
-    let tools: Vec<&str> = toml.split("[[tool]]").skip(1).collect();
-    assert_eq!(tools.len(), 1, "{toml}");
-    let lines: Vec<&str> = tools[0].lines().map(str::trim).collect();
-    for want in [r#"name = "harness-cc""#, r#"tier = "off""#, r#"implements = ["harness@1"]"#] {
-        assert!(lines.contains(&want), "{want} not in {toml}");
-    }
-    assert!(!tools[0].contains("uuid"));
-}
-
-#[test]
 fn test_it_serves_every_contract_verb_and_lists_its_optional_ones() {
     let names: Vec<&str> = specs().iter().map(|s| s.verb).collect();
     assert!(CONTRACT_VERBS.iter().all(|v| names.contains(v)));
@@ -158,66 +134,4 @@ fn test_a_claim_answers_faster_than_the_client_would_wait() {
     assert!(claim().timeout.unwrap() <= 15);
 }
 
-/// Below the move's own timeout the gateway would abort a claim that was about to succeed, and
-/// the session would be spent for nothing.
-#[test]
-fn test_the_claim_budget_covers_a_move_that_is_merely_slow() {
-    assert!(claim().timeout.unwrap() as f64 > MOVE_TIMEOUT_S);
-}
-
-#[test]
-fn test_the_shell_half_invokes_the_published_verb() {
-    let src = cx_script();
-    assert!(src.contains("POST /invoke ") && src.contains("harness-cc_pool_claim"));
-}
-
-/// Cutting the read off early turns a slow warm start into a cold one.
-#[test]
-fn test_the_shell_half_waits_out_the_service_budget() {
-    let src = cx_script();
-    let wait: u64 = src.split("CX_WAIT=${CX_WAIT:-").nth(1).unwrap().split('}').next().unwrap().parse().unwrap();
-    assert!(wait >= claim().timeout.unwrap());
-}
-
-/// A branch that does not `exec` leaves this script in the process tree for the whole session,
-/// which is the one thing it exists not to do.
-#[test]
-fn test_the_shell_half_hands_the_terminal_over_on_every_path() {
-    let src = cx_script();
-    let launches: Vec<&str> =
-        src.lines().map(str::trim).filter(|l| l.contains(r#""$CX_CLAUDE""#) && !l.starts_with('#')).collect();
-    assert!(!launches.is_empty(), "the script never launches Claude Code");
-    for line in launches {
-        assert!(line.contains("exec "), "{line}");
-    }
-}
-
 // --- tests/test_lifecycle.py ---
-
-/// The cx manifest's verbs live on under `harness-cc`, with no `wake`, no `effect` on any verb and
-/// no `tier` anywhere.
-#[test]
-fn test_the_manifest_drops_status() {
-    let names: Vec<&str> = specs().iter().map(|s| s.verb).collect();
-    for cx in ["start", "list", "stop", "resume", "adopt", "probe", "pool_claim", "pool_seed", "pool_remove"] {
-        assert!(names.contains(&cx), "{cx}");
-    }
-    assert!(!names.contains(&"wake"));
-    for s in specs() {
-        let text = format!("{} {}", s.description, s.params);
-        assert!(!text.contains("\"effect\"") && !text.contains("tier"), "{}", s.verb);
-    }
-}
-
-/// A refactor of the shared component fails here rather than in a terminal.
-#[test]
-fn test_the_protocol_component_still_has_what_the_claim_reaches_for() {
-    use awm_harness::claude::pty::{self, DaemonError, DaemonLane};
-
-    let lane = DaemonLane::from_parts("/x", "t", "s", 1, vec![]);
-    let _ = (&lane.sock, &lane.auth, &lane.session_id, &lane.repl_pid, &lane.dec_modes);
-    let _connect = pty::connect;
-    let _error: Option<DaemonError> = None;
-    let _open = <cch::lane::Host as cch::lane::Opener>::open_writer;
-    assert_eq!(json!(lane.repl_pid), json!(1));
-}

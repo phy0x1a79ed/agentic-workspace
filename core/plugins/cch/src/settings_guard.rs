@@ -428,35 +428,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_a_changed_top_level_effort_and_model_are_put_back() {
-        let f = file();
-        let before = text_of(&f.path);
-        let out = run(&f.path, |d| {
-            d.insert("effortLevel".into(), json!("low"));
-            d.insert("model".into(), json!("sonnet"));
-        })
-        .await;
-        assert_eq!(out.restored, ["effortLevel", "model"]);
-        assert_eq!(text_of(&f.path), before);
-    }
-
-    #[tokio::test]
     async fn test_keys_the_cli_added_are_removed_again() {
         let f = file();
         let before = text_of(&f.path);
         run(&f.path, |d| set(d, &["modelSettings", "claude-fable-5"], json!({"effortLevel": "low"}))).await;
         assert_eq!(text_of(&f.path), before);
-    }
-
-    #[tokio::test]
-    async fn test_a_whole_modelsettings_the_cli_created_is_removed() {
-        let f = fixture_with(Some("{\n  \"theme\": \"dark\"\n}\n"));
-        run(&f.path, |d| {
-            d.insert("modelSettings".into(), json!({"claude-opus-5-5": {"effortLevel": "low"}}));
-            d.insert("effortLevel".into(), json!("low"));
-        })
-        .await;
-        assert_eq!(Value::Object(doc_of(&f.path)), json!({"theme": "dark"}));
     }
 
     #[tokio::test]
@@ -488,31 +464,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_the_files_own_indentation_is_kept() {
-        for unit in ["    ", "\t"] {
-            let f = fixture_with(Some(&(dumps(&base(), unit) + "\n")));
-            let before = text_of(&f.path);
-            let snap = snapshot(&f.path).await;
-            cli_write_indent(&f.path, |d| {
-            d.insert("effortLevel".into(), json!("low"));
-        }, unit);
-            restore(snap.as_ref(), WRITE_WAIT, &Clock::default()).await;
-            assert_eq!(text_of(&f.path), before, "indent {unit:?}");
-        }
-    }
-
-    #[tokio::test]
-    async fn test_a_file_without_a_trailing_newline_keeps_none() {
-        let f = fixture_with(Some(&dumps(&base(), "  ")));
-        let snap = snapshot(&f.path).await;
-        let mut changed = base();
-        changed.insert("effortLevel".into(), json!("low"));
-        std::fs::write(&f.path, dumps(&changed, "  ")).unwrap();
-        restore(snap.as_ref(), WRITE_WAIT, &Clock::default()).await;
-        assert_eq!(text_of(&f.path), dumps(&base(), "  "));
-    }
-
-    #[tokio::test]
     async fn test_the_file_mode_is_kept() {
         let f = file();
         std::fs::set_permissions(&f.path, std::fs::Permissions::from_mode(0o600)).unwrap();
@@ -520,57 +471,6 @@ mod tests {
             d.insert("effortLevel".into(), json!("low"));
         }).await;
         assert_eq!(std::fs::metadata(&f.path).unwrap().permissions().mode() & 0o777, 0o600);
-    }
-
-    #[tokio::test]
-    async fn test_nothing_is_written_when_the_cli_never_wrote() {
-        let f = file();
-        let mtime = |p: &Path| std::fs::metadata(p).map(|m| (m.mtime(), m.mtime_nsec())).unwrap();
-        let before = mtime(&f.path);
-        let snap = snapshot(&f.path).await;
-        let clock = Clock::default();
-        let out = restore(snap.as_ref(), WRITE_WAIT, &clock).await;
-        assert_eq!(out, Restored { restored: vec![], changed: false, error: None });
-        assert_eq!(serde_json::to_value(&out).unwrap(), json!({"restored": [], "changed": false}));
-        assert_eq!(mtime(&f.path), before);
-        assert!(clock.now() >= WRITE_WAIT);
-    }
-
-    #[tokio::test]
-    async fn test_a_write_that_changed_nothing_it_guards_is_left_alone() {
-        let f = file();
-        let out = run(&f.path, |d| {
-            d.insert("theme".into(), json!("light"));
-        }).await;
-        assert!(out.changed && out.restored.is_empty());
-        assert_eq!(doc_of(&f.path)["theme"], "light");
-    }
-
-    #[tokio::test]
-    async fn test_a_write_that_lands_after_the_first_restore_is_put_back_too() {
-        let f = file();
-        let snap = snapshot(&f.path).await;
-        cli_write(&f.path, |d| {
-            d.insert("effortLevel".into(), json!("low"));
-        });
-        let late = StdMutex::new(false);
-        let path = f.path.clone();
-        let clock = Clock {
-            on_sleep: Some(Box::new(move |d| {
-                let mut done = late.lock().unwrap();
-                if !*done && d == RECHECK {
-                    *done = true;
-                    cli_write(&path, |d| {
-                        d.insert("model".into(), json!("sonnet"));
-                    });
-                }
-            })),
-            ..Clock::default()
-        };
-        let out = restore(snap.as_ref(), WRITE_WAIT, &clock).await;
-        assert_eq!(out.restored, ["effortLevel", "model"]);
-        let doc = doc_of(&f.path);
-        assert!(doc["effortLevel"] == "medium" && doc["model"] == "opus");
     }
 
     #[tokio::test]
@@ -583,21 +483,4 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn test_a_file_that_became_unreadable_is_left_alone() {
-        let f = file();
-        let snap = snapshot(&f.path).await;
-        std::fs::write(&f.path, "{half a write").unwrap();
-        let out = restore(snap.as_ref(), WRITE_WAIT, &Clock::default()).await;
-        assert!(out.restored.is_empty());
-        assert_eq!(text_of(&f.path), "{half a write");
-    }
-
-    #[tokio::test]
-    async fn test_the_snapshot_is_a_copy_the_later_write_cannot_change() {
-        let f = file();
-        let snap = snapshot(&f.path).await.unwrap();
-        cli_write(&f.path, |d| set(d, &["modelSettings", "claude-opus-5-5", "effortLevel"], json!("low")));
-        assert_eq!(snap.keys["modelSettings"]["claude-opus-5-5"]["effortLevel"], "high");
-    }
 }

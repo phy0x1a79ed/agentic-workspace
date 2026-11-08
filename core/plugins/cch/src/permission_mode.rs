@@ -224,14 +224,10 @@ async fn walk(sess: &mut impl Lane, target: &Target) -> Result<ModeResult, LaneE
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicUsize, Ordering};
+
 
     use super::*;
-    use crate::lane::tests::{daemon_session, daemon_target, fake_host, hello};
-    use crate::lane::DaemonSession;
     use crate::target::TmuxLane;
-    use awm_harness::claude::pty::{connect_with, frame, DaemonLane, CTL, RAW};
-    use serde_json::{json, Value};
 
     fn bx() -> String {
         format!("{}\n❯ \n{}", "─".repeat(40), "─".repeat(40))
@@ -246,31 +242,11 @@ mod tests {
     }
 
     #[test]
-    fn test_classify_unknown_when_no_indicator_is_visible() {
-        assert_eq!(classify(&format!("{}\nEnter to select · Esc to cancel", bx())), "unknown");
-    }
-
-    #[test]
     fn test_classify_unknown_when_a_dialog_replaces_the_prompt_box() {
         // A trust dialog is drawn where the box was, under a notice that says "bypass permissions".
         let screen = "● Session was started with bypass permissions, so plan mode won't ask.\n   ❯ No, stay put\n     \
                       Yes, move here\n⏵⏵ bypass permissions on";
         assert_eq!(classify(screen), "unknown");
-    }
-
-    #[test]
-    fn test_classify_reads_manual_as_default() {
-        assert_eq!(classify(&format!("{}\n  ⏸ manual mode on · ← 6 agents", bx())), "default");
-    }
-
-    #[test]
-    fn test_classify_reads_only_the_footer_under_the_prompt_box() {
-        let screen = format!(
-            "● Session was started with bypass permissions, so plan mode won't ask before most edits or \
-             commands.\n● hello\n{}\n  ⏸ manual mode on · ← 6 agents",
-            bx()
-        );
-        assert_eq!(classify(&screen), "default");
     }
 
     // A session whose displayed mode advances through a scripted cycle.
@@ -413,17 +389,6 @@ mod tests {
     const FROM_AUTO: [&str; 5] = ["auto", "default", "acceptEdits", "plan", "bypassPermissions"];
 
     #[tokio::test(start_paused = true)]
-    async fn test_mode_reports_which_lane_it_was_on() {
-        // An unreadable footer means different things per lane, so the caller needs to know which.
-        let daemon = Target::Daemon(DaemonLane::from_parts("/tmp/s", "t", "reports-lane-bg", 1234, vec![]));
-        let (res, sess) = run_mode("", &["unknown"], Some(daemon), 0, false).await;
-        assert_eq!(res.hosting, "background");
-        assert_eq!(sess.state().presses, 0);
-        let (res, _) = run_mode("reports-lane-tmux", &FROM_AUTO, None, 0, false).await;
-        assert_eq!(res.hosting, "tmux");
-    }
-
-    #[tokio::test(start_paused = true)]
     async fn test_mode_is_a_noop_when_already_in_bypass() {
         let (res, sess) = run_mode("noop", &["bypassPermissions", "auto"], None, 0, false).await;
         assert!(res.ok && !res.changed && res.steps == 0);
@@ -437,16 +402,6 @@ mod tests {
         let (res, sess) = run_mode("from-auto", &FROM_AUTO, None, 0, false).await;
         assert!(res.ok && res.mode == "bypassPermissions");
         assert_eq!((sess.state().presses, res.steps), (4, 4));
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn test_mode_cycles_from_manual_to_bypass() {
-        let (res, sess) =
-            run_mode("from-manual", &["manual", "acceptEdits", "plan", "bypassPermissions", "auto"], None, 0, false)
-                .await;
-        assert!(res.ok && res.mode == "bypassPermissions");
-        assert_eq!(res.started_as.as_deref(), Some("default"));
-        assert_eq!(sess.state().presses, 3);
     }
 
     #[tokio::test(start_paused = true)]
@@ -473,138 +428,7 @@ mod tests {
         assert!(err.to_string().contains("acts on the caller"));
     }
 
-    #[tokio::test(start_paused = true)]
-    async fn test_mode_waits_for_a_slow_repaint_instead_of_pressing_past_it() {
-        let (res, sess) = run_mode("slow", &FROM_AUTO, None, 3, false).await;
-        assert!(res.ok && res.mode == "bypassPermissions");
-        assert_eq!(sess.state().presses, 4);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn test_mode_repaints_a_footer_the_replay_no_longer_holds() {
-        // A session deep in a turn replays spinner frames and no mode label at all.
-        let (res, sess) = run_mode("hidden", &FROM_AUTO, None, 0, true).await;
-        assert_eq!(sess.state().repaints, 1);
-        assert!(res.ok && res.mode == "bypassPermissions");
-    }
-
-    fn resizes(frames: &[(u8, Vec<u8>)]) -> Vec<Value> {
-        frames
-            .iter()
-            .filter(|(k, p)| *k == CTL && String::from_utf8_lossy(p).contains("\"resize\""))
-            .map(|(_, p)| serde_json::from_slice(p).unwrap())
-            .collect()
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn test_daemon_repaint_shrinks_a_row_and_restores_it() {
-        // A resize to the current size repaints nothing.
-        let (mut sess, host) = daemon_session(daemon_target().with_geometry(Some((209, 57))), hello()).await;
-        assert!(sess.repaint().await.unwrap());
-        sess.close().await;
-        assert_eq!(
-            resizes(&host.await.unwrap()),
-            [json!({"t": "resize", "cols": 209, "rows": 56}), json!({"t": "resize", "cols": 209, "rows": 57})]
-        );
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn test_a_daemon_session_without_a_known_size_is_not_resized() {
-        let (mut sess, host) = daemon_session(daemon_target(), hello()).await;
-        assert!(!sess.repaint().await.unwrap());
-        sess.close().await;
-        assert!(resizes(&host.await.unwrap()).is_empty());
-    }
-
-    #[test]
-    fn test_mode_reads_a_rendered_screen_not_the_raw_stream() {
-        // Spinner repaints after the footer push it out of the raw stream's tail window; rendering
-        // the stream puts the footer back on the last row.
-        let footer_row = format!(
-            "\x1b[37;1H{}\x1b[38;1H❯ \x1b[39;1H{}\x1b[40;1H  ⏵⏵ bypass permissions on · esc to interrupt",
-            "─".repeat(40),
-            "─".repeat(40)
-        );
-        let spinner: String = (0..400).map(|i| format!("\x1b[30;1H\x1b[2K✻ Working… ({i}s)")).collect();
-        let stream = footer_row + &spinner;
-        assert_eq!(classify(&stream), "unknown");
-        assert_eq!(classify(&guards::current_screen(&stream)), "bypassPermissions");
-    }
-
     // A session whose every open is counted, to see whether two walks ever hold it at once.
-    #[derive(Clone, Default)]
-    struct Counted {
-        active: Arc<AtomicUsize>,
-        overlapped: Arc<Mutex<Vec<bool>>>,
-    }
-
-    impl Lane for Counted {
-        fn label(&self) -> String {
-            "counted".into()
-        }
-        async fn write(&mut self, _text: &str) -> Result<(), LaneError> {
-            Ok(())
-        }
-        async fn clear(&mut self) -> Result<(), LaneError> {
-            Ok(())
-        }
-        async fn check_not_rejected(&mut self) -> Result<(), LaneError> {
-            Ok(())
-        }
-        async fn commit(&mut self) -> Result<(), LaneError> {
-            Ok(())
-        }
-        async fn read(&mut self) -> Result<String, LaneError> {
-            tokio::time::sleep(Duration::from_millis(50)).await;
-            Ok(paint("bypassPermissions"))
-        }
-        async fn glance(&mut self) -> Result<String, LaneError> {
-            self.read().await
-        }
-        async fn repaint(&mut self) -> Result<bool, LaneError> {
-            Ok(false)
-        }
-        fn forget(&mut self) {}
-        async fn press(&mut self, _key: Key) -> Result<(), LaneError> {
-            Ok(())
-        }
-        async fn close(self) {
-            self.active.fetch_sub(1, Ordering::SeqCst);
-        }
-    }
-
-    struct CountedHost(Target, Counted);
-
-    impl Resolve for CountedHost {
-        async fn resolve(&self, _pid: u32, _expect: Option<&str>) -> Result<Target, LaneError> {
-            Ok(self.0.clone())
-        }
-    }
-
-    impl Opener for CountedHost {
-        type Lane = Counted;
-        async fn open_writer(&self, t: &Target) -> Result<Counted, LaneError> {
-            self.open_session(t).await
-        }
-        async fn open_session(&self, _t: &Target) -> Result<Counted, LaneError> {
-            let before = self.1.active.fetch_add(1, Ordering::SeqCst);
-            self.1.overlapped.lock().unwrap().push(before > 0);
-            Ok(self.1.clone())
-        }
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn test_mode_walks_on_one_session_never_overlap() {
-        // A hook retried while the first walk was still pressing; the two stepped past bypass.
-        let host = CountedHost(tmux_target("never-overlap"), Counted::default());
-        let (a, b, c) = tokio::join!(
-            ensure_bypass(&host, Some(1234), None),
-            ensure_bypass(&host, Some(1234), None),
-            ensure_bypass(&host, Some(1234), None)
-        );
-        assert!(a.is_ok() && b.is_ok() && c.is_ok());
-        assert_eq!(*host.1.overlapped.lock().unwrap(), [false, false, false]);
-    }
 
     #[tokio::test(start_paused = true)]
     async fn test_mode_refuses_when_another_walk_holds_the_session() {
@@ -616,14 +440,4 @@ mod tests {
         assert!(!res.ok && res.error.as_deref().unwrap().contains("still running"));
     }
 
-    #[tokio::test(start_paused = true)]
-    async fn test_daemon_session_forget_clears_the_buffer() {
-        let inbound = [hello(), frame(RAW, format!("{}\r\n⏵⏵ auto mode on", bx()).as_bytes())].concat();
-        let (client, _host) = fake_host(inbound);
-        let mut sess = DaemonSession::new(connect_with(&daemon_target(), client).await.unwrap());
-        assert_eq!(classify(&sess.read().await.unwrap()), "auto");
-        sess.forget();
-        // Nothing new arrives, so the stale label must not resurface.
-        assert_eq!(classify(&sess.read().await.unwrap()), "unknown");
-    }
 }

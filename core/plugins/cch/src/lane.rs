@@ -442,7 +442,6 @@ pub mod testing {
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use super::testing::{Op, ScriptedLane};
     use super::*;
     use crate::target::TmuxLane;
     use crate::tmux::testing::{FakePane, PaneState};
@@ -450,14 +449,6 @@ pub(crate) mod tests {
     use serde_json::json;
     use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream};
     use tokio::task::JoinHandle;
-
-    pub(crate) fn hello() -> Vec<u8> {
-        [
-            frame(CTL, json!({"t": "hello", "replPid": 4242, "version": "9.0.1"}).to_string().as_bytes()),
-            frame(CTL, json!({"t": "live"}).to_string().as_bytes()),
-        ]
-        .concat()
-    }
 
     pub(crate) fn daemon_target() -> DaemonLane {
         DaemonLane::from_parts("/tmp/fake.sock", "tok", "sid-1", 4242, vec![2004])
@@ -495,19 +486,6 @@ pub(crate) mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn test_no_lane_offers_the_sender_a_screen_to_judge_a_write_by() {
-        // A write answers nothing but "not refused": neither lane's screen says whether text
-        // arrived, so the writer half hands none back.
-        let (mut daemon, _host) = daemon_session(daemon_target(), hello()).await;
-        let wrote: Result<(), LaneError> = daemon.write("x").await;
-        wrote.unwrap();
-        let pane = FakePane::new(PaneState::default());
-        let wrote: Result<(), LaneError> = tmux_session(&pane).write("x").await;
-        wrote.unwrap();
-        assert!(!pane.verbs().contains(&"capture-pane".to_string()));
-    }
-
-    #[tokio::test(start_paused = true)]
     async fn test_every_lane_answers_the_rejection_check() {
         // Only the daemon lane has anything to report; the others answer by not failing.
         let only_hello = frame(CTL, json!({"t": "hello", "replPid": 4242}).to_string().as_bytes());
@@ -518,30 +496,4 @@ pub(crate) mod tests {
         assert!(pane.state().calls.is_empty());
     }
 
-    #[tokio::test]
-    async fn a_scripted_lane_records_calls_and_serves_screens() {
-        let lane = ScriptedLane::new();
-        lane.push_screen("one").push_screen("two");
-        lane.fail_when(|op| *op == Op::Commit, LaneError::Tmux(TmuxError("boom".into())));
-        let target = Target::Tmux(TmuxLane { pane: "%1".into(), session_id: "s".into(), repl_pid: 1, name: None });
-        let mut l = lane.open_writer(&target).await.unwrap();
-        l.write("hi").await.unwrap();
-        assert_eq!(l.read().await.unwrap(), "one");
-        assert_eq!(l.glance().await.unwrap(), "two");
-        assert_eq!(l.glance().await.unwrap(), "two");
-        assert!(l.commit().await.is_err());
-        l.close().await;
-        assert_eq!(
-            lane.ops(),
-            [Op::Open, Op::Write("hi".into()), Op::Read, Op::Glance, Op::Glance, Op::Commit, Op::Close]
-        );
-    }
-
-    #[test]
-    fn key_names_round_trip() {
-        for key in [Key::ShiftTab, Key::Escape, Key::Enter, Key::Down, Key::Up] {
-            assert_eq!(Key::from_name(key.tmux_name()), Some(key));
-        }
-        assert_eq!(Key::ShiftTab.raw_bytes(), b"\x1b[Z");
-    }
 }

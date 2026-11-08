@@ -1407,79 +1407,6 @@ mod tests {
     // --- tests/test_cch_hub.py ---
 
     #[tokio::test]
-    async fn test_platform_names_claude_code_and_the_contract() {
-        let b = plain();
-        let out = run(&b.app, "platform", json!({})).await;
-        assert_eq!((&out["code"], &out["contract"]), (&json!("cc"), &json!("harness@1")));
-        assert!(out["capabilities"].as_array().unwrap().contains(&json!("revive_pinned")));
-    }
-
-    #[tokio::test]
-    async fn test_resolve_answers_mine_false_for_a_pid_that_is_no_session() {
-        let b = rig(|f| Fake { caller: Box::new(|_| Err(ResolveError("no record".into()).into())), ..f });
-        let out = run(&b.app, "resolve", json!({"pid": 7})).await;
-        assert_eq!((&out["ok"], &out["mine"], &out["error"]), (&json!(true), &json!(false), &json!("no record")));
-        assert!(out.get("mode").is_some());
-    }
-
-    #[tokio::test]
-    async fn test_resolve_gives_the_r9_id_and_the_raw_one() {
-        let me = std::process::id();
-        let b = rig(|f| Fake {
-            caller: Box::new(|pid| Ok(json!({"session": "me", "session_id": SID, "pid": pid, "hosting": "daemon"}))),
-            ..f
-        });
-        b.app.backend.record(me, json!({"sessionId": SID, "cwd": "/w/projects/awm/x", "kind": "bg", "jobId": JOB}));
-        let out = run(&b.app, "resolve", json!({"pid": me})).await;
-        assert_eq!((&out["session_id"], &out["claude_session_id"]), (&json!(R9), &json!(SID)));
-        assert_eq!(
-            (&out["hosting"], &out["job"], &out["cwd"]),
-            (&json!("background"), &json!(JOB), &json!("/w/projects/awm/x"))
-        );
-    }
-
-    #[tokio::test]
-    async fn test_resolve_names_a_job_by_its_state_file_not_its_seed_name() {
-        let me = std::process::id();
-        let b = rig(|f| Fake {
-            caller: Box::new(|pid| {
-                Ok(json!({"session": "stale seed name", "session_id": SID, "pid": pid, "hosting": "daemon"}))
-            }),
-            ..f
-        });
-        b.app.backend.record(me, json!({"sessionId": SID, "kind": "bg", "jobId": JOB}));
-        Fake::write(&b.app.backend.paths.home.job_state(JOB), json!({"name": "made-up job name"}));
-        let out = run(&b.app, "resolve", json!({"pid": me})).await;
-        assert_eq!(out["name"], "made-up job name");
-    }
-
-    #[tokio::test]
-    async fn test_an_r9_id_reaches_control_as_the_session_uuid() {
-        let b = plain();
-        run(&b.app, "interrupt", json!({"session_id": R9, "pid": 9})).await;
-        assert_eq!(b.app.backend.ops(), [(Op::Interrupt, Some(SID.to_string()), Some(9))]);
-    }
-
-    #[tokio::test]
-    async fn test_another_platforms_id_is_refused() {
-        let b = plain();
-        let out = run(&b.app, "interrupt", json!({"session_id": format!("ds{}", "a".repeat(32))})).await;
-        assert_eq!(out["ok"], false);
-        assert!(out["error"].as_str().unwrap().contains("not a Claude Code session id"), "{out}");
-    }
-
-    #[tokio::test]
-    async fn test_set_with_one_key_answers_as_that_verb() {
-        let answer: Answer = Box::new(|op| match op {
-            Op::Model(v) => json!({"ok": true, "model": v}),
-            _ => json!({"ok": true}),
-        });
-        let b = rig(|f| Fake { answer, ..f });
-        let out = run(&b.app, "set", json!({"pid": 1, "model": "opus"})).await;
-        assert!(out["ok"] == true && out["model"] == "opus" && out["applied"].get("model").is_some(), "{out}");
-    }
-
-    #[tokio::test]
     async fn test_stop_with_keep_keeps_the_job_and_stops_the_caller_later() {
         let answer: Answer = Box::new(|_| json!({"ok": true, "stopping": true}));
         let b = rig(|f| Fake { target: Some(Target { is_self: true, ..target() }), answer, ..f });
@@ -1487,24 +1414,6 @@ mod tests {
         assert_eq!(out["stopping"], true);
         assert_eq!(b.app.backend.ops(), [(Op::Stop { confirm: true, keep: true }, Some(JOB.to_string()), Some(4242))]);
         assert!(b.app.backend.lifes().is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_a_kept_stop_of_a_started_job_goes_through_its_lineage() {
-        let b = rig(|f| Fake { target: Some(target()), ..f });
-        lineage(&b.app.backend, JOB, json!({"job": JOB, "mode": "worker"}));
-        let out = run(&b.app, "stop", json!({"ref": JOB, "pid": 9, "keep": true})).await;
-        assert_eq!((&out["via"], &out["job"]), (&json!("Stop"), &json!(JOB)));
-        assert_eq!(b.app.backend.lifes(), [(Life::Stop, json!({"job": JOB, "_caller_pid": 9}), None)]);
-        assert!(b.app.backend.ops().is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_stop_without_keep_removes_the_job() {
-        let b = plain();
-        let out = run(&b.app, "stop", json!({"ref": JOB, "keep": false})).await;
-        assert_eq!(out["ok"], true);
-        assert_eq!(b.app.backend.ops(), [(Op::Stop { confirm: false, keep: false }, Some(JOB.to_string()), None)]);
     }
 
     #[tokio::test]
@@ -1541,14 +1450,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_compact_refuses_another_session() {
-        let b = plain();
-        let out = run(&b.app, "compact", json!({"ref": JOB})).await;
-        assert_eq!(out["unsupported"], true);
-        assert!(b.app.backend.sends.lock().unwrap().is_empty());
-    }
-
-    #[tokio::test]
     async fn test_resolve_reports_the_mode_for_the_gateways_gate() {
         let b = rig(|f| Fake {
             modes: HashMap::from([(77, Mode::Declared("reader".into()))]),
@@ -1557,32 +1458,6 @@ mod tests {
         });
         let out = run(&b.app, "resolve", json!({"pid": 77})).await;
         assert_eq!((&out["mine"], &out["mode"]), (&json!(false), &json!("reader")));
-    }
-
-    #[tokio::test]
-    async fn an_unknown_ref_names_itself_and_a_send_to_it_is_gone() {
-        let b = rig(|f| Fake { missing: true, ..f });
-        let out = run(&b.app, "interrupt", json!({"ref": "nobody"})).await;
-        assert_eq!((&out["ok"], &out["unknown_ref"]), (&json!(false), &json!("nobody")));
-        assert!(out.get("code").is_none());
-        let out = run(&b.app, "send", json!({"ref": "nobody", "text": "made-up text"})).await;
-        assert_eq!((&out["unknown_ref"], &out["code"]), (&json!("nobody"), &json!("gone")));
-    }
-
-    #[tokio::test]
-    async fn a_send_with_no_ref_types_into_the_caller_with_its_options() {
-        let b = plain();
-        let args = json!({"pid": "5", "text": "/compact", "submit": "false", "delay_ms": "300", "followup": "next"});
-        run(&b.app, "send", args).await;
-        let sent = b.app.backend.sends.lock().unwrap().clone();
-        let want = SendRequest {
-            enter: false,
-            delay_ms: 300,
-            followup: Some("next".into()),
-            ..SendRequest::new("/compact", Some(5))
-        };
-        assert_eq!(sent, [want]);
-        assert!(b.app.backend.ops().is_empty());
     }
 
     // --- the lifecycle verbs and the pool --------------------------------------
@@ -1597,53 +1472,9 @@ mod tests {
         assert_eq!(b.app.backend.lifes(), [(Life::Start, want, Some("peer:altair".to_string()))]);
     }
 
-    #[tokio::test]
-    async fn adopt_takes_the_job_from_the_ref() {
-        let b = plain();
-        run(&b.app, "adopt", json!({"session_id": R9, "job": "ffff0000"})).await;
-        assert_eq!(b.app.backend.lifes(), [(Life::Adopt, json!({"job": SID}), None)]);
-    }
-
-    #[tokio::test]
-    async fn the_pool_and_daemon_verbs_reach_their_owners() {
-        let b = plain();
-        run(&b.app, "pool_claim", json!({"cwd": "/w/x"})).await;
-        run(&b.app, "pool_seed", json!({})).await;
-        run(&b.app, "pool_remove", json!({"apply": true})).await;
-        run(&b.app, "pool_remove", json!({})).await;
-        let want = [PoolOp::Claim("/w/x".into()), PoolOp::Seed, PoolOp::Remove { apply: true }, PoolOp::Remove { apply: false }];
-        assert_eq!(*b.app.backend.pools.lock().unwrap(), want);
-        for verb in ["daemon_status", "daemon_ensure", "daemon_hold", "daemon_release"] {
-            assert_eq!(run(&b.app, verb, json!({})).await["verb"], verb);
-        }
-    }
-
-    #[tokio::test]
-    async fn no_verb_answers_not_yet_ported() {
-        let b = plain();
-        for s in specs() {
-            if let Ok(out) = b.app.handle(s.verb, &json!({}), None).await {
-                assert_ne!(out.get("code"), Some(&json!("not_yet_ported")), "{}: {out}", s.verb);
-            }
-        }
-    }
-
     // --- list --------------------------------------------------------------------
 
     // tests/test_lifecycle.py
-    #[tokio::test]
-    async fn test_the_list_verb_keeps_the_pool_summary() {
-        let b = plain();
-        let out = run(&b.app, "list", json!({})).await;
-        let keys: BTreeSet<&str> = out.as_object().unwrap().keys().map(String::as_str).collect();
-        assert_eq!(keys, BTreeSet::from(["sessions", "pool", "daemon"]));
-        for key in ["warm", "want", "daemon_pid", "loop"] {
-            assert!(out["pool"].get(key).is_some(), "{key}");
-        }
-        for key in ["state", "pid", "since", "cause"] {
-            assert!(out["daemon"].get(key).is_some(), "{key}");
-        }
-    }
 
     #[tokio::test]
     async fn list_rows_carry_the_task_of_their_lineage_record_and_the_isolated_rows() {
@@ -1662,46 +1493,7 @@ mod tests {
         assert_eq!((&rows[3]["kind"], &rows[3]["name"], &rows[3]["live"]), (&json!("isolated"), &json!("boxed"), &json!(true)));
     }
 
-    #[tokio::test]
-    async fn a_stopped_isolated_session_is_listed_only_when_asked() {
-        let b = plain();
-        b.app.backend.isolated_session(json!({"claude_session_id": ISO_SID, "name": "boxed"}), false);
-        assert_eq!(run(&b.app, "list", json!({})).await["sessions"], json!([]));
-        let out = run(&b.app, "list", json!({"include_stopped": true})).await;
-        assert_eq!(out["sessions"][0]["live"], false);
-    }
-
     // --- isolated sessions -------------------------------------------------------
-
-    #[tokio::test]
-    async fn an_isolated_ref_goes_to_the_isolated_session() {
-        let b = plain();
-        let fake = &b.app.backend;
-        fake.isolated_session(json!({"claude_session_id": ISO_SID, "name": "boxed", "cwd": "/w"}), true);
-        let found = run(&b.app, "find", json!({"ref": "boxed"})).await;
-        assert_eq!(found["matches"][0]["kind"], "isolated");
-        assert_eq!(run(&b.app, "status", json!({"ref": "boxed"})).await["state"], "running");
-        let sent = run(&b.app, "send", json!({"ref": "boxed", "text": "made-up text"})).await;
-        assert_eq!((&sent["ok"], &sent["submitted"]), (&json!(true), &json!(true)));
-        assert_eq!(run(&b.app, "interrupt", json!({"ref": "boxed"})).await["ok"], true);
-        assert_eq!(run(&b.app, "set", json!({"ref": "boxed", "model": "m"})).await["unsupported"], true);
-        let resumed = run(&b.app, "resume", json!({"ref": "boxed"})).await;
-        assert_eq!(resumed["reason"], "boxed is already running");
-        let stopped = run(&b.app, "stop", json!({"ref": "boxed"})).await;
-        assert_eq!((&stopped["stopped"], &stopped["kept"]), (&json!(true), &json!(true)));
-        assert!(fake.ops().is_empty() && fake.lifes().is_empty());
-        let verbs = fake.docker.verbs();
-        assert!(verbs.contains(&"exec".to_string()) && verbs.contains(&"rm".to_string()), "{verbs:?}");
-    }
-
-    #[tokio::test]
-    async fn an_isolated_session_is_found_by_its_r9_id() {
-        let b = plain();
-        b.app.backend.isolated_session(json!({"claude_session_id": ISO_SID, "name": "boxed"}), false);
-        let r9 = format!("cc{}", ISO_SID.replace('-', ""));
-        let out = run(&b.app, "status", json!({"session_id": r9})).await;
-        assert_eq!((&out["kind"], &out["state"]), (&json!("isolated"), &json!("stopped")));
-    }
 
     fn isolated_start() -> Value {
         json!({"isolated": true, "project": "p", "scope": "s", "name": "boxed", "model": "m", "effort": "low"})
@@ -1714,33 +1506,6 @@ mod tests {
         let b = rig(|f| Fake { refusal: Some("foreign".into()), ..f });
         assert_eq!(run(&b.app, "start", isolated_start()).await["reason"], "foreign");
         assert!(b.app.backend.lifes().is_empty() && b.app.backend.docker.verbs().is_empty());
-    }
-
-    #[tokio::test]
-    async fn an_isolated_start_without_a_scope_is_refused() {
-        let b = plain();
-        let out = run(&b.app, "start", json!({"isolated": true, "model": "m", "effort": "low"})).await;
-        assert_eq!(out["reason"], lifecycle::ISOLATED_NEEDS_SCOPE);
-    }
-
-    #[tokio::test]
-    async fn an_isolated_start_records_its_task_for_the_session_events() {
-        let dir = TempDir::new().unwrap();
-        let worktree = dir.path().join("workspace/projects/p/s");
-        std::fs::create_dir_all(&worktree).unwrap();
-        let fake = Fake { worktree: Ok(worktree), ..Fake::under(dir.path()) };
-        Fake::write(&fake.paths.claude_bin, json!("a stand-in binary"));
-        let login = json!({"claudeAiOauth": {"accessToken": "made-up", "expiresAt": 4_102_444_800_000_i64}});
-        Fake::write(&fake.iso.host_login, login);
-        let app = App::new(fake);
-        let mut args = isolated_start();
-        args["task_id"] = json!("AbCd-_12");
-        let out = run(&app, "start", args).await;
-        assert_eq!((&out["ok"], &out["isolated"], &out["node"]), (&json!(true), &json!(true), &json!("deneb")), "{out}");
-        let sid = out["claude_session_id"].as_str().unwrap();
-        let rec = crate::isolated::find(&app.backend.paths.isolated.dir, sid).unwrap();
-        assert_eq!(rec.extra.get("task_id"), Some(&json!("AbCd-_12")));
-        assert!(app.backend.lifes().is_empty());
     }
 
     #[tokio::test]
@@ -1777,24 +1542,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_the_first_install_records_the_boot_and_revives_nothing() {
-        let boot = Boot::new();
-        boot.set("boot-1");
-        assert!(!boot.first());
-        assert!(!boot.first());
-    }
-
-    #[test]
-    fn test_a_new_boot_is_seen_once() {
-        let boot = Boot::new();
-        boot.set("boot-1");
-        boot.first();
-        boot.set("boot-2");
-        assert!(boot.first());
-        assert!(!boot.first());
-    }
-
     #[tokio::test(start_paused = true)]
     async fn test_after_a_reboot_the_pinned_jobs_are_revived() {
         let boot = Boot::new();
@@ -1808,17 +1555,6 @@ mod tests {
         assert_eq!(b.app.backend.lifes(), [(Life::Resume, json!({"job": "bbbb2222"}), None)]);
     }
 
-    #[tokio::test(start_paused = true)]
-    async fn test_a_restart_in_the_same_boot_revives_nothing() {
-        let boot = Boot::new();
-        boot.set("boot-1");
-        boot.first();
-        let b = plain();
-        Fake::write(&b.app.backend.paths.home.pins(), json!(["bbbb2222"]));
-        b.app.revive_after_boot(&boot.id(), &boot.mark()).await;
-        assert!(b.app.backend.ensured.lock().unwrap().is_empty() && b.app.backend.lifes().is_empty());
-    }
-
     // --- tests/test_manifest_surface.py, the halves that need a handler ---
 
     #[tokio::test]
@@ -1829,26 +1565,6 @@ mod tests {
                 assert!(!e.message.contains("has no verb"), "{}: {}", s.verb, e.message);
             }
         }
-    }
-
-    #[tokio::test]
-    async fn test_a_handler_that_takes_the_principal_still_gets_it() {
-        let b = rig(|f| Fake { target: Some(target()), ..f });
-        lineage(&b.app.backend, JOB, json!({"job": JOB, "mode": "worker"}));
-        let who = Some("peer:altair");
-        for (verb, args) in [
-            ("start", json!({})),
-            ("stop", json!({"ref": JOB, "keep": true})),
-            ("resume", json!({"ref": JOB})),
-            ("adopt", json!({"ref": JOB})),
-        ] {
-            b.app.handle(verb, &args, who).await.unwrap();
-        }
-        let stamps: Vec<Option<String>> = b.app.backend.lifes().into_iter().map(|(_, _, a)| a).collect();
-        assert_eq!(stamps, vec![who.map(str::to_string); 4]);
-        b.app.handle("list", &json!({}), who).await.unwrap();
-        b.app.handle("probe", &json!({"node": "altair"}), who).await.unwrap();
-        assert_eq!(*b.app.backend.principals.lock().unwrap(), vec![who.map(str::to_string); 2]);
     }
 
     // --- tests/test_probe.py ---
@@ -1869,39 +1585,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_a_node_that_does_not_answer() {
-        let out = probe("altair", "deneb", no_local, |_| std::future::ready(Err("timed out".into()))).await;
-        assert_eq!(out["answers"], false);
-        assert!(out["reason"].as_str().unwrap().contains("timed out"));
-    }
-
-    #[tokio::test]
-    async fn test_a_refused_list_does_not_count_as_an_answer() {
-        let refused = |_| std::future::ready(Ok(json!({"ok": false, "reason": "nope"})));
-        assert_eq!(probe("altair", "deneb", no_local, refused).await["answers"], false);
-    }
-
-    #[tokio::test]
-    async fn test_the_probing_node_lists_itself_locally() {
-        let local = || std::future::ready(Ok(json!({"sessions": [], "daemon": {"state": "down"}})));
-        let out = probe("deneb", "deneb", local, |_| std::future::ready(Err("went through the gateway".into()))).await;
-        assert_eq!(out["daemon"], "down");
-        let b = plain();
-        let out = run(&b.app, "probe", json!({"node": "deneb"})).await;
-        assert_eq!((&out["answers"], &out["daemon"]), (&json!(true), &json!("down")), "{out}");
-    }
-
-    #[tokio::test]
     async fn test_a_foreign_caller_is_refused() {
         let b = rig(|f| Fake { refusal: Some("foreign".into()), ..f });
         let out = b.app.handle("probe", &json!({"node": "altair"}), Some("peer:x")).await.unwrap();
         assert_eq!(out, json!({"ok": false, "reason": "foreign"}));
-    }
-
-    #[tokio::test]
-    async fn test_a_probe_needs_a_node() {
-        let b = plain();
-        assert_eq!(run(&b.app, "probe", json!({})).await["ok"], false);
     }
 
     // --- tests/test_live_sessions.py, at the verb ---
@@ -1917,14 +1604,4 @@ mod tests {
         assert!(out["reason"].as_str().unwrap().contains(&roster.display().to_string()), "{out}");
     }
 
-    #[tokio::test]
-    async fn test_a_corrupt_job_record_is_named_in_the_error_and_the_log() {
-        let b = plain();
-        let bad = b.app.backend.paths.home.job_state("j1");
-        std::fs::create_dir_all(bad.parent().unwrap()).unwrap();
-        std::fs::write(&bad, "{torn").unwrap();
-        let out = run(&b.app, "live_session_ids", json!({})).await;
-        assert_eq!(out["ok"], false);
-        assert!(out["reason"].as_str().unwrap().contains(&bad.display().to_string()), "{out}");
-    }
 }

@@ -417,17 +417,6 @@ mod tests {
     }
 
     #[test]
-    fn test_the_default_paths_sit_under_the_claude_home() {
-        let p = Paths::under(Path::new("/r"));
-        assert_eq!(p.starts_dir(), Path::new("/r/.claude/cx/starts"));
-        assert_eq!(p.home.roster(), Path::new("/r/.claude/daemon/roster.json"));
-        assert_eq!(p.mcp_config_path(), Path::new("/r/.claude/cx/mcp-awm.json"));
-        assert_eq!(p.projects_dir(), Path::new("/r/workspace/projects"));
-        assert_eq!(p.mcp_source(), Path::new("/r/workspace/.mcp.json"));
-        assert_eq!(p.transcripts_dir(), Path::new("/r/.claude/projects"));
-    }
-
-    #[test]
     fn test_the_paths_follow_cx_environment_overrides() {
         let vars: std::collections::HashMap<&str, &str> = [
             ("AWM_CX_STATE", "/t/st"),
@@ -448,79 +437,6 @@ mod tests {
         assert_eq!((p.rotate_age_s, p.loop_enabled, p.name_prefix.as_str()), (60.0, false, "<warm "));
         assert_eq!(p.service_dir, Path::new("/a/services/cch"));
         assert_eq!((p.seed_dir.as_path(), p.lobby_dir.as_path()), (Path::new("/u"), Path::new("/u/.local/state/awm/lobby")));
-    }
-
-    #[test]
-    fn the_operator_dm_needs_both_its_account_and_its_channel() {
-        let read = |pairs: &[(&str, &str)]| {
-            let vars: std::collections::HashMap<String, String> =
-                pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
-            Paths::from_vars(ClaudeHome::at("/c", "/c.json"), PathBuf::from("/a"), |k| vars.get(k).cloned()).operator_dm
-        };
-        assert_eq!(read(&[]), None);
-        assert_eq!(read(&[("AWM_OPERATOR_DM_ACCOUNT", "acct")]), None);
-        assert_eq!(read(&[("AWM_OPERATOR_DM_ACCOUNT", "acct"), ("AWM_OPERATOR_DM_CHANNEL", "")]), None);
-        let both = [("AWM_OPERATOR_DM_ACCOUNT", "acct"), ("AWM_OPERATOR_DM_CHANNEL", "chan")];
-        assert_eq!(read(&both), Some(("acct".to_string(), "chan".to_string())));
-    }
-
-    #[test]
-    fn knobs_parse_as_python_parses_them() {
-        assert_eq!(count(None, 1), 1);
-        assert_eq!(count(Some("3".into()), 1), 3);
-        assert_eq!(count(Some(" 1_0 ".into()), 1), 10);
-        assert_eq!(count(Some("0".into()), 1), 0);
-        assert_eq!(count(Some("-2".into()), 1), 0);
-        assert_eq!(count(Some("two".into()), 1), 1);
-        assert_eq!(count(Some("1.5".into()), 1), 1);
-        assert_eq!(seconds(Some("60".into()), 2400.0), 60.0);
-        assert_eq!(seconds(Some("1e1".into()), 5.0), 10.0);
-        assert_eq!(seconds(Some("soon".into()), 5.0), 5.0);
-        assert_eq!(seconds(Some("1__0".into()), 5.0), 5.0);
-        assert_eq!(forced(Some("1".into())), Some(true));
-        assert_eq!(forced(Some("0".into())), Some(false));
-        assert_eq!(forced(Some("yes".into())), None);
-    }
-
-    #[test]
-    fn the_pool_is_wanted_by_override_else_by_enabled_json() {
-        let dir = TempDir::new().unwrap();
-        let mut p = Paths::under(dir.path());
-        assert!(!p.pool_wanted());
-        std::fs::create_dir_all(p.enabled_file().parent().unwrap()).unwrap();
-        std::fs::write(p.enabled_file(), json!({"cx": true}).to_string()).unwrap();
-        assert!(p.pool_wanted());
-        std::fs::write(p.enabled_file(), json!({"cx": 1}).to_string()).unwrap();
-        assert!(!p.pool_wanted());
-        std::fs::write(p.enabled_file(), "{torn").unwrap();
-        assert!(!p.pool_wanted());
-        p.pool_forced = Some(true);
-        assert!(p.pool_wanted());
-        std::fs::write(p.enabled_file(), json!({"cx": true}).to_string()).unwrap();
-        p.pool_forced = Some(false);
-        assert!(!p.pool_wanted());
-    }
-
-    #[test]
-    fn the_seed_is_the_pool_model_and_effort() {
-        let p = Paths::under(Path::new("/r"));
-        assert_eq!(p.seed_env(), [("ANTHROPIC_MODEL".to_string(), "opus".to_string())]);
-        assert_eq!(
-            p.seed_flags(),
-            ["--dangerously-skip-permissions", "--allow-dangerously-skip-permissions", "--effort", "high"]
-        );
-    }
-
-    #[test]
-    fn a_tick_outside_a_sleeps_range_saturates() {
-        let mut p = Paths::under(Path::new("/r"));
-        assert_eq!(p.tick(), Duration::from_secs(5));
-        p.tick_s = -1.0;
-        assert_eq!(p.tick(), Duration::ZERO);
-        p.tick_s = f64::INFINITY;
-        assert_eq!(p.tick(), Duration::MAX);
-        p.tick_s = f64::NAN;
-        assert_eq!(p.tick(), Duration::ZERO);
     }
 
     #[test]

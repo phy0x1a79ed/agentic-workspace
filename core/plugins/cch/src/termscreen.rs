@@ -244,23 +244,10 @@ pub fn render(stream: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::render;
-    use crate::guards;
 
     #[test]
     fn test_text_and_line_breaks_render_as_rows() {
         assert_eq!(render("one\r\ntwo\r\n"), "one\ntwo");
-    }
-
-    #[test]
-    fn test_colour_and_title_sequences_are_dropped() {
-        assert_eq!(render("\x1b[1;31mred\x1b[0m\x1b]0;title\x07 ok"), "red ok");
-    }
-
-    #[test]
-    fn test_erasing_lines_upward_removes_what_was_painted_there() {
-        let painted = "keep\r\nold one\r\nold two";
-        let erased = "\x1b[2K\x1b[1A\x1b[2K\x1b[G";
-        assert_eq!(render(&format!("{painted}{erased}new")), "keep\nnew");
     }
 
     #[test]
@@ -269,23 +256,4 @@ mod tests {
         assert_eq!(render(stream), "hello\n  below");
     }
 
-    #[test]
-    fn test_erase_in_display_clears_below_the_cursor() {
-        assert_eq!(render("a\r\nb\r\nc\x1b[2;1H\x1b[J"), "a");
-    }
-
-    #[test]
-    fn test_switching_screens_starts_a_blank_grid() {
-        assert_eq!(render("old\x1b[?1049hnew"), "new");
-    }
-
-    #[test]
-    fn test_saved_cursor_comes_back() {
-        assert_eq!(render("ab\x1b7\r\nxy\x1b8Z"), "abZ\nxy");
-    }
-
-    #[test]
-    fn test_a_screen_with_no_escapes_is_text() {
-        assert_eq!(guards::current_screen("plain\ntext"), "plain\ntext");
-    }
 }

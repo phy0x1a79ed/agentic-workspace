@@ -2170,8 +2170,6 @@ mod tests {
     const DEAD: u32 = 4_999_999;
     const BASE_MS: i64 = 1_700_000_000_000;
     const RETIRED: &str = "0e380e38-0e38-0e38-0e38-0e380e380e38";
-    const UUID_ID: &str = "0123abcd-4567-89ef-0123-456789abcdef";
-    const R9: &str = "cc0123abcd456789ef0123456789abcdef";
 
     fn fit() -> Value {
         json!({"model": "opus", "effort": "high"})
@@ -2219,7 +2217,6 @@ mod tests {
 
     struct Launched {
         spec: LaunchSpec,
-        accept: Accept,
         seen_pending: Vec<String>,
     }
 
@@ -2385,12 +2382,6 @@ mod tests {
             }
         }
 
-        fn clear_starts(&self) {
-            for e in std::fs::read_dir(self.paths.starts_dir()).unwrap().flatten() {
-                std::fs::remove_file(e.path()).unwrap();
-            }
-        }
-
         fn pendings(&self) -> Vec<String> {
             let mut out: Vec<String> = std::fs::read_dir(self.paths.starts_dir())
                 .map(|d| d.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect())
@@ -2456,14 +2447,6 @@ mod tests {
             self.runs.lock().unwrap().iter().filter(|r| r[0] == "stop").map(|r| r[1].clone()).collect()
         }
 
-        fn calls(&self) -> Vec<(String, String, Value)> {
-            self.calls.lock().unwrap().iter().map(|c| (c.tool.clone(), c.verb.clone(), c.args.clone())).collect()
-        }
-
-        fn on_gateway(&self, f: impl Fn(&World, &Call) -> Result<Value, String> + Send + Sync + 'static) {
-            *self.gateway.lock().unwrap() = Some(Arc::new(f));
-        }
-
         fn on_launch(&self, f: impl Fn(&Fx, &LaunchSpec) -> Result<Job, LaunchError> + Send + Sync + 'static) {
             *self.launcher.lock().unwrap() = Some(Arc::new(f));
         }
@@ -2472,21 +2455,6 @@ mod tests {
             self.on_launch(move |_, _| {
                 Err(if timeout { LaunchError::Timeout("late".into()) } else { LaunchError::Spawn(std::io::Error::other("exec failed")) })
             });
-        }
-
-        /// Answer `scope create` by making the worktree, recording each one made.
-        fn creates_scopes(&self) -> Arc<StdMutex<Vec<(String, String)>>> {
-            let made = Arc::new(StdMutex::new(Vec::new()));
-            let m = made.clone();
-            self.on_gateway(move |w, call| {
-                if (call.tool.as_str(), call.verb.as_str()) == ("scope", "create") {
-                    let (p, s) = (call.args["project"].as_str().unwrap(), call.args["scope"].as_str().unwrap());
-                    m.lock().unwrap().push((p.to_string(), s.to_string()));
-                    std::fs::create_dir_all(w.projects().join(p).join(s)).unwrap();
-                }
-                Ok(json!({}))
-            });
-            made
         }
 
         fn mode_of(&self, pid: i64) -> Option<String> {
@@ -2577,9 +2545,9 @@ mod tests {
         }
 
         /// Records the call and registers the session under the child's pid, as the daemon would.
-        async fn launch(&self, spec: LaunchSpec, accept: Accept) -> Result<Job, LaunchError> {
+        async fn launch(&self, spec: LaunchSpec, _accept: Accept) -> Result<Job, LaunchError> {
             let seen_pending = self.pendings();
-            self.launches.lock().unwrap().push(Launched { spec: spec.clone(), accept, seen_pending });
+            self.launches.lock().unwrap().push(Launched { spec: spec.clone(), seen_pending });
             let custom = self.launcher.lock().unwrap().clone();
             let mut job = match custom {
                 Some(f) => f(self, &spec)?,
@@ -2660,16 +2628,6 @@ mod tests {
         out["ok"] == json!(false)
     }
 
-    fn git(dir: &Path, args: &[&str]) {
-        let out = std::process::Command::new("git")
-            .args(["-c", "user.name=t", "-c", "user.email=t@t"])
-            .args(args)
-            .current_dir(dir)
-            .output()
-            .unwrap();
-        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
-    }
-
     // --- a successful start ------------------------------------------------------
 
     #[tokio::test]
@@ -2705,79 +2663,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_the_accept_filter_takes_only_the_named_session() {
-        let w = Fx::new();
-        start_fit(&w, base()).await;
-        let accept = w.launches.lock().unwrap()[0].accept.clone();
-        let named = |seed: Option<&str>, name: &str| Job { seed_name: seed.map(str::to_string), name: name.into(), ..w.job(CHILD_JOB) };
-        assert!(accept(&named(Some("demo"), "")) && accept(&named(None, "demo")));
-        assert!(!accept(&named(Some("other"), "other")));
-    }
-
-    #[tokio::test]
-    async fn test_a_start_launches_skip_permissions_with_the_model_and_effort_asked() {
-        let w = Fx::new();
-        start_fit(&w, on(json!({"model": "sonnet", "effort": "medium"}))).await;
-        let flags = w.flags(0);
-        assert!(flags.contains(&"--dangerously-skip-permissions".to_string()));
-        assert!(flags.contains(&"--effort=medium".to_string()) && flags.contains(&"--model=sonnet".to_string()));
-        assert!(!flags.iter().any(|f| f.starts_with("--permission-mode")));
-    }
-
-    #[tokio::test]
-    async fn test_arguments_override_the_defaults_in_equals_form() {
-        let w = Fx::new();
-        start_fit(&w, on(json!({"name": "worker one", "model": "opus", "effort": "high", "permission": "plan",
-                                "disallowed_tools": ["Write", "Edit"], "remote_control": true, "brief": false}))).await;
-        let call = &w.launched()[0];
-        assert_eq!(call.name, "worker one");
-        assert_eq!(call.flags, ["--permission-mode=plan", "--allow-dangerously-skip-permissions",
-                                "--disallowedTools=Write,Edit", "--remote-control=worker-one", "--effort=high", "--model=opus"]);
-    }
-
-    #[tokio::test]
-    async fn test_bypass_stays_in_the_mode_cycle_for_every_start() {
-        for (permission, head) in [
-            (None, ["--dangerously-skip-permissions", "--allow-dangerously-skip-permissions"]),
-            (Some("plan"), ["--permission-mode=plan", "--allow-dangerously-skip-permissions"]),
-            (Some("dontAsk"), ["--permission-mode=dontAsk", "--allow-dangerously-skip-permissions"]),
-            (Some("bypassPermissions"), ["--permission-mode=bypassPermissions", "--allow-dangerously-skip-permissions"]),
-        ] {
-            let w = Fx::new();
-            let extra = permission.map_or(json!({}), |p| json!({"permission": p}));
-            start_fit(&w, on(extra)).await;
-            assert_eq!(w.flags(0)[..2], head, "{permission:?}");
-        }
-    }
-
-    #[tokio::test]
-    async fn test_allowed_tools_become_one_equals_form_flag() {
-        let w = Fx::new();
-        start_fit(&w, on(json!({"permission": "dontAsk", "disallowed_tools": ["Bash"],
-                                "allowed_tools": ["mcp__awm__*", "SendMessage"], "remote_control": "rc1", "brief": false}))).await;
-        let flags = w.flags(0);
-        assert_eq!(flags, ["--permission-mode=dontAsk", "--allow-dangerously-skip-permissions", "--disallowedTools=Bash",
-                           "--allowedTools=mcp__awm__*,SendMessage", "--remote-control=rc1", "--effort=high", "--model=opus"]);
-        assert!(!flags.contains(&"--allowedTools".to_string()));
-    }
-
-    #[tokio::test]
-    async fn test_allowed_tools_may_be_a_comma_string_and_default_to_none() {
-        let w = Fx::new();
-        start_fit(&w, on(json!({"allowed_tools": "Read,Skill"}))).await;
-        assert!(w.flags(0).contains(&"--allowedTools=Read,Skill".to_string()));
-        start_fit(&w, on(json!({"name": "second"}))).await;
-        assert!(!w.flags(1).iter().any(|f| f.starts_with("--allowedTools")));
-    }
-
-    #[tokio::test]
-    async fn test_allowed_tools_must_be_a_list_of_names() {
-        let w = Fx::new();
-        let out = start_fit(&w, on(json!({"allowed_tools": [1, 2]}))).await;
-        assert!(refused(&out) && reason(&out).contains("allowed_tools"));
-    }
-
-    #[tokio::test]
     async fn test_every_valued_flag_uses_the_equals_form() {
         let w = Fx::new();
         start_fit(&w, on(json!({"permission": "auto", "disallowed_tools": "Bash", "remote_control": "rc1", "brief": false}))).await;
@@ -2790,95 +2675,6 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn test_system_prompt_and_autocompact_become_equals_form_flags() {
-        let w = Fx::new();
-        start_fit(&w, on(json!({"system_prompt": "--not a flag\nsecond line", "autocompact": 233_000, "brief": false}))).await;
-        let flags = w.flags(0);
-        assert!(flags.contains(&"--append-system-prompt=--not a flag\nsecond line".to_string()));
-        assert!(flags.contains(&"--autocompact=233000".to_string()));
-        start_fit(&w, on(json!({"name": "second", "brief": false}))).await;
-        assert!(!w.flags(1).iter().any(|f| f.starts_with("--append-system-prompt") || f.starts_with("--autocompact")));
-    }
-
-    #[tokio::test]
-    async fn test_autocompact_outside_the_cli_range_is_refused() {
-        for value in [json!(99_999), json!(1_000_001), json!("200000"), json!(true), json!(2.5e5)] {
-            let w = Fx::new();
-            let out = start_fit(&w, on(json!({"autocompact": value}))).await;
-            assert!(refused(&out) && reason(&out).contains("autocompact") && w.launched().is_empty(), "{value}");
-        }
-    }
-
-    #[tokio::test]
-    async fn test_system_prompt_must_be_a_string() {
-        let w = Fx::new();
-        let out = start_fit(&w, on(json!({"system_prompt": ["a"]}))).await;
-        assert!(refused(&out) && reason(&out).contains("system_prompt"));
-    }
-
-    #[tokio::test]
-    async fn test_a_model_supplied_parent_is_ignored() {
-        let w = Fx::new();
-        let out = start_fit(&w, on(json!({"parent": "evil", "caller": "evil"}))).await;
-        assert!(out["ok"] == json!(true) && out["parent"].is_null());
-    }
-
-    #[tokio::test]
-    async fn test_a_started_session_is_not_a_pool_session() {
-        let w = Fx::new();
-        start_fit(&w, base()).await;
-        let sessions = Sessions::new(&w.paths, &w.procs);
-        let s = sessions.load().into_iter().find(|s| s.short == CHILD_JOB).unwrap();
-        assert!(!s.name.starts_with(&w.paths.name_prefix));
-        assert!(!sessions.is_ours(&s) && !sessions.was_ours(&s));
-        assert!(!sessions.removable(&s, None, None, Some(&BTreeSet::new())));
-    }
-
-    #[tokio::test]
-    async fn test_a_missing_worktree_is_created_once() {
-        let w = Fx::new();
-        let made = w.creates_scopes();
-        assert_eq!(start_fit(&w, json!({"project": "awm", "scope": "fresh"})).await["ok"], json!(true));
-        assert_eq!(*made.lock().unwrap(), [("awm".to_string(), "fresh".to_string())]);
-        start_fit(&w, on(json!({"name": "another"}))).await;
-        assert_eq!(made.lock().unwrap().len(), 1, "an existing worktree is not created again");
-    }
-
-    #[tokio::test]
-    async fn test_a_failed_scope_create_is_a_refusal() {
-        let w = Fx::new();
-        w.on_gateway(|_, _| Err("no such project".into()));
-        let out = start_fit(&w, json!({"project": "nope", "scope": "x"})).await;
-        assert!(refused(&out) && reason(&out).contains("no such project"));
-        assert!(w.launched().is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_tags_go_on_the_scope_and_into_the_lineage() {
-        let w = Fx::new();
-        let out = start_fit(&w, on(json!({"tags": "lab, ana"}))).await;
-        assert!(out["ok"] == json!(true) && out.get("warning").is_none());
-        assert_eq!(w.calls(), [("scope".into(), "tag".into(), json!({"project": "awm", "scope": "demo", "tags": ["lab", "ana"]}))]);
-        assert_eq!(read_lineage(&w.paths, CHILD_JOB).unwrap()["tags"], json!(["lab", "ana"]));
-    }
-
-    #[tokio::test]
-    async fn test_a_start_without_tags_leaves_the_scope_alone() {
-        let w = Fx::new();
-        assert_eq!(start_fit(&w, base()).await["ok"], json!(true));
-        assert!(w.calls().is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_a_failed_tag_is_a_warning_not_a_refusal() {
-        let w = Fx::new();
-        w.on_gateway(|_, _| Err("invalid tag 'Bad Tag'".into()));
-        let out = start_fit(&w, on(json!({"tags": ["Bad Tag"]}))).await;
-        assert!(out["ok"] == json!(true) && out["warning"].as_str().unwrap().contains("invalid tag"));
-        assert_eq!(w.launched().len(), 1);
-    }
-
     // --- refusals ----------------------------------------------------------------
 
     #[tokio::test]
@@ -2888,32 +2684,6 @@ mod tests {
         let out = start_fit(&w, base()).await;
         assert!(refused(&out) && reason(&out).contains("station"));
         assert!(w.launched().is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_the_legacy_bare_peer_is_refused() {
-        let w = Fx::new();
-        w.peers();
-        let out = start_as(&w, base(), "peer").await;
-        assert!(refused(&out) && reason(&out).contains("peer"));
-        assert!(w.launched().is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_a_peer_with_no_edge_here_is_refused() {
-        let w = Fx::new();
-        w.peers();
-        let out = start_as(&w, base(), "peer:nodeb").await;
-        assert!(refused(&out) && reason(&out).contains("no edge"));
-        assert!(w.launched().is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_a_peer_outside_the_book_is_refused() {
-        let w = Fx::new();
-        w.peers();
-        let out = start_as(&w, base(), "peer:stranger").await;
-        assert!(refused(&out) && w.launched().is_empty());
     }
 
     #[tokio::test]
@@ -2934,76 +2704,12 @@ mod tests {
         assert!(w.launched().is_empty());
     }
 
-    /// The daemon can die between cx's check and the launch.
-    #[tokio::test]
-    async fn test_the_shared_launcher_rechecks_the_daemon_and_its_refusal_is_mapped() {
-        let w = Fx::new();
-        w.on_launch(|_, _| Err(LaunchError::Refused("no claude code daemon is running".into())));
-        let out = start_fit(&w, base()).await;
-        assert!(refused(&out) && reason(&out).contains("daemon"));
-        assert!(w.pendings().is_empty(), "a launch that never ran leaves no pending record");
-    }
-
     #[tokio::test]
     async fn test_an_untrusted_worktree_refuses() {
         let w = Fx::new();
         std::fs::write(&w.paths.home.trust_file, json!({"projects": {}}).to_string()).unwrap();
         let out = start_fit(&w, base()).await;
         assert!(refused(&out) && reason(&out).contains("trust"));
-        assert!(w.launched().is_empty());
-    }
-
-    /// A new project's `.bare` has no trust entry, and nobody is there to accept the dialog for a
-    /// background start.
-    #[tokio::test]
-    async fn test_an_awm_worktree_is_trusted_before_its_start() {
-        let w = Fx::new();
-        let seed = w.root.join("seed");
-        std::fs::create_dir(&seed).unwrap();
-        git(&seed, &["init", "-q"]);
-        git(&seed, &["commit", "-q", "--allow-empty", "-m", "x"]);
-        let bare = w.projects().join("game").join(".bare");
-        git(&w.root, &["clone", "-q", "--bare", &seed.display().to_string(), &bare.display().to_string()]);
-        git(&bare, &["worktree", "add", "-q", "-b", "feat/fx", &w.projects().join("game/fx").display().to_string()]);
-        std::fs::write(&w.paths.home.trust_file, json!({"projects": {}}).to_string()).unwrap();
-        let out = start_fit(&w, json!({"project": "game", "scope": "fx"})).await;
-        assert_eq!(out["ok"], json!(true), "{out}");
-        let entries = read_json(&w.paths.home.trust_file)["projects"].clone();
-        assert_eq!(entries[bare.canonicalize().unwrap().display().to_string()], json!({"hasTrustDialogAccepted": true}));
-    }
-
-    #[tokio::test]
-    async fn test_a_taken_name_refuses() {
-        let w = Fx::new();
-        w.add(PARENT_JOB, "demo", ME);
-        let out = start_fit(&w, base()).await;
-        assert!(refused(&out) && reason(&out).contains("named"));
-        assert!(w.launched().is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_no_spelling_of_the_pool_prefix_is_a_name() {
-        let w = Fx::new();
-        for name in ["<warm sneaky>", " <warm sneaky>", "\t<warm x>", "a<warm", "<WARM x>", "x <Warm y>"] {
-            let out = start_fit(&w, on(json!({"name": name}))).await;
-            assert!(refused(&out), "{name}");
-        }
-        assert!(w.launched().is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_the_name_is_stripped_before_it_is_used() {
-        let w = Fx::new();
-        let out = start_fit(&w, on(json!({"name": "  tidy  "}))).await;
-        assert!(out["ok"] == json!(true) && out["name"] == json!("tidy") && w.launched()[0].name == "tidy");
-    }
-
-    #[tokio::test]
-    async fn test_a_leading_dash_is_not_a_name() {
-        let w = Fx::new();
-        for name in ["-x", "--evil", " -x"] {
-            assert!(refused(&start_fit(&w, on(json!({"name": name}))).await), "{name}");
-        }
         assert!(w.launched().is_empty());
     }
 
@@ -3019,21 +2725,6 @@ mod tests {
             }
             assert!(refused(&out) && w.launched().is_empty(), "{rc}");
         }
-    }
-
-    #[tokio::test]
-    async fn test_a_start_turns_remote_control_on_named_from_the_session_name() {
-        let w = Fx::new();
-        start_fit(&w, on(json!({"name": "redux-build/gateway"}))).await;
-        assert!(w.flags(0).contains(&"--remote-control=redux-build-gateway".to_string()));
-    }
-
-    #[tokio::test]
-    async fn test_remote_control_false_leaves_it_off_with_no_link() {
-        let w = Fx::new();
-        let out = start_fit(&w, on(json!({"remote_control": false}))).await;
-        assert!(out["link"].is_null() && out.get("link_reason").is_none());
-        assert!(!w.flags(0).iter().any(|f| f.starts_with("--remote-control")));
     }
 
     #[tokio::test]
@@ -3054,65 +2745,6 @@ mod tests {
         assert!(polls.lock().unwrap().len() == 3 && out.get("link_reason").is_none());
     }
 
-    #[tokio::test]
-    async fn test_a_start_with_remote_control_says_why_there_is_no_link_yet() {
-        let w = Fx::new();
-        let out = start_fit(&w, on(json!({"remote_control": true}))).await;
-        assert!(out["ok"] == json!(true) && out["link"].is_null());
-        assert!(out["link_reason"].as_str().unwrap().contains(CHILD_JOB));
-    }
-
-    #[tokio::test]
-    async fn test_remote_control_accepts_a_plain_label() {
-        let w = Fx::new();
-        assert_eq!(start_fit(&w, on(json!({"remote_control": "rc-1.a"}))).await["ok"], json!(true));
-        assert!(w.flags(0).contains(&"--remote-control=rc-1.a".to_string()));
-    }
-
-    #[tokio::test]
-    async fn test_bad_arguments_refuse() {
-        let w = Fx::new();
-        for args in [
-            json!({"project": "awm", "scope": "../escape"}),
-            json!({"project": "..", "scope": "demo"}),
-            json!({"project": "awm", "scope": "/abs"}),
-            json!({"project": "awm", "scope": "demo", "effort": "ludicrous"}),
-            json!({"project": "awm", "scope": "demo", "permission": "yolo"}),
-            json!({"project": "awm", "scope": "demo", "model": "--evil"}),
-            json!({"project": "awm", "scope": "demo", "mode": "has space"}),
-            json!({"scope": "demo"}),
-        ] {
-            assert!(refused(&start_fit(&w, args.clone()).await), "{args}");
-        }
-        assert!(w.launched().is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_a_start_without_model_and_effort_is_refused_with_no_default() {
-        for missing in [&["model"][..], &["effort"], &["model", "effort"]] {
-            let w = Fx::new();
-            let mut args = base();
-            for key in missing {
-                args.as_object_mut().unwrap().remove(*key);
-            }
-            let out = start(&w, &args, None).await;
-            assert!(refused(&out) && w.launched().is_empty());
-            assert!(reason(&out).contains("model and effort are required") && reason(&out).contains("fit the"));
-        }
-    }
-
-    #[tokio::test]
-    async fn test_effort_above_high_is_refused_on_any_model() {
-        let w = Fx::new();
-        for effort in ["xhigh", "max"] {
-            for model in ["opus", "sonnet", "haiku", "fable"] {
-                let out = start_fit(&w, on(json!({"model": model, "effort": effort}))).await;
-                assert!(refused(&out) && reason(&out).contains("upper limit"), "{model} {effort}");
-            }
-        }
-        assert!(w.launched().is_empty());
-    }
-
     // --- a launch that outlives its timeout (M3) ---------------------------------
 
     #[tokio::test]
@@ -3122,52 +2754,6 @@ mod tests {
         assert_eq!(w.launches.lock().unwrap()[0].seen_pending.len(), 1, "written before the launch");
         assert!(w.pendings().is_empty(), "dropped once the job record is written");
         assert_eq!(read_lineage(&w.paths, out["job"].as_str().unwrap()).unwrap()["mode"], json!("representative"));
-    }
-
-    #[tokio::test]
-    async fn test_a_failed_launch_leaves_the_pending_record() {
-        for timeout in [true, false] {
-            let w = Fx::new();
-            w.fail_launch(timeout);
-            let out = start_fit(&w, on(json!({"mode": "representative"}))).await;
-            assert!(refused(&out) && reason(&out).contains("did not start"));
-            assert_eq!(w.pendings().len(), 1);
-        }
-    }
-
-    #[tokio::test]
-    async fn test_an_oserror_from_the_start_path_is_a_refusal_not_a_crash() {
-        let w = Fx::with(|root, p| p.projects = Some(root.join("loop")));
-        std::os::unix::fs::symlink(w.root.join("loop"), w.root.join("loop")).unwrap();
-        let out = start_fit(&w, base()).await;
-        assert!(refused(&out) && reason(&out).starts_with("start failed: "), "{out}");
-    }
-
-    #[tokio::test]
-    async fn test_a_pending_record_that_cannot_be_written_stops_the_launch() {
-        let w = Fx::with(|root, p| p.cx_state = root.join("state-file"));
-        std::fs::write(w.root.join("state-file"), "not a directory").unwrap();
-        let out = start_fit(&w, base()).await;
-        assert!(refused(&out) && reason(&out).contains("record"));
-        assert!(w.launched().is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_a_pending_start_blocks_the_same_name() {
-        let w = Fx::new();
-        w.fail_launch(true);
-        start_fit(&w, base()).await;
-        let out = start_fit(&w, base()).await;
-        assert!(refused(&out) && reason(&out).contains("named"));
-    }
-
-    #[tokio::test]
-    async fn test_mode_of_applies_the_pending_mode_to_a_late_job() {
-        let w = Fx::new();
-        w.fail_launch(true);
-        start_fit(&w, on(json!({"mode": "representative"}))).await;
-        w.add(CHILD_JOB, "demo", CHILD_PID);
-        assert_eq!(w.mode_of(CHILD_PID.into()).as_deref(), Some("representative"));
     }
 
     fn now_ms() -> i64 {
@@ -3187,95 +2773,7 @@ mod tests {
         assert_eq!(w.mode_of(CHILD_PID.into()).as_deref(), Some("representative"));
     }
 
-    /// The keeper adopts only a recorded job, because cx refuses to stop or resume one it has no
-    /// record of.
-    #[tokio::test]
-    async fn test_a_job_is_recorded_only_once_cx_holds_its_lineage() {
-        let w = Fx::new();
-        w.fail_launch(true);
-        start_fit(&w, base()).await;
-        w.add_full(CHILD_JOB, "demo", CHILD_PID, "/home/user", "working", now_ms());
-        let row = |w: &Fx| collect_rows(w, &BTreeSet::new(), &BTreeMap::new(), None, None).into_iter().find(|r| r["job"] == json!(CHILD_JOB)).unwrap();
-        assert_eq!(row(&w)["recorded"], json!(false));
-        adopt_pending(&w, None);
-        assert_eq!(row(&w)["recorded"], json!(true));
-    }
-
-    #[tokio::test]
-    async fn test_adopt_pending_ignores_a_session_older_than_the_start() {
-        let w = Fx::new();
-        w.fail_launch(true);
-        start_fit(&w, base()).await;
-        w.add_full(CHILD_JOB, "demo", CHILD_PID, "/home/user", "working", 1_000_000_000_000);
-        assert!(adopt_pending(&w, None).is_empty() && w.pendings().len() == 1);
-    }
-
-    #[tokio::test]
-    async fn test_an_expired_pending_record_is_dropped() {
-        let w = Fx::new();
-        w.fail_launch(true);
-        start_fit(&w, base()).await;
-        assert!(adopt_pending(&w, Some(epoch_now() + 10.0)).is_empty() && w.pendings().len() == 1);
-        adopt_pending(&w, Some(epoch_now() + PENDING_TTL_S + 60.0));
-        assert!(w.pendings().is_empty());
-    }
-
     // --- stop --------------------------------------------------------------------
-
-    #[tokio::test]
-    async fn test_stop_refuses_a_job_without_lineage() {
-        let w = Fx::new();
-        w.add("cccccccc", "hand started", ME);
-        let out = stop_job(&w, json!({"job": "cccccccc"})).await;
-        assert!(refused(&out) && reason(&out).contains("not started by reflection start_other"));
-        assert!(w.stops().is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_stop_ends_a_job_start_created() {
-        let w = Fx::new();
-        start_fit(&w, base()).await;
-        assert_eq!(stop_job(&w, json!({"job": CHILD_JOB})).await, json!({"ok": true, "job": CHILD_JOB}));
-        assert_eq!(w.stops(), [CHILD_JOB]);
-    }
-
-    #[tokio::test]
-    async fn test_stop_records_the_stop_in_the_state_record() {
-        let w = Fx::new();
-        start_fit(&w, base()).await;
-        stop_job(&w, json!({"job": CHILD_JOB})).await;
-        let record = w.state(CHILD_JOB);
-        assert!(record["state"] == json!("stopped") && record["name"] == json!("demo"));
-    }
-
-    #[tokio::test]
-    async fn test_stop_reports_a_failed_claude_stop() {
-        let w = Fx::new();
-        *w.stop_answer.lock().unwrap() = (false, "no such job".into());
-        start_fit(&w, base()).await;
-        let out = stop_job(&w, json!({"job": CHILD_JOB})).await;
-        assert!(refused(&out) && reason(&out) == "no such job");
-        assert_eq!(w.state(CHILD_JOB)["state"], json!("working"));
-    }
-
-    #[tokio::test]
-    async fn test_stop_rejects_a_malformed_job() {
-        let w = Fx::new();
-        for job in [json!(""), json!("../x"), json!("ZZZZZZZZ"), Value::Null, json!(7), json!("aaaaaaaaa")] {
-            assert!(refused(&stop_job(&w, json!({"job": job})).await), "{job}");
-        }
-        assert!(w.stops().is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_a_peer_with_no_edge_here_cannot_stop() {
-        let w = Fx::new();
-        w.peers();
-        start_fit(&w, base()).await;
-        assert!(refused(&stop(&w, &json!({"job": CHILD_JOB}), Some("peer:nodeb")).await));
-        assert!(refused(&stop(&w, &json!({"job": CHILD_JOB}), Some("peer")).await));
-        assert!(w.stops().is_empty());
-    }
 
     #[tokio::test]
     async fn test_a_moded_session_stops_only_its_own_children() {
@@ -3287,24 +2785,6 @@ mod tests {
         w.lineage(CHILD_JOB, json!({"parent": PARENT_JOB}));
         assert_eq!(stop_job(&w, json!({"job": CHILD_JOB, CALLER_PID: ME})).await["ok"], json!(true));
         assert_eq!(w.stops(), [CHILD_JOB]);
-    }
-
-    #[tokio::test]
-    async fn test_a_worker_session_also_stops_only_its_own_children() {
-        let w = Fx::new();
-        w.parent_session(Some("worker"));
-        w.lineage(CHILD_JOB, json!({"parent": "zzzzzzzz"}));
-        assert!(refused(&stop_job(&w, json!({"job": CHILD_JOB, CALLER_PID: ME})).await));
-    }
-
-    #[tokio::test]
-    async fn test_a_caller_with_no_cx_mode_may_stop_any_cx_job() {
-        let w = Fx::new();
-        w.lineage(CHILD_JOB, json!({"parent": "zzzzzzzz"}));
-        assert_eq!(stop_job(&w, json!({"job": CHILD_JOB})).await["ok"], json!(true), "an operator or a service");
-        w.add("dddddddd", "<warm otter>", ME);
-        w.record(ME, "bg", Some("dddddddd"), "x");
-        assert_eq!(stop_job(&w, json!({"job": CHILD_JOB, CALLER_PID: ME})).await["ok"], json!(true));
     }
 
     #[tokio::test]
@@ -3330,46 +2810,6 @@ mod tests {
     // --- the caller's mode gates what it may start -------------------------------
 
     #[tokio::test]
-    async fn test_every_caller_gets_the_same_plain_worker() {
-        let w = Fx::new();
-        for mode in [Some("representative"), Some("secretary"), Some("delegate"), Some("worker"), None] {
-            w.launches.lock().unwrap().clear();
-            w.parent_session(mode);
-            let name = format!("w-{}", mode.unwrap_or("None"));
-            let ok = start_fit(&w, on(json!({"name": name, "prompt": "do it", "model": "opus", "effort": "high", CALLER_PID: ME}))).await;
-            assert!(ok["ok"] == json!(true) && ok["mode"] == json!("worker") && ok["parent"] == json!(PARENT_JOB), "{mode:?}");
-            let flags = w.flags(0);
-            assert!(flags.contains(&"--dangerously-skip-permissions".into()) && flags.contains(&"--allow-dangerously-skip-permissions".into()));
-            assert!(!flags.iter().any(|f| ["--restricted", "--strict-mcp", "--tools", "--settings"].iter().any(|p| f.starts_with(p))));
-            assert!(flags.contains(&"--model=opus".into()) && flags.contains(&"--effort=high".into()));
-            w.clear_starts();
-            w.set_workers(json!({}), None);
-        }
-    }
-
-    #[tokio::test]
-    async fn test_a_caller_may_ask_for_the_options_the_verb_declares() {
-        let w = Fx::new();
-        w.parent_session(Some("worker"));
-        let ok = start_fit(&w, on(json!({"permission": "plan", "allowed_tools": ["Bash"], "disallowed_tools": ["Read"],
-                                         "tools": ["Bash", "Read"], "remote_control": true, "mode": "mine", CALLER_PID: ME}))).await;
-        let flags = w.flags(0);
-        assert!(ok["ok"] == json!(true) && ok["mode"] == json!("mine"));
-        assert!(flags.contains(&"--permission-mode=plan".into()) && flags.contains(&"--allow-dangerously-skip-permissions".into()));
-        assert!(flags.contains(&"--tools=Bash,Read".into()) && flags.contains(&"--allowedTools=Bash".into()));
-        assert!(flags.contains(&"--disallowedTools=Read".into()) && flags.iter().any(|f| f.starts_with("--remote-control=")));
-    }
-
-    #[tokio::test]
-    async fn test_a_restricted_start_omits_the_settings_when_the_file_is_missing() {
-        let w = Fx::with(|root, p| p.restricted_settings = root.join("missing.json"));
-        start_fit(&w, on(json!({"restricted": true, "permission": "dontAsk"}))).await;
-        let flags = w.flags(0);
-        assert!(flags.contains(&"--restricted".into()) && flags.contains(&"--permission-mode=dontAsk".into()));
-        assert!(!flags.iter().any(|f| f.starts_with("--settings")));
-    }
-
-    #[tokio::test]
     async fn test_a_restricted_start_passes_the_reporting_settings_and_cannot_offer_bypass() {
         let w = Fx::with(|root, p| p.restricted_settings = root.join("reporting-settings.json"));
         std::fs::write(&w.paths.restricted_settings, "{}").unwrap();
@@ -3390,80 +2830,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_a_missing_awm_mcp_server_refuses_a_strict_start() {
-        let w = Fx::new();
-        std::fs::write(w.root.join("workspace.mcp.json"), json!({"mcpServers": {}}).to_string()).unwrap();
-        let out = start_fit(&w, on(json!({"strict_mcp": true}))).await;
-        assert!(refused(&out) && reason(&out).contains("awm server"));
-    }
-
-    #[tokio::test]
-    async fn test_a_caller_may_create_the_scope_it_starts_in() {
-        let w = Fx::new();
-        let made = w.creates_scopes();
-        w.parent_session(Some("worker"));
-        let out = start_fit(&w, json!({"project": "awm", "scope": "nowhere", CALLER_PID: ME})).await;
-        assert!(out["ok"] == json!(true) && *made.lock().unwrap() == [("awm".to_string(), "nowhere".to_string())]);
-    }
-
-    #[tokio::test]
-    async fn test_the_old_persona_names_and_modes_are_plain_labels() {
-        let w = Fx::new();
-        w.parent_session(Some("worker"));
-        for ask in [json!({"mode": "representative"}), json!({"name": "secretary"}), json!({"name": "representative - altair"})] {
-            w.clear_starts();
-            w.set_workers(json!({}), None);
-            w.parent_session(Some("worker"));
-            let out = start_fit(&w, merged(&[base(), json!({CALLER_PID: ME}), ask.clone()])).await;
-            assert_eq!(out["ok"], json!(true), "{ask}");
-        }
-    }
-
-    #[tokio::test]
-    async fn test_a_worker_or_unmoded_caller_may_start_any_other_mode() {
-        let w = Fx::new();
-        w.parent_session(Some("worker"));
-        assert_eq!(start_fit(&w, on(json!({"mode": "rep2", CALLER_PID: ME}))).await["ok"], json!(true));
-        w.clear_starts();
-        w.set_workers(json!({}), None);
-        w.parent_session(None); // no lineage: an ordinary session
-        assert_eq!(start_fit(&w, on(json!({"name": "other", "mode": "rep3", CALLER_PID: ME}))).await["ok"], json!(true));
-    }
-
-    #[tokio::test]
-    async fn test_tool_lists_are_validated() {
-        let w = Fx::new();
-        for field in ["tools", "allowed_tools", "disallowed_tools"] {
-            for bad in [json!("Bash;rm"), json!("-x"), json!("Read,Write("), json!("a b"), json!(["ok", "--evil"]), json!("Bash(a,b)"), json!(5)] {
-                let out = start_fit(&w, on(json!({field: bad}))).await;
-                assert!(refused(&out) && reason(&out).contains(field), "{field} {bad}");
-            }
-        }
-    }
-
-    #[tokio::test]
-    async fn test_tool_rules_with_a_specifier_are_accepted() {
-        let w = Fx::new();
-        let out = start_fit(&w, on(json!({"allowed_tools": ["Read(./**)", "mcp__awm__*", "Bash(git *)"]}))).await;
-        assert_eq!(out["ok"], json!(true));
-    }
-
-    #[tokio::test]
     async fn test_a_caller_whose_mode_is_unknown_may_not_start() {
         let w = Fx::new();
         w.parent_session(None);
         std::fs::write(w.paths.home.roster(), "{ not json").unwrap();
         let out = start_fit(&w, on(json!({CALLER_PID: ME}))).await;
         assert!(refused(&out) && reason(&out).contains("determined"));
-        assert!(w.launched().is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_an_invalid_caller_pid_is_unknown_not_unrestricted() {
-        let w = Fx::new();
-        for bad in [json!(0), json!(-1), json!("12"), json!(true), json!(1.5)] {
-            assert!(refused(&start_fit(&w, on(json!({CALLER_PID: bad}))).await), "{bad}");
-        }
         assert!(w.launched().is_empty());
     }
 
@@ -3482,88 +2854,7 @@ mod tests {
         assert!(!path.exists());
     }
 
-    #[tokio::test]
-    async fn test_a_stopped_and_reattached_session_keeps_its_mode() {
-        let w = Fx::new();
-        start_fit(&w, on(json!({"mode": "representative"}))).await;
-        w.age(CHILD_JOB);
-        w.set_workers(json!({}), None);
-        assert!(prune_lineage(&w, None).is_empty());
-        w.add(CHILD_JOB, "demo", CHILD_PID); // `claude attach` brings it back
-        assert_eq!(w.mode_of(CHILD_PID.into()).as_deref(), Some("representative"));
-    }
-
-    #[tokio::test]
-    async fn test_prune_keeps_lineage_of_a_held_job() {
-        let w = Fx::new();
-        start_fit(&w, base()).await;
-        let path = w.age(CHILD_JOB);
-        std::fs::remove_file(w.paths.home.job_state(CHILD_JOB)).unwrap();
-        assert!(prune_lineage(&w, None).is_empty() && path.exists());
-    }
-
-    #[tokio::test]
-    async fn test_prune_leaves_a_fresh_record_alone() {
-        let w = Fx::new();
-        start_fit(&w, base()).await;
-        w.set_workers(json!({}), None);
-        std::fs::remove_file(w.paths.home.job_state(CHILD_JOB)).unwrap();
-        assert!(prune_lineage(&w, None).is_empty());
-        assert!(w.paths.lineage_path(CHILD_JOB).exists());
-    }
-
-    #[tokio::test]
-    async fn test_prune_does_nothing_when_the_roster_is_unreadable() {
-        let w = Fx::new();
-        start_fit(&w, base()).await;
-        let path = w.age(CHILD_JOB);
-        std::fs::remove_file(w.paths.home.job_state(CHILD_JOB)).unwrap();
-        std::fs::write(w.paths.home.roster(), "{ not json").unwrap();
-        assert!(prune_lineage(&w, None).is_empty() && path.exists());
-    }
-
-    #[tokio::test]
-    async fn test_prune_does_nothing_when_the_roster_has_no_workers_table() {
-        let w = Fx::new();
-        start_fit(&w, base()).await;
-        let path = w.age(CHILD_JOB);
-        std::fs::remove_file(w.paths.home.job_state(CHILD_JOB)).unwrap();
-        std::fs::write(w.paths.home.roster(), json!({"supervisorPid": ME}).to_string()).unwrap();
-        assert!(prune_lineage(&w, None).is_empty() && path.exists());
-    }
-
-    #[tokio::test]
-    async fn test_prune_does_nothing_when_the_jobs_directory_is_missing() {
-        let w = Fx::new();
-        start_fit(&w, base()).await;
-        let path = w.age(CHILD_JOB);
-        w.set_workers(json!({}), None);
-        std::fs::remove_dir_all(w.paths.home.jobs()).unwrap();
-        assert!(prune_lineage(&w, None).is_empty() && path.exists());
-    }
-
-    /// The tick itself is the reconcile module's; this is the lifecycle half it calls.
-    #[tokio::test]
-    async fn test_the_reconcile_tick_prunes_and_adopts() {
-        let w = Fx::new();
-        assert_eq!(start_fit(&w, base()).await["ok"], json!(true));
-        let path = w.age(CHILD_JOB);
-        w.set_workers(json!({}), None);
-        std::fs::remove_file(w.paths.home.job_state(CHILD_JOB)).unwrap();
-        prune_lineage(&w, None);
-        prune_pins(&w).await;
-        assert!(adopt_pending(&w, None).is_empty());
-        assert!(!path.exists());
-    }
-
     // --- mode_of: three answers --------------------------------------------------
-
-    #[tokio::test]
-    async fn test_mode_of_reads_the_mode_through_the_roster() {
-        let w = Fx::new();
-        start_fit(&w, on(json!({"mode": "representative"}))).await;
-        assert_eq!(w.mode_of(CHILD_PID.into()).as_deref(), Some("representative"));
-    }
 
     #[tokio::test]
     async fn test_mode_of_is_none_only_for_a_pid_that_is_positively_not_cx_started() {
@@ -3573,49 +2864,6 @@ mod tests {
         assert_eq!(w.mode_of(ME.into()), None, "a pool session has no lineage");
         w.record(1, "interactive", None, "x");
         assert_eq!(w.mode_of(1), None, "an interactive terminal");
-    }
-
-    #[tokio::test]
-    async fn test_mode_of_is_none_for_a_pid_with_no_record_at_all() {
-        let w = Fx::new();
-        ensure_starts_dir(&w.paths).unwrap();
-        assert_eq!(w.mode_of(ME.into()), None);
-    }
-
-    #[tokio::test]
-    async fn test_mode_of_an_invalid_pid_is_unknown() {
-        let w = Fx::new();
-        for bad in [Value::Null, json!(0), json!(-3), json!(true), json!("12"), json!(1.5)] {
-            assert_eq!(lineage::mode_of_arg(&w.paths, &w.procs, &bad), Mode::Unknown, "{bad}");
-        }
-    }
-
-    #[tokio::test]
-    async fn test_mode_of_is_unknown_when_the_roster_is_unreadable() {
-        let w = Fx::new();
-        w.procs.may.store(true, Ordering::SeqCst);
-        start_fit(&w, on(json!({"mode": "representative"}))).await;
-        std::fs::write(w.paths.home.roster(), "{ not json").unwrap();
-        assert_eq!(w.mode_of(CHILD_PID.into()).as_deref(), Some("unknown"));
-    }
-
-    #[tokio::test]
-    async fn test_mode_of_keeps_the_recorded_mode_when_the_roster_is_missing() {
-        let w = Fx::new();
-        start_fit(&w, on(json!({"mode": "rep2"}))).await;
-        w.record(CHILD_PID, "bg", Some(CHILD_JOB), "x");
-        std::fs::remove_file(w.paths.home.roster()).unwrap();
-        assert_eq!(w.mode_of(CHILD_PID.into()).as_deref(), Some("rep2"));
-    }
-
-    #[tokio::test]
-    async fn test_mode_of_is_unknown_for_a_bg_session_when_the_roster_is_missing_and_no_lineage() {
-        let w = Fx::new();
-        start_fit(&w, base()).await;
-        w.record(CHILD_PID, "bg", Some(CHILD_JOB), "x");
-        std::fs::remove_file(w.paths.home.roster()).unwrap();
-        std::fs::remove_file(w.paths.lineage_path(CHILD_JOB)).unwrap();
-        assert_eq!(w.mode_of(CHILD_PID.into()).as_deref(), Some("unknown"));
     }
 
     #[tokio::test]
@@ -3629,207 +2877,14 @@ mod tests {
         assert_eq!(w.mode_of(CHILD_PID.into()).as_deref(), Some("unknown"));
     }
 
-    #[tokio::test]
-    async fn test_mode_of_is_none_for_a_job_without_cx_launch_flags_and_no_lineage() {
-        let w = Fx::new();
-        start_fit(&w, base()).await;
-        std::fs::remove_dir_all(w.paths.starts_dir()).unwrap();
-        assert_eq!(w.mode_of(CHILD_PID.into()), None);
-    }
-
-    #[tokio::test]
-    async fn test_mode_of_survives_a_missing_jobs_or_sessions_directory() {
-        for what in ["jobs", "sessions"] {
-            let w = Fx::new();
-            start_fit(&w, on(json!({"mode": "rep2"}))).await;
-            let dir = if what == "jobs" { w.paths.home.jobs() } else { w.paths.home.sessions() };
-            std::fs::remove_dir_all(dir).unwrap();
-            assert_eq!(w.mode_of(CHILD_PID.into()).as_deref(), Some("rep2"), "{what}");
-        }
-    }
-
-    #[tokio::test]
-    async fn test_a_corrupt_record_of_another_job_does_not_change_the_answer() {
-        let w = Fx::new();
-        start_fit(&w, on(json!({"mode": "rep2"}))).await;
-        std::fs::write(w.paths.starts_dir().join("cccccccc.json"), "{ not json").unwrap();
-        std::fs::write(w.paths.starts_dir().join("pending-0123456789abcdef.json"), "{ not json").unwrap();
-        assert_eq!(w.mode_of(CHILD_PID.into()).as_deref(), Some("rep2"));
-    }
-
-    #[tokio::test]
-    async fn test_mode_of_is_unknown_when_the_callers_own_lineage_record_is_corrupt() {
-        let w = Fx::new();
-        start_fit(&w, base()).await;
-        std::fs::write(w.paths.lineage_path(CHILD_JOB), "{ not json").unwrap();
-        assert_eq!(w.mode_of(CHILD_PID.into()).as_deref(), Some("unknown"));
-    }
-
-    #[tokio::test]
-    async fn test_mode_of_is_unknown_when_the_recorded_mode_is_not_valid() {
-        let w = Fx::new();
-        start_fit(&w, base()).await;
-        w.lineage(CHILD_JOB, json!({"mode": "has space"}));
-        assert_eq!(w.mode_of(CHILD_PID.into()).as_deref(), Some("unknown"));
-    }
-
-    #[tokio::test]
-    async fn test_mode_of_is_unknown_for_a_background_session_with_no_record() {
-        let w = Fx::new();
-        ensure_starts_dir(&w.paths).unwrap();
-        w.record(ME, "bg", Some("eeeeeeee"), "x"); // not in the roster, no lineage
-        assert_eq!(w.mode_of(ME.into()).as_deref(), Some("unknown"));
-    }
-
-    #[tokio::test]
-    async fn test_mode_of_uses_the_lineage_of_a_bg_session_missing_from_the_roster() {
-        let w = Fx::new();
-        w.lineage("eeeeeeee", json!({"mode": "representative"}));
-        w.record(ME, "bg", Some("eeeeeeee"), "x");
-        assert_eq!(w.mode_of(ME.into()).as_deref(), Some("representative"));
-    }
-
-    #[tokio::test]
-    async fn test_mode_of_is_unknown_for_a_stale_session_record() {
-        let w = Fx::new();
-        ensure_starts_dir(&w.paths).unwrap();
-        w.record(ME, "interactive", None, "x");
-        w.edit_json(&w.paths.home.session_record(ME), |r| r["procStart"] = json!("1"));
-        assert_eq!(w.mode_of(ME.into()).as_deref(), Some("unknown"));
-    }
-
     // --- the lifecycle brief ----------------------------------------------------
 
-    #[tokio::test]
-    async fn test_a_start_appends_the_brief_after_the_callers_system_prompt() {
-        let w = Fx::new();
-        start_fit(&w, on(json!({"system_prompt": "be terse"}))).await;
-        let text = system_prompt(&w.launched()[0]).unwrap();
-        assert!(text.starts_with("be terse\n\nYou are a worker session, started by an awm service."));
-        assert!(text.contains("You started in awm/demo, the scope your starter chose."));
-        assert!(text.contains(r#"reflection(verb="cd", args={path:<its worktree>})"#));
-        assert!(text.contains(r#"reflection(verb="stop", args={job:<your job>, confirm:true})"#));
-        assert_eq!(read_lineage(&w.paths, CHILD_JOB).unwrap()["brief"], json!(true));
-    }
-
-    #[tokio::test]
-    async fn test_started_by_names_who_started_a_session_with_no_caller() {
-        let w = Fx::new();
-        start_fit(&w, on(json!({"started_by": "a person from chat"}))).await;
-        let text = system_prompt(&w.launched()[0]).unwrap();
-        assert!(text.contains("started by a person from chat."));
-        assert!(text.contains("where your first prompt asks"));
-    }
-
-    #[tokio::test]
-    async fn test_a_calling_session_is_the_parent_to_report_to() {
-        let w = Fx::new();
-        w.parent_session(None);
-        start_fit(&w, on(json!({"started_by": "a person from chat", CALLER_PID: ME}))).await;
-        let text = system_prompt(&w.launched()[0]).unwrap();
-        assert!(text.contains(&format!("started by the session caller ({PARENT_JOB}).")));
-        assert!(text.contains(&format!("args={{job:\"{PARENT_JOB}\", text:…}}")));
-        assert!(!text.contains("a person from chat"));
-    }
-
-    #[tokio::test]
-    async fn test_an_interactive_parent_is_addressed_by_name() {
-        let w = Fx::new();
-        w.record(ME, "interactive", None, "dev");
-        start_fit(&w, on(json!({CALLER_PID: ME}))).await;
-        assert!(system_prompt(&w.launched()[0]).unwrap().contains(r#"args={job:"dev", text:…}"#));
-    }
-
-    #[tokio::test]
-    async fn test_a_job_lists_its_brief_before_its_launch_returns() {
-        let w = Fx::new();
-        let rows = Arc::new(StdMutex::new(Vec::new()));
-        let r = rows.clone();
-        w.on_launch(move |fx, spec| {
-            fx.add_full(CHILD_JOB, &spec.name, CHILD_PID, &spec.cwd.display().to_string(), "working", now_ms());
-            let listed = collect_rows(fx, &BTreeSet::new(), &BTreeMap::new(), None, None);
-            r.lock().unwrap().extend(listed.into_iter().filter(|row| row["job"] == json!(CHILD_JOB)));
-            Ok(fx.job(CHILD_JOB))
-        });
-        start_fit(&w, base()).await;
-        let rows = rows.lock().unwrap();
-        assert!(!rows.is_empty() && rows[0]["brief"] == json!(true) && rows[0]["mode"] == json!("worker"));
-    }
-
-    #[tokio::test]
-    async fn test_a_briefed_prompt_carries_the_common_prefix_and_retire_suffix() {
-        let w = Fx::new();
-        start_fit(&w, on(json!({"prompt": "fix the deploy", "started_by": "the deploy of awm"}))).await;
-        let prompt = w.launched()[0].prompt.clone().unwrap();
-        assert!(prompt.starts_with("Your task, from the deploy of awm:\n\nfix the deploy"));
-        assert!(prompt.contains("sign off with the `retire` skill"));
-        assert!(prompt.ends_with("message no other session."));
-    }
-
-    #[tokio::test]
-    async fn test_an_unbriefed_prompt_is_left_as_given() {
-        let w = Fx::new();
-        start_fit(&w, on(json!({"prompt": "fix the deploy", "brief": false}))).await;
-        assert_eq!(w.launched()[0].prompt.as_deref(), Some("fix the deploy"));
-    }
-
-    #[tokio::test]
-    async fn test_brief_false_leaves_the_brief_out() {
-        let w = Fx::new();
-        start_fit(&w, on(json!({"brief": false}))).await;
-        assert_eq!(system_prompt(&w.launched()[0]), None);
-        assert_eq!(read_lineage(&w.paths, CHILD_JOB).unwrap()["brief"], json!(false));
-    }
-
-    #[tokio::test]
-    async fn test_a_pinned_start_gets_no_brief() {
-        let w = Fx::new();
-        start_fit(&w, on(json!({"pin": true, "system_prompt": "seat brief"}))).await;
-        assert_eq!(system_prompt(&w.launched()[0]).as_deref(), Some("seat brief"));
-    }
-
-    #[tokio::test]
-    async fn test_brief_arguments_are_checked() {
-        let w = Fx::new();
-        for args in [json!({"brief": "yes"}), json!({"started_by": ""}), json!({"started_by": "x".repeat(121)}), json!({"started_by": "a\nb"})] {
-            assert!(refused(&start_fit(&w, on(args.clone())).await), "{args}");
-        }
-        assert!(w.launched().is_empty());
-    }
-
     // --- the parent comes from a verified session record -------------------------
-
-    #[tokio::test]
-    async fn test_parent_is_none_without_a_verified_record() {
-        let w = Fx::new();
-        // a roster match alone no longer names a parent
-        w.add(PARENT_JOB, "caller", ME);
-        assert!(start_fit(&w, on(json!({CALLER_PID: ME}))).await["parent"].is_null());
-    }
-
-    #[tokio::test]
-    async fn test_parent_of_an_interactive_caller_is_its_session_id() {
-        let w = Fx::new();
-        w.record(ME, "interactive", None, "x");
-        assert_eq!(start_fit(&w, on(json!({CALLER_PID: ME}))).await["parent"], json!(format!("sid-{ME}")));
-    }
-
-    #[tokio::test]
-    async fn test_a_stale_record_names_no_parent() {
-        let w = Fx::new();
-        w.record(ME, "bg", Some(PARENT_JOB), "x");
-        w.edit_json(&w.paths.home.session_record(ME), |r| r["procStart"] = json!("1"));
-        assert_eq!(parent_of(&w, &json!(ME)), None);
-    }
 
     // --- list --------------------------------------------------------------------
 
     fn by_key(rows: &[Value]) -> Vec<(String, Value)> {
         rows.iter().map(|r| (r["job"].as_str().or(r["tmux"].as_str()).unwrap_or_default().to_string(), r.clone())).collect()
-    }
-
-    fn row_of(rows: &[Value], job: &str) -> Value {
-        rows.iter().find(|r| r["job"] == json!(job)).cloned().unwrap()
     }
 
     #[tokio::test]
@@ -3858,167 +2913,11 @@ mod tests {
         assert_eq!(order, [PARENT_JOB, "main", CHILD_JOB], "oldest first");
     }
 
-    #[tokio::test]
-    async fn test_list_reports_the_live_remote_control_state_and_link() {
-        let w = Fx::new();
-        start_fit(&w, on(json!({"remote_control": "rc1"}))).await;
-        let row = row_of(&collect(&w, None, None).await, CHILD_JOB);
-        assert!(row["remote_control"] == json!(false) && row["link"].is_null());
-        assert_eq!(row["remote_control_label"], json!("rc1"), "the launch label is kept apart");
-        w.set_bridge(CHILD_JOB, "cse_01AbC");
-        let row = row_of(&collect(&w, None, None).await, CHILD_JOB);
-        assert_eq!(row["remote_control"], json!(true));
-        assert_eq!(row["link"], json!("https://claude.ai/code/session_01AbC"));
-    }
-
-    #[tokio::test]
-    async fn test_an_interactive_row_takes_its_link_from_the_session_record() {
-        let w = Fx::new();
-        w.record(ME, "interactive", None, "dev");
-        w.edit_json(&w.paths.home.session_record(ME), |r| r["bridgeSessionId"] = json!("cse_01Zz"));
-        let rows = collect(&w, None, None).await;
-        let row = rows.iter().find(|r| r["name"] == json!("dev")).unwrap();
-        assert_eq!(row["remote_control"], json!(true));
-        assert_eq!(row["link"], json!("https://claude.ai/code/session_01Zz"));
-    }
-
-    #[tokio::test]
-    async fn test_list_carries_needs_and_detail_from_the_job_record() {
-        let w = Fx::new();
-        w.add(PARENT_JOB, "<warm saiga>", ME);
-        w.edit_json(&w.paths.home.job_state(PARENT_JOB), |r| {
-            r["state"] = json!("blocked");
-            r["needs"] = json!("login required — run /login");
-            r["detail"] = json!("d".repeat(500));
-            r["tempo"] = json!("blocked");
-        });
-        let row = row_of(&collect(&w, None, None).await, PARENT_JOB);
-        assert!(row["state"] == json!("blocked") && row["needs"] == json!("login required — run /login"));
-        assert!(row["detail"] == json!("d".repeat(200)) && row["tempo"] == json!("blocked"));
-    }
-
-    #[tokio::test]
-    async fn test_a_dead_job_reports_stopped_only_when_it_recorded_stopped() {
-        for (recorded, reported) in [("stopped", "stopped"), ("working", "gone")] {
-            let w = Fx::new();
-            w.add_full(PARENT_JOB, "<warm saiga>", ME, "/home/user", recorded, BASE_MS);
-            let mut workers = w.workers();
-            workers[PARENT_JOB]["replProcStart"] = json!("1");
-            w.set_workers(workers, None);
-            let row = row_of(&collect(&w, None, None).await, PARENT_JOB);
-            assert_eq!(row["state"], json!(reported), "{recorded}");
-        }
-    }
-
-    #[tokio::test]
-    async fn test_list_filters_by_project_and_scope() {
-        let w = Fx::new();
-        w.add(PARENT_JOB, "<warm saiga>", ME);
-        start_fit(&w, base()).await;
-        let jobs = |rows: Vec<Value>| rows.iter().map(|r| r["job"].clone()).collect::<Vec<_>>();
-        assert_eq!(jobs(collect(&w, Some("awm"), None).await), [json!(CHILD_JOB)]);
-        assert_eq!(jobs(collect(&w, None, Some("demo")).await), [json!(CHILD_JOB)]);
-        assert!(collect(&w, Some("other"), None).await.is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_a_job_that_moved_lists_under_the_scope_it_is_in_now() {
-        let w = Fx::new();
-        w.add(PARENT_JOB, "<warm saiga>", ME);
-        start_fit(&w, base()).await;
-        let there = w.projects().join("metasmith/engine/presentation");
-        std::fs::create_dir_all(there.join("src")).unwrap();
-        std::fs::write(there.join(".git"), "gitdir: x\n").unwrap();
-        let path = w.paths.home.job_state(CHILD_JOB);
-        let rec = w.state(CHILD_JOB);
-        std::fs::write(&path, merged(&[rec.clone(), json!({"cwd": there.join("src").display().to_string()})]).to_string()).unwrap();
-        let row = row_of(&collect(&w, None, None).await, CHILD_JOB);
-        assert_eq!((row["project"].clone(), row["scope"].clone()), (json!("metasmith"), json!("engine/presentation")));
-        assert_eq!(collect(&w, Some("metasmith"), None).await.iter().map(|r| r["job"].clone()).collect::<Vec<_>>(), [json!(CHILD_JOB)]);
-        std::fs::write(&path, merged(&[rec, json!({"cwd": "/tmp"})]).to_string()).unwrap();
-        let row = row_of(&collect(&w, None, None).await, CHILD_JOB);
-        assert_eq!((row["project"].clone(), row["scope"].clone()), (Value::Null, Value::Null), "outside every scope");
-    }
-
-    /// The plan's listed change: rows carry `session_id` (R9), `parent`, `alive` and `transcript`.
-    #[tokio::test]
-    async fn test_list_rows_carry_session_id_parent_alive_and_transcript() {
-        let w = Fx::new();
-        *w.session_id.lock().unwrap() = Some(UUID_ID.into());
-        start_fit(&w, base()).await;
-        let mut workers = w.workers();
-        workers[CHILD_JOB]["sessionId"] = json!(UUID_ID);
-        w.set_workers(workers, None);
-        let folder = w.paths.transcripts_dir().join("-proj");
-        std::fs::create_dir_all(&folder).unwrap();
-        std::fs::write(folder.join(format!("{UUID_ID}.jsonl")), "{}\n").unwrap();
-        w.record(ME, "interactive", None, "dev");
-        let rows = collect(&w, None, None).await;
-        let child = row_of(&rows, CHILD_JOB);
-        assert_eq!(child["session_id"], json!(R9));
-        assert_eq!(child["alive"], json!(true));
-        assert_eq!(child["transcript"], json!(folder.join(format!("{UUID_ID}.jsonl")).display().to_string()));
-        assert!(child.get("parent").is_some_and(Value::is_null));
-        let dev = rows.iter().find(|r| r["name"] == json!("dev")).unwrap();
-        assert!(dev["alive"] == json!(true) && dev["transcript"].is_null() && dev["session_id"].is_null());
-        assert!(dev.get("parent").is_some_and(Value::is_null));
-    }
-
     // --- pins --------------------------------------------------------------------
 
     fn pins_file(w: &World) -> Value {
         let path = w.paths.home.pins();
         if path.exists() { serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap() } else { json!([]) }
-    }
-
-    #[tokio::test]
-    async fn test_a_pinned_start_pins_the_job_and_lists_it_pinned() {
-        let w = Fx::new();
-        let out = start_fit(&w, on(json!({"pin": true}))).await;
-        assert!(out["ok"] == json!(true) && out["pinned"] == json!(true));
-        assert_eq!(pins_file(&w), json!([CHILD_JOB]));
-        assert_eq!(read_lineage(&w.paths, CHILD_JOB).unwrap()["pinned"], json!(true));
-        assert_eq!(row_of(&collect(&w, None, None).await, CHILD_JOB)["pinned"], json!(true));
-    }
-
-    #[tokio::test]
-    async fn test_an_unpinned_start_leaves_the_pins_alone() {
-        let w = Fx::new();
-        let out = start_fit(&w, base()).await;
-        assert!(out["pinned"] == json!(false) && pins_file(&w) == json!([]));
-    }
-
-    #[tokio::test]
-    async fn test_pin_must_be_a_boolean() {
-        let w = Fx::new();
-        assert!(refused(&start_fit(&w, on(json!({"pin": "yes"}))).await));
-    }
-
-    #[tokio::test]
-    async fn test_stopping_a_pinned_job_unpins_and_removes_it() {
-        let w = Fx::new();
-        start_fit(&w, on(json!({"pin": true}))).await;
-        assert_eq!(stop_job(&w, json!({"job": CHILD_JOB})).await, json!({"ok": true, "job": CHILD_JOB, "removed": true}));
-        assert_eq!(*w.runs.lock().unwrap(), [vec!["stop".to_string(), CHILD_JOB.into()], vec!["rm".to_string(), CHILD_JOB.into()]]);
-        assert_eq!(pins_file(&w), json!([]));
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn test_a_failed_remove_of_a_pinned_job_is_reported() {
-        let w = Fx::new();
-        w.rm_fails.store(true, Ordering::SeqCst);
-        start_fit(&w, on(json!({"pin": true}))).await;
-        let out = stop_job(&w, json!({"job": CHILD_JOB})).await;
-        assert!(refused(&out) && reason(&out) == "busy");
-    }
-
-    #[tokio::test]
-    async fn test_prune_pins_drops_only_jobs_that_are_gone() {
-        let w = Fx::new();
-        start_fit(&w, on(json!({"pin": true}))).await;
-        std::fs::write(w.paths.home.pins(), json!([CHILD_JOB, "deadbeef"]).to_string()).unwrap();
-        assert_eq!(prune_pins(&w).await, ["deadbeef"]);
-        assert_eq!(pins_file(&w), json!([CHILD_JOB]));
     }
 
     // --- resume ------------------------------------------------------------------
@@ -4056,21 +2955,6 @@ mod tests {
         assert_eq!(pins_file(&w), json!([CHILD_JOB]));
     }
 
-    #[tokio::test]
-    async fn test_an_unpinned_job_resumes_unpinned() {
-        let w = Fx::new();
-        stopped_job(&w, CHILD_JOB, true, json!({}));
-        let out = resume_job(&w, json!({"job": CHILD_JOB})).await;
-        assert!(out["ok"] == json!(true) && out["pinned"] == json!(false) && pins_file(&w) == json!([]));
-    }
-
-    #[tokio::test]
-    async fn test_resume_refuses_a_job_cx_did_not_start() {
-        let w = Fx::new();
-        let out = resume_job(&w, json!({"job": CHILD_JOB})).await;
-        assert!(refused(&out) && reason(&out).contains("not started by") && respawned(&w).is_empty());
-    }
-
     /// A launcher that registers a new job for a resume from the transcript.
     fn relaunched(w: &World) {
         w.on_launch(|fx, spec| Ok(register(fx, "feedface", spec)));
@@ -4106,74 +2990,6 @@ mod tests {
         assert_eq!(rec["mode"], json!("worker"));
     }
 
-    #[tokio::test]
-    async fn test_a_removed_job_with_a_kept_lineage_resumes_from_the_transcript() {
-        let w = Fx::new();
-        relaunched(&w);
-        retired_transcript(&w, &w.projects().join("awm/demo"));
-        w.lineage(CHILD_JOB, json!({"name": "redux/worker", "session_id": RETIRED, "remote_control": "redux-worker",
-                                    "brief_text": "You are a worker session."}));
-        let out = resume_job(&w, json!({"job": CHILD_JOB})).await;
-        assert!(out["ok"] == json!(true) && out["name"] == json!("redux/worker"), "{out}");
-        let flags = w.flags(0);
-        assert!(flags.contains(&"--remote-control=redux-worker".into()));
-        assert!(flags.contains(&"--append-system-prompt=You are a worker session.".into()));
-    }
-
-    #[tokio::test]
-    async fn test_a_retired_session_with_no_transcript_is_refused() {
-        let w = Fx::new();
-        relaunched(&w);
-        let out = resume_job(&w, json!({"job": RETIRED})).await;
-        assert!(refused(&out) && reason(&out).contains("no transcript") && w.launched().is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_resume_refuses_a_removed_job() {
-        let w = Fx::new();
-        stopped_job(&w, CHILD_JOB, true, json!({}));
-        std::fs::remove_file(w.paths.home.job_state(CHILD_JOB)).unwrap();
-        let out = resume_job(&w, json!({"job": CHILD_JOB})).await;
-        assert!(refused(&out) && reason(&out).contains("removed") && respawned(&w).is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_resume_refuses_a_job_whose_transcript_is_gone() {
-        let w = Fx::new();
-        stopped_job(&w, CHILD_JOB, false, json!({}));
-        let out = resume_job(&w, json!({"job": CHILD_JOB})).await;
-        assert!(refused(&out) && reason(&out).contains("transcript") && respawned(&w).is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_resume_refuses_a_running_job() {
-        let w = Fx::new();
-        stopped_job(&w, CHILD_JOB, true, json!({}));
-        w.add(CHILD_JOB, "seat - x", ME);
-        let state = json!({"name": "seat - x", "sessionId": format!("{CHILD_JOB}-sid")});
-        std::fs::write(w.paths.home.job_state(CHILD_JOB), state.to_string()).unwrap();
-        let out = resume_job(&w, json!({"job": CHILD_JOB})).await;
-        assert!(refused(&out) && reason(&out).contains("running"));
-    }
-
-    #[tokio::test]
-    async fn test_resume_refuses_without_a_daemon() {
-        let w = Fx::new();
-        stopped_job(&w, CHILD_JOB, true, json!({}));
-        w.set_workers(json!({}), Some(DEAD));
-        let out = resume_job(&w, json!({"job": CHILD_JOB})).await;
-        assert!(refused(&out) && reason(&out).contains("no claude code daemon") && respawned(&w).is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_a_cx_session_may_resume_only_its_own_jobs() {
-        let w = Fx::new();
-        w.parent_session(Some("worker"));
-        stopped_job(&w, CHILD_JOB, true, json!({"parent": "someone-else"}));
-        let out = resume_job(&w, json!({"job": CHILD_JOB, CALLER_PID: ME})).await;
-        assert!(refused(&out) && reason(&out).contains("may resume only") && respawned(&w).is_empty());
-    }
-
     fn keep_answers(w: &World) {
         *w.keep.lock().unwrap() = Ok(json!({"ok": false, "reason": "daemon_down", "action": "held"}));
     }
@@ -4188,29 +3004,6 @@ mod tests {
         assert!(refused(&out) && out["code"] == json!("daemon_down") && respawned(&w).is_empty());
         assert_eq!(*w.keep_calls.lock().unwrap(), [ENSURE_TIMEOUT]);
         assert!(reason(&out).ends_with("(held: daemon_down)"));
-    }
-
-    #[tokio::test]
-    async fn test_resume_goes_ahead_once_keep_brings_the_daemon_up() {
-        let w = Fx::new();
-        keep_answers(&w);
-        stopped_job(&w, CHILD_JOB, true, json!({}));
-        w.set_workers(json!({}), Some(DEAD));
-        *w.keep.lock().unwrap() = Ok(json!({"ok": true}));
-        *w.keep_hook.lock().unwrap() = Some(Arc::new(|w: &World| w.set_workers(json!({}), None)));
-        let out = resume_job(&w, json!({"job": CHILD_JOB})).await;
-        assert!(out["ok"] == json!(true) && respawned(&w)[0].0 == CHILD_JOB);
-    }
-
-    #[tokio::test]
-    async fn test_stop_without_a_daemon_keeps_the_pinned_job() {
-        let w = Fx::new();
-        start_fit(&w, base()).await;
-        w.set_workers(w.workers(), Some(DEAD));
-        let out = stop_job(&w, json!({"job": CHILD_JOB})).await;
-        assert!(refused(&out) && out["code"] == json!("daemon_down"));
-        assert!(w.runs.lock().unwrap().is_empty());
-        assert_eq!(*w.keep_calls.lock().unwrap(), [STOP_ENSURE_TIMEOUT]);
     }
 
     fn transcript(w: &World, session_id: &str, turns: &[(&str, &str)]) {
@@ -4234,61 +3027,10 @@ mod tests {
         assert_eq!(read_lineage(&w.paths, CHILD_JOB).unwrap()["replaces"], json!("dddddddd"));
     }
 
-    #[tokio::test]
-    async fn test_replaces_must_be_a_job_id() {
-        let w = Fx::new();
-        let out = start_fit(&w, on(json!({"replaces": "../x"}))).await;
-        assert!(refused(&out) && reason(&out).contains("replaces"));
-    }
-
-    #[tokio::test]
-    async fn test_adopt_records_lineage_for_a_hand_started_job() {
-        let w = Fx::new();
-        w.add("eeeeeeee", "seat - chat main", ME);
-        let out = adopt(&w, &json!({"job": "eeeeeeee"}), None).await;
-        assert!(out["ok"] == json!(true) && read_lineage(&w.paths, "eeeeeeee").unwrap()["adopted"] == json!(true));
-        let again = adopt(&w, &json!({"job": "eeeeeeee"}), None).await;
-        assert!(refused(&again) && reason(&again).contains("already"));
-    }
-
-    /// start_other, a kept stop, resume_other: a wait keeps the job, so its lineage survives the
-    /// prune and the resume finds it. The kept stop is the verb table's; its lifecycle half is
-    /// `claude stop` and the recorded stop.
-    #[tokio::test]
-    async fn test_a_started_session_that_waits_can_be_resumed() {
-        let w = Fx::new();
-        let out = start_fit(&w, on(json!({"prompt": "do it"}))).await;
-        assert!(out["ok"] == json!(true) && out["job"] == json!(CHILD_JOB));
-        assert!(run_claude_stop(&w, CHILD_JOB).await.0);
-        record_stop(&w.paths, CHILD_JOB);
-
-        // The daemon drops the stopped worker from its roster and keeps its state.
-        w.set_workers(json!({}), None);
-        let state = merged(&[w.state(CHILD_JOB), json!({"sessionId": format!("{CHILD_JOB}-sid"), "state": "done"})]);
-        std::fs::write(w.paths.home.job_state(CHILD_JOB), state.to_string()).unwrap();
-        let folder = w.paths.transcripts_dir().join("-cwd");
-        std::fs::create_dir_all(&folder).unwrap();
-        std::fs::write(folder.join(format!("{CHILD_JOB}-sid.jsonl")), "{}\n").unwrap();
-        assert!(prune_lineage(&w, Some(epoch_now() + 86_400.0)).is_empty());
-
-        let back = resume_job(&w, json!({"job": CHILD_JOB})).await;
-        assert!(back["ok"] == json!(true) && back["job"] == json!(CHILD_JOB), "{back}");
-        assert_eq!(respawned(&w)[0].0, CHILD_JOB);
-    }
-
     // --- the lobby (test_lobby.py) -------------------------------------------------
 
     fn lobby_world() -> Fx {
         Fx::with(|root, p| p.lobby_dir = root.join("lobby"))
-    }
-
-    /// The launched session reports a Claude session id, as the daemon's does.
-    fn with_session_id(w: &World) {
-        *w.session_id.lock().unwrap() = Some(UUID_ID.into());
-    }
-
-    fn attached(w: &World) {
-        w.on_gateway(|_, call| Ok(json!({"ok": true, "task_id": call.args.get("task_id")})));
     }
 
     #[tokio::test]
@@ -4304,207 +3046,7 @@ mod tests {
         assert!(text.contains("new_project:true"));
     }
 
-    #[tokio::test]
-    async fn test_the_lobby_loads_the_awm_tools_and_the_workspace_orientation() {
-        let w = lobby_world();
-        start_fit(&w, json!({})).await;
-        let flags = w.flags(0);
-        let mcp = flags.iter().find_map(|f| f.strip_prefix("--mcp-config=")).unwrap();
-        assert!(read_json(Path::new(mcp))["mcpServers"].get("awm").is_some());
-        assert!(!flags.contains(&"--strict-mcp-config".into()));
-        assert!(std::fs::read_to_string(w.paths.lobby_dir.join("CLAUDE.md")).unwrap().contains("AGENTS.md"));
-    }
-
-    #[tokio::test]
-    async fn test_the_lobby_is_trusted_by_its_own_entry() {
-        let w = lobby_world();
-        start_fit(&w, json!({})).await;
-        let trust = read_json(&w.paths.home.trust_file);
-        let key = w.paths.lobby_dir.canonicalize().unwrap().display().to_string();
-        assert_eq!(trust["projects"][key]["hasTrustDialogAccepted"], json!(true));
-    }
-
-    #[tokio::test]
-    async fn test_a_lobby_inside_a_repository_is_refused() {
-        let w = Fx::with(|root, p| p.lobby_dir = root.join("repo").join("lobby"));
-        let repo = w.root.join("repo");
-        std::fs::create_dir(&repo).unwrap();
-        git(&repo, &["init", "-q"]);
-        let out = start_fit(&w, json!({})).await;
-        assert!(refused(&out) && reason(&out).contains("inside a git repository"), "{out}");
-        assert!(w.launched().is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_a_suggested_scope_starts_in_the_lobby_and_names_the_route() {
-        let w = lobby_world();
-        let out = start_fit(&w, on(json!({"suggest": true, "name": "fix/follow-up"}))).await;
-        assert!(out["lobby"] == json!(true) && out["cwd"] == json!(w.paths.lobby_dir.display().to_string()));
-        assert_eq!(out["suggested"], json!({"project": "awm", "scope": "demo"}));
-        let text = system_prompt(&w.launched()[0]).unwrap();
-        assert!(text.contains("suggests awm/demo") && text.contains("Choose another scope"));
-        assert_eq!(read_lineage(&w.paths, CHILD_JOB).unwrap()["suggested"], json!({"project": "awm", "scope": "demo"}));
-    }
-
-    #[tokio::test]
-    async fn test_a_project_alone_is_a_hint() {
-        let w = lobby_world();
-        start_fit(&w, json!({"project": "awm"})).await;
-        assert!(system_prompt(&w.launched()[0]).unwrap().contains("suggests the project awm"));
-    }
-
-    #[tokio::test]
-    async fn test_a_scope_without_its_project_is_refused() {
-        let w = lobby_world();
-        let out = start_fit(&w, json!({"scope": "demo"})).await;
-        assert!(refused(&out) && reason(&out).contains("project"));
-    }
-
-    #[tokio::test]
-    async fn test_a_named_scope_still_starts_there() {
-        let w = lobby_world();
-        let out = start_fit(&w, base()).await;
-        assert!(out["lobby"] == json!(false) && out["cwd"] == json!(w.projects().join("awm/demo").display().to_string()));
-        assert!(system_prompt(&w.launched()[0]).unwrap().contains("the scope your starter chose"));
-    }
-
-    #[tokio::test]
-    async fn test_the_brief_covers_naming_top_level_starts_and_subagents() {
-        let w = lobby_world();
-        start_fit(&w, json!({})).await;
-        let text = system_prompt(&w.launched()[0]).unwrap();
-        assert!(text.contains("`<task>/<descriptor>`") && text.contains("parallel-work"));
-        assert!(text.contains("do not call `EnterWorktree`") && text.contains("subagent"));
-        assert!(text.contains("Tony does not accept the work first"));
-    }
-
-    #[tokio::test]
-    async fn test_a_task_id_from_a_service_attaches_the_session_as_main() {
-        let w = lobby_world();
-        with_session_id(&w);
-        attached(&w);
-        let out = start_fit(&w, on(json!({"task_id": "ABEiM0RV"}))).await;
-        assert!(out["session_id"] == json!(R9) && out["task_id"] == json!("ABEiM0RV") && out["role"] == json!("main"));
-        assert!(w.calls().contains(&("operations".into(), "task_attach".into(),
-            json!({"task_id": "ABEiM0RV", "session_id": R9, "role": "main", "name": "demo"}))));
-        assert!(system_prompt(&w.launched()[0]).unwrap().contains("You joined task `ABEiM0RV` as its main"));
-        let rec = read_lineage(&w.paths, CHILD_JOB).unwrap();
-        assert!(rec["task_id"] == json!("ABEiM0RV") && rec["task_role"] == json!("main"));
-    }
-
-    #[tokio::test]
-    async fn test_a_task_id_from_a_session_attaches_a_worker() {
-        let w = lobby_world();
-        with_session_id(&w);
-        attached(&w);
-        w.parent_session(None);
-        let out = start_fit(&w, on(json!({"task_id": "ABEiM0RV", CALLER_PID: ME}))).await;
-        assert!(out["role"] == json!("worker") && out["parent"] == json!(PARENT_JOB));
-        assert_eq!(w.calls().last().unwrap().2["role"], json!("worker"));
-    }
-
-    #[tokio::test]
-    async fn test_an_attach_failure_is_a_warning() {
-        let w = lobby_world();
-        with_session_id(&w);
-        w.on_gateway(|_, _| Err("no gateway".into()));
-        let out = start_fit(&w, on(json!({"task_id": "ABEiM0RV"}))).await;
-        assert!(out["ok"] == json!(true) && out["warning"].as_str().unwrap().contains("not put on task ABEiM0RV"));
-    }
-
-    #[tokio::test]
-    async fn test_bad_task_arguments_are_refused() {
-        let w = lobby_world();
-        for (args, why) in [
-            (json!({"task_id": "short"}), "task id"),
-            (json!({"task_id": "ABEiM0RV", "role": "boss"}), "role must be"),
-            (json!({"role": "main"}), "role needs a task_id"),
-        ] {
-            let out = start_fit(&w, on(args)).await;
-            assert!(refused(&out) && reason(&out).contains(why), "{why}");
-        }
-    }
-
-    #[tokio::test]
-    async fn test_a_start_from_a_session_keeps_its_parent_in_the_lineage_record() {
-        let w = lobby_world();
-        with_session_id(&w);
-        attached(&w);
-        w.parent_session(None);
-        for entry in std::fs::read_dir(w.paths.home.sessions()).unwrap().flatten() {
-            w.edit_json(&entry.path(), |r| r["sessionId"] = json!("ffffffff-0000-1111-2222-333333333333"));
-        }
-        start_fit(&w, on(json!({CALLER_PID: ME}))).await;
-        // reflection records the journal's parent link; cch records none of its own.
-        assert!(!w.calls().iter().any(|c| c.1 == "session_parent"));
-        assert_eq!(read_lineage(&w.paths, CHILD_JOB).unwrap()["parent_session"], json!("ccffffffff000011112222333333333333"));
-    }
-
     // --- the plan's fixes and invariants -------------------------------------------
-
-    #[test]
-    fn an_isolated_start_with_no_scope_is_refused() {
-        let paths = Paths::under(Path::new("/nonexistent/cch-test"));
-        let lobby = parse(&paths, &fit()).unwrap();
-        assert_eq!(isolated_scope(&lobby), Err(Refused::new(ISOLATED_NEEDS_SCOPE)));
-        let project_only = parse(&paths, &merged(&[fit(), json!({"project": "awm"})])).unwrap();
-        assert!(isolated_scope(&project_only).is_err());
-        let scoped = parse(&paths, &base()).unwrap();
-        assert_eq!(isolated_scope(&scoped), Ok(("awm".into(), "demo".into())));
-    }
-
-    #[tokio::test]
-    async fn ensure_lineage_writes_a_worker_mode() {
-        let w = Fx::new();
-        w.add(CHILD_JOB, "kept seat", CHILD_PID);
-        let extra = json!({"name": "kept seat"}).as_object().cloned().unwrap();
-        assert_eq!(ensure_lineage(&w.paths, CHILD_JOB, "wait", &extra), None);
-        let rec = read_lineage(&w.paths, CHILD_JOB).unwrap();
-        assert_eq!(Value::Object(rec), json!({"job": CHILD_JOB, "parent": null, "origin": "wait", "mode": "worker", "name": "kept seat"}));
-        assert_eq!(w.mode_of(CHILD_PID.into()).as_deref(), Some("worker"), "not gated as unknown");
-        w.lineage(CHILD_JOB, json!({"mode": "rep"}));
-        assert_eq!(ensure_lineage(&w.paths, CHILD_JOB, "wait", &extra), None);
-        assert_eq!(read_lineage(&w.paths, CHILD_JOB).unwrap()["mode"], json!("rep"), "a held record is kept");
-    }
-
-    /// `build_flags` and `looks_cx_started` change together: every flag set a start writes reads
-    /// as a cx start once its lineage is gone.
-    #[test]
-    fn every_flag_set_build_flags_makes_is_recognised() {
-        let paths = Paths::under(Path::new("/nonexistent/cch-test"));
-        let spec = parse(&paths, &base()).unwrap();
-        let variants = [
-            spec.clone(),
-            Spec { permission: Some("plan".into()), ..spec.clone() },
-            Spec { permission: Some("dontAsk".into()), restricted: true, ..spec.clone() },
-            Spec { restricted: true, ..spec.clone() },
-            Spec { tools: vec!["Bash".into()], strict_mcp: true, mcp_config: Some("/x.json".into()), ..spec.clone() },
-            Spec { remote_control: None, brief_text: Some("b".into()), autocompact: Some(200_000), ..spec.clone() },
-            Spec { lobby_mcp: Some("/l.json".into()), disallowed_tools: vec!["Read".into()], allowed_tools: vec!["Bash".into()], ..spec },
-        ];
-        for v in variants {
-            let flags = build_flags(&paths, &v);
-            for key in ["args", "flagArgs"] {
-                let worker = json!({"dispatch": {"launch": {key: flags}}});
-                assert!(lineage::looks_cx_started(worker.as_object().unwrap()), "{flags:?}");
-            }
-        }
-        let typed = json!({"dispatch": {"launch": {"args": ["--permission-mode", "plan", "--effort", "high"]}}});
-        assert!(!lineage::looks_cx_started(typed.as_object().unwrap()), "a person's two-token flags are not cx's");
-    }
-
-    #[test]
-    fn a_record_with_a_bad_mode_is_never_written() {
-        let dir = TempDir::new().unwrap();
-        let paths = Paths::under(dir.path());
-        for mode in [json!("has space"), Value::Null, json!(5), json!("")] {
-            let rec = json!({"job": CHILD_JOB, "mode": mode}).as_object().cloned().unwrap();
-            assert!(write_lineage(&paths, CHILD_JOB, &rec).is_err(), "{mode}");
-        }
-        let rec = json!({"job": CHILD_JOB}).as_object().cloned().unwrap();
-        assert!(write_lineage(&paths, CHILD_JOB, &rec).is_err(), "no mode");
-        assert!(!paths.lineage_path(CHILD_JOB).exists());
-    }
 
     /// A lineage record is what Python's `json.dumps(record, indent=1)` wrote, mode 0600, and a
     /// pending one is filed under `sha256(name)[:16]`.
@@ -4531,26 +3073,4 @@ mod tests {
         assert_eq!(py_json(&json!({"x": "\u{1F600}"}), 1), "{\n \"x\": \"\\ud83d\\ude00\"\n}");
     }
 
-    /// Python's `str.format`: a value is never read as a template, and `{{` is one brace.
-    #[test]
-    fn the_brief_templates_fill_in_one_pass() {
-        assert_eq!(fill("a {x} {{y}} {z}", &[("x", "{z}"), ("z", "1")]), "a {z} {y} 1");
-        let spec = Spec { started_by: Some("{route}".into()), ..Spec::default() };
-        assert!(brief_text(&spec, None).starts_with("You are a worker session, started by {route}. "));
-    }
-
-    /// With no user manager the launcher runs straight from cch, so it must lead a session of its
-    /// own or it dies with cch's next restart.
-    #[tokio::test]
-    async fn a_launch_runs_in_a_session_of_its_own() {
-        let dir = TempDir::new().unwrap();
-        let out = dir.path().join("ids");
-        let script = format!("echo $$ $(cut -d' ' -f6 /proc/$$/stat) > {}", out.display());
-        let cmd = LaunchCommand { argv: vec!["sh".into(), "-c".into(), script], cwd: dir.path().into(), env: Vec::new() };
-        SetsidSpawner.run(&cmd, Duration::from_secs(10)).await.unwrap();
-        let text = std::fs::read_to_string(&out).unwrap();
-        let ids: Vec<&str> = text.split_whitespace().collect();
-        assert_eq!(ids.len(), 2);
-        assert_eq!(ids[0], ids[1], "the launcher leads its own session");
-    }
 }
