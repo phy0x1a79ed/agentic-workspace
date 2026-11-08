@@ -61,7 +61,10 @@ Removed:
 - the hash chain: `/api/act`, `/api/resume` and `approver/chain.py`, with the device chain state that only it reads;
 - the signed-read headers `x-awm-device`, `x-awm-ts` and `x-awm-sig`, which the cookie replaces.
 
-Cloud batch: add `telemetry` to the `singletons` of `edges.yml`, hosted on alcor. Its `callers` are every node that opts in, stations included, and deneb, so each node part reports to alcor and trilium on deneb reads the roster.
+Cloud batch:
+- Add `telemetry` to the `singletons` of `edges.yml`, hosted on alcor. Its `callers` are every node that opts in, stations included, and deneb, so each node part reports to alcor and trilium on deneb reads the roster.
+- Every node but alcor adds `telemetry` to its install config `exclude`, as for social and operations.
+- Every node that reports, alcor included, sets `[telemetry] swarm = "<name>"`. A node part with no swarm stays idle, and a roster with none refuses every report.
 
 ## port-comms: social
 
@@ -82,7 +85,7 @@ Spec: `fleet.md` R147 item 1, `queue.md` R63 item 1, `scopes.md` R40.
    - `{event: "started" | "stopped" | "remote_control" | "renamed", job, session_id, name, node, project, scope, kind, task_id?, rc_url?, ts}`;
    - `stopped` for every end, a crash included, within seconds of the process exit;
    - no event at boot. A subscriber reads `list_other` once when it connects.
-2. `list_other` rows gain `rc_url` and `task_id`.
+2. `list_other` rows gain `rc_url` and `task_id`, and each row carries `session_id`, so telemetry keys a session it first sees at connect by its id, not its job.
 3. `remote_control` on a session in mid-turn applies when the turn ends.
 
 ## gateway: plugin-redux/interview
@@ -91,16 +94,17 @@ Spec: `fleet.md` R147 items 1 and 6.
 
 `awm/plugins` already covers a plugin's install changes. It does not cover a running service. The gateway adds two topics:
 1. `awm/services`: `{service, plugin, event: "up" | "down", pid, ts}` at each register and each disconnect. No event at boot. A subscriber reads `GET /hub/table` when it connects.
-2. `awm/usage`: each usage event as the gateway appends it to `<AWM_DIR>/usage/`, the same object.
+2. `awm/usage`: each usage event as the gateway appends it to `<AWM_DIR>/usage/`, the same object. On a singleton's host, a call that arrives through the door records its `tool`, so telemetry derives the singleton's last response.
 
 Both stay local to the node, under the privacy rules of `drafts/plugin-contract.md` § Peer calls.
 
 ## What this scope provides
 
-telemetry, in `core/plugins/telemetry/`:
-- on each node that opts in, a part with no tool of its own, which follows the node's emit topics and reports to alcor through the hidden verb `telemetry report`;
-- on alcor, the singleton tool `telemetry` with the verbs `nodes`, `services` and `seats`;
-- on alcor, the topics `telemetry/roster`, at each change of the roster, and `telemetry/sessions`, at each session that goes live or goes: `{event: "live" | "gone", session_id, task_id?, node, ts}`.
+telemetry, as two core plugins on one library. The loader refuses a whole plugin that declares a singleton another node hosts, so the node part needs a manifest of its own:
+- `core/plugins/telemetry-node/`, on each node that opts in, alcor included: a service with no tool. It follows the node's emit topics and calls the hidden verb `telemetry report` with no peer, so the gateway sends it to alcor's door.
+- `core/plugins/telemetry/`, on alcor: the singleton tool `telemetry` with the verbs `nodes`, `services` and `seats`.
+- On alcor, the topic `telemetry/roster`, a change notice `{rev, node, changed: [nodes|sessions|services|usage|seats], ts}`. A consumer reads the verbs for the data.
+- On alcor, the topic `telemetry/sessions`, at each session that goes live or goes: `{event: "live" | "gone", session_id, job, task_id?, node, ts}`.
 
 trilium, in `awm/services/trilium/`:
 - the writer, the board page, the Ops note and the per-note bot button;
