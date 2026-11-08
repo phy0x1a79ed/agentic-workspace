@@ -8,11 +8,13 @@ Sources: the worker debrief journals 389a0111 (ops), 8caec34d (knowledge), 449af
 
 ## Current
 
-- `ops` batch closed. Release 5ebadb0a on github, mizar and alcor. dvc, operations and auth run as Rust on both. Next: the `comms` batch survey (social, browser, channel, rlm-browser).
+- `ops` batch closed. Release 5ebadb0a on github, mizar and alcor. dvc, operations and auth run as Rust on both. Next: plan the `comms` batch.
+- `comms` batch (social, browser, channel, rlm-browser) — survey done, /home/tony/.claude/jobs/b8680c94/tmp/survey/comms.md. feat/port-comms b77274c2 is 30 commits behind release, with mechanical conflicts only. 251 plugin tests to curate first (about 83 kept). Cloud dev needs `social` and `browser` back in `singleton_rust`, without relay. Plan by default: delete `awm/service_components/kept` (nothing imports it now); skip the live gamebot run for rlm-browser (no node runs it).
 
 ## Waiting on the user
 
 - When you are at a device: one passkey sign-in on a node edge, and open a node's portal on your phone. Neither gates the work. The Rust edge offers only HTTP/1.1, so an HTTP/2-only client fails.
+- comms: the channel cutover on mizar and alcor comes before deneb's relay moves, so the Rust member half talks to deneb's Python relay until `later-nodes`. Recommended and planned: cut over with a rollback ready (revert the pin, keep `channels.db`). If the first room check fails, stop and hold channel for deneb. Say so if you want it held instead.
 
 ## Preferences
 
