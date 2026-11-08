@@ -41,6 +41,7 @@ awm-edge = { path = "crates/awm-edge" }
 awm-pycompat = { path = "crates/awm-pycompat" }
 awm-store = { path = "crates/awm-store" }
 awm-plugin-sdk = { path = "crates/awm-plugin-sdk" }
+awm-plugin-telemetry = { path = "plugins/telemetry" }
 
 [profile.release]
 opt-level = 3
