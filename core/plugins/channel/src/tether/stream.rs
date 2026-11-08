@@ -493,15 +493,14 @@ impl Stream {
     /// Hold the watch open for the life of the plugin. Losing it is ordinary: the daemon can be
     /// replaced, and the backoff keeps a daemon that will not start from being asked constantly.
     pub async fn watch_forever(self: Arc<Self>, socket: PathBuf) {
-        let mut delay = Duration::from_secs(1);
+        let mut delay = awm_plugin_sdk::Backoff::doubling(1.0, 10.0);
         loop {
             match self.watch_once(&socket).await {
-                Ok(()) => delay = Duration::from_secs(1),
+                Ok(()) => delay.reset(),
                 Err(e) if e.kind() == std::io::ErrorKind::TimedOut => tracing::info!("tether: the event stream went quiet; reconnecting"),
                 Err(_) => {}
             }
-            tokio::time::sleep(delay).await;
-            delay = (delay * 2).min(Duration::from_secs(10));
+            tokio::time::sleep(delay.wait()).await;
         }
     }
 

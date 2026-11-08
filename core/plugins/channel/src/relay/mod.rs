@@ -18,7 +18,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use awm_plugin_sdk::VerbError;
+use awm_plugin_sdk::{Backoff, VerbError};
 use serde_json::{json, Value};
 
 use crate::channel::text;
@@ -273,7 +273,7 @@ impl Relay {
 
     /// Keep what the guest sends. Our members' messages are kept as they write them.
     async fn follow_room(&self, name: &str) {
-        let mut backoff = Duration::from_secs(1);
+        let mut backoff = Backoff::doubling(1.0, 30.0);
         while !self.stopping.load(Ordering::SeqCst) {
             let Some(row) = self.store.room(name).filter(|r| r.open) else { break };
             let batch = match self.rooms.recv(name, &row.token, row.cursor).await {
@@ -284,12 +284,11 @@ impl Relay {
                 }
                 Err(e) => {
                     tracing::info!("room {name}: receive failed, retrying: {e:?}");
-                    tokio::time::sleep(backoff).await;
-                    backoff = (backoff * 2).min(Duration::from_secs(30));
+                    tokio::time::sleep(backoff.wait()).await;
                     continue;
                 }
             };
-            backoff = Duration::from_secs(1);
+            backoff.reset();
             for message in batch.get("messages").and_then(Value::as_array).into_iter().flatten() {
                 if message.get("by").and_then(Value::as_str) == Some("host") {
                     continue;

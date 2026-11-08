@@ -8,6 +8,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde::Serialize;
 use serde_json::{json, Value};
 
+use crate::backoff::Backoff;
 use crate::hub::{HubError, Subscription};
 
 /// The health of one supervised loop, for a status verb.
@@ -212,7 +213,7 @@ impl SupervisedSubscription {
         HF: Future<Output = anyhow::Result<()>> + Send + 'static,
     {
         tracing::info!("subscription {}: starting", self.name);
-        let mut backoff = self.opts.backoff_initial;
+        let mut backoff = Backoff::new(self.opts.backoff_initial, self.opts.backoff_max, self.opts.backoff_factor);
         loop {
             let started = std::time::Instant::now();
             let end = match connect().await {
@@ -277,20 +278,22 @@ impl SupervisedSubscription {
                 s.consecutive_failures
             };
             if end == "idle" {
-                backoff = self.opts.backoff_initial;
+                backoff.reset();
                 continue;
             }
             let why = self.lock().last_error.clone().unwrap_or_default();
             if failures == 0 {
-                backoff = self.opts.backoff_initial;
-                tracing::warn!("subscription {} dropped after {:.0}s (retrying in {:.0}s): {why}", self.name, started.elapsed().as_secs_f64(), backoff.as_secs_f64());
-            } else if failures >= ERROR_AFTER {
-                tracing::error!("subscription {} failed ({failures} consecutive, retrying in {:.0}s): {why}", self.name, backoff.as_secs_f64());
-            } else {
-                tracing::warn!("subscription {} failed ({failures} consecutive, retrying in {:.0}s): {why}", self.name, backoff.as_secs_f64());
+                backoff.reset();
             }
-            tokio::time::sleep(backoff).await;
-            backoff = Duration::from_secs_f64((backoff.as_secs_f64() * self.opts.backoff_factor).min(self.opts.backoff_max.as_secs_f64()));
+            let wait = backoff.wait();
+            if failures == 0 {
+                tracing::warn!("subscription {} dropped after {:.0}s (retrying in {:.0}s): {why}", self.name, started.elapsed().as_secs_f64(), wait.as_secs_f64());
+            } else if failures >= ERROR_AFTER {
+                tracing::error!("subscription {} failed ({failures} consecutive, retrying in {:.0}s): {why}", self.name, wait.as_secs_f64());
+            } else {
+                tracing::warn!("subscription {} failed ({failures} consecutive, retrying in {:.0}s): {why}", self.name, wait.as_secs_f64());
+            }
+            tokio::time::sleep(wait).await;
         }
     }
 }

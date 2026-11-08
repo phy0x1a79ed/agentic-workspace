@@ -14,6 +14,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use awm_plugin_sdk::Backoff;
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
 
@@ -146,24 +147,23 @@ impl SlackUser {
 
     async fn run_poll(&self) {
         let mut baseline = HashMap::new();
-        let (mut first, mut backoff) = (true, 1.0);
+        let (mut first, mut backoff) = (true, Backoff::doubling(1.0, 60.0));
         loop {
             let wait = match self.poll_once(&mut baseline, first).await {
                 Ok(()) => {
                     self.live.store(true, Ordering::SeqCst);
                     first = false;
-                    backoff = 1.0;
-                    POLL_S
+                    backoff.reset();
+                    Duration::from_secs_f64(POLL_S)
                 }
                 Err(e) => {
                     self.live.store(false, Ordering::SeqCst);
-                    tracing::warn!("slack[{}] session poll error ({e}); retry in {backoff:.1}s", self.cfg.name);
-                    let w = backoff;
-                    backoff = f64::min(backoff * 2.0, 60.0);
-                    w
+                    let wait = backoff.wait();
+                    tracing::warn!("slack[{}] session poll error ({e}); retry in {:.1}s", self.cfg.name, wait.as_secs_f64());
+                    wait
                 }
             };
-            if self.shutdown.sleep(Duration::from_secs_f64(wait)).await {
+            if self.shutdown.sleep(wait).await {
                 return;
             }
         }
@@ -179,17 +179,17 @@ impl SlackUser {
                 }
             }
         })]);
-        let mut backoff = 1.0;
+        let mut backoff = Backoff::doubling(1.0, 30.0);
         loop {
             tokio::select! {
                 r = socket::run_once(&self.api, app_token, &self.live, &tx) => match r {
-                    Ok(()) => backoff = 1.0,
+                    Ok(()) => backoff.reset(),
                     Err(e) => {
-                        tracing::warn!("slack[{}] Socket Mode lost ({e}); retry in {backoff:.1}s", self.cfg.name);
-                        if self.shutdown.sleep(Duration::from_secs_f64(backoff)).await {
+                        let wait = backoff.wait();
+                        tracing::warn!("slack[{}] Socket Mode lost ({e}); retry in {:.1}s", self.cfg.name, wait.as_secs_f64());
+                        if self.shutdown.sleep(wait).await {
                             return;
                         }
-                        backoff = f64::min(backoff * 2.0, 30.0);
                     }
                 },
                 _ = self.shutdown.wait() => return,

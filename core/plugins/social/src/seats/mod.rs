@@ -16,6 +16,7 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use awm_plugin_sdk::push::Outcome;
+use awm_plugin_sdk::Backoff;
 use serde_json::{json, Value};
 
 use crate::config::{AccountConfig, SeatsConfig};
@@ -497,7 +498,7 @@ impl Seats {
     async fn pump(&self, seat: &mut Seat, pending: &[Queued]) -> bool {
         for q in pending {
             let started = self.world.now();
-            let mut delay = 2.0;
+            let mut delay = Backoff::doubling(2.0, 30.0);
             loop {
                 match self.world.push(&seat.job_node, &seat.job, &q.line).await {
                     Outcome::Delivered => {
@@ -512,8 +513,7 @@ impl Seats {
                             tracing::info!("seat {}: {} refused a line past the retry window: {why}", label(seat), seat.job);
                             return false;
                         }
-                        self.world.sleep(delay).await;
-                        delay = (delay * 2.0).min(30.0);
+                        self.world.sleep(delay.wait().as_secs_f64()).await;
                     }
                 }
             }

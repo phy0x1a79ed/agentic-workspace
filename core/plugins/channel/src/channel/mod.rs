@@ -24,7 +24,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use awm_plugin_sdk::push::{Pusher, Returned, SendFn};
-use awm_plugin_sdk::VerbError;
+use awm_plugin_sdk::{Backoff, VerbError};
 use serde_json::{json, Value};
 
 use crate::tether::adopted::BoxFut;
@@ -361,7 +361,7 @@ impl Channels {
     /// its holder, then acknowledged on the next feed, so a line lost in a restart comes again.
     pub async fn feed_forever(self: Arc<Self>) {
         let mut acks: Vec<Value> = vec![];
-        let mut backoff = Duration::from_secs(1);
+        let mut backoff = Backoff::doubling(1.0, 30.0);
         let mut held_rx = self.rooms_held.subscribe();
         while !self.stopping.load(Ordering::SeqCst) {
             let held: HashSet<String> = self.store.open_rows().into_iter().filter(|r| r.kind == "room").map(|r| r.session).collect();
@@ -381,12 +381,11 @@ impl Channels {
                 Ok(b) => b,
                 Err(e) => {
                     tracing::info!("room feed failed, retrying: {e}");
-                    tokio::time::sleep(backoff).await;
-                    backoff = (backoff * 2).min(Duration::from_secs(30));
+                    tokio::time::sleep(backoff.wait()).await;
                     continue;
                 }
             };
-            backoff = Duration::from_secs(1);
+            backoff.reset();
             acks = vec![];
             for message in batch.get("messages").and_then(Value::as_array).into_iter().flatten() {
                 self.take(message).await;

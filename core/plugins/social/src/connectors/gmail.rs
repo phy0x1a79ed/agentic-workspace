@@ -17,6 +17,7 @@ use std::time::Duration;
 
 use async_imap::error::Error as ImapError;
 use async_imap::Session;
+use awm_plugin_sdk::Backoff;
 use async_trait::async_trait;
 use futures_util::StreamExt;
 use serde_json::json;
@@ -406,23 +407,23 @@ impl Connector for GmailConnector {
                 anyhow::bail!("gmail[{name}] IMAP login failed; account down: {}", reason(&e));
             }
         }
-        let mut backoff = 1.0f64;
+        let mut backoff = Backoff::doubling(1.0, 60.0);
         loop {
             tokio::time::sleep(self.ep.poll).await;
             match self.poll(self.baseline.load(Ordering::SeqCst)).await {
                 Ok((rows, b)) => {
                     self.baseline.store(b, Ordering::SeqCst);
                     self.live.store(true, Ordering::SeqCst);
-                    backoff = 1.0;
+                    backoff.reset();
                     for r in rows {
                         (self.hooks.on_message)(self.inbound(r)).await;
                     }
                 }
                 Err(e) => {
                     self.live.store(false, Ordering::SeqCst);
-                    tracing::warn!("gmail[{name}] poll error ({}); retry in {backoff:.1}s", reason(&e));
-                    tokio::time::sleep(Duration::from_secs_f64(backoff)).await;
-                    backoff = (backoff * 2.0).min(60.0);
+                    let wait = backoff.wait();
+                    tracing::warn!("gmail[{name}] poll error ({}); retry in {:.1}s", reason(&e), wait.as_secs_f64());
+                    tokio::time::sleep(wait).await;
                 }
             }
         }

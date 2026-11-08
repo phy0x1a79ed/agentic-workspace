@@ -23,7 +23,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use awm_plugin_sdk::VerbError;
+use awm_plugin_sdk::{Backoff, VerbError};
 use serde_json::{json, Value};
 use tokio::sync::{mpsc, Notify};
 
@@ -49,7 +49,6 @@ pub const THREAD_WINDOW_S: f64 = 7.0 * 86400.0;
 /// The subtypes that are a message someone posted. Edits and deletes are handled apart.
 const POSTED: [&str; 4] = ["", "file_share", "thread_broadcast", "bot_message"];
 const MEMBER_TYPES: &str = "public_channel,private_channel,mpim,im";
-const MAX_BACKOFF_S: f64 = 30.0;
 
 fn s<'a>(v: &'a Value, k: &str) -> &'a str {
     v.get(k).and_then(Value::as_str).unwrap_or("")
@@ -410,17 +409,17 @@ impl SlackConnector {
     }
 
     async fn authenticate(&self) -> anyhow::Result<()> {
-        let mut backoff = 1.0;
+        let mut backoff = Backoff::doubling(1.0, 30.0);
         let auth = loop {
             match self.api.call("auth.test", &[]).await {
                 Ok(a) => break a,
                 // A transport failure is not a bad token: keep trying.
                 Err(e) if e.error.starts_with("http") => {
-                    tracing::warn!("slack-bot[{}] auth.test failed ({e}); retry in {backoff:.1}s", self.cfg.name);
-                    if self.shutdown.sleep(Duration::from_secs_f64(backoff)).await {
+                    let wait = backoff.wait();
+                    tracing::warn!("slack-bot[{}] auth.test failed ({e}); retry in {:.1}s", self.cfg.name, wait.as_secs_f64());
+                    if self.shutdown.sleep(wait).await {
                         anyhow::bail!("closed");
                     }
-                    backoff = f64::min(backoff * 2.0, MAX_BACKOFF_S);
                 }
                 Err(e) => anyhow::bail!("slack-bot[{}] auth.test failed; account down: {e}", self.cfg.name),
             }
@@ -589,17 +588,17 @@ impl Connector for SlackConnector {
                 }
             }
         }));
-        let mut backoff = 1.0;
+        let mut backoff = Backoff::doubling(1.0, 30.0);
         loop {
             tokio::select! {
                 r = socket::run_once(&self.api, &app_token, &self.live, &tx) => match r {
-                    Ok(()) => backoff = 1.0,
+                    Ok(()) => backoff.reset(),
                     Err(e) => {
-                        tracing::warn!("slack-bot[{}] Socket Mode lost ({e}); retry in {backoff:.1}s", self.cfg.name);
-                        if self.shutdown.sleep(Duration::from_secs_f64(backoff)).await {
+                        let wait = backoff.wait();
+                        tracing::warn!("slack-bot[{}] Socket Mode lost ({e}); retry in {:.1}s", self.cfg.name, wait.as_secs_f64());
+                        if self.shutdown.sleep(wait).await {
                             break;
                         }
-                        backoff = f64::min(backoff * 2.0, MAX_BACKOFF_S);
                     }
                 },
                 _ = self.shutdown.wait() => break,
