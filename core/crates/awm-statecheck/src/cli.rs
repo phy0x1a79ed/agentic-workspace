@@ -34,25 +34,17 @@ fn print(v: &impl serde::Serialize) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// A plugin binary's entry point: `<plugin> state <cmd>` runs and exits, any other start takes
-/// the snapshot once and logs what it took.
-pub fn entry(plugin: &str, state_toml: &str, default_dir: &Path, awm_dir: &Path) -> anyhow::Result<()> {
+/// `<plugin> state <cmd>` runs and exits. Any other start returns, and the SDK takes the snapshot.
+pub fn state_subcommand(plugin: &str, state_toml: &str, default_dir: &Path, awm_dir: &Path) -> anyhow::Result<()> {
     #[derive(clap::Parser)]
     struct StateCli {
         #[command(subcommand)]
         cmd: StateCmd,
     }
-    let decl = Decl::parse(state_toml, default_dir, awm_dir, |n| std::env::var(n).ok())?;
     if std::env::args().nth(1).as_deref() == Some("state") {
+        let decl = Decl::parse(state_toml, default_dir, awm_dir, |n| std::env::var(n).ok())?;
         let cli = <StateCli as clap::Parser>::parse_from(std::env::args().skip(1));
         std::process::exit(run(&cli.cmd, plugin, &decl)?);
-    }
-    let out = crate::snapshot_once(plugin, &decl)?;
-    for p in &out.taken {
-        tracing::info!("{plugin}: took the pre-redux snapshot {}", p.display());
-    }
-    for n in &out.notes {
-        tracing::info!("{plugin}: snapshot: {n}");
     }
     Ok(())
 }

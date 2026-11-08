@@ -9,7 +9,13 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use awm_proto::{Caller, Surface, UsageEvent};
-use futures_util::{FutureExt, SinkExt, StreamExt};
+use futures_util::{FutureExt, Sin/// Take the pre-redux snapshot of what the plugin declares, before its first Rust write. A failure
+/// refuses the start. Only a declaration is copied: a service dir can hold data that is not
+/// pre-redux state, such as kb's LanceDB.
+fn snapshot_state(env: &Env, toml: Option<&str>) -> anyhow::Result<()> {
+    let Some(text) = toml else { return Ok(()) };
+    let decl = awm_statecheck::decl::Decl::parse(text, &env.state_dir(), &env.awm_dir, |k| std::env::var(k).ok())?;
+Ext, StreamExt};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -479,15 +485,15 @@ impl Service {
         self
     }
 
-    /// Run `init` once, beside registration: the service is ready at once, and calls wait for
-    /// `init` up to `AWM_INIT_WAIT_S` (60 s). A failed `init` ends [`Service::run`] with its error.
     /// The plugin's `state.toml` (statecheck's declaration), usually `include_str!("../state.toml")`.
-    /// Without one the snapshot copies the service's state dir whole.
+    /// [`Service::run`] takes its snapshot before anything else. Without one, nothing is copied.
     pub fn state(mut self, toml: &'static str) -> Self {
         self.state_toml = Some(toml);
         self
     }
 
+    /// Run `init` once, beside registration: the service is ready at once, and calls wait for
+    /// `init` up to `AWM_INIT_WAIT_S` (60 s). A failed `init` ends [`Service::run`] with its error.
     pub fn on_start(mut self, init: impl Future<Output = anyhow::Result<()>> + Send + 'static) -> Self {
         self.on_start = Some(Box::pin(init));
         self
@@ -554,18 +560,18 @@ impl Service {
     }
 }
 
-/// Take the pre-redux snapshot before the first Rust write (statecheck). A failure refuses the
-/// start. A service with no declaration and no state dir has nothing from before, so it skips.
+/// Take the pre-redux snapshot of what the plugin declares, before its first Rust write. A failure
+/// refuses the start. Only a declaration is copied: a service dir can hold data that is not
+/// pre-redux state, such as kb's LanceDB.
 fn snapshot_state(env: &Env, toml: Option<&str>) -> anyhow::Result<()> {
-    let default = env.state_dir();
-    let decl = match toml {
-        Some(text) => awm_statecheck::decl::Decl::parse(text, &default, &env.awm_dir, |k| std::env::var(k).ok())?,
-        None if !default.exists() => return Ok(()),
-        None => awm_statecheck::decl::Decl::whole(&default),
-    };
+    let Some(text) = toml else { return Ok(()) };
+    let decl = awm_statecheck::decl::Decl::parse(text, &env.state_dir(), &env.awm_dir, |k| std::env::var(k).ok())?;
     let out = awm_statecheck::snapshot_once(&env.plugin, &decl).map_err(|e| anyhow::anyhow!("{}: pre-redux snapshot: {e}", env.service))?;
     for p in &out.taken {
         tracing::info!("{}: took the pre-redux snapshot {}", env.service, p.display());
+    }
+    for n in &out.notes {
+        tracing::info!("{}: snapshot: {n}", env.service);
     }
     Ok(())
 }
@@ -947,16 +953,16 @@ mod tests {
     }
 
     #[test]
-    fn the_snapshot_runs_before_start_and_skips_a_service_with_no_state() {
+    fn the_snapshot_copies_only_what_the_plugin_declares() {
         let tmp = tempfile::tempdir().unwrap();
         let env = Env { awm_dir: tmp.path().to_path_buf(), ..env() };
-        snapshot_state(&env, None).unwrap();
-        assert!(!env.state_dir().exists());
         std::fs::create_dir_all(env.state_dir()).unwrap();
         std::fs::write(env.state_dir().join("data.json"), "{}").unwrap();
         snapshot_state(&env, None).unwrap();
+        assert!(!env.state_dir().join(".pre-rust").exists());
+        snapshot_state(&env, Some("")).unwrap();
         assert!(env.state_dir().join(".pre-rust/state/data.json").exists());
-        snapshot_state(&env, None).unwrap();
+        snapshot_state(&env, Some("")).unwrap();
     }
 
     #[test]
