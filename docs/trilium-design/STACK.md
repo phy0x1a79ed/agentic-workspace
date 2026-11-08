@@ -1,17 +1,17 @@
 # Trilium design — interview stack
 
 Goal: settle the design of awm's Trilium surfaces with Tony: the swarm status page, the new-agent buttons, and the seat Remote Control toggle.
-Decisions: `search` for tag `decision` in awm/trilium-design.
+Decisions: `docs/trilium-design/DECISIONS.md`. Topics closed before 2026-11-08 also have a journal each (f421ff25, 46a610c5, 83668c7e, da0f35b6, 321e8ff2, b12f7bb4). One decision journal goes out when the stack empties.
 
 Related: journal 7724ff11 (ops-board decision), spec `docs/redux/*.md` (queue R61-R66, fleet R81/R105/R106, channels R77). Edit the spec one R-item at a time.
 
 ## Current
 
-board-layout-followups/swarm-triage
+board-layout-followups/board-look
 
 ## Waiting on the user
 
-(none)
+- Approvals design: per-task Approvals list (pending, then history); Approve opens alcor's modal in the vault (sign-in frame) with passkey; Reject needs none; no Tony-opened windows.
 
 ## Preferences
 
@@ -25,8 +25,7 @@ board-layout-followups/swarm-triage
 ## Stack
 
 - board-layout-followups — from redux-endstate/review after swarm-board/layout landed (awm d5be934c, journal 0d875664).
-  - swarm-triage — the tasks/Swarm triage folder is empty: no queue section feeds it. What belongs there?
-  - board-look — nobody has viewed the new page in a browser (passkey). Tony to look.
+  - board-look — Tony viewed the board 2026-11-07. Settled, not yet in spec: sections Needs you, Working, Stale, History (Done renamed); Stale = no active session and not completed; ending moves to History; a returning session goes back to Working. Draggable divider between rows and info panel. Info panel drops the title. Card id click-to-copy (in spec R62). No new-task button on cards (in spec R63 item 3). Bugs for the plan: "null" in card body; stale cards; no claude.ai links. Chips = status + node. Open: approvals (Waiting on the user).
 - PLAN — once the stack is empty: one formal plan for the whole build, then submit to plugin-redux/interview. Must fit plugin-redux ports: operations/front/routine in awm/port-ops, social in awm/port-comms (job e44d901a); the SDK carries a Rust `telemetry` library (today awm/service_components/telemetry, an event-sync layer, unused).
 
 ## Workers
@@ -36,9 +35,12 @@ board-layout-followups/swarm-triage
 
 ## Closed
 
-- note-agent-button — b12f7bb4. Bot button beside Trilium +; task with card; source note cloned under card; marker link note under source; writer reach +2. Spec queue.md R63 item 3, fleet.md R106 item 2.
-- signin-harmonize — 321e8ff2. One 12h sign-in page on auth.*; signed links; redirect + back; vault gets an alcor sign-in frame (same site); nodes keep tailnet names. Spec fleet.md R84 items 1-2.
-- status-pages/page-origin — da0f35b6 (first pass). deneb serves all pages as notes; alcor = API backend + one identity page; device credential cookie; everyday actions carry no instruction/grant; R65 chain and frames gone. Supersedes the "operations owns the Ops page" answer.
-- status-pages (own questions) — f421ff25. Spec fleet.md R147, install.md R115 item 4.
-- seat-rc-toggle — 83668c7e. Spec fleet.md R147 item 7, sessions.md R146.
-- new-agent-button — 46a610c5. Spec queue.md R61/R63/R65/R66, fleet.md R106/R147. Proposed dropped; scope awm/lobby.
+Decisions: DECISIONS.md.
+
+- status-pages
+- new-agent-button
+- seat-rc-toggle
+- page-origin (first pass)
+- signin-harmonize
+- note-agent-button
+- swarm-triage — no folder: "swarm triage" named an earlier session. In spec queue.md R61.
