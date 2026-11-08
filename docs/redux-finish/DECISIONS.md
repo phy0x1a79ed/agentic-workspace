@@ -77,3 +77,48 @@ Still open from the original interview (shelved by Tony, "shelf all decisions to
 **Parity.** 264 requests against the live Python edge on mizar showed two differences, both fixed: a bare text reply carried a content type, and the sign-in `next=` lost a path holding an encoded `#`. Intended differences: an upstream failure is always 502, the WebSocket bridge splices bytes after the handshake, and the listener offers only HTTP/1.1.
 
 **Landed.** Release 5ebadb0a. On both nodes `awm services` shows auth from `<AWM_DIR>/bin/auth` and no httpsfront. `state check` reports nothing lost, `.pre-rust/` exists, `/ca.crt` matches, an existing-format session opens the portal, a mic WebSocket answers 101, and `auth.db` is vacuumed. Not run: a real passkey sign-in and a phone visit, listed under Waiting on the user.
+
+## comms (2026-11-08)
+
+**Question.** How do social, browser, channel and rlm-browser move to Rust?
+
+**Tony:** "for comms, I'd just dev for end state rather than implementing a fallback."
+
+**Decided.**
+
+1. Each plugin is one static Rust binary with no fallback path. channel folds in relay and tether, and `kept` goes. `awm/services/social/mira/` stays Python.
+2. social and browser stay on alcor under their `awm-plugin@` units.
+3. A first start adopts each occupied seat. The seats stay paused until Tony turns them on.
+4. deneb's Python relay stays until `later-nodes`. A room it hosts is the one mixed state.
+5. rlm-browser has no live run, because it is disabled on mizar and alcor.
+
+**Landed.** Release 8cde8e40. Live on mizar and alcor, with 17 of 17 Slack seats adopted.
+
+## knowledge (2026-11-08)
+
+**Question.** How do journal, search, transcripts and scopes move to Rust without losing a post?
+
+**Decided.**
+
+1. `kb` serves `journal`, `search` and `transcripts`, as decision 7 of `inherited` says. `scopes` restarts after it, because scope `search` asks kb's `journal_query`.
+2. kb's first start copies the frozen posts into LanceDB. It refuses to serve until LanceDB holds each post and, with the model loaded, each post has its chunks. A marker file stops a second copy.
+3. Rollback follows decision 9: revert the code and run `kb export-back`. Restore `.pre-rust/` only when `kb state check` proves damage.
+4. mizar's ids for `agent-comms` and `rooms` stand. alcor's unused rows are deleted. Delete a peer's duplicates before the first node's first start.
+5. The tag sync pulls at start and replaces the six-hour timer. The plan also asked for a pull when a peer returns, and the gateway has no peer-up event.
+6. alcor stays keyword-only, because its host vars set `AWM_SEARCH=0` on purpose.
+7. transcripts keeps its 03:30 sweep until reflection provides a session-end event.
+8. The journal singleton goes on mizar and alcor only. Other nodes change in `later-nodes`.
+
+**Landed.** Release 829357ed and cloud dev 83930ad. On mizar the first start took 5m10 for 303 posts. `kb state check` and `scopes state check` lost nothing on either node.
+
+## telemetry-roster (2026-11-08)
+
+**Question.** Where does the telemetry roster run?
+
+**Decided.**
+
+1. The roster runs on alcor as `awm-plugin@telemetry`, under the user `awm-telemetry`, with a 64 MB cap. mizar drops its local `telemetry` and reports to alcor.
+2. The gateway's `Config` refuses unknown tables, so each plugin table in the install config needs a field there. `[telemetry]` has one, with a guard test.
+3. `feat/trilium-vault` stays unmerged, because the next deneb deploy would pick it up and fail to load.
+
+**Landed.** awm 7c6dcc06 and cloud dev 83930ad. The roster's `seats` view stays empty until seat events arrive, as its catch-up call does not match social's verb.
