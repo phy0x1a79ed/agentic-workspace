@@ -334,6 +334,8 @@ async fn main() -> anyhow::Result<()> {
         std::process::exit(issue().await);
     }
     awm_plugin_sdk::telemetry::init();
+    let awm_dir = awm_plugin_sdk::config::awm_dir();
+    awm_statecheck::cli::entry("channel", include_str!("../state.toml"), &awm_plugin_sdk::config::service_dir("channel"), &awm_dir)?;
     let svc = Service::from_env()?;
     let service = svc.context().env().service.clone();
     match service.as_str() {

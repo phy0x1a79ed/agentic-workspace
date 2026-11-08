@@ -204,6 +204,8 @@ async fn settle(book: Book, boxes: Arc<Containers>, settings: Arc<Settings>) {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     awm_plugin_sdk::telemetry::init();
+    let awm_dir = awm_plugin_sdk::config::awm_dir();
+    awm_statecheck::cli::entry("browser", include_str!("../state.toml"), &awm_plugin_sdk::config::service_dir("browser"), &awm_dir)?;
     let svc = Service::from_env()?;
     let dir = svc.context().env().awm_dir.clone();
     let settings = Arc::new(Settings::load(&dir)?);

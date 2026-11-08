@@ -418,6 +418,7 @@ dependencies = [
  "anyhow",
  "awm-cdp",
  "awm-plugin-sdk",
+ "awm-statecheck",
  "base64 0.22.1",
  "serde",
  "serde_json",
@@ -455,6 +456,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "awm-plugin-sdk",
+ "awm-statecheck",
  "base64 0.22.1",
  "chacha20poly1305",
  "chrono",
@@ -614,6 +616,7 @@ dependencies = [
  "anyhow",
  "awm-cdp",
  "awm-plugin-sdk",
+ "awm-statecheck",
  "awm-store",
  "axum",
  "chrono",
@@ -677,6 +680,7 @@ dependencies = [
  "async-imap",
  "async-trait",
  "awm-plugin-sdk",
+ "awm-statecheck",
  "awm-trust",
  "axum",
  "base64 0.22.1",
@@ -771,6 +775,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "toml",
+ "tracing",
 ]
 
 [[package]]

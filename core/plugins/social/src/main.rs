@@ -106,6 +106,9 @@ async fn gdrive_auth(args: &[String]) -> anyhow::Result<()> {
 async fn run() -> anyhow::Result<()> {
     // Both ring and aws-lc-rs are linked, so rustls has no default until one is named.
     let _ = tokio_rustls::rustls::crypto::ring::default_provider().install_default();
+    awm_plugin_sdk::telemetry::init();
+    let awm_dir = awm_plugin_sdk::config::awm_dir();
+    awm_statecheck::cli::entry("social", include_str!("../state.toml"), &awm_plugin_sdk::config::service_dir("social"), &awm_dir)?;
     let svc = Service::from_env()?;
     let env = svc.context().env().clone();
     let hub = svc.context().hub().clone();
