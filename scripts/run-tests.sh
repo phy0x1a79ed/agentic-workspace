@@ -71,7 +71,7 @@ declare -A DISTS=(
 )
 
 # Stable run order.
-ORDER=(contract gatewayclient config persistence grantlib telemetry usage kept tlsfront dvcdata tether scopes journal search social 2fa ssh auth httpsfront rlm-browser rlm-factorio vpn reflection dvc claude-science engcyc trilium zotero channel relay kb board transcripts trustpolicy browser wake)
+ORDER=(contract gatewayclient config persistence grantlib telemetry usage kept tlsfront dvcdata tether scopes journal search social 2fa ssh auth httpsfront rlm-browser rlm-factorio vpn reflection claude-science engcyc trilium zotero channel relay kb board transcripts trustpolicy browser wake)
 
 CHANGED_BASE=""
 SMOKE=0
