@@ -18,7 +18,7 @@ fn describe_matches_the_baseline() {
         awm_dir: r.dir.path().into(),
         token_file: None,
     };
-    let api = awm_plugin_transcripts::service(Service::new(env), Arc::new(r.app)).manifest();
+    let api = awm_kb_transcripts::service(Service::new(env), Arc::new(r.app)).manifest();
     let mut verbs: Vec<Value> = api["functions"]
         .as_array()
         .unwrap()

@@ -2,7 +2,7 @@
 
 mod common;
 
-use awm_plugin_transcripts::{daily, runs};
+use awm_kb_transcripts::{daily, runs};
 use common::*;
 use serde_json::json;
 
@@ -43,6 +43,6 @@ async fn a_timer_sweep_is_recorded_as_one() {
     let rows = r.app.runs(&json!({})).await.unwrap()["runs"].clone();
     assert_eq!((rows[0]["kind"].clone(), rows[0]["trigger"].clone(), rows[0]["sessions"].clone()), (json!("sweep"), json!("timer"), json!(1)));
     let last = runs::last_timer(&r.app.store).await.unwrap().unwrap();
-    assert!((awm_plugin_transcripts::sweep::now() - last).abs() < 5.0);
+    assert!((awm_kb_transcripts::sweep::now() - last).abs() < 5.0);
     assert!(!r.projects().join("proj/sess.jsonl").exists());
 }

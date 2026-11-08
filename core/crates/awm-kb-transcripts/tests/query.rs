@@ -3,7 +3,7 @@
 
 mod common;
 
-use awm_plugin_transcripts::search;
+use awm_kb_transcripts::search;
 use common::*;
 use serde_json::{json, Value};
 

@@ -5,7 +5,7 @@ mod common;
 use std::collections::HashSet;
 use std::os::unix::fs::PermissionsExt;
 
-use awm_plugin_transcripts::sweep;
+use awm_kb_transcripts::sweep;
 use common::*;
 use serde_json::json;
 

@@ -6,8 +6,8 @@
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use awm_plugin_transcripts::layout::{sessions, walk_files, Side, Tree};
-use awm_plugin_transcripts::sweep;
+use awm_kb_transcripts::layout::{sessions, walk_files, Side, Tree};
+use awm_kb_transcripts::sweep;
 
 fn listing(root: &Path) -> BTreeMap<PathBuf, (Vec<u8>, std::time::SystemTime)> {
     walk_files(root)

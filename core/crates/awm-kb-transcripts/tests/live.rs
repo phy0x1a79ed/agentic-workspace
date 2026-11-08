@@ -3,7 +3,7 @@
 
 mod common;
 
-use awm_plugin_transcripts::live_ids;
+use awm_kb_transcripts::live_ids;
 use common::*;
 use serde_json::json;
 

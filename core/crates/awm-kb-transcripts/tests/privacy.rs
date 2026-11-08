@@ -8,7 +8,7 @@ use std::collections::{BTreeSet, HashSet};
 use std::path::Path;
 
 use awm_plugin_sdk::privacy;
-use awm_plugin_transcripts::{sweep, App};
+use awm_kb_transcripts::{sweep, App};
 use common::*;
 use serde_json::{json, Value};
 
@@ -48,7 +48,7 @@ fn projects(out: &Value) -> BTreeSet<String> {
     out["hits"].as_array().unwrap().iter().map(|h| h["project"].as_str().unwrap().to_string()).collect()
 }
 
-async fn call(app: &App, verb: &str, args: Value, as_: Option<&str>) -> Result<Value, awm_plugin_transcripts::Fail> {
+async fn call(app: &App, verb: &str, args: Value, as_: Option<&str>) -> Result<Value, awm_kb_transcripts::Fail> {
     match verb {
         "search" => app.search(&args, as_).await,
         "query" => app.query(&args, as_).await,

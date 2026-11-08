@@ -7,8 +7,8 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
-use awm_plugin_transcripts::layout::Tree;
-use awm_plugin_transcripts::{App, BoxFut, Live};
+use awm_kb_transcripts::layout::Tree;
+use awm_kb_transcripts::{App, BoxFut, Live};
 use awm_store::Store;
 
 pub struct Fixed(pub Result<HashSet<String>, String>);
@@ -40,7 +40,7 @@ pub fn rig_with(live: Result<HashSet<String>, String>) -> Rig {
     std::fs::create_dir_all(&tree.projects).unwrap();
     std::fs::create_dir_all(&tree.archive).unwrap();
     let store = Store::open(dir.path().join("transcripts.db")).unwrap();
-    awm_plugin_transcripts::runs::open(&store).unwrap();
+    awm_kb_transcripts::runs::open(&store).unwrap();
     Rig { dir, app: App { tree, store, live: Box::new(Fixed(live)) } }
 }
 

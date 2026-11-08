@@ -1,14 +1,10 @@
 [package]
-name = "awm-plugin-transcripts"
-description = "Claude Code session logs: the gzipped archive at ~/.claude/projects-archive, its daily sweep, and the live `transcripts` search source."
+name = "awm-kb-transcripts"
+description = "Claude Code session logs inside kb: the gzipped archive at ~/.claude/projects-archive, its daily sweep, and the `transcripts` search source over a full-text LanceDB index of the archive."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish = false
-
-[[bin]]
-name = "transcripts"
-path = "src/main.rs"
 
 [dependencies]
 awm-plugin-sdk.workspace = true
