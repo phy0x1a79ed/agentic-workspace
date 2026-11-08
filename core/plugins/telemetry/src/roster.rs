@@ -305,17 +305,37 @@ impl Roster {
     }
 }
 
-/// One seat in one shape, keyed by its id. A `social seats` row names the id `id` and the
-/// label `name`; a `social/seats` event names them `seat` and `label`.
+/// One seat in one shape, keyed by its id `<account>/<channel>`. Social reports a seat two ways:
+/// a `social seats` row `{id, name, kind, holder, seat: {state, node, remote_control, job,
+/// rc_url, ..} | null}` (tagged with its `account`), and a `social/seats` event
+/// `{seat: "<account>/<channel>", label, state, node, remote_control, job?, rc_url?, ts}`.
+/// A channel with no seat row is `empty`.
 fn seat_row(row: &Value) -> Option<(String, Value)> {
-    let mut m = row.as_object()?.clone();
-    let key = m.get("seat").or_else(|| m.get("id")).and_then(Value::as_str)?.to_string();
-    m.remove("id");
-    m.insert("seat".into(), json!(key));
-    if let Some(name) = m.remove("name") {
-        m.entry("label").or_insert(name);
+    let m = row.as_object()?;
+    let nested = m.get("seat").and_then(Value::as_object);
+    let key = match (m.get("seat"), nested) {
+        (Some(Value::String(id)), _) => id.clone(),
+        (_, Some(n)) => n.get("id").and_then(Value::as_str)?.to_string(),
+        _ => format!("{}/{}", m.get("account")?.as_str()?, m.get("id")?.as_str()?),
+    };
+    let src = nested.unwrap_or(m);
+    let text = |o: &serde_json::Map<String, Value>, k: &str| o.get(k).and_then(Value::as_str).filter(|v| !v.is_empty()).map(str::to_string);
+    let mut out = json!({
+        "seat": key,
+        "label": text(m, "label").or_else(|| text(m, "name")).unwrap_or_default(),
+        "state": text(src, "state").unwrap_or_else(|| "empty".into()),
+        "remote_control": src.get("remote_control").and_then(Value::as_bool).unwrap_or(false),
+        "node": text(src, "node").unwrap_or_default(),
+    });
+    for k in ["job", "rc_url"] {
+        if let Some(v) = text(src, k) {
+            out[k] = json!(v);
+        }
     }
-    Some((key, Value::Object(m)))
+    if let Some(ts) = text(m, "ts") {
+        out["ts"] = json!(ts);
+    }
+    Some((key, out))
 }
 
 fn live(node: &str, s: &Session, ts: Ts) -> SessionEvent {
@@ -558,6 +578,21 @@ mod tests {
         let v = r.seats_view();
         assert_eq!((v["seats"].as_array().unwrap().len(), v["seats"][0]["state"].as_str()), (1, Some("occupied")), "keyed on the seat id, not the label");
         assert!(r.seat_event(&json!({"state": "x", "name": "alice"})).changed.is_empty(), "a row with no seat id is ignored");
+
+        // Real-shaped `social seats` rows (account tagged by the catch-up) land on the same key and shape as events.
+        let mut r = Roster::default();
+        let held = json!({"id": "C042", "name": "alice", "kind": "channel", "holder": null, "account": "slack-bot",
+            "seat": {"state": "occupied", "job": "j1", "node": "alcor", "level": "trusted", "scope": null, "adopted": false, "queued": 0,
+                     "done": false, "held": null, "breaker": null, "id": "slack-bot/C042", "remote_control": true, "rc_url": "https://claude.ai/code/s"}});
+        let free = json!({"id": "C043", "name": "bob", "kind": "channel", "holder": null, "seat": null, "account": "slack-bot"});
+        r.set_seats(&[held, free]);
+        let v = r.seats_view();
+        assert_eq!(v["seats"][0], json!({"seat": "slack-bot/C042", "label": "alice", "state": "occupied", "remote_control": true, "node": "alcor",
+                                         "job": "j1", "rc_url": "https://claude.ai/code/s"}));
+        assert_eq!((v["seats"][1]["seat"].as_str(), v["seats"][1]["state"].as_str()), (Some("slack-bot/C043"), Some("empty")));
+        let ev = json!({"seat": "slack-bot/C042", "label": "alice", "state": "occupied", "remote_control": true, "node": "alcor",
+                        "job": "j1", "rc_url": "https://claude.ai/code/s"});
+        assert!(r.seat_event(&ev).changed.is_empty(), "the live event parses to the row the catch-up made");
     }
 
 }

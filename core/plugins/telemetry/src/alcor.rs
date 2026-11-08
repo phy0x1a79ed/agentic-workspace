@@ -167,15 +167,34 @@ impl RosterPart {
         handle
     }
 
+    /// Read social's roster, one `seats` call per live account. An account that fails logs and
+    /// leaves the others in.
     async fn read_seats(&self, hub: &Hub, ctx: &Context) {
-        match hub.call("social", "seats", json!({}), None).await {
-            Ok(v) => {
-                let rows = v.get("seats").and_then(Value::as_array).or(v.as_array()).cloned().unwrap_or_default();
-                self.seats(ctx, |r| r.set_seats(&rows));
+        let accounts = match hub.call("social", "accounts", json!({}), None).await {
+            Ok(v) => v.get("accounts").and_then(Value::as_array).cloned().unwrap_or_default(),
+            Err(e) => return tracing::warn!("social accounts: {e}"),
+        };
+        let mut rows = vec![];
+        for a in accounts.iter().filter(|a| a["enabled"] == true && a["live"] == true) {
+            let Some(name) = a["name"].as_str() else { continue };
+            match hub.call("social", "seats", json!({"account": name}), None).await {
+                Ok(v) => rows.extend(account_rows(name, &v)),
+                Err(e) => tracing::warn!("social seats for {name}: {e}"),
             }
-            Err(e) => tracing::warn!("social seats: {e}"),
         }
+        self.seats(ctx, |r| r.set_seats(&rows));
     }
+}
+
+/// The rows of one account's `social seats` reply, each tagged with its account.
+fn account_rows(account: &str, reply: &Value) -> Vec<Value> {
+    let rows = reply.get("seats").and_then(Value::as_array).into_iter().flatten();
+    rows.map(|row| {
+        let mut row = row.clone();
+        row["account"] = json!(account);
+        row
+    })
+    .collect()
 }
 
 /// The `telemetry` tool on alcor.
