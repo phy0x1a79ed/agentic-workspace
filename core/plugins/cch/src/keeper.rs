@@ -108,21 +108,37 @@ pub fn memory_properties(knobs: &KeepKnobs) -> Vec<String> {
         .collect()
 }
 
+/// The system directories every session's `PATH` ends with.
+const SYSTEM_PATH: [&str; 3] = ["/usr/local/bin", "/usr/bin", "/bin"];
+
+/// The non-empty directories of a colon list, in order, each once.
+pub fn path_dirs(list: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for d in list.split(':').map(str::trim).filter(|d| !d.is_empty()) {
+        if !out.iter().any(|o| o == d) {
+            out.push(d.to_string());
+        }
+    }
+    out
+}
+
+/// The directories a running unit's `PATH` holds beyond what [`daemon_env`] always puts there.
+pub fn extra_path_dirs(unit_path: &str, user_home: &Path) -> Vec<String> {
+    let local_bin = user_home.join(".local").join("bin").to_string_lossy().into_owned();
+    path_dirs(unit_path).into_iter().filter(|d| *d != local_bin && !SYSTEM_PATH.contains(&d.as_str())).collect()
+}
+
 /// What the daemon needs beyond the user manager's own environment.
 ///
-/// The daemon hands its environment to every session it starts, so this is the sessions' `PATH`.
+/// The daemon hands its environment to every session it starts, so this is the sessions' `PATH`:
+/// `~/.local/bin`, then `extra`, then the system directories.
 /// The gateway's own environment is not copied: on a node where it was restarted from inside a
 /// session it carries that session's ids.
-pub fn daemon_env(knobs: &KeepKnobs, user_home: &Path, conda_root: Option<&Path>) -> Vec<(String, String)> {
+pub fn daemon_env(knobs: &KeepKnobs, user_home: &Path, extra: &[String]) -> Vec<(String, String)> {
     let mut path = vec![user_home.join(".local").join("bin").to_string_lossy().into_owned()];
-    let mut env = Vec::new();
-    if let Some(root) = conda_root {
-        path.push(root.join("condabin").to_string_lossy().into_owned());
-        path.push(root.join("bin").to_string_lossy().into_owned());
-        env.push(("MAMBA_ROOT_PREFIX".to_string(), root.to_string_lossy().into_owned()));
-    }
-    path.extend(["/usr/local/bin", "/usr/bin", "/bin"].map(String::from));
-    env.push(("PATH".into(), path.join(":")));
+    path.extend(extra.iter().cloned());
+    path.extend(SYSTEM_PATH.map(String::from));
+    let mut env = vec![("PATH".to_string(), path_dirs(&path.join(":")).join(":"))];
     env.extend(knobs.passed_env.iter().filter(|(_, v)| !v.is_empty()).cloned());
     env.extend(orphan_env());
     env
@@ -573,10 +589,9 @@ struct State {
     last_kick: f64,
     linger_tried: bool,
     env_pushed: bool,
-    /// The conda root read from the kept unit's environment, once.
-    unit_conda_root: Option<PathBuf>,
+    /// The extra `PATH` directories read from the kept unit's environment, once.
+    unit_path: Option<Vec<String>>,
     unit_env_read: bool,
-    conda_warned: bool,
 }
 
 /// The last reconcile's outcome and when it ran, for `status`.
@@ -694,9 +709,9 @@ impl<H: Host> Keeper<H> {
 
         if let Some(d) = d.as_ref().filter(|d| d.unit.as_deref() == Some(unit_name.as_str())) {
             state.transient_since = None;
-            if self.knobs.conda_root.is_none() && !state.unit_env_read {
+            if self.knobs.session_path.is_none() && !state.unit_env_read {
                 state.unit_env_read = true;
-                state.unit_conda_root = unit_env_value(&self.host.unit_environment(bus).await, "MAMBA_ROOT_PREFIX").map(PathBuf::from);
+                state.unit_path = self.unit_path(bus).await;
             }
             if unit.restarted() && d.uptime(now).unwrap_or(0.0) >= SETTLE_S {
                 self.host.systemctl(bus, vec!["reset-failed".into(), unit_name]).await;
@@ -736,20 +751,18 @@ impl<H: Host> Keeper<H> {
         self.launch(state, bus, &unit, "no daemon runs").await
     }
 
-    /// The conda root for a fresh unit: the knob, else what the kept unit carried. Never a default.
-    async fn conda_root(&self, state: &mut State, bus: &[(String, String)]) -> Option<PathBuf> {
-        if let Some(root) = self.knobs.conda_root.clone().or_else(|| state.unit_conda_root.clone()) {
-            return Some(root);
+    /// The extra `PATH` directories the running unit carries, or None when it sets no `PATH`.
+    async fn unit_path(&self, bus: &[(String, String)]) -> Option<Vec<String>> {
+        unit_env_value(&self.host.unit_environment(bus).await, "PATH").map(|p| extra_path_dirs(&p, &self.user_home))
+    }
+
+    /// The extra `PATH` directories for a fresh unit: the knob, else what the kept unit carried.
+    /// A typical install sets neither, and its sessions get the plain `PATH`.
+    async fn session_path(&self, state: &mut State, bus: &[(String, String)]) -> Vec<String> {
+        if let Some(dirs) = self.knobs.session_path.clone().or_else(|| state.unit_path.clone()) {
+            return dirs;
         }
-        let root = unit_env_value(&self.host.unit_environment(bus).await, "MAMBA_ROOT_PREFIX").map(PathBuf::from);
-        if root.is_none() && !state.conda_warned {
-            state.conda_warned = true;
-            tracing::warn!(
-                "keep: no conda root (AWM_CONDA_ROOT, MAMBA_ROOT_PREFIX or the daemon unit's environment); \
-                 the daemon's sessions get no mamba on their PATH"
-            );
-        }
-        root
+        self.unit_path(bus).await.unwrap_or_default()
     }
 
     async fn launch(&self, state: &mut State, bus: &[(String, String)], unit: &UnitState, reason: &str) -> Value {
@@ -766,8 +779,8 @@ impl<H: Host> Keeper<H> {
             self.host.systemctl(bus, vec!["start".into(), "--no-block".into(), unit_name]).await
         } else {
             let restart = restart_properties(self.host.systemd_version().await);
-            let root = self.conda_root(state, bus).await;
-            let env = daemon_env(&self.knobs, &self.user_home, root.as_deref());
+            let extra = self.session_path(state, bus).await;
+            let env = daemon_env(&self.knobs, &self.user_home, &extra);
             let argv = launch_argv(&self.knobs.unit, &self.knobs.claude_bin, &env, &memory, restart, &self.user_home);
             self.host.run_unit(bus, argv).await
         };
@@ -1417,15 +1430,21 @@ mod tests {
     }
 
     #[test]
-    fn test_daemon_env_puts_local_bin_and_mamba_first() {
+    fn test_daemon_env_puts_local_bin_then_the_session_path_first() {
         let mut kn = knobs();
         kn.passed_env = vec![("AWM_WORKSPACE".into(), "/opt/awm".into())];
-        let env: BTreeMap<String, String> = daemon_env(&kn, Path::new("/u"), Some(Path::new("/m"))).into_iter().collect();
-        let parts: Vec<&str> = env["PATH"].split(':').collect();
-        assert!(parts[0].ends_with("/.local/bin"));
-        assert_eq!(parts[1], "/m/condabin");
+        let env: BTreeMap<String, String> = daemon_env(&kn, Path::new("/u"), &["/m/condabin".into(), "/m/bin".into()]).into_iter().collect();
+        assert_eq!(env["PATH"], "/u/.local/bin:/m/condabin:/m/bin:/usr/local/bin:/usr/bin:/bin");
         assert_eq!(env["AWM_WORKSPACE"], "/opt/awm");
         assert!(!env.contains_key("CLAUDE_CODE_SESSION_ID"));
+        assert!(!env.contains_key("MAMBA_ROOT_PREFIX"));
+    }
+
+    #[test]
+    fn test_the_extra_dirs_of_a_unit_path_leave_out_what_daemon_env_adds() {
+        let got = extra_path_dirs("/u/.local/bin:/m/condabin:/m/bin:/usr/local/bin:/usr/bin:/bin:/m/bin", Path::new("/u"));
+        assert_eq!(got, ["/m/condabin", "/m/bin"]);
+        assert_eq!(path_dirs(" /a::/b:/a: "), ["/a", "/b"]);
     }
 
     #[tokio::test]
@@ -1443,23 +1462,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_conda_root_knob_goes_into_the_unit() {
+    async fn the_session_path_knob_goes_into_the_unit() {
         let mut kn = knobs();
-        kn.conda_root = Some("/conda".into());
-        let k = keeper_with(FakeState { unit_env: "Environment=MAMBA_ROOT_PREFIX=/other\n".into(), ..FakeState::default() }, kn);
+        kn.session_path = Some(vec!["/tools/bin".into()]);
+        let k = keeper_with(FakeState { unit_env: "Environment=PATH=/other/bin:/usr/bin\n".into(), ..FakeState::default() }, kn);
         k.reconcile(false).await;
         let argv = run_argv(&k);
-        assert_eq!(setenv(&argv, "MAMBA_ROOT_PREFIX").as_deref(), Some("/conda"));
-        assert!(setenv(&argv, "PATH").unwrap().starts_with("/u/.local/bin:/conda/condabin:/conda/bin:"));
+        assert_eq!(setenv(&argv, "PATH").as_deref(), Some("/u/.local/bin:/tools/bin:/usr/local/bin:/usr/bin:/bin"));
+        assert_eq!(setenv(&argv, "MAMBA_ROOT_PREFIX"), None);
     }
 
     #[tokio::test]
-    async fn without_the_knob_the_conda_root_comes_from_the_daemon_unit() {
-        let unit_env = "Environment=PATH=/usr/bin MAMBA_ROOT_PREFIX=/opt/conda CLAUDE_PTY_ORPHAN_CHECK_MS=40000\n";
+    async fn without_the_knob_the_session_path_comes_from_the_daemon_unit() {
+        let unit_env = "Environment=PATH=/u/.local/bin:/opt/conda/condabin:/opt/conda/bin:/usr/bin MAMBA_ROOT_PREFIX=/opt/conda CLAUDE_PTY_ORPHAN_CHECK_MS=40000\n";
+        let want = "/u/.local/bin:/opt/conda/condabin:/opt/conda/bin:/usr/local/bin:/usr/bin:/bin";
         let k = keeper(FakeState { unit_env: unit_env.into(), ..FakeState::default() });
         k.reconcile(false).await;
-        assert_eq!(setenv(&run_argv(&k), "MAMBA_ROOT_PREFIX").as_deref(), Some("/opt/conda"));
-        assert!(!k.state.lock().await.conda_warned);
+        assert_eq!(setenv(&run_argv(&k), "PATH").as_deref(), Some(want));
 
         let state = UnitState { n_restarts: Some(0), ..unit(Some("loaded"), "active") };
         let k = keeper(FakeState { running: Some(kept()), unit_state: state, unit_env: unit_env.into(), ..FakeState::default() });
@@ -1471,19 +1490,16 @@ mod tests {
             s.unit_env = "Environment=\n".into();
         }
         assert_eq!(k.reconcile(false).await["action"], "launched");
-        assert_eq!(setenv(&run_argv(&k), "MAMBA_ROOT_PREFIX").as_deref(), Some("/opt/conda"), "learned from the kept unit");
+        assert_eq!(setenv(&run_argv(&k), "PATH").as_deref(), Some(want), "learned from the kept unit");
     }
 
     #[tokio::test]
-    async fn with_no_conda_root_anywhere_the_unit_launches_without_it_and_warns_once() {
+    async fn with_no_session_path_anywhere_the_unit_gets_the_plain_path() {
         let k = keeper(FakeState::default());
         assert_eq!(k.reconcile(false).await["action"], "launched");
         let argv = run_argv(&k);
         assert_eq!(setenv(&argv, "MAMBA_ROOT_PREFIX"), None);
         assert_eq!(setenv(&argv, "PATH").as_deref(), Some("/u/.local/bin:/usr/local/bin:/usr/bin:/bin"));
-        assert!(k.state.lock().await.conda_warned);
-        k.reconcile(false).await;
-        assert!(k.state.lock().await.conda_warned);
     }
 
     #[tokio::test(start_paused = true)]

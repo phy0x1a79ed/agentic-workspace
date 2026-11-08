@@ -67,7 +67,7 @@ Gotchas: every path goes through `ClaudeHome`.
 - `bin/cx` stays as bash.
 - The isolated image is built from an embedded Dockerfile.
 - The login sync becomes a background task.
-- The daemon unit's `AWM_CONDA_ROOT` comes from the install config `[env]`, else from the running unit's environment, never from a hard-coded default. No node sets it today, and the unit is transient, so a reboot loses it. Before the land, set `[env] AWM_CONDA_ROOT` in each node's `config.toml` through the cloud `awm_config` role: `~/miniforge3` on mizar and alcor, `~/lib/miniforge3` on altair, capella and lyra, and shogun after a check.
+- The daemon unit's `PATH` gains the directories in `[env] AWM_SESSION_PATH`, a colon list, ahead of the system ones. With no knob, the keeper takes them from the running unit's `PATH`. A typical install sets nothing, and its sessions get the plain `PATH`. cch sets no conda variable. The nodes that keep miniforge get the knob through homelab_base's miniforge block, in plugin-redux's T8.
 
 **Consolidations.**
 - One verb table replaces the legacy adapters.

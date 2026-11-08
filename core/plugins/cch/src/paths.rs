@@ -94,9 +94,9 @@ pub struct KeepKnobs {
     pub memory_high: Option<String>,
     /// `AWM_KEEP_MEMORY_MAX`, the unit's `MemoryMax`.
     pub memory_max: Option<String>,
-    /// `AWM_CONDA_ROOT`, else `MAMBA_ROOT_PREFIX`: the conda root every session's `PATH` needs.
-    /// None means the keeper reads it from the running daemon unit, never from a default.
-    pub conda_root: Option<PathBuf>,
+    /// `AWM_SESSION_PATH`: a colon list of directories the sessions' `PATH` gains ahead of the
+    /// system ones. None means the keeper takes them from the running daemon unit's `PATH`.
+    pub session_path: Option<Vec<String>>,
     /// `AWM_WORKSPACE` and `CLAUDE_CONFIG_DIR` as this process sees them, passed to the daemon.
     pub passed_env: Vec<(String, String)>,
 }
@@ -211,7 +211,7 @@ impl Paths {
                 memory_low: seconds(var("AWM_KEEP_MEMORY_LOW"), 0.12),
                 memory_high: var("AWM_KEEP_MEMORY_HIGH").map(|v| v.trim().to_string()).filter(|v| !v.is_empty()),
                 memory_max: var("AWM_KEEP_MEMORY_MAX").map(|v| v.trim().to_string()).filter(|v| !v.is_empty()),
-                conda_root: path("AWM_CONDA_ROOT").or_else(|| path("MAMBA_ROOT_PREFIX")),
+                session_path: var("AWM_SESSION_PATH").map(|v| crate::keeper::path_dirs(&v)),
                 passed_env: ["AWM_WORKSPACE", "CLAUDE_CONFIG_DIR"]
                     .into_iter()
                     .filter_map(|k| var(k).map(|v| (k.to_string(), v)))
@@ -267,7 +267,7 @@ impl Paths {
                 memory_low: 0.12,
                 memory_high: None,
                 memory_max: None,
-                conda_root: None,
+                session_path: None,
                 passed_env: Vec::new(),
             },
             isolated: IsolatedKnobs {
