@@ -1,0 +1,26 @@
+[plugin]
+name = "dsh"
+version = "0.3.0"
+
+[[service]]
+name = "dsh"
+
+[[tool]]
+name = "dsh"
+major = 1
+tier = "off"
+
+[[tool]]
+name = "harness-ds"
+major = 1
+tier = "off"
+implements = ["harness@1"]
+
+[[page]]
+name = "dsh"
+dir = "pages/dsh/dist"
+
+[needs]
+secrets = []
+network = ["openrouter.ai", "github.com", "api.github.com"]
+platform = ["linux"]

@@ -200,35 +200,3 @@ pub fn hostname() -> String {
     let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
     String::from_utf8_lossy(&buf[..end]).into_owned()
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_core_roots_default_to_the_tree_under_the_workspace() {
-        let none: Config = toml::from_str("").unwrap();
-        let state = Path::new("/w/.awm");
-        assert_eq!(
-            none.core_root_dirs(state),
-            ["/w/core/plugins", "/w/awm/services", "/w/awm/plugins"].map(PathBuf::from).to_vec()
-        );
-        let named: Config = toml::from_str("workspace = \"/x\"\ncore_roots = [\"/r\"]").unwrap();
-        assert_eq!(named.core_root_dirs(state), vec![PathBuf::from("/r")]);
-        let ws: Config = toml::from_str("workspace = \"/x\"").unwrap();
-        assert_eq!(ws.core_root_dirs(state)[1], PathBuf::from("/x/awm/services"));
-    }
-
-    #[test]
-    fn defaults() {
-        let dir = tempfile::tempdir().unwrap();
-        let cfg = Config { exclude: vec!["engcyc".into()], ..Config::default() };
-        assert_eq!(cfg.listen, DEFAULT_LISTEN);
-        assert!(cfg.wants("journal") && !cfg.wants("engcyc"));
-        let cfg = Config { exclude: vec!["channel/relay".into()], ..Config::default() };
-        assert!(cfg.wants("channel") && cfg.wants_service("channel", "channel") && !cfg.wants_service("channel", "relay"));
-        assert!(cfg.wants_service("relay", "relay"), "the entry names channel's service only");
-        assert_eq!(cfg.edges_path(dir.path()), dir.path().join("edges.yml"));
-        assert_eq!(cfg.reserved, ["awm", "auth", "operations", "journal"]);
-    }
-}

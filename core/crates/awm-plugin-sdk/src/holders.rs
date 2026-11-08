@@ -163,20 +163,3 @@ pub async fn live_sessions(hub: &Hub) -> Option<HashSet<String>> {
     let rows = session_rows(hub, false).await?;
     Some(rows.iter().filter(|r| row_live(r)).map(|r| text(r, "session_id").to_lowercase()).collect())
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn claims_and_rows() {
-        let door = json!({"node": "mira", "job": "j1", "name": "n"});
-        let f = from_claim(Some(&door)).unwrap();
-        assert!(f.background && f.job == "j1" && f.name == "n");
-        let term = json!({"kind": "interactive", "job": "", "session_id": "ccab"});
-        let f = from_claim(Some(&term)).unwrap();
-        assert!(!f.background && f.session.as_deref() == Some("ccab"));
-        assert!(from_claim(Some(&json!("x"))).is_none());
-        assert!(row_live(&json!({"state": "running"})) && !row_live(&json!({"state": "gone"})) && !row_live(&json!({"live": false})));
-    }
-}

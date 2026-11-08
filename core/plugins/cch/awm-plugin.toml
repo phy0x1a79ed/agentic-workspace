@@ -1,0 +1,17 @@
+[plugin]
+name = "cch"
+version = "0.2.0"
+
+[[service]]
+name = "cch"
+
+[[tool]]
+name = "harness-cc"
+major = 1
+tier = "off"
+implements = ["harness@1"]
+
+[needs]
+secrets = []
+network = ["api.anthropic.com", "*.anthropic.com", "claude.ai", "*.claude.ai", "storage.googleapis.com"]
+platform = ["linux"]

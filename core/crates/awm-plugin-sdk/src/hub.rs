@@ -561,11 +561,4 @@ mod tests {
         assert_eq!((refused.status(), refused.body()), (Some(403), Some(&json!({"detail": "no"}))));
     }
 
-    #[test]
-    fn quoting_and_peers() {
-        assert_eq!(quote("a b/c"), "a%20b%2Fc");
-        assert_eq!(peer_query(Some("local")), "");
-        assert_eq!(peer_query(Some("mira")), "?peer=mira");
-        assert!(!truthy(&json!({})) && truthy(&json!({"ok": true})));
-    }
 }

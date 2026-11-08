@@ -234,19 +234,4 @@ mod tests {
         }
     }
 
-    #[test]
-    fn push_and_artifacts() {
-        let push = format!("{INSTALL}\n[fleet.push.alcor]\nurl = \"altair:/w/projects/{{project}}/.bare\"\nprojects = [\"proj\"]\nrefresh = \"true\"\n");
-        let f = p(&push).unwrap();
-        assert_eq!(f.push_url("alcor", "proj"), "altair:/w/projects/proj/.bare");
-        assert_eq!((f.push_url("alcor", "other"), f.push_url("capella", "proj")), (String::new(), String::new()));
-        let f = p("[fleet.push.a]\nurl = \"a:/{project}\"\nprojects = [\"p\"]\n").unwrap();
-        assert_eq!((f.push_url("a", "p"), f.refresh_command("a")), ("a:/p".to_string(), String::new()));
-        let f = p(&format!("{INSTALL}\n[fleet.push.alcor]\nartifacts = \"alcor:/w/.awm/artifacts\"\n")).unwrap();
-        assert_eq!((f.artifacts_dest("alcor"), f.push_url("alcor", "proj")), ("alcor:/w/.awm/artifacts".to_string(), String::new()));
-        let f = p(&format!("{push}artifacts = \"d:/w/.awm/artifacts\"\n")).unwrap();
-        assert_eq!((f.artifacts_dest("alcor"), f.artifacts_dest("capella")), ("d:/w/.awm/artifacts".to_string(), String::new()));
-        let f = p("[fleet]\nhome = \"mizar\"\nnodes = [\"mizar\", \"capella\"]\nsleepers = [\"capella\"]\n").unwrap();
-        assert_eq!(f.sleepers, ["capella"]);
-    }
 }

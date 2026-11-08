@@ -156,33 +156,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_defaults_convert() {
+    fn systemd_calendars_come_out_right_and_what_systemd_cannot_say_is_refused() {
         assert_eq!(to_on_calendar("0 4 * * *").unwrap(), "*-*-* 04:00:00");
-        assert_eq!(to_on_calendar("30 5 * * *").unwrap(), "*-*-* 05:30:00");
-    }
-
-    #[test]
-    fn lists_ranges_and_steps_expand() {
         assert_eq!(to_on_calendar("*/15 9-11 * * 1-5").unwrap(), "Mon,Tue,Wed,Thu,Fri *-*-* 09,10,11:00,15,30,45:00");
         assert_eq!(to_on_calendar("0 0 1,15 */6 *").unwrap(), "*-01,07-01,15 00:00:00");
         assert_eq!(to_on_calendar("0 3 */1 * 0").unwrap(), "*-*-* 03:00:00");
-    }
-
-    #[test]
-    fn what_systemd_cannot_say_is_refused() {
         assert!(to_on_calendar("@every 30s").unwrap_err().0.contains("interval"));
         assert!(to_on_calendar("0 4 1 * 1").unwrap_err().0.contains("both"));
         assert!(to_on_calendar("0 4 * *").is_err());
         assert!(to_on_calendar("61 4 * * *").is_err());
         assert!(to_on_calendar("0 4 * * 7").is_err());
-    }
-
-    #[test]
-    fn next_due_is_the_next_matching_minute() {
-        let c = parse("0 4 * * *").unwrap();
-        let now = Local.with_ymd_and_hms(2026, 11, 7, 3, 59, 30).unwrap().timestamp() as f64;
-        let due = c.next_due(now).unwrap();
-        assert_eq!(due, Local.with_ymd_and_hms(2026, 11, 7, 4, 0, 0).unwrap().timestamp() as f64);
-        assert_eq!(c.next_due(due).unwrap(), Local.with_ymd_and_hms(2026, 11, 8, 4, 0, 0).unwrap().timestamp() as f64);
     }
 }

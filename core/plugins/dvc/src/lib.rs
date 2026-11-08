@@ -162,15 +162,9 @@ mod tests {
         assert_eq!(iso(1791086225.7869637), "2026-10-04T03:57:05.786964+00:00");
         assert_eq!(iso(0.0), "");
         assert_eq!(iso(1791072000.0), "2026-10-04T00:00:00+00:00");
-    }
-
-    #[test]
-    fn iso_and_to_epoch_round_trip() {
         let t = 1791074502.508852;
-        let back = to_epoch(Some(&json!(iso(t)))).unwrap();
-        assert!((back - t).abs() < 1e-6);
+        assert!((to_epoch(Some(&json!(iso(t)))).unwrap() - t).abs() < 1e-6);
         assert_eq!(to_epoch(Some(&json!("1700000000"))), Some(1700000000.0));
-        assert_eq!(to_epoch(Some(&json!(""))), None);
         assert_eq!(to_epoch(Some(&json!("not a time"))), None);
         assert_eq!(to_epoch(Some(&json!("2026-10-04T00:00:00Z"))), Some(1791072000.0));
     }

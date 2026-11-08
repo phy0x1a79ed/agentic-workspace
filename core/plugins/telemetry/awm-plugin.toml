@@ -1,0 +1,18 @@
+# The swarm's roster (fleet.md R147 item 1), on alcor only: `telemetry` is a singleton there, so
+# every other node excludes this plugin and runs telemetry-node alone.
+[plugin]
+name = "telemetry"
+version = "0.1.0"
+
+[[service]]
+name = "telemetry"
+
+[[tool]]
+name = "telemetry"
+major = 1
+tier = "off"
+
+[needs]
+secrets = []
+network = []
+platform = ["linux"]

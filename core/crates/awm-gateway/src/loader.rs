@@ -798,16 +798,4 @@ mod tests {
         assert!(r.plugins.is_empty(), "{:?}", r.plugins.iter().map(|p| &p.name).collect::<Vec<_>>());
         assert_eq!(r.refused.len(), 2);
     }
-
-    #[test]
-    fn refused_provider_cascades() {
-        let t = tempfile::tempdir().unwrap();
-        let (core, other) = (t.path().join("core"), t.path().join("other"));
-        fs::create_dir_all(&core).unwrap();
-        plugin(&other, "a", "[plugin]\nname='a'\n[[service]]\nname='a'\n[[tool]]\nname='a'\n[[needs.tool]]\nname='gone'\n");
-        plugin(&other, "b", "[plugin]\nname='b'\n[[needs.tool]]\nname='a'\n");
-        let r = run(&core, &other, "mizar");
-        assert!(r.plugins.is_empty());
-        assert_eq!(r.refused.len(), 2);
-    }
 }

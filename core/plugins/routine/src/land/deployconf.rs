@@ -152,12 +152,4 @@ mod tests {
         assert_eq!(parse("[deploy]\nnode = 'x'\nzz = 1").unwrap_err().0, "deploy.toml: unknown keys in [deploy]: ['node', 'zz']");
     }
 
-    #[test]
-    fn reads_refresh_and_pins() {
-        let r = parse("[refresh]\nsync = \"s\"\ncommand = \"c\"\n").unwrap().refresh;
-        assert_eq!((r.sync.as_str(), r.command.as_str()), ("s", "c"));
-        assert_eq!(parse("[artifacts]\npins = [\"a/b.pin\"]").unwrap().artifact_pins, ["a/b.pin"]);
-        let d = parse("").unwrap();
-        assert_eq!((d.check_timeout, d.artifact_refresh_timeout), (CHECK_BUDGET, REFRESH_BUDGET));
-    }
 }

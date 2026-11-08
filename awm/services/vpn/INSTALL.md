@@ -22,7 +22,7 @@ and writes a gitignored `.runtime-env` baking `AWM_PYTHON` so the gateway can
 respawn it under systemd's minimal PATH.
 
 To iterate without installing, run a worktree's dev sandbox on its own port
-(`AWM_PORT=7871 bash awm/services/dev/sandbox/run.sh start`), NOT dev's :7821.
+(`AWM_PORT=7871 bash core/plugins/dev/sandbox/run.sh start`), NOT dev's :7821.
 
 > **Do not let this service auto-bootstrap on the canonical dev sandbox (`:7821`)
 > or prod.** Discovery is a global filesystem scan and Chrome-behind-VPN egress

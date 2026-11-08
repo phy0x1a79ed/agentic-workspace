@@ -30,7 +30,7 @@ if [ ${#missing[@]} -gt 0 ]; then
     exit 1
 fi
 
-for lib in config persistence gatewayclient grantlib claudedaemon kept trustpolicy tlsfront dvcdata; do
+for lib in config persistence gatewayclient grantlib kept trustpolicy tlsfront dvcdata; do
     [ -d "$WS/awm/service_components/$lib" ] && run "$WS/awm/service_components/$lib" --no-deps
 done
 

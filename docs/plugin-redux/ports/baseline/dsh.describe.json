@@ -1,0 +1,65 @@
+{
+  "plugin": "dsh",
+  "tool": "dsh",
+  "verbs": [
+    {
+      "description": "Tail the harness's stdout/stderr log.",
+      "params": [
+        {
+          "description": "Lines to return (default 200).",
+          "name": "tail",
+          "required": false,
+          "type": "number"
+        }
+      ],
+      "verb": "logs"
+    },
+    {
+      "description": "The default model new sessions start on. With no arguments, report the current selection and the route's catalog. Given a model id, select it \u2014 the harness watches its settings document, so this takes effect without a restart. This exists because the harness's own Settings UI is loopback-only: a browser on the mesh gets an in-memory settings mirror and the Models page reports that settings are unavailable.",
+      "params": [
+        {
+          "description": "Model id to select. Omit to report only.",
+          "name": "model",
+          "required": false
+        },
+        {
+          "description": "Also add the id to the route's catalog. Needed for a model the route does not yet advertise.",
+          "name": "declare",
+          "required": false,
+          "type": "boolean"
+        },
+        {
+          "description": "Reasoning effort to set alongside the model. Omit to keep whatever is already selected.",
+          "name": "reasoning",
+          "required": false
+        }
+      ],
+      "verb": "model"
+    },
+    {
+      "description": "Stop the harness and start it again \u2014 e.g. to pick up an edited settings.yaml, which is read at startup.",
+      "params": [],
+      "verb": "restart"
+    },
+    {
+      "description": "Start the harness web server on loopback, waiting until it binds. Idempotent.",
+      "params": [],
+      "verb": "start"
+    },
+    {
+      "description": "Report the DeepSeek Harness: whether the fork worktree is built and at what version, which revision it is on and whether that revision is what was built, whether the web server is running and at what pid/port, whether it is actually listening, the mesh front's listener and TLS state with the URL to open, and the model route's two halves \u2014 provider declared, key available \u2014 named separately.",
+      "params": [],
+      "verb": "status"
+    },
+    {
+      "description": "Stop the harness web server, ending live GUI connections. Sessions are persisted, so this loses no conversation. Idempotent. The supervision loop will not respawn it until start is called again.",
+      "params": [],
+      "verb": "stop"
+    },
+    {
+      "description": "The mesh URL that opens the harness GUI. Behind awm's edge session, so it is usable only by someone who could log into awm.",
+      "params": [],
+      "verb": "url"
+    }
+  ]
+}

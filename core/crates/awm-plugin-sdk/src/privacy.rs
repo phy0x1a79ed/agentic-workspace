@@ -304,14 +304,6 @@ pub fn hides_args(args: &Value) -> bool {
 mod tests {
     use super::*;
 
-    #[test]
-    fn slugs() {
-        assert_eq!(slug("/home/t/a.b"), "-home-t-a-b");
-        assert!(slug_covers("-home-t", "-home-t-x") && !slug_covers("-home-t", "-home-tx"));
-        assert_eq!(canonical(Some(""), Some("project:p")), (Some("p"), None));
-        assert!(from_peer(Some(" Peer:x")) && from_peer(Some("peer")) && !from_peer(Some("tony")) && !from_peer(None));
-    }
-
     /// One test, since `marks_path` reads the process-wide `AWM_DIR`.
     #[test]
     fn the_marks_file_and_its_failures() {

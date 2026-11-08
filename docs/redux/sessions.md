@@ -40,6 +40,7 @@ This doc holds a session's id, the id of its task, its lifecycle from start to r
   - A resume of a retired session starts a new job from its transcript, with the same session id.
   - Tony: "Yes" (2026-11-03), to keeping the job only for a wait.
 - **R146.** A session that `start_other` starts has Remote Control on unless the caller turns it off. Its Remote Control name is the session's name, with each `/` written as `-`. Tony: "reflection start_other defaults to remote control on" (2026-11-04).
+  - A seat's session follows its seat's Remote Control switch instead, which starts off (`fleet.md` R147 item 7).
 - **R11.** Each session deploys its work. It skips the deploy only when no deploy is possible, as for a design draft. Tony: "always deploy. if impossible (like design drafts), dont deploy." A session that a coordinator started for a complex task leaves its branch to the coordinator, which deploys (R52 path 2). The deploy follows the project's instructions. An agent asks Tony when it is unsure.
 - **R12.** A session closes on its own. Tony does not accept it first.
   1. When its task is done, the agent debriefs. The debrief writes the journal, which posts to the card. Tony reviews the journal without a live agent.

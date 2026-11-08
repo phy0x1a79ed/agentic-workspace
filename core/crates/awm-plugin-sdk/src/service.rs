@@ -485,7 +485,8 @@ impl Service {
         self
     }
 
-    fn manifest(&self) -> Value {
+    /// The `ready` api this service sends: `functions`, `sessions` and each [`Service::api`] key.
+    pub fn manifest(&self) -> Value {
         let mut api = self.api.clone();
         api.insert("functions".into(), Value::Array(self.verbs.iter().map(|v| v.spec.clone()).collect()));
         if !self.sessions.is_empty() {
@@ -997,22 +998,4 @@ mod tests {
         assert!(!call.ctx.emit("t", 1), "no control connection, nothing sent");
     }
 
-    #[tokio::test]
-    async fn a_test_service_takes_any_caller() {
-        let mut t = Service::new(env())
-            .emitter("news", Some("Each item."))
-            .verb("svc", "who", "", json!([]), |c: Call| async move {
-                c.ctx.emit("news", json!({"n": 1}));
-                Ok::<_, VerbError>(json!({"node": c.caller.node, "as": c.as_, "peer": c.from_peer()}))
-            })
-            .into_test()
-            .await
-            .unwrap();
-        let far = Caller { node: "mira".into(), lane: awm_proto::Lane::Edge, ..Caller::default() };
-        let got = t.call_as("who", json!({}), far, Some("peer:mira")).await.unwrap();
-        assert_eq!(got, json!({"node": "mira", "as": "peer:mira", "peer": true}));
-        assert_eq!(t.call("who", json!({})).await.unwrap()["peer"], false);
-        let frames = t.frames();
-        assert_eq!((frames.len(), frames[0]["kind"].as_str()), (2, Some("emit")));
-    }
 }

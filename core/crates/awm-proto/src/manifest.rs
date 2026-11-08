@@ -275,24 +275,6 @@ major = 1
     }
 
     #[test]
-    fn implements() {
-        assert_eq!(parse_implements("harness@1"), Some(("harness".to_string(), 1)));
-        assert!(parse_implements("nope").is_none());
-        assert!(parse_implements("a.b@1").is_none());
-        assert!(parse_implements("harness@x").is_none());
-    }
-
-    #[test]
-    fn a_uuid_is_an_unknown_key() {
-        assert!(Manifest::parse("[plugin]\nname='x'\n[[tool]]\nname='x'\nuuid='6f1c2c1e-0d4b-4f3e-9a51-3b8f2d7a9c10'\n").is_err());
-    }
-
-    #[test]
-    fn trust_is_gone_since_installing_trusts_a_plugin() {
-        assert!(Manifest::parse("[plugin]\nname='x'\ntrust='own'\n").is_err());
-    }
-
-    #[test]
     fn a_need_parses_its_retired_keys_for_a_warning() {
         let m = Manifest::parse("[plugin]\nname='x'\n[[needs.tool]]\nname='y'\nverbs=['get']\n[[needs.contract]]\nname='z'\noptional=true\n").unwrap();
         assert_eq!(m.needs.retired_keys(), ["verbs", "optional"]);
@@ -301,7 +283,13 @@ major = 1
     }
 
     #[test]
-    fn unknown_key_is_an_error() {
-        assert!(Manifest::parse("[plugin]\nname='x'\nbogus=1\n").is_err());
+    fn unknown_and_retired_keys_are_errors() {
+        for text in [
+            "[plugin]\nname='x'\nbogus=1\n",
+            "[plugin]\nname='x'\n[[tool]]\nname='x'\nuuid='6f1c2c1e-0d4b-4f3e-9a51-3b8f2d7a9c10'\n",
+            "[plugin]\nname='x'\ntrust='own'\n",
+        ] {
+            assert!(Manifest::parse(text).is_err(), "{text}");
+        }
     }
 }

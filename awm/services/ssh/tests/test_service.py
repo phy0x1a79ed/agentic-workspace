@@ -21,6 +21,9 @@ from awm.ssh.config import (
 )
 from awm.ssh.service import ConnState, SSHService
 
+_NO_2FA_VPN_HOST = ssh_config.HostConfig(
+    "nodevice", "u", needs_vpn=True, vpn_profile="ubc")
+
 
 async def _coro(value):
     """Wrap a plain value so it can stand in for an async method's return."""
@@ -53,7 +56,7 @@ class TestConfig:
     def test_known_hosts_has_expected_entries(self) -> None:
         assert "sockeye" in KNOWN_HOSTS
         assert "fir" in KNOWN_HOSTS
-        assert "chamois" in KNOWN_HOSTS
+        assert "chamois" not in KNOWN_HOSTS
 
     def test_sockeye_needs_vpn_and_cwl(self) -> None:
         cfg = resolve_host("sockeye")
@@ -67,13 +70,6 @@ class TestConfig:
         assert not cfg.needs_vpn
         assert cfg.twofa_device == "alliance"
         assert cfg.user == "phyberos"
-
-    def test_chamois_needs_vpn_no_2fa(self) -> None:
-        cfg = resolve_host("chamois")
-        assert cfg.needs_vpn
-        assert cfg.vpn_profile == "ubc"
-        assert cfg.twofa_device == ""
-        assert cfg.user == "tliu"
 
     def test_sockeye_variants(self) -> None:
         for name in ("sockeye1", "sockeye2", "sockeye3"):
@@ -95,7 +91,7 @@ class TestConfig:
         # Only MFA-lockout-prone fir carries the direct-ssh guard flag.
         assert resolve_host("fir").guarded is True
         assert resolve_host("sockeye").guarded is False
-        assert resolve_host("chamois").guarded is False
+        assert resolve_host("sockeye1").guarded is False
 
     def test_lock_path_format(self) -> None:
         p = lock_path(resolve_host("fir"))
@@ -830,13 +826,13 @@ class TestStatusVerb:
         svc = SSHService()
         svc._host("fir").state = ConnState.CONNECTED
         svc._host("sockeye").state = ConnState.AUTHENTICATING
-        svc._host("chamois").state = ConnState.DISPOSING
+        svc._host("sockeye3").state = ConnState.DISPOSING
         svc._write_lock(resolve_host("sockeye2"), "held")   # breaker lock → unavailable
 
         conns = (await svc.status())["connections"]
         assert conns["fir"]["status"] == "connected"
         assert conns["sockeye"]["status"] == "connecting"
-        assert conns["chamois"]["status"] == "disconnecting"
+        assert conns["sockeye3"]["status"] == "disconnecting"
         assert conns["sockeye2"]["status"] == "unavailable"
         assert conns["sockeye1"]["status"] == "disconnected"   # plain, no lock
 
@@ -1301,7 +1297,7 @@ class TestSlotArbiter:
             return svc._status_dict(cfg, "connected")
 
         monkeypatch.setattr(svc, "_do_connect_attempt", _fake_attempt)
-        result = await svc._do_connect(resolve_host("chamois"))  # no twofa_device
+        result = await svc._do_connect(_NO_2FA_VPN_HOST)  # no twofa_device
         assert result["status"] == "connected"
         assert seen["gated"] is False                 # ungated per-node local path
 
@@ -1810,7 +1806,7 @@ class TestChildReaping:
             self, isolated_dirs, monkeypatch) -> None:
         proc = _FakeProc()
         svc = SSHService()
-        cfg = resolve_host("chamois")        # no 2FA device: no burst to fake
+        cfg = _NO_2FA_VPN_HOST        # no 2FA device: no burst to fake
         self._patch_spawn(monkeypatch, proc)
         self._patch_killpg(monkeypatch, proc)
         monkeypatch.setattr(ssh_service, "_CONNECT_TIMEOUT", 0.05)
@@ -1831,7 +1827,7 @@ class TestChildReaping:
             self, isolated_dirs, monkeypatch) -> None:
         proc = _FakeProc()
         svc = SSHService()
-        cfg = resolve_host("chamois")
+        cfg = _NO_2FA_VPN_HOST
         self._patch_spawn(monkeypatch, proc)
         self._patch_killpg(monkeypatch, proc, alive_after_term=True)
         monkeypatch.setattr(ssh_service, "_CONNECT_TIMEOUT", 0.05)
@@ -1851,7 +1847,7 @@ class TestChildReaping:
             self, isolated_dirs, monkeypatch) -> None:
         live, _ = isolated_dirs
         svc = SSHService()
-        cfg = resolve_host("chamois")
+        cfg = _NO_2FA_VPN_HOST
         proc = _FakeProc()
         self._patch_spawn(monkeypatch, proc)
         self._patch_killpg(monkeypatch, proc)
@@ -1865,7 +1861,7 @@ class TestChildReaping:
 
         await svc._do_connect_attempt(cfg, gated=False)
 
-        assert not (live / "chamois.master.pid").exists()
+        assert not (live / "nodevice.master.pid").exists()
 
     async def test_boot_reaps_a_master_stranded_by_a_previous_life(
             self, isolated_dirs, monkeypatch) -> None:
@@ -2011,7 +2007,7 @@ class TestNothingWasSpent:
             self, isolated_dirs, monkeypatch) -> None:
         svc = SSHService()
         rec = ssh_service._AttemptRecord(spawned=True, twofa_seen_at_arm=7)
-        assert await svc._duo_saw_nothing(resolve_host("chamois"), rec) is False
+        assert await svc._duo_saw_nothing(_NO_2FA_VPN_HOST, rec) is False
 
     async def test_the_gated_path_frees_the_slot_when_duo_saw_nothing(
             self, isolated_dirs, monkeypatch) -> None:
@@ -2086,7 +2082,7 @@ class TestDependenciesBeforeTheLogin:
     async def test_the_vpn_gets_its_own_budget_outside_the_ssh_clock(
             self, isolated_dirs, monkeypatch) -> None:
         svc = SSHService()
-        cfg = resolve_host("chamois")       # VPN, no 2FA device
+        cfg = _NO_2FA_VPN_HOST       # VPN, no 2FA device
         seen: dict = {}
 
         async def _slow_vpn(service, verb, args=None, **kw):
@@ -2187,7 +2183,7 @@ class TestMasterScope:
     async def test_the_scope_wraps_the_ssh_argv(
             self, isolated_dirs, monkeypatch) -> None:
         svc = SSHService()
-        cfg = resolve_host("chamois")
+        cfg = _NO_2FA_VPN_HOST
         argvs: list = []
 
         class _Proc:
@@ -2214,4 +2210,21 @@ class TestMasterScope:
         assert argvs[0][:5] == ["systemd-run", "--user", "--scope",
                                 "--unit=x", "--"]
         assert argvs[0][5:9] == ["ssh", "-f", "-N", "-M"]
-        assert argvs[0][-1] == "chamois"
+        assert argvs[0][-1] == "nodevice"
+
+
+class TestMasterArgv:
+    def test_a_vpn_host_jumps_through_its_profile(self):
+        argv = ssh_service.master_argv(ssh_config.KNOWN_HOSTS["sockeye"])
+        assert argv[-3:] == ["-J", "vpn_ubc", "sockeye"]
+        assert "ProxyCommand=none" not in argv
+
+    def test_a_guarded_host_overrides_the_guard(self):
+        argv = ssh_service.master_argv(ssh_config.KNOWN_HOSTS["fir"])
+        assert argv[-3:] == ["-o", "ProxyCommand=none", "fir"]
+        assert "-J" not in argv
+
+    def test_a_plain_host_has_neither(self):
+        argv = ssh_service.master_argv(ssh_config.HostConfig("plain", "u"))
+        assert "-J" not in argv
+        assert "ProxyCommand=none" not in argv

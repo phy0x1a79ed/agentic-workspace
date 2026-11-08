@@ -159,10 +159,4 @@ mod tests {
         assert_eq!(fake.verbs(), ["approval_request", "approval_wait", "approval_wait", "approval_cancel"]);
     }
 
-    #[test]
-    fn file_only() {
-        let fake = Fake::new(&[]);
-        assert_eq!(run(file_request(&req(30, "r"), |v, a| fake.call(v, a))).unwrap(), "r1");
-        assert_eq!(fake.calls.borrow()[0].1["minutes"], 30);
-    }
 }

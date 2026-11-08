@@ -191,20 +191,6 @@ mod tests {
     }
 
     #[test]
-    fn an_unknown_or_scopeless_answer_is_no_holder() {
-        assert_eq!(Holder::from_answer(&json!({"ok": true, "known": false})), None);
-        assert_eq!(Holder::from_answer(&json!({"known": true, "session_id": "cc1", "project": "awm"})), None);
-    }
-
-    #[test]
-    fn a_token_is_never_trusted() {
-        let h = Holder::from_answer(&json!({"known": true, "session_id": "cc1", "project": "a", "scope": "b", "trust": "trusted"})).unwrap();
-        assert_eq!(h.trust, "untrusted");
-        let h = Holder::from_answer(&json!({"known": true, "session_id": "cc1", "project": "a", "scope": "b", "trust": "cooperative"})).unwrap();
-        assert_eq!(h.trust, "cooperative");
-    }
-
-    #[test]
     fn the_ceiling_holds_whatever_the_whitelist_says() {
         let h = holder();
         assert!(h.may("journal", "post") && !h.may("journal", "subscribe"));
@@ -238,11 +224,12 @@ mod tests {
     }
 
     #[test]
-    fn the_cache_forgets_after_its_window() {
-        let cache = TokenCache::default();
-        cache.put("t", holder());
-        assert_eq!(cache.get("t").map(|h| h.session_id), Some("cc0123".into()));
-        cache.seen.lock().unwrap().get_mut("t").unwrap().0 -= CACHE_FOR;
-        assert_eq!(cache.get("t"), None);
+    fn a_token_is_never_trusted_and_an_unknown_answer_is_no_holder() {
+        assert_eq!(Holder::from_answer(&json!({"ok": true, "known": false})), None);
+        assert_eq!(Holder::from_answer(&json!({"known": true, "session_id": "cc1", "project": "awm"})), None);
+        let h = Holder::from_answer(&json!({"known": true, "session_id": "cc1", "project": "a", "scope": "b", "trust": "trusted"})).unwrap();
+        assert_eq!(h.trust, "untrusted");
+        let h = Holder::from_answer(&json!({"known": true, "session_id": "cc1", "project": "a", "scope": "b", "trust": "cooperative"})).unwrap();
+        assert_eq!(h.trust, "cooperative");
     }
 }

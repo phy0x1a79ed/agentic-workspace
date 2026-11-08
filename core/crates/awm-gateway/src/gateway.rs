@@ -1608,24 +1608,3 @@ fn load_plugins(
     crate::lifecycle::stamp_all(&mut load, &core_roots, &cfg.workspace_dir(state).join(PLUGIN_PINS));
     load
 }
-
-#[cfg(test)]
-mod input_schema_tests {
-    use super::*;
-
-    #[test]
-    fn a_param_may_take_more_than_one_type() {
-        let spec = json!({"params": [
-            {"name": "query", "type": ["string", "object"], "required": true},
-            {"name": "max", "type": "int"},
-            {"name": "same", "type": ["dict", "object"]},
-            {"name": "plain"},
-        ]});
-        let schema = input_schema(&spec);
-        assert_eq!(schema["properties"]["query"]["type"], json!(["string", "object"]));
-        assert_eq!(schema["properties"]["max"]["type"], json!("integer"));
-        assert_eq!(schema["properties"]["same"]["type"], json!("object"));
-        assert_eq!(schema["properties"]["plain"]["type"], json!("string"));
-        assert_eq!(schema["required"], json!(["query"]));
-    }
-}

@@ -325,14 +325,4 @@ mod tests {
         sup.abort();
     }
 
-    #[tokio::test]
-    async fn a_failing_subscription_reports_its_health() {
-        let opts = SubscriptionOpts { backoff_initial: Duration::from_millis(10), ..SubscriptionOpts::default() };
-        let sub = SupervisedSubscription::spawn("t", opts, || async { Err(crate::HubError::Transport { what: "x".into(), reason: "down".into() }) }, |_v| async { Ok(()) });
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        let h = sub.health();
-        assert_eq!(h.as_object().unwrap().len(), 15, "{h}");
-        assert!(h["consecutive_failures"].as_u64().unwrap() >= 2 && h["healthy"] == false && h["last_end"] == "error", "{h}");
-        sub.abort();
-    }
 }

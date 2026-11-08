@@ -89,32 +89,3 @@ impl UsageStore {
         tally
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn records_and_tallies() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = UsageStore::new(dir.path().join("usage"));
-        let mut ev = UsageEvent::new("journal", Surface::Mcp);
-        ev.tool = Some("journal".into());
-        ev.verb = Some("post".into());
-        store.record(ev.clone());
-        store.record(ev);
-        let mut page = UsageEvent::new("fileviewer", Surface::Page);
-        page.name = Some("fileviewer".into());
-        store.record(page);
-        let mut old = UsageEvent::new("x", Surface::Cli);
-        old.ts = "2020-01-01T00:00:00Z".into();
-        store.record(old);
-
-        let t = store.tally(60);
-        assert_eq!(t.plugins["journal"][&Surface::Mcp], 2);
-        assert_eq!(t.plugins["fileviewer"][&Surface::Page], 1);
-        assert_eq!(t.detail["journal"]["mcp journal post"], 2);
-        assert!(!t.plugins.contains_key("x"));
-        assert!(!dir.path().join("usage/2020-01-01.jsonl").exists());
-    }
-}

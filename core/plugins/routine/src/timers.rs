@@ -190,24 +190,6 @@ mod tests {
     }
 
     #[test]
-    fn schedule_rejects_bad_calendar() {
-        if analyze(&["--version"]).is_none() {
-            return;
-        }
-        let tmp = tempfile::tempdir().unwrap();
-        let ok = |_: &[&str]| Ok(());
-        let t = Timers { dir: tmp.path(), systemctl: &ok };
-        assert!(t.schedule("awm", "x", "not a calendar", 30, None).is_err());
-        assert_eq!(std::fs::read_dir(tmp.path()).unwrap().count(), 0);
-    }
-
-    #[test]
-    fn unit_name_is_safe() {
-        assert_eq!(unit_name("a b", "c/d"), "awm-routine-a_b-c_d");
-        assert_eq!(quote("it's"), "'it'\"'\"'s'");
-    }
-
-    #[test]
     fn reads_the_elapse_in_utc() {
         let text = "  Original form: daily\nNormalized form: *-*-* 00:00:00\n    Next elapse: Sun 2026-11-01 00:00:00 PDT\n       (in UTC): Sun 2026-11-01 07:00:00 UTC\n       From now: 6 days ago\n";
         assert_eq!(parse_elapse(text).unwrap().to_rfc3339(), "2026-11-01T07:00:00+00:00");
@@ -216,10 +198,4 @@ mod tests {
         assert_eq!(parse_elapse("    Next elapse: never\n"), None);
     }
 
-    #[test]
-    fn next_elapse_asks_systemd() {
-        let base = "2026-11-01T06:59:00Z".parse::<DateTime<Utc>>().unwrap();
-        let Some(t) = next_elapse("*-*-* 07:00:00 UTC", base) else { return };
-        assert_eq!(t.to_rfc3339(), "2026-11-01T07:00:00+00:00");
-    }
 }

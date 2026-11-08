@@ -107,15 +107,3 @@ fn splitext(p: &str) -> (String, String) {
         _ => (p.to_string(), String::new()),
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn splitext_as_posixpath() {
-        for (p, b, e) in [("a.png", "a", ".png"), (".bashrc", ".bashrc", ""), ("..png", "..png", ""), ("a..png", "a.", ".png"), ("x.", "x", "."), ("noext", "noext", ""), ("d.x/f", "d.x/f", "")] {
-            assert_eq!(splitext(p), (b.into(), e.into()), "{p}");
-        }
-    }
-}

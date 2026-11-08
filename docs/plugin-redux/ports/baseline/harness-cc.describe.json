@@ -1,0 +1,702 @@
+{
+  "plugin": "cch",
+  "tool": "harness-cc",
+  "verbs": [
+    {
+      "description": "Take on a job started outside start.",
+      "params": [
+        {
+          "description": "The session's R9 id.",
+          "name": "session_id",
+          "required": false
+        },
+        {
+          "description": "A job id, a session name or a Claude session UUID.",
+          "name": "ref",
+          "required": false
+        },
+        {
+          "description": "The caller's own pid. With no session_id or ref the verb acts on the session at this pid.",
+          "name": "pid",
+          "required": false,
+          "type": "integer"
+        },
+        {
+          "description": "The job id.",
+          "name": "job",
+          "required": true
+        }
+      ],
+      "verb": "adopt"
+    },
+    {
+      "description": "The isolated session that holds a caller token, and the verbs it may call.",
+      "params": [
+        {
+          "description": "",
+          "name": "token",
+          "required": true
+        }
+      ],
+      "verb": "caller_of_token"
+    },
+    {
+      "description": "Compact the caller's own session, then type followup.",
+      "params": [
+        {
+          "description": "The session's R9 id.",
+          "name": "session_id",
+          "required": false
+        },
+        {
+          "description": "A job id, a session name or a Claude session UUID.",
+          "name": "ref",
+          "required": false
+        },
+        {
+          "description": "The caller's own pid. With no session_id or ref the verb acts on the session at this pid.",
+          "name": "pid",
+          "required": false,
+          "type": "integer"
+        },
+        {
+          "description": "",
+          "name": "followup",
+          "required": false
+        },
+        {
+          "description": "",
+          "name": "delay_ms",
+          "required": false,
+          "type": "integer"
+        }
+      ],
+      "verb": "compact"
+    },
+    {
+      "description": "Start the Claude Code daemon now if none runs, and wait until it answers. Returns ok=false with reason=daemon_down when it does not come up in time, is held, or cannot run here. Pass peer=<node> to bring another node's daemon back with no ssh. When this verb itself does not answer, the node's keep service is down: run `awm services restart cch` on that node.",
+      "params": [
+        {
+          "description": "Seconds to wait for the daemon. Default 30.",
+          "name": "timeout",
+          "required": false,
+          "type": "number"
+        }
+      ],
+      "verb": "daemon_ensure"
+    },
+    {
+      "description": "Stop the Claude Code daemon and keep it stopped until daemon_release or the hold expires. Its sessions keep running for 20 minutes without the daemon, then die, so a hold lasts at most that long. Nothing can start, resume or message a session while it is held.",
+      "params": [
+        {
+          "description": "Why, shown in daemon_status.",
+          "name": "reason",
+          "required": true
+        },
+        {
+          "description": "How long the hold lasts. Default 600, at most 1200.",
+          "name": "seconds",
+          "required": false,
+          "type": "number"
+        }
+      ],
+      "verb": "daemon_hold"
+    },
+    {
+      "description": "End a daemon_hold and start the daemon again.",
+      "params": [],
+      "verb": "daemon_release"
+    },
+    {
+      "description": "Show the Claude Code daemon on this node: pid, origin, unit, uptime, the unit's restart count and result, why the daemon last stopped, recent starts, whether it is held, and linger.",
+      "params": [],
+      "verb": "daemon_status"
+    },
+    {
+      "description": "The sessions a ref names.",
+      "params": [
+        {
+          "description": "",
+          "name": "ref",
+          "required": true
+        }
+      ],
+      "verb": "find"
+    },
+    {
+      "description": "Press Escape in a session.",
+      "params": [
+        {
+          "description": "The session's R9 id.",
+          "name": "session_id",
+          "required": false
+        },
+        {
+          "description": "A job id, a session name or a Claude session UUID.",
+          "name": "ref",
+          "required": false
+        },
+        {
+          "description": "The caller's own pid. With no session_id or ref the verb acts on the session at this pid.",
+          "name": "pid",
+          "required": false,
+          "type": "integer"
+        }
+      ],
+      "verb": "interrupt"
+    },
+    {
+      "description": "A session's claude.ai link.",
+      "params": [
+        {
+          "description": "The session's R9 id.",
+          "name": "session_id",
+          "required": false
+        },
+        {
+          "description": "A job id, a session name or a Claude session UUID.",
+          "name": "ref",
+          "required": false
+        },
+        {
+          "description": "The caller's own pid. With no session_id or ref the verb acts on the session at this pid.",
+          "name": "pid",
+          "required": false,
+          "type": "integer"
+        }
+      ],
+      "verb": "link"
+    },
+    {
+      "description": "Every Claude Code session on this node, with lineage and the warm pool.",
+      "params": [
+        {
+          "description": "Only sessions in this project.",
+          "name": "project",
+          "required": false
+        },
+        {
+          "description": "Only sessions in this scope.",
+          "name": "scope",
+          "required": false
+        },
+        {
+          "description": "",
+          "name": "include_stopped",
+          "required": false,
+          "type": "boolean"
+        }
+      ],
+      "verb": "list"
+    },
+    {
+      "description": "The Claude session UUIDs a running Claude Code process holds. Refuses when a record cannot be read, so a caller never acts on a shorter list than the truth.",
+      "params": [],
+      "verb": "live_session_ids"
+    },
+    {
+      "description": "Reconnect, enable or disable a session's MCP servers.",
+      "params": [
+        {
+          "description": "The session's R9 id.",
+          "name": "session_id",
+          "required": false
+        },
+        {
+          "description": "A job id, a session name or a Claude session UUID.",
+          "name": "ref",
+          "required": false
+        },
+        {
+          "description": "The caller's own pid. With no session_id or ref the verb acts on the session at this pid.",
+          "name": "pid",
+          "required": false,
+          "type": "integer"
+        },
+        {
+          "description": "reconnect, enable or disable.",
+          "name": "action",
+          "required": true
+        },
+        {
+          "description": "An MCP server name, or all.",
+          "name": "server",
+          "required": true
+        }
+      ],
+      "verb": "mcp"
+    },
+    {
+      "description": "Put the caller's own session back into bypass permissions.",
+      "params": [
+        {
+          "description": "",
+          "name": "pid",
+          "required": false,
+          "type": "integer"
+        },
+        {
+          "description": "",
+          "name": "expect_session",
+          "required": false
+        }
+      ],
+      "verb": "mode"
+    },
+    {
+      "description": "The follow-ups cch still owes.",
+      "params": [],
+      "verb": "pending"
+    },
+    {
+      "description": "The platform code, name and optional verbs.",
+      "params": [],
+      "verb": "platform"
+    },
+    {
+      "description": "Claim the warm session for a folder.",
+      "params": [
+        {
+          "description": "The directory to move the session to.",
+          "name": "cwd",
+          "required": true
+        }
+      ],
+      "verb": "pool_claim"
+    },
+    {
+      "description": "Plan or apply removal of stale pool sessions.",
+      "params": [
+        {
+          "description": "Carry out the plan (default false).",
+          "name": "apply",
+          "required": false,
+          "type": "boolean"
+        }
+      ],
+      "verb": "pool_remove"
+    },
+    {
+      "description": "Seed one warm session.",
+      "params": [],
+      "verb": "pool_seed"
+    },
+    {
+      "description": "Whether cch on `node` answers `list` from this node, and its daemon state. Returns no sessions. A seat keeper on another node asks this to tell its own lost contact from the node being down.",
+      "params": [
+        {
+          "description": "",
+          "name": "node",
+          "required": true
+        }
+      ],
+      "verb": "probe"
+    },
+    {
+      "description": "Turn Remote Control on or off.",
+      "params": [
+        {
+          "description": "The session's R9 id.",
+          "name": "session_id",
+          "required": false
+        },
+        {
+          "description": "A job id, a session name or a Claude session UUID.",
+          "name": "ref",
+          "required": false
+        },
+        {
+          "description": "The caller's own pid. With no session_id or ref the verb acts on the session at this pid.",
+          "name": "pid",
+          "required": false,
+          "type": "integer"
+        },
+        {
+          "description": "",
+          "name": "on",
+          "required": true,
+          "type": "boolean"
+        },
+        {
+          "description": "",
+          "name": "name",
+          "required": false
+        }
+      ],
+      "verb": "remote_control"
+    },
+    {
+      "description": "Whether the session at pid is a Claude Code session, and which.",
+      "params": [
+        {
+          "description": "",
+          "name": "pid",
+          "required": true,
+          "type": "integer"
+        }
+      ],
+      "verb": "resolve"
+    },
+    {
+      "description": "Bring back a stopped session, or a retired one in a new job, from its transcript.",
+      "params": [
+        {
+          "description": "The session's R9 id.",
+          "name": "session_id",
+          "required": false
+        },
+        {
+          "description": "A job id, a session name or a Claude session UUID.",
+          "name": "ref",
+          "required": false
+        },
+        {
+          "description": "The caller's own pid. With no session_id or ref the verb acts on the session at this pid.",
+          "name": "pid",
+          "required": false,
+          "type": "integer"
+        },
+        {
+          "description": "",
+          "name": "prompt",
+          "required": false
+        },
+        {
+          "description": "Resume a job that start did not create.",
+          "name": "adopt_lineage",
+          "required": false,
+          "type": "boolean"
+        }
+      ],
+      "verb": "resume"
+    },
+    {
+      "description": "Resume each pinned job whose process is gone.",
+      "params": [],
+      "verb": "revive_pinned"
+    },
+    {
+      "description": "Type text or a slash command into a session and submit it.",
+      "params": [
+        {
+          "description": "The session's R9 id.",
+          "name": "session_id",
+          "required": false
+        },
+        {
+          "description": "A job id, a session name or a Claude session UUID.",
+          "name": "ref",
+          "required": false
+        },
+        {
+          "description": "The caller's own pid. With no session_id or ref the verb acts on the session at this pid.",
+          "name": "pid",
+          "required": false,
+          "type": "integer"
+        },
+        {
+          "description": "",
+          "name": "text",
+          "required": true
+        },
+        {
+          "description": "Press Enter (default true).",
+          "name": "submit",
+          "required": false,
+          "type": "boolean"
+        },
+        {
+          "description": "Allow a destructive command.",
+          "name": "confirm",
+          "required": false,
+          "type": "boolean"
+        },
+        {
+          "description": "For the caller's own slash command: the prompt to type once it finishes.",
+          "name": "followup",
+          "required": false
+        },
+        {
+          "description": "",
+          "name": "delay_ms",
+          "required": false,
+          "type": "integer"
+        }
+      ],
+      "verb": "send"
+    },
+    {
+      "description": "Set a session's model, effort, name or folder.",
+      "params": [
+        {
+          "description": "The session's R9 id.",
+          "name": "session_id",
+          "required": false
+        },
+        {
+          "description": "A job id, a session name or a Claude session UUID.",
+          "name": "ref",
+          "required": false
+        },
+        {
+          "description": "The caller's own pid. With no session_id or ref the verb acts on the session at this pid.",
+          "name": "pid",
+          "required": false,
+          "type": "integer"
+        },
+        {
+          "description": "",
+          "name": "model",
+          "required": false
+        },
+        {
+          "description": "",
+          "name": "effort",
+          "required": false
+        },
+        {
+          "description": "",
+          "name": "name",
+          "required": false
+        },
+        {
+          "description": "",
+          "name": "cwd",
+          "required": false
+        },
+        {
+          "description": "With cwd: the line the session gets once the move applied, such as the new scope's brief: the caller's own in its follow-up, another session as a message.",
+          "name": "brief",
+          "required": false
+        }
+      ],
+      "verb": "set"
+    },
+    {
+      "description": "Start a named background session in a scope's worktree.",
+      "params": [
+        {
+          "description": "The project the scope belongs to. Without a scope it is only a hint in the brief.",
+          "name": "project",
+          "required": false
+        },
+        {
+          "description": "The scope whose worktree is the session's directory. Omit it to start in the lobby.",
+          "name": "scope",
+          "required": false
+        },
+        {
+          "description": "Treat project and scope as a suggested route, as for a follow-up session (sessions.md R18): start in the lobby and let the session choose.",
+          "name": "suggest",
+          "required": false,
+          "type": "boolean"
+        },
+        {
+          "description": "The task the session joins (sessions.md R57 step 3). Pass your own from reflection whoami when you start a session for your task.",
+          "name": "task_id",
+          "required": false
+        },
+        {
+          "description": "main or worker on the task. Defaults to worker when a session calls, else main.",
+          "name": "role",
+          "required": false
+        },
+        {
+          "description": "The first task. Without one the session starts empty.",
+          "name": "prompt",
+          "required": false
+        },
+        {
+          "description": "Text appended to the system prompt (claude --append-system-prompt). Unlike the prompt, a compaction never rewrites it.",
+          "name": "system_prompt",
+          "required": false
+        },
+        {
+          "description": "The auto-compact window in tokens, 100000 to 1000000. Claude Code compacts about 33k below it. Omitted means the model's own window.",
+          "name": "autocompact",
+          "required": false,
+          "type": "integer"
+        },
+        {
+          "description": "The session's name, <task>/<descriptor> for the sessions of one task (sessions.md R56). Defaults to the scope, or lobby-<hex> in the lobby.",
+          "name": "name",
+          "required": false
+        },
+        {
+          "description": "A model alias or full name, chosen to fit the task. A call without one is refused.",
+          "name": "model",
+          "required": true
+        },
+        {
+          "description": "low, medium or high, chosen to fit the task. High is the upper limit; xhigh and max are refused.",
+          "name": "effort",
+          "required": true
+        },
+        {
+          "description": "A permission mode (plan, acceptEdits, auto, manual, dontAsk, bypassPermissions). Omitted means skip-permissions. The session starts in this mode and can always switch to bypass, so a plan-mode start runs in bypass once its plan is approved.",
+          "name": "permission",
+          "required": false
+        },
+        {
+          "description": "A label recorded with the session, which a gateway gate can key on. Defaults to worker.",
+          "name": "mode",
+          "required": false
+        },
+        {
+          "description": "Tool names the session may not use.",
+          "name": "disallowed_tools",
+          "required": false,
+          "type": "array"
+        },
+        {
+          "description": "Tool names approved without a prompt, which keeps a dontAsk session from having them denied (for example mcp__awm__*).",
+          "name": "allowed_tools",
+          "required": false,
+          "type": "array"
+        },
+        {
+          "description": "The only built-in tools the session holds (claude --tools). Omitted means all.",
+          "name": "tools",
+          "required": false,
+          "type": "array"
+        },
+        {
+          "description": "Confine file tools to the worktree and ignore user settings (claude --restricted).",
+          "name": "restricted",
+          "required": false,
+          "type": "boolean"
+        },
+        {
+          "description": "Load only the awm MCP server, from the workspace config.",
+          "name": "strict_mcp",
+          "required": false,
+          "type": "boolean"
+        },
+        {
+          "description": "Remote Control, on unless false, named for the session with each `/` as `-`; a plain label names it instead. The result's `link` is the claude.ai link, null with a `link_reason` if it has not connected within a few seconds.",
+          "name": "remote_control",
+          "required": false,
+          "type": "boolean"
+        },
+        {
+          "description": "Pin the job, so the daemon's idle retirement passes it over. A pinned job is a kept session: stopping it unpins it and removes it with `claude rm`.",
+          "name": "pin",
+          "required": false,
+          "type": "boolean"
+        },
+        {
+          "description": "Append the worker lifecycle brief to the system prompt: work in the right scope, ask Tony through the board, sign off and stop when done. Default true. A pinned start never gets it.",
+          "name": "brief",
+          "required": false,
+          "type": "boolean"
+        },
+        {
+          "description": "Who the brief says started the session when no session called, such as 'Tony from Discord'. A calling session is named instead.",
+          "name": "started_by",
+          "required": false
+        },
+        {
+          "description": "The job this session replaces. Its last turns are appended to the prompt, it is stopped (and removed when pinned) if cx started it, and the new job's lineage records it.",
+          "name": "replaces",
+          "required": false
+        },
+        {
+          "description": "Tags to set on the scope (scope tag), such as ['lab', '<person>'] for work a lab member asked for. A tagging failure is returned as a warning and does not stop the start.",
+          "name": "tags",
+          "required": false,
+          "type": "array"
+        },
+        {
+          "description": "The starting session's pid.",
+          "name": "pid",
+          "required": false,
+          "type": "integer"
+        },
+        {
+          "description": "",
+          "name": "trust",
+          "required": false
+        },
+        {
+          "description": "",
+          "name": "task_id",
+          "required": false
+        },
+        {
+          "description": "",
+          "name": "role",
+          "required": false
+        },
+        {
+          "description": "",
+          "name": "suggest",
+          "required": false,
+          "type": "boolean"
+        },
+        {
+          "description": "Run the session in a rootless container with a whitelist of awm verbs (fleet.md R109).",
+          "name": "isolated",
+          "required": false,
+          "type": "boolean"
+        }
+      ],
+      "verb": "start"
+    },
+    {
+      "description": "A session's live state.",
+      "params": [
+        {
+          "description": "The session's R9 id.",
+          "name": "session_id",
+          "required": false
+        },
+        {
+          "description": "A job id, a session name or a Claude session UUID.",
+          "name": "ref",
+          "required": false
+        },
+        {
+          "description": "The caller's own pid. With no session_id or ref the verb acts on the session at this pid.",
+          "name": "pid",
+          "required": false,
+          "type": "integer"
+        }
+      ],
+      "verb": "status"
+    },
+    {
+      "description": "Stop a session and remove its job. With keep, the job stays and a resume brings it back: only a wait keeps it.",
+      "params": [
+        {
+          "description": "The session's R9 id.",
+          "name": "session_id",
+          "required": false
+        },
+        {
+          "description": "A job id, a session name or a Claude session UUID.",
+          "name": "ref",
+          "required": false
+        },
+        {
+          "description": "The caller's own pid. With no session_id or ref the verb acts on the session at this pid.",
+          "name": "pid",
+          "required": false,
+          "type": "integer"
+        },
+        {
+          "description": "",
+          "name": "keep",
+          "required": false,
+          "type": "boolean"
+        },
+        {
+          "description": "",
+          "name": "confirm",
+          "required": false,
+          "type": "boolean"
+        }
+      ],
+      "verb": "stop"
+    }
+  ]
+}

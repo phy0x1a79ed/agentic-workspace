@@ -31,11 +31,13 @@ struct Mark {
 
 /// `None` is a marks file that exists and does not parse.
 type Loaded = Option<Vec<Mark>>;
+/// A marks file's path, mtime and length, which say when to reread it.
+type Stamp = (PathBuf, SystemTime, u64);
 
 pub struct Marks {
     state: PathBuf,
     workspace: PathBuf,
-    cache: Mutex<Option<((PathBuf, SystemTime, u64), Loaded)>>,
+    cache: Mutex<Option<(Stamp, Loaded)>>,
 }
 
 /// Whether a call comes from another node: the edge lane, or a `peer` / `peer:<node>` stamp.

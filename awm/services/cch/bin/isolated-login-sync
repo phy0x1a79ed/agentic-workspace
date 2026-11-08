@@ -1,6 +1,0 @@
-#!/usr/bin/env bash
-# Keep each isolated session's login copy in step with the host login (fleet.md R109 item 4).
-set -euo pipefail
-cd "$(dirname "$0")/.."
-[ -f ./.runtime-env ] && . ./.runtime-env
-exec "${AWM_PYTHON:-python}" -m awm.cch.isolated sync --watch "$@"

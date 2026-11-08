@@ -1,0 +1,17 @@
+# The part on each node (fleet.md R147 item 1). It serves no tool: the loader refuses a whole
+# plugin whose tool a singleton host owns, so it cannot share telemetry's manifest.
+[plugin]
+name = "telemetry-node"
+version = "0.1.0"
+
+[[service]]
+name = "telemetry-node"
+
+[needs]
+secrets = []
+network = []
+platform = ["linux"]
+
+[[needs.tool]]   # list_other, the node's sessions at connect
+name = "reflection"
+major = 1

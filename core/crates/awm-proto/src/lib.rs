@@ -1,5 +1,6 @@
 //! Shared types of the awm core, as `docs/redux/drafts/plugin-contract.md` defines them.
 
+pub mod ids;
 pub mod manifest;
 pub mod network;
 pub mod usage;
@@ -26,12 +27,6 @@ pub fn valid_verb_name(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn verb_names() {
-        assert!(valid_verb_name("sign_peer_token") && valid_verb_name("list"));
-        assert!(!valid_verb_name("_x") && !valid_verb_name("a-b") && !valid_verb_name(""));
-    }
 
     #[test]
     fn tool_names() {

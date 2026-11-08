@@ -107,7 +107,7 @@ cd "$(dirname "$0")"
 exec "${AWM_PYTHON:-python}" -m awm.myservice.hub_adapter
 ```
 
-`hub_adapter.py` builds on `awm.gatewayclient.ServiceAdapter`, which registers, sends `ready`, dispatches calls and reconnects. `awm/services/dev/` is the smallest complete example to copy.
+`hub_adapter.py` builds on `awm.gatewayclient.ServiceAdapter`, which registers, sends `ready`, dispatches calls and reconnects.
 
 A **non-Python service** execs its binary. The binary reads the variables above, registers at `POST /hub/service/register` with its token, opens the control WebSocket the reply names and sends `ready` with its API manifest.
 
@@ -132,7 +132,7 @@ A service absent from `.awm/enabled.json` follows its profile. Keep the file exp
 
 ### Iterating in a dev sandbox
 
-`awm/services/dev/sandbox/run.sh` runs your worktree's gateway on its own port with its own state, so you test a change without touching prod. `ARCHITECTURE.md` § *Dev sandboxes* lists the ports. Point the CLI at it with `AWM_GATEWAY_URL=http://127.0.0.1:<port>`.
+`core/plugins/dev/sandbox/run.sh` runs your worktree's gateway on its own port with its own state, so you test a change without touching prod. `ARCHITECTURE.md` § *Dev sandboxes* lists the ports. Point the CLI at it with `AWM_GATEWAY_URL=http://127.0.0.1:<port>`.
 
 ## Authoring a page
 
