@@ -8,11 +8,11 @@ Decisions: `DECISIONS.md` beside this file.
 
 ## Current
 
-- open-for-tony
+- close-out
 
 ## Waiting on the user
 
-- open-for-tony: the six remaining items.
+- close-out: `.pre-rust`, old branches and scopes, seats.
 
 ## Preferences
 
@@ -22,7 +22,6 @@ Tony (2026-11-08): this session does the work itself; Sonnet agents at medium ef
 
 ## Stack
 
-- open-for-tony — the end-state journals' open items not reached above: per-node-edges, lyra vpn.toml, isolated/ mirror tag, alcor sites daemon, cch warm pool, science idle
 - close-out — `.pre-rust` deletion, unreviewed branches, retiring the redux scopes
 
 ## Workers
@@ -37,6 +36,7 @@ None.
 - r79-writer — alcor pushes to deneb's vault writer; R79 stands
 - deneb — no further decision; its own cutover per fleet-route, writer per r79-writer
 - node-checkout — every node clone-free this pass; release = manifest + hash-addressed binaries + small tar; mizar pushes, GitHub Release for fresh machines; ten non-core plugins in own projects, pushed as folders
+- open-for-tony — warm pool on a trusted seed dir; dvc mirror stopped; science idle 2 h; lyra vpn from capella; sites daemon kept as own project; per-node edges everywhere
 
 ## Survey state (2026-11-08)
 

@@ -54,3 +54,16 @@ Tony: "Lets also design an install system so that running awm with core plugins 
 Decided so far: every node goes clone-free in this pass, built before the fleet refresh so the fleet deploys once, on the final route. Only mizar keeps awm source, plus any scope worktree an agent works in. A release is a manifest of hash-addressed binaries plus a small tar of plugin manifests, `run.sh` files, page dists and agent docs, unpacked by an `awm` command with no git. mizar checks source against pins when it builds a release, and a node checks only sha256. One release format, two carriers: mizar pushes to fleet nodes as it does now, and each release also goes to a GitHub Release so a fresh machine can install with one command. All ten non-core plugins (2fa, trilium, ssh, vpn, wake, engcyc, rlm-factorio, zotero, claude-science, papers) become projects of their own by extending plugin_homes. Each release, mizar copies a node's enabled non-core plugins to it as folders, so 'mizar pushes' holds and no passkey tap is needed. Each plugin's own install hook builds its env.
 
 Landed: to be done by the plan.
+
+## open-for-tony (2026-11-08)
+
+The end-state journals' open items not settled above.
+
+- **cch warm pool.** Tony chose "Dedicated seed dir, cch trusts". cch records trust for one seed directory with `trust::grant_plain_dir`, as it does for the lobby, and `AWM_CX_SEED_DIR` defaults to it. Tony accepts that this extends trust to `--dangerously-skip-permissions` sessions.
+- **`isolated/` mirror tag.** Overtaken: Tony said "Stop the dvc nightly", then chose to stop the mirror only. `workspace_backup` stops on altair and stays off, so `.awm` and credentials stop going off-site. `cache_sync` keeps running. Workspace files outside DVC have no off-site copy after this. This overrides end state 8's mirror sentence.
+- **claude-science idle.** Tony: "Science timeout to 2hrs". It starts on the first request and stops after two hours with no request.
+- **lyra's `vpn.toml`.** Copy capella's, as mizar's was copied: 0600, hashes checked, nothing printed.
+- **alcor's sites daemon.** "Mira is going away" does not cover it. It becomes a project of its own and mizar pushes it to alcor, like the non-core plugins. Its error loop goes to the quality backlog.
+- **per-node-edges.** Every edge on every node. Each node's installed `edges.yml` holds only the peers it can reach, rendered from `homelab/edges.yml`. Fleet-wide lists such as the land rollout come from mizar's install config. Singleton callers and relays read what their own node has.
+
+Landed: to be done by the plan.
