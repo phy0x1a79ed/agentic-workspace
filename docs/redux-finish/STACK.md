@@ -8,14 +8,11 @@ Sources: the worker debrief journals 389a0111 (ops), 8caec34d (knowledge), 449af
 
 ## Current
 
-- `ops` batch (dvc, operations, auth) — plan /home/tony/.claude/plans/noble-splashing-nygaard.md. T1–T4 done; next T6 (auth).
-  - Tests trimmed workspace-wide: 1,929 -> 849 Rust tests, full run 1m41s -> 36 s; clippy clean under -D warnings.
-  - release 4052097d on github, mizar and alcor. dvc runs Rust on both; operations runs Rust on alcor (`awm-plugin@operations` -> `.awm/bin/operations`), check-state and state check exit 0, 3 passkeys parse, task_list answers from mizar, `/signin` 200. mizar's Claude hook is the Rust shim (deploy-hooks.sh).
-  - Cloud dev 47f8d98 applied to alcor (singletons, singleton_door; social_seats skipped).
+- `ops` batch closed. Release 5ebadb0a on github, mizar and alcor. dvc, operations and auth run as Rust on both. Next: the `comms` batch survey (social, browser, channel, rlm-browser).
 
 ## Waiting on the user
 
-- Nothing.
+- When you are at a device: one passkey sign-in on a node edge, and open a node's portal on your phone. Neither gates the work. The Rust edge offers only HTTP/1.1, so an HTTP/2-only client fails.
 
 ## Preferences
 
@@ -38,7 +35,6 @@ Sources: the worker debrief journals 389a0111 (ops), 8caec34d (knowledge), 449af
 Phase 1 scopes each plugin; phase 2 does the work in this order. Each topic lists its known questions and issues.
 
 - `scoping` — the plugin-by-plugin walk.
-  - `operations` — feat/port-ops (212 tests, no code left) + cloud feat/ops-units on alcor. Merge conflicts: deploy-hooks.sh, Cargo.lock, deploy.toml, fleet.md. Edges still redirect to `/portal_login` (now 404) until `operations,httpsfront` restart; cloud `deneb_passkey_login_url` still names `/portal_login`. Issues: the cloud dev drift (github 8f79bec ahead of mizar's bare 6c01e03); `run-containers.sh` lacks the community.docker collection; two order pullers once reflection lands.
   - `opt-in` — Tony: "an opt in mechanism for prototype features like the deploy queue and the board. this way we can try features in a few select sessions rather than fleet wide". Before trilium-board, its first user.
   - `trilium-board` — telemetry landed (acadb279); vault feat/trilium-vault 92a7d431 not submitted; cloud feat/telemetry-optin unrun; R79 (deneb's outbound calls) first. Needs the Rust operations, the vault API and reflection's `reflection/sessions`.
   - `social` + `browser` — feat/port-comms + cloud feat/rust-singletons on alcor. Seats stay paused until Tony turns them on.
@@ -46,13 +42,13 @@ Phase 1 scopes each plugin; phase 2 does the work in this order. Each topic list
   - `rlm-browser` — on feat/port-comms.
   - `kb` — journal, search, transcripts folded in; feat/port-knowledge passes cargo check only, journals has no tests, clippy fails; cloud feat/kb-journal-unit; model files; the agent-comms tag clash between mizar and alcor.
   - `scopes` — feat/port-knowledge, after kb.
+  - `front-declarations` — auth does not open `[[service.front]]` listeners yet, and `auth front` does not exist. Build them when dsh moves behind the edge; dsh then drops out of `EDGE_MATERIAL_PLUGINS`.
   - `reflection` — wip/port-harness-reflection compiles, tests unfinished; dsh session events ride with it; the order-puller handover with operations.
-  - `auth` — feat/port-ops-t9 does not build: ~3,600 lines of Rust written (certs, tls done), ~3,500 lines of Python left (proxy core, httpsfront app, wiring) plus 257 tests and a live-parity matrix. Size L. auth.tony-xy-liu.com on alcor is nginx + tunnel to deneb, not this plugin.
-  - `python-out` — plan T8: drop the core Python install path; each non-core Python plugin gets its own env. Before removing the conda `dvc` env: the stock project's git hooks still call it (the Rust dvc rewires hooks only at provisioning). Delete alcor's untracked `awm/plugins/{operations,routine,dashboard}` leftovers.
+  - `python-out` — plan T8: drop the core Python install path; each non-core Python plugin gets its own env. Before removing the conda `dvc` env: the stock project's git hooks still call it (the Rust dvc rewires hooks only at provisioning). Delete alcor's untracked `awm/plugins/{operations,routine,dashboard}` leftovers. `awm/service_components/tlsfront` and `awm.config.tokens` stay until claude-science stops importing them.
   - `landed` — cch, dsh, dev, mic, fileviewer, routine, dashboard, telemetry: confirm each is healthy on mizar and alcor. Issue: statecheck cannot copy a directory `[[extra]]` (took mizar's cch down 4 minutes).
   - `cross-cutting` — ticket 3e3bc12a2040's branch (plain-ssh edge, SDK snapshot, workspace root); SDK clippy `result_large_err`; routine with `AWM_DIR` unset takes a scope as the workspace; the stale land lease; the shelved decisions (R79, per-node-edges, lyra vpn.toml, `isolated/` tag, alcor's sites daemon).
-- `verify` — plan T9 on mizar and alcor. Check: dvc's mirror sends a dir holding only a symlink (e.g. `awm/` -> `data`) as a recursive Globus item; confirm Globus does not follow it into an excluded tree. From the test trim: gateway `stop` waits the full 8 s grace for a service that never registered; a crash-looping plugin may respawn once during a reload; cch's `shout_lost` log line is untested under load; the operations hook's dead-port retry is untested.
-- `later-nodes` — capella, lyra, deneb, shogun, altair; hpc-ssh-guard apply.
+- `verify` — plan T9 on mizar and alcor. Check: dvc's mirror sends a dir holding only a symlink (e.g. `awm/` -> `data`) as a recursive Globus item; confirm Globus does not follow it into an excluded tree. From the test trim: gateway `stop` waits the full 8 s grace for a service that never registered; a crash-looping plugin may respawn once during a reload; cch's `shout_lost` log line is untested under load; the operations hook's dead-port retry is untested. From auth: the public profile has no live parity run, because only deneb serves it; `run.sh stop` leaves a sandbox's services running when the `dev` binary is not built.
+- `later-nodes` — capella, lyra, deneb, shogun, altair; hpc-ssh-guard apply. deneb's `awm_plugins` must drop httpsfront in the same pass.
 
 ## Workers
 
@@ -64,6 +60,8 @@ Test trimmers (Sonnet medium, in this worktree, no commits), brief /home/tony/.c
 
 - `remote-build` — shelved (Tony: "lets shelf remote-build. we may not need it."). capella has 16 cores and 68 GB; mizar has 4.
 
+- `operations` — live on alcor; see DECISIONS.md § ops-questions.
+- `auth` — live on mizar and alcor; see DECISIONS.md § auth.
 - `dvc` — merge t7 with operations; mizar live checks; altair and capella later.
 - `queue-unblock` — no land queue this session; merge by hand, refresh mizar and alcor only.
 - `inherited` — the original interview's decisions are the starting point.

@@ -61,3 +61,19 @@ Still open from the original interview (shelved by Tony, "shelf all decisions to
 3. claude-science's C2b is out of scope.
 
 **Landed.** Cloud dev 47f8d98: feat/ops-units with the `singleton_rust` map cut to operations only (social and browser join with the comms batch), and Python social's `awm/services/social` folder restored.
+
+## auth (2026-11-08)
+
+**Question.** How does the front plugin `auth` replace auth, httpsfront and tlsfront on mizar and alcor?
+
+**Decided.**
+1. One Rust service serves the tools `auth` and `httpsfront` and the browser edge on `AWM_HTTPS_PORT`. The Python auth and httpsfront are deleted.
+2. The Python tlsfront library and `awm.config.tokens` stay. claude-science, which is not core, imports them. They go with `python-out`.
+3. `[[service.front]]` listeners and `auth front` wait for their first user. No plugin declares a front yet.
+4. Tests are curated, not ported: 257 Python tests became 113 Rust tests that run in about 2 s.
+5. statecheck's `decls/` drafts are deleted. Its test reads each plugin's real `state.toml`.
+6. The root `.gitignore` covers `awm/services/httpsfront/.certs/` and `.sans`. The folder's own `.gitignore` left with the Python, and the deploy's `git clean` would have deleted the leaf on nodes that hold no CA key.
+
+**Parity.** 264 requests against the live Python edge on mizar showed two differences, both fixed: a bare text reply carried a content type, and the sign-in `next=` lost a path holding an encoded `#`. Intended differences: an upstream failure is always 502, the WebSocket bridge splices bytes after the handshake, and the listener offers only HTTP/1.1.
+
+**Landed.** Release 5ebadb0a. On both nodes `awm services` shows auth from `<AWM_DIR>/bin/auth` and no httpsfront. `state check` reports nothing lost, `.pre-rust/` exists, `/ca.crt` matches, an existing-format session opens the portal, a mic WebSocket answers 101, and `auth.db` is vacuumed. Not run: a real passkey sign-in and a phone visit, listed under Waiting on the user.
