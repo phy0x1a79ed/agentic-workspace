@@ -7,7 +7,7 @@ Related: journal 7724ff11 (ops-board decision), spec `docs/redux/*.md` (queue R6
 
 ## Current
 
-BUILD — PLAN.md approved 2026-11-07. T1, T2, T5, T7, T8 done (decision journal a7d480e6). Contract at b11adebc. telemetry (job 4196b8cb) verified: land ticket f53295a154e7 at 82072cf6; the worker merges it when port-ops' lease frees and bounces stale c4a9ae6d1401 first. vault (job daf676e8) verified at 7bcd7394; plugin-redux/interview chose to land it after port-ops' Rust operations, with every awm/plugins/operations edit reverted; at its go, check release for the Python writer and re-add the deletion only if it is still there. Next: telemetry's release commit, then interview's go for vault, then T9, T10.
+BUILD — wrapped up 2026-11-08 at Tony's word. telemetry landed (release acadb279). vault, the cloud batch and the merges belong to a merge session: see HANDOFF.md, which opens with a decision for Tony (deneb's outbound calls, R79).
 
 ## Waiting on the user
 
