@@ -127,3 +127,13 @@ async fn the_inbox_cursor_moves_forward_only_and_survives_a_restart() {
     let all = r.call("ack", scope).await.unwrap();
     assert_eq!((all["unread"].clone(), all["cursor"]["through_id"].clone()), (json!(0), json!(own.id)));
 }
+
+#[tokio::test]
+async fn a_search_by_meaning_runs_with_the_model_loaded() {
+    let r = rig_with_model().await;
+    let post = r.post("p", "s", "agent:x", "kitchen sink plumbing notes", json!(["journal"])).await;
+    r.j.embed_waiting().await.unwrap();
+    let got = r.call("journal_query", json!({"query": {"$about": "kitchen sink"}})).await.unwrap();
+    let found: Vec<&str> = got["exact"].as_array().unwrap().iter().map(|h| h["id"].as_str().unwrap()).collect();
+    assert_eq!(found, [post.id.as_str()]);
+}

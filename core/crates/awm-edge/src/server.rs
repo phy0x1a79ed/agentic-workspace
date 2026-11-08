@@ -32,6 +32,28 @@ pub struct Login {
     pub level: EdgeLevel,
 }
 
+/// The node of a login by a client on an older release, which names no node: the key it logged
+/// in with (`SSH_USER_AUTH`, `publickey <type> <blob>` lines) must match an `authorized_keys`
+/// line whose comment is `awm:<node>:user`. Delete it once every node runs `AWM_EDGE_FROM`.
+pub fn caller_node(user_auth: &str, authorized_keys: &str) -> Option<String> {
+    let used: Vec<&str> = user_auth
+        .lines()
+        .filter_map(|l| l.strip_prefix("publickey "))
+        .filter_map(|k| k.split_whitespace().nth(1))
+        .collect();
+    authorized_keys.lines().find_map(|line| {
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        let blob_at = fields.iter().position(|f| f.starts_with("ssh-") || f.starts_with("ecdsa-"))?;
+        let blob = fields.get(blob_at + 1)?;
+        let comment = fields.get(blob_at + 2)?;
+        let mut parts = comment.split(':');
+        match (parts.next(), parts.next(), parts.next()) {
+            (Some("awm"), Some(node), Some("user")) if used.contains(blob) => Some(node.to_string()),
+            _ => None,
+        }
+    })
+}
+
 /// Resolve an `awm edge-serve` login from its own `--from` and `--level`.
 ///
 /// Under a forced command sshd runs the `authorized_keys` command whatever the client sent, and
@@ -220,6 +242,15 @@ mod tests {
              edges:\n  mizar: {alcor: lan}\n  altair: {alcor: {network: tailscale, key: service}}\n",
         )
         .unwrap()
+    }
+
+    #[test]
+    fn an_older_client_is_named_only_by_the_user_key_it_logged_in_with() {
+        let keys = "ssh-ed25519 AAAA awm:mizar:user\ncommand=\"x\",restrict ssh-ed25519 BBBB awm:altair:service\nssh-ed25519 CCCC tony@laptop\n";
+        assert_eq!(caller_node("publickey ssh-ed25519 AAAA\n", keys).as_deref(), Some("mizar"));
+        assert_eq!(caller_node("publickey ssh-ed25519 BBBB\n", keys), None);
+        assert_eq!(caller_node("publickey ssh-ed25519 CCCC\n", keys), None);
+        assert_eq!(caller_node("password\n", keys), None);
     }
 
     #[test]

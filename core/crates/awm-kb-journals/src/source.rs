@@ -112,10 +112,11 @@ impl Journals {
             _ => None,
         };
         let mut ask = awm_index::Ask::new(&self.index.spec.fields, text, &source, &veil, max, vector).map_err(|e| Fail::value(e.0))?;
-        let mut parts = vec![ask.cond.clone(), "body != ''".into(), format!("NOT {}", has_tag(FOLDED))];
+        let mut parts = vec![ask.cond.clone(), format!("NOT {}", has_tag(FOLDED))];
+        let mut entry_only = vec!["body != ''".to_string()];
         match scope {
             Scope::Threads => {
-                parts.push("thread IS NULL".into());
+                entry_only.push("thread IS NULL".into());
                 if !seen.iter().any(|t| kind(t)) {
                     parts.push(any_tag(&INDEXED_TAGS));
                 }
@@ -126,6 +127,8 @@ impl Journals {
                 }
             }
         }
+        ask.chunk_cond = Some(and(&parts));
+        parts.extend(entry_only);
         ask.cond = and(&parts);
         Ok(self.index.answer(&ask).await?)
     }

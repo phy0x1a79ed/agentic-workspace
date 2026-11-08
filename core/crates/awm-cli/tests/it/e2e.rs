@@ -1,6 +1,5 @@
 //! The gateway end to end: `awm gateway serve` in a temp dir loads a fake plugin, a third-party
-//! plugin that needs it, and (when the awm conda env is present) today's Python journal service
-//! unchanged. Calls go in through `awm mcp` and the `awm <tool> <verb>` CLI.
+//! plugin that needs it. Calls go in through `awm mcp` and the `awm <tool> <verb>` CLI.
 
 use std::sync::Arc;
 use std::io::{BufRead, BufReader, Write};
@@ -21,13 +20,6 @@ fn fake_bin() -> PathBuf {
     bin
 }
 
-/// The awm env's interpreter, when this machine has one (the build container mounts it).
-fn awm_python() -> Option<PathBuf> {
-    let root = std::env::var_os("AWM_CONDA_ROOT").map(PathBuf::from)?;
-    let py = root.join("envs/awm/bin/python");
-    py.exists().then_some(py)
-}
-
 fn repo() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..").canonicalize().unwrap()
 }
@@ -45,7 +37,6 @@ struct Node {
     _tmp: tempfile::TempDir,
     state: PathBuf,
     third: PathBuf,
-    journal: bool,
 }
 
 fn lay_out() -> Node {
@@ -89,11 +80,6 @@ network = ["egress-ok.invalid"]
         &core.join("operations/run.sh"),
         &format!("export FAKE_TOOL=operations FAKE_APPROVAL_FILE='{}'\nexec '{}'\n", state.join("approval.json").display(), fake.display()),
     );
-    // The fake also serves the other tools the journal plugin needs to load.
-    for tool in ["scope", "search", "auth"] {
-        write(&core.join(format!("{tool}/awm-plugin.toml")), &format!("[plugin]\nname = \"{tool}\"\n\n[[service]]\nname = \"{tool}\"\n\n[[tool]]\nname = \"{tool}\"\n"));
-        write(&core.join(format!("{tool}/run.sh")), &format!("export FAKE_TOOL={tool}\nexec '{}'\n", fake.display()));
-    }
     write(&core.join("fake/ui/index.html"), "<html><body>fake-ui-marker</body></html>\n");
 
     write(
@@ -120,34 +106,17 @@ major = 1
     write(&state.join("ext.token"), "ext-secret\n");
     write(&state.join("secrets.env"), "# node secrets\nFAKE_SECRET=s3cret\nOTHER_SECRET=not-yours\n");
 
-    let python = awm_python();
-    let mut env = String::new();
-    if let Some(py) = &python {
-        let repo = repo();
-        let mut path = vec![repo.join("awm/services/journal"), repo.join("awm/service_components/grantlib")];
-        for comp in std::fs::read_dir(repo.join("awm/service_components")).unwrap().flatten() {
-            path.push(comp.path());
-        }
-        let path = path.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(":");
-        std::os::unix::fs::symlink(repo.join("awm/services/journal"), core.join("journal")).unwrap();
-        env = format!(
-            "[env]\nAWM_PYTHON = \"{}\"\nPYTHONPATH = \"{path}\"\nAWM_SEARCH = \"0\"\nPYTHONDONTWRITEBYTECODE = \"1\"\n",
-            py.display()
-        );
-    } else {
-        eprintln!("no awm conda env (AWM_CONDA_ROOT): skipping the Python journal service");
-    }
     write(
         &state.join("config.toml"),
         &format!(
-            "node = \"e2e\"\nlisten = \"127.0.0.1:0\"\nworkspace = \"{}\"\ncore_roots = [\"{}\"]\nplugin_roots = [\"{}\"]\ntool_wait_s = 90\nsession_cache_s = 0\n[[external]]\nservice = \"ext\"\ntoken_file = \"{}\"\n[fleet]\nhome = \"e2e\"\nnodes = [\"e2e\"]\n{env}",
+            "node = \"e2e\"\nlisten = \"127.0.0.1:0\"\nworkspace = \"{}\"\ncore_roots = [\"{}\"]\nplugin_roots = [\"{}\"]\ntool_wait_s = 90\nsession_cache_s = 0\n[[external]]\nservice = \"ext\"\ntoken_file = \"{}\"\n[fleet]\nhome = \"e2e\"\nnodes = [\"e2e\"]\n",
             ws.display(),
             core.display(),
             third.display(),
             state.join("ext.token").display()
         ),
     );
-    Node { _tmp: tmp, state, third, journal: python.is_some() }
+    Node { _tmp: tmp, state, third }
 }
 
 struct Gateway {
@@ -596,14 +565,6 @@ fn gateway_end_to_end() {
     let posted = http().post(format!("{url}/usage")).json(&json!({"plugin": "fake", "surface": "code", "name": "lib"})).send().unwrap();
     assert!(posted.status().is_success());
 
-    // The Python journal service, loaded from its plugin folder.
-    if node.journal {
-        let (code, _, errout) =
-            cli(&url, &["journal", "post", "--project", "e2e", "--scope", "t", "--author", "e2e", "--body", "hello from the rust gateway"]);
-        assert_eq!(code, 0, "{}", fail(&format!("journal post: {errout}")));
-        let (text, err) = mcp.call("journal", json!({"verb": "fetch", "args": {"project": "e2e", "scope": "t"}}));
-        assert!(!err && text.contains("hello from the rust gateway"), "journal fetch: {text}");
-    }
 
     // An external service registers with its token. The supervisor never ran its run.sh.
     assert!(!node.state.join("logs/ext.log").exists(), "the supervisor spawned an external service");
@@ -778,10 +739,6 @@ fn gateway_end_to_end() {
         assert!(tally["plugins"]["fake"][surface].as_u64().unwrap_or(0) >= 1, "fake lacks {surface} usage: {tally}");
     }
     assert!(tally["plugins"]["caller"]["cli"].as_u64().unwrap_or(0) >= 1, "{tally}");
-    if node.journal {
-        assert!(tally["plugins"]["journal"]["cli"].as_u64().unwrap_or(0) >= 1, "{tally}");
-        assert!(tally["plugins"]["journal"]["mcp"].as_u64().unwrap_or(0) >= 1, "{tally}");
-    }
     assert!(tally["detail"]["fake"]["background nightly"].as_u64().unwrap_or(0) >= 1, "{tally}");
 
     drop(mcp);
@@ -807,22 +764,22 @@ fn edge_node(base: &Path, name: &str, tools: &[&str], edges: &str) -> PathBuf {
 }
 
 /// A stand-in for ssh from `from` to `to`: it drops ssh's options, the host and the `PATH=`
-/// prefix, and runs the rest of the command the edge client sent (`awm edge-serve --from
-/// <from>`) against `to`'s gateway, as a plain ssh login would.
+/// prefix, and runs the rest of the command the edge client sent (`AWM_EDGE_FROM=<from>
+/// awm edge-serve`) against `to`'s gateway, as a plain ssh login would.
 fn fake_ssh(base: &Path, from: &str, to: &str, to_state: &Path, to_url: &str) -> PathBuf {
     let home = base.join(format!("home-{to}"));
     std::fs::create_dir_all(&home).unwrap();
     let ssh = base.join(format!("fake-ssh-{from}"));
     write(&ssh, &format!(
         "#!/bin/sh\nunset AWM_EDGES_FILE SSH_ORIGINAL_COMMAND\nexport AWM_DIR='{}' AWM_GATEWAY_URL='{to_url}' AWM_NODE_NAME={to} HOME='{}'\n\
-         while [ $# -gt 0 ] && [ \"$1\" != awm ]; do shift; done\nshift\nexec '{}' \"$@\"\n",
+         while [ $# -gt 0 ] && [ \"$1\" != awm ]; do case \"$1\" in AWM_EDGE_FROM=*) export \"$1\";; esac; shift; done\nshift\nexec '{}' \"$@\"\n",
         to_state.display(), home.display(), awm_bin().display()));
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(&ssh, std::fs::Permissions::from_mode(0o755)).unwrap();
     ssh
 }
 
-/// A `peer=` call leaves through `ssh <peer> awm edge-serve --from near`, and the peer runs
+/// A `peer=` call leaves through `ssh <peer> AWM_EDGE_FROM=near awm edge-serve`, and the peer runs
 /// it as a call from the calling node (fleet.md R92, R93). A stand-in for ssh runs the
 /// command the client sent against the far gateway.
 #[test]
@@ -1295,7 +1252,7 @@ fn lay_out_isolated() -> Node {
             core.display()
         ),
     );
-    Node { _tmp: tmp, third: base.join("third"), state, journal: false }
+    Node { _tmp: tmp, third: base.join("third"), state }
 }
 
 /// One JSON-RPC message to `<base>/mcp`: (status, body).
