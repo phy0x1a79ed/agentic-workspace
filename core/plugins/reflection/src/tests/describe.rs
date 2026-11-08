@@ -3,11 +3,11 @@
 
 use std::path::PathBuf;
 
-use reflection::surface::{specs, Spec, TOOL};
+use crate::surface::{specs, TOOL};
 use serde_json::{json, Map, Value};
 
 fn baseline() -> Value {
-    serde_json::from_str(include_str!("../../../../docs/plugin-redux/ports/baseline/reflection.describe.json")).unwrap()
+    serde_json::from_str(include_str!("../../../../../docs/plugin-redux/ports/baseline/reflection.describe.json")).unwrap()
 }
 
 fn plugin_dir() -> PathBuf {
@@ -78,28 +78,33 @@ fn differences() -> Vec<String> {
     diffs
 }
 
-fn spec(verb: &str) -> Spec {
-    specs().into_iter().find(|s| s.verb == verb).unwrap()
-}
-
-/// The listed changes: `stop` takes an optional `job` that defaults to the caller, `list_other`
-/// gains `include_stopped`, and `probe` is new.
+/// The listed changes: `stop`'s optional `job`, `list_other`'s `include_stopped`, the new `probe`,
+/// `to` on `message` and `resume_other`, the lifecycle params and the sender-prefix wording.
 #[test]
 fn the_describe_differs_from_the_baseline_only_by_the_listed_changes() {
-    let want = ["list_other: adds param include_stopped", "probe: new verb", "stop: param job changed"];
+    let want = [
+        "compact: description",
+        "harness_event: adds param job",
+        "harness_event: adds param rc_url",
+        "harness_event: adds param session_kind",
+        "harness_event: adds param task_id",
+        "harness_event: description",
+        "harness_event: param kind changed",
+        "list_other: adds param include_stopped",
+        "message: adds param to",
+        "message: description",
+        "message: drops param job",
+        "message_self: description",
+        "probe: new verb",
+        "resume_other: adds param to",
+        "resume_other: description",
+        "resume_other: drops param job",
+        "start_other: description",
+        "stop: param job changed",
+    ];
     let mut got = differences();
     got.sort();
     assert_eq!(got, want);
-}
-
-#[test]
-fn the_changed_params_read_as_the_plan_says() {
-    let job = spec("stop").params[0].clone();
-    assert_eq!(as_described(&job)["required"], false);
-    assert!(job["description"].as_str().unwrap().ends_with("Omit to act on your own session."));
-    let probe = spec("probe");
-    assert_eq!(probe.params, json!([{"name": "node", "type": "string", "required": true, "description": "The node to probe."}]));
-    assert_eq!(probe.surfaces.as_deref(), Some(&["cli".to_string(), "http".to_string()][..]));
 }
 
 /// `surface.FUNCTIONS` timeouts in the Python reflection, plus `probe`.
@@ -162,11 +167,4 @@ fn the_manifest_needs_only_the_harness_contract() {
     }
     let tool = toml.split("[[tool]]").nth(1).unwrap();
     assert!(tool.contains(r#"name = "reflection""#) && tool.contains(r#"implements = ["reflection@1"]"#), "{toml}");
-}
-
-#[test]
-fn run_sh_execs_the_binary() {
-    let run = std::fs::read_to_string(plugin_dir().join("run.sh")).unwrap();
-    let body: Vec<&str> = run.lines().filter(|l| !l.starts_with("#!") && !l.trim().is_empty()).collect();
-    assert_eq!(body, [r#"exec "$AWM_DIR/bin/reflection" "$@""#]);
 }

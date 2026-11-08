@@ -2,6 +2,7 @@
 //! the wrapper that turns every failure into `ok: false` with a reason, logged once.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use awm_harness::contract::args::{bool_lenient, int_lenient};
 use awm_plugin_sdk::ids;
@@ -10,10 +11,11 @@ use serde_json::{json, Map, Value};
 
 use crate::app::{declared, is_false, is_ok, merged, object, ok_or_absent, py_repr, text, truthy, App, Failure};
 use crate::caller::Frame;
-use crate::gateway::Gateway;
+use crate::gateway::{Call, Gateway};
 use crate::ledger::Ticket;
 use crate::providers::{HarnessError, Provider, DOWN_FOR};
 use crate::trust::recorded_in;
+use crate::surface::TOOL;
 use crate::waits::NewWait;
 
 /// The mode the gateway's gate restricts hardest (core modes.rs).
@@ -26,8 +28,15 @@ pub const SELF_ACTING: [&str; 14] = [
     "message_self", "compact", "mode", "whoami", "wait", "remote_control", "model", "effort", "rename", "cd", "mcp",
     "interrupt", "link", "stop",
 ];
+/// `harness_event` kinds that report a session's lifecycle.
+pub const LIFECYCLE: [&str; 4] = ["started", "stopped", "remote_control", "renamed"];
+/// The emit topic of the session lifecycle, `reflection/sessions`.
+pub const SESSIONS_TOPIC: &str = "sessions";
 /// The keys every `list_other` row carries, null when its provider gave none.
 pub const ROW_KEYS: [&str; 9] = ["job", "session_id", "parent", "state", "live", "alive", "kind", "name", "transcript"];
+
+/// How long a verb forwarded to another node's reflection may take.
+const FORWARD_TIMEOUT: Duration = Duration::from_secs(60);
 
 const NO_MODEL: &str = "model and effort are required, with no default. Pick both to fit the task: a smaller model and \
                         lower effort for mechanical work, a larger model and high effort for design or debugging. Fable \
@@ -60,6 +69,21 @@ fn shown(v: Option<&Value>) -> String {
 
 fn reason(text: &str) -> Value {
     json!({"ok": false, "reason": text})
+}
+
+/// Where a `to` address leads.
+enum To {
+    Here(String),
+    Peer(String),
+    Refused(Value),
+}
+
+/// Split a `to` at its last `@`, because a session name may hold `/` and even `@`.
+pub(crate) fn split_to(to: &str) -> (&str, Option<&str>) {
+    match to.rsplit_once('@') {
+        Some((who, node)) if !who.is_empty() && !node.is_empty() => (who, Some(node)),
+        _ => (to, None),
+    }
 }
 
 /// The refusal of an effort above high, the upper limit for any session reflection starts or
@@ -308,7 +332,11 @@ impl<G: Gateway> App<G> {
     }
 
     async fn message(&self, frame: &Frame, args: &Value) -> Result<Value, Failure> {
-        let Some(job) = job_arg(args) else { return Ok(reason("job is required: the session to message")) };
+        let job = match self.address(frame, args, false).await {
+            To::Refused(out) => return Ok(out),
+            To::Peer(node) => return Ok(self.forward(frame, "message", &node, json!({"text": args.get("text"), "confirm": args.get("confirm")}), args).await),
+            To::Here(job) => job,
+        };
         let (p, named) = self.steer_target(frame, Some(&job), None).await?;
         let extra = json!({"text": self.provider_value(frame, args.get("text")).await, "confirm": flag(args, "confirm", false)});
         let mut out = self.harness_call(&p, "send", merged(&Value::Object(named), &extra), None).await?;
@@ -324,6 +352,40 @@ impl<G: Gateway> App<G> {
             Some(h) => merged(&out, &json!({"hint": h})),
             None => out,
         })
+    }
+
+    /// Where a `to` points: another node, or the job of the session it names on this one.
+    async fn address(&self, frame: &Frame, args: &Value, include_stopped: bool) -> To {
+        let Some(to) = args.get("to").and_then(Value::as_str).map(str::trim).filter(|t| !t.is_empty()) else {
+            return To::Refused(reason("to is required: <session name>@<node> or <job id>@<node>"));
+        };
+        let (who, node) = split_to(to);
+        if let Some(node) = node.filter(|n| *n != self.node.name()) {
+            return To::Peer(node.to_string());
+        }
+        let rows = self.list_other(frame, &json!({"include_stopped": include_stopped})).await;
+        let jobs: Vec<&str> = rows["sessions"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|r| text(r, "name") == Some(who))
+            .filter_map(|r| text(r, "job"))
+            .collect();
+        match jobs[..] {
+            [] => To::Here(who.to_string()),
+            [job] => To::Here(job.to_string()),
+            _ => To::Refused(json!({"ok": false, "reason": format!("{who} names {} sessions: pick one by job id", jobs.len()), "jobs": jobs})),
+        }
+    }
+
+    /// Hand a verb to `node`'s reflection with the caller's session, whose door stamps the claim.
+    async fn forward(&self, frame: &Frame, verb: &str, node: &str, mut fwd: Value, args: &Value) -> Value {
+        let (who, _) = split_to(args.get("to").and_then(Value::as_str).unwrap_or_default());
+        fwd["to"] = json!(who);
+        match self.gw.call(Call::new(TOOL, verb, fwd, FORWARD_TIMEOUT).peer(Some(node)).caller_pid(frame.pid)).await {
+            Ok(out) => out,
+            Err(e) => json!({"ok": false, "error": e.to_string()}),
+        }
     }
 
     /// Move a session, claiming the scope it moves into (sessions lane, scope claims).
@@ -519,6 +581,9 @@ impl<G: Gateway> App<G> {
         for r in rows.iter_mut() {
             let level = recorded_in(&data, text(r, "session_id"), text(r, "job"));
             r["trust"] = level.map_or_else(|| r.get("trust").cloned().unwrap_or(Value::Null), |l| json!(l));
+            if let Some(link) = text(r, "link").map(str::to_string) {
+                r["rc_url"] = json!(link);
+            }
             for key in ROW_KEYS {
                 if r.get(key).is_none() {
                     r[key] = Value::Null;
@@ -571,10 +636,15 @@ impl<G: Gateway> App<G> {
     }
 
     async fn resume_other(&self, frame: &Frame, args: &Value) -> Result<Value, Failure> {
+        let job = match self.address(frame, args, true).await {
+            To::Refused(out) => return Ok(out),
+            To::Peer(node) => return Ok(self.forward(frame, "resume_other", &node, json!({"prompt": args.get("prompt")}), args).await),
+            To::Here(job) => job,
+        };
         let extra = json!({"prompt": self.provider_value(frame, args.get("prompt")).await});
-        let (out, _) = self.on_job(frame, args, "resume", "resume_other", extra).await?;
+        let (out, _) = self.on_job(frame, &json!({"job": job}), "resume", "resume_other", extra).await?;
         if is_ok(&out) {
-            self.drop_wait_of_job(&job_arg(args).unwrap_or_default()).await;
+            self.drop_wait_of_job(&job).await;
             if let Some(sid) = out.get("session_id").and_then(Value::as_str) {
                 self.drop_wait(sid).await;
             }
@@ -678,11 +748,30 @@ impl<G: Gateway> App<G> {
     pub async fn harness_event(self: &Arc<Self>, args: &Value) -> Value {
         let event = declared(args);
         let out = match event.get("kind").and_then(Value::as_str) {
+            Some(kind) if LIFECYCLE.contains(&kind) => return self.lifecycle(&event).await,
             Some("clear") => self.cleared(&event).await,
             _ => self.record_event(event).await,
         };
         self.kick_sweep();
         out
+    }
+
+    /// A provider's lifecycle report, onto `reflection/sessions`. It is not a ticket, so no
+    /// ledger row is kept and a provider never resends one.
+    async fn lifecycle(&self, event: &Map<String, Value>) -> Value {
+        let field = |k: &str| event.get(k).cloned().unwrap_or(Value::Null);
+        let place = self.scope_of(event.get("cwd").and_then(Value::as_str)).await;
+        let (project, scope) = place.map_or((None, None), |(p, s)| (Some(p), Some(s)));
+        let ts = chrono::DateTime::from_timestamp_millis(self.node.now_ms()).map(|t| t.to_rfc3339());
+        let mut out = json!({"event": field("kind"), "job": field("job"), "session_id": field("session_id"), "name": field("name"),
+                             "node": self.node.name(), "project": project, "scope": scope, "kind": field("session_kind"), "ts": ts});
+        for key in ["task_id", "rc_url"] {
+            if let Some(v) = event.get(key).filter(|v| truthy(Some(v))) {
+                out[key] = v.clone();
+            }
+        }
+        self.node.emit(SESSIONS_TOPIC, out);
+        json!({"ok": true})
     }
 
     /// A session cleared itself: its new id takes the old one as its parent (sessions.md R13).

@@ -237,6 +237,8 @@ pub struct FakeGateway {
     pub on_claim: Mutex<Option<Hook>>,
     pub brief: Mutex<Value>,
     pub peer_answers: Mutex<HashMap<(String, String), Result<Value, String>>>,
+    /// operations answers every call with a transport fault.
+    pub operations_down: AtomicBool,
 }
 
 impl FakeGateway {
@@ -258,6 +260,7 @@ impl FakeGateway {
             on_claim: Mutex::default(),
             brief: Mutex::new(json!({"brief": null})),
             peer_answers: Mutex::default(),
+            operations_down: AtomicBool::new(false),
         }
     }
 
@@ -337,6 +340,7 @@ impl Gateway for FakeGateway {
                 "session_parent" => json!({"ok": true}),
                 _ => json!({}),
             }),
+            "operations" if self.operations_down.load(Ordering::SeqCst) => Err(CallError::Down("operations is down".into())),
             "operations" => Ok(json!({"task_id": "task-9"})),
             "reflection" => {
                 let key = (call.peer.clone().unwrap_or_default(), call.verb.clone());
@@ -352,6 +356,7 @@ pub struct FakeNode {
     pub peers: Mutex<Result<Vec<String>, String>>,
     pub now: Mutex<Option<i64>>,
     pub projects: Mutex<PathBuf>,
+    pub emitted: Mutex<Vec<(String, Value)>>,
 }
 
 impl Node for FakeNode {
@@ -367,8 +372,12 @@ impl Node for FakeNode {
         lock(&self.projects).clone()
     }
 
+    fn emit(&self, topic: &str, payload: Value) {
+        lock(&self.emitted).push((topic.to_string(), payload));
+    }
+
     fn now_ms(&self) -> i64 {
-        lock(&self.now).unwrap_or_else(|| crate::gateway::LiveNode.now_ms())
+        lock(&self.now).unwrap_or_else(crate::gateway::now_ms)
     }
 }
 
@@ -408,7 +417,7 @@ pub struct Fx {
 impl Fx {
     pub fn new() -> Self {
         let tmp = tempfile::tempdir().unwrap();
-        let node = Arc::new(FakeNode { peers: Mutex::new(Ok(vec![])), now: Mutex::default(), projects: Mutex::new(PathBuf::from("/w/projects")) });
+        let node = Arc::new(FakeNode { peers: Mutex::new(Ok(vec![])), now: Mutex::default(), projects: Mutex::new(PathBuf::from("/w/projects")), emitted: Mutex::default() });
         let trust = Arc::new(FakeTrust::default());
         let app = Arc::new(App::new(FakeGateway::new(), node.clone(), trust.clone(), Store::new(tmp.path().join("state"))));
         Self { app, node, trust, _tmp: tmp }

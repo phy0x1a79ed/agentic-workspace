@@ -24,6 +24,8 @@ pub struct Frame {
     pub claim: Option<Value>,
     /// `_caller_plugin`: the calling plugin's service, from the call frame alone.
     pub plugin: Option<String>,
+    /// The node a verified order's plugin speaks from, when it is not this node.
+    pub plugin_node: Option<String>,
     /// `_caller_trust`: the level the gateway gave the call.
     pub trust: Option<String>,
     /// The `X-Awm-As` principal, `peer:<node>` for a call from another node.
@@ -45,12 +47,18 @@ impl Frame {
             plugin: plugin.map(str::trim).filter(|p| !p.is_empty()).map(str::to_string),
             trust: args.get(TRUST_KEY).and_then(Value::as_str).map(str::to_string),
             as_: as_.map(str::to_string),
+            ..Self::default()
         }
     }
 
     /// A line that a plugin's service, reflection itself included, has typed.
     pub fn service(plugin: &str) -> Self {
         Self { plugin: Some(plugin.into()), ..Self::default() }
+    }
+
+    /// A verified order: alcor's operations speaking, not a local caller.
+    pub fn order() -> Self {
+        Self { plugin: Some("operations".into()), plugin_node: Some("alcor".into()), ..Self::default() }
     }
 
     /// How a provider names the caller's own session: by session id when isolated, else by pid.
@@ -68,6 +76,16 @@ impl Frame {
     /// The pid as the log lines print it, `None` when there is none.
     pub fn pid_text(&self) -> String {
         self.pid.map_or_else(|| "None".into(), |p| p.to_string())
+    }
+}
+
+/// A session's prefix. A session with no name goes by its job id.
+fn sender_prefix(name: Option<&str>, job: Option<&str>, session_id: Option<&str>, node: &str) -> String {
+    match (name, job.or(session_id)) {
+        (Some(n), Some(j)) => format!("from {n}@{node} [job {j}]: "),
+        (Some(n), None) => format!("from {n}@{node}: "),
+        (None, Some(j)) => format!("from {j}@{node}: "),
+        (None, None) => format!("from shell@{node}: "),
     }
 }
 
@@ -91,16 +109,33 @@ impl<G: Gateway> App<G> {
     }
 
     /// The text a provider is handed to type on behalf of `frame`'s caller. Every typed line
-    /// passes here, as opposed to a slash command a provider builds itself.
-    pub async fn provider_text(&self, frame: &Frame, text: &str) -> String {
-        let _ = frame;
-        text.to_string()
+    /// passes here. A slash command stays as it is, because a prefix would turn it into chat.
+    pub async fn provider_text(&self, frame: &Frame, typed: &str) -> String {
+        if typed.starts_with('/') {
+            return typed.to_string();
+        }
+        format!("{}{typed}", self.sender(frame).await)
+    }
+
+    /// Who the line is from, built from the gateway's stamps alone.
+    async fn sender(&self, frame: &Frame) -> String {
+        if let Some(c) = &frame.claim {
+            return sender_prefix(text(c, "name"), text(c, "job"), text(c, "session_id"), text(c, "node").unwrap_or("unknown"));
+        }
+        let node = self.node.name();
+        if let Some(plugin) = &frame.plugin {
+            return format!("from {plugin}@{}: ", frame.plugin_node.as_deref().unwrap_or(&node));
+        }
+        match self.actor(frame).await {
+            Some(who) => sender_prefix(text(&who, "name"), text(&who, "job"), text(&who, "session_id"), &node),
+            None => format!("from shell@{node}: "),
+        }
     }
 
     /// [`App::provider_text`] of an optional argument: a string is built, anything else is kept.
     pub async fn provider_value(&self, frame: &Frame, v: Option<&Value>) -> Value {
         match v {
-            Some(Value::String(s)) => Value::String(self.provider_text(frame, s).await),
+            Some(Value::String(s)) if !s.is_empty() => Value::String(self.provider_text(frame, s).await),
             Some(other) => other.clone(),
             None => Value::Null,
         }

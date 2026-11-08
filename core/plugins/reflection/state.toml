@@ -17,6 +17,10 @@ path = "services/reflection/*.tmp"
 [[transient]]
 path = "services/reflection/pending"
 
+# The orders this node has taken, pruned a day after each is reported.
+[[transient]]
+path = "services/reflection/orders.json"
+
 [[additive]]
 path = "services/reflection/events.jsonl"
 

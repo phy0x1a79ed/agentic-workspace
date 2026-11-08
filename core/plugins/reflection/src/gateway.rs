@@ -5,6 +5,7 @@ use std::future::Future;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use awm_plugin_sdk::service::Context;
 use awm_plugin_sdk::{config, CallOpts, Hub, HubError};
 use serde_json::Value;
 
@@ -16,13 +17,15 @@ pub struct Call {
     pub args: Value,
     pub peer: Option<String>,
     pub as_: Option<String>,
+    /// The session this call acts for, so that the door stamps it as the caller claim.
+    pub caller_pid: Option<u32>,
     pub timeout: Duration,
 }
 
 impl Call {
     /// A local call with no principal.
     pub fn new(tool: &str, verb: &str, args: Value, timeout: Duration) -> Self {
-        Self { tool: tool.into(), verb: verb.into(), args, peer: None, as_: None, timeout }
+        Self { tool: tool.into(), verb: verb.into(), args, peer: None, as_: None, caller_pid: None, timeout }
     }
 
     pub fn peer(mut self, peer: Option<&str>) -> Self {
@@ -32,6 +35,11 @@ impl Call {
 
     pub fn as_(mut self, as_: Option<&str>) -> Self {
         self.as_ = as_.map(str::to_string);
+        self
+    }
+
+    pub fn caller_pid(mut self, pid: Option<u32>) -> Self {
+        self.caller_pid = pid;
         self
     }
 }
@@ -80,7 +88,7 @@ impl Gateway for Hub {
     }
 
     async fn call(&self, call: Call) -> Result<Value, CallError> {
-        let opts = CallOpts { peer: call.peer.clone(), as_: call.as_.clone(), caller_pid: None, timeout: call.timeout };
+        let opts = CallOpts { peer: call.peer.clone(), as_: call.as_.clone(), caller_pid: call.caller_pid, timeout: call.timeout };
         self.call_with(&call.tool, &call.verb, call.args.clone(), &opts).await.map_err(|e| classify(&call, &e))
     }
 }
@@ -95,10 +103,12 @@ pub trait Node: Send + Sync + 'static {
     fn projects_dir(&self) -> PathBuf;
     /// Milliseconds since the epoch.
     fn now_ms(&self) -> i64;
+    /// Send one payload on this service's emit topic. Never waits on the gateway.
+    fn emit(&self, topic: &str, payload: Value);
 }
 
-/// This node: its edge list, its workspace and the system clock.
-pub struct LiveNode;
+/// This node: its edge list, its workspace, the system clock and the service's emit channel.
+pub struct LiveNode(pub Context);
 
 impl Node for LiveNode {
     fn name(&self) -> String {
@@ -114,9 +124,17 @@ impl Node for LiveNode {
         config::canonical_workspace().join("projects")
     }
 
-    fn now_ms(&self) -> i64 {
-        SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
+    fn emit(&self, topic: &str, payload: Value) {
+        self.0.emit(topic, payload);
     }
+
+    fn now_ms(&self) -> i64 {
+        now_ms()
+    }
+}
+
+pub(crate) fn now_ms() -> i64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
 }
 
 #[cfg(test)]

@@ -9,15 +9,18 @@ publish = false
 [lib]
 name = "reflection"
 path = "src/lib.rs"
+doctest = false
 
 [[bin]]
 name = "reflection"
 path = "src/main.rs"
+test = false
 
 [dependencies]
 awm-plugin-sdk.workspace = true
 awm-harness.workspace = true
 awm-trust.workspace = true
+chrono.workspace = true
 awm-statecheck = { path = "../../crates/awm-statecheck" }
 anyhow.workspace = true
 clap.workspace = true
@@ -30,6 +33,7 @@ tokio.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+ed25519-dalek = "2"
 tempfile.workspace = true
 tracing-subscriber.workspace = true
 tokio = { workspace = true, features = ["test-util"] }

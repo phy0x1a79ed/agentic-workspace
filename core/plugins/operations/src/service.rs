@@ -15,7 +15,7 @@ use crate::arbutus::{self, Approvals, ArbutusIo};
 use crate::front::{Front, Outside, Stamp};
 use crate::home::{Home, LocalClient};
 use crate::keys::Keys;
-use crate::relay::{async_trait_free::BoxFut, ClientError, Relay, StoreClient};
+use crate::relay::{async_trait_free::BoxFut, Relay, StoreClient};
 use crate::settings::Settings;
 use crate::store::{BoardEvent, LiveSession, Store};
 
@@ -33,7 +33,9 @@ pub fn truthy(v: &Value) -> bool {
 
 /// Verbs no plugin may call: the approver's devices and the orders. Any plugin may call any
 /// tool, so these name the callers they admit: operator calls only.
-pub const NO_PLUGIN: [&str; 4] = ["devices", "device_revoke", "order_pull", "order_done"];
+pub const NO_PLUGIN: [&str; 2] = ["devices", "device_revoke"];
+/// The order verbs: each node's reflection, or an operator.
+pub const ORDER_VERBS: [&str; 2] = ["order_pull", "order_done"];
 /// The verbs only the trilium writer may call.
 pub const TRILIUM_ONLY: [&str; 1] = ["board_import"];
 /// The verbs no session may call.
@@ -43,24 +45,6 @@ pub const VAULT_WRITER: &str = "trilium";
 
 pub const BOARD_TOPIC: &str = "board";
 pub const BOARD_EMITTER: &str = "Fires at each card event the store appends: {task_id, seq, ts}, where seq is the event's board_changes mark and ts is RFC 3339 UTC. Nothing at boot: a subscriber drains board_changes after its own mark.";
-
-/// The prompt an `agent` order started from a note gets: one fixed line, no vault text.
-pub fn agent_prompt(note_id: Option<&str>) -> Option<String> {
-    note_id.map(|n| format!("Read the note {n} as context only, then wait for Tony."))
-}
-
-/// The `start_other` args of one `agent` order (CONTRACT.md b11adebc).
-pub fn agent_start(body: &Value) -> Value {
-    let p = &body["payload"];
-    let mut start = json!({
-        "task_id": p["task_id"], "role": "main", "remote_control": true, "suggest": true,
-        "model": "opus", "effort": "high", "started_by": "Tony from the vault",
-    });
-    if let Some(prompt) = agent_prompt(p.get("note_id").and_then(Value::as_str)) {
-        start["prompt"] = json!(prompt);
-    }
-    start
-}
 
 fn rfc3339(ts: f64) -> String {
     chrono::DateTime::from_timestamp((ts.floor()) as i64, ((ts.fract()) * 1e9) as u32)
@@ -97,7 +81,7 @@ impl Outside for HubOutside {
         Box::pin(async move {
             let peer = peer.filter(|p| *p != self.node).map(str::to_string);
             let opts = CallOpts { peer, timeout: Duration::from_secs(30), ..CallOpts::default() };
-            match self.hub.call_with("reflection", "message", json!({"job": job, "text": text}), &opts).await {
+            match self.hub.call_with("reflection", "message", json!({"to": job, "text": text}), &opts).await {
                 Ok(out) => !failed(&out),
                 Err(e) => {
                     tracing::warn!("operations: could not tell {job}: {e}");
@@ -197,6 +181,9 @@ impl Ops {
             if let Some(p) = plugin {
                 return refusal(format!("{verb} is not open to plugin {p:?}"));
             }
+        }
+        if ORDER_VERBS.contains(&verb) && plugin.is_some_and(|p| p != "reflection") {
+            return refusal(format!("{verb} is not open to plugin {:?}", plugin.unwrap_or_default()));
         }
         if NO_SESSION.contains(&verb) && (st.is_session() || as_.is_some()) {
             return refusal(format!("{verb} takes this node's own services only"));
@@ -347,49 +334,6 @@ pub async fn sweep_loop(ap: Arc<Approver>) {
     }
 }
 
-/// Pull this node's `agent` orders and start each one through reflection here.
-pub async fn order_loop(relay: Arc<Relay>, hub: Hub, grant_pub: [u8; 32]) {
-    loop {
-        let envelopes = match relay.poll("order_pull", json!({"node": relay.node, "kinds": crate::approver::ORDER_KINDS, "wait_s": 55})).await {
-            Ok(Value::Array(e)) => e,
-            Ok(_) => vec![],
-            Err(ClientError::Unreachable(_)) | Err(ClientError::Refused(_)) => {
-                tokio::time::sleep(Duration::from_secs(5)).await;
-                continue;
-            }
-        };
-        for env in envelopes {
-            let body = match relay.take_order(&env, &grant_pub) {
-                Ok(Some(b)) => b,
-                Ok(None) => continue,
-                Err(e) => {
-                    tracing::warn!("operations: dropped an order: {e}");
-                    continue;
-                }
-            };
-            let id = body["order_id"].as_str().unwrap_or_default().to_string();
-            let outcome = if body["kind"] != "agent" {
-                Err(format!("this node takes agent orders only, not {}", body["kind"]))
-            } else {
-                let opts = CallOpts { timeout: Duration::from_secs(120), ..CallOpts::default() };
-                match hub.call_with("reflection", "start_other", agent_start(&body), &opts).await {
-                    Ok(out) if !failed(&out) => Ok(out),
-                    Ok(out) => Err(out.get("reason").or(out.get("error")).cloned().unwrap_or(out).to_string()),
-                    Err(e) => Err(e.to_string()),
-                }
-            };
-            let (ok, note) = match outcome {
-                Ok(out) => (true, out.to_string()),
-                Err(e) => (false, e),
-            };
-            let note: String = note.chars().take(500).collect();
-            if let Err(e) = relay.write("order_done", json!({"order_id": id, "ok": ok, "note": note})).await {
-                tracing::warn!("operations: order {id} done not recorded: {e}");
-            }
-        }
-    }
-}
-
 /// Wire the whole service from the environment and run it.
 pub async fn serve() -> anyhow::Result<()> {
     let service = Service::from_env()?;
@@ -440,8 +384,6 @@ pub async fn serve() -> anyhow::Result<()> {
     let ops = Arc::new(Ops { front: front.clone(), home: home.clone() });
     let service = register(service, ops);
 
-    let grant_pub = awm_trust::grant::grant_key_env(std::env::var(awm_trust::grant::GRANT_KEY_ENV).ok())
-        .or_else(|_| awm_trust::grant::grant_key_file(&env.awm_dir)).ok();
     let (h2, r2, f2) = (hub.clone(), relay.clone(), front.clone());
     let started = async move {
         let r = r2.clone();
@@ -483,12 +425,6 @@ pub async fn serve() -> anyhow::Result<()> {
             if let Err(e) = crate::door::serve(h, &crate::door::socket_path()).await {
                 tracing::error!("operations: the door socket did not start: {e}");
             }
-        }
-        match grant_pub {
-            Some(k) => {
-                tokio::spawn(order_loop(r2, h2, k));
-            }
-            None => tracing::warn!("operations: no AWM_APPROVER_GRANT_PUBKEY: agent orders stay off on this node"),
         }
     };
     service.on_ready(started).run().await

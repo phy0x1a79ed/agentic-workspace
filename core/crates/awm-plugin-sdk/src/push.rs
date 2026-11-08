@@ -74,7 +74,7 @@ fn gone_reason(v: &Value) -> bool {
 /// Type `text` into `job` on `node` through `reflection message`.
 pub async fn reflect(hub: &Hub, node: &str, job: &str, text: &str) -> Outcome {
     let opts = CallOpts { peer: peer_for(node), timeout: Duration::from_secs(60), ..CallOpts::default() };
-    match hub.call_with("reflection", "message", json!({"job": job, "text": text}), &opts).await {
+    match hub.call_with("reflection", "message", json!({"to": job, "text": text}), &opts).await {
         Ok(v) if v.get("ok").and_then(Value::as_bool) == Some(true) => Outcome::Delivered,
         Ok(v) if gone_reason(&v) => Outcome::Gone,
         Ok(v) => Outcome::Retry(v.to_string()),

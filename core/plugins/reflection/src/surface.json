@@ -4,7 +4,7 @@
   {
    "name": "message_self",
    "tool": "reflection_message_self",
-   "description": "Type a command/text into YOUR OWN prompt and submit it (no Escape, so it QUEUES behind the current turn). Use for self-directed slash commands like /compact or /model opus. Works the same whether your session runs in a terminal or as a background job — you do not need to know which. It types only into your own session; `message` types into another. A submitted slash command is auto-trailed by a follow-up prompt (override with `followup`) so the session has a next turn once the command finishes — a bare command would otherwise go idle. The follow-up is DEFERRED (injected after the command completes, never queued behind it) so it can't run ahead of the command. Modal commands (/status, /model with no arg, …) are refused — they trap input and freeze the session. So is every /mcp line: use the `mcp` verb.",
+   "description": "Type a command/text into YOUR OWN prompt and submit it (no Escape, so it QUEUES behind the current turn). Use for self-directed slash commands like /compact or /model opus. Works the same whether your session runs in a terminal or as a background job — you do not need to know which. It types only into your own session; `message` types into another. A submitted slash command is auto-trailed by a follow-up prompt (override with `followup`) so the session has a next turn once the command finishes — a bare command would otherwise go idle. The follow-up is DEFERRED (injected after the command completes, never queued behind it) so it can't run ahead of the command. Modal commands (/status, /model with no arg, …) are refused — they trap input and freeze the session. So is every /mcp line: use the `mcp` verb. Reflection starts the typed line with `from <session name>@<node> [job <id>]: `, built from the caller the gateway stamped, so the receiver sees who sent it.",
    "timeout": 60,
    "params": [
     {
@@ -38,7 +38,7 @@
   {
    "name": "compact",
    "tool": "reflection_compact",
-   "description": "Compact your own conversation: injects /compact into your own prompt; it queues and runs the instant the current turn ends. A resume prompt is then injected AFTER compaction completes (a detached watcher waits for it — the resume is never queued behind /compact, so it always lands on the freshly-compacted context) so the session resumes instead of going idle. Returns immediately with followup_deferred=true. Call with no arguments; works the same in a terminal session and in a background one.",
+   "description": "Compact your own conversation: injects /compact into your own prompt; it queues and runs the instant the current turn ends. A resume prompt is then injected AFTER compaction completes (a detached watcher waits for it — the resume is never queued behind /compact, so it always lands on the freshly-compacted context) so the session resumes instead of going idle. Returns immediately with followup_deferred=true. Call with no arguments; works the same in a terminal session and in a background one. Reflection starts the typed line with `from <session name>@<node> [job <id>]: `, built from the caller the gateway stamped, so the receiver sees who sent it.",
    "timeout": 60,
    "params": [
     {
@@ -238,14 +238,14 @@
   {
    "name": "message",
    "tool": "reflection_message",
-   "description": "To talk to another agent, use your harness's own channel first: in Claude Code, `SendMessage` to a session that `ListAgents` shows, and the reply comes back the same way. Use this verb when the harness has no such channel, or to drive another session's prompt, such as a slash command. Type text into another session's prompt and submit it (no Escape, so it queues behind its current turn). Same guards as `message_self`: destructive commands need confirm, modal commands are refused, and so is a session showing a modal or permission prompt. Every /mcp line is refused: reconnect, enable or disable servers with the `mcp` verb. No follow-up is added.",
+   "description": "To talk to another agent, use your harness's own channel first: in Claude Code, `SendMessage` to a session that `ListAgents` shows, and the reply comes back the same way. Use this verb when the harness has no such channel, or to drive another session's prompt, such as a slash command. Type text into another session's prompt and submit it (no Escape, so it queues behind its current turn). Same guards as `message_self`: destructive commands need confirm, modal commands are refused, and so is a session showing a modal or permission prompt. Every /mcp line is refused: reconnect, enable or disable servers with the `mcp` verb. No follow-up is added. Reflection starts the typed line with `from <session name>@<node> [job <id>]: `, built from the caller the gateway stamped, so the receiver sees who sent it.",
    "timeout": 60,
    "params": [
     {
-     "name": "job",
+     "name": "to",
      "type": "string",
      "required": true,
-     "description": "A job id, or a session name as `list_other` shows it."
+     "description": "The session: `<session name>@<node>` or `<job id>@<node>`. A bare name or job means this node. The address splits at the last `@`. A name that matches two sessions is refused, and the refusal lists their jobs."
     },
     {
      "name": "text",
@@ -277,7 +277,7 @@
   {
    "name": "start_other",
    "tool": "reflection_start_other",
-   "description": "Start a named background Claude Code session in a scope's worktree, creating the worktree if it is absent, and return its job id and the `claude attach` command. Refuses on a station, for a caller that is not a domestic peer, when no Claude Code daemon runs, when the worktree is untrusted, or when a live session already holds the name or the scope. The new session claims its scope, and a stop ends the claim. A lobby start claims nothing until its `cd`. A worktree of an awm project is trusted first, not refused. The session defaults to skip-permissions. `model` and `effort` are required, with no default: a call without them is refused. Pick both to fit the task, a smaller model and lower effort for mechanical work, a larger model and high effort for design or debugging. High is the upper limit, so xhigh and max are refused on any model. A call that names Fable needs the user to agree first: ask in the chat. Every caller gets the same session, whoever it is.",
+   "description": "Start a named background Claude Code session in a scope's worktree, creating the worktree if it is absent, and return its job id and the `claude attach` command. Refuses on a station, for a caller that is not a domestic peer, when no Claude Code daemon runs, when the worktree is untrusted, or when a live session already holds the name or the scope. The new session claims its scope, and a stop ends the claim. A lobby start claims nothing until its `cd`. A worktree of an awm project is trusted first, not refused. The session defaults to skip-permissions. `model` and `effort` are required, with no default: a call without them is refused. Pick both to fit the task, a smaller model and lower effort for mechanical work, a larger model and high effort for design or debugging. High is the upper limit, so xhigh and max are refused on any model. A call that names Fable needs the user to agree first: ask in the chat. Every caller gets the same session, whoever it is. Reflection starts the typed line with `from <session name>@<node> [job <id>]: `, built from the caller the gateway stamped, so the receiver sees who sent it.",
    "params": [
     {
      "name": "project",
@@ -473,13 +473,13 @@
   {
    "name": "resume_other",
    "tool": "reflection_resume_other",
-   "description": "Bring back a waiting job that `start_other` created, under the same job id and with its own conversation (`claude respawn`), and re-pin it if it was pinned. A retired session, whose job is gone, comes back in a new job from its transcript under the same session id (sessions.md R10). A resume by hand clears the job's wait. Refuses a running job, a session whose transcript is gone, a job that `start_other` did not create, and a job started above the high-effort limit.",
+   "description": "Bring back a waiting job that `start_other` created, under the same job id and with its own conversation (`claude respawn`), and re-pin it if it was pinned. A retired session, whose job is gone, comes back in a new job from its transcript under the same session id (sessions.md R10). A resume by hand clears the job's wait. Refuses a running job, a session whose transcript is gone, a job that `start_other` did not create, and a job started above the high-effort limit. Reflection starts the typed line with `from <session name>@<node> [job <id>]: `, built from the caller the gateway stamped, so the receiver sees who sent it.",
    "params": [
     {
-     "name": "job",
+     "name": "to",
      "type": "string",
      "required": true,
-     "description": "The job id `start_other` returned, or the session id of a retired session."
+     "description": "The session: `<session name>@<node>` or `<job id>@<node>`. A bare name or job means this node. The address splits at the last `@`. A name that matches two sessions is refused, and the refusal lists their jobs."
     },
     {
      "name": "prompt",
@@ -510,7 +510,7 @@
   {
    "name": "harness_event",
    "tool": "reflection_harness_event",
-   "description": "A harness plugin reports how a command with a follow-up ended, done or lost, or that a session cleared itself, clear (harness-contract.md § Events).",
+   "description": "A harness plugin reports how a command with a follow-up ended, done or lost, or that a session cleared itself, clear (harness-contract.md § Events). A provider also reports a session's lifecycle: started, stopped, remote_control or renamed.",
    "params": [
     {
      "name": "session_id",
@@ -521,7 +521,7 @@
      "name": "kind",
      "type": "string",
      "required": true,
-     "description": "done, lost or clear"
+     "description": "done, lost, clear, or a lifecycle kind: started, stopped, remote_control, renamed"
     },
     {
      "name": "parent",
@@ -571,6 +571,26 @@
     {
      "name": "at_ms",
      "type": "integer"
+    },
+    {
+     "name": "job",
+     "type": "string",
+     "description": "The job id, with a lifecycle kind."
+    },
+    {
+     "name": "session_kind",
+     "type": "string",
+     "description": "The session's row kind, with a lifecycle kind."
+    },
+    {
+     "name": "task_id",
+     "type": "string",
+     "description": "The operations task, when the session has one."
+    },
+    {
+     "name": "rc_url",
+     "type": "string",
+     "description": "The Remote Control link, while it is on."
     }
    ],
    "surfaces": [

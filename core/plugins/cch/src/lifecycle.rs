@@ -110,7 +110,7 @@ pub const HINT_PROJECT: &str = "Your starter suggests the project {project}. ";
 pub const TASK_JOINED: &str = "You joined task `{task_id}` as its {role}: your journals post to its card.";
 pub const TASK_OWN: &str = r#"`reflection(verb="whoami")` names your task id once your card exists. When Tony's work turns out to belong to a task that already runs, join it with `operations(verb="task_join")`."#;
 
-pub const REPORT_TO_PARENT: &str = r#"to the session that started you: `SendMessage` it when `ListAgents` lists it, else `reflection(verb="message", args={{job:"{target}", text:…}})`"#;
+pub const REPORT_TO_PARENT: &str = r#"to the session that started you: `SendMessage` it when `ListAgents` lists it, else `reflection(verb="message", args={{to:"{target}", text:…}})`"#;
 pub const REPORT_TO_PROMPT: &str =
     "where your first prompt asks. When it names no place, your debrief journal is the report";
 

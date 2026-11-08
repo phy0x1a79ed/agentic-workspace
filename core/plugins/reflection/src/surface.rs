@@ -13,6 +13,7 @@ use crate::gateway::Gateway;
 
 pub const TOOL: &str = "reflection";
 const TABLE: &str = include_str!("surface.json");
+const SESSIONS_EMITTER: &str = "Fires when a session starts, stops, gets Remote Control or is renamed: {event, job, session_id, name, node, project, scope, kind, task_id?, rc_url?, ts}. Nothing at boot: a subscriber reads list_other once when it connects.";
 
 /// One published verb.
 #[derive(Debug, Clone, PartialEq)]
@@ -56,7 +57,7 @@ pub fn specs() -> Vec<Spec> {
 
 /// Publish every verb of `app` on `svc`.
 pub fn serve<G: Gateway>(svc: Service, app: Arc<App<G>>) -> Service {
-    let svc = svc.api("description", json!(description()));
+    let svc = svc.api("description", json!(description())).emitter(crate::verbs::SESSIONS_TOPIC, Some(SESSIONS_EMITTER));
     specs().into_iter().fold(svc, |svc, spec| {
         let (verb, app) = (spec.verb.clone(), app.clone());
         let svc = svc.verb(TOOL, &spec.verb, &spec.description, spec.params, move |c: Call| {

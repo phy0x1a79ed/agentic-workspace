@@ -4,7 +4,6 @@
 use std::sync::Arc;
 
 use awm_plugin_operations::relay::{ClientError, Relay};
-use awm_trust::grant::load_public_key;
 use crate::common::{s, Env, Flaky, ME};
 use serde_json::{json, Value};
 
@@ -87,23 +86,6 @@ async fn refused_write_surfaces_and_does_not_block() {
     assert_eq!(p.relay.pending(), 0);
     let next = p.relay.write("task_open", json!({"title": "after", "session_id": "ccA"})).await.unwrap();
     assert!(next.get("queued").is_none());
-}
-
-#[tokio::test]
-async fn orders_run_once_and_only_for_this_node() {
-    let p = pair();
-    let grant_pub = load_public_key(&p.env.ap.keys.grant_pub_b64u()).unwrap();
-    let good = p.env.ap.issue_order("agent", "mizar", json!({"task_id": "ABEiM0RV", "node": "mizar"})).unwrap();
-    let other = p.env.ap.issue_order("agent", "alcor", json!({"task_id": "ABEiM0RV", "node": "alcor"})).unwrap();
-    let mut forged = good.clone();
-    forged["order"]["order_id"] = json!("o-forged");
-    let body = p.relay.take_order(&good, &grant_pub).unwrap().expect("a fresh order");
-    assert_eq!((body["kind"].clone(), body["payload"]["task_id"].clone()), (json!("agent"), json!("ABEiM0RV")));
-    assert_eq!(p.relay.take_order(&good, &grant_pub).unwrap(), None, "a replay is dropped");
-    assert!(p.relay.take_order(&other, &grant_pub).is_err(), "another node's order");
-    assert!(p.relay.take_order(&forged, &grant_pub).is_err(), "a forged order");
-    let late = p.env.ap.keys.envelope("order", json!({"order_id": "o-late", "kind": "agent", "node": "mizar", "payload": {}, "not_after": 1}));
-    assert!(p.relay.take_order(&late, &grant_pub).is_err(), "an expired order");
 }
 
 #[tokio::test]

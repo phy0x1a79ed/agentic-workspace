@@ -46,4 +46,4 @@ def test_tell_messages_the_job(monkeypatch):
     monkeypatch.setattr(gc, "call_sync", lambda svc, fn, args, **kw: seen.append(
         (svc, fn, args)) or {"ok": True})
     sessions.tell("abcd1234", "hi")
-    assert seen == [("reflection", "message", {"job": "abcd1234", "text": "hi"})]
+    assert seen == [("reflection", "message", {"to": "abcd1234", "text": "hi"})]

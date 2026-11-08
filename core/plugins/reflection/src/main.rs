@@ -34,7 +34,17 @@ async fn service() -> anyhow::Result<()> {
     reflection::snapshot::take(&awm_dir)?;
     let svc = Service::from_env()?;
     let store = Store::new(reflection::snapshot::service_dir(&awm_dir));
-    let app = Arc::new(App::new(svc.context().hub().clone(), Arc::new(LiveNode), Arc::new(Policy), store));
+    let app = Arc::new(App::new(svc.context().hub().clone(), Arc::new(LiveNode(svc.context())), Arc::new(Policy), store));
     let boot = app.clone();
-    reflection::surface::serve(svc, app).on_ready(boot.boot()).run().await
+    let grant_key = awm_trust::grant::grant_key_env(std::env::var(awm_trust::grant::GRANT_KEY_ENV).ok())
+        .or_else(|_| awm_trust::grant::grant_key_file(&awm_dir))
+        .ok();
+    let started = async move {
+        boot.clone().boot().await;
+        match grant_key {
+            Some(key) => drop(tokio::spawn(boot.order_loop(key))),
+            None => tracing::warn!("reflection: no AWM_APPROVER_GRANT_PUBKEY: agent orders stay off on this node"),
+        }
+    };
+    reflection::surface::serve(svc, app).on_ready(started).run().await
 }

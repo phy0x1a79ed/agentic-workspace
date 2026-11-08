@@ -27,10 +27,12 @@ pub enum File {
     Lost,
     /// The `tickets/` folder: `<ticket>.json` per open ticket, `<ticket>.closed` per early event.
     Tickets,
+    /// `{<order id>: {at_ms, ok?, note?, reported?}}`, written before an order starts.
+    Orders,
 }
 
 impl File {
-    const ALL: [File; 6] = [File::Trust, File::Waits, File::Retired, File::Events, File::Lost, File::Tickets];
+    const ALL: [File; 7] = [File::Trust, File::Waits, File::Retired, File::Events, File::Lost, File::Tickets, File::Orders];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -40,6 +42,7 @@ impl File {
             File::Events => "events.jsonl",
             File::Lost => "lost.jsonl",
             File::Tickets => "tickets",
+            File::Orders => "orders.json",
         }
     }
 
@@ -51,7 +54,7 @@ impl File {
 /// The state dir and its locks.
 pub struct Store {
     dir: PathBuf,
-    locks: [Mutex<()>; 6],
+    locks: [Mutex<()>; 7],
 }
 
 /// `json.dumps(data, indent=1)`, as the Python wrote the whole-file stores.

@@ -12,6 +12,7 @@ pub mod trust;
 
 pub mod calls;
 pub mod ledger;
+pub mod orders;
 pub mod peers;
 pub mod waits;
 

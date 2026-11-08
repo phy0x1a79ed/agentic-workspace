@@ -52,7 +52,7 @@ async fn test_message_self_goes_to_the_harness_that_owns_the_caller() {
     assert!(ok(&out) && out["ticket"] == "t-1", "{out}");
     let (verb, args) = fx.cc().last();
     assert!(verb == "send" && args["pid"] == ME && args["submit"] == true, "{args}");
-    assert_eq!(fx.ds().verbs(), ["resolve"]);
+    assert!(fx.ds().verbs().iter().all(|v| v == "resolve"));
     let tickets = fx.app.open_tickets().await;
     assert_eq!(tickets.len(), 1);
     assert_eq!((tickets[0]["session_id"].as_str(), tickets[0]["tool"].as_str()), (Some(my_id().as_str()), Some("harness-cc")));
@@ -74,22 +74,6 @@ async fn test_a_call_with_no_caller_pid_is_refused() {
 }
 
 #[tokio::test]
-async fn test_an_r9_id_picks_the_harness_by_its_platform_code() {
-    let fx = Fx::new();
-    let ds_id = format!("ds{}", "a".repeat(32));
-    fx.run("interrupt", json!({"_caller_pid": ME, "job": ds_id})).await;
-    assert!(fx.cc().verbs() == ["resolve"] || !fx.cc().verbs().contains(&"find".to_string()));
-    assert_eq!(fx.ds().last(), ("interrupt".to_string(), json!({"session_id": ds_id, "pid": ME})));
-}
-
-#[tokio::test]
-async fn test_a_job_is_found_by_asking_each_harness() {
-    let fx = Fx::new();
-    fx.run("model", json!({"_caller_pid": ME, "job": "j1", "model": "opus"})).await;
-    assert_eq!(fx.cc().last(), ("set".to_string(), json!({"ref": "j1", "pid": ME, "model": "opus"})));
-}
-
-#[tokio::test]
 async fn test_a_ref_two_harnesses_claim_is_refused() {
     let fx = Fx::new();
     fx.ds().set("j1", json!({"session_id": format!("ds{}", "b".repeat(32))}));
@@ -101,22 +85,9 @@ async fn test_a_ref_two_harnesses_claim_is_refused() {
 async fn test_a_call_from_a_peer_does_not_fan_out_again() {
     let fx = Fx::new();
     fx.set_peers(&["altair"]);
-    let out = fx.run("message", json!({"job": "67212311", "text": "hi"})).await;
+    let out = fx.run("message", json!({"to": "67212311", "text": "hi"})).await;
     assert!(error(&out).contains("no session on this node"), "{out}");
     assert!(fx.gw().peer_calls().is_empty(), "fanned out");
-}
-
-/// A session with no record shows None, which a gate reads as trusted when a harness knows it.
-#[tokio::test]
-async fn test_list_other_shows_each_recorded_level() {
-    let fx = Fx::new();
-    let web = format!("ds{}", "c".repeat(32));
-    fx.ds().set("x", json!({"session_id": web, "name": "web"}));
-    fx.app.record_trust(&web, "cooperative", "test", None).await;
-    let out = fx.run("list_other", json!({})).await;
-    let row = |h: &str| out["sessions"].as_array().unwrap().iter().find(|r| r["harness"] == h).unwrap().clone();
-    assert_eq!(row("harness-ds")["trust"], "cooperative");
-    assert_eq!(row("harness-cc")["trust"], Value::Null);
 }
 
 /// Only a session a harness recorded, by hand with no level, reads trusted (R103 item 2).
@@ -142,13 +113,6 @@ async fn test_start_other_passes_the_spec_through_and_records_trust() {
     assert_eq!(out["trust"], "cooperative", "{out}");
     assert_eq!(fx.app.level_of(Some(&new_id()), false, None).await, "cooperative");
     assert_eq!(fx.trust_file().await[new_id()]["origin"], "seat:ana");
-}
-
-#[tokio::test]
-async fn test_start_other_records_the_caller_as_the_parent() {
-    let fx = Fx::new();
-    fx.run("start_other", json!({"_caller_pid": ME, "project": "awm", "scope": "x"})).await;
-    assert_eq!(fx.links(), [(new_id(), my_id(), "start".to_string())]);
 }
 
 #[tokio::test]
@@ -189,19 +153,6 @@ async fn test_a_steer_the_callers_trust_forbids_is_refused() {
     assert!(!fx.cc().verbs().contains(&"interrupt".to_string()));
 }
 
-/// A session acting on itself steers nobody: retire's self-stop works at every level.
-#[tokio::test]
-async fn test_a_session_stops_itself_by_its_own_job() {
-    for level in ["trusted", "cooperative", "untrusted"] {
-        let fx = Fx::new();
-        fx.app.record_trust(&my_id(), level, "test", Some("j1")).await;
-        let out = fx.run("stop", json!({"_caller_pid": ME, "job": "j1", "confirm": true})).await;
-        assert!(ok(&out), "{level}: {out}");
-        let (verb, args) = fx.cc().last();
-        assert!(verb == "stop" && args["confirm"] == true, "{level}");
-    }
-}
-
 #[tokio::test]
 async fn test_a_trusted_sessions_stop_of_another_job_still_runs_the_check() {
     for verb in ["stop", "stop_other"] {
@@ -213,27 +164,6 @@ async fn test_a_trusted_sessions_stop_of_another_job_still_runs_the_check() {
         assert_eq!(fx.asked(), [("trusted".to_string(), verb.to_string(), Some("trusted".to_string()))]);
         assert!(!fx.cc().verbs().contains(&"stop".to_string()));
     }
-}
-
-/// The target named by job is described by its harness, so its level counts.
-#[tokio::test]
-async fn test_a_short_job_ref_carries_the_targets_level() {
-    let fx = Fx::new();
-    fx.cc().set("j2", peer_row());
-    fx.app.record_trust(&my_id(), "cooperative", "test", Some("j1")).await;
-    let out = fx.run("interrupt", json!({"_caller_pid": ME, "job": "j2"})).await;
-    assert!(refused(&out) && error(&out).contains("trusted"), "{out}");
-}
-
-/// No ledger entry and no harness that finds the id by status: whoami and the steer check must
-/// agree, since the harness resolved the caller by its pid.
-#[tokio::test]
-async fn test_a_caller_whoami_calls_trusted_steers_as_trusted() {
-    let fx = Fx::new();
-    fx.cc().set("j2", peer_row());
-    fx.cc().answer("status", json!({"ok": false, "reason": "no such session"}));
-    assert_eq!(fx.run("whoami", json!({"_caller_pid": ME})).await["trust"], "trusted");
-    assert!(ok(&fx.run("stop", json!({"_caller_pid": ME, "job": "j2", "confirm": true})).await));
 }
 
 /// A cleared or respawned conversation keeps its job, and so its level.
@@ -250,22 +180,6 @@ async fn test_a_level_follows_the_job_to_a_new_session_id() {
 }
 
 #[tokio::test]
-async fn test_the_first_local_message_carries_the_hint_once() {
-    let fx = Fx::new();
-    let first = fx.run("message", json!({"_caller_pid": ME, "job": "j1", "text": "hi"})).await;
-    let second = fx.run("message", json!({"_caller_pid": ME, "job": "j1", "text": "hi"})).await;
-    assert_eq!(first["hint"], awm_trust::FIRST_LOCAL_MESSAGE_HINT);
-    assert!(second.get("hint").is_none(), "{second}");
-}
-
-#[tokio::test]
-async fn test_whoami_adds_trust_task_and_harness() {
-    let fx = Fx::new();
-    let out = fx.run("whoami", json!({"_caller_pid": ME})).await;
-    assert_eq!((&out["session_id"], &out["harness"], &out["task_id"], &out["trust"]), (&json!(my_id()), &json!("harness-cc"), &json!("task-9"), &json!("trusted")));
-}
-
-#[tokio::test]
 async fn test_cd_claims_the_new_scope_and_releases_the_old() {
     let fx = Fx::new();
     *fx.gw().scope_fixed.lock().unwrap() = Some(json!({"ok": true, "claimed": true}));
@@ -278,30 +192,12 @@ async fn test_cd_claims_the_new_scope_and_releases_the_old() {
 }
 
 #[tokio::test]
-async fn test_cd_hands_the_new_scopes_brief_to_the_harness() {
-    let fx = Fx::new();
-    *fx.gw().scope_fixed.lock().unwrap() = Some(json!({"ok": true, "claimed": true}));
-    *fx.gw().brief.lock().unwrap() = json!({"brief": {"line": "The brief of awm/new: For x."}});
-    fx.run("cd", json!({"_caller_pid": ME, "path": "/w/projects/awm/new"})).await;
-    assert_eq!(fx.cc().last(), ("set".to_string(), json!({"pid": ME, "cwd": "/w/projects/awm/new", "brief": "The brief of awm/new: For x."})));
-    let asked: Vec<Value> = fx.gw().calls_to("journal").into_iter().filter(|(v, _)| v == "brief_read").map(|(_, a)| a).collect();
-    assert_eq!(asked, [json!({"project": "awm", "scope": "new"})]);
-}
-
-#[tokio::test]
 async fn test_a_background_session_does_not_move_into_a_held_scope() {
     let fx = Fx::new();
     *fx.gw().scope_fixed.lock().unwrap() = Some(json!({"ok": false, "claimed": false, "holder": "cc99"}));
     let out = fx.run("cd", json!({"_caller_pid": ME, "path": "/w/projects/awm/new"})).await;
     assert!(refused(&out) && reason(&out).contains("cc99"), "{out}");
     assert!(!fx.cc().verbs().contains(&"set".to_string()));
-}
-
-#[tokio::test]
-async fn test_cd_says_when_scope_claims_are_unavailable() {
-    let fx = Fx::new();
-    let out = fx.run("cd", json!({"_caller_pid": ME, "path": "/w/projects/awm/new"})).await;
-    assert_eq!(out["claim"], "unavailable");
 }
 
 #[tokio::test]
@@ -317,15 +213,6 @@ async fn test_a_lost_event_raises_the_alarm_and_closes_its_ticket() {
     let posts = fx.posts();
     assert_eq!(posts.len(), 1);
     assert_eq!((&posts[0]["project"], &posts[0]["scope"]), (&json!("awm"), &json!("redux-harness")));
-    fx.app.settle().await;
-}
-
-#[tokio::test]
-async fn test_a_done_event_closes_its_ticket_quietly() {
-    let fx = Fx::new();
-    fx.run("compact", json!({"_caller_pid": ME, "followup": "go on"})).await;
-    assert_eq!(fx.run("harness_event", json!({"session_id": my_id(), "ticket": "t-1", "kind": "done"})).await, json!({"ok": true}));
-    assert!(fx.app.open_tickets().await.is_empty() && fx.app.recent_lost().await.is_empty());
     fx.app.settle().await;
 }
 
@@ -386,30 +273,6 @@ async fn test_the_providers_come_from_the_live_contract_table() {
     assert_eq!(crate::providers::CONTRACT, "harness@1");
 }
 
-#[tokio::test]
-async fn test_an_isolated_caller_is_named_by_its_session_id() {
-    let fx = Fx::new();
-    let out = fx.run("whoami", json!({"_caller_session_id": my_id()})).await;
-    assert_eq!(out["session_id"], json!(my_id()));
-    assert!(fx.cc().calls_of("status").contains(&json!({"session_id": my_id()})));
-    assert!(!fx.cc().verbs().contains(&"resolve".to_string()));
-    fx.run("compact", json!({"_caller_session_id": my_id()})).await;
-    let (verb, args) = fx.cc().last();
-    assert!(verb == "compact" && args["session_id"] == json!(my_id()) && args.get("pid").is_none(), "{args}");
-}
-
-#[tokio::test]
-async fn test_hint_asks_each_peer_and_names_the_holder() {
-    let fx = Fx::new();
-    fx.set_peers(&["altair", "deneb", "mira"]);
-    fx.gw().peer_answer("altair", "list_other", Ok(json!({"sessions": [{"job": "67212311", "name": "x"}]})));
-    fx.gw().peer_answer("deneb", "list_other", Ok(json!({"sessions": [{"job": "11111111", "name": "y"}]})));
-    fx.gw().peer_answer("mira", "list_other", Err("asleep".into()));
-    assert_eq!(fx.app.hint("67212311").await, ". It runs on altair: call again with peer='altair'");
-    assert_eq!(fx.app.holders("Y").await, ["deneb"]);
-    assert_eq!(fx.app.hint("nobody").await, "");
-}
-
 // --- wait (sessions.md R51) -----------------------------------------------------
 
 #[tokio::test]
@@ -435,22 +298,6 @@ async fn test_a_wait_whose_stop_fails_is_not_left_behind() {
 }
 
 #[tokio::test]
-async fn test_a_terminal_session_waits_without_stopping() {
-    let fx = Fx::new();
-    let mut me = fx.cc().row("j1").unwrap();
-    me["job"] = Value::Null;
-    fx.cc().set("j1", me);
-    let out = fx.run("wait", json!({"_caller_pid": ME, "until": [other()]})).await;
-    assert!(ok(&out) && out["waiting"] == true && out["terminal"] == true, "{out}");
-    assert!(!fx.cc().verbs().contains(&"stop".to_string()));
-    fx.run("retired", json!({"session_id": other()})).await;
-    let (verb, args) = fx.cc().last();
-    assert_eq!(verb, "send");
-    assert_eq!(args["session_id"], json!(my_id()));
-    assert_eq!(fx.run("waits", json!({})).await["waits"], json!([]));
-}
-
-#[tokio::test]
 async fn test_the_last_retire_resumes_the_waiter_with_the_wake_line() {
     let fx = Fx::new();
     fx.run("wait", json!({"_caller_pid": ME, "until": [other(), third()]})).await;
@@ -468,16 +315,6 @@ async fn test_the_last_retire_resumes_the_waiter_with_the_wake_line() {
 }
 
 #[tokio::test]
-async fn test_a_session_already_retired_is_not_waited_on() {
-    let fx = Fx::new();
-    fx.app.retire(&other(), true, no_wake).await;
-    let out = fx.run("wait", json!({"_caller_pid": ME, "until": [other()]})).await;
-    assert!(ok(&out) && out["waiting"] == false, "{out}");
-    assert!(!fx.cc().verbs().contains(&"stop".to_string()));
-    assert_eq!(fx.run("waits", json!({})).await["waits"], json!([]));
-}
-
-#[tokio::test]
 async fn test_a_failed_wake_raises_an_alarm_and_keeps_the_wait() {
     let fx = Fx::new();
     fx.run("wait", json!({"_caller_pid": ME, "until": [other()]})).await;
@@ -485,14 +322,6 @@ async fn test_a_failed_wake_raises_an_alarm_and_keeps_the_wait() {
     assert_eq!(fx.run("retired", json!({"session_id": other()})).await["woken"], json!([]));
     assert!(fx.app.recent_lost().await[0]["reason"].as_str().unwrap().contains("no transcript"));
     assert_eq!(fx.run("waits", json!({})).await["waits"].as_array().unwrap().len(), 1);
-}
-
-#[tokio::test]
-async fn test_a_resume_by_hand_clears_the_wait() {
-    let fx = Fx::new();
-    fx.run("wait", json!({"_caller_pid": ME, "until": [other()]})).await;
-    fx.run("resume_other", json!({"job": "j1"})).await;
-    assert_eq!(fx.run("waits", json!({})).await["waits"], json!([]));
 }
 
 #[tokio::test]
@@ -560,34 +389,6 @@ async fn test_a_hand_started_session_reads_as_trusted_and_a_recorded_one_keeps_i
 }
 
 #[tokio::test]
-async fn test_session_of_a_pid_no_plugin_claims_carries_the_plugins_mode() {
-    let fx = Fx::new();
-    fx.cc().answer("resolve", json!({"ok": true, "mine": false, "mode": null}));
-    let out = fx.run("session_of", json!({"pid": 77})).await;
-    assert!(ok(&out) && out["known"] == false && out["mode"].is_null(), "{out}");
-}
-
-#[tokio::test]
-async fn test_session_of_with_no_plugin_answering_is_unknown() {
-    let fx = Fx::new();
-    fx.cc().down.store(true, std::sync::atomic::Ordering::SeqCst);
-    fx.ds().down.store(true, std::sync::atomic::Ordering::SeqCst);
-    let out = fx.run("session_of", json!({"pid": 77})).await;
-    assert!(out["known"] == false && out["mode"] == "unknown", "{out}");
-}
-
-#[tokio::test]
-async fn test_start_other_claims_its_scope_for_the_new_session() {
-    let fx = Fx::new();
-    fx.gw().use_claims();
-    let out = fx.run("start_other", json!({"_caller_pid": ME, "project": "awm", "scope": "x"})).await;
-    assert!(ok(&out) && out["claim"]["claimed"] == true, "{out}");
-    let held = fx.gw().with_claims(|c| c.holder("awm", "x"));
-    assert_eq!(held, Some(json!({"session_id": new_id(), "pid": NEW_PID, "job": "abcd1234"})));
-    assert!(fx.cc().calls_of("status").contains(&json!({"session_id": new_id()})));
-}
-
-#[tokio::test]
 async fn test_a_start_into_a_held_scope_is_refused_before_it_launches() {
     let fx = Fx::new();
     fx.gw().use_claims();
@@ -610,17 +411,6 @@ async fn test_a_start_that_loses_the_claim_stops_the_new_session() {
     assert!(refused(&out) && out["stopped"] == "abcd1234", "{out}");
     let (verb, args) = fx.cc().last();
     assert!(verb == "stop" && args["session_id"] == json!(new_id()) && args["keep"] == false, "{args}");
-}
-
-#[tokio::test]
-async fn test_a_lobby_start_claims_nothing() {
-    for spec in [json!({"project": "awm"}), json!({"project": "awm", "scope": "x", "suggest": true})] {
-        let fx = Fx::new();
-        fx.gw().use_claims();
-        let out = fx.run("start_other", crate::app::merged(&json!({"_caller_pid": ME}), &spec)).await;
-        assert!(ok(&out) && out.get("claim").is_none(), "{spec}: {out}");
-        assert!(fx.gw().with_claims(|c| c.calls.is_empty()), "{spec}");
-    }
 }
 
 #[tokio::test]

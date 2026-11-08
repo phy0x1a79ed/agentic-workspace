@@ -14,7 +14,8 @@ implements = ["reflection@1"]
 # Plain calls to operations, scope and journal each degrade when they fail, so they declare
 # nothing (decision a5f837ac).
 [needs]
-secrets = []
+# alcor's grant key, to check agent orders.
+secrets = ["AWM_APPROVER_GRANT_PUBKEY"]
 network = []
 
 # Every harness plugin: cch (harness-cc), dsh (harness-ds). See harness-contract.md.
