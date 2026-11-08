@@ -28,3 +28,13 @@ One section per closed topic, in the order they close. The open topics are in `S
 15. **trilium board** (trilium-design interview, journal a7d480e6; `docs/trilium-design/DECISIONS.md` and `CONTRACT.md` on feat/trilium-design). Tony: "I want ops and the control panel to be pages in trillium, essentially notes". The board, Ops (the swarm status page) and the per-note bot button are vault notes on deneb. alcor is their backend, an API at auth.tony-xy-liu.com, with one sign-in page there (12-hour passkey session, redirect back on success). A new core plugin `telemetry` (Rust) keeps the roster on alcor from events, with no polling. Sections: Needs you, Working, Stale, History; no Proposed, no Swarm triage. One New agent button starts a Remote Control agent with no brief in `awm/lobby`. Approvals and 2fa presses open alcor's passkey modal; everyday actions carry no grant. Seats have a Remote Control switch held by social. The vault writer lands after the Rust operations.
 
 Still open from the original interview (shelved by Tony, "shelf all decisions to your debrief"): R79 vs the vault, per-node-edges, lyra's vpn.toml, the `isolated/` mirror tag, alcor's sites daemon. Each is raised when a plugin's work reaches it. The trilium board adds one: R79 forbids deneb's outbound door calls, which the vault writer needs (trilium recommends alcor pushes through hidden trilium verbs).
+
+## queue-unblock (2026-11-07)
+
+**Question.** The land queue is held by the dead batch cffff968f16f. How do this session's merges reach mizar and alcor?
+
+**Tony:** "ignore the land queue. it is for parallel agentic work and we will do it all this session. so just merge as you normally would."
+
+**Decided.** This session does not use `scripts/land.sh`. The stale lease and the queued tickets 3e3bc12a2040 and 68647284ec63 stay untouched; their branches merge by hand. Per plugin: merge the branch into `feat/redux-finish` (from release), run the tests it touches and `deploy.toml`'s check, rebuild stale pins with `scripts/refresh-pins.sh` and commit them, promote `feat/redux-finish → dev → release`, push `release` to `github` fast-forward, then refresh mizar and alcor with `deploy.toml` § refresh (`refresh-checkout.sh`, then `node-refresh.sh` with `AWM_REFRESH_RESTART`). Other nodes are not refreshed until `later-nodes`.
+
+**Landed.** This file; no code.

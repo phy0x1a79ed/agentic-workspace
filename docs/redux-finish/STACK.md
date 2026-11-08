@@ -8,11 +8,11 @@ Sources: the worker debrief journals 389a0111 (ops), 8caec34d (knowledge), 449af
 
 ## Current
 
-- `queue-unblock` — the land queue is held by the dead batch cffff968f16f. Closing it needs a rollout choice: narrow `[fleet] nodes` to mizar and alcor, or roll on to the rest.
+- `dvc` — merge feat/port-ops-t7, test, promote, refresh mizar and alcor, live check.
 
 ## Waiting on the user
 
-- `queue-unblock`: narrow the rollout to mizar and alcor? (asked 2026-11-07)
+(none)
 
 ## Preferences
 
@@ -26,9 +26,9 @@ Sources: the worker debrief journals 389a0111 (ops), 8caec34d (knowledge), 449af
 
 Plugin by plugin, in land order. Each topic: finish what is left, land, live-check on mizar and alcor.
 
-- `queue-unblock` — close batch cffff968f16f; decide the rollout set.
 - `dvc` — ticket 68647284ec63 (feat/port-ops-t7) is ready; T7 live checks.
 - `operations` — feat/port-ops (built, 212 tests) + cloud feat/ops-units on alcor. Needs the cloud dev merge first.
+- `opt-in` — Tony 2026-11-07: "an opt in mechanism for prototype features like the deploy queue and the board. this way we can try features in a few select sessions rather than fleet wide". Placed before trilium-board, its first user.
 - `trilium-board` — the vault board and Ops, unfinished. Telemetry landed (acadb279); vault feat/trilium-vault 92a7d431 built, not submitted; cloud feat/telemetry-optin unrun (telemetry singleton on alcor); R79 decision first. Needs the Rust operations, the vault API and reflection's `reflection/sessions`.
 - `social` + `browser` — feat/port-comms + cloud feat/rust-singletons on alcor.
 - `channel` — on feat/port-comms; relay half on deneb (later-nodes).
@@ -49,4 +49,5 @@ Related, taken case by case: ticket 3e3bc12a2040 (plain-ssh edge, SDK snapshot, 
 
 ## Closed
 
+- `queue-unblock` — no land queue this session; merge by hand, refresh mizar and alcor only.
 - `inherited` — the original interview's decisions are the starting point.
