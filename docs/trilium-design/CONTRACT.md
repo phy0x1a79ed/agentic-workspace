@@ -33,7 +33,7 @@ The vault API, on alcor's address `auth.tony-xy-liu.com` (R64 item 5):
 - An everyday action takes the device credential alone:
   - `POST /api/agent` with `{node, note_id?}` starts an agent. It opens a card in Needs you and issues an `agent` order to the node. It answers `{task_id, order_id}`. With `note_id`, the card's `source_note` is that note.
   - `POST /api/card/{task_id}/close` and `POST /api/card/{task_id}/reject`.
-  - `POST /api/seat/{seat}/remote_control` with `{on}` calls social's `seat_remote_control`.
+  - `POST /api/seat/remote_control` with `{seat, on}` calls social's `seat_remote_control`. The seat id `<account>/<channel_id>` holds a slash, so it goes in the body, not the path.
   - `POST /api/request/{request_id}/reject`.
 - An approval takes the passkey, in the modal (below).
 
@@ -67,12 +67,12 @@ Cloud batch: add `telemetry` to the `singletons` of `edges.yml`, hosted on alcor
 
 Spec: `fleet.md` R147 item 7, `sessions.md` R146.
 
-1. Each seat in `seat_registry` gains `remote_control`, a bool that starts false. It holds across empty spells and restarts. An empty seat can be switched.
-2. A new hidden verb, `seat_remote_control {seat, on}`, sets it. Its caller gate admits only operations.
+1. Each seat in `seat_registry`, keyed by `<account>/<channel_id>`, gains `remote_control`, a bool that starts false. An adopted occupied seat starts true, matching its live session. It holds across empty spells and restarts. An empty seat can be switched.
+2. A new hidden verb, `seat_remote_control {seat, on}`, sets it and answers `{ok, seat, remote_control, live: none|applied|failed: <reason>}`. Its caller gate admits only operations on the same node.
 3. A switch on an occupied seat calls reflection `remote_control` for the seat's job. An order to a session in mid-turn waits for the turn to end.
 4. `ensure_seat`'s `start_other` passes the seat's `remote_control`.
 5. `seats` rows gain `remote_control` and `rc_url`.
-6. social emits on `social/seats` at each seat's state change and switch change: `{seat, state, remote_control, node, job?, rc_url?, ts}`.
+6. social emits on `social/seats` at each seat's state change and switch change: `{seat, label, state: empty|starting|occupied|retiring, remote_control, node, job?, rc_url?, ts}`, with `ts` in RFC 3339 UTC. `label` is the `seat:<platform>/<server>/<chat>` name, so a chat rename shows as an event. No event at boot. A subscriber reads `social seats` once when it connects.
 
 ## port-harness: reflection
 
