@@ -4,8 +4,8 @@
 //! Only the store writes a card's section and status (R66). Sessions move their card with
 //! `task_report`; Tony moves one only through an action the vault API verified, which calls
 //! the store in process. Every change appends to `events`, and each appended event is
-//! announced to the `on_event` hook once its transaction commits: the trilium writer drains
-//! `board_changes` from that announcement.
+//! announced to the `on_event` hook once its transaction commits: `vault_push` carries
+//! `board_changes` to the vault from that announcement.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -130,7 +130,7 @@ fn refuse<T>(msg: impl Into<String>) -> Result<T> {
     Err(QueueError::Refused(msg.into()))
 }
 
-/// One appended event, as `operations/board` announces it.
+/// One appended event.
 #[derive(Debug, Clone, PartialEq)]
 pub struct BoardEvent {
     pub task_id: String,
@@ -139,6 +139,7 @@ pub struct BoardEvent {
 }
 
 pub type EventHook = Arc<dyn Fn(&BoardEvent) + Send + Sync>;
+pub type NoticeHook = Arc<dyn Fn() + Send + Sync>;
 /// A task's approvals as `board_changes` carries them, read from the approver's own store.
 pub type ApprovalsOf = Arc<dyn Fn(&str) -> Vec<Value> + Send + Sync>;
 pub type Clock = Arc<dyn Fn() -> f64 + Send + Sync>;
@@ -182,6 +183,7 @@ pub struct Store {
     db: Mutex<Connection>,
     clock: Clock,
     on_event: Mutex<Option<EventHook>>,
+    on_notice: Mutex<Option<NoticeHook>>,
     approvals: Mutex<Option<ApprovalsOf>>,
 }
 
@@ -332,7 +334,7 @@ impl Store {
         db.pragma_update(None, "busy_timeout", 5000)?;
         db.execute_batch(SCHEMA)?;
         migrate(&db)?;
-        Ok(Store { path, db: Mutex::new(db), clock, on_event: Mutex::new(None), approvals: Mutex::new(None) })
+        Ok(Store { path, db: Mutex::new(db), clock, on_event: Mutex::new(None), on_notice: Mutex::new(None), approvals: Mutex::new(None) })
     }
 
     pub fn path(&self) -> &Path {
@@ -341,6 +343,10 @@ impl Store {
 
     pub fn set_on_event(&self, hook: EventHook) {
         *self.on_event.lock().expect("hook lock") = Some(hook);
+    }
+
+    pub fn set_on_notice(&self, hook: NoticeHook) {
+        *self.on_notice.lock().expect("hook lock") = Some(hook);
     }
 
     pub fn set_approvals(&self, f: ApprovalsOf) {
@@ -825,14 +831,19 @@ impl Store {
 
     /// One service's notice, one per kind and node.
     pub fn ops_post(&self, kind: &str, node: &str, title: &str, body: &str, op_id: Option<&str>) -> Result<Value> {
-        self.write(op_id, |tx| {
+        let out = self.write(op_id, |tx| {
             tx.tx.execute(
                 "INSERT INTO ops_notes(kind, node, title, body, ts) VALUES (?,?,?,?,?) ON CONFLICT(kind, node) DO UPDATE SET \
                  title=excluded.title, body=excluded.body, ts=excluded.ts",
                 params![kind, node, title, body, tx.now],
             )?;
             Ok(json!({"ok": true}))
-        })
+        })?;
+        let hook = self.on_notice.lock().expect("hook lock").clone();
+        if let Some(h) = hook {
+            h();
+        }
+        Ok(out)
     }
 
     /// The one-shot migration from the vault (CONTRACT.md item 2). It writes nothing unless

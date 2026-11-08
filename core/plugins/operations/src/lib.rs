@@ -18,6 +18,7 @@ pub mod service;
 pub mod settings;
 pub mod snapshot;
 pub mod store;
+pub mod vault_push;
 
 /// Seconds since the epoch, as Python's `time.time()`.
 pub fn now() -> f64 {

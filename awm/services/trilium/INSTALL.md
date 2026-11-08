@@ -141,15 +141,15 @@ edge** — it came from `/invoke` on loopback, which is the host's own CLI. That
 allow-list is defence in depth, and could not be the enforcement: a mesh node's
 edge runs no profile and never consults it.
 
-**One edge caller writes: the operations home's board writer.** alcor's writer
-reaches the vault through deneb's singleton door, stamped `peer:<AWM_OPERATIONS_HOME>`
-(default `alcor`). `_note_caller` admits it for the note and attribute verbs only,
-and `_writer_inside` then refuses any note outside the roots this host's
-`AWM_TRILIUM_WRITER_ROOTS` names (default `awmSwarmTasks,awmSwarmOps,awmSwarmBoard`:
-tasks, Ops and the board page). The writer moves a card between column folders with
-`note_move`, which needs both ends inside the roots and never moves a root. The
-caller's word never sets the subtree. Search without an ancestor answers only
-notes inside it. `tests/test_writer_subtree.py` pins the refusals.
+**No edge caller writes.** Every note verb is an operator verb, including a call
+stamped `peer:alcor`. The Swarm board's writer runs inside this service, on the node
+that sets `AWM_TRILIUM_BOARD=writer`, and writes over loopback through `board/fence.py`.
+The fence refuses any write outside the roots `AWM_TRILIUM_WRITER_ROOTS` names (default
+`awmSwarmTasks,awmSwarmOps,awmSwarmBoard`: tasks, Ops and the board page). It never moves
+or deletes a root. It has two acts outside the roots, for the per-note bot button
+(`fleet.md` R106 item 2): its own labelled marker note under any note, and a clone of a
+source note under a card. Removing a clone removes the branch and never the note.
+`tests/test_board.py` pins the refusals.
 
 CAUTION: this is deliberately *not* `userroot.wrap_handlers`. That answers
 "whose store?", which a shared vault never asks, and under
@@ -256,9 +256,10 @@ had just written. This is the least obvious consequence of sharing the document
 and the easiest to trip over, because installing the mirror on a second node
 looks like the obvious next step.
 
-The Swarm board has one writer too: operations on alcor, its home node. It
-writes each card under a fixed note id, so a retried write finds the note it
-made instead of a duplicate.
+The Swarm board has one writer too: the board writer in this service, on the node that
+sets `AWM_TRILIUM_BOARD=writer`. It writes each card under a fixed note id, so a retried
+write finds the note it made instead of a duplicate. It follows alcor's `operations/board`
+and `telemetry/roster` events and never polls. A node that is not the writer runs none of it.
 
 WARNING: **a replica follows a deletion.** Within a minute of a note being
 deleted anywhere it is gone everywhere. Replication is not backup, which is why
@@ -558,6 +559,25 @@ draws them as cards and the board's card search never counts them.
 CAUTION: a node that does not run the fork falls back to the grid view for
 `#viewType=chat`. It still lists the messages in sequence order. A text note a
 person adds there is sealed with its HTML as the message body.
+
+### The Swarm board and Ops
+
+The Swarm board, the Ops note and the per-note bot button are notes that this service
+writes (`queue.md` R61-R66, `fleet.md` R147). `awm/trilium/board/` holds the code. The
+pages are code notes that the vault runs, and `awm trilium board_install` rewrites them.
+
+1. Set `AWM_TRILIUM_BOARD=writer` on exactly one node. That node writes cards and Ops and
+   subscribes to alcor's `operations/board` and `telemetry/roster` topics.
+2. Set `AWM_TRILIUM_ALCOR_ORIGIN` to alcor's public address, which the pages call.
+   Set `AWM_TRILIUM_PORTALS` (`host=node,...`) for nodes whose roster row names no portal.
+3. The first start snapshots the vault, sends operations one `board_import`, and then
+   empties the Proposed, Done and Swarm triage folders into History. A mismatch files a
+   `request_human` and leaves the vault as it was.
+
+CAUTION: the pages put their overlays and toasts on the document, outside the render
+note's container. The scripts therefore inject the shared stylesheet into the document head.
+
+`tests/devcheck/` drives the pages on the fork's dev server against a stub of alcor.
 
 ### The two patches we carry
 

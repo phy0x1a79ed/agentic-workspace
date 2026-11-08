@@ -26,6 +26,9 @@ pub async fn run_roster() -> anyhow::Result<()> {
     alcor::service(svc, part)
         .on_ready(async move {
             if swarm.is_some() {
+                if config::edges().is_ok_and(|e| e.singletons.iter().any(|t| t.tool == "trilium")) {
+                    tokio::spawn(follow.clone().push_to_vault(ctx.hub().clone()));
+                }
                 follow.follow_seats(ctx);
             } else {
                 tracing::warn!("no [telemetry] swarm in the install config: this roster refuses every report");

@@ -39,6 +39,9 @@ from awm import config
 from awm.gatewayclient import ServiceAdapter, spawn_supervised
 
 from awm.trilium import etapi, instances, server, slices, sync, vault
+from awm.trilium.board.service import Board
+from awm.trilium.board.fence import Fence
+from awm.trilium.board.install import install as install_board
 
 log = logging.getLogger("awm.trilium.hub_adapter")
 
@@ -101,6 +104,50 @@ API_MANIFEST: dict[str, Any] = {
             "description": (
                 "Where the vault is served. A path, not a URL: it is on the "
                 "same origin as the page asking, behind the same session."
+            ),
+            "params": [],
+        },
+        {
+            "name": "board_apply",
+            "tool": "trilium_board_apply",
+            "surfaces": _CLI_HTTP,
+            "description": (
+                "One page of changed cards from operations on alcor. A page whose `base` "
+                "is not the vault's mark changes nothing. Without `base` it only answers "
+                "the mark. For operations, not for sessions."
+            ),
+            "params": [
+                {"name": "base", "type": "integer", "required": False,
+                 "description": "The mark this page follows."},
+                {"name": "cards", "type": "array", "required": False,
+                 "description": "The changed cards."},
+                {"name": "mark", "type": "integer", "required": False,
+                 "description": "The mark after this page."},
+            ],
+        },
+        {
+            "name": "ops_render",
+            "tool": "trilium_ops_render",
+            "surfaces": _CLI_HTTP,
+            "description": (
+                "Write the Ops note from a push: telemetry's nodes, services and seats, "
+                "or operations' notices. For those two services, not for sessions."
+            ),
+            "params": [
+                {"name": "nodes", "type": "array", "required": False, "description": "telemetry nodes rows."},
+                {"name": "services", "type": "array", "required": False, "description": "telemetry services rows."},
+                {"name": "seats", "type": "array", "required": False, "description": "telemetry seats rows."},
+                {"name": "notices", "type": "array", "required": False, "description": "operations ops_list rows."},
+            ],
+        },
+        {
+            "name": "board_install",
+            "tool": "trilium_board_install",
+            "surfaces": _CLI_HTTP,
+            "description": (
+                "Create or update the Swarm board page, the Ops page and the bot "
+                "button script in the vault. Idempotent. Operator only: the board "
+                "writer runs it at each start as well."
             ),
             "params": [],
         },
@@ -568,82 +615,6 @@ def _operator_only(as_: str | None, verb: str) -> None:
             f"run `awm trilium {verb}` on the host")
 
 
-#: The note and attribute verbs the operations home's board writer may call
-#: from across its door (fleet.md R87 item 3, queue.md R66).
-WRITER_VERBS = frozenset({
-    "note_get", "note_children", "note_search", "note_create", "note_update",
-    "note_upsert", "note_delete", "note_move", "attrs_get", "attr_set", "attr_delete"})
-WRITER_ROOTS_ENV = "AWM_TRILIUM_WRITER_ROOTS"
-#: The writer's three subtrees: tasks, Ops and the board page, as operations' `board` names them.
-DEFAULT_WRITER_ROOTS = "awmSwarmTasks,awmSwarmOps,awmSwarmBoard"
-#: How many notes one ancestry walk reads before it gives up and refuses.
-_WALK_MAX = 256
-
-
-def _writer_roots() -> frozenset[str]:
-    raw = os.environ.get(WRITER_ROOTS_ENV, DEFAULT_WRITER_ROOTS)
-    return frozenset(r.strip() for r in raw.split(",") if r.strip() and r.strip() != "root")
-
-
-def _is_writer(as_: str | None) -> bool:
-    """Whether ``as_`` is the operations home node, as its door stamps it."""
-    home = os.environ.get("AWM_OPERATIONS_HOME", "alcor").strip().lower()
-    stamp = (as_ or "").strip().lower()
-    return bool(home) and stamp.startswith("peer:") \
-        and stamp[len("peer:"):].split(".")[0] == home
-
-
-def _inside(c: Any, note_id: str, roots: frozenset[str],
-            parents: list[str] | None = None) -> bool:
-    """Whether any branch of ``note_id`` leads up to one of ``roots``.
-
-    A missing start note raises the client's own not-found error, so the
-    writer's existence check reads the same answer it would on the host.
-    """
-    if note_id in roots:
-        return True
-    frontier = list(parents if parents is not None
-                    else c.note(note_id).get("parentNoteIds") or [])
-    seen = {note_id}
-    while frontier and len(seen) < _WALK_MAX:
-        n = frontier.pop()
-        if n in roots:
-            return True
-        if n in seen or n in ("root", "none", ""):
-            continue
-        seen.add(n)
-        frontier.extend(c.note(n).get("parentNoteIds") or [])
-    return False
-
-
-def _note_caller(as_: str | None, verb: str) -> bool:
-    """`_operator_only` for the note verbs, which also admits the board writer.
-
-    Returns True for the writer, whose call must then pass `_writer_inside`.
-    """
-    if as_ is not None and not (verb in WRITER_VERBS and _is_writer(as_)):
-        _operator_only(as_, verb)
-    return as_ is not None
-
-
-async def _writer_inside(verb: str, *note_ids: str) -> None:
-    """Refuse the writer's call unless every note it names sits under a root that
-    this host's ``AWM_TRILIUM_WRITER_ROOTS`` lists. The caller's word never sets
-    the subtree."""
-    roots = _writer_roots()
-    if not roots:
-        raise PermissionError(f"{verb}: this vault names no writer subtree")
-
-    def _check() -> None:
-        c = etapi.client()
-        for note_id in note_ids:
-            if not _inside(c, note_id, roots):
-                raise PermissionError(
-                    f"{verb} on {note_id} refused: the board writer acts only "
-                    f"under {', '.join(sorted(roots))}")
-    await asyncio.to_thread(_check)
-
-
 async def _agent_gate(args: dict, verb: str, *note_ids: str) -> None:
     """Refuse a session's write to a note that is not labelled for agents.
 
@@ -664,7 +635,7 @@ async def _agent_gate(args: dict, verb: str, *note_ids: str) -> None:
                       if a.get("type") == "label"}
             if "agentManaged" in labels:
                 out.append(f"note {note_id} has #agentManaged: only the "
-                           f"operations board writer writes it")
+                           f"trilium board writer writes it")
             elif "agentWritable" not in labels:
                 out.append(f"note {note_id} has no effective #agentWritable label")
         return out
@@ -721,6 +692,38 @@ async def _h_stop(args: dict, as_: str | None = None) -> dict:
 async def _h_restart(args: dict, as_: str | None = None) -> dict:
     _operator_only(as_, "restart")
     return await asyncio.to_thread(CHILD.restart)
+
+
+BOARD: Board | None = None
+
+
+def _board() -> Board:
+    global BOARD
+    if BOARD is None:
+        BOARD = Board(Fence())
+    return BOARD
+
+
+def _service_only(args: dict, as_: str | None, verb: str) -> None:
+    """Refuse a person or a session. The gateway stamps a session's pid on a local call and its
+    claim on a door call, so a service's push carries neither."""
+    if as_ is not None or args.get("_caller_pid") or args.get("_caller_session"):
+        raise PermissionError(f"{verb} takes alcor's services only")
+
+
+async def _h_board_apply(args: dict, as_: str | None = None) -> dict:
+    _service_only(args, as_, "board_apply")
+    return await asyncio.to_thread(_board().apply, args)
+
+
+async def _h_ops_render(args: dict, as_: str | None = None) -> dict:
+    _service_only(args, as_, "ops_render")
+    return await asyncio.to_thread(_board().render, args)
+
+
+async def _h_board_install(args: dict, as_: str | None = None) -> dict:
+    _operator_only(as_, "board_install")
+    return await asyncio.to_thread(lambda: install_board(Fence()))
 
 
 async def _h_init(args: dict, as_: str | None = None) -> dict:
@@ -795,10 +798,8 @@ async def _h_export(args: dict, as_: str | None = None) -> dict:
 
 
 async def _h_note_upsert(args: dict, as_: str | None = None) -> dict:
-    writer = _note_caller(as_, "note_upsert")
+    _operator_only(as_, "note_upsert")
     parent = (args.get("parent") or "").strip() or "root"
-    if writer:
-        await _writer_inside("note_upsert", parent)
     await _agent_gate(args, "note_upsert", parent)
     title = (args.get("title") or "").strip()
     if not title:
@@ -854,10 +855,8 @@ def _note_id(args: dict, key: str = "note_id", default: str | None = None) -> st
 
 
 async def _h_note_get(args: dict, as_: str | None = None) -> dict:
-    writer = _note_caller(as_, "note_get")
+    _operator_only(as_, "note_get")
     note_id = _note_id(args)
-    if writer:
-        await _writer_inside("note_get", note_id)
     want_content = args.get("content", True) is not False
 
     def _read() -> dict:
@@ -871,10 +870,8 @@ async def _h_note_get(args: dict, as_: str | None = None) -> dict:
 
 
 async def _h_note_children(args: dict, as_: str | None = None) -> dict:
-    writer = _note_caller(as_, "note_children")
+    _operator_only(as_, "note_children")
     note_id = _note_id(args, default="root")
-    if writer:
-        await _writer_inside("note_children", note_id)
 
     def _read() -> dict:
         kids = etapi.client().children(note_id)
@@ -889,7 +886,7 @@ async def _h_note_children(args: dict, as_: str | None = None) -> dict:
 
 
 async def _h_note_search(args: dict, as_: str | None = None) -> dict:
-    writer = _note_caller(as_, "note_search")
+    _operator_only(as_, "note_search")
     query = (args.get("query") or "").strip()
     if not query:
         raise ValueError("query is required")
@@ -898,8 +895,6 @@ async def _h_note_search(args: dict, as_: str | None = None) -> dict:
         "fastSearch": args.get("fast", True) is not False,
     }
     ancestor = (args.get("ancestor") or "").strip()
-    if writer and ancestor:
-        await _writer_inside("note_search", ancestor)
     if ancestor:
         params["ancestorNoteId"] = ancestor
     # Trilium's search context appends "not archived" to every expression, and
@@ -911,22 +906,14 @@ async def _h_note_search(args: dict, as_: str | None = None) -> dict:
     def _search() -> dict:
         c = etapi.client()
         out = c.search(query, **params)
-        if writer and not ancestor:
-            roots = _writer_roots()
-            out["results"] = [n for n in out.get("results") or []
-                              if _inside(c, n.get("noteId", ""), roots,
-                                         n.get("parentNoteIds") or [])]
         return out
     return await asyncio.to_thread(_search)
 
 
 async def _h_note_create(args: dict, as_: str | None = None) -> dict:
-    writer = _note_caller(as_, "note_create")
+    _operator_only(as_, "note_create")
     parent = (args.get("parent") or "").strip() or "root"
     wanted_id = (args.get("note_id") or "").strip() or None
-    # The writer may make a root of its own subtree, wherever it goes.
-    if writer and wanted_id not in _writer_roots():
-        await _writer_inside("note_create", parent)
     await _agent_gate(args, "note_create", parent)
     title = (args.get("title") or "").strip()
     if not title:
@@ -955,10 +942,8 @@ async def _h_note_create(args: dict, as_: str | None = None) -> dict:
 
 
 async def _h_note_update(args: dict, as_: str | None = None) -> dict:
-    writer = _note_caller(as_, "note_update")
+    _operator_only(as_, "note_update")
     note_id = _note_id(args)
-    if writer:
-        await _writer_inside("note_update", note_id)
     await _agent_gate(args, "note_update", note_id)
     fields = {k: args[k] for k in ("title", "type", "mime")
               if args.get(k) not in (None, "")}
@@ -1032,10 +1017,8 @@ async def _h_note_place(args: dict, as_: str | None = None) -> dict:
 
 
 async def _h_note_delete(args: dict, as_: str | None = None) -> dict:
-    writer = _note_caller(as_, "note_delete")
+    _operator_only(as_, "note_delete")
     note_id = _note_id(args)
-    if writer:
-        await _writer_inside("note_delete", note_id)
     await _agent_gate(args, "note_delete", note_id)
     if note_id == "root":
         raise ValueError(
@@ -1049,12 +1032,8 @@ async def _h_note_delete(args: dict, as_: str | None = None) -> dict:
 
 
 async def _h_note_move(args: dict, as_: str | None = None) -> dict:
-    writer = _note_caller(as_, "note_move")
+    _operator_only(as_, "note_move")
     note_id, parent = _note_id(args), _note_id(args, "parent")
-    if writer:
-        if note_id in _writer_roots():
-            raise PermissionError(f"note_move on {note_id} refused: a writer root stays put")
-        await _writer_inside("note_move", note_id, parent)
     await _agent_gate(args, "note_move", note_id, parent)
     return await asyncio.to_thread(etapi.client().move_note, note_id, parent)
 
@@ -1072,10 +1051,8 @@ async def _h_note_clone(args: dict, as_: str | None = None) -> dict:
 
 
 async def _h_attrs_get(args: dict, as_: str | None = None) -> dict:
-    writer = _note_caller(as_, "attrs_get")
+    _operator_only(as_, "attrs_get")
     note_id = _note_id(args)
-    if writer:
-        await _writer_inside("attrs_get", note_id)
 
     def _read() -> dict:
         attrs = etapi.client().attributes(note_id)
@@ -1089,10 +1066,8 @@ async def _h_attrs_get(args: dict, as_: str | None = None) -> dict:
 
 
 async def _h_attr_set(args: dict, as_: str | None = None) -> dict:
-    writer = _note_caller(as_, "attr_set")
+    _operator_only(as_, "attr_set")
     note_id = _note_id(args)
-    if writer:
-        await _writer_inside("attr_set", note_id)
     await _agent_gate(args, "attr_set", note_id)
     name = (args.get("name") or "").strip().lstrip("#~")
     if not name:
@@ -1105,10 +1080,8 @@ async def _h_attr_set(args: dict, as_: str | None = None) -> dict:
 
 
 async def _h_attr_delete(args: dict, as_: str | None = None) -> dict:
-    writer = _note_caller(as_, "attr_delete")
+    _operator_only(as_, "attr_delete")
     note_id = _note_id(args)
-    if writer:
-        await _writer_inside("attr_delete", note_id)
     await _agent_gate(args, "attr_delete", note_id)
     name = (args.get("name") or "").strip().lstrip("#~")
     if not name:
@@ -1259,6 +1232,9 @@ HANDLERS = {
     "stop": _h_stop,
     "restart": _h_restart,
     "url": _h_url,
+    "board_apply": _h_board_apply,
+    "ops_render": _h_ops_render,
+    "board_install": _h_board_install,
     "init": _h_init,
     "logs": _h_logs,
     "snapshot": _h_snapshot,

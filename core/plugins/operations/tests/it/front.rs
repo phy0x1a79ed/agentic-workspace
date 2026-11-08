@@ -336,16 +336,13 @@ async fn the_vault_verbs_refuse_a_session_or_an_as() {
 }
 
 #[tokio::test]
-async fn board_import_is_for_trilium_alone() {
+async fn board_import_is_for_an_operator_on_alcor() {
     let h = harness();
     let ops = h.ops();
-    let want = json!({"ok": false, "error": "board_import is open to the trilium plugin only"});
-    assert_eq!(ops.handle("board_import", json!({"cards": []}), none(), None, None).await, want);
-    assert_eq!(ops.handle("board_import", json!({"cards": []}), none(), None, Some("search")).await, want);
-    let out = ops.handle("board_import", json!({"cards": []}), none(), None, Some("trilium")).await;
+    let out = ops.handle("board_import", json!({"cards": []}), none(), None, None).await;
     assert_eq!(out["ok"], true, "{out}");
-    let feed = ops.handle("board_changes", json!({"after": 0}), none(), None, Some("trilium")).await;
-    assert_eq!((feed["cards"].clone(), feed["more"].clone()), (json!([]), json!(false)));
+    let session = ops.handle("board_import", json!({"cards": []}), pid(77), None, None).await;
+    assert_eq!(session["ok"], false, "{session}");
 }
 
 #[tokio::test]
@@ -358,7 +355,7 @@ async fn ops_post_keeps_one_notice_per_kind_and_node() {
     ops.handle("ops_post", json!({"kind": "disk", "node": "lyra", "title": "Disk", "body": "91%"}), none(), None, None).await;
     let missing = ops.handle("ops_post", json!({"kind": "vpn", "node": "mizar", "title": " ", "body": "x"}), none(), None, None).await;
     assert_eq!(missing, json!({"ok": false, "error": "kind, node, title and body are required"}));
-    let list = ops.handle("ops_list", json!({}), none(), None, Some("trilium")).await;
+    let list = h.env.home.store.ops_list().unwrap();
     let notes: Vec<(String, String, String)> = list["notes"].as_array().unwrap().iter().map(|n| (s(&n["kind"]), s(&n["node"]), s(&n["title"]))).collect();
     assert_eq!(notes, [("disk".to_string(), "lyra".to_string(), "Disk".to_string()), ("vpn".to_string(), "mizar".to_string(), "VPN still down".to_string())]);
     let note = &list["notes"][1];
@@ -371,9 +368,6 @@ async fn the_home_verbs_answer_only_on_the_home_node() {
     let h = harness();
     let ops = Ops { front: h.front.clone(), home: None };
     let want = json!({"ok": false, "error": "this verb lives on the home node (alcor)"});
-    for verb in ["board_changes", "ops_list"] {
-        assert_eq!(ops.handle(verb, json!({}), none(), None, Some("trilium")).await, want);
-    }
     assert_eq!(ops.handle("devices", json!({}), none(), None, None).await, want);
-    assert_eq!(ops.handle("board_import", json!({}), none(), None, Some("trilium")).await, want);
+    assert_eq!(ops.handle("board_import", json!({}), none(), None, None).await, want);
 }

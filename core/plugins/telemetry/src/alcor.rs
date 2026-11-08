@@ -3,11 +3,13 @@
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Duration;
 
 use awm_plugin_sdk::supervise::SubscriptionOpts;
-use awm_plugin_sdk::{config, Call, Context, Hub, Service, SupervisedSubscription, VerbError};
+use awm_plugin_sdk::{config, Call, CallOpts, Context, Hub, Service, SupervisedSubscription, VerbError};
 use chrono::Utc;
 use serde_json::{json, Value};
+use tokio::sync::Notify;
 
 use crate::roster::{Applied, Item, Roster};
 use crate::verbs;
@@ -20,6 +22,8 @@ pub struct RosterPart {
     file: PathBuf,
     swarm: Option<String>,
     singletons: Singletons,
+    /// Rings at each roster change, for the push to the vault (fleet.md R79).
+    changed: Notify,
 }
 
 /// The singletons of this node's edge list.
@@ -42,7 +46,7 @@ impl RosterPart {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Roster::default(),
             Err(e) => return Err(anyhow::anyhow!("{}: {e}", file.display())),
         };
-        Ok(Arc::new(Self { roster: Mutex::new(roster), file, swarm, singletons }))
+        Ok(Arc::new(Self { roster: Mutex::new(roster), file, swarm, singletons, changed: Notify::new() }))
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Roster> {
@@ -74,6 +78,31 @@ impl RosterPart {
             ctx.emit("sessions", ev);
         }
         ctx.emit("roster", json!({"rev": roster.rev, "node": node, "changed": applied.changed, "ts": Utc::now()}));
+        self.changed.notify_one();
+    }
+
+    /// The roster as the vault's Ops note takes it.
+    fn ops_push(&self) -> Value {
+        let singles = (self.singletons)();
+        let roster = self.lock();
+        json!({
+            "nodes": roster.nodes_view(None, Utc::now())["nodes"],
+            "services": roster.services_view(&singles)["services"],
+            "seats": roster.seats_view()["seats"],
+        })
+    }
+
+    /// Carry each roster change to the vault on deneb, which makes no outbound call. A failed
+    /// push waits for the next change, which sends the whole roster again.
+    pub async fn push_to_vault(self: Arc<Self>, hub: Hub) {
+        let opts = CallOpts { timeout: Duration::from_secs(120), ..CallOpts::default() };
+        self.changed.notify_one();
+        loop {
+            self.changed.notified().await;
+            if let Err(e) = hub.call_with("trilium", "ops_render", self.ops_push(), &opts).await {
+                tracing::warn!("the roster push to the vault failed, and the next change retries it: {e}");
+            }
+        }
     }
 
     fn report(&self, call: &Call) -> Result<Value, VerbError> {

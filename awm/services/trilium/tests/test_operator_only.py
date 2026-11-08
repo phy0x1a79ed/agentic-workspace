@@ -58,7 +58,7 @@ EDGE_VERBS = ["status", "snapshots", "url"]
 #: `note_get` would be that same surface wearing awm's name. The person reading
 #: the vault already has all of it in front of them, so nothing is lost by
 #: keeping these on the host.
-OPERATOR_VERBS = ["start", "stop", "restart", "init", "logs",
+OPERATOR_VERBS = ["start", "stop", "restart", "init", "logs", "board_install",
                   "snapshot", "export", "restore", "note_upsert",
                   "note_get", "note_children", "note_search",
                   "note_create", "note_update", "note_delete",
@@ -69,13 +69,13 @@ OPERATOR_VERBS = ["start", "stop", "restart", "init", "logs",
 
 #: What the edge stamps. `_as_header` never emits an empty value, so any of
 #: these means the call crossed an edge listener.
-EDGE_IDENTITIES = ["user:tony", "user:steven", "user:operator", "peer"]
+EDGE_IDENTITIES = ["user:tony", "user:steven", "user:operator", "peer", "peer:alcor"]
 
 
 def test_the_two_lists_are_the_whole_surface():
     """A verb added later is in neither list, and this fails until someone has
     decided which it is. Defaulting to unreachable is the point."""
-    assert set(EDGE_VERBS) | set(OPERATOR_VERBS) == set(hub_adapter.HANDLERS)
+    assert set(EDGE_VERBS) | set(OPERATOR_VERBS) | {"board_apply", "ops_render"} == set(hub_adapter.HANDLERS)
 
 
 @pytest.mark.parametrize("verb", OPERATOR_VERBS)
@@ -107,3 +107,14 @@ def test_status_sheds_the_operators_half_for_a_signed_in_caller():
     for key in ("pid", "port", "scope", "data_dir", "log"):
         assert key not in through_edge["vault"], key
         assert key in from_console["vault"], key
+
+
+@pytest.mark.parametrize("verb", ["board_apply", "ops_render"])
+@pytest.mark.parametrize("args,as_", [
+    ({"_caller_pid": 77}, None),
+    ({"_caller_session": {"session_id": "s", "node": "alcor"}}, None),
+    ({}, "tony"),
+])
+def test_a_push_verb_refuses_a_person_or_a_session(verb, args, as_):
+    with pytest.raises(PermissionError):
+        asyncio.run(hub_adapter.HANDLERS[verb](dict(args), as_))

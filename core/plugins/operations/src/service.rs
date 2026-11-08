@@ -17,7 +17,7 @@ use crate::home::{Home, LocalClient};
 use crate::keys::Keys;
 use crate::relay::{async_trait_free::BoxFut, Relay, StoreClient};
 use crate::settings::Settings;
-use crate::store::{BoardEvent, LiveSession, Store};
+use crate::store::{LiveSession, Store};
 
 /// Python's truthiness for a JSON flag.
 pub fn truthy(v: &Value) -> bool {
@@ -36,24 +36,15 @@ pub fn truthy(v: &Value) -> bool {
 pub const NO_PLUGIN: [&str; 2] = ["devices", "device_revoke"];
 /// The order verbs: each node's reflection, or an operator.
 pub const ORDER_VERBS: [&str; 2] = ["order_pull", "order_done"];
-/// The verbs only the trilium writer may call.
-pub const TRILIUM_ONLY: [&str; 1] = ["board_import"];
 /// The verbs no session may call.
-pub const NO_SESSION: [&str; 5] = ["board_changes", "board_import", "ops_list", "ops_post", "devices"];
+pub const NO_SESSION: [&str; 3] = ["board_import", "ops_post", "devices"];
 /// The one plugin that writes the vault.
-pub const VAULT_WRITER: &str = "trilium";
 
-pub const BOARD_TOPIC: &str = "board";
-pub const BOARD_EMITTER: &str = "Fires at each card event the store appends: {task_id, seq, ts}, where seq is the event's board_changes mark and ts is RFC 3339 UTC. Nothing at boot: a subscriber drains board_changes after its own mark.";
 
 fn rfc3339(ts: f64) -> String {
     chrono::DateTime::from_timestamp((ts.floor()) as i64, ((ts.fract()) * 1e9) as u32)
         .map(|d| d.to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
         .unwrap_or_default()
-}
-
-pub fn board_event(e: &BoardEvent) -> Value {
-    json!({"task_id": e.task_id, "seq": e.seq, "ts": rfc3339(e.ts)})
 }
 
 // -- the gateway sides of the front, Arbutus and the approver ------------------------------
@@ -188,9 +179,6 @@ impl Ops {
         if NO_SESSION.contains(&verb) && (st.is_session() || as_.is_some()) {
             return refusal(format!("{verb} takes this node's own services only"));
         }
-        if TRILIUM_ONLY.contains(&verb) && plugin != Some(VAULT_WRITER) {
-            return refusal(format!("{verb} is open to the {VAULT_WRITER} plugin only"));
-        }
         let home = || self.home.clone().ok_or_else(|| refusal("this verb lives on the home node (alcor)"));
         match verb {
             "ops_post" => {
@@ -220,15 +208,6 @@ impl Ops {
                     h.approver.device_revoke(args.get("device_id").and_then(Value::as_str).unwrap_or_default())
                 };
                 out.unwrap_or_else(|e| e.as_json())
-            }
-            "board_changes" => {
-                let h = match home() { Ok(h) => h, Err(e) => return e };
-                let (after, limit) = (args.get("after").and_then(Value::as_i64).unwrap_or(0), args.get("limit").and_then(Value::as_i64));
-                blocking(move || h.store.board_changes(after, limit)).await.unwrap_or_else(|e| refusal(e.to_string()))
-            }
-            "ops_list" => {
-                let h = match home() { Ok(h) => h, Err(e) => return e };
-                blocking(move || h.store.ops_list()).await.unwrap_or_else(|e| refusal(e.to_string()))
             }
             "board_import" => {
                 let h = match home() { Ok(h) => h, Err(e) => return e };
@@ -261,7 +240,7 @@ pub fn register(mut service: Service, ops: Arc<Ops>) -> Service {
             service = service.timeout(Duration::from_secs(75));
         }
     }
-    service.api("description", json!(api::DESCRIPTION)).emitter(BOARD_TOPIC, Some(BOARD_EMITTER))
+    service.api("description", json!(api::DESCRIPTION))
 }
 
 // -- the home node's loops -------------------------------------------------------------------
@@ -355,10 +334,6 @@ pub async fn serve() -> anyhow::Result<()> {
         let ap = Arc::new(Approver::open(&s.approver_dir.join("approver.db"), keys, cfg, store.clone(), tools, init, Arc::new(crate::now))?);
         let a2 = ap.clone();
         store.set_approvals(Arc::new(move |t: &str| a2.approvals_of(t)));
-        let ctx = service.context();
-        store.set_on_event(Arc::new(move |e: &BoardEvent| {
-            ctx.emit(BOARD_TOPIC, board_event(e));
-        }));
         let h = Arc::new(Home { store, approver: ap.clone() });
         home = Some(h.clone());
         approver_handle = Some(ap);
@@ -414,6 +389,10 @@ pub async fn serve() -> anyhow::Result<()> {
         }
         if let (Some(h), Some(ap)) = (home, approver_handle) {
             follow_sessions(h2.clone(), h.store.clone());
+            if awm_plugin_sdk::config::edges().is_ok_and(|e| e.singletons.iter().any(|t| t.tool == "trilium")) {
+                let vault = Arc::new(crate::vault_push::HubVault { hub: h2.clone() });
+                tokio::spawn(crate::vault_push::Pusher::attach(h.store.clone(), vault).run());
+            }
             tokio::spawn(sweep_loop(ap.clone()));
             let vault = Arc::new(crate::server::Vault {
                 approver: ap, board_origins: s.board_origins.clone(),

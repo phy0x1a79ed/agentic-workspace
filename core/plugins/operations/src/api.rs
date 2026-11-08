@@ -133,12 +133,9 @@ and modal_url. Expires after 24 h. Only your session can cancel it.",
           json!([p("kind", "string", true, ""), p("node", "string", true, ""), p("title", "string", true, ""), p("body", "string", true, "")])),
         h("devices", "Enrolled devices. On alcor, for its operator only.", json!([])),
         h("device_revoke", "Revoke a device, its passkey and its sign-ins. On alcor, for its operator only.", json!([p("device_id", "string", true, "")])),
-        h("board_changes", "The board feed for the vault writer: the cards changed after event mark `after`, with the new mark. For \
-trilium, not for sessions.", json!([p("after", "integer", false, "The mark of the last page read. Default 0."), p("limit", "integer", false, "At most this many events. Default 500.")])),
-        h("board_import", "The vault's one-shot card import. For trilium only.",
+        h("board_import", "The vault's one-shot card import. For an operator on alcor.",
           json!([p("cards", "array", true, "[{task_id, section, kind, title, body?}]"), p("ops_notes", "array", false, "[{kind, node, title, body}]"),
                  p("accept_gap", "array", false, "The ids Tony accepted as missing or extra, or true for any gap.")])),
-        h("ops_list", "The Ops book's notices. For trilium, not for sessions.", json!([])),
     ]
 }
 

@@ -6,7 +6,9 @@ use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
+use awm_plugin_operations::relay::async_trait_free::BoxFut;
 use awm_plugin_operations::store::{BoardEvent, LiveSession, Open, Seat, Store};
+use awm_plugin_operations::vault_push::{Pusher, Vault};
 use crate::common::{count, s, Env, TestClock};
 use rusqlite::{params, Connection};
 use serde_json::{json, Map, Value};
@@ -532,4 +534,59 @@ fn the_event_hook_fires_once_per_event_after_commit() {
     st.ops_post("vpn", "mizar", "t", "b", None).unwrap();
     let seqs: Vec<i64> = seen.lock().unwrap().iter().map(|g| g.0.seq).collect();
     assert_eq!(seqs, [1, 2, 3], "seq rises, and an Ops notice is no card event");
+}
+
+// -- the push to the vault -------------------------------------------------------------------
+
+/// The vault's side of `board_apply` and `ops_render`, with a switch to refuse every push.
+#[derive(Default)]
+struct FakeVault {
+    mark: Mutex<i64>,
+    cards: Mutex<Vec<String>>,
+    notices: Mutex<Vec<Value>>,
+    down: Mutex<bool>,
+}
+
+impl Vault for FakeVault {
+    fn push<'a>(&'a self, verb: &'a str, args: Value) -> BoxFut<'a, Result<Value, String>> {
+        Box::pin(async move {
+            if *self.down.lock().unwrap() {
+                return Err("deneb is down".to_string());
+            }
+            if verb == "ops_render" {
+                self.notices.lock().unwrap().push(args["notices"].clone());
+                return Ok(json!({"ok": true}));
+            }
+            let mut mark = self.mark.lock().unwrap();
+            if args.get("base").and_then(Value::as_i64) == Some(*mark) {
+                self.cards.lock().unwrap().extend(args["cards"].as_array().unwrap().iter().map(|c| s(&c["task_id"])));
+                *mark = args["mark"].as_i64().unwrap();
+            }
+            Ok(json!({"mark": *mark}))
+        })
+    }
+}
+
+#[tokio::test]
+async fn the_vault_catches_up_from_its_own_mark_after_a_failed_push() {
+    let dir = tempfile::tempdir().unwrap();
+    let st = Arc::new(Store::open(dir.path().join("q.db"), true).unwrap());
+    let vault = Arc::new(FakeVault::default());
+    let p = Pusher::attach(st.clone(), vault.clone());
+    let open = |id: &str| st.task_open("x", Open { task_id: Some(id.into()), session_id: Some(S1.into()), ..Open::default() }, None).unwrap();
+    for i in 0..60 {
+        open(&format!("T{i:07}"));
+    }
+    st.ops_post("disk", "alcor", "Disk", "91%", None).unwrap();
+    *vault.down.lock().unwrap() = true;
+    assert!(p.pass().await.is_err());
+    assert!(vault.cards.lock().unwrap().is_empty());
+    *vault.down.lock().unwrap() = false;
+    p.pass().await.unwrap();
+    assert_eq!(vault.cards.lock().unwrap().len(), 60, "every card crosses, over more than one page");
+    assert_eq!(*vault.mark.lock().unwrap(), st.max_event_id().unwrap());
+    assert_eq!(vault.notices.lock().unwrap().len(), 1);
+    p.pass().await.unwrap();
+    assert_eq!(vault.notices.lock().unwrap().len(), 1, "unchanged notices are not sent again");
+    assert_eq!(vault.cards.lock().unwrap().len(), 60);
 }
