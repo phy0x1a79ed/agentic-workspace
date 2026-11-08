@@ -21,9 +21,10 @@ async fn service() -> anyhow::Result<()> {
     let svc = Service::from_env()?;
     let app = Arc::new(App::new(Live::new(Paths::from_env(), svc.context().hub().clone())));
     let boot = app.clone();
+    // The SDK holds every verb until this init returns, so none is answered before the boot.
     serve(svc, app)
         .on_start(async move {
-            boot.backend.boot().await;
+            cch::app::boot(boot).await;
             Ok(())
         })
         .run()

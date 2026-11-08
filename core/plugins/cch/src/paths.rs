@@ -74,6 +74,9 @@ pub struct Paths {
     pub hooks_reconcile: bool,
     /// `AWM_SOCIAL_PEER`: the node whose social plugin carries the low-memory notice.
     pub social_peer: Option<String>,
+    /// `AWM_OPERATOR_DM_ACCOUNT` and `AWM_OPERATOR_DM_CHANNEL`: where the low-memory notice goes.
+    /// None when either is unset, and the notice is then only logged.
+    pub operator_dm: Option<(String, String)>,
 }
 
 /// The daemon keeper's knobs.
@@ -226,6 +229,7 @@ impl Paths {
             },
             hooks_reconcile: var("AWM_CCH_HOOKS").as_deref() != Some("off"),
             social_peer: var("AWM_SOCIAL_PEER"),
+            operator_dm: var("AWM_OPERATOR_DM_ACCOUNT").zip(var("AWM_OPERATOR_DM_CHANNEL")),
             awm_dir,
             home,
         }
@@ -278,6 +282,7 @@ impl Paths {
             },
             hooks_reconcile: true,
             social_peer: None,
+            operator_dm: None,
             awm_dir,
             home,
         }
@@ -443,6 +448,20 @@ mod tests {
         assert_eq!((p.rotate_age_s, p.loop_enabled, p.name_prefix.as_str()), (60.0, false, "<warm "));
         assert_eq!(p.service_dir, Path::new("/a/services/cch"));
         assert_eq!((p.seed_dir.as_path(), p.lobby_dir.as_path()), (Path::new("/u"), Path::new("/u/.local/state/awm/lobby")));
+    }
+
+    #[test]
+    fn the_operator_dm_needs_both_its_account_and_its_channel() {
+        let read = |pairs: &[(&str, &str)]| {
+            let vars: std::collections::HashMap<String, String> =
+                pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+            Paths::from_vars(ClaudeHome::at("/c", "/c.json"), PathBuf::from("/a"), |k| vars.get(k).cloned()).operator_dm
+        };
+        assert_eq!(read(&[]), None);
+        assert_eq!(read(&[("AWM_OPERATOR_DM_ACCOUNT", "acct")]), None);
+        assert_eq!(read(&[("AWM_OPERATOR_DM_ACCOUNT", "acct"), ("AWM_OPERATOR_DM_CHANNEL", "")]), None);
+        let both = [("AWM_OPERATOR_DM_ACCOUNT", "acct"), ("AWM_OPERATOR_DM_CHANNEL", "chan")];
+        assert_eq!(read(&both), Some(("acct".to_string(), "chan".to_string())));
     }
 
     #[test]

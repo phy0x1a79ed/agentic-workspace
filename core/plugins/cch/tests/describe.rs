@@ -18,7 +18,7 @@ fn plugin_dir() -> PathBuf {
 }
 
 fn cx_script() -> String {
-    std::fs::read_to_string(plugin_dir().join("../../../awm/services/cch/bin/cx")).unwrap()
+    std::fs::read_to_string(plugin_dir().join("bin").join("cx")).unwrap()
 }
 
 fn claim() -> Spec {
@@ -72,9 +72,11 @@ fn differences() -> Vec<String> {
     diffs
 }
 
+/// The listed changes against the baseline. `start` drops its duplicate `task_id`, `role` and
+/// `suggest`. The rows of `list` gain `session_id`, `parent`, `alive`, `transcript` and `task_id`,
+/// which the describe does not show: `verbs.rs` tests them.
 #[test]
 fn the_describe_differs_from_the_baseline_only_by_the_listed_changes() {
-    // cch.md § Surface: `start` drops its duplicate `task_id`, `role` and `suggest`.
     let want = ["start: drops param task_id", "start: drops param role", "start: drops param suggest"];
     assert_eq!(differences(), want);
 }
@@ -187,6 +189,23 @@ fn test_the_shell_half_hands_the_terminal_over_on_every_path() {
     assert!(!launches.is_empty(), "the script never launches Claude Code");
     for line in launches {
         assert!(line.contains("exec "), "{line}");
+    }
+}
+
+// --- tests/test_lifecycle.py ---
+
+/// The cx manifest's verbs live on under `harness-cc`, with no `wake`, no `effect` on any verb and
+/// no `tier` anywhere.
+#[test]
+fn test_the_manifest_drops_status() {
+    let names: Vec<&str> = specs().iter().map(|s| s.verb).collect();
+    for cx in ["start", "list", "stop", "resume", "adopt", "probe", "pool_claim", "pool_seed", "pool_remove"] {
+        assert!(names.contains(&cx), "{cx}");
+    }
+    assert!(!names.contains(&"wake"));
+    for s in specs() {
+        let text = format!("{} {}", s.description, s.params);
+        assert!(!text.contains("\"effect\"") && !text.contains("tier"), "{}", s.verb);
     }
 }
 

@@ -77,6 +77,13 @@ pub const FOLLOW_POLL: Duration = Duration::from_secs(2);
 
 /// The platform code of a Claude Code session in an R9 id.
 pub const PLATFORM: &str = "cc";
+
+/// `text` as cch types it into a session on its own account: after `from cch@<node>: `, so no
+/// line cch wrote reads as the user's. A follow-up reflection passed in carries its own prefix
+/// and is typed as given.
+pub fn from_cch(text: &str) -> String {
+    format!("from cch@{}: {text}", awm_plugin_sdk::config::node_name())
+}
 /// The spool of events reflection did not take, beside the promises.
 pub const UNSENT_FILE: &str = "unsent.jsonl";
 
@@ -337,7 +344,7 @@ pub fn round_backoff(failures: u32) -> Duration {
 /// It goes in as plain text, never a slash command, and that asymmetry is why it lands: a queued
 /// slash command waits for a turn boundary, while a plain prompt is handed to the running turn.
 pub fn nudge_text(item: &Pending, waited_s: i64) -> String {
-    format!(
+    from_cch(&format!(
         "[awm reflection] Your queued `{text}` cannot run until the current turn ends, and it has been waiting \
          {minutes} minutes. Please finish the step you are on and end your turn without starting anything new — \
          `{text}` will run then, and reflection will send you \"{followup}\" straight afterwards, so nothing is \
@@ -346,7 +353,7 @@ pub fn nudge_text(item: &Pending, waited_s: i64) -> String {
         text = item.text,
         minutes = waited_s.div_euclid(60),
         followup = item.followup,
-    )
+    ))
 }
 
 fn opts(what: &str) -> DeliverOpts<'_> {
@@ -498,6 +505,10 @@ where
     /// once its dialog has been answered.
     async fn resume_text<T: ResumeTail>(&self, mut item: Pending, tail: &mut T) -> Pending {
         if item.changes.is_empty() {
+            // The default is cch's own line; a follow-up the caller gave is typed as given.
+            if item.followup.trim() == crate::guards::DEFAULT_FOLLOWUP {
+                item.followup = from_cch(crate::guards::DEFAULT_FOLLOWUP);
+            }
             return item;
         }
         if let Some(on_disk) = self.promises.read(item.repl_pid).await {
@@ -511,7 +522,7 @@ where
         } else {
             None
         };
-        Pending { followup: render_followup(&item.changes, link.as_deref(), &item.closing), ..item }
+        Pending { followup: from_cch(&render_followup(&item.changes, link.as_deref(), &item.closing)), ..item }
     }
 
     /// Wait for the command to run, type the resume, and hold the promise until it is taken up.
@@ -599,7 +610,7 @@ where
         shout_lost(item, reason);
         let mut told = false;
         if alive {
-            let notice = lost_notice(&item.text, &item.followup, reason);
+            let notice = from_cch(&lost_notice(&item.text, &item.followup, reason));
             match self.sender.deliver(item.repl_pid, &notice, opts("the lost-resume notice"), None::<&mut Tail>).await {
                 Ok(_) => told = true,
                 Err(e) => tracing::warn!("cch: could not tell session {} its resume was lost: {e}", who(item)),
@@ -1540,7 +1551,7 @@ mod tests {
         assert!(!h.run(promise(), told(Some(false), Some(true))).await);
         let [nudge, resumed] = h.seen().try_into().unwrap();
         assert_eq!(resumed, "resume");
-        assert!(nudge.starts_with("[awm reflection]"));
+        assert!(nudge.starts_with(&from_cch("[awm reflection]")));
         assert!(nudge.contains("/compact") && nudge.contains("end your turn"));
         assert!(nudge.contains("not a new instruction"));
         assert!(!nudge.contains('\n'), "a newline in a paste submits it early");
@@ -1593,7 +1604,7 @@ mod tests {
         let seen = h.seen();
         assert_eq!(seen[..seen.len() - 1], vec!["resume"; MAX_DELIVERY_ROUNDS as usize]);
         // Once the rounds are spent, the session is told what it lost.
-        assert!(seen.last().unwrap().starts_with("[awm reflection] Your `/compact`"));
+        assert!(seen.last().unwrap().starts_with(&from_cch("[awm reflection] Your `/compact`")));
         assert_eq!(h.load().await, []);
         let lost = h.lost_events();
         assert_eq!(lost.len(), 1);
@@ -1792,7 +1803,7 @@ mod tests {
         let item = the_one_promise(&h).await;
         h.promises.settle(OLD, "k-effort", FAILED, "the cursor was on No").await;
         resume_settled(&h, item).await;
-        assert_eq!(h.seen()[1..], [format!("The effort change to low did not apply (the cursor was on No). {CONTINUE}")]);
+        assert_eq!(h.seen()[1..], [from_cch(&format!("The effort change to low did not apply (the cursor was on No). {CONTINUE}"))]);
     }
 
     #[tokio::test(start_paused = true)]
@@ -1801,7 +1812,7 @@ mod tests {
         h.send("/cd /x", Some(Change::new("cd", "/x", "k-cd")), None).await;
         let item = the_one_promise(&h).await;
         resume_settled(&h, item).await;
-        assert_eq!(h.seen()[1..], [RECONNECT_AFTER_MOVE.to_string(), format!("The move to /x succeeded. {CONTINUE}")]);
+        assert_eq!(h.seen()[1..], [RECONNECT_AFTER_MOVE.to_string(), from_cch(&format!("The move to /x succeeded. {CONTINUE}"))]);
     }
 
     #[tokio::test(start_paused = true)]
@@ -1820,7 +1831,7 @@ mod tests {
         let item = the_one_promise(&h).await;
         h.promises.settle(OLD, "k-effort", APPLIED, "").await;
         resume_settled(&h, item).await;
-        assert_eq!(h.seen()[1..], [format!("The effort change to low succeeded. {CONTINUE}")]);
+        assert_eq!(h.seen()[1..], [from_cch(&format!("The effort change to low succeeded. {CONTINUE}"))]);
     }
 
     #[tokio::test(start_paused = true)]
@@ -1830,13 +1841,63 @@ mod tests {
         let replayed = the_one_promise(&h).await;
         assert_eq!(replayed.changes[0].outcome, "");
         resume_settled(&h, replayed).await;
-        assert_eq!(h.seen()[1..], [format!("The effort change to low succeeded. {CONTINUE}")]);
+        assert_eq!(h.seen()[1..], [from_cch(&format!("The effort change to low succeeded. {CONTINUE}"))]);
     }
 
     // --- one resume per session ---
 
+    fn prefix() -> String {
+        format!("from cch@{}: ", awm_plugin_sdk::config::node_name())
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_resume_after_a_settings_change_carries_the_cch_prefix() {
+        let h = harness();
+        h.send("/effort low", Some(effort()), None).await;
+        let item = the_one_promise(&h).await;
+        resume_settled(&h, item).await;
+        assert!(h.seen().last().unwrap().starts_with(&prefix()), "{:?}", h.seen());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_resume_after_remote_control_on_carries_the_cch_prefix() {
+        let h = harness();
+        let item = Pending { changes: vec![Change::new("rc_on", "", "k-rc")], ..promise() };
+        h.promises.record(&item).await;
+        resume_settled(&h, item).await;
+        let resumed = h.seen().last().cloned().unwrap();
+        assert!(resumed.starts_with(&prefix()) && resumed.contains("Remote Control"), "{resumed}");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_default_resume_carries_the_cch_prefix_and_a_given_one_is_typed_as_given() {
+        let h = harness();
+        let item = Pending { followup: CONTINUE.into(), ..promise() };
+        h.promises.record(&item).await;
+        resume_settled(&h, item).await;
+        assert_eq!(h.seen().last().unwrap(), &from_cch(CONTINUE));
+        let h = harness();
+        h.promises.record(&promise()).await;
+        resume_settled(&h, promise()).await;
+        assert_eq!(h.seen().last().unwrap(), "resume", "reflection's follow-up carries its own prefix");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_lost_notice_carries_the_cch_prefix() {
+        let h = harness();
+        h.promises.record(&promise()).await;
+        assert!(!h.run(promise(), told(Some(false), Some(false))).await);
+        let notice = h.seen().last().cloned().unwrap();
+        assert!(notice.starts_with(&prefix()) && notice.contains("were lost"), "{notice}");
+    }
+
+    #[test]
+    fn the_pause_request_carries_the_cch_prefix() {
+        assert!(nudge_text(&promise(), 600).starts_with(&prefix()));
+    }
+
     fn merged() -> String {
-        format!("The rename to scout and the effort change to low succeeded. {CONTINUE}")
+        from_cch(&format!("The rename to scout and the effort change to low succeeded. {CONTINUE}"))
     }
 
     async fn two_self_commands(h: &Harness) -> Pending {
@@ -1942,7 +2003,7 @@ mod tests {
         let seen = h.seen();
         assert_eq!(seen.iter().filter(|t| *t == RECONNECT_AFTER_MOVE).count(), 1);
         let resumes: Vec<&String> = seen.iter().filter(|t| *t != RECONNECT_AFTER_MOVE).collect();
-        assert_eq!(resumes, [&format!("The move to /home/user/after succeeded. {CONTINUE}")]);
+        assert_eq!(resumes, [&from_cch(&format!("The move to /home/user/after succeeded. {CONTINUE}"))]);
         assert_eq!(h.load().await, []);
     }
 
@@ -2096,7 +2157,7 @@ mod tests {
         run_swapped(&h, promise(), vec![Outcome::Started]).await;
         let seen = h.seen();
         assert_eq!(seen[0], "resume");
-        assert!(seen[1].starts_with("[awm reflection] Your `/compact`"));
+        assert!(seen[1].starts_with(&from_cch("[awm reflection] Your `/compact`")));
         let lost = h.lost_events();
         assert_eq!(lost.len(), 1);
         assert!(lost[0]["reason"].as_str().unwrap().contains("compact_boundary"));

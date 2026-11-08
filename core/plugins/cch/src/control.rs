@@ -1363,7 +1363,8 @@ async fn turn_off_later<E: Effects>(fx: &E, t: &Target, resume: bool) -> Result<
                 if !resume || is_true(&out, "modal_open") || is_true(&out, "refused") {
                     return;
                 }
-                if let Err(e) = fx2.deliver(&t2, SELF_OFF_FOLLOWUP, "the resume prompt", sender::ATTEMPTS).await {
+                let prompt = crate::resume::from_cch(SELF_OFF_FOLLOWUP);
+                if let Err(e) = fx2.deliver(&t2, &prompt, "the resume prompt", sender::ATTEMPTS).await {
                     tracing::warn!("reflection: self Remote Control off for {} failed: {e}", t2.label());
                 }
             }
@@ -2854,8 +2855,27 @@ mod tests {
         assert_eq!(modal.presses(), [Key::Enter]);
         assert_eq!(
             w.typed().last().unwrap(),
-            &(SELF_JOB.to_string(), SELF_OFF_FOLLOWUP.to_string(), sender::ATTEMPTS)
+            &(SELF_JOB.to_string(), crate::resume::from_cch(SELF_OFF_FOLLOWUP), sender::ATTEMPTS)
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_prompt_after_remote_control_off_carries_the_cch_prefix() {
+        let w = connected();
+        w.set_bridge(SELF_JOB, "cse_01Me");
+        remote_control(&w, false, None, None, me_()).await.unwrap();
+        let modal = FakeScreen::modal(&OPTIONS, 1);
+        w.set_screen(modal.clone());
+        let at = w.clone();
+        modal.on_press(move |key| {
+            if key == Key::Enter {
+                at.set_bridge(SELF_JOB, "");
+            }
+        });
+        run_spawned(&w).await;
+        let prefix = format!("from cch@{}: ", awm_plugin_sdk::config::node_name());
+        let (_, typed, _) = w.typed().last().cloned().unwrap();
+        assert!(typed.starts_with(&prefix) && typed.ends_with(SELF_OFF_FOLLOWUP), "{typed}");
     }
 
     // --- Remote Control on a busy session: applies at turn end ---
