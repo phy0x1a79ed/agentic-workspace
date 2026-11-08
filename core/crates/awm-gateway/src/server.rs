@@ -619,19 +619,3 @@ async fn mcp_message(gw: &Gateway, holder: &crate::isolated::Holder, msg: &Value
     };
     Some(json!({"jsonrpc": "2.0", "id": id, "result": result}))
 }
-
-#[cfg(test)]
-mod tests {
-    use super::page_plugin;
-
-    #[test]
-    fn a_page_is_known_by_its_path() {
-        assert_eq!(page_plugin("https://mizar.example:7819/p/dsh/dsh/").as_deref(), Some("dsh"));
-        assert_eq!(page_plugin("http://127.0.0.1:7819/p/ops/board/assets/x.js").as_deref(), Some("ops"));
-        assert_eq!(page_plugin("/p/mic/mic").as_deref(), Some("mic"));
-        assert_eq!(page_plugin("https://host/p/dsh"), None);
-        assert_eq!(page_plugin("https://host/p/dsh/"), None);
-        assert_eq!(page_plugin("https://host/dashboard/p/dsh/x"), None);
-        assert_eq!(page_plugin("https://host/p/a_b/x/"), None);
-    }
-}

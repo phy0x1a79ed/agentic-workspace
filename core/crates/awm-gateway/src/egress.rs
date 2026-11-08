@@ -211,16 +211,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_request_names_its_target() {
-        assert_eq!(target_of("CONNECT", "api.zotero.org:443"), Some(("api.zotero.org".into(), 443, String::new())));
-        assert_eq!(target_of("GET", "http://x.org/a?b"), Some(("x.org".into(), 80, "/a?b".into())));
-        assert_eq!(target_of("GET", "http://x.org:8080"), Some(("x.org".into(), 8080, "/".into())));
-        assert_eq!(target_of("CONNECT", "[::1]:22"), Some(("::1".into(), 22, String::new())));
-        assert_eq!(target_of("GET", "/relative"), None);
-        assert_eq!(target_of("CONNECT", "x.org:http"), None);
-    }
-
-    #[test]
     fn every_manifest_network_entry_parses() {
         let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
         let mut seen = 0;
@@ -238,7 +228,14 @@ mod tests {
     }
 
     #[test]
-    fn the_fleet_and_loopback_go_direct() {
+    fn a_request_names_its_target_and_the_fleet_and_loopback_go_direct() {
+        assert_eq!(target_of("CONNECT", "api.zotero.org:443"), Some(("api.zotero.org".into(), 443, String::new())));
+        assert_eq!(target_of("GET", "http://x.org/a?b"), Some(("x.org".into(), 80, "/a?b".into())));
+        assert_eq!(target_of("GET", "http://x.org:8080"), Some(("x.org".into(), 8080, "/".into())));
+        assert_eq!(target_of("CONNECT", "[::1]:22"), Some(("::1".into(), 22, String::new())));
+        assert_eq!(target_of("GET", "/relative"), None);
+        assert_eq!(target_of("CONNECT", "x.org:http"), None);
+
         let t = tempfile::tempdir().unwrap();
         let edges = t.path().join("edges.yml");
         std::fs::write(&edges, "nodes:\n  home: {role: homebase, addresses: {lan: 10.0.0.2, ts: null}}\n  work: {role: work}\n").unwrap();

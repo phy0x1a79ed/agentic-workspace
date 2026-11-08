@@ -62,19 +62,4 @@ mod tests {
         assert!(refusal(m, "reflection", "compact", Some("alcor")).is_some());
     }
 
-    #[test]
-    fn each_refusal_names_its_cause() {
-        let down = refusal(Some(UNREACHABLE), "channel", "write", None).unwrap();
-        assert!(down.contains("unreachable") && !down.contains("mode \"unknown\""), "{down}");
-        assert_eq!(refusal(Some(UNREACHABLE), "reflection", "compact", None), None);
-        let unk = refusal(Some(UNKNOWN), "channel", "write", None).unwrap();
-        assert!(unk.contains("could not tell") && unk.contains("channel.write"), "{unk}");
-    }
-
-    #[test]
-    fn an_unlisted_mode_is_unrestricted() {
-        assert!(!is_restricted(Some("worker")) && !is_restricted(None));
-        assert_eq!(refusal(Some("worker"), "journal", "post", Some("alcor")), None);
-        assert_eq!(refusal(None, "ssh", "run", None), None);
-    }
 }

@@ -36,6 +36,7 @@ struct Node {
     _dir: tempfile::TempDir,
     state: PathBuf,
     root: PathBuf,
+    names: Mutex<Vec<String>>,
 }
 
 impl Node {
@@ -44,7 +45,7 @@ impl Node {
         let (state, root) = (dir.path().join(".awm"), dir.path().join("roots"));
         std::fs::create_dir_all(&state).unwrap();
         std::fs::create_dir_all(&root).unwrap();
-        let node = Self { _dir: dir, state, root };
+        let node = Self { _dir: dir, state, root, names: Mutex::default() };
         node.config("");
         node
     }
@@ -52,24 +53,43 @@ impl Node {
     /// Write config.toml. Long windows keep a service that never registers from being restarted.
     fn config(&self, extra: &str) {
         let text = format!(
-            "node = \"here\"\nlisten = \"127.0.0.1:0\"\nworkspace = {:?}\ncore_roots = [{:?}]\ntool_wait_s = 1\nreconnect_window_s = 600\nadopt_window_s = 600\n{extra}",
+            "node = \"here\"\nlisten = \"127.0.0.1:0\"\nworkspace = {:?}\ncore_roots = [{:?}]\ntool_wait_s = 0.2\nreconnect_window_s = 600\nadopt_window_s = 600\n{extra}",
             self.root.parent().unwrap(),
             self.root
         );
         std::fs::write(self.state.join("config.toml"), text).unwrap();
     }
 
-    /// A one-service plugin `name` serving tool `name`, whose service idles and never registers.
+    /// A one-service plugin `name` serving tool `name`. Its service never registers, so it ignores
+    /// the shutdown frame and would hold a stop for the whole grace period. It idles until
+    /// [`Node::release`] touches its flag file, and exits on its own then.
     fn plugin(&self, name: &str, service_keys: &str, needs: &str) -> PathBuf {
         let dir = self.root.join(name);
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("run.sh"), "exec sleep 300\n").unwrap();
+        self.names.lock().unwrap().push(name.into());
+        let script = format!(
+            "flag=\"$AWM_DIR/release-{name}\"\nrm -f \"$flag\"\nfor _ in $(seq 1200); do [ -e \"$flag\" ] && exit 0; sleep 0.05; done\n"
+        );
+        std::fs::write(dir.join("run.sh"), script).unwrap();
         std::fs::write(
             dir.join(awm_proto::MANIFEST_FILE),
             format!("[plugin]\nname = '{name}'\n[[service]]\nname = '{name}'\n{service_keys}[[tool]]\nname = '{name}'\n{needs}"),
         )
         .unwrap();
         dir
+    }
+
+    /// Let every idle service exit, ahead of a stop or a restart that would otherwise wait out
+    /// the grace period.
+    fn release_all(&self) {
+        let names = self.names.lock().unwrap().clone();
+        self.release(&names.iter().map(String::as_str).collect::<Vec<_>>());
+    }
+
+    fn release(&self, names: &[&str]) {
+        for name in names {
+            std::fs::write(self.state.join(format!("release-{name}")), "").unwrap();
+        }
     }
 
     async fn open(&self, peers: Arc<dyn PeerTransport>) -> Arc<Gateway> {
@@ -132,7 +152,7 @@ async fn an_absent_tool_fails_at_once_and_a_starting_one_waits() {
     let slow = gw.invoke("slow", json!({"verb": "get"}), &ctx).await.unwrap_err();
     assert_eq!(slow.status, 503, "{:?}", slow.detail);
     assert!(slow.detail.as_str().unwrap().contains("\"slow\" is not up"), "{:?}", slow.detail);
-    assert!(started.elapsed() >= Duration::from_millis(900), "a starting tool is waited for");
+    assert!(started.elapsed() >= Duration::from_millis(150), "a starting tool is waited for");
 }
 
 /// The hook runs before the first start with its variables set, not again on an unchanged
@@ -155,16 +175,19 @@ async fn the_install_hook_runs_when_the_stamp_moves() {
     assert!(awm_gateway::hooks::stamp_path(&gw.state, "inst").is_file());
 
     let first = pid_of(&gw, "inst");
+    node.release_all();
     gw.reload(&ReloadRequest { restart: vec!["inst".into()], force: false }).await.unwrap();
     until("the restart", || pid_of(&gw, "inst").filter(|p| Some(*p) != first)).await;
     assert_eq!(runs(), 1, "an unchanged stamp runs no hook");
 
     std::fs::write(dir.join("new-file"), "x").unwrap();
     let second = pid_of(&gw, "inst");
+    node.release_all();
     gw.reload(&ReloadRequest { restart: vec!["inst".into()], force: false }).await.unwrap();
     until("the second restart", || pid_of(&gw, "inst").filter(|p| Some(*p) != second)).await;
     assert_eq!(runs(), 2, "a moved stamp runs the hook again");
     assert!(!node.state.join("plain-ran").exists(), "no install key, no install step");
+    node.release_all();
     awm_gateway::supervisor::stop_all(&gw).await;
 }
 
@@ -175,7 +198,9 @@ async fn a_failed_install_hook_refuses_its_plugin_and_dependents() {
     let node = Node::new();
     let dir = node.plugin("broken", "install = 'install.sh'\n", "");
     std::fs::write(dir.join("install.sh"), "echo first line\necho boom >&2\nexit 3\n").unwrap();
-    node.plugin("dependent", "", "[[needs.tool]]\nname = 'broken'\n");
+    let dependent = node.plugin("dependent", "", "[[needs.tool]]\nname = 'broken'\n");
+    // It starts before the hook failure refuses it, then is stopped; exiting at once spares the grace wait.
+    std::fs::write(dependent.join("run.sh"), "exit 0\n").unwrap();
     node.plugin("bystander", "", "");
     let gw = node.open(no_peers()).await;
     awm_gateway::supervisor::start_all(&gw, false).await;
@@ -195,6 +220,7 @@ async fn a_failed_install_hook_refuses_its_plugin_and_dependents() {
     gw.reload(&ReloadRequest::default()).await.unwrap();
     until("the fixed plugin", || pid_of(&gw, "broken")).await;
     assert!(loaded(&gw, "broken"));
+    node.release_all();
     awm_gateway::supervisor::stop_all(&gw).await;
 }
 
@@ -226,6 +252,7 @@ async fn stale_env_judges_spawned_and_adopted_plugins() {
     node.config("[env]\nFLAVOUR = \"three\"\n");
     let report = next.reload(&ReloadRequest::default()).await.unwrap();
     assert_eq!(report["stale_env"], json!(["idle"]), "an adopted process carries its spawn env: {report}");
+    node.release_all();
     awm_gateway::supervisor::stop_all(&next).await;
 }
 
@@ -256,12 +283,14 @@ async fn a_peer_notice_re_resolves_needs_only() {
     assert!(gw.cfg().env.is_empty(), "the config is not read again");
     assert_eq!(pid_of(&gw, "steady"), Some(steady), "steady keeps its process");
 
+    node.release(&["dep"]);
     *peer.0.lock().unwrap() = json!([]);
     assert!(gw.refresh_peer("far").await);
     let report = gw.reload_needs().await.unwrap();
     assert_eq!(report["stopped"], json!(["dep"]), "{report}");
     assert!(refusal(&gw, "dep").is_some());
     assert_eq!(pid_of(&gw, "steady"), Some(steady));
+    node.release_all();
     awm_gateway::supervisor::stop_all(&gw).await;
 }
 
@@ -282,12 +311,12 @@ async fn a_forced_restart_passes_a_tripped_breaker() {
 
     let restart = |force| ReloadRequest { restart: vec!["crashy".into()], force };
     gw.reload(&restart(false)).await.unwrap();
-    tokio::time::sleep(Duration::from_millis(300)).await;
     assert!(pid_of(&gw, "crashy").is_none(), "a plain restart leaves a tripped plugin down");
 
     gw.reload(&restart(true)).await.unwrap();
     until("the forced start", || pid_of(&gw, "crashy")).await;
     assert!(!gw.supervisor.journal.tripped("crashy"));
+    node.release_all();
     awm_gateway::supervisor::stop_all(&gw).await;
 }
 

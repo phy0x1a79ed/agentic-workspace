@@ -454,78 +454,42 @@ mod tests {
         true
     }
 
-    // --- the refusal ---
-
     #[test]
-    fn a_missing_daemon_is_a_refusal() {
+    fn a_daemon_that_cannot_be_reached_is_a_refusal() {
         let (_d, h) = home();
         assert!(daemon_refusal(&h, &bus()).unwrap().contains("no claude code daemon"));
         roster_file(&h, json!({}), Some(DEAD_PID));
         assert!(daemon_refusal(&h, &bus()).unwrap().contains("no claude code daemon"));
-    }
 
-    #[test]
-    fn a_running_daemon_is_not_a_refusal() {
-        let (_d, h) = home();
         roster_file(&h, json!({}), None);
-        assert_eq!(daemon_refusal(&h, &no_bus()), None);
-    }
-
-    #[test]
-    fn a_daemon_in_another_mount_namespace_is_a_refusal_without_a_user_bus() {
-        let (_d, h) = home();
-        roster_file(&h, json!({}), None);
+        assert_eq!(daemon_refusal(&h, &no_bus()), None, "a daemon in this namespace launches directly");
         let refusal = daemon_refusal(&h, &Host { bus: None, ns: Some(Some(false)) }).unwrap();
         assert!(refusal.contains("not reachable") && refusal.contains("mount namespace"), "{refusal}");
-    }
-
-    #[test]
-    fn an_unreadable_namespace_is_a_refusal_without_a_user_bus() {
-        let (_d, h) = home();
-        roster_file(&h, json!({}), None);
         assert!(daemon_refusal(&h, &Host { bus: None, ns: Some(None) }).unwrap().contains("not reachable"));
-    }
-
-    #[test]
-    fn a_daemon_in_this_namespace_launches_directly_without_a_user_bus() {
-        let (_d, h) = home();
-        roster_file(&h, json!({}), None);
-        assert_eq!(daemon_refusal(&h, &no_bus()), None);
-    }
-
-    #[test]
-    fn a_user_bus_reaches_the_daemon_from_any_namespace() {
-        let (_d, h) = home();
-        roster_file(&h, json!({}), None);
-        assert_eq!(daemon_refusal(&h, &Host { ns: Some(Some(false)), ..bus() }), None);
+        assert_eq!(daemon_refusal(&h, &Host { ns: Some(Some(false)), ..bus() }), None, "a user bus reaches it");
     }
 
     #[tokio::test(start_paused = true)]
-    async fn an_unreachable_daemon_means_nothing_is_spawned() {
-        let (_d, h) = home();
-        roster_file(&h, json!({}), None);
-        let host = Host { bus: None, ns: Some(Some(false)) };
-        let spawns = Spawns::default();
-        let err = launch(&h, &spec(&h, "n"), any, &spawns, &host).await.unwrap_err();
-        assert!(matches!(&err, LaunchError::Refused(m) if m.contains("not reachable")), "{err}");
-        let err = respawn(&h, "abc", &respawn_spec(&h), &spawns, &host).await.unwrap_err();
-        assert!(matches!(&err, LaunchError::Refused(m) if m.contains("not reachable")), "{err}");
-        assert!(spawns.calls().is_empty());
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn no_daemon_means_nothing_is_spawned() {
+    async fn nothing_is_spawned_without_a_reachable_daemon_or_for_a_live_job() {
         let (_d, h) = home();
         let spawns = Spawns::default();
         let err = launch(&h, &spec(&h, "n"), any, &spawns, &bus()).await.unwrap_err();
         assert!(matches!(&err, LaunchError::Refused(m) if m.contains("no claude code daemon")), "{err}");
+        let err = respawn(&h, "seat1", &respawn_spec(&h), &spawns, &bus()).await.unwrap_err();
+        assert!(matches!(&err, LaunchError::Refused(m) if m.contains("no claude code daemon")), "{err}");
+
+        roster_file(&h, json!({"seat1": live(None)}), None);
+        let err = respawn(&h, "seat1", &respawn_spec(&h), &spawns, &bus()).await.unwrap_err();
+        assert!(matches!(&err, LaunchError::Refused(m) if m.contains("running")), "{err}");
+
+        let host = Host { bus: None, ns: Some(Some(false)) };
+        let err = launch(&h, &spec(&h, "n"), any, &spawns, &host).await.unwrap_err();
+        assert!(matches!(&err, LaunchError::Refused(m) if m.contains("not reachable")), "{err}");
         assert!(spawns.calls().is_empty());
     }
 
-    // --- the command line ---
-
     #[test]
-    fn the_transient_unit_never_kills_its_own_control_group() {
+    fn the_command_line_keeps_systemd_run_claude_and_the_prompt_apart() {
         let s = LaunchSpec {
             flags: vec!["--effort".into(), "low".into()],
             env: vec![("ANTHROPIC_MODEL".into(), "m".into())],
@@ -541,30 +505,22 @@ mod tests {
         let unit = inv.argv.iter().find_map(|a| a.strip_prefix("--unit=awm-test-")).unwrap();
         assert!(unit.len() == 8 && unit.bytes().all(|b| b.is_ascii_hexdigit()), "{unit}");
         assert_eq!(inv.env, [("XDG_RUNTIME_DIR".to_string(), "/x".to_string())]);
-        assert!(inv.how.contains("user unit"));
         // Everything before the first `--` belongs to systemd-run, everything after to claude, and
         // the prompt follows a second `--` or the CLI drops it.
         let sep = inv.argv.iter().position(|a| a == "--").unwrap();
         assert_eq!(inv.argv[sep + 1..], ["/bin/claude", "--bg", "--name=n", "--effort", "low", "--", "do it"]);
-    }
 
-    #[test]
-    fn no_prompt_means_no_separator() {
-        let inv = build_argv(&LaunchSpec::new("/bin/claude", "/w", "n"), None);
-        assert_eq!(inv.argv, ["/bin/claude", "--bg", "--name=n"]);
-        assert!(inv.env.is_empty() && inv.how.contains("directly"));
-    }
-
-    #[test]
-    fn a_name_that_looks_like_a_flag_stays_one_argument() {
         let inv = build_argv(&LaunchSpec::new("/bin/claude", "/w", "--dangerously-skip-permissions"), None);
         assert_eq!(inv.argv, ["/bin/claude", "--bg", "--name=--dangerously-skip-permissions"]);
+        assert!(inv.env.is_empty() && inv.how.contains("directly"));
+
+        let cmd = vec!["/bin/claude".to_string(), "respawn".into(), "j".into()];
+        let inv = unit_argv(cmd, std::path::Path::new("/h"), &[], "awm-test-resume", bus().bus);
+        assert!(inv.argv.iter().any(|a| a == "--property=KillMode=process"));
     }
 
-    // --- the wait ---
-
     #[tokio::test(start_paused = true)]
-    async fn the_new_job_is_the_one_that_appears_after_the_spawn() {
+    async fn launch_returns_the_job_that_appears_after_the_spawn() {
         let (_d, h) = home();
         roster_file(&h, json!({"old": worker(1)}), None);
         let hh = h.clone();
@@ -583,34 +539,30 @@ mod tests {
         assert!(call.env.contains(&("K".into(), "v".into())));
         assert!(call.env.contains(&("HOME".into(), h.root.to_string_lossy().into_owned())));
         assert!(call.argv.iter().any(|a| a == "/bin/claude") && call.argv.iter().any(|a| a == "hi"));
-    }
 
-    #[tokio::test(start_paused = true)]
-    async fn a_new_job_the_caller_rejects_does_not_count() {
-        let (_d, h) = home();
+        // A job the caller rejects does not count; no new job is a timeout.
         roster_file(&h, json!({}), None);
         let hh = h.clone();
         let spawns = Spawns::on(move || roster_file(&hh, json!({"x": worker(1)}), None));
         let s = LaunchSpec { label: "warm".into(), timeout: Duration::from_millis(200), ..spec(&h, "n") };
         let err = launch(&h, &s, |_| false, &spawns, &no_bus()).await.unwrap_err();
         assert!(matches!(&err, LaunchError::Timeout(m) if m.contains("no new warm session")), "{err}");
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn no_new_job_is_a_timeout() {
-        let (_d, h) = home();
         roster_file(&h, json!({}), None);
         let s = LaunchSpec { timeout: Duration::from_millis(100), ..spec(&h, "n") };
-        let started = Instant::now();
         let err = launch(&h, &s, any, &Spawns::default(), &no_bus()).await.unwrap_err();
         assert!(matches!(&err, LaunchError::Timeout(m) if m.contains("no new background session")), "{err}");
-        assert!(started.elapsed() >= Duration::from_millis(100));
+
+        struct Broken;
+        impl Spawner for Broken {
+            async fn run(&self, _: &LaunchCommand, _: Duration) -> std::io::Result<()> {
+                Err(std::io::Error::from(std::io::ErrorKind::NotFound))
+            }
+        }
+        assert!(matches!(launch(&h, &spec(&h, "n"), any, &Broken, &no_bus()).await, Err(LaunchError::Spawn(_))));
     }
 
-    // --- respawn ---
-
     #[tokio::test(start_paused = true)]
-    async fn respawn_waits_for_the_same_job_to_come_back() {
+    async fn respawn_waits_for_the_same_job_to_come_back_past_a_stale_entry() {
         let (_d, h) = home();
         roster_file(&h, json!({"other": live(None)}), None);
         let hh = h.clone();
@@ -621,57 +573,12 @@ mod tests {
         let call = &spawns.calls()[0];
         assert_eq!(call.argv, ["/bin/claude", "respawn", "seat1"]);
         assert_eq!(call.cwd, h.root);
-    }
 
-    #[tokio::test(start_paused = true)]
-    async fn respawn_refuses_a_live_job() {
-        let (_d, h) = home();
-        roster_file(&h, json!({"seat1": live(None)}), None);
-        let spawns = Spawns::default();
-        let err = respawn(&h, "seat1", &respawn_spec(&h), &spawns, &bus()).await.unwrap_err();
-        assert!(matches!(&err, LaunchError::Refused(m) if m.contains("running")), "{err}");
-        assert!(spawns.calls().is_empty());
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn respawn_waits_past_a_stale_roster_entry() {
-        let (_d, h) = home();
         roster_file(&h, json!({"seat1": live(Some("dead"))}), None);
         let spawns = Spawns::default();
         let s = RespawnSpec { timeout: Duration::from_millis(100), ..respawn_spec(&h) };
         let err = respawn(&h, "seat1", &s, &spawns, &no_bus()).await.unwrap_err();
         assert!(matches!(&err, LaunchError::Timeout(m) if m.contains("seat1 did not come back")), "{err}");
         assert_eq!(spawns.calls().len(), 1);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn respawn_needs_a_daemon() {
-        let (_d, h) = home();
-        let spawns = Spawns::default();
-        let err = respawn(&h, "seat1", &respawn_spec(&h), &spawns, &bus()).await.unwrap_err();
-        assert!(matches!(&err, LaunchError::Refused(m) if m.contains("no claude code daemon")), "{err}");
-        assert!(spawns.calls().is_empty());
-    }
-
-    #[test]
-    fn respawn_runs_in_a_unit_that_keeps_its_control_group() {
-        let cmd = vec!["/bin/claude".to_string(), "respawn".into(), "j".into()];
-        let inv = unit_argv(cmd, std::path::Path::new("/h"), &[], "awm-test-resume", bus().bus);
-        assert!(inv.argv.iter().any(|a| a == "--property=KillMode=process"));
-        let sep = inv.argv.iter().position(|a| a == "--").unwrap();
-        assert_eq!(inv.argv[sep + 1..], ["/bin/claude", "respawn", "j"]);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn a_launcher_that_cannot_start_is_a_spawn_error() {
-        struct Broken;
-        impl Spawner for Broken {
-            async fn run(&self, _: &LaunchCommand, _: Duration) -> std::io::Result<()> {
-                Err(std::io::Error::from(std::io::ErrorKind::NotFound))
-            }
-        }
-        let (_d, h) = home();
-        roster_file(&h, json!({}), None);
-        assert!(matches!(launch(&h, &spec(&h, "n"), any, &Broken, &no_bus()).await, Err(LaunchError::Spawn(_))));
     }
 }

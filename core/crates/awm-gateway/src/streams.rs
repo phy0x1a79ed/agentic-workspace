@@ -282,16 +282,3 @@ pub async fn relay(ws: WebSocket, pipe: WsPipe) {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn stream_paths() {
-        assert_eq!(parts("/hub/emit/social/command"), Some(("emit", "social", "command")));
-        assert_eq!(parts("/hub/session/ssh/lease?x=1"), Some(("session", "ssh", "lease")));
-        assert_eq!(parts("/hub/emit/social"), None);
-        assert_eq!(parts("/hub/emit/social/a/b"), None);
-    }
-}

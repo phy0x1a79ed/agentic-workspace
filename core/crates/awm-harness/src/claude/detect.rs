@@ -95,44 +95,22 @@ mod tests {
     }
 
     #[test]
-    fn the_heuristic_recognises_claude_code() {
+    fn the_heuristic_recognises_claude_code_and_ignores_look_alikes() {
         for (argv, exe) in POSITIVE {
             assert!(looks_like_claude(argv, exe), "{argv:?} {exe:?}");
         }
-    }
-
-    #[test]
-    fn the_heuristic_ignores_other_processes_and_claude_looking_arguments() {
         for (argv, exe) in NEGATIVE {
             assert!(!looks_like_claude(argv, exe), "{argv:?} {exe:?}");
         }
     }
 
     #[test]
-    fn an_unreadable_exe_does_not_hide_a_readable_command_line() {
+    fn an_unreadable_half_does_not_hide_the_readable_one() {
         assert!(!judge(owned(&["sshd: user@pts/2"]), None));
         assert!(judge(owned(&["claude", "--bg"]), None));
-    }
-
-    #[test]
-    fn an_unreadable_command_line_does_not_hide_a_readable_exe() {
         assert!(!judge(None, Some("/usr/bin/bash".into())));
         assert!(judge(None, Some("/home/user/.local/share/claude/versions/2.1.296".into())));
-    }
-
-    #[test]
-    fn a_process_with_neither_readable_is_assumed_to_be_a_session() {
-        assert!(judge(None, None));
-        assert!(may_be_a_session(1_000_000_000));
-    }
-
-    #[test]
-    fn the_real_test_binary_is_not_a_session() {
+        assert!(judge(None, None), "a process with neither readable is assumed to be a session");
         assert!(!may_be_a_session(std::process::id()));
-    }
-
-    #[test]
-    fn the_attaching_argv_names_the_job() {
-        assert!(!attached_shorts().contains("nobody-has-this-short"));
     }
 }

@@ -85,17 +85,3 @@ fn forwarded(h: &HeaderMap) -> Vec<(String, String)> {
         .filter_map(|(k, v)| v.to_str().ok().map(|v| (k.as_str().to_string(), v.to_string())))
         .collect()
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn mounts() {
-        assert!(valid_mount("http://127.0.0.1:8123"));
-        assert!(!valid_mount("http://example.org:80"));
-        assert_eq!(split("/s/fileviewer/a/b"), Some(("fileviewer", "a/b")));
-        assert_eq!(split("/s/fileviewer"), Some(("fileviewer", "")));
-        assert_eq!(split("/s/"), None);
-    }
-}

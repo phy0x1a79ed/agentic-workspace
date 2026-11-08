@@ -423,7 +423,7 @@ mod tests {
     const T0: f64 = 1_792_000_000.0;
 
     #[test]
-    fn a_node_without_a_daemon_is_waited_for_and_spends_no_budget() {
+    fn decide_picks_the_action_for_each_situation() {
         let mut b = Breaker::default();
         for state in ["exited", "missing", "failed"] {
             let s = Situation { daemon_up: Some(false), ..Situation::new(state) };
@@ -433,80 +433,11 @@ mod tests {
         }
         let unreachable = Situation { node_reachable: false, ..Situation::new("exited") };
         assert_eq!(decide(&unreachable, &mut b, T0).0, Action::Wait);
-        assert!(b.attempts.is_empty());
-    }
+        assert!(b.attempts.is_empty(), "waiting spends no budget");
 
-    #[test]
-    fn an_exited_session_is_resumed_then_backed_off() {
-        let mut b = Breaker::default();
-        let exited = Situation::new("exited");
-        assert_eq!(decide(&exited, &mut b, T0).0, Action::Resume);
-        b.attempt(T0, "resume", "");
-        assert_eq!(decide(&exited, &mut b, T0 + 1.0).0, Action::Backoff);
-        assert_eq!(decide(&exited, &mut b, T0 + BACKOFF_S[0]).0, Action::Resume);
-    }
+        assert_eq!(decide(&Situation::new("alive"), &mut b, T0).0, Action::None);
+        assert_eq!(decide(&Situation::new("blocked"), &mut b, T0).0, Action::None);
 
-    #[test]
-    fn backoff_grows_one_two_five_ten_minutes() {
-        let mut b = Breaker::default();
-        let mut waits = Vec::new();
-        for i in 0..3 {
-            let now = T0 + f64::from(i);
-            b.attempt(now, "resume", "");
-            waits.push(b.next_try - now);
-        }
-        assert_eq!(waits, BACKOFF_S[..3]);
-    }
-
-    #[test]
-    fn three_resumes_that_do_not_stay_up_turn_into_a_fresh_start() {
-        let mut b = Breaker::default();
-        for i in 0..3 {
-            b.attempt(T0 + f64::from(i) * 1000.0, "resume", "");
-        }
-        let now = b.next_try;
-        let (action, why) = decide(&Situation::new("exited"), &mut b, now);
-        assert_eq!(action, Action::Fresh);
-        assert!(why.contains("resumes"));
-    }
-
-    #[test]
-    fn the_budget_trips_the_breaker_and_it_holds() {
-        let mut b = Breaker::default();
-        for i in 0..BUDGET {
-            b.attempt(T0 + i as f64 * 700.0, if i < 3 { "resume" } else { "fresh" }, "");
-        }
-        let now = T0 + BUDGET as f64 * 700.0;
-        assert!(b.tripped(now));
-        assert_eq!(decide(&Situation::new("exited"), &mut b, now).0, Action::GiveUp);
-        assert_eq!(b.reason, "4 attempts in 1 h did not stay up");
-        let later = b.tripped_at.unwrap() + HOLD_S;
-        assert_eq!(decide(&Situation::new("exited"), &mut b, later).0, Action::Resume);
-    }
-
-    #[test]
-    fn old_attempts_decay() {
-        let mut b = Breaker::default();
-        for i in 0..BUDGET - 1 {
-            b.attempt(T0 + i as f64, "resume", "");
-        }
-        b.attempt(T0 + DECAY_S + 10.0, "resume", "");
-        assert!(!b.tripped(T0 + DECAY_S + 11.0));
-    }
-
-    #[test]
-    fn a_session_that_stays_up_clears_the_breaker() {
-        let mut b = Breaker::default();
-        b.attempt(T0, "resume", "");
-        assert!(!b.healthy(T0 + 60.0, Some(T0 + 5.0)));
-        assert!(b.healthy(T0 + SETTLE_S + 10.0, Some(T0 + 5.0)));
-        assert!(b.attempts.is_empty());
-        assert_eq!(b.next_try, 0.0);
-    }
-
-    #[test]
-    fn failed_missing_and_changed_specs_start_fresh() {
-        let mut b = Breaker::default();
         assert_eq!(decide(&Situation::new("failed"), &mut b, T0).0, Action::Fresh);
         assert_eq!(decide(&Situation::new("missing"), &mut b, T0).0, Action::Fresh);
         let changed = Situation { spec_changed: true, ..Situation::new("exited") };
@@ -516,14 +447,48 @@ mod tests {
     }
 
     #[test]
-    fn alive_and_blocked_need_nothing() {
+    fn an_exited_session_is_resumed_backed_off_then_started_fresh_until_the_budget_trips() {
         let mut b = Breaker::default();
-        assert_eq!(decide(&Situation::new("alive"), &mut b, T0).0, Action::None);
-        assert_eq!(decide(&Situation::new("blocked"), &mut b, T0).0, Action::None);
+        let exited = Situation::new("exited");
+        assert_eq!(decide(&exited, &mut b, T0).0, Action::Resume);
+        b.attempt(T0, "resume", "");
+        assert_eq!(decide(&exited, &mut b, T0 + 1.0).0, Action::Backoff);
+        assert_eq!(decide(&exited, &mut b, T0 + BACKOFF_S[0]).0, Action::Resume);
+
+        let mut b = Breaker::default();
+        let mut waits = Vec::new();
+        for i in 0..3 {
+            let now = T0 + f64::from(i);
+            b.attempt(now, "resume", "");
+            waits.push(b.next_try - now);
+        }
+        assert_eq!(waits, BACKOFF_S[..3]);
+        let due = b.next_try;
+        let (action, why) = decide(&exited, &mut b, due);
+        assert_eq!(action, Action::Fresh, "three resumes that did not stay up");
+        assert!(why.contains("resumes"));
+
+        let mut b = Breaker::default();
+        for i in 0..BUDGET {
+            b.attempt(T0 + i as f64 * 700.0, if i < 3 { "resume" } else { "fresh" }, "");
+        }
+        let now = T0 + BUDGET as f64 * 700.0;
+        assert!(b.tripped(now));
+        assert_eq!(decide(&exited, &mut b, now).0, Action::GiveUp);
+        assert_eq!(b.reason, "4 attempts in 1 h did not stay up");
+        let later = b.tripped_at.unwrap() + HOLD_S;
+        assert_eq!(decide(&exited, &mut b, later).0, Action::Resume);
     }
 
     #[test]
-    fn breaker_round_trips_through_json() {
+    fn the_breaker_decays_clears_when_healthy_and_round_trips_through_json() {
+        let mut b = Breaker::default();
+        for i in 0..BUDGET - 1 {
+            b.attempt(T0 + i as f64, "resume", "");
+        }
+        b.attempt(T0 + DECAY_S + 10.0, "resume", "");
+        assert!(!b.tripped(T0 + DECAY_S + 11.0), "old attempts decay");
+
         let mut b = Breaker::default();
         b.attempt(T0, "resume", "");
         let text = serde_json::to_string(&b.to_value()).unwrap();
@@ -531,6 +496,11 @@ mod tests {
         assert_eq!(again, b);
         assert_eq!(b.to_value()["attempts"], json!([[T0, "resume"]]));
         assert_eq!(Breaker::from_value(None).unwrap(), Breaker::default());
+
+        assert!(!b.healthy(T0 + 60.0, Some(T0 + 5.0)));
+        assert!(b.healthy(T0 + SETTLE_S + 10.0, Some(T0 + 5.0)));
+        assert!(b.attempts.is_empty());
+        assert_eq!(b.next_try, 0.0);
     }
 
     #[test]

@@ -422,33 +422,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn trust_is_inherited_from_an_ancestor() {
+    async fn trust_needs_an_accepted_entry_on_the_path() {
         let t = tmp();
         let h = trust_file(&t.path, json!({ s(&t.path): { ACCEPTED: true } }));
         assert!(trusted(&t.path, &h).await);
         assert!(trusted(t.path.join("a").join("b"), &h).await);
-    }
+        let elsewhere = trust_file(&t.path, json!({ s(&t.path.join("other")): { ACCEPTED: true } }));
+        assert!(!trusted(t.path.join("here"), &elsewhere).await);
+        let declined = trust_file(&t.path, json!({ s(&t.path): { ACCEPTED: false } }));
+        assert!(!trusted(&t.path, &declined).await);
 
-    #[tokio::test]
-    async fn a_directory_with_no_trusted_ancestor_is_untrusted() {
-        let t = tmp();
-        let h = trust_file(
-            &t.path,
-            json!({ s(&t.path.join("other")): { ACCEPTED: true } }),
-        );
-        assert!(!trusted(t.path.join("here"), &h).await);
-    }
-
-    #[tokio::test]
-    async fn a_declined_entry_is_not_trust() {
-        let t = tmp();
-        let h = trust_file(&t.path, json!({ s(&t.path): { ACCEPTED: false } }));
-        assert!(!trusted(&t.path, &h).await);
-    }
-
-    #[tokio::test]
-    async fn an_unreadable_or_reshaped_file_reads_as_untrusted() {
-        let t = tmp();
         let missing = ClaudeHome::at(t.path.join(".claude"), t.path.join("missing.json"));
         assert!(!trusted(&t.path, &missing).await);
         let bad_file = t.path.join("bad.json");
@@ -459,180 +442,89 @@ mod tests {
         }
     }
 
-    // --- the stricter rule for `claude --bg` ---
-
+    /// The stricter rule for `claude --bg`: a git worktree is trusted through its repository's
+    /// entry, never through an ancestor directory.
     #[tokio::test]
-    async fn an_ancestor_does_not_trust_a_git_worktree() {
+    async fn a_start_needs_the_repository_entry_not_an_ancestor() {
         let t = tmp();
         let r = repos(&t.path);
-        let h = trust_file(&t.path, json!({ s(&t.path): { ACCEPTED: true } }));
-        // Measured: `/cd` into such a worktree opens "This directory is part of the repository
-        // at …/.bare" under a trusted home.
-        assert!(!trusted(&r.wt, &h).await);
-        let why = start_refusal(&r.wt, &h).await.expect("refused");
-        assert!(
-            why.contains(&s(&r.bare)) && why.contains("claude") && why.contains("accept"),
-            "{why}"
-        );
-    }
+        let ancestor = trust_file(&t.path, json!({ s(&t.path): { ACCEPTED: true } }));
+        assert!(!trusted(&r.wt, &ancestor).await);
+        let why = start_refusal(&r.wt, &ancestor).await.expect("refused");
+        assert!(why.contains(&s(&r.bare)) && why.contains("claude") && why.contains("accept"), "{why}");
 
-    #[tokio::test]
-    async fn the_main_repository_entry_trusts_every_worktree() {
-        let t = tmp();
-        let r = repos(&t.path);
-        let h = trust_file(&t.path, json!({ s(&r.bare): { ACCEPTED: true } }));
-        assert_eq!(start_refusal(&r.wt, &h).await, None);
-    }
+        let own = trust_file(&t.path, json!({ s(&r.bare): { ACCEPTED: true } }));
+        assert_eq!(start_refusal(&r.wt, &own).await, None);
+        let declined = trust_file(&t.path, json!({ s(&r.bare): { ACCEPTED: false } }));
+        assert!(start_refusal(&r.wt, &declined).await.is_some());
+        let missing = ClaudeHome::at(t.path.join(".claude"), t.path.join("missing.json"));
+        assert!(start_refusal(&r.wt, &missing).await.is_some());
 
-    #[tokio::test]
-    async fn a_declined_repository_entry_is_not_trust() {
-        let t = tmp();
-        let r = repos(&t.path);
-        let h = trust_file(&t.path, json!({ s(&r.bare): { ACCEPTED: false } }));
-        assert!(start_refusal(&r.wt, &h).await.is_some());
-    }
-
-    #[tokio::test]
-    async fn a_plain_repository_needs_its_own_entry() {
-        let t = tmp();
-        let r = repos(&t.path);
         let sub = r.plain.join("sub");
         std::fs::create_dir(&sub).unwrap();
         let ancestor = trust_file(&t.path, json!({ s(&t.path): { ACCEPTED: true } }));
         let why = start_refusal(&sub, &ancestor).await.expect("refused");
         assert!(why.contains(&s(&r.plain)), "{why}");
-        let own = trust_file(&t.path, json!({ s(&r.plain): { ACCEPTED: true } }));
-        assert_eq!(start_refusal(&r.plain, &own).await, None);
-        assert_eq!(start_refusal(&sub, &own).await, None);
-    }
+        let plain = trust_file(&t.path, json!({ s(&r.plain): { ACCEPTED: true } }));
+        assert_eq!(start_refusal(&r.plain, &plain).await, None);
+        assert_eq!(start_refusal(&sub, &plain).await, None);
 
-    #[tokio::test]
-    async fn the_workspace_key_is_the_bare_dir_or_the_repo_root() {
-        let t = tmp();
-        let r = repos(&t.path);
         assert_eq!(workspace_key(&r.wt).await, Some(r.bare.clone()));
         assert_eq!(workspace_key(&r.plain).await, Some(r.plain.clone()));
-    }
-
-    #[tokio::test]
-    async fn an_inherited_git_environment_does_not_redirect_the_lookup() {
-        // The GIT_* variables go into the environment handed to the lookup, not this process's,
-        // so parallel tests are unaffected.
-        let t = tmp();
-        let r = repos(&t.path);
+        // Inherited GIT_* variables must not redirect the lookup.
         let dot_git = r.plain.join(".git");
         let env = std::env::vars_os().chain([
             ("GIT_DIR".into(), dot_git.clone().into_os_string()),
             ("GIT_WORK_TREE".into(), r.plain.clone().into_os_string()),
             ("GIT_COMMON_DIR".into(), dot_git.clone().into_os_string()),
-            (
-                "GIT_INDEX_FILE".into(),
-                dot_git.join("index").into_os_string(),
-            ),
+            ("GIT_INDEX_FILE".into(), dot_git.join("index").into_os_string()),
         ]);
         assert_eq!(workspace_key_in(&r.wt, env).await, Some(r.bare.clone()));
-    }
 
-    #[tokio::test]
-    async fn a_directory_outside_git_inherits_from_an_ancestor() {
-        let t = tmp();
         let outside = t.path.join("notgit");
         std::fs::create_dir(&outside).unwrap();
-        let h = trust_file(&t.path, json!({ s(&t.path): { ACCEPTED: true } }));
         assert_eq!(workspace_key(&outside).await, None);
-        assert_eq!(start_refusal(&outside, &h).await, None);
+        let ancestor = trust_file(&t.path, json!({ s(&t.path): { ACCEPTED: true } }));
+        assert_eq!(start_refusal(&outside, &ancestor).await, None);
         let empty = trust_file(&t.path, json!({}));
         let why = start_refusal(&outside, &empty).await.expect("refused");
-        assert!(
-            why.contains(&s(&outside)) && why.contains("claude"),
-            "{why}"
-        );
+        assert!(why.contains(&s(&outside)) && why.contains("claude"), "{why}");
     }
 
     #[tokio::test]
-    async fn an_unreadable_trust_file_refuses_a_start() {
+    async fn only_awm_worktrees_under_the_projects_root_are_granted() {
         let t = tmp();
         let r = repos(&t.path);
-        let missing = ClaudeHome::at(t.path.join(".claude"), t.path.join("missing.json"));
-        assert!(start_refusal(&r.wt, &missing).await.is_some());
-    }
-
-    // --- granting trust to awm's own worktrees ---
-
-    #[tokio::test]
-    async fn an_awm_worktree_is_granted_its_repository_and_itself() {
-        let t = tmp();
-        let r = repos(&t.path);
-        let h = trust_file(
-            &t.path,
-            json!({ "/elsewhere": { ACCEPTED: true, "allowedTools": ["x"] } }),
-        );
+        let h = trust_file(&t.path, json!({ "/elsewhere": { ACCEPTED: true, "allowedTools": ["x"] } }));
         let added = grant_awm_worktree(&r.wt, &t.path, &h).await;
         assert_eq!(added, vec![s(&r.bare), s(&r.wt)]);
-        assert!(trusted(&r.wt, &h).await);
         assert_eq!(start_refusal(&r.wt, &h).await, None);
-        assert_eq!(
-            read(&h)["projects"]["/elsewhere"],
-            json!({ ACCEPTED: true, "allowedTools": ["x"] })
-        );
-        assert!(grant_awm_worktree(&r.wt, &t.path, &h).await.is_empty());
-    }
+        assert_eq!(read(&h)["projects"]["/elsewhere"], json!({ ACCEPTED: true, "allowedTools": ["x"] }));
+        assert!(grant_awm_worktree(&r.wt, &t.path, &h).await.is_empty(), "a second grant adds nothing");
 
-    #[tokio::test]
-    async fn an_existing_entry_keeps_its_other_fields() {
-        let t = tmp();
-        let r = repos(&t.path);
-        let h = trust_file(
-            &t.path,
-            json!({ s(&r.bare): { ACCEPTED: false, "mcpServers": { "a": 1 } } }),
-        );
-        grant_awm_worktree(&r.wt, &t.path, &h).await;
-        assert_eq!(
-            read(&h)["projects"][s(&r.bare)],
-            json!({ ACCEPTED: true, "mcpServers": { "a": 1 } })
-        );
-    }
+        // A declined entry is flipped and keeps its other fields.
+        let declined = trust_file(&t.path, json!({ s(&r.bare): { ACCEPTED: false, "mcpServers": { "a": 1 } } }));
+        grant_awm_worktree(&r.wt, &t.path, &declined).await;
+        assert_eq!(read(&declined)["projects"][s(&r.bare)], json!({ ACCEPTED: true, "mcpServers": { "a": 1 } }));
 
-    #[tokio::test]
-    async fn nothing_outside_the_projects_root_is_granted() {
-        let t = tmp();
-        let r = repos(&t.path);
+        // Refused: outside the root, a plain repository, the project dir, the bare repo, a non-repo,
+        // and a worktree of another project's repository.
         let h = trust_file(&t.path, json!({}));
-        assert!(grant_awm_worktree(&r.wt, t.path.join("other"), &h)
-            .await
-            .is_empty());
-        // A plain repository is not an awm project, even under the root.
-        assert!(grant_awm_worktree(&r.plain, &t.path, &h).await.is_empty());
-        // Nor is the project directory, or the bare repository itself.
-        assert!(grant_awm_worktree(t.path.join("proj"), &t.path, &h)
-            .await
-            .is_empty());
-        assert!(grant_awm_worktree(&r.bare, &t.path, &h).await.is_empty());
+        let stray = t.path.join("proj-b").join("scope");
+        std::fs::create_dir(stray.parent().unwrap()).unwrap();
+        git(&r.bare, &["worktree", "add", "-q", "-b", "feat/stray", &s(&stray)]);
         let outside = t.path.join("notgit");
         std::fs::create_dir(&outside).unwrap();
-        assert!(grant_awm_worktree(&outside, &t.path, &h).await.is_empty());
+        assert!(grant_awm_worktree(&r.wt, t.path.join("other"), &h).await.is_empty());
+        for dir in [&r.plain, &t.path.join("proj"), &r.bare, &outside, &stray] {
+            assert!(grant_awm_worktree(dir, &t.path, &h).await.is_empty(), "{dir:?}");
+        }
         assert_eq!(read(&h), json!({ "projects": {} }));
     }
 
+    /// The rewrite keeps Python's bytes: key order, `json.dumps(indent=2)` escaping, file mode.
     #[tokio::test]
-    async fn a_worktree_of_another_projects_repository_is_not_granted() {
-        // A worktree under proj-b/ whose repository is proj/.bare is not proj-b's.
-        let t = tmp();
-        let r = repos(&t.path);
-        let stray = t.path.join("proj-b").join("scope");
-        std::fs::create_dir(stray.parent().unwrap()).unwrap();
-        git(
-            &r.bare,
-            &["worktree", "add", "-q", "-b", "feat/stray", &s(&stray)],
-        );
-        let h = trust_file(&t.path, json!({}));
-        assert!(grant_awm_worktree(&stray, &t.path, &h).await.is_empty());
-    }
-
-    // --- beyond the Python suite: the rewrite matches Python's bytes ---
-
-    #[tokio::test]
-    async fn a_grant_keeps_key_order_fields_and_mode() {
+    async fn a_grant_rewrites_the_file_as_python_would() {
         let t = tmp();
         let r = repos(&t.path);
         let f = t.path.join("claude.json");
@@ -643,10 +535,7 @@ mod tests {
         std::fs::write(&f, before).unwrap();
         std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o640)).unwrap();
         let h = ClaudeHome::at(t.path.join(".claude"), &f);
-        assert_eq!(
-            grant_awm_worktree(&r.wt, &t.path, &h).await,
-            vec![s(&r.bare), s(&r.wt)]
-        );
+        assert_eq!(grant_awm_worktree(&r.wt, &t.path, &h).await, vec![s(&r.bare), s(&r.wt)]);
         let expected = format!(
             "{{\n  \"zeta\": 1,\n  \"projects\": {{\n    \"{bare}\": {{\n      \"allowedTools\": [],\n      \
              \"{ACCEPTED}\": true,\n      \"z\": {{}}\n    }},\n    \"/b\": {{\n      \"x\": true\n    }},\n    \
@@ -655,20 +544,14 @@ mod tests {
             wt = s(&r.wt)
         );
         assert_eq!(std::fs::read_to_string(&f).unwrap(), expected);
-        assert_eq!(
-            std::fs::metadata(&f).unwrap().permissions().mode() & 0o777,
-            0o640
-        );
-        let leftovers: Vec<_> = std::fs::read_dir(&t.path)
+        assert_eq!(std::fs::metadata(&f).unwrap().permissions().mode() & 0o777, 0o640);
+        let leftovers = std::fs::read_dir(&t.path)
             .unwrap()
             .filter_map(|e| e.ok())
             .filter(|e| e.file_name().to_string_lossy().contains(".awm."))
-            .collect();
-        assert!(leftovers.is_empty());
-    }
+            .count();
+        assert_eq!(leftovers, 0);
 
-    #[test]
-    fn the_output_matches_python_json_dump_byte_for_byte() {
         // Expected text is Python's `json.dumps(value, indent=2)` of the same value.
         let value: Value = serde_json::from_str(
             "{\"projects\": {\"/home/\u{e9}/\u{65e5}\u{672c}\": {\"hasTrustDialogAccepted\": true, \
@@ -694,11 +577,7 @@ mod tests {
   "numStartups": 3
 }"#;
         assert_eq!(python_json(&value), python);
-    }
 
-    #[tokio::test]
-    async fn a_plain_dir_with_a_non_ascii_name_is_granted_and_escaped() {
-        let t = tmp();
         let lobby = t.path.join("lobby-\u{e9}");
         std::fs::create_dir(&lobby).unwrap();
         let h = trust_file(&t.path, json!({}));
@@ -706,7 +585,6 @@ mod tests {
         let text = std::fs::read_to_string(&h.trust_file).unwrap();
         assert!(text.is_ascii() && text.contains("lobby-\\u00e9"), "{text}");
         assert!(trusted(&lobby, &h).await);
-        let r = repos(&t.path);
         assert!(grant_plain_dir(&r.plain, &h).await.is_empty());
     }
 }

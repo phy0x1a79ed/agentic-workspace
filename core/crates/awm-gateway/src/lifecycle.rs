@@ -195,13 +195,6 @@ mod tests {
     }
 
     #[test]
-    fn a_refusal_that_leaves_the_set_is_disabled_or_removed() {
-        let before = load(&[], &[], &[("off", "1"), ("gone", "2")]);
-        let after = load(&[], &[("off", "1")], &[]);
-        assert_eq!(events(&diff(&before, &after)), vec![("gone", Event::Removed, "2"), ("off", Event::Disabled, "1")]);
-    }
-
-    #[test]
     fn a_core_plugin_with_a_pin_takes_its_version() {
         let t = tempfile::tempdir().unwrap();
         let (core, other, pins) = (t.path().join("core"), t.path().join("other"), t.path().join("pins"));

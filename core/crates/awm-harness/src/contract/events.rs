@@ -240,12 +240,9 @@ mod tests {
         assert_eq!(left.lines().count(), 1);
         assert!(left.contains("cc3"));
         assert_eq!(seen.lock().unwrap().len(), 5);
-    }
 
-    #[tokio::test]
-    async fn resend_without_spool_is_zero() {
-        let dir = tempfile::tempdir().unwrap();
         let (send, _) = fake(vec![]);
         assert_eq!(Reporter::with_sender(send, dir.path().join("none")).resend().await, 0);
     }
+
 }

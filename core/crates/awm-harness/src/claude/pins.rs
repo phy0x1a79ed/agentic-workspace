@@ -143,7 +143,7 @@ mod tests {
         serde_json::from_str(&std::fs::read_to_string(home.pins()).unwrap()).unwrap()
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn pin_and_unpin_edit_the_array_under_the_cli_lock() {
         let dir = tempfile::tempdir().unwrap();
         let home = home_with_pins(dir.path());
@@ -154,46 +154,32 @@ mod tests {
         assert_eq!(unpin(&home, ["aaaa1111"]).await.unwrap(), ["aaaa1111"]);
         assert_eq!(pinned(&home).await, ["bbbb2222"]);
         assert!(unpin(&home, vec!["cccc3333".to_string()]).await.unwrap().is_empty());
-        assert!(!home.jobs().join("pins.json.lock").exists());
-    }
-
-    #[tokio::test]
-    async fn a_stale_lock_is_broken() {
-        let dir = tempfile::tempdir().unwrap();
-        let home = home_with_pins(dir.path());
         let lock = home.jobs().join("pins.json.lock");
+        assert!(!lock.exists());
+
         std::fs::create_dir(&lock).unwrap();
         let old = SystemTime::now() - Duration::from_secs(60);
         std::fs::File::open(&lock).unwrap().set_modified(old).unwrap();
-        pin(&home, "aaaa1111").await.unwrap();
-        assert_eq!(pinned(&home).await, ["aaaa1111"]);
+        pin(&home, "cccc3333").await.unwrap();
+        assert_eq!(pinned(&home).await, ["bbbb2222", "cccc3333"], "a stale lock is broken");
+
+        std::fs::create_dir(&lock).unwrap();
+        let err = pin(&home, "dddd4444").await.unwrap_err();
+        assert!(matches!(err, PinsError::Locked(_)), "a fresh lock is waited for, then given up on: {err}");
+        assert_eq!(pinned(&home).await, ["bbbb2222", "cccc3333"]);
     }
 
     #[tokio::test]
-    async fn a_fresh_lock_is_waited_for_then_given_up_on() {
-        let dir = tempfile::tempdir().unwrap();
-        let home = home_with_pins(dir.path());
-        std::fs::create_dir(home.jobs().join("pins.json.lock")).unwrap();
-        let err = pin(&home, "aaaa1111").await.unwrap_err();
-        assert!(matches!(err, PinsError::Locked(_)), "{err}");
-        assert_eq!(on_disk(&home), serde_json::json!([]));
-    }
-
-    #[tokio::test]
-    async fn a_file_that_is_not_an_array_is_left_alone() {
+    async fn a_file_that_is_not_an_array_is_left_alone_and_a_missing_one_is_made() {
         let dir = tempfile::tempdir().unwrap();
         let home = home_with_pins(dir.path());
         std::fs::write(home.pins(), r#"{"x": 1}"#).unwrap();
         assert!(matches!(pin(&home, "aaaa1111").await, Err(PinsError::NotArray(_))));
         assert_eq!(std::fs::read_to_string(home.pins()).unwrap(), r#"{"x": 1}"#);
         assert!(pinned(&home).await.is_empty());
-    }
 
-    #[tokio::test]
-    async fn a_missing_file_is_made() {
-        let dir = tempfile::tempdir().unwrap();
-        let home = ClaudeHome::at(dir.path().join("fresh"), dir.path().join("claude.json"));
-        pin(&home, "aaaa1111").await.unwrap();
-        assert_eq!(on_disk(&home), serde_json::json!(["aaaa1111"]));
+        let fresh = ClaudeHome::at(dir.path().join("fresh"), dir.path().join("claude.json"));
+        pin(&fresh, "aaaa1111").await.unwrap();
+        assert_eq!(on_disk(&fresh), serde_json::json!(["aaaa1111"]));
     }
 }

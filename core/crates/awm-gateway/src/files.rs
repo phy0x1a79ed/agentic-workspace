@@ -201,34 +201,23 @@ mod tests {
     }
 
     #[test]
-    fn a_reply_without_inline_files_is_untouched() {
+    fn a_reply_is_localized_safely_and_one_without_inline_files_is_untouched() {
         for text in ["not json", r#"{"files": [{"path": "/x"}]}"#, r#"{"count": 0}"#, r#"["b64"]"#] {
             assert_eq!(localize_in(text, "altair", Path::new("/nonexistent")), text);
         }
-    }
-
-    #[test]
-    fn a_name_cannot_leave_the_dir_and_a_clash_keeps_both() {
         let tmp = tempfile::tempdir().unwrap();
         let reply = json!({"files": [
             {"filename": "../../etc/passwd", "b64": b64(b"1")},
             {"filename": "d.txt", "b64": b64(b"2")},
             {"filename": "d.txt", "b64": b64(b"3")},
             {"filename": "", "b64": b64(b"4")},
+            {"filename": "a", "b64": "!!"},
         ]}).to_string();
         let out: Value = serde_json::from_str(&localize_in(&reply, "n", tmp.path())).unwrap();
-        let paths: Vec<&str> = out["files"].as_array().unwrap().iter().map(|f| f["path"].as_str().unwrap()).collect();
+        let files = out["files"].as_array().unwrap();
         let dir = out["dir"].as_str().unwrap();
-        let names: Vec<&str> = paths.iter().map(|p| p.strip_prefix(&format!("{dir}/")).unwrap()).collect();
-        assert_eq!(names, ["passwd", "d.txt", "d-1.txt", "file-3"]);
-    }
-
-    #[test]
-    fn bad_base64_is_reported_on_its_entry() {
-        let tmp = tempfile::tempdir().unwrap();
-        let reply = json!({"files": [{"filename": "a", "b64": "!!"}]}).to_string();
-        let out: Value = serde_json::from_str(&localize_in(&reply, "n", tmp.path())).unwrap();
-        assert!(out["files"][0]["error"].as_str().unwrap().contains("base64"));
-        assert!(out["files"][0].get("path").is_none());
+        let names: Vec<&str> = files[..4].iter().map(|f| f["path"].as_str().unwrap().strip_prefix(&format!("{dir}/")).unwrap()).collect();
+        assert_eq!(names, ["passwd", "d.txt", "d-1.txt", "file-3"], "a name cannot leave the dir and a clash keeps both");
+        assert!(files[4]["error"].as_str().unwrap().contains("base64") && files[4].get("path").is_none());
     }
 }

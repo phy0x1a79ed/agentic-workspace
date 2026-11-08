@@ -2,6 +2,7 @@
 //! plugin that needs it, and (when the awm conda env is present) today's Python journal service
 //! unchanged. Calls go in through `awm mcp` and the `awm <tool> <verb>` CLI.
 
+use std::sync::Arc;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -547,15 +548,20 @@ fn gateway_end_to_end() {
         .stdout(Stdio::piped()).spawn().unwrap();
     let mut lines = BufReader::new(listen.stdout.take().unwrap()).lines();
     let poke = url.clone();
-    let poker = std::thread::spawn(move || {
-        for _ in 0..40 {
-            let _ = http().post(format!("{poke}/invoke"))
-                .json(&json!({"name": "fake", "args": {"verb": "emit", "args": {"topic": "news", "payload": {"n": 1}}}})).send();
-            std::thread::sleep(Duration::from_millis(250));
-        }
-    });
+    let heard = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let poker = {
+        let heard = heard.clone();
+        std::thread::spawn(move || {
+            while !heard.load(std::sync::atomic::Ordering::SeqCst) {
+                let _ = http().post(format!("{poke}/invoke"))
+                    .json(&json!({"name": "fake", "args": {"verb": "emit", "args": {"topic": "news", "payload": {"n": 1}}}})).send();
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        })
+    };
     let line = lines.next().expect("awm listen printed nothing").unwrap();
     assert_eq!(serde_json::from_str::<Value>(&line).unwrap()["n"], 1);
+    heard.store(true, std::sync::atomic::Ordering::SeqCst);
     let _ = listen.kill();
     poker.join().unwrap();
     assert!(Stream::open(&format!("{url}/hub/emit/nobody/news")).is_err(), "an unknown service has no topics");
@@ -616,7 +622,7 @@ fn gateway_end_to_end() {
         if got.0 == 0 || Instant::now() >= deadline || !got.2.contains("ext not installed") {
             break got;
         }
-        std::thread::sleep(Duration::from_millis(200));
+        std::thread::sleep(Duration::from_millis(50));
     };
     let _ = ext.kill();
     let _ = ext.wait();
@@ -1532,7 +1538,7 @@ fn a_plugin_hears_the_plugin_lifecycle() {
     let removed = nth(2);
     assert_eq!((&removed["plugin"], &removed["event"], &removed["version"]), (&json!("hot"), &json!("removed"), &updated["version"]), "{removed}");
     reload();
-    std::thread::sleep(Duration::from_millis(300));
+    std::thread::sleep(Duration::from_millis(100));
     assert_eq!(heard()["payloads"].as_array().map(Vec::len), Some(3), "a reload that changes nothing reports nothing");
     assert!(gw.stop().success());
 }

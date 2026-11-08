@@ -125,10 +125,6 @@ pub async fn call(route: &DoorRoute, request: &DoorRequest) -> Result<String, Pe
 mod tests {
     use super::*;
 
-    fn empty() -> DoorRequest {
-        DoorRequest { name: String::new(), args: Value::Null, origin: None, session: None, trust: None, scope: None, job: None, session_name: None }
-    }
-
     #[test]
     fn the_request_carries_the_calling_session() {
         let caller = Caller {
@@ -146,25 +142,22 @@ mod tests {
     }
 
     #[test]
-    fn the_request_rides_on_stdin_not_the_ssh_command() {
-        let route = DoorRoute { tool: "vault".into(), host: "h".into(), address: "203.0.113.7".into(), port: 2201, user: None };
-        let req = DoorRequest { name: "vault".into(), args: json!({"verb": "get"}), ..empty() };
-        let args = ssh_args(&route);
-        let n = args.len();
-        assert_eq!(&args[n - 4..n - 1], ["-p", "2201", "203.0.113.7"]);
-        assert_eq!(args[n - 1], "port", "the request is not on the command line");
-        assert!(args.iter().any(|a| a.ends_with(SERVICE_KEY)));
-        let parsed = awm_trust::port::parse(&serde_json::to_string(&req).unwrap()).unwrap();
-        assert_eq!((parsed.name.as_str(), parsed.origin), ("vault", None));
-        assert!(!args.iter().any(|a| a == "-l"), "no user named, so ssh logs in as the caller");
-    }
-
-    #[test]
-    fn the_door_user_is_the_login_name() {
+    fn the_door_user_is_the_login_name_when_one_is_named() {
         let route = DoorRoute { tool: "vault".into(), host: "h".into(), address: "100.1.1.1".into(), port: 2201, user: Some("awm".into()) };
         let args = ssh_args(&route);
         let at = args.iter().position(|a| a == "-l").expect("-l");
         assert_eq!(args[at + 1], "awm");
         assert!(at < args.len() - 2, "the login precedes the address and the command");
+    }
+
+    #[test]
+    fn the_request_rides_on_stdin_not_the_ssh_command() {
+        let route = DoorRoute { tool: "vault".into(), host: "h".into(), address: "203.0.113.7".into(), port: 2201, user: None };
+        let args = ssh_args(&route);
+        let n = args.len();
+        assert_eq!(&args[n - 4..n - 1], ["-p", "2201", "203.0.113.7"]);
+        assert_eq!(args[n - 1], "port", "the request is not on the command line");
+        assert!(args.iter().any(|a| a.ends_with(SERVICE_KEY)));
+        assert!(!args.iter().any(|a| a == "-l"), "no user named, so ssh logs in as the caller");
     }
 }

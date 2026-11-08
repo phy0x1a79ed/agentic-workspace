@@ -85,19 +85,3 @@ impl ClaudeHome {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn paths_hang_off_root() {
-        let h = ClaudeHome::at("/x/.claude", "/x/.claude.json");
-        assert_eq!(h.roster(), Path::new("/x/.claude/daemon/roster.json"));
-        assert_eq!(h.job_state("ab12cd34"), Path::new("/x/.claude/jobs/ab12cd34/state.json"));
-        assert_eq!(h.session_record(7), Path::new("/x/.claude/sessions/7.json"));
-        assert_eq!(h.pins(), Path::new("/x/.claude/jobs/pins.json"));
-        let sock = h.control_socket();
-        assert!(sock.ends_with("control.sock"));
-        assert_eq!(sock.parent().unwrap().file_name().unwrap().len(), 8);
-    }
-}

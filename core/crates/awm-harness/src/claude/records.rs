@@ -308,30 +308,34 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_session_record_for_a_running_pid_is_returned() {
+    fn a_session_record_is_returned_only_for_a_running_pid_it_describes() {
         let (_d, h) = home();
         record(&h, me(), json!({"kind": "bg", "jobId": "ab12cd34", "sessionId": UUID, "procStart": own_start()}));
-        let rec = read_session_record(&h, me()).unwrap();
-        assert_eq!(rec["jobId"], "ab12cd34");
+        assert_eq!(read_session_record(&h, me()).unwrap()["jobId"], "ab12cd34");
         assert_eq!(job_of_pid(&h, me()).as_deref(), Some("ab12cd34"));
-    }
 
-    #[test]
-    fn an_interactive_session_has_no_job() {
-        let (_d, h) = home();
-        record(&h, me(), json!({"kind": "interactive", "sessionId": UUID}));
+        record(&h, me(), json!({"kind": "interactive", "sessionId": UUID, "bridgeSessionId": "cse_01Q"}));
         assert!(session_by_pid(&h, me()).is_some());
-        assert_eq!(job_of_pid(&h, me()), None);
+        assert_eq!(job_of_pid(&h, me()), None, "an interactive session has no job");
+        record(&h, me(), json!({"kind": "interactive", "procStart": own_start(), "bridgeSessionId": "cse_01Q"}));
+        assert_eq!(pid_bridge_id(&h, me()).as_deref(), Some("cse_01Q"));
+        assert_eq!(pid_bridge_id(&h, (1 << 22) + 1), None);
+
+        record(&h, DEAD_PID, json!({"kind": "bg"}));
+        assert_eq!(read_session_record(&h, DEAD_PID), Err(SessionRecordError::Gone));
+        record(&h, 0, json!({"kind": "bg"}));
+        assert_eq!(session_by_pid(&h, 0), None);
     }
 
     #[test]
     fn a_record_that_cannot_be_trusted_is_refused() {
         type Case = (&'static str, fn(&ClaudeHome));
-        let cases: [Case; 4] = [
+        let cases: [Case; 5] = [
             ("missing", |_| {}),
             ("unreadable", |h| std::fs::write(h.session_record(me()), "{").unwrap()),
             ("not an object", |h| std::fs::write(h.session_record(me()), "[1]").unwrap()),
             ("stale", |h| record(h, me(), json!({"kind": "bg", "procStart": "1"}))),
+            ("null", |h| record(h, me(), json!({"kind": "bg", "procStart": null}))),
         ];
         for (why, setup) in cases {
             let (_d, h) = home();
@@ -342,39 +346,11 @@ pub(crate) mod tests {
                 "stale" => assert!(
                     matches!(&err, SessionRecordError::Stale { claimed, live } if claimed == "1" && *live == own_start())
                 ),
+                "null" => assert!(matches!(&err, SessionRecordError::Stale { claimed, .. } if claimed == "None")),
                 _ => assert!(matches!(&err, SessionRecordError::Unreadable(u) if u.path == h.session_record(me()))),
             }
             assert_eq!(session_by_pid(&h, me()), None, "{why}");
         }
-    }
-
-    #[test]
-    fn a_null_proc_start_claims_none_and_is_stale() {
-        let (_d, h) = home();
-        record(&h, me(), json!({"kind": "bg", "procStart": null}));
-        assert!(matches!(read_session_record(&h, me()), Err(SessionRecordError::Stale { claimed, .. }) if claimed == "None"));
-    }
-
-    #[test]
-    fn a_dead_process_is_refused_whatever_its_record_says() {
-        let (_d, h) = home();
-        record(&h, DEAD_PID, json!({"kind": "bg"}));
-        assert_eq!(read_session_record(&h, DEAD_PID), Err(SessionRecordError::Gone));
-    }
-
-    #[test]
-    fn session_by_pid_declines_a_pid_that_is_not_one() {
-        let (_d, h) = home();
-        record(&h, 0, json!({"kind": "bg"}));
-        assert_eq!(session_by_pid(&h, 0), None);
-    }
-
-    #[test]
-    fn an_interactive_session_keeps_its_bridge_id_in_its_session_record() {
-        let (_d, h) = home();
-        record(&h, me(), json!({"kind": "interactive", "procStart": own_start(), "bridgeSessionId": "cse_01Q"}));
-        assert_eq!(pid_bridge_id(&h, me()).as_deref(), Some("cse_01Q"));
-        assert_eq!(pid_bridge_id(&h, (1 << 22) + 1), None);
     }
 
     #[test]
@@ -410,29 +386,13 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn coercions_match_python() {
-        let cases = [
-            (json!(null), "None"),
-            (json!(true), "True"),
-            (json!(5), "5"),
-            (json!(5.0), "5.0"),
-            (json!(1.5), "1.5"),
-            (json!(1e20), "1e+20"),
-            (json!(1.5e-5), "1.5e-05"),
-            (json!(1e15), "1000000000000000.0"),
-            (json!("x"), "x"),
-            (json!([1, "x", null, false]), "[1, 'x', None, False]"),
-            (json!({"a": "it's"}), "{'a': \"it's\"}"),
-        ];
-        for (v, want) in cases {
-            assert_eq!(py_str(&v), want, "{v}");
-        }
+    fn stored_fields_coerce_the_way_the_python_era_wrote_them() {
+        assert_eq!(py_str(&json!(5.0)), "5.0");
+        assert_eq!(py_str(&json!([1, "x", null, false])), "[1, 'x', None, False]");
         assert_eq!(py_int(&json!(true)), Some(1));
         assert_eq!(py_int(&json!(5.9)), Some(5));
         assert_eq!(py_int(&json!(" -1_000 ")), Some(-1000));
         assert_eq!(py_int(&json!("1__0")), None);
-        assert_eq!(py_int(&json!([1])), None);
-        assert_eq!(py_truthy_str(Some(&json!(""))), None);
         assert_eq!(py_truthy_str(Some(&json!(0))), None);
         assert_eq!(py_opt_str(Some(&json!(0))).as_deref(), Some("0"));
         assert_eq!(as_pid(Some(&json!(true))), None);

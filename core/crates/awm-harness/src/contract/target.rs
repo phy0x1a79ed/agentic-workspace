@@ -61,17 +61,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn session_beats_ref_beats_pid() {
+    fn session_beats_ref_beats_pid_and_a_foreign_session_is_refused() {
         let all = json!({"session_id": "CCabc", "ref": "j1", "pid": 5});
         assert_eq!(Target::from_args(&all), Target::Session("ccabc".into()));
         assert_eq!(Target::from_args(&json!({"ref": "j1", "pid": 5})), Target::Ref("j1".into()));
         assert_eq!(Target::from_args(&json!({"pid": "5"})), Target::Pid(5));
         assert_eq!(Target::from_args(&json!({"pid": "x", "ref": " "})), Target::None);
         assert_eq!(Target::from_args(&json!({"pid": -3})), Target::None);
-    }
 
-    #[test]
-    fn foreign_platform_refused() {
+
         let t = Target::Session("ds0123abcd".into());
         let e = t.raw_session("cc", "Claude Code").unwrap_err();
         assert!(e.contains("not a Claude Code session id"), "{e}");
