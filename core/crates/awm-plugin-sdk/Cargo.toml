@@ -9,6 +9,7 @@ publish = false
 [dependencies]
 awm-proto.workspace = true
 awm-trust.workspace = true
+awm-statecheck = { path = "../awm-statecheck" }
 anyhow.workspace = true
 thiserror.workspace = true
 serde.workspace = true
