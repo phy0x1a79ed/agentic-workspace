@@ -10,7 +10,7 @@ use serde_json::json;
 #[test]
 fn the_live_sessions_are_cchs_answer() {
     let ids = live_ids(&json!({"ok": true, "session_ids": ["a", "b"]})).unwrap();
-    assert_eq!(ids, ["a".to_string(), "b".to_string()].into_iter().collect());
+    assert_eq!(ids, ["a".to_string(), "b".to_string()].into_iter().collect::<std::collections::HashSet<_>>());
 }
 
 #[test]
