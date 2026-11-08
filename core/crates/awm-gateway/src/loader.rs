@@ -201,7 +201,7 @@ pub fn load(input: &LoadInput) -> LoadResult {
         if cand.manifest.placement.is_some() {
             out.warnings.push(format!("plugin {name}: [placement] is ignored, the install config places plugins (fleet.md R140)"));
         }
-        let plugin = match build_plugin(&cand, input, &mut out.warnings) {
+        let mut plugin = match build_plugin(&cand, input, &mut out.warnings) {
             Ok(p) => p,
             Err(reason) => {
                 out.refused.push(Refusal { plugin: name, dir: cand.dir, reason });
@@ -212,6 +212,8 @@ pub fn load(input: &LoadInput) -> LoadResult {
             out.refused.push(Refusal { plugin: name, dir: cand.dir, reason: reason.clone() });
             continue;
         }
+        // A singleton host serves this tool, and this plugin's service for it stays off here.
+        plugin.tools.retain(|t| !input.elsewhere.contains_key(&t.name) || plugin.services.iter().any(|s| s.enabled && s.tools.contains(&t.name)));
         if let Err(reason) = claim(&plugin, &reserved, input.elsewhere, &tool_names, &service_names) {
             out.refused.push(Refusal { plugin: name, dir: cand.dir, reason });
             continue;
@@ -607,6 +609,18 @@ mod tests {
         assert!(r.refused.iter().any(|f| f.plugin == "takes-auth" && f.reason.contains("reserved")));
         let r = run_with(&core, &other, "mizar", &none, &[]);
         assert!(r.refused.iter().any(|f| f.plugin == "ibkr" && f.reason.contains("already served by alcor")));
+    }
+
+    /// channel carries the `relay` tool, whose service runs only on deneb.
+    #[test]
+    fn a_tool_whose_service_is_off_here_leaves_a_singleton_to_its_host() {
+        let t = tempfile::tempdir().unwrap();
+        let (core, other) = (t.path().join("core"), t.path().join("other"));
+        fs::create_dir_all(&core).unwrap();
+        single(&other, "half", "ibkr", "profiles=['nope']\n");
+        let r = run_with(&core, &other, "mizar", &BTreeMap::new(), &[]);
+        assert!(r.refused.is_empty(), "{:?}", r.refused.iter().map(|f| &f.reason).collect::<Vec<_>>());
+        assert!(r.plugins.iter().find(|p| p.name == "half").unwrap().tools.is_empty());
     }
 
     #[test]

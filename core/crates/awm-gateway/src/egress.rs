@@ -214,7 +214,7 @@ mod tests {
     fn every_manifest_network_entry_parses() {
         let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
         let mut seen = 0;
-        for root in ["awm/services", "awm/plugins"] {
+        for root in ["core/plugins", "awm/services", "awm/plugins"] {
             for dir in std::fs::read_dir(repo.join(root)).unwrap().flatten() {
                 let Ok(text) = std::fs::read_to_string(dir.path().join(awm_proto::MANIFEST_FILE)) else { continue };
                 let m = awm_proto::Manifest::parse(&text).unwrap_or_else(|e| panic!("{}: {e}", dir.path().display()));
