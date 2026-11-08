@@ -1,5 +1,5 @@
 # The rlm-browser core plugin binary (static musl) that a deploy places at <AWM_DIR>/bin/rlm-browser.
 # Written by the deploy on mizar (scripts/refresh-pins.sh). Do not edit.
-version=rlm-browser-05e978644886
-file=awm-plugin-rlm-browser-05e978644886-linux-x86_64-musl
-sha256=ae26932a156a4fd2749048f0835407e3155bf9b53aa91a0264afd907493fc392
+version=rlm-browser-9ff9c1cf04c3
+file=awm-plugin-rlm-browser-9ff9c1cf04c3-linux-x86_64-musl
+sha256=250b816a28c0dc57b25128ef7de82eae09feb32060c169f43b63129666273269
