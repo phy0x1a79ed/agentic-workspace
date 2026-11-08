@@ -191,6 +191,25 @@ async fn the_install_hook_runs_when_the_stamp_moves() {
     awm_gateway::supervisor::stop_all(&gw).await;
 }
 
+/// A reload that makes a running local service `[[external]]` stops its child and leaves it down.
+#[tokio::test]
+async fn a_reload_that_makes_a_service_external_stops_its_child() {
+    let node = Node::new();
+    node.plugin("moving", "", "");
+    let gw = node.open(no_peers()).await;
+    awm_gateway::supervisor::start_all(&gw, false).await;
+    let pid = until("the spawn", || pid_of(&gw, "moving")).await;
+
+    node.config("[[external]]\nservice = \"moving\"\n");
+    let report = gw.reload(&ReloadRequest::default()).await.unwrap();
+    assert_eq!(report["stopped"], json!(["moving"]));
+    assert_eq!(report["started"], json!([]));
+    assert!(!std::path::Path::new(&format!("/proc/{pid}")).exists(), "the local child is gone");
+    assert_eq!(pid_of(&gw, "moving"), None, "nothing respawns it");
+    node.release_all();
+    awm_gateway::supervisor::stop_all(&gw).await;
+}
+
 /// A failed hook refuses its plugin alone, names its last output, and cascades to the plugins
 /// that need its tool. A restart that names it runs the hook again.
 #[tokio::test]

@@ -705,6 +705,7 @@ impl Gateway {
             return Err(ApiError::new(503, "the gateway is stopping"));
         }
         let _one_at_a_time = self.reloading.lock().await;
+        let old_cfg = self.cfg();
         let cfg = match scope {
             Scope::Everything => {
                 let cfg = Arc::new(Config::load(&self.state).map_err(|e| ApiError::new(400, e.to_string()))?);
@@ -751,11 +752,12 @@ impl Gateway {
         let (restarted, unknown): (Vec<String>, Vec<String>) =
             request.restart.iter().cloned().partition(|n| old.contains_key(n) && fresh.contains_key(n));
 
-        let services = |plugins: &BTreeMap<String, &loader::Plugin>| -> BTreeMap<String, bool> {
-            plugins.values().flat_map(|p| p.services.iter().map(|s| (s.name.clone(), s.enabled))).collect()
+        // A service is supervised when it is enabled and not `[[external]]`: its own unit runs the others.
+        let services = |plugins: &BTreeMap<String, &loader::Plugin>, cfg: &Config| -> BTreeMap<String, bool> {
+            plugins.values().flat_map(|p| p.services.iter().map(|s| (s.name.clone(), s.enabled && cfg.external(&s.name).is_none()))).collect()
         };
         let old_refs: BTreeMap<String, &loader::Plugin> = old.iter().map(|(k, v)| (k.clone(), v)).collect();
-        let (was, now) = (services(&old_refs), services(&fresh));
+        let (was, now) = (services(&old_refs, &old_cfg), services(&fresh, &cfg));
         let restarting: BTreeSet<&str> =
             restarted.iter().flat_map(|n| old[n].services.iter().map(|s| s.name.as_str())).collect();
         let stopping: Vec<String> = was
@@ -766,7 +768,7 @@ impl Gateway {
         let starting: Vec<loader::ServiceSpec> = fresh
             .values()
             .flat_map(|p| p.services.iter())
-            .filter(|s| s.enabled && (restarting.contains(s.name.as_str()) || was.get(&s.name) != Some(&true)))
+            .filter(|s| now.get(&s.name) == Some(&true) && (restarting.contains(s.name.as_str()) || was.get(&s.name) != Some(&true)))
             .cloned()
             .collect();
 
