@@ -1,5 +1,5 @@
 # The routine core plugin binary (static musl) that a deploy places at <AWM_DIR>/bin/routine.
 # Written by the deploy on mizar (scripts/refresh-pins.sh). Do not edit.
-version=routine-f419c25e5f40
-file=awm-plugin-routine-f419c25e5f40-linux-x86_64-musl
-sha256=79b64b15b7ec2f4868fb54ba0f8f4e173efe7e195f605f6b5d0aef805ed921e5
+version=routine-21b30f3d340b
+file=awm-plugin-routine-21b30f3d340b-linux-x86_64-musl
+sha256=02184c5aa7d8cfdd3759f4bdffa058c02d0e8a8561143126915599b3639d3b78

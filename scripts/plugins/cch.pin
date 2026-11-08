@@ -1,5 +1,5 @@
 # The cch core plugin binary (static musl) that a deploy places at <AWM_DIR>/bin/cch.
 # Written by the deploy on mizar (scripts/refresh-pins.sh). Do not edit.
-version=cch-77ee6b8b14d5
-file=awm-plugin-cch-77ee6b8b14d5-linux-x86_64-musl
-sha256=6a7f16394c64dda049fedff2ad846f4bdec0d33cdc22a9adb3d4c5205bb54310
+version=cch-196aacb10cd7
+file=awm-plugin-cch-196aacb10cd7-linux-x86_64-musl
+sha256=4f42a4ade1e60e95b5d180f0a93f98da31d12ceb071036c9d64258e5ce7a582e
