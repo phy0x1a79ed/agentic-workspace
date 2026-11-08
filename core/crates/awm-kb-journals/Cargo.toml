@@ -1,0 +1,27 @@
+[package]
+name = "awm-kb-journals"
+description = "The journal inside kb: scope channels, tags and their sync, briefs, versions, inbox cursors, lineage, and the `journals` search source."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+awm-plugin-sdk.workspace = true
+awm-store.workspace = true
+awm-pycompat.workspace = true
+awm-index.workspace = true
+awm-embed.workspace = true
+awm-trust.workspace = true
+awm-kb-source = { path = "../awm-kb-source" }
+anyhow.workspace = true
+futures-util.workspace = true
+lancedb = { version = "0.41", default-features = false }
+regex = "1"
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -1,0 +1,30 @@
+# scopes.db in the default state dir is copied whole. It stays at schema v5: the legacy
+# scope_posts, scope_subscribers and embeddings tables stay on disk, unread.
+# Claims, queues and last use come and go with sessions.
+[[transient]]
+path = "services/scopes/scopes.db"
+table = "scope_claims"
+
+[[transient]]
+path = "services/scopes/scopes.db"
+table = "scope_waiters"
+
+[[transient]]
+path = "services/scopes/scopes.db"
+table = "scope_use"
+
+# The private marks, which scopes alone writes: marks/private.json, and on a node not yet
+# moved the file at the old path, which is otherwise a symlink into marks/.
+[[extra]]
+name = "marks"
+path = "marks/private.json"
+
+[[extra]]
+name = "private.json"
+path = "private.json"
+
+[[additive]]
+path = "marks"
+
+[[additive]]
+path = "private.json"

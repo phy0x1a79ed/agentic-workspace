@@ -1,0 +1,32 @@
+# kb: awm's knowledge base. One process serves the journal, search and transcripts tools and
+# holds each search source in its own LanceDB database under services/kb/lance/<source>/.
+# search asks these sources in-process, so kb declares no [[service.archive]] table for them.
+[plugin]
+name = "kb"
+version = "0.1.0"
+
+[[service]]
+name = "kb"
+path = "."
+run = "run.sh"
+
+[[tool]]
+name = "journal"
+major = 1
+tier = "on"
+
+[[tool]]
+name = "search"
+major = 1
+implements = ["search@1"]
+tier = "on"
+
+[[tool]]
+name = "transcripts"
+major = 1
+tier = "off"
+
+[needs]
+secrets = []
+network = []
+platform = ["linux"]
