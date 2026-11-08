@@ -51,8 +51,18 @@ pub async fn invoke_local(dir: &Path, name: &str, args: Value, caller: &Caller) 
     }
 }
 
+/// The node a login names: a forced command's `--from`, else the client's `AWM_EDGE_FROM`, else,
+/// for a client on an older release, the comment on the key it logged in with.
+fn login_node(from: Option<&str>) -> Option<String> {
+    from.map(str::to_string).or_else(|| std::env::var("AWM_EDGE_FROM").ok()).or_else(|| {
+        let auth = std::fs::read_to_string(std::env::var_os("SSH_USER_AUTH")?).ok()?;
+        let home = std::env::var_os("HOME").map(std::path::PathBuf::from)?;
+        awm_edge::caller_node(&auth, &std::fs::read_to_string(home.join(".ssh/authorized_keys")).ok()?)
+    })
+}
+
 /// `awm edge-serve`: a login over an edge runs it, and serves stdin until it closes. A user
-/// key's login names its node with `--from`. A service key's forced command names its node and
+/// key's login names its node with `AWM_EDGE_FROM`. A service key's forced command names its node and
 /// `--level service`, and sshd puts what the client sent in `SSH_ORIGINAL_COMMAND`, which is
 /// never read for either.
 pub async fn edge_serve(from: Option<&str>, level: Option<&str>) -> anyhow::Result<i32> {
@@ -60,7 +70,8 @@ pub async fn edge_serve(from: Option<&str>, level: Option<&str>) -> anyhow::Resu
     let here = node_name();
     let edges = EdgeList::load(&edges_path(&dir))?;
     let original = std::env::var("SSH_ORIGINAL_COMMAND").ok();
-    let login = awm_edge::login(from, level, original.as_deref(), &edges, &here).map_err(anyhow::Error::msg)?;
+    let from = login_node(from);
+    let login = awm_edge::login(from.as_deref(), level, original.as_deref(), &edges, &here).map_err(anyhow::Error::msg)?;
     let service = (login.level == awm_edge::EdgeLevel::Service)
         .then(|| awm_edge::ServiceGate { tools: edges.door_tools(&here, &login.from), log: Some(dir.join("port.log")) });
     let from = login.from;

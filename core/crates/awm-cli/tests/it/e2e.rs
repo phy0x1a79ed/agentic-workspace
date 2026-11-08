@@ -764,22 +764,22 @@ fn edge_node(base: &Path, name: &str, tools: &[&str], edges: &str) -> PathBuf {
 }
 
 /// A stand-in for ssh from `from` to `to`: it drops ssh's options, the host and the `PATH=`
-/// prefix, and runs the rest of the command the edge client sent (`awm edge-serve --from
-/// <from>`) against `to`'s gateway, as a plain ssh login would.
+/// prefix, and runs the rest of the command the edge client sent (`AWM_EDGE_FROM=<from>
+/// awm edge-serve`) against `to`'s gateway, as a plain ssh login would.
 fn fake_ssh(base: &Path, from: &str, to: &str, to_state: &Path, to_url: &str) -> PathBuf {
     let home = base.join(format!("home-{to}"));
     std::fs::create_dir_all(&home).unwrap();
     let ssh = base.join(format!("fake-ssh-{from}"));
     write(&ssh, &format!(
         "#!/bin/sh\nunset AWM_EDGES_FILE SSH_ORIGINAL_COMMAND\nexport AWM_DIR='{}' AWM_GATEWAY_URL='{to_url}' AWM_NODE_NAME={to} HOME='{}'\n\
-         while [ $# -gt 0 ] && [ \"$1\" != awm ]; do shift; done\nshift\nexec '{}' \"$@\"\n",
+         while [ $# -gt 0 ] && [ \"$1\" != awm ]; do case \"$1\" in AWM_EDGE_FROM=*) export \"$1\";; esac; shift; done\nshift\nexec '{}' \"$@\"\n",
         to_state.display(), home.display(), awm_bin().display()));
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(&ssh, std::fs::Permissions::from_mode(0o755)).unwrap();
     ssh
 }
 
-/// A `peer=` call leaves through `ssh <peer> awm edge-serve --from near`, and the peer runs
+/// A `peer=` call leaves through `ssh <peer> AWM_EDGE_FROM=near awm edge-serve`, and the peer runs
 /// it as a call from the calling node (fleet.md R92, R93). A stand-in for ssh runs the
 /// command the client sent against the far gateway.
 #[test]
