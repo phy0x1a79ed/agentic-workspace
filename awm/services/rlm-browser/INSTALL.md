@@ -23,7 +23,7 @@ You never invoke the service by hand in normal operation. The gateway reads
 `AWM_SERVICE_NAME` and `AWM_HUB_TOKEN_FILE`. The adapter names itself to the
 gateway with the token in that file.
 
-To iterate without installing, run the worktree's dev sandbox (`bash awm/services/dev/sandbox/run.sh start`); it runs this same `run.sh` from the worktree.
+To iterate without installing, run the worktree's dev sandbox (`bash core/plugins/dev/sandbox/run.sh start`); it runs this same `run.sh` from the worktree.
 A manifest change takes effect on `awm reload` or a service restart.
 
 ## Configuration

@@ -44,6 +44,7 @@ awm-pycompat = { path = "crates/awm-pycompat" }
 awm-store = { path = "crates/awm-store" }
 awm-plugin-sdk = { path = "crates/awm-plugin-sdk" }
 awm-plugin-telemetry = { path = "plugins/telemetry" }
+awm-harness = { path = "crates/awm-harness", default-features = false }
 
 [profile.release]
 opt-level = 3

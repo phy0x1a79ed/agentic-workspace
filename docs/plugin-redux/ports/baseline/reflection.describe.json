@@ -1,0 +1,592 @@
+{
+  "plugin": "reflection",
+  "tool": "reflection",
+  "verbs": [
+    {
+      "description": "Give a job that cx did not start a lineage record, so `resume_other` and `stop_other` accept it. For a session started by hand that a keeper now keeps.",
+      "params": [
+        {
+          "description": "The job id.",
+          "name": "job",
+          "required": true
+        }
+      ],
+      "surfaces": [
+        "cli",
+        "http"
+      ],
+      "verb": "adopt_other"
+    },
+    {
+      "description": "Move a session to another directory: types `/cd <path>` and submits it. Claude Code then runs the session's tools from there, so later Bash calls stay in it, and loads that directory's project settings, MCP servers, skills and CLAUDE.md. `list_other` and the Swarm board show the session under the scope it moved to. Queues behind a running turn. Refused for a path that is not a directory, for one Claude Code is not trusted in (the trust dialog would wait on a person), and while a modal or permission prompt is showing. A worktree of an awm project is trusted first, not refused. Claude Code drops the session's MCP servers on a move, so the verb reconnects awm after it as `mcp` does; reconnect any other server with `mcp`. CLAUDE.md files add up across moves: the old one stays in context. On your own session, one follow-up prompt reports the move when it has run.",
+      "params": [
+        {
+          "description": "An absolute directory on this node.",
+          "name": "path",
+          "required": true
+        },
+        {
+          "description": "A job id, or a session name as `list_other` shows it. Omit to act on your own session.",
+          "name": "job",
+          "required": false
+        }
+      ],
+      "verb": "cd"
+    },
+    {
+      "description": "Compact your own conversation: injects /compact into your own prompt; it queues and runs the instant the current turn ends. A resume prompt is then injected AFTER compaction completes (a detached watcher waits for it \u2014 the resume is never queued behind /compact, so it always lands on the freshly-compacted context) so the session resumes instead of going idle. Returns immediately with followup_deferred=true. Call with no arguments; works the same in a terminal session and in a background one.",
+      "params": [
+        {
+          "description": "Prompt queued after /compact to resume work (default 'Continue with what you were doing.').",
+          "name": "followup",
+          "required": false
+        },
+        {
+          "description": "Wait this many ms before injecting (default 0).",
+          "name": "delay_ms",
+          "required": false,
+          "type": "integer"
+        }
+      ],
+      "verb": "compact"
+    },
+    {
+      "description": "Set a session's effort: types `/effort <level>` and submits it. Queues behind a running turn. Refused while a modal or permission prompt is showing. Claude Code asks 'Change effort level?' when the conversation already has output; this verb answers that dialog with 'Yes, switch to <level>' (it closes it with Escape if the cursor is on No, and leaves a dialog a PreModelSwitch hook raised alone). Claude Code saves the new level as the default for new sessions; this verb puts the saved default back in ~/.claude/settings.json, and the running session keeps the new level. On your own session the command runs when your turn ends, and exactly one follow-up prompt then reports whether the change succeeded or did not apply.",
+      "params": [
+        {
+          "description": "low, medium or high. High is the upper limit; xhigh and max are refused on any model.",
+          "name": "level",
+          "required": true
+        },
+        {
+          "description": "A job id, or a session name as `list_other` shows it. Omit to act on your own session.",
+          "name": "job",
+          "required": false
+        }
+      ],
+      "verb": "effort"
+    },
+    {
+      "description": "A harness plugin reports how a command with a follow-up ended, done or lost, or that a session cleared itself, clear (harness-contract.md \u00a7 Events).",
+      "params": [
+        {
+          "name": "session_id",
+          "required": true
+        },
+        {
+          "description": "done, lost or clear",
+          "name": "kind",
+          "required": true
+        },
+        {
+          "description": "With clear: the session id from before the clear.",
+          "name": "parent",
+          "required": false
+        },
+        {
+          "name": "ticket",
+          "required": false
+        },
+        {
+          "name": "command",
+          "required": false
+        },
+        {
+          "name": "followup",
+          "required": false
+        },
+        {
+          "name": "reason",
+          "required": false
+        },
+        {
+          "name": "name",
+          "required": false
+        },
+        {
+          "name": "pid",
+          "required": false,
+          "type": "integer"
+        },
+        {
+          "name": "cwd",
+          "required": false
+        },
+        {
+          "name": "told_session",
+          "required": false,
+          "type": "boolean"
+        },
+        {
+          "name": "injected_at_ms",
+          "required": false,
+          "type": "integer"
+        },
+        {
+          "name": "reissues",
+          "required": false,
+          "type": "integer"
+        },
+        {
+          "name": "at_ms",
+          "required": false,
+          "type": "integer"
+        }
+      ],
+      "surfaces": [
+        "cli",
+        "http"
+      ],
+      "verb": "harness_event"
+    },
+    {
+      "description": "Interrupt a session's running turn: presses Escape once, as a person would. Refused while a modal or permission prompt is showing.",
+      "params": [
+        {
+          "description": "A job id, or a session name as `list_other` shows it. Omit to act on your own session.",
+          "name": "job",
+          "required": false
+        }
+      ],
+      "verb": "interrupt"
+    },
+    {
+      "description": "Read a session's claude.ai link and whether Remote Control is on, from its record. Types nothing.",
+      "params": [
+        {
+          "description": "A job id, or a session name as `list_other` shows it. Omit to act on your own session.",
+          "name": "job",
+          "required": false
+        }
+      ],
+      "verb": "link"
+    },
+    {
+      "description": "List the sessions on this node: background jobs with their state, parent, caller and mode, interactive terminal sessions with a `tmux attach` command, and the warm pool. Each row's `remote_control` is whether Remote Control is on now and `link` is its claude.ai link. Read this to see what is running; the pool summary says whether a Claude Code daemon runs at all, the binary version the pool seeds against and when the reconcile loop last ticked.",
+      "params": [
+        {
+          "description": "Only sessions in this project.",
+          "name": "project",
+          "required": false
+        },
+        {
+          "description": "Only sessions in this scope.",
+          "name": "scope",
+          "required": false
+        }
+      ],
+      "verb": "list_other"
+    },
+    {
+      "description": "Reconnect, enable or disable a session's MCP servers: types `/mcp <action> <server>` and submits it. These forms act without opening Claude Code's MCP panel; bare `/mcp` opens it and stays refused everywhere. Queues behind a running turn. Refused while a modal or permission prompt is showing. On your own session the command runs when your turn ends, and one follow-up prompt then reports it. Claude Code records what a queued command printed only when it was submitted to an idle prompt, so that report often cannot quote it. Another session between turns answers with the printed result as `output`.",
+      "params": [
+        {
+          "description": "reconnect, enable or disable.",
+          "name": "action",
+          "required": true
+        },
+        {
+          "description": "An MCP server name, such as awm, or all.",
+          "name": "server",
+          "required": true
+        },
+        {
+          "description": "A job id, or a session name as `list_other` shows it. Omit to act on your own session.",
+          "name": "job",
+          "required": false
+        }
+      ],
+      "verb": "mcp"
+    },
+    {
+      "description": "To talk to another agent, use your harness's own channel first: in Claude Code, `SendMessage` to a session that `ListAgents` shows, and the reply comes back the same way. Use this verb when the harness has no such channel, or to drive another session's prompt, such as a slash command. Type text into another session's prompt and submit it (no Escape, so it queues behind its current turn). Same guards as `message_self`: destructive commands need confirm, modal commands are refused, and so is a session showing a modal or permission prompt. Every /mcp line is refused: reconnect, enable or disable servers with the `mcp` verb. No follow-up is added.",
+      "params": [
+        {
+          "description": "A job id, or a session name as `list_other` shows it.",
+          "name": "job",
+          "required": true
+        },
+        {
+          "description": "The line to type.",
+          "name": "text",
+          "required": true
+        },
+        {
+          "description": "Required to send destructive commands (/clear, /quit, /exit).",
+          "name": "confirm",
+          "required": false,
+          "type": "boolean"
+        }
+      ],
+      "verb": "message"
+    },
+    {
+      "description": "Type a command/text into YOUR OWN prompt and submit it (no Escape, so it QUEUES behind the current turn). Use for self-directed slash commands like /compact or /model opus. Works the same whether your session runs in a terminal or as a background job \u2014 you do not need to know which. It types only into your own session; `message` types into another. A submitted slash command is auto-trailed by a follow-up prompt (override with `followup`) so the session has a next turn once the command finishes \u2014 a bare command would otherwise go idle. The follow-up is DEFERRED (injected after the command completes, never queued behind it) so it can't run ahead of the command. Modal commands (/status, /model with no arg, \u2026) are refused \u2014 they trap input and freeze the session. So is every /mcp line: use the `mcp` verb.",
+      "params": [
+        {
+          "description": "The line to inject, e.g. '/compact' or '/model opus'.",
+          "name": "text",
+          "required": true
+        },
+        {
+          "description": "Press Enter to submit after pasting (default true).",
+          "name": "enter",
+          "required": false,
+          "type": "boolean"
+        },
+        {
+          "description": "Prompt injected after a slash command completes to keep the session alive (default 'Continue with what you were doing.'). Ignored for plain prompts.",
+          "name": "followup",
+          "required": false
+        },
+        {
+          "description": "Wait this many ms before injecting (default 0).",
+          "name": "delay_ms",
+          "required": false,
+          "type": "integer"
+        },
+        {
+          "description": "Required to send destructive commands (/clear, /quit, /exit).",
+          "name": "confirm",
+          "required": false,
+          "type": "boolean"
+        }
+      ],
+      "verb": "message_self"
+    },
+    {
+      "description": "Put your own session back into bypass-permissions mode. Approving a plan drops the session into whatever mode it was in before planning \u2014 from a phone that is 'auto', where a classifier gates every action. This cycles the permission mode (the Shift+Tab cycle) until the session reads as bypass permissions, checking after each step rather than assuming a starting point. Already in bypass is a no-op. Acts only on your own session.",
+      "params": [
+        {
+          "description": "Refuse unless the resolved session has this sessionId. For hooks, which reach us through an ancestry walk; agents never need it.",
+          "name": "expect_session",
+          "required": false
+        }
+      ],
+      "verb": "mode"
+    },
+    {
+      "description": "Switch a session's model: types `/model <model>` and submits it. Queues behind a running turn. Refused while a modal or permission prompt is showing. Claude Code asks 'Switch model?' when the conversation already has output; this verb answers that dialog with 'Yes, switch to <model>' (it closes it with Escape if the cursor is on No, and leaves a dialog a PreModelSwitch hook raised alone). Claude Code saves the new value as the default for new sessions; this verb puts the saved default back in ~/.claude/settings.json, and the running session keeps the new value. On your own session the command runs when your turn ends, and exactly one follow-up prompt then reports whether the change succeeded or did not apply.",
+      "params": [
+        {
+          "description": "A model alias or full name, e.g. opus or sonnet[1m].",
+          "name": "model",
+          "required": true
+        },
+        {
+          "description": "A job id, or a session name as `list_other` shows it. Omit to act on your own session.",
+          "name": "job",
+          "required": false
+        }
+      ],
+      "verb": "model"
+    },
+    {
+      "description": "List the deferred resumes this service still owes \u2014 one per session that has a slash command in flight. A session that compacted and then went idle forever is the visible symptom of one of these being lost; this is how you tell whether the promise is still being watched or vanished with a restart. `lost` lists the newest resumes reflection gave up on, each with its reason; each was also posted to the session's scope journal. Reports on the whole node, not just the caller.",
+      "params": [],
+      "verb": "pending"
+    },
+    {
+      "description": "Turn Remote Control on or off for a session on this node. On types `/rc <name>` and returns the claude.ai link once it connects, or link=null with a link_reason. Off types `/rc` and selects 'Disconnect this session' in the modal it opens; it is refused if the session is mid-turn or the modal is not the expected one. Your own session cannot answer in the same turn: the command runs when the turn ends and one follow-up prompt resumes you, carrying the link when turning on.",
+      "params": [
+        {
+          "description": "true to turn Remote Control on, false to turn it off.",
+          "name": "on",
+          "required": true,
+          "type": "boolean"
+        },
+        {
+          "description": "The Remote Control name when turning on; a plain label.",
+          "name": "name",
+          "required": false
+        },
+        {
+          "description": "A job id, or a session name as `list_other` shows it. Omit to act on your own session.",
+          "name": "job",
+          "required": false
+        }
+      ],
+      "verb": "remote_control"
+    },
+    {
+      "description": "Rename a session: types `/rename <name>` and submits it. Queues behind a running turn. Refused while a modal or permission prompt is showing. On your own session, one follow-up prompt reports the rename (and any other settings change still owed a report) when it has run.",
+      "params": [
+        {
+          "description": "The new name, one short line.",
+          "name": "name",
+          "required": true
+        },
+        {
+          "description": "A job id, or a session name as `list_other` shows it. Omit to act on your own session.",
+          "name": "job",
+          "required": false
+        }
+      ],
+      "verb": "rename"
+    },
+    {
+      "description": "Bring back a waiting job that `start_other` created, under the same job id and with its own conversation (`claude respawn`), and re-pin it if it was pinned. A retired session, whose job is gone, comes back in a new job from its transcript under the same session id (sessions.md R10). A resume by hand clears the job's wait. Refuses a running job, a session whose transcript is gone, a job that `start_other` did not create, and a job started above the high-effort limit.",
+      "params": [
+        {
+          "description": "The job id `start_other` returned, or the session id of a retired session.",
+          "name": "job",
+          "required": true
+        },
+        {
+          "description": "The first message the resumed session gets.",
+          "name": "prompt",
+          "required": false
+        }
+      ],
+      "verb": "resume_other"
+    },
+    {
+      "description": "A peer tells this node that a session retired there, so a wait here that lists it can wake its waiter.",
+      "params": [
+        {
+          "description": "The R9 id of the session that retired.",
+          "name": "session_id",
+          "required": true
+        }
+      ],
+      "surfaces": [
+        "cli",
+        "http"
+      ],
+      "verb": "retired"
+    },
+    {
+      "description": "Which of these sessions retired on this node, and which this node still knows as live or stopped.",
+      "params": [
+        {
+          "description": "R9 session ids.",
+          "name": "session_ids",
+          "required": true,
+          "type": "array"
+        }
+      ],
+      "surfaces": [
+        "cli",
+        "http"
+      ],
+      "verb": "retired_among"
+    },
+    {
+      "description": "The session that a process on this node belongs to, for a service that holds a stamped caller pid. Asks every harness plugin.",
+      "params": [
+        {
+          "name": "pid",
+          "required": true,
+          "type": "integer"
+        }
+      ],
+      "surfaces": [
+        "cli",
+        "http"
+      ],
+      "verb": "session_of"
+    },
+    {
+      "description": "Start a named background Claude Code session in a scope's worktree, creating the worktree if it is absent, and return its job id and the `claude attach` command. Refuses on a station, for a caller that is not a domestic peer, when no Claude Code daemon runs, when the worktree is untrusted, or when a live session already holds the name or the scope. The new session claims its scope, and a stop ends the claim. A lobby start claims nothing until its `cd`. A worktree of an awm project is trusted first, not refused. The session defaults to skip-permissions. `model` and `effort` are required, with no default: a call without them is refused. Pick both to fit the task, a smaller model and lower effort for mechanical work, a larger model and high effort for design or debugging. High is the upper limit, so xhigh and max are refused on any model. A call that names Fable needs the user to agree first: ask in the chat. Every caller gets the same session, whoever it is.",
+      "params": [
+        {
+          "description": "The project the scope belongs to.",
+          "name": "project",
+          "required": false
+        },
+        {
+          "description": "The scope whose worktree is the session's directory.",
+          "name": "scope",
+          "required": false
+        },
+        {
+          "description": "The first task. Without one the session starts empty.",
+          "name": "prompt",
+          "required": false
+        },
+        {
+          "description": "Text appended to the system prompt (claude --append-system-prompt). Unlike the prompt, a compaction never rewrites it.",
+          "name": "system_prompt",
+          "required": false
+        },
+        {
+          "description": "The auto-compact window in tokens, 100000 to 1000000. Claude Code compacts about 33k below it. Omitted means the model's own window.",
+          "name": "autocompact",
+          "required": false,
+          "type": "integer"
+        },
+        {
+          "description": "The session's name; defaults to the scope.",
+          "name": "name",
+          "required": false
+        },
+        {
+          "description": "A model alias or full name, chosen to fit the task.",
+          "name": "model",
+          "required": true
+        },
+        {
+          "description": "low, medium or high, chosen to fit the task. High is the upper limit; xhigh and max are refused.",
+          "name": "effort",
+          "required": true
+        },
+        {
+          "description": "A permission mode (plan, acceptEdits, auto, manual, dontAsk, bypassPermissions). Omitted means skip-permissions. The session starts in this mode and can always switch to bypass, so a plan-mode start runs in bypass once its plan is approved.",
+          "name": "permission",
+          "required": false
+        },
+        {
+          "description": "A label recorded with the session, which a gateway gate can key on. Defaults to worker.",
+          "name": "mode",
+          "required": false
+        },
+        {
+          "description": "Tool names the session may not use.",
+          "name": "disallowed_tools",
+          "required": false,
+          "type": "array"
+        },
+        {
+          "description": "Tool names approved without a prompt, which keeps a dontAsk session from having them denied (for example mcp__awm__*).",
+          "name": "allowed_tools",
+          "required": false,
+          "type": "array"
+        },
+        {
+          "description": "The only built-in tools the session holds (claude --tools). Omitted means all.",
+          "name": "tools",
+          "required": false,
+          "type": "array"
+        },
+        {
+          "description": "Confine file tools to the worktree and ignore user settings (claude --restricted).",
+          "name": "restricted",
+          "required": false,
+          "type": "boolean"
+        },
+        {
+          "description": "Load only the awm MCP server, from the workspace config.",
+          "name": "strict_mcp",
+          "required": false,
+          "type": "boolean"
+        },
+        {
+          "description": "Remote Control, on unless false (sessions.md R146), named for the session with each `/` as `-`. The result's `link` is the claude.ai link, null with a `link_reason` if it has not connected within a few seconds.",
+          "name": "remote_control",
+          "required": false,
+          "type": "boolean"
+        },
+        {
+          "description": "Pin the job, so the daemon's idle retirement passes it over. A pinned job is a kept session: stopping it unpins it and removes it with `claude rm`.",
+          "name": "pin",
+          "required": false,
+          "type": "boolean"
+        },
+        {
+          "description": "Append the worker lifecycle brief to the system prompt: work in the right scope, ask Tony through the board, sign off and stop when done. Default true. A pinned start never gets it.",
+          "name": "brief",
+          "required": false,
+          "type": "boolean"
+        },
+        {
+          "description": "Who the brief says started the session when no session called, such as 'Tony from Discord'. A calling session is named instead.",
+          "name": "started_by",
+          "required": false
+        },
+        {
+          "description": "The job this session replaces. Its last turns are appended to the prompt, it is stopped (and removed when pinned) if cx started it, and the new job's lineage records it.",
+          "name": "replaces",
+          "required": false
+        },
+        {
+          "description": "Tags to set on the scope (scope tag), such as ['lab', '<person>'] for work a lab member asked for. A tagging failure is returned as a warning and does not stop the start.",
+          "name": "tags",
+          "required": false,
+          "type": "array"
+        },
+        {
+          "description": "The board task the session works on (sessions.md).",
+          "name": "task_id",
+          "required": false
+        },
+        {
+          "description": "main or worker; the default is worker when a session starts it, else main.",
+          "name": "role",
+          "required": false
+        },
+        {
+          "description": "The new session's trust level. Never above the caller's.",
+          "name": "trust",
+          "required": false
+        },
+        {
+          "description": "Start in the lobby, outside every repository, and let the session route itself.",
+          "name": "suggest",
+          "required": false,
+          "type": "boolean"
+        },
+        {
+          "description": "Run the session in a rootless container on this node's Claude install, with a login copy that cannot refresh, no ssh and only the awm verbs it needs inside its own scope. It starts untrusted unless trust says otherwise.",
+          "name": "isolated",
+          "required": false,
+          "type": "boolean"
+        }
+      ],
+      "verb": "start_other"
+    },
+    {
+      "description": "Retire a background session on this node: stop it and remove its job (`claude stop`, then `claude rm`). The transcript stays, so the session is still resumable by its session id. A retire wakes each session that waits on it (`wait`), on any node. Retiring is the last step of every finished session: one that ends its work and sits idle never wakes its waiters. Works on any session, and on a job whose session has already exited, by its job id. Your own session is refused unless confirm is true, and is then stopped after this call returns. A terminal session is refused.",
+      "params": [
+        {
+          "description": "A job id, or a session name as `list_other` shows it.",
+          "name": "job",
+          "required": true
+        },
+        {
+          "description": "Required to stop your own session.",
+          "name": "confirm",
+          "required": false,
+          "type": "boolean"
+        }
+      ],
+      "verb": "stop"
+    },
+    {
+      "description": "Retire a session that `start_other` created: stop it and remove its job, as `stop` does. A pinned job is unpinned first. The retire wakes each session that waits on it. Refuses a job that `start_other` did not create.",
+      "params": [
+        {
+          "description": "The job id `start_other` returned.",
+          "name": "job",
+          "required": true
+        }
+      ],
+      "verb": "stop_other"
+    },
+    {
+      "description": "Pause your own session until every session in `until` has retired, then wake it with a line that says so. A wait works like a retire, in place of `stop`: compact first, then call it as the last step of a turn, after the sessions you hand work to have started. A background session stops and keeps its job, and the wake resumes it. A terminal session stays open and gets the line typed in. A listed session that itself waits has not finished, so nested waits hold. The wait clears when you wake, are resumed by hand, or retire.",
+      "params": [
+        {
+          "description": "The session ids (R9, as start_other returns them) to wait for.",
+          "name": "until",
+          "required": true,
+          "type": "array"
+        }
+      ],
+      "verb": "wait"
+    },
+    {
+      "description": "Every recorded wait: who waits, on whom, which of them have retired, since when, and in which scope.",
+      "params": [],
+      "surfaces": [
+        "cli",
+        "http"
+      ],
+      "verb": "waits"
+    },
+    {
+      "description": "Report which session reflection resolves you to, and how it would reach you (a tmux pane, or a background session's PTY). Useful when a reflection call refuses and you want to see why.",
+      "params": [],
+      "verb": "whoami"
+    }
+  ]
+}

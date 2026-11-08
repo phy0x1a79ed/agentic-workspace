@@ -476,7 +476,7 @@ this folder (any folder with a `run.sh` under `awm/services/`), starts it with
 
 No auth — the registration handshake carries no token.
 
-To iterate without installing, run the worktree's dev sandbox (`bash awm/services/dev/sandbox/run.sh start`); it runs this same `run.sh` from the worktree.
+To iterate without installing, run the worktree's dev sandbox (`bash core/plugins/dev/sandbox/run.sh start`); it runs this same `run.sh` from the worktree.
 The sandbox's `AWM_DIR` holds no `social.toml`, so point the service at a real
 one with **`AWM_SOCIAL_CONFIG=/abs/path/social.toml`** in the sandbox's `[env]`
 (the parallel of the 2fa service's `AWM_2FA_DIR`).

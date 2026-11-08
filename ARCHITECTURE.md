@@ -110,7 +110,7 @@ The gateway starts each service as `bash run.sh` with a cleared environment. It 
 
 `AWM_HUB_TOKEN_FILE` names a fresh service token per spawn, at `<AWM_DIR>/tokens/<service>.token`. An adopted service (§ *Service lifecycle*) keeps the token of its spawn. The service registers with it as `X-Awm-Service-Token`, opens its control WebSocket and sends `ready` with its API manifest. Every call it makes to `/invoke` carries the same token, which tells the gateway which plugin is calling.
 
-- **Python services** build on `awm.gatewayclient.ServiceAdapter`, which handles register, ready, dispatch and reconnect. `call`, `subscribe` and `acquire_lease` take `peer=<node>` to run across an edge. `awm/services/dev/` is the smallest complete example to copy.
+- **Python services** build on `awm.gatewayclient.ServiceAdapter`, which handles register, ready, dispatch and reconnect. `call`, `subscribe` and `acquire_lease` take `peer=<node>` to run across an edge.
 - **Per-service DBs.** `awm.persistence.databases` gives each service a DB at `<AWM_DIR>/services/<svc>/<svc>.db`. Each service seeds itself through its own `seed.py`.
 - **Install.** Install each plugin through its own `install.sh`, never with hand-rolled `pip`. `awm/install.sh` installs the libraries, then runs every plugin's `install.sh`. Set `AWM_ENV` to change the target env.
 
@@ -246,7 +246,7 @@ A Python service registers and sends `ready` before `on_start` runs, then finish
 
 ## Dev sandboxes
 
-`awm/services/dev/sandbox/run.sh` runs this worktree's `awm gateway serve` with its state in `sandbox/.awm`. Each start rewrites the sandbox's `config.toml`: this tree is the core root, the `dev` plugin is excluded, and `[env]` carries this tree's `PYTHONPATH` and interpreter, so the sandbox runs the worktree's code.
+`core/plugins/dev/sandbox/run.sh` runs this worktree's `awm gateway serve` with its state in `sandbox/.awm`. Each start rewrites the sandbox's `config.toml`: this tree is the core root, the `dev` plugin is excluded, the worktree's built core plugin binaries are linked into `sandbox/.awm/bin/`, and `[env]` carries this tree's `PYTHONPATH` and interpreter, so the sandbox runs the worktree's code.
 
 | Worktree | Port |
 |---|---|

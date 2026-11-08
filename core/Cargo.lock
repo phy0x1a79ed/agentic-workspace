@@ -184,6 +184,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "awm-harness"
+version = "0.1.0"
+dependencies = [
+ "awm-plugin-sdk",
+ "chrono",
+ "libc",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "awm-mcp"
 version = "0.1.0"
 dependencies = [
@@ -192,6 +208,66 @@ dependencies = [
  "reqwest",
  "serde_json",
  "tokio",
+]
+
+[[package]]
+name = "awm-plugin-cch"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "awm-harness",
+ "awm-plugin-sdk",
+ "awm-statecheck",
+ "chrono",
+ "clap",
+ "libc",
+ "regex",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "awm-plugin-dev"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "awm-plugin-sdk",
+ "axum",
+ "clap",
+ "reqwest",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "awm-plugin-dsh"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "awm-harness",
+ "awm-plugin-sdk",
+ "awm-statecheck",
+ "axum",
+ "clap",
+ "futures-util",
+ "libc",
+ "reqwest",
+ "serde_json",
+ "serde_yaml",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tokio-tungstenite 0.26.2",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]

@@ -1,0 +1,10 @@
+# What awm-statecheck copies to .pre-rust/ before dsh's first Rust start (harness-state.md rule 3).
+# The dir holds home/, whose .credentials.yaml and settings.yaml carry the secrets.
+dirs = ["${AWM_DIR}/services/dsh"]
+
+# Relative paths resolve against AWM_DIR. The spool empties once reflection takes its events.
+[[transient]]
+path = "services/dsh/unsent.jsonl"
+
+[[transient]]
+path = "services/dsh/home/settings.yaml.lock"

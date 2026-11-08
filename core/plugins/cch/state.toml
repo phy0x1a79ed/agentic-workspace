@@ -1,0 +1,39 @@
+# What awm-statecheck copies to .pre-rust/ before cch's first Rust start (harness-state.md rule 3).
+# The service dir holds the promise store, the keeper's hold and the isolated sessions; cx holds
+# the lineage records, the pool's state and the reboot mark.
+dirs = ["${AWM_DIR}/services/cch", "${AWM_CX_STATE:-${HOME}/.claude/cx}"]
+
+# Relative paths resolve against AWM_DIR. A promise, its done mark and the unsent spool each
+# go away once settled.
+[[transient]]
+path = "services/cch/pending"
+
+[[additive]]
+path = "${AWM_CX_STATE:-${HOME}/.claude/cx}/hits.log"
+
+# Under cx: locks and pipes that live only while a process holds them.
+[[transient]]
+path = "${AWM_CX_STATE:-${HOME}/.claude/cx}/locks"
+
+[[transient]]
+path = "${AWM_CX_STATE:-${HOME}/.claude/cx}/nap.fifo"
+
+[[transient]]
+path = "${AWM_CX_STATE:-${HOME}/.claude/cx}/reconcile.lock"
+
+[[extra]]
+name = "claude-json"
+path = "${HOME}/.claude.json"
+
+[[extra]]
+name = "claude-settings"
+path = "${HOME}/.claude/settings.json"
+
+# The first start copies these two into the service dir (migrate.rs).
+[[extra]]
+name = "reflection-pending"
+path = "${AWM_DIR}/services/reflection/pending"
+
+[[extra]]
+name = "keep-hold"
+path = "${AWM_DIR}/services/keep/hold.json"

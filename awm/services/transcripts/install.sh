@@ -13,7 +13,6 @@ AWM="${AWM_ROOT:-$(git rev-parse --show-toplevel)/awm}"
 ENV="${AWM_ENV:-awm}"
 run() { echo "+ pip install -e $*"; mamba run -n "$ENV" pip install -e "$@"; }
 
-run "$AWM/service_components/claudedaemon" --no-deps
 run "$AWM/service_components/config" --no-deps
 run "$AWM/service_components/persistence" --no-deps
 run "$AWM/service_components/gatewayclient" --no-deps

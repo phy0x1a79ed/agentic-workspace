@@ -58,7 +58,7 @@ A scope name may contain `/` when one project holds several products. A nested n
 
 References stay `project/scope` and split on the first slash.
 
-A standing `feat-*` scope may own the cross-service wiring for one feature family. It runs its own dev sandbox (`awm/services/dev/sandbox/run.sh`) on a port pinned in a gitignored `awm/services/dev/sandbox/.env`. `dev` is the release-staging worktree, not a feature scope.
+A standing `feat-*` scope may own the cross-service wiring for one feature family. It runs its own dev sandbox (`core/plugins/dev/sandbox/run.sh`) on a port pinned in a gitignored `core/plugins/dev/sandbox/.env`. `dev` is the release-staging worktree, not a feature scope.
 
 ## Hubs and peripherals
 
