@@ -1,10 +1,10 @@
-//! `awm edge-serve` and `awm port`: the two forced ends of an ssh login.
+//! `awm edge-serve` and `awm port`: the far ends of an ssh login from another node.
 //!
 //! Both hand each call to this node's loopback gateway. `edge-serve` vouches for
 //! the calling node with `X-Awm-Caller`, which the gateway honours only next to
 //! the edge token in `<AWM_DIR>/edge.token`. `port` runs at the service lane.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use awm_proto::{Caller, Lane};
 use awm_trust::edges::{edges_path, EdgeList};
@@ -51,24 +51,25 @@ pub async fn invoke_local(dir: &Path, name: &str, args: Value, caller: &Caller) 
     }
 }
 
-/// `awm edge-serve`: sshd runs it for a node's user key. Serves stdin until it closes.
-pub async fn edge_serve() -> anyhow::Result<i32> {
+/// `awm edge-serve`: a login over an edge runs it, and serves stdin until it closes. A user
+/// key's login names its node with `--from`. A service key's forced command names its node and
+/// `--level service`, and sshd puts what the client sent in `SSH_ORIGINAL_COMMAND`, which is
+/// never read for either.
+pub async fn edge_serve(from: Option<&str>, level: Option<&str>) -> anyhow::Result<i32> {
     let dir = awm_dir();
-    let auth = std::env::var_os("SSH_USER_AUTH")
-        .ok_or_else(|| anyhow::anyhow!("SSH_USER_AUTH is not set: sshd needs ExposeAuthInfo yes"))?;
-    let keys = dirs_home().join(".ssh/authorized_keys");
-    let from = awm_edge::caller_node(&std::fs::read_to_string(auth)?, &std::fs::read_to_string(&keys)?)
-        .ok_or_else(|| anyhow::anyhow!("this login's key carries no awm:<node>:user comment"))?;
     let here = node_name();
     let edges = EdgeList::load(&edges_path(&dir))?;
-    if !edges.reaches(&from, &here) {
-        anyhow::bail!("no edge from {from} to {here}");
-    }
+    let original = std::env::var("SSH_ORIGINAL_COMMAND").ok();
+    let login = awm_edge::login(from, level, original.as_deref(), &edges, &here).map_err(anyhow::Error::msg)?;
+    let service = (login.level == awm_edge::EdgeLevel::Service)
+        .then(|| awm_edge::ServiceGate { tools: edges.door_tools(&here, &login.from), log: Some(dir.join("port.log")) });
+    let from = login.from;
     let stream_dir = dir.clone();
     awm_edge::serve(
         tokio::io::stdin(),
         tokio::io::stdout(),
         from,
+        service,
         move |name, args, caller| {
             let dir = dir.clone();
             async move { invoke_local(&dir, &name, args, &caller).await }
@@ -143,10 +144,6 @@ pub async fn port(key: &str) -> anyhow::Result<i32> {
     Ok(if reply.contains(r#""ok":true"#) { 0 } else { 1 })
 }
 
-fn dirs_home() -> PathBuf {
-    std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/"))
-}
-
 /// The gateway with peers over the edges, when the install config lists no
 /// HTTP peers and the edges file names this node. Else the config's peers.
 pub async fn open_gateway(state: &Path) -> anyhow::Result<std::sync::Arc<awm_gateway::Gateway>> {
@@ -156,7 +153,8 @@ pub async fn open_gateway(state: &Path) -> anyhow::Result<std::sync::Arc<awm_gat
     if cfg.peer.is_empty() && path.exists() {
         let edges = EdgeList::load(&path)?;
         if edges.nodes.contains_key(&here) {
-            let peers = awm_edge::EdgePeers::new(here, edges, awm_edge::EdgeClient::ssh());
+            let client = awm_edge::EdgeClient::ssh(&here, &edges);
+            let peers = awm_edge::EdgePeers::new(here, edges, client);
             return awm_gateway::Gateway::open_with(state, cfg, std::sync::Arc::new(peers)).await;
         }
     }

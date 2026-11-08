@@ -16,6 +16,7 @@ import yaml
 
 EDGES_FILE_ENV = "AWM_EDGES_FILE"
 NETWORKS = ("lan", "tailscale", "zerotier", "internet")
+KEYS = ("user", "service")
 ROLES = ("laptop", "desktop", "homebase", "standby", "retiring", "work",
          "station", "backup", "admin")
 
@@ -50,6 +51,12 @@ def _validate(data: Any, path: Path) -> dict[str, Any]:
                 raise ValueError(f"{path}: edge {src} -> unknown node {dst}")
             if dst == src:
                 raise ValueError(f"{path}: self edge on {src}")
+            if isinstance(net, dict):
+                if set(net) - {"network", "key"}:
+                    raise ValueError(f"{path}: edge {src} -> {dst} takes only network and key")
+                if net.get("key", "user") not in KEYS:
+                    raise ValueError(f"{path}: edge {src} -> {dst} key {net.get('key')!r} not in {KEYS}")
+                net = net.get("network")
             if net not in NETWORKS:
                 raise ValueError(f"{path}: edge {src} -> {dst} network {net!r} not in {NETWORKS}")
     tools = set()
@@ -115,9 +122,27 @@ def reached_by(dst: str) -> list[str]:
     return sorted(s for s, t in (load().get("edges") or {}).items() if dst in (t or {}))
 
 
+def _edge(src: str, dst: str) -> dict[str, str] | None:
+    """The edge ``src -> dst`` as ``{network, key}``: edges.yml writes it as the bare network
+    name, or as a map whose ``key`` defaults to ``user``."""
+    raw = ((load().get("edges") or {}).get(src) or {}).get(dst)
+    if raw is None:
+        return None
+    if isinstance(raw, dict):
+        return {"network": raw["network"], "key": raw.get("key", "user")}
+    return {"network": raw, "key": "user"}
+
+
 def network(src: str, dst: str) -> str | None:
     """The one network the edge ``src -> dst`` runs over (R96), or ``None`` without an edge."""
-    return ((load().get("edges") or {}).get(src) or {}).get(dst)
+    edge = _edge(src, dst)
+    return edge["network"] if edge else None
+
+
+def key(src: str, dst: str) -> str | None:
+    """The key the edge ``src -> dst`` logs in with, ``user`` or ``service`` (R92), or ``None``."""
+    edge = _edge(src, dst)
+    return edge["key"] if edge else None
 
 
 def is_station(name: str) -> bool:

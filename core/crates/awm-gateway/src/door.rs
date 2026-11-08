@@ -54,9 +54,14 @@ pub fn request(tool: String, envelope: Value, caller: &Caller, here: &str) -> Do
     }
 }
 
-fn ssh_args(route: &DoorRoute) -> Vec<String> {
+/// The full path of this node's service key, for ssh's `-i`.
+pub fn service_key_path() -> String {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/".into());
-    let key = format!("{}/{SERVICE_KEY}", home.trim_end_matches('/'));
+    format!("{}/{SERVICE_KEY}", home.trim_end_matches('/'))
+}
+
+fn ssh_args(route: &DoorRoute) -> Vec<String> {
+    let key = service_key_path();
     let opts = [
         "-T", "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes", "-o", "ConnectTimeout=10",
         "-o", "ControlMaster=auto", "-o", "ControlPath=~/.ssh/cm-%C", "-o", "ControlPersist=10m",

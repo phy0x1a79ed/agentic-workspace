@@ -9,6 +9,6 @@ pub mod port;
 pub mod requests;
 pub mod trust;
 
-pub use edges::{EdgeList, Network};
+pub use edges::{Edge, EdgeKey, EdgeList, Network};
 pub use grant::{sign_envelope, verify_grant, verify_order, Grant, GrantError};
 pub use trust::{call_refusal, check_effort, cross_edge, journal_bound, level_for_start, may_steer, stamped_level, Call, JournalBound, Level, Raise, TrustError, FIRST_LOCAL_MESSAGE_HINT};
