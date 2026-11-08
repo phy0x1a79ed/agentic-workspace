@@ -194,7 +194,7 @@ Handoff: the plan file and the todo list. Next is T20.
 
 ### T20. Write the node config roles for the fleet pass
 
-fleet.md R140 (2026-11-03) puts node config in the cloud project. Work in scope `cloud/redux-trust` (branch `feat/redux-trust`), which redux-fleet merges. The edge list is `homelab/edges.yml` with its R87 test at `homelab/tests/test_edges.py` (commit 77e7830). Roles go under `homelab/roles/<role>/`. Send fleet the play lines for `homelab/site.yml` instead of editing it. Fleet's `awm_config` role installs the edge list at `<AWM_DIR>/edges.yml`. Fleet owns ufw defaults and alcor's port 22. sshd needs `ExposeAuthInfo yes` for `awm edge-serve`. Each node needs alcor's grant key at `<AWM_DIR>/grant-key.pub`.
+fleet.md R140 (2026-11-03) puts node config in the cloud project. Work in scope `cloud/redux-trust` (branch `feat/redux-trust`), which redux-fleet merges. The edge list is `homelab/edges.yml` with its R87 test at `homelab/tests/test_edges.py` (commit 77e7830). Roles go under `homelab/roles/<role>/`. Send fleet the play lines for `homelab/site.yml` instead of editing it. Fleet's `awm_config` role installs the edge list at `<AWM_DIR>/edges.yml`. Fleet owns ufw defaults and alcor's port 22. `awm edge-serve` needs no sshd setting (fleet.md R92). Each node needs alcor's grant key at `<AWM_DIR>/grant-key.pub`.
 
 Write `ssh_edges`, `users_sudo`, `singleton_door`, `singletons_sandbox`, `rt_user`, `journal_user`, `trilium_deneb` and `wsl_bridge` under `fleet/roles/`, and their `import_role` lines in `fleet/site.yml`. Add shogun's Terraform and lyra's key setup to Tony's list. Run the syntax check and check mode against a local inventory only.
 

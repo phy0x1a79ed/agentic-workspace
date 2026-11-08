@@ -1,7 +1,7 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
-use awm_edge::{caller_node, serve, EdgeClient, EdgeError};
+use awm_edge::{serve, EdgeClient, EdgeError, ServiceGate};
 use awm_gateway::peer::WsPipe;
 use awm_proto::{Caller, Lane, WsMsg};
 use serde_json::json;
@@ -18,6 +18,7 @@ fn duplex_client(opens: Arc<AtomicUsize>, drop_after: Option<usize>) -> EdgeClie
             sr,
             sw,
             "home".into(),
+            None,
             move |name, args, caller: Caller| {
                 let n = served.fetch_add(1, Ordering::SeqCst);
                 let peer = peer.clone();
@@ -116,13 +117,49 @@ async fn an_unreachable_peer_fails_cleanly_and_the_next_call_retries() {
     assert_eq!(opens.load(Ordering::SeqCst), 2);
 }
 
-#[test]
-fn the_key_names_the_calling_node() {
-    let auth = "publickey ssh-ed25519 AAAAmizar\n";
-    let keys = "ssh-ed25519 AAAAlyra awm:lyra:user\nrestrict,command=\"awm port\" ssh-ed25519 AAAAx awm:work:service\nssh-ed25519 AAAAmizar awm:mizar:user\n";
-    assert_eq!(caller_node(auth, keys).as_deref(), Some("mizar"));
-    assert_eq!(caller_node("publickey ssh-ed25519 AAAAx\n", keys), None);
-    assert_eq!(caller_node("publickey ssh-ed25519 AAAAzzz\n", keys), None);
+/// A service-level login runs on the service lane, as the door stamps a service key, reaches
+/// only its gate's tools, opens no stream, and logs each call.
+#[tokio::test]
+async fn a_service_login_reaches_only_its_tools_and_logs_each_call() {
+    let log = std::env::temp_dir().join(format!("awm-edge-port-{}.log", std::process::id()));
+    let _ = std::fs::remove_file(&log);
+    let gate = ServiceGate { tools: vec!["2fa".into()], log: Some(log.clone()) };
+    let c = EdgeClient::with_opener(Arc::new(move |_peer: &str| {
+        let (client_end, server_end) = tokio::io::duplex(1 << 16);
+        let (cr, cw) = tokio::io::split(client_end);
+        let (sr, sw) = tokio::io::split(server_end);
+        tokio::spawn(serve(
+            sr,
+            sw,
+            "altair".into(),
+            Some(gate.clone()),
+            |name: String, _args, caller: Caller| async move {
+                assert_eq!((caller.lane, caller.node.as_str()), (Lane::Service, "altair"));
+                if name == awm_edge::TOOLS_FRAME {
+                    return Ok(json!([{"name": "2fa"}, {"name": "journal"}]));
+                }
+                Ok(json!({"tool": name, "trust": caller.trust}))
+            },
+            |_path: String, _caller: Caller| async move { Err::<WsPipe, String>("the stream opener ran".into()) },
+        ));
+        Ok((Box::new(cr) as _, Box::new(cw) as _, None))
+    }));
+    let caller = Caller { node: "spoofed".into(), trust: Some("cooperative".into()), ..Caller::default() };
+    let v = c.invoke("alcor", "2fa", json!({"verb": "arm"}), caller.clone()).await.unwrap();
+    assert_eq!((v["tool"].as_str(), v["trust"].as_str()), (Some("2fa"), Some("cooperative")));
+    let err = c.invoke("alcor", "journal", json!({"verb": "fetch"}), caller.clone()).await.unwrap_err();
+    assert!(matches!(err, EdgeError::Remote(ref m) if m == "journal not installed"), "{err}");
+    let table = c.invoke("alcor", awm_edge::TOOLS_FRAME, json!(null), caller.clone()).await.unwrap();
+    assert_eq!(table, json!([{"name": "2fa"}]), "the table shows only the gate's tools");
+    let mut stream = c.open_ws("alcor", "/hub/emit/x/y", caller).await.unwrap();
+    assert_eq!(stream.rx.recv().await, Some(WsMsg::Close(Some("a service key opens no stream".into()))));
+    let lines: Vec<serde_json::Value> =
+        std::fs::read_to_string(&log).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    let got: Vec<(&str, &str, &str)> = lines.iter()
+        .map(|l| (l["tool"].as_str().unwrap(), l["verb"].as_str().unwrap(), l["result"].as_str().unwrap())).collect();
+    assert_eq!(got, [("2fa", "arm", "ok"), ("journal", "fetch", "refused"), ("/hub/emit/x/y", "", "refused")]);
+    assert!(lines.iter().all(|l| l["key"] == "awm:altair:service"));
+    let _ = std::fs::remove_file(&log);
 }
 
 #[tokio::test]

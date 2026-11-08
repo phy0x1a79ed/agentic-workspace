@@ -75,6 +75,31 @@ def test_rejects_unknown_network(tmp_path, monkeypatch):
         edges.load()
 
 
+def test_an_edge_is_a_network_name_or_a_map_with_its_key(tmp_path, monkeypatch):
+    two = tmp_path / "edges.yml"
+    two.write_text("nodes: {a: {role: station}, b: {role: standby}, c: {role: homebase}}\n"
+                   "edges: {a: {b: {network: tailscale, key: service}, c: tailscale}, c: {b: {network: lan}}}\n")
+    monkeypatch.setenv(edges.EDGES_FILE_ENV, str(two))
+    assert (edges.network("a", "b"), edges.key("a", "b")) == ("tailscale", "service")
+    assert (edges.network("a", "c"), edges.key("a", "c")) == ("tailscale", "user")
+    assert (edges.network("c", "b"), edges.key("c", "b")) == ("lan", "user")
+    assert edges.key("b", "a") is None
+    assert edges.reachable_from("a") == ["b", "c"]
+
+
+@pytest.mark.parametrize("edge, error", [
+    ("{network: lan, key: admin}", "key 'admin'"),
+    ("{key: service}", "network None"),
+    ("{network: lan, kee: service}", "only network and key"),
+])
+def test_rejects_a_bad_edge_map(tmp_path, monkeypatch, edge, error):
+    bad = tmp_path / "edges.yml"
+    bad.write_text(f"nodes: {{a: {{role: homebase}}, b: {{role: work}}}}\nedges: {{a: {{b: {edge}}}}}\n")
+    monkeypatch.setenv(edges.EDGES_FILE_ENV, str(bad))
+    with pytest.raises(ValueError, match=error):
+        edges.load()
+
+
 @pytest.mark.parametrize("singleton, error", [
     ("{tool: t, host: a}", "no callers list"),
     ("{tool: t, host: a, callers: [b]}", "caller b is no node"),

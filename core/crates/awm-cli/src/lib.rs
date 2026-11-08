@@ -98,8 +98,15 @@ pub enum Command {
     },
     /// Refresh this node from its checkout: install the plugins' envs, build the pages, reload.
     Deploy(deploy::Args),
-    /// Serve calls from another node over ssh: the forced command of an edge's user key.
-    EdgeServe,
+    /// Serve calls from another node over ssh, as `ssh <node> awm edge-serve --from <caller>`.
+    EdgeServe {
+        /// The calling node. A user key's login names it. A service key's forced command names it.
+        #[arg(long)]
+        from: Option<String>,
+        /// `user` (the default) or `service`. Only a service key's forced command says `service`.
+        #[arg(long)]
+        level: Option<String>,
+    },
     /// One call through the service door: the forced command of a service key.
     Port {
         /// The key's name, `awm:<holder>:service`.
@@ -185,7 +192,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<i32> {
         Command::Services { action, name } => services(&action, name).await,
         Command::Listen { service, topic, peer, matches } => listen(&service, &topic, peer, &matches).await,
         Command::Deploy(args) => deploy::run(args).await,
-        Command::EdgeServe => edge::edge_serve().await,
+        Command::EdgeServe { from, level } => edge::edge_serve(from.as_deref(), level.as_deref()).await,
         Command::Port { key } => edge::port(&key).await,
         Command::Tool(words) => run_tool(&words).await,
     }

@@ -17,6 +17,46 @@ pub enum Network {
     Internet,
 }
 
+/// Which key an edge's caller logs in with (fleet.md R92). A user key is a shell login as
+/// Tony. A service key runs the forced command that the target's `authorized_keys` names.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum EdgeKey {
+    #[default]
+    User,
+    Service,
+}
+
+/// One directed edge: the network it rides, and the key it logs in with. edges.yml writes it
+/// as the bare network name, or as `{network: <net>, key: service}`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Edge {
+    pub network: Network,
+    pub key: EdgeKey,
+}
+
+impl<'de> Deserialize<'de> for Edge {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Full {
+            network: Network,
+            #[serde(default)]
+            key: EdgeKey,
+        }
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Form {
+            Bare(Network),
+            Full(Full),
+        }
+        Ok(match Form::deserialize(d)? {
+            Form::Bare(network) => Edge { network, key: EdgeKey::User },
+            Form::Full(Full { network, key }) => Edge { network, key },
+        })
+    }
+}
+
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct Node {
     pub role: String,
@@ -52,7 +92,7 @@ pub struct EdgeList {
     #[serde(default)]
     pub nodes: BTreeMap<String, Node>,
     #[serde(default)]
-    pub edges: BTreeMap<String, BTreeMap<String, Network>>,
+    pub edges: BTreeMap<String, BTreeMap<String, Edge>>,
     #[serde(default)]
     pub singleton_doors: BTreeMap<String, Door>,
     #[serde(default)]
@@ -151,7 +191,12 @@ impl EdgeList {
     }
 
     pub fn network(&self, src: &str, dst: &str) -> Option<Network> {
-        self.edges.get(src).and_then(|t| t.get(dst)).copied()
+        self.edges.get(src).and_then(|t| t.get(dst)).map(|e| e.network)
+    }
+
+    /// The key the edge from `src` to `dst` logs in with, when that edge exists.
+    pub fn key(&self, src: &str, dst: &str) -> Option<EdgeKey> {
+        self.edges.get(src).and_then(|t| t.get(dst)).map(|e| e.key)
     }
 
     /// Whether `node` may call `tool`. A tool that is no singleton is not held here. A
@@ -318,6 +363,25 @@ singletons:
         assert!(EdgeList::parse(&format!("{door}singletons: [{{tool: t, host: a}}]\n")).is_err(), "callers is required");
         assert!(EdgeList::parse(&format!("{door}singletons: [{{tool: t, host: a, callers: [b]}}]\n")).is_err());
         assert!(EdgeList::parse(&format!("{door}singletons: [{{tool: t, host: a, callers: []}}, {{tool: t, host: a, callers: []}}]\n")).is_err());
+    }
+
+    #[test]
+    fn an_edge_is_a_network_name_or_a_map_with_its_key() {
+        let e = EdgeList::parse(
+            "nodes:\n  altair: {role: station}\n  alcor: {role: standby}\n  mizar: {role: homebase}\n\
+             edges:\n  altair: {alcor: {network: tailscale, key: service}, mizar: tailscale}\n  mizar: {alcor: {network: lan}}\n",
+        )
+        .unwrap();
+        assert_eq!(e.network("altair", "alcor"), Some(Network::Tailscale));
+        assert_eq!(e.key("altair", "alcor"), Some(EdgeKey::Service));
+        assert_eq!(e.key("altair", "mizar"), Some(EdgeKey::User), "the bare form is a user-key edge");
+        assert_eq!(e.key("mizar", "alcor"), Some(EdgeKey::User), "a map without a key is a user-key edge");
+        assert_eq!(e.network("mizar", "alcor"), Some(Network::Lan));
+        assert_eq!(e.key("alcor", "altair"), None);
+        let bad = "nodes: {a: {role: homebase}, b: {role: work}}\nedges: {a: {b: ";
+        assert!(EdgeList::parse(&format!("{bad}{{network: lan, key: admin}}}}}}\n")).is_err(), "no admin edge");
+        assert!(EdgeList::parse(&format!("{bad}{{key: service}}}}}}\n")).is_err(), "the map needs its network");
+        assert!(EdgeList::parse(&format!("{bad}{{network: lan, kee: service}}}}}}\n")).is_err(), "a misspelt key is refused");
     }
 
     #[test]
