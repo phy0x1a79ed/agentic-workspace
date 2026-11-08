@@ -1,0 +1,13 @@
+[package]
+name = "awm-pycompat"
+description = "Python 3.12 byte formats the plugin ports must reproduce: isoformat, json.dumps, repr, difflib and str rules."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde_json.workspace = true
+unicode-normalization = "0.1"
+
+[dev-dependencies]
+regex = "1"

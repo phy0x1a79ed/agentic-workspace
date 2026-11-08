@@ -1,0 +1,235 @@
+{
+  "plugin": "kb",
+  "tool": "kb",
+  "verbs": [
+    {
+      "description": "One paper in full, for `search get` on the `kb` and `library` sources: its title, authors, date, journal, url, and its abstract and body as one text.",
+      "params": [
+        {
+          "description": "The paper id.",
+          "name": "id",
+          "required": true
+        }
+      ],
+      "surfaces": [
+        "cli",
+        "http"
+      ],
+      "verb": "get"
+    },
+    {
+      "description": "Papers one hop from the given papers: their authors' other papers (`authors`), the papers they cite (`cites`) or the papers citing them (`cited_by`), ranked by personalized PageRank from the first five, the first weighted most, and never by meaning; ties go to the newest.",
+      "params": [
+        {
+          "description": "Paper ids, best first.",
+          "name": "ids",
+          "required": true,
+          "type": "array"
+        },
+        {
+          "description": "authors (default), cites or cited_by.",
+          "name": "along",
+          "required": false
+        },
+        {
+          "description": "Only papers published from this date on.",
+          "name": "after",
+          "required": false
+        },
+        {
+          "description": "Only papers published before this date.",
+          "name": "before",
+          "required": false
+        },
+        {
+          "description": "Maximum papers, 1-100. Default 20.",
+          "name": "limit",
+          "required": false,
+          "type": "integer"
+        }
+      ],
+      "surfaces": [
+        "cli",
+        "http"
+      ],
+      "verb": "hop"
+    },
+    {
+      "description": "The Zotero library's papers for the archive's live `library` source, in search's sections, found the way `kb query` finds papers but among the library's alone. The same papers can also appear in the `kb` source, unboosted. `search query` calls it; call that instead.",
+      "params": [
+        {
+          "description": "What to find.",
+          "name": "query",
+          "required": true
+        },
+        {
+          "description": "Maximum hits per section. Default 10.",
+          "name": "limit",
+          "required": false,
+          "type": "integer"
+        },
+        {
+          "description": "Papers have none, so any value answers nothing.",
+          "name": "project",
+          "required": false
+        },
+        {
+          "description": "Papers have none, so any value answers nothing.",
+          "name": "scope",
+          "required": false
+        },
+        {
+          "description": "Only papers from this ISO 8601 date on.",
+          "name": "after",
+          "required": false
+        },
+        {
+          "description": "Only papers before this ISO 8601 date.",
+          "name": "before",
+          "required": false
+        },
+        {
+          "description": "Only papers with an author of this surname, matched loosely, so 'Huttenhauer' finds Huttenhower.",
+          "name": "author",
+          "required": false
+        }
+      ],
+      "surfaces": [
+        "cli",
+        "http"
+      ],
+      "verb": "library"
+    },
+    {
+      "description": "The tail of the kb server's log. Operator only.",
+      "params": [
+        {
+          "description": "Lines from the end. Default 200.",
+          "name": "tail",
+          "required": false,
+          "type": "integer"
+        }
+      ],
+      "surfaces": [
+        "cli",
+        "http"
+      ],
+      "verb": "logs"
+    },
+    {
+      "description": "Papers for the archive's live `kb` source, in search's sections: `exact` holds papers whose title, abstract or body holds the query literally, then papers matching its words. `related` holds papers near the query in meaning (the entry index's best papers per zone, merged with the keyword matches). A hit carries its id, title, date and url and no passages; `kb get` reads the paper. The answer says in `degraded` what it could not use, for example the encoder or the index. `search query` calls it; call that instead.",
+      "params": [
+        {
+          "description": "What to find.",
+          "name": "query",
+          "required": true
+        },
+        {
+          "description": "Maximum hits per section. Default 10.",
+          "name": "limit",
+          "required": false,
+          "type": "integer"
+        },
+        {
+          "description": "Papers have none, so any value answers nothing.",
+          "name": "project",
+          "required": false
+        },
+        {
+          "description": "Papers have none, so any value answers nothing.",
+          "name": "scope",
+          "required": false
+        },
+        {
+          "description": "Only papers from this ISO 8601 date on.",
+          "name": "after",
+          "required": false
+        },
+        {
+          "description": "Only papers before this ISO 8601 date.",
+          "name": "before",
+          "required": false
+        },
+        {
+          "description": "Only papers with an author of this surname, matched loosely, so 'Huttenhauer' finds Huttenhower.",
+          "name": "author",
+          "required": false
+        }
+      ],
+      "surfaces": [
+        "cli",
+        "http"
+      ],
+      "verb": "query"
+    },
+    {
+      "description": "Entry-index hits for a text, per zone (body, abstract, title, journal, precedent, note), each resolved to its source, document and span. `search query` calls it for the archive's own documents; local callers only.",
+      "params": [
+        {
+          "description": "What to find.",
+          "name": "text",
+          "required": true
+        },
+        {
+          "description": "Entries per zone, 1-200. Default 50.",
+          "name": "k",
+          "required": false,
+          "type": "integer"
+        },
+        {
+          "description": "Only these zones.",
+          "name": "zones",
+          "required": false,
+          "type": "array"
+        },
+        {
+          "description": "Only these sources.",
+          "name": "sources",
+          "required": false,
+          "type": "array"
+        }
+      ],
+      "surfaces": [
+        "cli",
+        "http"
+      ],
+      "verb": "related"
+    },
+    {
+      "description": "Stop then start the kb server. Operator only.",
+      "params": [],
+      "surfaces": [
+        "cli",
+        "http"
+      ],
+      "verb": "restart"
+    },
+    {
+      "description": "Start the kb server if it is not running. Operator only.",
+      "params": [],
+      "surfaces": [
+        "cli",
+        "http"
+      ],
+      "verb": "start"
+    },
+    {
+      "description": "Whether the kb server is up, and the state of its encoder and served indexes.",
+      "params": [],
+      "surfaces": [
+        "cli",
+        "http"
+      ],
+      "verb": "status"
+    },
+    {
+      "description": "Stop the kb server and keep it down until `kb start`. Operator only.",
+      "params": [],
+      "surfaces": [
+        "cli",
+        "http"
+      ],
+      "verb": "stop"
+    }
+  ]
+}

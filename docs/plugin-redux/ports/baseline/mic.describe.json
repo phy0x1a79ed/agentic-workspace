@@ -1,0 +1,16 @@
+{
+  "plugin": "mic",
+  "tool": "mic",
+  "verbs": [
+    {
+      "description": "Run one reconcile pass now: ensure the PulseAudio config, daemon, virtmic null-sink and default capture source are all in place. Idempotent.",
+      "params": [],
+      "verb": "ensure_sink"
+    },
+    {
+      "description": "Report the active stream count, last PCM timestamp, and the audio path's health: PulseAudio reachability, whether the virtmic sink is loaded, the default capture source, which durability layers are installed, and the last heal time.",
+      "params": [],
+      "verb": "status"
+    }
+  ]
+}

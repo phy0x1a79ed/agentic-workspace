@@ -1,0 +1,1294 @@
+[
+ {
+  "value": null,
+  "repr": "None"
+ },
+ {
+  "value": true,
+  "repr": "True"
+ },
+ {
+  "value": false,
+  "repr": "False"
+ },
+ {
+  "value": 0,
+  "repr": "0"
+ },
+ {
+  "value": -1,
+  "repr": "-1"
+ },
+ {
+  "value": 9007199254740993,
+  "repr": "9007199254740993"
+ },
+ {
+  "value": -9223372036854775808,
+  "repr": "-9223372036854775808"
+ },
+ {
+  "value": {
+   "$int": "18446744073709551615"
+  },
+  "repr": "18446744073709551615"
+ },
+ {
+  "value": 0.0,
+  "repr": "0.0"
+ },
+ {
+  "value": -0.0,
+  "repr": "-0.0"
+ },
+ {
+  "value": 1.0,
+  "repr": "1.0"
+ },
+ {
+  "value": 0.1,
+  "repr": "0.1"
+ },
+ {
+  "value": 1e-07,
+  "repr": "1e-07"
+ },
+ {
+  "value": 1e+16,
+  "repr": "1e+16"
+ },
+ {
+  "value": 1e+22,
+  "repr": "1e+22"
+ },
+ {
+  "value": 123456789.125,
+  "repr": "123456789.125"
+ },
+ {
+  "value": 5e-324,
+  "repr": "5e-324"
+ },
+ {
+  "value": 1.7976931348623157e+308,
+  "repr": "1.7976931348623157e+308"
+ },
+ {
+  "value": 100.0,
+  "repr": "100.0"
+ },
+ {
+  "value": 1000000000000000.0,
+  "repr": "1000000000000000.0"
+ },
+ {
+  "value": 1.5e-05,
+  "repr": "1.5e-05"
+ },
+ {
+  "value": "",
+  "repr": "''"
+ },
+ {
+  "value": "plain",
+  "repr": "'plain'"
+ },
+ {
+  "value": "quote \" and \\ backslash",
+  "repr": "'quote \" and \\\\ backslash'"
+ },
+ {
+  "value": "tab\tnl\n",
+  "repr": "'tab\\tnl\\n'"
+ },
+ {
+  "value": "\u0000\u001f\u007f",
+  "repr": "'\\x00\\x1f\\x7f'"
+ },
+ {
+  "value": "\u00e9",
+  "repr": "'\u00e9'"
+ },
+ {
+  "value": "\u65e5\u672c",
+  "repr": "'\u65e5\u672c'"
+ },
+ {
+  "value": "\ud83d\udc4d\ud83c\udffd",
+  "repr": "'\ud83d\udc4d\ud83c\udffd'"
+ },
+ {
+  "value": "\u2028\u2029",
+  "repr": "'\\u2028\\u2029'"
+ },
+ {
+  "value": "\ufffd",
+  "repr": "'\ufffd'"
+ },
+ {
+  "value": [],
+  "repr": "[]"
+ },
+ {
+  "value": {
+   "$dict": []
+  },
+  "repr": "{}"
+ },
+ {
+  "value": [
+   1,
+   "a",
+   null,
+   [
+    2,
+    {
+     "$dict": [
+      [
+       "k",
+       "v"
+      ]
+     ]
+    }
+   ]
+  ],
+  "repr": "[1, 'a', None, [2, {'k': 'v'}]]"
+ },
+ {
+  "value": {
+   "$dict": [
+    [
+     "b",
+     1
+    ],
+    [
+     "a",
+     2
+    ],
+    [
+     "c",
+     {
+      "$dict": [
+       [
+        "z",
+        []
+       ],
+       [
+        "y",
+        {
+         "$dict": []
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  },
+  "repr": "{'b': 1, 'a': 2, 'c': {'z': [], 'y': {}}}"
+ },
+ {
+  "value": {
+   "$dict": [
+    [
+     "\u00e9",
+     "\u00fc"
+    ],
+    [
+     "1",
+     1
+    ],
+    [
+     "",
+     null
+    ]
+   ]
+  },
+  "repr": "{'\u00e9': '\u00fc', '1': 1, '': None}"
+ },
+ {
+  "value": null,
+  "repr": "None"
+ },
+ {
+  "value": -237576610058973703,
+  "repr": "-237576610058973703"
+ },
+ {
+  "value": true,
+  "repr": "True"
+ },
+ {
+  "value": [],
+  "repr": "[]"
+ },
+ {
+  "value": 111274250091832937,
+  "repr": "111274250091832937"
+ },
+ {
+  "value": {
+   "$dict": [
+    [
+     "20",
+     {
+      "$dict": [
+       [
+        "z0",
+        [
+         706.0500191370973,
+         2895369727710898240
+        ]
+       ],
+       [
+        "x y1",
+        false
+       ],
+       [
+        "22",
+        [
+         3,
+         0.25276913539394685
+        ]
+       ]
+      ]
+     }
+    ],
+    [
+     "z1",
+     "a-b-c"
+    ],
+    [
+     "z2",
+     "end."
+    ],
+    [
+     "a3",
+     [
+      "\u01f0",
+      [
+       "\u039f\u0394\u039f\u03a3 \u039f\u0394\u039f\u03a3.",
+       "\ud83d\udc4d\ud83c\udffd ok",
+       4.1603749337551045e+19,
+       -2.6112749504567525e+19
+      ],
+      null,
+      -4
+     ]
+    ]
+   ]
+  },
+  "repr": "{'20': {'z0': [706.0500191370973, 2895369727710898240], 'x y1': False, '22': [3, 0.25276913539394685]}, 'z1': 'a-b-c', 'z2': 'end.', 'a3': ['\u01f0', ['\u039f\u0394\u039f\u03a3 \u039f\u0394\u039f\u03a3.', '\ud83d\udc4d\ud83c\udffd ok', 4.1603749337551045e+19, -2.6112749504567525e+19], None, -4]}"
+ },
+ {
+  "value": 65.0,
+  "repr": "65.0"
+ },
+ {
+  "value": "\u0130stanbul",
+  "repr": "'\u0130stanbul'"
+ },
+ {
+  "value": {
+   "$dict": []
+  },
+  "repr": "{}"
+ },
+ {
+  "value": null,
+  "repr": "None"
+ },
+ {
+  "value": [],
+  "repr": "[]"
+ },
+ {
+  "value": 4337484204444854836,
+  "repr": "4337484204444854836"
+ },
+ {
+  "value": -2.4257350592656015e+19,
+  "repr": "-2.4257350592656015e+19"
+ },
+ {
+  "value": null,
+  "repr": "None"
+ },
+ {
+  "value": {
+   "$dict": [
+    [
+     "x y0",
+     -5
+    ],
+    [
+     "key1",
+     9.843806721101614e+19
+    ],
+    [
+     "z2",
+     [
+      "\u0301",
+      null
+     ]
+    ]
+   ]
+  },
+  "repr": "{'x y0': -5, 'key1': 9.843806721101614e+19, 'z2': ['\u0301', None]}"
+ },
+ {
+  "value": [
+   "\u001c",
+   "\u0301",
+   null
+  ],
+  "repr": "['\\x1c', '\u0301', None]"
+ },
+ {
+  "value": true,
+  "repr": "True"
+ },
+ {
+  "value": null,
+  "repr": "None"
+ },
+ {
+  "value": "\r\n",
+  "repr": "'\\r\\n'"
+ },
+ {
+  "value": {
+   "$dict": [
+    [
+     "x y0",
+     {
+      "$dict": [
+       [
+        "a0",
+        {
+         "$dict": [
+          [
+           "b0",
+           -2144550665710740274
+          ]
+         ]
+        }
+       ],
+       [
+        "b1",
+        false
+       ],
+       [
+        "key2",
+        {
+         "$dict": []
+        }
+       ]
+      ]
+     }
+    ],
+    [
+     "x y1",
+     7.0
+    ]
+   ]
+  },
+  "repr": "{'x y0': {'a0': {'b0': -2144550665710740274}, 'b1': False, 'key2': {}}, 'x y1': 7.0}"
+ },
+ {
+  "value": "\u001e",
+  "repr": "'\\x1e'"
+ },
+ {
+  "value": 0.07062789350555843,
+  "repr": "0.07062789350555843"
+ },
+ {
+  "value": {
+   "$dict": [
+    [
+     "x y0",
+     {
+      "$dict": [
+       [
+        "key0",
+        8.522299108860202e+19
+       ],
+       [
+        "b1",
+        false
+       ]
+      ]
+     }
+    ]
+   ]
+  },
+  "repr": "{'x y0': {'key0': 8.522299108860202e+19, 'b1': False}}"
+ },
+ {
+  "value": 1.3685910907644396e+19,
+  "repr": "1.3685910907644396e+19"
+ },
+ {
+  "value": {
+   "$dict": [
+    [
+     "x y0",
+     0.5403147714945584
+    ],
+    [
+     "b1",
+     {
+      "$dict": [
+       [
+        "\u00e90",
+        5.4577681369186304e+17
+       ],
+       [
+        "21",
+        {
+         "$dict": [
+          [
+           "key0",
+           0.5667261437545548
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ],
+    [
+     "22",
+     {
+      "$dict": [
+       [
+        "20",
+        null
+       ],
+       [
+        "x y1",
+        3829709150389880572
+       ]
+      ]
+     }
+    ]
+   ]
+  },
+  "repr": "{'x y0': 0.5403147714945584, 'b1': {'\u00e90': 5.4577681369186304e+17, '21': {'key0': 0.5667261437545548}}, '22': {'20': None, 'x y1': 3829709150389880572}}"
+ },
+ {
+  "value": {
+   "$dict": [
+    [
+     "a0",
+     true
+    ]
+   ]
+  },
+  "repr": "{'a0': True}"
+ },
+ {
+  "value": null,
+  "repr": "None"
+ },
+ {
+  "value": 0.13173790948489084,
+  "repr": "0.13173790948489084"
+ },
+ {
+  "value": 1527234829377545723,
+  "repr": "1527234829377545723"
+ },
+ {
+  "value": null,
+  "repr": "None"
+ },
+ {
+  "value": [
+   true
+  ],
+  "repr": "[True]"
+ },
+ {
+  "value": {
+   "$dict": [
+    [
+     "a0",
+     [
+      9733595.120620985
+     ]
+    ]
+   ]
+  },
+  "repr": "{'a0': [9733595.120620985]}"
+ },
+ {
+  "value": "\u4e2d\u6587\uff0c\u6807\u70b9\u3002",
+  "repr": "'\u4e2d\u6587\uff0c\u6807\u70b9\u3002'"
+ },
+ {
+  "value": false,
+  "repr": "False"
+ },
+ {
+  "value": "\u0085",
+  "repr": "'\\x85'"
+ },
+ {
+  "value": [],
+  "repr": "[]"
+ },
+ {
+  "value": false,
+  "repr": "False"
+ },
+ {
+  "value": 4138415886704729628,
+  "repr": "4138415886704729628"
+ },
+ {
+  "value": true,
+  "repr": "True"
+ },
+ {
+  "value": null,
+  "repr": "None"
+ },
+ {
+  "value": true,
+  "repr": "True"
+ },
+ {
+  "value": false,
+  "repr": "False"
+ },
+ {
+  "value": false,
+  "repr": "False"
+ },
+ {
+  "value": null,
+  "repr": "None"
+ },
+ {
+  "value": "D\u0130YARBAKIR",
+  "repr": "'D\u0130YARBAKIR'"
+ },
+ {
+  "value": [
+   [
+    "\u216b",
+    "\u03a3",
+    0.4766948080423721,
+    "\u001c"
+   ]
+  ],
+  "repr": "[['\u216b', '\u03a3', 0.4766948080423721, '\\x1c']]"
+ },
+ {
+  "value": 0.39121822048032606,
+  "repr": "0.39121822048032606"
+ },
+ {
+  "value": 9.59316148689401e+19,
+  "repr": "9.59316148689401e+19"
+ },
+ {
+  "value": "\r",
+  "repr": "'\\r'"
+ },
+ {
+  "value": null,
+  "repr": "None"
+ },
+ {
+  "value": [
+   -1943695110916960875,
+   "\u0663\u0664\u0665",
+   false
+  ],
+  "repr": "[-1943695110916960875, '\u0663\u0664\u0665', False]"
+ },
+ {
+  "value": null,
+  "repr": "None"
+ },
+ {
+  "value": "plain words",
+  "repr": "'plain words'"
+ },
+ {
+  "value": {
+   "$dict": [
+    [
+     "a0",
+     [
+      9.810391546408567e+19,
+      null
+     ]
+    ],
+    [
+     "b1",
+     -2.940215650503626e+19
+    ],
+    [
+     "a2",
+     [
+      "\u001f"
+     ]
+    ],
+    [
+     "\u00e93",
+     null
+    ]
+   ]
+  },
+  "repr": "{'a0': [9.810391546408567e+19, None], 'b1': -2.940215650503626e+19, 'a2': ['\\x1f'], '\u00e93': None}"
+ },
+ {
+  "value": null,
+  "repr": "None"
+ },
+ {
+  "value": false,
+  "repr": "False"
+ },
+ {
+  "value": 0.6756953282501467,
+  "repr": "0.6756953282501467"
+ },
+ {
+  "value": [
+   {
+    "$dict": []
+   },
+   true
+  ],
+  "repr": "[{}, True]"
+ },
+ {
+  "value": null,
+  "repr": "None"
+ },
+ {
+  "value": [
+   true,
+   0.20001583555229474,
+   null,
+   7
+  ],
+  "repr": "[True, 0.20001583555229474, None, 7]"
+ },
+ {
+  "value": {
+   "$float": "nan"
+  },
+  "repr": "nan"
+ },
+ {
+  "value": {
+   "$float": "inf"
+  },
+  "repr": "inf"
+ },
+ {
+  "value": {
+   "$float": "-inf"
+  },
+  "repr": "-inf"
+ },
+ {
+  "value": {
+   "$tuple": []
+  },
+  "repr": "()"
+ },
+ {
+  "value": {
+   "$tuple": [
+    1
+   ]
+  },
+  "repr": "(1,)"
+ },
+ {
+  "value": {
+   "$tuple": [
+    1,
+    "a"
+   ]
+  },
+  "repr": "(1, 'a')"
+ },
+ {
+  "value": {
+   "$tuple": [
+    "x",
+    {
+     "$tuple": [
+      2,
+      3.5
+     ]
+    }
+   ]
+  },
+  "repr": "('x', (2, 3.5))"
+ },
+ {
+  "value": "it's",
+  "repr": "\"it's\""
+ },
+ {
+  "value": "say \"hi\"",
+  "repr": "'say \"hi\"'"
+ },
+ {
+  "value": "both ' and \"",
+  "repr": "'both \\' and \"'"
+ },
+ {
+  "value": "\\",
+  "repr": "'\\\\'"
+ },
+ {
+  "value": "\u0007\b\u001b",
+  "repr": "'\\x07\\x08\\x1b'"
+ },
+ {
+  "value": "\u0080\u009f\u00a0\u00ad",
+  "repr": "'\\x80\\x9f\\xa0\\xad'"
+ },
+ {
+  "value": "\u200b\u200e\u2028\ufeff\ufffe",
+  "repr": "'\\u200b\\u200e\\u2028\\ufeff\\ufffe'"
+ },
+ {
+  "value": "\udb40\udc01",
+  "repr": "'\\U000e0001'"
+ },
+ {
+  "value": {
+   "$dict": [
+    [
+     1,
+     "int key"
+    ],
+    [
+     "s",
+     {
+      "$tuple": [
+       1,
+       2
+      ]
+     }
+    ]
+   ]
+  },
+  "repr": "{1: 'int key', 's': (1, 2)}"
+ },
+ {
+  "value": [
+   {
+    "$tuple": []
+   },
+   [
+    {
+     "$tuple": []
+    }
+   ]
+  ],
+  "repr": "[(), [()]]"
+ },
+ {
+  "value": {
+   "$int": "100000000000000000000"
+  },
+  "repr": "100000000000000000000"
+ },
+ {
+  "value": {
+   "$int": "-100000000000000000000"
+  },
+  "repr": "-100000000000000000000"
+ },
+ {
+  "value": "plain words",
+  "repr": "'plain words'"
+ },
+ {
+  "value": "caf\u00e9",
+  "repr": "'caf\u00e9'"
+ },
+ {
+  "value": "cafe\u0301",
+  "repr": "'cafe\u0301'"
+ },
+ {
+  "value": "na\u00efve",
+  "repr": "'na\u00efve'"
+ },
+ {
+  "value": "\u0130stanbul",
+  "repr": "'\u0130stanbul'"
+ },
+ {
+  "value": "\u0131i",
+  "repr": "'\u0131i'"
+ },
+ {
+  "value": "D\u0130YARBAKIR",
+  "repr": "'D\u0130YARBAKIR'"
+ },
+ {
+  "value": "\ufb01le \ufb02ow",
+  "repr": "'\ufb01le \ufb02ow'"
+ },
+ {
+  "value": "Stra\u00dfe",
+  "repr": "'Stra\u00dfe'"
+ },
+ {
+  "value": "STRASSE \u1e9e",
+  "repr": "'STRASSE \u1e9e'"
+ },
+ {
+  "value": "\u039f\u0394\u039f\u03a3 \u039f\u0394\u039f\u03a3.",
+  "repr": "'\u039f\u0394\u039f\u03a3 \u039f\u0394\u039f\u03a3.'"
+ },
+ {
+  "value": "\u03a3",
+  "repr": "'\u03a3'"
+ },
+ {
+  "value": "\u65e5\u672c\u8a9e\u306e\u30c6\u30ad\u30b9\u30c8",
+  "repr": "'\u65e5\u672c\u8a9e\u306e\u30c6\u30ad\u30b9\u30c8'"
+ },
+ {
+  "value": "\u4e2d\u6587\uff0c\u6807\u70b9\u3002",
+  "repr": "'\u4e2d\u6587\uff0c\u6807\u70b9\u3002'"
+ },
+ {
+  "value": "\ud55c\uad6d\uc5b4",
+  "repr": "'\ud55c\uad6d\uc5b4'"
+ },
+ {
+  "value": "\ud83d\udc4d\ud83c\udffd ok",
+  "repr": "'\ud83d\udc4d\ud83c\udffd ok'"
+ },
+ {
+  "value": "\ud83d\udc68\u200d\ud83d\udc69\u200d\ud83d\udc67 family",
+  "repr": "'\ud83d\udc68\\u200d\ud83d\udc69\\u200d\ud83d\udc67 family'"
+ },
+ {
+  "value": "\ud83c\uddf3\ud83c\uddff",
+  "repr": "'\ud83c\uddf3\ud83c\uddff'"
+ },
+ {
+  "value": "x\u00b2+y\u00b3",
+  "repr": "'x\u00b2+y\u00b3'"
+ },
+ {
+  "value": "\u0663\u0664\u0665",
+  "repr": "'\u0663\u0664\u0665'"
+ },
+ {
+  "value": "\u216b",
+  "repr": "'\u216b'"
+ },
+ {
+  "value": "\u00bd",
+  "repr": "'\u00bd'"
+ },
+ {
+  "value": "snake_case_name",
+  "repr": "'snake_case_name'"
+ },
+ {
+  "value": "a-b-c",
+  "repr": "'a-b-c'"
+ },
+ {
+  "value": "e.g. this.",
+  "repr": "'e.g. this.'"
+ },
+ {
+  "value": "Dr. Who? Yes! No...",
+  "repr": "'Dr. Who? Yes! No...'"
+ },
+ {
+  "value": "end.",
+  "repr": "'end.'"
+ },
+ {
+  "value": "#### Heading",
+  "repr": "'#### Heading'"
+ },
+ {
+  "value": "**Bold label**:",
+  "repr": "'**Bold label**:'"
+ },
+ {
+  "value": "- item",
+  "repr": "'- item'"
+ },
+ {
+  "value": "12) item",
+  "repr": "'12) item'"
+ },
+ {
+  "value": "tab\there",
+  "repr": "'tab\\there'"
+ },
+ {
+  "value": "\u0000nul",
+  "repr": "'\\x00nul'"
+ },
+ {
+  "value": "\u007fdel",
+  "repr": "'\\x7fdel'"
+ },
+ {
+  "value": "\u00ad",
+  "repr": "'\\xad'"
+ },
+ {
+  "value": "\u0301",
+  "repr": "'\u0301'"
+ },
+ {
+  "value": "\u03a9 \u00c5 K",
+  "repr": "'\u03a9 \u00c5 K'"
+ },
+ {
+  "value": "\u01c4 \u01c5 \u01c6",
+  "repr": "'\u01c4 \u01c5 \u01c6'"
+ },
+ {
+  "value": "\u01f0",
+  "repr": "'\u01f0'"
+ },
+ {
+  "value": "\ufb03",
+  "repr": "'\ufb03'"
+ },
+ {
+  "value": "\u24b6",
+  "repr": "'\u24b6'"
+ },
+ {
+  "value": "\ud835\udd18\ud835\udd2b\ud835\udd26\ud835\udd20\ud835\udd2c\ud835\udd21\ud835\udd22",
+  "repr": "'\ud835\udd18\ud835\udd2b\ud835\udd26\ud835\udd20\ud835\udd2c\ud835\udd21\ud835\udd22'"
+ },
+ {
+  "value": "\ud801\udc00\ud801\udc28",
+  "repr": "'\ud801\udc00\ud801\udc28'"
+ },
+ {
+  "value": "\uab70",
+  "repr": "'\uab70'"
+ },
+ {
+  "value": "\u10a0",
+  "repr": "'\u10a0'"
+ },
+ {
+  "value": "\ud83a\udd00",
+  "repr": "'\ud83a\udd00'"
+ },
+ {
+  "value": "a\nb\n",
+  "repr": "'a\\nb\\n'"
+ },
+ {
+  "value": "a\rb\r",
+  "repr": "'a\\rb\\r'"
+ },
+ {
+  "value": "a\r\nb\r\n",
+  "repr": "'a\\r\\nb\\r\\n'"
+ },
+ {
+  "value": "a\u000bb\u000b",
+  "repr": "'a\\x0bb\\x0b'"
+ },
+ {
+  "value": "a\fb\f",
+  "repr": "'a\\x0cb\\x0c'"
+ },
+ {
+  "value": "a\u001cb\u001c",
+  "repr": "'a\\x1cb\\x1c'"
+ },
+ {
+  "value": "a\u001db\u001d",
+  "repr": "'a\\x1db\\x1d'"
+ },
+ {
+  "value": "a\u001eb\u001e",
+  "repr": "'a\\x1eb\\x1e'"
+ },
+ {
+  "value": "a\u001fb\u001f",
+  "repr": "'a\\x1fb\\x1f'"
+ },
+ {
+  "value": "a\u0085b\u0085",
+  "repr": "'a\\x85b\\x85'"
+ },
+ {
+  "value": "a\u2028b\u2028",
+  "repr": "'a\\u2028b\\u2028'"
+ },
+ {
+  "value": "a\u2029b\u2029",
+  "repr": "'a\\u2029b\\u2029'"
+ },
+ {
+  "value": "a b ",
+  "repr": "'a b '"
+ },
+ {
+  "value": "a\tb\t",
+  "repr": "'a\\tb\\t'"
+ },
+ {
+  "value": "a\u00a0b\u00a0",
+  "repr": "'a\\xa0b\\xa0'"
+ },
+ {
+  "value": "a\u1680b\u1680",
+  "repr": "'a\\u1680b\\u1680'"
+ },
+ {
+  "value": "a\u2003b\u2003",
+  "repr": "'a\\u2003b\\u2003'"
+ },
+ {
+  "value": "a\u3000b\u3000",
+  "repr": "'a\\u3000b\\u3000'"
+ },
+ {
+  "value": "a\u202fb\u202f",
+  "repr": "'a\\u202fb\\u202f'"
+ },
+ {
+  "value": "a\u205fb\u205f",
+  "repr": "'a\\u205fb\\u205f'"
+ },
+ {
+  "value": "a\u200bb\u200b",
+  "repr": "'a\\u200bb\\u200b'"
+ },
+ {
+  "value": "a\u180eb\u180e",
+  "repr": "'a\\u180eb\\u180e'"
+ },
+ {
+  "value": "a\ufeffb\ufeff",
+  "repr": "'a\\ufeffb\\ufeff'"
+ },
+ {
+  "value": "\nlead and trail\n",
+  "repr": "'\\nlead and trail\\n'"
+ },
+ {
+  "value": "\rlead and trail\r",
+  "repr": "'\\rlead and trail\\r'"
+ },
+ {
+  "value": "\r\nlead and trail\r\n",
+  "repr": "'\\r\\nlead and trail\\r\\n'"
+ },
+ {
+  "value": "\u000blead and trail\u000b",
+  "repr": "'\\x0blead and trail\\x0b'"
+ },
+ {
+  "value": "\flead and trail\f",
+  "repr": "'\\x0clead and trail\\x0c'"
+ },
+ {
+  "value": "\u001clead and trail\u001c",
+  "repr": "'\\x1clead and trail\\x1c'"
+ },
+ {
+  "value": "\u001dlead and trail\u001d",
+  "repr": "'\\x1dlead and trail\\x1d'"
+ },
+ {
+  "value": "\u001elead and trail\u001e",
+  "repr": "'\\x1elead and trail\\x1e'"
+ },
+ {
+  "value": "\u001flead and trail\u001f",
+  "repr": "'\\x1flead and trail\\x1f'"
+ },
+ {
+  "value": "\u0085lead and trail\u0085",
+  "repr": "'\\x85lead and trail\\x85'"
+ },
+ {
+  "value": "\u2028lead and trail\u2028",
+  "repr": "'\\u2028lead and trail\\u2028'"
+ },
+ {
+  "value": "\u2029lead and trail\u2029",
+  "repr": "'\\u2029lead and trail\\u2029'"
+ },
+ {
+  "value": " lead and trail ",
+  "repr": "' lead and trail '"
+ },
+ {
+  "value": "\tlead and trail\t",
+  "repr": "'\\tlead and trail\\t'"
+ },
+ {
+  "value": "\u00a0lead and trail\u00a0",
+  "repr": "'\\xa0lead and trail\\xa0'"
+ },
+ {
+  "value": "\u1680lead and trail\u1680",
+  "repr": "'\\u1680lead and trail\\u1680'"
+ },
+ {
+  "value": "\u2003lead and trail\u2003",
+  "repr": "'\\u2003lead and trail\\u2003'"
+ },
+ {
+  "value": "\u3000lead and trail\u3000",
+  "repr": "'\\u3000lead and trail\\u3000'"
+ },
+ {
+  "value": "\u202flead and trail\u202f",
+  "repr": "'\\u202flead and trail\\u202f'"
+ },
+ {
+  "value": "\u205flead and trail\u205f",
+  "repr": "'\\u205flead and trail\\u205f'"
+ },
+ {
+  "value": "\u200blead and trail\u200b",
+  "repr": "'\\u200blead and trail\\u200b'"
+ },
+ {
+  "value": "\u180elead and trail\u180e",
+  "repr": "'\\u180elead and trail\\u180e'"
+ },
+ {
+  "value": "\ufefflead and trail\ufeff",
+  "repr": "'\\ufefflead and trail\\ufeff'"
+ },
+ {
+  "value": "",
+  "repr": "''"
+ },
+ {
+  "value": " ",
+  "repr": "' '"
+ },
+ {
+  "value": "\n",
+  "repr": "'\\n'"
+ },
+ {
+  "value": "\n\n",
+  "repr": "'\\n\\n'"
+ },
+ {
+  "value": "line\n",
+  "repr": "'line\\n'"
+ },
+ {
+  "value": "line\r\n",
+  "repr": "'line\\r\\n'"
+ },
+ {
+  "value": "a\r\rb",
+  "repr": "'a\\r\\rb'"
+ },
+ {
+  "value": "trail\r",
+  "repr": "'trail\\r'"
+ },
+ {
+  "value": "x\n\ny\n",
+  "repr": "'x\\n\\ny\\n'"
+ },
+ {
+  "value": "\f\u2003",
+  "repr": "'\\x0c\\u2003'"
+ },
+ {
+  "value": "a-b-c",
+  "repr": "'a-b-c'"
+ },
+ {
+  "value": "\u0130stanbul\u00a0\u001d\uab70\ud835\udd18\ud835\udd2b\ud835\udd26\ud835\udd20\ud835\udd2c\ud835\udd21\ud835\udd22\u00adplain words\u0000nul",
+  "repr": "'\u0130stanbul\\xa0\\x1d\uab70\ud835\udd18\ud835\udd2b\ud835\udd26\ud835\udd20\ud835\udd2c\ud835\udd21\ud835\udd22\\xadplain words\\x00nul'"
+ },
+ {
+  "value": "\u65e5\u672c\u8a9e\u306e\u30c6\u30ad\u30b9\u30c8\u001c\u01f0\ud801\udc00\ud801\udc28#### Heading\ufb01le \ufb02owsnake_case_name\u0301",
+  "repr": "'\u65e5\u672c\u8a9e\u306e\u30c6\u30ad\u30b9\u30c8\\x1c\u01f0\ud801\udc00\ud801\udc28#### Heading\ufb01le \ufb02owsnake_case_name\u0301'"
+ },
+ {
+  "value": "\u00a0\u01f0#### Heading  \r\n\u2029",
+  "repr": "'\\xa0\u01f0#### Heading  \\r\\n\\u2029'"
+ },
+ {
+  "value": "\ufb03\r",
+  "repr": "'\ufb03\\r'"
+ },
+ {
+  "value": "STRASSE \u1e9eDr. Who? Yes! No...D\u0130YARBAKIR\u2029",
+  "repr": "'STRASSE \u1e9eDr. Who? Yes! No...D\u0130YARBAKIR\\u2029'"
+ },
+ {
+  "value": "\u10a0\u1680na\u00efveD\u0130YARBAKIR\f",
+  "repr": "'\u10a0\\u1680na\u00efveD\u0130YARBAKIR\\x0c'"
+ },
+ {
+  "value": "\u65e5\u672c\u8a9e\u306e\u30c6\u30ad\u30b9\u30c8",
+  "repr": "'\u65e5\u672c\u8a9e\u306e\u30c6\u30ad\u30b9\u30c8'"
+ },
+ {
+  "value": ". \ud835\udd18\ud835\udd2b\ud835\udd26\ud835\udd20\ud835\udd2c\ud835\udd21\ud835\udd22\u3000\u0000nulx\u00b2+y\u00b3\u00bd",
+  "repr": "'. \ud835\udd18\ud835\udd2b\ud835\udd26\ud835\udd20\ud835\udd2c\ud835\udd21\ud835\udd22\\u3000\\x00nulx\u00b2+y\u00b3\u00bd'"
+ },
+ {
+  "value": "\u0663\u0664\u0665**Bold label**:cafe\u0301! \ufeffDr. Who? Yes! No...?!cafe\u0301",
+  "repr": "'\u0663\u0664\u0665**Bold label**:cafe\u0301! \\ufeffDr. Who? Yes! No...?!cafe\u0301'"
+ },
+ {
+  "value": "\ud801\udc00\ud801\udc28",
+  "repr": "'\ud801\udc00\ud801\udc28'"
+ },
+ {
+  "value": "\ud83d\udc68\u200d\ud83d\udc69\u200d\ud83d\udc67 family\ud801\udc00\ud801\udc28",
+  "repr": "'\ud83d\udc68\\u200d\ud83d\udc69\\u200d\ud83d\udc67 family\ud801\udc00\ud801\udc28'"
+ },
+ {
+  "value": "\u0301snake_case_name\u0085!  **Bold label**:\ud83c\uddf3\ud83c\uddff\u0663\u0664\u0665",
+  "repr": "'\u0301snake_case_name\\x85!  **Bold label**:\ud83c\uddf3\ud83c\uddff\u0663\u0664\u0665'"
+ },
+ {
+  "value": "\r\n",
+  "repr": "'\\r\\n'"
+ },
+ {
+  "value": "na\u00efve",
+  "repr": "'na\u00efve'"
+ },
+ {
+  "value": "\u0085a-b-c\t\u01f0?!",
+  "repr": "'\\x85a-b-c\\t\u01f0?!'"
+ },
+ {
+  "value": "\ud83a\udd00\ud835\udd18\ud835\udd2b\ud835\udd26\ud835\udd20\ud835\udd2c\ud835\udd21\ud835\udd22na\u00efve\ud55c\uad6d\uc5b4cafe\u0301",
+  "repr": "'\ud83a\udd00\ud835\udd18\ud835\udd2b\ud835\udd26\ud835\udd20\ud835\udd2c\ud835\udd21\ud835\udd22na\u00efve\ud55c\uad6d\uc5b4cafe\u0301'"
+ },
+ {
+  "value": "Dr. Who? Yes! No...- item\u0663\u0664\u0665\ud835\udd18\ud835\udd2b\ud835\udd26\ud835\udd20\ud835\udd2c\ud835\udd21\ud835\udd22\ud835\udd18\ud835\udd2b\ud835\udd26\ud835\udd20\ud835\udd2c\ud835\udd21\ud835\udd22\ufb01le \ufb02ow\ud83d\udc68\u200d\ud83d\udc69\u200d\ud83d\udc67 family",
+  "repr": "'Dr. Who? Yes! No...- item\u0663\u0664\u0665\ud835\udd18\ud835\udd2b\ud835\udd26\ud835\udd20\ud835\udd2c\ud835\udd21\ud835\udd22\ud835\udd18\ud835\udd2b\ud835\udd26\ud835\udd20\ud835\udd2c\ud835\udd21\ud835\udd22\ufb01le \ufb02ow\ud83d\udc68\\u200d\ud83d\udc69\\u200d\ud83d\udc67 family'"
+ }
+]

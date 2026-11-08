@@ -1,0 +1,527 @@
+{
+  "plugin": "scopes",
+  "tool": "scope",
+  "verbs": [
+    {
+      "description": "One-shot for the deploy (scopes.md R142): empty each worktree's .awm/ folder on this node. Removes the data and skills links, history.md and mcp-opencode.json, moves the DVC mount list and failure sentinel into the worktree's git dir, and rewrites each DVC project's hooks to match. Leaves context.md for the scope briefs one-shot and reports it. Idempotent.",
+      "params": [
+        {
+          "name": "dry_run",
+          "required": false,
+          "type": "boolean"
+        }
+      ],
+      "surfaces": [
+        "cli",
+        "http"
+      ],
+      "verb": "awm_sweep"
+    },
+    {
+      "description": "Claim a scope for a live session (scopes.md R3, R42). reflection cd calls this before it moves a session; agents use cd, not this verb. A scope holds at most one live session, and the claim ends when the session's process ends, unless the session waits on other sessions. A held scope answers ok=false with its holder. queue=true joins the scope's first-come queue and returns queued_position. A terminal session (terminal=true) is warned and never blocked.",
+      "params": [
+        {
+          "name": "project",
+          "required": true
+        },
+        {
+          "name": "scope",
+          "required": true
+        },
+        {
+          "description": "The session's id in R9 form (`cc` + hex of its Claude session UUID).",
+          "name": "session_id",
+          "required": true
+        },
+        {
+          "description": "The session's process id on this node. Default: the calling process.",
+          "name": "pid",
+          "required": false,
+          "type": "integer"
+        },
+        {
+          "description": "The session's background job, which the queue notifies when the scope frees.",
+          "name": "job",
+          "required": false
+        },
+        {
+          "name": "queue",
+          "required": false,
+          "type": "boolean"
+        },
+        {
+          "name": "terminal",
+          "required": false,
+          "type": "boolean"
+        }
+      ],
+      "surfaces": [
+        "cli",
+        "http"
+      ],
+      "verb": "claim"
+    },
+    {
+      "description": "The live session holding each scope, and each scope's queue.",
+      "params": [
+        {
+          "name": "project",
+          "required": false
+        },
+        {
+          "name": "scope",
+          "required": false
+        }
+      ],
+      "verb": "claims"
+    },
+    {
+      "description": "Complete (retire) a scope. Optionally merge, and remove the worktree with cleanup=true. The branch stays unless delete_branch=true, which needs cleanup=true. The reply then names the branch and its last SHA. cleanup refuses as scope_delete does; force=true discards and lists what it threw away.",
+      "params": [
+        {
+          "name": "project",
+          "required": true
+        },
+        {
+          "name": "scope",
+          "required": true
+        },
+        {
+          "name": "merge",
+          "required": false,
+          "type": "boolean"
+        },
+        {
+          "name": "cleanup",
+          "required": false,
+          "type": "boolean"
+        },
+        {
+          "name": "force",
+          "required": false,
+          "type": "boolean"
+        },
+        {
+          "description": "Also delete the scope's git branch. Default false: the branch is kept.",
+          "name": "delete_branch",
+          "required": false,
+          "type": "boolean"
+        }
+      ],
+      "verb": "complete"
+    },
+    {
+      "description": "Create a new scope (a worktree, its data view and its brief) for a project. The new branch defaults to feat/<scope>; pass branch_name to name it explicitly (e.g. a plain branch like 'release' or 'dev'). A branch that already exists is checked out, not recreated. A branch that only a remote carries becomes a local branch tracking that remote. When several remotes carry it, create refuses and names each one. Pass from_branch='<remote>/<branch>' to pick one. An unknown project is refused unless new_project=true, which first creates the project (bare repo, main checkout, data dirs; clone_url or fork_url to start from a remote); omit scope then to create the project alone. A '/' in scope groups it: the worktree lands in that group's directory and the branch under feat/<group>/. Projects grouped by component (check scope search) expect a grouped name. Examples: project='awm', scope='svc-diplomacy' creates projects/awm/svc-diplomacy on branch feat/svc-diplomacy; project='metasmith', scope='engine/presentation' creates projects/metasmith/engine/presentation on branch feat/engine/presentation.",
+      "params": [
+        {
+          "description": "Name of the project, the directory under projects/ (e.g. 'awm'); it must exist unless new_project is true. Not the workspace or the MCP namespace.",
+          "name": "project",
+          "required": true
+        },
+        {
+          "description": "Name for the new scope, unique within the project (e.g. 'svc-diplomacy', or 'engine/presentation' to place it in the engine group). Becomes the worktree path under the project. Required, except with new_project to create the project alone.",
+          "name": "scope",
+          "required": false
+        },
+        {
+          "description": "Start point of a new branch. Default: the project's default branch. For a branch that already exists, only '<remote>/<branch>' is accepted, and it sets the upstream.",
+          "name": "from_branch",
+          "required": false
+        },
+        {
+          "description": "Branch to check out. Default feat/<scope>. It may already exist locally or on a remote.",
+          "name": "branch_name",
+          "required": false
+        },
+        {
+          "description": "The scope brief: what the scope is for, in at most two sentences and 400 characters. It goes to the journal as brief_set would write it; see brief_set for what it holds.",
+          "name": "context",
+          "required": false
+        },
+        {
+          "description": "Create the project first when it does not exist. Default false: an unknown project is an error.",
+          "name": "new_project",
+          "required": false,
+          "type": "boolean"
+        },
+        {
+          "description": "With new_project: clone this remote as the project's bare repo.",
+          "name": "clone_url",
+          "required": false
+        },
+        {
+          "description": "With new_project: fork this GitHub repo and clone the fork.",
+          "name": "fork_url",
+          "required": false
+        },
+        {
+          "description": "Tags for the new scope, or for the project when it is created alone (see scope tag).",
+          "name": "tags",
+          "required": false,
+          "type": "array"
+        }
+      ],
+      "verb": "create"
+    },
+    {
+      "description": "Delete a scope and remove its worktree. The branch stays unless delete_branch=true. The reply then names the branch and its last SHA. Refuses when the worktree has uncommitted changes -- which covers data as well as code, since a data chunk is committed via its .dvc pin -- or the branch has commits no other branch or remote holds, even when the branch is kept. force=true discards them and the reply lists each one. A live session's claim always refuses.",
+      "params": [
+        {
+          "name": "project",
+          "required": true
+        },
+        {
+          "name": "scope",
+          "required": true
+        },
+        {
+          "name": "force",
+          "required": false,
+          "type": "boolean"
+        },
+        {
+          "description": "Also delete the scope's git branch. Default false: the branch is kept.",
+          "name": "delete_branch",
+          "required": false,
+          "type": "boolean"
+        }
+      ],
+      "verb": "delete"
+    },
+    {
+      "description": "Idempotent get-or-create of an agent/scope record. An unknown project is refused unless new_project=true, which registers the project too. Returns {project, scope}.",
+      "params": [
+        {
+          "name": "project",
+          "required": true
+        },
+        {
+          "name": "scope",
+          "required": true
+        },
+        {
+          "name": "branch",
+          "required": false
+        },
+        {
+          "name": "worktree",
+          "required": false
+        },
+        {
+          "name": "agent_cli",
+          "required": false
+        },
+        {
+          "name": "status",
+          "required": false
+        },
+        {
+          "name": "is_vagrant",
+          "required": false,
+          "type": "boolean"
+        },
+        {
+          "name": "display_name",
+          "required": false
+        },
+        {
+          "description": "Register the project when it does not exist. Default false: an unknown project is an error.",
+          "name": "new_project",
+          "required": false,
+          "type": "boolean"
+        }
+      ],
+      "verb": "ensure"
+    },
+    {
+      "description": "Fan-in: merge each peripheral scope's branch into a hub scope's branch (runs in the hub worktree, which must be clean and on the hub branch). Per-peripheral conflicts are aborted and reported; the batch continues. Local-only — no push. strategy='merge' only. A peripheral's data pins ride its code branch, so this merges data too -- there is no separate data leg any more.",
+      "params": [
+        {
+          "name": "project",
+          "required": true
+        },
+        {
+          "name": "hub",
+          "required": true
+        },
+        {
+          "name": "peripherals",
+          "required": true,
+          "type": "array"
+        },
+        {
+          "name": "strategy",
+          "required": false
+        }
+      ],
+      "verb": "git_gather"
+    },
+    {
+      "description": "Fan-out: merge a hub scope's branch into each peripheral scope's branch (each merge runs in that peripheral's worktree). A dirty or off-branch peripheral is skipped; conflicts are aborted and reported; the batch continues. Local-only — no push. strategy='merge' only. The hub's data pins ride its branch, so this fans out data too -- there is no separate data leg any more.",
+      "params": [
+        {
+          "name": "project",
+          "required": true
+        },
+        {
+          "name": "hub",
+          "required": true
+        },
+        {
+          "name": "peripherals",
+          "required": true,
+          "type": "array"
+        },
+        {
+          "name": "strategy",
+          "required": false
+        }
+      ],
+      "verb": "git_scatter"
+    },
+    {
+      "description": "Idempotent repair pass over active scopes: drop an untracked AGENTS.md / CLAUDE.md, and bring a DVC project's data view to whatever its checkout implies — installing the DVC merge driver + hooks, materialising the pinned chunks and building missing shared copies. Pass dry_run=true to preview. The reply also lists worktrees under projects/<project>/ that no scope row names (unregistered_worktrees) and active or allocated rows whose worktree is gone (orphaned_rows). Heal never registers or retires a row for either list.",
+      "params": [
+        {
+          "name": "project",
+          "required": false
+        },
+        {
+          "name": "dry_run",
+          "required": false,
+          "type": "boolean"
+        }
+      ],
+      "verb": "heal"
+    },
+    {
+      "description": "Mark a project, or one scope of it, private on this node, or clear the mark. A private project or scope, with every scope nested under it and every path under its directory, is invisible to calls from other nodes; callers on this node see it as before. Refuses a mark whose path would also hide another project's or scope's transcripts (projects 'awm' and 'awm-dev', for example). Returns the project's marks.",
+      "params": [
+        {
+          "name": "project",
+          "required": true
+        },
+        {
+          "description": "Mark only this scope. Omit to mark the whole project.",
+          "name": "scope",
+          "required": false
+        },
+        {
+          "description": "true sets the mark, false clears it.",
+          "name": "private",
+          "required": true,
+          "type": "boolean"
+        }
+      ],
+      "verb": "private"
+    },
+    {
+      "description": "Idempotent get-or-create of a project. Returns {project}.",
+      "params": [
+        {
+          "name": "project",
+          "required": true
+        },
+        {
+          "name": "repo_path",
+          "required": false
+        },
+        {
+          "name": "url",
+          "required": false
+        }
+      ],
+      "surfaces": [
+        "cli",
+        "http"
+      ],
+      "verb": "project_ensure"
+    },
+    {
+      "description": "Resolve a literal author/recipient string to its natural-key identity. Returns {kind, project?, scope?, username?} or null.",
+      "params": [
+        {
+          "name": "literal",
+          "required": true
+        }
+      ],
+      "surfaces": [
+        "cli",
+        "http"
+      ],
+      "verb": "ref_resolve"
+    },
+    {
+      "description": "Bring the scopes service's search index of scopes and projects in line with the tables: embeds what is missing, changed or made by another model, and drops what no longer exists. Returns counts per type. dry_run reports without writing; force re-embeds everything.",
+      "params": [
+        {
+          "name": "dry_run",
+          "required": false,
+          "type": "boolean"
+        },
+        {
+          "name": "force",
+          "required": false,
+          "type": "boolean"
+        }
+      ],
+      "surfaces": [
+        "cli",
+        "http"
+      ],
+      "verb": "reindex"
+    },
+    {
+      "description": "End a session's claim on a scope and notify the first session in its queue.",
+      "params": [
+        {
+          "name": "project",
+          "required": true
+        },
+        {
+          "name": "scope",
+          "required": true
+        },
+        {
+          "description": "The session's id in R9 form (`cc` + hex of its Claude session UUID).",
+          "name": "session_id",
+          "required": true
+        }
+      ],
+      "surfaces": [
+        "cli",
+        "http"
+      ],
+      "verb": "release"
+    },
+    {
+      "description": "Reconcile an on-disk worktree with a missing agents DB row.",
+      "params": [
+        {
+          "name": "project",
+          "required": true
+        },
+        {
+          "name": "scope",
+          "required": true
+        }
+      ],
+      "verb": "repair"
+    },
+    {
+      "description": "Validate-only read: does this (project, scope) exist and what is its status? Returns {exists, project, scope, status, private} when found, {exists: false, project, scope} when not found.",
+      "params": [
+        {
+          "name": "project",
+          "required": true
+        },
+        {
+          "name": "scope",
+          "required": true
+        }
+      ],
+      "verb": "resolve"
+    },
+    {
+      "description": "Search scopes: name matches first, then scopes ranked by the meaning of their brief and context. Each project's main checkout is a scope named for its default branch. Defaults to status='active'; pass status='all' for the full history. With no project, the reply also lists every project, matched and ranked by the same query, with its scope counts per status, and every tag in use with the number of scopes carrying it. Each scope and project carries its effective tags (see scope tag).",
+      "params": [
+        {
+          "name": "query",
+          "required": false
+        },
+        {
+          "name": "status",
+          "required": false
+        },
+        {
+          "description": "Only this project's scopes. Omit to search every project and list the projects.",
+          "name": "project",
+          "required": false
+        },
+        {
+          "name": "limit",
+          "required": false,
+          "type": "integer"
+        },
+        {
+          "description": "Skips scopes only; the project list is never paged.",
+          "name": "offset",
+          "required": false,
+          "type": "integer"
+        },
+        {
+          "description": "Only scopes whose effective tags hold this tag.",
+          "name": "tag",
+          "required": false
+        }
+      ],
+      "verb": "search"
+    },
+    {
+      "description": "Sync a scope's feature branch with a base branch via merge or rebase.",
+      "params": [
+        {
+          "name": "project",
+          "required": true
+        },
+        {
+          "name": "scope",
+          "required": true
+        },
+        {
+          "name": "strategy",
+          "required": false
+        },
+        {
+          "name": "from_branch",
+          "required": false
+        }
+      ],
+      "verb": "sync"
+    },
+    {
+      "description": "Read or set the tags of a project, a scope, or a scope group such as 'metasmith/lab' (a group needs no scope of its own yet). A scope's effective tags are those of the nearest level that has any: the scope, then each enclosing group, then the project; a nearer set replaces a farther one. Omit tags to read; tags=[] clears the level so it inherits again. Tags label and filter only. Returns the level's own tags, its effective tags and the level they come from.",
+      "params": [
+        {
+          "name": "project",
+          "required": true
+        },
+        {
+          "description": "A scope or scope group path. Omit to tag the project.",
+          "name": "scope",
+          "required": false
+        },
+        {
+          "description": "The level's whole tag set, replacing what it had: a list or a comma-separated string. Each tag is lowercase letters, digits, '.', '_' or '-', starts with a letter or digit, and is at most 32 characters.",
+          "name": "tags",
+          "required": false,
+          "type": "array"
+        }
+      ],
+      "verb": "tag"
+    },
+    {
+      "description": "Take a session out of a scope's queue (scopes.md R46).",
+      "params": [
+        {
+          "name": "project",
+          "required": true
+        },
+        {
+          "name": "scope",
+          "required": true
+        },
+        {
+          "description": "The session's id in R9 form (`cc` + hex of its Claude session UUID).",
+          "name": "session_id",
+          "required": true
+        }
+      ],
+      "surfaces": [
+        "cli",
+        "http"
+      ],
+      "verb": "withdraw"
+    }
+  ]
+}
