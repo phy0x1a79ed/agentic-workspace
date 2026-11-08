@@ -8,11 +8,14 @@ Sources: the worker debrief journals 389a0111 (ops), 8caec34d (knowledge), 449af
 
 ## Current
 
-- `scoping` / `operations` — survey in (survey/ops.md). Asked Tony: the vault board freezes between the Rust operations and the trilium writer; apply ops-units without the deneb caller until R79 is settled; Tony at hand for the passkey checks.
+- `ops` batch (dvc, operations, auth) — plan /home/tony/.claude/plans/noble-splashing-nygaard.md, approved 2026-11-07. Survey: /home/tony/.claude/jobs/b8680c94/tmp/survey/ops.md. T2 (cloud) and T3 (merge, tests) go ahead; T4 (cutover) waits on Q1–Q3.
 
 ## Waiting on the user
 
-- `operations`: board freeze OK; deneb caller deferred to trilium-board; passkey checks timing. (asked 2026-11-07)
+- Q1 `operations`: the vault board on deneb stops updating from the Rust operations land until trilium's writer lands. Recommend: accept, since the board is being remade. (asked 2026-11-07)
+- Q2 `operations`: cloud feat/ops-units adds deneb as an operations caller, which fleet.md R79 forbids. Recommend: drop that line now, settle R79 in `trilium-board`. (asked 2026-11-07)
+- Q3 `operations`, `auth`: the passkey close, the 2fa burst and the passkey sign-in need Tony at a device. Recommend: cut over while Tony is away with rollback ready; the checks wait here under Checks for Tony. (asked 2026-11-07)
+- Q4 `auth`: claude-science's front behind auth (C2b) is optional, claude-science is not core. Recommend: leave it for later. (asked 2026-11-07)
 
 ## Preferences
 
@@ -21,7 +24,7 @@ Sources: the worker debrief journals 389a0111 (ops), 8caec34d (knowledge), 449af
 - 2026-11-07: do not use the board; it is being remade. reflection and journals work.
 - 2026-11-07: mizar and alcor first. Other nodes later.
 - 2026-11-07: start from the original interview's decisions (DECISIONS.md § inherited). Work plugin by plugin. Related issues are prioritized case by case.
-- 2026-11-07: scope every plugin in the interview first; no work before its scope is settled. Survey and discuss one set at a time.
+- 2026-11-07: work in the old worker groups, one batch at a time: survey, plan the completion, implement, then return to this stack. Tony: "we can use the same groups as before rather than 1 plugin at a time. for each batch, we will survey and plan out the completion of the redux, then implement, then return to teh dfs interview stack. use stack.md for any questions to me." Groups in order: ops, comms, trilium-board + opt-in, knowledge, harness.
 
 ## Stack
 
@@ -46,7 +49,7 @@ Phase 1 scopes each plugin; phase 2 does the work in this order. Each topic list
 
 ## Workers
 
-Read-only survey subagents (Sonnet medium), one set at a time (Tony: "1 set at a time"). Brief /home/tony/.claude/jobs/b8680c94/tmp/survey/COMMON.md; reports beside it as <set>.md. Running: ops (dvc, operations, auth), started 2026-11-07. The first six were killed by the /cd move.
+Read-only survey subagents (Sonnet medium), one group at a time. Brief /home/tony/.claude/jobs/b8680c94/tmp/survey/COMMON.md; reports beside it as <group>.md. Done: ops. None running.
 
 ## Closed
 
