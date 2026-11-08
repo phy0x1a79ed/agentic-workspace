@@ -1,0 +1,14 @@
+{
+ "python": "3.12.16",
+ "unicode": "15.0.0",
+ "tables": {
+  "WORD": 748,
+  "SPACE": 10,
+  "DIGIT": 83,
+  "DECIMAL": 64,
+  "PRINTABLE": 711,
+  "SIGMA_CASED": 150,
+  "SIGMA_SKIP": 437,
+  "LOWER": 1433
+ }
+}

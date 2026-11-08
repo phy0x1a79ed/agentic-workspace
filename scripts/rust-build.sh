@@ -4,7 +4,8 @@
 #        AWM_CARGO_TARGET_DIR=<dir> scripts/rust-build.sh build   (build into this target dir)
 #        AWM_RUST_WORKDIR=<dir> scripts/rust-build.sh build   (another Cargo project)
 #        scripts/rust-build.sh --target-dir   (print the target dir a build uses)
-#        scripts/rust-build.sh --gc [--yes]   (delete the target dirs no live session builds in)
+#        scripts/rust-build.sh --gc [--yes]   (delete the target dirs no live session builds in, and
+#                                               the build images no worktree's Dockerfile matches)
 #
 # The default target dir is ~/.cache/awm-target/<worktree>, so build output stays out of the
 # worktree. --gc keeps <worktree> and <worktree>-* for the worktree of each live session that
@@ -51,7 +52,41 @@ gc() {
             echo "would delete  $name ($(du -sh "$dir" 2>/dev/null | cut -f1))"
         fi
     done
+    gc_images "$apply"
     [ -n "$apply" ] || echo "--- dry run: run --gc --yes to delete ---"
+}
+
+# The build image tag each worktree of this repo uses: its Dockerfile's hash when its
+# rust-build.sh tags by hash, else the fixed tag its rust-build.sh names.
+image_tags_in_use() {
+    local wt base
+    git -C "$here" worktree list --porcelain | sed -n 's/^worktree //p' | while read -r wt; do
+        [ -f "$wt/scripts/rust-build.sh" ] && [ -f "$wt/core/Dockerfile" ] || continue
+        base="$(grep -o 'awm-rust-build:[0-9][0-9.]*' "$wt/scripts/rust-build.sh" | head -n1)"
+        [ -n "$base" ] || continue
+        if grep -qF 'sha256sum < "$here/core/Dockerfile"' "$wt/scripts/rust-build.sh"; then
+            printf '%s-%s\n' "$base" "$(sha256sum < "$wt/core/Dockerfile" | cut -c1-12)"
+        else
+            printf '%s\n' "$base"
+        fi
+    done | sort -u
+}
+
+gc_images() {
+    local apply="$1" used tag
+    command -v docker >/dev/null || return 0
+    used="$(image_tags_in_use)"
+    [ -n "$used" ] || { echo "--gc: no worktree names a build image: deleting no image" >&2; return 0; }
+    docker image ls awm-rust-build --format '{{.Repository}}:{{.Tag}}' | while read -r tag; do
+        if grep -qxF "$tag" <<<"$used"; then
+            echo "keep    $tag (a worktree's Dockerfile)"
+        elif [ -n "$apply" ]; then
+            echo "delete  $tag"
+            docker image rm "$tag" >/dev/null || echo "warning: could not remove $tag" >&2
+        else
+            echo "would delete  $tag"
+        fi
+    done
 }
 
 if [ "${1:-}" = --gc ]; then
@@ -59,7 +94,8 @@ if [ "${1:-}" = --gc ]; then
     exit
 fi
 
-image="${AWM_RUST_IMAGE:-awm-rust-build:1.99.1}"
+# The tag carries the Dockerfile's hash, so an edit to it builds a new image.
+image="${AWM_RUST_IMAGE:-awm-rust-build:1.99.1-$(sha256sum < "$here/core/Dockerfile" | cut -c1-12)}"
 volume="${AWM_CARGO_CACHE:-awm-cargo-cache}"
 workdir="$(cd "${AWM_RUST_WORKDIR:-$here/core}" && pwd)"
 target_dir="${AWM_CARGO_TARGET_DIR:-$cache/$(worktree_of "$workdir")}"
