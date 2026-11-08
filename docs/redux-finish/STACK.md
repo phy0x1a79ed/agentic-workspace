@@ -48,7 +48,7 @@ Phase 1 scopes each plugin; phase 2 does the work in this order. Each topic list
   - `python-out` — plan T8: drop the core Python install path; each non-core Python plugin gets its own env.
   - `landed` — cch, dsh, dev, mic, fileviewer, routine, dashboard, telemetry: confirm each is healthy on mizar and alcor. Issue: statecheck cannot copy a directory `[[extra]]` (took mizar's cch down 4 minutes).
   - `cross-cutting` — ticket 3e3bc12a2040's branch (plain-ssh edge, SDK snapshot, workspace root); SDK clippy `result_large_err`; routine with `AWM_DIR` unset takes a scope as the workspace; the stale land lease; the shelved decisions (R79, per-node-edges, lyra vpn.toml, `isolated/` tag, alcor's sites daemon).
-- `verify` — plan T9 on mizar and alcor.
+- `verify` — plan T9 on mizar and alcor. Check: dvc's mirror sends a dir holding only a symlink (e.g. `awm/` -> `data`) as a recursive Globus item; confirm Globus does not follow it into an excluded tree.
 - `later-nodes` — capella, lyra, deneb, shogun, altair; hpc-ssh-guard apply.
 
 ## Workers
