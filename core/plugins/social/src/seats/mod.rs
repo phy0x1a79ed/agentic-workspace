@@ -23,6 +23,9 @@ use crate::config::{AccountConfig, SeatsConfig};
 use crate::connectors::{ChatKind, Inbound};
 use crate::db::{Db, Mount};
 use line::Place;
+
+/// Transitions one look at a seat may take before it waits for the next tick.
+const STEPS_PER_LOOK: usize = 3;
 use store::{Previous, Queued, Seat, State, Store};
 
 /// How long a started agent has to come up.
@@ -250,7 +253,7 @@ impl Seats {
     pub async fn drive(self: &Arc<Self>, key: &Key, live: Option<&HashSet<String>>) {
         let lock = self.lock(key);
         let _held = lock.lock().await;
-        for _ in 0..3 {
+        for _ in 0..STEPS_PER_LOOK {
             let Some(seat) = self.store.get(&key.0, &key.1).await else { return };
             if !self.step(seat, live).await {
                 return;
@@ -525,11 +528,16 @@ impl Seats {
 
     /// Every seat once. Each node's live jobs are read once, when a seat there needs them.
     pub async fn tick(self: &Arc<Self>) {
-        let mut cache: HashMap<String, Option<HashSet<String>>> = HashMap::new();
-        for s in self.store.all().await {
+        let seats = self.store.all().await;
+        let mut nodes: Vec<String> = seats.iter().filter(|s| s.state != State::Empty && !s.job_node.is_empty()).map(|s| s.job_node.clone()).collect();
+        nodes.sort();
+        nodes.dedup();
+        let reads = nodes.iter().map(|n| self.world.live(n));
+        let mut cache: HashMap<String, Option<HashSet<String>>> = nodes.iter().cloned().zip(futures_util::future::join_all(reads).await).collect();
+        for s in seats {
             let lock = self.lock(&s.key());
             let _held = lock.lock().await;
-            for _ in 0..3 {
+            for _ in 0..STEPS_PER_LOOK {
                 let Some(seat) = self.store.get(&s.account, &s.channel_id).await else { break };
                 let live = if seat.state != State::Empty && !seat.job_node.is_empty() {
                     if !cache.contains_key(&seat.job_node) {
