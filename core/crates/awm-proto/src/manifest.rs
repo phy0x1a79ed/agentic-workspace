@@ -72,6 +72,11 @@ pub struct FrontDecl {
     /// Path prefixes this front sends to another loopback upstream instead.
     #[serde(default)]
     pub paths: std::collections::BTreeMap<String, String>,
+    /// A loopback http URL auth sends a GET to as `x-awm-as`, at most once a minute, when an
+    /// authenticated request passes, and at once when the upstream refuses the connection. For a
+    /// service that starts on demand and stops when idle.
+    #[serde(default)]
+    pub wake: Option<String>,
 }
 
 fn default_front_name() -> String {
@@ -107,6 +112,9 @@ impl FrontDecl {
                 return Err(format!("front {:?}: path {prefix:?} must start with one /", self.name));
             }
             loopback_upstream(up).map_err(|e| format!("front {:?}: path {prefix:?}: {e}", self.name))?;
+        }
+        if let Some(wake) = &self.wake {
+            loopback_upstream(wake).map_err(|e| format!("front {:?}: wake: {e}", self.name))?;
         }
         Ok(())
     }
@@ -280,6 +288,18 @@ major = 1
         assert_eq!(m.needs.retired_keys(), ["verbs", "optional"]);
         assert!(Manifest::parse("[plugin]\nname='x'\n[[needs.tool]]\nname='y'\n").unwrap().needs.retired_keys().is_empty());
         assert!(Manifest::parse("[plugin]\nname='x'\n[[needs.tool]]\nname='y'\nbogus=1\n").is_err(), "any other key is still unknown");
+    }
+
+    #[test]
+    fn a_front_wake_is_a_loopback_url() {
+        let front = |wake: &str| format!("[plugin]\nname='x'\n[[service]]\nname='x'\n[[service.front]]\nport=1\nupstream='http://127.0.0.1:2'\n{wake}");
+        let parsed = Manifest::parse(&front("wake='http://127.0.0.1:3/_wake'")).unwrap();
+        let decl = &parsed.service[0].front[0];
+        assert_eq!(decl.wake.as_deref(), Some("http://127.0.0.1:3/_wake"));
+        assert!(decl.check().is_ok());
+        assert!(Manifest::parse(&front("")).unwrap().service[0].front[0].wake.is_none());
+        let remote = Manifest::parse(&front("wake='http://example.com/_wake'")).unwrap();
+        assert!(remote.service[0].front[0].check().unwrap_err().contains("wake"));
     }
 
     #[test]

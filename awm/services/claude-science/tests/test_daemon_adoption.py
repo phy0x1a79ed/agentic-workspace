@@ -1,13 +1,16 @@
 """Adoption is the behaviour that makes an awm deploy safe for live work.
 
 If `start` ever decides to launch a second daemon beside a running one, or
-`reconcile` ever restarts one that is merely busy, the cost lands on somebody
+`reconcile` ever stops one that is merely busy, the cost lands on somebody
 mid-analysis. Both are pinned here, along with the origin derivation the
 workbench's WebSocket origin check depends on — that one fails closed and
 silently, so it is worth a test rather than a comment.
 """
 
 from __future__ import annotations
+
+import threading
+import time
 
 import pytest
 
@@ -45,22 +48,21 @@ def test_start_adopts_a_running_daemon_and_launches_nothing(sup, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# "Could not find out" is not "dead"
+# On demand: start on a request, stop when idle
 # ---------------------------------------------------------------------------
 #
 # `status_json` never raises, so a timed-out subprocess, an OSError and garbage
 # on stdout all reach `reconcile` looking exactly like a daemon that is down:
-# running=False plus an `error`. Respawning on that is destructive, because
-# `start` stops the unit before it launches — so an unlucky probe kills a
-# healthy workbench mid-conversation. It happened: the probe reported dead while
-# the daemon was answering HTTP 200s on either side of the same tick.
+# running=False plus an `error`. Acting on that is destructive: the probe once
+# reported dead while the daemon was answering HTTP 200s on either side of the
+# same tick.
 
 @pytest.mark.parametrize("error", [
     "status timed out after 30s",
     "OSError: [Errno 12] Cannot allocate memory",
     "unparseable status output: ''",
 ])
-def test_reconcile_does_not_respawn_on_an_inconclusive_probe(sup, monkeypatch, error):
+def test_reconcile_leaves_the_daemon_alone_on_an_inconclusive_probe(sup, monkeypatch, error):
     monkeypatch.setattr(daemon, "installed", lambda: True)
     monkeypatch.setattr(daemon, "status_json",
                         lambda: {"running": False, "error": error})
@@ -70,37 +72,108 @@ def test_reconcile_does_not_respawn_on_an_inconclusive_probe(sup, monkeypatch, e
     out = sup.reconcile()
     assert out["action"] == "skipped"
     assert "inconclusive" in out["reason"]
-    assert sup.restarts == 0
+
+
+def test_reconcile_never_starts_a_daemon_that_is_down(sup, monkeypatch):
+    monkeypatch.setattr(daemon, "installed", lambda: True)
+    monkeypatch.setattr(daemon, "status_json", lambda: {"running": False})
+    monkeypatch.setattr(daemon, "port_listening", lambda port, **kw: False)
+    monkeypatch.setattr(daemon.subprocess, "run", _never_called)
+
+    assert sup.reconcile()["action"] == "down"
+    assert sup.snapshot()["state"] == "idle-stopped"
 
 
 def test_reconcile_believes_the_socket_over_a_clean_not_running(sup, monkeypatch):
-    """Something is accepting connections on the daemon's port. Whatever
-    `status` said, that is not a process which has died — and stopping it is the
-    failure this service exists to prevent."""
     monkeypatch.setattr(daemon, "installed", lambda: True)
     monkeypatch.setattr(daemon, "status_json", lambda: {"running": False})
     monkeypatch.setattr(daemon, "port_listening", lambda port, **kw: True)
     monkeypatch.setattr(daemon.subprocess, "run", _never_called)
 
-    out = sup.reconcile()
-    assert out["action"] == "skipped"
-    assert out["reason"] == "port still listening"
-    assert sup.restarts == 0
+    assert sup.reconcile()["reason"] == "port still listening"
 
 
-def test_reconcile_still_respawns_a_daemon_that_is_really_gone(sup, monkeypatch):
-    """The guard must not cost us the behaviour it guards: a conclusive
-    not-running with nothing on the port is a genuine death."""
+def _idle_daemon(sup, monkeypatch, *, idle_for):
+    monkeypatch.setattr(daemon, "installed", lambda: True)
+    monkeypatch.setattr(daemon, "status_json", _running)
+    monkeypatch.setattr(daemon, "IDLE_S", 7200.0)
+    stopped = []
+    monkeypatch.setattr(daemon.Supervisor, "stop", lambda self: stopped.append(True))
+    sup.last_activity = time.time() - idle_for
+    return stopped
+
+
+def test_reconcile_stops_a_daemon_idle_past_the_limit(sup, monkeypatch):
+    stopped = _idle_daemon(sup, monkeypatch, idle_for=7201)
+    assert sup.reconcile(busy=list)["action"] == "stopped"
+    assert stopped == [True]
+
+
+def test_reconcile_keeps_a_daemon_with_recent_activity(sup, monkeypatch):
+    stopped = _idle_daemon(sup, monkeypatch, idle_for=7000)
+    assert sup.reconcile(busy=_never_called)["action"] == "ok"
+    assert stopped == []
+
+
+def test_reconcile_keeps_a_daemon_with_work_running_and_restarts_the_clock(sup, monkeypatch):
+    stopped = _idle_daemon(sup, monkeypatch, idle_for=9000)
+    assert sup.reconcile(busy=lambda: [{"id": "c1"}])["reason"] == "work running"
+    assert stopped == []
+    assert time.time() - sup.last_activity < 5
+
+
+def test_reconcile_does_not_stop_when_it_cannot_ask_what_is_running(sup, monkeypatch):
+    stopped = _idle_daemon(sup, monkeypatch, idle_for=9000)
+
+    def broken():
+        raise RuntimeError("login failed")
+
+    assert sup.reconcile(busy=broken)["action"] == "skipped"
+    assert stopped == []
+
+
+def test_an_adopted_daemon_starts_its_idle_clock_at_adoption(sup, monkeypatch):
+    monkeypatch.setattr(daemon, "installed", lambda: True)
+    monkeypatch.setattr(daemon, "status_json", _running)
+    monkeypatch.setattr(daemon.subprocess, "run", _never_called)
+    assert sup.last_activity is None
+    assert sup.adopt()["adopted"] is True
+    assert time.time() - sup.last_activity < 5
+
+
+def test_adopt_launches_nothing_when_the_daemon_is_down(sup, monkeypatch):
     monkeypatch.setattr(daemon, "installed", lambda: True)
     monkeypatch.setattr(daemon, "status_json", lambda: {"running": False})
-    monkeypatch.setattr(daemon, "port_listening", lambda port, **kw: False)
+    monkeypatch.setattr(daemon.subprocess, "run", _never_called)
+    assert sup.adopt()["state"] == "idle-stopped"
+
+
+def test_a_request_starts_a_stopped_daemon_and_counts_as_activity(sup, monkeypatch):
     started = []
     monkeypatch.setattr(daemon.Supervisor, "start",
-                        lambda self: started.append(True))
-
-    assert sup.reconcile()["action"] == "respawned"
+                        lambda self: started.append(True) or {"running": True})
+    sup.ensure_running()
     assert started == [True]
-    assert sup.restarts == 1
+    assert time.time() - sup.last_activity < 5
+
+
+def test_two_wakes_at_once_start_one_daemon(sup, monkeypatch):
+    entered, release, starts = threading.Event(), threading.Event(), []
+
+    def slow_start(self):
+        starts.append(True)
+        entered.set()
+        release.wait(5)
+
+    monkeypatch.setattr(daemon.Supervisor, "start", slow_start)
+    assert sup.wake() is True
+    assert entered.wait(5)
+    assert sup.wake() is False
+    release.set()
+    deadline = time.time() + 5
+    while sup._waking.locked() and time.time() < deadline:
+        time.sleep(0.01)
+    assert starts == [True]
 
 
 def _never_called(*args, **kwargs):
@@ -196,3 +269,97 @@ def test_extra_origins_are_appended_and_deduped(monkeypatch):
 # ---------------------------------------------------------------------------
 # Health probe
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# The routes behind auth's fronts, and the verbs
+# ---------------------------------------------------------------------------
+
+class _FakeSupervisor:
+    def __init__(self):
+        self.woken = 0
+        self.ensured = 0
+
+    def wake(self):
+        self.woken += 1
+
+    def ensure_running(self):
+        self.ensured += 1
+
+    def login_url(self):
+        return "http://127.0.0.1:12203/?nonce=abc"
+
+
+def _get(path, *, headers=None):
+    from http.server import ThreadingHTTPServer
+    from urllib.error import HTTPError
+    from urllib.request import Request, urlopen
+
+    from awm.claude_science import signin
+
+    fake = _FakeSupervisor()
+    server = ThreadingHTTPServer(("127.0.0.1", 0), signin._handler(fake))
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        req = Request(f"http://127.0.0.1:{server.server_port}{path}", headers=headers or {})
+        try:
+            return urlopen(req, timeout=5).status, fake
+        except HTTPError as exc:
+            return exc.code, fake
+    finally:
+        server.shutdown()
+
+
+def test_wake_needs_the_edge_header():
+    status, fake = _get("/_wake")
+    assert (status, fake.woken) == (404, 0)
+    status, fake = _get("/_wake", headers={"x-awm-as": "user:alice"})
+    assert (status, fake.woken) == (202, 1)
+
+
+def test_signin_counts_as_activity_and_waits_for_the_daemon():
+    status, fake = _get("/_signin", headers={"x-awm-as": "user:alice"})
+    assert (status, fake.ensured) == (200, 1)
+    assert _get("/_signin")[1].ensured == 0
+
+
+@pytest.mark.parametrize("verb", ["url", "connector", "grants", "message", "new", "read"])
+def test_a_verb_that_needs_the_daemon_starts_it_first(verb, monkeypatch):
+    import asyncio
+
+    from awm.claude_science import hub_adapter
+
+    order = []
+
+    class Stop(Exception):
+        pass
+
+    def ensure():
+        order.append("ensure")
+
+    def after(*a, **k):
+        order.append("api")
+        raise Stop
+
+    monkeypatch.setattr(hub_adapter.SUPERVISOR, "ensure_running", ensure)
+    monkeypatch.setattr(hub_adapter.SUPERVISOR, "login_url", after)
+    args = {"text": "hi"}
+    with pytest.raises(Stop):
+        asyncio.run(hub_adapter.HANDLERS[verb](args))
+    assert order == ["ensure", "api"]
+
+
+@pytest.mark.parametrize("verb", ["status", "logs", "signin_url", "update_check"])
+def test_a_reporting_verb_does_not_wake_the_daemon(verb, monkeypatch):
+    import asyncio
+
+    from awm.claude_science import hub_adapter
+
+    monkeypatch.setattr(hub_adapter.SUPERVISOR, "ensure_running", _never_called)
+    monkeypatch.setattr(hub_adapter.SUPERVISOR, "start", _never_called)
+    monkeypatch.setattr(hub_adapter.SUPERVISOR, "snapshot", lambda: {"running": False})
+    monkeypatch.setattr(hub_adapter.SUPERVISOR, "install_state", lambda: {})
+    monkeypatch.setattr(hub_adapter.SUPERVISOR, "logs", lambda tail: "")
+    monkeypatch.setattr(hub_adapter.SUPERVISOR, "update_check", lambda: {})
+    monkeypatch.setattr(hub_adapter, "_front", lambda name: asyncio.sleep(0, {}))
+    asyncio.run(hub_adapter.HANDLERS[verb]({}))

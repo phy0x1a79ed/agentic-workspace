@@ -135,6 +135,7 @@ def wired(monkeypatch):
             return httpx.Response(200, json={"grants": state["grants"]})
         return httpx.Response(404, json={"detail": f"no route {path}"})
 
+    monkeypatch.setattr(hub_adapter.SUPERVISOR, "ensure_running", lambda: {})
     monkeypatch.setattr(hub_adapter.SUPERVISOR, "login_url",
                         lambda: "http://127.0.0.1:12203/?nonce=abc")
     monkeypatch.setattr(

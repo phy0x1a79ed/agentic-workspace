@@ -1,4 +1,11 @@
-"""``/_signin``: the zero-click owner sign-in behind auth's ``gui`` front.
+"""``/_signin`` and ``/_wake``, the plugin's loopback routes behind auth's fronts.
+
+``/_wake`` is the activity signal: auth sends it as the fronts' ``wake`` URL, once a minute
+while an authenticated browser is using them and at once when the workbench refuses the
+connection. It records the request and starts the daemon if it is down. This server stays up
+while the daemon is stopped, which is why it hosts the route.
+
+``/_signin``: the zero-click owner sign-in behind auth's ``gui`` front.
 
 The workbench has its own owner authentication on top of awm's, so a browser
 that has already logged into awm would still face a nonce only the CLI can
@@ -57,10 +64,15 @@ def _handler(supervisor: Any) -> type[BaseHTTPRequestHandler]:
 
         def do_GET(self) -> None:
             parts = urlsplit(self.path)
-            if parts.path != "/_signin" or not self.headers.get("x-awm-as"):
+            if parts.path not in ("/_signin", "/_wake") or not self.headers.get("x-awm-as"):
                 self._reply(404, "not found")
                 return
+            if parts.path == "/_wake":
+                supervisor.wake()
+                self._reply(202, "waking")
+                return
             try:
+                supervisor.ensure_running()
                 nonce = api.nonce_from(supervisor.login_url())
             except api.WorkbenchError:
                 self._reply(502, "<h2>Sign-in unavailable</h2><p>No nonce in "

@@ -26,9 +26,12 @@ front gates it with the edge session, so only a signed-in browser reaches it.
 **The daemon is adopted, not owned.** Every other awm service parents its child
 and lets the gateway's supervision cover the whole stack. This one deliberately
 does not: the workbench holds live conversations, sandbox binds, and analysis
-runs, and a deploy can restart the gateway. So this service starts
-a daemon if none is running, adopts one that is, restarts one that has died —
-and leaves it running when the service stops. `stop` is an explicit verb.
+runs, and a deploy can restart the gateway. So this service adopts a daemon
+that is running, starts one on the first request (a browser hit through the
+fronts, or a verb that needs it), stops it after `CLAUDE_SCIENCE_IDLE_S` with
+no request and no conversation in flight, and leaves it running when the
+service stops. `stop` is an explicit verb. A stopped daemon is a normal state:
+`status` reports it as `idle-stopped`.
 
 The practical guarantee: **restarting the gateway does not change the daemon's
 pid.** If it does, something is wrong.
@@ -238,7 +241,8 @@ waits for the workbench too.
 | `CLAUDE_SCIENCE_PUBLIC_HOST` | from `AWM_EDGE_URL` | host a browser reaches this node at |
 | `CLAUDE_SCIENCE_EXTRA_ORIGINS` | — | comma-separated extra allowed origins |
 | `CLAUDE_SCIENCE_MCP_ALLOW` | built-in list | JSON `{domain: [verb, …]}` for the bridge |
-| `CLAUDE_SCIENCE_HEALTH_INTERVAL_S` | `20` | supervision loop period |
+| `CLAUDE_SCIENCE_HEALTH_INTERVAL_S` | `20` | idle-check loop period |
+| `CLAUDE_SCIENCE_IDLE_S` | `7200` | seconds with no request before the daemon is stopped |
 
 **The ports are free choices in the code, but not on every node.** capella runs
 awm inside WSL, where only specific ports are forwarded by the Windows-side
@@ -426,11 +430,11 @@ Claude render an HTML preview (proves the `:12202` front).
   to guess. So standing up a second instance is what breaks bare `awm science
   status` on the nodes that have none. Give a node its own instance, or name the
   peer.
-- **A stopped daemon is respawned within `HEALTH_INTERVAL_S`.** `science stop`
-  means it for about twenty seconds; the supervision loop has no notion of a
-  deliberate stop. To hold it down — for a data-dir merge, say — stop the
-  *service* first (`awm services stop claude-science`), which leaves the adopted
-  daemon running, then stop the daemon.
+- **A stopped daemon comes back on the next request.** A browser hit through
+  a front or a verb that needs the daemon starts it. To hold it down — for a
+  data-dir merge, say — stop the *service* first
+  (`awm services stop claude-science`), which leaves the adopted daemon
+  running, then stop the daemon.
 - **The binary self-updates by default.** `status` reports the running version;
   `--no-auto-update` is a knob, not our default, and `update --to <version>`
   both pins and rolls back.

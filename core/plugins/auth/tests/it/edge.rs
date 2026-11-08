@@ -376,3 +376,49 @@ async fn a_service_front_gates_relays_and_follows_the_table() {
     fronts.reconcile(Default::default()).await;
     assert!(TcpStream::connect(free).await.is_err(), "a front no longer declared closes");
 }
+
+#[tokio::test]
+async fn a_front_with_wake_wakes_on_authenticated_traffic_and_on_refusal() {
+    let (up, mut seen) = upstream().await;
+    let (wake, mut woken) = upstream().await;
+    let dir = tempfile::tempdir().unwrap();
+    let base = Base {
+        gate: Arc::new(AuthGate::new(Arc::new(Fixed))),
+        grants: Arc::new(Grants::new(None, "node")),
+        config: EdgeConfig { upstream: String::new(), ca_path: dir.path().join("ca.pem"), ca_download: true, same_site: "lax", behind_proxy: true, identity_cookies: &[] },
+        tls: None,
+        san: None,
+        sans_file: dir.path().join("sans"),
+    };
+    let fronts = Fronts::new(base);
+    let up_port = |addr: SocketAddr| TcpListener::bind(addr);
+    let live = TcpListener::bind("127.0.0.1:0").await.unwrap().local_addr().unwrap();
+    let down = TcpListener::bind("127.0.0.1:0").await.unwrap().local_addr().unwrap();
+    let wake_url = format!("http://{wake}/_wake");
+    let table = json!([
+        {"name": "sci", "enabled": true, "front": [{"port": live.port(), "upstream": format!("http://{up}/"), "name": "gui", "wake": wake_url}]},
+        {"name": "dead", "enabled": true, "front": [{"port": down.port(), "upstream": format!("http://127.0.0.1:{}/", up_port(([127, 0, 0, 1], 0).into()).await.unwrap().local_addr().unwrap().port()), "name": "gui", "wake": wake_url}]},
+    ]);
+    fronts.reconcile(fronts::declared(&table)).await;
+    let alice = session("alice");
+
+    assert_eq!(send(live, request("GET", "/a", &["Accept: application/json"]), "").await.status, 401);
+    tokio::task::yield_now().await;
+    assert!(woken.try_recv().is_err(), "an unauthenticated request never wakes");
+
+    assert_eq!(send(live, request("GET", "/a", &[alice.as_str()]), "").await.status, 200);
+    assert_eq!(woken.recv().await.unwrap().header("x-awm-as"), ["user:alice"]);
+    seen.recv().await.unwrap();
+    send(live, request("GET", "/b", &[alice.as_str()]), "").await;
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    assert!(woken.try_recv().is_err(), "a second hit inside the minute does not wake again");
+
+    let page = send(down, request("GET", "/", &[alice.as_str(), "Accept: text/html"]), "").await;
+    assert_eq!(page.status, 503);
+    assert!(page.body.contains("Starting the workbench"), "{}", page.body);
+    assert_eq!(woken.recv().await.unwrap().target, "/_wake", "a refused upstream wakes at once");
+    let api = send(down, request("GET", "/x", &[alice.as_str(), "Accept: application/json"]), "").await;
+    assert_eq!(api.status, 503);
+    assert!(!api.body.contains("<meta"));
+    woken.recv().await.unwrap();
+}

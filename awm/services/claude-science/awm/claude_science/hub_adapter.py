@@ -11,10 +11,15 @@ Unlike every other one, it owns it *at arm's length*: the workbench daemon is
 adopted rather than parented, so an awm deploy cannot interrupt a conversation.
 See ``daemon`` for that argument in full.
 
+The daemon runs on demand. It starts on the first request, which is a browser hit
+through auth's fronts (their ``wake`` URL reaches ``signin``'s ``/_wake``) or a verb
+that needs it, and stops after ``CLAUDE_SCIENCE_IDLE_S`` with no request and no
+conversation in flight. Starting the service only adopts a daemon that is running.
+
 Three things live under this one supervised process, and all three are things
 the gateway registration does not carry:
 
-  - the workbench daemon (adopted; outlives us on purpose),
+  - the workbench daemon (adopted or started on demand; outlives us on purpose),
   - the sign-in route behind auth's front — see ``signin``,
   - an MCP bridge handing the workbench a curated slice of awm's verbs — see
     ``mcp_bridge``.
@@ -62,8 +67,9 @@ API_MANIFEST: dict[str, Any] = {
             "tool": "science_status",
             "description": (
                 "Report the Claude Science workbench: whether the daemon is "
-                "running and at what pid/version/port, whether this service "
-                "adopted it or started it, the three install steps (binary, "
+                "running, or idle-stopped (a normal state: it starts on the "
+                "next request), and at what pid/version/port, whether this "
+                "service adopted it or started it, the three install steps (binary, "
                 "provisioned data dir, daemon) named separately, both mesh TLS "
                 "fronts' listener + TLS state, the MCP bridge's mount and "
                 "allowlist size, each conversation with a turn in flight and "
@@ -78,7 +84,8 @@ API_MANIFEST: dict[str, Any] = {
             "surfaces": ["cli", "http"],
             "description": (
                 "Adopt the running workbench daemon, or launch one detached if "
-                "none is running. Idempotent. The daemon deliberately outlives "
+                "none is running. Idempotent. Other verbs that need the "
+                "daemon start it themselves. The daemon deliberately outlives "
                 "this service, so this is safe to call at any time."
             ),
             "params": [],
@@ -328,8 +335,13 @@ async def _h_logs(args: dict) -> dict:
     return {"tail": tail, "log": await asyncio.to_thread(SUPERVISOR.logs, tail)}
 
 
+def _url() -> str:
+    SUPERVISOR.ensure_running()
+    return SUPERVISOR.login_url()
+
+
 async def _h_url(args: dict) -> dict:
-    return {"url": await asyncio.to_thread(SUPERVISOR.login_url)}
+    return {"url": await asyncio.to_thread(_url)}
 
 
 async def _h_signin_url(args: dict) -> dict:
@@ -339,6 +351,7 @@ async def _h_signin_url(args: dict) -> dict:
 
 def _connector(args: dict) -> dict:
     """List or register a local MCP server. Runs on a worker thread."""
+    SUPERVISOR.ensure_running()
     with api.connect(SUPERVISOR.login_url()) as owner:
         name = (args.get("name") or "").strip()
         if not name:
@@ -374,6 +387,7 @@ def _connector(args: dict) -> dict:
 
 def _grants(args: dict) -> dict:
     """List or add a host grant. Runs on a worker thread."""
+    SUPERVISOR.ensure_running()
     with api.connect(SUPERVISOR.login_url()) as owner:
         before = api.list_grants(owner)
         path = (args.get("path") or "").strip()
@@ -403,6 +417,7 @@ def _message(args: dict) -> dict:
     text = (args.get("text") or "").strip()
     if not text:
         raise ValueError("text is required")
+    SUPERVISOR.ensure_running()
     with api.connect(SUPERVISOR.login_url()) as owner:
         target = conversations.resolve_conversation(
             owner, args.get("conversation"))
@@ -415,6 +430,7 @@ def _new(args: dict) -> dict:
     text = (args.get("text") or "").strip()
     if not text:
         raise ValueError("text is required")
+    SUPERVISOR.ensure_running()
     with api.connect(SUPERVISOR.login_url()) as owner:
         return conversations.open_conversation(
             owner, text,
@@ -426,6 +442,7 @@ def _read(args: dict) -> dict:
     """Read a conversation's transcript. Runs on a worker thread."""
     since = args.get("since")
     limit = args.get("limit")
+    SUPERVISOR.ensure_running()
     with api.connect(SUPERVISOR.login_url()) as owner:
         target = conversations.resolve_conversation(
             owner, args.get("conversation"))
@@ -472,21 +489,28 @@ HANDLERS = {
 # -- the supervision loop ---------------------------------------------------
 
 
+def _busy() -> list[dict]:
+    """The conversations with a turn in flight. Raises when the workbench cannot say."""
+    with api.connect(SUPERVISOR.login_url()) as owner:
+        return conversations.active(owner)
+
+
 async def _health_loop() -> None:
-    """Restart the workbench daemon whenever it has actually died. Never exits.
+    """Stop the workbench daemon once it has been idle long enough. Never exits.
 
     Watches process liveness rather than an HTTP probe: a slow probe during an
-    analysis is not evidence of death, and respawning on it would interrupt the
-    very work this service is arranged to protect.
+    analysis is not evidence of anything, and stopping on it would interrupt the
+    very work this service is arranged to protect. It never starts the daemon;
+    a request does.
     """
-    log.info("claude-science: supervision loop started (interval=%ss)",
-             daemon.HEALTH_INTERVAL_S)
+    log.info("claude-science: idle loop started (interval=%ss, idle limit=%ss)",
+             daemon.HEALTH_INTERVAL_S, daemon.IDLE_S)
     while True:
         try:
             await asyncio.sleep(daemon.HEALTH_INTERVAL_S)
-            res = await asyncio.to_thread(SUPERVISOR.reconcile)
-            if res.get("action") == "respawned":
-                log.warning("claude-science: workbench daemon respawned")
+            res = await asyncio.to_thread(SUPERVISOR.reconcile, _busy)
+            if res.get("action") == "stopped":
+                log.info("claude-science: workbench daemon stopped after idling")
         except Exception:  # noqa: BLE001 — never let the loop die
             # CancelledError is a BaseException and so passes through, which is
             # what the supervisor above wants: a *return* from here would read
@@ -524,31 +548,32 @@ async def _outputs_loop() -> None:
 
 
 async def _on_start() -> None:
-    """Adopt-or-start the daemon, raise the sign-in route and the bridge, then loop.
+    """Adopt a running daemon, raise the sign-in route and the bridge, then loop.
 
-    No failure here is fatal. The service still registers, so ``status`` can
-    report *why* it is broken — which is the visibility the hand-managed units
-    never had — and the loop keeps retrying the daemon.
+    A stopped daemon stays stopped until a request wakes it. No failure here is
+    fatal. The service still registers, so ``status`` can report *why* it is
+    broken — which is the visibility the hand-managed units never had.
     """
     if not daemon.installed():
         log.warning("claude-science: binary missing at %s — run install.sh; the "
                     "service will register and report this via status", daemon.BIN)
     else:
         try:
-            snap = await asyncio.to_thread(SUPERVISOR.start)
-            log.info("claude-science: daemon %s pid=%s version=%s port=%s",
-                     "adopted" if snap.get("adopted") else "started",
-                     snap.get("pid"), snap.get("version"), snap.get("port"))
+            snap = await asyncio.to_thread(SUPERVISOR.adopt)
+            if snap.get("running"):
+                log.info("claude-science: daemon adopted pid=%s version=%s port=%s",
+                         snap.get("pid"), snap.get("version"), snap.get("port"))
+            else:
+                log.info("claude-science: no daemon running; the first request starts it")
         except Exception:  # noqa: BLE001
-            log.exception("claude-science: initial adopt/start failed; "
-                          "the loop will retry")
+            log.exception("claude-science: adopting a running daemon failed")
 
     try:
         signin.start(SUPERVISOR)
     except OSError:  # the workbench is still usable with the CLI's sign-in link
         log.exception("claude-science: the sign-in route failed to start")
 
-    # Both are long-lived and both fail silently if left to a bare create_task
+    # The three are long-lived and fail silently if left to a bare create_task
     # whose handle nobody reads: a bridge that died on its first line looks
     # exactly like one nobody has called yet, and a dead supervision loop looks
     # exactly like a workbench that has not crashed. spawn_supervised logs at

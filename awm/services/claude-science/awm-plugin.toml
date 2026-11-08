@@ -16,11 +16,13 @@ name = "gui"
 port = 12211
 upstream = "http://127.0.0.1:12203"
 paths = { "/_signin" = "http://127.0.0.1:12210" }
+wake = "http://127.0.0.1:12210/_wake"
 
 [[service.front]]
 name = "sandbox"
 port = 12212
 upstream = "http://127.0.0.1:12204"
+wake = "http://127.0.0.1:12210/_wake"
 
 [[tool]]
 name = "science"

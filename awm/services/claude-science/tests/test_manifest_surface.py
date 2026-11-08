@@ -50,3 +50,10 @@ def test_the_destructive_verbs_carry_a_timeout():
     for fn in FUNCTIONS:
         if fn["name"] in slow:
             assert fn.get("timeout", 0) >= 180, fn["name"]
+
+
+def test_both_fronts_wake_the_workbench_through_the_signin_route():
+    manifest = tomllib.loads((Path(__file__).resolve().parents[1] / "awm-plugin.toml").read_text())
+    fronts = manifest["service"][0]["front"]
+    assert [f["name"] for f in fronts] == ["gui", "sandbox"]
+    assert {f["wake"] for f in fronts} == {"http://127.0.0.1:12210/_wake"}

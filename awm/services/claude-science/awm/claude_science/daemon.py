@@ -1,4 +1,4 @@
-"""Supervision of the Claude Science workbench daemon — by adoption, not parenthood.
+"""Supervision of the Claude Science workbench daemon — on demand, by adoption, not parenthood.
 
 Every other awm service owns its child: it spawns the process, sets
 ``PR_SET_PDEATHSIG`` so the child cannot outlive it, and the gateway's
@@ -14,9 +14,13 @@ interruption of somebody's work, for no gain — the daemon already has its own
 watchdog and its own crash recovery.
 
 So: this module *adopts*. On start it asks the binary whether a daemon is
-already running and, if one is, records the fact and leaves it alone. If none
-is, it launches one detached and lets it outlive us. Stopping the service does
-not stop the workbench; ``stop`` is an explicit verb for when you mean it.
+already running and, if one is, records the fact and leaves it alone. It never
+launches one by itself: the daemon starts on the first request (a browser hit
+through auth's fronts, or a verb that needs it) and ``reconcile`` stops it
+after ``IDLE_S`` with no request and no conversation in flight. A daemon that
+dies stays down until the next request. A launched daemon is detached and
+outlives us. Stopping the service does not stop the workbench; ``stop`` is an
+explicit verb for when you mean it.
 
 What that buys, versus the hand-rolled systemd unit this replaces: the daemon
 is visible in ``awm services list``, its health is a verb rather than a
@@ -36,9 +40,10 @@ import logging
 import os
 import socket
 import subprocess
+import threading
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import urlsplit
 from awm.gatewayclient.proc import user_manager_env
 
@@ -72,6 +77,9 @@ SANDBOX_FRONT_PORT = 12212
 
 #: How often the reconcile loop checks that the daemon is still alive.
 HEALTH_INTERVAL_S = float(os.environ.get("CLAUDE_SCIENCE_HEALTH_INTERVAL_S", "20"))
+
+#: Seconds with no request before the daemon is stopped.
+IDLE_S = float(os.environ.get("CLAUDE_SCIENCE_IDLE_S", "7200"))
 
 #: How long to wait for a freshly-launched daemon to report itself running.
 #: First launch provisions ~6 GB of environments, but it binds and answers
@@ -211,11 +219,12 @@ def allowed_origins(main_front_port: int) -> list[str]:
 
 
 class Supervisor:
-    """Adopt-or-start lifecycle for the workbench daemon.
+    """Adopt, start on demand and stop when idle: the workbench daemon's lifecycle.
 
     Stateless with respect to the daemon: every question is answered by asking
     the binary, so a gateway restart that loses this object's memory changes
-    nothing about what it reports.
+    nothing about what it reports. The one thing it remembers is when the last
+    request arrived, which a restart resets to the moment the daemon is adopted.
     """
 
     def __init__(self, *, main_front_port: int, sandbox_front_port: int) -> None:
@@ -226,15 +235,29 @@ class Supervisor:
         #: different ways, and only one of them implicates this service.
         self.adopted: bool | None = None
         self.started_at: float | None = None
-        self.restarts = 0
+        #: Wall time of the last request, or of adoption. ``None`` while no daemon is known.
+        self.last_activity: float | None = None
+        self._lifecycle = threading.RLock()
+        self._waking = threading.Lock()
 
     # -- state ------------------------------------------------------------
 
     def snapshot(self) -> dict[str, Any]:
         st = status_json()
         flags = launch_flags(st.get("pid"))
+        running = bool(st.get("running"))
+        if running:
+            state = "running"
+        elif not installed():
+            state = "not-installed"
+        elif st.get("error"):
+            state = "unknown"
+        else:
+            # Stopped for want of requests: the normal resting state, not a fault.
+            state = "idle-stopped"
         return {
-            "running": bool(st.get("running")),
+            "state": state,
+            "running": running,
             "pid": st.get("pid"),
             # Read off the live daemon's argv, not off our config: an adopted
             # daemon predating a flag change is still running the old one, and
@@ -251,7 +274,8 @@ class Supervisor:
             "user_unit": (f"{TRANSIENT_UNIT}.service"
                           if user_manager_env() else None),
             "adopted": self.adopted,
-            "restarts_by_us": self.restarts,
+            "last_activity": self.last_activity,
+            "idle_limit_s": IDLE_S,
             "supervised_since": self.started_at,
             "error": st.get("error"),
             "daemon": st.get("daemon"),
@@ -268,8 +292,55 @@ class Supervisor:
 
     # -- lifecycle --------------------------------------------------------
 
+    def touch(self) -> None:
+        """Count a request: the idle clock restarts."""
+        self.last_activity = time.time()
+
+    def adopt(self) -> dict[str, Any]:
+        """Adopt a daemon that is already running, and launch nothing."""
+        if installed():
+            st = status_json()
+            if st.get("running"):
+                with self._lifecycle:
+                    if self.adopted is None:
+                        self.adopted = True
+                        log.info("claude-science: adopted running daemon pid=%s version=%s",
+                                 st.get("pid"), st.get("version"))
+                    if self.last_activity is None:
+                        self.touch()
+        return self.snapshot()
+
+    def ensure_running(self) -> dict[str, Any]:
+        """Count a request and return once the daemon is up, starting it if it is down."""
+        self.touch()
+        return self.start()
+
+    def wake(self) -> bool:
+        """Count a request and start a stopped daemon off the caller's thread.
+
+        False when a start is already under way, so two wakes at once start one daemon.
+        """
+        self.touch()
+        if not self._waking.acquire(blocking=False):
+            return False
+
+        def run() -> None:
+            try:
+                self.start()
+            except Exception:  # noqa: BLE001 — the next request wakes it again
+                log.exception("claude-science: starting the daemon on demand failed")
+            finally:
+                self._waking.release()
+
+        threading.Thread(target=run, name="claude-science-wake", daemon=True).start()
+        return True
+
     def start(self) -> dict[str, Any]:
         """Adopt a running daemon, or launch one detached. Idempotent."""
+        with self._lifecycle:
+            return self._start()
+
+    def _start(self) -> dict[str, Any]:
         if not installed():
             raise RuntimeError(
                 f"claude-science is not installed at {BIN} — run install.sh"
@@ -280,6 +351,8 @@ class Supervisor:
                 self.adopted = True
                 log.info("claude-science: adopted running daemon pid=%s version=%s",
                          st.get("pid"), st.get("version"))
+            if self.last_activity is None:
+                self.touch()
             return self.snapshot()
 
         origins = allowed_origins(self.main_front_port)
@@ -358,6 +431,7 @@ class Supervisor:
             if status_json().get("running"):
                 self.adopted = False
                 self.started_at = time.time()
+                self.touch()
                 return self.snapshot()
             time.sleep(1.0)
         raise RuntimeError(
@@ -373,68 +447,82 @@ class Supervisor:
         """
         if not installed():
             return {"running": False, "error": f"binary not installed at {BIN}"}
-        if not status_json().get("running"):
+        with self._lifecycle:
+            if not status_json().get("running"):
+                return self.snapshot()
+            proc = _run(["stop"], timeout=120.0)
+            if proc.returncode != 0:
+                log.warning("claude-science stop returned %d: %s", proc.returncode,
+                            (proc.stderr or "").strip()[:200])
+            self.adopted = None
+            self.started_at = None
+            self.last_activity = None
             return self.snapshot()
-        proc = _run(["stop"], timeout=120.0)
-        if proc.returncode != 0:
-            log.warning("claude-science stop returned %d: %s", proc.returncode,
-                        (proc.stderr or "").strip()[:200])
-        self.adopted = None
-        self.started_at = None
-        return self.snapshot()
 
     def restart(self) -> dict[str, Any]:
-        self.stop()
-        snap = self.start()
-        self.restarts += 1
-        return snap
+        with self._lifecycle:
+            self.stop()
+            return self.start()
 
-    def reconcile(self) -> dict[str, Any]:
-        """One pass of the supervision loop: restart a daemon that has died.
+    def reconcile(self, busy: Callable[[], Any] | None = None) -> dict[str, Any]:
+        """One pass of the supervision loop: stop a daemon idle past ``IDLE_S``.
+
+        Never starts one: a daemon that is down stays down until a request wakes it.
+        ``busy`` returns the work in flight (empty when none); a daemon with work
+        running is not stopped, and the idle clock restarts when that work ends.
 
         Watches liveness, not responsiveness. A slow HTTP probe on a box mid
-        analysis is not evidence of death, and restarting on it would turn a
-        busy minute into an interrupted conversation — the exact failure this
-        service exists to avoid.
+        analysis is not evidence of death, and acting on it would turn a busy
+        minute into an interrupted conversation — the exact failure this service
+        exists to avoid.
         """
         if not installed():
             return {"action": "skipped", "reason": "binary not installed"}
         st = status_json()
-        if st.get("running"):
-            return {"action": "ok"}
 
         # `status_json` never raises, so a timed-out subprocess, an OSError and
         # unparseable output all arrive here indistinguishable from a daemon
         # that is genuinely down — running=False, plus an `error`. Those are
-        # "could not find out", and respawning on them is destructive: `start`
-        # stops the unit before launching, so an inconclusive probe kills a
-        # healthy workbench and takes the live conversation with it. That is the
-        # exact failure this service exists to prevent, and it happened once —
-        # the probe said dead while the daemon was still answering HTTP 200s on
-        # either side of the tick. Wait for a probe that actually knows.
+        # "could not find out", and stopping on them is destructive: an
+        # inconclusive probe once took down a healthy workbench and its live
+        # conversation, while the daemon was still answering HTTP 200s on either
+        # side of the tick. Wait for a probe that actually knows.
         if st.get("error"):
             log.warning("claude-science: liveness probe inconclusive (%s); "
-                        "not respawning", st["error"])
+                        "leaving the daemon alone", st["error"])
             return {"action": "skipped",
                     "reason": f"probe inconclusive: {st['error']}"}
 
-        # A clean not-running that the socket contradicts is not evidence of
-        # death either — something is serving on that port, and killing it is
-        # the same destructive move. Believe the socket, and say so loudly:
-        # a persistent disagreement is a real fault, just not one to resolve by
-        # stopping the daemon.
-        if port_listening(PORT):
-            log.warning("claude-science: status reports not-running but :%d "
-                        "still accepts connections; not respawning", PORT)
-            return {"action": "skipped", "reason": "port still listening"}
+        if not st.get("running"):
+            # A clean not-running that the socket contradicts is not evidence
+            # either: something is serving on that port. Say so loudly; a
+            # persistent disagreement is a real fault.
+            if port_listening(PORT):
+                log.warning("claude-science: status reports not-running but :%d "
+                            "still accepts connections", PORT)
+                return {"action": "skipped", "reason": "port still listening"}
+            self.last_activity = None
+            return {"action": "down"}
 
-        # Only respawn something we are allowed to own. A daemon that was
-        # adopted and has since exited was somebody else's to stop — but it is
-        # also now nobody's, so bringing it back is the useful behaviour.
-        log.warning("claude-science: daemon is not running — starting it")
-        self.start()
-        self.restarts += 1
-        return {"action": "respawned"}
+        with self._lifecycle:
+            if self.last_activity is None:
+                self.touch()
+            idle = time.time() - self.last_activity
+            if idle < IDLE_S:
+                return {"action": "ok", "idle_s": idle}
+            if busy is not None:
+                try:
+                    work = busy()
+                except Exception as exc:  # noqa: BLE001 — no evidence, no stop
+                    log.warning("claude-science: could not ask the workbench what "
+                                "is running (%s); not stopping it", exc)
+                    return {"action": "skipped", "reason": f"busy check failed: {exc}"}
+                if work:
+                    self.touch()
+                    return {"action": "ok", "reason": "work running"}
+            log.info("claude-science: no request for %.0fs — stopping the daemon", idle)
+            self.stop()
+        return {"action": "stopped", "idle_s": idle}
 
     # -- one-shot queries -------------------------------------------------
 

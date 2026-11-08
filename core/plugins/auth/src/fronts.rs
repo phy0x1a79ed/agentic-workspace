@@ -4,6 +4,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use awm_plugin_sdk::{Hub, SubscriptionOpts, SupervisedSubscription};
 use awm_proto::manifest::FrontDecl;
@@ -15,7 +16,7 @@ use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 
 use crate::certs;
-use crate::edge::{self, not_found, re_segments, refuse, BoxFut, Dispatch, Edge, EdgeConfig, Forward, Req, Response};
+use crate::edge::{self, not_found, reply, with_header, re_segments, refuse, BoxFut, Dispatch, Edge, EdgeConfig, Forward, Req, Response};
 use crate::gate::AuthGate;
 use crate::portal::Grants;
 
@@ -30,6 +31,50 @@ struct Door {
 pub struct Relay {
     /// Longest prefix first.
     doors: Vec<Door>,
+    wake: Option<Wake>,
+}
+
+/// A front's on-demand start: the URL that starts the service and when it was last sent.
+struct Wake {
+    url: String,
+    client: reqwest::Client,
+    last: std::sync::Mutex<Option<Instant>>,
+}
+
+/// The longest gap between wakes while traffic flows.
+const WAKE_EVERY: Duration = Duration::from_secs(60);
+
+impl Wake {
+    fn new(url: &str) -> Wake {
+        let client = reqwest::Client::builder().no_proxy().timeout(Duration::from_secs(5)).build().expect("reqwest client builds");
+        Wake { url: url.to_string(), client, last: std::sync::Mutex::new(None) }
+    }
+
+    /// Send the wake for `sub` unless one went out in the last minute, or `now` is set.
+    fn send(&self, sub: &str, now: bool) {
+        {
+            let mut last = self.last.lock().unwrap_or_else(|e| e.into_inner());
+            if !now && last.is_some_and(|t| t.elapsed() < WAKE_EVERY) {
+                return;
+            }
+            *last = Some(Instant::now());
+        }
+        let (client, url, sub) = (self.client.clone(), self.url.clone(), edge::as_header(sub));
+        tokio::spawn(async move {
+            if let Err(e) = client.get(&url).header("x-awm-as", sub.as_bytes()).send().await {
+                tracing::debug!("auth: wake {url} failed: {e}");
+            }
+        });
+    }
+}
+
+fn starting_response(html: bool) -> Response {
+    let busy = |r: Response| with_header(with_header(r, "retry-after", "3"), "cache-control", "no-store");
+    if html {
+        const PAGE: &str = "<!doctype html><meta charset=utf-8><meta http-equiv=refresh content=3><title>Starting</title><body style=\"font-family:sans-serif;margin:4em\"><p>Starting the workbench&hellip;</p>";
+        return busy(reply(503, "text/html; charset=utf-8", PAGE));
+    }
+    busy(edge::plain_text(503, "the workbench is starting"))
 }
 
 fn origin_of(up: &str) -> Option<HeaderValue> {
@@ -46,7 +91,7 @@ impl Relay {
         let mut doors: Vec<Door> = decl.paths.iter().map(|(p, up)| door(p, up)).collect();
         doors.push(door("/", &decl.upstream));
         doors.sort_by_key(|d| std::cmp::Reverse(d.prefix.len()));
-        Relay { doors }
+        Relay { doors, wake: decl.wake.as_deref().map(Wake::new) }
     }
 
     fn door(&self, path: &str) -> &Door {
@@ -64,6 +109,16 @@ impl Relay {
         };
         let door = self.door(&req.path);
         let raw = req.raw.clone();
+        if let Some(wake) = &self.wake {
+            wake.send(&sub, false);
+            let html = req.parts.method == hyper::Method::GET && req.header("accept").is_some_and(|a| a.contains("text/html"));
+            let starting = || {
+                wake.send(&sub, true);
+                starting_response(html)
+            };
+            let opts = Forward { origin: door.origin.clone(), unreachable: Some(&starting), ..Forward::default() };
+            return edge.forward(req, &door.up, &raw, &sub, decision.refreshed(), opts).await;
+        }
         edge.forward(req, &door.up, &raw, &sub, decision.refreshed(), Forward { origin: door.origin.clone(), ..Forward::default() }).await
     }
 
@@ -74,6 +129,9 @@ impl Relay {
         let Some(sub) = edge.authenticate(&req, Some(&req.shape(true))).sub().map(str::to_string) else {
             return refuse(403);
         };
+        if let Some(wake) = &self.wake {
+            wake.send(&sub, false);
+        }
         let door = self.door(&req.path);
         let mut fwd = edge::ws_headers(&req);
         edge::replace_origin(&mut fwd, door.origin.clone());
