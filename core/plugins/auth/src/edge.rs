@@ -6,8 +6,7 @@
 //! difference between `%23` and `#` and between `%2e%2e` and a directory climb. [`re_segments`]
 //! closes the gap by refusing a target that means one thing to the router and another upstream.
 //!
-//! A [`Dispatch`] decides what happens to a request after the edge's own routes. [`Private`] is
-//! the plain path: gate, then forward to the gateway.
+//! A [`Dispatch`] decides what happens to a request after the edge's own routes.
 
 use std::future::Future;
 use std::net::{IpAddr, SocketAddr};
@@ -39,14 +38,15 @@ pub type BoxError = Box<dyn std::error::Error + Send + Sync>;
 pub type Body = BoxBody<Bytes, BoxError>;
 pub type Response = hyper::Response<Body>;
 pub type BoxFut<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+pub type Upstream = Client<HttpConnector, Body>;
 
 /// Hop-by-hop headers (RFC 7230 6.1), which are not forwarded. `host` goes too: the client
 /// derives it from the upstream URL.
-const HOP: [&str; 9] = ["connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailers", "transfer-encoding", "upgrade", "host"];
+pub const HOP: [&str; 9] = ["connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailers", "transfer-encoding", "upgrade", "host"];
 
 /// Headers the gateway reads as who is calling or which session this is. None is a browser's to
 /// present, and `x-awm-as` is written only by the edge.
-const CALLER_HEADERS: [&str; 8] = [
+pub const CALLER_HEADERS: [&str; 8] = [
     "x-awm-as",
     "x-awm-caller-pid",
     "x-awm-session-pid",
@@ -96,6 +96,20 @@ impl Req {
         header(&self.parts.headers, name)
     }
 
+    /// The body for an upstream leg: a body of known length streams through, because a peer's
+    /// file hop can carry gigabytes. Any other is read first, so the upstream leg is framed by
+    /// length and a caller's `Transfer-Encoding` never reaches it.
+    pub async fn relayed_body(self) -> Result<Body, Response> {
+        let streamed = self.parts.headers.get("content-length").is_some_and(|v| !v.is_empty() && v.as_bytes() != b"0");
+        if streamed {
+            return Ok(self.body.map_err(Into::into).boxed());
+        }
+        match self.body.collect().await {
+            Ok(c) => Ok(full(c.to_bytes())),
+            Err(_) => Err(text(400, "bad request body")),
+        }
+    }
+
     pub fn shape(&self, websocket: bool) -> Shape<'_> {
         Shape { method: self.parts.method.as_str(), path: &self.path, raw: &self.raw, query: &self.query, websocket }
     }
@@ -103,33 +117,30 @@ impl Req {
 
 /// What happens to a request after the edge's own routes (`/ca.crt`, `/__auth/*`).
 pub trait Dispatch: Send + Sync + 'static {
-    fn http<'a>(&'a self, edge: &'a Edge, req: Req) -> BoxFut<'a, Response> {
-        Box::pin(edge.private_http(req))
-    }
-
-    fn ws<'a>(&'a self, edge: &'a Edge, req: Req) -> BoxFut<'a, Response> {
-        Box::pin(edge.private_ws(req))
-    }
+    fn http<'a>(&'a self, edge: &'a Edge, req: Req) -> BoxFut<'a, Response>;
+    fn ws<'a>(&'a self, edge: &'a Edge, req: Req) -> BoxFut<'a, Response>;
 }
 
-/// The default profile's plain path.
-pub struct Private;
-impl Dispatch for Private {}
+/// How [`Edge::forward`] differs from relaying the request as it came.
+#[derive(Default)]
+pub struct Forward<'a> {
+    /// A body the caller has already read, sent in place of the request's own.
+    pub body: Option<Bytes>,
+    /// The answer when the upstream cannot be reached, in place of the 502.
+    pub unreachable: Option<&'a (dyn Fn() -> Response + Sync)>,
+}
 
 pub struct Edge {
     pub gate: Arc<AuthGate>,
     pub grants: Arc<Grants>,
     pub config: EdgeConfig,
-    client: Client<HttpConnector, Body>,
+    client: Upstream,
     dispatch: Box<dyn Dispatch>,
 }
 
 impl Edge {
     pub fn new(gate: Arc<AuthGate>, grants: Arc<Grants>, config: EdgeConfig, dispatch: Box<dyn Dispatch>) -> Edge {
-        let mut http = HttpConnector::new();
-        http.set_nodelay(true);
-        let client = Client::builder(TokioExecutor::new()).build(http);
-        Edge { gate, grants, config, client, dispatch }
+        Edge { gate, grants, config, client: client(None, usize::MAX), dispatch }
     }
 
     async fn handle(self: Arc<Self>, req: hyper::Request<Incoming>, peer: SocketAddr) -> Response {
@@ -179,7 +190,7 @@ impl Edge {
         if req.parts.method == Method::GET && html {
             let host = req.header("host").unwrap_or_default();
             let path = portal::local_path(Some(&req.path)).unwrap_or("/");
-            return redirect(&portal::login_url(&format!("https://{host}{path}")), &[("cache-control", "no-store")]);
+            return redirect(302, &portal::login_url(&format!("https://{host}{path}")), &[("cache-control", "no-store")]);
         }
         json_reply(401, &json!({"error": "unauthenticated"}))
     }
@@ -188,7 +199,7 @@ impl Edge {
     pub fn refresh_cookie(&self, resp: &mut Response, refreshed: Option<&str>) {
         if let Some(token) = refreshed {
             let ttl = self.gate.session_ttl_seconds() as i64;
-            add_cookie(resp, &set_cookie(COOKIE_NAME, token, ttl, true, self.config.same_site));
+            add_cookie(resp, &set_cookie(COOKIE_NAME, token, Some(ttl), "/", true, self.config.same_site));
         }
     }
 
@@ -223,9 +234,9 @@ impl Edge {
             return no_store(json_reply(503, &json!({"error": "no session can be signed here"})));
         };
         let site = self.config.same_site;
-        let mut resp = no_store(redirect(&quote(path, LOCATION_SAFE), &[]));
-        add_cookie(&mut resp, &set_cookie(COOKIE_NAME, &token, ttl, true, site));
-        add_cookie(&mut resp, &set_cookie(AS_COOKIE_NAME, &sub, ttl, false, site));
+        let mut resp = no_store(redirect(302, &quote(path, LOCATION_SAFE), &[]));
+        add_cookie(&mut resp, &set_cookie(COOKIE_NAME, &token, Some(ttl), "/", true, site));
+        add_cookie(&mut resp, &set_cookie(AS_COOKIE_NAME, &sub, Some(ttl), "/", false, site));
         self.clear_identity_cookies(&mut resp);
         resp
     }
@@ -251,81 +262,47 @@ impl Edge {
         }
     }
 
-    // -- the plain path ------------------------------------------------------------------
-
-    /// Authenticate, then relay to the gateway.
-    pub async fn private_http(&self, req: Req) -> Response {
-        if re_segments(&req.raw, &req.path) {
-            return not_found();
-        }
-        let decision = self.authenticate(&req, Some(&req.shape(false)));
-        let Some(sub) = decision.sub().map(str::to_string) else {
-            return self.deny(&req);
-        };
-        let refreshed = decision.refreshed().map(str::to_string);
-        let raw = req.raw.clone();
-        self.forward(req, &self.config.upstream, &raw, &sub, refreshed.as_deref()).await
-    }
-
-    /// Authenticate the handshake, then bridge the socket to the gateway.
-    pub async fn private_ws(&self, req: Req) -> Response {
-        if re_segments(&req.raw, &req.path) {
-            return refuse(403);
-        }
-        let Some(sub) = self.authenticate(&req, Some(&req.shape(true))).sub().map(str::to_string) else {
-            return refuse(403);
-        };
-        let mut fwd = ws_headers(&req);
-        fwd.insert("x-awm-as", as_header(&sub));
-        let raw = req.raw.clone();
-        self.bridge(req, &self.config.upstream, &raw, fwd).await
-    }
+    // -- relaying ------------------------------------------------------------------------
 
     /// Relay one authenticated request to `up` as `sub`. A body of known length streams
     /// through, because a peer's file hop can carry gigabytes. Any other is read first, so the
     /// upstream leg is framed by length and a caller's `Transfer-Encoding` never reaches it.
-    pub async fn forward(&self, req: Req, up: &str, raw: &[u8], sub: &str, refreshed: Option<&str>) -> Response {
+    pub async fn forward(&self, req: Req, up: &str, raw: &[u8], sub: &str, refreshed: Option<&str>, opts: Forward<'_>) -> Response {
         let Some(uri) = target(up, raw, &req.query) else {
             return not_found();
         };
-        let headers = self.upstream_headers(&req, sub);
-        let Req { parts, body, path, .. } = req;
-        let streamed = parts.headers.get("content-length").is_some_and(|v| !v.is_empty() && v.as_bytes() != b"0");
-        let body: Body = if streamed {
-            body.map_err(Into::into).boxed()
-        } else {
-            match body.collect().await {
-                Ok(c) => full(c.to_bytes()),
-                Err(_) => return text(400, "bad request body"),
+        let mut headers = self.upstream_headers(&req, Some(sub));
+        let (path, method) = (req.path.clone(), req.parts.method.clone());
+        let body = match opts.body {
+            Some(read) => {
+                headers.remove("content-length");
+                full(read)
             }
+            None => match req.relayed_body().await {
+                Ok(body) => body,
+                Err(refusal) => return refusal,
+            },
         };
-        let mut out = hyper::Request::new(body);
-        *out.method_mut() = parts.method;
-        *out.uri_mut() = uri;
-        *out.headers_mut() = headers;
-        match self.client.request(out).await {
-            Ok(resp) => {
-                let (head, body) = resp.into_parts();
-                let mut resp = hyper::Response::new(body.map_err(Into::into).boxed());
-                *resp.status_mut() = head.status;
-                for (k, v) in &head.headers {
-                    if !HOP.contains(&k.as_str()) {
-                        resp.headers_mut().append(k.clone(), v.clone());
-                    }
-                }
+        match self.send(&method, uri, headers, body).await {
+            Ok(mut resp) => {
                 self.refresh_cookie(&mut resp, refreshed);
                 resp
             }
             Err(e) => {
                 tracing::debug!("edge: upstream failed for {path}: {e}");
-                text(502, "upstream gateway unreachable")
+                opts.unreachable.map_or_else(|| text(502, "upstream gateway unreachable"), |answer| answer())
             }
         }
     }
 
+    /// One request on the shared upstream client.
+    pub async fn send(&self, method: &Method, uri: Uri, headers: HeaderMap, body: Body) -> Result<Response, BoxError> {
+        relay(&self.client, method, uri, headers, body).await
+    }
+
     /// The request headers the upstream sees: the browser's, less the hop and caller headers, and
-    /// the identity the edge asserts.
-    fn upstream_headers(&self, req: &Req, sub: &str) -> HeaderMap {
+    /// the identity the edge asserts, when there is one.
+    pub fn upstream_headers(&self, req: &Req, sub: Option<&str>) -> HeaderMap {
         let mut out = HeaderMap::new();
         for (k, v) in &req.parts.headers {
             if !HOP.contains(&k.as_str()) && !CALLER_HEADERS.contains(&k.as_str()) {
@@ -336,7 +313,9 @@ impl Edge {
             out.remove("authorization");
         }
         out.insert("x-forwarded-proto", HeaderValue::from_static("https"));
-        out.insert("x-awm-as", as_header(sub));
+        if let Some(sub) = sub {
+            out.insert("x-awm-as", as_header(sub));
+        }
         // `host` is dropped, which leaves a reverse-proxied third party unable to tell what
         // address the browser used.
         if let Some(host) = req.parts.headers.get("host") {
@@ -348,7 +327,7 @@ impl Edge {
         out
     }
 
-    fn client_ip(&self, req: &Req) -> String {
+    pub fn client_ip(&self, req: &Req) -> String {
         if self.config.behind_proxy && req.peer.ip().is_loopback() {
             let hops = req.header("x-forwarded-for").unwrap_or_default();
             let named = hops.rsplit(',').map(str::trim).find(|h| h.parse::<IpAddr>().map_or(!h.is_empty(), |ip| !ip.is_loopback()));
@@ -433,6 +412,33 @@ impl Edge {
     }
 }
 
+/// An upstream client, with `connect` as the time to open a connection and `idle` as the idle
+/// connections kept per host.
+pub fn client(connect: Option<Duration>, idle: usize) -> Upstream {
+    let mut http = HttpConnector::new();
+    http.set_nodelay(true);
+    http.set_connect_timeout(connect);
+    Client::builder(TokioExecutor::new()).pool_max_idle_per_host(idle).build(http)
+}
+
+/// Send one request and answer the upstream's response, less its hop-by-hop headers. The body
+/// is the upstream's, as it arrives.
+pub async fn relay(client: &Upstream, method: &Method, uri: Uri, headers: HeaderMap, body: Body) -> Result<Response, BoxError> {
+    let mut out = hyper::Request::new(body);
+    *out.method_mut() = method.clone();
+    *out.uri_mut() = uri;
+    *out.headers_mut() = headers;
+    let (head, body) = client.request(out).await?.into_parts();
+    let mut resp = hyper::Response::new(body.map_err(Into::into).boxed());
+    *resp.status_mut() = head.status;
+    for (k, v) in &head.headers {
+        if !HOP.contains(&k.as_str()) {
+            resp.headers_mut().append(k.clone(), v.clone());
+        }
+    }
+    Ok(resp)
+}
+
 // -- serving ------------------------------------------------------------------------------
 
 /// Bind the edge and serve it in the background. With `tls` it listens on every IPv4 interface,
@@ -493,7 +499,7 @@ fn unquote(raw: &[u8]) -> String {
 }
 
 /// `up` + the target, byte for byte. `None` when the result is no URI.
-fn target(up: &str, raw: &[u8], query: &[u8]) -> Option<Uri> {
+pub fn target(up: &str, raw: &[u8], query: &[u8]) -> Option<Uri> {
     let mut url = String::from(up);
     url.push_str(std::str::from_utf8(raw).ok()?);
     if !query.is_empty() {
@@ -509,7 +515,7 @@ fn header(headers: &HeaderMap, name: &str) -> Option<String> {
 }
 
 /// One cookie of the first `Cookie` header, as Starlette parses it: later duplicates win.
-fn cookie_of(headers: &HeaderMap, name: &str) -> Option<String> {
+pub fn cookie_of(headers: &HeaderMap, name: &str) -> Option<String> {
     let mut found = None;
     for chunk in header(headers, "cookie")?.split(';') {
         let (key, val) = chunk.split_once('=').unwrap_or(("", chunk));
@@ -522,7 +528,7 @@ fn cookie_of(headers: &HeaderMap, name: &str) -> Option<String> {
 }
 
 /// The last value of `key` in a query string.
-fn query_param(query: &[u8], key: &str) -> Option<String> {
+pub fn query_param(query: &[u8], key: &str) -> Option<String> {
     url::form_urlencoded::parse(query).filter(|(k, _)| k == key).map(|(_, v)| v.into_owned()).last()
 }
 
@@ -534,7 +540,7 @@ fn is_websocket(headers: &HeaderMap) -> bool {
 /// Whether this `Authorization` is a device token the edge has read. Any `awmut1.` bearer
 /// counts, verified or not: one that failed here may still be live where it was meant for, and an
 /// upstream app that saw it could replay it there.
-fn consumed_edge_token(authorization: Option<&str>) -> bool {
+pub fn consumed_edge_token(authorization: Option<&str>) -> bool {
     bearer_of(authorization).is_some_and(looks_like_token)
 }
 
@@ -564,7 +570,7 @@ pub fn ws_headers(req: &Req) -> HeaderMap {
 
 // -- replies and cookies --------------------------------------------------------------------
 
-fn full(bytes: impl Into<Bytes>) -> Body {
+pub fn full(bytes: impl Into<Bytes>) -> Body {
     Full::new(bytes.into()).map_err(|never| match never {}).boxed()
 }
 
@@ -572,7 +578,7 @@ fn empty() -> Body {
     full(Bytes::new())
 }
 
-fn reply(status: u16, content_type: &str, body: impl Into<Bytes>) -> Response {
+pub fn reply(status: u16, content_type: &str, body: impl Into<Bytes>) -> Response {
     let mut r = hyper::Response::new(full(body));
     *r.status_mut() = StatusCode::from_u16(status).expect("a valid status");
     r.headers_mut().insert("content-type", HeaderValue::from_str(content_type).expect("a valid content type"));
@@ -592,26 +598,26 @@ pub fn json_reply(status: u16, v: &Value) -> Response {
 }
 
 /// A handshake refused with `status`: no body, and no accept first.
-fn refuse(status: u16) -> Response {
+pub fn refuse(status: u16) -> Response {
     let mut r = hyper::Response::new(empty());
     *r.status_mut() = StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY);
     r
 }
 
-fn redirect(location: &str, headers: &[(&'static str, &str)]) -> Response {
-    let mut r = refuse(302);
+pub fn redirect(status: u16, location: &str, headers: &[(&'static str, &str)]) -> Response {
+    let mut r = refuse(status);
     r.headers_mut().insert("location", HeaderValue::from_str(location).unwrap_or_else(|_| HeaderValue::from_static("/")));
     headers.iter().fold(r, |r, (k, v)| with_header(r, k, v))
 }
 
-fn with_header(mut r: Response, name: &'static str, value: &str) -> Response {
+pub fn with_header(mut r: Response, name: &'static str, value: &str) -> Response {
     if let Ok(v) = HeaderValue::from_str(value) {
         r.headers_mut().insert(HeaderName::from_static(name), v);
     }
     r
 }
 
-fn add_cookie(r: &mut Response, cookie: &str) {
+pub fn add_cookie(r: &mut Response, cookie: &str) {
     if let Ok(v) = HeaderValue::from_str(cookie) {
         r.headers_mut().append("set-cookie", v);
     }
@@ -652,9 +658,11 @@ fn cookie_value(v: &str) -> String {
     out
 }
 
-fn set_cookie(name: &str, value: &str, max_age: i64, http_only: bool, same_site: &str) -> String {
+/// `Response.set_cookie` with the attributes in the order `SimpleCookie` writes them.
+pub fn set_cookie(name: &str, value: &str, max_age: Option<i64>, path: &str, http_only: bool, same_site: &str) -> String {
     let http_only = if http_only { "HttpOnly; " } else { "" };
-    format!("{name}={}; {http_only}Max-Age={max_age}; Path=/; SameSite={same_site}; Secure", cookie_value(value))
+    let max_age = max_age.map_or(String::new(), |age| format!("Max-Age={age}; "));
+    format!("{name}={}; {http_only}{max_age}Path={path}; SameSite={same_site}; Secure", cookie_value(value))
 }
 
 fn delete_cookie(name: &str) -> String {

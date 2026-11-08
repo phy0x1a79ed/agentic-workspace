@@ -6,12 +6,14 @@ use std::sync::Arc;
 use awm_plugin_sdk::{Call, Service, VerbError};
 use serde_json::{json, Value};
 
-use crate::edge::{self, Edge, EdgeConfig, Private};
+use crate::edge::{self, Edge, EdgeConfig};
+use crate::front::{Front, Upstreams};
 use crate::gate::AuthGate;
 use crate::portal::{Grants, GRANT_KEY_ENV};
 use crate::store::{AuthStore, INIT_ENV};
 use crate::verbs::{self, Caller};
-use crate::{certs, landing, snapshot, tls};
+use crate::landing::{self, Landing};
+use crate::{certs, policy, snapshot, tls};
 
 const PUBLIC_PROFILE: &str = "public";
 
@@ -45,6 +47,10 @@ pub async fn serve() -> anyhow::Result<()> {
         (None, Default::default(), None)
     };
 
+    let hub = service.context().hub().clone();
+    let upstreams = Upstreams::from_env();
+    let front = Front::new(public, upstreams.clone(), hub, Landing::open(&state.join("landing.db"))?);
+
     let grant_key = std::env::var(GRANT_KEY_ENV).ok();
     let edge = Arc::new(Edge::new(
         Arc::new(AuthGate::new(Arc::new(store.clone()))),
@@ -55,9 +61,9 @@ pub async fn serve() -> anyhow::Result<()> {
             ca_download: !public,
             same_site: if public { "strict" } else { "lax" },
             behind_proxy: !tls_on,
-            identity_cookies: &[],
+            identity_cookies: &["trilium.sid", "trilium-csrf"],
         },
-        Box::new(Private),
+        Box::new(front),
     ));
     edge::start(edge, port, tls_config).await.map_err(|e| anyhow::anyhow!("the edge could not listen on :{port}: {e}"))?;
     tracing::info!("auth: edge on :{port} -> {} (tls {}, profile {})", env.hub_url, if tls_on { "on" } else { "off" }, profile.as_deref().unwrap_or("default"));
@@ -65,6 +71,10 @@ pub async fn serve() -> anyhow::Result<()> {
     let status = json!({
         "listener_port": port, "tls": tls_on, "san": san, "upstream": env.hub_url, "serving": true,
         "profile": profile.as_deref().unwrap_or("default"),
+        "vault_upstream": upstreams.vault, "relay_upstream": upstreams.tether, "board_upstream": upstreams.board,
+        "vault_mount": upstreams.vault.as_ref().map(|_| policy::vault::SHELL),
+        "relay_mounts": upstreams.tether.as_ref().map(|_| [policy::tether::PREFIX, policy::tether::ROOMS]),
+        "board_mount": upstreams.board.as_ref().map(|_| policy::board::PREFIX),
     });
     register(service, Arc::new(store), status).run().await
 }

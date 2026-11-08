@@ -8,6 +8,7 @@ pub mod verbs;
 
 pub mod certs;
 pub mod edge;
+pub mod front;
 pub mod service;
 pub mod snapshot;
 pub mod tls;
