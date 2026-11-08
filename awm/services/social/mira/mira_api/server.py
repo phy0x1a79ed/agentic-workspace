@@ -50,6 +50,8 @@ DEFAULT_POLL_INTERVAL_S = 15.0
 #: One upload chunk (8 MiB, base64 in JSON) plus headroom. aiohttp's default is 1 MiB.
 MAX_REQUEST_BYTES = 16 * 1024 * 1024
 WATCH_HISTORY_LIMIT = 50
+# A signed-out browser fails every pass with the same error, so it costs one page eval per gap.
+WATCH_MAX_BACKOFF_S = 300.0
 
 
 def _fs_error(exc: Exception) -> web.Response:
@@ -598,6 +600,7 @@ class MiraAPI:
         p = self._platforms[name]
         backoff = 1.0
         first = True
+        last_error = ""
         while True:
             try:
                 if not p.self_id:
@@ -623,14 +626,17 @@ class MiraAPI:
                             p.unreadable.add(cid)
                         log.debug("%s skip conversation %s: %s", name, cid, exc)
                 backoff = 1.0
+                last_error = ""
                 await asyncio.sleep(self._poll_interval)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001
-                log.warning("%s watcher error (%s); retry in %.1fs",
-                            name, exc, backoff)
+                error = (str(exc) or repr(exc)).splitlines()[0]
+                if error != last_error:
+                    log.warning("%s watcher error (%s); retrying", name, error)
+                    last_error = error
                 await asyncio.sleep(backoff)
-                backoff = min(backoff * 2, 60.0)
+                backoff = min(backoff * 2, WATCH_MAX_BACKOFF_S)
 
     async def _poll_conversation(self, p: Platform, conv: dict) -> None:
         cid = conv.get("id", "")
