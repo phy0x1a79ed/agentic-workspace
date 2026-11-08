@@ -1,7 +1,7 @@
 # SSH Service
 
-Manages headless ControlMaster SSH connections to managed hosts (sockeye,
-fir, chamois). Orchestrates VPN and 2FA burst automatically before
+Manages headless ControlMaster SSH connections to managed hosts (sockeye
+and fir). Orchestrates VPN and 2FA burst automatically before
 connecting, so the caller gets a seamless single-verb API.
 
 > **Never `ssh fir` directly.** `fir` (Alliance) locks the account after 10
@@ -25,11 +25,9 @@ connecting, so the caller gets a seamless single-verb API.
 |------|-------------|------------|----------|---------|
 | sockeye, sockeye1-3 | ubc | cwl | txyliu | no |
 | fir | — | alliance | phyberos | **yes** |
-| chamois | ubc | — | tliu | no |
 
 The 2FA column is the host's own `twofa_device`, which is what decides whether a
-connect goes through the fleet slot arbiter. `chamois` has none: it is reached
-over the `ubc` tunnel, and the *vpn* service arms `cwl` for its own dial.
+connect goes through the fleet slot arbiter.
 
 ## MFA-lockout hold (operator note)
 
@@ -88,7 +86,7 @@ a second Duo push at a host that was already down for maintenance.
 Non-guarded hosts live in a shared `~/.ssh/config` block:
 
 ```
-host sockeye* chamois shamwow
+host sockeye* shamwow
     ControlMaster auto
     ControlPath ~/.ssh/live_connections/%h_%p_%r
     ServerAliveInterval 60s
@@ -143,8 +141,7 @@ give it an equivalent `Host` block listing **every name it can be reached by**
 
 `sockeye` carries the same guard as `fir`: a `ProxyCommand` guard in its config
 block. A bare `ssh sockeye` with no master hits the guard before any Duo push.
-The service's master bypasses the guard with `-J vpn_ubc`. `chamois` gets the
-same `-J`.
+The service's master bypasses the guard with `-J vpn_ubc`.
 
 ## Failure visibility
 
