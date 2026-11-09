@@ -73,7 +73,7 @@ The callers list fails closed. A node it leaves out gets the answer an unknown t
 
 **CAUTION** Each gateway reads `callers` from its own `edges.yml`. A relay with a stale copy checks against its stale list, and only the host's check stands behind it.
 
-alcor hosts `2fa`, `operations` (the task queue and the approver), `browser` and `social`, and its ssh service is the slot arbiter. deneb hosts `trilium`, the vault, and `relay`, the host half of the channel rooms beside the tether relay. The cloud project's `edges.yml` is the record.
+alcor hosts `2fa`, `operations` (the task queue and the approver), `browser` and `social`, and its ssh service is the slot arbiter. Each seat host runs `seats`, and social never dials it. The host opens every connection: a held `social seat_pull` brings lines down, and `social seat_report` takes replies and seat state up (`docs/redux/channels.md` R148). deneb hosts `trilium`, the vault, and `relay`, the host half of the channel rooms beside the tether relay. The cloud project's `edges.yml` is the record.
 
 ## People
 

@@ -33,7 +33,7 @@ A plugin keeps its state in SQLite, so the gateway's respawn brings it back whol
 
 1. `cch`'s keep unit holds the daemon in its own user unit, outside awm's control group and outside every terminal (`core/plugins/cch/src/keeper.rs`).
 2. `cch`'s session layer ensures the daemon before a start, resume or stop. It refuses with `code: "daemon_down"` only when that fails. It revives pinned jobs once per boot.
-3. `social`'s seat keeper holds the keeper policy: the restart record, the decision (wait, resume, start fresh, give up) and the breaker.
+3. The `seats` plugin on each seat host holds the keeper policy: the restart record, the decision (wait, resume, start fresh, give up) and the breaker.
 
 **CAUTION** A keeper must read `daemon_down` and `daemon.state` as "wait", never as "the session is gone". Stopping a pinned job runs `claude rm` and loses its conversation. That reading is what destroyed a seat on 2026-10-20.
 

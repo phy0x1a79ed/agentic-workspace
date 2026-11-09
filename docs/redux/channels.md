@@ -71,6 +71,8 @@ How a seat lives as a session belongs in `sessions.md`. Communication between aw
 - **R138.** When a tether ends, the owner gets the shell back on every launcher. On Windows PowerShell stays open at its prompt, as bash does on Linux. Tony: "and for tethers, they currently cause powershell to close on exit. they should behave like bash and return the shell instead" (2026-11-03).
 - **R111.** An isolated session (`fleet.md` R109) may open and hold both rooms and machine channels for its own task. A machine channel lets our session act on the other machine, never the other side act on ours. Tony: "it should also get tethers and rooms. the tethers dont let the other side execute code locally so should be safe" (2026-11-02).
 
+- **R148.** A seat runs on its host, and social stays a singleton on alcor. Each seat host runs the `seats` plugin, which starts and manages that node's seat agents. alcor has no route to a seat host, so the host opens the connection. It holds a long poll to social for lines, and it keeps replies in an outbox on its own disk. A home network reset only delays lines and replies: no seat empties, no agent is lost and no notice goes out. Tony: "Altair initiates the seats and manages them since the seats are on altair", "whatever manages seats needs to establish a connection with alcor for 2-way coms, enabling alcor to send message events" and "seats needs to run on multiple nodes despite socials being a singleton" (2026-11-08).
+
 ## Gap from today
 
 Status at the wave-2 gather (`feat/redux` 16da3979, 2026-11-04). `docs/redux-review/build-survey.md` § 3 holds the row for each requirement.
