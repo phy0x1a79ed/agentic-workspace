@@ -184,7 +184,8 @@ fn the_tether_mount_claims_its_surface_and_refuses_near_misses() {
     let claimed = [
         "/tether".to_string(), "/tether/win".into(), "/tether/bin/tether".into(), "/tether/claim/1".into(),
         format!("/tether/join/7/{TICKET}"), format!("/tether/seat/{TICKET}/recv"), "/room/acre-anchor-kettle/send".into(),
-        "/room/acre-anchor-kettle-abbey-otter-lamp/recv".into(),
+        "/room/acre-anchor-kettle-abbey-otter-lamp/recv".into(), "/room/acre-anchor-kettle/file".into(),
+        format!("/room/acre-anchor-kettle/file/{TICKET}"),
     ];
     for path in &claimed {
         assert!(tether::owns(path), "{path}");
@@ -197,6 +198,8 @@ fn the_tether_mount_claims_its_surface_and_refuses_near_misses() {
         format!("/tether/seat/{TICKET}/join"), "/tether/bin/../../etc/passwd".into(), "/tether/invoke".into(),
         "/tether/issue".into(), "/tether/status".into(), "/room".into(), "/room/acre-anchor".into(),
         "/room/Acre-anchor-kettle".into(), "/room/acre-anchor-kettle/".into(), "/room/acre-anchor-kettle/close".into(),
+        "/room/acre-anchor-kettle/file/".into(), format!("/room/acre-anchor-kettle/file/{t31}"),
+        format!("/room/acre-anchor-kettle/file/{}", TICKET.to_uppercase()), format!("/room/acre-anchor-kettle/send/{TICKET}"),
     ];
     for path in &misses {
         assert!(!tether::owns(path), "{path}");

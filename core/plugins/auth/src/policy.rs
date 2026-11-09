@@ -341,7 +341,8 @@ pub mod tether {
             format!(r"^/tether/release/{slot}/{token}"),
             format!(r"^/tether/hold/{slot}/{token}"),
             format!(r"^/room/{room}"),
-            format!(r"^/room/{room}/(?:send|recv|ws|leave)"),
+            format!(r"^/room/{room}/(?:send|recv|ws|leave|file)"),
+            format!(r"^/room/{room}/file/{token}"),
         ]
         .iter()
         .map(|p| Regex::new(&format!(r"{p}\n?\z")).unwrap())

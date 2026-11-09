@@ -95,7 +95,31 @@ pub fn open(key: &str, n: i64, room: &str, sealed: &str) -> Result<String, Crypt
     Ok(String::from_utf8_lossy(&plain).into_owned())
 }
 
-fn unb64(s: &str) -> Result<Vec<u8>, CryptoError> {
+/// The nonce of one chunk of a sealed file: a last-chunk flag as 4 bytes, then the chunk's
+/// index as 8, both big-endian. The flag makes a file cut at a chunk boundary fail to open.
+fn chunk_nonce(index: u64, last: bool) -> [u8; 12] {
+    let mut out = [0u8; 12];
+    out[..4].copy_from_slice(&(last as u32).to_be_bytes());
+    out[4..].copy_from_slice(&index.to_be_bytes());
+    out
+}
+
+/// One chunk of a sealed file, under the file's own key.
+pub fn seal_chunk(key: &[u8; 32], index: u64, last: bool, plain: &[u8]) -> Vec<u8> {
+    ChaCha20Poly1305::new(Key::from_slice(key)).encrypt(Nonce::from_slice(&chunk_nonce(index, last)), plain).expect("sealing in memory does not fail")
+}
+
+pub fn open_chunk(key: &[u8; 32], index: u64, last: bool, sealed: &[u8]) -> Result<Vec<u8>, CryptoError> {
+    ChaCha20Poly1305::new(Key::from_slice(key))
+        .decrypt(Nonce::from_slice(&chunk_nonce(index, last)), sealed)
+        .map_err(|_| CryptoError(format!("chunk {index} of a sealed file did not open")))
+}
+
+pub fn b64(bytes: &[u8]) -> String {
+    B64.encode(bytes)
+}
+
+pub fn unb64(s: &str) -> Result<Vec<u8>, CryptoError> {
     B64.decode(s.as_bytes()).map_err(|_| CryptoError("not base64".into()))
 }
 
