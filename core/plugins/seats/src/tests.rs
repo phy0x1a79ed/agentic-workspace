@@ -565,7 +565,7 @@ async fn a_seat_starts_off_and_its_agent_follows_the_switch() {
     assert_eq!(t.world.w().specs[0]["remote_control"], false, "a seat starts with Remote Control off");
     let (s, live) = t.seats.set_remote_control("opal", "D0TEST", true).await.unwrap();
     assert_eq!(live, Live::Applied);
-    assert_eq!(t.world.w().switched, [("job-1".to_string(), true, "seat:slack-dm-tester".to_string())], "the session name with each / as -");
+    assert_eq!(t.world.w().switched, [("job-1".to_string(), true, "seat-slack-dm-tester".to_string())], "the session name as a plain label");
     assert_eq!(s.rc_url, "https://claude.ai/code/job-1");
     t.seats.set_remote_control("opal", "D0TEST", false).await.unwrap();
     assert_eq!(t.seat().await.rc_url, "", "off clears the link");
@@ -602,7 +602,7 @@ async fn adoption_switches_remote_control_off_and_a_paused_occupied_seat_still_d
     t.seats.adopt(&decl(), "agent-a", "s").await;
     let s = t.seat().await;
     assert_eq!((s.state, s.adopted, s.remote_control, s.rc_url.as_str()), (State::Occupied, true, false, ""));
-    assert_eq!(t.world.w().switched, [("agent-a".to_string(), false, "seat:slack-dm-tester".to_string())], "the live session follows the switch");
+    assert_eq!(t.world.w().switched, [("agent-a".to_string(), false, "seat-slack-dm-tester".to_string())], "the live session follows the switch");
     t.send("to the adopted seat").await;
     assert_eq!(t.world.got("agent-a"), ["to the adopted seat"]);
 }

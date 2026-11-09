@@ -171,8 +171,17 @@ impl Seats {
     }
 
     /// The session name a seat's agent gets: Remote Control writes each `/` as `-` (R146).
+    /// The session name as a plain label, which `/rc` takes: each run of other characters as `-`.
     fn rc_name(s: &Seat) -> String {
-        s.decl.name.replace('/', "-")
+        let mut out = String::new();
+        for c in s.decl.name.chars() {
+            if c.is_ascii_alphanumeric() || "._-".contains(c) {
+                out.push(c);
+            } else if !out.ends_with('-') {
+                out.push('-');
+            }
+        }
+        out.trim_matches(|c| "-._".contains(c)).chars().take(64).collect()
     }
 
     fn lock(&self, key: &Key) -> Arc<tokio::sync::Mutex<()>> {

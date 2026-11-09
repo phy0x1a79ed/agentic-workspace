@@ -167,15 +167,16 @@ impl RosterPart {
         handle
     }
 
-    /// Read social's roster, one `seats` call per live account. An account that fails logs and
-    /// leaves the others in.
+    /// Read social's roster, one `seats` call per enabled account. An account that fails logs and
+    /// leaves the others in. A seat list needs no live socket, and social's accounts are not yet
+    /// live when it restarts together with telemetry.
     async fn read_seats(&self, hub: &Hub, ctx: &Context) {
         let accounts = match hub.call("social", "accounts", json!({}), None).await {
             Ok(v) => v.get("accounts").and_then(Value::as_array).cloned().unwrap_or_default(),
             Err(e) => return tracing::warn!("social accounts: {e}"),
         };
         let mut rows = vec![];
-        for a in accounts.iter().filter(|a| a["enabled"] == true && a["live"] == true) {
+        for a in accounts.iter().filter(|a| a["enabled"] == true) {
             let Some(name) = a["name"].as_str() else { continue };
             match hub.call("social", "seats", json!({"account": name}), None).await {
                 Ok(v) => rows.extend(account_rows(name, &v)),
