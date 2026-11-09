@@ -52,9 +52,6 @@ _RECONCILE_WAIT_TIMEOUT = 60.0
 # Which node is speaking. Comes from the node env, not the OS hostname.
 _NODE_NAME = config.node_name()
 
-# The 2fa service runs as a canonical singleton on a peer node, named here.
-# Read per use via gatewayclient.peer_env.
-_TWOFA_PEER_ENV = "AWM_TWOFA_PEER"
 # The node that runs ssh-arbiter, which grants the one in-flight login per host
 # across the fleet.
 _ARBITER_PEER_ENV = "AWM_SSH_SLOT_PEER"
@@ -761,18 +758,17 @@ class SSHService:
             # sockeye/sockeye1 both on cwl) would then skip its grant, leaving budget
             # at 1 for 2 pushes — the 2nd push is held, times out, and trips its
             # breaker. That was the original overlapping-login failure.
-            twofa_peer = gatewayclient.peer_env(_TWOFA_PEER_ENV)
             try:
                 armed = await gatewayclient.call("2fa", "burst", {
                         "device": cfg.twofa_device,
                         "window": 120,
                         "count": 1,
-                    }, peer=twofa_peer)
+                    })
             except Exception as exc:  # noqa: BLE001 — named for the caller
                 # Without an armed approver the push would wait on a phone
                 # nobody is holding, and time out as a failed MFA attempt.
                 raise _DependencyFailed(
-                    f"the Duo auto-approver (2fa@{twofa_peer or _NODE_NAME}) "
+                    "the Duo auto-approver (2fa) "
                     f"did not answer: {str(exc) or type(exc).__name__}") from exc
             # Duo's own observation count as of arming. If it has not moved by
             # the time this attempt fails, Duo never heard from the login and no
@@ -780,10 +776,8 @@ class SSHService:
             # which the caller reads as "no evidence" rather than as zero.
             seen = (armed or {}).get("transactions_seen")
             rec.twofa_seen_at_arm = int(seen) if isinstance(seen, int) else None
-            log.info("2fa burst armed (+1) for %s on device %s%s",
-                     cfg.host, cfg.twofa_device,
-                     f" via 2fa@{gatewayclient.peer_env(_TWOFA_PEER_ENV)}"
-                     if gatewayclient.peer_env(_TWOFA_PEER_ENV) else "")
+            log.info("2fa burst armed (+1) for %s on device %s",
+                     cfg.host, cfg.twofa_device)
 
         env = os.environ.copy()
         env.update({
@@ -1054,7 +1048,7 @@ class SSHService:
         if not cfg.twofa_device or rec.twofa_seen_at_arm is None:
             return False
         try:
-            info = await gatewayclient.call("2fa", "status", {"device": cfg.twofa_device}, peer=gatewayclient.peer_env(_TWOFA_PEER_ENV))
+            info = await gatewayclient.call("2fa", "status", {"device": cfg.twofa_device})
         except Exception as exc:  # noqa: BLE001 — cannot ask ⇒ cannot assert
             log.info("ssh: cannot check Duo activity for %s (2fa unreachable: "
                      "%s) — holding", cfg.host, exc)

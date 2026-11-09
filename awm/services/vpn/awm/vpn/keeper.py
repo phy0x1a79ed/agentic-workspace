@@ -54,7 +54,7 @@ def page(text: str) -> None:
     account, channel = awm_config.operator_dm()
     try:
         gatewayclient.call_sync("social", "send", {"account": account, "channel": channel, "text": text},
-                                peer=gatewayclient.peer_env("AWM_SOCIAL_PEER"), timeout=15)
+                                timeout=15)
     except Exception as exc:  # noqa: BLE001 — the keeper has stopped either way
         log.error("could not page the operator: %s (%s)", exc, text)
 

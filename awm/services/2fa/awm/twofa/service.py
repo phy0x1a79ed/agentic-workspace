@@ -46,8 +46,6 @@ log = logging.getLogger("awm.twofa.service")
 
 # Singleton re-homing selector (federation). 2fa is canonical on one node; on
 # that node social is co-located so this is unset and social calls stay local.
-# A node that borrows social exports AWM_SOCIAL_PEER=<peer>. Read fresh per use.
-_SOCIAL_PEER_ENV = "AWM_SOCIAL_PEER"
 # Duo reachability probe budget. Short: `ping` is called on the recovery path,
 # where a slow answer is nearly as bad as a wrong one.
 _REACH_PROBE_TIMEOUT = 8
@@ -196,7 +194,7 @@ class TwoFAService:
         def _stream():
             # peer selector read per connection, so a re-home takes effect on
             # the next reconnect without a restart.
-            return gatewayclient.subscribe("social", "command", peer=gatewayclient.peer_env(_SOCIAL_PEER_ENV))
+            return gatewayclient.subscribe("social", "command")
 
         self._social_sub = gatewayclient.SupervisedSubscription(
             "2fa/social.command", _stream, self._handle_social_command)
@@ -238,7 +236,7 @@ class TwoFAService:
             return
         try:
             from awm import gatewayclient
-            await gatewayclient.call("social", "send", {"account": account, "channel": str(channel), "text": text}, peer=gatewayclient.peer_env(_SOCIAL_PEER_ENV))
+            await gatewayclient.call("social", "send", {"account": account, "channel": str(channel), "text": text})
         except Exception as exc:  # noqa: BLE001 — confirmation is non-critical
             log.debug("2fa: social reply failed: %s", exc)
 
@@ -390,17 +388,8 @@ class TwoFAService:
         sub = self._social_sub
         if sub is None:
             if not self.cfg.social_subscribe:
-                # Say *why* it is off. "Disabled" on the node that borrows 2fa
-                # is the correct state, and an operator who cannot tell that
-                # from a fault will go looking for a bug that isn't there.
-                from awm import gatewayclient
-                owner = gatewayclient.peer_env("AWM_TWOFA_PEER")
-                why = (f"2fa is owned by peer {owner!r}; only the owner listens "
-                       f"for /approve" if owner else
-                       "social subscription disabled by config")
-                return {"healthy": True, "connected": False,
-                        "listening": False, "owner": owner,
-                        "last_error": why}
+                return {"healthy": True, "connected": False, "listening": False,
+                        "last_error": "social subscription disabled by config"}
             return {"healthy": False, "connected": False,
                     "last_error": "social listener not started"}
         try:
