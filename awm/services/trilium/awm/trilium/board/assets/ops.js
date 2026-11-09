@@ -50,6 +50,14 @@ const rc = (url) => (/^https:\/\/claude\.ai\//.test(url || "")
 
 const sessionMatches = (q, s) => fuzzy(q, s.name) || fuzzy(q, s.scope) || fuzzy(q, s.project);
 
+// A session started for a card keeps the name "task <id>", so it shows the card's title.
+const TASK_NAME = /^task (\S+)$/;
+async function cardTitles(nodes) {
+  const ids = [...new Set(nodes.flatMap((n) => n.sessions || []).map((s) => TASK_NAME.exec(show(s.name))?.[1]).filter(Boolean))];
+  const hits = await Promise.all(ids.map((id) => api.searchForNotes(`#swarmCard #taskId = ${JSON.stringify(id)}`)));
+  return new Map(ids.flatMap((id, i) => (hits[i][0] ? [[`task ${id}`, hits[i][0].title]] : [])));
+}
+
 function nodeSection(n, q) {
   const own = fuzzy(q, n.name);
   const sessions = (n.sessions || []).filter((s) => own || sessionMatches(q, s));
@@ -181,6 +189,8 @@ async function render() {
   const roster = await swarmRoster();
   const q = $(".search").value;
   const all = roster.nodes || [];
+  const titles = await cardTitles(all);
+  for (const n of all) for (const s of n.sessions || []) s.name = titles.get(s.name) || s.name;
   const nodes = all.filter((n) => fuzzy(q, n.name) || (n.sessions || []).some((s) => sessionMatches(q, s)));
   $(".awm-nodes").replaceChildren(...(nodes.length ? nodes.map((n) => nodeSection(n, q))
     : [el("div", { class: "none" }, "No node matches.")]));

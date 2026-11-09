@@ -186,7 +186,7 @@ pub struct Ops {
 }
 
 fn stamp(call: &awm_plugin_sdk::Call) -> Stamp {
-    Stamp { pid: call.caller_pid(), session_id: call.caller_session_id().map(str::to_string), claim: call.caller_claim().cloned() }
+    Stamp { pid: call.caller_pid(), session_id: call.caller_session_id().map(str::to_string), claim: call.caller_claim().cloned(), peer: awm_plugin_sdk::config::caller_peer(call.as_.as_deref()).map(str::to_string) }
 }
 
 fn refusal(msg: impl Into<String>) -> Value {

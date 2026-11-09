@@ -375,6 +375,18 @@ async fn a_plugin_caller_is_refused_the_operator_verbs() {
 }
 
 #[tokio::test]
+async fn a_session_attached_by_another_nodes_service_is_recorded_on_that_node() {
+    let h = harness();
+    let ops = h.ops();
+    let t = h.env.store.agent_card("mizar", None).unwrap()["task_id"].clone();
+    let st = Stamp { peer: Some("mizar".into()), ..none() };
+    let sid = "cc08a5906268d5471f84530c72522d4d3b";
+    assert!(ok(&ops.handle("task_attach", json!({"task_id": t, "session_id": sid, "role": "main"}), st, Some("peer:mizar"), None).await));
+    let got = h.env.store.task_get(t.as_str().unwrap()).unwrap();
+    assert_eq!(got["sessions"][0]["node"], "mizar");
+}
+
+#[tokio::test]
 async fn the_operator_still_calls_them() {
     let h = harness();
     let ops = h.ops();
