@@ -773,9 +773,6 @@ mod tests {
         async fn repaint(&mut self) -> Result<bool, LaneError> {
             panic!("the sender asked the lane for repaint")
         }
-        fn forget(&mut self) {
-            panic!("the sender asked the lane for forget")
-        }
         async fn press(&mut self, _key: Key) -> Result<(), LaneError> {
             panic!("the sender asked the lane for press")
         }
