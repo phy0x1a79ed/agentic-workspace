@@ -1,6 +1,6 @@
 [package]
 name = "awm-plugin-routine"
-description = "The routine plugin: registered routines, their timers, their runs and failure chain, and the land queue."
+description = "The routine plugin: registered routines, their timers, their runs and failure chain, and node rollout."
 version.workspace = true
 edition.workspace = true
 license.workspace = true

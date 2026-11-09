@@ -106,7 +106,7 @@ steps() {
 
 step_sync() { (cd "$root" && AWM_REFRESH_TO=$1 sh scripts/refresh-checkout.sh); }
 
-# The landing agents name what restarts ($AWM_REFRESH_RESTART, comma separated):
+# The ship skill names what restarts ($AWM_REFRESH_RESTART, comma separated):
 # `gateway` restarts the unit, and plugin names restart those plugins.
 step_deploy() {
     local args=() names=() name restart

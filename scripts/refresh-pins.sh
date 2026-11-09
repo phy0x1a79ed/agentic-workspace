@@ -3,13 +3,13 @@
 # plugin binary (scripts/release-plugins.sh), the plugin pages (scripts/release-pages.sh) and
 # the embedder's model files (scripts/release-models.sh).
 # A pin is stale when its version differs from the tree's, or when its file is missing from, or
-# differs in, the artifact store. awm's deploy runs this in the batch's temp worktree
-# (deploy.toml [artifacts] refresh) and commits the pins it rewrote.
+# differs in, the artifact store. The ship skill runs this in the rc worktree
+# and commits the pins it rewrote.
 #
-# The service runs this with the gateway's environment, so it sets the toolchains itself:
-# npm from the dsh conda env, cargo through the Rust container. The caches survive the temp
-# tree: the cargo target dir, and node_modules keyed by package-lock.json.
-#   AWM_DIR            the landing node's awm dir; the artifact store is <AWM_DIR>/artifacts
+# This sets the toolchains itself:
+# npm from the dsh conda env, cargo through the Rust container. The caches outlive the
+# worktree: the cargo target dir, and node_modules keyed by package-lock.json.
+#   AWM_DIR            the canonical awm dir, which a worktree must set; the artifact store is <AWM_DIR>/artifacts
 #   AWM_BUILD_CACHE    the cache root, default <AWM_DIR>/build-cache
 set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"

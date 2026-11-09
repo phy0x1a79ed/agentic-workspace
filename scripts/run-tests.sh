@@ -20,7 +20,7 @@
 #   scripts/run-tests.sh --smoke           # only tests marked smoke
 #   scripts/run-tests.sh --summary <file>  # also write "<dist> <result>" lines
 #
-# The deploy check runs `--smoke --changed $AWM_DEPLOY_BASE` (deploy.toml). A
+# The ship skill runs `--smoke --changed release`. A
 # change to a shared component selects every dist, since each one imports it.
 #
 # Reports pass/fail per dist and exits non-zero if any dist failed.
