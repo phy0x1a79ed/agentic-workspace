@@ -16,19 +16,19 @@ API_MANIFEST: dict[str, Any] = {
     "functions": [
         {
             "name": "status",
-            "tool": "ssh_arbiter_status",
+            "tool": "ssh-arbiter_status",
             "description": "Each held host, the open leases and /approve windows, and the /approve wire's health.",
             "params": [],
         },
         {
             "name": "notify_test",
-            "tool": "ssh_arbiter_notify_test",
+            "tool": "ssh-arbiter_notify_test",
             "description": "Send a test page down the lock-alert wire. Writes no hold.",
             "params": [{"name": "host", "type": "string", "required": False}],
         },
         {
             "name": "receive_test",
-            "tool": "ssh_arbiter_receive_test",
+            "tool": "ssh-arbiter_receive_test",
             "description": "Prove an operator /approve still reaches this service. Opens no window.",
             "params": [{"name": "timeout", "type": "number", "required": False}],
         },

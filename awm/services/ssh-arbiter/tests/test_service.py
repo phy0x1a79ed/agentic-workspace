@@ -83,6 +83,8 @@ def test_only_status_and_the_wire_tests_are_verbs():
     # An agent must never hold a verb that lifts a hold.
     assert set(hub_adapter.HANDLERS) == {"status", "notify_test", "receive_test"}
     assert {f["name"] for f in hub_adapter.API_MANIFEST["functions"]} == set(hub_adapter.HANDLERS)
+    # The gateway refuses a whole service over one tool name outside '<tool>_<verb>'.
+    assert all(f["tool"] == f"ssh-arbiter_{f['name']}" for f in hub_adapter.API_MANIFEST["functions"])
 
 
 async def test_a_failed_release_locks_pages_and_refuses(svc, alerts):
