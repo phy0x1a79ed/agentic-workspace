@@ -61,7 +61,9 @@ The CLI (`awm <tool> <verb>`) and HTTP (`POST /invoke`) surfaces keep one comman
 ## Git
 
 - A scope's branch is `feat/<scope>` by default. A legacy or nested scope has its own branch name. Ask `scope(verb="search")` instead of guessing.
-- Take finished awm work live with the `ship` skill, on mizar. It merges `feat → dev`, then runs the release train `dev → release-candidate → release → nodes`. There is no `main`.
+- Take finished awm work live with the `ship` skill. It merges `feat → dev`, then runs the release train `dev → release-candidate → release → nodes`. There is no `main`. For awm:
+  - Run it on mizar. The `dev` worktree is `projects/awm/dev`, and the backup remote is `github`.
+  - Build: `scripts/refresh-pins.sh`, with `AWM_DIR` set to `<workspace>/.awm`. Smoke tests: `scripts/run-tests.sh --smoke --changed release`. Rollout: `scripts/rollout.sh --restart <list> <sha>`.
 - Do not open pull requests. Open one only when Tony asks for it.
 - **WARNING** Never commit in the workspace root checkout. On a node that deploys awm, each deploy resets `<workspace>/` onto upstream `release` and discards local commits without a warning. Work in a scope worktree under `projects/` and push the branch. A `reset: moving to …` entry in `git -C <workspace> reflog` shows a deploy ran.
 - A push to mizar fails with *branch is currently checked out* when a worktree there holds the branch. This is not a permissions fault. See `PROTOCOLS.md` § *Pushing to mizar*.
