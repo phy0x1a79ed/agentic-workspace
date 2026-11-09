@@ -93,11 +93,11 @@ Ops on the vault shows each seat with a Remote Control switch (`fleet.md` R147 i
 
 - **State.** Schema v10 adds `remote_control` and `rc_url` to `seat_registry`. Python social stops at v8 and never read the seat tables, so a rollback is unchanged.
 - **Seat id.** `<account>/<channel_id>`, the table's key. The session name is the seat's `label`, because a chat rename changes it.
-- **Verb.** `seat_remote_control {seat, on}` has no MCP tool. Only operations on this node may call it. On a seat whose agent was started or is up, it also calls reflection `remote_control` with the session name, each `/` written as `-` (`sessions.md` R146). A failed live call keeps the switch, and the next start carries it.
+- **Verb.** `seat_remote_control {seat, on}` has no MCP tool. Only operations on this node may call it. On a seat whose agent was started or is up, it also calls reflection `remote_control` with the session name, each `/` written as `-` (`sessions.md` R146). The row then holds what the session really is, read back from `list_other`. A failed live call leaves the switch at the session's state, and the seat event carries `rc_live: failed: <why>`.
 - **Start.** `start_other` passes the seat's switch.
 - **Adoption.** Adoption leaves the live session alone. An occupied seat records its switch as on, because every seat session before the switch started with Remote Control on.
-- **Link.** `rc_url` comes from reflection's answer or the job's `list_other` row. It is empty until harness adds `rc_url` to those rows.
-- **Event.** `social/seats` carries `{seat, label, state, remote_control, node, job?, rc_url?, ts}`. The seat's save emits it when one of those fields changed. No event goes out at boot, so a subscriber reads `social seats` once when it connects.
+- **Link.** `remote_control` and `rc_url` of an occupied seat follow the job's `list_other` row on every tick, so a switch made outside the seat shows on Ops.
+- **Event.** `social/seats` carries `{seat, label, state, remote_control, node, job?, rc_url?, ts}`. The seat's save emits it when one of those fields changed. A switch answer adds `rc_live` (`applied`, `none` or `failed: <why>`) and always emits, so Ops can settle a pending flip. No event goes out at boot, so a subscriber reads `social seats` once when it connects.
 
 **CAUTION** A start emits `starting` twice: once before reflection answers, and once with the job id.
 
