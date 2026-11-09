@@ -5,7 +5,20 @@
 .awm-search { flex: 1; min-width: 160px; max-width: 360px; padding: 4px 8px; }
 .awm-live { font-size: 12px; opacity: .75; }
 .awm-live[data-down] { color: #c0392b; opacity: 1; font-weight: 600; }
-.awm-new { display: flex; gap: 4px; align-items: center; }
+.awm-spawn { display: flex; gap: 6px 14px; align-items: center; flex-wrap: wrap; flex: none; padding: 6px 8px; border: 1px solid rgba(127,127,127,.35); border-radius: 6px; }
+.awm-spawn h3 { margin: 0; font-size: 14px; font-weight: 600; }
+.awm-field { display: flex; gap: 6px; align-items: center; }
+.awm-field > small { opacity: .75; }
+.awm-seg { display: flex; flex-wrap: wrap; }
+.awm-seg label { position: relative; cursor: pointer; }
+.awm-seg input { position: absolute; opacity: 0; inset: 0; margin: 0; cursor: pointer; }
+.awm-seg span { display: block; padding: 3px 10px; border: 1px solid rgba(127,127,127,.55); margin-left: -1px; }
+.awm-seg label:first-child span { margin-left: 0; border-radius: 4px 0 0 4px; }
+.awm-seg label:last-child span { border-radius: 0 4px 4px 0; }
+.awm-seg label:only-child span { border-radius: 4px; }
+.awm-seg label:hover span { background: rgba(127,127,127,.15); }
+.awm-seg input:checked + span { background: #2e86c1; border-color: #2e86c1; color: #fff; }
+.awm-seg input:focus-visible + span { outline: 2px solid #2e86c1; outline-offset: 1px; }
 .awm-main { display: flex; min-height: 0; flex: 1; }
 .awm-sections { flex: 0 0 var(--awm-left, 55%); overflow: auto; min-width: 220px; }
 .awm-divider { flex: 0 0 7px; cursor: col-resize; background: rgba(127,127,127,.25); border-radius: 3px; margin: 0 4px; touch-action: none; }
@@ -31,10 +44,25 @@
 <div class="awm-board">
   <div class="awm-top">
     <input class="awm-search" type="search" placeholder="Search cards">
-    <span class="awm-new"><select class="awm-node" title="Node for the new agent"></select><button class="awm-btn primary awm-newbtn" type="button">New agent</button></span>
     <span class="awm-twofa">2fa <button class="awm-btn" data-count="1" type="button">1</button> <button class="awm-btn" data-count="2" type="button">2</button> <button class="awm-btn" data-count="4" type="button">4</button></span>
     <span class="awm-live"></span>
   </div>
+  <section class="awm-spawn" aria-label="New agent">
+    <h3>New agent</h3>
+    <div class="awm-field"><small>Node</small><div class="awm-seg awm-spawn-node" role="radiogroup" aria-label="Node"></div></div>
+    <div class="awm-field"><small>Model</small><div class="awm-seg" role="radiogroup" aria-label="Model">
+      <label><input type="radio" name="awm-spawn-model" value="opus" checked><span>Opus</span></label>
+      <label><input type="radio" name="awm-spawn-model" value="sonnet"><span>Sonnet</span></label>
+      <label><input type="radio" name="awm-spawn-model" value="haiku"><span>Haiku</span></label>
+      <label><input type="radio" name="awm-spawn-model" value="fable"><span>Fable</span></label>
+    </div></div>
+    <div class="awm-field"><small>Effort</small><div class="awm-seg" role="radiogroup" aria-label="Effort">
+      <label><input type="radio" name="awm-spawn-effort" value="low"><span>Low</span></label>
+      <label><input type="radio" name="awm-spawn-effort" value="medium"><span>Medium</span></label>
+      <label><input type="radio" name="awm-spawn-effort" value="high" checked><span>High</span></label>
+    </div></div>
+    <button class="awm-btn primary awm-newbtn" type="button">Start agent</button>
+  </section>
   <div class="awm-main">
     <div class="awm-sections"></div>
     <div class="awm-divider" role="separator" aria-orientation="vertical" title="Drag to resize"></div>

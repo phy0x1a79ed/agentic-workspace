@@ -96,9 +96,12 @@ def main() -> int:
         after = page.eval_on_selector(".awm-sections", "e => e.getBoundingClientRect().width")
         check("the divider resizes rows and panel", after < before - 150, f"{before:.0f} -> {after:.0f}")
 
-        opts = page.eval_on_selector_all(".awm-node option", "o => o.map(x => x.textContent)")
-        check("New agent dropdown: fewest 7-day sessions first, no stations, no deneb",
+        opts = page.eval_on_selector_all(".awm-spawn-node label", "o => o.map(x => x.textContent)")
+        check("New agent nodes: fewest 7-day sessions first, no stations, no deneb",
               [o.split(" ")[0] for o in opts] == ["lyra", "altair", "mizar"], str(opts))
+        chosen = page.eval_on_selector_all(".awm-spawn input:checked", "e => e.map(x => x.value)")
+        check("New agent defaults: least-used node, Opus, high", chosen == ["lyra", "opus", "high"], str(chosen))
+        page.locator(".awm-spawn").screenshot(path=str(SHOTS / "new-agent.png"))
 
         # History: open, scroll the sentinel into view, more than one page arrives.
         page.click(".awm-sections details[data-section='history'] summary")
@@ -111,7 +114,8 @@ def main() -> int:
         check("History pages in older cards as the sentinel shows (50 per page, 72 cards)", n == 72, str(n))
 
         # New agent: first press has no cookie -> 401 -> sign-in frame -> retry.
-        page.select_option(".awm-node", "lyra")
+        for value in ("altair", "sonnet", "medium"):
+            page.check(f".awm-spawn input[value={value}]", force=True)
         seen_frames: list[str] = []
         page.on("framenavigated", lambda f: seen_frames.append(f.url))
         page.click(".awm-newbtn")
@@ -119,7 +123,8 @@ def main() -> int:
         check("a 401 opens the sign-in frame, then the call is repeated",
               any("/signin?frame=1" in u for u in seen_frames), str(seen_frames))
         agent = [c for c in calls() if c.get("path") == "/api/agent"]
-        check("New agent posts {node} to alcor", agent and agent[-1]["body"] == {"node": "lyra"}, str(agent))
+        check("New agent posts node, model and effort to alcor",
+              agent and agent[-1]["body"] == {"node": "altair", "model": "sonnet", "effort": "medium"}, str(agent))
 
         # Approve opens the modal frame; the modal tells the page.
         page.click(".awm-appr button:text-is('Approve')")

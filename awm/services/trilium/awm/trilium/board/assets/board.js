@@ -204,23 +204,27 @@ async function select(n) {
   await panel(n);
 }
 
-// -- the header: search, New agent, 2fa -------------------------------------------------------------------
+// -- New agent, search, 2fa -------------------------------------------------------------------------------
+
+const picked = (field) => $(`input[name="awm-spawn-${field}"]:checked`)?.value;
 
 async function fillNodes() {
-  const pick = $(".awm-node");
   const nodes = await nodeChoices();
-  const have = pick.value;
-  pick.replaceChildren(...nodes.map((n) => el("option", { value: n.name }, `${n.name} (${n.sessions} in 7d)`)));
-  if (have && nodes.some((n) => n.name === have)) pick.value = have;
+  const have = picked("node");
+  const keep = nodes.some((n) => n.name === have) ? have : nodes[0]?.name;
+  $(".awm-spawn-node").replaceChildren(...(nodes.length
+    ? nodes.map((n) => el("label", {},
+      el("input", { type: "radio", name: "awm-spawn-node", value: n.name, checked: n.name === keep }),
+      el("span", {}, `${n.name} (${n.sessions} in 7d)`)))
+    : [el("small", { class: "awm-empty" }, "no nodes in the roster")]));
   $(".awm-newbtn").disabled = nodes.length === 0;
-  if (!nodes.length) pick.replaceChildren(el("option", { value: "" }, "no nodes in the roster"));
 }
 
 $(".awm-newbtn").addEventListener("click", async () => {
-  const node = $(".awm-node").value;
+  const node = picked("node");
   if (!node) return;
   try {
-    const out = await swarmCall(origin, "/api/agent", { node });
+    const out = await swarmCall(origin, "/api/agent", { node, model: picked("model"), effort: picked("effort") });
     toast(`Agent starting on ${node}${out.task_id ? ` (${out.task_id})` : ""}`);
   } catch (e) { toast(e.message, true); }
 });
