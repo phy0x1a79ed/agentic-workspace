@@ -110,10 +110,10 @@ A large reference chunk that scopes read but rarely re-pin can be shared. List i
 
 ### Off-site backup
 
-The dvc service schedules two nightly jobs. They do different things.
+The dvc service has two jobs. Only the archive runs on a schedule.
 
-- **The archive** pushes the DVC cache to chinook. It is append-only, which makes a local `dvc gc` recoverable.
-- **The mirror** copies the rest of the workspace to a sibling remote root. It deletes: a file removed here is removed there on the next run. It skips the cache and the materialised checkouts, because the archive holds those bytes and Globus cannot preserve a hardlink.
+- **The archive** (`cache_sync`) pushes the DVC cache to chinook every night. It is append-only, which makes a local `dvc gc` recoverable.
+- **The mirror** (`workspace_backup`) copies the rest of the workspace to a sibling remote root. It is off on every node, because it sent `.awm` and its credentials off-site. Workspace files outside DVC therefore have no off-site copy. When run by hand, it deletes: a file removed here is removed there on the next run. It skips the cache and the materialised checkouts, because the archive holds those bytes and Globus cannot preserve a hardlink.
 
 Every mirror destination sits under `…/workspace/`. A delete-enabled transfer therefore cannot reach the archive, whatever its exclusion logic does.
 
