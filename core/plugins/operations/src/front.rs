@@ -388,22 +388,27 @@ impl Front {
         };
         let need = if kind == "review" { "has something for you to review" } else { "needs you" };
         let mut message = format!("**{who}** on **{node}** {need}.\n{text}");
-        if let Reach::Link(url) = &reach {
-            message.push_str(&format!("\n{url}"));
-        } else if let Some(job) = &c.job {
-            message.push_str(&format!("\nAttach: `claude attach {job}` on {node}"));
-        }
-        if reach == Reach::Connecting {
-            message.push_str("\nRemote Control connects when this session ends its turn. The link follows then.");
-        }
+        let attach = c.job.as_ref().map(|job| format!("\nAttach: `claude attach {job}` on {node}")).unwrap_or_default();
+        let (link, note) = match &reach {
+            Reach::Link(url) => {
+                message.push_str(&format!("\n{url}"));
+                (Some(url), None)
+            }
+            Reach::Connecting => {
+                message.push_str(&format!("{attach}\nRemote Control connects when this session ends its turn. The link follows then."));
+                (None, Some("Remote Control connects when you end your turn, and Tony gets the link then."))
+            }
+            Reach::Unavailable => {
+                message.push_str(&attach);
+                (None, None)
+            }
+        };
         if !self.outside.dm_tony(&message).await {
             return Err("this session holds no card and the DM to Tony did not go out: try again".into());
         }
-        let mut out = json!({"ok": true, "notified": true, "link": null});
-        match reach {
-            Reach::Link(url) => out["link"] = json!(url),
-            Reach::Connecting => out["note"] = json!("Remote Control connects when you end your turn, and Tony gets the link then."),
-            Reach::Unavailable => {}
+        let mut out = json!({"ok": true, "notified": true, "link": link});
+        if let Some(note) = note {
+            out["note"] = json!(note);
         }
         Ok(out)
     }
@@ -427,21 +432,19 @@ impl Front {
     /// and forget each session that went. Answers how many went out.
     pub async fn links_due(&self) -> usize {
         let mut sent = 0;
+        let mut rosters = HashMap::new();
         for (key, who) in self.relay.marks(RC_PENDING) {
-            let Some((node, job)) = key[RC_PENDING.len()..].split_once(':') else {
-                self.relay.clear_mark(&key);
-                continue;
-            };
-            let Some(links) = self.outside.links(node).await else { continue };
-            match links.get(job) {
-                Some(None) => continue,
-                Some(Some(url)) => {
-                    if !self.outside.dm_tony(&format!("**{who}** on **{node}**: Remote Control is on.\n{url}")).await {
-                        continue;
-                    }
-                    sent += 1;
+            let Some((node, job)) = key.strip_prefix(RC_PENDING).and_then(|k| k.split_once(':')) else { continue };
+            if !rosters.contains_key(node) {
+                rosters.insert(node.to_string(), self.outside.links(node).await);
+            }
+            let Some(links) = &rosters[node] else { continue };
+            if let Some(link) = links.get(job) {
+                let Some(url) = link else { continue };
+                if !self.outside.dm_tony(&format!("**{who}** on **{node}**: Remote Control is on.\n{url}")).await {
+                    continue;
                 }
-                None => {}
+                sent += 1;
             }
             self.relay.clear_mark(&key);
         }

@@ -135,24 +135,33 @@ impl Default for SeatsConfig {
     }
 }
 
+enum Place<'a> {
+    Chat(&'a SeatChat),
+    Rule(&'a SeatRule),
+}
+
 impl SeatsConfig {
     /// The seat a chat is, if any: a named chat first, else the first rule of its kind.
     pub fn seat_for(&self, account: &str, channel: &str, kind: &str, sender: &str) -> Option<(String, Level, String)> {
-        if let Some(c) = self.chats.iter().find(|c| c.account == account && c.channel == channel) {
-            return Some((c.node.clone(), c.level, c.scope.clone()));
+        match self.place(account, channel, kind, sender)? {
+            Place::Chat(c) => Some((c.node.clone(), c.level, c.scope.clone())),
+            Place::Rule(r) => Some((r.node.clone(), r.level, r.scope.clone())),
         }
-        self.rules
-            .iter()
-            .find(|r| r.account == account && r.kind == kind && !r.except.iter().any(|e| e == channel || e == sender))
-            .map(|r| (r.node.clone(), r.level, r.scope.clone()))
     }
 
     /// A seat's own model and effort, read live so a config edit reaches an existing seat.
     pub fn agent_for(&self, account: &str, channel: &str, kind: &str) -> Option<(String, String)> {
-        if let Some(c) = self.chats.iter().find(|c| c.account == account && c.channel == channel) {
-            return c.agent.clone();
+        match self.place(account, channel, kind, "")? {
+            Place::Chat(c) => c.agent.clone(),
+            Place::Rule(r) => r.agent.clone(),
         }
-        self.rules.iter().find(|r| r.account == account && r.kind == kind && !r.except.iter().any(|e| e == channel))?.agent.clone()
+    }
+
+    fn place(&self, account: &str, channel: &str, kind: &str, sender: &str) -> Option<Place<'_>> {
+        if let Some(c) = self.chats.iter().find(|c| c.account == account && c.channel == channel) {
+            return Some(Place::Chat(c));
+        }
+        self.rules.iter().find(|r| r.account == account && r.kind == kind && !r.except.iter().any(|e| e == channel || e == sender)).map(Place::Rule)
     }
 
     /// The notice chat: the `notice` table, else the trusted Discord DM a `[[seats.chat]]` names.
@@ -393,11 +402,10 @@ fn level(t: &Table, label: &str) -> R<Level> {
 
 /// A seat's `model` and `effort`, as `start_other` takes them: both, or neither.
 fn agent(t: &Table, label: &str) -> R<Option<(String, String)>> {
-    if !t.contains_key("model") && !t.contains_key("effort") {
-        return Ok(None);
-    }
-    if !(t.contains_key("model") && t.contains_key("effort")) {
-        return err(format!("{label}: name model and effort together"));
+    match (t.contains_key("model"), t.contains_key("effort")) {
+        (false, false) => return Ok(None),
+        (true, true) => {}
+        _ => return err(format!("{label}: name model and effort together")),
     }
     let effort = need(t, "effort", label)?;
     check_effort(&effort).map_err(|e| ConfigError(format!("{label}.effort: {e}")))?;

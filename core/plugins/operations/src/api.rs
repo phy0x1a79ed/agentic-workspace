@@ -74,7 +74,7 @@ pub fn verbs() -> Vec<VerbSpec> {
     let [n2, r2] = shown();
     vec![
         v("request_human", "Tell Tony you need him. kind blocked (with reason) or review (with summary) puts your card in Needs you. \
-With no card, it sends him a Discord DM with a link to your session and opens no card. urgent:true on a card's block also posts to his notifications. kind approval posts an Arbutus admin bundle to Slack for Tony or Ryan. Tony answers \
+With no card, it sends him a Discord DM and opens no card, and turns on your Remote Control so he can reach you. If Remote Control was off, the link goes out in a second DM when you end your turn, so end your turn after this call. urgent:true on a card's block also posts to his notifications. kind approval posts an Arbutus admin bundle to Slack for Tony or Ryan. Tony answers \
 in your session, and his prompt moves the card back to Working. The answer's card_url opens the card on his board, when the board's \
 link is configured.",
           json!([p("kind", "string", false, "blocked, review or approval."), s("reason"), s("summary"),

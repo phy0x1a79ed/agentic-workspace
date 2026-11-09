@@ -105,7 +105,11 @@ impl Outside for HubOutside {
             let peer = Some(node).filter(|n| *n != self.node).map(str::to_string);
             let opts = CallOpts { peer, timeout: Duration::from_secs(30), ..CallOpts::default() };
             match self.hub.call_with("reflection", "remote_control", json!({"on": true, "job": job}), &opts).await {
-                Ok(out) if out["ok"] == json!(true) => out["link"].as_str().map_or(Reach::Connecting, |url| Reach::Link(url.to_string())),
+                Ok(out) if out["ok"] == json!(true) => match out["link"].as_str() {
+                    Some(url) => Reach::Link(url.to_string()),
+                    None if out["applies"] == json!("turn_end") => Reach::Connecting,
+                    None => Reach::Unavailable,
+                },
                 Ok(out) => {
                     tracing::warn!("operations: Remote Control refused for {job} on {node}: {out}");
                     Reach::Unavailable
@@ -122,7 +126,7 @@ impl Outside for HubOutside {
         Box::pin(async move {
             let opts = CallOpts { timeout: Duration::from_secs(10), ..CallOpts::default() };
             let out = self.hub.call_with("telemetry", "nodes", json!({"node": node}), &opts).await.ok()?;
-            let sessions = out["nodes"].as_array()?.first()?["sessions"].as_array()?.clone();
+            let sessions = out["nodes"].as_array()?.first()?["sessions"].as_array()?;
             Some(sessions.iter().filter_map(|s| Some((s["job"].as_str()?.to_string(), s["link"].as_str().map(str::to_string)))).collect())
         })
     }

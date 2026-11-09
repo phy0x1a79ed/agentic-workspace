@@ -46,7 +46,7 @@ Gotchas:
 
 One module owns every seat in `social.db`: `seat_registry`, a durable `seat_queue`, `seat_routed` for dedupe, and `seat_lines` for the send/react defaults. Each seat's transitions run in one task per seat, and each transition writes the database before it acts.
 
-**Config.** `[seats]` holds `project = "agentic-commons"`, opus and high, `paused`, and `notice`, which defaults to Tony's Discord DM. One `[[seats.rule]]` makes every slack-bot DM a cooperative seat on altair at `seats/{slug}`, except Slackbot. `[[seats.chat]]` overrides name Tony's two DMs (trusted; altair and mizar) and Hallam Hive #general (cooperative, altair).
+**Config.** `[seats]` holds `project = "agentic-commons"`, opus and high, `paused`, and `notice`, which defaults to Tony's Discord DM. One `[[seats.rule]]` makes every slack-bot DM a cooperative seat on altair at `seats/{slug}`, except Slackbot. `[[seats.chat]]` overrides name Tony's two DMs (trusted; altair and mizar) and Hallam Hive #general (cooperative, altair). A `[[seats.rule]]` or `[[seats.chat]]` can name its own `model` and `effort`, both or neither, with the values `start_other` takes. A seat that names neither uses `[seats]`. The pair applies at the seat's next agent start.
 
 **Transitions.**
 1. **empty**, message: queue it, react 👀, run `ensure_seat` (`scopes create` on the seat's node), then `start_other {project, scope: "seats/<slug>"}` with `peer`. → starting. The rows go into the brief but stay undelivered.
