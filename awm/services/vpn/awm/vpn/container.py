@@ -196,8 +196,14 @@ def exit_ip(name: str) -> str:
     return proc.stdout.strip() if proc.returncode == 0 else ""
 
 
+def _tunnel_device_present(name: str) -> bool:
+    return _docker(["exec", name, "test", "-e", "/sys/class/net/tun0"], check=False, timeout=20).returncode == 0
+
+
 def leak_check(name: str) -> tuple[str, bool]:
-    """Return (exit_ip, healthy). Healthy = reachable in-netns AND ≠ host IP."""
+    """Return (exit_ip, healthy). Healthy = tunnel device present, reachable in-netns AND ≠ host IP."""
+    if not _tunnel_device_present(name):
+        return "", False
     ip = exit_ip(name)
     if not ip:
         return "", False  # fail-closed: no egress through the tunnel

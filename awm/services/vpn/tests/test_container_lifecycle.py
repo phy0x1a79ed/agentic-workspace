@@ -94,6 +94,18 @@ def test_a_run_that_outlives_the_cli_is_judged_by_what_the_daemon_did(harness):
         "an exit that came up must not be torn down for the CLI's timeout"
 
 
+def test_a_container_with_no_tunnel_yet_is_not_healthy(monkeypatch):
+    # Before the dial finishes, curl still answers with an IP that can pass as an exit.
+    from awm.vpn import container
+
+    device = {"returncode": 1}
+    monkeypatch.setattr(container, "_docker", lambda args, **kw: subprocess.CompletedProcess(args, device["returncode"], "9.9.9.9\n", ""))
+    monkeypatch.setattr(container, "host_ip", lambda: "")
+    assert container.leak_check("awm-vpn-ubc") == ("", False)
+    device["returncode"] = 0
+    assert container.leak_check("awm-vpn-ubc") == ("9.9.9.9", True)
+
+
 def test_a_remove_that_never_finishes_says_so(harness):
     container, install, _ = harness
 
