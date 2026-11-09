@@ -131,7 +131,8 @@ async function swarmCall(origin, path, body, method = "POST") {
 function toast(text, bad = false) {
   const t = el("div", { class: "awm-toast" + (bad ? " bad" : "") }, text);
   document.body.append(t);
-  t.addEventListener("animationend", () => t.remove());
+  // Script-driven, because Trilium's motion setting strips CSS animations.
+  t.animate([{ opacity: 1, offset: 0.85 }, { opacity: 0 }], { duration: 4000 }).finished.then(() => t.remove());
 }
 
 // -- the node dropdown (queue.md R63 item 1) ----------------------------------------------------------

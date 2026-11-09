@@ -387,8 +387,7 @@ async fn card_action(State(v): S, method: Method, h: HeaderMap, Path((task_id, a
     let store = v.approver.store.clone();
     let out = match action.as_str() {
         "close" => blocking(move || store.card_close(&task_id)).await,
-        "reject" => blocking(move || store.card_reject(&task_id)).await,
-        _ => return deny("unknown_action", "a card closes or rejects"),
+        _ => return deny("unknown_action", "a card closes"),
     };
     ok(out.map_err(ApproverError::from))
 }
@@ -403,6 +402,14 @@ async fn seat_rc(State(v): S, method: Method, h: HeaderMap, Json(b): Json<Value>
         Ok(out) => Json(out).into_response(),
         Err(e) => deny("failed", &e.to_string()),
     }
+}
+
+async fn service_toggle(State(v): S, method: Method, h: HeaderMap, Json(b): Json<Value>) -> Response {
+    let d = match everyday(&v, &method, &h, "service_toggle") {
+        Ok(d) => d,
+        Err(r) => return r,
+    };
+    ok(v.approver.service_toggle(&d, sv(&b, "node"), sv(&b, "service"), b.get("on").is_some_and(crate::service::truthy)).await)
 }
 
 async fn request_reject(State(v): S, method: Method, h: HeaderMap, Path(request_id): Path<String>) -> Response {
@@ -512,6 +519,7 @@ pub fn router(v: Arc<Vault>) -> Router {
         .route("/api/agent", post(agent))
         .route("/api/card/{task_id}/{action}", post(card_action))
         .route("/api/seat/remote_control", post(seat_rc))
+        .route("/api/service/toggle", post(service_toggle))
         .route("/api/request/{request_id}", get(request_view))
         .route("/api/request/{request_id}/options", post(request_options))
         .route("/api/request/{request_id}/approve", post(request_approve))

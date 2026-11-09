@@ -596,13 +596,13 @@ async fn an_empty_seat_switches_without_a_call_and_a_failed_live_switch_keeps_th
 }
 
 #[tokio::test]
-async fn adoption_keeps_the_live_session_on_and_a_paused_occupied_seat_still_delivers() {
+async fn adoption_switches_remote_control_off_and_a_paused_occupied_seat_still_delivers() {
     let mut t = T::new(true);
     t.world.w().up.insert("agent-a".into());
     t.seats.adopt(&decl(), "agent-a", "s").await;
     let s = t.seat().await;
-    assert_eq!((s.state, s.adopted, s.remote_control, s.rc_url.as_str()), (State::Occupied, true, true, "https://claude.ai/code/agent-a"));
-    assert!(t.world.w().switched.is_empty(), "the live session is untouched");
+    assert_eq!((s.state, s.adopted, s.remote_control, s.rc_url.as_str()), (State::Occupied, true, false, ""));
+    assert_eq!(t.world.w().switched, [("agent-a".to_string(), false, "seat:slack-dm-tester".to_string())], "the live session follows the switch");
     t.send("to the adopted seat").await;
     assert_eq!(t.world.got("agent-a"), ["to the adopted seat"]);
 }

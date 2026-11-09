@@ -392,7 +392,10 @@ impl Gateway {
 
     /// Every provider of a contract at a major right now (R117 item 4).
     pub fn providers(&self, contract: &str, major: u32) -> Vec<Owner> {
-        loader::providers(&self.name_table(), contract, major)
+        let enabled = self.tools();
+        let mut owners = loader::providers(&self.name_table(), contract, major);
+        owners.retain(|o| o.peer.is_some() || enabled.contains_key(&o.name));
+        owners
     }
 
     /// The live table as `awm table` shows it to `caller`.

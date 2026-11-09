@@ -32,7 +32,7 @@ def portals_from_env() -> dict[str, str]:
 
 
 def _node(row: dict[str, Any], portals: dict[str, str]) -> dict[str, Any]:
-    """One ``telemetry nodes`` row, as the pages read it. ``uses`` are the tools the node can use."""
+    """One ``telemetry nodes`` row, as the pages read it. ``enabled`` is None from an older node."""
     name = text(row.get("node") or row.get("name"))
     portal = text(row.get("portal"))
     if not portal:
@@ -43,13 +43,14 @@ def _node(row: dict[str, Any], portals: dict[str, str]) -> dict[str, Any]:
                  "task_id": text(s.get("task_id")), "kind": text(s.get("kind")),
                  "remote_control": bool(s.get("remote_control"))}
                 for s in row.get("sessions") or [] if isinstance(s, dict)]
-    uses = row.get("uses") if row.get("uses") is not None else row.get("services")
     return {"name": name, "role": text(row.get("role")), "portal": portal,
             "last_seen": row.get("last_seen"), "sessions": sessions,
             "sessions_7d": int(row.get("sessions_7d") or 0),
-            "services": [{"service": text(u.get("tool") or u.get("service")),
-                          "last_checked": u.get("last_checked"), "last_used": u.get("last_used")}
-                         for u in uses or [] if isinstance(u, dict) and u.get("available", True)]}
+            "services": [{"service": text(u.get("service")), "plugin": text(u.get("plugin")),
+                          "up": bool(u.get("up")), "enabled": u.get("enabled"), "tools": u.get("tools") or []}
+                         for u in row.get("services") or [] if isinstance(u, dict)],
+            "plugins": [{"name": text(p.get("name")), "version": text(p.get("version")), "core": bool(p.get("core"))}
+                        for p in row.get("plugins") or [] if isinstance(p, dict)]}
 
 
 def agent_nodes(nodes: list[dict[str, Any]]) -> list[str]:

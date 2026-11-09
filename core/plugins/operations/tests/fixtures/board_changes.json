@@ -33,9 +33,11 @@
           "role": "main",
           "active": true,
           "node": "mizar",
-          "rc_url": "https://rc.example.test/s1",
+          "rc_url": null,
           "started": 1800000001.0,
-          "ended": null
+          "ended": null,
+          "project": null,
+          "scope": null
         },
         {
           "session_id": "cc3333333333333333333333333333333a",
@@ -46,7 +48,9 @@
           "node": "mizar",
           "rc_url": null,
           "started": 1800000007.0,
-          "ended": null
+          "ended": null,
+          "project": null,
+          "scope": null
         }
       ],
       "source_note": null,
@@ -140,7 +144,9 @@
           "node": "lyra",
           "rc_url": null,
           "started": 1800000009.0,
-          "ended": 1800000010.0
+          "ended": 1800000010.0,
+          "project": null,
+          "scope": null
         }
       ],
       "source_note": null,

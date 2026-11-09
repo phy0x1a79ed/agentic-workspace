@@ -11,8 +11,8 @@ use serde_json::{json, Map, Value};
 use crate::approver::Approver;
 use crate::store::{Open, Seat, Store};
 
-pub const VERBS: [&str; 21] = [
-    "task_open", "task_attach", "task_join", "task_report", "task_session_end", "task_claim", "task_detail", "task_message",
+pub const VERBS: [&str; 22] = [
+    "task_autotitle", "task_open", "task_attach", "task_join", "task_report", "task_session_end", "task_claim", "task_detail", "task_message",
     "task_messages", "task_for_session", "task_sessions", "task_get", "task_list", "approval_request", "approval_get", "approval_wait",
     "approval_cancel", "order_pull", "order_done", "keys", "ops_post",
 ];
@@ -30,7 +30,7 @@ fn s(a: &Value, k: &str) -> Option<String> {
 }
 
 fn seat(a: &Value) -> Seat {
-    Seat { node: s(a, "node"), name: s(a, "name"), rc_url: s(a, "rc_url"), job: s(a, "job") }
+    Seat { node: s(a, "node"), name: s(a, "name"), job: s(a, "job") }
 }
 
 fn need(a: &Value, k: &str) -> Result<String, String> {
@@ -67,7 +67,7 @@ impl Home {
                 let o = Open {
                     session_id: s(&a, "session_id"), task_id: s(&a, "task_id"), kind: s(&a, "kind"), peer: s(&a, "peer"), node: s(&a, "node"),
                     section: s(&a, "section"), status: s(&a, "status"), tags, meta: a.get("meta").and_then(Value::as_object).cloned(),
-                    name: s(&a, "name"), rc_url: s(&a, "rc_url"), job: s(&a, "job"), source_note: None,
+                    name: s(&a, "name"), job: s(&a, "job"), source_note: None,
                 };
                 blocking(move || q(st.task_open(&title, o, op.as_deref()))).await?
             }
@@ -83,7 +83,12 @@ impl Home {
             "task_report" => {
                 let t = need(&a, "task_id")?;
                 blocking(move || q(st.task_report(&t, s(&a, "session_id").as_deref(), &s(&a, "state").unwrap_or_default(),
-                                                  s(&a, "reason").as_deref(), s(&a, "rc_url").as_deref(), op.as_deref()))).await?
+                                                  s(&a, "reason").as_deref(), op.as_deref()))).await?
+            }
+            "task_autotitle" => {
+                let t = need(&a, "task_id")?;
+                let from_plan = a["from_plan"].as_bool().unwrap_or(false);
+                blocking(move || q(st.task_autotitle(&t, &s(&a, "title").unwrap_or_default(), from_plan, op.as_deref()))).await?
             }
             "task_session_end" => {
                 let (t, sid) = (need(&a, "task_id")?, need(&a, "session_id")?);
@@ -138,6 +143,9 @@ impl Home {
                     }
                 }
                 let kind = need(&a, "kind")?;
+                if kind == crate::api::VAULT_ONLY_KIND {
+                    return Err(format!("{kind} opens only from the Ops page"));
+                }
                 let minutes = a.get("minutes").and_then(|m| m.as_i64().or_else(|| m.as_str().and_then(|s| s.parse().ok()))).unwrap_or(15);
                 ap.approval_request(&kind, s(&a, "node").as_deref(), &s(&a, "reason").unwrap_or_default(), minutes,
                                     a.get("payload").cloned().unwrap_or(Value::Null), s(&a, "session_id").as_deref(), s(&a, "request_id").as_deref())

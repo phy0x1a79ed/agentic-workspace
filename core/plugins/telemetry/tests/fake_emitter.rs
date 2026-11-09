@@ -72,14 +72,15 @@ impl Probe for FakeProbe {
                 role: Some("home".into()),
                 portal: Some("https://mizar.example:8443".into()),
                 sessions: vec![Session { job: "boot".into(), link: Some("https://claude.ai/code/boot".into()), ..Session::default() }],
-                services: vec![ServiceRow { service: "journal".into(), plugin: Some("journal".into()), tools: vec!["journal".into()], up: true }],
+                services: vec![ServiceRow { service: "journal".into(), plugin: Some("journal".into()), tools: vec!["journal".into()], up: true, enabled: Some(true) }],
                 tools: vec![ToolRow { tool: "journal".into(), host: None }, ToolRow { tool: "social".into(), host: Some("alcor".into()) }],
+                plugins: vec![],
             })
         })
     }
 
     fn tools(&self) -> BoxFuture<'_, anyhow::Result<Item>> {
-        Box::pin(async { Ok(Item::Tools { services: vec![], tools: vec![ToolRow { tool: "journal".into(), host: None }] }) })
+        Box::pin(async { Ok(Item::Tools { services: vec![], tools: vec![ToolRow { tool: "journal".into(), host: None }], plugins: vec![] }) })
     }
 }
 

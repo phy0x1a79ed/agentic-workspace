@@ -24,6 +24,9 @@ pub fn parse_ts(v: Option<&Value>) -> Option<Ts> {
     }
 }
 
+/// The name cch gives a warm pool session until it is claimed.
+const WARM_PREFIX: &str = "<warm ";
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Session {
     pub job: String,
@@ -65,6 +68,19 @@ pub struct ServiceRow {
     pub tools: Vec<String>,
     #[serde(default)]
     pub up: bool,
+    /// None from a node that predates the field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+}
+
+/// One plugin a node has loaded.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct PluginRow {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    #[serde(default)]
+    pub core: bool,
 }
 
 /// One tool a node can use: its own, or a singleton behind another host's door.
@@ -92,6 +108,8 @@ pub enum Item {
         services: Vec<ServiceRow>,
         #[serde(default)]
         tools: Vec<ToolRow>,
+        #[serde(default)]
+        plugins: Vec<PluginRow>,
     },
     /// One `reflection/sessions` event.
     Session { event: String, session: Session, #[serde(default)] ts: Option<Ts> },
@@ -100,7 +118,7 @@ pub enum Item {
     /// The newest use of one tool on the node, coalesced from `awm/usage`.
     Usage { tool: String, #[serde(default)] last_used: Option<Ts>, #[serde(default)] last_ok: Option<Ts> },
     /// The node's services and tools again, after an `awm/plugins` change.
-    Tools { services: Vec<ServiceRow>, tools: Vec<ToolRow> },
+    Tools { services: Vec<ServiceRow>, tools: Vec<ToolRow>, #[serde(default)] plugins: Vec<PluginRow> },
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -112,6 +130,8 @@ pub struct ServiceState {
     pub up: bool,
     #[serde(default)]
     pub since: Option<Ts>,
+    #[serde(default)]
+    pub enabled: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -146,6 +166,8 @@ pub struct NodeState {
     pub services: BTreeMap<String, ServiceState>,
     #[serde(default)]
     pub tools: BTreeMap<String, ToolUse>,
+    #[serde(default)]
+    pub plugins: Vec<PluginRow>,
 }
 
 /// A session that went live or went, for `telemetry/sessions`.
@@ -261,10 +283,11 @@ impl Roster {
                     "portal": n.portal,
                     "last_seen": n.last_seen,
                     "sessions_7d": self.sessions_in_window(name, now),
-                    "sessions": n.sessions.values().collect::<Vec<_>>(),
+                    "sessions": n.sessions.values().filter(|s| !s.name.as_deref().is_some_and(|x| x.starts_with(WARM_PREFIX))).collect::<Vec<_>>(),
                     "services": n.services.iter().map(|(s, st)| json!({
-                        "service": s, "plugin": st.plugin, "tools": st.tools, "up": st.up, "since": st.since,
+                        "service": s, "plugin": st.plugin, "tools": st.tools, "up": st.up, "since": st.since, "enabled": st.enabled,
                     })).collect::<Vec<_>>(),
+                    "plugins": n.plugins,
                     "uses": n.tools.iter().map(|(t, u)| json!({
                         "tool": t, "host": u.host, "available": u.available,
                         "last_checked": u.last_checked, "last_used": u.last_used,
@@ -349,6 +372,13 @@ fn gone(node: &str, s: &Session, ts: Ts) -> SessionEvent {
     SessionEvent { event: "gone", ..live(node, s, ts) }
 }
 
+fn set_plugins(state: &mut NodeState, rows: Vec<PluginRow>, out: &mut Applied) {
+    if rows != state.plugins {
+        state.plugins = rows;
+        out.changed.insert("nodes");
+    }
+}
+
 fn set_services(state: &mut NodeState, rows: Vec<ServiceRow>, now: Ts, out: &mut Applied) {
     let next: BTreeMap<String, ServiceState> = rows
         .into_iter()
@@ -357,7 +387,7 @@ fn set_services(state: &mut NodeState, rows: Vec<ServiceRow>, now: Ts, out: &mut
                 Some(old) if old.up == r.up => old.since,
                 _ => Some(now),
             };
-            (r.service, ServiceState { plugin: r.plugin, tools: r.tools, up: r.up, since })
+            (r.service, ServiceState { plugin: r.plugin, tools: r.tools, up: r.up, since, enabled: r.enabled })
         })
         .collect();
     if next != state.services {
@@ -385,7 +415,8 @@ fn set_tools(state: &mut NodeState, rows: Vec<ToolRow>, now: Ts, out: &mut Appli
 
 fn apply_item(state: &mut NodeState, node: &str, item: Item, now: Ts, out: &mut Applied) {
     match item {
-        Item::Hello { role, portal, sessions, services, tools } => {
+        Item::Hello { role, portal, sessions, services, tools, plugins } => {
+            set_plugins(state, plugins, out);
             if (state.role.as_ref(), state.portal.as_ref()) != (role.as_ref(), portal.as_ref()) {
                 (state.role, state.portal) = (role, portal);
                 out.changed.insert("nodes");
@@ -467,7 +498,8 @@ fn apply_item(state: &mut NodeState, node: &str, item: Item, now: Ts, out: &mut 
                 out.changed.insert("usage");
             }
         }
-        Item::Tools { services, tools } => {
+        Item::Tools { services, tools, plugins } => {
+            set_plugins(state, plugins, out);
             set_services(state, services, now, out);
             set_tools(state, tools, now, out);
         }
@@ -491,9 +523,21 @@ mod tests {
             role: Some("home".into()),
             portal: Some("https://mizar:8443".into()),
             sessions,
-            services: vec![ServiceRow { service: "social".into(), plugin: Some("social".into()), tools: vec!["social".into()], up: true }],
+            services: vec![ServiceRow { service: "social".into(), plugin: Some("social".into()), tools: vec!["social".into()], up: true, enabled: Some(true) }],
             tools: vec![ToolRow { tool: "journal".into(), host: None }, ToolRow { tool: "social".into(), host: Some("alcor".into()) }],
+            plugins: vec![],
         }
+    }
+
+    #[test]
+    fn a_warm_session_is_not_listed_and_a_claimed_one_is() {
+        let mut r = Roster::default();
+        let now = t("2026-01-01T00:00:00Z");
+        let named = |job: &str, name: &str| Session { job: job.into(), name: Some(name.into()), ..Session::default() };
+        r.apply("n", vec![hello(vec![named("w", "<warm pika>"), named("c", "claimed")])], now);
+        let v = r.nodes_view(None, now);
+        assert_eq!(v["nodes"][0]["sessions"].as_array().unwrap().iter().map(|s| s["job"].as_str().unwrap()).collect::<Vec<_>>(), ["c"]);
+        assert_eq!(v["nodes"][0]["services"][0]["enabled"], true);
     }
 
     #[test]

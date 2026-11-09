@@ -213,10 +213,10 @@ fn board_changes_pages_by_event_with_one_card_per_task() {
     let st = Store::open_with_clock(dir.path().join("q.db"), true, clock.clock()).unwrap();
     let o = |id: &str, sid: Option<&str>| Open { task_id: Some(id.into()), session_id: sid.map(str::to_string), ..Open::default() };
     st.task_open("one", o("T0000001", Some(S1)), None).unwrap();
-    st.task_report("T0000001", Some(S1), "blocked", Some("why"), None, None).unwrap();
+    st.task_report("T0000001", Some(S1), "blocked", Some("why"), None).unwrap();
     st.task_open("two", o("T0000002", None), None).unwrap();
     st.task_message("T0000001", "hi", None, None, None, None).unwrap();
-    st.task_report("T0000002", None, "working", None, None, None).unwrap();
+    st.task_report("T0000002", None, "working", None, None).unwrap();
     let ids = |v: &Value| v["cards"].as_array().unwrap().iter().map(|c| s(&c["task_id"])).collect::<Vec<_>>();
 
     let p1 = st.board_changes(0, Some(3)).unwrap();
@@ -234,7 +234,7 @@ fn board_changes_pages_by_event_with_one_card_per_task() {
 
 const CARD_KEYS: [&str; 15] = ["task_id", "title", "kind", "section", "status", "peer", "tags", "meta", "created", "updated", "done_at",
                                "parent_task", "sessions", "source_note", "approvals"];
-const SESSION_KEYS: [&str; 9] = ["session_id", "job", "name", "role", "active", "node", "rc_url", "started", "ended"];
+const SESSION_KEYS: [&str; 11] = ["session_id", "job", "name", "role", "active", "node", "rc_url", "started", "ended", "project", "scope"];
 
 fn key_set(v: &Value) -> BTreeSet<String> {
     v.as_object().unwrap().keys().cloned().collect()
@@ -256,7 +256,7 @@ async fn fixture_board() -> Value {
     at(1.0);
     st.task_open("Fix the tunnel", Open {
         task_id: Some("T0000001".into()), session_id: Some(S1.into()), node: Some("mizar".into()), name: Some("fix-tunnel".into()),
-        rc_url: Some("https://rc.example.test/s1".into()), job: Some("job-a".into()), tags: Some(vec!["infra".into()]), ..Open::default()
+        job: Some("job-a".into()), tags: Some(vec!["infra".into()]), ..Open::default()
     }, None).unwrap();
     at(2.0);
     st.task_detail("T0000001", Some("# Fix the tunnel\n\nsteps"), Some(&[json!({"id": "1", "subject": "port hooks", "status": "in_progress"})]), None).unwrap();
@@ -336,7 +336,7 @@ fn a_gone_session_leaves_its_lone_card_stale() {
     let (_d, st) = fresh();
     seated(&st, "T0000001", &sid(1), "mizar", "job-a");
     seated(&st, "T0000002", &sid(2), "lyra", "job-b");
-    st.task_report("T0000002", Some(&sid(2)), "blocked", Some("a key"), None, None).unwrap();
+    st.task_report("T0000002", Some(&sid(2)), "blocked", Some("a key"), None).unwrap();
     assert_eq!(st.session_gone(Some(&sid(1)), None, "mizar").unwrap(), ["T0000001"]);
     assert_eq!(at(&st, "T0000001"), ("stale".into(), Value::Null));
     assert_eq!(st.task_sessions("T0000001").unwrap()[0]["active"], false);
@@ -380,6 +380,43 @@ fn a_live_session_brings_its_card_back_and_close_files_a_stale_one() {
 }
 
 #[test]
+fn session_details_copy_the_roster_onto_active_rows() {
+    let (_d, st) = fresh();
+    seated(&st, "T0000001", &sid(1), "mizar", "job-a");
+    let live = |link: Option<&str>| HashMap::from([("mizar".to_string(), vec![LiveSession {
+        job: Some("job-a".into()), link: link.map(str::to_string), project: Some("awm".into()), scope: Some("dev".into()), ..LiveSession::default() }])]);
+    let row = |st: &Store| st.task_get("T0000001").unwrap()["sessions"][0].clone();
+    st.session_details(&live(Some("https://rc.example.test/a"))).unwrap();
+    assert_eq!((row(&st)["rc_url"].clone(), row(&st)["project"].clone(), row(&st)["scope"].clone()), (json!("https://rc.example.test/a"), json!("awm"), json!("dev")));
+    let mark = st.board_changes(0, Some(100)).unwrap()["mark"].clone();
+    st.session_details(&live(Some("https://rc.example.test/a"))).unwrap();
+    assert_eq!(st.board_changes(0, Some(100)).unwrap()["mark"], mark, "an unchanged roster writes nothing");
+    st.session_details(&live(None)).unwrap();
+    assert_eq!(row(&st)["rc_url"], json!(null), "Remote Control went off");
+}
+
+#[test]
+fn an_agent_card_takes_a_generated_title_until_a_name_arrives() {
+    let (_d, st) = fresh();
+    let t = s(&st.agent_card("mizar", None).unwrap()["task_id"]);
+    let title = |st: &Store| s(&st.task_get(&t).unwrap()["title"]);
+    st.task_autotitle(&t, "first prompt", false, None).unwrap();
+    assert_eq!(title(&st), "first prompt");
+    st.task_autotitle(&t, "second prompt", false, None).unwrap();
+    assert_eq!(title(&st), "first prompt", "only the first prompt titles a card");
+    st.task_autotitle(&t, "Plan heading", true, None).unwrap();
+    assert_eq!(title(&st), "Plan heading");
+    st.task_autotitle(&t, "Later heading", true, None).unwrap();
+    assert_eq!(title(&st), "Plan heading", "a plan heading is final");
+    let u = s(&st.agent_card("mizar", None).unwrap()["task_id"]);
+    st.task_attach(&u, &sid(9), "main", Seat { node: Some("mizar".into()), ..Seat::default() }, None).unwrap();
+    st.task_autotitle(&u, "from prompt", false, None).unwrap();
+    st.session_renamed(Some(&sid(9)), None, "mizar", "real-name").unwrap();
+    st.task_autotitle(&u, "A heading", true, None).unwrap();
+    assert_eq!(s(&st.task_get(&u).unwrap()["title"]), "real-name", "a rename wins over a plan heading");
+}
+
+#[test]
 fn reconcile_follows_the_roster_on_the_nodes_it_lists() {
     let (_d, st) = fresh();
     seated(&st, "T0000001", &sid(1), "mizar", "job-a");
@@ -388,8 +425,8 @@ fn reconcile_follows_the_roster_on_the_nodes_it_lists() {
     seated(&st, "T0000004", &sid(4), "mizar", "job-d");
     st.session_gone(Some(&sid(2)), None, "mizar").unwrap();
     let roster = HashMap::from([("mizar".to_string(), vec![
-        LiveSession { session_id: Some(sid(2)), job: Some("job-b".into()), name: None },
-        LiveSession { session_id: None, job: Some("job-d".into()), name: None },
+        LiveSession { session_id: Some(sid(2)), job: Some("job-b".into()), name: None, ..LiveSession::default() },
+        LiveSession { session_id: None, job: Some("job-d".into()), name: None, ..LiveSession::default() },
     ])]);
     let out = st.reconcile(&roster).unwrap();
     assert_eq!(out, json!({"stale": ["T0000001"], "working": ["T0000002"]}));
@@ -407,7 +444,7 @@ fn a_card_takes_the_name_of_its_main_session() {
     assert_eq!(st.session_renamed(Some(&sid(1)), None, "mizar", "new-agent/section").unwrap(), ["T0000001"]);
     assert_eq!(title(), "new-agent/section");
     assert!(st.session_renamed(Some(&sid(1)), None, "mizar", "new-agent/section").unwrap().is_empty(), "the same name is no change");
-    let roster = HashMap::from([("mizar".to_string(), vec![LiveSession { session_id: None, job: Some("job-a".into()), name: Some("while-offline".into()) }])]);
+    let roster = HashMap::from([("mizar".to_string(), vec![LiveSession { session_id: None, job: Some("job-a".into()), name: Some("while-offline".into()), ..LiveSession::default() }])]);
     st.reconcile(&roster).unwrap();
     assert_eq!(title(), "while-offline", "a rename missed while disconnected lands at reconcile");
     st.task_attach("T0000001", &sid(2), "worker", Seat { node: Some("mizar".into()), job: Some("job-b".into()), ..Seat::default() }, None).unwrap();
@@ -433,10 +470,10 @@ fn the_event_hook_fires_once_per_event_after_commit() {
     assert!(got.iter().all(|g| g.1 == 2), "each announcement follows the commit of its whole write");
     st.task_open("x", o(), Some("mizar:1")).unwrap();
     assert!(st.task_open("x", o(), None).is_err());
-    assert!(st.task_report("nosuchid", None, "done", None, None, None).is_err());
-    assert!(st.task_report("T0000001", None, "dragged", None, None, None).is_err());
+    assert!(st.task_report("nosuchid", None, "done", None, None).is_err());
+    assert!(st.task_report("T0000001", None, "dragged", None, None).is_err());
     assert_eq!(seen.lock().unwrap().len(), 2, "a replayed or refused write announces nothing");
-    st.task_report("T0000001", Some(S1), "blocked", None, None, None).unwrap();
+    st.task_report("T0000001", Some(S1), "blocked", None, None).unwrap();
     st.ops_post("vpn", "mizar", "t", "b", None).unwrap();
     let seqs: Vec<i64> = seen.lock().unwrap().iter().map(|g| g.0.seq).collect();
     assert_eq!(seqs, [1, 2, 3], "seq rises, and an Ops notice is no card event");

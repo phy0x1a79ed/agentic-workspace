@@ -1,7 +1,7 @@
 //! The session verbs (queue.md R145): request_human, the urgent DM, Tony's prompt, the hooks,
-//! approvals, Arbutus and intake, and the service's caller gates. Ported from test_front.py
+//! approvals, Arbutus, and the service's caller gates. Ported from test_front.py
 //! and test_plugin_callers.py with the approved revision: card_url for panel_url, approvals
-//! on the requester's own card, intake in Needs you, ops_notes and jobs on session rows.
+//! on the requester's own card, ops_notes and jobs on session rows.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -190,6 +190,16 @@ async fn tonys_prompt_moves_the_card_to_working() {
 }
 
 #[tokio::test]
+async fn the_first_prompt_moves_and_titles_an_agent_card() {
+    let h = harness();
+    let t = h.env.store.agent_card("mizar", None).unwrap()["task_id"].clone();
+    assert!(ok(&h.call("task_attach", pid(11), json!({"task_id": t, "session_id": A, "role": "main"})).await));
+    assert_eq!(h.card(&t)["section"], "needs_you");
+    assert_eq!(h.call("hook_prompt", pid(11), json!({"prompt": "fix the toast"})).await["moved"], true);
+    assert_eq!((h.card(&t)["section"].clone(), h.card(&t)["title"].clone()), (json!("working"), json!("fix the toast")));
+}
+
+#[tokio::test]
 async fn join_tells_the_main_session() {
     let h = harness();
     let t = h.call("task_open", pid(11), json!({"title": "main work", "name": "fix-tunnel"})).await["task_id"].clone();
@@ -318,7 +328,7 @@ async fn claim_moves_a_needs_you_card_to_working() {
     assert!(ok(&out) && out["section"] == "working", "{out}");
     let card = h.env.store.task_get(&t).unwrap();
     assert_eq!((s(&card["kind"]), s(&card["sessions"][0]["role"]), s(&card["sessions"][0]["job"])), ("task".into(), "main".into(), "job-a".into()));
-    h.env.store.task_report(&t, Some(A), "done", None, None, None).unwrap();
+    h.env.store.task_report(&t, Some(A), "done", None, None).unwrap();
     assert!(!ok(&h.call("claim_task", pid(22), json!({"task_id": t})).await), "History is not claimable");
 }
 
@@ -340,34 +350,6 @@ async fn an_urgent_block_reminds_tony_once() {
     h.clock.advance(61.0);
     assert_eq!(h.front.remind_due().await, 0);
     assert_eq!(h.card(&out["task_id"])["section"], "working");
-}
-
-#[tokio::test]
-async fn a_board_post_becomes_one_needs_you_card_and_its_thread_reaches_the_session() {
-    let h = harness();
-    let post = json!({"board_card": "c0ffee", "sender": "caviar/agent", "title": "help with x", "body": "details"});
-    assert!(!ok(&h.call("intake_post", pid(11), post.clone()).await), "sessions cannot post intake");
-    let out = h.call("intake_post", none(), post.clone()).await;
-    assert_eq!(out["opened"], true);
-    let tid = s(&out["task_id"]);
-    assert!(h.out.dms().last().unwrap().contains(&format!("claim task {tid}")));
-    let card = h.card(&out["task_id"]);
-    assert_eq!((s(&card["section"]), s(&card["status"]), card["tags"].clone(), s(&card["title"])),
-               ("needs_you".into(), "intake".into(), json!(["board"]), "caviar/agent: help with x".into()));
-    assert_eq!(card["meta"], json!({"board_card": "c0ffee", "from": "caviar/agent"}));
-    assert_eq!(h.env.store.task_messages(&tid, 0).unwrap().iter().map(|m| s(&m["body"])).collect::<Vec<_>>(), ["details"]);
-    let again = h.call("intake_post", none(), post).await;
-    assert_eq!(again, json!({"ok": true, "task_id": tid, "opened": false}));
-    assert_eq!(h.out.dms().len(), 1);
-    h.call("claim_task", pid(11), json!({"task_id": tid})).await;
-    let said = h.call("intake_message", none(), json!({"board_card": "c0ffee", "sender": "caviar/agent", "body": "any news?"})).await;
-    assert_eq!(said["told"], true);
-    assert_eq!(h.out.told().last().unwrap().1, "fix-tunnel");
-    let reply = h.call("intake_post", none(), json!({"board_card": "c0ffee2", "sender": "caviar/agent", "title": "re: help", "body": "more", "reply_to": "c0ffee"})).await;
-    assert_eq!(reply["task_id"], json!(tid));
-    assert_eq!(h.env.store.task_messages(&tid, 0).unwrap().last().unwrap()["body"], "more");
-    let nope = h.call("intake_message", none(), json!({"board_card": "nope", "sender": "x", "body": "y"})).await;
-    assert_eq!(nope["task_id"], Value::Null);
 }
 
 #[tokio::test]

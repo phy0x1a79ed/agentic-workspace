@@ -57,10 +57,23 @@ def ensure_tasks(fence: Fence, parent: str = ids.BOOK_ID) -> None:
     if fence.note(ids.TASKS_ID) is None:
         fence.create(parent, "tasks", "book", note_id=ids.TASKS_ID,
                      labels={**ids.MANAGED, "swarmTasks": ""})
+    elif parent in fence.roots:
+        fence.nest_root(ids.TASKS_ID, parent)
     for section, note_id, title in ids.COLUMNS:
         if fence.note(note_id) is None:
             fence.create(ids.TASKS_ID, title, "book", note_id=note_id,
                          labels={**ids.MANAGED, "swarmColumn": section})
+
+
+def _fold_stale_column(fence: Fence) -> None:
+    if fence.note(ids.LEGACY_STALE_ID) is None:
+        return
+    history = ids.COLUMN_IDS["history"]
+    for kid in fence.children(ids.LEGACY_STALE_ID):
+        labels = {a["name"]: a.get("value") for a in kid.get("attributes") or [] if a.get("type") == "label"}
+        fence.update(kid["noteId"], labels={"section": "history", "status": "stale", "historyAt": labels.get("updatedAt")})
+        fence.move(kid["noteId"], history)
+    fence.delete(ids.LEGACY_STALE_ID)
 
 
 def install(fence: Fence, parent: str = ids.BOOK_ID) -> dict[str, Any]:
@@ -79,6 +92,7 @@ def install(fence: Fence, parent: str = ids.BOOK_ID) -> dict[str, Any]:
           labels=ids.MANAGED)
     _code(fence, ids.OPS_PAGE_ID, ids.OPS_SCRIPT_ID, "ops.js", ids.FRONTEND_JS, _asset("ops.js"))
     fence.relation(ids.OPS_ID, "renderNote", ids.OPS_PAGE_ID)
-    ensure_tasks(fence, parent)
+    ensure_tasks(fence, ids.ROOT_ID)
+    _fold_stale_column(fence)
     return {"board": ids.ROOT_ID, "ops": ids.OPS_ID, "tasks": ids.TASKS_ID,
             "bot": ids.BOT_SCRIPT_ID, "alcor_origin": origin}

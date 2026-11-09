@@ -150,6 +150,9 @@ pub struct LiveSession {
     pub session_id: Option<String>,
     pub job: Option<String>,
     pub name: Option<String>,
+    pub link: Option<String>,
+    pub project: Option<String>,
+    pub scope: Option<String>,
 }
 
 /// A new card's fields beyond its title.
@@ -165,7 +168,6 @@ pub struct Open {
     pub tags: Option<Vec<String>>,
     pub meta: Option<Map<String, Value>>,
     pub name: Option<String>,
-    pub rc_url: Option<String>,
     pub job: Option<String>,
     pub source_note: Option<String>,
 }
@@ -175,7 +177,6 @@ pub struct Open {
 pub struct Seat {
     pub node: Option<String>,
     pub name: Option<String>,
-    pub rc_url: Option<String>,
     pub job: Option<String>,
 }
 
@@ -282,7 +283,7 @@ fn raw_task(db: &Connection, task_id: &str) -> Result<Option<TaskRow>> {
 
 fn sessions_of(db: &Connection, task_id: &str) -> Result<Vec<Value>> {
     let mut st = db.prepare(
-        "SELECT session_id, job, name, role, active, node, rc_url, started, ended FROM sessions WHERE task_id=? ORDER BY started",
+        "SELECT session_id, job, name, role, active, node, rc_url, started, ended, project, scope FROM sessions WHERE task_id=? ORDER BY started",
     )?;
     let rows = st.query_map([task_id], |r| {
         Ok(json!({
@@ -290,7 +291,8 @@ fn sessions_of(db: &Connection, task_id: &str) -> Result<Vec<Value>> {
             "name": r.get::<_, Option<String>>(2)?, "role": r.get::<_, String>(3)?,
             "active": r.get::<_, i64>(4)? != 0, "node": r.get::<_, Option<String>>(5)?,
             "rc_url": r.get::<_, Option<String>>(6)?, "started": r.get::<_, f64>(7)?,
-            "ended": r.get::<_, Option<f64>>(8)?,
+            "ended": r.get::<_, Option<f64>>(8)?, "project": r.get::<_, Option<String>>(9)?,
+            "scope": r.get::<_, Option<String>>(10)?,
         }))
     })?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -418,11 +420,11 @@ impl Store {
             return refuse(format!("role must be one of {ROLES:?}, not {role:?}"));
         }
         tx.tx.execute(
-            "INSERT INTO sessions(session_id, task_id, role, node, name, rc_url, job, started) VALUES (?,?,?,?,?,?,?,?) \
+            "INSERT INTO sessions(session_id, task_id, role, node, name, job, started) VALUES (?,?,?,?,?,?,?) \
              ON CONFLICT(session_id) DO UPDATE SET task_id=excluded.task_id, role=excluded.role, active=1, ended=NULL, \
              node=COALESCE(excluded.node, node), name=COALESCE(excluded.name, name), \
-             rc_url=COALESCE(excluded.rc_url, rc_url), job=COALESCE(excluded.job, job)",
-            params![session_id, task_id, role, seat.node, seat.name, seat.rc_url, seat.job, tx.now],
+             job=COALESCE(excluded.job, job)",
+            params![session_id, task_id, role, seat.node, seat.name, seat.job, tx.now],
         )?;
         tx.event(task_id, "session", json!({"session_id": session_id, "role": role}))
     }
@@ -458,7 +460,7 @@ impl Store {
             )?;
             tx.event(&tid, "open", json!({"title": title, "section": section, "status": o.status}))?;
             if let Some(sid) = o.session_id.as_deref().filter(|s| !s.is_empty()) {
-                let seat = Seat { node: o.node.clone(), name: o.name.clone(), rc_url: o.rc_url.clone(), job: o.job.clone() };
+                let seat = Seat { node: o.node.clone(), name: o.name.clone(), job: o.job.clone() };
                 Store::add_session(tx, &tid, sid, "main", &seat)?;
             }
             Ok(json!({"task_id": tid}))
@@ -524,7 +526,7 @@ impl Store {
     }
 
     /// A session moves its own card: working, planned, blocked, review or done.
-    pub fn task_report(&self, task_id: &str, session_id: Option<&str>, state: &str, reason: Option<&str>, rc_url: Option<&str>, op_id: Option<&str>) -> Result<Value> {
+    pub fn task_report(&self, task_id: &str, session_id: Option<&str>, state: &str, reason: Option<&str>, op_id: Option<&str>) -> Result<Value> {
         let Some((section, status)) = report_state(state) else {
             return refuse(format!("state must be one of {REPORT_STATES:?}, not {state:?}"));
         };
@@ -534,14 +536,34 @@ impl Store {
                 return refuse("an approval card moves only through the approver");
             }
             let tid = row.task_id.clone();
-            if let (Some(url), Some(sid)) = (rc_url, session_id) {
-                tx.tx.execute("UPDATE sessions SET rc_url=? WHERE session_id=?", params![url, sid])?;
-            }
             let mut meta = row.meta.clone();
             meta.insert("reason".into(), if section == NEEDS_YOU { json!(reason) } else { Value::Null });
             tx.tx.execute("UPDATE tasks SET meta=? WHERE task_id=?", params![Value::Object(meta).to_string(), tid])?;
             Store::set_card(tx, &tid, section, status, "report", json!({"session_id": session_id, "reason": reason}))?;
             Ok(json!({"task_id": tid, "section": section, "status": status}))
+        })
+    }
+
+    /// Title a card still named by `agent_card`. A plan heading also replaces a title taken
+    /// from the first prompt. A session's name replaces either, so neither overwrites one.
+    pub fn task_autotitle(&self, task_id: &str, title: &str, from_plan: bool, op_id: Option<&str>) -> Result<Value> {
+        self.write(op_id, |tx| {
+            let row = task_by_id(&tx.tx, task_id)?;
+            let default = row.meta.get("from") == Some(&json!("vault")) && row.title.starts_with("Agent on ");
+            let provisional = row.meta.get("title_from") == Some(&json!("prompt"));
+            if title.is_empty() || !(default || (from_plan && provisional)) {
+                return Ok(json!({"task_id": row.task_id, "retitled": false}));
+            }
+            let mut meta = row.meta.clone();
+            if from_plan {
+                meta.remove("title_from");
+            } else {
+                meta.insert("title_from".into(), json!("prompt"));
+            }
+            tx.tx.execute("UPDATE tasks SET title=?, meta=?, updated=? WHERE task_id=?",
+                          params![title, Value::Object(meta).to_string(), tx.now, row.task_id])?;
+            tx.event(&row.task_id, "title", json!({"title": title}))?;
+            Ok(json!({"task_id": row.task_id, "retitled": true}))
         })
     }
 
@@ -702,24 +724,16 @@ impl Store {
 
     // -- Tony's actions, only through the vault API (R63) -------------------------------
 
-    fn finish_card(&self, task_id: &str, status: &str, why: &str) -> Result<Value> {
+    /// Close a card to History. A Stale card closes the same way (R61 item 4).
+    pub fn card_close(&self, task_id: &str) -> Result<Value> {
         self.write(None, |tx| {
             let row = task_by_id(&tx.tx, task_id)?;
             if row.kind == "approval" {
                 return refuse("an approval closes by approve, reject or cancel");
             }
-            Store::set_card(tx, &row.task_id, HISTORY, Some(status), why, json!({}))?;
-            Ok(json!({"task_id": row.task_id, "section": HISTORY, "status": status}))
+            Store::set_card(tx, &row.task_id, HISTORY, Some("done"), "close", json!({}))?;
+            Ok(json!({"task_id": row.task_id, "section": HISTORY, "status": "done"}))
         })
-    }
-
-    /// Close a card to History. A Stale card closes the same way (R61 item 4).
-    pub fn card_close(&self, task_id: &str) -> Result<Value> {
-        self.finish_card(task_id, "done", "close")
-    }
-
-    pub fn card_reject(&self, task_id: &str) -> Result<Value> {
-        self.finish_card(task_id, "rejected", "reject")
     }
 
     /// The card of an `agent` order: Needs you until its session reports, with the note it
@@ -893,7 +907,7 @@ impl Store {
             for (sid, tid) in match_rows(&tx.tx, session_id, job, node, true)? {
                 tx.tx.execute("UPDATE sessions SET name=? WHERE session_id=?", params![name, sid])?;
                 let n = tx.tx.execute(
-                    "UPDATE tasks SET title=?1, updated=?2 WHERE task_id=?3 AND title<>?1 \
+                    "UPDATE tasks SET title=?1, updated=?2, meta=json_remove(COALESCE(meta,'{}'),'$.title_from') WHERE task_id=?3 AND title<>?1 \
                      AND EXISTS (SELECT 1 FROM sessions WHERE session_id=?4 AND task_id=?3 AND role='main')",
                     params![name, tx.now, tid, sid],
                 )?;
@@ -922,11 +936,7 @@ impl Store {
         let (mut gone, mut live) = (vec![], vec![]);
         for (sid, job, node, active, name) in rows {
             let Some(listed) = roster.get(&node) else { continue };
-            let found = listed.iter().find(|l| match (&l.session_id, &l.job) {
-                (Some(s), _) if !s.is_empty() => same_session(s, &sid),
-                (_, Some(j)) => job.as_deref() == Some(j.as_str()),
-                _ => false,
-            });
+            let found = listed_session(listed, &sid, job.as_deref());
             let listed_name = found.and_then(|l| l.name.as_deref()).filter(|_| active);
             if let Some(now) = listed_name.filter(|n| name.as_deref() != Some(*n)) {
                 self.session_renamed(Some(&sid), None, &node, now)?;
@@ -941,6 +951,34 @@ impl Store {
         Ok(json!({"stale": gone, "working": live}))
     }
 
+    /// Copy telemetry's link, project and scope onto each active session it lists. Only what
+    /// differs is written, so an unchanged roster sends the board nothing.
+    pub fn session_details(&self, roster: &HashMap<String, Vec<LiveSession>>) -> Result<()> {
+        type Row = (String, String, Option<String>, String, Option<String>, Option<String>, Option<String>);
+        let rows: Vec<Row> = {
+            let db = self.conn();
+            let mut st = db.prepare("SELECT session_id, task_id, job, node, rc_url, project, scope FROM sessions WHERE node IS NOT NULL AND active=1")?;
+            let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?)))?
+                .collect::<rusqlite::Result<_>>()?;
+            rows
+        };
+        let changed: Vec<(String, String, &LiveSession)> = rows.into_iter().filter_map(|(sid, tid, job, node, link, project, scope)| {
+            let found = listed_session(roster.get(&node)?, &sid, job.as_deref())?;
+            (found.link != link || found.project != project || found.scope != scope).then_some((sid, tid, found))
+        }).collect();
+        if changed.is_empty() {
+            return Ok(());
+        }
+        self.write(None, |tx| {
+            for (sid, tid, s) in &changed {
+                tx.tx.execute("UPDATE sessions SET rc_url=?, project=?, scope=? WHERE session_id=?", params![s.link, s.project, s.scope, sid])?;
+                tx.event(tid, "session_details", json!({"session_id": sid}))?;
+            }
+            Ok(json!(null))
+        })?;
+        Ok(())
+    }
+
     /// Undo the port's section rename, for a rollback to the Python store.
     pub fn downgrade_sections(&self) -> Result<Value> {
         let db = self.conn();
@@ -948,6 +986,14 @@ impl Store {
         let s = db.execute("UPDATE tasks SET section='working' WHERE section='stale'", [])?;
         Ok(json!({"history_to_done": h, "stale_to_working": s}))
     }
+}
+
+fn listed_session<'a>(listed: &'a [LiveSession], session_id: &str, job: Option<&str>) -> Option<&'a LiveSession> {
+    listed.iter().find(|l| match (&l.session_id, &l.job) {
+        (Some(s), _) if !s.is_empty() => same_session(s, session_id),
+        (_, Some(j)) => job == Some(j.as_str()),
+        _ => false,
+    })
 }
 
 fn same_session(a: &str, b: &str) -> bool {
@@ -994,7 +1040,7 @@ fn unstale(tx: &mut Tx, task_id: &str, session_id: &str) -> Result<Option<String
 }
 
 fn migrate(db: &Connection) -> rusqlite::Result<()> {
-    for (table, column) in [("tasks", "body"), ("tasks", "source_note"), ("sessions", "job")] {
+    for (table, column) in [("tasks", "body"), ("tasks", "source_note"), ("sessions", "job"), ("sessions", "project"), ("sessions", "scope")] {
         if !has_column(db, table, column)? {
             db.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} TEXT"))?;
         }

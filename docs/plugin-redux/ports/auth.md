@@ -49,8 +49,6 @@ State:
 
 Dependencies: `secrets = ["AWM_APPROVER_GRANT_PUBKEY"]` and no needs. With trilium absent, every slice path returns 404.
 
-Coupling with the untouched board service (`awm/services/board`): auth's `MAX_FILE_BODY` stays at least `AWM_BOARD_FILE_MAX`.
-
 Tests:
 - Port the 257 Python tests.
 - Add tests for the front declarations, the landing copy, the cert copy and the caller gate.

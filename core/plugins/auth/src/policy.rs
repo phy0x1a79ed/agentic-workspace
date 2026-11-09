@@ -2,8 +2,8 @@
 //!
 //! On the public profile (`AWM_EDGE_PROFILE=public`) a request whose path is not listed here is
 //! a 404 whether or not it carries a session. The lists are constants with tests, not a per-host
-//! string, so a change to the surface is a reviewed diff. The four mounts the edge forwards to
-//! an upstream other than the gateway ([`vault`], [`slices`], [`tether`], [`board`]) live here
+//! string, so a change to the surface is a reviewed diff. The three mounts the edge forwards to
+//! an upstream other than the gateway ([`vault`], [`slices`], [`tether`]) live here
 //! too, because every verdict is decided against their shapes.
 //!
 //! Paths are the decoded request path. Each mount's `upstream_raw_path` checks the raw bytes as
@@ -28,8 +28,6 @@ pub enum Verdict {
     Slice,
     /// The remote-assistance relay. Allowed with no session: the relay gates itself.
     Tether,
-    /// The federation board. Allowed with no session: the board checks its own bearer.
-    Board,
     /// `/invoke`, allowed only for a body that [`invoke_allows`] admits.
     Invoke,
 }
@@ -44,7 +42,6 @@ impl Verdict {
             Verdict::Vault => "vault",
             Verdict::Slice => "slice",
             Verdict::Tether => "tether",
-            Verdict::Board => "board",
             Verdict::Invoke => "invoke",
         }
     }
@@ -84,12 +81,6 @@ pub fn classify(path: &str) -> Verdict {
     if tether::refused(path) {
         return Verdict::Deny;
     }
-    if board::owns(path) {
-        return Verdict::Board;
-    }
-    if board::in_mount(path) {
-        return Verdict::Deny;
-    }
     if OPEN_EXACT.contains(&path) || OPEN_PREFIXES.iter().any(|p| path.starts_with(p)) {
         return Verdict::Open;
     }
@@ -112,7 +103,7 @@ fn is_machine_sub(sub: &str) -> bool {
 pub fn allows(path: &str, sub: Option<&str>) -> bool {
     let verdict = classify(path);
     match verdict {
-        Verdict::Open | Verdict::Slice | Verdict::Tether | Verdict::Board => return true,
+        Verdict::Open | Verdict::Slice | Verdict::Tether => return true,
         Verdict::Deny => return false,
         _ => {}
     }
@@ -394,63 +385,6 @@ pub mod tether {
             return None;
         }
         Some(raw[PREFIX.len()..].to_vec())
-    }
-}
-
-/// The federation board: `/board`, an allow-list of method-and-path shapes.
-pub mod board {
-    use std::sync::LazyLock;
-
-    use regex::Regex;
-
-    pub const PREFIX: &str = "/board";
-    /// Largest request body forwarded.
-    pub const MAX_BODY: usize = 1024 * 1024;
-    /// Largest file upload forwarded: the board's own per-file cap.
-    pub const MAX_FILE_BODY: usize = 16 * 1024 * 1024;
-
-    /// `(methods, path)`, matched in full (Python's `fullmatch`: no final-newline rule).
-    static SHAPES: LazyLock<Vec<(&'static [&'static str], Regex)>> = LazyLock::new(|| {
-        let id = r"[0-9a-f]{32}";
-        let shapes: [(&'static [&'static str], String); 8] = [
-            (&["POST", "GET"], r"/board/cards".to_string()),
-            (&["GET"], format!(r"/board/cards/{id}")),
-            (&["POST"], format!(r"/board/cards/{id}/(?:claim|complete|fail|status|reject)")),
-            (&["POST", "GET"], format!(r"/board/cards/{id}/messages")),
-            (&["GET"], format!(r"/board/cards/{id}/events")),
-            (&["POST", "GET"], format!(r"/board/cards/{id}/files")),
-            (&["GET"], format!(r"/board/cards/{id}/files/{id}")),
-            (&["GET"], r"/board/stream".to_string()),
-        ];
-        shapes.into_iter().map(|(m, p)| (m, Regex::new(&format!(r"\A{p}\z")).unwrap())).collect()
-    });
-    static UPLOAD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\A/board/cards/[0-9a-f]{32}/files\z").unwrap());
-
-    /// The body cap for one request: a file upload's, or the card verbs'.
-    pub fn body_cap(method: &str, path: &str) -> usize {
-        if method.to_uppercase() == "POST" && UPLOAD.is_match(path) { MAX_FILE_BODY } else { MAX_BODY }
-    }
-
-    /// Whether `path` has a shape this mount claims, for some method.
-    pub fn owns(path: &str) -> bool {
-        SHAPES.iter().any(|(_, p)| p.is_match(path))
-    }
-
-    /// Whether this mount claims `method` on `path`.
-    pub fn allows(method: &str, path: &str) -> bool {
-        let method = method.to_uppercase();
-        SHAPES.iter().any(|(m, p)| m.contains(&method.as_str()) && p.is_match(path))
-    }
-
-    /// Whether `path` is at or under the mount, claimed or not.
-    pub fn in_mount(path: &str) -> bool {
-        path == PREFIX || path.starts_with("/board/")
-    }
-
-    /// `raw` itself when the bytes, as sent, are a claimed shape; else `None`.
-    pub fn upstream_raw_path(raw: &[u8]) -> Option<Vec<u8>> {
-        let text = std::str::from_utf8(raw).ok().filter(|t| t.is_ascii())?;
-        owns(text).then(|| raw.to_vec())
     }
 }
 

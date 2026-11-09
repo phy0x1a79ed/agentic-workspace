@@ -61,7 +61,7 @@ def test_render_writes_one_roster_note_that_the_pages_read(world):
     assert mizar["portal"] == "https://mizar.test/" and mizar["sessions_7d"] == 12
     assert mizar["sessions"][0]["rc_url"] == "https://claude.ai/code/s1"
     assert roster["services"][0]["health"] == "up" and roster["services"][0]["service"] == "journal"
-    assert [u["service"] for u in mizar["services"]] == ["journal"]  # a tool it cannot use is not listed
+    assert [(u["service"], u["enabled"]) for u in mizar["services"]] == [("trilium", None)]  # an older node sends no enabled
     assert mizar["sessions"][0]["remote_control"] is True
     assert roster["seats"] == [{"seat": "acct/123", "label": "seat:discord/lab/steward",
                                 "state": "empty", "remote_control": False, "rc_url": "", "node": ""}]
@@ -151,7 +151,7 @@ def test_every_press_is_a_credentialed_fetch_to_the_contract_routes():
     lib, board, ops_js, bot = js("lib.js"), js("board.js"), js("ops.js"), js("bot.js")
     assert 'credentials: "include"' in lib
     assert "/api/agent" in board and "/api/agent" in bot
-    assert "/api/card/" in board and "/api/seat/remote_control" in ops_js and "/api/request/" in board
+    assert "/api/card/" in board and "/api/seat/remote_control" in ops_js and "/api/service/toggle" in ops_js and "/api/request/" in board
     assert "note_id" in bot
 
 

@@ -1,23 +1,36 @@
 <style>
 /*COMMON*/
 .awm-ops { display: flex; flex-direction: column; gap: 14px; padding: 10px; box-sizing: border-box; font-size: 14px; overflow: auto; height: 100%; }
+.awm-ops, .awm-ops * { user-select: text; -webkit-user-select: text; }
 .awm-ops h3 { margin: 6px 0 2px; }
 .awm-ops .search { max-width: 360px; width: 100%; padding: 4px 8px; }
-.awm-nodes { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 12px; }
+.awm-nodes { display: flex; flex-direction: column; gap: 12px; }
 .awm-node { border: 1px solid rgba(127,127,127,.4); border-radius: 8px; padding: 10px 12px; }
 .awm-node header { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
 .awm-node header b { font-size: 16px; }
-.awm-node h5 { margin: 10px 0 3px; font-size: 12px; opacity: .8; text-transform: uppercase; }
-.awm-node ul { margin: 0; padding-left: 16px; }
+.awm-node ul { margin: 6px 0 0; padding-left: 16px; }
 .awm-ops table { border-collapse: collapse; width: 100%; font-size: 13px; }
 .awm-ops th, .awm-ops td { text-align: left; padding: 3px 8px; border-bottom: 1px solid rgba(127,127,127,.25); }
 .awm-ops small { opacity: .7; }
 .awm-ops .none { opacity: .6; }
+.awm-grid { overflow-x: auto; }
+.awm-ops .cell { text-align: center; }
+.awm-legend { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 6px; font-size: 12px; }
+.awm-state { font-size: 15px; line-height: 1; }
+.awm-state.enabled { color: #2e9e4f; }
+.awm-state.disabled { color: #888; }
+.awm-state.failed { color: #d33; }
+.awm-state.uninstalled { opacity: .35; }
+.awm-state.reachable { color: #2f7fd6; }
+.awm-state.unreachable { color: #d33; }
+.awm-state.unknown { color: #b58900; }
+.awm-switch { background: none; border: 1px solid rgba(127,127,127,.4); border-radius: 4px; cursor: pointer; padding: 1px 7px; }
 </style>
 <div class="awm-ops">
-  <input class="search" type="search" placeholder="Find a node, session, seat or service">
+  <input class="search" type="search" placeholder="Find a node, session, seat, plugin or service">
   <section><h3>Nodes</h3><div class="awm-nodes"></div></section>
   <section><h3>Seats</h3><div class="awm-seats"></div></section>
+  <section><h3>Plugins</h3><div class="awm-plugins"></div></section>
   <section><h3>Services</h3><div class="awm-services"></div></section>
   <section class="awm-notices"></section>
 </div>

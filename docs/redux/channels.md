@@ -78,5 +78,5 @@ How a seat lives as a session belongs in `sessions.md`. Communication between aw
 Status at the wave-2 gather (`feat/redux` 16da3979, 2026-11-04). `docs/redux-review/build-survey.md` § 3 holds the row for each requirement.
 
 - **R72, R76, R138.** tether v0.3.0 sits unpushed and unreleased on the tether branch `feat/redux-channels2`. The awm pin bump waits on `feat/redux-channels2-pin`. Both land at T26, and persistent rooms (R72) go live with them.
-- **R77.** `board` stays a door-only service on deneb with no tool. Its intake turns a card into a Proposed task in operations. The door's removal waits on Tony. The branch `feat/redux-r77` (f3928d5f) edits a Python path release no longer has, so the removal needs writing again.
+- **R77.** The `board` service, its auth door and the `intake_post` verb are gone. Tony: "Retire now, cut intake" (2026-11-09). Caviar and muse lost their way to post cards to this swarm.
 - **R125.** The 5-subagent cap leaks a slot when SubagentStop never fires (T23). A seat with no ledger entry reads trusted until the seat restart at T27.

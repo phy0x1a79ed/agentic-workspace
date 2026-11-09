@@ -35,7 +35,9 @@ pub const MINUTES_MIN: i64 = 15;
 pub const MINUTES_MAX: i64 = 1440;
 pub const BURST_COUNTS: [i64; 3] = [1, 2, 4];
 /// The order kinds alcor signs. `agent` replaces spawn and new_from (CONTRACT.md b11adebc).
-pub const ORDER_KINDS: [&str; 1] = ["agent"];
+pub const ORDER_KINDS: [&str; 2] = ["agent", "service"];
+/// How long one passkey approval keeps the Ops service switches open.
+pub const SERVICE_WINDOW_S: f64 = 300.0;
 /// The kinds whose grant opens a window for its minutes, so the summary names them.
 const WINDOW_KINDS: [&str; 4] = ["admin_ssh", "trust_raise", "browser_signin", "vault_hold"];
 
@@ -804,6 +806,34 @@ impl Approver {
         )?;
         self.signal(&format!("orders:{node}"));
         Ok(env)
+    }
+
+    /// Switch a service on `node` from Ops. Outside a window this device opened with its passkey,
+    /// it opens no order and answers with the request to approve.
+    pub async fn service_toggle(&self, device: &str, node: &str, service: &str, on: bool) -> AResult<Value> {
+        let node = self.order_node("service", Some(node))?;
+        if !valid_plugin(service) {
+            return Err(bad("service is a service name"));
+        }
+        let open = self.conn().query_row(
+            "SELECT 1 FROM requests WHERE kind='service_window' AND status='approved' AND requester_session IS NULL AND device=? AND decided_at>?",
+            params![device, self.now() - SERVICE_WINDOW_S],
+            |_| Ok(()),
+        ).optional()?.is_some();
+        if !open {
+            let pending: Option<String> = self.conn().query_row(
+                "SELECT request_id FROM requests WHERE kind='service_window' AND status='pending' AND requester_session IS NULL AND expires>?",
+                params![self.now()],
+                |r| r.get(0),
+            ).optional()?;
+            if let Some(request_id) = pending {
+                return Ok(json!({"needs_approval": true, "request_id": request_id}));
+            }
+            let r = self.approval_request("service_window", None, "Allow Ops to switch services for 5 minutes", MINUTES_MIN, json!({}), None, None).await?;
+            return Ok(json!({"needs_approval": true, "request_id": r["request_id"]}));
+        }
+        let env = self.issue_order("service", &node, json!({"service": service, "on": on}))?;
+        Ok(json!({"order_id": env["order"]["order_id"]}))
     }
 
     /// Start an agent on `node` from the vault: a card in Needs you and a signed `agent`

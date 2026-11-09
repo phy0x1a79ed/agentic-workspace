@@ -143,8 +143,8 @@ fn guarded(rid: &str, device: &str) -> Vec<(Method, String, Option<Value>)> {
         p(Method::GET, "/api/session".into(), None),
         p(Method::POST, "/api/agent".into(), Some(json!({"node": AGENT_NODE}))),
         p(Method::POST, "/api/card/AAAAAAAA/close".into(), Some(json!({}))),
-        p(Method::POST, "/api/card/AAAAAAAA/reject".into(), Some(json!({}))),
         p(Method::POST, "/api/seat/remote_control".into(), Some(json!({"seat": "s1", "on": true}))),
+        p(Method::POST, "/api/service/toggle".into(), Some(json!({"node": AGENT_NODE, "service": "dsh", "on": false}))),
         p(Method::GET, format!("/api/request/{rid}"), None),
         p(Method::POST, format!("/api/request/{rid}/options"), Some(json!({}))),
         p(Method::POST, format!("/api/request/{rid}/approve"), Some(json!({"assertion": {}}))),
@@ -316,19 +316,14 @@ fn enc(s: &str) -> String {
 // -- everyday actions --------------------------------------------------------------------------
 
 #[tokio::test]
-async fn cards_close_and_reject_to_history() {
+async fn cards_close_to_history() {
     let t = vt();
     let (_, _, c) = t.signed_in("phone");
     let one = t.e.store.task_open("Close me", Open::default(), None).unwrap();
-    let two = t.e.store.task_open("Reject me", Open::default(), None).unwrap();
     let r = t.post(&format!("/api/card/{}/close", s(&one["task_id"])), Some(&c), json!({})).await;
     assert_eq!(r.status, StatusCode::OK, "{}", r.text());
     let card = t.e.store.task_get(s(&one["task_id"])).unwrap();
     assert_eq!((card["section"].as_str(), card["status"].as_str()), (Some("history"), Some("done")));
-    let r = t.post(&format!("/api/card/{}/reject", s(&two["task_id"])), Some(&c), json!({})).await;
-    assert_eq!(r.status, StatusCode::OK, "{}", r.text());
-    let card = t.e.store.task_get(s(&two["task_id"])).unwrap();
-    assert_eq!((card["section"].as_str(), card["status"].as_str()), (Some("history"), Some("rejected")));
     let r = t.post(&format!("/api/card/{}/frobnicate", s(&one["task_id"])), Some(&c), json!({})).await;
     assert_eq!((r.status, r.code()), (StatusCode::BAD_REQUEST, json!("unknown_action")));
     let r = t.post("/api/card/ZZZZZZZZ/close", Some(&c), json!({})).await;

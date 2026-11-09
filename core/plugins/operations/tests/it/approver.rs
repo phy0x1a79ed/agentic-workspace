@@ -2,7 +2,7 @@
 //! on the requester's own task, grants, orders, the 2fa burst and the portal sign-in.
 //! Every id, host and key here is synthetic.
 
-use awm_plugin_operations::approver::{request_kinds, ApproverError, CHALLENGE_TTL_S, REQUEST_TTL_S, SESSION_TTL_S};
+use awm_plugin_operations::approver::{request_kinds, ApproverError, CHALLENGE_TTL_S, REQUEST_TTL_S, SERVICE_WINDOW_S, SESSION_TTL_S};
 use awm_plugin_operations::passkeys::soft::SoftAuthenticator;
 use awm_plugin_operations::store::Open;
 use awm_trust::grant::{b64u, unb64u, verify_grant, verify_order, Expect, GrantError};
@@ -568,4 +568,20 @@ async fn burst_binds_count_and_device() {
     let a = pk.assert(&o["options"]);
     e.ap.burst(s(&o["nonce"]), 4, "phone", &a).await.unwrap();
     assert_eq!(e.tools.calls(), vec![("burst".to_string(), json!({"device": "phone", "count": 4}))]);
+}
+
+#[tokio::test]
+async fn a_passkey_opens_the_service_switches_for_this_device_for_five_minutes() {
+    let e = env();
+    let (device, mut pk) = e.enrol("phone");
+    let first = e.ap.service_toggle(&device, "mizar", "dsh", false).await.unwrap();
+    assert_eq!(first["needs_approval"], true, "the first switch asks for the passkey and issues no order");
+    let rid = s(&first["request_id"]).to_string();
+    let a = e.approval_assertion(&mut pk, &rid);
+    e.ap.approve(&rid, &a).await.unwrap();
+    assert!(e.ap.service_toggle(&device, "mizar", "dsh", false).await.unwrap()["order_id"].is_string());
+    assert_eq!(e.ap.service_toggle("other-device", "mizar", "dsh", true).await.unwrap()["needs_approval"], true, "the window is this device's");
+    assert_eq!(code(e.ap.service_toggle(&device, "mizar", "../x", true).await), "bad_request");
+    e.clock.advance(SERVICE_WINDOW_S + 1.0);
+    assert_eq!(e.ap.service_toggle(&device, "mizar", "dsh", true).await.unwrap()["needs_approval"], true, "the window closes");
 }

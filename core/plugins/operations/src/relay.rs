@@ -16,8 +16,8 @@ use serde_json::{json, Value};
 
 use crate::ids::{mint_task_id, token};
 
-pub const WRITES: [&str; 12] = [
-    "task_open", "task_attach", "task_join", "task_report", "task_session_end", "task_claim", "task_detail", "task_message",
+pub const WRITES: [&str; 13] = [
+    "task_autotitle", "task_open", "task_attach", "task_join", "task_report", "task_session_end", "task_claim", "task_detail", "task_message",
     "approval_request", "approval_cancel", "order_done", "ops_post",
 ];
 pub const READS: [&str; 7] = ["task_for_session", "task_sessions", "task_get", "task_list", "task_messages", "approval_get", "keys"];
