@@ -336,6 +336,7 @@ class SSHService:
 
     def _acquire_singleton(self) -> None:
         try:
+            os.makedirs(os.path.dirname(SINGLETON_PATH), mode=0o700, exist_ok=True)
             fd = os.open(SINGLETON_PATH, os.O_CREAT | os.O_RDWR, 0o600)
         except OSError as exc:
             # Can't even open the lock file — fail open rather than crash; the
