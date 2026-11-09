@@ -525,6 +525,11 @@ class SSHService:
         for name, cfg in KNOWN_HOSTS.items():
             hs = self._host(name)
             st = hs.state
+            if st == ConnState.CONNECTED and not await self._check_master(cfg.host):
+                async with self._lock:
+                    if hs.state == ConnState.CONNECTED:
+                        hs.state = ConnState.DISCONNECTED
+                st = hs.state
             if st == ConnState.CONNECTED:
                 connections[name] = self._status_dict(cfg, "connected")
             elif st == ConnState.AUTHENTICATING:

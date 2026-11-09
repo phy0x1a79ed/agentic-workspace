@@ -389,6 +389,18 @@ class TestStateMachine:
         assert result["status"] == "connected"       # adopted, not errored
         assert svc._host("fir").state == ConnState.CONNECTED
 
+    async def test_status_reports_a_master_that_died_as_disconnected(
+            self, isolated_dirs, monkeypatch) -> None:
+        svc = SSHService()
+        svc._host("fir").state = ConnState.CONNECTED
+
+        async def _dead(_host):
+            return False
+
+        monkeypatch.setattr(svc, "_check_master", _dead)
+        assert (await svc.status())["connections"]["fir"]["status"] == "disconnected"
+        assert svc._host("fir").state == ConnState.DISCONNECTED
+
     async def test_do_connect_raise_does_not_strand_authenticating(
             self, isolated_dirs, monkeypatch) -> None:
         svc = SSHService()

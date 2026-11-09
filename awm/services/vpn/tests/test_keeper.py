@@ -10,18 +10,15 @@ pytestmark = [pytest.mark.unit]
 class Lives:
     """A watch stand-in: each call is one dial whose tunnel lives the next duration, or raises."""
 
-    def __init__(self, keeper_mod, lives):
-        self.lives, self.now, self.dials, self.mod = list(lives), 0.0, 0, keeper_mod
-
-    def clock(self):
-        return self.now
+    def __init__(self, lives):
+        self.lives, self.dials = list(lives), 0
 
     def __call__(self, profile):
         self.dials += 1
         life = self.lives.pop(0) if self.lives else 0.0
         if isinstance(life, Exception):
             raise life
-        self.now += life
+        return life
 
 
 @pytest.fixture()
@@ -39,8 +36,8 @@ def keeper_mod(monkeypatch):
 ], ids=["failed dials", "young deaths", "a settled tunnel resets the count"])
 def test_the_keeper_stops_and_pages_after_three_short_lives_in_a_row(keeper_mod, lives, dials):
     pages: list[str] = []
-    watch = Lives(keeper_mod, lives)
-    k = keeper_mod.Keeper("ubc", watch=watch, alert=pages.append, clock=watch.clock)
+    watch = Lives(lives)
+    k = keeper_mod.Keeper("ubc", watch=watch, alert=pages.append)
 
     k.run()
 

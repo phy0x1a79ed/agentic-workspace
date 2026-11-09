@@ -398,6 +398,13 @@ def _tail_logs(name: str, lines: int = 30) -> str:
     return ((proc.stdout or "") + (proc.stderr or "")).strip() or "(no logs)"
 
 
+def started_at(profile: str) -> float:
+    """When docker last started the profile's container, as a Unix time."""
+    raw = _docker(["inspect", "-f", "{{.State.StartedAt}}", container_name(profile)]).stdout.strip()
+    whole, _, frac = raw.rstrip("Z").partition(".")
+    return datetime.fromisoformat(whole).replace(tzinfo=timezone.utc).timestamp() + float(f"0.{frac or 0}")
+
+
 def _log_dead_container(name: str) -> None:
     """Record when and how a stopped exit ended, before it is removed. Never raises."""
     try:
