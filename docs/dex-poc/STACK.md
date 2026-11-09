@@ -6,14 +6,11 @@
 
 ## Current
 
-`test-play`
+`calling-mechanism`
 
 ## Waiting on the user
 
-- Is the six-act play the thing to build against? (Acts: cold fill, copy vs service, live swap, versioned calls, eviction, catch-up.)
-- Reply version policy: the caller sends an `accept` list and the receiver replies in the highest version it can produce from that list, else a structured error?
-- Build JSON only in the POC and reserve an encoding-negotiation field for a fast path later (add the fast path only if Act 3 or a real workload shows a need)?
-- Dispatch the first worker on Acts 1 and 2 (a host on mizar and capella, resolution, fill)? Model and effort to confirm.
+- What carries IPC and network calls in the POC: a direct framed JSON link, or the existing gateway path? (Recommended: direct link, with the gateway path measured as the baseline.)
 
 ## Preferences
 
@@ -24,26 +21,23 @@
 - 2026-11-09: Full exploration including prototype builds, not only docs.
 - 2026-11-09: Builds run on capella. The contract is strict versioned JSON.
 - 2026-11-09: MVP is cache, update event and remote fill; bidding after. Work test cases one at a time as the system builds up.
+- 2026-11-09: Work the four scenario topics one at a time with dfs-interview, in the user's order.
 
 ## Stack
 
-- `closed-system`: nodes mizar and capella; module L (a copy, loaded in-process) and service S (routed). Capella builds and publishes L.
-  - `test-play`: the six-act scenario to build against, worked one act at a time
-    - act 1 `cold-fill`: first call fills L from capella by digest, loads it, answers
-    - act 2 `copy-vs-service`: S is routed and never copied; kill and restart S
-    - act 3 `live-swap`: publish L v2 under load, bad build rejected, in-process encoding cost measured
-    - act 4 `versioned-calls`: v1 calls still work after v2 goes live; unknown keys rejected
-    - act 5 `eviction`: cache cap evicts copies only, never a loaded module or a service route
-    - act 6 `catch-up`: a node offline during a publish catches up on reconnect, with no polling
-  - `frozen-contract`: decided JSON, strict, versioned. Open: reply version policy, in-process fast path.
-    - Measured on capella (Ryzen 7 7800X3D, hot loop, no dlopen): pointer call through a swappable table 2.2 ns; plus memcpy in and out 10.3 ns; strict JSON both ways for a 106-byte request about 400 ns.
-    - Proposal: one schema, the encoding chosen by locality (typed call, `repr(C)` by pointer, same-layout bytes, JSON), serialized at the router and not the caller; resolve a selector to a handle once, then call through the handle; JSON stays the mandatory fallback and canonical form. Build JSON only first; reserve the encoding negotiation field.
-  - `first-test`: `claude-md-sync` is a candidate after the play. One origin per name against C3 is still open.
+- `closed-system`: nodes mizar and capella (alcor later as a node that never compiles); module L (a copy, loaded in-process) and service S (routed). Capella builds and publishes L.
+  - `calling-mechanism`: cross-plugin calls in process, over IPC and over the network, from one call site. Tests the calling mechanism.
+  - `update-flow`: a network call, a stale notice, a cross-network update. Where the update comes from, where the new version comes from, and whether it starts from a binary.
+  - `cache-pagetable`: how the cache works and where the "page table" lives. Copies against services; eviction.
+  - `market-build`: a build job between mizar and capella through a market bit.
+  - `version-policy`: whether a reply is translated to the caller's version (caller sends an `accept` list; receiver replies in the highest version it can produce, else a structured error).
+  - `test-play`: rebuild the play from the decisions above.
+- `first-test`: `claude-md-sync` is a candidate after the play. One origin per name against C3 is still open.
 - `transport-survey`: do AWM peer links or the push path already give subscribe?
 - `tool-surface`: the narrow exposed tool, roughly submit, status, result, cancel
 - `core-boundary`: the core crate against the AWM adapter
 - `coexistence`: how it runs in a few select sessions (Q30) and what stays out
-- `bidding`: market allocation. Deferred until the MVP works.
+- `bidding`: market allocation beyond the build job. Deferred.
 - `swap`: state handover and bad-activation recovery (Q7, Q8, Q24). Later rollout step.
 - `handoff`: the brief for the build session
 
@@ -56,3 +50,6 @@ None.
 - `freshness`: event-driven; subscribed or disconnected, keepalive is the only clock.
 - `keepalive`: dropped from the design; a socket option.
 - `mvp-scope`: cache, update event, remote fill first; bidding after; test cases one at a time.
+- `exploration-direction`: full exploration with prototype builds on a closed system.
+- `contract-and-builds`: strict versioned JSON; capella builds; mizar and capella as the pair.
+- `format-per-locality`: two formats, struct in process and JSON from IPC outward.

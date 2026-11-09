@@ -58,3 +58,21 @@ Each mutable name has one origin. Whether that sits within C3 is still to confir
 **Open, on `STACK.md`.** Whether a reply is downcast to the caller's version, and the in-process encoding.
 
 **Landed.** Input to `handoff`.
+
+## format-per-locality (2026-11-09)
+
+**Question.** Which encoding does a message use at each locality?
+
+**User's words.** "we should decide on the format per locality now. it may just be 2: struct vs json at the IPC seam" and, on the proposal, "looks good, next?"
+
+**Decided design.** Two formats, split at the process boundary.
+- In process: a struct. The envelope (`v`, `id`, `from`, `to`, selector handle, `replyTo`) is always a fixed-layout struct. The args are a typed struct pointer when caller and callee agree on the module's interface hash and layout version, otherwise JSON bytes.
+- IPC and network: strict versioned JSON for the envelope and the args. A module's upcasters translate prior versions.
+- A layout mismatch falls back to the JSON form, where translation runs. The upcasters touch JSON only. The layout check replaces the separate encoding-negotiation field proposed earlier.
+- The struct side is flat, fixed-size fields plus borrowed slices. Richer data rides as JSON bytes inside `args`.
+
+**Why.** Plugin-to-gateway IPC is already JSON frames over HTTP and WebSocket, and each hop costs far more than JSON does. A third, same-layout bytes format would only pay off with shared-memory IPC and would add an architecture, endianness and layout-version matrix to the frozen contract.
+
+**Measured (capella, hot loop, no `dlopen`).** Pointer call through a swappable table 2.2 ns; with memcpy in and out 10.3 ns; strict JSON both ways for a 106-byte request about 400 ns.
+
+**Landed.** Input to `handoff`. Refines `contract-and-builds`.
