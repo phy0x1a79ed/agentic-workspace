@@ -327,6 +327,7 @@ async fn run_service(gw: Arc<Gateway>, spec: ServiceSpec, retired: Arc<AtomicBoo
             }
         };
         gw.supervisor.groups().remove(&spec.name);
+        gw.hub.exited(&spec.name);
         if group > 0 && survival::group_alive(group) {
             // A respawn never doubles a process: the old group is gone before the next spawn.
             clear_group(group).await;

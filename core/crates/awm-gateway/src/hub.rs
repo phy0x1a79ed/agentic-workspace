@@ -245,6 +245,17 @@ impl Hub {
         was
     }
 
+    /// The service's process exited. A row still at `Starting` never sent `ready` and never will
+    /// from that process: mark it `Down` so nothing waits on it.
+    pub fn exited(&self, name: &str) {
+        if let Some(svc) = self.lock().get_mut(name).filter(|s| s.status == Status::Starting) {
+            svc.tx = None;
+            svc.status = Status::Down;
+            svc.down_since = Some(Instant::now());
+        }
+        self.changed.notify_waiters();
+    }
+
     /// How long a known service has been off its control WebSocket.
     pub fn down_for(&self, name: &str) -> Option<Duration> {
         self.lock().get(name).and_then(|s| s.down_since).map(|t| t.elapsed())
@@ -435,6 +446,13 @@ mod tests {
         assert_eq!(hub.status("journal"), Some(Status::Refused), "a stale socket must not take a service down");
         hub.disconnected("journal", &id);
         assert!(hub.down_for("journal").is_some());
+        let id3 = hub.register("early", "early", None, None).unwrap();
+        let Claim::Claimed { .. } = hub.claim(&id3) else { panic!() };
+        hub.disconnected("early", &id3);
+        assert_eq!(hub.status("early"), Some(Status::Down), "closing before ready leaves no starting row");
+        hub.register("never", "never", None, None).unwrap();
+        hub.exited("never");
+        assert_eq!(hub.status("never"), Some(Status::Down), "an exit before connecting leaves no starting row");
         assert!(hub.register("journal", "journal", None, None).is_ok());
         hub.forget("journal");
         assert_eq!(hub.status("journal"), None);
