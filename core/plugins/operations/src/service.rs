@@ -259,18 +259,20 @@ pub fn roster_of(nodes: &Value) -> HashMap<String, Vec<LiveSession>> {
         let live = n["sessions"].as_array().cloned().unwrap_or_default().iter().map(|s| LiveSession {
             session_id: s["session_id"].as_str().filter(|x| !x.is_empty()).map(str::to_string),
             job: s["job"].as_str().filter(|x| !x.is_empty()).map(str::to_string),
+            name: s["name"].as_str().filter(|x| !x.is_empty()).map(str::to_string),
         }).collect();
         Some((node, live))
     }).collect()
 }
 
-/// One `telemetry/sessions` event: a session that went live or went.
+/// One `telemetry/sessions` event: a session that went live, went or took a new name.
 pub fn on_session_event(store: &Store, e: &Value) -> anyhow::Result<Vec<String>> {
     let node = e["node"].as_str().unwrap_or_default();
     let (sid, job) = (e["session_id"].as_str(), e["job"].as_str());
     Ok(match e["event"].as_str() {
         Some("gone") => store.session_gone(sid, job, node)?,
         Some("live") => store.session_live(sid, job, node)?,
+        Some("renamed") => store.session_renamed(sid, job, node, e["name"].as_str().unwrap_or_default())?,
         _ => vec![],
     })
 }

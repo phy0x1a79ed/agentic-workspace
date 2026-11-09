@@ -149,6 +149,7 @@ pub type Clock = Arc<dyn Fn() -> f64 + Send + Sync>;
 pub struct LiveSession {
     pub session_id: Option<String>,
     pub job: Option<String>,
+    pub name: Option<String>,
 }
 
 /// A new card's fields beyond its title.
@@ -881,26 +882,57 @@ impl Store {
         Ok(serde_json::from_value(v).unwrap_or_default())
     }
 
+    /// A session took a new name. Its row keeps the name, and a card it is the main session of
+    /// takes the name as its title. Returns the retitled cards.
+    pub fn session_renamed(&self, session_id: Option<&str>, job: Option<&str>, node: &str, name: &str) -> Result<Vec<String>> {
+        if name.is_empty() {
+            return Ok(vec![]);
+        }
+        let v = self.write(None, |tx| {
+            let mut retitled = vec![];
+            for (sid, tid) in match_rows(&tx.tx, session_id, job, node, true)? {
+                tx.tx.execute("UPDATE sessions SET name=? WHERE session_id=?", params![name, sid])?;
+                let n = tx.tx.execute(
+                    "UPDATE tasks SET title=?1, updated=?2 WHERE task_id=?3 AND title<>?1 \
+                     AND EXISTS (SELECT 1 FROM sessions WHERE session_id=?4 AND task_id=?3 AND role='main')",
+                    params![name, tx.now, tid, sid],
+                )?;
+                if n > 0 {
+                    tx.event(&tid, "title", json!({"title": name}))?;
+                    retitled.push(tid);
+                }
+            }
+            Ok(json!(retitled))
+        })?;
+        Ok(serde_json::from_value(v).unwrap_or_default())
+    }
+
     /// Reconcile with telemetry's roster: on each node it lists, an active row with no live
     /// session ends, and an ended row whose session is live comes back. Nodes the roster
     /// does not list are left alone.
     pub fn reconcile(&self, roster: &HashMap<String, Vec<LiveSession>>) -> Result<Value> {
-        let rows: Vec<(String, String, Option<String>, String, bool)> = {
+        let rows: Vec<(String, Option<String>, String, bool, Option<String>)> = {
             let db = self.conn();
-            let mut st = db.prepare("SELECT session_id, task_id, job, node, active FROM sessions WHERE node IS NOT NULL")?;
+            let mut st = db.prepare("SELECT session_id, job, node, active, name FROM sessions WHERE node IS NOT NULL")?;
             let rows = st
-                .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get::<_, i64>(4)? != 0)))?
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get::<_, i64>(3)? != 0, r.get(4)?)))?
                 .collect::<rusqlite::Result<_>>()?;
             rows
         };
         let (mut gone, mut live) = (vec![], vec![]);
-        for (sid, _tid, job, node, active) in rows {
+        for (sid, job, node, active, name) in rows {
             let Some(listed) = roster.get(&node) else { continue };
-            let is_live = listed.iter().any(|l| match (&l.session_id, &l.job) {
+            let found = listed.iter().find(|l| match (&l.session_id, &l.job) {
                 (Some(s), _) if !s.is_empty() => same_session(s, &sid),
                 (_, Some(j)) => job.as_deref() == Some(j.as_str()),
                 _ => false,
             });
+            if let (Some(now), Some(was), true) = (found.and_then(|l| l.name.as_deref()), name.as_deref(), active) {
+                if now != was {
+                    self.session_renamed(Some(&sid), None, &node, now)?;
+                }
+            }
+            let is_live = found.is_some();
             match (active, is_live) {
                 (true, false) => gone.extend(self.session_gone(Some(&sid), None, &node)?),
                 (false, true) => live.extend(self.session_live(Some(&sid), None, &node)?),

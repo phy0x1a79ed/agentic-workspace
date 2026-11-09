@@ -388,8 +388,8 @@ fn reconcile_follows_the_roster_on_the_nodes_it_lists() {
     seated(&st, "T0000004", &sid(4), "mizar", "job-d");
     st.session_gone(Some(&sid(2)), None, "mizar").unwrap();
     let roster = HashMap::from([("mizar".to_string(), vec![
-        LiveSession { session_id: Some(sid(2)), job: Some("job-b".into()) },
-        LiveSession { session_id: None, job: Some("job-d".into()) },
+        LiveSession { session_id: Some(sid(2)), job: Some("job-b".into()), name: None },
+        LiveSession { session_id: None, job: Some("job-d".into()), name: None },
     ])]);
     let out = st.reconcile(&roster).unwrap();
     assert_eq!(out, json!({"stale": ["T0000001"], "working": ["T0000002"]}));
@@ -397,6 +397,21 @@ fn reconcile_follows_the_roster_on_the_nodes_it_lists() {
     assert_eq!(at(&st, "T0000004").0, "working", "matched on its job");
     let empty = HashMap::from([("lyra".to_string(), vec![])]);
     assert_eq!(st.reconcile(&empty).unwrap(), json!({"stale": ["T0000003"], "working": []}), "a listed node with no sessions ends them all");
+}
+
+#[test]
+fn a_card_takes_the_name_of_its_main_session() {
+    let (_d, st) = fresh();
+    st.task_open("Agent on mizar", Open { task_id: Some("T0000001".into()), session_id: Some(sid(1)), node: Some("mizar".into()), job: Some("job-a".into()), name: Some("first".into()), ..Open::default() }, None).unwrap();
+    let title = || s(&st.task_get("T0000001").unwrap()["title"]);
+    assert_eq!(st.session_renamed(Some(&sid(1)), None, "mizar", "new-agent/section").unwrap(), ["T0000001"]);
+    assert_eq!(title(), "new-agent/section");
+    assert!(st.session_renamed(Some(&sid(1)), None, "mizar", "new-agent/section").unwrap().is_empty(), "the same name is no change");
+    let roster = HashMap::from([("mizar".to_string(), vec![LiveSession { session_id: None, job: Some("job-a".into()), name: Some("while-offline".into()) }])]);
+    st.reconcile(&roster).unwrap();
+    assert_eq!(title(), "while-offline", "a rename missed while disconnected lands at reconcile");
+    st.task_attach("T0000001", &sid(2), "worker", Seat { node: Some("mizar".into()), job: Some("job-b".into()), ..Seat::default() }, None).unwrap();
+    assert!(st.session_renamed(Some(&sid(2)), None, "mizar", "a-worker").unwrap().is_empty(), "a worker's name is not the card's");
 }
 
 // -- the event hook --------------------------------------------------------------------------
