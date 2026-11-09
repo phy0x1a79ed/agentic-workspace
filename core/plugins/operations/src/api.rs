@@ -32,6 +32,9 @@ fn rid() -> Value {
 }
 
 /// The payload fields each request kind needs. The approver checks against this table.
+/// Opened only by the Ops page, so a session can never ask for it.
+pub const VAULT_ONLY_KIND: &str = "service_window";
+
 pub const PAYLOADS: [(&str, &[&str]); 7] = [
     ("admin_ssh", &["pubkey", "nodes"]),
     ("trust_raise", &["session_id", "from", "to"]),
@@ -43,7 +46,7 @@ pub const PAYLOADS: [(&str, &[&str]); 7] = [
 ];
 
 fn payload_help() -> String {
-    let kinds: Vec<String> = PAYLOADS.iter().map(|(k, v)| format!("{k} {{{}}}", v.join(", "))).collect();
+    let kinds: Vec<String> = PAYLOADS.iter().filter(|(k, _)| *k != VAULT_ONLY_KIND).map(|(k, v)| format!("{k} {{{}}}", v.join(", "))).collect();
     format!(
         "{}. plugin_commits.plugins is [{{plugin, commit, source?, from?}}]: an install, or a move from one commit to another \
          (install.md R116 item 2). One request approves every plugin commit of the change.",
@@ -69,10 +72,8 @@ fn h(name: &'static str, description: &str, params: Value) -> VerbSpec {
 
 /// Every verb, in Python's order, with the port's additions at the end.
 pub fn verbs() -> Vec<VerbSpec> {
-    let shown = || [p("name", "string", false, "The session's name, for the board."), p("rc_url", "string", false, "The session's Remote Control link, for the board.")];
-    let kinds: Vec<&str> = PAYLOADS.iter().map(|(k, _)| *k).collect();
-    let [n, r] = shown();
-    let [n2, r2] = shown();
+    let name = || p("name", "string", false, "The session's name, for the board.");
+    let kinds: Vec<&str> = PAYLOADS.iter().filter(|(k, _)| *k != VAULT_ONLY_KIND).map(|(k, _)| *k).collect();
     vec![
         v("request_human", "Tell Tony you need him. kind blocked (with reason) or review (with summary) puts your card in Needs you. \
 With no card, it sends him a Discord DM and opens no card, and turns on your Remote Control so he can reach you. If Remote Control was off, the link goes out in a second DM when you end your turn, so end your turn after this call. urgent:true on a card's block also posts to his notifications. kind approval posts an Arbutus admin bundle to Slack for Tony or Ryan. Tony answers \
@@ -81,13 +82,13 @@ link is configured.",
           json!([p("kind", "string", false, "blocked, review or approval."), s("reason"), s("summary"),
                  p("urgent", "boolean", false, ""), p("bundle", "string", false, "kind approval: the bundle's name.")])),
         h("task_open", "Open a card for new work and make the session its main session. Works while alcor is down: the id is minted \
-here and the write waits in the outbox.", json!([p("title", "string", true, ""), sid(), s("peer"), p("tags", "array", false, ""), n, r])),
+here and the write waits in the outbox.", json!([p("title", "string", true, ""), sid(), s("peer"), p("tags", "array", false, ""), name()])),
         h("task_attach", "Put a session on an existing card, as cch start does for a task id.",
-          json!([tid(), sid_req(), p("role", "string", false, "main, worker or joined."), n2, r2])),
+          json!([tid(), sid_req(), p("role", "string", false, "main, worker or joined."), name()])),
         v("task_join", "Join your session to a running task, when Tony started you while it ran. Your own card folds into it, and its \
 main session is told.", json!([tid(), sid()])),
         v("task_report", "Move your card: working, planned, blocked, review or done. planned, blocked and review put it in Needs you.",
-          json!([p("task_id", "string", false, "Default: your session's task."), sid(), p("state", "string", true, ""), s("reason"), s("rc_url")])),
+          json!([p("task_id", "string", false, "Default: your session's task."), sid(), p("state", "string", true, ""), s("reason")])),
         h("task_session_end", "Mark a session of a task finished.", json!([tid(), sid_req()])),
         v("task_for_session", "A session's task id, or null.", json!([sid()])),
         v("task_sessions", "Every session of a task, active or finished, with its role.", json!([tid()])),

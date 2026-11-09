@@ -40,7 +40,7 @@ fn task_id_vector_shared_with_sessions() {
 #[test]
 fn open_attach_join_and_sessions() {
     let (_d, st) = fresh();
-    let o = Open { session_id: Some("ccA".into()), node: Some("mizar".into()), rc_url: Some("https://rc.example.test/x".into()), ..Open::default() };
+    let o = Open { session_id: Some("ccA".into()), node: Some("mizar".into()), ..Open::default() };
     let t = s(&st.task_open("redux queue", o, None).unwrap()["task_id"]);
     st.task_attach(&t, "ccB", "worker", Seat { node: Some("alcor".into()), ..Seat::default() }, None).unwrap();
     let own = open(&st, "side quest", "ccC");
@@ -63,18 +63,18 @@ fn report_moves_sections_and_working_has_no_tag() {
     let (_d, st) = fresh();
     let t = open(&st, "x", "ccA");
     assert_eq!(section(&st, &t), ("working".into(), Value::Null));
-    st.task_report(&t, Some("ccA"), "blocked", Some("need a key"), None, None).unwrap();
+    st.task_report(&t, Some("ccA"), "blocked", Some("need a key"), None).unwrap();
     assert_eq!(section(&st, &t), ("needs_you".into(), json!("blocked")));
-    st.task_report(&t, Some("ccA"), "review", None, None, None).unwrap();
+    st.task_report(&t, Some("ccA"), "review", None, None).unwrap();
     assert_eq!(st.task_get(&t).unwrap()["status"], "review");
-    st.task_report(&t, Some("ccA"), "planned", None, None, None).unwrap();
+    st.task_report(&t, Some("ccA"), "planned", None, None).unwrap();
     assert_eq!(section(&st, &t), ("needs_you".into(), json!("planned")));
-    let out = st.task_report(&t, Some("ccA"), "done", None, None, None).unwrap();
+    let out = st.task_report(&t, Some("ccA"), "done", None, None).unwrap();
     assert_eq!(out, json!({"task_id": t, "section": "history", "status": "done"}));
     let c = st.task_get(&t).unwrap();
     assert_eq!((s(&c["section"]), s(&c["status"])), ("history".into(), "done".into()));
     assert!(c["done_at"].as_f64().is_some());
-    assert!(st.task_report(&t, Some("ccA"), "dragged", None, None, None).is_err());
+    assert!(st.task_report(&t, Some("ccA"), "dragged", None, None).is_err());
 }
 
 #[test]
@@ -112,7 +112,7 @@ fn an_old_approval_card_moves_only_through_the_approver() {
     let t = s(&st.task_open("admin ssh on capella", o, None).unwrap()["task_id"]);
     let c = st.task_get(&t).unwrap();
     assert_eq!((s(&c["section"]), s(&c["status"]), s(&c["kind"])), ("needs_you".into(), "approval".into(), "approval".into()));
-    assert!(st.task_report(&t, None, "done", None, None, None).is_err());
+    assert!(st.task_report(&t, None, "done", None, None).is_err());
     assert!(st.card_close(&t).is_err());
     assert!(st.task_claim(&t, "ccA", Seat::default(), None).is_err());
     assert!(st.approval_resolve(&t, "q1", "sideways", false).is_err());
@@ -145,7 +145,7 @@ fn history_pages_back_and_search() {
     for i in 0..7 {
         clock.advance(1.0);
         let t = open(&st, &format!("job {i}"), &format!("cc{i}"));
-        st.task_report(&t, Some(&format!("cc{i}")), "done", None, None, None).unwrap();
+        st.task_report(&t, Some(&format!("cc{i}")), "done", None, None).unwrap();
     }
     let titles = |v: &Value| v["cards"].as_array().unwrap().iter().map(|c| s(&c["title"])).collect::<Vec<_>>();
     let p1 = st.task_list(Some("history"), None, None, Some(3)).unwrap();

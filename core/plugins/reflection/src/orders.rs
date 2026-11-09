@@ -15,16 +15,15 @@ use crate::store::File;
 const WAIT_S: u64 = 55;
 const PULL_TIMEOUT: Duration = Duration::from_secs(75);
 const DONE_TIMEOUT: Duration = Duration::from_secs(30);
+const SERVICE_TIMEOUT: Duration = Duration::from_secs(120);
 /// Long past any order's `not_after` (10 min), so a replay still finds its record.
 const KEEP_MS: i64 = 24 * 3600 * 1000;
 const NOTE_MAX: usize = 500;
 
-/// The `start_other` args of one `agent` order. The session waits for Tony, unless a note gives it
-/// a first line. That line is fixed, so no vault text reaches the session.
 /// The `awm services` arguments of a `service` order. Disabling reflection would end the process
 /// that reports the order, so a node's reflection stays on from here.
 fn service_args(payload: &Value) -> Result<[String; 2], String> {
-    let name = text(payload, "service").filter(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')).ok_or("no valid service name")?;
+    let name = text(payload, "service").filter(|n| awm_plugin_sdk::config::valid_service_name(n)).ok_or("no valid service name")?;
     let on = truthy(payload.get("on"));
     if name == "reflection" && !on {
         return Err("reflection carries out these orders and cannot disable itself".into());
@@ -38,13 +37,17 @@ async fn run_service(payload: &Value) -> (bool, String) {
         Err(why) => return (false, why),
     };
     let awm = std::path::Path::new(&std::env::var("HOME").unwrap_or_default()).join(".local/bin/awm");
-    match tokio::process::Command::new(awm).arg("services").args(&args).output().await {
-        Ok(o) if o.status.success() => (true, format!("{} {}", args[0], args[1])),
-        Ok(o) => (false, clip(String::from_utf8_lossy(&o.stderr).into_owned())),
-        Err(e) => (false, clip(e.to_string())),
+    let run = tokio::process::Command::new(awm).arg("services").args(&args).kill_on_drop(true).output();
+    match tokio::time::timeout(SERVICE_TIMEOUT, run).await {
+        Err(_) => (false, "awm services timed out".into()),
+        Ok(Ok(o)) if o.status.success() => (true, format!("{} {}", args[0], args[1])),
+        Ok(Ok(o)) => (false, clip(String::from_utf8_lossy(&o.stderr).into_owned())),
+        Ok(Err(e)) => (false, clip(e.to_string())),
     }
 }
 
+/// The `start_other` args of one `agent` order. The session waits for Tony, unless a note gives it
+/// a first line. That line is fixed, so no vault text reaches the session.
 fn order_start(body: &Value) -> Value {
     let p = &body["payload"];
     let mut start = json!({

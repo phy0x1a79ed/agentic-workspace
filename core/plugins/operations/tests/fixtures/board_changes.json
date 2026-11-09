@@ -33,7 +33,7 @@
           "role": "main",
           "active": true,
           "node": "mizar",
-          "rc_url": "https://rc.example.test/s1",
+          "rc_url": null,
           "started": 1800000001.0,
           "ended": null,
           "project": null,

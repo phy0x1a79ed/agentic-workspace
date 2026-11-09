@@ -111,7 +111,7 @@ async function pageBack() {
       const page = await historyPage(label(last, "historyAt"));
       historyMore = page.length === PAGE;
       historyShown = historyShown.concat(page);
-      fill("history", historyShown);
+      parts.history.list.append(...page.map(header));
     }
   } finally { paging = false; }
 }

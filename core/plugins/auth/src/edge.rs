@@ -143,7 +143,7 @@ pub struct Edge {
 
 impl Edge {
     pub fn new(gate: Arc<AuthGate>, grants: Arc<Grants>, config: EdgeConfig, dispatch: Box<dyn Dispatch>) -> Edge {
-        Edge { gate, grants, config, client: client(None, usize::MAX), dispatch }
+        Edge { gate, grants, config, client: client(), dispatch }
     }
 
     async fn handle(self: Arc<Self>, req: hyper::Request<Incoming>, peer: SocketAddr) -> Response {
@@ -417,18 +417,15 @@ impl Edge {
     }
 }
 
-/// An upstream client, with `connect` as the time to open a connection and `idle` as the idle
-/// connections kept per host.
-pub fn client(connect: Option<Duration>, idle: usize) -> Upstream {
+fn client() -> Upstream {
     let mut http = HttpConnector::new();
     http.set_nodelay(true);
-    http.set_connect_timeout(connect);
-    Client::builder(TokioExecutor::new()).pool_max_idle_per_host(idle).build(http)
+    Client::builder(TokioExecutor::new()).pool_max_idle_per_host(usize::MAX).build(http)
 }
 
 /// Send one request and answer the upstream's response, less its hop-by-hop headers. The body
 /// is the upstream's, as it arrives.
-pub async fn relay(client: &Upstream, method: &Method, uri: Uri, headers: HeaderMap, body: Body) -> Result<Response, BoxError> {
+async fn relay(client: &Upstream, method: &Method, uri: Uri, headers: HeaderMap, body: Body) -> Result<Response, BoxError> {
     let mut out = hyper::Request::new(body);
     *out.method_mut() = method.clone();
     *out.uri_mut() = uri;

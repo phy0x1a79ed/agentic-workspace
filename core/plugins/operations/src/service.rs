@@ -282,8 +282,8 @@ pub fn roster_of(nodes: &Value) -> HashMap<String, Vec<LiveSession>> {
     nodes["nodes"].as_array().cloned().unwrap_or_default().iter().filter_map(|n| {
         let node = n["node"].as_str()?.to_string();
         let live = n["sessions"].as_array().cloned().unwrap_or_default().iter().map(|s| LiveSession {
-            session_id: s["session_id"].as_str().filter(|x| !x.is_empty()).map(str::to_string),
-            job: s["job"].as_str().filter(|x| !x.is_empty()).map(str::to_string),
+            session_id: text(&s["session_id"]),
+            job: text(&s["job"]),
             name: text(&s["name"]), link: text(&s["link"]), project: text(&s["project"]), scope: text(&s["scope"]),
         }).collect();
         Some((node, live))

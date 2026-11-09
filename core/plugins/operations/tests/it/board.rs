@@ -213,10 +213,10 @@ fn board_changes_pages_by_event_with_one_card_per_task() {
     let st = Store::open_with_clock(dir.path().join("q.db"), true, clock.clock()).unwrap();
     let o = |id: &str, sid: Option<&str>| Open { task_id: Some(id.into()), session_id: sid.map(str::to_string), ..Open::default() };
     st.task_open("one", o("T0000001", Some(S1)), None).unwrap();
-    st.task_report("T0000001", Some(S1), "blocked", Some("why"), None, None).unwrap();
+    st.task_report("T0000001", Some(S1), "blocked", Some("why"), None).unwrap();
     st.task_open("two", o("T0000002", None), None).unwrap();
     st.task_message("T0000001", "hi", None, None, None, None).unwrap();
-    st.task_report("T0000002", None, "working", None, None, None).unwrap();
+    st.task_report("T0000002", None, "working", None, None).unwrap();
     let ids = |v: &Value| v["cards"].as_array().unwrap().iter().map(|c| s(&c["task_id"])).collect::<Vec<_>>();
 
     let p1 = st.board_changes(0, Some(3)).unwrap();
@@ -256,7 +256,7 @@ async fn fixture_board() -> Value {
     at(1.0);
     st.task_open("Fix the tunnel", Open {
         task_id: Some("T0000001".into()), session_id: Some(S1.into()), node: Some("mizar".into()), name: Some("fix-tunnel".into()),
-        rc_url: Some("https://rc.example.test/s1".into()), job: Some("job-a".into()), tags: Some(vec!["infra".into()]), ..Open::default()
+        job: Some("job-a".into()), tags: Some(vec!["infra".into()]), ..Open::default()
     }, None).unwrap();
     at(2.0);
     st.task_detail("T0000001", Some("# Fix the tunnel\n\nsteps"), Some(&[json!({"id": "1", "subject": "port hooks", "status": "in_progress"})]), None).unwrap();
@@ -336,7 +336,7 @@ fn a_gone_session_leaves_its_lone_card_stale() {
     let (_d, st) = fresh();
     seated(&st, "T0000001", &sid(1), "mizar", "job-a");
     seated(&st, "T0000002", &sid(2), "lyra", "job-b");
-    st.task_report("T0000002", Some(&sid(2)), "blocked", Some("a key"), None, None).unwrap();
+    st.task_report("T0000002", Some(&sid(2)), "blocked", Some("a key"), None).unwrap();
     assert_eq!(st.session_gone(Some(&sid(1)), None, "mizar").unwrap(), ["T0000001"]);
     assert_eq!(at(&st, "T0000001"), ("stale".into(), Value::Null));
     assert_eq!(st.task_sessions("T0000001").unwrap()[0]["active"], false);
@@ -470,10 +470,10 @@ fn the_event_hook_fires_once_per_event_after_commit() {
     assert!(got.iter().all(|g| g.1 == 2), "each announcement follows the commit of its whole write");
     st.task_open("x", o(), Some("mizar:1")).unwrap();
     assert!(st.task_open("x", o(), None).is_err());
-    assert!(st.task_report("nosuchid", None, "done", None, None, None).is_err());
-    assert!(st.task_report("T0000001", None, "dragged", None, None, None).is_err());
+    assert!(st.task_report("nosuchid", None, "done", None, None).is_err());
+    assert!(st.task_report("T0000001", None, "dragged", None, None).is_err());
     assert_eq!(seen.lock().unwrap().len(), 2, "a replayed or refused write announces nothing");
-    st.task_report("T0000001", Some(S1), "blocked", None, None, None).unwrap();
+    st.task_report("T0000001", Some(S1), "blocked", None, None).unwrap();
     st.ops_post("vpn", "mizar", "t", "b", None).unwrap();
     let seqs: Vec<i64> = seen.lock().unwrap().iter().map(|g| g.0.seq).collect();
     assert_eq!(seqs, [1, 2, 3], "seq rises, and an Ops notice is no card event");

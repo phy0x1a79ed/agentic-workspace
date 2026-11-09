@@ -48,9 +48,11 @@ function ago(ts) {
 const rc = (url) => (/^https:\/\/claude\.ai\//.test(url || "")
   ? el("a", { href: url, target: "_blank", rel: "noopener" }, "Remote Control") : null);
 
+const sessionMatches = (q, s) => fuzzy(q, s.name) || fuzzy(q, s.scope) || fuzzy(q, s.project);
+
 function nodeSection(n, q) {
   const own = fuzzy(q, n.name);
-  const sessions = (n.sessions || []).filter((s) => own || fuzzy(q, s.name) || fuzzy(q, s.scope) || fuzzy(q, s.project));
+  const sessions = (n.sessions || []).filter((s) => own || sessionMatches(q, s));
   const services = n.services || [];
   const up = services.filter((s) => s.up).length;
   return el("article", { class: "awm-node", "data-node": n.name },
@@ -179,7 +181,7 @@ async function render() {
   const roster = await swarmRoster();
   const q = $(".search").value;
   const all = roster.nodes || [];
-  const nodes = all.filter((n) => fuzzy(q, n.name) || (n.sessions || []).some((s) => fuzzy(q, s.name) || fuzzy(q, s.scope) || fuzzy(q, s.project)));
+  const nodes = all.filter((n) => fuzzy(q, n.name) || (n.sessions || []).some((s) => sessionMatches(q, s)));
   $(".awm-nodes").replaceChildren(...(nodes.length ? nodes.map((n) => nodeSection(n, q))
     : [el("div", { class: "none" }, "No node matches.")]));
   const seats = (roster.seats || []).filter((s) => fuzzy(q, s.label) || fuzzy(q, s.seat));

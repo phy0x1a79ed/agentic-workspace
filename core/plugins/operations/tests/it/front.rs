@@ -328,7 +328,7 @@ async fn claim_moves_a_needs_you_card_to_working() {
     assert!(ok(&out) && out["section"] == "working", "{out}");
     let card = h.env.store.task_get(&t).unwrap();
     assert_eq!((s(&card["kind"]), s(&card["sessions"][0]["role"]), s(&card["sessions"][0]["job"])), ("task".into(), "main".into(), "job-a".into()));
-    h.env.store.task_report(&t, Some(A), "done", None, None, None).unwrap();
+    h.env.store.task_report(&t, Some(A), "done", None, None).unwrap();
     assert!(!ok(&h.call("claim_task", pid(22), json!({"task_id": t})).await), "History is not claimable");
 }
 

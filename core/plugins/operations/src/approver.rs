@@ -808,13 +808,11 @@ impl Approver {
         Ok(env)
     }
 
-    /// Start an agent on `node` from the vault: a card in Needs you and a signed `agent`
-    /// order. No text from the vault reaches the agent, so a model or effort must be a listed one.
     /// Switch a service on `node` from Ops. Outside a window this device opened with its passkey,
     /// it opens no order and answers with the request to approve.
     pub async fn service_toggle(&self, device: &str, node: &str, service: &str, on: bool) -> AResult<Value> {
         let node = self.order_node("service", Some(node))?;
-        if service.is_empty() || service.len() > 64 || !service.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-') {
+        if !awm_plugin_sdk::config::valid_service_name(service) {
             return Err(bad("service is a service name"));
         }
         let open = self.conn().query_row(
@@ -823,6 +821,14 @@ impl Approver {
             |_| Ok(()),
         ).optional()?.is_some();
         if !open {
+            let pending: Option<String> = self.conn().query_row(
+                "SELECT request_id FROM requests WHERE kind='service_window' AND status='pending' AND requester_session IS NULL AND expires>?",
+                params![self.now()],
+                |r| r.get(0),
+            ).optional()?;
+            if let Some(request_id) = pending {
+                return Ok(json!({"needs_approval": true, "request_id": request_id}));
+            }
             let r = self.approval_request("service_window", None, "Allow Ops to switch services for 5 minutes", MINUTES_MIN, json!({}), None, None).await?;
             return Ok(json!({"needs_approval": true, "request_id": r["request_id"]}));
         }
@@ -830,6 +836,8 @@ impl Approver {
         Ok(json!({"order_id": env["order"]["order_id"]}))
     }
 
+    /// Start an agent on `node` from the vault: a card in Needs you and a signed `agent`
+    /// order. No text from the vault reaches the agent, so a model or effort must be a listed one.
     pub async fn agent(&self, node: &str, model: Option<&str>, effort: Option<&str>, note_id: Option<&str>) -> AResult<Value> {
         let node = self.order_node("agent", Some(node))?;
         if model.is_some_and(|m| !AGENT_MODELS.contains(&m)) {

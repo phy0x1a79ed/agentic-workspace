@@ -2,7 +2,7 @@
 //!
 //! On the public profile (`AWM_EDGE_PROFILE=public`) a request whose path is not listed here is
 //! a 404 whether or not it carries a session. The lists are constants with tests, not a per-host
-//! string, so a change to the surface is a reviewed diff. The four mounts the edge forwards to
+//! string, so a change to the surface is a reviewed diff. The three mounts the edge forwards to
 //! an upstream other than the gateway ([`vault`], [`slices`], [`tether`]) live here
 //! too, because every verdict is decided against their shapes.
 //!

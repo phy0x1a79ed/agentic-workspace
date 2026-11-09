@@ -168,7 +168,6 @@ pub struct Open {
     pub tags: Option<Vec<String>>,
     pub meta: Option<Map<String, Value>>,
     pub name: Option<String>,
-    pub rc_url: Option<String>,
     pub job: Option<String>,
     pub source_note: Option<String>,
 }
@@ -178,7 +177,6 @@ pub struct Open {
 pub struct Seat {
     pub node: Option<String>,
     pub name: Option<String>,
-    pub rc_url: Option<String>,
     pub job: Option<String>,
 }
 
@@ -422,11 +420,11 @@ impl Store {
             return refuse(format!("role must be one of {ROLES:?}, not {role:?}"));
         }
         tx.tx.execute(
-            "INSERT INTO sessions(session_id, task_id, role, node, name, rc_url, job, started) VALUES (?,?,?,?,?,?,?,?) \
+            "INSERT INTO sessions(session_id, task_id, role, node, name, job, started) VALUES (?,?,?,?,?,?,?) \
              ON CONFLICT(session_id) DO UPDATE SET task_id=excluded.task_id, role=excluded.role, active=1, ended=NULL, \
              node=COALESCE(excluded.node, node), name=COALESCE(excluded.name, name), \
-             rc_url=COALESCE(excluded.rc_url, rc_url), job=COALESCE(excluded.job, job)",
-            params![session_id, task_id, role, seat.node, seat.name, seat.rc_url, seat.job, tx.now],
+             job=COALESCE(excluded.job, job)",
+            params![session_id, task_id, role, seat.node, seat.name, seat.job, tx.now],
         )?;
         tx.event(task_id, "session", json!({"session_id": session_id, "role": role}))
     }
@@ -462,7 +460,7 @@ impl Store {
             )?;
             tx.event(&tid, "open", json!({"title": title, "section": section, "status": o.status}))?;
             if let Some(sid) = o.session_id.as_deref().filter(|s| !s.is_empty()) {
-                let seat = Seat { node: o.node.clone(), name: o.name.clone(), rc_url: o.rc_url.clone(), job: o.job.clone() };
+                let seat = Seat { node: o.node.clone(), name: o.name.clone(), job: o.job.clone() };
                 Store::add_session(tx, &tid, sid, "main", &seat)?;
             }
             Ok(json!({"task_id": tid}))
@@ -528,7 +526,7 @@ impl Store {
     }
 
     /// A session moves its own card: working, planned, blocked, review or done.
-    pub fn task_report(&self, task_id: &str, session_id: Option<&str>, state: &str, reason: Option<&str>, rc_url: Option<&str>, op_id: Option<&str>) -> Result<Value> {
+    pub fn task_report(&self, task_id: &str, session_id: Option<&str>, state: &str, reason: Option<&str>, op_id: Option<&str>) -> Result<Value> {
         let Some((section, status)) = report_state(state) else {
             return refuse(format!("state must be one of {REPORT_STATES:?}, not {state:?}"));
         };
@@ -538,9 +536,6 @@ impl Store {
                 return refuse("an approval card moves only through the approver");
             }
             let tid = row.task_id.clone();
-            if let (Some(url), Some(sid)) = (rc_url, session_id) {
-                tx.tx.execute("UPDATE sessions SET rc_url=? WHERE session_id=?", params![url, sid])?;
-            }
             let mut meta = row.meta.clone();
             meta.insert("reason".into(), if section == NEEDS_YOU { json!(reason) } else { Value::Null });
             tx.tx.execute("UPDATE tasks SET meta=? WHERE task_id=?", params![Value::Object(meta).to_string(), tid])?;
@@ -729,20 +724,16 @@ impl Store {
 
     // -- Tony's actions, only through the vault API (R63) -------------------------------
 
-    fn finish_card(&self, task_id: &str, status: &str, why: &str) -> Result<Value> {
+    /// Close a card to History. A Stale card closes the same way (R61 item 4).
+    pub fn card_close(&self, task_id: &str) -> Result<Value> {
         self.write(None, |tx| {
             let row = task_by_id(&tx.tx, task_id)?;
             if row.kind == "approval" {
                 return refuse("an approval closes by approve, reject or cancel");
             }
-            Store::set_card(tx, &row.task_id, HISTORY, Some(status), why, json!({}))?;
-            Ok(json!({"task_id": row.task_id, "section": HISTORY, "status": status}))
+            Store::set_card(tx, &row.task_id, HISTORY, Some("done"), "close", json!({}))?;
+            Ok(json!({"task_id": row.task_id, "section": HISTORY, "status": "done"}))
         })
-    }
-
-    /// Close a card to History. A Stale card closes the same way (R61 item 4).
-    pub fn card_close(&self, task_id: &str) -> Result<Value> {
-        self.finish_card(task_id, "done", "close")
     }
 
     /// The card of an `agent` order: Needs you until its session reports, with the note it
