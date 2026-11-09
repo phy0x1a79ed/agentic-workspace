@@ -138,10 +138,6 @@ fn run_job(paths: &Paths, job: &str, timeout: u64, force: bool, dry_run: bool, t
         tracing::error!("{e}");
         return 1;
     }
-    if let Err(e) = snapshot::take(&paths.awm_dir) {
-        tracing::error!("the pre-redux state snapshot failed, so run-job refuses to run: {e:#}");
-        return 1;
-    }
     let dao = match RunsDao::open(&paths.db()) {
         Ok(d) => d,
         Err(e) => {
@@ -217,7 +213,6 @@ fn run_job(paths: &Paths, job: &str, timeout: u64, force: bool, dry_run: bool, t
 async fn serve(paths: Paths) -> anyhow::Result<()> {
     let svc = Service::from_env()?;
     let ctx = svc.context();
-    snapshot::take(&paths.awm_dir)?;
     let dao = Arc::new(RunsDao::open(&paths.db())?);
     jobs::ensure_seeded(&paths, &dao)?;
     let api = Arc::new(Native::new(&paths.state_dir()));

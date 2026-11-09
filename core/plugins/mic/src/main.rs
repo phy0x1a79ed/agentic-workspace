@@ -36,15 +36,11 @@ fn main() -> anyhow::Result<()> {
         std::process::exit(awm_statecheck::cli::run(&cmd, "mic", &decl()?)?);
     }
     audio::ensure_runtime_env();
-    let out = awm_statecheck::snapshot_once("mic", &decl()?)?;
-    tokio::runtime::Builder::new_multi_thread().enable_all().build()?.block_on(run(out))
+    tokio::runtime::Builder::new_multi_thread().enable_all().build()?.block_on(run())
 }
 
-async fn run(snapshot: awm_statecheck::snapshot::Outcome) -> anyhow::Result<()> {
+async fn run() -> anyhow::Result<()> {
     awm_plugin_sdk::telemetry::init();
-    for p in &snapshot.taken {
-        tracing::info!("mic: took the pre-redux snapshot {}", p.display());
-    }
     let var = |k: &str| std::env::var(k).ok().filter(|v| !v.trim().is_empty());
     let sink = var("MIC_SINK").unwrap_or_else(|| audio::DEFAULT_SINK.into());
     let interval = var("MIC_HEALTH_INTERVAL_S").and_then(|v| v.trim().parse::<f64>().ok()).filter(|s| *s > 0.0).unwrap_or(20.0);

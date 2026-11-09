@@ -14,7 +14,7 @@ use crate::portal::{Grants, GRANT_KEY_ENV};
 use crate::store::{AuthStore, INIT_ENV};
 use crate::verbs::{self, Caller};
 use crate::landing::{self, Landing};
-use crate::{certs, policy, snapshot, tls};
+use crate::{certs, policy, tls};
 
 const PUBLIC_PROFILE: &str = "public";
 
@@ -25,7 +25,6 @@ const FRONT: &str = "Report one service's front: the TLS port auth opened for it
 pub async fn serve() -> anyhow::Result<()> {
     let service = Service::from_env()?;
     let env = service.context().env().clone();
-    snapshot::take(&env.awm_dir)?;
     let state = env.state_dir();
     std::fs::create_dir_all(&state)?;
 

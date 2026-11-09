@@ -1,4 +1,4 @@
-//! The pre-redux snapshot of operations' state, taken once before the first Rust write.
+//! What the pre-redux state check reads of operations's state.
 
 use std::path::Path;
 
@@ -9,15 +9,4 @@ pub fn decl(awm_dir: &Path) -> anyhow::Result<Decl> {
     let mut d = Decl::parse(include_str!("../state.toml"), &Path::new(&home).join(".awm/operations"), awm_dir, |n| std::env::var(n).ok())?;
     d.extra.push(Extra { name: "arbutus-pending".into(), path: crate::arbutus::approval_pending_dir() });
     Ok(d)
-}
-
-pub fn take(awm_dir: &Path) -> anyhow::Result<()> {
-    let out = awm_statecheck::snapshot_once("operations", &decl(awm_dir)?)?;
-    for p in &out.taken {
-        tracing::info!("operations: took the pre-redux snapshot {}", p.display());
-    }
-    for n in &out.notes {
-        tracing::info!("operations: snapshot: {n}");
-    }
-    Ok(())
 }

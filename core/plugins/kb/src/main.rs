@@ -62,19 +62,15 @@ fn main() -> anyhow::Result<()> {
         }
         Some(Cmd::Serve) | None => {}
     }
-    let snapshot = awm_statecheck::snapshot_once("kb", &decl(&awm_dir)?)?;
-    runtime()?.block_on(run(&awm_dir, snapshot))
+    runtime()?.block_on(run(&awm_dir))
 }
 
 fn runtime() -> std::io::Result<tokio::runtime::Runtime> {
     tokio::runtime::Builder::new_multi_thread().enable_all().build()
 }
 
-async fn run(awm_dir: &Path, snapshot: awm_statecheck::snapshot::Outcome) -> anyhow::Result<()> {
+async fn run(awm_dir: &Path) -> anyhow::Result<()> {
     awm_plugin_sdk::telemetry::init();
-    for p in &snapshot.taken {
-        tracing::info!("kb: took the pre-redux snapshot {}", p.display());
-    }
     let svc = Service::from_env()?;
     let ctx = svc.context();
     let hub = ctx.hub().clone();

@@ -29,7 +29,7 @@ The deploy unpacks the model files from the artifact in `scripts/models.pin` to 
 
 **CAUTION** `services/kb/` also holds the Python papers plugin's state, up to 170 GB on altair. Do not treat that folder as kb's alone.
 
-At its first start kb takes one `.pre-rust/` snapshot beside each declared state dir. It then copies every post of the frozen tables into LanceDB. It refuses to serve until LanceDB holds each post and, with the model loaded, every post has its chunks. A marker file records the pass, so no later start copies again. Run `kb state --help` for the state check subcommands.
+At its first start kb copies every post of the frozen tables into LanceDB. It refuses to serve until LanceDB holds each post and, with the model loaded, every post has its chunks. A marker file records the pass, so no later start copies again. Run `kb state --help` for the state check subcommands.
 
 ## Roll back
 

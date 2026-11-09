@@ -23,13 +23,12 @@ cch keeps no database. It reads Claude Code's own files in place under `$CLAUDE_
 
 ## First start
 
-Before cch answers any verb, it runs the first four steps in order:
+Before cch answers any verb, it runs the first three steps in order:
 
-1. It takes the `.pre-rust/` snapshot once. A failed snapshot stops the start, so nothing writes unsnapshotted state.
-2. It copies reflection's old `pending/` and the keep service's `hold.json` into its own folder, and drops a `MIGRATED` marker in each source. The sources stay for 7 days.
-3. It replays the promises it owes.
-4. It replaces the four awm hook entries in `settings.json` with `cch hook <name>`, and keeps a backup as `~/.claude/backups/settings.json.<ts>.cch`. It touches no other entry. Set `AWM_CCH_HOOKS=off` to skip this step.
-5. In the background, it disables the old `awm-isolated-login-sync` user unit when one exists.
+1. It copies reflection's old `pending/` and the keep service's `hold.json` into its own folder, and drops a `MIGRATED` marker in each source. The sources stay for 7 days.
+2. It replays the promises it owes.
+3. It replaces the four awm hook entries in `settings.json` with `cch hook <name>`, and keeps a backup as `~/.claude/backups/settings.json.<ts>.cch`. It touches no other entry. Set `AWM_CCH_HOOKS=off` to skip this step.
+4. In the background, it disables the old `awm-isolated-login-sync` user unit when one exists.
 
 **CAUTION** `awm/scripts/deploy-hooks.sh` no longer carries cch's hooks. An older copy of that script adds the Python entries back beside cch's, and every hook then fires twice.
 

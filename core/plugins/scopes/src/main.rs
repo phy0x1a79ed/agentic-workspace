@@ -34,15 +34,11 @@ fn main() -> anyhow::Result<()> {
     if let Some(Cmd::State { cmd }) = Cli::parse().cmd {
         std::process::exit(awm_statecheck::cli::run(&cmd, "scopes", &decl()?)?);
     }
-    let out = awm_statecheck::snapshot_once("scopes", &decl()?)?;
-    tokio::runtime::Builder::new_multi_thread().enable_all().build()?.block_on(run(out))
+    tokio::runtime::Builder::new_multi_thread().enable_all().build()?.block_on(run())
 }
 
-async fn run(snapshot: awm_statecheck::snapshot::Outcome) -> anyhow::Result<()> {
+async fn run() -> anyhow::Result<()> {
     awm_plugin_sdk::telemetry::init();
-    for p in &snapshot.taken {
-        tracing::info!("scopes: took the pre-redux snapshot {}", p.display());
-    }
     let svc = Service::from_env()?;
     let ctx = svc.context();
     let state = ctx.env().state_dir();

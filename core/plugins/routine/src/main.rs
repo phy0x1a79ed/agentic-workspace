@@ -47,7 +47,6 @@ async fn main() -> anyhow::Result<()> {
 async fn serve() -> anyhow::Result<()> {
     let svc = Service::from_env()?;
     let env = svc.context().env().clone();
-    snapshot::take(&env.awm_dir)?;
     let store = Arc::new(Store::open(&env.state_dir().join("routine.db"))?);
     let orphans = store.orphan_live()?;
     if orphans > 0 {

@@ -988,7 +988,6 @@ fn run_main(a: LandArgs) -> Result<i32> {
     };
     let install = std::env::var_os("AWM_INSTALL_CONFIG").filter(|c| !c.is_empty()).map(PathBuf::from).unwrap_or_else(|| awm_dir.join(fleetconf::FILE));
     let fleet = fleetconf::load(&install).map_err(|e| LandError::Exit(e.0))?;
-    crate::snapshot::take(&awm_dir).map_err(|e| LandError::Exit(format!("the pre-redux state snapshot failed, so land refuses to run: {e:#}")))?;
     let mut land = Land::new(&project, &ws, &awm_dir, &awm_plugin_sdk::config::node_name(), fleet)?;
     let res = match a.verb {
         LandVerb::Batch { ticket } => return land.run_batch(&ticket),

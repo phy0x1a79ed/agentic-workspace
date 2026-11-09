@@ -32,7 +32,6 @@ struct StateCli {
 #[tokio::main]
 async fn service() -> anyhow::Result<()> {
     awm_plugin_sdk::telemetry::init();
-    cch::snapshot::take(&awm_plugin_sdk::config::awm_dir())?;
     let svc = Service::from_env()?;
     let app = Arc::new(App::new(Live::new(Paths::from_env(), svc.context().hub().clone())));
     let boot = app.clone();

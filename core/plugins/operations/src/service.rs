@@ -300,12 +300,10 @@ pub async fn sweep_loop(ap: Arc<Approver>) {
 /// Wire the whole service from the environment and run it.
 pub async fn serve() -> anyhow::Result<()> {
     let service = Service::from_env()?;
-    let env = service.context().env().clone();
     let hub = service.context().hub().clone();
     let s = Settings::from_env()?;
     let node = crate::settings::node_name();
     let init = std::env::var("AWM_OPERATIONS_INIT").is_ok_and(|v| v == "1");
-    crate::snapshot::take(&env.awm_dir)?;
 
     let mut home = None;
     let mut approver_handle = None;

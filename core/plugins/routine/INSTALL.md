@@ -16,7 +16,7 @@ The unit dir is `AWM_ROUTINE_UNIT_DIR`, else `$XDG_CONFIG_HOME/systemd/user`. `s
 
 **CAUTION** The land state is the format `land.py` wrote, byte for byte. A Python `land.sh` on an old branch and the Rust one read each other's tickets, batches and lease. Keep the JSON writer in `src/land/json.rs` matching Python's `json.dumps(indent=1)`.
 
-**CAUTION** The first run of the service or of `routine land` copies the state once into `.pre-rust/` before it writes anything. A failed copy refuses the start. Never delete `.pre-rust/` by hand: run `routine state prune` with Tony's dated OK.
+**CAUTION** Never delete `.pre-rust/` by hand: run `routine state prune` with Tony's dated OK.
 
 ## Timers
 
