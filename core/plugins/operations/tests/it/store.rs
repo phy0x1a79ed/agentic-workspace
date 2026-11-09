@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 
-use awm_plugin_operations::ids::{from_uuid, intake_task_id, is_task_id, mint_task_id};
+use awm_plugin_operations::ids::{from_uuid, is_task_id, mint_task_id};
 use awm_plugin_operations::store::{Open, Seat, Store};
 use crate::common::{s, TestClock};
 use serde_json::{json, Map, Value};
@@ -35,8 +35,6 @@ fn task_id_vector_shared_with_sessions() {
     assert_eq!(from_uuid(uuid::Uuid::parse_str("00112233-4455-6677-8899-aabbccddeeff").unwrap()), "ABEiM0RV");
     assert!(is_task_id(&mint_task_id()));
     assert!(!is_task_id("abc/defg"));
-    assert!(is_task_id(&intake_task_id("c0ffee")));
-    assert_eq!(intake_task_id("c0ffee"), intake_task_id("c0ffee"), "one id per board card");
 }
 
 #[test]

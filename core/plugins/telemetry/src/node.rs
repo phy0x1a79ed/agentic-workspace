@@ -13,7 +13,7 @@ use futures_util::future::BoxFuture;
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
 
-use crate::roster::{parse_ts, Item, ServiceRow, Session, ToolRow, Ts};
+use crate::roster::{parse_ts, Item, PluginRow, ServiceRow, Session, ToolRow, Ts};
 
 /// The plugins whose own calls the node part does not forward, so a report never reports itself.
 const OWN_PLUGINS: [&str; 2] = ["telemetry", "telemetry-node"];
@@ -273,7 +273,7 @@ impl GatewayProbe {
         Ok(resp.json().await?)
     }
 
-    async fn read_tools(&self) -> anyhow::Result<(Vec<ServiceRow>, Vec<ToolRow>)> {
+    async fn read_tools(&self) -> anyhow::Result<(Vec<ServiceRow>, Vec<ToolRow>, Vec<PluginRow>)> {
         let table = self.get("/hub/table").await?;
         let plugins = self.get("/hub/plugins").await?;
         let edges = config::edges().unwrap_or_default();
@@ -283,7 +283,7 @@ impl GatewayProbe {
 
 /// The node's services, up when enabled and in the live table, and the tools it can use: its
 /// own and the singletons behind other hosts' doors.
-pub fn services_and_tools(table: &Value, plugins: &Value, doors: &[(String, String)]) -> (Vec<ServiceRow>, Vec<ToolRow>) {
+pub fn services_and_tools(table: &Value, plugins: &Value, doors: &[(String, String)]) -> (Vec<ServiceRow>, Vec<ToolRow>, Vec<PluginRow>) {
     let rows = table.as_array().cloned().unwrap_or_default();
     let live_plugins: Vec<&str> = rows.iter().filter_map(|t| t.get("plugin").and_then(Value::as_str)).collect();
     let services = plugins
@@ -298,18 +298,21 @@ pub fn services_and_tools(table: &Value, plugins: &Value, doors: &[(String, Stri
             let tools: Vec<String> = s.get("tools").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).map(str::to_string).collect();
             let enabled = s.get("enabled").and_then(Value::as_bool).unwrap_or(true);
             let in_table = tools.is_empty() || plugin.as_deref().is_some_and(|p| live_plugins.contains(&p));
-            Some(ServiceRow { service: name, plugin, tools, up: enabled && in_table })
+            Some(ServiceRow { service: name, plugin, tools, up: enabled && in_table, enabled: Some(enabled) })
         })
         .collect();
     let mut tools: Vec<ToolRow> = rows.iter().filter_map(|t| t.get("name").and_then(Value::as_str)).map(|n| ToolRow { tool: n.into(), host: None }).collect();
     tools.extend(doors.iter().map(|(tool, host)| ToolRow { tool: tool.clone(), host: Some(host.clone()) }));
-    (services, tools)
+    let loaded = plugins.get("plugins").and_then(Value::as_array).into_iter().flatten().filter_map(|p| {
+        Some(PluginRow { name: p.get("name")?.as_str()?.into(), version: p.get("version").and_then(Value::as_str).map(str::to_string), core: p.get("core").and_then(Value::as_bool).unwrap_or(false) })
+    });
+    (services, tools, loaded.collect())
 }
 
 impl Probe for GatewayProbe {
     fn hello(&self) -> BoxFuture<'_, anyhow::Result<Item>> {
         Box::pin(async move {
-            let (services, tools) = self.read_tools().await?;
+            let (services, tools, plugins) = self.read_tools().await?;
             let listed = self.hub.call("reflection", "list_other", json!({}), None).await?;
             let sessions = listed
                 .get("sessions")
@@ -321,14 +324,14 @@ impl Probe for GatewayProbe {
                 .map(redact)
                 .collect();
             let role = config::edges().ok().and_then(|e| e.nodes.get(&self.node).map(|n| n.role.clone()));
-            Ok(Item::Hello { role, portal: config::edge_url(), sessions, services, tools })
+            Ok(Item::Hello { role, portal: config::edge_url(), sessions, services, tools, plugins })
         })
     }
 
     fn tools(&self) -> BoxFuture<'_, anyhow::Result<Item>> {
         Box::pin(async move {
-            let (services, tools) = self.read_tools().await?;
-            Ok(Item::Tools { services, tools })
+            let (services, tools, plugins) = self.read_tools().await?;
+            Ok(Item::Tools { services, tools, plugins })
         })
     }
 }

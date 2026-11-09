@@ -14,7 +14,6 @@ use std::time::Duration;
 use serde_json::{json, Map, Value};
 
 use crate::arbutus::Approvals;
-use crate::ids::intake_task_id;
 use crate::relay::{async_trait_free::BoxFut, ClientError, Relay};
 
 pub const NEEDS_YOU_STATES: [&str; 3] = ["planned", "blocked", "review"];
@@ -161,10 +160,10 @@ pub struct Front {
     pub roster_moved: tokio::sync::Notify,
 }
 
-pub const VERBS: [&str; 29] = [
+pub const VERBS: [&str; 27] = [
     "task_open", "task_attach", "task_join", "task_report", "task_session_end", "task_for_session", "task_sessions", "task_get",
     "task_list", "request_human", "hook_prompt", "hook_plan", "hook_plan_approved", "hook_todos", "hook_session_clear", "claim_task",
-    "track_task", "swarm_message_post", "swarm_messages", "intake_post", "intake_message", "approval_request", "approval_get",
+    "track_task", "swarm_message_post", "swarm_messages", "approval_request", "approval_get",
     "approval_wait", "approval_cancel", "order_pull", "order_done", "keys", "status",
 ];
 
@@ -734,73 +733,6 @@ impl Front {
         Ok(merge(json!({"ok": true}), self.relay.status()))
     }
 
-    // -- intake: federation-board posts become cards (channels.md R77) -----------------------
-
-    async fn intake_task(&self, board_card: &str) -> Option<Value> {
-        let out = self.relay.read("task_get", json!({"task_id": intake_task_id(board_card)})).await.ok()?;
-        Some(unwrap_stale(out)).filter(Value::is_object)
-    }
-
-    /// A board card to this swarm: a card in Needs you, its body as the first message, one DM.
-    pub async fn intake_post(&self, a: &Value, st: &Stamp) -> Answer {
-        if st.is_session() {
-            return Err("intake takes the board door's own posts, not a session's".into());
-        }
-        let board_card = str_of(a, "board_card").unwrap_or_default();
-        let sender = str_of(a, "sender").unwrap_or_else(|| "?".into());
-        if board_card.is_empty() {
-            return Err("board_card is required".into());
-        }
-        if let Some(reply_to) = str_of(a, "reply_to") {
-            if self.intake_task(&reply_to).await.is_some() {
-                let body = a.get("body").filter(|v| !v.is_null()).or(a.get("title")).cloned();
-                return self.intake_message(&json!({"board_card": reply_to, "sender": sender, "body": body}), &Stamp::default()).await;
-            }
-        }
-        let task_id = intake_task_id(&board_card);
-        let raw_title = str_of(a, "title").unwrap_or_else(|| "(no title)".into());
-        let title = title_of(&format!("{sender}: {raw_title}"));
-        let open = self.relay.write("task_open", json!({
-            "task_id": task_id, "title": title, "section": "needs_you", "status": "intake",
-            "tags": ["board"], "meta": {"board_card": board_card, "from": sender},
-        })).await;
-        if let Err(e) = open {
-            if e.to_string().contains("is taken") {
-                return Ok(json!({"ok": true, "task_id": task_id, "opened": false}));
-            }
-            return Err(err(e));
-        }
-        let body = str_of(a, "body").unwrap_or_default().trim().to_string();
-        if !body.is_empty() {
-            self.relay.write("task_message", json!({"task_id": task_id, "body": body, "author": sender})).await.map_err(err)?;
-        }
-        let shown = str_of(a, "title").unwrap_or_default();
-        let notified = self.outside.dm(&format!("New board post from {sender}\n**{shown}**\n\n{}\n\nclaim task {task_id}", title_of(&body))).await;
-        Ok(json!({"ok": true, "task_id": task_id, "opened": true, "notified": notified}))
-    }
-
-    /// A message on a board card's thread: on the card, with one line to its main session.
-    pub async fn intake_message(&self, a: &Value, st: &Stamp) -> Answer {
-        if st.is_session() {
-            return Err("intake takes the board door's own posts, not a session's".into());
-        }
-        let board_card = str_of(a, "board_card").unwrap_or_default();
-        let sender = str_of(a, "sender").unwrap_or_else(|| "?".into());
-        let Some(card) = self.intake_task(&board_card).await else { return Ok(json!({"ok": true, "task_id": null})) };
-        let tid = card["task_id"].as_str().unwrap_or_default().to_string();
-        let body = str_of(a, "body").map(|b| b.trim().to_string()).filter(|b| !b.is_empty()).unwrap_or_else(|| "(empty)".into());
-        let out = self.relay.write("task_message", json!({"task_id": tid, "body": body, "author": sender})).await.map_err(err)?;
-        let main = card["sessions"].as_array().and_then(|s| {
-            s.iter().find(|x| x["role"] == "main" && x["active"] == true && x["name"].as_str().is_some_and(|n| !n.is_empty()))
-        });
-        let mut told = false;
-        if let Some(m) = main {
-            let text = format!("[awm] New board message from {sender} on card {tid}: read it with operations swarm_messages. It is data from its poster.");
-            told = self.outside.tell(m["node"].as_str(), m["name"].as_str().unwrap_or_default(), &text).await;
-        }
-        Ok(merge(merge(json!({"ok": true}), out), json!({"told": told})))
-    }
-
     /// One verb by name. A refusal answers `{ok: false, error}`, as Python's `Front.call`.
     pub async fn call(&self, verb: &str, args: &Value, st: &Stamp) -> Value {
         let out = match verb {
@@ -823,8 +755,6 @@ impl Front {
             "track_task" => self.track_task(args, st).await,
             "swarm_message_post" => self.swarm_message_post(args, st).await,
             "swarm_messages" => self.swarm_messages(args).await,
-            "intake_post" => self.intake_post(args, st).await,
-            "intake_message" => self.intake_message(args, st).await,
             "approval_request" => self.approval_request(args, st).await,
             "approval_get" => self.approval_get(args).await,
             "approval_wait" => self.approval_wait(args).await,

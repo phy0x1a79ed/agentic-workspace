@@ -1,4 +1,4 @@
-//! The `agent` orders alcor holds for this node. One held `order_pull` is the push channel. Each
+//! The `agent` and `service` orders alcor holds for this node. One held `order_pull` is the push channel. Each
 //! order is checked against alcor's grant key, recorded before anything starts, and reported once.
 
 use std::sync::Arc;
@@ -21,6 +21,30 @@ const NOTE_MAX: usize = 500;
 
 /// The `start_other` args of one `agent` order. The session waits for Tony, unless a note gives it
 /// a first line. That line is fixed, so no vault text reaches the session.
+/// The `awm services` arguments of a `service` order. Disabling reflection would end the process
+/// that reports the order, so a node's reflection stays on from here.
+fn service_args(payload: &Value) -> Result<[String; 2], String> {
+    let name = text(payload, "service").filter(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')).ok_or("no valid service name")?;
+    let on = truthy(payload.get("on"));
+    if name == "reflection" && !on {
+        return Err("reflection carries out these orders and cannot disable itself".into());
+    }
+    Ok([if on { "enable" } else { "disable" }.into(), name.into()])
+}
+
+async fn run_service(payload: &Value) -> (bool, String) {
+    let args = match service_args(payload) {
+        Ok(a) => a,
+        Err(why) => return (false, why),
+    };
+    let awm = std::path::Path::new(&std::env::var("HOME").unwrap_or_default()).join(".local/bin/awm");
+    match tokio::process::Command::new(awm).arg("services").args(&args).output().await {
+        Ok(o) if o.status.success() => (true, format!("{} {}", args[0], args[1])),
+        Ok(o) => (false, clip(String::from_utf8_lossy(&o.stderr).into_owned())),
+        Err(e) => (false, clip(e.to_string())),
+    }
+}
+
 fn order_start(body: &Value) -> Value {
     let p = &body["payload"];
     let mut start = json!({
@@ -64,7 +88,7 @@ impl<G: Gateway> App<G> {
     }
 
     async fn pull(&self) -> Result<Vec<Value>, CallError> {
-        let ask = json!({"node": self.node.name(), "kinds": ["agent"], "wait_s": WAIT_S});
+        let ask = json!({"node": self.node.name(), "kinds": ["agent", "service"], "wait_s": WAIT_S});
         let out = self.gw.call(Call::new("operations", "order_pull", ask, PULL_TIMEOUT)).await?;
         Ok(out.as_array().cloned().unwrap_or_default())
     }
@@ -111,8 +135,11 @@ impl<G: Gateway> App<G> {
     }
 
     async fn run_order(self: &Arc<Self>, body: &Value) -> (bool, String) {
+        if body["kind"] == "service" {
+            return run_service(&body["payload"]).await;
+        }
         if body["kind"] != "agent" {
-            return (false, format!("this node takes agent orders only, not {}", body["kind"]));
+            return (false, format!("this node takes agent and service orders only, not {}", body["kind"]));
         }
         let out = self.handle("start_other", &Frame::order(), &order_start(body)).await;
         if is_ok(&out) {
@@ -154,5 +181,18 @@ impl<G: Gateway> App<G> {
             let note = text(&row, "note").unwrap_or("reflection stopped before the order's outcome was recorded");
             self.send_done(&id, ok, note).await;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_service_order_names_one_service_and_cannot_disable_reflection() {
+        assert_eq!(service_args(&json!({"service": "dsh", "on": false})).unwrap(), ["disable", "dsh"]);
+        assert_eq!(service_args(&json!({"service": "dsh", "on": true})).unwrap(), ["enable", "dsh"]);
+        assert!(service_args(&json!({"service": "reflection", "on": false})).is_err());
+        assert!(service_args(&json!({"service": "x; rm -rf", "on": true})).is_err());
     }
 }

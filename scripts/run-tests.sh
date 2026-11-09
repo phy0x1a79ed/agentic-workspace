@@ -47,14 +47,13 @@ declare -A DISTS=(
   [trilium]="$WS/awm/services/trilium::$WS/awm/services/trilium/tests"
   [zotero]="$WS/awm/services/zotero::$WS/awm/services/zotero/tests"
   [kb]="$WS/awm/services/kb::$WS/awm/services/kb/tests"
-  [board]="$WS/awm/services/board::$WS/awm/services/board/tests"
   [grantlib]="$WS/awm/service_components/grantlib::$WS/awm/service_components/grantlib/tests"
   [trustpolicy]="$WS/awm/service_components/trustpolicy::$WS/awm/service_components/trustpolicy/tests"
   [wake]="$WS/awm/plugins/wake::$WS/awm/plugins/wake/tests"
 )
 
 # Stable run order.
-ORDER=(contract gatewayclient config persistence grantlib usage 2fa ssh rlm-factorio vpn claude-science engcyc trilium zotero kb board trustpolicy wake)
+ORDER=(contract gatewayclient config persistence grantlib usage 2fa ssh rlm-factorio vpn claude-science engcyc trilium zotero kb trustpolicy wake)
 
 CHANGED_BASE=""
 SMOKE=0

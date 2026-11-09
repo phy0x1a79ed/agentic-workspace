@@ -578,10 +578,13 @@ impl Seats {
         seat.job = job.into();
         seat.adopted = true;
         seat.done_at = 0.0;
-        // Every seat session so far started with Remote Control on, and adoption leaves it so.
-        seat.remote_control = true;
-        seat.rc_url = self.world.rc_url(job).await.unwrap_or_default();
+        seat.rc_url = if seat.remote_control { self.world.rc_url(job).await.unwrap_or_default() } else { String::new() };
         self.save(&seat).await;
+        if !seat.remote_control {
+            if let Err(why) = self.world.remote_control(job, false, &Self::rc_name(&seat)).await {
+                tracing::info!("seat {}: Remote Control off for {job} failed: {why}", label(&seat));
+            }
+        }
         self.store.deliver_briefed(seat.account(), seat.channel(), job, now).await;
         let name = if session_name.is_empty() { seat.decl.name.clone() } else { session_name.to_string() };
         self.mounted(&seat, job, &name).await;

@@ -554,6 +554,11 @@ impl Connector for GmailConnector {
     }
 
     /// The account's mailboxes and labels. Gmail has no DMs, so `include_dms` is ignored.
+    /// Labels are folders, not chats, so mail has no seat.
+    async fn list_seats(&self) -> Result<Vec<Channel>> {
+        Ok(vec![])
+    }
+
     async fn list_channels(&self, _include_dms: bool) -> Result<Vec<Channel>> {
         let names = self
             .session(|s| {

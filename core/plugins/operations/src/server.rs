@@ -404,6 +404,14 @@ async fn seat_rc(State(v): S, method: Method, h: HeaderMap, Json(b): Json<Value>
     }
 }
 
+async fn service_toggle(State(v): S, method: Method, h: HeaderMap, Json(b): Json<Value>) -> Response {
+    let d = match everyday(&v, &method, &h, "service_toggle") {
+        Ok(d) => d,
+        Err(r) => return r,
+    };
+    ok(v.approver.service_toggle(&d, sv(&b, "node"), sv(&b, "service"), b.get("on").is_some_and(crate::service::truthy)).await)
+}
+
 async fn request_reject(State(v): S, method: Method, h: HeaderMap, Path(request_id): Path<String>) -> Response {
     let d = match everyday(&v, &method, &h, "reject_request") {
         Ok(d) => d,
@@ -511,6 +519,7 @@ pub fn router(v: Arc<Vault>) -> Router {
         .route("/api/agent", post(agent))
         .route("/api/card/{task_id}/{action}", post(card_action))
         .route("/api/seat/remote_control", post(seat_rc))
+        .route("/api/service/toggle", post(service_toggle))
         .route("/api/request/{request_id}", get(request_view))
         .route("/api/request/{request_id}/options", post(request_options))
         .route("/api/request/{request_id}/approve", post(request_approve))
