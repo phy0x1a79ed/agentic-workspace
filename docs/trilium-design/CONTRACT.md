@@ -32,7 +32,7 @@ Stale (R61 item 4):
 The vault API, on alcor's address `auth.tony-xy-liu.com` (R64 item 5):
 - Every route checks the device credential cookie and that `Origin` is one of `board_origins`. It answers CORS with that origin and `Access-Control-Allow-Credentials: true`. It refuses every other origin.
 - An everyday action takes the device credential alone:
-  - `POST /api/agent` with `{node, note_id?}` starts an agent. It opens a card in Needs you and issues an `agent` order to the node. It answers `{task_id, order_id}`. With `note_id`, the card's `source_note` is that note.
+  - `POST /api/agent` with `{node, model?, effort?, note_id?}` starts an agent. `model` is opus, sonnet, haiku or fable, default opus. `effort` is low, medium or high, default high. Any other value is `bad_request`. It opens a card in Needs you and issues an `agent` order to the node. It answers `{task_id, order_id}`. With `note_id`, the card's `source_note` is that note.
   - `POST /api/card/{task_id}/close` and `POST /api/card/{task_id}/reject`.
   - `POST /api/seat/remote_control` with `{seat, on}` calls social's `seat_remote_control`. The seat id `<account>/<channel_id>` holds a slash, so it goes in the body, not the path.
   - `POST /api/request/{request_id}/reject`.
@@ -105,7 +105,7 @@ telemetry, as two core plugins on one library. The loader refuses a whole plugin
 - `core/plugins/telemetry-node/`, on each node that opts in, alcor included: a service with no tool. It follows the node's emit topics and calls the hidden verb `telemetry report` with no peer, so the gateway sends it to alcor's door.
 - `core/plugins/telemetry/`, on alcor: the singleton tool `telemetry` with the verbs `nodes`, `services` and `seats`.
 - On alcor, the topic `telemetry/roster`, a change notice `{rev, node, changed: [nodes|sessions|services|usage|seats], ts}`. A consumer reads the verbs for the data.
-- On alcor, the topic `telemetry/sessions`, at each session that goes live or goes: `{event: "live" | "gone", session_id, job, task_id?, node, ts}`.
+- On alcor, the topic `telemetry/sessions`, at each session that goes live, goes or is renamed: `{event: "live" | "gone" | "renamed", session_id, job, task_id?, node, name?, ts}`. A `renamed` event carries `name`.
 - `telemetry nodes` lists each node's live sessions, so a subscriber reconciles at each reconnect: `{rev, nodes: [{node, ..., sessions: [{job, session_id?, task_id?, started?, link?, remote_control, name?, project?, scope?, kind?}]}]}`. `session_id` is absent until the session's first turn. A row matches an event on `session_id`, else on `job`, as `telemetry/sessions` names it.
 
 trilium, in `awm/services/trilium/`:
