@@ -140,6 +140,13 @@ class Fence:
         self._require("move", note_id, parent)
         self.c.move_note(note_id, parent)
 
+    def nest_root(self, note_id: str, parent: str) -> None:
+        """Put one root under another. Nothing else moves a root."""
+        if note_id not in self.roots or parent not in self.roots:
+            raise Refused(f"nest_root of {note_id} under {parent} refused: both must be roots")
+        if (self.note(note_id) or {}).get("parentNoteIds") != [parent]:
+            self.c.move_note(note_id, parent)
+
     def delete(self, note_id: str) -> None:
         if note_id in self.roots:
             raise Refused(f"delete on {note_id} refused: a writer root is never deleted")

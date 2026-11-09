@@ -190,6 +190,16 @@ async fn tonys_prompt_moves_the_card_to_working() {
 }
 
 #[tokio::test]
+async fn the_first_prompt_moves_and_titles_an_agent_card() {
+    let h = harness();
+    let t = h.env.store.agent_card("mizar", None).unwrap()["task_id"].clone();
+    assert!(ok(&h.call("task_attach", pid(11), json!({"task_id": t, "session_id": A, "role": "main"})).await));
+    assert_eq!(h.card(&t)["section"], "needs_you");
+    assert_eq!(h.call("hook_prompt", pid(11), json!({"prompt": "fix the toast"})).await["moved"], true);
+    assert_eq!((h.card(&t)["section"].clone(), h.card(&t)["title"].clone()), (json!("working"), json!("fix the toast")));
+}
+
+#[tokio::test]
 async fn join_tells_the_main_session() {
     let h = harness();
     let t = h.call("task_open", pid(11), json!({"title": "main work", "name": "fix-tunnel"})).await["task_id"].clone();

@@ -11,8 +11,8 @@ use serde_json::{json, Map, Value};
 use crate::approver::Approver;
 use crate::store::{Open, Seat, Store};
 
-pub const VERBS: [&str; 21] = [
-    "task_open", "task_attach", "task_join", "task_report", "task_session_end", "task_claim", "task_detail", "task_message",
+pub const VERBS: [&str; 22] = [
+    "task_autotitle", "task_open", "task_attach", "task_join", "task_report", "task_session_end", "task_claim", "task_detail", "task_message",
     "task_messages", "task_for_session", "task_sessions", "task_get", "task_list", "approval_request", "approval_get", "approval_wait",
     "approval_cancel", "order_pull", "order_done", "keys", "ops_post",
 ];
@@ -84,6 +84,11 @@ impl Home {
                 let t = need(&a, "task_id")?;
                 blocking(move || q(st.task_report(&t, s(&a, "session_id").as_deref(), &s(&a, "state").unwrap_or_default(),
                                                   s(&a, "reason").as_deref(), s(&a, "rc_url").as_deref(), op.as_deref()))).await?
+            }
+            "task_autotitle" => {
+                let t = need(&a, "task_id")?;
+                let from_plan = a["from_plan"].as_bool().unwrap_or(false);
+                blocking(move || q(st.task_autotitle(&t, &s(&a, "title").unwrap_or_default(), from_plan, op.as_deref()))).await?
             }
             "task_session_end" => {
                 let (t, sid) = (need(&a, "task_id")?, need(&a, "session_id")?);

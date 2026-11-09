@@ -28,15 +28,15 @@ def folder_of(fake, task_id):
 
 # -- sections -------------------------------------------------------------------------------------------
 
-def test_the_board_has_four_columns_and_no_proposed_or_triage(world):
+def test_the_board_has_three_columns(world):
     fake, fence, *_ = world
     titles = [fake.notes[c]["title"] for c in fake.notes[ids.TASKS_ID]["children"]]
-    assert titles == ["Needs you", "Working", "Stale", "History"]
+    assert titles == ["Needs you", "Working", "History"]
 
 
 @pytest.mark.parametrize("section,column", [
     ("needs_you", "awmSwarmColNeedsYou"), ("working", "awmSwarmColWorking"),
-    ("stale", "awmSwarmColStale"), ("history", "awmSwarmColHistory"),
+    ("stale", "awmSwarmColHistory"), ("history", "awmSwarmColHistory"),
     ("done", "awmSwarmColHistory"), ("proposed", "awmSwarmColHistory")])
 def test_a_card_sits_in_its_sections_folder(world, section, column):
     fake, fence, w = world
@@ -221,7 +221,9 @@ def test_a_page_applies_from_its_base_and_moves_the_mark(world):
     fake, fence, w = world
     assert w.apply(None, [], None) == {"mark": 0, "applied": 0}
     assert w.apply(0, [card("a", "stale"), card("b", "needs_you")], 3) == {"mark": 3, "applied": 2}
-    assert folder_of(fake, "a") == ["awmSwarmColStale"]
+    assert folder_of(fake, "a") == ["awmSwarmColHistory"]
+    labels = fake.labels(ids.card_note_id("a"))
+    assert labels["status"] == "stale" and labels["historyAt"]
     assert w.mark() == 3
 
 
@@ -248,3 +250,16 @@ def test_one_bad_card_does_not_stop_the_rest(world):
     bad_then_good = [{"section": "working"}, {"task_id": "b", "section": "working"}, card("a")]
     assert w.apply(0, bad_then_good, 3) == {"mark": 3, "applied": 2}
     assert ids.card_note_id("b") in fake.notes
+
+
+def test_install_folds_the_stale_column_and_nests_tasks(world):
+    fake, fence, w = world
+    fence.create(ids.TASKS_ID, "Stale", "book", note_id=ids.LEGACY_STALE_ID)
+    nid = fence.create(ids.LEGACY_STALE_ID, "old", "text", note_id="swcold", labels={"updatedAt": "5000", "section": "stale"})
+    for _ in range(2):
+        install.install(fence)
+    assert fake.notes[nid]["parents"] == [ids.COLUMN_IDS["history"]]
+    labels = fake.labels(nid)
+    assert (labels["section"], labels["status"], labels["historyAt"]) == ("history", "stale", "5000")
+    assert ids.LEGACY_STALE_ID not in fake.notes
+    assert fake.notes[ids.TASKS_ID]["parents"] == [ids.ROOT_ID]

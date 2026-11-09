@@ -1,13 +1,14 @@
-// The Swarm board (queue.md R61-R66): four sections of card headers, a search, a draggable divider
+// The Swarm board (queue.md R61-R66): three sections of card headers, a search, a draggable divider
 // and an info panel with the task's sessions and approvals. Cards are notes the writer keeps; every
 // press is a fetch to alcor's API. The page re-renders when Trilium reports changed entities.
 
 const box = api.$container[0];
 const $ = (sel) => box.querySelector(sel);
-const SECTIONS = [["needs_you", "Needs you"], ["working", "Working"], ["stale", "Stale"], ["history", "History"]];
-const PAGE = 50;
+const SECTIONS = [["needs_you", "Needs you"], ["working", "Working"], ["history", "History"]];
+const PAGE = 30;
+const NEAR_PX = 200;
 const origin = await swarmOrigin();
-const open = { needs_you: true, working: true, stale: true, history: false };
+const open = { needs_you: true, working: true, history: false };
 let selected = null;       // task id
 let historyShown = [];
 let historyMore = false;
@@ -23,11 +24,11 @@ const rcLink = (url) => /^https:\/\/claude\.ai\//.test(url || "");
 
 const parts = {};
 for (const [key, name] of SECTIONS) {
-  const count = el("span", { class: "n" });
+  const count = key === "history" ? null : el("span", { class: "n" });
   const list = el("div", { class: "awm-list" });
   const d = el("details", { "data-section": key }, el("summary", {}, `${name} `, count));
   if (open[key]) d.setAttribute("open", "");
-  d.addEventListener("toggle", () => { open[key] = d.open; });
+  d.addEventListener("toggle", () => { open[key] = d.open; if (key === "history" && d.open) render(); });
   d.append(list);
   if (key === "history") d.append(el("div", { class: "awm-sentinel" }));
   parts[key] = { d, count, list };
@@ -45,8 +46,8 @@ function header(n) {
     node ? el("span", { class: "awm-chip node" }, node) : null);
 }
 
-function fill(key, notes, more) {
-  parts[key].count.textContent = `(${notes.length}${more ? "+" : ""})`;
+function fill(key, notes) {
+  if (parts[key].count) parts[key].count.textContent = `(${notes.length})`;
   parts[key].list.replaceChildren(...(notes.length ? notes.map(header)
     : [el("div", { class: "awm-empty" }, "No cards.")]));
 }
@@ -71,10 +72,11 @@ async function render() {
         const v = quoted(q);
         const hits = await api.searchForNotes(`#swarmCard and (note.title *=* ${v} or #taskId = ${v} `
           + `or #peer = ${v} or #status = ${v}) orderBy #updatedAt desc`);
-        for (const [key] of SECTIONS) fill(key, hits.filter((n) => label(n, "section") === key), false);
+        for (const [key] of SECTIONS) fill(key, hits.filter((n) => label(n, "section") === key));
       } else {
         for (const [key] of SECTIONS) {
-          if (key !== "history") { fill(key, await cards(key), false); continue; }
+          if (key !== "history") { fill(key, await cards(key)); continue; }
+          if (!open.history) continue;
           // History keeps the pages Tony scrolled through; a change reloads only the first page.
           const first = await historyPage(null);
           const have = new Set(first.map((n) => n.noteId));
@@ -82,7 +84,7 @@ async function render() {
             && Number(label(n, "historyAt")) <= Number(label(first[first.length - 1] || n, "historyAt")));
           historyShown = first.concat(older);
           if (!paging) historyMore = first.length === PAGE || older.length > 0;
-          fill("history", historyShown, historyMore);
+          fill("history", historyShown);
         }
       }
       await status();
@@ -92,23 +94,31 @@ async function render() {
       }
     } while (again);
   } finally { rendering = false; }
+  pageBack();
+}
+
+function nearEnd() {
+  const sentinel = parts.history.d.querySelector(".awm-sentinel").getBoundingClientRect();
+  return sentinel.height > 0 && sentinel.top < $(".awm-sections").getBoundingClientRect().bottom + NEAR_PX;
 }
 
 async function pageBack() {
-  const last = historyShown[historyShown.length - 1];
-  if (paging || !historyMore || !last || $(".awm-search").value.trim()) return;
+  if (paging || $(".awm-search").value.trim()) return;
   paging = true;
   try {
-    const page = await historyPage(label(last, "historyAt"));
-    historyMore = page.length === PAGE;
-    historyShown = historyShown.concat(page);
-    fill("history", historyShown, historyMore);
+    while (historyMore && historyShown.length && nearEnd()) {
+      const last = historyShown[historyShown.length - 1];
+      const page = await historyPage(label(last, "historyAt"));
+      historyMore = page.length === PAGE;
+      historyShown = historyShown.concat(page);
+      fill("history", historyShown);
+    }
   } finally { paging = false; }
 }
 
 // History loads older cards as the sentinel scrolls into view (R61 item 5).
 new IntersectionObserver((seen) => { if (seen.some((e) => e.isIntersecting)) pageBack(); },
-                         { root: $(".awm-sections"), rootMargin: "200px" })
+                         { root: $(".awm-sections"), rootMargin: `${NEAR_PX}px` })
   .observe(parts.history.d.querySelector(".awm-sentinel"));
 
 async function status() {
@@ -172,17 +182,16 @@ async function panel(n) {
       rec.source_note ? el("button", { class: "awm-btn", type: "button",
                                        onclick: () => api.activateNote(rec.source_note) }, "Source note") : null,
       section !== "history" ? el("button", { class: "awm-btn", type: "button", onclick: () =>
-        act(`/api/card/${encodeURIComponent(taskId)}/close`, "Closed") }, "Close") : null,
-      section !== "history" ? el("button", { class: "awm-btn danger", type: "button", onclick: () =>
-        act(`/api/card/${encodeURIComponent(taskId)}/reject`, "Rejected") }, "Reject") : null),
+        act(`/api/card/${encodeURIComponent(taskId)}/close`, "Closed") }, "Close") : null),
     rec.reason ? el("p", {}, show(rec.reason)) : null,
     el("h4", {}, "Sessions"),
     sessions.length ? el("table", {},
-      el("tr", {}, ...["session", "role", "node", "state", ""].map((h) => el("th", {}, h))),
+      el("tr", {}, ...["session", "project / scope", "role", "node", "state", ""].map((h) => el("th", {}, h))),
       ...sessions.map((s) => el("tr", {},
-        el("td", {}, show(s.name || s.session_id)), el("td", {}, show(s.role)), el("td", {}, show(s.node)),
+        el("td", {}, show(s.name || s.session_id)), el("td", {}, [s.project, s.scope].filter(Boolean).join(" / ")),
+        el("td", {}, show(s.role)), el("td", {}, show(s.node)),
         el("td", {}, s.active ? "active" : "ended"),
-        el("td", {}, rcLink(s.rc_url) ? el("a", { href: s.rc_url, target: "_blank", rel: "noopener" }, "Remote Control") : ""))))
+        el("td", {}, s.active && rcLink(s.rc_url) ? el("a", { href: s.rc_url, target: "_blank", rel: "noopener" }, "Remote Control") : ""))))
       : el("p", { class: "awm-empty" }, "No sessions yet."),
     el("h4", {}, `Approvals${pending.length ? ` (${pending.length} pending)` : ""}`),
     ...(approvals.length ? pending.map(approvalRow).concat(past.map(approvalRow))

@@ -387,8 +387,7 @@ async fn card_action(State(v): S, method: Method, h: HeaderMap, Path((task_id, a
     let store = v.approver.store.clone();
     let out = match action.as_str() {
         "close" => blocking(move || store.card_close(&task_id)).await,
-        "reject" => blocking(move || store.card_reject(&task_id)).await,
-        _ => return deny("unknown_action", "a card closes or rejects"),
+        _ => return deny("unknown_action", "a card closes"),
     };
     ok(out.map_err(ApproverError::from))
 }

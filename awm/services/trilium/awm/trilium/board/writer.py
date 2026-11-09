@@ -64,7 +64,7 @@ class Writer:
                 self.fence.move(nid, column)
         self._record(card, nid)
         self._messages(card, nid)
-        self._source(card, nid, ended=section == "history")
+        self._source(card, nid, ended=section == "history" and card.get("section") != "stale")
 
     @staticmethod
     def _initial_body(card: dict[str, Any]) -> str:

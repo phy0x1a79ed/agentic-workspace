@@ -63,7 +63,7 @@ def main() -> int:
                 settle(page)
         page.locator(".awm-card").locator("visible=true").first.wait_for(timeout=30000)
         heads = [s.inner_text().strip() for s in page.query_selector_all(".awm-sections summary")]
-        check("four sections, no Proposed", [h.split(" (")[0] for h in heads] == ["Needs you", "Working", "Stale", "History"], str(heads))
+        check("three sections", [h.split(" (")[0] for h in heads] == ["Needs you", "Working", "History"], str(heads))
         try:
             urllib.request.urlopen(f"{VAULT}/etapi/notes/awmSwarmColTriage")
             gone = False
@@ -107,11 +107,15 @@ def main() -> int:
         page.click(".awm-sections details[data-section='history'] summary")
         page.wait_for_timeout(1500)
         page.screenshot(path=str(SHOTS / "history.png"))
-        page.wait_for_function("document.querySelectorAll('details[data-section=history] .awm-card').length >= 50")
-        # The sentinel is in view as soon as History opens, so the second page follows the first.
+        page.wait_for_function("document.querySelectorAll('details[data-section=history] .awm-card').length >= 30")
+        first = page.eval_on_selector_all("details[data-section=history] .awm-card", "e => e.length")
+        check("History shows one page until scrolled", first < 72, str(first))
+        page.evaluate("document.querySelector('.awm-sections').scrollTop = 1e9")
+        page.wait_for_timeout(500)
+        page.evaluate("document.querySelector('.awm-sections').scrollTop = 1e9")
         page.wait_for_function("document.querySelectorAll('details[data-section=history] .awm-card').length >= 72")
         n = page.eval_on_selector_all("details[data-section=history] .awm-card", "e => e.length")
-        check("History pages in older cards as the sentinel shows (50 per page, 72 cards)", n == 72, str(n))
+        check("History pages in older cards as the sentinel shows (30 per page, 72 cards)", n == 72, str(n))
 
         # New agent: first press has no cookie -> 401 -> sign-in frame -> retry.
         for value in ("altair", "sonnet", "medium"):

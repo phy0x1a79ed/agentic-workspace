@@ -273,6 +273,10 @@ pub fn register(mut service: Service, ops: Arc<Ops>) -> Service {
 
 // -- the home node's loops -------------------------------------------------------------------
 
+fn text(v: &Value) -> Option<String> {
+    v.as_str().filter(|x| !x.is_empty()).map(str::to_string)
+}
+
 /// The roster's live sessions per node, from `telemetry nodes` (CONTRACT.md d5c3a3f2).
 pub fn roster_of(nodes: &Value) -> HashMap<String, Vec<LiveSession>> {
     nodes["nodes"].as_array().cloned().unwrap_or_default().iter().filter_map(|n| {
@@ -280,7 +284,7 @@ pub fn roster_of(nodes: &Value) -> HashMap<String, Vec<LiveSession>> {
         let live = n["sessions"].as_array().cloned().unwrap_or_default().iter().map(|s| LiveSession {
             session_id: s["session_id"].as_str().filter(|x| !x.is_empty()).map(str::to_string),
             job: s["job"].as_str().filter(|x| !x.is_empty()).map(str::to_string),
-            name: s["name"].as_str().filter(|x| !x.is_empty()).map(str::to_string),
+            name: text(&s["name"]), link: text(&s["link"]), project: text(&s["project"]), scope: text(&s["scope"]),
         }).collect();
         Some((node, live))
     }).collect()
@@ -332,26 +336,40 @@ pub fn follow_sessions(hub: Hub, store: Arc<Store>) -> SupervisedSubscription {
     )
 }
 
+async fn join_session_details(hub: &Hub, store: Arc<Store>) {
+    match hub.call("telemetry", "nodes", json!({}), None).await {
+        Ok(nodes) => {
+            let roster = roster_of(&nodes);
+            if let Err(e) = blocking(move || store.session_details(&roster)).await {
+                tracing::warn!("operations: session details: {e}");
+            }
+        }
+        Err(e) => tracing::warn!("operations: telemetry nodes: {e}"),
+    }
+}
+
 /// Send each link still owed at every (re)connect and whenever a session changes in the roster.
-pub fn follow_links(hub: Hub, front: Arc<Front>) -> SupervisedSubscription {
+pub fn follow_links(hub: Hub, front: Arc<Front>, store: Arc<Store>) -> SupervisedSubscription {
     let opts = SubscriptionOpts { idle_timeout: Duration::from_secs(3600), ..SubscriptionOpts::default() };
-    let f1 = front.clone();
+    let (f1, s1, h1) = (front.clone(), store.clone(), hub.clone());
     SupervisedSubscription::spawn(
         "operations/telemetry.roster",
         opts,
         move || {
-            let (hub, front) = (hub.clone(), f1.clone());
+            let (hub, front, s1) = (hub.clone(), f1.clone(), s1.clone());
             async move {
                 let sub = hub.subscribe("telemetry", "roster", None, None).await?;
                 front.links_due().await;
+                join_session_details(&hub, s1).await;
                 Ok(sub)
             }
         },
         move |event: Value| {
-            let front = front.clone();
+            let (front, store, h2) = (front.clone(), store.clone(), h1.clone());
             async move {
                 if event["changed"].as_array().is_some_and(|c| c.contains(&json!("sessions"))) {
                     front.links_due().await;
+                    join_session_details(&h2, store).await;
                 }
                 Ok(())
             }
@@ -445,7 +463,7 @@ pub async fn serve() -> anyhow::Result<()> {
         }
         if let (Some(h), Some(ap)) = (home, approver_handle) {
             follow_sessions(h2.clone(), h.store.clone());
-            follow_links(h2.clone(), f3);
+            follow_links(h2.clone(), f3, h.store.clone());
             let vault = Arc::new(crate::vault_push::HubVault { hub: h2.clone() });
             tokio::spawn(crate::vault_push::Pusher::attach(h.store.clone(), vault).run());
             tokio::spawn(sweep_loop(ap.clone()));

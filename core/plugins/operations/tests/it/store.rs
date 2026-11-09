@@ -116,7 +116,6 @@ fn an_old_approval_card_moves_only_through_the_approver() {
     assert_eq!((s(&c["section"]), s(&c["status"]), s(&c["kind"])), ("needs_you".into(), "approval".into(), "approval".into()));
     assert!(st.task_report(&t, None, "done", None, None, None).is_err());
     assert!(st.card_close(&t).is_err());
-    assert!(st.card_reject(&t).is_err());
     assert!(st.task_claim(&t, "ccA", Seat::default(), None).is_err());
     assert!(st.approval_resolve(&t, "q1", "sideways", false).is_err());
     st.approval_resolve(&t, "q1", "expired", false).unwrap();
