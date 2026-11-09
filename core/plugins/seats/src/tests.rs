@@ -19,6 +19,8 @@ struct W {
     starts: VecDeque<Started>,
     /// Jobs that run.
     up: HashSet<String>,
+    /// Jobs with Remote Control on.
+    rc: HashSet<String>,
     /// Jobs started but never up.
     down_on_start: bool,
     /// What the next pushes answer, else delivered while the job runs.
@@ -90,6 +92,9 @@ impl World for Fake {
         w.jobs += 1;
         let job = format!("job-{}", w.jobs);
         let lines: Vec<String> = spec["prompt"].as_str().unwrap().lines().filter(|l| l.starts_with('[')).map(text_of).collect();
+        if spec["remote_control"] == true {
+            w.rc.insert(job.clone());
+        }
         if !w.down_on_start {
             w.up.insert(job.clone());
             w.got.entry(job.clone()).or_default().extend(lines);
@@ -110,9 +115,10 @@ impl World for Fake {
         w.got.entry(job.into()).or_default().push(text_of(line));
         Outcome::Delivered
     }
-    async fn live(&self) -> Option<HashSet<String>> {
+    async fn live(&self) -> Option<Links> {
         let w = self.w();
-        (!w.cannot_tell).then(|| w.up.clone())
+        let link = |j: &String| if w.rc.contains(j) { format!("https://claude.ai/code/{j}") } else { String::new() };
+        (!w.cannot_tell).then(|| w.up.iter().map(|j| (j.clone(), link(j))).collect())
     }
     async fn scope_ready(&self, _p: &str, _s: &str) -> Option<bool> {
         Some(!self.w().scope_missing)
@@ -120,16 +126,18 @@ impl World for Fake {
     async fn transcript(&self, job: &str) -> Option<String> {
         Some(format!("/transcripts/{job}.jsonl"))
     }
-    async fn remote_control(&self, job: &str, on: bool, name: &str) -> Result<Option<String>, String> {
+    async fn remote_control(&self, job: &str, on: bool, name: &str) -> Result<(), String> {
         let mut w = self.w();
         if w.switch_fails {
             return Err("no such session".into());
         }
         w.switched.push((job.into(), on, name.into()));
-        Ok(on.then(|| format!("https://claude.ai/code/{job}")))
-    }
-    async fn rc_url(&self, job: &str) -> Option<String> {
-        self.w().up.contains(job).then(|| format!("https://claude.ai/code/{job}"))
+        if on {
+            w.rc.insert(job.into());
+        } else {
+            w.rc.remove(job);
+        }
+        Ok(())
     }
     fn hand(&self, job: &str, line: &str) {
         self.w().hands.push((job.into(), line.into()));
@@ -580,7 +588,7 @@ async fn a_seat_starts_off_and_its_agent_follows_the_switch() {
 }
 
 #[tokio::test]
-async fn an_empty_seat_switches_without_a_call_and_a_failed_live_switch_keeps_the_setting() {
+async fn an_empty_seat_switches_without_a_call_and_a_live_seat_records_its_session() {
     let mut t = T::new(true);
     t.send("while paused").await;
     let (_, live) = t.seats.set_remote_control("opal", "D0TEST", true).await.unwrap();
@@ -592,7 +600,12 @@ async fn an_empty_seat_switches_without_a_call_and_a_failed_live_switch_keeps_th
     t.world.w().switch_fails = true;
     let (s, live) = t.seats.set_remote_control("opal", "D0TEST", true).await.unwrap();
     assert_eq!(live, Live::Failed("no such session".into()));
-    assert!(s.remote_control && t.seat().await.remote_control);
+    assert!(!s.remote_control && !t.seat().await.remote_control, "the row holds what the session is");
+    let answer = t.world.w().seat_reports.last().unwrap()["event"].clone();
+    assert_eq!((answer["remote_control"].clone(), answer["rc_live"].clone()), (json!(false), json!("failed: no such session")), "social hears the failure though the row did not change");
+    t.world.w().rc.insert("job-1".into());
+    t.tick().await;
+    assert_eq!(t.seat().await.rc_url, "https://claude.ai/code/job-1", "a look picks up Remote Control switched outside the seat");
 }
 
 #[tokio::test]
