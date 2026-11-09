@@ -401,6 +401,7 @@ pub async fn serve() -> anyhow::Result<()> {
     let front = Arc::new(Front {
         relay: relay.clone(), node: node.clone(), outside, arbutus: arb.clone(), card_url: s.card_url.clone(),
         approver_origin: s.origin.clone(), remind_s: s.remind_s, clock: Arc::new(crate::now),
+        link_wait: Duration::from_secs(15), asking: Default::default(), roster_moved: Default::default(),
     });
     if let Some(a) = &arb {
         let f = front.clone();
