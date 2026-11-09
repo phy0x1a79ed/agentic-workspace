@@ -17,6 +17,10 @@ ip link set dev eth0 mtu 1400 2>/dev/null || true
 # --- dial ---------------------------------------------------------------------
 # openconnect reads successive password prompts from stdin lines: the primary
 # password, then the second-factor line ("push") which triggers the Duo push.
+# exec, so supervisor's stop signal (SIGINT) reaches openconnect, which logs the
+# session out on SIGINT.
 echo "[dial] connecting to $UBC_SERVER as $UBC_USER"
-printf '%s\n%s\n' "$UBC_PASSWORD" "${UBC_SECOND_FACTOR:-push}" \
-    | openconnect "$UBC_SERVER" --user="$UBC_USER" --passwd-on-stdin
+exec openconnect "$UBC_SERVER" --user="$UBC_USER" --passwd-on-stdin <<EOF
+$UBC_PASSWORD
+${UBC_SECOND_FACTOR:-push}
+EOF

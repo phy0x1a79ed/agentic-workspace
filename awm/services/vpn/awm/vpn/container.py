@@ -45,6 +45,8 @@ _DOCKER_TIMEOUT_S = 30.0
 # CLI was killed while the daemon carried on, so `up` failed on an exit that came
 # up anyway, and the next `up` hit a name conflict.
 _DOCKER_SLOW_TIMEOUT_S = 60.0
+# How long `down` gives openconnect to log the session out before docker kills it.
+_LOGOUT_S = 20
 # The worst case of `up`, for callers that size their own timeouts on it:
 # rm + 2fa arm + run + tunnel wait, plus slack for the polls inside the wait.
 UP_BUDGET_S = 2 * _DOCKER_SLOW_TIMEOUT_S + 15.0 + _UP_TIMEOUT_S + 30.0
@@ -290,11 +292,11 @@ def _up_locked(profile: str) -> dict:
 
     # Pass creds via `-e KEY` (value taken from our env, not argv) so secrets
     # don't show up in `docker inspect`/`ps`. NET_ADMIN + tun for the dialer;
-    # publish the bounce sshd so host-side `ssh -W`/ProxyJump can egress here.
+    # publish the bounce sshd on loopback; other nodes reach it by jumping through this host.
     run_env = {**_subprocess_env(), **cfg.env}
     args = ["run", "-d", "--name", name,
             "--cap-add=NET_ADMIN", "--device=/dev/net/tun",
-            "-p", f"{config.bounce_port(profile)}:22"]
+            "-p", f"127.0.0.1:{config.bounce_port(profile)}:22"]
     for key in cfg.env:
         args += ["-e", key]
     args.append(cfg.image)
@@ -340,10 +342,19 @@ def _up_locked(profile: str) -> dict:
 
 
 def down(profile: str) -> dict:
-    """Tear the exit down and clear its singleton row."""
+    """Log the session out, remove the container and clear its singleton row.
+
+    ``docker stop`` lets openconnect log out (its stop signal is SIGINT), so the
+    VPN server stops counting the session; a bare ``rm -f`` would leave it open.
+    """
     name = container_name(profile)
     with _profile_lock(profile):
         existed = _exists(name)
+        if existed:
+            try:
+                _docker(["stop", "-t", str(_LOGOUT_S), name], check=False, timeout=_LOGOUT_S + _DOCKER_TIMEOUT_S)
+            except DockerTimeout:
+                log.warning("docker stop %s timed out; removing it without a logout", name)
         _rm_quiet(name)
         dao.VpnDAO().delete(profile)
     return {"profile": profile, "container": name, "status": "down",

@@ -24,7 +24,7 @@ import logging
 from typing import Any
 
 from awm.gatewayclient import ServiceAdapter
-from awm.vpn import container, dao
+from awm.vpn import container, dao, keeper
 
 log = logging.getLogger("awm.vpn.hub_adapter")
 
@@ -37,7 +37,9 @@ API_MANIFEST: dict[str, Any] = {
             "name": "up",
             "tool": "vpn_up",
             "description": (
-                "Bring a VPN exit up (profile: 'ubc' or 'proton'). Idempotent "
+                "Bring a VPN exit up (profile: 'ubc' or 'proton'). A kept profile "
+                "('ubc') is already held up from service start and re-dialed when "
+                "it dies; `up` restarts that keeping after a `down` or a page. Idempotent "
                 "singleton — at most one awm-vpn-<profile> container at a time; "
                 "a second call returns the existing exit. For UBC, arms the local "
                 "awm 2fa Duo auto-approver (a burst on the configured device) "
@@ -61,8 +63,9 @@ API_MANIFEST: dict[str, Any] = {
             "name": "down",
             "tool": "vpn_down",
             "description": (
-                "Tear a VPN exit down: stop+remove its container and clear its "
-                "singleton record. Returns {profile, container, status, removed}."
+                "Tear a VPN exit down: stop re-dialing it, log the session out, "
+                "remove its container and clear its singleton record. Returns "
+                "{profile, container, status, removed}."
             ),
             "params": [
                 {"name": "profile", "type": "string", "required": True},
@@ -110,6 +113,8 @@ async def _emit_state(profile: str, event: str, *, container_name: str = "",
 
 async def _up(args: dict) -> dict:
     profile = str(args["profile"]).strip()
+    if profile in keeper.KEEPERS:
+        keeper.KEEPERS[profile].start()
     desc = await asyncio.to_thread(container.up, profile)
     await _emit_state(profile, desc["status"],
                       container_name=desc["container"], exit_ip=desc["exit_ip"])
@@ -118,6 +123,8 @@ async def _up(args: dict) -> dict:
 
 async def _down(args: dict) -> dict:
     profile = str(args["profile"]).strip()
+    if profile in keeper.KEEPERS:
+        keeper.KEEPERS[profile].hold()
     result = await asyncio.to_thread(container.down, profile)
     await _emit_state(profile, "down", container_name=result["container"])
     return result
@@ -150,9 +157,11 @@ async def main() -> None:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
-    _adapter = ServiceAdapter(
-        "vpn", API_MANIFEST, HANDLERS, on_start=dao.init,
-    )
+    def _start() -> None:
+        dao.init()
+        keeper.start_configured()
+
+    _adapter = ServiceAdapter("vpn", API_MANIFEST, HANDLERS, on_start=_start)
     await _adapter.run()
 
 
