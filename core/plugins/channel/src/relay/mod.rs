@@ -30,8 +30,9 @@ const FEED_MAX_S: f64 = 60.0;
 pub const PRUNE: Duration = Duration::from_secs(30);
 /// How long a closed room's messages are kept for members still to fetch them.
 const KEEP_CLOSED_S: f64 = 7.0 * 24.0 * 3600.0;
-/// The keys of a message a member may send: plaintext, a sealed message, or a key exchange.
-const BODY_KEYS: [&str; 4] = ["text", "sealed", "n", "spake2"];
+/// The keys of a message a member may send: plaintext, a file the tether relay holds, a sealed
+/// message, or a key exchange.
+const BODY_KEYS: [&str; 5] = ["text", "file", "sealed", "n", "spake2"];
 const LASTS: [&str; 2] = ["task", "persistent"];
 
 /// rooms.sealed: no encryption, an offer is out, our side has sent sealed text.
@@ -113,7 +114,7 @@ impl Relay {
             }
         }
         if body.is_empty() {
-            return Err(refuse("a message carries `text`, `sealed` with `n`, or `spake2`"));
+            return Err(refuse("a message carries `text`, `file`, `sealed` with `n`, or `spake2`"));
         }
         if body.contains_key("spake2") {
             if self.store.members(name).len() > 1 {
@@ -123,7 +124,7 @@ impl Relay {
         }
         if body.contains_key("sealed") {
             self.store.seal(name, SEALED);
-        } else if body.contains_key("text") && row.sealed == SEALED {
+        } else if (body.contains_key("text") || body.contains_key("file")) && row.sealed == SEALED {
             return Err(refuse(format!("room {name} is encrypted, so plaintext is refused")));
         }
         self.store.renew(&m.node, Some(std::slice::from_ref(&m.session)));

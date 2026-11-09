@@ -93,6 +93,35 @@
       "timeout": 60
     },
     {
+      "name": "send",
+      "tool": "channel_send",
+      "description": "Send a file on this node into a room you hold. The bytes go straight to the room's relay, apart from the messages, with no size limit, sealed in an encrypted room. A message then names the file, and the other side fetches it from the room. Returns the file's `id`, `size` and `url`. A file the other side sends arrives the same way: it is saved beside the room's transcript, and the pushed line names where.",
+      "params": [
+        {
+          "name": "path",
+          "type": "string",
+          "required": true,
+          "description": "The file, by its absolute path on this node."
+        },
+        {
+          "name": "text",
+          "type": "string",
+          "description": "A message to send with it."
+        },
+        {
+          "name": "filename",
+          "type": "string",
+          "description": "The name the other side sees. Defaults to the file's own."
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "description": "The channel, by its name. Needed only when you hold more than one; `status` lists yours."
+        }
+      ],
+      "timeout": 3600.0
+    },
+    {
       "name": "drain",
       "tool": "channel_drain",
       "description": "Read a machine's tool log since your last drain: each command, its output and how it ended. This output is never pushed to you and is not in the transcript. `until` with a task id waits for that command to finish. On a room, drain returns nothing.",

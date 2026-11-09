@@ -14,6 +14,7 @@
 //! A machine adds a shell. What a command prints is a tool log that only `drain` reads.
 
 pub mod crypto;
+pub mod files;
 pub mod lines;
 pub mod machines;
 pub mod store;
@@ -213,10 +214,53 @@ impl Channels {
         if w.target == "shell" {
             return Ok(json!({"name": row.name, "sent": false, "note": "a room has no shell, so a shell write does nothing"}));
         }
-        let keyed = row.crypto.as_ref().is_some_and(|c| c.get("out").is_some_and(|o| !o.is_null() && o != ""));
-        let message = match keyed.then(|| self.store.next_out(&row.name)).flatten() {
-            Some((key, n)) => json!({"n": n, "sealed": crypto::seal(&key, n, &row.name, text).map_err(|e| VerbError::runtime(e.0))?}),
-            None => json!({"text": text}),
+        let keyed = keyed(&row);
+        let seq = self.post_room(holder, &row, json!({"text": text}), text).await?;
+        Ok(json!({"name": row.name, "sent": seq, "sealed": keyed}))
+    }
+
+    /// Send a local file into a room you hold. The bytes go straight to the public edge, sealed
+    /// under a fresh key in an encrypted room, and a message then names the file.
+    pub async fn send(self: &Arc<Self>, holder: &Holder, path: &str, text: &str, name: Option<&str>, as_name: Option<&str>) -> Res<Value> {
+        let row = self.pick(holder, name)?;
+        if row.kind != "room" {
+            return Err(refuse("a machine takes files from the next tether release on; until then, write the file through the shell"));
+        }
+        let local = std::path::Path::new(path);
+        if !local.is_absolute() || !local.is_file() {
+            return Err(refuse(format!("path names a file on this node by its absolute path; {path:?} is not one")));
+        }
+        let size = local.metadata().map_err(|e| refuse(e.to_string()))?.len();
+        let file_name = as_name.filter(|n| !n.is_empty()).map(str::to_string).unwrap_or_else(|| local.file_name().unwrap_or_default().to_string_lossy().into_owned());
+        let keyed = keyed(&row);
+        let key: Option<[u8; 32]> = keyed.then(rand::random);
+        let id = files::upload(&row.link, local, key.as_ref()).await.map_err(refuse)?;
+        let mut file = json!({"id": id, "name": file_name, "size": size});
+        let message = match key {
+            Some(key) => {
+                file["key"] = json!(crypto::b64(&key));
+                json!({"kind": "file", "file": file, "text": text})
+            }
+            None if text.is_empty() => json!({"file": file}),
+            None => json!({"file": file, "text": text}),
+        };
+        let seq = self.post_room(holder, &row, message, &format!("{text}\n(file {file_name}, {size} bytes, sent from {path})")).await?;
+        Ok(json!({"name": row.name, "sent": seq, "sealed": keyed, "file": {"id": id, "name": file_name, "size": size, "url": format!("{}/file/{id}", row.link)}}))
+    }
+
+    /// Post one message into a room, sealed when the room has its keys, and record `said` in the
+    /// transcript. Returns its number. A sealed message carries the whole of `message` as JSON
+    /// when it is more than text.
+    async fn post_room(&self, holder: &Holder, row: &Row, message: Value, said: &str) -> Res<i64> {
+        let message = match keyed(row).then(|| self.store.next_out(&row.name)).flatten() {
+            Some((key, n)) => {
+                let plain = match message.get("text").and_then(Value::as_str) {
+                    Some(t) if message.as_object().is_some_and(|m| m.len() == 1) => t.to_string(),
+                    _ => message.to_string(),
+                };
+                json!({"n": n, "sealed": crypto::seal(&key, n, &row.name, &plain).map_err(|e| VerbError::runtime(e.0))?})
+            }
+            None => message,
         };
         let args = json!({"member": member(&holder.session, &holder.name, &holder.level), "name": row.name, "message": message});
         let sent = match self.relay("write", args, Duration::from_secs(60)).await {
@@ -230,8 +274,8 @@ impl Channels {
         };
         let seq = sent.get("sent").and_then(Value::as_i64).unwrap_or(0);
         let who = if holder.name.is_empty() { "host" } else { &holder.name };
-        self.transcripts.append(&row.name, seq, "host", who, text);
-        Ok(json!({"name": row.name, "sent": sent.get("sent"), "sealed": keyed}))
+        self.transcripts.append(&row.name, seq, "host", who, said);
+        Ok(seq)
     }
 
     /// A machine's tool log since the holder's last drain. Empty on a room.
@@ -602,7 +646,7 @@ impl Channels {
     }
 
     /// Record one message the feed brought, and type it into its holder.
-    async fn take(&self, message: &Value) {
+    async fn take(self: &Arc<Self>, message: &Value) {
         let name = text(message, "room");
         let Some(row) = self.store.get(&name).filter(|r| r.open && r.session == text(message, "session")) else { return };
         let id = message.get("id").and_then(Value::as_i64).unwrap_or(0);
@@ -623,29 +667,61 @@ impl Channels {
         let who = message.get("who").and_then(Value::as_str).filter(|w| !w.is_empty()).unwrap_or("?").to_string();
         if by == "member" {
             // Another of our sessions: a plain room only, at the level its node stamped.
-            let said = text(body, "text");
-            let path = self.transcripts.append(&name, seq, "member", &who, &said);
-            self.store.set_cursor(&name, seq);
-            let level = message.get("level").and_then(Value::as_str).filter(|l| !l.is_empty()).unwrap_or(UNTRUSTED);
-            self.push(&row, lines::push_line("room", &name, level, &who, &said, seq, &path));
+            let level = message.get("level").and_then(Value::as_str).filter(|l| !l.is_empty()).unwrap_or(UNTRUSTED).to_string();
+            let file = body.get("file").filter(|f| f.is_object()).cloned();
+            self.said(&row, seq, "member", &who, &level, text_of(body), file);
             return;
         }
         let read = self.read(&name, body, row.crypto.clone().unwrap_or(json!({})));
-        let path = self.transcripts.append(&name, seq, "guest", &who, &read.text);
-        self.store.set_cursor(&name, seq);
-        if let Some(n) = read.notice {
-            self.push(&row, lines::notice(&row.kind, &name, &n));
+        if let Some(n) = &read.notice {
+            self.push(&row, lines::notice(&row.kind, &name, n));
         }
         if read.says {
-            self.push(&row, lines::push_line(&row.kind, &name, &row.trust, &who, &read.text, seq, &path));
+            self.said(&row, seq, "guest", &who, &row.trust.clone(), read.text, read.file);
+        } else {
+            self.transcripts.append(&name, seq, "guest", &who, &read.text);
+            self.store.set_cursor(&name, seq);
         }
+    }
+
+    /// Record and push one thing the other side said. A message that names a file is pushed once
+    /// the file is saved on this node, off the feed loop, so a large file holds up no other room.
+    #[allow(clippy::too_many_arguments)]
+    fn said(self: &Arc<Self>, row: &Row, seq: i64, by: &str, who: &str, level: &str, said: String, file: Option<Value>) {
+        self.store.set_cursor(&row.name, seq);
+        let Some(file) = file else {
+            let path = self.transcripts.append(&row.name, seq, by, who, &said);
+            self.push(row, lines::push_line(&row.kind, &row.name, level, who, &said, seq, &path));
+            return;
+        };
+        let (me, row, by, who, level) = (self.clone(), row.clone(), by.to_string(), who.to_string(), level.to_string());
+        tokio::spawn(async move {
+            let file_name = text(&file, "name");
+            let dest = files::saved_path(&me.transcripts.root, &row.name, seq, &file_name);
+            let key: Option<[u8; 32]> = match file.get("key").and_then(Value::as_str) {
+                None => None,
+                Some(k) => crypto::unb64(k).ok().and_then(|k| k.try_into().ok()),
+            };
+            let got = if file.get("key").is_some() && key.is_none() {
+                Err("its key is not 32 bytes of base64".to_string())
+            } else {
+                files::download(&row.link, &text(&file, "id"), &dest, key.as_ref()).await
+            };
+            let about = match got {
+                Ok(size) => format!("(file {file_name:?}, {size} bytes, saved at {})", dest.display()),
+                Err(e) => format!("(file {file_name:?} could not be fetched: {e})"),
+            };
+            let said = if said.is_empty() { about } else { format!("{said}\n{about}") };
+            let path = me.transcripts.append(&row.name, seq, &by, &who, &said);
+            me.push(&row, lines::push_line(&row.kind, &row.name, &level, &who, &said, seq, &path));
+        });
     }
 
     /// One guest message: its text for the transcript, a notice for the holder when it moved
     /// the encryption along or was refused, and whether its text is something the guest said.
     fn read(&self, name: &str, body: &Value, state: Value) -> Read {
         let phase = state.get("phase").and_then(Value::as_str).unwrap_or("");
-        let say = |text: String, notice: Option<&str>, says: bool| Read { text, notice: notice.map(str::to_string), says };
+        let say = |text: String, notice: Option<&str>, says: bool| Read { text, notice: notice.map(str::to_string), says, file: None };
         if let Some(theirs) = body.get("spake2") {
             let offer = if phase == "offered" { self.offers().remove(name) } else { None };
             let Some(offer) = offer else {
@@ -677,11 +753,19 @@ impl Channels {
             next["n_in"] = json!(n);
             next["phase"] = json!("sealed");
             self.store.set_crypto(name, Some(&next));
-            if phase == "keyed" {
-                let says = text != "ready";
-                return say(text, Some("is encrypted now. Plaintext from the other side is refused from here."), says);
+            let notice = (phase == "keyed").then_some("is encrypted now. Plaintext from the other side is refused from here.");
+            let says = !(phase == "keyed" && text == "ready");
+            let sent: Option<Value> = serde_json::from_str::<Value>(&text).ok().filter(|v| v["kind"] == "file" && v["file"].is_object());
+            return match sent {
+                Some(sent) => Read { text: text_of(&sent), notice: notice.map(str::to_string), says: true, file: Some(sent["file"].clone()) },
+                None => say(text, notice, says),
+            };
+        }
+        if let Some(file) = body.get("file").filter(|f| f.is_object()) {
+            if phase == "sealed" {
+                return say("(refused a plaintext file)".into(), Some("refused a plaintext file from the other side, because the room is encrypted. It was not fetched."), false);
             }
-            return say(text, None, true);
+            return Read { text: text_of(body), notice: None, says: true, file: Some(file.clone()) };
         }
         let Some(text) = body.get("text").and_then(Value::as_str) else {
             let mut extra: Vec<&str> = body.as_object().into_iter().flat_map(|m| m.keys()).map(String::as_str).filter(|k| !["seq", "by", "from"].contains(k)).collect();
@@ -744,6 +828,8 @@ struct Read {
     text: String,
     notice: Option<String>,
     says: bool,
+    /// The file the message names, with its key when it came sealed.
+    file: Option<Value>,
 }
 
 /// How a `write` runs: its target and, on a machine shell, its options.
@@ -756,6 +842,16 @@ pub struct Write {
     pub limit_s: Option<i64>,
     pub cols: Option<i64>,
     pub rows: Option<i64>,
+}
+
+/// Whether a room has the keys to seal what our side sends.
+fn keyed(row: &Row) -> bool {
+    row.crypto.as_ref().is_some_and(|c| c.get("out").is_some_and(|o| !o.is_null() && o != ""))
+}
+
+/// The text a message carries beside a file, or nothing.
+fn text_of(v: &Value) -> String {
+    v.get("text").and_then(Value::as_str).unwrap_or("").to_string()
 }
 
 /// A string field as Python's `str(x or "")` reads it.

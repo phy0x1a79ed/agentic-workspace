@@ -108,6 +108,7 @@ async fn channel_verb(ch: Arc<Channels>, call: Call) -> Result<Value, VerbError>
             };
             ch.write(&who, &text, name_arg(&call), w).await
         }
+        "send" => ch.send(&who, &channel::text(&call.args, "path"), &text, name_arg(&call), call.str_arg("filename")).await,
         "drain" => {
             let wait = number(&call, "wait")?.unwrap_or(0) as f64;
             ch.drain(&who, name_arg(&call), wait, number(&call, "until")?, number(&call, "task")?, yes(&call, "raw")).await

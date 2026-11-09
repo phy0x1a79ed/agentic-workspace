@@ -398,6 +398,89 @@ impl Guest {
     async fn leave(&self) {
         assert!(self.http.post(format!("{}/leave", self.link)).send().await.unwrap().status().is_success());
     }
+
+    /// The how-to's FILES steps: the bytes up, and the id back.
+    async fn upload(&self, bytes: Vec<u8>) -> String {
+        let r = self.http.post(format!("{}/file", self.link)).body(bytes).send().await.unwrap();
+        assert!(r.status().is_success(), "{}", r.status());
+        r.json::<Value>().await.unwrap()["id"].as_str().unwrap().to_string()
+    }
+
+    async fn fetch(&self, id: &str) -> Vec<u8> {
+        self.http.get(format!("{}/file/{id}", self.link)).send().await.unwrap().bytes().await.unwrap().to_vec()
+    }
+}
+
+/// The path a pushed line says a file was saved at.
+fn saved_at(pushed: &Captured) -> Option<PathBuf> {
+    pushed.texts().iter().find_map(|t| Some(PathBuf::from(t.split("saved at ").nth(1)?.trim_end_matches(')'))))
+}
+
+#[tokio::test]
+async fn files_cross_a_room_both_ways_beside_the_messages() {
+    let tmp = tempfile::tempdir().unwrap();
+    let Some((_host, node, pushed, _)) = setup(tmp.path()).await else { return };
+    let opened = node.ch.open(&tester(), "room", None, false).await.unwrap();
+    let mut guest = Guest::new(opened["link"].as_str().unwrap());
+
+    let theirs: Vec<u8> = (0..300_000u32).map(|i| (i % 251) as u8).collect();
+    let id = guest.upload(theirs.clone()).await;
+    guest.post(json!({"text": "the log", "file": {"id": id, "name": "../run log.txt", "size": theirs.len()}})).await;
+    eventually("the guest's file is saved", || saved_at(&pushed).is_some()).await;
+    let line = pushed.texts().into_iter().find(|t| t.contains("saved at")).unwrap();
+    assert!(line.contains("[untrusted] from visitor: the log ⏎ (file \"../run log.txt\", 300000 bytes"), "{line}");
+    let path = saved_at(&pushed).unwrap();
+    assert!(path.to_string_lossy().ends_with(".files/1-run_log.txt") && path.starts_with(tmp.path()), "{path:?}");
+    assert_eq!(std::fs::read(&path).unwrap(), theirs);
+
+    let ours = tmp.path().join("ours.bin");
+    std::fs::write(&ours, b"from the host").unwrap();
+    let sent = node.ch.send(&tester(), ours.to_str().unwrap(), "here", None, Some("report.bin")).await.unwrap();
+    assert_eq!((sent["file"]["name"].as_str(), sent["file"]["size"].as_u64(), sent["sealed"].as_bool()), (Some("report.bin"), Some(13), Some(false)));
+    let heard = guest.hear().await;
+    let m = &heard["messages"][0];
+    assert_eq!((m["text"].as_str(), m["file"]["name"].as_str()), (Some("here"), Some("report.bin")));
+    assert_eq!(guest.fetch(m["file"]["id"].as_str().unwrap()).await, b"from the host");
+    assert!(node.ch.send(&tester(), "relative.txt", "", None, None).await.is_err());
+}
+
+#[tokio::test]
+async fn an_encrypted_room_seals_its_files_and_refuses_a_plain_one() {
+    use crate::channel::crypto::{open_chunk, seal_chunk};
+    let tmp = tempfile::tempdir().unwrap();
+    let Some((_host, node, pushed, _)) = setup(tmp.path()).await else { return };
+    let opened = node.ch.open(&tester(), "room", None, false).await.unwrap();
+    let mut guest = Guest::new(opened["link"].as_str().unwrap());
+    let offer = node.ch.encrypt(&tester(), None).await.unwrap();
+    let theirs = guest.offer().await;
+    guest.answer_offer(&theirs, offer["password"].as_str().unwrap()).await;
+    eventually("the room is encrypted", || pushed.any("is encrypted now")).await;
+
+    let ours = tmp.path().join("secret.txt");
+    let plain: Vec<u8> = b"top secret ".repeat(7000);
+    std::fs::write(&ours, &plain).unwrap();
+    assert_eq!(node.ch.send(&tester(), ours.to_str().unwrap(), "", None, None).await.unwrap()["sealed"], true);
+    let heard = guest.hear().await;
+    let sent: Value = serde_json::from_str(&guest.unseal(&heard["messages"][0])).unwrap();
+    assert_eq!((sent["kind"].as_str(), sent["file"]["size"].as_u64()), (Some("file"), Some(plain.len() as u64)));
+    let key: [u8; 32] = crate::channel::crypto::unb64(sent["file"]["key"].as_str().unwrap()).unwrap().try_into().unwrap();
+    let held = guest.fetch(sent["file"]["id"].as_str().unwrap()).await;
+    let chunk = crate::channel::files::CHUNK + 16;
+    assert_eq!(held.len(), plain.len() + 32, "two chunks, each with its tag");
+    let mut opened_back = open_chunk(&key, 0, false, &held[..chunk]).unwrap();
+    opened_back.extend(open_chunk(&key, 1, true, &held[chunk..]).unwrap());
+    assert_eq!(opened_back, plain);
+
+    let id = guest.upload(b"clear bytes".to_vec()).await;
+    guest.post(json!({"file": {"id": id, "name": "clear.txt", "size": 11}})).await;
+    eventually("refused", || pushed.any("refused a plaintext file")).await;
+
+    let key = [9u8; 32];
+    let id = guest.upload(seal_chunk(&key, 0, true, b"sealed bytes")).await;
+    let file = json!({"kind": "file", "file": {"id": id, "name": "s.txt", "size": 12, "key": crate::channel::crypto::b64(&key)}});
+    guest.say_sealed(&file.to_string()).await;
+    eventually("the sealed file is saved", || saved_at(&pushed).is_some()).await;
+    assert_eq!(std::fs::read(saved_at(&pushed).unwrap()).unwrap(), b"sealed bytes");
 }
 
 /// A host and one member node, `testnode`, whose sessions are the tester and one other.
