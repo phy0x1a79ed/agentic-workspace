@@ -215,7 +215,7 @@ async function fillNodes() {
   $(".awm-spawn-node").replaceChildren(...(nodes.length
     ? nodes.map((n) => el("label", {},
       el("input", { type: "radio", name: "awm-spawn-node", value: n.name, checked: n.name === keep }),
-      el("span", {}, `${n.name} (${n.sessions} in 7d)`)))
+      el("span", { title: n.name }, n.name)))
     : [el("small", { class: "awm-empty" }, "no nodes in the roster")]));
   $(".awm-newbtn").disabled = nodes.length === 0;
 }

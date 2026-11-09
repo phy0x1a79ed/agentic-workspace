@@ -98,7 +98,7 @@ def main() -> int:
 
         opts = page.eval_on_selector_all(".awm-spawn-node label", "o => o.map(x => x.textContent)")
         check("New agent nodes: fewest 7-day sessions first, no stations, no deneb",
-              [o.split(" ")[0] for o in opts] == ["lyra", "altair", "mizar"], str(opts))
+              opts == ["lyra", "altair", "mizar"], str(opts))
         chosen = page.eval_on_selector_all(".awm-spawn input:checked", "e => e.map(x => x.value)")
         check("New agent defaults: least-used node, Opus, high", chosen == ["lyra", "opus", "high"], str(chosen))
         page.locator(".awm-spawn").screenshot(path=str(SHOTS / "new-agent.png"))

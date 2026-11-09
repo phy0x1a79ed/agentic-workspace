@@ -19,6 +19,9 @@
 .awm-seg label:hover span { background: rgba(127,127,127,.15); }
 .awm-seg input:checked + span { background: #2e86c1; border-color: #2e86c1; color: #fff; }
 .awm-seg input:focus-visible + span { outline: 2px solid #2e86c1; outline-offset: 1px; }
+.awm-field:has(.awm-spawn-node) { flex: 1 1 100%; }
+.awm-seg.awm-spawn-node { flex: 1; display: grid; grid-template-columns: repeat(auto-fill, minmax(90px, 1fr)); gap: 4px; }
+.awm-spawn-node label span, .awm-spawn-node label:first-child span, .awm-spawn-node label:last-child span { margin-left: 0; border-radius: 4px; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .awm-main { display: flex; min-height: 0; flex: 1; }
 .awm-sections { flex: 0 0 var(--awm-left, 55%); overflow: auto; min-width: 220px; }
 .awm-divider { flex: 0 0 7px; cursor: col-resize; background: rgba(127,127,127,.25); border-radius: 3px; margin: 0 4px; touch-action: none; }
@@ -51,9 +54,9 @@
     <h3>New agent</h3>
     <div class="awm-field"><small>Node</small><div class="awm-seg awm-spawn-node" role="radiogroup" aria-label="Node"></div></div>
     <div class="awm-field"><small>Model</small><div class="awm-seg" role="radiogroup" aria-label="Model">
-      <label><input type="radio" name="awm-spawn-model" value="opus" checked><span>Opus</span></label>
-      <label><input type="radio" name="awm-spawn-model" value="sonnet"><span>Sonnet</span></label>
       <label><input type="radio" name="awm-spawn-model" value="haiku"><span>Haiku</span></label>
+      <label><input type="radio" name="awm-spawn-model" value="sonnet"><span>Sonnet</span></label>
+      <label><input type="radio" name="awm-spawn-model" value="opus" checked><span>Opus</span></label>
       <label><input type="radio" name="awm-spawn-model" value="fable"><span>Fable</span></label>
     </div></div>
     <div class="awm-field"><small>Effort</small><div class="awm-seg" role="radiogroup" aria-label="Effort">
