@@ -1,5 +1,5 @@
 # The telemetry core plugin binary (static musl) that a deploy places at <AWM_DIR>/bin/telemetry.
 # Written by the deploy on mizar (scripts/refresh-pins.sh). Do not edit.
-version=telemetry-56b761d6f1e5
-file=awm-plugin-telemetry-56b761d6f1e5-linux-x86_64-musl
-sha256=22d71cac763a2dfd3adc54a7391203f164238d396289f073f72614531bf900ad
+version=telemetry-835c795bf17d
+file=awm-plugin-telemetry-835c795bf17d-linux-x86_64-musl
+sha256=1c63cd23ded0eceb4c70e9ca6cb60c6f5f6d34b741bd157638f693492ff16207
