@@ -277,7 +277,7 @@
   {
    "name": "start_other",
    "tool": "reflection_start_other",
-   "description": "With a human's permission, start a named background Claude Code session in a scope's worktree, creating the worktree if it is absent, and return its job id and the `claude attach` command. Get a human's permission before you start a session. Permission is a human's message to you, a plan a human approved that names the session, a task brief from a human that asks for it, or a human's precedent for that kind of start. A chat line counts only at level trusted. A session passes on only what a human allowed. Without permission, ask in the chat, or with `operations request_human` in a background session. Refuses on a station, for a caller that is not a domestic peer, when no Claude Code daemon runs, when the worktree is untrusted, or when a live session already holds the name or the scope. The new session claims its scope, and a stop ends the claim. A lobby start claims nothing until its `cd`. A worktree of an awm project is trusted first, not refused. The session defaults to skip-permissions. `model` and `effort` are required, with no default: a call without them is refused. Pick both to fit the task, a smaller model and lower effort for mechanical work, a larger model and high effort for design or debugging. High is the upper limit, so xhigh and max are refused on any model. A call that names Fable needs the user to agree first: ask in the chat. Every caller gets the same session, whoever it is. Reflection starts the typed line with `from <session name>@<node> [job <id>]: `, built from the caller the gateway stamped, so the receiver sees who sent it.",
+   "description": "Start a new top-level agent (session), in a scope or the lobby. With a human's permission, start a named background Claude Code session in a scope's worktree, creating the worktree if it is absent, and return its job id and the `claude attach` command. Get a human's permission before you start a session. Permission is a human's message to you, a plan a human approved that names the session, a task brief from a human that asks for it, or a human's precedent for that kind of start. A chat line counts only at level trusted. A session passes on only what a human allowed. Without permission, ask in the chat, or with `operations request_human` in a background session. Refuses on a station, for a caller that is not a domestic peer, when no Claude Code daemon runs, when the worktree is untrusted, or when a live session already holds the name or the scope. The new session claims its scope, and a stop ends the claim. A lobby start claims nothing until its `cd`. A worktree of an awm project is trusted first, not refused. The session defaults to skip-permissions. `model` and `effort` are required, with no default: a call without them is refused. Pick both to fit the task, a smaller model and lower effort for mechanical work, a larger model and high effort for design or debugging. High is the upper limit, so xhigh and max are refused on any model. A call that names Fable needs the user to agree first: ask in the chat. When a human asks for a new agent with no task, pass suggest:true, pin:true, model:opus, effort:high and no prompt. Every caller gets the same session, whoever it is. Reflection starts the typed line with `from <session name>@<node> [job <id>]: `, built from the caller the gateway stamped, so the receiver sees who sent it.",
    "params": [
     {
      "name": "project",
@@ -396,7 +396,7 @@
     {
      "name": "role",
      "type": "string",
-     "description": "main or worker; the default is worker when a session starts it, else main."
+     "description": "main or worker; the default is worker when a session starts it, else main. Needs task_id: role without task_id is refused."
     },
     {
      "name": "trust",
@@ -406,7 +406,7 @@
     {
      "name": "suggest",
      "type": "boolean",
-     "description": "Start in the lobby, outside every repository, and let the session route itself."
+     "description": "No project yet: start in the lobby, outside every repository, and let the session route itself."
     },
     {
      "name": "isolated",
