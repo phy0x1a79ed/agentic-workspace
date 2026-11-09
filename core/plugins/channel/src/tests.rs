@@ -668,6 +668,9 @@ async fn the_how_to_states_every_constant_the_guest_and_our_side_use() {
         "ChaCha20-Poly1305".into(),
         "standard alphabet with padding".into(),
         "KEYS FOR NEXT TIME".into(),
+        format!("chunks of {} bytes", crate::channel::files::CHUNK),
+        "1 for the last chunk".into(),
+        "parts of at most\n  32 MiB".into(),
     ] {
         assert!(text.contains(&needle), "{needle}");
     }
