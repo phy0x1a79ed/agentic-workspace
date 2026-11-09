@@ -1,5 +1,5 @@
 # The seats core plugin binary (static musl) that a deploy places at <AWM_DIR>/bin/seats.
 # Written by the deploy on mizar (scripts/refresh-pins.sh). Do not edit.
-version=seats-d409cac1ddfd
-file=awm-plugin-seats-d409cac1ddfd-linux-x86_64-musl
-sha256=509c43e0bcb9c2d9efd70549c7c007708601cf9ea9632fa86db8436e6a13ce58
+version=seats-e7ae55bb990f
+file=awm-plugin-seats-e7ae55bb990f-linux-x86_64-musl
+sha256=b2564a34bc291a91a7cce83ec18f7da21222841dcccbe4d92a90890726e9f751
