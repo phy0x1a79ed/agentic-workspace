@@ -1,5 +1,5 @@
 # The browser core plugin binary (static musl) that a deploy places at <AWM_DIR>/bin/browser.
 # Written by the deploy on mizar (scripts/refresh-pins.sh). Do not edit.
-version=browser-f332768b813b
-file=awm-plugin-browser-f332768b813b-linux-x86_64-musl
-sha256=3f843fe0fd23f8704e785b4cdb4e93827e9438228d6159bfd8bda4ed74eb39e1
+version=browser-ad45e2ad4c26
+file=awm-plugin-browser-ad45e2ad4c26-linux-x86_64-musl
+sha256=3637fea60631c6b819c993c23c00cf3c0fc9c8da8ec621e7bea534817827b245
