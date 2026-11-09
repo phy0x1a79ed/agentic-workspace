@@ -44,8 +44,6 @@ from .notify import NULL_NOTIFIER
 
 log = logging.getLogger("awm.twofa.service")
 
-# Singleton re-homing selector (federation). 2fa is canonical on one node; on
-# that node social is co-located so this is unset and social calls stay local.
 # Duo reachability probe budget. Short: `ping` is called on the recovery path,
 # where a slow answer is nearly as bad as a wrong one.
 _REACH_PROBE_TIMEOUT = 8

@@ -32,7 +32,7 @@ _DISCONNECT_POLL_ATTEMPTS = 8
 # Hard cap on a teardown (`ssh -O exit` + confirm). Bounds the otherwise-unbounded
 # `proc.communicate()` so a wedged control socket can't hang a teardown forever —
 # which, on the connect timeout path, would strand the host in AUTHENTICATING with
-# the breaker never tripping and every later connect absorbed onto a dead waiter.
+# no verdict ever sent to the arbiter and every later connect absorbed onto a dead waiter.
 _EXIT_TIMEOUT = 15.0
 # How long a reaped ssh gets to die on SIGTERM before it is SIGKILLed. Short: the
 # process we reap is by definition one that is not making progress.
@@ -57,7 +57,7 @@ _NODE_NAME = config.node_name()
 _ARBITER_PEER_ENV = "AWM_SSH_SLOT_PEER"
 
 
-# Notable substrings in ssh stderr worth surfacing into ssh.log / the lock reason.
+# Notable substrings in ssh stderr worth surfacing into ssh.log and the lease verdict's reason.
 _NOTABLE_STDERR = (
     "Permission denied",
     "Too many authentication failures",
@@ -76,7 +76,7 @@ _NOTABLE_STDERR = (
 
 # --- pre-auth vs auth failure classification -------------------------------
 #
-# The breaker exists for ONE reason: bound the MFA attempts spent toward provider
+# The arbiter's hold exists for ONE reason: bound the MFA attempts spent toward provider
 # lockout (fir re-locks at 10 failed Duo). A connect that dies BEFORE the auth
 # phase spends nothing, so holding the host for it — and making the operator run
 # `/approve` to clear it — is a false positive. Seen live 2026-07-15: both fir
@@ -237,8 +237,8 @@ class SSHService:
         self._acquire_singleton()
         os.makedirs(LIVE_DIR, exist_ok=True)
         try:
-            # Rebuild per-host state from the world (adopt live masters, respect
-            # breaker locks) and reap stale sockets — in the background so startup
+            # Rebuild per-host state from the world (adopt live masters) and reap
+            # stale sockets — in the background so startup
             # never blocks on ssh probes.
             loop = asyncio.get_running_loop()
             self._reconcile_task = loop.create_task(self._reconcile_on_boot())
@@ -452,16 +452,12 @@ class SSHService:
                 await self._await_quietly(waiter)
                 continue
             if kind == "probe_connected":
-                # AUTH-FREE probe (`ssh -O check` never mints a login). Live →
-                # done; dead → the master died out-of-band, demote and re-auth.
-                if await self._check_master(cfg.host):
+                # Live → done; dead → the master died out-of-band, re-auth.
+                if await self._verify_connected(cfg, hs):
                     return self._status_dict(cfg, "connected")
-                async with self._lock:
-                    if hs.state == ConnState.CONNECTED:
-                        hs.state = ConnState.DISCONNECTED
                 continue
 
-            # kind == "probe_start": past the breaker gate. Probe (auth-free) for
+            # kind == "probe_start": no attempt or disposal in flight. Probe (auth-free) for
             # an already-live master — ours, adopted at boot, or made out-of-band
             # — so we never spawn `ssh -M` against an existing socket (which would
             # drop to a non-multiplexed login and fire MFA).
@@ -471,7 +467,7 @@ class SSHService:
                         hs.state = ConnState.CONNECTED
                         return self._status_dict(cfg, "connected")
                 continue
-            # No master, not locked: CAS to AUTHENTICATING and start the one
+            # No master: CAS to AUTHENTICATING and start the one
             # attempt. Re-validate under the lock so a connect that raced us into
             # AUTHENTICATING is absorbed rather than duplicated.
             async with self._lock:
@@ -517,16 +513,22 @@ class SSHService:
             return self._status_dict(cfg, "disconnected",
                                      warning="master process may still be running")
 
+    async def _verify_connected(self, cfg: HostConfig, hs: HostState) -> bool:
+        """Probe a CONNECTED host's master (auth-free) and demote it if the master died."""
+        if await self._check_master(cfg.host):
+            return True
+        async with self._lock:
+            if hs.state == ConnState.CONNECTED:
+                hs.state = ConnState.DISCONNECTED
+        return False
+
     async def status(self) -> dict:
+        connected = [(KNOWN_HOSTS[n], self._host(n)) for n in KNOWN_HOSTS
+                     if self._host(n).state == ConnState.CONNECTED]
+        await asyncio.gather(*(self._verify_connected(cfg, hs) for cfg, hs in connected))
         connections: dict[str, dict] = {}
         for name, cfg in KNOWN_HOSTS.items():
-            hs = self._host(name)
-            st = hs.state
-            if st == ConnState.CONNECTED and not await self._check_master(cfg.host):
-                async with self._lock:
-                    if hs.state == ConnState.CONNECTED:
-                        hs.state = ConnState.DISCONNECTED
-                st = hs.state
+            st = self._host(name).state
             if st == ConnState.CONNECTED:
                 connections[name] = self._status_dict(cfg, "connected")
             elif st == ConnState.AUTHENTICATING:
@@ -542,8 +544,8 @@ class SSHService:
 
     async def _run_attempt(self, cfg: HostConfig, hs: HostState) -> dict:
         """The single auth attempt. Always resolves via an internal outcome — a
-        success or a breaker trip — never by outer cancellation, so the breaker
-        can never be bypassed. Transitions the host on completion."""
+        success or a failure verdict — never by outer cancellation. A lease that
+        drops without a verdict makes the arbiter hold the host. Transitions the host on completion."""
         try:
             result = await self._do_connect(cfg)
         except Exception as e:  # noqa: BLE001
@@ -565,7 +567,7 @@ class SSHService:
             elif connected:
                 hs.state = ConnState.CONNECTED
             else:
-                # Failure already tripped the breaker inside _do_connect.
+                # _do_connect already sent the failure verdict to the arbiter.
                 hs.state = ConnState.DISCONNECTED
         return result
 
@@ -637,7 +639,7 @@ class SSHService:
                     error=f"{cfg.host} is not available for automated access right now")
             result = await self._do_connect_attempt(cfg)
             ok = self._verdict_ok(result)
-            reason = result.pop("_lock_reason", "")
+            reason = result.pop("_verdict_reason", "")
             await lease.verdict(ok=ok, reason=reason)
             return result
 
@@ -654,7 +656,7 @@ class SSHService:
     async def _do_connect_attempt(self, cfg: HostConfig) -> dict:
         """Bring up the ControlMaster (2fa + ssh + poll) within an internal
         timeout. Never raises. A failure returns an error dict carrying
-        ``_lock_reason`` and ``_preauth`` for the lease verdict. See
+        ``_verdict_reason`` and ``_preauth`` for the lease verdict. See
         :meth:`_is_preauth_failure`."""
         marker = self._deviation_marker(cfg)
         self._safe_unlink(marker)
@@ -682,7 +684,7 @@ class SSHService:
                 cfg, "error",
                 error=(f"{e} — no login to {cfg.host} was attempted and no MFA "
                        f"attempt was spent, safe to retry"))
-            result["_lock_reason"] = str(e)
+            result["_verdict_reason"] = str(e)
             result["_preauth"] = True
             return result
         except _AttemptFailed as e:
@@ -691,9 +693,8 @@ class SSHService:
             # can appear just after we gave up polling — and this, not TimeoutError,
             # is the common give-up path. Re-check once: if it's now up, ADOPT it as
             # success. That auth already succeeded (an MFA attempt was spent and
-            # approved), so tripping the breaker on it would waste a live connection
-            # AND spuriously page the operator, while leaving a master orphaned
-            # behind a lock. Only if there is genuinely no master do we fail through.
+            # approved), so failing it would make the arbiter hold a host that
+            # is connected, page the operator for nothing, and orphan the master. Only if there is genuinely no master do we fail through.
             if await self._check_master(cfg.host):
                 log.info("connected to %s (master appeared just after poll window)",
                          cfg.host)
@@ -730,18 +731,18 @@ class SSHService:
                 cfg, "error",
                 error=f"{what} — no MFA attempt was spent, safe to retry later")
         else:
-            # Neutral to the caller — the detailed reason goes to the lock + the
+            # Neutral to the caller — the detailed reason goes in the lease verdict + the
             # operator Discord alert, not to the agent.
             result = self._status_dict(
                 cfg, "error", error=f"connect to {cfg.host} failed")
-        result["_lock_reason"] = reason
+        result["_verdict_reason"] = reason
         result["_preauth"] = preauth
         return result
 
     async def _attempt_master(self, cfg: HostConfig, marker: str,
                               rec: _AttemptRecord) -> None:
         """Orchestrate 2fa + ssh and poll for the ControlMaster socket.
-        Returns on success (lock cleared); raises :class:`_AttemptFailed` if the
+        Returns on success; raises :class:`_AttemptFailed` if the
         master never appears.
 
         ``rec`` is the caller's object, filled in as we go, because this
@@ -756,8 +757,8 @@ class SSHService:
             # never double-spawns. Do NOT gate on an existing "burst_active": a
             # second concurrent connect to a host sharing this device (e.g.
             # sockeye/sockeye1 both on cwl) would then skip its grant, leaving budget
-            # at 1 for 2 pushes — the 2nd push is held, times out, and trips its
-            # breaker. That was the original overlapping-login failure.
+            # at 1 for 2 pushes — the 2nd push is held, times out, and the
+            # arbiter holds the host. That was the original overlapping-login failure.
             try:
                 armed = await gatewayclient.call("2fa", "burst", {
                         "device": cfg.twofa_device,
@@ -794,8 +795,8 @@ class SSHService:
         # `NumberOfPasswordPrompts` is 3, so one `ssh` invocation will retry the
         # kbd-interactive/Duo exchange up to THREE times before giving up — and
         # each retry is a fresh Duo push. That silently turns one connect into up
-        # to three failed MFA attempts on a failing-auth path, so the one-strike
-        # breaker (which counts *connects*) under-counts *pushes* 3:1 and a
+        # to three failed MFA attempts on a failing-auth path, so the arbiter's
+        # one-strike hold (which counts *connects*) under-counts *pushes* 3:1 and a
         # handful of connects can still march the provider to its 10-strike
         # lockout. Forcing =1 makes the invariant exact: one connect ⇒ at most one
         # Duo push. (Confirmed in the wild: fir.connect.stderr showed three

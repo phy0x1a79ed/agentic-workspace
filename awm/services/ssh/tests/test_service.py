@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 import socket
 import subprocess
@@ -181,7 +180,7 @@ class TestLeaseVerdict:
 
         result = await svc.connect("fir")
         assert result["status"] == "error"
-        assert "_lock_reason" not in result and "_preauth" not in result
+        assert "_verdict_reason" not in result and "_preauth" not in result
         assert verdicts[0][0] is False and "Permission denied" in verdicts[0][1]
 
     async def test_no_arbiter_means_no_login(

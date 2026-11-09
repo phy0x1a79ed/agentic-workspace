@@ -28,6 +28,7 @@ import threading
 import time
 from datetime import datetime, timezone
 
+from awm.persistence.timestamps import iso_to_ms
 from awm.vpn import config, dao
 
 log = logging.getLogger("awm.vpn.container")
@@ -391,9 +392,8 @@ def _tail_logs(name: str, lines: int = 30) -> str:
 
 def started_at(profile: str) -> float:
     """When docker last started the profile's container, as a Unix time."""
-    raw = _docker(["inspect", "-f", "{{.State.StartedAt}}", container_name(profile)]).stdout.strip()
-    whole, _, frac = raw.rstrip("Z").partition(".")
-    return datetime.fromisoformat(whole).replace(tzinfo=timezone.utc).timestamp() + float(f"0.{frac or 0}")
+    raw = _docker(["inspect", "-f", "{{.State.StartedAt}}", container_name(profile)]).stdout
+    return iso_to_ms(raw) / 1000
 
 
 def _log_dead_container(name: str) -> None:
