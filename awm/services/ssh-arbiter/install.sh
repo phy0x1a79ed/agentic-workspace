@@ -2,7 +2,7 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 AWM="${AWM_ROOT:-$(git -C "$HERE" rev-parse --show-toplevel)/awm}"
-ENV="${AWM_ENV:-awm-ssh-slot}"
+ENV="${AWM_ENV:-awm-ssh-arbiter}"
 
 . "$AWM/plugin-env.sh"
 run "$AWM/service_components/config" --no-deps
@@ -13,4 +13,4 @@ run "$HERE"
 
 bake_runtime_env
 
-echo "Installed awm-ssh-slot into env '$ENV'."
+echo "Installed awm-ssh-arbiter into env '$ENV'."

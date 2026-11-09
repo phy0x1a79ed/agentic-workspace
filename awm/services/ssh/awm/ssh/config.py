@@ -30,11 +30,16 @@ KNOWN_HOSTS: dict[str, HostConfig] = {
 
 LIVE_DIR = os.path.expanduser("~/.ssh/live_connections")
 SSH_ASKPASS = os.path.expanduser("~/.ssh/awm-duo-askpass")
-# Circuit-breaker locks: a single failed connect drops a per-host lockfile here,
-# and every later connect refuses (no VPN/2FA/ssh) until the hold lifts. Recovery
-# is operator-gated and out of band (a Discord /approve window) — there is no
-# self-serve verb. Kept out of LIVE_DIR so it survives socket cleanup / self-heal.
-LOCK_DIR = os.path.expanduser("~/.ssh/awm-ssh-locks")
+# Any of these in ssh's stderr means the auth phase was reached, so an MFA attempt
+# may have been spent. ssh's classification and the arbiter's attribution both veto on it.
+AUTH_PHASE_STDERR = (
+    "Permission denied",
+    "Too many authentication failures",
+    "Authentication failed",
+    "locked",
+    "MFA",
+    "Duo",
+)
 
 # Process-singleton lock: exactly one svc-ssh may run at a time — two would race
 # the same account toward MFA lockout with independent in-memory state. Held via
@@ -52,10 +57,6 @@ def resolve_host(name: str) -> HostConfig:
 
 def control_path(cfg: HostConfig) -> str:
     return os.path.join(LIVE_DIR, f"{cfg.host}_{cfg.port}_{cfg.user}")
-
-
-def lock_path(cfg: HostConfig) -> str:
-    return os.path.join(LOCK_DIR, f"{cfg.host}.lock")
 
 
 def stderr_path(cfg: HostConfig) -> str:

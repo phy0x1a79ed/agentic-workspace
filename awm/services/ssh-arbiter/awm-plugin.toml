@@ -1,13 +1,13 @@
 [plugin]
-name = "ssh-slot"
+name = "ssh-arbiter"
 version = "0.1.0"
 
 [[service]]
-name = "ssh-slot"
+name = "ssh-arbiter"
 install = "install.sh"
 
 [[tool]]
-name = "ssh-slot"
+name = "ssh-arbiter"
 major = 1
 tier = "off"
 

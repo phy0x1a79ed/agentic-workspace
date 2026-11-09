@@ -76,9 +76,10 @@ impl ServiceGate {
         }
     }
 
-    /// Whether `path` opens a session on a service this gate serves. Subscriptions stay refused.
-    fn admits_session(&self, path: &str) -> bool {
+    /// Whether `path` opens a stream on a service this gate serves, the same rule a call meets.
+    fn admits_stream(&self, path: &str) -> bool {
         path.strip_prefix("/hub/session/")
+            .or_else(|| path.strip_prefix("/hub/emit/"))
             .and_then(|rest| rest.split('/').next())
             .is_some_and(|service| self.tools.iter().any(|t| t == service))
     }
@@ -141,7 +142,7 @@ where
             WS_OPEN => {
                 let path = req.args.get("path").and_then(Value::as_str).unwrap_or_default().to_string();
                 if let Some(gate) = &service {
-                    let admitted = gate.admits_session(&path);
+                    let admitted = gate.admits_stream(&path);
                     gate.record(&from, &path, &Value::Null, if admitted { "opened" } else { "refused" });
                     if !admitted {
                         let error = Some(format!("a service key opens no stream at {path}"));
