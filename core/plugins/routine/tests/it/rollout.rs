@@ -92,5 +92,6 @@ fn a_node_whose_push_fails_counts_as_failed_and_the_run_goes_on() {
 fn restart_needs_names_or_none() {
     assert_eq!(restart_list("none").unwrap(), "");
     assert_eq!(restart_list(" a, b ").unwrap(), "a,b");
+    assert_eq!(restart_list("none,cch").unwrap(), "cch");
     assert!(restart_list(" , ").unwrap_err().contains("--restart"));
 }

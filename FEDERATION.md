@@ -154,9 +154,15 @@ For a host with a 2FA device, a connect first takes that host's slot from the ar
 
 ## Deploy
 
-mizar holds the canonical repo of awm. Sessions take work live with the `ship` skill, which holds the protocol. No agent is started for a failure, and no session is warned of a restart. Never hand-patch a running node: the next refresh reverts the patch.
+mizar holds the canonical repo of awm. Sessions take work live with the `ship` skill, which holds the protocol and names these commands:
 
-A session on another node pushes its branch to mizar first (`PROTOCOLS.md` § *Pushing to mizar*). The skill ends by running `scripts/rollout.sh --restart <list> <sha>`, which does this for each node in the install config's `[fleet]` order:
+- Pins: `scripts/refresh-pins.sh`. In a worktree, set `AWM_DIR` to the canonical `<workspace>/.awm`, or the pins build into a store no node reads.
+- Smoke tests: `scripts/run-tests.sh --smoke --changed release`.
+- Rollout: `scripts/rollout.sh --restart <list> <sha>`.
+
+ No agent is started for a failure, and no session is warned of a restart. Never hand-patch a running node: the next refresh reverts the patch.
+
+A session on another node pushes its branch to mizar first (`PROTOCOLS.md` § *Pushing to mizar*). The rollout does this for each node in the install config's `[fleet]` order:
 
 1. Skip a sleeper that does not answer.
 2. For a node in `[fleet.push.<node>]`, such as altair, push `release` to it as `refs/mizar/release`, fast-forward only. When that entry names an `artifacts` directory, push each file the release pins (`deploy.toml` § `artifacts`) from mizar's `<AWM_DIR>/artifacts`. The core binary (`scripts/core.pin`), the built pages (`scripts/pages.pin`) and the Trilium server tarball travel this way. Their node never fetches them.

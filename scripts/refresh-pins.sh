@@ -3,7 +3,7 @@
 # plugin binary (scripts/release-plugins.sh), the plugin pages (scripts/release-pages.sh) and
 # the embedder's model files (scripts/release-models.sh).
 # A pin is stale when its version differs from the tree's, or when its file is missing from, or
-# differs in, the artifact store. The ship skill runs this in the rc worktree
+# differs in, the artifact store. The ship skill runs this in the release-candidate worktree
 # and commits the pins it rewrote.
 #
 # This sets the toolchains itself:

@@ -53,14 +53,14 @@ fn short(sha: &str) -> &str {
     &sha[..sha.len().min(12)]
 }
 
-/// The restart list as `--restart` gives it: plugin names, `gateway`, or `none`.
+/// The restart list as `--restart` gives it: plugin names, `gateway`, or `none`, which a
+/// union of trailers may carry beside real names.
 pub fn restart_list(text: &str) -> Result<String, String> {
     let names: Vec<&str> = text.split(',').map(str::trim).filter(|n| !n.is_empty()).collect();
-    match names.as_slice() {
-        [] => Err("--restart names the plugins to restart, `gateway`, or `none`".into()),
-        ["none"] => Ok(String::new()),
-        _ => Ok(names.join(",")),
+    if names.is_empty() {
+        return Err("--restart names the plugins to restart, `gateway`, or `none`".into());
     }
+    Ok(names.into_iter().filter(|n| *n != "none").collect::<Vec<_>>().join(","))
 }
 
 fn answers(node: &str) -> bool {
