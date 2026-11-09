@@ -253,10 +253,3 @@ mod tests {
     }
 
 }
-
-/// A service name as `awm services` takes it. The first byte keeps it from reading as a flag.
-pub fn valid_service_name(name: &str) -> bool {
-    name.len() <= 64
-        && name.as_bytes().first().is_some_and(u8::is_ascii_alphanumeric)
-        && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
-}

@@ -812,7 +812,7 @@ impl Approver {
     /// it opens no order and answers with the request to approve.
     pub async fn service_toggle(&self, device: &str, node: &str, service: &str, on: bool) -> AResult<Value> {
         let node = self.order_node("service", Some(node))?;
-        if !awm_plugin_sdk::config::valid_service_name(service) {
+        if !valid_plugin(service) {
             return Err(bad("service is a service name"));
         }
         let open = self.conn().query_row(

@@ -23,7 +23,7 @@ const NOTE_MAX: usize = 500;
 /// The `awm services` arguments of a `service` order. Disabling reflection would end the process
 /// that reports the order, so a node's reflection stays on from here.
 fn service_args(payload: &Value) -> Result<[String; 2], String> {
-    let name = text(payload, "service").filter(|n| awm_plugin_sdk::config::valid_service_name(n)).ok_or("no valid service name")?;
+    let name = text(payload, "service").filter(|n| n.as_bytes().first().is_some_and(u8::is_ascii_alphanumeric) && n.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')).ok_or("no valid service name")?;
     let on = truthy(payload.get("on"));
     if name == "reflection" && !on {
         return Err("reflection carries out these orders and cannot disable itself".into());
