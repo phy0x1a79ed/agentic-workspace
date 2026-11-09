@@ -334,7 +334,8 @@ impl Roster {
 /// One seat in one shape, keyed by its id `<account>/<channel>`. Social reports a seat two ways:
 /// a `social seats` row `{id, name, kind, holder, seat: {state, node, remote_control, job,
 /// rc_url, ..} | null}` (tagged with its `account`), and a `social/seats` event
-/// `{seat: "<account>/<channel>", label, state, node, remote_control, job?, rc_url?, ts}`.
+/// `{seat: "<account>/<channel>", label, state, node, remote_control, job?, rc_url?, rc_live?, ts}`,
+/// where `rc_live` answers a Remote Control flip: `applied`, `none` or `failed: <why>`.
 /// A channel with no seat row is `empty`.
 fn seat_row(row: &Value) -> Option<(String, Value)> {
     let m = row.as_object()?;
@@ -353,7 +354,7 @@ fn seat_row(row: &Value) -> Option<(String, Value)> {
         "remote_control": src.get("remote_control").and_then(Value::as_bool).unwrap_or(false),
         "node": text(src, "node").unwrap_or_default(),
     });
-    for k in ["job", "rc_url"] {
+    for k in ["job", "rc_url", "rc_live"] {
         if let Some(v) = text(src, k) {
             out[k] = json!(v);
         }
@@ -635,9 +636,10 @@ mod tests {
         assert!(a.changed.contains("seats"));
         assert!(r.set_seats(&[empty]).changed.is_empty());
         r.seat_event(&json!({"seat": "slack/C042", "label": "alice", "state": "occupied", "remote_control": true, "node": "alcor",
-                             "job": "j1", "rc_url": "https://claude.ai/code/s", "ts": "2026-11-07T10:00:00Z"}));
+                             "job": "j1", "rc_url": "https://claude.ai/code/s", "rc_live": "failed: busy", "ts": "2026-11-07T10:00:00Z"}));
         let v = r.seats_view();
         assert_eq!((v["seats"].as_array().unwrap().len(), v["seats"][0]["state"].as_str()), (1, Some("occupied")), "keyed on the seat id, not the label");
+        assert_eq!(v["seats"][0]["rc_live"], json!("failed: busy"), "the answer to a Remote Control flip reaches Ops");
         assert!(r.seat_event(&json!({"state": "x", "name": "alice"})).changed.is_empty(), "a row with no seat id is ignored");
 
         // Real-shaped `social seats` rows (account tagged by the catch-up) land on the same key and shape as events.

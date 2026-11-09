@@ -509,7 +509,16 @@ impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Captured {
 
 impl Captured {
     /// Capture this thread's logs until the guard drops.
+    ///
+    /// A callsite caches its interest from the dispatchers alive when it first fires. With no
+    /// global subscriber, a parallel test that fires it first caches "never", and this thread's
+    /// subscriber then misses the event. A global one that discards keeps every callsite live.
     pub fn install(&self) -> tracing::subscriber::DefaultGuard {
+        static GLOBAL: std::sync::Once = std::sync::Once::new();
+        GLOBAL.call_once(|| {
+            let sink = tracing_subscriber::fmt().with_writer(std::io::sink).with_max_level(tracing::Level::INFO).finish();
+            let _ = tracing::subscriber::set_global_default(sink);
+        });
         let sub = tracing_subscriber::fmt().with_writer(self.clone()).with_max_level(tracing::Level::INFO).with_ansi(false).finish();
         tracing::subscriber::set_default(sub)
     }

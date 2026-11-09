@@ -1082,9 +1082,6 @@ mod tests {
         async fn repaint(&mut self) -> Result<bool, LaneError> {
             panic!("the resume never repaints")
         }
-        fn forget(&mut self) {
-            panic!("the resume never reads a screen")
-        }
         async fn press(&mut self, _key: Key) -> Result<(), LaneError> {
             panic!("the resume presses no keys")
         }

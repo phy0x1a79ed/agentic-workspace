@@ -813,7 +813,9 @@ impl Social {
         }
         match kind {
             "seat" => {
-                if self.seats.store.mirror(&account, &channel, &s(b, "state"), &s(b, "job"), truthy(b.get("remote_control")), &s(b, "rc_url"), b["public"].clone()).await {
+                // An answer to a Remote Control flip goes to Ops even when the seat did not change.
+                let changed = self.seats.store.mirror(&account, &channel, &s(b, "state"), &s(b, "job"), truthy(b.get("remote_control")), &s(b, "rc_url"), b["public"].clone()).await;
+                if changed || b["event"].get("rc_live").is_some() {
                     self.emit("seats", b["event"].clone());
                 }
                 ok

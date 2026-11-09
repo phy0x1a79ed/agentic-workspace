@@ -105,10 +105,6 @@ pub trait Lane: Send {
     /// current screen anyway; a daemon session of unknown size cannot be asked).
     fn repaint(&mut self) -> impl Future<Output = Result<bool, LaneError>> + Send;
 
-    /// Discard buffered output, so the next read sees only what comes after. The daemon stream is
-    /// append-only and still holds every earlier footer; tmux has nothing stale to drop.
-    fn forget(&mut self);
-
     /// Press one key.
     fn press(&mut self, key: Key) -> impl Future<Output = Result<(), LaneError>> + Send;
 
@@ -193,12 +189,6 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Lane for DaemonSession<S> {
         Ok(true)
     }
 
-    // Without this a session sitting in `default`, which draws no mode indicator, reads back as
-    // whatever mode the buffer last painted.
-    fn forget(&mut self) {
-        self.conn.clear_output();
-    }
-
     async fn press(&mut self, key: Key) -> Result<(), LaneError> {
         Ok(self.conn.send_keys(key.raw_bytes()).await?)
     }
@@ -254,10 +244,6 @@ impl<R: Runner> Lane for AnyLane<R> {
 
     async fn repaint(&mut self) -> Result<bool, LaneError> {
         each!(self, l => l.repaint().await)
-    }
-
-    fn forget(&mut self) {
-        each!(self, l => l.forget())
     }
 
     async fn press(&mut self, key: Key) -> Result<(), LaneError> {
@@ -325,7 +311,6 @@ pub mod testing {
         Read,
         Glance,
         Repaint,
-        Forget,
         Press(Key),
         Close,
     }
@@ -412,10 +397,6 @@ pub mod testing {
 
         async fn repaint(&mut self) -> Result<bool, LaneError> {
             self.record(Op::Repaint).map(|()| false)
-        }
-
-        fn forget(&mut self) {
-            let _ = self.record(Op::Forget);
         }
 
         async fn press(&mut self, key: Key) -> Result<(), LaneError> {

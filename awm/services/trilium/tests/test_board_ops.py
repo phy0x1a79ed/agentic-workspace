@@ -64,7 +64,8 @@ def test_render_writes_one_roster_note_that_the_pages_read(world):
     assert [(u["service"], u["enabled"]) for u in mizar["services"]] == [("trilium", None)]  # an older node sends no enabled
     assert mizar["sessions"][0]["remote_control"] is True
     assert roster["seats"] == [{"seat": "acct/123", "label": "seat:discord/lab/steward",
-                                "state": "empty", "remote_control": False, "rc_url": "", "node": ""}]
+                                "state": "empty", "remote_control": False, "rc_url": "", "node": "",
+                                "rc_live": "", "ts": ""}]
 
 
 def test_render_keeps_the_portals_note_and_one_note_per_notice(world):

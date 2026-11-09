@@ -410,6 +410,16 @@ async fn setup(tmp: &Path) -> Option<(Host, MemberNode, Captured, Sessions)> {
 }
 
 #[tokio::test]
+async fn a_fresh_machine_slot_comes_from_the_real_relay() {
+    let tmp = tempfile::tempdir().unwrap();
+    let Some(host) = Host::start(tmp.path(), 180.0) else { return };
+    let slot = host.relay().issue(NODE, None).await.unwrap();
+    assert!(slot["slot"].is_u64(), "{slot}");
+    assert!(slot["token"].as_str().is_some_and(|t| !t.is_empty() && t.chars().all(|c| c.is_ascii_hexdigit())), "{slot}");
+    assert!(slot["expires_in"].as_f64().is_some_and(|s| s > 0.0), "{slot}");
+}
+
+#[tokio::test]
 async fn a_guest_with_only_the_link_talks_and_our_writes_are_not_pushed_back() {
     let tmp = tempfile::tempdir().unwrap();
     let Some((_host, node, pushed, _)) = setup(tmp.path()).await else { return };
@@ -658,12 +668,15 @@ async fn owner_text_is_pushed_and_output_is_only_drained() {
     let node = machine_node(tmp.path(), &daemon, &pushed);
     let name = open_machine(&node).await;
     event(&node.stream, 1, json!({"type": "session.phase", "phase": "open"}));
-    event(&node.stream, 2, json!({"type": "owner.said", "text": "hi there"}));
+    // A reconnect, as the daemon writes it: silent.
+    event(&node.stream, 2, json!({"type": "session.phase", "phase": "reconnecting", "why": "the connection closed"}));
+    event(&node.stream, 3, json!({"type": "session.phase", "phase": "open", "resumed": {"gap_s": 9, "resent": 0}}));
+    event(&node.stream, 4, json!({"type": "owner.said", "text": "hi there"}));
     let b64 = base64::engine::general_purpose::STANDARD;
-    event(&node.stream, 3, json!({"type": "task.output", "task": 1, "stream": "stdout", "bytes": 3, "data": b64.encode("out")}));
-    event(&node.stream, 4, json!({"type": "task.exited", "task": 1, "code": 0}));
+    event(&node.stream, 5, json!({"type": "task.output", "task": 1, "stream": "stdout", "bytes": 3, "data": b64.encode("out")}));
+    event(&node.stream, 6, json!({"type": "task.exited", "task": 1, "code": 0}));
     eventually("the owner's line", || pushed.any(&format!("machine {name} [untrusted] from the owner: hi there"))).await;
-    assert!(pushed.any("the owner connected."));
+    assert_eq!(pushed.texts().iter().filter(|t| t.contains("the owner connected.")).count(), 1, "a reconnect is silent");
     assert!(!pushed.any("out"), "output is never pushed");
 
     let w = |target: &str| Write { target: target.into(), ..Write::default() };
@@ -684,9 +697,9 @@ async fn owner_text_is_pushed_and_output_is_only_drained() {
     let stream = node.stream.clone();
     tokio::spawn(async move {
         tokio::time::sleep(Duration::from_millis(200)).await;
-        event(&stream, 5, json!({"type": "task.output", "task": 2, "stream": "stdout", "bytes": 1, "data": b64.encode("z")}));
+        event(&stream, 7, json!({"type": "task.output", "task": 2, "stream": "stdout", "bytes": 1, "data": b64.encode("z")}));
         tokio::time::sleep(Duration::from_millis(200)).await;
-        event(&stream, 6, json!({"type": "task.exited", "task": 2}));
+        event(&stream, 8, json!({"type": "task.exited", "task": 2}));
     });
     let waited = node.ch.drain(&tester(), None, 5.0, Some(2), None, false).await.unwrap();
     assert_eq!(waited["events"].as_array().unwrap().last().unwrap()["type"], "task.exited", "until waits for its task");
@@ -754,13 +767,14 @@ impl Fake {
     }
 
     fn adopted(&self, issuer: &str) -> Arc<Adopted> {
+        self.adopted_via(issuer, None)
+    }
+
+    fn adopted_via(&self, issuer: &str, proxy: Option<&str>) -> Arc<Adopted> {
         let argv = vec![issuer.to_string(), "issue".to_string()];
-        let launch = Launch {
-            env: vec![("PATH".into(), "/usr/bin:/bin".into()), ("MARK".into(), self.mark.display().to_string()), ("TETHER_ISSUER".into(), serde_json::to_string(&argv).unwrap())],
-            secrets: vec![],
-            issuer: Some(argv),
-            use_manager: false,
-        };
+        let mut env = vec![("PATH".into(), "/usr/bin:/bin".into()), ("MARK".into(), self.mark.display().to_string()), ("TETHER_ISSUER".into(), serde_json::to_string(&argv).unwrap())];
+        env.extend(proxy.map(|p| ("https_proxy".to_string(), p.to_string())));
+        let launch = Launch { env, secrets: vec![], use_manager: false };
         Adopted::new(self.paths.clone(), fake_probe(self.mark.clone()), launch)
     }
 
@@ -806,7 +820,20 @@ async fn a_daemon_with_the_python_issuer_is_replaced_once_idle() {
     let rust = fake.adopted("/bin/channel");
     let out = rust.reconcile().await;
     assert_eq!(out["action"], "replaced", "{out}");
-    assert!(out["reason"].as_str().unwrap().contains("issuer"));
+    assert!(out["reason"].as_str().unwrap().contains("TETHER_ISSUER"));
     assert_ne!(fake.pid(), pid);
     assert_eq!(rust.reconcile().await["action"], "none");
+}
+
+#[tokio::test]
+async fn a_daemon_on_a_gone_gateway_proxy_is_replaced_once_idle() {
+    let fake = Fake::new(RUNS);
+    assert_eq!(fake.adopted_via("/bin/channel", Some("http://127.0.0.1:1111")).reconcile().await["action"], "started");
+    let pid = fake.pid();
+    let restarted = fake.adopted_via("/bin/channel", Some("http://127.0.0.1:2222"));
+    let out = restarted.reconcile().await;
+    assert_eq!(out["action"], "replaced", "{out}");
+    assert_eq!(out["reason"], "it was launched with another https_proxy");
+    assert_ne!(fake.pid(), pid);
+    assert_eq!(restarted.reconcile().await["action"], "none");
 }
