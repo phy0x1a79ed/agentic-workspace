@@ -1,637 +1,112 @@
-//! The seat transitions against a scripted world, and the no-drop property under faults.
+//! Declaring seats and the queue a host pulls.
 
-use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
-use async_trait::async_trait;
-use awm_plugin_sdk::push::Outcome;
 use awm_trust::Level;
-use serde_json::Value;
+use serde_json::json;
 
 use super::*;
-use crate::config::{AccountConfig, Notice, SeatChat, SeatRule, SeatsConfig};
-use crate::connectors::{ChatKind, Inbound};
-use crate::db::Db;
-
-#[derive(Default)]
-struct W {
-    now: f64,
-    jobs: u32,
-    /// What the next starts answer, else a job that comes up.
-    starts: VecDeque<Started>,
-    /// Jobs that run.
-    up: HashSet<String>,
-    /// Jobs started but never up.
-    down_on_start: bool,
-    /// What the next pushes answer, else delivered while the job runs.
-    pushes: VecDeque<Outcome>,
-    cannot_tell: bool,
-    scope_missing: bool,
-    specs: Vec<Value>,
-    /// Every line each job got, from its brief or a push.
-    got: HashMap<String, Vec<String>>,
-    briefs: HashMap<String, Vec<String>>,
-    reacts: Vec<String>,
-    said: Vec<(String, String)>,
-    asked: Vec<(String, String)>,
-    events: Vec<Value>,
-    /// Each `remote_control` call: job, on, name.
-    switched: Vec<(String, bool, String)>,
-    switch_fails: bool,
-}
-
-#[derive(Clone, Default)]
-struct Fake(Arc<Mutex<W>>);
-
-impl Fake {
-    fn w(&self) -> std::sync::MutexGuard<'_, W> {
-        self.0.lock().unwrap()
-    }
-    fn advance(&self, s: f64) {
-        self.w().now += s;
-    }
-    fn got(&self, job: &str) -> Vec<String> {
-        self.w().got.get(job).cloned().unwrap_or_default()
-    }
-    fn texts(&self) -> Vec<String> {
-        let w = self.w();
-        let mut all: Vec<String> = w.got.values().flatten().cloned().collect();
-        all.sort();
-        all
-    }
-}
-
-fn text_of(line: &str) -> String {
-    line.rsplit("] ").next().unwrap_or(line).to_string()
-}
-
-#[async_trait]
-impl World for Fake {
-    fn now(&self) -> f64 {
-        self.w().now
-    }
-    async fn sleep(&self, secs: f64) {
-        self.advance(secs);
-    }
-    async fn start(&self, _node: &str, spec: Value) -> Started {
-        let mut w = self.w();
-        w.specs.push(spec.clone());
-        if let Some(s) = w.starts.pop_front() {
-            if let Started::Job(j) = &s {
-                w.up.insert(j.clone());
-            }
-            return s;
-        }
-        w.jobs += 1;
-        let job = format!("job-{}", w.jobs);
-        let lines: Vec<String> = spec["prompt"].as_str().unwrap().lines().filter(|l| l.starts_with('[')).map(text_of).collect();
-        w.briefs.insert(job.clone(), lines.clone());
-        if !w.down_on_start {
-            w.up.insert(job.clone());
-            w.got.entry(job.clone()).or_default().extend(lines);
-        }
-        Started::Job(job)
-    }
-    async fn push(&self, _node: &str, job: &str, line: &str) -> Outcome {
-        let mut w = self.w();
-        if let Some(o) = w.pushes.pop_front() {
-            if o == Outcome::Delivered {
-                w.got.entry(job.into()).or_default().push(text_of(line));
-            }
-            return o;
-        }
-        if !w.up.contains(job) {
-            return Outcome::Gone;
-        }
-        if line != RETIRE_LINE {
-            w.got.entry(job.into()).or_default().push(text_of(line));
-        }
-        Outcome::Delivered
-    }
-    async fn live(&self, _node: &str) -> Option<HashSet<String>> {
-        let w = self.w();
-        (!w.cannot_tell).then(|| w.up.clone())
-    }
-    async fn scope_ready(&self, _n: &str, _p: &str, _s: &str) -> Option<bool> {
-        Some(!self.w().scope_missing)
-    }
-    async fn transcript(&self, _node: &str, job: &str) -> Option<String> {
-        Some(format!("/transcripts/{job}.jsonl"))
-    }
-    async fn react(&self, _a: &str, _c: &str, id: &str, _e: &str) {
-        self.w().reacts.push(id.into());
-    }
-    async fn say(&self, _a: &str, channel: &str, _t: Option<&str>, text: &str) -> bool {
-        self.w().said.push((channel.into(), text.into()));
-        true
-    }
-    async fn ask(&self, kind: &str, text: &str) {
-        self.w().asked.push((kind.into(), text.into()));
-    }
-    async fn tag(&self, _n: &str, _d: &str) {}
-    fn emit(&self, event: Value) {
-        self.w().events.push(event);
-    }
-    async fn remote_control(&self, _node: &str, job: &str, on: bool, name: &str) -> Result<Option<String>, String> {
-        let mut w = self.w();
-        if w.switch_fails {
-            return Err("no such session".into());
-        }
-        w.switched.push((job.into(), on, name.into()));
-        Ok(on.then(|| format!("https://claude.ai/code/{job}")))
-    }
-    async fn rc_url(&self, _node: &str, job: &str) -> Option<String> {
-        self.w().up.contains(job).then(|| format!("https://claude.ai/code/{job}"))
-    }
-}
-
-fn cfg(paused: bool) -> SeatsConfig {
-    SeatsConfig {
-        paused,
-        notice: Some(Notice { account: "bot".into(), channel: "N0TEST".into() }),
-        rules: vec![SeatRule { account: "opal".into(), kind: "dm".into(), node: "altair".into(), level: Level::Cooperative, scope: "seats/{slug}".into(), except: vec!["USLACKBOT".into()] }],
-        chats: vec![SeatChat { account: "opal".into(), channel: "C0TEST".into(), node: "altair".into(), level: Level::Cooperative, scope: "seats/test-lab-general".into() }],
-        ..SeatsConfig::default()
-    }
-}
-
-fn accounts() -> Vec<AccountConfig> {
-    vec![AccountConfig { name: "opal".into(), platform: "slack".into(), trust: "cooperative".into(), ..Default::default() }]
-}
+use crate::config::{SeatChat, SeatRule};
 
 struct T {
     _tmp: tempfile::TempDir,
-    db: Db,
-    world: Fake,
     seats: Arc<Seats>,
-    n: u32,
 }
 
-impl T {
-    fn new(paused: bool) -> Self {
-        let tmp = tempfile::tempdir().unwrap();
-        let db = Db::open(&tmp.path().join("social.db")).unwrap();
-        let world = Fake::default();
-        world.w().now = 1_000_000.0;
-        let seats = Seats::new(db.clone(), cfg(paused), accounts(), Arc::new(world.clone()));
-        Self { _tmp: tmp, db, world, seats, n: 0 }
-    }
-
-    /// social restarted: a new engine over the same database.
-    fn restart(&mut self, paused: bool) {
-        self.seats = Seats::new(self.db.clone(), cfg(paused), accounts(), Arc::new(self.world.clone()));
-    }
-
-    fn dm(&mut self, text: &str) -> Inbound {
-        self.n += 1;
-        Inbound { account: "opal".into(), platform: "slack".into(), channel_id: "D0TEST".into(), kind: ChatKind::Dm, sender_id: "U0TEST".into(), sender_name: "tester".into(), text: text.into(), message_id: format!("{}.0", self.n), to_holder: true, ..Default::default() }
-    }
-
-    async fn send(&mut self, text: &str) -> Routed {
-        let m = self.dm(text);
-        let r = self.seats.route(&m).await;
-        self.settle().await;
-        r
-    }
-
-    async fn settle(&self) {
-        for _ in 0..20 {
-            tokio::task::yield_now().await;
-        }
-        self.seats.tick().await;
-    }
-
-    async fn seat(&self) -> Seat {
-        self.seats.store.get("opal", "D0TEST").await.unwrap()
-    }
-
-    async fn tick(&self) {
-        self.seats.tick().await;
-    }
-}
-
-#[tokio::test]
-async fn a_message_to_an_empty_seat_reacts_queues_and_starts_one_agent() {
-    let mut t = T::new(false);
-    t.world.w().down_on_start = true;
-    assert_eq!(t.send("first").await, Routed::Seat);
-    let s = t.seat().await;
-    assert_eq!((s.state, s.job.as_str(), s.scope.as_str()), (State::Starting, "job-1", "seats/tester"));
-    assert_eq!(t.world.w().reacts, ["1.0"], "one 👀, on the cold start");
-    let spec = t.world.w().specs[0].clone();
-    assert_eq!((spec["project"].as_str(), spec["trust"].as_str(), spec["name"].as_str()), (Some("agentic-commons"), Some("cooperative"), Some("seat:slack/dm/tester")));
-    assert!(spec["prompt"].as_str().unwrap().contains("[slack/DM/tester, cooperative] first"));
-    assert_eq!(t.seats.queued("opal", "D0TEST").await, 1, "briefed is not delivered");
-    assert_eq!(t.send("second").await, Routed::Seat);
-    assert_eq!(t.world.w().specs.len(), 1, "a starting seat starts nothing more");
-    assert_eq!(t.world.w().reacts.len(), 1);
-
-    t.world.w().up.insert("job-1".into());
-    t.seats.touch("altair", "job-1").await;
-    assert_eq!(t.seat().await.state, State::Occupied);
-    assert_eq!(t.world.got("job-1"), ["second"], "the brief held the first, the push the second");
-    assert_eq!(t.seats.queued("opal", "D0TEST").await, 0);
-    let mount = t.db.holder("opal", "D0TEST").await.unwrap();
-    assert_eq!((mount.node.as_str(), mount.job.as_str()), ("altair", "job-1"));
-    assert_eq!(t.seats.store.line("altair", "job-1").await.unwrap().3, "2.0", "send defaults to the latest line");
-}
-
-#[tokio::test]
-async fn a_start_that_never_comes_up_requeues_and_trips_the_breaker() {
-    let mut t = T::new(false);
-    t.world.w().down_on_start = true;
-    t.send("hello").await;
-    for round in 1..=4 {
-        t.world.advance(UP_S + 1.0);
-        t.tick().await;
-        let s = t.seat().await;
-        assert_eq!(s.state, State::Empty, "round {round}");
-        assert_eq!(t.seats.queued("opal", "D0TEST").await, 1, "the line waits");
-        assert!(t.db.holder("opal", "D0TEST").await.is_none());
-        if round < 4 {
-            t.world.advance(store::BACKOFF_S[round - 1] + 1.0);
-            t.tick().await;
-            assert_eq!(t.seat().await.state, State::Starting, "retried after the backoff");
-        }
-    }
-    let s = t.seat().await;
-    assert!(s.breaker.held(t.world.now()));
-    assert!(t.world.w().said.iter().any(|(c, x)| c == "N0TEST" && x.contains("could not start an agent 4 times")));
-    t.world.advance(3600.0);
-    t.tick().await;
-    assert_eq!(t.seat().await.state, State::Empty, "held");
-    t.world.w().down_on_start = false;
-    t.seats.reset("opal", "D0TEST").await;
-    t.tick().await;
-    assert_eq!(t.seat().await.state, State::Occupied);
-    assert_eq!(t.world.texts(), ["hello"]);
-}
-
-#[tokio::test]
-async fn cannot_tell_never_gives_up_a_start_or_empties_a_seat() {
-    let mut t = T::new(false);
-    t.world.w().down_on_start = true;
-    t.send("hello").await;
-    t.world.w().cannot_tell = true;
-    t.world.advance(UP_S * 10.0);
-    t.tick().await;
-    assert_eq!(t.seat().await.state, State::Starting);
-    t.world.w().up.insert("job-1".into());
-    t.world.w().cannot_tell = false;
-    t.tick().await;
-    assert_eq!(t.seat().await.state, State::Occupied);
-    t.world.w().cannot_tell = true;
-    t.world.w().up.clear();
-    t.tick().await;
-    assert_eq!(t.seat().await.state, State::Occupied);
-}
-
-#[tokio::test]
-async fn a_gone_push_returns_its_lines_and_starts_the_next_agent_with_them() {
-    let mut t = T::new(false);
-    t.send("one").await;
-    assert_eq!(t.seat().await.state, State::Occupied);
-    t.world.w().up.remove("job-1");
-    t.send("two").await;
-    t.send("three").await;
-    let s = t.seat().await;
-    assert_eq!((s.state, s.job.as_str()), (State::Occupied, "job-2"));
-    assert_eq!(t.world.got("job-2"), ["two", "three"]);
-    assert!(t.world.w().specs[1]["prompt"].as_str().unwrap().contains("job job-1 on altair"));
-    assert_eq!(t.world.texts(), ["one", "three", "two"]);
-}
-
-#[tokio::test]
-async fn a_refused_push_past_the_window_counts_the_agent_lost() {
-    let mut t = T::new(false);
-    t.send("one").await;
-    t.world.w().pushes.extend(std::iter::repeat_n(Outcome::Retry("busy".into()), 100));
-    t.send("two").await;
-    t.world.w().pushes.clear();
-    t.tick().await;
-    let s = t.seat().await;
-    assert_eq!(s.job, "job-2");
-    assert_eq!(t.world.got("job-2"), ["two"]);
-}
-
-#[tokio::test]
-async fn done_then_quiet_retires_and_a_message_while_retiring_gets_one_reply() {
-    let mut t = T::new(false);
-    t.send("task").await;
-    assert_eq!(t.seats.mark_done("altair", "job-1").await.len(), 1);
-    t.world.advance(DONE_S - 10.0);
-    t.tick().await;
-    assert_eq!(t.seat().await.state, State::Occupied);
-    t.world.advance(20.0);
-    t.tick().await;
-    assert_eq!(t.seat().await.state, State::Retiring);
-    t.send("new one").await;
-    t.send("and another").await;
-    let said: Vec<String> = t.world.w().said.iter().filter(|(c, _)| c == "D0TEST").map(|(_, x)| x.clone()).collect();
-    assert_eq!(said, [SHIFT_REPLY], "one reply per retiring");
-    assert_eq!(t.seat().await.state, State::Retiring);
-    t.world.advance(RETIRE_S + 1.0);
-    t.tick().await;
-    t.tick().await;
-    let s = t.seat().await;
-    assert_eq!((s.state, s.job.as_str()), (State::Occupied, "job-2"), "the next agent starts beside the old one");
-    assert!(t.world.w().specs[1]["prompt"].as_str().unwrap().contains("/transcripts/job-1.jsonl"));
-    assert!(t.world.w().specs[1].get("replaces").is_none());
-    assert_eq!(t.world.got("job-2"), ["new one", "and another"]);
-    assert_eq!(t.db.holder("opal", "D0TEST").await.unwrap().job, "job-2", "the old agent is unbound");
-}
-
-#[tokio::test]
-async fn a_retiring_agent_that_leaves_empties_the_seat_and_a_new_message_clears_done() {
-    let mut t = T::new(false);
-    t.send("task").await;
-    t.seats.mark_done("altair", "job-1").await;
-    t.send("more").await;
-    assert_eq!(t.seat().await.done_at, 0.0, "a new message clears the mark");
-    t.seats.mark_done("altair", "job-1").await;
-    t.world.advance(DONE_S + 1.0);
-    t.tick().await;
-    assert_eq!(t.seat().await.state, State::Retiring);
-    t.world.w().up.remove("job-1");
-    t.tick().await;
-    assert_eq!(t.seat().await.state, State::Empty);
-    assert!(t.world.w().specs.len() == 1, "nothing waits, so nothing starts");
-    assert!(!t.world.w().said.iter().any(|(_, x)| x.contains("ended before")), "a done agent leaving is no outage");
-}
-
-#[tokio::test]
-async fn a_session_event_wakes_the_loop_with_no_timer_behind_it() {
-    let mut t = T::new(false);
-    t.send("task").await;
-    assert_eq!(t.seat().await.state, State::Occupied);
-    assert_eq!(t.seats.next_due().await, None, "an occupied seat has no clock of its own");
-    let looping = tokio::spawn(t.seats.clone().tick_forever());
-    t.world.w().up.remove("job-1");
-    t.seats.wake();
-    for _ in 0..200 {
-        if t.seat().await.state == State::Empty {
-            break;
-        }
-        tokio::task::yield_now().await;
-    }
-    assert_eq!(t.seat().await.state, State::Empty, "the stop was seen on the event");
-    looping.abort();
-}
-
-#[tokio::test]
-async fn a_seat_with_a_deadline_is_due_at_it() {
-    let mut t = T::new(false);
-    t.send("task").await;
-    t.world.w().up.clear();
-    t.seats.tick().await;
-    t.world.w().down_on_start = true;
-    t.send("again").await;
-    let s = t.seat().await;
-    assert_eq!(s.state, State::Starting);
-    let due = t.seats.next_due().await.unwrap();
-    assert!((due - (s.deadline - t.world.now()).max(TICK_S as f64)).abs() < 1e-6, "{due}");
-}
-
-#[tokio::test]
-async fn an_agent_that_dies_before_done_gets_a_notice_and_no_restart() {
-    let mut t = T::new(false);
-    t.send("task").await;
-    t.world.w().up.remove("job-1");
-    t.tick().await;
-    assert_eq!(t.seat().await.state, State::Empty);
-    assert!(t.world.w().said.iter().any(|(c, x)| c == "N0TEST" && x.contains("ended before its task was done")));
-    assert_eq!(t.world.w().specs.len(), 1);
-    t.send("back?").await;
-    assert_eq!(t.seat().await.job, "job-2");
-}
-
-#[tokio::test]
-async fn after_a_restart_waiting_lines_go_to_the_live_agent() {
-    let mut t = T::new(false);
-    t.send("one").await;
-    let m = t.dm("two");
-    t.seats.store.enqueue("opal", "D0TEST", &m.message_id, "", &line::push_line(&m, "cooperative"), t.world.now()).await;
-    t.restart(false);
-    t.tick().await;
-    assert_eq!(t.world.got("job-1"), ["one", "two"]);
-    assert_eq!(t.world.w().specs.len(), 1);
-}
-
-#[tokio::test]
-async fn paused_seats_record_and_start_nothing_and_unpause_lists_the_chats() {
-    let mut t = T::new(true);
-    t.send("while paused").await;
-    t.send("again").await;
-    assert_eq!(t.seat().await.state, State::Empty);
-    assert!(t.world.w().specs.is_empty() && t.world.w().reacts.is_empty());
-    assert_eq!(t.seats.queued("opal", "D0TEST").await, 0, "nothing to replay");
-    t.restart(false);
-    t.seats.unpause_summary().await;
-    let notice = t.world.w().said.last().unwrap().1.clone();
-    assert!(notice.contains("opal/DM tester: 2 messages") && !notice.contains("while paused"));
-    t.tick().await;
-    assert!(t.world.w().specs.is_empty(), "unpause starts nothing by itself");
-    assert_eq!(t.seat().await.missed, 0);
-}
-
-#[tokio::test]
-async fn an_outside_sender_is_held_until_admitted() {
-    let mut t = T::new(false);
-    let mut m = t.dm("from outside");
-    m.outside = true;
-    t.seats.route(&m).await;
-    t.settle().await;
-    assert!(t.world.w().specs.is_empty());
-    assert!(t.world.w().asked.iter().any(|(k, x)| k == "blocked" && x.contains("seat_admit")));
-    t.seats.admit("opal", "D0TEST").await;
-    assert_eq!(t.world.texts(), ["from outside"]);
-}
-
-#[tokio::test]
-async fn a_missing_scope_holds_the_lines_and_asks() {
-    let mut t = T::new(false);
-    t.world.w().scope_missing = true;
-    t.send("hi").await;
-    assert_eq!(t.seat().await.held, "scope");
-    assert!(t.world.w().asked.iter().any(|(k, x)| k == "blocked" && x.contains("no scope")));
-    t.tick().await;
-    assert!(t.world.w().specs.is_empty());
-    t.world.w().scope_missing = false;
-    t.seats.reset("opal", "D0TEST").await;
-    assert_eq!(t.world.texts(), ["hi"]);
-}
-
-/// A replay of the lost DM of 2026-11-07: the seat's agent had gone, the push was refused as
-/// gone, and the Python dropped the line. Here the line starts the next agent.
-#[tokio::test]
-async fn the_undelivered_dm_of_2026_11_07_reaches_an_agent() {
-    let mut t = T::new(false);
-    let seat = t.seats.declared("opal", "D0TEST", &line::Place { platform: "slack".into(), kind: ChatKind::Dm, person: "tester".into(), ..Default::default() }).await.unwrap();
-    t.seats.adopt(seat, "altair", "hand-started", "").await;
-    t.send("are you there?").await;
-    assert_eq!(t.world.got("job-1"), ["are you there?"]);
-    assert_eq!(t.world.w().reacts.len(), 1);
-}
-
-/// No line is lost or given twice, through refused starts, refused and lost pushes, agents
-/// that die, "cannot tell", and restarts of social.
-#[tokio::test]
-async fn no_line_is_lost_or_doubled_under_faults() {
-    let mut rng_state: u64 = 0x9e37_79b9_7f4a_7c15;
-    let mut rnd = move |n: u64| {
-        rng_state ^= rng_state << 13;
-        rng_state ^= rng_state >> 7;
-        rng_state ^= rng_state << 17;
-        rng_state % n
+fn t() -> T {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = Db::open(&tmp.path().join("social.db")).unwrap();
+    let cfg = SeatsConfig {
+        paused: true,
+        rules: vec![SeatRule { account: "opal".into(), kind: "dm".into(), node: "altair".into(), level: Level::Cooperative, scope: "seats/{slug}".into(), except: vec![] }],
+        chats: vec![SeatChat { account: "opal".into(), channel: "C0TEST".into(), node: "mizar".into(), level: Level::Cooperative, scope: "seats/general".into() }],
+        ..SeatsConfig::default()
     };
-    for _round in 0..3 {
-        let mut t = T::new(false);
-        let mut sent = vec![];
-        for i in 0..40 {
-            match rnd(10) {
-                0 => t.world.w().starts.push_back(Started::Refused("daemon down".into())),
-                1 => t.world.w().down_on_start = rnd(2) == 0,
-                2 => {
-                    let s = t.seat().await;
-                    if s.state == State::Occupied {
-                        t.world.w().up.remove(&s.job);
-                    }
-                }
-                3 => t.world.w().pushes.push_back(Outcome::Retry("busy".into())),
-                4 => t.world.w().cannot_tell = rnd(2) == 0,
-                5 => t.restart(false),
-                6 => t.world.advance(rnd(400) as f64),
-                _ => {}
-            }
-            let text = format!("m{i:02}");
-            t.send(&text).await;
-            sent.push(text);
-            if rnd(3) == 0 {
-                t.tick().await;
-            }
-        }
-        {
-            let mut w = t.world.0.lock().unwrap();
-            w.starts.clear();
-            w.pushes.clear();
-            w.down_on_start = false;
-            w.cannot_tell = false;
-        }
-        for _ in 0..40 {
-            t.world.advance(store::HOLD_S / 4.0);
-            t.tick().await;
-            if t.seats.queued("opal", "D0TEST").await == 0 && t.seat().await.state == State::Occupied {
-                break;
-            }
-        }
-        let mut got = t.world.texts();
-        got.sort();
-        assert_eq!(got, sent, "every line once");
-    }
+    let accounts = vec![AccountConfig { name: "opal".into(), platform: "slack".into(), ..Default::default() }];
+    T { seats: Seats::new(db, cfg, accounts), _tmp: tmp }
 }
 
-// -- the Remote Control switch and the social/seats event (trilium CONTRACT.md) --
-
-#[tokio::test]
-async fn a_seat_starts_off_and_its_agent_follows_the_switch() {
-    let mut t = T::new(false);
-    t.send("first").await;
-    assert_eq!(t.world.w().specs[0]["remote_control"], false, "a seat starts with Remote Control off");
-    let s = t.seat().await;
-    assert_eq!((s.state, s.remote_control, s.rc_url.as_str()), (State::Occupied, false, ""));
-
-    let (s, live) = t.seats.set_remote_control("opal", "D0TEST", true).await.unwrap();
-    assert_eq!(live, Live::Applied);
-    assert_eq!(t.world.w().switched, [("job-1".to_string(), true, "seat:slack-dm-tester".to_string())], "the session name with each / as -");
-    assert_eq!(s.rc_url, "https://claude.ai/code/job-1");
-    assert_eq!(t.seat().await.rc_url, "https://claude.ai/code/job-1");
-
-    t.seats.set_remote_control("opal", "D0TEST", false).await.unwrap();
-    assert_eq!(t.seat().await.rc_url, "", "off clears the link");
-    t.seats.set_remote_control("opal", "D0TEST", true).await.unwrap();
-
-    t.world.w().up.clear();
-    t.tick().await;
-    let s = t.seat().await;
-    assert_eq!((s.state, s.remote_control, s.rc_url.as_str()), (State::Empty, true, ""), "the switch holds across an empty spell");
-    t.send("again").await;
-    assert_eq!(t.world.w().specs.last().unwrap()["remote_control"], true, "the next agent starts with it");
-    assert_eq!(t.seat().await.rc_url, "https://claude.ai/code/job-2", "an agent that comes up on reports its link");
+fn dm(id: &str) -> Inbound {
+    Inbound { account: "opal".into(), platform: "slack".into(), channel_id: "D0TEST".into(), kind: ChatKind::Dm, sender_id: "U0".into(), sender_name: "tester".into(), message_id: id.into(), text: "hi".into(), to_holder: true, ..Default::default() }
 }
 
 #[tokio::test]
-async fn an_empty_seat_switches_without_a_call_and_a_restart_keeps_it() {
-    let mut t = T::new(true);
-    t.send("while paused").await;
-    let (_, live) = t.seats.set_remote_control("opal", "D0TEST", true).await.unwrap();
-    assert_eq!(live, Live::None);
-    assert!(t.world.w().switched.is_empty(), "no session to switch");
-    t.restart(false);
-    assert!(t.seat().await.remote_control);
-    assert!(t.seats.set_remote_control("opal", "D0NONE", true).await.is_none(), "no such seat");
+async fn a_message_waits_for_its_host_and_a_resynced_copy_is_routed_once() {
+    let t = t();
+    assert_eq!(t.seats.route(&dm("1.0")).await, Routed::Seat);
+    let mut again = dm("1.0");
+    again.resynced = true;
+    assert_eq!(t.seats.route(&again).await, Routed::Duplicate);
+    let reply = t.seats.pull("altair", 0, 0.0).await;
+    assert_eq!(reply["rows"].as_array().unwrap().len(), 1, "one line for one message");
+    let row = &reply["rows"][0];
+    assert_eq!((row["kind"].as_str(), row["line"].as_str(), row["new"].as_bool()), (Some("line"), Some("[slack/DM/tester, cooperative] hi"), Some(true)));
+    assert_eq!((row["seat"]["node"].as_str(), row["seat"]["scope"].as_str(), row["seat"]["brief"].as_str()), (Some("altair"), Some("seats/tester"), Some("briefs/slack-slack.md")));
+    assert_eq!(reply["settings"]["paused"], true);
+    assert!(t.seats.pull("mizar", 0, 0.0).await["rows"].as_array().unwrap().is_empty(), "another host's row is not mine");
 }
 
 #[tokio::test]
-async fn a_failed_live_switch_keeps_the_setting() {
-    let mut t = T::new(false);
-    t.send("first").await;
-    t.world.w().switch_fails = true;
-    let (s, live) = t.seats.set_remote_control("opal", "D0TEST", true).await.unwrap();
-    assert_eq!(live, Live::Failed("no such session".into()));
-    assert!(s.remote_control && t.seat().await.remote_control);
+async fn a_row_is_resent_until_its_host_acks_it() {
+    let t = t();
+    t.seats.route(&dm("1.0")).await;
+    t.seats.route(&dm("2.0")).await;
+    let first = t.seats.pull("altair", 0, 0.0).await;
+    let again = t.seats.pull("altair", 0, 0.0).await;
+    assert_eq!(first["rows"], again["rows"], "the answer may have been lost");
+    let id = first["rows"][0]["id"].as_i64().unwrap();
+    let rest = t.seats.pull("altair", id, 0.0).await;
+    assert_eq!(rest["rows"].as_array().unwrap().len(), 1, "an ack clears only through its id");
+    assert!(t.seats.pull("altair", rest["rows"][0]["id"].as_i64().unwrap(), 0.0).await["rows"].as_array().unwrap().is_empty());
 }
 
 #[tokio::test]
-async fn live_mounts_on_declared_chats_become_adopted_seats() {
-    let t = T::new(true);
-    let dm = |ch: &str, job: &str| crate::db::Mount { account: "opal".into(), channel_id: ch.into(), channel_name: "".into(), node: "altair".into(), job: job.into(), session_name: "s".into(), mounted_at: "".into() };
-    let place = |kind| line::Place { platform: "slack".into(), kind, person: "tester".into(), chat_name: "general".into(), ..Default::default() };
-    t.db.mount(dm("D0TEST", "agent-a")).await.unwrap();
-    t.db.mount(dm("C0OTHER", "hand")).await.unwrap();
-    let n = t.seats.adopt_mounts(vec![(dm("D0TEST", "agent-a"), place(ChatKind::Dm)), (dm("C0OTHER", "hand"), place(ChatKind::Channel))]).await;
-    assert_eq!(n, 1, "only the declared chat is a seat");
-    let s = t.seat().await;
-    assert_eq!((s.state, s.job.as_str(), s.adopted), (State::Occupied, "agent-a", true));
-    assert!(t.seats.store.get("opal", "C0OTHER").await.is_none(), "an undeclared mount stays a hand mount");
-    assert_eq!(t.seats.adopt_mounts(vec![(dm("D0TEST", "agent-a"), place(ChatKind::Dm))]).await, 0, "once");
+async fn a_held_pull_answers_when_a_row_arrives_and_an_empty_one_at_its_wait() {
+    let t = t();
+    let seats = t.seats.clone();
+    let started = std::time::Instant::now();
+    let held = tokio::spawn(async move { seats.pull("altair", 0, 30.0).await });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    t.seats.route(&dm("1.0")).await;
+    assert_eq!(held.await.unwrap()["rows"].as_array().unwrap().len(), 1);
+    assert!(started.elapsed() < Duration::from_secs(10), "the row woke it");
+    assert!(t.seats.pull("mizar", 0, 0.05).await["rows"].as_array().unwrap().is_empty());
 }
 
 #[tokio::test]
-async fn adoption_keeps_the_live_session_on_and_calls_no_reflection() {
-    let t = T::new(true);
-    let m = crate::db::Mount { account: "opal".into(), channel_id: "D0TEST".into(), channel_name: "".into(), node: "altair".into(), job: "agent-a".into(), session_name: "s".into(), mounted_at: "".into() };
-    t.world.w().up.insert("agent-a".into());
-    let place = line::Place { platform: "slack".into(), kind: ChatKind::Dm, person: "tester".into(), ..Default::default() };
-    t.seats.adopt_mounts(vec![(m, place)]).await;
-    let s = t.seat().await;
-    assert_eq!((s.state, s.remote_control, s.rc_url.as_str()), (State::Occupied, true, "https://claude.ai/code/agent-a"));
-    assert!(t.world.w().switched.is_empty(), "the live session is untouched");
-    let general = t.seats.declared("opal", "C0TEST", &line::Place { platform: "slack".into(), server: "Test Lab".into(), kind: ChatKind::Channel, chat_name: "general".into(), ..Default::default() }).await.unwrap();
-    assert!(!general.remote_control, "a seat empty at adoption starts off");
+async fn an_applied_outbox_row_is_not_applied_again_and_a_new_epoch_starts_over() {
+    let t = t();
+    let store = &t.seats.store;
+    assert!(store.fresh("altair", "e1", 5).await);
+    store.applied("altair", "e1", 5).await;
+    assert!(!store.fresh("altair", "e1", 5).await, "a replay");
+    assert!(!store.fresh("altair", "e1", 4).await);
+    assert!(store.fresh("altair", "e1", 6).await);
+    assert!(store.fresh("altair", "e2", 1).await, "a rebuilt host database");
+    assert!(store.fresh("mizar", "e1", 1).await, "marks are per host");
 }
 
 #[tokio::test]
-async fn a_paused_occupied_seat_still_delivers() {
-    let mut t = T::new(true);
-    let seat = t.seats.declared("opal", "D0TEST", &line::Place { platform: "slack".into(), kind: ChatKind::Dm, person: "tester".into(), ..Default::default() }).await.unwrap();
-    t.world.w().up.insert("agent-k".into());
-    t.seats.adopt(seat, "altair", "agent-k", "").await;
-    t.send("to the adopted seat").await;
-    assert_eq!(t.world.got("agent-k"), ["to the adopted seat"]);
+async fn a_report_fills_what_seats_shows_and_a_change_is_flagged_once() {
+    let t = t();
+    t.seats.route(&dm("1.0")).await;
+    let store = &t.seats.store;
+    let report = json!({"state": "occupied", "id": "opal/D0TEST", "queued": 2});
+    assert!(store.mirror("opal", "D0TEST", "occupied", "j1", true, "u", report.clone()).await);
+    assert!(!store.mirror("opal", "D0TEST", "occupied", "j1", true, "u", report.clone()).await, "nothing evented changed");
+    let seat = store.get("opal", "D0TEST").await.unwrap();
+    assert_eq!((seat.public(), seat.job.as_str()), (report, "j1"));
+    assert!(!store.mirror("opal", "NOSEAT", "occupied", "j", false, "", json!({})).await);
 }
 
 #[tokio::test]
-async fn a_forward_queues_a_line_and_grants_a_day_of_reads() {
-    let mut t = T::new(false);
-    let target = t.seats.declared("opal", "C0TEST", &line::Place { platform: "slack".into(), server: "Test Lab".into(), kind: ChatKind::Channel, chat_name: "general".into(), ..Default::default() }).await.unwrap();
-    t.seats.forward(target, ("opal", "D0TEST"), "[forwarded] look at this").await;
-    for _ in 0..20 {
-        tokio::task::yield_now().await;
-    }
-    t.tick().await;
-    assert_eq!(t.seats.store.get("opal", "C0TEST").await.unwrap().state, State::Occupied);
-    let now = t.world.now();
+async fn a_forward_queues_a_line_for_the_target_host_and_grants_a_day_of_reads() {
+    let t = t();
+    let target = t.seats.declared("opal", "C0TEST", &Place { platform: "slack".into(), server: "Lab".into(), kind: ChatKind::Channel, chat_name: "general".into(), ..Default::default() }).await.unwrap();
+    t.seats.forward(&target, ("opal", "D0TEST"), "[forwarded] look").await;
+    let rows = t.seats.store.waiting("mizar", 10).await;
+    assert_eq!((rows[0].kind.as_str(), rows[0].line.as_str()), ("line", "[forwarded] look"));
+    let now = crate::db::now();
     assert_eq!(t.seats.store.reads(vec![("opal".into(), "C0TEST".into())], "opal", now).await, ["D0TEST"]);
     assert!(t.seats.store.reads(vec![("opal".into(), "C0TEST".into())], "opal", now + READ_S + 1.0).await.is_empty());
-    let _ = t.dm("x");
 }

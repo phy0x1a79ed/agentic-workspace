@@ -1,0 +1,26 @@
+# The chat seats this node hosts. social on alcor owns the chats and which node each seat runs
+# on. This plugin starts each seat's agent here, and opens the connection to social itself.
+[plugin]
+name = "seats"
+version = "0.1.0"
+
+[[service]]
+name = "seats"
+run = "run.sh"
+
+[[tool]]
+name = "seats"
+major = 1
+service = "seats"
+tier = "on"
+
+# social is reached through its door, and a link that is down only delays lines.
+[needs]
+secrets = []
+network = []
+platform = ["linux"]
+
+[[needs.tool]]
+name = "reflection"
+major = 1
+verbs = ["message", "list_other", "session_of", "start_other"]

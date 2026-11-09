@@ -1184,6 +1184,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "awm-plugin-seats"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "awm-plugin-sdk",
+ "chrono",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "awm-plugin-social"
 version = "0.1.0"
 dependencies = [

@@ -1,6 +1,6 @@
 [package]
 name = "awm-plugin-social"
-description = "Chat accounts, cloud buckets and the seats that keep an agent on each chat."
+description = "Chat accounts, cloud buckets and the queue each seat host pulls."
 version.workspace = true
 edition.workspace = true
 license.workspace = true

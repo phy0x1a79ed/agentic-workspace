@@ -28,7 +28,7 @@ pub const MAX_INLINE_BYTES: u64 = 24 << 20;
 pub const MAX_REQUEST_BYTES: usize = 64 << 20;
 
 /// The verbs whose `file` argument is a path on the caller's node: `(tool, verb)`.
-const FILE_VERBS: &[(&str, &str)] = &[("social", "send")];
+const FILE_VERBS: &[(&str, &str)] = &[("social", "send"), ("seats", "send")];
 
 /// Read the local file a verb in [`FILE_VERBS`] names, and carry its bytes in `files` instead.
 /// `name` and `args` are the `/invoke` body: a tool with a `{verb, args}` envelope, or a flat `<tool>_<verb>`.

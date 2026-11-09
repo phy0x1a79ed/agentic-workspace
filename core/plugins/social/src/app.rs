@@ -223,7 +223,12 @@ impl Social {
         }
         if let Some(held) = self.db.holder(&m.account, &m.channel_id).await {
             let level = self.account(&m.account).map(|a| a.level_of(&m.channel_id)).unwrap_or(Level::Untrusted);
-            self.pusher().push(&held.node, &held.job, &line::push_line(&m, level.as_str()));
+            let text = line::push_line(&m, level.as_str());
+            if self.seats.is_host(&held.node) {
+                self.seats.hand(&held.node, &held.job, &text).await;
+            } else {
+                self.pusher().push(&held.node, &held.job, &text);
+            }
         }
     }
 
@@ -241,11 +246,9 @@ impl Social {
 
     // -- who calls ------------------------------------------------------------------
 
-    /// The calling session as a holder. A seat's agent that calls is up.
+    /// The calling session as a holder.
     async fn holder(&self, call: &Call) -> Result<Holder, holders::HolderError> {
-        let h = holders::caller(call, "a seat").await?;
-        self.seats.touch(&h.node, &h.job).await;
-        Ok(h)
+        holders::caller(call, "a seat").await
     }
 
     /// The chats of `account` the caller may read and answer, or None for no bound.
@@ -590,10 +593,7 @@ impl Social {
         let held: HashMap<String, Mount> = self.db.mounts(Some(&account)).await.into_iter().map(|m| (m.channel_id.clone(), m)).collect();
         let mut out = vec![];
         for c in conn.list_seats().await? {
-            let seat = match self.seats.store.get(&account, &c.id).await {
-                Some(st) => Some(st.public(self.seats.queued(&account, &c.id).await)),
-                None => None,
-            };
+            let seat = self.seats.store.get(&account, &c.id).await.map(|st| st.public());
             let mut row = chan(&c);
             row["holder"] = held.get(&c.id).map(Mount::holder).unwrap_or(Value::Null);
             row["seat"] = seat.unwrap_or(Value::Null);
@@ -634,14 +634,6 @@ impl Social {
         Err(format!("reflection on {node} does not list job {job}"))
     }
 
-    /// A job's level from reflection's rows on its node, or None when it does not say.
-    async fn job_level(&self, node: &str, job: &str) -> Option<Level> {
-        let peer = (node != self.here).then(|| node.to_string());
-        let opts = CallOpts { peer, timeout: Duration::from_secs(30), ..CallOpts::default() };
-        let out = self.hub.call_with("reflection", "list_other", json!({}), &opts).await.ok()?;
-        out.get("sessions")?.as_array()?.iter().find(|r| s(r, "job") == job).and_then(|r| ["trust", "level"].iter().find_map(|k| r.get(*k).and_then(Value::as_str)).and_then(|t| t.parse().ok()))
-    }
-
     pub async fn mount(&self, call: Call) -> Result<Value, VerbError> {
         let account = s(&call.args, "account");
         let conn = self.conn(&account)?;
@@ -665,14 +657,17 @@ impl Social {
             return Ok(json!({"ok": false, "error": format!("{label}: {why}")}));
         }
         let place = self.place(&account, &seat);
-        let row = self.db.mount(Mount { account: account.clone(), channel_id: seat.id.clone(), channel_name: seat.name.clone(), node: who.node.clone(), job: who.job.clone(), session_name: who.name.clone(), mounted_at: String::new() }).await.map_err(|e| VerbError::runtime(e.to_string()))?;
-        self.watch_node(&who.node);
         let declared = match self.seats.store.get(&account, &seat.id).await {
             Some(st) => Some(st),
             None => self.seats.declared(&account, &seat.id, &place).await,
         };
-        if let Some(st) = declared {
-            self.seats.adopt(st, &who.node, &who.job, &who.name).await;
+        if let Some(host) = declared.as_ref().map(|st| &st.node).filter(|n| **n != who.node) {
+            return Ok(json!({"ok": false, "error": format!("{label} is a seat hosted on {host}: mount it from a session there")}));
+        }
+        let row = self.db.mount(Mount { account: account.clone(), channel_id: seat.id.clone(), channel_name: seat.name.clone(), node: who.node.clone(), job: who.job.clone(), session_name: who.name.clone(), mounted_at: String::new() }).await.map_err(|e| VerbError::runtime(e.to_string()))?;
+        self.watch_node(&who.node);
+        if let Some(st) = &declared {
+            self.seats.adopt(st, &who.job, &who.name).await;
         }
         if let Some(e) = &evicted {
             self.pusher().push(&e.node, &e.job, &format!("{} seat lost: {label} is now held by {}. Nothing more from it reaches you.", conn.platform(), holder_label(&row)));
@@ -716,19 +711,11 @@ impl Social {
         }
         for m in &rows {
             self.db.unmount(&account, &m.channel_id).await;
-            self.seats.released(&account, &m.channel_id, &m.node, &m.job).await;
+            if let Some(st) = self.seats.store.get(&account, &m.channel_id).await {
+                self.seats.released(&st, &m.job).await;
+            }
         }
         Ok(json!({"ok": true, "released": rows.iter().map(|m| json!({"id": m.channel_id, "name": m.channel_name})).collect::<Vec<_>>()}))
-    }
-
-    pub async fn mark_seat_done(&self, call: Call) -> Result<Value, VerbError> {
-        let who = self.holder(&call).await.map_err(VerbError::from)?;
-        let marked = self.seats.mark_done(&who.node, &who.job).await;
-        if marked.is_empty() {
-            return Err(VerbError::new("HolderError", "this session is no seat's agent: only a seat's agent marks its task done"));
-        }
-        Ok(json!({"ok": true, "seats": marked.iter().map(|s| json!({"account": s.account, "id": s.channel_id, "name": s.channel_name})).collect::<Vec<_>>(),
-            "next": "social tells you to retire once 4 hours pass with no new message. A new message clears the mark."}))
     }
 
     pub async fn forward(&self, call: Call) -> Result<Value, VerbError> {
@@ -759,52 +746,8 @@ impl Social {
         let original = self.seats.store.line_of(&src_account, &src_channel, &message_id).await.unwrap_or_else(|| format!("message {message_id}"));
         let note = s(&call.args, "note");
         let line = format!("[forwarded by the agent of {src_channel}] {original}{}", if note.is_empty() { String::new() } else { format!(" \u{2014} {note}") });
-        self.seats.forward(target.clone(), (&src_account, &src_channel), &line).await;
-        Ok(json!({"ok": true, "to": {"account": account, "id": chat.id, "name": chat.name, "state": target.state.as_str()}, "reads": {"account": src_account, "channel": src_channel, "hours": 24}}))
-    }
-
-    async fn trusted_seat(&self, call: &Call) -> Result<crate::seats::store::Seat, VerbError> {
-        if level_of(call) != Level::Trusted {
-            return Err(VerbError::permission(format!("{}: only a trusted session runs this", call.verb)));
-        }
-        let (account, channel) = (s(&call.args, "account"), s(&call.args, "channel"));
-        self.seats.store.get(&account, &channel).await.ok_or_else(|| VerbError::value(format!("{account}/{channel} is no seat social has seen; `seats` lists them")))
-    }
-
-    pub async fn seat_reset(&self, call: Call) -> Result<Value, VerbError> {
-        let seat = self.trusted_seat(&call).await?;
-        let st = self.seats.reset(&seat.account, &seat.channel_id).await.unwrap_or(seat);
-        Ok(json!({"ok": true, "seat": st.public(self.seats.queued(&st.account, &st.channel_id).await)}))
-    }
-
-    pub async fn seat_admit(&self, call: Call) -> Result<Value, VerbError> {
-        let seat = self.trusted_seat(&call).await?;
-        let st = self.seats.admit(&seat.account, &seat.channel_id).await.unwrap_or(seat);
-        Ok(json!({"ok": true, "seat": st.public(self.seats.queued(&st.account, &st.channel_id).await)}))
-    }
-
-    pub async fn seat_adopt(&self, call: Call) -> Result<Value, VerbError> {
-        if level_of(&call) != Level::Trusted {
-            return Err(VerbError::permission("seat_adopt: only a trusted session runs this"));
-        }
-        let (account, channel, job) = (s(&call.args, "account"), s(&call.args, "channel"), s(&call.args, "job"));
-        let conn = self.conn(&account)?;
-        let seat = match self.seats.store.get(&account, &channel).await {
-            Some(st) => st,
-            None => {
-                let chat = self.find_seat(&conn, &channel).await.map_err(VerbError::value)?;
-                self.seats.declared(&account, &chat.id, &self.place(&account, &chat)).await.ok_or_else(|| VerbError::value(format!("{channel:?} is no seat: [seats] in social.toml declares none there")))?
-            }
-        };
-        let node = Some(s(&call.args, "node")).filter(|n| !n.is_empty()).unwrap_or_else(|| seat.node.clone());
-        let seat_level: Level = seat.level.parse().unwrap_or(Level::Untrusted);
-        match self.job_level(&node, &job).await {
-            Some(l) if l < seat_level => return Err(VerbError::permission(format!("job {job} runs at {}, below the seat's {}", l.as_str(), seat_level.as_str()))),
-            None if seat_level == Level::Trusted => return Err(VerbError::permission(format!("job {job}'s level cannot be read on {node}, and the seat is trusted"))),
-            _ => {}
-        }
-        let st = self.seats.adopt(seat, &node, &job, "").await;
-        Ok(json!({"ok": true, "seat": st.public(self.seats.queued(&st.account, &st.channel_id).await)}))
+        self.seats.forward(&target, (&src_account, &src_channel), &line).await;
+        Ok(json!({"ok": true, "to": {"account": account, "id": chat.id, "name": chat.name, "state": target.state}, "reads": {"account": src_account, "channel": src_channel, "hours": 24}}))
     }
 
     /// The Remote Control switch on Ops: operations on this node is the one caller.
@@ -818,8 +761,158 @@ impl Social {
         }
         let on = truthy(call.args.get("on"));
         let (account, channel) = seat.split_once('/').filter(|(a, c)| !a.is_empty() && !c.is_empty()).ok_or_else(|| VerbError::value(format!("seat {seat:?} is not <account>/<channel_id>")))?;
-        let (st, live) = self.seats.set_remote_control(account, channel, on).await.ok_or_else(|| VerbError::value(format!("{seat} is no seat social has seen; `seats` lists them")))?;
-        Ok(json!({"ok": true, "seat": st.id(), "remote_control": st.remote_control, "live": live.as_str()}))
+        let st = self.seats.store.get(account, channel).await.ok_or_else(|| VerbError::value(format!("{seat} is no seat social has seen; `seats` lists them")))?;
+        self.seats.set_remote_control(&st, on).await;
+        Ok(json!({"ok": true, "seat": st.id(), "remote_control": on, "live": "pending"}))
+    }
+
+    // -- the seat hosts ---------------------------------------------------------------
+
+    /// The node a seat host's call speaks for: the door's stamp, and no session's word.
+    fn seat_host(&self, call: &Call) -> Result<String, VerbError> {
+        if call.caller_claim().is_some() || call.caller_session_id().is_some() {
+            return Err(VerbError::permission(format!("{}: only a node's seats plugin calls this", call.verb)));
+        }
+        Ok(call.peer_node().unwrap_or(&self.here).to_string())
+    }
+
+    pub async fn seat_pull(&self, call: Call) -> Result<Value, VerbError> {
+        let node = self.seat_host(&call)?;
+        Ok(self.seats.pull(&node, int(call.args.get("ack_through"), 0), call.args.get("wait_s").and_then(Value::as_f64).unwrap_or(0.0)).await)
+    }
+
+    /// One row of a host's outbox, applied once however often it is sent.
+    pub async fn seat_report(&self, call: Call) -> Result<Value, VerbError> {
+        let node = self.seat_host(&call)?;
+        let (epoch, id, kind) = (s(&call.args, "epoch"), int(call.args.get("id"), 0), s(&call.args, "kind"));
+        if !self.seats.store.fresh(&node, &epoch, id).await {
+            return Ok(json!({"ok": true, "duplicate": true}));
+        }
+        let body = call.args.get("body").cloned().unwrap_or(Value::Null);
+        let out = self.apply_report(&node, &kind, &body).await;
+        if out.get("retry") != Some(&json!(true)) {
+            self.seats.store.applied(&node, &epoch, id).await;
+        }
+        Ok(out)
+    }
+
+    /// Whether `node` hosts this chat's seat or holds it by hand.
+    async fn answers(&self, node: &str, account: &str, channel: &str) -> bool {
+        self.seats.store.get(account, channel).await.is_some_and(|st| st.node == node) || self.db.holder(account, channel).await.is_some_and(|m| m.node == node)
+    }
+
+    async fn apply_report(&self, node: &str, kind: &str, b: &Value) -> Value {
+        let ok = json!({"ok": true});
+        let (account, channel) = (s(b, "account"), Some(s(b, "channel")).filter(|c| !c.is_empty()).unwrap_or_else(|| s(b, "channel_id")));
+        match kind {
+            "seat" => {
+                if self.seats.store.mirror(&account, &channel, &s(b, "state"), &s(b, "job"), truthy(b.get("remote_control")), &s(b, "rc_url"), b["public"].clone()).await {
+                    self.emit("seats", b["event"].clone());
+                }
+                ok
+            }
+            "send" => {
+                if !self.answers(node, &account, &channel).await {
+                    return json!({"ok": false, "error": format!("{node} does not answer {account}/{channel}")});
+                }
+                self.seat_send(&account, &channel, b).await
+            }
+            "react" => {
+                if self.answers(node, &account, &channel).await {
+                    if let Ok(conn) = self.conn(&account) {
+                        if let Err(e) = conn.react(&channel, &s(b, "message_id"), &s(b, "emoji"), false).await {
+                            tracing::info!("seat react on {account}/{channel} failed: {}", e.message);
+                        }
+                    }
+                }
+                ok
+            }
+            "notice" => {
+                match self.seats.cfg.notice_for(&self.accounts) {
+                    Some(n) => match self.conn(&n.account) {
+                        Ok(conn) => {
+                            if let Err(e) = conn.send(&n.channel, &format!("{}{}", crate::seats::NOTICE, s(b, "text")), None, &[]).await {
+                                tracing::warn!("a seat notice did not go out: {}", e.message);
+                            }
+                        }
+                        Err(e) => tracing::warn!("a seat notice did not go out: {}", e.message),
+                    },
+                    None => tracing::warn!("no notice chat for: {}", s(b, "text")),
+                }
+                ok
+            }
+            "ask" => {
+                let ask_kind = s(b, "kind");
+                let args = if ask_kind == "review" { json!({"kind": ask_kind, "summary": s(b, "text")}) } else { json!({"kind": ask_kind, "reason": s(b, "text")}) };
+                if let Err(e) = self.hub.call("operations", "request_human", args, None).await {
+                    tracing::warn!("request_human ({ask_kind}) failed: {e}");
+                }
+                ok
+            }
+            "tag" => {
+                let _ = self.hub.call("journal", "tag_add", json!({"name": s(b, "name"), "description": s(b, "description")}), None).await;
+                ok
+            }
+            "mount" => {
+                let m = Mount { account, channel_id: channel, channel_name: s(b, "channel_name"), node: node.to_string(), job: s(b, "job"), session_name: s(b, "session_name"), mounted_at: String::new() };
+                if let Err(e) = self.db.mount(m).await {
+                    tracing::warn!("seat mount failed: {e}");
+                }
+                ok
+            }
+            "unmount" => {
+                let job = s(b, "job");
+                if self.db.holder(&account, &channel).await.is_some_and(|m| m.node == node && m.job == job) {
+                    self.db.unmount(&account, &channel).await;
+                }
+                ok
+            }
+            "line" => {
+                self.seats.store.set_line(node, &s(b, "job"), &account, &channel, &s(b, "thread_id"), &s(b, "message_id"), now()).await;
+                ok
+            }
+            "live" => {
+                let jobs: HashSet<&str> = b["jobs"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+                let held: BTreeSet<String> = self.db.mounts(None).await.into_iter().filter(|m| m.node == node && !jobs.contains(m.job.as_str())).map(|m| m.job).collect();
+                for job in held {
+                    for m in self.db.release_holder(node, &job).await {
+                        tracing::info!("released seat {}/{}: holder {} is gone", m.account, m.channel_id, holder_label(&m));
+                    }
+                }
+                ok
+            }
+            other => {
+                tracing::warn!("{node} reported a row of unknown kind {other:?}");
+                ok
+            }
+        }
+    }
+
+    /// A seat agent's reply. Only a refusal that a resend cannot change drops it.
+    async fn seat_send(&self, account: &str, channel: &str, b: &Value) -> Value {
+        let conn = match self.conn(account) {
+            Ok(c) => c,
+            Err(e) => return json!({"ok": false, "error": e.message, "retry": true}),
+        };
+        let files: Vec<OutFile> = match b.get("files") {
+            Some(Value::Array(a)) => match a.iter().map(OutFile::from_value).collect() {
+                Ok(f) => f,
+                Err(e) => return json!({"ok": false, "error": VerbError::from(e).message}),
+            },
+            _ => vec![],
+        };
+        let thread = Some(s(b, "thread")).filter(|t| !t.is_empty());
+        match conn.send(channel, &s(b, "text"), thread.as_deref(), &files).await {
+            Ok(sent) => {
+                let mut out = serde_json::Map::from_iter([("ok".to_string(), json!(true))]);
+                out.extend(sent);
+                Value::Object(out)
+            }
+            Err(e) => {
+                let final_refusal = ["ValueError", "PermissionError", "FirstContactRefused", "FileNotFoundError"].contains(&e.error_class.as_str());
+                json!({"ok": false, "error": e.message, "error_class": e.error_class, "retry": !final_refusal})
+            }
+        }
     }
 
     // -- operators -------------------------------------------------------------------
@@ -988,11 +1081,11 @@ impl Social {
 
     // -- background ------------------------------------------------------------------
 
-    /// Release every hand mount whose holder's job is gone. Seats look after their own.
+    /// Release every hand mount whose holder's job is gone. A seat host reports its own.
     pub async fn prune(&self) -> Vec<Mount> {
         let mut by_node: BTreeMap<String, HashSet<String>> = BTreeMap::new();
         for m in self.db.mounts(None).await {
-            if self.seats.store.get(&m.account, &m.channel_id).await.is_some_and(|s| !s.job.is_empty()) {
+            if self.seats.is_host(&m.node) {
                 continue;
             }
             by_node.entry(m.node).or_default().insert(m.job);
@@ -1007,21 +1100,20 @@ impl Social {
         freed
     }
 
-    /// Watch `node`'s sessions: a start or stop there wakes the seats and prunes the hand mounts.
+    /// Watch `node`'s sessions, so a hand mount there is pruned. A seat host reports its own.
     pub fn watch_node(&self, node: &str) {
-        if let Some(w) = self.watch.get() {
+        if let (Some(w), false) = (self.watch.get(), self.seats.is_host(node)) {
             w.ensure(node);
         }
     }
 
-    /// Start watching reflection on this node, on every node a seat or a mount lives on.
+    /// Start watching reflection on this node, and on every node a hand mount lives on.
     pub async fn watch_sessions(self: &Arc<Self>) {
         let me = Arc::downgrade(self);
         let watch = awm_plugin_sdk::sessions::SessionWatch::new(self.hub.clone(), "social", move |_node| {
             let me = me.clone();
             async move {
                 let Some(me) = me.upgrade() else { return };
-                me.seats.wake();
                 for m in me.prune().await {
                     tracing::info!("released seat {}/{}: holder {} is gone", m.account, m.channel_id, holder_label(&m));
                 }
@@ -1029,30 +1121,9 @@ impl Social {
         });
         let _ = self.watch.set(watch);
         let mut nodes: BTreeSet<String> = BTreeSet::from([self.here.clone()]);
-        nodes.extend(self.seats.cfg.rules.iter().map(|r| r.node.clone()));
-        nodes.extend(self.seats.cfg.chats.iter().map(|c| c.node.clone()));
         nodes.extend(self.db.mounts(None).await.into_iter().map(|m| m.node));
-        nodes.extend(self.seats.store.all().await.into_iter().map(|s| s.job_node).filter(|n| !n.is_empty()));
         for n in nodes {
             self.watch_node(&n);
         }
-    }
-
-    /// At start: the live mounts on declared chats become their seats' agents.
-    pub async fn adopt_mounts(&self) {
-        let mut found = vec![];
-        let mounts = self.db.mounts(None).await;
-        let mut lists: HashMap<String, Vec<Channel>> = HashMap::new();
-        for m in mounts {
-            if !lists.contains_key(&m.account) {
-                let Ok(conn) = self.conn(&m.account) else { continue };
-                lists.insert(m.account.clone(), conn.list_seats().await.unwrap_or_default());
-            }
-            let Some(c) = lists[&m.account].iter().find(|c| c.id == m.channel_id).cloned() else { continue };
-            let place = self.place(&m.account, &c);
-            found.push((m, place));
-        }
-        let n = self.seats.adopt_mounts(found).await;
-        tracing::info!("{n} live mount(s) adopted as seat agents");
     }
 }

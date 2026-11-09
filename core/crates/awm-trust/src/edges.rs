@@ -60,9 +60,13 @@ impl<'de> Deserialize<'de> for Edge {
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct Node {
     pub role: String,
-    /// `false` marks a node that runs no awm. Absent is not `false`.
+    /// `false` marks a node outside Ansible's coverage. Absent is not `false`.
     #[serde(default)]
     pub managed: Option<bool>,
+    /// `true` marks an unmanaged node that runs awm. An unmanaged node without it is never dialed,
+    /// which keeps a call off the HPC login nodes, where failed logins lock the account.
+    #[serde(default)]
+    pub runs_awm: Option<bool>,
     #[serde(default)]
     pub addresses: BTreeMap<String, Option<String>>,
     /// The node does not exist yet. Nothing it names takes effect.
@@ -172,9 +176,9 @@ impl EdgeList {
         self.nodes.get(node).is_some_and(|n| n.role == "retiring")
     }
 
-    /// Whether `node` is marked `managed: false`: it runs no awm, so no call dials it.
+    /// Whether `node` is unmanaged and not marked `runs_awm: true`, so no call dials it.
     pub fn runs_no_awm(&self, node: &str) -> bool {
-        self.nodes.get(node).is_some_and(|n| n.managed == Some(false))
+        self.nodes.get(node).is_some_and(|n| n.managed == Some(false) && n.runs_awm != Some(true))
     }
 
     /// The nodes `src` may dial: its edges, less every retiring node and every node that runs no awm.
@@ -334,13 +338,14 @@ singletons:
     #[test]
     fn a_node_that_runs_no_awm_is_not_dialable() {
         let e = EdgeList::parse(
-            "nodes:\n  home: {role: homebase, managed: true}\n  hpc: {role: station, managed: false}\n  work: {role: work}\n\
-             edges:\n  home: {hpc: internet, work: lan}\n",
+            "nodes:\n  home: {role: homebase, managed: true}\n  hpc: {role: station, managed: false}\n  work: {role: work}\n  \
+             lab: {role: work, managed: false, runs_awm: true}\n\
+             edges:\n  home: {hpc: internet, work: lan, lab: tailscale}\n",
         )
         .unwrap();
-        assert!(e.runs_no_awm("hpc") && !e.runs_no_awm("work") && !e.runs_no_awm("home"));
-        assert_eq!(e.reachable_from("home"), vec!["hpc", "work"]);
-        assert_eq!(e.dialable_from("home"), vec!["work"]);
+        assert!(e.runs_no_awm("hpc") && !e.runs_no_awm("work") && !e.runs_no_awm("home") && !e.runs_no_awm("lab"));
+        assert_eq!(e.reachable_from("home"), vec!["hpc", "lab", "work"]);
+        assert_eq!(e.dialable_from("home"), vec!["lab", "work"]);
     }
 
     #[test]

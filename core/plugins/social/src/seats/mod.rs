@@ -1,113 +1,35 @@
-//! The seats: every message in a seated chat goes to that chat's one agent, which social starts
-//! on the seat's node and retires when its task is done (seat-pause DESIGN.md).
-//!
-//! A seat is `empty`, `starting`, `occupied` or `retiring`. Every line goes into the durable
-//! `seat_queue` first, and leaves it only when reflection took it, so no line is lost to a dead
-//! agent, a failed push or a restart of social. Each seat's work runs under its own lock, and
-//! each transition writes the database before it acts. [`Seats::drive`] reconciles one seat
-//! with its queue and the clock, and every event and the tick only call it.
+//! What social knows of the seats. A seat runs on its host's `seats` plugin. Social owns which
+//! node each seated chat belongs to, and a durable queue per host that the host pulls and acks.
+//! alcor has no route to a seat host, so the host opens every connection.
 
 pub mod line;
 pub mod store;
-pub mod world;
 
-use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex};
+use std::collections::HashSet;
+use std::sync::Arc;
+use std::time::Duration;
 
-use async_trait::async_trait;
-use awm_plugin_sdk::push::Outcome;
-use awm_plugin_sdk::Backoff;
 use serde_json::{json, Value};
 
 use crate::config::{AccountConfig, SeatsConfig};
 use crate::connectors::{ChatKind, Inbound};
-use crate::db::{Db, Mount};
+use crate::db::Db;
 use line::Place;
-use store::{Previous, Queued, Seat, State, Store};
+use store::{Row, Seat, Store};
 
-/// Transitions one look at a seat may take before it waits for the next tick.
-const STEPS_PER_LOOK: usize = 3;
-
-/// How long a started agent has to come up.
-pub const UP_S: f64 = 180.0;
-/// How long a done seat's chat stays quiet before its agent is told to retire.
-pub const DONE_S: f64 = 4.0 * 3600.0;
-/// How long a retiring agent has before the next one starts beside it.
-pub const RETIRE_S: f64 = 240.0;
-/// How long one line is retried before the seat counts its agent lost.
-pub const PUSH_RETRY_S: f64 = 120.0;
 /// How long a forward lets the receiving seat read the source chat.
 pub const READ_S: f64 = 24.0 * 3600.0;
-/// The shortest wait before a seat's overdue clock is looked at again.
-pub const TICK_S: u64 = 15;
+/// The longest one pull is held.
+const MAX_WAIT_S: f64 = 55.0;
+/// The most rows one pull carries.
+const PULL_ROWS: i64 = 100;
 
-pub const SHIFT_REPLY: &str = "agent is changing shift, will respond within 5 mins";
-pub const RETIRE_LINE: &str = "social: this seat's task is done and its chat has been quiet for 4 hours. Write your handoff journal, then retire.";
 pub const NOTICE: &str = "social (an automatic notice, not a message from Tony): ";
-
-/// What `start_other` answered.
-#[derive(Debug, Clone, PartialEq)]
-pub enum Started {
-    Job(String),
-    Refused(String),
-}
-
-/// Everything a seat does outside social's own database.
-#[async_trait]
-pub trait World: Send + Sync {
-    fn now(&self) -> f64;
-    async fn sleep(&self, secs: f64);
-    /// `reflection start_other` on `node`.
-    async fn start(&self, node: &str, spec: Value) -> Started;
-    /// `reflection message`: one line typed into `job` on `node`.
-    async fn push(&self, node: &str, job: &str, line: &str) -> Outcome;
-    /// The live jobs on `node`, or None when it cannot tell.
-    async fn live(&self, node: &str) -> Option<HashSet<String>>;
-    /// Whether the seat's scope exists on `node`, or None when it cannot tell.
-    async fn scope_ready(&self, node: &str, project: &str, scope: &str) -> Option<bool>;
-    /// The transcript of a past job, for the next agent's brief.
-    async fn transcript(&self, node: &str, job: &str) -> Option<String>;
-    async fn react(&self, account: &str, channel: &str, message_id: &str, emoji: &str);
-    async fn say(&self, account: &str, channel: &str, thread: Option<&str>, text: &str) -> bool;
-    /// `operations request_human`, kind `blocked` or `review`.
-    async fn ask(&self, kind: &str, text: &str);
-    /// `journal tag_add`, for a person's `user:<slug>` tag.
-    async fn tag(&self, name: &str, description: &str);
-    /// Publish one `social/seats` event.
-    fn emit(&self, _event: Value) {}
-    /// `reflection remote_control` on `job`: its claude.ai link when the answer carries one, or why it failed.
-    async fn remote_control(&self, _node: &str, _job: &str, _on: bool, _name: &str) -> Result<Option<String>, String> {
-        Err("no reflection".into())
-    }
-    /// The live job's claude.ai link, from its `list_other` row.
-    async fn rc_url(&self, _node: &str, _job: &str) -> Option<String> {
-        None
-    }
-}
-
-/// What a switch did to the seat's live session.
-#[derive(Debug, Clone, PartialEq)]
-pub enum Live {
-    /// The seat has no live session to switch.
-    None,
-    Applied,
-    Failed(String),
-}
-
-impl Live {
-    pub fn as_str(&self) -> String {
-        match self {
-            Live::None => "none".into(),
-            Live::Applied => "applied".into(),
-            Live::Failed(why) => format!("failed: {why}"),
-        }
-    }
-}
 
 /// What became of one inbound message.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Routed {
-    /// The chat is a seat, and the seat took the message.
+    /// The chat is a seat, and its host's queue took the message.
     Seat,
     /// The chat is a seat and saw this message before.
     Duplicate,
@@ -115,16 +37,12 @@ pub enum Routed {
     NotSeat,
 }
 
-type Key = (String, String);
-
 pub struct Seats {
     pub store: Store,
-    db: Db,
     pub cfg: SeatsConfig,
     accounts: Vec<AccountConfig>,
-    world: Arc<dyn World>,
-    locks: Mutex<HashMap<Key, Arc<tokio::sync::Mutex<()>>>>,
-    wake: tokio::sync::Notify,
+    hosts: HashSet<String>,
+    arrived: tokio::sync::Notify,
 }
 
 fn kind_str(k: ChatKind) -> &'static str {
@@ -135,50 +53,38 @@ fn kind_str(k: ChatKind) -> &'static str {
     }
 }
 
-fn label(s: &Seat) -> String {
-    let server = if s.kind == "dm" || s.server.is_empty() { s.account.clone() } else { s.server.clone() };
-    let chat = match s.kind.as_str() {
-        "dm" => format!("DM {}", s.slug),
-        "group" => s.channel_name.clone(),
-        _ => format!("#{}", s.channel_name.trim_start_matches('#')),
-    };
-    format!("{server}/{chat}")
+fn kind_of(s: &str) -> ChatKind {
+    match s {
+        "dm" => ChatKind::Dm,
+        "group" => ChatKind::Group,
+        _ => ChatKind::Channel,
+    }
 }
 
 impl Seats {
-    pub fn new(db: Db, cfg: SeatsConfig, accounts: Vec<AccountConfig>, world: Arc<dyn World>) -> Arc<Self> {
-        Arc::new(Self { store: Store(db.clone()), db, cfg, accounts, world, locks: Mutex::new(HashMap::new()), wake: tokio::sync::Notify::new() })
+    pub fn new(db: Db, cfg: SeatsConfig, accounts: Vec<AccountConfig>) -> Arc<Self> {
+        let hosts = cfg.rules.iter().map(|r| r.node.clone()).chain(cfg.chats.iter().map(|c| c.node.clone())).collect();
+        Arc::new(Self { store: Store(db), cfg, accounts, hosts, arrived: tokio::sync::Notify::new() })
     }
 
-    /// Write the row, and publish its `social/seats` event when the save changed one.
-    async fn save(&self, s: &Seat) {
-        if self.store.save(s).await {
-            self.world.emit(s.event(&crate::db::now_iso()));
-        }
-    }
-
-    /// The session name a seat's agent gets: Remote Control writes each `/` as `-` (R146).
-    fn rc_name(s: &Seat) -> String {
-        s.name.replace('/', "-")
-    }
-
-    fn lock(&self, key: &Key) -> Arc<tokio::sync::Mutex<()>> {
-        self.locks.lock().unwrap().entry(key.clone()).or_default().clone()
+    /// Whether `node` hosts seats, so lines for it wait here for its pull.
+    pub fn is_host(&self, node: &str) -> bool {
+        self.hosts.contains(node)
     }
 
     fn platform(&self, account: &str) -> String {
         self.accounts.iter().find(|a| a.name == account).map(|a| a.platform.clone()).unwrap_or_default()
     }
 
-    async fn notice(&self, text: &str) {
-        match self.cfg.notice_for(&self.accounts) {
-            Some(n) => {
-                if !self.world.say(&n.account, &n.channel, None, &format!("{NOTICE}{text}")).await {
-                    tracing::warn!("a seat notice did not go out: {text}");
-                }
-            }
-            None => tracing::warn!("no notice chat for: {text}"),
-        }
+    /// What a host needs to know of a seat, with the labels only social can work out.
+    fn decl(&self, s: &Seat) -> Value {
+        let platform = self.platform(&s.account);
+        let place = Place { platform: platform.clone(), server: s.server.clone(), kind: kind_of(&s.kind), chat_name: s.channel_name.clone(), person: s.slug.clone() };
+        json!({
+            "account": s.account, "channel_id": s.channel_id, "channel_name": s.channel_name, "kind": s.kind, "server": s.server, "slug": s.slug,
+            "node": s.node, "scope": s.scope, "level": s.level, "platform": platform, "name": s.name,
+            "server_label": place.server_label(), "chat_label": place.chat_label(), "brief": line::brief_file(&place, &s.level),
+        })
     }
 
     /// The seat this message's chat is: its row, or a new one when the config declares it.
@@ -191,7 +97,7 @@ impl Seats {
                     let kind = if s.kind == "group" { ChatKind::Group } else { ChatKind::Channel };
                     s.name = Place { platform: self.platform(&s.account), server: s.server.clone(), kind, chat_name: s.channel_name.clone(), person: String::new() }.session_name();
                 }
-                self.save(&s).await;
+                self.store.save(&s).await;
             }
             return Some((s, false));
         }
@@ -209,558 +115,99 @@ impl Seats {
             node,
             level: level.as_str().into(),
             name: place.session_name(),
+            state: "empty".into(),
             ..Default::default()
         };
-        self.save(&seat).await;
+        self.store.save(&seat).await;
         Some((seat, true))
     }
 
+    async fn queue(&self, node: &str, kind: &str, account: &str, channel: &str, message_id: &str, thread_id: &str, line: &str, body: Value) {
+        self.store.enqueue(Row { node: node.into(), kind: kind.into(), account: account.into(), channel_id: channel.into(), message_id: message_id.into(), thread_id: thread_id.into(), line: line.into(), body, ..Default::default() }, crate::db::now()).await;
+        self.arrived.notify_waiters();
+    }
+
     /// Route one inbound message, already cleared for a holder and outside a quiet thread.
-    pub async fn route(self: &Arc<Self>, m: &Inbound) -> Routed {
-        let Some((mut seat, new)) = self.declare(m).await else { return Routed::NotSeat };
-        let now = self.world.now();
-        if !self.store.routed(&m.account, &m.channel_id, &m.message_id, now).await {
+    pub async fn route(&self, m: &Inbound) -> Routed {
+        let Some((seat, new)) = self.declare(m).await else { return Routed::NotSeat };
+        if !self.store.routed(&m.account, &m.channel_id, &m.message_id, crate::db::now()).await {
             return Routed::Duplicate;
         }
-        if self.cfg.paused && seat.state == State::Empty {
-            seat.missed += 1;
-            self.save(&seat).await;
-            return Routed::Seat;
-        }
-        let line = line::push_line(m, &seat.level);
-        self.store.enqueue(&m.account, &m.channel_id, &m.message_id, &m.thread_id, &line, now).await;
-        seat.last_message = now;
-        seat.done_at = 0.0;
-        if m.outside && seat.held != "admitted" && !seat.held.starts_with("outside") {
-            seat.held = format!("outside:{}", if m.sender_name.is_empty() { &m.sender_id } else { &m.sender_name });
-            self.save(&seat).await;
-            self.world.ask("blocked", &format!("A sender outside the lab wrote in the seat {}. Its messages wait until `social seat_admit account={} channel={}`.", label(&seat), seat.account, seat.channel_id)).await;
-            return Routed::Seat;
-        }
-        self.save(&seat).await;
-        if new && seat.kind == "dm" {
-            self.world.tag(&format!("user:{}", seat.slug), &format!("journals of the seat agent for {}", seat.slug)).await;
-            self.world.ask("review", &format!("A new DM seat opened: {} on {}. Its agent starts now.", label(&seat), seat.node)).await;
-        }
-        let me = self.clone();
-        let key = seat.key();
-        tokio::spawn(async move { me.drive(&key, None).await });
+        let outside = if !m.outside { String::new() } else if m.sender_name.is_empty() { m.sender_id.clone() } else { m.sender_name.clone() };
+        self.queue(&seat.node, "line", &m.account, &m.channel_id, &m.message_id, &m.thread_id, &line::push_line(m, &seat.level), json!({"outside": outside, "new": new})).await;
         Routed::Seat
     }
 
-    /// Bring one seat in line with its queue and the clock. `live` is the seat node's live jobs
-    /// when the caller knows them.
-    pub async fn drive(self: &Arc<Self>, key: &Key, live: Option<&HashSet<String>>) {
-        let lock = self.lock(key);
-        let _held = lock.lock().await;
-        for _ in 0..STEPS_PER_LOOK {
-            let Some(seat) = self.store.get(&key.0, &key.1).await else { return };
-            if !self.step(seat, live).await {
-                return;
-            }
-        }
-    }
-
-    /// One transition. True when the seat should be looked at again at once.
-    async fn step(self: &Arc<Self>, mut seat: Seat, live: Option<&HashSet<String>>) -> bool {
-        let now = self.world.now();
-        let pending = self.store.pending(&seat.account, &seat.channel_id).await;
-        let gone = |s: &Seat| live.is_some_and(|l| !l.contains(&s.job));
-        match seat.state {
-            State::Empty => {
-                let held = seat.held.starts_with("outside") || seat.held == "scope";
-                if pending.is_empty() || self.cfg.paused || held || !seat.breaker.allows(now) {
-                    return false;
-                }
-                self.cold_start(seat, &pending, None).await;
-                false
-            }
-            State::Starting => {
-                if !seat.job.is_empty() && live.is_some_and(|l| l.contains(&seat.job)) {
-                    return self.up(seat, now).await;
-                }
-                if now >= seat.deadline {
-                    let here = match live {
-                        Some(l) => Some(l.clone()),
-                        None => self.world.live(&seat.job_node).await,
-                    };
-                    match here {
-                        // Cannot tell: a start is never given up on a guess.
-                        None => return false,
-                        Some(l) if !seat.job.is_empty() && l.contains(&seat.job) => return self.up(seat, now).await,
-                        Some(_) => {}
-                    }
-                    tracing::info!("seat {}: its agent {} did not come up", label(&seat), seat.job);
-                    self.failed_start(seat, "its agent did not come up within 3 minutes").await;
-                    return true;
-                }
-                false
-            }
-            State::Occupied => {
-                if gone(&seat) {
-                    if seat.done_at == 0.0 {
-                        self.notice(&format!("the agent of the seat {} ({}@{}) ended before its task was done.", label(&seat), seat.job, seat.job_node)).await;
-                    }
-                    self.vacate(&mut seat).await;
-                    return !pending.is_empty();
-                }
-                if seat.done_at > 0.0 && now - seat.done_at.max(seat.last_message) >= DONE_S && pending.is_empty() {
-                    seat.state = State::Retiring;
-                    seat.deadline = now + RETIRE_S;
-                    seat.replied = false;
-                    self.save(&seat).await;
-                    if self.world.push(&seat.job_node, &seat.job, RETIRE_LINE).await == Outcome::Gone {
-                        self.vacate(&mut seat).await;
-                    }
-                    return false;
-                }
-                if !pending.is_empty() && !self.pump(&mut seat, &pending).await {
-                    self.vacate(&mut seat).await;
-                    return true;
-                }
-                false
-            }
-            State::Retiring => {
-                if gone(&seat) {
-                    self.vacate(&mut seat).await;
-                    return !pending.is_empty();
-                }
-                if pending.is_empty() {
-                    return false;
-                }
-                if !seat.replied {
-                    seat.replied = true;
-                    self.save(&seat).await;
-                    let first = &pending[0];
-                    let thread = if first.thread_id.is_empty() { None } else { Some(first.thread_id.as_str()) };
-                    self.world.say(&seat.account, &seat.channel_id, thread, SHIFT_REPLY).await;
-                    self.react(&seat, &pending).await;
-                }
-                if now >= seat.deadline {
-                    let previous = Previous { job: seat.job.clone(), node: seat.job_node.clone() };
-                    self.cold_start(seat, &pending, Some(previous)).await;
-                }
-                false
-            }
-        }
-    }
-
-    /// The started agent is up: its brief's lines are delivered.
-    async fn up(&self, mut seat: Seat, now: f64) -> bool {
-        let briefed = self.store.pending(&seat.account, &seat.channel_id).await;
-        if let Some(last) = briefed.iter().rev().find(|q| q.briefed_to == seat.job) {
-            self.store.set_line(&seat.job_node, &seat.job, &seat.account, &seat.channel_id, &last.thread_id, &last.message_id, now).await;
-        }
-        self.store.deliver_briefed(&seat.account, &seat.channel_id, &seat.job, now).await;
-        seat.state = State::Occupied;
-        seat.since = now;
-        if seat.remote_control {
-            seat.rc_url = self.world.rc_url(&seat.job_node, &seat.job).await.unwrap_or_default();
-        }
-        self.save(&seat).await;
-        true
-    }
-
-    /// The agent is gone: free the seat and keep its lines for the next agent.
-    async fn vacate(&self, seat: &mut Seat) {
-        if !seat.job.is_empty() {
-            seat.previous = Previous { job: seat.job.clone(), node: seat.job_node.clone() };
-            self.unbind(seat).await;
-        }
-        seat.state = State::Empty;
-        seat.job.clear();
-        seat.rc_url.clear();
-        seat.adopted = false;
-        seat.done_at = 0.0;
-        self.store.unbrief(&seat.account, &seat.channel_id).await;
-        self.save(seat).await;
-    }
-
-    async fn unbind(&self, seat: &Seat) {
-        if let Some(m) = self.db.holder(&seat.account, &seat.channel_id).await {
-            if m.job == seat.job && m.node == seat.job_node {
-                self.db.unmount(&seat.account, &seat.channel_id).await;
-            }
-        }
-    }
-
-    async fn react(&self, seat: &Seat, pending: &[Queued]) {
-        if let Some(last) = pending.iter().rev().find(|q| !q.message_id.is_empty()) {
-            self.world.react(&seat.account, &seat.channel_id, &last.message_id, "👀").await;
-        }
-    }
-
-    async fn failed_start(&self, mut seat: Seat, why: &str) {
-        let now = self.world.now();
-        self.unbind(&seat).await;
-        self.store.unbrief(&seat.account, &seat.channel_id).await;
-        seat.state = State::Empty;
-        seat.job.clear();
-        let tripped = seat.breaker.fail(now);
-        self.save(&seat).await;
-        if tripped {
-            self.notice(&format!(
-                "the seat {} could not start an agent 4 times in an hour ({why}). It holds its messages for 6 hours, or until `social seat_reset account={} channel={}`.",
-                label(&seat),
-                seat.account,
-                seat.channel_id
-            ))
-            .await;
-        }
-    }
-
-    /// Start the seat's agent with every waiting line in its brief.
-    async fn cold_start(&self, mut seat: Seat, pending: &[Queued], previous: Option<Previous>) {
-        let now = self.world.now();
-        let project = self.cfg.project.clone();
-        if self.world.scope_ready(&seat.node, &project, &seat.scope).await == Some(false) {
-            if seat.held != "scope" {
-                seat.held = "scope".into();
-                self.save(&seat).await;
-                self.world.ask("blocked", &format!("The seat {} has no scope {project}/{} on {}. Create it, then run `social seat_reset account={} channel={}`.", label(&seat), seat.scope, seat.node, seat.account, seat.channel_id)).await;
-            }
-            return;
-        }
-        if seat.state == State::Empty {
-            self.react(&seat, pending).await;
-        }
-        let old = (seat.state == State::Retiring).then(|| seat.clone());
-        let previous = previous.or_else(|| (!seat.previous.job.is_empty()).then(|| seat.previous.clone()));
-        let transcript = match &previous {
-            Some(p) => self.world.transcript(&p.node, &p.job).await,
-            None => None,
-        };
-        let place = Place {
-            platform: self.platform(&seat.account),
-            server: seat.server.clone(),
-            kind: match seat.kind.as_str() {
-                "dm" => ChatKind::Dm,
-                "group" => ChatKind::Group,
-                _ => ChatKind::Channel,
-            },
-            chat_name: seat.channel_name.clone(),
-            person: seat.slug.clone(),
-        };
-        let lines: Vec<String> = pending.iter().map(|q| q.line.clone()).collect();
-        let facts = line::BriefFacts {
-            docs: &self.cfg.docs,
-            place: &place,
-            level: &seat.level,
-            project: &project,
-            scope: &seat.scope,
-            previous: previous.as_ref().map(|p| (p.job.as_str(), p.node.as_str(), transcript.as_deref())),
-        };
-        let spec = json!({
-            "project": project, "scope": seat.scope, "name": seat.name, "prompt": line::brief(&facts, &lines),
-            "trust": seat.level, "model": self.cfg.model, "effort": self.cfg.effort, "remote_control": seat.remote_control,
-        });
-        let ids: Vec<i64> = pending.iter().map(|q| q.id).collect();
-        seat.state = State::Starting;
-        seat.since = now;
-        seat.deadline = now + UP_S;
-        seat.job.clear();
-        seat.rc_url.clear();
-        seat.job_node = seat.node.clone();
-        seat.replied = false;
-        if seat.held == "scope" {
-            seat.held.clear();
-        }
-        self.save(&seat).await;
-        self.store.brief_to(ids.clone(), "starting").await;
-        match self.world.start(&seat.node, spec).await {
-            Started::Job(job) => {
-                seat.job = job.clone();
-                if let Some(p) = previous {
-                    seat.previous = p;
-                }
-                self.save(&seat).await;
-                self.store.brief_to(ids, &job).await;
-                let _ = self
-                    .db
-                    .mount(Mount { account: seat.account.clone(), channel_id: seat.channel_id.clone(), channel_name: seat.channel_name.clone(), node: seat.node.clone(), job, session_name: seat.name.clone(), mounted_at: String::new() })
-                    .await;
-                if let Some(old) = old {
-                    tracing::info!("seat {}: {} took over from retiring {}", label(&seat), seat.job, old.job);
-                }
-            }
-            Started::Refused(why) => {
-                tracing::info!("seat {}: start refused: {why}", label(&seat));
-                if let Some(old) = old {
-                    // The retiring agent still runs: it keeps the seat until it is gone.
-                    let mut back = old;
-                    back.replied = true;
-                    self.store.unbrief(&back.account, &back.channel_id).await;
-                    back.breaker.fail(now);
-                    self.save(&back).await;
-                    return;
-                }
-                self.failed_start(seat, &why).await;
-            }
-        }
-    }
-
-    /// Push every waiting line to the seat's agent, in order. False when the agent is lost.
-    async fn pump(&self, seat: &mut Seat, pending: &[Queued]) -> bool {
-        for q in pending {
-            let started = self.world.now();
-            let mut delay = Backoff::doubling(2.0, 30.0);
-            loop {
-                match self.world.push(&seat.job_node, &seat.job, &q.line).await {
-                    Outcome::Delivered => {
-                        let now = self.world.now();
-                        self.store.delivered(q.id, now).await;
-                        self.store.set_line(&seat.job_node, &seat.job, &seat.account, &seat.channel_id, &q.thread_id, &q.message_id, now).await;
-                        break;
-                    }
-                    Outcome::Gone => return false,
-                    Outcome::Retry(why) => {
-                        if self.world.now() - started >= PUSH_RETRY_S {
-                            tracing::info!("seat {}: {} refused a line past the retry window: {why}", label(seat), seat.job);
-                            return false;
-                        }
-                        self.world.sleep(delay.wait().as_secs_f64()).await;
-                    }
-                }
-            }
-        }
-        true
-    }
-
-    /// Every seat once. Each node's live jobs are read once, when a seat there needs them.
-    pub async fn tick(self: &Arc<Self>) {
-        let seats = self.store.all().await;
-        let mut nodes: Vec<String> = seats.iter().filter(|s| s.state != State::Empty && !s.job_node.is_empty()).map(|s| s.job_node.clone()).collect();
-        nodes.sort();
-        nodes.dedup();
-        let reads = nodes.iter().map(|n| self.world.live(n));
-        let mut cache: HashMap<String, Option<HashSet<String>>> = nodes.iter().cloned().zip(futures_util::future::join_all(reads).await).collect();
-        for s in seats {
-            let lock = self.lock(&s.key());
-            let _held = lock.lock().await;
-            for _ in 0..STEPS_PER_LOOK {
-                let Some(seat) = self.store.get(&s.account, &s.channel_id).await else { break };
-                let live = if seat.state != State::Empty && !seat.job_node.is_empty() {
-                    if !cache.contains_key(&seat.job_node) {
-                        let l = self.world.live(&seat.job_node).await;
-                        cache.insert(seat.job_node.clone(), l);
-                    }
-                    cache[&seat.job_node].clone()
-                } else {
-                    None
-                };
-                if !self.step(seat, live.as_ref()).await {
-                    break;
-                }
-            }
-        }
-    }
-
-    /// A session started or stopped somewhere: look at every seat now.
-    pub fn wake(&self) {
-        self.wake.notify_one();
-    }
-
-    /// Seconds until the next moment a seat's own clock needs a look: a start deadline, a retire
-    /// deadline, the quiet hour of a finished task, or the end of a breaker pause. A moment already
-    /// past that `tick` did not clear is looked at again after `TICK_S`.
-    async fn next_due(&self) -> Option<f64> {
-        let now = self.world.now();
-        let mut due: Option<f64> = None;
-        for s in self.store.all().await {
-            let at = match s.state {
-                State::Starting | State::Retiring => s.deadline,
-                State::Occupied if s.done_at > 0.0 => s.done_at.max(s.last_message) + DONE_S,
-                State::Empty => s.breaker.next_try.max(s.breaker.hold_until),
-                State::Occupied => continue,
-            };
-            due = Some(due.map_or(at, |d| d.min(at)));
-        }
-        due.map(|at| (at - now).max(TICK_S as f64))
-    }
-
-    pub async fn tick_forever(self: Arc<Self>) {
-        loop {
-            self.tick().await;
-            let wait = self.next_due().await.map(std::time::Duration::from_secs_f64);
-            tokio::select! {
-                _ = self.wake.notified() => {}
-                _ = async { match wait { Some(w) => tokio::time::sleep(w).await, None => std::future::pending().await } } => {}
-            }
-        }
-    }
-
-    /// The agent `(node, job)` made a social call, so it is up.
-    pub async fn touch(self: &Arc<Self>, node: &str, job: &str) {
-        for s in self.store.of_job(node, job).await {
-            if s.state == State::Starting {
-                let live = HashSet::from([job.to_string()]);
-                self.drive(&s.key(), Some(&live)).await;
-            }
-        }
-    }
-
-    /// `mark_seat_done` from `(node, job)`: the seats it marked.
-    pub async fn mark_done(&self, node: &str, job: &str) -> Vec<Seat> {
-        let now = self.world.now();
-        let mut out = vec![];
-        for mut s in self.store.of_job(node, job).await {
-            if matches!(s.state, State::Occupied | State::Starting) {
-                s.done_at = now;
-                self.save(&s).await;
-                out.push(s);
-            }
-        }
-        out
-    }
-
-    pub async fn reset(self: &Arc<Self>, account: &str, channel: &str) -> Option<Seat> {
-        let mut s = self.store.get(account, channel).await?;
-        s.breaker = Default::default();
-        if s.held == "scope" {
-            s.held.clear();
-        }
-        self.save(&s).await;
-        self.drive(&s.key(), None).await;
-        self.store.get(account, channel).await
-    }
-
-    pub async fn admit(self: &Arc<Self>, account: &str, channel: &str) -> Option<Seat> {
-        let mut s = self.store.get(account, channel).await?;
-        s.held = "admitted".into();
-        self.save(&s).await;
-        self.drive(&s.key(), None).await;
-        self.store.get(account, channel).await
-    }
-
-    /// A seat row for a chat the config declares, without a message, for adopt and forward.
+    /// A seat row for a chat the config declares, without a message, for mount and forward.
     pub async fn declared(&self, account: &str, channel: &str, place: &Place) -> Option<Seat> {
         let m = Inbound { account: account.into(), channel_id: channel.into(), channel_name: place.chat_name.clone(), server: place.server.clone(), kind: place.kind, platform: place.platform.clone(), sender_name: place.person.clone(), ..Default::default() };
         self.declare(&m).await.map(|(s, _)| s)
     }
 
-    /// Make `(node, job)` the seat's agent, keeping its conversation.
-    pub async fn adopt(&self, mut seat: Seat, node: &str, job: &str, session_name: &str) -> Seat {
-        let now = self.world.now();
-        if !seat.job.is_empty() && (seat.job != job || seat.job_node != node) {
-            seat.previous = Previous { job: seat.job.clone(), node: seat.job_node.clone() };
-        }
-        seat.state = State::Occupied;
-        seat.job = job.into();
-        seat.job_node = node.into();
-        seat.adopted = true;
-        seat.since = now;
-        seat.done_at = 0.0;
-        // Every seat session so far started with Remote Control on, and adoption leaves it so.
-        seat.remote_control = true;
-        seat.rc_url = self.world.rc_url(node, job).await.unwrap_or_default();
-        self.save(&seat).await;
-        self.store.deliver_briefed(&seat.account, &seat.channel_id, job, now).await;
-        let name = if session_name.is_empty() { seat.name.clone() } else { session_name.to_string() };
-        let _ = self.db.mount(Mount { account: seat.account.clone(), channel_id: seat.channel_id.clone(), channel_name: seat.channel_name.clone(), node: node.into(), job: job.into(), session_name: name, mounted_at: String::new() }).await;
-        seat
-    }
-
-    /// A hand mount let go of a declared seat: the seat is empty again.
-    pub async fn released(&self, account: &str, channel: &str, node: &str, job: &str) {
-        if let Some(mut s) = self.store.get(account, channel).await {
-            if s.job == job && s.job_node == node && s.state != State::Empty {
-                s.previous = Previous { job: s.job.clone(), node: s.job_node.clone() };
-                s.state = State::Empty;
-                s.job.clear();
-                s.rc_url.clear();
-                s.adopted = false;
-                self.save(&s).await;
-            }
-        }
+    /// One line for a hand-mounted chat's holder on a seat host.
+    pub async fn hand(&self, node: &str, job: &str, text: &str) {
+        self.queue(node, "hand", "", "", "", "", text, json!({"job": job})).await;
     }
 
     /// Queue a forwarded line for another seat, and let it read the source chat for a day.
-    pub async fn forward(self: &Arc<Self>, target: Seat, source: (&str, &str), line: &str) {
-        let now = self.world.now();
-        self.store.enqueue(&target.account, &target.channel_id, "", "", line, now).await;
-        self.store.grant_read((&target.account, &target.channel_id), source, now + READ_S).await;
-        let mut t = target;
-        t.last_message = now;
-        t.done_at = 0.0;
-        self.save(&t).await;
-        let me = self.clone();
-        let key = t.key();
-        tokio::spawn(async move { me.drive(&key, None).await });
+    pub async fn forward(&self, target: &Seat, source: (&str, &str), text: &str) {
+        self.queue(&target.node, "line", &target.account, &target.channel_id, "", "", text, json!({})).await;
+        self.store.grant_read((&target.account, &target.channel_id), source, crate::db::now() + READ_S).await;
     }
 
-    /// At start: each mount on a declared chat is that seat's agent.
-    pub async fn adopt_mounts(&self, mounts: Vec<(Mount, Place)>) -> usize {
-        let mut n = 0;
-        for (m, place) in mounts {
-            let seat = match self.store.get(&m.account, &m.channel_id).await {
-                Some(s) => s,
-                None => match self.declared(&m.account, &m.channel_id, &place).await {
-                    Some(s) => s,
-                    None => continue,
-                },
-            };
-            if seat.state == State::Empty || (seat.job == m.job && seat.job_node == m.node && seat.state != State::Occupied) {
-                self.adopt(seat, &m.node, &m.job, &m.session_name).await;
-                n += 1;
+    /// `job`, on the seat's own host, took the chat by hand.
+    pub async fn adopt(&self, seat: &Seat, job: &str, session_name: &str) {
+        self.queue(&seat.node, "adopt", &seat.account, &seat.channel_id, "", "", "", json!({"job": job, "session_name": session_name})).await;
+    }
+
+    /// `job` let go of the chat by hand.
+    pub async fn released(&self, seat: &Seat, job: &str) {
+        self.queue(&seat.node, "released", &seat.account, &seat.channel_id, "", "", "", json!({"job": job})).await;
+    }
+
+    pub async fn set_remote_control(&self, seat: &Seat, on: bool) {
+        self.queue(&seat.node, "remote_control", &seat.account, &seat.channel_id, "", "", "", json!({"on": on})).await;
+    }
+
+    /// Take `node`'s ack, then answer with what waits for it, holding up to `wait_s` for a row.
+    pub async fn pull(&self, node: &str, ack_through: i64, wait_s: f64) -> Value {
+        self.store.ack(node, ack_through, crate::db::now()).await;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs_f64(wait_s.clamp(0.0, MAX_WAIT_S));
+        let rows = loop {
+            let arrived = self.arrived.notified();
+            tokio::pin!(arrived);
+            arrived.as_mut().enable();
+            let rows = self.store.waiting(node, PULL_ROWS).await;
+            if !rows.is_empty() {
+                break rows;
             }
-        }
-        n
-    }
-
-    /// With the seats unpaused, one notice line per seat chat that got messages while paused.
-    pub async fn unpause_summary(&self) {
-        if self.cfg.paused {
-            return;
-        }
-        let missed: Vec<Seat> = self.store.all().await.into_iter().filter(|s| s.missed > 0).collect();
-        if missed.is_empty() {
-            return;
-        }
-        let lines: Vec<String> = missed.iter().map(|s| format!("- {}: {} message{}", label(s), s.missed, if s.missed == 1 { "" } else { "s" })).collect();
-        self.notice(&format!("the seats are on again. These chats got messages while they were paused, and nobody answered them:\n{}", lines.join("\n"))).await;
-        for mut s in missed {
-            s.missed = 0;
-            self.save(&s).await;
-        }
-    }
-
-    /// Set the seat's Remote Control switch, and switch its live session too.
-    pub async fn set_remote_control(&self, account: &str, channel: &str, on: bool) -> Option<(Seat, Live)> {
-        let key = (account.to_string(), channel.to_string());
-        let lock = self.lock(&key);
-        let _held = lock.lock().await;
-        let mut seat = self.store.get(account, channel).await?;
-        seat.remote_control = on;
-        if !on {
-            seat.rc_url.clear();
-        }
-        self.save(&seat).await;
-        let live_job = !seat.job.is_empty() && matches!(seat.state, State::Starting | State::Occupied);
-        if !live_job {
-            return Some((seat, Live::None));
-        }
-        let live = match self.world.remote_control(&seat.job_node, &seat.job, on, &Self::rc_name(&seat)).await {
-            Ok(url) => {
-                if on {
-                    seat.rc_url = match url {
-                        Some(u) => u,
-                        None => self.world.rc_url(&seat.job_node, &seat.job).await.unwrap_or_default(),
-                    };
-                    self.save(&seat).await;
-                }
-                Live::Applied
-            }
-            Err(why) => {
-                tracing::info!("seat {}: Remote Control {} for {} failed: {why}", label(&seat), if on { "on" } else { "off" }, seat.job);
-                Live::Failed(why)
+            tokio::select! {
+                _ = arrived => {}
+                _ = tokio::time::sleep_until(deadline) => break rows,
             }
         };
-        Some((seat, live))
+        let mut out = Vec::with_capacity(rows.len());
+        for row in rows {
+            out.push(self.wire(row).await);
+        }
+        json!({"rows": out, "settings": {"paused": self.cfg.paused, "project": self.cfg.project, "model": self.cfg.model, "effort": self.cfg.effort, "docs": self.cfg.docs}})
     }
 
-    /// The pending lines of a seat, for `seats`.
-    pub async fn queued(&self, account: &str, channel: &str) -> i64 {
-        self.store.pending(account, channel).await.len() as i64
+    async fn wire(&self, row: Row) -> Value {
+        let mut out = row.body.as_object().cloned().unwrap_or_default();
+        out.extend([
+            ("id".to_string(), json!(row.id)),
+            ("kind".to_string(), json!(row.kind)),
+            ("account".to_string(), json!(row.account)),
+            ("channel_id".to_string(), json!(row.channel_id)),
+            ("message_id".to_string(), json!(row.message_id)),
+            ("thread_id".to_string(), json!(row.thread_id)),
+            ("line".to_string(), json!(row.line)),
+        ]);
+        if let Some(seat) = self.store.get(&row.account, &row.channel_id).await {
+            out.insert("seat".to_string(), self.decl(&seat));
+        }
+        Value::Object(out)
     }
 }
 

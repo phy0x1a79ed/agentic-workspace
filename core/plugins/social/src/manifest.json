@@ -187,12 +187,6 @@
       ]
     },
     {
-      "name": "mark_seat_done",
-      "tool": "social_mark_seat_done",
-      "description": "Mark your seat's task done, after its handoff journal. Social tells your agent to retire once 4 hours pass with no new message, and a new message clears the mark. A seat's agent only.",
-      "params": []
-    },
-    {
       "name": "forward",
       "tool": "social_forward",
       "description": "Forward a message from a chat you hold to another seat. Its agent gets the line, and may read your chat's history for 24 hours. An empty seat starts its agent, except a DM nobody has opened. With no `message_id` it forwards your latest pushed line.",
@@ -223,74 +217,9 @@
       ]
     },
     {
-      "name": "seat_reset",
-      "tool": "social_seat_reset",
-      "description": "Clear a seat's start breaker. A seat whose agent failed to come up 4 times in an hour holds for 6 hours, or until this.",
-      "params": [
-        {
-          "name": "account",
-          "type": "string",
-          "required": true
-        },
-        {
-          "name": "channel",
-          "type": "string",
-          "required": true
-        }
-      ]
-    },
-    {
-      "name": "seat_adopt",
-      "tool": "social_seat_adopt",
-      "description": "Make a running background job the agent of a declared seat, keeping its conversation. Its level must be at least the seat's, and a session below trusted never takes a trusted seat.",
-      "surfaces": [
-        "cli",
-        "http"
-      ],
-      "params": [
-        {
-          "name": "account",
-          "type": "string",
-          "required": true
-        },
-        {
-          "name": "channel",
-          "type": "string",
-          "required": true
-        },
-        {
-          "name": "job",
-          "type": "string",
-          "required": true
-        },
-        {
-          "name": "node",
-          "type": "string",
-          "required": false
-        }
-      ]
-    },
-    {
-      "name": "seat_admit",
-      "tool": "social_seat_admit",
-      "description": "Admit a sender from outside the lab whose messages a seat holds: the held lines go to the seat's agent, and the sender's later messages reach it as any other.",
-      "params": [
-        {
-          "name": "account",
-          "type": "string",
-          "required": true
-        },
-        {
-          "name": "channel",
-          "type": "string",
-          "required": true
-        }
-      ]
-    },
-    {
       "name": "seat_remote_control",
       "tool": "social_seat_remote_control",
-      "description": "Set a seat's Remote Control switch, which every agent the seat starts follows, and switch its live session too. Only operations on this node calls it, for the Remote Control switch on Ops.",
+      "description": "Set a seat's Remote Control switch, which every agent the seat starts follows. The seat's host applies it to the live session on its next pull, so `live` answers `pending`. Only operations on this node calls it, for the Remote Control switch on Ops.",
       "surfaces": [
         "cli",
         "http"
@@ -306,6 +235,60 @@
           "name": "on",
           "type": "boolean",
           "required": true
+        }
+      ]
+    },
+    {
+      "name": "seat_pull",
+      "tool": "social_seat_pull",
+      "description": "A seat host's seats plugin holds this to take the rows waiting for its node. `ack_through` acks every row through that id. Not for sessions.",
+      "surfaces": [
+        "cli",
+        "http"
+      ],
+      "timeout": 75,
+      "params": [
+        {
+          "name": "ack_through",
+          "type": "integer",
+          "required": false
+        },
+        {
+          "name": "wait_s",
+          "type": "number",
+          "required": false
+        }
+      ]
+    },
+    {
+      "name": "seat_report",
+      "tool": "social_seat_report",
+      "description": "A seat host's seats plugin sends one row of its outbox. A row already applied is answered and not applied again. Not for sessions.",
+      "surfaces": [
+        "cli",
+        "http"
+      ],
+      "timeout": 120,
+      "params": [
+        {
+          "name": "epoch",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "id",
+          "type": "integer",
+          "required": true
+        },
+        {
+          "name": "kind",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "body",
+          "type": "object",
+          "required": false
         }
       ]
     },

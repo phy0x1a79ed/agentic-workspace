@@ -143,7 +143,9 @@ pub struct Call<'a> {
 pub const START_VERBS: [&str; 3] = ["start_other", "resume_other", "adopt_other"];
 /// The `social` verbs a seat holds and answers its own chats with (R69). social keeps them
 /// to the chats the session holds, and a mount to chats below trusted that no sibling holds.
-pub const SEAT_CHAT_VERBS: [&str; 9] = ["send", "react", "fetch", "history", "download_attachments", "mount", "unmount", "mark_seat_done", "forward"];
+pub const SEAT_CHAT_VERBS: [&str; 8] = ["send", "react", "fetch", "history", "download_attachments", "mount", "unmount", "forward"];
+/// The `seats` verbs a seat's agent answers and finishes with.
+pub const SEAT_AGENT_VERBS: [&str; 2] = ["send", "mark_done"];
 /// The `2fa` verbs that only read. ssh arms the approver itself for fir and sockeye.
 pub const TWOFA_READS: [&str; 5] = ["devices", "ping", "reachability", "status", "pending"];
 const DESCRIBE: &str = "describe";
@@ -166,6 +168,7 @@ pub fn call_refusal(level: Level, call: &Call) -> Option<String> {
     match tool {
         // A seat answers its own chats and nothing more: no search, lookup, DM or bucket.
         "social" => partial(SEAT_CHAT_VERBS.contains(&verb)),
+        "seats" => partial(SEAT_AGENT_VERBS.contains(&verb)),
         // No cards; request_human is the one way to Tony's queue (items 5 and 6).
         "operations" => partial(verb == "request_human"),
         // The vault holds the board's cards and Tony's own notes (items 5 and 10).

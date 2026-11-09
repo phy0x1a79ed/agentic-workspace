@@ -29,12 +29,10 @@ async fn dispatch(app: Arc<Social>, name: &str, call: Call) -> Result<Value, Ver
         "seats" => app.seats_verb(call).await,
         "mount" => app.mount(call).await,
         "unmount" => app.unmount(call).await,
-        "mark_seat_done" => app.mark_seat_done(call).await,
         "forward" => app.forward(call).await,
-        "seat_reset" => app.seat_reset(call).await,
-        "seat_adopt" => app.seat_adopt(call).await,
-        "seat_admit" => app.seat_admit(call).await,
         "seat_remote_control" => app.seat_remote_control(call).await,
+        "seat_pull" => app.seat_pull(call).await,
+        "seat_report" => app.seat_report(call).await,
         "search" => app.search(call).await,
         "download_attachments" => app.download_attachments(call).await,
         "accounts" => app.accounts(call).await,
@@ -118,8 +116,7 @@ async fn run() -> anyhow::Result<()> {
     }
     let db = db::Db::open(&awm_plugin_sdk::config::service_dir("social").join("social.db"))?;
     let conns: app::Conns = Arc::new(RwLock::new(BTreeMap::new()));
-    let world = Arc::new(seats::world::Live { hub: hub.clone(), here: env.node.clone(), conns: conns.clone(), ctx: Some(svc.context()) });
-    let seats = seats::Seats::new(db.clone(), loaded.seats.clone(), loaded.accounts.clone(), world);
+    let seats = seats::Seats::new(db.clone(), loaded.seats.clone(), loaded.accounts.clone());
     let buckets = loaded
         .buckets
         .iter()
@@ -128,7 +125,7 @@ async fn run() -> anyhow::Result<()> {
             (c.clone(), b)
         })
         .collect();
-    let app = Social::new(env.node.clone(), hub.clone(), db.clone(), loaded.accounts.clone(), conns.clone(), buckets, seats.clone());
+    let app = Social::new(env.node.clone(), hub.clone(), db.clone(), loaded.accounts.clone(), conns.clone(), buckets, seats);
     let _ = app.ctx.set(svc.context());
 
     for a in loaded.accounts.iter().filter(|a| a.enabled) {
@@ -160,11 +157,6 @@ async fn run() -> anyhow::Result<()> {
     service(svc, app.clone())
         .on_ready(async move {
             ready.watch_sessions().await;
-            tokio::time::sleep(Duration::from_secs(20)).await;
-            ready.adopt_mounts().await;
-            ready.seats.unpause_summary().await;
-            ready.seats.tick().await;
-            tokio::spawn(ready.seats.clone().tick_forever());
         })
         .run()
         .await

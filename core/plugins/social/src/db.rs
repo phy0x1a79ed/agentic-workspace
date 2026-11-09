@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
 
-pub const SCHEMA_VERSION: i64 = 10;
+pub const SCHEMA_VERSION: i64 = 11;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS social_accounts (
@@ -170,6 +170,44 @@ CREATE TABLE IF NOT EXISTS seat_cursor (
 );
 ";
 
+/// v11: seats moved to their hosts. Each seat's state leaves as a `seed` row its host applies
+/// once. A line already waiting is queued again after the seeds, because a line that reached a
+/// host before its seed would start a second agent beside a live one.
+pub const SEATS_V11: &str = "
+ALTER TABLE seat_queue ADD COLUMN node TEXT NOT NULL DEFAULT '';
+ALTER TABLE seat_queue ADD COLUMN kind TEXT NOT NULL DEFAULT 'line';
+ALTER TABLE seat_queue ADD COLUMN body TEXT NOT NULL DEFAULT '{}';
+CREATE INDEX IF NOT EXISTS ix_seat_queue_node ON seat_queue (node, delivered_at, id);
+CREATE TABLE IF NOT EXISTS seat_hosts (
+    node  TEXT PRIMARY KEY,
+    epoch TEXT NOT NULL DEFAULT '',
+    mark  INTEGER NOT NULL DEFAULT 0
+);
+INSERT INTO seat_queue (account, channel_id, line, queued_at, node, kind, body)
+    SELECT account, channel_id, '', 0, node, 'seed', json_object('state', json_object(
+        'state', state, 'job', job, 'job_node', job_node, 'adopted', adopted, 'since', since, 'last_message', last_message,
+        'done_at', done_at, 'deadline', deadline, 'previous', previous, 'breaker', breaker, 'held', held, 'replied', replied,
+        'missed', missed, 'remote_control', remote_control, 'rc_url', rc_url))
+    FROM seat_registry WHERE node != '';
+INSERT INTO seat_queue (account, channel_id, message_id, thread_id, line, queued_at, node, kind)
+    SELECT q.account, q.channel_id, q.message_id, q.thread_id, q.line, q.queued_at, r.node, 'line'
+    FROM seat_queue q JOIN seat_registry r ON r.account = q.account AND r.channel_id = q.channel_id
+    WHERE q.delivered_at = 0 AND q.kind = 'line' ORDER BY q.id;
+UPDATE seat_queue SET delivered_at = 1 WHERE delivered_at = 0 AND kind = 'line' AND node = '';
+ALTER TABLE seat_registry ADD COLUMN report TEXT NOT NULL DEFAULT '{}';
+ALTER TABLE seat_registry DROP COLUMN job_node;
+ALTER TABLE seat_registry DROP COLUMN adopted;
+ALTER TABLE seat_registry DROP COLUMN since;
+ALTER TABLE seat_registry DROP COLUMN last_message;
+ALTER TABLE seat_registry DROP COLUMN done_at;
+ALTER TABLE seat_registry DROP COLUMN deadline;
+ALTER TABLE seat_registry DROP COLUMN previous;
+ALTER TABLE seat_registry DROP COLUMN breaker;
+ALTER TABLE seat_registry DROP COLUMN held;
+ALTER TABLE seat_registry DROP COLUMN replied;
+ALTER TABLE seat_registry DROP COLUMN missed;
+";
+
 /// v10: each seat's Remote Control switch, and its live session's claude.ai link.
 pub const SEATS_V10: &str = "
 ALTER TABLE seat_registry ADD COLUMN remote_control INTEGER NOT NULL DEFAULT 0;
@@ -190,6 +228,7 @@ fn migration(from: i64) -> String {
         // Every message the Python saw counts as routed, so the first resync replays none.
         8 => format!("{SEATS}INSERT OR IGNORE INTO seat_routed (account, channel_id, message_id, routed_at) SELECT account, channel_id, message_id, 0 FROM social_history;\n"),
         9 => SEATS_V10.into(),
+        10 => SEATS_V11.into(),
         _ => String::new(),
     }
 }
@@ -225,7 +264,7 @@ pub fn open_conn(path: &Path) -> anyhow::Result<Connection> {
     conn.pragma_update(None, "foreign_keys", "ON")?;
     match version(&conn)? {
         None if tables(&conn)? == 0 => {
-            conn.execute_batch(&format!("{SCHEMA}{HISTORY}{MOUNTS}{KEEPERS_V5}{KEEPER_STATE}{QUIET}{SEATS}{SEATS_V10}"))?;
+            conn.execute_batch(&format!("{SCHEMA}{HISTORY}{MOUNTS}{KEEPERS_V5}{KEEPER_STATE}{QUIET}{SEATS}{SEATS_V10}{SEATS_V11}"))?;
             conn.execute_batch("ALTER TABLE social_keepers ADD COLUMN seen_at TEXT NOT NULL DEFAULT '';")?;
             conn.execute_batch("CREATE TABLE schema_version (version INTEGER NOT NULL);")?;
             conn.execute("INSERT INTO schema_version (version) VALUES (?1)", [SCHEMA_VERSION])?;
@@ -579,6 +618,31 @@ mod tests {
         assert_eq!(c.query_row("SELECT count(*) FROM seat_routed WHERE message_id = 'm1'", [], |r| r.get::<_, i64>(0)).unwrap(), 1, "seen messages are routed");
         drop(c);
         assert_eq!(version(&open_conn(&old).unwrap()).unwrap(), Some(SCHEMA_VERSION), "reopening is a no-op");
+    }
+
+    /// **WARNING** A wrong seed vacates a live agent, so this pins the v10 mapping row by row.
+    #[test]
+    fn a_v10_seat_leaves_as_a_seed_ahead_of_its_waiting_lines() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("v10.db");
+        {
+            let c = Connection::open(&p).unwrap();
+            c.execute_batch(&format!("{SCHEMA}{HISTORY}{MOUNTS}{KEEPERS_V5}{KEEPER_STATE}{QUIET}{SEATS}{SEATS_V10}")).unwrap();
+            c.execute_batch("ALTER TABLE social_keepers ADD COLUMN seen_at TEXT NOT NULL DEFAULT '';CREATE TABLE schema_version (version INTEGER NOT NULL);INSERT INTO schema_version VALUES (10);").unwrap();
+            c.execute_batch("INSERT INTO seat_registry (account, channel_id, node, state, job, job_node, adopted, remote_control, rc_url, previous, breaker, missed) VALUES ('a', 'live', 'altair', 'occupied', 'j1', 'altair', 1, 1, 'u', '{\"job\":\"old\",\"node\":\"altair\"}', '{\"hold_until\":5.0}', 3);").unwrap();
+            c.execute_batch("INSERT INTO seat_queue (account, channel_id, message_id, line, queued_at) VALUES ('a', 'live', 'm1', 'waiting', 7.0), ('gone', 'x', 'm2', 'orphan', 7.0);").unwrap();
+        }
+        let c = open_conn(&p).unwrap();
+        assert_eq!(version(&c).unwrap(), Some(SCHEMA_VERSION));
+        let rows: Vec<(String, String, String, f64)> = c.prepare("SELECT node, kind, line, delivered_at FROM seat_queue WHERE delivered_at = 0 ORDER BY id").unwrap().query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).unwrap().map(Result::unwrap).collect();
+        assert_eq!(rows, [("altair".to_string(), "seed".to_string(), String::new(), 0.0), ("altair".to_string(), "line".to_string(), "waiting".to_string(), 0.0)], "the seed first, and the orphan closed");
+        let body: String = c.query_row("SELECT body FROM seat_queue WHERE kind = 'seed'", [], |r| r.get(0)).unwrap();
+        let state = &serde_json::from_str::<Value>(&body).unwrap()["state"];
+        assert_eq!((state["state"].as_str(), state["job"].as_str(), state["job_node"].as_str(), state["adopted"].as_i64(), state["missed"].as_i64(), state["remote_control"].as_i64()), (Some("occupied"), Some("j1"), Some("altair"), Some(1), Some(3), Some(1)));
+        assert_eq!(state["previous"].as_str(), Some("{\"job\":\"old\",\"node\":\"altair\"}"), "a string the host parses");
+        let (kept, report): (String, String) = c.query_row("SELECT job, report FROM seat_registry", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!((kept.as_str(), report.as_str()), ("j1", "{}"));
+        assert!(c.prepare("SELECT breaker FROM seat_registry").is_err(), "the state machine's columns are gone");
     }
 
     #[test]

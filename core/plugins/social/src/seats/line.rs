@@ -1,4 +1,4 @@
-//! What a seat's agent sees: the pushed line, the session name, the scope slug and the brief.
+//! What a seat's agent sees: the pushed line, the session name, the scope slug and its brief's name.
 
 use crate::connectors::{ChatKind, Inbound};
 
@@ -84,52 +84,13 @@ pub fn push_line(m: &Inbound, level: &str) -> String {
     format!("[{}/{}/{who}, {level}]{thread} {text}", p.server_label(), p.chat_label())
 }
 
-/// Everything the brief names besides the queued lines.
-pub struct BriefFacts<'a> {
-    pub docs: &'a str,
-    pub place: &'a Place,
-    pub level: &'a str,
-    pub project: &'a str,
-    pub scope: &'a str,
-    /// `(job, node, transcript path)` of the agent before, if any.
-    pub previous: Option<(&'a str, &'a str, Option<&'a str>)>,
-}
-
-/// The first prompt of a seat's agent.
-pub fn brief(f: &BriefFacts, lines: &[String]) -> String {
-    let p = f.place;
-    let server_brief = if p.kind == ChatKind::Dm && f.level == "trusted" {
-        format!("{}/briefs/{}-dm.md", f.docs, p.platform)
+/// The seat's brief, relative to the seat docs.
+pub fn brief_file(p: &Place, level: &str) -> String {
+    if p.kind == ChatKind::Dm && level == "trusted" {
+        format!("briefs/{}-dm.md", p.platform)
     } else {
-        format!("{}/briefs/{}-{}.md", f.docs, p.platform, slug(&p.server_label()))
-    };
-    let mut out = format!(
-        "You are the agent of one chat seat: {}/{} on {}, at level {}. Your scope is {}/{}.\n\
-         Read {}/seat-sop.md, then {server_brief}.\n\
-         Each new message in the chat is typed into your prompt as one line, \"[<server>/<chat>/<sender>, <level>] \u{21b3}<thread> <text>\". \
-         Answer with `social send text=<text>`: with no account and channel it answers the latest line, in its thread. \
-         Answer the message that started you, on that task only. When the task is done, write your handoff journal, then call `social mark_seat_done`.\n",
-        p.server_label(),
-        p.chat_label(),
-        p.platform,
-        f.level,
-        f.project,
-        f.scope,
-        f.docs,
-    );
-    if let Some((job, node, transcript)) = f.previous {
-        out.push_str(&format!("The agent before you was job {job} on {node}. Look for its handoff journal in this scope"));
-        match transcript {
-            Some(t) => out.push_str(&format!(", and read its transcript at {t} if the journal is not there yet.\n")),
-            None => out.push_str(".\n"),
-        }
+        format!("briefs/{}-{}.md", p.platform, slug(&p.server_label()))
     }
-    out.push_str("The messages waiting for you, oldest first:\n");
-    for l in lines {
-        out.push_str(l);
-        out.push('\n');
-    }
-    out
 }
 
 #[cfg(test)]
