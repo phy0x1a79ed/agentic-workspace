@@ -91,6 +91,49 @@ async fn a_stream_carries_text_and_bytes_both_ways_and_ends() {
     assert_eq!(refused.rx.recv().await, Some(WsMsg::Close(Some("no such stream".into()))));
 }
 
+/// A lease's verdict is its last frame, and the local socket closes right behind it.
+#[tokio::test]
+async fn a_last_frame_sent_as_the_stream_closes_still_arrives() {
+    let (seen_tx, mut seen_rx) = tokio::sync::mpsc::unbounded_channel::<WsMsg>();
+    let c = EdgeClient::with_opener(Arc::new(move |_peer: &str| {
+        let (client_end, server_end) = tokio::io::duplex(1 << 16);
+        let (cr, cw) = tokio::io::split(client_end);
+        let (sr, sw) = tokio::io::split(server_end);
+        let seen = seen_tx.clone();
+        tokio::spawn(serve(
+            sr,
+            sw,
+            "home".into(),
+            None,
+            |_name: String, _args, _caller: Caller| async move { Ok(json!(null)) },
+            move |_path: String, _caller: Caller| {
+                let seen = seen.clone();
+                async move {
+                    let (mine, theirs) = WsPipe::pair();
+                    let WsPipe { tx, mut rx } = theirs;
+                    tokio::spawn(async move {
+                        let _hold_open = tx;
+                        while let Some(m) = rx.recv().await {
+                            let _ = seen.send(m);
+                        }
+                    });
+                    Ok(mine)
+                }
+            },
+        ));
+        Ok((Box::new(cr) as _, Box::new(cw) as _, None))
+    }));
+    // tokio's select picks at random, so one pass could pass by luck.
+    for _ in 0..64 {
+        let WsPipe { tx, rx } = c.open_ws("work", "/hub/session/ssh-arbiter/lease", Caller::default()).await.unwrap();
+        tx.send(WsMsg::Text("verdict".into())).unwrap();
+        tx.send(WsMsg::Close(None)).unwrap();
+        drop(rx);
+        let got = tokio::time::timeout(std::time::Duration::from_secs(5), seen_rx.recv()).await;
+        assert_eq!(got, Ok(Some(WsMsg::Text("verdict".into()))), "the last frame was lost");
+    }
+}
+
 #[tokio::test]
 async fn a_remote_error_is_an_error() {
     let c = duplex_client(Arc::new(AtomicUsize::new(0)), Some(0));
@@ -151,13 +194,26 @@ async fn a_service_login_reaches_only_its_tools_and_logs_each_call() {
     assert!(matches!(err, EdgeError::Remote(ref m) if m == "journal not installed"), "{err}");
     let table = c.invoke("alcor", awm_edge::TOOLS_FRAME, json!(null), caller.clone()).await.unwrap();
     assert_eq!(table, json!([{"name": "2fa"}]), "the table shows only the gate's tools");
-    let mut stream = c.open_ws("alcor", "/hub/emit/x/y", caller).await.unwrap();
-    assert_eq!(stream.rx.recv().await, Some(WsMsg::Close(Some("a service key opens no stream".into()))));
+    for path in ["/hub/emit/journal/y", "/hub/session/journal/lease"] {
+        let mut refused = c.open_ws("alcor", path, caller.clone()).await.unwrap();
+        assert_eq!(refused.rx.recv().await, Some(WsMsg::Close(Some(format!("a service key opens no stream at {path}")))));
+    }
+    for path in ["/hub/emit/2fa/y", "/hub/session/2fa/lease"] {
+        let mut admitted = c.open_ws("alcor", path, caller.clone()).await.unwrap();
+        assert_eq!(admitted.rx.recv().await, Some(WsMsg::Close(Some("the stream opener ran".into()))));
+    }
     let lines: Vec<serde_json::Value> =
         std::fs::read_to_string(&log).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect();
     let got: Vec<(&str, &str, &str)> = lines.iter()
         .map(|l| (l["tool"].as_str().unwrap(), l["verb"].as_str().unwrap(), l["result"].as_str().unwrap())).collect();
-    assert_eq!(got, [("2fa", "arm", "ok"), ("journal", "fetch", "refused"), ("/hub/emit/x/y", "", "refused")]);
+    assert_eq!(got, [
+        ("2fa", "arm", "ok"),
+        ("journal", "fetch", "refused"),
+        ("/hub/emit/journal/y", "", "refused"),
+        ("/hub/session/journal/lease", "", "refused"),
+        ("/hub/emit/2fa/y", "", "opened"),
+        ("/hub/session/2fa/lease", "", "opened"),
+    ]);
     assert!(lines.iter().all(|l| l["key"] == "awm:altair:service"));
     let _ = std::fs::remove_file(&log);
 }

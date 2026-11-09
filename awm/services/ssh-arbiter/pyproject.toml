@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "awm-ssh-arbiter"
+version = "0.1.0"
+requires-python = ">=3.11"
+description = "AWM ssh-arbiter singleton: the fleet's single-attempt arbiter for lockout-sensitive ssh hosts."
+dependencies = [
+    "awm-ssh",
+]
+
+[tool.setuptools.packages.find]
+include = ["awm.ssh_arbiter*"]
+namespaces = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
