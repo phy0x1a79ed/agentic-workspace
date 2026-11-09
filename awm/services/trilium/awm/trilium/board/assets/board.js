@@ -207,10 +207,16 @@ async function select(n) {
 // -- New agent, search, 2fa -------------------------------------------------------------------------------
 
 const picked = (field) => $(`input[name="awm-spawn-${field}"]:checked`)?.value;
+const remembered = (name) => { try { return localStorage.getItem(name); } catch (e) { return null; } };
+
+$(".awm-spawn").addEventListener("change", (ev) => {
+  try { localStorage.setItem(ev.target.name, ev.target.value); } catch (e) { /* none */ }
+});
+for (const i of box.querySelectorAll(".awm-spawn input")) if (remembered(i.name) === i.value) i.checked = true;
 
 async function fillNodes() {
   const nodes = await nodeChoices();
-  const have = picked("node");
+  const have = picked("node") || remembered("awm-spawn-node");
   const keep = nodes.some((n) => n.name === have) ? have : nodes[0]?.name;
   $(".awm-spawn-node").replaceChildren(...(nodes.length
     ? nodes.map((n) => el("label", {},
