@@ -34,8 +34,7 @@ fn setup() -> T {
 
 fn rollout(t: &T, fleet: &str, restart: &str) -> Rollout {
     Rollout {
-        project: "proj".into(),
-        workspace: t.ws.root.clone(),
+        checkout: t.ws.proj.join("release"),
         bare: t.ws.bare.clone(),
         awm_dir: t.root.join("awm"),
         node: "mizar".into(),
@@ -55,9 +54,9 @@ fn names(out: &[(String, Outcome)]) -> Vec<&str> {
 #[test]
 fn a_failed_node_does_not_stop_the_others_and_a_rerun_retries_it() {
     let t = setup();
-    git(&t.root, &["init", "-q", "--bare", &t.root.join("peer-proj.git").to_string_lossy()]);
+    git(&t.root, &["init", "-q", "--bare", &t.root.join("peer-awm.git").to_string_lossy()]);
     let flag = t.root.join("alcor-ok");
-    let peer = |name: &str, cmd: &str| format!("[fleet.push.{name}]\nurl = \"{}\"\nprojects = [\"proj\"]\nrefresh = \"{cmd}\"\n", t.root.join("peer-{project}.git").display());
+    let peer = |name: &str, cmd: &str| format!("[fleet.push.{name}]\nurl = \"{}\"\nprojects = [\"awm\"]\nrefresh = \"{cmd}\"\n", t.root.join("peer-{project}.git").display());
     let fleet = format!(
         "[fleet]\nhome = \"mizar\"\nnodes = [\"mizar\", \"alcor\", \"lyra\"]\n{}{}",
         peer("alcor", &format!("test -e {} && echo $AWM_REFRESH_NODE >> {}", flag.display(), t.log.display())),
@@ -70,7 +69,7 @@ fn a_failed_node_does_not_stop_the_others_and_a_rerun_retries_it() {
     assert_eq!(names(&first), ["alcor"]);
     assert_eq!(first.len(), 3);
     assert_eq!(lines(&t.log), ["mizar restart=routine,cch", "lyra"]);
-    assert_eq!(git(&t.root.join("peer-proj.git"), &["rev-parse", "refs/mizar/release"]), to);
+    assert_eq!(git(&t.root.join("peer-awm.git"), &["rev-parse", "refs/mizar/release"]), to);
 
     std::fs::write(&flag, "").unwrap();
     assert!(names(&ro.run(&to).unwrap()).is_empty());
@@ -81,7 +80,7 @@ fn a_failed_node_does_not_stop_the_others_and_a_rerun_retries_it() {
 fn a_node_whose_push_fails_counts_as_failed_and_the_run_goes_on() {
     let t = setup();
     let fleet = format!(
-        "[fleet]\nhome = \"mizar\"\nnodes = [\"mizar\", \"alcor\"]\n[fleet.push.alcor]\nurl = \"{}\"\nprojects = [\"proj\"]\n",
+        "[fleet]\nhome = \"mizar\"\nnodes = [\"mizar\", \"alcor\"]\n[fleet.push.alcor]\nurl = \"{}\"\nprojects = [\"awm\"]\n",
         t.root.join("missing-{project}.git").display()
     );
     let out = rollout(&t, &fleet, "none").run(&t.ws.rev("release")).unwrap();

@@ -1,8 +1,8 @@
 //! Built files a release pins, and their push to the nodes that cannot fetch.
 //!
-//! A pin is a `key=value` file in the project's tree that names one file in the landing node's
+//! A pin is a `key=value` file in the project's tree that names one file in the rollout node's
 //! artifact store (`<AWM_DIR>/artifacts`) and its sha256 (install.md R115 item 4).
-//! `deploy.toml`'s `[artifacts] pins` lists the pins. The landing node pushes each pinned file
+//! `deploy.toml`'s `[artifacts] pins` lists the pins. The rollout pushes each pinned file
 //! to every push node that names an `artifacts` directory, before that node refreshes. The
 //! node never fetches it (Tony, 2026-11-05: "mizar pushes rather than deneb updates"). The
 //! install on the node checks the sha256 again.
@@ -25,7 +25,7 @@ pub struct Artifact {
     pub sha256: String,
 }
 
-pub fn parse_pin(text: &str, pin: &str) -> Result<Artifact, String> {
+fn parse_pin(text: &str, pin: &str) -> Result<Artifact, String> {
     let mut fields = HashMap::new();
     for line in text.lines() {
         if line.trim_start().starts_with('#') {
@@ -47,25 +47,23 @@ pub fn parse_pin(text: &str, pin: &str) -> Result<Artifact, String> {
 }
 
 pub fn show(bare: &Path, spec: &str) -> Option<String> {
-    let r = sh::git(bare, &["show", spec], &HashMap::new(), None);
-    // Python's text mode strips nothing from `git show`, and proc.git strips the ends.
-    (r.code == 0).then(|| r.stdout.trim().to_string())
+    crate::runner::git(bare, &["show", spec])
 }
 
-/// The artifacts `rev` pins, read from the commit rather than a checkout.
-pub fn pinned(bare: &Path, rev: &str) -> Result<Vec<Artifact>, String> {
-    let Some(conf) = show(bare, &format!("{rev}:{}", deployconf::FILE)) else { return Ok(vec![]) };
-    let cfg = deployconf::parse(&conf).map_err(|e| e.0)?;
+/// The artifacts `rev` pins, read from the commit rather than a checkout, each checked
+/// against `store`.
+pub fn pinned(bare: &Path, store: &Path, rev: &str, pins: &[String]) -> Result<Vec<Artifact>, String> {
     let mut out = vec![];
-    for pin in &cfg.artifact_pins {
-        let short: String = rev.chars().take(12).collect();
-        let text = show(bare, &format!("{rev}:{pin}")).ok_or_else(|| format!("{} lists {pin}, which {short} does not hold", deployconf::FILE))?;
-        out.push(parse_pin(&text, pin)?);
+    for pin in pins {
+        let text = show(bare, &format!("{rev}:{pin}")).ok_or_else(|| format!("{} lists {pin}, which {} does not hold", deployconf::FILE, super::short(rev)))?;
+        let art = parse_pin(&text, pin)?;
+        check(store, &art)?;
+        out.push(art);
     }
     Ok(out)
 }
 
-pub fn sha256_file(path: &Path) -> std::io::Result<String> {
+fn sha256_file(path: &Path) -> std::io::Result<String> {
     let mut f = std::fs::File::open(path)?;
     let mut h = Sha256::new();
     let mut buf = vec![0u8; 1 << 20];
@@ -97,7 +95,7 @@ pub fn check(store: &Path, art: &Artifact) -> Result<(), String> {
 pub fn push(store: &Path, art: &Artifact, dest: &str) -> Ran {
     let src = quote(&store.join(&art.file).to_string_lossy());
     let to = quote(&format!("{}/{}", dest.trim_end_matches('/'), art.file));
-    sh::bash(&format!("rsync -t --mkpath {src} {to}"), store, Duration::from_secs(900), &HashMap::new(), Duration::from_secs(5))
+    sh::bash(&format!("rsync -t --mkpath {src} {to}"), store, Duration::from_secs(900), &HashMap::new())
 }
 
 #[cfg(test)]

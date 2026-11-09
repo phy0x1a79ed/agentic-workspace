@@ -1,4 +1,4 @@
-//! Blocking shell and git calls for node rollout, which runs as a command, not a service.
+//! Blocking shell calls for node rollout, which runs as a command, not a service.
 
 use std::collections::HashMap;
 use std::io::Read;
@@ -8,42 +8,18 @@ use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+const GRACE: Duration = Duration::from_secs(5);
+
 pub struct Ran {
     /// The exit code, or minus the signal that killed the shell.
     pub code: i32,
     pub stdout: String,
-    pub stderr: String,
     pub timed_out: bool,
 }
 
 impl Ran {
     pub fn ok(&self) -> bool {
         self.code == 0 && !self.timed_out
-    }
-}
-
-/// `git -C cwd args`, with `input` on its stdin.
-pub fn git(cwd: &Path, args: &[&str], env: &HashMap<String, String>, input: Option<&str>) -> Ran {
-    let mut cmd = Command::new("git");
-    cmd.arg("-C").arg(cwd).args(args).envs(env);
-    cmd.stdin(if input.is_some() { Stdio::piped() } else { Stdio::null() }).stdout(Stdio::piped()).stderr(Stdio::piped());
-    let child = cmd.spawn();
-    let mut child = match child {
-        Ok(c) => c,
-        Err(e) => return Ran { code: 127, stdout: String::new(), stderr: format!("git: {e}"), timed_out: false },
-    };
-    if let (Some(text), Some(mut stdin)) = (input, child.stdin.take()) {
-        use std::io::Write;
-        let _ = stdin.write_all(text.as_bytes());
-    }
-    match child.wait_with_output() {
-        Ok(out) => Ran {
-            code: out.status.code().unwrap_or_else(|| -out.status.signal().unwrap_or(0)),
-            stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
-            stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
-            timed_out: false,
-        },
-        Err(e) => Ran { code: 127, stdout: String::new(), stderr: format!("git: {e}"), timed_out: false },
     }
 }
 
@@ -55,10 +31,10 @@ fn kill_group(pid: u32, sig: i32) {
 }
 
 /// Run `cmd` under bash in its own process group, stdout and stderr merged into `stdout`,
-/// with stdin closed. Past `timeout` the group gets SIGTERM, then SIGKILL after `grace`.
-pub fn bash(cmd: &str, cwd: &Path, timeout: Duration, env: &HashMap<String, String>, grace: Duration) -> Ran {
-    let fail = |what: &str, e: std::io::Error| Ran { code: 127, stdout: format!("{what}: {e}"), stderr: String::new(), timed_out: false };
-    let (r, w) = match pipe() {
+/// with stdin closed. Past `timeout` the group gets SIGTERM, then SIGKILL after [`GRACE`].
+pub fn bash(cmd: &str, cwd: &Path, timeout: Duration, env: &HashMap<String, String>) -> Ran {
+    let fail = |what: &str, e: std::io::Error| Ran { code: 127, stdout: format!("{what}: {e}"), timed_out: false };
+    let (r, w) = match crate::proc::pipe() {
         Ok(p) => p,
         Err(e) => return fail("pipe", e),
     };
@@ -101,7 +77,7 @@ pub fn bash(cmd: &str, cwd: &Path, timeout: Duration, env: &HashMap<String, Stri
             kill_group(pid, libc::SIGTERM);
             term_at = Some(Instant::now());
         }
-        if term_at.is_some_and(|t| t.elapsed() > grace) {
+        if term_at.is_some_and(|t| t.elapsed() > GRACE) {
             kill_group(pid, libc::SIGKILL);
         }
         std::thread::sleep(Duration::from_millis(50));
@@ -117,16 +93,5 @@ pub fn bash(cmd: &str, cwd: &Path, timeout: Duration, env: &HashMap<String, Stri
     }
     let out = String::from_utf8_lossy(&buf.lock().unwrap_or_else(|p| p.into_inner())).into_owned();
     let code = status.map(|s| s.code().unwrap_or_else(|| -s.signal().unwrap_or(0))).unwrap_or(-1);
-    Ran { code, stdout: out, stderr: String::new(), timed_out }
-}
-
-fn pipe() -> std::io::Result<(std::os::fd::OwnedFd, std::os::fd::OwnedFd)> {
-    use std::os::fd::FromRawFd;
-    let mut fds = [0; 2];
-    // SAFETY: pipe2 writes two fresh descriptors into fds, which we then own.
-    if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
-        return Err(std::io::Error::last_os_error());
-    }
-    // SAFETY: both descriptors are open and owned by nothing else.
-    Ok(unsafe { (std::os::fd::OwnedFd::from_raw_fd(fds[0]), std::os::fd::OwnedFd::from_raw_fd(fds[1])) })
+    Ran { code, stdout: out, timed_out }
 }

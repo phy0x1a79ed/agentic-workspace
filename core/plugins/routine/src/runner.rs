@@ -95,7 +95,7 @@ fn tail(text: &str, n: usize) -> String {
     text.chars().skip(count.saturating_sub(n)).collect()
 }
 
-fn git(root: &Path, args: &[&str]) -> Option<String> {
+pub(crate) fn git(root: &Path, args: &[&str]) -> Option<String> {
     let out = Command::new("git").arg("-C").arg(root).args(args).output().ok()?;
     out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
