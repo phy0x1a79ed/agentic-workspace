@@ -29,3 +29,15 @@ Each mutable name has one origin. Whether that sits within C3 is still to confir
 **Decided design.** The MVP is the content-addressed cache, the update event (publish and subscribe, per `freshness`) and remote fill. Bidding comes after. Test cases (CLAUDE.md sync, a singleton verb, a build or embedding job) are worked one at a time as the system grows, not bundled into the first step. A hands-on POC is wanted to play with the MVP.
 
 **Landed.** Input to the `handoff` brief. Narrows the `first-step` question: the three workloads are no longer a bundle. Revisits nothing in `freshness`.
+
+## exploration-direction (2026-11-09)
+
+**Question.** How far does the first step go, and what does the test system look like?
+
+**User's words.** "lets do full exploration including prototype POC builds." "lets design a small closed system with multiple dev gateways (set one up on alcor as well?)" "2 plugins, a local and a service?" "test the in process hotswapping of rust binaries, we can then iterate on the core contract that must stay frozen (can we use an existing standard?), caches, evictions, and remote resolution. this also need to distinguish from a remote service vs a remote copy that can be cached"
+
+**Direction (the user's, not yet a design).** Build prototypes, not only docs. The closed system spans mizar and alcor with a dev gateway on each, and two plugins: a local one and a service. It tests in-process hot swap of Rust binaries, then iterates on the frozen contract, caches, eviction and remote resolution. Resolution must tell a remote service (called, never copied) from a remote copy (cacheable).
+
+**Measured.** A dev gateway with empty state takes 8 MB RSS (alcor's production gateway takes 31 MB). mizar and alcor both run glibc 2.39 on x86_64, and the installed `awm` binary is byte-identical in size on both. alcor has no Rust toolchain, and neither has `rustc` on its shell PATH (mizar builds run in a container).
+
+**Landed.** Input to `handoff`. The design proposals that follow from this are on `STACK.md` under "Waiting on the user" until confirmed.
