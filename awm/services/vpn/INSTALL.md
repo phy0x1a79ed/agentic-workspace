@@ -24,12 +24,6 @@ respawn it under systemd's minimal PATH.
 To iterate without installing, run a worktree's dev sandbox on its own port
 (`AWM_PORT=7871 bash core/plugins/dev/sandbox/run.sh start`), NOT dev's :7821.
 
-> **Do not let this service auto-bootstrap on the canonical dev sandbox (`:7821`)
-> or prod.** Discovery is a global filesystem scan and Chrome-behind-VPN egress
-> must not come up there by accident. Keep it on `feat/svc-vpn` (or `awm services
-> disable vpn`) until the profile-aware discovery gate lands, a separate effort.
-> Only ever shadow it onto `:7871`.
-
 ## 2. Build the per-profile container images
 
 The service runs these images but does **not** build them — build once per host
@@ -85,32 +79,29 @@ triggers goes through unattended.
 
 ## 4a. SSH bounce (ProxyJump) — reaching hosts *behind* the VPN
 
-Each exit also runs a **bounce sshd** in the container's netns (the proven
-`projects/vpn_bounce` architecture), published on the host at `bounce_port`
-(ubc `2222`, proton `2223`). An `ssh -W %h:%p` / `ProxyJump` through it egresses
-via the tunnel — this is how host-side `ssh sockeye` reaches UBC ARC.
+Each exit also runs a **bounce sshd** in the container's netns, published on the
+host's loopback only at `bounce_port` (ubc `2222`, proton `2223`). An
+`ssh -W %h:%p` / `ProxyJump` through it egresses via the tunnel. This is how
+`ssh sockeye` reaches UBC ARC from every node.
 
-- **Key:** a single bounce keypair is generated on first `up` at
-  `$AWM_DIR/services/vpn/bounce` (private, `0600`) `+ .pub`. The public key is
-  injected into every container as the sole authorized key; point your
-  `~/.ssh/config` bounce host's `IdentityFile` at the private key.
-- **Host keys** are regenerated per container start, so the bounce host should use
-  `StrictHostKeyChecking no` + `UserKnownHostsFile /dev/null` (as the legacy
-  `vpn_ubc` block already does).
-- **Example** `~/.ssh/config`:
+- **Keys:** the bounce admits this node's own bounce key,
+  `$AWM_DIR/services/vpn/bounce` (made on first `up`), plus each line of
+  `$AWM_DIR/services/vpn/bounce_callers`. The cloud `hpc_ssh` role writes that
+  file on altair from the edge keys of every node with a sockeye edge.
+- **Routes:** the cloud `hpc_ssh` role renders `vpn_ubc`. On altair it points at
+  `localhost:2222` with the bounce key. Elsewhere it adds `ProxyJump altair` and
+  the node's edge key.
+- **Host keys** are regenerated per container start, so `vpn_ubc` uses
+  `StrictHostKeyChecking no` and `UserKnownHostsFile /dev/null`.
 
-      Host vpn_ubc
-          HostName localhost
-          Port 2222
-          User root
-          IdentitiesOnly yes
-          PreferredAuthentications publickey
-          IdentityFile ~/agentic_workspace/.awm/services/vpn/bounce
-          StrictHostKeyChecking no
-          UserKnownHostsFile /dev/null
+## 4b. Keeping the `ubc` exit up
 
-  Then `Host sockeye … ProxyCommand ssh -W %h:%p vpn_ubc` tunnels through, exactly
-  as it did against the old standalone `vpn_bounce` container.
+**CAUTION** UBC ends an account's oldest session once it holds about three, so run
+the `vpn` plugin on altair only. The service dials `ubc` when it starts and
+re-dials when docker reports the container died. Each dial spends a `cwl` Duo
+push. After three dials in a row that fail or live under ten minutes, it stops and
+pages the operator. `vpn up --profile ubc` starts it again. `vpn down` stops
+re-dialing and logs the session out before it removes the container.
 
 ## 5. Proton notes
 

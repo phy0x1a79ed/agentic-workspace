@@ -1,8 +1,9 @@
 # SSH Service
 
-Manages headless ControlMaster SSH connections to managed hosts (sockeye
-and fir). Orchestrates VPN and 2FA burst automatically before
-connecting, so the caller gets a seamless single-verb API.
+Manages headless ControlMaster SSH connections to managed hosts (fir, nibi,
+trillium and sockeye). Before connecting it takes the host's slot from
+`ssh-arbiter` on alcor and arms the 2FA burst, so the caller gets a single-verb
+API. A sockeye master jumps through the UBC tunnel on altair.
 
 > **Never `ssh fir` directly.** `fir` (Alliance) locks the account after 10
 > failed MFA attempts in a row (support ticket #0317299 — it happened on
@@ -21,10 +22,10 @@ connecting, so the caller gets a seamless single-verb API.
 
 ## Managed hosts
 
-| Host | VPN required | 2FA device | SSH user | Guarded |
-|------|-------------|------------|----------|---------|
-| sockeye, sockeye1-3 | ubc | cwl | txyliu | no |
-| fir | — | alliance | phyberos | **yes** |
+| Host | Jump | 2FA device | SSH user | Guarded |
+|------|------|------------|----------|---------|
+| sockeye, sockeye1-3 | `vpn_ubc` (altair's tunnel) | cwl | txyliu | no |
+| fir, nibi, trillium, trillium-gpu | — | alliance | phyberos | **yes** |
 
 The 2FA column is the host's own `twofa_device`, which is what decides whether a
 connect goes through the fleet slot arbiter.
@@ -32,7 +33,7 @@ connect goes through the fleet slot arbiter.
 ## MFA-lockout hold (operator note)
 
 A single failed connect that could have spent an MFA attempt puts that host into
-a **hold**: further automated `connect`s are refused **before** any VPN/2FA/ssh
+a **hold**: further automated `connect`s are refused **before** any 2FA or ssh
 runs, so a host that failed once can never march toward the provider's
 MFA-lockout ceiling. The operator is paged in their Discord DM with the bot
 (the node's operator DM, `AWM_OPERATOR_DM_CHANNEL` in `FEDERATION.md`). See *What is allowed to hold a host* for the
@@ -76,9 +77,8 @@ a second Duo push at a host that was already down for maintenance.
   unrecognized prompt (or no option naming one of our devices) makes it refuse
   and drop a deviation marker rather than guessing an option.
 - `~/.ssh/awm-ssh-guard` — ProxyCommand guard for guarded hosts (see below).
-- The `vpn`, `2fa`, and `social` services must be running on the gateway.
-  `social` carries both the operator alert and the `/approve` recovery signal
-  (the service subscribes to social's `command` emit, like `2fa` does); a
+- The `ssh-arbiter` and `2fa` singletons on alcor must answer. The arbiter
+  keeps the holds, sends the operator alert and listens for `/approve`. A
   `social` hiccup can't mask a hold (the alert is best-effort, the hold is not).
 
 ## ControlMaster behaviour
@@ -163,7 +163,7 @@ A hold refuses automated access until an operator runs `/approve`, so it is only
 ever justified by an MFA attempt that could actually have been spent. Three
 answers are treated as proof that none was:
 
-1. **ssh never ran.** The VPN call, the 2FA arming and the exec all precede any
+1. **ssh never ran.** The lease, the 2FA arming and the exec all precede any
    packet ssh could send, so a failure before the exec cannot have reached a
    login. No stderr is consulted.
 2. **ssh said it died before auth** — `kex_exchange_identification`,
@@ -208,9 +208,9 @@ spawns each master through `systemd-run --user --scope` instead, as a unit named
 the restart. The service probes `systemd-run` once per life. A node whose gateway
 runs as a system unit (capella) fails the probe and spawns masters bare.
 
-The VPN exit is brought up before the 120s login clock starts, on its own budget.
-That budget must cover the vpn service's `UP_BUDGET_S`, or a slow docker daemon
-reads as a dead host.
+The service never brings a VPN up. altair's vpn service keeps the UBC tunnel up
+by itself. When the tunnel is down, the jump is refused before auth, the error
+names the tunnel, and no Duo push is spent.
 
 **CAUTION** The askpass keeps its rate-cap state in `~/.ssh/awm-duo-locks/`, and
 answering counts toward a cap that trips a 30-minute hold refusing all Duo
