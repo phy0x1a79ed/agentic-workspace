@@ -28,6 +28,7 @@ import threading
 import time
 from datetime import datetime, timezone
 
+from awm.persistence.timestamps import iso_to_ms
 from awm.vpn import config, dao
 
 log = logging.getLogger("awm.vpn.container")
@@ -149,26 +150,17 @@ def arm_2fa_burst(device: str) -> bool:
     rather than in the container because the container can't reach the host
     gateway before its tunnel is up.
 
-    Routed through the ``AWM_TWOFA_PEER`` selector like every other 2fa
-    consumer. It used to POST our own gateway unconditionally, which on a node
-    that borrows 2fa meant this one caller armed a local approver while ``ssh``
-    armed the owner's — the fleet-global attempt budget only holds if every
-    consumer agrees on where the singleton lives.
-
     Returns True on a clean call. Never raises — if 2fa is unreachable the dial
     falls back to a manual Duo approval (and likely times out).
     """
     from awm import gatewayclient
 
-    peer = gatewayclient.peer_env("AWM_TWOFA_PEER")
     try:
-        gatewayclient.call_sync("2fa", "burst", {"device": device}, peer=peer, timeout=15)
+        gatewayclient.call_sync("2fa", "burst", {"device": device}, timeout=15)
     except Exception as exc:  # noqa: BLE001 — arming is best-effort by contract
-        log.warning("2fa burst arm failed (device=%r, owner=%s): %s",
-                    device, peer or "local", exc)
+        log.warning("2fa burst arm failed (device=%r): %s", device, exc)
         return False
-    log.info("armed 2fa burst device=%r before dial (owner=%s)",
-             device, peer or "local")
+    log.info("armed 2fa burst device=%r before dial", device)
     return True
 
 
@@ -396,6 +388,12 @@ def status_all() -> list[dict]:
 def _tail_logs(name: str, lines: int = 30) -> str:
     proc = _docker(["logs", "--tail", str(lines), name], check=False)
     return ((proc.stdout or "") + (proc.stderr or "")).strip() or "(no logs)"
+
+
+def started_at(profile: str) -> float:
+    """When docker last started the profile's container, as a Unix time."""
+    raw = _docker(["inspect", "-f", "{{.State.StartedAt}}", container_name(profile)]).stdout
+    return iso_to_ms(raw) / 1000
 
 
 def _log_dead_container(name: str) -> None:

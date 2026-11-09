@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 import socket
 import subprocess
@@ -181,7 +180,7 @@ class TestLeaseVerdict:
 
         result = await svc.connect("fir")
         assert result["status"] == "error"
-        assert "_lock_reason" not in result and "_preauth" not in result
+        assert "_verdict_reason" not in result and "_preauth" not in result
         assert verdicts[0][0] is False and "Permission denied" in verdicts[0][1]
 
     async def test_no_arbiter_means_no_login(
@@ -388,6 +387,18 @@ class TestStateMachine:
         result = await svc.connect("fir")
         assert result["status"] == "connected"       # adopted, not errored
         assert svc._host("fir").state == ConnState.CONNECTED
+
+    async def test_status_reports_a_master_that_died_as_disconnected(
+            self, isolated_dirs, monkeypatch) -> None:
+        svc = SSHService()
+        svc._host("fir").state = ConnState.CONNECTED
+
+        async def _dead(_host):
+            return False
+
+        monkeypatch.setattr(svc, "_check_master", _dead)
+        assert (await svc.status())["connections"]["fir"]["status"] == "disconnected"
+        assert svc._host("fir").state == ConnState.DISCONNECTED
 
     async def test_do_connect_raise_does_not_strand_authenticating(
             self, isolated_dirs, monkeypatch) -> None:
