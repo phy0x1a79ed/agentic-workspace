@@ -9,7 +9,7 @@
 //!
 //! Nothing here depends on the link to social. What social should hear goes in the outbox.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 
 use async_trait::async_trait;
@@ -49,15 +49,13 @@ pub trait World: Send + Sync {
     /// `reflection message`: one line typed into `job`.
     async fn push(&self, job: &str, line: &str) -> Outcome;
     /// The live jobs here, or None when it cannot tell.
-    async fn live(&self) -> Option<HashSet<String>>;
+    async fn live(&self) -> Option<Links>;
     /// Whether the seat's scope exists here, or None when it cannot tell.
     async fn scope_ready(&self, project: &str, scope: &str) -> Option<bool>;
     /// The transcript of a past job, for the next agent's brief.
     async fn transcript(&self, job: &str) -> Option<String>;
-    /// `reflection remote_control` on `job`: its claude.ai link when the answer carries one, or why it failed.
-    async fn remote_control(&self, job: &str, on: bool, name: &str) -> Result<Option<String>, String>;
-    /// The live job's claude.ai link, from its `list_other` row.
-    async fn rc_url(&self, job: &str) -> Option<String>;
+    /// `reflection remote_control` on `job`, or why it failed.
+    async fn remote_control(&self, job: &str, on: bool, name: &str) -> Result<(), String>;
     /// Type one line into a hand-mounted chat's holder.
     fn hand(&self, job: &str, line: &str);
     /// Queue one row for social.
@@ -108,14 +106,39 @@ pub enum Live {
     Failed(String),
 }
 
+impl Live {
+    /// How the seat event tells Ops the answer: `failed: <why>` when it failed.
+    fn as_text(&self) -> String {
+        match self {
+            Self::None => "none".into(),
+            Self::Applied => "applied".into(),
+            Self::Failed(why) => format!("failed: {why}"),
+        }
+    }
+}
+
 type Key = (String, String);
+
+/// Each live job here with its claude.ai link, empty while its Remote Control is off.
+pub type Links = HashMap<String, String>;
+
+/// Take the seat's Remote Control state from its live session. True when that changed the seat.
+fn sync_rc(seat: &mut Seat, live: Option<&Links>) -> bool {
+    let Some(link) = live.and_then(|l| l.get(&seat.job)) else { return false };
+    if seat.rc_url == *link && seat.remote_control != link.is_empty() {
+        return false;
+    }
+    seat.remote_control = !link.is_empty();
+    seat.rc_url = link.clone();
+    true
+}
 
 pub struct Seats {
     pub store: Store,
     settings: RwLock<Settings>,
     world: Arc<dyn World>,
     locks: Mutex<HashMap<Key, Arc<tokio::sync::Mutex<()>>>>,
-    reported_live: Mutex<Option<HashSet<String>>>,
+    reported_live: Mutex<Option<Vec<String>>>,
     wake: tokio::sync::Notify,
 }
 
@@ -162,17 +185,35 @@ impl Seats {
     /// Write the row, and tell social when what it shows of the seat changed.
     async fn save(&self, s: &Seat) {
         if self.store.save(s).await {
-            let queued = self.queued(s.account(), s.channel()).await;
-            let ts = crate::now_iso();
-            self.world
-                .up("seat", json!({"account": s.account(), "channel_id": s.channel(), "state": s.state.as_str(), "job": s.job, "remote_control": s.remote_control, "rc_url": s.rc_url, "public": s.public(queued), "event": s.event(&ts)}))
-                .await;
+            self.report(s, None).await;
         }
     }
 
+    /// Tell social what it shows of the seat. `switch` answers a Remote Control flip, which social
+    /// passes on to Ops even when nothing changed.
+    async fn report(&self, s: &Seat, switch: Option<&Live>) {
+        let queued = self.queued(s.account(), s.channel()).await;
+        let mut event = s.event(&crate::now_iso());
+        if let Some(live) = switch {
+            event["rc_live"] = json!(live.as_text());
+        }
+        self.world
+            .up("seat", json!({"account": s.account(), "channel_id": s.channel(), "state": s.state.as_str(), "job": s.job, "remote_control": s.remote_control, "rc_url": s.rc_url, "public": s.public(queued), "event": event}))
+            .await;
+    }
+
     /// The session name a seat's agent gets: Remote Control writes each `/` as `-` (R146).
+    /// The session name as a plain label, which `/rc` takes: each run of other characters as `-`.
     fn rc_name(s: &Seat) -> String {
-        s.decl.name.replace('/', "-")
+        let mut out = String::new();
+        for c in s.decl.name.chars() {
+            if c.is_ascii_alphanumeric() || "._-".contains(c) {
+                out.push(c);
+            } else if !out.ends_with('-') {
+                out.push('-');
+            }
+        }
+        out.trim_matches(|c| "-._".contains(c)).chars().take(64).collect()
     }
 
     fn lock(&self, key: &Key) -> Arc<tokio::sync::Mutex<()>> {
@@ -259,12 +300,12 @@ impl Seats {
 
     /// Bring one seat in line with its queue and the clock. `live` is this node's live jobs
     /// when the caller knows them.
-    pub async fn drive(self: &Arc<Self>, key: &Key, live: Option<&HashSet<String>>) {
+    pub async fn drive(self: &Arc<Self>, key: &Key, live: Option<&Links>) {
         let lock = self.lock(key);
         let _held = lock.lock().await;
         // A job started or adopted since `live` was read is not in it, and is not gone.
         let newer = match live {
-            Some(l) => self.store.get(&key.0, &key.1).await.is_some_and(|s| !s.job.is_empty() && !l.contains(&s.job)),
+            Some(l) => self.store.get(&key.0, &key.1).await.is_some_and(|s| !s.job.is_empty() && !l.contains_key(&s.job)),
             None => false,
         };
         let reread = if newer { self.world.live().await } else { None };
@@ -278,10 +319,10 @@ impl Seats {
     }
 
     /// One transition. True when the seat should be looked at again at once.
-    async fn step(self: &Arc<Self>, mut seat: Seat, live: Option<&HashSet<String>>) -> bool {
+    async fn step(self: &Arc<Self>, mut seat: Seat, live: Option<&Links>) -> bool {
         let now = self.world.now();
         let pending = self.store.pending(seat.account(), seat.channel()).await;
-        let gone = |s: &Seat| live.is_some_and(|l| !l.contains(&s.job));
+        let gone = |s: &Seat| live.is_some_and(|l| !l.contains_key(&s.job));
         match seat.state {
             State::Empty => {
                 let held = seat.held.starts_with("outside") || seat.held == "scope";
@@ -292,8 +333,8 @@ impl Seats {
                 false
             }
             State::Starting => {
-                if !seat.job.is_empty() && live.is_some_and(|l| l.contains(&seat.job)) {
-                    return self.up(seat, now).await;
+                if !seat.job.is_empty() && live.is_some_and(|l| l.contains_key(&seat.job)) {
+                    return self.up(seat, now, live).await;
                 }
                 if now >= seat.deadline {
                     let here = match live {
@@ -303,7 +344,7 @@ impl Seats {
                     match here {
                         // Cannot tell: a start is never given up on a guess.
                         None => return false,
-                        Some(l) if !seat.job.is_empty() && l.contains(&seat.job) => return self.up(seat, now).await,
+                        Some(l) if !seat.job.is_empty() && l.contains_key(&seat.job) => return self.up(seat, now, Some(&l)).await,
                         Some(_) => {}
                     }
                     tracing::info!("seat {}: its agent {} did not come up", label(&seat), seat.job);
@@ -320,6 +361,9 @@ impl Seats {
                     self.vacate(&mut seat).await;
                     return !pending.is_empty();
                 }
+                if sync_rc(&mut seat, live) {
+                    self.save(&seat).await;
+                }
                 if !pending.is_empty() && !self.pump(&mut seat, &pending).await {
                     self.vacate(&mut seat).await;
                     return true;
@@ -330,7 +374,7 @@ impl Seats {
     }
 
     /// The started agent is up: its brief's lines are delivered.
-    async fn up(&self, mut seat: Seat, now: f64) -> bool {
+    async fn up(&self, mut seat: Seat, now: f64, live: Option<&Links>) -> bool {
         let briefed = self.store.pending(seat.account(), seat.channel()).await;
         if let Some(last) = briefed.iter().rev().find(|q| q.briefed_to == seat.job) {
             let latest = Latest { account: seat.account().into(), channel: seat.channel().into(), thread: last.thread_id.clone(), message_id: last.message_id.clone() };
@@ -338,9 +382,7 @@ impl Seats {
         }
         self.store.deliver_briefed(seat.account(), seat.channel(), &seat.job, now).await;
         seat.state = State::Occupied;
-        if seat.remote_control {
-            seat.rc_url = self.world.rc_url(&seat.job).await.unwrap_or_default();
-        }
+        sync_rc(&mut seat, live);
         self.save(&seat).await;
         true
     }
@@ -481,15 +523,17 @@ impl Seats {
     pub async fn tick(self: &Arc<Self>) {
         let live = self.world.live().await;
         if let Some(l) = &live {
+            let mut jobs: Vec<String> = l.keys().cloned().collect();
+            jobs.sort();
             let changed = {
                 let mut reported = self.reported_live.lock().unwrap();
-                let changed = reported.as_ref() != Some(l);
-                *reported = Some(l.clone());
+                let changed = reported.as_ref() != Some(&jobs);
+                if changed {
+                    *reported = Some(jobs.clone());
+                }
                 changed
             };
             if changed {
-                let mut jobs: Vec<&String> = l.iter().collect();
-                jobs.sort();
                 self.world.up("live", json!({"jobs": jobs})).await;
             }
         }
@@ -578,7 +622,10 @@ impl Seats {
         seat.job = job.into();
         seat.adopted = true;
         seat.done_at = 0.0;
-        seat.rc_url = if seat.remote_control { self.world.rc_url(job).await.unwrap_or_default() } else { String::new() };
+        seat.rc_url.clear();
+        if seat.remote_control {
+            sync_rc(&mut seat, self.world.live().await.as_ref());
+        }
         self.save(&seat).await;
         if !seat.remote_control {
             if let Err(why) = self.world.remote_control(job, false, &Self::rc_name(&seat)).await {
@@ -622,37 +669,34 @@ impl Seats {
         }
     }
 
-    /// Set the seat's Remote Control switch, and switch its live session too.
+    /// Set the seat's Remote Control switch, and switch its live session too. The row then holds
+    /// what the session really is, and social hears the answer even when the row did not change.
     pub async fn set_remote_control(&self, account: &str, channel: &str, on: bool) -> Option<(Seat, Live)> {
         let key = (account.to_string(), channel.to_string());
         let lock = self.lock(&key);
         let _held = lock.lock().await;
         let mut seat = self.store.get(account, channel).await?;
-        seat.remote_control = on;
-        if !on {
+        let live = if seat.job.is_empty() || !matches!(seat.state, State::Starting | State::Occupied) {
+            seat.remote_control = on;
             seat.rc_url.clear();
-        }
-        self.save(&seat).await;
-        let live_job = !seat.job.is_empty() && matches!(seat.state, State::Starting | State::Occupied);
-        if !live_job {
-            return Some((seat, Live::None));
-        }
-        let live = match self.world.remote_control(&seat.job, on, &Self::rc_name(&seat)).await {
-            Ok(url) => {
-                if on {
-                    seat.rc_url = match url {
-                        Some(u) => u,
-                        None => self.world.rc_url(&seat.job).await.unwrap_or_default(),
-                    };
-                    self.save(&seat).await;
+            Live::None
+        } else {
+            let answer = match self.world.remote_control(&seat.job, on, &Self::rc_name(&seat)).await {
+                Ok(()) => {
+                    seat.remote_control = on;
+                    seat.rc_url.clear();
+                    Live::Applied
                 }
-                Live::Applied
-            }
-            Err(why) => {
-                tracing::info!("seat {}: Remote Control {} for {} failed: {why}", label(&seat), if on { "on" } else { "off" }, seat.job);
-                Live::Failed(why)
-            }
+                Err(why) => {
+                    tracing::info!("seat {}: Remote Control {} for {} failed: {why}", label(&seat), if on { "on" } else { "off" }, seat.job);
+                    Live::Failed(why)
+                }
+            };
+            sync_rc(&mut seat, self.world.live().await.as_ref());
+            answer
         };
+        self.store.save(&seat).await;
+        self.report(&seat, Some(&live)).await;
         Some((seat, live))
     }
 

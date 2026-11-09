@@ -61,6 +61,8 @@ pub struct Stamp {
     pub session_id: Option<String>,
     /// `_caller_session`: the claim of a session on another node.
     pub claim: Option<Value>,
+    /// The node a call from another node's service came from, by its `as` stamp.
+    pub peer: Option<String>,
 }
 
 impl Stamp {
@@ -190,8 +192,9 @@ impl Front {
                 node: node.filter(|n| *n != self.node),
             };
         }
-        let Some(pid) = stamp.pid else { return Caller::default() };
-        let Some(rec) = self.outside.session_of(pid).await else { return Caller::default() };
+        let service = || Caller { node: stamp.peer.clone().filter(|n| *n != self.node), ..Caller::default() };
+        let Some(pid) = stamp.pid else { return service() };
+        let Some(rec) = self.outside.session_of(pid).await else { return service() };
         Caller { session_id: str_of(&rec, "session_id").map(|s| norm(&s)), job: str_of(&rec, "job"), name: str_of(&rec, "name"), node: None }
     }
 

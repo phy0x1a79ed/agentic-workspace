@@ -87,6 +87,11 @@ pub async fn reflect(hub: &Hub, node: &str, job: &str, text: &str) -> Outcome {
 /// The running background jobs on `node` across its harnesses, or None when it cannot tell.
 /// Any `errors[]` entry means some harness did not answer, so it cannot tell.
 pub async fn live_jobs(hub: &Hub, node: &str) -> Option<HashSet<String>> {
+    live_links(hub, node).await.map(|l| l.into_keys().collect())
+}
+
+/// [`live_jobs`], each with its claude.ai link: empty while its Remote Control is off.
+pub async fn live_links(hub: &Hub, node: &str) -> Option<HashMap<String, String>> {
     let opts = CallOpts { peer: peer_for(node), timeout: Duration::from_secs(60), ..CallOpts::default() };
     let reply = hub.call_with("reflection", "list_other", json!({}), &opts).await.ok()?;
     let errors = reply.get("errors").and_then(Value::as_array).is_some_and(|e| !e.is_empty());
@@ -97,7 +102,10 @@ pub async fn live_jobs(hub: &Hub, node: &str) -> Option<HashSet<String>> {
     Some(
         rows.iter()
             .filter(|r| row_live(r))
-            .filter_map(|r| r.get("job").and_then(Value::as_str).filter(|j| !j.is_empty()).map(str::to_string))
+            .filter_map(|r| {
+                let job = r.get("job").and_then(Value::as_str).filter(|j| !j.is_empty())?;
+                Some((job.to_string(), r.get("rc_url").and_then(Value::as_str).unwrap_or("").to_string()))
+            })
             .collect(),
     )
 }

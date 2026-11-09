@@ -610,16 +610,16 @@ class TestNothingWasSpent:
             self, isolated_dirs, monkeypatch) -> None:
         """A dependency that fails before ssh runs cannot have fired a push.
 
-        Seen live 2026-09-01: `vpn/up` answered HTTP 504, ssh never ran, and the
-        arbiter held sockeye fleet-wide and paged the operator for it.
+        Seen live 2026-09-01: a dependency answered HTTP 504, ssh never ran, and
+        the arbiter held sockeye fleet-wide and paged the operator for it.
         """
         svc = SSHService()
         cfg = resolve_host("sockeye")
 
-        async def _vpn_times_out(c, marker, rec):
-            raise RuntimeError("gateway call vpn/up failed: HTTP 504")
+        async def _dependency_times_out(c, marker, rec):
+            raise RuntimeError("gateway call 2fa/burst failed: HTTP 504")
 
-        monkeypatch.setattr(svc, "_attempt_master", _vpn_times_out)
+        monkeypatch.setattr(svc, "_attempt_master", _dependency_times_out)
         monkeypatch.setattr(svc, "_check_master", _false)
 
         result = await svc._do_connect_attempt(cfg)
@@ -676,30 +676,28 @@ class TestDependenciesBeforeTheLogin:
     connection" — so agents went looking at sockeye.
     """
 
-    async def test_a_dead_vpn_is_named_and_spends_nothing(
+    async def test_a_refused_jump_names_the_tunnel_and_spends_nothing(
             self, isolated_dirs, monkeypatch) -> None:
+        """Altair's tunnel down: the jump host cannot reach the bounce, so sockeye never saw a packet."""
         svc = SSHService()
         cfg = resolve_host("sockeye")
-        spawned: list = []
 
-        async def _vpn_fails(service, verb, args=None, **kw):
-            raise RuntimeError("gateway call vpn/up failed: HTTP 502")
+        async def _jump_refused(c, marker, rec):
+            rec.spawned = True
+            with open(ssh_service.stderr_path(c), "w") as f:
+                f.write("channel 0: open failed: connect failed: Connection refused\n"
+                        "stdio forwarding failed\n"
+                        "kex_exchange_identification: Connection closed by remote host\n")
+            raise ssh_service._AttemptFailed("ControlMaster did not appear within 60s")
 
-        async def _spawn(*a, **k):
-            spawned.append(a)
-            raise AssertionError("no ssh may run without the tunnel")
-
-        monkeypatch.setattr(ssh_service.gatewayclient, "call", _vpn_fails)
-        monkeypatch.setattr(ssh_service.asyncio, "create_subprocess_exec", _spawn)
+        monkeypatch.setattr(svc, "_attempt_master", _jump_refused)
         monkeypatch.setattr(svc, "_check_master", _false)
 
         result = await svc._do_connect_attempt(cfg)
 
-        assert result["status"] == "error"
-        assert "'ubc' VPN exit" in result["error"]
-        assert "refused" not in result["error"]
+        assert result["_preauth"] is True
+        assert "ubc VPN tunnel on altair is down" in result["error"]
         assert "no MFA attempt was spent" in result["error"]
-        assert spawned == []
 
     async def test_an_unreachable_approver_is_named_before_any_ssh(
             self, isolated_dirs, monkeypatch) -> None:

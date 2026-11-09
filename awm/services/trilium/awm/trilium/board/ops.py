@@ -75,7 +75,8 @@ def build_roster(nodes: list[dict], services: list[dict], seats: list[dict],
                    "label": text(s.get("label") or s.get("name")) or text(s.get("seat") or s.get("id")),
                    "state": text(s.get("state")),
                    "remote_control": bool(s.get("remote_control")),
-                   "rc_url": text(s.get("rc_url")), "node": text(s.get("node"))}
+                   "rc_url": text(s.get("rc_url")), "node": text(s.get("node")),
+                   "rc_live": text(s.get("rc_live")), "ts": text(s.get("ts"))}
                   for s in seats],
         "notices": [{"kind": text(n.get("kind")), "node": text(n.get("node")),
                      "title": text(n.get("title")), "body": text(n.get("body")),

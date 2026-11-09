@@ -895,6 +895,13 @@ impl Approver {
             "UPDATE orders SET done_at=?, ok=?, note=? WHERE order_id=? AND done_at IS NULL",
             params![self.now(), ok as i64, note, order_id],
         )?;
+        if n == 1 && !ok {
+            let payload: Option<String> = self.conn().query_row("SELECT payload FROM orders WHERE order_id=? AND kind='agent'", [order_id], |r| r.get(0)).optional()?;
+            let task = payload.and_then(|p| serde_json::from_str::<Value>(&p).ok()).and_then(|p| p["task_id"].as_str().map(str::to_string));
+            if let Some(task) = task {
+                self.store.agent_order_failed(&task, &note).map_err(|e| ApproverError::new("failed", e.to_string()))?;
+            }
+        }
         Ok(json!({"order_id": order_id, "recorded": n == 1}))
     }
 

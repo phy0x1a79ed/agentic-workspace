@@ -593,7 +593,7 @@ impl Channels {
         }
         match event.get("phase").and_then(Value::as_str) {
             Some("ended") => Some(event.get("ended").and_then(Value::as_str).filter(|s| !s.is_empty()).unwrap_or("the session ended").to_string()),
-            Some("open") if !event.get("resumed").and_then(Value::as_bool).unwrap_or(false) => {
+            Some("open") if event.get("resumed").is_none_or(Value::is_null) => {
                 self.push(row, lines::notice("machine", &row.name, "the owner connected."));
                 None
             }

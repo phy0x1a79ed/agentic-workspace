@@ -1,15 +1,14 @@
 //! The seats' world in production: this node's reflection and scope, and the outbox.
 
-use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
 use awm_plugin_sdk::push::{self, Outcome, Pusher};
-use awm_plugin_sdk::{holders, CallOpts, Hub};
+use awm_plugin_sdk::{CallOpts, Hub};
 use serde_json::{json, Value};
 
-use crate::engine::{Started, World};
+use crate::engine::{Links, Started, World};
 use crate::link::Link;
 
 pub struct Live {
@@ -49,8 +48,8 @@ impl World for Live {
         push::reflect(&self.hub, &self.here, job, line).await
     }
 
-    async fn live(&self) -> Option<HashSet<String>> {
-        push::live_jobs(&self.hub, &self.here).await
+    async fn live(&self) -> Option<Links> {
+        push::live_links(&self.hub, &self.here).await
     }
 
     async fn scope_ready(&self, project: &str, scope: &str) -> Option<bool> {
@@ -63,18 +62,12 @@ impl World for Live {
         v.get("path").and_then(Value::as_str).map(str::to_string)
     }
 
-    async fn remote_control(&self, job: &str, on: bool, name: &str) -> Result<Option<String>, String> {
+    async fn remote_control(&self, job: &str, on: bool, name: &str) -> Result<(), String> {
         match self.hub.call_with("reflection", "remote_control", json!({"job": job, "on": on, "name": name}), &opts(60)).await {
-            Ok(v) if v.get("ok") != Some(&json!(false)) => Ok(v.get("rc_url").and_then(Value::as_str).filter(|u| !u.is_empty()).map(str::to_string)),
+            Ok(v) if v.get("ok") != Some(&json!(false)) => Ok(()),
             Ok(v) => Err(reason(&v)),
             Err(e) => Err(e.to_string()),
         }
-    }
-
-    async fn rc_url(&self, job: &str) -> Option<String> {
-        let rows = holders::session_rows(&self.hub, false).await?;
-        let row = rows.iter().find(|r| r.get("job").and_then(Value::as_str) == Some(job))?;
-        row.get("rc_url").and_then(Value::as_str).filter(|u| !u.is_empty()).map(str::to_string)
     }
 
     fn hand(&self, job: &str, line: &str) {

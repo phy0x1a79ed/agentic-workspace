@@ -26,13 +26,6 @@ from awm.ssh.config import (
 log = logging.getLogger("awm.ssh.service")
 
 _CONNECT_TIMEOUT = 120.0
-# Budget for bringing the host's VPN exit up, spent BEFORE the ssh clock above
-# starts. A cold UBC dial is a docker run plus a Duo-approved openconnect login;
-# it must cover the vpn service's own worst case (`vpn.container.UP_BUDGET_S`,
-# 240s) or a slow docker daemon reads here as a dead host. It used to be the
-# gateway's 30s default, and on 2026-10-16 every connect to sockeye after the
-# tunnel dropped gave up while the vpn service was still dialing.
-_VPN_UP_TIMEOUT = 270.0
 _CHECK_POLL_INTERVAL = 1.5
 _CHECK_POLL_ATTEMPTS = 40
 _DISCONNECT_POLL_ATTEMPTS = 8
@@ -107,6 +100,10 @@ _PREAUTH_STDERR = (
     "kex_exchange_identification",   # died during key exchange — before auth
     "Exceeded MaxStartups",          # sshd's pre-auth connection cap
     "Connection refused",            # no TCP listener
+    # The jump host could not reach the next hop, so the target never saw a
+    # packet. This is how a down VPN exit shows behind `-J vpn_<profile>`.
+    "open failed: connect failed",
+    "stdio forwarding failed",
     "Could not resolve hostname",    # never left this host
     "No route to host",
     "Network is unreachable",
@@ -191,9 +188,8 @@ class _AttemptFailed(Exception):
 
 
 class _DependencyFailed(Exception):
-    """Something the login needs (the VPN exit, the Duo approver) failed before
-    ssh ran. The message names it, because the caller has to know what to wait
-    for; "the host refused" sent agents chasing sockeye when the tunnel was down."""
+    """Something the login needs (the Duo approver) failed before ssh ran. The
+    message names it, because the caller has to know what to wait for."""
 
 
 # A ControlMaster outlives the connect that made it, but by default it lives in
@@ -654,7 +650,7 @@ class SSHService:
         return result.get("status") == "connected" or bool(preauth)
 
     async def _do_connect_attempt(self, cfg: HostConfig) -> dict:
-        """Bring up the ControlMaster (vpn + 2fa + ssh + poll) within an internal
+        """Bring up the ControlMaster (2fa + ssh + poll) within an internal
         timeout. Never raises. A failure returns an error dict carrying
         ``_lock_reason`` and ``_preauth`` for the lease verdict. See
         :meth:`_is_preauth_failure`."""
@@ -671,7 +667,6 @@ class SSHService:
             log.info("connecting to %s (vpn=%s, 2fa=%s)",
                      cfg.host, cfg.vpn_profile or "none",
                      cfg.twofa_device or "none")
-            await self._bring_up_vpn(cfg)
             await asyncio.wait_for(self._attempt_master(cfg, marker, rec),
                                    timeout=_CONNECT_TIMEOUT)
             log.info("connected to %s", cfg.host)
@@ -721,7 +716,10 @@ class SSHService:
             # no /approve.
             log.warning("pre-auth failure on %s (no MFA attempt spent): %s",
                         cfg.host, reason)
-            if rec.spawned:
+            if rec.spawned and cfg.needs_vpn and self._jump_refused(cfg):
+                what = (f"the jump through vpn_{cfg.vpn_profile} was refused: the "
+                        f"{cfg.vpn_profile} VPN tunnel on altair is down or re-dialing")
+            elif rec.spawned:
                 what = f"{cfg.host} refused the connection before authentication"
             else:
                 what = (f"connect to {cfg.host} failed before ssh ran "
@@ -740,7 +738,7 @@ class SSHService:
 
     async def _attempt_master(self, cfg: HostConfig, marker: str,
                               rec: _AttemptRecord) -> None:
-        """Orchestrate vpn + 2fa + ssh and poll for the ControlMaster socket.
+        """Orchestrate 2fa + ssh and poll for the ControlMaster socket.
         Returns on success (lock cleared); raises :class:`_AttemptFailed` if the
         master never appears.
 
@@ -849,24 +847,6 @@ class SSHService:
         raise _AttemptFailed(
             f"ControlMaster did not appear within "
             f"{_CHECK_POLL_ATTEMPTS * _CHECK_POLL_INTERVAL:.0f}s")
-
-    async def _bring_up_vpn(self, cfg: HostConfig) -> None:
-        """Ensure the host's VPN exit is up, within its own budget.
-
-        Idempotent on the vpn side: a live exit answers at once, a dead one is
-        re-dialed. Raises :class:`_DependencyFailed` naming the exit."""
-        if not (cfg.needs_vpn and cfg.vpn_profile):
-            return
-        try:
-            result = await gatewayclient.call(
-                "vpn", "up", {"profile": cfg.vpn_profile},
-                timeout=_VPN_UP_TIMEOUT)
-        except Exception as exc:  # noqa: BLE001 — named for the caller
-            raise _DependencyFailed(
-                f"the '{cfg.vpn_profile}' VPN exit could not be brought up: "
-                f"{str(exc) or type(exc).__name__}") from exc
-        log.info("vpn up %s: %s", cfg.vpn_profile,
-                 (result or {}).get("status", "ok"))
 
     async def _detach_prefix(self, cfg: HostConfig) -> list[str]:
         """The argv prefix that spawns a master in its own systemd scope, or
@@ -1007,7 +987,7 @@ class SSHService:
         evidence at all -> False (hold the host).
         """
         if not rec.spawned:
-            # Nothing ran. The vpn call, the 2fa arming and the exec all precede
+            # Nothing ran. The 2fa arming and the exec both precede
             # any packet ssh could send, so a failure before the exec cannot have
             # reached a login — no stderr reading required, and none wanted,
             # since the file describes a different attempt entirely.
@@ -1028,6 +1008,16 @@ class SSHService:
         if os.path.exists(marker) and not self._deviation_was_non_duo(marker):
             return False  # a Duo menu was presented — a push may have fired
         return any(s.lower() in ssh_only for s in _PREAUTH_STDERR)
+
+    @staticmethod
+    def _jump_refused(cfg: HostConfig) -> bool:
+        try:
+            with open(stderr_path(cfg), encoding="utf-8", errors="replace") as f:
+                blob = f.read().lower()
+        except FileNotFoundError:
+            return False
+        return any(m in blob for m in ("connection refused", "open failed: connect failed",
+                                       "stdio forwarding failed"))
 
     async def _duo_saw_nothing(self, cfg: HostConfig,
                                rec: _AttemptRecord) -> bool:

@@ -1,5 +1,5 @@
 # The dev core plugin binary (static musl) that a deploy places at <AWM_DIR>/bin/dev.
 # Written by the deploy on mizar (scripts/refresh-pins.sh). Do not edit.
-version=dev-d873fc2cbd30
-file=awm-plugin-dev-d873fc2cbd30-linux-x86_64-musl
-sha256=966164630f8248fc7f33daefb49b6f46ae4bd5a353b55a9be582034f014d3a4e
+version=dev-bd0fcee2a5b0
+file=awm-plugin-dev-bd0fcee2a5b0-linux-x86_64-musl
+sha256=2c62efef88f4879b36f5a49bb947153ae03bc1972c81995eb273fb9ad2090d46

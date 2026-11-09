@@ -309,7 +309,9 @@ pub fn parse_tool_call(words: &[String]) -> anyhow::Result<Value> {
     let mut peer = None;
     let mut i = 0;
     while i < flags.len() {
-        let Some(flag) = flags[i].strip_prefix("--") else { anyhow::bail!("unexpected argument {:?}", flags[i]) };
+        let Some(flag) = flags[i].strip_prefix("--") else {
+            anyhow::bail!("unexpected argument {:?}: pass arguments as --name value, or `--json '{{...}}'`", flags[i])
+        };
         let (key, inline) = match flag.split_once('=') {
             Some((k, v)) => (k.to_string(), Some(v.to_string())),
             None => (flag.to_string(), None),
@@ -373,12 +375,23 @@ async fn invoke_and_print(body: &Value) -> anyhow::Result<i32> {
         Ok(0)
     } else {
         let detail = body.get("detail").cloned().unwrap_or(body);
-        eprintln!("awm: {} {}", status.as_u16(), match detail {
+        let text = match detail {
             Value::String(s) => s,
             other => serde_json::to_string_pretty(&other)?,
-        });
+        };
+        eprintln!("awm: {} {text}", status.as_u16());
+        if let Some(hint) = missing_flags_hint(&text) {
+            eprintln!("awm: pass {hint}");
+        }
         Ok(1)
     }
+}
+
+/// The flags a verb's "missing required argument(s)" refusal asks for, spelled for this CLI.
+fn missing_flags_hint(error: &str) -> Option<String> {
+    let (_, tail) = error.split_once("missing required argument(s): ")?;
+    let (names, _) = tail.split_once('.')?;
+    Some(names.split(", ").map(|n| format!("--{n} <value>")).collect::<Vec<_>>().join(" "))
 }
 
 #[cfg(test)]
@@ -405,5 +418,8 @@ mod tests {
         assert_eq!(b["args"]["args"]["b"], "c");
         assert!(parse_tool_call(&w("x v stray")).is_err());
         assert_eq!(parse_tool_call(&w("scope git-gather --hub x")).unwrap()["args"]["verb"], "git_gather");
+        let refusal = r#"{"error": "connect: missing required argument(s): host, port. Ask Tony."}"#;
+        assert_eq!(missing_flags_hint(refusal).unwrap(), "--host <value> --port <value>");
+        assert_eq!(missing_flags_hint("connect: refused"), None);
     }
 }

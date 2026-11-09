@@ -50,6 +50,14 @@ const rc = (url) => (/^https:\/\/claude\.ai\//.test(url || "")
 
 const sessionMatches = (q, s) => fuzzy(q, s.name) || fuzzy(q, s.scope) || fuzzy(q, s.project);
 
+// A session started for a card keeps the name "task <id>", so it shows the card's title.
+const TASK_NAME = /^task (\S+)$/;
+async function cardTitles(nodes) {
+  const ids = [...new Set(nodes.flatMap((n) => n.sessions || []).map((s) => TASK_NAME.exec(show(s.name))?.[1]).filter(Boolean))];
+  const hits = await Promise.all(ids.map((id) => api.searchForNotes(`#swarmCard #taskId = ${JSON.stringify(id)}`)));
+  return new Map(ids.flatMap((id, i) => (hits[i][0] ? [[`task ${id}`, hits[i][0].title]] : [])));
+}
+
 function nodeSection(n, q) {
   const own = fuzzy(q, n.name);
   const sessions = (n.sessions || []).filter((s) => own || sessionMatches(q, s));
@@ -67,23 +75,41 @@ function nodeSection(n, q) {
       : el("div", { class: "none" }, "no sessions"));
 }
 
+// A flip waits for the seat's answer: a seat event newer than the row it was flipped on.
+const flips = new Map();
+const FLIP_GIVE_UP_MS = 120000;
+
+function settleFlip(s) {
+  const f = flips.get(s.seat);
+  if (!f) return;
+  if (Date.now() - f.at > FLIP_GIVE_UP_MS) { flips.delete(s.seat); return; }
+  if (!s.rc_live || s.ts === f.ts) return;
+  flips.delete(s.seat);
+  const failed = s.rc_live.startsWith("failed");
+  toast(failed ? `${s.label || s.seat}: Remote Control ${f.want ? "on" : "off"} ${s.rc_live}`
+    : `${s.label || s.seat}: Remote Control ${s.remote_control ? "on" : "off"}`, failed);
+}
+
 function seatRow(s) {
+  settleFlip(s);
+  const pending = flips.has(s.seat);
   const sw = el("input", { type: "checkbox", title: "Remote Control" });
   sw.checked = !!s.remote_control;
+  sw.disabled = pending;
   sw.addEventListener("change", async () => {
     const want = sw.checked;
+    sw.checked = !want;
     sw.disabled = true;
+    flips.set(s.seat, { want, ts: s.ts, at: Date.now() });
     try {
       // The seat id holds a slash, so it travels in the body (fleet.md R147 item 7).
-      const out = await swarmCall(origin, "/api/seat/remote_control", { seat: s.seat, on: want });
-      const live = show(out.live);
-      toast(`${s.label || s.seat}: Remote Control ${want ? "on" : "off"}${live.startsWith("failed") ? ` (${live})` : ""}`,
-            live.startsWith("failed"));
-    } catch (e) { sw.checked = !want; toast(e.message, true); }
-    sw.disabled = false;
+      await swarmCall(origin, "/api/seat/remote_control", { seat: s.seat, on: want });
+      toast(`${s.label || s.seat}: Remote Control ${want ? "on" : "off"} requested`);
+    } catch (e) { flips.delete(s.seat); sw.disabled = false; toast(e.message, true); }
   });
   return el("tr", { "data-seat": s.seat }, el("td", {}, s.label || s.seat), el("td", {}, s.state || ""),
-    el("td", {}, el("label", {}, sw, " Remote Control")), el("td", {}, s.remote_control ? rc(s.rc_url) : null));
+    el("td", {}, el("label", {}, sw, pending ? " Remote Control (requested)" : " Remote Control")),
+    el("td", {}, s.remote_control ? rc(s.rc_url) : null));
 }
 
 function table(heads, rows, empty) {
@@ -181,6 +207,8 @@ async function render() {
   const roster = await swarmRoster();
   const q = $(".search").value;
   const all = roster.nodes || [];
+  const titles = await cardTitles(all);
+  for (const n of all) for (const s of n.sessions || []) s.name = titles.get(s.name) || s.name;
   const nodes = all.filter((n) => fuzzy(q, n.name) || (n.sessions || []).some((s) => sessionMatches(q, s)));
   $(".awm-nodes").replaceChildren(...(nodes.length ? nodes.map((n) => nodeSection(n, q))
     : [el("div", { class: "none" }, "No node matches.")]));

@@ -179,10 +179,6 @@ impl<L: Lane> Screen<L> {
         Ok(self.lane.press(key).await?)
     }
 
-    fn forget(&mut self) {
-        self.lane.forget();
-    }
-
     fn hold(&self) -> impl Future<Output = Result<OwnedMutexGuard<()>, ControlError>> + Send + 'static {
         let lock = self.lock.clone();
         async move {
@@ -1393,15 +1389,15 @@ async fn turn_off_later<E: Effects>(fx: &E, t: &Target, resume: bool) -> Result<
     ))
 }
 
-/// The text of the option the cursor is on, from the latest paint of it.
+/// The text of the option the cursor is on, the lowest one painted.
 pub fn selected_option(screen: &str) -> Option<String> {
-    CURSOR.captures_iter(&guards::plain_screen(screen)).last().map(|c| c[1].trim().to_string())
+    CURSOR.captures_iter(&guards::current_screen(screen)).last().map(|c| c[1].trim().to_string())
 }
 
 /// Which key moves the cursor toward the disconnect option, or None if unknown.
 fn direction(screen: &str) -> Option<Key> {
-    let plain = guards::plain_screen(screen);
-    let lines: Vec<&str> = plain.split('\n').collect();
+    let shown = guards::current_screen(screen);
+    let lines: Vec<&str> = shown.split('\n').collect();
     let target = lines.iter().rposition(|ln| ln.to_lowercase().contains(DISCONNECT_OPTION))?;
     let cursor = lines.iter().rposition(|ln| CURSOR.is_match(ln))?;
     Some(if cursor > target { Key::Up } else { Key::Down })
@@ -1424,7 +1420,7 @@ async fn drive_disconnect<E: Effects>(
 }
 
 fn shows_disconnect(screen: &str) -> bool {
-    guards::plain_screen(screen).to_lowercase().contains(DISCONNECT_OPTION)
+    guards::current_screen(screen).to_lowercase().contains(DISCONNECT_OPTION)
 }
 
 async fn drive_on<E: Effects>(
@@ -1488,6 +1484,9 @@ async fn await_modal<L: Lane>(sess: &mut Screen<L>, wait: Wait) -> Result<Option
 }
 
 /// Move the cursor onto 'Disconnect this session'. `Some` is the reason it could not.
+///
+/// Each read is the whole stream since the lane opened: a key press repaints only the rows that
+/// changed, so the screen is the replay of every paint.
 async fn walk_to_disconnect<L: Lane>(sess: &mut Screen<L>, mut screen: String) -> Result<Option<String>, ControlError> {
     let mut key = None;
     for _ in 0..=MAX_MODAL_STEPS {
@@ -1507,7 +1506,6 @@ async fn walk_to_disconnect<L: Lane>(sess: &mut Screen<L>, mut screen: String) -
                 }
             },
         };
-        sess.forget();
         sess.press(step).await?;
         sleep(KEY_SETTLE).await;
         screen = sess.read().await?;
@@ -1826,7 +1824,13 @@ mod tests {
     const DEAD_PID: u32 = (1 << 22) + 12345;
     const PLAIN: &str = "some output\n? for shortcuts";
     const PROMPT: &str = "Do you want to proceed?\n❯ 1. Yes\n  2. No\nEsc to cancel";
-    const OPTIONS: [&str; 3] = ["Show QR code", "Disconnect this session", "Continue"];
+    // Claude Code 2.1.321's `/rc` modal on a connected session, as its daemon pty streamed it:
+    // the open, then the repaint after each Up. The cursor starts on Continue, the last option.
+    const RC_OPEN: &str = include_str!("../testdata/rc_modal_2.1.321/open.stream");
+    const RC_UP: [&str; 2] = [
+        include_str!("../testdata/rc_modal_2.1.321/up1.stream"),
+        include_str!("../testdata/rc_modal_2.1.321/up2.stream"),
+    ];
     const MODEL_KEY: &str = "model-a";
 
     fn me() -> u32 {
@@ -1848,8 +1852,8 @@ mod tests {
     #[derive(Default)]
     struct ScreenState {
         frames: VecDeque<String>,
-        // The Remote Control modal: a list with a cursor that Down and Up move.
-        modal: Option<(Vec<String>, usize)>,
+        // What the session paints after each Up or Down, appended to the stream.
+        repaints: VecDeque<String>,
         presses: Vec<Key>,
         closed: bool,
         on_press: Option<OnPress>,
@@ -1866,9 +1870,10 @@ mod tests {
             s
         }
 
-        fn modal(options: &[&str], cursor: usize) -> Self {
-            let s = Self::default();
-            s.0.lock().unwrap().modal = Some((options.iter().map(|o| o.to_string()).collect(), cursor));
+        /// A pty stream that grows by one of `repaints` on each Up or Down.
+        fn stream(open: &str, repaints: &[&str]) -> Self {
+            let s = Self::new(&[open]);
+            s.0.lock().unwrap().repaints = repaints.iter().map(|r| r.to_string()).collect();
             s
         }
 
@@ -1886,14 +1891,6 @@ mod tests {
 
         fn render(&self) -> String {
             let mut s = self.0.lock().unwrap();
-            if let Some((options, cursor)) = &s.modal {
-                let rows: Vec<String> = options
-                    .iter()
-                    .enumerate()
-                    .map(|(i, o)| format!("{}{o}", if i == *cursor { "❯ " } else { "  " }))
-                    .collect();
-                return format!("Remote Control\n{}\nEnter to select", rows.join("\n"));
-            }
             if s.frames.len() > 1 {
                 s.frames.pop_front().unwrap_or_default()
             } else {
@@ -1927,18 +1924,14 @@ mod tests {
         async fn repaint(&mut self) -> Result<bool, LaneError> {
             Ok(false)
         }
-        fn forget(&mut self) {}
         async fn press(&mut self, key: Key) -> Result<(), LaneError> {
             let hook = {
                 let mut s = self.0.lock().unwrap();
                 s.presses.push(key);
-                if let Some((options, cursor)) = &mut s.modal {
-                    let n = options.len();
-                    *cursor = match key {
-                        Key::Down => (*cursor + 1) % n,
-                        Key::Up => (*cursor + n - 1) % n,
-                        _ => *cursor,
-                    };
+                if matches!(key, Key::Up | Key::Down) {
+                    if let Some(paint) = s.repaints.pop_front() {
+                        s.frames.back_mut().expect("a stream").push_str(&paint);
+                    }
                 }
                 s.on_press.clone()
             };
@@ -2449,17 +2442,17 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn test_off_types_rc_and_selects_disconnect_in_the_modal() {
         let w = connected();
-        let modal = FakeScreen::modal(&OPTIONS, 0);
+        let modal = FakeScreen::stream(RC_OPEN, &RC_UP);
         let out = drive(&w, &modal, true).await;
         assert!(ok(&out) && out["bridge_cleared"] == json!(true) && out["remote_control"] == json!(false), "{out}");
         assert_eq!(w.typed(), [(OTHER_JOB.to_string(), "/rc".to_string(), 1)]);
-        assert_eq!(modal.presses(), [Key::Down, Key::Enter], "Show QR -> Disconnect");
+        assert_eq!(modal.presses(), [Key::Up, Key::Up, Key::Enter], "Continue -> Show QR -> Disconnect");
     }
 
     #[tokio::test(start_paused = true)]
     async fn test_off_refuses_a_modal_that_is_not_the_expected_one() {
         let w = connected();
-        let modal = FakeScreen::modal(&["Yes", "No"], 0);
+        let modal = FakeScreen::new(&["Do you want to proceed?\n❯ Yes\n  No\nEnter to select"]);
         let out = drive(&w, &modal, true).await;
         assert!(out["ok"] == json!(false) && out["kind"] == json!("unexpected_modal"));
         assert_eq!(modal.presses(), [Key::Escape], "closed, and Enter never pressed");

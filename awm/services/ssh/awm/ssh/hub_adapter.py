@@ -15,8 +15,8 @@ svc = SSHService()
 API_MANIFEST: dict[str, Any] = {
     "description": (
         "SSH to the managed HPC hosts, and the only sanctioned way to reach "
-        "them. `connect` orchestrates the VPN and the Duo approver itself, so "
-        "do NOT call the vpn or 2fa domains around it — they are already armed, "
+        "them. `connect` arms the Duo approver itself, so do NOT call the 2fa "
+        "domain around it — it is already armed, "
         "once, for the single login it is about to make. After connecting, plain "
         "`ssh <host> <cmd>` multiplexes over the ControlMaster with no new "
         "authentication. A host reported 'unavailable' is held after an earlier "
@@ -31,14 +31,14 @@ API_MANIFEST: dict[str, Any] = {
             "description": (
                 "Open a ControlMaster SSH connection to a managed host. "
                 "Idempotent — if already connected it does an auth-free liveness "
-                "check and returns without a new login. Orchestrates VPN + 2FA "
-                "burst automatically for hosts that require them, deduplicating "
+                "check and returns without a new login. Arms the 2FA burst "
+                "automatically for hosts that require it, deduplicating "
                 "concurrent requests into a single attempt — you do not need to "
-                "call the vpn or 2fa domains, and doing so spends MFA budget "
-                "this service is accounting for. Blocks until the ControlMaster "
-                "socket is live, then returns success: seconds when the VPN "
-                "exit is up, a minute or more when it has to be re-dialed. "
-                "A failure names what failed (the VPN exit, the Duo approver, "
+                "call the 2fa domain, and doing so spends MFA budget this "
+                "service is accounting for. Sockeye hosts jump through the UBC "
+                "VPN tunnel that altair's vpn service keeps up; never call vpn "
+                "for them. Blocks until the ControlMaster socket is live. A "
+                "failure names what failed (the VPN tunnel, the Duo approver, "
                 "the host). Returns status 'unavailable' (no login attempted) if "
                 "the host is held by the circuit breaker after a prior failure — "
                 "recovery is an operator /approve in Discord, never a retry. An "
@@ -49,9 +49,9 @@ API_MANIFEST: dict[str, Any] = {
             "params": [
                 {"name": "host", "type": "string", "required": True},
             ],
-            # A VPN re-dial (service._VPN_UP_TIMEOUT) plus the ssh login
-            # (service._CONNECT_TIMEOUT), plus slack for the lease.
-            "timeout": 420,
+            # The ssh login (service._CONNECT_TIMEOUT), plus slack for a
+            # lease queued behind another login.
+            "timeout": 300,
         },
         {
             "name": "disconnect",

@@ -26,6 +26,9 @@ KNOWN_HOSTS: dict[str, HostConfig] = {
     "sockeye2": HostConfig("sockeye2", "txyliu",   needs_vpn=True,  vpn_profile="ubc",  twofa_device="cwl"),
     "sockeye3": HostConfig("sockeye3", "txyliu",   needs_vpn=True,  vpn_profile="ubc",  twofa_device="cwl"),
     "fir":      HostConfig("fir",      "phyberos",  needs_vpn=False,                    twofa_device="alliance", guarded=True),
+    "nibi": HostConfig("nibi", "phyberos", twofa_device="alliance", guarded=True),
+    "trillium": HostConfig("trillium", "phyberos", twofa_device="alliance", guarded=True),
+    "trillium-gpu": HostConfig("trillium-gpu", "phyberos", twofa_device="alliance", guarded=True),
 }
 
 LIVE_DIR = os.path.expanduser("~/.ssh/live_connections")

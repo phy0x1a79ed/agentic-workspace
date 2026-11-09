@@ -94,6 +94,18 @@ def test_a_run_that_outlives_the_cli_is_judged_by_what_the_daemon_did(harness):
         "an exit that came up must not be torn down for the CLI's timeout"
 
 
+def test_a_container_with_no_tunnel_yet_is_not_healthy(monkeypatch):
+    # Before the dial finishes, curl still answers with an IP that can pass as an exit.
+    from awm.vpn import container
+
+    device = {"returncode": 1}
+    monkeypatch.setattr(container, "_docker", lambda args, **kw: subprocess.CompletedProcess(args, device["returncode"], "9.9.9.9\n", ""))
+    monkeypatch.setattr(container, "host_ip", lambda: "")
+    assert container.leak_check("awm-vpn-ubc") == ("", False)
+    device["returncode"] = 0
+    assert container.leak_check("awm-vpn-ubc") == ("9.9.9.9", True)
+
+
 def test_a_remove_that_never_finishes_says_so(harness):
     container, install, _ = harness
 
@@ -140,3 +152,34 @@ def test_the_gateway_gives_up_its_full_budget():
     up = next(f for f in hub_adapter.API_MANIFEST["functions"] if f["name"] == "up")
     assert up["timeout"] == container.UP_BUDGET_S
     assert container.UP_BUDGET_S > container._UP_TIMEOUT_S + 2 * 30.0
+
+
+def test_down_logs_out_before_it_removes(harness):
+    container, install, rows = harness
+    docker = install(FakeDocker(state="running"))
+
+    container.down("ubc")
+
+    verbs = [c[0] for c in docker.calls if c[0] in ("stop", "rm")]
+    assert verbs == ["stop", "rm"], "a bare rm leaves the VPN session counted on the server"
+
+
+def test_the_bounce_listens_on_loopback_only(harness):
+    container, install, _ = harness
+    docker = install(FakeDocker())
+
+    container.up("ubc")
+
+    run = next(c for c in docker.calls if c[0] == "run")
+    assert run[run.index("-p") + 1] == "127.0.0.1:2222:22"
+
+
+def test_the_bounce_admits_its_own_key_and_each_caller(tmp_path, monkeypatch):
+    from awm.vpn import config
+
+    monkeypatch.setattr(config, "SERVICE_DIR", tmp_path)
+    monkeypatch.setattr(config, "ensure_bounce_key", lambda: "ssh-ed25519 OWN awm-vpn-bounce")
+    assert config.bounce_authorized_keys() == "ssh-ed25519 OWN awm-vpn-bounce"
+    (tmp_path / "bounce_callers").write_text("# rendered by hpc_ssh\nssh-ed25519 MIZAR awm:mizar:user\n\nssh-ed25519 CAPELLA awm:capella:user\n")
+    assert config.bounce_authorized_keys().splitlines() == [
+        "ssh-ed25519 OWN awm-vpn-bounce", "ssh-ed25519 MIZAR awm:mizar:user", "ssh-ed25519 CAPELLA awm:capella:user"]
