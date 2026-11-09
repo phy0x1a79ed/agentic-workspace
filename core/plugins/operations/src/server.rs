@@ -375,8 +375,9 @@ async fn agent(State(v): S, method: Method, h: HeaderMap, Json(b): Json<Value>) 
     if let Err(r) = everyday(&v, &method, &h, "agent") {
         return r;
     }
-    let note = b.get("note_id").and_then(Value::as_str).filter(|s| !s.is_empty());
-    ok(v.approver.agent(sv(&b, "node"), note).await)
+    let pick = |key| b.get(key).and_then(Value::as_str);
+    let note = pick("note_id").filter(|s| !s.is_empty());
+    ok(v.approver.agent(sv(&b, "node"), pick("model"), pick("effort"), note).await)
 }
 
 async fn card_action(State(v): S, method: Method, h: HeaderMap, Path((task_id, action)): Path<(String, String)>) -> Response {

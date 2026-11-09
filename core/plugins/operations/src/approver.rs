@@ -100,6 +100,8 @@ impl From<crate::store::QueueError> for ApproverError {
 
 pub type AResult<T> = Result<T, ApproverError>;
 
+const AGENT_MODELS: [&str; 4] = ["opus", "sonnet", "haiku", "fable"];
+
 fn bad(msg: impl Into<String>) -> ApproverError {
     ApproverError::new("bad_request", msg)
 }
@@ -805,9 +807,13 @@ impl Approver {
     }
 
     /// Start an agent on `node` from the vault: a card in Needs you and a signed `agent`
-    /// order. No text from the vault reaches the agent.
-    pub async fn agent(&self, node: &str, note_id: Option<&str>) -> AResult<Value> {
+    /// order. No text from the vault reaches the agent, so a model or effort must be a listed one.
+    pub async fn agent(&self, node: &str, model: Option<&str>, effort: Option<&str>, note_id: Option<&str>) -> AResult<Value> {
         let node = self.order_node("agent", Some(node))?;
+        if model.is_some_and(|m| !AGENT_MODELS.contains(&m)) {
+            return Err(bad(format!("model must be one of {}", AGENT_MODELS.join(", "))));
+        }
+        effort.map(awm_trust::trust::check_effort).transpose().map_err(|e| bad(e.to_string()))?;
         if let Some(n) = note_id {
             if n.is_empty() || n.len() > 64 || !n.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-') {
                 return Err(bad("note_id is a vault note id"));
@@ -819,6 +825,12 @@ impl Approver {
         let mut payload = json!({"task_id": task_id, "node": node});
         if let Some(n) = note_id {
             payload["note_id"] = json!(n);
+        }
+        if let Some(m) = model {
+            payload["model"] = json!(m);
+        }
+        if let Some(e) = effort {
+            payload["effort"] = json!(e);
         }
         let env = self.issue_order("agent", &node, payload)?;
         Ok(json!({"task_id": task_id, "order_id": env["order"]["order_id"]}))

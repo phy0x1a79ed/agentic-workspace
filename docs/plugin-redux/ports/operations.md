@@ -47,8 +47,8 @@ Caller gate:
 - `devices` and `device_revoke` also refuse a session stamp and an `as_`.
 
 Stale:
-- operations follows `telemetry/sessions`. A `gone` ends the row, and a Working or Needs you card with no live session moves to Stale. A `live` moves a Stale card back to Working.
-- At start and at each reconnect it reconciles against `telemetry nodes` (CONTRACT.md d5c3a3f2), matching on session_id, then on job. Nodes the roster omits stay untouched.
+- operations follows `telemetry/sessions`. A `gone` ends the row, and a Working or Needs you card with no live session moves to Stale. A `live` moves a Stale card back to Working. A `renamed` sets the row's name, and the name of a card's main session becomes the card's title.
+- At start and at each reconnect it reconciles against `telemetry nodes` (CONTRACT.md d5c3a3f2), matching on session_id, then on job. A listed name that differs from the row's counts as a `renamed`. Nodes the roster omits stay untouched.
 - With telemetry absent, no card goes stale.
 
 The vault API, on the approver server:

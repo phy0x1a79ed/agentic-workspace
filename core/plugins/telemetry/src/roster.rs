@@ -158,6 +158,9 @@ pub struct SessionEvent {
     pub task_id: Option<String>,
     pub node: String,
     pub ts: Ts,
+    /// The new name, on a `renamed` event.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
 /// What one report changed.
@@ -339,7 +342,7 @@ fn seat_row(row: &Value) -> Option<(String, Value)> {
 }
 
 fn live(node: &str, s: &Session, ts: Ts) -> SessionEvent {
-    SessionEvent { event: "live", session_id: s.id().into(), job: s.job.clone(), task_id: s.task_id.clone(), node: node.into(), ts }
+    SessionEvent { event: "live", session_id: s.id().into(), job: s.job.clone(), task_id: s.task_id.clone(), node: node.into(), ts, name: None }
 }
 
 fn gone(node: &str, s: &Session, ts: Ts) -> SessionEvent {
@@ -430,6 +433,9 @@ fn apply_item(state: &mut NodeState, node: &str, item: Item, now: Ts, out: &mut 
                             session.link = session.link.or_else(|| old.link.clone());
                             session.remote_control = session.remote_control || old.remote_control;
                         }
+                        if event == "renamed" && session.name.is_some() && session.name != old.name {
+                            out.sessions.push(SessionEvent { event: "renamed", name: session.name.clone(), ..live(node, &session, ts) });
+                        }
                     } else {
                         session.started = session.started.or(Some(ts));
                         out.sessions.push(live(node, &session, ts));
@@ -511,6 +517,17 @@ mod tests {
         let rev = r.rev;
         let a = r.apply("mizar", vec![stopped], now);
         assert!(a.sessions.is_empty() && !a.changed.contains("sessions") && r.rev == rev);
+    }
+
+    #[test]
+    fn a_rename_is_a_session_event_only_when_the_name_changes() {
+        let mut r = Roster::default();
+        let now = t("2026-11-07T10:00:00Z");
+        r.apply("mizar", vec![hello(vec![Session { name: Some("old".into()), ..sess("a1") }])], now);
+        let renamed = Item::Session { event: "renamed".into(), session: Session { name: Some("new".into()), ..sess("a1") }, ts: Some(now) };
+        let a = r.apply("mizar", vec![renamed.clone()], now);
+        assert_eq!((a.sessions[0].event, a.sessions[0].name.as_deref()), ("renamed", Some("new")));
+        assert!(r.apply("mizar", vec![renamed], now).sessions.is_empty());
     }
 
     #[test]

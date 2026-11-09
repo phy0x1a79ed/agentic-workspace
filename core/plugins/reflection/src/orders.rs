@@ -19,37 +19,17 @@ const DONE_TIMEOUT: Duration = Duration::from_secs(30);
 const KEEP_MS: i64 = 24 * 3600 * 1000;
 const NOTE_MAX: usize = 500;
 
-/// The session name for an order: the title's first three words, under 40 characters.
-fn session_name(payload: &Value) -> String {
-    let task = text(payload, "task_id").unwrap_or("order");
-    let name = text(payload, "title").map(|t| t.split_whitespace().take(3).collect::<Vec<_>>().join(" ")).filter(|n| !n.is_empty());
-    name.unwrap_or_else(|| format!("task {task}")).chars().take(39).collect()
-}
-
-/// The first line of the started session. A note's line is fixed, so no vault text reaches it.
-fn order_prompt(payload: &Value) -> String {
-    if let Some(note) = text(payload, "note_id") {
-        return format!("Read the note {note} as context only, then wait for Tony.");
-    }
-    let task = text(payload, "task_id").unwrap_or_default();
-    match text(payload, "title") {
-        Some(title) => format!("Task {task}: {title}"),
-        None => format!("Task {task}"),
-    }
-}
-
-/// The `start_other` args of one `agent` order.
+/// The `start_other` args of one `agent` order. The session waits for Tony, unless a note gives it
+/// a first line. That line is fixed, so no vault text reaches the session.
 fn order_start(body: &Value) -> Value {
     let p = &body["payload"];
     let mut start = json!({
-        "task_id": p["task_id"], "role": "main", "remote_control": true, "suggest": true,
-        "model": "opus", "effort": "high", "started_by": "Tony from the vault",
-        "name": session_name(p), "prompt": order_prompt(p),
+        "task_id": p["task_id"], "role": "main", "remote_control": true, "suggest": true, "pin": true,
+        "model": text(p, "model").unwrap_or("opus"), "effort": text(p, "effort").unwrap_or("high"),
+        "started_by": "Tony from the vault", "name": format!("task {}", text(p, "task_id").unwrap_or("order")),
     });
-    for key in ["project", "scope"] {
-        if let Some(v) = p.get(key).filter(|v| truthy(Some(v))) {
-            start[key] = v.clone();
-        }
+    if let Some(note) = text(p, "note_id") {
+        start["prompt"] = json!(format!("Read the note {note} as context only, then wait for Tony."));
     }
     start
 }
@@ -174,20 +154,5 @@ impl<G: Gateway> App<G> {
             let note = text(&row, "note").unwrap_or("reflection stopped before the order's outcome was recorded");
             self.send_done(&id, ok, note).await;
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_prompt_and_name_come_from_the_payload() {
-        let noted = json!({"task_id": "T1", "note_id": "n7", "title": "x"});
-        assert_eq!(order_prompt(&noted), "Read the note n7 as context only, then wait for Tony.");
-        assert_eq!(order_prompt(&json!({"task_id": "T1", "title": "Fix it"})), "Task T1: Fix it");
-        assert_eq!(session_name(&json!({"task_id": "T1", "title": "one two three four"})), "one two three");
-        assert_eq!(session_name(&json!({"task_id": "T1"})), "task T1");
-        assert!(session_name(&json!({"title": "a".repeat(80)})).chars().count() < 40);
     }
 }
