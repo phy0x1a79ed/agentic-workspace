@@ -764,13 +764,14 @@ impl Fake {
     }
 
     fn adopted(&self, issuer: &str) -> Arc<Adopted> {
+        self.adopted_via(issuer, None)
+    }
+
+    fn adopted_via(&self, issuer: &str, proxy: Option<&str>) -> Arc<Adopted> {
         let argv = vec![issuer.to_string(), "issue".to_string()];
-        let launch = Launch {
-            env: vec![("PATH".into(), "/usr/bin:/bin".into()), ("MARK".into(), self.mark.display().to_string()), ("TETHER_ISSUER".into(), serde_json::to_string(&argv).unwrap())],
-            secrets: vec![],
-            issuer: Some(argv),
-            use_manager: false,
-        };
+        let mut env = vec![("PATH".into(), "/usr/bin:/bin".into()), ("MARK".into(), self.mark.display().to_string()), ("TETHER_ISSUER".into(), serde_json::to_string(&argv).unwrap())];
+        env.extend(proxy.map(|p| ("https_proxy".to_string(), p.to_string())));
+        let launch = Launch { env, secrets: vec![], use_manager: false };
         Adopted::new(self.paths.clone(), fake_probe(self.mark.clone()), launch)
     }
 
@@ -816,7 +817,20 @@ async fn a_daemon_with_the_python_issuer_is_replaced_once_idle() {
     let rust = fake.adopted("/bin/channel");
     let out = rust.reconcile().await;
     assert_eq!(out["action"], "replaced", "{out}");
-    assert!(out["reason"].as_str().unwrap().contains("issuer"));
+    assert!(out["reason"].as_str().unwrap().contains("TETHER_ISSUER"));
     assert_ne!(fake.pid(), pid);
     assert_eq!(rust.reconcile().await["action"], "none");
+}
+
+#[tokio::test]
+async fn a_daemon_on_a_gone_gateway_proxy_is_replaced_once_idle() {
+    let fake = Fake::new(RUNS);
+    assert_eq!(fake.adopted_via("/bin/channel", Some("http://127.0.0.1:1111")).reconcile().await["action"], "started");
+    let pid = fake.pid();
+    let restarted = fake.adopted_via("/bin/channel", Some("http://127.0.0.1:2222"));
+    let out = restarted.reconcile().await;
+    assert_eq!(out["action"], "replaced", "{out}");
+    assert_eq!(out["reason"], "it was launched with another https_proxy");
+    assert_ne!(fake.pid(), pid);
+    assert_eq!(restarted.reconcile().await["action"], "none");
 }

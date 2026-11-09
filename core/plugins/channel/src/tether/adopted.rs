@@ -52,14 +52,17 @@ const KEEP: [&str; 19] = [
     "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "no_proxy", "all_proxy",
 ];
 const KEEP_PREFIX: [&str; 4] = ["AWM_", "TETHER_", "LC_", "XDG_"];
+/// The variables a running binary must share with this launch to count as current: the slot
+/// issuer, and the gateway's egress proxy, whose port changes each time the gateway restarts.
+const PINNED: [&str; 9] = [
+    "TETHER_ISSUER", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "no_proxy", "all_proxy",
+];
 
-/// How the binary is launched: its environment, the secrets it gets by name, and, for the
-/// operator, the issuer argv it must carry for the running daemon to count as current.
+/// How the binary is launched: its environment and the secrets it gets by name.
 #[derive(Debug, Clone, Default)]
 pub struct Launch {
     pub env: Vec<(String, String)>,
     pub secrets: Vec<(String, String)>,
-    pub issuer: Option<Vec<String>>,
     /// Hand the binary to the user's systemd manager when there is one. Tests run without.
     pub use_manager: bool,
 }
@@ -103,7 +106,7 @@ impl Launch {
             }
         }
         env.sort();
-        Self { env, secrets, issuer: issuer.filter(|_| paths.role == Role::Operator), use_manager: true }
+        Self { env, secrets, use_manager: true }
     }
 
     /// `env` in systemd's EnvironmentFile syntax: each value double-quoted with `\` and `"`
@@ -145,11 +148,15 @@ fn signal(pid: u32, sig: i32) {
     }
 }
 
-/// The `TETHER_ISSUER` a running process was started with, or None when it cannot be read.
-fn issuer_of(pid: u32) -> Option<Option<Vec<String>>> {
+/// The environment a running process was started with, or None when it cannot be read.
+fn environ(pid: u32) -> Option<Vec<(String, String)>> {
     let raw = std::fs::read(format!("/proc/{pid}/environ")).ok()?;
-    let found = raw.split(|c| *c == 0).find_map(|kv| kv.strip_prefix(b"TETHER_ISSUER="));
-    Some(found.and_then(|v| serde_json::from_slice(v).ok()))
+    let text = String::from_utf8_lossy(&raw);
+    Some(text.split('\0').filter_map(|kv| kv.split_once('=')).map(|(k, v)| (k.to_string(), v.to_string())).collect())
+}
+
+fn lookup<'a>(env: &'a [(String, String)], key: &str) -> Option<&'a str> {
+    env.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str())
 }
 
 fn live_sessions(report: &Value) -> usize {
@@ -214,7 +221,7 @@ impl Adopted {
     }
 
     /// Why the running binary is not current: a fetch replaced its file, it runs another release
-    /// than the one installed, or, for the operator, its issuer is not this plugin's.
+    /// than the one installed, or it was launched with another issuer or proxy than this launch's.
     pub fn stale(&self, pid: Option<u32>) -> Option<String> {
         let pid = pid?;
         if exe(pid).is_some_and(|e| e.ends_with(" (deleted)")) {
@@ -227,12 +234,8 @@ impl Adopted {
                 return Some(format!("it runs {r} and {installed} is installed"));
             }
         }
-        if let (Some(want), Some(has)) = (&self.launch.issuer, issuer_of(pid)) {
-            if has.as_ref() != Some(want) {
-                return Some("its slot issuer is not this plugin's `channel issue`".into());
-            }
-        }
-        None
+        let has = environ(pid)?;
+        PINNED.iter().find(|k| lookup(&has, k) != lookup(&self.launch.env, k)).map(|k| format!("it was launched with another {k}"))
     }
 
     pub async fn alive(&self) -> bool {
