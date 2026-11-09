@@ -1,5 +1,5 @@
 # routine, with events folded in (port T6). Relative paths resolve against AWM_DIR.
-dirs = ["services/routine", "land", "services/events"]
+dirs = ["services/routine", "rollout", "services/events"]
 
 [[extra]]
 name = "units"
@@ -10,22 +10,4 @@ path = "services/routine/routine.db"
 table = "timer_slots"
 
 [[transient]]
-path = "land/*/lease.json"
-
-[[transient]]
-path = "land/*/lock"
-
-# A landed ticket and a finished batch go away on their own.
-[[transient]]
-path = "land/*/tickets/*.json"
-
-[[transient]]
-path = "land/*/batch.json"
-
-# A batch's worktree is a checkout the next batch rebuilds: recorded, not copied, and gone
-# once the batch settles.
-[[size_only]]
-path = "land/*/tree"
-
-[[transient]]
-path = "land/*/tree"
+path = "rollout/lock"

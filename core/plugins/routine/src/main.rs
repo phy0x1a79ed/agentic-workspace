@@ -1,8 +1,8 @@
-//! The routine service, its land queue and its state check.
+//! The routine service, node rollout and its state check.
 
 use std::sync::Arc;
 
-use awm_plugin_routine::land::{self, LandArgs};
+use awm_plugin_routine::rollout::{self, RolloutArgs};
 use awm_plugin_routine::events::Events;
 use awm_plugin_routine::outbound::GatewayOutbound;
 use awm_plugin_routine::runner::Runner;
@@ -14,7 +14,7 @@ use awm_statecheck::cli::StateCmd;
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "routine", about = "Registered routines, their timers and runs, and the land queue.")]
+#[command(name = "routine", about = "Registered routines, their timers and runs, and node rollout.")]
 struct Cli {
     #[command(subcommand)]
     cmd: Option<Cmd>,
@@ -24,8 +24,8 @@ struct Cli {
 enum Cmd {
     /// Run the routine service (the default).
     Serve,
-    /// The land queue: submit, wait, batch, hold, bounce, status. See the skills ci/land and ci/merge.
-    Land(LandArgs),
+    /// Make each node of the fleet run a release commit. See the skill `ship`.
+    Rollout(RolloutArgs),
     /// The pre-redux state check.
     State {
         #[command(subcommand)]
@@ -39,7 +39,7 @@ async fn main() -> anyhow::Result<()> {
     let awm_dir = awm_plugin_sdk::config::awm_dir();
     match Cli::parse().cmd {
         Some(Cmd::State { cmd }) => std::process::exit(awm_statecheck::cli::run(&cmd, "routine", &snapshot::decl(&awm_dir)?)?),
-        Some(Cmd::Land(args)) => std::process::exit(tokio::task::spawn_blocking(move || land::main(args)).await?),
+        Some(Cmd::Rollout(args)) => std::process::exit(tokio::task::spawn_blocking(move || rollout::main(args)).await?),
         Some(Cmd::Serve) | None => serve().await,
     }
 }
