@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use awm_plugin_sdk::{Hub, SubscriptionOpts, SupervisedSubscription};
 use serde_json::Value;
 
-use crate::runner::Runner;
+use crate::runner::{row_events, Runner};
 
 pub struct Events {
     hub: Hub,
@@ -23,12 +23,7 @@ impl Events {
     /// Make the open subscriptions match the installed routines' events.
     pub fn reconcile(&self) {
         let wanted: BTreeSet<String> = match self.runner.store.list_routines(None) {
-            Ok(rows) => rows
-                .iter()
-                .filter_map(|r| r.get("definition")?.get("events")?.as_array().cloned())
-                .flatten()
-                .filter_map(|e| e.as_str().map(str::to_string))
-                .collect(),
+            Ok(rows) => rows.iter().flat_map(row_events).map(str::to_string).collect(),
             Err(e) => return tracing::error!("routine events: cannot list routines: {e}"),
         };
         let mut subs = self.subs.lock().unwrap_or_else(|p| p.into_inner());

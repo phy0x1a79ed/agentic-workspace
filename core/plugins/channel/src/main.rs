@@ -179,15 +179,11 @@ async fn run_channel(svc: Service) -> anyhow::Result<()> {
             tokio::spawn(stream.clone().watch_forever(socket));
             ready.resume();
             tokio::spawn(ready.clone().feed_forever());
-            let prune = ready.clone();
-            let watch = awm_plugin_sdk::sessions::SessionWatch::new(hub, "channel", move |_node| {
-                let prune = prune.clone();
-                async move {
-                    prune.prune().await;
-                }
-            });
-            watch.ensure(&awm_plugin_sdk::config::node_name());
-
+            awm_plugin_sdk::sessions::SessionWatch::new(hub, "channel", move |_node| {
+                let ready = ready.clone();
+                async move { ready.prune().await }
+            })
+            .ensure(&awm_plugin_sdk::config::node_name());
         })
         .on_shutdown(async move {
             down.stop();

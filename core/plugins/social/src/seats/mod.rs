@@ -23,10 +23,10 @@ use crate::config::{AccountConfig, SeatsConfig};
 use crate::connectors::{ChatKind, Inbound};
 use crate::db::{Db, Mount};
 use line::Place;
+use store::{Previous, Queued, Seat, State, Store};
 
 /// Transitions one look at a seat may take before it waits for the next tick.
 const STEPS_PER_LOOK: usize = 3;
-use store::{Previous, Queued, Seat, State, Store};
 
 /// How long a started agent has to come up.
 pub const UP_S: f64 = 180.0;

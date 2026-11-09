@@ -85,6 +85,11 @@ fn s<'a>(row: &'a Row, key: &str) -> &'a str {
     row.get(key).and_then(Value::as_str).unwrap_or("")
 }
 
+/// The events an installed routine's row listens for.
+pub(crate) fn row_events(row: &Row) -> impl Iterator<Item = &str> {
+    row.get("definition").and_then(|d| d.get("events")).and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str)
+}
+
 fn tail(text: &str, n: usize) -> String {
     let count = text.chars().count();
     text.chars().skip(count.saturating_sub(n)).collect()
@@ -247,8 +252,7 @@ impl Runner {
             Err(e) => return tracing::error!("event {topic}: cannot list routines: {e}"),
         };
         for rec in rows {
-            let listens = rec.get("definition").and_then(|d| d.get("events")).and_then(Value::as_array).is_some_and(|a| a.iter().any(|e| e.as_str() == Some(topic)));
-            if listens {
+            if row_events(&rec).any(|e| e == topic) {
                 self.fire_event(s(&rec, "project"), s(&rec, "name"), topic, payload.clone());
             }
         }
