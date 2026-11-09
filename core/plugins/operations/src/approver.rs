@@ -101,7 +101,6 @@ impl From<crate::store::QueueError> for ApproverError {
 pub type AResult<T> = Result<T, ApproverError>;
 
 const AGENT_MODELS: [&str; 4] = ["opus", "sonnet", "haiku", "fable"];
-const AGENT_EFFORTS: [&str; 3] = ["low", "medium", "high"];
 
 fn bad(msg: impl Into<String>) -> ApproverError {
     ApproverError::new("bad_request", msg)
@@ -812,11 +811,9 @@ impl Approver {
     pub async fn agent(&self, node: &str, model: Option<&str>, effort: Option<&str>, note_id: Option<&str>) -> AResult<Value> {
         let node = self.order_node("agent", Some(node))?;
         if model.is_some_and(|m| !AGENT_MODELS.contains(&m)) {
-            return Err(bad("model is one of opus, sonnet, haiku, fable"));
+            return Err(bad(format!("model must be one of {}", AGENT_MODELS.join(", "))));
         }
-        if effort.is_some_and(|e| !AGENT_EFFORTS.contains(&e)) {
-            return Err(bad("effort is one of low, medium, high"));
-        }
+        effort.map(awm_trust::trust::check_effort).transpose().map_err(|e| bad(e.to_string()))?;
         if let Some(n) = note_id {
             if n.is_empty() || n.len() > 64 || !n.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-') {
                 return Err(bad("note_id is a vault note id"));

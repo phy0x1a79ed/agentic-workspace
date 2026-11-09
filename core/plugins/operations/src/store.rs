@@ -927,10 +927,9 @@ impl Store {
                 (_, Some(j)) => job.as_deref() == Some(j.as_str()),
                 _ => false,
             });
-            if let (Some(now), Some(was), true) = (found.and_then(|l| l.name.as_deref()), name.as_deref(), active) {
-                if now != was {
-                    self.session_renamed(Some(&sid), None, &node, now)?;
-                }
+            let listed_name = found.and_then(|l| l.name.as_deref()).filter(|_| active);
+            if let Some(now) = listed_name.filter(|n| name.as_deref() != Some(*n)) {
+                self.session_renamed(Some(&sid), None, &node, now)?;
             }
             let is_live = found.is_some();
             match (active, is_live) {
