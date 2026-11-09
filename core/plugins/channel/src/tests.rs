@@ -410,6 +410,16 @@ async fn setup(tmp: &Path) -> Option<(Host, MemberNode, Captured, Sessions)> {
 }
 
 #[tokio::test]
+async fn a_fresh_machine_slot_comes_from_the_real_relay() {
+    let tmp = tempfile::tempdir().unwrap();
+    let Some(host) = Host::start(tmp.path(), 180.0) else { return };
+    let slot = host.relay().issue(NODE, None).await.unwrap();
+    assert!(slot["slot"].is_u64(), "{slot}");
+    assert!(slot["token"].as_str().is_some_and(|t| !t.is_empty() && t.chars().all(|c| c.is_ascii_hexdigit())), "{slot}");
+    assert!(slot["expires_in"].as_f64().is_some_and(|s| s > 0.0), "{slot}");
+}
+
+#[tokio::test]
 async fn a_guest_with_only_the_link_talks_and_our_writes_are_not_pushed_back() {
     let tmp = tempfile::tempdir().unwrap();
     let Some((_host, node, pushed, _)) = setup(tmp.path()).await else { return };

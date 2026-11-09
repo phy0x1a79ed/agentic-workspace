@@ -69,13 +69,16 @@ impl Rooms {
         if self.bearer.is_empty() {
             return Err(RoomsError::Refused(format!("{BEARER_ENV} is not set on this node, so it cannot issue a slot")));
         }
-        let body = restore.cloned().unwrap_or(Value::Null);
-        let resp = self.client.post(format!("{}/issue", self.base)).bearer_auth(&self.bearer).json(&body).send().await.map_err(|e| self.unreachable(e))?;
+        let mut req = self.client.post(format!("{}/issue", self.base)).bearer_auth(&self.bearer);
+        if let Some(r) = restore {
+            req = req.json(r);
+        }
+        let resp = req.send().await.map_err(|e| self.unreachable(e))?;
         let status = resp.status().as_u16();
         match status {
             503 => return Err(RoomsError::Refused("the relay has no slot free right now; try again later".into())),
             409 | 410 if restore.is_some() => return Ok(json!({"refused": if status == 409 { "taken" } else { "ended" }})),
-            400 => return Err(RoomsError::Refused("the relay refused the restore: it names a slot, a seat token and an owner token".into())),
+            400 if restore.is_some() => return Err(RoomsError::Refused("the relay refused the restore: it names a slot, a seat token and an owner token".into())),
             200 => {}
             _ => return Err(RoomsError::Refused(format!("the relay refused to issue a slot ({status}); check {BASE_ENV} and {BEARER_ENV}"))),
         }
