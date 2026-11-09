@@ -108,7 +108,7 @@ async fn main() -> anyhow::Result<()> {
     awm_plugin_sdk::telemetry::init();
     let awm_dir = awm_plugin_sdk::config::awm_dir();
     awm_statecheck::cli::state_subcommand(TOOL, include_str!("../state.toml"), &awm_plugin_sdk::config::service_dir(TOOL), &awm_dir)?;
-    let svc = Service::from_env()?.state(include_str!("../state.toml"));
+    let svc = Service::from_env()?;
     let dir = awm_plugin_sdk::config::service_dir(TOOL);
     let store = store::Store::open(&dir.join("rlm-browser.db"))?;
     let manager = Arc::new(Manager::new(Config::from_env(dir.join("profiles")), store, Some(svc.context())));

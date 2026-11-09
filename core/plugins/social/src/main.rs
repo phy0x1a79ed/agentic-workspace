@@ -107,7 +107,7 @@ async fn run() -> anyhow::Result<()> {
     awm_plugin_sdk::telemetry::init();
     let awm_dir = awm_plugin_sdk::config::awm_dir();
     awm_statecheck::cli::state_subcommand("social", include_str!("../state.toml"), &awm_plugin_sdk::config::service_dir("social"), &awm_dir)?;
-    let svc = Service::from_env()?.state(include_str!("../state.toml"));
+    let svc = Service::from_env()?;
     let env = svc.context().env().clone();
     let hub = svc.context().hub().clone();
     let loaded = config::load(&config::config_file(&env.awm_dir)).map_err(|e| anyhow::anyhow!(e))?;

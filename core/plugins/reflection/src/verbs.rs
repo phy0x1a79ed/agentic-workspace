@@ -23,12 +23,6 @@ use crate::waits::NewWait;
 pub const UNKNOWN_MODE: &str = "unknown";
 /// The level an isolated session starts at when the caller names none (fleet.md R109).
 pub const ISOLATED_TRUST: &str = "untrusted";
-/// The verbs that act on the caller's own session. Each takes no `job`, or a `job` that
-/// defaults to the caller, and each resolves the caller through [`App::resolve_caller`].
-pub const SELF_ACTING: [&str; 14] = [
-    "message_self", "compact", "mode", "whoami", "wait", "remote_control", "model", "effort", "rename", "cd", "mcp",
-    "interrupt", "link", "stop",
-];
 /// `harness_event` kinds that report a session's lifecycle.
 pub const LIFECYCLE: [&str; 4] = ["started", "stopped", "remote_control", "renamed"];
 /// The emit topic of the session lifecycle, `reflection/sessions`.
@@ -160,7 +154,7 @@ impl<G: Gateway> App<G> {
                     // Only a session's own call looks further: a peer's call has no caller pid,
                     // and must not fan out again from here.
                     if frame.pid.is_some() {
-                        why.push_str(&self.hint(r).await);
+                        why.push_str(&crate::peers::hint_text(&self.holders(r).await));
                     }
                 }
                 tracing::warn!("reflection: {verb} failed for caller pid {}: {why}", frame.pid_text());

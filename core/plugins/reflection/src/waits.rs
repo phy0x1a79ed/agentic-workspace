@@ -226,7 +226,7 @@ impl<G: Gateway> App<G> {
     /// Resume a waiter that kept its job, or type the wake line into a terminal waiter.
     pub async fn wake(&self, row: Value) -> Result<Value, String> {
         let sid = waiter(&row).to_string();
-        let p = self.for_platform(sid.get(..2).unwrap_or_default()).await.map_err(|e| format!("HarnessError: {e}"))?;
+        let p = self.for_platform(crate::providers::platform_of(&sid)).await.map_err(|e| format!("HarnessError: {e}"))?;
         let line = self.provider_text(&Frame::service("reflection"), &wake_text(&row)).await;
         let out = match text(&row, "job") {
             Some(job) => self.harness_call(&p, "resume", json!({"ref": job, "adopt_lineage": true, "prompt": line}), None).await,

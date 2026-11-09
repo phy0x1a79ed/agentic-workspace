@@ -59,7 +59,7 @@ pub fn same_session(a: &Value, b: &Value) -> bool {
     if !sa.is_empty() && sa == sb {
         return true;
     }
-    text(a, "job").is_some_and(|j| text(b, "job") == Some(j)) && sa.get(..2) == sb.get(..2)
+    text(a, "job").is_some_and(|j| text(b, "job") == Some(j)) && crate::providers::platform_of(sa) == crate::providers::platform_of(sb)
 }
 
 /// The level `trust.json` holds for `session_id`, or for its job under another id of its platform.
@@ -71,7 +71,7 @@ pub fn recorded_in(data: &Map<String, Value>, session_id: Option<&str>, job: Opt
     }
     let job = job.filter(|j| !j.is_empty())?;
     data.iter()
-        .filter(|(k, r)| r.get("job").and_then(Value::as_str) == Some(job) && k.get(..2) == sid.get(..2))
+        .filter(|(k, r)| r.get("job").and_then(Value::as_str) == Some(job) && crate::providers::platform_of(k) == crate::providers::platform_of(sid))
         .find_map(|(_, r)| level_of(r))
 }
 

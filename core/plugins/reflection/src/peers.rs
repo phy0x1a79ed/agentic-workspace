@@ -70,11 +70,6 @@ impl<G: Gateway> App<G> {
         found
     }
 
-    /// A clause for the unknown-job error that names the peer running `reference`, or `""`.
-    pub async fn hint(&self, reference: &str) -> String {
-        hint_text(&self.holders(reference).await)
-    }
-
     /// Tell every peer that `session_id` retired, so a wait there wakes. A peer that misses it
     /// checks again at its start.
     pub async fn tell_peers(&self, session_id: &str) {
@@ -127,7 +122,7 @@ impl<G: Gateway> App<G> {
     /// `live` or `stopped` when this node's harness knows the session, `gone` when it says it
     /// does not, else None.
     pub async fn session_state(&self, session_id: &str) -> Option<String> {
-        let p = self.for_platform(session_id.get(..2).unwrap_or_default()).await.ok()?;
+        let p = self.for_platform(crate::providers::platform_of(session_id)).await.ok()?;
         let out = self.harness_call(&p, "status", json!({"session_id": session_id}), None).await.ok()?;
         if is_false(&out, "ok") {
             return truthy(out.get("unknown_ref")).then(|| "gone".into());

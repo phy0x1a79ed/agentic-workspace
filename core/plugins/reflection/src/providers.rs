@@ -22,6 +22,11 @@ pub const DOWN_FOR: Duration = Duration::from_secs(60);
 /// The provider list is read again after this.
 pub const TABLE_FOR: Duration = Duration::from_secs(30);
 
+/// The platform a session id names: its first two characters.
+pub fn platform_of(id: &str) -> &str {
+    id.get(..2).unwrap_or_default()
+}
+
 /// One harness plugin: its tool, the platform code it serves, the node it runs on when not
 /// this one, and the optional verbs its `platform` answer lists.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -246,7 +251,7 @@ impl<G: Gateway> App<G> {
 
     /// The provider of an R9 `session_id`, and what it says about that session.
     pub async fn for_session(&self, session_id: &str) -> Result<(Provider, Value), HarnessError> {
-        let p = self.for_platform(session_id.get(..2).unwrap_or_default()).await?;
+        let p = self.for_platform(platform_of(session_id)).await?;
         let who = self.harness_call(&p, "status", json!({"session_id": session_id}), None).await?;
         if is_false(&who, "ok") {
             let why = text(&who, "reason")
@@ -277,7 +282,7 @@ impl<G: Gateway> App<G> {
         let mut named = Map::new();
         if ids::is_r9(&lower) && text_ref.chars().count() > 8 {
             named.insert("session_id".into(), json!(lower));
-            return Ok((self.for_platform(&lower[..2]).await?, named));
+            return Ok((self.for_platform(platform_of(&lower)).await?, named));
         }
         let hits: Vec<Provider> = self
             .answers("find", &json!({"ref": text_ref}))

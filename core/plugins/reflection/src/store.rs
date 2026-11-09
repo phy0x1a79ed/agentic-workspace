@@ -6,7 +6,7 @@
 //! across a gateway call, because scopes calls back into reflection during a claim.
 
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use serde_json::{Map, Value};
 use tokio::io::AsyncWriteExt;
@@ -59,10 +59,6 @@ pub fn pretty(v: &Value) -> String {
 impl Store {
     pub fn new(dir: impl Into<PathBuf>) -> Self {
         Self { dir: dir.into(), locks: Default::default() }
-    }
-
-    pub fn dir(&self) -> &Path {
-        &self.dir
     }
 
     pub fn path(&self, f: File) -> PathBuf {

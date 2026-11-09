@@ -31,7 +31,6 @@ struct StateCli {
 async fn service() -> anyhow::Result<()> {
     awm_plugin_sdk::telemetry::init();
     let awm_dir = config::awm_dir();
-    reflection::snapshot::take(&awm_dir)?;
     let svc = Service::from_env()?;
     let store = Store::new(reflection::snapshot::service_dir(&awm_dir));
     let app = Arc::new(App::new(svc.context().hub().clone(), Arc::new(LiveNode(svc.context())), Arc::new(Policy), store));

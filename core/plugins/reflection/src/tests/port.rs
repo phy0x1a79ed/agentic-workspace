@@ -12,7 +12,7 @@ use crate::ledger::CLOSED_KEPT_MS;
 use crate::surface::specs;
 use crate::caller::Frame;
 use crate::store::File;
-use crate::verbs::{split_to, LIFECYCLE, ROW_KEYS, SELF_ACTING};
+use crate::verbs::{split_to, LIFECYCLE, ROW_KEYS};
 
 const DAY_MS: i64 = 24 * 3600 * 1000;
 
@@ -42,6 +42,13 @@ fn needs(verb: &str) -> Value {
         _ => json!({}),
     }
 }
+
+/// The verbs that act on the caller's own session. Each takes no `job`, or a `job` that
+/// defaults to the caller, and each resolves the caller through [`App::resolve_caller`].
+const SELF_ACTING: [&str; 14] = [
+    "message_self", "compact", "mode", "whoami", "wait", "remote_control", "model", "effort", "rename", "cd", "mcp",
+    "interrupt", "link", "stop",
+];
 
 /// Every self-acting verb either takes no `job` or defaults it to the caller, and each one finds
 /// the caller through the one helper: the provider sees the caller's own pid.
@@ -165,7 +172,7 @@ async fn a_ticket_that_names_a_path_writes_nothing_outside_tickets() {
     let fx = Fx::new();
     fx.run("harness_event", json!({"session_id": my_id(), "ticket": "../trust", "kind": "done"})).await;
     fx.app.settle().await;
-    assert!(!fx.app.store.dir().join("trust.closed").exists());
+    assert!(!fx.app.store.tickets().parent().unwrap().join("trust.closed").exists());
 }
 
 #[tokio::test]

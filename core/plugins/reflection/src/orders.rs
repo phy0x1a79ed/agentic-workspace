@@ -4,6 +4,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use awm_plugin_sdk::Backoff;
 use serde_json::{json, Map, Value};
 
 use crate::app::{is_ok, text, truthy, App};
@@ -14,8 +15,6 @@ use crate::store::File;
 const WAIT_S: u64 = 55;
 const PULL_TIMEOUT: Duration = Duration::from_secs(75);
 const DONE_TIMEOUT: Duration = Duration::from_secs(30);
-const BACKOFF_MIN: Duration = Duration::from_secs(2);
-const BACKOFF_MAX: Duration = Duration::from_secs(60);
 /// Long past any order's `not_after` (10 min), so a replay still finds its record.
 const KEEP_MS: i64 = 24 * 3600 * 1000;
 const NOTE_MAX: usize = 500;
@@ -64,11 +63,11 @@ impl<G: Gateway> App<G> {
     /// first pull that answers after it resends the reports that could not be delivered.
     pub async fn order_loop(self: Arc<Self>, grant_key: [u8; 32]) {
         let mut connected = false;
-        let mut backoff = BACKOFF_MIN;
+        let mut backoff = Backoff::doubling(2.0, 60.0);
         loop {
             match self.pull().await {
                 Ok(envelopes) => {
-                    backoff = BACKOFF_MIN;
+                    backoff.reset();
                     if !connected {
                         self.resend_reports().await;
                         connected = true;
@@ -78,8 +77,7 @@ impl<G: Gateway> App<G> {
                 Err(e) => {
                     connected = false;
                     tracing::warn!("reflection: order pull failed: {e}");
-                    tokio::time::sleep(backoff).await;
-                    backoff = (backoff * 2).min(BACKOFF_MAX);
+                    tokio::time::sleep(backoff.wait()).await;
                 }
             }
         }

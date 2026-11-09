@@ -4,7 +4,7 @@
 
 use awm_harness::contract::args::int_lenient;
 use awm_plugin_sdk::ids;
-use awm_plugin_sdk::service::{CLAIM_KEY, PID_KEY, SESSION_KEY, TRUST_KEY};
+use awm_plugin_sdk::service::{CLAIM_KEY, PID_KEY, SESSION_KEY};
 use serde_json::{json, Value};
 
 use crate::app::{text, App};
@@ -26,8 +26,6 @@ pub struct Frame {
     pub plugin: Option<String>,
     /// The node a verified order's plugin speaks from, when it is not this node.
     pub plugin_node: Option<String>,
-    /// `_caller_trust`: the level the gateway gave the call.
-    pub trust: Option<String>,
     /// The `X-Awm-As` principal, `peer:<node>` for a call from another node.
     pub as_: Option<String>,
     /// The caller as its harness described it, so one call asks the providers once.
@@ -47,7 +45,6 @@ impl Frame {
             session_id: ids::to_r9(args.get(SESSION_KEY).and_then(Value::as_str)),
             claim: args.get(CLAIM_KEY).filter(|c| c.is_object()).cloned(),
             plugin: plugin.map(str::trim).filter(|p| !p.is_empty()).map(str::to_string),
-            trust: args.get(TRUST_KEY).and_then(Value::as_str).map(str::to_string),
             as_: as_.map(str::to_string),
             ..Self::default()
         }
@@ -157,7 +154,7 @@ mod tests {
                           "_caller_trust": "cooperative", "pid": 7, "session_id": "cc99"});
         let f = Frame::from_args(&args, Some("peer:far"), Some("social"));
         assert_eq!((f.pid, f.session_id.as_deref(), f.plugin.as_deref()), (Some(4242), Some("cc0e38"), Some("social")));
-        assert_eq!((f.claim.clone(), f.trust.as_deref()), (Some(json!({"node": "far"})), Some("cooperative")));
+        assert_eq!(f.claim, Some(json!({"node": "far"})));
         assert_eq!(f.me(), json!({"session_id": "cc0e38"}));
         let bare = Frame::from_args(&json!({"_caller_pid": 0, "_caller_session_id": "builder"}), None, Some(" "));
         assert_eq!(bare, Frame::default());
