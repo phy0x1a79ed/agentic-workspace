@@ -50,8 +50,24 @@ fn operator_dm() -> (String, String) {
     (var("AWM_OPERATOR_DM_ACCOUNT").unwrap_or_else(|| "discord-bot".into()), var("AWM_OPERATOR_DM_CHANNEL").unwrap_or_else(|| "1522674357762261112".into()))
 }
 
+/// Tony's Discord DM with the bot, for a question that needs his answer.
+const TONY_DM: (&str, &str) = ("discord-bot", "1469466265897668729");
+
 fn failed(out: &Value) -> bool {
     out.get("ok") == Some(&json!(false))
+}
+
+impl HubOutside {
+    async fn send(&self, account: &str, channel: &str, text: &str) -> bool {
+        let opts = CallOpts { timeout: Duration::from_secs(30), ..CallOpts::default() };
+        match self.hub.call_with("social", "send", json!({"account": account, "channel": channel, "text": text}), &opts).await {
+            Ok(out) => !failed(&out),
+            Err(e) => {
+                tracing::warn!("operations: could not reach Tony: {e}");
+                false
+            }
+        }
+    }
 }
 
 impl Outside for HubOutside {
@@ -76,14 +92,21 @@ impl Outside for HubOutside {
     fn dm<'a>(&'a self, text: &'a str) -> BoxFut<'a, bool> {
         Box::pin(async move {
             let (account, channel) = operator_dm();
-            let opts = CallOpts { timeout: Duration::from_secs(30), ..CallOpts::default() };
-            match self.hub.call_with("social", "send", json!({"account": account, "channel": channel, "text": text}), &opts).await {
-                Ok(out) => !failed(&out),
-                Err(e) => {
-                    tracing::warn!("operations: could not DM Tony: {e}");
-                    false
-                }
-            }
+            self.send(&account, &channel, text).await
+        })
+    }
+
+    fn dm_tony<'a>(&'a self, text: &'a str) -> BoxFut<'a, bool> {
+        Box::pin(self.send(TONY_DM.0, TONY_DM.1, text))
+    }
+
+    fn link<'a>(&'a self, node: &'a str, job: &'a str) -> BoxFut<'a, Option<String>> {
+        Box::pin(async move {
+            let opts = CallOpts { timeout: Duration::from_secs(10), ..CallOpts::default() };
+            let out = self.hub.call_with("telemetry", "nodes", json!({"node": node}), &opts).await.ok()?;
+            out["nodes"].as_array()?.iter()
+                .flat_map(|n| n["sessions"].as_array().into_iter().flatten())
+                .find(|s| s["job"] == json!(job))?["link"].as_str().map(str::to_string)
         })
     }
 }

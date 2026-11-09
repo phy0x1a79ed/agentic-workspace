@@ -72,8 +72,9 @@ fn ok(v: &Value) -> bool {
 }
 
 #[tokio::test]
-async fn blocked_opens_a_card_and_urgent_sends_a_dm() {
+async fn a_block_moves_the_card_and_urgent_sends_a_dm() {
     let h = harness();
+    h.call("task_open", pid(11), json!({"title": "vpn", "name": "fix-tunnel"})).await;
     let out = h.call("request_human", pid(11), json!({"kind": "blocked", "reason": "needs the VPN key", "urgent": true})).await;
     assert!(ok(&out), "{out}");
     assert_eq!((s(&out["section"]), s(&out["status"])), ("needs_you".into(), "blocked".into()));
@@ -96,8 +97,35 @@ async fn blocked_opens_a_card_and_urgent_sends_a_dm() {
 }
 
 #[tokio::test]
+async fn no_card_means_a_dm_with_the_session_link_and_no_new_card() {
+    let h = harness();
+    let out = h.call("request_human", pid(11), json!({"kind": "blocked", "reason": "needs the VPN key"})).await;
+    assert_eq!((out["ok"].clone(), out["notified"].clone()), (json!(true), json!(true)), "{out}");
+    assert!(out.get("task_id").is_none(), "{out}");
+    let dm = &h.out.asks()[0];
+    assert!(dm.contains("fix-tunnel") && dm.contains("needs the VPN key") && dm.contains("https://claude.ai/code/mizar-job-a"), "{dm}");
+    assert_eq!(h.call("task_for_session", pid(11), json!({})).await["task_id"], Value::Null);
+
+    h.call("request_human", pid(22), json!({"kind": "review", "summary": "look"})).await;
+    assert!(h.out.asks()[1].contains("`claude attach job-b` on mizar"), "a job with no link says how to attach");
+
+    let d = format!("cc{}", "d".repeat(32));
+    h.call("request_human", door(&d, "lyra"), json!({"reason": "from afar"})).await;
+    assert!(h.out.asks()[2].contains("on **lyra**"), "{:?}", h.out.asks());
+
+    let service = h.call("request_human", none(), json!({"kind": "blocked", "reason": "a seat has no scope"})).await;
+    assert_eq!(service["notified"], true);
+    assert!(h.out.asks()[3].starts_with("**A service**"));
+
+    *h.out.ask_fails.lock().unwrap() = true;
+    let failed = h.call("request_human", pid(11), json!({"reason": "again"})).await;
+    assert!(!ok(&failed) && s(&failed["error"]).contains("did not go out"), "{failed}");
+}
+
+#[tokio::test]
 async fn tonys_prompt_moves_the_card_to_working() {
     let h = harness();
+    h.call("task_open", pid(11), json!({"title": "port", "name": "fix-tunnel"})).await;
     let out = h.call("request_human", pid(11), json!({"kind": "blocked", "reason": "which port?"})).await;
     assert_eq!(h.call("hook_prompt", pid(22), json!({"prompt": "hi"})).await["moved"], false);
     let moved = h.call("hook_prompt", pid(11), json!({"prompt": "use 2201"})).await;
@@ -164,6 +192,7 @@ async fn arbutus_approval_blocks_the_card_until_slack_decides() {
 async fn a_session_through_the_door_acts_on_its_own_card() {
     let h = harness();
     let d = format!("cc{}", "d".repeat(32));
+    h.call("task_open", door(&d, "lyra"), json!({"title": "key", "name": "remote-work"})).await;
     let out = h.call("request_human", door(&d, "lyra"), json!({"kind": "blocked", "reason": "needs a key", "urgent": true})).await;
     assert!(ok(&out) && out["status"] == "blocked", "{out}");
     let card = h.card(&out["task_id"]);
@@ -241,6 +270,7 @@ async fn claim_moves_a_needs_you_card_to_working() {
 #[tokio::test]
 async fn an_urgent_block_reminds_tony_once() {
     let h = harness();
+    h.call("task_open", pid(11), json!({"title": "key", "name": "fix-tunnel"})).await;
     let out = h.call("request_human", pid(11), json!({"kind": "blocked", "reason": "key expired", "urgent": true})).await;
     assert_eq!(h.front.remind_due().await, 0);
     h.clock.advance(61.0);

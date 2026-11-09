@@ -26,8 +26,12 @@ pub trait Outside: Send + Sync {
     fn session_of(&self, pid: u32) -> BoxFut<'_, Option<Value>>;
     /// Type one line into a session, on `peer` when it is another node.
     fn tell<'a>(&'a self, peer: Option<&'a str>, job: &'a str, text: &'a str) -> BoxFut<'a, bool>;
-    /// One DM to Tony.
+    /// One line to Tony's notifications channel.
     fn dm<'a>(&'a self, text: &'a str) -> BoxFut<'a, bool>;
+    /// One message in Tony's own Discord DM.
+    fn dm_tony<'a>(&'a self, text: &'a str) -> BoxFut<'a, bool>;
+    /// The claude.ai link of a job on a node, when it has one.
+    fn link<'a>(&'a self, node: &'a str, job: &'a str) -> BoxFut<'a, Option<String>>;
 }
 
 /// Who is calling, from the gateway's stamps.
@@ -324,8 +328,8 @@ impl Front {
         Ok(out["task_id"].as_str().unwrap_or_default().to_string())
     }
 
-    /// Tell Tony you need him: blocked, review, or an Arbutus admin approval. A service with
-    /// no session gets a card of its own on each call.
+    /// Tell Tony you need him: blocked, review, or an Arbutus admin approval. A caller that
+    /// holds no card reaches him by DM instead, with a link to its session.
     pub async fn request_human(&self, a: &Value, st: &Stamp) -> Answer {
         let kind = match str_of(a, "kind").map(|k| k.trim().to_string()).filter(|k| !k.is_empty()) {
             Some(k) => k,
@@ -344,7 +348,9 @@ impl Front {
         if text.is_empty() {
             return Err(if kind == "blocked" { "reason is required" } else { "summary is required" }.into());
         }
-        let task_id = self.card_for(session.as_deref(), &c, &text).await?;
+        let Some(task_id) = self.task_of(session.as_deref()).await? else {
+            return self.ask_by_dm(&kind, &text, &c).await;
+        };
         let mut out = self.report(&task_id, session.as_deref(), &kind, Some(json!(text)), None).await?;
         out["card_url"] = self.card_link(&task_id);
         if kind == "blocked" && a.get("urgent") == Some(&json!(true)) {
@@ -356,6 +362,26 @@ impl Front {
             self.relay.set_mark(&format!("remind:{task_id}"), &json!({"due": (self.clock)() + self.remind_s, "text": message}).to_string());
         }
         Ok(out)
+    }
+
+    async fn ask_by_dm(&self, kind: &str, text: &str, c: &Caller) -> Answer {
+        let node = c.node.as_deref().unwrap_or(&self.node);
+        let who = c.name.as_deref().or(c.job.as_deref()).unwrap_or("A service");
+        let link = match &c.job {
+            Some(job) => self.outside.link(node, job).await,
+            None => None,
+        };
+        let need = if kind == "review" { "has something for you to review" } else { "needs you" };
+        let mut message = format!("**{who}** on **{node}** {need}.\n{text}");
+        match (&link, &c.job) {
+            (Some(url), _) => message.push_str(&format!("\n{url}")),
+            (None, Some(job)) => message.push_str(&format!("\nAttach: `claude attach {job}` on {node}")),
+            (None, None) => {}
+        }
+        if !self.outside.dm_tony(&message).await {
+            return Err("this session holds no card and the DM to Tony did not go out: try again".into());
+        }
+        Ok(json!({"ok": true, "notified": true, "link": link}))
     }
 
     /// Send the one reminder of each urgent block that is still blocked. Answers how many went.

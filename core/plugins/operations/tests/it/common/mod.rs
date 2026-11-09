@@ -159,6 +159,8 @@ pub struct FakeOutside {
     pub pids: Mutex<HashMap<u32, Value>>,
     pub told: Mutex<Vec<(Option<String>, String, String)>>,
     pub dms: Mutex<Vec<String>>,
+    pub asks: Mutex<Vec<String>>,
+    pub ask_fails: Mutex<bool>,
 }
 
 impl FakeOutside {
@@ -168,11 +170,15 @@ impl FakeOutside {
             (11, json!({"ok": true, "session_id": A, "job": "job-a", "name": "fix-tunnel"})),
             (22, json!({"ok": true, "session_id": B, "job": "job-b", "name": "other"})),
         ]);
-        Arc::new(FakeOutside { pids: Mutex::new(pids), told: Mutex::new(vec![]), dms: Mutex::new(vec![]) })
+        Arc::new(FakeOutside { pids: Mutex::new(pids), told: Mutex::new(vec![]), dms: Mutex::new(vec![]), asks: Mutex::new(vec![]), ask_fails: Mutex::new(false) })
     }
 
     pub fn dms(&self) -> Vec<String> {
         self.dms.lock().unwrap().clone()
+    }
+
+    pub fn asks(&self) -> Vec<String> {
+        self.asks.lock().unwrap().clone()
     }
 
     pub fn told(&self) -> Vec<(Option<String>, String, String)> {
@@ -198,6 +204,17 @@ impl Outside for FakeOutside {
             self.dms.lock().unwrap().push(text.to_string());
             true
         })
+    }
+
+    fn dm_tony<'a>(&'a self, text: &'a str) -> BoxFut<'a, bool> {
+        Box::pin(async move {
+            self.asks.lock().unwrap().push(text.to_string());
+            !*self.ask_fails.lock().unwrap()
+        })
+    }
+
+    fn link<'a>(&'a self, node: &'a str, job: &'a str) -> BoxFut<'a, Option<String>> {
+        Box::pin(async move { (job == "job-a").then(|| format!("https://claude.ai/code/{node}-{job}")) })
     }
 }
 

@@ -74,12 +74,11 @@ pub fn verbs() -> Vec<VerbSpec> {
     let [n2, r2] = shown();
     vec![
         v("request_human", "Tell Tony you need him. kind blocked (with reason) or review (with summary) puts your card in Needs you. \
-urgent:true on a block also sends him a Discord DM. kind approval posts an Arbutus admin bundle to Slack for Tony or Ryan. Tony answers \
+With no card, it sends him a Discord DM with a link to your session and opens no card. urgent:true on a card's block also posts to his notifications. kind approval posts an Arbutus admin bundle to Slack for Tony or Ryan. Tony answers \
 in your session, and his prompt moves the card back to Working. The answer's card_url opens the card on his board, when the board's \
 link is configured.",
           json!([p("kind", "string", false, "blocked, review or approval."), s("reason"), s("summary"),
-                 p("urgent", "boolean", false, ""), p("bundle", "string", false, "kind approval: the bundle's name."),
-                 p("title", "string", false, "A title, if this opens your card.")])),
+                 p("urgent", "boolean", false, ""), p("bundle", "string", false, "kind approval: the bundle's name.")])),
         h("task_open", "Open a card for new work and make the session its main session. Works while alcor is down: the id is minted \
 here and the write waits in the outbox.", json!([p("title", "string", true, ""), sid(), s("peer"), p("tags", "array", false, ""), n, r])),
         h("task_attach", "Put a session on an existing card, as cch start does for a task id.",
