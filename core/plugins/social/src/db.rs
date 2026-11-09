@@ -189,8 +189,8 @@ INSERT INTO seat_queue (account, channel_id, line, queued_at, node, kind, body)
         'done_at', done_at, 'deadline', deadline, 'previous', previous, 'breaker', breaker, 'held', held, 'replied', replied,
         'missed', missed, 'remote_control', remote_control, 'rc_url', rc_url))
     FROM seat_registry WHERE node != '';
-INSERT INTO seat_queue (account, channel_id, message_id, thread_id, line, queued_at, node, kind)
-    SELECT q.account, q.channel_id, q.message_id, q.thread_id, q.line, q.queued_at, r.node, 'line'
+INSERT INTO seat_queue (account, channel_id, message_id, thread_id, line, queued_at, node, kind, body)
+    SELECT q.account, q.channel_id, q.message_id, q.thread_id, q.line, q.queued_at, r.node, 'line', '{\"kept\":true}'
     FROM seat_queue q JOIN seat_registry r ON r.account = q.account AND r.channel_id = q.channel_id
     WHERE q.delivered_at = 0 AND q.kind = 'line' ORDER BY q.id;
 UPDATE seat_queue SET delivered_at = 1 WHERE delivered_at = 0 AND kind = 'line' AND node = '';
@@ -299,6 +299,33 @@ impl Db {
     {
         let me = self.0.clone();
         tokio::task::spawn_blocking(move || f(&me.lock().unwrap_or_else(|p| p.into_inner()))).await.expect("a db call panicked")
+    }
+
+    // -- gap resync ---------------------------------------------------------
+
+    /// The seats and mounted chats of `account`: what a gap in the live feed must not lose.
+    pub async fn gap_chats(&self, account: &str) -> Vec<String> {
+        let a = account.to_string();
+        self.run(move |c| c.prepare("SELECT channel_id FROM seat_registry WHERE account = ?1 UNION SELECT channel_id FROM social_mounts WHERE account = ?1").and_then(|mut s| s.query_map(params![a], |r| r.get(0))?.collect()).unwrap_or_default()).await
+    }
+
+    /// The newest message of a chat this connection has seen.
+    pub async fn cursor(&self, account: &str, channel: &str) -> Option<String> {
+        let (a, ch) = (account.to_string(), channel.to_string());
+        self.run(move |c| c.query_row("SELECT last_id FROM seat_cursor WHERE account = ?1 AND channel_id = ?2", params![a, ch], |r| r.get(0)).optional().ok().flatten()).await
+    }
+
+    pub async fn set_cursor(&self, account: &str, channel: &str, last_id: &str) {
+        let v = [account, channel, last_id].map(str::to_string);
+        let _ = self
+            .run(move |c| {
+                c.execute(
+                    "INSERT INTO seat_cursor (account, channel_id, last_id) VALUES (?1, ?2, ?3) \
+                     ON CONFLICT (account, channel_id) DO UPDATE SET last_id = excluded.last_id WHERE CAST(excluded.last_id AS INTEGER) > CAST(seat_cursor.last_id AS INTEGER)",
+                    params![v[0], v[1], v[2]],
+                )
+            })
+            .await;
     }
 
     // -- operators ----------------------------------------------------------
@@ -636,6 +663,8 @@ mod tests {
         assert_eq!(version(&c).unwrap(), Some(SCHEMA_VERSION));
         let rows: Vec<(String, String, String, f64)> = c.prepare("SELECT node, kind, line, delivered_at FROM seat_queue WHERE delivered_at = 0 ORDER BY id").unwrap().query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).unwrap().map(Result::unwrap).collect();
         assert_eq!(rows, [("altair".to_string(), "seed".to_string(), String::new(), 0.0), ("altair".to_string(), "line".to_string(), "waiting".to_string(), 0.0)], "the seed first, and the orphan closed");
+        let kept: String = c.query_row("SELECT body FROM seat_queue WHERE kind = 'line' AND delivered_at = 0", [], |r| r.get(0)).unwrap();
+        assert_eq!(kept, r#"{"kept":true}"#, "a line already waiting survives the pause");
         let body: String = c.query_row("SELECT body FROM seat_queue WHERE kind = 'seed'", [], |r| r.get(0)).unwrap();
         let state = &serde_json::from_str::<Value>(&body).unwrap()["state"];
         assert_eq!((state["state"].as_str(), state["job"].as_str(), state["job_node"].as_str(), state["adopted"].as_i64(), state["missed"].as_i64(), state["remote_control"].as_i64()), (Some("occupied"), Some("j1"), Some("altair"), Some(1), Some(3), Some(1)));

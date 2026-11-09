@@ -233,6 +233,18 @@ pub fn journal_bound(edges: &EdgeList, level: Level, node: &str, project: &str, 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_seat_agent_answers_and_finishes_but_runs_no_other_seats_verb() {
+        let call = |verb| Call { tool: "seats", verb, harness: false, names_other: false };
+        for level in [Level::Cooperative, Level::Untrusted] {
+            assert_eq!(call_refusal(level, &call("send")), None);
+            assert_eq!(call_refusal(level, &call("mark_done")), None);
+            assert!(call_refusal(level, &call("reset")).is_some());
+            assert!(call_refusal(level, &call("list")).is_some());
+        }
+        assert_eq!(call_refusal(Level::Trusted, &call("reset")), None);
+    }
     use crate::grant::payload_digest;
     use crate::grant::tests::{key, sign};
 

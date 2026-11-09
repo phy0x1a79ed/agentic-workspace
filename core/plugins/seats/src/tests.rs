@@ -620,6 +620,20 @@ async fn a_seed_keeps_a_live_agent_in_its_seat_and_never_overwrites_one() {
 }
 
 #[tokio::test]
+async fn a_line_that_waited_through_the_move_survives_the_pause() {
+    let mut t = T::new(true);
+    let mut m = t.dm("waited");
+    m.kept = true;
+    t.seats.take(m).await;
+    t.settle().await;
+    assert_eq!((t.seat().await.missed, t.queued().await), (0, 1), "it waits instead of counting as missed");
+    assert!(t.world.w().specs.is_empty(), "and starts nothing while paused");
+    t.seats.configure(settings(false)).await;
+    t.tick().await;
+    assert_eq!(t.world.texts(), ["waited"]);
+}
+
+#[tokio::test]
 async fn a_seed_with_a_job_on_another_node_starts_empty_with_it_as_predecessor() {
     let t = T::new(true);
     t.seats.seed(decl(), seed("512feb43", "deneb")).await;

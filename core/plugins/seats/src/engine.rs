@@ -101,6 +101,8 @@ pub struct Incoming {
     pub outside: String,
     /// The first message of a new seat.
     pub new: bool,
+    /// A line that waited in social before seats moved here, which a pause does not discard.
+    pub kept: bool,
 }
 
 /// What a switch did to the seat's live session.
@@ -237,7 +239,7 @@ impl Seats {
     pub async fn take(self: &Arc<Self>, m: Incoming) {
         let mut seat = self.upsert(&m.seat).await;
         let now = self.world.now();
-        if self.paused() && seat.state == State::Empty {
+        if self.paused() && seat.state == State::Empty && !m.kept {
             seat.missed += 1;
             self.save(&seat).await;
             return;

@@ -181,6 +181,41 @@ impl DiscordConnector {
         permission(format!("discord {channel}: nobody has written to Opal here yet, and Opal never messages a person first"))
     }
 
+    /// A fresh session replays nothing, so fetch what each seat and mounted chat got since its
+    /// last message. A resume needs none of this: the gateway replays the gap itself. The first
+    /// sight of a chat only sets its cursor.
+    async fn catch_up(&self, tx: &mpsc::UnboundedSender<Inbound>) {
+        for channel in self.hooks.db.gap_chats(self.name()).await {
+            let Ok(id) = channel.parse::<u64>() else { continue };
+            let cursor = self.hooks.db.cursor(self.name(), &channel).await.and_then(|c| c.parse::<u64>().ok());
+            let page = match cursor {
+                Some(after) => self.http.channel_messages(Id::new(id)).after(Id::new(after)).limit(PAGE).await.map_err(http_err),
+                None => self.http.channel_messages(Id::new(id)).limit(1).await.map_err(http_err),
+            };
+            let mut page = match page {
+                Ok(r) => r.models().await.unwrap_or_default(),
+                Err(e) => {
+                    tracing::warn!(account = %self.name(), "discord resync of {channel} failed: {}", e.message);
+                    continue;
+                }
+            };
+            page.sort_by_key(|m| m.id.get());
+            if let Some(newest) = page.last() {
+                self.hooks.db.set_cursor(self.name(), &channel, &newest.id.get().to_string()).await;
+            }
+            if cursor.is_none() {
+                continue;
+            }
+            for m in &page {
+                let found = self.cache().message(self.name(), m);
+                if let Some(mut msg) = found {
+                    msg.resynced = true;
+                    let _ = tx.send(msg);
+                }
+            }
+        }
+    }
+
     async fn register(&self, app: u64) {
         let body = serde_json::to_vec(&approve_payload()).unwrap_or_default();
         let req = match Request::builder(&Route::SetGlobalCommands { application_id: app }).body(body).build() {
@@ -366,9 +401,14 @@ impl Connector for DiscordConnector {
                     self.mark_ready();
                     tracing::info!(account = %self.name(), "discord ready");
                     let me = self.clone();
-                    tokio::spawn(async move { me.register(app).await });
+                    let gap = tx.clone();
+                    tokio::spawn(async move {
+                        me.catch_up(&gap).await;
+                        me.register(app).await;
+                    });
                 }
                 Next::Message(m) => {
+                    self.hooks.db.set_cursor(self.name(), &m.channel_id, &m.message_id).await;
                     let _ = tx.send(*m);
                 }
                 Next::Interaction(i) => {

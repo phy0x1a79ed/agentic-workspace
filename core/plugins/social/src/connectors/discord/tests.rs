@@ -134,6 +134,32 @@ async fn send_to_dm_opens_it_once() {
 
 // -- seats ----------------------------------------------------------------------
 
+#[tokio::test]
+async fn a_new_session_fetches_what_each_seat_missed_since_its_cursor() {
+    let r = rig_with(|m, p| {
+        (m == "GET" && p.starts_with("channels/555/messages")).then(|| {
+            let person = || user_json(4242, "tester", false);
+            let page = vec![message_json(13 << 22, 555, user_json(ME, "opal-bot", true), "mine", 0), message_json(12 << 22, 555, person(), "second", 0), message_json(11 << 22, 555, person(), "first", 0)];
+            (200, serde_json::to_vec(&page).unwrap())
+        })
+    })
+    .await;
+    r.db.mount(crate::db::Mount { account: "bot".into(), channel_id: "555".into(), channel_name: "".into(), node: "n".into(), job: "j".into(), session_name: "".into(), mounted_at: "".into() }).await.unwrap();
+    let (tx, mut rx) = mpsc::unbounded_channel();
+
+    r.conn.catch_up(&tx).await;
+    assert!(rx.try_recv().is_err(), "the first sight only sets the cursor");
+    assert_eq!(r.db.cursor("bot", "555").await.unwrap(), (13u64 << 22).to_string());
+
+    r.db.run(|c| c.execute("DELETE FROM seat_cursor", [])).await.unwrap();
+    r.db.set_cursor("bot", "555", &(10u64 << 22).to_string()).await;
+    r.conn.catch_up(&tx).await;
+    let (a, b) = (rx.try_recv().unwrap(), rx.try_recv().unwrap());
+    assert_eq!((a.text.as_str(), b.text.as_str(), a.resynced && b.resynced), ("first", "second", true), "oldest first, and no copy of our own");
+    assert!(rx.try_recv().is_err());
+    assert_eq!(r.db.cursor("bot", "555").await.unwrap(), (13u64 << 22).to_string());
+}
+
 // -- first contact ----------------------------------------------------------------
 
 #[tokio::test]
