@@ -774,8 +774,7 @@ class SSHService:
     async def _do_connect(self, cfg: HostConfig) -> dict:
         """Route the single attempt. A lockout-sensitive host (one with a 2FA
         device) goes through the fleet-global slot arbiter — a live-WS lease to
-        ``ssh@<AWM_SSH_SLOT_PEER>``, or the in-process arbiter when this node owns
-        the slot (selector unset). Every other host keeps the per-node
+        ``ssh-slot@<AWM_SSH_SLOT_PEER>``. Every other host keeps the per-node
         local-breaker path unchanged. Never raises."""
         if cfg.twofa_device:
             return await self._connect_through_arbiter(cfg)
@@ -784,57 +783,19 @@ class SSHService:
     # -- slot arbiter: fleet-global single-attempt gate ---------------------
 
     async def _connect_through_arbiter(self, cfg: HostConfig) -> dict:
-        """Acquire the host's fleet-wide slot, run the one attempt while holding
-        it, then report the verdict. Local when we own the arbiter, else a live-WS
-        lease to the arbiter peer. Fails CLOSED — an unreachable arbiter refuses
-        the connect (no VPN/2FA/ssh, no MFA spent)."""
+        """Acquire the host's fleet-wide slot from the ``ssh-slot`` singleton over a
+        live-WS lease, run the one attempt while holding it, then report the
+        verdict. The open socket IS the lease, so a drop mid-attempt trips the
+        arbiter LOCKED on its own. Fails CLOSED — an unset or unreachable arbiter
+        refuses the connect (no VPN/2FA/ssh, no MFA spent)."""
         slot_peer = gatewayclient.peer_env(_SLOT_PEER_ENV)
         if not slot_peer:
-            return await self._connect_via_local_arbiter(cfg)
-        return await self._connect_via_arbiter_peer(cfg, slot_peer)
-
-    async def _connect_via_local_arbiter(self, cfg: HostConfig) -> dict:
-        """This node owns the arbiter: acquire in-process, hold across the attempt
-        (the attempt task's liveness IS the hold), release with the verdict."""
-        status, token = await self._slot_acquire(cfg.host)
-        if status != "granted":
             return self._status_dict(
-                cfg, "unavailable",
-                error=f"{cfg.host} is not available for automated access right now")
-        ok = False
-        reason = ""
+                cfg, "error",
+                error=(f"{_SLOT_PEER_ENV} names no connection arbiter on this "
+                       f"node, so no login to {cfg.host} was attempted"))
         try:
-            result = await self._do_connect_attempt(cfg, gated=True)
-            ok = self._verdict_ok(result)
-            reason = result.pop("_lock_reason", "")
-            return result
-        finally:
-            # We own the arbiter AND made the attempt, so we are the requester.
-            await self._slot_release(cfg.host, token, ok=ok, reason=reason,
-                                     requester=_NODE_NAME)
-
-    @staticmethod
-    def _verdict_ok(result: dict) -> bool:
-        """The lease verdict answers "was the lockout budget spent?", NOT "did the
-        connect succeed" — the slot exists solely to bound MFA attempts fleet-wide.
-
-        So a connect that died before the auth phase reports ``ok``: it spent
-        nothing, the account is not at risk, and the slot should simply be freed
-        rather than held (which would cost the operator an /approve for a failure
-        that was never their account's fault). Popping ``_preauth`` here keeps it
-        off the dict the agent sees.
-        """
-        preauth = result.pop("_preauth", False)
-        return result.get("status") == "connected" or bool(preauth)
-
-    async def _connect_via_arbiter_peer(self, cfg: HostConfig,
-                                        slot_peer: str) -> dict:
-        """Acquire a slot from the arbiter peer over a CA-verified, peer-bearer
-        WS lease; the open socket IS the lease. Hold it across the attempt, then
-        send the verdict (a clean release) — a drop mid-attempt trips the arbiter
-        LOCKED on its own."""
-        try:
-            lease = await gatewayclient.acquire_lease("ssh", cfg.host, peer=slot_peer, node=_NODE_NAME)
+            lease = await gatewayclient.acquire_lease("ssh-slot", cfg.host, peer=slot_peer, node=_NODE_NAME)
         except Exception as e:  # noqa: BLE001 — arbiter unreachable → FAIL CLOSED
             # Closed, but not held: 'unavailable' means an operator must
             # /approve, and nothing here needs one — only the peer to come back.
@@ -842,7 +803,7 @@ class SSHService:
                       slot_peer, cfg.host, e)
             return self._status_dict(
                 cfg, "error",
-                error=(f"the connection arbiter (ssh@{slot_peer}) did not answer, "
+                error=(f"the connection arbiter (ssh-slot@{slot_peer}) did not answer, "
                        f"so no login to {cfg.host} was attempted and no MFA "
                        f"attempt was spent — safe to retry once {slot_peer} "
                        f"is reachable"))
@@ -858,6 +819,20 @@ class SSHService:
             reason = result.pop("_lock_reason", "")
             await lease.verdict(ok=ok, reason=reason)
             return result
+
+    @staticmethod
+    def _verdict_ok(result: dict) -> bool:
+        """The lease verdict answers "was the lockout budget spent?", NOT "did the
+        connect succeed" — the slot exists solely to bound MFA attempts fleet-wide.
+
+        So a connect that died before the auth phase reports ``ok``: it spent
+        nothing, the account is not at risk, and the slot should simply be freed
+        rather than held (which would cost the operator an /approve for a failure
+        that was never their account's fault). Popping ``_preauth`` here keeps it
+        off the dict the agent sees.
+        """
+        preauth = result.pop("_preauth", False)
+        return result.get("status") == "connected" or bool(preauth)
 
     async def _slot_acquire(self, host: str) -> tuple[str, str | None]:
         """Arbiter ``open`` transition. Atomically grant at most one in-flight

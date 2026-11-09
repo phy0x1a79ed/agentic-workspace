@@ -76,6 +76,13 @@ impl ServiceGate {
         }
     }
 
+    /// Whether `path` opens a session on a service this gate serves. Subscriptions stay refused.
+    fn admits_session(&self, path: &str) -> bool {
+        path.strip_prefix("/hub/session/")
+            .and_then(|rest| rest.split('/').next())
+            .is_some_and(|service| self.tools.iter().any(|t| t == service))
+    }
+
     /// Keep only this gate's tools in a `/hub/table` reply.
     fn filter_table(&self, table: Value) -> Value {
         match table {
@@ -131,17 +138,18 @@ where
             WS_CLOSE => {
                 streams.lock().await.remove(&req.id);
             }
-            WS_OPEN if service.is_some() => {
-                let path = req.args.get("path").and_then(Value::as_str).unwrap_or_default();
-                if let Some(gate) = &service {
-                    gate.record(&from, path, &Value::Null, "refused");
-                }
-                let error = Some("a service key opens no stream".to_string());
-                write_line(&writer, &Response { id: req.id, ok: false, result: None, error, more: false }).await;
-            }
             WS_OPEN => {
-                let (writer, open_ws, streams) = (writer.clone(), open_ws.clone(), streams.clone());
                 let path = req.args.get("path").and_then(Value::as_str).unwrap_or_default().to_string();
+                if let Some(gate) = &service {
+                    let admitted = gate.admits_session(&path);
+                    gate.record(&from, &path, &Value::Null, if admitted { "opened" } else { "refused" });
+                    if !admitted {
+                        let error = Some(format!("a service key opens no stream at {path}"));
+                        write_line(&writer, &Response { id: req.id, ok: false, result: None, error, more: false }).await;
+                        continue;
+                    }
+                }
+                let (writer, open_ws, streams) = (writer.clone(), open_ws.clone(), streams.clone());
                 let id = req.id;
                 // Messages may follow the open before the stream is up: hold them until it is.
                 let (early_tx, mut early_rx) = mpsc::unbounded_channel();

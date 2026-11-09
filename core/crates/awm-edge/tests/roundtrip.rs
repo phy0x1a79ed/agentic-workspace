@@ -151,13 +151,23 @@ async fn a_service_login_reaches_only_its_tools_and_logs_each_call() {
     assert!(matches!(err, EdgeError::Remote(ref m) if m == "journal not installed"), "{err}");
     let table = c.invoke("alcor", awm_edge::TOOLS_FRAME, json!(null), caller.clone()).await.unwrap();
     assert_eq!(table, json!([{"name": "2fa"}]), "the table shows only the gate's tools");
-    let mut stream = c.open_ws("alcor", "/hub/emit/x/y", caller).await.unwrap();
-    assert_eq!(stream.rx.recv().await, Some(WsMsg::Close(Some("a service key opens no stream".into()))));
+    for path in ["/hub/emit/2fa/y", "/hub/session/journal/lease"] {
+        let mut refused = c.open_ws("alcor", path, caller.clone()).await.unwrap();
+        assert_eq!(refused.rx.recv().await, Some(WsMsg::Close(Some(format!("a service key opens no stream at {path}")))));
+    }
+    let mut admitted = c.open_ws("alcor", "/hub/session/2fa/lease", caller).await.unwrap();
+    assert_eq!(admitted.rx.recv().await, Some(WsMsg::Close(Some("the stream opener ran".into()))));
     let lines: Vec<serde_json::Value> =
         std::fs::read_to_string(&log).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect();
     let got: Vec<(&str, &str, &str)> = lines.iter()
         .map(|l| (l["tool"].as_str().unwrap(), l["verb"].as_str().unwrap(), l["result"].as_str().unwrap())).collect();
-    assert_eq!(got, [("2fa", "arm", "ok"), ("journal", "fetch", "refused"), ("/hub/emit/x/y", "", "refused")]);
+    assert_eq!(got, [
+        ("2fa", "arm", "ok"),
+        ("journal", "fetch", "refused"),
+        ("/hub/emit/2fa/y", "", "refused"),
+        ("/hub/session/journal/lease", "", "refused"),
+        ("/hub/session/2fa/lease", "", "opened"),
+    ]);
     assert!(lines.iter().all(|l| l["key"] == "awm:altair:service"));
     let _ = std::fs::remove_file(&log);
 }

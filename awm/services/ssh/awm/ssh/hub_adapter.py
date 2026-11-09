@@ -119,11 +119,6 @@ API_MANIFEST: dict[str, Any] = {
         },
     ],
     "emitters": [],
-    # Direct-session slot lease: a requester (this node or a peer) holds an open
-    # WS for the duration of one connect attempt; the OPEN socket IS the lease.
-    # This node is the fleet's slot arbiter for lockout-sensitive hosts. See
-    # SSHService._lease_session and FEDERATION.md (SlotArbiter DFA).
-    "sessions": [{"kind": "lease", "transport": "direct"}],
 }
 
 
@@ -144,7 +139,6 @@ async def main() -> None:
     )
     await ServiceAdapter(
         "ssh", API_MANIFEST, HANDLERS,
-        session_handlers={"lease": svc._lease_session},
         on_start=svc.init,
     ).run()
 

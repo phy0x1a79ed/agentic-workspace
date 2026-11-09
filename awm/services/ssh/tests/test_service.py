@@ -38,6 +38,30 @@ async def _noop_alert(_text):
     return None
 
 
+def _lease_from(svc, monkeypatch) -> None:
+    """Point ``svc``'s lease at its own arbiter, as if ``ssh-slot`` answered."""
+
+    class _Lease:
+        def __init__(self, host, status, token):
+            self.host, self.status, self.token = host, status, token
+            self.granted, self.reason = status == "granted", None
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def verdict(self, ok, reason=""):
+            await svc._slot_release(self.host, self.token, ok=ok, reason=reason)
+
+    async def _acquire(service, host, *, peer, node):
+        return _Lease(host, *await svc._slot_acquire(host))
+
+    monkeypatch.setenv("AWM_SSH_SLOT_PEER", "alcor")
+    monkeypatch.setattr(ssh_service.gatewayclient, "acquire_lease", _acquire)
+
+
 def _spawned() -> "ssh_service._AttemptRecord":
     """An attempt record for a connect that DID reach the ssh exec.
 
@@ -415,6 +439,7 @@ class TestStateMachine:
         monkeypatch.setattr(svc, "_attempt_master", _hang)
         monkeypatch.setattr(svc, "_exit_master", _true)      # reap is a no-op here
         monkeypatch.setattr(svc, "_alert", _capture_alert)
+        _lease_from(svc, monkeypatch)
 
         result = await svc.connect("fir")
         # The internal timeout became an auth FAILURE routed through the breaker —
@@ -485,6 +510,7 @@ class TestStateMachine:
 
         monkeypatch.setattr(svc, "_check_master", _master_late)
         monkeypatch.setattr(svc, "_attempt_master", _fail_to_bring_up)
+        _lease_from(svc, monkeypatch)
         result = await svc.connect("fir")
         assert result["status"] == "connected"       # adopted, not errored
         assert svc._read_lock(cfg) is None            # breaker NOT tripped
@@ -795,24 +821,50 @@ class TestSlotArbiter:
         monkeypatch.setattr(svc, "_check_master", _false)
         monkeypatch.setattr(svc, "_attempt_master", _fail_attempt)
 
-        await svc._connect_via_local_arbiter(cfg)
+        _, token = await svc._slot_acquire("fir")
+        result = await svc._do_connect_attempt(cfg, gated=True)
+        await svc._slot_release("fir", token, ok=svc._verdict_ok(result),
+                                reason=result.pop("_lock_reason", ""))
         assert svc._read_lock(cfg) is not None, "auth failure must still hold fir"
         assert "fir" not in svc._leased
 
     async def test_do_connect_routes_2fa_host_through_gated_arbiter(
             self, isolated_dirs, monkeypatch) -> None:
-        monkeypatch.delenv("AWM_SSH_SLOT_PEER", raising=False)  # local arbiter
+        monkeypatch.setenv("AWM_SSH_SLOT_PEER", "alcor")
         svc = SSHService()
         seen = {}
+
+        class _Lease:
+            granted = True
+            async def __aenter__(self): return self
+            async def __aexit__(self, *exc): return False
+            async def verdict(self, ok, reason=""): seen["verdict"] = ok
+
+        async def _fake_lease(service, host, *, peer, node):
+            seen["lease"] = (service, host, peer)
+            return _Lease()
 
         async def _fake_attempt(cfg, gated=False):
             seen["gated"] = gated
             return svc._status_dict(cfg, "connected")
 
+        monkeypatch.setattr(ssh_service.gatewayclient, "acquire_lease", _fake_lease)
         monkeypatch.setattr(svc, "_do_connect_attempt", _fake_attempt)
         result = await svc._do_connect(resolve_host("fir"))
         assert result["status"] == "connected"
-        assert seen["gated"] is True                  # gated arbiter path
+        assert seen == {"lease": ("ssh-slot", "fir", "alcor"), "gated": True, "verdict": True}
+
+    async def test_2fa_host_with_no_arbiter_attempts_nothing(
+            self, isolated_dirs, monkeypatch) -> None:
+        monkeypatch.delenv("AWM_SSH_SLOT_PEER", raising=False)
+        svc = SSHService()
+
+        async def _no_attempt(cfg, gated=False):
+            raise AssertionError("no login without an arbiter")
+
+        monkeypatch.setattr(svc, "_do_connect_attempt", _no_attempt)
+        result = await svc._do_connect(resolve_host("fir"))
+        assert result["status"] == "error"
         assert "fir" not in svc._leased               # released after success
 
 class TestApproveObservability:
