@@ -41,3 +41,20 @@ Each mutable name has one origin. Whether that sits within C3 is still to confir
 **Measured.** A dev gateway with empty state takes 8 MB RSS (alcor's production gateway takes 31 MB). mizar and alcor both run glibc 2.39 on x86_64, and the installed `awm` binary is byte-identical in size on both. alcor has no Rust toolchain, and neither has `rustc` on its shell PATH (mizar builds run in a container).
 
 **Landed.** Input to `handoff`. The design proposals that follow from this are on `STACK.md` under "Waiting on the user" until confirmed.
+
+## contract-and-builds (2026-11-09)
+
+**Question.** What encoding does the frozen contract use, and where do builds and the second node live?
+
+**User's words.** "lets use capella for builds, so maybe a second remote awm there instead. capella is much faster at builds." "the frozon contract are for dex calls that could cross binary, process, or network boundaries. Lets just use json, honestly. and fail on any unknown keys. -> would also need versioning so that prior calls still get translated and handled during transition periods."
+
+**Decided.**
+- The contract is JSON. A message with an unknown key is rejected. Every message carries a version, and a module translates prior-version calls so they still work through a transition period.
+- Builds run on capella. The second node is capella (dev gateway there), paired with mizar. alcor can join later as a third node that never compiles.
+- The contract covers dex calls across a binary, process or network boundary. Calls inside a module are ordinary code and stay outside it.
+
+**Measured on capella.** 16 cores, 67 GB free, glibc 2.35, native `cargo` and Docker present, production gateway at 10 MB on port 7819. mizar and alcor run glibc 2.39, so an artifact built on capella loads on both; the reverse would fail. capella's `awm` binary differs from mizar's.
+
+**Open, on `STACK.md`.** Whether a reply is downcast to the caller's version, and the in-process encoding.
+
+**Landed.** Input to `handoff`.
