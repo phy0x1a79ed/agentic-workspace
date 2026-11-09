@@ -133,9 +133,6 @@ and modal_url. Expires after 24 h. Only your session can cancel it.",
           json!([p("kind", "string", true, ""), p("node", "string", true, ""), p("title", "string", true, ""), p("body", "string", true, "")])),
         h("devices", "Enrolled devices. On alcor, for its operator only.", json!([])),
         h("device_revoke", "Revoke a device, its passkey and its sign-ins. On alcor, for its operator only.", json!([p("device_id", "string", true, "")])),
-        h("board_import", "The vault's one-shot card import. For an operator on alcor.",
-          json!([p("cards", "array", true, "[{task_id, section, kind, title, body?}]"), p("ops_notes", "array", false, "[{kind, node, title, body}]"),
-                 p("accept_gap", "array", false, "The ids Tony accepted as missing or extra, or true for any gap.")])),
     ]
 }
 

@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use awm_plugin_operations::relay::async_trait_free::BoxFut;
 use awm_plugin_operations::store::{BoardEvent, LiveSession, Open, Seat, Store};
 use awm_plugin_operations::vault_push::{Pusher, Vault};
-use crate::common::{count, s, Env, TestClock};
+use crate::common::{s, Env, TestClock};
 use rusqlite::{params, Connection};
 use serde_json::{json, Map, Value};
 
@@ -143,7 +143,6 @@ fn sections(pairs: &[(&str, &str)]) -> HashMap<String, String> {
 struct Migrated {
     dir: tempfile::TempDir,
     store: Store,
-    clock: TestClock,
 }
 
 fn migrated() -> Migrated {
@@ -152,7 +151,7 @@ fn migrated() -> Migrated {
     python_db(&path);
     let clock = TestClock::at(T0);
     let store = Store::open_with_clock(&path, false, clock.clock()).unwrap();
-    Migrated { dir, store, clock }
+    Migrated { dir, store }
 }
 
 // -- the first-start migration ---------------------------------------------------------------
@@ -170,7 +169,6 @@ fn the_first_start_migrates_a_python_queue_in_place() {
     assert!(tasks.contains(&"body".into()) && tasks.contains(&"source_note".into()), "{tasks:?}");
     assert!(columns(&path, "sessions").contains(&"job".into()));
     assert_eq!(columns(&path, "ops_notes"), ["kind", "node", "title", "body", "ts"]);
-    assert_eq!(st.kv_get("vault_mark").unwrap().as_deref(), Some("7"));
     assert_eq!(st.kv_get("writer_mark").unwrap().as_deref(), Some("7"));
     assert_eq!(keys(&path), before, "no row gains or loses a key");
     let old = st.task_get("T0000001").unwrap();
@@ -180,10 +178,8 @@ fn the_first_start_migrates_a_python_queue_in_place() {
     assert_eq!(st.task_messages("T0000003", 0).unwrap()[0]["body"], "hello");
     assert_eq!(st.max_event_id().unwrap(), 8);
 
-    st.kv_set("vault_mark", "9").unwrap();
     drop(st);
-    let again = Store::open(&path, false).unwrap();
-    assert_eq!(again.kv_get("vault_mark").unwrap().as_deref(), Some("9"), "a second start keeps the mark it has");
+    Store::open(&path, false).unwrap();
     assert_eq!(keys(&path), before);
 }
 
@@ -271,10 +267,6 @@ async fn fixture_board() -> Value {
     at(5.0);
     st.task_open("An idea", Open { task_id: Some("T0000002".into()), kind: Some("note".into()), section: Some("needs_you".into()), ..Open::default() }, None).unwrap();
     at(6.0);
-    st.kv_set("vault_mark", &st.max_event_id().unwrap().to_string()).unwrap();
-    let cards = [json!({"task_id": "T0000001", "section": "needs_you", "kind": "task", "title": "Fix the tunnel"}),
-                 json!({"task_id": "T0000002", "section": "needs_you", "kind": "note", "title": "An idea", "body": "The idea, in full."})];
-    assert_eq!(st.board_import(&cards, &[], &json!(false)).unwrap()["ok"], true);
     at(7.0);
     st.task_open("Side quest", Open { task_id: Some("T0000003".into()), session_id: Some(S3.into()), node: Some("mizar".into()), job: Some("job-c".into()), ..Open::default() }, None).unwrap();
     at(8.0);
@@ -301,9 +293,6 @@ async fn board_changes_matches_the_shared_fixture() {
     for card in got["cards"].as_array().unwrap() {
         let mut want = names(&CARD_KEYS);
         let id = s(&card["task_id"]);
-        if id == "T0000002" {
-            want.insert("body".into());
-        }
         if id == "T0000001" {
             want.insert("messages".into());
         }
@@ -323,104 +312,6 @@ async fn board_changes_matches_the_shared_fixture() {
         std::fs::write(&out, serde_json::to_string_pretty(&got).unwrap() + "\n").unwrap();
         panic!("board_changes differs from {}: the actual feed is in {}", path.display(), out.display());
     }
-}
-
-// -- board_import ----------------------------------------------------------------------------
-
-fn card(id: &str, section: &str, kind: &str, body: Option<&str>) -> Value {
-    let mut c = json!({"task_id": id, "section": section, "kind": kind, "title": id});
-    if let Some(b) = body {
-        c["body"] = json!(b);
-    }
-    c
-}
-
-fn vault() -> Vec<Value> {
-    vec![card("T0000001", "history", "task", None), card("T0000002", "proposed", "note", Some("The idea, in full.")),
-         card("T0000003", "working", "task", None), card("T0000004", "proposed", "task", None)]
-}
-
-/// What an import may change, to show a refused one changed nothing.
-fn written(m: &Migrated) -> (i64, Option<String>, HashMap<String, String>, Value, i64) {
-    let path = m.dir.path().join("queue.db");
-    (count(&m.store, "events"), m.store.kv_get("board_import").unwrap(), raw_sections(&path),
-     m.store.task_get("T0000002").unwrap()["body"].clone(), count(&m.store, "ops_notes"))
-}
-
-#[test]
-fn an_exact_import_moves_proposed_cards_to_history_and_lands_note_bodies() {
-    let m = migrated();
-    m.clock.set(T0 + 10.0);
-    m.store.ops_post("vpn", "mizar", "VPN newer", "the tunnel is back", None).unwrap();
-    let notes = [json!({"kind": "vpn", "node": "mizar", "title": "VPN older", "body": "down"}),
-                 json!({"kind": "disk", "node": "alcor", "title": "Disk", "body": "91%"}),
-                 json!({"kind": "", "node": "alcor", "title": "no kind", "body": "x"})];
-    m.clock.set(T0 + 20.0);
-    let out = m.store.board_import(&vault(), &notes, &json!(false)).unwrap();
-    assert_eq!(out, json!({"ok": true, "moved": 2, "notes": 1}));
-    let path = m.dir.path().join("queue.db");
-    assert_eq!(raw_sections(&path), sections(&[("T0000001", "history"), ("T0000002", "history"), ("T0000003", "working"),
-                                                ("T0000004", "history"), ("T0000005", "working")]));
-    let idea = m.store.task_get("T0000002").unwrap();
-    assert_eq!((idea["body"].clone(), idea["done_at"].clone(), idea["kind"].clone()), (json!("The idea, in full."), json!(T0 + 20.0), json!("note")));
-    assert_eq!(m.store.task_get("T0000004").unwrap()["body"], Value::Null, "only a note's body lands");
-    let listed = m.store.ops_list().unwrap();
-    let titles: Vec<(String, String)> = listed["notes"].as_array().unwrap().iter().map(|n| (s(&n["kind"]), s(&n["title"]))).collect();
-    assert_eq!(titles, [("disk".to_string(), "Disk".to_string()), ("vpn".to_string(), "VPN newer".to_string())], "an import never overwrites a newer notice");
-    let record: Value = serde_json::from_str(&m.store.kv_get("board_import").unwrap().unwrap()).unwrap();
-    assert_eq!(record, json!({"ts": T0 + 20.0, "cards": 4, "moved": 2, "notes": 1, "gap": []}));
-}
-
-#[test]
-fn a_replay_after_success_answers_ok_and_writes_nothing() {
-    let m = migrated();
-    m.store.board_import(&vault(), &[], &json!(false)).unwrap();
-    let before = written(&m);
-    let again = m.store.board_import(&[card("T0000009", "proposed", "note", None)], &[json!({"kind": "k", "node": "n", "title": "t", "body": "b"})], &json!(false)).unwrap();
-    assert_eq!(again, json!({"ok": true, "replay": true}));
-    assert_eq!(written(&m), before);
-}
-
-fn refused(m: &Migrated, cards: &[Value], gap: Value) -> Value {
-    let before = written(m);
-    let out = m.store.board_import(cards, &[json!({"kind": "disk", "node": "alcor", "title": "Disk", "body": "91%"})], &gap).unwrap();
-    assert_eq!(out["ok"], false, "{out}");
-    assert_eq!(written(m), before, "a refused import writes nothing");
-    out
-}
-
-#[test]
-fn an_import_that_does_not_match_the_queue_is_refused() {
-    let m = migrated();
-    let out = refused(&m, &vault()[..3], json!(false));
-    assert_eq!(out, json!({"ok": false, "missing": ["T0000004"], "extra": [], "no_body": [], "duplicates": false, "expected": 4, "given": 3}));
-    let mut cards = vault();
-    cards.push(card("T0000005", "working", "task", None));
-    cards.push(card("T0000009", "proposed", "task", None));
-    let out = refused(&m, &cards, json!(false));
-    assert_eq!((out["missing"].clone(), out["extra"].clone()), (json!([]), json!(["T0000005", "T0000009"])), "a card after the mark is extra");
-    let mut cards = vault();
-    cards.push(card("T0000001", "history", "task", None));
-    let out = refused(&m, &cards, json!(true));
-    assert_eq!((out["duplicates"].clone(), out["given"].clone()), (json!(true), json!(5)), "accept_gap does not excuse duplicates");
-    let mut cards = vault();
-    cards[1] = card("T0000002", "proposed", "note", None);
-    assert_eq!(refused(&m, &cards, json!(true))["no_body"], json!(["T0000002"]));
-}
-
-#[test]
-fn accept_gap_must_name_the_gap_exactly() {
-    let m = migrated();
-    let mut cards = vault()[..3].to_vec();
-    cards.push(card("T0000005", "working", "task", None));
-    refused(&m, &cards, json!(["T0000004"]));
-    refused(&m, &cards, json!(["T0000004", "T0000005", "T0000006"]));
-    refused(&m, &cards, json!("yes"));
-    let out = m.store.board_import(&cards, &[], &json!(["T0000005", "T0000004"])).unwrap();
-    assert_eq!(out, json!({"ok": true, "moved": 1, "notes": 0}));
-    assert_eq!(m.store.task_get("T0000004").unwrap()["section"], "proposed", "a card left out stays where it is");
-    let record: Value = serde_json::from_str(&m.store.kv_get("board_import").unwrap().unwrap()).unwrap();
-    assert_eq!(record["gap"], json!(["T0000004", "T0000005"]));
 }
 
 // -- Stale (R61 item 4) ----------------------------------------------------------------------

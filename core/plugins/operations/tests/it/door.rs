@@ -61,7 +61,6 @@ async fn the_door_refuses_what_is_not_a_home_verb() {
     let sv = served().await;
     refused(locked(&sv.path, "mizar").call("card_action", json!({"action": "close"})).await, "does not take");
     refused(locked(&sv.path, "mizar").call("devices", json!({})).await, "does not take");
-    refused(locked(&sv.path, "mizar").call("board_import", json!({"cards": []})).await, "does not take");
     refused(locked(&sv.path, "mizar").call("task_report", json!({"task_id": "nosuchid", "state": "done"})).await, "nosuchid");
 }
 

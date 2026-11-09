@@ -37,16 +37,7 @@ pub const NO_PLUGIN: [&str; 2] = ["devices", "device_revoke"];
 /// The order verbs: each node's reflection, or an operator.
 pub const ORDER_VERBS: [&str; 2] = ["order_pull", "order_done"];
 /// The verbs no session may call.
-pub const NO_SESSION: [&str; 3] = ["board_import", "ops_post", "devices"];
-/// The one plugin that writes the vault.
-
-
-fn rfc3339(ts: f64) -> String {
-    chrono::DateTime::from_timestamp((ts.floor()) as i64, ((ts.fract()) * 1e9) as u32)
-        .map(|d| d.to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
-        .unwrap_or_default()
-}
-
+pub const NO_SESSION: [&str; 2] = ["ops_post", "devices"];
 // -- the gateway sides of the front, Arbutus and the approver ------------------------------
 
 pub struct HubOutside {
@@ -208,13 +199,6 @@ impl Ops {
                     h.approver.device_revoke(args.get("device_id").and_then(Value::as_str).unwrap_or_default())
                 };
                 out.unwrap_or_else(|e| e.as_json())
-            }
-            "board_import" => {
-                let h = match home() { Ok(h) => h, Err(e) => return e };
-                let cards = args.get("cards").and_then(Value::as_array).cloned().unwrap_or_default();
-                let notes = args.get("ops_notes").and_then(Value::as_array).cloned().unwrap_or_default();
-                let gap = args.get("accept_gap").cloned().unwrap_or(Value::Null);
-                blocking(move || h.store.board_import(&cards, &notes, &gap)).await.unwrap_or_else(|e| refusal(e.to_string()))
             }
             _ => self.front.call(verb, &args, &st).await,
         }

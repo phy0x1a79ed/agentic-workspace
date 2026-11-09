@@ -7,7 +7,7 @@
 //! announced to the `on_event` hook once its transaction commits: `vault_push` carries
 //! `board_changes` to the vault from that announcement.
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -21,7 +21,7 @@ pub const WORKING: &str = "working";
 pub const STALE: &str = "stale";
 pub const HISTORY: &str = "history";
 pub const SECTIONS: [&str; 4] = [NEEDS_YOU, WORKING, STALE, HISTORY];
-/// The section a vault Proposed card had before `board_import` moves it to History.
+/// A section older rows may still hold; no card moves into it.
 const PROPOSED: &str = "proposed";
 pub const ROLES: [&str; 3] = ["main", "worker", "joined"];
 pub const APPROVAL_OUTCOMES: [&str; 4] = ["approved", "denied", "expired", "cancelled"];
@@ -846,75 +846,6 @@ impl Store {
         Ok(out)
     }
 
-    /// The one-shot migration from the vault (CONTRACT.md item 2). It writes nothing unless
-    /// the vault's cards are exactly the store's cards up to `vault_mark`, or the gap is
-    /// accepted. A replay after success answers ok and writes nothing.
-    pub fn board_import(&self, cards: &[Value], ops_notes: &[Value], accept_gap: &Value) -> Result<Value> {
-        if self.kv_get("board_import")?.is_some() {
-            return Ok(json!({"ok": true, "replay": true}));
-        }
-        let mark: i64 = self.kv_get("vault_mark")?.and_then(|s| s.trim().parse().ok()).unwrap_or(0);
-        let given: Vec<(String, String, String, Option<String>)> = cards
-            .iter()
-            .map(|c| {
-                let s = |k: &str| c.get(k).and_then(Value::as_str).unwrap_or_default().to_string();
-                (s("task_id"), s("section"), s("kind"), c.get("body").and_then(Value::as_str).map(str::to_string))
-            })
-            .collect();
-        let out = self.write(None, |tx| {
-            let mut expected = BTreeSet::new();
-            let mut st = tx.tx.prepare("SELECT DISTINCT task_id FROM events WHERE id<=?")?;
-            let ids: Vec<String> = st.query_map([mark], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
-            drop(st);
-            for id in ids {
-                if let Ok(row) = task_by_id(&tx.tx, &id) {
-                    expected.insert(row.task_id);
-                }
-            }
-            let given_ids: BTreeSet<String> = given.iter().map(|g| g.0.clone()).collect();
-            let missing: Vec<String> = expected.difference(&given_ids).cloned().collect();
-            let extra: Vec<String> = given_ids.difference(&expected).cloned().collect();
-            let duplicates = given.len() != given_ids.len();
-            let no_body: Vec<String> = given.iter().filter(|g| g.2 == "note" && g.3.is_none()).map(|g| g.0.clone()).collect();
-            let gap: BTreeSet<String> = missing.iter().chain(extra.iter()).cloned().collect();
-            let accepted = match accept_gap {
-                Value::Bool(b) => *b,
-                Value::Array(a) => a.iter().filter_map(Value::as_str).map(str::to_string).collect::<BTreeSet<_>>() == gap,
-                _ => false,
-            };
-            if duplicates || !no_body.is_empty() || (!gap.is_empty() && !accepted) {
-                return Ok(json!({"ok": false, "missing": missing, "extra": extra, "no_body": no_body, "duplicates": duplicates,
-                                 "expected": expected.len(), "given": given.len()}));
-            }
-            let mut moved = 0;
-            for (tid, section, kind, body) in &given {
-                let Some(row) = raw_task(&tx.tx, tid)? else { continue };
-                if let Some(b) = body.as_ref().filter(|_| kind == "note") {
-                    tx.tx.execute("UPDATE tasks SET body=? WHERE task_id=?", params![b, tid])?;
-                }
-                if section == PROPOSED || row.section == PROPOSED {
-                    Store::set_card(tx, tid, HISTORY, row.status.as_deref(), "import", json!({"from": "proposed"}))?;
-                    moved += 1;
-                }
-            }
-            let mut notes = 0;
-            for n in ops_notes {
-                let s = |k: &str| n.get(k).and_then(Value::as_str).unwrap_or_default().to_string();
-                if s("kind").is_empty() || s("node").is_empty() {
-                    continue;
-                }
-                notes += tx.tx.execute(
-                    "INSERT INTO ops_notes(kind, node, title, body, ts) VALUES (?,?,?,?,?) ON CONFLICT(kind, node) DO NOTHING",
-                    params![s("kind"), s("node"), s("title"), s("body"), tx.now],
-                )?;
-            }
-            let record = json!({"ts": tx.now, "cards": given.len(), "moved": moved, "notes": notes, "gap": gap});
-            tx.tx.execute("INSERT INTO kv VALUES ('board_import', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [record.to_string()])?;
-            Ok(json!({"ok": true, "moved": moved, "notes": notes}))
-        })?;
-        Ok(out)
-    }
-
     // -- Stale (R61 item 4) ------------------------------------------------------------------
 
     /// A session that went: its row ends, and a Working or Needs-you card with no live
@@ -1039,10 +970,6 @@ fn migrate(db: &Connection) -> rusqlite::Result<()> {
     }
     db.execute_batch(ADDITIVE)?;
     db.execute("UPDATE tasks SET section='history' WHERE section='done'", [])?;
-    let writer: Option<String> = db.query_row("SELECT value FROM kv WHERE key='writer_mark'", [], |r| r.get(0)).optional()?;
-    if let Some(w) = writer {
-        db.execute("INSERT INTO kv VALUES ('vault_mark', ?) ON CONFLICT(key) DO NOTHING", [w])?;
-    }
     Ok(())
 }
 

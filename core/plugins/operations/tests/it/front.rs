@@ -336,16 +336,6 @@ async fn the_vault_verbs_refuse_a_session_or_an_as() {
 }
 
 #[tokio::test]
-async fn board_import_is_for_an_operator_on_alcor() {
-    let h = harness();
-    let ops = h.ops();
-    let out = ops.handle("board_import", json!({"cards": []}), none(), None, None).await;
-    assert_eq!(out["ok"], true, "{out}");
-    let session = ops.handle("board_import", json!({"cards": []}), pid(77), None, None).await;
-    assert_eq!(session["ok"], false, "{session}");
-}
-
-#[tokio::test]
 async fn ops_post_keeps_one_notice_per_kind_and_node() {
     let h = harness();
     let ops = h.ops();
@@ -369,5 +359,4 @@ async fn the_home_verbs_answer_only_on_the_home_node() {
     let ops = Ops { front: h.front.clone(), home: None };
     let want = json!({"ok": false, "error": "this verb lives on the home node (alcor)"});
     assert_eq!(ops.handle("devices", json!({}), none(), None, None).await, want);
-    assert_eq!(ops.handle("board_import", json!({}), none(), None, None).await, want);
 }

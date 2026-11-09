@@ -89,8 +89,7 @@
       "parent_task": null,
       "sessions": [],
       "source_note": null,
-      "approvals": [],
-      "body": "The idea, in full."
+      "approvals": []
     },
     {
       "task_id": "T0000003",
