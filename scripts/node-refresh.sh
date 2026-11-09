@@ -9,8 +9,8 @@
 # caller that dies or drops its ssh leaves them running.
 #
 # The result goes to <AWM_DIR>/state/refresh/<sha>.json, the steps' output to <sha>.log
-# beside it. A second call for the same sha waits for the unit that runs, or answers from
-# the result, and never runs the steps twice. Delete the result to run them again.
+# beside it. A second call for the same sha waits for the unit that runs, answers from a
+# result that succeeded, and runs the steps again after one that failed.
 # The last line of output is `AWM-REFRESH-RESULT <result json>`, which the deploy reads.
 #
 # The body is one function, called on the last line: sync rewrites this file while
@@ -46,8 +46,8 @@ main() {
 
 launch() {
     local to=$1
-    if [[ ! -s $result ]] && ! running; then
-        rm -f "$log"
+    if ! succeeded && ! running; then
+        rm -f "$log" "$result"
         local env=(AWM_REFRESH_IN_UNIT=1 PATH="$PATH" AWM_DIR="$AWM_DIR" HOME="$HOME")
         local v
         for v in AWM_WORKSPACE AWM_NODE_NAME MAMBA_ROOT_PREFIX MAMBA_EXE AWM_REFRESH_RESTART; do
@@ -74,8 +74,10 @@ launch() {
     [[ -s $result ]] || fail_launch "$to" "$unit ended without a result"
     [[ -f $log ]] && tail -n 40 "$log"
     printf 'AWM-REFRESH-RESULT %s\n' "$(tr -d '\n' < "$result")"
-    grep -q '"ok": true' "$result"
+    succeeded
 }
+
+succeeded() { grep -qs '"ok": true' "$result"; }
 
 running() { systemctl --user is-active --quiet "$unit" 2>/dev/null; }
 

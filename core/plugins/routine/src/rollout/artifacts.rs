@@ -46,7 +46,7 @@ pub fn parse_pin(text: &str, pin: &str) -> Result<Artifact, String> {
     Ok(Artifact { pin: pin.into(), file: name, sha256: sha })
 }
 
-fn show(bare: &Path, spec: &str) -> Option<String> {
+pub fn show(bare: &Path, spec: &str) -> Option<String> {
     let r = sh::git(bare, &["show", spec], &HashMap::new(), None);
     // Python's text mode strips nothing from `git show`, and proc.git strips the ends.
     (r.code == 0).then(|| r.stdout.trim().to_string())

@@ -1,4 +1,4 @@
-//! Blocking shell and git calls for the land queue, which runs as a command, not a service.
+//! Blocking shell and git calls for node rollout, which runs as a command, not a service.
 
 use std::collections::HashMap;
 use std::io::Read;

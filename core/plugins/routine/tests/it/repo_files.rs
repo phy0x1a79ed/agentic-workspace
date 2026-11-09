@@ -1,5 +1,5 @@
-//! awm's own deploy.toml and the scripts the land rollout runs: refresh-checkout.sh,
-//! full-tests.sh, move-canonical.sh, awm-deploy.sh, build.sh, install.sh and refresh-pins.sh.
+//! awm's own deploy.toml and the scripts node rollout runs: refresh-checkout.sh,
+//! node-refresh.sh, full-tests.sh, move-canonical.sh, awm-deploy.sh, build.sh, install.sh and refresh-pins.sh.
 
 
 use std::os::unix::fs::PermissionsExt;
@@ -76,6 +76,33 @@ fn node_repo(tmp: &Path) -> (PathBuf, String) {
 
 fn refresh_checkout(node: &Path, to: &str) -> Output {
     sh(Command::new("sh").arg(repo().join("scripts/refresh-checkout.sh")).current_dir(node).env_clear().env("PATH", path_env()).env("HOME", home()).env("AWM_REFRESH_TO", to))
+}
+
+#[test]
+fn node_refresh_retries_a_failed_result_and_keeps_a_good_one() {
+    let tmp = tempfile::tempdir().unwrap();
+    let node = tmp.path().join("node");
+    let flag = tmp.path().join("deploy-ok");
+    let calls = tmp.path().join("calls");
+    copy("scripts/node-refresh.sh", &node.join("scripts/node-refresh.sh"));
+    write(&node.join("scripts/refresh-checkout.sh"), "true\n");
+    write(&node.join("scripts/awm-deploy.sh"), &format!("echo x >> {}\ntest -e {}\n", calls.display(), flag.display()));
+    let bin = tmp.path().join("bin");
+    exe(&bin.join("systemctl"), "#!/bin/sh\nexit 1\n");
+    exe(&bin.join("awm"), "#!/bin/sh\n[ \"$1\" = plugins ] && echo '{}' || echo '[]'\n");
+    let to = "a".repeat(40);
+    let refresh = || sh(Command::new("bash").arg(node.join("scripts/node-refresh.sh")).arg(&to).env("PATH", format!("{}:{}", bin.display(), path_env())).env("AWM_DIR", node.join(".awm")).env_remove("AWM_REFRESH_IN_UNIT"));
+    let deploys = || std::fs::read_to_string(&calls).unwrap().lines().count();
+
+    assert_eq!(refresh().status.code(), Some(1));
+    assert_eq!(deploys(), 1);
+    write(&flag, "");
+    let r = refresh();
+    assert!(r.status.success(), "{}", text(&r.stdout));
+    assert_eq!(deploys(), 2);
+    let r = refresh();
+    assert!(r.status.success() && text(&r.stdout).contains("AWM-REFRESH-RESULT"), "{}", text(&r.stdout));
+    assert_eq!(deploys(), 2);
 }
 
 #[test]
