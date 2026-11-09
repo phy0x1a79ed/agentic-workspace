@@ -188,6 +188,8 @@ impl EdgeClient {
         tokio::spawn(async move {
             loop {
                 tokio::select! {
+                    // A local socket can send its last frame and close at once: send the frame first.
+                    biased;
                     msg = from_me.recv() => match msg {
                         Some(WsMsg::Close(_)) | None => break,
                         Some(m) => {
