@@ -41,7 +41,7 @@ impl Outcome {
     }
 }
 
-fn pipe() -> std::io::Result<(OwnedFd, OwnedFd)> {
+pub(crate) fn pipe() -> std::io::Result<(OwnedFd, OwnedFd)> {
     let mut fds = [0; 2];
     // SAFETY: pipe2 writes two fresh descriptors into fds, which we then own.
     if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
