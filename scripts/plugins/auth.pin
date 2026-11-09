@@ -1,5 +1,5 @@
 # The auth core plugin binary (static musl) that a deploy places at <AWM_DIR>/bin/auth.
 # Written by the deploy on mizar (scripts/refresh-pins.sh). Do not edit.
-version=auth-a44fc414ca85
-file=awm-plugin-auth-a44fc414ca85-linux-x86_64-musl
-sha256=22de32b462504057404654bb3e77115264083dd4f23ae0208547829ba2ed515b
+version=auth-65244f3d2afd
+file=awm-plugin-auth-65244f3d2afd-linux-x86_64-musl
+sha256=e64b707579f00c3dd114f5993b7110ae31bb26f72abe5ec7fd8bbf524659af47
