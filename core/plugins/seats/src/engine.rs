@@ -413,9 +413,10 @@ impl Seats {
             project: &settings.project,
             previous: previous.as_ref().map(|p| (p.job.as_str(), p.node.as_str(), transcript.as_deref())),
         };
+        let (model, effort) = if seat.decl.model.is_empty() { (&settings.model, &settings.effort) } else { (&seat.decl.model, &seat.decl.effort) };
         let mut spec = json!({
             "project": settings.project, "scope": seat.decl.scope, "name": seat.decl.name, "prompt": brief::brief(&facts, &lines),
-            "trust": seat.decl.level, "model": settings.model, "effort": settings.effort, "remote_control": seat.remote_control,
+            "trust": seat.decl.level, "model": model, "effort": effort, "remote_control": seat.remote_control,
             "pin": true,
         });
         // A host reboot can bring the old agent back after its seat emptied: the new one takes its place.

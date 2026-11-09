@@ -36,6 +36,8 @@ CREATE TABLE IF NOT EXISTS seat_registry (
     missed       INTEGER NOT NULL DEFAULT 0,
     remote_control INTEGER NOT NULL DEFAULT 0,
     rc_url       TEXT NOT NULL DEFAULT '',
+    model        TEXT NOT NULL DEFAULT '',
+    effort       TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (account, channel_id)
 );
 CREATE TABLE IF NOT EXISTS seat_queue (
@@ -170,6 +172,9 @@ pub struct Decl {
     pub brief: String,
     /// The agent's session name, `seat:<app>/<server>/<chat>`.
     pub name: String,
+    /// The seat's own model and effort. Empty means the node's `[seats]` pair.
+    pub model: String,
+    pub effort: String,
 }
 
 /// A seat's state as social's database held it before seats moved to their hosts.
@@ -214,7 +219,7 @@ pub struct Seat {
     pub rc_url: String,
 }
 
-const COLS: &str = "account, channel_id, channel_name, kind, server, slug, node, scope, level, platform, server_label, chat_label, brief, name, state, job, adopted, last_message, done_at, deadline, previous, breaker, held, missed, remote_control, rc_url";
+const COLS: &str = "account, channel_id, channel_name, kind, server, slug, node, scope, level, platform, server_label, chat_label, brief, name, state, job, adopted, last_message, done_at, deadline, previous, breaker, held, missed, remote_control, rc_url, model, effort";
 
 impl Seat {
     fn from_row(r: &Row) -> rusqlite::Result<Self> {
@@ -236,6 +241,8 @@ impl Seat {
                 chat_label: r.get(11)?,
                 brief: r.get(12)?,
                 name: r.get(13)?,
+                model: r.get(26)?,
+                effort: r.get(27)?,
             },
             state: State::parse(&r.get::<_, String>(14)?),
             job: r.get(15)?,
@@ -347,12 +354,12 @@ fn save(c: &Connection, s: &Seat) -> rusqlite::Result<bool> {
     let before = c.query_row(&format!("SELECT {COLS} FROM seat_registry WHERE account = ?1 AND channel_id = ?2"), params![s.decl.account, s.decl.channel_id], Seat::from_row).optional()?;
     let d = &s.decl;
     c.execute(
-        &format!("INSERT OR REPLACE INTO seat_registry ({COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26)"),
+        &format!("INSERT OR REPLACE INTO seat_registry ({COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28)"),
         params![
             d.account, d.channel_id, d.channel_name, d.kind, d.server, d.slug, d.node, d.scope, d.level, d.platform, d.server_label, d.chat_label, d.brief, d.name,
             s.state.as_str(), s.job, s.adopted as i64, s.last_message, s.done_at, s.deadline,
             serde_json::to_string(&s.previous).unwrap_or_default(), serde_json::to_string(&s.breaker).unwrap_or_default(),
-            s.held, s.missed, s.remote_control as i64, s.rc_url
+            s.held, s.missed, s.remote_control as i64, s.rc_url, d.model, d.effort
         ],
     )?;
     Ok(before.is_none_or(|b| b.public(0) != s.public(0) || b.decl.name != s.decl.name))
@@ -371,6 +378,12 @@ impl Store {
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.execute_batch(SCHEMA)?;
+        for column in ["model", "effort"] {
+            let known: bool = conn.query_row("SELECT COUNT(*) > 0 FROM pragma_table_info('seat_registry') WHERE name = ?1", [column], |r| r.get(0))?;
+            if !known {
+                conn.execute_batch(&format!("ALTER TABLE seat_registry ADD COLUMN {column} TEXT NOT NULL DEFAULT ''"))?;
+            }
+        }
         Ok(Self(Arc::new(Mutex::new(conn))))
     }
 

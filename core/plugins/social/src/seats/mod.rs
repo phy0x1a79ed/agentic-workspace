@@ -83,7 +83,9 @@ impl Seats {
     /// What a host needs to know of a seat, with the labels only social can work out.
     fn decl(&self, s: &Seat) -> Value {
         let place = self.place_of(s);
+        let (model, effort) = self.cfg.agent_for(&s.account, &s.channel_id, &s.kind).unwrap_or_default();
         json!({
+            "model": model, "effort": effort,
             "account": s.account, "channel_id": s.channel_id, "channel_name": s.channel_name, "kind": s.kind, "server": s.server, "slug": s.slug,
             "node": s.node, "scope": s.scope, "level": s.level, "platform": place.platform, "name": s.name,
             "server_label": place.server_label(), "chat_label": place.chat_label(), "brief": line::brief_file(&place, &s.level),

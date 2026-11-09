@@ -116,8 +116,8 @@ mod verbs {
         conns.write().unwrap().insert("opal".into(), fake.clone());
         let cfg = SeatsConfig {
             paused: true,
-            rules: vec![SeatRule { account: "opal".into(), kind: "dm".into(), node: "altair".into(), level: Level::Cooperative, scope: "seats/{slug}".into(), except: vec![] }],
-            chats: vec![SeatChat { account: "opal".into(), channel: "D0OPER".into(), node: "altair".into(), level: Level::Trusted, scope: "seats/operator".into() }],
+            rules: vec![SeatRule { account: "opal".into(), kind: "dm".into(), node: "altair".into(), level: Level::Cooperative, scope: "seats/{slug}".into(), except: vec![], agent: None }],
+            chats: vec![SeatChat { account: "opal".into(), channel: "D0OPER".into(), node: "altair".into(), level: Level::Trusted, scope: "seats/operator".into(), agent: None }],
             ..Default::default()
         };
         let seats = crate::seats::Seats::new(db.clone(), cfg, vec![account.clone()]);

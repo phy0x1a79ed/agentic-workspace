@@ -7,6 +7,7 @@
 //! records the calling session, and only that session cancels it (fleet.md R97 item 1).
 //! Every write goes through the relay, so it waits in the outbox while alcor is away.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use serde_json::{json, Map, Value};
@@ -30,9 +31,23 @@ pub trait Outside: Send + Sync {
     fn dm<'a>(&'a self, text: &'a str) -> BoxFut<'a, bool>;
     /// One message in Tony's own Discord DM.
     fn dm_tony<'a>(&'a self, text: &'a str) -> BoxFut<'a, bool>;
-    /// The claude.ai link of a job on a node, when it has one.
-    fn link<'a>(&'a self, node: &'a str, job: &'a str) -> BoxFut<'a, Option<String>>;
+    /// Turn a job's Remote Control on, when it is off, and say how it can be reached.
+    fn reach<'a>(&'a self, node: &'a str, job: &'a str) -> BoxFut<'a, Reach>;
+    /// Each job the roster holds on a node, with its claude.ai link. None when the roster has
+    /// no answer for that node.
+    fn links<'a>(&'a self, node: &'a str) -> BoxFut<'a, Option<HashMap<String, Option<String>>>>;
 }
+
+/// How a session can be reached after asking for Remote Control.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Reach {
+    Link(String),
+    /// `/rc` is typed and connects when the session's turn ends.
+    Connecting,
+    Unavailable,
+}
+
+const RC_PENDING: &str = "rc:";
 
 /// Who is calling, from the gateway's stamps.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -367,21 +382,73 @@ impl Front {
     async fn ask_by_dm(&self, kind: &str, text: &str, c: &Caller) -> Answer {
         let node = c.node.as_deref().unwrap_or(&self.node);
         let who = c.name.as_deref().or(c.job.as_deref()).unwrap_or("A service");
-        let link = match &c.job {
-            Some(job) => self.outside.link(node, job).await,
-            None => None,
+        let reach = match &c.job {
+            Some(job) => self.turn_on_rc(node, job, who).await,
+            None => Reach::Unavailable,
         };
         let need = if kind == "review" { "has something for you to review" } else { "needs you" };
         let mut message = format!("**{who}** on **{node}** {need}.\n{text}");
-        match (&link, &c.job) {
-            (Some(url), _) => message.push_str(&format!("\n{url}")),
-            (None, Some(job)) => message.push_str(&format!("\nAttach: `claude attach {job}` on {node}")),
-            (None, None) => {}
-        }
+        let attach = c.job.as_ref().map(|job| format!("\nAttach: `claude attach {job}` on {node}")).unwrap_or_default();
+        let (link, note) = match &reach {
+            Reach::Link(url) => {
+                message.push_str(&format!("\n{url}"));
+                (Some(url), None)
+            }
+            Reach::Connecting => {
+                message.push_str(&format!("{attach}\nRemote Control connects when this session ends its turn. The link follows then."));
+                (None, Some("Remote Control connects when you end your turn, and Tony gets the link then."))
+            }
+            Reach::Unavailable => {
+                message.push_str(&attach);
+                (None, None)
+            }
+        };
         if !self.outside.dm_tony(&message).await {
             return Err("this session holds no card and the DM to Tony did not go out: try again".into());
         }
-        Ok(json!({"ok": true, "notified": true, "link": link}))
+        let mut out = json!({"ok": true, "notified": true, "link": link});
+        if let Some(note) = note {
+            out["note"] = json!(note);
+        }
+        Ok(out)
+    }
+
+    /// The pending mark goes first, so a second call in the same turn types no second `/rc`:
+    /// that one would land on a connected session and open its disconnect modal.
+    async fn turn_on_rc(&self, node: &str, job: &str, who: &str) -> Reach {
+        let key = format!("{RC_PENDING}{node}:{job}");
+        if self.relay.mark(&key).is_some() {
+            return Reach::Connecting;
+        }
+        self.relay.set_mark(&key, who);
+        let reach = self.outside.reach(node, job).await;
+        if reach != Reach::Connecting {
+            self.relay.clear_mark(&key);
+        }
+        reach
+    }
+
+    /// Send Tony the link of each session whose Remote Control has connected since it asked,
+    /// and forget each session that went. Answers how many went out.
+    pub async fn links_due(&self) -> usize {
+        let mut sent = 0;
+        let mut rosters = HashMap::new();
+        for (key, who) in self.relay.marks(RC_PENDING) {
+            let Some((node, job)) = key.strip_prefix(RC_PENDING).and_then(|k| k.split_once(':')) else { continue };
+            if !rosters.contains_key(node) {
+                rosters.insert(node.to_string(), self.outside.links(node).await);
+            }
+            let Some(links) = &rosters[node] else { continue };
+            if let Some(link) = links.get(job) {
+                let Some(url) = link else { continue };
+                if !self.outside.dm_tony(&format!("**{who}** on **{node}**: Remote Control is on.\n{url}")).await {
+                    continue;
+                }
+                sent += 1;
+            }
+            self.relay.clear_mark(&key);
+        }
+        sent
     }
 
     /// Send the one reminder of each urgent block that is still blocked. Answers how many went.
