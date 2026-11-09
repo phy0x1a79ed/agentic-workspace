@@ -482,6 +482,19 @@ async fn agent_opens_a_card_and_an_order_the_node_verifies() {
 }
 
 #[tokio::test]
+async fn a_failed_agent_order_retires_its_card_only_when_no_session_reached_it() {
+    let e = env();
+    let out = e.ap.agent(AGENT_NODE, None, None, None).await.unwrap();
+    e.ap.order_done(s(&out["order_id"]), false, "no harness").unwrap();
+    let card = e.store.task_get(s(&out["task_id"])).unwrap();
+    assert_eq!((card["section"].as_str(), card["status"].as_str()), (Some("history"), Some("failed")));
+    let out = e.ap.agent(AGENT_NODE, None, None, None).await.unwrap();
+    e.store.task_attach(s(&out["task_id"]), "cc01", "main", Default::default(), None).unwrap();
+    e.ap.order_done(s(&out["order_id"]), false, "late").unwrap();
+    assert_eq!(e.store.task_get(s(&out["task_id"])).unwrap()["section"], "needs_you");
+}
+
+#[tokio::test]
 async fn orders_pull_by_kind_and_are_done_once() {
     let e = env();
     let env1 = e.ap.issue_order("agent", AGENT_NODE, json!({"task_id": "AAAAAAAA", "node": AGENT_NODE})).unwrap();

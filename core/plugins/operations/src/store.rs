@@ -752,6 +752,19 @@ impl Store {
         }, None)
     }
 
+    /// An `agent` order that failed retires its card, unless a session reached it after all.
+    pub fn agent_order_failed(&self, task_id: &str, note: &str) -> Result<()> {
+        self.write(None, |tx| {
+            let row = task_by_id(&tx.tx, task_id)?;
+            let sessions: i64 = tx.tx.query_row("SELECT COUNT(*) FROM sessions WHERE task_id=?", [&row.task_id], |r| r.get(0))?;
+            if sessions == 0 && row.section == NEEDS_YOU {
+                Store::set_card(tx, &row.task_id, HISTORY, Some("failed"), "order_failed", json!({"note": note}))?;
+            }
+            Ok(json!(null))
+        })?;
+        Ok(())
+    }
+
     // -- approvals (fleet.md R97 item 1, as amended: a request belongs to its task) -----
 
     /// Tag the requester's card in Needs you for one new request. A requester with no card
