@@ -9,7 +9,7 @@
 //!
 //! Nothing here depends on the link to social. What social should hear goes in the outbox.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 
 use async_trait::async_trait;
@@ -122,9 +122,12 @@ type Key = (String, String);
 /// Each live job here with its claude.ai link, empty while its Remote Control is off.
 pub type Links = HashMap<String, String>;
 
-/// Take the seat's Remote Control state from its live session. False when `live` lacks the job.
+/// Take the seat's Remote Control state from its live session. True when that changed the seat.
 fn sync_rc(seat: &mut Seat, live: Option<&Links>) -> bool {
     let Some(link) = live.and_then(|l| l.get(&seat.job)) else { return false };
+    if seat.rc_url == *link && seat.remote_control != link.is_empty() {
+        return false;
+    }
     seat.remote_control = !link.is_empty();
     seat.rc_url = link.clone();
     true
@@ -135,7 +138,7 @@ pub struct Seats {
     settings: RwLock<Settings>,
     world: Arc<dyn World>,
     locks: Mutex<HashMap<Key, Arc<tokio::sync::Mutex<()>>>>,
-    reported_live: Mutex<Option<HashSet<String>>>,
+    reported_live: Mutex<Option<Vec<String>>>,
     wake: tokio::sync::Notify,
 }
 
@@ -520,16 +523,17 @@ impl Seats {
     pub async fn tick(self: &Arc<Self>) {
         let live = self.world.live().await;
         if let Some(l) = &live {
-            let now: HashSet<String> = l.keys().cloned().collect();
+            let mut jobs: Vec<String> = l.keys().cloned().collect();
+            jobs.sort();
             let changed = {
                 let mut reported = self.reported_live.lock().unwrap();
-                let changed = reported.as_ref() != Some(&now);
-                *reported = Some(now.clone());
+                let changed = reported.as_ref() != Some(&jobs);
+                if changed {
+                    *reported = Some(jobs.clone());
+                }
                 changed
             };
             if changed {
-                let mut jobs: Vec<&String> = now.iter().collect();
-                jobs.sort();
                 self.world.up("live", json!({"jobs": jobs})).await;
             }
         }
@@ -618,7 +622,10 @@ impl Seats {
         seat.job = job.into();
         seat.adopted = true;
         seat.done_at = 0.0;
-        seat.rc_url = if seat.remote_control { self.link(job).await } else { String::new() };
+        seat.rc_url.clear();
+        if seat.remote_control {
+            sync_rc(&mut seat, self.world.live().await.as_ref());
+        }
         self.save(&seat).await;
         if !seat.remote_control {
             if let Err(why) = self.world.remote_control(job, false, &Self::rc_name(&seat)).await {
@@ -674,27 +681,23 @@ impl Seats {
             seat.rc_url.clear();
             Live::None
         } else {
-            match self.world.remote_control(&seat.job, on, &Self::rc_name(&seat)).await {
+            let answer = match self.world.remote_control(&seat.job, on, &Self::rc_name(&seat)).await {
                 Ok(()) => {
                     seat.remote_control = on;
-                    seat.rc_url = if on { self.link(&seat.job).await } else { String::new() };
+                    seat.rc_url.clear();
                     Live::Applied
                 }
                 Err(why) => {
                     tracing::info!("seat {}: Remote Control {} for {} failed: {why}", label(&seat), if on { "on" } else { "off" }, seat.job);
-                    sync_rc(&mut seat, self.world.live().await.as_ref());
                     Live::Failed(why)
                 }
-            }
+            };
+            sync_rc(&mut seat, self.world.live().await.as_ref());
+            answer
         };
         self.store.save(&seat).await;
         self.report(&seat, Some(&live)).await;
         Some((seat, live))
-    }
-
-    /// The live job's claude.ai link, empty when it has none or nobody can tell.
-    async fn link(&self, job: &str) -> String {
-        self.world.live().await.and_then(|mut l| l.remove(job)).unwrap_or_default()
     }
 
     /// The pending lines of a seat.
