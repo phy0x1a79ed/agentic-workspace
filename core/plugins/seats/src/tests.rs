@@ -723,8 +723,7 @@ fn wall() -> f64 {
 }
 
 fn attached(t: &T, social: &Social, epoch: &str) -> Arc<Link> {
-    let link = Link::new(Arc::new(social.clone()), t.store.clone(), epoch.into(), wall);
-    link.attach(t.seats.clone());
+    let link = Link::new(Arc::new(social.clone()), t.store.clone(), epoch.into());
     link
 }
 
@@ -735,7 +734,7 @@ impl L {
         let social = Social::default();
         let link = attached(&t, &social, "e1");
         social.line("hello");
-        link.pull_once().await.unwrap();
+        link.pull_once(&t.seats).await.unwrap();
         t.settle().await;
         assert_eq!(t.world.got("job-1"), ["hello"]);
         assert_eq!(t.seat().await.state, State::Occupied);
@@ -743,7 +742,7 @@ impl L {
     }
 
     async fn settle_pull(&self) {
-        let _ = self.link.pull_once().await;
+        let _ = self.link.pull_once(&self.t.seats).await;
         self.t.settle().await;
     }
 
@@ -759,7 +758,7 @@ async fn a_link_loss_loses_no_agent_no_line_and_no_reply_and_says_nothing() {
     l.drain().await;
 
     l.social.s().down = true;
-    assert!(l.link.pull_once().await.is_err());
+    assert!(l.link.pull_once(&l.t.seats).await.is_err());
     assert_eq!(l.link.status().await["connected"], false);
     l.t.world.advance(420.0);
     l.t.tick().await;
@@ -768,7 +767,8 @@ async fn a_link_loss_loses_no_agent_no_line_and_no_reply_and_says_nothing() {
     assert!(!l.t.world.noticed(), "a reset says nothing");
     assert_eq!(l.t.world.w().specs.len(), 1, "and starts nothing");
 
-    let id = l.link.enqueue("send", &json!({"text": "during"})).await;
+    l.link.enqueue("send", &json!({"text": "during"})).await;
+    let id = l.t.store.outbox_first().await.unwrap().id;
     assert!(matches!(l.link.flush_once().await, Flushed::Retry(_)));
     assert_eq!(l.link.status().await["outbox"], 1, "the reply waits");
     l.social.line("while down");
@@ -788,7 +788,7 @@ async fn a_lost_pull_answer_resends_and_a_row_stored_twice_is_taken_once() {
     let l = L::occupied().await;
     l.social.line("one");
     l.social.s().lose_pull = true;
-    assert!(l.link.pull_once().await.is_err());
+    assert!(l.link.pull_once(&l.t.seats).await.is_err());
     assert_eq!(l.t.world.got("job-1"), ["hello"], "it never arrived");
     l.settle_pull().await;
     assert_eq!(l.t.world.got("job-1"), ["hello", "one"]);
@@ -813,11 +813,11 @@ async fn a_lost_report_answer_is_resent_and_applied_once() {
 async fn a_host_restart_takes_an_unacked_row_once() {
     let mut l = L::occupied().await;
     l.social.line("one");
-    l.link.pull_once().await.unwrap();
+    l.link.pull_once(&l.t.seats).await.unwrap();
     l.t.settle().await;
     l.t.restart(false);
     l.link = attached(&l.t, &l.social, "e1");
-    l.link.pull_once().await.unwrap();
+    l.link.pull_once(&l.t.seats).await.unwrap();
     l.t.settle().await;
     assert_eq!(l.t.world.got("job-1"), ["hello", "one"]);
     let rows = l.social.s().rows.len();
@@ -847,7 +847,7 @@ async fn a_hand_row_is_typed_and_paused_arrives_with_the_pull() {
         s.rows.push(json!({"id": id, "kind": "hand", "job": "h1", "line": "[hand] hi"}));
         s.paused = true;
     }
-    l.link.pull_once().await.unwrap();
+    l.link.pull_once(&l.t.seats).await.unwrap();
     assert_eq!(l.t.world.w().hands, [("h1".to_string(), "[hand] hi".to_string())]);
     assert!(l.t.seats.settings().paused);
 }

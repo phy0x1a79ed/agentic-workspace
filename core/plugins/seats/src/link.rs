@@ -8,7 +8,7 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -64,8 +64,6 @@ pub struct Link {
     alcor: Arc<dyn Alcor>,
     store: Store,
     epoch: String,
-    seats: OnceLock<Arc<Seats>>,
-    now: fn() -> f64,
     out: Notify,
     connected: AtomicBool,
     down_since: Mutex<f64>,
@@ -74,29 +72,20 @@ pub struct Link {
 
 impl Link {
     /// `epoch` names this database, so social starts a rebuilt one's row ids over.
-    pub fn new(alcor: Arc<dyn Alcor>, store: Store, epoch: String, now: fn() -> f64) -> Arc<Self> {
-        Arc::new(Self { alcor, store, epoch, seats: OnceLock::new(), now, out: Notify::new(), connected: AtomicBool::new(false), down_since: Mutex::new(0.0), waiting: Mutex::default() })
-    }
-
-    pub fn attach(&self, seats: Arc<Seats>) {
-        let _ = self.seats.set(seats);
-    }
-
-    fn seats(&self) -> &Arc<Seats> {
-        self.seats.get().expect("attached before the loops start")
+    pub fn new(alcor: Arc<dyn Alcor>, store: Store, epoch: String) -> Arc<Self> {
+        Arc::new(Self { alcor, store, epoch, out: Notify::new(), connected: AtomicBool::new(false), down_since: Mutex::new(0.0), waiting: Mutex::default() })
     }
 
     /// Queue one row for social.
-    pub async fn enqueue(&self, kind: &str, body: &Value) -> i64 {
-        let id = self.store.outbox_push(kind, body, (self.now)()).await;
+    pub async fn enqueue(&self, kind: &str, body: &Value) {
+        self.store.outbox_push(kind, body, crate::now()).await;
         self.out.notify_one();
-        id
     }
 
     /// Queue a reply and wait briefly for its answer. A slow link is no failure: the row stays.
     pub async fn send(&self, body: &Value) -> Value {
         let (tx, rx) = oneshot::channel();
-        let id = self.store.outbox_push("send", body, (self.now)()).await;
+        let id = self.store.outbox_push("send", body, crate::now()).await;
         self.waiting.lock().unwrap().insert(id, tx);
         self.out.notify_one();
         match tokio::time::timeout(SEND_WAIT, rx).await {
@@ -121,12 +110,12 @@ impl Link {
         self.connected.store(false, Ordering::SeqCst);
         let mut since = self.down_since.lock().unwrap();
         if *since == 0.0 {
-            *since = (self.now)();
+            *since = crate::now();
         }
     }
 
     /// Hold one pull, then store what it brought.
-    pub async fn pull_once(&self) -> Result<(), String> {
+    pub async fn pull_once(&self, seats: &Arc<Seats>) -> Result<(), String> {
         let mark: i64 = self.store.meta("pull_mark").await.and_then(|m| m.parse().ok()).unwrap_or(0);
         let reply = match self.alcor.pull(mark, WAIT_S).await {
             Ok(r) => r,
@@ -137,21 +126,20 @@ impl Link {
         };
         self.link_up();
         if let Some(s) = reply.get("settings").and_then(|s| serde_json::from_value::<Settings>(s.clone()).ok()) {
-            self.seats().configure(s).await;
+            seats.configure(s).await;
         }
         for row in reply.get("rows").and_then(Value::as_array).into_iter().flatten() {
             let id = row["id"].as_i64().unwrap_or(0);
             if id <= mark {
                 continue;
             }
-            self.apply(row).await;
+            Self::apply(seats, row).await;
             self.store.set_meta("pull_mark", &id.to_string()).await;
         }
         Ok(())
     }
 
-    async fn apply(&self, row: &Value) {
-        let seats = self.seats();
+    async fn apply(seats: &Arc<Seats>, row: &Value) {
         let decl = || serde_json::from_value::<Decl>(row["seat"].clone()).unwrap_or_default();
         let text = |k: &str| row[k].as_str().unwrap_or("").to_string();
         match row["kind"].as_str().unwrap_or("") {
@@ -181,7 +169,7 @@ impl Link {
             Err(e) => return Flushed::Retry(e),
         };
         let wants_retry = answer.get("retry").and_then(Value::as_bool) == Some(true);
-        if wants_retry && (self.now)() - row.at < GIVE_UP_S {
+        if wants_retry && crate::now() - row.at < GIVE_UP_S {
             return Flushed::Retry(answer.get("error").and_then(Value::as_str).unwrap_or("social asked for a resend").to_string());
         }
         if answer.get("ok").and_then(Value::as_bool) != Some(true) {
@@ -194,10 +182,10 @@ impl Link {
         Flushed::Sent
     }
 
-    pub async fn pull_forever(self: Arc<Self>) {
+    pub async fn pull_forever(self: Arc<Self>, seats: Arc<Seats>) {
         let mut backoff = Backoff::doubling(BACKOFF_MIN_S, BACKOFF_MAX_S);
         loop {
-            match self.pull_once().await {
+            match self.pull_once(&seats).await {
                 Ok(()) => backoff.reset(),
                 Err(e) => {
                     tracing::info!("seats: the pull from social failed: {e}");

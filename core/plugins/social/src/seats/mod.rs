@@ -76,13 +76,16 @@ impl Seats {
         self.accounts.iter().find(|a| a.name == account).map(|a| a.platform.clone()).unwrap_or_default()
     }
 
+    fn place_of(&self, s: &Seat) -> Place {
+        Place { platform: self.platform(&s.account), server: s.server.clone(), kind: kind_of(&s.kind), chat_name: s.channel_name.clone(), person: s.slug.clone() }
+    }
+
     /// What a host needs to know of a seat, with the labels only social can work out.
     fn decl(&self, s: &Seat) -> Value {
-        let platform = self.platform(&s.account);
-        let place = Place { platform: platform.clone(), server: s.server.clone(), kind: kind_of(&s.kind), chat_name: s.channel_name.clone(), person: s.slug.clone() };
+        let place = self.place_of(s);
         json!({
             "account": s.account, "channel_id": s.channel_id, "channel_name": s.channel_name, "kind": s.kind, "server": s.server, "slug": s.slug,
-            "node": s.node, "scope": s.scope, "level": s.level, "platform": platform, "name": s.name,
+            "node": s.node, "scope": s.scope, "level": s.level, "platform": place.platform, "name": s.name,
             "server_label": place.server_label(), "chat_label": place.chat_label(), "brief": line::brief_file(&place, &s.level),
         })
     }
@@ -94,8 +97,7 @@ impl Seats {
                 s.channel_name = if m.channel_name.is_empty() { s.channel_name } else { m.channel_name.clone() };
                 s.server = if m.server.is_empty() { s.server } else { m.server.clone() };
                 if s.kind != "dm" {
-                    let kind = if s.kind == "group" { ChatKind::Group } else { ChatKind::Channel };
-                    s.name = Place { platform: self.platform(&s.account), server: s.server.clone(), kind, chat_name: s.channel_name.clone(), person: String::new() }.session_name();
+                    s.name = self.place_of(&s).session_name();
                 }
                 self.store.save(&s).await;
             }
@@ -122,9 +124,13 @@ impl Seats {
         Some((seat, true))
     }
 
-    async fn queue(&self, node: &str, kind: &str, account: &str, channel: &str, message_id: &str, thread_id: &str, line: &str, body: Value) {
-        self.store.enqueue(Row { node: node.into(), kind: kind.into(), account: account.into(), channel_id: channel.into(), message_id: message_id.into(), thread_id: thread_id.into(), line: line.into(), body, ..Default::default() }, crate::db::now()).await;
+    async fn queue(&self, row: Row) {
+        self.store.enqueue(row, crate::db::now()).await;
         self.arrived.notify_waiters();
+    }
+
+    fn row(seat: &Seat, kind: &str, body: Value) -> Row {
+        Row { node: seat.node.clone(), kind: kind.into(), account: seat.account.clone(), channel_id: seat.channel_id.clone(), body, ..Default::default() }
     }
 
     /// Route one inbound message, already cleared for a holder and outside a quiet thread.
@@ -134,7 +140,7 @@ impl Seats {
             return Routed::Duplicate;
         }
         let outside = if !m.outside { String::new() } else if m.sender_name.is_empty() { m.sender_id.clone() } else { m.sender_name.clone() };
-        self.queue(&seat.node, "line", &m.account, &m.channel_id, &m.message_id, &m.thread_id, &line::push_line(m, &seat.level), json!({"outside": outside, "new": new})).await;
+        self.queue(Row { message_id: m.message_id.clone(), thread_id: m.thread_id.clone(), line: line::push_line(m, &seat.level), ..Self::row(&seat, "line", json!({"outside": outside, "new": new})) }).await;
         Routed::Seat
     }
 
@@ -146,27 +152,27 @@ impl Seats {
 
     /// One line for a hand-mounted chat's holder on a seat host.
     pub async fn hand(&self, node: &str, job: &str, text: &str) {
-        self.queue(node, "hand", "", "", "", "", text, json!({"job": job})).await;
+        self.queue(Row { node: node.into(), kind: "hand".into(), line: text.into(), body: json!({"job": job}), ..Default::default() }).await;
     }
 
     /// Queue a forwarded line for another seat, and let it read the source chat for a day.
     pub async fn forward(&self, target: &Seat, source: (&str, &str), text: &str) {
-        self.queue(&target.node, "line", &target.account, &target.channel_id, "", "", text, json!({})).await;
+        self.queue(Row { line: text.into(), ..Self::row(target, "line", json!({})) }).await;
         self.store.grant_read((&target.account, &target.channel_id), source, crate::db::now() + READ_S).await;
     }
 
     /// `job`, on the seat's own host, took the chat by hand.
     pub async fn adopt(&self, seat: &Seat, job: &str, session_name: &str) {
-        self.queue(&seat.node, "adopt", &seat.account, &seat.channel_id, "", "", "", json!({"job": job, "session_name": session_name})).await;
+        self.queue(Self::row(seat, "adopt", json!({"job": job, "session_name": session_name}))).await;
     }
 
     /// `job` let go of the chat by hand.
     pub async fn released(&self, seat: &Seat, job: &str) {
-        self.queue(&seat.node, "released", &seat.account, &seat.channel_id, "", "", "", json!({"job": job})).await;
+        self.queue(Self::row(seat, "released", json!({"job": job}))).await;
     }
 
     pub async fn set_remote_control(&self, seat: &Seat, on: bool) {
-        self.queue(&seat.node, "remote_control", &seat.account, &seat.channel_id, "", "", "", json!({"on": on})).await;
+        self.queue(Self::row(seat, "remote_control", json!({"on": on}))).await;
     }
 
     /// Take `node`'s ack, then answer with what waits for it, holding up to `wait_s` for a row.

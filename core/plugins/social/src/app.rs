@@ -95,6 +95,12 @@ fn chan(c: &Channel) -> Value {
     json!({"id": c.id, "name": c.name, "kind": c.kind})
 }
 
+fn log_freed(freed: &[Mount]) {
+    for m in freed {
+        tracing::info!("released seat {}/{}: holder {} is gone", m.account, m.channel_id, holder_label(m));
+    }
+}
+
 fn holder_label(m: &Mount) -> String {
     let name = if m.session_name.is_empty() { String::new() } else { format!(" ({})", m.session_name) };
     format!("{}@{}{name}", m.job, m.node)
@@ -158,9 +164,7 @@ impl Social {
             tracing::info!("{} line(s) for hand mount {job}@{node} came back ({why:?})", lines.len());
             if why == Returned::Gone {
                 tokio::spawn(async move {
-                    for m in me.db.release_holder(&node, &job).await {
-                        tracing::info!("released seat {}/{}: holder {} is gone", m.account, m.channel_id, holder_label(&m));
-                    }
+                    log_freed(&me.db.release_holder(&node, &job).await);
                 });
             }
         });
@@ -804,6 +808,9 @@ impl Social {
     async fn apply_report(&self, node: &str, kind: &str, b: &Value) -> Value {
         let ok = json!({"ok": true});
         let (account, channel) = (s(b, "account"), Some(s(b, "channel")).filter(|c| !c.is_empty()).unwrap_or_else(|| s(b, "channel_id")));
+        if matches!(kind, "seat" | "send" | "react" | "mount" | "unmount" | "line") && !self.answers(node, &account, &channel).await {
+            return json!({"ok": false, "error": format!("{node} does not answer {account}/{channel}")});
+        }
         match kind {
             "seat" => {
                 if self.seats.store.mirror(&account, &channel, &s(b, "state"), &s(b, "job"), truthy(b.get("remote_control")), &s(b, "rc_url"), b["public"].clone()).await {
@@ -812,17 +819,12 @@ impl Social {
                 ok
             }
             "send" => {
-                if !self.answers(node, &account, &channel).await {
-                    return json!({"ok": false, "error": format!("{node} does not answer {account}/{channel}")});
-                }
                 self.seat_send(&account, &channel, b).await
             }
             "react" => {
-                if self.answers(node, &account, &channel).await {
-                    if let Ok(conn) = self.conn(&account) {
-                        if let Err(e) = conn.react(&channel, &s(b, "message_id"), &s(b, "emoji"), false).await {
-                            tracing::info!("seat react on {account}/{channel} failed: {}", e.message);
-                        }
+                if let Ok(conn) = self.conn(&account) {
+                    if let Err(e) = conn.react(&channel, &s(b, "message_id"), &s(b, "emoji"), false).await {
+                        tracing::info!("seat react on {account}/{channel} failed: {}", e.message);
                     }
                 }
                 ok
@@ -875,9 +877,7 @@ impl Social {
                 let jobs: HashSet<&str> = b["jobs"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
                 let held: BTreeSet<String> = self.db.mounts(None).await.into_iter().filter(|m| m.node == node && !jobs.contains(m.job.as_str())).map(|m| m.job).collect();
                 for job in held {
-                    for m in self.db.release_holder(node, &job).await {
-                        tracing::info!("released seat {}/{}: holder {} is gone", m.account, m.channel_id, holder_label(&m));
-                    }
+                    log_freed(&self.db.release_holder(node, &job).await);
                 }
                 ok
             }
@@ -1114,9 +1114,7 @@ impl Social {
             let me = me.clone();
             async move {
                 let Some(me) = me.upgrade() else { return };
-                for m in me.prune().await {
-                    tracing::info!("released seat {}/{}: holder {} is gone", m.account, m.channel_id, holder_label(&m));
-                }
+                log_freed(&me.prune().await);
             }
         });
         let _ = self.watch.set(watch);

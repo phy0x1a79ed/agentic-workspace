@@ -268,10 +268,13 @@ impl Seats {
     pub async fn drive(self: &Arc<Self>, key: &Key, live: Option<&HashSet<String>>) {
         let lock = self.lock(key);
         let _held = lock.lock().await;
-        self.look(key, live).await;
-    }
-
-    async fn look(self: &Arc<Self>, key: &Key, live: Option<&HashSet<String>>) {
+        // A job started or adopted since `live` was read is not in it, and is not gone.
+        let newer = match live {
+            Some(l) => self.store.get(&key.0, &key.1).await.is_some_and(|s| !s.job.is_empty() && !l.contains(&s.job)),
+            None => false,
+        };
+        let reread = if newer { self.world.live().await } else { None };
+        let live = if newer { reread.as_ref() } else { live };
         for _ in 0..STEPS_PER_LOOK {
             let Some(seat) = self.store.get(&key.0, &key.1).await else { return };
             if !self.step(seat, live).await {
@@ -373,7 +376,6 @@ impl Seats {
         }
         self.store.deliver_briefed(seat.account(), seat.channel(), &seat.job, now).await;
         seat.state = State::Occupied;
-        seat.since = now;
         if seat.remote_control {
             seat.rc_url = self.world.rc_url(&seat.job).await.unwrap_or_default();
         }
@@ -456,7 +458,6 @@ impl Seats {
         });
         let ids: Vec<i64> = pending.iter().map(|q| q.id).collect();
         seat.state = State::Starting;
-        seat.since = now;
         seat.deadline = now + UP_S;
         seat.job.clear();
         seat.rc_url.clear();
@@ -541,15 +542,8 @@ impl Seats {
                 self.world.up("live", json!({"jobs": jobs})).await;
             }
         }
-        for s in self.store.all().await {
-            let key = s.key();
-            let lock = self.lock(&key);
-            let _held = lock.lock().await;
-            // A job started or adopted since the read above is not in it, and is not gone.
-            let newer = self.store.get(&key.0, &key.1).await.is_some_and(|s| !s.job.is_empty() && live.as_ref().is_some_and(|l| !l.contains(&s.job)));
-            let seen = if newer { self.world.live().await } else { live.clone() };
-            self.look(&key, seen.as_ref()).await;
-        }
+        let keys: Vec<Key> = self.store.all().await.iter().map(Seat::key).collect();
+        futures_util::future::join_all(keys.iter().map(|key| self.drive(key, live.as_ref()))).await;
     }
 
     /// One line for a hand-mounted chat's holder here.
@@ -633,7 +627,6 @@ impl Seats {
         seat.state = State::Occupied;
         seat.job = job.into();
         seat.adopted = true;
-        seat.since = now;
         seat.done_at = 0.0;
         // Every seat session so far started with Remote Control on, and adoption leaves it so.
         seat.remote_control = true;

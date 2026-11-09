@@ -27,7 +27,6 @@ CREATE TABLE IF NOT EXISTS seat_registry (
     state        TEXT NOT NULL DEFAULT 'empty',
     job          TEXT NOT NULL DEFAULT '',
     adopted      INTEGER NOT NULL DEFAULT 0,
-    since        REAL NOT NULL DEFAULT 0,
     last_message REAL NOT NULL DEFAULT 0,
     done_at      REAL NOT NULL DEFAULT 0,
     deadline     REAL NOT NULL DEFAULT 0,
@@ -182,7 +181,6 @@ pub struct Seed {
     pub job: String,
     pub job_node: String,
     pub adopted: i64,
-    pub since: f64,
     pub last_message: f64,
     pub done_at: f64,
     pub deadline: f64,
@@ -202,7 +200,6 @@ pub struct Seat {
     pub state: State,
     pub job: String,
     pub adopted: bool,
-    pub since: f64,
     pub last_message: f64,
     pub done_at: f64,
     /// Starting: when the agent must be up. Retiring: when the next agent starts.
@@ -220,12 +217,12 @@ pub struct Seat {
     pub rc_url: String,
 }
 
-const COLS: &str = "account, channel_id, channel_name, kind, server, slug, node, scope, level, platform, server_label, chat_label, brief, name, state, job, adopted, since, last_message, done_at, deadline, previous, breaker, held, replied, missed, remote_control, rc_url";
+const COLS: &str = "account, channel_id, channel_name, kind, server, slug, node, scope, level, platform, server_label, chat_label, brief, name, state, job, adopted, last_message, done_at, deadline, previous, breaker, held, replied, missed, remote_control, rc_url";
 
 impl Seat {
     fn from_row(r: &Row) -> rusqlite::Result<Self> {
-        let previous: String = r.get(21)?;
-        let breaker: String = r.get(22)?;
+        let previous: String = r.get(20)?;
+        let breaker: String = r.get(21)?;
         Ok(Self {
             decl: Decl {
                 account: r.get(0)?,
@@ -246,17 +243,16 @@ impl Seat {
             state: State::parse(&r.get::<_, String>(14)?),
             job: r.get(15)?,
             adopted: r.get::<_, i64>(16)? != 0,
-            since: r.get(17)?,
-            last_message: r.get(18)?,
-            done_at: r.get(19)?,
-            deadline: r.get(20)?,
+            last_message: r.get(17)?,
+            done_at: r.get(18)?,
+            deadline: r.get(19)?,
             previous: serde_json::from_str(&previous).unwrap_or_default(),
             breaker: serde_json::from_str(&breaker).unwrap_or_default(),
-            held: r.get(23)?,
-            replied: r.get::<_, i64>(24)? != 0,
-            missed: r.get(25)?,
-            remote_control: r.get::<_, i64>(26)? != 0,
-            rc_url: r.get(27)?,
+            held: r.get(22)?,
+            replied: r.get::<_, i64>(23)? != 0,
+            missed: r.get(24)?,
+            remote_control: r.get::<_, i64>(25)? != 0,
+            rc_url: r.get(26)?,
         })
     }
 
@@ -268,7 +264,6 @@ impl Seat {
             state: if elsewhere { State::Empty } else { State::parse(&seed.state) },
             job: if elsewhere { String::new() } else { seed.job.clone() },
             adopted: !elsewhere && seed.adopted != 0,
-            since: seed.since,
             last_message: seed.last_message,
             done_at: if elsewhere { 0.0 } else { seed.done_at },
             deadline: seed.deadline,
@@ -357,10 +352,10 @@ fn save(c: &Connection, s: &Seat) -> rusqlite::Result<bool> {
     let before = c.query_row(&format!("SELECT {COLS} FROM seat_registry WHERE account = ?1 AND channel_id = ?2"), params![s.decl.account, s.decl.channel_id], Seat::from_row).optional()?;
     let d = &s.decl;
     c.execute(
-        &format!("INSERT OR REPLACE INTO seat_registry ({COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28)"),
+        &format!("INSERT OR REPLACE INTO seat_registry ({COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27)"),
         params![
             d.account, d.channel_id, d.channel_name, d.kind, d.server, d.slug, d.node, d.scope, d.level, d.platform, d.server_label, d.chat_label, d.brief, d.name,
-            s.state.as_str(), s.job, s.adopted as i64, s.since, s.last_message, s.done_at, s.deadline,
+            s.state.as_str(), s.job, s.adopted as i64, s.last_message, s.done_at, s.deadline,
             serde_json::to_string(&s.previous).unwrap_or_default(), serde_json::to_string(&s.breaker).unwrap_or_default(),
             s.held, s.replied as i64, s.missed, s.remote_control as i64, s.rc_url
         ],

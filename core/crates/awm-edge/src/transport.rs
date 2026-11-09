@@ -33,7 +33,7 @@ impl EdgePeers {
                 body: format!("{peer} is retiring: no call dials a retiring node"),
             });
         }
-        if self.edges.runs_no_awm(peer) {
+        if self.edges.undialable(peer) {
             return Err(PeerError::Refused { peer: peer.into(), status: 400, body: format!("{peer} runs no awm") });
         }
         if self.edges.reaches(&self.here, peer) {

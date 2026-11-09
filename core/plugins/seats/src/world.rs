@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use awm_plugin_sdk::push::{self, Outcome, Pusher};
-use awm_plugin_sdk::{CallOpts, Hub};
+use awm_plugin_sdk::{holders, CallOpts, Hub};
 use serde_json::{json, Value};
 
 use crate::engine::{Started, World};
@@ -72,8 +72,8 @@ impl World for Live {
     }
 
     async fn rc_url(&self, job: &str) -> Option<String> {
-        let v = self.hub.call_with("reflection", "list_other", json!({}), &opts(30)).await.ok()?;
-        let row = v.get("sessions")?.as_array()?.iter().find(|r| r.get("job").and_then(Value::as_str) == Some(job))?;
+        let rows = holders::session_rows(&self.hub, false).await?;
+        let row = rows.iter().find(|r| r.get("job").and_then(Value::as_str) == Some(job))?;
         row.get("rc_url").and_then(Value::as_str).filter(|u| !u.is_empty()).map(str::to_string)
     }
 

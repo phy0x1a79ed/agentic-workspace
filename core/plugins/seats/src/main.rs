@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use awm_plugin_sdk::holders;
 use awm_plugin_sdk::push::Pusher;
-use awm_plugin_sdk::{Call, CallOpts, Level, Service, VerbError};
+use awm_plugin_sdk::{Call, Level, Service, VerbError};
 use serde_json::{json, Value};
 
 use engine::{Seats, Settings};
@@ -133,9 +133,7 @@ impl App {
 
     /// A job's level from reflection's row, or None when it does not say.
     async fn job_level(call: &Call, job: &str) -> Option<Level> {
-        let opts = CallOpts { timeout: std::time::Duration::from_secs(30), ..CallOpts::default() };
-        let out = call.hub().call_with("reflection", "list_other", json!({}), &opts).await.ok()?;
-        out.get("sessions")?.as_array()?.iter().find(|r| s(r, "job") == job).and_then(|r| ["trust", "level"].iter().find_map(|k| r.get(*k).and_then(Value::as_str)).and_then(|t| t.parse().ok()))
+        holders::session_rows(call.hub(), false).await?.iter().find(|r| s(r, "job") == job).and_then(|r| ["trust", "level"].iter().find_map(|k| r.get(*k).and_then(Value::as_str)).and_then(|t| t.parse().ok()))
     }
 
     async fn adopt(&self, call: Call) -> Result<Value, VerbError> {
@@ -194,12 +192,11 @@ async fn main() -> anyhow::Result<()> {
         }
     };
     let settings: Settings = store.meta("settings").await.and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
-    let link = Link::new(Arc::new(link::ThroughDoor(hub.clone())), store.clone(), epoch, now);
+    let link = Link::new(Arc::new(link::ThroughDoor(hub.clone())), store.clone(), epoch);
     let on_return = Arc::new(|(node, job): (String, String), lines: Vec<String>, why| tracing::info!("{} line(s) for hand mount {job}@{node} came back ({why:?})", lines.len()));
     let pusher = Pusher::reflection(hub.clone(), on_return);
     let world = Arc::new(world::Live { hub: hub.clone(), here: env.node.clone(), link: link.clone(), pusher });
     let seats = Seats::new(store, settings, world);
-    link.attach(seats.clone());
 
     let watched = seats.clone();
     let watch = awm_plugin_sdk::sessions::SessionWatch::new(hub, "seats", move |_node| {
@@ -211,9 +208,9 @@ async fn main() -> anyhow::Result<()> {
     service(svc, app)
         .on_ready(async move {
             watch.ensure(&here);
-            tokio::spawn(seats.tick_forever());
+            tokio::spawn(seats.clone().tick_forever());
             tokio::spawn(link.clone().flush_forever());
-            tokio::spawn(link.pull_forever());
+            tokio::spawn(link.pull_forever(seats));
         })
         .run()
         .await

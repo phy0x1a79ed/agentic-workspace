@@ -1191,6 +1191,7 @@ dependencies = [
  "async-trait",
  "awm-plugin-sdk",
  "chrono",
+ "futures-util",
  "rusqlite",
  "serde",
  "serde_json",

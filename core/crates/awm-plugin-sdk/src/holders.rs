@@ -69,7 +69,7 @@ pub async fn claim(hub: &Hub, pid: u32) -> Option<Value> {
 }
 
 /// Every session on this node from `reflection list_other`, or None when it cannot tell.
-async fn session_rows(hub: &Hub, include_stopped: bool) -> Option<Vec<Value>> {
+pub async fn session_rows(hub: &Hub, include_stopped: bool) -> Option<Vec<Value>> {
     let args = if include_stopped { json!({"include_stopped": true}) } else { json!({}) };
     let opts = CallOpts { timeout: Duration::from_secs(30), ..CallOpts::default() };
     let out = match hub.call_with("reflection", "list_other", args, &opts).await {

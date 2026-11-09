@@ -177,13 +177,13 @@ impl EdgeList {
     }
 
     /// Whether `node` is unmanaged and not marked `runs_awm: true`, so no call dials it.
-    pub fn runs_no_awm(&self, node: &str) -> bool {
+    pub fn undialable(&self, node: &str) -> bool {
         self.nodes.get(node).is_some_and(|n| n.managed == Some(false) && n.runs_awm != Some(true))
     }
 
-    /// The nodes `src` may dial: its edges, less every retiring node and every node that runs no awm.
+    /// The nodes `src` may dial: its edges, less every retiring node and every undialable node.
     pub fn dialable_from(&self, src: &str) -> Vec<String> {
-        self.reachable_from(src).into_iter().filter(|n| !self.retiring(n) && !self.runs_no_awm(n)).collect()
+        self.reachable_from(src).into_iter().filter(|n| !self.retiring(n) && !self.undialable(n)).collect()
     }
 
     pub fn reached_by(&self, dst: &str) -> Vec<String> {
@@ -343,7 +343,7 @@ singletons:
              edges:\n  home: {hpc: internet, work: lan, lab: tailscale}\n",
         )
         .unwrap();
-        assert!(e.runs_no_awm("hpc") && !e.runs_no_awm("work") && !e.runs_no_awm("home") && !e.runs_no_awm("lab"));
+        assert!(e.undialable("hpc") && !e.undialable("work") && !e.undialable("home") && !e.undialable("lab"));
         assert_eq!(e.reachable_from("home"), vec!["hpc", "lab", "work"]);
         assert_eq!(e.dialable_from("home"), vec!["lab", "work"]);
     }
