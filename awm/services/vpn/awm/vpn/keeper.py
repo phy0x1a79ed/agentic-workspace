@@ -26,12 +26,13 @@ _MAX_SHORT_LIVES = 3
 _SETTLED_S = 600.0
 
 
-def wait_for_death(profile: str) -> None:
-    """Bring the exit up and block until docker reports its container died.
+def wait_for_death(profile: str) -> float:
+    """Bring the exit up, block until docker reports its container died, and return how long it ran.
 
     The event stream opens before the dial, so a death in between is not missed.
     A stream that ends (the daemon restarted) returns as if the container died,
-    and the next ``up`` finds it running without dialing.
+    and the next ``up`` finds it running without dialing. The life counts from
+    docker's start time, so a tunnel adopted from an earlier service life keeps its age.
     """
     name = container.container_name(profile)
     events = subprocess.Popen(
@@ -40,7 +41,9 @@ def wait_for_death(profile: str) -> None:
         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
     try:
         container.up(profile)
+        started = container.started_at(profile)
         events.stdout.readline()
+        return time.time() - started
     finally:
         events.kill()
         events.wait()
@@ -51,16 +54,16 @@ def page(text: str) -> None:
     account, channel = awm_config.operator_dm()
     try:
         gatewayclient.call_sync("social", "send", {"account": account, "channel": channel, "text": text},
-                                peer=gatewayclient.peer_env("AWM_SOCIAL_PEER"), timeout=15)
+                                timeout=15)
     except Exception as exc:  # noqa: BLE001 — the keeper has stopped either way
         log.error("could not page the operator: %s (%s)", exc, text)
 
 
 class Keeper:
-    def __init__(self, profile: str, *, watch: Callable[[str], None] = wait_for_death,
-                 alert: Callable[[str], None] = page, clock: Callable[[], float] = time.monotonic) -> None:
+    def __init__(self, profile: str, *, watch: Callable[[str], float] = wait_for_death,
+                 alert: Callable[[str], None] = page) -> None:
         self.profile = profile
-        self._watch, self._alert, self._clock = watch, alert, clock
+        self._watch, self._alert = watch, alert
         self._held = threading.Event()
         self._thread: threading.Thread | None = None
         self._guard = threading.Lock()
@@ -80,17 +83,16 @@ class Keeper:
     def run(self) -> None:
         short_lives = 0
         while not self._held.is_set():
-            started = self._clock()
             try:
-                self._watch(self.profile)
-                log.warning("vpn '%s' container died", self.profile)
+                lived = self._watch(self.profile)
+                log.warning("vpn '%s' container died after %.0fs", self.profile, lived)
                 last = "the container died"
             except Exception as exc:  # noqa: BLE001 — a failed dial is counted, not fatal
                 log.warning("vpn '%s' dial failed: %s", self.profile, exc)
-                last = str(exc).splitlines()[0] if str(exc) else type(exc).__name__
+                lived, last = 0.0, str(exc).splitlines()[0] if str(exc) else type(exc).__name__
             if self._held.is_set():
                 return
-            short_lives = 0 if self._clock() - started >= _SETTLED_S else short_lives + 1
+            short_lives = 0 if lived >= _SETTLED_S else short_lives + 1
             if short_lives >= _MAX_SHORT_LIVES:
                 self._alert(
                     f"🔌 vpn [{awm_config.node_name()}]: the `{self.profile}` tunnel failed or died young "

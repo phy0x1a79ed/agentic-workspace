@@ -302,10 +302,8 @@ def _remote(peer: str | None) -> str | None:
 def peer_env(var: str) -> str | None:
     """Read a peer-selector env var; empty/unset → ``None`` (local).
 
-    The convention for singleton re-homing: a node borrowing a singleton exports
-    e.g. ``AWM_SOCIAL_PEER=mira`` / ``AWM_TWOFA_PEER=mira``; the node that owns
-    the singleton leaves it unset so calls stay local. Read fresh each time so a
-    reconnect loop picks up a change without a restart.
+    e.g. ``AWM_SSH_SLOT_PEER=alcor`` names the node a lease is taken from. Read
+    fresh each time so a reconnect loop picks up a change without a restart.
     """
     v = (os.environ.get(var) or "").strip()
     return v or None
