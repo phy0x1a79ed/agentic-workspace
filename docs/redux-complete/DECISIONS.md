@@ -80,4 +80,4 @@ Decided:
 - **Old scopes.** Scopes whose branches are fully in release are completed and their worktrees removed. Branches stay in git. Each unmerged branch is audited for anything the end state still needs, and the audit goes to Tony before anything unmerged is touched.
 - **Seats.** Unpaused as the last step, after the fleet is verified, with one live inbound and outbound message confirmed.
 
-Landed: to be done by the plan.
+Landed: snapshots deleted on mizar, shogun, capella, altair and deneb. alcor keeps its copy until Monday's close, and lyra is offline. 90 merged scopes retired, and the branch audit went to Tony on card 46Pz69LI. The seats stay paused: social on alcor has no edge to altair, where R129 puts the Slack seats, and altair's `managed: false` reads as "runs no awm" (cloud 3e6f469). Tony chooses an alcor to altair edge or moves the Slack seats to mizar.
