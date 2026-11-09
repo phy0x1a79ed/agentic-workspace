@@ -327,10 +327,14 @@ async fn an_order_runs_once_reports_once_and_a_bad_one_starts_nothing() {
     let starts = fx.cc().calls_of("start");
     assert_eq!(starts.len(), 1, "{starts:?}");
     assert_eq!((starts[0]["remote_control"].clone(), starts[0]["task_id"].clone()), (json!(true), json!("T1")));
-    assert_eq!(starts[0]["prompt"], "from operations@alcor: Task T1");
+    assert!(starts[0].get("prompt").is_none(), "{starts:?}");
+    assert_eq!((starts[0]["pin"].clone(), starts[0]["model"].clone(), starts[0]["effort"].clone()), (json!(true), json!("opus"), json!("high")));
     let dones = order_dones(&fx);
     assert_eq!(dones.len(), 1, "{dones:?}");
     assert_eq!((dones[0]["order_id"].clone(), dones[0]["ok"].clone()), (json!("o1"), json!(true)));
+    fx.app.take_orders(&key, vec![order("o5", "here", later, json!({"task_id": "T2", "model": "haiku", "effort": "low"}))]).await;
+    let picked = &fx.cc().calls_of("start")[1];
+    assert_eq!((picked["model"].clone(), picked["effort"].clone()), (json!("haiku"), json!("low")));
 }
 
 #[tokio::test]

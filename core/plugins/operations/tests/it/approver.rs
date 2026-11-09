@@ -444,14 +444,17 @@ async fn plugin_commits_grant_names_every_commit() {
 #[tokio::test]
 async fn agent_opens_a_card_and_an_order_the_node_verifies() {
     let e = env();
-    assert_eq!(code(e.ap.agent("deneb", None).await), "not_allowed");
-    assert_eq!(code(e.ap.agent("Bad Node", None).await), "not_allowed");
+    assert_eq!(code(e.ap.agent("deneb", None, None, None).await), "not_allowed");
+    assert_eq!(code(e.ap.agent("Bad Node", None, None, None).await), "not_allowed");
     let long = "n".repeat(65);
     for bad in ["", "has space", "x/../y", long.as_str()] {
-        assert_eq!(code(e.ap.agent(AGENT_NODE, Some(bad)).await), "bad_request", "{bad:?}");
+        assert_eq!(code(e.ap.agent(AGENT_NODE, None, None, Some(bad)).await), "bad_request", "{bad:?}");
+    }
+    for (model, effort) in [(Some("gpt"), None), (Some(""), None), (None, Some("xhigh")), (None, Some("High"))] {
+        assert_eq!(code(e.ap.agent(AGENT_NODE, model, effort, None).await), "bad_request", "{model:?} {effort:?}");
     }
     assert!(e.ap.order_pull(AGENT_NODE, None, 0.0).await.unwrap().as_array().unwrap().is_empty(), "a refused agent issues no order");
-    let out = e.ap.agent(AGENT_NODE, Some("note_1-x")).await.unwrap();
+    let out = e.ap.agent(AGENT_NODE, None, None, Some("note_1-x")).await.unwrap();
     let task = s(&out["task_id"]).to_string();
     let card = e.store.task_get(&task).unwrap();
     assert_eq!(card["section"], "needs_you");
@@ -471,10 +474,10 @@ async fn agent_opens_a_card_and_an_order_the_node_verifies() {
     let row = e.ap.order_get(s(&body["order_id"])).unwrap().unwrap();
     assert!(row["pulled_at"].as_f64().is_some());
 
-    let plain = e.ap.agent(AGENT_NODE, None).await.unwrap();
+    let plain = e.ap.agent(AGENT_NODE, Some("sonnet"), Some("low"), None).await.unwrap();
     let envs = e.ap.order_pull(AGENT_NODE, None, 0.0).await.unwrap();
     let last = envs.as_array().unwrap().iter().find(|x| x["order"]["order_id"] == plain["order_id"]).unwrap().clone();
-    assert_eq!(last["order"]["payload"], json!({"task_id": plain["task_id"], "node": AGENT_NODE}));
+    assert_eq!(last["order"]["payload"], json!({"task_id": plain["task_id"], "node": AGENT_NODE, "model": "sonnet", "effort": "low"}));
     assert_eq!(e.store.task_get(s(&plain["task_id"])).unwrap()["source_note"], Value::Null);
 }
 
