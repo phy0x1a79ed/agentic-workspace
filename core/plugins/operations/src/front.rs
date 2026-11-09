@@ -7,8 +7,9 @@
 //! records the calling session, and only that session cancels it (fleet.md R97 item 1).
 //! Every write goes through the relay, so it waits in the outbox while alcor is away.
 
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use serde_json::{json, Map, Value};
 
@@ -48,6 +49,10 @@ pub enum Reach {
 }
 
 const RC_PENDING: &str = "rc:";
+
+fn rc_key(node: &str, job: &str) -> String {
+    format!("{RC_PENDING}{node}:{job}")
+}
 
 /// Who is calling, from the gateway's stamps.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -149,6 +154,11 @@ pub struct Front {
     pub approver_origin: String,
     pub remind_s: f64,
     pub clock: crate::store::Clock,
+    /// How long a no-card DM waits for a queued Remote Control's link before it goes without one.
+    pub link_wait: Duration,
+    /// The Remote Control marks of DMs still being composed: their link belongs in that DM.
+    pub asking: Mutex<HashSet<String>>,
+    pub roster_moved: tokio::sync::Notify,
 }
 
 pub const VERBS: [&str; 29] = [
@@ -381,6 +391,21 @@ impl Front {
 
     async fn ask_by_dm(&self, kind: &str, text: &str, c: &Caller) -> Answer {
         let node = c.node.as_deref().unwrap_or(&self.node);
+        let key = c.job.as_ref().map(|job| rc_key(node, job));
+        if let Some(k) = &key {
+            self.asking.lock().unwrap().insert(k.clone());
+        }
+        let out = self.send_ask(kind, text, c, node).await;
+        if let Some(k) = &key {
+            self.asking.lock().unwrap().remove(k);
+            if self.relay.mark(k).is_some() {
+                self.links_due().await;
+            }
+        }
+        out
+    }
+
+    async fn send_ask(&self, kind: &str, text: &str, c: &Caller, node: &str) -> Answer {
         let who = c.name.as_deref().or(c.job.as_deref()).unwrap_or("A service");
         let reach = match &c.job {
             Some(job) => self.turn_on_rc(node, job, who).await,
@@ -416,24 +441,45 @@ impl Front {
     /// The pending mark goes first, so a second call in the same turn types no second `/rc`:
     /// that one would land on a connected session and open its disconnect modal.
     async fn turn_on_rc(&self, node: &str, job: &str, who: &str) -> Reach {
-        let key = format!("{RC_PENDING}{node}:{job}");
+        let key = rc_key(node, job);
         if self.relay.mark(&key).is_some() {
             return Reach::Connecting;
         }
         self.relay.set_mark(&key, who);
-        let reach = self.outside.reach(node, job).await;
+        let reach = match self.outside.reach(node, job).await {
+            Reach::Connecting => self.link_soon(node, job).await.map_or(Reach::Connecting, Reach::Link),
+            other => other,
+        };
         if reach != Reach::Connecting {
             self.relay.clear_mark(&key);
         }
         reach
     }
 
+    async fn link_soon(&self, node: &str, job: &str) -> Option<String> {
+        let deadline = tokio::time::Instant::now() + self.link_wait;
+        loop {
+            let moved = self.roster_moved.notified();
+            tokio::pin!(moved);
+            moved.as_mut().enable();
+            let links = tokio::time::timeout_at(deadline, self.outside.links(node)).await.ok()?;
+            if let Some(url) = links.and_then(|mut links| links.remove(job)).flatten() {
+                return Some(url);
+            }
+            tokio::time::timeout_at(deadline, moved).await.ok()?;
+        }
+    }
+
     /// Send Tony the link of each session whose Remote Control has connected since it asked,
     /// and forget each session that went. Answers how many went out.
     pub async fn links_due(&self) -> usize {
+        self.roster_moved.notify_waiters();
         let mut sent = 0;
         let mut rosters = HashMap::new();
         for (key, who) in self.relay.marks(RC_PENDING) {
+            if self.asking.lock().unwrap().contains(&key) {
+                continue;
+            }
             let Some((node, job)) = key.strip_prefix(RC_PENDING).and_then(|k| k.split_once(':')) else { continue };
             if !rosters.contains_key(node) {
                 rosters.insert(node.to_string(), self.outside.links(node).await);

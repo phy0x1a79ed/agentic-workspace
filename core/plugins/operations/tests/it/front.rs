@@ -32,6 +32,7 @@ fn harness_with(arbutus: Option<Arc<Approvals>>, card_url: Option<&str>) -> H {
     let front = Arc::new(Front {
         relay, node: "mizar".into(), outside: out.clone(), arbutus, card_url: card_url.map(str::to_string),
         approver_origin: ORIGIN.into(), remind_s: 60.0, clock: clock.clock(),
+        link_wait: std::time::Duration::ZERO, asking: Default::default(), roster_moved: Default::default(),
     });
     H { env, front, out, clock }
 }
@@ -150,6 +151,18 @@ async fn a_queued_remote_control_sends_its_link_once_it_connects() {
     assert_eq!(h.front.links_due().await, 1);
     assert!(h.out.asks().last().unwrap().contains("https://claude.ai/code/session_a"));
     assert_eq!(h.front.links_due().await, 0, "the link goes out once");
+}
+
+#[tokio::test]
+async fn a_link_that_connects_during_the_call_goes_in_the_one_dm() {
+    let h = harness();
+    h.out.reach.lock().unwrap().insert("job-a".into(), Reach::Connecting);
+    h.out.roster.lock().unwrap().insert("mizar".into(), HashMap::from([("job-a".to_string(), Some("https://claude.ai/code/session_a".to_string()))]));
+    let out = h.call("request_human", pid(11), json!({"reason": "one"})).await;
+    assert_eq!(out["link"], "https://claude.ai/code/session_a");
+    assert_eq!(h.out.asks().len(), 1);
+    assert!(h.out.asks()[0].ends_with("https://claude.ai/code/session_a"), "{:?}", h.out.asks());
+    assert_eq!(h.front.links_due().await, 0);
 }
 
 #[tokio::test]
