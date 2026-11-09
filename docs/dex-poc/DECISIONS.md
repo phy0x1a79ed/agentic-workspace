@@ -19,3 +19,13 @@ Routing to a singleton needs no freshness check: a "moved" reply or a connection
 Each mutable name has one origin. Whether that sits within C3 is still to confirm (see `claude-md-sync`).
 
 **Landed.** Input to the `handoff` brief. Revises design section 7 and Q6.
+
+## mvp-scope (2026-11-09)
+
+**Question.** What does the first step contain, and in what order are the test cases worked?
+
+**User's words.** "I'd argue that caches, stale signals (when an update happens), and remote filling are the MVP. we add bidding after." "we should work through each individually as we build up the system though."
+
+**Decided design.** The MVP is the content-addressed cache, the update event (publish and subscribe, per `freshness`) and remote fill. Bidding comes after. Test cases (CLAUDE.md sync, a singleton verb, a build or embedding job) are worked one at a time as the system grows, not bundled into the first step. A hands-on POC is wanted to play with the MVP.
+
+**Landed.** Input to the `handoff` brief. Narrows the `first-step` question: the three workloads are no longer a bundle. Revisits nothing in `freshness`.
