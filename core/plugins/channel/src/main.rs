@@ -181,7 +181,9 @@ async fn run_channel(svc: Service) -> anyhow::Result<()> {
             tokio::spawn(ready.clone().feed_forever());
             awm_plugin_sdk::sessions::SessionWatch::new(hub, "channel", move |_node| {
                 let ready = ready.clone();
-                async move { ready.prune().await }
+                async move {
+                    ready.prune().await;
+                }
             })
             .ensure(&awm_plugin_sdk::config::node_name());
         })
