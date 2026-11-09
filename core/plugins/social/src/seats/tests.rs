@@ -18,8 +18,8 @@ fn t() -> T {
     let db = Db::open(&tmp.path().join("social.db")).unwrap();
     let cfg = SeatsConfig {
         paused: true,
-        rules: vec![SeatRule { account: "opal".into(), kind: "dm".into(), node: "altair".into(), level: Level::Cooperative, scope: "seats/{slug}".into(), except: vec![] }],
-        chats: vec![SeatChat { account: "opal".into(), channel: "C0TEST".into(), node: "mizar".into(), level: Level::Cooperative, scope: "seats/general".into() }],
+        rules: vec![SeatRule { account: "opal".into(), kind: "dm".into(), node: "altair".into(), level: Level::Cooperative, scope: "seats/{slug}".into(), except: vec![], agent: None }],
+        chats: vec![SeatChat { account: "opal".into(), channel: "C0TEST".into(), node: "mizar".into(), level: Level::Cooperative, scope: "seats/general".into(), agent: None }],
         ..SeatsConfig::default()
     };
     let accounts = vec![AccountConfig { name: "opal".into(), platform: "slack".into(), ..Default::default() }];

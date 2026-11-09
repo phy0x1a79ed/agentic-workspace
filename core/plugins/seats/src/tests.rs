@@ -263,6 +263,37 @@ async fn a_message_to_an_empty_seat_reacts_queues_and_starts_one_agent() {
 }
 
 #[tokio::test]
+async fn a_seat_with_its_own_model_and_effort_starts_with_them() {
+    let mut t = T::new(false);
+    t.send("first").await;
+    let spec = t.world.w().specs[0].clone();
+    assert_eq!((spec["model"].as_str(), spec["effort"].as_str()), (Some("opus"), Some("high")), "no override takes [seats]");
+
+    let mut t = T::new(false);
+    let mut m = t.dm("first");
+    (m.seat.model, m.seat.effort) = ("sonnet".into(), "medium".into());
+    t.seats.take(m).await;
+    t.settle().await;
+    let spec = t.world.w().specs[0].clone();
+    assert_eq!((spec["model"].as_str(), spec["effort"].as_str()), (Some("sonnet"), Some("medium")));
+    assert_eq!(t.seat().await.decl.model, "sonnet", "the override is stored");
+}
+
+#[test]
+fn a_database_from_before_the_seat_override_opens_with_it_empty() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("seats.db");
+    drop(Store::open(&path).unwrap());
+    let c = rusqlite::Connection::open(&path).unwrap();
+    c.execute_batch("ALTER TABLE seat_registry DROP COLUMN model; ALTER TABLE seat_registry DROP COLUMN effort; INSERT INTO seat_registry (account, channel_id) VALUES ('opal', 'D1')").unwrap();
+    drop(c);
+    drop(Store::open(&path).unwrap());
+    let c = rusqlite::Connection::open(&path).unwrap();
+    let model: String = c.query_row("SELECT model FROM seat_registry WHERE channel_id = 'D1'", [], |r| r.get(0)).unwrap();
+    assert_eq!(model, "");
+}
+
+#[tokio::test]
 async fn a_start_that_never_comes_up_requeues_and_trips_the_breaker() {
     let mut t = T::new(false);
     t.world.w().down_on_start = true;

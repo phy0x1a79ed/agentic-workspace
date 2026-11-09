@@ -9,6 +9,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use awm_trust::trust::check_effort;
 use awm_trust::Level;
 use toml::{Table, Value};
 
@@ -99,6 +100,8 @@ pub struct SeatRule {
     pub scope: String,
     /// Chat ids and sender ids that are not seats, such as Slackbot.
     pub except: Vec<String>,
+    /// The agent's model and effort, instead of `[seats]`.
+    pub agent: Option<(String, String)>,
 }
 
 /// One named chat that is a seat, overriding any rule.
@@ -109,6 +112,8 @@ pub struct SeatChat {
     pub node: String,
     pub level: Level,
     pub scope: String,
+    /// The agent's model and effort, instead of `[seats]`.
+    pub agent: Option<(String, String)>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -140,6 +145,14 @@ impl SeatsConfig {
             .iter()
             .find(|r| r.account == account && r.kind == kind && !r.except.iter().any(|e| e == channel || e == sender))
             .map(|r| (r.node.clone(), r.level, r.scope.clone()))
+    }
+
+    /// A seat's own model and effort, read live so a config edit reaches an existing seat.
+    pub fn agent_for(&self, account: &str, channel: &str, kind: &str) -> Option<(String, String)> {
+        if let Some(c) = self.chats.iter().find(|c| c.account == account && c.channel == channel) {
+            return c.agent.clone();
+        }
+        self.rules.iter().find(|r| r.account == account && r.kind == kind && !r.except.iter().any(|e| e == channel))?.agent.clone()
     }
 
     /// The notice chat: the `notice` table, else the trusted Discord DM a `[[seats.chat]]` names.
@@ -353,8 +366,8 @@ fn buckets(data: &Table, cfg: &Path) -> R<(Vec<BucketConfig>, Vec<String>)> {
 }
 
 const SEATS_KEYS: [&str; 8] = ["project", "model", "effort", "paused", "notice", "docs", "rule", "chat"];
-const RULE_KEYS: [&str; 6] = ["account", "kind", "node", "level", "scope", "except"];
-const CHAT_KEYS: [&str; 5] = ["account", "channel", "node", "level", "scope"];
+const RULE_KEYS: [&str; 8] = ["account", "kind", "node", "level", "scope", "except", "model", "effort"];
+const CHAT_KEYS: [&str; 7] = ["account", "channel", "node", "level", "scope", "model", "effort"];
 
 fn keys(t: &Table, allowed: &[&str], label: &str) -> R<()> {
     let mut bad: Vec<&String> = t.keys().filter(|k| !allowed.contains(&k.as_str())).collect();
@@ -378,6 +391,19 @@ fn level(t: &Table, label: &str) -> R<Level> {
     raw.parse::<Level>().ok().ok_or_else(|| ConfigError(format!("{label}.level must be one of {}", LEVELS.join(", "))))
 }
 
+/// A seat's `model` and `effort`, as `start_other` takes them: both, or neither.
+fn agent(t: &Table, label: &str) -> R<Option<(String, String)>> {
+    if !t.contains_key("model") && !t.contains_key("effort") {
+        return Ok(None);
+    }
+    if !(t.contains_key("model") && t.contains_key("effort")) {
+        return err(format!("{label}: name model and effort together"));
+    }
+    let effort = need(t, "effort", label)?;
+    check_effort(&effort).map_err(|e| ConfigError(format!("{label}.effort: {e}")))?;
+    Ok(Some((need(t, "model", label)?, effort)))
+}
+
 fn seats(data: &Table, cfg: &Path) -> R<SeatsConfig> {
     let mut out = SeatsConfig::default();
     let Some(v) = data.get("seats") else { return Ok(out) };
@@ -389,9 +415,7 @@ fn seats(data: &Table, cfg: &Path) -> R<SeatsConfig> {
             *slot = need(t, key, "[seats]")?;
         }
     }
-    if matches!(out.effort.as_str(), "xhigh" | "max") {
-        return err("[seats].effort: high is the upper limit");
-    }
+    check_effort(&out.effort).map_err(|e| ConfigError(format!("[seats].effort: {e}")))?;
     out.paused = opt_bool(t, "paused", true, cfg, "[seats]")?;
     if let Some(n) = t.get("notice") {
         let n = n.as_table().ok_or_else(|| ConfigError("[seats].notice must be a table {account, channel}".into()))?;
@@ -416,13 +440,13 @@ fn seats(data: &Table, cfg: &Path) -> R<SeatsConfig> {
             Some(Value::Array(a)) if a.iter().all(Value::is_str) => a.iter().map(|v| v.as_str().unwrap().to_string()).collect(),
             Some(_) => return err(format!("{label}.except must be a list of ids")),
         };
-        out.rules.push(SeatRule { account: need(r, "account", &label)?, kind, node: need(r, "node", &label)?, level: level(r, &label)?, scope: need(r, "scope", &label)?, except });
+        out.rules.push(SeatRule { account: need(r, "account", &label)?, kind, node: need(r, "node", &label)?, level: level(r, &label)?, scope: need(r, "scope", &label)?, except, agent: agent(r, &label)? });
     }
     let mut seen = BTreeMap::new();
     for (i, c) in list("chat")?.iter().enumerate() {
         let label = format!("[[seats.chat]] {}", i + 1);
         keys(c, &CHAT_KEYS, &label)?;
-        let chat = SeatChat { account: need(c, "account", &label)?, channel: need(c, "channel", &label)?, node: need(c, "node", &label)?, level: level(c, &label)?, scope: need(c, "scope", &label)? };
+        let chat = SeatChat { account: need(c, "account", &label)?, channel: need(c, "channel", &label)?, node: need(c, "node", &label)?, level: level(c, &label)?, scope: need(c, "scope", &label)?, agent: agent(c, &label)? };
         if let Some(j) = seen.insert((chat.account.clone(), chat.channel.clone()), i + 1) {
             return err(format!("{label} names the chat [[seats.chat]] {j} names"));
         }
@@ -439,6 +463,22 @@ mod tests {
         let p = dir.join("social.toml");
         std::fs::write(&p, text).unwrap();
         p
+    }
+
+    #[test]
+    fn a_seat_names_model_and_effort_together_under_the_ceiling() {
+        let tmp = tempfile::tempdir().unwrap();
+        let load = |extra: &str| {
+            let p = write(tmp.path(), &format!("[[seats.chat]]\naccount = \"a\"\nchannel = \"C1\"\nnode = \"n\"\nlevel = \"trusted\"\nscope = \"s\"\n{extra}\n"));
+            let data: Table = std::fs::read_to_string(&p).unwrap().parse().unwrap();
+            seats(&data, &p)
+        };
+        assert_eq!(load("").unwrap().agent_for("a", "C1", "dm"), None);
+        let both = load("model = \"sonnet\"\neffort = \"medium\"").unwrap();
+        assert_eq!(both.agent_for("a", "C1", "dm"), Some(("sonnet".into(), "medium".into())));
+        assert!(load("model = \"sonnet\"").unwrap_err().0.contains("together"));
+        assert!(load("effort = \"low\"").unwrap_err().0.contains("together"));
+        assert!(load("model = \"opus\"\neffort = \"xhigh\"").unwrap_err().0.contains("above the limit"));
     }
 
     #[test]

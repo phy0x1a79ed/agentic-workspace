@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use awm_plugin_operations::arbutus::Approvals;
-use awm_plugin_operations::front::{Front, Stamp};
+use awm_plugin_operations::front::{Front, Reach, Stamp};
 use awm_plugin_operations::home::LocalClient;
 use awm_plugin_operations::relay::Relay;
 use awm_plugin_operations::service::{self, Ops};
@@ -106,6 +106,7 @@ async fn no_card_means_a_dm_with_the_session_link_and_no_new_card() {
     assert!(dm.contains("fix-tunnel") && dm.contains("needs the VPN key") && dm.contains("https://claude.ai/code/mizar-job-a"), "{dm}");
     assert_eq!(h.call("task_for_session", pid(11), json!({})).await["task_id"], Value::Null);
 
+    h.out.reach.lock().unwrap().insert("job-b".into(), Reach::Unavailable);
     h.call("request_human", pid(22), json!({"kind": "review", "summary": "look"})).await;
     assert!(h.out.asks()[1].contains("`claude attach job-b` on mizar"), "a job with no link says how to attach");
 
@@ -116,10 +117,51 @@ async fn no_card_means_a_dm_with_the_session_link_and_no_new_card() {
     let service = h.call("request_human", none(), json!({"kind": "blocked", "reason": "a seat has no scope"})).await;
     assert_eq!(service["notified"], true);
     assert!(h.out.asks()[3].starts_with("**A service**"));
+    assert_eq!(h.out.reaches.lock().unwrap().len(), 3, "no job, no /rc");
 
     *h.out.ask_fails.lock().unwrap() = true;
     let failed = h.call("request_human", pid(11), json!({"reason": "again"})).await;
     assert!(!ok(&failed) && s(&failed["error"]).contains("did not go out"), "{failed}");
+}
+
+#[tokio::test]
+async fn a_queued_remote_control_sends_its_link_once_it_connects() {
+    let h = harness();
+    h.out.reach.lock().unwrap().insert("job-a".into(), Reach::Connecting);
+    let set_roster = |link: Option<&str>| {
+        let jobs = HashMap::from([("job-a".to_string(), link.map(str::to_string))]);
+        h.out.roster.lock().unwrap().insert("mizar".into(), jobs);
+    };
+
+    let first = h.call("request_human", pid(11), json!({"reason": "one"})).await;
+    assert_eq!(first["link"], Value::Null);
+    assert!(s(&first["note"]).contains("end your turn"), "{first}");
+    assert!(h.out.asks()[0].contains("link follows") && h.out.asks()[0].contains("claude attach job-a"), "{:?}", h.out.asks());
+    h.call("request_human", pid(11), json!({"reason": "two"})).await;
+    assert_eq!(h.out.reaches.lock().unwrap().len(), 1, "a second call in the turn types no second /rc");
+
+    assert_eq!(h.front.links_due().await, 0, "no roster answer keeps the mark");
+    set_roster(None);
+    assert_eq!(h.front.links_due().await, 0, "still connecting");
+    set_roster(Some("https://claude.ai/code/session_a"));
+    *h.out.ask_fails.lock().unwrap() = true;
+    assert_eq!(h.front.links_due().await, 0, "a failed DM keeps the mark");
+    *h.out.ask_fails.lock().unwrap() = false;
+    assert_eq!(h.front.links_due().await, 1);
+    assert!(h.out.asks().last().unwrap().contains("https://claude.ai/code/session_a"));
+    assert_eq!(h.front.links_due().await, 0, "the link goes out once");
+}
+
+#[tokio::test]
+async fn a_session_that_goes_while_connecting_is_forgotten() {
+    let h = harness();
+    h.out.reach.lock().unwrap().insert("job-a".into(), Reach::Connecting);
+    h.call("request_human", pid(11), json!({"reason": "one"})).await;
+    h.out.roster.lock().unwrap().insert("mizar".into(), HashMap::new());
+    assert_eq!(h.front.links_due().await, 0);
+    let asked = h.out.asks().len();
+    h.out.roster.lock().unwrap().insert("mizar".into(), HashMap::from([("job-a".to_string(), Some("https://claude.ai/code/x".to_string()))]));
+    assert_eq!((h.front.links_due().await, h.out.asks().len()), (0, asked));
 }
 
 #[tokio::test]

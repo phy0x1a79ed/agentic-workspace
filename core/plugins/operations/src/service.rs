@@ -12,7 +12,7 @@ use serde_json::{json, Value};
 use crate::api::{self, TOOL};
 use crate::approver::{Approver, Config, Tools};
 use crate::arbutus::{self, Approvals, ArbutusIo};
-use crate::front::{Front, Outside, Stamp};
+use crate::front::{Front, Outside, Reach, Stamp};
 use crate::home::{Home, LocalClient};
 use crate::keys::Keys;
 use crate::relay::{async_trait_free::BoxFut, Relay, StoreClient};
@@ -100,13 +100,30 @@ impl Outside for HubOutside {
         Box::pin(self.send(TONY_DM.0, TONY_DM.1, text))
     }
 
-    fn link<'a>(&'a self, node: &'a str, job: &'a str) -> BoxFut<'a, Option<String>> {
+    fn reach<'a>(&'a self, node: &'a str, job: &'a str) -> BoxFut<'a, Reach> {
+        Box::pin(async move {
+            let peer = Some(node).filter(|n| *n != self.node).map(str::to_string);
+            let opts = CallOpts { peer, timeout: Duration::from_secs(30), ..CallOpts::default() };
+            match self.hub.call_with("reflection", "remote_control", json!({"on": true, "job": job}), &opts).await {
+                Ok(out) if out["ok"] == json!(true) => out["link"].as_str().map_or(Reach::Connecting, |url| Reach::Link(url.to_string())),
+                Ok(out) => {
+                    tracing::warn!("operations: Remote Control refused for {job} on {node}: {out}");
+                    Reach::Unavailable
+                }
+                Err(e) => {
+                    tracing::warn!("operations: could not turn on Remote Control for {job} on {node}: {e}");
+                    Reach::Unavailable
+                }
+            }
+        })
+    }
+
+    fn links<'a>(&'a self, node: &'a str) -> BoxFut<'a, Option<HashMap<String, Option<String>>>> {
         Box::pin(async move {
             let opts = CallOpts { timeout: Duration::from_secs(10), ..CallOpts::default() };
             let out = self.hub.call_with("telemetry", "nodes", json!({"node": node}), &opts).await.ok()?;
-            out["nodes"].as_array()?.iter()
-                .flat_map(|n| n["sessions"].as_array().into_iter().flatten())
-                .find(|s| s["job"] == json!(job))?["link"].as_str().map(str::to_string)
+            let sessions = out["nodes"].as_array()?.first()?["sessions"].as_array()?.clone();
+            Some(sessions.iter().filter_map(|s| Some((s["job"].as_str()?.to_string(), s["link"].as_str().map(str::to_string)))).collect())
         })
     }
 }
@@ -309,6 +326,33 @@ pub fn follow_sessions(hub: Hub, store: Arc<Store>) -> SupervisedSubscription {
     )
 }
 
+/// Send each link still owed at every (re)connect and whenever a session changes in the roster.
+pub fn follow_links(hub: Hub, front: Arc<Front>) -> SupervisedSubscription {
+    let opts = SubscriptionOpts { idle_timeout: Duration::from_secs(3600), ..SubscriptionOpts::default() };
+    let f1 = front.clone();
+    SupervisedSubscription::spawn(
+        "operations/telemetry.roster",
+        opts,
+        move || {
+            let (hub, front) = (hub.clone(), f1.clone());
+            async move {
+                let sub = hub.subscribe("telemetry", "roster", None, None).await?;
+                front.links_due().await;
+                Ok(sub)
+            }
+        },
+        move |event: Value| {
+            let front = front.clone();
+            async move {
+                if event["changed"].as_array().is_some_and(|c| c.contains(&json!("sessions"))) {
+                    front.links_due().await;
+                }
+                Ok(())
+            }
+        },
+    )
+}
+
 /// Expire each pending request at its own expiry, waking early when a new one opens.
 pub async fn sweep_loop(ap: Arc<Approver>) {
     loop {
@@ -364,7 +408,7 @@ pub async fn serve() -> anyhow::Result<()> {
     let ops = Arc::new(Ops { front: front.clone(), home: home.clone() });
     let service = register(service, ops);
 
-    let (h2, r2, f2) = (hub.clone(), relay.clone(), front.clone());
+    let (h2, r2, f2, f3) = (hub.clone(), relay.clone(), front.clone(), front.clone());
     let started = async move {
         let r = r2.clone();
         tokio::spawn(async move {
@@ -394,6 +438,7 @@ pub async fn serve() -> anyhow::Result<()> {
         }
         if let (Some(h), Some(ap)) = (home, approver_handle) {
             follow_sessions(h2.clone(), h.store.clone());
+            follow_links(h2.clone(), f3);
             let vault = Arc::new(crate::vault_push::HubVault { hub: h2.clone() });
             tokio::spawn(crate::vault_push::Pusher::attach(h.store.clone(), vault).run());
             tokio::spawn(sweep_loop(ap.clone()));

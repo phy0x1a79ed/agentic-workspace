@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 
 use awm_plugin_operations::approver::{Approver, Config, Tools};
 use awm_plugin_operations::arbutus::ArbutusIo;
-use awm_plugin_operations::front::Outside;
+use awm_plugin_operations::front::{Outside, Reach};
 use awm_plugin_operations::home::Home;
 use awm_plugin_operations::keys::Keys;
 use awm_plugin_operations::relay::async_trait_free::BoxFut;
@@ -161,6 +161,9 @@ pub struct FakeOutside {
     pub dms: Mutex<Vec<String>>,
     pub asks: Mutex<Vec<String>>,
     pub ask_fails: Mutex<bool>,
+    pub reach: Mutex<HashMap<String, Reach>>,
+    pub reaches: Mutex<Vec<String>>,
+    pub roster: Mutex<HashMap<String, HashMap<String, Option<String>>>>,
 }
 
 impl FakeOutside {
@@ -170,7 +173,7 @@ impl FakeOutside {
             (11, json!({"ok": true, "session_id": A, "job": "job-a", "name": "fix-tunnel"})),
             (22, json!({"ok": true, "session_id": B, "job": "job-b", "name": "other"})),
         ]);
-        Arc::new(FakeOutside { pids: Mutex::new(pids), told: Mutex::new(vec![]), dms: Mutex::new(vec![]), asks: Mutex::new(vec![]), ask_fails: Mutex::new(false) })
+        Arc::new(FakeOutside { pids: Mutex::new(pids), told: Mutex::new(vec![]), dms: Mutex::new(vec![]), asks: Mutex::new(vec![]), ask_fails: Mutex::new(false), reach: Mutex::default(), reaches: Mutex::default(), roster: Mutex::default() })
     }
 
     pub fn dms(&self) -> Vec<String> {
@@ -213,8 +216,15 @@ impl Outside for FakeOutside {
         })
     }
 
-    fn link<'a>(&'a self, node: &'a str, job: &'a str) -> BoxFut<'a, Option<String>> {
-        Box::pin(async move { (job == "job-a").then(|| format!("https://claude.ai/code/{node}-{job}")) })
+    fn reach<'a>(&'a self, node: &'a str, job: &'a str) -> BoxFut<'a, Reach> {
+        Box::pin(async move {
+            self.reaches.lock().unwrap().push(format!("{node}/{job}"));
+            self.reach.lock().unwrap().get(job).cloned().unwrap_or(Reach::Link(format!("https://claude.ai/code/{node}-{job}")))
+        })
+    }
+
+    fn links<'a>(&'a self, node: &'a str) -> BoxFut<'a, Option<HashMap<String, Option<String>>>> {
+        Box::pin(async move { self.roster.lock().unwrap().get(node).cloned() })
     }
 }
 
