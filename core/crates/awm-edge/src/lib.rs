@@ -14,5 +14,5 @@ pub mod transport;
 
 pub use client::{EdgeClient, EdgeError, SshCommand};
 pub use frame::{Request, Response};
-pub use server::{caller_node, login, serve, EdgeLevel, Login, ServiceGate};
+pub use server::{login, serve, EdgeLevel, Login, ServiceGate};
 pub use transport::{EdgePeers, TABLE_CHANGED_FRAME, TOOLS_FRAME};

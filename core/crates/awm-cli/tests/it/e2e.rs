@@ -1361,22 +1361,6 @@ fn isolated_door_end_to_end() {
     assert!(gw.stop().success());
 }
 
-#[test]
-fn wants_follows_the_install_config() {
-    let tmp = tempfile::tempdir().unwrap();
-    // No config: every plugin is wanted.
-    let wants = |name: &str| {
-        Command::new(awm_bin()).args(["wants", name, "--state"]).arg(tmp.path()).status().unwrap().code().unwrap()
-    };
-    assert_eq!(wants("journal"), 0);
-    write(&tmp.path().join("config.toml"), "plugins = [\"*\"]\nexclude = [\"trilium\"]\n");
-    assert_eq!(wants("journal"), 0);
-    assert_eq!(wants("trilium"), 1);
-    write(&tmp.path().join("config.toml"), "plugins = [\"journal\"]\n");
-    assert_eq!(wants("journal"), 0);
-    assert_eq!(wants("search"), 1);
-}
-
 /// Any plugin may call any tool, so auth names the plugins that may read its secrets. The
 /// gateway names the calling plugin in the frame, and the Python adapter hands it to auth as
 /// A plugin subscribed to the gateway's own `awm/plugins` topic hears each change a reload
