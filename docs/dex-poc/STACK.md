@@ -12,6 +12,7 @@
 
 - Is the six-act play the thing to build against? (Acts: cold fill, copy vs service, live swap, versioned calls, eviction, catch-up.)
 - Reply version policy: the caller sends an `accept` list and the receiver replies in the highest version it can produce from that list, else a structured error?
+- Build JSON only in the POC and reserve an encoding-negotiation field for a fast path later (add the fast path only if Act 3 or a real workload shows a need)?
 - Dispatch the first worker on Acts 1 and 2 (a host on mizar and capella, resolution, fill)? Model and effort to confirm.
 
 ## Preferences
@@ -35,6 +36,8 @@
     - act 5 `eviction`: cache cap evicts copies only, never a loaded module or a service route
     - act 6 `catch-up`: a node offline during a publish catches up on reconnect, with no polling
   - `frozen-contract`: decided JSON, strict, versioned. Open: reply version policy, in-process fast path.
+    - Measured on capella (Ryzen 7 7800X3D, hot loop, no dlopen): pointer call through a swappable table 2.2 ns; plus memcpy in and out 10.3 ns; strict JSON both ways for a 106-byte request about 400 ns.
+    - Proposal: one schema, the encoding chosen by locality (typed call, `repr(C)` by pointer, same-layout bytes, JSON), serialized at the router and not the caller; resolve a selector to a handle once, then call through the handle; JSON stays the mandatory fallback and canonical form. Build JSON only first; reserve the encoding negotiation field.
   - `first-test`: `claude-md-sync` is a candidate after the play. One origin per name against C3 is still open.
 - `transport-survey`: do AWM peer links or the push path already give subscribe?
 - `tool-surface`: the narrow exposed tool, roughly submit, status, result, cancel
