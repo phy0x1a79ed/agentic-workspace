@@ -668,12 +668,15 @@ async fn owner_text_is_pushed_and_output_is_only_drained() {
     let node = machine_node(tmp.path(), &daemon, &pushed);
     let name = open_machine(&node).await;
     event(&node.stream, 1, json!({"type": "session.phase", "phase": "open"}));
-    event(&node.stream, 2, json!({"type": "owner.said", "text": "hi there"}));
+    // A reconnect, as the daemon writes it: silent.
+    event(&node.stream, 2, json!({"type": "session.phase", "phase": "reconnecting", "why": "the connection closed"}));
+    event(&node.stream, 3, json!({"type": "session.phase", "phase": "open", "resumed": {"gap_s": 9, "resent": 0}}));
+    event(&node.stream, 4, json!({"type": "owner.said", "text": "hi there"}));
     let b64 = base64::engine::general_purpose::STANDARD;
-    event(&node.stream, 3, json!({"type": "task.output", "task": 1, "stream": "stdout", "bytes": 3, "data": b64.encode("out")}));
-    event(&node.stream, 4, json!({"type": "task.exited", "task": 1, "code": 0}));
+    event(&node.stream, 5, json!({"type": "task.output", "task": 1, "stream": "stdout", "bytes": 3, "data": b64.encode("out")}));
+    event(&node.stream, 6, json!({"type": "task.exited", "task": 1, "code": 0}));
     eventually("the owner's line", || pushed.any(&format!("machine {name} [untrusted] from the owner: hi there"))).await;
-    assert!(pushed.any("the owner connected."));
+    assert_eq!(pushed.texts().iter().filter(|t| t.contains("the owner connected.")).count(), 1, "a reconnect is silent");
     assert!(!pushed.any("out"), "output is never pushed");
 
     let w = |target: &str| Write { target: target.into(), ..Write::default() };
@@ -694,9 +697,9 @@ async fn owner_text_is_pushed_and_output_is_only_drained() {
     let stream = node.stream.clone();
     tokio::spawn(async move {
         tokio::time::sleep(Duration::from_millis(200)).await;
-        event(&stream, 5, json!({"type": "task.output", "task": 2, "stream": "stdout", "bytes": 1, "data": b64.encode("z")}));
+        event(&stream, 7, json!({"type": "task.output", "task": 2, "stream": "stdout", "bytes": 1, "data": b64.encode("z")}));
         tokio::time::sleep(Duration::from_millis(200)).await;
-        event(&stream, 6, json!({"type": "task.exited", "task": 2}));
+        event(&stream, 8, json!({"type": "task.exited", "task": 2}));
     });
     let waited = node.ch.drain(&tester(), None, 5.0, Some(2), None, false).await.unwrap();
     assert_eq!(waited["events"].as_array().unwrap().last().unwrap()["type"], "task.exited", "until waits for its task");
