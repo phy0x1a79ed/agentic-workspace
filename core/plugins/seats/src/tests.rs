@@ -107,9 +107,7 @@ impl World for Fake {
         if !w.up.contains(job) {
             return Outcome::Gone;
         }
-        if line != RETIRE_LINE {
-            w.got.entry(job.into()).or_default().push(text_of(line));
-        }
+        w.got.entry(job.into()).or_default().push(text_of(line));
         Outcome::Delivered
     }
     async fn live(&self) -> Option<HashSet<String>> {
@@ -339,47 +337,38 @@ async fn a_refused_push_past_the_window_counts_the_agent_lost() {
 }
 
 #[tokio::test]
-async fn done_then_quiet_retires_and_a_message_while_retiring_gets_one_reply() {
+async fn a_seat_keeps_its_agent_however_long_the_chat_is_quiet() {
     let mut t = T::new(false);
     t.send("task").await;
-    assert_eq!(t.seats.mark_done("job-1").await.len(), 1);
-    t.world.advance(DONE_S - 10.0);
-    t.tick().await;
-    assert_eq!(t.seat().await.state, State::Occupied);
-    t.world.advance(20.0);
-    t.tick().await;
-    assert_eq!(t.seat().await.state, State::Retiring);
-    t.send("new one").await;
-    t.send("and another").await;
-    let said: Vec<String> = t.world.w().said.iter().filter(|(c, _)| c == "D0TEST").map(|(_, x)| x.clone()).collect();
-    assert_eq!(said, [SHIFT_REPLY], "one reply per retiring");
-    assert_eq!(t.seat().await.state, State::Retiring);
-    t.world.advance(RETIRE_S + 1.0);
-    t.tick().await;
-    t.tick().await;
-    let s = t.seat().await;
-    assert_eq!((s.state, s.job.as_str()), (State::Occupied, "job-2"), "the next agent starts beside the old one");
-    assert!(t.world.w().specs[1]["prompt"].as_str().unwrap().contains("/transcripts/job-1.jsonl"));
-    assert_eq!(t.world.got("job-2"), ["new one", "and another"]);
-    assert_eq!(t.world.w().mounted["D0TEST"], "job-2", "the old agent is unbound");
-}
-
-#[tokio::test]
-async fn a_retiring_agent_that_leaves_empties_the_seat_and_a_new_message_clears_done() {
-    let mut t = T::new(false);
-    t.send("task").await;
+    assert_eq!(t.world.w().specs[0]["pin"], true, "a seat's agent is a persistent session");
+    assert!(t.world.w().specs[0].get("replaces").is_none());
     t.seats.mark_done("job-1").await;
     t.send("more").await;
     assert_eq!(t.seat().await.done_at, 0.0, "a new message clears the mark");
     t.seats.mark_done("job-1").await;
-    t.world.advance(DONE_S + 1.0);
+    let lines = t.world.got("job-1");
+    t.world.advance(30.0 * 86400.0);
     t.tick().await;
-    assert_eq!(t.seat().await.state, State::Retiring);
+    let s = t.seat().await;
+    assert_eq!((s.state, s.job.as_str()), (State::Occupied, "job-1"));
+    assert_eq!(t.world.got("job-1"), lines, "nothing tells the agent to leave");
+
     t.world.w().up.remove("job-1");
     t.tick().await;
     assert_eq!(t.seat().await.state, State::Empty);
     assert_eq!(t.world.w().specs.len(), 1, "nothing waits, so nothing starts");
     assert!(!t.world.w().said.iter().any(|(_, x)| x.contains("ended before")), "a done agent leaving is no outage");
+    t.send("back").await;
+    t.tick().await;
+    assert_eq!(t.world.w().specs[1]["replaces"], "job-1", "an agent a reboot brought back gives way");
+
+    t.world.w().up.insert("hand-started".into());
+    t.seats.adopt(&decl(), "hand-started", "").await;
+    t.world.w().up.remove("hand-started");
+    t.tick().await;
+    t.send("again").await;
+    t.tick().await;
+    assert!(t.world.w().specs[2].get("replaces").is_none(), "a session the seat only adopted is never stopped");
 }
 
 #[tokio::test]

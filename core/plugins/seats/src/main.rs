@@ -93,7 +93,7 @@ impl App {
             return Err(VerbError::new("HolderError", "this session is no seat's agent: only a seat's agent marks its task done"));
         }
         Ok(json!({"ok": true, "seats": marked.iter().map(|s| json!({"account": s.account(), "id": s.channel(), "name": s.decl.channel_name})).collect::<Vec<_>>(),
-            "next": "you are told to retire once 4 hours pass with no new message. A new message clears the mark."}))
+            "next": "wait here: a new message clears the mark."}))
     }
 
     async fn public(&self, seat: &Seat) -> Value {
@@ -169,7 +169,7 @@ fn service(svc: Service, app: Arc<App>) -> Service {
         json!([param("text", "string", false), param("channel", "string", false), param("thread", "string", false), param("file", "string", false), param("files", "array", false)]),
         send
     );
-    let svc = verb!(svc, "mark_done", "Mark your seat's task done, after its handoff journal. You are told to retire once 4 hours pass with no new message, and a new message clears the mark.", json!([]), mark_done);
+    let svc = verb!(svc, "mark_done", "Mark your seat's task done, after its handoff journal. A new message clears the mark.", json!([]), mark_done);
     let svc = verb!(svc, "list", "This node's seats, whether they are paused, and the state of the link to social.", json!([]), list);
     let svc = verb!(svc, "reset", "Clear a seat's start breaker and its missing-scope hold, then look at it again. Trusted only.", account_channel(), reset);
     let svc = verb!(svc, "admit", "Let an outside sender's messages through to a seat. Trusted only.", account_channel(), admit);

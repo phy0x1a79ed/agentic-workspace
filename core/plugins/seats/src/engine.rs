@@ -1,7 +1,7 @@
 //! The seats of this node: every message in a seated chat goes to that chat's one agent, which
-//! this plugin starts here and retires when its task is done.
+//! this plugin starts here and keeps for as long as it runs.
 //!
-//! A seat is `empty`, `starting`, `occupied` or `retiring`. Every line goes into the durable
+//! A seat is `empty`, `starting` or `occupied`. Every line goes into the durable
 //! `seat_queue` first, and leaves it only when reflection took it, so no line is lost to a dead
 //! agent, a failed push or a restart. Each seat's work runs under its own lock, and each
 //! transition writes the database before it acts. [`Seats::drive`] reconciles one seat with its
@@ -26,17 +26,11 @@ const STEPS_PER_LOOK: usize = 3;
 
 /// How long a started agent has to come up.
 pub const UP_S: f64 = 180.0;
-/// How long a done seat's chat stays quiet before its agent is told to retire.
-pub const DONE_S: f64 = 4.0 * 3600.0;
-/// How long a retiring agent has before the next one starts beside it.
-pub const RETIRE_S: f64 = 240.0;
 /// How long one line is retried before the seat counts its agent lost.
 pub const PUSH_RETRY_S: f64 = 120.0;
 /// The shortest wait before a seat's overdue clock is looked at again.
 pub const TICK_S: u64 = 15;
 
-pub const SHIFT_REPLY: &str = "agent is changing shift, will respond within 5 mins";
-pub const RETIRE_LINE: &str = "seats: this seat's task is done and its chat has been quiet for 4 hours. Write your handoff journal, then retire.";
 
 /// What `start_other` answered.
 #[derive(Debug, Clone, PartialEq)]
@@ -294,7 +288,7 @@ impl Seats {
                 if pending.is_empty() || self.paused() || held || !seat.breaker.allows(now) {
                     return false;
                 }
-                self.cold_start(seat, &pending, None).await;
+                self.cold_start(seat, &pending).await;
                 false
             }
             State::Starting => {
@@ -326,41 +320,9 @@ impl Seats {
                     self.vacate(&mut seat).await;
                     return !pending.is_empty();
                 }
-                if seat.done_at > 0.0 && now - seat.done_at.max(seat.last_message) >= DONE_S && pending.is_empty() {
-                    seat.state = State::Retiring;
-                    seat.deadline = now + RETIRE_S;
-                    seat.replied = false;
-                    self.save(&seat).await;
-                    if self.world.push(&seat.job, RETIRE_LINE).await == Outcome::Gone {
-                        self.vacate(&mut seat).await;
-                    }
-                    return false;
-                }
                 if !pending.is_empty() && !self.pump(&mut seat, &pending).await {
                     self.vacate(&mut seat).await;
                     return true;
-                }
-                false
-            }
-            State::Retiring => {
-                if gone(&seat) {
-                    self.vacate(&mut seat).await;
-                    return !pending.is_empty();
-                }
-                if pending.is_empty() {
-                    return false;
-                }
-                if !seat.replied {
-                    seat.replied = true;
-                    self.save(&seat).await;
-                    let first = &pending[0];
-                    let thread = if first.thread_id.is_empty() { None } else { Some(first.thread_id.as_str()) };
-                    self.say(&seat, thread, SHIFT_REPLY).await;
-                    self.react(&seat, &pending).await;
-                }
-                if now >= seat.deadline {
-                    let previous = Previous { job: seat.job.clone(), node: seat.decl.node.clone() };
-                    self.cold_start(seat, &pending, Some(previous)).await;
                 }
                 false
             }
@@ -386,7 +348,7 @@ impl Seats {
     /// The agent is gone: free the seat and keep its lines for the next agent.
     async fn vacate(&self, seat: &mut Seat) {
         if !seat.job.is_empty() {
-            seat.previous = Previous { job: seat.job.clone(), node: seat.decl.node.clone() };
+            seat.previous = Previous { job: seat.job.clone(), node: seat.decl.node.clone(), adopted: seat.adopted };
             self.unbind(seat).await;
         }
         seat.state = State::Empty;
@@ -425,7 +387,7 @@ impl Seats {
     }
 
     /// Start the seat's agent with every waiting line in its brief.
-    async fn cold_start(&self, mut seat: Seat, pending: &[Queued], previous: Option<Previous>) {
+    async fn cold_start(&self, mut seat: Seat, pending: &[Queued]) {
         let now = self.world.now();
         let settings = self.settings();
         if self.world.scope_ready(&settings.project, &seat.decl.scope).await == Some(false) {
@@ -439,8 +401,7 @@ impl Seats {
         if seat.state == State::Empty {
             self.react(&seat, pending).await;
         }
-        let old = (seat.state == State::Retiring).then(|| seat.clone());
-        let previous = previous.or_else(|| (!seat.previous.job.is_empty()).then(|| seat.previous.clone()));
+        let previous = (!seat.previous.job.is_empty()).then(|| seat.previous.clone());
         let transcript = match &previous {
             Some(p) if p.node == seat.decl.node => self.world.transcript(&p.job).await,
             _ => None,
@@ -452,16 +413,20 @@ impl Seats {
             project: &settings.project,
             previous: previous.as_ref().map(|p| (p.job.as_str(), p.node.as_str(), transcript.as_deref())),
         };
-        let spec = json!({
+        let mut spec = json!({
             "project": settings.project, "scope": seat.decl.scope, "name": seat.decl.name, "prompt": brief::brief(&facts, &lines),
             "trust": seat.decl.level, "model": settings.model, "effort": settings.effort, "remote_control": seat.remote_control,
+            "pin": true,
         });
+        // A host reboot can bring the old agent back after its seat emptied: the new one takes its place.
+        if let Some(p) = previous.as_ref().filter(|p| !p.adopted && p.node == seat.decl.node) {
+            spec["replaces"] = json!(p.job);
+        }
         let ids: Vec<i64> = pending.iter().map(|q| q.id).collect();
         seat.state = State::Starting;
         seat.deadline = now + UP_S;
         seat.job.clear();
         seat.rc_url.clear();
-        seat.replied = false;
         if seat.held == "scope" {
             seat.held.clear();
         }
@@ -470,29 +435,14 @@ impl Seats {
         match self.world.start(spec).await {
             Started::Job(job) => {
                 seat.job = job.clone();
-                if let Some(p) = previous {
-                    seat.previous = p;
-                }
                 self.save(&seat).await;
                 self.store.brief_to(ids, &job).await;
                 self.mounted(&seat, &job, &seat.decl.name).await;
-                if let Some(old) = old {
-                    tracing::info!("seat {}: {} took over from retiring {}", label(&seat), seat.job, old.job);
-                }
                 // The session's `started` event can come before this start answers.
                 self.wake();
             }
             Started::Refused(why) => {
                 tracing::info!("seat {}: start refused: {why}", label(&seat));
-                if let Some(old) = old {
-                    // The retiring agent still runs: it keeps the seat until it is gone.
-                    let mut back = old;
-                    back.replied = true;
-                    self.store.unbrief(back.account(), back.channel()).await;
-                    back.breaker.fail(now);
-                    self.save(&back).await;
-                    return;
-                }
                 self.failed_start(seat, &why).await;
             }
         }
@@ -563,8 +513,7 @@ impl Seats {
         let mut due: Option<f64> = None;
         for s in self.store.all().await {
             let at = match s.state {
-                State::Starting | State::Retiring => s.deadline,
-                State::Occupied if s.done_at > 0.0 => s.done_at.max(s.last_message) + DONE_S,
+                State::Starting => s.deadline,
                 State::Empty => s.breaker.next_try.max(s.breaker.hold_until),
                 State::Occupied => continue,
             };
@@ -622,7 +571,7 @@ impl Seats {
         let mut seat = self.upsert(decl).await;
         let now = self.world.now();
         if !seat.job.is_empty() && seat.job != job {
-            seat.previous = Previous { job: seat.job.clone(), node: seat.decl.node.clone() };
+            seat.previous = Previous { job: seat.job.clone(), node: seat.decl.node.clone(), adopted: seat.adopted };
         }
         seat.state = State::Occupied;
         seat.job = job.into();
@@ -642,7 +591,7 @@ impl Seats {
     pub async fn released(&self, account: &str, channel: &str, job: &str) {
         if let Some(mut s) = self.store.get(account, channel).await {
             if s.job == job && s.state != State::Empty {
-                s.previous = Previous { job: s.job.clone(), node: s.decl.node.clone() };
+                s.previous = Previous { job: s.job.clone(), node: s.decl.node.clone(), adopted: s.adopted };
                 s.state = State::Empty;
                 s.job.clear();
                 s.rc_url.clear();

@@ -18,7 +18,7 @@ pub fn brief(f: &Facts, lines: &[String]) -> String {
          Read {}/seat-sop.md, then {}/{}.\n\
          Each new message in the chat is typed into your prompt as one line, \"[<server>/<chat>/<sender>, <level>] \u{21b3}<thread> <text>\". \
          Answer with `seats send text=<text>`: with no channel it answers the latest line, in its thread, and a reply waits here if the link to the chat is down. \
-         Answer the message that started you, on that task only. When the task is done, write your handoff journal, then call `seats mark_done`, and wait. A new message reaches you here. Do not end your session: the seat tells you when to retire.\n",
+         Answer the message that started you, on that task only. When the task is done, write your handoff journal, then call `seats mark_done`, and wait. A new message reaches you here. You are a persistent session: keep your session name, and never end the session.\n",
         d.server_label, d.chat_label, d.platform, d.level, f.project, d.scope, f.docs, f.docs, d.brief,
     );
     if let Some((job, node, transcript)) = f.previous {

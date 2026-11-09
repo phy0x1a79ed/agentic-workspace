@@ -33,7 +33,6 @@ CREATE TABLE IF NOT EXISTS seat_registry (
     previous     TEXT NOT NULL DEFAULT '{}',
     breaker      TEXT NOT NULL DEFAULT '{}',
     held         TEXT NOT NULL DEFAULT '',
-    replied      INTEGER NOT NULL DEFAULT 0,
     missed       INTEGER NOT NULL DEFAULT 0,
     remote_control INTEGER NOT NULL DEFAULT 0,
     rc_url       TEXT NOT NULL DEFAULT '',
@@ -78,7 +77,6 @@ pub enum State {
     Empty,
     Starting,
     Occupied,
-    Retiring,
 }
 
 impl State {
@@ -87,14 +85,12 @@ impl State {
             State::Empty => "empty",
             State::Starting => "starting",
             State::Occupied => "occupied",
-            State::Retiring => "retiring",
         }
     }
     fn parse(s: &str) -> Self {
         match s {
             "starting" => State::Starting,
             "occupied" => State::Occupied,
-            "retiring" => State::Retiring,
             _ => State::Empty,
         }
     }
@@ -149,6 +145,9 @@ pub struct Previous {
     pub job: String,
     #[serde(default)]
     pub node: String,
+    /// A session the seat took over rather than started, so no later start may replace it.
+    #[serde(default)]
+    pub adopted: bool,
 }
 
 /// What social declares about a chat. It rides on every row social sends.
@@ -187,7 +186,6 @@ pub struct Seed {
     pub previous: String,
     pub breaker: String,
     pub held: String,
-    pub replied: i64,
     pub missed: i64,
     pub remote_control: i64,
     pub rc_url: String,
@@ -202,13 +200,12 @@ pub struct Seat {
     pub adopted: bool,
     pub last_message: f64,
     pub done_at: f64,
-    /// Starting: when the agent must be up. Retiring: when the next agent starts.
+    /// Starting: when the agent must be up.
     pub deadline: f64,
     pub previous: Previous,
     pub breaker: Breaker,
     /// Why the seat holds its lines: `outside:<sender>`, `scope`, or `admitted`.
     pub held: String,
-    pub replied: bool,
     /// Messages that arrived while the seats were paused, for the summary at unpause.
     pub missed: i64,
     /// The seat's Remote Control switch, which every agent it starts follows.
@@ -217,7 +214,7 @@ pub struct Seat {
     pub rc_url: String,
 }
 
-const COLS: &str = "account, channel_id, channel_name, kind, server, slug, node, scope, level, platform, server_label, chat_label, brief, name, state, job, adopted, last_message, done_at, deadline, previous, breaker, held, replied, missed, remote_control, rc_url";
+const COLS: &str = "account, channel_id, channel_name, kind, server, slug, node, scope, level, platform, server_label, chat_label, brief, name, state, job, adopted, last_message, done_at, deadline, previous, breaker, held, missed, remote_control, rc_url";
 
 impl Seat {
     fn from_row(r: &Row) -> rusqlite::Result<Self> {
@@ -249,10 +246,9 @@ impl Seat {
             previous: serde_json::from_str(&previous).unwrap_or_default(),
             breaker: serde_json::from_str(&breaker).unwrap_or_default(),
             held: r.get(22)?,
-            replied: r.get::<_, i64>(23)? != 0,
-            missed: r.get(24)?,
-            remote_control: r.get::<_, i64>(25)? != 0,
-            rc_url: r.get(26)?,
+            missed: r.get(23)?,
+            remote_control: r.get::<_, i64>(24)? != 0,
+            rc_url: r.get(25)?,
         })
     }
 
@@ -267,10 +263,9 @@ impl Seat {
             last_message: seed.last_message,
             done_at: if elsewhere { 0.0 } else { seed.done_at },
             deadline: seed.deadline,
-            previous: if elsewhere { Previous { job: seed.job, node: seed.job_node } } else { previous },
+            previous: if elsewhere { Previous { job: seed.job, node: seed.job_node, adopted: false } } else { previous },
             breaker: serde_json::from_str(&seed.breaker).unwrap_or_default(),
             held: seed.held,
-            replied: seed.replied != 0,
             missed: seed.missed,
             remote_control: seed.remote_control != 0,
             rc_url: if elsewhere { String::new() } else { seed.rc_url },
@@ -352,12 +347,12 @@ fn save(c: &Connection, s: &Seat) -> rusqlite::Result<bool> {
     let before = c.query_row(&format!("SELECT {COLS} FROM seat_registry WHERE account = ?1 AND channel_id = ?2"), params![s.decl.account, s.decl.channel_id], Seat::from_row).optional()?;
     let d = &s.decl;
     c.execute(
-        &format!("INSERT OR REPLACE INTO seat_registry ({COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27)"),
+        &format!("INSERT OR REPLACE INTO seat_registry ({COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26)"),
         params![
             d.account, d.channel_id, d.channel_name, d.kind, d.server, d.slug, d.node, d.scope, d.level, d.platform, d.server_label, d.chat_label, d.brief, d.name,
             s.state.as_str(), s.job, s.adopted as i64, s.last_message, s.done_at, s.deadline,
             serde_json::to_string(&s.previous).unwrap_or_default(), serde_json::to_string(&s.breaker).unwrap_or_default(),
-            s.held, s.replied as i64, s.missed, s.remote_control as i64, s.rc_url
+            s.held, s.missed, s.remote_control as i64, s.rc_url
         ],
     )?;
     Ok(before.is_none_or(|b| b.public(0) != s.public(0) || b.decl.name != s.decl.name))
