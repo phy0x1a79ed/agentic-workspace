@@ -27,3 +27,20 @@
 **Design.** `cch find` searches only the live roster, which drops stopped jobs. The ids-harmonize resolver searches stopped jobs too, and callers pass the canonical id, so the failure goes away. No separate fix.
 
 **Landed.** Covered by ids-harmonize.
+
+## name-is-name (2026-11-10)
+
+**Question.** What rules does a name keep, how does a lookup match one, and what stops the pool from reading names as state?
+
+**Your words.**
+> for names we can do a softer search, but with each case not partial matches.
+> can we fix the name based matching by the session pool system as well?
+
+**Design.**
+- Start and rename keep the 1–80 printable-character rule, because `/rename` is typed into the terminal. The leading `-` rule goes: the name is passed as `--name=<name>`.
+- A `{name}` lookup matches the whole current name, ignoring case. It never matches part of a name, and it never matches `seed_name`. If more than one session matches, the lookup errors and lists their canonical ids.
+- The pool keeps a ledger keyed by canonical id. It writes `{id: spare}` before it launches a spare with `--session-id`. `is_ours` reads "spare" from the ledger, `was_ours` reads "id is in the ledger", and a claim flips the entry to `claimed`. An entry with no session behind it is safe to drop.
+- Telemetry rows carry `pool: spare`, and telemetry and the board filter on that field.
+- Deleted: `name_prefix`, `AWM_CX_PREFIX`, `WARM_PREFIX`, the `<warm` name ban, and the noun-stripping in `seed.rs` and `claim.rs`.
+
+**Landed.** Spec only.
