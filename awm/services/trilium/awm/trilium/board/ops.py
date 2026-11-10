@@ -90,7 +90,9 @@ def build_roster(nodes: list[dict], services: list[dict], seats: list[dict],
                    "state": text(s.get("state")),
                    "remote_control": bool(s.get("remote_control")),
                    "rc_url": text(s.get("rc_url")), "node": text(s.get("node")),
-                   "rc_live": text(s.get("rc_live")), "ts": text(s.get("ts"))}
+                   "rc_live": text(s.get("rc_live")), "ts": text(s.get("ts")),
+                   "model": text(s.get("model")), "effort": text(s.get("effort")),
+                   "refresh": bool(s.get("refresh")), "refresh_live": text(s.get("refresh_live"))}
                   for s in seats],
         "notices": [{"kind": text(n.get("kind")), "node": text(n.get("node")),
                      "title": text(n.get("title")), "body": text(n.get("body")),

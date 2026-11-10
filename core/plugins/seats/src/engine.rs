@@ -242,16 +242,18 @@ impl Seats {
     /// from Ops, which social passes on even when nothing changed.
     async fn report(&self, s: &Seat, answer: Option<(&str, &str)>) {
         let queued = self.queued(s.account(), s.channel()).await;
-        let mut event = s.event(&crate::now_iso());
+        let (mut event, mut public) = (s.event(&crate::now_iso()), s.public(queued));
         let (model, effort) = self.pair(s);
-        event["model"] = json!(model);
-        event["effort"] = json!(effort);
-        event["refresh"] = json!(s.refresh);
+        for v in [&mut event, &mut public] {
+            v["model"] = json!(model);
+            v["effort"] = json!(effort);
+            v["refresh"] = json!(s.refresh);
+        }
         if let Some((key, text)) = answer {
             event[key] = json!(text);
         }
         self.world
-            .up("seat", json!({"account": s.account(), "channel_id": s.channel(), "state": s.state.as_str(), "job": s.job, "remote_control": s.remote_control, "rc_url": s.rc_url, "public": s.public(queued), "event": event}))
+            .up("seat", json!({"account": s.account(), "channel_id": s.channel(), "state": s.state.as_str(), "job": s.job, "remote_control": s.remote_control, "rc_url": s.rc_url, "public": public, "event": event}))
             .await;
     }
 

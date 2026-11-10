@@ -224,6 +224,50 @@ function settleFlip(s) {
     : `${s.label || s.seat}: Remote Control ${s.remote_control ? "on" : "off"}`, failed);
 }
 
+// A seat's model and effort as the spawn panel names them. An unsent pick outlives a redraw.
+const choices = (name) => [...document.querySelectorAll(`input[name="awm-spawn-${name}"]`)]
+  .map((i) => [i.value, i.nextElementSibling.textContent]);
+const picks = new Map();
+// A Refresh waits for its answer as a flip does.
+const refreshes = new Map();
+
+function settleRefresh(s) {
+  const r = refreshes.get(s.seat);
+  if (!r) return;
+  if (Date.now() - r.at > FLIP_GIVE_UP_MS) { refreshes.delete(s.seat); return; }
+  if (!s.refresh_live || s.ts === r.ts) return;
+  refreshes.delete(s.seat);
+  toast(`${s.label || s.seat}: ${s.model} at ${s.effort} effort ${s.refresh_live === "pending"
+    ? "once its agent is between turns" : "from its next start"}`);
+}
+
+function pickCell(s) {
+  settleRefresh(s);
+  const pick = picks.get(s.seat) || { model: s.model, effort: s.effort };
+  const select = (name) => {
+    const opts = choices(name);
+    if (pick[name] && !opts.some(([v]) => v === pick[name])) opts.push([pick[name], pick[name]]);
+    const sel = el("select", { "aria-label": name }, ...opts.map(([v, label]) =>
+      el("option", { value: v, selected: v === pick[name] }, label)));
+    sel.addEventListener("change", () => picks.set(s.seat, { ...pick, [name]: sel.value }));
+    return sel;
+  };
+  const waiting = refreshes.has(s.seat) || s.refresh;
+  const btn = el("button", { class: "awm-btn", type: "button", disabled: waiting },
+    waiting ? "Refresh pending" : "Refresh");
+  const [model, effort] = [select("model"), select("effort")];
+  btn.addEventListener("click", async () => {
+    btn.disabled = true;
+    refreshes.set(s.seat, { ts: s.ts, at: Date.now() });
+    try {
+      await swarmCall(origin, "/api/seat/refresh", { seat: s.seat, model: model.value, effort: effort.value });
+      picks.delete(s.seat);
+      toast(`${s.label || s.seat}: refresh on ${model.value} at ${effort.value} effort requested`);
+    } catch (e) { refreshes.delete(s.seat); btn.disabled = false; toast(e.message, true); }
+  });
+  return el("td", {}, model, " ", effort, " ", btn);
+}
+
 function seatRow(s) {
   settleFlip(s);
   const pending = flips.has(s.seat);
@@ -243,7 +287,7 @@ function seatRow(s) {
   });
   return el("tr", { "data-seat": s.seat }, el("td", {}, s.label || s.seat), el("td", {}, s.state || ""),
     el("td", {}, el("label", {}, sw, pending ? " Remote Control (requested)" : " Remote Control")),
-    el("td", {}, s.remote_control ? rc(s.rc_url) : null));
+    el("td", {}, s.remote_control ? rc(s.rc_url) : null), pickCell(s));
 }
 
 function table(heads, rows, none) {
@@ -352,7 +396,7 @@ function drawFleet() {
   $(".awm-nodes").replaceChildren(...(nodes.length ? nodes.map((n) => nodeSection(n, q))
     : [empty(all.length ? "No node matches." : "No nodes reported.")]));
   const seats = (roster.seats || []).filter((s) => fuzzy(q, s.label) || fuzzy(q, s.seat));
-  $(".awm-seats").replaceChildren(table(["seat", "state", "", ""], seats.map(seatRow), "No seats."));
+  $(".awm-seats").replaceChildren(table(["seat", "state", "", "", "agent"], seats.map(seatRow), "No seats."));
   const plugins = new Map();
   for (const n of all) for (const p of n.plugins || []) plugins.set(p.name, { name: p.name, core: p.core });
   $(".awm-plugins").replaceChildren(grid(all, [...plugins.values()].filter((p) => fuzzy(q, p.name)).sort((a, b) => a.name.localeCompare(b.name)),
