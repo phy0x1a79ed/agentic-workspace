@@ -270,7 +270,6 @@ fn with_ok(row: Value) -> Value {
 
 /// A `list` row: the session row with the keys every harness's list carries.
 fn list_row(mut row: Value) -> Value {
-    row["job"] = row["fork_session_id"].clone();
     row["alive"] = row["live"].clone();
     row["kind"] = json!("web");
     row["transcript"] = Value::Null;
@@ -316,7 +315,7 @@ mod tests {
         let out = a.handle(HARNESS_TOOL, "list", &json!({"project": "awm"})).await.unwrap();
         let row = &out["sessions"][0];
         assert_eq!(out["sessions"].as_array().unwrap().len(), 1);
-        assert_eq!((row["job"].as_str(), row["alive"].clone(), row["kind"].as_str()), (Some(FORK), json!(true), Some("web")));
+        assert_eq!((row["fork_session_id"].as_str(), row["alive"].clone(), row["kind"].as_str()), (Some(FORK), json!(true), Some("web")));
         assert_eq!((row["parent"].clone(), row["transcript"].clone()), (Value::Null, Value::Null));
         let none = a.handle(HARNESS_TOOL, "list", &json!({"scope": "other"})).await.unwrap();
         assert_eq!(none["sessions"], json!([]));

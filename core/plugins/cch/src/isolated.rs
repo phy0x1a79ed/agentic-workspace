@@ -946,7 +946,7 @@ impl<D: Docker> Isolated<D> {
             None => self.iso_live(rec).await,
         };
         let sid = &rec.claude_session_id;
-        json!({"session_id": r9(sid), "claude_session_id": sid, "name": rec.name, "job": null, "pid": null,
+        json!({"session_id": r9(sid), "claude_session_id": sid, "name": rec.name, "pid": null,
                "live": live, "kind": "isolated", "container": rec.container, "project": rec.project,
                "scope": rec.scope, "cwd": rec.cwd})
     }

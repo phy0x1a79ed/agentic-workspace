@@ -287,9 +287,9 @@ impl Paths {
         self.starts_dir().join(format!("pending-{id}.json"))
     }
 
-    /// The lineage record of `job`.
-    pub fn lineage_path(&self, job: &str) -> PathBuf {
-        self.starts_dir().join(format!("{job}.json"))
+    /// The lineage record of the session with canonical id `id`.
+    pub fn lineage_path(&self, id: &str) -> PathBuf {
+        self.starts_dir().join(format!("{id}.json"))
     }
 
     /// The promise store, `<service dir>/pending`. [`Paths::legacy_promises_dir`] is where the
@@ -401,7 +401,7 @@ mod tests {
     fn the_pending_path_is_the_canonical_session_id() {
         let p = Paths::under(Path::new("/r"));
         assert_eq!(p.pending_path("cc0123"), Path::new("/r/.claude/cx/starts/pending-cc0123.json"));
-        assert_eq!(p.lineage_path("abababab"), Path::new("/r/.claude/cx/starts/abababab.json"));
+        assert_eq!(p.lineage_path("ccabababab000040008000000000000000"), Path::new("/r/.claude/cx/starts/ccabababab000040008000000000000000.json"));
     }
 
     #[test]

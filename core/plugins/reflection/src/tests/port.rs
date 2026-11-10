@@ -28,7 +28,7 @@ fn now_ms() -> i64 {
     awm_pycompat::time::now_ms()
 }
 
-/// The args each self-acting verb needs besides `job`.
+/// The args each self-acting verb needs besides `to`.
 fn needs(verb: &str) -> Value {
     match verb {
         "message_self" => json!({"text": "hello"}),
@@ -43,7 +43,7 @@ fn needs(verb: &str) -> Value {
     }
 }
 
-/// The verbs that act on the caller's own session. Each takes no `job`, or a `job` that
+/// The verbs that act on the caller's own session. Each takes no `to`, or a `to` that
 /// defaults to the caller, and each resolves the caller through [`App::resolve_caller`].
 const SELF_ACTING: [&str; 14] = [
     "message_self", "compact", "mode", "whoami", "wait", "remote_control", "model", "effort", "rename", "cd", "mcp",
@@ -76,7 +76,7 @@ async fn every_self_acting_verb_defaults_to_or_takes_none() {
 }
 
 #[tokio::test]
-async fn stop_with_no_job_is_the_callers_own_session_and_needs_confirm() {
+async fn stop_with_no_to_is_the_callers_own_session_and_needs_confirm() {
     let fx = Fx::new();
     let out = fx.run("stop", json!({"_caller_pid": ME})).await;
     assert_eq!(out["kind"], "self", "{out}");
@@ -115,7 +115,7 @@ async fn a_claim_that_calls_back_into_reflection_does_not_hang() {
             let who = app.handle("session_of", &crate::caller::Frame::default(), &json!({"pid": pid})).await;
             assert_eq!(who["session_id"], json!(new_id()), "{who}");
             app.handle("waits", &crate::caller::Frame::default(), &json!({})).await;
-            app.record_trust(&third(), "cooperative", "test", None).await;
+            app.record_trust(&third(), "cooperative", "test").await;
             app.open_tickets().await;
             who
         })
@@ -131,7 +131,7 @@ async fn a_claim_that_calls_back_into_reflection_does_not_hang() {
 async fn concurrent_trust_records_lose_none() {
     let fx = Fx::new();
     let ids: Vec<String> = (0..16).map(|i| format!("cc{i:032x}")).collect();
-    join_all(ids.iter().map(|sid| fx.app.record_trust(sid, "cooperative", "test", None))).await;
+    join_all(ids.iter().map(|sid| fx.app.record_trust(sid, "cooperative", "test"))).await;
     let data = fx.trust_file().await;
     assert!(ids.iter().all(|sid| data.get(sid).is_some()), "{data}");
 }
@@ -224,14 +224,15 @@ async fn the_sender_prefix_comes_from_the_stamps_only() {
     let fx = Fx::new();
     fx.cc().set("j2", peer_row());
     let claim = |c: Value| Frame::from_args(&json!({"_caller_session": c}), Some("peer:far"), None);
+    let me = |text: &str| format!("from me@here [{}]: {text}", my_id());
     let cases = [
-        (Frame::from_args(&json!({"_caller_pid": ME}), None, None), "hi", "from me@here [job j1]: hi"),
-        (Frame::from_args(&json!({"_caller_pid": ME}), None, None), "from tony@x: hi", "from me@here [job j1]: from tony@x: hi"),
-        (claim(json!({"session_id": "cc12", "node": "far", "job": "jf", "name": "one"})), "hi", "from one@far [job jf]: hi"),
-        (claim(json!({"session_id": "cc12", "node": "far", "job": "jf"})), "hi", "from jf@far: hi"),
-        (Frame::from_args(&json!({}), None, Some("social")), "hi", "from social@here: hi"),
-        (Frame::from_args(&json!({"_caller_plugin": "forged", "name": "forged"}), None, None), "hi", "from shell@here: hi"),
-        (Frame::from_args(&json!({"_caller_pid": ME}), None, None), "/clear", "/clear"),
+        (Frame::from_args(&json!({"_caller_pid": ME}), None, None), "hi", me("hi")),
+        (Frame::from_args(&json!({"_caller_pid": ME}), None, None), "from tony@x: hi", me("from tony@x: hi")),
+        (claim(json!({"session_id": "cc12", "node": "far", "name": "one"})), "hi", "from one@far [cc12]: hi".to_string()),
+        (claim(json!({"session_id": "cc12", "node": "far"})), "hi", "from cc12@far: hi".to_string()),
+        (Frame::from_args(&json!({}), None, Some("social")), "hi", "from social@here: hi".to_string()),
+        (Frame::from_args(&json!({"_caller_plugin": "forged", "name": "forged"}), None, None), "hi", "from shell@here: hi".to_string()),
+        (Frame::from_args(&json!({"_caller_pid": ME}), None, None), "/clear", "/clear".to_string()),
     ];
     for (frame, text, want) in cases {
         assert_eq!(typed(&fx, frame, text).await, want);
@@ -243,7 +244,7 @@ async fn a_to_is_an_id_or_a_whole_name_and_an_ambiguous_name_lists_the_ids() {
     let fx = Fx::new();
     let ids = [new_id(), new_id()];
     for (job, sid) in ["j3", "j4"].iter().zip(&ids) {
-        fx.cc().set(job, json!({"session_id": sid, "name": "Dup", "pid": 88, "job": job}));
+        fx.cc().set(job, json!({"session_id": sid, "name": "Dup", "pid": 88}));
     }
     let out = fx.run("message", json!({"to": {"name": "dup"}, "text": "hi"})).await;
     assert!(refused(&out) && ids.iter().all(|i| out.to_string().contains(i.as_str())), "{out}");
@@ -252,7 +253,7 @@ async fn a_to_is_an_id_or_a_whole_name_and_an_ambiguous_name_lists_the_ids() {
         let out = fx.run("message", json!({"to": bad, "text": "hi"})).await;
         assert!(refused(&out) && fx.cc().calls_of("send").is_empty(), "{bad}: {out}");
     }
-    fx.cc().set("j5", json!({"session_id": new_id(), "name": "solo", "pid": 89, "job": "j5"}));
+    fx.cc().set("j5", json!({"session_id": new_id(), "name": "solo", "pid": 89}));
     assert!(ok(&fx.run("message", json!({"to": {"name": "SOLO"}, "text": "hi"})).await));
 }
 
@@ -267,7 +268,7 @@ async fn each_lifecycle_kind_emits_once_and_keeps_no_ledger_row() {
     *fx.node.projects.lock().unwrap() = tmp.path().to_path_buf();
     let cwd = tmp.path().join("awm/redux-x/core").display().to_string();
     for kind in LIFECYCLE {
-        let event = json!({"session_id": my_id(), "kind": kind, "job": "j1", "name": "n", "cwd": cwd, "session_kind": "bg", "rc_url": "u",
+        let event = json!({"session_id": my_id(), "kind": kind, "name": "n", "cwd": cwd, "session_kind": "bg", "rc_url": "u",
                            "state": "blocked", "needs": "pick", "retired": true});
         assert!(ok(&fx.run("harness_event", event).await));
     }

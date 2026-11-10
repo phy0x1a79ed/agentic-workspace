@@ -13,7 +13,7 @@ use crate::hub::{CallOpts, Hub};
 use crate::supervise::{SubscriptionOpts, SupervisedSubscription};
 
 /// The session `pid` belongs to, or None when it is none or reflection cannot answer. The record
-/// carries `session_id` (R9), `name`, `job`, `hosting` (`background` or `terminal`), `pid`,
+/// carries `session_id` (R9), `name`, `hosting` (`background` or `terminal`), `pid`,
 /// `cwd` and `harness`.
 pub async fn session_of(hub: &Hub, pid: u32) -> Option<Value> {
     if pid == 0 {

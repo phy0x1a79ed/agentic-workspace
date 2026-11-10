@@ -20,7 +20,7 @@ pub struct Frame {
     /// `_caller_session_id`: an isolated session's R9 id, which has no host pid. Read before
     /// `pid`.
     pub session_id: Option<String>,
-    /// `_caller_session`: a door-verified session on another node, `{session_id, node, job?, name?}`.
+    /// `_caller_session`: a door-verified session on another node, `{session_id, node, name?}`.
     pub claim: Option<Value>,
     /// `_caller_plugin`: the calling plugin's service, from the call frame alone.
     pub plugin: Option<String>,
@@ -78,12 +78,12 @@ impl Frame {
     }
 }
 
-/// A session's prefix. A session with no name goes by its job id.
-fn sender_prefix(name: Option<&str>, job: Option<&str>, session_id: Option<&str>, node: &str) -> String {
-    match (name, job.or(session_id)) {
-        (Some(n), Some(j)) => format!("from {n}@{node} [job {j}]: "),
+/// A session's prefix. A session with no name goes by its session id.
+fn sender_prefix(name: Option<&str>, session_id: Option<&str>, node: &str) -> String {
+    match (name, session_id) {
+        (Some(n), Some(id)) => format!("from {n}@{node} [{id}]: "),
         (Some(n), None) => format!("from {n}@{node}: "),
-        (None, Some(j)) => format!("from {j}@{node}: "),
+        (None, Some(id)) => format!("from {id}@{node}: "),
         (None, None) => format!("from shell@{node}: "),
     }
 }
@@ -122,14 +122,14 @@ impl<G: Gateway> App<G> {
     /// Who the line is from, built from the gateway's stamps alone.
     async fn sender(&self, frame: &Frame) -> String {
         if let Some(c) = &frame.claim {
-            return sender_prefix(text(c, "name"), text(c, "job"), text(c, "session_id"), text(c, "node").unwrap_or("unknown"));
+            return sender_prefix(text(c, "name"), text(c, "session_id"), text(c, "node").unwrap_or("unknown"));
         }
         let node = self.node.name();
         if let Some(plugin) = &frame.plugin {
             return format!("from {plugin}@{}: ", frame.plugin_node.as_deref().unwrap_or(&node));
         }
         match self.actor(frame).await {
-            Some(who) => sender_prefix(text(&who, "name"), text(&who, "job"), text(&who, "session_id"), &node),
+            Some(who) => sender_prefix(text(&who, "name"), text(&who, "session_id"), &node),
             None => format!("from shell@{node}: "),
         }
     }

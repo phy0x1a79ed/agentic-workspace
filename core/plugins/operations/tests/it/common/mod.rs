@@ -168,11 +168,11 @@ pub struct FakeOutside {
 }
 
 impl FakeOutside {
-    /// pid 11 is session A (job-a, fix-tunnel); pid 22 is session B (job-b, other).
+    /// pid 11 is session A (fix-tunnel); pid 22 is session B (other).
     pub fn new() -> Arc<FakeOutside> {
         let pids = HashMap::from([
-            (11, json!({"ok": true, "session_id": A, "job": "job-a", "name": "fix-tunnel"})),
-            (22, json!({"ok": true, "session_id": B, "job": "job-b", "name": "other"})),
+            (11, json!({"ok": true, "session_id": A, "name": "fix-tunnel"})),
+            (22, json!({"ok": true, "session_id": B, "name": "other"})),
         ]);
         Arc::new(FakeOutside { pids: Mutex::new(pids), told: Mutex::new(vec![]), dms: Mutex::new(vec![]), asks: Mutex::new(vec![]), ask_fails: Mutex::new(false), reach: Mutex::default(), reaches: Mutex::default(), roster: Mutex::default(), seated: Mutex::default() })
     }

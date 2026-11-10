@@ -121,7 +121,7 @@ pub fn pick_caller(pid: Option<u32>, answers: &[(Provider, Value)]) -> Result<(P
     let Some(pid) = pid else {
         return Err(HarnessError::Failed(
             "could not tell which session is calling, so there is no session of your own to act on. Call through a \
-             session's own `awm mcp` proxy, or name a session with `job`"
+             session's own `awm mcp` proxy, or name a session with `to`"
                 .into(),
         ));
     };

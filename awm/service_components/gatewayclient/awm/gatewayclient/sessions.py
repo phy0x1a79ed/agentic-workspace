@@ -12,7 +12,7 @@ def session_of(pid: Any, *, timeout: float = 10.0) -> Optional[dict]:
     """The session that ``pid`` belongs to, or None when it is none or reflection is down.
 
     The record carries ``session_id`` (R9), ``claude_session_id`` for a Claude Code
-    session, ``name``, ``job``, ``hosting`` (``background`` or ``terminal``), ``pid``,
+    session, ``name``, ``hosting`` (``background`` or ``terminal``), ``pid``,
     ``proc_start``, ``cwd`` and ``harness``.
     """
     if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:

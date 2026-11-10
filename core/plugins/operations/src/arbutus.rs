@@ -181,7 +181,7 @@ impl Approvals {
     }
 
     /// Freeze the named bundle, post it, and record the request. Grants nothing.
-    pub async fn open(&self, bundle: &str, agent: &str, node: &str, job: &str, session: &str) -> Result<Value, String> {
+    pub async fn open(&self, bundle: &str, agent: &str, node: &str, session: &str) -> Result<Value, String> {
         let Some((account, channel)) = approval_channel() else { return Err("this node has no approval channel: set AWM_APPROVAL_CHANNEL".into()) };
         if !valid_name(bundle) {
             return Err("bundle must name a bundle file: letters, digits, '.', '_' and '-'".into());
@@ -207,7 +207,7 @@ impl Approvals {
         std::fs::copy(&src, &copy).map_err(|e| e.to_string())?;
         let mut req = json!({
             "ref": r, "name": bundle, "sha256": sha256_file(&copy).map_err(|e| e.to_string())?,
-            "agent": agent, "node": node, "job": job, "session": session, "task": null, "account": account, "channel": channel,
+            "agent": agent, "node": node, "session": session, "task": null, "account": account, "channel": channel,
             "post_ts": "", "created": crate::now(), "state": "pending",
         });
         if let (Some(m), Value::Object(p)) = (req.as_object_mut(), parsed) {

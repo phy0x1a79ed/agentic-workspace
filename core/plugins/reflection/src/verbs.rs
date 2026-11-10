@@ -26,7 +26,7 @@ pub const LIFECYCLE: [&str; 5] = ["started", "stopped", "remote_control", "renam
 /// The emit topic of the session lifecycle, `reflection/sessions`.
 pub const SESSIONS_TOPIC: &str = "sessions";
 /// The keys every `list_other` row carries, null when its provider gave none.
-pub const ROW_KEYS: [&str; 9] = ["job", "session_id", "parent", "state", "live", "alive", "kind", "name", "transcript"];
+pub const ROW_KEYS: [&str; 8] = ["session_id", "parent", "state", "live", "alive", "kind", "name", "transcript"];
 
 
 const NO_MODEL: &str = "model and effort are required, with no default. Pick both to fit the task: a smaller model and \
@@ -237,7 +237,7 @@ impl<G: Gateway> App<G> {
         }
     }
 
-    // --- a session named by `job`, or the caller's own --------------------------------
+    // --- a session named by `to`, or the caller's own --------------------------------
 
     /// The target `named` as its harness describes it, or `named` with `known: false`.
     async fn described(&self, p: &Provider, named: &Map<String, Value>) -> Value {
@@ -294,7 +294,7 @@ impl<G: Gateway> App<G> {
                 if !confirm {
                     return Ok(json!({"ok": false, "reason": OWN_STOP, "kind": "self"}));
                 }
-                // Named by its id, so the provider finds the job and sees the caller stop itself.
+                // Named by its id, so the provider sees the caller stop itself.
                 let named = json!({"session_id": who.get("session_id"), "pid": frame.pid_value()});
                 (p, object(&named))
             }
@@ -355,8 +355,7 @@ impl<G: Gateway> App<G> {
         let mut claim = json!("unavailable");
         let mut warning = None;
         if let (Some((project, scope)), false) = (&place, sid.is_empty()) {
-            let ask = json!({"project": project, "scope": scope, "session_id": sid, "pid": before.get("pid"),
-                             "job": before.get("job"), "terminal": interactive});
+            let ask = json!({"project": project, "scope": scope, "session_id": sid, "pid": before.get("pid"), "terminal": interactive});
             if let Some(got) = self.scopes_call("claim", ask).await {
                 if !ok_or_absent(&got) && !truthy(got.get("claimed")) {
                     let why = text(&got, "reason").map(str::to_string);
@@ -456,7 +455,7 @@ impl<G: Gateway> App<G> {
                 Some(a) => format!("session:{}", shown(a.get("session_id"))),
                 None => frame.as_.clone().filter(|a| !a.is_empty()).unwrap_or_else(|| "service".into()),
             };
-            self.record_trust(&sid, &level, &origin, text(&out, "job")).await;
+            self.record_trust(&sid, &level, &origin).await;
             out["trust"] = json!(level);
         }
         if let Some(parent) = actor.as_ref().and_then(|a| text(a, "session_id")) {
@@ -477,7 +476,7 @@ impl<G: Gateway> App<G> {
                 Value::Null
             }
         };
-        let ask = json!({"project": project, "scope": scope, "session_id": sid, "pid": new_pid, "job": out.get("job")});
+        let ask = json!({"project": project, "scope": scope, "session_id": sid, "pid": new_pid});
         let Some(got) = self.scopes_call("claim", ask).await else { return merged(&out, &json!({"claim": "unavailable"})) };
         if ok_or_absent(&got) || truthy(got.get("claimed")) {
             return merged(&out, &json!({"claim": got}));
@@ -491,7 +490,7 @@ impl<G: Gateway> App<G> {
             }
         };
         let why = text(&got, "reason").map_or_else(|| format!("{project}/{scope} is held by {}", shown(got.get("holder"))), str::to_string);
-        let stopped = if stopped { out.get("job").cloned().unwrap_or(Value::Null) } else { Value::Null };
+        let stopped = if stopped { json!(sid) } else { Value::Null };
         json!({"ok": false, "claim": got, "stopped": stopped, "reason": why})
     }
 
@@ -533,7 +532,7 @@ impl<G: Gateway> App<G> {
         // `trust` is the recorded level, or the row's own for a session with no record.
         let data = self.trust_data().await;
         for r in rows.iter_mut() {
-            let level = recorded_in(&data, text(r, "session_id"), text(r, "job"));
+            let level = recorded_in(&data, text(r, "session_id"));
             r["trust"] = level.map_or_else(|| r.get("trust").cloned().unwrap_or(Value::Null), |l| json!(l));
             if let Some(link) = text(r, "link").map(str::to_string) {
                 r["rc_url"] = json!(link);
@@ -639,19 +638,19 @@ impl<G: Gateway> App<G> {
             return Ok(json!({"ok": true, "waiting": false, "until": until,
                              "reason": "every session in until has already retired; carry on"}));
         }
-        let job = text(&who, "job").map(str::to_string);
+        let kept = text(&who, "hosting") == Some("background");
         let row = self
             .add_wait(NewWait {
                 session_id: sid.clone(),
                 until,
                 tool: p.tool.clone(),
-                job: job.clone(),
+                kept,
                 name: text(&who, "name").unwrap_or_default().into(),
                 cwd: text(&who, "cwd").map(str::to_string),
                 retired: already,
             })
             .await;
-        if job.is_none() {
+        if !kept {
             return Ok(json!({"ok": true, "waiting": true, "until": row["until"], "retired": row["retired"],
                              "terminal": true, "note": TERMINAL_WAIT}));
         }
@@ -708,7 +707,7 @@ impl<G: Gateway> App<G> {
         let place = self.scope_of(event.get("cwd").and_then(Value::as_str)).await;
         let (project, scope) = place.map_or((None, None), |(p, s)| (Some(p), Some(s)));
         let ts = chrono::DateTime::from_timestamp_millis(self.node.now_ms()).map(|t| t.to_rfc3339());
-        let mut out = json!({"event": field("kind"), "job": field("job"), "session_id": field("session_id"), "name": field("name"),
+        let mut out = json!({"event": field("kind"), "session_id": field("session_id"), "name": field("name"),
                              "node": self.node.name(), "project": project, "scope": scope, "kind": field("session_kind"), "ts": ts});
         for key in ["task_id", "rc_url", "state", "needs", "retired", "pool"] {
             if let Some(v) = event.get(key).filter(|v| truthy(Some(v))) {

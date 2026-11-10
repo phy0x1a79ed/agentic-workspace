@@ -163,7 +163,7 @@ impl Sessions {
             }
             if let Some(fork_id) = self.procs.environ(p).get("DSH_SESSION_ID").filter(|v| !v.is_empty()) {
                 return json!({"ok": true, "mine": true, "session_id": r9(fork_id), "hosting": "web",
-                              "fork_session_id": fork_id, "pid": p, "job": null});
+                              "fork_session_id": fork_id, "pid": p});
             }
             pid = self.procs.ppid(p) as i64;
             seen += 1;
@@ -189,7 +189,7 @@ impl Sessions {
         if let [row] = running.as_slice() {
             return json!({"ok": true, "mine": true, "session_id": row["session_id"], "hosting": "web",
                           "fork_session_id": row["fork_session_id"], "name": row["name"], "cwd": row["cwd"],
-                          "pid": fork_pid, "job": null});
+                          "pid": fork_pid});
         }
         json!({"ok": true, "mine": true, "session_id": null,
                "error": format!("the call came through the DeepSeek harness's one MCP client, which carries no session id, \
@@ -291,7 +291,7 @@ impl Sessions {
         if let Some(prompt) = nonempty(args.get("prompt")) {
             self.send(&row, prompt).await?;
         }
-        Ok(json!({"ok": true, "session_id": row["session_id"], "fork_session_id": fork_id, "job": null,
+        Ok(json!({"ok": true, "session_id": row["session_id"], "fork_session_id": fork_id,
                   "name": args.get("name").cloned().unwrap_or(Value::Null), "cwd": cwd}))
     }
 
@@ -299,7 +299,7 @@ impl Sessions {
         if let Some(p) = prompt.filter(|p| !p.is_empty()) {
             self.send(row, p).await?;
         }
-        Ok(json!({"ok": true, "session_id": row["session_id"], "job": null, "live": true}))
+        Ok(json!({"ok": true, "session_id": row["session_id"], "live": true}))
     }
 
     async fn events_since(&self, fork_id: &str, seq: Option<i64>) -> Result<Vec<Value>, ForkError> {

@@ -21,7 +21,7 @@ pub const TITLE_CHARS: usize = 80;
 /// What the front asks of other plugins. Each degrades: a missing answer is no session, no
 /// notice or no DM, never a failed call.
 pub trait Outside: Send + Sync {
-    /// The session behind a pid on this node: `{session_id, job, name}`.
+    /// The session behind a pid on this node: `{session_id, name}`.
     fn session_of(&self, pid: u32) -> BoxFut<'_, Option<Value>>;
     /// Whether the session is the agent of a seat on this node. A seat never gets a card. False
     /// when seats gives no answer.
@@ -34,7 +34,7 @@ pub trait Outside: Send + Sync {
     fn dm_tony<'a>(&'a self, text: &'a str) -> BoxFut<'a, bool>;
     /// Turn a session's Remote Control on, when it is off, and say how it can be reached.
     fn reach<'a>(&'a self, node: &'a str, session: &'a str) -> BoxFut<'a, Reach>;
-    /// Each job the roster holds on a node, with its claude.ai link. None when the roster has
+    /// Each session the roster holds on a node, with its claude.ai link. None when the roster has
     /// no answer for that node.
     fn links<'a>(&'a self, node: &'a str) -> BoxFut<'a, Option<HashMap<String, Option<String>>>>;
 }
@@ -50,8 +50,13 @@ pub enum Reach {
 
 const RC_PENDING: &str = "rc:";
 
-fn rc_key(node: &str, job: &str) -> String {
-    format!("{RC_PENDING}{node}:{job}")
+fn rc_key(node: &str, session: &str) -> String {
+    format!("{RC_PENDING}{node}:{session}")
+}
+
+/// The name `claude attach` takes for a session, when it is a Claude Code one.
+fn attach_name(session: &str) -> Option<String> {
+    awm_plugin_sdk::ids::SessionId::parse(session).ok()?.job_dir().map(str::to_string)
 }
 
 /// Who is calling, from the gateway's stamps.
@@ -75,7 +80,6 @@ impl Stamp {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Caller {
     pub session_id: Option<String>,
-    pub job: Option<String>,
     pub name: Option<String>,
     /// The session's own node, when it is not this one.
     pub node: Option<String>,
@@ -188,7 +192,6 @@ impl Front {
             let node = str_of(c, "node");
             return Caller {
                 session_id: str_of(c, "session_id").map(|s| norm(&s)),
-                job: str_of(c, "job"),
                 name: str_of(c, "name"),
                 node: node.filter(|n| *n != self.node),
             };
@@ -196,38 +199,20 @@ impl Front {
         let service = || Caller { node: stamp.peer.clone().filter(|n| *n != self.node), ..Caller::default() };
         let Some(pid) = stamp.pid else { return service() };
         let Some(rec) = self.outside.session_of(pid).await else { return service() };
-        Caller { session_id: str_of(&rec, "session_id").map(|s| norm(&s)), job: str_of(&rec, "job"), name: str_of(&rec, "name"), node: None }
+        Caller { session_id: str_of(&rec, "session_id").map(|s| norm(&s)), name: str_of(&rec, "name"), node: None }
     }
 
-    fn job_key(&self, c: &Caller) -> String {
-        match &c.node {
-            Some(n) => format!("job:{n}:{}", c.job.clone().unwrap_or_default()),
-            None => format!("job:{}", c.job.clone().unwrap_or_default()),
-        }
-    }
-
-    async fn caller(&self, stamp: &Stamp) -> Caller {
-        let c = self.identify(stamp).await;
-        if let (Some(_), Some(s)) = (&c.job, &c.session_id) {
-            self.relay.set_mark(&self.job_key(&c), s);
-        }
-        c
-    }
-
-    /// The node and job a write records for the caller's session.
+    /// The node a write records for the caller's session.
     fn whereabouts(c: &Caller) -> Value {
         let mut m = Map::new();
         if let Some(n) = &c.node {
             m.insert("node".into(), json!(n));
         }
-        if let Some(j) = &c.job {
-            m.insert("job".into(), json!(j));
-        }
         Value::Object(m)
     }
 
     async fn session(&self, args: &Value, stamp: &Stamp, required: bool) -> Result<(Option<String>, Caller), String> {
-        let c = self.caller(stamp).await;
+        let c = self.identify(stamp).await;
         let session = str_of(args, "session_id").map(|s| norm_arg(&s)).transpose()?.or_else(|| c.session_id.clone());
         if required && session.is_none() {
             return Err("no calling session: pass session_id".into());
@@ -236,7 +221,7 @@ impl Front {
     }
 
     async fn own(&self, args: &Value, stamp: &Stamp) -> Result<Caller, String> {
-        let c = self.caller(stamp).await;
+        let c = self.identify(stamp).await;
         let Some(sid) = c.session_id.clone() else { return Err("this verb is for a running session: no calling session".into()) };
         if let Some(given) = str_of(args, "session_id") {
             if norm_arg(&given)? != sid {
@@ -377,7 +362,7 @@ impl Front {
         if kind == "blocked" && a.get("urgent") == Some(&json!(true)) {
             let node = c.node.clone().unwrap_or_else(|| self.node.clone());
             let who = c.name.clone().unwrap_or_else(|| task_id.clone());
-            let attach = c.job.clone().or_else(|| c.name.clone()).unwrap_or_else(|| "<job>".into());
+            let attach = c.session_id.as_deref().and_then(attach_name).or_else(|| c.name.clone()).unwrap_or_else(|| "<session>".into());
             let message = format!("**{who}** on **{node}** needs you.\n{text}\nCard {task_id}. Attach: `claude attach {attach}` on {node}");
             out["notified"] = json!(self.outside.dm(&message).await);
             self.relay.set_mark(&format!("remind:{task_id}"), &json!({"due": (self.clock)() + self.remind_s, "text": message}).to_string());
@@ -387,7 +372,7 @@ impl Front {
 
     async fn ask_by_dm(&self, kind: &str, text: &str, c: &Caller) -> Answer {
         let node = c.node.as_deref().unwrap_or(&self.node);
-        let key = c.job.as_ref().map(|job| rc_key(node, job));
+        let key = c.session_id.as_ref().map(|session| rc_key(node, session));
         if let Some(k) = &key {
             self.asking.lock().unwrap().insert(k.clone());
         }
@@ -402,14 +387,14 @@ impl Front {
     }
 
     async fn send_ask(&self, kind: &str, text: &str, c: &Caller, node: &str) -> Answer {
-        let who = c.name.as_deref().or(c.job.as_deref()).unwrap_or("A service");
-        let reach = match (&c.job, &c.session_id) {
-            (Some(job), Some(session)) => self.turn_on_rc(node, job, session, who).await,
-            _ => Reach::Unavailable,
+        let who = c.name.as_deref().unwrap_or("A service");
+        let reach = match &c.session_id {
+            Some(session) => self.turn_on_rc(node, session, who).await,
+            None => Reach::Unavailable,
         };
         let need = if kind == "review" { "has something for you to review" } else { "needs you" };
         let mut message = format!("**{who}** on **{node}** {need}.\n{text}");
-        let attach = c.job.as_ref().map(|job| format!("\nAttach: `claude attach {job}` on {node}")).unwrap_or_default();
+        let attach = c.session_id.as_deref().and_then(attach_name).map(|job| format!("\nAttach: `claude attach {job}` on {node}")).unwrap_or_default();
         let (link, note) = match &reach {
             Reach::Link(url) => {
                 message.push_str(&format!("\n{url}"));
@@ -436,14 +421,14 @@ impl Front {
 
     /// The pending mark goes first, so a second call in the same turn types no second `/rc`:
     /// that one would land on a connected session and open its disconnect modal.
-    async fn turn_on_rc(&self, node: &str, job: &str, session: &str, who: &str) -> Reach {
-        let key = rc_key(node, job);
+    async fn turn_on_rc(&self, node: &str, session: &str, who: &str) -> Reach {
+        let key = rc_key(node, session);
         if self.relay.mark(&key).is_some() {
             return Reach::Connecting;
         }
         self.relay.set_mark(&key, who);
         let reach = match self.outside.reach(node, session).await {
-            Reach::Connecting => self.link_soon(node, job).await.map_or(Reach::Connecting, Reach::Link),
+            Reach::Connecting => self.link_soon(node, session).await.map_or(Reach::Connecting, Reach::Link),
             other => other,
         };
         if reach != Reach::Connecting {
@@ -452,14 +437,14 @@ impl Front {
         reach
     }
 
-    async fn link_soon(&self, node: &str, job: &str) -> Option<String> {
+    async fn link_soon(&self, node: &str, session: &str) -> Option<String> {
         let deadline = tokio::time::Instant::now() + self.link_wait;
         loop {
             let moved = self.roster_moved.notified();
             tokio::pin!(moved);
             moved.as_mut().enable();
             let links = tokio::time::timeout_at(deadline, self.outside.links(node)).await.ok()?;
-            if let Some(url) = links.and_then(|mut links| links.remove(job)).flatten() {
+            if let Some(url) = links.and_then(|mut links| links.remove(session)).flatten() {
                 return Some(url);
             }
             tokio::time::timeout_at(deadline, moved).await.ok()?;
@@ -476,12 +461,12 @@ impl Front {
             if self.asking.lock().unwrap().contains(&key) {
                 continue;
             }
-            let Some((node, job)) = key.strip_prefix(RC_PENDING).and_then(|k| k.split_once(':')) else { continue };
+            let Some((node, session)) = key.strip_prefix(RC_PENDING).and_then(|k| k.split_once(':')) else { continue };
             if !rosters.contains_key(node) {
                 rosters.insert(node.to_string(), self.outside.links(node).await);
             }
             let Some(links) = &rosters[node] else { continue };
-            if let Some(link) = links.get(job) {
+            if let Some(link) = links.get(session) {
                 let Some(url) = link else { continue };
                 if !self.outside.dm_tony(&format!("**{who}** on **{node}**: Remote Control is on.\n{url}")).await {
                     continue;
@@ -527,9 +512,9 @@ impl Front {
 
     async fn arbutus_open(&self, a: &Value, session: Option<&str>, c: &Caller) -> Answer {
         let Some(arb) = self.arbutus.clone() else { return Err("this node takes no admin approvals".into()) };
-        let agent = c.name.clone().or_else(|| c.job.clone()).unwrap_or_else(|| "a session".into());
+        let agent = c.name.clone().unwrap_or_else(|| "a session".into());
         let node = c.node.clone().unwrap_or_else(|| self.node.clone());
-        let req = arb.open(&str_of(a, "bundle").unwrap_or_default(), &agent, &node, c.job.as_deref().unwrap_or(""), session.unwrap_or("")).await?;
+        let req = arb.open(&str_of(a, "bundle").unwrap_or_default(), &agent, &node, session.unwrap_or("")).await?;
         let (name, r) = (req["name"].as_str().unwrap_or_default(), req["ref"].as_str().unwrap_or_default().to_string());
         let reason = format!("Admin approval {name} (ref {r}) waits for Tony or Ryan in Slack.");
         let task_id = self.card_for(session, c, &reason).await?;
@@ -588,16 +573,12 @@ impl Front {
         Ok(json!({"ok": true, "tracked": true, "task_id": task_id}))
     }
 
-    /// A /clear gave the job a new session id. The new one takes the old one's place and role
-    /// on its card, so the job keeps one card.
-    pub async fn hook_session_clear(&self, st: &Stamp) -> Answer {
+    /// A /clear gave a session a new id. The new one takes the place and role of `parent`, the
+    /// id before the clear, on its card, so the session keeps one card.
+    pub async fn hook_session_clear(&self, a: &Value, st: &Stamp) -> Answer {
         let c = self.identify(st).await;
-        let (Some(_), Some(sid)) = (&c.job, &c.session_id) else { return Ok(json!({"ok": true, "ended": null})) };
-        let new = norm_arg(sid)?;
-        let key = self.job_key(&c);
-        let seen = self.relay.mark(&key);
-        let old = [seen, Some(sid.clone())].into_iter().flatten().find(|s| !s.is_empty() && *s != new);
-        self.relay.set_mark(&key, &new);
+        let (Some(sid), Some(parent)) = (&c.session_id, str_of(a, "parent")) else { return Ok(json!({"ok": true, "ended": null})) };
+        let (new, old) = (norm_arg(sid)?, Some(norm_arg(&parent)?).filter(|p| *p != norm(sid)));
         let Some(task_id) = self.task_of(old.as_deref()).await? else { return Ok(json!({"ok": true, "ended": null})) };
         let old = old.unwrap_or_default();
         let sessions = unwrap_stale(self.relay.read("task_sessions", json!({"task_id": task_id})).await.map_err(err)?);
@@ -641,7 +622,7 @@ impl Front {
     // -- approvals (fleet.md R97) -----------------------------------------------------------
 
     pub async fn approval_request(&self, a: &Value, st: &Stamp) -> Answer {
-        let c = self.caller(st).await;
+        let c = self.identify(st).await;
         let out = self.relay.write("approval_request", json!({
             "kind": a.get("kind"), "node": a.get("node"), "reason": a.get("reason").cloned().unwrap_or(json!("")),
             "minutes": a.get("minutes").cloned().unwrap_or(json!(15)), "payload": a.get("payload"), "session_id": c.session_id,
@@ -711,7 +692,7 @@ impl Front {
             "request_human" => self.request_human(args, st).await,
             "hook_plan_approved" => self.hook_plan_approved(args, st).await,
             "hook_todos" => self.hook_todos(args, st).await,
-            "hook_session_clear" => self.hook_session_clear(st).await,
+            "hook_session_clear" => self.hook_session_clear(args, st).await,
             "claim_task" => self.claim_task(args, st).await,
             "track_task" => self.track_task(args, st).await,
             "swarm_message_post" => self.swarm_message_post(args, st).await,

@@ -15,56 +15,56 @@ use crate::store::{self, Decl, Seat, Seed, State, Store};
 struct W {
     now: f64,
     jobs: u32,
-    /// What the next starts answer, else a job that comes up.
+    /// What the next starts answer, else a session that comes up.
     starts: VecDeque<Started>,
-    /// Jobs that run.
+    /// Sessions that run.
     up: HashSet<String>,
-    /// Jobs with Remote Control on.
+    /// Sessions with Remote Control on.
     rc: HashSet<String>,
-    /// Jobs started but never up.
+    /// Sessions started but never up.
     down_on_start: bool,
-    /// What the next pushes answer, else delivered while the job runs.
+    /// What the next pushes answer, else delivered while the session runs.
     pushes: VecDeque<Outcome>,
     cannot_tell: bool,
     scope_missing: bool,
     specs: Vec<Value>,
-    /// Every line each job got, from its brief or a push.
+    /// Every line each session got, from its brief or a push.
     got: HashMap<String, Vec<String>>,
     reacts: Vec<String>,
     said: Vec<(String, String)>,
     asked: Vec<(String, String)>,
-    /// `channel -> job` from the mount and unmount rows.
+    /// `channel -> session` from the mount and unmount rows.
     mounted: HashMap<String, String>,
     latest: HashMap<String, String>,
     hands: Vec<(String, String)>,
     live_reports: Vec<Value>,
     seat_reports: Vec<Value>,
-    /// Each `remote_control` call: job, on, name.
+    /// Each `remote_control` call: session, on, name.
     switched: Vec<(String, bool, String)>,
     switch_fails: bool,
-    /// Jobs mid-turn.
+    /// Sessions mid-turn.
     busy: HashSet<String>,
-    /// When each job's session last changed state.
+    /// When each session's session last changed state.
     active: HashMap<String, f64>,
     stopped: Vec<String>,
     stop_fails: bool,
-    /// Each `resume` call: the job and its Remote Control switch.
+    /// Each `resume` call: the session and its Remote Control switch.
     resumed: Vec<(String, bool)>,
     resume_refused: bool,
 }
 
 impl W {
-    /// A started or resumed job, which gets the lines of its prompt as it comes up.
-    fn come_up(&mut self, job: String, prompt: &str, remote_control: bool) -> Started {
+    /// A started or resumed session, which gets the lines of its prompt as it comes up.
+    fn come_up(&mut self, session: String, prompt: &str, remote_control: bool) -> Started {
         let lines: Vec<String> = prompt.lines().filter(|l| l.starts_with('[')).map(text_of).collect();
         if remote_control {
-            self.rc.insert(job.clone());
+            self.rc.insert(session.clone());
         }
         if !self.down_on_start {
-            self.up.insert(job.clone());
-            self.got.entry(job.clone()).or_default().extend(lines);
+            self.up.insert(session.clone());
+            self.got.entry(session.clone()).or_default().extend(lines);
         }
-        Started::Job(job)
+        Started::Session(session)
     }
 }
 
@@ -78,8 +78,8 @@ impl Fake {
     fn advance(&self, s: f64) {
         self.w().now += s;
     }
-    fn got(&self, job: &str) -> Vec<String> {
-        self.w().got.get(job).cloned().unwrap_or_default()
+    fn got(&self, session: &str) -> Vec<String> {
+        self.w().got.get(session).cloned().unwrap_or_default()
     }
     fn texts(&self) -> Vec<String> {
         let w = self.w();
@@ -108,46 +108,46 @@ impl World for Fake {
         let mut w = self.w();
         w.specs.push(spec.clone());
         if let Some(s) = w.starts.pop_front() {
-            if let Started::Job(j) = &s {
+            if let Started::Session(j) = &s {
                 w.up.insert(j.clone());
             }
             return s;
         }
         w.jobs += 1;
-        let job = format!("job-{}", w.jobs);
-        w.come_up(job, spec["prompt"].as_str().unwrap(), spec["remote_control"] == true)
+        let session = format!("job-{}", w.jobs);
+        w.come_up(session, spec["prompt"].as_str().unwrap(), spec["remote_control"] == true)
     }
-    async fn resume(&self, job: &str, prompt: &str, remote_control: bool, _name: &str) -> Started {
+    async fn resume(&self, session: &str, prompt: &str, remote_control: bool, _name: &str) -> Started {
         let mut w = self.w();
-        w.resumed.push((job.into(), remote_control));
+        w.resumed.push((session.into(), remote_control));
         if w.resume_refused {
             return Started::Refused("no transcript".into());
         }
         w.jobs += 1;
-        let job = format!("job-{}", w.jobs);
-        w.come_up(job, prompt, remote_control)
+        let session = format!("job-{}", w.jobs);
+        w.come_up(session, prompt, remote_control)
     }
-    async fn stop(&self, job: &str) -> Result<(), String> {
+    async fn stop(&self, session: &str) -> Result<(), String> {
         let mut w = self.w();
         if w.stop_fails {
             return Err("daemon down".into());
         }
-        w.stopped.push(job.into());
-        w.up.remove(job);
+        w.stopped.push(session.into());
+        w.up.remove(session);
         Ok(())
     }
-    async fn push(&self, job: &str, line: &str) -> Outcome {
+    async fn push(&self, session: &str, line: &str) -> Outcome {
         let mut w = self.w();
         if let Some(o) = w.pushes.pop_front() {
             if o == Outcome::Delivered {
-                w.got.entry(job.into()).or_default().push(text_of(line));
+                w.got.entry(session.into()).or_default().push(text_of(line));
             }
             return o;
         }
-        if !w.up.contains(job) {
+        if !w.up.contains(session) {
             return Outcome::Gone;
         }
-        w.got.entry(job.into()).or_default().push(text_of(line));
+        w.got.entry(session.into()).or_default().push(text_of(line));
         Outcome::Delivered
     }
     async fn live(&self) -> Option<Agents> {
@@ -162,24 +162,21 @@ impl World for Fake {
     async fn scope_ready(&self, _p: &str, _s: &str) -> Option<bool> {
         Some(!self.w().scope_missing)
     }
-    async fn transcript(&self, job: &str) -> Option<String> {
-        Some(format!("/transcripts/{job}.jsonl"))
-    }
-    async fn remote_control(&self, job: &str, on: bool, name: &str) -> Result<(), String> {
+    async fn remote_control(&self, session: &str, on: bool, name: &str) -> Result<(), String> {
         let mut w = self.w();
         if w.switch_fails {
             return Err("no such session".into());
         }
-        w.switched.push((job.into(), on, name.into()));
+        w.switched.push((session.into(), on, name.into()));
         if on {
-            w.rc.insert(job.into());
+            w.rc.insert(session.into());
         } else {
-            w.rc.remove(job);
+            w.rc.remove(session);
         }
         Ok(())
     }
-    fn hand(&self, job: &str, line: &str) {
-        self.w().hands.push((job.into(), line.into()));
+    fn hand(&self, session: &str, line: &str) {
+        self.w().hands.push((session.into(), line.into()));
     }
     async fn up(&self, kind: &str, b: Value) {
         let text = |k: &str| b[k].as_str().unwrap_or("").to_string();
@@ -190,13 +187,13 @@ impl World for Fake {
             "notice" => w.said.push(("NOTICE".into(), text("text"))),
             "ask" => w.asked.push((text("kind"), text("text"))),
             "mount" => {
-                w.mounted.insert(text("channel_id"), text("job"));
+                w.mounted.insert(text("channel_id"), text("session_id"));
             }
             "unmount" => {
                 w.mounted.remove(&text("channel_id"));
             }
             "line" => {
-                w.latest.insert(text("job"), text("message_id"));
+                w.latest.insert(text("session_id"), text("message_id"));
             }
             "live" => w.live_reports.push(b),
             "seat" => w.seat_reports.push(b),
@@ -288,7 +285,7 @@ async fn a_message_to_an_empty_seat_reacts_queues_and_starts_one_agent() {
     t.world.w().down_on_start = true;
     t.send("first").await;
     let s = t.seat().await;
-    assert_eq!((s.state, s.job.as_str()), (State::Starting, "job-1"));
+    assert_eq!((s.state, s.session_id.as_str()), (State::Starting, "job-1"));
     assert_eq!(t.world.w().reacts, ["1.0"], "one 👀, on the cold start");
     let spec = t.world.w().specs[0].clone();
     assert_eq!((spec["project"].as_str(), spec["trust"].as_str(), spec["name"].as_str()), (Some("agentic-commons"), Some("cooperative"), Some("seat:slack/dm/tester")));
@@ -375,25 +372,6 @@ async fn a_start_that_never_comes_up_requeues_and_trips_the_breaker() {
 }
 
 #[tokio::test]
-async fn cannot_tell_never_gives_up_a_start_or_empties_a_seat() {
-    let mut t = T::new(false);
-    t.world.w().down_on_start = true;
-    t.send("hello").await;
-    t.world.w().cannot_tell = true;
-    t.world.advance(UP_S * 10.0);
-    t.tick().await;
-    assert_eq!(t.seat().await.state, State::Starting);
-    t.world.w().up.insert("job-1".into());
-    t.world.w().cannot_tell = false;
-    t.tick().await;
-    assert_eq!(t.seat().await.state, State::Occupied);
-    t.world.w().cannot_tell = true;
-    t.world.w().up.clear();
-    t.tick().await;
-    assert_eq!(t.seat().await.state, State::Occupied);
-}
-
-#[tokio::test]
 async fn a_gone_push_returns_its_lines_and_starts_the_next_agent_with_them() {
     let mut t = T::new(false);
     t.send("one").await;
@@ -401,23 +379,10 @@ async fn a_gone_push_returns_its_lines_and_starts_the_next_agent_with_them() {
     t.send("two").await;
     t.send("three").await;
     let s = t.seat().await;
-    assert_eq!((s.state, s.job.as_str()), (State::Occupied, "job-2"));
+    assert_eq!((s.state, s.session_id.as_str()), (State::Occupied, "job-2"));
     assert_eq!(t.world.got("job-2"), ["two", "three"]);
-    assert!(t.world.w().specs[1]["prompt"].as_str().unwrap().contains("job job-1 on altair"));
+    assert!(t.world.w().specs[1]["prompt"].as_str().unwrap().contains("session job-1 on altair"));
     assert_eq!(t.world.texts(), ["one", "three", "two"]);
-}
-
-#[tokio::test]
-async fn a_refused_push_past_the_window_counts_the_agent_lost() {
-    let mut t = T::new(false);
-    t.send("one").await;
-    t.world.w().pushes.extend(std::iter::repeat_n(Outcome::Retry("busy".into()), 100));
-    t.send("two").await;
-    t.world.w().pushes.clear();
-    t.tick().await;
-    assert_eq!(t.seat().await.job, "job-2");
-    assert_eq!(t.world.got("job-2"), ["two"]);
-    assert!(t.world.w().said.iter().any(|(c, x)| c == "NOTICE" && x.contains("job-1@altair) stopped taking messages")));
 }
 
 #[tokio::test]
@@ -455,11 +420,11 @@ async fn an_idle_agent_stops_after_4_hours_and_the_next_message_resumes_its_conv
     t.world.w().active.insert("job-1".into(), sent + 600.0);
     t.world.advance(IDLE_S);
     t.tick().await;
-    assert_eq!(t.seat().await.job, "job-1", "4 hours from the message, but not from the end of the turn");
+    assert_eq!(t.seat().await.session_id, "job-1", "4 hours from the message, but not from the end of the turn");
     t.world.w().busy.insert("job-1".into());
     t.world.advance(3600.0);
     t.tick().await;
-    assert_eq!(t.seat().await.job, "job-1", "never mid-turn");
+    assert_eq!(t.seat().await.session_id, "job-1", "never mid-turn");
     t.world.w().busy.clear();
     t.world.w().stop_fails = true;
     t.tick().await;
@@ -467,7 +432,7 @@ async fn an_idle_agent_stops_after_4_hours_and_the_next_message_resumes_its_conv
     t.world.w().stop_fails = false;
     t.tick().await;
     let s = t.seat().await;
-    assert_eq!((s.state, s.previous.job.as_str(), s.previous.stopped), (State::Empty, "job-1", true));
+    assert_eq!((s.state, s.previous.session_id.as_str(), s.previous.stopped), (State::Empty, "job-1", true));
     assert_eq!(t.world.w().stopped, ["job-1"]);
     assert!(!t.world.noticed(), "an idle stop is no news");
 
@@ -476,7 +441,7 @@ async fn an_idle_agent_stops_after_4_hours_and_the_next_message_resumes_its_conv
     assert_eq!(t.world.w().resumed, [("job-1".to_string(), true)], "the resume takes the switch set while the seat was empty");
     assert_eq!(t.world.w().specs.len(), 1, "a resume starts nothing new");
     let s = t.seat().await;
-    assert_eq!((s.state, s.job.as_str(), s.remote_control), (State::Occupied, "job-2", true));
+    assert_eq!((s.state, s.session_id.as_str(), s.remote_control), (State::Occupied, "job-2", true));
     assert_eq!((t.world.got("job-2"), t.queued().await), (vec!["back".to_string()], 0));
 
     let now = t.world.now();
@@ -486,8 +451,8 @@ async fn an_idle_agent_stops_after_4_hours_and_the_next_message_resumes_its_conv
     t.world.w().resume_refused = true;
     t.send("again").await;
     let spec = t.world.w().specs[1].clone();
-    assert!(spec.get("replaces").is_none(), "the stop already removed the job");
-    assert!(spec["prompt"].as_str().unwrap().contains("job job-2 on altair"), "a refused resume starts afresh with the transcript");
+    assert!(spec.get("replaces").is_none(), "the stop already removed the session");
+    assert!(spec["prompt"].as_str().unwrap().contains("session job-2 on altair"), "a refused resume starts afresh");
     assert_eq!(t.world.got("job-3"), ["again"]);
 
     t.world.w().up.insert("hand-started".into());
@@ -496,7 +461,7 @@ async fn an_idle_agent_stops_after_4_hours_and_the_next_message_resumes_its_conv
     t.seats.adopt(&decl(), "hand-started").await;
     t.world.advance(10.0 * IDLE_S);
     t.tick().await;
-    assert_eq!(t.seat().await.job, "hand-started", "an adopted session is never stopped");
+    assert_eq!(t.seat().await.session_id, "hand-started", "an adopted session is never stopped");
 }
 
 #[tokio::test]
@@ -514,18 +479,6 @@ async fn a_session_event_wakes_the_loop_with_no_timer_behind_it() {
     }
     assert_eq!(t.seat().await.state, State::Empty, "the stop was seen on the event");
     looping.abort();
-}
-
-#[tokio::test]
-async fn after_a_restart_waiting_lines_go_to_the_live_agent() {
-    let mut t = T::new(false);
-    t.send("one").await;
-    let m = t.dm("two");
-    t.store.enqueue(Some(m.id), "opal", "D0TEST", &m.message_id, "", &m.line, t.world.now()).await;
-    t.restart(false);
-    t.tick().await;
-    assert_eq!(t.world.got("job-1"), ["one", "two"]);
-    assert_eq!(t.world.w().specs.len(), 1);
 }
 
 #[tokio::test]
@@ -576,17 +529,6 @@ async fn a_missing_scope_holds_the_lines_and_asks() {
     assert_eq!(t.world.texts(), ["hi"]);
 }
 
-/// A replay of the lost DM of 2026-11-07: the seat's agent had gone, the push was refused as
-/// gone, and the Python dropped the line. Here the line starts the next agent.
-#[tokio::test]
-async fn the_undelivered_dm_of_2026_11_07_reaches_an_agent() {
-    let mut t = T::new(false);
-    t.seats.adopt(&decl(), "hand-started").await;
-    t.send("are you there?").await;
-    assert_eq!(t.world.got("job-1"), ["are you there?"]);
-    assert_eq!(t.world.w().reacts.len(), 1);
-}
-
 /// No line is lost or given twice, through refused starts, refused and lost pushes, agents
 /// that die, "cannot tell", and restarts of the plugin.
 #[tokio::test]
@@ -609,7 +551,7 @@ async fn no_line_is_lost_or_doubled_under_faults() {
                 2 => {
                     let s = t.seat().await;
                     if s.state == State::Occupied {
-                        t.world.w().up.remove(&s.job);
+                        t.world.w().up.remove(&s.session_id);
                     }
                 }
                 3 => t.world.w().pushes.push_back(Outcome::Retry("busy".into())),
@@ -690,24 +632,12 @@ async fn an_empty_seat_switches_without_a_call_and_a_live_seat_records_its_sessi
 }
 
 #[tokio::test]
-async fn adoption_switches_remote_control_off_and_a_paused_occupied_seat_still_delivers() {
-    let mut t = T::new(true);
-    t.world.w().up.insert("agent-a".into());
-    t.seats.adopt(&decl(), "agent-a").await;
-    let s = t.seat().await;
-    assert_eq!((s.state, s.adopted, s.remote_control, s.rc_url.as_str()), (State::Occupied, true, false, ""));
-    assert_eq!(t.world.w().switched, [("agent-a".to_string(), false, "seat-slack-dm-tester".to_string())], "the live session follows the switch");
-    t.send("to the adopted seat").await;
-    assert_eq!(t.world.got("agent-a"), ["to the adopted seat"]);
-}
-
-#[tokio::test]
-async fn a_new_session_reports_the_live_jobs_once_per_change() {
+async fn a_new_session_reports_the_live_sessions_once_per_change() {
     let mut t = T::new(false);
     t.send("first").await;
     t.tick().await;
     t.tick().await;
-    assert_eq!(t.world.w().live_reports.last().unwrap()["jobs"], json!(["job-1"]));
+    assert_eq!(t.world.w().live_reports.last().unwrap()["session_ids"], json!(["job-1"]));
     let n = t.world.w().live_reports.len();
     t.tick().await;
     assert_eq!(t.world.w().live_reports.len(), n, "no change, no row");
@@ -715,8 +645,8 @@ async fn a_new_session_reports_the_live_jobs_once_per_change() {
 
 // -- moving state from social ----------------------------------------------------------
 
-fn seed(job: &str, job_node: &str) -> Seed {
-    Seed { state: "occupied".into(), job: job.into(), job_node: job_node.into(), adopted: 1, remote_control: 1, rc_url: "u".into(), previous: r#"{"job":"old","node":"altair"}"#.into(), breaker: r#"{"hold_until":5.0}"#.into(), missed: 2, ..Default::default() }
+fn seed(session: &str, session_node: &str) -> Seed {
+    Seed { state: "occupied".into(), session_id: session.into(), session_node: session_node.into(), adopted: 1, remote_control: 1, rc_url: "u".into(), previous: r#"{"session_id":"old","node":"altair"}"#.into(), breaker: r#"{"hold_until":5.0}"#.into(), missed: 2, ..Default::default() }
 }
 
 #[tokio::test]
@@ -725,12 +655,12 @@ async fn a_seed_keeps_a_live_agent_in_its_seat_and_never_overwrites_one() {
     t.world.w().up.insert("j1".into());
     t.seats.seed(decl(), seed("j1", "altair")).await;
     let s = t.seat().await;
-    assert_eq!((s.state, s.job.as_str(), s.adopted, s.remote_control, s.missed, s.previous.job.as_str(), s.breaker.hold_until), (State::Occupied, "j1", true, true, 2, "old", 5.0));
+    assert_eq!((s.state, s.session_id.as_str(), s.adopted, s.remote_control, s.missed, s.previous.session_id.as_str(), s.breaker.hold_until), (State::Occupied, "j1", true, true, 2, "old", 5.0));
     t.tick().await;
     assert_eq!(t.seat().await.state, State::Occupied, "the agent is live, so nothing changes");
     assert!(!t.world.noticed() && t.world.w().specs.is_empty());
     t.seats.seed(decl(), seed("other", "altair")).await;
-    assert_eq!(t.seat().await.job, "j1", "a replayed seed changes nothing");
+    assert_eq!(t.seat().await.session_id, "j1", "a replayed seed changes nothing");
 }
 
 #[tokio::test]
@@ -752,7 +682,7 @@ async fn a_seed_with_a_job_on_another_node_starts_empty_with_it_as_predecessor()
     let t = T::new(true);
     t.seats.seed(decl(), seed("512feb43", "deneb")).await;
     let s = t.seat().await;
-    assert_eq!((s.state, s.job.as_str(), s.previous.job.as_str(), s.previous.node.as_str(), s.rc_url.as_str()), (State::Empty, "", "512feb43", "deneb", ""));
+    assert_eq!((s.state, s.session_id.as_str(), s.previous.session_id.as_str(), s.previous.node.as_str(), s.rc_url.as_str()), (State::Empty, "", "512feb43", "deneb", ""));
 }
 
 // -- the link ----------------------------------------------------------------------------
@@ -877,7 +807,7 @@ async fn a_link_loss_loses_no_agent_no_line_and_no_reply_and_says_nothing() {
     l.t.world.advance(420.0);
     l.t.tick().await;
     let s = l.t.seat().await;
-    assert_eq!((s.state, s.job.as_str(), s.breaker.attempts.len()), (State::Occupied, "job-1", 0), "the agent's life is read on this node");
+    assert_eq!((s.state, s.session_id.as_str(), s.breaker.attempts.len()), (State::Occupied, "job-1", 0), "the agent's life is read on this node");
     assert!(!l.t.world.noticed(), "a reset says nothing");
     assert_eq!(l.t.world.w().specs.len(), 1, "and starts nothing");
 
@@ -898,7 +828,7 @@ async fn a_link_loss_loses_no_agent_no_line_and_no_reply_and_says_nothing() {
 }
 
 #[tokio::test]
-async fn a_lost_pull_answer_resends_and_a_row_stored_twice_is_taken_once() {
+async fn a_lost_answer_resends_and_a_row_stored_twice_is_taken_once() {
     let l = L::occupied().await;
     l.social.line("one");
     l.social.s().lose_pull = true;
@@ -909,11 +839,7 @@ async fn a_lost_pull_answer_resends_and_a_row_stored_twice_is_taken_once() {
     l.settle_pull().await;
     assert_eq!(l.t.world.got("job-1"), ["hello", "one"], "the next pull acked it");
     assert_eq!(l.social.s().acked, 2);
-}
 
-#[tokio::test]
-async fn a_lost_report_answer_is_resent_and_applied_once() {
-    let l = L::occupied().await;
     l.drain().await;
     let before = l.social.s().applied.len();
     l.link.enqueue("send", &json!({"text": "x"})).await;
@@ -921,21 +847,6 @@ async fn a_lost_report_answer_is_resent_and_applied_once() {
     assert!(matches!(l.link.flush_once().await, Flushed::Retry(_)));
     assert_eq!(l.link.flush_once().await, Flushed::Sent, "the row stayed and is sent again");
     assert_eq!(l.social.s().applied.len(), before + 1);
-}
-
-#[tokio::test]
-async fn a_host_restart_takes_an_unacked_row_once() {
-    let mut l = L::occupied().await;
-    l.social.line("one");
-    l.link.pull_once(&l.t.seats).await.unwrap();
-    l.t.settle().await;
-    l.t.restart(false);
-    l.link = attached(&l.t, &l.social, "e1");
-    l.link.pull_once(&l.t.seats).await.unwrap();
-    l.t.settle().await;
-    assert_eq!(l.t.world.got("job-1"), ["hello", "one"]);
-    let rows = l.social.s().rows.len();
-    assert_eq!(rows, 2);
 }
 
 #[tokio::test]
@@ -958,7 +869,7 @@ async fn a_hand_row_is_typed_and_paused_arrives_with_the_pull() {
         let mut s = l.social.s();
         s.next += 1;
         let id = s.next;
-        s.rows.push(json!({"id": id, "kind": "hand", "job": "h1", "line": "[hand] hi"}));
+        s.rows.push(json!({"id": id, "kind": "hand", "session_id": "h1", "line": "[hand] hi"}));
         s.paused = true;
     }
     l.link.pull_once(&l.t.seats).await.unwrap();

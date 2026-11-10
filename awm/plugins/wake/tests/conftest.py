@@ -53,7 +53,7 @@ class FakeGateway:
 
 @pytest.fixture()
 def gw():
-    return FakeGateway({(REFLECTION, "start_other"): {"job": "abcd1234", "session_id": "cc" + "a" * 32, "link": "https://x/s"}})
+    return FakeGateway({(REFLECTION, "start_other"): {"session_id": "cc" + "a" * 32, "link": "https://x/s"}})
 
 
 __all__ = ["FakeGateway", "REFLECTION", "WAKE", "CallError"]

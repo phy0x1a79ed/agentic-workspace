@@ -18,11 +18,11 @@ now = time.time()
 fence = Fence()
 nodes = [
     {"node": "mizar", "role": "compute", "last_seen": now - 30, "sessions_7d": 41,
-     "sessions": [{"job": "daf676e8", "name": "plugin-redux/trilium-vault", "link": "https://claude.ai/code/session_aaa",
+     "sessions": [{"session_id": "ccdaf676e8000040008000000000000000", "name": "plugin-redux/trilium-vault", "link": "https://claude.ai/code/session_aaa",
                    "scope": "awm/trilium-vault", "remote_control": True}],
      "uses": [{"tool": "journal", "host": "alcor", "listed": True, "last_checked": now - 5, "last_used": now - 100}]},
     {"node": "lyra", "role": "compute", "last_seen": now - 4000, "sessions_7d": 3,
-     "sessions": [{"job": "9f", "name": "lab notes", "scope": "lab/x"}], "uses": []},
+     "sessions": [{"session_id": "cc9f000000000040008000000000000000", "name": "lab notes", "scope": "lab/x"}], "uses": []},
     {"node": "altair", "role": "compute", "last_seen": now - 90, "sessions_7d": 9, "sessions": []},
     {"node": "capella", "role": "station", "last_seen": now - 9000, "sessions_7d": 0, "sessions": []},
     {"node": "deneb", "role": "front", "last_seen": now - 2, "sessions_7d": 0, "sessions": []},

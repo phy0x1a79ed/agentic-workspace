@@ -57,7 +57,7 @@ impl H {
     }
 
     async fn open(&self) -> Value {
-        let req = self.approvals.open("grow", "infra-agent", "altair", "job1", SESSION).await.unwrap();
+        let req = self.approvals.open("grow", "infra-agent", "altair", SESSION).await.unwrap();
         self.approvals.attach(&s(&req["ref"]), "ABCDEFGH").unwrap();
         req
     }
@@ -208,10 +208,10 @@ async fn expired_request_is_closed() {
 #[tokio::test]
 async fn open_refuses_a_bad_name_or_bundle() {
     let h = H::new(0);
-    assert!(h.approvals.open("../etc", "a", "n", "", "").await.is_err());
-    assert!(h.approvals.open("missing", "a", "n", "", "").await.is_err());
+    assert!(h.approvals.open("../etc", "a", "n", "").await.is_err());
+    assert!(h.approvals.open("missing", "a", "n", "").await.is_err());
     std::fs::write(h.dir.path().join("bundles/bad.bundle"), "minutes\t5\n").unwrap();
-    assert!(h.approvals.open("bad", "a", "n", "", "").await.is_err());
+    assert!(h.approvals.open("bad", "a", "n", "").await.is_err());
     assert!(h.io.posts().is_empty());
 }
 

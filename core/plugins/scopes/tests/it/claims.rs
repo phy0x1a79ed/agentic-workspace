@@ -52,7 +52,7 @@ impl Drop for Child {
 fn a_free_scope_is_claimed() {
     let r = common::rig();
     let out = claim(&r, json!({"session_id": S1, "pid": me()}));
-    assert_eq!(out, json!({"ok": true, "project": "p", "scope": "s", "claimed": true, "holder": {"session_id": S1, "job": null, "pid": me()}}));
+    assert_eq!(out, json!({"ok": true, "project": "p", "scope": "s", "claimed": true, "holder": {"session_id": S1, "pid": me()}}));
     assert_eq!(holder(&r).as_deref(), Some(S1));
 }
 
@@ -115,9 +115,9 @@ fn a_terminal_session_is_warned_not_blocked() {
 fn the_queue_is_first_come_first_served() {
     let r = common::rig();
     claim(&r, json!({"session_id": S1, "pid": me()}));
-    let first = claim(&r, json!({"session_id": S2, "pid": me(), "job": "job2", "queue": true}));
-    let second = claim(&r, json!({"session_id": S3, "pid": me(), "job": "job3", "queue": true}));
-    let again = claim(&r, json!({"session_id": S2, "pid": me(), "job": "job2", "queue": true}));
+    let first = claim(&r, json!({"session_id": S2, "pid": me(), "queue": true}));
+    let second = claim(&r, json!({"session_id": S3, "pid": me(), "queue": true}));
+    let again = claim(&r, json!({"session_id": S2, "pid": me(), "queue": true}));
     assert_eq!((first["queued_position"].clone(), second["queued_position"].clone(), again["queued_position"].clone()), (json!(1), json!(2), json!(1)));
 
     let out = release(&r, S1);
@@ -141,7 +141,7 @@ fn the_queue_is_first_come_first_served() {
 fn the_head_is_notified_once() {
     let r = common::rig();
     claim(&r, json!({"session_id": S1, "pid": me()}));
-    claim(&r, json!({"session_id": S2, "pid": me(), "job": "job2", "queue": true}));
+    claim(&r, json!({"session_id": S2, "pid": me(), "queue": true}));
     release(&r, S1);
     release(&r, S1);
     claim(&r, json!({"session_id": S3, "pid": me()}));
@@ -154,4 +154,27 @@ fn release_by_another_session_changes_nothing() {
     claim(&r, json!({"session_id": S1, "pid": me()}));
     assert_eq!(release(&r, S2)["released"], json!(false));
     assert_eq!(holder(&r).as_deref(), Some(S1));
+}
+
+// MIGRATION(session-ids)
+#[test]
+fn a_v5_database_loses_its_job_columns_and_keeps_its_claims() {
+    use awm_store::rusqlite::Connection;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("scopes.db");
+    {
+        let c = Connection::open(&path).unwrap();
+        c.execute_batch(
+            "CREATE TABLE schema_version (version INTEGER NOT NULL); INSERT INTO schema_version VALUES (5);
+             CREATE TABLE scope_claims (project TEXT NOT NULL, scope TEXT NOT NULL, session TEXT NOT NULL, pid INTEGER, proc_start TEXT, job TEXT, claimed_at INTEGER NOT NULL, PRIMARY KEY (project, scope));
+             CREATE TABLE scope_waiters (project TEXT NOT NULL, scope TEXT NOT NULL, session TEXT NOT NULL, pid INTEGER, proc_start TEXT, job TEXT, asked_at INTEGER NOT NULL, notified_at INTEGER, PRIMARY KEY (project, scope, session));
+             INSERT INTO scope_claims VALUES ('p', 's', 'cc1', 1, NULL, 'abcd1234', 5);",
+        )
+        .unwrap();
+    }
+    awm_plugin_scopes::db::open(&path).unwrap();
+    let c = Connection::open(&path).unwrap();
+    let cols: Vec<String> = ["scope_claims", "scope_waiters"].iter().flat_map(|t| c.prepare(&format!("SELECT name FROM pragma_table_info('{t}')")).unwrap().query_map([], |r| r.get::<_, String>(0)).unwrap().map(Result::unwrap).collect::<Vec<_>>()).collect();
+    assert!(!cols.contains(&"job".to_string()), "{cols:?}");
+    assert_eq!(c.query_row("SELECT session FROM scope_claims", [], |r| r.get::<_, String>(0)).unwrap(), "cc1");
 }

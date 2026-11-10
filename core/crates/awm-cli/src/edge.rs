@@ -131,8 +131,8 @@ pub async fn port(key: &str) -> anyhow::Result<i32> {
                 session: r.session.clone(),
                 trust: r.trust.clone(),
                 scope: r.scope.clone(),
-                job: r.job.clone(),
                 name: r.session_name.clone(),
+                kind: r.session_kind.clone(),
             };
             Some(invoke_local(&dir, &r.name, r.args.clone(), &caller).await)
         }

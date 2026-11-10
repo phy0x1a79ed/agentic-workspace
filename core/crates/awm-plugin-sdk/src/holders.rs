@@ -34,13 +34,11 @@ impl From<HolderError> for crate::VerbError {
     }
 }
 
-/// The calling session as a holder: `job` is what a push types into, `session` the R9 id when
-/// one is known, else `job:<job>`.
+/// The calling session as a holder: `session` is its R9 id, which a push types into.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Holder {
     pub node: String,
     pub session: String,
-    pub job: String,
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pid: Option<u32>,
@@ -48,7 +46,6 @@ pub struct Holder {
 
 struct Found {
     background: bool,
-    job: String,
     session: Option<String>,
     name: String,
 }
@@ -65,7 +62,7 @@ fn text(v: &Value, key: &str) -> String {
 pub async fn claim(hub: &Hub, pid: u32) -> Option<Value> {
     let rec = crate::sessions::session_of(hub, pid).await?;
     let kind = if rec.get("hosting").and_then(Value::as_str) == Some("background") { "bg" } else { "interactive" };
-    Some(json!({"kind": kind, "job": text(&rec, "job"), "name": text(&rec, "name"), "session_id": rec.get("session_id")}))
+    Some(json!({"kind": kind, "name": text(&rec, "name"), "session_id": rec.get("session_id")}))
 }
 
 /// Every session on this node from `reflection list_other`, or None when it cannot tell.
@@ -94,34 +91,19 @@ pub fn row_live(row: &Value) -> bool {
     !DEAD_STATES.contains(&state) && row.get("live") != Some(&json!(false)) && row.get("alive") != Some(&json!(false))
 }
 
-/// The job `session` runs as, its own id when it is isolated, or None when it is neither.
-async fn push_target(hub: &Hub, session: &str) -> Option<String> {
-    for row in session_rows(hub, true).await.unwrap_or_default() {
-        if text(&row, "session_id").to_lowercase() != session {
-            continue;
-        }
-        let job = text(&row, "job");
-        if !job.is_empty() {
-            return Some(job);
-        }
-        if row.get("kind").and_then(Value::as_str) == Some(ISOLATED) {
-            return Some(session.to_string());
-        }
-    }
-    None
+/// Whether `session` is a background (`bg`, or `web` for a DeepSeek one) or an isolated session.
+async fn can_hold(hub: &Hub, session: &str) -> bool {
+    let rows = session_rows(hub, true).await.unwrap_or_default();
+    rows.iter().any(|row| text(row, "session_id").to_lowercase() == session && ["bg", "web", ISOLATED].contains(&text(row, "kind").as_str()))
 }
 
 fn from_claim(raw: Option<&Value>) -> Option<Found> {
     let obj = raw.filter(|r| r.is_object())?;
     let get = |k: &str| obj.get(k).cloned().unwrap_or(Value::Null);
-    // A gateway's door claim names no kind: it carries a job only for a background session.
-    let door = obj.get("kind").is_none() && obj.get("hosting").is_none() && get("node").as_str().is_some_and(|n| !n.is_empty());
-    let job = text(obj, "job");
     Some(Found {
-        background: get("kind") == "bg" || get("hosting") == "background" || (door && !job.is_empty()),
+        background: ["bg", "web", ISOLATED].contains(&text(obj, "kind").as_str()) || get("hosting") == "background",
         session: get("session_id").as_str().map(str::to_string).or_else(|| get("sessionId").as_str().and_then(|s| crate::ids::SessionId::from_harness_native(crate::ids::Platform::Claude, s).ok()).map(|i| i.canonical())),
         name: text(obj, "name"),
-        job,
     })
 }
 
@@ -134,14 +116,12 @@ pub async fn caller(call: &Call, what: &str) -> Result<Holder, HolderError> {
     let (found, node) = if let Some(pid) = pid {
         let found = crate::sessions::session_of(hub, pid).await.map(|rec| Found {
             background: rec.get("hosting").and_then(Value::as_str) == Some("background"),
-            job: text(&rec, "job"),
             session: rec.get("session_id").and_then(Value::as_str).map(str::to_string),
             name: text(&rec, "name"),
         });
         (found, Some(here))
     } else if let Some(sid) = &sid {
-        let target = push_target(hub, sid).await;
-        let found = Found { background: target.is_some(), job: target.unwrap_or_default(), session: Some(sid.clone()), name: String::new() };
+        let found = Found { background: can_hold(hub, sid).await, session: Some(sid.clone()), name: String::new() };
         (Some(found), Some(here))
     } else {
         (from_claim(call.args.get(CLAIM_KEY)), call.peer_node().map(str::to_string))
@@ -149,13 +129,15 @@ pub async fn caller(call: &Call, what: &str) -> Result<Holder, HolderError> {
     let (Some(node), Some(found)) = (node, found) else {
         return Err(HolderError(format!("no calling session reached {what}: it is held by a running agent session, so call this from one")));
     };
-    if !found.background || found.job.is_empty() {
+    if !found.background {
         return Err(HolderError(format!(
             "only a background session, or an isolated one, can hold {what}: each message is typed into the holder's prompt"
         )));
     }
-    let session = sid.or(found.session).unwrap_or_else(|| format!("job:{}", found.job));
-    Ok(Holder { node, session, job: found.job, name: found.name, pid })
+    let Some(session) = sid.or(found.session) else {
+        return Err(HolderError(format!("the calling session has no session id, so it cannot hold {what}")));
+    };
+    Ok(Holder { node, session, name: found.name, pid })
 }
 
 /// The R9 ids of the sessions running on this node, or None when it cannot tell.

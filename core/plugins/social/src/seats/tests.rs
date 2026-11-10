@@ -31,7 +31,7 @@ fn dm(id: &str) -> Inbound {
 }
 
 #[tokio::test]
-async fn a_message_waits_for_its_host_and_a_resynced_copy_is_routed_once() {
+async fn a_message_waits_for_its_host_is_routed_once_and_resent_until_acked() {
     let t = t();
     assert_eq!(t.seats.route(&dm("1.0")).await, Routed::Seat);
     let mut again = dm("1.0");
@@ -44,16 +44,10 @@ async fn a_message_waits_for_its_host_and_a_resynced_copy_is_routed_once() {
     assert_eq!((row["seat"]["node"].as_str(), row["seat"]["scope"].as_str(), row["seat"]["brief"].as_str()), (Some("altair"), Some("seats/tester"), Some("briefs/slack-slack.md")));
     assert_eq!(reply["settings"]["paused"], true);
     assert!(t.seats.pull("mizar", 0, 0.0).await["rows"].as_array().unwrap().is_empty(), "another host's row is not mine");
-}
 
-#[tokio::test]
-async fn a_row_is_resent_until_its_host_acks_it() {
-    let t = t();
-    t.seats.route(&dm("1.0")).await;
     t.seats.route(&dm("2.0")).await;
     let first = t.seats.pull("altair", 0, 0.0).await;
-    let again = t.seats.pull("altair", 0, 0.0).await;
-    assert_eq!(first["rows"], again["rows"], "the answer may have been lost");
+    assert_eq!(first["rows"], t.seats.pull("altair", 0, 0.0).await["rows"], "the answer may have been lost");
     let id = first["rows"][0]["id"].as_i64().unwrap();
     let rest = t.seats.pull("altair", id, 0.0).await;
     assert_eq!(rest["rows"].as_array().unwrap().len(), 1, "an ack clears only through its id");
@@ -95,7 +89,7 @@ async fn a_report_fills_what_seats_shows_and_a_change_is_flagged_once() {
     assert!(store.mirror("opal", "D0TEST", "occupied", "j1", true, "u", report.clone()).await);
     assert!(!store.mirror("opal", "D0TEST", "occupied", "j1", true, "u", report.clone()).await, "nothing evented changed");
     let seat = store.get("opal", "D0TEST").await.unwrap();
-    assert_eq!((seat.public(), seat.job.as_str()), (report, "j1"));
+    assert_eq!((seat.public(), seat.session_id.as_str()), (report, "j1"));
     assert!(!store.mirror("opal", "NOSEAT", "occupied", "j", false, "", json!({})).await);
 }
 

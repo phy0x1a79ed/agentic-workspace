@@ -8,6 +8,7 @@ pub mod home;
 pub mod job;
 pub mod kept;
 pub mod launch;
+pub mod legacy;
 pub mod live;
 pub mod pins;
 pub mod pty;

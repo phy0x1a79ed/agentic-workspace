@@ -12,8 +12,8 @@ SID = "cc" + "a" * 32
 def test_session_of_asks_reflection_with_the_pid(monkeypatch):
     seen = []
     monkeypatch.setattr(gc, "call_sync", lambda svc, fn, args, **kw: seen.append(
-        (svc, fn, args)) or {"ok": True, "session_id": "cc1", "job": "abcd1234"})
-    assert sessions.session_of(42)["job"] == "abcd1234"
+        (svc, fn, args)) or {"ok": True, "session_id": "cc1", "name": "worker"})
+    assert sessions.session_of(42)["name"] == "worker"
     assert seen == [("reflection", "session_of", {"pid": 42})]
 
 

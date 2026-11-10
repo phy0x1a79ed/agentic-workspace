@@ -151,7 +151,7 @@ async fn failure_starts_fixer_on_declared_peer() {
     let rid = run["id"].as_str().unwrap();
     assert!(start.started_by.contains(rid) && start.started_by.contains("job abc"));
     assert!(start.prompt.contains("boom") && start.prompt.contains("Check the disk first."));
-    assert_eq!(run["dispatched"], json!([{"for": "two", "role": "fixer", "via": "agent", "job": "job1", "peer": "alcor", "errors": []}]));
+    assert_eq!(run["dispatched"], json!([{"for": "two", "role": "fixer", "via": "agent", "session_id": "job1", "peer": "alcor", "errors": []}]));
     assert!(f.out.dms.lock().unwrap().is_empty());
 }
 
@@ -179,7 +179,7 @@ async fn a_routine_without_a_fixer_posts_a_notice() {
     f.runner.install("proj", &write_routine(&repo, "nightly", body).to_string_lossy()).unwrap();
     let run = f.runner.trigger("proj", "nightly", "call", "", true).await.unwrap();
     assert!(f.out.starts.lock().unwrap().is_empty());
-    assert_eq!(run["dispatched"], json!([{"for": "two", "role": "notice", "via": "notice", "job": "", "peer": "", "errors": []}]));
+    assert_eq!(run["dispatched"], json!([{"for": "two", "role": "notice", "via": "notice", "session_id": "", "peer": "", "errors": []}]));
     let dms = f.out.dms.lock().unwrap();
     assert!(dms.len() == 1 && dms[0].contains("failed at two") && dms[0].contains("boom"));
 }

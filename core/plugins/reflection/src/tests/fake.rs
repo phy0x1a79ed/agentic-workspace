@@ -37,7 +37,7 @@ pub fn third() -> String {
 
 /// The session `j2` that is not the caller.
 pub fn peer_row() -> Value {
-    json!({"session_id": other(), "name": "other", "pid": 77, "job": "j2"})
+    json!({"session_id": other(), "name": "other", "pid": 77})
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -128,9 +128,9 @@ impl Fake {
                 out
             }
             "start" => {
-                let row = json!({"session_id": new_id(), "name": "new", "pid": NEW_PID, "job": "abcd1234"});
+                let row = json!({"session_id": new_id(), "name": "new", "pid": NEW_PID});
                 self.set("abcd1234", row.clone());
-                json!({"ok": true, "job": row["job"], "session_id": row["session_id"]})
+                json!({"ok": true, "session_id": row["session_id"]})
             }
             "status" => {
                 let reference = args.get("session_id").and_then(Value::as_str);
@@ -187,7 +187,7 @@ impl FakeClaims {
                         return json!({"ok": false, "claimed": false, "holder": holder, "reason": why});
                     }
                 }
-                let holder = json!({"session_id": a["session_id"], "pid": a.get("pid"), "job": a.get("job")});
+                let holder = json!({"session_id": a["session_id"], "pid": a.get("pid")});
                 self.hold(&project, &scope, holder.clone());
                 json!({"ok": true, "claimed": true, "holder": holder})
             }
@@ -243,7 +243,7 @@ pub struct FakeGateway {
 
 impl FakeGateway {
     pub fn new() -> Self {
-        let me = json!({"session_id": my_id(), "name": "me", "pid": ME, "job": "j1", "cwd": "/w/projects/awm/redux-harness"});
+        let me = json!({"session_id": my_id(), "name": "me", "pid": ME, "hosting": "background", "cwd": "/w/projects/awm/redux-harness"});
         let codes = [("harness-cc", "cc"), ("harness-ds", "ds")].into_iter().map(|(t, c)| (t.to_string(), c.to_string())).collect();
         Self {
             cc: Fake::new("harness-cc", vec![("j1", me)]),

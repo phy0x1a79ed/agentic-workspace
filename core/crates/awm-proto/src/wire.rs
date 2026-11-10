@@ -26,12 +26,14 @@ pub struct Caller {
     /// The node a relayed call started from, when it is not `node` (fleet.md R98 item 3).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub origin: Option<String>,
-    /// The calling session's job and name on its own node, which a singleton's host needs to
-    /// act on the session through its door.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub job: Option<String>,
+    /// The calling session's name on its own node, which a singleton's host needs to act on the
+    /// session through its door.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// The calling session's row kind, such as `bg`. A holder on another node reads it from the
+    /// door claim, since only a background or isolated session can hold.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
 }
 
 impl Caller {

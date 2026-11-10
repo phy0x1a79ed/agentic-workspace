@@ -29,24 +29,23 @@ struct Row_ {
     session: String,
     pid: Option<i64>,
     proc_start: Option<String>,
-    job: Option<String>,
     /// `claimed_at` for a claim, `asked_at` for a waiter.
     at: i64,
     notified_at: Option<i64>,
 }
 
 fn claim_row(r: &Row<'_>) -> awm_store::rusqlite::Result<Row_> {
-    Ok(Row_ { session: r.get("session")?, pid: r.get("pid")?, proc_start: r.get("proc_start")?, job: r.get("job")?, at: r.get("claimed_at")?, notified_at: None })
+    Ok(Row_ { session: r.get("session")?, pid: r.get("pid")?, proc_start: r.get("proc_start")?, at: r.get("claimed_at")?, notified_at: None })
 }
 
 fn waiter_row(r: &Row<'_>) -> awm_store::rusqlite::Result<Row_> {
-    Ok(Row_ { session: r.get("session")?, pid: r.get("pid")?, proc_start: r.get("proc_start")?, job: r.get("job")?, at: r.get("asked_at")?, notified_at: r.get("notified_at")? })
+    Ok(Row_ { session: r.get("session")?, pid: r.get("pid")?, proc_start: r.get("proc_start")?, at: r.get("asked_at")?, notified_at: r.get("notified_at")? })
 }
 
 fn public(row: Option<&Row_>) -> Value {
     match row {
         None => Value::Null,
-        Some(r) => json!({"session_id": r.session, "job": r.job, "pid": r.pid, "since": r.at}),
+        Some(r) => json!({"session_id": r.session, "pid": r.pid, "since": r.at}),
     }
 }
 
@@ -94,9 +93,6 @@ impl Op {
     /// Tell the first waiter its scope is free, once.
     fn hand_over(&self, c: &Connection, project: &str, scope: &str, head: Option<&Row_>) -> Result<bool, Fail> {
         let Some(head) = head else { return Ok(false) };
-        if head.job.as_deref().is_none_or(str::is_empty) {
-            return Ok(false);
-        }
         if head.notified_at.is_some_and(|n| n != 0) {
             return Ok(false);
         }
@@ -114,7 +110,7 @@ impl Op {
     /// Claim a scope for a session, or say who holds it. A terminal session (R41) is warned,
     /// never blocked or queued. With `queue` a refused session joins the queue.
     #[allow(clippy::too_many_arguments)]
-    pub fn claim(&self, project: &str, scope: &str, session_id: &str, pid: Option<i64>, job: Option<&str>, queue: bool, terminal: bool) -> Result<Value, Fail> {
+    pub fn claim(&self, project: &str, scope: &str, session_id: &str, pid: Option<i64>, queue: bool, terminal: bool) -> Result<Value, Fail> {
         if session_id.is_empty() {
             return Err(Fail::value("session_id is required"));
         }
@@ -130,8 +126,8 @@ impl Op {
             };
             let enqueue = |c: &Connection| -> Result<(), Fail> {
                 c.execute(
-                    "INSERT INTO scope_waiters (project, scope, session, pid, proc_start, job, asked_at) VALUES (?,?,?,?,?,?,?)",
-                    params![project, scope, session_id, pid, start, job, now_ms()],
+                    "INSERT INTO scope_waiters (project, scope, session, pid, proc_start, asked_at) VALUES (?,?,?,?,?,?)",
+                    params![project, scope, session_id, pid, start, now_ms()],
                 )?;
                 Ok(())
             };
@@ -170,14 +166,14 @@ impl Op {
                 }));
             }
             c.execute(
-                "INSERT INTO scope_claims (project, scope, session, pid, proc_start, job, claimed_at) VALUES (?,?,?,?,?,?,?) \
+                "INSERT INTO scope_claims (project, scope, session, pid, proc_start, claimed_at) VALUES (?,?,?,?,?,?) \
                  ON CONFLICT (project, scope) DO UPDATE SET session=excluded.session, pid=excluded.pid, \
-                 proc_start=excluded.proc_start, job=excluded.job, claimed_at=excluded.claimed_at",
-                params![project, scope, session_id, pid, start, job, now_ms()],
+                 proc_start=excluded.proc_start, claimed_at=excluded.claimed_at",
+                params![project, scope, session_id, pid, start, now_ms()],
             )?;
             c.execute("DELETE FROM scope_waiters WHERE project=? AND scope=? AND session=?", [project, scope, session_id])?;
             touch(c, project, scope)?;
-            Ok(json!({"ok": true, "project": project, "scope": scope, "claimed": true, "holder": {"session_id": session_id, "job": job, "pid": pid}}))
+            Ok(json!({"ok": true, "project": project, "scope": scope, "claimed": true, "holder": {"session_id": session_id, "pid": pid}}))
         })
     }
 
@@ -203,7 +199,7 @@ impl Op {
         Ok(json!({"ok": true, "project": project, "scope": scope, "withdrawn": left}))
     }
 
-    /// The live session that holds the scope, as `{session_id, job, pid, since}`.
+    /// The live session that holds the scope, as `{session_id, pid, since}`.
     pub fn live_holder(&self, project: &str, scope: &str) -> Result<Option<Value>, Fail> {
         let waiting = self.waiting();
         self.write(|c| Ok(self.holder(c, project, scope, &waiting)?.map(|h| public(Some(&h)))))

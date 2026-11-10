@@ -573,11 +573,6 @@
      "type": "integer"
     },
     {
-     "name": "job",
-     "type": "string",
-     "description": "The job id, with a lifecycle kind."
-    },
-    {
      "name": "session_kind",
      "type": "string",
      "description": "The session's row kind, with a lifecycle kind."

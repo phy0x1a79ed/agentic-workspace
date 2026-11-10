@@ -90,7 +90,6 @@ fn the_describe_differs_from_the_baseline_only_by_the_listed_changes() {
         "compact: description",
         "effort: adds param to",
         "effort: drops param job",
-        "harness_event: adds param job",
         "harness_event: adds param needs",
         "harness_event: adds param rc_url",
         "harness_event: adds param retired",

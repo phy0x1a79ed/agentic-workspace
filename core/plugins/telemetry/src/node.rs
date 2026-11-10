@@ -87,8 +87,7 @@ pub fn session_of(v: &Value) -> Option<Session> {
     let link = s("rc_url").or_else(|| s("link"));
     let state = s("state").filter(|x| ["working", "blocked", "done"].contains(&x.as_str()));
     Some(Session {
-        job: s("job")?,
-        session_id: s("session_id"),
+        session_id: s("session_id")?,
         name: s("name"),
         project: s("project"),
         scope: s("scope"),
@@ -104,7 +103,7 @@ pub fn session_of(v: &Value) -> Option<Session> {
     })
 }
 
-/// A session in a project or scope this node marks private leaves the node as its job alone
+/// A session in a project or scope this node marks private leaves the node as its session id alone
 /// (contract § Peer calls item 6), so it still counts but says nothing.
 pub fn redact(s: Session) -> Session {
     redact_with(s, privacy::hidden)
@@ -112,7 +111,7 @@ pub fn redact(s: Session) -> Session {
 
 pub fn redact_with(s: Session, hidden: impl Fn(&str, Option<&str>) -> bool) -> Session {
     match &s.project {
-        Some(p) if hidden(p, s.scope.as_deref()) => Session { job: s.job, kind: s.kind, started: s.started, ..Session::default() },
+        Some(p) if hidden(p, s.scope.as_deref()) => Session { session_id: s.session_id, kind: s.kind, started: s.started, ..Session::default() },
         _ => s,
     }
 }
@@ -347,11 +346,11 @@ mod tests {
 
     #[test]
     fn payloads_map_to_messages() {
-        let ev = json!({"event": "started", "job": "a1", "session_id": "s1", "name": "x", "node": "mizar", "project": "awm",
+        let ev = json!({"event": "started", "session_id": "s1", "name": "x", "node": "mizar", "project": "awm",
                         "scope": "lobby", "kind": "worker", "task_id": "CW", "rc_url": "https://claude.ai/code/s1", "ts": "2026-11-07T10:00:00Z"});
         let Some(Msg::Item(item)) = message("reflection", "sessions", &ev, "mizar") else { panic!() };
         let Item::Session { event, session, ts } = *item else { panic!() };
-        assert_eq!((event.as_str(), session.session_id.as_deref(), session.link.as_deref()), ("started", Some("s1"), Some("https://claude.ai/code/s1")));
+        assert_eq!((event.as_str(), Some(session.session_id.as_str()), session.link.as_deref()), ("started", Some("s1"), Some("https://claude.ai/code/s1")));
         assert!(session.remote_control && ts.is_some());
         assert!(message("reflection", "sessions", &ev, "lyra").is_none(), "another node's session is not ours to report");
 
@@ -366,10 +365,10 @@ mod tests {
     }
 
     #[test]
-    fn a_private_session_leaves_as_its_job_alone() {
-        let s = Session { job: "j".into(), name: Some("n".into()), project: Some("secret".into()), link: Some("l".into()), ..Session::default() };
+    fn a_private_session_leaves_as_its_id_alone() {
+        let s = Session { session_id: "j".into(), name: Some("n".into()), project: Some("secret".into()), link: Some("l".into()), ..Session::default() };
         let r = redact_with(s.clone(), |p, _| p == "secret");
-        assert_eq!(r, Session { job: "j".into(), ..Session::default() });
+        assert_eq!(r, Session { session_id: "j".into(), ..Session::default() });
         assert_eq!(redact_with(s.clone(), |_, _| false), s);
     }
 

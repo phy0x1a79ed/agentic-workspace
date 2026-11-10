@@ -21,14 +21,14 @@ pub struct Seat {
     /// The agent's session name, `seat:<app>/<server>/<chat>`.
     pub name: String,
     pub state: String,
-    pub job: String,
+    pub session_id: String,
     pub remote_control: bool,
     pub rc_url: String,
     /// The host's own view of the seat, as `seats` shows it.
     pub report: Value,
 }
 
-const COLS: &str = "account, channel_id, channel_name, kind, server, slug, node, scope, level, name, state, job, remote_control, rc_url, report";
+const COLS: &str = "account, channel_id, channel_name, kind, server, slug, node, scope, level, name, state, session_id, remote_control, rc_url, report";
 
 impl Seat {
     fn from_row(r: &SqlRow) -> rusqlite::Result<Self> {
@@ -45,7 +45,7 @@ impl Seat {
             level: r.get(8)?,
             name: r.get(9)?,
             state: r.get(10)?,
-            job: r.get(11)?,
+            session_id: r.get(11)?,
             remote_control: r.get::<_, i64>(12)? != 0,
             rc_url: r.get(13)?,
             report: serde_json::from_str(&report).unwrap_or(Value::Null),
@@ -62,7 +62,7 @@ impl Seat {
         if self.report.as_object().is_some_and(|o| !o.is_empty()) {
             return self.report.clone();
         }
-        json!({"state": self.state, "job": if self.job.is_empty() { Value::Null } else { json!(self.job) }, "node": self.node, "level": self.level, "scope": self.scope,
+        json!({"state": self.state, "session_id": if self.session_id.is_empty() { Value::Null } else { json!(self.session_id) }, "node": self.node, "level": self.level, "scope": self.scope,
             "adopted": false, "queued": 0, "held": Value::Null, "breaker": Value::Null, "id": self.id(), "remote_control": self.remote_control, "rc_url": self.rc_url})
     }
 }
@@ -88,7 +88,7 @@ fn save(c: &Connection, s: &Seat) -> rusqlite::Result<usize> {
              ON CONFLICT (account, channel_id) DO UPDATE SET channel_name = excluded.channel_name, kind = excluded.kind, server = excluded.server, slug = excluded.slug, \
              node = excluded.node, scope = excluded.scope, level = excluded.level, name = excluded.name"
         ),
-        params![s.account, s.channel_id, s.channel_name, s.kind, s.server, s.slug, s.node, s.scope, s.level, s.name, s.state, s.job, s.remote_control as i64, s.rc_url, s.report.to_string()],
+        params![s.account, s.channel_id, s.channel_name, s.kind, s.server, s.slug, s.node, s.scope, s.level, s.name, s.state, s.session_id, s.remote_control as i64, s.rc_url, s.report.to_string()],
     )
 }
 
@@ -111,13 +111,13 @@ impl Store {
     }
 
     /// Store what a host reported. True when a field its `social/seats` event carries changed.
-    pub async fn mirror(&self, account: &str, channel: &str, state: &str, job: &str, remote_control: bool, rc_url: &str, report: Value) -> bool {
-        let v = [account, channel, state, job, rc_url].map(str::to_string);
+    pub async fn mirror(&self, account: &str, channel: &str, state: &str, session: &str, remote_control: bool, rc_url: &str, report: Value) -> bool {
+        let v = [account, channel, state, session, rc_url].map(str::to_string);
         self.0
             .run(move |c| -> bool {
-                let before: Option<(String, String, i64, String)> = c.query_row("SELECT state, job, remote_control, rc_url FROM seat_registry WHERE account = ?1 AND channel_id = ?2", params![v[0], v[1]], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).optional().ok().flatten();
+                let before: Option<(String, String, i64, String)> = c.query_row("SELECT state, session_id, remote_control, rc_url FROM seat_registry WHERE account = ?1 AND channel_id = ?2", params![v[0], v[1]], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).optional().ok().flatten();
                 let Some(before) = before else { return false };
-                let _ = c.execute("UPDATE seat_registry SET state = ?1, job = ?2, remote_control = ?3, rc_url = ?4, report = ?5 WHERE account = ?6 AND channel_id = ?7", params![v[2], v[3], remote_control as i64, v[4], report.to_string(), v[0], v[1]]);
+                let _ = c.execute("UPDATE seat_registry SET state = ?1, session_id = ?2, remote_control = ?3, rc_url = ?4, report = ?5 WHERE account = ?6 AND channel_id = ?7", params![v[2], v[3], remote_control as i64, v[4], report.to_string(), v[0], v[1]]);
                 before != (v[2].clone(), v[3].clone(), remote_control as i64, v[4].clone())
             })
             .await
@@ -185,16 +185,16 @@ impl Store {
             .await
     }
 
-    /// The latest line a host pushed to `(node, job)`: what `send` and `react` default to.
+    /// The latest line a host pushed to `(node, session)`: what `send` and `react` default to.
     #[allow(clippy::too_many_arguments)]
-    pub async fn set_line(&self, node: &str, job: &str, account: &str, channel: &str, thread: &str, message_id: &str, at: f64) {
-        let v = [node, job, account, channel, thread, message_id].map(str::to_string);
+    pub async fn set_line(&self, node: &str, session: &str, account: &str, channel: &str, thread: &str, message_id: &str, at: f64) {
+        let v = [node, session, account, channel, thread, message_id].map(str::to_string);
         let _ = self
             .0
             .run(move |c| {
                 c.execute(
-                    "INSERT INTO seat_lines (node, job, account, channel_id, thread_id, message_id, at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) \
-                     ON CONFLICT (node, job) DO UPDATE SET account = excluded.account, channel_id = excluded.channel_id, thread_id = excluded.thread_id, \
+                    "INSERT INTO seat_lines (node, session_id, account, channel_id, thread_id, message_id, at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) \
+                     ON CONFLICT (node, session_id) DO UPDATE SET account = excluded.account, channel_id = excluded.channel_id, thread_id = excluded.thread_id, \
                      message_id = excluded.message_id, at = excluded.at",
                     params![v[0], v[1], v[2], v[3], v[4], v[5], at],
                 )
@@ -202,11 +202,11 @@ impl Store {
             .await;
     }
 
-    /// `(account, channel, thread, message_id)` of the latest line `(node, job)` got.
-    pub async fn line(&self, node: &str, job: &str) -> Option<(String, String, String, String)> {
-        let (n, j) = (node.to_string(), job.to_string());
+    /// `(account, channel, thread, message_id)` of the latest line `(node, session)` got.
+    pub async fn line(&self, node: &str, session: &str) -> Option<(String, String, String, String)> {
+        let (n, j) = (node.to_string(), session.to_string());
         self.0
-            .run(move |c| c.query_row("SELECT account, channel_id, thread_id, message_id FROM seat_lines WHERE node = ?1 AND job = ?2", params![n, j], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).optional().ok().flatten())
+            .run(move |c| c.query_row("SELECT account, channel_id, thread_id, message_id FROM seat_lines WHERE node = ?1 AND session_id = ?2", params![n, j], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).optional().ok().flatten())
             .await
     }
 

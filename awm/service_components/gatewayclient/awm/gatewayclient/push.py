@@ -17,7 +17,7 @@ from awm.gatewayclient.holders import row_live
 log = logging.getLogger("awm.gatewayclient.push")
 
 PUSH_RETRY_S = 120.0
-_GONE_MARKERS = ("no session on this node has the job id", "is not running")
+_GONE_MARKERS = ("no session on this node has the id", "is not running")
 
 Send = Callable[[str, str, str], Awaitable[str]]
 
@@ -98,16 +98,3 @@ class Pusher:
                 return "dropped"
             await self._sleep(delay)
             delay = min(delay * 2, 30.0)
-
-
-async def live_jobs(node: str) -> set[str] | None:
-    """The running background jobs on ``node`` across its harnesses, or None when it cannot tell."""
-    try:
-        reply = await _reflection(node, "list_other", {})
-    except Exception as exc:  # noqa: BLE001 — an unreachable node keeps what it holds
-        log.info("cannot list sessions on %s: %s", node, exc)
-        return None
-    if not isinstance(reply, dict) or "sessions" not in reply or reply.get("errors"):
-        return None
-    return {str(row["job"]) for row in reply["sessions"]
-            if isinstance(row, dict) and row.get("job") and row_live(row)}

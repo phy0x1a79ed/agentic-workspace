@@ -1,7 +1,7 @@
 //! Every channel this node holds, in `services/channel/channels.db`, read in place.
 //!
-//! A holder is a session on this node: `node` and `session` name it, and `job` is where its
-//! lines are typed. For a machine, `token` is the tether slot and `ref` the session id the
+//! A holder is a session on this node: `node` and `session` name it, and its lines are typed
+//! into `session`. For a machine, `token` is the tether slot and `ref` the session id the
 //! stream gave its mint. `trust` is the other side's level, always untrusted, and
 //! `holder_level` the holder's own. `cursor` follows the conversation and `log_cursor` the tool
 //! log, each in the daemon epoch beside it. `fed` is the relay's id of the last room message
@@ -23,7 +23,6 @@ const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS channels (
     trust     TEXT NOT NULL,
     node      TEXT NOT NULL,
     session   TEXT NOT NULL DEFAULT '',
-    job       TEXT NOT NULL,
     holder    TEXT NOT NULL DEFAULT '',
     link      TEXT NOT NULL DEFAULT '',
     token     TEXT NOT NULL DEFAULT '',
@@ -61,7 +60,6 @@ pub struct Row {
     pub trust: String,
     pub node: String,
     pub session: String,
-    pub job: String,
     pub holder: String,
     pub link: String,
     pub token: String,
@@ -87,7 +85,6 @@ impl Row {
             trust: r.get("trust")?,
             node: r.get("node")?,
             session: r.get("session")?,
-            job: r.get("job")?,
             holder: r.get("holder")?,
             link: r.get("link")?,
             token: r.get("token")?,
@@ -134,6 +131,11 @@ impl Store {
         let conn = db::open(path)?;
         conn.execute_batch(SCHEMA)?;
         db::add_columns(&conn, "channels", &ADDED)?;
+        // MIGRATION(session-ids): a file written before the holder was its session id has a `job` column.
+        let has_job = conn.prepare("PRAGMA table_info(channels)")?.query_map([], |r| r.get::<_, String>(1))?.any(|c| c.is_ok_and(|c| c == "job"));
+        if has_job {
+            conn.execute_batch("ALTER TABLE channels DROP COLUMN job")?;
+        }
         Ok(Self(Mutex::new(conn)))
     }
 
@@ -155,9 +157,9 @@ impl Store {
 
     pub fn add(&self, n: New) -> rusqlite::Result<Row> {
         self.db().execute(
-            "INSERT OR REPLACE INTO channels (name, kind, trust, node, session, job, holder, link, token, opened_at, lasts, ref, epoch, log_epoch, holder_level)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?13, ?14)",
-            params![n.name, n.kind, UNTRUSTED, n.holder.node, n.holder.session, n.holder.job, n.holder.name, n.link, n.token, db::now(), n.lasts, n.r#ref, n.epoch, n.holder.level],
+            "INSERT OR REPLACE INTO channels (name, kind, trust, node, session, holder, link, token, opened_at, lasts, ref, epoch, log_epoch, holder_level)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12, ?13)",
+            params![n.name, n.kind, UNTRUSTED, n.holder.node, n.holder.session, n.holder.name, n.link, n.token, db::now(), n.lasts, n.r#ref, n.epoch, n.holder.level],
         )?;
         self.get(n.name).ok_or(rusqlite::Error::QueryReturnedNoRows)
     }

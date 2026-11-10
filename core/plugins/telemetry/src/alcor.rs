@@ -42,7 +42,13 @@ impl RosterPart {
     pub fn load(state_dir: PathBuf, swarm: Option<String>, singletons: Singletons) -> anyhow::Result<Arc<Self>> {
         let file = state_dir.join("roster.json");
         let roster = match std::fs::read_to_string(&file) {
-            Ok(text) => serde_json::from_str(&text).map_err(|e| anyhow::anyhow!("{}: {e}", file.display()))?,
+            Ok(text) => {
+                let bad = |e: serde_json::Error| anyhow::anyhow!("{}: {e}", file.display());
+                let mut stored: Value = serde_json::from_str(&text).map_err(bad)?;
+                // MIGRATION(session-ids)
+                crate::roster::rekey_by_session(&mut stored);
+                serde_json::from_value(stored).map_err(bad)?
+            }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Roster::default(),
             Err(e) => return Err(anyhow::anyhow!("{}: {e}", file.display())),
         };
@@ -258,7 +264,7 @@ mod tests {
         let part = RosterPart::load(tmp.path().join("services/telemetry"), Some("tony".into()), singles()).unwrap();
         let mut t = service(Service::new(env(tmp.path(), "alcor")), part).into_test().await.unwrap();
         let hello = json!({"swarm": "tony", "node": "mizar", "items": [{"type": "hello", "role": "home",
-            "sessions": [{"job": "a1", "link": "https://claude.ai/code/a1", "task_id": "CW"}]}]});
+            "sessions": [{"session_id": "a1", "link": "https://claude.ai/code/a1", "task_id": "CW"}]}]});
 
         let e = t.call_as("report", hello.clone(), from("lyra"), Some("peer:lyra")).await.unwrap_err();
         assert!(e.message.contains("must come from mizar"), "{e:?}");

@@ -45,7 +45,6 @@ pub const FEED_WAIT_S: f64 = 25.0;
 pub struct Holder {
     pub node: String,
     pub session: String,
-    pub job: String,
     pub name: String,
     pub level: String,
     pub isolated: bool,

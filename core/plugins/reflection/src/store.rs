@@ -15,9 +15,9 @@ use tokio::sync::{Mutex, MutexGuard};
 /// One of reflection's state files.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum File {
-    /// `{<R9 id>: {level, origin, at_ms, job?, hinted?}}`.
+    /// `{<R9 id>: {level, origin, at_ms, hinted?}}`.
     Trust,
-    /// `[{session_id, until, retired, tool, job, name, since_ms, project, scope}]`.
+    /// `[{session_id, until, retired, tool, kept, name, since_ms, project, scope}]`.
     Waits,
     /// `{<R9 id>: at_ms}`, the newest kept.
     Retired,
@@ -116,6 +116,32 @@ impl Store {
     pub fn tickets(&self) -> PathBuf {
         self.path(File::Tickets)
     }
+
+    /// MIGRATION(session-ids): drop the `job` from each trust record, and turn the `job` of each
+    /// wait into `kept`. Both stores are keyed by session id already. Idempotent.
+    pub fn migrate_session_ids(&self) -> io::Result<()> {
+        let read = |f: File| std::fs::read_to_string(self.path(f)).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok());
+        let write = |f: File, v: &Value| std::fs::write(self.path(f), pretty(v));
+        if let Some(Value::Object(mut trust)) = read(File::Trust) {
+            let held = trust.values_mut().filter_map(Value::as_object_mut).filter_map(|r| r.remove("job")).count();
+            if held > 0 {
+                write(File::Trust, &Value::Object(trust))?;
+            }
+        }
+        if let Some(Value::Array(mut waits)) = read(File::Waits) {
+            let mut changed = false;
+            for row in waits.iter_mut().filter_map(Value::as_object_mut) {
+                if let Some(job) = row.remove("job") {
+                    row.insert("kept".into(), Value::Bool(!job.is_null()));
+                    changed = true;
+                }
+            }
+            if changed {
+                write(File::Waits, &Value::Array(waits))?;
+            }
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -127,6 +153,24 @@ mod tests {
     fn pretty_matches_pythons_indent_of_one() {
         let v = json!({"a": {"level": "trusted", "at_ms": 1}, "b": []});
         assert_eq!(pretty(&v), "{\n \"a\": {\n  \"level\": \"trusted\",\n  \"at_ms\": 1\n },\n \"b\": []\n}");
+    }
+
+    // MIGRATION(session-ids)
+    #[test]
+    fn the_job_leaves_trust_records_and_waits() {
+        let tmp = tempfile::tempdir().unwrap();
+        let s = Store::new(tmp.path());
+        std::fs::write(s.path(File::Trust), r#"{"cc1": {"level": "trusted", "job": "j1"}, "cc2": {"level": "cooperative"}}"#).unwrap();
+        std::fs::write(s.path(File::Waits), r#"[{"session_id": "cc1", "job": "j1"}, {"session_id": "cc2", "job": null}, {"session_id": "cc3", "kept": true}]"#).unwrap();
+        for _ in 0..2 {
+            s.migrate_session_ids().unwrap();
+            let read = |f: File| serde_json::from_str::<Value>(&std::fs::read_to_string(s.path(f)).unwrap()).unwrap();
+            assert_eq!(read(File::Trust), json!({"cc1": {"level": "trusted"}, "cc2": {"level": "cooperative"}}));
+            assert_eq!(
+                read(File::Waits),
+                json!([{"session_id": "cc1", "kept": true}, {"session_id": "cc2", "kept": false}, {"session_id": "cc3", "kept": true}])
+            );
+        }
     }
 
     #[tokio::test]

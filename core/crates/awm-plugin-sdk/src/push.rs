@@ -1,4 +1,4 @@
-//! The push loop of channels.md R69: lines typed into a holder's background job, in order per
+//! The push loop of channels.md R69: lines typed into a holder's background session, in order per
 //! holder (`gatewayclient/push.py`). social's seats and the channel plugin deliver through it.
 //!
 //! A [`Pusher`] never drops a line. When the holder is gone, or refuses past the retry window,
@@ -42,8 +42,8 @@ pub type SendFuture = Pin<Box<dyn Future<Output = Outcome> + Send>>;
 pub type SendFn = Arc<dyn Fn(String, String, String) -> SendFuture + Send + Sync>;
 pub type ReturnFn = Arc<dyn Fn(Key, Vec<String>, Returned) + Send + Sync>;
 
-/// Reasons a reflection older than `code: "gone"` gives for a missing job.
-const GONE_MARKERS: [&str; 2] = ["no session on this node has the job id", "is not running"];
+/// Reasons a reflection older than `code: "gone"` gives for a missing session.
+const GONE_MARKERS: [&str; 2] = ["no session on this node has the id", "is not running"];
 
 #[derive(Debug, Clone, Copy)]
 pub struct PushOpts {
@@ -84,13 +84,8 @@ pub async fn reflect(hub: &Hub, node: &str, session: &str, text: &str) -> Outcom
     }
 }
 
-/// The job ids of the running background jobs on `node` across its harnesses, or None when it
-/// cannot tell. Any `errors[]` entry means some harness did not answer, so it cannot tell.
-pub async fn live_jobs(hub: &Hub, node: &str) -> Option<HashSet<String>> {
-    live_rows(hub, node).await.map(|l| l.values().filter_map(|r| r.get("job").and_then(Value::as_str).map(str::to_string)).collect())
-}
-
-/// The `list_other` row of each running background job on `node`, by session id.
+/// The `list_other` row of each running background session on `node`, by session id, or None
+/// when it cannot tell. Any `errors[]` entry means some harness did not answer, so it cannot tell.
 pub async fn live_rows(hub: &Hub, node: &str) -> Option<HashMap<String, Value>> {
     let opts = CallOpts { peer: peer_for(node), timeout: Duration::from_secs(60), ..CallOpts::default() };
     let mut reply = hub.call_with("reflection", "list_other", json!({}), &opts).await.ok()?;
@@ -102,7 +97,7 @@ pub async fn live_rows(hub: &Hub, node: &str) -> Option<HashMap<String, Value>> 
         rows.into_iter()
             .filter(row_live)
             .filter_map(|r| {
-                r.get("job").and_then(Value::as_str).filter(|j| !j.is_empty())?;
+                ["bg", "web"].contains(&r.get("kind").and_then(Value::as_str)?).then_some(())?;
                 let session = r.get("session_id").and_then(Value::as_str).filter(|j| !j.is_empty())?.to_string();
                 Some((session, r))
             })
@@ -243,10 +238,10 @@ mod tests {
         let back: Log = Arc::new(Mutex::new(Vec::new()));
         let (s, b) = (sent.clone(), back.clone());
         let script = Arc::new(script);
-        let send: SendFn = Arc::new(move |_node, job, line| {
+        let send: SendFn = Arc::new(move |_node, session, line| {
             let (s, script) = (s.clone(), script.clone());
             Box::pin(async move {
-                let out = script(&job, &line);
+                let out = script(&session, &line);
                 if out == Outcome::Delivered {
                     s.lock().unwrap().push(line);
                 }

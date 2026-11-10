@@ -79,7 +79,7 @@ impl Outside for HubOutside {
         Box::pin(async move {
             let opts = CallOpts { timeout: Duration::from_secs(10), ..CallOpts::default() };
             match self.hub.call_with("seats", "list", json!({}), &opts).await {
-                Ok(out) => out["seats"].as_array().is_some_and(|rows| rows.iter().any(|r| r["job"].as_str() == Some(session))),
+                Ok(out) => out["seats"].as_array().is_some_and(|rows| rows.iter().any(|r| r["session_id"].as_str() == Some(session))),
                 Err(e) => {
                     tracing::warn!("operations: could not ask seats about {session}: {e}");
                     false
@@ -140,7 +140,7 @@ impl Outside for HubOutside {
             let opts = CallOpts { timeout: Duration::from_secs(10), ..CallOpts::default() };
             let out = self.hub.call_with("telemetry", "nodes", json!({"node": node}), &opts).await.ok()?;
             let sessions = out["nodes"].as_array()?.first()?["sessions"].as_array()?;
-            Some(sessions.iter().filter_map(|s| Some((s["job"].as_str()?.to_string(), s["link"].as_str().map(str::to_string)))).collect())
+            Some(sessions.iter().filter_map(|s| Some((s["session_id"].as_str()?.to_string(), s["link"].as_str().map(str::to_string)))).collect())
         })
     }
 }
@@ -296,7 +296,6 @@ pub fn roster_of(nodes: &Value) -> HashMap<String, Vec<LiveSession>> {
         let node = n["node"].as_str()?.to_string();
         let live = n["sessions"].as_array().cloned().unwrap_or_default().iter().map(|s| LiveSession {
             session_id: text(&s["session_id"]),
-            job: text(&s["job"]),
             name: text(&s["name"]), link: text(&s["link"]), project: text(&s["project"]), scope: text(&s["scope"]),
             state: text(&s["state"]), needs: text(&s["needs"]),
         }).collect();
@@ -307,17 +306,16 @@ pub fn roster_of(nodes: &Value) -> HashMap<String, Vec<LiveSession>> {
 /// One `telemetry/sessions` event: a session that went live, went, took a new name or
 /// changed state.
 pub fn on_session_event(store: &Store, e: &Value) -> anyhow::Result<Vec<String>> {
-    let node = e["node"].as_str().unwrap_or_default();
-    let (sid, job) = (e["session_id"].as_str(), e["job"].as_str());
+    let Some(sid) = e["session_id"].as_str().filter(|s| !s.is_empty()) else { return Ok(vec![]) };
     let mut moved = match e["event"].as_str() {
-        Some("gone") => return Ok(store.session_gone(sid, job, node, e["retired"] == json!(true))?),
-        Some("live") => store.session_live(sid, job, node)?,
-        Some("renamed") => return Ok(store.session_renamed(sid, job, node, e["name"].as_str().unwrap_or_default())?),
+        Some("gone") => return Ok(store.session_gone(sid, e["retired"] == json!(true))?),
+        Some("live") => store.session_live(sid)?,
+        Some("renamed") => return Ok(store.session_renamed(sid, e["name"].as_str().unwrap_or_default())?),
         Some("state") => vec![],
         _ => return Ok(vec![]),
     };
     if let Some(state) = e["state"].as_str() {
-        moved.extend(store.session_state(sid, job, node, state, e["needs"].as_str())?);
+        moved.extend(store.session_state(sid, state, e["needs"].as_str())?);
     }
     Ok(moved)
 }

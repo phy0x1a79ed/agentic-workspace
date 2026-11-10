@@ -3,6 +3,7 @@
 mod brief;
 mod engine;
 mod link;
+mod migrate;
 mod store;
 #[cfg(test)]
 mod tests;
@@ -41,7 +42,7 @@ fn param(name: &str, kind: &str, required: bool) -> Value {
     json!({"name": name, "type": kind, "required": required})
 }
 
-/// The chat `job` answers: the one `channel` names among its seats, else its latest line's.
+/// The chat `session` answers: the one `channel` names among its seats, else its latest line's.
 fn pick<'a>(seats: &'a [Seat], channel: &str, latest: Option<&store::Latest>) -> Result<&'a Seat, VerbError> {
     if channel.is_empty() {
         if let Some(l) = latest {
@@ -66,7 +67,7 @@ fn pick<'a>(seats: &'a [Seat], channel: &str, latest: Option<&store::Latest>) ->
 impl App {
     async fn agent_seats(&self, call: &Call) -> Result<(String, Vec<Seat>), VerbError> {
         let who = holders::caller(call, "a seat").await?;
-        let seats = self.seats.store.of_job(&who.session).await;
+        let seats = self.seats.store.of_session(&who.session).await;
         if seats.is_empty() {
             return Err(VerbError::new("HolderError", "this session is no seat's agent on this node"));
         }
@@ -74,8 +75,8 @@ impl App {
     }
 
     async fn send(&self, call: Call) -> Result<Value, VerbError> {
-        let (job, seats) = self.agent_seats(&call).await?;
-        let latest = self.seats.store.line(&job).await;
+        let (session, seats) = self.agent_seats(&call).await?;
+        let latest = self.seats.store.line(&session).await;
         let seat = pick(&seats, &s(&call.args, "channel"), latest.as_ref())?;
         let text = s(&call.args, "text");
         let files = call.args.get("files").filter(|f| f.as_array().is_some_and(|a| !a.is_empty())).cloned();
@@ -121,22 +122,22 @@ impl App {
         Ok(json!({"ok": true, "seat": self.public(&seat).await}))
     }
 
-    /// A job's level from reflection's row, or None when it does not say.
-    async fn job_level(call: &Call, job: &str) -> Option<Level> {
-        holders::session_rows(call.hub(), false).await?.iter().find(|r| s(r, "session_id") == job).and_then(|r| ["trust", "level"].iter().find_map(|k| r.get(*k).and_then(Value::as_str)).and_then(|t| t.parse().ok()))
+    /// A session's level from reflection's row, or None when it does not say.
+    async fn session_level(call: &Call, session: &str) -> Option<Level> {
+        holders::session_rows(call.hub(), false).await?.iter().find(|r| s(r, "session_id") == session).and_then(|r| ["trust", "level"].iter().find_map(|k| r.get(*k).and_then(Value::as_str)).and_then(|t| t.parse().ok()))
     }
 
     async fn adopt(&self, call: Call) -> Result<Value, VerbError> {
         let (account, channel) = Self::named(&call)?;
-        let job = s(&call.args, "job");
+        let session = s(&call.args, "session_id");
         let seat = self.seats.store.get(&account, &channel).await.ok_or_else(|| Self::no_seat(&account, &channel))?;
         let wanted: Level = seat.decl.level.parse().unwrap_or(Level::Untrusted);
-        match Self::job_level(&call, &job).await {
-            Some(l) if l < wanted => return Err(VerbError::permission(format!("job {job} runs at {}, below the seat's {}", l.as_str(), wanted.as_str()))),
-            None if wanted == Level::Trusted => return Err(VerbError::permission(format!("job {job}'s level cannot be read, and the seat is trusted"))),
+        match Self::session_level(&call, &session).await {
+            Some(l) if l < wanted => return Err(VerbError::permission(format!("session {session} runs at {}, below the seat's {}", l.as_str(), wanted.as_str()))),
+            None if wanted == Level::Trusted => return Err(VerbError::permission(format!("session {session}'s level cannot be read, and the seat is trusted"))),
             _ => {}
         }
-        let seat = self.seats.adopt(&seat.decl, &job).await;
+        let seat = self.seats.adopt(&seat.decl, &session).await;
         Ok(json!({"ok": true, "seat": self.public(&seat).await}))
     }
 }
@@ -162,7 +163,7 @@ fn service(svc: Service, app: Arc<App>) -> Service {
     let svc = verb!(svc, "list", "This node's seats, whether they are paused, and the state of the link to social.", json!([]), list);
     let svc = verb!(svc, "reset", "Clear a seat's start breaker and its missing-scope hold, then look at it again. Trusted only.", account_channel(), reset);
     let svc = verb!(svc, "admit", "Let an outside sender's messages through to a seat. Trusted only.", account_channel(), admit);
-    verb!(svc, "adopt", "Make a running session this seat's agent, keeping its conversation. Trusted only.", json!([param("account", "string", true), param("channel", "string", true), param("job", "string", true)]), adopt)
+    verb!(svc, "adopt", "Make a running session this seat's agent, keeping its conversation. Trusted only.", json!([param("account", "string", true), param("channel", "string", true), param("session_id", "string", true)]), adopt)
 }
 
 #[tokio::main]
@@ -182,7 +183,7 @@ async fn main() -> anyhow::Result<()> {
     };
     let settings: Settings = store.meta("settings").await.and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
     let link = Link::new(Arc::new(link::ThroughDoor(hub.clone())), store.clone(), epoch);
-    let on_return = Arc::new(|(node, job): (String, String), lines: Vec<String>, why| tracing::info!("{} line(s) for hand mount {job}@{node} came back ({why:?})", lines.len()));
+    let on_return = Arc::new(|(node, session): (String, String), lines: Vec<String>, why| tracing::info!("{} line(s) for hand mount {session}@{node} came back ({why:?})", lines.len()));
     let pusher = Pusher::reflection(hub.clone(), on_return);
     let world = Arc::new(world::Live { hub: hub.clone(), here: env.node.clone(), link: link.clone(), pusher });
     let seats = Seats::new(store, settings, world);

@@ -7,6 +7,7 @@ mod buckets;
 mod config;
 mod connectors;
 mod db;
+mod migrate;
 mod seats;
 
 use std::collections::BTreeMap;

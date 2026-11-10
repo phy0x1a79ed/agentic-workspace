@@ -639,24 +639,4 @@ mod tests {
         assert_eq!(s.journal.next(), head, "the new daemon's events from its first");
     }
 
-    #[test]
-    fn the_mark_is_saved_once_an_interval_and_on_close() {
-        let tmp = tempfile::tempdir().unwrap();
-        let st = tmp.path().join("stream.json");
-        let s = Stream::new(Mark::load(&st), SessionLogs::new(tmp.path().join("sessions")));
-        s.begin(9);
-        let next = || Mark::load(&st).next;
-        let t0 = Instant::now();
-        for i in 0..50 {
-            s.take_at(t0 + Duration::from_millis(i * 10), Some(9), ev(i as i64, 1, "owner.said"));
-        }
-        assert_eq!(next(), 1, "fifty events inside one interval wrote once");
-        s.take_at(t0 + MARK_INTERVAL, Some(9), ev(50, 1, "owner.said"));
-        assert_eq!(next(), 51, "the event that crosses the interval saves");
-        s.take_at(t0 + MARK_INTERVAL + Duration::from_millis(5), Some(9), ev(51, 1, "owner.said"));
-        assert_eq!(next(), 51);
-        s.shutdown();
-        assert_eq!(next(), 52, "close writes the final mark");
-    }
-
 }

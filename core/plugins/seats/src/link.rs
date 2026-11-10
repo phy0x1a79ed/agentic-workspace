@@ -148,11 +148,11 @@ impl Link {
                 Err(e) => tracing::warn!("seats: a line row did not parse: {e}"),
             },
             "seed" => seats.seed(decl(), serde_json::from_value::<Seed>(row["state"].clone()).unwrap_or_default()).await,
-            "released" => seats.released(&text("account"), &text("channel_id"), &text("job")).await,
+            "released" => seats.released(&text("account"), &text("channel_id"), &text("session_id")).await,
             "remote_control" => {
                 seats.set_remote_control(&text("account"), &text("channel_id"), row["on"].as_bool().unwrap_or(false)).await;
             }
-            "hand" => seats.hand(&text("job"), &text("line")),
+            "hand" => seats.hand(&text("session_id"), &text("line")),
             other => tracing::warn!("seats: social sent a row of unknown kind {other:?}"),
         }
     }

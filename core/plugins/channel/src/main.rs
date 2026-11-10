@@ -83,7 +83,6 @@ async fn holder(call: &Call) -> Result<Holder, VerbError> {
     Ok(Holder {
         node: h.node,
         session: h.session,
-        job: h.job,
         name: h.name,
         level: call.caller_trust().filter(|t| !t.is_empty()).unwrap_or("untrusted").to_string(),
         isolated: call.caller_session_id().is_some_and(|s| awm_plugin_sdk::ids::SessionId::parse(s).is_ok()),

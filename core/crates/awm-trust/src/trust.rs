@@ -245,7 +245,7 @@ mod tests {
     fn a_to_names_another_session() {
         use serde_json::json;
         assert!(Call::names_other(&json!({"to": {"id": "cc00"}})) && Call::names_other(&json!({"to": {"name": "x"}})));
-        assert!(!Call::names_other(&json!({"job": "abcd1234"})) && !Call::names_other(&json!({"to": null})));
+        assert!(!Call::names_other(&json!({"text": "x"})) && !Call::names_other(&json!({"to": null})));
     }
 
     #[test]

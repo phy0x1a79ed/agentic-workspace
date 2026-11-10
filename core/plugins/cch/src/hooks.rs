@@ -316,8 +316,14 @@ pub fn brief(input: &[u8], hub: &dyn Hub, seen: &Path, claude_pid: impl FnOnce()
         if let Some(pid) = claude_pid() {
             let before = swap_seen(seen, pid, sid);
             if payload.get("source").and_then(Value::as_str) == Some("clear") && !before.is_empty() && before != sid {
-                let args = json!({"session_id": sid, "kind": "clear", "parent": before});
+                let canon = |raw: &str| {
+                    awm_plugin_sdk::ids::SessionId::from_harness_native(awm_plugin_sdk::ids::Platform::Claude, raw)
+                        .map_or_else(|_| raw.to_string(), |id| id.canonical())
+                };
+                let args = json!({"session_id": canon(sid), "kind": "clear", "parent": canon(&before)});
                 let _ = hub.invoke("reflection_harness_event", &args, parent_pid(), CLEAR_TIMEOUT);
+                let ops = json!({"session_id": canon(sid), "parent": canon(&before)});
+                let _ = hub.invoke("operations_hook_session_clear", &ops, parent_pid(), CLEAR_TIMEOUT);
             }
         }
     }

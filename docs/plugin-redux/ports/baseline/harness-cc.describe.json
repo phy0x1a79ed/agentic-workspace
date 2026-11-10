@@ -15,11 +15,6 @@
           "name": "pid",
           "required": false,
           "type": "integer"
-        },
-        {
-          "description": "The job id.",
-          "name": "job",
-          "required": true
         }
       ],
       "verb": "adopt"
@@ -551,7 +546,7 @@
           "required": false
         },
         {
-          "description": "The job this session replaces. Its last turns are appended to the prompt, it is stopped (and removed when pinned) if cx started it, and the new job's lineage records it.",
+          "description": "The session_id this session replaces. Its last turns are appended to the prompt, it is stopped (and removed when pinned) if cx started it, and the new session's lineage records it.",
           "name": "replaces",
           "required": false
         },

@@ -94,10 +94,10 @@ async fn test_a_call_from_a_peer_does_not_fan_out_again() {
 #[tokio::test]
 async fn test_a_session_no_harness_knows_reads_untrusted() {
     let fx = Fx::new();
-    assert_eq!(fx.app.level_of(Some(&my_id()), false, None).await, "trusted");
+    assert_eq!(fx.app.level_of(Some(&my_id()), false).await, "trusted");
     fx.cc().answer("status", json!({"ok": false, "reason": "no such session"}));
-    assert_eq!(fx.app.level_of(Some(&format!("cc{}", "9".repeat(32))), false, None).await, "untrusted");
-    assert_eq!(fx.app.level_of(None, false, None).await, "trusted", "a caller that is no session");
+    assert_eq!(fx.app.level_of(Some(&format!("cc{}", "9".repeat(32))), false).await, "untrusted");
+    assert_eq!(fx.app.level_of(None, false).await, "trusted", "a caller that is no session");
 }
 
 #[tokio::test]
@@ -111,7 +111,7 @@ async fn test_start_other_passes_the_spec_through_and_records_trust() {
     assert_eq!(starts.len(), 1);
     assert!(starts[0]["task_id"] == "t9" && starts[0]["pid"] == ME, "{}", starts[0]);
     assert_eq!(out["trust"], "cooperative", "{out}");
-    assert_eq!(fx.app.level_of(Some(&new_id()), false, None).await, "cooperative");
+    assert_eq!(fx.app.level_of(Some(&new_id()), false).await, "cooperative");
     assert!(fx.trust_file().await[new_id()]["origin"].as_str().unwrap().starts_with("session:"));
 }
 
@@ -137,7 +137,7 @@ async fn test_an_isolated_start_is_untrusted_unless_trust_is_named() {
 #[tokio::test]
 async fn test_a_start_above_the_callers_trust_is_refused() {
     let fx = Fx::new();
-    fx.app.record_trust(&my_id(), "cooperative", "test", None).await;
+    fx.app.record_trust(&my_id(), "cooperative", "test").await;
     let out = fx.run("start_other", json!({"_caller_pid": ME, "project": "awm", "scope": "x", "trust": "trusted"})).await;
     assert!(refused(&out) && error(&out).contains("grant"), "{out}");
     assert!(!fx.cc().verbs().contains(&"start".to_string()));
@@ -154,7 +154,7 @@ async fn test_a_steer_the_callers_trust_forbids_is_refused() {
 }
 
 #[tokio::test]
-async fn test_a_trusted_sessions_stop_of_another_job_still_runs_the_check() {
+async fn test_a_trusted_sessions_stop_of_another_session_still_runs_the_check() {
     for verb in ["stop", "stop_other"] {
         let fx = Fx::new();
         fx.cc().set("j2", peer_row());
@@ -163,19 +163,6 @@ async fn test_a_trusted_sessions_stop_of_another_job_still_runs_the_check() {
         assert_eq!(out, json!({"ok": false, "error": "no"}), "{verb}");
         assert_eq!(fx.asked(), [("trusted".to_string(), verb.to_string(), Some("trusted".to_string()))]);
         assert!(!fx.cc().verbs().contains(&"stop".to_string()));
-    }
-}
-
-/// A cleared or respawned conversation keeps its job, and so its level.
-#[tokio::test]
-async fn test_a_level_follows_the_job_to_a_new_session_id() {
-    for level in ["cooperative", "untrusted"] {
-        let fx = Fx::new();
-        fx.cc().set("j2", peer_row());
-        fx.app.record_trust(&format!("cc{}", "5".repeat(32)), level, "test", Some("j1")).await;
-        assert_eq!(fx.run("whoami", json!({"_caller_pid": ME})).await["trust"], level);
-        assert!(refused(&fx.run("stop", json!({"_caller_pid": ME, "to": {"id": other()}, "confirm": true})).await), "{level}");
-        assert!(ok(&fx.run("stop", json!({"_caller_pid": ME, "to": {"id": my_id()}, "confirm": true})).await), "{level}");
     }
 }
 
@@ -276,7 +263,7 @@ async fn test_the_providers_come_from_the_live_contract_table() {
 // --- wait (sessions.md R51) -----------------------------------------------------
 
 #[tokio::test]
-async fn test_wait_records_the_wait_then_stops_the_caller_keeping_its_job() {
+async fn test_wait_records_the_wait_then_stops_the_caller_keeping_its_conversation() {
     let fx = Fx::new();
     let out = fx.run("wait", json!({"_caller_pid": ME, "until": [other()]})).await;
     assert!(ok(&out) && out["waiting"] == true, "{out}");
@@ -284,7 +271,7 @@ async fn test_wait_records_the_wait_then_stops_the_caller_keeping_its_job() {
     let waits = fx.run("waits", json!({})).await["waits"].clone();
     assert_eq!(waits.as_array().unwrap().len(), 1);
     let row = &waits[0];
-    assert_eq!((&row["session_id"], &row["until"], &row["job"]), (&json!(my_id()), &json!([other()]), &json!("j1")));
+    assert_eq!((&row["session_id"], &row["until"], &row["kept"]), (&json!(my_id()), &json!([other()]), &json!(true)));
     assert_eq!((&row["project"], &row["scope"]), (&json!("awm"), &json!("redux-harness")));
 }
 
@@ -301,7 +288,7 @@ async fn test_a_wait_whose_stop_fails_is_not_left_behind() {
 async fn test_the_last_retire_resumes_the_waiter_with_the_wake_line() {
     let fx = Fx::new();
     fx.run("wait", json!({"_caller_pid": ME, "until": [other(), third()]})).await;
-    fx.cc().set("w2", json!({"session_id": other(), "name": "w2", "job": "w2"}));
+    fx.cc().set("w2", json!({"session_id": other(), "name": "w2"}));
     fx.cc().answer("stop", json!({"ok": true, "session_id": other()}));
     assert_eq!(fx.run("stop", json!({"to": {"id": other()}})).await["woken"], json!([]));
     assert!(!fx.cc().verbs().contains(&"resume".to_string()));
@@ -384,7 +371,7 @@ async fn test_session_of_gives_the_gate_the_mode_and_the_trust() {
 async fn test_a_hand_started_session_reads_as_trusted_and_a_recorded_one_keeps_its_level() {
     let fx = Fx::new();
     assert_eq!(fx.run("session_of", json!({"pid": ME})).await["trust"], "trusted");
-    fx.app.record_trust(&my_id(), "cooperative", "test", None).await;
+    fx.app.record_trust(&my_id(), "cooperative", "test").await;
     assert_eq!(fx.run("session_of", json!({"pid": ME})).await["trust"], "cooperative");
 }
 
@@ -405,10 +392,10 @@ async fn test_a_start_that_loses_the_claim_stops_the_new_session() {
     fx.gw().use_claims();
     fx.gw().with_claims(|c| {
         c.unlisted = true;
-        c.hold("awm", "x", json!({"session_id": format!("cc{}", "9".repeat(32)), "pid": 1, "job": "other"}));
+        c.hold("awm", "x", json!({"session_id": format!("cc{}", "9".repeat(32)), "pid": 1}));
     });
     let out = fx.run("start_other", json!({"_caller_pid": ME, "project": "awm", "scope": "x"})).await;
-    assert!(refused(&out) && out["stopped"] == "abcd1234", "{out}");
+    assert!(refused(&out) && out["stopped"] == json!(new_id()), "{out}");
     let (verb, args) = fx.cc().last();
     assert!(verb == "stop" && args["session_id"] == json!(new_id()) && args["keep"] == false, "{args}");
 }
@@ -419,10 +406,10 @@ async fn test_a_stop_releases_the_sessions_claims() {
         let fx = Fx::new();
         fx.gw().use_claims();
         fx.gw().with_claims(|c| {
-            c.hold("awm", "x", json!({"session_id": my_id(), "pid": ME, "job": "j1"}));
-            c.hold("awm", "y", json!({"session_id": format!("cc{}", "9".repeat(32)), "pid": 1, "job": "other"}));
+            c.hold("awm", "x", json!({"session_id": my_id(), "pid": ME}));
+            c.hold("awm", "y", json!({"session_id": format!("cc{}", "9".repeat(32)), "pid": 1}));
         });
-        fx.cc().answer("stop", json!({"ok": true, "job": "j1", "session_id": my_id()}));
+        fx.cc().answer("stop", json!({"ok": true, "session_id": my_id()}));
         let out = fx.run(verb, json!({"_caller_pid": ME, "to": {"id": my_id()}, "confirm": true})).await;
         assert!(ok(&out), "{verb}: {out}");
         let held: Vec<(String, String)> = fx.gw().with_claims(|c| c.held.iter().map(|(k, _)| k.clone()).collect());

@@ -9,8 +9,8 @@ through that node's edge, which stamps the verified ``peer:<node>`` and carries
 ``_caller_session``, the claim that node read from its own record.
 
 A line is typed into the holder through ``reflection message``, so a holder is a
-background session, named by its job, or an isolated session, named by its R9
-id (``channels.md`` R111). It lives here because a plugin may not import another
+background session or an isolated session, named by its R9 id (``channels.md``
+R111). It lives here because a plugin may not import another
 plugin's code (``install.md`` R117 item 1).
 """
 
@@ -44,8 +44,7 @@ def claim(pid: int) -> dict | None:
     if not rec:
         return None
     return {"kind": "bg" if rec.get("hosting") == "background" else "interactive",
-            "job": str(rec.get("job") or ""), "name": str(rec.get("name") or ""),
-            "session_id": rec.get("session_id")}
+            "name": str(rec.get("name") or ""), "session_id": rec.get("session_id")}
 
 
 def _session_rows(include_stopped: bool = False) -> list[dict] | None:
@@ -74,18 +73,11 @@ def row_live(row: dict) -> bool:
             and row.get("alive") is not False)
 
 
-def _push_target(session: str) -> str | None:
-    """The job ``session`` runs as on this node, its own R9 id when it is isolated, or
-    None when it is neither. A holder is a session of either kind."""
+def _can_hold(session: str) -> bool:
+    """Whether ``session`` is a background (``bg``, or ``web`` for DeepSeek) or an isolated session."""
     rows = _session_rows(include_stopped=True)
-    for row in rows or []:
-        if str(row["session_id"]).lower() != session:
-            continue
-        if row.get("job"):
-            return str(row["job"])
-        if row.get("kind") == ISOLATED:
-            return session
-    return None
+    return any(str(row["session_id"]).lower() == session and row.get("kind") in ("bg", "web", ISOLATED)
+               for row in rows or [])
 
 
 def _canonical_id(text: object) -> str | None:
@@ -107,21 +99,16 @@ def _native_id(raw: object) -> str | None:
 def _from_claim(raw: object) -> dict | None:
     if not isinstance(raw, dict):
         return None
-    # A gateway's door claim names no kind: it carries a job only for a background session.
-    door = "kind" not in raw and "hosting" not in raw and bool(raw.get("node"))
-    return {"background": raw.get("kind") == "bg" or raw.get("hosting") == "background"
-                          or (door and bool(raw.get("job"))),
-            "job": str(raw.get("job") or ""),
+    return {"background": raw.get("kind") in ("bg", "web", ISOLATED) or raw.get("hosting") == "background",
             "session": raw.get("session_id") or _native_id(raw.get("sessionId")),
             "name": str(raw.get("name") or "")}
 
 
 def caller(args: dict, as_: str | None, *, what: str = "a channel") -> dict:
-    """The calling session as ``{node, session, job, name}``, or a :class:`HolderError`.
+    """The calling session as ``{node, session, name}``, or a :class:`HolderError`.
 
-    ``job`` is what a push types into. ``session`` is the R9 id when one is
-    known, else ``job:<job>``. ``pid`` joins them for a session on this node.
-    ``what`` names the held thing in the refusal.
+    ``session`` is the R9 id, which a push types into. ``pid`` joins them for a
+    session on this node. ``what`` names the held thing in the refusal.
     """
     from awm.config import edges
     from awm.gatewayclient import sessions
@@ -133,24 +120,23 @@ def caller(args: dict, as_: str | None, *, what: str = "a channel") -> dict:
         rec = sessions.session_of(pid)
         found = None if not rec else {
             "background": rec.get("hosting") == "background",
-            "job": str(rec.get("job") or ""), "session": rec.get("session_id"),
-            "name": str(rec.get("name") or "")}
+            "session": rec.get("session_id"), "name": str(rec.get("name") or "")}
         node = config.node_name()
     elif sid:
-        target = _push_target(sid)
-        found = {"background": bool(target), "job": target or "", "session": sid, "name": ""}
+        found = {"background": _can_hold(sid), "session": sid, "name": ""}
         node = config.node_name()
     else:
         found, node = _from_claim(args.get(CLAIM_KEY)), edges.caller_peer(as_)
     if not node or found is None:
         raise HolderError(f"no calling session reached {what}: it is held by a "
                           "running agent session, so call this from one")
-    if not found["background"] or not found["job"]:
+    if not found["background"]:
         raise HolderError(f"only a background session, or an isolated one, can hold {what}: "
                           "each message is typed into the holder's prompt")
-    session = sid or found.get("session") or f"job:{found['job']}"
-    holder = {"node": node, "session": str(session), "job": found["job"],
-              "name": found["name"]}
+    session = sid or found.get("session")
+    if not session:
+        raise HolderError(f"the calling session has no session id, so it cannot hold {what}")
+    holder = {"node": node, "session": str(session), "name": found["name"]}
     if has_pid:
         holder["pid"] = pid
     return holder

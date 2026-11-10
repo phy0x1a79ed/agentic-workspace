@@ -39,7 +39,7 @@ fn acked(reply: Result<Value, HubError>) -> Result<Value, String> {
 fn started(reply: &Result<Value, String>) -> Started {
     match reply {
         Ok(v) => match v.get("session_id").and_then(Value::as_str).filter(|j| !j.is_empty()) {
-            Some(session) => Started::Job(session.to_string()),
+            Some(session) => Started::Session(session.to_string()),
             None => Started::Refused(reason(v)),
         },
         Err(why) => Started::Refused(why.clone()),
@@ -60,11 +60,11 @@ impl World for Live {
         started(&acked(self.hub.call_with("reflection", "start_other", spec, &opts(240)).await))
     }
 
-    async fn resume(&self, job: &str, prompt: &str, remote_control: bool, name: &str) -> Started {
-        let reply = acked(self.hub.call_with("reflection", "resume_other", json!({"to": {"id": job}, "prompt": prompt}), &opts(240)).await);
+    async fn resume(&self, session: &str, prompt: &str, remote_control: bool, name: &str) -> Started {
+        let reply = acked(self.hub.call_with("reflection", "resume_other", json!({"to": {"id": session}, "prompt": prompt}), &opts(240)).await);
         let out = started(&reply);
         let linked = reply.ok().and_then(|v| v.get("link").and_then(Value::as_str).map(|l| !l.is_empty())).unwrap_or(false);
-        if let Started::Job(new) = &out {
+        if let Started::Session(new) = &out {
             if linked != remote_control {
                 if let Err(why) = self.remote_control(new, remote_control, name).await {
                     tracing::info!("seats: Remote Control {} for the resumed {new} failed: {why}", if remote_control { "on" } else { "off" });
@@ -74,12 +74,12 @@ impl World for Live {
         out
     }
 
-    async fn stop(&self, job: &str) -> Result<(), String> {
-        acked(self.hub.call_with("reflection", "stop_other", json!({"to": {"id": job}}), &opts(60)).await).map(drop)
+    async fn stop(&self, session: &str) -> Result<(), String> {
+        acked(self.hub.call_with("reflection", "stop_other", json!({"to": {"id": session}}), &opts(60)).await).map(drop)
     }
 
-    async fn push(&self, job: &str, line: &str) -> Outcome {
-        push::reflect(&self.hub, &self.here, job, line).await
+    async fn push(&self, session: &str, line: &str) -> Outcome {
+        push::reflect(&self.hub, &self.here, session, line).await
     }
 
     async fn live(&self) -> Option<Agents> {
@@ -90,7 +90,7 @@ impl World for Live {
             busy: r.get("state").and_then(Value::as_str) == Some("working"),
             active_at: chrono::DateTime::parse_from_rfc3339(&text(&r, "active_at")).map_or(0.0, |t| t.timestamp_millis() as f64 / 1000.0),
         };
-        Some(rows.into_iter().map(|(job, r)| (job, agent(r))).collect())
+        Some(rows.into_iter().map(|(session, r)| (session, agent(r))).collect())
     }
 
     async fn scope_ready(&self, project: &str, scope: &str) -> Option<bool> {
@@ -98,17 +98,12 @@ impl World for Live {
         v.get("exists").and_then(Value::as_bool)
     }
 
-    async fn transcript(&self, job: &str) -> Option<String> {
-        let v = self.hub.call_with("reflection", "transcript", json!({"job": job}), &opts(30)).await.ok()?;
-        v.get("path").and_then(Value::as_str).map(str::to_string)
+    async fn remote_control(&self, session: &str, on: bool, name: &str) -> Result<(), String> {
+        acked(self.hub.call_with("reflection", "remote_control", json!({"to": {"id": session}, "on": on, "name": name}), &opts(60)).await).map(drop)
     }
 
-    async fn remote_control(&self, job: &str, on: bool, name: &str) -> Result<(), String> {
-        acked(self.hub.call_with("reflection", "remote_control", json!({"to": {"id": job}, "on": on, "name": name}), &opts(60)).await).map(drop)
-    }
-
-    fn hand(&self, job: &str, line: &str) {
-        self.pusher.push(&self.here, job, line);
+    fn hand(&self, session: &str, line: &str) {
+        self.pusher.push(&self.here, session, line);
     }
 
     async fn up(&self, kind: &str, body: Value) {

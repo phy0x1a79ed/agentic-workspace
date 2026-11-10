@@ -18,7 +18,7 @@ use awm_harness::claude::records;
 use awm_harness::claude::roster::{self, JobId};
 use awm_harness::claude::{trust, ClaudeHome};
 use awm_plugin_sdk::procfs;
-use awm_plugin_sdk::ids::{Name, SessionId};
+use awm_plugin_sdk::ids::{Name, Platform, SessionId};
 use regex::Regex;
 use serde_json::{json, Value};
 use tokio::sync::{Mutex, OwnedMutexGuard};
@@ -110,6 +110,11 @@ pub struct Target {
 }
 
 impl Target {
+    /// The session's canonical id.
+    pub fn canonical(&self) -> Option<String> {
+        SessionId::from_harness_native(Platform::Claude, self.session_id.as_deref()?).ok().map(|id| id.canonical())
+    }
+
     /// The name, else the job id, else the pid.
     pub fn label(&self) -> String {
         [self.name.as_deref(), self.job.as_deref()]
@@ -523,11 +528,11 @@ async fn bridge_id(home: &ClaudeHome, t: &Target) -> Option<String> {
 }
 
 fn refused(t: &Target, why: &str) -> Value {
-    json!({"ok": false, "refused": true, "session": t.label(), "job": t.job, "reason": why})
+    json!({"ok": false, "refused": true, "session": t.label(), "session_id": t.canonical(), "reason": why})
 }
 
 fn identify(t: &Target) -> Value {
-    json!({"session": t.label(), "job": t.job, "self": t.is_self})
+    json!({"session": t.label(), "session_id": t.canonical(), "self": t.is_self})
 }
 
 fn ok_for(t: &Target) -> Value {
@@ -601,7 +606,7 @@ async fn command<E: Effects>(fx: &E, t: &Target, cmd: Command<'_>) -> Result<Val
             ..SendRequest::new(cmd.text, Some(t.pid))
         };
         let out = fx.send_self(req).await?;
-        return Ok(with(out, json!({"self": true, "job": t.job})));
+        return Ok(with(out, json!({"self": true, "session_id": t.canonical()})));
     }
     if let Some(no) = guards::refusal(cmd.text, cmd.confirm, cmd.allow_modal)? {
         return Ok(no);
@@ -1003,7 +1008,7 @@ pub async fn mcp<E: Effects>(
             change: Some(new_change("mcp", &format!("{action} {}", server.trim()), "")),
             ..SendRequest::new(&line, Some(t.pid))
         };
-        return Ok(with(fx.send_self(req).await?, json!({"self": true, "job": t.job})));
+        return Ok(with(fx.send_self(req).await?, json!({"self": true, "session_id": t.canonical()})));
     }
     Ok(mcp_other(fx, &t, &line).await?)
 }
@@ -1145,7 +1150,7 @@ pub async fn stop<E: Effects, R: Remover>(
     if let (false, false, Some(job)) = (t.alive, t.is_self, t.job.as_deref()) {
         // A job whose session has exited would otherwise stay in the fleet view as stopped for good.
         let result = remove_job(&remove, job).await;
-        let mut out = with(json!({"ok": done(&result), "job": job, "exited": true}), outcome_json(&result));
+        let mut out = with(json!({"ok": done(&result), "session_id": t.canonical(), "exited": true}), outcome_json(&result));
         if !done(&result) {
             out = with(out, json!({"reason": stop_failure(&result)}));
         }
@@ -1245,12 +1250,13 @@ pub async fn remote_control<E: Effects>(
     turn_off(fx, &t).await
 }
 
-/// Put `job`'s Remote Control back the way it was last switched, after a relaunch brought it up
-/// the other way. None when it already matches. One try: a refusal is logged by the caller, never
-/// retried, so a human's own `/rc` later is not fought.
+/// Put the Remote Control of `job`, which holds session `session_id`, back the way it was last
+/// switched, after a relaunch brought it up the other way. None when it already matches. One try:
+/// a refusal is logged by the caller, never retried, so a human's own `/rc` later is not fought.
 pub async fn restore_remote_control<E: Effects>(
     fx: &E,
     job: &str,
+    session_id: &str,
     on: bool,
     name: Option<&str>,
 ) -> Option<Result<Value, ControlError>> {
@@ -1259,7 +1265,7 @@ pub async fn restore_remote_control<E: Effects>(
     if bridged == on {
         return None;
     }
-    Some(remote_control(fx, on, name, Some(job), None).await)
+    Some(remote_control(fx, on, name, Some(session_id), None).await)
 }
 
 async fn turn_on<E: Effects>(fx: &E, t: &Target, name: Option<&str>) -> Result<Value, ControlError> {
@@ -2402,7 +2408,7 @@ mod tests {
         let w = World::new();
         let rm = FakeRemover::new(true);
         let out = stop(&w, Some(sid(OTHER_JOB).as_str()), me_(), false, rm.clone()).await.unwrap();
-        assert!(ok(&out) && out["job"] == json!(OTHER_JOB) && rm.calls() == [OTHER_JOB]);
+        assert!(ok(&out) && out["session_id"] == json!(sid(OTHER_JOB)) && rm.calls() == [OTHER_JOB]);
     }
 
     #[tokio::test]
@@ -2492,7 +2498,7 @@ mod tests {
         let start = Instant::now();
         let out = remote_control(&w, true, Some("phone-1"), Some(sid(OTHER_JOB).as_str()), me_()).await.unwrap();
         assert!(ok(&out) && out["applies"] == json!("turn_end") && out["link"].is_null(), "{out}");
-        assert!(out["session"] == json!("other one") && out["job"] == json!(OTHER_JOB) && out["self"] == json!(false));
+        assert!(out["session"] == json!("other one") && out["session_id"] == json!(sid(OTHER_JOB)) && out["self"] == json!(false));
         assert!(text(&out, "link_reason").contains("mid-turn"));
         assert_eq!(w.typed(), [(OTHER_JOB.to_string(), "/rc phone-1".to_string(), 1)], "one attempt, no retry");
         assert!(start.elapsed() < POLL, "the link timeout is not waited out");
