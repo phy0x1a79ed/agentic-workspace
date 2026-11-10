@@ -77,7 +77,12 @@ One module owns every seat in `social.db`: `seat_registry`, a durable `seat_queu
 **Line, brief, names.**
 - The pushed line is `[<server>/<chat>/<sender>, <level>] ↳<thread> text`, cut at 1500 characters.
 - The brief gives absolute paths under `<workspace>/projects/agentic-commons/main/docs/` (`seat-sop.md`, then `briefs/<platform>-<server-slug>.md`, or `discord-dm.md` for Tony), plus the seat facts.
-- Sessions are named `seat:<platform>/<server>/<chat>`, with slugs in lowercase-hyphen form.
+- Sessions are named `seat:<platform>/<server>/<chat>`, or `seat:<platform>/dm/<person>` for a DM, with slugs in lowercase-hyphen form. Social derives the name from the stored row on each read and stores none. `social seats` gives it as `label`, which telemetry shows on Ops.
+
+**Roster.** A seat lives while `social.toml` declares it. At startup social forgets each stored row the config no longer declares, re-sends each kept seat's declaration, then sends each host its roster. A host forgets any seat its roster lacks, and a live agent of that seat keeps running. `social seats` lists every stored seat, also one whose chat the platform has not listed yet, such as a Discord channel before the gateway is ready.
+- **CAUTION** Social checks a stored row at startup with no sender, so a sender exception alone never drops a DM seat. Put the DM's channel id in the rule's `except` too, as for Slackbot.
+- **CAUTION** A rollout restarts social before the seat hosts. A host on the older build acks a row kind it does not know and loses it. Restart social once more after a rollout that adds a row kind.
+- **CAUTION** Telemetry reads `social seats` only when it connects. Restart telemetry after a change to the roster's shape.
 
 Tests:
 - one test per transition and edge;
