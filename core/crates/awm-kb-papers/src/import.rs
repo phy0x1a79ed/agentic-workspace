@@ -352,7 +352,9 @@ async fn write_entries(
     let titles = zone_texts(semdb, "titles")?;
     let abstracts = zone_texts(semdb, "abstracts")?;
     let db = open_ro(&semdb.join("chunks").join("chunks.sqlite"))?;
-    let mut q = db.prepare("SELECT key, text FROM chunk ORDER BY key, id")?;
+    // Rowid order reads the file front to back. The key index would read it at random, which
+    // takes hours on a busy disk. semdb writes each paper's chunks together, which `done` checks.
+    let mut q = db.prepare("SELECT key, text FROM chunk ORDER BY id")?;
     let mut rows = q.query([])?;
     let mut done: HashSet<String> = HashSet::new();
     let mut batch: Vec<Map<String, Value>> = Vec::new();
@@ -393,6 +395,7 @@ async fn write_entries(
         }
         let Some((k, text)) = row else { break };
         if key.is_empty() {
+            anyhow::ensure!(!done.contains(&k), "the chunks of {k} are not contiguous in chunks.sqlite");
             key = k;
         }
         if !body.is_empty() {
