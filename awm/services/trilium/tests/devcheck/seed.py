@@ -21,7 +21,7 @@ alcor.nodes = [
     {"node": "mizar", "role": "compute", "last_seen": now - 30, "sessions_7d": 41,
      "sessions": [{"job": "daf676e8", "name": "plugin-redux/trilium-vault", "link": "https://claude.ai/code/session_aaa",
                    "scope": "awm/trilium-vault", "remote_control": True}],
-     "uses": [{"tool": "journal", "host": "alcor", "available": True, "last_checked": now - 5, "last_used": now - 100}]},
+     "uses": [{"tool": "journal", "host": "alcor", "listed": True, "last_checked": now - 5, "last_used": now - 100}]},
     {"node": "lyra", "role": "compute", "last_seen": now - 4000, "sessions_7d": 3,
      "sessions": [{"job": "9f", "name": "lab notes", "scope": "lab/x"}], "uses": []},
     {"node": "altair", "role": "compute", "last_seen": now - 90, "sessions_7d": 9, "sessions": []},

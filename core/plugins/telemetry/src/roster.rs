@@ -139,7 +139,8 @@ pub struct ToolUse {
     #[serde(default)]
     pub host: Option<String>,
     /// Whether the node's last check listed the tool. A tool it no longer lists keeps its history.
-    pub available: bool,
+    #[serde(alias = "available")]
+    pub listed: bool,
     #[serde(default)]
     pub last_checked: Option<Ts>,
     #[serde(default)]
@@ -147,6 +148,17 @@ pub struct ToolUse {
     /// The newest call that succeeded: for a tool the node hosts, its last response.
     #[serde(default)]
     pub last_ok: Option<Ts>,
+}
+
+impl ToolUse {
+    /// Whether the node's calls get through: `failing` when its newest call is newer than its newest success.
+    fn reach(&self) -> &'static str {
+        match (self.last_used, self.last_ok) {
+            (None, _) => "untried",
+            (Some(used), Some(ok)) if ok >= used => "ok",
+            _ => "failing",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -289,8 +301,8 @@ impl Roster {
                     })).collect::<Vec<_>>(),
                     "plugins": n.plugins,
                     "uses": n.tools.iter().map(|(t, u)| json!({
-                        "tool": t, "host": u.host, "available": u.available,
-                        "last_checked": u.last_checked, "last_used": u.last_used,
+                        "tool": t, "host": u.host, "listed": u.listed, "reach": u.reach(),
+                        "last_checked": u.last_checked, "last_used": u.last_used, "last_ok": u.last_ok,
                     })).collect::<Vec<_>>(),
                 })
             })
@@ -400,17 +412,17 @@ fn set_services(state: &mut NodeState, rows: Vec<ServiceRow>, now: Ts, out: &mut
 fn set_tools(state: &mut NodeState, rows: Vec<ToolRow>, now: Ts, out: &mut Applied) {
     let listed: BTreeMap<String, Option<String>> = rows.into_iter().map(|r| (r.tool, r.host)).collect();
     for (tool, u) in state.tools.iter_mut() {
-        if !listed.contains_key(tool) && u.available {
-            u.available = false;
+        if !listed.contains_key(tool) && u.listed {
+            u.listed = false;
             out.changed.insert("services");
         }
     }
     for (tool, host) in listed {
         let u = state.tools.entry(tool).or_default();
-        if !u.available || u.host != host {
+        if !u.listed || u.host != host {
             out.changed.insert("services");
         }
-        (u.available, u.host, u.last_checked) = (true, host, Some(now));
+        (u.listed, u.host, u.last_checked) = (true, host, Some(now));
     }
 }
 
@@ -620,6 +632,12 @@ mod tests {
         assert_eq!(row["last_used"], json!(later));
         assert_eq!(v["services"][1]["health"], "unknown", "alcor runs no service with the 2fa tool");
         assert_eq!(v["services"][2]["health"], "unknown", "deneb never reported");
+        let reach = |r: &Roster, at| r.nodes_view(Some("mizar"), at)["nodes"][0]["uses"][1]["reach"].clone();
+        assert_eq!(r.nodes_view(Some("mizar"), later)["nodes"][0]["uses"][0]["reach"], "untried", "mizar never called journal");
+        assert_eq!(reach(&r, later), "failing", "mizar's newest call failed");
+        let fixed = t("2026-11-07T10:10:00Z");
+        r.apply("mizar", vec![Item::Usage { tool: "social".into(), last_used: Some(fixed), last_ok: Some(fixed) }], fixed);
+        assert_eq!(reach(&r, fixed), "ok");
 
         let down = Item::Service { service: "social".into(), plugin: None, up: false, ts: Some(later) };
         let a = r.apply("alcor", vec![down], later);

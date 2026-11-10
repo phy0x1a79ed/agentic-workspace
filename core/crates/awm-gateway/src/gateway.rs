@@ -1197,25 +1197,34 @@ impl Gateway {
             tracing::info!("level gate: refused {tool}.{verb}: {why}");
             return Err(ApiError::new(403, why));
         }
-        if let Some(peer) = peer.filter(|p| p != "local" && *p != self.node) {
-            if SESSION_BOUND.iter().any(|(t, vs)| *t == tool && vs.contains(&verb.as_str())) {
-                return Err(ApiError::new(400, format!(
-                    "{tool}.{verb} acts on your own session on this node, so it cannot run on peer {peer:?}; call it without peer")));
-            }
-            // The far node takes a session claim in the args as this node's word, so a
-            // session's own call carries none: its identity rides in the caller this node stamps.
-            let from_session = ctx.caller.lane == Lane::Local && ctx.caller.session.is_some();
-            let envelope = json!({"verb": verb, "args": if from_session { strip_stamps(&inner) } else { inner }});
-            if let Some(route) = door {
-                let request = crate::door::request(tool, envelope, &ctx.caller, &self.node);
-                return Ok(crate::door::call(&route, &request).await?);
-            }
-            return Ok(self.peers.invoke(&peer, &tool, envelope, ctx).await?);
-        }
-
         let started = Instant::now();
-        let result = self.invoke_local(&tool, &verb, inner, ctx, &tools).await;
-        self.record_call(&tools, &tool, &verb, ctx, result.is_ok(), started);
+        let routed = peer.filter(|p| p != "local" && *p != self.node);
+        // A routed call names no local plugin, so its tool stands in.
+        let plugin = match routed {
+            Some(_) => Some(tool.clone()),
+            None => tools.get(&tool).map(|e| e.plugin.clone()),
+        };
+        let result = match routed {
+            Some(peer) => {
+                if SESSION_BOUND.iter().any(|(t, vs)| *t == tool && vs.contains(&verb.as_str())) {
+                    return Err(ApiError::new(400, format!(
+                        "{tool}.{verb} acts on your own session on this node, so it cannot run on peer {peer:?}; call it without peer")));
+                }
+                // The far node takes a session claim in the args as this node's word, so a
+                // session's own call carries none: its identity rides in the caller this node stamps.
+                let from_session = ctx.caller.lane == Lane::Local && ctx.caller.session.is_some();
+                let envelope = json!({"verb": verb, "args": if from_session { strip_stamps(&inner) } else { inner }});
+                match door {
+                    Some(route) => {
+                        let request = crate::door::request(tool.clone(), envelope, &ctx.caller, &self.node);
+                        crate::door::call(&route, &request).await.map_err(ApiError::from)
+                    }
+                    None => self.peers.invoke(&peer, &tool, envelope, ctx).await.map_err(ApiError::from),
+                }
+            }
+            None => self.invoke_local(&tool, &verb, inner, ctx, &tools).await,
+        };
+        self.record_call(plugin, &tool, &verb, ctx, result.is_ok(), started);
         result
     }
 
@@ -1241,8 +1250,8 @@ impl Gateway {
         self.topics.publish(self, crate::telemetry::SERVICE, crate::telemetry::SERVICES_TOPIC, &payload);
     }
 
-    fn record_call(&self, tools: &BTreeMap<String, ToolEntry>, tool: &str, verb: &str, ctx: &CallContext, ok: bool, started: Instant) {
-        let Some(plugin) = tools.get(tool).map(|e| e.plugin.clone()).filter(|_| verb != DESCRIBE) else { return };
+    fn record_call(&self, plugin: Option<String>, tool: &str, verb: &str, ctx: &CallContext, ok: bool, started: Instant) {
+        let Some(plugin) = plugin.filter(|_| verb != DESCRIBE) else { return };
         let mut ev = UsageEvent::new(plugin, ctx.surface);
         ev.tool = Some(tool.to_string());
         ev.verb = Some(verb.to_string());
@@ -1342,7 +1351,7 @@ impl Gateway {
             Ok::<_, ApiError>(render(&value))
         }
         .await;
-        self.record_call(&tools, tool, verb, &ctx, result.is_ok(), started);
+        self.record_call(tools.get(tool).map(|e| e.plugin.clone()), tool, verb, &ctx, result.is_ok(), started);
         result
     }
 

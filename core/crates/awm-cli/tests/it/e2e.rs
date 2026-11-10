@@ -1047,6 +1047,11 @@ fn a_caller_reaches_a_peers_singleton_through_its_door() {
         assert_eq!((who["caller"]["node"].as_str(), who["caller"]["lane"].as_str()), (Some("alcor"), Some("service")), "{who}");
         assert_eq!(who["as"], "peer:alcor");
     }
+    // alcor's usage log holds each door call, so telemetry sees a failing door.
+    let written: String = std::fs::read_dir(alcor_state.join("usage")).unwrap().flatten().map(|e| std::fs::read_to_string(e.path()).unwrap()).collect();
+    let oks: Vec<Value> = written.lines().map(|l| serde_json::from_str::<Value>(l).unwrap())
+        .filter(|e| e["tool"] == "trilium").map(|e| e["ok"].clone()).collect();
+    assert_eq!(oks, [json!(false), json!(true), json!(true)], "{written}");
     let args = std::fs::read_to_string(&door.args).unwrap();
     assert!(args.contains("\n-p\n2201\n127.0.0.1\nport\n"), "the door listens on deneb's public address, and the request is not on the command line: {args}");
     assert!(args.contains("\n-l\nawm\n"), "the caller logs in as the door's user: {args}");

@@ -190,5 +190,5 @@ async fn a_session_start_and_stop_reach_the_roster_within_seconds() {
 
     // A plugin change reads the node's tools again.
     fake.emit("awm", "plugins", json!({"plugin": "kb", "event": "removed", "version": "x", "root": "core"}));
-    until(&roster, "refresh", |v| v["nodes"][0]["uses"].as_array().unwrap().iter().any(|u| u["tool"] == "social" && u["available"] == false)).await;
+    until(&roster, "refresh", |v| v["nodes"][0]["uses"].as_array().unwrap().iter().any(|u| u["tool"] == "social" && u["listed"] == false)).await;
 }
