@@ -12,7 +12,7 @@ use crate::ledger::CLOSED_KEPT_MS;
 use crate::surface::specs;
 use crate::caller::Frame;
 use crate::store::File;
-use crate::verbs::{split_to, LIFECYCLE, ROW_KEYS};
+use crate::verbs::{LIFECYCLE, ROW_KEYS};
 
 const DAY_MS: i64 = 24 * 3600 * 1000;
 
@@ -50,20 +50,20 @@ const SELF_ACTING: [&str; 14] = [
     "interrupt", "link", "stop",
 ];
 
-/// Every self-acting verb either takes no `job` or defaults it to the caller, and each one finds
+/// Every self-acting verb either takes no `to` or defaults it to the caller, and each one finds
 /// the caller through the one helper: the provider sees the caller's own pid.
 #[tokio::test]
-async fn every_self_acting_verb_defaults_job_or_takes_none() {
+async fn every_self_acting_verb_defaults_to_or_takes_none() {
     let table = specs();
     for verb in SELF_ACTING {
         let spec = table.iter().find(|s| s.verb == verb).unwrap_or_else(|| panic!("{verb} is published"));
-        let job = spec.params.as_array().unwrap().iter().find(|p| p["name"] == "job");
-        assert!(job.is_none_or(|j| j.get("required") != Some(&json!(true))), "{verb} requires job");
+        let to = spec.params.as_array().unwrap().iter().find(|p| p["name"] == "to");
+        assert!(to.is_none_or(|j| j.get("required") != Some(&json!(true))), "{verb} requires to");
 
         let fx = Fx::new();
         let args = crate::app::merged(&json!({"_caller_pid": ME}), &needs(verb));
         let out = fx.run(verb, args).await;
-        assert!(!out.to_string().contains("job is required"), "{verb}: {out}");
+        assert!(!out.to_string().contains("to is required"), "{verb}: {out}");
         assert!(fx.cc().calls_of("resolve").contains(&json!({"pid": ME})), "{verb} did not resolve the caller");
         let acted: Vec<(String, Value)> =
             fx.cc().calls.lock().unwrap().iter().filter(|(v, _)| !["resolve", "find", "status"].contains(&v.as_str())).cloned().collect();
@@ -143,7 +143,7 @@ async fn a_stop_tells_each_peer_that_the_session_retired() {
     fx.set_peers(&["altair", "alcor"]);
     fx.cc().set("j2", peer_row());
     fx.cc().answer("stop", json!({"ok": true, "session_id": other()}));
-    assert!(ok(&fx.run("stop_other", json!({"_caller_pid": ME, "job": "j2"})).await));
+    assert!(ok(&fx.run("stop_other", json!({"_caller_pid": ME, "to": {"id": other()}})).await));
     fx.app.settle().await;
     let told: Vec<(String, String)> = fx.gw().peer_calls().into_iter().filter(|(_, v, _)| v == "retired").map(|(p, _, a)| (p, a["session_id"].as_str().unwrap().into())).collect();
     assert_eq!(told, [("altair".to_string(), other()), ("alcor".to_string(), other())]);
@@ -195,11 +195,11 @@ async fn list_other_names_each_failing_provider_and_fills_every_row_key() {
 #[tokio::test]
 async fn a_message_to_a_gone_session_says_so_in_its_code() {
     let fx = Fx::new();
-    let out = fx.run("message", json!({"_caller_pid": ME, "to": "nobody", "text": "hi"})).await;
+    let out = fx.run("message", json!({"_caller_pid": ME, "to": {"name": "nobody"}, "text": "hi"})).await;
     assert!(refused(&out) && out["code"] == "gone", "{out}");
     fx.cc().set("j2", peer_row());
     fx.cc().answer("send", json!({"ok": false, "unknown_ref": true, "reason": "j2 ended"}));
-    let out = fx.run("message", json!({"_caller_pid": ME, "to": "j2", "text": "hi"})).await;
+    let out = fx.run("message", json!({"_caller_pid": ME, "to": {"id": other()}, "text": "hi"})).await;
     assert_eq!(out["code"], "gone", "{out}");
 }
 
@@ -214,7 +214,7 @@ async fn a_start_refusal_keeps_the_providers_code() {
 // --- sender names ---------------------------------------------------------------
 
 async fn typed(fx: &Fx, frame: Frame, text: &str) -> String {
-    let args = json!({"to": "j2", "text": text});
+    let args = json!({"to": {"id": other()}, "text": text});
     assert!(ok(&fx.app.handle("message", &frame, &args).await));
     fx.cc().calls_of("send").last().unwrap()["text"].as_str().unwrap().to_string()
 }
@@ -238,36 +238,22 @@ async fn the_sender_prefix_comes_from_the_stamps_only() {
     }
 }
 
-#[test]
-fn a_to_splits_at_its_last_at() {
-    for (to, who, node) in [("a/b@mizar", "a/b", Some("mizar")), ("name", "name", None), ("j1", "j1", None), ("x@y@z", "x@y", Some("z"))] {
-        assert_eq!(split_to(to), (who, node), "{to}");
-    }
-}
-
 #[tokio::test]
-async fn an_ambiguous_name_is_refused_with_its_jobs() {
+async fn a_to_is_an_id_or_a_whole_name_and_an_ambiguous_name_lists_the_ids() {
     let fx = Fx::new();
-    for job in ["j3", "j4"] {
-        fx.cc().set(job, json!({"session_id": new_id(), "name": "dup", "pid": 88, "job": job}));
+    let ids = [new_id(), new_id()];
+    for (job, sid) in ["j3", "j4"].iter().zip(&ids) {
+        fx.cc().set(job, json!({"session_id": sid, "name": "Dup", "pid": 88, "job": job}));
     }
-    let out = fx.run("message", json!({"to": "dup", "text": "hi"})).await;
-    assert!(refused(&out), "{out}");
-    let mut jobs: Vec<&str> = out["jobs"].as_array().unwrap().iter().map(|j| j.as_str().unwrap()).collect();
-    jobs.sort_unstable();
-    assert_eq!(jobs, ["j3", "j4"]);
+    let out = fx.run("message", json!({"to": {"name": "dup"}, "text": "hi"})).await;
+    assert!(refused(&out) && ids.iter().all(|i| out.to_string().contains(i.as_str())), "{out}");
     assert!(fx.cc().calls_of("send").is_empty());
-}
-
-#[tokio::test]
-async fn a_to_on_another_node_is_forwarded_with_the_caller() {
-    let fx = Fx::new();
-    fx.gw().peer_answer("far", "message", Ok(json!({"ok": true})));
-    let out = fx.run("message", json!({"to": "one@far", "text": "hi", "_caller_pid": ME})).await;
-    assert!(ok(&out), "{out}");
-    let call = fx.gw().others.lock().unwrap().last().cloned().unwrap();
-    assert_eq!((call.peer.as_deref(), call.caller_pid), (Some("far"), Some(ME)));
-    assert_eq!((call.args["to"].clone(), call.args["text"].clone()), (json!("one"), json!("hi")), "the far side builds the prefix");
+    for bad in [json!("dup"), json!({"id": "j3"}), json!({"id": ids[0], "name": "dup"}), json!({"id": &ids[0][..10]})] {
+        let out = fx.run("message", json!({"to": bad, "text": "hi"})).await;
+        assert!(refused(&out) && fx.cc().calls_of("send").is_empty(), "{bad}: {out}");
+    }
+    fx.cc().set("j5", json!({"session_id": new_id(), "name": "solo", "pid": 89, "job": "j5"}));
+    assert!(ok(&fx.run("message", json!({"to": {"name": "SOLO"}, "text": "hi"})).await));
 }
 
 // --- the sessions topic -----------------------------------------------------------

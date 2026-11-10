@@ -75,8 +75,8 @@ def row_live(row: dict) -> bool:
 
 
 def _push_target(session: str) -> str | None:
-    """What ``reflection message`` types into for ``session`` on this node: its job,
-    its own R9 id when it is isolated, or None when nothing can be typed into it."""
+    """The job ``session`` runs as on this node, its own R9 id when it is isolated, or
+    None when it is neither. A holder is a session of either kind."""
     rows = _session_rows(include_stopped=True)
     for row in rows or []:
         if str(row["session_id"]).lower() != session:
@@ -88,6 +88,22 @@ def _push_target(session: str) -> str | None:
     return None
 
 
+def _canonical_id(text: object) -> str | None:
+    """The text as a canonical session id, or None when it is not one."""
+    try:
+        return ids.SessionId.parse(text).canonical()
+    except ids.BadSessionId:
+        return None
+
+
+def _native_id(raw: object) -> str | None:
+    """The id of a Claude hook payload's own ``sessionId``, or None when it is not a UUID."""
+    try:
+        return ids.SessionId.from_harness_native(ids.PLATFORM_CLAUDE, raw).canonical()
+    except (ids.BadSessionId, AttributeError):
+        return None
+
+
 def _from_claim(raw: object) -> dict | None:
     if not isinstance(raw, dict):
         return None
@@ -96,7 +112,7 @@ def _from_claim(raw: object) -> dict | None:
     return {"background": raw.get("kind") == "bg" or raw.get("hosting") == "background"
                           or (door and bool(raw.get("job"))),
             "job": str(raw.get("job") or ""),
-            "session": raw.get("session_id") or ids.to_r9(raw.get("sessionId")),
+            "session": raw.get("session_id") or _native_id(raw.get("sessionId")),
             "name": str(raw.get("name") or "")}
 
 
@@ -112,7 +128,7 @@ def caller(args: dict, as_: str | None, *, what: str = "a channel") -> dict:
 
     pid = args.get(PID_KEY)
     has_pid = isinstance(pid, int) and not isinstance(pid, bool)
-    sid = ids.to_r9(args.get(SESSION_KEY))
+    sid = _canonical_id(args.get(SESSION_KEY))
     if has_pid:
         rec = sessions.session_of(pid)
         found = None if not rec else {

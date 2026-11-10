@@ -111,13 +111,13 @@ impl Captured {
     }
     fn send(&self) -> awm_plugin_sdk::push::SendFn {
         let me = self.clone();
-        Arc::new(move |node, job, text| {
+        Arc::new(move |node, session, text| {
             let me = me.clone();
             Box::pin(async move {
-                if me.gone.lock().unwrap().contains(&job) {
+                if me.gone.lock().unwrap().contains(&session) {
                     return Outcome::Gone;
                 }
-                me.lines.lock().unwrap().push((node, job, text));
+                me.lines.lock().unwrap().push((node, session, text));
                 Outcome::Delivered
             })
         })
@@ -516,7 +516,7 @@ async fn a_guest_with_only_the_link_talks_and_our_writes_are_not_pushed_back() {
     eventually("the guest's line is pushed", || pushed.any("from visitor: hello from outside")).await;
     let line = pushed.texts().into_iter().find(|t| t.contains("hello from outside")).unwrap();
     assert_eq!(line, format!("room {name} [untrusted] from visitor: hello from outside"));
-    assert_eq!(pushed.lines.lock().unwrap()[0].1, "job-aaaa");
+    assert_eq!(pushed.lines.lock().unwrap()[0].1, tester().session);
 
     let sent = node.ch.write(&tester(), "and hello back", None, Write { target: "say".into(), ..Write::default() }).await.unwrap();
     assert_eq!(sent["sealed"], false);

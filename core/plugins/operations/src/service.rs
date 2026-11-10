@@ -75,14 +75,14 @@ impl Outside for HubOutside {
         Box::pin(awm_plugin_sdk::sessions::session_of(&self.hub, pid))
     }
 
-    fn tell<'a>(&'a self, peer: Option<&'a str>, job: &'a str, text: &'a str) -> BoxFut<'a, bool> {
+    fn tell<'a>(&'a self, peer: Option<&'a str>, session: &'a str, text: &'a str) -> BoxFut<'a, bool> {
         Box::pin(async move {
             let peer = peer.filter(|p| *p != self.node).map(str::to_string);
             let opts = CallOpts { peer, timeout: Duration::from_secs(30), ..CallOpts::default() };
-            match self.hub.call_with("reflection", "message", json!({"to": job, "text": text}), &opts).await {
+            match self.hub.call_with("reflection", "message", json!({"to": {"id": session}, "text": text}), &opts).await {
                 Ok(out) => !failed(&out),
                 Err(e) => {
-                    tracing::warn!("operations: could not tell {job}: {e}");
+                    tracing::warn!("operations: could not tell {session}: {e}");
                     false
                 }
             }
@@ -100,22 +100,22 @@ impl Outside for HubOutside {
         Box::pin(self.send(TONY_DM.0, TONY_DM.1, text))
     }
 
-    fn reach<'a>(&'a self, node: &'a str, job: &'a str) -> BoxFut<'a, Reach> {
+    fn reach<'a>(&'a self, node: &'a str, session: &'a str) -> BoxFut<'a, Reach> {
         Box::pin(async move {
             let peer = Some(node).filter(|n| *n != self.node).map(str::to_string);
             let opts = CallOpts { peer, timeout: Duration::from_secs(30), ..CallOpts::default() };
-            match self.hub.call_with("reflection", "remote_control", json!({"on": true, "job": job}), &opts).await {
+            match self.hub.call_with("reflection", "remote_control", json!({"on": true, "to": {"id": session}}), &opts).await {
                 Ok(out) if out["ok"] == json!(true) => match out["link"].as_str() {
                     Some(url) => Reach::Link(url.to_string()),
                     None if out["applies"] == json!("turn_end") => Reach::Connecting,
                     None => Reach::Unavailable,
                 },
                 Ok(out) => {
-                    tracing::warn!("operations: Remote Control refused for {job} on {node}: {out}");
+                    tracing::warn!("operations: Remote Control refused for {session} on {node}: {out}");
                     Reach::Unavailable
                 }
                 Err(e) => {
-                    tracing::warn!("operations: could not turn on Remote Control for {job} on {node}: {e}");
+                    tracing::warn!("operations: could not turn on Remote Control for {session} on {node}: {e}");
                     Reach::Unavailable
                 }
             }
@@ -159,8 +159,8 @@ impl ArbutusIo for HubArbutus {
         Box::pin(arbutus::run_approve(name, bundles, approved_by))
     }
 
-    fn tell<'a>(&'a self, job: &'a str, line: &'a str) -> BoxFut<'a, Result<(), String>> {
-        Box::pin(async move { awm_plugin_sdk::sessions::tell(&self.hub, job, line).await.map(|_| ()).map_err(|e| e.to_string()) })
+    fn tell<'a>(&'a self, session: &'a str, line: &'a str) -> BoxFut<'a, Result<(), String>> {
+        Box::pin(async move { awm_plugin_sdk::sessions::tell(&self.hub, session, line).await.map(|_| ()).map_err(|e| e.to_string()) })
     }
 }
 

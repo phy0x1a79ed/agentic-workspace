@@ -111,6 +111,8 @@ pub trait Backend: Send + Sync + 'static {
     fn mode_of(&self, pid: Option<i64>) -> impl Future<Output = Mode> + Send;
     /// The session `job` names, or the caller's own ([`control::resolve`]).
     fn resolve(&self, job: Option<String>, pid: Option<u32>) -> impl Future<Output = Result<Target, ControlError>> + Send;
+    /// Every session whose whole name is `name` ([`control::named`]).
+    fn named(&self, name: &str) -> impl Future<Output = Vec<Target>> + Send;
     fn control(&self, op: Op, job: Option<String>, pid: Option<u32>) -> impl Future<Output = Result<Value, ControlError>> + Send;
     /// Type into the caller's own session, arming the resume a slash command is owed.
     fn send(&self, req: SendRequest) -> impl Future<Output = Result<Value, SendError>> + Send;
@@ -516,6 +518,10 @@ impl Backend for Live {
 
     async fn resolve(&self, job: Option<String>, pid: Option<u32>) -> Result<Target, ControlError> {
         control::resolve(&self.fx, job.as_deref(), pid).await
+    }
+
+    async fn named(&self, name: &str) -> Vec<Target> {
+        control::named(&self.fx, name).await
     }
 
     async fn control(&self, op: Op, job: Option<String>, pid: Option<u32>) -> Result<Value, ControlError> {

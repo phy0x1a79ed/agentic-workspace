@@ -18,6 +18,7 @@ use awm_harness::claude::records;
 use awm_harness::claude::roster::{self, JobId};
 use awm_harness::claude::{trust, ClaudeHome};
 use awm_plugin_sdk::procfs;
+use awm_plugin_sdk::ids::{Name, SessionId};
 use regex::Regex;
 use serde_json::{json, Value};
 use tokio::sync::{Mutex, OwnedMutexGuard};
@@ -25,7 +26,6 @@ use tokio::time::{sleep, Instant};
 
 use crate::guards::{self, EmptyText};
 use crate::lane::{AnyLane, Host, Key, Lane, LaneError, Opener};
-use crate::lineage;
 use crate::paths::Paths;
 use crate::permission_mode::{walk_lock, WALK_WAIT};
 use crate::promises::{Change, Promises, APPLIED, FAILED};
@@ -122,7 +122,7 @@ impl Target {
 
 /// No session on this node answers to `unknown_ref`.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error("no session on this node has the job id or name {}; `list_other` shows them", py_repr(.unknown_ref))]
+#[error("no session on this node has the id {}; `list_other` shows them", py_repr(.unknown_ref))]
 pub struct UnknownSession {
     pub unknown_ref: String,
 }
@@ -418,7 +418,32 @@ fn candidates(home: &ClaudeHome) -> Vec<Target> {
             session_id: str_of(rec.get("sessionId")),
         });
     }
+    out.extend(stopped_jobs(home, &out));
     out
+}
+
+/// Every job the daemon's roster no longer lists, by its state record: a stopped session.
+fn stopped_jobs(home: &ClaudeHome, listed: &[Target]) -> Vec<Target> {
+    let mut dirs: Vec<String> = std::fs::read_dir(home.jobs())
+        .map(|d| d.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect())
+        .unwrap_or_default();
+    dirs.sort();
+    dirs.into_iter()
+        .filter(|short| !listed.iter().any(|t| t.job.as_deref() == Some(short)))
+        .filter_map(|short| {
+            let state = records::read_json(&home.job_state(&short));
+            let session_id = str_of(state.get("sessionId"))?;
+            Some(Target {
+                pid: 0,
+                kind: SessionKind::Background,
+                alive: false,
+                name: str_of(state.get("name")),
+                job: Some(short),
+                is_self: false,
+                session_id: Some(session_id),
+            })
+        })
+        .collect()
 }
 
 fn describe(t: &Target) -> String {
@@ -455,41 +480,27 @@ async fn mark_self(home: &ClaudeHome, mut t: Target, caller_pid: Option<u32>) ->
     t
 }
 
-/// The session `job` names (a job id, a session id, or a name, exactly then case-blind), or the
-/// caller's own when it is omitted. A name two sessions share is refused with the candidates.
-pub async fn resolve<E: Effects>(fx: &E, job: Option<&str>, caller_pid: Option<u32>) -> Result<Target, ControlError> {
-    let wanted = job.map(str::trim).unwrap_or_default();
-    if wanted.is_empty() {
+/// The session whose canonical id is `session`, live or stopped, or the caller's own when it is
+/// omitted.
+pub async fn resolve<E: Effects>(fx: &E, session: Option<&str>, caller_pid: Option<u32>) -> Result<Target, ControlError> {
+    let Some(wanted) = session.filter(|s| !s.is_empty()) else {
         return caller_target(fx.home(), caller_pid).await;
-    }
+    };
+    let uuid = SessionId::parse(wanted).map_err(|e| ResolveError(e.to_string()))?.harness_native();
     let home = fx.home().clone();
     let cands = blocking(move || candidates(&home)).await;
-    let folded = wanted.to_lowercase();
-    let tiers: [Vec<&Target>; 3] = [
-        cands
-            .iter()
-            .filter(|t| t.job.as_deref() == Some(wanted) || t.session_id.as_deref() == Some(wanted))
-            .collect(),
-        cands.iter().filter(|t| t.name.as_deref() == Some(wanted)).collect(),
-        cands.iter().filter(|t| t.name.as_deref().unwrap_or_default().to_lowercase() == folded).collect(),
-    ];
-    for matches in tiers {
-        match matches.as_slice() {
-            [] => {}
-            [one] => return Ok(mark_self(fx.home(), (*one).clone(), caller_pid).await),
-            many => {
-                let listed: Vec<String> = many.iter().map(|t| describe(t)).collect();
-                return Err(ResolveError(format!(
-                    "{} names {} sessions: {}. Pass the job id.",
-                    py_repr(wanted),
-                    many.len(),
-                    listed.join("; ")
-                ))
-                .into());
-            }
-        }
+    match cands.into_iter().find(|t| t.session_id.as_deref() == Some(uuid.as_str())) {
+        Some(t) => Ok(mark_self(fx.home(), t, caller_pid).await),
+        None => Err(UnknownSession { unknown_ref: wanted.into() }.into()),
     }
-    Err(UnknownSession { unknown_ref: wanted.into() }.into())
+}
+
+/// Every session, live or stopped, whose whole name is `name`, any case.
+pub async fn named<E: Effects>(fx: &E, name: &str) -> Vec<Target> {
+    let Ok(name) = Name::new(name) else { return vec![] };
+    let home = fx.home().clone();
+    let cands = blocking(move || candidates(&home)).await;
+    cands.into_iter().filter(|t| t.name.as_deref().is_some_and(|n| name.matches(n))).collect()
 }
 
 fn require_running(t: &Target) -> Result<(), ControlError> {
@@ -776,12 +787,6 @@ fn is_model_name(name: &str) -> bool {
         && chars.all(|c| c.is_ascii_alphanumeric() || "._[]:-".contains(c))
 }
 
-fn is_rc_name(name: &str) -> bool {
-    let b = name.as_bytes();
-    (1..=64).contains(&b.len())
-        && b[0].is_ascii_alphanumeric()
-        && b[1..].iter().all(|c| c.is_ascii_alphanumeric() || b"._-".contains(c))
-}
 
 /// Switch the target's model with `/model <name>`, answering the confirm dialog it may raise.
 pub async fn model<E: Effects>(
@@ -1131,33 +1136,24 @@ async fn remove_job<R: Remover>(remove: &R, job: &str) -> StopOutcome {
 /// returned. A terminal session the caller retires itself is left open for its terminal to close.
 pub async fn stop<E: Effects, R: Remover>(
     fx: &E,
-    job: Option<&str>,
+    session: Option<&str>,
     caller_pid: Option<u32>,
     confirm: bool,
     remove: R,
 ) -> Result<Value, ControlError> {
-    let Some(job) = job.map(str::trim).filter(|j| !j.is_empty()) else {
-        return Ok(reason("job is required: the session to stop"));
+    let Some(session) = session.filter(|s| !s.is_empty()) else {
+        return Ok(reason("session_id is required: the session to stop"));
     };
-    let t = match resolve(fx, Some(job), caller_pid).await {
-        Ok(t) => t,
-        Err(e @ (ControlError::Resolve(_) | ControlError::Unknown(_))) => {
-            // A job whose session has exited has no live row to resolve, and would otherwise stay
-            // in the fleet view as stopped for good.
-            let listed = lineage::is_job(job)
-                && tokio::fs::metadata(fx.home().jobs().join(job)).await.is_ok_and(|m| m.is_dir());
-            if !listed {
-                return Err(e);
-            }
-            let result = remove_job(&remove, job).await;
-            let mut out = with(json!({"ok": done(&result), "job": job, "exited": true}), outcome_json(&result));
-            if !done(&result) {
-                out = with(out, json!({"reason": stop_failure(&result)}));
-            }
-            return Ok(out);
+    let t = resolve(fx, Some(session), caller_pid).await?;
+    if let (false, false, Some(job)) = (t.alive, t.is_self, t.job.as_deref()) {
+        // A job whose session has exited would otherwise stay in the fleet view as stopped for good.
+        let result = remove_job(&remove, job).await;
+        let mut out = with(json!({"ok": done(&result), "job": job, "exited": true}), outcome_json(&result));
+        if !done(&result) {
+            out = with(out, json!({"reason": stop_failure(&result)}));
         }
-        Err(e) => return Err(e),
-    };
+        return Ok(out);
+    }
     let terminal = t.kind != SessionKind::Background || t.job.as_deref().is_none_or(str::is_empty);
     if terminal && t.is_self && confirm {
         // The caller learns of it, so the sessions that wait on it wake. Its terminal closes it.
@@ -1235,14 +1231,15 @@ pub async fn remote_control<E: Effects>(
     require_running(&t)?;
     let bridge = bridge_id(fx.home(), &t).await;
     if on {
-        if name.is_some_and(|n| !is_rc_name(n)) {
-            return Ok(reason("name must be a plain label"));
-        }
+        let name = match name.map(Name::new).transpose() {
+            Ok(n) => n.map(|n| n.rc()),
+            Err(e) => return Ok(reason(&e.to_string())),
+        };
         if bridge.is_some() {
             let out = with(ok_for(&t), json!({"changed": false, "detail": "Remote Control is already on"}));
             return Ok(with(out, link_fields(bridge.as_deref())));
         }
-        return turn_on(fx, &t, name).await;
+        return turn_on(fx, &t, name.as_deref()).await;
     }
     if bridge.is_none() {
         let out = with(ok_for(&t), json!({"changed": false, "detail": "Remote Control is already off"}));
@@ -1837,6 +1834,15 @@ mod tests {
     const SELF_JOB: &str = "aaaaaaaa";
     const OTHER_JOB: &str = "bbbbbbbb";
     const DEAD_JOB: &str = "cccccccc";
+
+    /// The canonical id of the session test job `short` holds.
+    fn sid(short: &str) -> String {
+        format!("cc{short}000040008000000000000000")
+    }
+
+    fn uuid(short: &str) -> String {
+        format!("{short}-0000-4000-8000-000000000000")
+    }
     // Above the kernel's largest pid, so no process ever holds it.
     const DEAD_PID: u32 = (1 << 22) + 12345;
     const PLAIN: &str = "some output\n? for shortcuts";
@@ -2081,14 +2087,14 @@ mod tests {
                 std::fs::read(&roster).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or(json!({"workers": {}}));
             doc["workers"][short] = json!({
                 "replPid": pid,
-                "sessionId": format!("sid-{short}"),
+                "sessionId": uuid(short),
                 "replProcStart": if alive { proc_start(pid) } else { "1".into() },
             });
             std::fs::write(&roster, doc.to_string()).unwrap();
             std::fs::create_dir_all(self.home.jobs().join(short)).unwrap();
-            std::fs::write(self.home.job_state(short), json!({"name": name}).to_string()).unwrap();
+            std::fs::write(self.home.job_state(short), json!({"name": name, "sessionId": uuid(short)}).to_string()).unwrap();
             if alive {
-                self.record(pid, "bg", name, json!({"jobId": short}));
+                self.record(pid, "bg", name, json!({"jobId": short, "sessionId": uuid(short)}));
             }
         }
 
@@ -2298,13 +2304,16 @@ mod tests {
     // --- resolving `job` ---
 
     #[tokio::test]
-    async fn test_an_ambiguous_name_is_refused_with_the_candidates() {
+    async fn test_a_name_finds_every_session_it_names_live_or_stopped() {
         let w = World::new();
-        w.add_job(DEAD_JOB, "other one", DEAD_PID, false);
-        let err = resolve(&w, Some("other one"), me_()).await.unwrap_err();
-        let said = err.to_string();
-        assert!(matches!(err, ControlError::Resolve(_)));
-        assert!(said.contains(OTHER_JOB) && said.contains(DEAD_JOB) && said.contains("job id"), "{said}");
+        w.add_job(DEAD_JOB, "Other One", DEAD_PID, false);
+        let mut jobs: Vec<String> = named(&w, "other one").await.into_iter().filter_map(|t| t.job).collect();
+        jobs.sort();
+        assert_eq!(jobs, [OTHER_JOB, DEAD_JOB]);
+        assert!(named(&w, "other").await.is_empty());
+        let dead = resolve(&w, Some(&sid(DEAD_JOB)), me_()).await.unwrap();
+        assert!(!dead.alive && dead.job.as_deref() == Some(DEAD_JOB));
+        assert!(matches!(resolve(&w, Some(DEAD_JOB), me_()).await, Err(ControlError::Resolve(_))));
     }
 
     // --- link ---
@@ -2315,7 +2324,8 @@ mod tests {
     async fn test_a_slash_verb_types_its_command_into_the_named_session() {
         for (verb, arg, typed) in [("model", "opus", "/model opus"), ("effort", "medium", "/effort medium"), ("rename", "  new name ", "/rename new name")] {
             let w = World::new();
-            let job = Some(OTHER_JOB);
+            let other = sid(OTHER_JOB);
+            let job = Some(other.as_str());
             let out = match verb {
                 "model" => model(&w, arg, job, me_()).await,
                 "effort" => effort(&w, arg, job, me_()).await,
@@ -2334,7 +2344,8 @@ mod tests {
             let w = World::new();
             w.s().status = status.into();
             w.set_screen(FakeScreen::new(&[&screen]));
-            let job = Some(OTHER_JOB);
+            let other = sid(OTHER_JOB);
+            let job = Some(other.as_str());
             let outs = [
                 model(&w, "opus", job, me_()).await.unwrap(),
                 effort(&w, "low", job, me_()).await.unwrap(),
@@ -2358,7 +2369,7 @@ mod tests {
     #[tokio::test]
     async fn test_message_types_the_text_into_the_other_session() {
         let w = World::new();
-        let out = message(&w, Some("other one"), "please look at X", me_(), false).await.unwrap();
+        let out = message(&w, Some(sid(OTHER_JOB).as_str()), "please look at X", me_(), false).await.unwrap();
         assert!(ok(&out));
         assert_eq!(w.typed(), [(OTHER_JOB.to_string(), "please look at X".to_string(), sender::ATTEMPTS)]);
     }
@@ -2393,7 +2404,7 @@ mod tests {
     async fn test_stop_removes_another_session() {
         let w = World::new();
         let rm = FakeRemover::new(true);
-        let out = stop(&w, Some("other one"), me_(), false, rm.clone()).await.unwrap();
+        let out = stop(&w, Some(sid(OTHER_JOB).as_str()), me_(), false, rm.clone()).await.unwrap();
         assert!(ok(&out) && out["job"] == json!(OTHER_JOB) && rm.calls() == [OTHER_JOB]);
     }
 
@@ -2401,7 +2412,7 @@ mod tests {
     async fn test_stop_refuses_the_callers_own_session_without_confirm() {
         let w = World::new();
         let rm = FakeRemover::new(true);
-        let out = stop(&w, Some("me"), me_(), false, rm.clone()).await.unwrap();
+        let out = stop(&w, Some(sid(SELF_JOB).as_str()), me_(), false, rm.clone()).await.unwrap();
         assert!(out["ok"] == json!(false) && out["refused"] == json!(true) && out["kind"] == json!("self"));
         assert!(rm.calls().is_empty() && w.spawned_count() == 0);
     }
@@ -2410,7 +2421,7 @@ mod tests {
     async fn test_stop_of_own_session_with_confirm_runs_after_the_call_returns() {
         let w = World::new();
         let rm = FakeRemover::new(true);
-        let out = stop(&w, Some(SELF_JOB), me_(), true, rm.clone()).await.unwrap();
+        let out = stop(&w, Some(sid(SELF_JOB).as_str()), me_(), true, rm.clone()).await.unwrap();
         assert!(ok(&out) && out["stopping"] == json!(true) && rm.calls().is_empty());
         run_spawned(&w).await;
         assert_eq!(rm.calls(), [SELF_JOB]);
@@ -2429,7 +2440,7 @@ mod tests {
             sleep(Duration::from_millis(750)).await;
             later.set_bridge(OTHER_JOB, "cse_01New");
         });
-        let out = remote_control(&w, true, Some("phone-1"), Some("other one"), me_()).await.unwrap();
+        let out = remote_control(&w, true, Some("phone-1"), Some(sid(OTHER_JOB).as_str()), me_()).await.unwrap();
         assert!(ok(&out) && out["link"] == json!("https://claude.ai/code/session_01New"), "{out}");
         assert_eq!(w.typed(), [(OTHER_JOB.to_string(), "/rc phone-1".to_string(), 1)], "one attempt, no retry");
         assert!(out.get("link_reason").is_none());
@@ -2453,7 +2464,7 @@ mod tests {
                 at.set_bridge(OTHER_JOB, "");
             }
         });
-        remote_control(w, false, None, Some(OTHER_JOB), me_()).await.unwrap()
+        remote_control(w, false, None, Some(sid(OTHER_JOB).as_str()), me_()).await.unwrap()
     }
 
     #[tokio::test(start_paused = true)]
@@ -2482,7 +2493,7 @@ mod tests {
         let w = World::new();
         w.s().status = "busy".into();
         let start = Instant::now();
-        let out = remote_control(&w, true, Some("phone-1"), Some(OTHER_JOB), me_()).await.unwrap();
+        let out = remote_control(&w, true, Some("phone-1"), Some(sid(OTHER_JOB).as_str()), me_()).await.unwrap();
         assert!(ok(&out) && out["applies"] == json!("turn_end") && out["link"].is_null(), "{out}");
         assert!(out["session"] == json!("other one") && out["job"] == json!(OTHER_JOB) && out["self"] == json!(false));
         assert!(text(&out, "link_reason").contains("mid-turn"));
@@ -2496,7 +2507,7 @@ mod tests {
     async fn test_an_effort_dialog_with_the_cursor_on_yes_is_answered_with_enter() {
         let w = World::new();
         let shown = w.after_typing(&effort_yes());
-        let out = effort(&w, "low", Some(OTHER_JOB), me_()).await.unwrap();
+        let out = effort(&w, "low", Some(sid(OTHER_JOB).as_str()), me_()).await.unwrap();
         assert!(ok(&out) && out["switch_dialog"]["answered"] == json!(true), "{out}");
         assert!(shown.presses() == [Key::Enter] && shown.closed());
     }
@@ -2505,7 +2516,7 @@ mod tests {
     async fn test_a_dialog_with_the_cursor_on_no_is_closed_with_escape() {
         let w = World::new();
         let shown = w.after_typing(&effort_no());
-        let out = effort(&w, "low", Some(OTHER_JOB), me_()).await.unwrap();
+        let out = effort(&w, "low", Some(sid(OTHER_JOB).as_str()), me_()).await.unwrap();
         assert!(out["ok"] == json!(false) && text(&out, "reason").contains("No, go back"), "{out}");
         assert_eq!(shown.presses(), [Key::Escape]);
     }
@@ -2517,7 +2528,7 @@ mod tests {
         let w = World::new();
         let shown = w.after_typing(&effort_yes());
         shown.on_press(w.cli_saves(save_effort));
-        let out = effort(&w, "low", Some(OTHER_JOB), me_()).await.unwrap();
+        let out = effort(&w, "low", Some(sid(OTHER_JOB).as_str()), me_()).await.unwrap();
         assert!(ok(&out) && shown.presses() == [Key::Enter]);
         assert_eq!(out["switch_dialog"]["defaults_restored"], json!([format!("modelSettings.{MODEL_KEY}.effortLevel")]));
         assert_eq!(w.settings(), settings_text(), "byte for byte, formatting too");
@@ -2532,7 +2543,7 @@ mod tests {
             doc["theme"] = json!("light");
             doc["newKey"] = json!({"a": 1});
         }));
-        effort(&w, "low", Some(OTHER_JOB), me_()).await.unwrap();
+        effort(&w, "low", Some(sid(OTHER_JOB).as_str()), me_()).await.unwrap();
         let doc: Map<String, Value> = serde_json::from_str(&w.settings()).unwrap();
         assert!(doc["theme"] == json!("light") && doc["newKey"] == json!({"a": 1}));
         assert_eq!(doc["modelSettings"][MODEL_KEY]["effortLevel"], json!("high"));
@@ -2568,7 +2579,7 @@ mod tests {
     async fn test_cd_types_the_resolved_path_and_sees_the_session_arrive() {
         let w = World::new();
         let there = moves(&w);
-        let out = cd(&w, &format!("{}/", shown(&there)), Some("other one"), me_(), "").await.unwrap();
+        let out = cd(&w, &format!("{}/", shown(&there)), Some(sid(OTHER_JOB).as_str()), me_(), "").await.unwrap();
         assert!(ok(&out) && out["moved"] == json!(true) && out["cwd"] == json!(shown(&there)), "{out}");
         assert_eq!(out["mcp_reconnected"], json!(true));
         assert_eq!(
@@ -2585,7 +2596,7 @@ mod tests {
         for path in ["", "relative/dir", "/no/such/dir", "/tmp\n/etc"] {
             let w = World::new();
             moves(&w);
-            let out = cd(&w, path, Some(OTHER_JOB), me_(), "").await.unwrap();
+            let out = cd(&w, path, Some(sid(OTHER_JOB).as_str()), me_(), "").await.unwrap();
             assert_eq!(out["ok"], json!(false));
             assert!(w.typed().is_empty() && w.sent().is_empty() && w.opened() == 0);
         }
@@ -2600,7 +2611,7 @@ mod tests {
             s.settled = false;
             s.follow_cd = false;
         }
-        let out = cd(&w, &shown(&there), Some(OTHER_JOB), me_(), "").await.unwrap();
+        let out = cd(&w, &shown(&there), Some(sid(OTHER_JOB).as_str()), me_(), "").await.unwrap();
         assert!(ok(&out) && out["moved"] == json!(false) && text(&out, "detail").contains("mid-turn"));
         assert_eq!(w.typed_texts(), [format!("/cd {}", shown(&there))]);
         w.set_cwd(parent(), &shown(&there));
@@ -2614,7 +2625,7 @@ mod tests {
         let there = moves(&w);
         w.s().follow_cd = false;
         let start = Instant::now();
-        let out = cd(&w, &shown(&there), Some(OTHER_JOB), me_(), "").await.unwrap();
+        let out = cd(&w, &shown(&there), Some(sid(OTHER_JOB).as_str()), me_(), "").await.unwrap();
         assert!(ok(&out) && out["moved"] == json!(false) && text(&out, "detail").contains("list_other"));
         assert!(start.elapsed() >= MOVE_WAIT);
         assert!(out["mcp_reconnected"] == json!(false) && w.typed().len() == 1);
@@ -2626,7 +2637,7 @@ mod tests {
     async fn test_mcp_types_the_panel_free_line_and_reads_what_it_printed() {
         let w = World::new();
         w.s().output = Some("Successfully reconnected to awm".into());
-        let out = mcp(&w, "reconnect", "awm", Some("other one"), me_()).await.unwrap();
+        let out = mcp(&w, "reconnect", "awm", Some(sid(OTHER_JOB).as_str()), me_()).await.unwrap();
         assert!(ok(&out) && out["output"] == json!("Successfully reconnected to awm"));
         assert_eq!(w.typed(), [(OTHER_JOB.to_string(), "/mcp reconnect awm".to_string(), sender::ATTEMPTS)]);
         assert_eq!(w.s().output_seen, ["/mcp reconnect awm"]);

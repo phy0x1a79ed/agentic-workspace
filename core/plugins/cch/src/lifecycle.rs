@@ -16,7 +16,7 @@ use awm_harness::claude::records::{read_json, read_json_strict, Object};
 use awm_harness::claude::roster::{self, Job, JobId};
 use awm_harness::claude::{kept, pins, trust};
 use awm_plugin_sdk::config::{self, EdgeList};
-use awm_plugin_sdk::ids;
+use awm_plugin_sdk::ids::{Name, Platform, SessionId};
 use regex::Regex;
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -89,7 +89,7 @@ pub const BRIEF: &str = r#"You are a worker session, started by {started_by}. {w
 **Close the session when the work is done.** Deploy your work as its project's protocol says. Skip the deploy only when no deploy is possible, as for a design draft. When a coordinator started you for one part of a larger task, leave your branch to the coordinator, which deploys. For awm, load the `ship` skill. The work is done when three things hold: what you were asked for is merged and deployed, or merged to `dev` while a release train already holds `release-candidate`; it is verified; and nothing waits on you. You close on your own: Tony does not accept the work first. When you find follow-up issues, stay live and raise each one with `request_human`. To sign off, run the `retire` skill. Where it is missing, sign off by hand:
 1. Run the `debrief` skill. Its journal is your report, and it cites the journals that shaped your work (`journal(verb="reads")` lists the candidates).
 2. Report what you did {report_to}.
-3. Close with `reflection(verb="stop", args={{job:<your job>, confirm:true}})`. `reflection(verb="whoami")` names your job."#;
+3. Close with `reflection(verb="stop", args={{confirm:true}})`. It stops your own session, so it takes no `to`."#;
 
 /// Wrap the first prompt of every briefed start, whoever starts it: a session, a routine's fixer,
 /// a deploy's refresh or a board button.
@@ -109,7 +109,7 @@ pub const HINT_PROJECT: &str = "Your starter suggests the project {project}. ";
 
 pub const TASK_JOINED: &str = "You joined task `{task_id}` as its {role}.";
 
-pub const REPORT_TO_PARENT: &str = r#"to the session that started you: `SendMessage` it when `ListAgents` lists it, else `reflection(verb="message", args={{to:"{target}", text:…}})`"#;
+pub const REPORT_TO_PARENT: &str = r#"to the session that started you: `SendMessage` it when `ListAgents` lists it, else `reflection(verb="message", args={{to:{{id:"{target}"}}, text:…}})`"#;
 pub const REPORT_TO_PROMPT: &str =
     "where your first prompt asks. When it names no place, your debrief journal is the report";
 
@@ -125,8 +125,6 @@ static PATH_PART: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[A-Za-z0-9][A
 static TOOL: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^[A-Za-z][A-Za-z0-9_*.-]{0,127}(\([^,()\n]{1,200}\))?$").unwrap());
 static MODEL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[A-Za-z0-9][A-Za-z0-9._\[\]:-]*$").unwrap());
-static RC_NAME: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$").unwrap());
-static RC_UNSAFE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[^A-Za-z0-9._-]+").unwrap());
 static UUID: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$").unwrap());
 /// A task id (sessions.md R58): the first 8 characters of a urlsafe base64 UUID.
@@ -742,25 +740,15 @@ fn autocompact(value: Option<&Value>) -> Result<Option<i64>, Refused> {
 
 /// The Remote Control name to use, or None when it is off (sessions.md R146).
 ///
-/// Remote Control is on unless the caller passes false. The flag takes an optional value, and the
-/// CLI reads a value that starts with `-` as a new flag, so a name is held to a plain label. The
-/// default and `true` derive one from the session name, each `/` and other unsafe run written as `-`.
+/// Remote Control is on unless the caller passes false. The default and `true` name it after the
+/// session, a string names it itself, each in the form `/rc` takes ([`Name::rc`]).
 fn remote_control(value: Option<&Value>, name: &str) -> Result<Option<String>, Refused> {
+    let label = |text: &str| Name::new(text).map(|n| Some(n.rc())).map_err(|e| Refused::new(e.to_string()));
     match value {
         Some(Value::Bool(false)) => Ok(None),
-        None | Some(Value::Bool(true)) => {
-            let derived: String =
-                RC_UNSAFE.replace_all(name, "-").trim_matches(|c| "-._".contains(c)).chars().take(64).collect();
-            if py_match(&RC_NAME, &derived) {
-                Ok(Some(derived))
-            } else if value.is_none() {
-                Ok(None)
-            } else {
-                Err(Refused::new("remote_control needs a name; pass one explicitly"))
-            }
-        }
-        Some(Value::String(s)) if py_match(&RC_NAME, py_strip(s)) => Ok(Some(py_strip(s).to_string())),
-        Some(_) => Err(Refused::new("remote_control must be true, false or a plain label")),
+        None | Some(Value::Bool(true)) => label(name),
+        Some(Value::String(s)) => label(s),
+        Some(_) => Err(Refused::new("remote_control must be true, false or a label")),
     }
 }
 
@@ -853,13 +841,12 @@ fn fill(template: &str, vars: &[(&str, &str)]) -> String {
 /// supplied. A background parent is addressed by its job id, which a rename does not change; an
 /// interactive one by its name.
 fn starter(spec: &Spec, caller_rec: Option<&Object>) -> (String, String) {
-    if let (Some(parent), Some(rec)) = (session_ref(caller_rec), caller_rec) {
+    if let Some((parent, rec)) = caller_rec.and_then(|r| Some((claude_r9(text(r.get("sessionId")))?, r))) {
         let name = rec.get("name").filter(|v| truthy(Some(v))).map(py_str).unwrap_or_default();
         let name = py_strip(&name).to_string();
         let started_by =
             if name.is_empty() { format!("the session {parent}") } else { format!("the session {name} ({parent})") };
-        let target = if text(rec.get("kind")) == Some("bg") || name.is_empty() { parent } else { name };
-        return (started_by, fill(REPORT_TO_PARENT, &[("target", &target)]));
+        return (started_by, fill(REPORT_TO_PARENT, &[("target", &parent)]));
     }
     (spec.started_by.clone().unwrap_or_else(|| "an awm service".into()), REPORT_TO_PROMPT.to_string())
 }
@@ -990,7 +977,7 @@ async fn start_inner<E: Effects>(fx: &E, args: &Value, as_: Option<&str>) -> Res
     record.insert("pinned".into(), json!(spec.pin));
     record.insert("brief".into(), json!(spec.brief));
     record.insert("lobby".into(), json!(spec.lobby));
-    if let Some(r9) = caller_rec.as_ref().and_then(|r| ids::to_r9(text(r.get("sessionId")))) {
+    if let Some(r9) = caller_rec.as_ref().and_then(|r| claude_r9(text(r.get("sessionId")))) {
         record.insert("parent_session".into(), json!(r9));
     }
     if spec.lobby {
@@ -1046,7 +1033,7 @@ async fn start_inner<E: Effects>(fx: &E, args: &Value, as_: Option<&str>) -> Res
     .await?;
     drop(guard);
 
-    let session_id = ids::to_r9(session.session_id.as_deref());
+    let session_id = claude_r9(session.session_id.as_deref());
     let task_warning = match &spec.task_id {
         Some(_) => attach_task(fx, &spec, session_id.as_deref()).await,
         None => None,
@@ -1141,7 +1128,7 @@ pub async fn started_link<E: Effects>(fx: &E, job: &str, remote_control: bool) -
         }
         if Instant::now() >= deadline {
             return json!({"link": null, "link_reason": format!(
-                "Remote Control had not connected after {}s; `reflection link` with job {job} returns the link once it has",
+                "Remote Control had not connected after {}s; `reflection link` on the session returns the link once it has",
                 wait.as_secs_f64()
             )});
         }
@@ -1553,10 +1540,7 @@ pub async fn adopt<E: Effects>(fx: &E, args: &Value, as_: Option<&str>) -> Value
         if let Some(reason) = who_may_refusal(fx, stamp.as_deref()) {
             return Err(reason);
         }
-        let job = match a.get("job") {
-            Some(Value::String(j)) if lineage::is_job(j) => j.clone(),
-            _ => return Err("job must be a job id".into()),
-        };
+        let job = named_job(fx.paths(), a.get("job"))?.map_err(|sid| format!("no job holds session {sid}"))?;
         if read_lineage(fx.paths(), &job).is_some() {
             return Err(format!("job {job} already has a lineage record"));
         }
@@ -1629,17 +1613,9 @@ async fn resume_inner<E: Effects>(fx: &E, args: &Value, as_: Option<&str>) -> Re
         if let Some(reason) = who_may_refusal(fx, stamp.as_deref()) {
             return Err(Refused::new(reason));
         }
-        let job = match a.get("job") {
-            Some(Value::String(j)) if lineage::is_job(j) || py_match(&UUID, j) => j.clone(),
-            _ => return Err(Refused::new("job must be a job id or a session id")),
-        };
-        let job = if py_match(&UUID, &job) {
-            match job_of_session(fx.paths(), &job) {
-                None => return Ok(Resume::Retired(job, None)),
-                Some(found) => found,
-            }
-        } else {
-            job
+        let job = match named_job(fx.paths(), a.get("job")).map_err(Refused::new)? {
+            Ok(job) => job,
+            Err(sid) => return Ok(Resume::Retired(sid, None)),
         };
         let Some(rec) = read_lineage(fx.paths(), &job) else {
             return Err(Refused::new(format!(
@@ -1689,8 +1665,18 @@ async fn resume_inner<E: Effects>(fx: &E, args: &Value, as_: Option<&str>) -> Re
     Ok(out)
 }
 
+/// The job `job` names: a job id, or the Claude UUID of the session a job holds. A session no
+/// job holds any more comes back as `Err(uuid)`.
+fn named_job(paths: &Paths, job: Option<&Value>) -> Result<Result<String, String>, String> {
+    match job {
+        Some(Value::String(j)) if lineage::is_job(j) => Ok(Ok(j.clone())),
+        Some(Value::String(j)) if py_match(&UUID, j) => Ok(job_of_session(paths, j).ok_or_else(|| j.clone())),
+        _ => Err("name the session by its session_id".into()),
+    }
+}
+
 /// The job that still holds `session_id`: in its state record, else in its lineage.
-fn job_of_session(paths: &Paths, session_id: &str) -> Option<String> {
+pub fn job_of_session(paths: &Paths, session_id: &str) -> Option<String> {
     let mut dirs: Vec<PathBuf> =
         std::fs::read_dir(paths.home.jobs()).map(|d| d.flatten().map(|e| e.path()).collect()).unwrap_or_default();
     dirs.sort();
@@ -1818,7 +1804,7 @@ async fn resume_retired<E: Effects>(
     drop(guard);
     tracing::info!("cx: resumed retired session {session_id} as {} in {cwd}", session.short);
     let mut out = json!({
-        "ok": true, "job": session.short, "session_id": ids::to_r9(Some(session_id)),
+        "ok": true, "job": session.short, "session_id": claude_r9(Some(session_id)),
         "name": spec.name, "node": fx.node_name(), "project": project, "scope": scope,
         "cwd": cwd, "attach": format!("claude attach {}", session.short), "pinned": pinned,
         "from_transcript": true,
@@ -1839,10 +1825,7 @@ pub async fn stop<E: Effects>(fx: &E, args: &Value, as_: Option<&str>) -> Value 
         if let Some(reason) = crate::app::caller_refusal(stamp.as_deref(), || fx.edges()) {
             return Err(reason);
         }
-        let job = match a.get("job") {
-            Some(Value::String(j)) if lineage::is_job(j) => j.clone(),
-            _ => return Err("job must be a job id".into()),
-        };
+        let job = named_job(fx.paths(), a.get("job"))?.map_err(|sid| format!("no job holds session {sid}"))?;
         let Some(rec) = read_lineage(fx.paths(), &job) else {
             return Err(format!("job {job} was not started by reflection start_other, so it will not be stopped"));
         };
@@ -2006,12 +1989,17 @@ fn job_row<E: Effects>(fx: &E, sessions: &Sessions, s: &Session, rec: Option<&Ob
         "pool": sessions.is_ours(s) || sessions.was_ours(s),
         "brief": truthy(rec.get("brief")),
         "tags": field("tags"),
-        "session_id": ids::to_r9(s.session_id.as_deref()),
+        "session_id": claude_r9(s.session_id.as_deref()),
         "alive": alive,
         "transcript": transcript_of(paths, s.session_id.as_deref()),
     });
     let Value::Object(row) = row else { unreachable!("a json! object") };
     row
+}
+
+/// The R9 id of a session id read from Claude's own job or session files.
+fn claude_r9(raw: Option<&str>) -> Option<String> {
+    SessionId::from_harness_native(Platform::Claude, raw?).ok().map(|id| id.canonical())
 }
 
 fn clip(v: Option<&Value>) -> Value {
@@ -2036,7 +2024,7 @@ fn interactive_row<E: Effects>(fx: &E, rec: &Object, panes: &BTreeMap<u32, Strin
         "link": roster::bridge_link(bridge),
         "started_at": rec.get("startedAt").and_then(Value::as_f64).and_then(iso_ms_f),
         "pool": false, "pinned": false, "brief": false,
-        "session_id": ids::to_r9(session_id),
+        "session_id": claude_r9(session_id),
         "alive": true,
         "transcript": transcript_of(paths, session_id),
     });
@@ -2734,15 +2722,17 @@ mod tests {
 
     #[tokio::test]
     async fn test_remote_control_cannot_inject_flags() {
-        for rc in [json!("--evil"), json!("-x"), json!("a b"), json!("x".repeat(65)), json!(""), json!(" "), json!("a;b"), json!(5)] {
+        for rc in [json!("--evil"), json!("-x"), json!("a b"), json!("x".repeat(65)), json!("a;b"), json!(" "), json!(5)] {
             let w = Fx::new();
             let out = start_fit(&w, on(json!({"remote_control": rc}))).await;
-            if rc == json!("") || rc == json!(" ") {
-                // An empty value is "off" or refused; either way nothing is injected.
-                assert!(!w.launched().iter().any(|l| l.flags.iter().any(|f| f == "--remote-control=")));
+            if rc == json!(" ") || rc == json!(5) {
+                assert!(refused(&out) && w.launched().is_empty(), "{rc}");
                 continue;
             }
-            assert!(refused(&out) && w.launched().is_empty(), "{rc}");
+            let flags: Vec<String> = w.launched().iter().flat_map(|l| l.flags.clone()).collect();
+            let label = flags.iter().find_map(|f| f.strip_prefix("--remote-control=")).expect("a label");
+            assert!(!label.starts_with('-') && label.len() <= 64, "{rc} -> {label}");
+            assert!(label.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c)), "{rc} -> {label}");
         }
     }
 

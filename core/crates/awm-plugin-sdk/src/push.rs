@@ -23,7 +23,7 @@ pub enum Outcome {
     Delivered,
     /// The holder refused or could not be reached. The line is sent again.
     Retry(String),
-    /// The holder's job no longer exists.
+    /// The holder's session no longer exists.
     Gone,
 }
 
@@ -35,7 +35,7 @@ pub enum Returned {
     Exhausted,
 }
 
-/// A holder: the node it runs on and its job id.
+/// A holder: the node it runs on and its canonical session id.
 pub type Key = (String, String);
 
 pub type SendFuture = Pin<Box<dyn Future<Output = Outcome> + Send>>;
@@ -71,10 +71,10 @@ fn gone_reason(v: &Value) -> bool {
     GONE_MARKERS.iter().any(|m| reason.contains(m))
 }
 
-/// Type `text` into `job` on `node` through `reflection message`.
-pub async fn reflect(hub: &Hub, node: &str, job: &str, text: &str) -> Outcome {
+/// Type `text` into session `session` on `node` through `reflection message`.
+pub async fn reflect(hub: &Hub, node: &str, session: &str, text: &str) -> Outcome {
     let opts = CallOpts { peer: peer_for(node), timeout: Duration::from_secs(60), ..CallOpts::default() };
-    match hub.call_with("reflection", "message", json!({"to": job, "text": text}), &opts).await {
+    match hub.call_with("reflection", "message", json!({"to": {"id": session}, "text": text}), &opts).await {
         Ok(v) if v.get("ok").and_then(Value::as_bool) == Some(true) => Outcome::Delivered,
         Ok(v) if gone_reason(&v) => Outcome::Gone,
         Ok(v) => Outcome::Retry(v.to_string()),
@@ -84,13 +84,13 @@ pub async fn reflect(hub: &Hub, node: &str, job: &str, text: &str) -> Outcome {
     }
 }
 
-/// The running background jobs on `node` across its harnesses, or None when it cannot tell.
-/// Any `errors[]` entry means some harness did not answer, so it cannot tell.
+/// The job ids of the running background jobs on `node` across its harnesses, or None when it
+/// cannot tell. Any `errors[]` entry means some harness did not answer, so it cannot tell.
 pub async fn live_jobs(hub: &Hub, node: &str) -> Option<HashSet<String>> {
-    live_rows(hub, node).await.map(|l| l.into_keys().collect())
+    live_rows(hub, node).await.map(|l| l.values().filter_map(|r| r.get("job").and_then(Value::as_str).map(str::to_string)).collect())
 }
 
-/// The `list_other` row of each running background job on `node`, by job id.
+/// The `list_other` row of each running background job on `node`, by session id.
 pub async fn live_rows(hub: &Hub, node: &str) -> Option<HashMap<String, Value>> {
     let opts = CallOpts { peer: peer_for(node), timeout: Duration::from_secs(60), ..CallOpts::default() };
     let mut reply = hub.call_with("reflection", "list_other", json!({}), &opts).await.ok()?;
@@ -102,8 +102,9 @@ pub async fn live_rows(hub: &Hub, node: &str) -> Option<HashMap<String, Value>> 
         rows.into_iter()
             .filter(row_live)
             .filter_map(|r| {
-                let job = r.get("job").and_then(Value::as_str).filter(|j| !j.is_empty())?.to_string();
-                Some((job, r))
+                r.get("job").and_then(Value::as_str).filter(|j| !j.is_empty())?;
+                let session = r.get("session_id").and_then(Value::as_str).filter(|j| !j.is_empty())?.to_string();
+                Some((session, r))
             })
             .collect(),
     )
@@ -134,15 +135,15 @@ impl Pusher {
 
     /// A pusher that types through `reflection message` on `hub`.
     pub fn reflection(hub: Hub, on_return: ReturnFn) -> Self {
-        let send: SendFn = Arc::new(move |node, job, line| {
+        let send: SendFn = Arc::new(move |node, session, line| {
             let hub = hub.clone();
-            Box::pin(async move { reflect(&hub, &node, &job, &line).await })
+            Box::pin(async move { reflect(&hub, &node, &session, &line).await })
         });
         Self::new(send, on_return, PushOpts::default())
     }
 
-    pub fn push(&self, node: &str, job: &str, line: &str) {
-        let key = (node.to_string(), job.to_string());
+    pub fn push(&self, node: &str, session: &str, line: &str) {
+        let key = (node.to_string(), session.to_string());
         let start = {
             let mut st = self.0.state.lock().unwrap();
             st.queues.entry(key.clone()).or_default().push_back(line.to_string());
@@ -154,9 +155,9 @@ impl Pusher {
     }
 
     /// The lines still queued for a holder, oldest first.
-    pub fn pending(&self, node: &str, job: &str) -> Vec<String> {
+    pub fn pending(&self, node: &str, session: &str) -> Vec<String> {
         let st = self.0.state.lock().unwrap();
-        st.queues.get(&(node.to_string(), job.to_string())).map(|q| q.iter().cloned().collect()).unwrap_or_default()
+        st.queues.get(&(node.to_string(), session.to_string())).map(|q| q.iter().cloned().collect()).unwrap_or_default()
     }
 
     /// Wait until every queue is empty.
@@ -200,7 +201,7 @@ async fn drain(inner: Arc<Inner>, key: Key) {
             st.draining.remove(&key);
             st.queues.remove(&key).map(Vec::from).unwrap_or_default()
         };
-        tracing::info!(node = %key.0, job = %key.1, lines = lines.len(), ?returned, "push lines returned to their owner");
+        tracing::info!(node = %key.0, session = %key.1, lines = lines.len(), ?returned, "push lines returned to their owner");
         (inner.on_return)(key, lines, returned);
         inner.idle.notify_waiters();
         return;
@@ -217,7 +218,7 @@ async fn deliver(inner: &Inner, key: &Key, line: &str) -> Option<Returned> {
             Outcome::Gone => return Some(Returned::Gone),
             Outcome::Retry(why) => {
                 if tokio::time::Instant::now() + delay > deadline {
-                    tracing::warn!(node = %key.0, job = %key.1, %why, "push refused for the whole retry window");
+                    tracing::warn!(node = %key.0, session = %key.1, %why, "push refused for the whole retry window");
                     return Some(Returned::Exhausted);
                 }
                 tokio::time::sleep(delay).await;

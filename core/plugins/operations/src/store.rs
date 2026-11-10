@@ -1048,7 +1048,7 @@ fn listed_session<'a>(listed: &'a [LiveSession], session_id: &str, job: Option<&
 }
 
 fn same_session(a: &str, b: &str) -> bool {
-    let n = |s: &str| awm_plugin_sdk::ids::normalise(s).unwrap_or_else(|_| s.to_lowercase());
+    let n = |s: &str| awm_plugin_sdk::ids::SessionId::parse(s).map(|i| i.canonical()).unwrap_or_else(|_| s.to_lowercase());
     n(a) == n(b)
 }
 
@@ -1056,9 +1056,8 @@ fn same_session(a: &str, b: &str) -> bool {
 /// its node.
 fn match_rows(db: &Connection, session_id: Option<&str>, job: Option<&str>, node: &str, active: bool) -> Result<Vec<(String, String)>> {
     if let Some(sid) = session_id.filter(|s| !s.is_empty()) {
-        let norm = awm_plugin_sdk::ids::normalise(sid).unwrap_or_else(|_| sid.to_string());
-        let mut st = db.prepare("SELECT session_id, task_id FROM sessions WHERE session_id IN (?, ?)")?;
-        let rows: Vec<(String, String)> = st.query_map(params![sid, norm], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<rusqlite::Result<_>>()?;
+        let mut st = db.prepare("SELECT session_id, task_id FROM sessions WHERE session_id = ?")?;
+        let rows: Vec<(String, String)> = st.query_map(params![sid], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<rusqlite::Result<_>>()?;
         if !rows.is_empty() {
             return Ok(rows);
         }

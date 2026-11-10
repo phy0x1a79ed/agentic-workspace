@@ -135,8 +135,15 @@ pub struct Call<'a> {
     pub verb: &'a str,
     /// The tool serves the harness contract. Only reflection drives a harness.
     pub harness: bool,
-    /// The call names another session by `job`.
+    /// The call names another session in its `to`.
     pub names_other: bool,
+}
+
+impl Call<'_> {
+    /// Whether a call's `args` name another session: a reflection `to`.
+    pub fn names_other(args: &serde_json::Value) -> bool {
+        args.get("to").is_some_and(|t| !t.is_null())
+    }
 }
 
 /// Verbs that bring up a top-level session (channels.md R125 item 3).
@@ -233,6 +240,13 @@ pub fn journal_bound(edges: &EdgeList, level: Level, node: &str, project: &str, 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_to_names_another_session() {
+        use serde_json::json;
+        assert!(Call::names_other(&json!({"to": {"id": "cc00"}})) && Call::names_other(&json!({"to": {"name": "x"}})));
+        assert!(!Call::names_other(&json!({"job": "abcd1234"})) && !Call::names_other(&json!({"to": null})));
+    }
 
     #[test]
     fn a_seat_agent_answers_but_runs_no_other_seats_verb() {

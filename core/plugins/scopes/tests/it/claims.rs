@@ -125,7 +125,7 @@ fn the_queue_is_first_come_first_served() {
     assert_eq!(out["next"]["session_id"], json!(S2));
     assert_eq!(out["notified"], json!(true));
     let notices = r.out.calls_to("message");
-    assert_eq!(notices[0]["to"], json!("job2"));
+    assert_eq!(notices[0]["to"], json!({"id": S2}));
     assert!(notices[0]["text"].as_str().unwrap().contains("p/s"));
 
     let jump = claim(&r, json!({"session_id": S3, "pid": me()}));

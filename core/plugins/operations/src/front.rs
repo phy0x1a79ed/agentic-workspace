@@ -26,13 +26,13 @@ pub trait Outside: Send + Sync {
     /// The session behind a pid on this node: `{session_id, job, name}`.
     fn session_of(&self, pid: u32) -> BoxFut<'_, Option<Value>>;
     /// Type one line into a session, on `peer` when it is another node.
-    fn tell<'a>(&'a self, peer: Option<&'a str>, job: &'a str, text: &'a str) -> BoxFut<'a, bool>;
+    fn tell<'a>(&'a self, peer: Option<&'a str>, session: &'a str, text: &'a str) -> BoxFut<'a, bool>;
     /// One line to Tony's notifications channel.
     fn dm<'a>(&'a self, text: &'a str) -> BoxFut<'a, bool>;
     /// One message in Tony's own Discord DM.
     fn dm_tony<'a>(&'a self, text: &'a str) -> BoxFut<'a, bool>;
-    /// Turn a job's Remote Control on, when it is off, and say how it can be reached.
-    fn reach<'a>(&'a self, node: &'a str, job: &'a str) -> BoxFut<'a, Reach>;
+    /// Turn a session's Remote Control on, when it is off, and say how it can be reached.
+    fn reach<'a>(&'a self, node: &'a str, session: &'a str) -> BoxFut<'a, Reach>;
     /// Each job the roster holds on a node, with its claude.ai link. None when the roster has
     /// no answer for that node.
     fn links<'a>(&'a self, node: &'a str) -> BoxFut<'a, Option<HashMap<String, Option<String>>>>;
@@ -90,12 +90,12 @@ fn unwrap_stale(out: Value) -> Value {
 }
 
 fn norm(s: &str) -> String {
-    awm_plugin_sdk::ids::normalise(s).unwrap_or_else(|_| s.trim().to_lowercase())
+    awm_plugin_sdk::ids::SessionId::parse(s).map(|i| i.canonical()).unwrap_or_else(|_| s.trim().to_lowercase())
 }
 
 /// A session id a caller passed: refused unless it is an R9 id.
 fn norm_arg(s: &str) -> Result<String, String> {
-    awm_plugin_sdk::ids::normalise(s).map_err(|e| e.to_string())
+    awm_plugin_sdk::ids::SessionId::parse(s).map(|i| i.canonical()).map_err(|e| e.to_string())
 }
 
 fn err(e: ClientError) -> String {
@@ -275,11 +275,11 @@ impl Front {
         let out = self.relay.write("task_join", w).await.map_err(err)?;
         let main = str_of(&out, "main_session_id");
         let mut told = false;
-        if let (Some(m), Some(name)) = (main.as_ref(), str_of(&out, "main_name")) {
+        if let Some(m) = main.as_ref() {
             if Some(m) != session.as_ref() {
                 let text = format!("[awm] session {} joined your task {} (operations task_sessions shows it).",
                                    session.clone().unwrap_or_default(), out["task_id"].as_str().unwrap_or_default());
-                told = self.outside.tell(out.get("main_node").and_then(Value::as_str), &name, &text).await;
+                told = self.outside.tell(out.get("main_node").and_then(Value::as_str), m, &text).await;
             }
         }
         Ok(merge(merge(json!({"ok": true}), out), json!({"main_notified": told})))
@@ -402,9 +402,9 @@ impl Front {
 
     async fn send_ask(&self, kind: &str, text: &str, c: &Caller, node: &str) -> Answer {
         let who = c.name.as_deref().or(c.job.as_deref()).unwrap_or("A service");
-        let reach = match &c.job {
-            Some(job) => self.turn_on_rc(node, job, who).await,
-            None => Reach::Unavailable,
+        let reach = match (&c.job, &c.session_id) {
+            (Some(job), Some(session)) => self.turn_on_rc(node, job, session, who).await,
+            _ => Reach::Unavailable,
         };
         let need = if kind == "review" { "has something for you to review" } else { "needs you" };
         let mut message = format!("**{who}** on **{node}** {need}.\n{text}");
@@ -435,13 +435,13 @@ impl Front {
 
     /// The pending mark goes first, so a second call in the same turn types no second `/rc`:
     /// that one would land on a connected session and open its disconnect modal.
-    async fn turn_on_rc(&self, node: &str, job: &str, who: &str) -> Reach {
+    async fn turn_on_rc(&self, node: &str, job: &str, session: &str, who: &str) -> Reach {
         let key = rc_key(node, job);
         if self.relay.mark(&key).is_some() {
             return Reach::Connecting;
         }
         self.relay.set_mark(&key, who);
-        let reach = match self.outside.reach(node, job).await {
+        let reach = match self.outside.reach(node, session).await {
             Reach::Connecting => self.link_soon(node, job).await.map_or(Reach::Connecting, Reach::Link),
             other => other,
         };
@@ -528,7 +528,7 @@ impl Front {
         let Some(arb) = self.arbutus.clone() else { return Err("this node takes no admin approvals".into()) };
         let agent = c.name.clone().or_else(|| c.job.clone()).unwrap_or_else(|| "a session".into());
         let node = c.node.clone().unwrap_or_else(|| self.node.clone());
-        let req = arb.open(&str_of(a, "bundle").unwrap_or_default(), &agent, &node, c.job.as_deref().unwrap_or("")).await?;
+        let req = arb.open(&str_of(a, "bundle").unwrap_or_default(), &agent, &node, c.job.as_deref().unwrap_or(""), session.unwrap_or("")).await?;
         let (name, r) = (req["name"].as_str().unwrap_or_default(), req["ref"].as_str().unwrap_or_default().to_string());
         let reason = format!("Admin approval {name} (ref {r}) waits for Tony or Ryan in Slack.");
         let task_id = self.card_for(session, c, &reason).await?;

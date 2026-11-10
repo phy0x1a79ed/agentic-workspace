@@ -10,6 +10,7 @@ use awm_plugin_operations::arbutus::{parse_bundle, Approvals};
 use crate::common::{s, FakeArbutus};
 use serde_json::{json, Value};
 
+const SESSION: &str = "cc11111111111111111111111111111111";
 const TONY: &str = "U01";
 const RYAN: &str = "U02";
 const STEVEN: &str = "U03";
@@ -56,7 +57,7 @@ impl H {
     }
 
     async fn open(&self) -> Value {
-        let req = self.approvals.open("grow", "infra-agent", "altair", "job1").await.unwrap();
+        let req = self.approvals.open("grow", "infra-agent", "altair", "job1", SESSION).await.unwrap();
         self.approvals.attach(&s(&req["ref"]), "ABCDEFGH").unwrap();
         req
     }
@@ -121,7 +122,7 @@ async fn admin_approve_runs_on_the_frozen_copy() {
     assert_eq!(last.3, "100.1");
     assert!(last.2.contains("Approved by tony"));
     let (job, line) = h.io.lines()[0].clone();
-    assert_eq!(job, "job1");
+    assert_eq!(job, SESSION);
     assert!(line.contains("approved") && line.contains("ssh windows are open for 60 minutes") && line.contains("scripts/tf --approval grow"), "{line}");
     assert_eq!(h.decided().await, [("ABCDEFGH".to_string(), line)], "the card hears the same line");
 }
@@ -207,10 +208,10 @@ async fn expired_request_is_closed() {
 #[tokio::test]
 async fn open_refuses_a_bad_name_or_bundle() {
     let h = H::new(0);
-    assert!(h.approvals.open("../etc", "a", "n", "").await.is_err());
-    assert!(h.approvals.open("missing", "a", "n", "").await.is_err());
+    assert!(h.approvals.open("../etc", "a", "n", "", "").await.is_err());
+    assert!(h.approvals.open("missing", "a", "n", "", "").await.is_err());
     std::fs::write(h.dir.path().join("bundles/bad.bundle"), "minutes\t5\n").unwrap();
-    assert!(h.approvals.open("bad", "a", "n", "").await.is_err());
+    assert!(h.approvals.open("bad", "a", "n", "", "").await.is_err());
     assert!(h.io.posts().is_empty());
 }
 

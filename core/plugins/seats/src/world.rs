@@ -35,11 +35,11 @@ fn acked(reply: Result<Value, HubError>) -> Result<Value, String> {
     }
 }
 
-/// The job a start or resume answered.
+/// The session a start or resume answered, by its canonical id.
 fn started(reply: &Result<Value, String>) -> Started {
     match reply {
-        Ok(v) => match v.get("job").and_then(Value::as_str).filter(|j| !j.is_empty()) {
-            Some(job) => Started::Job(job.to_string()),
+        Ok(v) => match v.get("session_id").and_then(Value::as_str).filter(|j| !j.is_empty()) {
+            Some(session) => Started::Job(session.to_string()),
             None => Started::Refused(reason(v)),
         },
         Err(why) => Started::Refused(why.clone()),
@@ -61,7 +61,7 @@ impl World for Live {
     }
 
     async fn resume(&self, job: &str, prompt: &str, remote_control: bool, name: &str) -> Started {
-        let reply = acked(self.hub.call_with("reflection", "resume_other", json!({"to": job, "prompt": prompt}), &opts(240)).await);
+        let reply = acked(self.hub.call_with("reflection", "resume_other", json!({"to": {"id": job}, "prompt": prompt}), &opts(240)).await);
         let out = started(&reply);
         let linked = reply.ok().and_then(|v| v.get("link").and_then(Value::as_str).map(|l| !l.is_empty())).unwrap_or(false);
         if let Started::Job(new) = &out {
@@ -75,7 +75,7 @@ impl World for Live {
     }
 
     async fn stop(&self, job: &str) -> Result<(), String> {
-        acked(self.hub.call_with("reflection", "stop_other", json!({"job": job}), &opts(60)).await).map(drop)
+        acked(self.hub.call_with("reflection", "stop_other", json!({"to": {"id": job}}), &opts(60)).await).map(drop)
     }
 
     async fn push(&self, job: &str, line: &str) -> Outcome {
@@ -104,7 +104,7 @@ impl World for Live {
     }
 
     async fn remote_control(&self, job: &str, on: bool, name: &str) -> Result<(), String> {
-        acked(self.hub.call_with("reflection", "remote_control", json!({"job": job, "on": on, "name": name}), &opts(60)).await).map(drop)
+        acked(self.hub.call_with("reflection", "remote_control", json!({"to": {"id": job}, "on": on, "name": name}), &opts(60)).await).map(drop)
     }
 
     fn hand(&self, job: &str, line: &str) {

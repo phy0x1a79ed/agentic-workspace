@@ -103,10 +103,10 @@ async fn no_card_means_a_dm_with_the_session_link_and_no_new_card() {
     assert_eq!((out["ok"].clone(), out["notified"].clone()), (json!(true), json!(true)), "{out}");
     assert!(out.get("task_id").is_none(), "{out}");
     let dm = &h.out.asks()[0];
-    assert!(dm.contains("fix-tunnel") && dm.contains("needs the VPN key") && dm.contains("https://claude.ai/code/mizar-job-a"), "{dm}");
+    assert!(dm.contains("fix-tunnel") && dm.contains("needs the VPN key") && dm.contains(&format!("https://claude.ai/code/mizar-{A}")), "{dm}");
     assert_eq!(h.call("task_for_session", pid(11), json!({})).await["task_id"], Value::Null);
 
-    h.out.reach.lock().unwrap().insert("job-b".into(), Reach::Unavailable);
+    h.out.reach.lock().unwrap().insert(B.into(), Reach::Unavailable);
     h.call("request_human", pid(22), json!({"kind": "review", "summary": "look"})).await;
     assert!(h.out.asks()[1].contains("`claude attach job-b` on mizar"), "a job with no link says how to attach");
 
@@ -127,7 +127,7 @@ async fn no_card_means_a_dm_with_the_session_link_and_no_new_card() {
 #[tokio::test]
 async fn a_queued_remote_control_sends_its_link_once_it_connects() {
     let h = harness();
-    h.out.reach.lock().unwrap().insert("job-a".into(), Reach::Connecting);
+    h.out.reach.lock().unwrap().insert(A.into(), Reach::Connecting);
     let set_roster = |link: Option<&str>| {
         let jobs = HashMap::from([("job-a".to_string(), link.map(str::to_string))]);
         h.out.roster.lock().unwrap().insert("mizar".into(), jobs);
@@ -155,7 +155,7 @@ async fn a_queued_remote_control_sends_its_link_once_it_connects() {
 #[tokio::test]
 async fn a_link_that_connects_during_the_call_goes_in_the_one_dm() {
     let h = harness();
-    h.out.reach.lock().unwrap().insert("job-a".into(), Reach::Connecting);
+    h.out.reach.lock().unwrap().insert(A.into(), Reach::Connecting);
     h.out.roster.lock().unwrap().insert("mizar".into(), HashMap::from([("job-a".to_string(), Some("https://claude.ai/code/session_a".to_string()))]));
     let out = h.call("request_human", pid(11), json!({"reason": "one"})).await;
     assert_eq!(out["link"], "https://claude.ai/code/session_a");
@@ -167,7 +167,7 @@ async fn a_link_that_connects_during_the_call_goes_in_the_one_dm() {
 #[tokio::test]
 async fn a_session_that_goes_while_connecting_is_forgotten() {
     let h = harness();
-    h.out.reach.lock().unwrap().insert("job-a".into(), Reach::Connecting);
+    h.out.reach.lock().unwrap().insert(A.into(), Reach::Connecting);
     h.call("request_human", pid(11), json!({"reason": "one"})).await;
     h.out.roster.lock().unwrap().insert("mizar".into(), HashMap::new());
     assert_eq!(h.front.links_due().await, 0);
@@ -183,7 +183,7 @@ async fn join_tells_the_main_session() {
     let out = h.call("task_join", pid(22), json!({"task_id": t})).await;
     assert_eq!((s(&out["main_session_id"]), out["main_notified"].clone()), (A.into(), json!(true)));
     let told = &h.out.told()[0];
-    assert_eq!((told.0.as_deref(), told.1.as_str()), (Some("mizar"), "fix-tunnel"));
+    assert_eq!((told.0.as_deref(), told.1.as_str()), (Some("mizar"), A));
     assert!(told.2.contains(B));
     let joined = h.card(&t)["sessions"].as_array().unwrap().iter().find(|x| x["session_id"] == B).cloned().unwrap();
     assert_eq!((s(&joined["role"]), s(&joined["job"])), ("joined".into(), "job-b".into()));

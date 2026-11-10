@@ -42,7 +42,7 @@ impl Frame {
         let pid = int_lenient(args.get(PID_KEY), 0);
         Self {
             pid: (pid > 0).then(|| u32::try_from(pid).ok()).flatten(),
-            session_id: ids::to_r9(args.get(SESSION_KEY).and_then(Value::as_str)),
+            session_id: args.get(SESSION_KEY).and_then(Value::as_str).and_then(|s| ids::SessionId::parse(s).ok()).map(|i| i.canonical()),
             claim: args.get(CLAIM_KEY).filter(|c| c.is_object()).cloned(),
             plugin: plugin.map(str::trim).filter(|p| !p.is_empty()).map(str::to_string),
             as_: as_.map(str::to_string),
@@ -150,12 +150,12 @@ mod tests {
 
     #[test]
     fn the_frame_reads_only_the_stamps() {
-        let args = json!({"_caller_pid": 4242, "_caller_session_id": "CC0E38", "_caller_session": {"node": "far"},
+        let args = json!({"_caller_pid": 4242, "_caller_session_id": "cc0e380e380e380e380e380e380e380e38", "_caller_session": {"node": "far"},
                           "_caller_trust": "cooperative", "pid": 7, "session_id": "cc99"});
         let f = Frame::from_args(&args, Some("peer:far"), Some("social"));
-        assert_eq!((f.pid, f.session_id.as_deref(), f.plugin.as_deref()), (Some(4242), Some("cc0e38"), Some("social")));
+        assert_eq!((f.pid, f.session_id.as_deref(), f.plugin.as_deref()), (Some(4242), Some("cc0e380e380e380e380e380e380e380e38"), Some("social")));
         assert_eq!(f.claim, Some(json!({"node": "far"})));
-        assert_eq!(f.me(), json!({"session_id": "cc0e38"}));
+        assert_eq!(f.me(), json!({"session_id": "cc0e380e380e380e380e380e380e380e38"}));
         let bare = Frame::from_args(&json!({"_caller_pid": 0, "_caller_session_id": "builder"}), None, Some(" "));
         assert_eq!(bare, Frame::default());
         assert_eq!((bare.me(), bare.pid_text()), (json!({"pid": null}), "None".to_string()));

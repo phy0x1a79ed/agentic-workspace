@@ -94,7 +94,7 @@ pub fn row_live(row: &Value) -> bool {
     !DEAD_STATES.contains(&state) && row.get("live") != Some(&json!(false)) && row.get("alive") != Some(&json!(false))
 }
 
-/// What `reflection message` types into for `session`: its job, its own id when it is isolated.
+/// The job `session` runs as, its own id when it is isolated, or None when it is neither.
 async fn push_target(hub: &Hub, session: &str) -> Option<String> {
     for row in session_rows(hub, true).await.unwrap_or_default() {
         if text(&row, "session_id").to_lowercase() != session {
@@ -119,7 +119,7 @@ fn from_claim(raw: Option<&Value>) -> Option<Found> {
     let job = text(obj, "job");
     Some(Found {
         background: get("kind") == "bg" || get("hosting") == "background" || (door && !job.is_empty()),
-        session: get("session_id").as_str().map(str::to_string).or_else(|| crate::ids::to_r9(get("sessionId").as_str())),
+        session: get("session_id").as_str().map(str::to_string).or_else(|| get("sessionId").as_str().and_then(|s| crate::ids::SessionId::from_harness_native(crate::ids::Platform::Claude, s).ok()).map(|i| i.canonical())),
         name: text(obj, "name"),
         job,
     })
@@ -129,7 +129,7 @@ fn from_claim(raw: Option<&Value>) -> Option<Found> {
 pub async fn caller(call: &Call, what: &str) -> Result<Holder, HolderError> {
     let hub = call.hub();
     let pid = call.caller_pid();
-    let sid = crate::ids::to_r9(call.args.get(SESSION_KEY).and_then(Value::as_str));
+    let sid = call.args.get(SESSION_KEY).and_then(Value::as_str).and_then(|s| crate::ids::SessionId::parse(s).ok()).map(|i| i.canonical());
     let here = call.ctx.env().node.clone();
     let (found, node) = if let Some(pid) = pid {
         let found = crate::sessions::session_of(hub, pid).await.map(|rec| Found {

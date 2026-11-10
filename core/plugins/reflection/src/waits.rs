@@ -119,13 +119,6 @@ impl<G: Gateway> App<G> {
         self.save_waits(rows).await;
     }
 
-    /// Clear the wait of the session whose job is `job`: it was resumed by hand.
-    pub async fn drop_wait_of_job(&self, job: &str) {
-        let _held = self.store.lock(File::Waits).await;
-        let rows = self.waits().await.into_iter().filter(|r| job.is_empty() || text(r, "job") != Some(job)).collect();
-        self.save_waits(rows).await;
-    }
-
     /// Wake the waiter. On a failure, raise an alarm and keep the wait.
     async fn wake_or_alarm<W, F>(&self, row: &Value, wake: &W) -> bool
     where
@@ -229,7 +222,7 @@ impl<G: Gateway> App<G> {
         let p = self.for_platform(crate::providers::platform_of(&sid)).await.map_err(|e| format!("HarnessError: {e}"))?;
         let line = self.provider_text(&Frame::service("reflection"), &wake_text(&row)).await;
         let out = match text(&row, "job") {
-            Some(job) => self.harness_call(&p, "resume", json!({"ref": job, "adopt_lineage": true, "prompt": line}), None).await,
+            Some(_) => self.harness_call(&p, "resume", json!({"session_id": sid, "adopt_lineage": true, "prompt": line}), None).await,
             None => self.harness_call(&p, "send", json!({"session_id": sid, "text": line}), None).await,
         };
         out.map_err(|e| format!("HarnessError: {e}"))

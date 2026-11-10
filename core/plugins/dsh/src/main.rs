@@ -225,7 +225,7 @@ mod tests {
         let target_verbs = ["compact", "interrupt", "resume", "send", "set", "status", "stop"];
         let mut want: Vec<(String, String, String)> = target_verbs
             .iter()
-            .flat_map(|v| ["session_id", "ref", "pid"].map(|p| (HARNESS_TOOL.to_string(), v.to_string(), format!("{p} description added"))))
+            .flat_map(|v| ["session_id", "pid"].map(|p| (HARNESS_TOOL.to_string(), v.to_string(), format!("{p} description added"))))
             .collect();
         let mut got = differences();
         want.sort();

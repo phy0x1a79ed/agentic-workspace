@@ -103,7 +103,7 @@ impl Channels {
                 let _ = gone_tx.send(key);
             }
             Returned::Exhausted => {
-                tracing::warn!("{} line(s) for job {} on {} were not taken in the retry window; they stay in the transcripts", lines.len(), key.1, key.0);
+                tracing::warn!("{} line(s) for session {} on {} were not taken in the retry window; they stay in the transcripts", lines.len(), key.1, key.0);
             }
         });
         let pusher = Pusher::new(p.send, on_return, Default::default());
@@ -123,9 +123,9 @@ impl Channels {
         });
         let weak = Arc::downgrade(&me);
         tokio::spawn(async move {
-            while let Some((node, job)) = gone_rx.recv().await {
+            while let Some((node, session)) = gone_rx.recv().await {
                 let Some(me) = weak.upgrade() else { return };
-                me.close_job(&node, &job).await;
+                me.close_session(&node, &session).await;
             }
         });
         me
@@ -136,7 +136,7 @@ impl Channels {
     }
 
     fn push(&self, row: &Row, line: String) {
-        self.pusher.push(&row.node, &row.job, &line);
+        self.pusher.push(&row.node, &row.session, &line);
     }
 
     // -- verbs ---------------------------------------------------------------
@@ -391,7 +391,7 @@ impl Channels {
 
     /// Close every channel whose holding session has ended. "Could not tell" closes nothing.
     pub async fn prune(&self) -> Vec<String> {
-        let rows: Vec<Row> = self.store.open_rows().into_iter().filter(|r| awm_plugin_sdk::ids::is_r9(&r.session)).collect();
+        let rows: Vec<Row> = self.store.open_rows().into_iter().filter(|r| awm_plugin_sdk::ids::SessionId::parse(&r.session).is_ok()).collect();
         if rows.is_empty() {
             return vec![];
         }
@@ -820,10 +820,10 @@ impl Channels {
         }
     }
 
-    pub async fn close_job(&self, node: &str, job: &str) -> Vec<String> {
-        let rows = self.store.of_job(node, job);
+    pub async fn close_session(&self, node: &str, session: &str) -> Vec<String> {
+        let rows = self.store.of_holder(node, session, true);
         for row in &rows {
-            tracing::info!("closing {} {}: holder {job}@{node} is gone", row.kind, row.name);
+            tracing::info!("closing {} {}: holder {session}@{node} is gone", row.kind, row.name);
             self.shut(row, "its holding session ended").await;
         }
         rows.into_iter().map(|r| r.name).collect()

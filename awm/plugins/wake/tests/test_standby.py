@@ -70,7 +70,7 @@ async def test_release_messages_the_session_with_the_report(alcor_cfg, store, gw
                                 report={"revive": {"revived": ["8162a704"]}})
     assert out["held"] and out["delivered"]
     _, verb, args, _ = gw.calls[-1]
-    assert verb == "message" and args["job"] == "abcd1234" and "8162a704" in args["text"]
+    assert verb == "message" and args["to"] == {"id": "cc" + "a" * 32} and "8162a704" in args["text"]
     assert standby.status(store)["holds"][0]["state"] == "released"
 
 

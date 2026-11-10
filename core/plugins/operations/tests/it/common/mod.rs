@@ -195,9 +195,9 @@ impl Outside for FakeOutside {
         Box::pin(async move { rec })
     }
 
-    fn tell<'a>(&'a self, peer: Option<&'a str>, job: &'a str, text: &'a str) -> BoxFut<'a, bool> {
+    fn tell<'a>(&'a self, peer: Option<&'a str>, session: &'a str, text: &'a str) -> BoxFut<'a, bool> {
         Box::pin(async move {
-            self.told.lock().unwrap().push((peer.map(str::to_string), job.to_string(), text.to_string()));
+            self.told.lock().unwrap().push((peer.map(str::to_string), session.to_string(), text.to_string()));
             true
         })
     }
@@ -216,10 +216,10 @@ impl Outside for FakeOutside {
         })
     }
 
-    fn reach<'a>(&'a self, node: &'a str, job: &'a str) -> BoxFut<'a, Reach> {
+    fn reach<'a>(&'a self, node: &'a str, session: &'a str) -> BoxFut<'a, Reach> {
         Box::pin(async move {
-            self.reaches.lock().unwrap().push(format!("{node}/{job}"));
-            self.reach.lock().unwrap().get(job).cloned().unwrap_or(Reach::Link(format!("https://claude.ai/code/{node}-{job}")))
+            self.reaches.lock().unwrap().push(format!("{node}/{session}"));
+            self.reach.lock().unwrap().get(session).cloned().unwrap_or(Reach::Link(format!("https://claude.ai/code/{node}-{session}")))
         })
     }
 
@@ -271,9 +271,9 @@ impl ArbutusIo for FakeArbutus {
         })
     }
 
-    fn tell<'a>(&'a self, job: &'a str, line: &'a str) -> BoxFut<'a, Result<(), String>> {
+    fn tell<'a>(&'a self, session: &'a str, line: &'a str) -> BoxFut<'a, Result<(), String>> {
         Box::pin(async move {
-            self.lines.lock().unwrap().push((job.into(), line.into()));
+            self.lines.lock().unwrap().push((session.into(), line.into()));
             Ok(())
         })
     }

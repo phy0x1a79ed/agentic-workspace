@@ -112,8 +112,9 @@ impl Fake {
                 None => json!({"ok": true, "mine": false}),
             },
             "find" => {
-                let row = self.row(args["ref"].as_str().unwrap_or_default());
-                json!({"ok": true, "matches": row.into_iter().collect::<Vec<_>>()})
+                let name = args["name"].as_str().unwrap_or_default().to_lowercase();
+                let hits: Vec<&Value> = rows.iter().filter(|r| r["name"].as_str().is_some_and(|n| n.to_lowercase() == name)).collect();
+                json!({"ok": true, "sessions": hits})
             }
             "list" => json!({"ok": true, "sessions": rows}),
             "pending" => json!({"ok": true, "pending": []}),
@@ -132,9 +133,9 @@ impl Fake {
                 json!({"ok": true, "job": row["job"], "session_id": row["session_id"]})
             }
             "status" => {
-                let reference = args.get("ref").or_else(|| args.get("session_id")).and_then(Value::as_str);
+                let reference = args.get("session_id").and_then(Value::as_str);
                 let row = match reference {
-                    Some(r) => self.row(r).or_else(|| rows.iter().find(|x| x.get("session_id").and_then(Value::as_str) == Some(r)).cloned()),
+                    Some(r) => rows.iter().find(|x| x.get("session_id").and_then(Value::as_str) == Some(r)).cloned(),
                     None => rows.iter().find(|x| x.get("pid") == args.get("pid")).cloned(),
                 };
                 match row {
@@ -236,7 +237,6 @@ pub struct FakeGateway {
     /// Run inside a scope `claim`, before it answers, with the claim's args.
     pub on_claim: Mutex<Option<Hook>>,
     pub brief: Mutex<Value>,
-    pub peer_answers: Mutex<HashMap<(String, String), Result<Value, String>>>,
     /// operations answers every call with a transport fault.
     pub operations_down: AtomicBool,
 }
@@ -259,7 +259,6 @@ impl FakeGateway {
             claims: Mutex::default(),
             on_claim: Mutex::default(),
             brief: Mutex::new(json!({"brief": null})),
-            peer_answers: Mutex::default(),
             operations_down: AtomicBool::new(false),
         }
     }
@@ -276,10 +275,6 @@ impl FakeGateway {
             .filter(|c| c.tool == "reflection")
             .map(|c| (c.peer.clone().unwrap_or_default(), c.verb.clone(), c.args.clone()))
             .collect()
-    }
-
-    pub fn peer_answer(&self, peer: &str, verb: &str, out: Result<Value, String>) {
-        lock(&self.peer_answers).insert((peer.into(), verb.into()), out);
     }
 
     pub fn use_claims(&self) {
@@ -342,10 +337,7 @@ impl Gateway for FakeGateway {
             }),
             "operations" if self.operations_down.load(Ordering::SeqCst) => Err(CallError::Down("operations is down".into())),
             "operations" => Ok(json!({"task_id": "task-9"})),
-            "reflection" => {
-                let key = (call.peer.clone().unwrap_or_default(), call.verb.clone());
-                lock(&self.peer_answers).get(&key).cloned().unwrap_or_else(|| Err("no route".into())).map_err(CallError::Down)
-            }
+            "reflection" => Err(CallError::Down("no route".into())),
             _ => Err(CallError::Refused(format!("{}: not installed", call.tool))),
         }
     }

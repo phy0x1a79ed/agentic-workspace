@@ -175,10 +175,6 @@ impl Store {
         self.rows(&format!("SELECT * FROM channels WHERE node = ?1 AND session = ?2{open} ORDER BY opened_at"), [node, session])
     }
 
-    pub fn of_job(&self, node: &str, job: &str) -> Vec<Row> {
-        self.rows("SELECT * FROM channels WHERE node = ?1 AND job = ?2 AND open = 1 ORDER BY opened_at", [node, job])
-    }
-
     pub fn set_cursor(&self, name: &str, cursor: i64) {
         let _ = self.db().execute("UPDATE channels SET cursor = ?1 WHERE name = ?2 AND cursor < ?1", params![cursor, name]);
     }

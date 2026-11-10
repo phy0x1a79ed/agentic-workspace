@@ -9,7 +9,11 @@
 use std::collections::HashSet;
 use std::path::Path;
 
-use awm_plugin_sdk::ids::to_r9;
+use awm_plugin_sdk::ids::SessionId;
+
+fn to_r9(text: Option<&str>) -> Option<String> {
+    SessionId::parse(text?).ok().map(|id| id.canonical())
+}
 use awm_pycompat::repr::str_repr;
 use awm_pycompat::time::now_ms;
 use awm_store::rusqlite::{params, Connection, OpenFlags, OptionalExtension};

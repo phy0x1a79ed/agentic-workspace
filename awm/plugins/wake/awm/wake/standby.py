@@ -102,7 +102,7 @@ async def take(cfg: WakeConfig, store: Store, gw: Gateway, *, down: str, reason:
     if not isinstance(started, dict) or not started.get("job"):
         raise Refused(f"no standby session started on {cfg.node}: {started!r}")
     held = {"down": down, "reason": reason, "planned": planned, "state": "holding",
-            "taken_at": t, "deadline_at": deadline_at, "job": started["job"],
+            "taken_at": t, "deadline_at": deadline_at, "job": started["job"], "session_id": started.get("session_id"),
             "link": started.get("link"), "rewakes": 0, "last_rewake_at": None,
             "up_seen_at": None, "nagged": False}
     data["holds"][down] = held
@@ -122,7 +122,7 @@ async def release(cfg: WakeConfig, store: Store, gw: Gateway, *, down: str,
     store.save(data)
     note = (f"Release from {down}: it is back. Revive report: "
             f"{json.dumps(report or {}, sort_keys=True)}. Tell Tony, then stop this session.")
-    delivered = await _tell(gw, held["job"], note)
+    delivered = await _tell(gw, held, note)
     return {"ok": True, "held": True, "job": held["job"], "delivered": delivered}
 
 
@@ -165,7 +165,7 @@ async def watchdog_tick(cfg: WakeConfig, store: Store, gw: Gateway, *,
             held["up_seen_at"] = t
         elif not held["nagged"] and t - held["up_seen_at"] > cfg.standby.deadline_s:
             held["nagged"] = True
-            await _tell(gw, held["job"], f"{partner} answers ssh but has not released the hold "
+            await _tell(gw, held, f"{partner} answers ssh but has not released the hold "
                         f"after {cfg.standby.deadline_s:.0f}s. Its boot runner may have failed: "
                         f"check its pinned jobs and tell Tony.")
             events.append("nagged")
@@ -180,7 +180,7 @@ async def watchdog_tick(cfg: WakeConfig, store: Store, gw: Gateway, *,
         held["rewakes"] += 1
         held["last_rewake_at"] = t
         store.save(data)
-        await _tell(gw, held["job"], f"{partner} is still down past its deadline. Sent "
+        await _tell(gw, held, f"{partner} is still down past its deadline. Sent "
                     f"Wake-on-LAN {held['rewakes']} of {cfg.standby.rewake_max} to {', '.join(sent)}.")
         events.append("rewake")
     return events
@@ -215,9 +215,12 @@ def _spawn(argv: tuple[str, ...]) -> None:
                      stderr=subprocess.DEVNULL, start_new_session=True)
 
 
-async def _tell(gw: Gateway, job: str, text: str) -> bool:
+async def _tell(gw: Gateway, held: dict[str, Any], text: str) -> bool:
+    """Type ``text`` into the hold's session. A hold taken before ids were stored has none."""
+    if not held.get("session_id"):
+        return False
     try:
-        await gw.call(REFLECTION, "message", {"job": job, "text": text})
+        await gw.call(REFLECTION, "message", {"to": {"id": held["session_id"]}, "text": text})
         return True
     except CallError:
         return False

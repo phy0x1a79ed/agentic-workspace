@@ -1,0 +1,20 @@
+{
+  "ids": [
+    {"canonical": "cc0f1e2d3c4b5a69788796a5b4c3d2e1f0", "harness_native": "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0", "job_dir": "0f1e2d3c"},
+    {"canonical": "cc0e384a75a06e43faa19e298e409a2730", "harness_native": "0e384a75-a06e-43fa-a19e-298e409a2730", "job_dir": "0e384a75"},
+    {"canonical": "ds00ff", "harness_native": "00ff", "job_dir": null}
+  ],
+  "bad_ids": [
+    "", "cc", "ds", "zz1234", "ccxyz", "cc1234", "b7312951", "0f1e2d3c",
+    "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0", "0f1e2d3c4b5a69788796a5b4c3d2e1f0",
+    "CC0F1E2D3C4B5A69788796A5B4C3D2E1F0", " cc0f1e2d3c4b5a69788796a5b4c3d2e1f0",
+    "cc0f1e2d3c4b5a69788796a5b4c3d2e1f0@vega"
+  ],
+  "names": [
+    {"name": "board-sync", "rc": "board-sync", "matches": ["board-sync", "Board-Sync", " board-sync "], "misses": ["board", "board-sync-2"]},
+    {"name": "review @alice's PR / ü", "rc": "review-alice-s-PR", "matches": ["REVIEW @ALICE'S PR / Ü"], "misses": ["review", "alice"]},
+    {"name": "ccface1234", "rc": "ccface1234", "matches": ["CCFACE1234"], "misses": ["ccface"]},
+    {"name": "ü", "rc": "session", "matches": ["Ü"], "misses": ["u"]}
+  ],
+  "bad_names": ["", "   ", "tab\there", "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"]
+}

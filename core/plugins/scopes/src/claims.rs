@@ -94,7 +94,9 @@ impl Op {
     /// Tell the first waiter its scope is free, once.
     fn hand_over(&self, c: &Connection, project: &str, scope: &str, head: Option<&Row_>) -> Result<bool, Fail> {
         let Some(head) = head else { return Ok(false) };
-        let Some(job) = head.job.as_deref().filter(|j| !j.is_empty()) else { return Ok(false) };
+        if head.job.as_deref().is_none_or(str::is_empty) {
+            return Ok(false);
+        }
         if head.notified_at.is_some_and(|n| n != 0) {
             return Ok(false);
         }
@@ -102,7 +104,7 @@ impl Op {
             "[awm] scope {project}/{scope} is free and you are first in its queue. Move there with reflection cd now. \
              Add to your question on the board that the conflict is clear (scopes.md R7)."
         );
-        let sent = outbound::notify(self.out.as_ref(), job, &text);
+        let sent = outbound::notify(self.out.as_ref(), &head.session, &text);
         if sent {
             c.execute("UPDATE scope_waiters SET notified_at=? WHERE project=? AND scope=? AND session=?", params![now_ms(), project, scope, head.session])?;
         }

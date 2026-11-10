@@ -1,97 +1,233 @@
-//! The one parser of the session id of `sessions.md` R9 (`gatewayclient/ids.py`): a two-letter
-//! platform code, then the platform's own id as hex of any length.
+//! The session id of `sessions.md` R9 and the session name, mirrored by `gatewayclient/ids.py`.
 //!
-//! A Claude Code session is `cc` plus its UUID without dashes. A DeepSeek harness session is
-//! `ds` plus the hex of the UUID in its `session-<uuid>` id.
+//! A [`SessionId`] is a two-letter platform code then hex. Its canonical form is the only text
+//! [`SessionId::parse`] takes. A harness's own form comes in only through
+//! [`SessionId::from_harness_native`], where awm reads that harness's files.
 
-pub const PLATFORM_CLAUDE: &str = "cc";
-pub const PLATFORM_DEEPSEEK: &str = "ds";
-pub const PLATFORMS: [&str; 2] = [PLATFORM_CLAUDE, PLATFORM_DEEPSEEK];
+use std::fmt;
+
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("{0}")]
 pub struct BadSessionId(pub String);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Platform {
+    Claude,
+    DeepSeek,
+}
+
+impl Platform {
+    pub const ALL: [Platform; 2] = [Platform::Claude, Platform::DeepSeek];
+
+    pub const fn code(self) -> &'static str {
+        match self {
+            Platform::Claude => "cc",
+            Platform::DeepSeek => "ds",
+        }
+    }
+
+    pub fn from_code(code: &str) -> Result<Self, BadSessionId> {
+        Self::ALL.into_iter().find(|p| p.code() == code).ok_or_else(|| {
+            let known: Vec<_> = Self::ALL.iter().map(|p| p.code()).collect();
+            BadSessionId(format!("unknown platform code {code:?}; known: {}", known.join(", ")))
+        })
+    }
+}
+
 fn is_hex(s: &str) -> bool {
     !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
-fn is_uuid(s: &str) -> bool {
-    let groups: Vec<&str> = s.split('-').collect();
-    match groups.len() {
-        1 => s.len() == 32 && is_hex(s),
-        5 => groups.iter().zip([8, 4, 4, 4, 12]).all(|(g, n)| g.len() == n && is_hex(g)),
-        _ => false,
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct SessionId {
+    platform: Platform,
+    hex: String,
+}
+
+impl SessionId {
+    /// The id whose canonical form is `text`: lowercase `cc` + 32 hex, or `ds` + hex.
+    pub fn parse(text: &str) -> Result<Self, BadSessionId> {
+        let bad = |why: &str| {
+            BadSessionId(format!("{text:?} is not a canonical session id ({why}); the form is cc<32 hex> or ds<hex>"))
+        };
+        let (code, hex) = (text.get(..2).ok_or_else(|| bad("too short"))?, text.get(2..).unwrap_or(""));
+        let platform = Platform::from_code(code).map_err(|_| bad("no platform code"))?;
+        if !is_hex(hex) {
+            return Err(bad("not lowercase hex"));
+        }
+        if platform == Platform::Claude && hex.len() != 32 {
+            return Err(bad(&format!("{} hex digits, a cc id has 32", hex.len())));
+        }
+        Ok(Self { platform, hex: hex.into() })
+    }
+
+    /// The id of the harness's own session id `raw`: a Claude session UUID, or a DeepSeek hex id.
+    pub fn from_harness_native(platform: Platform, raw: &str) -> Result<Self, BadSessionId> {
+        let hex = raw.trim().to_lowercase().replace('-', "");
+        Self::parse(&format!("{}{hex}", platform.code()))
+            .map_err(|_| BadSessionId(format!("{raw:?} is not a {} harness session id", platform.code())))
+    }
+
+    pub fn platform(&self) -> Platform {
+        self.platform
+    }
+
+    pub fn canonical(&self) -> String {
+        format!("{}{}", self.platform.code(), self.hex)
+    }
+
+    /// The form the harness itself uses: a dashed UUID for Claude Code, the hex for DeepSeek.
+    pub fn harness_native(&self) -> String {
+        match self.platform {
+            Platform::Claude => {
+                let h = &self.hex;
+                format!("{}-{}-{}-{}-{}", &h[..8], &h[8..12], &h[12..16], &h[16..20], &h[20..])
+            }
+            Platform::DeepSeek => self.hex.clone(),
+        }
+    }
+
+    /// The name of the session's `~/.claude/jobs/` dir. Only Claude Code sessions have one.
+    pub fn job_dir(&self) -> Option<&str> {
+        (self.platform == Platform::Claude).then(|| &self.hex[..8])
     }
 }
 
-/// The R9 id of the platform's own session id `raw`.
-pub fn r9(platform: &str, raw: &str) -> Result<String, BadSessionId> {
-    if !PLATFORMS.contains(&platform) {
-        return Err(BadSessionId(format!("unknown platform code {platform:?}; known: {}", PLATFORMS.join(", "))));
-    }
-    let digits = raw.trim().to_lowercase().replace('-', "");
-    if !is_hex(&digits) {
-        return Err(BadSessionId(format!("{raw:?} is not a hex session id")));
-    }
-    Ok(format!("{platform}{digits}"))
-}
-
-/// `(platform, raw)` for an R9 id. `raw` is the platform's own form: a dashed UUID for Claude Code.
-pub fn parse_r9(session_id: &str) -> Result<(String, String), BadSessionId> {
-    let text = session_id.trim().to_lowercase();
-    let bad = || BadSessionId(format!("{session_id:?} is not an R9 session id"));
-    let (platform, digits) = (text.get(..2).ok_or_else(bad)?, text.get(2..).ok_or_else(bad)?);
-    if !PLATFORMS.contains(&platform) || !is_hex(digits) {
-        return Err(bad());
-    }
-    if platform == PLATFORM_CLAUDE && digits.len() == 32 {
-        let d = digits;
-        return Ok((platform.into(), format!("{}-{}-{}-{}-{}", &d[..8], &d[8..12], &d[12..16], &d[16..20], &d[20..])));
-    }
-    Ok((platform.into(), digits.into()))
-}
-
-/// The R9 id for `reference`: an R9 id as is, or a bare Claude session UUID.
-pub fn normalise(reference: &str) -> Result<String, BadSessionId> {
-    let text = reference.trim().to_lowercase();
-    if is_uuid(&text) {
-        return r9(PLATFORM_CLAUDE, &text);
-    }
-    parse_r9(&text)?;
-    Ok(text)
-}
-
-/// [`normalise`] that answers None for anything that is not an id.
-pub fn to_r9(reference: Option<&str>) -> Option<String> {
-    normalise(reference?).ok()
-}
-
-/// The dashed Claude session UUID behind an R9 Claude id.
-pub fn claude_uuid(session_id: &str) -> Option<String> {
-    match parse_r9(session_id) {
-        Ok((p, raw)) if p == PLATFORM_CLAUDE && raw.contains('-') => Some(raw),
-        _ => None,
+impl fmt::Display for SessionId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}{}", self.platform.code(), self.hex)
     }
 }
 
-pub fn is_r9(reference: &str) -> bool {
-    parse_r9(reference).is_ok()
+impl std::str::FromStr for SessionId {
+    type Err = BadSessionId;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s)
+    }
+}
+
+impl Serialize for SessionId {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&self.canonical())
+    }
+}
+
+impl<'de> Deserialize<'de> for SessionId {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Self::parse(&String::deserialize(d)?).map_err(serde::de::Error::custom)
+    }
+}
+
+pub const NAME_MAX: usize = 80;
+const RC_MAX: usize = 64;
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("{0}")]
+pub struct BadName(pub String);
+
+/// A session's label. It carries no meaning: no routing, no pool state, no id.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct Name(String);
+
+impl Name {
+    /// The name `text`, trimmed: 1 to 80 characters, no control characters.
+    pub fn new(text: &str) -> Result<Self, BadName> {
+        let t = text.trim();
+        if t.is_empty() || t.chars().count() > NAME_MAX || t.chars().any(char::is_control) {
+            return Err(BadName(format!("a session name is 1 to {NAME_MAX} printable characters, not {text:?}")));
+        }
+        Ok(Self(t.into()))
+    }
+
+    pub fn display(&self) -> &str {
+        &self.0
+    }
+
+    /// The name as Claude Code's `/rc` takes it: runs outside `[A-Za-z0-9._-]` become one `-`.
+    pub fn rc(&self) -> String {
+        let mut out = String::new();
+        for c in self.0.chars() {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
+                out.push(c);
+            } else if !out.ends_with('-') {
+                out.push('-');
+            }
+        }
+        let out: String = out.trim_matches('-').chars().take(RC_MAX).collect();
+        let out = out.trim_end_matches('-');
+        if out.is_empty() { "session".into() } else { out.into() }
+    }
+
+    /// Whether `text` is this whole name, ignoring case and surrounding space.
+    pub fn matches(&self, text: &str) -> bool {
+        self.0.to_lowercase() == text.trim().to_lowercase()
+    }
+}
+
+impl fmt::Display for Name {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl TryFrom<String> for Name {
+    type Error = BadName;
+    fn try_from(s: String) -> Result<Self, Self::Error> {
+        Self::new(&s)
+    }
+}
+
+impl From<Name> for String {
+    fn from(n: Name) -> String {
+        n.0
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::Value;
+
+    /// Rows shared with `gatewayclient/tests/test_ids.py`.
+    const GOLDEN: &str = include_str!("../ids_golden.json");
 
     #[test]
-    fn ids_round_trip() {
-        let uuid = "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0";
-        let id = normalise(uuid).unwrap();
-        assert_eq!(id, "cc0f1e2d3c4b5a69788796a5b4c3d2e1f0");
-        assert_eq!(normalise(&id.to_uppercase()).unwrap(), id);
-        assert_eq!(claude_uuid(&id).as_deref(), Some(uuid));
-        assert_eq!(parse_r9("dsabc1").unwrap(), ("ds".into(), "abc1".into()));
-        assert!(to_r9(Some("job-1")).is_none() && to_r9(None).is_none());
-        assert!(r9("zz", "ab").is_err() && !is_r9("cc") && !is_r9("ccxyz"));
+    fn golden_vector() {
+        let g: Value = serde_json::from_str(GOLDEN).unwrap();
+        for row in g["ids"].as_array().unwrap() {
+            let id = SessionId::parse(row["canonical"].as_str().unwrap()).unwrap();
+            assert_eq!(id.harness_native(), row["harness_native"].as_str().unwrap());
+            assert_eq!(id.job_dir(), row["job_dir"].as_str());
+            let p = Platform::from_code(&row["canonical"].as_str().unwrap()[..2]).unwrap();
+            assert_eq!(SessionId::from_harness_native(p, row["harness_native"].as_str().unwrap()).unwrap(), id);
+        }
+        for bad in g["bad_ids"].as_array().unwrap() {
+            assert!(SessionId::parse(bad.as_str().unwrap()).is_err(), "{bad}");
+        }
+        for row in g["names"].as_array().unwrap() {
+            let n = Name::new(row["name"].as_str().unwrap()).unwrap();
+            assert_eq!(n.rc(), row["rc"].as_str().unwrap());
+            for m in row["matches"].as_array().unwrap() {
+                assert!(n.matches(m.as_str().unwrap()), "{m}");
+            }
+            for m in row["misses"].as_array().unwrap() {
+                assert!(!n.matches(m.as_str().unwrap()), "{m}");
+            }
+        }
+        for bad in g["bad_names"].as_array().unwrap() {
+            assert!(Name::new(bad.as_str().unwrap()).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn serde_uses_the_canonical_form() {
+        let id = SessionId::parse("cc0f1e2d3c4b5a69788796a5b4c3d2e1f0").unwrap();
+        let v = serde_json::to_value(&id).unwrap();
+        assert_eq!(v, "cc0f1e2d3c4b5a69788796a5b4c3d2e1f0");
+        assert_eq!(serde_json::from_value::<SessionId>(v).unwrap(), id);
+        assert!(serde_json::from_value::<SessionId>("0f1e2d3c".into()).is_err());
     }
 }

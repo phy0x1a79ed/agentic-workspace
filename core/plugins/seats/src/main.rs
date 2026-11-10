@@ -66,11 +66,11 @@ fn pick<'a>(seats: &'a [Seat], channel: &str, latest: Option<&store::Latest>) ->
 impl App {
     async fn agent_seats(&self, call: &Call) -> Result<(String, Vec<Seat>), VerbError> {
         let who = holders::caller(call, "a seat").await?;
-        let seats = self.seats.store.of_job(&who.job).await;
+        let seats = self.seats.store.of_job(&who.session).await;
         if seats.is_empty() {
             return Err(VerbError::new("HolderError", "this session is no seat's agent on this node"));
         }
-        Ok((who.job, seats))
+        Ok((who.session, seats))
     }
 
     async fn send(&self, call: Call) -> Result<Value, VerbError> {
@@ -123,7 +123,7 @@ impl App {
 
     /// A job's level from reflection's row, or None when it does not say.
     async fn job_level(call: &Call, job: &str) -> Option<Level> {
-        holders::session_rows(call.hub(), false).await?.iter().find(|r| s(r, "job") == job).and_then(|r| ["trust", "level"].iter().find_map(|k| r.get(*k).and_then(Value::as_str)).and_then(|t| t.parse().ok()))
+        holders::session_rows(call.hub(), false).await?.iter().find(|r| s(r, "session_id") == job).and_then(|r| ["trust", "level"].iter().find_map(|k| r.get(*k).and_then(Value::as_str)).and_then(|t| t.parse().ok()))
     }
 
     async fn adopt(&self, call: Call) -> Result<Value, VerbError> {

@@ -74,18 +74,18 @@ async fn test_a_call_with_no_caller_pid_is_refused() {
 }
 
 #[tokio::test]
-async fn test_a_ref_two_harnesses_claim_is_refused() {
+async fn test_a_name_two_harnesses_answer_to_is_refused() {
     let fx = Fx::new();
-    fx.ds().set("j1", json!({"session_id": format!("ds{}", "b".repeat(32))}));
-    let out = fx.run("interrupt", json!({"_caller_pid": ME, "job": "j1"})).await;
-    assert!(refused(&out) && error(&out).contains("harness-cc, harness-ds"), "{out}");
+    fx.ds().set("d1", json!({"session_id": format!("ds{}", "b".repeat(32)), "name": "me"}));
+    let out = fx.run("interrupt", json!({"_caller_pid": ME, "to": {"name": "me"}})).await;
+    assert!(refused(&out) && error(&out).contains(&my_id()) && error(&out).contains(&"b".repeat(32)), "{out}");
 }
 
 #[tokio::test]
 async fn test_a_call_from_a_peer_does_not_fan_out_again() {
     let fx = Fx::new();
     fx.set_peers(&["altair"]);
-    let out = fx.run("message", json!({"to": "67212311", "text": "hi"})).await;
+    let out = fx.run("message", json!({"to": {"name": "nobody"}, "text": "hi"})).await;
     assert!(error(&out).contains("no session on this node"), "{out}");
     assert!(fx.gw().peer_calls().is_empty(), "fanned out");
 }
@@ -118,7 +118,7 @@ async fn test_start_other_passes_the_spec_through_and_records_trust() {
 #[tokio::test]
 async fn test_a_clear_event_records_the_old_session_as_the_parent() {
     let fx = Fx::new();
-    let old = "0e380e38-0e38-0e38-0e38-0e380e380e38";
+    let old = "cc0e380e380e380e380e380e380e380e38";
     let new = format!("cc{}", "2".repeat(32));
     let out = fx.run("harness_event", json!({"session_id": new, "kind": "clear", "parent": old})).await;
     assert_eq!(out, json!({"ok": true, "recorded": true}));
@@ -148,7 +148,7 @@ async fn test_a_steer_the_callers_trust_forbids_is_refused() {
     let fx = Fx::new();
     fx.cc().set("j2", peer_row());
     fx.deny_steers("no");
-    let out = fx.run("interrupt", json!({"_caller_pid": ME, "job": "j2"})).await;
+    let out = fx.run("interrupt", json!({"_caller_pid": ME, "to": {"id": other()}})).await;
     assert_eq!(out, json!({"ok": false, "error": "no"}));
     assert!(!fx.cc().verbs().contains(&"interrupt".to_string()));
 }
@@ -159,7 +159,7 @@ async fn test_a_trusted_sessions_stop_of_another_job_still_runs_the_check() {
         let fx = Fx::new();
         fx.cc().set("j2", peer_row());
         fx.deny_steers("no");
-        let out = fx.run(verb, json!({"_caller_pid": ME, "job": "j2", "confirm": true})).await;
+        let out = fx.run(verb, json!({"_caller_pid": ME, "to": {"id": other()}, "confirm": true})).await;
         assert_eq!(out, json!({"ok": false, "error": "no"}), "{verb}");
         assert_eq!(fx.asked(), [("trusted".to_string(), verb.to_string(), Some("trusted".to_string()))]);
         assert!(!fx.cc().verbs().contains(&"stop".to_string()));
@@ -174,8 +174,8 @@ async fn test_a_level_follows_the_job_to_a_new_session_id() {
         fx.cc().set("j2", peer_row());
         fx.app.record_trust(&format!("cc{}", "5".repeat(32)), level, "test", Some("j1")).await;
         assert_eq!(fx.run("whoami", json!({"_caller_pid": ME})).await["trust"], level);
-        assert!(refused(&fx.run("stop", json!({"_caller_pid": ME, "job": "j2", "confirm": true})).await), "{level}");
-        assert!(ok(&fx.run("stop", json!({"_caller_pid": ME, "job": "j1", "confirm": true})).await), "{level}");
+        assert!(refused(&fx.run("stop", json!({"_caller_pid": ME, "to": {"id": other()}, "confirm": true})).await), "{level}");
+        assert!(ok(&fx.run("stop", json!({"_caller_pid": ME, "to": {"id": my_id()}, "confirm": true})).await), "{level}");
     }
 }
 
@@ -280,7 +280,7 @@ async fn test_wait_records_the_wait_then_stops_the_caller_keeping_its_job() {
     let fx = Fx::new();
     let out = fx.run("wait", json!({"_caller_pid": ME, "until": [other()]})).await;
     assert!(ok(&out) && out["waiting"] == true, "{out}");
-    assert_eq!(fx.cc().last(), ("stop".to_string(), json!({"ref": "j1", "pid": ME, "keep": true, "confirm": true})));
+    assert_eq!(fx.cc().last(), ("stop".to_string(), json!({"session_id": my_id(), "pid": ME, "keep": true, "confirm": true})));
     let waits = fx.run("waits", json!({})).await["waits"].clone();
     assert_eq!(waits.as_array().unwrap().len(), 1);
     let row = &waits[0];
@@ -303,13 +303,13 @@ async fn test_the_last_retire_resumes_the_waiter_with_the_wake_line() {
     fx.run("wait", json!({"_caller_pid": ME, "until": [other(), third()]})).await;
     fx.cc().set("w2", json!({"session_id": other(), "name": "w2", "job": "w2"}));
     fx.cc().answer("stop", json!({"ok": true, "session_id": other()}));
-    assert_eq!(fx.run("stop", json!({"job": "w2"})).await["woken"], json!([]));
+    assert_eq!(fx.run("stop", json!({"to": {"id": other()}})).await["woken"], json!([]));
     assert!(!fx.cc().verbs().contains(&"resume".to_string()));
     assert_eq!(fx.run("waits", json!({})).await["waits"][0]["retired"], json!([other()]));
     fx.cc().answer("stop", json!({"ok": true, "session_id": third()}));
-    assert_eq!(fx.run("stop", json!({"job": third()})).await["woken"], json!([my_id()]));
+    assert_eq!(fx.run("stop", json!({"to": {"id": third()}})).await["woken"], json!([my_id()]));
     let (verb, args) = fx.cc().last();
-    assert!(verb == "resume" && args["ref"] == "j1" && args["prompt"].as_str().unwrap().contains(&other()), "{args}");
+    assert!(verb == "resume" && args["session_id"] == my_id() && args["prompt"].as_str().unwrap().contains(&other()), "{args}");
     assert_eq!(fx.run("waits", json!({})).await["waits"], json!([]));
     fx.app.settle().await;
 }
@@ -423,7 +423,7 @@ async fn test_a_stop_releases_the_sessions_claims() {
             c.hold("awm", "y", json!({"session_id": format!("cc{}", "9".repeat(32)), "pid": 1, "job": "other"}));
         });
         fx.cc().answer("stop", json!({"ok": true, "job": "j1", "session_id": my_id()}));
-        let out = fx.run(verb, json!({"_caller_pid": ME, "job": "j1", "confirm": true})).await;
+        let out = fx.run(verb, json!({"_caller_pid": ME, "to": {"id": my_id()}, "confirm": true})).await;
         assert!(ok(&out), "{verb}: {out}");
         let held: Vec<(String, String)> = fx.gw().with_claims(|c| c.held.iter().map(|(k, _)| k.clone()).collect());
         assert_eq!(held, [("awm".to_string(), "y".to_string())], "{verb}");

@@ -9,6 +9,7 @@ use std::future::Future;
 use std::time::Duration;
 
 use awm_harness::claude::records::session_by_pid;
+use awm_plugin_sdk::ids::{Platform, SessionId};
 use awm_harness::claude::ClaudeHome;
 use serde_json::{json, Value};
 
@@ -34,6 +35,8 @@ pub struct Hog {
     pub command: String,
     pub job: Option<String>,
     pub session: Option<String>,
+    /// The canonical id of that session.
+    pub session_id: Option<String>,
 }
 
 /// When memory went low, when the operator was last told, and when each session was last warned.
@@ -135,18 +138,20 @@ fn text_of(v: Option<&Value>) -> Option<String> {
     }
 }
 
-/// The background job and session name of the Claude Code session at or above `pid`.
-pub fn owner(home: &ClaudeHome, mut pid: u32) -> (Option<String>, Option<String>) {
+/// The background job, session name and canonical session id of the Claude Code session at or
+/// above `pid`.
+pub fn owner(home: &ClaudeHome, mut pid: u32) -> (Option<String>, Option<String>, Option<String>) {
     let mut seen = 0;
     while pid > 1 && seen < 64 {
         if let Some(rec) = session_by_pid(home, pid) {
             let job = if rec.get("kind").and_then(Value::as_str) == Some("bg") { text_of(rec.get("jobId")) } else { None };
-            return (job, text_of(rec.get("name")));
+            let id = text_of(rec.get("sessionId")).and_then(|raw| SessionId::from_harness_native(Platform::Claude, &raw).ok()).map(|i| i.canonical());
+            return (job, text_of(rec.get("name")), id);
         }
         pid = awm_plugin_sdk::procfs::ppid(pid).unwrap_or(0);
         seen += 1;
     }
-    (None, None)
+    (None, None, None)
 }
 
 /// The `n` processes of this user with the most resident memory. Blocking reads of `/proc`.
@@ -169,8 +174,8 @@ pub fn top_hogs(home: &ClaudeHome, n: usize) -> Vec<Hog> {
         .into_iter()
         .take(n)
         .map(|(rss_kb, pid)| {
-            let (job, session) = owner(home, pid);
-            Hog { pid, rss_kb, command: command(pid), job, session }
+            let (job, session, session_id) = owner(home, pid);
+            Hog { pid, rss_kb, command: command(pid), job, session, session_id }
         })
         .collect()
 }
@@ -268,10 +273,10 @@ pub async fn memory_tick(watch: &mut MemWatch, node: &impl Node, gateway: &impl 
         tracing::warn!("keep: could not tell the operator: {e}");
     }
     for hog in watch.jobs_to_warn(now, &hogs) {
-        let job = hog.job.clone().unwrap_or_default();
-        let args = json!({"to": job, "text": session_warning(&notify.node, &hog, available)});
+        let Some(id) = hog.session_id.clone() else { continue };
+        let args = json!({"to": {"id": id}, "text": session_warning(&notify.node, &hog, available)});
         if let Err(e) = gateway.call(Call::new("reflection", "message", args)).await {
-            tracing::warn!("keep: could not warn {job}: {e}");
+            tracing::warn!("keep: could not warn {id}: {e}");
         }
     }
 }
@@ -285,7 +290,7 @@ mod tests {
     const T0: f64 = 1_792_000_000.0;
 
     fn hog(pid: u32, rss_kb: u64, command: &str, job: Option<&str>, session: Option<&str>) -> Hog {
-        Hog { pid, rss_kb, command: command.into(), job: job.map(String::from), session: session.map(String::from) }
+        Hog { pid, rss_kb, command: command.into(), job: job.map(String::from), session: session.map(String::from), session_id: job.map(|_| format!("cc{}", "a".repeat(32))) }
     }
 
     #[test]
@@ -326,7 +331,7 @@ mod tests {
         assert!(sent[0].args["text"].as_str().unwrap().contains("big.py"));
         assert_eq!(messaged.len(), 1);
         assert_eq!((messaged[0].tool.as_str(), messaged[0].verb.as_str()), ("reflection", "message"));
-        assert_eq!(messaged[0].args["to"], "0000aaaa");
+        assert_eq!(messaged[0].args["to"], json!({"id": format!("cc{}", "a".repeat(32))}));
     }
 
 }

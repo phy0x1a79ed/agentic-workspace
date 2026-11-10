@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use awm_harness::contract::{self, args::bool_lenient, args::int_lenient, args::text, target_params};
+use awm_harness::contract::{self, args::bool_lenient, args::int_lenient, args::text, find_params, target_params};
 use awm_plugin_sdk::{CallOpts, Hub, VerbError};
 use serde_json::{json, Value};
 
@@ -42,10 +42,8 @@ fn pd(name: &str, ty: &str, description: &str) -> Value {
     json!({"name": name, "type": ty, "required": false, "description": description})
 }
 
-const TARGET_REF: &str = "A DeepSeek harness session: its fork id (session-<uuid>), an R9 id prefix of 8 or more characters, or its exact title.";
-
 fn target_plus(extra: &[(&str, &str)]) -> Value {
-    let mut out = target_params(TARGET_REF);
+    let mut out = target_params();
     out.extend(extra.iter().map(|(n, t)| p(n, t)));
     Value::Array(out)
 }
@@ -79,7 +77,7 @@ fn contract_params(verb: &str) -> Value {
     match verb {
         "platform" => json!([]),
         "resolve" => json!([{"name": "pid", "type": "integer", "required": true}]),
-        "find" => json!([{"name": "ref", "type": "string", "required": true}]),
+        "find" => Value::Array(find_params()),
         "status" | "interrupt" => target_plus(&[]),
         "stop" => target_plus(&[("keep", "boolean"), ("confirm", "boolean")]),
         "list" => json!([p("project", "string"), p("scope", "string"), p("include_stopped", "boolean")]),
@@ -208,15 +206,12 @@ impl App {
         match verb {
             "platform" => Ok(contract::platform(PLATFORM, NAME, &[])),
             "resolve" => Ok(s.resolve(pid_arg(args.get("pid")), fork_pid).await),
-            "find" => {
-                let row = s.find_one(&text(args.get("ref")).unwrap_or_default()).await?;
-                Ok(json!({"ok": true, "matches": row.into_iter().collect::<Vec<_>>()}))
-            }
+            "find" => Ok(json!({"ok": true, "sessions": s.named(&text(args.get("name")).unwrap_or_default()).await?})),
             "status" => match s.target(args, fork_pid).await {
                 Ok(row) => Ok(with_ok(row)),
                 Err(_) if !listening(s.fork.port).await => Ok(json!({"ok": true, "live": false, "state": "stopped"})),
                 Err(e) => Ok(json!({"ok": false, "error": e.0,
-                                    "unknown_ref": text(args.get("session_id")).or_else(|| text(args.get("ref")))})),
+                                    "unknown_ref": text(args.get("session_id"))})),
             },
             "list" => {
                 let rows = match s.rows().await {
@@ -344,14 +339,14 @@ mod tests {
     async fn a_fork_fault_is_ok_false_never_a_verb_error() {
         let (stub, a, _d) = up().await;
         stub.with(|g| g.refuse.push("session.cancel".into()));
-        let out = a.handle(HARNESS_TOOL, "interrupt", &json!({"ref": "web"})).await.unwrap();
+        let out = a.handle(HARNESS_TOOL, "interrupt", &json!({"session_id": R9})).await.unwrap();
         assert_eq!(out, json!({"ok": false, "error": "session.cancel: E_STUB: refused"}));
-        let out = a.handle(HARNESS_TOOL, "status", &json!({"ref": "nothing"})).await.unwrap();
+        let out = a.handle(HARNESS_TOOL, "status", &json!({"session_id": "ds0e"})).await.unwrap();
         assert_eq!(out["ok"], false);
-        assert_eq!(out["error"], "no DeepSeek harness session matches 'nothing'");
-        assert_eq!(out["unknown_ref"], "nothing");
+        assert_eq!(out["error"], "no DeepSeek harness session matches 'ds0e'");
+        assert_eq!(out["unknown_ref"], "ds0e");
         let out = a.handle(HARNESS_TOOL, "stop", &json!({})).await.unwrap();
-        assert_eq!(out["error"], "name a session with session_id or ref");
+        assert_eq!(out["error"], "name a session with session_id");
         assert_eq!(a.handle(HARNESS_TOOL, "platform", &json!({})).await.unwrap()["code"], "ds");
     }
 

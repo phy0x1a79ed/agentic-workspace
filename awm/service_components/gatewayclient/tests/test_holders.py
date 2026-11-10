@@ -126,7 +126,7 @@ def test_an_isolated_session_holds_a_channel_by_its_r9_id(monkeypatch):
     """It has no job, and reflection types into it by its session id (R111)."""
     _list_other(monkeypatch, ROWS)
     monkeypatch.setattr(holders.config, "node_name", lambda: "mizar")
-    holder = holders.caller({"_caller_session_id": ISO.upper()}, None)
+    holder = holders.caller({"_caller_session_id": ISO}, None)
     assert holder == {"node": "mizar", "session": ISO, "job": ISO, "name": ""}
 
 
