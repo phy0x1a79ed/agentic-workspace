@@ -1,0 +1,25 @@
+[package]
+name = "awm-kb-papers"
+description = "The papers source inside kb: the paper corpus in its own LanceDB generation, ranked by bge-large, and the import that builds a generation."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+awm-embed.workspace = true
+awm-index.workspace = true
+awm-kb-source = { path = "../awm-kb-source" }
+awm-pycompat.workspace = true
+awm-plugin-sdk.workspace = true
+anyhow.workspace = true
+futures = "0.3"
+lancedb = { version = "0.41", default-features = false }
+rusqlite.workspace = true
+parquet = { version = "58", default-features = false, features = ["arrow", "snap", "zstd"] }
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

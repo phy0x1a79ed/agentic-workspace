@@ -22,8 +22,13 @@ use lancedb::DistanceType;
 use serde_json::{Map, Value};
 use std::collections::HashSet;
 
-/// Probes of a vector search over an IVF index.
+/// Probes of a vector search over an IVF index, at least.
 pub const NPROBES: usize = 20;
+
+/// Probes for `rows` chunks: 5% of the index's partitions, which number about `sqrt(rows)`.
+fn nprobes(rows: usize) -> usize {
+    NPROBES.max((rows as f64).sqrt() as usize / 20)
+}
 /// How many phrase matches an `$about` ranks, or a sort orders, at most.
 pub const CANDIDATES: usize = 1000;
 const BATCH: usize = 500;
@@ -145,7 +150,8 @@ impl Index {
         Ok(found)
     }
 
-    async fn ids(&self, cond: &str, limit: Option<usize>) -> Result<Vec<String>> {
+    /// The ids passing `cond`, up to `limit`.
+    pub async fn ids(&self, cond: &str, limit: Option<usize>) -> Result<Vec<String>> {
         let mut out = Vec::new();
         for sec in self.sections() {
             let mut q = sec.entries.query().select(Select::columns(&["id"]));
@@ -239,7 +245,8 @@ impl Index {
 
     /// Each entry's best chunk similarity to the query vector, for the nearest `depth` entries.
     async fn dense(&self, sec: &Section, vector: &[f32], cond: &str, depth: usize) -> Result<IndexMap<String, f64>> {
-        if sec.chunks.count_rows(None).await? == 0 {
+        let rows = sec.chunks.count_rows(None).await?;
+        if rows == 0 {
             return Ok(IndexMap::new());
         }
         let mut q = sec
@@ -247,7 +254,7 @@ impl Index {
             .query()
             .nearest_to(vector)?
             .distance_type(DistanceType::Cosine)
-            .nprobes(NPROBES)?
+            .nprobes(nprobes(rows))?
             .select(Select::columns(&["id", "_distance"]))
             .limit(depth * 3);
         if cond != "true" {

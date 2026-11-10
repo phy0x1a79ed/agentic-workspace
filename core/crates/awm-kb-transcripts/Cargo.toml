@@ -7,6 +7,7 @@ license.workspace = true
 publish = false
 
 [dependencies]
+awm-embed.workspace = true
 awm-plugin-sdk.workspace = true
 awm-pycompat.workspace = true
 awm-store.workspace = true

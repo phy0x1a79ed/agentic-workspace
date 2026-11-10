@@ -45,6 +45,8 @@ pub fn spec() -> Spec {
             ("session".into(), Kind::Text),
         ],
         section_by: Some("ts".into()),
+        dim: awm_embed::MINILM.dim,
+        entry_only: vec![],
     }
 }
 

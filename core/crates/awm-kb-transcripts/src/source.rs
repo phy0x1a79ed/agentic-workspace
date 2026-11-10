@@ -1,5 +1,5 @@
 //! The opt-in search source `transcripts`: search asks it in-process, and it answers from the
-//! archive's full-text index. A peer sees nothing of a marked project, nor of a session that
+//! full-text index, after catching it up with what the live transcripts gained. A peer sees nothing of a marked project, nor of a session that
 //! entered a marked path, and its `max` fills with hits it may see.
 
 use std::sync::Arc;
@@ -65,6 +65,9 @@ impl Source for Transcripts {
 
     fn query(&self, ask: Ask) -> BoxFuture<'_, Result<Value, SourceError>> {
         Box::pin(async move {
+            if let Err(e) = self.app.catch_up().await {
+                tracing::warn!("transcripts: live sessions not caught up, answering from the index: {}", e.message);
+            }
             let ix = self.ix()?;
             let Some(narrow) = ix.narrow(None, ask.veil != Veil::None) else {
                 return Ok(json!({"exact": []}));
