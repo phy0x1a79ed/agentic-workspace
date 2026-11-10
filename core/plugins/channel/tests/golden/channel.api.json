@@ -95,7 +95,7 @@
     {
       "name": "send",
       "tool": "channel_send",
-      "description": "Send a file on this node into a room you hold. The bytes go straight to the room's relay, apart from the messages, with no size limit, sealed in an encrypted room. A message then names the file, and the other side fetches it from the room. Returns the file's `id`, `size` and `url`. A file the other side sends arrives the same way: it is saved beside the room's transcript, and the pushed line names where.",
+      "description": "Send a file on this node into a room or onto a machine you hold, with no size limit. Into a room, the bytes go straight to the room's relay, apart from the messages, sealed in an encrypted room. A message then names the file, and the other side fetches it from the room. Returns the file's `id`, `size` and `url`. A file a room's other side sends arrives the same way: it is saved beside the room's transcript, and the pushed line names where. Onto a machine, the file lands in a fresh folder under the owner's temp directory, and the answer is its `path` there.",
       "params": [
         {
           "name": "path",

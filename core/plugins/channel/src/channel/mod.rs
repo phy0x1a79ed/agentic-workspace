@@ -219,19 +219,25 @@ impl Channels {
         Ok(json!({"name": row.name, "sent": seq, "sealed": keyed}))
     }
 
-    /// Send a local file into a room you hold. The bytes go straight to the public edge, sealed
-    /// under a fresh key in an encrypted room, and a message then names the file.
+    /// Send a local file. Into a room, the bytes go straight to the public edge, sealed under a
+    /// fresh key in an encrypted room, and a message then names the file. Onto a machine, the
+    /// tether daemon puts it under the owner's temp directory and the answer names the path.
     pub async fn send(self: &Arc<Self>, holder: &Holder, path: &str, text: &str, name: Option<&str>, as_name: Option<&str>) -> Res<Value> {
         let row = self.pick(holder, name)?;
-        if row.kind != "room" {
-            return Err(refuse("a machine takes files from the next tether release on; until then, write the file through the shell"));
-        }
         let local = std::path::Path::new(path);
         if !local.is_absolute() || !local.is_file() {
             return Err(refuse(format!("path names a file on this node by its absolute path; {path:?} is not one")));
         }
-        let size = local.metadata().map_err(|e| refuse(e.to_string()))?.len();
         let file_name = as_name.filter(|n| !n.is_empty()).map(str::to_string).unwrap_or_else(|| local.file_name().unwrap_or_default().to_string_lossy().into_owned());
+        if row.kind == "machine" {
+            let (slot, sid) = self.aim(&row)?;
+            let placed = self.on_machine(&row, self.machines.put(slot, &sid, path, &file_name).await).await?;
+            if !text.is_empty() {
+                self.on_machine(&row, self.machines.say(slot, &sid, text).await).await?;
+            }
+            return Ok(placed);
+        }
+        let size = local.metadata().map_err(|e| refuse(e.to_string()))?.len();
         let keyed = keyed(&row);
         let key: Option<[u8; 32]> = keyed.then(rand::random);
         let id = files::upload(&row.link, local, key.as_ref()).await.map_err(refuse)?;
