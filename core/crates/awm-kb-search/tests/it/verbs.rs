@@ -30,13 +30,16 @@ async fn describe_matches_the_baseline_with_the_listed_changes() {
     verbs.sort_by(|a, b| a["verb"].as_str().cmp(&b["verb"].as_str()));
     let mut want: Value = serde_json::from_str(include_str!("../../../../../docs/plugin-redux/ports/baseline/search.describe.json")).unwrap();
     // The listed changes: reindex and api_export go; sources and status describe the live
-    // sources; query and get name guide where they named the retired awm source.
+    // sources; query and get name guide where they named the retired awm source; query's first
+    // line is its summary sentence.
     let list = want["verbs"].as_array_mut().unwrap();
     list.retain(|v| v["verb"] != "reindex" && v["verb"] != "api_export");
     for v in list.iter_mut() {
         let d = v["description"].as_str().unwrap().to_string();
         let d = match v["verb"].as_str().unwrap() {
-            "query" => d.replace("such as journals, or awm for the node's tools;", "such as journals, or guide for how to use awm;"),
+            "query" => d
+                .replace("such as journals, or awm for the node's tools;", "such as journals, or guide for how to use awm;")
+                .replace("search query \u{2014} rank items from named sources.", "Rank hits from named sources. Open a hit with `get`."),
             "get" => d.replace("and an awm hit is its verb's describe.", "and a guide hit is its section of a doc or its verb's describe."),
             "sources" | "status" => functions.iter().find(|f| f["tool"] == format!("search_{}", v["verb"].as_str().unwrap())).unwrap()["description"].as_str().unwrap().to_string(),
             _ => d,
@@ -46,7 +49,7 @@ async fn describe_matches_the_baseline_with_the_listed_changes() {
     assert_eq!(json!({"plugin": "search", "tool": "search", "verbs": verbs}), want);
     let text = functions[0]["description"].as_str().unwrap();
     assert_eq!(text.lines().count(), 13);
-    assert!(text.starts_with("search query \u{2014} rank items from named sources.\n") && text.ends_with("Open one with `get`.\n"));
+    assert!(text.starts_with("Rank hits from named sources. Open a hit with `get`.\n") && text.ends_with("Open one with `get`.\n"));
     for name in ["sources", "status"] {
         let d = functions.iter().find(|f| f["tool"] == format!("search_{name}")).unwrap()["description"].as_str().unwrap();
         for gone in ["sync", "frozen", "sweep", "subscription"] {
