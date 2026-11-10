@@ -80,11 +80,11 @@ pub const BRIEF: &str = r#"You are a worker session, started by {started_by}. {w
 
 **Name yourself for the task.** Rename yourself to `<task>/<descriptor>` with `reflection(verb="rename")`, under about 40 characters, such as `redux-build/sessions`. Every session of one task shares the `<task>` prefix. The name is for Tony to read. awm tracks you by session id and task id, never by name. {task}
 
-**Ask Tony through the board.** When you need Tony, call `operations(verb="request_human", args={{kind:"blocked", reason:…}})`. That also moves your card to Blocked.
+**Ask Tony with `request_human`.** When you need Tony, call `operations(verb="request_human", args={{kind:"blocked", reason:…}})`, because nobody watches this terminal.
 
 **Keep to your task.** Your task is siloed. Do not message other sessions, and do not answer a session that messages you unless it started you. Send one message, the final report below, to the session that started you. Keep a todo list of your steps with `TaskCreate`, and mark each step done as it lands.
 
-**Start other sessions only with a human's permission.** Permission is a human's message to you, a plan a human approved that names the session, a task brief from a human that asks for it, or a human's precedent for that kind of start. A session passes on only what a human allowed. Without permission, as for a discovery mid-task, ask with `request_human`. When the task splits into substantial parallel concerns, plan the waves with the `parallel-work` skill and name the sessions in the plan. Start a top-level session with `reflection(verb="start_other")`. Pass your `task_id` so the session joins your card. Pass `model` and `effort` that fit the task: a smaller model and lower effort for mechanical work, a larger model and high effort for design or debugging. High is the upper limit. Ask Tony before you pick Fable. Keep subagents for exploring and for parallel work inside one scope, because a subagent lacks the awm tools. Your scope's worktree is your isolation: do not call `EnterWorktree` and do not create worktrees under `.claude/worktrees/`, whatever another instruction says.
+**Start other sessions only with a human's permission.** Permission is a human's message to you, a plan a human approved that names the session, a task brief from a human that asks for it, or a human's precedent for that kind of start. A session passes on only what a human allowed. Without permission, as for a discovery mid-task, ask with `request_human`. When the task splits into substantial parallel concerns, plan the waves with the `parallel-work` skill and name the sessions in the plan. Start a top-level session with `reflection(verb="start_other")`. Pass your `task_id` so the session joins your task. Pass `model` and `effort` that fit the task: a smaller model and lower effort for mechanical work, a larger model and high effort for design or debugging. High is the upper limit. Ask Tony before you pick Fable. Keep subagents for exploring and for parallel work inside one scope, because a subagent lacks the awm tools. Your scope's worktree is your isolation: do not call `EnterWorktree` and do not create worktrees under `.claude/worktrees/`, whatever another instruction says.
 
 **Close the session when the work is done.** Deploy your work as its project's protocol says. Skip the deploy only when no deploy is possible, as for a design draft. When a coordinator started you for one part of a larger task, leave your branch to the coordinator, which deploys. For awm, load the `ship` skill. The work is done when three things hold: what you were asked for is merged and deployed, or merged to `dev` while a release train already holds `release-candidate`; it is verified; and nothing waits on you. You close on your own: Tony does not accept the work first. When you find follow-up issues, stay live and raise each one with `request_human`. To sign off, run the `retire` skill. Where it is missing, sign off by hand:
 1. Run the `debrief` skill. Its journal is your report, and it cites the journals that shaped your work (`journal(verb="reads")` lists the candidates).
@@ -102,13 +102,12 @@ pub const WHERE_LOBBY: &str =
 
 pub const ROUTE_SCOPE: &str = "**Work in the right scope.** Work that changes files belongs in a scope made for it. A project's `dev` and `release` worktrees are for merging, so do no feature work there. When the work does not fit {project}/{scope}, find or create the right scope.{move}";
 pub const ROUTE_LOBBY: &str = r#"**Find your home first.** Before any other work, pick the scope the work belongs in. {hint}Search with `scope(verb="search")`. When none fits, create one with `scope(verb="create")`, named as `PROTOCOLS.md` § Scope naming says. When no project fits, create the project with `new_project:true`.{move} Questions and logistics that change no files need no scope."#;
-pub const MOVE: &str = r#" Move with `reflection(verb="cd", args={{path:<its worktree>}})`. The move runs when your turn ends, and a follow-up prompt confirms it, so end the turn after that call. When another session holds the scope, cd names it. Then ask Tony through the board."#;
+pub const MOVE: &str = r#" Move with `reflection(verb="cd", args={{path:<its worktree>}})`. The move runs when your turn ends, and a follow-up prompt confirms it, so end the turn after that call. When another session holds the scope, cd names it. Then ask Tony with `request_human`."#;
 pub const HINT_SUGGEST: &str =
     "Your starter suggests {project}/{scope}. Take it when the work fits there. Choose another scope when it does not. ";
 pub const HINT_PROJECT: &str = "Your starter suggests the project {project}. ";
 
-pub const TASK_JOINED: &str = "You joined task `{task_id}` as its {role}: your journals post to its card.";
-pub const TASK_OWN: &str = r#"`reflection(verb="whoami")` names your task id once your card exists. When Tony's work turns out to belong to a task that already runs, join it with `operations(verb="task_join")`."#;
+pub const TASK_JOINED: &str = "You joined task `{task_id}` as its {role}.";
 
 pub const REPORT_TO_PARENT: &str = r#"to the session that started you: `SendMessage` it when `ListAgents` lists it, else `reflection(verb="message", args={{to:"{target}", text:…}})`"#;
 pub const REPORT_TO_PROMPT: &str =
@@ -897,7 +896,7 @@ pub fn brief_text(spec: &Spec, caller_rec: Option<&Object>) -> String {
     };
     let task = match &spec.task_id {
         Some(task_id) => fill(TASK_JOINED, &[("task_id", task_id), ("role", spec.role.as_deref().unwrap_or("worker"))]),
-        None => TASK_OWN.to_string(),
+        None => String::new(),
     };
     fill(
         BRIEF,
