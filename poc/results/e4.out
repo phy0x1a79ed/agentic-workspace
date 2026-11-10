@@ -1,0 +1,10 @@
+E4 mizar replies: {"ev":"decline","node":"mizar","reason":"no cargo"}
+E4 capella replies: {"est_ms":60000,"ev":"bid","glibc":2.35,"node":"capella"}
+E4 award -> capella (bid round 421ms)
+E4 built c3209405ed66 in 107ms
+E4 fetched by digest: verify=true
+E4 loaded on mizar: version=2 calc(3,4)=Ok(1012)
+E4 repro: same dir rebuild equal=true
+E4 repro: different build dir, no remap equal=true
+E4 repro: different dirs, both --remap-path-prefix equal=true
+E4 digests c3209405ed c3209405ed c3209405ed c3209405ed c3209405ed

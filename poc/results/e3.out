@@ -1,0 +1,24 @@
+E3 sub n1: table -> 2c4fc366
+E3 sub n2: table -> 07f162f6
+E3 sub n3: table -> fe30f69a
+E3 sub n4: table -> 90a575c7
+E3 sub n5: table -> 200291d5
+E3 store cap=3; sequence of calls (level, result, time):
+E3   call n1(pinned) -> L3 Ok(3) 42.26ms  store=1 blobs
+E3   call n1(pinned) -> L0 Ok(3) 0.00ms  store=1 blobs
+E3   call n2 -> L3 Ok(3) 89.65ms  store=2 blobs
+E3   call n3 -> L3 Ok(3) 61.50ms  store=3 blobs
+E3   call n4 -> L3 Ok(3) 131.75ms  store=3 blobs
+E3   call n5 -> L3 Ok(3) 62.48ms  store=3 blobs
+E3   call n2 -> L3 Ok(3) 62.39ms  store=3 blobs
+E3   call n1(pinned) -> L0 Ok(3) 0.00ms  store=3 blobs
+E3 evicted=Some(3) svc entry still Some(Service { route: "capella" })
+E3 event: n3: table -> 82b51695
+E3 n3 after event -> L3 Ok(3) 60.02ms; store=3 blobs (old n3 blob orphan evicted first)
+E3 restart: table.json restored entries=6 equal=true store blobs=3 pinned=0
+E3 resub n1: 304 (table kept)
+E3 resub n2: 304 (table kept)
+E3 resub n3: 304 (table kept)
+E3 resub n4: 304 (table kept)
+E3 resub n5: 304 (table kept)
+E3 n3 after restart -> L1 Ok(3) 6.74ms

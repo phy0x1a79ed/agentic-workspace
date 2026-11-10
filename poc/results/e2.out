@@ -1,0 +1,18 @@
+E2 initial: SWAP -> v1 b204d832 fetch+verify+load+swap 52.46ms
+E2 count before swap = 1511893
+E2 event v2: SWAP -> v2 c3209405 fetch+verify+load+swap 52.18ms
+E2 count after swap  = 15859 (state lost)
+E2 event tampered: REJECT cddb8daf digest mismatch (v kept: 2)
+thread '<unnamed>' (3420664) panicked at modl/src/lib.rs:17:67:
+bad init
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+E2 event panic-on-init: REJECT a31e1125 init failed (module reported panic) (v kept: 2)
+E2 still serving: calc=Ok(1002)
+E2 published v3 while mizar link was down
+E2 reconnect with held digest: SWAP -> v2 dbab81c3 fetch+verify+load+swap 66.50ms
+E2 reconnect, nothing new: 304 notmodified
+E2 load thread 0: calls=1702139 errors=0 outputs-in-order=[3, 1002]
+E2 load thread 1: calls=1838017 errors=0 outputs-in-order=[3, 1002]
+E2 load thread 2: calls=1618791 errors=0 outputs-in-order=[3, 1002]
+E2 load thread 3: calls=2040909 errors=0 outputs-in-order=[3, 1002]
+E2 swaps=[(1, 52.455728), (2, 52.176809), (2, 66.503432)] rejects=["cddb8daf: digest mismatch", "a31e1125: init failed (module reported panic)"]
