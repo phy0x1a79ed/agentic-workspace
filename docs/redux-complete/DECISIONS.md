@@ -80,4 +80,6 @@ Decided:
 - **Old scopes.** Scopes whose branches are fully in release are completed and their worktrees removed. Branches stay in git. Each unmerged branch is audited for anything the end state still needs, and the audit goes to Tony before anything unmerged is touched.
 - **Seats.** Unpaused as the last step, after the fleet is verified, with one live inbound and outbound message confirmed.
 
-Landed: snapshots deleted on mizar, shogun, capella, altair and deneb. alcor keeps its copy until Monday's close, and lyra is offline. 90 merged scopes retired, and the branch audit went to Tony on card 46Pz69LI. The seats stay paused: social on alcor has no edge to altair, where R129 puts the Slack seats, and altair's `managed: false` reads as "runs no awm" (cloud 3e6f469). Tony chooses an alcor to altair edge or moves the Slack seats to mizar.
+Landed: snapshots deleted on every node but lyra, which is offline. alcor's went after its first gateway-free trading day, 2026-11-09. 90 merged scopes retired, and the branch audit went to Tony on card 46Pz69LI. The seats are on, homed on mizar and altair, each on its own host (cloud 0447021, 180f70b), so alcor needs no edge to altair.
+
+After the close-out, 2026-11-09: alcor runs stock `release` bab05f0 through cloud's `stock_pin`, with rt free of the gateway. `systemctl stop awm-rt` stops each job through the rt shell (`KillMode=mixed`). alcor's shared awm env is gone. Each plugin and wake-boot runs from its own env.
