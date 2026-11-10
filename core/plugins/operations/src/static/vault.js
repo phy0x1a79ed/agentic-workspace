@@ -4,20 +4,33 @@
 const data = JSON.parse(document.body.dataset.json || "{}");
 const main = document.getElementById("main");
 const status = document.getElementById("status");
+const lede = document.getElementById("lede");
 
 function say(text, bad = false) {
   status.textContent = text;
   status.className = bad ? "bad" : "";
 }
 
-function el(tag, attrs = {}, ...kids) {
-  const e = document.createElement(tag);
+function fill(e, attrs, kids) {
   for (const [k, v] of Object.entries(attrs)) {
     if (k === "onclick") e.addEventListener("click", v);
     else e.setAttribute(k, v);
   }
   for (const k of kids) e.append(k);
   return e;
+}
+
+const el = (tag, attrs = {}, ...kids) => fill(document.createElement(tag), attrs, kids);
+const svg = (tag, attrs = {}, ...kids) => fill(document.createElementNS("http://www.w3.org/2000/svg", tag), attrs, kids);
+
+const keyIcon = () => svg("svg", { viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", "stroke-width": "2",
+                                    "stroke-linecap": "round", "stroke-linejoin": "round", "aria-hidden": "true" },
+  svg("path", { d: "M2.6 18.4A2 2 0 0 0 2 19.8V21a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h1a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h.2a2 2 0 0 0 1.4-.6l.8-.8a6.5 6.5 0 1 0-4-4z" }),
+  svg("circle", { cx: "16.5", cy: "7.5", r: ".5", fill: "currentColor" }));
+
+// The one action a page asks for: full width, filled, with the passkey glyph.
+function primary(label, onclick) {
+  return el("button", { class: "primary", onclick }, keyIcon(), label);
 }
 
 function b64u(bytes) {
@@ -95,23 +108,26 @@ async function signin() {
 }
 
 function portalList() {
-  const ul = el("ul");
+  const ul = el("ul", { class: "rows" });
   for (const p of data.portals || []) {
     const next = `https://${p.host}/`;
-    ul.append(el("li", {}, el("a", { href: `/signin/go?next=${encodeURIComponent(next)}` }, `${p.host} (${p.node})`)));
+    ul.append(el("li", {}, el("a", { href: `/signin/go?next=${encodeURIComponent(next)}` },
+                                el("span", { class: "name" }, p.host), el("span", { class: "muted" }, p.node))));
   }
   return ul;
 }
 
 async function pageSignin() {
   const done = () => {
-    if (data.frame) { tell({ type: "awm-signed-in" }); say("Signed in."); return; }
-    main.append(el("p", {}, "Signed in. Open a surface:"), portalList(),
-                el("button", { class: "plain", onclick: async () => { await api("/api/signout", {}); location.reload(); } }, "Sign out"));
     say("");
+    if (data.frame) { lede.textContent = "You are signed in."; tell({ type: "awm-signed-in" }); return; }
+    lede.textContent = "You are signed in. Open a surface:";
+    main.append(portalList(),
+                el("button", { class: "plain", onclick: async () => { await api("/api/signout", {}); location.reload(); } }, "Sign out"));
   };
   if (data.signed_in) return done();
-  const button = el("button", { onclick: async () => {
+  lede.textContent = "One passkey tap signs you in for 12 hours.";
+  const button = primary("Sign in with passkey", async () => {
     button.disabled = true;
     try {
       const out = await signin();
@@ -119,7 +135,7 @@ async function pageSignin() {
       button.remove();
       done();
     } catch (e) { say(e.message, true); button.disabled = false; }
-  } }, "Sign in with passkey");
+  });
   main.append(button);
 }
 
@@ -130,11 +146,10 @@ function row(dl, k, v) {
 
 async function needSignin() {
   if (await signedIn()) return true;
-  const button = el("button", { onclick: async () => {
+  lede.textContent = "Sign in first. One passkey tap signs you in for 12 hours.";
+  main.append(primary("Sign in with passkey", async () => {
     try { await signin(); location.reload(); } catch (e) { say(e.message, true); }
-  } }, "Sign in with passkey");
-  main.append(button);
-  say("Sign in first.");
+  }));
   return false;
 }
 
@@ -153,7 +168,7 @@ async function pageApprove() {
   row(dl, "Status", req.status);
   main.append(dl);
   if (req.status !== "pending") { say(`This request is ${req.status}.`); tell({ type: "awm-approval", request_id: id, ok: req.status === "approved" }); return; }
-  const approve = el("button", { onclick: async () => {
+  const approve = primary("Approve with passkey", async () => {
     approve.disabled = reject.disabled = true;
     try {
       const options = await api(`/api/request/${encodeURIComponent(id)}/options`, {});
@@ -162,7 +177,7 @@ async function pageApprove() {
       say("Approved.");
       tell({ type: "awm-approval", request_id: id, ok: true });
     } catch (e) { say(e.message, true); approve.disabled = reject.disabled = false; }
-  } }, "Approve with passkey");
+  });
   const reject = el("button", { class: "plain", onclick: async () => {
     approve.disabled = reject.disabled = true;
     try {
@@ -185,13 +200,13 @@ async function pageTwofa() {
       else if (list.length > 1) {
         const pick = el("select", { id: "device" });
         for (const d of list) { const v = d.device || d.id || d.name; pick.append(el("option", { value: v }, d.name || v)); }
-        main.append(el("label", {}, "Device ", pick));
+        main.append(el("label", {}, "Device", pick));
         device = null;
       }
     } catch (e) { say(e.message, true); return; }
   }
-  main.append(el("p", {}, `Approve the next ${data.count} 2fa push${data.count > 1 ? "es" : ""}.`));
-  const go = el("button", { onclick: async () => {
+  lede.textContent = `Approve the next ${data.count} 2fa push${data.count > 1 ? "es" : ""}.`;
+  const go = primary("Arm with passkey", async () => {
     go.disabled = true;
     const d = device || (document.getElementById("device") || {}).value || "";
     try {
@@ -201,14 +216,14 @@ async function pageTwofa() {
       say("Armed.");
       tell({ type: "awm-approval", request_id: null, ok: true });
     } catch (e) { say(e.message, true); go.disabled = false; }
-  } }, "Arm with passkey");
+  });
   main.append(go);
 }
 
 async function pageEnrol() {
   const token = location.hash.slice(1);
   const name = el("input", { id: "name", placeholder: "phone" });
-  const go = el("button", { onclick: async () => {
+  const go = primary("Enrol", async () => {
     go.disabled = true;
     try {
       const begin = await api("/api/enrol/begin", { token, name: name.value });
@@ -216,18 +231,20 @@ async function pageEnrol() {
       const out = await api("/api/enrol/finish", { token, reg_id: begin.reg_id, name: name.value, credential: credentialJSON(cred) });
       say(`Enrolled as ${out.device}. This browser is signed in.`);
     } catch (e) { say(e.message, true); go.disabled = false; }
-  } }, "Enrol");
+  });
   if (!token) { say("Open the enrolment link alcor printed.", true); return; }
-  main.append(el("p", {}, "This registers a passkey with alcor's approver."), el("label", {}, "Device name ", name), go);
+  lede.textContent = "This registers a passkey with alcor's approver.";
+  main.append(el("label", {}, "Device name", name), go);
 }
 
 async function pageDevices() {
   if (!(await needSignin())) return;
   let list;
   try { list = await api("/api/devices"); } catch (e) { say(e.message, true); return; }
-  const ul = el("ul");
+  const ul = el("ul", { class: "rows" });
   for (const d of list) {
-    const li = el("li", {}, `${d.name || d.device_id} (${d.device_id})${d.revoked_at ? ", revoked" : ""} `);
+    const meta = el("span", { class: "muted" }, `${d.device_id}${d.revoked_at ? ", revoked" : ""}`);
+    const li = el("li", {}, el("span", { class: "name" }, d.name || d.device_id, " ", meta));
     if (!d.revoked_at) {
       const b = el("button", { class: "plain", onclick: async () => {
         b.disabled = true;
@@ -235,7 +252,7 @@ async function pageDevices() {
           const begin = await api(`/api/device/${encodeURIComponent(d.device_id)}/revoke/options`, {});
           const assertion = await tap(begin.options);
           await api(`/api/device/${encodeURIComponent(d.device_id)}/revoke`, { nonce: begin.nonce, assertion });
-          li.append(" revoked");
+          meta.append(", revoked");
           b.remove();
         } catch (e) { say(e.message, true); b.disabled = false; }
       } }, "Revoke");

@@ -8,6 +8,11 @@
 <script type="module" src="/static/vault.js"></script>
 </head>
 <body data-page="{{page}}" data-json="{{data}}">
-<main id="main"><h1>{{title}}</h1><p id="status" role="status"></p></main>
+<div class="backdrop">
+<main id="main" class="card">
+<header><h1>{{title}}</h1><p id="lede" class="muted"></p></header>
+<p id="status" role="status"></p>
+</main>
+</div>
 </body>
 </html>
