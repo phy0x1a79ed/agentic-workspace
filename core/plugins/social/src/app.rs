@@ -20,6 +20,7 @@ use crate::config::{AccountConfig, BucketConfig};
 use crate::connectors::{self, ChatKind, Channel, Command, Connector, Inbound, OutFile};
 use crate::db::{now, Db, Mount};
 use crate::seats::line::{self, Place};
+use crate::seats::store::Seat;
 use crate::seats::{Routed, Seats};
 
 pub const MAX_INLINE_BYTES: usize = 24 * 1024 * 1024;
@@ -588,20 +589,37 @@ impl Social {
             _ => ChatKind::Channel,
         };
         let platform = self.account(account).map(|a| a.platform.clone()).unwrap_or_default();
-        Place { platform, server: String::new(), kind, chat_name: c.name.clone(), person: if kind == ChatKind::Dm { c.name.clone() } else { String::new() } }
+        if kind == ChatKind::Dm {
+            return Place { platform, kind, person: c.name.clone(), ..Default::default() };
+        }
+        // A Discord guild channel is listed as `<guild>#<channel>`.
+        let (server, chat) = c.name.split_once('#').unwrap_or(("", &c.name));
+        Place { platform, server: server.into(), kind, chat_name: chat.into(), person: String::new() }
     }
 
     pub async fn seats_verb(&self, call: Call) -> Result<Value, VerbError> {
         let account = s(&call.args, "account");
         let conn = self.conn(&account)?;
         let held: HashMap<String, Mount> = self.db.mounts(Some(&account)).await.into_iter().map(|m| (m.channel_id.clone(), m)).collect();
+        let mut stored: BTreeMap<String, Seat> = self.seats.store.all().await.into_iter().filter(|st| st.account == account).map(|st| (st.channel_id.clone(), st)).collect();
         let mut out = vec![];
-        for c in conn.list_seats().await? {
-            let seat = self.seats.store.get(&account, &c.id).await.map(|st| st.public());
-            let mut row = chan(&c);
-            row["holder"] = held.get(&c.id).map(Mount::holder).unwrap_or(Value::Null);
-            row["seat"] = seat.unwrap_or(Value::Null);
+        let mut add = |mut row: Value, seat: Option<Seat>| {
+            row["holder"] = held.get(row["id"].as_str().unwrap_or("")).map(Mount::holder).unwrap_or(Value::Null);
+            if let Some(st) = seat {
+                row["label"] = json!(self.seats.name(&st));
+                row["seat"] = st.public();
+            } else {
+                row["seat"] = Value::Null;
+            }
             out.push(row);
+        };
+        for c in conn.list_seats().await? {
+            let seat = stored.remove(&c.id);
+            add(chan(&c), seat);
+        }
+        // A declared seat whose chat the platform has not listed yet, such as a guild channel before the gateway is ready.
+        for st in stored.into_values() {
+            add(json!({"id": st.channel_id, "name": st.channel_name, "kind": st.kind}), Some(st));
         }
         Ok(json!({"seats": out}))
     }

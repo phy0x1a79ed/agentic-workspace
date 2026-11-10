@@ -965,3 +965,22 @@ async fn a_hand_row_is_typed_and_paused_arrives_with_the_pull() {
     assert_eq!(l.t.world.w().hands, [("h1".to_string(), "[hand] hi".to_string())]);
     assert!(l.t.seats.settings().paused);
 }
+
+#[tokio::test]
+async fn a_decl_row_renames_the_seat_and_a_dropped_row_forgets_it() {
+    let l = L::occupied().await;
+    let push = |row: Value| {
+        let mut s = l.social.s();
+        s.next += 1;
+        let mut row = row;
+        row["id"] = json!(s.next);
+        s.rows.push(row);
+    };
+    push(json!({"kind": "decl", "seat": {"account": "opal", "channel_id": "D0TEST", "name": "seat:slack/dm/renamed"}}));
+    push(json!({"kind": "decl"}));
+    l.link.pull_once(&l.t.seats).await.unwrap();
+    assert_eq!(l.t.store.get("opal", "D0TEST").await.unwrap().decl.name, "seat:slack/dm/renamed", "a decl row without a seat changes nothing");
+    push(json!({"kind": "dropped", "account": "opal", "channel_id": "D0TEST"}));
+    l.link.pull_once(&l.t.seats).await.unwrap();
+    assert!(l.t.store.get("opal", "D0TEST").await.is_none());
+}

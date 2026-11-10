@@ -262,7 +262,7 @@ impl Seats {
     }
 
     /// The seat this row names, created or brought up to date from social's declaration.
-    async fn upsert(&self, decl: &Decl) -> Seat {
+    pub async fn upsert(&self, decl: &Decl) -> Seat {
         match self.store.get(&decl.account, &decl.channel_id).await {
             Some(mut s) => {
                 if s.decl != *decl {
@@ -691,6 +691,13 @@ impl Seats {
         self.store.deliver_briefed(seat.account(), seat.channel(), job, now).await;
         self.mounted(&seat, job).await;
         seat
+    }
+
+    /// Social no longer declares the seat. A live agent keeps running, without the seat.
+    pub async fn dropped(&self, account: &str, channel: &str) {
+        let lock = self.lock(&(account.to_string(), channel.to_string()));
+        let _held = lock.lock().await;
+        self.store.delete(account, channel).await;
     }
 
     /// A hand mount let go of a declared seat: the seat is empty again.

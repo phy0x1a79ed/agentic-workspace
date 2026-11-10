@@ -433,6 +433,16 @@ impl Store {
         }
     }
 
+    /// Forget the seat and the lines that wait for it.
+    pub async fn delete(&self, account: &str, channel: &str) {
+        let (a, ch) = (account.to_string(), channel.to_string());
+        let _ = self.run(move |c| c.execute_batch("BEGIN").and_then(|_| {
+            c.execute("DELETE FROM seat_registry WHERE account = ?1 AND channel_id = ?2", params![a, ch])?;
+            c.execute("DELETE FROM seat_queue WHERE account = ?1 AND channel_id = ?2", params![a, ch])?;
+            c.execute_batch("COMMIT")
+        })).await;
+    }
+
     /// Every seat `job` is the agent of.
     pub async fn of_job(&self, job: &str) -> Vec<Seat> {
         let j = job.to_string();
