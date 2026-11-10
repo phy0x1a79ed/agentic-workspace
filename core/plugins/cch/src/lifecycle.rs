@@ -1786,6 +1786,7 @@ async fn resume_retired<E: Effects>(
         Err(e) => return Err(Refused::new(format!("the session did not resume: {e}")).into()),
     };
     let now = fx.now();
+    let pinned = truthy(rec.get("pinned")) && pin(fx, &session.short).await;
     let (short, s, c, sid) = (session.short.clone(), spec.clone(), cwd.clone(), session_id.to_string());
     let (project, scope) = blocking(fx, move |fx| -> std::io::Result<(Value, Value)> {
         let (project, scope) = match project_scope(fx.paths(), Some(&c)) {
@@ -1805,7 +1806,7 @@ async fn resume_retired<E: Effects>(
             ("resumed_from", rec.get("job").cloned().unwrap_or(Value::Null)),
             ("started_at", json!(iso(now))),
             ("started_epoch", json!(now)),
-            ("pinned", json!(false)),
+            ("pinned", json!(pinned)),
         ] {
             record.insert(key.into(), value);
         }
@@ -1819,7 +1820,7 @@ async fn resume_retired<E: Effects>(
     let mut out = json!({
         "ok": true, "job": session.short, "session_id": ids::to_r9(Some(session_id)),
         "name": spec.name, "node": fx.node_name(), "project": project, "scope": scope,
-        "cwd": cwd, "attach": format!("claude attach {}", session.short), "pinned": false,
+        "cwd": cwd, "attach": format!("claude attach {}", session.short), "pinned": pinned,
         "from_transcript": true,
     });
     extend(&mut out, started_link(fx, &session.short, spec.remote_control.is_some()).await);
@@ -1996,7 +1997,7 @@ fn job_row<E: Effects>(fx: &E, sessions: &Sessions, s: &Session, rec: Option<&Ob
         "project": project, "scope": scope, "cwd": s.cwd,
         "state": shown,
         "needs": record.get("needs"), "detail": clip(record.get("detail")),
-        "tempo": record.get("tempo"),
+        "tempo": record.get("tempo"), "active_at": record.get("updatedAt"),
         "attach": format!("claude attach {}", s.short),
         "parent": field("parent"), "caller": field("caller"),
         "mode": field("mode"), "remote_control": s.remote_control(),
@@ -3008,6 +3009,19 @@ mod tests {
         assert_eq!(rec["session_id"], json!(RETIRED));
         // The gateway gates a session with no mode in its record as `unknown` and refuses its calls.
         assert_eq!(rec["mode"], json!("worker"));
+        assert_eq!((&out["pinned"], &rec["pinned"]), (&json!(false), &json!(false)));
+    }
+
+    #[tokio::test]
+    async fn test_a_retired_pinned_job_resumes_pinned() {
+        let w = Fx::new();
+        relaunched(&w);
+        retired_transcript(&w, &w.projects().join("awm/demo"));
+        write_lineage(&w.paths, "deadbeef", json!({"name": "seat", "mode": "worker", "session_id": RETIRED, "pinned": true}).as_object().unwrap()).unwrap();
+        let out = resume_job(&w, json!({"job": "deadbeef"})).await;
+        assert!(out["ok"] == json!(true) && out["pinned"] == json!(true), "{out}");
+        assert_eq!(pins_file(&w), json!(["feedface"]));
+        assert_eq!(read_lineage(&w.paths, "feedface").unwrap()["pinned"], json!(true));
     }
 
     fn keep_answers(w: &World) {

@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::brief;
-use crate::store::{Decl, Latest, Previous, Queued, Seat, Seed, State, Store};
+use crate::store::{Decl, Latest, Queued, Seat, Seed, State, Store};
 
 /// Transitions one look at a seat may take before it waits for the next tick.
 const STEPS_PER_LOOK: usize = 3;
@@ -30,6 +30,8 @@ pub const UP_S: f64 = 180.0;
 pub const PUSH_RETRY_S: f64 = 120.0;
 /// The shortest wait before a seat's overdue clock is looked at again.
 pub const TICK_S: u64 = 15;
+/// How long a seat's agent may go with no message and no turn before the seat stops it.
+pub const IDLE_S: f64 = 4.0 * 3600.0;
 
 
 /// What `start_other` answered.
@@ -46,10 +48,15 @@ pub trait World: Send + Sync {
     async fn sleep(&self, secs: f64);
     /// `reflection start_other` here.
     async fn start(&self, spec: Value) -> Started;
+    /// `reflection resume_other` on a job the seat stopped, typing `prompt`, then the switch
+    /// `remote_control` applied to the session it comes back as.
+    async fn resume(&self, job: &str, prompt: &str, remote_control: bool, name: &str) -> Started;
+    /// `reflection stop_other`, or why it failed.
+    async fn stop(&self, job: &str) -> Result<(), String>;
     /// `reflection message`: one line typed into `job`.
     async fn push(&self, job: &str, line: &str) -> Outcome;
     /// The live jobs here, or None when it cannot tell.
-    async fn live(&self) -> Option<Links>;
+    async fn live(&self) -> Option<Agents>;
     /// Whether the seat's scope exists here, or None when it cannot tell.
     async fn scope_ready(&self, project: &str, scope: &str) -> Option<bool>;
     /// The transcript of a past job, for the next agent's brief.
@@ -119,12 +126,23 @@ impl Live {
 
 type Key = (String, String);
 
-/// Each live job here with its claude.ai link, empty while its Remote Control is off.
-pub type Links = HashMap<String, String>;
+/// What this node's session list says of one live job.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Agent {
+    /// Its claude.ai link, empty while its Remote Control is off.
+    pub link: String,
+    pub busy: bool,
+    /// When its session last changed state, in epoch seconds, or 0 when unknown. Once it waits,
+    /// this is the end of its last turn.
+    pub active_at: f64,
+}
+
+/// Each live job here.
+pub type Agents = HashMap<String, Agent>;
 
 /// Take the seat's Remote Control state from its live session. True when that changed the seat.
-fn sync_rc(seat: &mut Seat, live: Option<&Links>) -> bool {
-    let Some(link) = live.and_then(|l| l.get(&seat.job)) else { return false };
+fn sync_rc(seat: &mut Seat, live: Option<&Agents>) -> bool {
+    let Some(link) = live.and_then(|l| l.get(&seat.job)).map(|a| &a.link) else { return false };
     if seat.rc_url == *link && seat.remote_control != link.is_empty() {
         return false;
     }
@@ -139,6 +157,8 @@ pub struct Seats {
     world: Arc<dyn World>,
     locks: Mutex<HashMap<Key, Arc<tokio::sync::Mutex<()>>>>,
     reported_live: Mutex<Option<Vec<String>>>,
+    /// When each occupied seat's agent goes idle, as last seen, for the tick's timer.
+    idle_at: Mutex<HashMap<Key, f64>>,
     wake: tokio::sync::Notify,
 }
 
@@ -155,7 +175,7 @@ fn label(s: &Seat) -> String {
 
 impl Seats {
     pub fn new(store: Store, settings: Settings, world: Arc<dyn World>) -> Arc<Self> {
-        Arc::new(Self { store, settings: RwLock::new(settings), world, locks: Mutex::new(HashMap::new()), reported_live: Mutex::new(None), wake: tokio::sync::Notify::new() })
+        Arc::new(Self { store, settings: RwLock::new(settings), world, locks: Mutex::new(HashMap::new()), reported_live: Mutex::new(None), idle_at: Mutex::new(HashMap::new()), wake: tokio::sync::Notify::new() })
     }
 
     pub fn settings(&self) -> Settings {
@@ -300,7 +320,7 @@ impl Seats {
 
     /// Bring one seat in line with its queue and the clock. `live` is this node's live jobs
     /// when the caller knows them.
-    pub async fn drive(self: &Arc<Self>, key: &Key, live: Option<&Links>) {
+    pub async fn drive(self: &Arc<Self>, key: &Key, live: Option<&Agents>) {
         let lock = self.lock(key);
         let _held = lock.lock().await;
         // A job started or adopted since `live` was read is not in it, and is not gone.
@@ -319,7 +339,7 @@ impl Seats {
     }
 
     /// One transition. True when the seat should be looked at again at once.
-    async fn step(self: &Arc<Self>, mut seat: Seat, live: Option<&Links>) -> bool {
+    async fn step(self: &Arc<Self>, mut seat: Seat, live: Option<&Agents>) -> bool {
         let now = self.world.now();
         let pending = self.store.pending(seat.account(), seat.channel()).await;
         let gone = |s: &Seat| live.is_some_and(|l| !l.contains_key(&s.job));
@@ -358,23 +378,23 @@ impl Seats {
                     if seat.done_at == 0.0 {
                         self.notice(&format!("the agent of the seat {} ({}@{}) ended before its task was done.", label(&seat), seat.job, seat.decl.node)).await;
                     }
-                    self.vacate(&mut seat).await;
+                    self.vacate(&mut seat, false).await;
                     return !pending.is_empty();
                 }
                 if sync_rc(&mut seat, live) {
                     self.save(&seat).await;
                 }
                 if !pending.is_empty() && !self.pump(&mut seat, &pending).await {
-                    self.vacate(&mut seat).await;
+                    self.vacate(&mut seat, false).await;
                     return true;
                 }
-                false
+                self.stop_if_idle(seat, live, now).await
             }
         }
     }
 
     /// The started agent is up: its brief's lines are delivered.
-    async fn up(&self, mut seat: Seat, now: f64, live: Option<&Links>) -> bool {
+    async fn up(&self, mut seat: Seat, now: f64, live: Option<&Agents>) -> bool {
         let briefed = self.store.pending(seat.account(), seat.channel()).await;
         if let Some(last) = briefed.iter().rev().find(|q| q.briefed_to == seat.job) {
             let latest = Latest { account: seat.account().into(), channel: seat.channel().into(), thread: last.thread_id.clone(), message_id: last.message_id.clone() };
@@ -387,10 +407,48 @@ impl Seats {
         true
     }
 
-    /// The agent is gone: free the seat and keep its lines for the next agent.
-    async fn vacate(&self, seat: &mut Seat) {
+    /// Stop the seat's agent once it went `IDLE_S` with no message and no turn, else note when
+    /// it would. Only an agent the seat started, and never mid-turn. True when it stopped.
+    async fn stop_if_idle(&self, mut seat: Seat, live: Option<&Agents>, now: f64) -> bool {
+        let Some(live) = live else { return false };
+        let key = seat.key();
+        let at = match live.get(&seat.job) {
+            _ if seat.adopted => None,
+            Some(a) if a.busy => Some(now + IDLE_S),
+            Some(a) if a.active_at > 0.0 => Some(seat.last_message.max(a.active_at) + IDLE_S),
+            _ => None,
+        };
+        let idle_at = |at: Option<f64>| match at {
+            Some(at) => self.idle_at.lock().unwrap().insert(key.clone(), at),
+            None => self.idle_at.lock().unwrap().remove(&key),
+        };
+        match at {
+            Some(at) if at <= now => {}
+            other => {
+                idle_at(other);
+                return false;
+            }
+        }
+        match self.world.stop(&seat.job).await {
+            Ok(()) => {
+                tracing::info!("seat {}: stopped its idle agent {}", label(&seat), seat.job);
+                idle_at(None);
+                self.vacate(&mut seat, true).await;
+                true
+            }
+            Err(why) => {
+                tracing::info!("seat {}: stopping its idle agent {} failed: {why}", label(&seat), seat.job);
+                idle_at(Some(now));
+                false
+            }
+        }
+    }
+
+    /// The agent is gone: free the seat and keep its lines for the next agent. `stopped` says
+    /// the seat stopped it for idleness.
+    async fn vacate(&self, seat: &mut Seat, stopped: bool) {
         if !seat.job.is_empty() {
-            seat.previous = Previous { job: seat.job.clone(), node: seat.decl.node.clone(), adopted: seat.adopted };
+            seat.previous = seat.as_previous(stopped);
             self.unbind(seat).await;
         }
         seat.state = State::Empty;
@@ -414,6 +472,8 @@ impl Seats {
         self.store.unbrief(seat.account(), seat.channel()).await;
         seat.state = State::Empty;
         seat.job.clear();
+        // A resume that did not come up is not tried again.
+        seat.previous.stopped = false;
         let tripped = seat.breaker.fail(now);
         self.save(&seat).await;
         if tripped {
@@ -461,10 +521,12 @@ impl Seats {
             "trust": seat.decl.level, "model": model, "effort": effort, "remote_control": seat.remote_control,
             "pin": true,
         });
+        let here = previous.as_ref().filter(|p| !p.adopted && p.node == seat.decl.node);
         // A host reboot can bring the old agent back after its seat emptied: the new one takes its place.
-        if let Some(p) = previous.as_ref().filter(|p| !p.adopted && p.node == seat.decl.node) {
+        if let Some(p) = here.filter(|p| !p.stopped) {
             spec["replaces"] = json!(p.job);
         }
+        let resume = here.filter(|p| p.stopped).map(|p| p.job.clone());
         let ids: Vec<i64> = pending.iter().map(|q| q.id).collect();
         seat.state = State::Starting;
         seat.deadline = now + UP_S;
@@ -475,7 +537,21 @@ impl Seats {
         }
         self.save(&seat).await;
         self.store.brief_to(ids.clone(), "starting").await;
-        match self.world.start(spec).await {
+        let resumed = match resume {
+            Some(job) => match self.world.resume(&job, &lines.join("\n"), seat.remote_control, &Self::rc_name(&seat)).await {
+                Started::Refused(why) => {
+                    tracing::info!("seat {}: resuming {job} refused, starting afresh: {why}", label(&seat));
+                    None
+                }
+                started => Some(started),
+            },
+            None => None,
+        };
+        let started = match resumed {
+            Some(started) => started,
+            None => self.world.start(spec).await,
+        };
+        match started {
             Started::Job(job) => {
                 seat.job = job.clone();
                 self.save(&seat).await;
@@ -560,7 +636,10 @@ impl Seats {
             let at = match s.state {
                 State::Starting => s.deadline,
                 State::Empty => s.breaker.next_try.max(s.breaker.hold_until),
-                State::Occupied => continue,
+                State::Occupied => match self.idle_at.lock().unwrap().get(&s.key()) {
+                    Some(at) => *at,
+                    None => continue,
+                },
             };
             due = Some(due.map_or(at, |d| d.min(at)));
         }
@@ -616,7 +695,7 @@ impl Seats {
         let mut seat = self.upsert(decl).await;
         let now = self.world.now();
         if !seat.job.is_empty() && seat.job != job {
-            seat.previous = Previous { job: seat.job.clone(), node: seat.decl.node.clone(), adopted: seat.adopted };
+            seat.previous = seat.as_previous(false);
         }
         seat.state = State::Occupied;
         seat.job = job.into();
@@ -642,7 +721,7 @@ impl Seats {
     pub async fn released(&self, account: &str, channel: &str, job: &str) {
         if let Some(mut s) = self.store.get(account, channel).await {
             if s.job == job && s.state != State::Empty {
-                s.previous = Previous { job: s.job.clone(), node: s.decl.node.clone(), adopted: s.adopted };
+                s.previous = s.as_previous(false);
                 s.state = State::Empty;
                 s.job.clear();
                 s.rc_url.clear();
