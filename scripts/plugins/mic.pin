@@ -1,5 +1,5 @@
 # The mic core plugin binary (static musl) that a deploy places at <AWM_DIR>/bin/mic.
 # Written by the deploy on mizar (scripts/refresh-pins.sh). Do not edit.
-version=mic-ef2e1f2631d8
-file=awm-plugin-mic-ef2e1f2631d8-linux-x86_64-musl
-sha256=b2358d5ebccefa1c2b322c70dea89f516710af555c78a89acfa117acf2b2509f
+version=mic-8abbaac8009d
+file=awm-plugin-mic-8abbaac8009d-linux-x86_64-musl
+sha256=d25f6393fddcaa02a3436248bb04d68ce5e2b3fb02de3bde63c05d8da64423b7
