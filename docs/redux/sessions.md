@@ -22,12 +22,12 @@ This doc holds a session's id, the id of its task, its lifecycle from start to r
 - **R58.** awm mints one task id for each card. The task id points to every session of the task, active or finished. Tony: "we should use real ids since the task slug may not have enough uniquiness", "Since a task can have multiple sessions, the id is no longer 1 to 1 so awm needs to manage this now" and "it would be easier if awm just mints a task id per card, which points to multiple sessions, active or otherwise" (2026-11-01).
   - The task id is the first 8 characters of a random UUID in URL-safe base64, with `-` and `_`. Tony: "Lets expand the characters to 8 and use uuids converted to base64" (2026-11-01).
   - The URL-safe alphabet keeps the id usable in a URL or a path. The standard alphabet holds `/`.
-- **R57.** A session reports to the card of its task. awm joins a session to a task by the task id. Tony: "So now we we want a card/task to track potentially multiple sessions" and "This looks good" (2026-11-01).
+- **R57.** A card follows the sessions of its task, and no session reports to it (`queue.md` R61 item 2). awm joins a session to a task by the task id. Tony: "So now we we want a card/task to track potentially multiple sessions" and "This looks good" (2026-11-01).
   1. A session that starts new work gets a new card. awm mints the task id then.
   2. `reflection whoami` reports the session's task id.
   3. The coordinator passes the task id when it starts a session. awm puts that session on the existing card.
   4. The coordinator renames itself to the task name with `reflection rename`, for legibility (R56).
-  5. A session that joins a running task, as in R52 path 3, sets its task id to the running task's id with one verb. Its own card folds into the task's card. awm tells the task's main session that it joined. The main session is the coordinator, or the one session of a simple task. Tony: "Lets aim for b actually. The coordinator or main session should know when thjs happens" (2026-11-01).
+  5. Tony joins a session to a running task, as in R52 path 3, with the prompt `claim task <id>`. cch's prompt hook makes the claim, and the session calls nothing. A job keeps its card across a `/clear`: the new session takes the old one's place. Tony: "Job keeps its card" (2026-11-09). awm tells the task's main session that it joined. The main session is the coordinator, or the one session of a simple task. Tony: "Lets aim for b actually. The coordinator or main session should know when thjs happens" (2026-11-01).
 - **R13.** Each session records the id of the session that started it. A session that clears itself gets a new id, with the old id as its parent. One parent link covers both a clear and a `start_other`.
 
 ### Lifecycle
