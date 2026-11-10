@@ -5,7 +5,7 @@ Decisions: docs/session-ids/DECISIONS.md
 
 ## Current
 
-stored-keys
+(none: stack empty)
 
 ## Waiting on the user
 
@@ -14,7 +14,6 @@ stored-keys
 
 ## Stack
 
-- stored-keys: state keyed on the short id or name (seats `job`, telemetry fallback, board cards) moves to the canonical id.
 
 ## Workers
 
@@ -23,3 +22,4 @@ stored-keys
 - ids-harmonize
 - resume-short-id
 - name-is-name
+- stored-keys

@@ -10,7 +10,7 @@
 > do the same translation trick for /rc, but trillium can use the real name
 
 **Design.**
-- `SessionId` is one type. `id.canonical()` gives `cc` + 32 hex, which is the only form awm stores, displays, and accepts from a caller.
+- `SessionId` is one type. `id.canonical()` gives `cc` + 32 hex, which is the only form awm stores and accepts from a caller. Agents see it. Tony never does: every human surface (the board, the Control panel, Discord) shows the name, and the board keeps the id as a hidden card label (amended by stored-keys).
 - Each consumer gets a named converter. `id.harness_native()` gives Claude Code's dashed UUID. `id.job_dir()` gives the 8-hex short id, used only as a path segment under `~/.claude/jobs/`.
 - `SessionId::parse` accepts the canonical form only. `SessionId::from_harness_native` is called only where awm reads Claude Code's own files. Nothing accepts a short id or a prefix.
 - One resolver takes a typed argument, `{id}` or `{name}`, and never sniffs a string. It searches live sessions and stopped jobs. An ambiguous name is an error that lists the canonical ids. A short id is refused with a pointer to the canonical id. The other five resolvers are deleted.
@@ -42,5 +42,23 @@
 - The pool keeps a ledger keyed by canonical id. It writes `{id: spare}` before it launches a spare with `--session-id`. `is_ours` reads "spare" from the ledger, `was_ours` reads "id is in the ledger", and a claim flips the entry to `claimed`. An entry with no session behind it is safe to drop.
 - Telemetry rows carry `pool: spare`, and telemetry and the board filter on that field.
 - Deleted: `name_prefix`, `AWM_CX_PREFIX`, `WARM_PREFIX`, the `<warm` name ban, and the noun-stripping in `seed.rs` and `claim.rs`.
+
+**Landed.** Spec only.
+
+## stored-keys (2026-11-10)
+
+**Question.** How do the stores and verbs that key on a short id or a name move to the canonical id?
+
+**Your words.**
+> migration, do it once and cut over services live
+> agent facing sure. but I will not know or want to deal with uuids
+
+**Design.**
+- Every verb argument and output named `job` takes and returns the canonical id. This covers reflection, cch, routine, operations, gateway claims, seat events and the telemetry fallback. `list_other` rows show the canonical id.
+- Where a record holds both the canonical id and a short `job`, the `job` field is dropped: trust, waits, `channels.job`, operations `sessions.job` and its `rc:<node>:<job>` relay keys, `scope_waiters.job`.
+- Where the short id is the only key, a one-shot migration maps it to the canonical id through `~/.claude/jobs/<short>/state.json`, then the lineage file. It drops rows that map to no job. This covers seats (`seat_registry`, `seat_lines`), social (mounts, keepers, mirrored seat tables), the wake standby hold, and lineage filenames.
+- The migration runs once at deploy, and the services cut over live. No migration or compatibility code stays in the tree after that.
+- cch's pending record is keyed by the canonical id chosen with `--session-id`, not by a digest of the name.
+- Operations asks the seats registry whether a session holds a seat. `SEAT_PREFIX` is deleted, and the `seat:` text is display only.
 
 **Landed.** Spec only.
