@@ -43,7 +43,7 @@ Machines reach each other through ssh keys at three levels (R92). Each `authoriz
 
 - **User.** Tony's account, with a shell and agent access. A user key is an edge, and carries no forced command. awm traffic runs `AWM_EDGE_FROM=<holder> awm edge-serve` in that shell.
 - **Service.** A key locked to `awm port`, with no shell and no forwarding. `awm port` reads the request from stdin (the caller's command is the bare `port`; the older form with the JSON on the command line is still accepted), runs only the host's singletons that admit the key's holder, and logs each call to `<AWM_DIR>/port.log`. A service key from outside the edges carries an `expiry-time`: the timed invite.
-- **Service-only edge.** An edge that edges.yml writes as `{network: <net>, key: service}`. The caller logs in with its service key. The target's `authorized_keys` line forces `awm edge-serve --from <holder> --level service`, with `restrict`. The forced command names the node and the level, never the client. A service-level call runs on the service lane, reaches only the host's singletons that admit the holder, and logs to `<AWM_DIR>/port.log`.
+- **Service-only edge.** An edge that edges.yml writes as `{network: <net>, key: service}`. The caller logs in with its service key. The target's `authorized_keys` line forces `awm edge-serve --from <holder> --level service`, with `restrict`. The forced command names the node and the level, never the client. A service-level call runs on the service lane, reaches only the host's singletons that admit the holder, and logs to `<AWM_DIR>/port.log`. A stream (a direct session or an emit) passes the same admission as a call.
 - **Admin.** A separate account with sudo, for config and installs. shogun holds it on the Arbutus nodes.
 
 ## Singletons
@@ -73,7 +73,7 @@ The callers list fails closed. A node it leaves out gets the answer an unknown t
 
 **CAUTION** Each gateway reads `callers` from its own `edges.yml`. A relay with a stale copy checks against its stale list, and only the host's check stands behind it.
 
-alcor hosts `2fa`, `operations` (the task queue and the approver), `browser` and `social`, and its ssh service is the slot arbiter. Each seat host runs `seats`, and social never dials it. The host opens every connection: a held `social seat_pull` brings lines down, and `social seat_report` takes replies and seat state up (`docs/redux/channels.md` R148). deneb hosts `trilium`, the vault, and `relay`, the host half of the channel rooms beside the tether relay. The cloud project's `edges.yml` is the record.
+alcor hosts `2fa`, `operations` (the task queue and the approver), `browser` and `social`, and `ssh-arbiter` is the slot arbiter. Each seat host runs `seats`, and social never dials it. The host opens every connection: a held `social seat_pull` brings lines down, and `social seat_report` takes replies and seat state up (`docs/redux/channels.md` R148). deneb hosts `trilium`, the vault, and `relay`, the host half of the channel rooms beside the tether relay. The cloud project's `edges.yml` is the record.
 
 ## People
 
@@ -131,9 +131,9 @@ A post that arrives across an edge carries the stamp `peer:<node>` as its author
 
 ## Connection-slot arbiter
 
-A lockout-sensitive host fails closed after a few failed 2FA prompts. fir locks the Alliance account after 10 failed Duo prompts. Several nodes drive the same account through the one 2fa singleton, so the attempt budget is fleet-global, and one node keeps it. The ssh singleton on alcor is the slot arbiter. A node finds it in the edge list, or in `AWM_SSH_SLOT_PEER`.
+A lockout-sensitive host fails closed after a few failed 2FA prompts. fir locks the Alliance account after 10 failed Duo prompts. Several nodes drive the same account through the one 2fa singleton, so the attempt budget is fleet-global, and one node keeps it. The `ssh-arbiter` singleton on alcor is the slot arbiter, and the lock code lives only there. A node's ssh service takes its lease from the node that `AWM_SSH_SLOT_PEER` names, over an edge, because a lease is a stream and the door carries none. altair's edge to alcor is service-only for this.
 
-For a host with a 2FA device, a connect first takes that host's slot from the arbiter. The arbiter grants at most one attempt in flight, fleet-wide. After a failure it refuses every attempt until an operator clears it. A host with no 2FA device keeps a breaker per node.
+For a host with a 2FA device, a connect first takes that host's slot from the arbiter. The arbiter grants at most one attempt in flight, fleet-wide. After a failure it refuses every attempt until an operator clears it.
 
 **The lease is a connection, not a timer.** The requester opens a direct session to the arbiter, and the open socket is the lease. A dead requester frees or trips its slot the moment its socket drops. The grant or refusal rides as the first frame (`{"lease":"granted"|"busy"|"locked"}`).
 
@@ -145,10 +145,12 @@ For a host with a 2FA device, a connect first takes that host's slot from the ar
 
 - LOCKED persists in the arbiter's lockfile. LEASED dies with its socket.
 - The arbiter is the only notifier on a LOCKED transition, so the requester's own attempt stays silent.
-- An arbiter that cannot be reached refuses the connect. No VPN, 2FA or ssh runs, and no MFA is spent.
+- An arbiter that cannot be reached refuses the connect. No 2FA or ssh runs, and no MFA is spent.
 - The alert names the requester, which travels with the lease. The arbiter never names itself.
 
 **The verdict answers "was the MFA budget spent?", not "did the connect succeed".** A connect that died before the auth phase reports `verdict_ok`. `SSHService._is_preauth_failure` classifies the ssh stderr asymmetrically. Only unambiguous markers count as pre-auth (`kex_exchange_identification`, `Exceeded MaxStartups`, `Connection refused`, DNS or routing). Any auth-phase marker vetoes, and so does an askpass deviation. No evidence holds the slot. The classification runs on the requester.
+
+**One UBC VPN session, on altair.** UBC ends an account's oldest VPN session once it holds about three, so a second node's tunnel can cut altair's. Only altair loads the `vpn` plugin. Its service keeps the `ubc` tunnel up and re-dials when docker reports the container died. After three dials in a row that fail or live under ten minutes, it stops and pages the operator, so a flapping tunnel spends no more Duo pushes. Every other node with a sockeye edge renders `vpn_ubc` as a `ProxyJump altair` to the bounce on altair's loopback, and altair admits their edge keys there. A jump refused because the tunnel is down is pre-auth, so it spends no slot.
 
 **CAUTION** Before a new node's first connect to a lockout-sensitive host, copy the host's keys from a node that has them: `ssh-keygen -F <host>`, appended to the new node's `~/.ssh/known_hosts`. Otherwise the askpass refuses the fingerprint prompt and the connect fails.
 
