@@ -1,5 +1,5 @@
 # The operations core plugin binary (static musl) that a deploy places at <AWM_DIR>/bin/operations.
 # Written by the deploy on mizar (scripts/refresh-pins.sh). Do not edit.
-version=operations-efa9c2d8f480
-file=awm-plugin-operations-efa9c2d8f480-linux-x86_64-musl
-sha256=9589676b21861f85acd0e977e6a5b5330e0096df44d99c98b7cc5c58517d1368
+version=operations-b80cf8e13fe2
+file=awm-plugin-operations-b80cf8e13fe2-linux-x86_64-musl
+sha256=c52c97efbcf89e845a1b8154390d6136092acae021488bad172a64c999488f96
