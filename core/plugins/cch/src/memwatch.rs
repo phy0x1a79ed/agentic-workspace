@@ -143,7 +143,7 @@ pub fn owner(home: &ClaudeHome, mut pid: u32) -> (Option<String>, Option<String>
     let mut seen = 0;
     while pid > 1 && seen < 64 {
         if let Some(rec) = session_by_pid(home, pid) {
-            let id = text_of(rec.get("sessionId")).and_then(|raw| SessionId::from_harness_native(Platform::Claude, &raw).ok()).map(|i| i.canonical());
+            let id = text_of(rec.get("sessionId")).and_then(|raw| SessionId::canonical_of_native(Platform::Claude, &raw));
             return (text_of(rec.get("name")), id);
         }
         pid = awm_plugin_sdk::procfs::ppid(pid).unwrap_or(0);

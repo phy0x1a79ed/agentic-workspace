@@ -169,8 +169,9 @@ fn legacy_session(home: &ClaudeHome, short: &str, rec: &serde_json::Map<String, 
 }
 
 /// Rewrite every `starts/<short>.json` as `starts/<canonical>.json`, its `job` dropped and its
-/// `parent` canonical. A record that maps to no session is dropped. Nothing changes when `jobs/`
-/// cannot be listed. Returns the files rewritten.
+/// `parent` canonical. A record that maps to no session is dropped, and so is a pending record
+/// filed under a name digest. Nothing changes when `jobs/` cannot be listed. Returns the files
+/// rewritten.
 pub fn lineage_keys(paths: &Paths) -> io::Result<usize> {
     if !legacy::jobs_readable(&paths.home) {
         return Err(io::Error::other("the jobs dir is unreadable, so no lineage file was renamed"));
@@ -179,6 +180,11 @@ pub fn lineage_keys(paths: &Paths) -> io::Result<usize> {
     let mut moved = 0;
     for entry in dir.flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
+        let pending = name.strip_prefix("pending-").and_then(|f| f.strip_suffix(".json"));
+        if pending.is_some_and(|id| SessionId::parse(id).is_err()) {
+            std::fs::remove_file(entry.path())?;
+            continue;
+        }
         let Some(short) = name.strip_suffix(".json").filter(|s| lineage::is_job(s)) else { continue };
         let Some(Value::Object(mut rec)) = std::fs::read(entry.path()).ok().and_then(|b| serde_json::from_slice(&b).ok()) else {
             continue;
@@ -309,7 +315,9 @@ mod tests {
         let rec = serde_json::json!({"job": "abababab", "mode": "worker", "parent": "cdcdcdcd", "resumed_from": "x"});
         std::fs::write(starts.join("abababab.json"), rec.to_string()).unwrap();
         std::fs::write(starts.join("eeeeeeee.json"), r#"{"job": "eeeeeeee", "mode": "worker"}"#).unwrap();
+        std::fs::write(starts.join("pending-0f1e2d3c4b5a6978.json"), r#"{"name": "x"}"#).unwrap();
         assert_eq!(lineage_keys(&paths).unwrap(), 2);
+        assert!(!starts.join("pending-0f1e2d3c4b5a6978.json").exists(), "a digest-named pending record is dropped");
         assert_eq!(lineage_keys(&paths).unwrap(), 0, "a second run finds nothing");
         let read = |name: String| -> Value { serde_json::from_slice(&std::fs::read(starts.join(name)).unwrap()).unwrap() };
         assert_eq!(

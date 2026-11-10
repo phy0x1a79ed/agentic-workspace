@@ -42,7 +42,7 @@ impl Frame {
         let pid = int_lenient(args.get(PID_KEY), 0);
         Self {
             pid: (pid > 0).then(|| u32::try_from(pid).ok()).flatten(),
-            session_id: args.get(SESSION_KEY).and_then(Value::as_str).and_then(|s| ids::SessionId::parse(s).ok()).map(|i| i.canonical()),
+            session_id: args.get(SESSION_KEY).and_then(Value::as_str).and_then(ids::SessionId::checked),
             claim: args.get(CLAIM_KEY).filter(|c| c.is_object()).cloned(),
             plugin: plugin.map(str::trim).filter(|p| !p.is_empty()).map(str::to_string),
             as_: as_.map(str::to_string),

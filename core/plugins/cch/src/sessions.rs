@@ -71,7 +71,7 @@ impl<'a> Sessions<'a> {
 
     /// Where the ledger has this session, if the pool made it.
     pub fn stage(&self, s: &Session) -> Option<Stage> {
-        self.ledger.get(&ledger::key(s.session_id.as_deref()?)?).copied()
+        self.ledger.get(&s.canonical()?).copied()
     }
 
     /// Is the process the roster recorded still the one running under that pid? The start time

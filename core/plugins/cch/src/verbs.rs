@@ -591,7 +591,7 @@ fn pool_for_peer(mut held: Value, as_: Option<&str>) -> Value {
         _ => None,
     });
     let shown = privacy::visible_rows(sessions.unwrap_or_default(), as_);
-    let names: Vec<Value> = shown.iter().filter_map(|r| r.get("session").cloned()).collect();
+    let names: Vec<Value> = shown.iter().filter_map(|r| r.get("session_id").cloned()).collect();
     if let Some(map) = held.as_object_mut() {
         if let Some(Value::Array(warm)) = map.get_mut("warm") {
             warm.retain(|s| names.contains(s));
@@ -956,16 +956,16 @@ impl<B: Backend> App<B> {
         let live = self.backend.live_jobs().await;
         let (mut revived, mut still, mut failed) = (vec![], vec![], vec![]);
         for job in pins::pinned(self.backend.home()).await {
-            if live.contains(&job) {
-                still.push(job);
-                continue;
-            }
             let (paths, j) = (self.backend.paths().clone(), job.clone());
-            let extra: Map<String, Value> = [("pinned".to_string(), json!(true))].into_iter().collect();
             let Some(id) = blocking(move || lifecycle::session_of_job(&paths, &j)).await else {
                 failed.push(json!({"session_id": null, "error": format!("job {job} has no session on record")}));
                 continue;
             };
+            if live.contains(&job) {
+                still.push(id);
+                continue;
+            }
+            let extra: Map<String, Value> = [("pinned".to_string(), json!(true))].into_iter().collect();
             let (paths, key) = (self.backend.paths().clone(), id.clone());
             if let Some(error) = blocking(move || lifecycle::ensure_lineage(&paths, &key, "revive_pinned", &extra)).await {
                 failed.push(json!({"session_id": id, "error": error}));
@@ -1348,8 +1348,8 @@ pub mod testing {
             self.pools.lock().unwrap().push(op.clone());
             Ok(match op {
                 PoolOp::Status => self.pool_status.clone(),
-                PoolOp::Claim(cwd) => json!({"session": null, "reason": format!("nothing warm for {cwd}")}),
-                PoolOp::Seed => json!({"session": null, "refused": "no daemon in a test"}),
+                PoolOp::Claim(cwd) => json!({"session_id": null, "reason": format!("nothing warm for {cwd}")}),
+                PoolOp::Seed => json!({"session_id": null, "refused": "no daemon in a test"}),
                 PoolOp::Remove { apply } => if apply { json!({"applied": []}) } else { json!({"plan": []}) },
             })
         }
@@ -1465,7 +1465,7 @@ mod tests {
             lineage(fake, job, json!({"session_id": sid_of(job), "mode": "worker"}));
         }
         let out = run(&b.app, "revive_pinned", json!({})).await;
-        assert_eq!((&out["revived"], &out["live"], &out["failed"]), (&json!([sid_of("bbbb2222")]), &json!(["aaaa1111"]), &json!([])));
+        assert_eq!((&out["revived"], &out["live"], &out["failed"]), (&json!([sid_of("bbbb2222")]), &json!([sid_of("aaaa1111")]), &json!([])));
         assert_eq!(fake.lifes(), [(Life::Resume, json!({"session_id": sid_of("bbbb2222")}), None)]);
     }
 

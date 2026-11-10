@@ -645,7 +645,7 @@ impl Backend for Live {
             }
             PoolOp::Claim(cwd) => {
                 let out = claim::claim(&self.pool, &DaemonKeys, &cwd).await;
-                if out.get("session").and_then(Value::as_str).is_some_and(|s| !s.is_empty()) {
+                if out.get("session_id").and_then(Value::as_str).is_some_and(|s| !s.is_empty()) {
                     // Seed the replacement while the caller is still starting up, rather than up
                     // to a tick later.
                     self.pool_loop.kick();
@@ -653,8 +653,8 @@ impl Backend for Live {
                 Ok(out)
             }
             PoolOp::Seed => match seed::seed_one(&self.pool, &self.launcher).await {
-                Ok(short) => Ok(json!({"session": short})),
-                Err(LaunchError::Refused(why)) => Ok(json!({"session": null, "refused": why})),
+                Ok(id) => Ok(json!({"session_id": id})),
+                Err(LaunchError::Refused(why)) => Ok(json!({"session_id": null, "refused": why})),
                 Err(e) => Err(e.to_string()),
             },
             PoolOp::Remove { apply: true } => {

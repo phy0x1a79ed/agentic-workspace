@@ -18,21 +18,11 @@ pub enum Stage {
     Kept,
 }
 
-impl Stage {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Stage::Spare => "spare",
-            Stage::Claimed => "claimed",
-            Stage::Kept => "kept",
-        }
-    }
-}
-
 pub type Ledger = BTreeMap<String, Stage>;
 
 /// The canonical id of a Claude session UUID.
 pub fn key(uuid: &str) -> Option<String> {
-    SessionId::from_harness_native(Platform::Claude, uuid).ok().map(|id| id.canonical())
+    SessionId::canonical_of_native(Platform::Claude, uuid)
 }
 
 /// The ledger at `path`; a missing or unreadable file is an empty ledger.

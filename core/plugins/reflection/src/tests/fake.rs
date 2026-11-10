@@ -112,8 +112,8 @@ impl Fake {
                 None => json!({"ok": true, "mine": false}),
             },
             "find" => {
-                let name = args["name"].as_str().unwrap_or_default().to_lowercase();
-                let hits: Vec<&Value> = rows.iter().filter(|r| r["name"].as_str().is_some_and(|n| n.to_lowercase() == name)).collect();
+                let name = awm_plugin_sdk::ids::Name::new(args["name"].as_str().unwrap_or_default()).ok();
+                let hits: Vec<&Value> = rows.iter().filter(|r| r["name"].as_str().is_some_and(|n| name.as_ref().is_some_and(|w| w.matches(n)))).collect();
                 json!({"ok": true, "sessions": hits})
             }
             "list" => json!({"ok": true, "sessions": rows}),

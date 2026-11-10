@@ -41,7 +41,7 @@ impl Procs for ProcFs {
 
 /// The R9 id of a fork id, or None when it holds no hex id.
 pub fn r9(fork_id: &str) -> Option<String> {
-    SessionId::from_harness_native(Platform::DeepSeek, fork_id.strip_prefix("session-").unwrap_or(fork_id)).ok().map(|id| id.canonical())
+    SessionId::canonical_of_native(Platform::DeepSeek, fork_id.strip_prefix("session-").unwrap_or(fork_id))
 }
 
 pub fn unsupported(what: &str) -> Value {

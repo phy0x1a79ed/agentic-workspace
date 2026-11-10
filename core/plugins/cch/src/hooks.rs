@@ -315,14 +315,11 @@ pub fn brief(input: &[u8], hub: &dyn Hub, seen: &Path, claude_pid: impl FnOnce()
     if let Some(sid) = session_id {
         if let Some(pid) = claude_pid() {
             let before = swap_seen(seen, pid, sid);
-            if payload.get("source").and_then(Value::as_str) == Some("clear") && !before.is_empty() && before != sid {
-                let canon = |raw: &str| {
-                    awm_plugin_sdk::ids::SessionId::from_harness_native(awm_plugin_sdk::ids::Platform::Claude, raw)
-                        .map_or_else(|_| raw.to_string(), |id| id.canonical())
-                };
-                let args = json!({"session_id": canon(sid), "kind": "clear", "parent": canon(&before)});
+            let cleared = payload.get("source").and_then(Value::as_str) == Some("clear") && before != sid;
+            if let (true, Some(id), Some(parent)) = (cleared, ledger::key(sid), ledger::key(&before)) {
+                let args = json!({"session_id": id, "kind": "clear", "parent": parent});
                 let _ = hub.invoke("reflection_harness_event", &args, parent_pid(), CLEAR_TIMEOUT);
-                let ops = json!({"session_id": canon(sid), "parent": canon(&before)});
+                let ops = json!({"session_id": id, "parent": parent});
                 let _ = hub.invoke("operations_hook_session_clear", &ops, parent_pid(), CLEAR_TIMEOUT);
             }
         }
@@ -819,11 +816,13 @@ mod tests {
         let state = tempfile::tempdir().unwrap();
         let seen = state.path().join("awm/cch/session-start");
         let hub = FakeHub::new(|_, _| Ok(json!({})));
-        fire(&hub, &seen, "startup", "old-id");
-        fire(&hub, &seen, "compact", "old-id");
+        let (old, new) = ("00000000-0000-4000-8000-000000000001", "00000000-0000-4000-8000-000000000002");
+        fire(&hub, &seen, "startup", old);
+        fire(&hub, &seen, "compact", old);
         assert!(clears(&hub).is_empty());
-        fire(&hub, &seen, "clear", "new-id");
-        assert_eq!(clears(&hub), vec![json!({"session_id": "new-id", "kind": "clear", "parent": "old-id"})]);
+        fire(&hub, &seen, "clear", new);
+        let parent = "cc00000000000040008000000000000001";
+        assert_eq!(clears(&hub), vec![json!({"session_id": "cc00000000000040008000000000000002", "kind": "clear", "parent": parent})]);
         assert_eq!(hub.calls.borrow()[0].3, CLEAR_TIMEOUT);
     }
 

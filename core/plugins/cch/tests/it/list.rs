@@ -89,7 +89,7 @@ async fn test_the_list_verb_hides_private_sessions_from_a_peer() {
             ],
             pool_status: json!({
                 "warm": [PARENT_JOB, "dddd0004"], "want": 1, "daemon_pid": null, "loop": "running",
-                "sessions": [{"session": PARENT_JOB, "cwd": demo}, {"session": "dddd0004", "cwd": "/elsewhere"}],
+                "sessions": [{"session_id": PARENT_JOB, "cwd": demo}, {"session_id": "dddd0004", "cwd": "/elsewhere"}],
             }),
             ..f
         }
@@ -97,7 +97,7 @@ async fn test_the_list_verb_hides_private_sessions_from_a_peer() {
     mark("awm", &r.projects.join("awm"));
     let peer = list(&r.app, Some("peer:capella")).await;
     assert_eq!(jobs(&peer), ["cccc0003"]);
-    let pool: Vec<&str> = peer["pool"]["sessions"].as_array().unwrap().iter().map(|s| s["session"].as_str().unwrap()).collect();
+    let pool: Vec<&str> = peer["pool"]["sessions"].as_array().unwrap().iter().map(|s| s["session_id"].as_str().unwrap()).collect();
     assert_eq!(pool, ["dddd0004"]);
     assert_eq!(peer["pool"]["warm"], json!(["dddd0004"]));
     let local = list(&r.app, None).await;

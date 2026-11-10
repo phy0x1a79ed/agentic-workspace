@@ -24,7 +24,10 @@ pub const REMOVE_TIMEOUT: Duration = Duration::from_secs(20);
 /// One session the plan may delete, and why. `removed` is set once [`apply`] has acted on it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Removal {
-    pub session: String,
+    pub session_id: Option<String>,
+    /// The job `claude rm` takes.
+    #[serde(skip)]
+    pub short: String,
     pub name: String,
     pub why: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -43,7 +46,7 @@ pub fn plan<P: Processes, T: Terminals>(pool: &Pool<P, T>, now: Option<f64>) -> 
     s.load()
         .into_iter()
         .filter(|x| s.removable(x, version.as_deref(), now, Some(&attached)))
-        .map(|x| Removal { why: why(pool, &x, version.as_deref(), now), session: x.short, name: x.name, removed: None })
+        .map(|x| Removal { why: why(pool, &x, version.as_deref(), now), session_id: x.canonical(), short: x.short, name: x.name, removed: None })
         .collect()
 }
 
@@ -76,7 +79,7 @@ where
 {
     let mut done = Vec::new();
     for item in pool.read(move |p| plan(p, now)).await {
-        let short = item.session.clone();
+        let short = item.short.clone();
         let check = short.clone();
         if !pool.read(move |p| still_removable(p, &check)).await {
             tracing::info!("cx: {short} stopped being removable between the plan and the removal — left alone");
@@ -94,7 +97,7 @@ where
 /// nothing: it is what a stopped daemon looks like.
 fn forget_the_gone<P: Processes, T: Terminals>(pool: &Pool<P, T>) {
     let live: BTreeSet<String> =
-        pool.sessions().load().iter().filter_map(|s| ledger::key(s.session_id.as_deref()?)).collect();
+        pool.sessions().load().iter().filter_map(|s| s.canonical()).collect();
     if !live.is_empty() {
         ledger::retain(&pool.paths.ledger_path(), |k| live.contains(k));
     }
@@ -136,7 +139,7 @@ mod tests {
         // The one case removal exists for, and nothing else on a live box.
         let b = TestBox::new();
         let items: std::collections::HashMap<String, Removal> =
-            plan(&b.pool(), Some(b.a_minute_on())).into_iter().map(|i| (i.session.clone(), i)).collect();
+            plan(&b.pool(), Some(b.a_minute_on())).into_iter().map(|i| (i.short.clone(), i)).collect();
         assert_eq!(items.keys().cloned().collect::<HashSet<_>>(), HashSet::from(["strandeddead".into(), "stranded".into()]));
         assert_eq!(items["strandeddead"].why, "the process is gone");
         assert!(items["stranded"].why.contains("never prompted"));
@@ -169,7 +172,7 @@ mod tests {
         let b = TestBox::new();
         let rm = Rm::default();
         let done = apply(&b.pool(), &rm, None).await;
-        let by: std::collections::HashMap<_, _> = done.iter().map(|d| (d.session.as_str(), d.removed)).collect();
+        let by: std::collections::HashMap<_, _> = done.iter().map(|d| (d.short.as_str(), d.removed)).collect();
         assert_eq!(by["stranded"], Some(true));
         assert_eq!(by["strandeddead"], Some(false));
         let calls = rm.0.lock().unwrap().clone();

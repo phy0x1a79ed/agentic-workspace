@@ -280,7 +280,7 @@ impl<F: Effects> Watcher<F> {
         };
         let mut ev = event(kind, claude_session_id, f, task_id);
         if let Some(stage) = pool {
-            ev["pool"] = json!(stage.as_str());
+            ev["pool"] = json!(stage);
         }
         let _ = self.out.send(ev);
     }

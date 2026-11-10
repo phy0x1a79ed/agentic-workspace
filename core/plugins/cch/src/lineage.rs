@@ -9,7 +9,7 @@
 
 use std::cell::{Cell, OnceCell};
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use awm_plugin_sdk::ids::SessionId;
 use awm_harness::claude::records::{read_json, read_json_strict, Object, Unreadable};
@@ -537,18 +537,16 @@ pub fn lineage_records(paths: &Paths) -> BTreeMap<String, LineageRecord> {
         .collect()
 }
 
-/// Every readable pending record that names its session, with its path. A file not filed under a
-/// canonical session id is a record of an older layout and is skipped.
-pub fn pending_records(paths: &Paths) -> Vec<(PathBuf, LineageRecord)> {
+/// Every readable pending record that names its session, by the canonical id it is filed under.
+/// A file not filed under a canonical session id is a record of an older layout and is skipped.
+pub fn pending_records(paths: &Paths) -> Vec<(String, LineageRecord)> {
     starts_entries(paths)
         .into_iter()
-        .filter(|fname| {
-            fname.strip_prefix("pending-").and_then(|f| f.strip_suffix(".json")).is_some_and(|id| SessionId::parse(id).is_ok())
-        })
         .filter_map(|fname| {
-            let path = paths.starts_dir().join(fname);
-            let rec = LineageRecord::from(read_object(&path)?);
-            rec.name.is_some().then_some((path, rec))
+            let id = fname.strip_prefix("pending-")?.strip_suffix(".json")?;
+            SessionId::parse(id).ok()?;
+            let rec = LineageRecord::from(read_object(&paths.pending_path(id))?);
+            rec.name.is_some().then(|| (id.to_string(), rec))
         })
         .collect()
 }
@@ -556,6 +554,7 @@ pub fn pending_records(paths: &Paths) -> Vec<(PathBuf, LineageRecord)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
     use awm_plugin_sdk::procfs;
     use serde_json::json;
     use std::cell::RefCell;

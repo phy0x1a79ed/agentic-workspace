@@ -44,7 +44,7 @@ fn session(call: &Call) -> Option<String> {
     if call.caller.lane != awm_plugin_sdk::Lane::Local {
         return None;
     }
-    call.caller.session.as_deref().or_else(|| call.caller_session_id()).and_then(|s| awm_plugin_sdk::ids::SessionId::parse(s).ok()).map(|id| id.canonical())
+    call.caller.session.as_deref().or_else(|| call.caller_session_id()).and_then(awm_plugin_sdk::ids::SessionId::checked)
 }
 
 /// Add every verb of the `search` tool to `svc`.

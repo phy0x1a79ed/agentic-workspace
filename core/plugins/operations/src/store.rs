@@ -1039,8 +1039,7 @@ fn listed_session<'a>(listed: &'a [LiveSession], session_id: &str) -> Option<&'a
 }
 
 fn same_session(a: &str, b: &str) -> bool {
-    let n = |s: &str| awm_plugin_sdk::ids::SessionId::parse(s).map(|i| i.canonical()).unwrap_or_else(|_| s.to_lowercase());
-    n(a) == n(b)
+    crate::front::norm(a) == crate::front::norm(b)
 }
 
 /// The (session_id, task_id) rows a telemetry event names.

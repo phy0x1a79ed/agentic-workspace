@@ -49,6 +49,21 @@ fn to_arg(args: &Value) -> Result<Option<Ref>, Value> {
     Ref::from_args(args).map_err(|e| reason(&e))
 }
 
+/// The `to` a verb requires, or the refusal of a missing or malformed one.
+fn required_to(args: &Value) -> Result<Ref, Value> {
+    to_arg(args)?.ok_or_else(|| reason("to is required: {id} or {name}"))
+}
+
+/// Unwraps a `to_arg` or `required_to` result, returning its refusal as the verb's reply.
+macro_rules! or_refuse {
+    ($e:expr) => {
+        match $e {
+            Ok(v) => v,
+            Err(refused) => return Ok(refused),
+        }
+    };
+}
+
 /// A field as Python's `str()` prints it.
 fn shown(v: Option<&Value>) -> String {
     match v {
@@ -261,19 +276,15 @@ impl<G: Gateway> App<G> {
     }
 
     async fn on_target(&self, frame: &Frame, args: &Value, verb: &str, steer: Option<&str>, extra: Value) -> Result<Value, Failure> {
-        let to = match to_arg(args) {
-            Ok(to) => to,
-            Err(refused) => return Ok(refused),
-        };
+        let to = or_refuse!(to_arg(args));
         let (p, named) = self.steer_target(frame, to.as_ref(), steer).await?;
         Ok(self.harness_call(&p, verb, merged(&Value::Object(named), &extra), None).await?)
     }
 
     /// A verb that needs a `to` and always checks the steer, sent with the caller's `as`.
     async fn on_other(&self, frame: &Frame, args: &Value, verb: &str, steer: &str, extra: Value) -> Result<(Value, Map<String, Value>), Failure> {
-        let to = match to_arg(args) {
-            Ok(Some(to)) => to,
-            Ok(None) => return Ok((reason("to is required: {id} or {name}"), Map::new())),
+        let to = match required_to(args) {
+            Ok(to) => to,
             Err(refused) => return Ok((refused, Map::new())),
         };
         let (p, named) = self.steer_target(frame, Some(&to), Some(steer)).await?;
@@ -282,10 +293,7 @@ impl<G: Gateway> App<G> {
     }
 
     async fn stop(self: &Arc<Self>, frame: &Frame, args: &Value) -> Result<Value, Failure> {
-        let to = match to_arg(args) {
-            Ok(to) => to,
-            Err(refused) => return Ok(refused),
-        };
+        let to = or_refuse!(to_arg(args));
         let confirm = flag(args, "confirm", false);
         let (p, named) = match &to {
             Some(to) => self.steer_target(frame, Some(to), Some("stop")).await?,
@@ -318,11 +326,7 @@ impl<G: Gateway> App<G> {
     }
 
     async fn message(&self, frame: &Frame, args: &Value) -> Result<Value, Failure> {
-        let to = match to_arg(args) {
-            Ok(Some(to)) => to,
-            Ok(None) => return Ok(reason("to is required: {id} or {name}")),
-            Err(refused) => return Ok(refused),
-        };
+        let to = or_refuse!(required_to(args));
         let (p, named) = self.steer_target(frame, Some(&to), None).await?;
         let extra = json!({"text": self.provider_value(frame, args.get("text")).await, "confirm": flag(args, "confirm", false)});
         let mut out = self.harness_call(&p, "send", merged(&Value::Object(named), &extra), None).await?;
@@ -342,10 +346,7 @@ impl<G: Gateway> App<G> {
 
     /// Move a session, claiming the scope it moves into (sessions lane, scope claims).
     async fn cd(&self, frame: &Frame, args: &Value) -> Result<Value, Failure> {
-        let to = match to_arg(args) {
-            Ok(to) => to,
-            Err(refused) => return Ok(refused),
-        };
+        let to = or_refuse!(to_arg(args));
         let (p, named) = self.steer_target(frame, to.as_ref(), Some("cd")).await?;
         let before = self.harness_call(&p, "status", Value::Object(named.clone()), None).await?;
         let sid = text(&before, "session_id").or_else(|| named.get("session_id").and_then(Value::as_str)).unwrap_or_default().to_string();
@@ -613,8 +614,8 @@ impl<G: Gateway> App<G> {
         let mut until: Vec<String> = vec![];
         for u in &raw {
             let text_u = u.as_str().map_or_else(|| u.to_string(), |s| s.trim().to_lowercase());
-            match u.as_str().map(|s| ids::SessionId::parse(s).map(|i| i.canonical())) {
-                Some(Ok(id)) => {
+            match u.as_str().and_then(ids::SessionId::checked) {
+                Some(id) => {
                     if !until.contains(&id) {
                         until.push(id);
                     }
@@ -664,7 +665,7 @@ impl<G: Gateway> App<G> {
     }
 
     async fn retired(&self, args: &Value) -> Value {
-        let Some(sid) = args.get("session_id").and_then(Value::as_str).and_then(|s| ids::SessionId::parse(s).ok()).map(|i| i.canonical()) else {
+        let Some(sid) = args.get("session_id").and_then(Value::as_str).and_then(ids::SessionId::checked) else {
             return reason("session_id is required: an R9 session id");
         };
         json!({"ok": true, "woken": self.retire(&sid, false, |row| self.wake(row)).await})
@@ -674,7 +675,7 @@ impl<G: Gateway> App<G> {
         let asked: Vec<String> = args
             .get("session_ids")
             .and_then(Value::as_array)
-            .map(|a| a.iter().filter_map(|s| s.as_str().and_then(|s| ids::SessionId::parse(s).ok()).map(|i| i.canonical())).collect())
+            .map(|a| a.iter().filter_map(|s| s.as_str().and_then(ids::SessionId::checked)).collect())
             .unwrap_or_default();
         let mut gone = self.retired_here(&asked).await;
         let unretired: Vec<&String> = asked.iter().filter(|s| !gone.contains(s)).collect();
@@ -720,7 +721,7 @@ impl<G: Gateway> App<G> {
 
     /// A session cleared itself: its new id takes the old one as its parent (sessions.md R13).
     async fn cleared(&self, event: &Map<String, Value>) -> Value {
-        let id = |k: &str| event.get(k).and_then(Value::as_str).and_then(|s| ids::SessionId::parse(s).ok()).map(|i| i.canonical());
+        let id = |k: &str| event.get(k).and_then(Value::as_str).and_then(ids::SessionId::checked);
         let (Some(new), Some(old)) = (id("session_id"), id("parent")) else {
             return json!({"ok": false, "error": "a clear needs session_id and parent as session ids"});
         };

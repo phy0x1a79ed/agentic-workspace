@@ -42,7 +42,7 @@ impl Who {
     pub fn from_call(call: &Call) -> Who {
         let arg = |k: &str| call.args.get(k).and_then(Value::as_str).map(str::to_string);
         let session = match call.caller.lane {
-            Lane::Local => call.caller.session.as_deref().and_then(|s| awm_plugin_sdk::ids::SessionId::parse(s).ok()).map(|i| i.canonical()),
+            Lane::Local => call.caller.session.as_deref().and_then(awm_plugin_sdk::ids::SessionId::checked),
             _ => None,
         };
         Who {

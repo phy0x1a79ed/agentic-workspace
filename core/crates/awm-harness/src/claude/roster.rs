@@ -172,6 +172,11 @@ fn int_items(v: Option<&Value>) -> Vec<i64> {
 }
 
 impl Job {
+    /// The canonical id of the job's current session.
+    pub fn canonical(&self) -> Option<String> {
+        awm_plugin_sdk::ids::SessionId::canonical_of_native(awm_plugin_sdk::ids::Platform::Claude, self.session_id.as_deref()?)
+    }
+
     /// The job `short`, from its roster entry `worker` joined to its own record under `home`.
     /// Its session id is its live process's: the roster keeps the first one through a `/clear`.
     pub fn from_worker(short: &str, worker: &Value, home: &ClaudeHome) -> Self {

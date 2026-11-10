@@ -94,8 +94,8 @@ fn unwrap_stale(out: Value) -> Value {
     out
 }
 
-fn norm(s: &str) -> String {
-    awm_plugin_sdk::ids::SessionId::parse(s).map(|i| i.canonical()).unwrap_or_else(|_| s.trim().to_lowercase())
+pub(crate) fn norm(s: &str) -> String {
+    awm_plugin_sdk::ids::SessionId::checked(s).unwrap_or_else(|| s.trim().to_lowercase())
 }
 
 /// A session id a caller passed: refused unless it is an R9 id.

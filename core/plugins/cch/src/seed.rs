@@ -115,7 +115,7 @@ fn noun() -> &'static str {
     NOUNS[(uuid::Uuid::new_v4().as_u128() % NOUNS.len() as u128) as usize]
 }
 
-/// Start one warm session and return its short id. [`LaunchError::Refused`] when the
+/// Start one warm session and return its canonical session id. [`LaunchError::Refused`] when the
 /// precondition fails, [`LaunchError::Timeout`] when no new claimable session appears.
 pub async fn seed_one<P, T>(pool: &Pool<P, T>, launcher: &impl Launcher) -> Result<String, LaunchError>
 where
@@ -154,7 +154,7 @@ where
         }
     };
     tracing::info!("cx: seeded {} as {}", s.name, s.short);
-    Ok(s.short)
+    Ok(id)
 }
 
 #[cfg(test)]
@@ -226,7 +226,7 @@ pub(crate) mod tests {
         let launcher = FakeLauncher::default();
         let pool = b.pool_with(|p| p.rotate_age_s = 999_999.0);
         std::fs::write(&b.paths.home.trust_file, r#"{"projects":{}}"#).unwrap();
-        assert_eq!(seed_one(&pool, &launcher).await.unwrap(), "warmfresh");
+        let seeded = seed_one(&pool, &launcher).await.unwrap();
         let spec = launcher.launched.lock().unwrap()[0].clone();
         assert!(NOUNS.contains(&spec.name.as_str()));
         assert_eq!(spec.unit_prefix, "awm-cx-seed");
@@ -236,6 +236,7 @@ pub(crate) mod tests {
         assert_eq!(given, b.paths.seed_flags());
         assert_eq!(id[0], "--session-id");
         let key = ledger::key(&id[1]).unwrap();
+        assert_eq!(seeded, key);
         assert_eq!(ledger::load(&b.paths.ledger_path()).get(&key), Some(&Stage::Spare));
         assert_eq!(spec.env, b.paths.seed_env());
         let trust = std::fs::read_to_string(&b.paths.home.trust_file).unwrap();

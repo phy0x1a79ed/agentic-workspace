@@ -228,7 +228,7 @@ impl<T: Tend, B: Bookkeeping> Loop<T, B> {
             Ok(done) => {
                 for item in done {
                     let verb = if item.removed == Some(true) { "removed" } else { "kept" };
-                    tracing::info!("cx: {verb} {} ({})", item.session, item.why);
+                    tracing::info!("cx: {verb} {} ({})", item.short, item.why);
                 }
             }
             Err(exc) => tracing::error!("cx: removal failed: {exc:#}"),

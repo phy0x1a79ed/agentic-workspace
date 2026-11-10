@@ -112,7 +112,7 @@ pub struct Target {
 impl Target {
     /// The session's canonical id.
     pub fn canonical(&self) -> Option<String> {
-        SessionId::from_harness_native(Platform::Claude, self.session_id.as_deref()?).ok().map(|id| id.canonical())
+        SessionId::canonical_of_native(Platform::Claude, self.session_id.as_deref()?)
     }
 
     /// The name, else the job id, else the pid.
@@ -380,6 +380,13 @@ fn alive(pid: Option<u32>, start: Option<&str>) -> bool {
 
 /// Every session on this node that `list_other` would show.
 fn candidates(home: &ClaudeHome) -> Vec<Target> {
+    let mut out = running(home);
+    out.extend(stopped_jobs(home, &out));
+    out
+}
+
+/// Every session the daemon's roster lists, plus every live interactive session.
+fn running(home: &ClaudeHome) -> Vec<Target> {
     let mut out: Vec<Target> = roster::load(home)
         .into_iter()
         .filter(|j| j.has_record)
@@ -423,32 +430,31 @@ fn candidates(home: &ClaudeHome) -> Vec<Target> {
             session_id: str_of(rec.get("sessionId")),
         });
     }
-    out.extend(stopped_jobs(home, &out));
     out
 }
 
 /// Every job the daemon's roster no longer lists, by its state record: a stopped session.
 fn stopped_jobs(home: &ClaudeHome, listed: &[Target]) -> Vec<Target> {
+    let listed: HashSet<&str> = listed.iter().filter_map(|t| t.job.as_deref()).collect();
     let mut dirs: Vec<String> = std::fs::read_dir(home.jobs())
         .map(|d| d.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect())
         .unwrap_or_default();
     dirs.sort();
-    dirs.into_iter()
-        .filter(|short| !listed.iter().any(|t| t.job.as_deref() == Some(short)))
-        .filter_map(|short| {
-            let state = records::read_json(&home.job_state(&short));
-            let session_id = str_of(state.get("sessionId"))?;
-            Some(Target {
-                pid: 0,
-                kind: SessionKind::Background,
-                alive: false,
-                name: str_of(state.get("name")),
-                job: Some(short),
-                is_self: false,
-                session_id: Some(session_id),
-            })
-        })
-        .collect()
+    dirs.into_iter().filter(|short| !listed.contains(short.as_str())).filter_map(|short| stopped_job(home, short)).collect()
+}
+
+/// The job `short` as a stopped session, from its state record.
+fn stopped_job(home: &ClaudeHome, short: String) -> Option<Target> {
+    let state = records::read_json(&home.job_state(&short));
+    Some(Target {
+        pid: 0,
+        kind: SessionKind::Background,
+        alive: false,
+        name: str_of(state.get("name")),
+        session_id: Some(str_of(state.get("sessionId"))?),
+        job: Some(short),
+        is_self: false,
+    })
 }
 
 fn describe(t: &Target) -> String {
@@ -491,10 +497,19 @@ pub async fn resolve<E: Effects>(fx: &E, session: Option<&str>, caller_pid: Opti
     let Some(wanted) = session.filter(|s| !s.is_empty()) else {
         return caller_target(fx.home(), caller_pid).await;
     };
-    let uuid = SessionId::parse(wanted).map_err(|e| ResolveError(e.to_string()))?.harness_native();
+    let id = SessionId::parse(wanted).map_err(|e| ResolveError(e.to_string()))?;
+    let (uuid, job) = (id.harness_native(), id.job_dir().map(str::to_string));
     let home = fx.home().clone();
-    let cands = blocking(move || candidates(&home)).await;
-    match cands.into_iter().find(|t| t.session_id.as_deref() == Some(uuid.as_str())) {
+    let found = blocking(move || {
+        let is_it = |t: &Target| t.session_id.as_deref() == Some(uuid.as_str());
+        let live = running(&home);
+        live.iter().find(|t| is_it(t)).cloned().or_else(|| {
+            let job = job.filter(|j| !live.iter().any(|t| t.job.as_deref() == Some(j)))?;
+            stopped_job(&home, job).filter(is_it)
+        })
+    })
+    .await;
+    match found {
         Some(t) => Ok(mark_self(fx.home(), t, caller_pid).await),
         None => Err(UnknownSession { unknown_ref: wanted.into() }.into()),
     }

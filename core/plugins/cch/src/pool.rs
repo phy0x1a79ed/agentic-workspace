@@ -142,7 +142,7 @@ pub fn status<P: Processes, T: Terminals>(
         .map(|x| {
             let v = version.as_deref();
             json!({
-                "session": x.short,
+                "session_id": x.canonical(),
                 "name": x.name,
                 "age_s": round1(age_s(&x, now)),
                 "alive": s.is_alive(&x),
@@ -156,7 +156,7 @@ pub fn status<P: Processes, T: Terminals>(
         })
         .collect();
     rows.sort_by(|a, b| a["age_s"].as_f64().unwrap_or(0.0).total_cmp(&b["age_s"].as_f64().unwrap_or(0.0)));
-    let warm: Vec<Value> = rows.iter().filter(|r| r["claimable"] == true).map(|r| r["session"].clone()).collect();
+    let warm: Vec<Value> = rows.iter().filter(|r| r["claimable"] == true).map(|r| r["session_id"].clone()).collect();
     let mut out = json!({
         "warm": warm,
         "want": pool.paths.want,
@@ -230,6 +230,18 @@ pub(crate) mod testing {
         pub newest_ms: i64,
     }
 
+    pub const SHORTS: [&str; 5] = ["warmfresh", "adopted", "stranded", "strandeddead", "claimedfresh"];
+
+    /// The canonical session id of the box's session `i`.
+    pub fn id_of(i: usize) -> String {
+        format!("cc0000000000004000800000000000000{i}")
+    }
+
+    /// The short of the box's session with canonical id `id`.
+    pub fn short_of(id: &str) -> String {
+        SHORTS[(0..SHORTS.len()).find(|&i| id_of(i) == id).unwrap()].to_string()
+    }
+
     fn now_ms() -> i64 {
         SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64)
     }
@@ -261,7 +273,8 @@ pub(crate) mod testing {
         fn write_box(&self) {
             let seed = self.paths.seed_dir.to_string_lossy().into_owned();
             let n = self.newest_ms;
-            // (short, seed name, cli version, alive, started ms, ledger stage)
+            // (short, seed name, cli version, alive, started ms, ledger stage); the session id of
+            // row i is [`id_of`]`(i)`.
             let workers = [
                 ("warmfresh", "dunlin", VERSION, true, n, Stage::Spare),
                 ("adopted", "zorilla", VERSION, true, n - 5_352_669, Stage::Kept),
@@ -273,7 +286,7 @@ pub(crate) mod testing {
             let mut map = serde_json::Map::new();
             for (i, (short, seed_name, cli, alive, started, stage)) in workers.into_iter().enumerate() {
                 let (pid, start) = if alive { (ALIVE_PID, ALIVE_START) } else { (2, "1") };
-                ledger.insert(crate::ledger::key(&format!("00000000-0000-4000-8000-00000000000{i}")).unwrap(), stage);
+                ledger.insert(id_of(i), stage);
                 map.insert(
                     short.into(),
                     json!({
@@ -346,7 +359,7 @@ mod tests {
             .as_array()
             .unwrap()
             .iter()
-            .map(|r| (r["session"].as_str().unwrap().to_string(), r.clone()))
+            .map(|r| (super::testing::short_of(r["session_id"].as_str().unwrap()), r.clone()))
             .collect()
     }
 

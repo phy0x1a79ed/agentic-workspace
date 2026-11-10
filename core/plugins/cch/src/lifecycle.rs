@@ -24,7 +24,7 @@ use tokio::sync::Mutex;
 use tokio::time::{sleep, timeout, Instant};
 
 use crate::gateway::{Call, Gateway};
-use crate::ledger::{self, Stage};
+use crate::ledger;
 use crate::lineage::{self, Mode, Processes, Procfs};
 use crate::paths::{Paths, SKIP_PERMISSION_FLAGS};
 use crate::sessions::{Session, Sessions};
@@ -427,7 +427,7 @@ pub fn caller_record<E: Effects>(fx: &E, pid: &Value) -> Option<Object> {
 
 /// The canonical id of the session a record names.
 pub fn session_ref(rec: Option<&Object>) -> Option<String> {
-    claude_r9(text(rec?.get("sessionId")))
+    text(rec?.get("sessionId")).and_then(ledger::key)
 }
 
 /// The calling session's canonical id.
@@ -831,7 +831,7 @@ fn fill(template: &str, vars: &[(&str, &str)]) -> String {
 /// supplied. A background parent is addressed by its job id, which a rename does not change; an
 /// interactive one by its name.
 fn starter(spec: &Spec, caller_rec: Option<&Object>) -> (String, String) {
-    if let Some((parent, rec)) = caller_rec.and_then(|r| Some((claude_r9(text(r.get("sessionId")))?, r))) {
+    if let Some((parent, rec)) = caller_rec.and_then(|r| Some((text(r.get("sessionId")).and_then(ledger::key)?, r))) {
         let name = rec.get("name").filter(|v| truthy(Some(v))).map(py_str).unwrap_or_default();
         let name = py_strip(&name).to_string();
         let started_by =
@@ -967,7 +967,7 @@ async fn start_inner<E: Effects>(fx: &E, args: &Value, as_: Option<&str>) -> Res
     record.insert("pinned".into(), json!(spec.pin));
     record.insert("brief".into(), json!(spec.brief));
     record.insert("lobby".into(), json!(spec.lobby));
-    if let Some(r9) = caller_rec.as_ref().and_then(|r| claude_r9(text(r.get("sessionId")))) {
+    if let Some(r9) = caller_rec.as_ref().and_then(|r| text(r.get("sessionId")).and_then(ledger::key)) {
         record.insert("parent_session".into(), json!(r9));
     }
     if spec.lobby {
@@ -1410,15 +1410,6 @@ fn started_epoch(rec: &Object) -> f64 {
     rec.get("started_epoch").and_then(Value::as_f64).unwrap_or(0.0)
 }
 
-/// Whether `s` is the late job of the pending start filed under `id`.
-fn is_late_job_of(s: &Session, id: &str) -> bool {
-    s.session_id.as_deref().and_then(ledger::key).as_deref() == Some(id)
-}
-
-/// The session id a pending record is filed under.
-fn pending_id(path: &Path) -> Option<&str> {
-    path.file_name()?.to_str()?.strip_prefix("pending-")?.strip_suffix(".json")
-}
 
 /// Give each pending record to the job that outlived its launch timeout; the jobs adopted.
 ///
@@ -1432,15 +1423,13 @@ pub fn adopt_pending<E: Effects>(fx: &E, now: Option<f64>) -> Vec<String> {
         return Vec::new();
     }
     let now = now.unwrap_or_else(|| fx.now());
-    let held: BTreeSet<String> = lineage::lineage_records(paths).into_keys().collect();
-    let key = |s: &Session| s.session_id.as_deref().and_then(ledger::key);
     let live = Sessions::new(paths, fx.procs()).load();
     let mut adopted = Vec::new();
-    for (path, _) in pending {
+    for (id, _) in &pending {
+        let path = paths.pending_path(id);
         // The record as written, so the adopted one keeps its keys in their order.
         let Some(rec) = read_object(&path) else { continue };
-        let Some(id) = pending_id(&path) else { continue };
-        let late = live.iter().find(|s| key(s).is_some_and(|k| !held.contains(&k)) && is_late_job_of(s, id));
+        let late = live.iter().find(|s| s.canonical().as_ref() == Some(id));
         let done = match late {
             Some(late) => {
                 let mut record = rec.clone();
@@ -1662,7 +1651,7 @@ pub fn job_of_session(paths: &Paths, id: &SessionId) -> Option<String> {
 
 /// The canonical id of the session the job `job` holds, by its state record.
 pub fn session_of_job(paths: &Paths, job: &str) -> Option<String> {
-    claude_r9(text(read_json(&paths.home.job_state(job)).get("sessionId")))
+    text(read_json(&paths.home.job_state(job)).get("sessionId")).and_then(ledger::key)
 }
 
 /// Where the session last worked, among the folders its transcript's directory names.
@@ -1903,17 +1892,15 @@ pub fn collect_rows<E: Effects>(
     let paths = fx.paths();
     let sessions = Sessions::new(paths, fx.procs());
     let lineage = lineage_objects(paths);
-    let pending: Vec<(String, Object)> = lineage::pending_records(paths)
-        .into_iter()
-        .filter_map(|(path, r)| Some((pending_id(&path)?.to_string(), Object::from(r))))
-        .collect();
+    let pending: Vec<(String, Object)> =
+        lineage::pending_records(paths).into_iter().map(|(id, r)| (id, Object::from(r))).collect();
     let node = fx.node_name();
     let mut rows: Vec<Object> = Vec::new();
     for s in sessions.load().iter().filter(|s| s.has_record) {
         // The job runs its first prompt before `start` writes its lineage, and that prompt's hook
         // already asks whether the job carries the brief: the pending record answers.
-        let recorded = claude_r9(s.session_id.as_deref()).and_then(|id| lineage.get(&id));
-        let rec = recorded.or_else(|| pending.iter().find(|(id, _)| is_late_job_of(s, id)).map(|(_, r)| r));
+        let recorded = s.canonical().and_then(|id| lineage.get(&id));
+        let rec = recorded.or_else(|| pending.iter().find(|(id, _)| s.canonical().as_ref() == Some(id)).map(|(_, r)| r));
         let mut row = job_row(fx, &sessions, s, rec, &node);
         row.insert("pinned".into(), json!(pinned.contains(&s.short)));
         row.insert("recorded".into(), json!(recorded.is_some()));
@@ -1969,20 +1956,15 @@ fn job_row<E: Effects>(fx: &E, sessions: &Sessions, s: &Session, rec: Option<&Ob
         "mode": field("mode"), "remote_control": s.remote_control(),
         "remote_control_label": field("remote_control"), "link": s.link(),
         "started_at": started_at,
-        "pool": sessions.stage(s).map(Stage::as_str),
+        "pool": sessions.stage(s),
         "brief": truthy(rec.get("brief")),
         "tags": field("tags"),
-        "session_id": claude_r9(s.session_id.as_deref()),
+        "session_id": s.canonical(),
         "alive": alive,
         "transcript": transcript_of(paths, s.session_id.as_deref()),
     });
     let Value::Object(row) = row else { unreachable!("a json! object") };
     row
-}
-
-/// The R9 id of a session id read from Claude's own job or session files.
-fn claude_r9(raw: Option<&str>) -> Option<String> {
-    SessionId::from_harness_native(Platform::Claude, raw?).ok().map(|id| id.canonical())
 }
 
 fn clip(v: Option<&Value>) -> Value {
@@ -2007,7 +1989,7 @@ fn interactive_row<E: Effects>(fx: &E, rec: &Object, panes: &BTreeMap<u32, Strin
         "link": roster::bridge_link(bridge),
         "started_at": rec.get("startedAt").and_then(Value::as_f64).and_then(iso_ms_f),
         "pool": null, "pinned": false, "brief": false,
-        "session_id": claude_r9(session_id),
+        "session_id": session_id.and_then(ledger::key),
         "alive": true,
         "transcript": transcript_of(paths, session_id),
     });
@@ -2926,7 +2908,7 @@ mod tests {
         let w = Fx::new();
         w.add_full(PARENT_JOB, "saiga", ME, "/home/user", "working", 1_600_000_000_000);
         let uuid = "00000000-0000-4000-8000-0000000000aa";
-        crate::ledger::set(&w.paths.ledger_path(), &crate::ledger::key(uuid).unwrap(), Stage::Spare).unwrap();
+        crate::ledger::set(&w.paths.ledger_path(), &crate::ledger::key(uuid).unwrap(), crate::ledger::Stage::Spare).unwrap();
         start_fit(&w, on(json!({"mode": "rep"}))).await;
         w.record(ME, "interactive", None, "dev");
         let cwd = w.projects().join("awm/demo").display().to_string();

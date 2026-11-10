@@ -70,6 +70,16 @@ impl SessionId {
             .map_err(|_| BadSessionId(format!("{raw:?} is not a {} harness session id", platform.code())))
     }
 
+    /// `text` if it is a canonical id, else `None`.
+    pub fn checked(text: &str) -> Option<String> {
+        Self::parse(text).ok().map(|id| id.canonical())
+    }
+
+    /// The canonical form of the harness's own id `raw`, or `None` if it is not one.
+    pub fn canonical_of_native(platform: Platform, raw: &str) -> Option<String> {
+        Self::from_harness_native(platform, raw).ok().map(|id| id.canonical())
+    }
+
     pub fn platform(&self) -> Platform {
         self.platform
     }

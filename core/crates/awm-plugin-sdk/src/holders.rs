@@ -17,6 +17,8 @@ use crate::service::{Call, CLAIM_KEY, SESSION_KEY};
 
 const DEAD_STATES: [&str; 2] = ["gone", "stopped"];
 pub const ISOLATED: &str = "isolated";
+/// Session kinds that run without a terminal and so can hold a lock.
+const HOLDER_KINDS: [&str; 3] = ["bg", "web", ISOLATED];
 
 /// The calling session cannot hold the thing. The message says why.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -94,15 +96,15 @@ pub fn row_live(row: &Value) -> bool {
 /// Whether `session` is a background (`bg`, or `web` for a DeepSeek one) or an isolated session.
 async fn can_hold(hub: &Hub, session: &str) -> bool {
     let rows = session_rows(hub, true).await.unwrap_or_default();
-    rows.iter().any(|row| text(row, "session_id").to_lowercase() == session && ["bg", "web", ISOLATED].contains(&text(row, "kind").as_str()))
+    rows.iter().any(|row| text(row, "session_id").to_lowercase() == session && HOLDER_KINDS.contains(&text(row, "kind").as_str()))
 }
 
 fn from_claim(raw: Option<&Value>) -> Option<Found> {
     let obj = raw.filter(|r| r.is_object())?;
     let get = |k: &str| obj.get(k).cloned().unwrap_or(Value::Null);
     Some(Found {
-        background: ["bg", "web", ISOLATED].contains(&text(obj, "kind").as_str()) || get("hosting") == "background",
-        session: get("session_id").as_str().map(str::to_string).or_else(|| get("sessionId").as_str().and_then(|s| crate::ids::SessionId::from_harness_native(crate::ids::Platform::Claude, s).ok()).map(|i| i.canonical())),
+        background: HOLDER_KINDS.contains(&text(obj, "kind").as_str()) || get("hosting") == "background",
+        session: get("session_id").as_str().map(str::to_string),
         name: text(obj, "name"),
     })
 }
@@ -111,7 +113,7 @@ fn from_claim(raw: Option<&Value>) -> Option<Found> {
 pub async fn caller(call: &Call, what: &str) -> Result<Holder, HolderError> {
     let hub = call.hub();
     let pid = call.caller_pid();
-    let sid = call.args.get(SESSION_KEY).and_then(Value::as_str).and_then(|s| crate::ids::SessionId::parse(s).ok()).map(|i| i.canonical());
+    let sid = call.args.get(SESSION_KEY).and_then(Value::as_str).and_then(crate::ids::SessionId::checked);
     let here = call.ctx.env().node.clone();
     let (found, node) = if let Some(pid) = pid {
         let found = crate::sessions::session_of(hub, pid).await.map(|rec| Found {

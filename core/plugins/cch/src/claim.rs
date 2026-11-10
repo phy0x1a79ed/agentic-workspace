@@ -96,7 +96,7 @@ impl Keys for DaemonKeys {
 
 fn miss(reason: String) -> Value {
     tracing::info!("cx: no session handed out — {reason}");
-    json!({"session": null, "reason": reason})
+    json!({"session_id": null, "reason": reason})
 }
 
 fn realpath_sync(p: &Path) -> PathBuf {
@@ -111,9 +111,9 @@ async fn realpath(cwd: &str) -> PathBuf {
     }
 }
 
-/// Move the newest warm session to `cwd` and answer `{session, cwd}`, or `{session: null,
-/// reason}` when there is nothing to hand out, which the caller reads as "launch cold". Nothing
-/// here fails at the caller.
+/// Move the newest warm session to `cwd` and answer `{session_id, attach, cwd}`, where `attach` is
+/// what `claude attach` takes, or `{session_id: null, reason}` when there is nothing to hand out,
+/// which the caller reads as "launch cold". Nothing here fails at the caller.
 pub async fn claim<P, T>(pool: &Pool<P, T>, keys: &impl Keys, cwd: &str) -> Value
 where
     P: Processes + Clone + Send + Sync + 'static,
@@ -173,7 +173,7 @@ where
         ms(typed - started),
         ms(typed.elapsed())
     );
-    json!({"session": short, "cwd": want})
+    json!({"session_id": id, "attach": short, "cwd": want})
 }
 
 /// Wait for the session's own record to say it is where we sent it: the only positive evidence
@@ -210,13 +210,13 @@ fn recheck<P: Processes, T: Terminals>(pool: &Pool<P, T>, short: &str) -> Option
     if !(s.is_ours(&found) && found.tokens == 0 && s.is_alive(&found)) {
         return None;
     }
-    ledger::key(found.session_id.as_deref()?)
+    found.canonical()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pool::testing::{NoTerminals, Table, TestBox};
+    use crate::pool::testing::{id_of, NoTerminals, Table, TestBox};
     use awm_harness::claude::ClaudeHome;
     use std::sync::Mutex;
     use tempfile::TempDir;
@@ -338,7 +338,7 @@ mod tests {
         let keys = FakeKeys { moves: false, ..FakeKeys::new(&b) };
         let elsewhere = TempDir::new().unwrap();
         let out = claim(&pool(&b), &keys, &elsewhere.path().to_string_lossy()).await;
-        assert_eq!(out["session"], Value::Null);
+        assert_eq!(out["session_id"], Value::Null);
         assert!(out["reason"].as_str().unwrap().contains("trust"));
         assert!(keys.typed().is_empty());
     }
@@ -348,7 +348,7 @@ mod tests {
         let b = TestBox::new();
         let dir = trusted(&b);
         let out = claim(&pool(&b), &FakeKeys::new(&b), &dir).await;
-        assert_eq!(out, json!({"session": "warmfresh", "cwd": dir}));
+        assert_eq!(out, json!({"session_id": id_of(0), "attach": "warmfresh", "cwd": dir}));
     }
 
     #[tokio::test]
@@ -358,8 +358,8 @@ mod tests {
         let (pool, keys) = (pool(&b), FakeKeys::new(&b));
         let first = claim(&pool, &keys, &dir).await;
         let second = claim(&pool, &keys, &dir).await;
-        assert_eq!(first["session"], "warmfresh");
-        assert_eq!(second["session"], Value::Null);
+        assert_eq!(first["attach"], "warmfresh");
+        assert_eq!(second["session_id"], Value::Null);
     }
 
     #[tokio::test]
@@ -368,7 +368,7 @@ mod tests {
         let dir = trusted(&b);
         let (pool, keys) = (pool(&b), FakeKeys::new(&b));
         let out = claim(&pool, &keys, &dir).await;
-        assert_eq!(out["session"], "warmfresh");
+        assert_eq!(out["attach"], "warmfresh");
         assert_eq!(keys.typed(), [format!("/cd {dir}")]);
         let s = pool.sessions();
         let fresh = s.load().into_iter().find(|x| x.short == "warmfresh").unwrap();

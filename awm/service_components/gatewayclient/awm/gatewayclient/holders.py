@@ -30,6 +30,8 @@ PID_KEY = "_caller_pid"
 CLAIM_KEY = "_caller_session"
 
 ISOLATED = "isolated"
+# Session kinds that run without a terminal and so can hold a lock.
+HOLDER_KINDS = ("bg", "web", ISOLATED)
 
 
 class HolderError(ValueError):
@@ -76,7 +78,7 @@ def row_live(row: dict) -> bool:
 def _can_hold(session: str) -> bool:
     """Whether ``session`` is a background (``bg``, or ``web`` for DeepSeek) or an isolated session."""
     rows = _session_rows(include_stopped=True)
-    return any(str(row["session_id"]).lower() == session and row.get("kind") in ("bg", "web", ISOLATED)
+    return any(str(row["session_id"]).lower() == session and row.get("kind") in HOLDER_KINDS
                for row in rows or [])
 
 
@@ -88,19 +90,11 @@ def _canonical_id(text: object) -> str | None:
         return None
 
 
-def _native_id(raw: object) -> str | None:
-    """The id of a Claude hook payload's own ``sessionId``, or None when it is not a UUID."""
-    try:
-        return ids.SessionId.from_harness_native(ids.PLATFORM_CLAUDE, raw).canonical()
-    except (ids.BadSessionId, AttributeError):
-        return None
-
-
 def _from_claim(raw: object) -> dict | None:
     if not isinstance(raw, dict):
         return None
-    return {"background": raw.get("kind") in ("bg", "web", ISOLATED) or raw.get("hosting") == "background",
-            "session": raw.get("session_id") or _native_id(raw.get("sessionId")),
+    return {"background": raw.get("kind") in HOLDER_KINDS or raw.get("hosting") == "background",
+            "session": raw.get("session_id"),
             "name": str(raw.get("name") or "")}
 
 
