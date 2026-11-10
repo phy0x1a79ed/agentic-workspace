@@ -407,6 +407,9 @@ fn a_main_sessions_state_moves_its_card_and_a_request_outlives_the_turn() {
     assert_eq!(st.reconcile(&roster).unwrap()["state"], json!(["T0000002"]), "reconcile applies the roster's state");
     assert_eq!(st.session_gone(Some(&sid(3)), None, "mizar", true).unwrap(), ["T0000002"]);
     assert_eq!(at(&st, "T0000002"), ("history".into(), json!("done")), "a retire files the card as done");
+    let agent = Open { task_id: Some("T0000003".into()), session_id: Some(sid(4)), node: Some("mizar".into()), section: Some("needs_you".into()), ..Open::default() };
+    st.task_open("New agent", agent, None).unwrap();
+    assert_eq!(st.session_state(Some(&sid(4)), None, "mizar", "done", None).unwrap(), ["T0000003"], "a New agent card leaves Needs you when its first turn ends");
 }
 
 #[test]
@@ -430,19 +433,14 @@ fn an_agent_card_takes_a_generated_title_until_a_name_arrives() {
     let (_d, st) = fresh();
     let t = s(&st.agent_card("mizar", None).unwrap()["task_id"]);
     let title = |st: &Store| s(&st.task_get(&t).unwrap()["title"]);
-    st.task_autotitle(&t, "first prompt", false, None).unwrap();
-    assert_eq!(title(&st), "first prompt");
-    st.task_autotitle(&t, "second prompt", false, None).unwrap();
-    assert_eq!(title(&st), "first prompt", "only the first prompt titles a card");
-    st.task_autotitle(&t, "Plan heading", true, None).unwrap();
+    st.task_autotitle(&t, "Plan heading", None).unwrap();
     assert_eq!(title(&st), "Plan heading");
-    st.task_autotitle(&t, "Later heading", true, None).unwrap();
+    st.task_autotitle(&t, "Later heading", None).unwrap();
     assert_eq!(title(&st), "Plan heading", "a plan heading is final");
     let u = s(&st.agent_card("mizar", None).unwrap()["task_id"]);
     st.task_attach(&u, &sid(9), "main", Seat { node: Some("mizar".into()), ..Seat::default() }, None).unwrap();
-    st.task_autotitle(&u, "from prompt", false, None).unwrap();
     st.session_renamed(Some(&sid(9)), None, "mizar", "real-name").unwrap();
-    st.task_autotitle(&u, "A heading", true, None).unwrap();
+    st.task_autotitle(&u, "A heading", None).unwrap();
     assert_eq!(s(&st.task_get(&u).unwrap()["title"]), "real-name", "a rename wins over a plan heading");
 }
 

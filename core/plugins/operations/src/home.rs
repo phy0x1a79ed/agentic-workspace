@@ -87,8 +87,7 @@ impl Home {
             }
             "task_autotitle" => {
                 let t = need(&a, "task_id")?;
-                let from_plan = a["from_plan"].as_bool().unwrap_or(false);
-                blocking(move || q(st.task_autotitle(&t, &s(&a, "title").unwrap_or_default(), from_plan, op.as_deref()))).await?
+                blocking(move || q(st.task_autotitle(&t, &s(&a, "title").unwrap_or_default(), op.as_deref()))).await?
             }
             "task_session_end" => {
                 let (t, sid) = (need(&a, "task_id")?, need(&a, "session_id")?);
