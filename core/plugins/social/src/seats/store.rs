@@ -63,7 +63,7 @@ impl Seat {
             return self.report.clone();
         }
         json!({"state": self.state, "job": if self.job.is_empty() { Value::Null } else { json!(self.job) }, "node": self.node, "level": self.level, "scope": self.scope,
-            "adopted": false, "queued": 0, "done": false, "held": Value::Null, "breaker": Value::Null, "id": self.id(), "remote_control": self.remote_control, "rc_url": self.rc_url})
+            "adopted": false, "queued": 0, "held": Value::Null, "breaker": Value::Null, "id": self.id(), "remote_control": self.remote_control, "rc_url": self.rc_url})
     }
 }
 

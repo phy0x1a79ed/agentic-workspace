@@ -148,9 +148,6 @@ impl Link {
                 Err(e) => tracing::warn!("seats: a line row did not parse: {e}"),
             },
             "seed" => seats.seed(decl(), serde_json::from_value::<Seed>(row["state"].clone()).unwrap_or_default()).await,
-            "adopt" => {
-                seats.adopt(&decl(), &text("job"), &text("session_name")).await;
-            }
             "released" => seats.released(&text("account"), &text("channel_id"), &text("job")).await,
             "remote_control" => {
                 seats.set_remote_control(&text("account"), &text("channel_id"), row["on"].as_bool().unwrap_or(false)).await;

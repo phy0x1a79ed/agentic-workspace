@@ -90,6 +90,7 @@ mod verbs {
                 Channel { id: "D0TEST".into(), name: "tester".into(), kind: "dm".into() },
                 Channel { id: "C0TEST".into(), name: "general".into(), kind: "channel".into() },
                 Channel { id: "D0OPER".into(), name: "operator".into(), kind: "dm".into() },
+                Channel { id: "C0OPER".into(), name: "ops".into(), kind: "channel".into() },
             ])
         }
         async fn identity(&self) -> connectors::Result<Identity> {
@@ -110,7 +111,7 @@ mod verbs {
     async fn rig() -> Rig {
         let tmp = tempfile::tempdir().unwrap();
         let db = crate::db::Db::open(&tmp.path().join("social.db")).unwrap();
-        let account = AccountConfig { name: "opal".into(), platform: "slack".into(), token: "xoxb-test".into(), trust: "cooperative".into(), trusted_chats: vec!["D0OPER".into()], enabled: true, ..Default::default() };
+        let account = AccountConfig { name: "opal".into(), platform: "slack".into(), token: "xoxb-test".into(), trust: "cooperative".into(), trusted_chats: vec!["D0OPER".into(), "C0OPER".into()], enabled: true, ..Default::default() };
         let fake = Arc::new(Fake { cfg: account.clone(), ..Default::default() });
         let conns: crate::app::Conns = Default::default();
         conns.write().unwrap().insert("opal".into(), fake.clone());
@@ -141,14 +142,13 @@ mod verbs {
     }
 
     #[tokio::test]
-    async fn mounting_a_declared_dm_adopts_it_and_send_defaults_to_the_latest_line() {
+    async fn mounting_a_declared_seat_names_seats_adopt_and_its_agent_sends_to_the_latest_line() {
         let r = rig().await;
         let out = r.call("mount", "j1", "cooperative", json!({"account": "opal", "channel": "D0TEST"})).await.unwrap();
-        assert_eq!(out["ok"], true, "{out}");
-        let seat = r.app.seats.store.get("opal", "D0TEST").await.unwrap();
-        assert_eq!(seat.node, "altair");
-        let rows = r.app.seats.store.waiting("altair", 10).await;
-        assert_eq!((rows[0].kind.as_str(), rows[0].body["job"].as_str()), ("adopt", Some("j1")), "the host is told to adopt it");
+        assert!(out["error"].as_str().unwrap().contains("a seat on altair: run `seats adopt account=opal channel=D0TEST job=<job>` there"), "{out}");
+        assert!(r.app.db.holder("opal", "D0TEST").await.is_none());
+        assert!(r.app.seats.store.waiting("altair", 10).await.iter().all(|row| row.kind != "adopt"));
+        bind(&r, "D0TEST", "j1").await;
         assert!(r.call("send", "j1", "cooperative", json!({"text": "hi"})).await.unwrap_err().message.contains("No pushed line"));
         r.app.seats.store.set_line("altair", "j1", "opal", "D0TEST", "5.0", "6.0", 1.0).await;
         r.call("send", "j1", "cooperative", json!({"text": "answer"})).await.unwrap();
@@ -158,16 +158,22 @@ mod verbs {
         assert_eq!(sent[1].0, "D0TEST", "the label DM names the held DM");
     }
 
+    /// Bind `job` on altair to the chat, as the seats host does for the agent it starts.
+    async fn bind(r: &Rig, channel: &str, job: &str) {
+        r.app.db.mount(crate::db::Mount { account: "opal".into(), channel_id: channel.into(), node: "altair".into(), job: job.into(), ..Default::default() }).await.unwrap();
+    }
+
     #[tokio::test]
     async fn a_cooperative_session_answers_only_what_it_holds_and_never_a_trusted_chat() {
         let r = rig().await;
-        r.call("mount", "j1", "cooperative", json!({"account": "opal", "channel": "D0TEST"})).await.unwrap();
+        bind(&r, "D0TEST", "j1").await;
         let e = r.call("send", "j1", "cooperative", json!({"account": "opal", "channel": "C0TEST", "text": "x"})).await.unwrap_err();
         assert_eq!(e.error_class, "PermissionError");
-        let out = r.call("mount", "j2", "cooperative", json!({"account": "opal", "channel": "D0OPER", "force": true})).await.unwrap();
+        r.call("mount", "j1", "cooperative", json!({"account": "opal", "channel": "C0TEST"})).await.unwrap();
+        let held = r.call("mount", "j2", "cooperative", json!({"account": "opal", "channel": "C0TEST"})).await.unwrap();
+        assert!(held["error"].as_str().unwrap().contains("Pass force=true"), "{held}");
+        let out = r.call("mount", "j2", "cooperative", json!({"account": "opal", "channel": "C0OPER"})).await.unwrap();
         assert!(out["error"].as_str().unwrap().contains("cannot hold a trusted chat"), "{out}");
-        let held = r.call("mount", "j2", "cooperative", json!({"account": "opal", "channel": "D0TEST"})).await.unwrap();
-        assert!(held["error"].as_str().unwrap().contains("Pass force=true"));
     }
 
     #[tokio::test]

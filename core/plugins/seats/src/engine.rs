@@ -244,10 +244,6 @@ impl Seats {
         self.world.up("notice", json!({"text": text})).await;
     }
 
-    async fn say(&self, s: &Seat, thread: Option<&str>, text: &str) {
-        self.world.up("send", json!({"account": s.account(), "channel": s.channel(), "thread": thread, "text": text})).await;
-    }
-
     async fn ask(&self, kind: &str, text: &str) {
         self.world.up("ask", json!({"kind": kind, "text": text})).await;
     }
@@ -301,7 +297,6 @@ impl Seats {
         }
         self.store.enqueue(Some(m.id), seat.account(), seat.channel(), &m.message_id, &m.thread_id, &m.line, now).await;
         seat.last_message = now;
-        seat.done_at = 0.0;
         if !m.outside.is_empty() && seat.held != "admitted" && !seat.held.starts_with("outside") {
             seat.held = format!("outside:{}", m.outside);
             self.save(&seat).await;
@@ -375,17 +370,14 @@ impl Seats {
             }
             State::Occupied => {
                 if gone(&seat) {
-                    if seat.done_at == 0.0 {
-                        self.notice(&format!("the agent of the seat {} ({}@{}) ended before its task was done.", label(&seat), seat.job, seat.decl.node)).await;
-                    }
-                    self.vacate(&mut seat, false).await;
+                    self.lost(&mut seat, "ended").await;
                     return !pending.is_empty();
                 }
                 if sync_rc(&mut seat, live) {
                     self.save(&seat).await;
                 }
                 if !pending.is_empty() && !self.pump(&mut seat, &pending).await {
-                    self.vacate(&mut seat, false).await;
+                    self.lost(&mut seat, "stopped taking messages").await;
                     return true;
                 }
                 self.stop_if_idle(seat, live, now).await
@@ -441,6 +433,15 @@ impl Seats {
         }
     }
 
+    /// The agent went without the seat stopping it: free the seat, with a notice unless the
+    /// session was only adopted.
+    async fn lost(&self, seat: &mut Seat, how: &str) {
+        if !seat.adopted {
+            self.notice(&format!("the agent of the seat {} ({}@{}) {how}. The next message starts a new one.", label(seat), seat.job, seat.decl.node)).await;
+        }
+        self.vacate(seat, false).await;
+    }
+
     /// The agent is gone: free the seat and keep its lines for the next agent. `stopped` says
     /// the seat stopped it for idleness.
     async fn vacate(&self, seat: &mut Seat, stopped: bool) {
@@ -452,7 +453,6 @@ impl Seats {
         seat.job.clear();
         seat.rc_url.clear();
         seat.adopted = false;
-        seat.done_at = 0.0;
         self.store.unbrief(seat.account(), seat.channel()).await;
         self.save(seat).await;
     }
@@ -473,15 +473,11 @@ impl Seats {
         seat.previous.stopped = false;
         let tripped = seat.breaker.fail(now);
         self.save(&seat).await;
+        let reset = format!("`seats reset account={} channel={}` on {}", seat.account(), seat.channel(), seat.decl.node);
         if tripped {
-            self.notice(&format!(
-                "the seat {} could not start an agent 4 times in an hour ({why}). It holds its messages for 6 hours, or until `seats reset account={} channel={}` on {}.",
-                label(&seat),
-                seat.account(),
-                seat.channel(),
-                seat.decl.node
-            ))
-            .await;
+            self.notice(&format!("the seat {} could not start an agent 4 times in an hour ({why}). It holds its messages for 6 hours, or until {reset}.", label(&seat))).await;
+        } else if seat.breaker.attempts.len() == 1 {
+            self.notice(&format!("the seat {} could not start an agent ({why}). It tries again on its own, or now with {reset}.", label(&seat))).await;
         }
     }
 
@@ -511,6 +507,7 @@ impl Seats {
             decl: &seat.decl,
             project: &settings.project,
             previous: previous.as_ref().map(|p| (p.job.as_str(), p.node.as_str(), transcript.as_deref())),
+            missed: seat.missed,
         };
         let (model, effort) = if seat.decl.model.is_empty() { (&settings.model, &settings.effort) } else { (&seat.decl.model, &seat.decl.effort) };
         let mut spec = json!({
@@ -535,7 +532,7 @@ impl Seats {
         self.save(&seat).await;
         self.store.brief_to(ids.clone(), "starting").await;
         let started = match resume {
-            Some(job) => match self.world.resume(&job, &lines.join("\n"), seat.remote_control, &Self::rc_name(&seat)).await {
+            Some(job) => match self.world.resume(&job, &format!("{}{}", brief::missed(seat.missed), lines.join("\n")), seat.remote_control, &Self::rc_name(&seat)).await {
                 Started::Refused(why) => {
                     tracing::info!("seat {}: resuming {job} refused, starting afresh: {why}", label(&seat));
                     self.world.start(spec).await
@@ -547,6 +544,7 @@ impl Seats {
         match started {
             Started::Job(job) => {
                 seat.job = job.clone();
+                seat.missed = 0;
                 self.save(&seat).await;
                 self.store.brief_to(ids, &job).await;
                 self.mounted(&seat, &job, &seat.decl.name).await;
@@ -650,20 +648,6 @@ impl Seats {
         }
     }
 
-    /// `mark_done` from `job`: the seats it marked.
-    pub async fn mark_done(&self, job: &str) -> Vec<Seat> {
-        let now = self.world.now();
-        let mut out = vec![];
-        for mut s in self.store.of_job(job).await {
-            if matches!(s.state, State::Occupied | State::Starting) {
-                s.done_at = now;
-                self.save(&s).await;
-                out.push(s);
-            }
-        }
-        out
-    }
-
     pub async fn reset(self: &Arc<Self>, account: &str, channel: &str) -> Option<Seat> {
         let mut s = self.store.get(account, channel).await?;
         s.breaker = Default::default();
@@ -684,7 +668,7 @@ impl Seats {
     }
 
     /// Make `job` the seat's agent, keeping its conversation.
-    pub async fn adopt(&self, decl: &Decl, job: &str, session_name: &str) -> Seat {
+    pub async fn adopt(&self, decl: &Decl, job: &str) -> Seat {
         let mut seat = self.upsert(decl).await;
         let now = self.world.now();
         if !seat.job.is_empty() && seat.job != job {
@@ -693,7 +677,6 @@ impl Seats {
         seat.state = State::Occupied;
         seat.job = job.into();
         seat.adopted = true;
-        seat.done_at = 0.0;
         seat.rc_url.clear();
         if seat.remote_control {
             sync_rc(&mut seat, self.world.live().await.as_ref());
@@ -705,8 +688,7 @@ impl Seats {
             }
         }
         self.store.deliver_briefed(seat.account(), seat.channel(), job, now).await;
-        let name = if session_name.is_empty() { seat.decl.name.clone() } else { session_name.to_string() };
-        self.mounted(&seat, job, &name).await;
+        self.mounted(&seat, job, &seat.decl.name).await;
         seat
     }
 
@@ -735,10 +717,6 @@ impl Seats {
         }
         let lines: Vec<String> = missed.iter().map(|s| format!("- {}: {} message{}", label(s), s.missed, if s.missed == 1 { "" } else { "s" })).collect();
         self.notice(&format!("the seats are on again. These chats got messages while they were paused, and nobody answered them:\n{}", lines.join("\n"))).await;
-        for mut s in missed {
-            s.missed = 0;
-            self.save(&s).await;
-        }
     }
 
     /// Set the seat's Remote Control switch, and switch its live session too. The row then holds

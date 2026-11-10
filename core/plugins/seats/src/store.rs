@@ -28,7 +28,6 @@ CREATE TABLE IF NOT EXISTS seat_registry (
     job          TEXT NOT NULL DEFAULT '',
     adopted      INTEGER NOT NULL DEFAULT 0,
     last_message REAL NOT NULL DEFAULT 0,
-    done_at      REAL NOT NULL DEFAULT 0,
     deadline     REAL NOT NULL DEFAULT 0,
     previous     TEXT NOT NULL DEFAULT '{}',
     breaker      TEXT NOT NULL DEFAULT '{}',
@@ -189,7 +188,6 @@ pub struct Seed {
     pub job_node: String,
     pub adopted: i64,
     pub last_message: f64,
-    pub done_at: f64,
     pub deadline: f64,
     pub previous: String,
     pub breaker: String,
@@ -207,14 +205,14 @@ pub struct Seat {
     pub job: String,
     pub adopted: bool,
     pub last_message: f64,
-    pub done_at: f64,
     /// Starting: when the agent must be up.
     pub deadline: f64,
     pub previous: Previous,
     pub breaker: Breaker,
     /// Why the seat holds its lines: `outside:<sender>`, `scope`, or `admitted`.
     pub held: String,
-    /// Messages that arrived while the seats were paused, for the summary at unpause.
+    /// Messages that arrived while the seats were paused and the seat was empty, for the
+    /// summary at unpause and the next agent's first prompt, which clears it.
     pub missed: i64,
     /// The seat's Remote Control switch, which every agent it starts follows.
     pub remote_control: bool,
@@ -222,12 +220,12 @@ pub struct Seat {
     pub rc_url: String,
 }
 
-const COLS: &str = "account, channel_id, channel_name, kind, server, slug, node, scope, level, platform, server_label, chat_label, brief, name, state, job, adopted, last_message, done_at, deadline, previous, breaker, held, missed, remote_control, rc_url, model, effort";
+const COLS: &str = "account, channel_id, channel_name, kind, server, slug, node, scope, level, platform, server_label, chat_label, brief, name, state, job, adopted, last_message, deadline, previous, breaker, held, missed, remote_control, rc_url, model, effort";
 
 impl Seat {
     fn from_row(r: &Row) -> rusqlite::Result<Self> {
-        let previous: String = r.get(20)?;
-        let breaker: String = r.get(21)?;
+        let previous: String = r.get(19)?;
+        let breaker: String = r.get(20)?;
         Ok(Self {
             decl: Decl {
                 account: r.get(0)?,
@@ -244,21 +242,20 @@ impl Seat {
                 chat_label: r.get(11)?,
                 brief: r.get(12)?,
                 name: r.get(13)?,
-                model: r.get(26)?,
-                effort: r.get(27)?,
+                model: r.get(25)?,
+                effort: r.get(26)?,
             },
             state: State::parse(&r.get::<_, String>(14)?),
             job: r.get(15)?,
             adopted: r.get::<_, i64>(16)? != 0,
             last_message: r.get(17)?,
-            done_at: r.get(18)?,
-            deadline: r.get(19)?,
+            deadline: r.get(18)?,
             previous: serde_json::from_str(&previous).unwrap_or_default(),
             breaker: serde_json::from_str(&breaker).unwrap_or_default(),
-            held: r.get(22)?,
-            missed: r.get(23)?,
-            remote_control: r.get::<_, i64>(24)? != 0,
-            rc_url: r.get(25)?,
+            held: r.get(21)?,
+            missed: r.get(22)?,
+            remote_control: r.get::<_, i64>(23)? != 0,
+            rc_url: r.get(24)?,
         })
     }
 
@@ -271,7 +268,6 @@ impl Seat {
             job: if elsewhere { String::new() } else { seed.job.clone() },
             adopted: !elsewhere && seed.adopted != 0,
             last_message: seed.last_message,
-            done_at: if elsewhere { 0.0 } else { seed.done_at },
             deadline: seed.deadline,
             previous: if elsewhere { Previous { job: seed.job, node: seed.job_node, ..Default::default() } } else { previous },
             breaker: serde_json::from_str(&seed.breaker).unwrap_or_default(),
@@ -323,7 +319,7 @@ impl Seat {
         json!({
             "state": self.state.as_str(), "job": if self.job.is_empty() { Value::Null } else { json!(self.job) },
             "node": self.decl.node, "level": self.decl.level, "scope": self.decl.scope, "adopted": self.adopted,
-            "queued": queued, "done": self.done_at > 0.0, "held": if self.held.is_empty() || self.held == "admitted" { Value::Null } else { json!(self.held) },
+            "queued": queued, "held": if self.held.is_empty() || self.held == "admitted" { Value::Null } else { json!(self.held) },
             "breaker": if self.breaker.hold_until > 0.0 { json!({"hold_until": self.breaker.hold_until}) } else { Value::Null },
             "id": self.id(), "remote_control": self.remote_control, "rc_url": self.rc_url,
         })
@@ -362,10 +358,10 @@ fn save(c: &Connection, s: &Seat) -> rusqlite::Result<bool> {
     let before = c.query_row(&format!("SELECT {COLS} FROM seat_registry WHERE account = ?1 AND channel_id = ?2"), params![s.decl.account, s.decl.channel_id], Seat::from_row).optional()?;
     let d = &s.decl;
     c.execute(
-        &format!("INSERT OR REPLACE INTO seat_registry ({COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28)"),
+        &format!("INSERT OR REPLACE INTO seat_registry ({COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27)"),
         params![
             d.account, d.channel_id, d.channel_name, d.kind, d.server, d.slug, d.node, d.scope, d.level, d.platform, d.server_label, d.chat_label, d.brief, d.name,
-            s.state.as_str(), s.job, s.adopted as i64, s.last_message, s.done_at, s.deadline,
+            s.state.as_str(), s.job, s.adopted as i64, s.last_message, s.deadline,
             serde_json::to_string(&s.previous).unwrap_or_default(), serde_json::to_string(&s.breaker).unwrap_or_default(),
             s.held, s.missed, s.remote_control as i64, s.rc_url, d.model, d.effort
         ],
@@ -391,6 +387,10 @@ impl Store {
             if !known {
                 conn.execute_batch(&format!("ALTER TABLE seat_registry ADD COLUMN {column} TEXT NOT NULL DEFAULT ''"))?;
             }
+        }
+        let has_done_at: bool = conn.query_row("SELECT COUNT(*) > 0 FROM pragma_table_info('seat_registry') WHERE name = 'done_at'", [], |r| r.get(0))?;
+        if has_done_at {
+            conn.execute_batch("ALTER TABLE seat_registry DROP COLUMN done_at")?;
         }
         Ok(Self(Arc::new(Mutex::new(conn))))
     }

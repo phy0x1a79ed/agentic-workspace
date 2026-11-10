@@ -86,16 +86,6 @@ impl App {
         Ok(self.link.send(&json!({"account": seat.account(), "channel": seat.channel(), "thread": thread, "text": text, "files": files})).await)
     }
 
-    async fn mark_done(&self, call: Call) -> Result<Value, VerbError> {
-        let who = holders::caller(&call, "a seat").await?;
-        let marked = self.seats.mark_done(&who.job).await;
-        if marked.is_empty() {
-            return Err(VerbError::new("HolderError", "this session is no seat's agent: only a seat's agent marks its task done"));
-        }
-        Ok(json!({"ok": true, "seats": marked.iter().map(|s| json!({"account": s.account(), "id": s.channel(), "name": s.decl.channel_name})).collect::<Vec<_>>(),
-            "next": "wait here: a new message clears the mark."}))
-    }
-
     async fn public(&self, seat: &Seat) -> Value {
         seat.public(self.seats.queued(seat.account(), seat.channel()).await)
     }
@@ -146,7 +136,7 @@ impl App {
             None if wanted == Level::Trusted => return Err(VerbError::permission(format!("job {job}'s level cannot be read, and the seat is trusted"))),
             _ => {}
         }
-        let seat = self.seats.adopt(&seat.decl, &job, "").await;
+        let seat = self.seats.adopt(&seat.decl, &job).await;
         Ok(json!({"ok": true, "seat": self.public(&seat).await}))
     }
 }
@@ -169,7 +159,6 @@ fn service(svc: Service, app: Arc<App>) -> Service {
         json!([param("text", "string", false), param("channel", "string", false), param("thread", "string", false), param("file", "string", false), param("files", "array", false)]),
         send
     );
-    let svc = verb!(svc, "mark_done", "Mark your seat's task done, after its handoff journal. A new message clears the mark.", json!([]), mark_done);
     let svc = verb!(svc, "list", "This node's seats, whether they are paused, and the state of the link to social.", json!([]), list);
     let svc = verb!(svc, "reset", "Clear a seat's start breaker and its missing-scope hold, then look at it again. Trusted only.", account_channel(), reset);
     let svc = verb!(svc, "admit", "Let an outside sender's messages through to a seat. Trusted only.", account_channel(), admit);

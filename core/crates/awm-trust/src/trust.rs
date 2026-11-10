@@ -144,8 +144,8 @@ pub const START_VERBS: [&str; 3] = ["start_other", "resume_other", "adopt_other"
 /// The `social` verbs a seat holds and answers its own chats with (R69). social keeps them
 /// to the chats the session holds, and a mount to chats below trusted that no sibling holds.
 pub const SEAT_CHAT_VERBS: [&str; 8] = ["send", "react", "fetch", "history", "download_attachments", "mount", "unmount", "forward"];
-/// The `seats` verbs a seat's agent answers and finishes with.
-pub const SEAT_AGENT_VERBS: [&str; 2] = ["send", "mark_done"];
+/// The `seats` verbs a seat's agent answers with.
+pub const SEAT_AGENT_VERBS: [&str; 1] = ["send"];
 /// The `2fa` verbs that only read. ssh arms the approver itself for fir and sockeye.
 pub const TWOFA_READS: [&str; 5] = ["devices", "ping", "reachability", "status", "pending"];
 const DESCRIBE: &str = "describe";
@@ -235,11 +235,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_seat_agent_answers_and_finishes_but_runs_no_other_seats_verb() {
+    fn a_seat_agent_answers_but_runs_no_other_seats_verb() {
         let call = |verb| Call { tool: "seats", verb, harness: false, names_other: false };
         for level in [Level::Cooperative, Level::Untrusted] {
             assert_eq!(call_refusal(level, &call("send")), None);
-            assert_eq!(call_refusal(level, &call("mark_done")), None);
+            assert!(call_refusal(level, &call("mark_done")).is_some());
             assert!(call_refusal(level, &call("reset")).is_some());
             assert!(call_refusal(level, &call("list")).is_some());
         }
