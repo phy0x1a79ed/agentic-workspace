@@ -137,21 +137,35 @@ impl Seats {
 
     /// A chat the config no longer declares stops being a seat, here and on its host.
     async fn drop_seat(&self, s: &Seat) {
+        self.forget(s).await;
+        self.roster(&s.node).await;
+    }
+
+    async fn forget(&self, s: &Seat) {
         tracing::info!("seat {} is no longer declared: dropped", s.id());
         self.store.delete(&s.account, &s.channel_id).await;
         self.store.0.unmount(&s.account, &s.channel_id).await;
-        self.queue(Self::row(s, "dropped", json!({}))).await;
     }
 
-    /// At startup: drop each stored seat the config no longer declares, and send each host the
-    /// current declaration of the rest, so a seat that hears nothing still carries today's name.
+    /// Every seat `node` hosts. The host forgets any seat the list lacks.
+    async fn roster(&self, node: &str) {
+        let ids: Vec<String> = self.store.all().await.iter().filter(|s| s.node == node).map(Seat::id).collect();
+        self.queue(Row { node: node.into(), kind: "roster".into(), body: json!({"seats": ids}), ..Default::default() }).await;
+    }
+
+    /// At startup: forget each stored seat the config no longer declares, send each host the
+    /// current declaration of the rest, so a seat that hears nothing still carries today's name,
+    /// then each host's roster, which also clears a seat whose drop a host missed.
     pub async fn sync(&self) {
         for s in self.store.all().await {
             if self.declares(&s, "") {
                 self.queue(Self::row(&s, "decl", json!({}))).await;
             } else {
-                self.drop_seat(&s).await;
+                self.forget(&s).await;
             }
+        }
+        for node in &self.hosts {
+            self.roster(node).await;
         }
     }
 

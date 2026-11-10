@@ -123,7 +123,8 @@ async fn sync_drops_a_seat_the_config_no_longer_declares_and_redeclares_the_rest
     seats.sync().await;
     assert!(seats.store.get("opal", "D0TEST").await.is_none());
     let altair = seats.pull("altair", 0, 0.0).await;
-    assert_eq!(altair["rows"].as_array().unwrap().last().unwrap()["kind"], "dropped");
+    let roster = altair["rows"].as_array().unwrap().last().unwrap().clone();
+    assert_eq!((roster["kind"].as_str(), roster["seats"].clone()), (Some("roster"), json!([])), "altair hosts no seat now");
     let mizar = seats.pull("mizar", 0, 0.0).await;
     assert_eq!((mizar["rows"][0]["kind"].as_str(), mizar["rows"][0]["seat"]["name"].as_str()), (Some("decl"), Some("seat:slack/hallam-hive/general")));
 }
@@ -137,4 +138,5 @@ async fn a_message_from_an_excepted_sender_drops_its_stored_seat() {
     let seats = Seats::new(t.seats.store.0.clone(), cfg, vec![]);
     assert_eq!(seats.route(&dm("2.0")).await, Routed::NotSeat);
     assert!(seats.store.get("opal", "D0TEST").await.is_none());
+    assert_eq!(seats.pull("altair", 0, 0.0).await["rows"].as_array().unwrap().last().unwrap()["kind"], "roster");
 }
