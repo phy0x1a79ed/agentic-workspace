@@ -19,6 +19,9 @@ use engine::{Seats, Settings};
 use link::Link;
 use store::Seat;
 
+/// Discord's cap on one message's content, counted in chars as twilight counts them.
+const DISCORD_MAX: usize = 2000;
+
 pub(crate) fn now() -> f64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0)
 }
@@ -81,6 +84,10 @@ impl App {
         let files = call.args.get("files").filter(|f| f.as_array().is_some_and(|a| !a.is_empty())).cloned();
         if text.is_empty() && files.is_none() {
             return Err(VerbError::value("seats send needs text, a file, or both"));
+        }
+        let len = text.chars().count();
+        if seat.decl.platform == "discord" && len > DISCORD_MAX {
+            return Err(VerbError::value(format!("seats send: Discord takes at most {DISCORD_MAX} characters per message and this text has {len}. Send it as several messages, or attach it as a file.")));
         }
         let thread = Some(s(&call.args, "thread")).filter(|t| !t.is_empty()).or_else(|| latest.filter(|l| l.account == seat.account() && l.channel == seat.channel()).map(|l| l.thread).filter(|t| !t.is_empty()));
         Ok(self.link.send(&json!({"account": seat.account(), "channel": seat.channel(), "thread": thread, "text": text, "files": files})).await)
