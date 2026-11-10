@@ -117,6 +117,7 @@ async fn run() -> anyhow::Result<()> {
     let db = db::Db::open(&awm_plugin_sdk::config::service_dir("social").join("social.db"))?;
     let conns: app::Conns = Arc::new(RwLock::new(BTreeMap::new()));
     let seats = seats::Seats::new(db.clone(), loaded.seats.clone(), loaded.accounts.clone());
+    seats.sync().await;
     let buckets = loaded
         .buckets
         .iter()

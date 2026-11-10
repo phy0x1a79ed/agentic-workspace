@@ -18,8 +18,6 @@ pub struct Seat {
     pub node: String,
     pub scope: String,
     pub level: String,
-    /// The agent's session name, `seat:<app>/<server>/<chat>`.
-    pub name: String,
     pub state: String,
     pub job: String,
     pub remote_control: bool,
@@ -28,11 +26,11 @@ pub struct Seat {
     pub report: Value,
 }
 
-const COLS: &str = "account, channel_id, channel_name, kind, server, slug, node, scope, level, name, state, job, remote_control, rc_url, report";
+const COLS: &str = "account, channel_id, channel_name, kind, server, slug, node, scope, level, state, job, remote_control, rc_url, report";
 
 impl Seat {
     fn from_row(r: &SqlRow) -> rusqlite::Result<Self> {
-        let report: String = r.get(14)?;
+        let report: String = r.get(13)?;
         Ok(Self {
             account: r.get(0)?,
             channel_id: r.get(1)?,
@@ -43,11 +41,10 @@ impl Seat {
             node: r.get(6)?,
             scope: r.get(7)?,
             level: r.get(8)?,
-            name: r.get(9)?,
-            state: r.get(10)?,
-            job: r.get(11)?,
-            remote_control: r.get::<_, i64>(12)? != 0,
-            rc_url: r.get(13)?,
+            state: r.get(9)?,
+            job: r.get(10)?,
+            remote_control: r.get::<_, i64>(11)? != 0,
+            rc_url: r.get(12)?,
             report: serde_json::from_str(&report).unwrap_or(Value::Null),
         })
     }
@@ -84,11 +81,11 @@ pub struct Row {
 fn save(c: &Connection, s: &Seat) -> rusqlite::Result<usize> {
     c.execute(
         &format!(
-            "INSERT INTO seat_registry ({COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15) \
+            "INSERT INTO seat_registry ({COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14) \
              ON CONFLICT (account, channel_id) DO UPDATE SET channel_name = excluded.channel_name, kind = excluded.kind, server = excluded.server, slug = excluded.slug, \
-             node = excluded.node, scope = excluded.scope, level = excluded.level, name = excluded.name"
+             node = excluded.node, scope = excluded.scope, level = excluded.level"
         ),
-        params![s.account, s.channel_id, s.channel_name, s.kind, s.server, s.slug, s.node, s.scope, s.level, s.name, s.state, s.job, s.remote_control as i64, s.rc_url, s.report.to_string()],
+        params![s.account, s.channel_id, s.channel_name, s.kind, s.server, s.slug, s.node, s.scope, s.level, s.state, s.job, s.remote_control as i64, s.rc_url, s.report.to_string()],
     )
 }
 
@@ -100,6 +97,15 @@ impl Store {
     pub async fn get(&self, account: &str, channel: &str) -> Option<Seat> {
         let (a, ch) = (account.to_string(), channel.to_string());
         self.0.run(move |c| c.query_row(&format!("SELECT {COLS} FROM seat_registry WHERE account = ?1 AND channel_id = ?2"), params![a, ch], Seat::from_row).optional().ok().flatten()).await
+    }
+
+    pub async fn all(&self) -> Vec<Seat> {
+        self.0.run(|c| c.prepare(&format!("SELECT {COLS} FROM seat_registry ORDER BY account, channel_id")).and_then(|mut s| s.query_map([], Seat::from_row)?.collect()).unwrap_or_default()).await
+    }
+
+    pub async fn delete(&self, account: &str, channel: &str) {
+        let (a, ch) = (account.to_string(), channel.to_string());
+        let _ = self.0.run(move |c| c.execute("DELETE FROM seat_registry WHERE account = ?1 AND channel_id = ?2", params![a, ch])).await;
     }
 
     /// Write what social declares. The host's report on the row is left alone.
