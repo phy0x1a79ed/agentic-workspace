@@ -54,15 +54,15 @@ fn pick<'a>(seats: &'a [Seat], channel: &str, latest: Option<&store::Latest>) ->
         }
         return match seats {
             [only] => Ok(only),
-            _ => Err(VerbError::value("seats send: this session holds several seats and no line names one. Pass channel, an id or a label such as `DM` or `#general`.")),
+            _ => Err(VerbError::value("seats: this session holds several seats and no line names one. Pass channel, an id or a label such as `DM` or `#general`.")),
         };
     }
     let want = channel.trim_start_matches(['#', '@']).to_lowercase();
     let mut hits = seats.iter().filter(|s| s.channel() == channel || (channel == "DM" && s.decl.kind == "dm") || (!s.decl.channel_name.is_empty() && s.decl.channel_name.trim_start_matches('#').to_lowercase() == want));
     match (hits.next(), hits.next()) {
         (Some(hit), None) => Ok(hit),
-        (None, _) => Err(VerbError::value(format!("seats send: this session holds no seat {channel:?}. Use `social send` for any other chat."))),
-        _ => Err(VerbError::value(format!("seats send: {channel:?} names several seats. Pass the id."))),
+        (None, _) => Err(VerbError::value(format!("seats: this session holds no seat {channel:?}. Use `social send` for any other chat."))),
+        _ => Err(VerbError::value(format!("seats: {channel:?} names several seats. Pass the id."))),
     }
 }
 
@@ -91,6 +91,34 @@ impl App {
         }
         let thread = Some(s(&call.args, "thread")).filter(|t| !t.is_empty()).or_else(|| latest.filter(|l| l.account == seat.account() && l.channel == seat.channel()).map(|l| l.thread).filter(|t| !t.is_empty()));
         Ok(self.link.send(&json!({"account": seat.account(), "channel": seat.channel(), "thread": thread, "text": text, "files": files})).await)
+    }
+
+    /// React to, or download from, a message in the agent's seat: the latest line's by default.
+    async fn act(&self, call: &Call, action: &str, extra: Value) -> Result<Value, VerbError> {
+        let (job, seats) = self.agent_seats(call).await?;
+        let latest = self.seats.store.line(&job).await;
+        let seat = pick(&seats, &s(&call.args, "channel"), latest.as_ref())?;
+        let message = Some(s(&call.args, "message_id"))
+            .filter(|m| !m.is_empty())
+            .or_else(|| latest.filter(|l| l.account == seat.account() && l.channel == seat.channel()).map(|l| l.message_id).filter(|m| !m.is_empty()))
+            .ok_or_else(|| VerbError::value(format!("seats {}: no line of this seat names a message. Pass message_id.", call.verb)))?;
+        let mut args = json!({"action": action, "account": seat.account(), "channel": seat.channel(), "message_id": message});
+        if let (Value::Object(a), Value::Object(e)) = (&mut args, extra) {
+            a.extend(e.into_iter().filter(|(_, v)| !v.is_null()));
+        }
+        self.link.act(args).await
+    }
+
+    async fn react(&self, call: Call) -> Result<Value, VerbError> {
+        let emoji = s(&call.args, "emoji");
+        if emoji.is_empty() {
+            return Err(VerbError::value("seats react needs an emoji"));
+        }
+        self.act(&call, "react", json!({"emoji": emoji, "remove": call.args.get("remove")})).await
+    }
+
+    async fn download(&self, call: Call) -> Result<Value, VerbError> {
+        self.act(&call, "download", json!({"idx": call.args.get("idx")})).await
     }
 
     async fn public(&self, seat: &Seat) -> Value {
@@ -165,6 +193,20 @@ fn service(svc: Service, app: Arc<App>) -> Service {
         "Answer your seat's chat. With no `channel` it answers your latest pushed line, in its thread. If the link to the chat is down, the reply waits on this node and goes out once. `file` uploads a file from this node (an absolute path, up to 24 MiB). Use `social send` for a chat that is not your seat.",
         json!([param("text", "string", false), param("channel", "string", false), param("thread", "string", false), param("file", "string", false), param("files", "array", false)]),
         send
+    );
+    let svc = verb!(
+        svc,
+        "react",
+        "React to a message in your seat's chat with an emoji (a unicode emoji, or a custom one as `<:name:id>` on Discord, `name` on Slack). With no `message_id` it reacts to your latest line's message. `remove` takes the reaction off. Fails on a platform without reactions.",
+        json!([param("emoji", "string", true), param("remove", "boolean", false), param("message_id", "string", false), param("channel", "string", false)]),
+        react
+    );
+    let svc = verb!(
+        svc,
+        "download",
+        "Save the files posted with a message in your seat's chat to a fresh temp dir on this node, and return each file's `path`. With no `message_id` it takes your latest line's message. `idx` picks one attachment. Files together may not pass 24 MiB. Fails on a platform without attachments.",
+        json!([param("message_id", "string", false), param("idx", "number", false), param("channel", "string", false)]),
+        download
     );
     let svc = verb!(svc, "list", "This node's seats, whether they are paused, and the state of the link to social.", json!([]), list);
     let svc = verb!(svc, "reset", "Clear a seat's start breaker and its missing-scope hold, then look at it again. Trusted only.", account_channel(), reset);

@@ -870,6 +870,10 @@ impl Alcor for Social {
         }
         Ok(json!({"ok": true, "ts": "9.9"}))
     }
+
+    async fn act(&self, args: Value) -> Result<Value, awm_plugin_sdk::VerbError> {
+        Ok(json!({"ok": true, "args": args}))
+    }
 }
 
 struct L {

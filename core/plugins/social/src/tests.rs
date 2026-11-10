@@ -6,7 +6,7 @@ use serde_json::{json, Value};
 
 /// The surface changes the port plan lists; every other verb is the Python's byte for byte.
 const REMOVED: [&str; 10] = ["keepers", "keep_reset", "keep_adopt", "bucket_sites", "bucket_versions", "bucket_restore", "bucket_share", "bucket_shares", "bucket_unshare", "bucket_resolve"];
-const ADDED: [&str; 5] = ["forward", "seat_remote_control", "seat_refresh", "seat_pull", "seat_report"];
+const ADDED: [&str; 6] = ["forward", "seat_remote_control", "seat_refresh", "seat_pull", "seat_report", "seat_act"];
 const REWORDED: [&str; 10] = ["send", "react", "seats", "mount", "search", "buckets", "bucket_ls", "bucket_get", "bucket_mv", "bucket_search"];
 
 #[test]

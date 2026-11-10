@@ -518,12 +518,12 @@ impl Social {
         let who = self.holder(&call).await;
         let (account, channel) = (s(&call.args, "account"), s(&call.args, "channel"));
         self.held_only(&call, &who, &account, &channel).await?;
-        let idx = match call.args.get("idx") {
-            None | Some(Value::Null) => None,
-            Some(Value::String(x)) if x.is_empty() => None,
-            v => Some(int(v, 0)),
-        };
-        let files = self.conn(&account)?.download_attachments(&channel, &s(&call.args, "message_id"), idx).await?;
+        self.inline_files(&account, &channel, &s(&call.args, "message_id"), idx(&call.args)).await
+    }
+
+    /// A message's attachments as `b64` files, which the caller's gateway writes to disk.
+    async fn inline_files(&self, account: &str, channel: &str, message: &str, idx: Option<i64>) -> Result<Value, VerbError> {
+        let files = self.conn(account)?.download_attachments(channel, message, idx).await?;
         let total: usize = files.iter().map(|f| f.data.len()).sum();
         if total > MAX_INLINE_BYTES {
             return Err(VerbError::value(format!("the attachments come to {total} bytes, over the {MAX_INLINE_BYTES} a reply carries; fetch one at a time with idx")));
@@ -827,6 +827,27 @@ impl Social {
         Ok(out)
     }
 
+    /// A seat agent's reaction or download, answered directly because the agent waits on it.
+    pub async fn seat_act(&self, call: Call) -> Result<Value, VerbError> {
+        let node = self.seat_host(&call)?;
+        let (account, channel, message) = (s(&call.args, "account"), s(&call.args, "channel"), s(&call.args, "message_id"));
+        if !self.answers(&node, &account, &channel).await {
+            return Err(VerbError::permission(format!("{node} does not answer {account}/{channel}")));
+        }
+        match s(&call.args, "action").as_str() {
+            "react" => {
+                let done = self.conn(&account)?.react(&channel, &message, &s(&call.args, "emoji"), truthy(call.args.get("remove"))).await?;
+                let mut out = serde_json::Map::from_iter([("ok".to_string(), json!(true))]);
+                if let Value::Object(o) = done {
+                    out.extend(o);
+                }
+                Ok(Value::Object(out))
+            }
+            "download" => self.inline_files(&account, &channel, &message, idx(&call.args)).await,
+            other => Err(VerbError::value(format!("seat_act: action is react or download, not {other:?}"))),
+        }
+    }
+
     /// Whether `node` hosts this chat's seat or holds it by hand.
     async fn answers(&self, node: &str, account: &str, channel: &str) -> bool {
         self.seats.store.get(account, channel).await.is_some_and(|st| st.node == node) || self.db.holder(account, channel).await.is_some_and(|m| m.node == node)
@@ -930,6 +951,12 @@ impl Social {
             },
             _ => vec![],
         };
+        if !files.is_empty() {
+            let size: u64 = files.iter().map(OutFile::size).sum();
+            if !conn.sends_files() || size > conn.max_file_bytes() {
+                return json!({"ok": false, "error": format!("{} takes at most {} bytes of files per message, and these come to {size}", conn.platform(), if conn.sends_files() { conn.max_file_bytes() } else { 0 }), "error_class": "ValueError", "retry": false});
+            }
+        }
         let thread = Some(s(b, "thread")).filter(|t| !t.is_empty());
         match conn.send(channel, &s(b, "text"), thread.as_deref(), &files).await {
             Ok(sent) => {
@@ -938,7 +965,7 @@ impl Social {
                 Value::Object(out)
             }
             Err(e) => {
-                let final_refusal = ["ValueError", "PermissionError", "FirstContactRefused", "FileNotFoundError"].contains(&e.error_class.as_str());
+                let final_refusal = ["ValueError", "PermissionError", "FirstContactRefused", "FileNotFoundError", "NotImplementedError", "Forbidden", "NotFound"].contains(&e.error_class.as_str());
                 json!({"ok": false, "error": e.message, "error_class": e.error_class, "retry": !final_refusal})
             }
         }
@@ -1152,5 +1179,14 @@ impl Social {
         for n in nodes {
             self.watch_node(&n);
         }
+    }
+}
+
+/// The optional attachment index of a download.
+fn idx(args: &Value) -> Option<i64> {
+    match args.get("idx") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(x)) if x.is_empty() => None,
+        v => Some(int(v, 0)),
     }
 }
