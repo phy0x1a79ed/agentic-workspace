@@ -510,7 +510,7 @@
   {
    "name": "harness_event",
    "tool": "reflection_harness_event",
-   "description": "A harness plugin reports how a command with a follow-up ended, done or lost, or that a session cleared itself, clear (harness-contract.md § Events). A provider also reports a session's lifecycle: started, stopped, remote_control or renamed.",
+   "description": "A harness plugin reports how a command with a follow-up ended, done or lost, or that a session cleared itself, clear (harness-contract.md § Events). A provider also reports a session's lifecycle: started, stopped, remote_control, renamed or state.",
    "params": [
     {
      "name": "session_id",
@@ -521,7 +521,7 @@
      "name": "kind",
      "type": "string",
      "required": true,
-     "description": "done, lost, clear, or a lifecycle kind: started, stopped, remote_control, renamed"
+     "description": "done, lost, clear, or a lifecycle kind: started, stopped, remote_control, renamed, state"
     },
     {
      "name": "parent",
@@ -591,6 +591,21 @@
      "name": "rc_url",
      "type": "string",
      "description": "The Remote Control link, while it is on."
+    },
+    {
+     "name": "state",
+     "type": "string",
+     "description": "A background job's state: working, blocked or done."
+    },
+    {
+     "name": "needs",
+     "type": "string",
+     "description": "While blocked: what the session needs."
+    },
+    {
+     "name": "retired",
+     "type": "boolean",
+     "description": "With stopped: the stop was a retire, not a crash."
     }
    ],
    "surfaces": [

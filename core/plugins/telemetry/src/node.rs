@@ -85,6 +85,7 @@ pub fn message(service: &str, topic: &str, payload: &Value, here: &str) -> Optio
 pub fn session_of(v: &Value) -> Option<Session> {
     let s = |k: &str| v.get(k).and_then(Value::as_str).filter(|x| !x.is_empty()).map(str::to_string);
     let link = s("rc_url").or_else(|| s("link"));
+    let state = s("state").filter(|x| ["working", "blocked", "done"].contains(&x.as_str()));
     Some(Session {
         job: s("job")?,
         session_id: s("session_id"),
@@ -96,6 +97,9 @@ pub fn session_of(v: &Value) -> Option<Session> {
         remote_control: v.get("remote_control").and_then(Value::as_bool).unwrap_or(link.is_some()),
         link,
         started: parse_ts(v.get("started_at")).or_else(|| parse_ts(v.get("started"))),
+        needs: s("needs").filter(|_| state.as_deref() == Some("blocked")),
+        state,
+        retired: v.get("retired").and_then(Value::as_bool).unwrap_or(false),
     })
 }
 
