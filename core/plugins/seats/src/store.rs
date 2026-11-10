@@ -401,7 +401,8 @@ fn save(c: &Connection, s: &Seat) -> rusqlite::Result<bool> {
             s.held, s.missed, s.remote_control as i64, s.rc_url, d.model, d.effort, s.pick_model, s.pick_effort, s.refresh as i64
         ],
     )?;
-    Ok(before.is_none_or(|b| b.public(0) != s.public(0) || b.decl.name != s.decl.name))
+    let pair = |s: &Seat| (s.decl.model.clone(), s.decl.effort.clone(), s.pick_model.clone(), s.pick_effort.clone());
+    Ok(before.is_none_or(|b| b.public(0) != s.public(0) || b.decl.name != s.decl.name || pair(&b) != pair(s)))
 }
 
 /// The plugin's database.

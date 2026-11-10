@@ -246,6 +246,7 @@ async fn main() -> anyhow::Result<()> {
     service(svc, app)
         .on_ready(async move {
             watch.ensure(&here);
+            seats.report_all().await;
             tokio::spawn(seats.clone().tick_forever());
             tokio::spawn(link.clone().flush_forever());
             tokio::spawn(link.pull_forever(seats));
