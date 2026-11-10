@@ -78,6 +78,9 @@ struct Facts {
     bridge: Option<String>,
     /// The `kind` of the session's `list` row.
     row_kind: &'static str,
+    /// A background job's `state` and, while it is blocked, its `needs`.
+    state: Option<String>,
+    needs: Option<String>,
 }
 
 /// One session record as read from disk.
@@ -121,7 +124,10 @@ fn read_record(home: &ClaudeHome, pid: u32) -> Option<Record> {
     let facts = match &job {
         Some(short) => {
             let st: Object = read_json(&home.job_state(short));
+            let state = text(st.get("state"));
             Facts {
+                needs: text(st.get("needs")).filter(|_| state.as_deref() == Some("blocked")),
+                state,
                 name: text(st.get("name")).or_else(|| text(rec.get("name"))),
                 cwd: text(rec.get("cwd")).or_else(|| text(st.get("cwd"))),
                 bridge: text(st.get("bridgeSessionId")),
@@ -135,6 +141,8 @@ fn read_record(home: &ClaudeHome, pid: u32) -> Option<Record> {
             cwd: text(rec.get("cwd")),
             bridge: text(rec.get("bridgeSessionId")),
             row_kind: "interactive",
+            state: None,
+            needs: None,
         },
     };
     Some(Record { claude_session_id, proc_start: proc_start_of(rec.get("procStart")), facts })
@@ -171,6 +179,15 @@ fn event(kind: &str, claude_session_id: &str, f: &Facts, task_id: Option<String>
     });
     if let Some(task) = task_id {
         out["task_id"] = json!(task);
+    }
+    match (kind, f.state.as_deref()) {
+        // cch's own stop writes `stopped` before the kill: a retire, not a crash.
+        ("stopped", Some("stopped")) => out["retired"] = json!(true),
+        (_, Some(state)) => {
+            out["state"] = json!(state);
+            out["needs"] = json!(f.needs);
+        }
+        _ => {}
     }
     let rc_url = bridge_link(f.bridge.as_deref());
     if kind == "remote_control" || rc_url.is_some() {
@@ -300,6 +317,11 @@ impl<F: Effects> Watcher<F> {
         if before.bridge != rec.facts.bridge {
             self.emit("remote_control", &sid, &rec.facts).await;
         }
+        if (&before.state, &before.needs) != (&rec.facts.state, &rec.facts.needs)
+            && rec.facts.state.as_deref() != Some("stopped")
+        {
+            self.emit("state", &sid, &rec.facts).await;
+        }
     }
 
     async fn job(&mut self, short: &str) {
@@ -331,6 +353,8 @@ impl<F: Effects> Watcher<F> {
             cwd: rec.as_ref().and_then(|r| r.cwd.clone()),
             bridge: None,
             row_kind: "isolated",
+            state: None,
+            needs: None,
         };
         let task_id = rec.as_ref().and_then(|r| text(r.extra.get("task_id")));
         if !self.quiet {
@@ -781,8 +805,11 @@ mod tests {
         }
 
         fn job_state(&self, job: &str, name: &str, bridge: Option<&str>) {
+            self.job_record(job, json!({"name": name, "cwd": "/work/beta"}), bridge);
+        }
+
+        fn job_record(&self, job: &str, mut st: Value, bridge: Option<&str>) {
             std::fs::create_dir_all(self.paths.home.jobs().join(job)).unwrap();
-            let mut st = json!({"name": name, "cwd": "/work/beta"});
             if let Some(b) = bridge {
                 st["bridgeSessionId"] = json!(b);
             }
@@ -904,6 +931,31 @@ mod tests {
         assert_eq!(kinds(&sent), ["started", "stopped"]);
         assert!(sent[0]["session_id"] == json!(r9(SID_B)) && sent[1]["session_id"] == json!(r9(SID_A)));
         assert_eq!(*w.watched.lock().unwrap(), HashSet::from([101]));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_job_state_change_is_sent_once_and_a_retire_marks_its_stop() {
+        let mut w = World::open();
+        w.background(102, SID_B, JOB);
+        w.job_record(JOB, json!({"name": "worker", "state": "working", "needs": "approve plan"}), None);
+        w.start().await;
+        let blocked = json!({"name": "worker", "state": "blocked", "needs": "pick one", "detail": "a"});
+        for (st, detail) in [(&blocked, "a"), (&blocked, "b")] {
+            let mut st = st.clone();
+            st["detail"] = json!(detail);
+            w.job_record(JOB, st, None);
+            w.push(Change::Job(JOB.into()));
+            sleep(Duration::from_millis(10)).await;
+        }
+        w.job_record(JOB, json!({"name": "worker", "state": "stopped"}), None);
+        w.push(Change::Job(JOB.into()));
+        sleep(Duration::from_millis(10)).await;
+        w.kill(102);
+        sleep(SWAP_GRACE * 2).await;
+        let sent = w.finish().await;
+        assert_eq!(kinds(&sent), ["state", "stopped"], "a detail-only rewrite and the stop write send no state");
+        assert!(sent[0]["state"] == json!("blocked") && sent[0]["needs"] == json!("pick one"), "{}", sent[0]);
+        assert_eq!(sent[1]["retired"], json!(true));
     }
 
     #[test]
