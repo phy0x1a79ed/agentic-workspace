@@ -53,7 +53,6 @@ Status at the wave-2 gather (`feat/redux` 16da3979, 2026-11-04). `docs/redux-rev
   - Seat agents run in mode `worker` with skip-permissions and the full MCP surface. Tony's personal accounts are reachable.
   - An unscoped `social history` returns every chat, Tony's DM included.
 - Drift:
-  - mizar's copy of the `opal-seat-holder` skill is out of date.
   - Two lab agents run in scopes not tagged `lab`.
   - `slack-main` runs in the `awm/dev` worktree.
   - Editing a brief replaces the agent and loses its context.
