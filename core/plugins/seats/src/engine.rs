@@ -196,6 +196,7 @@ impl Seats {
             *held = settings.clone();
         }
         self.store.set_meta("settings", &serde_json::to_string(&settings).unwrap_or_default()).await;
+        self.report_all().await;
         if !settings.paused {
             self.unpause_summary().await;
             self.wake();
@@ -245,6 +246,14 @@ impl Seats {
         self.world
             .up("seat", json!({"account": s.account(), "channel_id": s.channel(), "state": s.state.as_str(), "job": s.job, "remote_control": s.remote_control, "rc_url": s.rc_url, "public": public, "event": event}))
             .await;
+    }
+
+    /// Tell social what it shows of every seat: at boot, and when the node's model or effort
+    /// changed under the seats that use them.
+    pub async fn report_all(&self) {
+        for s in self.store.all().await {
+            self.report(&s, None).await;
+        }
     }
 
     /// The session name a seat's agent gets: Remote Control writes each `/` as `-` (R146).

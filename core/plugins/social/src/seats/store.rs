@@ -121,10 +121,11 @@ impl Store {
         let v = [account, channel, state, job, rc_url].map(str::to_string);
         self.0
             .run(move |c| -> bool {
-                let before: Option<(String, String, i64, String)> = c.query_row("SELECT state, job, remote_control, rc_url FROM seat_registry WHERE account = ?1 AND channel_id = ?2", params![v[0], v[1]], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).optional().ok().flatten();
-                let Some(before) = before else { return false };
+                let before: Option<(String, String, i64, String, String)> = c.query_row("SELECT state, job, remote_control, rc_url, report FROM seat_registry WHERE account = ?1 AND channel_id = ?2", params![v[0], v[1]], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get::<_, Option<String>>(4)?.unwrap_or_default()))).optional().ok().flatten();
+                let Some((state, job, rc, url, old)) = before else { return false };
+                let old: Value = serde_json::from_str(&old).unwrap_or_default();
                 let _ = c.execute("UPDATE seat_registry SET state = ?1, job = ?2, remote_control = ?3, rc_url = ?4, report = ?5 WHERE account = ?6 AND channel_id = ?7", params![v[2], v[3], remote_control as i64, v[4], report.to_string(), v[0], v[1]]);
-                before != (v[2].clone(), v[3].clone(), remote_control as i64, v[4].clone())
+                (state, job, rc, url) != (v[2].clone(), v[3].clone(), remote_control as i64, v[4].clone()) || ["model", "effort", "refresh"].iter().any(|k| old.get(k) != report.get(k))
             })
             .await
     }

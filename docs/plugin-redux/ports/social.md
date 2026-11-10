@@ -103,7 +103,7 @@ Ops on the vault shows each seat with a Remote Control switch (`fleet.md` R147 i
 - **Persistence.** cch records each switch on the job's lineage record. A daemon relaunch or a resume of the session brings the recorded switch back (`sessions.md` R146).
 - **Adoption.** Adoption leaves the live session alone. An occupied seat records its switch as on, because every seat session before the switch started with Remote Control on.
 - **Link.** `remote_control` and `rc_url` of an occupied seat follow the job's `list_other` row on every tick, so a switch made outside the seat shows on Ops.
-- **Event.** `social/seats` carries `{seat, label, state, remote_control, node, model, effort, refresh, job?, rc_url?, ts}`. The seat's save emits it when one of those fields changed. A switch answer adds `rc_live` (`applied`, `none` or `failed: <why>`) and a Refresh answer adds `refresh_live` (`pending` or `kept`). Either answer always emits, so Ops can settle a pending request. No event goes out at boot, so a subscriber reads `social seats` once when it connects.
+- **Event.** `social/seats` carries `{seat, label, state, remote_control, node, model, effort, refresh, job?, rc_url?, ts}`. The seat's save emits it when one of those fields changed. A switch answer adds `rc_live` (`applied`, `none` or `failed: <why>`) and a Refresh answer adds `refresh_live` (`pending` or `kept`). Either answer always emits, so Ops can settle a pending request. At boot each seats plugin reports every seat, and social emits only for a seat whose evented fields changed. A subscriber reads `social seats` once when it connects.
 
 ### Model, effort and Refresh
 

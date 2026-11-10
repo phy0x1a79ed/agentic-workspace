@@ -95,6 +95,9 @@ async fn a_report_fills_what_seats_shows_and_a_change_is_flagged_once() {
     let report = json!({"state": "occupied", "id": "opal/D0TEST", "queued": 2});
     assert!(store.mirror("opal", "D0TEST", "occupied", "j1", true, "u", report.clone()).await);
     assert!(!store.mirror("opal", "D0TEST", "occupied", "j1", true, "u", report.clone()).await, "nothing evented changed");
+    let picked = json!({"state": "occupied", "id": "opal/D0TEST", "queued": 2, "model": "sonnet"});
+    assert!(store.mirror("opal", "D0TEST", "occupied", "j1", true, "u", picked).await, "a new model is evented");
+    assert!(store.mirror("opal", "D0TEST", "occupied", "j1", true, "u", report.clone()).await);
     let seat = store.get("opal", "D0TEST").await.unwrap();
     assert_eq!((seat.public(), seat.job.as_str()), (report, "j1"));
     assert!(!store.mirror("opal", "NOSEAT", "occupied", "j", false, "", json!({})).await);
