@@ -65,7 +65,7 @@ impl Place {
     }
 }
 
-/// `[<server>/<chat>/<sender>, <level>] ↳<thread> <text>`, on one line.
+/// `[<server>/<chat>/<sender>, <level>, msg <id>] ↳<thread> <text>`, on one line.
 pub fn push_line(m: &Inbound, level: &str) -> String {
     let p = Place::of(m);
     let mut who = if m.sender_name.is_empty() { if m.sender_id.is_empty() { "?".to_string() } else { m.sender_id.clone() } } else { m.sender_name.clone() };
@@ -81,7 +81,8 @@ pub fn push_line(m: &Inbound, level: &str) -> String {
         let n = m.attachments.len();
         text = format!("{text} [+{n} file{}]", if n > 1 { "s" } else { "" }).trim_start().to_string();
     }
-    format!("[{}/{}/{who}, {level}]{thread} {text}", p.server_label(), p.chat_label())
+    let id = if m.message_id.is_empty() { String::new() } else { format!(", msg {}", m.message_id) };
+    format!("[{}/{}/{who}, {level}{id}]{thread} {text}", p.server_label(), p.chat_label())
 }
 
 /// The seat's brief, relative to the seat docs.
@@ -104,12 +105,12 @@ mod tests {
 
     #[test]
     fn the_line_names_the_place_the_sender_and_the_level() {
-        assert_eq!(push_line(&msg(ChatKind::Dm), "cooperative"), "[slack/DM/tester, cooperative] hi \u{23ce} there");
+        assert_eq!(push_line(&msg(ChatKind::Dm), "cooperative"), "[slack/DM/tester, cooperative, msg 1.0] hi \u{23ce} there");
         let mut m = msg(ChatKind::Channel);
         m.thread_id = "0.5".into();
         m.sender_bot = true;
         m.attachments = vec![Attachment::default(); 2];
-        assert_eq!(push_line(&m, "untrusted"), "[Test Lab/#general/tester (bot), untrusted] \u{21b3}0.5 hi \u{23ce} there [+2 files]");
+        assert_eq!(push_line(&m, "untrusted"), "[Test Lab/#general/tester (bot), untrusted, msg 1.0] \u{21b3}0.5 hi \u{23ce} there [+2 files]");
         m.thread_id = "1.0".into();
         assert!(!push_line(&m, "x").contains('\u{21b3}'), "a thread's first message is not marked");
         m.text = "y".repeat(TEXT_MAX + 10);
