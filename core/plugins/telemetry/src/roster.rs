@@ -352,14 +352,14 @@ impl Roster {
 /// rc_url, ..} | null}` (tagged with its `account`), and a `social/seats` event
 /// `{seat: "<account>/<channel>", label, state, node, remote_control, job?, rc_url?, rc_live?, ts}`,
 /// where `rc_live` answers a Remote Control flip: `applied`, `none` or `failed: <why>`.
-/// A channel with no seat row is `empty`.
+/// A channel that social.toml does not declare a seat (`seat: null`) has no row.
 fn seat_row(row: &Value) -> Option<(String, Value)> {
     let m = row.as_object()?;
     let nested = m.get("seat").and_then(Value::as_object);
     let key = match (m.get("seat"), nested) {
         (Some(Value::String(id)), _) => id.clone(),
         (_, Some(n)) => n.get("id").and_then(Value::as_str)?.to_string(),
-        _ => format!("{}/{}", m.get("account")?.as_str()?, m.get("id")?.as_str()?),
+        _ => return None,
     };
     let src = nested.unwrap_or(m);
     let text = |o: &serde_json::Map<String, Value>, k: &str| o.get(k).and_then(Value::as_str).filter(|v| !v.is_empty()).map(str::to_string);
@@ -711,9 +711,9 @@ mod tests {
         let free = json!({"id": "C043", "name": "bob", "kind": "channel", "holder": null, "seat": null, "account": "slack-bot"});
         r.set_seats(&[held, free]);
         let v = r.seats_view();
+        assert_eq!(v["seats"].as_array().unwrap().len(), 1, "a channel with no declared seat has no row");
         assert_eq!(v["seats"][0], json!({"seat": "slack-bot/C042", "label": "alice", "state": "occupied", "remote_control": true, "node": "alcor",
                                          "job": "j1", "rc_url": "https://claude.ai/code/s"}));
-        assert_eq!((v["seats"][1]["seat"].as_str(), v["seats"][1]["state"].as_str()), (Some("slack-bot/C043"), Some("empty")));
         let ev = json!({"seat": "slack-bot/C042", "label": "alice", "state": "occupied", "remote_control": true, "node": "alcor",
                         "job": "j1", "rc_url": "https://claude.ai/code/s"});
         assert!(r.seat_event(&ev).changed.is_empty(), "the live event parses to the row the catch-up made");
