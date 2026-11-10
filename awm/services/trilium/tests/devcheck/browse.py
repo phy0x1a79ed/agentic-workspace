@@ -182,6 +182,14 @@ def main() -> int:
         page.wait_for_timeout(800)
         seat = [c for c in calls() if c.get("path") == "/api/seat/remote_control"]
         check("the seat switch posts {seat, on}", seat and seat[-1]["body"] == {"seat": "acct/222", "on": True}, str(seat))
+        picked = page.eval_on_selector_all("tr[data-seat='acct/111'] select", "e => e.map(x => x.value)")
+        check("the seat row presets its model and effort", picked == ["opus", "high"], str(picked))
+        page.select_option("tr[data-seat='acct/111'] select[aria-label=model]", "sonnet")
+        page.click("tr[data-seat='acct/111'] button >> text=Refresh")
+        page.wait_for_timeout(800)
+        ref = [c for c in calls() if c.get("path") == "/api/seat/refresh"]
+        check("Refresh posts {seat, model, effort}",
+              ref and ref[-1]["body"] == {"seat": "acct/111", "model": "sonnet", "effort": "high"}, str(ref))
         page.evaluate("document.querySelector('.awm-sections').scrollTop = 1e9")
         page.wait_for_timeout(800)
         n2 = page.eval_on_selector_all("details[data-section=history] .awm-card", "e => e.length")

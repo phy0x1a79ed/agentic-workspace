@@ -254,16 +254,17 @@ function pickCell(s) {
   };
   const waiting = refreshes.has(s.seat) || s.refresh;
   const btn = el("button", { class: "awm-btn", type: "button", disabled: waiting },
-    waiting ? "Refresh pending" : "Refresh");
+    waiting ? "Pending" : "Refresh");
   const [model, effort] = [select("model"), select("effort")];
   btn.addEventListener("click", async () => {
     btn.disabled = true;
+    btn.textContent = "Pending";
     refreshes.set(s.seat, { ts: s.ts, at: Date.now() });
     try {
       await swarmCall(origin, "/api/seat/refresh", { seat: s.seat, model: model.value, effort: effort.value });
       picks.delete(s.seat);
       toast(`${s.label || s.seat}: refresh on ${model.value} at ${effort.value} effort requested`);
-    } catch (e) { refreshes.delete(s.seat); btn.disabled = false; toast(e.message, true); }
+    } catch (e) { refreshes.delete(s.seat); btn.disabled = false; btn.textContent = "Refresh"; toast(e.message, true); }
   });
   return el("td", {}, model, " ", effort, " ", btn);
 }
