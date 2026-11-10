@@ -41,7 +41,7 @@ fn decl(awm_dir: &Path) -> anyhow::Result<Decl> {
 /// The model, or `None` when it is absent or turned off: sources then store their writes and
 /// embed them when it loads.
 fn embedder(awm_dir: &Path) -> Option<Arc<dyn Embedder>> {
-    match awm_embed::MiniLm::load(awm_dir) {
+    match awm_embed::Onnx::load(awm_dir, &awm_embed::MINILM) {
         Ok(m) => Some(Arc::new(m)),
         Err(e) => {
             tracing::warn!("kb: no embedder, answering on keywords: {e}");

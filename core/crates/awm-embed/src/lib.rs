@@ -6,4 +6,5 @@ pub mod embed;
 pub mod model;
 
 pub use chunk::Document;
-pub use embed::{disabled, EmbedError, Embedder, MiniLm, Stub};
+pub use embed::{disabled, EmbedError, Embedder, Onnx, Stub};
+pub use model::{Model, BGE_LARGE, MINILM};
