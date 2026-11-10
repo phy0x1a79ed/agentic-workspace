@@ -22,9 +22,9 @@ main() {
     root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
     export AWM_DIR=${AWM_DIR:-$root/.awm}
     local conda cand
-    # Nodes keep conda in different places. Take the first root that holds the awm env.
+    # Nodes keep conda in different places. Take the first root that holds mamba.
     for cand in ${MAMBA_ROOT_PREFIX:-} "$HOME/miniforge3" "$HOME/lib/miniforge3" /opt/miniforge3; do
-        [[ -d $cand/envs/awm ]] && { conda=$cand; break; }
+        [[ -x $cand/bin/mamba ]] && { conda=$cand; break; }
     done
     if [[ -n ${conda:-} ]]; then
         export MAMBA_ROOT_PREFIX=$conda
