@@ -590,7 +590,10 @@ impl<G: Gateway> App<G> {
     }
 
     async fn resume_other(&self, frame: &Frame, args: &Value) -> Result<Value, Failure> {
-        let extra = json!({"prompt": self.provider_value(frame, args.get("prompt")).await});
+        let extra = json!({
+            "prompt": self.provider_value(frame, args.get("prompt")).await,
+            "model": args.get("model"), "effort": args.get("effort"),
+        });
         let (out, named) = self.on_other(frame, args, "resume", "resume_other", extra).await?;
         if is_ok(&out) {
             for sid in [named.get("session_id"), out.get("session_id")].into_iter().flatten().filter_map(Value::as_str) {

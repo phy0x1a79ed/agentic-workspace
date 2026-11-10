@@ -37,6 +37,9 @@ CREATE TABLE IF NOT EXISTS seat_registry (
     rc_url       TEXT NOT NULL DEFAULT '',
     model        TEXT NOT NULL DEFAULT '',
     effort       TEXT NOT NULL DEFAULT '',
+    pick_model   TEXT NOT NULL DEFAULT '',
+    pick_effort  TEXT NOT NULL DEFAULT '',
+    refresh      INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (account, channel_id)
 );
 CREATE TABLE IF NOT EXISTS seat_queue (
@@ -226,9 +229,14 @@ pub struct Seat {
     pub remote_control: bool,
     /// The live agent's claude.ai link, while the switch is on.
     pub rc_url: String,
+    /// The model and effort picked on the Ops board, which win over social's.
+    pub pick_model: String,
+    pub pick_effort: String,
+    /// The agent restarts on the seat's model and effort once it is between turns.
+    pub refresh: bool,
 }
 
-const COLS: &str = "account, channel_id, channel_name, kind, server, slug, node, scope, level, platform, server_label, chat_label, brief, name, state, session_id, adopted, last_message, deadline, previous, breaker, held, missed, remote_control, rc_url, model, effort";
+const COLS: &str = "account, channel_id, channel_name, kind, server, slug, node, scope, level, platform, server_label, chat_label, brief, name, state, session_id, adopted, last_message, deadline, previous, breaker, held, missed, remote_control, rc_url, model, effort, pick_model, pick_effort, refresh";
 
 impl Seat {
     fn from_row(r: &Row) -> rusqlite::Result<Self> {
@@ -264,6 +272,9 @@ impl Seat {
             missed: r.get(22)?,
             remote_control: r.get::<_, i64>(23)? != 0,
             rc_url: r.get(24)?,
+            pick_model: r.get(27)?,
+            pick_effort: r.get(28)?,
+            refresh: r.get::<_, i64>(29)? != 0,
         })
     }
 
@@ -284,12 +295,27 @@ impl Seat {
             remote_control: seed.remote_control != 0,
             rc_url: if elsewhere { String::new() } else { seed.rc_url },
             decl,
+            ..Default::default()
         }
     }
 
     /// The seat's current agent, as the next one's predecessor.
     pub fn as_previous(&self, stopped: bool) -> Previous {
         Previous { session_id: self.session_id.clone(), node: self.decl.node.clone(), adopted: self.adopted, stopped }
+    }
+
+    /// The seat runs a session it started or adopted.
+    pub fn has_live_session(&self) -> bool {
+        !self.session_id.is_empty() && matches!(self.state, State::Starting | State::Occupied)
+    }
+
+    /// The agent left: the seat is empty, and nothing of that agent stays on the row.
+    pub fn clear_agent(&mut self) {
+        self.state = State::Empty;
+        self.session_id.clear();
+        self.rc_url.clear();
+        self.adopted = false;
+        self.refresh = false;
     }
 
     pub fn account(&self) -> &str {
@@ -330,6 +356,7 @@ impl Seat {
             "queued": queued, "held": if self.held.is_empty() || self.held == "admitted" { Value::Null } else { json!(self.held) },
             "breaker": if self.breaker.hold_until > 0.0 { json!({"hold_until": self.breaker.hold_until}) } else { Value::Null },
             "id": self.id(), "remote_control": self.remote_control, "rc_url": self.rc_url,
+            "refresh": self.refresh,
         })
     }
 }
@@ -366,15 +393,16 @@ fn save(c: &Connection, s: &Seat) -> rusqlite::Result<bool> {
     let before = c.query_row(&format!("SELECT {COLS} FROM seat_registry WHERE account = ?1 AND channel_id = ?2"), params![s.decl.account, s.decl.channel_id], Seat::from_row).optional()?;
     let d = &s.decl;
     c.execute(
-        &format!("INSERT OR REPLACE INTO seat_registry ({COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27)"),
+        &format!("INSERT OR REPLACE INTO seat_registry ({COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30)"),
         params![
             d.account, d.channel_id, d.channel_name, d.kind, d.server, d.slug, d.node, d.scope, d.level, d.platform, d.server_label, d.chat_label, d.brief, d.name,
             s.state.as_str(), s.session_id, s.adopted as i64, s.last_message, s.deadline,
             serde_json::to_string(&s.previous).unwrap_or_default(), serde_json::to_string(&s.breaker).unwrap_or_default(),
-            s.held, s.missed, s.remote_control as i64, s.rc_url, d.model, d.effort
+            s.held, s.missed, s.remote_control as i64, s.rc_url, d.model, d.effort, s.pick_model, s.pick_effort, s.refresh as i64
         ],
     )?;
-    Ok(before.is_none_or(|b| b.public(0) != s.public(0) || b.decl.name != s.decl.name))
+    let pair = |s: &Seat| (s.decl.model.clone(), s.decl.effort.clone(), s.pick_model.clone(), s.pick_effort.clone());
+    Ok(before.is_none_or(|b| b.public(0) != s.public(0) || b.decl.name != s.decl.name || pair(&b) != pair(s)))
 }
 
 /// The plugin's database.
@@ -394,6 +422,9 @@ impl Store {
         for (column, want, change) in [
             ("model", true, "ADD COLUMN model TEXT NOT NULL DEFAULT ''"),
             ("effort", true, "ADD COLUMN effort TEXT NOT NULL DEFAULT ''"),
+            ("pick_model", true, "ADD COLUMN pick_model TEXT NOT NULL DEFAULT ''"),
+            ("pick_effort", true, "ADD COLUMN pick_effort TEXT NOT NULL DEFAULT ''"),
+            ("refresh", true, "ADD COLUMN refresh INTEGER NOT NULL DEFAULT 0"),
             ("done_at", false, "DROP COLUMN done_at"),
         ] {
             let has: bool = conn.query_row("SELECT COUNT(*) > 0 FROM pragma_table_info('seat_registry') WHERE name = ?1", [column], |r| r.get(0))?;
@@ -432,6 +463,16 @@ impl Store {
                 false
             }
         }
+    }
+
+    /// Forget the seat and the lines that wait for it.
+    pub async fn delete(&self, account: &str, channel: &str) {
+        let (a, ch) = (account.to_string(), channel.to_string());
+        let _ = self.run(move |c| c.execute_batch("BEGIN").and_then(|_| {
+            c.execute("DELETE FROM seat_registry WHERE account = ?1 AND channel_id = ?2", params![a, ch])?;
+            c.execute("DELETE FROM seat_queue WHERE account = ?1 AND channel_id = ?2", params![a, ch])?;
+            c.execute_batch("COMMIT")
+        })).await;
     }
 
     /// Every seat `session` is the agent of.

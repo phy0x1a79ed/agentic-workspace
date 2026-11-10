@@ -4,7 +4,8 @@
 //! Down: one held `seat_pull`, which carries the id of the last row stored here as its ack. Each
 //! row is stored before it is acked, so a lost answer costs a resend and never a row. Up: the
 //! outbox, sent in order, one row per `seat_report`. A loss of the link only delays both: seat
-//! state and each agent's life are read on this node.
+//! state and each agent's life are read on this node. A reaction or a download skips the
+//! outbox: the agent waits on its answer, so it fails at once when the link is down.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -12,7 +13,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use awm_plugin_sdk::{Backoff, CallOpts, Hub};
+use awm_plugin_sdk::{Backoff, CallOpts, Hub, HubError, VerbError};
 use serde_json::{json, Value};
 use tokio::sync::{oneshot, Notify};
 
@@ -29,11 +30,12 @@ const SEND_WAIT: Duration = Duration::from_secs(8);
 /// How long a row social keeps asking to resend stays in line. Only a reachable social asks.
 const GIVE_UP_S: f64 = 3600.0;
 
-/// The two calls to social.
+/// The calls to social.
 #[async_trait]
 pub trait Alcor: Send + Sync {
     async fn pull(&self, ack_through: i64, wait_s: u64) -> Result<Value, String>;
     async fn report(&self, row: Value) -> Result<Value, String>;
+    async fn act(&self, args: Value) -> Result<Value, VerbError>;
 }
 
 /// social through its singleton door.
@@ -49,6 +51,14 @@ impl Alcor for ThroughDoor {
     async fn report(&self, row: Value) -> Result<Value, String> {
         let opts = CallOpts { timeout: REPORT_TIMEOUT, ..CallOpts::default() };
         self.0.call_with("social", "seat_report", row, &opts).await.map_err(|e| e.to_string())
+    }
+
+    async fn act(&self, args: Value) -> Result<Value, VerbError> {
+        let opts = CallOpts { timeout: REPORT_TIMEOUT, ..CallOpts::default() };
+        self.0.call_with("social", "seat_act", args, &opts).await.map_err(|e| match e {
+            HubError::Verb { error, error_class, .. } => VerbError::new(error_class.as_deref().unwrap_or("RuntimeError"), error),
+            other => VerbError::runtime(format!("the link to the chat is down ({other}). Try again shortly.")),
+        })
     }
 }
 
@@ -92,6 +102,11 @@ impl Link {
             Ok(Ok(answer)) => answer,
             _ => json!({"ok": true, "queued": true, "note": "the link to the chat is slow or down. Your reply is queued on this node and goes out, once, when it is back. Do not send it again."}),
         }
+    }
+
+    /// React or download through social, now: the agent waits on the answer.
+    pub async fn act(&self, args: Value) -> Result<Value, VerbError> {
+        self.alcor.act(args).await
     }
 
     pub async fn status(&self) -> Value {
@@ -148,9 +163,14 @@ impl Link {
                 Err(e) => tracing::warn!("seats: a line row did not parse: {e}"),
             },
             "seed" => seats.seed(decl(), serde_json::from_value::<Seed>(row["state"].clone()).unwrap_or_default()).await,
+            "decl" if row["seat"].is_object() => drop(seats.upsert(&decl()).await),
+            "roster" => seats.keep(row["seats"].as_array().into_iter().flatten().filter_map(Value::as_str).collect()).await,
             "released" => seats.released(&text("account"), &text("channel_id"), &text("session_id")).await,
             "remote_control" => {
                 seats.set_remote_control(&text("account"), &text("channel_id"), row["on"].as_bool().unwrap_or(false)).await;
+            }
+            "refresh" => {
+                seats.set_refresh(&text("account"), &text("channel_id"), &text("model"), &text("effort")).await;
             }
             "hand" => seats.hand(&text("session_id"), &text("line")),
             other => tracing::warn!("seats: social sent a row of unknown kind {other:?}"),

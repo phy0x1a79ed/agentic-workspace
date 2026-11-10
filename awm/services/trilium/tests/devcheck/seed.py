@@ -30,8 +30,9 @@ nodes = [
 services = [{"tool": "journal", "service": "journal", "host": "alcor", "health": "up", "last_response": now - 3, "last_used": now - 60},
                   {"tool": "trilium", "service": "trilium", "host": "deneb", "health": "down", "last_response": now - 7200, "last_used": now - 7000}]
 seats = [{"seat": "acct/111", "name": "seat:discord/lab/steward", "state": "occupied", "remote_control": True,
-                "rc_url": "https://claude.ai/code/session_seat", "node": "mizar"},
-               {"seat": "acct/222", "name": "seat:slack/lab/triage", "state": "empty", "remote_control": False}]
+                "model": "opus", "effort": "high", "refresh": False, "rc_url": "https://claude.ai/code/session_seat", "node": "mizar"},
+               {"seat": "acct/222", "name": "seat:slack/lab/triage", "state": "empty", "remote_control": False,
+                "model": "sonnet", "effort": "medium", "refresh": False}]
 notices = [{"kind": "scope-hygiene", "node": "mizar", "title": "Scope hygiene", "body": "2 removed", "ts": now}]
 
 cards = []

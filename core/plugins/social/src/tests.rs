@@ -6,7 +6,7 @@ use serde_json::{json, Value};
 
 /// The surface changes the port plan lists; every other verb is the Python's byte for byte.
 const REMOVED: [&str; 10] = ["keepers", "keep_reset", "keep_adopt", "bucket_sites", "bucket_versions", "bucket_restore", "bucket_share", "bucket_shares", "bucket_unshare", "bucket_resolve"];
-const ADDED: [&str; 4] = ["forward", "seat_remote_control", "seat_pull", "seat_report"];
+const ADDED: [&str; 6] = ["forward", "seat_remote_control", "seat_refresh", "seat_pull", "seat_report", "seat_act"];
 const REWORDED: [&str; 10] = ["send", "react", "seats", "mount", "search", "buckets", "bucket_ls", "bucket_get", "bucket_mv", "bucket_search"];
 
 #[test]
@@ -164,6 +164,20 @@ mod verbs {
     }
 
     #[tokio::test]
+    async fn seats_lists_each_stored_seat_by_its_name_even_before_the_platform_lists_its_chat() {
+        let r = rig().await;
+        r.app.seats.store.save(&crate::seats::store::Seat { account: "opal".into(), channel_id: "C0LATE".into(), channel_name: "general".into(), kind: "channel".into(), server: "Hallam Hive".into(), node: "altair".into(), state: "empty".into(), ..Default::default() }).await;
+        r.app.seats.store.save(&crate::seats::store::Seat { account: "opal".into(), channel_id: "D0TEST".into(), channel_name: "Tester Display".into(), kind: "dm".into(), slug: "tester".into(), node: "altair".into(), state: "empty".into(), ..Default::default() }).await;
+        let out = r.call("seats", "j1", "trusted", json!({"account": "opal"})).await.unwrap();
+        let label = |id: &str| out["seats"].as_array().unwrap().iter().find(|row| row["id"] == id).map(|row| row["label"].clone());
+        assert_eq!(label("C0LATE"), Some(json!("seat:slack/hallam-hive/general")), "{out}");
+        assert_eq!(label("D0TEST"), Some(json!("seat:slack/dm/tester")), "a DM is named by its slug, not its display name");
+        assert_eq!(label("C0TEST"), Some(Value::Null), "a chat that is no seat has no label");
+        let guild = r.app.place("opal", &Channel { id: "1".into(), name: "Hallam Hive#general".into(), kind: "text".into() });
+        assert_eq!(guild.session_name(), "seat:slack/hallam-hive/general", "a listed guild channel names its guild");
+    }
+
+    #[tokio::test]
     async fn a_cooperative_session_answers_only_what_it_holds_and_never_a_trusted_chat() {
         let r = rig().await;
         bind(&r, "D0TEST", "j1").await;
@@ -207,6 +221,9 @@ mod verbs {
         let args = json!({"seat": "opal/D0OPER", "on": true});
         assert_eq!(r.svc.call("seat_remote_control", args.clone()).await.unwrap_err().error_class, "PermissionError");
         assert_eq!(r.call("seat_remote_control", "op", "trusted", args).await.unwrap_err().error_class, "PermissionError");
+        let args = json!({"seat": "opal/D0OPER", "model": "sonnet", "effort": "low"});
+        assert_eq!(r.svc.call("seat_refresh", args.clone()).await.unwrap_err().error_class, "PermissionError");
+        assert_eq!(r.call("seat_refresh", "op", "trusted", args).await.unwrap_err().error_class, "PermissionError");
     }
 
     #[tokio::test]

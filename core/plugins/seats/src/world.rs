@@ -60,8 +60,9 @@ impl World for Live {
         started(&acked(self.hub.call_with("reflection", "start_other", spec, &opts(240)).await))
     }
 
-    async fn resume(&self, session: &str, prompt: &str, remote_control: bool, name: &str) -> Started {
-        let reply = acked(self.hub.call_with("reflection", "resume_other", json!({"to": {"id": session}, "prompt": prompt}), &opts(240)).await);
+    async fn resume(&self, session: &str, model: &str, effort: &str, prompt: &str, remote_control: bool, name: &str) -> Started {
+        let args = json!({"to": {"id": session}, "model": model, "effort": effort, "prompt": prompt});
+        let reply = acked(self.hub.call_with("reflection", "resume_other", args, &opts(240)).await);
         let out = started(&reply);
         let linked = reply.ok().and_then(|v| v.get("link").and_then(Value::as_str).map(|l| !l.is_empty())).unwrap_or(false);
         if let Started::Session(new) = &out {

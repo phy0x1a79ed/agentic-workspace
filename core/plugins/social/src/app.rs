@@ -20,6 +20,7 @@ use crate::config::{AccountConfig, BucketConfig};
 use crate::connectors::{self, ChatKind, Channel, Command, Connector, Inbound, OutFile};
 use crate::db::{now, Db, Mount};
 use crate::seats::line::{self, Place};
+use crate::seats::store::Seat;
 use crate::seats::{Routed, Seats};
 
 pub const MAX_INLINE_BYTES: usize = 24 * 1024 * 1024;
@@ -377,15 +378,7 @@ impl Social {
         if text.is_empty() && files.is_empty() {
             return Err(VerbError::value("send needs text, a file, or both"));
         }
-        if !files.is_empty() {
-            if !conn.sends_files() {
-                return Err(VerbError::runtime(format!("{} account {account:?} does not take files through social", conn.platform())));
-            }
-            let size: u64 = files.iter().map(OutFile::size).sum();
-            if size > conn.max_file_bytes() {
-                return Err(VerbError::value(format!("the files come to {size} bytes, over the {} that {account:?} takes per message", conn.max_file_bytes())));
-            }
-        }
+        check_files(&*conn, &account, &files)?;
         let personal = self.account(&account).is_some_and(|a| a.kind() == "user");
         let sent = if personal {
             *self.relaying.lock().unwrap().entry(conn.platform().to_string()).or_default() += 1;
@@ -434,7 +427,11 @@ impl Social {
         let who = self.holder(&call).await;
         let (account, channel, _, message) = self.defaults(&call, who.as_ref().ok(), true).await?;
         self.held_only(&call, &who, &account, &channel).await?;
-        let done = self.conn(&account)?.react(&channel, &message.unwrap_or_default(), &s(&call.args, "emoji"), truthy(call.args.get("remove"))).await?;
+        self.react_to(&account, &channel, &message.unwrap_or_default(), &call.args).await
+    }
+
+    async fn react_to(&self, account: &str, channel: &str, message: &str, args: &Value) -> Result<Value, VerbError> {
+        let done = self.conn(account)?.react(channel, message, &s(args, "emoji"), truthy(args.get("remove"))).await?;
         let mut out = serde_json::Map::from_iter([("ok".to_string(), json!(true))]);
         if let Value::Object(o) = done {
             out.extend(o);
@@ -517,12 +514,12 @@ impl Social {
         let who = self.holder(&call).await;
         let (account, channel) = (s(&call.args, "account"), s(&call.args, "channel"));
         self.held_only(&call, &who, &account, &channel).await?;
-        let idx = match call.args.get("idx") {
-            None | Some(Value::Null) => None,
-            Some(Value::String(x)) if x.is_empty() => None,
-            v => Some(int(v, 0)),
-        };
-        let files = self.conn(&account)?.download_attachments(&channel, &s(&call.args, "message_id"), idx).await?;
+        self.inline_files(&account, &channel, &s(&call.args, "message_id"), idx(&call.args)).await
+    }
+
+    /// A message's attachments as `b64` files, which the caller's gateway writes to disk.
+    async fn inline_files(&self, account: &str, channel: &str, message: &str, idx: Option<i64>) -> Result<Value, VerbError> {
+        let files = self.conn(account)?.download_attachments(channel, message, idx).await?;
         let total: usize = files.iter().map(|f| f.data.len()).sum();
         if total > MAX_INLINE_BYTES {
             return Err(VerbError::value(format!("the attachments come to {total} bytes, over the {MAX_INLINE_BYTES} a reply carries; fetch one at a time with idx")));
@@ -588,20 +585,36 @@ impl Social {
             _ => ChatKind::Channel,
         };
         let platform = self.account(account).map(|a| a.platform.clone()).unwrap_or_default();
-        Place { platform, server: String::new(), kind, chat_name: c.name.clone(), person: if kind == ChatKind::Dm { c.name.clone() } else { String::new() } }
+        if kind == ChatKind::Dm {
+            return Place { platform, kind, person: c.name.clone(), ..Default::default() };
+        }
+        // A Discord guild channel is listed as `<guild>#<channel>`.
+        let (server, chat) = c.name.split_once('#').unwrap_or(("", &c.name));
+        Place { platform, server: server.into(), kind, chat_name: chat.into(), person: String::new() }
     }
 
     pub async fn seats_verb(&self, call: Call) -> Result<Value, VerbError> {
         let account = s(&call.args, "account");
         let conn = self.conn(&account)?;
         let held: HashMap<String, Mount> = self.db.mounts(Some(&account)).await.into_iter().map(|m| (m.channel_id.clone(), m)).collect();
+        let mut stored: BTreeMap<String, Seat> = self.seats.store.all().await.into_iter().filter(|st| st.account == account).map(|st| (st.channel_id.clone(), st)).collect();
         let mut out = vec![];
-        for c in conn.list_seats().await? {
-            let seat = self.seats.store.get(&account, &c.id).await.map(|st| st.public());
-            let mut row = chan(&c);
-            row["holder"] = held.get(&c.id).map(Mount::holder).unwrap_or(Value::Null);
-            row["seat"] = seat.unwrap_or(Value::Null);
+        let mut add = |c: &Channel, seat: Option<Seat>| {
+            let mut row = chan(c);
+            row["holder"] = held.get(&c.id).map_or(Value::Null, Mount::holder);
+            row["seat"] = seat.as_ref().map_or(Value::Null, Seat::public);
+            if let Some(st) = seat {
+                row["label"] = json!(self.seats.name(&st));
+            }
             out.push(row);
+        };
+        for c in conn.list_seats().await? {
+            let seat = stored.remove(&c.id);
+            add(&c, seat);
+        }
+        // A declared seat whose chat the platform has not listed yet, such as a guild channel before the gateway is ready.
+        for st in stored.into_values() {
+            add(&Channel { id: st.channel_id.clone(), name: st.channel_name.clone(), kind: st.kind.clone() }, Some(st));
         }
         Ok(json!({"seats": out}))
     }
@@ -747,20 +760,37 @@ impl Social {
         Ok(json!({"ok": true, "to": {"account": account, "id": chat.id, "name": chat.name, "state": target.state}, "reads": {"account": src_account, "channel": src_channel, "hours": 24}}))
     }
 
-    /// The Remote Control switch on Ops: operations on this node is the one caller.
-    pub async fn seat_remote_control(&self, call: Call) -> Result<Value, VerbError> {
+    /// The seat an Ops switch names, for operations on this node only.
+    async fn ops_seat(&self, call: &Call) -> Result<crate::seats::store::Seat, VerbError> {
         if !switch_caller(call.plugin.as_deref(), call.from_peer()) {
-            return Err(VerbError::permission("seat_remote_control: only operations on this node runs this"));
+            return Err(VerbError::permission(format!("{}: only operations on this node runs this", call.verb)));
         }
         let seat = s(&call.args, "seat");
+        let (account, channel) = seat.split_once('/').filter(|(a, c)| !a.is_empty() && !c.is_empty()).ok_or_else(|| VerbError::value(format!("seat {seat:?} is not <account>/<channel_id>")))?;
+        self.seats.store.get(account, channel).await.ok_or_else(|| VerbError::value(format!("{seat} is no seat social has seen; `seats` lists them")))
+    }
+
+    /// The Remote Control switch on Ops: operations on this node is the one caller.
+    pub async fn seat_remote_control(&self, call: Call) -> Result<Value, VerbError> {
+        let st = self.ops_seat(&call).await?;
         if call.args.get("on").is_none_or(Value::is_null) {
             return Err(VerbError::value("seat_remote_control: missing required argument(s): on."));
         }
         let on = truthy(call.args.get("on"));
-        let (account, channel) = seat.split_once('/').filter(|(a, c)| !a.is_empty() && !c.is_empty()).ok_or_else(|| VerbError::value(format!("seat {seat:?} is not <account>/<channel_id>")))?;
-        let st = self.seats.store.get(account, channel).await.ok_or_else(|| VerbError::value(format!("{seat} is no seat social has seen; `seats` lists them")))?;
         self.seats.set_remote_control(&st, on).await;
         Ok(json!({"ok": true, "seat": st.id(), "remote_control": on, "live": "pending"}))
+    }
+
+    /// The Refresh button on Ops: operations on this node is the one caller.
+    pub async fn seat_refresh(&self, call: Call) -> Result<Value, VerbError> {
+        let st = self.ops_seat(&call).await?;
+        let (model, effort) = (s(&call.args, "model"), s(&call.args, "effort"));
+        if model.is_empty() {
+            return Err(VerbError::value("seat_refresh: missing required argument(s): model."));
+        }
+        awm_trust::trust::check_effort(&effort).map_err(|e| VerbError::value(format!("seat_refresh: {e}")))?;
+        self.seats.set_refresh(&st, &model, &effort).await;
+        Ok(json!({"ok": true, "seat": st.id(), "model": model, "effort": effort, "live": "pending"}))
     }
 
     // -- the seat hosts ---------------------------------------------------------------
@@ -793,6 +823,20 @@ impl Social {
         Ok(out)
     }
 
+    /// A seat agent's reaction or download, answered directly because the agent waits on it.
+    pub async fn seat_act(&self, call: Call) -> Result<Value, VerbError> {
+        let node = self.seat_host(&call)?;
+        let (account, channel, message) = (s(&call.args, "account"), s(&call.args, "channel"), s(&call.args, "message_id"));
+        if !self.answers(&node, &account, &channel).await {
+            return Err(VerbError::permission(format!("{node} does not answer {account}/{channel}")));
+        }
+        match s(&call.args, "action").as_str() {
+            "react" => self.react_to(&account, &channel, &message, &call.args).await,
+            "download" => self.inline_files(&account, &channel, &message, idx(&call.args)).await,
+            other => Err(VerbError::value(format!("seat_act: action is react or download, not {other:?}"))),
+        }
+    }
+
     /// Whether `node` hosts this chat's seat or holds it by hand.
     async fn answers(&self, node: &str, account: &str, channel: &str) -> bool {
         self.seats.store.get(account, channel).await.is_some_and(|st| st.node == node) || self.db.holder(account, channel).await.is_some_and(|m| m.node == node)
@@ -806,9 +850,9 @@ impl Social {
         }
         match kind {
             "seat" => {
-                // An answer to a Remote Control flip goes to Ops even when the seat did not change.
+                // An answer to a flip or a refresh goes to Ops even when the seat did not change.
                 let changed = self.seats.store.mirror(&account, &channel, &s(b, "state"), &s(b, "session_id"), truthy(b.get("remote_control")), &s(b, "rc_url"), b["public"].clone()).await;
-                if changed || b["event"].get("rc_live").is_some() {
+                if changed || b["event"].get("rc_live").is_some() || b["event"].get("refresh_live").is_some() {
                     self.emit("seats", b["event"].clone());
                 }
                 ok
@@ -896,6 +940,9 @@ impl Social {
             },
             _ => vec![],
         };
+        if let Err(e) = check_files(&*conn, account, &files) {
+            return json!({"ok": false, "error": e.message, "error_class": e.error_class, "retry": false});
+        }
         let thread = Some(s(b, "thread")).filter(|t| !t.is_empty());
         match conn.send(channel, &s(b, "text"), thread.as_deref(), &files).await {
             Ok(sent) => {
@@ -904,7 +951,7 @@ impl Social {
                 Value::Object(out)
             }
             Err(e) => {
-                let final_refusal = ["ValueError", "PermissionError", "FirstContactRefused", "FileNotFoundError"].contains(&e.error_class.as_str());
+                let final_refusal = ["ValueError", "PermissionError", "FirstContactRefused", "FileNotFoundError", "NotImplementedError", "Forbidden", "NotFound"].contains(&e.error_class.as_str());
                 json!({"ok": false, "error": e.message, "error_class": e.error_class, "retry": !final_refusal})
             }
         }
@@ -1118,5 +1165,29 @@ impl Social {
         for n in nodes {
             self.watch_node(&n);
         }
+    }
+}
+
+/// The optional attachment index of a download.
+/// Refuses files the account cannot take in one message.
+fn check_files(conn: &dyn Connector, account: &str, files: &[OutFile]) -> Result<(), VerbError> {
+    if files.is_empty() {
+        return Ok(());
+    }
+    if !conn.sends_files() {
+        return Err(VerbError::new("NotImplementedError", format!("{} account {account:?} does not take files through social", conn.platform())));
+    }
+    let size: u64 = files.iter().map(OutFile::size).sum();
+    if size > conn.max_file_bytes() {
+        return Err(VerbError::value(format!("the files come to {size} bytes, over the {} that {account:?} takes per message", conn.max_file_bytes())));
+    }
+    Ok(())
+}
+
+fn idx(args: &Value) -> Option<i64> {
+    match args.get("idx") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(x)) if x.is_empty() => None,
+        v => Some(int(v, 0)),
     }
 }

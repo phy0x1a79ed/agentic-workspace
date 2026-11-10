@@ -40,8 +40,9 @@ async fn a_message_waits_for_its_host_is_routed_once_and_resent_until_acked() {
     let reply = t.seats.pull("altair", 0, 0.0).await;
     assert_eq!(reply["rows"].as_array().unwrap().len(), 1, "one line for one message");
     let row = &reply["rows"][0];
-    assert_eq!((row["kind"].as_str(), row["line"].as_str(), row["new"].as_bool()), (Some("line"), Some("[slack/DM/tester, cooperative] hi"), Some(true)));
+    assert_eq!((row["kind"].as_str(), row["line"].as_str(), row["new"].as_bool()), (Some("line"), Some("[slack/DM/tester, cooperative, msg 1.0] hi"), Some(true)));
     assert_eq!((row["seat"]["node"].as_str(), row["seat"]["scope"].as_str(), row["seat"]["brief"].as_str()), (Some("altair"), Some("seats/tester"), Some("briefs/slack-slack.md")));
+    assert_eq!(row["seat"]["name"], "seat:slack/dm/tester");
     assert_eq!(reply["settings"]["paused"], true);
     assert!(t.seats.pull("mizar", 0, 0.0).await["rows"].as_array().unwrap().is_empty(), "another host's row is not mine");
 
@@ -88,6 +89,9 @@ async fn a_report_fills_what_seats_shows_and_a_change_is_flagged_once() {
     let report = json!({"state": "occupied", "id": "opal/D0TEST", "queued": 2});
     assert!(store.mirror("opal", "D0TEST", "occupied", "j1", true, "u", report.clone()).await);
     assert!(!store.mirror("opal", "D0TEST", "occupied", "j1", true, "u", report.clone()).await, "nothing evented changed");
+    let picked = json!({"state": "occupied", "id": "opal/D0TEST", "queued": 2, "model": "sonnet"});
+    assert!(store.mirror("opal", "D0TEST", "occupied", "j1", true, "u", picked).await, "a new model is evented");
+    assert!(store.mirror("opal", "D0TEST", "occupied", "j1", true, "u", report.clone()).await);
     let seat = store.get("opal", "D0TEST").await.unwrap();
     assert_eq!((seat.public(), seat.session_id.as_str()), (report, "j1"));
     assert!(!store.mirror("opal", "NOSEAT", "occupied", "j", false, "", json!({})).await);
@@ -103,4 +107,33 @@ async fn a_forward_queues_a_line_for_the_target_host_and_grants_a_day_of_reads()
     let now = crate::db::now();
     assert_eq!(t.seats.store.reads(vec![("opal".into(), "C0TEST".into())], "opal", now).await, ["D0TEST"]);
     assert!(t.seats.store.reads(vec![("opal".into(), "C0TEST".into())], "opal", now + READ_S + 1.0).await.is_empty());
+}
+
+#[tokio::test]
+async fn sync_drops_a_seat_the_config_no_longer_declares_and_redeclares_the_rest_by_name() {
+    let t = t();
+    t.seats.route(&dm("1.0")).await;
+    t.seats.declared("opal", "C0TEST", &Place { platform: "slack".into(), server: "Hallam Hive".into(), kind: ChatKind::Channel, chat_name: "general".into(), ..Default::default() }).await;
+    let mut cfg = t.seats.cfg.clone();
+    cfg.rules[0].except = vec!["D0TEST".into()];
+    let seats = Seats::new(t.seats.store.0.clone(), cfg, vec![AccountConfig { name: "opal".into(), platform: "slack".into(), ..Default::default() }]);
+    seats.sync().await;
+    assert!(seats.store.get("opal", "D0TEST").await.is_none());
+    let altair = seats.pull("altair", 0, 0.0).await;
+    let roster = altair["rows"].as_array().unwrap().last().unwrap().clone();
+    assert_eq!((roster["kind"].as_str(), roster["seats"].clone()), (Some("roster"), json!([])), "altair hosts no seat now");
+    let mizar = seats.pull("mizar", 0, 0.0).await;
+    assert_eq!((mizar["rows"][0]["kind"].as_str(), mizar["rows"][0]["seat"]["name"].as_str()), (Some("decl"), Some("seat:slack/hallam-hive/general")));
+}
+
+#[tokio::test]
+async fn a_message_from_an_excepted_sender_drops_its_stored_seat() {
+    let t = t();
+    t.seats.route(&dm("1.0")).await;
+    let mut cfg = t.seats.cfg.clone();
+    cfg.rules[0].except = vec!["U0".into()];
+    let seats = Seats::new(t.seats.store.0.clone(), cfg, vec![]);
+    assert_eq!(seats.route(&dm("2.0")).await, Routed::NotSeat);
+    assert!(seats.store.get("opal", "D0TEST").await.is_none());
+    assert_eq!(seats.pull("altair", 0, 0.0).await["rows"].as_array().unwrap().last().unwrap()["kind"], "roster");
 }

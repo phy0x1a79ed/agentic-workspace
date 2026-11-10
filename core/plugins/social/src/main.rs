@@ -32,8 +32,10 @@ async fn dispatch(app: Arc<Social>, name: &str, call: Call) -> Result<Value, Ver
         "unmount" => app.unmount(call).await,
         "forward" => app.forward(call).await,
         "seat_remote_control" => app.seat_remote_control(call).await,
+        "seat_refresh" => app.seat_refresh(call).await,
         "seat_pull" => app.seat_pull(call).await,
         "seat_report" => app.seat_report(call).await,
+        "seat_act" => app.seat_act(call).await,
         "search" => app.search(call).await,
         "download_attachments" => app.download_attachments(call).await,
         "accounts" => app.accounts(call).await,
@@ -118,6 +120,7 @@ async fn run() -> anyhow::Result<()> {
     let db = db::Db::open(&awm_plugin_sdk::config::service_dir("social").join("social.db"))?;
     let conns: app::Conns = Arc::new(RwLock::new(BTreeMap::new()));
     let seats = seats::Seats::new(db.clone(), loaded.seats.clone(), loaded.accounts.clone());
+    seats.sync().await;
     let buckets = loaded
         .buckets
         .iter()

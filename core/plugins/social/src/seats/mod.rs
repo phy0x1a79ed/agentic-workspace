@@ -76,6 +76,11 @@ impl Seats {
         self.accounts.iter().find(|a| a.name == account).map(|a| a.platform.clone()).unwrap_or_default()
     }
 
+    /// The seat's session name, worked out from the row, so a rename reaches every old row.
+    pub fn name(&self, s: &Seat) -> String {
+        self.place_of(s).session_name()
+    }
+
     fn place_of(&self, s: &Seat) -> Place {
         Place { platform: self.platform(&s.account), server: s.server.clone(), kind: kind_of(&s.kind), chat_name: s.channel_name.clone(), person: s.slug.clone() }
     }
@@ -87,7 +92,7 @@ impl Seats {
         json!({
             "model": model, "effort": effort,
             "account": s.account, "channel_id": s.channel_id, "channel_name": s.channel_name, "kind": s.kind, "server": s.server, "slug": s.slug,
-            "node": s.node, "scope": s.scope, "level": s.level, "platform": place.platform, "name": s.name,
+            "node": s.node, "scope": s.scope, "level": s.level, "platform": place.platform, "name": place.session_name(),
             "server_label": place.server_label(), "chat_label": place.chat_label(), "brief": line::brief_file(&place, &s.level),
         })
     }
@@ -95,12 +100,14 @@ impl Seats {
     /// The seat this message's chat is: its row, or a new one when the config declares it.
     async fn declare(&self, m: &Inbound) -> Option<(Seat, bool)> {
         if let Some(mut s) = self.store.get(&m.account, &m.channel_id).await {
+            if !self.declares(&s, &m.sender_id) {
+                self.forget(&s).await;
+                self.roster(&s.node, &self.store.all().await).await;
+                return None;
+            }
             if (!m.channel_name.is_empty() && m.channel_name != s.channel_name) || (!m.server.is_empty() && m.server != s.server) {
                 s.channel_name = if m.channel_name.is_empty() { s.channel_name } else { m.channel_name.clone() };
                 s.server = if m.server.is_empty() { s.server } else { m.server.clone() };
-                if s.kind != "dm" {
-                    s.name = self.place_of(&s).session_name();
-                }
                 self.store.save(&s).await;
             }
             return Some((s, false));
@@ -118,12 +125,45 @@ impl Seats {
             slug,
             node,
             level: level.as_str().into(),
-            name: place.session_name(),
             state: "empty".into(),
             ..Default::default()
         };
         self.store.save(&seat).await;
         Some((seat, true))
+    }
+
+    fn declares(&self, s: &Seat, sender: &str) -> bool {
+        self.cfg.seat_for(&s.account, &s.channel_id, &s.kind, sender).is_some()
+    }
+
+    async fn forget(&self, s: &Seat) {
+        tracing::info!("seat {} is no longer declared: dropped", s.id());
+        self.store.delete(&s.account, &s.channel_id).await;
+        self.store.0.unmount(&s.account, &s.channel_id).await;
+    }
+
+    /// The seats of `seats` that `node` hosts. The host forgets any seat the list lacks.
+    async fn roster(&self, node: &str, seats: &[Seat]) {
+        let ids: Vec<String> = seats.iter().filter(|s| s.node == node).map(Seat::id).collect();
+        self.queue(Row { node: node.into(), kind: "roster".into(), body: json!({"seats": ids}), ..Default::default() }).await;
+    }
+
+    /// At startup: forget each stored seat the config no longer declares, send each host the
+    /// current declaration of the rest, so a seat that hears nothing still carries today's name,
+    /// then each host's roster, which also clears a seat whose drop a host missed.
+    pub async fn sync(&self) {
+        let mut kept = vec![];
+        for s in self.store.all().await {
+            if self.declares(&s, "") {
+                self.queue(Self::row(&s, "decl", json!({}))).await;
+                kept.push(s);
+            } else {
+                self.forget(&s).await;
+            }
+        }
+        for node in &self.hosts {
+            self.roster(node, &kept).await;
+        }
     }
 
     async fn queue(&self, row: Row) {
@@ -170,6 +210,10 @@ impl Seats {
 
     pub async fn set_remote_control(&self, seat: &Seat, on: bool) {
         self.queue(Self::row(seat, "remote_control", json!({"on": on}))).await;
+    }
+
+    pub async fn set_refresh(&self, seat: &Seat, model: &str, effort: &str) {
+        self.queue(Self::row(seat, "refresh", json!({"model": model, "effort": effort}))).await;
     }
 
     /// Take `node`'s ack, then answer with what waits for it, holding up to `wait_s` for a row.
