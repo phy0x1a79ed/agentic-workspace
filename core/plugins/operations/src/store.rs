@@ -933,7 +933,7 @@ impl Store {
                 let to_working = match (state, row.section.as_str()) {
                     ("blocked", WORKING | NEEDS_YOU | STALE) => false,
                     ("working", NEEDS_YOU | STALE) | ("done", STALE) => true,
-                    ("done", NEEDS_YOU) if by_state => true,
+                    ("done", NEEDS_YOU) if by_state || row.status.is_none() => true,
                     _ => continue,
                 };
                 let mut meta = row.meta.clone();

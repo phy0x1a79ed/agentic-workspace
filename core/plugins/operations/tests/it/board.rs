@@ -407,6 +407,9 @@ fn a_main_sessions_state_moves_its_card_and_a_request_outlives_the_turn() {
     assert_eq!(st.reconcile(&roster).unwrap()["state"], json!(["T0000002"]), "reconcile applies the roster's state");
     assert_eq!(st.session_gone(Some(&sid(3)), None, "mizar", true).unwrap(), ["T0000002"]);
     assert_eq!(at(&st, "T0000002"), ("history".into(), json!("done")), "a retire files the card as done");
+    let agent = Open { task_id: Some("T0000003".into()), session_id: Some(sid(4)), node: Some("mizar".into()), section: Some("needs_you".into()), ..Open::default() };
+    st.task_open("New agent", agent, None).unwrap();
+    assert_eq!(st.session_state(Some(&sid(4)), None, "mizar", "done", None).unwrap(), ["T0000003"], "a New agent card leaves Needs you when its first turn ends");
 }
 
 #[test]
