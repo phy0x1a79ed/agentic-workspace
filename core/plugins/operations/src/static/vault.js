@@ -11,8 +11,7 @@ function say(text, bad = false) {
   status.className = bad ? "bad" : "";
 }
 
-function el(tag, attrs = {}, ...kids) {
-  const e = document.createElement(tag);
+function fill(e, attrs, kids) {
   for (const [k, v] of Object.entries(attrs)) {
     if (k === "onclick") e.addEventListener("click", v);
     else e.setAttribute(k, v);
@@ -21,20 +20,13 @@ function el(tag, attrs = {}, ...kids) {
   return e;
 }
 
-const SVG = "http://www.w3.org/2000/svg";
+const el = (tag, attrs = {}, ...kids) => fill(document.createElement(tag), attrs, kids);
+const svg = (tag, attrs = {}, ...kids) => fill(document.createElementNS("http://www.w3.org/2000/svg", tag), attrs, kids);
 
-function keyIcon() {
-  const svg = document.createElementNS(SVG, "svg");
-  for (const [k, v] of Object.entries({ viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", "stroke-width": "2",
-    "stroke-linecap": "round", "stroke-linejoin": "round", "aria-hidden": "true" })) svg.setAttribute(k, v);
-  const path = document.createElementNS(SVG, "path");
-  path.setAttribute("d", "M2.6 18.4A2 2 0 0 0 2 19.8V21a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h1a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h.2a2 2 0 0 0 1.4-.6l.8-.8a6.5 6.5 0 1 0-4-4z");
-  svg.append(path);
-  const dot = document.createElementNS(SVG, "circle");
-  for (const [k, v] of Object.entries({ cx: "16.5", cy: "7.5", r: ".5", fill: "currentColor" })) dot.setAttribute(k, v);
-  svg.append(dot);
-  return svg;
-}
+const keyIcon = () => svg("svg", { viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", "stroke-width": "2",
+                                    "stroke-linecap": "round", "stroke-linejoin": "round", "aria-hidden": "true" },
+  svg("path", { d: "M2.6 18.4A2 2 0 0 0 2 19.8V21a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h1a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h.2a2 2 0 0 0 1.4-.6l.8-.8a6.5 6.5 0 1 0-4-4z" }),
+  svg("circle", { cx: "16.5", cy: "7.5", r: ".5", fill: "currentColor" }));
 
 // The one action a page asks for: full width, filled, with the passkey glyph.
 function primary(label, onclick) {
@@ -127,12 +119,11 @@ function portalList() {
 
 async function pageSignin() {
   const done = () => {
-    lede.textContent = "You are signed in.";
-    if (data.frame) { tell({ type: "awm-signed-in" }); say(""); return; }
+    say("");
+    if (data.frame) { lede.textContent = "You are signed in."; tell({ type: "awm-signed-in" }); return; }
     lede.textContent = "You are signed in. Open a surface:";
     main.append(portalList(),
                 el("button", { class: "plain", onclick: async () => { await api("/api/signout", {}); location.reload(); } }, "Sign out"));
-    say("");
   };
   if (data.signed_in) return done();
   lede.textContent = "One passkey tap signs you in for 12 hours.";
@@ -252,8 +243,8 @@ async function pageDevices() {
   try { list = await api("/api/devices"); } catch (e) { say(e.message, true); return; }
   const ul = el("ul", { class: "rows" });
   for (const d of list) {
-    const li = el("li", {}, el("span", { class: "name" }, d.name || d.device_id, " ",
-                               el("span", { class: "muted" }, `${d.device_id}${d.revoked_at ? ", revoked" : ""}`)));
+    const meta = el("span", { class: "muted" }, `${d.device_id}${d.revoked_at ? ", revoked" : ""}`);
+    const li = el("li", {}, el("span", { class: "name" }, d.name || d.device_id, " ", meta));
     if (!d.revoked_at) {
       const b = el("button", { class: "plain", onclick: async () => {
         b.disabled = true;
@@ -261,7 +252,7 @@ async function pageDevices() {
           const begin = await api(`/api/device/${encodeURIComponent(d.device_id)}/revoke/options`, {});
           const assertion = await tap(begin.options);
           await api(`/api/device/${encodeURIComponent(d.device_id)}/revoke`, { nonce: begin.nonce, assertion });
-          li.firstChild.lastChild.append(", revoked");
+          meta.append(", revoked");
           b.remove();
         } catch (e) { say(e.message, true); b.disabled = false; }
       } }, "Revoke");
