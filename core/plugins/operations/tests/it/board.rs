@@ -197,7 +197,7 @@ fn a_missing_queue_is_refused_unless_created() {
 #[test]
 fn downgrade_sections_renames_back_for_python() {
     let m = migrated();
-    assert_eq!(m.store.session_gone(Some(S3), None, "mizar").unwrap(), ["T0000003"]);
+    assert_eq!(m.store.session_gone(Some(S3), None, "mizar", false).unwrap(), ["T0000003"]);
     assert_eq!(m.store.task_get("T0000003").unwrap()["section"], "stale");
     assert_eq!(m.store.downgrade_sections().unwrap(), json!({"history_to_done": 1, "stale_to_working": 1}));
     let path = m.dir.path().join("queue.db");
@@ -276,7 +276,7 @@ async fn fixture_board() -> Value {
         task_id: Some("T0000004".into()), session_id: Some(S4.into()), node: Some("lyra".into()), name: Some("old-work".into()), job: Some("job-d".into()), ..Open::default()
     }, None).unwrap();
     at(10.0);
-    st.session_gone(Some(S4), None, "lyra").unwrap();
+    st.session_gone(Some(S4), None, "lyra", false).unwrap();
     at(11.0);
     st.card_close("T0000004").unwrap();
     at(12.0);
@@ -337,13 +337,13 @@ fn a_gone_session_leaves_its_lone_card_stale() {
     seated(&st, "T0000001", &sid(1), "mizar", "job-a");
     seated(&st, "T0000002", &sid(2), "lyra", "job-b");
     st.task_report("T0000002", Some(&sid(2)), "blocked", Some("a key"), None).unwrap();
-    assert_eq!(st.session_gone(Some(&sid(1)), None, "mizar").unwrap(), ["T0000001"]);
+    assert_eq!(st.session_gone(Some(&sid(1)), None, "mizar", false).unwrap(), ["T0000001"]);
     assert_eq!(at(&st, "T0000001"), ("stale".into(), Value::Null));
     assert_eq!(st.task_sessions("T0000001").unwrap()[0]["active"], false);
-    assert!(st.session_gone(None, Some("job-b"), "mizar").unwrap().is_empty(), "a job is matched on its own node");
-    assert_eq!(st.session_gone(None, Some("job-b"), "lyra").unwrap(), ["T0000002"]);
+    assert!(st.session_gone(None, Some("job-b"), "mizar", false).unwrap().is_empty(), "a job is matched on its own node");
+    assert_eq!(st.session_gone(None, Some("job-b"), "lyra", false).unwrap(), ["T0000002"]);
     assert_eq!(at(&st, "T0000002"), ("stale".into(), json!("blocked")), "a Needs-you card goes Stale too");
-    assert!(st.session_gone(Some(&sid(9)), None, "mizar").unwrap().is_empty());
+    assert!(st.session_gone(Some(&sid(9)), None, "mizar", false).unwrap().is_empty());
 }
 
 #[test]
@@ -351,11 +351,11 @@ fn a_card_with_another_live_session_stays() {
     let (_d, st) = fresh();
     seated(&st, "T0000001", &sid(1), "mizar", "job-a");
     st.task_attach("T0000001", &sid(2), "worker", Seat { node: Some("lyra".into()), ..Seat::default() }, None).unwrap();
-    assert!(st.session_gone(Some(&sid(1)), None, "mizar").unwrap().is_empty());
+    assert!(st.session_gone(Some(&sid(1)), None, "mizar", false).unwrap().is_empty());
     assert_eq!(at(&st, "T0000001").0, "working");
     seated(&st, "T0000002", &sid(3), "mizar", "job-c");
     st.card_close("T0000002").unwrap();
-    assert!(st.session_gone(Some(&sid(3)), None, "mizar").unwrap().is_empty(), "a History card stays in History");
+    assert!(st.session_gone(Some(&sid(3)), None, "mizar", false).unwrap().is_empty(), "a History card stays in History");
     assert_eq!(at(&st, "T0000002").0, "history");
 }
 
@@ -364,19 +364,49 @@ fn a_live_session_brings_its_card_back_and_close_files_a_stale_one() {
     let (_d, st) = fresh();
     seated(&st, "T0000001", &sid(1), "mizar", "job-a");
     seated(&st, "T0000002", &sid(2), "mizar", "job-b");
-    st.session_gone(Some(&sid(1)), None, "mizar").unwrap();
-    st.session_gone(Some(&sid(2)), None, "mizar").unwrap();
+    st.session_gone(Some(&sid(1)), None, "mizar", false).unwrap();
+    st.session_gone(Some(&sid(2)), None, "mizar", false).unwrap();
     assert_eq!(st.session_live(Some(&sid(1)), None, "mizar").unwrap(), ["T0000001"]);
     assert_eq!(at(&st, "T0000001"), ("working".into(), Value::Null));
     assert_eq!(st.task_sessions("T0000001").unwrap()[0]["active"], true);
     assert!(st.session_live(Some(&sid(1)), None, "mizar").unwrap().is_empty(), "a Working card stays");
     assert_eq!(st.card_close("T0000002").unwrap()["section"], "history");
     seated(&st, "T0000003", &sid(3), "lyra", "job-c");
-    st.session_gone(None, Some("job-c"), "lyra").unwrap();
+    st.session_gone(None, Some("job-c"), "lyra", false).unwrap();
     assert_eq!(st.session_live(None, Some("job-c"), "lyra").unwrap(), ["T0000003"]);
     seated(&st, "T0000004", &sid(4), "lyra", "job-d");
-    st.session_gone(Some(&sid(4)), None, "lyra").unwrap();
+    st.session_gone(Some(&sid(4)), None, "lyra", false).unwrap();
     assert_eq!(st.task_claim("T0000004", &sid(5), Seat::default(), None).unwrap()["section"], "working", "a claim takes a Stale card");
+}
+
+#[test]
+fn a_main_sessions_state_moves_its_card_and_a_request_outlives_the_turn() {
+    let (_d, st) = fresh();
+    seated(&st, "T0000001", &sid(1), "mizar", "job-a");
+    let state = |s: &str, needs: Option<&str>| st.session_state(Some(&sid(1)), None, "mizar", s, needs).unwrap();
+    assert_eq!(state("blocked", Some("pick one")), ["T0000001"]);
+    assert_eq!(at(&st, "T0000001"), ("needs_you".into(), json!("blocked")));
+    assert_eq!(st.task_get("T0000001").unwrap()["meta"]["reason"], json!("pick one"));
+    assert!(state("blocked", Some("pick one")).is_empty(), "the same block writes nothing");
+    assert_eq!(state("done", None), ["T0000001"], "a block's own Needs you clears when the turn ends");
+    assert_eq!(at(&st, "T0000001"), ("working".into(), Value::Null));
+    assert!(state("done", None).is_empty(), "a turn ending done stays in Working");
+    st.task_report("T0000001", Some(&sid(1)), "review", Some("look"), None).unwrap();
+    assert!(state("done", None).is_empty(), "a request_human outlives the turn after it");
+    assert_eq!(state("working", None), ["T0000001"], "Tony's answer starts the session working");
+    st.task_attach("T0000001", &sid(2), "worker", Seat { node: Some("mizar".into()), ..Seat::default() }, None).unwrap();
+    assert!(st.session_state(Some(&sid(2)), None, "mizar", "blocked", Some("x")).unwrap().is_empty(), "only the main session moves the card");
+    st.card_close("T0000001").unwrap();
+    assert!(state("blocked", Some("y")).is_empty(), "a closed card stays closed");
+    seated(&st, "T0000002", &sid(3), "mizar", "job-c");
+    st.session_gone(Some(&sid(3)), None, "mizar", false).unwrap();
+    assert_eq!(st.session_state(Some(&sid(3)), None, "mizar", "working", None).unwrap(), ["T0000002"], "a state takes a Stale card");
+    let roster = HashMap::from([("mizar".to_string(), vec![
+        LiveSession { session_id: Some(sid(3)), state: Some("blocked".into()), needs: Some("why".into()), ..LiveSession::default() },
+    ])]);
+    assert_eq!(st.reconcile(&roster).unwrap()["state"], json!(["T0000002"]), "reconcile applies the roster's state");
+    assert_eq!(st.session_gone(Some(&sid(3)), None, "mizar", true).unwrap(), ["T0000002"]);
+    assert_eq!(at(&st, "T0000002"), ("history".into(), json!("done")), "a retire files the card as done");
 }
 
 #[test]
@@ -423,17 +453,17 @@ fn reconcile_follows_the_roster_on_the_nodes_it_lists() {
     seated(&st, "T0000002", &sid(2), "mizar", "job-b");
     seated(&st, "T0000003", &sid(3), "lyra", "job-c");
     seated(&st, "T0000004", &sid(4), "mizar", "job-d");
-    st.session_gone(Some(&sid(2)), None, "mizar").unwrap();
+    st.session_gone(Some(&sid(2)), None, "mizar", false).unwrap();
     let roster = HashMap::from([("mizar".to_string(), vec![
         LiveSession { session_id: Some(sid(2)), job: Some("job-b".into()), name: None, ..LiveSession::default() },
         LiveSession { session_id: None, job: Some("job-d".into()), name: None, ..LiveSession::default() },
     ])]);
     let out = st.reconcile(&roster).unwrap();
-    assert_eq!(out, json!({"stale": ["T0000001"], "working": ["T0000002"]}));
+    assert_eq!(out, json!({"stale": ["T0000001"], "working": ["T0000002"], "state": []}));
     assert_eq!(at(&st, "T0000003").0, "working", "a node the roster does not list is left alone");
     assert_eq!(at(&st, "T0000004").0, "working", "matched on its job");
     let empty = HashMap::from([("lyra".to_string(), vec![])]);
-    assert_eq!(st.reconcile(&empty).unwrap(), json!({"stale": ["T0000003"], "working": []}), "a listed node with no sessions ends them all");
+    assert_eq!(st.reconcile(&empty).unwrap(), json!({"stale": ["T0000003"], "working": [], "state": []}), "a listed node with no sessions ends them all");
 }
 
 #[test]

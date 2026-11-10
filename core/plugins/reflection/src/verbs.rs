@@ -24,7 +24,7 @@ pub const UNKNOWN_MODE: &str = "unknown";
 /// The level an isolated session starts at when the caller names none (fleet.md R109).
 pub const ISOLATED_TRUST: &str = "untrusted";
 /// `harness_event` kinds that report a session's lifecycle.
-pub const LIFECYCLE: [&str; 4] = ["started", "stopped", "remote_control", "renamed"];
+pub const LIFECYCLE: [&str; 5] = ["started", "stopped", "remote_control", "renamed", "state"];
 /// The emit topic of the session lifecycle, `reflection/sessions`.
 pub const SESSIONS_TOPIC: &str = "sessions";
 /// The keys every `list_other` row carries, null when its provider gave none.
@@ -757,7 +757,7 @@ impl<G: Gateway> App<G> {
         let ts = chrono::DateTime::from_timestamp_millis(self.node.now_ms()).map(|t| t.to_rfc3339());
         let mut out = json!({"event": field("kind"), "job": field("job"), "session_id": field("session_id"), "name": field("name"),
                              "node": self.node.name(), "project": project, "scope": scope, "kind": field("session_kind"), "ts": ts});
-        for key in ["task_id", "rc_url"] {
+        for key in ["task_id", "rc_url", "state", "needs", "retired"] {
             if let Some(v) = event.get(key).filter(|v| truthy(Some(v))) {
                 out[key] = v.clone();
             }

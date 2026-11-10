@@ -83,10 +83,9 @@ async fn a_block_moves_the_card_and_urgent_sends_a_dm() {
     let dm = &h.out.dms()[0];
     assert!(dm.contains("needs the VPN key") && dm.contains("fix-tunnel") && dm.contains("job-a"), "{dm}");
     let tid = s(&out["task_id"]);
-    assert_eq!(out["card_url"], json!(format!("https://board.example.test/card/{tid}")));
-    assert!(out.get("panel_url").is_none());
+    assert!(out.get("card_url").is_none(), "the session is not shown the board");
     let got = h.call("task_get", none(), json!({"task_id": tid})).await;
-    assert_eq!(got["card_url"], out["card_url"]);
+    assert_eq!(got["card_url"], json!(format!("https://board.example.test/card/{tid}")));
     assert_eq!(got["task"]["task_id"], json!(tid));
     let card = h.card(&out["task_id"]);
     assert_eq!(card["meta"]["reason"], "needs the VPN key");
@@ -178,28 +177,6 @@ async fn a_session_that_goes_while_connecting_is_forgotten() {
 }
 
 #[tokio::test]
-async fn tonys_prompt_moves_the_card_to_working() {
-    let h = harness();
-    h.call("task_open", pid(11), json!({"title": "port", "name": "fix-tunnel"})).await;
-    let out = h.call("request_human", pid(11), json!({"kind": "blocked", "reason": "which port?"})).await;
-    assert_eq!(h.call("hook_prompt", pid(22), json!({"prompt": "hi"})).await["moved"], false);
-    let moved = h.call("hook_prompt", pid(11), json!({"prompt": "use 2201"})).await;
-    assert_eq!((moved["moved"].clone(), moved["blocked"].clone()), (json!(true), json!(false)));
-    assert_eq!(h.card(&out["task_id"])["section"], "working");
-    assert_eq!(h.call("hook_prompt", pid(11), json!({"prompt": "thanks"})).await["moved"], false);
-}
-
-#[tokio::test]
-async fn the_first_prompt_moves_and_titles_an_agent_card() {
-    let h = harness();
-    let t = h.env.store.agent_card("mizar", None).unwrap()["task_id"].clone();
-    assert!(ok(&h.call("task_attach", pid(11), json!({"task_id": t, "session_id": A, "role": "main"})).await));
-    assert_eq!(h.card(&t)["section"], "needs_you");
-    assert_eq!(h.call("hook_prompt", pid(11), json!({"prompt": "fix the toast"})).await["moved"], true);
-    assert_eq!((h.card(&t)["section"].clone(), h.card(&t)["title"].clone()), (json!("working"), json!("fix the toast")));
-}
-
-#[tokio::test]
 async fn join_tells_the_main_session() {
     let h = harness();
     let t = h.call("task_open", pid(11), json!({"title": "main work", "name": "fix-tunnel"})).await["task_id"].clone();
@@ -265,7 +242,7 @@ async fn a_session_through_the_door_acts_on_its_own_card() {
     assert_eq!((s(&ses["session_id"]), s(&ses["node"]), s(&ses["job"])), (d.clone(), "lyra".into(), "job-d".into()));
     let dm = &h.out.dms()[0];
     assert!(dm.contains("on **lyra**") && dm.contains("job-d` on lyra"), "{dm}");
-    let plan = h.call("hook_plan", door(&d, "lyra"), json!({"plan_text": "# Next"})).await;
+    let plan = h.call("hook_plan_approved", door(&d, "lyra"), json!({"plan_text": "# Next"})).await;
     assert_eq!((plan["task_id"].clone(), plan["opened"].clone()), (out["task_id"].clone(), json!(false)));
     let new = format!("cc{}", "e".repeat(32));
     let cleared = h.call("hook_session_clear", door(&new, "lyra"), json!({"new_session_id": new})).await;
@@ -273,23 +250,36 @@ async fn a_session_through_the_door_acts_on_its_own_card() {
 }
 
 #[tokio::test]
-async fn a_plan_opens_a_planned_card_and_approval_moves_it_to_working() {
+async fn an_approved_plan_opens_a_card_titled_by_its_heading_but_not_for_a_seat() {
     let h = harness();
-    let out = h.call("hook_plan", pid(11), json!({"session_id": A, "plan_text": "# Fix the tunnel\n\nsteps"})).await;
-    assert_eq!((out["opened"].clone(), out["blocked"].clone()), (json!(true), json!(true)));
-    let tid = s(&out["task_id"]);
-    assert!(s(&out["notice"]).contains(&tid));
+    let out = h.call("hook_plan_approved", pid(11), json!({"session_id": A, "plan_text": "# Fix the tunnel\n\nsteps"})).await;
+    assert_eq!(out["opened"], json!(true), "{out}");
+    assert!(out.get("notice").is_none(), "the session is told nothing");
     let card = h.card(&out["task_id"]);
-    assert_eq!((s(&card["title"]), s(&card["section"]), s(&card["status"])), ("Fix the tunnel".into(), "needs_you".into(), "planned".into()));
+    assert_eq!((s(&card["title"]), s(&card["section"])), ("Fix the tunnel".into(), "working".into()));
     assert!(s(&card["meta"]["plan"]).starts_with("# Fix the tunnel"));
-    let again = h.call("hook_plan", pid(11), json!({"session_id": A, "plan_text": "# Fix the tunnel v2"})).await;
+    let again = h.call("hook_plan_approved", pid(11), json!({"session_id": A, "plan_text": "# Fix the tunnel v2"})).await;
     assert_eq!((again["task_id"].clone(), again["opened"].clone()), (out["task_id"].clone(), json!(false)));
-    assert!(again.get("notice").is_none());
-    let done = h.call("hook_plan_approved", pid(11), json!({"session_id": A, "plan_text": "# Fix the tunnel v3"})).await;
-    let card = h.card(&out["task_id"]);
-    assert_eq!((done["blocked"].clone(), s(&card["section"])), (json!(false), "working".into()));
-    assert_eq!(card["meta"]["plan"], "# Fix the tunnel v3");
-    assert_eq!(h.call("hook_prompt", pid(11), json!({"prompt": "go"})).await["moved"], false);
+    assert_eq!(h.card(&out["task_id"])["meta"]["plan"], "# Fix the tunnel v2");
+    h.out.pids.lock().unwrap().insert(44, json!({"ok": true, "session_id": format!("cc{}", "4".repeat(32)), "job": "job-s", "name": "seat:slack/lab/ryan"}));
+    let seat = h.call("hook_plan_approved", pid(44), json!({"plan_text": "# Seat work"})).await;
+    assert_eq!((seat["tracked"].clone(), seat.get("task_id")), (json!(false), None), "a seat gets no card");
+}
+
+#[tokio::test]
+async fn a_clear_keeps_the_job_on_its_card() {
+    let h = harness();
+    let t = h.call("track_task", pid(11), json!({"title": "before the clear"})).await["task_id"].clone();
+    let new = format!("cc{}", "c".repeat(32));
+    h.out.pids.lock().unwrap().insert(33, json!({"ok": true, "session_id": new, "job": "job-a", "name": "fix-tunnel"}));
+    let out = h.call("hook_session_clear", pid(33), json!({"new_session_id": new})).await;
+    assert_eq!((s(&out["ended"]), out["task_id"].clone()), (A.into(), t.clone()));
+    let rows: HashMap<String, (bool, String)> = h.env.store.task_sessions(&s(&t)).unwrap().iter()
+        .map(|x| (s(&x["session_id"]), (x["active"].as_bool().unwrap(), s(&x["role"])))).collect();
+    assert_eq!(rows, HashMap::from([(A.to_string(), (false, "main".into())), (new.clone(), (true, "main".into()))]));
+    assert_eq!(h.card(&t)["section"], "working");
+    let plan = h.call("hook_plan_approved", pid(33), json!({"session_id": new, "plan_text": "# Next"})).await;
+    assert_eq!((plan["opened"].clone(), plan["task_id"].clone()), (json!(false), t), "the next plan lands on the same card");
 }
 
 #[tokio::test]
@@ -301,21 +291,6 @@ async fn todos_show_on_the_card_and_need_one() {
     assert_eq!(h.call("hook_todos", pid(11), json!({"session_id": A, "items": items})).await["tracked"], true);
     assert_eq!(h.card(&t)["meta"]["todos"], items);
     assert!(!ok(&h.call("hook_todos", pid(11), json!({"session_id": A, "items": "x"})).await));
-}
-
-#[tokio::test]
-async fn a_clear_takes_the_old_session_off_its_card() {
-    let h = harness();
-    let t = h.call("track_task", pid(11), json!({"title": "before the clear"})).await["task_id"].clone();
-    let new = format!("cc{}", "c".repeat(32));
-    h.out.pids.lock().unwrap().insert(33, json!({"ok": true, "session_id": new, "job": "job-a", "name": "fix-tunnel"}));
-    let out = h.call("hook_session_clear", pid(33), json!({"new_session_id": new})).await;
-    assert_eq!((s(&out["ended"]), out["task_id"].clone()), (A.into(), t.clone()));
-    let active: HashMap<String, bool> = h.env.store.task_sessions(&s(&t)).unwrap().iter().map(|x| (s(&x["session_id"]), x["active"].as_bool().unwrap())).collect();
-    assert_eq!(active, HashMap::from([(A.to_string(), false)]));
-    assert_eq!(h.call("task_for_session", none(), json!({"session_id": new})).await["task_id"], Value::Null);
-    let plan = h.call("hook_plan", pid(33), json!({"session_id": new, "plan_text": "# Next"})).await;
-    assert!(plan["opened"] == true && plan["task_id"] != t, "{plan}");
 }
 
 #[tokio::test]
@@ -346,7 +321,7 @@ async fn an_urgent_block_reminds_tony_once() {
     assert_eq!(h.front.remind_due().await, 0);
     assert_eq!(h.out.dms().len(), 2);
     h.call("request_human", pid(11), json!({"kind": "blocked", "reason": "again", "urgent": true})).await;
-    h.call("hook_prompt", pid(11), json!({"prompt": "here you go"})).await;
+    h.env.store.session_state(Some(A), None, "mizar", "working", None).unwrap();
     h.clock.advance(61.0);
     assert_eq!(h.front.remind_due().await, 0);
     assert_eq!(h.card(&out["task_id"])["section"], "working");
