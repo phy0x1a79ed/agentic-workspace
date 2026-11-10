@@ -1,5 +1,5 @@
 # The reflection core plugin binary (static musl) that a deploy places at <AWM_DIR>/bin/reflection.
 # Written by the deploy on mizar (scripts/refresh-pins.sh). Do not edit.
-version=reflection-fabef1ec6551
-file=awm-plugin-reflection-fabef1ec6551-linux-x86_64-musl
-sha256=2bb808533ccd69dd2a7952bf37c37a0991a62028e61df873b5aa4e37f1e3dd48
+version=reflection-b50640ab1f8e
+file=awm-plugin-reflection-b50640ab1f8e-linux-x86_64-musl
+sha256=24a2ef02883b2c8c9d01a457dc0f725aae705f1d825f73887eba6380d6137320
