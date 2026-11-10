@@ -10,10 +10,6 @@
           "required": false
         },
         {
-          "name": "ref",
-          "required": false
-        },
-        {
           "name": "pid",
           "required": false,
           "type": "integer"
@@ -38,8 +34,9 @@
       "description": "Harness contract verb `find` for DeepSeek harness sessions.",
       "params": [
         {
-          "name": "ref",
-          "required": true
+          "name": "name",
+          "required": true,
+          "description": "The whole session name, any case."
         }
       ],
       "surfaces": [
@@ -53,10 +50,6 @@
       "params": [
         {
           "name": "session_id",
-          "required": false
-        },
-        {
-          "name": "ref",
           "required": false
         },
         {
@@ -126,10 +119,6 @@
           "required": false
         },
         {
-          "name": "ref",
-          "required": false
-        },
-        {
           "name": "pid",
           "required": false,
           "type": "integer"
@@ -150,10 +139,6 @@
       "params": [
         {
           "name": "session_id",
-          "required": false
-        },
-        {
-          "name": "ref",
           "required": false
         },
         {
@@ -196,10 +181,6 @@
       "params": [
         {
           "name": "session_id",
-          "required": false
-        },
-        {
-          "name": "ref",
           "required": false
         },
         {
@@ -312,10 +293,6 @@
           "required": false
         },
         {
-          "name": "ref",
-          "required": false
-        },
-        {
           "name": "pid",
           "required": false,
           "type": "integer"
@@ -332,10 +309,6 @@
       "params": [
         {
           "name": "session_id",
-          "required": false
-        },
-        {
-          "name": "ref",
           "required": false
         },
         {

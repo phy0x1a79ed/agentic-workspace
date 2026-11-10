@@ -33,6 +33,7 @@ async fn service() -> anyhow::Result<()> {
     let awm_dir = config::awm_dir();
     let svc = Service::from_env()?;
     let store = Store::new(reflection::snapshot::service_dir(&awm_dir));
+    store.migrate_session_ids()?;
     let app = Arc::new(App::new(svc.context().hub().clone(), Arc::new(LiveNode(svc.context())), Arc::new(Policy), store));
     let boot = app.clone();
     let grant_key = awm_trust::grant::grant_key_env(std::env::var(awm_trust::grant::GRANT_KEY_ENV).ok())

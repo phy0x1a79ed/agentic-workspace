@@ -58,7 +58,7 @@ claim() {
   exec 3<&- 3>&-
   # The gateway returns the verb's answer as a JSON string inside `result`, so
   # its quotes arrive escaped.
-  local re='\\?"session\\?"[[:space:]]*:[[:space:]]*\\?"([A-Za-z0-9]+)'
+  local re='\\?"attach\\?"[[:space:]]*:[[:space:]]*\\?"([A-Za-z0-9]+)'
   [[ $resp =~ $re ]] || return 1
   printf '%s\n' "${BASH_REMATCH[1]}"
 }

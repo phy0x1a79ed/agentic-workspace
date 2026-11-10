@@ -17,7 +17,7 @@ pytestmark = [pytest.mark.unit]
 
 NODES = [
     {"node": "mizar", "role": "compute", "last_seen": 1000, "sessions_7d": 12,
-     "sessions": [{"job": "ab12", "name": "plugin-redux/port-trilium", "link": "https://claude.ai/code/s1",
+     "sessions": [{"session_id": "cc00000000000040008000000000ab12", "name": "plugin-redux/port-trilium", "link": "https://claude.ai/code/s1",
                    "scope": "awm/x", "remote_control": True}],
      "services": [{"service": "trilium", "up": True}],
      "uses": [{"tool": "journal", "host": "alcor", "listed": True, "last_checked": 5, "last_used": 4},

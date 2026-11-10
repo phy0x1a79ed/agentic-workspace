@@ -11,7 +11,7 @@ use std::future::Future;
 
 use serde_json::{json, Map, Value};
 
-use crate::app::{text, App};
+use crate::app::{text, truthy, App};
 use crate::caller::Frame;
 use crate::gateway::Gateway;
 use crate::store::File;
@@ -26,7 +26,9 @@ pub struct NewWait {
     pub session_id: String,
     pub until: Vec<String>,
     pub tool: String,
-    pub job: Option<String>,
+    /// The waiter stops with its conversation kept, so a resume wakes it. A terminal waiter is
+    /// woken by a line typed into it.
+    pub kept: bool,
     pub name: String,
     pub cwd: Option<String>,
     pub retired: Vec<String>,
@@ -97,13 +99,13 @@ impl<G: Gateway> App<G> {
         }
     }
 
-    /// Record a wait. A second wait of one session replaces the first. A waiter with no `job` is a
-    /// terminal session: it is woken by a line typed into it, not by a resume.
+    /// Record a wait. A second wait of one session replaces the first. A waiter that
+    /// is not `kept` is a terminal session.
     pub async fn add_wait(&self, w: NewWait) -> Value {
         let place = self.scope_of(w.cwd.as_deref()).await;
         let retired: Vec<&String> = w.until.iter().filter(|s| w.retired.contains(s)).collect();
         let row = json!({"session_id": w.session_id, "until": w.until, "retired": retired, "tool": w.tool,
-                         "job": w.job, "name": w.name, "since_ms": self.node.now_ms(),
+                         "kept": w.kept, "name": w.name, "since_ms": self.node.now_ms(),
                          "project": place.as_ref().map(|p| &p.0), "scope": place.as_ref().map(|p| &p.1)});
         let _held = self.store.lock(File::Waits).await;
         let mut rows: Vec<Value> = self.waits().await.into_iter().filter(|r| waiter(r) != w.session_id).collect();
@@ -116,13 +118,6 @@ impl<G: Gateway> App<G> {
     pub async fn drop_wait(&self, session_id: &str) {
         let _held = self.store.lock(File::Waits).await;
         let rows = self.waits().await.into_iter().filter(|r| waiter(r) != session_id).collect();
-        self.save_waits(rows).await;
-    }
-
-    /// Clear the wait of the session whose job is `job`: it was resumed by hand.
-    pub async fn drop_wait_of_job(&self, job: &str) {
-        let _held = self.store.lock(File::Waits).await;
-        let rows = self.waits().await.into_iter().filter(|r| job.is_empty() || text(r, "job") != Some(job)).collect();
         self.save_waits(rows).await;
     }
 
@@ -223,14 +218,15 @@ impl<G: Gateway> App<G> {
         lost
     }
 
-    /// Resume a waiter that kept its job, or type the wake line into a terminal waiter.
+    /// Resume a waiter that kept its conversation, or type the wake line into a terminal waiter.
     pub async fn wake(&self, row: Value) -> Result<Value, String> {
         let sid = waiter(&row).to_string();
         let p = self.for_platform(crate::providers::platform_of(&sid)).await.map_err(|e| format!("HarnessError: {e}"))?;
         let line = self.provider_text(&Frame::service("reflection"), &wake_text(&row)).await;
-        let out = match text(&row, "job") {
-            Some(job) => self.harness_call(&p, "resume", json!({"ref": job, "adopt_lineage": true, "prompt": line}), None).await,
-            None => self.harness_call(&p, "send", json!({"session_id": sid, "text": line}), None).await,
+        let out = if truthy(row.get("kept")) {
+            self.harness_call(&p, "resume", json!({"session_id": sid, "adopt_lineage": true, "prompt": line}), None).await
+        } else {
+            self.harness_call(&p, "send", json!({"session_id": sid, "text": line}), None).await
         };
         out.map_err(|e| format!("HarnessError: {e}"))
     }

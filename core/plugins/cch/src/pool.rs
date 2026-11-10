@@ -75,7 +75,7 @@ where
 /// Newest rather than oldest because rotation replaces before it removes, so the pool may hold
 /// an old session on its way out beside its replacement, and the newest gives its taker the most
 /// time before the daemon retires it.
-pub fn warm(all: Vec<Session>, pool: Sessions<'_>, version: Option<&str>, now: Option<f64>) -> Vec<Session> {
+pub fn warm(all: Vec<Session>, pool: &Sessions<'_>, version: Option<&str>, now: Option<f64>) -> Vec<Session> {
     let mut out: Vec<Session> = all.into_iter().filter(|s| pool.claimable(s, version, now)).collect();
     out.sort_by_key(|s| std::cmp::Reverse(s.started_at_ms.unwrap_or(0)));
     out
@@ -83,10 +83,10 @@ pub fn warm(all: Vec<Session>, pool: Sessions<'_>, version: Option<&str>, now: O
 
 /// Why `s` cannot be handed out, in a word a person can act on, or None if it can.
 ///
-/// Ordered by what the reader can do about it. "renamed" comes late: the pool renames every
-/// session it hands out, so "claimed" is the news, and "renamed" is left for a spare somebody
-/// adopted without going through `cx`.
-pub fn why_not(s: &Session, pool: Sessions<'_>, version: Option<&str>, now: Option<f64>) -> Option<String> {
+/// Ordered by what the reader can do about it. "taken" comes late: a claim moves every session
+/// it hands out, so "claimed" is the news, and "taken" is left for a session the ledger no longer
+/// calls a spare although nothing moved it.
+pub fn why_not(s: &Session, pool: &Sessions<'_>, version: Option<&str>, now: Option<f64>) -> Option<String> {
     let Some(version) = version else { return Some("no claude binary".into()) };
     let why = if !s.has_record {
         "deleted".to_string()
@@ -97,7 +97,7 @@ pub fn why_not(s: &Session, pool: Sessions<'_>, version: Option<&str>, now: Opti
     } else if s.origin_cwd.is_some() {
         "claimed".into()
     } else if !pool.is_ours(s) {
-        "renamed".into()
+        "taken".into()
     } else if !is_untouched(s) {
         "used".into()
     } else if s.cli_version.as_deref() != Some(version) {
@@ -123,9 +123,8 @@ fn no_loop() -> Map<String, Value> {
 /// The whole pool in one reply at epoch second `now`: what is held, and whether it can be held.
 /// `loop_status` is the reconcile loop's own status, merged in.
 ///
-/// It lists everything the pool ever seeded, under whatever name it wears now: where a session
-/// went is the question status exists to answer, and dropping it the instant it is renamed
-/// answers nothing.
+/// It lists everything the ledger holds: where a session went is the question status exists to
+/// answer, and dropping it the instant it is claimed answers nothing.
 pub fn status<P: Processes, T: Terminals>(
     pool: &Pool<P, T>,
     now: f64,
@@ -143,7 +142,7 @@ pub fn status<P: Processes, T: Terminals>(
         .map(|x| {
             let v = version.as_deref();
             json!({
-                "session": x.short,
+                "session_id": x.canonical(),
                 "name": x.name,
                 "age_s": round1(age_s(&x, now)),
                 "alive": s.is_alive(&x),
@@ -151,13 +150,13 @@ pub fn status<P: Processes, T: Terminals>(
                 "cli_version": x.cli_version,
                 "claimable": s.claimable(&x, v, now),
                 "attached": attached.contains(&x.short),
-                "why_not": why_not(&x, s, v, now),
+                "why_not": why_not(&x, &s, v, now),
                 "removable": s.removable(&x, v, now, Some(&attached)),
             })
         })
         .collect();
     rows.sort_by(|a, b| a["age_s"].as_f64().unwrap_or(0.0).total_cmp(&b["age_s"].as_f64().unwrap_or(0.0)));
-    let warm: Vec<Value> = rows.iter().filter(|r| r["claimable"] == true).map(|r| r["session"].clone()).collect();
+    let warm: Vec<Value> = rows.iter().filter(|r| r["claimable"] == true).map(|r| r["session_id"].clone()).collect();
     let mut out = json!({
         "warm": warm,
         "want": pool.paths.want,
@@ -165,7 +164,6 @@ pub fn status<P: Processes, T: Terminals>(
         "daemon_pid": pid,
         "seeding": if pid.is_some() { "ok" } else { "refused: no claude code daemon is running" },
         "binary_version": version,
-        "prefix": pool.paths.name_prefix,
         "rotate_age_s": pool.paths.rotate_age_s,
     });
     if let Some(map) = out.as_object_mut() {
@@ -186,6 +184,7 @@ pub(crate) mod testing {
     use tempfile::TempDir;
 
     use super::{Pool, Terminals};
+    use crate::ledger::Stage;
     use crate::lineage::Processes;
     use crate::paths::Paths;
 
@@ -231,6 +230,18 @@ pub(crate) mod testing {
         pub newest_ms: i64,
     }
 
+    pub const SHORTS: [&str; 5] = ["warmfresh", "adopted", "stranded", "strandeddead", "claimedfresh"];
+
+    /// The canonical session id of the box's session `i`.
+    pub fn id_of(i: usize) -> String {
+        format!("cc0000000000004000800000000000000{i}")
+    }
+
+    /// The short of the box's session with canonical id `id`.
+    pub fn short_of(id: &str) -> String {
+        SHORTS[(0..SHORTS.len()).find(|&i| id_of(i) == id).unwrap()].to_string()
+    }
+
     fn now_ms() -> i64 {
         SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64)
     }
@@ -262,17 +273,20 @@ pub(crate) mod testing {
         fn write_box(&self) {
             let seed = self.paths.seed_dir.to_string_lossy().into_owned();
             let n = self.newest_ms;
-            // (short, seed name, cli version, alive, started ms)
+            // (short, seed name, cli version, alive, started ms, ledger stage); the session id of
+            // row i is [`id_of`]`(i)`.
             let workers = [
-                ("warmfresh", "<warm dunlin>", VERSION, true, n),
-                ("adopted", "<warm zorilla>", VERSION, true, n - 5_352_669),
-                ("stranded", "<warm saiga>", OLD_VERSION, true, n - 57_064_857),
-                ("strandeddead", "<warm saiga>", OLD_VERSION, false, n - 57_064_857),
-                ("claimedfresh", "<warm vole>", VERSION, true, n - 30_000),
+                ("warmfresh", "dunlin", VERSION, true, n, Stage::Spare),
+                ("adopted", "zorilla", VERSION, true, n - 5_352_669, Stage::Kept),
+                ("stranded", "saiga", OLD_VERSION, true, n - 57_064_857, Stage::Claimed),
+                ("strandeddead", "saiga", OLD_VERSION, false, n - 57_064_857, Stage::Claimed),
+                ("claimedfresh", "vole", VERSION, true, n - 30_000, Stage::Claimed),
             ];
+            let mut ledger = crate::ledger::Ledger::new();
             let mut map = serde_json::Map::new();
-            for (i, (short, seed_name, cli, alive, started)) in workers.into_iter().enumerate() {
+            for (i, (short, seed_name, cli, alive, started, stage)) in workers.into_iter().enumerate() {
                 let (pid, start) = if alive { (ALIVE_PID, ALIVE_START) } else { (2, "1") };
+                ledger.insert(id_of(i), stage);
                 map.insert(
                     short.into(),
                     json!({
@@ -287,6 +301,8 @@ pub(crate) mod testing {
                     }),
                 );
             }
+            std::fs::create_dir_all(self.paths.service_dir.as_path()).unwrap();
+            std::fs::write(self.paths.ledger_path(), serde_json::to_vec(&ledger).unwrap()).unwrap();
             let roster = json!({"proto": 1, "supervisorPid": std::process::id(), "workers": map});
             write_json(&self.paths.home.roster(), &roster);
             let pristine = |name: &str, origin: Option<&str>, cwd: &str| {
@@ -294,15 +310,15 @@ pub(crate) mod testing {
                        "cwd": cwd, "firstTerminalAt": null, "state": "idle"})
             };
             let states = [
-                ("warmfresh", pristine("<warm dunlin>", None, &seed)),
+                ("warmfresh", pristine("dunlin", None, &seed)),
                 (
                     "adopted",
                     json!({"name": "pair session", "tokens": 31_000, "intent": "", "originCwd": "/work/alpha",
                            "cwd": "/work/alpha", "firstTerminalAt": "2026-01-01T00:00:00.000Z", "state": "done"}),
                 ),
-                ("stranded", pristine("<warm saiga>", Some("/work/beta"), "/work/beta")),
-                ("strandeddead", pristine("<warm saiga>", Some("/work/beta"), "/work/beta")),
-                ("claimedfresh", pristine("claimed vole", Some("/work/gamma"), "/work/gamma")),
+                ("stranded", pristine("saiga", Some("/work/beta"), "/work/beta")),
+                ("strandeddead", pristine("saiga", Some("/work/beta"), "/work/beta")),
+                ("claimedfresh", pristine("vole", Some("/work/gamma"), "/work/gamma")),
             ];
             for (short, state) in states {
                 write_json(&self.paths.home.job_state(short), &state);
@@ -343,7 +359,7 @@ mod tests {
             .as_array()
             .unwrap()
             .iter()
-            .map(|r| (r["session"].as_str().unwrap().to_string(), r.clone()))
+            .map(|r| (super::testing::short_of(r["session_id"].as_str().unwrap()), r.clone()))
             .collect()
     }
 
@@ -367,7 +383,7 @@ mod tests {
         twin.short = "warmolder".into();
         twin.started_at_ms = twin.started_at_ms.map(|ms| ms - 1000);
         all.push(twin);
-        let order: Vec<String> = warm(all, s, Some(VERSION), Some(b.now())).into_iter().map(|x| x.short).collect();
+        let order: Vec<String> = warm(all, &s, Some(VERSION), Some(b.now())).into_iter().map(|x| x.short).collect();
         assert_eq!(order, ["warmfresh", "warmolder"]);
     }
 

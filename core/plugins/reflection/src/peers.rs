@@ -15,16 +15,9 @@ pub const LIST_TIMEOUT: Duration = Duration::from_secs(5);
 pub const RETIRED_TIMEOUT: Duration = Duration::from_secs(15);
 pub const AMONG_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Whether a session row of a peer answers to `reference`.
+/// Whether a session row of a peer answers to `reference`: its id, or its whole name.
 pub fn names(row: &Value, reference: &str) -> bool {
-    let field = |k: &str| match row.get(k) {
-        Some(v) if truthy(Some(v)) => v.as_str().map_or_else(|| v.to_string(), str::to_string),
-        _ => String::new(),
-    };
-    if reference == field("job") || reference == field("session_id") {
-        return true;
-    }
-    text(row, "name").unwrap_or_default().to_lowercase() == reference.to_lowercase()
+    text(row, "session_id") == Some(reference) || awm_plugin_sdk::ids::Name::new(reference).is_ok_and(|n| n.matches(text(row, "name").unwrap_or_default()))
 }
 
 /// The clause the unknown-job error gains, or `""`.
@@ -32,7 +25,7 @@ pub fn hint_text(found: &[String]) -> String {
     match found {
         [] => String::new(),
         [one] => format!(". It runs on {one}: call again with peer={}", str_repr(one)),
-        many => format!(". Sessions on {} answer to it: call again with peer=<one of them> and the job id", many.join(", ")),
+        many => format!(". Sessions on {} answer to it: call again with peer=<one of them> and to: {{id}}", many.join(", ")),
     }
 }
 

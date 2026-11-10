@@ -628,18 +628,9 @@ pub fn records(root: &Path) -> Vec<Record> {
 }
 
 /// The isolated session `reference` names: its session id (dashed or not), container or name.
-pub fn find(root: &Path, reference: &str) -> Option<Record> {
-    let text = reference.trim().to_lowercase();
-    if text.is_empty() {
-        return None;
-    }
-    records(root).into_iter().find(|rec| {
-        let sid = &rec.claude_session_id;
-        text == *sid
-            || text == sid.replace('-', "")
-            || rec.container.as_deref() == Some(text.as_str())
-            || rec.name.as_deref().unwrap_or("").to_lowercase() == text
-    })
+pub fn find(root: &Path, session_id: &str) -> Option<Record> {
+    let uuid = awm_plugin_sdk::ids::SessionId::parse(session_id).ok()?.harness_native();
+    records(root).into_iter().find(|rec| rec.claude_session_id == uuid)
 }
 
 /// A parsed isolated `start`, as lifecycle's argument parse leaves it.
@@ -748,9 +739,9 @@ impl<D: Docker> Isolated<D> {
     }
 
     /// [`find`] off the async path.
-    pub async fn find(&self, reference: &str) -> Option<Record> {
-        let (root, reference) = (self.knobs.dir.clone(), reference.to_string());
-        blocking(move || find(&root, &reference)).await.ok().flatten()
+    pub async fn find(&self, session_id: &str) -> Option<Record> {
+        let (root, session_id) = (self.knobs.dir.clone(), session_id.to_string());
+        blocking(move || find(&root, &session_id)).await.ok().flatten()
     }
 
     /// [`TokenStore::mint`] off the async path.
@@ -955,7 +946,7 @@ impl<D: Docker> Isolated<D> {
             None => self.iso_live(rec).await,
         };
         let sid = &rec.claude_session_id;
-        json!({"session_id": r9(sid), "claude_session_id": sid, "name": rec.name, "job": null, "pid": null,
+        json!({"session_id": r9(sid), "claude_session_id": sid, "name": rec.name, "pid": null,
                "live": live, "kind": "isolated", "container": rec.container, "project": rec.project,
                "scope": rec.scope, "cwd": rec.cwd})
     }
@@ -1008,8 +999,14 @@ impl<D: Docker> Isolated<D> {
     }
 
     /// The `find` answer for an isolated session.
-    pub async fn find_answer(&self, rec: &Record) -> Value {
-        json!({"ok": true, "matches": [self.iso_row(rec, None).await]})
+    /// The rows of the isolated sessions whose whole name is `name`, any case.
+    pub async fn named(&self, name: &str) -> Vec<Value> {
+        let Ok(name) = awm_plugin_sdk::ids::Name::new(name) else { return vec![] };
+        let mut rows = vec![];
+        for rec in self.records().await.iter().filter(|r| r.name.as_deref().is_some_and(|n| name.matches(n))) {
+            rows.push(self.iso_row(rec, None).await);
+        }
+        rows
     }
 
     /// The `status` answer for an isolated session.
@@ -1306,7 +1303,8 @@ mod tests {
         let out = start(&h, "x", "", None).await;
         let sid = out["claude_session_id"].as_str().unwrap();
         let token = token_of(&h, sid);
-        let rec = h.iso.find(sid).await.unwrap();
+        let canonical = awm_plugin_sdk::ids::SessionId::from_harness_native(awm_plugin_sdk::ids::Platform::Claude, sid).unwrap().canonical();
+        let rec = h.iso.find(&canonical).await.unwrap();
         h.iso.stop_answer(&rec).await.unwrap();
         assert_eq!(h.iso.caller_answer(&json!(token)).await, json!({"ok": true, "known": false}));
         assert!(h.iso.session_dir(sid).exists());

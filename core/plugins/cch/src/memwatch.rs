@@ -9,6 +9,7 @@ use std::future::Future;
 use std::time::Duration;
 
 use awm_harness::claude::records::session_by_pid;
+use awm_plugin_sdk::ids::{Platform, SessionId};
 use awm_harness::claude::ClaudeHome;
 use serde_json::{json, Value};
 
@@ -26,14 +27,16 @@ pub const TOP_N: usize = 3;
 /// The memory watch's period, as a sleep takes it.
 pub const TICK: Duration = Duration::from_secs(30);
 
-/// One of the user's biggest processes, and the background session above it if any.
+/// One of the user's biggest processes, and the session above it if any.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Hog {
     pub pid: u32,
     pub rss_kb: u64,
     pub command: String,
-    pub job: Option<String>,
+    /// The name of that session.
     pub session: Option<String>,
+    /// The canonical id of that session.
+    pub session_id: Option<String>,
 }
 
 /// When memory went low, when the operator was last told, and when each session was last warned.
@@ -43,7 +46,7 @@ pub struct MemWatch {
     pub low_fraction: f64,
     pub low_since: Option<f64>,
     pub last_alert: Option<f64>,
-    pub warned_jobs: HashMap<String, f64>,
+    pub warned: HashMap<String, f64>,
 }
 
 impl Default for MemWatch {
@@ -55,7 +58,7 @@ impl Default for MemWatch {
 impl MemWatch {
     /// A watch that counts memory as low below `low_fraction` of the total available.
     pub fn new(low_fraction: f64) -> Self {
-        Self { low_fraction, low_since: None, last_alert: None, warned_jobs: HashMap::new() }
+        Self { low_fraction, low_since: None, last_alert: None, warned: HashMap::new() }
     }
 
     /// True when the operator should hear about low memory now.
@@ -76,12 +79,12 @@ impl MemWatch {
     }
 
     /// The hogs whose session has not been warned within the hour, marked warned at `now`.
-    pub fn jobs_to_warn(&mut self, now: f64, hogs: &[Hog]) -> Vec<Hog> {
+    pub fn sessions_to_warn(&mut self, now: f64, hogs: &[Hog]) -> Vec<Hog> {
         let mut out = Vec::new();
         for hog in hogs {
-            let Some(job) = &hog.job else { continue };
-            if now - self.warned_jobs.get(job).copied().unwrap_or(-ALERT_EVERY_S) >= ALERT_EVERY_S {
-                self.warned_jobs.insert(job.clone(), now);
+            let Some(id) = &hog.session_id else { continue };
+            if now - self.warned.get(id).copied().unwrap_or(-ALERT_EVERY_S) >= ALERT_EVERY_S {
+                self.warned.insert(id.clone(), now);
                 out.push(hog.clone());
             }
         }
@@ -135,13 +138,13 @@ fn text_of(v: Option<&Value>) -> Option<String> {
     }
 }
 
-/// The background job and session name of the Claude Code session at or above `pid`.
+/// The name and canonical id of the Claude Code session at or above `pid`.
 pub fn owner(home: &ClaudeHome, mut pid: u32) -> (Option<String>, Option<String>) {
     let mut seen = 0;
     while pid > 1 && seen < 64 {
         if let Some(rec) = session_by_pid(home, pid) {
-            let job = if rec.get("kind").and_then(Value::as_str) == Some("bg") { text_of(rec.get("jobId")) } else { None };
-            return (job, text_of(rec.get("name")));
+            let id = text_of(rec.get("sessionId")).and_then(|raw| SessionId::canonical_of_native(Platform::Claude, &raw));
+            return (text_of(rec.get("name")), id);
         }
         pid = awm_plugin_sdk::procfs::ppid(pid).unwrap_or(0);
         seen += 1;
@@ -169,8 +172,8 @@ pub fn top_hogs(home: &ClaudeHome, n: usize) -> Vec<Hog> {
         .into_iter()
         .take(n)
         .map(|(rss_kb, pid)| {
-            let (job, session) = owner(home, pid);
-            Hog { pid, rss_kb, command: command(pid), job, session }
+            let (session, session_id) = owner(home, pid);
+            Hog { pid, rss_kb, command: command(pid), session, session_id }
         })
         .collect()
 }
@@ -188,8 +191,8 @@ pub fn render(node: &str, total_kb: u64, available_kb: u64, hogs: &[Hog]) -> Str
         gb(total_kb)
     )];
     for hog in hogs {
-        let who = match &hog.job {
-            Some(job) => format!(", in session {job} ({})", hog.session.as_deref().unwrap_or("None")),
+        let who = match &hog.session_id {
+            Some(id) => format!(", in session {id} ({})", hog.session.as_deref().unwrap_or("None")),
             None => String::new(),
         };
         lines.push(format!("- pid {}, {}: {}{who}", hog.pid, gb(hog.rss_kb), hog.command));
@@ -267,11 +270,11 @@ pub async fn memory_tick(watch: &mut MemWatch, node: &impl Node, gateway: &impl 
     if let Err(e) = tell_operator(gateway, notify, &text).await {
         tracing::warn!("keep: could not tell the operator: {e}");
     }
-    for hog in watch.jobs_to_warn(now, &hogs) {
-        let job = hog.job.clone().unwrap_or_default();
-        let args = json!({"to": job, "text": session_warning(&notify.node, &hog, available)});
+    for hog in watch.sessions_to_warn(now, &hogs) {
+        let Some(id) = hog.session_id.clone() else { continue };
+        let args = json!({"to": {"id": id}, "text": session_warning(&notify.node, &hog, available)});
         if let Err(e) = gateway.call(Call::new("reflection", "message", args)).await {
-            tracing::warn!("keep: could not warn {job}: {e}");
+            tracing::warn!("keep: could not warn {id}: {e}");
         }
     }
 }
@@ -284,8 +287,8 @@ mod tests {
     const GB: u64 = 1024 * 1024;
     const T0: f64 = 1_792_000_000.0;
 
-    fn hog(pid: u32, rss_kb: u64, command: &str, job: Option<&str>, session: Option<&str>) -> Hog {
-        Hog { pid, rss_kb, command: command.into(), job: job.map(String::from), session: session.map(String::from) }
+    fn hog(pid: u32, rss_kb: u64, command: &str, session: Option<&str>) -> Hog {
+        Hog { pid, rss_kb, command: command.into(), session: session.map(String::from), session_id: session.map(|_| format!("cc{}", "a".repeat(32))) }
     }
 
     #[test]
@@ -311,7 +314,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_a_tick_tells_the_operator_and_the_sessions() {
-        let node = FakeNode(60 * GB, 2 * GB, vec![hog(7, 25 * GB, "python big.py", Some("0000aaaa"), Some("test run"))]);
+        let node = FakeNode(60 * GB, 2 * GB, vec![hog(7, 25 * GB, "python big.py", Some("test run"))]);
         let gateway = FakeGateway::default();
         let notify = Notify { node: "node-a".into(), operator: Some(("acct".into(), "C1".into())), social_peer: None };
         let mut watch = MemWatch::default();
@@ -326,7 +329,7 @@ mod tests {
         assert!(sent[0].args["text"].as_str().unwrap().contains("big.py"));
         assert_eq!(messaged.len(), 1);
         assert_eq!((messaged[0].tool.as_str(), messaged[0].verb.as_str()), ("reflection", "message"));
-        assert_eq!(messaged[0].args["to"], "0000aaaa");
+        assert_eq!(messaged[0].args["to"], json!({"id": format!("cc{}", "a".repeat(32))}));
     }
 
 }

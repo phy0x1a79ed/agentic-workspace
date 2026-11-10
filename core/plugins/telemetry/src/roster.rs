@@ -24,14 +24,9 @@ pub fn parse_ts(v: Option<&Value>) -> Option<Ts> {
     }
 }
 
-/// The name cch gives a warm pool session until it is claimed.
-const WARM_PREFIX: &str = "<warm ";
-
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Session {
-    pub job: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub session_id: Option<String>,
+    pub session_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -58,13 +53,9 @@ pub struct Session {
     /// On a `stopped` event: cch's own stop ended it, not a crash.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub retired: bool,
-}
-
-impl Session {
-    /// The id `telemetry/sessions` names: the harness session id, else the job.
-    pub fn id(&self) -> &str {
-        self.session_id.as_deref().unwrap_or(&self.job)
-    }
+    /// The warm pool's ledger stage: `spare`, `claimed` or `kept`. None for a session the pool did not make.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pool: Option<String>,
 }
 
 /// One service of a node's gateway.
@@ -180,7 +171,7 @@ pub struct NodeState {
     pub last_seen: Option<Ts>,
     #[serde(default)]
     pub sessions: BTreeMap<String, Session>,
-    /// Each session seen live in the usage window, by job, with when it started.
+    /// Each session seen live in the usage window, by session id, with when it started.
     #[serde(default)]
     pub starts: BTreeMap<String, Ts>,
     #[serde(default)]
@@ -196,7 +187,6 @@ pub struct NodeState {
 pub struct SessionEvent {
     pub event: &'static str,
     pub session_id: String,
-    pub job: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub task_id: Option<String>,
     pub node: String,
@@ -231,6 +221,34 @@ pub struct Roster {
     pub nodes: BTreeMap<String, NodeState>,
     #[serde(default)]
     pub seats: BTreeMap<String, Value>,
+}
+
+/// MIGRATION(session-ids): rekey a stored roster's sessions and starts from job to session id.
+/// A session with no session id, and a start that names no kept session, is dropped. True when
+/// anything changed.
+pub fn rekey_by_session(stored: &mut Value) -> bool {
+    let mut changed = false;
+    let Some(nodes) = stored.get_mut("nodes").and_then(Value::as_object_mut) else { return false };
+    for node in nodes.values_mut() {
+        let Some(sessions) = node.get("sessions").and_then(Value::as_object).filter(|s| s.values().any(|v| v.get("job").is_some())) else {
+            continue;
+        };
+        let mut kept = serde_json::Map::new();
+        let mut by_job = std::collections::HashMap::new();
+        for (job, mut session) in sessions.clone() {
+            session.as_object_mut().map(|o| o.remove("job"));
+            if let Some(id) = session.get("session_id").and_then(Value::as_str).map(str::to_string) {
+                by_job.insert(job, id.clone());
+                kept.insert(id, session);
+            }
+        }
+        let starts = node.get("starts").and_then(Value::as_object).cloned().unwrap_or_default();
+        let starts: serde_json::Map<String, Value> = starts.into_iter().filter_map(|(job, ts)| Some((by_job.get(&job)?.clone(), ts))).collect();
+        node["sessions"] = Value::Object(kept);
+        node["starts"] = Value::Object(starts);
+        changed = true;
+    }
+    changed
 }
 
 fn newest(a: Option<Ts>, b: Option<Ts>) -> Option<Ts> {
@@ -311,7 +329,7 @@ impl Roster {
                     "portal": n.portal,
                     "last_seen": n.last_seen,
                     "sessions_7d": self.sessions_in_window(name, now),
-                    "sessions": n.sessions.values().filter(|s| !s.name.as_deref().is_some_and(|x| x.starts_with(WARM_PREFIX))).collect::<Vec<_>>(),
+                    "sessions": n.sessions.values().filter(|s| s.pool.as_deref() != Some("spare")).collect::<Vec<_>>(),
                     "services": n.services.iter().map(|(s, st)| json!({
                         "service": s, "plugin": st.plugin, "tools": st.tools, "up": st.up, "since": st.since, "enabled": st.enabled,
                     })).collect::<Vec<_>>(),
@@ -360,9 +378,9 @@ impl Roster {
 }
 
 /// One seat in one shape, keyed by its id `<account>/<channel>`. Social reports a seat two ways:
-/// a `social seats` row `{id, name, kind, holder, seat: {state, node, remote_control, job,
+/// a `social seats` row `{id, name, kind, holder, seat: {state, node, remote_control, session_id,
 /// rc_url, ..} | null}` (tagged with its `account`), and a `social/seats` event
-/// `{seat: "<account>/<channel>", label, state, node, remote_control, job?, rc_url?, rc_live?,
+/// `{seat: "<account>/<channel>", label, state, node, remote_control, session_id?, rc_url?, rc_live?,
 /// model, effort, refresh, refresh_live?, ts}`, where `rc_live` answers a Remote Control flip:
 /// `applied`, `none` or `failed: <why>`, and `refresh_live` a Refresh: `pending` or `kept`.
 /// A channel that social.toml does not declare a seat (`seat: null`) has no row.
@@ -384,7 +402,7 @@ fn seat_row(row: &Value) -> Option<(String, Value)> {
         "node": text(src, "node").unwrap_or_default(),
         "refresh": src.get("refresh").and_then(Value::as_bool).unwrap_or(false),
     });
-    for k in ["job", "rc_url", "rc_live", "model", "effort", "refresh_live"] {
+    for k in ["session_id", "rc_url", "rc_live", "model", "effort", "refresh_live"] {
         if let Some(v) = text(src, k) {
             out[k] = json!(v);
         }
@@ -398,8 +416,7 @@ fn seat_row(row: &Value) -> Option<(String, Value)> {
 fn live(node: &str, s: &Session, ts: Ts) -> SessionEvent {
     SessionEvent {
         event: "live",
-        session_id: s.id().into(),
-        job: s.job.clone(),
+        session_id: s.session_id.clone(),
         task_id: s.task_id.clone(),
         node: node.into(),
         ts,
@@ -470,18 +487,18 @@ fn apply_item(state: &mut NodeState, node: &str, item: Item, now: Ts, out: &mut 
                 (state.role, state.portal) = (role, portal);
                 out.changed.insert("nodes");
             }
-            let next: BTreeMap<String, Session> = sessions.into_iter().map(|s| (s.job.clone(), s)).collect();
-            for (job, s) in &state.sessions {
-                if !next.contains_key(job) {
+            let next: BTreeMap<String, Session> = sessions.into_iter().map(|s| (s.session_id.clone(), s)).collect();
+            for (id, s) in &state.sessions {
+                if !next.contains_key(id) {
                     out.sessions.push(gone(node, s, now));
                 }
             }
-            for (job, s) in &next {
-                match state.sessions.get(job) {
+            for (id, s) in &next {
+                match state.sessions.get(id) {
                     Some(old) => state_change(node, old, s, now, out),
                     None => {
                         out.sessions.push(live(node, s, now));
-                        state.starts.entry(job.clone()).or_insert(s.started.unwrap_or(now));
+                        state.starts.entry(id.clone()).or_insert(s.started.unwrap_or(now));
                     }
                 }
             }
@@ -496,21 +513,21 @@ fn apply_item(state: &mut NodeState, node: &str, item: Item, now: Ts, out: &mut 
             let ts = ts.unwrap_or(now);
             match event.as_str() {
                 "stopped" => {
-                    if let Some(s) = state.sessions.remove(&session.job) {
+                    if let Some(s) = state.sessions.remove(&session.session_id) {
                         out.sessions.push(SessionEvent { retired: session.retired, ..gone(node, &s, ts) });
                         out.changed.insert("sessions");
                     }
                 }
                 "started" | "remote_control" | "renamed" | "state" => {
-                    let old = state.sessions.get(&session.job).cloned();
+                    let old = state.sessions.get(&session.session_id).cloned();
                     if let Some(old) = &old {
                         // An update event names only what changed; the rest stays as it was.
-                        session.session_id = session.session_id.or_else(|| old.session_id.clone());
                         session.name = session.name.or_else(|| old.name.clone());
                         session.project = session.project.or_else(|| old.project.clone());
                         session.scope = session.scope.or_else(|| old.scope.clone());
                         session.kind = session.kind.or_else(|| old.kind.clone());
                         session.task_id = session.task_id.or_else(|| old.task_id.clone());
+                        session.pool = session.pool.or_else(|| old.pool.clone());
                         session.started = session.started.or(old.started);
                         if session.state.is_none() {
                             (session.state, session.needs) = (old.state.clone(), old.needs.clone());
@@ -526,10 +543,10 @@ fn apply_item(state: &mut NodeState, node: &str, item: Item, now: Ts, out: &mut 
                     } else {
                         session.started = session.started.or(Some(ts));
                         out.sessions.push(live(node, &session, ts));
-                        state.starts.entry(session.job.clone()).or_insert(session.started.unwrap_or(ts));
+                        state.starts.entry(session.session_id.clone()).or_insert(session.started.unwrap_or(ts));
                     }
                     if old.as_ref() != Some(&session) {
-                        state.sessions.insert(session.job.clone(), session);
+                        state.sessions.insert(session.session_id.clone(), session);
                         out.changed.insert("sessions");
                     }
                 }
@@ -570,8 +587,8 @@ mod tests {
         DateTime::parse_from_rfc3339(s).unwrap().with_timezone(&Utc)
     }
 
-    fn sess(job: &str) -> Session {
-        Session { job: job.into(), name: Some(format!("{job}-name")), link: Some(format!("https://claude.ai/code/{job}")), ..Session::default() }
+    fn sess(id: &str) -> Session {
+        Session { session_id: id.into(), name: Some(format!("{id}-name")), link: Some(format!("https://claude.ai/code/{id}")), ..Session::default() }
     }
 
     fn hello(sessions: Vec<Session>) -> Item {
@@ -589,10 +606,10 @@ mod tests {
     fn a_warm_session_is_not_listed_and_a_claimed_one_is() {
         let mut r = Roster::default();
         let now = t("2026-01-01T00:00:00Z");
-        let named = |job: &str, name: &str| Session { job: job.into(), name: Some(name.into()), ..Session::default() };
-        r.apply("n", vec![hello(vec![named("w", "<warm pika>"), named("c", "claimed")])], now);
+        let pooled = |id: &str, pool: &str| Session { session_id: id.into(), pool: Some(pool.into()), ..Session::default() };
+        r.apply("n", vec![hello(vec![pooled("w", "spare"), pooled("c", "claimed")])], now);
         let v = r.nodes_view(None, now);
-        assert_eq!(v["nodes"][0]["sessions"].as_array().unwrap().iter().map(|s| s["job"].as_str().unwrap()).collect::<Vec<_>>(), ["c"]);
+        assert_eq!(v["nodes"][0]["sessions"].as_array().unwrap().iter().map(|s| s["session_id"].as_str().unwrap()).collect::<Vec<_>>(), ["c"]);
         assert_eq!(v["nodes"][0]["services"][0]["enabled"], true);
     }
 
@@ -601,7 +618,7 @@ mod tests {
         let mut r = Roster::default();
         let now = t("2026-11-07T10:00:00Z");
         let a = r.apply("mizar", vec![hello(vec![sess("a1")])], now);
-        assert_eq!(a.sessions.iter().map(|e| (e.event, e.job.as_str())).collect::<Vec<_>>(), [("live", "a1")]);
+        assert_eq!(a.sessions.iter().map(|e| (e.event, e.session_id.as_str())).collect::<Vec<_>>(), [("live", "a1")]);
         assert!(a.changed.contains("nodes") && a.changed.contains("sessions"));
 
         let started = Item::Session { event: "started".into(), session: Session { task_id: Some("CW".into()), ..sess("b2") }, ts: Some(now) };
@@ -609,7 +626,7 @@ mod tests {
         assert_eq!((a.sessions[0].event, a.sessions[0].task_id.as_deref()), ("live", Some("CW")));
         assert_eq!(r.nodes["mizar"].sessions.len(), 2);
 
-        let stopped = Item::Session { event: "stopped".into(), session: Session { job: "a1".into(), ..Session::default() }, ts: Some(now) };
+        let stopped = Item::Session { event: "stopped".into(), session: Session { session_id: "a1".into(), ..Session::default() }, ts: Some(now) };
         let a = r.apply("mizar", vec![stopped.clone()], now);
         assert_eq!((a.sessions[0].event, a.sessions[0].session_id.as_str()), ("gone", "a1"));
         assert_eq!(r.nodes["mizar"].sessions.keys().collect::<Vec<_>>(), ["b2"]);
@@ -645,7 +662,7 @@ mod tests {
         assert_eq!(r.nodes["mizar"].sessions["a1"].needs.as_deref(), Some("pick"));
         let a = r.apply("mizar", vec![hello(vec![at("done", None)])], now);
         assert_eq!(a.sessions.iter().map(|e| (e.event, e.state.as_deref())).collect::<Vec<_>>(), [("state", Some("done"))], "a hello carries state");
-        let stopped = Item::Session { event: "stopped".into(), session: Session { job: "a1".into(), retired: true, ..Session::default() }, ts: Some(now) };
+        let stopped = Item::Session { event: "stopped".into(), session: Session { session_id: "a1".into(), retired: true, ..Session::default() }, ts: Some(now) };
         let a = r.apply("mizar", vec![stopped], now);
         assert!(a.sessions[0].event == "gone" && a.sessions[0].retired);
     }
@@ -656,7 +673,7 @@ mod tests {
         let now = t("2026-11-07T10:00:00Z");
         r.apply("mizar", vec![hello(vec![sess("a1"), sess("a2")])], now);
         let a = r.apply("mizar", vec![hello(vec![sess("a2"), sess("a3")])], now);
-        let mut got: Vec<_> = a.sessions.iter().map(|e| (e.event, e.job.as_str())).collect();
+        let mut got: Vec<_> = a.sessions.iter().map(|e| (e.event, e.session_id.as_str())).collect();
         got.sort();
         assert_eq!(got, [("gone", "a1"), ("live", "a3")]);
     }
@@ -709,6 +726,18 @@ mod tests {
         assert_eq!((row["health"].as_str(), &row["since"]), (Some("down"), &json!(later)));
     }
 
+    // MIGRATION(session-ids)
+    #[test]
+    fn a_stored_roster_is_rekeyed_by_session_id() {
+        let mut stored = json!({"nodes": {"mizar": {
+            "sessions": {"a1": {"job": "a1", "session_id": "cc1"}, "a2": {"job": "a2"}},
+            "starts": {"a1": "2026-11-07T10:00:00Z", "a9": "2026-11-07T10:00:00Z"}}}});
+        assert!(rekey_by_session(&mut stored));
+        assert_eq!(stored["nodes"]["mizar"], json!({"sessions": {"cc1": {"session_id": "cc1"}}, "starts": {"cc1": "2026-11-07T10:00:00Z"}}));
+        assert!(!rekey_by_session(&mut stored));
+        assert!(serde_json::from_value::<Roster>(stored).is_ok());
+    }
+
     #[test]
     fn seats_replace_and_update_by_id() {
         let mut r = Roster::default();
@@ -717,7 +746,7 @@ mod tests {
         assert!(a.changed.contains("seats"));
         assert!(r.set_seats(&[empty]).changed.is_empty());
         r.seat_event(&json!({"seat": "slack/C042", "label": "alice", "state": "occupied", "remote_control": true, "node": "alcor",
-                             "job": "j1", "rc_url": "https://claude.ai/code/s", "rc_live": "failed: busy", "ts": "2026-11-07T10:00:00Z",
+                             "session_id": "cc1", "rc_url": "https://claude.ai/code/s", "rc_live": "failed: busy", "ts": "2026-11-07T10:00:00Z",
                              "model": "sonnet", "effort": "low", "refresh": true, "refresh_live": "pending"}));
         let v = r.seats_view();
         assert_eq!((v["seats"].as_array().unwrap().len(), v["seats"][0]["state"].as_str()), (1, Some("occupied")), "keyed on the seat id, not the label");
@@ -729,7 +758,7 @@ mod tests {
         // Real-shaped `social seats` rows (account tagged by the catch-up) land on the same key and shape as events.
         let mut r = Roster::default();
         let held = json!({"id": "C042", "name": "alice", "kind": "channel", "holder": null, "account": "slack-bot",
-            "seat": {"state": "occupied", "job": "j1", "node": "alcor", "level": "trusted", "scope": null, "adopted": false, "queued": 0,
+            "seat": {"state": "occupied", "session_id": "cc1", "node": "alcor", "level": "trusted", "scope": null, "adopted": false, "queued": 0,
                      "held": null, "breaker": null, "id": "slack-bot/C042", "remote_control": true, "rc_url": "https://claude.ai/code/s",
                      "model": "opus", "effort": "high", "refresh": false}});
         let free = json!({"id": "C043", "name": "bob", "kind": "channel", "holder": null, "seat": null, "account": "slack-bot"});
@@ -737,9 +766,9 @@ mod tests {
         let v = r.seats_view();
         assert_eq!(v["seats"].as_array().unwrap().len(), 1, "a channel with no declared seat has no row");
         assert_eq!(v["seats"][0], json!({"seat": "slack-bot/C042", "label": "alice", "state": "occupied", "remote_control": true, "node": "alcor",
-                                         "job": "j1", "rc_url": "https://claude.ai/code/s", "model": "opus", "effort": "high", "refresh": false}));
+                                         "session_id": "cc1", "rc_url": "https://claude.ai/code/s", "model": "opus", "effort": "high", "refresh": false}));
         let ev = json!({"seat": "slack-bot/C042", "label": "alice", "state": "occupied", "remote_control": true, "node": "alcor",
-                        "job": "j1", "rc_url": "https://claude.ai/code/s", "model": "opus", "effort": "high", "refresh": false});
+                        "session_id": "cc1", "rc_url": "https://claude.ai/code/s", "model": "opus", "effort": "high", "refresh": false});
         assert!(r.seat_event(&ev).changed.is_empty(), "the live event parses to the row the catch-up made");
     }
 

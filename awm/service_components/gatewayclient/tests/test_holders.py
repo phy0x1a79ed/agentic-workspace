@@ -25,74 +25,70 @@ def test_the_refusal_names_what_is_held():
 
 
 def test_an_interactive_session_holds_nothing(monkeypatch):
-    _record(monkeypatch, {"hosting": "terminal", "job": "", "session_id": SID, "name": "x"})
+    _record(monkeypatch, {"hosting": "terminal", "session_id": SID, "name": "x"})
     with pytest.raises(HolderError, match="background session"):
         holders.caller({"_caller_pid": 42}, None)
 
 
 def test_a_session_on_this_node_is_named_by_its_r9_id(monkeypatch):
-    _record(monkeypatch, {"hosting": "background", "job": "abcd1234",
-                          "session_id": SID, "name": "worker"})
+    _record(monkeypatch, {"hosting": "background", "session_id": SID, "name": "worker"})
     monkeypatch.setattr(holders.config, "node_name", lambda: "mizar")
     assert holders.caller({"_caller_pid": 42}, None) == {
-        "node": "mizar", "session": SID, "job": "abcd1234", "name": "worker", "pid": 42}
+        "node": "mizar", "session": SID, "name": "worker", "pid": 42}
 
 
 def test_the_session_id_the_gateway_sends_wins(monkeypatch):
-    monkeypatch.setattr(holders, "_push_target", lambda sid: "abcd1234")
+    monkeypatch.setattr(holders, "_can_hold", lambda sid: True)
     monkeypatch.setattr(holders.config, "node_name", lambda: "mizar")
-    holder = holders.caller({"_caller_session_id": SID}, None)
-    assert holder["session"] == SID and holder["job"] == "abcd1234"
+    assert holders.caller({"_caller_session_id": SID}, None)["session"] == SID
 
 
 def test_a_session_id_with_nothing_to_type_into_holds_nothing(monkeypatch):
-    monkeypatch.setattr(holders, "_push_target", lambda sid: None)
+    monkeypatch.setattr(holders, "_can_hold", lambda sid: False)
     monkeypatch.setattr(holders.config, "node_name", lambda: "mizar")
     with pytest.raises(HolderError, match="background session"):
         holders.caller({"_caller_session_id": SID}, None)
 
 
-def test_a_holder_on_another_node_with_no_session_id_is_known_by_its_job(monkeypatch):
+def test_a_holder_on_another_node_with_no_session_id_holds_nothing(monkeypatch):
     from awm.config import edges
 
     monkeypatch.setattr(edges, "caller_peer", lambda as_: "alcor")
-    holder = holders.caller({"_caller_session": {"kind": "bg", "job": "feed1234",
-                                                 "name": "far"}}, "peer:alcor")
-    assert holder == {"node": "alcor", "session": "job:feed1234", "job": "feed1234",
-                      "name": "far"}
+    with pytest.raises(HolderError, match="no session id"):
+        holders.caller({"_caller_session": {"kind": "bg", "name": "far"}}, "peer:alcor")
 
 
 def test_a_background_session_behind_a_door_holds_a_seat(monkeypatch):
     from awm.config import edges
 
     monkeypatch.setattr(edges, "caller_peer", lambda as_: "altair")
-    claim = {"session_id": SID, "node": "altair", "job": "346ce8e4", "name": "seat:slack/main"}
+    claim = {"session_id": SID, "node": "altair", "name": "seat:slack/main", "kind": "bg"}
     assert holders.caller({"_caller_session": claim}, "peer:altair") == {
-        "node": "altair", "session": SID, "job": "346ce8e4", "name": "seat:slack/main"}
+        "node": "altair", "session": SID, "name": "seat:slack/main"}
+    with pytest.raises(HolderError, match="background session"):
+        holders.caller({"_caller_session": {**claim, "kind": "interactive"}}, "peer:altair")
 
 
-def test_an_interactive_session_behind_a_door_holds_nothing(monkeypatch):
+def test_a_borrowed_interactive_claim_holds_nothing(monkeypatch):
     from awm.config import edges
 
     monkeypatch.setattr(edges, "caller_peer", lambda as_: "altair")
     with pytest.raises(HolderError, match="background session"):
-        holders.caller({"_caller_session": {"session_id": SID, "node": "altair"}}, "peer:altair")
+        holders.caller({"_caller_session": {"kind": "interactive", "session_id": SID}}, "peer:altair")
 
 
 def test_a_borrower_forwards_its_record_as_a_claim(monkeypatch):
-    _record(monkeypatch, {"hosting": "background", "job": "abcd1234",
-                          "session_id": SID, "name": "worker"})
-    assert holders.claim(42) == {"kind": "bg", "job": "abcd1234", "name": "worker",
-                                 "session_id": SID}
+    _record(monkeypatch, {"hosting": "background", "session_id": SID, "name": "worker"})
+    assert holders.claim(42) == {"kind": "bg", "name": "worker", "session_id": SID}
     _record(monkeypatch, None)
     assert holders.claim(42) is None
 
 
 ROWS = {"ok": True, "sessions": [
-    {"session_id": SID, "job": "abcd1234", "harness": "cch", "state": "working"},
-    {"session_id": "cc" + "f" * 32, "job": "dead0000", "harness": "cch", "state": "gone"},
-    {"session_id": ISO, "job": None, "kind": "isolated", "live": True},
-    {"session_id": "cc" + "e" * 32, "job": None, "kind": "interactive", "live": True},
+    {"session_id": SID, "kind": "bg", "harness": "cch", "state": "working"},
+    {"session_id": "cc" + "f" * 32, "kind": "bg", "harness": "cch", "state": "gone"},
+    {"session_id": ISO, "kind": "isolated", "live": True},
+    {"session_id": "cc" + "e" * 32, "kind": "interactive", "live": True},
 ]}
 
 
@@ -114,29 +110,29 @@ def test_live_sessions_are_the_live_rows_of_list_other(monkeypatch):
     assert seen == [("reflection", "list_other", {})]
 
 
-def test_a_push_reaches_a_session_by_its_job(monkeypatch):
+def test_a_background_session_can_hold(monkeypatch):
     seen = _list_other(monkeypatch, ROWS)
-    assert holders._push_target(SID) == "abcd1234"
-    assert holders._push_target("cc" + "e" * 32) is None
-    assert holders._push_target("cc" + "1" * 32) is None
+    assert holders._can_hold(SID)
+    assert not holders._can_hold("cc" + "e" * 32)
+    assert not holders._can_hold("cc" + "1" * 32)
     assert seen[0][2] == {"include_stopped": True}
 
 
 def test_an_isolated_session_holds_a_channel_by_its_r9_id(monkeypatch):
-    """It has no job, and reflection types into it by its session id (R111)."""
+    """Reflection types into it by its session id (R111)."""
     _list_other(monkeypatch, ROWS)
     monkeypatch.setattr(holders.config, "node_name", lambda: "mizar")
-    holder = holders.caller({"_caller_session_id": ISO.upper()}, None)
-    assert holder == {"node": "mizar", "session": ISO, "job": ISO, "name": ""}
+    holder = holders.caller({"_caller_session_id": ISO}, None)
+    assert holder == {"node": "mizar", "session": ISO, "name": ""}
 
 
 @pytest.mark.parametrize("answer", [
     RuntimeError("reflection is down"),
-    {"ok": True, "sessions": [{"job": "abcd1234", "state": "working"}]},
+    {"ok": True, "sessions": [{"kind": "bg", "state": "working"}]},
     {"ok": True, "sessions": ROWS["sessions"], "errors": [{"harness": "dsh"}]},
 ])
 def test_a_list_other_that_cannot_tell_names_nothing_and_closes_nothing(monkeypatch, answer):
     _list_other(monkeypatch, answer)
     assert holders._session_rows() is None
-    assert holders._push_target(SID) is None
+    assert not holders._can_hold(SID)
     assert holders.live_sessions() is None

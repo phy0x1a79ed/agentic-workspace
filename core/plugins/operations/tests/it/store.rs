@@ -1,5 +1,5 @@
 //! The task store (fleet.md R106, queue.md R61 to R66), ported from test_store.py with the
-//! approved revision: History for done, approvals on the requester's own card, jobs on rows.
+//! approved revision: History for done, approvals on the requester's own card.
 
 use std::collections::HashMap;
 

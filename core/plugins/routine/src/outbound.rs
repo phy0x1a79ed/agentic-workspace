@@ -23,7 +23,7 @@ pub struct Start {
 }
 
 pub trait Outbound: Send + Sync {
-    /// Start a background session. Returns its job.
+    /// Start a background session. Returns its session id.
     fn start_session(&self, start: Start) -> BoxFut<'_, String>;
     /// Send the operator a message on their notice channel.
     fn notify_operator(&self, text: String) -> BoxFut<'_, ()>;
@@ -70,10 +70,10 @@ impl Outbound for GatewayOutbound {
             }
             let peer = if s.peer.is_empty() { "local".to_string() } else { s.peer };
             let res = self.invoke("reflection", "start_other", args, Some(peer), Duration::from_secs(120)).await?;
-            match res.get("job").filter(|j| !j.is_null() && *j != &json!("")) {
+            match res.get("session_id").filter(|j| !j.is_null() && *j != &json!("")) {
                 Some(j) => Ok(j.as_str().map(str::to_string).unwrap_or_else(|| j.to_string())),
                 None => {
-                    let shown: String = format!("start_other returned no job: {res}").chars().take(400).collect();
+                    let shown: String = format!("start_other returned no session_id: {res}").chars().take(400).collect();
                     anyhow::bail!(shown)
                 }
             }

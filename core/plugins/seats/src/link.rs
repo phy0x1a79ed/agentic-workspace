@@ -165,14 +165,14 @@ impl Link {
             "seed" => seats.seed(decl(), serde_json::from_value::<Seed>(row["state"].clone()).unwrap_or_default()).await,
             "decl" if row["seat"].is_object() => drop(seats.upsert(&decl()).await),
             "roster" => seats.keep(row["seats"].as_array().into_iter().flatten().filter_map(Value::as_str).collect()).await,
-            "released" => seats.released(&text("account"), &text("channel_id"), &text("job")).await,
+            "released" => seats.released(&text("account"), &text("channel_id"), &text("session_id")).await,
             "remote_control" => {
                 seats.set_remote_control(&text("account"), &text("channel_id"), row["on"].as_bool().unwrap_or(false)).await;
             }
             "refresh" => {
                 seats.set_refresh(&text("account"), &text("channel_id"), &text("model"), &text("effort")).await;
             }
-            "hand" => seats.hand(&text("job"), &text("line")),
+            "hand" => seats.hand(&text("session_id"), &text("line")),
             other => tracing::warn!("seats: social sent a row of unknown kind {other:?}"),
         }
     }

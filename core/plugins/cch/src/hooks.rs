@@ -12,6 +12,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use awm_harness::claude::ClaudeHome;
 use serde_json::{json, Map, Value};
 
+use crate::ledger::{self, Stage};
 use crate::paths::Paths;
 
 /// The hub a hook calls when `AWM_HUB_URL` is unset.
@@ -314,9 +315,12 @@ pub fn brief(input: &[u8], hub: &dyn Hub, seen: &Path, claude_pid: impl FnOnce()
     if let Some(sid) = session_id {
         if let Some(pid) = claude_pid() {
             let before = swap_seen(seen, pid, sid);
-            if payload.get("source").and_then(Value::as_str) == Some("clear") && !before.is_empty() && before != sid {
-                let args = json!({"session_id": sid, "kind": "clear", "parent": before});
+            let cleared = payload.get("source").and_then(Value::as_str) == Some("clear") && before != sid;
+            if let (true, Some(id), Some(parent)) = (cleared, ledger::key(sid), ledger::key(&before)) {
+                let args = json!({"session_id": id, "kind": "clear", "parent": parent});
                 let _ = hub.invoke("reflection_harness_event", &args, parent_pid(), CLEAR_TIMEOUT);
+                let ops = json!({"session_id": id, "parent": parent});
+                let _ = hub.invoke("operations_hook_session_clear", &ops, parent_pid(), CLEAR_TIMEOUT);
             }
         }
     }
@@ -461,23 +465,12 @@ pub fn spoken(prompt: Option<&Value>) -> String {
     tail.trim().to_string()
 }
 
-fn py_str(v: Option<&Value>) -> String {
-    match v {
-        Some(Value::String(s)) => s.clone(),
-        Some(v) if truthy(Some(v)) => v.to_string(),
-        _ => String::new(),
-    }
-}
-
 /// Drops the name and records the intent in the job record at `path`, or leaves it exactly as it
 /// is. Read, modify, write with no lock: the session writes the same file, so only the two keys
 /// change between the read and the replace.
-fn clear_name(path: &Path, intent: &str, prefix: &str) {
+fn clear_name(path: &Path, intent: &str) {
     let Ok(bytes) = fs::read(path) else { return };
     let Ok(Value::Object(mut state)) = serde_json::from_slice::<Value>(&bytes) else { return };
-    if !py_str(state.get("name")).starts_with(prefix) {
-        return;
-    }
     state.shift_remove("name");
     state.shift_remove("nameSource");
     // `??`, not `||`, merges this field back on every later write, so an empty string would
@@ -496,9 +489,10 @@ fn clear_name(path: &Path, intent: &str, prefix: &str) {
     }
 }
 
-/// `cch hook name` on a UserPromptSubmit payload. Acts only while the job record still carries
-/// the pool's `claimed <noun>` name, and only on a person's first real request.
-pub fn name(input: &[u8], job_dir: Option<&Path>, claimed_prefix: &str) -> Option<String> {
+/// `cch hook name` on a UserPromptSubmit payload. Acts only while the pool ledger at `ledger`
+/// says the session is `claimed`, and only on a person's first real request; it then marks the
+/// session `kept`, so it fires once.
+pub fn name(input: &[u8], job_dir: Option<&Path>, ledger: &Path) -> Option<String> {
     let payload = object(input)?;
     // Only a person at the composer, not a wake-up, a schedule or an SDK caller, titles a session.
     let source = payload.get("source");
@@ -511,8 +505,13 @@ pub fn name(input: &[u8], job_dir: Option<&Path>, claimed_prefix: &str) -> Optio
         return None;
     }
     let job = job_dir.filter(|j| !j.as_os_str().is_empty())?;
+    let id = ledger::key(payload.get("session_id")?.as_str()?)?;
+    if ledger::load(ledger).get(&id) != Some(&Stage::Claimed) {
+        return None;
+    }
     let intent: String = prompt.chars().take(INTENT_MAX).collect();
-    clear_name(&job.join("state.json"), &intent, claimed_prefix);
+    clear_name(&job.join("state.json"), &intent);
+    let _ = ledger::set(ledger, &id, Stage::Kept);
     None
 }
 
@@ -676,7 +675,7 @@ pub fn dispatch(name: &str, input: &[u8]) -> Option<String> {
         }
         "name" => {
             let job = std::env::var_os("CLAUDE_JOB_DIR").map(PathBuf::from);
-            self::name(input, job.as_deref(), &Paths::from_env().claimed_prefix)
+            self::name(input, job.as_deref(), &Paths::from_env().ledger_path())
         }
         "subagent-cap" => subagent_cap(input, &subagents_dir(), epoch_now, || level(&HttpHub::from_env())),
         "report" => {
@@ -817,11 +816,13 @@ mod tests {
         let state = tempfile::tempdir().unwrap();
         let seen = state.path().join("awm/cch/session-start");
         let hub = FakeHub::new(|_, _| Ok(json!({})));
-        fire(&hub, &seen, "startup", "old-id");
-        fire(&hub, &seen, "compact", "old-id");
+        let (old, new) = ("00000000-0000-4000-8000-000000000001", "00000000-0000-4000-8000-000000000002");
+        fire(&hub, &seen, "startup", old);
+        fire(&hub, &seen, "compact", old);
         assert!(clears(&hub).is_empty());
-        fire(&hub, &seen, "clear", "new-id");
-        assert_eq!(clears(&hub), vec![json!({"session_id": "new-id", "kind": "clear", "parent": "old-id"})]);
+        fire(&hub, &seen, "clear", new);
+        let parent = "cc00000000000040008000000000000001";
+        assert_eq!(clears(&hub), vec![json!({"session_id": "cc00000000000040008000000000000002", "kind": "clear", "parent": parent})]);
         assert_eq!(hub.calls.borrow()[0].3, CLEAR_TIMEOUT);
     }
 

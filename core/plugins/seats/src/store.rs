@@ -25,7 +25,7 @@ CREATE TABLE IF NOT EXISTS seat_registry (
     brief        TEXT NOT NULL DEFAULT '',
     name         TEXT NOT NULL DEFAULT '',
     state        TEXT NOT NULL DEFAULT 'empty',
-    job          TEXT NOT NULL DEFAULT '',
+    session_id   TEXT NOT NULL DEFAULT '',
     adopted      INTEGER NOT NULL DEFAULT 0,
     last_message REAL NOT NULL DEFAULT 0,
     deadline     REAL NOT NULL DEFAULT 0,
@@ -56,7 +56,7 @@ CREATE TABLE IF NOT EXISTS seat_queue (
 );
 CREATE INDEX IF NOT EXISTS ix_seat_queue_chat ON seat_queue (account, channel_id, delivered_at);
 CREATE TABLE IF NOT EXISTS seat_lines (
-    job          TEXT PRIMARY KEY,
+    session_id   TEXT PRIMARY KEY,
     account      TEXT NOT NULL,
     channel_id   TEXT NOT NULL,
     thread_id    TEXT NOT NULL DEFAULT '',
@@ -154,7 +154,7 @@ impl Breaker {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Previous {
     #[serde(default)]
-    pub job: String,
+    pub session_id: String,
     #[serde(default)]
     pub node: String,
     /// A session the seat took over rather than started, so no later start may replace it.
@@ -195,8 +195,8 @@ pub struct Decl {
 #[serde(default)]
 pub struct Seed {
     pub state: String,
-    pub job: String,
-    pub job_node: String,
+    pub session_id: String,
+    pub session_node: String,
     pub adopted: i64,
     pub last_message: f64,
     pub deadline: f64,
@@ -213,7 +213,7 @@ pub struct Seed {
 pub struct Seat {
     pub decl: Decl,
     pub state: State,
-    pub job: String,
+    pub session_id: String,
     pub adopted: bool,
     pub last_message: f64,
     /// Starting: when the agent must be up.
@@ -236,7 +236,7 @@ pub struct Seat {
     pub refresh: bool,
 }
 
-const COLS: &str = "account, channel_id, channel_name, kind, server, slug, node, scope, level, platform, server_label, chat_label, brief, name, state, job, adopted, last_message, deadline, previous, breaker, held, missed, remote_control, rc_url, model, effort, pick_model, pick_effort, refresh";
+const COLS: &str = "account, channel_id, channel_name, kind, server, slug, node, scope, level, platform, server_label, chat_label, brief, name, state, session_id, adopted, last_message, deadline, previous, breaker, held, missed, remote_control, rc_url, model, effort, pick_model, pick_effort, refresh";
 
 impl Seat {
     fn from_row(r: &Row) -> rusqlite::Result<Self> {
@@ -262,7 +262,7 @@ impl Seat {
                 effort: r.get(26)?,
             },
             state: State::parse(&r.get::<_, String>(14)?),
-            job: r.get(15)?,
+            session_id: r.get(15)?,
             adopted: r.get::<_, i64>(16)? != 0,
             last_message: r.get(17)?,
             deadline: r.get(18)?,
@@ -278,17 +278,17 @@ impl Seat {
         })
     }
 
-    /// A seat from its old row. A job on another node stays there, so the seat starts empty.
+    /// A seat from its old row. A session on another node stays there, so the seat starts empty.
     pub fn seeded(decl: Decl, seed: Seed) -> Self {
-        let elsewhere = !seed.job.is_empty() && seed.job_node != decl.node;
+        let elsewhere = !seed.session_id.is_empty() && seed.session_node != decl.node;
         let previous: Previous = serde_json::from_str(&seed.previous).unwrap_or_default();
         Self {
             state: if elsewhere { State::Empty } else { State::parse(&seed.state) },
-            job: if elsewhere { String::new() } else { seed.job.clone() },
+            session_id: if elsewhere { String::new() } else { seed.session_id.clone() },
             adopted: !elsewhere && seed.adopted != 0,
             last_message: seed.last_message,
             deadline: seed.deadline,
-            previous: if elsewhere { Previous { job: seed.job, node: seed.job_node, ..Default::default() } } else { previous },
+            previous: if elsewhere { Previous { session_id: seed.session_id, node: seed.session_node, ..Default::default() } } else { previous },
             breaker: serde_json::from_str(&seed.breaker).unwrap_or_default(),
             held: seed.held,
             missed: seed.missed,
@@ -301,18 +301,18 @@ impl Seat {
 
     /// The seat's current agent, as the next one's predecessor.
     pub fn as_previous(&self, stopped: bool) -> Previous {
-        Previous { job: self.job.clone(), node: self.decl.node.clone(), adopted: self.adopted, stopped }
+        Previous { session_id: self.session_id.clone(), node: self.decl.node.clone(), adopted: self.adopted, stopped }
     }
 
     /// The seat runs a session it started or adopted.
-    pub fn has_live_job(&self) -> bool {
-        !self.job.is_empty() && matches!(self.state, State::Starting | State::Occupied)
+    pub fn has_live_session(&self) -> bool {
+        !self.session_id.is_empty() && matches!(self.state, State::Starting | State::Occupied)
     }
 
     /// The agent left: the seat is empty, and nothing of that agent stays on the row.
     pub fn clear_agent(&mut self) {
         self.state = State::Empty;
-        self.job.clear();
+        self.session_id.clear();
         self.rc_url.clear();
         self.adopted = false;
         self.refresh = false;
@@ -338,8 +338,8 @@ impl Seat {
     /// The `social/seats` event of this row.
     pub fn event(&self, ts: &str) -> Value {
         let mut e = json!({"seat": self.id(), "label": self.decl.name, "state": self.state.as_str(), "remote_control": self.remote_control, "node": self.decl.node});
-        if !self.job.is_empty() {
-            e["job"] = json!(self.job);
+        if !self.session_id.is_empty() {
+            e["session_id"] = json!(self.session_id);
         }
         if !self.rc_url.is_empty() {
             e["rc_url"] = json!(self.rc_url);
@@ -351,7 +351,7 @@ impl Seat {
     /// What `seats list` and `social seats` show of the seat.
     pub fn public(&self, queued: i64) -> Value {
         json!({
-            "state": self.state.as_str(), "job": if self.job.is_empty() { Value::Null } else { json!(self.job) },
+            "state": self.state.as_str(), "session_id": if self.session_id.is_empty() { Value::Null } else { json!(self.session_id) },
             "node": self.decl.node, "level": self.decl.level, "scope": self.decl.scope, "adopted": self.adopted,
             "queued": queued, "held": if self.held.is_empty() || self.held == "admitted" { Value::Null } else { json!(self.held) },
             "breaker": if self.breaker.hold_until > 0.0 { json!({"hold_until": self.breaker.hold_until}) } else { Value::Null },
@@ -396,7 +396,7 @@ fn save(c: &Connection, s: &Seat) -> rusqlite::Result<bool> {
         &format!("INSERT OR REPLACE INTO seat_registry ({COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30)"),
         params![
             d.account, d.channel_id, d.channel_name, d.kind, d.server, d.slug, d.node, d.scope, d.level, d.platform, d.server_label, d.chat_label, d.brief, d.name,
-            s.state.as_str(), s.job, s.adopted as i64, s.last_message, s.deadline,
+            s.state.as_str(), s.session_id, s.adopted as i64, s.last_message, s.deadline,
             serde_json::to_string(&s.previous).unwrap_or_default(), serde_json::to_string(&s.breaker).unwrap_or_default(),
             s.held, s.missed, s.remote_control as i64, s.rc_url, d.model, d.effort, s.pick_model, s.pick_effort, s.refresh as i64
         ],
@@ -414,10 +414,11 @@ impl Store {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        let conn = Connection::open(path)?;
+        let mut conn = Connection::open(path)?;
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.execute_batch(SCHEMA)?;
+        crate::migrate::run(&mut conn, &crate::migrate::jobs_dir())?;
         for (column, want, change) in [
             ("model", true, "ADD COLUMN model TEXT NOT NULL DEFAULT ''"),
             ("effort", true, "ADD COLUMN effort TEXT NOT NULL DEFAULT ''"),
@@ -474,10 +475,10 @@ impl Store {
         })).await;
     }
 
-    /// Every seat `job` is the agent of.
-    pub async fn of_job(&self, job: &str) -> Vec<Seat> {
-        let j = job.to_string();
-        self.run(move |c| c.prepare(&format!("SELECT {COLS} FROM seat_registry WHERE job = ?1")).and_then(|mut s| s.query_map(params![j], Seat::from_row)?.collect()).unwrap_or_default()).await
+    /// Every seat `session` is the agent of.
+    pub async fn of_session(&self, session: &str) -> Vec<Seat> {
+        let j = session.to_string();
+        self.run(move |c| c.prepare(&format!("SELECT {COLS} FROM seat_registry WHERE session_id = ?1")).and_then(|mut s| s.query_map(params![j], Seat::from_row)?.collect()).unwrap_or_default()).await
     }
 
     /// Queue one line. `origin` is social's row id, so a row sent twice is queued once.
@@ -497,8 +498,8 @@ impl Store {
         .await
     }
 
-    pub async fn brief_to(&self, ids: Vec<i64>, job: &str) {
-        let j = job.to_string();
+    pub async fn brief_to(&self, ids: Vec<i64>, session: &str) {
+        let j = session.to_string();
         let _ = self
             .run(move |c| -> rusqlite::Result<()> {
                 for id in ids {
@@ -509,13 +510,13 @@ impl Store {
             .await;
     }
 
-    /// Mark every line briefed to `job` on this seat delivered.
-    pub async fn deliver_briefed(&self, account: &str, channel: &str, job: &str, at: f64) -> usize {
-        let (a, ch, j) = (account.to_string(), channel.to_string(), job.to_string());
+    /// Mark every line briefed to `session` on this seat delivered.
+    pub async fn deliver_briefed(&self, account: &str, channel: &str, session: &str, at: f64) -> usize {
+        let (a, ch, j) = (account.to_string(), channel.to_string(), session.to_string());
         self.run(move |c| c.execute("UPDATE seat_queue SET delivered_at = ?1 WHERE account = ?2 AND channel_id = ?3 AND briefed_to = ?4 AND delivered_at = 0", params![at, a, ch, j]).unwrap_or(0)).await
     }
 
-    /// Put lines briefed to a job that never came up back in the queue.
+    /// Put lines briefed to a session that never came up back in the queue.
     pub async fn unbrief(&self, account: &str, channel: &str) {
         let (a, ch) = (account.to_string(), channel.to_string());
         let _ = self.run(move |c| c.execute("UPDATE seat_queue SET briefed_to = '' WHERE account = ?1 AND channel_id = ?2 AND delivered_at = 0", params![a, ch])).await;
@@ -525,17 +526,17 @@ impl Store {
         let _ = self.run(move |c| c.execute("UPDATE seat_queue SET delivered_at = ?1 WHERE id = ?2", params![at, id])).await;
     }
 
-    pub async fn set_line(&self, job: &str, latest: &Latest, at: f64) {
-        let (j, l) = (job.to_string(), latest.clone());
+    pub async fn set_line(&self, session: &str, latest: &Latest, at: f64) {
+        let (j, l) = (session.to_string(), latest.clone());
         let _ = self
-            .run(move |c| c.execute("INSERT OR REPLACE INTO seat_lines (job, account, channel_id, thread_id, message_id, at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)", params![j, l.account, l.channel, l.thread, l.message_id, at]))
+            .run(move |c| c.execute("INSERT OR REPLACE INTO seat_lines (session_id, account, channel_id, thread_id, message_id, at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)", params![j, l.account, l.channel, l.thread, l.message_id, at]))
             .await;
     }
 
-    /// The latest line `job` got: what `seats send` defaults to.
-    pub async fn line(&self, job: &str) -> Option<Latest> {
-        let j = job.to_string();
-        self.run(move |c| c.query_row("SELECT account, channel_id, thread_id, message_id FROM seat_lines WHERE job = ?1", params![j], |r| Ok(Latest { account: r.get(0)?, channel: r.get(1)?, thread: r.get(2)?, message_id: r.get(3)? })).optional().ok().flatten())
+    /// The latest line `session` got: what `seats send` defaults to.
+    pub async fn line(&self, session: &str) -> Option<Latest> {
+        let j = session.to_string();
+        self.run(move |c| c.query_row("SELECT account, channel_id, thread_id, message_id FROM seat_lines WHERE session_id = ?1", params![j], |r| Ok(Latest { account: r.get(0)?, channel: r.get(1)?, thread: r.get(2)?, message_id: r.get(3)? })).optional().ok().flatten())
             .await
     }
 

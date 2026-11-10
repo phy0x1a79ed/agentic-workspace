@@ -182,14 +182,13 @@ function ago(ts) {
 }
 
 
-const sessionMatches = (q, s) => fuzzy(q, s.name) || fuzzy(q, s.scope) || fuzzy(q, s.project);
+const sessionMatches = (q, s) => fuzzy(q, s.name) || fuzzy(q, s.card) || fuzzy(q, s.scope) || fuzzy(q, s.project);
 
-// A session started for a card keeps the name "task <id>", so it shows the card's title.
-const TASK_NAME = /^task (\S+)$/;
+// A session started for a card carries its task id, so it shows the card's title beside its name.
 async function cardTitles(nodes) {
-  const ids = [...new Set(nodes.flatMap((n) => n.sessions || []).map((s) => TASK_NAME.exec(show(s.name))?.[1]).filter(Boolean))];
+  const ids = [...new Set(nodes.flatMap((n) => n.sessions || []).map((s) => s.task_id).filter(Boolean))];
   const hits = await Promise.all(ids.map((id) => api.searchForNotes(`#swarmCard #taskId = ${JSON.stringify(id)}`)));
-  return new Map(ids.flatMap((id, i) => (hits[i][0] ? [[`task ${id}`, hits[i][0].title]] : [])));
+  return new Map(ids.flatMap((id, i) => (hits[i][0] ? [[id, hits[i][0].title]] : [])));
 }
 
 function nodeSection(n, q) {
@@ -204,7 +203,8 @@ function nodeSection(n, q) {
       el("small", {}, `${(n.sessions || []).length} live`),
       el("small", {}, `${n.sessions_7d || 0} sessions in 7d`),
       el("small", {}, `${up}/${services.length} services up`)),
-    sessions.length ? el("ul", {}, ...sessions.map((s) => el("li", {}, show(s.name), " ",
+    sessions.length ? el("ul", {}, ...sessions.map((s) => el("li", {}, show(s.name || "(unnamed)"), " ",
+      s.card ? el("span", { class: "awm-chip" }, show(s.card)) : null, " ",
       s.project || s.scope ? el("small", {}, [s.project, s.scope].filter(Boolean).join("/")) : null, " ", rc(s.rc_url))))
       : empty("no sessions"));
 }
@@ -388,7 +388,7 @@ async function renderFleet() {
   fillNodes(roster);
   const nodes = roster.nodes || [];
   const titles = await cardTitles(nodes);
-  for (const n of nodes) for (const s of n.sessions || []) s.name = titles.get(s.name) || s.name;
+  for (const n of nodes) for (const s of n.sessions || []) s.card = titles.get(s.task_id) || "";
   fleet = { roster, nodes };
   drawFleet();
 }
@@ -471,7 +471,7 @@ async function panel(n) {
     sessions.length ? el("table", {},
       el("tr", {}, ...["session", "project / scope", "role", "node", "state", ""].map((h) => el("th", {}, h))),
       ...sessions.map((s) => el("tr", {},
-        el("td", {}, show(s.name || s.session_id)), el("td", {}, [s.project, s.scope].filter(Boolean).join(" / ")),
+        el("td", {}, show(s.name || "(unnamed)")), el("td", {}, [s.project, s.scope].filter(Boolean).join(" / ")),
         el("td", {}, show(s.role)), el("td", {}, show(s.node)),
         el("td", {}, s.active ? "active" : "ended"),
         el("td", {}, s.active ? rc(s.rc_url) : null))))

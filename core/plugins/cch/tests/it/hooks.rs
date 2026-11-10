@@ -8,7 +8,7 @@ use std::process::{Command, Output, Stdio};
 use std::sync::mpsc;
 use std::time::Duration;
 
-use awm_harness::claude::ClaudeHome;
+use cch::ledger::{self, Stage};
 use cch::paths::Paths;
 use serde_json::{json, Value};
 
@@ -72,24 +72,36 @@ fn body(request: &str) -> Value {
     serde_json::from_str(request.split("\r\n\r\n").nth(1).unwrap()).unwrap()
 }
 
-/// A job directory holding a freshly claimed session's state record.
+const SESSION: &str = "00000000-0000-4000-8000-000000000007";
+
+/// A job directory holding a freshly claimed session's state record, and a pool ledger that says
+/// so. The ledger sits at `<AWM_DIR>/services/cch/pool.json`, with `AWM_DIR` the temp dir.
 fn job() -> (tempfile::TempDir, PathBuf) {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path().join("jobs").join("job0001");
     std::fs::create_dir_all(&dir).unwrap();
-    let state = json!({"name": "claimed dunlin", "nameSource": "user", "intent": "", "cwd": "/home/user", "state": "working"});
+    let state = json!({"name": "dunlin", "nameSource": "user", "intent": "", "cwd": "/home/user", "state": "working"});
     std::fs::write(dir.join("state.json"), state.to_string()).unwrap();
+    set_stage(tmp.path(), Stage::Claimed);
     (tmp, dir)
 }
 
-fn run(job: &Path, payload: Value) -> Value {
-    run_with(job, payload, &[])
+fn ledger_of(tmp: &Path) -> PathBuf {
+    Paths::under(tmp).ledger_path()
 }
 
-fn run_with(job: &Path, payload: Value, env: &[(&str, &Path)]) -> Value {
-    let mut env = env.to_vec();
-    env.push(("CLAUDE_JOB_DIR", job));
-    let (out, _) = hook(&["name"], &payload.to_string(), &env);
+fn set_stage(tmp: &Path, stage: Stage) {
+    ledger::set(&ledger_of(tmp), &ledger::key(SESSION).unwrap(), stage).unwrap();
+}
+
+fn stage_of(tmp: &Path) -> Option<Stage> {
+    ledger::load(&ledger_of(tmp)).get(&ledger::key(SESSION).unwrap()).copied()
+}
+
+fn run(job: &Path, mut payload: Value) -> Value {
+    payload["session_id"] = json!(SESSION);
+    let tmp = job.parent().unwrap().parent().unwrap();
+    let (out, _) = hook(&["name"], &payload.to_string(), &[("CLAUDE_JOB_DIR", job), ("AWM_DIR", &tmp.join(".awm"))]);
     assert!(out.status.success());
     assert_eq!(out.stdout, b"");
     serde_json::from_slice(&std::fs::read(job.join("state.json")).unwrap()).unwrap()
@@ -105,8 +117,18 @@ fn test_a_first_prompt_clears_the_name_and_records_the_intent() {
 }
 
 #[test]
-fn test_a_session_that_is_not_the_pool_s_is_untouched() {
-    let (_tmp, job) = job();
+fn test_a_first_prompt_marks_the_session_kept_and_a_second_changes_nothing() {
+    let (tmp, job) = job();
+    run(&job, json!({"source": "user", "prompt": "first"}));
+    assert_eq!(stage_of(tmp.path()), Some(Stage::Kept));
+    std::fs::write(job.join("state.json"), json!({"name": "mine"}).to_string()).unwrap();
+    assert_eq!(run(&job, json!({"source": "user", "prompt": "second"})), json!({"name": "mine"}));
+}
+
+#[test]
+fn test_a_session_the_ledger_does_not_call_claimed_is_untouched() {
+    let (tmp, job) = job();
+    set_stage(tmp.path(), Stage::Spare);
     std::fs::write(job.join("state.json"), json!({"name": "remote shell"}).to_string()).unwrap();
     let state = run(&job, json!({"source": "user", "prompt": "carry on"}));
     assert_eq!(state, json!({"name": "remote shell"}));
@@ -118,20 +140,6 @@ fn test_garbage_on_standard_input_costs_nobody_a_prompt() {
     let (out, _) = hook(&["name"], "not json at all", &[("CLAUDE_JOB_DIR", &job)]);
     assert!(out.status.success());
     assert_eq!(out.stdout, b"");
-}
-
-#[test]
-fn test_the_hook_and_the_service_agree_on_the_claimed_prefix() {
-    // The hook and the pool read the one `Paths::claimed_prefix`, the default and the override alike.
-    let tmp = tempfile::tempdir().unwrap();
-    let env = Paths::from_vars(ClaudeHome::at(tmp.path(), tmp.path().join(".claude.json")), tmp.path().into(), |_| None);
-    assert_eq!(env.claimed_prefix, "claimed ");
-    assert_eq!(Paths::under(tmp.path()).claimed_prefix, env.claimed_prefix);
-    let (_tmp, job) = job();
-    std::fs::write(job.join("state.json"), json!({"name": "held dunlin"}).to_string()).unwrap();
-    let prefix = Path::new("held ");
-    let state = run_with(&job, json!({"source": "user", "prompt": "hello"}), &[("AWM_CX_CLAIMED_PREFIX", prefix)]);
-    assert_eq!(state, json!({"intent": "hello"}));
 }
 
 #[test]

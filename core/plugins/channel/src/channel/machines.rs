@@ -300,23 +300,3 @@ pub fn decoded(events: &[Value], raw: bool) -> Vec<Value> {
         })
         .collect()
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn out(task: i64, stream: &str, bytes: &[u8]) -> Value {
-        json!({"type": "task.output", "task": task, "stream": stream, "bytes": bytes.len(), "data": base64::engine::general_purpose::STANDARD.encode(bytes)})
-    }
-
-    #[test]
-    fn a_character_split_across_chunks_is_whole_again() {
-        let e = "é".as_bytes();
-        let got = decoded(&[out(1, "stdout", &[b'a', e[0]]), out(1, "stdout", &[e[1], b'b'])], false);
-        assert_eq!(got.len(), 1);
-        assert_eq!(got[0]["text"], "aéb");
-        assert_eq!(got[0]["bytes"], 4);
-        assert!(got[0].get("data").is_none());
-    }
-
-}

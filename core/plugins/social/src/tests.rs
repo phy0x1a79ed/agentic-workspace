@@ -128,16 +128,16 @@ mod verbs {
         Rig { svc, app, fake, _tmp: tmp }
     }
 
-    /// A call from job `job` on altair at `level`, as the door stamps it.
-    fn from(job: &str, level: &str, mut args: Value) -> Value {
+    /// A call from session `session` on altair at `level`, as the door stamps it.
+    fn from(session: &str, level: &str, mut args: Value) -> Value {
         args["_caller_trust"] = json!(level);
-        args["_caller_session"] = json!({"kind": "bg", "job": job, "name": format!("seat:{job}")});
+        args["_caller_session"] = json!({"kind": "bg", "session_id": session, "name": format!("seat:{session}")});
         args
     }
 
     impl Rig {
-        async fn call(&self, verb: &str, job: &str, level: &str, args: Value) -> Result<Value, awm_plugin_sdk::VerbError> {
-            self.svc.call_as(verb, from(job, level, args), Caller::default(), Some("peer:altair")).await
+        async fn call(&self, verb: &str, session: &str, level: &str, args: Value) -> Result<Value, awm_plugin_sdk::VerbError> {
+            self.svc.call_as(verb, from(session, level, args), Caller::default(), Some("peer:altair")).await
         }
     }
 
@@ -145,7 +145,7 @@ mod verbs {
     async fn mounting_a_declared_seat_names_seats_adopt_and_its_agent_sends_to_the_latest_line() {
         let r = rig().await;
         let out = r.call("mount", "j1", "cooperative", json!({"account": "opal", "channel": "D0TEST"})).await.unwrap();
-        assert!(out["error"].as_str().unwrap().contains("a seat on altair: run `seats adopt account=opal channel=D0TEST job=<job>` there"), "{out}");
+        assert!(out["error"].as_str().unwrap().contains("a seat on altair: run `seats adopt account=opal channel=D0TEST session_id=<session id>` there"), "{out}");
         assert!(r.app.db.holder("opal", "D0TEST").await.is_none());
         assert!(r.app.seats.store.waiting("altair", 10).await.iter().all(|row| row.kind != "adopt"));
         bind(&r, "D0TEST", "j1").await;
@@ -158,9 +158,9 @@ mod verbs {
         assert_eq!(sent[1].0, "D0TEST", "the label DM names the held DM");
     }
 
-    /// Bind `job` on altair to the chat, as the seats host does for the agent it starts.
-    async fn bind(r: &Rig, channel: &str, job: &str) {
-        r.app.db.mount(crate::db::Mount { account: "opal".into(), channel_id: channel.into(), node: "altair".into(), job: job.into(), ..Default::default() }).await.unwrap();
+    /// Bind `session` on altair to the chat, as the seats host does for the agent it starts.
+    async fn bind(r: &Rig, channel: &str, session: &str) {
+        r.app.db.mount(crate::db::Mount { account: "opal".into(), channel_id: channel.into(), node: "altair".into(), session_id: session.into(), ..Default::default() }).await.unwrap();
     }
 
     #[tokio::test]

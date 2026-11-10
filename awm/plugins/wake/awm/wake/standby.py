@@ -21,6 +21,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from awm.gatewayclient.ids import PLATFORM_CLAUDE, BadSessionId, SessionId
 from awm.wake import magic
 from awm.wake.config import WakeConfig
 from awm.wake.gateway import REFLECTION, WAKE, CallError, Gateway
@@ -45,6 +46,8 @@ class Store:
             return {"holds": {}, "misses": {}}
         data.setdefault("holds", {})
         data.setdefault("misses", {})
+        if _rekey_holds(data):
+            self.save(data)
         return data
 
     def save(self, data: dict[str, Any]) -> None:
@@ -52,6 +55,31 @@ class Store:
         tmp = self.path.with_suffix(".tmp")
         tmp.write_text(json.dumps(data, indent=1))
         os.replace(tmp, self.path)
+
+
+def _rekey_holds(data: dict[str, Any]) -> bool:
+    """MIGRATION(session-ids): give each hold keyed by a job its session id.
+
+    A hold whose job names no session is dropped. An unreadable jobs dir raises,
+    and nothing is dropped. True when a hold changed.
+    """
+    stale = {down: h for down, h in data["holds"].items() if "job" in h}
+    if not stale:
+        return False
+    jobs = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude") / "jobs"
+    try:
+        os.listdir(jobs)
+    except OSError as exc:
+        raise RuntimeError(f"cannot rekey the standby holds by session id: {jobs} is unreadable: {exc}") from exc
+    for down, held in stale.items():
+        job = held.pop("job")
+        try:
+            raw = json.loads((jobs / str(job) / "state.json").read_text()).get("sessionId")
+            held.setdefault("session_id", SessionId.from_harness_native(PLATFORM_CLAUDE, raw).canonical())
+        except (OSError, ValueError, AttributeError, BadSessionId):
+            if not held.get("session_id"):
+                del data["holds"][down]
+    return True
 
 
 def default_store() -> Store:
@@ -99,10 +127,10 @@ async def take(cfg: WakeConfig, store: Store, gw: Gateway, *, down: str, reason:
         "started_by": f"the wake plugin on {cfg.node}",
         "model": "sonnet", "effort": "medium",
         "prompt": brief(cfg, down, reason, deadline_at, planned)})
-    if not isinstance(started, dict) or not started.get("job"):
+    if not isinstance(started, dict) or not started.get("session_id"):
         raise Refused(f"no standby session started on {cfg.node}: {started!r}")
     held = {"down": down, "reason": reason, "planned": planned, "state": "holding",
-            "taken_at": t, "deadline_at": deadline_at, "job": started["job"],
+            "taken_at": t, "deadline_at": deadline_at, "session_id": started["session_id"],
             "link": started.get("link"), "rewakes": 0, "last_rewake_at": None,
             "up_seen_at": None, "nagged": False}
     data["holds"][down] = held
@@ -122,8 +150,8 @@ async def release(cfg: WakeConfig, store: Store, gw: Gateway, *, down: str,
     store.save(data)
     note = (f"Release from {down}: it is back. Revive report: "
             f"{json.dumps(report or {}, sort_keys=True)}. Tell Tony, then stop this session.")
-    delivered = await _tell(gw, held["job"], note)
-    return {"ok": True, "held": True, "job": held["job"], "delivered": delivered}
+    delivered = await _tell(gw, held["session_id"], note)
+    return {"ok": True, "held": True, "session_id": held["session_id"], "delivered": delivered}
 
 
 def status(store: Store) -> dict[str, Any]:
@@ -165,7 +193,7 @@ async def watchdog_tick(cfg: WakeConfig, store: Store, gw: Gateway, *,
             held["up_seen_at"] = t
         elif not held["nagged"] and t - held["up_seen_at"] > cfg.standby.deadline_s:
             held["nagged"] = True
-            await _tell(gw, held["job"], f"{partner} answers ssh but has not released the hold "
+            await _tell(gw, held["session_id"], f"{partner} answers ssh but has not released the hold "
                         f"after {cfg.standby.deadline_s:.0f}s. Its boot runner may have failed: "
                         f"check its pinned jobs and tell Tony.")
             events.append("nagged")
@@ -180,7 +208,7 @@ async def watchdog_tick(cfg: WakeConfig, store: Store, gw: Gateway, *,
         held["rewakes"] += 1
         held["last_rewake_at"] = t
         store.save(data)
-        await _tell(gw, held["job"], f"{partner} is still down past its deadline. Sent "
+        await _tell(gw, held["session_id"], f"{partner} is still down past its deadline. Sent "
                     f"Wake-on-LAN {held['rewakes']} of {cfg.standby.rewake_max} to {', '.join(sent)}.")
         events.append("rewake")
     return events
@@ -200,7 +228,7 @@ async def handover(cfg: WakeConfig, gw: Gateway, *, reason: str, expect_down_s: 
         raise Refused(f"{partner} did not take the standby, so {cfg.node} stays up: {exc}") from exc
     if not isinstance(held, dict) or not held.get("ok"):
         raise Refused(f"{partner} did not take the standby, so {cfg.node} stays up: {held!r}")
-    out = {"ok": True, "partner": partner, "standby_job": held.get("job"),
+    out = {"ok": True, "partner": partner, "standby_session": held.get("session_id"),
            "standby_link": held.get("link"), "rebooting": False,
            "tell_tony": f"{partner} holds the standby while {cfg.node} restarts"
                         + (f": {held['link']}" if held.get("link") else ".")}
@@ -215,16 +243,17 @@ def _spawn(argv: tuple[str, ...]) -> None:
                      stderr=subprocess.DEVNULL, start_new_session=True)
 
 
-async def _tell(gw: Gateway, job: str, text: str) -> bool:
+async def _tell(gw: Gateway, session_id: str, text: str) -> bool:
+    """Type ``text`` into the hold's session."""
     try:
-        await gw.call(REFLECTION, "message", {"job": job, "text": text})
+        await gw.call(REFLECTION, "message", {"to": {"id": session_id}, "text": text})
         return True
     except CallError:
         return False
 
 
 def _public(held: dict[str, Any]) -> dict[str, Any]:
-    return {k: held.get(k) for k in ("down", "state", "planned", "reason", "job", "link",
+    return {k: held.get(k) for k in ("down", "state", "planned", "reason", "session_id", "link",
                                      "taken_at", "deadline_at", "rewakes")}
 
 

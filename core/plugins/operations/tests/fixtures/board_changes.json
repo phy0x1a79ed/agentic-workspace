@@ -28,7 +28,6 @@
       "sessions": [
         {
           "session_id": "cc0123456789abcdef0123456789abcdef",
-          "job": "job-a",
           "name": "fix-tunnel",
           "role": "main",
           "active": true,
@@ -41,7 +40,6 @@
         },
         {
           "session_id": "cc3333333333333333333333333333333a",
-          "job": "job-c",
           "name": null,
           "role": "joined",
           "active": true,
@@ -137,7 +135,6 @@
       "sessions": [
         {
           "session_id": "cc4444444444444444444444444444444b",
-          "job": "job-d",
           "name": "old-work",
           "role": "main",
           "active": false,

@@ -3,7 +3,7 @@
 //! hygiene pass.
 //!
 //! The Python service is the specification: its result shapes, error classes and texts, and
-//! `scopes.db` at schema v5. scopes keeps no search index of its own: `search` ranks scopes
+//! `scopes.db` at schema v6. scopes keeps no search index of its own: `search` ranks scopes
 //! by the journal's brief posts, asked over the hub.
 //!
 //! The work is synchronous, as the Python's was: each verb runs on tokio's blocking pool and

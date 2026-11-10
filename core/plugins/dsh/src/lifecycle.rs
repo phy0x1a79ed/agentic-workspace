@@ -123,7 +123,6 @@ pub fn can_change_the_set(frame: &Value) -> bool {
 
 #[derive(Clone)]
 struct Seen {
-    job: String,
     name: Value,
     cwd: Value,
 }
@@ -146,7 +145,7 @@ pub struct Lifecycle {
 }
 
 fn event(kind: &str, session_id: &str, s: &Seen) -> Value {
-    json!({"kind": kind, "session_id": session_id, "job": s.job, "name": s.name, "cwd": s.cwd, "session_kind": SESSION_KIND})
+    json!({"kind": kind, "session_id": session_id, "name": s.name, "cwd": s.cwd, "session_kind": SESSION_KIND})
 }
 
 impl Lifecycle {
@@ -184,8 +183,7 @@ impl Lifecycle {
             .filter_map(row)
             .filter_map(|r| {
                 let sid = r["session_id"].as_str()?.to_string();
-                let job = r["fork_session_id"].as_str()?.to_string();
-                Some((sid, Seen { job, name: r["name"].clone(), cwd: r["cwd"].clone() }))
+                Some((sid, Seen { name: r["name"].clone(), cwd: r["cwd"].clone() }))
             })
             .collect();
         let mut st = self.state.lock().unwrap();
@@ -424,7 +422,7 @@ mod tests {
         w.until_sent(1).await;
         assert_eq!(
             w.reflection.sent(),
-            [json!({"kind": "started", "session_id": OTHER_R9, "job": OTHER_FORK, "name": "fresh", "cwd": "/w/projects/p/s", "session_kind": "web"})]
+            [json!({"kind": "started", "session_id": OTHER_R9, "name": "fresh", "cwd": "/w/projects/p/s", "session_kind": "web"})]
         );
     }
 
@@ -446,7 +444,7 @@ mod tests {
         w.push(json!({"type": "session/deleted", "sessionId": FORK})).await;
         w.until_sent(1).await;
         let ev = &w.reflection.sent()[0];
-        assert_eq!((ev["kind"].as_str(), ev["session_id"].as_str(), ev["job"].as_str()), (Some("stopped"), Some(R9), Some(FORK)));
+        assert_eq!((ev["kind"].as_str(), ev["session_id"].as_str()), (Some("stopped"), Some(R9)));
     }
 
     #[tokio::test]

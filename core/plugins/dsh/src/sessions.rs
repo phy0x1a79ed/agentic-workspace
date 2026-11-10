@@ -9,13 +9,13 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use awm_harness::contract::{self, HarnessEvent, Kind, Reporter};
-use awm_plugin_sdk::ids;
+use awm_plugin_sdk::ids::{Name, Platform, SessionId};
 use serde_json::{json, Map, Value};
 
 use crate::fork::{Fork, ForkError};
 use crate::lifecycle::Lifecycle;
 
-pub const PLATFORM: &str = ids::PLATFORM_DEEPSEEK;
+pub const PLATFORM: &str = Platform::DeepSeek.code();
 pub const NAME: &str = "DeepSeek harness";
 pub const COMPACT_WAIT: Duration = Duration::from_secs(1800);
 pub const POLL: Duration = Duration::from_secs(3);
@@ -41,7 +41,7 @@ impl Procs for ProcFs {
 
 /// The R9 id of a fork id, or None when it holds no hex id.
 pub fn r9(fork_id: &str) -> Option<String> {
-    ids::r9(PLATFORM, fork_id.strip_prefix("session-").unwrap_or(fork_id)).ok()
+    SessionId::canonical_of_native(Platform::DeepSeek, fork_id.strip_prefix("session-").unwrap_or(fork_id))
 }
 
 pub fn unsupported(what: &str) -> Value {
@@ -141,27 +141,15 @@ impl Sessions {
 
     /// The one session `reference` names: its R9 id, fork id, an R9 prefix of 8 or more, or its
     /// exact title. Two hits are a refusal.
-    pub async fn find_one(&self, reference: &str) -> Result<Option<Value>, ForkError> {
-        let r = reference.trim().to_lowercase();
-        if r.is_empty() {
-            return Ok(None);
-        }
-        let mut hits: Vec<Value> = self
-            .rows()
-            .await?
-            .into_iter()
-            .filter(|row| {
-                let sid = text_of(row, "session_id");
-                r == sid
-                    || r == text_of(row, "fork_session_id").to_lowercase()
-                    || (r.chars().count() >= 8 && sid.starts_with(&r))
-                    || text_of(row, "name").to_lowercase() == r
-            })
-            .collect();
-        if hits.len() > 1 {
-            return Err(ForkError(format!("{} names {} DeepSeek harness sessions", repr(&r), hits.len())));
-        }
-        Ok(hits.pop())
+    /// The session whose canonical id is `session_id`.
+    pub async fn by_id(&self, session_id: &str) -> Result<Option<Value>, ForkError> {
+        Ok(self.rows().await?.into_iter().find(|row| text_of(row, "session_id") == session_id))
+    }
+
+    /// Every session whose whole title is `name`, any case.
+    pub async fn named(&self, name: &str) -> Result<Vec<Value>, ForkError> {
+        let Ok(name) = Name::new(name) else { return Ok(vec![]) };
+        Ok(self.rows().await?.into_iter().filter(|row| name.matches(&text_of(row, "name"))).collect())
     }
 
     /// Whether `pid` is a fork session, walking up to the fork's node process.
@@ -175,7 +163,7 @@ impl Sessions {
             }
             if let Some(fork_id) = self.procs.environ(p).get("DSH_SESSION_ID").filter(|v| !v.is_empty()) {
                 return json!({"ok": true, "mine": true, "session_id": r9(fork_id), "hosting": "web",
-                              "fork_session_id": fork_id, "pid": p, "job": null});
+                              "fork_session_id": fork_id, "pid": p});
             }
             pid = self.procs.ppid(p) as i64;
             seen += 1;
@@ -201,7 +189,7 @@ impl Sessions {
         if let [row] = running.as_slice() {
             return json!({"ok": true, "mine": true, "session_id": row["session_id"], "hosting": "web",
                           "fork_session_id": row["fork_session_id"], "name": row["name"], "cwd": row["cwd"],
-                          "pid": fork_pid, "job": null});
+                          "pid": fork_pid});
         }
         json!({"ok": true, "mine": true, "session_id": null,
                "error": format!("the call came through the DeepSeek harness's one MCP client, which carries no session id, \
@@ -210,18 +198,18 @@ impl Sessions {
 
     /// The row a verb names by `session_id`, `ref` or the caller's `pid`.
     pub async fn target(&self, args: &Value, fork_pid: Option<u32>) -> Result<Value, ForkError> {
-        let reference = contract::args::text(args.get("session_id")).or_else(|| contract::args::text(args.get("ref")));
+        let reference = contract::args::text(args.get("session_id"));
         let row = if let Some(r) = &reference {
-            self.find_one(r).await?
+            self.by_id(r).await?
         } else if truthy(args.get("pid")) {
             let who = self.resolve(pid_arg(args.get("pid")), fork_pid).await;
             let Some(sid) = who.get("session_id").and_then(Value::as_str) else {
                 let why = who.get("error").and_then(Value::as_str).unwrap_or("the caller is no DeepSeek harness session");
                 return Err(ForkError(why.to_string()));
             };
-            self.find_one(sid).await?
+            self.by_id(sid).await?
         } else {
-            return Err(ForkError("name a session with session_id or ref".into()));
+            return Err(ForkError("name a session with session_id".into()));
         };
         row.ok_or_else(|| {
             let shown = reference.as_deref().map(repr).unwrap_or_else(|| "None".into());
@@ -303,7 +291,7 @@ impl Sessions {
         if let Some(prompt) = nonempty(args.get("prompt")) {
             self.send(&row, prompt).await?;
         }
-        Ok(json!({"ok": true, "session_id": row["session_id"], "fork_session_id": fork_id, "job": null,
+        Ok(json!({"ok": true, "session_id": row["session_id"], "fork_session_id": fork_id,
                   "name": args.get("name").cloned().unwrap_or(Value::Null), "cwd": cwd}))
     }
 
@@ -311,7 +299,7 @@ impl Sessions {
         if let Some(p) = prompt.filter(|p| !p.is_empty()) {
             self.send(row, p).await?;
         }
-        Ok(json!({"ok": true, "session_id": row["session_id"], "job": null, "live": true}))
+        Ok(json!({"ok": true, "session_id": row["session_id"], "live": true}))
     }
 
     async fn events_since(&self, fork_id: &str, seq: Option<i64>) -> Result<Vec<Value>, ForkError> {
@@ -482,18 +470,18 @@ pub mod tests {
     }
 
     #[tokio::test]
-    async fn find_matches_the_r9_id_a_prefix_the_fork_id_and_the_title() {
+    async fn by_id_takes_the_whole_id_and_named_the_whole_title() {
         let r = rig().await;
-        for reference in [R9, &R9[..10], FORK, "WEB"] {
-            assert_eq!(r.s.find_one(reference).await.unwrap().unwrap()["session_id"], R9, "{reference}");
-        }
-        assert!(r.s.find_one("ds0e").await.unwrap().is_none());
+        assert_eq!(r.s.by_id(R9).await.unwrap().unwrap()["session_id"], R9);
+        assert!(r.s.by_id(&R9[..10]).await.unwrap().is_none());
+        assert_eq!(r.s.named("WEB").await.unwrap()[0]["session_id"], R9);
+        assert!(r.s.named("we").await.unwrap().is_empty());
     }
 
     #[tokio::test]
     async fn plain_text_is_queued_and_a_slash_command_is_executed() {
         let r = rig().await;
-        let row = r.s.find_one(R9).await.unwrap().unwrap();
+        let row = r.s.by_id(R9).await.unwrap().unwrap();
         assert_eq!(r.s.send(&row, "hello").await.unwrap()["confirmed"], "enqueued");
         assert_eq!(r.stub.last(), ("session.prompt".into(),
                    json!({"sessionId": FORK, "mode": "queue", "content": [{"type": "text", "text": "hello"}]})));
@@ -504,7 +492,7 @@ pub mod tests {
     #[tokio::test]
     async fn model_and_effort_go_in_one_select() {
         let r = rig().await;
-        let row = r.s.find_one(R9).await.unwrap().unwrap();
+        let row = r.s.by_id(R9).await.unwrap().unwrap();
         r.s.set(&row, &json!({"model": "deepseek-v4", "effort": "high"}), Some("or".into())).await.unwrap();
         assert_eq!(r.stub.last(), ("session.selectModel".into(),
                    json!({"sessionId": FORK, "provider": "or", "model": "deepseek-v4", "reasoningEffort": "high"})));
@@ -535,7 +523,7 @@ pub mod tests {
     async fn compact_queues_the_followup_after_compaction_end_and_reports_done() {
         let r = rig().await;
         r.stub.with(|g| g.history = vec![json!({"seq": 4, "type": "message"})]);
-        let row = r.s.find_one(R9).await.unwrap().unwrap();
+        let row = r.s.by_id(R9).await.unwrap().unwrap();
         let (out, watch) = r.s.compact(&row, Some("carry on")).await.unwrap();
         assert!(out["ticket"].as_str().is_some_and(|t| !t.is_empty()));
         assert_eq!(out["followup_deferred"], true);
@@ -554,7 +542,7 @@ pub mod tests {
     #[tokio::test]
     async fn a_failed_compaction_is_lost_and_types_nothing() {
         let r = rig().await;
-        let row = r.s.find_one(R9).await.unwrap().unwrap();
+        let row = r.s.by_id(R9).await.unwrap().unwrap();
         r.stub.with(|g| g.history = vec![json!({"seq": 9, "type": "compaction/end", "payload": {"error": "overflow"}})]);
         assert_eq!(r.s.watch_compaction(&row, "carry on", "t", Some(8)).await, Kind::Lost);
         assert!(r.events.lock().unwrap().last().unwrap()["reason"].as_str().unwrap().contains("overflow"));
@@ -567,7 +555,7 @@ pub mod tests {
         let spool = r._dir.path().join("refused.jsonl");
         let (reporter, _) = recording(spool.clone(), false);
         r.s.reporter = reporter;
-        let row = r.s.find_one(R9).await.unwrap().unwrap();
+        let row = r.s.by_id(R9).await.unwrap().unwrap();
         r.stub.with(|g| g.history = vec![json!({"seq": 2, "type": "compaction/end"})]);
         assert_eq!(r.s.watch_compaction(&row, "carry on", "t1", Some(1)).await, Kind::Done);
         let line: Value = serde_json::from_str(std::fs::read_to_string(&spool).unwrap().trim()).unwrap();

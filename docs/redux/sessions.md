@@ -9,11 +9,12 @@ This doc holds a session's id, the id of its task, its lifecycle from start to r
 ### Identity
 
 - **R9.** One id refers to one session, in awm and on its platform alike. Tony: "we have 1 and only 1 id that references each task/session across claude and awm."
-  - The id is hex, of any length. Its first 2 characters name the platform.
-  - A Claude Code session's id is `cc` followed by the hex digits of its full Claude session UUID.
+  - The id is lowercase hex. Its first 2 characters name the platform. This is the canonical form, and the only form a verb accepts or a store keeps.
+  - A Claude Code session's id is `cc` followed by the 32 hex digits of its full Claude session UUID. A DeepSeek session's id is `ds` followed by its own hex id, of any length.
   - awm accepts incoming session ids. It mints no session ids of its own that map to them. A task has its own id (R58).
-  - A short form, such as a unique prefix, is only a lookup on this id.
-  - The session id and the task id (R58) are the only keys awm tracks by. Tony: "The real tracking is the 2 character claude indicator plus claude session id for sessions and the task ids minted by awm" (2026-11-01).
+  - Each consumer takes the form it needs from a named converter: `canonical()`, `harness_native()` for the platform's own files, and `job_dir()` for a Claude Code job folder. A verb refuses a short id or a bare UUID, and the refusal shows the canonical form. Tony: "one lookup function should accept the canonical ID only. and this should be obvious what is canonical" and "it shouldnt accept different types of hte same ID because that's dangerous" (2026-11-10).
+  - A lookup names a session by `{id}` or by `{name}`, never by a string that could be either. A name matches a whole current name, ignoring case. A name that matches two sessions is refused, and the refusal lists their ids. The node goes in `peer`, never in the name.
+  - The session id and the task id (R58) are the only keys awm tracks by. Tony: "The real tracking is the 2 character claude indicator plus claude session id for sessions and the task ids minted by awm" (2026-11-01). Nothing reads meaning from a name: the warm pool keeps its own ledger, and a seat is whatever the seat registry holds.
 - **R56.** The sessions of one task share a common prefix in their names, so that Tony can tell them apart. A name serves legibility only. awm tracks sessions by session id (R9) and tasks by task id (R58), never by name. Tony: "We also need to give guidelines for naming... sessions for a task needs to be identifiable. Use common prefix.", "Id  prefer human readable prefix and session descriptor but fear will get long" and "lets omit the id in the name. Names can be for legibility only." (2026-11-01).
   1. The task name is a slug of 2 or 3 words, such as `redux-naming`. The coordinator takes the task name.
   2. Each session it starts takes `<task>/<descriptor>`, where the descriptor names the concern in 1 to 3 words, such as `redux-naming/survey`.

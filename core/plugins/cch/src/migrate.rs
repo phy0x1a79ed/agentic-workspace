@@ -5,9 +5,17 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
+use awm_harness::claude::legacy;
+use awm_harness::claude::ClaudeHome;
+use awm_plugin_sdk::ids::{Platform, SessionId};
 use serde::Serialize;
+use serde_json::Value;
 
+use crate::ledger::{self, Stage};
+use crate::lifecycle;
+use crate::lineage::{self, Procfs};
 use crate::paths::Paths;
+use crate::sessions::Sessions;
 
 /// The marker a migrated source dir carries: the ISO time and the destination path.
 pub const MARKER: &str = "MIGRATED";
@@ -148,6 +156,77 @@ pub async fn migrate(paths: &Paths) -> Report {
     report
 }
 
+// MIGRATION(session-ids): lineage files keyed by job short id become files keyed by canonical
+// session id; a pre-ledger warm spare gets its ledger entry. Delete with legacy.rs.
+
+/// The canonical session id a legacy lineage record belongs to: the one it records, else the one
+/// its job's state file records.
+fn legacy_session(home: &ClaudeHome, short: &str, rec: &serde_json::Map<String, Value>) -> Option<SessionId> {
+    let recorded = rec.get("session_id").and_then(Value::as_str);
+    recorded
+        .and_then(|raw| SessionId::parse(raw).ok().or_else(|| SessionId::from_harness_native(Platform::Claude, raw).ok()))
+        .or_else(|| legacy::canonical_of_job(home, short))
+}
+
+/// Rewrite every `starts/<short>.json` as `starts/<canonical>.json`, its `job` dropped and its
+/// `parent` canonical. A record that maps to no session is dropped, and so is a pending record
+/// filed under a name digest. Nothing changes when `jobs/` cannot be listed. Returns the files
+/// rewritten.
+pub fn lineage_keys(paths: &Paths) -> io::Result<usize> {
+    if !legacy::jobs_readable(&paths.home) {
+        return Err(io::Error::other("the jobs dir is unreadable, so no lineage file was renamed"));
+    }
+    let Ok(dir) = std::fs::read_dir(paths.starts_dir()) else { return Ok(0) };
+    let mut moved = 0;
+    for entry in dir.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let pending = name.strip_prefix("pending-").and_then(|f| f.strip_suffix(".json"));
+        if pending.is_some_and(|id| SessionId::parse(id).is_err()) {
+            std::fs::remove_file(entry.path())?;
+            continue;
+        }
+        let Some(short) = name.strip_suffix(".json").filter(|s| lineage::is_job(s)) else { continue };
+        let Some(Value::Object(mut rec)) = std::fs::read(entry.path()).ok().and_then(|b| serde_json::from_slice(&b).ok()) else {
+            continue;
+        };
+        if let Some(id) = legacy_session(&paths.home, short, &rec) {
+            let key = id.canonical();
+            rec.remove("job");
+            rec.remove("resumed_from");
+            rec.insert("session_id".into(), Value::String(key.clone()));
+            if let Some(Value::String(parent)) = rec.get("parent").cloned() {
+                let parent = if lineage::is_job(&parent) {
+                    legacy::canonical_of_job(&paths.home, &parent)
+                } else {
+                    SessionId::from_harness_native(Platform::Claude, &parent).ok()
+                };
+                rec.insert("parent".into(), parent.map_or(Value::Null, |p| Value::String(p.canonical())));
+            }
+            let dest = paths.lineage_path(&key);
+            if !dest.exists() {
+                lifecycle::write_json(&dest, &Value::Object(rec))?;
+            }
+        }
+        std::fs::remove_file(entry.path())?;
+        moved += 1;
+    }
+    Ok(moved)
+}
+
+/// Enter each live session the pool seeded before the ledger existed, named `<warm ...`, as a
+/// spare. Returns how many were entered.
+pub fn seed_ledger(paths: &Paths) -> usize {
+    let path = paths.ledger_path();
+    let ledger = ledger::load(&path);
+    let sessions = Sessions::new(paths, &Procfs).load();
+    let warm = sessions
+        .iter()
+        .filter(|s| s.name.starts_with("<warm "))
+        .filter_map(|s| ledger::key(s.session_id.as_deref()?))
+        .filter(|id| !ledger.contains_key(id));
+    warm.filter(|id| ledger::set(&path, id, Stage::Spare).is_ok()).count()
+}
+
 /// The rollback to the Python cch: copies `<service dir>/pending/` back over reflection's
 /// `pending/`, keeping modes, and removes that dir's [`MARKER`]. Answers the files it copied.
 pub fn rollback(paths: &Paths) -> io::Result<Vec<PathBuf>> {
@@ -217,6 +296,43 @@ mod tests {
         assert!(!dest.join(MARKER).exists());
         assert!(paths.legacy_promises_dir().join("4242.json").exists(), "the source is never deleted");
         assert!(paths.legacy_hold_path().exists());
+    }
+
+    // MIGRATION(session-ids)
+    #[test]
+    fn lineage_files_are_rekeyed_by_session_and_a_warm_spare_enters_the_ledger() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = Paths::under(tmp.path());
+        let (home, starts) = (&paths.home, paths.starts_dir());
+        std::fs::create_dir_all(&starts).unwrap();
+        std::fs::create_dir_all(home.daemon_dir()).unwrap();
+        for job in ["abababab", "cdcdcdcd"] {
+            std::fs::create_dir_all(home.jobs().join(job)).unwrap();
+            let state = serde_json::json!({"sessionId": format!("{job}-0000-4000-8000-000000000000"), "name": "<warm 1>"});
+            std::fs::write(home.job_state(job), state.to_string()).unwrap();
+        }
+        let id = |job: &str| format!("cc{job}000040008000000000000000");
+        let rec = serde_json::json!({"job": "abababab", "mode": "worker", "parent": "cdcdcdcd", "resumed_from": "x"});
+        std::fs::write(starts.join("abababab.json"), rec.to_string()).unwrap();
+        std::fs::write(starts.join("eeeeeeee.json"), r#"{"job": "eeeeeeee", "mode": "worker"}"#).unwrap();
+        std::fs::write(starts.join("pending-0f1e2d3c4b5a6978.json"), r#"{"name": "x"}"#).unwrap();
+        assert_eq!(lineage_keys(&paths).unwrap(), 2);
+        assert!(!starts.join("pending-0f1e2d3c4b5a6978.json").exists(), "a digest-named pending record is dropped");
+        assert_eq!(lineage_keys(&paths).unwrap(), 0, "a second run finds nothing");
+        let read = |name: String| -> Value { serde_json::from_slice(&std::fs::read(starts.join(name)).unwrap()).unwrap() };
+        assert_eq!(
+            read(format!("{}.json", id("abababab"))),
+            serde_json::json!({"mode": "worker", "parent": id("cdcdcdcd"), "session_id": id("abababab")})
+        );
+        assert!(!starts.join("abababab.json").exists() && !starts.join("eeeeeeee.json").exists(), "an unmappable record is dropped");
+
+        let roster = serde_json::json!({"workers": {
+            "abababab": {"replPid": 1, "sessionId": "abababab-0000-4000-8000-000000000000", "dispatch": {"seed": {"name": "<warm 1>"}}},
+        }});
+        std::fs::write(home.roster(), roster.to_string()).unwrap();
+        assert_eq!(seed_ledger(&paths), 1);
+        assert_eq!(seed_ledger(&paths), 0);
+        assert_eq!(ledger::load(&paths.ledger_path()), ledger::Ledger::from([(id("abababab"), Stage::Spare)]));
     }
 
     #[tokio::test]

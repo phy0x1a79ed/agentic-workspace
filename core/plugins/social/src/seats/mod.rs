@@ -193,8 +193,8 @@ impl Seats {
     }
 
     /// One line for a hand-mounted chat's holder on a seat host.
-    pub async fn hand(&self, node: &str, job: &str, text: &str) {
-        self.queue(Row { node: node.into(), kind: "hand".into(), line: text.into(), body: json!({"job": job}), ..Default::default() }).await;
+    pub async fn hand(&self, node: &str, session: &str, text: &str) {
+        self.queue(Row { node: node.into(), kind: "hand".into(), line: text.into(), body: json!({"session_id": session}), ..Default::default() }).await;
     }
 
     /// Queue a forwarded line for another seat, and let it read the source chat for a day.
@@ -203,9 +203,9 @@ impl Seats {
         self.store.grant_read((&target.account, &target.channel_id), source, crate::db::now() + READ_S).await;
     }
 
-    /// `job` let go of the chat by hand.
-    pub async fn released(&self, seat: &Seat, job: &str) {
-        self.queue(Self::row(seat, "released", json!({"job": job}))).await;
+    /// `session` let go of the chat by hand.
+    pub async fn released(&self, seat: &Seat, session: &str) {
+        self.queue(Self::row(seat, "released", json!({"session_id": session}))).await;
     }
 
     pub async fn set_remote_control(&self, seat: &Seat, on: bool) {

@@ -83,9 +83,6 @@ pub fn handle(hub: &dyn Hub, home: &Path, p: &Value) {
     let subagent = p.get("agent_id").is_some_and(|v| !v.is_null() && v != "");
     match p.get("hook_event_name").and_then(Value::as_str) {
         Some("SessionStart") => {
-            if p.get("source").and_then(Value::as_str) == Some("clear") {
-                report(hub, sid, "hook_session_clear", json!({}));
-            }
             return;
         }
         Some("UserPromptSubmit") => {
@@ -161,13 +158,13 @@ mod tests {
     }
 
     #[test]
-    fn only_a_clear_reports_a_session_start() {
+    fn a_session_start_reports_nothing_here() {
         let (_t, home) = fixture();
         let hub = stub(json!({}));
         handle(&hub, &home, &json!({"session_id": "s2", "hook_event_name": "SessionStart", "source": "startup"}));
         assert!(hub.calls.borrow().is_empty());
         handle(&hub, &home, &json!({"session_id": "s2", "hook_event_name": "SessionStart", "source": "clear"}));
-        assert_eq!(hub.calls.borrow()[0], ("operations_hook_session_clear".to_string(), json!({"session_id": "s2"})));
+        assert!(hub.calls.borrow().is_empty(), "the brief hook reports a clear, with its parent");
     }
 
     #[test]

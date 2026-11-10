@@ -80,6 +80,8 @@ impl Relay {
         db.pragma_update(None, "journal_mode", "WAL")?;
         db.pragma_update(None, "busy_timeout", 5000)?;
         db.execute_batch(SCHEMA)?;
+        // MIGRATION(session-ids): marks keyed by a job short id are no longer read.
+        db.execute("DELETE FROM meta WHERE substr(k, 1, 4) = 'job:' OR (substr(k, 1, 3) = 'rc:' AND k NOT GLOB 'rc:*:cc????????????????????????????????' AND k NOT GLOB 'rc:*:ds*')", [])?;
         Ok(Relay { node: node.into(), db: Mutex::new(db), store, clock, flush_lock: tokio::sync::Mutex::new(()) })
     }
 

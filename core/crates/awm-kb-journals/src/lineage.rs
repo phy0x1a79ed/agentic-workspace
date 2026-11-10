@@ -9,7 +9,7 @@
 use std::collections::HashSet;
 use std::path::Path;
 
-use awm_plugin_sdk::ids::to_r9;
+use awm_plugin_sdk::ids::SessionId;
 use awm_pycompat::repr::str_repr;
 use awm_pycompat::time::now_ms;
 use awm_store::rusqlite::{params, Connection, OpenFlags, OptionalExtension};
@@ -38,7 +38,7 @@ pub fn stamp(meta: &Value, caller: Option<&str>) -> Result<Value> {
         None | Some(Value::Null) => {}
         Some(Value::String(s)) if s.is_empty() => {}
         Some(named) => {
-            let session = named.as_str().and_then(|s| to_r9(Some(s)));
+            let session = named.as_str().and_then(SessionId::checked);
             let Some(session) = session else {
                 return Err(Fail::value(format!("meta.session {} is not a session id", py_repr(&named))));
             };
@@ -194,7 +194,7 @@ impl Journals {
         if !PARENT_KINDS.contains(&how) {
             return Err(Fail::value(format!("how is one of ('start', 'clear'), not {}", str_repr(how))));
         }
-        let (Some(session), Some(parent)) = (to_r9(Some(session_id)), to_r9(Some(parent_id))) else {
+        let (Some(session), Some(parent)) = (SessionId::checked(session_id), SessionId::checked(parent_id)) else {
             return Err(Fail::value("session_id and parent are session ids"));
         };
         if session == parent {
@@ -226,7 +226,7 @@ impl Journals {
 
     /// Every edge reachable forward from `session_id`: parents, then what each debrief cites.
     pub async fn walk(&self, session_id: &str, limit: usize) -> Result<Value> {
-        let start = to_r9(Some(session_id)).ok_or_else(|| Fail::value(format!("{} is not a session id", str_repr(session_id))))?;
+        let start = SessionId::checked(session_id).ok_or_else(|| Fail::value(format!("{} is not a session id", str_repr(session_id))))?;
         let mut edges = Vec::new();
         let mut seen = HashSet::from([start.clone()]);
         let mut queue = std::collections::VecDeque::from([start.clone()]);

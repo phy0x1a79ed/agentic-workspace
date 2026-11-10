@@ -9,8 +9,9 @@
 
 use std::cell::{Cell, OnceCell};
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
+use awm_plugin_sdk::ids::SessionId;
 use awm_harness::claude::records::{read_json, read_json_strict, Object, Unreadable};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -290,7 +291,7 @@ impl<'a> Call<'a> {
             return Err(unread("a background session record carries no job id"));
         };
         let lenient = self.workers(false)?;
-        if let Some(declared) = self.declared(job, self.names(job, lenient.get(job), rec.get("name")))? {
+        if let Some(declared) = self.declared(job, self.session_ids(job, lenient.get(job), Some(rec)))? {
             return Ok(Some(declared));
         }
         let strict = self.workers(true)?;
@@ -307,7 +308,7 @@ impl<'a> Call<'a> {
         let Some(rec) = rec else { return Ok(None) };
         let Some(parked) = text(rec.get("parkedJobId")).filter(|j| is_job(j)) else { return Ok(None) };
         let workers = self.workers(false)?;
-        self.declared(parked, self.names(parked, workers.get(parked), rec.get("name")))
+        self.declared(parked, self.session_ids(parked, workers.get(parked), Some(rec)))
     }
 
     /// The mode of the nearest ancestor process that is a cx-started session.
@@ -364,7 +365,7 @@ impl<'a> Call<'a> {
             if equals_pid(w.get("replPid"), pid)
                 && self.procs.start(pid).is_some_and(|live| live == py_str(w.get("replProcStart")))
             {
-                if let Some(declared) = self.declared(job, self.names(job, Some(worker), None))? {
+                if let Some(declared) = self.declared(job, self.session_ids(job, Some(worker), None))? {
                     return Ok((true, Some(declared)));
                 }
                 return Ok((true, looks_cx_started(w).then(|| UNKNOWN.into())));
@@ -386,31 +387,29 @@ impl<'a> Call<'a> {
         }
     }
 
-    /// Every name a pending start for this job could have been filed under.
-    fn names(&self, job: &str, worker: Option<&Value>, session_name: Option<&Value>) -> BTreeSet<String> {
-        let seed = object(worker)
-            .and_then(|w| object(w.get("dispatch")))
-            .and_then(|d| object(d.get("seed")))
-            .and_then(|s| s.get("name"));
+    /// Every session id this job could have been filed under.
+    fn session_ids(&self, job: &str, worker: Option<&Value>, rec: Option<&Object>) -> BTreeSet<String> {
         let state = read_json(&self.paths.home.job_state(job));
-        [session_name, seed, state.get("name")]
+        [object(worker).and_then(|w| w.get("sessionId")), rec.and_then(|r| r.get("sessionId")), state.get("sessionId")]
             .into_iter()
             .filter_map(text)
-            .filter(|n| !n.is_empty())
-            .map(str::to_string)
+            .filter_map(crate::ledger::key)
             .collect()
     }
 
-    /// The mode recorded for this job, else for a pending start of one of its names. Only the
-    /// files this job could own are read: a damaged record of any other job is not this caller's
-    /// business.
-    fn declared(&self, job: &str, names: BTreeSet<String>) -> Result<Option<String>, Unread> {
-        let mut record = read_record(&self.paths.lineage_path(job))?;
-        for name in &names {
+    /// The mode recorded for one of this job's sessions, else for a pending start of one. Only
+    /// the files this job could own are read: a damaged record of any other job is not this
+    /// caller's business.
+    fn declared(&self, job: &str, ids: BTreeSet<String>) -> Result<Option<String>, Unread> {
+        let mut record = None;
+        for id in &ids {
+            record = match read_record(&self.paths.lineage_path(id))? {
+                Some(rec) => Some(rec),
+                None => read_record(&self.paths.pending_path(id))?,
+            };
             if record.is_some() {
                 break;
             }
-            record = read_record(&self.paths.pending_path(name))?;
         }
         let Some(record) = record else { return Ok(None) };
         match text(record.get("mode")) {
@@ -436,7 +435,7 @@ fn take<T: serde::de::DeserializeOwned>(map: &mut Object, key: &str) -> Option<T
 
 macro_rules! lineage_record {
     ($( $(#[$doc:meta])* $field:ident : $ty:ty, )*) => {
-        /// A lineage record, `starts/<job>.json`, or a pending one, `starts/pending-<digest>.json`.
+        /// A lineage record, `starts/<session id>.json`, or a pending one, `starts/pending-<session id>.json`.
         ///
         /// Every key is optional. A key of an unexpected type, a null, and any key this struct
         /// does not name are kept in `extra` as read, so a record round-trips through a rewrite.
@@ -473,12 +472,11 @@ macro_rules! lineage_record {
 }
 
 lineage_record! {
-    job: String,
     name: String,
     project: String,
     scope: String,
     cwd: String,
-    /// The starting session: a background parent's job id, else an interactive one's session id.
+    /// The starting session's canonical id.
     parent: String,
     parent_session: String,
     caller: String,
@@ -513,13 +511,11 @@ fn read_object(path: &Path) -> Option<Object> {
     }
 }
 
-/// The lineage record of `job`, or None when `job` is not a job id or its record is absent or
-/// unreadable.
-pub fn read_lineage(paths: &Paths, job: &str) -> Option<LineageRecord> {
-    if !is_job(job) {
-        return None;
-    }
-    read_object(&paths.lineage_path(job)).map(LineageRecord::from)
+/// The lineage record of session `id`, or None when `id` is not canonical or its record is
+/// absent or unreadable.
+pub fn read_lineage(paths: &Paths, id: &str) -> Option<LineageRecord> {
+    SessionId::parse(id).ok()?;
+    read_object(&paths.lineage_path(id)).map(LineageRecord::from)
 }
 
 fn starts_entries(paths: &Paths) -> Vec<String> {
@@ -529,27 +525,28 @@ fn starts_entries(paths: &Paths) -> Vec<String> {
     names
 }
 
-/// Every readable, non-empty lineage record, by job.
+/// Every readable, non-empty lineage record, by canonical session id.
 pub fn lineage_records(paths: &Paths) -> BTreeMap<String, LineageRecord> {
     starts_entries(paths)
         .into_iter()
         .filter_map(|fname| {
-            let job = fname.strip_suffix(".json")?.to_string();
-            let rec = is_job(&job).then(|| read_object(&paths.lineage_path(&job))).flatten()?;
-            (!rec.is_empty()).then(|| (job, LineageRecord::from(rec)))
+            let id = fname.strip_suffix(".json")?.to_string();
+            let rec = SessionId::parse(&id).ok().and_then(|_| read_object(&paths.lineage_path(&id)))?;
+            (!rec.is_empty()).then(|| (id, LineageRecord::from(rec)))
         })
         .collect()
 }
 
-/// Every readable pending record that names its session, with its path.
-pub fn pending_records(paths: &Paths) -> Vec<(PathBuf, LineageRecord)> {
+/// Every readable pending record that names its session, by the canonical id it is filed under.
+/// A file not filed under a canonical session id is a record of an older layout and is skipped.
+pub fn pending_records(paths: &Paths) -> Vec<(String, LineageRecord)> {
     starts_entries(paths)
         .into_iter()
-        .filter(|fname| fname.starts_with("pending-") && fname.ends_with(".json"))
         .filter_map(|fname| {
-            let path = paths.starts_dir().join(fname);
-            let rec = LineageRecord::from(read_object(&path)?);
-            rec.name.is_some().then_some((path, rec))
+            let id = fname.strip_prefix("pending-")?.strip_suffix(".json")?;
+            SessionId::parse(id).ok()?;
+            let rec = LineageRecord::from(read_object(&paths.pending_path(id))?);
+            rec.name.is_some().then(|| (id.to_string(), rec))
         })
         .collect()
 }
@@ -557,6 +554,7 @@ pub fn pending_records(paths: &Paths) -> Vec<(PathBuf, LineageRecord)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
     use awm_plugin_sdk::procfs;
     use serde_json::json;
     use std::cell::RefCell;
@@ -564,6 +562,14 @@ mod tests {
 
     const JOB: &str = "abababab";
     const PARENT_JOB: &str = "cdcdcdcd";
+
+    fn uuid_of(job: &str) -> String {
+        format!("{job}-0000-4000-8000-000000000000")
+    }
+
+    fn id_of(job: &str) -> String {
+        format!("cc{job}000040008000000000000000")
+    }
 
     fn me() -> u32 {
         std::process::id()
@@ -671,7 +677,7 @@ mod tests {
             let start = start.map_or_else(|| proc_start(pid), str::to_string);
             self.one_worker(job, json!({"replPid": pid, "replProcStart": start, "dispatch": {"seed": {"name": name}}}));
             std::fs::create_dir_all(self.paths.home.jobs().join(job)).unwrap();
-            std::fs::write(self.paths.home.job_state(job), json!({"name": name}).to_string()).unwrap();
+            std::fs::write(self.paths.home.job_state(job), json!({"name": name, "sessionId": uuid_of(job)}).to_string()).unwrap();
         }
 
         fn lineage(&self, mode: Value) {
@@ -679,7 +685,7 @@ mod tests {
         }
 
         fn lineage_of(&self, job: &str, mode: Value) {
-            std::fs::write(self.paths.lineage_path(job), json!({"mode": mode}).to_string()).unwrap();
+            std::fs::write(self.paths.lineage_path(&id_of(job)), json!({"mode": mode}).to_string()).unwrap();
         }
 
         fn starts_file(&self, file: &str, text: &str) {
@@ -691,7 +697,7 @@ mod tests {
         }
 
         fn record_started(&self, pid: u32, kind: &str, job: Option<&str>, start: &str) {
-            self.raw_record(pid, json!({"pid": pid, "procStart": start, "kind": kind, "jobId": job, "name": "x"}));
+            self.raw_record(pid, json!({"pid": pid, "procStart": start, "kind": kind, "jobId": job, "sessionId": job.map(uuid_of), "name": "x"}));
         }
 
         fn raw_record(&self, pid: u32, doc: Value) {
@@ -769,7 +775,7 @@ mod tests {
     fn test_a_corrupt_lineage_record_of_the_caller_is_unknown() {
         let h = Home::new();
         h.worker("rep");
-        h.starts_file(&format!("{JOB}.json"), "{ not json");
+        h.starts_file(&format!("{}.json", id_of(JOB)), "{ not json");
         assert_eq!(h.me(), Mode::Unknown);
     }
 
@@ -819,7 +825,7 @@ mod tests {
     fn test_an_ancestor_job_with_a_damaged_lineage_makes_the_child_unknown() {
         let h = Home::new();
         h.restricted_parent("delegate");
-        h.starts_file(&format!("{PARENT_JOB}.json"), "{ not json");
+        h.starts_file(&format!("{}.json", id_of(PARENT_JOB)), "{ not json");
         h.record(me(), "interactive", None);
         assert_eq!(h.me(), Mode::Unknown);
     }
@@ -896,7 +902,7 @@ mod tests {
     fn test_the_pool_seed_flags_are_not_a_cx_start() {
         let h = Home::new();
         h.worker("rep");
-        h.launch(json!({"args": ["--session-id", "x", "-n", "<warm badger>", "--dangerously-skip-permissions",
+        h.launch(json!({"args": ["--session-id", "x", "-n", "badger", "--dangerously-skip-permissions",
                                  "--allow-dangerously-skip-permissions", "--effort", "medium"]}));
         assert_eq!(h.me(), Mode::Ungated);
     }
@@ -907,11 +913,11 @@ mod tests {
 
     #[test]
     fn a_lineage_record_round_trips_unknown_keys_and_odd_types() {
-        let doc = json!({"job": "abababab", "name": "rep", "parent": null, "mode": "worker",
+        let doc = json!({"session_id": "ccabababab000040008000000000000000", "name": "rep", "parent": null, "mode": "worker",
                          "pinned": "yes", "started_epoch": 1.5, "suggested": {"project": "p", "scope": null},
                          "tags": ["a"], "future": {"x": 1}});
         let rec: LineageRecord = serde_json::from_value(doc.clone()).unwrap();
-        assert_eq!((rec.job.as_deref(), rec.mode.as_deref(), rec.pinned, rec.parent.as_deref()), (Some("abababab"), Some("worker"), None, None));
+        assert_eq!((rec.session_id.as_deref(), rec.mode.as_deref(), rec.pinned, rec.parent.as_deref()), (Some("ccabababab000040008000000000000000"), Some("worker"), None, None));
         assert_eq!(rec.suggested, Some(Suggested { project: Some("p".into()), scope: None }));
         assert_eq!(rec.extra.get("pinned"), Some(&json!("yes")));
         let back = serde_json::to_value(&rec).unwrap();

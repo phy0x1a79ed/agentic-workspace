@@ -37,7 +37,7 @@ pub const IDLE_S: f64 = 4.0 * 3600.0;
 /// What `start_other` answered.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Started {
-    Job(String),
+    Session(String),
     Refused(String),
 }
 
@@ -48,23 +48,21 @@ pub trait World: Send + Sync {
     async fn sleep(&self, secs: f64);
     /// `reflection start_other` here.
     async fn start(&self, spec: Value) -> Started;
-    /// `reflection resume_other` on a job the seat stopped, on `model` at `effort`, typing
+    /// `reflection resume_other` on a session the seat stopped, on `model` at `effort`, typing
     /// `prompt`, then the switch `remote_control` applied to the session it comes back as.
-    async fn resume(&self, job: &str, model: &str, effort: &str, prompt: &str, remote_control: bool, name: &str) -> Started;
+    async fn resume(&self, session: &str, model: &str, effort: &str, prompt: &str, remote_control: bool, name: &str) -> Started;
     /// `reflection stop_other`, or why it failed.
-    async fn stop(&self, job: &str) -> Result<(), String>;
-    /// `reflection message`: one line typed into `job`.
-    async fn push(&self, job: &str, line: &str) -> Outcome;
-    /// The live jobs here, or None when it cannot tell.
+    async fn stop(&self, session: &str) -> Result<(), String>;
+    /// `reflection message`: one line typed into `session`.
+    async fn push(&self, session: &str, line: &str) -> Outcome;
+    /// The live sessions here, or None when it cannot tell.
     async fn live(&self) -> Option<Agents>;
     /// Whether the seat's scope exists here, or None when it cannot tell.
     async fn scope_ready(&self, project: &str, scope: &str) -> Option<bool>;
-    /// The transcript of a past job, for the next agent's brief.
-    async fn transcript(&self, job: &str) -> Option<String>;
-    /// `reflection remote_control` on `job`, or why it failed.
-    async fn remote_control(&self, job: &str, on: bool, name: &str) -> Result<(), String>;
+    /// `reflection remote_control` on `session`, or why it failed.
+    async fn remote_control(&self, session: &str, on: bool, name: &str) -> Result<(), String>;
     /// Type one line into a hand-mounted chat's holder.
-    fn hand(&self, job: &str, line: &str);
+    fn hand(&self, session: &str, line: &str);
     /// Queue one row for social.
     async fn up(&self, kind: &str, body: Value);
 }
@@ -126,7 +124,7 @@ impl Live {
 
 type Key = (String, String);
 
-/// What this node's session list says of one live job.
+/// What this node's session list says of one live session.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Agent {
     /// Its claude.ai link, empty while its Remote Control is off.
@@ -137,12 +135,12 @@ pub struct Agent {
     pub active_at: f64,
 }
 
-/// Each live job here.
+/// Each live session here.
 pub type Agents = HashMap<String, Agent>;
 
 /// Take the seat's Remote Control state from its live session. True when that changed the seat.
 fn sync_rc(seat: &mut Seat, live: Option<&Agents>) -> bool {
-    let Some(link) = live.and_then(|l| l.get(&seat.job)).map(|a| &a.link) else { return false };
+    let Some(link) = live.and_then(|l| l.get(&seat.session_id)).map(|a| &a.link) else { return false };
     if seat.rc_url == *link && seat.remote_control != link.is_empty() {
         return false;
     }
@@ -244,7 +242,7 @@ impl Seats {
             event[key] = json!(text);
         }
         self.world
-            .up("seat", json!({"account": s.account(), "channel_id": s.channel(), "state": s.state.as_str(), "job": s.job, "remote_control": s.remote_control, "rc_url": s.rc_url, "public": public, "event": event}))
+            .up("seat", json!({"account": s.account(), "channel_id": s.channel(), "state": s.state.as_str(), "session_id": s.session_id, "remote_control": s.remote_control, "rc_url": s.rc_url, "public": public, "event": event}))
             .await;
     }
 
@@ -282,17 +280,17 @@ impl Seats {
         self.world.up("ask", json!({"kind": kind, "text": text})).await;
     }
 
-    async fn mounted(&self, s: &Seat, job: &str) {
-        self.world.up("mount", json!({"account": s.account(), "channel_id": s.channel(), "channel_name": s.decl.channel_name, "job": job, "session_name": s.decl.name})).await;
+    async fn mounted(&self, s: &Seat, session: &str) {
+        self.world.up("mount", json!({"account": s.account(), "channel_id": s.channel(), "channel_name": s.decl.channel_name, "session_id": session, "session_name": s.decl.name})).await;
     }
 
     async fn unbind(&self, seat: &Seat) {
-        self.world.up("unmount", json!({"account": seat.account(), "channel_id": seat.channel(), "job": seat.job})).await;
+        self.world.up("unmount", json!({"account": seat.account(), "channel_id": seat.channel(), "session_id": seat.session_id})).await;
     }
 
-    async fn set_line(&self, job: &str, latest: Latest, now: f64) {
-        self.world.up("line", json!({"job": job, "account": latest.account, "channel_id": latest.channel, "thread_id": latest.thread, "message_id": latest.message_id})).await;
-        self.store.set_line(job, &latest, now).await;
+    async fn set_line(&self, session: &str, latest: Latest, now: f64) {
+        self.world.up("line", json!({"session_id": session, "account": latest.account, "channel_id": latest.channel, "thread_id": latest.thread, "message_id": latest.message_id})).await;
+        self.store.set_line(session, &latest, now).await;
     }
 
     /// The seat this row names, created or brought up to date from social's declaration.
@@ -347,14 +345,14 @@ impl Seats {
         tokio::spawn(async move { me.drive(&key, None).await });
     }
 
-    /// Bring one seat in line with its queue and the clock. `live` is this node's live jobs
+    /// Bring one seat in line with its queue and the clock. `live` is this node's live sessions
     /// when the caller knows them.
     pub async fn drive(self: &Arc<Self>, key: &Key, live: Option<&Agents>) {
         let lock = self.lock(key);
         let _held = lock.lock().await;
-        // A job started or adopted since `live` was read is not in it, and is not gone.
+        // A session started or adopted since `live` was read is not in it, and is not gone.
         let newer = match live {
-            Some(l) => self.store.get(&key.0, &key.1).await.is_some_and(|s| !s.job.is_empty() && !l.contains_key(&s.job)),
+            Some(l) => self.store.get(&key.0, &key.1).await.is_some_and(|s| !s.session_id.is_empty() && !l.contains_key(&s.session_id)),
             None => false,
         };
         let reread = if newer { self.world.live().await } else { None };
@@ -371,7 +369,7 @@ impl Seats {
     async fn step(self: &Arc<Self>, mut seat: Seat, live: Option<&Agents>) -> bool {
         let now = self.world.now();
         let pending = self.store.pending(seat.account(), seat.channel()).await;
-        let gone = |s: &Seat| live.is_some_and(|l| !l.contains_key(&s.job));
+        let gone = |s: &Seat| live.is_some_and(|l| !l.contains_key(&s.session_id));
         match seat.state {
             State::Empty => {
                 let held = seat.held.starts_with("outside") || seat.held == "scope";
@@ -382,7 +380,7 @@ impl Seats {
                 false
             }
             State::Starting => {
-                if !seat.job.is_empty() && live.is_some_and(|l| l.contains_key(&seat.job)) {
+                if !seat.session_id.is_empty() && live.is_some_and(|l| l.contains_key(&seat.session_id)) {
                     return self.up(seat, now, live).await;
                 }
                 if now >= seat.deadline {
@@ -393,10 +391,10 @@ impl Seats {
                     match here {
                         // Cannot tell: a start is never given up on a guess.
                         None => return false,
-                        Some(l) if !seat.job.is_empty() && l.contains_key(&seat.job) => return self.up(seat, now, Some(&l)).await,
+                        Some(l) if !seat.session_id.is_empty() && l.contains_key(&seat.session_id) => return self.up(seat, now, Some(&l)).await,
                         Some(_) => {}
                     }
-                    tracing::info!("seat {}: its agent {} did not come up", label(&seat), seat.job);
+                    tracing::info!("seat {}: its agent {} did not come up", label(&seat), seat.session_id);
                     self.failed_start(seat, "its agent did not come up within 3 minutes").await;
                     return true;
                 }
@@ -422,15 +420,15 @@ impl Seats {
     /// The started agent is up: its brief's lines are delivered.
     async fn up(&self, mut seat: Seat, now: f64, live: Option<&Agents>) -> bool {
         let briefed = self.store.pending(seat.account(), seat.channel()).await;
-        let latest = match briefed.iter().rev().find(|q| q.briefed_to == seat.job && !q.message_id.is_empty()) {
+        let latest = match briefed.iter().rev().find(|q| q.briefed_to == seat.session_id && !q.message_id.is_empty()) {
             Some(last) => Some(Latest { account: seat.account().into(), channel: seat.channel().into(), thread: last.thread_id.clone(), message_id: last.message_id.clone() }),
             // A refresh's own line names no message: the agent answers where its predecessor did.
-            None => self.store.line(&seat.previous.job).await,
+            None => self.store.line(&seat.previous.session_id).await,
         };
         if let Some(latest) = latest {
-            self.set_line(&seat.job, latest, now).await;
+            self.set_line(&seat.session_id, latest, now).await;
         }
-        self.store.deliver_briefed(seat.account(), seat.channel(), &seat.job, now).await;
+        self.store.deliver_briefed(seat.account(), seat.channel(), &seat.session_id, now).await;
         seat.state = State::Occupied;
         seat.breaker.attempts.clear();
         sync_rc(&mut seat, live);
@@ -442,7 +440,7 @@ impl Seats {
     /// it would. Only an agent the seat started, and never mid-turn. True when it stopped.
     async fn stop_if_idle(&self, mut seat: Seat, live: Option<&Agents>, now: f64) -> bool {
         let Some(live) = live else { return false };
-        let at = match live.get(&seat.job) {
+        let at = match live.get(&seat.session_id) {
             _ if seat.adopted => None,
             Some(a) if a.busy => Some(now + IDLE_S),
             // No event marks the end of a turn, so a refresh waits on the tick's next look.
@@ -462,9 +460,9 @@ impl Seats {
         }
         let refresh = seat.refresh;
         // A failed stop leaves the deadline past, so the next tick tries again.
-        match self.world.stop(&seat.job).await {
+        match self.world.stop(&seat.session_id).await {
             Ok(()) => {
-                tracing::info!("seat {}: stopped its {} agent {}", label(&seat), if refresh { "refreshed" } else { "idle" }, seat.job);
+                tracing::info!("seat {}: stopped its {} agent {}", label(&seat), if refresh { "refreshed" } else { "idle" }, seat.session_id);
                 self.vacate(&mut seat, true).await;
                 if refresh {
                     let (model, effort) = self.pair(&seat);
@@ -474,7 +472,7 @@ impl Seats {
                 true
             }
             Err(why) => {
-                tracing::info!("seat {}: stopping its idle agent {} failed: {why}", label(&seat), seat.job);
+                tracing::info!("seat {}: stopping its idle agent {} failed: {why}", label(&seat), seat.session_id);
                 false
             }
         }
@@ -484,7 +482,7 @@ impl Seats {
     /// session was only adopted.
     async fn lost(&self, seat: &mut Seat, how: &str) {
         if !seat.adopted {
-            self.notice(&format!("the agent of the seat {} ({}@{}) {how}. The next message starts a new one.", label(seat), seat.job, seat.decl.node)).await;
+            self.notice(&format!("the agent of the seat {} ({}@{}) {how}. The next message starts a new one.", label(seat), seat.session_id, seat.decl.node)).await;
         }
         self.vacate(seat, false).await;
     }
@@ -492,7 +490,7 @@ impl Seats {
     /// The agent is gone: free the seat and keep its lines for the next agent. `stopped` says
     /// the seat stopped it for idleness.
     async fn vacate(&self, seat: &mut Seat, stopped: bool) {
-        if !seat.job.is_empty() {
+        if !seat.session_id.is_empty() {
             seat.previous = seat.as_previous(stopped);
             self.unbind(seat).await;
         }
@@ -512,7 +510,7 @@ impl Seats {
         self.unbind(&seat).await;
         self.store.unbrief(seat.account(), seat.channel()).await;
         seat.state = State::Empty;
-        seat.job.clear();
+        seat.session_id.clear();
         // A resume that did not come up is not tried again.
         seat.previous.stopped = false;
         let failure = seat.breaker.fail(now);
@@ -540,17 +538,13 @@ impl Seats {
         if seat.state == State::Empty {
             self.react(&seat, pending).await;
         }
-        let previous = (!seat.previous.job.is_empty()).then(|| seat.previous.clone());
-        let transcript = match &previous {
-            Some(p) if p.node == seat.decl.node => self.world.transcript(&p.job).await,
-            _ => None,
-        };
+        let previous = (!seat.previous.session_id.is_empty()).then(|| seat.previous.clone());
         let lines: Vec<String> = pending.iter().map(|q| q.line.clone()).collect();
         let facts = brief::Facts {
             docs: &settings.docs,
             decl: &seat.decl,
             project: &settings.project,
-            previous: previous.as_ref().map(|p| (p.job.as_str(), p.node.as_str(), transcript.as_deref())),
+            previous: previous.as_ref().map(|p| (p.session_id.as_str(), p.node.as_str())),
             missed: seat.missed,
         };
         let (model, effort) = self.pair(&seat);
@@ -562,13 +556,13 @@ impl Seats {
         let here = previous.as_ref().filter(|p| !p.adopted && p.node == seat.decl.node);
         // A host reboot can bring the old agent back after its seat emptied: the new one takes its place.
         if let Some(p) = here.filter(|p| !p.stopped) {
-            spec["replaces"] = json!(p.job);
+            spec["replaces"] = json!(p.session_id);
         }
-        let resume = here.filter(|p| p.stopped).map(|p| p.job.clone());
+        let resume = here.filter(|p| p.stopped).map(|p| p.session_id.clone());
         let ids: Vec<i64> = pending.iter().map(|q| q.id).collect();
         seat.state = State::Starting;
         seat.deadline = now + UP_S;
-        seat.job.clear();
+        seat.session_id.clear();
         seat.rc_url.clear();
         if seat.held == "scope" {
             seat.held.clear();
@@ -576,9 +570,9 @@ impl Seats {
         self.save(&seat).await;
         self.store.brief_to(ids.clone(), "starting").await;
         let started = match resume {
-            Some(job) => match self.world.resume(&job, &model, &effort, &format!("{}{}", brief::missed(seat.missed), lines.join("\n")), seat.remote_control, &Self::rc_name(&seat)).await {
+            Some(session) => match self.world.resume(&session, &model, &effort, &format!("{}{}", brief::missed(seat.missed), lines.join("\n")), seat.remote_control, &Self::rc_name(&seat)).await {
                 Started::Refused(why) => {
-                    tracing::info!("seat {}: resuming {job} refused, starting afresh: {why}", label(&seat));
+                    tracing::info!("seat {}: resuming {session} refused, starting afresh: {why}", label(&seat));
                     self.world.start(spec).await
                 }
                 started => started,
@@ -586,12 +580,12 @@ impl Seats {
             None => self.world.start(spec).await,
         };
         match started {
-            Started::Job(job) => {
-                seat.job = job.clone();
+            Started::Session(session) => {
+                seat.session_id = session.clone();
                 seat.missed = 0;
                 self.save(&seat).await;
-                self.store.brief_to(ids, &job).await;
-                self.mounted(&seat, &job).await;
+                self.store.brief_to(ids, &session).await;
+                self.mounted(&seat, &session).await;
                 // The session's `started` event can come before this start answers.
                 self.wake();
             }
@@ -608,18 +602,18 @@ impl Seats {
             let started = self.world.now();
             let mut delay = Backoff::doubling(2.0, 30.0);
             loop {
-                match self.world.push(&seat.job, &q.line).await {
+                match self.world.push(&seat.session_id, &q.line).await {
                     Outcome::Delivered => {
                         let now = self.world.now();
                         self.store.delivered(q.id, now).await;
                         let latest = Latest { account: seat.account().into(), channel: seat.channel().into(), thread: q.thread_id.clone(), message_id: q.message_id.clone() };
-                        self.set_line(&seat.job, latest, now).await;
+                        self.set_line(&seat.session_id, latest, now).await;
                         break;
                     }
                     Outcome::Gone => return false,
                     Outcome::Retry(why) => {
                         if self.world.now() - started >= PUSH_RETRY_S {
-                            tracing::info!("seat {}: {} refused a line past the retry window: {why}", label(seat), seat.job);
+                            tracing::info!("seat {}: {} refused a line past the retry window: {why}", label(seat), seat.session_id);
                             return false;
                         }
                         self.world.sleep(delay.wait().as_secs_f64()).await;
@@ -630,22 +624,22 @@ impl Seats {
         true
     }
 
-    /// Every seat once, and social told when the set of live jobs changed.
+    /// Every seat once, and social told when the set of live sessions changed.
     pub async fn tick(self: &Arc<Self>) {
         let live = self.world.live().await;
         if let Some(l) = &live {
-            let mut jobs: Vec<String> = l.keys().cloned().collect();
-            jobs.sort();
+            let mut sessions: Vec<String> = l.keys().cloned().collect();
+            sessions.sort();
             let changed = {
                 let mut reported = self.reported_live.lock().unwrap();
-                let changed = reported.as_ref() != Some(&jobs);
+                let changed = reported.as_ref() != Some(&sessions);
                 if changed {
-                    *reported = Some(jobs.clone());
+                    *reported = Some(sessions.clone());
                 }
                 changed
             };
             if changed {
-                self.world.up("live", json!({"jobs": jobs})).await;
+                self.world.up("live", json!({"session_ids": sessions})).await;
             }
         }
         let keys: Vec<Key> = self.store.all().await.iter().map(Seat::key).collect();
@@ -653,8 +647,8 @@ impl Seats {
     }
 
     /// One line for a hand-mounted chat's holder here.
-    pub fn hand(&self, job: &str, line: &str) {
-        self.world.hand(job, line);
+    pub fn hand(&self, session: &str, line: &str) {
+        self.world.hand(session, line);
     }
 
     /// A session started or stopped here, or a clock changed: look at every seat now.
@@ -711,15 +705,15 @@ impl Seats {
         self.store.get(account, channel).await
     }
 
-    /// Make `job` the seat's agent, keeping its conversation.
-    pub async fn adopt(&self, decl: &Decl, job: &str) -> Seat {
+    /// Make `session` the seat's agent, keeping its conversation.
+    pub async fn adopt(&self, decl: &Decl, session: &str) -> Seat {
         let mut seat = self.upsert(decl).await;
         let now = self.world.now();
-        if !seat.job.is_empty() && seat.job != job {
+        if !seat.session_id.is_empty() && seat.session_id != session {
             seat.previous = seat.as_previous(false);
         }
         seat.state = State::Occupied;
-        seat.job = job.into();
+        seat.session_id = session.into();
         seat.adopted = true;
         seat.refresh = false;
         seat.rc_url.clear();
@@ -728,12 +722,12 @@ impl Seats {
         }
         self.save(&seat).await;
         if !seat.remote_control {
-            if let Err(why) = self.world.remote_control(job, false, &Self::rc_name(&seat)).await {
-                tracing::info!("seat {}: Remote Control off for {job} failed: {why}", label(&seat));
+            if let Err(why) = self.world.remote_control(session, false, &Self::rc_name(&seat)).await {
+                tracing::info!("seat {}: Remote Control off for {session} failed: {why}", label(&seat));
             }
         }
-        self.store.deliver_briefed(seat.account(), seat.channel(), job, now).await;
-        self.mounted(&seat, job).await;
+        self.store.deliver_briefed(seat.account(), seat.channel(), session, now).await;
+        self.mounted(&seat, session).await;
         seat
     }
 
@@ -751,9 +745,9 @@ impl Seats {
     }
 
     /// A hand mount let go of a declared seat: the seat is empty again.
-    pub async fn released(&self, account: &str, channel: &str, job: &str) {
+    pub async fn released(&self, account: &str, channel: &str, session: &str) {
         if let Some(mut s) = self.store.get(account, channel).await {
-            if s.job == job && s.state != State::Empty {
+            if s.session_id == session && s.state != State::Empty {
                 s.previous = s.as_previous(false);
                 s.clear_agent();
                 self.save(&s).await;
@@ -784,16 +778,16 @@ impl Seats {
         // The switch is what the seat's next start uses, whether or not a live session took it.
         seat.remote_control = on;
         seat.rc_url.clear();
-        let live = if !seat.has_live_job() {
+        let live = if !seat.has_live_session() {
             Live::None
         } else {
-            match self.world.remote_control(&seat.job, on, &Self::rc_name(&seat)).await {
+            match self.world.remote_control(&seat.session_id, on, &Self::rc_name(&seat)).await {
                 Ok(()) => {
                     sync_rc(&mut seat, self.world.live().await.as_ref());
                     Live::Applied
                 }
                 Err(why) => {
-                    tracing::info!("seat {}: Remote Control {} for {} failed: {why}", label(&seat), if on { "on" } else { "off" }, seat.job);
+                    tracing::info!("seat {}: Remote Control {} for {} failed: {why}", label(&seat), if on { "on" } else { "off" }, seat.session_id);
                     Live::Failed(why)
                 }
             }
@@ -812,7 +806,7 @@ impl Seats {
         let mut seat = self.store.get(account, channel).await?;
         seat.pick_model = model.into();
         seat.pick_effort = effort.into();
-        seat.refresh = !seat.adopted && seat.has_live_job();
+        seat.refresh = !seat.adopted && seat.has_live_session();
         self.store.save(&seat).await;
         self.report(&seat, Some(("refresh_live", if seat.refresh { "pending" } else { "kept" }))).await;
         self.wake();

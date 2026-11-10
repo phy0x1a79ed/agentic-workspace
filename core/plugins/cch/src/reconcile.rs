@@ -73,7 +73,7 @@ where
             .read(|p| {
                 let s = p.sessions();
                 let version = s.binary_version();
-                pool::warm(s.load(), s, version.as_deref(), None).len()
+                pool::warm(s.load(), &s, version.as_deref(), None).len()
             })
             .await
     }
@@ -228,7 +228,7 @@ impl<T: Tend, B: Bookkeeping> Loop<T, B> {
             Ok(done) => {
                 for item in done {
                     let verb = if item.removed == Some(true) { "removed" } else { "kept" };
-                    tracing::info!("cx: {verb} {} ({})", item.session, item.why);
+                    tracing::info!("cx: {verb} {} ({})", item.short, item.why);
                 }
             }
             Err(exc) => tracing::error!("cx: removal failed: {exc:#}"),
@@ -277,7 +277,7 @@ mod tests {
             let p = &self.pool;
             let s = p.sessions();
             let version = s.binary_version();
-            pool::warm(s.load(), s, version.as_deref(), None).len()
+            pool::warm(s.load(), &s, version.as_deref(), None).len()
         }
 
         async fn seed_one(&self) -> Result<String, LaunchError> {

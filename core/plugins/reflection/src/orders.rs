@@ -146,7 +146,7 @@ impl<G: Gateway> App<G> {
         }
         let out = self.handle("start_other", &Frame::order(), &order_start(body)).await;
         if is_ok(&out) {
-            (true, format!("job {} session {}", text(&out, "job").unwrap_or("?"), text(&out, "session_id").unwrap_or("?")))
+            (true, format!("session {}", text(&out, "session_id").unwrap_or("?")))
         } else {
             (false, clip(out.get("reason").or(out.get("error")).unwrap_or(&out).to_string()))
         }

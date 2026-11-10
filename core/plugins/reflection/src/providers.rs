@@ -27,6 +27,38 @@ pub fn platform_of(id: &str) -> &str {
     id.get(..2).unwrap_or_default()
 }
 
+/// A session a verb names in its `to`: `{id}`, the canonical id, or `{name}`, the whole name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Ref {
+    Id(ids::SessionId),
+    Name(ids::Name),
+}
+
+impl Ref {
+    /// The `to` in `args`, None when it is absent.
+    pub fn from_args(args: &Value) -> Result<Option<Self>, String> {
+        const FORM: &str = "to is {id: <canonical session id>} or {name: <session name>}";
+        let to = match args.get("to") {
+            None | Some(Value::Null) => return Ok(None),
+            Some(Value::Object(to)) if to.len() == 1 => to,
+            Some(_) => return Err(FORM.into()),
+        };
+        match (to.get("id").and_then(Value::as_str), to.get("name").and_then(Value::as_str)) {
+            (Some(id), None) => ids::SessionId::parse(id).map(|id| Some(Ref::Id(id))).map_err(|e| format!("{e}. {FORM}")),
+            (None, Some(name)) => ids::Name::new(name).map(|n| Some(Ref::Name(n))).map_err(|e| e.to_string()),
+            _ => Err(FORM.into()),
+        }
+    }
+
+    /// The id or the name, as an error shows it.
+    pub fn shown(&self) -> String {
+        match self {
+            Ref::Id(id) => id.canonical(),
+            Ref::Name(n) => n.display().into(),
+        }
+    }
+}
+
 /// One harness plugin: its tool, the platform code it serves, the node it runs on when not
 /// this one, and the optional verbs its `platform` answer lists.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -52,11 +84,11 @@ impl Provider {
 pub enum HarnessError {
     #[error("{0}")]
     Failed(String),
-    /// A pid or a ref that more than one provider claims.
+    /// A pid or a name that more than one session answers to.
     #[error("{0}")]
     Ambiguous(String),
-    /// A job id or a name no provider on this node knows.
-    #[error("no session on this node has the job id or name {}; `list_other` shows them", str_repr(.0))]
+    /// An id or a name no provider on this node knows.
+    #[error("no session on this node has the id or name {}; `list_other` shows them", str_repr(.0))]
     Unknown(String),
 }
 
@@ -89,7 +121,7 @@ pub fn pick_caller(pid: Option<u32>, answers: &[(Provider, Value)]) -> Result<(P
     let Some(pid) = pid else {
         return Err(HarnessError::Failed(
             "could not tell which session is calling, so there is no session of your own to act on. Call through a \
-             session's own `awm mcp` proxy, or name a session with `job`"
+             session's own `awm mcp` proxy, or name a session with `to`"
                 .into(),
         ));
     };
@@ -168,7 +200,7 @@ impl<G: Gateway> App<G> {
             }
         };
         let code = out.get("code").and_then(Value::as_str)?;
-        if !ids::PLATFORMS.contains(&code) {
+        if ids::Platform::from_code(code).is_err() {
             return None;
         }
         lock(&self.table.platforms).insert(key, out.clone());
@@ -275,40 +307,48 @@ impl<G: Gateway> App<G> {
         pick_caller(Some(pid), &self.answers("resolve", &json!({"pid": pid})).await)
     }
 
-    /// The provider whose session `reference` names, and the argument that names it there.
-    pub async fn for_ref(&self, reference: &str) -> Result<(Provider, Map<String, Value>), HarnessError> {
-        let text_ref = reference.trim();
-        let lower = text_ref.to_lowercase();
-        let mut named = Map::new();
-        if ids::is_r9(&lower) && text_ref.chars().count() > 8 {
-            named.insert("session_id".into(), json!(lower));
-            return Ok((self.for_platform(platform_of(&lower)).await?, named));
-        }
-        let hits: Vec<Provider> = self
-            .answers("find", &json!({"ref": text_ref}))
-            .await
-            .into_iter()
-            .filter(|(_, r)| r.get("matches").is_some_and(|m| truthy(Some(m))))
-            .map(|(p, _)| p)
-            .collect();
-        match hits.as_slice() {
-            [] => Err(HarnessError::Unknown(text_ref.to_string())),
-            [p] => {
-                named.insert("ref".into(), json!(text_ref));
-                Ok((p.clone(), named))
+    /// The provider of the session `to` names, and the args that name it there: its id.
+    pub async fn resolve(&self, to: &Ref) -> Result<(Provider, Map<String, Value>), HarnessError> {
+        let (p, sid) = match to {
+            Ref::Id(id) => (self.for_platform(id.platform().code()).await?, id.canonical()),
+            Ref::Name(name) => self.by_name(name).await?,
+        };
+        Ok((p, Map::from_iter([("session_id".to_string(), json!(sid))])))
+    }
+
+    /// The one session, of every provider, whose whole name is `name`.
+    async fn by_name(&self, name: &ids::Name) -> Result<(Provider, String), HarnessError> {
+        let mut hits: Vec<(Provider, Value)> = vec![];
+        for (p, out) in self.answers("find", &json!({"name": name.display()})).await {
+            for row in out.get("sessions").and_then(Value::as_array).into_iter().flatten() {
+                if text(row, "session_id").is_some() {
+                    hits.push((p.clone(), row.clone()));
+                }
             }
+        }
+        match hits.as_slice() {
+            [] => Err(HarnessError::Unknown(name.display().into())),
+            [(p, row)] => Ok((p.clone(), text(row, "session_id").unwrap_or_default().into())),
             many => {
-                let tools: Vec<&str> = many.iter().map(|p| p.tool.as_str()).collect();
-                Err(HarnessError::Ambiguous(format!("{} names sessions under {}; pass the session id", str_repr(text_ref), tools.join(", "))))
+                let listed: Vec<String> = many
+                    .iter()
+                    .map(|(_, r)| format!("{} ({})", text(r, "session_id").unwrap_or_default(), if truthy(r.get("live")) { "live" } else { "stopped" }))
+                    .collect();
+                Err(HarnessError::Ambiguous(format!(
+                    "{} names {} sessions: {}. Pass to: {{id}} with one of them",
+                    str_repr(name.display()),
+                    many.len(),
+                    listed.join(", ")
+                )))
             }
         }
     }
 
-    /// The provider and target args of a verb with an optional `job`: the session `job` names,
-    /// with the caller's pid, else the caller's own session through [`App::resolve_caller`].
-    pub async fn named_target(&self, job: Option<&str>, frame: &Frame) -> Result<(Provider, Map<String, Value>), HarnessError> {
-        if let Some(job) = job.map(str::trim).filter(|j| !j.is_empty()) {
-            let (p, mut named) = self.for_ref(job).await?;
+    /// The provider and target args of a verb with an optional `to`: the session `to` names, with
+    /// the caller's pid, else the caller's own session through [`App::resolve_caller`].
+    pub async fn target(&self, to: Option<&Ref>, frame: &Frame) -> Result<(Provider, Map<String, Value>), HarnessError> {
+        if let Some(to) = to {
+            let (p, mut named) = self.resolve(to).await?;
             named.insert("pid".into(), frame.pid_value());
             return Ok((p, named));
         }

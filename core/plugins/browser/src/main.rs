@@ -60,7 +60,7 @@ fn caller(call: &Call) -> (String, String) {
     let c = &call.caller;
     let claim = call.caller_claim();
     let from_claim = |k: &str| claim.and_then(|v| v.get(k)).and_then(Value::as_str).filter(|s| !s.is_empty()).map(str::to_string);
-    let session = c.session.clone().filter(|s| !s.is_empty()).or_else(|| c.job.clone().filter(|s| !s.is_empty())).or_else(|| from_claim("session_id")).or_else(|| from_claim("job")).or_else(|| from_claim("name"));
+    let session = c.session.clone().filter(|s| !s.is_empty()).or_else(|| from_claim("session_id")).or_else(|| from_claim("name"));
     let key = session.map(|s| format!("{}/{s}", c.node)).unwrap_or_default();
     (key, call.caller_trust().unwrap_or("untrusted").to_string())
 }

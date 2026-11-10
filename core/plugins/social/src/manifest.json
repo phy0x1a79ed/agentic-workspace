@@ -137,7 +137,7 @@
     {
       "name": "seats",
       "tool": "social_seats",
-      "description": "List the chats a bot account is in, each with the session holding it or null. A chat that [seats] in social.toml declares a seat also shows its seat: the state (empty, starting, occupied), its agent's job and node, its level and its queued lines. Social starts a seat's agent on the seat's first new message. The seat stops its agent after 4 hours with no message and no running turn, and the next message resumes the same conversation.",
+      "description": "List the chats a bot account is in, each with the session holding it or null. A chat that [seats] in social.toml declares a seat also shows its seat: the state (empty, starting, occupied), its agent's session id and node, its level and its queued lines. Social starts a seat's agent on the seat's first new message. The seat stops its agent after 4 hours with no message and no running turn, and the next message resumes the same conversation.",
       "params": [
         {
           "name": "account",

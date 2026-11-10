@@ -129,7 +129,7 @@ where
         let lane = if service.is_some() { Lane::Service } else { Lane::Edge };
         let caller = Caller { node: from.clone(), lane, session: req.caller.session, trust: req.caller.trust,
                               scope: req.caller.scope, origin: req.caller.origin.filter(|o| *o != from),
-                              job: req.caller.job, name: req.caller.name };
+                              name: req.caller.name, kind: req.caller.kind };
         match req.name.as_str() {
             WS_SEND => {
                 if let (Some(tx), Ok(msg)) = (streams.lock().await.get(&req.id), serde_json::from_value::<WsMsg>(req.args)) {

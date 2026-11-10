@@ -31,7 +31,7 @@ class Now:
 
 
 async def test_handover_takes_standby_on_partner_then_reboots(cfg):
-    gw = FakeGateway({(WAKE, "standby_take"): {"ok": True, "job": "j1", "link": "https://l"}})
+    gw = FakeGateway({(WAKE, "standby_take"): {"ok": True, "session_id": "cc" + "b" * 32, "link": "https://l"}})
     ran = []
     out = await standby.handover(cfg, gw, reason="kernel update", reboot=True, runner=ran.append)
     assert gw.calls[0] == (WAKE, "standby_take",
@@ -52,7 +52,7 @@ async def test_handover_never_reboots_without_a_standby(cfg):
 async def test_take_starts_a_briefed_remote_control_session(alcor_cfg, store, gw):
     out = await standby.take(alcor_cfg, store, gw, down="mizar", reason="kernel update",
                              now=Now())
-    assert out["ok"] and out["job"] == "abcd1234" and not out["reused"]
+    assert out["ok"] and out["session_id"] == "cc" + "a" * 32 and not out["reused"]
     _, verb, args, peer = gw.calls[0]
     assert verb == "start_other" and peer is None
     assert args["remote_control"] is True and args["name"] == "standby-for-mizar"
@@ -70,7 +70,7 @@ async def test_release_messages_the_session_with_the_report(alcor_cfg, store, gw
                                 report={"revive": {"revived": ["8162a704"]}})
     assert out["held"] and out["delivered"]
     _, verb, args, _ = gw.calls[-1]
-    assert verb == "message" and args["job"] == "abcd1234" and "8162a704" in args["text"]
+    assert verb == "message" and args["to"] == {"id": "cc" + "a" * 32} and "8162a704" in args["text"]
     assert standby.status(store)["holds"][0]["state"] == "released"
 
 
@@ -131,3 +131,22 @@ async def test_boot_waits_for_gateway_and_releases_even_on_failure(cfg):
     out = await boot.run(cfg, gw, revive_tries=2, sleep=sleep)
     assert "revive_pinned failed" in out["error"]
     assert gw.verbs() == ["revive_pinned", "revive_pinned", "standby_release"]
+
+
+# MIGRATION(session-ids)
+def test_a_hold_keyed_by_job_is_rekeyed_by_session_id(tmp_path, monkeypatch):
+    jobs = tmp_path / "claude" / "jobs"
+    (jobs / "abababab").mkdir(parents=True)
+    (jobs / "abababab" / "state.json").write_text('{"sessionId": "abababab-0000-4000-8000-000000000000"}')
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
+    store = standby.Store(tmp_path / "standby.json")
+    store.save({"holds": {"mizar": {"state": "holding", "job": "abababab"},
+                          "alcor": {"state": "holding", "job": "eeeeeeee"}}, "misses": {}})
+    holds = store.load()["holds"]
+    assert holds == {"mizar": {"state": "holding", "session_id": "ccabababab000040008000000000000000"}}
+    assert store.load()["holds"] == holds
+
+    store.save({"holds": {"mizar": {"state": "holding", "job": "abababab"}}, "misses": {}})
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "missing"))
+    with pytest.raises(RuntimeError, match="unreadable"):
+        store.load()
