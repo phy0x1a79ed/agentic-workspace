@@ -239,6 +239,34 @@
       ]
     },
     {
+      "name": "seat_refresh",
+      "tool": "social_seat_refresh",
+      "description": "Pick a seat's model and effort, which win over social.toml. The seat's host restarts an agent it started on them once the agent is between turns, resuming its conversation, and keeps them for the next start of an empty seat. `live` answers `pending`. Only operations on this node calls it, for the Refresh button on Ops.",
+      "surfaces": [
+        "cli",
+        "http"
+      ],
+      "params": [
+        {
+          "name": "seat",
+          "type": "string",
+          "required": true,
+          "description": "<account>/<channel_id>, as `seats` shows it."
+        },
+        {
+          "name": "model",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "effort",
+          "type": "string",
+          "required": true,
+          "description": "low, medium or high."
+        }
+      ]
+    },
+    {
       "name": "seat_pull",
       "tool": "social_seat_pull",
       "description": "A seat host's seats plugin holds this to take the rows waiting for its node. `ack_through` acks every row through that id. Not for sessions.",

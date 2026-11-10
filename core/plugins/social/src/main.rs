@@ -31,6 +31,7 @@ async fn dispatch(app: Arc<Social>, name: &str, call: Call) -> Result<Value, Ver
         "unmount" => app.unmount(call).await,
         "forward" => app.forward(call).await,
         "seat_remote_control" => app.seat_remote_control(call).await,
+        "seat_refresh" => app.seat_refresh(call).await,
         "seat_pull" => app.seat_pull(call).await,
         "seat_report" => app.seat_report(call).await,
         "search" => app.search(call).await,

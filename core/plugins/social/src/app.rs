@@ -780,6 +780,22 @@ impl Social {
         Ok(json!({"ok": true, "seat": st.id(), "remote_control": on, "live": "pending"}))
     }
 
+    /// The Refresh button on Ops: operations on this node is the one caller.
+    pub async fn seat_refresh(&self, call: Call) -> Result<Value, VerbError> {
+        if !switch_caller(call.plugin.as_deref(), call.from_peer()) {
+            return Err(VerbError::permission("seat_refresh: only operations on this node runs this"));
+        }
+        let (seat, model, effort) = (s(&call.args, "seat"), s(&call.args, "model"), s(&call.args, "effort"));
+        if model.is_empty() {
+            return Err(VerbError::value("seat_refresh: missing required argument(s): model."));
+        }
+        awm_trust::trust::check_effort(&effort).map_err(|e| VerbError::value(format!("seat_refresh: {e}")))?;
+        let (account, channel) = seat.split_once('/').filter(|(a, c)| !a.is_empty() && !c.is_empty()).ok_or_else(|| VerbError::value(format!("seat {seat:?} is not <account>/<channel_id>")))?;
+        let st = self.seats.store.get(account, channel).await.ok_or_else(|| VerbError::value(format!("{seat} is no seat social has seen; `seats` lists them")))?;
+        self.seats.set_refresh(&st, &model, &effort).await;
+        Ok(json!({"ok": true, "seat": st.id(), "model": model, "effort": effort, "live": "pending"}))
+    }
+
     // -- the seat hosts ---------------------------------------------------------------
 
     /// The node a seat host's call speaks for: the door's stamp, and no session's word.
@@ -823,9 +839,9 @@ impl Social {
         }
         match kind {
             "seat" => {
-                // An answer to a Remote Control flip goes to Ops even when the seat did not change.
+                // An answer to a flip or a refresh goes to Ops even when the seat did not change.
                 let changed = self.seats.store.mirror(&account, &channel, &s(b, "state"), &s(b, "job"), truthy(b.get("remote_control")), &s(b, "rc_url"), b["public"].clone()).await;
-                if changed || b["event"].get("rc_live").is_some() {
+                if changed || b["event"].get("rc_live").is_some() || b["event"].get("refresh_live").is_some() {
                     self.emit("seats", b["event"].clone());
                 }
                 ok
