@@ -75,7 +75,8 @@ One module owns every seat in `social.db`: `seat_registry`, a durable `seat_queu
 - "Cannot tell", including any `errors[]` for the node, never empties a seat.
 
 **Line, brief, names.**
-- The pushed line is `[<server>/<chat>/<sender>, <level>] ↳<thread> text`, cut at 1500 characters.
+- The pushed line is `[<server>/<chat>/<sender>, <level>, msg <id>] ↳<thread> text`, cut at 1500 characters. The id lets `seats react` and `seats download` name a message other than the latest.
+- A Discord line shows each mention by name, and the bot as `@you`. A channel message that mentions only others is stored and kept off the seat.
 - The brief gives absolute paths under `<workspace>/projects/agentic-commons/main/docs/` (`seat-sop.md`, then `briefs/<platform>-<server-slug>.md`, or `discord-dm.md` for Tony), plus the seat facts.
 - Sessions are named `seat:<platform>/<server>/<chat>`, or `seat:<platform>/dm/<person>` for a DM, with slugs in lowercase-hyphen form. Social derives the name from the stored row on each read and stores none. `social seats` gives it as `label`, which telemetry shows on Ops.
 
