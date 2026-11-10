@@ -9,10 +9,11 @@ PAGE_ID = "awmSwarmBoardPage"
 SCRIPT_ID = "awmSwarmBoardJs"
 BOT_SCRIPT_ID = "awmSwarmBotJs"
 OPS_ID = "awmSwarmOps"
-OPS_PAGE_ID = "awmSwarmOpsPage"
-OPS_SCRIPT_ID = "awmSwarmOpsJs"
 ROSTER_ID = "awmSwarmRoster"
 PORTALS_ID = "awmSwarmPortals"
+#: The Ops page and its script, before Ops joined the Control panel. Install deletes them.
+LEGACY_OPS_PAGE_ID = "awmSwarmOpsPage"
+LEGACY_OPS_SCRIPT_ID = "awmSwarmOpsJs"
 
 #: The three subtrees the writer owns. Nothing else is written, bar the two acts of fleet.md R106.
 ROOTS = (TASKS_ID, OPS_ID, ROOT_ID)

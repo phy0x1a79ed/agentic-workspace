@@ -130,7 +130,7 @@ API_MANIFEST: dict[str, Any] = {
             "tool": "trilium_ops_render",
             "surfaces": _CLI_HTTP,
             "description": (
-                "Write the Ops note from a push: telemetry's nodes, services and seats, "
+                "Write the Ops data from a push: telemetry's nodes, services and seats, "
                 "or operations' notices. For those two services, not for sessions."
             ),
             "params": [
@@ -145,7 +145,7 @@ API_MANIFEST: dict[str, Any] = {
             "tool": "trilium_board_install",
             "surfaces": _CLI_HTTP,
             "description": (
-                "Create or update the Swarm board page, the Ops page and the bot "
+                "Create or update the Control panel page, its data folders and the bot "
                 "button script in the vault. Idempotent. Operator only: the board "
                 "writer runs it at each start as well."
             ),

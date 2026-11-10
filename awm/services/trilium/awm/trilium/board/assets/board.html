@@ -43,10 +43,32 @@
 .awm-info p { margin: 4px 0; }
 .awm-appr { border: 1px solid rgba(127,127,127,.35); border-radius: 6px; padding: 6px 8px; margin: 4px 0; }
 .awm-appr .sum { margin: 2px 0 4px; white-space: pre-wrap; }
+.awm-fleet, .awm-fleet * { user-select: text; -webkit-user-select: text; }
+.awm-nodes { display: flex; flex-direction: column; gap: 12px; }
+.awm-node { border: 1px solid rgba(127,127,127,.4); border-radius: 8px; padding: 10px 12px; }
+.awm-node header { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.awm-node header b { font-size: 16px; }
+.awm-node ul { margin: 6px 0 0; padding-left: 16px; }
+.awm-fleet table { border-collapse: collapse; width: 100%; font-size: 13px; }
+.awm-fleet th, .awm-fleet td { text-align: left; padding: 3px 8px; border-bottom: 1px solid rgba(127,127,127,.25); }
+.awm-fleet small { opacity: .7; }
+.awm-fleet .cell { text-align: center; }
+.awm-fleet pre { white-space: pre-wrap; }
+.awm-grid { overflow-x: auto; }
+.awm-legend { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 6px; font-size: 12px; }
+.awm-state { font-size: 15px; line-height: 1; }
+.awm-state.enabled { color: #2e9e4f; }
+.awm-state.disabled { color: #888; }
+.awm-state.failed { color: #d33; }
+.awm-state.uninstalled { opacity: .35; }
+.awm-state.reachable { color: #2f7fd6; }
+.awm-state.unreachable { color: #d33; }
+.awm-state.unknown { color: #b58900; }
+.awm-switch { background: none; border: 1px solid rgba(127,127,127,.4); border-radius: 4px; cursor: pointer; padding: 1px 7px; }
 </style>
 <div class="awm-board">
   <div class="awm-top">
-    <input class="awm-search" type="search" placeholder="Search cards">
+    <input class="awm-search" type="search" placeholder="Search cards, nodes, sessions, seats, plugins, services">
     <span class="awm-twofa">2fa <button class="awm-btn" data-count="1" type="button">1</button> <button class="awm-btn" data-count="2" type="button">2</button> <button class="awm-btn" data-count="4" type="button">4</button></span>
     <span class="awm-live"></span>
   </div>

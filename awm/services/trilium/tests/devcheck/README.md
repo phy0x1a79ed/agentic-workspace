@@ -1,6 +1,6 @@
 # Dev-server check
 
-Drives the board, Ops and the bot button on the fork's dev server (`projects/trilium`, on a copy of a
+Drives the Control panel and the bot button on the fork's dev server (`projects/trilium`, on a copy of a
 vault snapshot, never the live vault) against a stub of alcor. Not part of the pytest run.
 
 1. Copy a snapshot into the dev scratch dir, add `[General] noAuthentication=true` to its

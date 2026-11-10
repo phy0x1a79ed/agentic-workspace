@@ -1,4 +1,4 @@
-// Shared by the board, Ops and the bot button. The installer puts this text in front of each page
+// Shared by the Control panel and the bot button. The installer puts this text in front of each page
 // script, so every script is one self-contained unit with no module loading to go wrong.
 //
 // Every press is a fetch to alcor's API with the device credential (queue.md R64 item 5). The only
@@ -163,6 +163,5 @@ function entitiesChanged(box, relevant, handler) {
 const CARD_LABELS = ["section", "status", "peer", "taskId", "pendingApprovals", "historyAt", "updatedAt",
                      "queueChangedAt"];
 const cardsChanged = (lr) => lr.getBranchRows().length > 0
-  || lr.getAttributeRows().some((r) => CARD_LABELS.includes(r.name))
-  || lr.isNoteContentReloaded(SWARM_ROSTER_ID);
+  || lr.getAttributeRows().some((r) => CARD_LABELS.includes(r.name));
 const rosterChanged = (lr) => lr.isNoteContentReloaded(SWARM_ROSTER_ID) || lr.isNoteReloaded(SWARM_ROSTER_ID);

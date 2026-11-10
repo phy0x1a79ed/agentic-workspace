@@ -1,14 +1,16 @@
-"""The Ops note: telemetry's roster rendered one way into the vault (fleet.md R147 items 3-7).
+"""The Ops data folder: telemetry's roster rendered one way into the vault (fleet.md R147 items 3-7).
 
 Telemetry holds the facts and pushes them here at each roster change. operations pushes the
-notices the same way. The page reads one JSON note, so the New agent dropdown on the board and
-the Ops cards agree on the same roster.
+notices the same way. The Control panel reads one JSON note, so the New agent dropdown and the
+fleet sections agree on the same roster. A push that moves only the clocks writes nothing, because
+each roster write redraws every open Control panel.
 """
 
 from __future__ import annotations
 
 import json
 import os
+from datetime import datetime
 from typing import Any
 
 from awm.trilium.board import ids
@@ -18,6 +20,9 @@ from awm.trilium.board.render import text
 #: Nodes that never take an agent from the New agent button (fleet.md R79, R88).
 NEVER_AGENT_NODES = frozenset({"deneb"})
 NEVER_AGENT_ROLES = frozenset({"station"})
+
+#: A node's stored ``last_seen`` may lag this far behind its pushes before it is written alone.
+SEEN_LAG_S = 300
 
 
 def portals_from_env() -> dict[str, str]:
@@ -94,6 +99,34 @@ def portals_text(portals: dict[str, str], nodes: list[dict]) -> str:
             + ("\n".join(rows) or "No portal is configured.") + "\n")
 
 
+def _epoch(v: Any) -> float | None:
+    if isinstance(v, (int, float)):
+        return float(v)
+    try:
+        return datetime.fromisoformat(text(v)).timestamp()
+    except ValueError:
+        return None
+
+
+def _without_clocks(roster: dict[str, Any]) -> dict[str, Any]:
+    return {**roster,
+            "nodes": [{**n, "last_seen": None} for n in roster.get("nodes") or []],
+            "services": [{**s, "last_response": None, "last_used": None} for s in roster.get("services") or []]}
+
+
+def clocks_only(stored: dict[str, Any], roster: dict[str, Any]) -> bool:
+    """Whether the roster differs from the stored one only by clocks no page needs to the second:
+    a node's ``last_seen`` that lags under ``SEEN_LAG_S``, a service's last response or use."""
+    if _without_clocks(stored) != _without_clocks(roster):
+        return False
+    for old, new in zip(stored.get("nodes") or [], roster.get("nodes") or []):
+        if old["last_seen"] != new["last_seen"]:
+            was, now = _epoch(old["last_seen"]), _epoch(new["last_seen"])
+            if was is None or now is None or abs(now - was) > SEEN_LAG_S:
+                return False
+    return True
+
+
 def _rows(args: dict[str, Any], key: str) -> list[dict[str, Any]]:
     return [r for r in args.get(key) or [] if isinstance(r, dict)]
 
@@ -118,6 +151,8 @@ class OpsRenderer:
                                   notices, self.portals)
         else:
             roster = {**stored, "notices": build_roster([], [], [], notices, {})["notices"]}
+        if stored and clocks_only(stored, roster):
+            return stored
         self._upsert(ids.ROSTER_ID, "roster", "application/json",
                      json.dumps(roster, sort_keys=True))
         self._upsert(ids.PORTALS_ID, "Portals", ids.MARKDOWN,
@@ -133,7 +168,7 @@ class OpsRenderer:
 
     def _notices(self, notices: list[dict]) -> None:
         """One managed note per kind and node, as the first Ops book kept them."""
-        fixed = {ids.ROSTER_ID, ids.PORTALS_ID, ids.OPS_PAGE_ID}
+        fixed = {ids.ROSTER_ID, ids.PORTALS_ID}
         have = {k.get("title"): k.get("noteId") for k in self.fence.children(ids.OPS_ID)
                 if k.get("noteId") not in fixed
                 and any(a.get("name") == "agentManaged" for a in k.get("attributes") or [])}
