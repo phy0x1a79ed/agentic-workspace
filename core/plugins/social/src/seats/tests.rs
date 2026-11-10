@@ -40,7 +40,7 @@ async fn a_message_waits_for_its_host_and_a_resynced_copy_is_routed_once() {
     let reply = t.seats.pull("altair", 0, 0.0).await;
     assert_eq!(reply["rows"].as_array().unwrap().len(), 1, "one line for one message");
     let row = &reply["rows"][0];
-    assert_eq!((row["kind"].as_str(), row["line"].as_str(), row["new"].as_bool()), (Some("line"), Some("[slack/DM/tester, cooperative] hi"), Some(true)));
+    assert_eq!((row["kind"].as_str(), row["line"].as_str(), row["new"].as_bool()), (Some("line"), Some("[slack/DM/tester, cooperative, msg 1.0] hi"), Some(true)));
     assert_eq!((row["seat"]["node"].as_str(), row["seat"]["scope"].as_str(), row["seat"]["brief"].as_str()), (Some("altair"), Some("seats/tester"), Some("briefs/slack-slack.md")));
     assert_eq!(row["seat"]["name"], "seat:slack/dm/tester");
     assert_eq!(reply["settings"]["paused"], true);
