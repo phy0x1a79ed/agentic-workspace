@@ -455,9 +455,9 @@ impl Connector for DiscordConnector {
         self.ensure().await?;
         let (id, _) = self.resolve(channel).await?;
         let mut before = before.filter(|b| !b.is_empty()).map(snowflake).transpose()?;
-        let place = {
+        let (place, me) = {
             let c = self.cache();
-            c.place(id, c.chans.get(&id).and_then(|c| c.guild))
+            (c.place(id, c.chans.get(&id).and_then(|c| c.guild)), c.me.as_ref().map(|(id, _)| *id))
         };
         let mut out = vec![];
         while out.len() < limit {
@@ -465,7 +465,7 @@ impl Connector for DiscordConnector {
             let page = self.page(id, want, before).await?;
             let full = page.len() == want as usize;
             before = page.last().map(|m| m.id.get());
-            out.extend(page.iter().map(|m| inbound(&self.cfg.name, m, &place, true)));
+            out.extend(page.iter().map(|m| inbound(&self.cfg.name, m, &place, me, true)));
             if !full {
                 break;
             }
