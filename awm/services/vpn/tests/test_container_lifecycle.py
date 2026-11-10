@@ -20,8 +20,9 @@ class FakeDocker:
     """A docker CLI stand-in: one container's state, and every call made."""
 
     def __init__(self, state: str = "", *, slow: tuple[str, ...] = (),
-                 run_starts: bool = True) -> None:
+                 run_starts: bool = True, logs: str = "") -> None:
         self.state = state
+        self.logs = logs
         self.slow = set(slow)
         self.run_starts = run_starts
         self.calls: list[list[str]] = []
@@ -45,6 +46,8 @@ class FakeDocker:
                 return subprocess.CompletedProcess(args, 1, "", "No such object")
             out = (self.state if args[2] == "{{.State.Status}}"
                    else f"status={self.state} exit=1 started=a finished=b")
+        elif verb == "logs":
+            out = self.logs
         elif verb == "rm":
             self.state = ""
         elif verb == "run":
@@ -154,14 +157,18 @@ def test_the_gateway_gives_up_its_full_budget():
     assert container.UP_BUDGET_S > container._UP_TIMEOUT_S + 2 * 30.0
 
 
-def test_down_logs_out_before_it_removes(harness):
+@pytest.mark.parametrize("logs, logged_out", [
+    ("Send BYE packet: Aborted by caller\nUser cancelled (SIGINT/SIGTERM); exiting.", True),
+    ("Received SIGTERM", False),
+])
+def test_down_logs_out_before_it_removes(harness, logs, logged_out):
     container, install, rows = harness
-    docker = install(FakeDocker(state="running"))
+    docker = install(FakeDocker(state="running", logs=logs))
 
-    container.down("ubc")
+    assert container.down("ubc")["logged_out"] is logged_out
 
-    verbs = [c[0] for c in docker.calls if c[0] in ("stop", "rm")]
-    assert verbs == ["stop", "rm"], "a bare rm leaves the VPN session counted on the server"
+    verbs = [c[0] for c in docker.calls if c[0] in ("stop", "logs", "rm")]
+    assert verbs == ["stop", "logs", "rm"], "a bare rm leaves the VPN session counted on the server, and takes its log"
 
 
 def test_the_bounce_listens_on_loopback_only(harness):

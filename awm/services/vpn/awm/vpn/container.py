@@ -48,6 +48,8 @@ _DOCKER_TIMEOUT_S = 30.0
 _DOCKER_SLOW_TIMEOUT_S = 60.0
 # How long `down` gives openconnect to log the session out before docker kills it.
 _LOGOUT_S = 20
+# openconnect's log line for the logout it sends: "Send BYE packet: <reason>".
+_BYE = "Send BYE packet"
 # The worst case of `up`, for callers that size their own timeouts on it:
 # rm + 2fa arm + run + tunnel wait, plus slack for the polls inside the wait.
 UP_BUDGET_S = 2 * _DOCKER_SLOW_TIMEOUT_S + 15.0 + _UP_TIMEOUT_S + 30.0
@@ -338,19 +340,25 @@ def down(profile: str) -> dict:
 
     ``docker stop`` lets openconnect log out (its stop signal is SIGINT), so the
     VPN server stops counting the session; a bare ``rm -f`` would leave it open.
+    ``logged_out`` says whether openconnect logged the BYE it sent.
     """
     name = container_name(profile)
+    logged_out = False
     with _profile_lock(profile):
         existed = _exists(name)
         if existed:
             try:
                 _docker(["stop", "-t", str(_LOGOUT_S), name], check=False, timeout=_LOGOUT_S + _DOCKER_TIMEOUT_S)
+                logs = _tail_logs(name, 15)
+                logged_out = _BYE in logs
+                if not logged_out:
+                    log.warning("%s stopped with no logout; the server may still count its session:\n%s", name, logs)
             except DockerTimeout:
                 log.warning("docker stop %s timed out; removing it without a logout", name)
         _rm_quiet(name)
         dao.VpnDAO().delete(profile)
     return {"profile": profile, "container": name, "status": "down",
-            "removed": existed}
+            "removed": existed, "logged_out": logged_out}
 
 
 def status_one(profile: str) -> dict:
