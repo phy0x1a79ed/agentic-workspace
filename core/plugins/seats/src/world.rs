@@ -5,10 +5,10 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use awm_plugin_sdk::push::{self, Outcome, Pusher};
-use awm_plugin_sdk::{CallOpts, Hub};
+use awm_plugin_sdk::{CallOpts, Hub, HubError};
 use serde_json::{json, Value};
 
-use crate::engine::{Links, Started, World};
+use crate::engine::{Agent, Agents, Started, World};
 use crate::link::Link;
 
 pub struct Live {
@@ -26,6 +26,26 @@ fn reason(v: &Value) -> String {
     ["reason", "error", "code"].iter().find_map(|k| v.get(*k).and_then(Value::as_str).filter(|s| !s.is_empty()).map(str::to_string)).unwrap_or_else(|| v.to_string())
 }
 
+/// The reply of a verb that answered ok, or why it did not.
+fn acked(reply: Result<Value, HubError>) -> Result<Value, String> {
+    match reply {
+        Ok(v) if v.get("ok") != Some(&json!(false)) => Ok(v),
+        Ok(v) => Err(reason(&v)),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// The job a start or resume answered.
+fn started(reply: &Result<Value, String>) -> Started {
+    match reply {
+        Ok(v) => match v.get("job").and_then(Value::as_str).filter(|j| !j.is_empty()) {
+            Some(job) => Started::Job(job.to_string()),
+            None => Started::Refused(reason(v)),
+        },
+        Err(why) => Started::Refused(why.clone()),
+    }
+}
+
 #[async_trait]
 impl World for Live {
     fn now(&self) -> f64 {
@@ -37,19 +57,40 @@ impl World for Live {
     }
 
     async fn start(&self, spec: Value) -> Started {
-        match self.hub.call_with("reflection", "start_other", spec, &opts(240)).await {
-            Ok(v) if v.get("ok") != Some(&json!(false)) && v.get("job").and_then(Value::as_str).is_some_and(|j| !j.is_empty()) => Started::Job(v["job"].as_str().unwrap().to_string()),
-            Ok(v) => Started::Refused(reason(&v)),
-            Err(e) => Started::Refused(e.to_string()),
+        started(&acked(self.hub.call_with("reflection", "start_other", spec, &opts(240)).await))
+    }
+
+    async fn resume(&self, job: &str, prompt: &str, remote_control: bool, name: &str) -> Started {
+        let reply = acked(self.hub.call_with("reflection", "resume_other", json!({"to": job, "prompt": prompt}), &opts(240)).await);
+        let out = started(&reply);
+        let linked = reply.ok().and_then(|v| v.get("link").and_then(Value::as_str).map(|l| !l.is_empty())).unwrap_or(false);
+        if let Started::Job(new) = &out {
+            if linked != remote_control {
+                if let Err(why) = self.remote_control(new, remote_control, name).await {
+                    tracing::info!("seats: Remote Control {} for the resumed {new} failed: {why}", if remote_control { "on" } else { "off" });
+                }
+            }
         }
+        out
+    }
+
+    async fn stop(&self, job: &str) -> Result<(), String> {
+        acked(self.hub.call_with("reflection", "stop_other", json!({"job": job}), &opts(60)).await).map(drop)
     }
 
     async fn push(&self, job: &str, line: &str) -> Outcome {
         push::reflect(&self.hub, &self.here, job, line).await
     }
 
-    async fn live(&self) -> Option<Links> {
-        push::live_links(&self.hub, &self.here).await
+    async fn live(&self) -> Option<Agents> {
+        let rows = push::live_rows(&self.hub, &self.here).await?;
+        let text = |r: &Value, k: &str| r.get(k).and_then(Value::as_str).unwrap_or("").to_owned();
+        let agent = |r: Value| Agent {
+            link: text(&r, "rc_url"),
+            busy: r.get("state").and_then(Value::as_str) == Some("working"),
+            active_at: chrono::DateTime::parse_from_rfc3339(&text(&r, "active_at")).map_or(0.0, |t| t.timestamp_millis() as f64 / 1000.0),
+        };
+        Some(rows.into_iter().map(|(job, r)| (job, agent(r))).collect())
     }
 
     async fn scope_ready(&self, project: &str, scope: &str) -> Option<bool> {
@@ -63,11 +104,7 @@ impl World for Live {
     }
 
     async fn remote_control(&self, job: &str, on: bool, name: &str) -> Result<(), String> {
-        match self.hub.call_with("reflection", "remote_control", json!({"job": job, "on": on, "name": name}), &opts(60)).await {
-            Ok(v) if v.get("ok") != Some(&json!(false)) => Ok(()),
-            Ok(v) => Err(reason(&v)),
-            Err(e) => Err(e.to_string()),
-        }
+        acked(self.hub.call_with("reflection", "remote_control", json!({"job": job, "on": on, "name": name}), &opts(60)).await).map(drop)
     }
 
     fn hand(&self, job: &str, line: &str) {

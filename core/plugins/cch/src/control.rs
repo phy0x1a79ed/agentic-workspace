@@ -1251,6 +1251,23 @@ pub async fn remote_control<E: Effects>(
     turn_off(fx, &t).await
 }
 
+/// Put `job`'s Remote Control back the way it was last switched, after a relaunch brought it up
+/// the other way. None when it already matches. One try: a refusal is logged by the caller, never
+/// retried, so a human's own `/rc` later is not fought.
+pub async fn restore_remote_control<E: Effects>(
+    fx: &E,
+    job: &str,
+    on: bool,
+    name: Option<&str>,
+) -> Option<Result<Value, ControlError>> {
+    let (home, j) = (fx.home().clone(), job.to_string());
+    let bridged = blocking(move || roster::job_bridge_id(&home, &j)).await.is_some();
+    if bridged == on {
+        return None;
+    }
+    Some(remote_control(fx, on, name, Some(job), None).await)
+}
+
 async fn turn_on<E: Effects>(fx: &E, t: &Target, name: Option<&str>) -> Result<Value, ControlError> {
     if let Some(no) = check_clear(fx, t).await? {
         return Ok(no);

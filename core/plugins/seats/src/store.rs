@@ -150,6 +150,9 @@ pub struct Previous {
     /// A session the seat took over rather than started, so no later start may replace it.
     #[serde(default)]
     pub adopted: bool,
+    /// The seat stopped it for idleness, so the next message resumes its conversation.
+    #[serde(default)]
+    pub stopped: bool,
 }
 
 /// What social declares about a chat. It rides on every row social sends.
@@ -270,7 +273,7 @@ impl Seat {
             last_message: seed.last_message,
             done_at: if elsewhere { 0.0 } else { seed.done_at },
             deadline: seed.deadline,
-            previous: if elsewhere { Previous { job: seed.job, node: seed.job_node, adopted: false } } else { previous },
+            previous: if elsewhere { Previous { job: seed.job, node: seed.job_node, ..Default::default() } } else { previous },
             breaker: serde_json::from_str(&seed.breaker).unwrap_or_default(),
             held: seed.held,
             missed: seed.missed,
@@ -278,6 +281,11 @@ impl Seat {
             rc_url: if elsewhere { String::new() } else { seed.rc_url },
             decl,
         }
+    }
+
+    /// The seat's current agent, as the next one's predecessor.
+    pub fn as_previous(&self, stopped: bool) -> Previous {
+        Previous { job: self.job.clone(), node: self.decl.node.clone(), adopted: self.adopted, stopped }
     }
 
     pub fn account(&self) -> &str {

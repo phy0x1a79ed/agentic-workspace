@@ -1317,6 +1317,24 @@ pub fn write_lineage(paths: &Paths, job: &str, record: &Object) -> std::io::Resu
     write_json(&paths.lineage_path(job), &Value::Object(record.clone()))
 }
 
+/// Record `job`'s last Remote Control switch, so a resume comes up the way it was left: the label
+/// when on (the given name, else the one already recorded, else `true`), null when off. False when
+/// `job` has no lineage record.
+pub fn record_remote_control(paths: &Paths, job: &str, on: bool, name: Option<&str>) -> std::io::Result<bool> {
+    let Some(mut rec) = read_lineage(paths, job) else { return Ok(false) };
+    let had = rec.get("remote_control").filter(|v| truthy(Some(v))).cloned();
+    let want = match (on, name.filter(|n| !n.is_empty())) {
+        (false, _) => Value::Null,
+        (true, Some(n)) => json!(n),
+        (true, None) => had.clone().unwrap_or(json!(true)),
+    };
+    if had.unwrap_or(Value::Null) != want {
+        rec.insert("remote_control".into(), want);
+        write_lineage(paths, job, &rec)?;
+    }
+    Ok(true)
+}
+
 /// Record the declared mode before the launch; no record, no launch.
 pub fn write_pending(paths: &Paths, record: &Object) -> Result<(), Refused> {
     let mut rec = record.clone();
@@ -1742,7 +1760,8 @@ async fn resume_retired<E: Effects>(
                 "name": name, "project": r.get("project"), "scope": r.get("scope"),
                 "model": or_default("model", "opus"), "effort": or_default("effort", "high"),
                 "mode": r.get("mode"),
-                "remote_control": r.get("remote_control").filter(|v| truthy(Some(v))), "brief": false,
+                "remote_control": r.get("remote_control").filter(|v| truthy(Some(v))).cloned().unwrap_or(json!(false)),
+                "brief": false,
             }),
         )?;
         spec.brief_text = text(r.get("brief_text")).map(str::to_string);
@@ -1767,6 +1786,7 @@ async fn resume_retired<E: Effects>(
         Err(e) => return Err(Refused::new(format!("the session did not resume: {e}")).into()),
     };
     let now = fx.now();
+    let pinned = truthy(rec.get("pinned")) && pin(fx, &session.short).await;
     let (short, s, c, sid) = (session.short.clone(), spec.clone(), cwd.clone(), session_id.to_string());
     let (project, scope) = blocking(fx, move |fx| -> std::io::Result<(Value, Value)> {
         let (project, scope) = match project_scope(fx.paths(), Some(&c)) {
@@ -1786,7 +1806,7 @@ async fn resume_retired<E: Effects>(
             ("resumed_from", rec.get("job").cloned().unwrap_or(Value::Null)),
             ("started_at", json!(iso(now))),
             ("started_epoch", json!(now)),
-            ("pinned", json!(false)),
+            ("pinned", json!(pinned)),
         ] {
             record.insert(key.into(), value);
         }
@@ -1800,7 +1820,7 @@ async fn resume_retired<E: Effects>(
     let mut out = json!({
         "ok": true, "job": session.short, "session_id": ids::to_r9(Some(session_id)),
         "name": spec.name, "node": fx.node_name(), "project": project, "scope": scope,
-        "cwd": cwd, "attach": format!("claude attach {}", session.short), "pinned": false,
+        "cwd": cwd, "attach": format!("claude attach {}", session.short), "pinned": pinned,
         "from_transcript": true,
     });
     extend(&mut out, started_link(fx, &session.short, spec.remote_control.is_some()).await);
@@ -1977,7 +1997,7 @@ fn job_row<E: Effects>(fx: &E, sessions: &Sessions, s: &Session, rec: Option<&Ob
         "project": project, "scope": scope, "cwd": s.cwd,
         "state": shown,
         "needs": record.get("needs"), "detail": clip(record.get("detail")),
-        "tempo": record.get("tempo"),
+        "tempo": record.get("tempo"), "active_at": record.get("updatedAt"),
         "attach": format!("claude attach {}", s.short),
         "parent": field("parent"), "caller": field("caller"),
         "mode": field("mode"), "remote_control": s.remote_control(),
@@ -2983,10 +3003,25 @@ mod tests {
         let call = &w.launched()[0];
         assert!(call.flags.contains(&format!("--resume={RETIRED}")) && call.cwd == cwd);
         assert!(call.prompt.as_deref() == Some("carry on") && call.name == "resumed-0e380e38");
+        // No recorded switch means Remote Control stays off, not on under a name derived from the session's.
+        assert!(!call.flags.iter().any(|f| f.starts_with("--remote-control")), "{:?}", call.flags);
         let rec = read_lineage(&w.paths, "feedface").unwrap();
         assert_eq!(rec["session_id"], json!(RETIRED));
         // The gateway gates a session with no mode in its record as `unknown` and refuses its calls.
         assert_eq!(rec["mode"], json!("worker"));
+        assert_eq!((&out["pinned"], &rec["pinned"]), (&json!(false), &json!(false)));
+    }
+
+    #[tokio::test]
+    async fn test_a_retired_pinned_job_resumes_pinned() {
+        let w = Fx::new();
+        relaunched(&w);
+        retired_transcript(&w, &w.projects().join("awm/demo"));
+        write_lineage(&w.paths, "deadbeef", json!({"name": "seat", "mode": "worker", "session_id": RETIRED, "pinned": true}).as_object().unwrap()).unwrap();
+        let out = resume_job(&w, json!({"job": "deadbeef"})).await;
+        assert!(out["ok"] == json!(true) && out["pinned"] == json!(true), "{out}");
+        assert_eq!(pins_file(&w), json!(["feedface"]));
+        assert_eq!(read_lineage(&w.paths, "feedface").unwrap()["pinned"], json!(true));
     }
 
     fn keep_answers(w: &World) {
@@ -3046,6 +3081,28 @@ mod tests {
     }
 
     // --- the plan's fixes and invariants -------------------------------------------
+
+    /// A switch lands on the lineage record that a resume reads: off clears the label, a bare on
+    /// keeps the one recorded, and a job with no record is left alone.
+    #[test]
+    fn a_remote_control_switch_is_recorded_for_the_next_resume() {
+        let dir = TempDir::new().unwrap();
+        let paths = Paths::under(dir.path());
+        let rec = json!({"name": "seat", "mode": "worker", "remote_control": "seat-x"}).as_object().cloned().unwrap();
+        write_lineage(&paths, CHILD_JOB, &rec).unwrap();
+        let label = |paths: &Paths| read_lineage(paths, CHILD_JOB).unwrap()["remote_control"].clone();
+        for (on, name, want) in [
+            (false, None, Value::Null),
+            (true, None, json!(true)),
+            (true, Some("lab"), json!("lab")),
+            (true, None, json!("lab")),
+            (false, Some("lab"), Value::Null),
+        ] {
+            assert!(record_remote_control(&paths, CHILD_JOB, on, name).unwrap());
+            assert_eq!(label(&paths), want, "on={on} name={name:?}");
+        }
+        assert!(!record_remote_control(&paths, "ffffffff", false, None).unwrap());
+    }
 
     /// A lineage record is what Python's `json.dumps(record, indent=1)` wrote, mode 0600, and a
     /// pending one is filed under `sha256(name)[:16]`.
