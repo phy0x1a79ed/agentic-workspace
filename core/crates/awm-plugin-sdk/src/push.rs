@@ -93,18 +93,17 @@ pub async fn live_jobs(hub: &Hub, node: &str) -> Option<HashSet<String>> {
 /// The `list_other` row of each running background job on `node`, by job id.
 pub async fn live_rows(hub: &Hub, node: &str) -> Option<HashMap<String, Value>> {
     let opts = CallOpts { peer: peer_for(node), timeout: Duration::from_secs(60), ..CallOpts::default() };
-    let reply = hub.call_with("reflection", "list_other", json!({}), &opts).await.ok()?;
-    let errors = reply.get("errors").and_then(Value::as_array).is_some_and(|e| !e.is_empty());
-    let rows = reply.get("sessions")?.as_array()?;
-    if errors {
+    let mut reply = hub.call_with("reflection", "list_other", json!({}), &opts).await.ok()?;
+    if reply.get("errors").and_then(Value::as_array).is_some_and(|e| !e.is_empty()) {
         return None;
     }
+    let Value::Array(rows) = reply.get_mut("sessions")?.take() else { return None };
     Some(
-        rows.iter()
-            .filter(|r| row_live(r))
+        rows.into_iter()
+            .filter(row_live)
             .filter_map(|r| {
-                let job = r.get("job").and_then(Value::as_str).filter(|j| !j.is_empty())?;
-                Some((job.to_string(), r.clone()))
+                let job = r.get("job").and_then(Value::as_str).filter(|j| !j.is_empty())?.to_string();
+                Some((job, r))
             })
             .collect(),
     )

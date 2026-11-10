@@ -251,8 +251,17 @@ struct Watcher<F> {
     out: mpsc::UnboundedSender<Value>,
     /// The jobs a pid was ever seen for. A new pid for one of them is a relaunch.
     seen_jobs: HashSet<String>,
-    relaunched: mpsc::UnboundedSender<String>,
+    rc: mpsc::UnboundedSender<Rc>,
     quiet: bool,
+}
+
+/// What the Remote Control restore hears of a background job.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Rc {
+    /// The job came back under a new pid.
+    Relaunched(String),
+    /// The job's Remote Control bridge came or went.
+    Bridge(String),
 }
 
 impl<F: Effects> Watcher<F> {
@@ -305,7 +314,7 @@ impl<F: Effects> Watcher<F> {
                 self.by_pid.insert(pid, (sid.clone(), rec.proc_start.clone()));
                 if let Some(job) = &rec.facts.job {
                     if !self.seen_jobs.insert(job.clone()) && !self.quiet {
-                        let _ = self.relaunched.send(job.clone());
+                        let _ = self.rc.send(Rc::Relaunched(job.clone()));
                     }
                 }
             }
@@ -324,6 +333,9 @@ impl<F: Effects> Watcher<F> {
         }
         if before.bridge != rec.facts.bridge {
             self.emit("remote_control", &sid, &rec.facts).await;
+            if let Some(job) = rec.facts.job.clone().filter(|_| !self.quiet) {
+                let _ = self.rc.send(Rc::Bridge(job));
+            }
         }
         if (&before.state, &before.needs) != (&rec.facts.state, &rec.facts.needs)
             && rec.facts.state.as_deref() != Some("stopped")
@@ -408,26 +420,12 @@ impl<F: Effects> Watcher<F> {
 }
 
 /// Watch with `fx` and report through `gw` until `fx` runs out of changes. The state on disk at
-/// the start is read silently: a restart sends nothing. Each job that comes back under a new pid
-/// goes to `relaunched`.
-pub async fn watch<G: Gateway + 'static, F: Effects>(
-    paths: Arc<Paths>,
-    gw: Arc<G>,
-    fx: F,
-    relaunched: mpsc::UnboundedSender<String>,
-) {
+/// the start is read silently: a restart sends nothing. Each job that comes back under a new pid,
+/// and each bridge change of a job, goes to `rc`.
+pub async fn watch<G: Gateway + 'static, F: Effects>(paths: Arc<Paths>, gw: Arc<G>, fx: F, rc: mpsc::UnboundedSender<Rc>) {
     let (out, events) = mpsc::unbounded_channel();
     let reporter = tokio::spawn(report(gw, events));
-    let mut w = Watcher {
-        paths,
-        fx,
-        sessions: BTreeMap::new(),
-        by_pid: HashMap::new(),
-        out,
-        seen_jobs: HashSet::new(),
-        relaunched,
-        quiet: true,
-    };
+    let mut w = Watcher { paths, fx, sessions: BTreeMap::new(), by_pid: HashMap::new(), out, seen_jobs: HashSet::new(), rc, quiet: true };
     w.rescan().await;
     w.quiet = false;
     loop {
@@ -446,9 +444,9 @@ pub async fn watch<G: Gateway + 'static, F: Effects>(
 }
 
 /// Report this node's session events to reflection for as long as cch runs. Never returns.
-pub async fn run<G: Gateway + 'static>(paths: Arc<Paths>, gw: Arc<G>, relaunched: mpsc::UnboundedSender<String>) {
+pub async fn run<G: Gateway + 'static>(paths: Arc<Paths>, gw: Arc<G>, rc: mpsc::UnboundedSender<Rc>) {
     match Live::start(&paths) {
-        Ok(fx) => watch(paths, gw, fx, relaunched).await,
+        Ok(fx) => watch(paths, gw, fx, rc).await,
         Err(e) => tracing::warn!("cch: session events are off: {e}"),
     }
     std::future::pending::<()>().await;
@@ -783,7 +781,7 @@ mod tests {
         alive: Arc<Mutex<HashSet<u32>>>,
         watched: Arc<Mutex<HashSet<u32>>>,
         task: Option<JoinHandle<()>>,
-        relaunches: Option<mpsc::UnboundedReceiver<String>>,
+        relaunches: Option<mpsc::UnboundedReceiver<Rc>>,
     }
 
     impl World {
@@ -947,7 +945,8 @@ mod tests {
     }
 
     /// A job back under a new pid, by a swap or a relaunch after its stop, is reported once so its
-    /// Remote Control switch can be put back. A job's first pid is a start, not a relaunch.
+    /// Remote Control switch can be put back, and so is its bridge coming up after. A job's first
+    /// pid is a start, not a relaunch.
     #[tokio::test(start_paused = true)]
     async fn a_job_back_under_a_new_pid_is_a_relaunch() {
         let mut w = World::open();
@@ -963,14 +962,18 @@ mod tests {
         sleep(SWAP_GRACE * 30).await;
         w.background(302, SID_B, JOB);
         w.push(Change::Session(302));
+        sleep(Duration::from_millis(10)).await;
+        w.job_state(JOB, "worker", Some("cse_bridge"));
+        w.push(Change::Session(302));
         w.background(402, SID_A, "e5f6a7b8");
         w.push(Change::Session(402));
         w.finish().await;
         let mut got = Vec::new();
-        while let Ok(job) = w.relaunches.as_mut().unwrap().try_recv() {
-            got.push(job);
+        while let Ok(rc) = w.relaunches.as_mut().unwrap().try_recv() {
+            got.push(rc);
         }
-        assert_eq!(got, [JOB, JOB]);
+        let back = Rc::Relaunched(JOB.into());
+        assert_eq!(got, [back.clone(), back, Rc::Bridge(JOB.into())]);
     }
 
     #[tokio::test(start_paused = true)]

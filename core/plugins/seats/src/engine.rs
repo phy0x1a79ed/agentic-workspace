@@ -411,34 +411,31 @@ impl Seats {
     /// it would. Only an agent the seat started, and never mid-turn. True when it stopped.
     async fn stop_if_idle(&self, mut seat: Seat, live: Option<&Agents>, now: f64) -> bool {
         let Some(live) = live else { return false };
-        let key = seat.key();
         let at = match live.get(&seat.job) {
             _ if seat.adopted => None,
             Some(a) if a.busy => Some(now + IDLE_S),
             Some(a) if a.active_at > 0.0 => Some(seat.last_message.max(a.active_at) + IDLE_S),
             _ => None,
         };
-        let idle_at = |at: Option<f64>| match at {
-            Some(at) => self.idle_at.lock().unwrap().insert(key.clone(), at),
-            None => self.idle_at.lock().unwrap().remove(&key),
-        };
-        match at {
-            Some(at) if at <= now => {}
-            other => {
-                idle_at(other);
-                return false;
-            }
+        {
+            let mut idle_at = self.idle_at.lock().unwrap();
+            match at {
+                Some(at) => idle_at.insert(seat.key(), at),
+                None => idle_at.remove(&seat.key()),
+            };
         }
+        if !at.is_some_and(|at| at <= now) {
+            return false;
+        }
+        // A failed stop leaves the deadline past, so the next tick tries again.
         match self.world.stop(&seat.job).await {
             Ok(()) => {
                 tracing::info!("seat {}: stopped its idle agent {}", label(&seat), seat.job);
-                idle_at(None);
                 self.vacate(&mut seat, true).await;
                 true
             }
             Err(why) => {
                 tracing::info!("seat {}: stopping its idle agent {} failed: {why}", label(&seat), seat.job);
-                idle_at(Some(now));
                 false
             }
         }
@@ -537,18 +534,14 @@ impl Seats {
         }
         self.save(&seat).await;
         self.store.brief_to(ids.clone(), "starting").await;
-        let resumed = match resume {
+        let started = match resume {
             Some(job) => match self.world.resume(&job, &lines.join("\n"), seat.remote_control, &Self::rc_name(&seat)).await {
                 Started::Refused(why) => {
                     tracing::info!("seat {}: resuming {job} refused, starting afresh: {why}", label(&seat));
-                    None
+                    self.world.start(spec).await
                 }
-                started => Some(started),
+                started => started,
             },
-            None => None,
-        };
-        let started = match resumed {
-            Some(started) => started,
             None => self.world.start(spec).await,
         };
         match started {
