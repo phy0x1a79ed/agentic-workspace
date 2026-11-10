@@ -261,7 +261,9 @@ async fn an_approved_plan_opens_a_card_titled_by_its_heading_but_not_for_a_seat(
     let again = h.call("hook_plan_approved", pid(11), json!({"session_id": A, "plan_text": "# Fix the tunnel v2"})).await;
     assert_eq!((again["task_id"].clone(), again["opened"].clone()), (out["task_id"].clone(), json!(false)));
     assert_eq!(h.card(&out["task_id"])["meta"]["plan"], "# Fix the tunnel v2");
-    h.out.pids.lock().unwrap().insert(44, json!({"ok": true, "session_id": format!("cc{}", "4".repeat(32)), "job": "job-s", "name": "seat:slack/lab/ryan"}));
+    let seated = format!("cc{}", "4".repeat(32));
+    h.out.pids.lock().unwrap().insert(44, json!({"ok": true, "session_id": seated, "job": "job-s", "name": "ryan"}));
+    h.out.seated.lock().unwrap().push(seated);
     let seat = h.call("hook_plan_approved", pid(44), json!({"plan_text": "# Seat work"})).await;
     assert_eq!((seat["tracked"].clone(), seat.get("task_id")), (json!(false), None), "a seat gets no card");
 }

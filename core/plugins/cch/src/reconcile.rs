@@ -73,7 +73,7 @@ where
             .read(|p| {
                 let s = p.sessions();
                 let version = s.binary_version();
-                pool::warm(s.load(), s, version.as_deref(), None).len()
+                pool::warm(s.load(), &s, version.as_deref(), None).len()
             })
             .await
     }
@@ -277,7 +277,7 @@ mod tests {
             let p = &self.pool;
             let s = p.sessions();
             let version = s.binary_version();
-            pool::warm(s.load(), s, version.as_deref(), None).len()
+            pool::warm(s.load(), &s, version.as_deref(), None).len()
         }
 
         async fn seed_one(&self) -> Result<String, LaunchError> {

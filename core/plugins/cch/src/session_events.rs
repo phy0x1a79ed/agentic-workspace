@@ -26,6 +26,7 @@ use tokio::time::{sleep, sleep_until, Instant};
 
 use crate::gateway::{Call, Gateway};
 use crate::isolated;
+use crate::ledger;
 use crate::lineage;
 use crate::paths::Paths;
 use crate::resume::r9;
@@ -269,6 +270,11 @@ impl<F: Effects> Watcher<F> {
         if self.quiet {
             return;
         }
+        let pool = {
+            let path = self.paths.ledger_path();
+            let id = r9(claude_session_id);
+            blocking(move || ledger::load(&path).get(&id).copied()).await.flatten()
+        };
         let task_id = match f.job.clone() {
             Some(job) => {
                 let paths = self.paths.clone();
@@ -276,7 +282,11 @@ impl<F: Effects> Watcher<F> {
             }
             None => None,
         };
-        let _ = self.out.send(event(kind, claude_session_id, f, task_id));
+        let mut ev = event(kind, claude_session_id, f, task_id);
+        if let Some(stage) = pool {
+            ev["pool"] = json!(stage.as_str());
+        }
+        let _ = self.out.send(ev);
     }
 
     /// Take `pid` off the session it was counted for; the session departs when no pid is left.

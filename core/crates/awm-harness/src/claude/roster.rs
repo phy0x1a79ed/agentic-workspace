@@ -274,7 +274,7 @@ mod tests {
             &h,
             json!({
                 "newer": {"replPid": 7, "startedAt": 2000, "cliVersion": "2.1.1", "sessionId": "s2",
-                          "decModes": [1, "x", 2], "dispatch": {"source": "cli", "seed": {"name": "<warm a>"}}},
+                          "decModes": [1, "x", 2], "dispatch": {"source": "cli", "seed": {"name": "a"}}},
                 "older": {"replPid": 8, "startedAt": 1000},
             }),
             None,
@@ -283,7 +283,7 @@ mod tests {
         let got = load(&h);
         assert_eq!(got.iter().map(|j| j.short.as_str()).collect::<Vec<_>>(), ["older", "newer"]);
         let newer = &got[1];
-        assert_eq!((newer.name.as_str(), newer.tokens, newer.seed_name.as_deref()), ("renamed", 5, Some("<warm a>")));
+        assert_eq!((newer.name.as_str(), newer.tokens, newer.seed_name.as_deref()), ("renamed", 5, Some("a")));
         assert_eq!(newer.dec_modes, [1, 2]);
         assert_eq!((newer.repl_pid, newer.source.as_deref(), newer.cwd.as_deref()), (Some(7), Some("cli"), Some("/w")));
         assert_eq!(newer.needs, None);

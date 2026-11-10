@@ -24,6 +24,7 @@ use tokio::sync::Mutex;
 use tokio::time::{sleep, timeout, Instant};
 
 use crate::gateway::{Call, Gateway};
+use crate::ledger::{self, Stage};
 use crate::lineage::{self, Mode, Processes, Procfs};
 use crate::paths::{Paths, SKIP_PERMISSION_FLAGS};
 use crate::sessions::{Session, Sessions};
@@ -546,7 +547,7 @@ pub fn check_effort(effort: &Value) -> Result<(), Refused> {
 }
 
 /// Check a start's arguments and fill in cx's defaults. `args` is the verb's argument object.
-pub fn parse(paths: &Paths, args: &Value) -> Result<Spec, Refused> {
+pub fn parse(args: &Value) -> Result<Spec, Refused> {
     let empty = Object::new();
     let a = args.as_object().unwrap_or(&empty);
     let given = |k: &str| a.get(k).filter(|v| !v.is_null());
@@ -590,11 +591,6 @@ pub fn parse(paths: &Paths, args: &Value) -> Result<Spec, Refused> {
     let name = py_strip(&name).to_string();
     if name.is_empty() || name.chars().count() > 80 || !py_printable(&name) || name.starts_with('-') {
         return refuse("name must be a short printable string that does not start with '-'");
-    }
-    let lower = name.to_lowercase();
-    let pool_marks = ["<warm".to_string(), py_strip(&paths.name_prefix).to_lowercase()];
-    if pool_marks.iter().any(|mark| !mark.is_empty() && lower.contains(mark.as_str())) {
-        return refuse("a name may not carry the pool's prefix");
     }
     let prompt = optional_text(given("prompt"), "prompt must be a string")?;
     let system_prompt = optional_text(given("system_prompt"), "system_prompt must be a string")?;
@@ -905,7 +901,7 @@ async fn start_inner<E: Effects>(fx: &E, args: &Value, as_: Option<&str>) -> Res
         if let Some(reason) = who_may_refusal(fx, stamp.as_deref()) {
             return Err(Refused::new(reason));
         }
-        let mut spec = parse(fx.paths(), &a)?;
+        let mut spec = parse(&a)?;
         ensure_starts_dir(fx.paths())?;
         refuse_unknown_caller(fx, &a)?;
         if spec.strict_mcp {
@@ -997,19 +993,24 @@ async fn start_inner<E: Effects>(fx: &E, args: &Value, as_: Option<&str>) -> Res
     if let Some(replaces) = &spec.replaces {
         record.insert("replaces".into(), json!(replaces));
     }
+    let uuid = uuid::Uuid::new_v4().to_string();
+    let id = ledger::key(&uuid).expect("a v4 uuid is a session id");
     let pending = record.clone();
-    blocking(fx, move |fx| write_pending(fx.paths(), &pending)).await?;
+    let pending_id = id.clone();
+    blocking(fx, move |fx| write_pending(fx.paths(), &pending_id, &pending)).await?;
 
     let flagged = spec.clone();
     let mut launch_spec = LaunchSpec::new(fx.paths().claude_bin.clone(), cwd.clone(), spec.name.clone());
     launch_spec.flags = blocking(fx, move |fx| build_flags(fx.paths(), &flagged)).await;
+    launch_spec.flags.push(format!("--session-id={uuid}"));
     launch_spec.prompt = spec.prompt.clone();
     launch_spec.unit_prefix = "awm-cx-start".into();
-    let session = match fx.launch(launch_spec, accept_named(&spec.name)).await {
+    let accept: Accept = Arc::new(move |s: &Job| s.session_id.as_deref() == Some(uuid.as_str()));
+    let session = match fx.launch(launch_spec, accept).await {
         Ok(session) => session,
         Err(LaunchError::Refused(why)) => {
-            let name = spec.name.clone();
-            blocking(fx, move |fx| drop_pending(fx.paths(), &name)).await;
+            let id = id.clone();
+            blocking(fx, move |fx| drop_pending(fx.paths(), &id)).await;
             return Err(Refused::new(why).into());
         }
         // The pending record stays: the job may still appear, and until it is adopted the
@@ -1020,14 +1021,14 @@ async fn start_inner<E: Effects>(fx: &E, args: &Value, as_: Option<&str>) -> Res
     lineage_rec.insert("job".into(), json!(session.short));
     lineage_rec.insert("session_id".into(), json!(session.session_id));
     lineage_rec.insert("brief_text".into(), json!(spec.brief_text));
-    let (short, name) = (session.short.clone(), spec.name.clone());
+    let short = session.short.clone();
     blocking(fx, move |fx| {
         write_lineage(fx.paths(), &short, &lineage_rec).map_err(|e| {
             Refused::new(format!(
                 "started {short} but could not record it ({e}); the pending record keeps its mode"
             ))
         })?;
-        drop_pending(fx.paths(), &name);
+        drop_pending(fx.paths(), &id);
         Ok::<_, Refused>(())
     })
     .await?;
@@ -1323,20 +1324,19 @@ pub fn record_remote_control(paths: &Paths, job: &str, on: bool, name: Option<&s
 }
 
 /// Record the declared mode before the launch; no record, no launch.
-pub fn write_pending(paths: &Paths, record: &Object) -> Result<(), Refused> {
+pub fn write_pending(paths: &Paths, id: &str, record: &Object) -> Result<(), Refused> {
     let mut rec = record.clone();
     rec.insert("pending".into(), Value::Bool(true));
-    let name = text(record.get("name")).unwrap_or_default();
-    write_json(&paths.pending_path(name), &Value::Object(rec)).map_err(|e| {
+    write_json(&paths.pending_path(id), &Value::Object(rec)).map_err(|e| {
         Refused::new(format!("cannot keep lineage records ({e}); refusing to start a session that could not be recorded"))
     })
 }
 
-/// Drop the pending record of the start of `name`.
-pub fn drop_pending(paths: &Paths, name: &str) {
-    match std::fs::remove_file(paths.pending_path(name)) {
+/// Drop the pending record of the start of session `id`.
+pub fn drop_pending(paths: &Paths, id: &str) {
+    match std::fs::remove_file(paths.pending_path(id)) {
         Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
-            tracing::warn!("cx: could not drop the pending record of {}: {e}", py_repr(name));
+            tracing::warn!("cx: could not drop the pending record of {id}: {e}");
         }
         _ => {}
     }
@@ -1423,12 +1423,14 @@ fn started_epoch(rec: &Object) -> f64 {
     rec.get("started_epoch").and_then(Value::as_f64).unwrap_or(0.0)
 }
 
-/// Whether `s` is the late job of the pending start `rec`: the same name, and not older than the
-/// start allowing five seconds of clock skew.
-fn is_late_job_of(s: &Session, rec: &Object) -> bool {
-    let Some(name) = text(rec.get("name")) else { return false };
-    (s.seed_name.as_deref() == Some(name) || s.name == name)
-        && s.started_at_ms.unwrap_or(0) as f64 / 1000.0 >= started_epoch(rec) - 5.0
+/// Whether `s` is the late job of the pending start filed under `id`.
+fn is_late_job_of(s: &Session, id: &str) -> bool {
+    s.session_id.as_deref().and_then(ledger::key).as_deref() == Some(id)
+}
+
+/// The session id a pending record is filed under.
+fn pending_id(path: &Path) -> Option<&str> {
+    path.file_name()?.to_str()?.strip_prefix("pending-")?.strip_suffix(".json")
 }
 
 /// Give each pending record to the job that outlived its launch timeout; the jobs adopted.
@@ -1449,7 +1451,8 @@ pub fn adopt_pending<E: Effects>(fx: &E, now: Option<f64>) -> Vec<String> {
     for (path, _) in pending {
         // The record as written, so the adopted one keeps its keys in their order.
         let Some(rec) = read_object(&path) else { continue };
-        let late = live.iter().find(|s| !held.contains(&s.short) && is_late_job_of(s, &rec));
+        let Some(id) = pending_id(&path) else { continue };
+        let late = live.iter().find(|s| !held.contains(&s.short) && is_late_job_of(s, id));
         let done = match late {
             Some(late) => {
                 let mut record = rec.clone();
@@ -1741,7 +1744,6 @@ async fn resume_retired<E: Effects>(
         // A resume continues a conversation, so a lost lineage record falls back to a fixed model
         // at the effort ceiling rather than refusing the resume.
         let mut spec = parse(
-            fx.paths(),
             &json!({
                 "name": name, "project": r.get("project"), "scope": r.get("scope"),
                 "model": or_default("model", "opus"), "effort": or_default("effort", "high"),
@@ -1924,13 +1926,16 @@ pub fn collect_rows<E: Effects>(
     let paths = fx.paths();
     let sessions = Sessions::new(paths, fx.procs());
     let lineage = lineage_objects(paths);
-    let pending: Vec<Object> = lineage::pending_records(paths).into_iter().map(|(_, r)| Object::from(r)).collect();
+    let pending: Vec<(String, Object)> = lineage::pending_records(paths)
+        .into_iter()
+        .filter_map(|(path, r)| Some((pending_id(&path)?.to_string(), Object::from(r))))
+        .collect();
     let node = fx.node_name();
     let mut rows: Vec<Object> = Vec::new();
     for s in sessions.load().iter().filter(|s| s.has_record) {
         // The job runs its first prompt before `start` writes its lineage, and that prompt's hook
         // already asks whether the job carries the brief: the pending record answers.
-        let rec = lineage.get(&s.short).or_else(|| pending.iter().find(|p| is_late_job_of(s, p)));
+        let rec = lineage.get(&s.short).or_else(|| pending.iter().find(|(id, _)| is_late_job_of(s, id)).map(|(_, r)| r));
         let mut row = job_row(fx, &sessions, s, rec, &node);
         row.insert("pinned".into(), json!(pinned.contains(&s.short)));
         row.insert("recorded".into(), json!(lineage.contains_key(&s.short)));
@@ -1986,7 +1991,7 @@ fn job_row<E: Effects>(fx: &E, sessions: &Sessions, s: &Session, rec: Option<&Ob
         "mode": field("mode"), "remote_control": s.remote_control(),
         "remote_control_label": field("remote_control"), "link": s.link(),
         "started_at": started_at,
-        "pool": sessions.is_ours(s) || sessions.was_ours(s),
+        "pool": sessions.stage(s).map(Stage::as_str),
         "brief": truthy(rec.get("brief")),
         "tags": field("tags"),
         "session_id": claude_r9(s.session_id.as_deref()),
@@ -2023,7 +2028,7 @@ fn interactive_row<E: Effects>(fx: &E, rec: &Object, panes: &BTreeMap<u32, Strin
         "remote_control": truthy(rec.get("bridgeSessionId")), "remote_control_label": null,
         "link": roster::bridge_link(bridge),
         "started_at": rec.get("startedAt").and_then(Value::as_f64).and_then(iso_ms_f),
-        "pool": false, "pinned": false, "brief": false,
+        "pool": null, "pinned": false, "brief": false,
         "session_id": claude_r9(session_id),
         "alive": true,
         "transcript": transcript_of(paths, session_id),
@@ -2474,6 +2479,19 @@ mod tests {
         fx.job(short)
     }
 
+    /// The uuid a start launched its last session with.
+    fn chosen_uuid(fx: &Fx) -> String {
+        let launches = fx.launches.lock().unwrap();
+        launches.last().unwrap().spec.flags.iter().find_map(|f| f.strip_prefix("--session-id=")).unwrap().to_string()
+    }
+
+    fn set_session(fx: &Fx, short: &str, uuid: &str) {
+        let mut workers = fx.workers();
+        workers[short]["sessionId"] = json!(uuid);
+        let supervisor = fx.roster().get("supervisorPid").and_then(Value::as_u64).map(|p| p as u32);
+        fx.set_workers(workers, supervisor);
+    }
+
     impl DaemonGate for World {
         async fn pid(&self) -> Option<u32> {
             let sup = self.roster().get("supervisorPid").and_then(Value::as_u64).map(|p| p as u32)?;
@@ -2776,6 +2794,8 @@ mod tests {
         start_fit(&w, on(json!({"mode": "representative"}))).await;
         assert!(adopt_pending(&w, None).is_empty(), "no job has appeared yet");
         w.add_full(CHILD_JOB, "demo", CHILD_PID, "/home/user", "working", now_ms());
+        assert!(adopt_pending(&w, None).is_empty(), "a job of the same name is not the start");
+        set_session(&w, CHILD_JOB, &chosen_uuid(&w));
         assert_eq!(adopt_pending(&w, None), [CHILD_JOB]);
         assert!(w.pendings().is_empty());
         assert_eq!(read_lineage(&w.paths, CHILD_JOB).unwrap()["mode"], json!("representative"));
@@ -2869,7 +2889,7 @@ mod tests {
     async fn test_mode_of_is_none_only_for_a_pid_that_is_positively_not_cx_started() {
         let w = Fx::new();
         start_fit(&w, base()).await;
-        w.add("dddddddd", "<warm otter>", ME);
+        w.add("dddddddd", "otter", ME);
         assert_eq!(w.mode_of(ME.into()), None, "a pool session has no lineage");
         w.record(1, "interactive", None, "x");
         assert_eq!(w.mode_of(1), None, "an interactive terminal");
@@ -2899,19 +2919,24 @@ mod tests {
     #[tokio::test]
     async fn test_list_merges_roster_lineage_and_interactive_sessions() {
         let w = Fx::new();
-        w.add_full(PARENT_JOB, "<warm saiga>", ME, "/home/user", "working", 1_600_000_000_000);
+        w.add_full(PARENT_JOB, "saiga", ME, "/home/user", "working", 1_600_000_000_000);
+        let uuid = "00000000-0000-4000-8000-0000000000aa";
+        crate::ledger::set(&w.paths.ledger_path(), &crate::ledger::key(uuid).unwrap(), Stage::Spare).unwrap();
         start_fit(&w, on(json!({"mode": "rep"}))).await;
         w.record(ME, "interactive", None, "dev");
         let cwd = w.projects().join("awm/demo").display().to_string();
-        w.edit_json(&w.paths.home.session_record(ME), |r| r["cwd"] = json!(cwd));
+        w.edit_json(&w.paths.home.session_record(ME), |r| {
+            r["cwd"] = json!(cwd);
+            r["sessionId"] = json!(uuid);
+        });
         *w.panes.lock().unwrap() = BTreeMap::from([(ME, "main".to_string())]);
 
         let rows = by_key(&collect(&w, None, None).await);
         let get = |k: &str| rows.iter().find(|(key, _)| key == k).map(|(_, r)| r.clone()).unwrap();
         let pool_row = get(PARENT_JOB);
-        assert!(pool_row["pool"] == json!(true) && pool_row["mode"].is_null());
+        assert!(pool_row["pool"] == json!("spare") && pool_row["mode"].is_null());
         let child = get(CHILD_JOB);
-        assert!(child["pool"] == json!(false) && child["mode"] == json!("rep"));
+        assert!(child["pool"].is_null() && child["mode"] == json!("rep"));
         assert!(child["parent"].is_null() && child["caller"] == json!("local"));
         assert!(child["project"] == json!("awm") && child["scope"] == json!("demo"));
         assert!(child["attach"] == json!(format!("claude attach {CHILD_JOB}")) && child["node"] == json!("testnode"));
@@ -3095,7 +3120,7 @@ mod tests {
     }
 
     /// A lineage record is what Python's `json.dumps(record, indent=1)` wrote, mode 0600, and a
-    /// pending one is filed under `sha256(name)[:16]`.
+    /// pending one is filed under its session id.
     #[test]
     fn lineage_records_keep_the_python_format() {
         let dir = TempDir::new().unwrap();
@@ -3112,8 +3137,8 @@ mod tests {
         );
         assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
         assert!(!path.with_extension("tmp").exists());
-        write_pending(&paths, &rec).unwrap();
-        let expected = paths.starts_dir().join("pending-cbdf06e4a340e910.json");
+        write_pending(&paths, "cc0123", &rec).unwrap();
+        let expected = paths.starts_dir().join("pending-cc0123.json");
         assert!(expected.exists(), "{}", expected.display());
         assert_eq!(read_json(&expected)["pending"], json!(true));
         assert_eq!(py_json(&json!({"x": "\u{1F600}"}), 1), "{\n \"x\": \"\\ud83d\\ude00\"\n}");

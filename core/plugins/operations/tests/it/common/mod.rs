@@ -164,6 +164,7 @@ pub struct FakeOutside {
     pub reach: Mutex<HashMap<String, Reach>>,
     pub reaches: Mutex<Vec<String>>,
     pub roster: Mutex<HashMap<String, HashMap<String, Option<String>>>>,
+    pub seated: Mutex<Vec<String>>,
 }
 
 impl FakeOutside {
@@ -173,7 +174,7 @@ impl FakeOutside {
             (11, json!({"ok": true, "session_id": A, "job": "job-a", "name": "fix-tunnel"})),
             (22, json!({"ok": true, "session_id": B, "job": "job-b", "name": "other"})),
         ]);
-        Arc::new(FakeOutside { pids: Mutex::new(pids), told: Mutex::new(vec![]), dms: Mutex::new(vec![]), asks: Mutex::new(vec![]), ask_fails: Mutex::new(false), reach: Mutex::default(), reaches: Mutex::default(), roster: Mutex::default() })
+        Arc::new(FakeOutside { pids: Mutex::new(pids), told: Mutex::new(vec![]), dms: Mutex::new(vec![]), asks: Mutex::new(vec![]), ask_fails: Mutex::new(false), reach: Mutex::default(), reaches: Mutex::default(), roster: Mutex::default(), seated: Mutex::default() })
     }
 
     pub fn dms(&self) -> Vec<String> {
@@ -193,6 +194,10 @@ impl Outside for FakeOutside {
     fn session_of(&self, pid: u32) -> BoxFut<'_, Option<Value>> {
         let rec = self.pids.lock().unwrap().get(&pid).cloned();
         Box::pin(async move { rec })
+    }
+
+    fn holds_seat<'a>(&'a self, session: &'a str) -> BoxFut<'a, bool> {
+        Box::pin(async move { self.seated.lock().unwrap().iter().any(|s| s == session) })
     }
 
     fn tell<'a>(&'a self, peer: Option<&'a str>, session: &'a str, text: &'a str) -> BoxFut<'a, bool> {

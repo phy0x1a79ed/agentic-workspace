@@ -12,6 +12,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use awm_harness::claude::ClaudeHome;
 use serde_json::{json, Map, Value};
 
+use crate::ledger::{self, Stage};
 use crate::paths::Paths;
 
 /// The hub a hook calls when `AWM_HUB_URL` is unset.
@@ -461,23 +462,12 @@ pub fn spoken(prompt: Option<&Value>) -> String {
     tail.trim().to_string()
 }
 
-fn py_str(v: Option<&Value>) -> String {
-    match v {
-        Some(Value::String(s)) => s.clone(),
-        Some(v) if truthy(Some(v)) => v.to_string(),
-        _ => String::new(),
-    }
-}
-
 /// Drops the name and records the intent in the job record at `path`, or leaves it exactly as it
 /// is. Read, modify, write with no lock: the session writes the same file, so only the two keys
 /// change between the read and the replace.
-fn clear_name(path: &Path, intent: &str, prefix: &str) {
+fn clear_name(path: &Path, intent: &str) {
     let Ok(bytes) = fs::read(path) else { return };
     let Ok(Value::Object(mut state)) = serde_json::from_slice::<Value>(&bytes) else { return };
-    if !py_str(state.get("name")).starts_with(prefix) {
-        return;
-    }
     state.shift_remove("name");
     state.shift_remove("nameSource");
     // `??`, not `||`, merges this field back on every later write, so an empty string would
@@ -496,9 +486,10 @@ fn clear_name(path: &Path, intent: &str, prefix: &str) {
     }
 }
 
-/// `cch hook name` on a UserPromptSubmit payload. Acts only while the job record still carries
-/// the pool's `claimed <noun>` name, and only on a person's first real request.
-pub fn name(input: &[u8], job_dir: Option<&Path>, claimed_prefix: &str) -> Option<String> {
+/// `cch hook name` on a UserPromptSubmit payload. Acts only while the pool ledger at `ledger`
+/// says the session is `claimed`, and only on a person's first real request; it then marks the
+/// session `kept`, so it fires once.
+pub fn name(input: &[u8], job_dir: Option<&Path>, ledger: &Path) -> Option<String> {
     let payload = object(input)?;
     // Only a person at the composer, not a wake-up, a schedule or an SDK caller, titles a session.
     let source = payload.get("source");
@@ -511,8 +502,13 @@ pub fn name(input: &[u8], job_dir: Option<&Path>, claimed_prefix: &str) -> Optio
         return None;
     }
     let job = job_dir.filter(|j| !j.as_os_str().is_empty())?;
+    let id = ledger::key(payload.get("session_id")?.as_str()?)?;
+    if ledger::load(ledger).get(&id) != Some(&Stage::Claimed) {
+        return None;
+    }
     let intent: String = prompt.chars().take(INTENT_MAX).collect();
-    clear_name(&job.join("state.json"), &intent, claimed_prefix);
+    clear_name(&job.join("state.json"), &intent);
+    let _ = ledger::set(ledger, &id, Stage::Kept);
     None
 }
 
@@ -676,7 +672,7 @@ pub fn dispatch(name: &str, input: &[u8]) -> Option<String> {
         }
         "name" => {
             let job = std::env::var_os("CLAUDE_JOB_DIR").map(PathBuf::from);
-            self::name(input, job.as_deref(), &Paths::from_env().claimed_prefix)
+            self::name(input, job.as_deref(), &Paths::from_env().ledger_path())
         }
         "subagent-cap" => subagent_cap(input, &subagents_dir(), epoch_now, || level(&HttpHub::from_env())),
         "report" => {

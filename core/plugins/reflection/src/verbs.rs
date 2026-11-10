@@ -452,11 +452,9 @@ impl<G: Gateway> App<G> {
             }
         }
         if !level.is_empty() {
-            let name = args.get("name").filter(|n| truthy(Some(n))).map(|n| shown(Some(n))).unwrap_or_default();
-            let origin = match (name.strip_prefix("seat:"), &actor) {
-                (Some(seat), _) => format!("seat:{seat}"),
-                (None, Some(a)) => format!("session:{}", shown(a.get("session_id"))),
-                (None, None) => frame.as_.clone().filter(|a| !a.is_empty()).unwrap_or_else(|| "service".into()),
+            let origin = match &actor {
+                Some(a) => format!("session:{}", shown(a.get("session_id"))),
+                None => frame.as_.clone().filter(|a| !a.is_empty()).unwrap_or_else(|| "service".into()),
             };
             self.record_trust(&sid, &level, &origin, text(&out, "job")).await;
             out["trust"] = json!(level);
@@ -712,7 +710,7 @@ impl<G: Gateway> App<G> {
         let ts = chrono::DateTime::from_timestamp_millis(self.node.now_ms()).map(|t| t.to_rfc3339());
         let mut out = json!({"event": field("kind"), "job": field("job"), "session_id": field("session_id"), "name": field("name"),
                              "node": self.node.name(), "project": project, "scope": scope, "kind": field("session_kind"), "ts": ts});
-        for key in ["task_id", "rc_url", "state", "needs", "retired"] {
+        for key in ["task_id", "rc_url", "state", "needs", "retired", "pool"] {
             if let Some(v) = event.get(key).filter(|v| truthy(Some(v))) {
                 out[key] = v.clone();
             }

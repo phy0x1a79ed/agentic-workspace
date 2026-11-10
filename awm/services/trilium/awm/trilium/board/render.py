@@ -75,7 +75,7 @@ def card_body(card: dict[str, Any]) -> str:
         parts.append(f"<h4>Todos</h4><ul>{rows}</ul>")
     sessions = card.get("sessions") or []
     if sessions:
-        rows = "".join(f"<li>{e(text(s.get('name') or s.get('session_id') or s.get('job')))} "
+        rows = "".join(f"<li>{e(text(s.get('name') or '(unnamed)'))} "
                        f"({e(text(s.get('role')))}, "
                        f"{'active' if s.get('active') else 'ended'})</li>" for s in sessions)
         parts.append(f"<h4>Sessions</h4><ul>{rows}</ul>")

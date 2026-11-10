@@ -815,7 +815,7 @@ impl<B: Backend> App<B> {
         if let Some(reason) = refusal {
             return json!({"ok": false, "reason": reason});
         }
-        let spec = match lifecycle::parse(self.backend.paths(), args) {
+        let spec = match lifecycle::parse(args) {
             Ok(spec) => spec,
             Err(r) => return r.answer(),
         };

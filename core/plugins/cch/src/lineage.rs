@@ -11,6 +11,7 @@ use std::cell::{Cell, OnceCell};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
+use awm_plugin_sdk::ids::SessionId;
 use awm_harness::claude::records::{read_json, read_json_strict, Object, Unreadable};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -290,7 +291,7 @@ impl<'a> Call<'a> {
             return Err(unread("a background session record carries no job id"));
         };
         let lenient = self.workers(false)?;
-        if let Some(declared) = self.declared(job, self.names(job, lenient.get(job), rec.get("name")))? {
+        if let Some(declared) = self.declared(job, self.session_ids(job, lenient.get(job), Some(rec)))? {
             return Ok(Some(declared));
         }
         let strict = self.workers(true)?;
@@ -307,7 +308,7 @@ impl<'a> Call<'a> {
         let Some(rec) = rec else { return Ok(None) };
         let Some(parked) = text(rec.get("parkedJobId")).filter(|j| is_job(j)) else { return Ok(None) };
         let workers = self.workers(false)?;
-        self.declared(parked, self.names(parked, workers.get(parked), rec.get("name")))
+        self.declared(parked, self.session_ids(parked, workers.get(parked), Some(rec)))
     }
 
     /// The mode of the nearest ancestor process that is a cx-started session.
@@ -364,7 +365,7 @@ impl<'a> Call<'a> {
             if equals_pid(w.get("replPid"), pid)
                 && self.procs.start(pid).is_some_and(|live| live == py_str(w.get("replProcStart")))
             {
-                if let Some(declared) = self.declared(job, self.names(job, Some(worker), None))? {
+                if let Some(declared) = self.declared(job, self.session_ids(job, Some(worker), None))? {
                     return Ok((true, Some(declared)));
                 }
                 return Ok((true, looks_cx_started(w).then(|| UNKNOWN.into())));
@@ -386,31 +387,26 @@ impl<'a> Call<'a> {
         }
     }
 
-    /// Every name a pending start for this job could have been filed under.
-    fn names(&self, job: &str, worker: Option<&Value>, session_name: Option<&Value>) -> BTreeSet<String> {
-        let seed = object(worker)
-            .and_then(|w| object(w.get("dispatch")))
-            .and_then(|d| object(d.get("seed")))
-            .and_then(|s| s.get("name"));
+    /// Every session id a pending start for this job could have been filed under.
+    fn session_ids(&self, job: &str, worker: Option<&Value>, rec: Option<&Object>) -> BTreeSet<String> {
         let state = read_json(&self.paths.home.job_state(job));
-        [session_name, seed, state.get("name")]
+        [object(worker).and_then(|w| w.get("sessionId")), rec.and_then(|r| r.get("sessionId")), state.get("sessionId")]
             .into_iter()
             .filter_map(text)
-            .filter(|n| !n.is_empty())
-            .map(str::to_string)
+            .filter_map(crate::ledger::key)
             .collect()
     }
 
-    /// The mode recorded for this job, else for a pending start of one of its names. Only the
+    /// The mode recorded for this job, else for a pending start of one of its sessions. Only the
     /// files this job could own are read: a damaged record of any other job is not this caller's
     /// business.
-    fn declared(&self, job: &str, names: BTreeSet<String>) -> Result<Option<String>, Unread> {
+    fn declared(&self, job: &str, ids: BTreeSet<String>) -> Result<Option<String>, Unread> {
         let mut record = read_record(&self.paths.lineage_path(job))?;
-        for name in &names {
+        for id in &ids {
             if record.is_some() {
                 break;
             }
-            record = read_record(&self.paths.pending_path(name))?;
+            record = read_record(&self.paths.pending_path(id))?;
         }
         let Some(record) = record else { return Ok(None) };
         match text(record.get("mode")) {
@@ -436,7 +432,7 @@ fn take<T: serde::de::DeserializeOwned>(map: &mut Object, key: &str) -> Option<T
 
 macro_rules! lineage_record {
     ($( $(#[$doc:meta])* $field:ident : $ty:ty, )*) => {
-        /// A lineage record, `starts/<job>.json`, or a pending one, `starts/pending-<digest>.json`.
+        /// A lineage record, `starts/<job>.json`, or a pending one, `starts/pending-<session id>.json`.
         ///
         /// Every key is optional. A key of an unexpected type, a null, and any key this struct
         /// does not name are kept in `extra` as read, so a record round-trips through a rewrite.
@@ -541,11 +537,14 @@ pub fn lineage_records(paths: &Paths) -> BTreeMap<String, LineageRecord> {
         .collect()
 }
 
-/// Every readable pending record that names its session, with its path.
+/// Every readable pending record that names its session, with its path. A file not filed under a
+/// canonical session id is a record of an older layout and is skipped.
 pub fn pending_records(paths: &Paths) -> Vec<(PathBuf, LineageRecord)> {
     starts_entries(paths)
         .into_iter()
-        .filter(|fname| fname.starts_with("pending-") && fname.ends_with(".json"))
+        .filter(|fname| {
+            fname.strip_prefix("pending-").and_then(|f| f.strip_suffix(".json")).is_some_and(|id| SessionId::parse(id).is_ok())
+        })
         .filter_map(|fname| {
             let path = paths.starts_dir().join(fname);
             let rec = LineageRecord::from(read_object(&path)?);
@@ -896,7 +895,7 @@ mod tests {
     fn test_the_pool_seed_flags_are_not_a_cx_start() {
         let h = Home::new();
         h.worker("rep");
-        h.launch(json!({"args": ["--session-id", "x", "-n", "<warm badger>", "--dangerously-skip-permissions",
+        h.launch(json!({"args": ["--session-id", "x", "-n", "badger", "--dangerously-skip-permissions",
                                  "--allow-dangerously-skip-permissions", "--effort", "medium"]}));
         assert_eq!(h.me(), Mode::Ungated);
     }

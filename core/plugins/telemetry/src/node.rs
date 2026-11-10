@@ -100,6 +100,7 @@ pub fn session_of(v: &Value) -> Option<Session> {
         needs: s("needs").filter(|_| state.as_deref() == Some("blocked")),
         state,
         retired: v.get("retired").and_then(Value::as_bool).unwrap_or(false),
+        pool: s("pool"),
     })
 }
 

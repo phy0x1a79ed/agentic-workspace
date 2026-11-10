@@ -24,9 +24,6 @@ pub fn parse_ts(v: Option<&Value>) -> Option<Ts> {
     }
 }
 
-/// The name cch gives a warm pool session until it is claimed.
-const WARM_PREFIX: &str = "<warm ";
-
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Session {
     pub job: String,
@@ -58,6 +55,9 @@ pub struct Session {
     /// On a `stopped` event: cch's own stop ended it, not a crash.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub retired: bool,
+    /// The warm pool's ledger stage: `spare`, `claimed` or `kept`. None for a session the pool did not make.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pool: Option<String>,
 }
 
 impl Session {
@@ -311,7 +311,7 @@ impl Roster {
                     "portal": n.portal,
                     "last_seen": n.last_seen,
                     "sessions_7d": self.sessions_in_window(name, now),
-                    "sessions": n.sessions.values().filter(|s| !s.name.as_deref().is_some_and(|x| x.starts_with(WARM_PREFIX))).collect::<Vec<_>>(),
+                    "sessions": n.sessions.values().filter(|s| s.pool.as_deref() != Some("spare")).collect::<Vec<_>>(),
                     "services": n.services.iter().map(|(s, st)| json!({
                         "service": s, "plugin": st.plugin, "tools": st.tools, "up": st.up, "since": st.since, "enabled": st.enabled,
                     })).collect::<Vec<_>>(),
@@ -509,6 +509,7 @@ fn apply_item(state: &mut NodeState, node: &str, item: Item, now: Ts, out: &mut 
                         session.scope = session.scope.or_else(|| old.scope.clone());
                         session.kind = session.kind.or_else(|| old.kind.clone());
                         session.task_id = session.task_id.or_else(|| old.task_id.clone());
+                        session.pool = session.pool.or_else(|| old.pool.clone());
                         session.started = session.started.or(old.started);
                         if session.state.is_none() {
                             (session.state, session.needs) = (old.state.clone(), old.needs.clone());
@@ -587,8 +588,8 @@ mod tests {
     fn a_warm_session_is_not_listed_and_a_claimed_one_is() {
         let mut r = Roster::default();
         let now = t("2026-01-01T00:00:00Z");
-        let named = |job: &str, name: &str| Session { job: job.into(), name: Some(name.into()), ..Session::default() };
-        r.apply("n", vec![hello(vec![named("w", "<warm pika>"), named("c", "claimed")])], now);
+        let pooled = |job: &str, pool: &str| Session { job: job.into(), pool: Some(pool.into()), ..Session::default() };
+        r.apply("n", vec![hello(vec![pooled("w", "spare"), pooled("c", "claimed")])], now);
         let v = r.nodes_view(None, now);
         assert_eq!(v["nodes"][0]["sessions"].as_array().unwrap().iter().map(|s| s["job"].as_str().unwrap()).collect::<Vec<_>>(), ["c"]);
         assert_eq!(v["nodes"][0]["services"][0]["enabled"], true);

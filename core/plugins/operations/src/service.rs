@@ -75,6 +75,19 @@ impl Outside for HubOutside {
         Box::pin(awm_plugin_sdk::sessions::session_of(&self.hub, pid))
     }
 
+    fn holds_seat<'a>(&'a self, session: &'a str) -> BoxFut<'a, bool> {
+        Box::pin(async move {
+            let opts = CallOpts { timeout: Duration::from_secs(10), ..CallOpts::default() };
+            match self.hub.call_with("seats", "list", json!({}), &opts).await {
+                Ok(out) => out["seats"].as_array().is_some_and(|rows| rows.iter().any(|r| r["job"].as_str() == Some(session))),
+                Err(e) => {
+                    tracing::warn!("operations: could not ask seats about {session}: {e}");
+                    false
+                }
+            }
+        })
+    }
+
     fn tell<'a>(&'a self, peer: Option<&'a str>, session: &'a str, text: &'a str) -> BoxFut<'a, bool> {
         Box::pin(async move {
             let peer = peer.filter(|p| *p != self.node).map(str::to_string);

@@ -1,6 +1,6 @@
 //! Seeds one warm session. The launch, and why it is refused with no Claude Code daemon running,
 //! live in awm-harness `claude::launch`; read its docs before changing anything here. This module
-//! adds what is particular to the pool: the name, the directory, and which new session counts.
+//! adds what is particular to the pool: the ledger entry, the directory, and which new session counts.
 
 use std::future::Future;
 use std::sync::Arc;
@@ -10,6 +10,7 @@ use awm_harness::claude::roster::{self, Job};
 use awm_harness::claude::trust;
 use awm_harness::claude::ClaudeHome;
 
+use crate::ledger::{self, Stage};
 use crate::lineage::Processes;
 use crate::pool::{Pool, Terminals};
 use crate::sessions::Sessions;
@@ -129,17 +130,29 @@ where
         return Err(LaunchError::Refused(format!("cannot make the seed directory {}: {e}", paths.seed_dir.display())));
     }
     trust::grant_plain_dir(&paths.seed_dir, &paths.home).await;
-    let mut spec = LaunchSpec::new(&paths.claude_bin, &paths.seed_dir, format!("{}{}>", paths.name_prefix, noun()));
+    let uuid = uuid::Uuid::new_v4().to_string();
+    let id = ledger::key(&uuid).expect("a v4 uuid is a session id");
+    let mut spec = LaunchSpec::new(&paths.claude_bin, &paths.seed_dir, noun());
     spec.flags = paths.seed_flags();
+    spec.flags.extend(["--session-id".into(), uuid.clone()]);
     spec.env = paths.seed_env();
     spec.unit_prefix = UNIT_PREFIX.into();
     spec.label = "warm".into();
     let procs = &pool.procs;
     let accept = move |new: &Job| {
         let s = Sessions::new(paths, procs);
-        s.claimable(new, s.binary_version().as_deref(), None)
+        new.session_id.as_deref() == Some(uuid.as_str()) && s.claimable(new, s.binary_version().as_deref(), None)
     };
-    let s = launcher.launch(&paths.home, &spec, accept).await?;
+    if let Err(e) = ledger::set(&paths.ledger_path(), &id, Stage::Spare) {
+        return Err(LaunchError::Refused(format!("cannot write the pool ledger: {e}")));
+    }
+    let s = match launcher.launch(&paths.home, &spec, accept).await {
+        Ok(s) => s,
+        Err(e) => {
+            ledger::remove(&paths.ledger_path(), &id);
+            return Err(e);
+        }
+    };
     tracing::info!("cx: seeded {} as {}", s.name, s.short);
     Ok(s.short)
 }
@@ -187,6 +200,10 @@ pub(crate) mod tests {
             accept: impl Fn(&Job) -> bool + Send + Sync,
         ) -> Result<Job, LaunchError> {
             self.launched.lock().unwrap().push(spec.clone());
+            let uuid = spec.flags.iter().skip_while(|f| *f != "--session-id").nth(1).unwrap();
+            let mut roster: serde_json::Value = serde_json::from_slice(&std::fs::read(home.roster()).unwrap()).unwrap();
+            roster["workers"]["warmfresh"]["sessionId"] = uuid.as_str().into();
+            std::fs::write(home.roster(), roster.to_string()).unwrap();
             roster::load(home)
                 .into_iter()
                 .find(|j| accept(j))
@@ -204,19 +221,22 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn a_seed_is_named_from_the_nouns_and_launched_as_a_warm_seed_unit() {
+    async fn a_seed_is_named_from_the_nouns_ledgered_and_launched_as_a_warm_seed_unit() {
         let b = TestBox::new();
         let launcher = FakeLauncher::default();
         let pool = b.pool_with(|p| p.rotate_age_s = 999_999.0);
         std::fs::write(&b.paths.home.trust_file, r#"{"projects":{}}"#).unwrap();
         assert_eq!(seed_one(&pool, &launcher).await.unwrap(), "warmfresh");
         let spec = launcher.launched.lock().unwrap()[0].clone();
-        let noun = spec.name.strip_prefix("<warm ").and_then(|n| n.strip_suffix('>')).unwrap();
-        assert!(NOUNS.contains(&noun));
+        assert!(NOUNS.contains(&spec.name.as_str()));
         assert_eq!(spec.unit_prefix, "awm-cx-seed");
         assert_eq!(spec.label, "warm");
         assert_eq!(spec.cwd, b.paths.seed_dir);
-        assert_eq!(spec.flags, b.paths.seed_flags());
+        let (given, id) = spec.flags.split_at(spec.flags.len() - 2);
+        assert_eq!(given, b.paths.seed_flags());
+        assert_eq!(id[0], "--session-id");
+        let key = ledger::key(&id[1]).unwrap();
+        assert_eq!(ledger::load(&b.paths.ledger_path()).get(&key), Some(&Stage::Spare));
         assert_eq!(spec.env, b.paths.seed_env());
         let trust = std::fs::read_to_string(&b.paths.home.trust_file).unwrap();
         assert!(trust.contains(b.paths.seed_dir.to_str().unwrap()), "{trust}");

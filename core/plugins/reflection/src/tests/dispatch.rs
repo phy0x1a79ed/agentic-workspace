@@ -105,14 +105,14 @@ async fn test_start_other_passes_the_spec_through_and_records_trust() {
     let fx = Fx::new();
     let out = fx
         .run("start_other", json!({"_caller_pid": ME, "project": "awm", "scope": "x", "task_id": "t9", "role": "worker",
-                                    "trust": "cooperative", "name": "seat:ana"}))
+                                    "trust": "cooperative", "name": "ana"}))
         .await;
     let starts = fx.cc().calls_of("start");
     assert_eq!(starts.len(), 1);
     assert!(starts[0]["task_id"] == "t9" && starts[0]["pid"] == ME, "{}", starts[0]);
     assert_eq!(out["trust"], "cooperative", "{out}");
     assert_eq!(fx.app.level_of(Some(&new_id()), false, None).await, "cooperative");
-    assert_eq!(fx.trust_file().await[new_id()]["origin"], "seat:ana");
+    assert!(fx.trust_file().await[new_id()]["origin"].as_str().unwrap().starts_with("session:"));
 }
 
 #[tokio::test]

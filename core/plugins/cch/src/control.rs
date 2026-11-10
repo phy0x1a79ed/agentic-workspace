@@ -834,9 +834,6 @@ pub async fn rename<E: Effects>(
     if name.is_empty() || name.chars().count() > 80 || !is_printable(name) || name.starts_with('-') {
         return Ok(reason("name must be a short printable string on one line that does not start with '-'"));
     }
-    if name.to_lowercase().contains("<warm") {
-        return Ok(reason("a name may not carry the warm pool's mark"));
-    }
     let text = format!("/rename {name}");
     slash(fx, job, caller_pid, &text, "the rename", new_change("rename", name, ""), None).await
 }

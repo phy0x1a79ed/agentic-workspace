@@ -17,14 +17,15 @@ use crate::arbutus::Approvals;
 use crate::relay::{async_trait_free::BoxFut, ClientError, Relay};
 
 pub const TITLE_CHARS: usize = 80;
-/// A seat's session name starts so. A seat never gets a card.
-const SEAT_PREFIX: &str = "seat:";
 
 /// What the front asks of other plugins. Each degrades: a missing answer is no session, no
 /// notice or no DM, never a failed call.
 pub trait Outside: Send + Sync {
     /// The session behind a pid on this node: `{session_id, job, name}`.
     fn session_of(&self, pid: u32) -> BoxFut<'_, Option<Value>>;
+    /// Whether the session is the agent of a seat on this node. A seat never gets a card. False
+    /// when seats gives no answer.
+    fn holds_seat<'a>(&'a self, session: &'a str) -> BoxFut<'a, bool>;
     /// Type one line into a session, on `peer` when it is another node.
     fn tell<'a>(&'a self, peer: Option<&'a str>, session: &'a str, text: &'a str) -> BoxFut<'a, bool>;
     /// One line to Tony's notifications channel.
@@ -563,11 +564,12 @@ impl Front {
     /// The session's state moves the card.
     pub async fn hook_plan_approved(&self, a: &Value, st: &Stamp) -> Answer {
         let (session, c) = self.session(a, st, true).await?;
-        if c.name.as_deref().is_some_and(|n| n.starts_with(SEAT_PREFIX)) {
+        let session = session.unwrap_or_default();
+        if self.outside.holds_seat(&session).await {
             return Ok(json!({"ok": true, "tracked": false}));
         }
         let text = str_of(a, "plan_text").unwrap_or_default();
-        let (task_id, opened) = self.card_or_open(&session.unwrap_or_default(), &c, &heading(&text).unwrap_or_default()).await?;
+        let (task_id, opened) = self.card_or_open(&session, &c, &heading(&text).unwrap_or_default()).await?;
         if !text.is_empty() {
             self.relay.write("task_detail", json!({"task_id": task_id, "plan": text})).await.map_err(err)?;
             let title = title_of(&heading(&text).unwrap_or_default());

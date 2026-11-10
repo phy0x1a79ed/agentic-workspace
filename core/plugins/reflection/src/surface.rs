@@ -13,7 +13,7 @@ use crate::gateway::Gateway;
 
 pub const TOOL: &str = "reflection";
 const TABLE: &str = include_str!("surface.json");
-const SESSIONS_EMITTER: &str = "Fires when a session starts, stops, gets Remote Control, is renamed or changes state: {event, job, session_id, name, node, project, scope, kind, task_id?, rc_url?, state?, needs?, retired?, ts}. state is working, blocked or done, needs is why while blocked, and retired marks a stop that cch's own stop made. Nothing at boot: a subscriber reads list_other once when it connects.";
+const SESSIONS_EMITTER: &str = "Fires when a session starts, stops, gets Remote Control, is renamed or changes state: {event, job, session_id, name, node, project, scope, kind, task_id?, rc_url?, state?, needs?, retired?, pool?, ts}. pool is spare, claimed or kept for a session the warm pool made. state is working, blocked or done, needs is why while blocked, and retired marks a stop that cch's own stop made. Nothing at boot: a subscriber reads list_other once when it connects.";
 
 /// One published verb.
 #[derive(Debug, Clone, PartialEq)]
