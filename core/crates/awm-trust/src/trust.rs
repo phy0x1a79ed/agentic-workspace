@@ -145,7 +145,7 @@ pub const START_VERBS: [&str; 3] = ["start_other", "resume_other", "adopt_other"
 /// to the chats the session holds, and a mount to chats below trusted that no sibling holds.
 pub const SEAT_CHAT_VERBS: [&str; 8] = ["send", "react", "fetch", "history", "download_attachments", "mount", "unmount", "forward"];
 /// The `seats` verbs a seat's agent answers with.
-pub const SEAT_AGENT_VERBS: [&str; 1] = ["send"];
+pub const SEAT_AGENT_VERBS: [&str; 3] = ["send", "react", "download"];
 /// The `2fa` verbs that only read. ssh arms the approver itself for fir and sockeye.
 pub const TWOFA_READS: [&str; 5] = ["devices", "ping", "reachability", "status", "pending"];
 const DESCRIBE: &str = "describe";
