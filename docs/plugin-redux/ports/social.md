@@ -52,8 +52,8 @@ One module owns every seat in `social.db`: `seat_registry`, a durable `seat_queu
 1. **empty**, message: queue it, react 👀, run `ensure_seat` (`scopes create` on the seat's node), then `start_other {project, scope: "seats/<slug>"}` with `peer`. → starting. The rows go into the brief but stay undelivered.
 2. **starting**: the agent's first live `list_other` row or social call marks the briefed rows delivered. → occupied. If the agent is not up within 3 min, requeue the rows and count one breaker attempt: 4 per hour, backoff 60, 120, 300 and 600 s, then a 6 h hold and a down notice.
 3. **occupied**: each message is pushed. A Gone or exhausted push returns its rows → empty, then step 1.
-4. `mark_seat_done`, then 4 h with no message: send the retire line → retiring. An agent is started unpinned and never with `replaces`.
-5. **retiring**: reply once "agent is changing shift, will respond within 5 mins" and queue. When the agent is gone → empty. After 4 min, start the next agent beside it with the previous job's transcript path, without `replaces`, and unbind the old agent.
+4. **occupied**, 4 h with no message and no running turn: `stop_other` the agent → empty, with the job marked stopped. The clock starts at the later of the last message and the job's `active_at` in `list_other`. Only an agent the seat started is stopped, never an adopted one. A failed stop retries at the next tick. No notice goes out.
+5. **empty** after an idle stop, message: `resume_other` the stopped job with the waiting lines as its prompt, so the agent keeps its conversation, then apply the seat's switch to it. → starting. A refused resume falls back to step 1 with the previous job's transcript in the brief and no `replaces`. A resume that does not come up is not tried again.
 6. An agent that dies before done gets a down notice and no restart. Its undelivered rows start the next agent.
 7. **After a restart**: undelivered rows go to a live agent, or cold-start. Slack resync routes only messages after `synced_ts` that are not in `seat_routed`. Discord gets a per-chat cursor. Nothing older starts an agent.
 
@@ -93,8 +93,9 @@ Ops on the vault shows each seat with a Remote Control switch (`fleet.md` R147 i
 
 - **State.** Schema v10 adds `remote_control` and `rc_url` to `seat_registry`. Python social stops at v8 and never read the seat tables, so a rollback is unchanged.
 - **Seat id.** `<account>/<channel_id>`, the table's key. The session name is the seat's `label`, because a chat rename changes it.
-- **Verb.** `seat_remote_control {seat, on}` has no MCP tool. Only operations on this node may call it. On a seat whose agent was started or is up, it also calls reflection `remote_control` with the session name, each `/` written as `-` (`sessions.md` R146). The row then holds what the session really is, read back from `list_other`. A failed live call leaves the switch at the session's state, and the seat event carries `rc_live: failed: <why>`.
-- **Start.** `start_other` passes the seat's switch.
+- **Verb.** `seat_remote_control {seat, on}` has no MCP tool. Only operations on this node may call it. On a seat whose agent was started or is up, it also calls reflection `remote_control` with the session name, each `/` written as `-` (`sessions.md` R146). The row then holds what the session really is, read back from `list_other`. A failed live call keeps the new switch for the seat's next start, and the seat event carries `rc_live: failed: <why>`.
+- **Start.** `start_other` passes the seat's switch. A resume after an idle stop applies it.
+- **Persistence.** cch records each switch on the job's lineage record. A daemon relaunch or a resume of the session brings the recorded switch back (`sessions.md` R146).
 - **Adoption.** Adoption leaves the live session alone. An occupied seat records its switch as on, because every seat session before the switch started with Remote Control on.
 - **Link.** `remote_control` and `rc_url` of an occupied seat follow the job's `list_other` row on every tick, so a switch made outside the seat shows on Ops.
 - **Event.** `social/seats` carries `{seat, label, state, remote_control, node, job?, rc_url?, ts}`. The seat's save emits it when one of those fields changed. A switch answer adds `rc_live` (`applied`, `none` or `failed: <why>`) and always emits, so Ops can settle a pending flip. No event goes out at boot, so a subscriber reads `social seats` once when it connects.
