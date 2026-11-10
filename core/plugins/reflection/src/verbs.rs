@@ -633,10 +633,16 @@ impl<G: Gateway> App<G> {
     async fn resume_other(&self, frame: &Frame, args: &Value) -> Result<Value, Failure> {
         let job = match self.address(frame, args, true).await {
             To::Refused(out) => return Ok(out),
-            To::Peer(node) => return Ok(self.forward(frame, "resume_other", &node, json!({"prompt": args.get("prompt")}), args).await),
+            To::Peer(node) => {
+                let fwd = json!({"prompt": args.get("prompt"), "model": args.get("model"), "effort": args.get("effort")});
+                return Ok(self.forward(frame, "resume_other", &node, fwd, args).await);
+            }
             To::Here(job) => job,
         };
-        let extra = json!({"prompt": self.provider_value(frame, args.get("prompt")).await});
+        let extra = json!({
+            "prompt": self.provider_value(frame, args.get("prompt")).await,
+            "model": args.get("model"), "effort": args.get("effort"),
+        });
         let (out, _) = self.on_job(frame, &json!({"job": job}), "resume", "resume_other", extra).await?;
         if is_ok(&out) {
             self.drop_wait_of_job(&job).await;

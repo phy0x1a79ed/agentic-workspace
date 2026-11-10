@@ -169,6 +169,9 @@ impl Link {
             "remote_control" => {
                 seats.set_remote_control(&text("account"), &text("channel_id"), row["on"].as_bool().unwrap_or(false)).await;
             }
+            "refresh" => {
+                seats.set_refresh(&text("account"), &text("channel_id"), &text("model"), &text("effort")).await;
+            }
             "hand" => seats.hand(&text("job"), &text("line")),
             other => tracing::warn!("seats: social sent a row of unknown kind {other:?}"),
         }

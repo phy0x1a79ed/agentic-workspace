@@ -1751,9 +1751,11 @@ async fn resume_retired<E: Effects>(
         };
         let short: String = sid.chars().take(8).collect();
         let name = [a.get("name"), r.get("name")].into_iter().flatten().find(|v| truthy(Some(v))).cloned().unwrap_or_else(|| json!(format!("resumed-{short}")));
-        let or_default = |key: &str, default: &str| r.get(key).filter(|v| truthy(Some(v))).cloned().unwrap_or_else(|| json!(default));
-        // A resume continues a conversation, so a lost lineage record falls back to a fixed model
-        // at the effort ceiling rather than refusing the resume.
+        // The caller's pick wins. A resume continues a conversation, so a lost lineage record falls
+        // back to a fixed model at the effort ceiling rather than refusing the resume.
+        let or_default = |key: &str, default: &str| {
+            [a.get(key), r.get(key)].into_iter().flatten().find(|v| truthy(Some(v))).cloned().unwrap_or_else(|| json!(default))
+        };
         let mut spec = parse(
             fx.paths(),
             &json!({
@@ -1801,6 +1803,8 @@ async fn resume_retired<E: Effects>(
             ("project", project.clone()),
             ("scope", scope.clone()),
             ("mode", json!(s.mode)),
+            ("model", json!(s.model)),
+            ("effort", json!(s.effort)),
             ("remote_control", json!(s.remote_control)),
             ("session_id", json!(sid)),
             ("resumed_from", rec.get("job").cloned().unwrap_or(Value::Null)),
@@ -3007,6 +3011,7 @@ mod tests {
         assert!(!call.flags.iter().any(|f| f.starts_with("--remote-control")), "{:?}", call.flags);
         let rec = read_lineage(&w.paths, "feedface").unwrap();
         assert_eq!(rec["session_id"], json!(RETIRED));
+        assert_eq!((&rec["model"], &rec["effort"]), (&json!("opus"), &json!("high")));
         // The gateway gates a session with no mode in its record as `unknown` and refuses its calls.
         assert_eq!(rec["mode"], json!("worker"));
         assert_eq!((&out["pinned"], &rec["pinned"]), (&json!(false), &json!(false)));
@@ -3018,10 +3023,11 @@ mod tests {
         relaunched(&w);
         retired_transcript(&w, &w.projects().join("awm/demo"));
         write_lineage(&w.paths, "deadbeef", json!({"name": "seat", "mode": "worker", "session_id": RETIRED, "pinned": true}).as_object().unwrap()).unwrap();
-        let out = resume_job(&w, json!({"job": "deadbeef"})).await;
+        let out = resume_job(&w, json!({"job": "deadbeef", "model": "sonnet", "effort": "low"})).await;
         assert!(out["ok"] == json!(true) && out["pinned"] == json!(true), "{out}");
         assert_eq!(pins_file(&w), json!(["feedface"]));
-        assert_eq!(read_lineage(&w.paths, "feedface").unwrap()["pinned"], json!(true));
+        let rec = read_lineage(&w.paths, "feedface").unwrap();
+        assert_eq!((&rec["pinned"], &rec["model"], &rec["effort"]), (&json!(true), &json!("sonnet"), &json!("low")));
     }
 
     fn keep_answers(w: &World) {

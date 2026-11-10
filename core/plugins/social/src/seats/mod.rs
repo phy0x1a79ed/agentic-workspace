@@ -212,6 +212,10 @@ impl Seats {
         self.queue(Self::row(seat, "remote_control", json!({"on": on}))).await;
     }
 
+    pub async fn set_refresh(&self, seat: &Seat, model: &str, effort: &str) {
+        self.queue(Self::row(seat, "refresh", json!({"model": model, "effort": effort}))).await;
+    }
+
     /// Take `node`'s ack, then answer with what waits for it, holding up to `wait_s` for a row.
     pub async fn pull(&self, node: &str, ack_through: i64, wait_s: f64) -> Value {
         self.store.ack(node, ack_through, crate::db::now()).await;
