@@ -313,6 +313,7 @@ fn http_err(e: twilight_http::Error) -> VerbError {
             };
             VerbError::new(class, format!("{s} {} (error code: {code}): {text}", reason(s)))
         }
+        ErrorType::Validation => value(format!("discord: {e}")),
         _ => runtime(format!("discord: {e}")),
     }
 }
