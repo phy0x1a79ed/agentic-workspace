@@ -43,7 +43,7 @@ The `awm` MCP server (`awm mcp`) is registered in `<workspace>/.mcp.json`. Its s
 
 Discover the catalog. Do not memorize it.
 
-1. Run `awm(verb="describe")`. One call returns every tool with its verbs, each verb with a one-line summary and its required arguments. A client that defers schemas shows a tool as a bare name. Load it with `ToolSearch` first.
+1. Run `awm(verb="describe")`. One call returns every tool with its verbs, each verb with its first sentence and its arguments, `required` and `optional`. A client that defers schemas shows a tool as a bare name. Load it with `ToolSearch` first.
 2. Run `<tool>(verb="describe")` for all of that tool's verbs, their params and which params are required. A param lists its `type` only when it is not a string. Add `args={"verbs":["<name>"]}` for some of them. An unknown argument to a verb returns an error that carries its schema.
 3. Add the optional `peer` key to run a verb on a node across an edge. Its enum lists the valid nodes and its description names the default. A tool that one node serves routes there with no `peer`. A wrong `peer` is refused, never run locally.
 
