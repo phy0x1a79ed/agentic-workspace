@@ -600,9 +600,11 @@ async fn an_empty_seat_switches_without_a_call_and_a_live_seat_records_its_sessi
     t.world.w().switch_fails = true;
     let (s, live) = t.seats.set_remote_control("opal", "D0TEST", true).await.unwrap();
     assert_eq!(live, Live::Failed("no such session".into()));
-    assert!(!s.remote_control && !t.seat().await.remote_control, "the row holds what the session is");
+    assert!(s.remote_control && t.seat().await.remote_control, "the row holds the switch for the next start");
     let answer = t.world.w().seat_reports.last().unwrap()["event"].clone();
-    assert_eq!((answer["remote_control"].clone(), answer["rc_live"].clone()), (json!(false), json!("failed: no such session")), "social hears the failure though the row did not change");
+    assert_eq!((answer["remote_control"].clone(), answer["rc_live"].clone()), (json!(true), json!("failed: no such session")), "social hears the switch and the failure");
+    t.tick().await;
+    assert!(!t.seat().await.remote_control, "a look shows what the live session is");
     t.world.w().rc.insert("job-1".into());
     t.tick().await;
     assert_eq!(t.seat().await.rc_url, "https://claude.ai/code/job-1", "a look picks up Remote Control switched outside the seat");

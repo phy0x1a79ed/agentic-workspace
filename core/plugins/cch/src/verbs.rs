@@ -643,10 +643,7 @@ impl<B: Backend> App<B> {
             "set" => self.set(args).await,
             "compact" => self.compact(args).await,
             "mode" => self.mode(args).await,
-            "remote_control" => {
-                let op = Op::RemoteControl { on: flag(args, "on", false), name: opt_text(args.get("name")) };
-                self.control(args, op).await
-            }
+            "remote_control" => self.remote_control(args).await,
             "mcp" => {
                 let op =
                     Op::Mcp { action: text_or_empty(args.get("action")), server: text_or_empty(args.get("server")) };
@@ -675,6 +672,21 @@ impl<B: Backend> App<B> {
     async fn control(&self, args: &Value, op: Op) -> Result<Value, Failure> {
         let job = session_ref(args)?;
         Ok(self.backend.control(op, job, pid_arg(args)).await?)
+    }
+
+    /// Switch Remote Control, and record the switch on the job's lineage record once it took or
+    /// queued, so a resume or a relaunch comes back the same way.
+    async fn remote_control(&self, args: &Value) -> Result<Value, Failure> {
+        let (on, name) = (flag(args, "on", false), opt_text(args.get("name")));
+        let out = self.control(args, Op::RemoteControl { on, name: name.clone() }).await?;
+        if let (true, Some(job)) = (truthy(out.get("ok")), opt_text(out.get("job"))) {
+            let paths = self.backend.paths().clone();
+            let recorded = blocking(move || lifecycle::record_remote_control(&paths, &job, on, name.as_deref())).await;
+            if let Err(e) = recorded {
+                tracing::warn!("cch: could not record the Remote Control switch: {e}");
+            }
+        }
+        Ok(out)
     }
 
     /// The isolated session that `session_id` or `ref` names, if any.

@@ -676,24 +676,22 @@ impl Seats {
         let lock = self.lock(&key);
         let _held = lock.lock().await;
         let mut seat = self.store.get(account, channel).await?;
+        // The switch is what the seat's next start uses, whether or not a live session took it.
+        seat.remote_control = on;
+        seat.rc_url.clear();
         let live = if seat.job.is_empty() || !matches!(seat.state, State::Starting | State::Occupied) {
-            seat.remote_control = on;
-            seat.rc_url.clear();
             Live::None
         } else {
-            let answer = match self.world.remote_control(&seat.job, on, &Self::rc_name(&seat)).await {
+            match self.world.remote_control(&seat.job, on, &Self::rc_name(&seat)).await {
                 Ok(()) => {
-                    seat.remote_control = on;
-                    seat.rc_url.clear();
+                    sync_rc(&mut seat, self.world.live().await.as_ref());
                     Live::Applied
                 }
                 Err(why) => {
                     tracing::info!("seat {}: Remote Control {} for {} failed: {why}", label(&seat), if on { "on" } else { "off" }, seat.job);
                     Live::Failed(why)
                 }
-            };
-            sync_rc(&mut seat, self.world.live().await.as_ref());
-            answer
+            }
         };
         self.store.save(&seat).await;
         self.report(&seat, Some(&live)).await;

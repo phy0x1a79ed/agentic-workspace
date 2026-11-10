@@ -44,6 +44,9 @@ pub const RESPAWN: Duration = Duration::from_secs(5);
 /// The user unit the Python cch synced isolated logins with; the watch in-process replaces it.
 pub const LOGIN_SYNC_UNIT: &str = "awm-isolated-login-sync.service";
 const SYSTEMCTL_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long a relaunched job gets to bring its Remote Control bridge up before its recorded
+/// switch is compared with it.
+pub const RC_SETTLE: Duration = Duration::from_secs(20);
 
 /// One control verb, as the verb table hands it to [`Backend::control`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -363,12 +366,39 @@ impl Live {
                 Ok(())
             }
         });
+        let (relaunched, relaunches) = tokio::sync::mpsc::unbounded_channel();
+        tokio::spawn(restore_after_relaunch(self.fx.clone(), self.paths.clone(), relaunches));
         let (paths, gw) = (self.paths.clone(), Arc::new(self.hub.clone()));
         spawn_supervised("cch.session-events", RESPAWN, move || {
-            let (paths, gw) = (paths.clone(), gw.clone());
+            let (paths, gw, relaunched) = (paths.clone(), gw.clone(), relaunched.clone());
             async move {
-                session_events::run(paths, gw).await;
+                session_events::run(paths, gw, relaunched).await;
                 Ok(())
+            }
+        });
+    }
+}
+
+/// Put each relaunched job's Remote Control back to its last recorded switch once its bridge has
+/// had [`RC_SETTLE`] to come up. Claude Code relaunches a job with the flags it was created with,
+/// so a switch made since would otherwise be lost. A job whose record holds no switch is skipped.
+async fn restore_after_relaunch(
+    fx: control::Live<Watch>,
+    paths: Arc<Paths>,
+    mut relaunches: tokio::sync::mpsc::UnboundedReceiver<String>,
+) {
+    while let Some(job) = relaunches.recv().await {
+        let (fx, paths) = (fx.clone(), paths.clone());
+        tokio::spawn(async move {
+            tokio::time::sleep(RC_SETTLE).await;
+            let j = job.clone();
+            let recorded = tokio::task::spawn_blocking(move || lifecycle::read_lineage(&paths, &j)).await.ok().flatten();
+            let Some(want) = recorded.and_then(|rec| rec.get("remote_control").cloned()) else { return };
+            let on = !matches!(want, Value::Null | Value::Bool(false));
+            match control::restore_remote_control(&fx, &job, on, want.as_str()).await {
+                None => {}
+                Some(Ok(out)) => tracing::info!("cch: relaunched {job}: Remote Control put back {}: {out}", if on { "on" } else { "off" }),
+                Some(Err(e)) => tracing::warn!("cch: relaunched {job}: Remote Control could not be put back: {e}"),
             }
         });
     }
