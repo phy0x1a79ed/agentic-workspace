@@ -50,6 +50,8 @@ struct W {
     stop_fails: bool,
     /// Each `resume` call: the job and its Remote Control switch.
     resumed: Vec<(String, bool)>,
+    /// The model and effort of each `resume` call.
+    resumed_on: Vec<(String, String)>,
     resume_refused: bool,
 }
 
@@ -117,9 +119,10 @@ impl World for Fake {
         let job = format!("job-{}", w.jobs);
         w.come_up(job, spec["prompt"].as_str().unwrap(), spec["remote_control"] == true)
     }
-    async fn resume(&self, job: &str, prompt: &str, remote_control: bool, _name: &str) -> Started {
+    async fn resume(&self, job: &str, model: &str, effort: &str, prompt: &str, remote_control: bool, _name: &str) -> Started {
         let mut w = self.w();
         w.resumed.push((job.into(), remote_control));
+        w.resumed_on.push((model.into(), effort.into()));
         if w.resume_refused {
             return Started::Refused("no transcript".into());
         }
@@ -325,20 +328,64 @@ async fn a_seat_with_its_own_model_and_effort_starts_with_them() {
     let spec = t.world.w().specs[0].clone();
     assert_eq!((spec["model"].as_str(), spec["effort"].as_str()), (Some("sonnet"), Some("medium")));
     assert_eq!(t.seat().await.decl.model, "sonnet", "the override is stored");
+
+    t.world.w().up.clear();
+    t.tick().await;
+    t.seats.set_refresh("opal", "D0TEST", "haiku", "low").await.unwrap();
+    t.seats.upsert(&Decl { model: "sonnet".into(), effort: "medium".into(), channel_name: "renamed".into(), ..decl() }).await;
+    t.restart(false);
+    t.send("second").await;
+    let spec = t.world.w().specs[1].clone();
+    assert_eq!((spec["model"].as_str(), spec["effort"].as_str()), (Some("haiku"), Some("low")), "the board's pick outlives a decl and a restart and wins");
+}
+
+#[tokio::test]
+async fn a_refresh_restarts_the_agent_between_turns_on_the_pick_and_keeps_its_conversation() {
+    let mut t = T::new(false);
+    t.send("task").await;
+    t.world.w().busy.insert("job-1".into());
+    let (s, answer) = t.seats.set_refresh("opal", "D0TEST", "sonnet", "medium").await.unwrap();
+    assert_eq!((answer, s.refresh), (Refresh::Pending, true));
+    let event = t.world.w().seat_reports.last().unwrap()["event"].clone();
+    assert_eq!((event["refresh_live"].clone(), event["refresh"].clone(), event["model"].clone()), (json!("pending"), json!(true), json!("sonnet")), "social hears the answer");
+    t.tick().await;
+    assert_eq!(t.seat().await.job, "job-1", "never mid-turn");
+    t.world.w().busy.clear();
+    t.tick().await;
+    assert_eq!(t.world.w().stopped, ["job-1"], "between turns it stops at once, with no idle wait");
+    t.tick().await;
+    let s = t.seat().await;
+    assert_eq!(t.world.w().resumed_on, [("sonnet".to_string(), "medium".to_string())]);
+    assert_eq!((s.state, s.job.as_str(), s.refresh), (State::Occupied, "job-2", false));
+    assert_eq!(t.world.w().specs.len(), 1, "a resume, not a new start");
+    assert!(t.world.got("job-2")[0].contains("restarted you on sonnet at medium effort"), "{:?}", t.world.got("job-2"));
+    assert_eq!(t.store.line("job-2").await.unwrap().message_id, "1.0", "it answers where the stopped agent last did");
+    assert_eq!(t.world.w().reacts, ["1.0"], "no new 👀 for a restart");
+
+    t.world.w().up.clear();
+    t.tick().await;
+    let (s, answer) = t.seats.set_refresh("opal", "D0TEST", "haiku", "low").await.unwrap();
+    assert_eq!((answer, s.refresh, s.state), (Refresh::Kept, false, State::Empty), "an empty seat keeps the pick for its next start");
+    assert_eq!(t.world.w().resumed.len(), 1, "and starts nothing");
+
+    t.world.w().up.insert("hand-started".into());
+    t.seats.adopt(&decl(), "hand-started").await;
+    let (s, answer) = t.seats.set_refresh("opal", "D0TEST", "opus", "high").await.unwrap();
+    assert_eq!((answer, s.refresh), (Refresh::Kept, false), "a session the seat only adopted is never restarted");
 }
 
 #[test]
-fn an_older_database_opens_with_the_override_empty_and_no_done_mark() {
+fn an_older_database_opens_with_no_override_no_pick_and_no_done_mark() {
     let tmp = tempfile::tempdir().unwrap();
     let path = tmp.path().join("seats.db");
     drop(Store::open(&path).unwrap());
     let c = rusqlite::Connection::open(&path).unwrap();
-    c.execute_batch("ALTER TABLE seat_registry DROP COLUMN model; ALTER TABLE seat_registry DROP COLUMN effort; ALTER TABLE seat_registry ADD COLUMN done_at REAL NOT NULL DEFAULT 0; INSERT INTO seat_registry (account, channel_id) VALUES ('opal', 'D1')").unwrap();
+    c.execute_batch("ALTER TABLE seat_registry DROP COLUMN model; ALTER TABLE seat_registry DROP COLUMN effort; ALTER TABLE seat_registry DROP COLUMN pick_model; ALTER TABLE seat_registry DROP COLUMN pick_effort; ALTER TABLE seat_registry DROP COLUMN refresh; ALTER TABLE seat_registry ADD COLUMN done_at REAL NOT NULL DEFAULT 0; INSERT INTO seat_registry (account, channel_id) VALUES ('opal', 'D1')").unwrap();
     drop(c);
     drop(Store::open(&path).unwrap());
     let c = rusqlite::Connection::open(&path).unwrap();
-    let model: String = c.query_row("SELECT model FROM seat_registry WHERE channel_id = 'D1'", [], |r| r.get(0)).unwrap();
-    assert_eq!(model, "");
+    let row: (String, String, bool) = c.query_row("SELECT model, pick_model, refresh FROM seat_registry WHERE channel_id = 'D1'", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap();
+    assert_eq!(row, (String::new(), String::new(), false));
     let done: bool = c.query_row("SELECT COUNT(*) > 0 FROM pragma_table_info('seat_registry') WHERE name = 'done_at'", [], |r| r.get(0)).unwrap();
     assert!(!done);
 }

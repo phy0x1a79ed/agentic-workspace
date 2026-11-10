@@ -48,9 +48,9 @@ pub trait World: Send + Sync {
     async fn sleep(&self, secs: f64);
     /// `reflection start_other` here.
     async fn start(&self, spec: Value) -> Started;
-    /// `reflection resume_other` on a job the seat stopped, typing `prompt`, then the switch
-    /// `remote_control` applied to the session it comes back as.
-    async fn resume(&self, job: &str, prompt: &str, remote_control: bool, name: &str) -> Started;
+    /// `reflection resume_other` on a job the seat stopped, on `model` at `effort`, typing
+    /// `prompt`, then the switch `remote_control` applied to the session it comes back as.
+    async fn resume(&self, job: &str, model: &str, effort: &str, prompt: &str, remote_control: bool, name: &str) -> Started;
     /// `reflection stop_other`, or why it failed.
     async fn stop(&self, job: &str) -> Result<(), String>;
     /// `reflection message`: one line typed into `job`.
@@ -120,6 +120,24 @@ impl Live {
             Self::None => "none".into(),
             Self::Applied => "applied".into(),
             Self::Failed(why) => format!("failed: {why}"),
+        }
+    }
+}
+
+/// What a refresh did: the seat restarts its agent, or only keeps the pick for its next start.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Refresh {
+    /// The seat has no agent it started, so the pick waits for the next start.
+    Kept,
+    /// The agent restarts once it is between turns.
+    Pending,
+}
+
+impl Refresh {
+    fn as_text(self) -> &'static str {
+        match self {
+            Self::Kept => "kept",
+            Self::Pending => "pending",
         }
     }
 }
@@ -209,13 +227,28 @@ impl Seats {
         }
     }
 
-    /// Tell social what it shows of the seat. `switch` answers a Remote Control flip, which social
-    /// passes on to Ops even when nothing changed.
-    async fn report(&self, s: &Seat, switch: Option<&Live>) {
+    /// The model and effort the seat's next agent runs on.
+    fn pair(&self, s: &Seat) -> (String, String) {
+        match s.chosen() {
+            Some((model, effort)) => (model.into(), effort.into()),
+            None => {
+                let settings = self.settings();
+                (settings.model, settings.effort)
+            }
+        }
+    }
+
+    /// Tell social what it shows of the seat. `answer` is `(key, text)` for a flip or a refresh
+    /// from Ops, which social passes on even when nothing changed.
+    async fn report(&self, s: &Seat, answer: Option<(&str, &str)>) {
         let queued = self.queued(s.account(), s.channel()).await;
         let mut event = s.event(&crate::now_iso());
-        if let Some(live) = switch {
-            event["rc_live"] = json!(live.as_text());
+        let (model, effort) = self.pair(s);
+        event["model"] = json!(model);
+        event["effort"] = json!(effort);
+        event["refresh"] = json!(s.refresh);
+        if let Some((key, text)) = answer {
+            event[key] = json!(text);
         }
         self.world
             .up("seat", json!({"account": s.account(), "channel_id": s.channel(), "state": s.state.as_str(), "job": s.job, "remote_control": s.remote_control, "rc_url": s.rc_url, "public": s.public(queued), "event": event}))
@@ -388,8 +421,12 @@ impl Seats {
     /// The started agent is up: its brief's lines are delivered.
     async fn up(&self, mut seat: Seat, now: f64, live: Option<&Agents>) -> bool {
         let briefed = self.store.pending(seat.account(), seat.channel()).await;
-        if let Some(last) = briefed.iter().rev().find(|q| q.briefed_to == seat.job) {
-            let latest = Latest { account: seat.account().into(), channel: seat.channel().into(), thread: last.thread_id.clone(), message_id: last.message_id.clone() };
+        let latest = match briefed.iter().rev().find(|q| q.briefed_to == seat.job && !q.message_id.is_empty()) {
+            Some(last) => Some(Latest { account: seat.account().into(), channel: seat.channel().into(), thread: last.thread_id.clone(), message_id: last.message_id.clone() }),
+            // A refresh's own line names no message: the agent answers where its predecessor did.
+            None => self.store.line(&seat.previous.job).await,
+        };
+        if let Some(latest) = latest {
             self.set_line(&seat.job, latest, now).await;
         }
         self.store.deliver_briefed(seat.account(), seat.channel(), &seat.job, now).await;
@@ -404,8 +441,11 @@ impl Seats {
     /// it would. Only an agent the seat started, and never mid-turn. True when it stopped.
     async fn stop_if_idle(&self, mut seat: Seat, live: Option<&Agents>, now: f64) -> bool {
         let Some(live) = live else { return false };
-        let at = match live.get(&seat.job) {
+        let agent = live.get(&seat.job);
+        let at = match agent {
             _ if seat.adopted => None,
+            // No event marks the end of a turn, so a refresh is looked at every tick until then.
+            Some(_) if seat.refresh => Some(now),
             Some(a) if a.busy => Some(now + IDLE_S),
             Some(a) if a.active_at > 0.0 => Some(seat.last_message.max(a.active_at) + IDLE_S),
             _ => None,
@@ -417,14 +457,20 @@ impl Seats {
                 None => idle_at.remove(&seat.key()),
             };
         }
-        if !at.is_some_and(|at| at <= now) {
+        if agent.is_some_and(|a| a.busy) || !at.is_some_and(|at| at <= now) {
             return false;
         }
+        let refresh = seat.refresh;
         // A failed stop leaves the deadline past, so the next tick tries again.
         match self.world.stop(&seat.job).await {
             Ok(()) => {
-                tracing::info!("seat {}: stopped its idle agent {}", label(&seat), seat.job);
+                tracing::info!("seat {}: stopped its {} agent {}", label(&seat), if refresh { "refreshed" } else { "idle" }, seat.job);
                 self.vacate(&mut seat, true).await;
+                if refresh {
+                    let (model, effort) = self.pair(&seat);
+                    let line = format!("[seat] The seat restarted you on {model} at {effort} effort, as Ops asked. Carry on where you left off.");
+                    self.store.enqueue(None, seat.account(), seat.channel(), "", "", &line, now).await;
+                }
                 true
             }
             Err(why) => {
@@ -454,6 +500,7 @@ impl Seats {
         seat.job.clear();
         seat.rc_url.clear();
         seat.adopted = false;
+        seat.refresh = false;
         self.store.unbrief(seat.account(), seat.channel()).await;
         self.save(seat).await;
     }
@@ -510,7 +557,7 @@ impl Seats {
             previous: previous.as_ref().map(|p| (p.job.as_str(), p.node.as_str(), transcript.as_deref())),
             missed: seat.missed,
         };
-        let (model, effort) = if seat.decl.model.is_empty() { (&settings.model, &settings.effort) } else { (&seat.decl.model, &seat.decl.effort) };
+        let (model, effort) = self.pair(&seat);
         let mut spec = json!({
             "project": settings.project, "scope": seat.decl.scope, "name": seat.decl.name, "prompt": brief::brief(&facts, &lines),
             "trust": seat.decl.level, "model": model, "effort": effort, "remote_control": seat.remote_control,
@@ -533,7 +580,7 @@ impl Seats {
         self.save(&seat).await;
         self.store.brief_to(ids.clone(), "starting").await;
         let started = match resume {
-            Some(job) => match self.world.resume(&job, &format!("{}{}", brief::missed(seat.missed), lines.join("\n")), seat.remote_control, &Self::rc_name(&seat)).await {
+            Some(job) => match self.world.resume(&job, &model, &effort, &format!("{}{}", brief::missed(seat.missed), lines.join("\n")), seat.remote_control, &Self::rc_name(&seat)).await {
                 Started::Refused(why) => {
                     tracing::info!("seat {}: resuming {job} refused, starting afresh: {why}", label(&seat));
                     self.world.start(spec).await
@@ -678,6 +725,7 @@ impl Seats {
         seat.state = State::Occupied;
         seat.job = job.into();
         seat.adopted = true;
+        seat.refresh = false;
         seat.rc_url.clear();
         if seat.remote_control {
             sync_rc(&mut seat, self.world.live().await.as_ref());
@@ -715,6 +763,7 @@ impl Seats {
                 s.job.clear();
                 s.rc_url.clear();
                 s.adopted = false;
+                s.refresh = false;
                 self.save(&s).await;
             }
         }
@@ -758,8 +807,26 @@ impl Seats {
             }
         };
         self.store.save(&seat).await;
-        self.report(&seat, Some(&live)).await;
+        self.report(&seat, Some(("rc_live", &live.as_text()))).await;
         Some((seat, live))
+    }
+
+    /// Pick the seat's model and effort. An agent the seat started restarts on them once it is
+    /// between turns, through the idle stop and its resume. Social hears the answer.
+    pub async fn set_refresh(&self, account: &str, channel: &str, model: &str, effort: &str) -> Option<(Seat, Refresh)> {
+        let key = (account.to_string(), channel.to_string());
+        let lock = self.lock(&key);
+        let _held = lock.lock().await;
+        let mut seat = self.store.get(account, channel).await?;
+        seat.pick_model = model.into();
+        seat.pick_effort = effort.into();
+        let restart = !seat.adopted && !seat.job.is_empty() && matches!(seat.state, State::Starting | State::Occupied);
+        seat.refresh = restart;
+        let answer = if restart { Refresh::Pending } else { Refresh::Kept };
+        self.store.save(&seat).await;
+        self.report(&seat, Some(("refresh_live", answer.as_text()))).await;
+        self.wake();
+        Some((seat, answer))
     }
 
     /// The pending lines of a seat.
