@@ -707,6 +707,7 @@ impl FakeDaemon {
                         json!({"ok": true, "task": id})
                     }
                     "tasks" => json!({"tasks": me.tasks.lock().unwrap().iter().map(|t| json!({"task": t})).collect::<Vec<_>>()}),
+                    "file" => json!({"ok": true, "path": format!("/tmp/tether-1/{}", args["name"].as_str().unwrap()), "bytes": 3}),
                     _ => json!({"ok": true}),
                 })
             })
@@ -771,6 +772,12 @@ async fn owner_text_is_pushed_and_output_is_only_drained() {
     let ran = node.ch.write(&tester(), "ls", None, w("shell")).await.unwrap();
     assert_eq!(ran["task"], 1);
     assert_eq!(daemon.last("run").unwrap(), json!({"code": "4", "command": "ls"}));
+    let local = tmp.path().join("notes.txt");
+    std::fs::write(&local, "abc").unwrap();
+    let local = local.display().to_string();
+    let sent = node.ch.send(&tester(), &local, "", None, Some("n.txt")).await.unwrap();
+    assert_eq!(sent, json!({"name": name, "path": "/tmp/tether-1/n.txt", "bytes": 3}));
+    assert_eq!(daemon.last("file").unwrap(), json!({"code": "4", "path": local, "name": "n.txt"}));
 
     let drained = node.ch.drain(&tester(), None, 0.0, None, None, false).await.unwrap();
     let kinds: Vec<&str> = drained["events"].as_array().unwrap().iter().map(|e| e["type"].as_str().unwrap()).collect();

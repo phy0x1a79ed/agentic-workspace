@@ -49,6 +49,15 @@ pub struct Session {
     pub remote_control: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub started: Option<Ts>,
+    /// A background job's state: `working`, `blocked` or `done`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<String>,
+    /// What a blocked session needs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub needs: Option<String>,
+    /// On a `stopped` event: cch's own stop ended it, not a crash.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub retired: bool,
 }
 
 impl Session {
@@ -182,7 +191,7 @@ pub struct NodeState {
     pub plugins: Vec<PluginRow>,
 }
 
-/// A session that went live or went, for `telemetry/sessions`.
+/// A session that went live, went, was renamed or changed state, for `telemetry/sessions`.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct SessionEvent {
     pub event: &'static str,
@@ -195,6 +204,13 @@ pub struct SessionEvent {
     /// The new name, on a `renamed` event.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub state: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub needs: Option<String>,
+    /// On `gone`: the session was retired, not lost.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub retired: bool,
 }
 
 /// What one report changed.
@@ -378,7 +394,25 @@ fn seat_row(row: &Value) -> Option<(String, Value)> {
 }
 
 fn live(node: &str, s: &Session, ts: Ts) -> SessionEvent {
-    SessionEvent { event: "live", session_id: s.id().into(), job: s.job.clone(), task_id: s.task_id.clone(), node: node.into(), ts, name: None }
+    SessionEvent {
+        event: "live",
+        session_id: s.id().into(),
+        job: s.job.clone(),
+        task_id: s.task_id.clone(),
+        node: node.into(),
+        ts,
+        name: None,
+        state: s.state.clone(),
+        needs: s.needs.clone(),
+        retired: false,
+    }
+}
+
+/// A `state` event when `new` changed the state or needs that `old` held.
+fn state_change(node: &str, old: &Session, new: &Session, ts: Ts, out: &mut Applied) {
+    if (&old.state, &old.needs) != (&new.state, &new.needs) {
+        out.sessions.push(SessionEvent { event: "state", ..live(node, new, ts) });
+    }
 }
 
 fn gone(node: &str, s: &Session, ts: Ts) -> SessionEvent {
@@ -441,9 +475,12 @@ fn apply_item(state: &mut NodeState, node: &str, item: Item, now: Ts, out: &mut 
                 }
             }
             for (job, s) in &next {
-                if !state.sessions.contains_key(job) {
-                    out.sessions.push(live(node, s, now));
-                    state.starts.entry(job.clone()).or_insert(s.started.unwrap_or(now));
+                match state.sessions.get(job) {
+                    Some(old) => state_change(node, old, s, now, out),
+                    None => {
+                        out.sessions.push(live(node, s, now));
+                        state.starts.entry(job.clone()).or_insert(s.started.unwrap_or(now));
+                    }
                 }
             }
             if next != state.sessions {
@@ -458,11 +495,11 @@ fn apply_item(state: &mut NodeState, node: &str, item: Item, now: Ts, out: &mut 
             match event.as_str() {
                 "stopped" => {
                     if let Some(s) = state.sessions.remove(&session.job) {
-                        out.sessions.push(gone(node, &s, ts));
+                        out.sessions.push(SessionEvent { retired: session.retired, ..gone(node, &s, ts) });
                         out.changed.insert("sessions");
                     }
                 }
-                "started" | "remote_control" | "renamed" => {
+                "started" | "remote_control" | "renamed" | "state" => {
                     let old = state.sessions.get(&session.job).cloned();
                     if let Some(old) = &old {
                         // An update event names only what changed; the rest stays as it was.
@@ -473,6 +510,9 @@ fn apply_item(state: &mut NodeState, node: &str, item: Item, now: Ts, out: &mut 
                         session.kind = session.kind.or_else(|| old.kind.clone());
                         session.task_id = session.task_id.or_else(|| old.task_id.clone());
                         session.started = session.started.or(old.started);
+                        if session.state.is_none() {
+                            (session.state, session.needs) = (old.state.clone(), old.needs.clone());
+                        }
                         if event != "remote_control" {
                             session.link = session.link.or_else(|| old.link.clone());
                             session.remote_control = session.remote_control || old.remote_control;
@@ -480,6 +520,7 @@ fn apply_item(state: &mut NodeState, node: &str, item: Item, now: Ts, out: &mut 
                         if event == "renamed" && session.name.is_some() && session.name != old.name {
                             out.sessions.push(SessionEvent { event: "renamed", name: session.name.clone(), ..live(node, &session, ts) });
                         }
+                        state_change(node, old, &session, ts, out);
                     } else {
                         session.started = session.started.or(Some(ts));
                         out.sessions.push(live(node, &session, ts));
@@ -585,6 +626,26 @@ mod tests {
         let a = r.apply("mizar", vec![renamed.clone()], now);
         assert_eq!((a.sessions[0].event, a.sessions[0].name.as_deref()), ("renamed", Some("new")));
         assert!(r.apply("mizar", vec![renamed], now).sessions.is_empty());
+    }
+
+    #[test]
+    fn a_state_change_is_a_session_event_and_a_retire_marks_the_gone() {
+        let mut r = Roster::default();
+        let now = t("2026-11-07T10:00:00Z");
+        let at = |state: &str, needs: Option<&str>| Session { state: Some(state.into()), needs: needs.map(Into::into), ..sess("a1") };
+        r.apply("mizar", vec![hello(vec![at("working", None)])], now);
+        let event = |s: Session| Item::Session { event: "state".into(), session: s, ts: Some(now) };
+        let a = r.apply("mizar", vec![event(at("blocked", Some("pick")))], now);
+        assert_eq!((a.sessions[0].event, a.sessions[0].state.as_deref(), a.sessions[0].needs.as_deref()), ("state", Some("blocked"), Some("pick")));
+        let renamed = Item::Session { event: "renamed".into(), session: Session { name: Some("new".into()), ..sess("a1") }, ts: Some(now) };
+        let a = r.apply("mizar", vec![renamed], now);
+        assert_eq!(a.sessions.iter().map(|e| e.event).collect::<Vec<_>>(), ["renamed"], "an event without a state keeps the old one");
+        assert_eq!(r.nodes["mizar"].sessions["a1"].needs.as_deref(), Some("pick"));
+        let a = r.apply("mizar", vec![hello(vec![at("done", None)])], now);
+        assert_eq!(a.sessions.iter().map(|e| (e.event, e.state.as_deref())).collect::<Vec<_>>(), [("state", Some("done"))], "a hello carries state");
+        let stopped = Item::Session { event: "stopped".into(), session: Session { job: "a1".into(), retired: true, ..Session::default() }, ts: Some(now) };
+        let a = r.apply("mizar", vec![stopped], now);
+        assert!(a.sessions[0].event == "gone" && a.sessions[0].retired);
     }
 
     #[test]

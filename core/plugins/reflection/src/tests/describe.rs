@@ -85,8 +85,11 @@ fn the_describe_differs_from_the_baseline_only_by_the_listed_changes() {
     let want = [
         "compact: description",
         "harness_event: adds param job",
+        "harness_event: adds param needs",
         "harness_event: adds param rc_url",
+        "harness_event: adds param retired",
         "harness_event: adds param session_kind",
+        "harness_event: adds param state",
         "harness_event: adds param task_id",
         "harness_event: description",
         "harness_event: param kind changed",

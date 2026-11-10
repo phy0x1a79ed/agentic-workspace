@@ -16,9 +16,9 @@ use serde_json::{json, Map, Value};
 use crate::arbutus::Approvals;
 use crate::relay::{async_trait_free::BoxFut, ClientError, Relay};
 
-pub const NEEDS_YOU_STATES: [&str; 3] = ["planned", "blocked", "review"];
 pub const TITLE_CHARS: usize = 80;
-pub const NOTICE: &str = "This session's work is card {task_id} on Tony's Swarm board. Move it with operations task_report, and call request_human when you need Tony.";
+/// A seat's session name starts so. A seat never gets a card.
+const SEAT_PREFIX: &str = "seat:";
 
 /// What the front asks of other plugins. Each degrades: a missing answer is no session, no
 /// notice or no DM, never a failed call.
@@ -162,9 +162,9 @@ pub struct Front {
     pub roster_moved: tokio::sync::Notify,
 }
 
-pub const VERBS: [&str; 27] = [
+pub const VERBS: [&str; 25] = [
     "task_open", "task_attach", "task_join", "task_report", "task_session_end", "task_for_session", "task_sessions", "task_get",
-    "task_list", "request_human", "hook_prompt", "hook_plan", "hook_plan_approved", "hook_todos", "hook_session_clear", "claim_task",
+    "task_list", "request_human", "hook_plan_approved", "hook_todos", "hook_session_clear", "claim_task",
     "track_task", "swarm_message_post", "swarm_messages", "approval_request", "approval_get",
     "approval_wait", "approval_cancel", "order_pull", "order_done", "keys", "status",
 ];
@@ -266,11 +266,7 @@ impl Front {
         let role = str_of(a, "role").unwrap_or_else(|| "worker".into());
         let w = merge(json!({"task_id": a.get("task_id"), "session_id": session, "role": role,
                              "name": str_of(a, "name").or_else(|| c.name.clone())}), Front::whereabouts(&c));
-        let out = self.relay.write("task_attach", w).await.map_err(err)?;
-        if let (Some(sid), Some(task_id), "main") = (&session, str_of(a, "task_id"), role.as_str()) {
-            self.relay.set_mark(&format!("needs:{sid}"), &task_id);
-        }
-        Ok(merge(json!({"ok": true}), out))
+        Ok(merge(json!({"ok": true}), self.relay.write("task_attach", w).await.map_err(err)?))
     }
 
     pub async fn task_join(&self, a: &Value, st: &Stamp) -> Answer {
@@ -302,13 +298,6 @@ impl Front {
     async fn report(&self, task_id: &str, session: Option<&str>, state: &str, reason: Option<Value>) -> Answer {
         let out = self.relay.write("task_report", json!({"task_id": task_id, "session_id": session, "state": state,
                                                           "reason": reason})).await.map_err(err)?;
-        if let Some(s) = session {
-            if NEEDS_YOU_STATES.contains(&state) {
-                self.relay.set_mark(&format!("needs:{s}"), task_id);
-            } else {
-                self.relay.clear_mark(&format!("needs:{s}"));
-            }
-        }
         Ok(merge(json!({"ok": true}), out))
     }
 
@@ -360,8 +349,8 @@ impl Front {
         Ok(out["task_id"].as_str().unwrap_or_default().to_string())
     }
 
-    /// Tell Tony you need him: blocked, review, or an Arbutus admin approval. A caller that
-    /// holds no card reaches him by DM instead, with a link to its session.
+    /// Tell Tony you need him: blocked, review, or an Arbutus admin approval. A caller with a
+    /// card puts it in Needs you. One with none reaches him by DM, with a link to its session.
     pub async fn request_human(&self, a: &Value, st: &Stamp) -> Answer {
         let kind = match str_of(a, "kind").map(|k| k.trim().to_string()).filter(|k| !k.is_empty()) {
             Some(k) => k,
@@ -384,7 +373,6 @@ impl Front {
             return self.ask_by_dm(&kind, &text, &c).await;
         };
         let mut out = self.report(&task_id, session.as_deref(), &kind, Some(json!(text))).await?;
-        out["card_url"] = self.card_link(&task_id);
         if kind == "blocked" && a.get("urgent") == Some(&json!(true)) {
             let node = c.node.clone().unwrap_or_else(|| self.node.clone());
             let who = c.name.clone().unwrap_or_else(|| task_id.clone());
@@ -556,17 +544,6 @@ impl Front {
         }
     }
 
-    /// Tony's prompt to a session moves its card from Needs you to Working (R61 item 2).
-    pub async fn hook_prompt(&self, a: &Value, st: &Stamp) -> Answer {
-        let c = self.caller(st).await;
-        let Some(sid) = c.session_id.clone() else { return Ok(json!({"ok": true, "moved": false})) };
-        let Some(task_id) = self.relay.mark(&format!("needs:{sid}")) else { return Ok(json!({"ok": true, "moved": false, "blocked": false})) };
-        self.report(&task_id, Some(&sid), "working", None).await?;
-        self.autotitle(&task_id, &str_of(a, "prompt").unwrap_or_default(), false).await?;
-        self.relay.clear_mark(&format!("remind:{task_id}"));
-        Ok(json!({"ok": true, "moved": true, "task_id": task_id, "blocked": false}))
-    }
-
     // -- the plan, todo and clear hooks, and a session's own card ---------------------------
 
     async fn card_or_open(&self, session: &str, c: &Caller, title: &str) -> Result<(String, bool), String> {
@@ -590,36 +567,20 @@ impl Front {
         Ok(())
     }
 
-    fn opened(out: Value, task_id: &str, opened: bool) -> Value {
-        let mut out = merge(out, json!({"task_id": task_id, "opened": opened}));
-        if opened {
-            out["notice"] = json!(NOTICE.replace("{task_id}", task_id));
-        }
-        out
-    }
-
-    pub async fn hook_plan(&self, a: &Value, st: &Stamp) -> Answer {
-        let (session, c) = self.session(a, st, true).await?;
-        let session = session.unwrap_or_default();
-        let text = str_of(a, "plan_text").unwrap_or_default();
-        let (task_id, opened) = self.card_or_open(&session, &c, &heading(&text).unwrap_or_default()).await?;
-        self.relay.write("task_detail", json!({"task_id": task_id, "plan": text})).await.map_err(err)?;
-        self.autotitle(&task_id, &heading(&text).unwrap_or_default(), true).await?;
-        let out = self.report(&task_id, Some(&session), "planned", None).await?;
-        Ok(Front::opened(merge(out, json!({"blocked": true})), &task_id, opened))
-    }
-
+    /// An approved plan gives the session a card, unless it is a seat's, and goes on the card.
+    /// The session's state moves the card.
     pub async fn hook_plan_approved(&self, a: &Value, st: &Stamp) -> Answer {
         let (session, c) = self.session(a, st, true).await?;
-        let session = session.unwrap_or_default();
+        if c.name.as_deref().is_some_and(|n| n.starts_with(SEAT_PREFIX)) {
+            return Ok(json!({"ok": true, "tracked": false}));
+        }
         let text = str_of(a, "plan_text").unwrap_or_default();
-        let (task_id, opened) = self.card_or_open(&session, &c, &heading(&text).unwrap_or_default()).await?;
+        let (task_id, opened) = self.card_or_open(&session.unwrap_or_default(), &c, &heading(&text).unwrap_or_default()).await?;
         if !text.is_empty() {
             self.relay.write("task_detail", json!({"task_id": task_id, "plan": text})).await.map_err(err)?;
             self.autotitle(&task_id, &heading(&text).unwrap_or_default(), true).await?;
         }
-        let out = self.report(&task_id, Some(&session), "working", None).await?;
-        Ok(Front::opened(merge(out, json!({"blocked": false})), &task_id, opened))
+        Ok(json!({"ok": true, "task_id": task_id, "opened": opened}))
     }
 
     pub async fn hook_todos(&self, a: &Value, st: &Stamp) -> Answer {
@@ -630,8 +591,8 @@ impl Front {
         Ok(json!({"ok": true, "tracked": true, "task_id": task_id}))
     }
 
-    /// A /clear gave the job a new session id. The old one leaves its card, so the job's
-    /// next plan opens one of its own.
+    /// A /clear gave the job a new session id. The new one takes the old one's place and role
+    /// on its card, so the job keeps one card.
     pub async fn hook_session_clear(&self, a: &Value, st: &Stamp) -> Answer {
         let c = self.identify(st).await;
         let (Some(_), Some(sid)) = (&c.job, &c.session_id) else { return Ok(json!({"ok": true, "ended": null})) };
@@ -642,9 +603,13 @@ impl Front {
         self.relay.set_mark(&key, &new);
         let Some(task_id) = self.task_of(old.as_deref()).await? else { return Ok(json!({"ok": true, "ended": null})) };
         let old = old.unwrap_or_default();
+        let sessions = unwrap_stale(self.relay.read("task_sessions", json!({"task_id": task_id})).await.map_err(err)?);
+        let role = sessions.as_array().into_iter().flatten().find(|s| s["session_id"].as_str().is_some_and(|s| norm(s) == old))
+            .and_then(|s| str_of(s, "role")).unwrap_or_else(|| "main".into());
+        let w = merge(json!({"task_id": task_id, "session_id": new, "role": role, "name": c.name}), Front::whereabouts(&c));
+        self.relay.write("task_attach", w).await.map_err(err)?;
         self.relay.write("task_session_end", json!({"task_id": task_id, "session_id": old})).await.map_err(err)?;
-        self.relay.clear_mark(&format!("needs:{old}"));
-        Ok(json!({"ok": true, "ended": old, "task_id": task_id}))
+        Ok(json!({"ok": true, "ended": old, "joined": new, "task_id": task_id}))
     }
 
     pub async fn claim_task(&self, a: &Value, st: &Stamp) -> Answer {
@@ -654,15 +619,13 @@ impl Front {
         let prefixed = words.len() > 2 && words[0].eq_ignore_ascii_case("claim") && words[1].eq_ignore_ascii_case("task");
         let Some(id) = words.get(if prefixed { 2 } else { 0 }).map(|s| s.to_string()) else { return Err("task_id is required".into()) };
         let w = merge(json!({"task_id": id, "session_id": session, "name": c.name}), Front::whereabouts(&c));
-        let out = self.relay.write("task_claim", w).await.map_err(err)?;
-        self.relay.clear_mark(&format!("needs:{}", session.unwrap_or_default()));
-        Ok(merge(json!({"ok": true}), out))
+        Ok(merge(json!({"ok": true}), self.relay.write("task_claim", w).await.map_err(err)?))
     }
 
     pub async fn track_task(&self, a: &Value, st: &Stamp) -> Answer {
         let (session, c) = self.session(a, st, true).await?;
         let (task_id, opened) = self.card_or_open(&session.unwrap_or_default(), &c, &str_of(a, "title").unwrap_or_default()).await?;
-        Ok(Front::opened(json!({"ok": true}), &task_id, opened))
+        Ok(json!({"ok": true, "task_id": task_id, "opened": opened}))
     }
 
     pub async fn swarm_message_post(&self, a: &Value, st: &Stamp) -> Answer {
@@ -752,8 +715,6 @@ impl Front {
             "task_get" => self.task_get(args).await,
             "task_list" => self.task_list(args).await,
             "request_human" => self.request_human(args, st).await,
-            "hook_prompt" => self.hook_prompt(args, st).await,
-            "hook_plan" => self.hook_plan(args, st).await,
             "hook_plan_approved" => self.hook_plan_approved(args, st).await,
             "hook_todos" => self.hook_todos(args, st).await,
             "hook_session_clear" => self.hook_session_clear(args, st).await,

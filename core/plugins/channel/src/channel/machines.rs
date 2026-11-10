@@ -126,6 +126,11 @@ impl Machines {
         self.aimed("send", slot, sid, json!({"text": text})).await
     }
 
+    /// Put a local file on the owner's machine. Answers once the owner says where it landed.
+    pub async fn put(&self, slot: i64, sid: &str, path: &str, name: &str) -> Result<Value, MachineError> {
+        self.aimed_for("file", slot, sid, json!({"path": path, "name": name}), Duration::from_secs(3600)).await
+    }
+
     pub async fn run(&self, slot: i64, sid: &str, command: &str, limit_s: Option<i64>) -> Result<Value, MachineError> {
         let mut fields = json!({"command": command});
         if let Some(l) = limit_s {
@@ -215,6 +220,10 @@ impl Machines {
     }
 
     async fn aimed(&self, verb: &str, slot: i64, sid: &str, fields: Value) -> Result<Value, MachineError> {
+        self.aimed_for(verb, slot, sid, fields, Duration::from_secs(60)).await
+    }
+
+    async fn aimed_for(&self, verb: &str, slot: i64, sid: &str, fields: Value, timeout: Duration) -> Result<Value, MachineError> {
         if let Some(current) = self.session_of(slot) {
             if current != sid {
                 return Err(MachineError::Gone(format!("slot {slot} now carries a later session")));
@@ -224,7 +233,7 @@ impl Machines {
         if let (Some(a), Some(f)) = (args.as_object_mut(), fields.as_object()) {
             a.extend(f.clone());
         }
-        self.ask(verb, args, Duration::from_secs(60)).await
+        self.ask(verb, args, timeout).await
     }
 
     async fn ask(&self, verb: &str, args: Value, timeout: Duration) -> Result<Value, MachineError> {
