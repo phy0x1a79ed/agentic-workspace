@@ -378,15 +378,7 @@ impl Social {
         if text.is_empty() && files.is_empty() {
             return Err(VerbError::value("send needs text, a file, or both"));
         }
-        if !files.is_empty() {
-            if !conn.sends_files() {
-                return Err(VerbError::runtime(format!("{} account {account:?} does not take files through social", conn.platform())));
-            }
-            let size: u64 = files.iter().map(OutFile::size).sum();
-            if size > conn.max_file_bytes() {
-                return Err(VerbError::value(format!("the files come to {size} bytes, over the {} that {account:?} takes per message", conn.max_file_bytes())));
-            }
-        }
+        check_files(&*conn, &account, &files)?;
         let personal = self.account(&account).is_some_and(|a| a.kind() == "user");
         let sent = if personal {
             *self.relaying.lock().unwrap().entry(conn.platform().to_string()).or_default() += 1;
@@ -435,7 +427,11 @@ impl Social {
         let who = self.holder(&call).await;
         let (account, channel, _, message) = self.defaults(&call, who.as_ref().ok(), true).await?;
         self.held_only(&call, &who, &account, &channel).await?;
-        let done = self.conn(&account)?.react(&channel, &message.unwrap_or_default(), &s(&call.args, "emoji"), truthy(call.args.get("remove"))).await?;
+        self.react_to(&account, &channel, &message.unwrap_or_default(), &call.args).await
+    }
+
+    async fn react_to(&self, account: &str, channel: &str, message: &str, args: &Value) -> Result<Value, VerbError> {
+        let done = self.conn(account)?.react(channel, message, &s(args, "emoji"), truthy(args.get("remove"))).await?;
         let mut out = serde_json::Map::from_iter([("ok".to_string(), json!(true))]);
         if let Value::Object(o) = done {
             out.extend(o);
@@ -835,14 +831,7 @@ impl Social {
             return Err(VerbError::permission(format!("{node} does not answer {account}/{channel}")));
         }
         match s(&call.args, "action").as_str() {
-            "react" => {
-                let done = self.conn(&account)?.react(&channel, &message, &s(&call.args, "emoji"), truthy(call.args.get("remove"))).await?;
-                let mut out = serde_json::Map::from_iter([("ok".to_string(), json!(true))]);
-                if let Value::Object(o) = done {
-                    out.extend(o);
-                }
-                Ok(Value::Object(out))
-            }
+            "react" => self.react_to(&account, &channel, &message, &call.args).await,
             "download" => self.inline_files(&account, &channel, &message, idx(&call.args)).await,
             other => Err(VerbError::value(format!("seat_act: action is react or download, not {other:?}"))),
         }
@@ -951,11 +940,8 @@ impl Social {
             },
             _ => vec![],
         };
-        if !files.is_empty() {
-            let size: u64 = files.iter().map(OutFile::size).sum();
-            if !conn.sends_files() || size > conn.max_file_bytes() {
-                return json!({"ok": false, "error": format!("{} takes at most {} bytes of files per message, and these come to {size}", conn.platform(), if conn.sends_files() { conn.max_file_bytes() } else { 0 }), "error_class": "ValueError", "retry": false});
-            }
+        if let Err(e) = check_files(&*conn, account, &files) {
+            return json!({"ok": false, "error": e.message, "error_class": e.error_class, "retry": false});
         }
         let thread = Some(s(b, "thread")).filter(|t| !t.is_empty());
         match conn.send(channel, &s(b, "text"), thread.as_deref(), &files).await {
@@ -1183,6 +1169,21 @@ impl Social {
 }
 
 /// The optional attachment index of a download.
+/// Refuses files the account cannot take in one message.
+fn check_files(conn: &dyn Connector, account: &str, files: &[OutFile]) -> Result<(), VerbError> {
+    if files.is_empty() {
+        return Ok(());
+    }
+    if !conn.sends_files() {
+        return Err(VerbError::new("NotImplementedError", format!("{} account {account:?} does not take files through social", conn.platform())));
+    }
+    let size: u64 = files.iter().map(OutFile::size).sum();
+    if size > conn.max_file_bytes() {
+        return Err(VerbError::value(format!("the files come to {size} bytes, over the {} that {account:?} takes per message", conn.max_file_bytes())));
+    }
+    Ok(())
+}
+
 fn idx(args: &Value) -> Option<i64> {
     match args.get("idx") {
         None | Some(Value::Null) => None,

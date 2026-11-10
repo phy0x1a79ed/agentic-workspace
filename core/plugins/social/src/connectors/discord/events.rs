@@ -147,6 +147,10 @@ pub enum Next {
 }
 
 impl Cache {
+    pub fn me_id(&self) -> Option<u64> {
+        self.me.as_ref().map(|(id, _)| *id)
+    }
+
     pub fn put_channel(&mut self, c: &Channel) {
         let recipient = c.recipients.as_ref().and_then(|r| r.first()).map(|u| (u.id.get(), user_str(&u.name, u.discriminator)));
         if c.kind == ChannelType::Private {
@@ -230,7 +234,7 @@ impl Cache {
         if place.kind != ChatKind::Channel && !m.author.bot {
             self.spoken.insert(ch);
         }
-        let me = self.me.as_ref().map(|(id, _)| *id);
+        let me = self.me_id();
         Some(inbound(account, m, &place, me, natural(m, place.kind) && !for_others(m, place.kind, me)))
     }
 

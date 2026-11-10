@@ -457,7 +457,7 @@ impl Connector for DiscordConnector {
         let mut before = before.filter(|b| !b.is_empty()).map(snowflake).transpose()?;
         let (place, me) = {
             let c = self.cache();
-            (c.place(id, c.chans.get(&id).and_then(|c| c.guild)), c.me.as_ref().map(|(id, _)| *id))
+            (c.place(id, c.chans.get(&id).and_then(|c| c.guild)), c.me_id())
         };
         let mut out = vec![];
         while out.len() < limit {
