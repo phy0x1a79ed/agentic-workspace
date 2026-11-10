@@ -31,8 +31,7 @@ NODES = [
 
 PUSH = {
     "nodes": NODES,
-    "services": [{"tool": "journal", "host": "alcor", "service": "journal", "health": "up",
-                  "last_response": 9, "last_used": 8}],
+    "services": [{"tool": "journal", "host": "alcor", "service": "journal", "health": "up"}],
     "seats": [{"seat": "acct/123", "name": "seat:discord/lab/steward", "state": "empty",
                "remote_control": False}],
     "notices": [{"kind": "scope-hygiene", "node": "mizar", "title": "Scope hygiene",
@@ -82,13 +81,13 @@ def test_render_keeps_the_portals_note_and_one_note_per_notice(world):
 
 
 def clocks(seen):
-    return {**PUSH, "nodes": [{**NODES[0], "last_seen": seen}, *NODES[1:]],
-            "services": [{**PUSH["services"][0], "last_response": seen, "last_used": seen}]}
+    return {**PUSH, "nodes": [{**NODES[0], "last_seen": seen}, *NODES[1:]]}
 
 
 @pytest.mark.parametrize("push, writes", [
     (PUSH, False),
     (clocks(1000 + ops.SEEN_LAG_S), False),   # only the clocks moved
+    (clocks("1970-01-01T00:21:40+00:00"), False),  # an ISO clock reads as the same epoch seconds
     (clocks(1001 + ops.SEEN_LAG_S), True),    # last_seen fell too far behind
     ({**PUSH, "seats": [{**PUSH["seats"][0], "ts": "2"}]}, True),
 ])

@@ -12,13 +12,14 @@ const NEAR_PX = 200;
 const origin = await swarmOrigin();
 const FLEET = [["nodes", "Nodes"], ["seats", "Seats"], ["plugins", "Plugins"], ["services", "Services"],
                ["notices", "Notices"]];
-const open = { needs_you: true, working: true, history: false, nodes: true };
-const shown = { needs_you: [], working: [] };
+const OPEN = new Set(["needs_you", "working", "nodes"]);
+const SEARCHED = ["needs_you", "working"];
 let fleet = { roster: {}, nodes: [] };
 let selected = null;       // task id
 let historyShown = [];
 let historyMore = false;
 let paging = false;
+let nearEnd = false;       // History's sentinel is within NEAR_PX of the view
 let rendering = false;
 let again = false;
 
@@ -26,6 +27,7 @@ const label = (n, name) => n.getLabelValue(name) || "";
 const rc = (url) => (/^https:\/\/claude\.ai\//.test(url || "")
   ? el("a", { href: url, target: "_blank", rel: "noopener" }, "Remote Control") : null);
 const quoted = (q) => `"${q.replace(/["\\]/g, " ").trim()}"`;
+const empty = (text, tag = "div") => el(tag, { class: "awm-empty" }, text);
 
 // -- the sections ---------------------------------------------------------------------------------
 
@@ -34,16 +36,18 @@ for (const [key, name] of SECTIONS) {
   const count = key === "history" ? null : el("span", { class: "n" });
   const list = el("div", { class: "awm-list" });
   const d = el("details", { "data-section": key }, el("summary", {}, `${name} `, count));
-  if (open[key]) d.setAttribute("open", "");
-  d.addEventListener("toggle", () => { open[key] = d.open; if (key === "history" && d.open) render(); });
+  if (OPEN.has(key)) d.setAttribute("open", "");
   d.append(list);
-  if (key === "history") d.append(el("div", { class: "awm-sentinel" }));
-  parts[key] = { d, count, list };
+  if (key === "history") {
+    d.addEventListener("toggle", () => { if (d.open) render(); });
+    d.append(el("div", { class: "awm-sentinel" }));
+  }
+  parts[key] = { d, count, list, notes: [] };
 }
 for (const [key, name] of FLEET) {
   const d = el("details", { "data-section": key, class: "awm-fleet" }, el("summary", {}, name),
     el("div", { class: `awm-${key}` }));
-  if (open[key]) d.setAttribute("open", "");
+  if (OPEN.has(key)) d.setAttribute("open", "");
   parts[key] = { d };
 }
 $(".awm-sections").replaceChildren(...SECTIONS.concat(FLEET).map(([key]) => parts[key].d));
@@ -63,13 +67,12 @@ function header(n) {
 const cardMatches = (q, n) => fuzzy(q, n.title) || ["taskId", "peer", "status"].some((k) => fuzzy(q, label(n, k)));
 
 // Needs you and Working show the cards that match the search. History shows all it has loaded.
-function fill(key, notes) {
-  if (key in shown) shown[key] = notes;
-  const q = key in shown ? query() : "";
+function fill(key, notes, q = "") {
+  parts[key].notes = notes;
   const rows = notes.filter((n) => cardMatches(q, n));
   if (parts[key].count) parts[key].count.textContent = rows.length === notes.length ? `(${notes.length})` : `(${rows.length}/${notes.length})`;
   parts[key].list.replaceChildren(...(rows.length ? rows.map(header)
-    : [el("div", { class: "awm-empty" }, notes.length ? "No card matches." : "No cards.")]));
+    : [empty(notes.length ? "No card matches." : "No cards.")]));
 }
 
 async function cards(section) {
@@ -87,11 +90,13 @@ async function render() {
   try {
     do {
       again = false;
-      for (const [key] of SECTIONS) {
-        if (key !== "history") { fill(key, await cards(key)); continue; }
-        if (!open.history) continue;
+      const history = parts.history.d.open;
+      const [needs, working, first] = await Promise.all([cards("needs_you"), cards("working"),
+        history ? historyPage(null) : null, status()]);
+      fill("needs_you", needs, query());
+      fill("working", working, query());
+      if (history) {
         // History keeps the pages Tony scrolled through; a change reloads only the first page.
-        const first = await historyPage(null);
         const have = new Set(first.map((n) => n.noteId));
         const older = historyShown.filter((n) => !have.has(n.noteId) && label(n, "historyAt")
           && Number(label(n, "historyAt")) <= Number(label(first[first.length - 1] || n, "historyAt")));
@@ -99,7 +104,6 @@ async function render() {
         if (!paging) historyMore = first.length === PAGE || older.length > 0;
         fill("history", historyShown);
       }
-      await status();
       if (selected) {
         const n = (await api.searchForNotes(`#swarmCard #taskId = ${quoted(selected)}`))[0];
         if (n) await panel(n);
@@ -109,18 +113,11 @@ async function render() {
   pageBack();
 }
 
-// The sentinel is near the view, not above it: Tony reading the fleet below History pages nothing.
-function nearEnd() {
-  const sentinel = parts.history.d.querySelector(".awm-sentinel").getBoundingClientRect();
-  const view = $(".awm-sections").getBoundingClientRect();
-  return sentinel.height > 0 && sentinel.top < view.bottom + NEAR_PX && sentinel.bottom > view.top - NEAR_PX;
-}
-
 async function pageBack() {
   if (paging) return;
   paging = true;
   try {
-    while (historyMore && historyShown.length && nearEnd()) {
+    while (historyMore && historyShown.length && nearEnd) {
       const last = historyShown[historyShown.length - 1];
       const page = await historyPage(label(last, "historyAt"));
       historyMore = page.length === PAGE;
@@ -130,8 +127,9 @@ async function pageBack() {
   } finally { paging = false; }
 }
 
-// History loads older cards as the sentinel scrolls into view (R61 item 5).
-new IntersectionObserver((seen) => { if (seen.some((e) => e.isIntersecting)) pageBack(); },
+// History loads older cards as the sentinel scrolls into view (R61 item 5). Scrolled past it, Tony
+// reads the fleet and pages nothing.
+new IntersectionObserver((seen) => { nearEnd = seen[seen.length - 1].isIntersecting; if (nearEnd) pageBack(); },
                          { root: $(".awm-sections"), rootMargin: `${NEAR_PX}px` })
   .observe(parts.history.d.querySelector(".awm-sentinel"));
 
@@ -208,7 +206,7 @@ function nodeSection(n, q) {
       el("small", {}, `${up}/${services.length} services up`)),
     sessions.length ? el("ul", {}, ...sessions.map((s) => el("li", {}, show(s.name), " ",
       s.project || s.scope ? el("small", {}, [s.project, s.scope].filter(Boolean).join("/")) : null, " ", rc(s.rc_url))))
-      : el("div", { class: "awm-empty" }, "no sessions"));
+      : empty("no sessions"));
 }
 
 // A flip waits for the seat's answer: a seat event newer than the row it was flipped on.
@@ -248,9 +246,9 @@ function seatRow(s) {
     el("td", {}, s.remote_control ? rc(s.rc_url) : null));
 }
 
-function table(heads, rows, empty) {
+function table(heads, rows, none) {
   return rows.length ? el("table", {}, el("tr", {}, ...heads.map((h) => el("th", {}, h))), ...rows)
-    : el("div", { class: "awm-empty" }, empty);
+    : empty(none);
 }
 
 // Each state has its own mark, so the grid reads without colour or text.
@@ -296,7 +294,7 @@ async function toggleService(node, row, local, btn) {
 }
 
 function serviceCell(row, node) {
-  const local = (node.services || []).find((s) => s.service === row.name || (row.singleton && (s.tools || []).includes(row.singleton.service)));
+  const local = (node.services || []).find((s) => s.service === row.name);
   const state = cellState(local, row.singleton);
   const canSwitch = local && (state === "enabled" || state === "disabled" || state === "failed")
     && !(row.name === "reflection" && local.enabled);
@@ -312,20 +310,18 @@ function serviceRows(roster, nodes) {
   for (const n of nodes) for (const s of n.services || []) {
     rows.set(s.service, { name: s.service, core: core.has(s.plugin) });
   }
+  const owner = new Map(nodes.flatMap((n) => n.services || []).flatMap((x) => [...(x.tools || []), x.service].map((t) => [t, x.service])));
   for (const s of roster.services || []) {
-    const owner = nodes.flatMap((n) => n.services || []).find((x) => x.service === s.service || (x.tools || []).includes(s.service));
-    const name = owner ? owner.service : s.service;
+    const name = owner.get(s.service) || s.service;
     rows.set(name, { ...(rows.get(name) || { name, core: false }), singleton: s });
   }
   return [...rows.values()].sort((a, b) => a.name.localeCompare(b.name));
 }
 
-function legend() {
-  return el("div", { class: "awm-legend" }, ...Object.keys(STATES).map((k) => el("span", {}, mark(k), " ", STATES[k][1])));
-}
+const LEGEND = el("div", { class: "awm-legend" }, ...Object.keys(STATES).map((k) => el("span", {}, mark(k), " ", STATES[k][1])));
 
-function grid(nodes, rows, cell, empty) {
-  if (!rows.length) return el("div", { class: "awm-empty" }, empty);
+function grid(nodes, rows, cell, none) {
+  if (!rows.length) return empty(none);
   return el("div", { class: "awm-grid" }, el("table", {},
     el("tr", {}, el("th", {}, ""), ...nodes.map((n) => el("th", { class: "cell" }, n.name))),
     ...rows.map((r) => el("tr", { "data-row": r.name }, el("td", {}, r.name,
@@ -341,6 +337,7 @@ function pluginCell(row, node) {
 
 async function renderFleet() {
   const roster = await swarmRoster();
+  fillNodes(roster);
   const nodes = roster.nodes || [];
   const titles = await cardTitles(nodes);
   for (const n of nodes) for (const s of n.sessions || []) s.name = titles.get(s.name) || s.name;
@@ -353,18 +350,18 @@ function drawFleet() {
   const q = query();
   const nodes = all.filter((n) => fuzzy(q, n.name) || (n.sessions || []).some((s) => sessionMatches(q, s)));
   $(".awm-nodes").replaceChildren(...(nodes.length ? nodes.map((n) => nodeSection(n, q))
-    : [el("div", { class: "awm-empty" }, all.length ? "No node matches." : "No nodes reported.")]));
+    : [empty(all.length ? "No node matches." : "No nodes reported.")]));
   const seats = (roster.seats || []).filter((s) => fuzzy(q, s.label) || fuzzy(q, s.seat));
   $(".awm-seats").replaceChildren(table(["seat", "state", "", ""], seats.map(seatRow), "No seats."));
   const plugins = new Map();
   for (const n of all) for (const p of n.plugins || []) plugins.set(p.name, { name: p.name, core: p.core });
   $(".awm-plugins").replaceChildren(grid(all, [...plugins.values()].filter((p) => fuzzy(q, p.name)).sort((a, b) => a.name.localeCompare(b.name)),
     pluginCell, "No plugins."));
-  $(".awm-services").replaceChildren(legend(), grid(all, serviceRows(roster, all).filter((r) => fuzzy(q, r.name)), serviceCell, "No services."));
+  $(".awm-services").replaceChildren(LEGEND, grid(all, serviceRows(roster, all).filter((r) => fuzzy(q, r.name)), serviceCell, "No services."));
   const notices = (roster.notices || []).filter((n) => fuzzy(q, `${n.kind} ${n.node} ${n.title}`));
   $(".awm-notices").replaceChildren(...(notices.length ? notices.map((n) => el("details", {},
     el("summary", {}, `${n.title || n.kind} - ${n.node}`), el("pre", {}, show(n.body))))
-    : [el("div", { class: "awm-empty" }, "No notices.")]));
+    : [empty("No notices.")]));
 }
 
 // -- the info panel -------------------------------------------------------------------------------------
@@ -430,10 +427,10 @@ async function panel(n) {
         el("td", {}, show(s.role)), el("td", {}, show(s.node)),
         el("td", {}, s.active ? "active" : "ended"),
         el("td", {}, s.active ? rc(s.rc_url) : null))))
-      : el("p", { class: "awm-empty" }, "No sessions yet."),
+      : empty("No sessions yet.", "p"),
     el("h4", {}, `Approvals${pending.length ? ` (${pending.length} pending)` : ""}`),
     ...(approvals.length ? pending.map(approvalRow).concat(past.map(approvalRow))
-      : [el("p", { class: "awm-empty" }, "No approvals.")]),
+      : [empty("No approvals.", "p")]),
   ];
   const todos = (rec.todos || []).filter((t) => t && (t.subject || t.content));
   if (todos.length) {
@@ -461,15 +458,15 @@ $(".awm-spawn").addEventListener("change", (ev) => {
 });
 for (const i of box.querySelectorAll(".awm-spawn input")) if (remembered(i.name) === i.value) i.checked = true;
 
-async function fillNodes() {
-  const nodes = await nodeChoices();
+function fillNodes(roster) {
+  const nodes = nodeChoices(roster);
   const have = picked("node") || remembered("awm-spawn-node");
   const keep = nodes.some((n) => n.name === have) ? have : nodes[0]?.name;
   $(".awm-spawn-node").replaceChildren(...(nodes.length
     ? nodes.map((n) => el("label", {},
       el("input", { type: "radio", name: "awm-spawn-node", value: n.name, checked: n.name === keep }),
       el("span", { title: n.name }, n.name)))
-    : [el("small", { class: "awm-empty" }, "no nodes in the roster")]));
+    : [empty("no nodes in the roster", "small")]));
   $(".awm-newbtn").disabled = nodes.length === 0;
 }
 
@@ -488,7 +485,7 @@ for (const b of box.querySelectorAll(".awm-twofa button")) {
 
 // The search refilters what is loaded. It never queries the vault.
 $(".awm-search").addEventListener("input", () => {
-  for (const key in shown) fill(key, shown[key]);
+  for (const key of SEARCHED) fill(key, parts[key].notes, query());
   drawFleet();
 });
 
@@ -527,6 +524,5 @@ $(".awm-search").addEventListener("input", () => {
 })();
 
 entitiesChanged(box, cardsChanged, render);
-entitiesChanged(box, rosterChanged, () => { renderFleet(); fillNodes(); });
-await fillNodes();
+entitiesChanged(box, rosterChanged, renderFleet);
 await Promise.all([render(), renderFleet()]);

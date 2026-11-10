@@ -36,6 +36,16 @@ def portals_from_env() -> dict[str, str]:
     return out
 
 
+def _epoch(v: Any) -> float | None:
+    """A clock as epoch seconds: telemetry sends a number or an ISO string."""
+    if isinstance(v, (int, float)):
+        return float(v)
+    try:
+        return datetime.fromisoformat(text(v)).timestamp()
+    except ValueError:
+        return None
+
+
 def _node(row: dict[str, Any], portals: dict[str, str]) -> dict[str, Any]:
     """One ``telemetry nodes`` row, as the pages read it. ``enabled`` is None from an older node."""
     name = text(row.get("node") or row.get("name"))
@@ -49,7 +59,7 @@ def _node(row: dict[str, Any], portals: dict[str, str]) -> dict[str, Any]:
                  "remote_control": bool(s.get("remote_control"))}
                 for s in row.get("sessions") or [] if isinstance(s, dict)]
     return {"name": name, "role": text(row.get("role")), "portal": portal,
-            "last_seen": row.get("last_seen"), "sessions": sessions,
+            "last_seen": _epoch(row.get("last_seen")), "sessions": sessions,
             "sessions_7d": int(row.get("sessions_7d") or 0),
             "services": [{"service": text(u.get("service")), "plugin": text(u.get("plugin")),
                           "up": bool(u.get("up")), "enabled": u.get("enabled"), "tools": u.get("tools") or []}
@@ -73,8 +83,7 @@ def build_roster(nodes: list[dict], services: list[dict], seats: list[dict],
         "nodes": sorted(cards, key=lambda n: n["name"]),
         "agent_nodes": agent_nodes(cards),
         "services": [{"service": text(s.get("tool") or s.get("service")), "host": text(s.get("host")),
-                      "health": text(s.get("health")) or "unknown",
-                      "last_response": s.get("last_response"), "last_used": s.get("last_used")}
+                      "health": text(s.get("health")) or "unknown"}
                      for s in services],
         "seats": [{"seat": text(s.get("seat") or s.get("id")),
                    "label": text(s.get("label") or s.get("name")) or text(s.get("seat") or s.get("id")),
@@ -99,32 +108,22 @@ def portals_text(portals: dict[str, str], nodes: list[dict]) -> str:
             + ("\n".join(rows) or "No portal is configured.") + "\n")
 
 
-def _epoch(v: Any) -> float | None:
-    if isinstance(v, (int, float)):
-        return float(v)
-    try:
-        return datetime.fromisoformat(text(v)).timestamp()
-    except ValueError:
-        return None
+def _unseen(roster: dict[str, Any]) -> dict[str, Any]:
+    return {**roster, "nodes": [{**n, "last_seen": None} for n in roster.get("nodes") or []]}
 
 
-def _without_clocks(roster: dict[str, Any]) -> dict[str, Any]:
-    return {**roster,
-            "nodes": [{**n, "last_seen": None} for n in roster.get("nodes") or []],
-            "services": [{**s, "last_response": None, "last_used": None} for s in roster.get("services") or []]}
+def _near(was: Any, now: Any) -> bool:
+    if was == now:
+        return True
+    clocks = isinstance(was, (int, float)) and isinstance(now, (int, float))
+    return clocks and abs(now - was) <= SEEN_LAG_S
 
 
 def clocks_only(stored: dict[str, Any], roster: dict[str, Any]) -> bool:
-    """Whether the roster differs from the stored one only by clocks no page needs to the second:
-    a node's ``last_seen`` that lags under ``SEEN_LAG_S``, a service's last response or use."""
-    if _without_clocks(stored) != _without_clocks(roster):
-        return False
-    for old, new in zip(stored.get("nodes") or [], roster.get("nodes") or []):
-        if old["last_seen"] != new["last_seen"]:
-            was, now = _epoch(old["last_seen"]), _epoch(new["last_seen"])
-            if was is None or now is None or abs(now - was) > SEEN_LAG_S:
-                return False
-    return True
+    """Whether the roster differs from the stored one only by node ``last_seen`` clocks that lag
+    under ``SEEN_LAG_S``."""
+    return _unseen(stored) == _unseen(roster) and all(
+        _near(old["last_seen"], new["last_seen"]) for old, new in zip(stored["nodes"], roster["nodes"]))
 
 
 def _rows(args: dict[str, Any], key: str) -> list[dict[str, Any]]:
@@ -135,11 +134,14 @@ class OpsRenderer:
     def __init__(self, fence: Fence, portals: dict[str, str] | None = None) -> None:
         self.fence = fence
         self.portals = dict(portals if portals is not None else portals_from_env())
+        self._last: dict[str, Any] | None = None
 
     def _stored(self) -> dict[str, Any]:
-        if self.fence.note(ids.ROSTER_ID) is None:
-            return {}
-        return json.loads(text(self.fence.content(ids.ROSTER_ID)) or "{}")
+        """The roster as last written. Only this renderer writes it, so the vault is read once."""
+        if self._last is None:
+            note = self.fence.note(ids.ROSTER_ID)
+            self._last = json.loads(text(self.fence.content(ids.ROSTER_ID)) or "{}") if note else {}
+        return self._last
 
     def render(self, args: dict[str, Any]) -> dict[str, Any]:
         """Write one push into the vault: the JSON note, Portals and one note per notice. A push
@@ -158,6 +160,7 @@ class OpsRenderer:
         self._upsert(ids.PORTALS_ID, "Portals", ids.MARKDOWN,
                      portals_text(self.portals, roster["nodes"]))
         self._notices(roster["notices"])
+        self._last = roster
         return roster
 
     def _upsert(self, note_id: str, title: str, mime: str, content: str) -> None:
