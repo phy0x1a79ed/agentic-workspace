@@ -79,7 +79,7 @@ fn differences() -> Vec<String> {
 }
 
 /// The listed changes: `stop`'s optional `job`, `list_other`'s `include_stopped`, the new `probe`,
-/// `to` on `message` and `resume_other`, the lifecycle params and the sender-prefix wording.
+/// `to` on `message` and `resume_other`, `resume_other`'s model and effort, the lifecycle params and the sender-prefix wording.
 #[test]
 fn the_describe_differs_from_the_baseline_only_by_the_listed_changes() {
     let want = [
@@ -99,6 +99,8 @@ fn the_describe_differs_from_the_baseline_only_by_the_listed_changes() {
         "message: drops param job",
         "message_self: description",
         "probe: new verb",
+        "resume_other: adds param effort",
+        "resume_other: adds param model",
         "resume_other: adds param to",
         "resume_other: description",
         "resume_other: drops param job",
