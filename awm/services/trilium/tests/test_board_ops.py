@@ -33,7 +33,7 @@ PUSH = {
     "nodes": NODES,
     "services": [{"tool": "journal", "host": "alcor", "service": "journal", "health": "up"}],
     "seats": [{"seat": "acct/123", "name": "seat:discord/lab/steward", "state": "empty",
-               "remote_control": False}],
+               "remote_control": False, "model": "sonnet", "effort": "low", "refresh": True}],
     "notices": [{"kind": "scope-hygiene", "node": "mizar", "title": "Scope hygiene",
                  "body": "2 removed", "ts": 1}],
 }
@@ -64,7 +64,8 @@ def test_render_writes_one_roster_note_that_the_pages_read(world):
     assert mizar["sessions"][0]["remote_control"] is True
     assert roster["seats"] == [{"seat": "acct/123", "label": "seat:discord/lab/steward",
                                 "state": "empty", "remote_control": False, "rc_url": "", "node": "",
-                                "rc_live": "", "ts": ""}]
+                                "rc_live": "", "ts": "", "model": "sonnet", "effort": "low",
+                                "refresh": True, "refresh_live": ""}]
 
 
 def test_render_keeps_the_portals_note_and_one_note_per_notice(world):

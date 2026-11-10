@@ -171,6 +171,8 @@ pub fn specs() -> Vec<Spec> {
             targeted(vec![
                 opt("prompt", "string", ""),
                 opt("adopt_lineage", "boolean", "Resume a job that start did not create."),
+                opt("model", "string", "A retired session resumes on this model instead of its recorded one."),
+                opt("effort", "string", "A retired session resumes at this effort instead of its recorded one."),
             ]),
             Some(90),
         ),

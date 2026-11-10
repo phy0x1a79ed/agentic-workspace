@@ -485,6 +485,16 @@
      "name": "prompt",
      "type": "string",
      "description": "The first message the resumed session gets."
+    },
+    {
+     "name": "model",
+     "type": "string",
+     "description": "The model a retired session resumes on, in place of the one it was started with. A stopped job that still exists keeps its own."
+    },
+    {
+     "name": "effort",
+     "type": "string",
+     "description": "The effort a retired session resumes at, in place of the one it was started with. High is the upper limit."
     }
    ],
    "timeout": 90

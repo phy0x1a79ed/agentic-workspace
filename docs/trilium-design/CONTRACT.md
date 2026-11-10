@@ -35,6 +35,7 @@ The vault API, on alcor's address `auth.tony-xy-liu.com` (R64 item 5):
   - `POST /api/agent` with `{node, model?, effort?, note_id?}` starts an agent. `model` is opus, sonnet, haiku or fable, default opus. `effort` is low, medium or high, default high. Any other value is `bad_request`. It opens a card in Needs you and issues an `agent` order to the node. It answers `{task_id, order_id}`. With `note_id`, the card's `source_note` is that note.
   - `POST /api/card/{task_id}/close` and `POST /api/card/{task_id}/reject`.
   - `POST /api/seat/remote_control` with `{seat, on}` calls social's `seat_remote_control`. The seat id `<account>/<channel_id>` holds a slash, so it goes in the body, not the path.
+  - `POST /api/seat/refresh` with `{seat, model, effort}` calls social's `seat_refresh`.
   - `POST /api/request/{request_id}/reject`.
 - An approval takes the passkey, in the modal (below).
 
@@ -76,7 +77,8 @@ Spec: `fleet.md` R147 item 7, `sessions.md` R146.
 3. A switch on an occupied seat calls reflection `remote_control` for the seat's job. An order to a session in mid-turn waits for the turn to end.
 4. `ensure_seat`'s `start_other` passes the seat's `remote_control`.
 5. `seats` rows gain `remote_control` and `rc_url`.
-6. social emits on `social/seats` at each seat's state change and switch change: `{seat, label, state: empty|starting|occupied|retiring, remote_control, node, job?, rc_url?, ts}`, with `ts` in RFC 3339 UTC. `label` is the `seat:<platform>/<server>/<chat>` name, so a chat rename shows as an event. No event at boot. A subscriber reads `social seats` once when it connects.
+6. social emits on `social/seats` at each seat's state change and switch change: `{seat, label, state: empty|starting|occupied|retiring, remote_control, node, model, effort, refresh, job?, rc_url?, ts}`, with `ts` in RFC 3339 UTC. `label` is the `seat:<platform>/<server>/<chat>` name, so a chat rename shows as an event. No event at boot. A subscriber reads `social seats` once when it connects.
+7. A hidden verb, `seat_refresh {seat, model, effort}`, stores the seat's model and effort and answers `{ok, seat, model, effort, live: pending}`. Its caller gate admits only operations on the same node. The seat event that follows carries `refresh_live`: `pending` when the seat restarts its agent between turns, `kept` when the pick waits for the next start.
 
 ## port-harness: reflection
 

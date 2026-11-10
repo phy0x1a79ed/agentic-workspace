@@ -362,8 +362,9 @@ impl Roster {
 /// One seat in one shape, keyed by its id `<account>/<channel>`. Social reports a seat two ways:
 /// a `social seats` row `{id, name, kind, holder, seat: {state, node, remote_control, job,
 /// rc_url, ..} | null}` (tagged with its `account`), and a `social/seats` event
-/// `{seat: "<account>/<channel>", label, state, node, remote_control, job?, rc_url?, rc_live?, ts}`,
-/// where `rc_live` answers a Remote Control flip: `applied`, `none` or `failed: <why>`.
+/// `{seat: "<account>/<channel>", label, state, node, remote_control, job?, rc_url?, rc_live?,
+/// model, effort, refresh, refresh_live?, ts}`, where `rc_live` answers a Remote Control flip:
+/// `applied`, `none` or `failed: <why>`, and `refresh_live` a Refresh: `pending` or `kept`.
 /// A channel that social.toml does not declare a seat (`seat: null`) has no row.
 fn seat_row(row: &Value) -> Option<(String, Value)> {
     let m = row.as_object()?;
@@ -381,8 +382,9 @@ fn seat_row(row: &Value) -> Option<(String, Value)> {
         "state": text(src, "state").unwrap_or_else(|| "empty".into()),
         "remote_control": src.get("remote_control").and_then(Value::as_bool).unwrap_or(false),
         "node": text(src, "node").unwrap_or_default(),
+        "refresh": src.get("refresh").and_then(Value::as_bool).unwrap_or(false),
     });
-    for k in ["job", "rc_url", "rc_live"] {
+    for k in ["job", "rc_url", "rc_live", "model", "effort", "refresh_live"] {
         if let Some(v) = text(src, k) {
             out[k] = json!(v);
         }
@@ -710,30 +712,34 @@ mod tests {
     #[test]
     fn seats_replace_and_update_by_id() {
         let mut r = Roster::default();
-        let empty = json!({"seat": "slack/C042", "label": "alice", "state": "empty", "remote_control": false, "node": "alcor"});
+        let empty = json!({"seat": "slack/C042", "label": "alice", "state": "empty", "remote_control": false, "node": "alcor", "refresh": false});
         let a = r.set_seats(std::slice::from_ref(&empty));
         assert!(a.changed.contains("seats"));
         assert!(r.set_seats(&[empty]).changed.is_empty());
         r.seat_event(&json!({"seat": "slack/C042", "label": "alice", "state": "occupied", "remote_control": true, "node": "alcor",
-                             "job": "j1", "rc_url": "https://claude.ai/code/s", "rc_live": "failed: busy", "ts": "2026-11-07T10:00:00Z"}));
+                             "job": "j1", "rc_url": "https://claude.ai/code/s", "rc_live": "failed: busy", "ts": "2026-11-07T10:00:00Z",
+                             "model": "sonnet", "effort": "low", "refresh": true, "refresh_live": "pending"}));
         let v = r.seats_view();
         assert_eq!((v["seats"].as_array().unwrap().len(), v["seats"][0]["state"].as_str()), (1, Some("occupied")), "keyed on the seat id, not the label");
         assert_eq!(v["seats"][0]["rc_live"], json!("failed: busy"), "the answer to a Remote Control flip reaches Ops");
+        let row = &v["seats"][0];
+        assert_eq!((&row["model"], &row["effort"], &row["refresh"], &row["refresh_live"]), (&json!("sonnet"), &json!("low"), &json!(true), &json!("pending")), "and the pick and a Refresh's answer");
         assert!(r.seat_event(&json!({"state": "x", "name": "alice"})).changed.is_empty(), "a row with no seat id is ignored");
 
         // Real-shaped `social seats` rows (account tagged by the catch-up) land on the same key and shape as events.
         let mut r = Roster::default();
         let held = json!({"id": "C042", "name": "alice", "kind": "channel", "holder": null, "account": "slack-bot",
             "seat": {"state": "occupied", "job": "j1", "node": "alcor", "level": "trusted", "scope": null, "adopted": false, "queued": 0,
-                     "held": null, "breaker": null, "id": "slack-bot/C042", "remote_control": true, "rc_url": "https://claude.ai/code/s"}});
+                     "held": null, "breaker": null, "id": "slack-bot/C042", "remote_control": true, "rc_url": "https://claude.ai/code/s",
+                     "model": "opus", "effort": "high", "refresh": false}});
         let free = json!({"id": "C043", "name": "bob", "kind": "channel", "holder": null, "seat": null, "account": "slack-bot"});
         r.set_seats(&[held, free]);
         let v = r.seats_view();
         assert_eq!(v["seats"].as_array().unwrap().len(), 1, "a channel with no declared seat has no row");
         assert_eq!(v["seats"][0], json!({"seat": "slack-bot/C042", "label": "alice", "state": "occupied", "remote_control": true, "node": "alcor",
-                                         "job": "j1", "rc_url": "https://claude.ai/code/s"}));
+                                         "job": "j1", "rc_url": "https://claude.ai/code/s", "model": "opus", "effort": "high", "refresh": false}));
         let ev = json!({"seat": "slack-bot/C042", "label": "alice", "state": "occupied", "remote_control": true, "node": "alcor",
-                        "job": "j1", "rc_url": "https://claude.ai/code/s"});
+                        "job": "j1", "rc_url": "https://claude.ai/code/s", "model": "opus", "effort": "high", "refresh": false});
         assert!(r.seat_event(&ev).changed.is_empty(), "the live event parses to the row the catch-up made");
     }
 

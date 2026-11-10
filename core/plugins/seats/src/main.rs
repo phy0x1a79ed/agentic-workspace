@@ -94,7 +94,7 @@ impl App {
     }
 
     async fn public(&self, seat: &Seat) -> Value {
-        seat.public(self.seats.queued(seat.account(), seat.channel()).await)
+        self.seats.public(seat).await
     }
 
     async fn list(&self, _call: Call) -> Result<Value, VerbError> {

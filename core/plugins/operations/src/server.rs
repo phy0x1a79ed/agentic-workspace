@@ -396,12 +396,24 @@ async fn seat_rc(State(v): S, method: Method, h: HeaderMap, Json(b): Json<Value>
     if let Err(r) = everyday(&v, &method, &h, "seat_remote_control") {
         return r;
     }
-    let Some(hub) = v.hub.as_ref() else { return deny("failed", "no gateway") };
     let on = b.get("on").is_some_and(crate::service::truthy);
-    match hub.call("social", "seat_remote_control", json!({"seat": sv(&b, "seat"), "on": on}), None).await {
+    social(&v, "seat_remote_control", json!({"seat": sv(&b, "seat"), "on": on})).await
+}
+
+/// An Ops seat switch, answered by social.
+async fn social(v: &Vault, verb: &str, args: Value) -> Response {
+    let Some(hub) = v.hub.as_ref() else { return deny("failed", "no gateway") };
+    match hub.call("social", verb, args, None).await {
         Ok(out) => Json(out).into_response(),
         Err(e) => deny("failed", &e.to_string()),
     }
+}
+
+async fn seat_refresh(State(v): S, method: Method, h: HeaderMap, Json(b): Json<Value>) -> Response {
+    if let Err(r) = everyday(&v, &method, &h, "seat_refresh") {
+        return r;
+    }
+    social(&v, "seat_refresh", json!({"seat": sv(&b, "seat"), "model": sv(&b, "model"), "effort": sv(&b, "effort")})).await
 }
 
 async fn service_toggle(State(v): S, method: Method, h: HeaderMap, Json(b): Json<Value>) -> Response {
@@ -519,6 +531,7 @@ pub fn router(v: Arc<Vault>) -> Router {
         .route("/api/agent", post(agent))
         .route("/api/card/{task_id}/{action}", post(card_action))
         .route("/api/seat/remote_control", post(seat_rc))
+        .route("/api/seat/refresh", post(seat_refresh))
         .route("/api/service/toggle", post(service_toggle))
         .route("/api/request/{request_id}", get(request_view))
         .route("/api/request/{request_id}/options", post(request_options))
