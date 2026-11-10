@@ -304,12 +304,18 @@ impl Seat {
         Previous { job: self.job.clone(), node: self.decl.node.clone(), adopted: self.adopted, stopped }
     }
 
-    /// The seat's own model and effort: the board's pick, else social's. None means the node's.
-    pub fn chosen(&self) -> Option<(&str, &str)> {
-        [(&self.pick_model, &self.pick_effort), (&self.decl.model, &self.decl.effort)]
-            .into_iter()
-            .find(|(model, _)| !model.is_empty())
-            .map(|(model, effort)| (model.as_str(), effort.as_str()))
+    /// The seat runs a session it started or adopted.
+    pub fn has_live_job(&self) -> bool {
+        !self.job.is_empty() && matches!(self.state, State::Starting | State::Occupied)
+    }
+
+    /// The agent left: the seat is empty, and nothing of that agent stays on the row.
+    pub fn clear_agent(&mut self) {
+        self.state = State::Empty;
+        self.job.clear();
+        self.rc_url.clear();
+        self.adopted = false;
+        self.refresh = false;
     }
 
     pub fn account(&self) -> &str {
@@ -350,7 +356,7 @@ impl Seat {
             "queued": queued, "held": if self.held.is_empty() || self.held == "admitted" { Value::Null } else { json!(self.held) },
             "breaker": if self.breaker.hold_until > 0.0 { json!({"hold_until": self.breaker.hold_until}) } else { Value::Null },
             "id": self.id(), "remote_control": self.remote_control, "rc_url": self.rc_url,
-            "model": self.chosen().map(|c| c.0), "effort": self.chosen().map(|c| c.1), "refresh": self.refresh,
+            "refresh": self.refresh,
         })
     }
 }

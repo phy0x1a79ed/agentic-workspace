@@ -209,43 +209,46 @@ function nodeSection(n, q) {
       : empty("no sessions"));
 }
 
-// A flip waits for the seat's answer: a seat event newer than the row it was flipped on.
+// A flip or a Refresh waits for the seat's answer: a seat event newer than the row it was sent on.
 const flips = new Map();
+const refreshes = new Map();
 const FLIP_GIVE_UP_MS = 120000;
 
+// The request `waits` holds for the seat, once its `answer` field came back, else null.
+function answered(waits, s, answer) {
+  const w = waits.get(s.seat);
+  if (!w) return null;
+  if (Date.now() - w.at > FLIP_GIVE_UP_MS) { waits.delete(s.seat); return null; }
+  if (!s[answer] || s.ts === w.ts) return null;
+  waits.delete(s.seat);
+  return w;
+}
+
 function settleFlip(s) {
-  const f = flips.get(s.seat);
+  const f = answered(flips, s, "rc_live");
   if (!f) return;
-  if (Date.now() - f.at > FLIP_GIVE_UP_MS) { flips.delete(s.seat); return; }
-  if (!s.rc_live || s.ts === f.ts) return;
-  flips.delete(s.seat);
   const failed = s.rc_live.startsWith("failed");
   toast(failed ? `${s.label || s.seat}: Remote Control ${f.want ? "on" : "off"} ${s.rc_live}`
     : `${s.label || s.seat}: Remote Control ${s.remote_control ? "on" : "off"}`, failed);
 }
 
-// A seat's model and effort as the spawn panel names them. An unsent pick outlives a redraw.
-const choices = (name) => [...document.querySelectorAll(`input[name="awm-spawn-${name}"]`)]
-  .map((i) => [i.value, i.nextElementSibling.textContent]);
-const picks = new Map();
-// A Refresh waits for its answer as a flip does.
-const refreshes = new Map();
-
 function settleRefresh(s) {
-  const r = refreshes.get(s.seat);
-  if (!r) return;
-  if (Date.now() - r.at > FLIP_GIVE_UP_MS) { refreshes.delete(s.seat); return; }
-  if (!s.refresh_live || s.ts === r.ts) return;
-  refreshes.delete(s.seat);
+  if (!answered(refreshes, s, "refresh_live")) return;
   toast(`${s.label || s.seat}: ${s.model} at ${s.effort} effort ${s.refresh_live === "pending"
     ? "once its agent is between turns" : "from its next start"}`);
 }
+
+// A seat's model and effort as the spawn panel names them. An unsent pick outlives a redraw.
+const spawnChoices = {};
+const choices = (name) => (spawnChoices[name] ??= [...document.querySelectorAll(`input[name="awm-spawn-${name}"]`)]
+  .map((i) => [i.value, i.nextElementSibling.textContent]));
+const picks = new Map();
 
 function pickCell(s) {
   settleRefresh(s);
   const pick = picks.get(s.seat) || { model: s.model, effort: s.effort };
   const select = (name) => {
-    const opts = choices(name);
+    const opts = [...choices(name)];
     if (pick[name] && !opts.some(([v]) => v === pick[name])) opts.push([pick[name], pick[name]]);
     const sel = el("select", { "aria-label": name }, ...opts.map(([v, label]) =>
       el("option", { value: v, selected: v === pick[name] }, label)));

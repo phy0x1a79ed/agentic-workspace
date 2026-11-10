@@ -764,34 +764,35 @@ impl Social {
         Ok(json!({"ok": true, "to": {"account": account, "id": chat.id, "name": chat.name, "state": target.state}, "reads": {"account": src_account, "channel": src_channel, "hours": 24}}))
     }
 
-    /// The Remote Control switch on Ops: operations on this node is the one caller.
-    pub async fn seat_remote_control(&self, call: Call) -> Result<Value, VerbError> {
+    /// The seat an Ops switch names, for operations on this node only.
+    async fn ops_seat(&self, call: &Call) -> Result<crate::seats::store::Seat, VerbError> {
         if !switch_caller(call.plugin.as_deref(), call.from_peer()) {
-            return Err(VerbError::permission("seat_remote_control: only operations on this node runs this"));
+            return Err(VerbError::permission(format!("{}: only operations on this node runs this", call.verb)));
         }
         let seat = s(&call.args, "seat");
+        let (account, channel) = seat.split_once('/').filter(|(a, c)| !a.is_empty() && !c.is_empty()).ok_or_else(|| VerbError::value(format!("seat {seat:?} is not <account>/<channel_id>")))?;
+        self.seats.store.get(account, channel).await.ok_or_else(|| VerbError::value(format!("{seat} is no seat social has seen; `seats` lists them")))
+    }
+
+    /// The Remote Control switch on Ops: operations on this node is the one caller.
+    pub async fn seat_remote_control(&self, call: Call) -> Result<Value, VerbError> {
+        let st = self.ops_seat(&call).await?;
         if call.args.get("on").is_none_or(Value::is_null) {
             return Err(VerbError::value("seat_remote_control: missing required argument(s): on."));
         }
         let on = truthy(call.args.get("on"));
-        let (account, channel) = seat.split_once('/').filter(|(a, c)| !a.is_empty() && !c.is_empty()).ok_or_else(|| VerbError::value(format!("seat {seat:?} is not <account>/<channel_id>")))?;
-        let st = self.seats.store.get(account, channel).await.ok_or_else(|| VerbError::value(format!("{seat} is no seat social has seen; `seats` lists them")))?;
         self.seats.set_remote_control(&st, on).await;
         Ok(json!({"ok": true, "seat": st.id(), "remote_control": on, "live": "pending"}))
     }
 
     /// The Refresh button on Ops: operations on this node is the one caller.
     pub async fn seat_refresh(&self, call: Call) -> Result<Value, VerbError> {
-        if !switch_caller(call.plugin.as_deref(), call.from_peer()) {
-            return Err(VerbError::permission("seat_refresh: only operations on this node runs this"));
-        }
-        let (seat, model, effort) = (s(&call.args, "seat"), s(&call.args, "model"), s(&call.args, "effort"));
+        let st = self.ops_seat(&call).await?;
+        let (model, effort) = (s(&call.args, "model"), s(&call.args, "effort"));
         if model.is_empty() {
             return Err(VerbError::value("seat_refresh: missing required argument(s): model."));
         }
         awm_trust::trust::check_effort(&effort).map_err(|e| VerbError::value(format!("seat_refresh: {e}")))?;
-        let (account, channel) = seat.split_once('/').filter(|(a, c)| !a.is_empty() && !c.is_empty()).ok_or_else(|| VerbError::value(format!("seat {seat:?} is not <account>/<channel_id>")))?;
-        let st = self.seats.store.get(account, channel).await.ok_or_else(|| VerbError::value(format!("{seat} is no seat social has seen; `seats` lists them")))?;
         self.seats.set_refresh(&st, &model, &effort).await;
         Ok(json!({"ok": true, "seat": st.id(), "model": model, "effort": effort, "live": "pending"}))
     }

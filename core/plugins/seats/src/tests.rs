@@ -344,8 +344,7 @@ async fn a_refresh_restarts_the_agent_between_turns_on_the_pick_and_keeps_its_co
     let mut t = T::new(false);
     t.send("task").await;
     t.world.w().busy.insert("job-1".into());
-    let (s, answer) = t.seats.set_refresh("opal", "D0TEST", "sonnet", "medium").await.unwrap();
-    assert_eq!((answer, s.refresh), (Refresh::Pending, true));
+    assert!(t.seats.set_refresh("opal", "D0TEST", "sonnet", "medium").await.unwrap().refresh);
     let event = t.world.w().seat_reports.last().unwrap()["event"].clone();
     assert_eq!((event["refresh_live"].clone(), event["refresh"].clone(), event["model"].clone()), (json!("pending"), json!(true), json!("sonnet")), "social hears the answer");
     t.tick().await;
@@ -364,14 +363,14 @@ async fn a_refresh_restarts_the_agent_between_turns_on_the_pick_and_keeps_its_co
 
     t.world.w().up.clear();
     t.tick().await;
-    let (s, answer) = t.seats.set_refresh("opal", "D0TEST", "haiku", "low").await.unwrap();
-    assert_eq!((answer, s.refresh, s.state), (Refresh::Kept, false, State::Empty), "an empty seat keeps the pick for its next start");
+    let s = t.seats.set_refresh("opal", "D0TEST", "haiku", "low").await.unwrap();
+    assert_eq!((s.refresh, s.state), (false, State::Empty), "an empty seat keeps the pick for its next start");
+    assert_eq!(t.world.w().seat_reports.last().unwrap()["event"]["refresh_live"], json!("kept"));
     assert_eq!(t.world.w().resumed.len(), 1, "and starts nothing");
 
     t.world.w().up.insert("hand-started".into());
     t.seats.adopt(&decl(), "hand-started").await;
-    let (s, answer) = t.seats.set_refresh("opal", "D0TEST", "opus", "high").await.unwrap();
-    assert_eq!((answer, s.refresh), (Refresh::Kept, false), "a session the seat only adopted is never restarted");
+    assert!(!t.seats.set_refresh("opal", "D0TEST", "opus", "high").await.unwrap().refresh, "a session the seat only adopted is never restarted");
 }
 
 #[test]
