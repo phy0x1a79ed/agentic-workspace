@@ -693,12 +693,12 @@ mod tests {
         assert_eq!(row["last_used"], json!(later));
         assert_eq!(v["services"][1]["health"], "unknown", "alcor runs no service with the 2fa tool");
         assert_eq!(v["services"][2]["health"], "unknown", "deneb never reported");
-        let reach = |r: &Roster, at| r.nodes_view(Some("mizar"), at)["nodes"][0]["uses"][1]["reach"].clone();
-        assert_eq!(r.nodes_view(Some("mizar"), later)["nodes"][0]["uses"][0]["reach"], "untried", "mizar never called journal");
-        assert_eq!(reach(&r, later), "failing", "mizar's newest call failed");
+        let reach = |r: &Roster, at, i: usize| r.nodes_view(Some("mizar"), at)["nodes"][0]["uses"][i]["reach"].clone();
+        assert_eq!(reach(&r, later, 0), "untried", "mizar never called journal");
+        assert_eq!(reach(&r, later, 1), "failing", "mizar's newest call failed");
         let fixed = t("2026-11-07T10:10:00Z");
         r.apply("mizar", vec![Item::Usage { tool: "social".into(), last_used: Some(fixed), last_ok: Some(fixed) }], fixed);
-        assert_eq!(reach(&r, fixed), "ok");
+        assert_eq!(reach(&r, fixed, 1), "ok");
 
         let down = Item::Service { service: "social".into(), plugin: None, up: false, ts: Some(later) };
         let a = r.apply("alcor", vec![down], later);

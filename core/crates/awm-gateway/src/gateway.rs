@@ -1200,10 +1200,7 @@ impl Gateway {
         let started = Instant::now();
         let routed = peer.filter(|p| p != "local" && *p != self.node);
         // A routed call names no local plugin, so its tool stands in.
-        let plugin = match routed {
-            Some(_) => Some(tool.clone()),
-            None => tools.get(&tool).map(|e| e.plugin.clone()),
-        };
+        let plugin = if routed.is_some() { Some(tool.clone()) } else { tools.get(&tool).map(|e| e.plugin.clone()) };
         let result = match routed {
             Some(peer) => {
                 if SESSION_BOUND.iter().any(|(t, vs)| *t == tool && vs.contains(&verb.as_str())) {
