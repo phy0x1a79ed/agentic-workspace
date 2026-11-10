@@ -100,7 +100,7 @@ before for the next page.", json!([s("section"), s("q"), p("before", "number", f
 first heading when the session has none and is not a seat.", json!([sid_req(), s("plan_text")])),
         h("hook_todos", "The task hooks: the session's todo list changed. It shows on the card. A session with no card is left alone.",
           json!([sid_req(), p("items", "array", true, "The full list, each item {id, subject, status}.")])),
-        h("hook_session_clear", "The SessionStart hook on clear: the job's new session takes the old one's place on its card.", json!([p("new_session_id", "string", false, "The session id after the clear.")])),
+        h("hook_session_clear", "The SessionStart hook on clear: the job's new session takes the old one's place on its card.", json!([])),
         h("claim_task", "The prompt hook on Tony's `claim task <id>`: the session becomes the card's main session, and a Needs-you or \
 Stale card moves to Working.", json!([p("task_id", "string", true, "The 8-character task id."), sid()])),
         h("track_task", "Put your session's work on the board: your card, or a new one in Working. A plan, a claim or request_human also \

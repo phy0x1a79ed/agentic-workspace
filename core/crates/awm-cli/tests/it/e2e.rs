@@ -1047,6 +1047,9 @@ fn a_caller_reaches_a_peers_singleton_through_its_door() {
         assert_eq!((who["caller"]["node"].as_str(), who["caller"]["lane"].as_str()), (Some("alcor"), Some("service")), "{who}");
         assert_eq!(who["as"], "peer:alcor");
     }
+    // alcor's usage log holds each door call, so telemetry sees a failing door.
+    let oks: Vec<Value> = usage_log(&alcor_state).into_iter().filter(|e| e["tool"] == "trilium").map(|e| e["ok"].clone()).collect();
+    assert_eq!(oks, [json!(false), json!(true), json!(true)]);
     let args = std::fs::read_to_string(&door.args).unwrap();
     assert!(args.contains("\n-p\n2201\n127.0.0.1\nport\n"), "the door listens on deneb's public address, and the request is not on the command line: {args}");
     assert!(args.contains("\n-l\nawm\n"), "the caller logs in as the door's user: {args}");
@@ -1269,6 +1272,13 @@ fn rpc(base: &str, token: Option<&str>, method: &str, params: Value) -> (u16, Va
     let resp = req.json(&body).send().unwrap();
     let status = resp.status().as_u16();
     (status, resp.json().unwrap_or(Value::Null))
+}
+
+/// Every event in a gateway's usage log, oldest day first.
+fn usage_log(state: &Path) -> Vec<Value> {
+    let mut days: Vec<_> = std::fs::read_dir(state.join("usage")).unwrap().flatten().map(|e| e.path()).collect();
+    days.sort();
+    days.iter().flat_map(|p| std::fs::read_to_string(p).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect::<Vec<Value>>()).collect()
 }
 
 fn door_call(base: &str, tool: &str, arguments: Value) -> (String, bool) {
@@ -1495,7 +1505,6 @@ fn a_plugin_hears_service_and_usage_events() {
     let payloads = until("the usage event", "uselisten", &|ps| ps.iter().any(|p| p["tool"] == "uselisten" && p["verb"] == "heard"));
     let ev = payloads.iter().find(|p| p["tool"] == "uselisten" && p["verb"] == "heard").unwrap();
     assert_eq!((&ev["plugin"], &ev["surface"], &ev["ok"]), (&json!("uselisten"), &json!("cli"), &json!(true)), "{ev}");
-    let written: String = std::fs::read_dir(state.join("usage")).unwrap().flatten().map(|e| std::fs::read_to_string(e.path()).unwrap()).collect();
-    assert!(written.lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()).any(|l| &l == ev), "the event differs from the line written: {ev}");
+    assert!(usage_log(&state).contains(ev), "the event differs from the line written: {ev}");
     assert!(gw.stop().success());
 }

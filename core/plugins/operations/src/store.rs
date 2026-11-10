@@ -550,24 +550,15 @@ impl Store {
         })
     }
 
-    /// Title a card still named by `agent_card`. A plan heading also replaces a title taken
-    /// from the first prompt. A session's name replaces either, so neither overwrites one.
-    pub fn task_autotitle(&self, task_id: &str, title: &str, from_plan: bool, op_id: Option<&str>) -> Result<Value> {
+    /// Title a card still named by `agent_card`, so a session's name or an earlier plan stays.
+    pub fn task_autotitle(&self, task_id: &str, title: &str, op_id: Option<&str>) -> Result<Value> {
         self.write(op_id, |tx| {
             let row = task_by_id(&tx.tx, task_id)?;
             let default = row.meta.get("from") == Some(&json!("vault")) && row.title.starts_with("Agent on ");
-            let provisional = row.meta.get("title_from") == Some(&json!("prompt"));
-            if title.is_empty() || !(default || (from_plan && provisional)) {
+            if title.is_empty() || !default {
                 return Ok(json!({"task_id": row.task_id, "retitled": false}));
             }
-            let mut meta = row.meta.clone();
-            if from_plan {
-                meta.remove("title_from");
-            } else {
-                meta.insert("title_from".into(), json!("prompt"));
-            }
-            tx.tx.execute("UPDATE tasks SET title=?, meta=?, updated=? WHERE task_id=?",
-                          params![title, Value::Object(meta).to_string(), tx.now, row.task_id])?;
+            tx.tx.execute("UPDATE tasks SET title=?, updated=? WHERE task_id=?", params![title, tx.now, row.task_id])?;
             tx.event(&row.task_id, "title", json!({"title": title}))?;
             Ok(json!({"task_id": row.task_id, "retitled": true}))
         })
@@ -919,7 +910,8 @@ impl Store {
     /// A main session's live state moves its card (R61 item 2): `blocked` to Needs you with
     /// `needs` as the reason, `working` out of Needs you or Stale, and `done` out of Stale or out
     /// of a Needs you that a block put there, so a `request_human` outlives the turn that ends
-    /// after it. History, approval cards and a pending approval stay. Answers the tasks it moved.
+    /// after it, or a Needs you with no request. History, approval cards and a pending approval
+    /// stay. Answers the tasks it moved.
     pub fn session_state(&self, session_id: Option<&str>, job: Option<&str>, node: &str, state: &str, needs: Option<&str>) -> Result<Vec<String>> {
         let v = self.write(None, |tx| {
             let mut moved = vec![];
@@ -930,29 +922,22 @@ impl Store {
                     continue;
                 }
                 let by_state = row.meta.contains_key(BLOCKED_BY_STATE);
-                let to_working = match (state, row.section.as_str()) {
-                    ("blocked", WORKING | NEEDS_YOU | STALE) => false,
-                    ("working", NEEDS_YOU | STALE) | ("done", STALE) => true,
-                    ("done", NEEDS_YOU) if by_state => true,
+                let blocked = match (state, row.section.as_str()) {
+                    ("blocked", NEEDS_YOU) if by_state && row.meta.get("reason").and_then(Value::as_str) == needs => continue,
+                    ("blocked", WORKING | NEEDS_YOU | STALE) => true,
+                    ("working", NEEDS_YOU | STALE) | ("done", STALE) => false,
+                    ("done", NEEDS_YOU) if by_state || row.status.is_none() => false,
                     _ => continue,
                 };
                 let mut meta = row.meta.clone();
-                if to_working {
-                    meta.insert("reason".into(), Value::Null);
-                    meta.remove(BLOCKED_BY_STATE);
-                } else {
-                    if row.section == NEEDS_YOU && by_state && row.meta.get("reason").and_then(Value::as_str) == needs {
-                        continue;
-                    }
-                    meta.insert("reason".into(), json!(needs));
-                    meta.insert(BLOCKED_BY_STATE.into(), json!(true));
-                }
+                meta.insert("reason".into(), if blocked { json!(needs) } else { Value::Null });
+                match blocked {
+                    true => meta.insert(BLOCKED_BY_STATE.into(), json!(true)),
+                    false => meta.remove(BLOCKED_BY_STATE),
+                };
                 tx.tx.execute("UPDATE tasks SET meta=? WHERE task_id=?", params![Value::Object(meta).to_string(), row.task_id])?;
-                let data = json!({"session_id": sid, "reason": needs});
-                match to_working {
-                    true => Store::set_card(tx, &row.task_id, WORKING, None, "state", data)?,
-                    false => Store::set_card(tx, &row.task_id, NEEDS_YOU, Some("blocked"), "state", data)?,
-                }
+                let (section, status) = if blocked { (NEEDS_YOU, Some("blocked")) } else { (WORKING, None) };
+                Store::set_card(tx, &row.task_id, section, status, "state", json!({"session_id": sid, "reason": needs}))?;
                 moved.push(row.task_id);
             }
             Ok(json!(moved))
@@ -971,7 +956,7 @@ impl Store {
             for (sid, tid) in match_rows(&tx.tx, session_id, job, node, true)? {
                 tx.tx.execute("UPDATE sessions SET name=? WHERE session_id=?", params![name, sid])?;
                 let n = tx.tx.execute(
-                    "UPDATE tasks SET title=?1, updated=?2, meta=json_remove(COALESCE(meta,'{}'),'$.title_from') WHERE task_id=?3 AND title<>?1 \
+                    "UPDATE tasks SET title=?1, updated=?2 WHERE task_id=?3 AND title<>?1 \
                      AND EXISTS (SELECT 1 FROM sessions WHERE session_id=?4 AND task_id=?3 AND role='main')",
                     params![name, tx.now, tid, sid],
                 )?;
@@ -1010,8 +995,8 @@ impl Store {
                 (false, Some(_)) => live.extend(self.session_live(Some(&sid), None, &node)?),
                 _ => {}
             }
-            if let Some(state) = found.and_then(|l| l.state.as_deref()) {
-                moved.extend(self.session_state(Some(&sid), None, &node, state, found.and_then(|l| l.needs.as_deref()))?);
+            if let Some(l @ LiveSession { state: Some(state), .. }) = found {
+                moved.extend(self.session_state(Some(&sid), None, &node, state, l.needs.as_deref())?);
             }
         }
         Ok(json!({"stale": gone, "working": live, "state": moved}))

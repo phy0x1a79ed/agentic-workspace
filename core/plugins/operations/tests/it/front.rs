@@ -299,7 +299,7 @@ async fn claim_moves_a_needs_you_card_to_working() {
     let o = Open { kind: Some("note".into()), section: Some("needs_you".into()), ..Open::default() };
     let t = s(&h.env.store.task_open("idea", o, None).unwrap()["task_id"]);
     assert!(!ok(&h.call("claim_task", pid(11), json!({})).await));
-    let out = h.call("claim_task", pid(11), json!({"task_id": format!("claim task {t}")})).await;
+    let out = h.call("claim_task", pid(11), json!({"task_id": t})).await;
     assert!(ok(&out) && out["section"] == "working", "{out}");
     let card = h.env.store.task_get(&t).unwrap();
     assert_eq!((s(&card["kind"]), s(&card["sessions"][0]["role"]), s(&card["sessions"][0]["job"])), ("task".into(), "main".into(), "job-a".into()));

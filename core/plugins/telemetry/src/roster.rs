@@ -148,7 +148,8 @@ pub struct ToolUse {
     #[serde(default)]
     pub host: Option<String>,
     /// Whether the node's last check listed the tool. A tool it no longer lists keeps its history.
-    pub available: bool,
+    #[serde(alias = "available")]
+    pub listed: bool,
     #[serde(default)]
     pub last_checked: Option<Ts>,
     #[serde(default)]
@@ -156,6 +157,17 @@ pub struct ToolUse {
     /// The newest call that succeeded: for a tool the node hosts, its last response.
     #[serde(default)]
     pub last_ok: Option<Ts>,
+}
+
+impl ToolUse {
+    /// Whether the node's calls get through: `failing` when its newest call is newer than its newest success.
+    fn reach(&self) -> &'static str {
+        match (self.last_used, self.last_ok) {
+            (None, _) => "untried",
+            (Some(used), Some(ok)) if ok >= used => "ok",
+            _ => "failing",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -305,8 +317,8 @@ impl Roster {
                     })).collect::<Vec<_>>(),
                     "plugins": n.plugins,
                     "uses": n.tools.iter().map(|(t, u)| json!({
-                        "tool": t, "host": u.host, "available": u.available,
-                        "last_checked": u.last_checked, "last_used": u.last_used,
+                        "tool": t, "host": u.host, "listed": u.listed, "reach": u.reach(),
+                        "last_checked": u.last_checked, "last_used": u.last_used, "last_ok": u.last_ok,
                     })).collect::<Vec<_>>(),
                 })
             })
@@ -352,14 +364,14 @@ impl Roster {
 /// rc_url, ..} | null}` (tagged with its `account`), and a `social/seats` event
 /// `{seat: "<account>/<channel>", label, state, node, remote_control, job?, rc_url?, rc_live?, ts}`,
 /// where `rc_live` answers a Remote Control flip: `applied`, `none` or `failed: <why>`.
-/// A channel with no seat row is `empty`.
+/// A channel that social.toml does not declare a seat (`seat: null`) has no row.
 fn seat_row(row: &Value) -> Option<(String, Value)> {
     let m = row.as_object()?;
     let nested = m.get("seat").and_then(Value::as_object);
     let key = match (m.get("seat"), nested) {
         (Some(Value::String(id)), _) => id.clone(),
         (_, Some(n)) => n.get("id").and_then(Value::as_str)?.to_string(),
-        _ => format!("{}/{}", m.get("account")?.as_str()?, m.get("id")?.as_str()?),
+        _ => return None,
     };
     let src = nested.unwrap_or(m);
     let text = |o: &serde_json::Map<String, Value>, k: &str| o.get(k).and_then(Value::as_str).filter(|v| !v.is_empty()).map(str::to_string);
@@ -434,17 +446,17 @@ fn set_services(state: &mut NodeState, rows: Vec<ServiceRow>, now: Ts, out: &mut
 fn set_tools(state: &mut NodeState, rows: Vec<ToolRow>, now: Ts, out: &mut Applied) {
     let listed: BTreeMap<String, Option<String>> = rows.into_iter().map(|r| (r.tool, r.host)).collect();
     for (tool, u) in state.tools.iter_mut() {
-        if !listed.contains_key(tool) && u.available {
-            u.available = false;
+        if !listed.contains_key(tool) && u.listed {
+            u.listed = false;
             out.changed.insert("services");
         }
     }
     for (tool, host) in listed {
         let u = state.tools.entry(tool).or_default();
-        if !u.available || u.host != host {
+        if !u.listed || u.host != host {
             out.changed.insert("services");
         }
-        (u.available, u.host, u.last_checked) = (true, host, Some(now));
+        (u.listed, u.host, u.last_checked) = (true, host, Some(now));
     }
 }
 
@@ -681,6 +693,12 @@ mod tests {
         assert_eq!(row["last_used"], json!(later));
         assert_eq!(v["services"][1]["health"], "unknown", "alcor runs no service with the 2fa tool");
         assert_eq!(v["services"][2]["health"], "unknown", "deneb never reported");
+        let reach = |r: &Roster, at, i: usize| r.nodes_view(Some("mizar"), at)["nodes"][0]["uses"][i]["reach"].clone();
+        assert_eq!(reach(&r, later, 0), "untried", "mizar never called journal");
+        assert_eq!(reach(&r, later, 1), "failing", "mizar's newest call failed");
+        let fixed = t("2026-11-07T10:10:00Z");
+        r.apply("mizar", vec![Item::Usage { tool: "social".into(), last_used: Some(fixed), last_ok: Some(fixed) }], fixed);
+        assert_eq!(reach(&r, fixed, 1), "ok");
 
         let down = Item::Service { service: "social".into(), plugin: None, up: false, ts: Some(later) };
         let a = r.apply("alcor", vec![down], later);
@@ -711,9 +729,9 @@ mod tests {
         let free = json!({"id": "C043", "name": "bob", "kind": "channel", "holder": null, "seat": null, "account": "slack-bot"});
         r.set_seats(&[held, free]);
         let v = r.seats_view();
+        assert_eq!(v["seats"].as_array().unwrap().len(), 1, "a channel with no declared seat has no row");
         assert_eq!(v["seats"][0], json!({"seat": "slack-bot/C042", "label": "alice", "state": "occupied", "remote_control": true, "node": "alcor",
                                          "job": "j1", "rc_url": "https://claude.ai/code/s"}));
-        assert_eq!((v["seats"][1]["seat"].as_str(), v["seats"][1]["state"].as_str()), (Some("slack-bot/C043"), Some("empty")));
         let ev = json!({"seat": "slack-bot/C042", "label": "alice", "state": "occupied", "remote_control": true, "node": "alcor",
                         "job": "j1", "rc_url": "https://claude.ai/code/s"});
         assert!(r.seat_event(&ev).changed.is_empty(), "the live event parses to the row the catch-up made");

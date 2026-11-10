@@ -9,7 +9,7 @@ use std::time::Duration;
 pub const TOOL: &str = "search";
 
 pub const QUERY_DESCRIPTION: &str = "\
-search query \u{2014} rank items from named sources.
+Rank hits from named sources. Open a hit with `get`.
   query: string | {\"text\"?: T, \"<source>\": F, ...}    max: hits per source per section, default 10
 
 <source>: a kind `sources` lists, such as journals, or guide for how to use awm; @node for another node.

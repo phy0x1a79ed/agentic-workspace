@@ -54,8 +54,8 @@ const NATIVE_WRITES: [&str; 11] =
 const DOOR_VERBS_TTL: Duration = Duration::from_secs(600);
 const DOOR_VERBS_RETRY: Duration = Duration::from_secs(60);
 
-/// One verb as the MCP list shows it: name, summary and required arguments.
-type VerbLine = (String, String, Vec<String>);
+/// One verb as the MCP list shows it: name, summary, and each argument with whether it is required.
+type VerbLine = (String, String, Vec<(String, bool)>);
 
 /// A singleton's verbs as its host's door last described them.
 #[derive(Default)]
@@ -885,11 +885,11 @@ impl Gateway {
         v
     }
 
-    /// Each verb with its summary and required arguments. On `mcp`, a verb whose `surfaces`
+    /// Each verb with its summary and arguments. On `mcp`, a verb whose `surfaces`
     /// leaves out `mcp`, such as a hook's, is left out. The CLI and HTTP keep every verb.
-    fn verb_names(&self, entry: &ToolEntry, mcp: bool) -> Vec<(String, String, Vec<String>)> {
+    fn verb_names(&self, entry: &ToolEntry, mcp: bool) -> Vec<VerbLine> {
         let listed = entry.verbs.iter().filter(|(_, vb)| !mcp || on_mcp(&vb.spec));
-        let own = listed.map(|(_, vb)| (vb.verb.clone(), summary(&vb.spec), required(&vb.spec)));
+        let own = listed.map(|(_, vb)| (vb.verb.clone(), summary(&vb.spec), args(&vb.spec)));
         if entry.name == NATIVE_TOOL {
             let mut v: Vec<_> = NATIVE_VERBS.iter().map(|(n, d)| (n.to_string(), d.to_string(), vec![])).collect();
             v.extend(own);
@@ -1037,7 +1037,10 @@ impl Gateway {
             .filter(|e| !self.singleton_refuses(&e.name, caller))
             .map(|e| {
                 json!({"tool": e.name, "plugin": e.plugin, "tier": if e.tier == Tier::On {"on"} else {"off"},
-                       "verbs": self.verb_names(e, mcp).into_iter().map(|(v, s, r)| json!({"verb": v, "summary": one_line(&s), "required": r})).collect::<Vec<_>>()})
+                       "verbs": self.verb_names(e, mcp).into_iter().map(|(v, s, a)| {
+                           let pick = |want| a.iter().filter(|(_, r)| *r == want).map(|(n, _)| n).collect::<Vec<_>>();
+                           json!({"verb": v, "summary": one_line(&s), "required": pick(true), "optional": pick(false)})
+                       }).collect::<Vec<_>>()})
             })
             .collect();
         json!({"node": self.node, "tools": tools,
@@ -1197,25 +1200,31 @@ impl Gateway {
             tracing::info!("level gate: refused {tool}.{verb}: {why}");
             return Err(ApiError::new(403, why));
         }
-        if let Some(peer) = peer.filter(|p| p != "local" && *p != self.node) {
-            if SESSION_BOUND.iter().any(|(t, vs)| *t == tool && vs.contains(&verb.as_str())) {
-                return Err(ApiError::new(400, format!(
-                    "{tool}.{verb} acts on your own session on this node, so it cannot run on peer {peer:?}; call it without peer")));
-            }
-            // The far node takes a session claim in the args as this node's word, so a
-            // session's own call carries none: its identity rides in the caller this node stamps.
-            let from_session = ctx.caller.lane == Lane::Local && ctx.caller.session.is_some();
-            let envelope = json!({"verb": verb, "args": if from_session { strip_stamps(&inner) } else { inner }});
-            if let Some(route) = door {
-                let request = crate::door::request(tool, envelope, &ctx.caller, &self.node);
-                return Ok(crate::door::call(&route, &request).await?);
-            }
-            return Ok(self.peers.invoke(&peer, &tool, envelope, ctx).await?);
-        }
-
         let started = Instant::now();
-        let result = self.invoke_local(&tool, &verb, inner, ctx, &tools).await;
-        self.record_call(&tools, &tool, &verb, ctx, result.is_ok(), started);
+        let routed = peer.filter(|p| p != "local" && *p != self.node);
+        // A routed call names no local plugin, so its tool stands in.
+        let plugin = if routed.is_some() { Some(tool.clone()) } else { tools.get(&tool).map(|e| e.plugin.clone()) };
+        let result = match routed {
+            Some(peer) => {
+                if SESSION_BOUND.iter().any(|(t, vs)| *t == tool && vs.contains(&verb.as_str())) {
+                    return Err(ApiError::new(400, format!(
+                        "{tool}.{verb} acts on your own session on this node, so it cannot run on peer {peer:?}; call it without peer")));
+                }
+                // The far node takes a session claim in the args as this node's word, so a
+                // session's own call carries none: its identity rides in the caller this node stamps.
+                let from_session = ctx.caller.lane == Lane::Local && ctx.caller.session.is_some();
+                let envelope = json!({"verb": verb, "args": if from_session { strip_stamps(&inner) } else { inner }});
+                match door {
+                    Some(route) => {
+                        let request = crate::door::request(tool.clone(), envelope, &ctx.caller, &self.node);
+                        crate::door::call(&route, &request).await.map_err(ApiError::from)
+                    }
+                    None => self.peers.invoke(&peer, &tool, envelope, ctx).await.map_err(ApiError::from),
+                }
+            }
+            None => self.invoke_local(&tool, &verb, inner, ctx, &tools).await,
+        };
+        self.record_call(plugin, &tool, &verb, ctx, result.is_ok(), started);
         result
     }
 
@@ -1241,8 +1250,8 @@ impl Gateway {
         self.topics.publish(self, crate::telemetry::SERVICE, crate::telemetry::SERVICES_TOPIC, &payload);
     }
 
-    fn record_call(&self, tools: &BTreeMap<String, ToolEntry>, tool: &str, verb: &str, ctx: &CallContext, ok: bool, started: Instant) {
-        let Some(plugin) = tools.get(tool).map(|e| e.plugin.clone()).filter(|_| verb != DESCRIBE) else { return };
+    fn record_call(&self, plugin: Option<String>, tool: &str, verb: &str, ctx: &CallContext, ok: bool, started: Instant) {
+        let Some(plugin) = plugin.filter(|_| verb != DESCRIBE) else { return };
         let mut ev = UsageEvent::new(plugin, ctx.surface);
         ev.tool = Some(tool.to_string());
         ev.verb = Some(verb.to_string());
@@ -1342,7 +1351,7 @@ impl Gateway {
             Ok::<_, ApiError>(render(&value))
         }
         .await;
-        self.record_call(&tools, tool, verb, &ctx, result.is_ok(), started);
+        self.record_call(tools.get(tool).map(|e| e.plugin.clone()), tool, verb, &ctx, result.is_ok(), started);
         result
     }
 
@@ -1404,7 +1413,10 @@ fn domain_tool(name: &str, verbs: Option<Vec<VerbLine>>, runs: &str, peer: Optio
     let mut lines: Vec<String> = verbs
         .iter()
         .flatten()
-        .map(|(v, s, req)| format!("- {v}({}): {}", req.join(", "), one_line(s)))
+        .map(|(v, s, args)| {
+            let args: Vec<String> = args.iter().map(|(n, r)| if *r { n.clone() } else { format!("{n}?") }).collect();
+            format!("- {v}({}): {}", args.join(", "), one_line(s))
+        })
         .collect();
     if lines.is_empty() {
         lines.push("- (its verbs are not read yet; call verb='describe' for them)".into());
@@ -1427,7 +1439,7 @@ fn domain_tool(name: &str, verbs: Option<Vec<VerbLine>>, runs: &str, peer: Optio
     json!({
         "name": name,
         "description": format!(
-            "The '{name}' tool. Call with {{verb, args}}; verb='describe' (optionally args={{verbs:[<name>, ...]}}) returns full parameter schemas. Verbs, with required arguments:\n{}\n{runs}",
+            "The '{name}' tool. Call with {{verb, args}}; verb='describe' (optionally args={{verbs:[<name>, ...]}}) returns full parameter schemas. Verbs, with arguments (? marks optional):\n{}\n{runs}",
             lines.join("\n")),
         "inputSchema": {"type": "object", "properties": properties, "required": ["verb"]},
     })
@@ -1443,7 +1455,7 @@ fn described_verbs(answer: &Value) -> Vec<VerbLine> {
         .filter(|v| on_mcp(v))
         .filter_map(|v| {
             let name = v.get("verb").and_then(Value::as_str)?.to_string();
-            Some((name, summary(v), required(v)))
+            Some((name, summary(v), args(v)))
         })
         .collect()
 }
@@ -1457,25 +1469,36 @@ fn summary(spec: &Value) -> String {
     spec.get("description").and_then(Value::as_str).unwrap_or("").to_string()
 }
 
+/// The first sentence of the first line, cut at a word boundary past 160 characters.
 fn one_line(s: &str) -> String {
-    let first = s.lines().next().unwrap_or("").trim();
-    if first.chars().count() > 100 {
-        format!("{}...", first.chars().take(97).collect::<String>())
-    } else {
-        first.to_string()
+    const CAP: usize = 160;
+    let line = s.lines().next().unwrap_or("").trim();
+    let end = line.match_indices(". ").map(|(i, _)| i).find(|&i| ends_sentence(&line[..i])).map_or(line.len(), |i| i + 1);
+    let sentence = &line[..end];
+    if sentence.chars().count() <= CAP {
+        return sentence.to_string();
     }
+    let head: String = sentence.chars().take(CAP).collect();
+    let cut = head.rfind(' ').unwrap_or(head.len());
+    format!("{}...", head[..cut].trim_end_matches([',', ';', ':']))
 }
 
-fn required(spec: &Value) -> Vec<String> {
+/// Whether a period after `before` ends a sentence: not after a one-letter word, as in "e.g.".
+fn ends_sentence(before: &str) -> bool {
+    before.rsplit([' ', '.', '(']).next().is_none_or(|w| w.chars().count() > 1)
+}
+
+/// Each param in declared order, with whether it is required.
+fn args(spec: &Value) -> Vec<(String, bool)> {
     spec.get("params")
         .and_then(Value::as_array)
-        .map(|ps| {
-            ps.iter()
-                .filter(|p| p.get("required").and_then(Value::as_bool).unwrap_or(false))
-                .filter_map(|p| p.get("name").and_then(Value::as_str).map(str::to_string))
-                .collect()
+        .into_iter()
+        .flatten()
+        .filter_map(|p| {
+            let name = p.get("name").and_then(Value::as_str)?.to_string();
+            Some((name, p.get("required").and_then(Value::as_bool).unwrap_or(false)))
         })
-        .unwrap_or_default()
+        .collect()
 }
 
 /// A manifest's type name as a JSON Schema type.
@@ -1612,4 +1635,27 @@ fn load_plugins(
     });
     crate::lifecycle::stamp_all(&mut load, &core_roots, &cfg.workspace_dir(state).join(PLUGIN_PINS));
     load
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn domain_tool_verb_lines() {
+        let long = format!("{} tail. More.", "word ".repeat(40));
+        let rows: [(&str, &[(&str, bool)], &str); 5] = [
+            ("Rank hits. Open one with get.", &[("query", true), ("max", false)], "- v(query, max?): Rank hits."),
+            ("No arguments.", &[], "- v(): No arguments."),
+            ("Find items, e.g. notes. Then more.\nSecond line.", &[], "- v(): Find items, e.g. notes."),
+            ("Ends without a period", &[("a", false)], "- v(a?): Ends without a period"),
+            (&long, &[], &format!("- v(): {}...", "word ".repeat(32).trim_end())),
+        ];
+        for (summary, args, want) in rows {
+            let args = args.iter().map(|(n, r)| (n.to_string(), *r)).collect();
+            let tool = domain_tool("t", Some(vec![("v".into(), summary.into(), args)]), "", None);
+            let desc = tool["description"].as_str().unwrap();
+            assert!(desc.lines().any(|l| l == want), "{want:?} not in {desc}");
+        }
+    }
 }
