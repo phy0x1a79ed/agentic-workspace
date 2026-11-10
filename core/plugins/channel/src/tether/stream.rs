@@ -498,9 +498,14 @@ impl Stream {
             let mut lines = BufReader::new(stream).lines();
             let quiet = || std::io::Error::new(std::io::ErrorKind::TimedOut, "the event stream went quiet");
             let Some(opening) = tokio::time::timeout(IDLE_DEADLINE, lines.next_line()).await.map_err(|_| quiet())?? else { return Ok(()) };
-            let epoch = serde_json::from_str::<Value>(&opening).ok().and_then(|h| int(&h, "epoch"));
+            let opening = serde_json::from_str::<Value>(&opening).unwrap_or_default();
+            let epoch = int(&opening, "epoch");
             if let Some(e) = epoch {
                 self.begin(e);
+                // A new daemon read our cursor from the old one's numbering. Ask again from ours.
+                if int(&opening, "cursor").is_some_and(|c| c != self.journal.next()) {
+                    return Ok(());
+                }
             }
             loop {
                 let Some(raw) = tokio::time::timeout(IDLE_DEADLINE, lines.next_line()).await.map_err(|_| quiet())?? else { return Ok(()) };
@@ -597,6 +602,41 @@ mod tests {
         assert!(again.book().0.gens.is_empty());
         let mode = std::fs::metadata(tmp.path().join("sessions")).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o700);
+    }
+
+    /// A replaced daemon numbers from zero, so the cursor the plugin held for the old one would
+    /// skip the new one's first events until its stream caught up.
+    #[tokio::test]
+    async fn a_replaced_daemon_is_read_from_its_own_start() {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        let tmp = tempfile::tempdir().unwrap();
+        let socket = tmp.path().join("operator.sock");
+        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        // The daemon's side: it starts the watch where it was asked to, at most its own head.
+        let head = 2;
+        tokio::spawn(async move {
+            loop {
+                let (stream, _) = listener.accept().await.unwrap();
+                let (read, mut write) = stream.into_split();
+                let mut request = String::new();
+                BufReader::new(read).read_line(&mut request).await.unwrap();
+                let since = serde_json::from_str::<Value>(&request).unwrap()["args"]["since"].as_i64().unwrap();
+                let mut out = json!({"type": "watch.open", "epoch": 10, "cursor": since}).to_string() + "\n";
+                for seq in since..head {
+                    out += &(ev(seq, 1, "owner.said").to_string() + "\n");
+                }
+                write.write_all(out.as_bytes()).await.unwrap();
+            }
+        });
+        let s = Stream::new(Mark::load(&tmp.path().join("stream.json")), SessionLogs::new(tmp.path().join("sessions")));
+        s.begin(9);
+        for seq in 0..40 {
+            s.take(Some(9), ev(seq, 1, "owner.said"));
+        }
+        s.watch_once(&socket).await.unwrap();
+        s.watch_once(&socket).await.unwrap();
+        assert_eq!(s.journal.epoch(), Some(10));
+        assert_eq!(s.journal.next(), head, "the new daemon's events from its first");
     }
 
     #[test]
