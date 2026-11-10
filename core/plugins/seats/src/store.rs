@@ -113,9 +113,17 @@ pub const DECAY_S: f64 = 3600.0;
 pub const BACKOFF_S: [f64; 4] = [60.0, 120.0, 300.0, 600.0];
 pub const HOLD_S: f64 = 6.0 * 3600.0;
 
+/// Where a failed start leaves its streak.
+#[derive(Debug, PartialEq)]
+pub enum Failure {
+    First,
+    Again,
+    Tripped,
+}
+
 impl Breaker {
-    /// Count one failed start. True when it trips.
-    pub fn fail(&mut self, now: f64) -> bool {
+    /// Count one failed start.
+    pub fn fail(&mut self, now: f64) -> Failure {
         self.attempts.retain(|a| now - a < DECAY_S);
         self.attempts.push(now);
         let n = self.attempts.len();
@@ -123,10 +131,10 @@ impl Breaker {
             self.hold_until = now + HOLD_S;
             self.next_try = self.hold_until;
             self.attempts.clear();
-            return true;
+            return Failure::Tripped;
         }
         self.next_try = now + BACKOFF_S[n - 1];
-        false
+        if n == 1 { Failure::First } else { Failure::Again }
     }
 
     pub fn allows(&self, now: f64) -> bool {
@@ -382,15 +390,15 @@ impl Store {
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.execute_batch(SCHEMA)?;
-        for column in ["model", "effort"] {
-            let known: bool = conn.query_row("SELECT COUNT(*) > 0 FROM pragma_table_info('seat_registry') WHERE name = ?1", [column], |r| r.get(0))?;
-            if !known {
-                conn.execute_batch(&format!("ALTER TABLE seat_registry ADD COLUMN {column} TEXT NOT NULL DEFAULT ''"))?;
+        for (column, want, change) in [
+            ("model", true, "ADD COLUMN model TEXT NOT NULL DEFAULT ''"),
+            ("effort", true, "ADD COLUMN effort TEXT NOT NULL DEFAULT ''"),
+            ("done_at", false, "DROP COLUMN done_at"),
+        ] {
+            let has: bool = conn.query_row("SELECT COUNT(*) > 0 FROM pragma_table_info('seat_registry') WHERE name = ?1", [column], |r| r.get(0))?;
+            if has != want {
+                conn.execute_batch(&format!("ALTER TABLE seat_registry {change}"))?;
             }
-        }
-        let has_done_at: bool = conn.query_row("SELECT COUNT(*) > 0 FROM pragma_table_info('seat_registry') WHERE name = 'done_at'", [], |r| r.get(0))?;
-        if has_done_at {
-            conn.execute_batch("ALTER TABLE seat_registry DROP COLUMN done_at")?;
         }
         Ok(Self(Arc::new(Mutex::new(conn))))
     }

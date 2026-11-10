@@ -651,11 +651,7 @@ impl Social {
         };
         let label = if seat.name.is_empty() { seat.id.clone() } else { seat.name.clone() };
         let place = self.place(&account, &seat);
-        let declared = match self.seats.store.get(&account, &seat.id).await {
-            Some(st) => Some(st),
-            None => self.seats.declared(&account, &seat.id, &place).await,
-        };
-        if let Some(st) = declared {
+        if let Some(st) = self.seats.declared(&account, &seat.id, &place).await {
             return Ok(json!({"ok": false, "error": format!("{label} is a seat on {}: run `seats adopt account={account} channel={} job=<job>` there", st.node, seat.id)}));
         }
         let prev = self.db.holder(&account, &seat.id).await;

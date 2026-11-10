@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::brief;
-use crate::store::{Decl, Latest, Queued, Seat, Seed, State, Store};
+use crate::store::{Decl, Failure, Latest, Queued, Seat, Seed, State, Store};
 
 /// Transitions one look at a seat may take before it waits for the next tick.
 const STEPS_PER_LOOK: usize = 3;
@@ -248,8 +248,8 @@ impl Seats {
         self.world.up("ask", json!({"kind": kind, "text": text})).await;
     }
 
-    async fn mounted(&self, s: &Seat, job: &str, session_name: &str) {
-        self.world.up("mount", json!({"account": s.account(), "channel_id": s.channel(), "channel_name": s.decl.channel_name, "job": job, "session_name": session_name})).await;
+    async fn mounted(&self, s: &Seat, job: &str) {
+        self.world.up("mount", json!({"account": s.account(), "channel_id": s.channel(), "channel_name": s.decl.channel_name, "job": job, "session_name": s.decl.name})).await;
     }
 
     async fn unbind(&self, seat: &Seat) {
@@ -394,6 +394,7 @@ impl Seats {
         }
         self.store.deliver_briefed(seat.account(), seat.channel(), &seat.job, now).await;
         seat.state = State::Occupied;
+        seat.breaker.attempts.clear();
         sync_rc(&mut seat, live);
         self.save(&seat).await;
         true
@@ -471,13 +472,13 @@ impl Seats {
         seat.job.clear();
         // A resume that did not come up is not tried again.
         seat.previous.stopped = false;
-        let tripped = seat.breaker.fail(now);
+        let failure = seat.breaker.fail(now);
         self.save(&seat).await;
         let reset = format!("`seats reset account={} channel={}` on {}", seat.account(), seat.channel(), seat.decl.node);
-        if tripped {
-            self.notice(&format!("the seat {} could not start an agent 4 times in an hour ({why}). It holds its messages for 6 hours, or until {reset}.", label(&seat))).await;
-        } else if seat.breaker.attempts.len() == 1 {
-            self.notice(&format!("the seat {} could not start an agent ({why}). It tries again on its own, or now with {reset}.", label(&seat))).await;
+        match failure {
+            Failure::Tripped => self.notice(&format!("the seat {} could not start an agent 4 times in an hour ({why}). It holds its messages for 6 hours, or until {reset}.", label(&seat))).await,
+            Failure::First => self.notice(&format!("the seat {} could not start an agent ({why}). It tries again on its own, or now with {reset}.", label(&seat))).await,
+            Failure::Again => {}
         }
     }
 
@@ -547,7 +548,7 @@ impl Seats {
                 seat.missed = 0;
                 self.save(&seat).await;
                 self.store.brief_to(ids, &job).await;
-                self.mounted(&seat, &job, &seat.decl.name).await;
+                self.mounted(&seat, &job).await;
                 // The session's `started` event can come before this start answers.
                 self.wake();
             }
@@ -688,7 +689,7 @@ impl Seats {
             }
         }
         self.store.deliver_briefed(seat.account(), seat.channel(), job, now).await;
-        self.mounted(&seat, job, &seat.decl.name).await;
+        self.mounted(&seat, job).await;
         seat
     }
 
