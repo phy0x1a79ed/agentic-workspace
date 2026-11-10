@@ -26,6 +26,8 @@ const PROPOSED: &str = "proposed";
 pub const ROLES: [&str; 3] = ["main", "worker", "joined"];
 pub const APPROVAL_OUTCOMES: [&str; 4] = ["approved", "denied", "expired", "cancelled"];
 pub const PAGE: i64 = 50;
+/// The meta key that marks a Needs-you card its session's block put there.
+const BLOCKED_BY_STATE: &str = "blocked_by_state";
 pub const PLAN_CHARS: usize = 20_000;
 pub const TODO_ITEMS: usize = 200;
 pub const MESSAGE_CHARS: usize = 20_000;
@@ -153,6 +155,9 @@ pub struct LiveSession {
     pub link: Option<String>,
     pub project: Option<String>,
     pub scope: Option<String>,
+    /// `working`, `blocked` or `done`, from the job's own record.
+    pub state: Option<String>,
+    pub needs: Option<String>,
 }
 
 /// A new card's fields beyond its title.
@@ -538,6 +543,7 @@ impl Store {
             let tid = row.task_id.clone();
             let mut meta = row.meta.clone();
             meta.insert("reason".into(), if section == NEEDS_YOU { json!(reason) } else { Value::Null });
+            meta.remove(BLOCKED_BY_STATE);
             tx.tx.execute("UPDATE tasks SET meta=? WHERE task_id=?", params![Value::Object(meta).to_string(), tid])?;
             Store::set_card(tx, &tid, section, status, "report", json!({"session_id": session_id, "reason": reason}))?;
             Ok(json!({"task_id": tid, "section": section, "status": status}))
@@ -877,14 +883,15 @@ impl Store {
     // -- Stale (R61 item 4) ------------------------------------------------------------------
 
     /// A session that went: its row ends, and a Working or Needs-you card with no live
-    /// session left moves to Stale. Answers the tasks it moved.
-    pub fn session_gone(&self, session_id: Option<&str>, job: Option<&str>, node: &str) -> Result<Vec<String>> {
+    /// session left moves to Stale, or to History as done when the session was retired.
+    /// Answers the tasks it moved.
+    pub fn session_gone(&self, session_id: Option<&str>, job: Option<&str>, node: &str, retired: bool) -> Result<Vec<String>> {
         let v = self.write(None, |tx| {
             let ids = match_rows(&tx.tx, session_id, job, node, true)?;
             let mut moved = vec![];
             for (sid, tid) in ids {
                 tx.tx.execute("UPDATE sessions SET active=0, ended=? WHERE session_id=?", params![tx.now, sid])?;
-                if let Some(t) = stale_if_orphaned(tx, &tid, &sid)? {
+                if let Some(t) = end_if_orphaned(tx, &tid, &sid, retired)? {
                     moved.push(t);
                 }
             }
@@ -903,6 +910,50 @@ impl Store {
                 if let Some(t) = unstale(tx, &tid, &sid)? {
                     moved.push(t);
                 }
+            }
+            Ok(json!(moved))
+        })?;
+        Ok(serde_json::from_value(v).unwrap_or_default())
+    }
+
+    /// A main session's live state moves its card (R61 item 2): `blocked` to Needs you with
+    /// `needs` as the reason, `working` out of Needs you or Stale, and `done` out of Stale or out
+    /// of a Needs you that a block put there, so a `request_human` outlives the turn that ends
+    /// after it. History, approval cards and a pending approval stay. Answers the tasks it moved.
+    pub fn session_state(&self, session_id: Option<&str>, job: Option<&str>, node: &str, state: &str, needs: Option<&str>) -> Result<Vec<String>> {
+        let v = self.write(None, |tx| {
+            let mut moved = vec![];
+            for (sid, tid) in match_rows(&tx.tx, session_id, job, node, true)? {
+                let main: bool = tx.tx.query_row("SELECT role='main' FROM sessions WHERE session_id=?", [&sid], |r| r.get(0))?;
+                let row = task_by_id(&tx.tx, &tid)?;
+                if !main || row.kind == "approval" || row.status.as_deref() == Some("approval") {
+                    continue;
+                }
+                let by_state = row.meta.contains_key(BLOCKED_BY_STATE);
+                let to_working = match (state, row.section.as_str()) {
+                    ("blocked", WORKING | NEEDS_YOU | STALE) => false,
+                    ("working", NEEDS_YOU | STALE) | ("done", STALE) => true,
+                    ("done", NEEDS_YOU) if by_state => true,
+                    _ => continue,
+                };
+                let mut meta = row.meta.clone();
+                if to_working {
+                    meta.insert("reason".into(), Value::Null);
+                    meta.remove(BLOCKED_BY_STATE);
+                } else {
+                    if row.section == NEEDS_YOU && by_state && row.meta.get("reason").and_then(Value::as_str) == needs {
+                        continue;
+                    }
+                    meta.insert("reason".into(), json!(needs));
+                    meta.insert(BLOCKED_BY_STATE.into(), json!(true));
+                }
+                tx.tx.execute("UPDATE tasks SET meta=? WHERE task_id=?", params![Value::Object(meta).to_string(), row.task_id])?;
+                let data = json!({"session_id": sid, "reason": needs});
+                match to_working {
+                    true => Store::set_card(tx, &row.task_id, WORKING, None, "state", data)?,
+                    false => Store::set_card(tx, &row.task_id, NEEDS_YOU, Some("blocked"), "state", data)?,
+                }
+                moved.push(row.task_id);
             }
             Ok(json!(moved))
         })?;
@@ -935,8 +986,8 @@ impl Store {
     }
 
     /// Reconcile with telemetry's roster: on each node it lists, an active row with no live
-    /// session ends, and an ended row whose session is live comes back. Nodes the roster
-    /// does not list are left alone.
+    /// session ends, an ended row whose session is live comes back, and a live session's state
+    /// moves its card. Nodes the roster does not list are left alone.
     pub fn reconcile(&self, roster: &HashMap<String, Vec<LiveSession>>) -> Result<Value> {
         let rows: Vec<(String, Option<String>, String, bool, Option<String>)> = {
             let db = self.conn();
@@ -946,7 +997,7 @@ impl Store {
                 .collect::<rusqlite::Result<_>>()?;
             rows
         };
-        let (mut gone, mut live) = (vec![], vec![]);
+        let (mut gone, mut live, mut moved) = (vec![], vec![], vec![]);
         for (sid, job, node, active, name) in rows {
             let Some(listed) = roster.get(&node) else { continue };
             let found = listed_session(listed, &sid, job.as_deref());
@@ -954,14 +1005,16 @@ impl Store {
             if let Some(now) = listed_name.filter(|n| name.as_deref() != Some(*n)) {
                 self.session_renamed(Some(&sid), None, &node, now)?;
             }
-            let is_live = found.is_some();
-            match (active, is_live) {
-                (true, false) => gone.extend(self.session_gone(Some(&sid), None, &node)?),
-                (false, true) => live.extend(self.session_live(Some(&sid), None, &node)?),
+            match (active, found) {
+                (true, None) => gone.extend(self.session_gone(Some(&sid), None, &node, false)?),
+                (false, Some(_)) => live.extend(self.session_live(Some(&sid), None, &node)?),
                 _ => {}
             }
+            if let Some(state) = found.and_then(|l| l.state.as_deref()) {
+                moved.extend(self.session_state(Some(&sid), None, &node, state, found.and_then(|l| l.needs.as_deref()))?);
+            }
         }
-        Ok(json!({"stale": gone, "working": live}))
+        Ok(json!({"stale": gone, "working": live, "state": moved}))
     }
 
     /// Copy telemetry's link, project and scope onto each active session it lists. Only what
@@ -1031,11 +1084,15 @@ fn match_rows(db: &Connection, session_id: Option<&str>, job: Option<&str>, node
     Ok(rows)
 }
 
-fn stale_if_orphaned(tx: &mut Tx, task_id: &str, session_id: &str) -> Result<Option<String>> {
+fn end_if_orphaned(tx: &mut Tx, task_id: &str, session_id: &str, retired: bool) -> Result<Option<String>> {
     let row = task_by_id(&tx.tx, task_id)?;
     tx.event(&row.task_id, "session_gone", json!({"session_id": session_id}))?;
     if ![WORKING, NEEDS_YOU].contains(&row.section.as_str()) || live_sessions(&tx.tx, &row.task_id)? > 0 {
         return Ok(None);
+    }
+    if retired {
+        Store::set_card(tx, &row.task_id, HISTORY, Some("done"), "retired", json!({"session_id": session_id}))?;
+        return Ok(Some(row.task_id));
     }
     tx.tx.execute("UPDATE tasks SET section=?, updated=? WHERE task_id=?", params![STALE, tx.now, row.task_id])?;
     tx.event(&row.task_id, "stale", json!({"section": STALE, "status": row.status, "from": row.section}))?;
