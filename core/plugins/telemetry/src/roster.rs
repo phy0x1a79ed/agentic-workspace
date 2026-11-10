@@ -725,7 +725,7 @@ mod tests {
         let mut r = Roster::default();
         let held = json!({"id": "C042", "name": "alice", "kind": "channel", "holder": null, "account": "slack-bot",
             "seat": {"state": "occupied", "job": "j1", "node": "alcor", "level": "trusted", "scope": null, "adopted": false, "queued": 0,
-                     "done": false, "held": null, "breaker": null, "id": "slack-bot/C042", "remote_control": true, "rc_url": "https://claude.ai/code/s"}});
+                     "held": null, "breaker": null, "id": "slack-bot/C042", "remote_control": true, "rc_url": "https://claude.ai/code/s"}});
         let free = json!({"id": "C043", "name": "bob", "kind": "channel", "holder": null, "seat": null, "account": "slack-bot"});
         r.set_seats(&[held, free]);
         let v = r.seats_view();

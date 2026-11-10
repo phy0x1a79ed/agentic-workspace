@@ -650,6 +650,10 @@ impl Social {
             Err(e) => return Ok(json!({"ok": false, "error": e})),
         };
         let label = if seat.name.is_empty() { seat.id.clone() } else { seat.name.clone() };
+        let place = self.place(&account, &seat);
+        if let Some(st) = self.seats.declared(&account, &seat.id, &place).await {
+            return Ok(json!({"ok": false, "error": format!("{label} is a seat on {}: run `seats adopt account={account} channel={} job=<job>` there", st.node, seat.id)}));
+        }
         let prev = self.db.holder(&account, &seat.id).await;
         let evicted = prev.filter(|p| (p.node.as_str(), p.job.as_str()) != (who.node.as_str(), who.job.as_str()));
         if let Some(e) = &evicted {
@@ -660,19 +664,8 @@ impl Social {
         if let Some(why) = self.mount_refusal(level_of(&call), &account, &seat.id, &who, evicted.as_ref()).await {
             return Ok(json!({"ok": false, "error": format!("{label}: {why}")}));
         }
-        let place = self.place(&account, &seat);
-        let declared = match self.seats.store.get(&account, &seat.id).await {
-            Some(st) => Some(st),
-            None => self.seats.declared(&account, &seat.id, &place).await,
-        };
-        if let Some(host) = declared.as_ref().map(|st| &st.node).filter(|n| **n != who.node) {
-            return Ok(json!({"ok": false, "error": format!("{label} is a seat hosted on {host}: mount it from a session there")}));
-        }
         let row = self.db.mount(Mount { account: account.clone(), channel_id: seat.id.clone(), channel_name: seat.name.clone(), node: who.node.clone(), job: who.job.clone(), session_name: who.name.clone(), mounted_at: String::new() }).await.map_err(|e| VerbError::runtime(e.to_string()))?;
         self.watch_node(&who.node);
-        if let Some(st) = &declared {
-            self.seats.adopt(st, &who.job, &who.name).await;
-        }
         if let Some(e) = &evicted {
             self.pusher().push(&e.node, &e.job, &format!("{} seat lost: {label} is now held by {}. Nothing more from it reaches you.", conn.platform(), holder_label(&row)));
         }

@@ -15,7 +15,6 @@ Copy each file to the path on its right, on every node that runs Claude Code.
 | `skills/goal-alignment/SKILL.md` | `~/.claude/skills/goal-alignment/SKILL.md` | A goal is a journal post (`fleet.md` R107 item 10) |
 | `skills/retire/SKILL.md` | `~/.claude/skills/retire/SKILL.md` | Ends with `reflection stop` or `reflection wait` (`sessions.md` R8, R51) |
 | `skills/parallel-work/SKILL.md` | `~/.claude/skills/parallel-work/SKILL.md` | New (`parallel-work.md` R59). `CLAUDE.md` carries its pointer |
-| `skills/opal-seat-holder/SKILL.md` | `~/.claude/skills/opal-seat-holder/SKILL.md` | One unpinned session per task (`sessions.md` R67), channel verbs for machines |
 | `skills/scatter-gather/SKILL.md` | `~/.claude/skills/scatter-gather/SKILL.md` | Peripherals come from `PROTOCOLS.md` only |
 | `skills/dfs-interview/SKILL.md` | `~/.claude/skills/dfs-interview/` | Decisions go to `DECISIONS.md` beside `STACK.md`, with one decision journal at the end |
 

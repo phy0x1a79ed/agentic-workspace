@@ -15,7 +15,7 @@ Replaces `awm/services/social/` (11,283 lines). It runs on alcor as `awm-plugin@
 Surface changes, listed:
 - Removed `keepers`, `keep_reset` and `keep_adopt`, the seven OneDrive-only bucket verbs, and `bucket_get`'s `version` (Drive keeps none).
 - `bucket_rm` refuses the bucket root.
-- Added `mark_seat_done`, `forward`, `seat_reset`, `seat_adopt` (on CLI and HTTP) and `seat_admit`.
+- Added `forward`, `seat_reset`, `seat_adopt` (on CLI and HTTP) and `seat_admit`.
 - `seats` shows each seat's state.
 - `send` and `react` ids default to the caller's latest pushed line.
 - `send` refuses a DM to someone who never wrote, on Discord too.
@@ -50,20 +50,20 @@ One module owns every seat in `social.db`: `seat_registry`, a durable `seat_queu
 
 **Transitions.**
 1. **empty**, message: queue it, react 👀, run `ensure_seat` (`scopes create` on the seat's node), then `start_other {project, scope: "seats/<slug>"}` with `peer`. → starting. The rows go into the brief but stay undelivered.
-2. **starting**: the agent's first live `list_other` row or social call marks the briefed rows delivered. → occupied. If the agent is not up within 3 min, requeue the rows and count one breaker attempt: 4 per hour, backoff 60, 120, 300 and 600 s, then a 6 h hold and a down notice.
+2. **starting**: the agent's first live `list_other` row or social call marks the briefed rows delivered. → occupied. If the agent is not up within 3 min, requeue the rows and count one breaker attempt: 4 per hour, backoff 60, 120, 300 and 600 s, then a 6 h hold. The first failure of a streak and the hold each send a notice. An agent that comes up ends the streak.
 3. **occupied**: each message is pushed. A Gone or exhausted push returns its rows → empty, then step 1.
 4. **occupied**, 4 h with no message and no running turn: `stop_other` the agent → empty, with the job marked stopped. The clock starts at the later of the last message and the job's `active_at` in `list_other`. Only an agent the seat started is stopped, never an adopted one. A failed stop retries at the next tick. No notice goes out.
 5. **empty** after an idle stop, message: `resume_other` the stopped job with the waiting lines as its prompt, so the agent keeps its conversation, then apply the seat's switch to it. → starting. A refused resume falls back to step 1 with the previous job's transcript in the brief and no `replaces`. A resume that does not come up is not tried again.
-6. An agent that dies before done gets a down notice and no restart. Its undelivered rows start the next agent.
+6. An agent the seat started that ends, or stops taking pushes, gets a notice and no restart. Its undelivered rows start the next agent. An adopted session ends with no notice.
 7. **After a restart**: undelivered rows go to a live agent, or cold-start. Slack resync routes only messages after `synced_ts` that are not in `seat_routed`. Discord gets a per-chat cursor. Nothing older starts an agent.
 
 **Trust.**
-- `mark_seat_done` and `forward` join `SEAT_CHAT_VERBS` (`core/crates/awm-trust/src/trust.rs:122`).
+- `forward` joins `SEAT_CHAT_VERBS` (`core/crates/awm-trust/src/trust.rs:122`).
 - `_mount_refusal` (`hub_adapter.py:623`) carries over for `mount` and `seat_adopt`, so `force` never takes a trusted seat.
 - An adopted job's level must be at least its seat's level.
 
 **Edges.**
-- A hand mount on a declared seat adopts it, as with Kalen and Patrik.
+- A hand mount on a declared seat is refused. It names `seats adopt` on the seat's host, the one way to hand a session a declared seat.
 - On the first Rust start, every live `social_mounts` row (20 today) becomes an adopted seat, keeper-started or not.
 - Hand mounts on chats that no rule declares keep routing to their holder.
 - The `social_quiet_threads` gate (`send quiet=`) carries over.

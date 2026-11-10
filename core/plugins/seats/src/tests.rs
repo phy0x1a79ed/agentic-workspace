@@ -294,6 +294,7 @@ async fn a_message_to_an_empty_seat_reacts_queues_and_starts_one_agent() {
     assert_eq!((spec["project"].as_str(), spec["trust"].as_str(), spec["name"].as_str()), (Some("agentic-commons"), Some("cooperative"), Some("seat:slack/dm/tester")));
     let prompt = spec["prompt"].as_str().unwrap();
     assert!(prompt.contains("[slack/DM/tester, cooperative] first") && prompt.contains("/docs/briefs/slack-slack.md") && prompt.contains("`seats send text=<text>`"));
+    assert!(prompt.contains("agentic-commons/seats/tester") && prompt.contains("`journal`, `seat` and `user:tester`") && !prompt.contains("paused"), "{prompt}");
     assert_eq!(t.queued().await, 1, "briefed is not delivered");
     t.send("second").await;
     assert_eq!(t.world.w().specs.len(), 1, "a starting seat starts nothing more");
@@ -327,17 +328,19 @@ async fn a_seat_with_its_own_model_and_effort_starts_with_them() {
 }
 
 #[test]
-fn a_database_from_before_the_seat_override_opens_with_it_empty() {
+fn an_older_database_opens_with_the_override_empty_and_no_done_mark() {
     let tmp = tempfile::tempdir().unwrap();
     let path = tmp.path().join("seats.db");
     drop(Store::open(&path).unwrap());
     let c = rusqlite::Connection::open(&path).unwrap();
-    c.execute_batch("ALTER TABLE seat_registry DROP COLUMN model; ALTER TABLE seat_registry DROP COLUMN effort; INSERT INTO seat_registry (account, channel_id) VALUES ('opal', 'D1')").unwrap();
+    c.execute_batch("ALTER TABLE seat_registry DROP COLUMN model; ALTER TABLE seat_registry DROP COLUMN effort; ALTER TABLE seat_registry ADD COLUMN done_at REAL NOT NULL DEFAULT 0; INSERT INTO seat_registry (account, channel_id) VALUES ('opal', 'D1')").unwrap();
     drop(c);
     drop(Store::open(&path).unwrap());
     let c = rusqlite::Connection::open(&path).unwrap();
     let model: String = c.query_row("SELECT model FROM seat_registry WHERE channel_id = 'D1'", [], |r| r.get(0)).unwrap();
     assert_eq!(model, "");
+    let done: bool = c.query_row("SELECT COUNT(*) > 0 FROM pragma_table_info('seat_registry') WHERE name = 'done_at'", [], |r| r.get(0)).unwrap();
+    assert!(!done);
 }
 
 #[tokio::test]
@@ -351,6 +354,8 @@ async fn a_start_that_never_comes_up_requeues_and_trips_the_breaker() {
         assert_eq!(t.seat().await.state, State::Empty, "round {round}");
         assert_eq!(t.queued().await, 1, "the line waits");
         assert!(!t.world.w().mounted.contains_key("D0TEST"));
+        let first = t.world.w().said.iter().filter(|(c, x)| c == "NOTICE" && x.contains("could not start an agent (") && x.contains("seats reset account=opal channel=D0TEST")).count();
+        assert_eq!(first, 1, "round {round}: the first failure of a streak notifies, once");
         if round < 4 {
             t.world.advance(store::BACKOFF_S[round - 1] + 1.0);
             t.tick().await;
@@ -412,32 +417,31 @@ async fn a_refused_push_past_the_window_counts_the_agent_lost() {
     t.tick().await;
     assert_eq!(t.seat().await.job, "job-2");
     assert_eq!(t.world.got("job-2"), ["two"]);
+    assert!(t.world.w().said.iter().any(|(c, x)| c == "NOTICE" && x.contains("job-1@altair) stopped taking messages")));
 }
 
 #[tokio::test]
-async fn an_agent_that_vanished_gives_way_unless_the_seat_only_adopted_it() {
+async fn an_agent_that_vanished_gives_way_with_a_notice_unless_the_seat_only_adopted_it() {
     let mut t = T::new(false);
     t.send("task").await;
     assert_eq!(t.world.w().specs[0]["pin"], true, "a seat's agent is a persistent session");
     assert!(t.world.w().specs[0].get("replaces").is_none());
-    t.seats.mark_done("job-1").await;
-    t.send("more").await;
-    assert_eq!(t.seat().await.done_at, 0.0, "a new message clears the mark");
-    t.seats.mark_done("job-1").await;
 
     t.world.w().up.remove("job-1");
     t.tick().await;
     assert_eq!(t.seat().await.state, State::Empty);
     assert_eq!(t.world.w().specs.len(), 1, "nothing waits, so nothing starts");
-    assert!(!t.world.w().said.iter().any(|(_, x)| x.contains("ended before")), "a done agent leaving is no outage");
+    assert!(t.world.w().said.iter().any(|(c, x)| c == "NOTICE" && x.contains("job-1@altair) ended")));
     t.send("back").await;
     t.tick().await;
     assert_eq!(t.world.w().specs[1]["replaces"], "job-1", "an agent a reboot brought back gives way");
 
     t.world.w().up.insert("hand-started".into());
-    t.seats.adopt(&decl(), "hand-started", "").await;
+    t.seats.adopt(&decl(), "hand-started").await;
+    let notices = t.world.w().said.len();
     t.world.w().up.remove("hand-started");
     t.tick().await;
+    assert_eq!(t.world.w().said.len(), notices, "an adopted session ending is its starter's business");
     t.send("again").await;
     t.tick().await;
     assert!(t.world.w().specs[2].get("replaces").is_none(), "a session the seat only adopted is never stopped");
@@ -489,7 +493,7 @@ async fn an_idle_agent_stops_after_4_hours_and_the_next_message_resumes_its_conv
     t.world.w().up.insert("hand-started".into());
     let now = t.world.now();
     t.world.w().active.insert("hand-started".into(), now);
-    t.seats.adopt(&decl(), "hand-started", "").await;
+    t.seats.adopt(&decl(), "hand-started").await;
     t.world.advance(10.0 * IDLE_S);
     t.tick().await;
     assert_eq!(t.seat().await.job, "hand-started", "an adopted session is never stopped");
@@ -510,19 +514,6 @@ async fn a_session_event_wakes_the_loop_with_no_timer_behind_it() {
     }
     assert_eq!(t.seat().await.state, State::Empty, "the stop was seen on the event");
     looping.abort();
-}
-
-#[tokio::test]
-async fn an_agent_that_dies_before_done_gets_a_notice_and_no_restart() {
-    let mut t = T::new(false);
-    t.send("task").await;
-    t.world.w().up.remove("job-1");
-    t.tick().await;
-    assert_eq!(t.seat().await.state, State::Empty);
-    assert!(t.world.w().said.iter().any(|(c, x)| c == "NOTICE" && x.contains("ended before its task was done")));
-    assert_eq!(t.world.w().specs.len(), 1);
-    t.send("back?").await;
-    assert_eq!(t.seat().await.job, "job-2");
 }
 
 #[tokio::test]
@@ -550,9 +541,12 @@ async fn paused_seats_record_and_start_nothing_and_going_on_lists_the_chats() {
     assert!(notice.contains("opal/DM tester: 2 messages") && !notice.contains("while paused"));
     t.tick().await;
     assert!(t.world.w().specs.is_empty(), "going on starts nothing by itself");
-    assert_eq!(t.seat().await.missed, 0);
     t.seats.configure(settings(false)).await;
     assert_eq!(t.world.w().said.len(), 1, "the same settings post nothing");
+    t.send("after").await;
+    let prompt = t.world.w().specs[0]["prompt"].as_str().unwrap().to_string();
+    assert!(prompt.contains("2 messages came while the seats were paused") && prompt.contains("`social history`"), "{prompt}");
+    assert_eq!(t.seat().await.missed, 0, "the brief that names them clears the count");
 }
 
 #[tokio::test]
@@ -587,7 +581,7 @@ async fn a_missing_scope_holds_the_lines_and_asks() {
 #[tokio::test]
 async fn the_undelivered_dm_of_2026_11_07_reaches_an_agent() {
     let mut t = T::new(false);
-    t.seats.adopt(&decl(), "hand-started", "").await;
+    t.seats.adopt(&decl(), "hand-started").await;
     t.send("are you there?").await;
     assert_eq!(t.world.got("job-1"), ["are you there?"]);
     assert_eq!(t.world.w().reacts.len(), 1);
@@ -699,7 +693,7 @@ async fn an_empty_seat_switches_without_a_call_and_a_live_seat_records_its_sessi
 async fn adoption_switches_remote_control_off_and_a_paused_occupied_seat_still_delivers() {
     let mut t = T::new(true);
     t.world.w().up.insert("agent-a".into());
-    t.seats.adopt(&decl(), "agent-a", "s").await;
+    t.seats.adopt(&decl(), "agent-a").await;
     let s = t.seat().await;
     assert_eq!((s.state, s.adopted, s.remote_control, s.rc_url.as_str()), (State::Occupied, true, false, ""));
     assert_eq!(t.world.w().switched, [("agent-a".to_string(), false, "seat-slack-dm-tester".to_string())], "the live session follows the switch");

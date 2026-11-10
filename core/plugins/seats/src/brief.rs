@@ -7,8 +7,9 @@ pub struct Facts<'a> {
     pub docs: &'a str,
     pub decl: &'a Decl,
     pub project: &'a str,
-    /// `(job, node, transcript path)` of the agent before, if any.
+    /// `(job, node, transcript path)` of the agent before, for a start that does not resume it.
     pub previous: Option<(&'a str, &'a str, Option<&'a str>)>,
+    pub missed: i64,
 }
 
 pub fn brief(f: &Facts, lines: &[String]) -> String {
@@ -17,21 +18,33 @@ pub fn brief(f: &Facts, lines: &[String]) -> String {
         "You are the agent of one chat seat: {}/{} on {}, at level {}. Your scope is {}/{}.\n\
          Read {}/seat-sop.md, then {}/{}.\n\
          Each new message in the chat is typed into your prompt as one line, \"[<server>/<chat>/<sender>, <level>] \u{21b3}<thread> <text>\". \
-         Answer with `seats send text=<text>`: with no channel it answers the latest line, in its thread, and a reply waits here if the link to the chat is down. \
-         Answer the message that started you, on that task only. When the task is done, write your handoff journal, then call `seats mark_done`, and wait. A new message reaches you here. You are a persistent session: keep your session name, and never end the session.\n",
-        d.server_label, d.chat_label, d.platform, d.level, f.project, d.scope, f.docs, f.docs, d.brief,
+         Answer each one with `seats send text=<text>`: with no channel it answers the latest line, in its thread, and a reply waits here if the link to the chat is down. \
+         After each result or decision you send, post a journal in your scope tagged `journal`, `seat` and `user:{}`. \
+         You are a persistent session: keep your session name, and never end the session. \
+         Between messages, wait. The seat stops you after 4 idle hours and resumes this conversation on the next message.\n",
+        d.server_label, d.chat_label, d.platform, d.level, f.project, d.scope, f.docs, f.docs, d.brief, d.slug,
     );
     if let Some((job, node, transcript)) = f.previous {
-        out.push_str(&format!("The agent before you was job {job} on {node}. Look for its handoff journal in this scope"));
+        out.push_str(&format!("The agent before you was job {job} on {node}. Read the journals of your scope"));
         match transcript {
-            Some(t) => out.push_str(&format!(", and read its transcript at {t} if the journal is not there yet.\n")),
+            Some(t) => out.push_str(&format!(", and its transcript at {t} for what they leave out.\n")),
             None => out.push_str(".\n"),
         }
     }
+    out.push_str(&missed(f.missed));
     out.push_str("The messages waiting for you, oldest first:\n");
     for l in lines {
         out.push_str(l);
         out.push('\n');
     }
     out
+}
+
+/// The line that says how many messages came while the seats were paused, or nothing.
+pub fn missed(n: i64) -> String {
+    match n {
+        0 => String::new(),
+        1 => "1 message came while the seats were paused and got no answer. `social history` shows it.\n".into(),
+        n => format!("{n} messages came while the seats were paused and got no answer. `social history` shows them.\n"),
+    }
 }

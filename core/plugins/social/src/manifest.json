@@ -149,7 +149,7 @@
     {
       "name": "mount",
       "tool": "social_mount",
-      "description": "Hold a seat: every new message in that chat, from anyone but the bot, is typed into your prompt as one line '[<server>/<chat>/<sender>, <level>] ↳<thread> <text>'. Background sessions only. One holder per seat: a held seat is refused unless `force`, which takes it and tells the old holder. A session below trusted never holds a trusted chat. A Discord DM is a seat only for an operator. Mounting a declared seat makes you its agent. The result's `rename` gives the seat's session name, seat:<app>/<server>/<chat>.",
+      "description": "Hold a seat: every new message in that chat, from anyone but the bot, is typed into your prompt as one line '[<server>/<chat>/<sender>, <level>] ↳<thread> <text>'. Background sessions only. One holder per seat: a held seat is refused unless `force`, which takes it and tells the old holder. A session below trusted never holds a trusted chat. A Discord DM is a seat only for an operator. A declared seat is refused: its host's `seats adopt` hands it a session. The result's `rename` gives the seat's session name, seat:<app>/<server>/<chat>.",
       "params": [
         {
           "name": "account",

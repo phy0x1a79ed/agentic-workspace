@@ -163,11 +163,6 @@ impl Seats {
         self.store.grant_read((&target.account, &target.channel_id), source, crate::db::now() + READ_S).await;
     }
 
-    /// `job`, on the seat's own host, took the chat by hand.
-    pub async fn adopt(&self, seat: &Seat, job: &str, session_name: &str) {
-        self.queue(Self::row(seat, "adopt", json!({"job": job, "session_name": session_name}))).await;
-    }
-
     /// `job` let go of the chat by hand.
     pub async fn released(&self, seat: &Seat, job: &str) {
         self.queue(Self::row(seat, "released", json!({"job": job}))).await;
