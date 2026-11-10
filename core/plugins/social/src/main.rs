@@ -33,6 +33,7 @@ async fn dispatch(app: Arc<Social>, name: &str, call: Call) -> Result<Value, Ver
         "seat_remote_control" => app.seat_remote_control(call).await,
         "seat_pull" => app.seat_pull(call).await,
         "seat_report" => app.seat_report(call).await,
+        "seat_act" => app.seat_act(call).await,
         "search" => app.search(call).await,
         "download_attachments" => app.download_attachments(call).await,
         "accounts" => app.accounts(call).await,

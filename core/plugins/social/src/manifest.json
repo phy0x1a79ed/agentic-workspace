@@ -293,6 +293,53 @@
       ]
     },
     {
+      "name": "seat_act",
+      "tool": "social_seat_act",
+      "description": "A seat host's seats plugin reacts to a message (`action` react) or downloads its attachments (`action` download) in a chat its node answers. Not for sessions.",
+      "surfaces": [
+        "cli",
+        "http"
+      ],
+      "timeout": 300,
+      "params": [
+        {
+          "name": "action",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "account",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "channel",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "message_id",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "emoji",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "remove",
+          "type": "boolean",
+          "required": false
+        },
+        {
+          "name": "idx",
+          "type": "number",
+          "required": false
+        }
+      ]
+    },
+    {
       "name": "search",
       "tool": "social_search",
       "description": "Search a platform's own message index live (Slack search.messages, Gmail X-GM-RAW). Returns matches with attachment metadata. Not supported for Discord bot accounts (use fetch).",
