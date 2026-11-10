@@ -133,6 +133,10 @@ class Fence:
         self._require("relation", note_id)
         self.c.set_attribute(note_id=note_id, name=name, value=target, type="relation")
 
+    def unrelate(self, note_id: str, name: str) -> None:
+        self._require("relation", note_id)
+        self.c.clear_attribute(note_id=note_id, name=name, type="relation")
+
     def move(self, note_id: str, parent: str) -> None:
         """Put the note under this parent and nowhere else. A root stays put."""
         if note_id in self.roots:

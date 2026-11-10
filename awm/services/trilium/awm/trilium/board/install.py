@@ -1,8 +1,8 @@
-"""The pages of the board and of Ops, as notes in the vault (queue.md R61, fleet.md R147).
+"""The Control panel and the bot button, as notes in the vault (queue.md R61, fleet.md R147).
 
 ``install`` is idempotent and writes only what differs, so the writer runs it at each start and
-``awm trilium board_install`` runs it by hand. The pages are code notes the vault executes: a
-render note names its page in a ``renderNote`` relation, the page holds a frontend script, and one
+``awm trilium board_install`` runs it by hand. The page is a code note the vault executes: the
+render note names it in a ``renderNote`` relation, the page holds a frontend script, and one
 script note with ``#run=frontendStartup`` adds the bot button to every ordinary note.
 """
 
@@ -76,22 +76,31 @@ def _fold_stale_column(fence: Fence) -> None:
     fence.delete(ids.LEGACY_STALE_ID)
 
 
+def _fold_ops_page(fence: Fence) -> None:
+    """The Ops note becomes the data folder of the Control panel. Its page and script go."""
+    for note_id in (ids.LEGACY_OPS_SCRIPT_ID, ids.LEGACY_OPS_PAGE_ID):
+        if fence.note(note_id) is not None:
+            fence.delete(note_id)
+    if fence.note(ids.OPS_ID) is None:
+        fence.create(ids.ROOT_ID, "Ops data", "book", note_id=ids.OPS_ID, labels=ids.MANAGED)
+        return
+    fence.update(ids.OPS_ID, title="Ops data", type_="book",
+                 labels={**ids.MANAGED, "swarmOps": None, "alcorOrigin": None, "approverOrigin": None})
+    fence.unrelate(ids.OPS_ID, "renderNote")
+    fence.nest_root(ids.OPS_ID, ids.ROOT_ID)
+
+
 def install(fence: Fence, parent: str = ids.BOOK_ID) -> dict[str, Any]:
-    """Create or update the board page, the Ops page and the bot button script."""
+    """Create or update the Control panel, its data folders and the bot button script."""
     origin = alcor_origin()
     labels = {"alcorOrigin": origin, "approverOrigin": None}
-    _render_note(fence, parent, ids.ROOT_ID, "Swarm board", {"swarmBoard": "", **labels})
-    _code(fence, ids.ROOT_ID, ids.PAGE_ID, "board page", "text/html", _asset("board.html"))
+    _render_note(fence, parent, ids.ROOT_ID, "Control panel", {"swarmBoard": "", **labels})
+    _code(fence, ids.ROOT_ID, ids.PAGE_ID, "control panel page", "text/html", _asset("board.html"))
     _code(fence, ids.PAGE_ID, ids.SCRIPT_ID, "board.js", ids.FRONTEND_JS, _asset("board.js"))
     fence.relation(ids.ROOT_ID, "renderNote", ids.PAGE_ID)
     _code(fence, ids.ROOT_ID, ids.BOT_SCRIPT_ID, "bot button.js", ids.FRONTEND_JS,
           _asset("bot.js"), labels={"run": "frontendStartup", "swarmBot": ""})
-
-    _render_note(fence, parent, ids.OPS_ID, "Ops", {"swarmOps": "", **labels})
-    _code(fence, ids.OPS_ID, ids.OPS_PAGE_ID, "ops page", "text/html", _asset("ops.html"),
-          labels=ids.MANAGED)
-    _code(fence, ids.OPS_PAGE_ID, ids.OPS_SCRIPT_ID, "ops.js", ids.FRONTEND_JS, _asset("ops.js"))
-    fence.relation(ids.OPS_ID, "renderNote", ids.OPS_PAGE_ID)
+    _fold_ops_page(fence)
     ensure_tasks(fence, ids.ROOT_ID)
     _fold_stale_column(fence)
     return {"board": ids.ROOT_ID, "ops": ids.OPS_ID, "tasks": ids.TASKS_ID,

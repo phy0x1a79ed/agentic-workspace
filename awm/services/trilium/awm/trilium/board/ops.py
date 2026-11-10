@@ -1,14 +1,16 @@
-"""The Ops note: telemetry's roster rendered one way into the vault (fleet.md R147 items 3-7).
+"""The Ops data folder: telemetry's roster rendered one way into the vault (fleet.md R147 items 3-7).
 
 Telemetry holds the facts and pushes them here at each roster change. operations pushes the
-notices the same way. The page reads one JSON note, so the New agent dropdown on the board and
-the Ops cards agree on the same roster.
+notices the same way. The Control panel reads one JSON note, so the New agent dropdown and the
+fleet sections agree on the same roster. A push that moves only the clocks writes nothing, because
+each roster write redraws every open Control panel.
 """
 
 from __future__ import annotations
 
 import json
 import os
+from datetime import datetime
 from typing import Any
 
 from awm.trilium.board import ids
@@ -18,6 +20,9 @@ from awm.trilium.board.render import text
 #: Nodes that never take an agent from the New agent button (fleet.md R79, R88).
 NEVER_AGENT_NODES = frozenset({"deneb"})
 NEVER_AGENT_ROLES = frozenset({"station"})
+
+#: A node's stored ``last_seen`` may lag this far behind its pushes before it is written alone.
+SEEN_LAG_S = 300
 
 
 def portals_from_env() -> dict[str, str]:
@@ -29,6 +34,16 @@ def portals_from_env() -> dict[str, str]:
         if host.strip() and node.strip():
             out[host.strip()] = node.strip()
     return out
+
+
+def _epoch(v: Any) -> float | None:
+    """A clock as epoch seconds: telemetry sends a number or an ISO string."""
+    if isinstance(v, (int, float)):
+        return float(v)
+    try:
+        return datetime.fromisoformat(text(v)).timestamp()
+    except ValueError:
+        return None
 
 
 def _node(row: dict[str, Any], portals: dict[str, str]) -> dict[str, Any]:
@@ -44,7 +59,7 @@ def _node(row: dict[str, Any], portals: dict[str, str]) -> dict[str, Any]:
                  "remote_control": bool(s.get("remote_control"))}
                 for s in row.get("sessions") or [] if isinstance(s, dict)]
     return {"name": name, "role": text(row.get("role")), "portal": portal,
-            "last_seen": row.get("last_seen"), "sessions": sessions,
+            "last_seen": _epoch(row.get("last_seen")), "sessions": sessions,
             "sessions_7d": int(row.get("sessions_7d") or 0),
             "services": [{"service": text(u.get("service")), "plugin": text(u.get("plugin")),
                           "up": bool(u.get("up")), "enabled": u.get("enabled"), "tools": u.get("tools") or []}
@@ -68,8 +83,7 @@ def build_roster(nodes: list[dict], services: list[dict], seats: list[dict],
         "nodes": sorted(cards, key=lambda n: n["name"]),
         "agent_nodes": agent_nodes(cards),
         "services": [{"service": text(s.get("tool") or s.get("service")), "host": text(s.get("host")),
-                      "health": text(s.get("health")) or "unknown",
-                      "last_response": s.get("last_response"), "last_used": s.get("last_used")}
+                      "health": text(s.get("health")) or "unknown"}
                      for s in services],
         "seats": [{"seat": text(s.get("seat") or s.get("id")),
                    "label": text(s.get("label") or s.get("name")) or text(s.get("seat") or s.get("id")),
@@ -94,6 +108,24 @@ def portals_text(portals: dict[str, str], nodes: list[dict]) -> str:
             + ("\n".join(rows) or "No portal is configured.") + "\n")
 
 
+def _unseen(roster: dict[str, Any]) -> dict[str, Any]:
+    return {**roster, "nodes": [{**n, "last_seen": None} for n in roster.get("nodes") or []]}
+
+
+def _near(was: Any, now: Any) -> bool:
+    if was == now:
+        return True
+    clocks = isinstance(was, (int, float)) and isinstance(now, (int, float))
+    return clocks and abs(now - was) <= SEEN_LAG_S
+
+
+def clocks_only(stored: dict[str, Any], roster: dict[str, Any]) -> bool:
+    """Whether the roster differs from the stored one only by node ``last_seen`` clocks that lag
+    under ``SEEN_LAG_S``."""
+    return _unseen(stored) == _unseen(roster) and all(
+        _near(old["last_seen"], new["last_seen"]) for old, new in zip(stored["nodes"], roster["nodes"]))
+
+
 def _rows(args: dict[str, Any], key: str) -> list[dict[str, Any]]:
     return [r for r in args.get(key) or [] if isinstance(r, dict)]
 
@@ -102,11 +134,14 @@ class OpsRenderer:
     def __init__(self, fence: Fence, portals: dict[str, str] | None = None) -> None:
         self.fence = fence
         self.portals = dict(portals if portals is not None else portals_from_env())
+        self._last: dict[str, Any] | None = None
 
     def _stored(self) -> dict[str, Any]:
-        if self.fence.note(ids.ROSTER_ID) is None:
-            return {}
-        return json.loads(text(self.fence.content(ids.ROSTER_ID)) or "{}")
+        """The roster as last written. Only this renderer writes it, so the vault is read once."""
+        if self._last is None:
+            note = self.fence.note(ids.ROSTER_ID)
+            self._last = json.loads(text(self.fence.content(ids.ROSTER_ID)) or "{}") if note else {}
+        return self._last
 
     def render(self, args: dict[str, Any]) -> dict[str, Any]:
         """Write one push into the vault: the JSON note, Portals and one note per notice. A push
@@ -118,11 +153,14 @@ class OpsRenderer:
                                   notices, self.portals)
         else:
             roster = {**stored, "notices": build_roster([], [], [], notices, {})["notices"]}
+        if stored and clocks_only(stored, roster):
+            return stored
         self._upsert(ids.ROSTER_ID, "roster", "application/json",
                      json.dumps(roster, sort_keys=True))
         self._upsert(ids.PORTALS_ID, "Portals", ids.MARKDOWN,
                      portals_text(self.portals, roster["nodes"]))
         self._notices(roster["notices"])
+        self._last = roster
         return roster
 
     def _upsert(self, note_id: str, title: str, mime: str, content: str) -> None:
@@ -133,7 +171,7 @@ class OpsRenderer:
 
     def _notices(self, notices: list[dict]) -> None:
         """One managed note per kind and node, as the first Ops book kept them."""
-        fixed = {ids.ROSTER_ID, ids.PORTALS_ID, ids.OPS_PAGE_ID}
+        fixed = {ids.ROSTER_ID, ids.PORTALS_ID}
         have = {k.get("title"): k.get("noteId") for k in self.fence.children(ids.OPS_ID)
                 if k.get("noteId") not in fixed
                 and any(a.get("name") == "agentManaged" for a in k.get("attributes") or [])}

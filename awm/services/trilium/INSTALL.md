@@ -142,10 +142,10 @@ allow-list is defence in depth, and could not be the enforcement: a mesh node's
 edge runs no profile and never consults it.
 
 **No edge caller writes.** Every note verb is an operator verb, including a call
-stamped `peer:alcor`, except the two hidden verbs below. The Swarm board's writer runs inside
+stamped `peer:alcor`, except the two hidden verbs below. The Control panel's writer runs inside
 this service and writes over loopback through `board/fence.py`.
 The fence refuses any write outside the roots `AWM_TRILIUM_WRITER_ROOTS` names (default
-`awmSwarmTasks,awmSwarmOps,awmSwarmBoard`: tasks, Ops and the board page). It never moves
+`awmSwarmTasks,awmSwarmOps,awmSwarmBoard`: tasks, Ops data and the Control panel). It never moves
 or deletes a root. It has two acts outside the roots, for the per-note bot button
 (`fleet.md` R106 item 2): its own labelled marker note under any note, and a clone of a
 source note under a card. Removing a clone removes the branch and never the note.
@@ -256,7 +256,7 @@ had just written. This is the least obvious consequence of sharing the document
 and the easiest to trip over, because installing the mirror on a second node
 looks like the obvious next step.
 
-The Swarm board has one writer too: the board writer in this service on deneb. It writes
+The Control panel has one writer too: the board writer in this service on deneb. It writes
 each card under a fixed note id, so a retried write finds the note it made instead of a
 duplicate. alcor's operations and telemetry push to it through the hidden verbs `board_apply`
 and `ops_render`. The writer makes no outbound call (`fleet.md` R79).
@@ -550,11 +550,11 @@ CAUTION: a node that does not run the fork falls back to the grid view for
 `#viewType=chat`. It still lists the messages in sequence order. A text note a
 person adds there is sealed with its HTML as the message body.
 
-### The Swarm board and Ops
+### The Control panel
 
-The Swarm board, the Ops note and the per-note bot button are notes that this service
-writes (`queue.md` R61-R66, `fleet.md` R147). `awm/trilium/board/` holds the code. The
-pages are code notes that the vault runs, and `awm trilium board_install` rewrites them.
+The Control panel, its Ops data folder and the per-note bot button are notes that this
+service writes (`queue.md` R61-R66, `fleet.md` R147). `awm/trilium/board/` holds the code.
+The pages are code notes that the vault runs, and `awm trilium board_install` rewrites them.
 
 1. Set `AWM_TRILIUM_ALCOR_ORIGIN` to alcor's public address, which the pages call.
 2. Set `AWM_TRILIUM_PORTALS` (`host=node,...`) for nodes whose roster row names no portal.
