@@ -1038,9 +1038,8 @@ impl Gateway {
             .map(|e| {
                 json!({"tool": e.name, "plugin": e.plugin, "tier": if e.tier == Tier::On {"on"} else {"off"},
                        "verbs": self.verb_names(e, mcp).into_iter().map(|(v, s, a)| {
-                           let (req, opt): (Vec<_>, Vec<_>) = a.into_iter().partition(|(_, r)| *r);
-                           let names = |xs: Vec<(String, bool)>| xs.into_iter().map(|(n, _)| n).collect::<Vec<_>>();
-                           json!({"verb": v, "summary": one_line(&s), "required": names(req), "optional": names(opt)})
+                           let pick = |want| a.iter().filter(|(_, r)| *r == want).map(|(n, _)| n).collect::<Vec<_>>();
+                           json!({"verb": v, "summary": one_line(&s), "required": pick(true), "optional": pick(false)})
                        }).collect::<Vec<_>>()})
             })
             .collect();
@@ -1464,16 +1463,11 @@ fn summary(spec: &Value) -> String {
     spec.get("description").and_then(Value::as_str).unwrap_or("").to_string()
 }
 
-/// The first sentence of the first line. A sentence ends at ". ", unless the period follows a
-/// one-letter word, as in "e.g.". Past 160 characters it is cut at a word boundary.
+/// The first sentence of the first line, cut at a word boundary past 160 characters.
 fn one_line(s: &str) -> String {
     const CAP: usize = 160;
     let line = s.lines().next().unwrap_or("").trim();
-    let end = line
-        .match_indices(". ")
-        .map(|(i, _)| i)
-        .find(|&i| line[..i].rsplit([' ', '.', '(']).next().is_none_or(|w| w.chars().count() > 1))
-        .map_or(line.len(), |i| i + 1);
+    let end = line.match_indices(". ").map(|(i, _)| i).find(|&i| ends_sentence(&line[..i])).map_or(line.len(), |i| i + 1);
     let sentence = &line[..end];
     if sentence.chars().count() <= CAP {
         return sentence.to_string();
@@ -1481,6 +1475,11 @@ fn one_line(s: &str) -> String {
     let head: String = sentence.chars().take(CAP).collect();
     let cut = head.rfind(' ').unwrap_or(head.len());
     format!("{}...", head[..cut].trim_end_matches([',', ';', ':']))
+}
+
+/// Whether a period after `before` ends a sentence: not after a one-letter word, as in "e.g.".
+fn ends_sentence(before: &str) -> bool {
+    before.rsplit([' ', '.', '(']).next().is_none_or(|w| w.chars().count() > 1)
 }
 
 /// Each param in declared order, with whether it is required.
