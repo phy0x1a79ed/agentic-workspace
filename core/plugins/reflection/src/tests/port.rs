@@ -281,7 +281,8 @@ async fn each_lifecycle_kind_emits_once_and_keeps_no_ledger_row() {
     *fx.node.projects.lock().unwrap() = tmp.path().to_path_buf();
     let cwd = tmp.path().join("awm/redux-x/core").display().to_string();
     for kind in LIFECYCLE {
-        let event = json!({"session_id": my_id(), "kind": kind, "job": "j1", "name": "n", "cwd": cwd, "session_kind": "bg", "rc_url": "u"});
+        let event = json!({"session_id": my_id(), "kind": kind, "job": "j1", "name": "n", "cwd": cwd, "session_kind": "bg", "rc_url": "u",
+                           "state": "blocked", "needs": "pick", "retired": true});
         assert!(ok(&fx.run("harness_event", event).await));
     }
     let got = fx.node.emitted.lock().unwrap().clone();
@@ -291,6 +292,7 @@ async fn each_lifecycle_kind_emits_once_and_keeps_no_ledger_row() {
         assert_eq!((e["project"].clone(), e["scope"].clone(), e["kind"].clone()), (json!("awm"), json!("redux-x"), json!("bg")));
         assert_eq!((e["node"].clone(), e["rc_url"].clone()), (json!("here"), json!("u")));
         assert!(e["ts"].is_string() && e.get("task_id").is_none(), "{e}");
+        assert_eq!((e["state"].clone(), e["needs"].clone(), e["retired"].clone()), (json!("blocked"), json!("pick"), json!(true)));
     }
     assert!(fx.app.store.read_text(File::Events).await.is_empty(), "a lifecycle event is not a ticket");
     fx.run("harness_event", json!({"session_id": my_id(), "kind": "stopped", "cwd": "/not/a/scope"})).await;

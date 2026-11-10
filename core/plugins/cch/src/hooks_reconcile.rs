@@ -45,7 +45,7 @@ pub const HOOKS: [Hook; 5] = [
         name: "report",
         legacy_file: LEGACY_REPORT,
         entries: &[
-            ("PostToolUse", Some("Write|Edit|ExitPlanMode|TaskCreate|TaskUpdate|TodoWrite"), 15),
+            ("PostToolUse", Some("ExitPlanMode|TaskCreate|TaskUpdate|TodoWrite"), 15),
             ("UserPromptSubmit", None, 15),
             ("SessionStart", Some("clear"), 15),
         ],

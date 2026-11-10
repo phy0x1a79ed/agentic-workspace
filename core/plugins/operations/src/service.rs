@@ -285,21 +285,28 @@ pub fn roster_of(nodes: &Value) -> HashMap<String, Vec<LiveSession>> {
             session_id: text(&s["session_id"]),
             job: text(&s["job"]),
             name: text(&s["name"]), link: text(&s["link"]), project: text(&s["project"]), scope: text(&s["scope"]),
+            state: text(&s["state"]), needs: text(&s["needs"]),
         }).collect();
         Some((node, live))
     }).collect()
 }
 
-/// One `telemetry/sessions` event: a session that went live, went or took a new name.
+/// One `telemetry/sessions` event: a session that went live, went, took a new name or
+/// changed state.
 pub fn on_session_event(store: &Store, e: &Value) -> anyhow::Result<Vec<String>> {
     let node = e["node"].as_str().unwrap_or_default();
     let (sid, job) = (e["session_id"].as_str(), e["job"].as_str());
-    Ok(match e["event"].as_str() {
-        Some("gone") => store.session_gone(sid, job, node)?,
+    let mut moved = match e["event"].as_str() {
+        Some("gone") => return Ok(store.session_gone(sid, job, node, e["retired"] == json!(true))?),
         Some("live") => store.session_live(sid, job, node)?,
-        Some("renamed") => store.session_renamed(sid, job, node, e["name"].as_str().unwrap_or_default())?,
-        _ => vec![],
-    })
+        Some("renamed") => return Ok(store.session_renamed(sid, job, node, e["name"].as_str().unwrap_or_default())?),
+        Some("state") => vec![],
+        _ => return Ok(vec![]),
+    };
+    if let Some(state) = e["state"].as_str() {
+        moved.extend(store.session_state(sid, job, node, state, e["needs"].as_str())?);
+    }
+    Ok(moved)
 }
 
 /// Follow telemetry's session feed, reconciling with its roster at each (re)connect.
