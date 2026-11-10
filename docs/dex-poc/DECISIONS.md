@@ -76,3 +76,22 @@ Each mutable name has one origin. Whether that sits within C3 is still to confir
 **Measured (capella, hot loop, no `dlopen`).** Pointer call through a swappable table 2.2 ns; with memcpy in and out 10.3 ns; strict JSON both ways for a 106-byte request about 400 ns.
 
 **Landed.** Input to `handoff`. Refines `contract-and-builds`.
+
+## calling-mechanism (2026-11-09)
+
+**Question.** How does one call site reach a callee in process, over IPC and across the network, and what carries the legs?
+
+**User's words.** "we need to abstract this so that the caller never knows". Then "compact and build POC, report experiment findings".
+
+**Status.** Working design. The user did not confirm the proposal in words; they set the requirement above and directed the build on the proposal. Revisit if an experiment contradicts it.
+
+**Working design.**
+- The caller never knows the placement. `to` is location-free, the router chooses the path, and placement comes only from the registry. A test caller has no placement branch.
+- One surface for every placement: `call(to, selector, args, deadline)` returns a future. A local callee gives a future that is ready on first poll with no allocation.
+- Across the C ABI: `call(handle, &req, &mut rep)` returns Done or Pending(ticket); `poll(ticket)` collects the reply. A selector resolves to a handle once. No callbacks, because one could outlive a swap.
+- A deadline is mandatory on every call.
+- One closed error set at every placement: `doesNotUnderstand`, `timeout`, `unavailable`, `moved`. On `moved` nothing has executed, so the router re-resolves and retries once. It surfaces the others.
+- The router never retries an effectful call automatically, because the outcome after a timeout is unknown. The envelope `id` is the dedup key. Pure selectors retry freely.
+- Carrier in the POC: a Unix socket locally and an ssh channel (stdio, no listening port) to capella, as `awm-edge` does. The existing gateway path is measured as the baseline.
+
+**Landed.** The POC build (`STACK.md`, `poc-build`).
