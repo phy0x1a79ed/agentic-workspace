@@ -967,7 +967,7 @@ async fn a_hand_row_is_typed_and_paused_arrives_with_the_pull() {
 }
 
 #[tokio::test]
-async fn a_decl_row_renames_the_seat_and_a_dropped_row_forgets_it() {
+async fn a_decl_row_renames_the_seat_and_a_roster_that_lacks_it_forgets_it() {
     let l = L::occupied().await;
     let push = |row: Value| {
         let mut s = l.social.s();
@@ -980,7 +980,10 @@ async fn a_decl_row_renames_the_seat_and_a_dropped_row_forgets_it() {
     push(json!({"kind": "decl"}));
     l.link.pull_once(&l.t.seats).await.unwrap();
     assert_eq!(l.t.store.get("opal", "D0TEST").await.unwrap().decl.name, "seat:slack/dm/renamed", "a decl row without a seat changes nothing");
-    push(json!({"kind": "dropped", "account": "opal", "channel_id": "D0TEST"}));
+    push(json!({"kind": "roster", "seats": ["opal/D0TEST"]}));
+    l.link.pull_once(&l.t.seats).await.unwrap();
+    assert!(l.t.store.get("opal", "D0TEST").await.is_some(), "a seat on the roster stays");
+    push(json!({"kind": "roster", "seats": []}));
     l.link.pull_once(&l.t.seats).await.unwrap();
     assert!(l.t.store.get("opal", "D0TEST").await.is_none());
 }

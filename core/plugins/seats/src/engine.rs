@@ -9,7 +9,7 @@
 //!
 //! Nothing here depends on the link to social. What social should hear goes in the outbox.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, RwLock};
 
 use async_trait::async_trait;
@@ -693,11 +693,17 @@ impl Seats {
         seat
     }
 
-    /// Social no longer declares the seat. A live agent keeps running, without the seat.
-    pub async fn dropped(&self, account: &str, channel: &str) {
-        let lock = self.lock(&(account.to_string(), channel.to_string()));
-        let _held = lock.lock().await;
-        self.store.delete(account, channel).await;
+    /// Forget each seat social's roster lacks, with the lines that wait for it. A live agent
+    /// keeps running, without the seat.
+    pub async fn keep(&self, roster: HashSet<&str>) {
+        for s in self.store.all().await {
+            if !roster.contains(s.id().as_str()) {
+                let lock = self.lock(&s.key());
+                let _held = lock.lock().await;
+                tracing::info!("seat {}: social no longer declares it, forgotten", label(&s));
+                self.store.delete(s.account(), s.channel()).await;
+            }
+        }
     }
 
     /// A hand mount let go of a declared seat: the seat is empty again.
