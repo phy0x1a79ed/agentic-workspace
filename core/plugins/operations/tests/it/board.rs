@@ -433,19 +433,14 @@ fn an_agent_card_takes_a_generated_title_until_a_name_arrives() {
     let (_d, st) = fresh();
     let t = s(&st.agent_card("mizar", None).unwrap()["task_id"]);
     let title = |st: &Store| s(&st.task_get(&t).unwrap()["title"]);
-    st.task_autotitle(&t, "first prompt", false, None).unwrap();
-    assert_eq!(title(&st), "first prompt");
-    st.task_autotitle(&t, "second prompt", false, None).unwrap();
-    assert_eq!(title(&st), "first prompt", "only the first prompt titles a card");
-    st.task_autotitle(&t, "Plan heading", true, None).unwrap();
+    st.task_autotitle(&t, "Plan heading", None).unwrap();
     assert_eq!(title(&st), "Plan heading");
-    st.task_autotitle(&t, "Later heading", true, None).unwrap();
+    st.task_autotitle(&t, "Later heading", None).unwrap();
     assert_eq!(title(&st), "Plan heading", "a plan heading is final");
     let u = s(&st.agent_card("mizar", None).unwrap()["task_id"]);
     st.task_attach(&u, &sid(9), "main", Seat { node: Some("mizar".into()), ..Seat::default() }, None).unwrap();
-    st.task_autotitle(&u, "from prompt", false, None).unwrap();
     st.session_renamed(Some(&sid(9)), None, "mizar", "real-name").unwrap();
-    st.task_autotitle(&u, "A heading", true, None).unwrap();
+    st.task_autotitle(&u, "A heading", None).unwrap();
     assert_eq!(s(&st.task_get(&u).unwrap()["title"]), "real-name", "a rename wins over a plan heading");
 }
 

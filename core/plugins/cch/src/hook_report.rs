@@ -84,7 +84,7 @@ pub fn handle(hub: &dyn Hub, home: &Path, p: &Value) {
     match p.get("hook_event_name").and_then(Value::as_str) {
         Some("SessionStart") => {
             if p.get("source").and_then(Value::as_str) == Some("clear") {
-                report(hub, sid, "hook_session_clear", json!({"new_session_id": sid}));
+                report(hub, sid, "hook_session_clear", json!({}));
             }
             return;
         }
@@ -167,7 +167,7 @@ mod tests {
         handle(&hub, &home, &json!({"session_id": "s2", "hook_event_name": "SessionStart", "source": "startup"}));
         assert!(hub.calls.borrow().is_empty());
         handle(&hub, &home, &json!({"session_id": "s2", "hook_event_name": "SessionStart", "source": "clear"}));
-        assert_eq!(hub.calls.borrow()[0], ("operations_hook_session_clear".to_string(), json!({"session_id": "s2", "new_session_id": "s2"})));
+        assert_eq!(hub.calls.borrow()[0], ("operations_hook_session_clear".to_string(), json!({"session_id": "s2"})));
     }
 
     #[test]
