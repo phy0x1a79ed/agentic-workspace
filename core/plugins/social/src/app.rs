@@ -603,23 +603,22 @@ impl Social {
         let held: HashMap<String, Mount> = self.db.mounts(Some(&account)).await.into_iter().map(|m| (m.channel_id.clone(), m)).collect();
         let mut stored: BTreeMap<String, Seat> = self.seats.store.all().await.into_iter().filter(|st| st.account == account).map(|st| (st.channel_id.clone(), st)).collect();
         let mut out = vec![];
-        let mut add = |mut row: Value, seat: Option<Seat>| {
-            row["holder"] = held.get(row["id"].as_str().unwrap_or("")).map(Mount::holder).unwrap_or(Value::Null);
+        let mut add = |c: &Channel, seat: Option<Seat>| {
+            let mut row = chan(c);
+            row["holder"] = held.get(&c.id).map_or(Value::Null, Mount::holder);
+            row["seat"] = seat.as_ref().map_or(Value::Null, Seat::public);
             if let Some(st) = seat {
                 row["label"] = json!(self.seats.name(&st));
-                row["seat"] = st.public();
-            } else {
-                row["seat"] = Value::Null;
             }
             out.push(row);
         };
         for c in conn.list_seats().await? {
             let seat = stored.remove(&c.id);
-            add(chan(&c), seat);
+            add(&c, seat);
         }
         // A declared seat whose chat the platform has not listed yet, such as a guild channel before the gateway is ready.
         for st in stored.into_values() {
-            add(json!({"id": st.channel_id, "name": st.channel_name, "kind": st.kind}), Some(st));
+            add(&Channel { id: st.channel_id.clone(), name: st.channel_name.clone(), kind: st.kind.clone() }, Some(st));
         }
         Ok(json!({"seats": out}))
     }

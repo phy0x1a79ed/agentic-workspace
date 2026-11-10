@@ -101,7 +101,8 @@ impl Seats {
     async fn declare(&self, m: &Inbound) -> Option<(Seat, bool)> {
         if let Some(mut s) = self.store.get(&m.account, &m.channel_id).await {
             if !self.declares(&s, &m.sender_id) {
-                self.drop_seat(&s).await;
+                self.forget(&s).await;
+                self.roster(&s.node, &self.store.all().await).await;
                 return None;
             }
             if (!m.channel_name.is_empty() && m.channel_name != s.channel_name) || (!m.server.is_empty() && m.server != s.server) {
@@ -135,21 +136,15 @@ impl Seats {
         self.cfg.seat_for(&s.account, &s.channel_id, &s.kind, sender).is_some()
     }
 
-    /// A chat the config no longer declares stops being a seat, here and on its host.
-    async fn drop_seat(&self, s: &Seat) {
-        self.forget(s).await;
-        self.roster(&s.node).await;
-    }
-
     async fn forget(&self, s: &Seat) {
         tracing::info!("seat {} is no longer declared: dropped", s.id());
         self.store.delete(&s.account, &s.channel_id).await;
         self.store.0.unmount(&s.account, &s.channel_id).await;
     }
 
-    /// Every seat `node` hosts. The host forgets any seat the list lacks.
-    async fn roster(&self, node: &str) {
-        let ids: Vec<String> = self.store.all().await.iter().filter(|s| s.node == node).map(Seat::id).collect();
+    /// The seats of `seats` that `node` hosts. The host forgets any seat the list lacks.
+    async fn roster(&self, node: &str, seats: &[Seat]) {
+        let ids: Vec<String> = seats.iter().filter(|s| s.node == node).map(Seat::id).collect();
         self.queue(Row { node: node.into(), kind: "roster".into(), body: json!({"seats": ids}), ..Default::default() }).await;
     }
 
@@ -157,15 +152,17 @@ impl Seats {
     /// current declaration of the rest, so a seat that hears nothing still carries today's name,
     /// then each host's roster, which also clears a seat whose drop a host missed.
     pub async fn sync(&self) {
+        let mut kept = vec![];
         for s in self.store.all().await {
             if self.declares(&s, "") {
                 self.queue(Self::row(&s, "decl", json!({}))).await;
+                kept.push(s);
             } else {
                 self.forget(&s).await;
             }
         }
         for node in &self.hosts {
-            self.roster(node).await;
+            self.roster(node, &kept).await;
         }
     }
 
