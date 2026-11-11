@@ -442,14 +442,20 @@ impl SeatBook {
     async fn service_tab(&self, site: &str, url: &str) -> Result<(String, String), BookError> {
         let mut st = self.state.lock().await;
         let cdp = self.shared.clone();
+        // Asked first, so a Chrome restart has redialled before the generation is read.
+        let infos = cdp.send("Target.getTargets", json!({}), None).await?;
+        let live = |id: &str| infos["targetInfos"].as_array().into_iter().flatten().any(|t| t["targetId"] == id);
         if st.service_generation != Some(cdp.generation()) {
             st.service_tabs.clear();
+            st.service_window = None;
+        }
+        st.service_tabs.retain(|(_, t, _)| live(t));
+        if st.service_tabs.is_empty() {
             st.service_window = None;
         }
         if let Some((_, t, f)) = st.service_tabs.iter().find(|(s, _, _)| s == site) {
             return Ok((t.clone(), f.clone()));
         }
-        let infos = cdp.send("Target.getTargets", json!({}), None).await?;
         let seat_tabs: Vec<&String> = st.seats.iter().flat_map(|s| s.tabs.iter()).collect();
         let found = infos["targetInfos"].as_array().into_iter().flatten().find(|t| {
             t["type"].as_str().unwrap_or("page") == "page"
