@@ -146,3 +146,19 @@ Each mutable name has one origin. Whether that sits within C3 is still to confir
 **Leaning, revisit at `bids`.** Score each axis as a robust z (median and MAD over the bids and history), clamp it so no single axis (such as a zero-cost cache hit) dominates, and take a weighted sum.
 
 **Open.** Whether braavos forks metasmith, lifts its code, or takes its ideas (topic `metasmith-reuse`).
+
+## metasmith-reuse (2026-11-11)
+
+**Question.** Does baitan fork metasmith, lift its code, or take its ideas?
+
+**User's words.** "take metasmith ideas then, can be new tool." "braavos is slightly overused, what do you think about baitan (摆摊)?"
+
+**Decided.**
+- Take metasmith's ideas, not its code: types as property sets with subset subtyping, lineage signatures, and transform contracts (requirements, products, resources). They become a new tool, extended with a format axis and per-what appraisal axes. Metasmith stays as it is and can join later as a provider.
+- The plugin is renamed baitan (摆摊, a street stall). Sections above that say braavos mean baitan.
+
+**Also settled in this exchange.**
+- Checkers need flexibility. Design against the case where the checker's CheckM run and the Nextflow plan's own CheckM step must share one cache entry. Several reviews per job and trust are deferred.
+- Deferred items and test cases are journalled in 3a6c999a (tag `deferred`), to be edited as they change.
+
+**Landed.** New tool; no metasmith fork.
