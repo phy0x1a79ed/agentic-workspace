@@ -1,0 +1,19 @@
+# Tony's own accounts and drives: gmail, his Slack and Google Drive, read and drafted, never
+# sent. One instance runs on alcor, and only the nodes in productivity.toml's `callers` reach it.
+[plugin]
+name = "productivity"
+version = "0.1.0"
+
+[[service]]
+name = "productivity"
+run = "run.sh"
+
+[[tool]]
+name = "productivity"
+major = 1
+service = "productivity"
+tier = "on"
+
+[needs]
+network = ["slack.com", "*.slack.com", "*.slack-edge.com", "imap.gmail.com:993", "www.googleapis.com", "oauth2.googleapis.com"]
+platform = ["linux"]

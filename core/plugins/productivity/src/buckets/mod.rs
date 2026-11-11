@@ -53,7 +53,6 @@ pub struct Got {
 #[async_trait]
 pub trait Bucket: Send + Sync {
     fn name(&self) -> &str;
-    fn kind(&self) -> &str;
 
     /// The immediate children of the folder `path` (`""` is the root).
     async fn ls(&self, path: &str) -> Result<Vec<Entry>>;

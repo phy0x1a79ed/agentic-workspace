@@ -10,7 +10,7 @@ use tokio::sync::{Mutex, RwLock};
 
 use awm_plugin_sdk::VerbError;
 
-use crate::connectors::runtime;
+use crate::runtime;
 
 /// Where the Web API lives, unless `AWM_SLACK_API` says otherwise.
 pub const DEFAULT_API: &str = "https://slack.com/api";
@@ -98,7 +98,7 @@ impl Client {
     }
 
     /// Run `creds_cmd` through `sh -c` and take the `{token, cookie}` it prints.
-    pub async fn fetch_creds(&self) -> crate::connectors::Result<()> {
+    pub async fn fetch_creds(&self) -> crate::Result<()> {
         let Some(cmd) = &self.creds_cmd else {
             return Err(runtime("no creds_cmd to refresh session credentials"));
         };
@@ -235,4 +235,50 @@ impl Client {
 /// Every param that has a value, for the methods whose optional params Python dropped when None.
 pub fn params<'a>(items: &[(&'a str, Option<String>)]) -> Vec<(&'a str, String)> {
     items.iter().filter_map(|(k, v)| v.clone().map(|v| (*k, v))).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use axum::extract::State;
+    use axum::http::HeaderMap;
+    use axum::routing::post;
+    use axum::{Json, Router};
+    use serde_json::{json, Value};
+
+    use super::Client;
+
+    type Seen = Arc<Mutex<Vec<(String, String)>>>;
+
+    /// auth.test that takes only `xoxc-NEW`, recording each call's token and cookie.
+    async fn fake() -> (String, Seen) {
+        async fn auth(State(seen): State<Seen>, headers: HeaderMap) -> Json<Value> {
+            let h = |k: &str| headers.get(k).and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
+            let (auth, cookie) = (h("authorization"), h("cookie"));
+            seen.lock().unwrap().push((auth.clone(), cookie));
+            Json(if auth == "Bearer xoxc-NEW" { json!({"ok": true, "user_id": "UME"}) } else { json!({"ok": false, "error": "invalid_auth"}) })
+        }
+        let seen = Seen::default();
+        let app = Router::new().route("/auth.test", post(auth)).with_state(seen.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        (base, seen)
+    }
+
+    #[tokio::test]
+    async fn stale_session_creds_are_refetched_once() {
+        let (base, seen) = fake().await;
+        let cmd = r#"printf '{"token":"xoxc-NEW","cookie":"xoxd-NEW"}'"#;
+        let c = Client::new(&base, "xoxc-OLD", "xoxd-OLD", Some(cmd.into()));
+        assert_eq!(c.call("auth.test", &[]).await.unwrap()["user_id"], "UME");
+        let tokens: Vec<_> = seen.lock().unwrap().iter().map(|(a, _)| a.clone()).collect();
+        assert_eq!(tokens, ["Bearer xoxc-OLD", "Bearer xoxc-NEW"]);
+        assert_eq!(seen.lock().unwrap().last().unwrap().1, "d=xoxd-NEW");
+
+        // With no creds_cmd there is nothing to refresh.
+        let c = Client::new(&base, "xoxc-OLD", "xoxd-OLD", None);
+        assert_eq!(c.call("auth.test", &[]).await.unwrap_err().to_string(), "slack auth.test: invalid_auth");
+    }
 }

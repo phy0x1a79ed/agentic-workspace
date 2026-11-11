@@ -11,7 +11,7 @@ use serde_json::{json, Value};
 use tokio::sync::mpsc::UnboundedSender;
 use tokio_tungstenite::tungstenite::Message;
 
-use super::api::Client;
+use awm_chat::slack::api::Client;
 
 pub enum Signal {
     /// The socket is up: whatever arrived while it was down needs a sync.
