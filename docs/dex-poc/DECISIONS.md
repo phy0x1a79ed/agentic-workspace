@@ -95,3 +95,19 @@ Each mutable name has one origin. Whether that sits within C3 is still to confir
 - Carrier in the POC: a Unix socket locally and an ssh channel (stdio, no listening port) to capella, as `awm-edge` does. The existing gateway path is measured as the baseline.
 
 **Landed.** The POC build (`STACK.md`, `poc-build`).
+
+## market-scope (2026-11-11)
+
+**Question.** What kind of job does the first compute market run, and who provides the compute?
+
+**User's words.** "pressing issue is some compute market for awm peers." "can we abstract sockeye and fir, nibi, and trillium as well? slurm's fair use quota's would also be interesting to consider as a system. I think this system should be more standaone than other plugins in that it should be able to be called directly, not just through awm." "aspirationally, Id want compiled nextflow workflows to be executable through this system"
+
+**Decided.**
+- A job is general: a command, a requirement predicate, inputs and outputs. A cargo build is the first recipe. (Option B; the user widened it rather than picking A or C.)
+- Providers are not only awm peers. The UBC cluster Sockeye and the Alliance clusters Fir, Nibi and Trillium are providers too, behind one abstraction. Slurm's fair-share quotas are an input to allocation.
+- The system is standalone: it can be called directly, not only through awm.
+- Aspiration: run compiled Nextflow workflows through it.
+
+**Known.** ssh routes to sockeye, fir, nibi and trillium already exist: altair holds the UBC VPN jump, and ssh-arbiter on alcor holds the 2FA leases (journals 06ffb49f, e9f609ba). No awm verb runs a remote command today. The edge times out at 60 s, so a job is submit, then status and result. `dvc run` with its watcher is the closest existing job pattern.
+
+**Landed.** Opens the topics `standalone`, `providers`, `fair-share` and `nextflow` under `compute-market`.

@@ -6,7 +6,7 @@
 
 ## Current
 
-`compute-market`: a compute market for awm peers. The user's pressing issue (2026-11-11). Evidence: journal 7ab424c3 (cold builds on mizar, full disk from per-worktree targets, contention) and E4 in `FINDINGS.md`. First question: what the first version covers.
+`compute-market`: a compute market for awm peers. The user's pressing issue (2026-11-11). Evidence: journal 7ab424c3 (cold builds on mizar, full disk from per-worktree targets, contention) and E4 in `FINDINGS.md`. `market-scope` closed: a general job, HPC clusters as providers, standalone, Nextflow later. Next: `standalone`.
 
 ## Waiting on the user
 
@@ -20,15 +20,20 @@ Nothing.
 - 2026-11-09: Full exploration including prototype builds, not only docs.
 - 2026-11-09: Builds run on capella. The contract is strict versioned JSON.
 - 2026-11-09: MVP is cache, update event and remote fill; bidding after.
+- 2026-11-11: The market is standalone, callable without awm.
 - 2026-11-11: "pressing issue is some compute market for awm peers."
 - Standing: one report at the end, no interim status reports.
 
 ## Stack
 
 - `compute-market`: see Current.
+  - `standalone`: callable directly, not only through awm. Who calls it, and from where.
+  - `providers`: awm peers and Slurm clusters (sockeye, fir, nibi, trillium) behind one abstraction. A cluster login node cannot host a daemon.
+  - `fair-share`: Slurm fair-use quotas as an allocation input, "as a system".
   - `tool-surface`: the narrow exposed tool, roughly submit, status, result, cancel. A 15 to 50 minute build cannot be one blocking call.
   - `bidding`: allocation among peers (requirement predicate, bid, award).
   - `build-repro`: do real workloads (kb, lance, musl release) give byte-identical output? E4 tested only a dependency-free crate.
+  - `nextflow`: run compiled Nextflow workflows through the market. Aspirational; last under `compute-market`.
 - `envelope-mapping`: map the dex TypeScript kernel's envelope (altair, dex/edge) to `{v, id, from, to, selector, args}`; ask whether both share one envelope.
 - `first-test`: `claude-md-sync` is a candidate after the experiments. One origin per name against C3 is still open.
 - `version-policy`: whether a reply is translated to the caller's version (caller sends an `accept` list; receiver replies in the highest version it can produce, else a structured error).
@@ -51,4 +56,5 @@ None.
 - `contract-and-builds`: strict versioned JSON; capella builds; mizar and capella as the pair.
 - `format-per-locality`: struct in process, JSON from IPC outward.
 - `calling-mechanism`: working design, taken as accepted when the user directed the build.
+- `market-scope`: a general job (build first); HPC clusters as providers; standalone; Nextflow aspirational.
 - `poc-build`: E1 to E4 run; results in `FINDINGS.md`.
