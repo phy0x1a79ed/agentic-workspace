@@ -1,8 +1,6 @@
 //! Tony's Slack, Teams and Discord chats, read and staged through their signed-in tabs in
 //! alcor's shared browser. `chat.js` makes every request with the page's own session.
 
-use std::time::Duration;
-
 use awm_chat::{value, Downloaded};
 use awm_plugin_sdk::{Hub, VerbError};
 use serde_json::{json, Value};
@@ -66,15 +64,7 @@ impl Chat {
             .map(|(name, data)| json!({"name": name, "mime": tab::mime_of(name), "b64": tab::b64(data)}))
             .collect();
         let args = [json!(self.tab.site), json!(files)];
-        let stage = || self.tab.eval(JS, "window.__awmChat.stage", &args);
-        // The navigation swaps the page out from under the first try now and then.
-        let staged = match stage().await {
-            Err(e) if e.message.contains("context") => {
-                tokio::time::sleep(Duration::from_secs(3)).await;
-                stage().await?
-            }
-            other => other?,
-        };
+        let staged = self.tab.eval(JS, "window.__awmChat.stage", &args).await?;
         let shot = self.tab.cdp("Page.captureScreenshot", json!({"format": "png"})).await?;
         Ok((staged, Downloaded { filename: format!("staged-{}.png", self.tab.site), mime: "image/png".into(), data: tab::unb64(&shot["data"])? }))
     }
