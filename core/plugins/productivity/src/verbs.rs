@@ -167,7 +167,7 @@ impl Productivity {
         };
         let mut files: Vec<DraftFile> = handed_files(&call.args)?
             .into_iter()
-            .map(|(filename, data)| DraftFile { mime: mime_guess::from_path(&filename).first_or_octet_stream().to_string(), filename, data })
+            .map(|(filename, data)| DraftFile { mime: crate::tab::mime_of(&filename), filename, data })
             .collect();
         for f in call.args.get("bucket_files").and_then(Value::as_array).into_iter().flatten() {
             files.push(self.bucket_file(&s(f, "bucket"), &s(f, "path")).await?);
@@ -195,28 +195,26 @@ impl Productivity {
     pub async fn chat_read(&self, call: Call) -> R {
         let tab = Chat::new(call.hub(), &s(&call.args, "site"))?;
         let want = s(&call.args, "chat");
-        let out = async {
+        tab.read(async {
             if want.is_empty() {
                 return Ok(json!({"chats": tab.chats().await?}));
             }
             let chat = tab.chat(&want).await?;
             let msgs = tab.messages(chat["id"].as_str().unwrap_or_default(), int(call.args.get("limit"), 30).clamp(1, 100) as usize).await?;
             Ok(json!({"chat": chat, "messages": msgs}))
-        }
-        .await;
-        tab.done().await;
-        out
+        })
+        .await
     }
 
     pub async fn chat_download(&self, call: Call) -> R {
         let tab = Chat::new(call.hub(), &s(&call.args, "site"))?;
-        let out = async {
-            let chat = tab.chat(&s(&call.args, "chat")).await?;
-            tab.download(chat["id"].as_str().unwrap_or_default(), &s(&call.args, "message_id"), idx(&call.args)).await
-        }
-        .await;
-        tab.done().await;
-        awm_chat::inline_files(&out?, &self.here)
+        let files = tab
+            .read(async {
+                let chat = tab.chat(&s(&call.args, "chat")).await?;
+                tab.download(chat["id"].as_str().unwrap_or_default(), &s(&call.args, "message_id"), idx(&call.args)).await
+            })
+            .await?;
+        awm_chat::inline_files(&files, &self.here)
     }
 
     /// Put files in a chat's compose box in alcor's browser. Tony sends the message himself.

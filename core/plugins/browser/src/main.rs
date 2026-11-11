@@ -69,19 +69,13 @@ fn caller(call: &Call) -> (String, String) {
     (key, call.caller_trust().unwrap_or("untrusted").to_string())
 }
 
-/// The service-tab and drop verbs answer only productivity, calling on its own account from this node.
+/// The service-tab verbs answer only productivity, calling on its own account from this node.
 fn productivity_only(call: &Call) -> Result<(), BookError> {
     let c = &call.caller;
     if call.plugin.as_deref() == Some("productivity") && c.lane == Lane::Service && c.node == call.ctx.env().node && c.session.is_none() {
         return Ok(());
     }
     Err(BookError::Seat("only the productivity service drives the service tabs".into()))
-}
-
-/// A drop-folder file name: one plain path segment.
-fn drop_name(name: &str) -> Result<&str, BookError> {
-    let ok = !name.is_empty() && name.len() <= 200 && !name.starts_with('.') && !name.contains(['/', '\\', '\0']);
-    ok.then_some(name).ok_or_else(|| BookError::Usage(format!("{name:?} is not a plain file name")))
 }
 
 fn answer(r: Result<Value, BookError>) -> Result<Value, VerbError> {
@@ -191,11 +185,9 @@ fn service(svc: Service, book: Book, settings: Arc<Settings>, chrome: Arc<Chrome
     service_verbs(svc, book, settings, chrome)
 }
 
-/// The productivity service's verbs: its own tab per site in the service window, and the drop
-/// folder Chrome downloads into and uploads from.
+/// The productivity service's verbs: its own tab per site in the service window.
 fn service_verbs(svc: Service, book: Book, settings: Arc<Settings>, chrome: Arc<Chrome>) -> Service {
     let site = || p("site", "string", true, "A site the browser config names, such as slack, teams or discord.");
-    let name = || p("name", "string", true, "A plain file name in the drop folder.");
     let (s, c) = (settings.clone(), chrome.clone());
     let svc = verb!(svc, book, [s, c], "service_cdp", "Run a page-level DevTools method on the site's tab in the service window, opening the tab first. Only the productivity service may call it.",
         json!([site(), p("method", "string", true, ""), p("params", "object", false, "")]),
@@ -204,47 +196,12 @@ fn service_verbs(svc: Service, book: Book, settings: Arc<Settings>, chrome: Arc<
             let (site, method) = (usage(req(&call, "site"))?, usage(req(&call, "method"))?);
             let url = s.service_sites.iter().find(|(k, _)| *k == site).map(|(_, u)| u.clone()).ok_or_else(|| BookError::Usage(format!("no service site named {site:?}")))?;
             c.ensure().await?;
-            b.service_send(&site, &url, chrome::DROP_MOUNT, &method, call.args.get("params").cloned().unwrap_or(Value::Null)).await
+            b.service_send(&site, &url, &method, call.args.get("params").cloned().unwrap_or(Value::Null)).await
         });
-    let svc = verb!(svc, book, "service_close", "Close the site's tab in the service window. Only the productivity service may call it.", json!([site()]), |b, call, _who| {
+    verb!(svc, book, "service_close", "Close the site's tab in the service window. Only the productivity service may call it.", json!([site()]), |b, call, _who| {
         productivity_only(&call)?;
         let site = usage(req(&call, "site"))?;
         b.service_close(&site).await.map(|closed| json!({"closed": closed}))
-    });
-    let c = chrome.clone();
-    let svc = verb!(svc, book, [c], "drop_put", "Write a file into the drop folder, for a service tab to upload. Returns its path inside Chrome. Only the productivity service may call it.",
-        json!([name(), p("b64", "string", true, "The file's bytes, base64.")]),
-        |_b, call, _who| {
-            productivity_only(&call)?;
-            let (n, b64) = (usage(req(&call, "name"))?, usage(req(&call, "b64"))?);
-            let dir = c.drop_dir().ok_or_else(|| BookError::Seat("this browser has no drop folder".into()))?;
-            use base64::Engine;
-            let bytes = base64::engine::general_purpose::STANDARD.decode(b64.trim()).map_err(|e| BookError::Usage(format!("b64: {e}")))?;
-            let path = dir.join(drop_name(&n)?);
-            std::fs::create_dir_all(dir).and_then(|_| std::fs::write(path, &bytes)).map_err(|e| BookError::Other(e.into()))?;
-            Ok(json!({"path": format!("{}/{n}", chrome::DROP_MOUNT), "size": bytes.len()}))
-        });
-    let c = chrome.clone();
-    let svc = verb!(svc, book, [c], "drop_list", "The files in the drop folder: downloads, and staged files not yet taken. A name ending .crdownload is still downloading. Only the productivity service may call it.", json!([]), |_b, call, _who| {
-        productivity_only(&call)?;
-        let dir = c.drop_dir().ok_or_else(|| BookError::Seat("this browser has no drop folder".into()))?;
-        let mut files: Vec<Value> = std::fs::read_dir(dir).into_iter().flatten().flatten().filter_map(|e| {
-            let meta = e.metadata().ok().filter(|m| m.is_file())?;
-            Some(json!({"name": e.file_name().to_string_lossy(), "size": meta.len()}))
-        }).collect();
-        files.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
-        Ok(json!({"files": files}))
-    });
-    let c = chrome;
-    verb!(svc, book, [c], "drop_take", "Read a file out of the drop folder and delete it. Only the productivity service may call it.", json!([name()]), |_b, call, _who| {
-        productivity_only(&call)?;
-        let n = usage(req(&call, "name"))?;
-        let dir = c.drop_dir().ok_or_else(|| BookError::Seat("this browser has no drop folder".into()))?;
-        let path = dir.join(drop_name(&n)?);
-        let bytes = std::fs::read(&path).map_err(|e| BookError::Usage(format!("{n}: {e}")))?;
-        let _ = std::fs::remove_file(&path);
-        use base64::Engine;
-        Ok(json!({"name": n, "size": bytes.len(), "b64": base64::engine::general_purpose::STANDARD.encode(&bytes)}))
     })
 }
 
@@ -401,15 +358,13 @@ mod tests {
             bare_call(Some("productivity"), Caller { lane: Lane::Local, ..own }),
         ];
         assert!(refused.iter().all(|c| productivity_only(c).is_err()));
-        assert!(drop_name("report.pdf").is_ok());
-        assert!(["", "../x", "a/b", ".hidden"].iter().all(|n| drop_name(n).is_err()));
     }
 
     #[tokio::test]
     async fn a_session_reaches_no_service_verb() {
         let book = Arc::new(SeatBook::new(Arc::new(seats::tests::FakeChrome::new("shared")), None, None));
         let svc = built(book).into_test().await.unwrap();
-        for (verb, args) in [("service_cdp", json!({"site": "teams", "method": "Runtime.evaluate"})), ("service_close", json!({"site": "teams"})), ("drop_put", json!({"name": "a", "b64": ""})), ("drop_list", json!({})), ("drop_take", json!({"name": "a"}))] {
+        for (verb, args) in [("service_cdp", json!({"site": "teams", "method": "Runtime.evaluate"})), ("service_close", json!({"site": "teams"}))] {
             let out = call(&svc, verb, args, Some("trusted")).await;
             assert!(out["error"].as_str().unwrap().contains("only the productivity service"), "{verb}: {out}");
         }

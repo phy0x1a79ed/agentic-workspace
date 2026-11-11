@@ -5,12 +5,11 @@ use std::path::Path;
 
 use async_trait::async_trait;
 use awm_plugin_sdk::{Hub, VerbError};
-use base64::Engine;
 use serde_json::{json, Value};
 
 use super::{exists, is_a_dir, not_a_dir, not_found, Bucket, Entry, Got, Result};
 use crate::config::BucketConfig;
-use crate::tab::Tab;
+use crate::tab::{self, Tab};
 
 const JS: &str = include_str!("onedrive.js");
 /// A whole file crosses the browser hop as base64 in one reply.
@@ -31,7 +30,7 @@ impl OneDrive {
             r => tokio::sync::OnceCell::new_with(Some(format!("/{r}"))),
         };
         let site = if cfg.site.is_empty() { "onedrive" } else { &cfg.site };
-        Ok(std::sync::Arc::new(OneDrive { name: cfg.name.clone(), root, tab: Tab::new(hub, site) }))
+        Ok(std::sync::Arc::new(OneDrive { name: cfg.name.clone(), root, tab: Tab::new(hub, site, "sharepoint.com") }))
     }
 
     async fn root(&self) -> Result<&str> {
@@ -49,14 +48,11 @@ impl OneDrive {
 
     async fn run(&self, f: &str, args: &[Value]) -> Result<Value> {
         self.tab.eval(JS, &format!("window.__awmDrive.{f}"), args).await.map_err(|e| {
-            let m = e.message.clone();
-            let tagged = |code: &str| m.split_once(": ").is_some_and(|(_, rest)| rest.starts_with(code));
-            match () {
-                _ if tagged("ENOENT") => not_found(m),
-                _ if tagged("EISDIR") => is_a_dir(m),
-                _ if tagged("ENOTDIR") => not_a_dir(m),
-                _ if tagged("EINVAL") => VerbError::value(m),
-                _ => e,
+            let code = e.message.split_once(": ").and_then(|(_, rest)| rest.split(':').next()).unwrap_or_default();
+            let kinds: [(&str, fn(String) -> VerbError); 4] = [("ENOENT", not_found), ("EISDIR", is_a_dir), ("ENOTDIR", not_a_dir), ("EINVAL", VerbError::value)];
+            match kinds.iter().find(|(c, _)| *c == code) {
+                Some((_, kind)) => kind(e.message),
+                None => e,
             }
         })
     }
@@ -104,28 +100,18 @@ impl Bucket for OneDrive {
     }
 
     async fn get(&self, path: &str, dest: &Path) -> Result<Got> {
-        let e = self.stat(path).await?;
-        if e.is_dir {
-            return Err(is_a_dir(format!("bucket {:?}: {path:?} is a folder", self.name)));
-        }
-        if e.size as u64 > MAX_FILE_BYTES {
-            return Err(VerbError::value(format!("bucket {:?}: {path:?} is {} bytes; the browser path carries {MAX_FILE_BYTES} at most. Open {} instead", self.name, e.size, e.web_url)));
-        }
-        let v = self.run("get", &[json!(self.abs(path).await?)]).await?;
-        let data = base64::engine::general_purpose::STANDARD.decode(v["b64"].as_str().unwrap_or_default()).map_err(|x| VerbError::runtime(x.to_string()))?;
-        let filename = v["filename"].as_str().unwrap_or("file").to_string();
-        let local = dest.join(super::local_segment(&filename));
-        std::fs::write(&local, &data).map_err(|x| VerbError::runtime(format!("{}: {x}", local.display())))?;
-        Ok(Got { filename, mime: v["mime"].as_str().unwrap_or_default().to_string(), size: data.len() as i64, path: local.display().to_string() })
+        let f = tab::file(&self.run("get", &[json!(self.abs(path).await?), json!(MAX_FILE_BYTES)]).await?)?;
+        let local = dest.join(super::local_segment(&f.filename));
+        tokio::fs::write(&local, &f.data).await.map_err(|x| VerbError::runtime(format!("{}: {x}", local.display())))?;
+        Ok(Got { size: f.data.len() as i64, filename: f.filename, mime: f.mime, path: local.display().to_string() })
     }
 
     async fn put(&self, path: &str, src: &Path, _mime: Option<&str>, parents: bool) -> Result<Entry> {
-        let data = std::fs::read(src).map_err(|x| not_found(format!("{}: {x}", src.display())))?;
+        let data = tokio::fs::read(src).await.map_err(|x| not_found(format!("{}: {x}", src.display())))?;
         if data.len() as u64 > MAX_FILE_BYTES {
             return Err(VerbError::value(format!("{} is {} bytes; the browser path carries {MAX_FILE_BYTES} at most", src.display(), data.len())));
         }
-        let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
-        Ok(self.entry(self.run("put", &[json!(self.abs(path).await?), json!(b64), json!(parents)]).await?))
+        Ok(self.entry(self.run("put", &[json!(self.abs(path).await?), json!(tab::b64(&data)), json!(parents)]).await?))
     }
 
     async fn rm(&self, path: &str) -> Result<()> {
