@@ -1950,7 +1950,7 @@ fn job_row<E: Effects>(fx: &E, sessions: &Sessions, s: &Session, rec: Option<&Ob
     };
     let started_at = rec.get("started_at").filter(|v| truthy(Some(v))).cloned().unwrap_or_else(|| json!(iso_ms(s.started_at_ms)));
     let row = json!({
-        "tmux": null, "name": s.name, "node": node,
+        "kind": "bg", "tmux": null, "name": s.name, "node": node,
         "project": project, "scope": scope, "cwd": s.cwd,
         "state": shown,
         "needs": record.get("needs"), "detail": clip(record.get("detail")),
@@ -1983,7 +1983,7 @@ fn interactive_row<E: Effects>(fx: &E, rec: &Object, panes: &BTreeMap<u32, Strin
     let bridge = text(rec.get("bridgeSessionId")).filter(|b| !b.is_empty());
     let session_id = text(rec.get("sessionId"));
     let row = json!({
-        "tmux": tmux, "name": rec.get("name"), "node": node,
+        "kind": "interactive", "tmux": tmux, "name": rec.get("name"), "node": node,
         "project": project, "scope": scope, "cwd": rec.get("cwd"),
         "state": rec.get("status").filter(|v| truthy(Some(v))).cloned().unwrap_or_else(|| json!("unknown")),
         "needs": null, "detail": null, "tempo": null,
@@ -2927,12 +2927,12 @@ mod tests {
         let pool_row = get(&ledger::key(uuid).unwrap());
         assert!(pool_row["pool"] == json!("spare") && pool_row["mode"].is_null());
         let child = get(&chosen_id(&w));
-        assert!(child["pool"].is_null() && child["mode"] == json!("rep"));
+        assert!(child["pool"].is_null() && child["mode"] == json!("rep") && child["kind"] == json!("bg"));
         assert!(child["parent"].is_null() && child["caller"] == json!("local"));
         assert!(child["project"] == json!("awm") && child["scope"] == json!("demo"));
         assert!(child["attach"] == json!(format!("claude attach {}", chosen_job(&w))) && child["node"] == json!("testnode"));
         let tmux = get("main");
-        assert!(tmux["attach"] == json!("tmux attach -t main") && tmux.get("job").is_none());
+        assert!(tmux["attach"] == json!("tmux attach -t main") && tmux["kind"] == json!("interactive"));
         assert!(tmux["name"] == json!("dev") && tmux["scope"] == json!("demo"));
         let order: Vec<&str> = rows.iter().map(|(k, _)| k.as_str()).collect();
         assert_eq!(order, [ledger::key(uuid).unwrap(), "main".into(), chosen_id(&w)], "oldest first");

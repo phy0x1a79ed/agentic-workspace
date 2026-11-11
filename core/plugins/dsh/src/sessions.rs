@@ -86,7 +86,7 @@ pub fn row(item: &Value) -> Option<Value> {
     Some(json!({
         "session_id": sid, "fork_session_id": fork_id,
         "name": nonempty(item.get("title")),
-        "live": true,
+        "kind": "web", "live": true,
         "state": if truthy(item.get("running")) { "busy" } else { "idle" },
         "cwd": cwd,
         "project": place.as_ref().map(|p| &p.0), "scope": place.as_ref().map(|p| &p.1),
