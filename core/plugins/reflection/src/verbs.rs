@@ -29,9 +29,9 @@ pub const SESSIONS_TOPIC: &str = "sessions";
 pub const ROW_KEYS: [&str; 8] = ["session_id", "parent", "state", "live", "alive", "kind", "name", "transcript"];
 
 
-const NO_MODEL: &str = "model and effort are required, with no default. Pick both to fit the task: a smaller model and \
-                        lower effort for mechanical work, a larger model and high effort for design or debugging. Fable \
-                        needs Tony's consent first.";
+/// The model and effort of a start that names neither.
+const DEFAULT_MODEL: &str = "opus";
+const DEFAULT_EFFORT: &str = "medium";
 const OWN_STOP: &str = "that is your own session; stopping it ends this conversation. Pass confirm=true to proceed.";
 const TERMINAL_WAIT: &str =
     "a terminal session stays open; the wake line is typed in when every listed session has retired. End your turn now";
@@ -407,9 +407,15 @@ impl<G: Gateway> App<G> {
     async fn start_other(&self, frame: &Frame, args: &Value) -> Result<Value, Failure> {
         let actor = self.actor(frame).await;
         self.check_steer(actor.as_ref(), "start_other", None).await?;
-        if !truthy(args.get("model")) || !truthy(args.get("effort")) {
-            return Ok(reason(NO_MODEL));
+        let mut args = args.clone();
+        if let Some(m) = args.as_object_mut() {
+            for (key, default) in [("model", DEFAULT_MODEL), ("effort", DEFAULT_EFFORT)] {
+                if !truthy(m.get(key)) {
+                    m.insert(key.into(), json!(default));
+                }
+            }
         }
+        let args = &args;
         if let Some(refused) = over_limit(args.get("effort")) {
             return Ok(refused);
         }
