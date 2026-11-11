@@ -29,18 +29,28 @@ pub enum EdgeError {
 /// (fleet.md R92). The default adds a shared master connection (`ControlMaster`,
 /// `ControlPersist`) and a keep-alive. `AWM_EDGE_SSH` names another program to run in its
 /// place, with the same arguments.
+///
+/// A sleeping peer's ssh config may wake it on connect. The child's `AWM_EDGE_WAKE` tells
+/// that hook whether this channel may wake the peer (`1`) or must fail fast (`0`, with a
+/// short connect timeout so a sweep never waits on a shelved node).
 #[derive(Debug, Clone)]
 pub struct SshCommand {
     pub program: String,
     pub args: Vec<String>,
+    pub wake: bool,
 }
+
+/// The variable a peer's ssh wake hook reads.
+pub const WAKE_VAR: &str = "AWM_EDGE_WAKE";
+/// How long a call that wakes a peer waits beyond the usual timeout: an unshelve and boot.
+pub const WAKE_GRACE: Duration = Duration::from_secs(360);
 
 impl SshCommand {
     /// `ssh <peer> AWM_EDGE_FROM=<here> awm edge-serve`. A service-key edge logs in with this node's
     /// service key only, and the far `authorized_keys` forces its command, so what it
     /// sends is ignored there. Each key keeps its own master: a master reuses its first login's
     /// key for every channel, so a user master must never carry a service edge.
-    pub fn ssh(peer: &str, here: &str, key: EdgeKey) -> Self {
+    pub fn ssh(peer: &str, here: &str, key: EdgeKey, wake: bool) -> Self {
         let kind = match key {
             EdgeKey::User => "user",
             EdgeKey::Service => "service",
@@ -51,6 +61,9 @@ impl SshCommand {
             "-o", "ControlPersist=10m", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3",
         ];
         let mut args: Vec<String> = opts.iter().map(|s| s.to_string()).collect();
+        if !wake {
+            args.extend(["-o".into(), "ConnectTimeout=10".into()]);
+        }
         if key == EdgeKey::Service {
             args.extend(["-i".into(), awm_gateway::door::service_key_path(), "-o".into(), "IdentitiesOnly=yes".into()]);
         }
@@ -58,7 +71,7 @@ impl SshCommand {
         // A node on an older release refuses `--from` and ignores an environment prefix.
         args.extend([peer.to_string(), "PATH=\"$HOME/.local/bin:$PATH\"".into(), format!("AWM_EDGE_FROM={here}"), "awm".into(), "edge-serve".into()]);
         let program = std::env::var("AWM_EDGE_SSH").ok().filter(|p| !p.trim().is_empty()).unwrap_or_else(|| "ssh".into());
-        Self { program, args }
+        Self { program, args, wake }
     }
 }
 
@@ -114,8 +127,8 @@ impl Channel {
     }
 }
 
-/// Opens a channel's two ends. Swapped out in tests.
-pub type Opener = Arc<dyn Fn(&str) -> std::io::Result<(Box<dyn AsyncRead + Send + Unpin>, Box<dyn AsyncWrite + Send + Unpin>, Option<tokio::process::Child>)> + Send + Sync>;
+/// Opens a channel's two ends to a peer, waking it when the flag says so. Swapped out in tests.
+pub type Opener = Arc<dyn Fn(&str, bool) -> std::io::Result<(Box<dyn AsyncRead + Send + Unpin>, Box<dyn AsyncWrite + Send + Unpin>, Option<tokio::process::Child>)> + Send + Sync>;
 
 async fn send_line(ch: &Channel, req: &Request) -> std::io::Result<()> {
     let mut line = serde_json::to_vec(req).expect("json");
@@ -139,10 +152,11 @@ impl EdgeClient {
         let here = here.to_string();
         let keys: HashMap<String, EdgeKey> =
             edges.edges.get(&here).map(|t| t.iter().map(|(p, e)| (p.clone(), e.key)).collect()).unwrap_or_default();
-        Self::with_opener(Arc::new(move |peer: &str| {
-            let cmd = SshCommand::ssh(peer, &here, keys.get(peer).copied().unwrap_or_default());
+        Self::with_opener(Arc::new(move |peer: &str, wake: bool| {
+            let cmd = SshCommand::ssh(peer, &here, keys.get(peer).copied().unwrap_or_default(), wake);
             let mut child = Command::new(&cmd.program)
                 .args(&cmd.args)
+                .env(WAKE_VAR, if cmd.wake { "1" } else { "0" })
                 .stdin(std::process::Stdio::piped())
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::null())
@@ -158,23 +172,25 @@ impl EdgeClient {
         Self { open, channels: Mutex::default(), next_id: AtomicU64::new(1), timeout: Duration::from_secs(60) }
     }
 
-    async fn channel(&self, peer: &str) -> Result<Arc<Channel>, EdgeError> {
+    /// The live channel to `peer`, or a new one, and whether it is new.
+    async fn channel(&self, peer: &str, wake: bool) -> Result<(Arc<Channel>, bool), EdgeError> {
         let mut map = self.channels.lock().await;
         if let Some(ch) = map.get(peer) {
             if ch.alive.load(Ordering::SeqCst) {
-                return Ok(ch.clone());
+                return Ok((ch.clone(), false));
             }
         }
-        let (r, w, child) = (self.open)(peer)
+        let (r, w, child) = (self.open)(peer, wake)
             .map_err(|e| EdgeError::Unreachable { peer: peer.into(), reason: e.to_string() })?;
         let ch = Channel::start(r, w, child);
         map.insert(peer.into(), ch.clone());
-        Ok(ch)
+        Ok((ch, true))
     }
 
-    /// Open the stream `path` on `peer`'s gateway, as `caller`.
-    pub async fn open_ws(&self, peer: &str, path: &str, caller: Caller) -> Result<WsPipe, EdgeError> {
-        let ch = self.channel(peer).await?;
+    /// Open the stream `path` on `peer`'s gateway, as `caller`. `wake` lets a new channel wake
+    /// a sleeping peer.
+    pub async fn open_ws(&self, peer: &str, path: &str, caller: Caller, wake: bool) -> Result<WsPipe, EdgeError> {
+        let (ch, _) = self.channel(peer, wake).await?;
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let (mine, theirs) = WsPipe::pair();
         let WsPipe { tx: to_me, rx: mut from_me } = theirs;
@@ -206,9 +222,11 @@ impl EdgeClient {
         Ok(mine)
     }
 
-    /// Call tool `name` on `peer` with `args`, as `caller`.
-    pub async fn invoke(&self, peer: &str, name: &str, args: Value, caller: Caller) -> Result<Value, EdgeError> {
-        let ch = self.channel(peer).await?;
+    /// Call tool `name` on `peer` with `args`, as `caller`. `wake` lets a new channel wake a
+    /// sleeping peer, and the call then waits out the wake too.
+    pub async fn invoke(&self, peer: &str, name: &str, args: Value, caller: Caller, wake: bool) -> Result<Value, EdgeError> {
+        let (ch, fresh) = self.channel(peer, wake).await?;
+        let timeout = if wake && fresh { self.timeout + WAKE_GRACE } else { self.timeout };
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let (tx, rx) = oneshot::channel();
         ch.pending.lock().await.insert(id, Waiter::Call(tx));
@@ -218,10 +236,10 @@ impl EdgeClient {
             ch.pending.lock().await.remove(&id);
             return Err(EdgeError::Unreachable { peer: peer.into(), reason: e.to_string() });
         }
-        match tokio::time::timeout(self.timeout, rx).await {
+        match tokio::time::timeout(timeout, rx).await {
             Err(_) => {
                 ch.pending.lock().await.remove(&id);
-                Err(EdgeError::Timeout { peer: peer.into(), timeout: self.timeout })
+                Err(EdgeError::Timeout { peer: peer.into(), timeout })
             }
             Ok(Err(_)) => Err(EdgeError::Unreachable { peer: peer.into(), reason: "the link dropped".into() }),
             Ok(Ok(resp)) if resp.ok => Ok(resp.result.unwrap_or(Value::Null)),
@@ -236,7 +254,7 @@ mod tests {
 
     #[test]
     fn a_user_edge_names_this_node_and_keeps_a_user_master() {
-        let cmd = SshCommand::ssh("alcor", "mizar", EdgeKey::User);
+        let cmd = SshCommand::ssh("alcor", "mizar", EdgeKey::User, false);
         let n = cmd.args.len();
         assert_eq!(cmd.args[n - 5..], ["alcor", "PATH=\"$HOME/.local/bin:$PATH\"", "AWM_EDGE_FROM=mizar", "awm", "edge-serve"]);
         assert!(cmd.args.iter().any(|a| a == "ControlPath=~/.ssh/cm-%C-user"));
@@ -244,8 +262,16 @@ mod tests {
     }
 
     #[test]
+    fn only_a_waking_channel_waits_on_the_connect() {
+        let sweep = SshCommand::ssh("shogun", "mizar", EdgeKey::User, false);
+        assert!(!sweep.wake && sweep.args.iter().any(|a| a == "ConnectTimeout=10"), "a sweep fails fast on a shelved peer");
+        let ask = SshCommand::ssh("shogun", "mizar", EdgeKey::User, true);
+        assert!(ask.wake && !ask.args.iter().any(|a| a.starts_with("ConnectTimeout")), "a wake leaves the connect timeout to the peer's ssh config");
+    }
+
+    #[test]
     fn a_service_edge_logs_in_with_the_service_key_only() {
-        let cmd = SshCommand::ssh("alcor", "altair", EdgeKey::Service);
+        let cmd = SshCommand::ssh("alcor", "altair", EdgeKey::Service, false);
         let at = cmd.args.iter().position(|a| a == "-i").expect("-i");
         assert!(cmd.args[at + 1].ends_with(awm_gateway::door::SERVICE_KEY));
         assert!(cmd.args.iter().any(|a| a == "IdentitiesOnly=yes"));
