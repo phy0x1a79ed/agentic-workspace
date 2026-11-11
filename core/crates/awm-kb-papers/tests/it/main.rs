@@ -4,7 +4,7 @@
 use awm_embed::{Embedder, Stub};
 use awm_index::grammar::{parse_source, parse_text};
 use awm_index::Veil;
-use awm_kb_papers::import::{build, make_current, Opts};
+use awm_kb_papers::import::{build, make_current, run, Opts};
 use awm_kb_papers::{fields, Papers, NAME};
 use awm_kb_source::{Ask, Source};
 use lancedb::arrow::arrow_array::{ArrayRef, Int64Array, ListArray, RecordBatch, StringArray};
@@ -57,9 +57,9 @@ fn write_zone(semdb: &Path, zone: &str, rows: &[(&str, &str)], stub: &Stub) {
     std::fs::write(semdb.join("vectors").join(zone).join("index.npy"), bytes).unwrap();
 }
 
-fn fake_semdb(semdb: &Path, stub: &Stub) {
+fn fake_semdb(semdb: &Path, stub: &Stub, papers: &[Fake]) {
     let mut authors = ListBuilder::new(StringBuilder::new());
-    for p in &PAPERS {
+    for p in papers {
         for a in p.3 {
             authors.values().append_value(a);
         }
@@ -67,20 +67,20 @@ fn fake_semdb(semdb: &Path, stub: &Stub) {
     }
     let authors: ListArray = authors.finish();
     let paper = RecordBatch::try_from_iter([
-        ("paper_id", utf8(PAPERS.iter().map(|p| p.0).collect())),
-        ("doi", utf8(PAPERS.iter().map(|p| p.1).collect())),
-        ("title", utf8(PAPERS.iter().map(|p| p.2).collect())),
+        ("paper_id", utf8(papers.iter().map(|p| p.0).collect())),
+        ("doi", utf8(papers.iter().map(|p| p.1).collect())),
+        ("title", utf8(papers.iter().map(|p| p.2).collect())),
         ("authors", Arc::new(authors) as ArrayRef),
-        ("year", Arc::new(Int64Array::from(PAPERS.iter().map(|p| p.4).collect::<Vec<_>>())) as ArrayRef),
-        ("journal", utf8(PAPERS.iter().map(|_| "J Synth").collect())),
+        ("year", Arc::new(Int64Array::from(papers.iter().map(|p| p.4).collect::<Vec<_>>())) as ArrayRef),
+        ("journal", utf8(papers.iter().map(|_| "J Synth").collect())),
     ])
     .unwrap();
     write_parquet(&semdb.join("registry/paper.parquet"), paper);
-    let domain = RecordBatch::try_from_iter([("paper_id", utf8(PAPERS.iter().map(|p| p.0).collect())), ("domain", utf8(PAPERS.iter().map(|p| p.5).collect()))]).unwrap();
+    let domain = RecordBatch::try_from_iter([("paper_id", utf8(papers.iter().map(|p| p.0).collect())), ("domain", utf8(papers.iter().map(|p| p.5).collect()))]).unwrap();
     write_parquet(&semdb.join("registry/paper_domain.parquet"), domain);
-    write_zone(semdb, "titles", &PAPERS.iter().map(|p| (p.0, p.2)).collect::<Vec<_>>(), stub);
-    write_zone(semdb, "abstracts", &PAPERS.iter().filter(|p| !p.6.is_empty()).map(|p| (p.0, p.6)).collect::<Vec<_>>(), stub);
-    write_zone(semdb, "chunks", &PAPERS.iter().flat_map(|p| p.7.iter().map(|c| (p.0, *c))).collect::<Vec<_>>(), stub);
+    write_zone(semdb, "titles", &papers.iter().map(|p| (p.0, p.2)).collect::<Vec<_>>(), stub);
+    write_zone(semdb, "abstracts", &papers.iter().filter(|p| !p.6.is_empty()).map(|p| (p.0, p.6)).collect::<Vec<_>>(), stub);
+    write_zone(semdb, "chunks", &papers.iter().flat_map(|p| p.7.iter().map(|c| (p.0, *c))).collect::<Vec<_>>(), stub);
 }
 
 fn fake_graph(path: &Path) {
@@ -100,11 +100,11 @@ const ZOTERO: &str = r#"{"library": "users/0", "key": "K1", "version": 5, "doi":
 
 async fn papers(tmp: &Path, stub: Arc<Stub>) -> Arc<Papers> {
     let semdb = tmp.join("semdb");
-    fake_semdb(&semdb, &stub);
+    fake_semdb(&semdb, &stub, &PAPERS);
     fake_graph(&tmp.join("graph.db"));
     std::fs::write(tmp.join("zotero.jsonl"), ZOTERO).unwrap();
     let root = tmp.join("papers");
-    let opts = Opts { semdb, graph: Some(tmp.join("graph.db")), zotero: Some(tmp.join("zotero.jsonl")), model: tmp.join("unused"), root: root.clone() };
+    let opts = Opts { semdb, graph: Some(tmp.join("graph.db")), zotero: Some(tmp.join("zotero.jsonl")), model: None, root: root.clone(), domains: vec![] };
     let out = build(&opts, &root.join("gen-1"), stub.as_ref()).await.unwrap();
     assert_eq!((out["papers"].clone(), out["chunks"].clone(), out["zotero"]["held"].clone()), (json!(5), json!(11), json!(1)));
     make_current(&root, "gen-1").unwrap();
@@ -160,9 +160,32 @@ async fn a_new_current_generation_is_served_from_the_next_query() {
     let stub = Arc::new(Stub::new("stub-bge", 1024));
     let src = papers(tmp.path(), stub.clone()).await;
     let root = tmp.path().join("papers");
-    let opts = Opts { semdb: tmp.path().join("semdb"), graph: None, zotero: None, model: tmp.path().join("unused"), root: root.clone() };
+    let opts = Opts { semdb: tmp.path().join("semdb"), graph: None, zotero: None, model: None, root: root.clone(), domains: vec![] };
     build(&opts, &root.join("gen-2"), stub.as_ref()).await.unwrap();
     make_current(&root, "gen-2").unwrap();
     assert_eq!(src.status().await["generation"], json!("gen-2"));
     assert!(ask(&src, json!({"$about": "tailings"}), json!({"collection": "tony"})).await.is_empty(), "gen-2 has no Zotero items");
+}
+
+#[tokio::test]
+async fn a_domain_update_replaces_its_papers_in_a_clone_and_keeps_their_other_collections() {
+    let tmp = tempfile::tempdir().unwrap();
+    let stub = Arc::new(Stub::new("stub-bge", 1024));
+    let src = papers(tmp.path(), stub.clone()).await;
+    let root = tmp.path().join("papers");
+    let mut grown = PAPERS.to_vec();
+    grown[1].7 = &["Passivation dissolves under bioleaching."];
+    grown.push(("doi:10.1/e", "10.1/e", "Copper chaperones in yeast", &["Fay F"], 2023, "copper", "Chaperones carry copper ions.", &[]));
+    fake_semdb(&tmp.path().join("semdb-2"), &stub, &grown);
+    let opts = Opts { semdb: tmp.path().join("semdb-2"), graph: None, zotero: None, model: None, root: root.clone(), domains: vec!["copper".into()] };
+    let out = run(&opts).await.unwrap();
+    assert_eq!((out["papers"].clone(), out["replaced"].clone()), (json!(2), json!(1)), "{out}");
+
+    assert_eq!(ask(&src, json!({"$contains": "dissolves"}), json!({"collection": {"$all": ["copper", "tony"]}})).await, ["doi:10.1/b"], "the library label survives");
+    assert!(ask(&src, json!({"$contains": "potential"}), json!({})).await.is_empty(), "the old body is gone");
+    assert_eq!(ask(&src, json!({"$about": "chaperones"}), json!({"collection": "copper"})).await.first().map(String::as_str), Some("doi:10.1/e"));
+    assert_eq!(ask(&src, json!({"$contains": "tailings"}), json!({"collection": "tony"})).await, ["zotero:users/0/K2"], "other papers stay");
+
+    make_current(&root, "gen-1").unwrap();
+    assert_eq!(ask(&src, json!({"$contains": "potential"}), json!({})).await, ["doi:10.1/b"], "rolling back serves gen-1 untouched");
 }

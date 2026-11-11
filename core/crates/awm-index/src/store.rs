@@ -693,6 +693,15 @@ impl Index {
         Ok(())
     }
 
+    /// Run the maintenance a load skips, in every section, and wait for it: fold the loaded
+    /// rows into the indexes, compact, prune old versions, retrain the vector index once due.
+    pub async fn optimize(&self) -> Result<()> {
+        for sec in self.sections() {
+            maintain(&self.spec, &sec, &self.store.path, &self.write).await?;
+        }
+        Ok(())
+    }
+
     /// Remove entries and their chunks: chunks first, so an entry never outlives a crash unseen.
     pub async fn delete(&self, ids: &[String]) -> Result<usize> {
         let _w = self.write.lock().await;

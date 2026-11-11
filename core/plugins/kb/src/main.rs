@@ -44,12 +44,15 @@ enum Cmd {
         /// The Zotero items, one JSON object per line.
         #[arg(long)]
         zotero: Option<std::path::PathBuf>,
-        /// The bge-large-en-v1.5 model files.
+        /// The bge-large-en-v1.5 model files. A domain update keeps the current generation's.
         #[arg(long)]
-        model: std::path::PathBuf,
+        model: Option<std::path::PathBuf>,
         /// The papers root to write into; default `<AWM_DIR>/services/kb/lance/papers`.
         #[arg(long)]
         root: Option<std::path::PathBuf>,
+        /// Update only these semdb domains, in a clone of the current generation.
+        #[arg(long, num_args = 1..)]
+        domains: Vec<String>,
     },
 }
 
@@ -79,10 +82,10 @@ fn main() -> anyhow::Result<()> {
             println!("{}", serde_json::to_string_pretty(&out)?);
             return Ok(());
         }
-        Some(Cmd::PapersImport { semdb, graph, zotero, model, root }) => {
+        Some(Cmd::PapersImport { semdb, graph, zotero, model, root, domains }) => {
             awm_plugin_sdk::telemetry::init();
             let root = root.unwrap_or_else(|| awm_kb_papers::root(&awm_dir));
-            let opts = awm_kb_papers::import::Opts { semdb, graph, zotero, model, root };
+            let opts = awm_kb_papers::import::Opts { semdb, graph, zotero, model, root, domains };
             let out = runtime()?.block_on(awm_kb_papers::import::run(&opts))?;
             println!("{}", serde_json::to_string_pretty(&out)?);
             return Ok(());
