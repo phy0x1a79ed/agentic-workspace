@@ -196,8 +196,8 @@ The gateway appends each event to `<AWM_DIR>/usage/<YYYY-MM-DD>.jsonl` and prune
 The `kb` plugin serves the `search` tool (`core/crates/awm-kb-search`). Agents get one search over everything the swarm knows, on this node and across its edges. search is a federator with no content store, because a second copy of each source drifted from the first. `core/plugins/kb/INSTALL.md` covers a node's install. `docs/search-opt/` holds the engine's decisions. This section holds the reasons.
 
 - **kb's sources.** journals, guide, transcripts and papers answer in-process through `awm_kb_source::Source`. Each owns its LanceDB store under `services/kb/lance/<source>`, through `awm-index`, and applies the caller's veil itself. No caller sees a row a mark covers.
-- **Plug-ins.** Another plugin joins with one `[[service.archive]]` table per source in its manifest, with `mode = "live"`. The table names the verb search calls at query time, so a new source needs no change to search. A caller names the source as `name`, or `name@node` on another node. A source marked `optin` runs only when a caller names it. `awm services` lists the tables under `archive` in each row. An `index` table stays listed with an error, because search no longer reads change feeds.
-- **Declared fields.** Each table declares its fields with a class and the fields a hit shows. The declaration is the query schema, so a new field needs no code in search.
+- **Declared fields.** Each source declares its fields with a class and the fields a hit shows. The declaration is the query schema, so a new field needs no code in search. kb hands search the declaration of every source it is built with, open or not, so a node without papers still checks a `papers@altair` filter before it asks altair.
+- **Sources on peers.** A bare kind this node does not serve goes to the first peer, in edge-list order, whose `search sources` lists it. Search keeps one snapshot of every peer's kinds for five minutes, failures included, so a down peer costs one timeout per period, not one per query. `FEDERATION.md` § *Search across nodes* covers the wire.
 - **The guide source.** It indexes this node's tools, one entry per verb, so an agent finds a verb by what it does. It follows the gateway's `plugins` and `services` topics, so a new plugin's verbs appear with no timer.
 - **One store per source.** Each source answers apart, so no score has to compare across sources. A source's `$about` ranking fuses its own vector and keyword lists by score.
 - **Maintenance.** Each write counts the rows it leaves outside the indexes. The count starts maintenance, not a clock.
@@ -323,7 +323,7 @@ Paths are under `core/crates/`.
 - **Edges** — `awm-trust/src/edges.rs` reads the edge list, `awm-gateway/src/peer.rs` routes a call to another node, `awm-edge` carries it, and `awm-cli/src/edge.rs` serves `awm edge-serve` and `awm port`.
 - **CLI and MCP** — `awm-cli/src/lib.rs`, `deploy.rs`, `bootstrap.rs`. `awm-mcp/src/lib.rs`.
 - **Wire and manifest types** — `awm-proto`.
-- **Search archive** — `awm-kb-search`. `registry.rs` reads the plug-in tables, `merge.rs` fuses and `federation.rs` asks each other node across its edge. `awm-index` is the engine each source links.
+- **Search archive** — `awm-kb-search`. `request.rs` places each source on a node and `federation.rs` asks each other node across its edge. `awm-index` is the engine each source links.
 - **Frontend** — `awm/vite.config.ts`, `awm/scripts/build.sh`, `awm/package.json`.
 
 ## The editable install

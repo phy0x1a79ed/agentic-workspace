@@ -61,7 +61,7 @@ impl Rig {
             .iter()
             .map(|n| json!({"name": n, "dir": self.plugin_dir(n), "tools": [{"name": format!("{n}tool")}]}))
             .collect();
-        *self.hub.snapshot.lock().unwrap() = json!({"plugins": plugins, "skipped": skipped, "refused": [], "archives": []});
+        *self.hub.snapshot.lock().unwrap() = json!({"plugins": plugins, "skipped": skipped, "refused": []});
     }
 
     async fn ask(&self, text: Value, filter: Value, veil: Veil) -> Value {

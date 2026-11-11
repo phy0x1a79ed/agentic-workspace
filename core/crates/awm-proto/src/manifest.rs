@@ -51,8 +51,6 @@ pub struct ServiceDecl {
     #[serde(default)]
     pub profiles: Option<Vec<String>>,
     #[serde(default)]
-    pub archive: Vec<toml::Value>,
-    #[serde(default)]
     pub front: Vec<FrontDecl>,
 }
 

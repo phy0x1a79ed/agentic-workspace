@@ -23,7 +23,7 @@ pub const NATIVE_TOOL: &str = "awm";
 const NATIVE_VERBS: [(&str, &str); 17] = [
     ("status", "The gateway's status: node, uptime, plugins and services."),
     ("plugins", "Every plugin the loader read: loaded, refused with the reason, and skipped."),
-    ("services", "Every service of the loaded plugins and every one the hub knows: status, pid, enabled, tools, mount and archive tables."),
+    ("services", "Every service of the loaded plugins and every one the hub knows: status, pid, enabled, tools and mount."),
     ("start", "Start the service `name` (a trusted caller on this node)."),
     ("stop", "Stop the service `name` until it is started again or the gateway restarts."),
     ("restart", "Restart the service `name`: its plugin's refresh hook (routines.md R33) and an operator both use it."),

@@ -13,6 +13,7 @@ Rank hits from named sources. Open a hit with `get`.
   query: string | {\"text\"?: T, \"<source>\": F, ...}    max: hits per source per section, default 10
 
 <source>: a kind `sources` lists, such as journals, or guide for how to use awm; @node for another node.
+   A bare kind this node lacks goes to the first peer that serves it.
 F: MongoDB filter on the source's fields: $and $or $nor $eq $ne $gt $gte $lt $lte $in $nin $all.
    {} matches all. * in a value globs. A scope covers its nested scopes. ts is ISO-8601.
 $sort in F: one field, +/-. On content, by match score.
@@ -21,14 +22,14 @@ T: string | {\"$contains\": s} | {\"$about\": s} | {\"$and\"|\"$or\": [...]}, sh
    $about: rank by meaning. At most one, directly under the top $and or $or.
    Under $and or alone it only ranks the matches. Under $or it also adds the nearest others, as `related`.
 Short forms: query s = {\"text\": s}. No source = this node's journals. T s = {\"$or\": [{\"$about\": s}, {\"$contains\": s}]}.
-Returns {source: {exact, related}}. A hit is the id and the fields `sources` marks. Open one with `get`.
+Returns {source: {exact, related, node?}}; node names the peer a bare kind went to. A hit is the id and the fields `sources` marks. Open one with `get`.
 ";
 
 const GET_DESCRIPTION: &str = "One document in full: every field its source declares; a paper adds its authors and journal, and a guide hit is its section of a doc or its verb's describe. Take `source` and `id` from a hit. For a hit from another node, set `node` to the node of its source. Pass the `query` the hit answered: each get is logged with the caller's scope as feedback on search.";
 
-const SOURCES_DESCRIPTION: &str = "Every source a query reaches on this node, with its kind, node, mode, fields and their classes, the fields a hit shows, whether a query that names no source asks it (`default`), its document count, and its last answer and error; and search's health: whether semantic ranking is available and the registry's last read.";
+const SOURCES_DESCRIPTION: &str = "Every source a query reaches, on this node and on its peers (`mode: peer`), with its kind, node, mode, fields and their classes, the fields a hit shows, whether a query that names no source asks it (`default`), its document count, and its last answer and error; and search's health: whether semantic ranking is available; and `peers`, each peer's kinds or why it did not answer.";
 
-const STATUS_DESCRIPTION: &str = "search's health: documents per source, each source's last answer and error, whether semantic ranking is available, and the registry's last read.";
+const STATUS_DESCRIPTION: &str = "search's health: documents per source, each source's last answer and error, and whether semantic ranking is available.";
 
 /// A param as describe lists it: the type only when it is not a string.
 fn p(name: &str, ty: &str, required: bool, description: &str) -> Value {

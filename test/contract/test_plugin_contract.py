@@ -130,9 +130,6 @@ def test_each_manifest_names_its_folder_and_no_host(folder):
     assert services or m.get("page"), "a plugin runs a service or serves a page"
     if services:
         assert name in {s["name"] for s in services}
-    for s in services:
-        for table in s.get("archive", []):
-            assert table["mode"] in ("index", "live"), table
     for tool in m.get("tool", []):
         assert tool["name"] != "awm", "the awm tool belongs to the core"
         assert tool["tier"] in ("on", "off")

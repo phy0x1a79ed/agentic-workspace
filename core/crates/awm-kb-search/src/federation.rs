@@ -8,7 +8,9 @@ use crate::hits;
 use crate::request::{label, Kinds};
 use crate::{BoxFut, CallError};
 use awm_plugin_sdk::config::EdgeList;
+use indexmap::IndexMap;
 use serde_json::{json, Map, Value};
+use std::collections::HashSet;
 use std::time::Duration;
 
 /// Budget for one peer, connect to reply.
@@ -64,11 +66,16 @@ fn record(edges: &EdgeList, here: &str, name: &str) -> Option<String> {
     edges.reachable_from(&label(here)).into_iter().find(|r| label(r) == label(name))
 }
 
-/// The peer's answer: one object per source asked.
-fn reply(raw: Value, names: &[String]) -> Result<Map<String, Value>, CallError> {
-    let mut raw = raw;
+/// `search <verb>` on `node`: the reply taken out of the gateway's `result` when `has` does not
+/// find the verb's own keys, refused over [`MAX_REPLY_BYTES`], and decoded from a JSON string.
+async fn call(peers: &dyn Peers, node: &str, verb: &str, args: Value, has: impl Fn(&Map<String, Value>) -> bool) -> Result<Value, CallError> {
+    let call = peers.invoke(node, "search", verb, args, PEER_TIMEOUT);
+    let mut raw = match tokio::time::timeout(PEER_TIMEOUT + Duration::from_secs(1), call).await {
+        Err(_) => return Err(CallError::new("TimeoutError", format!("timeout after {}s", PEER_TIMEOUT.as_secs()))),
+        Ok(r) => r?,
+    };
     if let Value::Object(m) = &raw {
-        if m.contains_key("result") && !names.iter().any(|n| m.contains_key(n)) {
+        if !has(m) && m.contains_key("result") {
             raw = m["result"].clone();
         }
     }
@@ -79,16 +86,16 @@ fn reply(raw: Value, names: &[String]) -> Result<Map<String, Value>, CallError> 
     if size > MAX_REPLY_BYTES {
         return Err(CallError::new("ValueError", format!("reply of {size} bytes exceeds the {MAX_REPLY_BYTES} byte cap")));
     }
-    if let Value::String(s) = &raw {
-        raw = serde_json::from_str(s).map_err(|e| CallError::new("JSONDecodeError", e.to_string()))?;
-    }
     match raw {
-        Value::Object(m) if names.iter().any(|n| m.get(n).is_some_and(Value::is_object)) => Ok(m),
-        other => {
-            let detail = other.get("error").filter(|e| crate::live::truthy(e)).map(hits::py_str);
-            Err(CallError::new("RuntimeError", detail.unwrap_or_else(|| "reply names none of the sources asked".into())))
-        }
+        Value::String(s) => serde_json::from_str(&s).map_err(|e| CallError::new("JSONDecodeError", e.to_string())),
+        other => Ok(other),
     }
+}
+
+/// A reply without what was asked: the error it carries, or `missing`.
+fn refusal(raw: &Value, missing: &str) -> CallError {
+    let detail = raw.get("error").filter(|e| hits::truthy(e)).map(hits::py_str);
+    CallError::new("RuntimeError", detail.unwrap_or_else(|| missing.into()))
 }
 
 /// One source's part of a peer's answer, cleaned to the kind's hit fields.
@@ -101,7 +108,7 @@ fn answer(raw: Option<&Value>, limit: usize, fields: &[String]) -> Value {
     if m.contains_key("related") {
         out.insert("related".into(), Value::Array(hits::section(m.get("related"), limit, fields)));
     }
-    if let Some(e) = m.get("error").filter(|e| crate::live::truthy(e)) {
+    if let Some(e) = m.get("error").filter(|e| hits::truthy(e)) {
         out.insert("error".into(), json!(hits::py_str(e).chars().take(300).collect::<String>()));
     }
     Value::Object(out)
@@ -120,18 +127,36 @@ pub async fn ask_home(peers: &dyn Peers, here: &str, home: &str, args: Value, li
         return PeerResult::failed(&name, "station", "a station runs no search".into());
     }
     let names: Vec<String> = args["query"].as_object().map(|q| q.keys().filter(|k| *k != "text").cloned().collect()).unwrap_or_default();
-    let call = peers.invoke(&name, "search", "query", args, PEER_TIMEOUT);
-    let raw = match tokio::time::timeout(PEER_TIMEOUT + Duration::from_secs(1), call).await {
-        Err(_) => return PeerResult::failed(&name, "error", format!("timeout after {}s", PEER_TIMEOUT.as_secs())),
-        Ok(Err(e)) => return PeerResult::failed(&name, "error", e.describe()),
-        Ok(Ok(raw)) => raw,
-    };
-    let reply = match reply(raw, &names) {
-        Ok(r) => r,
+    let reply = match call(peers, &name, "query", args, |m| names.iter().any(|n| m.contains_key(n))).await {
+        Ok(Value::Object(m)) if names.iter().any(|n| m.get(n).is_some_and(Value::is_object)) => m,
+        Ok(other) => return PeerResult::failed(&name, "error", refusal(&other, "reply names none of the sources asked").describe()),
         Err(e) => return PeerResult::failed(&name, "error", e.describe()),
     };
     let found = names.iter().map(|n| (n.clone(), answer(reply.get(n), limit, &kinds.hit_fields(n)))).collect();
     PeerResult { name, status: "ok".into(), error: None, found }
+}
+
+/// The kinds each peer serves, or why it did not say, in edge-list order.
+pub type Served = IndexMap<String, Result<Vec<String>, String>>;
+
+/// The kinds one peer's `search sources` lists as its own.
+async fn kinds_of(peers: &dyn Peers, name: &str) -> Result<Vec<String>, String> {
+    let raw = call(peers, name, "sources", json!({}), |m| m.contains_key("sources")).await.map_err(|e| e.describe())?;
+    let rows = raw.get("sources").and_then(Value::as_array).ok_or("reply lists no sources")?;
+    Ok(rows.iter().filter(|r| r.get("mode").and_then(Value::as_str) != Some("peer")).filter_map(|r| r.get("kind").and_then(Value::as_str)).map(String::from).collect())
+}
+
+/// What every node this one may dial serves, asked in parallel. Stations and nodes behind an
+/// open tag clash are not asked.
+pub async fn served(peers: &dyn Peers, here: &str, clashed: &HashSet<String>) -> Served {
+    let edges = peers.edges();
+    let names: Vec<String> = edges
+        .dialable_from(&label(here))
+        .into_iter()
+        .filter(|n| !clashed.contains(&label(n)) && edges.nodes.get(n).is_none_or(|r| r.role != "station"))
+        .collect();
+    let asked = futures_util::future::join_all(names.iter().map(|n| kinds_of(peers, n))).await;
+    names.into_iter().zip(asked).collect()
 }
 
 /// One document from a peer's search, stamped with the peer as its origin.
@@ -140,22 +165,9 @@ pub async fn fetch(peers: &dyn Peers, here: &str, name: &str, source: &str, id: 
     let Some(node) = record(&edges, here, name) else {
         return Err(CallError::new("ValueError", format!("no edge from {} to {name}", label(here))));
     };
-    let call = peers.invoke(&node, "search", "get", json!({"source": source, "id": id}), PEER_TIMEOUT);
-    let mut raw = match tokio::time::timeout(PEER_TIMEOUT + Duration::from_secs(1), call).await {
-        Err(_) => return Err(CallError::new("TimeoutError", String::new())),
-        Ok(r) => r?,
-    };
-    if let Value::Object(m) = &raw {
-        if !m.contains_key("document") && m.contains_key("result") {
-            raw = m["result"].clone();
-        }
-    }
-    if let Value::String(s) = &raw {
-        raw = serde_json::from_str(s).map_err(|e| CallError::new("JSONDecodeError", e.to_string()))?;
-    }
+    let raw = call(peers, &node, "get", json!({"source": source, "id": id}), |m| m.contains_key("document")).await?;
     let Some(Value::Object(doc)) = raw.get("document") else {
-        let detail = raw.get("error").filter(|e| crate::live::truthy(e)).map(hits::py_str);
-        return Err(CallError::new("RuntimeError", detail.unwrap_or_else(|| "reply has no document".into())));
+        return Err(refusal(&raw, "reply has no document"));
     };
     let mut out = doc.clone();
     out.insert("source".into(), json!(source));

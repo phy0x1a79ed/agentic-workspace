@@ -5,6 +5,7 @@
 use awm_embed::{Embedder, Stub};
 use awm_index::fields::{Class, Field, Fields};
 use awm_index::{Index, Spec, Store, Veil};
+use awm_kb_search::request::Kinds;
 use awm_kb_search::{BoxFut, CallError, Gateway, Peers, Search};
 use awm_kb_source::{Ask, Source, SourceError};
 use awm_plugin_sdk::config::EdgeList;
@@ -182,14 +183,11 @@ impl Source for Fake {
 
 type Handler = Arc<dyn Fn(&Value) -> Result<Value, CallError> + Send + Sync>;
 
-/// The gateway: `awm services` rows, the loader's archives, and one handler per tool verb.
+/// The gateway: one handler per tool verb.
 #[derive(Default)]
 pub struct FakeGateway {
-    pub rows: Mutex<Vec<Value>>,
-    pub archives: Mutex<Vec<Value>>,
     pub handlers: Mutex<HashMap<(String, String), Handler>>,
     pub calls: Mutex<Vec<(String, String, Value)>>,
-    pub down: Mutex<bool>,
 }
 
 impl FakeGateway {
@@ -200,30 +198,9 @@ impl FakeGateway {
     pub fn on(&self, tool: &str, verb: &str, f: impl Fn(&Value) -> Result<Value, CallError> + Send + Sync + 'static) {
         self.handlers.lock().unwrap().insert((tool.into(), verb.into()), Arc::new(f));
     }
-
-    /// A ready service declaring live tables, its verbs answered by `f`.
-    pub fn live(&self, service: &str, tool: &str, tables: Value) {
-        self.rows.lock().unwrap().push(json!({"name": service, "plugin": service, "status": "ready", "tools": [tool], "archive": tables}));
-    }
-
-    /// A kind declared on disk, whether or not it runs here.
-    pub fn declare(&self, plugin: &str, tables: Value) {
-        self.archives.lock().unwrap().push(json!({"plugin": plugin, "service": plugin, "archive": tables}));
-    }
 }
 
 impl Gateway for FakeGateway {
-    fn services(&self) -> BoxFut<'_, Result<Vec<Value>, CallError>> {
-        Box::pin(async move {
-            if *self.down.lock().unwrap() {
-                return Err(CallError::new("ConnectionError", "the gateway is down"));
-            }
-            Ok(self.rows.lock().unwrap().clone())
-        })
-    }
-    fn plugins(&self) -> BoxFut<'_, Result<Value, CallError>> {
-        Box::pin(async move { Ok(json!({"archives": self.archives.lock().unwrap().clone()})) })
-    }
     fn call<'a>(&'a self, tool: &'a str, verb: &'a str, args: Value, _t: Duration) -> BoxFut<'a, Result<Value, CallError>> {
         Box::pin(async move {
             self.calls.lock().unwrap().push((tool.into(), verb.into(), args.clone()));
@@ -287,19 +264,29 @@ pub struct Rig {
     pub journals: Arc<Lance>,
 }
 
-/// The kinds the Python suite's manifests declared: kb and transcripts, beside kb's journals.
-pub fn declare_python_kinds(g: &FakeGateway) {
-    g.declare("papers", json!([
-        {"name": "kb", "mode": "live", "query": "kb_query", "get": "kb_get", "hit": ["title", "ts"],
-         "fields": {"title": "content", "text": "content", "ts": "datetime", "author": "categorical", "tag": "categorical",
-                    "cites": "categorical", "cited_by": "categorical"}},
-        {"name": "library", "mode": "live", "query": "kb_library", "get": "kb_get"},
-    ]));
-    g.declare("transcripts", json!([
-        {"name": "transcripts", "mode": "live", "query": "transcripts_query", "optin": true, "hit": ["title", "ts"],
-         "fields": {"title": "content", "text": "content", "ts": "datetime", "project": "categorical",
-                    "scope": {"class": "categorical", "nested": "/"}}},
-    ]));
+/// The kinds kb knows but the rig does not serve: papers and transcripts.
+pub fn known() -> Kinds {
+    let papers = Fields(vec![
+        Field::new("title", Class::Content),
+        Field::new("text", Class::Content),
+        Field::new("ts", Class::Datetime),
+        Field::new("author", Class::Categorical),
+        Field::new("cites", Class::Categorical),
+        Field::new("cited_by", Class::Categorical),
+    ]);
+    let transcripts = Fields(vec![
+        Field::new("title", Class::Content),
+        Field::new("text", Class::Content),
+        Field::new("ts", Class::Datetime),
+        Field::new("project", Class::Categorical),
+        Field::nested("scope", "/"),
+    ]);
+    Kinds([("papers".to_string(), (papers, hit())), ("transcripts".to_string(), (transcripts, hit()))].into_iter().collect())
+}
+
+/// A peer's `search sources` answer listing `kinds` as its own.
+pub fn lists(kinds: &[&str]) -> Value {
+    json!({"sources": kinds.iter().map(|k| json!({"kind": k, "mode": "local"})).collect::<Vec<_>>()})
 }
 
 /// search over a journals source and any `extra` sources.
@@ -308,12 +295,11 @@ pub async fn rig_with(extra: Vec<Arc<dyn Source>>) -> Rig {
     let dir = tempfile::tempdir().unwrap();
     let journals = Lance::open(&dir.path().join("lance"), "journals", true).await;
     let gateway = FakeGateway::new();
-    declare_python_kinds(&gateway);
     let peers = FakePeers::new();
     let mut sources: Vec<Arc<dyn Source>> = vec![journals.clone()];
     sources.extend(extra);
     let emb: Arc<dyn Embedder> = Arc::new(Stub::default());
-    let search = Search::new(&dir.path().join("search"), sources, Some(emb), gateway.clone(), peers.clone()).unwrap().named(HERE);
+    let search = Search::new(&dir.path().join("search"), sources, known(), Some(emb), gateway.clone(), peers.clone()).unwrap().named(HERE);
     Rig { dir, gateway, peers, search: Arc::new(search), journals }
 }
 

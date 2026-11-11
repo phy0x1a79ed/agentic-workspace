@@ -114,7 +114,9 @@ async fn run(awm_dir: &Path) -> anyhow::Result<()> {
         None
     });
     sources.extend(papers.clone().map(|p| p as Arc<dyn Source>));
-    let search = awm_kb_search::Search::with_hub(&services.join("search"), sources, model, hub.clone())?;
+    let papers_spec = awm_kb_papers::spec();
+    let known = awm_kb_search::request::Kinds([(papers_spec.name, (papers_spec.fields, papers_spec.hit))].into_iter().collect());
+    let search = awm_kb_search::Search::with_hub(&services.join("search"), sources, known, model, hub.clone())?;
 
     let svc = awm_kb_journals::register(svc, journals.clone());
     let svc = awm_kb_search::register(svc, Arc::new(search));

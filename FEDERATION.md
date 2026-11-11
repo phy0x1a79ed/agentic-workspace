@@ -109,14 +109,13 @@ A node can mark a project or one scope of it private. Run `scope private project
 
 ## Search across nodes
 
-`search query` names each source as `kind` for this node or `kind@node` for another. It groups the sources by node and asks each other node once, across the edge, with the same text and each source's filter under its bare `kind`. The answer keys each peer source as `kind@node`.
+`search query` names each source as `kind` or `kind@node`. A bare `kind` means this node when it serves the kind, else the first peer whose `search sources` lists it. Search groups the sources by node and asks each other node once, across the edge, with the same text and each source's filter under its bare `kind`. The answer keys each section as the caller wrote it, and a section a bare kind sent to a peer adds `node`, so `get` can follow its hits.
 
 - A node that is down, refuses or times out never fails the search or hides local hits. Its sources show the status.
-- Scores from different nodes do not compare, so the merge fuses ranks and ignores scores.
-- A call that arrives from another node searches that node only. No node relays a search onward.
+- Each source answers apart. Scores from different nodes never meet.
+- A call that arrives from another node searches that node only. No node relays a search onward, and a relayed bare kind never goes to a peer.
+- `search sources` adds a `mode: peer` row for each kind a peer serves, and a `peers` map with each peer's kinds or error. A relayed call sees this node's rows only, so two nodes never list each other in a loop.
 - Two nodes whose journal tag vocabularies clash do not search each other. Search marks each `name@node` source of a clashed node refused and does not ask it, until the newer tag is renamed.
-
-`ARCHITECTURE.md` § *The search archive* covers the plug-in contract.
 
 A post that arrives across an edge carries the stamp `peer:<node>` as its author. The `author` argument moves to `meta.claimed_author`, so a post proves its origin.
 
