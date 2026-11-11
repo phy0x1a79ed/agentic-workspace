@@ -32,7 +32,6 @@ use std::sync::{Arc, Mutex as StdMutex, RwLock};
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 
-pub const DIM: i32 = 384;
 pub const CHUNKS: &str = "__chunks";
 /// Below this many chunks a flat scan is exact and small, so no vector index is built.
 pub const IVF_MIN_ROWS: usize = 5000;
@@ -59,6 +58,11 @@ pub struct Spec {
     pub extra: Vec<(String, Kind)>,
     /// The datetime field whose year picks an entry's section, or `None` for one table.
     pub section_by: Option<String>,
+    /// The width of the vectors the source's model makes.
+    pub dim: usize,
+    /// Non-content fields the chunk rows do not copy, such as long id lists. A filter on one of
+    /// them reaches the chunks through [`crate::Ask::chunk_cond`].
+    pub entry_only: Vec<String>,
 }
 
 /// Run the CPU-bound encode without starving the runtime: on a multi-thread runtime the worker
@@ -101,13 +105,17 @@ impl Spec {
     }
 
     fn kept(&self) -> Vec<(String, Kind)> {
-        self.fields.iter().filter(|f| f.class != Class::Content).map(|f| (f.name.clone(), Self::kind(f.class))).collect()
+        self.fields
+            .iter()
+            .filter(|f| f.class != Class::Content && !self.entry_only.contains(&f.name))
+            .map(|f| (f.name.clone(), Self::kind(f.class)))
+            .collect()
     }
 
     pub fn chunk_cols(&self) -> Vec<(String, Kind)> {
         let mut cols = vec![("id".to_string(), Kind::Text), ("chunk".into(), Kind::Int32), ("hash".into(), Kind::Text)];
         cols.extend(self.kept());
-        cols.push(("vector".into(), Kind::Vector(DIM)));
+        cols.push(("vector".into(), Kind::Vector(self.dim as i32)));
         cols
     }
 
@@ -637,6 +645,50 @@ impl Index {
             let mut m = sec.entries.merge_insert(&["id"]);
             m.when_matched_update_all(None);
             m.execute(reader(cells::batch(&cols, part)?)).await?;
+        }
+        Ok(())
+    }
+
+    /// Append entries whose chunks an import computed elsewhere. Each is marked chunked with the
+    /// hash [`Index::upsert`] gives its content, so a later upsert of the same content keeps the
+    /// chunks [`Index::load_chunks`] stores. Starts no maintenance: call [`Index::build_indexes`].
+    pub async fn load_entries(&self, rows: &[Map<String, Value>]) -> Result<usize> {
+        let cols = self.spec.entry_cols();
+        let at = cols.iter().position(|(n, _)| n == CHUNKED).unwrap();
+        let mut groups: IndexMap<String, Vec<Vec<Cell>>> = IndexMap::new();
+        for r in rows {
+            let Some(mut e) = self.entry(r) else { continue };
+            e.cells[at] = Cell::Text(content_hash(&self.doc(&cols, &e.cells, &e.id)));
+            groups.entry(e.section).or_default().push(e.cells);
+        }
+        let _w = self.write.lock().await;
+        let mut n = 0;
+        for (key, rows) in groups {
+            let sec = self.section(&key).await?;
+            for part in rows.chunks(BATCH * 4) {
+                sec.entries.add(cells::batch(&cols, part)?).execute().await?;
+            }
+            n += rows.len();
+        }
+        Ok(n)
+    }
+
+    /// Append chunk rows, each in [`Spec::chunk_cols`] order, to section `key`.
+    pub async fn load_chunks(&self, key: &str, rows: &[Vec<Cell>]) -> Result<()> {
+        let cols = self.spec.chunk_cols();
+        let _w = self.write.lock().await;
+        let sec = self.section(key).await?;
+        for part in rows.chunks(BATCH * 4) {
+            sec.chunks.add(cells::batch(&cols, part)?).execute().await?;
+        }
+        Ok(())
+    }
+
+    /// Build every index a section lacks, the vector index included, as after a load.
+    pub async fn build_indexes(&self) -> Result<()> {
+        let _w = self.write.lock().await;
+        for sec in self.sections() {
+            ensure_indexes(&self.spec, &sec, &self.store.path).await?;
         }
         Ok(())
     }

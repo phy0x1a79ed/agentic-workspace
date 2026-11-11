@@ -1,6 +1,6 @@
 use awm_embed::embed::{from_blob, to_blob};
-use awm_embed::model::{self, ModelFilesError};
-use awm_embed::MiniLm;
+use awm_embed::model::ModelFilesError;
+use awm_embed::{Onnx, MINILM};
 
 #[test]
 fn blob_round_trip() {
@@ -15,9 +15,9 @@ fn blob_round_trip() {
 #[test]
 fn verify_refuses_missing_and_wrong_files() {
     let dir = tempfile::tempdir().unwrap();
-    assert!(matches!(model::verify(dir.path()), Err(ModelFilesError::Missing(_))));
+    assert!(matches!(MINILM.verify(dir.path()), Err(ModelFilesError::Missing(_))));
     std::fs::write(dir.path().join("model.onnx"), b"not a model").unwrap();
-    assert!(matches!(model::verify(dir.path()), Err(ModelFilesError::Mismatch { .. })));
-    assert!(MiniLm::load_dir(dir.path()).is_err());
+    assert!(matches!(MINILM.verify(dir.path()), Err(ModelFilesError::Mismatch { .. })));
+    assert!(Onnx::load_dir(dir.path(), &MINILM).is_err());
 }
 

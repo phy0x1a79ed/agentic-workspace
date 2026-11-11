@@ -26,7 +26,7 @@ async fn a_sweep_indexes_what_it_archived() {
     write(&p.join("fresh.jsonl"), &msgs(&["swept words, but live"]), 0.0);
     let out = r.app.sweep(&json!({}), None, "manual").await.unwrap();
     assert_eq!(out["sessions"], 1);
-    assert_eq!(hits(&r, "swept words").await, ["sess:1"], "the live session is not indexed");
+    assert_eq!(hits(&r, "swept words").await, ["fresh:1", "sess:1"], "the live session is caught up by the query");
     let rec = r.app.ix().unwrap().record("proj", "sess").unwrap();
     assert_eq!((rec.rows, rec.lines, rec.error), (2, 2, None));
     let dry = r.app.sweep(&json!({"dry_run": true}), None, "manual").await.unwrap();
@@ -127,4 +127,23 @@ async fn the_source_answers_from_the_index() {
     assert_eq!(out["exact"], json!([]));
     let st = src.status().await;
     assert_eq!((st["rows"].clone(), st["sessions"].clone()), (json!(3), json!(2)));
+}
+
+#[tokio::test]
+async fn a_query_indexes_the_complete_lines_a_live_session_gained() {
+    let r = rig();
+    r.indexed().await;
+    let path = r.projects().join("proj/live.jsonl");
+    write(&path, &(msgs(&["first live turn"]) + &msg("half written")), 0.0);
+    assert_eq!(hits(&r, "live turn").await, ["live:1"]);
+    assert!(hits(&r, "half written").await.is_empty(), "a line still being written waits");
+    let mut f = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
+    std::io::Write::write_all(&mut f, format!("\n{}", msgs(&["second live turn"])).as_bytes()).unwrap();
+    drop(f);
+    assert_eq!(hits(&r, "live turn").await, ["live:1", "live:3"]);
+    assert_eq!(hits(&r, "half written").await, ["live:2"]);
+    let rec = r.app.ix().unwrap().record("proj", "live").unwrap();
+    assert_eq!((rec.rows, rec.lines), (3, 3));
+    r.reconcile().await;
+    assert!(r.app.ix().unwrap().record("proj", "live").is_some(), "a reconcile keeps a live session's record");
 }

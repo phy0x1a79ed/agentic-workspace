@@ -229,7 +229,7 @@ impl Guide {
         let kb = awm_dir.join("services").join("kb");
         let store = awm_index::Store::open(&kb.join("lance").join(NAME)).await?;
         let (fields, hit) = (fields(), hit());
-        let index = store.index(Spec { name: NAME.into(), fields: fields.clone(), hit: hit.clone(), extra: vec![], section_by: None }).await?;
+        let index = store.index(Spec { name: NAME.into(), fields: fields.clone(), hit: hit.clone(), extra: vec![], section_by: None, dim: awm_embed::MINILM.dim, entry_only: vec![] }).await?;
         let state_path = kb.join("guide.json");
         Ok(Arc::new(Guide {
             index,

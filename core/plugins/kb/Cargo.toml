@@ -14,6 +14,7 @@ path = "src/main.rs"
 awm-embed.workspace = true
 awm-kb-guide = { path = "../../crates/awm-kb-guide" }
 awm-kb-journals = { path = "../../crates/awm-kb-journals" }
+awm-kb-papers = { path = "../../crates/awm-kb-papers" }
 awm-kb-search = { path = "../../crates/awm-kb-search" }
 awm-kb-source = { path = "../../crates/awm-kb-source" }
 awm-kb-transcripts = { path = "../../crates/awm-kb-transcripts" }

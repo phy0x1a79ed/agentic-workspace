@@ -14,7 +14,7 @@
 #
 # Usage:
 #   scripts/run-tests.sh                 # run all dists
-#   scripts/run-tests.sh kb contract     # run only the named dists
+#   scripts/run-tests.sh zotero contract     # run only the named dists
 #   PYTEST_ARGS="-x -q" scripts/run-tests.sh   # pass extra args to pytest
 #   scripts/run-tests.sh --changed <base>  # only dists touched since <base>
 #   scripts/run-tests.sh --smoke           # only tests marked smoke
@@ -46,14 +46,13 @@ declare -A DISTS=(
   [engcyc]="$WS/awm/services/engcyc::$WS/awm/services/engcyc/tests"
   [trilium]="$WS/awm/services/trilium::$WS/awm/services/trilium/tests"
   [zotero]="$WS/awm/services/zotero::$WS/awm/services/zotero/tests"
-  [kb]="$WS/awm/services/kb::$WS/awm/services/kb/tests"
   [grantlib]="$WS/awm/service_components/grantlib::$WS/awm/service_components/grantlib/tests"
   [trustpolicy]="$WS/awm/service_components/trustpolicy::$WS/awm/service_components/trustpolicy/tests"
   [wake]="$WS/awm/plugins/wake::$WS/awm/plugins/wake/tests"
 )
 
 # Stable run order.
-ORDER=(contract gatewayclient config persistence grantlib usage 2fa ssh rlm-factorio vpn claude-science engcyc trilium zotero kb trustpolicy wake)
+ORDER=(contract gatewayclient config persistence grantlib usage 2fa ssh rlm-factorio vpn claude-science engcyc trilium zotero trustpolicy wake)
 
 CHANGED_BASE=""
 SMOKE=0
@@ -138,7 +137,7 @@ if [ ! -x "$PY" ]; then
 fi
 
 # A plugin that owns its runtime runs its tests there. Its env appears when its install hook has run.
-declare -A PLUGIN_ENVS=([2fa]=awm-2fa [ssh]=awm-ssh [vpn]=awm-vpn [claude-science]=awm-claude-science [trilium]=awm-trilium [zotero]=awm-zotero [kb]=awm-papers [wake]=awm-wake)
+declare -A PLUGIN_ENVS=([2fa]=awm-2fa [ssh]=awm-ssh [vpn]=awm-vpn [claude-science]=awm-claude-science [trilium]=awm-trilium [zotero]=awm-zotero [wake]=awm-wake)
 
 declare -A RESULT
 overall=0
