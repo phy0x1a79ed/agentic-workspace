@@ -229,6 +229,7 @@ fn migration(from: i64) -> String {
         8 => format!("{SEATS}INSERT OR IGNORE INTO seat_routed (account, channel_id, message_id, routed_at) SELECT account, channel_id, message_id, 0 FROM social_history;\n"),
         9 => SEATS_V10.into(),
         10 => SEATS_V11.into(),
+        11 => "ALTER TABLE social_mounts RENAME COLUMN job TO session_id;\nALTER TABLE social_keepers RENAME COLUMN job TO session_id;\nALTER TABLE seat_registry RENAME COLUMN job TO session_id;\nALTER TABLE seat_lines RENAME COLUMN job TO session_id;\n".into(),
         _ => String::new(),
     }
 }
@@ -255,10 +256,6 @@ fn tables(conn: &Connection) -> rusqlite::Result<i64> {
 
 /// Open `social.db`, creating it at the current version or carrying an older one forward by its migrations.
 pub fn open_conn(path: &Path) -> anyhow::Result<Connection> {
-    open_with(path, &crate::migrate::jobs_dir(), &awm_plugin_sdk::config::node_name())
-}
-
-fn open_with(path: &Path, jobs: &Path, here: &str) -> anyhow::Result<Connection> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
@@ -280,11 +277,7 @@ fn open_with(path: &Path, jobs: &Path, here: &str) -> anyhow::Result<Connection>
     };
     for step in from..SCHEMA_VERSION {
         let tx = conn.unchecked_transaction()?;
-        if step == 11 {
-            crate::migrate::session_ids(&tx, jobs, here)?;
-        } else {
-            tx.execute_batch(&migration(step))?;
-        }
+        tx.execute_batch(&migration(step))?;
         tx.execute("UPDATE schema_version SET version = ?1", [step + 1])?;
         tx.commit()?;
     }
@@ -675,8 +668,8 @@ mod tests {
         assert_eq!(kept, r#"{"kept":true}"#, "a line already waiting survives the pause");
         let body: String = c.query_row("SELECT body FROM seat_queue WHERE kind = 'seed'", [], |r| r.get(0)).unwrap();
         let state = &serde_json::from_str::<Value>(&body).unwrap()["state"];
-        assert_eq!((state["state"].as_str(), state["session_id"].as_str(), state["session_node"].as_str(), state["adopted"].as_i64(), state["missed"].as_i64(), state["remote_control"].as_i64()), (Some("occupied"), Some("cc0a1b2c3d111122223333444455556666"), Some("altair"), Some(1), Some(3), Some(1)));
-        assert_eq!(state["previous"].as_str(), Some("{\"node\":\"altair\",\"session_id\":\"\"}"), "a string the host parses, its unmapped short id dropped");
+        assert_eq!((state["state"].as_str(), state["job"].as_str(), state["job_node"].as_str(), state["adopted"].as_i64(), state["missed"].as_i64(), state["remote_control"].as_i64()), (Some("occupied"), Some("cc0a1b2c3d111122223333444455556666"), Some("altair"), Some(1), Some(3), Some(1)));
+        assert_eq!(state["previous"].as_str(), Some("{\"job\":\"old\",\"node\":\"altair\"}"), "a string the host parses");
         let (kept, report): (String, String) = c.query_row("SELECT session_id, report FROM seat_registry", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
         assert_eq!((kept.as_str(), report.as_str()), ("cc0a1b2c3d111122223333444455556666", "{}"));
         assert!(c.prepare("SELECT breaker FROM seat_registry").is_err(), "the state machine's columns are gone");
@@ -696,37 +689,5 @@ mod tests {
         assert_eq!(version(&c).unwrap(), Some(SCHEMA_VERSION));
         let (rc, url, state): (i64, String, String) = c.query_row("SELECT remote_control, rc_url, state FROM seat_registry", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap();
         assert_eq!((rc, url.as_str(), state.as_str()), (0, "", "occupied"));
-    }
-
-    // MIGRATION(session-ids): pins the v11 to v12 rewrite row by row.
-    #[test]
-    fn a_v11_db_keys_its_rows_by_session_id() {
-        let tmp = tempfile::tempdir().unwrap();
-        let jobs = tmp.path().join("jobs");
-        std::fs::create_dir_all(jobs.join("0a1b2c3d")).unwrap();
-        std::fs::write(jobs.join("0a1b2c3d/state.json"), r#"{"sessionId":"0a1b2c3d-1111-2222-3333-444455556666"}"#).unwrap();
-        let id = "cc0a1b2c3d111122223333444455556666";
-        let p = tmp.path().join("v11.db");
-        {
-            let c = Connection::open(&p).unwrap();
-            c.execute_batch(&format!("{SCHEMA}{HISTORY}{MOUNTS}{KEEPERS_V5}{KEEPER_STATE}{QUIET}{SEATS}{SEATS_V10}{SEATS_V11}")).unwrap();
-            c.execute_batch("ALTER TABLE social_keepers ADD COLUMN seen_at TEXT NOT NULL DEFAULT '';CREATE TABLE schema_version (version INTEGER NOT NULL);INSERT INTO schema_version VALUES (11);").unwrap();
-            c.execute_batch(&format!(
-                "INSERT INTO social_mounts (account, channel_id, node, job) VALUES ('a', 'here', 'alcor', '0a1b2c3d'), ('a', 'gone', 'alcor', 'deadbeef'), ('a', 'far', 'altair', '{id}'), ('a', 'farshort', 'altair', '0a1b2c3d');
-                 INSERT INTO seat_registry (account, channel_id, node, state, job, report) VALUES ('a', 's1', 'alcor', 'occupied', '0a1b2c3d', '{{\"job\":\"0a1b2c3d\"}}'), ('a', 's2', 'altair', 'occupied', '0a1b2c3d', '{{}}');
-                 INSERT INTO seat_lines (node, job, account, channel_id, at) VALUES ('alcor', '0a1b2c3d', 'a', 'here', 1), ('alcor', 'deadbeef', 'a', 'gone', 1);
-                 INSERT INTO seat_queue (account, channel_id, line, queued_at, node, kind, body) VALUES ('a', 'here', '', 0, 'alcor', 'hand', '{{\"job\":\"0a1b2c3d\"}}'), ('a', 'gone', '', 0, 'alcor', 'released', '{{\"job\":\"deadbeef\"}}');"
-            ))
-            .unwrap();
-        }
-        let c = open_with(&p, &jobs, "alcor").unwrap();
-        let col = |sql: &str| c.prepare(sql).unwrap().query_map([], |r| r.get::<_, String>(0)).unwrap().map(Result::unwrap).collect::<Vec<_>>();
-        assert_eq!(col("SELECT channel_id || '=' || session_id FROM social_mounts ORDER BY channel_id"), [format!("far={id}"), format!("here={id}")]);
-        assert_eq!(col("SELECT channel_id || '=' || session_id || '=' || state FROM seat_registry ORDER BY channel_id"), [format!("s1={id}=occupied"), "s2==empty".to_string()]);
-        assert_eq!(col("SELECT report FROM seat_registry WHERE channel_id = 's1'"), [format!("{{\"session_id\":\"{id}\"}}")]);
-        assert_eq!(col("SELECT session_id FROM seat_lines"), [id]);
-        assert_eq!(col("SELECT body FROM seat_queue ORDER BY id"), [format!("{{\"session_id\":\"{id}\"}}")]);
-        assert_eq!(version(&c).unwrap(), Some(SCHEMA_VERSION));
-        assert!(open_with(&tmp.path().join("v11b.db"), &jobs, "alcor").is_ok(), "a fresh db needs no mapping");
     }
 }
