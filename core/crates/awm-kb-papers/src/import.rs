@@ -22,8 +22,8 @@ use std::collections::{HashMap, HashSet};
 use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
 
-/// The collection every Zotero library item joins.
-pub const PRIVATE: &str = "private";
+/// The collection every item of Tony's Zotero library joins.
+pub const LIBRARY: &str = "tony";
 /// The chunk rows written per Lance append.
 const ROWS: usize = 20_000;
 /// The entries written per Lance append: each carries its paper's whole body.
@@ -281,7 +281,7 @@ pub(crate) fn item_keys(item: &Map<String, Value>) -> Option<ItemKeys> {
 /// The shortest normalized title that matches by title and year.
 const MIN_TITLE: usize = 20;
 
-/// Add [`PRIVATE`] to each semdb paper a Zotero item matches by [`item_keys`]. Returns the
+/// Add [`LIBRARY`] to each semdb paper a Zotero item matches by [`item_keys`]. Returns the
 /// unmatched items as rows to embed.
 fn join_library(papers: &mut HashMap<String, Paper>, items: &[Map<String, Value>]) -> Vec<Map<String, Value>> {
     let by_doi: HashMap<String, String> = papers.iter().filter(|(_, p)| !p.doi.is_empty()).map(|(id, p)| (p.doi.clone(), id.clone())).collect();
@@ -296,8 +296,8 @@ fn join_library(papers: &mut HashMap<String, Paper>, items: &[Map<String, Value>
         let found = keys.doi.and_then(|d| by_doi.get(&d)).or_else(|| keys.title_year.and_then(|k| by_title.get(&k))).cloned();
         match found.and_then(|id| papers.get_mut(&id)) {
             Some(p) => {
-                if !p.collections.iter().any(|c| c == PRIVATE) {
-                    p.collections.push(PRIVATE.into());
+                if !p.collections.iter().any(|c| c == LIBRARY) {
+                    p.collections.push(LIBRARY.into());
                 }
             }
             None => held.push(held_row(item)),
@@ -320,7 +320,7 @@ pub fn held_row(item: &Map<String, Value>) -> Map<String, Value> {
     if let Some(y) = item_year(item) {
         row.insert("ts".into(), json!(year_start(y)));
     }
-    row.insert("collection".into(), json!([PRIVATE]));
+    row.insert("collection".into(), json!([LIBRARY]));
     row.insert("author".into(), json!(authors));
     row.insert("doi".into(), json!(item_str(item, "doi").to_lowercase()));
     row.insert("journal".into(), json!(item_str(item, "publication")));

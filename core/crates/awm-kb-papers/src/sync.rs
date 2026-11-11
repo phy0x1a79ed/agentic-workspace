@@ -1,11 +1,11 @@
 //! The daily Zotero sync, inside kb: the library items that moved since the served
-//! generation's cursor join it in place. A matched semdb paper gains [`PRIVATE`] and keeps its
+//! generation's cursor join it in place. A matched semdb paper gains [`LIBRARY`] and keeps its
 //! vectors. An item semdb lacks is written whole and embedded here.
 //!
 //! A session stop on `reflection/sessions` triggers it, and kb's start catches up, at most once
 //! per [`SYNC_GAP_S`]. The cursor lives in the generation, so a new generation keeps its own.
 
-use crate::import::{held_row, item_keys, norm_title, write_atomic, PRIVATE};
+use crate::import::{held_row, item_keys, norm_title, write_atomic, LIBRARY};
 use crate::{Generation, Papers};
 use anyhow::{Context as _, Result};
 use awm_index::sql::quote;
@@ -107,10 +107,10 @@ impl Papers {
                 Some(id) => {
                     let Some(mut doc) = g.index.document(&id, "true").await? else { continue };
                     let mut have: Vec<Value> = doc.get("collection").and_then(Value::as_array).cloned().unwrap_or_default();
-                    if have.iter().any(|c| c == PRIVATE) {
+                    if have.iter().any(|c| c == LIBRARY) {
                         continue;
                     }
-                    have.push(json!(PRIVATE));
+                    have.push(json!(LIBRARY));
                     doc.insert("collection".into(), Value::Array(have));
                     rows.push(doc);
                     joined += 1;

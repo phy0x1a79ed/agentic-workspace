@@ -19,7 +19,7 @@ type Fake = (&'static str, &'static str, &'static str, &'static [&'static str], 
 const PAPERS: [Fake; 4] = [
     ("doi:10.1/a", "10.1/a", "Copper bioleaching by acidophiles", &["Ada A", "Ben B"], 2020, "mining", "Acidophiles leach copper from ore.", &["Heap leaching runs for months.", "Ferrous iron oxidation drives it."]),
     ("doi:10.1/b", "10.1/b", "Chalcopyrite passivation layers", &["Ben B"], 2021, "copper", "A jarosite layer slows chalcopyrite.", &["Passivation forms at low potential."]),
-    ("doi:10.1/c", "10.1/c", "Gut microbiome of honey bees", &["Cy C"], 2019, "tony", "Bee guts hold few taxa.", &[]),
+    ("doi:10.1/c", "10.1/c", "Gut microbiome of honey bees", &["Cy C"], 2019, "vpri", "Bee guts hold few taxa.", &[]),
     ("doi:10.1/d", "10.1/d", "Rare earth recovery with lanmodulin", &["Dee D"], 2022, "mining", "", &["Lanmodulin binds lanthanides tightly."]),
 ];
 
@@ -134,13 +134,13 @@ async fn import_then_query_by_meaning_keyword_and_collection() {
     let hits = ask(&src, json!({"$contains": "lanmodulin"}), json!({})).await;
     assert_eq!(hits, ["doi:10.1/d"], "the body is searchable by keyword");
 
-    let private = ask(&src, json!({"$about": "copper"}), json!({"collection": "private"})).await;
-    let mut private = private;
-    private.sort();
-    assert_eq!(private, ["doi:10.1/b", "zotero:users/0/K2"], "a matched item joins private, an unmatched one is held");
-    let either = ask(&src, json!({"$about": "copper bees"}), json!({"collection": {"$in": ["tony", "copper"]}})).await;
+    let library = ask(&src, json!({"$about": "copper"}), json!({"collection": "tony"})).await;
+    let mut library = library;
+    library.sort();
+    assert_eq!(library, ["doi:10.1/b", "zotero:users/0/K2"], "a matched item joins tony, an unmatched one is held");
+    let either = ask(&src, json!({"$about": "copper bees"}), json!({"collection": {"$in": ["vpri", "copper"]}})).await;
     assert!(either.iter().all(|i| i == "doi:10.1/b" || i == "doi:10.1/c") && either.len() == 2, "{either:?}");
-    let both = ask(&src, json!({"$about": "copper"}), json!({"collection": {"$all": ["copper", "private"]}})).await;
+    let both = ask(&src, json!({"$about": "copper"}), json!({"collection": {"$all": ["copper", "tony"]}})).await;
     assert_eq!(both, ["doi:10.1/b"]);
 
     assert_eq!(ask(&src, json!({"$about": "leaching"}), json!({"cited_by": "doi:10.1/b"})).await, ["doi:10.1/a"]);
@@ -164,5 +164,5 @@ async fn a_new_current_generation_is_served_from_the_next_query() {
     build(&opts, &root.join("gen-2"), stub.as_ref()).await.unwrap();
     make_current(&root, "gen-2").unwrap();
     assert_eq!(src.status().await["generation"], json!("gen-2"));
-    assert!(ask(&src, json!({"$about": "tailings"}), json!({"collection": "private"})).await.is_empty(), "gen-2 has no Zotero items");
+    assert!(ask(&src, json!({"$about": "tailings"}), json!({"collection": "tony"})).await.is_empty(), "gen-2 has no Zotero items");
 }
