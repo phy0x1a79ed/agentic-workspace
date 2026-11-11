@@ -210,6 +210,52 @@ async fn a_reload_that_makes_a_service_external_stops_its_child() {
     awm_gateway::supervisor::stop_all(&gw).await;
 }
 
+/// An `[[external]]` plugin's hook runs in the gateway, and its registered service then hears
+/// `shutdown` so its own unit respawns it. An unchanged stamp runs no hook and sends nothing; a
+/// restart sends `shutdown` without a hook; a failed hook refuses the plugin.
+#[tokio::test]
+async fn an_external_plugins_hook_runs_in_the_gateway_then_restarts_it() {
+    let node = Node::new();
+    let dir = node.plugin("ext", "install = 'install.sh'\n", "");
+    std::fs::write(dir.join("install.sh"), "sleep 0.3\necho ran >> \"$AWM_DIR/hook.log\"\n").unwrap();
+    node.config("[[external]]\nservice = \"ext\"\n");
+    let gw = node.open(no_peers()).await;
+    let id = gw.hub.register("ext", "ext", None, None).unwrap();
+    let awm_gateway::hub::Claim::Claimed { mut rx, .. } = gw.hub.claim(&id) else { panic!("claim") };
+    let runs = || std::fs::read_to_string(node.state.join("hook.log")).unwrap_or_default().lines().count();
+    let shutdowns = |rx: &mut tokio::sync::mpsc::UnboundedReceiver<String>| {
+        std::iter::from_fn(|| rx.try_recv().ok()).filter(|f| f.contains("shutdown")).count()
+    };
+    let installing = |gw: &Gateway| gw.services_view().as_array().unwrap().iter().any(|r| r["installing"] == json!(true));
+
+    awm_gateway::supervisor::start_all(&gw, false).await;
+    assert!(installing(&gw), "the flag is up before the hook ends");
+    until("the install", || (!installing(&gw)).then_some(())).await;
+    assert_eq!((runs(), shutdowns(&mut rx)), (1, 1));
+    assert!(awm_gateway::hooks::stamp_path(&gw.state, "ext").is_file());
+    assert_eq!(pid_of(&gw, "ext"), None, "the gateway never spawns it");
+
+    gw.reload(&ReloadRequest::default()).await.unwrap();
+    until("the no-op", || (!installing(&gw)).then_some(())).await;
+    assert_eq!((runs(), shutdowns(&mut rx)), (1, 0), "an unchanged stamp runs no hook");
+
+    let report = gw.reload(&ReloadRequest { restart: vec!["ext".into()], force: false }).await.unwrap();
+    assert_eq!(report["stopped"], json!([]), "the restart waits for the hook");
+    until("the restart", || (!installing(&gw)).then_some(())).await;
+    assert_eq!((runs(), shutdowns(&mut rx)), (1, 1), "a restart sends shutdown without a hook");
+
+    std::fs::write(dir.join("new-file"), "x").unwrap();
+    gw.reload(&ReloadRequest::default()).await.unwrap();
+    until("the reinstall", || (!installing(&gw)).then_some(())).await;
+    assert_eq!((runs(), shutdowns(&mut rx)), (2, 1), "a moved stamp reinstalls and restarts");
+
+    std::fs::write(dir.join("install.sh"), "echo boom >&2\nexit 1\n").unwrap();
+    gw.reload(&ReloadRequest::default()).await.unwrap();
+    let reason = until("the refusal", || refusal(&gw, "ext")).await;
+    assert!(reason.contains("boom"), "{reason}");
+    assert_eq!(shutdowns(&mut rx), 0, "a failed hook leaves the old service up");
+}
+
 /// A failed hook refuses its plugin alone, names its last output, and cascades to the plugins
 /// that need its tool. A restart that names it runs the hook again.
 #[tokio::test]

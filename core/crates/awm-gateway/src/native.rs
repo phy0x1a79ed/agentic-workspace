@@ -37,13 +37,14 @@ impl Gateway {
                 "refusal": hub.and_then(|h| h.refusal.clone()), "mount": hub.and_then(|h| h.mount.clone()),
                 "tools": spec.tools, "archive": spec.archive, "front": spec.front, "external": self.cfg().external(&spec.name).is_some(),
                 "failed": failed.contains(&spec.name), "tripped": self.supervisor.journal.tripped(&spec.name),
+                "installing": self.hooks.installing(&spec.plugin),
             }));
         }
         for (name, h) in live.iter().filter(|(n, _)| !seen.contains(n)) {
             rows.push(json!({
                 "name": name, "plugin": h.plugin, "enabled": true, "status": h.status, "id": h.id, "pid": h.pid,
                 "verbs": h.verbs, "refusal": h.refusal, "mount": h.mount, "tools": [], "archive": [], "front": [],
-                "external": false, "failed": false, "tripped": false,
+                "external": false, "failed": false, "tripped": false, "installing": false,
             }));
         }
         json!(rows)

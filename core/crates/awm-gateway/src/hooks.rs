@@ -1,7 +1,7 @@
 //! Each plugin's `install` hook (plugin-contract § Runtime): it runs before the plugin's first
 //! spawn, and again only when the plugin's install stamp moves.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
@@ -19,11 +19,26 @@ pub struct Hooks {
     running: tokio::sync::Mutex<()>,
     /// `{plugin: (stamp, reason)}`: the hooks that failed, on the stamp they failed on.
     failed: Mutex<BTreeMap<String, (String, String)>>,
+    /// The external plugins whose hooks are queued or running.
+    installing: Mutex<BTreeSet<String>>,
 }
 
 impl Hooks {
     pub fn failed(&self) -> BTreeMap<String, (String, String)> {
         self.failed.lock().unwrap_or_else(|p| p.into_inner()).clone()
+    }
+
+    pub fn installing(&self, plugin: &str) -> bool {
+        self.installing.lock().unwrap_or_else(|p| p.into_inner()).contains(plugin)
+    }
+
+    /// Mark `plugin` as installing. False when it already was.
+    pub fn begin(&self, plugin: &str) -> bool {
+        self.installing.lock().unwrap_or_else(|p| p.into_inner()).insert(plugin.to_string())
+    }
+
+    pub fn end(&self, plugin: &str) {
+        self.installing.lock().unwrap_or_else(|p| p.into_inner()).remove(plugin);
     }
 
     /// Drop the kept failures of `plugins`, so their hooks run again at the next start.
@@ -48,18 +63,18 @@ async fn stamp_of(dir: &Path) -> String {
 
 /// Run `plugin`'s install hooks unless its stamp matches the last success. A failure is kept,
 /// so the loader refuses the plugin until its folder changes; the error names the hook's last
-/// output lines.
-pub async fn ensure(gw: &Gateway, plugin: &str) -> Result<(), String> {
+/// output lines. `Ok(true)` when the hooks ran.
+pub async fn ensure(gw: &Gateway, plugin: &str) -> Result<bool, String> {
     let loaded = gw.read_load().plugins.iter().find(|p| p.name == plugin).cloned();
     let Some(p) = loaded else { return Err(format!("plugin {plugin:?} is no longer loaded")) };
     if p.install.is_empty() {
-        return Ok(());
+        return Ok(false);
     }
     let _one_at_a_time = gw.hooks.running.lock().await;
     let path = stamp_path(&gw.state, plugin);
     let before = stamp_of(&p.dir).await;
     if std::fs::read_to_string(&path).is_ok_and(|s| s.trim() == before) {
-        return Ok(());
+        return Ok(false);
     }
     if let Some((_, reason)) = gw.hooks.failed().get(plugin).filter(|(at, _)| *at == before) {
         return Err(reason.clone());
@@ -79,7 +94,7 @@ pub async fn ensure(gw: &Gateway, plugin: &str) -> Result<(), String> {
     std::fs::create_dir_all(plugin_state(&gw.state, plugin)).map_err(|e| e.to_string())?;
     crate::survival::write_atomic(&path, &after).map_err(|e| format!("{}: {e}", path.display()))?;
     tracing::info!("plugin {plugin}: installed");
-    Ok(())
+    Ok(true)
 }
 
 async fn run(gw: &Gateway, p: &Plugin, hook: &Path) -> Result<(), String> {

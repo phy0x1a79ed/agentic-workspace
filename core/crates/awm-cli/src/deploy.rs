@@ -218,7 +218,9 @@ pub async fn run(args: Args) -> anyhow::Result<i32> {
     loop {
         let rows = native("services").await;
         let rows = rows.as_ref().ok().and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
-        let is_down = |r: &Value| r["enabled"] == json!(true) && r["external"] != json!(true) && r["status"] != json!("ready");
+        let is_down = |r: &Value| {
+            r["enabled"] == json!(true) && (r["installing"] == json!(true) || (r["external"] != json!(true) && r["status"] != json!("ready")))
+        };
         let name = |r: &Value| format!("{} ({})", r["name"].as_str().unwrap_or("?"), r["status"].as_str().unwrap_or("?"));
         let gave_up: Vec<String> = rows.iter().filter(|r| is_down(r) && (r["failed"] == json!(true) || r["tripped"] == json!(true))).map(name).collect();
         if !gave_up.is_empty() {
