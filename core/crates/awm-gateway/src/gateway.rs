@@ -279,17 +279,24 @@ impl Gateway {
         }
     }
 
+    /// Whether `token` is the one `service` proves itself with.
+    pub fn token_matches(&self, service: &str, token: &str) -> bool {
+        let token = token.trim();
+        !token.is_empty()
+            && self
+                .token_file_of(service)
+                .and_then(|p| std::fs::read_to_string(p).ok())
+                .is_some_and(|expected| expected.trim() == token)
+    }
+
     /// The registered service whose token is `token`, if any.
     pub fn service_of_token(&self, token: &str) -> Option<String> {
-        let token = token.trim();
-        if token.is_empty() {
-            return None;
-        }
-        self.hub.services().into_iter().map(|s| s.name).find(|name| {
-            self.token_file_of(name)
-                .and_then(|p| std::fs::read_to_string(p).ok())
-                .is_some_and(|expected| !expected.trim().is_empty() && expected.trim() == token)
-        })
+        self.hub.services().into_iter().map(|s| s.name).find(|name| self.token_matches(name, token))
+    }
+
+    /// Whether `token` names a registered service, or an `[[external]]` one that may register.
+    pub fn knows_token(&self, token: &str) -> bool {
+        self.service_of_token(token).is_some() || self.cfg().external.iter().any(|e| self.token_matches(&e.service, token))
     }
 
     pub fn plugin_of_service(&self, service: &str) -> String {
