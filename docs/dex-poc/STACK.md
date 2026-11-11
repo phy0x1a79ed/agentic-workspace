@@ -6,15 +6,7 @@
 
 ## Current
 
-`poc-build`: build the POC and run four experiments, in order. Report findings once, at the end, as `docs/dex-poc/FINDINGS.md` and in one reply. No interim status reports.
-
-Where it lives: `poc/` in this worktree, a standalone Cargo workspace (an empty `[workspace]` table, no dependency on `awm-plugin-sdk`). Sync the sources to capella and build there with native `cargo` (glibc 2.35, so artifacts also load on mizar and alcor at 2.39). mizar has no `cargo` on its PATH. Capella is the second node, reached by `ssh capella` stdio, with no listening port. Keep capella scratch under a job-unique `/tmp` name and delete it afterwards. Do not touch the production gateways; the baseline uses read-only calls only.
-
-Experiments:
-- **E1 `calling-mechanism`.** One call site, three placements: a `cdylib` loaded in process (struct path), a separate process on mizar (Unix socket, JSON), a process on capella (ssh stdio, JSON). Uniform async surface, deadline, closed error set. Kill the callee and expect `unavailable` through the same code path. Record p50 and p99 per placement. Baseline: the existing gateway `POST /invoke` locally and with `peer=capella`, for a trivial read-only verb.
-- **E2 `update-flow`.** Hot swap module L v1 to v2 under constant load, with content-hash filenames: zero failed calls and results change once, in order. Capella builds v2 and publishes it. mizar gets the publish event over the link, fetches the bytes by digest, verifies, loads and swaps. A corrupt build and a panic-on-init build are rejected and v1 keeps serving. Show state lost across the swap. A node offline during a publish catches up on reconnect by sending the digest it holds. Answer: where does an update originate, where does the new version come from, and does it start from a binary.
-- **E3 `cache-pagetable`.** A content-addressed store per node. The per-node router table, name to `Copy{digest}` or `Service{route}`, is the candidate page table. The origin's tag table is authoritative; each node's table is a cache invalidated by events. Cap the store at 3 artifacts. Evict copies only, never a loaded module or a service route. An evicted copy refills on its next call. Report where the table lives and what survives a restart.
-- **E4 `market-build`.** mizar posts a work item (source digest, toolchain, target triple, glibc baseline, requirement) to both nodes. mizar cannot compile and declines. capella bids with an expected duration, mizar accepts, capella builds, and mizar fetches the artifact by digest. Rebuild on capella and compare output hashes: report whether cargo output is byte-reproducible.
+`compute-market`: a compute market for awm peers. The user's pressing issue (2026-11-11). Evidence: journal 7ab424c3 (cold builds on mizar, full disk from per-worktree targets, contention) and E4 in `FINDINGS.md`. First question: what the first version covers.
 
 ## Waiting on the user
 
@@ -28,19 +20,21 @@ Nothing.
 - 2026-11-09: Full exploration including prototype builds, not only docs.
 - 2026-11-09: Builds run on capella. The contract is strict versioned JSON.
 - 2026-11-09: MVP is cache, update event and remote fill; bidding after.
-- 2026-11-09: "compact and build POC, report experiment findings."
+- 2026-11-11: "pressing issue is some compute market for awm peers."
 - Standing: one report at the end, no interim status reports.
 
 ## Stack
 
-- `poc-build`: see Current.
+- `compute-market`: see Current.
+  - `tool-surface`: the narrow exposed tool, roughly submit, status, result, cancel. A 15 to 50 minute build cannot be one blocking call.
+  - `bidding`: allocation among peers (requirement predicate, bid, award).
+  - `build-repro`: do real workloads (kb, lance, musl release) give byte-identical output? E4 tested only a dependency-free crate.
+- `envelope-mapping`: map the dex TypeScript kernel's envelope (altair, dex/edge) to `{v, id, from, to, selector, args}`; ask whether both share one envelope.
 - `first-test`: `claude-md-sync` is a candidate after the experiments. One origin per name against C3 is still open.
 - `version-policy`: whether a reply is translated to the caller's version (caller sends an `accept` list; receiver replies in the highest version it can produce, else a structured error).
 - `transport-survey`: do AWM peer links or the push path already give subscribe?
-- `tool-surface`: the narrow exposed tool, roughly submit, status, result, cancel
 - `core-boundary`: the core crate against the AWM adapter
 - `coexistence`: how it runs in a few select sessions (Q30) and what stays out
-- `bidding`: market allocation beyond the build job. Deferred.
 - `swap`: state handover and bad-activation recovery (Q7, Q8, Q24). Later rollout step.
 - `handoff`: the brief for the build session, written from the findings
 
@@ -57,3 +51,4 @@ None.
 - `contract-and-builds`: strict versioned JSON; capella builds; mizar and capella as the pair.
 - `format-per-locality`: struct in process, JSON from IPC outward.
 - `calling-mechanism`: working design, taken as accepted when the user directed the build.
+- `poc-build`: E1 to E4 run; results in `FINDINGS.md`.
