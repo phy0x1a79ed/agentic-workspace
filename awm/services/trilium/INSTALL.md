@@ -744,6 +744,12 @@ without a server and says so. `TRILIUM_REQUIRE_SERVER=1` makes that fatal.
 5. Deploy awm. Before a push node refreshes, the deploy pushes the tarball into
    the node's artifact store, when the install config names one
    (`FEDERATION.md` § Deploy). The node never fetches it.
+6. Check `awm trilium status` on the node: `source.current` must be true.
+
+**CAUTION** A refresh that does not build skips `install.sh`, so a release that
+moves only `server.pin` leaves the old server running with `current` false. Run
+`install.sh` on the node as the `awm` user with `AWM_DIR` set to the node's awm
+dir, then `awm reload --restart trilium --force`.
 
 A change made as a note, such as the board page, a widget or a script, needs none
 of this. It goes live through the `trilium` tool.
