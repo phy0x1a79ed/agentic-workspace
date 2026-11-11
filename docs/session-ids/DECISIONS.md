@@ -57,8 +57,8 @@
 - Every verb argument and output named `job` becomes `session_id`, holding the canonical id. Only reflection's `to: {id}|{name}` says `id`. This covers reflection, cch, routine, operations, gateway claims, seat events and the telemetry fallback. `list_other` rows show the canonical id.
 - Where a record holds both the canonical id and a short `job`, the `job` field is dropped: trust, waits, `channels.job`, operations `sessions.job` and its `rc:<node>:<job>` relay keys, `scope_waiters.job`.
 - Where the short id is the only key, a one-shot migration maps it to the canonical id through `~/.claude/jobs/<short>/state.json`, then the lineage file. It drops rows that map to no job. This covers seats (`seat_registry`, `seat_lines`), social (mounts, keepers, mirrored seat tables), the wake standby hold, and lineage filenames.
-- The migration runs once at deploy, and the services cut over live. Its code then leaves the tree, except social's v11 to v12 step, kept for mira's `social.db`, which never ran it.
+- The migration runs once at deploy, and the services cut over live. Its code then leaves the tree.
 - cch's pending record waits under a random token, not a digest of the name. The launch finds the job by its name, and the lineage record is filed under the job's own session id. A late job is adopted by its name.
 - Operations asks the seats registry whether a session holds a seat. `SEAT_PREFIX` is deleted, and the `seat:` text is display only.
 
-**Landed.** 710c5961 (no `job` on the wire or in stores), 2a791193 (pending record by token). Migrations ran in release ce40bb82 and left the tree in ae9a51b4 (release 3717557f).
+**Landed.** 710c5961 (no `job` on the wire or in stores), 2a791193 (pending record by token). Migrations ran in release ce40bb82 and left the tree in ae9a51b4 (release 3717557f), social's last once mira retired.
