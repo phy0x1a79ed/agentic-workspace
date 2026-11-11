@@ -414,11 +414,10 @@ impl Store {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        let mut conn = Connection::open(path)?;
+        let conn = Connection::open(path)?;
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.execute_batch(SCHEMA)?;
-        crate::migrate::run(&mut conn, &crate::migrate::jobs_dir())?;
         for (column, want, change) in [
             ("model", true, "ADD COLUMN model TEXT NOT NULL DEFAULT ''"),
             ("effort", true, "ADD COLUMN effort TEXT NOT NULL DEFAULT ''"),

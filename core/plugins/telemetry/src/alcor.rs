@@ -42,13 +42,7 @@ impl RosterPart {
     pub fn load(state_dir: PathBuf, swarm: Option<String>, singletons: Singletons) -> anyhow::Result<Arc<Self>> {
         let file = state_dir.join("roster.json");
         let roster = match std::fs::read_to_string(&file) {
-            Ok(text) => {
-                let bad = |e: serde_json::Error| anyhow::anyhow!("{}: {e}", file.display());
-                let mut stored: Value = serde_json::from_str(&text).map_err(bad)?;
-                // MIGRATION(session-ids)
-                crate::roster::rekey_by_session(&mut stored);
-                serde_json::from_value(stored).map_err(bad)?
-            }
+            Ok(text) => serde_json::from_str(&text).map_err(|e| anyhow::anyhow!("{}: {e}", file.display()))?,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Roster::default(),
             Err(e) => return Err(anyhow::anyhow!("{}: {e}", file.display())),
         };

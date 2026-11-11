@@ -1081,10 +1081,6 @@ fn migrate(db: &Connection) -> rusqlite::Result<()> {
         }
     }
     db.execute_batch(ADDITIVE)?;
-    // MIGRATION(session-ids): a session row keys on its session id, never a job.
-    if has_column(db, "sessions", "job")? {
-        db.execute_batch("BEGIN; DROP INDEX IF EXISTS sessions_job; ALTER TABLE sessions DROP COLUMN job; COMMIT;")?;
-    }
     db.execute("UPDATE tasks SET section='history' WHERE section='done'", [])?;
     Ok(())
 }

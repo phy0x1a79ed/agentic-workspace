@@ -131,22 +131,3 @@ async def test_boot_waits_for_gateway_and_releases_even_on_failure(cfg):
     out = await boot.run(cfg, gw, revive_tries=2, sleep=sleep)
     assert "revive_pinned failed" in out["error"]
     assert gw.verbs() == ["revive_pinned", "revive_pinned", "standby_release"]
-
-
-# MIGRATION(session-ids)
-def test_a_hold_keyed_by_job_is_rekeyed_by_session_id(tmp_path, monkeypatch):
-    jobs = tmp_path / "claude" / "jobs"
-    (jobs / "abababab").mkdir(parents=True)
-    (jobs / "abababab" / "state.json").write_text('{"sessionId": "abababab-0000-4000-8000-000000000000"}')
-    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
-    store = standby.Store(tmp_path / "standby.json")
-    store.save({"holds": {"mizar": {"state": "holding", "job": "abababab"},
-                          "alcor": {"state": "holding", "job": "eeeeeeee"}}, "misses": {}})
-    holds = store.load()["holds"]
-    assert holds == {"mizar": {"state": "holding", "session_id": "ccabababab000040008000000000000000"}}
-    assert store.load()["holds"] == holds
-
-    store.save({"holds": {"mizar": {"state": "holding", "job": "abababab"}}, "misses": {}})
-    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "missing"))
-    with pytest.raises(RuntimeError, match="unreadable"):
-        store.load()

@@ -21,7 +21,6 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from awm.gatewayclient.ids import PLATFORM_CLAUDE, BadSessionId, SessionId
 from awm.wake import magic
 from awm.wake.config import WakeConfig
 from awm.wake.gateway import REFLECTION, WAKE, CallError, Gateway
@@ -46,8 +45,6 @@ class Store:
             return {"holds": {}, "misses": {}}
         data.setdefault("holds", {})
         data.setdefault("misses", {})
-        if _rekey_holds(data):
-            self.save(data)
         return data
 
     def save(self, data: dict[str, Any]) -> None:
@@ -55,31 +52,6 @@ class Store:
         tmp = self.path.with_suffix(".tmp")
         tmp.write_text(json.dumps(data, indent=1))
         os.replace(tmp, self.path)
-
-
-def _rekey_holds(data: dict[str, Any]) -> bool:
-    """MIGRATION(session-ids): give each hold keyed by a job its session id.
-
-    A hold whose job names no session is dropped. An unreadable jobs dir raises,
-    and nothing is dropped. True when a hold changed.
-    """
-    stale = {down: h for down, h in data["holds"].items() if "job" in h}
-    if not stale:
-        return False
-    jobs = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude") / "jobs"
-    try:
-        os.listdir(jobs)
-    except OSError as exc:
-        raise RuntimeError(f"cannot rekey the standby holds by session id: {jobs} is unreadable: {exc}") from exc
-    for down, held in stale.items():
-        job = held.pop("job")
-        try:
-            raw = json.loads((jobs / str(job) / "state.json").read_text()).get("sessionId")
-            held.setdefault("session_id", SessionId.from_harness_native(PLATFORM_CLAUDE, raw).canonical())
-        except (OSError, ValueError, AttributeError, BadSessionId):
-            if not held.get("session_id"):
-                del data["holds"][down]
-    return True
 
 
 def default_store() -> Store:

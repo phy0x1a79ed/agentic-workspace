@@ -155,26 +155,3 @@ fn release_by_another_session_changes_nothing() {
     assert_eq!(release(&r, S2)["released"], json!(false));
     assert_eq!(holder(&r).as_deref(), Some(S1));
 }
-
-// MIGRATION(session-ids)
-#[test]
-fn a_v5_database_loses_its_job_columns_and_keeps_its_claims() {
-    use awm_store::rusqlite::Connection;
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("scopes.db");
-    {
-        let c = Connection::open(&path).unwrap();
-        c.execute_batch(
-            "CREATE TABLE schema_version (version INTEGER NOT NULL); INSERT INTO schema_version VALUES (5);
-             CREATE TABLE scope_claims (project TEXT NOT NULL, scope TEXT NOT NULL, session TEXT NOT NULL, pid INTEGER, proc_start TEXT, job TEXT, claimed_at INTEGER NOT NULL, PRIMARY KEY (project, scope));
-             CREATE TABLE scope_waiters (project TEXT NOT NULL, scope TEXT NOT NULL, session TEXT NOT NULL, pid INTEGER, proc_start TEXT, job TEXT, asked_at INTEGER NOT NULL, notified_at INTEGER, PRIMARY KEY (project, scope, session));
-             INSERT INTO scope_claims VALUES ('p', 's', 'cc1', 1, NULL, 'abcd1234', 5);",
-        )
-        .unwrap();
-    }
-    awm_plugin_scopes::db::open(&path).unwrap();
-    let c = Connection::open(&path).unwrap();
-    let cols: Vec<String> = ["scope_claims", "scope_waiters"].iter().flat_map(|t| c.prepare(&format!("SELECT name FROM pragma_table_info('{t}')")).unwrap().query_map([], |r| r.get::<_, String>(0)).unwrap().map(Result::unwrap).collect::<Vec<_>>()).collect();
-    assert!(!cols.contains(&"job".to_string()), "{cols:?}");
-    assert_eq!(c.query_row("SELECT session FROM scope_claims", [], |r| r.get::<_, String>(0)).unwrap(), "cc1");
-}
