@@ -16,7 +16,7 @@ use awm_harness::claude::records::{read_json, read_json_strict, Object};
 use awm_harness::claude::roster::{self, Job, JobId};
 use awm_harness::claude::{kept, pins, trust};
 use awm_plugin_sdk::config::{self, EdgeList};
-use awm_plugin_sdk::ids;
+use awm_plugin_sdk::ids::{Name, Platform, SessionId};
 use regex::Regex;
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -24,6 +24,7 @@ use tokio::sync::Mutex;
 use tokio::time::{sleep, timeout, Instant};
 
 use crate::gateway::{Call, Gateway};
+use crate::ledger;
 use crate::lineage::{self, Mode, Processes, Procfs};
 use crate::paths::{Paths, SKIP_PERMISSION_FLAGS};
 use crate::sessions::{Session, Sessions};
@@ -89,7 +90,7 @@ pub const BRIEF: &str = r#"You are a worker session, started by {started_by}. {w
 **Close the session when the work is done.** Deploy your work as its project's protocol says. Skip the deploy only when no deploy is possible, as for a design draft. When a coordinator started you for one part of a larger task, leave your branch to the coordinator, which deploys. For awm, load the `ship` skill. The work is done when three things hold: what you were asked for is merged and deployed, or merged to `dev` while a release train already holds `release-candidate`; it is verified; and nothing waits on you. You close on your own: Tony does not accept the work first. When you find follow-up issues, stay live and raise each one with `request_human`. To sign off, run the `retire` skill. Where it is missing, sign off by hand:
 1. Run the `debrief` skill. Its journal is your report, and it cites the journals that shaped your work (`journal(verb="reads")` lists the candidates).
 2. Report what you did {report_to}.
-3. Close with `reflection(verb="stop", args={{job:<your job>, confirm:true}})`. `reflection(verb="whoami")` names your job."#;
+3. Close with `reflection(verb="stop", args={{confirm:true}})`. It stops your own session, so it takes no `to`."#;
 
 /// Wrap the first prompt of every briefed start, whoever starts it: a session, a routine's fixer,
 /// a deploy's refresh or a board button.
@@ -109,7 +110,7 @@ pub const HINT_PROJECT: &str = "Your starter suggests the project {project}. ";
 
 pub const TASK_JOINED: &str = "You joined task `{task_id}` as its {role}.";
 
-pub const REPORT_TO_PARENT: &str = r#"to the session that started you: `SendMessage` it when `ListAgents` lists it, else `reflection(verb="message", args={{to:"{target}", text:…}})`"#;
+pub const REPORT_TO_PARENT: &str = r#"to the session that started you: `SendMessage` it when `ListAgents` lists it, else `reflection(verb="message", args={{to:{{id:"{target}"}}, text:…}})`"#;
 pub const REPORT_TO_PROMPT: &str =
     "where your first prompt asks. When it names no place, your debrief journal is the report";
 
@@ -125,10 +126,6 @@ static PATH_PART: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[A-Za-z0-9][A
 static TOOL: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^[A-Za-z][A-Za-z0-9_*.-]{0,127}(\([^,()\n]{1,200}\))?$").unwrap());
 static MODEL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[A-Za-z0-9][A-Za-z0-9._\[\]:-]*$").unwrap());
-static RC_NAME: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$").unwrap());
-static RC_UNSAFE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[^A-Za-z0-9._-]+").unwrap());
-static UUID: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$").unwrap());
 /// A task id (sessions.md R58): the first 8 characters of a urlsafe base64 UUID.
 static TASK_ID: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[A-Za-z0-9_-]{8}$").unwrap());
 static SESSION_ID: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[0-9A-Za-z-]+$").unwrap());
@@ -428,16 +425,12 @@ pub fn caller_record<E: Effects>(fx: &E, pid: &Value) -> Option<Object> {
     (claimed.is_empty() || claimed == live).then_some(rec)
 }
 
-/// The session a record names: a background job by its job id, else by its session id.
+/// The canonical id of the session a record names.
 pub fn session_ref(rec: Option<&Object>) -> Option<String> {
-    let rec = rec?;
-    if text(rec.get("kind")) == Some("bg") && truthy(rec.get("jobId")) {
-        return rec.get("jobId").map(py_str);
-    }
-    rec.get("sessionId").filter(|v| truthy(Some(v))).map(py_str)
+    text(rec?.get("sessionId")).and_then(ledger::key)
 }
 
-/// The calling session: its job id when a background job, else its session id.
+/// The calling session's canonical id.
 pub fn parent_of<E: Effects>(fx: &E, pid: &Value) -> Option<String> {
     session_ref(caller_record(fx, pid).as_ref())
 }
@@ -548,7 +541,7 @@ pub fn check_effort(effort: &Value) -> Result<(), Refused> {
 }
 
 /// Check a start's arguments and fill in cx's defaults. `args` is the verb's argument object.
-pub fn parse(paths: &Paths, args: &Value) -> Result<Spec, Refused> {
+pub fn parse(args: &Value) -> Result<Spec, Refused> {
     let empty = Object::new();
     let a = args.as_object().unwrap_or(&empty);
     let given = |k: &str| a.get(k).filter(|v| !v.is_null());
@@ -593,11 +586,6 @@ pub fn parse(paths: &Paths, args: &Value) -> Result<Spec, Refused> {
     if name.is_empty() || name.chars().count() > 80 || !py_printable(&name) || name.starts_with('-') {
         return refuse("name must be a short printable string that does not start with '-'");
     }
-    let lower = name.to_lowercase();
-    let pool_marks = ["<warm".to_string(), py_strip(&paths.name_prefix).to_lowercase()];
-    if pool_marks.iter().any(|mark| !mark.is_empty() && lower.contains(mark.as_str())) {
-        return refuse("a name may not carry the pool's prefix");
-    }
     let prompt = optional_text(given("prompt"), "prompt must be a string")?;
     let system_prompt = optional_text(given("system_prompt"), "system_prompt must be a string")?;
     let (model, effort) = (a.get("model"), a.get("effort"));
@@ -635,8 +623,8 @@ pub fn parse(paths: &Paths, args: &Value) -> Result<Spec, Refused> {
     };
     let replaces = match given("replaces") {
         None => None,
-        Some(Value::String(r)) if lineage::is_job(r) => Some(r.clone()),
-        Some(_) => return refuse("replaces must be a job id"),
+        Some(Value::String(r)) if SessionId::parse(r).is_ok_and(|id| id.platform() == Platform::Claude) => Some(r.clone()),
+        Some(_) => return refuse("replaces must be a session_id"),
     };
     let autocompact = autocompact(given("autocompact"))?;
     let disallowed_tools = tool_list(given("disallowed_tools"), "disallowed_tools")?;
@@ -742,25 +730,15 @@ fn autocompact(value: Option<&Value>) -> Result<Option<i64>, Refused> {
 
 /// The Remote Control name to use, or None when it is off (sessions.md R146).
 ///
-/// Remote Control is on unless the caller passes false. The flag takes an optional value, and the
-/// CLI reads a value that starts with `-` as a new flag, so a name is held to a plain label. The
-/// default and `true` derive one from the session name, each `/` and other unsafe run written as `-`.
+/// Remote Control is on unless the caller passes false. The default and `true` name it after the
+/// session, a string names it itself, each in the form `/rc` takes ([`Name::rc`]).
 fn remote_control(value: Option<&Value>, name: &str) -> Result<Option<String>, Refused> {
+    let label = |text: &str| Name::new(text).map(|n| Some(n.rc())).map_err(|e| Refused::new(e.to_string()));
     match value {
         Some(Value::Bool(false)) => Ok(None),
-        None | Some(Value::Bool(true)) => {
-            let derived: String =
-                RC_UNSAFE.replace_all(name, "-").trim_matches(|c| "-._".contains(c)).chars().take(64).collect();
-            if py_match(&RC_NAME, &derived) {
-                Ok(Some(derived))
-            } else if value.is_none() {
-                Ok(None)
-            } else {
-                Err(Refused::new("remote_control needs a name; pass one explicitly"))
-            }
-        }
-        Some(Value::String(s)) if py_match(&RC_NAME, py_strip(s)) => Ok(Some(py_strip(s).to_string())),
-        Some(_) => Err(Refused::new("remote_control must be true, false or a plain label")),
+        None | Some(Value::Bool(true)) => label(name),
+        Some(Value::String(s)) => label(s),
+        Some(_) => Err(Refused::new("remote_control must be true, false or a label")),
     }
 }
 
@@ -853,13 +831,12 @@ fn fill(template: &str, vars: &[(&str, &str)]) -> String {
 /// supplied. A background parent is addressed by its job id, which a rename does not change; an
 /// interactive one by its name.
 fn starter(spec: &Spec, caller_rec: Option<&Object>) -> (String, String) {
-    if let (Some(parent), Some(rec)) = (session_ref(caller_rec), caller_rec) {
+    if let Some((parent, rec)) = caller_rec.and_then(|r| Some((text(r.get("sessionId")).and_then(ledger::key)?, r))) {
         let name = rec.get("name").filter(|v| truthy(Some(v))).map(py_str).unwrap_or_default();
         let name = py_strip(&name).to_string();
         let started_by =
             if name.is_empty() { format!("the session {parent}") } else { format!("the session {name} ({parent})") };
-        let target = if text(rec.get("kind")) == Some("bg") || name.is_empty() { parent } else { name };
-        return (started_by, fill(REPORT_TO_PARENT, &[("target", &target)]));
+        return (started_by, fill(REPORT_TO_PARENT, &[("target", &parent)]));
     }
     (spec.started_by.clone().unwrap_or_else(|| "an awm service".into()), REPORT_TO_PROMPT.to_string())
 }
@@ -918,7 +895,7 @@ async fn start_inner<E: Effects>(fx: &E, args: &Value, as_: Option<&str>) -> Res
         if let Some(reason) = who_may_refusal(fx, stamp.as_deref()) {
             return Err(Refused::new(reason));
         }
-        let mut spec = parse(fx.paths(), &a)?;
+        let mut spec = parse(&a)?;
         ensure_starts_dir(fx.paths())?;
         refuse_unknown_caller(fx, &a)?;
         if spec.strict_mcp {
@@ -964,7 +941,7 @@ async fn start_inner<E: Effects>(fx: &E, args: &Value, as_: Option<&str>) -> Res
     }
 
     let guard = fx.start_lock().lock().await;
-    if let Some(old) = spec.replaces.clone() {
+    if let Some(old) = spec.replaces.clone().and_then(|r| SessionId::parse(&r).ok()) {
         let (prompt, o) = (spec.prompt.clone(), old.clone());
         spec.prompt = blocking(fx, move |fx| with_tail(fx.paths(), prompt, &o)).await;
         retire(fx, &old).await;
@@ -990,7 +967,7 @@ async fn start_inner<E: Effects>(fx: &E, args: &Value, as_: Option<&str>) -> Res
     record.insert("pinned".into(), json!(spec.pin));
     record.insert("brief".into(), json!(spec.brief));
     record.insert("lobby".into(), json!(spec.lobby));
-    if let Some(r9) = caller_rec.as_ref().and_then(|r| ids::to_r9(text(r.get("sessionId")))) {
+    if let Some(r9) = caller_rec.as_ref().and_then(|r| text(r.get("sessionId")).and_then(ledger::key)) {
         record.insert("parent_session".into(), json!(r9));
     }
     if spec.lobby {
@@ -1010,43 +987,51 @@ async fn start_inner<E: Effects>(fx: &E, args: &Value, as_: Option<&str>) -> Res
     if let Some(replaces) = &spec.replaces {
         record.insert("replaces".into(), json!(replaces));
     }
+    // `claude --bg` picks the session id itself, so the pending record waits under a random
+    // token until the launch finds the job by its name.
+    let token = ledger::key(&uuid::Uuid::new_v4().to_string()).expect("a v4 uuid is a session id");
     let pending = record.clone();
-    blocking(fx, move |fx| write_pending(fx.paths(), &pending)).await?;
+    let pending_token = token.clone();
+    blocking(fx, move |fx| write_pending(fx.paths(), &pending_token, &pending)).await?;
 
     let flagged = spec.clone();
     let mut launch_spec = LaunchSpec::new(fx.paths().claude_bin.clone(), cwd.clone(), spec.name.clone());
     launch_spec.flags = blocking(fx, move |fx| build_flags(fx.paths(), &flagged)).await;
     launch_spec.prompt = spec.prompt.clone();
     launch_spec.unit_prefix = "awm-cx-start".into();
-    let session = match fx.launch(launch_spec, accept_named(&spec.name)).await {
+    let name = spec.name.clone();
+    let accept: Accept = Arc::new(move |s: &Job| s.named(&name));
+    let session = match fx.launch(launch_spec, accept).await {
         Ok(session) => session,
         Err(LaunchError::Refused(why)) => {
-            let name = spec.name.clone();
-            blocking(fx, move |fx| drop_pending(fx.paths(), &name)).await;
+            let token = token.clone();
+            blocking(fx, move |fx| drop_pending(fx.paths(), &token)).await;
             return Err(Refused::new(why).into());
         }
         // The pending record stays: the job may still appear, and until it is adopted the
         // declared mode applies to it by name.
         Err(e) => return Err(Refused::new(format!("the session did not start: {e}")).into()),
     };
+    let Some(id) = session.canonical() else {
+        return Err(Refused::new(format!("started {} but it has no session id; the pending record keeps its mode", session.short)).into());
+    };
     let mut lineage_rec = record.clone();
-    lineage_rec.insert("job".into(), json!(session.short));
-    lineage_rec.insert("session_id".into(), json!(session.session_id));
+    lineage_rec.insert("session_id".into(), json!(id));
     lineage_rec.insert("brief_text".into(), json!(spec.brief_text));
-    let (short, name) = (session.short.clone(), spec.name.clone());
+    let (short, key) = (session.short.clone(), id.clone());
     blocking(fx, move |fx| {
-        write_lineage(fx.paths(), &short, &lineage_rec).map_err(|e| {
+        write_lineage(fx.paths(), &key, &lineage_rec).map_err(|e| {
             Refused::new(format!(
                 "started {short} but could not record it ({e}); the pending record keeps its mode"
             ))
         })?;
-        drop_pending(fx.paths(), &name);
+        drop_pending(fx.paths(), &token);
         Ok::<_, Refused>(())
     })
     .await?;
     drop(guard);
 
-    let session_id = ids::to_r9(session.session_id.as_deref());
+    let session_id = Some(id);
     let task_warning = match &spec.task_id {
         Some(_) => attach_task(fx, &spec, session_id.as_deref()).await,
         None => None,
@@ -1061,7 +1046,7 @@ async fn start_inner<E: Effects>(fx: &E, args: &Value, as_: Option<&str>) -> Res
         if pinned { ", pinned" } else { "" }
     );
     let mut out = json!({
-        "ok": true, "job": session.short, "session_id": session_id, "name": spec.name,
+        "ok": true, "session_id": session_id, "name": spec.name,
         "node": fx.node_name(), "project": record["project"], "scope": record["scope"],
         "lobby": spec.lobby, "cwd": cwd.display().to_string(), "attach": format!("claude attach {}", session.short),
         "parent": parent, "mode": spec.mode, "pinned": pinned,
@@ -1079,11 +1064,6 @@ async fn start_inner<E: Effects>(fx: &E, args: &Value, as_: Option<&str>) -> Res
         out["warning"] = json!(warnings.join("; "));
     }
     Ok(out)
-}
-
-fn accept_named(name: &str) -> Accept {
-    let name = name.to_string();
-    Arc::new(move |s: &Job| s.seed_name.as_deref() == Some(name.as_str()) || s.name == name)
 }
 
 /// Put the new session on its task's card (sessions.md R57 step 3). A failure is a warning, never
@@ -1141,7 +1121,7 @@ pub async fn started_link<E: Effects>(fx: &E, job: &str, remote_control: bool) -
         }
         if Instant::now() >= deadline {
             return json!({"link": null, "link_reason": format!(
-                "Remote Control had not connected after {}s; `reflection link` with job {job} returns the link once it has",
+                "Remote Control had not connected after {}s; `reflection link` on the session returns the link once it has",
                 wait.as_secs_f64()
             )});
         }
@@ -1266,13 +1246,11 @@ fn read_object(path: &Path) -> Option<Object> {
     }
 }
 
-/// The lineage record of `job` as written, or None when `job` is not a job id or its record is
-/// absent or unreadable.
-pub fn read_lineage(paths: &Paths, job: &str) -> Option<Object> {
-    if !lineage::is_job(job) {
-        return None;
-    }
-    read_object(&paths.lineage_path(job))
+/// The lineage record of session `id` as written, or None when `id` is not canonical or its
+/// record is absent or unreadable.
+pub fn read_lineage(paths: &Paths, id: &str) -> Option<Object> {
+    SessionId::parse(id).ok()?;
+    read_object(&paths.lineage_path(id))
 }
 
 /// `value` as Python's `json.dumps(value, indent=indent)` writes it: ASCII only, `\uXXXX` escapes.
@@ -1298,7 +1276,7 @@ fn py_json(value: &Value, indent: usize) -> String {
 
 /// Write `value` to `path` as Python's lineage writer does: indent 1, mode 0600, through a `.tmp`
 /// sibling and a rename.
-fn write_json(path: &Path, value: &Value) -> std::io::Result<()> {
+pub(crate) fn write_json(path: &Path, value: &Value) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -1308,20 +1286,20 @@ fn write_json(path: &Path, value: &Value) -> std::io::Result<()> {
     std::fs::rename(&tmp, path)
 }
 
-/// Write `job`'s lineage record. A record without a valid `mode` is refused: the gateway would
-/// gate its session as `unknown`.
-pub fn write_lineage(paths: &Paths, job: &str, record: &Object) -> std::io::Result<()> {
+/// Write session `id`'s lineage record. A record without a valid `mode` is refused: the gateway
+/// would gate its session as `unknown`.
+pub fn write_lineage(paths: &Paths, id: &str, record: &Object) -> std::io::Result<()> {
     if !text(record.get("mode")).is_some_and(lineage::is_mode) {
         return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "a lineage record needs a valid mode"));
     }
-    write_json(&paths.lineage_path(job), &Value::Object(record.clone()))
+    write_json(&paths.lineage_path(id), &Value::Object(record.clone()))
 }
 
-/// Record `job`'s last Remote Control switch, so a resume comes up the way it was left: the label
-/// when on (the given name, else the one already recorded, else `true`), null when off. False when
-/// `job` has no lineage record.
-pub fn record_remote_control(paths: &Paths, job: &str, on: bool, name: Option<&str>) -> std::io::Result<bool> {
-    let Some(mut rec) = read_lineage(paths, job) else { return Ok(false) };
+/// Record the session's last Remote Control switch, so a resume comes up the way it was left: the
+/// label when on (the given name, else the one already recorded, else `true`), null when off.
+/// False when the session has no lineage record.
+pub fn record_remote_control(paths: &Paths, id: &str, on: bool, name: Option<&str>) -> std::io::Result<bool> {
+    let Some(mut rec) = read_lineage(paths, id) else { return Ok(false) };
     let had = rec.get("remote_control").filter(|v| truthy(Some(v))).cloned();
     let want = match (on, name.filter(|n| !n.is_empty())) {
         (false, _) => Value::Null,
@@ -1330,48 +1308,47 @@ pub fn record_remote_control(paths: &Paths, job: &str, on: bool, name: Option<&s
     };
     if had.unwrap_or(Value::Null) != want {
         rec.insert("remote_control".into(), want);
-        write_lineage(paths, job, &rec)?;
+        write_lineage(paths, id, &rec)?;
     }
     Ok(true)
 }
 
 /// Record the declared mode before the launch; no record, no launch.
-pub fn write_pending(paths: &Paths, record: &Object) -> Result<(), Refused> {
+pub fn write_pending(paths: &Paths, id: &str, record: &Object) -> Result<(), Refused> {
     let mut rec = record.clone();
     rec.insert("pending".into(), Value::Bool(true));
-    let name = text(record.get("name")).unwrap_or_default();
-    write_json(&paths.pending_path(name), &Value::Object(rec)).map_err(|e| {
+    write_json(&paths.pending_path(id), &Value::Object(rec)).map_err(|e| {
         Refused::new(format!("cannot keep lineage records ({e}); refusing to start a session that could not be recorded"))
     })
 }
 
-/// Drop the pending record of the start of `name`.
-pub fn drop_pending(paths: &Paths, name: &str) {
-    match std::fs::remove_file(paths.pending_path(name)) {
+/// Drop the pending record of the start of session `id`.
+pub fn drop_pending(paths: &Paths, id: &str) {
+    match std::fs::remove_file(paths.pending_path(id)) {
         Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
-            tracing::warn!("cx: could not drop the pending record of {}: {e}", py_repr(name));
+            tracing::warn!("cx: could not drop the pending record of {id}: {e}");
         }
         _ => {}
     }
 }
 
-/// Give `job` a lineage record when it has none, so `resume` takes it; the error, if any. The
-/// record says `mode: "worker"`, since a record with no mode gates its session as `unknown`.
-pub fn ensure_lineage(paths: &Paths, job: &str, origin: &str, extra: &Object) -> Option<String> {
-    if read_lineage(paths, job).is_some() {
+/// Give session `id` a lineage record when it has none, so `resume` takes it; the error, if any.
+/// The record says `mode: "worker"`, since a record with no mode gates its session as `unknown`.
+pub fn ensure_lineage(paths: &Paths, id: &str, origin: &str, extra: &Object) -> Option<String> {
+    if read_lineage(paths, id).is_some() {
         return None;
     }
     let mut record = Object::new();
-    record.insert("job".into(), json!(job));
+    record.insert("session_id".into(), json!(id));
     record.insert("parent".into(), Value::Null);
     record.insert("origin".into(), json!(origin));
     record.insert("mode".into(), json!(DEFAULT_MODE));
     record.extend(extra.clone());
-    write_lineage(paths, job, &record).err().map(|e| format!("no lineage: {e}"))
+    write_lineage(paths, id, &record).err().map(|e| format!("no lineage: {e}"))
 }
 
 fn lineage_objects(paths: &Paths) -> BTreeMap<String, Object> {
-    lineage::lineage_records(paths).into_iter().map(|(job, rec)| (job, Object::from(rec))).collect()
+    lineage::lineage_records(paths).into_iter().map(|(id, rec)| (id, Object::from(rec))).collect()
 }
 
 /// Delete the lineage records of jobs that `claude rm` has removed; the jobs pruned.
@@ -1390,11 +1367,12 @@ pub fn prune_lineage<E: Effects>(fx: &E, now: Option<f64>) -> Vec<String> {
     }
     let now = now.unwrap_or_else(|| fx.now());
     let mut gone = Vec::new();
-    for job in lineage::lineage_records(paths).into_keys() {
+    for id in lineage::lineage_records(paths).into_keys() {
+        let Some(job) = SessionId::parse(&id).ok().and_then(|s| s.job_dir().map(str::to_string)) else { continue };
         if workers.contains_key(&job) {
             continue;
         }
-        let path = paths.lineage_path(&job);
+        let path = paths.lineage_path(&id);
         let prune = || -> std::io::Result<bool> {
             if paths.home.job_state(&job).exists() {
                 return Ok(false);
@@ -1407,7 +1385,7 @@ pub fn prune_lineage<E: Effects>(fx: &E, now: Option<f64>) -> Vec<String> {
             Ok(true)
         };
         if prune().unwrap_or(false) {
-            gone.push(job);
+            gone.push(id);
         }
     }
     gone
@@ -1436,16 +1414,15 @@ fn started_epoch(rec: &Object) -> f64 {
     rec.get("started_epoch").and_then(Value::as_f64).unwrap_or(0.0)
 }
 
-/// Whether `s` is the late job of the pending start `rec`: the same name, and not older than the
-/// start allowing five seconds of clock skew.
-fn is_late_job_of(s: &Session, rec: &Object) -> bool {
-    let Some(name) = text(rec.get("name")) else { return false };
-    (s.seed_name.as_deref() == Some(name) || s.name == name)
-        && s.started_at_ms.unwrap_or(0) as f64 / 1000.0 >= started_epoch(rec) - 5.0
-}
 
 /// Give each pending record to the job that outlived its launch timeout; the jobs adopted.
 ///
+/// Whether `s` is the late job of the pending start `rec`: the same name, and not older than the
+/// start allowing five seconds of clock skew.
+fn is_late_job_of(s: &Session, rec: &Object) -> bool {
+    text(rec.get("name")).is_some_and(|name| s.named(name)) && s.started_at_ms.unwrap_or(0) as f64 / 1000.0 >= started_epoch(rec) - 5.0
+}
+
 /// A pending record whose job never appeared is dropped after [`PENDING_TTL_S`]. A start in flight
 /// holds the start lock and is left to finish. Reads files: call it off the executor.
 pub fn adopt_pending<E: Effects>(fx: &E, now: Option<f64>) -> Vec<String> {
@@ -1456,19 +1433,21 @@ pub fn adopt_pending<E: Effects>(fx: &E, now: Option<f64>) -> Vec<String> {
         return Vec::new();
     }
     let now = now.unwrap_or_else(|| fx.now());
-    let held: BTreeSet<String> = lineage::lineage_records(paths).into_keys().collect();
+    let mut held: BTreeSet<String> = lineage::lineage_records(paths).into_keys().collect();
     let live = Sessions::new(paths, fx.procs()).load();
     let mut adopted = Vec::new();
-    for (path, _) in pending {
+    for (token, _) in &pending {
+        let path = paths.pending_path(token);
         // The record as written, so the adopted one keeps its keys in their order.
         let Some(rec) = read_object(&path) else { continue };
-        let late = live.iter().find(|s| !held.contains(&s.short) && is_late_job_of(s, &rec));
+        let late = live.iter().filter(|s| is_late_job_of(s, &rec)).find_map(|s| s.canonical().filter(|id| !held.contains(id)).map(|id| (s, id)));
         let done = match late {
-            Some(late) => {
+            Some((late, id)) => {
                 let mut record = rec.clone();
-                record.insert("job".into(), json!(late.short));
-                write_lineage(paths, &late.short, &record).and_then(|_| std::fs::remove_file(&path)).map(|_| {
-                    adopted.push(late.short.clone());
+                record.insert("session_id".into(), json!(id));
+                write_lineage(paths, &id, &record).and_then(|_| std::fs::remove_file(&path)).map(|_| {
+                    held.insert(id.clone());
+                    adopted.push(id);
                     tracing::info!("cx: adopted {} for the pending start of {}", late.short, py_repr(text(rec.get("name")).unwrap_or_default()));
                 })
             }
@@ -1509,32 +1488,31 @@ fn transcript_exists(paths: &Paths, session_id: &str) -> bool {
 }
 
 /// `prompt` with the last turns of `old`'s conversation appended. Reads files.
-pub fn with_tail(paths: &Paths, prompt: Option<String>, old: &str) -> Option<String> {
-    let state = read_json(&paths.home.job_state(old));
-    let Some(session_id) = text(state.get("sessionId")).filter(|s| py_match(&SESSION_ID, s)) else { return prompt };
-    let Some(found) = find_transcript(paths, session_id) else { return prompt };
+pub fn with_tail(paths: &Paths, prompt: Option<String>, old: &SessionId) -> Option<String> {
+    let Some(found) = find_transcript(paths, &old.harness_native()) else { return prompt };
     let Ok(bytes) = std::fs::read(found) else { return prompt };
     let tail = kept::transcript_tail(String::from_utf8_lossy(&bytes).lines(), TAIL_TURNS, kept::TAIL_LIMIT);
     if tail.is_empty() {
         return prompt;
     }
-    let intro = format!("The session you replace (job {old}) ended with these turns:");
+    let intro = format!("The session you replace ({old}) ended with these turns:");
     let parts: Vec<&str> = [prompt.as_deref(), Some(intro.as_str()), Some(tail.as_str())].into_iter().flatten().filter(|p| !p.is_empty()).collect();
     Some(parts.join("\n\n"))
 }
 
 /// Stop and remove the job a fresh start replaces, when cx started it. Done after its tail is
 /// read, because removing a pinned job deletes the state record that names its transcript.
-async fn retire<E: Effects>(fx: &E, old: &str) {
-    let o = old.to_string();
+async fn retire<E: Effects>(fx: &E, old: &SessionId) {
+    let Some(job) = old.job_dir().map(str::to_string) else { return };
+    let o = old.canonical();
     let Some(rec) = blocking(fx, move |fx| read_lineage(fx.paths(), &o)).await else { return };
-    let out = if truthy(rec.get("pinned")) || pins::pinned(&fx.paths().home).await.iter().any(|j| j == old) {
-        stop_pinned(fx, old).await
+    let out = if truthy(rec.get("pinned")) || pins::pinned(&fx.paths().home).await.contains(&job) {
+        stop_pinned(fx, &job).await
     } else {
-        let (ok, detail) = run_claude_stop(fx, old).await;
+        let (ok, detail) = run_claude_stop(fx, &job).await;
         if ok {
-            let o = old.to_string();
-            blocking(fx, move |fx| record_stop(fx.paths(), &o)).await;
+            let j = job.clone();
+            blocking(fx, move |fx| record_stop(fx.paths(), &j)).await;
         }
         json!({"ok": ok, "reason": detail})
     };
@@ -1549,36 +1527,31 @@ async fn retire<E: Effects>(fx: &E, old: &str) {
 /// by hand that a keeper now keeps.
 pub async fn adopt<E: Effects>(fx: &E, args: &Value, as_: Option<&str>) -> Value {
     let (a, stamp) = (args.clone(), as_.map(str::to_string));
-    let checked = blocking(fx, move |fx| -> Result<(String, Object), String> {
+    let checked = blocking(fx, move |fx| -> Result<(String, String, Object), String> {
         if let Some(reason) = who_may_refusal(fx, stamp.as_deref()) {
             return Err(reason);
         }
-        let job = match a.get("job") {
-            Some(Value::String(j)) if lineage::is_job(j) => j.clone(),
-            _ => return Err("job must be a job id".into()),
-        };
-        if read_lineage(fx.paths(), &job).is_some() {
-            return Err(format!("job {job} already has a lineage record"));
+        let id = named_session(a.get("session_id"))?;
+        let job = job_of_session(fx.paths(), &id).ok_or_else(|| format!("no job holds session {id}"))?;
+        if read_lineage(fx.paths(), &id.canonical()).is_some() {
+            return Err(format!("session {id} already has a lineage record"));
         }
         let state = read_json(&fx.paths().home.job_state(&job));
-        if state.is_empty() {
-            return Err(format!("job {job} has no state record"));
-        }
-        Ok((job, state))
+        Ok((id.canonical(), job, state))
     })
     .await;
-    let (job, state) = match checked {
+    let (id, job, state) = match checked {
         Ok(found) => found,
         Err(reason) => return json!({"ok": false, "reason": reason}),
     };
     let pinned = pins::pinned(&fx.paths().home).await.contains(&job);
     let now = fx.now();
     let caller = caller_name(as_);
-    let j = job.clone();
+    let j = id.clone();
     let written = blocking(fx, move |fx| {
         let (project, scope) = project_scope(fx.paths(), text(state.get("cwd")));
         let record = json!({
-            "job": j, "name": state.get("name"), "project": project, "scope": scope,
+            "session_id": j, "name": state.get("name"), "project": project, "scope": scope,
             "cwd": state.get("cwd"), "parent": null, "caller": caller,
             "mode": DEFAULT_MODE, "remote_control": null, "model": null,
             "started_at": iso(now), "started_epoch": now,
@@ -1590,21 +1563,21 @@ pub async fn adopt<E: Effects>(fx: &E, args: &Value, as_: Option<&str>) -> Value
     .await;
     match written {
         Ok(record) => {
-            tracing::info!("cx: adopted {job} ({}){}", record.get("name").map(py_str).unwrap_or_default(), if pinned { ", pinned" } else { "" });
-            json!({"ok": true, "job": job, "name": record["name"], "pinned": pinned,
+            tracing::info!("cx: adopted {id} ({}){}", record.get("name").map(py_str).unwrap_or_default(), if pinned { ", pinned" } else { "" });
+            json!({"ok": true, "session_id": id, "name": record["name"], "pinned": pinned,
                    "project": record["project"], "scope": record["scope"]})
         }
-        Err(e) => json!({"ok": false, "reason": format!("could not record {job}: {e}")}),
+        Err(e) => json!({"ok": false, "reason": format!("could not record {id}: {e}")}),
     }
 }
 
 // --- resume --------------------------------------------------------------------
 
 enum Resume {
-    /// Respawn the stopped job under its own id.
-    Respawn(String, Object),
-    /// Start a new job from the transcript of this session id.
-    Retired(String, Option<Object>),
+    /// Respawn the stopped job, named by its job dir, under its own session.
+    Respawn(String, SessionId, Object),
+    /// Start a new job from the transcript of this session.
+    Retired(SessionId, Option<Object>),
 }
 
 /// Bring back a stopped job that `start` created, with its own conversation, or start a new job
@@ -1629,43 +1602,27 @@ async fn resume_inner<E: Effects>(fx: &E, args: &Value, as_: Option<&str>) -> Re
         if let Some(reason) = who_may_refusal(fx, stamp.as_deref()) {
             return Err(Refused::new(reason));
         }
-        let job = match a.get("job") {
-            Some(Value::String(j)) if lineage::is_job(j) || py_match(&UUID, j) => j.clone(),
-            _ => return Err(Refused::new("job must be a job id or a session id")),
-        };
-        let job = if py_match(&UUID, &job) {
-            match job_of_session(fx.paths(), &job) {
-                None => return Ok(Resume::Retired(job, None)),
-                Some(found) => found,
-            }
-        } else {
-            job
-        };
-        let Some(rec) = read_lineage(fx.paths(), &job) else {
+        let id = named_session(a.get("session_id")).map_err(Refused::new)?;
+        let rec = read_lineage(fx.paths(), &id.canonical());
+        let Some(job) = job_of_session(fx.paths(), &id) else { return Ok(Resume::Retired(id, rec)) };
+        let Some(rec) = rec else {
             return Err(Refused::new(format!(
-                "job {job} was not started by reflection start_other, so it will not be resumed"
+                "session {id} was not started by reflection start_other, so it will not be resumed"
             )));
         };
         if let Some(reason) = caller_refusal_for(fx, a.get(CALLER_PID).unwrap_or(&Value::Null), &rec, "resume") {
             return Err(Refused::new(reason));
         }
         check_recorded_effort(&rec)?;
-        let state = read_json(&fx.paths().home.job_state(&job));
-        if state.is_empty() {
-            return match text(rec.get("session_id")) {
-                Some(sid) => Ok(Resume::Retired(sid.to_string(), Some(rec))),
-                None => Err(Refused::new(format!("job {job} has no state record; it was removed"))),
-            };
+        if !transcript_exists(fx.paths(), &id.harness_native()) {
+            return Err(Refused::new(format!("session {id} has no transcript left to resume")));
         }
-        if !text(state.get("sessionId")).is_some_and(|sid| transcript_exists(fx.paths(), sid)) {
-            return Err(Refused::new(format!("job {job} has no transcript left to resume")));
-        }
-        Ok(Resume::Respawn(job, rec))
+        Ok(Resume::Respawn(job, id, rec))
     })
     .await?;
-    let (job, rec) = match step {
-        Resume::Retired(session_id, rec) => return resume_retired(fx, &session_id, rec, args).await,
-        Resume::Respawn(job, rec) => (job, rec),
+    let (job, id, rec) = match step {
+        Resume::Retired(id, rec) => return resume_retired(fx, &id, rec, args).await,
+        Resume::Respawn(job, id, rec) => (job, id, rec),
     };
     ensure_daemon(fx.daemon(), "resumed", ENSURE_TIMEOUT).await?;
     let session = {
@@ -1679,9 +1636,9 @@ async fn resume_inner<E: Effects>(fx: &E, args: &Value, as_: Option<&str>) -> Re
         }
     };
     let pinned = truthy(rec.get("pinned")) && pin(fx, &job).await;
-    tracing::info!("cx: resumed {} as {job}{}", session.name, if pinned { ", pinned" } else { "" });
+    tracing::info!("cx: resumed {} as {id}{}", session.name, if pinned { ", pinned" } else { "" });
     let mut out = json!({
-        "ok": true, "job": job, "name": session.name, "node": fx.node_name(),
+        "ok": true, "session_id": id, "name": session.name, "node": fx.node_name(),
         "project": rec.get("project"), "scope": rec.get("scope"),
         "attach": format!("claude attach {job}"), "pinned": pinned,
     });
@@ -1689,17 +1646,24 @@ async fn resume_inner<E: Effects>(fx: &E, args: &Value, as_: Option<&str>) -> Re
     Ok(out)
 }
 
-/// The job that still holds `session_id`: in its state record, else in its lineage.
-fn job_of_session(paths: &Paths, session_id: &str) -> Option<String> {
-    let mut dirs: Vec<PathBuf> =
-        std::fs::read_dir(paths.home.jobs()).map(|d| d.flatten().map(|e| e.path()).collect()).unwrap_or_default();
-    dirs.sort();
-    for dir in dirs {
-        if text(read_json(&dir.join("state.json")).get("sessionId")) == Some(session_id) {
-            return dir.file_name().map(|n| n.to_string_lossy().into_owned());
-        }
+/// The Claude Code session that `session_id` names.
+fn named_session(session_id: Option<&Value>) -> Result<SessionId, String> {
+    match session_id.and_then(Value::as_str).map(SessionId::parse) {
+        Some(Ok(id)) if id.platform() == Platform::Claude => Ok(id),
+        Some(Ok(id)) => Err(format!("{id} is not a Claude Code session id")),
+        Some(Err(e)) => Err(e.to_string()),
+        None => Err("name the session by its session_id".into()),
     }
-    lineage_objects(paths).into_iter().find(|(_, rec)| text(rec.get("session_id")) == Some(session_id)).map(|(job, _)| job)
+}
+
+/// The job dir that still holds session `id`: its state record exists.
+pub fn job_of_session(paths: &Paths, id: &SessionId) -> Option<String> {
+    id.job_dir().filter(|job| paths.home.job_state(job).exists()).map(str::to_string)
+}
+
+/// The canonical id of the session the job `job` holds, by its state record.
+pub fn session_of_job(paths: &Paths, job: &str) -> Option<String> {
+    text(read_json(&paths.home.job_state(job)).get("sessionId")).and_then(ledger::key)
 }
 
 /// Where the session last worked, among the folders its transcript's directory names.
@@ -1730,12 +1694,13 @@ fn transcript_cwd(path: &Path) -> Option<String> {
 /// record, while it lasts, gives the name, the mode and the brief back.
 async fn resume_retired<E: Effects>(
     fx: &E,
-    session_id: &str,
+    id: &SessionId,
     rec: Option<Object>,
     args: &Value,
 ) -> Result<Value, Failure> {
     let rec = rec.unwrap_or_default();
-    let (a, r, sid) = (args.clone(), rec.clone(), session_id.to_string());
+    let native = id.harness_native();
+    let (a, r, sid) = (args.clone(), rec.clone(), native.clone());
     let (spec, cwd) = blocking(fx, move |fx| -> Result<(Spec, String), Refused> {
         if let Some(reason) = caller_refusal_for(fx, a.get(CALLER_PID).unwrap_or(&Value::Null), &r, "resume") {
             return Err(Refused::new(reason));
@@ -1751,11 +1716,12 @@ async fn resume_retired<E: Effects>(
         };
         let short: String = sid.chars().take(8).collect();
         let name = [a.get("name"), r.get("name")].into_iter().flatten().find(|v| truthy(Some(v))).cloned().unwrap_or_else(|| json!(format!("resumed-{short}")));
-        let or_default = |key: &str, default: &str| r.get(key).filter(|v| truthy(Some(v))).cloned().unwrap_or_else(|| json!(default));
-        // A resume continues a conversation, so a lost lineage record falls back to a fixed model
-        // at the effort ceiling rather than refusing the resume.
+        // The caller's pick wins. A resume continues a conversation, so a lost lineage record falls
+        // back to a fixed model at the effort ceiling rather than refusing the resume.
+        let or_default = |key: &str, default: &str| {
+            [a.get(key), r.get(key)].into_iter().flatten().find(|v| truthy(Some(v))).cloned().unwrap_or_else(|| json!(default))
+        };
         let mut spec = parse(
-            fx.paths(),
             &json!({
                 "name": name, "project": r.get("project"), "scope": r.get("scope"),
                 "model": or_default("model", "opus"), "effort": or_default("effort", "high"),
@@ -1777,48 +1743,50 @@ async fn resume_retired<E: Effects>(
     let flagged = spec.clone();
     let mut launch_spec = LaunchSpec::new(fx.paths().claude_bin.clone(), PathBuf::from(&cwd), spec.name.clone());
     launch_spec.flags = blocking(fx, move |fx| build_flags(fx.paths(), &flagged)).await;
-    launch_spec.flags.push(format!("--resume={session_id}"));
+    launch_spec.flags.push(format!("--resume={native}"));
     launch_spec.prompt = text(args.get("prompt")).filter(|p| !p.is_empty()).map(str::to_string);
     launch_spec.unit_prefix = "awm-cx-resume".into();
-    let session = match fx.launch(launch_spec, accept_named(&spec.name)).await {
+    let held = native.clone();
+    let accept: Accept = Arc::new(move |s: &Job| s.session_id.as_deref() == Some(held.as_str()));
+    let session = match fx.launch(launch_spec, accept).await {
         Ok(session) => session,
         Err(LaunchError::Refused(why)) => return Err(Refused::new(why).into()),
         Err(e) => return Err(Refused::new(format!("the session did not resume: {e}")).into()),
     };
     let now = fx.now();
     let pinned = truthy(rec.get("pinned")) && pin(fx, &session.short).await;
-    let (short, s, c, sid) = (session.short.clone(), spec.clone(), cwd.clone(), session_id.to_string());
+    let (s, c, key) = (spec.clone(), cwd.clone(), id.canonical());
     let (project, scope) = blocking(fx, move |fx| -> std::io::Result<(Value, Value)> {
         let (project, scope) = match project_scope(fx.paths(), Some(&c)) {
             (None, _) => (rec.get("project").cloned().unwrap_or(Value::Null), rec.get("scope").cloned().unwrap_or(Value::Null)),
             (p, sc) => (json!(p), json!(sc)),
         };
-        let mut record: Object = rec.iter().filter(|(k, _)| *k != "job").map(|(k, v)| (k.clone(), v.clone())).collect();
-        for (key, value) in [
-            ("job", json!(short)),
+        let mut record = rec;
+        for (field, value) in [
             ("name", json!(s.name)),
             ("cwd", json!(c)),
             ("project", project.clone()),
             ("scope", scope.clone()),
             ("mode", json!(s.mode)),
+            ("model", json!(s.model)),
+            ("effort", json!(s.effort)),
             ("remote_control", json!(s.remote_control)),
-            ("session_id", json!(sid)),
-            ("resumed_from", rec.get("job").cloned().unwrap_or(Value::Null)),
+            ("session_id", json!(key)),
             ("started_at", json!(iso(now))),
             ("started_epoch", json!(now)),
             ("pinned", json!(pinned)),
         ] {
-            record.insert(key.into(), value);
+            record.insert(field.into(), value);
         }
-        write_lineage(fx.paths(), &short, &record)?;
+        write_lineage(fx.paths(), &key, &record)?;
         Ok((project, scope))
     })
     .await
     .map_err(os)?;
     drop(guard);
-    tracing::info!("cx: resumed retired session {session_id} as {} in {cwd}", session.short);
+    tracing::info!("cx: resumed retired session {id} as {} in {cwd}", session.short);
     let mut out = json!({
-        "ok": true, "job": session.short, "session_id": ids::to_r9(Some(session_id)),
+        "ok": true, "session_id": id.canonical(),
         "name": spec.name, "node": fx.node_name(), "project": project, "scope": scope,
         "cwd": cwd, "attach": format!("claude attach {}", session.short), "pinned": pinned,
         "from_transcript": true,
@@ -1835,24 +1803,22 @@ async fn resume_retired<E: Effects>(
 /// replaces, so it is unpinned and removed with `claude rm`.
 pub async fn stop<E: Effects>(fx: &E, args: &Value, as_: Option<&str>) -> Value {
     let (a, stamp) = (args.clone(), as_.map(str::to_string));
-    let checked = blocking(fx, move |fx| -> Result<(String, Object), String> {
+    let checked = blocking(fx, move |fx| -> Result<(String, String, Object), String> {
         if let Some(reason) = crate::app::caller_refusal(stamp.as_deref(), || fx.edges()) {
             return Err(reason);
         }
-        let job = match a.get("job") {
-            Some(Value::String(j)) if lineage::is_job(j) => j.clone(),
-            _ => return Err("job must be a job id".into()),
-        };
-        let Some(rec) = read_lineage(fx.paths(), &job) else {
-            return Err(format!("job {job} was not started by reflection start_other, so it will not be stopped"));
+        let id = named_session(a.get("session_id"))?;
+        let job = job_of_session(fx.paths(), &id).ok_or_else(|| format!("no job holds session {id}"))?;
+        let Some(rec) = read_lineage(fx.paths(), &id.canonical()) else {
+            return Err(format!("session {id} was not started by reflection start_other, so it will not be stopped"));
         };
         if let Some(reason) = caller_refusal_for(fx, a.get(CALLER_PID).unwrap_or(&Value::Null), &rec, "stop") {
             return Err(reason);
         }
-        Ok((job, rec))
+        Ok((id.canonical(), job, rec))
     })
     .await;
-    let (job, rec) = match checked {
+    let (id, job, rec) = match checked {
         Ok(found) => found,
         Err(reason) => {
             tracing::info!("cx: stop refused — {reason}");
@@ -1866,30 +1832,31 @@ pub async fn stop<E: Effects>(fx: &E, args: &Value, as_: Option<&str>) -> Value 
         return r.answer();
     }
     if truthy(rec.get("pinned")) || pins::pinned(&fx.paths().home).await.contains(&job) {
-        return stop_pinned(fx, &job).await;
+        let mut out = stop_pinned(fx, &job).await;
+        out["session_id"] = json!(id);
+        return out;
     }
     let (ok, detail) = run_claude_stop(fx, &job).await;
     if !ok {
-        return json!({"ok": false, "job": job, "reason": detail});
+        return json!({"ok": false, "session_id": id, "reason": detail});
     }
-    let j = job.clone();
-    blocking(fx, move |fx| record_stop(fx.paths(), &j)).await;
-    json!({"ok": true, "job": job})
+    blocking(fx, move |fx| record_stop(fx.paths(), &job)).await;
+    json!({"ok": true, "session_id": id})
 }
 
 /// Unpin `job` and remove it with `claude rm`.
 pub async fn stop_pinned<E: Effects>(fx: &E, job: &str) -> Value {
     if let Err(e) = pins::unpin(&fx.paths().home, [job]).await {
-        return json!({"ok": false, "job": job, "reason": format!("could not unpin {job}: {e}")});
+        return json!({"ok": false, "reason": format!("could not unpin {job}: {e}")});
     }
     let Ok(id) = JobId::parse(job) else {
-        return json!({"ok": false, "job": job, "reason": format!("{} is not a job id", py_repr(job))});
+        return json!({"ok": false, "reason": format!("{} is not a job id", py_repr(job))});
     };
     let out = cli::stop_and_remove(&id, &fx.paths().claude_bin, fx.runner(), fx.probe()).await;
     if !out.removed {
-        return json!({"ok": false, "job": job, "reason": out.detail});
+        return json!({"ok": false, "reason": out.detail});
     }
-    json!({"ok": true, "job": job, "removed": true})
+    json!({"ok": true, "removed": true})
 }
 
 /// `claude stop <job>`, which keeps the conversation; whether it succeeded, and its output.
@@ -1941,16 +1908,18 @@ pub fn collect_rows<E: Effects>(
     let paths = fx.paths();
     let sessions = Sessions::new(paths, fx.procs());
     let lineage = lineage_objects(paths);
-    let pending: Vec<Object> = lineage::pending_records(paths).into_iter().map(|(_, r)| Object::from(r)).collect();
+    let pending: Vec<(String, Object)> =
+        lineage::pending_records(paths).into_iter().map(|(id, r)| (id, Object::from(r))).collect();
     let node = fx.node_name();
     let mut rows: Vec<Object> = Vec::new();
     for s in sessions.load().iter().filter(|s| s.has_record) {
         // The job runs its first prompt before `start` writes its lineage, and that prompt's hook
         // already asks whether the job carries the brief: the pending record answers.
-        let rec = lineage.get(&s.short).or_else(|| pending.iter().find(|p| is_late_job_of(s, p)));
+        let recorded = s.canonical().and_then(|id| lineage.get(&id));
+        let rec = recorded.or_else(|| pending.iter().find(|(id, _)| s.canonical().as_ref() == Some(id)).map(|(_, r)| r));
         let mut row = job_row(fx, &sessions, s, rec, &node);
         row.insert("pinned".into(), json!(pinned.contains(&s.short)));
-        row.insert("recorded".into(), json!(lineage.contains_key(&s.short)));
+        row.insert("recorded".into(), json!(recorded.is_some()));
         rows.push(row);
     }
     for rec in interactive_records(fx) {
@@ -1993,7 +1962,7 @@ fn job_row<E: Effects>(fx: &E, sessions: &Sessions, s: &Session, rec: Option<&Ob
     };
     let started_at = rec.get("started_at").filter(|v| truthy(Some(v))).cloned().unwrap_or_else(|| json!(iso_ms(s.started_at_ms)));
     let row = json!({
-        "job": s.short, "tmux": null, "name": s.name, "node": node,
+        "kind": "bg", "tmux": null, "name": s.name, "node": node,
         "project": project, "scope": scope, "cwd": s.cwd,
         "state": shown,
         "needs": record.get("needs"), "detail": clip(record.get("detail")),
@@ -2003,10 +1972,10 @@ fn job_row<E: Effects>(fx: &E, sessions: &Sessions, s: &Session, rec: Option<&Ob
         "mode": field("mode"), "remote_control": s.remote_control(),
         "remote_control_label": field("remote_control"), "link": s.link(),
         "started_at": started_at,
-        "pool": sessions.is_ours(s) || sessions.was_ours(s),
+        "pool": sessions.stage(s),
         "brief": truthy(rec.get("brief")),
         "tags": field("tags"),
-        "session_id": ids::to_r9(s.session_id.as_deref()),
+        "session_id": s.canonical(),
         "alive": alive,
         "transcript": transcript_of(paths, s.session_id.as_deref()),
     });
@@ -2026,7 +1995,7 @@ fn interactive_row<E: Effects>(fx: &E, rec: &Object, panes: &BTreeMap<u32, Strin
     let bridge = text(rec.get("bridgeSessionId")).filter(|b| !b.is_empty());
     let session_id = text(rec.get("sessionId"));
     let row = json!({
-        "job": null, "tmux": tmux, "name": rec.get("name"), "node": node,
+        "kind": "interactive", "tmux": tmux, "name": rec.get("name"), "node": node,
         "project": project, "scope": scope, "cwd": rec.get("cwd"),
         "state": rec.get("status").filter(|v| truthy(Some(v))).cloned().unwrap_or_else(|| json!("unknown")),
         "needs": null, "detail": null, "tempo": null,
@@ -2035,8 +2004,8 @@ fn interactive_row<E: Effects>(fx: &E, rec: &Object, panes: &BTreeMap<u32, Strin
         "remote_control": truthy(rec.get("bridgeSessionId")), "remote_control_label": null,
         "link": roster::bridge_link(bridge),
         "started_at": rec.get("startedAt").and_then(Value::as_f64).and_then(iso_ms_f),
-        "pool": false, "pinned": false, "brief": false,
-        "session_id": ids::to_r9(session_id),
+        "pool": null, "pinned": false, "brief": false,
+        "session_id": session_id.and_then(ledger::key),
         "alive": true,
         "transcript": transcript_of(paths, session_id),
     });
@@ -2189,6 +2158,15 @@ mod tests {
     const DEAD: u32 = 4_999_999;
     const BASE_MS: i64 = 1_700_000_000_000;
     const RETIRED: &str = "0e380e38-0e38-0e38-0e38-0e380e380e38";
+    const RETIRED_ID: &str = "cc0e380e380e380e380e380e380e380e38";
+
+    fn uuid_of(job: &str) -> String {
+        format!("{job}-0000-4000-8000-000000000000")
+    }
+
+    fn id_of(job: &str) -> String {
+        format!("cc{job}000040008000000000000000")
+    }
 
     fn fit() -> Value {
         json!({"model": "opus", "effort": "high"})
@@ -2237,6 +2215,8 @@ mod tests {
     struct Launched {
         spec: LaunchSpec,
         seen_pending: Vec<String>,
+        /// The session id the daemon picked for a start, as `claude --bg` does whatever the flags say.
+        picked: String,
     }
 
     /// A temporary Claude home with a roster the tests add sessions to, and every effect faked.
@@ -2355,7 +2335,7 @@ mod tests {
             let mut workers = self.workers();
             workers[short] = json!({
                 "replPid": pid, "replProcStart": self.proc_start(pid), "startedAt": started_ms,
-                "cliVersion": "2.1.268", "sessionId": format!("sid-{pid}"),
+                "cliVersion": "2.1.268", "sessionId": uuid_of(short),
                 "dispatch": {"source": "shell", "seed": {"name": name}},
             });
             let supervisor = self.roster().get("supervisorPid").and_then(Value::as_u64).map(|p| p as u32);
@@ -2369,7 +2349,7 @@ mod tests {
         fn record(&self, pid: u32, kind: &str, job: Option<&str>, name: &str) {
             let rec = json!({
                 "pid": pid, "procStart": self.proc_start(pid), "kind": kind, "jobId": job, "name": name,
-                "sessionId": format!("sid-{pid}"), "cwd": "/home/user", "status": "idle", "startedAt": 1_650_000_000_000_i64,
+                "sessionId": job.map_or_else(|| format!("{pid:08}-0000-4000-8000-000000000000"), uuid_of), "cwd": "/home/user", "status": "idle", "startedAt": 1_650_000_000_000_i64,
             });
             std::fs::write(self.paths.home.session_record(pid), rec.to_string()).unwrap();
         }
@@ -2383,12 +2363,12 @@ mod tests {
         fn lineage(&self, job: &str, over: Value) -> Object {
             ensure_starts_dir(&self.paths).unwrap();
             let rec = merged(&[
-                json!({"job": job, "name": job, "project": "awm", "scope": "demo", "cwd": "/x",
+                json!({"session_id": id_of(job), "name": job, "project": "awm", "scope": "demo", "cwd": "/x",
                        "parent": null, "caller": "local", "mode": "worker",
                        "remote_control": null, "started_at": "2026-01-01T00:00:00+00:00"}),
                 over,
             ]);
-            write_json(&self.paths.lineage_path(job), &rec).unwrap();
+            write_json(&self.paths.lineage_path(&id_of(job)), &rec).unwrap();
             rec.as_object().cloned().unwrap()
         }
 
@@ -2445,9 +2425,9 @@ mod tests {
             ]);
         }
 
-        /// Make `job`'s lineage record an hour old.
-        fn age(&self, job: &str) -> PathBuf {
-            let path = self.paths.lineage_path(job);
+        /// Make the lineage record of session `id` an hour old.
+        fn age(&self, id: &str) -> PathBuf {
+            let path = self.paths.lineage_path(id);
             let old = SystemTime::now() - Duration::from_secs(3600);
             std::fs::File::options().write(true).open(&path).unwrap().set_modified(old).unwrap();
             path
@@ -2481,9 +2461,31 @@ mod tests {
         }
     }
 
-    fn register(fx: &Fx, short: &str, spec: &LaunchSpec) -> Job {
+    /// The job holds the session `uuid`, or the one `--resume` names, as the daemon would.
+    fn register(fx: &Fx, short: &str, spec: &LaunchSpec, uuid: &str) -> Job {
         fx.add_full(short, &spec.name, CHILD_PID, &spec.cwd.display().to_string(), "working", BASE_MS);
+        set_session(fx, short, spec.flags.iter().find_map(|f| f.strip_prefix("--resume=")).unwrap_or(uuid));
         fx.job(short)
+    }
+
+    /// The uuid the daemon picked for the last launch.
+    fn chosen_uuid(fx: &Fx) -> String {
+        fx.launches.lock().unwrap().last().unwrap().picked.clone()
+    }
+
+    fn chosen_id(fx: &Fx) -> String {
+        ledger::key(&chosen_uuid(fx)).unwrap()
+    }
+
+    fn chosen_job(fx: &Fx) -> String {
+        chosen_uuid(fx)[..8].to_string()
+    }
+
+    fn set_session(fx: &Fx, short: &str, uuid: &str) {
+        let mut workers = fx.workers();
+        workers[short]["sessionId"] = json!(uuid);
+        let supervisor = fx.roster().get("supervisorPid").and_then(Value::as_u64).map(|p| p as u32);
+        fx.set_workers(workers, supervisor);
     }
 
     impl DaemonGate for World {
@@ -2566,11 +2568,12 @@ mod tests {
         /// Records the call and registers the session under the child's pid, as the daemon would.
         async fn launch(&self, spec: LaunchSpec, _accept: Accept) -> Result<Job, LaunchError> {
             let seen_pending = self.pendings();
-            self.launches.lock().unwrap().push(Launched { spec: spec.clone(), seen_pending });
+            let picked = uuid::Uuid::new_v4().to_string();
+            self.launches.lock().unwrap().push(Launched { spec: spec.clone(), seen_pending, picked: picked.clone() });
             let custom = self.launcher.lock().unwrap().clone();
             let mut job = match custom {
                 Some(f) => f(self, &spec)?,
-                None => register(self, CHILD_JOB, &spec),
+                None => register(self, &picked[..8], &spec, &picked),
             };
             if let Some(sid) = self.session_id.lock().unwrap().clone() {
                 job.session_id = Some(sid);
@@ -2656,15 +2659,15 @@ mod tests {
         let out = start_fit(&w, on(json!({"prompt": "do it", "mode": "rep", CALLER_PID: ME}))).await;
         assert!(out["link_reason"].is_string());
         let expected = json!({
-            "ok": true, "job": CHILD_JOB, "session_id": null, "name": "demo", "node": "testnode",
+            "ok": true, "session_id": chosen_id(&w), "name": "demo", "node": "testnode",
             "project": "awm", "scope": "demo", "lobby": false,
             "cwd": w.projects().join("awm/demo").display().to_string(),
-            "attach": format!("claude attach {CHILD_JOB}"), "parent": PARENT_JOB, "mode": "rep",
+            "attach": format!("claude attach {}", chosen_job(&w)), "parent": id_of(PARENT_JOB), "mode": "rep",
             "pinned": false, "link": null, "link_reason": out["link_reason"],
         });
         assert_eq!(out, expected);
-        let rec = read_lineage(&w.paths, CHILD_JOB).unwrap();
-        assert_eq!((rec["parent"].as_str(), rec["caller"].as_str()), (Some(PARENT_JOB), Some("local")));
+        let rec = read_lineage(&w.paths, &chosen_id(&w)).unwrap();
+        assert_eq!((rec["parent"].as_str(), rec["caller"].as_str()), (Some(id_of(PARENT_JOB).as_str()), Some("local")));
         assert_eq!((rec["mode"].as_str(), rec["project"].as_str(), rec["scope"].as_str()), (Some("rep"), Some("awm"), Some("demo")));
         assert!(rec["remote_control"] == json!("demo") && truthy(rec.get("started_at")));
         assert!(w.launched()[0].prompt.as_deref().unwrap().contains("\n\ndo it\n\n"));
@@ -2711,7 +2714,7 @@ mod tests {
         w.peers();
         let out = start_as(&w, base(), "peer:nodea").await;
         assert_eq!(out["ok"], json!(true), "{out}");
-        assert_eq!(read_lineage(&w.paths, CHILD_JOB).unwrap()["caller"], json!("nodea"));
+        assert_eq!(read_lineage(&w.paths, &chosen_id(&w)).unwrap()["caller"], json!("nodea"));
     }
 
     #[tokio::test]
@@ -2734,15 +2737,17 @@ mod tests {
 
     #[tokio::test]
     async fn test_remote_control_cannot_inject_flags() {
-        for rc in [json!("--evil"), json!("-x"), json!("a b"), json!("x".repeat(65)), json!(""), json!(" "), json!("a;b"), json!(5)] {
+        for rc in [json!("--evil"), json!("-x"), json!("a b"), json!("x".repeat(65)), json!("a;b"), json!(" "), json!(5)] {
             let w = Fx::new();
             let out = start_fit(&w, on(json!({"remote_control": rc}))).await;
-            if rc == json!("") || rc == json!(" ") {
-                // An empty value is "off" or refused; either way nothing is injected.
-                assert!(!w.launched().iter().any(|l| l.flags.iter().any(|f| f == "--remote-control=")));
+            if rc == json!(" ") || rc == json!(5) {
+                assert!(refused(&out) && w.launched().is_empty(), "{rc}");
                 continue;
             }
-            assert!(refused(&out) && w.launched().is_empty(), "{rc}");
+            let flags: Vec<String> = w.launched().iter().flat_map(|l| l.flags.clone()).collect();
+            let label = flags.iter().find_map(|f| f.strip_prefix("--remote-control=")).expect("a label");
+            assert!(!label.starts_with('-') && label.len() <= 64, "{rc} -> {label}");
+            assert!(label.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c)), "{rc} -> {label}");
         }
     }
 
@@ -2772,7 +2777,7 @@ mod tests {
         let out = start_fit(&w, on(json!({"mode": "representative"}))).await;
         assert_eq!(w.launches.lock().unwrap()[0].seen_pending.len(), 1, "written before the launch");
         assert!(w.pendings().is_empty(), "dropped once the job record is written");
-        assert_eq!(read_lineage(&w.paths, out["job"].as_str().unwrap()).unwrap()["mode"], json!("representative"));
+        assert_eq!(read_lineage(&w.paths, out["session_id"].as_str().unwrap()).unwrap()["mode"], json!("representative"));
     }
 
     fn now_ms() -> i64 {
@@ -2785,10 +2790,13 @@ mod tests {
         w.fail_launch(true);
         start_fit(&w, on(json!({"mode": "representative"}))).await;
         assert!(adopt_pending(&w, None).is_empty(), "no job has appeared yet");
+        w.add_full(CHILD_JOB, "other", CHILD_PID, "/home/user", "working", now_ms());
+        assert!(adopt_pending(&w, None).is_empty(), "a job of another name is not the start");
         w.add_full(CHILD_JOB, "demo", CHILD_PID, "/home/user", "working", now_ms());
-        assert_eq!(adopt_pending(&w, None), [CHILD_JOB]);
+        set_session(&w, CHILD_JOB, &chosen_uuid(&w));
+        assert_eq!(adopt_pending(&w, None), [chosen_id(&w)], "the new job of the start's name is");
         assert!(w.pendings().is_empty());
-        assert_eq!(read_lineage(&w.paths, CHILD_JOB).unwrap()["mode"], json!("representative"));
+        assert_eq!(read_lineage(&w.paths, &chosen_id(&w)).unwrap()["mode"], json!("representative"));
         assert_eq!(w.mode_of(CHILD_PID.into()).as_deref(), Some("representative"));
     }
 
@@ -2798,11 +2806,13 @@ mod tests {
     async fn test_a_moded_session_stops_only_its_own_children() {
         let w = Fx::new();
         w.parent_session(Some("representative"));
+        w.add(CHILD_JOB, "child", CHILD_PID);
         w.lineage(CHILD_JOB, json!({"parent": "zzzzzzzz"}));
-        let out = stop_job(&w, json!({"job": CHILD_JOB, CALLER_PID: ME})).await;
+        let out = stop_job(&w, json!({"session_id": id_of(CHILD_JOB), CALLER_PID: ME})).await;
         assert!(refused(&out) && reason(&out).contains("started"));
-        w.lineage(CHILD_JOB, json!({"parent": PARENT_JOB}));
-        assert_eq!(stop_job(&w, json!({"job": CHILD_JOB, CALLER_PID: ME})).await["ok"], json!(true));
+        w.lineage(CHILD_JOB, json!({"parent": id_of(PARENT_JOB)}));
+        let out = stop_job(&w, json!({"session_id": id_of(CHILD_JOB), CALLER_PID: ME})).await;
+        assert_eq!((&out["ok"], &out["session_id"]), (&json!(true), &json!(id_of(CHILD_JOB))));
         assert_eq!(w.stops(), [CHILD_JOB]);
     }
 
@@ -2811,9 +2821,10 @@ mod tests {
         let w = Fx::new();
         // The Python test's caller had an ancestor that may be a session; here the caller may be one.
         w.procs.may.store(true, Ordering::SeqCst);
+        w.add(CHILD_JOB, "child", CHILD_PID);
         w.lineage(CHILD_JOB, json!({}));
         std::fs::write(w.paths.home.roster(), "{ not json").unwrap();
-        let out = stop_job(&w, json!({"job": CHILD_JOB, CALLER_PID: ME})).await;
+        let out = stop_job(&w, json!({"session_id": id_of(CHILD_JOB), CALLER_PID: ME})).await;
         assert!(refused(&out) && reason(&out).contains("determined"));
         assert!(w.stops().is_empty());
     }
@@ -2864,12 +2875,12 @@ mod tests {
     async fn test_prune_drops_lineage_only_after_the_job_is_removed() {
         let w = Fx::new();
         start_fit(&w, base()).await;
-        let path = w.age(CHILD_JOB);
+        let path = w.age(&chosen_id(&w));
         w.set_workers(json!({}), None);
         assert!(prune_lineage(&w, None).is_empty(), "stopped, but its conversation remains");
         assert!(path.exists());
-        std::fs::remove_file(w.paths.home.job_state(CHILD_JOB)).unwrap();
-        assert_eq!(prune_lineage(&w, None), [CHILD_JOB]);
+        std::fs::remove_file(w.paths.home.job_state(&chosen_job(&w))).unwrap();
+        assert_eq!(prune_lineage(&w, None), [chosen_id(&w)]);
         assert!(!path.exists());
     }
 
@@ -2879,7 +2890,7 @@ mod tests {
     async fn test_mode_of_is_none_only_for_a_pid_that_is_positively_not_cx_started() {
         let w = Fx::new();
         start_fit(&w, base()).await;
-        w.add("dddddddd", "<warm otter>", ME);
+        w.add("dddddddd", "otter", ME);
         assert_eq!(w.mode_of(ME.into()), None, "a pool session has no lineage");
         w.record(1, "interactive", None, "x");
         assert_eq!(w.mode_of(1), None, "an interactive terminal");
@@ -2890,7 +2901,7 @@ mod tests {
         let w = Fx::new();
         start_fit(&w, base()).await;
         let mut workers = w.workers();
-        workers[CHILD_JOB]["dispatch"]["launch"] = json!({"args": ["--permission-mode=dontAsk"]});
+        workers[chosen_job(&w)]["dispatch"]["launch"] = json!({"args": ["--permission-mode=dontAsk"]});
         w.set_workers(workers, None);
         std::fs::remove_dir_all(w.paths.starts_dir()).unwrap();
         assert_eq!(w.mode_of(CHILD_PID.into()).as_deref(), Some("unknown"));
@@ -2903,33 +2914,38 @@ mod tests {
     // --- list --------------------------------------------------------------------
 
     fn by_key(rows: &[Value]) -> Vec<(String, Value)> {
-        rows.iter().map(|r| (r["job"].as_str().or(r["tmux"].as_str()).unwrap_or_default().to_string(), r.clone())).collect()
+        rows.iter().map(|r| (r["tmux"].as_str().or(r["session_id"].as_str()).unwrap_or_default().to_string(), r.clone())).collect()
     }
 
     #[tokio::test]
     async fn test_list_merges_roster_lineage_and_interactive_sessions() {
         let w = Fx::new();
-        w.add_full(PARENT_JOB, "<warm saiga>", ME, "/home/user", "working", 1_600_000_000_000);
+        w.add_full(PARENT_JOB, "saiga", ME, "/home/user", "working", 1_600_000_000_000);
+        let uuid = "00000000-0000-4000-8000-0000000000aa";
+        crate::ledger::set(&w.paths.ledger_path(), &crate::ledger::key(uuid).unwrap(), crate::ledger::Stage::Spare).unwrap();
         start_fit(&w, on(json!({"mode": "rep"}))).await;
         w.record(ME, "interactive", None, "dev");
         let cwd = w.projects().join("awm/demo").display().to_string();
-        w.edit_json(&w.paths.home.session_record(ME), |r| r["cwd"] = json!(cwd));
+        w.edit_json(&w.paths.home.session_record(ME), |r| {
+            r["cwd"] = json!(cwd);
+            r["sessionId"] = json!(uuid);
+        });
         *w.panes.lock().unwrap() = BTreeMap::from([(ME, "main".to_string())]);
 
         let rows = by_key(&collect(&w, None, None).await);
         let get = |k: &str| rows.iter().find(|(key, _)| key == k).map(|(_, r)| r.clone()).unwrap();
-        let pool_row = get(PARENT_JOB);
-        assert!(pool_row["pool"] == json!(true) && pool_row["mode"].is_null());
-        let child = get(CHILD_JOB);
-        assert!(child["pool"] == json!(false) && child["mode"] == json!("rep"));
+        let pool_row = get(&ledger::key(uuid).unwrap());
+        assert!(pool_row["pool"] == json!("spare") && pool_row["mode"].is_null());
+        let child = get(&chosen_id(&w));
+        assert!(child["pool"].is_null() && child["mode"] == json!("rep") && child["kind"] == json!("bg"));
         assert!(child["parent"].is_null() && child["caller"] == json!("local"));
         assert!(child["project"] == json!("awm") && child["scope"] == json!("demo"));
-        assert!(child["attach"] == json!(format!("claude attach {CHILD_JOB}")) && child["node"] == json!("testnode"));
+        assert!(child["attach"] == json!(format!("claude attach {}", chosen_job(&w))) && child["node"] == json!("testnode"));
         let tmux = get("main");
-        assert!(tmux["attach"] == json!("tmux attach -t main") && tmux["job"].is_null());
+        assert!(tmux["attach"] == json!("tmux attach -t main") && tmux["kind"] == json!("interactive"));
         assert!(tmux["name"] == json!("dev") && tmux["scope"] == json!("demo"));
         let order: Vec<&str> = rows.iter().map(|(k, _)| k.as_str()).collect();
-        assert_eq!(order, [PARENT_JOB, "main", CHILD_JOB], "oldest first");
+        assert_eq!(order, [ledger::key(uuid).unwrap(), "main".into(), chosen_id(&w)], "oldest first");
     }
 
     // --- pins --------------------------------------------------------------------
@@ -2949,12 +2965,12 @@ mod tests {
     fn stopped_job(w: &World, job: &str, transcript: bool, over: Value) {
         w.lineage(job, merged(&[json!({"name": "seat - x"}), over]));
         std::fs::create_dir_all(w.paths.home.jobs().join(job)).unwrap();
-        let state = json!({"name": "seat - x", "sessionId": format!("{job}-sid"), "state": "done"});
+        let state = json!({"name": "seat - x", "sessionId": uuid_of(job), "state": "done"});
         std::fs::write(w.paths.home.job_state(job), state.to_string()).unwrap();
         if transcript {
             let folder = w.paths.transcripts_dir().join("-some-cwd");
             std::fs::create_dir_all(&folder).unwrap();
-            std::fs::write(folder.join(format!("{job}-sid.jsonl")), "{}\n").unwrap();
+            std::fs::write(folder.join(format!("{}.jsonl", uuid_of(job))), "{}\n").unwrap();
         }
     }
 
@@ -2966,8 +2982,8 @@ mod tests {
     async fn test_resume_respawns_the_same_job_and_re_pins_it() {
         let w = Fx::new();
         stopped_job(&w, CHILD_JOB, true, json!({"pinned": true}));
-        let out = resume_job(&w, json!({"job": CHILD_JOB})).await;
-        assert!(out["ok"] == json!(true) && out["job"] == json!(CHILD_JOB) && out["pinned"] == json!(true));
+        let out = resume_job(&w, json!({"session_id": id_of(CHILD_JOB)})).await;
+        assert!(out["ok"] == json!(true) && out["session_id"] == json!(id_of(CHILD_JOB)) && out["pinned"] == json!(true));
         assert!(out["name"] == json!("seat - x") && out["link"].is_null());
         assert_eq!(respawned(&w)[0].0, CHILD_JOB);
         assert_eq!(respawned(&w)[0].1.unit_prefix, "awm-cx-resume");
@@ -2976,7 +2992,7 @@ mod tests {
 
     /// A launcher that registers a new job for a resume from the transcript.
     fn relaunched(w: &World) {
-        w.on_launch(|fx, spec| Ok(register(fx, "feedface", spec)));
+        w.on_launch(|fx, spec| Ok(register(fx, "feedface", spec, "")));
     }
 
     fn retired_transcript(w: &World, cwd: &Path) {
@@ -2997,16 +3013,17 @@ mod tests {
         relaunched(&w);
         let cwd = w.projects().join("awm/demo");
         retired_transcript(&w, &cwd);
-        let out = resume_job(&w, json!({"job": RETIRED, "prompt": "carry on"})).await;
-        assert!(out["ok"] == json!(true) && out["from_transcript"] == json!(true) && out["job"] == json!("feedface"), "{out}");
-        assert_eq!(out["session_id"], json!(format!("cc{}", RETIRED.replace('-', ""))));
+        let out = resume_job(&w, json!({"session_id": RETIRED_ID, "prompt": "carry on"})).await;
+        assert!(out["ok"] == json!(true) && out["from_transcript"] == json!(true) && out["attach"] == json!("claude attach feedface"), "{out}");
+        assert_eq!(out["session_id"], json!(RETIRED_ID));
         let call = &w.launched()[0];
         assert!(call.flags.contains(&format!("--resume={RETIRED}")) && call.cwd == cwd);
         assert!(call.prompt.as_deref() == Some("carry on") && call.name == "resumed-0e380e38");
         // No recorded switch means Remote Control stays off, not on under a name derived from the session's.
         assert!(!call.flags.iter().any(|f| f.starts_with("--remote-control")), "{:?}", call.flags);
-        let rec = read_lineage(&w.paths, "feedface").unwrap();
-        assert_eq!(rec["session_id"], json!(RETIRED));
+        let rec = read_lineage(&w.paths, RETIRED_ID).unwrap();
+        assert_eq!(rec["session_id"], json!(RETIRED_ID));
+        assert_eq!((&rec["model"], &rec["effort"]), (&json!("opus"), &json!("high")));
         // The gateway gates a session with no mode in its record as `unknown` and refuses its calls.
         assert_eq!(rec["mode"], json!("worker"));
         assert_eq!((&out["pinned"], &rec["pinned"]), (&json!(false), &json!(false)));
@@ -3017,11 +3034,12 @@ mod tests {
         let w = Fx::new();
         relaunched(&w);
         retired_transcript(&w, &w.projects().join("awm/demo"));
-        write_lineage(&w.paths, "deadbeef", json!({"name": "seat", "mode": "worker", "session_id": RETIRED, "pinned": true}).as_object().unwrap()).unwrap();
-        let out = resume_job(&w, json!({"job": "deadbeef"})).await;
+        write_lineage(&w.paths, RETIRED_ID, json!({"name": "seat", "mode": "worker", "session_id": RETIRED_ID, "pinned": true}).as_object().unwrap()).unwrap();
+        let out = resume_job(&w, json!({"session_id": RETIRED_ID, "model": "sonnet", "effort": "low"})).await;
         assert!(out["ok"] == json!(true) && out["pinned"] == json!(true), "{out}");
         assert_eq!(pins_file(&w), json!(["feedface"]));
-        assert_eq!(read_lineage(&w.paths, "feedface").unwrap()["pinned"], json!(true));
+        let rec = read_lineage(&w.paths, RETIRED_ID).unwrap();
+        assert_eq!((&rec["pinned"], &rec["model"], &rec["effort"]), (&json!(true), &json!("sonnet"), &json!("low")));
     }
 
     fn keep_answers(w: &World) {
@@ -3034,7 +3052,7 @@ mod tests {
         keep_answers(&w);
         stopped_job(&w, CHILD_JOB, true, json!({}));
         w.set_workers(json!({}), Some(DEAD));
-        let out = resume_job(&w, json!({"job": CHILD_JOB})).await;
+        let out = resume_job(&w, json!({"session_id": id_of(CHILD_JOB)})).await;
         assert!(refused(&out) && out["code"] == json!("daemon_down") && respawned(&w).is_empty());
         assert_eq!(*w.keep_calls.lock().unwrap(), [ENSURE_TIMEOUT]);
         assert!(reason(&out).ends_with("(held: daemon_down)"));
@@ -3051,14 +3069,14 @@ mod tests {
     async fn test_a_replacing_start_carries_the_old_tail_and_retires_the_old_job() {
         let w = Fx::new();
         stopped_job(&w, "dddddddd", false, json!({}));
-        transcript(&w, "dddddddd-sid", &[("user", "where were we"), ("assistant", "on step 3")]);
-        let out = start_fit(&w, on(json!({"prompt": "carry on", "replaces": "dddddddd"}))).await;
+        transcript(&w, &uuid_of("dddddddd"), &[("user", "where were we"), ("assistant", "on step 3")]);
+        let out = start_fit(&w, on(json!({"prompt": "carry on", "replaces": id_of("dddddddd")}))).await;
         assert_eq!(out["ok"], json!(true), "{out}");
         let prompt = w.launched()[0].prompt.clone().unwrap();
-        assert!(prompt.contains("carry on") && prompt.contains("job dddddddd") && prompt.contains("on step 3"));
+        assert!(prompt.contains("carry on") && prompt.contains(&id_of("dddddddd")) && prompt.contains("on step 3"));
         assert_eq!(w.stops(), ["dddddddd"]);
         assert_eq!(w.state("dddddddd")["state"], json!("stopped"));
-        assert_eq!(read_lineage(&w.paths, CHILD_JOB).unwrap()["replaces"], json!("dddddddd"));
+        assert_eq!(read_lineage(&w.paths, &chosen_id(&w)).unwrap()["replaces"], json!(id_of("dddddddd")));
     }
 
     // --- the lobby (test_lobby.py) -------------------------------------------------
@@ -3089,8 +3107,9 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let paths = Paths::under(dir.path());
         let rec = json!({"name": "seat", "mode": "worker", "remote_control": "seat-x"}).as_object().cloned().unwrap();
-        write_lineage(&paths, CHILD_JOB, &rec).unwrap();
-        let label = |paths: &Paths| read_lineage(paths, CHILD_JOB).unwrap()["remote_control"].clone();
+        let id = id_of(CHILD_JOB);
+        write_lineage(&paths, &id, &rec).unwrap();
+        let label = |paths: &Paths| read_lineage(paths, &id).unwrap()["remote_control"].clone();
         for (on, name, want) in [
             (false, None, Value::Null),
             (true, None, json!(true)),
@@ -3098,14 +3117,14 @@ mod tests {
             (true, None, json!("lab")),
             (false, Some("lab"), Value::Null),
         ] {
-            assert!(record_remote_control(&paths, CHILD_JOB, on, name).unwrap());
+            assert!(record_remote_control(&paths, &id, on, name).unwrap());
             assert_eq!(label(&paths), want, "on={on} name={name:?}");
         }
-        assert!(!record_remote_control(&paths, "ffffffff", false, None).unwrap());
+        assert!(!record_remote_control(&paths, &id_of("ffffffff"), false, None).unwrap());
     }
 
     /// A lineage record is what Python's `json.dumps(record, indent=1)` wrote, mode 0600, and a
-    /// pending one is filed under `sha256(name)[:16]`.
+    /// pending one is filed under its session id.
     #[test]
     fn lineage_records_keep_the_python_format() {
         let dir = TempDir::new().unwrap();
@@ -3114,16 +3133,16 @@ mod tests {
             .as_object()
             .cloned()
             .unwrap();
-        write_lineage(&paths, CHILD_JOB, &rec).unwrap();
-        let path = paths.lineage_path(CHILD_JOB);
+        write_lineage(&paths, &id_of(CHILD_JOB), &rec).unwrap();
+        let path = paths.lineage_path(&id_of(CHILD_JOB));
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
             "{\n \"name\": \"caf\\u00e9/w\",\n \"mode\": \"worker\",\n \"tags\": [],\n \"suggested\": {},\n \"parent\": null,\n \"pinned\": false\n}"
         );
         assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
         assert!(!path.with_extension("tmp").exists());
-        write_pending(&paths, &rec).unwrap();
-        let expected = paths.starts_dir().join("pending-cbdf06e4a340e910.json");
+        write_pending(&paths, "cc0123", &rec).unwrap();
+        let expected = paths.starts_dir().join("pending-cc0123.json");
         assert!(expected.exists(), "{}", expected.display());
         assert_eq!(read_json(&expected)["pending"], json!(true));
         assert_eq!(py_json(&json!({"x": "\u{1F600}"}), 1), "{\n \"x\": \"\\ud83d\\ude00\"\n}");

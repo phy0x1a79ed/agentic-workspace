@@ -36,7 +36,7 @@ impl Outside for Fake {
     fn start_agent<'a>(&'a self, args: Value) -> BoxFuture<'a, Result<Value, String>> {
         Box::pin(async move {
             self.started.lock().unwrap().push(args);
-            Ok(json!({"job": "job-1"}))
+            Ok(json!({"session_id": "job-1"}))
         })
     }
 }

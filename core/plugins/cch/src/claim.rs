@@ -1,6 +1,6 @@
 //! Hands the newest warm session to a terminal: types `/cd <dir>` into it, which reloads project
-//! settings, MCP servers, skills and CLAUDE.md as a launch there would, then renames it `claimed
-//! <noun>` so it stops advertising itself as a spare.
+//! settings, MCP servers, skills and CLAUDE.md as a launch there would, then marks it `claimed` in the
+//! pool ledger so it stops advertising itself as a spare.
 //!
 //! CAUTION: CLAUDE.md accumulates across moves. The destination's file is added and the origin's
 //! is not removed, which is why a session is seeded where there is no CLAUDE.md and moved exactly
@@ -16,8 +16,8 @@ use awm_harness::claude::trust;
 use serde_json::{json, Value};
 use tokio::time::{sleep, Instant};
 
+use crate::ledger::{self, Stage};
 use crate::lineage::Processes;
-use crate::paths::Paths;
 use crate::pool::{self, Pool, Terminals};
 use crate::sessions::Session;
 
@@ -94,20 +94,9 @@ impl Keys for DaemonKeys {
     }
 }
 
-/// The name a spare takes when a terminal claims it: `<warm serval>` becomes `claimed serval`.
-///
-/// The noun is the only handle the user already has on the session they watched appear. The
-/// short id stands in when the name is not shaped the way the pool writes them, which only
-/// happens if the prefix is reconfigured mid-life.
-pub fn claimed_name(paths: &Paths, name: &str, short: &str) -> String {
-    let rest: String = name.chars().skip(paths.name_prefix.chars().count()).collect();
-    let noun = rest.trim().trim_end_matches('>').trim();
-    format!("{}{}", paths.claimed_prefix, if noun.is_empty() { short } else { noun })
-}
-
 fn miss(reason: String) -> Value {
     tracing::info!("cx: no session handed out — {reason}");
-    json!({"session": null, "reason": reason})
+    json!({"session_id": null, "reason": reason})
 }
 
 fn realpath_sync(p: &Path) -> PathBuf {
@@ -122,9 +111,9 @@ async fn realpath(cwd: &str) -> PathBuf {
     }
 }
 
-/// Move the newest warm session to `cwd` and answer `{session, cwd}`, or `{session: null,
-/// reason}` when there is nothing to hand out, which the caller reads as "launch cold". Nothing
-/// here fails at the caller.
+/// Move the newest warm session to `cwd` and answer `{session_id, attach, cwd}`, where `attach` is
+/// what `claude attach` takes, or `{session_id: null, reason}` when there is nothing to hand out,
+/// which the caller reads as "launch cold". Nothing here fails at the caller.
 pub async fn claim<P, T>(pool: &Pool<P, T>, keys: &impl Keys, cwd: &str) -> Value
 where
     P: Processes + Clone + Send + Sync + 'static,
@@ -149,7 +138,7 @@ where
         .read(|p| {
             let s = p.sessions();
             let version = s.binary_version();
-            pool::warm(s.load(), s, version.as_deref(), None).into_iter().next()
+            pool::warm(s.load(), &s, version.as_deref(), None).into_iter().next()
         })
         .await;
     let Some(s) = newest else { return miss("no warm session".into()) };
@@ -171,13 +160,12 @@ where
         return miss(format!("{short} did not reach {want} in time"));
     }
     let check = short.clone();
-    let Some(settled) = pool.read(move |p| recheck(p, &check)).await else {
+    let Some(id) = pool.read(move |p| recheck(p, &check)).await else {
         return miss(format!("{short} was taken while we were moving it"));
     };
-    // After the recheck, never before it: the recheck asks whether the name still carries the
-    // pool's prefix, and this is what takes it away. Nothing waits for the rename to land; it is
-    // the session's own next turn, and `cx` is already attaching by then.
-    rename(pool, keys, &settled, &short).await;
+    if let Err(exc) = ledger::set(&pool.paths.ledger_path(), &id, Stage::Claimed) {
+        tracing::warn!("cx: could not mark {short} claimed: {exc}");
+    }
     let ms = |d: Duration| d.as_secs_f64() * 1000.0;
     tracing::info!(
         "cx: {want} claimed {short} in {:.0}ms (typing {:.0}ms, landing {:.0}ms)",
@@ -185,17 +173,7 @@ where
         ms(typed - started),
         ms(typed.elapsed())
     );
-    json!({"session": short, "cwd": want})
-}
-
-/// Take the pool's name off a session that now belongs to somebody, typed as `/rename` so the
-/// vendor updates the record and the session registry together. A failure is logged and
-/// swallowed: refusing to hand over a working session over its name would be the worse outcome.
-async fn rename<P: Processes, T: Terminals>(pool: &Pool<P, T>, keys: &impl Keys, s: &Session, short: &str) {
-    let name = claimed_name(&pool.paths, &s.name, short);
-    if let Err(exc) = keys.type_command(s, &format!("/rename {name}")).await {
-        tracing::warn!("cx: {short} kept its pool name — {exc}");
-    }
+    json!({"session_id": id, "attach": short, "cwd": want})
 }
 
 /// Wait for the session's own record to say it is where we sent it: the only positive evidence
@@ -223,29 +201,31 @@ where
     false
 }
 
-/// The session as it stands now, or None if it is no longer ours to give. The move stamps an
-/// origin directory, so this cannot re-run `claimable`; it checks nobody else arrived during the
-/// move: the name still carries the pool's prefix, nothing has been said to it, and it still runs.
-fn recheck<P: Processes, T: Terminals>(pool: &Pool<P, T>, short: &str) -> Option<Session> {
+/// The ledger id of the session if it is still ours to give. The move stamps an origin directory,
+/// so this cannot re-run `claimable`; it checks nobody else arrived during the move: the ledger
+/// still says spare, nothing has been said to it, and it still runs.
+fn recheck<P: Processes, T: Terminals>(pool: &Pool<P, T>, short: &str) -> Option<String> {
     let s = pool.sessions();
     let found = s.load().into_iter().find(|x| x.short == short)?;
-    (s.is_ours(&found) && found.tokens == 0 && s.is_alive(&found)).then_some(found)
+    if !(s.is_ours(&found) && found.tokens == 0 && s.is_alive(&found)) {
+        return None;
+    }
+    found.canonical()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pool::testing::{NoTerminals, Table, TestBox};
+    use crate::pool::testing::{id_of, NoTerminals, Table, TestBox};
     use awm_harness::claude::ClaudeHome;
     use std::sync::Mutex;
     use tempfile::TempDir;
 
-    /// What `/cd` and `/rename` do to the session's record, recorded; `moves` false types into
+    /// What `/cd` does to the session's record, recorded; `moves` false types into
     /// a session that never moves.
     struct FakeKeys {
         home: ClaudeHome,
         moves: bool,
-        refuse_rename: bool,
         typed: Mutex<Vec<String>>,
         cleared: Mutex<Vec<String>>,
     }
@@ -255,7 +235,6 @@ mod tests {
             Self {
                 home: b.paths.home.clone(),
                 moves: true,
-                refuse_rename: false,
                 typed: Mutex::default(),
                 cleared: Mutex::default(),
             }
@@ -268,9 +247,6 @@ mod tests {
 
     impl Keys for FakeKeys {
         async fn type_command(&self, s: &Session, text: &str) -> Result<(), DaemonError> {
-            if self.refuse_rename && text.starts_with("/rename ") {
-                return Err(DaemonError("no reachable PTY".into()));
-            }
             self.typed.lock().unwrap().push(text.to_string());
             if !self.moves {
                 return Ok(());
@@ -280,8 +256,6 @@ mod tests {
             if let Some(dir) = text.strip_prefix("/cd ") {
                 data["cwd"] = json!(dir);
                 data["originCwd"] = json!(dir);
-            } else if let Some(name) = text.strip_prefix("/rename ") {
-                data["name"] = json!(name);
             }
             std::fs::write(&path, data.to_string()).unwrap();
             Ok(())
@@ -364,7 +338,7 @@ mod tests {
         let keys = FakeKeys { moves: false, ..FakeKeys::new(&b) };
         let elsewhere = TempDir::new().unwrap();
         let out = claim(&pool(&b), &keys, &elsewhere.path().to_string_lossy()).await;
-        assert_eq!(out["session"], Value::Null);
+        assert_eq!(out["session_id"], Value::Null);
         assert!(out["reason"].as_str().unwrap().contains("trust"));
         assert!(keys.typed().is_empty());
     }
@@ -374,7 +348,7 @@ mod tests {
         let b = TestBox::new();
         let dir = trusted(&b);
         let out = claim(&pool(&b), &FakeKeys::new(&b), &dir).await;
-        assert_eq!(out, json!({"session": "warmfresh", "cwd": dir}));
+        assert_eq!(out, json!({"session_id": id_of(0), "attach": "warmfresh", "cwd": dir}));
     }
 
     #[tokio::test]
@@ -384,24 +358,22 @@ mod tests {
         let (pool, keys) = (pool(&b), FakeKeys::new(&b));
         let first = claim(&pool, &keys, &dir).await;
         let second = claim(&pool, &keys, &dir).await;
-        assert_eq!(first["session"], "warmfresh");
-        assert_eq!(second["session"], Value::Null);
+        assert_eq!(first["attach"], "warmfresh");
+        assert_eq!(second["session_id"], Value::Null);
     }
 
     #[tokio::test]
-    async fn test_a_claim_renames_the_session_out_of_the_pool() {
-        // The whole point: the session stops advertising itself as a spare.
+    async fn test_a_claim_takes_the_session_out_of_the_spares_without_renaming_it() {
         let b = TestBox::new();
         let dir = trusted(&b);
         let (pool, keys) = (pool(&b), FakeKeys::new(&b));
         let out = claim(&pool, &keys, &dir).await;
-        assert_eq!(out["session"], "warmfresh");
-        assert_eq!(keys.typed(), [format!("/cd {dir}"), "/rename claimed dunlin".into()]);
+        assert_eq!(out["attach"], "warmfresh");
+        assert_eq!(keys.typed(), [format!("/cd {dir}")]);
         let s = pool.sessions();
         let fresh = s.load().into_iter().find(|x| x.short == "warmfresh").unwrap();
-        assert_eq!(fresh.name, "claimed dunlin");
-        assert!(!s.is_ours(&fresh));
-        assert!(s.was_ours(&fresh));
+        assert_eq!(s.stage(&fresh), Some(Stage::Claimed));
+        assert!(!s.is_ours(&fresh) && s.was_ours(&fresh));
     }
 
 }

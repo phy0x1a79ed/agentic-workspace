@@ -182,14 +182,13 @@ function ago(ts) {
 }
 
 
-const sessionMatches = (q, s) => fuzzy(q, s.name) || fuzzy(q, s.scope) || fuzzy(q, s.project);
+const sessionMatches = (q, s) => fuzzy(q, s.name) || fuzzy(q, s.card) || fuzzy(q, s.scope) || fuzzy(q, s.project);
 
-// A session started for a card keeps the name "task <id>", so it shows the card's title.
-const TASK_NAME = /^task (\S+)$/;
+// A session started for a card carries its task id, so it shows the card's title beside its name.
 async function cardTitles(nodes) {
-  const ids = [...new Set(nodes.flatMap((n) => n.sessions || []).map((s) => TASK_NAME.exec(show(s.name))?.[1]).filter(Boolean))];
+  const ids = [...new Set(nodes.flatMap((n) => n.sessions || []).map((s) => s.task_id).filter(Boolean))];
   const hits = await Promise.all(ids.map((id) => api.searchForNotes(`#swarmCard #taskId = ${JSON.stringify(id)}`)));
-  return new Map(ids.flatMap((id, i) => (hits[i][0] ? [[`task ${id}`, hits[i][0].title]] : [])));
+  return new Map(ids.flatMap((id, i) => (hits[i][0] ? [[id, hits[i][0].title]] : [])));
 }
 
 function nodeSection(n, q) {
@@ -204,24 +203,73 @@ function nodeSection(n, q) {
       el("small", {}, `${(n.sessions || []).length} live`),
       el("small", {}, `${n.sessions_7d || 0} sessions in 7d`),
       el("small", {}, `${up}/${services.length} services up`)),
-    sessions.length ? el("ul", {}, ...sessions.map((s) => el("li", {}, show(s.name), " ",
+    sessions.length ? el("ul", {}, ...sessions.map((s) => el("li", {}, show(s.name || "(unnamed)"), " ",
+      s.card ? el("span", { class: "awm-chip" }, show(s.card)) : null, " ",
       s.project || s.scope ? el("small", {}, [s.project, s.scope].filter(Boolean).join("/")) : null, " ", rc(s.rc_url))))
       : empty("no sessions"));
 }
 
-// A flip waits for the seat's answer: a seat event newer than the row it was flipped on.
+// A flip or a Refresh waits for the seat's answer: a seat event newer than the row it was sent on.
 const flips = new Map();
+const refreshes = new Map();
 const FLIP_GIVE_UP_MS = 120000;
 
+// The request `waits` holds for the seat, once its `answer` field came back, else null.
+function answered(waits, s, answer) {
+  const w = waits.get(s.seat);
+  if (!w) return null;
+  if (Date.now() - w.at > FLIP_GIVE_UP_MS) { waits.delete(s.seat); return null; }
+  if (!s[answer] || s.ts === w.ts) return null;
+  waits.delete(s.seat);
+  return w;
+}
+
 function settleFlip(s) {
-  const f = flips.get(s.seat);
+  const f = answered(flips, s, "rc_live");
   if (!f) return;
-  if (Date.now() - f.at > FLIP_GIVE_UP_MS) { flips.delete(s.seat); return; }
-  if (!s.rc_live || s.ts === f.ts) return;
-  flips.delete(s.seat);
   const failed = s.rc_live.startsWith("failed");
   toast(failed ? `${s.label || s.seat}: Remote Control ${f.want ? "on" : "off"} ${s.rc_live}`
     : `${s.label || s.seat}: Remote Control ${s.remote_control ? "on" : "off"}`, failed);
+}
+
+function settleRefresh(s) {
+  if (!answered(refreshes, s, "refresh_live")) return;
+  toast(`${s.label || s.seat}: ${s.model} at ${s.effort} effort ${s.refresh_live === "pending"
+    ? "once its agent is between turns" : "from its next start"}`);
+}
+
+// A seat's model and effort as the spawn panel names them. An unsent pick outlives a redraw.
+const spawnChoices = {};
+const choices = (name) => (spawnChoices[name] ??= [...document.querySelectorAll(`input[name="awm-spawn-${name}"]`)]
+  .map((i) => [i.value, i.nextElementSibling.textContent]));
+const picks = new Map();
+
+function pickCell(s) {
+  settleRefresh(s);
+  const pick = picks.get(s.seat) || { model: s.model, effort: s.effort };
+  const select = (name) => {
+    const opts = [...choices(name)];
+    if (pick[name] && !opts.some(([v]) => v === pick[name])) opts.push([pick[name], pick[name]]);
+    const sel = el("select", { "aria-label": name }, ...opts.map(([v, label]) =>
+      el("option", { value: v, selected: v === pick[name] }, label)));
+    sel.addEventListener("change", () => picks.set(s.seat, { ...pick, [name]: sel.value }));
+    return sel;
+  };
+  const waiting = refreshes.has(s.seat) || s.refresh;
+  const btn = el("button", { class: "awm-btn", type: "button", disabled: waiting },
+    waiting ? "Pending" : "Refresh");
+  const [model, effort] = [select("model"), select("effort")];
+  btn.addEventListener("click", async () => {
+    btn.disabled = true;
+    btn.textContent = "Pending";
+    refreshes.set(s.seat, { ts: s.ts, at: Date.now() });
+    try {
+      await swarmCall(origin, "/api/seat/refresh", { seat: s.seat, model: model.value, effort: effort.value });
+      picks.delete(s.seat);
+      toast(`${s.label || s.seat}: refresh on ${model.value} at ${effort.value} effort requested`);
+    } catch (e) { refreshes.delete(s.seat); btn.disabled = false; btn.textContent = "Refresh"; toast(e.message, true); }
+  });
+  return el("td", {}, model, " ", effort, " ", btn);
 }
 
 function seatRow(s) {
@@ -243,7 +291,7 @@ function seatRow(s) {
   });
   return el("tr", { "data-seat": s.seat }, el("td", {}, s.label || s.seat), el("td", {}, s.state || ""),
     el("td", {}, el("label", {}, sw, pending ? " Remote Control (requested)" : " Remote Control")),
-    el("td", {}, s.remote_control ? rc(s.rc_url) : null));
+    el("td", {}, s.remote_control ? rc(s.rc_url) : null), pickCell(s));
 }
 
 function table(heads, rows, none) {
@@ -340,7 +388,7 @@ async function renderFleet() {
   fillNodes(roster);
   const nodes = roster.nodes || [];
   const titles = await cardTitles(nodes);
-  for (const n of nodes) for (const s of n.sessions || []) s.name = titles.get(s.name) || s.name;
+  for (const n of nodes) for (const s of n.sessions || []) s.card = titles.get(s.task_id) || "";
   fleet = { roster, nodes };
   drawFleet();
 }
@@ -352,7 +400,7 @@ function drawFleet() {
   $(".awm-nodes").replaceChildren(...(nodes.length ? nodes.map((n) => nodeSection(n, q))
     : [empty(all.length ? "No node matches." : "No nodes reported.")]));
   const seats = (roster.seats || []).filter((s) => fuzzy(q, s.label) || fuzzy(q, s.seat));
-  $(".awm-seats").replaceChildren(table(["seat", "state", "", ""], seats.map(seatRow), "No seats."));
+  $(".awm-seats").replaceChildren(table(["seat", "state", "", "", "agent"], seats.map(seatRow), "No seats."));
   const plugins = new Map();
   for (const n of all) for (const p of n.plugins || []) plugins.set(p.name, { name: p.name, core: p.core });
   $(".awm-plugins").replaceChildren(grid(all, [...plugins.values()].filter((p) => fuzzy(q, p.name)).sort((a, b) => a.name.localeCompare(b.name)),
@@ -423,7 +471,7 @@ async function panel(n) {
     sessions.length ? el("table", {},
       el("tr", {}, ...["session", "project / scope", "role", "node", "state", ""].map((h) => el("th", {}, h))),
       ...sessions.map((s) => el("tr", {},
-        el("td", {}, show(s.name || s.session_id)), el("td", {}, [s.project, s.scope].filter(Boolean).join(" / ")),
+        el("td", {}, show(s.name || "(unnamed)")), el("td", {}, [s.project, s.scope].filter(Boolean).join(" / ")),
         el("td", {}, show(s.role)), el("td", {}, show(s.node)),
         el("td", {}, s.active ? "active" : "ended"),
         el("td", {}, s.active ? rc(s.rc_url) : null))))

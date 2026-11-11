@@ -15,9 +15,9 @@ use tokio::sync::{Mutex, MutexGuard};
 /// One of reflection's state files.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum File {
-    /// `{<R9 id>: {level, origin, at_ms, job?, hinted?}}`.
+    /// `{<R9 id>: {level, origin, at_ms, hinted?}}`.
     Trust,
-    /// `[{session_id, until, retired, tool, job, name, since_ms, project, scope}]`.
+    /// `[{session_id, until, retired, tool, kept, name, since_ms, project, scope}]`.
     Waits,
     /// `{<R9 id>: at_ms}`, the newest kept.
     Retired,

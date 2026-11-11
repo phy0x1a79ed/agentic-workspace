@@ -1146,19 +1146,19 @@ fn a_door_call_carries_the_calling_session() {
     let r9 = "cc0f1e2d3c4b5a69788796a5b4c3d2e1f0";
     write(&alcor_state.join("sessions.json"),
           &json!({"4242": {"ok": true, "known": true, "session_id": r9, "trust": "cooperative", "mode": null, "cwd": "/",
-                           "job": "0f1e2d3c", "name": "redux/x"}}).to_string());
+                           "name": "redux/x", "kind": "bg"}}).to_string());
     let door = fake_door(base, "alcor", "deneb", &deneb_state, &deneb.url);
     let alcor = Gateway::start_with(&alcor_state, &[("AWM_DOOR_SSH", door.ssh.to_str().unwrap()), ("AWM_EDGE_SSH", "false")]);
     let fail = || format!("{}\ndeneb: {}", log(&alcor_state), log(&deneb_state));
     let who_of = |reply: &Value| -> Value { serde_json::from_str(reply["result"].as_str().unwrap_or("null")).unwrap_or(Value::Null) };
 
-    // A session on alcor: deneb sees its id, job and name as the claim, on the node the door
+    // A session on alcor: deneb sees its id and name as the claim, on the node the door
     // verified, and its own level. A claim the session wrote into its args never leaves alcor.
     let reply: Value = http().post(format!("{}/invoke", alcor.url)).header("X-Awm-Session-Pid", "4242")
         .json(&json!({"name": "hall", "args": {"verb": "whoami", "args": {"_caller_session": {"session_id": "cc99", "node": "lyra"}}}}))
         .send().unwrap().json().unwrap();
     let who = who_of(&reply);
-    assert_eq!(who["claim"], json!({"session_id": r9, "node": "alcor", "job": "0f1e2d3c", "name": "redux/x"}), "{reply} {}", fail());
+    assert_eq!(who["claim"], json!({"session_id": r9, "node": "alcor", "name": "redux/x", "kind": "bg"}), "{reply} {}", fail());
     assert_eq!((who["trust"].as_str(), who["caller"]["lane"].as_str(), who["as"].as_str()), (Some("cooperative"), Some("service"), Some("peer:alcor")), "{who}");
 
     // alcor's own service, with no session, claims none and stays trusted.
@@ -1174,7 +1174,7 @@ fn a_door_call_carries_the_calling_session() {
     let (text, err) = door_call(&iso, "hall", json!({"verb": "whoami"}));
     assert!(!err, "{text} {}", fail());
     let who: Value = serde_json::from_str(&text).unwrap();
-    assert_eq!(who["claim"], json!({"session_id": SESSION, "node": "alcor", "name": "iso"}), "{who}");
+    assert_eq!(who["claim"], json!({"session_id": SESSION, "node": "alcor", "name": "iso", "kind": "isolated"}), "{who}");
     assert_eq!((who["trust"].as_str(), who["scope"].as_str()), (Some("untrusted"), Some("awm/iso")), "{who}");
     let (text, err) = door_call(&iso, "hall", json!({"verb": "echo", "args": {"text": "x"}}));
     assert!(err && text.contains("whitelist"), "{text}");

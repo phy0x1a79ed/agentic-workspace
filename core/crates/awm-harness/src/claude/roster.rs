@@ -172,6 +172,17 @@ fn int_items(v: Option<&Value>) -> Vec<i64> {
 }
 
 impl Job {
+    /// The canonical id of the job's current session.
+    pub fn canonical(&self) -> Option<String> {
+        awm_plugin_sdk::ids::SessionId::canonical_of_native(awm_plugin_sdk::ids::Platform::Claude, self.session_id.as_deref()?)
+    }
+
+    /// Whether the job was launched as, or now carries, the name `name`. A launch finds its new job
+    /// this way: `claude --bg` picks the session id itself and ignores `--session-id`.
+    pub fn named(&self, name: &str) -> bool {
+        self.seed_name.as_deref() == Some(name) || self.name == name
+    }
+
     /// The job `short`, from its roster entry `worker` joined to its own record under `home`.
     /// Its session id is its live process's: the roster keeps the first one through a `/clear`.
     pub fn from_worker(short: &str, worker: &Value, home: &ClaudeHome) -> Self {
@@ -274,7 +285,7 @@ mod tests {
             &h,
             json!({
                 "newer": {"replPid": 7, "startedAt": 2000, "cliVersion": "2.1.1", "sessionId": "s2",
-                          "decModes": [1, "x", 2], "dispatch": {"source": "cli", "seed": {"name": "<warm a>"}}},
+                          "decModes": [1, "x", 2], "dispatch": {"source": "cli", "seed": {"name": "a"}}},
                 "older": {"replPid": 8, "startedAt": 1000},
             }),
             None,
@@ -283,7 +294,7 @@ mod tests {
         let got = load(&h);
         assert_eq!(got.iter().map(|j| j.short.as_str()).collect::<Vec<_>>(), ["older", "newer"]);
         let newer = &got[1];
-        assert_eq!((newer.name.as_str(), newer.tokens, newer.seed_name.as_deref()), ("renamed", 5, Some("<warm a>")));
+        assert_eq!((newer.name.as_str(), newer.tokens, newer.seed_name.as_deref()), ("renamed", 5, Some("a")));
         assert_eq!(newer.dec_modes, [1, 2]);
         assert_eq!((newer.repl_pid, newer.source.as_deref(), newer.cwd.as_deref()), (Some(7), Some("cli"), Some("/w")));
         assert_eq!(newer.needs, None);

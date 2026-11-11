@@ -295,7 +295,7 @@ reaches every node and ends the clash. Change nothing else, then stop.",
             let handle = match self.outside().start_agent(args).await {
                 Ok(res) => {
                     let pick = |k: &str| res.get(k).filter(|v| crate::truthy(v)).cloned();
-                    py_str(&pick("job").or_else(|| pick("job_id")).unwrap_or(res.clone()))
+                    py_str(&pick("session_id").unwrap_or(res.clone()))
                 }
                 Err(e) => {
                     tracing::warn!("cannot dispatch the agent for the {} clash: {e}", str_repr(&py_str(&c["name"])));

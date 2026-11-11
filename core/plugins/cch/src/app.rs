@@ -111,6 +111,8 @@ pub trait Backend: Send + Sync + 'static {
     fn mode_of(&self, pid: Option<i64>) -> impl Future<Output = Mode> + Send;
     /// The session `job` names, or the caller's own ([`control::resolve`]).
     fn resolve(&self, job: Option<String>, pid: Option<u32>) -> impl Future<Output = Result<Target, ControlError>> + Send;
+    /// Every session whose whole name is `name` ([`control::named`]).
+    fn named(&self, name: &str) -> impl Future<Output = Vec<Target>> + Send;
     fn control(&self, op: Op, job: Option<String>, pid: Option<u32>) -> impl Future<Output = Result<Value, ControlError>> + Send;
     /// Type into the caller's own session, arming the resume a slash command is owed.
     fn send(&self, req: SendRequest) -> impl Future<Output = Result<Value, SendError>> + Send;
@@ -420,10 +422,16 @@ async fn restore_after_relaunch(fx: control::Live<Watch>, paths: Arc<Paths>, mut
 /// when it tried.
 async fn restore_switch(fx: &control::Live<Watch>, paths: &Arc<Paths>, job: &str) -> bool {
     let (paths, j) = (paths.clone(), job.to_string());
-    let recorded = tokio::task::spawn_blocking(move || lifecycle::read_lineage(&paths, &j)).await.ok().flatten();
-    let Some(want) = recorded.and_then(|rec| rec.get("remote_control").cloned()) else { return false };
+    let recorded = tokio::task::spawn_blocking(move || {
+        let id = lifecycle::session_of_job(&paths, &j)?;
+        lifecycle::read_lineage(&paths, &id).map(|rec| (id, rec))
+    })
+    .await
+    .ok()
+    .flatten();
+    let Some((id, want)) = recorded.and_then(|(id, rec)| Some((id, rec.get("remote_control").cloned()?))) else { return false };
     let on = want.as_bool().unwrap_or_else(|| want.as_str().is_some_and(|s| !s.is_empty()));
-    let Some(out) = control::restore_remote_control(fx, job, on, want.as_str()).await else { return false };
+    let Some(out) = control::restore_remote_control(fx, job, &id, on, want.as_str()).await else { return false };
     let shown = if on { "on" } else { "off" };
     match out {
         Ok(out) => tracing::info!("cch: relaunched {job}: Remote Control put back {shown}: {out}"),
@@ -516,6 +524,10 @@ impl Backend for Live {
 
     async fn resolve(&self, job: Option<String>, pid: Option<u32>) -> Result<Target, ControlError> {
         control::resolve(&self.fx, job.as_deref(), pid).await
+    }
+
+    async fn named(&self, name: &str) -> Vec<Target> {
+        control::named(&self.fx, name).await
     }
 
     async fn control(&self, op: Op, job: Option<String>, pid: Option<u32>) -> Result<Value, ControlError> {
@@ -619,7 +631,7 @@ impl Backend for Live {
             }
             PoolOp::Claim(cwd) => {
                 let out = claim::claim(&self.pool, &DaemonKeys, &cwd).await;
-                if out.get("session").and_then(Value::as_str).is_some_and(|s| !s.is_empty()) {
+                if out.get("session_id").and_then(Value::as_str).is_some_and(|s| !s.is_empty()) {
                     // Seed the replacement while the caller is still starting up, rather than up
                     // to a tick later.
                     self.pool_loop.kick();
@@ -627,8 +639,8 @@ impl Backend for Live {
                 Ok(out)
             }
             PoolOp::Seed => match seed::seed_one(&self.pool, &self.launcher).await {
-                Ok(short) => Ok(json!({"session": short})),
-                Err(LaunchError::Refused(why)) => Ok(json!({"session": null, "refused": why})),
+                Ok(id) => Ok(json!({"session_id": id})),
+                Err(LaunchError::Refused(why)) => Ok(json!({"session_id": null, "refused": why})),
                 Err(e) => Err(e.to_string()),
             },
             PoolOp::Remove { apply: true } => {

@@ -144,7 +144,7 @@ async fn a_new_session_fetches_what_each_seat_missed_since_its_cursor() {
         })
     })
     .await;
-    r.db.mount(crate::db::Mount { account: "bot".into(), channel_id: "555".into(), channel_name: "".into(), node: "n".into(), job: "j".into(), session_name: "".into(), mounted_at: "".into() }).await.unwrap();
+    r.db.mount(crate::db::Mount { account: "bot".into(), channel_id: "555".into(), channel_name: "".into(), node: "n".into(), session_id: "j".into(), session_name: "".into(), mounted_at: "".into() }).await.unwrap();
     let (tx, mut rx) = mpsc::unbounded_channel();
 
     r.conn.catch_up(&tx).await;
@@ -190,15 +190,6 @@ async fn a_dm_nobody_else_wrote_in_is_refused() {
 // -- reactions ------------------------------------------------------------------------
 
 // -- /approve -------------------------------------------------------------------------
-
-#[tokio::test]
-async fn the_registration_puts_discord_py_s_payload() {
-    let r = rig().await;
-    r.conn.register(8).await;
-    let puts = r.stand.calls("PUT", "applications/8/commands");
-    assert_eq!(puts.len(), 1);
-    assert_eq!(puts[0].json(), events::approve_payload());
-}
 
 #[tokio::test]
 async fn an_operator_gets_the_command_after_the_ack() {

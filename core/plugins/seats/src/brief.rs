@@ -7,8 +7,8 @@ pub struct Facts<'a> {
     pub docs: &'a str,
     pub decl: &'a Decl,
     pub project: &'a str,
-    /// `(job, node, transcript path)` of the agent before, for a start that does not resume it.
-    pub previous: Option<(&'a str, &'a str, Option<&'a str>)>,
+    /// `(session id, node)` of the agent before, for a start that does not resume it.
+    pub previous: Option<(&'a str, &'a str)>,
     pub missed: i64,
 }
 
@@ -24,12 +24,8 @@ pub fn brief(f: &Facts, lines: &[String]) -> String {
          Between messages, wait. The seat stops you after 4 idle hours and resumes this conversation on the next message.\n",
         d.server_label, d.chat_label, d.platform, d.level, f.project, d.scope, f.docs, f.docs, d.brief, d.slug,
     );
-    if let Some((job, node, transcript)) = f.previous {
-        out.push_str(&format!("The agent before you was job {job} on {node}. Read the journals of your scope"));
-        match transcript {
-            Some(t) => out.push_str(&format!(", and its transcript at {t} for what they leave out.\n")),
-            None => out.push_str(".\n"),
-        }
+    if let Some((session, node)) = f.previous {
+        out.push_str(&format!("The agent before you was session {session} on {node}. Read the journals of your scope.\n"));
     }
     out.push_str(&missed(f.missed));
     out.push_str("The messages waiting for you, oldest first:\n");

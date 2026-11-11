@@ -104,7 +104,7 @@ fn log_freed(freed: &[Mount]) {
 
 fn holder_label(m: &Mount) -> String {
     let name = if m.session_name.is_empty() { String::new() } else { format!(" ({})", m.session_name) };
-    format!("{}@{}{name}", m.job, m.node)
+    format!("{}@{}{name}", m.session_id, m.node)
 }
 
 /// A filesystem-safe, non-empty basename for one attachment.
@@ -160,12 +160,12 @@ impl Social {
             relaying: Mutex::new(HashMap::new()),
         });
         let weak = Arc::downgrade(&me);
-        let on_return = Arc::new(move |(node, job): (String, String), lines: Vec<String>, why: Returned| {
+        let on_return = Arc::new(move |(node, session): (String, String), lines: Vec<String>, why: Returned| {
             let Some(me) = weak.upgrade() else { return };
-            tracing::info!("{} line(s) for hand mount {job}@{node} came back ({why:?})", lines.len());
+            tracing::info!("{} line(s) for hand mount {session}@{node} came back ({why:?})", lines.len());
             if why == Returned::Gone {
                 tokio::spawn(async move {
-                    log_freed(&me.db.release_holder(&node, &job).await);
+                    log_freed(&me.db.release_holder(&node, &session).await);
                 });
             }
         });
@@ -230,9 +230,9 @@ impl Social {
             let level = self.account(&m.account).map(|a| a.level_of(&m.channel_id)).unwrap_or(Level::Untrusted);
             let text = line::push_line(&m, level.as_str());
             if self.seats.is_host(&held.node) {
-                self.seats.hand(&held.node, &held.job, &text).await;
+                self.seats.hand(&held.node, &held.session_id, &text).await;
             } else {
-                self.pusher().push(&held.node, &held.job, &text);
+                self.pusher().push(&held.node, &held.session_id, &text);
             }
         }
     }
@@ -260,7 +260,7 @@ impl Social {
     async fn chat_bound(&self, account: &str, who: Option<&Holder>, level: Level) -> Option<HashSet<String>> {
         let Some(cfg) = self.account(account) else { return if level == Level::Trusted { None } else { Some(HashSet::new()) } };
         let held: Vec<Mount> = match who {
-            Some(h) => self.db.mounts(Some(account)).await.into_iter().filter(|m| m.node == h.node && m.job == h.job).collect(),
+            Some(h) => self.db.mounts(Some(account)).await.into_iter().filter(|m| m.node == h.node && m.session_id == h.session).collect(),
             None => vec![],
         };
         let mut chats: HashSet<String> = held.iter().map(|m| m.channel_id.clone()).collect();
@@ -268,7 +268,7 @@ impl Social {
             return None;
         }
         if let Some(h) = who {
-            let mine: Vec<(String, String)> = self.db.mounts(None).await.into_iter().filter(|m| m.node == h.node && m.job == h.job).map(|m| (m.account, m.channel_id)).collect();
+            let mine: Vec<(String, String)> = self.db.mounts(None).await.into_iter().filter(|m| m.node == h.node && m.session_id == h.session).map(|m| (m.account, m.channel_id)).collect();
             chats.extend(self.seats.store.reads(mine, account, now()).await);
         }
         Some(chats)
@@ -287,7 +287,7 @@ impl Social {
         let mut thread = Some(s(&call.args, "thread")).filter(|t| !t.is_empty());
         let mut message = Some(s(&call.args, "message_id")).filter(|t| !t.is_empty());
         let line = match who {
-            Some(h) => self.seats.store.line(&h.node, &h.job).await,
+            Some(h) => self.seats.store.line(&h.node, &h.session).await,
             None => None,
         };
         if channel.is_empty() {
@@ -306,7 +306,7 @@ impl Social {
                 message = Some(id).filter(|m| !m.is_empty());
             }
         } else if let Some(h) = who {
-            let held: Vec<Mount> = self.db.mounts(None).await.into_iter().filter(|m| m.node == h.node && m.job == h.job && (account.is_empty() || m.account == account)).collect();
+            let held: Vec<Mount> = self.db.mounts(None).await.into_iter().filter(|m| m.node == h.node && m.session_id == h.session && (account.is_empty() || m.account == account)).collect();
             let want = channel.trim_start_matches(['#', '@']).to_lowercase();
             let mut hits: Vec<&Mount> = held.iter().filter(|m| m.channel_id == channel).collect();
             if hits.is_empty() {
@@ -378,15 +378,7 @@ impl Social {
         if text.is_empty() && files.is_empty() {
             return Err(VerbError::value("send needs text, a file, or both"));
         }
-        if !files.is_empty() {
-            if !conn.sends_files() {
-                return Err(VerbError::runtime(format!("{} account {account:?} does not take files through social", conn.platform())));
-            }
-            let size: u64 = files.iter().map(OutFile::size).sum();
-            if size > conn.max_file_bytes() {
-                return Err(VerbError::value(format!("the files come to {size} bytes, over the {} that {account:?} takes per message", conn.max_file_bytes())));
-            }
-        }
+        check_files(&*conn, &account, &files)?;
         let personal = self.account(&account).is_some_and(|a| a.kind() == "user");
         let sent = if personal {
             *self.relaying.lock().unwrap().entry(conn.platform().to_string()).or_default() += 1;
@@ -435,7 +427,11 @@ impl Social {
         let who = self.holder(&call).await;
         let (account, channel, _, message) = self.defaults(&call, who.as_ref().ok(), true).await?;
         self.held_only(&call, &who, &account, &channel).await?;
-        let done = self.conn(&account)?.react(&channel, &message.unwrap_or_default(), &s(&call.args, "emoji"), truthy(call.args.get("remove"))).await?;
+        self.react_to(&account, &channel, &message.unwrap_or_default(), &call.args).await
+    }
+
+    async fn react_to(&self, account: &str, channel: &str, message: &str, args: &Value) -> Result<Value, VerbError> {
+        let done = self.conn(account)?.react(channel, message, &s(args, "emoji"), truthy(args.get("remove"))).await?;
         let mut out = serde_json::Map::from_iter([("ok".to_string(), json!(true))]);
         if let Value::Object(o) = done {
             out.extend(o);
@@ -518,12 +514,12 @@ impl Social {
         let who = self.holder(&call).await;
         let (account, channel) = (s(&call.args, "account"), s(&call.args, "channel"));
         self.held_only(&call, &who, &account, &channel).await?;
-        let idx = match call.args.get("idx") {
-            None | Some(Value::Null) => None,
-            Some(Value::String(x)) if x.is_empty() => None,
-            v => Some(int(v, 0)),
-        };
-        let files = self.conn(&account)?.download_attachments(&channel, &s(&call.args, "message_id"), idx).await?;
+        self.inline_files(&account, &channel, &s(&call.args, "message_id"), idx(&call.args)).await
+    }
+
+    /// A message's attachments as `b64` files, which the caller's gateway writes to disk.
+    async fn inline_files(&self, account: &str, channel: &str, message: &str, idx: Option<i64>) -> Result<Value, VerbError> {
+        let files = self.conn(account)?.download_attachments(channel, message, idx).await?;
         let total: usize = files.iter().map(|f| f.data.len()).sum();
         if total > MAX_INLINE_BYTES {
             return Err(VerbError::value(format!("the attachments come to {total} bytes, over the {MAX_INLINE_BYTES} a reply carries; fetch one at a time with idx")));
@@ -633,26 +629,26 @@ impl Social {
             return Some(format!("a {} session cannot hold a trusted chat", level.as_str()));
         }
         let evicted = evicted?;
-        let parent = match self.parent_job(&who.node, &who.job).await {
+        let parent = match self.parent_session(&who.node, &who.session).await {
             Ok(p) => p,
             Err(e) => return Some(format!("cannot read this session's parent to take the seat over: {e}")),
         };
-        if (evicted.node.as_str(), evicted.job.as_str()) != (who.node.as_str(), parent.as_deref().unwrap_or("")) {
+        if (evicted.node.as_str(), evicted.session_id.as_str()) != (who.node.as_str(), parent.as_deref().unwrap_or("")) {
             return Some(format!("a {} session takes a held seat only from the session that started it, not from {}", level.as_str(), holder_label(evicted)));
         }
         None
     }
 
-    async fn parent_job(&self, node: &str, job: &str) -> Result<Option<String>, String> {
+    async fn parent_session(&self, node: &str, session: &str) -> Result<Option<String>, String> {
         let peer = (node != self.here).then(|| node.to_string());
         let opts = CallOpts { peer, timeout: Duration::from_secs(30), ..CallOpts::default() };
         let out = self.hub.call_with("reflection", "list_other", json!({}), &opts).await.map_err(|e| e.to_string())?;
         for row in out.get("sessions").and_then(Value::as_array).into_iter().flatten() {
-            if s(row, "job") == job {
+            if s(row, "session_id") == session {
                 return Ok(Some(s(row, "parent")).filter(|p| !p.is_empty()));
             }
         }
-        Err(format!("reflection on {node} does not list job {job}"))
+        Err(format!("reflection on {node} does not list session {session}"))
     }
 
     pub async fn mount(&self, call: Call) -> Result<Value, VerbError> {
@@ -669,10 +665,10 @@ impl Social {
         let label = if seat.name.is_empty() { seat.id.clone() } else { seat.name.clone() };
         let place = self.place(&account, &seat);
         if let Some(st) = self.seats.declared(&account, &seat.id, &place).await {
-            return Ok(json!({"ok": false, "error": format!("{label} is a seat on {}: run `seats adopt account={account} channel={} job=<job>` there", st.node, seat.id)}));
+            return Ok(json!({"ok": false, "error": format!("{label} is a seat on {}: run `seats adopt account={account} channel={} session_id=<session id>` there", st.node, seat.id)}));
         }
         let prev = self.db.holder(&account, &seat.id).await;
-        let evicted = prev.filter(|p| (p.node.as_str(), p.job.as_str()) != (who.node.as_str(), who.job.as_str()));
+        let evicted = prev.filter(|p| (p.node.as_str(), p.session_id.as_str()) != (who.node.as_str(), who.session.as_str()));
         if let Some(e) = &evicted {
             if !truthy(call.args.get("force")) {
                 return Ok(json!({"ok": false, "error": format!("{label} is held by {} since {}. Pass force=true to take it.", holder_label(e), e.mounted_at), "holder": e.holder()}));
@@ -681,10 +677,10 @@ impl Social {
         if let Some(why) = self.mount_refusal(level_of(&call), &account, &seat.id, &who, evicted.as_ref()).await {
             return Ok(json!({"ok": false, "error": format!("{label}: {why}")}));
         }
-        let row = self.db.mount(Mount { account: account.clone(), channel_id: seat.id.clone(), channel_name: seat.name.clone(), node: who.node.clone(), job: who.job.clone(), session_name: who.name.clone(), mounted_at: String::new() }).await.map_err(|e| VerbError::runtime(e.to_string()))?;
+        let row = self.db.mount(Mount { account: account.clone(), channel_id: seat.id.clone(), channel_name: seat.name.clone(), node: who.node.clone(), session_id: who.session.clone(), session_name: who.name.clone(), mounted_at: String::new() }).await.map_err(|e| VerbError::runtime(e.to_string()))?;
         self.watch_node(&who.node);
         if let Some(e) = &evicted {
-            self.pusher().push(&e.node, &e.job, &format!("{} seat lost: {label} is now held by {}. Nothing more from it reaches you.", conn.platform(), holder_label(&row)));
+            self.pusher().push(&e.node, &e.session_id, &format!("{} seat lost: {label} is now held by {}. Nothing more from it reaches you.", conn.platform(), holder_label(&row)));
         }
         let reply = format!(
             "social send text=<text> answers the latest line in its thread; name this chat with channel={} when you hold more than one. Before work that takes a while, react \u{1f440} with `social react emoji=\u{1f440}`, then post the answer with `social send`. Share a long document, such as a plan, with file=<path> instead of pasting it",
@@ -698,7 +694,7 @@ impl Social {
             "push": "each new message here is typed into your prompt as '[<server>/<chat>/<sender>, <level>] \u{21b3}<thread> <text>'",
             "reply": reply,
             "backlog": if conn.keeps_history() { format!("social history account={account} channel={}", seat.id) } else { format!("social fetch account={account} channel={}", seat.id) },
-            "lasts": "until unmount, a forced mount by another session, or this session's job ending",
+            "lasts": "until unmount, a forced mount by another session, or this session ending",
         }))
     }
 
@@ -717,16 +713,16 @@ impl Social {
             if rows.is_empty() {
                 return Ok(json!({"ok": false, "error": format!("{r:?} is not mounted")}));
             }
-            if let Some(o) = rows.iter().find(|m| (m.node.as_str(), m.job.as_str()) != (who.node.as_str(), who.job.as_str())) {
+            if let Some(o) = rows.iter().find(|m| (m.node.as_str(), m.session_id.as_str()) != (who.node.as_str(), who.session.as_str())) {
                 return Ok(json!({"ok": false, "error": format!("{r:?} is held by {}, not by you", holder_label(o))}));
             }
         } else {
-            rows.retain(|m| m.node == who.node && m.job == who.job);
+            rows.retain(|m| m.node == who.node && m.session_id == who.session);
         }
         for m in &rows {
             self.db.unmount(&account, &m.channel_id).await;
             if let Some(st) = self.seats.store.get(&account, &m.channel_id).await {
-                self.seats.released(&st, &m.job).await;
+                self.seats.released(&st, &m.session_id).await;
             }
         }
         Ok(json!({"ok": true, "released": rows.iter().map(|m| json!({"id": m.channel_id, "name": m.channel_name})).collect::<Vec<_>>()}))
@@ -734,7 +730,7 @@ impl Social {
 
     pub async fn forward(&self, call: Call) -> Result<Value, VerbError> {
         let who = self.holder(&call).await.map_err(VerbError::from)?;
-        let Some((src_account, src_channel, _, last_id)) = self.seats.store.line(&who.node, &who.job).await else {
+        let Some((src_account, src_channel, _, last_id)) = self.seats.store.line(&who.node, &who.session).await else {
             return Err(VerbError::value("forward: no pushed line names a chat for this session"));
         };
         let message_id = Some(s(&call.args, "message_id")).filter(|m| !m.is_empty()).unwrap_or(last_id);
@@ -764,20 +760,37 @@ impl Social {
         Ok(json!({"ok": true, "to": {"account": account, "id": chat.id, "name": chat.name, "state": target.state}, "reads": {"account": src_account, "channel": src_channel, "hours": 24}}))
     }
 
-    /// The Remote Control switch on Ops: operations on this node is the one caller.
-    pub async fn seat_remote_control(&self, call: Call) -> Result<Value, VerbError> {
+    /// The seat an Ops switch names, for operations on this node only.
+    async fn ops_seat(&self, call: &Call) -> Result<crate::seats::store::Seat, VerbError> {
         if !switch_caller(call.plugin.as_deref(), call.from_peer()) {
-            return Err(VerbError::permission("seat_remote_control: only operations on this node runs this"));
+            return Err(VerbError::permission(format!("{}: only operations on this node runs this", call.verb)));
         }
         let seat = s(&call.args, "seat");
+        let (account, channel) = seat.split_once('/').filter(|(a, c)| !a.is_empty() && !c.is_empty()).ok_or_else(|| VerbError::value(format!("seat {seat:?} is not <account>/<channel_id>")))?;
+        self.seats.store.get(account, channel).await.ok_or_else(|| VerbError::value(format!("{seat} is no seat social has seen; `seats` lists them")))
+    }
+
+    /// The Remote Control switch on Ops: operations on this node is the one caller.
+    pub async fn seat_remote_control(&self, call: Call) -> Result<Value, VerbError> {
+        let st = self.ops_seat(&call).await?;
         if call.args.get("on").is_none_or(Value::is_null) {
             return Err(VerbError::value("seat_remote_control: missing required argument(s): on."));
         }
         let on = truthy(call.args.get("on"));
-        let (account, channel) = seat.split_once('/').filter(|(a, c)| !a.is_empty() && !c.is_empty()).ok_or_else(|| VerbError::value(format!("seat {seat:?} is not <account>/<channel_id>")))?;
-        let st = self.seats.store.get(account, channel).await.ok_or_else(|| VerbError::value(format!("{seat} is no seat social has seen; `seats` lists them")))?;
         self.seats.set_remote_control(&st, on).await;
         Ok(json!({"ok": true, "seat": st.id(), "remote_control": on, "live": "pending"}))
+    }
+
+    /// The Refresh button on Ops: operations on this node is the one caller.
+    pub async fn seat_refresh(&self, call: Call) -> Result<Value, VerbError> {
+        let st = self.ops_seat(&call).await?;
+        let (model, effort) = (s(&call.args, "model"), s(&call.args, "effort"));
+        if model.is_empty() {
+            return Err(VerbError::value("seat_refresh: missing required argument(s): model."));
+        }
+        awm_trust::trust::check_effort(&effort).map_err(|e| VerbError::value(format!("seat_refresh: {e}")))?;
+        self.seats.set_refresh(&st, &model, &effort).await;
+        Ok(json!({"ok": true, "seat": st.id(), "model": model, "effort": effort, "live": "pending"}))
     }
 
     // -- the seat hosts ---------------------------------------------------------------
@@ -810,6 +823,20 @@ impl Social {
         Ok(out)
     }
 
+    /// A seat agent's reaction or download, answered directly because the agent waits on it.
+    pub async fn seat_act(&self, call: Call) -> Result<Value, VerbError> {
+        let node = self.seat_host(&call)?;
+        let (account, channel, message) = (s(&call.args, "account"), s(&call.args, "channel"), s(&call.args, "message_id"));
+        if !self.answers(&node, &account, &channel).await {
+            return Err(VerbError::permission(format!("{node} does not answer {account}/{channel}")));
+        }
+        match s(&call.args, "action").as_str() {
+            "react" => self.react_to(&account, &channel, &message, &call.args).await,
+            "download" => self.inline_files(&account, &channel, &message, idx(&call.args)).await,
+            other => Err(VerbError::value(format!("seat_act: action is react or download, not {other:?}"))),
+        }
+    }
+
     /// Whether `node` hosts this chat's seat or holds it by hand.
     async fn answers(&self, node: &str, account: &str, channel: &str) -> bool {
         self.seats.store.get(account, channel).await.is_some_and(|st| st.node == node) || self.db.holder(account, channel).await.is_some_and(|m| m.node == node)
@@ -823,9 +850,9 @@ impl Social {
         }
         match kind {
             "seat" => {
-                // An answer to a Remote Control flip goes to Ops even when the seat did not change.
-                let changed = self.seats.store.mirror(&account, &channel, &s(b, "state"), &s(b, "job"), truthy(b.get("remote_control")), &s(b, "rc_url"), b["public"].clone()).await;
-                if changed || b["event"].get("rc_live").is_some() {
+                // An answer to a flip or a refresh goes to Ops even when the seat did not change.
+                let changed = self.seats.store.mirror(&account, &channel, &s(b, "state"), &s(b, "session_id"), truthy(b.get("remote_control")), &s(b, "rc_url"), b["public"].clone()).await;
+                if changed || b["event"].get("rc_live").is_some() || b["event"].get("refresh_live").is_some() {
                     self.emit("seats", b["event"].clone());
                 }
                 ok
@@ -868,28 +895,28 @@ impl Social {
                 ok
             }
             "mount" => {
-                let m = Mount { account, channel_id: channel, channel_name: s(b, "channel_name"), node: node.to_string(), job: s(b, "job"), session_name: s(b, "session_name"), mounted_at: String::new() };
+                let m = Mount { account, channel_id: channel, channel_name: s(b, "channel_name"), node: node.to_string(), session_id: s(b, "session_id"), session_name: s(b, "session_name"), mounted_at: String::new() };
                 if let Err(e) = self.db.mount(m).await {
                     tracing::warn!("seat mount failed: {e}");
                 }
                 ok
             }
             "unmount" => {
-                let job = s(b, "job");
-                if self.db.holder(&account, &channel).await.is_some_and(|m| m.node == node && m.job == job) {
+                let session = s(b, "session_id");
+                if self.db.holder(&account, &channel).await.is_some_and(|m| m.node == node && m.session_id == session) {
                     self.db.unmount(&account, &channel).await;
                 }
                 ok
             }
             "line" => {
-                self.seats.store.set_line(node, &s(b, "job"), &account, &channel, &s(b, "thread_id"), &s(b, "message_id"), now()).await;
+                self.seats.store.set_line(node, &s(b, "session_id"), &account, &channel, &s(b, "thread_id"), &s(b, "message_id"), now()).await;
                 ok
             }
             "live" => {
-                let jobs: HashSet<&str> = b["jobs"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
-                let held: BTreeSet<String> = self.db.mounts(None).await.into_iter().filter(|m| m.node == node && !jobs.contains(m.job.as_str())).map(|m| m.job).collect();
-                for job in held {
-                    log_freed(&self.db.release_holder(node, &job).await);
+                let sessions: HashSet<&str> = b["session_ids"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+                let held: BTreeSet<String> = self.db.mounts(None).await.into_iter().filter(|m| m.node == node && !sessions.contains(m.session_id.as_str())).map(|m| m.session_id).collect();
+                for session in held {
+                    log_freed(&self.db.release_holder(node, &session).await);
                 }
                 ok
             }
@@ -913,6 +940,9 @@ impl Social {
             },
             _ => vec![],
         };
+        if let Err(e) = check_files(&*conn, account, &files) {
+            return json!({"ok": false, "error": e.message, "error_class": e.error_class, "retry": false});
+        }
         let thread = Some(s(b, "thread")).filter(|t| !t.is_empty());
         match conn.send(channel, &s(b, "text"), thread.as_deref(), &files).await {
             Ok(sent) => {
@@ -921,7 +951,7 @@ impl Social {
                 Value::Object(out)
             }
             Err(e) => {
-                let final_refusal = ["ValueError", "PermissionError", "FirstContactRefused", "FileNotFoundError"].contains(&e.error_class.as_str());
+                let final_refusal = ["ValueError", "PermissionError", "FirstContactRefused", "FileNotFoundError", "NotImplementedError", "Forbidden", "NotFound"].contains(&e.error_class.as_str());
                 json!({"ok": false, "error": e.message, "error_class": e.error_class, "retry": !final_refusal})
             }
         }
@@ -1093,20 +1123,20 @@ impl Social {
 
     // -- background ------------------------------------------------------------------
 
-    /// Release every hand mount whose holder's job is gone. A seat host reports its own.
+    /// Release every hand mount whose holder's session is gone. A seat host reports its own.
     pub async fn prune(&self) -> Vec<Mount> {
         let mut by_node: BTreeMap<String, HashSet<String>> = BTreeMap::new();
         for m in self.db.mounts(None).await {
             if self.seats.is_host(&m.node) {
                 continue;
             }
-            by_node.entry(m.node).or_default().insert(m.job);
+            by_node.entry(m.node).or_default().insert(m.session_id);
         }
         let mut freed = vec![];
-        for (node, jobs) in by_node {
-            let Some(live) = awm_plugin_sdk::push::live_jobs(&self.hub, &node).await else { continue };
-            for job in jobs.difference(&live) {
-                freed.extend(self.db.release_holder(&node, job).await);
+        for (node, sessions) in by_node {
+            let Some(live) = awm_plugin_sdk::push::live_rows(&self.hub, &node).await.map(|rows| rows.into_keys().collect::<HashSet<_>>()) else { continue };
+            for session in sessions.difference(&live) {
+                freed.extend(self.db.release_holder(&node, session).await);
             }
         }
         freed
@@ -1135,5 +1165,29 @@ impl Social {
         for n in nodes {
             self.watch_node(&n);
         }
+    }
+}
+
+/// The optional attachment index of a download.
+/// Refuses files the account cannot take in one message.
+fn check_files(conn: &dyn Connector, account: &str, files: &[OutFile]) -> Result<(), VerbError> {
+    if files.is_empty() {
+        return Ok(());
+    }
+    if !conn.sends_files() {
+        return Err(VerbError::new("NotImplementedError", format!("{} account {account:?} does not take files through social", conn.platform())));
+    }
+    let size: u64 = files.iter().map(OutFile::size).sum();
+    if size > conn.max_file_bytes() {
+        return Err(VerbError::value(format!("the files come to {size} bytes, over the {} that {account:?} takes per message", conn.max_file_bytes())));
+    }
+    Ok(())
+}
+
+fn idx(args: &Value) -> Option<i64> {
+    match args.get("idx") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(x)) if x.is_empty() => None,
+        v => Some(int(v, 0)),
     }
 }

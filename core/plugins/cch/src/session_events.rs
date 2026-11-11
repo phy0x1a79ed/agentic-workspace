@@ -26,6 +26,7 @@ use tokio::time::{sleep, sleep_until, Instant};
 
 use crate::gateway::{Call, Gateway};
 use crate::isolated;
+use crate::ledger;
 use crate::lineage;
 use crate::paths::Paths;
 use crate::resume::r9;
@@ -172,7 +173,6 @@ fn event(kind: &str, claude_session_id: &str, f: &Facts, task_id: Option<String>
     let mut out = json!({
         "kind": kind,
         "session_id": r9(claude_session_id),
-        "job": f.job,
         "name": f.name,
         "cwd": f.cwd,
         "session_kind": f.row_kind,
@@ -269,14 +269,20 @@ impl<F: Effects> Watcher<F> {
         if self.quiet {
             return;
         }
-        let task_id = match f.job.clone() {
-            Some(job) => {
-                let paths = self.paths.clone();
-                blocking(move || lineage::read_lineage(&paths, &job).and_then(|r| r.task_id)).await.flatten()
-            }
-            None => None,
+        let pool = {
+            let path = self.paths.ledger_path();
+            let id = r9(claude_session_id);
+            blocking(move || ledger::load(&path).get(&id).copied()).await.flatten()
         };
-        let _ = self.out.send(event(kind, claude_session_id, f, task_id));
+        let task_id = {
+            let (paths, id) = (self.paths.clone(), r9(claude_session_id));
+            blocking(move || lineage::read_lineage(&paths, &id).and_then(|r| r.task_id)).await.flatten()
+        };
+        let mut ev = event(kind, claude_session_id, f, task_id);
+        if let Some(stage) = pool {
+            ev["pool"] = json!(stage);
+        }
+        let _ = self.out.send(ev);
     }
 
     /// Take `pid` off the session it was counted for; the session departs when no pid is left.
@@ -908,7 +914,7 @@ mod tests {
         assert_eq!(kinds(&sent), ["started"]);
         let ev = &sent[0];
         assert_eq!(ev["session_id"], json!(r9(SID_A)));
-        assert!(ev["name"] == json!("first") && ev["cwd"] == json!("/work/alpha") && ev["job"].is_null());
+        assert!(ev["name"] == json!("first") && ev["cwd"] == json!("/work/alpha"));
         assert_eq!(ev["session_kind"], json!("interactive"));
         assert!(ev.get("rc_url").is_none() && ev.get("task_id").is_none());
     }
@@ -918,13 +924,13 @@ mod tests {
         let mut w = World::open();
         w.start().await;
         w.job_state(JOB, "worker", Some("cse_01Job"));
-        std::fs::write(w.paths.lineage_path(JOB), json!({"job": JOB, "task_id": TASK}).to_string()).unwrap();
+        std::fs::write(w.paths.lineage_path(&r9(SID_B)), json!({"task_id": TASK}).to_string()).unwrap();
         w.background(102, SID_B, JOB);
         w.push(Change::Session(102));
         let sent = w.finish().await;
         assert_eq!(kinds(&sent), ["started"]);
         let ev = &sent[0];
-        assert!(ev["job"] == json!(JOB) && ev["name"] == json!("worker") && ev["session_kind"] == json!("bg"), "{ev}");
+        assert!(ev["session_id"] == json!(r9(SID_B)) && ev["name"] == json!("worker") && ev["session_kind"] == json!("bg"), "{ev}");
         assert_eq!(ev["task_id"], json!(TASK));
         assert_eq!(ev["rc_url"], json!("https://claude.ai/code/session_01Job"));
     }

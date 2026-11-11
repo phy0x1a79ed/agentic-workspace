@@ -3,7 +3,7 @@
 //! A service key's `authorized_keys` line reads
 //! `restrict,command="awm port --key awm:<holder>:service" ssh-ed25519 …`. The caller
 //! sends the request on stdin, and sshd sets `SSH_ORIGINAL_COMMAND` to `port`. The door takes one
-//! JSON request `{"name","args","origin"?,"session"?,"trust"?,"scope"?,"job"?,"session_name"?}`, answers any tool outside its set as `<tool> not installed`, as the local gateway answers an absent tool, logs every
+//! JSON request `{"name","args","origin"?,"session"?,"trust"?,"scope"?,"session_name"?,"session_kind"?}`, answers any tool outside its set as `<tool> not installed`, as the local gateway answers an absent tool, logs every
 //! call, and hands the rest to the local gateway at the service lane.
 
 use std::io::Write;
@@ -28,11 +28,12 @@ pub struct DoorRequest {
     pub trust: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scope: Option<String>,
-    /// The calling session's job and name on the calling node.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub job: Option<String>,
+    /// The calling session's name on the calling node.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_name: Option<String>,
+    /// The calling session's row kind on the calling node, such as `bg`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_kind: Option<String>,
 }
 
 /// Parse a request: the JSON, with an optional leading `port`.

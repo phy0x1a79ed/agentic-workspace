@@ -1,4 +1,4 @@
-//! `scopes.db` at schema v5, unchanged from the Python, and the identity rows: projects,
+//! `scopes.db` at schema v6, unchanged from the Python, and the identity rows: projects,
 //! users and agents (a scope's row).
 //!
 //! The `embeddings` tables are created on a fresh database, as the Python did, and never
@@ -9,7 +9,7 @@ use awm_store::{Migration, Store};
 
 use crate::Fail;
 
-pub const SCHEMA_VERSION: i64 = 5;
+pub const SCHEMA_VERSION: i64 = 6;
 
 const SCHEMA_SQL: &str = "\
 -- Identity (kept relational — all in the scopes DB) -------------------
@@ -61,7 +61,6 @@ CREATE TABLE IF NOT EXISTS scope_claims (
     session     TEXT NOT NULL,
     pid         INTEGER,
     proc_start  TEXT,
-    job         TEXT,
     claimed_at  INTEGER NOT NULL,
     PRIMARY KEY (project, scope)
 );
@@ -71,7 +70,6 @@ CREATE TABLE IF NOT EXISTS scope_waiters (
     session     TEXT NOT NULL,
     pid         INTEGER,
     proc_start  TEXT,
-    job         TEXT,
     asked_at    INTEGER NOT NULL,
     notified_at INTEGER,
     PRIMARY KEY (project, scope, session)
@@ -106,16 +104,18 @@ CREATE TABLE IF NOT EXISTS embeddings (
 CREATE VIRTUAL TABLE IF NOT EXISTS embeddings_fts USING fts5(text, tokenize='porter unicode61');
 ";
 
-const MIGRATIONS: [Migration; 3] = [
+const MIGRATIONS: [Migration; 4] = [
     Migration { from: 2, sql: "DROP INDEX IF EXISTS idx_agents_parent;\nALTER TABLE agents DROP COLUMN parent_id;\n" },
     Migration {
         from: 3,
         sql: "CREATE TABLE IF NOT EXISTS tags (\n    project TEXT NOT NULL, scope TEXT NOT NULL DEFAULT '',\n    tags TEXT NOT NULL, updated_at INTEGER NOT NULL,\n    PRIMARY KEY (project, scope));\n",
     },
     Migration { from: 4, sql: CLAIMS_SQL },
+    // v6 dropped the claims' `job` columns, which every v5 store has since lost.
+    Migration { from: 5, sql: "" },
 ];
 
-/// Open `scopes.db` and bring it to v5.
+/// Open `scopes.db` and bring it to v6.
 pub fn open(path: &std::path::Path) -> Result<Store, Fail> {
     let store = Store::open(path)?;
     let schema = format!("{SCHEMA_SQL}{CLAIMS_SQL}{EMBEDDINGS_SQL}");

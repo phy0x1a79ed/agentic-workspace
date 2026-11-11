@@ -74,13 +74,28 @@ pub struct Place {
     pub kind: ChatKind,
 }
 
-pub fn inbound(account: &str, m: &Message, place: &Place, to_holder: bool) -> Inbound {
+/// The text with each user mention `<@id>` as `@name`, and as `@you` for this bot.
+fn named_mentions(m: &Message, me: Option<u64>) -> String {
+    let mut text = m.content.clone();
+    for u in &m.mentions {
+        let name = if Some(u.id.get()) == me { "@you".to_string() } else { format!("@{}", u.name) };
+        text = text.replace(&format!("<@{}>", u.id), &name).replace(&format!("<@!{}>", u.id), &name);
+    }
+    text
+}
+
+/// A channel message that mentions people, none of them this bot: it is for someone else.
+fn for_others(m: &Message, kind: ChatKind, me: Option<u64>) -> bool {
+    kind == ChatKind::Channel && !m.mentions.is_empty() && !m.mentions.iter().any(|u| Some(u.id.get()) == me)
+}
+
+pub fn inbound(account: &str, m: &Message, place: &Place, me: Option<u64>, to_holder: bool) -> Inbound {
     Inbound {
         account: account.to_string(),
         platform: "discord".into(),
         channel_id: m.channel_id.get().to_string(),
         channel_name: place.channel_name.clone(),
-        text: m.content.clone(),
+        text: named_mentions(m, me),
         sender_id: m.author.id.get().to_string(),
         sender_name: user_str(&m.author.name, m.author.discriminator),
         thread_id: String::new(),
@@ -132,6 +147,10 @@ pub enum Next {
 }
 
 impl Cache {
+    pub fn me_id(&self) -> Option<u64> {
+        self.me.as_ref().map(|(id, _)| *id)
+    }
+
     pub fn put_channel(&mut self, c: &Channel) {
         let recipient = c.recipients.as_ref().and_then(|r| r.first()).map(|u| (u.id.get(), user_str(&u.name, u.discriminator)));
         if c.kind == ChannelType::Private {
@@ -215,7 +234,8 @@ impl Cache {
         if place.kind != ChatKind::Channel && !m.author.bot {
             self.spoken.insert(ch);
         }
-        Some(inbound(account, m, &place, natural(m, place.kind)))
+        let me = self.me_id();
+        Some(inbound(account, m, &place, me, natural(m, place.kind) && !for_others(m, place.kind, me)))
     }
 
     pub fn apply(&mut self, account: &str, e: &Event) -> Next {
@@ -399,6 +419,25 @@ pub mod tests {
             (false, 0, "  /x", false),
         ] {
             assert_eq!(natural(&message(bot, kind, text, None), ChatKind::Dm), heard, "{bot} {kind} {text:?}");
+        }
+    }
+
+    #[test]
+    fn a_channel_message_for_another_bot_names_it_and_stays_off_the_seat() {
+        let me = Some(7);
+        for (mentions, text, line, heard) in [
+            (vec![], "hello all", "hello all", true),
+            (vec![(7, "hallam")], "<@7> hi", "@you hi", true),
+            (vec![(9, "john-agent")], "<@!9> hi", "@john-agent hi", false),
+            (vec![(9, "john-agent"), (7, "hallam")], "<@9> <@7> both", "@john-agent @you both", true),
+        ] {
+            let mut v = message_json(1 << 22, 555, user_json(4242, "tester", false), text, 0);
+            v["guild_id"] = json!("1");
+            v["mentions"] = json!(mentions.iter().map(|(id, name)| { let mut u = user_json(*id, name, true); u["public_flags"] = json!(0); u }).collect::<Vec<_>>());
+            let m: Message = serde_json::from_value(v).unwrap();
+            let place = Place { channel_name: "general".into(), server: "Hive".into(), kind: ChatKind::Channel };
+            let i = inbound("bot", &m, &place, me, !for_others(&m, ChatKind::Channel, me));
+            assert_eq!((i.text.as_str(), i.to_holder), (line, heard), "{text:?}");
         }
     }
 

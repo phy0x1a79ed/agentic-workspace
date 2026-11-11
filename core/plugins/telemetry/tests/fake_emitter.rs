@@ -71,7 +71,7 @@ impl Probe for FakeProbe {
             Ok(Item::Hello {
                 role: Some("home".into()),
                 portal: Some("https://mizar.example:8443".into()),
-                sessions: vec![Session { job: "boot".into(), link: Some("https://claude.ai/code/boot".into()), ..Session::default() }],
+                sessions: vec![Session { session_id: "boot".into(), link: Some("https://claude.ai/code/boot".into()), ..Session::default() }],
                 services: vec![ServiceRow { service: "journal".into(), plugin: Some("journal".into()), tools: vec!["journal".into()], up: true, enabled: Some(true) }],
                 tools: vec![ToolRow { tool: "journal".into(), host: None }, ToolRow { tool: "social".into(), host: Some("alcor".into()) }],
                 plugins: vec![],
@@ -113,10 +113,10 @@ async fn until<F: Fn(&Value) -> bool>(roster: &Roster, what: &str, f: F) -> (Val
     }
 }
 
-fn jobs(v: &Value) -> Vec<String> {
-    let mut j: Vec<String> = v["nodes"][0]["sessions"].as_array().into_iter().flatten().filter_map(|s| s["job"].as_str()).map(str::to_string).collect();
-    j.sort();
-    j
+fn ids(v: &Value) -> Vec<String> {
+    let mut ids: Vec<String> = v["nodes"][0]["sessions"].as_array().into_iter().flatten().filter_map(|s| s["session_id"].as_str()).map(str::to_string).collect();
+    ids.sort();
+    ids
 }
 
 fn topics(frames: &[Value]) -> Vec<(String, String)> {
@@ -135,7 +135,7 @@ async fn a_session_start_and_stop_reach_the_roster_within_seconds() {
     let _part = node::start(hub, "mizar".into(), "tony".into(), Arc::new(FakeProbe), forward_to(roster.clone()), Arc::new(|p: &str, _: Option<&str>| p == "secret"));
 
     // Each subscription's first connect sends the hello read at connect.
-    let (v, _) = until(&roster, "hello", |v| jobs(v) == ["boot"]).await;
+    let (v, _) = until(&roster, "hello", |v| ids(v) == ["boot"]).await;
     assert_eq!(v["nodes"][0]["role"], "home");
     assert_eq!(v["nodes"][0]["sessions"][0]["link"], "https://claude.ai/code/boot");
     for (service, topic) in node::TOPICS {
@@ -148,29 +148,29 @@ async fn a_session_start_and_stop_reach_the_roster_within_seconds() {
     }
     roster.lock().await.frames();
 
-    fake.emit("reflection", "sessions", json!({"event": "started", "job": "w1", "session_id": "s-w1", "name": "worker", "node": "mizar",
+    fake.emit("reflection", "sessions", json!({"event": "started", "session_id": "w1", "name": "worker", "node": "mizar",
         "project": "awm", "scope": "lobby", "kind": "worker", "task_id": "CWPY", "rc_url": "https://claude.ai/code/s-w1", "ts": "2026-11-07T10:00:00Z"}));
-    let (v, took) = until(&roster, "start", |v| jobs(v) == ["boot", "w1"]).await;
+    let (v, took) = until(&roster, "start", |v| ids(v) == ["boot", "w1"]).await;
     assert!(took < Duration::from_secs(2), "start took {took:?}");
-    let w1 = v["nodes"][0]["sessions"].as_array().unwrap().iter().find(|s| s["job"] == "w1").unwrap().clone();
+    let w1 = v["nodes"][0]["sessions"].as_array().unwrap().iter().find(|s| s["session_id"] == "w1").unwrap().clone();
     assert_eq!((w1["link"].as_str(), w1["task_id"].as_str()), (Some("https://claude.ai/code/s-w1"), Some("CWPY")));
     assert_eq!(v["nodes"][0]["sessions_7d"], 2);
     let frames = roster.lock().await.frames();
     assert_eq!(topics(&frames), [("sessions".into(), "live".into()), ("roster".into(), "".into())]);
-    assert_eq!(frames[0]["payload"]["session_id"], "s-w1");
+    assert_eq!(frames[0]["payload"]["session_id"], "w1");
 
-    fake.emit("reflection", "sessions", json!({"event": "stopped", "job": "w1", "session_id": "s-w1", "node": "mizar", "ts": "2026-11-07T10:01:00Z"}));
-    let (v, took) = until(&roster, "stop", |v| jobs(v) == ["boot"]).await;
+    fake.emit("reflection", "sessions", json!({"event": "stopped", "session_id": "w1", "node": "mizar", "ts": "2026-11-07T10:01:00Z"}));
+    let (v, took) = until(&roster, "stop", |v| ids(v) == ["boot"]).await;
     assert!(took < Duration::from_secs(2), "stop took {took:?}");
     assert_eq!(v["nodes"][0]["sessions_7d"], 2, "a stopped session still counts for the week");
     let frames = roster.lock().await.frames();
     assert_eq!(topics(&frames), [("sessions".into(), "gone".into()), ("roster".into(), "".into())]);
 
-    // A session in a private project reaches the roster as its job alone.
-    fake.emit("reflection", "sessions", json!({"event": "started", "job": "p1", "name": "hush", "node": "mizar", "project": "secret",
+    // A session in a private project reaches the roster as its session id alone.
+    fake.emit("reflection", "sessions", json!({"event": "started", "session_id": "p1", "name": "hush", "node": "mizar", "project": "secret",
         "rc_url": "https://claude.ai/code/p1", "task_id": "T"}));
-    let (v, _) = until(&roster, "private start", |v| jobs(v) == ["boot", "p1"]).await;
-    let p1 = v["nodes"][0]["sessions"].as_array().unwrap().iter().find(|s| s["job"] == "p1").unwrap().clone();
+    let (v, _) = until(&roster, "private start", |v| ids(v) == ["boot", "p1"]).await;
+    let p1 = v["nodes"][0]["sessions"].as_array().unwrap().iter().find(|s| s["session_id"] == "p1").unwrap().clone();
     assert!(p1.get("name").is_none() && p1.get("project").is_none() && p1.get("link").is_none() && p1.get("task_id").is_none(), "{p1}");
     roster.lock().await.frames();
 

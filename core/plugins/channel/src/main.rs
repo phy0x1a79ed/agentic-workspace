@@ -83,10 +83,9 @@ async fn holder(call: &Call) -> Result<Holder, VerbError> {
     Ok(Holder {
         node: h.node,
         session: h.session,
-        job: h.job,
         name: h.name,
         level: call.caller_trust().filter(|t| !t.is_empty()).unwrap_or("untrusted").to_string(),
-        isolated: awm_plugin_sdk::ids::to_r9(call.caller_session_id()).is_some(),
+        isolated: call.caller_session_id().is_some_and(|s| awm_plugin_sdk::ids::SessionId::parse(s).is_ok()),
     })
 }
 
@@ -161,9 +160,9 @@ async fn run_channel(svc: Service) -> anyhow::Result<()> {
             Box::pin(async move { hub.call_with("relay", verb, args, &CallOpts { timeout, ..CallOpts::default() }).await.map_err(relay_error) })
         }),
         machines,
-        send: Arc::new(move |node, job, text| {
+        send: Arc::new(move |node, session, text| {
             let hub = h2.clone();
-            Box::pin(async move { awm_plugin_sdk::push::reflect(&hub, &node, &job, &text).await })
+            Box::pin(async move { awm_plugin_sdk::push::reflect(&hub, &node, &session, &text).await })
         }),
         transcripts: channel::lines::Transcripts { root: dir.join("transcripts") },
         list_sessions: Arc::new(move || {

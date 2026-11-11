@@ -203,7 +203,7 @@ fn a_clean_merged_scope_deletes_and_ignored_files_never_block() {
 fn a_live_claim_blocks_even_with_force_until_released() {
     let r = common::rig();
     let s = origin_scope(&r);
-    r.op.claim(P, "s", "cc".repeat(17).as_str(), Some(std::process::id() as i64), Some("abcd1234"), false, false).unwrap();
+    r.op.claim(P, "s", "cc".repeat(17).as_str(), Some(std::process::id() as i64), false, false).unwrap();
     let e = r.op.delete_scope(P, "s", true, false).unwrap_err();
     assert!(e.class == "RuntimeError" && e.message.contains("force does not override"));
     assert!(s.exists());

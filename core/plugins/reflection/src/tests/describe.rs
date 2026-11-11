@@ -79,12 +79,17 @@ fn differences() -> Vec<String> {
 }
 
 /// The listed changes: `stop`'s optional `job`, `list_other`'s `include_stopped`, the new `probe`,
-/// `to` on `message` and `resume_other`, the lifecycle params and the sender-prefix wording.
+/// `to` on `message` and `resume_other`, `resume_other`'s model and effort, the lifecycle params and the sender-prefix wording.
 #[test]
 fn the_describe_differs_from_the_baseline_only_by_the_listed_changes() {
     let want = [
+        "adopt_other: adds param to",
+        "adopt_other: drops param job",
+        "cd: adds param to",
+        "cd: drops param job",
         "compact: description",
-        "harness_event: adds param job",
+        "effort: adds param to",
+        "effort: drops param job",
         "harness_event: adds param needs",
         "harness_event: adds param rc_url",
         "harness_event: adds param retired",
@@ -93,19 +98,37 @@ fn the_describe_differs_from_the_baseline_only_by_the_listed_changes() {
         "harness_event: adds param task_id",
         "harness_event: description",
         "harness_event: param kind changed",
+        "interrupt: adds param to",
+        "interrupt: drops param job",
+        "link: adds param to",
+        "link: drops param job",
         "list_other: adds param include_stopped",
+        "mcp: adds param to",
+        "mcp: drops param job",
         "message: adds param to",
         "message: description",
         "message: drops param job",
         "message_self: description",
+        "model: adds param to",
+        "model: drops param job",
         "probe: new verb",
+        "remote_control: adds param to",
+        "remote_control: drops param job",
+        "rename: adds param to",
+        "rename: drops param job",
+        "resume_other: adds param effort",
+        "resume_other: adds param model",
         "resume_other: adds param to",
         "resume_other: description",
         "resume_other: drops param job",
         "start_other: description",
         "start_other: param role changed",
         "start_other: param suggest changed",
-        "stop: param job changed",
+        "stop: adds param to",
+        "stop: description",
+        "stop: drops param job",
+        "stop_other: adds param to",
+        "stop_other: drops param job",
     ];
     let mut got = differences();
     got.sort();

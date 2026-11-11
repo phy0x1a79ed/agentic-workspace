@@ -2,7 +2,7 @@
 
 ## Purpose & Contents
 
-This file holds the approved port plan for social and its seats component, from the comms group's plan (task CWPYAtyb), approved by Tony on 2026-11-06. The Remote Control switch comes from the port-comms items of `docs/trilium-design/CONTRACT.md`, approved by plugin-redux/interview on 2026-11-07. It names only what the Python does not make obvious. The Python at release 49232bf9 is the reference for everything kept. The rules every comms port follows are in `comms.md`.
+This file holds the approved port plan for social and its seats component, from the comms group's plan (task CWPYAtyb), approved by Tony on 2026-11-06. The Remote Control switch comes from the port-comms items of `docs/trilium-design/CONTRACT.md`, approved by plugin-redux/interview on 2026-11-07. The model, effort and Refresh controls come from the plan of awm/seat-refresh, approved by Tony on 2026-11-10. It names only what the Python does not make obvious. The Python at release 49232bf9 is the reference for everything kept. The rules every comms port follows are in `comms.md`.
 
 ## Plan
 
@@ -75,7 +75,8 @@ One module owns every seat in `social.db`: `seat_registry`, a durable `seat_queu
 - "Cannot tell", including any `errors[]` for the node, never empties a seat.
 
 **Line, brief, names.**
-- The pushed line is `[<server>/<chat>/<sender>, <level>] ↳<thread> text`, cut at 1500 characters.
+- The pushed line is `[<server>/<chat>/<sender>, <level>, msg <id>] ↳<thread> text`, cut at 1500 characters. The id lets `seats react` and `seats download` name a message other than the latest.
+- A Discord line shows each mention by name, and the bot as `@you`. A channel message that mentions only others is stored and kept off the seat.
 - The brief gives absolute paths under `<workspace>/projects/agentic-commons/main/docs/` (`seat-sop.md`, then `briefs/<platform>-<server-slug>.md`, or `discord-dm.md` for Tony), plus the seat facts.
 - Sessions are named `seat:<platform>/<server>/<chat>`, or `seat:<platform>/dm/<person>` for a DM, with slugs in lowercase-hyphen form. Social derives the name from the stored row on each read and stores none. `social seats` gives it as `label`, which telemetry shows on Ops.
 
@@ -103,7 +104,21 @@ Ops on the vault shows each seat with a Remote Control switch (`fleet.md` R147 i
 - **Persistence.** cch records each switch on the job's lineage record. A daemon relaunch or a resume of the session brings the recorded switch back (`sessions.md` R146).
 - **Adoption.** Adoption leaves the live session alone. An occupied seat records its switch as on, because every seat session before the switch started with Remote Control on.
 - **Link.** `remote_control` and `rc_url` of an occupied seat follow the job's `list_other` row on every tick, so a switch made outside the seat shows on Ops.
-- **Event.** `social/seats` carries `{seat, label, state, remote_control, node, job?, rc_url?, ts}`. The seat's save emits it when one of those fields changed. A switch answer adds `rc_live` (`applied`, `none` or `failed: <why>`) and always emits, so Ops can settle a pending flip. No event goes out at boot, so a subscriber reads `social seats` once when it connects.
+- **Event.** `social/seats` carries `{seat, label, state, remote_control, node, model, effort, refresh, job?, rc_url?, ts}`. The seat's save emits it when one of those fields changed. A switch answer adds `rc_live` (`applied`, `none` or `failed: <why>`) and a Refresh answer adds `refresh_live` (`pending` or `kept`). Either answer always emits, so Ops can settle a pending request. At boot each seats plugin reports every seat, and social emits only for a seat whose evented fields changed. A subscriber reads `social seats` once when it connects.
+
+### Model, effort and Refresh
+
+Ops shows each seat's model and effort beside its switch, with a Refresh button that applies a new pick.
+
+- **Pick.** The pick lives on the seats plugin's row, not on the decl, so a `social.toml` change keeps it. The seat runs on the pick, else the decl's pair, else the node's settings. `model` and `effort` in the event are that resolved pair.
+- **Verb.** `seat_refresh {seat, model, effort}` has no MCP tool. Only operations on this node may call it. It refuses an effort above high. It does not check the model name, because cch takes any model id.
+- **Refresh.** On a seat whose agent the seat started, the refresh stops the agent at the next tick it is not mid-turn, then resumes its conversation on the pick. An empty seat keeps the pick for its next start (`kept`). An adopted seat keeps the pick and is never stopped, because the seat cannot start that session again.
+- **Resume.** The resume takes the pick through `resume_other`'s `model` and `effort`.
+- **Restart line.** The resumed agent gets a `[seat]` line that names its new pair. That line has no message id, so it gets no 👀. The agent's reply target falls back to its predecessor's last line.
+
+**CAUTION** No session event marks the end of a turn. While a refresh waits on a busy agent, the seat looks at it on every tick (15 s).
+
+**CAUTION** cch applies a resume's `model` and `effort` to a retired session only. The seat's stop removes the job, which makes it retired. A stop that kept the job would resume the agent on its old pair.
 
 **CAUTION** A start emits `starting` twice: once before reflection answers, and once with the job id.
 

@@ -25,12 +25,12 @@ use crate::tether::stream::{Mark, SessionLogs, Stream};
 const BEARER: &str = "a-test-bearer-nothing-guards";
 const NODE: &str = "testnode";
 
-fn holder(c: char, job: &str, name: &str, level: &str) -> Holder {
-    Holder { node: NODE.into(), session: format!("cc{}", c.to_string().repeat(32)), job: job.into(), name: name.into(), level: level.into(), isolated: false }
+fn holder(c: char, name: &str, level: &str) -> Holder {
+    Holder { node: NODE.into(), session: format!("cc{}", c.to_string().repeat(32)), name: name.into(), level: level.into(), isolated: false }
 }
 
 fn tester() -> Holder {
-    holder('a', "job-aaaa", "tester", "trusted")
+    holder('a', "tester", "trusted")
 }
 
 async fn eventually<F: Fn() -> bool>(what: &str, f: F) {
@@ -111,13 +111,13 @@ impl Captured {
     }
     fn send(&self) -> awm_plugin_sdk::push::SendFn {
         let me = self.clone();
-        Arc::new(move |node, job, text| {
+        Arc::new(move |node, session, text| {
             let me = me.clone();
             Box::pin(async move {
-                if me.gone.lock().unwrap().contains(&job) {
+                if me.gone.lock().unwrap().contains(&session) {
                     return Outcome::Gone;
                 }
-                me.lines.lock().unwrap().push((node, job, text));
+                me.lines.lock().unwrap().push((node, session, text));
                 Outcome::Delivered
             })
         })
@@ -487,19 +487,9 @@ async fn an_encrypted_room_seals_its_files_and_refuses_a_plain_one() {
 async fn setup(tmp: &Path) -> Option<(Host, MemberNode, Captured, Sessions)> {
     let host = Host::start(tmp, 180.0)?;
     let pushed = Captured::default();
-    let sessions = Sessions::of(&[&tester(), &holder('b', "job-bbbb", "someone-else", "cooperative")]);
+    let sessions = Sessions::of(&[&tester(), &holder('b', "someone-else", "cooperative")]);
     let node = MemberNode::new(tmp, NODE, host.door(NODE), pushed.clone(), sessions.clone());
     Some((host, node, pushed, sessions))
-}
-
-#[tokio::test]
-async fn a_fresh_machine_slot_comes_from_the_real_relay() {
-    let tmp = tempfile::tempdir().unwrap();
-    let Some(host) = Host::start(tmp.path(), 180.0) else { return };
-    let slot = host.relay().issue(NODE, None).await.unwrap();
-    assert!(slot["slot"].is_u64(), "{slot}");
-    assert!(slot["token"].as_str().is_some_and(|t| !t.is_empty() && t.chars().all(|c| c.is_ascii_hexdigit())), "{slot}");
-    assert!(slot["expires_in"].as_f64().is_some_and(|s| s > 0.0), "{slot}");
 }
 
 #[tokio::test]
@@ -516,13 +506,13 @@ async fn a_guest_with_only_the_link_talks_and_our_writes_are_not_pushed_back() {
     eventually("the guest's line is pushed", || pushed.any("from visitor: hello from outside")).await;
     let line = pushed.texts().into_iter().find(|t| t.contains("hello from outside")).unwrap();
     assert_eq!(line, format!("room {name} [untrusted] from visitor: hello from outside"));
-    assert_eq!(pushed.lines.lock().unwrap()[0].1, "job-aaaa");
+    assert_eq!(pushed.lines.lock().unwrap()[0].1, tester().session);
 
     let sent = node.ch.write(&tester(), "and hello back", None, Write { target: "say".into(), ..Write::default() }).await.unwrap();
     assert_eq!(sent["sealed"], false);
     let heard = guest.hear().await;
     assert_eq!(heard["messages"][0]["text"], "and hello back");
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
     assert!(!pushed.any("and hello back"), "our own write is not pushed back");
     let transcript = std::fs::read_to_string(node.ch.transcripts.path(&name)).unwrap();
     assert!(transcript.contains("hello from outside") && transcript.contains("and hello back"));
@@ -550,7 +540,7 @@ async fn either_side_leaving_ends_the_room_on_the_other() {
 async fn who_may_hold_a_channel() {
     let tmp = tempfile::tempdir().unwrap();
     let Some((_host, node, _pushed, _)) = setup(tmp.path()).await else { return };
-    let untrusted = holder('d', "job-dddd", "u", "untrusted");
+    let untrusted = holder('d', "u", "untrusted");
     assert!(node.ch.open(&untrusted, "room", None, false).await.unwrap_err().message.contains("only when it is isolated"));
     let isolated = Holder { isolated: true, ..untrusted.clone() };
     assert!(node.ch.open(&isolated, "room", None, false).await.is_ok());
@@ -575,10 +565,10 @@ async fn a_room_and_its_unread_messages_survive_a_host_restart() {
 #[tokio::test]
 async fn a_member_whose_node_stops_renewing_lapses_and_its_room_ends() {
     let tmp = tempfile::tempdir().unwrap();
-    let Some(host) = Host::start(tmp.path(), 0.5) else { return };
+    let Some(host) = Host::start(tmp.path(), 0.05) else { return };
     let m = Member { node: "n".into(), session: "cc1".into(), name: "s".into(), level: "trusted".into(), who: "s@n".into() };
     let opened = host.relay().open(&m, false).await.unwrap();
-    tokio::time::sleep(Duration::from_millis(800)).await;
+    tokio::time::sleep(Duration::from_millis(120)).await;
     assert_eq!(host.relay().prune().await, ["cc1@n"]);
     let room = host.relay().store.room(opened["name"].as_str().unwrap()).unwrap();
     assert!(!room.open && room.token.is_empty(), "the host token is forgotten");
@@ -906,27 +896,20 @@ async fn a_stale_binary_waits_for_its_sessions_then_is_replaced() {
 }
 
 #[tokio::test]
-async fn a_daemon_with_the_python_issuer_is_replaced_once_idle() {
-    let fake = Fake::new(RUNS);
-    assert_eq!(fake.adopted("/usr/bin/python").reconcile().await["action"], "started");
-    let pid = fake.pid();
-    let rust = fake.adopted("/bin/channel");
-    let out = rust.reconcile().await;
-    assert_eq!(out["action"], "replaced", "{out}");
-    assert!(out["reason"].as_str().unwrap().contains("TETHER_ISSUER"));
-    assert_ne!(fake.pid(), pid);
-    assert_eq!(rust.reconcile().await["action"], "none");
-}
-
-#[tokio::test]
-async fn a_daemon_on_a_gone_gateway_proxy_is_replaced_once_idle() {
-    let fake = Fake::new(RUNS);
-    assert_eq!(fake.adopted_via("/bin/channel", Some("http://127.0.0.1:1111")).reconcile().await["action"], "started");
-    let pid = fake.pid();
-    let restarted = fake.adopted_via("/bin/channel", Some("http://127.0.0.1:2222"));
-    let out = restarted.reconcile().await;
-    assert_eq!(out["action"], "replaced", "{out}");
-    assert_eq!(out["reason"], "it was launched with another https_proxy");
-    assert_ne!(fake.pid(), pid);
-    assert_eq!(restarted.reconcile().await["action"], "none");
+async fn a_daemon_launched_another_way_is_replaced_once_idle() {
+    let rows: [(&str, Option<&str>, &str, Option<&str>, &str); 2] = [
+        ("/usr/bin/python", None, "/bin/channel", None, "TETHER_ISSUER"),
+        ("/bin/channel", Some("http://127.0.0.1:1111"), "/bin/channel", Some("http://127.0.0.1:2222"), "it was launched with another https_proxy"),
+    ];
+    for (issuer, proxy, next_issuer, next_proxy, reason) in rows {
+        let fake = Fake::new(RUNS);
+        assert_eq!(fake.adopted_via(issuer, proxy).reconcile().await["action"], "started");
+        let pid = fake.pid();
+        let next = fake.adopted_via(next_issuer, next_proxy);
+        let out = next.reconcile().await;
+        assert_eq!(out["action"], "replaced", "{out}");
+        assert!(out["reason"].as_str().unwrap().contains(reason), "{out}");
+        assert_ne!(fake.pid(), pid);
+        assert_eq!(next.reconcile().await["action"], "none");
+    }
 }

@@ -1233,7 +1233,7 @@ impl Gateway {
         let level = awm_trust::stamped_level(ctx.caller.trust.as_deref(), ctx.caller.lane != Lane::Edge);
         let (contract, major) = crate::isolated::HARNESS_CONTRACT;
         let harness = self.providers(contract, major).iter().any(|o| o.name == tool);
-        let names_other = args.get("job").and_then(Value::as_str).is_some_and(|j| !j.is_empty());
+        let names_other = awm_trust::Call::names_other(args);
         awm_trust::call_refusal(level, &awm_trust::Call { tool, verb, harness, names_other })
     }
 

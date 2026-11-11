@@ -137,7 +137,7 @@
     {
       "name": "seats",
       "tool": "social_seats",
-      "description": "List the chats a bot account is in, each with the session holding it or null. A chat that [seats] in social.toml declares a seat also shows its seat: the state (empty, starting, occupied), its agent's job and node, its level and its queued lines. Social starts a seat's agent on the seat's first new message. The seat stops its agent after 4 hours with no message and no running turn, and the next message resumes the same conversation.",
+      "description": "List the chats a bot account is in, each with the session holding it or null. A chat that [seats] in social.toml declares a seat also shows its seat: the state (empty, starting, occupied), its agent's session id and node, its level and its queued lines. Social starts a seat's agent on the seat's first new message. The seat stops its agent after 4 hours with no message and no running turn, and the next message resumes the same conversation.",
       "params": [
         {
           "name": "account",
@@ -239,6 +239,34 @@
       ]
     },
     {
+      "name": "seat_refresh",
+      "tool": "social_seat_refresh",
+      "description": "Pick a seat's model and effort, which win over social.toml. The seat's host restarts an agent it started on them once the agent is between turns, resuming its conversation, and keeps them for the next start of an empty seat. `live` answers `pending`. Only operations on this node calls it, for the Refresh button on Ops.",
+      "surfaces": [
+        "cli",
+        "http"
+      ],
+      "params": [
+        {
+          "name": "seat",
+          "type": "string",
+          "required": true,
+          "description": "<account>/<channel_id>, as `seats` shows it."
+        },
+        {
+          "name": "model",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "effort",
+          "type": "string",
+          "required": true,
+          "description": "low, medium or high."
+        }
+      ]
+    },
+    {
       "name": "seat_pull",
       "tool": "social_seat_pull",
       "description": "A seat host's seats plugin holds this to take the rows waiting for its node. `ack_through` acks every row through that id. Not for sessions.",
@@ -288,6 +316,53 @@
         {
           "name": "body",
           "type": "object",
+          "required": false
+        }
+      ]
+    },
+    {
+      "name": "seat_act",
+      "tool": "social_seat_act",
+      "description": "A seat host's seats plugin reacts to a message (`action` react) or downloads its attachments (`action` download) in a chat its node answers. Not for sessions.",
+      "surfaces": [
+        "cli",
+        "http"
+      ],
+      "timeout": 300,
+      "params": [
+        {
+          "name": "action",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "account",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "channel",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "message_id",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "emoji",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "remove",
+          "type": "boolean",
+          "required": false
+        },
+        {
+          "name": "idx",
+          "type": "number",
           "required": false
         }
       ]

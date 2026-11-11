@@ -190,7 +190,7 @@ impl Journals {
         let (visible, _) = self.visible_fn(who)?;
         let Some(post) = post.filter(|p| visible(p)) else { return Ok(json!({"ok": true, "recorded": 0})) };
         let session = match who.lane {
-            Lane::Service => truthy_str(a, "session").and_then(|s| awm_plugin_sdk::ids::to_r9(Some(&s))).or(who.session.clone()),
+            Lane::Service => truthy_str(a, "session").and_then(|s| awm_plugin_sdk::ids::SessionId::checked(&s)).or(who.session.clone()),
             _ => who.session.clone(),
         };
         Ok(json!({"ok": true, "recorded": self.record_reads(session.as_deref(), &[post])?}))
@@ -202,7 +202,7 @@ impl Journals {
         }
         let named = a.get("session").filter(|v| truthy(v));
         let session = match named {
-            Some(n) => n.as_str().and_then(|s| awm_plugin_sdk::ids::to_r9(Some(s))),
+            Some(n) => n.as_str().and_then(awm_plugin_sdk::ids::SessionId::checked),
             None => who.session.clone(),
         };
         let Some(session) = session else {

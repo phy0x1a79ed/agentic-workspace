@@ -258,7 +258,7 @@ mod tests {
         let part = RosterPart::load(tmp.path().join("services/telemetry"), Some("tony".into()), singles()).unwrap();
         let mut t = service(Service::new(env(tmp.path(), "alcor")), part).into_test().await.unwrap();
         let hello = json!({"swarm": "tony", "node": "mizar", "items": [{"type": "hello", "role": "home",
-            "sessions": [{"job": "a1", "link": "https://claude.ai/code/a1", "task_id": "CW"}]}]});
+            "sessions": [{"session_id": "a1", "link": "https://claude.ai/code/a1", "task_id": "CW"}]}]});
 
         let e = t.call_as("report", hello.clone(), from("lyra"), Some("peer:lyra")).await.unwrap_err();
         assert!(e.message.contains("must come from mizar"), "{e:?}");

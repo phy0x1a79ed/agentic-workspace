@@ -1,7 +1,7 @@
 //! Tool `harness-cc`, the harness contract over Claude Code sessions: its 29 verbs as one table of
 //! specs, and the dispatcher that maps each verb's arguments onto the module that does the work.
 //!
-//! A verb that acts on a session names it with `session_id` (R9) or `ref` (a job id, a name or a
+//! A verb that acts on a session names it with `session_id` (R9) or `ref` (a name or a
 //! session UUID). With neither it acts on the session at `pid`, the caller pid reflection passes.
 
 use std::future::Future;
@@ -10,8 +10,9 @@ use std::time::Duration;
 
 use awm_harness::claude::{daemonlog, live, pins, records, ClaudeHome};
 use awm_harness::contract::args::{bool_lenient, int_lenient};
-use awm_harness::contract::{self, target_params};
+use awm_harness::contract::{self, find_params, target_params};
 use awm_plugin_sdk::{privacy, procfs, Call, Service, VerbError};
+use awm_plugin_sdk::ids::{Platform, SessionId};
 use serde_json::{json, Map, Value};
 
 use crate::app::{Backend, Life, Op, PeerCall, PoolOp};
@@ -58,8 +59,6 @@ pub const OPTIONAL_VERBS: [&str; 17] = [
 /// back to the keeper.
 pub const PROBE_TIMEOUT: Duration = Duration::from_secs(20);
 
-const REF_TEXT: &str = "A job id, a session name or a Claude session UUID.";
-
 /// One published verb.
 pub struct Spec {
     pub verb: &'static str,
@@ -82,7 +81,7 @@ fn req(name: &str, ty: &str, description: &str) -> Value {
 }
 
 fn targeted(extra: Vec<Value>) -> Value {
-    let mut out = target_params(REF_TEXT);
+    let mut out = target_params();
     out.extend(extra);
     Value::Array(out)
 }
@@ -115,7 +114,7 @@ fn start_params() -> Value {
         opt("pin", "boolean", "Pin the job, so the daemon's idle retirement passes it over. A pinned job is a kept session: stopping it unpins it and removes it with `claude rm`."),
         opt("brief", "boolean", "Append the worker lifecycle brief to the system prompt: work in the right scope, ask Tony through the board, sign off and stop when done. Default true. A pinned start never gets it."),
         opt("started_by", "string", "Who the brief says started the session when no session called, such as 'Tony from Discord'. A calling session is named instead."),
-        opt("replaces", "string", "The job this session replaces. Its last turns are appended to the prompt, it is stopped (and removed when pinned) if cx started it, and the new job's lineage records it."),
+        opt("replaces", "string", "The session_id this session replaces. Its last turns are appended to the prompt, it is stopped (and removed when pinned) if cx started it, and the new session's lineage records it."),
         opt("tags", "array", "Tags to set on the scope (scope tag), such as ['lab', '<person>'] for work a lab member asked for. A tagging failure is returned as a warning and does not stop the start."),
         opt("pid", "integer", "The starting session's pid."),
         opt("trust", "string", ""),
@@ -133,7 +132,7 @@ pub fn specs() -> Vec<Spec> {
             json!([req("pid", "integer", "")]),
             Some(30),
         ),
-        spec("find", "The sessions a ref names.", json!([req("ref", "string", "")]), Some(30)),
+        spec("find", "The sessions, live or stopped, whose whole name is name, any case.", Value::Array(find_params()), Some(30)),
         spec("status", "A session's live state.", targeted(vec![]), Some(30)),
         spec(
             "list",
@@ -171,6 +170,8 @@ pub fn specs() -> Vec<Spec> {
             targeted(vec![
                 opt("prompt", "string", ""),
                 opt("adopt_lineage", "boolean", "Resume a job that start did not create."),
+                opt("model", "string", "A retired session resumes on this model instead of its recorded one."),
+                opt("effort", "string", "A retired session resumes at this effort instead of its recorded one."),
             ]),
             Some(90),
         ),
@@ -214,7 +215,7 @@ pub fn specs() -> Vec<Spec> {
             Some(60),
         ),
         spec("link", "A session's claude.ai link.", targeted(vec![]), Some(30)),
-        spec("adopt", "Take on a job started outside start.", targeted(vec![req("job", "string", "The job id.")]), Some(30)),
+        spec("adopt", "Take on a job started outside start.", targeted(vec![]), Some(30)),
         spec("revive_pinned", "Resume each pinned job whose process is gone.", json!([]), Some(600)),
         spec("pending", "The follow-ups cch still owes.", json!([]), None),
         spec(
@@ -370,35 +371,22 @@ fn flag(args: &Value, key: &str, default: bool) -> bool {
     bool_lenient(args.get(key), default)
 }
 
-/// A Claude session UUID from the digits of an R9 id; digits of any other length pass as they are.
-fn uuid_of(session_id: &str) -> String {
-    let digits: Vec<char> = session_id.chars().skip(2).collect();
-    if digits.len() != 32 {
-        return digits.into_iter().collect();
-    }
-    let part = |a: usize, b: usize| digits[a..b].iter().collect::<String>();
-    [part(0, 8), part(8, 12), part(12, 16), part(16, 20), part(20, 32)].join("-")
-}
-
-/// The `job` control takes: the session `session_id` or `ref` names, or None for the caller's own.
+/// The canonical id in `session_id`, checked to be a Claude Code one, or None for the caller's own.
 fn session_ref(args: &Value) -> Result<Option<String>, ResolveError> {
-    let sid = text_or_empty(args.get("session_id")).trim().to_lowercase();
-    if !sid.is_empty() {
-        if !sid.starts_with(PLATFORM) {
-            return Err(ResolveError(format!(
-                "{} is not a Claude Code session id (it does not start with {})",
-                py_repr(&sid),
-                py_repr(PLATFORM)
-            )));
-        }
-        return Ok(Some(uuid_of(&sid)));
+    let sid = text_or_empty(args.get("session_id"));
+    if sid.is_empty() {
+        return Ok(None);
     }
-    Ok(Some(text_or_empty(args.get("ref")).trim().to_string()).filter(|r| !r.is_empty()))
+    match SessionId::parse(&sid) {
+        Ok(id) if id.platform() == Platform::Claude => Ok(Some(sid)),
+        Ok(_) => Err(ResolveError(format!("{} is not a Claude Code session id", py_repr(&sid)))),
+        Err(e) => Err(ResolveError(e.to_string())),
+    }
 }
 
 /// A raw Claude session id in `session_id` moves to `claude_session_id`, its R9 id taking its place.
 fn with_ids(mut out: Value) -> Value {
-    let raw = out.get("session_id").and_then(Value::as_str).filter(|s| !s.is_empty() && !awm_plugin_sdk::ids::is_r9(s));
+    let raw = out.get("session_id").and_then(Value::as_str).filter(|s| !s.is_empty() && SessionId::parse(s).is_err());
     if let Some(sid) = raw.map(str::to_string) {
         out["claude_session_id"] = json!(sid);
         out["session_id"] = json!(r9(&sid));
@@ -408,7 +396,7 @@ fn with_ids(mut out: Value) -> Value {
 
 fn row(t: &Target) -> Value {
     with_ids(json!({
-        "session_id": t.session_id, "name": t.name, "job": t.job, "pid": t.pid, "live": t.alive, "kind": t.kind.as_str(),
+        "session_id": t.session_id, "name": t.name, "pid": t.pid, "live": t.alive, "kind": t.kind.as_str(),
     }))
 }
 
@@ -562,10 +550,13 @@ pub fn first_start_this_boot(boot_id: &std::path::Path, mark: &std::path::Path) 
 
 // --- list ----------------------------------------------------------------------
 
-/// Whether job `job`'s transcripts ever ran with their cwd under a private mark. Reads files.
-fn entered_mark(home: &ClaudeHome, job: Option<&str>) -> bool {
-    let Some(job) = job.filter(|j| !j.is_empty()) else { return false };
-    let state = records::read_json(&home.job_state(job));
+/// Whether the transcripts of the session `session_id` ever ran with their cwd under a private
+/// mark. Reads files.
+fn entered_mark(home: &ClaudeHome, session_id: Option<&str>) -> bool {
+    let Some(job) = session_id.and_then(|s| SessionId::parse(s).ok()).and_then(|id| id.job_dir().map(str::to_string)) else {
+        return false;
+    };
+    let state = records::read_json(&home.job_state(&job));
     let Some(scanned) = opt_text(state.get("linkScanPath")) else { return false };
     let scanned = std::path::PathBuf::from(scanned);
     let folder = scanned.parent().map(std::path::Path::to_path_buf).unwrap_or_default();
@@ -583,9 +574,9 @@ fn with_tasks(paths: &Paths, rows: Vec<Value>) -> Vec<Value> {
     rows.into_iter()
         .map(|mut row| {
             let task = row
-                .get("job")
+                .get("session_id")
                 .and_then(Value::as_str)
-                .and_then(|job| lifecycle::read_lineage(paths, job))
+                .and_then(|id| lifecycle::read_lineage(paths, id))
                 .and_then(|rec| opt_text(rec.get("task_id")));
             if let (Some(task), Some(map)) = (task, row.as_object_mut()) {
                 map.insert("task_id".into(), json!(task));
@@ -602,7 +593,7 @@ fn pool_for_peer(mut held: Value, as_: Option<&str>) -> Value {
         _ => None,
     });
     let shown = privacy::visible_rows(sessions.unwrap_or_default(), as_);
-    let names: Vec<Value> = shown.iter().filter_map(|r| r.get("session").cloned()).collect();
+    let names: Vec<Value> = shown.iter().filter_map(|r| r.get("session_id").cloned()).collect();
     if let Some(map) = held.as_object_mut() {
         if let Some(Value::Array(warm)) = map.get_mut("warm") {
             warm.retain(|s| names.contains(s));
@@ -615,7 +606,7 @@ fn pool_for_peer(mut held: Value, as_: Option<&str>) -> Value {
 // --- the verbs ---------------------------------------------------------------
 
 /// The keys a verb's arguments carry that lifecycle does not take.
-const NOT_LIFECYCLE: [&str; 5] = ["pid", "session_id", "ref", "keep", "confirm"];
+const NOT_LIFECYCLE: [&str; 4] = ["pid", "session_id", "keep", "confirm"];
 
 /// The verb table over its effects.
 pub struct App<B> {
@@ -679,9 +670,9 @@ impl<B: Backend> App<B> {
     async fn remote_control(&self, args: &Value) -> Result<Value, Failure> {
         let (on, name) = (flag(args, "on", false), opt_text(args.get("name")));
         let out = self.control(args, Op::RemoteControl { on, name: name.clone() }).await?;
-        if let (true, Some(job)) = (truthy(out.get("ok")), opt_text(out.get("job"))) {
+        if let (true, Some(id)) = (truthy(out.get("ok")), opt_text(out.get("session_id"))) {
             let paths = self.backend.paths().clone();
-            let recorded = blocking(move || lifecycle::record_remote_control(&paths, &job, on, name.as_deref())).await;
+            let recorded = blocking(move || lifecycle::record_remote_control(&paths, &id, on, name.as_deref())).await;
             if let Err(e) = recorded {
                 tracing::warn!("cch: could not record the Remote Control switch: {e}");
             }
@@ -697,12 +688,13 @@ impl<B: Backend> App<B> {
         })
     }
 
-    /// `args` as lifecycle takes them: the ref as `job`, the caller pid as `_caller_pid`.
+    /// `args` as lifecycle takes them: the session as `session_id`, the caller pid as
+    /// `_caller_pid`.
     fn lifecycle_args(args: &Value) -> Result<Map<String, Value>, Failure> {
         let mut out = args.as_object().cloned().unwrap_or_default();
         NOT_LIFECYCLE.iter().for_each(|k| drop(out.remove(*k)));
-        if let Some(job) = session_ref(args)? {
-            out.insert("job".into(), json!(job));
+        if let Some(sid) = session_ref(args)? {
+            out.insert("session_id".into(), json!(sid));
         }
         if let Some(pid) = pid_int(args) {
             out.insert(lifecycle::CALLER_PID.into(), json!(pid));
@@ -723,10 +715,9 @@ impl<B: Backend> App<B> {
         let at = who.get("pid").and_then(Value::as_u64).and_then(|p| u32::try_from(p).ok()).unwrap_or_default();
         let home = self.backend.home().clone();
         let cwd = transcript::session_and_cwd_for(&home, at).await.1;
-        let (job, name, proc_start) = blocking(move || {
-            let job = records::job_of_pid(&home, at);
-            let name = job.as_deref().and_then(|j| job_name(&home, j));
-            (job, name, procfs::start_ticks(at))
+        let (name, proc_start) = blocking(move || {
+            let name = records::job_of_pid(&home, at).and_then(|j| job_name(&home, &j));
+            (name, procfs::start_ticks(at))
         })
         .await;
         let lane = who.get("hosting").cloned().unwrap_or(Value::Null);
@@ -745,7 +736,6 @@ impl<B: Backend> App<B> {
             "lane": lane,
             "hosting": hosting,
             "pane": who.get("pane"),
-            "job": job,
             "proc_start": proc_start,
             "cwd": cwd,
             "mode": mode.as_wire(),
@@ -753,15 +743,10 @@ impl<B: Backend> App<B> {
     }
 
     async fn find(&self, args: &Value) -> Result<Value, Failure> {
-        if let Some(rec) = self.isolated(args).await? {
-            return Ok(self.backend.isolated().find_answer(&rec).await);
-        }
-        let job = session_ref(args)?;
-        match self.backend.resolve(job, None).await {
-            Ok(t) => Ok(json!({"ok": true, "matches": [row(&t)]})),
-            Err(ControlError::Unknown(_)) => Ok(json!({"ok": true, "matches": []})),
-            Err(e) => Err(e.into()),
-        }
+        let name = text_or_empty(args.get("name"));
+        let mut sessions: Vec<Value> = self.backend.named(&name).await.iter().map(row).collect();
+        sessions.extend(self.backend.isolated().named(&name).await);
+        Ok(json!({"ok": true, "sessions": sessions}))
     }
 
     async fn status(&self, args: &Value) -> Result<Value, Failure> {
@@ -833,7 +818,7 @@ impl<B: Backend> App<B> {
         if let Some(reason) = refusal {
             return json!({"ok": false, "reason": reason});
         }
-        let spec = match lifecycle::parse(self.backend.paths(), args) {
+        let spec = match lifecycle::parse(args) {
             Ok(spec) => spec,
             Err(r) => return r.answer(),
         };
@@ -865,18 +850,18 @@ impl<B: Backend> App<B> {
         let (job, pid) = (session_ref(args)?, pid_arg(args));
         let confirm = flag(args, "confirm", false);
         let t = self.backend.resolve(job.clone(), pid).await.ok();
-        let started = match t.as_ref().filter(|t| !t.is_self).and_then(|t| t.job.clone()).filter(|j| !j.is_empty()) {
-            Some(j) => {
+        let started = match t.as_ref().filter(|t| !t.is_self).and_then(Target::canonical) {
+            Some(id) => {
                 let paths = self.backend.paths().clone();
-                let probe = j.clone();
-                blocking(move || lifecycle::read_lineage(&paths, &probe).is_some_and(|r| !r.is_empty())).await.then_some(j)
+                let probe = id.clone();
+                blocking(move || lifecycle::read_lineage(&paths, &probe).is_some_and(|r| !r.is_empty())).await.then_some(id)
             }
             None => None,
         };
         let mut out = if !flag(args, "keep", false) {
             self.backend.control(Op::Stop { confirm, keep: false }, job, pid).await?
-        } else if let Some(j) = started {
-            let fwd = json!({"job": j, lifecycle::CALLER_PID: pid_int(args)});
+        } else if let Some(id) = started {
+            let fwd = json!({"session_id": id, lifecycle::CALLER_PID: pid_int(args)});
             self.backend.lifecycle(Life::Stop, fwd, as_.map(str::to_string)).await
         } else {
             self.backend.control(Op::Stop { confirm, keep: true }, job, pid).await?
@@ -897,9 +882,13 @@ impl<B: Backend> App<B> {
         }
         let mut fwd = Self::lifecycle_args(args)?;
         fwd.remove("adopt_lineage");
-        if let (true, Some(job)) = (flag(args, "adopt_lineage", false), opt_text(fwd.get("job"))) {
+        if let (true, Some(sid)) = (flag(args, "adopt_lineage", false), opt_text(fwd.get("session_id"))) {
             let paths = self.backend.paths().clone();
-            let error = blocking(move || lifecycle::ensure_lineage(&paths, &job, "wait", &Map::new())).await;
+            let error = blocking(move || match SessionId::parse(&sid).ok().and_then(|id| lifecycle::job_of_session(&paths, &id)) {
+                Some(_) => lifecycle::ensure_lineage(&paths, &sid, "wait", &Map::new()),
+                None => Some(format!("no job holds session {sid}")),
+            })
+            .await;
             if let Some(error) = error {
                 return Ok(json!({"ok": false, "reason": error}));
             }
@@ -969,22 +958,27 @@ impl<B: Backend> App<B> {
         let live = self.backend.live_jobs().await;
         let (mut revived, mut still, mut failed) = (vec![], vec![], vec![]);
         for job in pins::pinned(self.backend.home()).await {
-            if live.contains(&job) {
-                still.push(job);
-                continue;
-            }
             let (paths, j) = (self.backend.paths().clone(), job.clone());
-            let extra: Map<String, Value> = [("pinned".to_string(), json!(true))].into_iter().collect();
-            if let Some(error) = blocking(move || lifecycle::ensure_lineage(&paths, &j, "revive_pinned", &extra)).await {
-                failed.push(json!({"job": job, "error": error}));
+            let Some(id) = blocking(move || lifecycle::session_of_job(&paths, &j)).await else {
+                failed.push(json!({"session_id": null, "error": format!("job {job} has no session on record")}));
+                continue;
+            };
+            if live.contains(&job) {
+                still.push(id);
                 continue;
             }
-            let out = self.backend.lifecycle(Life::Resume, json!({"job": job}), None).await;
+            let extra: Map<String, Value> = [("pinned".to_string(), json!(true))].into_iter().collect();
+            let (paths, key) = (self.backend.paths().clone(), id.clone());
+            if let Some(error) = blocking(move || lifecycle::ensure_lineage(&paths, &key, "revive_pinned", &extra)).await {
+                failed.push(json!({"session_id": id, "error": error}));
+                continue;
+            }
+            let out = self.backend.lifecycle(Life::Resume, json!({"session_id": id}), None).await;
             if truthy(out.get("ok")) {
-                revived.push(job);
+                revived.push(id);
             } else {
                 let why = out.get("reason").filter(|r| truthy(Some(r))).or_else(|| out.get("error"));
-                failed.push(json!({"job": job, "error": why}));
+                failed.push(json!({"session_id": id, "error": why}));
             }
         }
         json!({"ok": failed.is_empty(), "revived": revived, "live": still, "failed": failed})
@@ -1068,7 +1062,7 @@ impl<B: Backend> App<B> {
         let (sessions, held) = blocking(move || {
             let held = if peer { pool_for_peer(held, stamp.as_deref()) } else { held };
             if peer {
-                rows.retain(|r| !entered_mark(&home, r.get("job").and_then(Value::as_str)));
+                rows.retain(|r| !entered_mark(&home, r.get("session_id").and_then(Value::as_str)));
             }
             rows.extend(iso);
             let mut sessions = privacy::visible_rows(rows, stamp.as_deref());
@@ -1284,6 +1278,10 @@ pub mod testing {
             self.target.clone().ok_or_else(|| crate::control::UnknownSession { unknown_ref: job.unwrap_or_default() }.into())
         }
 
+        async fn named(&self, name: &str) -> Vec<Target> {
+            self.target.clone().into_iter().filter(|t| t.name.as_deref() == Some(name)).collect()
+        }
+
         async fn control(&self, op: Op, job: Option<String>, pid: Option<u32>) -> Result<Value, ControlError> {
             self.ops.lock().unwrap().push((op.clone(), job.clone(), pid));
             if self.missing {
@@ -1352,8 +1350,8 @@ pub mod testing {
             self.pools.lock().unwrap().push(op.clone());
             Ok(match op {
                 PoolOp::Status => self.pool_status.clone(),
-                PoolOp::Claim(cwd) => json!({"session": null, "reason": format!("nothing warm for {cwd}")}),
-                PoolOp::Seed => json!({"session": null, "refused": "no daemon in a test"}),
+                PoolOp::Claim(cwd) => json!({"session_id": null, "reason": format!("nothing warm for {cwd}")}),
+                PoolOp::Seed => json!({"session_id": null, "refused": "no daemon in a test"}),
                 PoolOp::Remove { apply } => if apply { json!({"applied": []}) } else { json!({"plan": []}) },
             })
         }
@@ -1378,6 +1376,8 @@ mod tests {
     const SID: &str = "00000000-0000-4000-8000-000000000001";
     const R9: &str = "cc00000000000040008000000000000001";
     const JOB: &str = "abcd1234";
+    const JOB_UUID: &str = "abcd1234-0000-4000-8000-000000000000";
+    const JOB_SID: &str = "ccabcd1234000040008000000000000000";
     const ISO_SID: &str = "00000000-0000-4000-8000-0000000000aa";
 
     /// A fake over a temp dir that lives as long as the app.
@@ -1412,8 +1412,16 @@ mod tests {
         app.handle(verb, &args, None).await.unwrap()
     }
 
+    fn sid_of(job: &str) -> String {
+        format!("cc{job}000040008000000000000000")
+    }
+
     fn lineage(fake: &Fake, job: &str, record: Value) {
-        Fake::write(&fake.paths.lineage_path(job), record);
+        Fake::write(&fake.paths.lineage_path(&sid_of(job)), record);
+    }
+
+    fn held_job(fake: &Fake, job: &str) {
+        Fake::write(&fake.paths.home.job_state(job), json!({"sessionId": format!("{job}-0000-4000-8000-000000000000")}));
     }
 
     // --- tests/test_cch_hub.py ---
@@ -1422,9 +1430,9 @@ mod tests {
     async fn test_stop_with_keep_keeps_the_job_and_stops_the_caller_later() {
         let answer: Answer = Box::new(|_| json!({"ok": true, "stopping": true}));
         let b = rig(|f| Fake { target: Some(Target { is_self: true, ..target() }), answer, ..f });
-        let out = run(&b.app, "stop", json!({"ref": JOB, "pid": 4242, "confirm": true, "keep": true})).await;
+        let out = run(&b.app, "stop", json!({"session_id": JOB_SID, "pid": 4242, "confirm": true, "keep": true})).await;
         assert_eq!(out["stopping"], true);
-        assert_eq!(b.app.backend.ops(), [(Op::Stop { confirm: true, keep: true }, Some(JOB.to_string()), Some(4242))]);
+        assert_eq!(b.app.backend.ops(), [(Op::Stop { confirm: true, keep: true }, Some(JOB_SID.to_string()), Some(4242))]);
         assert!(b.app.backend.lifes().is_empty());
     }
 
@@ -1432,20 +1440,21 @@ mod tests {
     async fn test_stop_removes_the_job_by_default_and_names_the_session() {
         let sid = "00000000-0000-4000-8000-000000000002";
         let b = rig(|f| Fake { target: Some(Target { session_id: Some(sid.into()), ..target() }), ..f });
-        let out = run(&b.app, "stop", json!({"ref": JOB})).await;
-        assert_eq!(b.app.backend.ops(), [(Op::Stop { confirm: false, keep: false }, Some(JOB.to_string()), None)]);
+        let out = run(&b.app, "stop", json!({"session_id": JOB_SID})).await;
+        assert_eq!(b.app.backend.ops(), [(Op::Stop { confirm: false, keep: false }, Some(JOB_SID.to_string()), None)]);
         assert_eq!(out["session_id"], "cc00000000000040008000000000000002");
     }
 
     #[tokio::test]
     async fn test_resume_can_adopt_a_job_with_no_lineage() {
         let b = plain();
-        let out = run(&b.app, "resume", json!({"ref": JOB, "adopt_lineage": true})).await;
+        Fake::write(&b.app.backend.paths.home.job_state(JOB), json!({"sessionId": JOB_UUID}));
+        let out = run(&b.app, "resume", json!({"session_id": JOB_SID, "adopt_lineage": true})).await;
         assert!(out["ok"] == true && out.get("adopt_lineage").is_none(), "{out}");
         let written: Value =
-            serde_json::from_slice(&std::fs::read(b.app.backend.paths.lineage_path(JOB)).unwrap()).unwrap();
+            serde_json::from_slice(&std::fs::read(b.app.backend.paths.lineage_path(JOB_SID)).unwrap()).unwrap();
         assert_eq!((&written["origin"], &written["mode"]), (&json!("wait"), &json!("worker")));
-        assert_eq!(b.app.backend.lifes(), [(Life::Resume, json!({"job": JOB}), None)]);
+        assert_eq!(b.app.backend.lifes(), [(Life::Resume, json!({"session_id": JOB_SID}), None)]);
     }
 
     #[tokio::test]
@@ -1454,11 +1463,12 @@ mod tests {
         let fake = &b.app.backend;
         Fake::write(&fake.paths.home.pins(), json!(["aaaa1111", "bbbb2222"]));
         for job in ["aaaa1111", "bbbb2222"] {
-            lineage(fake, job, json!({"job": job, "mode": "worker"}));
+            held_job(fake, job);
+            lineage(fake, job, json!({"session_id": sid_of(job), "mode": "worker"}));
         }
         let out = run(&b.app, "revive_pinned", json!({})).await;
-        assert_eq!((&out["revived"], &out["live"], &out["failed"]), (&json!(["bbbb2222"]), &json!(["aaaa1111"]), &json!([])));
-        assert_eq!(fake.lifes(), [(Life::Resume, json!({"job": "bbbb2222"}), None)]);
+        assert_eq!((&out["revived"], &out["live"], &out["failed"]), (&json!([sid_of("bbbb2222")]), &json!([sid_of("aaaa1111")]), &json!([])));
+        assert_eq!(fake.lifes(), [(Life::Resume, json!({"session_id": sid_of("bbbb2222")}), None)]);
     }
 
     #[tokio::test]
@@ -1491,11 +1501,11 @@ mod tests {
     #[tokio::test]
     async fn list_rows_carry_the_task_of_their_lineage_record_and_the_isolated_rows() {
         let b = rig(|f| Fake {
-            rows: vec![json!({"job": JOB, "transcript": "/t/a.jsonl"}), json!({"job": "bbbb2222"}), json!({"job": null})],
+            rows: vec![json!({"session_id": JOB_SID, "transcript": "/t/a.jsonl"}), json!({"session_id": sid_of("bbbb2222")}), json!({"session_id": null})],
             ..f
         });
-        lineage(&b.app.backend, JOB, json!({"job": JOB, "mode": "worker", "task_id": "AbCd-_12"}));
-        lineage(&b.app.backend, "bbbb2222", json!({"job": "bbbb2222", "mode": "worker"}));
+        lineage(&b.app.backend, JOB, json!({"session_id": JOB_SID, "mode": "worker", "task_id": "AbCd-_12"}));
+        lineage(&b.app.backend, "bbbb2222", json!({"session_id": sid_of("bbbb2222"), "mode": "worker"}));
         b.app.backend.isolated_session(json!({"claude_session_id": ISO_SID, "name": "boxed", "project": "p", "scope": "s"}), true);
         let out = run(&b.app, "list", json!({})).await;
         let rows = out["sessions"].as_array().unwrap();
@@ -1562,9 +1572,10 @@ mod tests {
         boot.set("boot-2");
         let b = rig(|f| Fake { daemon_up: std::sync::Mutex::new([Err("down".to_string())].into()), ..f });
         Fake::write(&b.app.backend.paths.home.pins(), json!(["bbbb2222"]));
+        held_job(&b.app.backend, "bbbb2222");
         b.app.revive_after_boot(&boot.id(), &boot.mark()).await;
         assert_eq!(*b.app.backend.ensured.lock().unwrap(), ["revived", "revived"], "it waits for the daemon");
-        assert_eq!(b.app.backend.lifes(), [(Life::Resume, json!({"job": "bbbb2222"}), None)]);
+        assert_eq!(b.app.backend.lifes(), [(Life::Resume, json!({"session_id": sid_of("bbbb2222")}), None)]);
     }
 
     // --- tests/test_manifest_surface.py, the halves that need a handler ---
@@ -1590,7 +1601,7 @@ mod tests {
         let peer = |call: PeerCall| {
             assert_eq!((call.node.as_str(), call.tool, call.verb), ("altair", "harness-cc", "list"));
             assert!(call.timeout < Duration::from_secs(30));
-            std::future::ready(Ok(json!({"sessions": [{"job": "secret"}], "daemon": {"state": "up"}})))
+            std::future::ready(Ok(json!({"sessions": [{"session_id": "secret"}], "daemon": {"state": "up"}})))
         };
         let out = probe("altair", "deneb", no_local, peer).await;
         assert_eq!(out, json!({"ok": true, "node": "altair", "from": "deneb", "answers": true, "daemon": "up"}));

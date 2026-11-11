@@ -30,7 +30,7 @@ fn s(a: &Value, k: &str) -> Option<String> {
 }
 
 fn seat(a: &Value) -> Seat {
-    Seat { node: s(a, "node"), name: s(a, "name"), job: s(a, "job") }
+    Seat { node: s(a, "node"), name: s(a, "name") }
 }
 
 fn need(a: &Value, k: &str) -> Result<String, String> {
@@ -67,7 +67,7 @@ impl Home {
                 let o = Open {
                     session_id: s(&a, "session_id"), task_id: s(&a, "task_id"), kind: s(&a, "kind"), peer: s(&a, "peer"), node: s(&a, "node"),
                     section: s(&a, "section"), status: s(&a, "status"), tags, meta: a.get("meta").and_then(Value::as_object).cloned(),
-                    name: s(&a, "name"), job: s(&a, "job"), source_note: None,
+                    name: s(&a, "name"), source_note: None,
                 };
                 blocking(move || q(st.task_open(&title, o, op.as_deref()))).await?
             }

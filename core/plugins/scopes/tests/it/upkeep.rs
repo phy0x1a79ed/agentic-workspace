@@ -69,7 +69,7 @@ fn a_claimed_scope_is_held() {
     let r = rig();
     scope(&r, "busy");
     let session = format!("cc{}", "b".repeat(32));
-    r.op.claim(P, "busy", &session, Some(std::process::id() as i64), None, false, false).unwrap();
+    r.op.claim(P, "busy", &session, Some(std::process::id() as i64), false, false).unwrap();
     let report = r.op.hygiene_check(Some(later()), 14.0, false).unwrap();
     assert_eq!(report["held"][0]["why"], json!(format!("in use by session {session}")));
 }

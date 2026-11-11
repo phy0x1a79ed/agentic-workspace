@@ -1,82 +1,104 @@
-"""The one parser of the session id of `sessions.md` R9: a two-letter platform code, then the platform's own id as hex of any length.
+"""The session id of ``sessions.md`` R9 and the session name, mirrored from ``awm-proto/src/ids.rs``.
 
-A Claude Code session is ``cc`` plus its session UUID with the dashes removed.
-A DeepSeek harness session is ``ds`` plus the hex of the UUID in its ``session-<uuid>`` id.
-A short form is only a prefix lookup on this id, never an id of its own.
-It lives in gatewayclient so that every service and plugin env parses ids the same way.
+A ``SessionId`` is a two-letter platform code then hex. Its canonical form is the only text
+``SessionId.parse`` takes. A harness's own form comes in only through
+``SessionId.from_harness_native``, where awm reads that harness's files.
 """
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 
 PLATFORM_CLAUDE = "cc"
 PLATFORM_DEEPSEEK = "ds"
 PLATFORMS = (PLATFORM_CLAUDE, PLATFORM_DEEPSEEK)
+NAME_MAX = 80
+_RC_MAX = 64
 
-_HEX = re.compile(r"^[0-9a-f]+$")
-_UUID = re.compile(r"^[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}$")
+_HEX = re.compile(r"[0-9a-f]+")
+_RC_RUN = re.compile(r"[^A-Za-z0-9._-]+")
 
 
 class BadSessionId(ValueError):
-    """The text is not a session id in any form awm accepts."""
+    """The text is not a canonical session id."""
 
 
-def r9(platform: str, raw: str) -> str:
-    """The R9 id of the platform's own session id ``raw``."""
-    if platform not in PLATFORMS:
-        raise BadSessionId(f"unknown platform code {platform!r}; known: {', '.join(PLATFORMS)}")
-    digits = (raw or "").strip().lower().replace("-", "")
-    if not digits or not _HEX.match(digits):
-        raise BadSessionId(f"{raw!r} is not a hex session id")
-    return platform + digits
+class BadName(ValueError):
+    """The text is not a valid session name."""
 
 
-def parse_r9(session_id: str) -> tuple[str, str]:
-    """``(platform, raw)`` for an R9 id. ``raw`` is the platform's own form: a dashed UUID for Claude Code."""
-    text = (session_id or "").strip().lower()
-    platform, digits = text[:2], text[2:]
-    if platform not in PLATFORMS or not digits or not _HEX.match(digits):
-        raise BadSessionId(f"{session_id!r} is not an R9 session id")
-    if platform == PLATFORM_CLAUDE and len(digits) == 32:
-        return platform, "-".join((digits[:8], digits[8:12], digits[12:16],
-                                   digits[16:20], digits[20:]))
-    return platform, digits
+@dataclass(frozen=True, order=True)
+class SessionId:
+    platform: str
+    hex: str
+
+    @classmethod
+    def parse(cls, text: str) -> SessionId:
+        """The id whose canonical form is ``text``: lowercase ``cc`` + 32 hex, or ``ds`` + hex."""
+        def bad(why: str) -> BadSessionId:
+            return BadSessionId(f"{text!r} is not a canonical session id ({why}); "
+                                "the form is cc<32 hex> or ds<hex>")
+        if not isinstance(text, str) or len(text) < 2:
+            raise bad("too short")
+        platform, digits = text[:2], text[2:]
+        if platform not in PLATFORMS:
+            raise bad("no platform code")
+        if not _HEX.fullmatch(digits):
+            raise bad("not lowercase hex")
+        if platform == PLATFORM_CLAUDE and len(digits) != 32:
+            raise bad(f"{len(digits)} hex digits, a cc id has 32")
+        return cls(platform, digits)
+
+    @classmethod
+    def from_harness_native(cls, platform: str, raw: str) -> SessionId:
+        """The id of the harness's own session id ``raw``: a Claude session UUID, or a DeepSeek hex id."""
+        try:
+            return cls.parse(platform + (raw or "").strip().lower().replace("-", ""))
+        except BadSessionId:
+            raise BadSessionId(f"{raw!r} is not a {platform} harness session id") from None
+
+    def canonical(self) -> str:
+        return self.platform + self.hex
+
+    def harness_native(self) -> str:
+        """The form the harness itself uses: a dashed UUID for Claude Code, the hex for DeepSeek."""
+        if self.platform != PLATFORM_CLAUDE:
+            return self.hex
+        h = self.hex
+        return f"{h[:8]}-{h[8:12]}-{h[12:16]}-{h[16:20]}-{h[20:]}"
+
+    def job_dir(self) -> str | None:
+        """The name of the session's ``~/.claude/jobs/`` dir. Only Claude Code sessions have one."""
+        return self.hex[:8] if self.platform == PLATFORM_CLAUDE else None
+
+    def __str__(self) -> str:
+        return self.canonical()
 
 
-def normalise(ref: str) -> str:
-    """The R9 id for ``ref``: an R9 id as is, or a bare Claude session UUID.
+@dataclass(frozen=True)
+class Name:
+    """A session's label. It carries no meaning: no routing, no pool state, no id."""
+    text: str
 
-    A job id or a name is not a session id. Resolve it through the harness first.
-    """
-    text = (ref or "").strip().lower()
-    if _UUID.match(text):
-        return r9(PLATFORM_CLAUDE, text)
-    parse_r9(text)
-    return text
+    @classmethod
+    def new(cls, text: str) -> Name:
+        """The name ``text``, trimmed: 1 to 80 characters, no control characters."""
+        t = (text or "").strip()
+        if not t or len(t) > NAME_MAX or any(ord(c) < 32 or 127 <= ord(c) < 160 for c in t):
+            raise BadName(f"a session name is 1 to {NAME_MAX} printable characters, not {text!r}")
+        return cls(t)
 
+    def display(self) -> str:
+        return self.text
 
-def to_r9(ref: object) -> str | None:
-    """``normalise`` that answers None instead of raising, for input that may not be an id."""
-    if not isinstance(ref, str):
-        return None
-    try:
-        return normalise(ref)
-    except BadSessionId:
-        return None
+    def rc(self) -> str:
+        """The name as Claude Code's ``/rc`` takes it: runs outside ``[A-Za-z0-9._-]`` become one ``-``."""
+        out = _RC_RUN.sub("-", self.text).strip("-")[:_RC_MAX].rstrip("-")
+        return out or "session"
 
+    def matches(self, text: str) -> bool:
+        """Whether ``text`` is this whole name, ignoring case and surrounding space."""
+        return self.text.lower() == (text or "").strip().lower()
 
-def claude_uuid(session_id: str) -> str | None:
-    """The dashed Claude session UUID behind an R9 Claude id, else None."""
-    try:
-        platform, raw = parse_r9(session_id)
-    except BadSessionId:
-        return None
-    return raw if platform == PLATFORM_CLAUDE and "-" in raw else None
-
-
-def is_r9(ref: str) -> bool:
-    try:
-        parse_r9(ref)
-    except BadSessionId:
-        return False
-    return True
+    def __str__(self) -> str:
+        return self.text

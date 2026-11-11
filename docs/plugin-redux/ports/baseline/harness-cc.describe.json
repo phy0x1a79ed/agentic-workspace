@@ -6,25 +6,15 @@
       "description": "Take on a job started outside start.",
       "params": [
         {
-          "description": "The session's R9 id.",
+          "description": "The session's canonical id.",
           "name": "session_id",
           "required": false
         },
         {
-          "description": "A job id, a session name or a Claude session UUID.",
-          "name": "ref",
-          "required": false
-        },
-        {
-          "description": "The caller's own pid. With no session_id or ref the verb acts on the session at this pid.",
+          "description": "The caller's own pid. With no session_id the verb acts on the session at this pid.",
           "name": "pid",
           "required": false,
           "type": "integer"
-        },
-        {
-          "description": "The job id.",
-          "name": "job",
-          "required": true
         }
       ],
       "verb": "adopt"
@@ -44,17 +34,12 @@
       "description": "Compact the caller's own session, then type followup.",
       "params": [
         {
-          "description": "The session's R9 id.",
+          "description": "The session's canonical id.",
           "name": "session_id",
           "required": false
         },
         {
-          "description": "A job id, a session name or a Claude session UUID.",
-          "name": "ref",
-          "required": false
-        },
-        {
-          "description": "The caller's own pid. With no session_id or ref the verb acts on the session at this pid.",
+          "description": "The caller's own pid. With no session_id the verb acts on the session at this pid.",
           "name": "pid",
           "required": false,
           "type": "integer"
@@ -113,11 +98,11 @@
       "verb": "daemon_status"
     },
     {
-      "description": "The sessions a ref names.",
+      "description": "The sessions, live or stopped, whose whole name is name, any case.",
       "params": [
         {
-          "description": "",
-          "name": "ref",
+          "description": "The whole session name, any case.",
+          "name": "name",
           "required": true
         }
       ],
@@ -127,17 +112,12 @@
       "description": "Press Escape in a session.",
       "params": [
         {
-          "description": "The session's R9 id.",
+          "description": "The session's canonical id.",
           "name": "session_id",
           "required": false
         },
         {
-          "description": "A job id, a session name or a Claude session UUID.",
-          "name": "ref",
-          "required": false
-        },
-        {
-          "description": "The caller's own pid. With no session_id or ref the verb acts on the session at this pid.",
+          "description": "The caller's own pid. With no session_id the verb acts on the session at this pid.",
           "name": "pid",
           "required": false,
           "type": "integer"
@@ -149,17 +129,12 @@
       "description": "A session's claude.ai link.",
       "params": [
         {
-          "description": "The session's R9 id.",
+          "description": "The session's canonical id.",
           "name": "session_id",
           "required": false
         },
         {
-          "description": "A job id, a session name or a Claude session UUID.",
-          "name": "ref",
-          "required": false
-        },
-        {
-          "description": "The caller's own pid. With no session_id or ref the verb acts on the session at this pid.",
+          "description": "The caller's own pid. With no session_id the verb acts on the session at this pid.",
           "name": "pid",
           "required": false,
           "type": "integer"
@@ -198,17 +173,12 @@
       "description": "Reconnect, enable or disable a session's MCP servers.",
       "params": [
         {
-          "description": "The session's R9 id.",
+          "description": "The session's canonical id.",
           "name": "session_id",
           "required": false
         },
         {
-          "description": "A job id, a session name or a Claude session UUID.",
-          "name": "ref",
-          "required": false
-        },
-        {
-          "description": "The caller's own pid. With no session_id or ref the verb acts on the session at this pid.",
+          "description": "The caller's own pid. With no session_id the verb acts on the session at this pid.",
           "name": "pid",
           "required": false,
           "type": "integer"
@@ -296,17 +266,12 @@
       "description": "Turn Remote Control on or off.",
       "params": [
         {
-          "description": "The session's R9 id.",
+          "description": "The session's canonical id.",
           "name": "session_id",
           "required": false
         },
         {
-          "description": "A job id, a session name or a Claude session UUID.",
-          "name": "ref",
-          "required": false
-        },
-        {
-          "description": "The caller's own pid. With no session_id or ref the verb acts on the session at this pid.",
+          "description": "The caller's own pid. With no session_id the verb acts on the session at this pid.",
           "name": "pid",
           "required": false,
           "type": "integer"
@@ -341,17 +306,12 @@
       "description": "Bring back a stopped session, or a retired one in a new job, from its transcript.",
       "params": [
         {
-          "description": "The session's R9 id.",
+          "description": "The session's canonical id.",
           "name": "session_id",
           "required": false
         },
         {
-          "description": "A job id, a session name or a Claude session UUID.",
-          "name": "ref",
-          "required": false
-        },
-        {
-          "description": "The caller's own pid. With no session_id or ref the verb acts on the session at this pid.",
+          "description": "The caller's own pid. With no session_id the verb acts on the session at this pid.",
           "name": "pid",
           "required": false,
           "type": "integer"
@@ -379,17 +339,12 @@
       "description": "Type text or a slash command into a session and submit it.",
       "params": [
         {
-          "description": "The session's R9 id.",
+          "description": "The session's canonical id.",
           "name": "session_id",
           "required": false
         },
         {
-          "description": "A job id, a session name or a Claude session UUID.",
-          "name": "ref",
-          "required": false
-        },
-        {
-          "description": "The caller's own pid. With no session_id or ref the verb acts on the session at this pid.",
+          "description": "The caller's own pid. With no session_id the verb acts on the session at this pid.",
           "name": "pid",
           "required": false,
           "type": "integer"
@@ -429,17 +384,12 @@
       "description": "Set a session's model, effort, name or folder.",
       "params": [
         {
-          "description": "The session's R9 id.",
+          "description": "The session's canonical id.",
           "name": "session_id",
           "required": false
         },
         {
-          "description": "A job id, a session name or a Claude session UUID.",
-          "name": "ref",
-          "required": false
-        },
-        {
-          "description": "The caller's own pid. With no session_id or ref the verb acts on the session at this pid.",
+          "description": "The caller's own pid. With no session_id the verb acts on the session at this pid.",
           "name": "pid",
           "required": false,
           "type": "integer"
@@ -596,7 +546,7 @@
           "required": false
         },
         {
-          "description": "The job this session replaces. Its last turns are appended to the prompt, it is stopped (and removed when pinned) if cx started it, and the new job's lineage records it.",
+          "description": "The session_id this session replaces. Its last turns are appended to the prompt, it is stopped (and removed when pinned) if cx started it, and the new session's lineage records it.",
           "name": "replaces",
           "required": false
         },
@@ -646,17 +596,12 @@
       "description": "A session's live state.",
       "params": [
         {
-          "description": "The session's R9 id.",
+          "description": "The session's canonical id.",
           "name": "session_id",
           "required": false
         },
         {
-          "description": "A job id, a session name or a Claude session UUID.",
-          "name": "ref",
-          "required": false
-        },
-        {
-          "description": "The caller's own pid. With no session_id or ref the verb acts on the session at this pid.",
+          "description": "The caller's own pid. With no session_id the verb acts on the session at this pid.",
           "name": "pid",
           "required": false,
           "type": "integer"
@@ -668,17 +613,12 @@
       "description": "Stop a session and remove its job. With keep, the job stays and a resume brings it back: only a wait keeps it.",
       "params": [
         {
-          "description": "The session's R9 id.",
+          "description": "The session's canonical id.",
           "name": "session_id",
           "required": false
         },
         {
-          "description": "A job id, a session name or a Claude session UUID.",
-          "name": "ref",
-          "required": false
-        },
-        {
-          "description": "The caller's own pid. With no session_id or ref the verb acts on the session at this pid.",
+          "description": "The caller's own pid. With no session_id the verb acts on the session at this pid.",
           "name": "pid",
           "required": false,
           "type": "integer"
