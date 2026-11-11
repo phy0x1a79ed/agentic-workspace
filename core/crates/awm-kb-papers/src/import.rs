@@ -72,7 +72,7 @@ pub async fn run(opts: &Opts) -> Result<Value> {
         build(opts, &dir, &embedder).await?
     } else {
         let current = std::fs::read_to_string(opts.root.join(CURRENT)).context("a domain update needs a current generation")?;
-        clone_generation(&opts.root.join(current.trim()), &dir)?;
+        clone_generation(&opts.root.join(current.trim()), &dir, false)?;
         update(opts, &dir).await?
     };
     make_current(&opts.root, &name)?;
@@ -85,10 +85,6 @@ pub async fn build(opts: &Opts, dir: &Path, embedder: &dyn Embedder) -> Result<V
     let started = std::time::Instant::now();
 
     let mut papers = registry(&opts.semdb.join("registry"))?;
-    let (cites, cited_by) = match &opts.graph {
-        Some(g) => citations(g)?,
-        None => Default::default(),
-    };
     let items = match &opts.zotero {
         Some(p) => zotero_items(p)?,
         None => vec![],
@@ -96,11 +92,7 @@ pub async fn build(opts: &Opts, dir: &Path, embedder: &dyn Embedder) -> Result<V
     let held = join_library(&mut papers, &items);
 
     let index = Store::open(&dir.join("lance")).await?.index(spec()).await?;
-    let entries = write_entries(&index, &opts.semdb, &papers, &cites, &cited_by).await?;
-    let mut chunks = 0;
-    for zone in ["titles", "abstracts", "chunks"] {
-        chunks += write_chunks(&index, &opts.semdb, zone, &papers).await?;
-    }
+    let (entries, chunks) = write_papers(&index, opts, &papers).await?;
     let held_n = held.len();
     if !held.is_empty() {
         let written = index.upsert(&held, Some(embedder)).await?;
@@ -129,10 +121,6 @@ pub async fn update(opts: &Opts, dir: &Path) -> Result<Value> {
     let mut papers = registry(&opts.semdb.join("registry"))?;
     papers.retain(|_, p| p.collections.iter().any(|c| opts.domains.contains(c)));
     anyhow::ensure!(!papers.is_empty(), "semdb holds no paper in {:?}", opts.domains);
-    let (cites, cited_by) = match &opts.graph {
-        Some(g) => citations(g)?,
-        None => Default::default(),
-    };
     let index = Store::open(&dir.join("lance")).await?.index(spec()).await?;
     let ids: Vec<String> = papers.keys().cloned().collect();
     for hit in index.hits(&ids).await? {
@@ -144,11 +132,7 @@ pub async fn update(opts: &Opts, dir: &Path) -> Result<Value> {
         }
     }
     let replaced = index.delete(&ids).await?;
-    let entries = write_entries(&index, &opts.semdb, &papers, &cites, &cited_by).await?;
-    let mut chunks = 0;
-    for zone in ["titles", "abstracts", "chunks"] {
-        chunks += write_chunks(&index, &opts.semdb, zone, &papers).await?;
-    }
+    let (entries, chunks) = write_papers(&index, opts, &papers).await?;
     index.optimize().await?;
     Ok(json!({
         "generation": dir.file_name().map(|n| n.to_string_lossy().into_owned()),
@@ -160,21 +144,32 @@ pub async fn update(opts: &Opts, dir: &Path) -> Result<Value> {
     }))
 }
 
+/// Write `papers`' entries, with their citations, and their chunks in every zone. Returns
+/// `(entries, chunks)`.
+async fn write_papers(index: &Index, opts: &Opts, papers: &HashMap<String, Paper>) -> Result<(usize, usize)> {
+    let (cites, cited_by) = match &opts.graph {
+        Some(g) => citations(g)?,
+        None => Default::default(),
+    };
+    let entries = write_entries(index, &opts.semdb, papers, &cites, &cited_by).await?;
+    let mut chunks = 0;
+    for zone in ["titles", "abstracts", "chunks"] {
+        chunks += write_chunks(index, &opts.semdb, zone, papers).await?;
+    }
+    Ok((entries, chunks))
+}
+
 /// Copy generation `from` to `to`. Lance never rewrites a data or index file, so those are
 /// hardlinked and cost no disk. Every other file is copied, because something rewrites it in
 /// place: the manifests, the Zotero cursor, the vector index's trained count.
-fn clone_generation(from: &Path, to: &Path) -> Result<()> {
-    clone_tree(from, to, false)
-}
-
-fn clone_tree(from: &Path, to: &Path, immutable: bool) -> Result<()> {
+fn clone_generation(from: &Path, to: &Path, immutable: bool) -> Result<()> {
     std::fs::create_dir_all(to)?;
     for entry in std::fs::read_dir(from)? {
         let entry = entry?;
         let (src, dest) = (entry.path(), to.join(entry.file_name()));
         let immutable = immutable || matches!(entry.file_name().to_str(), Some("data" | "_indices" | "model"));
         if entry.file_type()?.is_dir() {
-            clone_tree(&src, &dest, immutable)?;
+            clone_generation(&src, &dest, immutable)?;
         } else if immutable {
             std::fs::hard_link(&src, &dest)?;
         } else {

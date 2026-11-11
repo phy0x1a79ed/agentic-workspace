@@ -277,6 +277,10 @@ def _peer_or_operator(as_: str | None, verb: str) -> None:
         raise PermissionError(f"{verb} is open to the operator and to peers only")
 
 
+def _held_library() -> dict[str, Any]:
+    return sync.held(vault.Vault()).read()
+
+
 def items_page(library: dict[str, Any], since: dict[str, int], offset: int, limit: int) -> dict[str, Any]:
     """One page of ``library``'s items that moved past ``since``, oldest version first."""
     moved = [i for i in library.get("items") or []
@@ -298,16 +302,17 @@ async def _h_items(args: dict, as_: str | None = None) -> dict:
     since = {str(k): int(v) for k, v in since.items()}
     wait = max(0, min(int(args.get("wait") or 0), WAIT_MAX_S))
     moved = MOVED
-    page = items_page(await asyncio.to_thread(lambda: sync.held(vault.Vault()).read()),
-                      since, offset, limit)
+
+    async def _page() -> dict:
+        return items_page(await asyncio.to_thread(_held_library), since, offset, limit)
+    page = await _page()
     if page["total"] or not wait:
         return page
     try:
         await asyncio.wait_for(moved.wait(), wait)
     except TimeoutError:
         return page
-    return items_page(await asyncio.to_thread(lambda: sync.held(vault.Vault()).read()),
-                      since, offset, limit)
+    return await _page()
 
 
 async def _h_add(args: dict, as_: str | None = None) -> dict:
@@ -317,7 +322,7 @@ async def _h_add(args: dict, as_: str | None = None) -> dict:
         raise ValueError("fields must be an object of Zotero item fields")
 
     def _add() -> dict:
-        held = sync.held(vault.Vault()).read().get("items") or []
+        held = _held_library().get("items") or []
         return add.add(doi=(args.get("doi") or "").strip(),
                        url=(args.get("url") or "").strip(),
                        fields=fields, held=held)
@@ -326,9 +331,12 @@ async def _h_add(args: dict, as_: str | None = None) -> dict:
 
 async def _h_pull(args: dict, as_: str | None = None) -> dict:
     _operator_only(as_, "pull")
-    return await asyncio.to_thread(
+    result = await asyncio.to_thread(
         sync.pull, vault.Vault(), force=bool(args.get("force")),
         may_create=MAY_CREATE_ROOT)
+    if (result or {}).get("changed"):
+        _bundle_moved()
+    return result
 
 
 async def _h_apply(args: dict, as_: str | None = None) -> dict:

@@ -12,6 +12,7 @@ import json
 import re
 import urllib.parse
 import urllib.request
+from collections.abc import Iterable
 from typing import Any
 
 from awm.zotero import source
@@ -102,12 +103,13 @@ def collection_key() -> str:
 
 
 def add(*, doi: str = "", url: str = "", fields: dict[str, Any] | None = None,
-        held: list[dict[str, Any]] = ()) -> dict[str, Any]:
+        held: Iterable[dict[str, Any]] = ()) -> dict[str, Any]:
     """File one item, unless `held` (the mirrored items) already has its DOI."""
     fields = dict(fields or {})
     if doi:
         doi = norm_doi(doi)
-        have = next((i for i in held if (i.get("doi") or "").lower() == doi), None)
+        have = next((i for i in held if _DOI.search(i.get("doi") or "")
+                     and norm_doi(i["doi"]) == doi), None)
         if have:
             return {"status": "exists", "key": have.get("key"),
                     "library": have.get("library"), "title": have.get("title")}

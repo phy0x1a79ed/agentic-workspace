@@ -45,7 +45,7 @@ enum Cmd {
         #[arg(long)]
         zotero: Option<std::path::PathBuf>,
         /// The bge-large-en-v1.5 model files. A domain update keeps the current generation's.
-        #[arg(long)]
+        #[arg(long, required_unless_present = "domains", conflicts_with = "domains")]
         model: Option<std::path::PathBuf>,
         /// The papers root to write into; default `<AWM_DIR>/services/kb/lance/papers`.
         #[arg(long)]

@@ -75,14 +75,21 @@ fn zotero_peer() -> Option<String> {
     std::env::var("AWM_ZOTERO_PEER").ok().filter(|p| !p.is_empty() && p != "local")
 }
 
+/// A zotero reply, unwrapped from the `result` a routed call puts it in.
+fn page(reply: Value) -> Value {
+    match reply.get("result") {
+        Some(inner) if reply.get("items").is_none() => inner.clone(),
+        _ => reply,
+    }
+}
+
 /// Every item that moved since `since`, page by page, with the library versions at the end.
 async fn moved(hub: &Hub, since: &BTreeMap<String, i64>) -> Result<Vec<Map<String, Value>>> {
     let peer = zotero_peer();
     let mut out = Vec::new();
     let mut offset = Some(0u64);
     while let Some(at) = offset {
-        let reply = hub.call("zotero", "items", json!({"since": since, "offset": at, "limit": PAGE}), peer.as_deref()).await?;
-        let page = if reply.get("items").is_none() { reply.get("result").cloned().unwrap_or_default() } else { reply };
+        let page = page(hub.call("zotero", "items", json!({"since": since, "offset": at, "limit": PAGE}), peer.as_deref()).await?);
         out.extend(page["items"].as_array().into_iter().flatten().filter_map(|i| i.as_object().cloned()));
         offset = page["next"].as_u64();
     }
@@ -149,21 +156,13 @@ async fn sync_due(papers: &Papers) -> bool {
     }
 }
 
-async fn run_once(ctx: &Context, papers: &Papers) -> bool {
+async fn run_once(ctx: &Context, papers: &Papers) -> Result<()> {
     let _one = SYNCING.lock().await;
     let started = std::time::Instant::now();
-    let ok = match papers.sync(ctx.hub()).await {
-        Ok(v) => {
-            tracing::info!("papers: zotero sync: {v}");
-            true
-        }
-        Err(e) => {
-            tracing::warn!("papers: zotero sync failed, retrying at the next session stop: {e:#}");
-            false
-        }
-    };
-    ctx.usage("papers-sync", ok, started.elapsed().as_millis() as u64);
-    ok
+    let out = papers.sync(ctx.hub()).await;
+    ctx.usage("papers-sync", out.is_ok(), started.elapsed().as_millis() as u64);
+    tracing::info!("papers: zotero sync: {}", out?);
+    Ok(())
 }
 
 /// Whether zotero holds an item past the served cursor, waiting up to [`WAIT_S`] for one.
@@ -171,23 +170,19 @@ async fn moved_past(hub: &Hub, papers: &Papers) -> Result<bool> {
     let g = papers.generation().await.map_err(|e| anyhow::anyhow!(e.0))?;
     let since = Cursor::load(&papers.root.join(&g.name)).versions;
     let opts = CallOpts { peer: zotero_peer(), timeout: Duration::from_secs(WAIT_S + 30), ..CallOpts::default() };
-    let reply = hub.call_with("zotero", "items", json!({"since": since, "limit": 1, "wait": WAIT_S}), &opts).await?;
-    let page = reply.get("result").filter(|_| reply.get("total").is_none()).unwrap_or(&reply);
-    Ok(page["total"].as_u64().unwrap_or(0) > 0)
+    let reply = page(hub.call_with("zotero", "items", json!({"since": since, "limit": 1, "wait": WAIT_S}), &opts).await?);
+    Ok(reply["total"].as_u64().unwrap_or(0) > 0)
 }
 
 /// Sync each time zotero answers the long poll with a moved item.
 async fn watch(ctx: Context, papers: Arc<Papers>) {
     loop {
-        let synced = match moved_past(ctx.hub(), &papers).await {
+        let step = match moved_past(ctx.hub(), &papers).await {
             Ok(true) => run_once(&ctx, &papers).await,
-            Ok(false) => true,
-            Err(e) => {
-                tracing::info!("papers: zotero long poll failed, retrying in {}s: {e:#}", RETRY.as_secs());
-                false
-            }
+            moved => moved.map(drop),
         };
-        if !synced {
+        if let Err(e) = step {
+            tracing::info!("papers: zotero watch, retrying in {}s: {e:#}", RETRY.as_secs());
             tokio::time::sleep(RETRY).await;
         }
     }
@@ -205,7 +200,9 @@ pub async fn follow(ctx: Context, papers: Arc<Papers>) {
         let (ctx, papers) = (ctx.clone(), papers.clone());
         async move {
             if event.get("event").and_then(Value::as_str) == Some("stopped") && sync_due(&papers).await {
-                run_once(&ctx, &papers).await;
+                if let Err(e) = run_once(&ctx, &papers).await {
+                    tracing::warn!("papers: zotero sync failed: {e:#}");
+                }
             }
             Ok(())
         }
