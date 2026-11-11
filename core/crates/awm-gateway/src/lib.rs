@@ -12,6 +12,7 @@ pub mod install;
 pub mod isolated;
 pub mod lifecycle;
 pub mod loader;
+pub mod loopback;
 pub mod modes;
 pub mod mount;
 pub mod native;

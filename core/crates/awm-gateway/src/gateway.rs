@@ -279,17 +279,24 @@ impl Gateway {
         }
     }
 
+    /// Whether `token` is the one `service` proves itself with.
+    pub fn token_matches(&self, service: &str, token: &str) -> bool {
+        let token = token.trim();
+        !token.is_empty()
+            && self
+                .token_file_of(service)
+                .and_then(|p| std::fs::read_to_string(p).ok())
+                .is_some_and(|expected| expected.trim() == token)
+    }
+
     /// The registered service whose token is `token`, if any.
     pub fn service_of_token(&self, token: &str) -> Option<String> {
-        let token = token.trim();
-        if token.is_empty() {
-            return None;
-        }
-        self.hub.services().into_iter().map(|s| s.name).find(|name| {
-            self.token_file_of(name)
-                .and_then(|p| std::fs::read_to_string(p).ok())
-                .is_some_and(|expected| !expected.trim().is_empty() && expected.trim() == token)
-        })
+        self.hub.services().into_iter().map(|s| s.name).find(|name| self.token_matches(name, token))
+    }
+
+    /// Whether `token` names a registered service, or an `[[external]]` one that may register.
+    pub fn knows_token(&self, token: &str) -> bool {
+        self.service_of_token(token).is_some() || self.cfg().external.iter().any(|e| self.token_matches(&e.service, token))
     }
 
     pub fn plugin_of_service(&self, service: &str) -> String {
@@ -763,9 +770,10 @@ impl Gateway {
         let (was, now) = (services(&old_refs, &old_cfg), services(&fresh, &cfg));
         let restarting: BTreeSet<&str> =
             restarted.iter().flat_map(|n| old[n].services.iter().map(|s| s.name.as_str())).collect();
+        // An external service restarts after its plugin's install hooks, in `install_external`.
         let stopping: Vec<String> = was
             .iter()
-            .filter(|(n, was_on)| restarting.contains(n.as_str()) || (**was_on && now.get(*n) != Some(&true)))
+            .filter(|(n, was_on)| (restarting.contains(n.as_str()) && cfg.external(n).is_none()) || (**was_on && now.get(*n) != Some(&true)))
             .map(|(n, _)| n.clone())
             .collect();
         let starting: Vec<loader::ServiceSpec> = fresh
@@ -775,6 +783,11 @@ impl Gateway {
             .cloned()
             .collect();
 
+        let externals: Vec<String> = fresh
+            .values()
+            .filter(|p| p.services.iter().any(|s| s.enabled && cfg.external(&s.name).is_some()))
+            .map(|p| p.name.clone())
+            .collect();
         if !request.restart.is_empty() || !stopping.is_empty() || !starting.is_empty() {
             tracing::info!(
                 "reload: restart {:?} (force {}), stop {stopping:?}, start {:?}",
@@ -798,6 +811,9 @@ impl Gateway {
             changes
         };
         self.hub.changed.notify_waiters();
+        for p in &externals {
+            crate::supervisor::install_external(&gw, p, restarted.contains(p));
+        }
         for spec in starting.clone() {
             if request.force && restarting.contains(spec.name.as_str()) {
                 crate::supervisor::force_start(&gw, spec);

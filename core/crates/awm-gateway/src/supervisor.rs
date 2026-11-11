@@ -183,7 +183,7 @@ fn start_inner(gw: &Arc<Gateway>, spec: ServiceSpec, adopted: Option<Adopted>, f
         return;
     }
     if gw.cfg().external(&spec.name).is_some() {
-        tracing::info!("service {}: external, waiting for it to register", spec.name);
+        install_external(gw, &spec.plugin, false);
         return;
     }
     let mut tasks = gw.supervisor.tasks();
@@ -206,6 +206,45 @@ fn start_inner(gw: &Arc<Gateway>, spec: ServiceSpec, adopted: Option<Adopted>, f
     let name = spec.name.clone();
     let (gw2, flag) = (gw.clone(), retired.clone());
     tasks.insert(name, (retired, tokio::spawn(async move { run_service(gw2, spec, flag, adopted).await })));
+}
+
+/// Run the install hooks of an external plugin, whose own unit runs its services. The old
+/// process keeps serving meanwhile. When the hooks ran, or `restart` asks, each of the plugin's
+/// external services hears `shutdown`, and its unit respawns it on the new install.
+pub fn install_external(gw: &Arc<Gateway>, plugin: &str, restart: bool) {
+    if !gw.hooks.begin(plugin) {
+        return;
+    }
+    let (gw, plugin) = (gw.clone(), plugin.to_string());
+    tokio::spawn(async move {
+        match crate::hooks::ensure(&gw, &plugin).await {
+            Ok(ran) if ran || restart => {
+                let cfg = gw.cfg();
+                let load = gw.read_load();
+                let names = load.plugins.iter().filter(|p| p.name == plugin).flat_map(|p| p.services.iter());
+                for s in names.filter(|s| s.enabled && cfg.external(&s.name).is_some()) {
+                    if !gw.hub.send(&s.name, &json!({"kind": "shutdown"})) {
+                        tracing::warn!("service {}: not registered, so it did not hear shutdown", s.name);
+                    }
+                }
+            }
+            Ok(_) => {}
+            Err(why) => refuse(&gw, &plugin, &why),
+        }
+        gw.hooks.end(&plugin);
+    });
+}
+
+/// Refuse a plugin whose install hook failed. Its own task reloads, so a caller inside a
+/// reload never waits on itself.
+fn refuse(gw: &Arc<Gateway>, plugin: &str, why: &str) {
+    tracing::error!("plugin {plugin}: refused: {why}");
+    let gw = gw.clone();
+    tokio::spawn(async move {
+        if let Err(e) = gw.reload_needs().await {
+            tracing::warn!("reload after a failed install hook: {}", e.detail);
+        }
+    });
 }
 
 /// Stand some services down for a plugin change: `shutdown`, a grace period, then signals.
@@ -263,14 +302,7 @@ async fn run_service(gw: Arc<Gateway>, spec: ServiceSpec, retired: Arc<AtomicBoo
             }
             None => {
                 if let Err(why) = crate::hooks::ensure(&gw, &spec.plugin).await {
-                    tracing::error!("plugin {}: refused: {why}", spec.plugin);
-                    // Its own task stands this one down, so the reload never waits on itself.
-                    let gw = gw.clone();
-                    tokio::spawn(async move {
-                        if let Err(e) = gw.reload_needs().await {
-                            tracing::warn!("reload after a failed install hook: {}", e.detail);
-                        }
-                    });
+                    refuse(&gw, &spec.plugin, &why);
                     break;
                 }
                 if done() {
