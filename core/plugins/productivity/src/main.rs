@@ -1,10 +1,11 @@
 //! The productivity plugin: Tony's own mail, chats and drives, read and staged, never sent.
 //!
 //! `productivity` serves the plugin on alcor. `productivity gdrive-auth` mints a Google Drive
-//! refresh token. Every verb runs [`admit`] first: only sessions on the nodes in `callers` are
-//! served, and never a seat.
+//! refresh token. Slack, Teams and Discord chats go through alcor's shared browser. Every verb
+//! runs [`admit`] first: only sessions on the nodes in `callers` are served, and never a seat.
 
 mod buckets;
+mod chat;
 mod config;
 mod gmail;
 mod slack;
@@ -69,6 +70,9 @@ async fn dispatch(app: Arc<Productivity>, name: &str, call: Call) -> std::result
         "search" => app.search(call).await,
         "download_attachments" => app.download_attachments(call).await,
         "draft" => app.draft(call).await,
+        "chat_read" => app.chat_read(call).await,
+        "chat_download" => app.chat_download(call).await,
+        "chat_stage" => app.chat_stage(call).await,
         "buckets" => app.buckets_verb().await,
         "bucket_ls" => app.bucket_ls(call).await,
         "bucket_stat" => app.bucket_stat(call).await,

@@ -28,7 +28,7 @@ pub const MAX_INLINE_BYTES: u64 = 24 << 20;
 pub const MAX_REQUEST_BYTES: usize = 64 << 20;
 
 /// The verbs whose `file` argument is a path on the caller's node: `(tool, verb)`.
-const FILE_VERBS: &[(&str, &str)] = &[("social", "send"), ("seats", "send"), ("productivity", "draft"), ("productivity", "bucket_put")];
+const FILE_VERBS: &[(&str, &str)] = &[("social", "send"), ("seats", "send"), ("productivity", "draft"), ("productivity", "chat_stage"), ("productivity", "bucket_put")];
 
 /// Read the local files a verb in [`FILE_VERBS`] names, `file` and each path string in `files`,
 /// and carry their bytes in `files` instead.

@@ -158,6 +158,97 @@
       ]
     },
     {
+      "name": "chat_read",
+      "tool": "productivity_chat_read",
+      "description": "Read Tony's Slack, Teams or Discord through his signed-in tab in alcor's browser. Without `chat`, lists the site's chats as {id, name, kind}. With `chat` (an id, or a name that matches one chat), returns its last `limit` messages, oldest first, with each attachment's `idx`. Discord's tab opens for the call and closes after it.",
+      "timeout": 120,
+      "params": [
+        {
+          "name": "site",
+          "type": "string",
+          "required": true,
+          "description": "slack, teams or discord."
+        },
+        {
+          "name": "chat",
+          "type": "string",
+          "required": false,
+          "description": "A chat id or name. Omit to list the chats."
+        },
+        {
+          "name": "limit",
+          "type": "number",
+          "required": false,
+          "description": "Messages to return, 1 to 100. Default 30."
+        }
+      ]
+    },
+    {
+      "name": "chat_download",
+      "tool": "productivity_chat_download",
+      "description": "Download a chat message's attachments to a fresh temp dir on the node you call from. `message_id` is the `id` chat_read gave; `idx` selects one attachment. 24 MiB in all.",
+      "timeout": 300,
+      "params": [
+        {
+          "name": "site",
+          "type": "string",
+          "required": true,
+          "description": "slack, teams or discord."
+        },
+        {
+          "name": "chat",
+          "type": "string",
+          "required": true,
+          "description": "A chat id or name."
+        },
+        {
+          "name": "message_id",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "idx",
+          "type": "number",
+          "required": false
+        }
+      ]
+    },
+    {
+      "name": "chat_stage",
+      "tool": "productivity_chat_stage",
+      "description": "Put files in a chat's compose box in alcor's browser for Tony to send himself; nothing is sent. `file` is a path on your own node, `files` several, `bucket_files` drive files as [{bucket, path}]. 24 MiB in all. Returns a screenshot of the tab as a file, so you can check the files landed. Tony sends through `browser viewer`.",
+      "timeout": 180,
+      "params": [
+        {
+          "name": "site",
+          "type": "string",
+          "required": true,
+          "description": "slack, teams or discord."
+        },
+        {
+          "name": "chat",
+          "type": "string",
+          "required": true,
+          "description": "A chat id or name."
+        },
+        {
+          "name": "file",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "files",
+          "type": "array",
+          "required": false
+        },
+        {
+          "name": "bucket_files",
+          "type": "array",
+          "required": false
+        }
+      ]
+    },
+    {
       "name": "buckets",
       "tool": "productivity_buckets",
       "description": "List configured cloud file-store buckets (Google Drive) with kind and root. Each is probed now: `live` is false, with an `error`, when the store does not answer."
