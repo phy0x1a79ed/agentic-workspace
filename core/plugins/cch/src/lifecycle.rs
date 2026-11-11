@@ -987,29 +987,33 @@ async fn start_inner<E: Effects>(fx: &E, args: &Value, as_: Option<&str>) -> Res
     if let Some(replaces) = &spec.replaces {
         record.insert("replaces".into(), json!(replaces));
     }
-    let uuid = uuid::Uuid::new_v4().to_string();
-    let id = ledger::key(&uuid).expect("a v4 uuid is a session id");
+    // `claude --bg` picks the session id itself, so the pending record waits under a random
+    // token until the launch finds the job by its name.
+    let token = ledger::key(&uuid::Uuid::new_v4().to_string()).expect("a v4 uuid is a session id");
     let pending = record.clone();
-    let pending_id = id.clone();
-    blocking(fx, move |fx| write_pending(fx.paths(), &pending_id, &pending)).await?;
+    let pending_token = token.clone();
+    blocking(fx, move |fx| write_pending(fx.paths(), &pending_token, &pending)).await?;
 
     let flagged = spec.clone();
     let mut launch_spec = LaunchSpec::new(fx.paths().claude_bin.clone(), cwd.clone(), spec.name.clone());
     launch_spec.flags = blocking(fx, move |fx| build_flags(fx.paths(), &flagged)).await;
-    launch_spec.flags.push(format!("--session-id={uuid}"));
     launch_spec.prompt = spec.prompt.clone();
     launch_spec.unit_prefix = "awm-cx-start".into();
-    let accept: Accept = Arc::new(move |s: &Job| s.session_id.as_deref() == Some(uuid.as_str()));
+    let name = spec.name.clone();
+    let accept: Accept = Arc::new(move |s: &Job| s.named(&name));
     let session = match fx.launch(launch_spec, accept).await {
         Ok(session) => session,
         Err(LaunchError::Refused(why)) => {
-            let id = id.clone();
-            blocking(fx, move |fx| drop_pending(fx.paths(), &id)).await;
+            let token = token.clone();
+            blocking(fx, move |fx| drop_pending(fx.paths(), &token)).await;
             return Err(Refused::new(why).into());
         }
         // The pending record stays: the job may still appear, and until it is adopted the
         // declared mode applies to it by name.
         Err(e) => return Err(Refused::new(format!("the session did not start: {e}")).into()),
+    };
+    let Some(id) = session.canonical() else {
+        return Err(Refused::new(format!("started {} but it has no session id; the pending record keeps its mode", session.short)).into());
     };
     let mut lineage_rec = record.clone();
     lineage_rec.insert("session_id".into(), json!(id));
@@ -1021,7 +1025,7 @@ async fn start_inner<E: Effects>(fx: &E, args: &Value, as_: Option<&str>) -> Res
                 "started {short} but could not record it ({e}); the pending record keeps its mode"
             ))
         })?;
-        drop_pending(fx.paths(), &key);
+        drop_pending(fx.paths(), &token);
         Ok::<_, Refused>(())
     })
     .await?;
@@ -1413,6 +1417,12 @@ fn started_epoch(rec: &Object) -> f64 {
 
 /// Give each pending record to the job that outlived its launch timeout; the jobs adopted.
 ///
+/// Whether `s` is the late job of the pending start `rec`: the same name, and not older than the
+/// start allowing five seconds of clock skew.
+fn is_late_job_of(s: &Session, rec: &Object) -> bool {
+    text(rec.get("name")).is_some_and(|name| s.named(name)) && s.started_at_ms.unwrap_or(0) as f64 / 1000.0 >= started_epoch(rec) - 5.0
+}
+
 /// A pending record whose job never appeared is dropped after [`PENDING_TTL_S`]. A start in flight
 /// holds the start lock and is left to finish. Reads files: call it off the executor.
 pub fn adopt_pending<E: Effects>(fx: &E, now: Option<f64>) -> Vec<String> {
@@ -1423,19 +1433,21 @@ pub fn adopt_pending<E: Effects>(fx: &E, now: Option<f64>) -> Vec<String> {
         return Vec::new();
     }
     let now = now.unwrap_or_else(|| fx.now());
+    let mut held: BTreeSet<String> = lineage::lineage_records(paths).into_keys().collect();
     let live = Sessions::new(paths, fx.procs()).load();
     let mut adopted = Vec::new();
-    for (id, _) in &pending {
-        let path = paths.pending_path(id);
+    for (token, _) in &pending {
+        let path = paths.pending_path(token);
         // The record as written, so the adopted one keeps its keys in their order.
         let Some(rec) = read_object(&path) else { continue };
-        let late = live.iter().find(|s| s.canonical().as_ref() == Some(id));
+        let late = live.iter().filter(|s| is_late_job_of(s, &rec)).find_map(|s| s.canonical().filter(|id| !held.contains(id)).map(|id| (s, id)));
         let done = match late {
-            Some(late) => {
+            Some((late, id)) => {
                 let mut record = rec.clone();
                 record.insert("session_id".into(), json!(id));
-                write_lineage(paths, id, &record).and_then(|_| std::fs::remove_file(&path)).map(|_| {
-                    adopted.push(id.to_string());
+                write_lineage(paths, &id, &record).and_then(|_| std::fs::remove_file(&path)).map(|_| {
+                    held.insert(id.clone());
+                    adopted.push(id);
                     tracing::info!("cx: adopted {} for the pending start of {}", late.short, py_repr(text(rec.get("name")).unwrap_or_default()));
                 })
             }
@@ -2203,6 +2215,8 @@ mod tests {
     struct Launched {
         spec: LaunchSpec,
         seen_pending: Vec<String>,
+        /// The session id the daemon picked for a start, as `claude --bg` does whatever the flags say.
+        picked: String,
     }
 
     /// A temporary Claude home with a roster the tests add sessions to, and every effect faked.
@@ -2447,19 +2461,16 @@ mod tests {
         }
     }
 
-    /// The job holds the session its launch flags name, as the daemon would.
-    fn register(fx: &Fx, short: &str, spec: &LaunchSpec) -> Job {
+    /// The job holds the session `uuid`, or the one `--resume` names, as the daemon would.
+    fn register(fx: &Fx, short: &str, spec: &LaunchSpec, uuid: &str) -> Job {
         fx.add_full(short, &spec.name, CHILD_PID, &spec.cwd.display().to_string(), "working", BASE_MS);
-        if let Some(uuid) = spec.flags.iter().find_map(|f| f.strip_prefix("--session-id=").or(f.strip_prefix("--resume="))) {
-            set_session(fx, short, uuid);
-        }
+        set_session(fx, short, spec.flags.iter().find_map(|f| f.strip_prefix("--resume=")).unwrap_or(uuid));
         fx.job(short)
     }
 
-    /// The uuid a start launched its last session with.
+    /// The uuid the daemon picked for the last launch.
     fn chosen_uuid(fx: &Fx) -> String {
-        let launches = fx.launches.lock().unwrap();
-        launches.last().unwrap().spec.flags.iter().find_map(|f| f.strip_prefix("--session-id=")).unwrap().to_string()
+        fx.launches.lock().unwrap().last().unwrap().picked.clone()
     }
 
     fn chosen_id(fx: &Fx) -> String {
@@ -2557,14 +2568,12 @@ mod tests {
         /// Records the call and registers the session under the child's pid, as the daemon would.
         async fn launch(&self, spec: LaunchSpec, _accept: Accept) -> Result<Job, LaunchError> {
             let seen_pending = self.pendings();
-            self.launches.lock().unwrap().push(Launched { spec: spec.clone(), seen_pending });
+            let picked = uuid::Uuid::new_v4().to_string();
+            self.launches.lock().unwrap().push(Launched { spec: spec.clone(), seen_pending, picked: picked.clone() });
             let custom = self.launcher.lock().unwrap().clone();
             let mut job = match custom {
                 Some(f) => f(self, &spec)?,
-                None => {
-                    let uuid = spec.flags.iter().find_map(|f| f.strip_prefix("--session-id="));
-                    register(self, uuid.map_or(CHILD_JOB, |u| &u[..8]), &spec)
-                }
+                None => register(self, &picked[..8], &spec, &picked),
             };
             if let Some(sid) = self.session_id.lock().unwrap().clone() {
                 job.session_id = Some(sid);
@@ -2781,10 +2790,11 @@ mod tests {
         w.fail_launch(true);
         start_fit(&w, on(json!({"mode": "representative"}))).await;
         assert!(adopt_pending(&w, None).is_empty(), "no job has appeared yet");
+        w.add_full(CHILD_JOB, "other", CHILD_PID, "/home/user", "working", now_ms());
+        assert!(adopt_pending(&w, None).is_empty(), "a job of another name is not the start");
         w.add_full(CHILD_JOB, "demo", CHILD_PID, "/home/user", "working", now_ms());
-        assert!(adopt_pending(&w, None).is_empty(), "a job of the same name is not the start");
         set_session(&w, CHILD_JOB, &chosen_uuid(&w));
-        assert_eq!(adopt_pending(&w, None), [chosen_id(&w)]);
+        assert_eq!(adopt_pending(&w, None), [chosen_id(&w)], "the new job of the start's name is");
         assert!(w.pendings().is_empty());
         assert_eq!(read_lineage(&w.paths, &chosen_id(&w)).unwrap()["mode"], json!("representative"));
         assert_eq!(w.mode_of(CHILD_PID.into()).as_deref(), Some("representative"));
@@ -2982,7 +2992,7 @@ mod tests {
 
     /// A launcher that registers a new job for a resume from the transcript.
     fn relaunched(w: &World) {
-        w.on_launch(|fx, spec| Ok(register(fx, "feedface", spec)));
+        w.on_launch(|fx, spec| Ok(register(fx, "feedface", spec, "")));
     }
 
     fn retired_transcript(w: &World, cwd: &Path) {

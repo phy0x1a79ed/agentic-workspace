@@ -13,7 +13,6 @@ use awm_harness::claude::ClaudeHome;
 use crate::ledger::{self, Stage};
 use crate::lineage::Processes;
 use crate::pool::{Pool, Terminals};
-use crate::sessions::Sessions;
 
 /// Sessions are named so they read as tooling in `claude agents` and nobody deletes one thinking
 /// it is abandoned work.
@@ -130,29 +129,19 @@ where
         return Err(LaunchError::Refused(format!("cannot make the seed directory {}: {e}", paths.seed_dir.display())));
     }
     trust::grant_plain_dir(&paths.seed_dir, &paths.home).await;
-    let uuid = uuid::Uuid::new_v4().to_string();
-    let id = ledger::key(&uuid).expect("a v4 uuid is a session id");
     let mut spec = LaunchSpec::new(&paths.claude_bin, &paths.seed_dir, noun());
     spec.flags = paths.seed_flags();
-    spec.flags.extend(["--session-id".into(), uuid.clone()]);
     spec.env = paths.seed_env();
     spec.unit_prefix = UNIT_PREFIX.into();
     spec.label = "warm".into();
-    let procs = &pool.procs;
-    let accept = move |new: &Job| {
-        let s = Sessions::new(paths, procs);
-        new.session_id.as_deref() == Some(uuid.as_str()) && s.claimable(new, s.binary_version().as_deref(), None)
+    let name = spec.name.clone();
+    let s = launcher.launch(&paths.home, &spec, move |new: &Job| new.named(&name)).await?;
+    let Some(id) = s.canonical() else {
+        return Err(LaunchError::Refused(format!("the warm session {} has no session id", s.short)));
     };
     if let Err(e) = ledger::set(&paths.ledger_path(), &id, Stage::Spare) {
         return Err(LaunchError::Refused(format!("cannot write the pool ledger: {e}")));
     }
-    let s = match launcher.launch(&paths.home, &spec, accept).await {
-        Ok(s) => s,
-        Err(e) => {
-            ledger::remove(&paths.ledger_path(), &id);
-            return Err(e);
-        }
-    };
     tracing::info!("cx: seeded {} as {}", s.name, s.short);
     Ok(id)
 }
@@ -200,13 +189,13 @@ pub(crate) mod tests {
             accept: impl Fn(&Job) -> bool + Send + Sync,
         ) -> Result<Job, LaunchError> {
             self.launched.lock().unwrap().push(spec.clone());
-            let uuid = spec.flags.iter().skip_while(|f| *f != "--session-id").nth(1).unwrap();
             let mut roster: serde_json::Value = serde_json::from_slice(&std::fs::read(home.roster()).unwrap()).unwrap();
-            roster["workers"]["warmfresh"]["sessionId"] = uuid.as_str().into();
+            roster["workers"]["warmfresh"]["dispatch"]["seed"]["name"] = spec.name.as_str().into();
             std::fs::write(home.roster(), roster.to_string()).unwrap();
+            // The real launch looks only at jobs that are new; here that is `warmfresh`.
             roster::load(home)
                 .into_iter()
-                .find(|j| accept(j))
+                .find(|j| j.short == "warmfresh" && accept(j))
                 .ok_or_else(|| LaunchError::Timeout("no new warm session appeared within 45s".into()))
         }
     }
@@ -226,18 +215,17 @@ pub(crate) mod tests {
         let launcher = FakeLauncher::default();
         let pool = b.pool_with(|p| p.rotate_age_s = 999_999.0);
         std::fs::write(&b.paths.home.trust_file, r#"{"projects":{}}"#).unwrap();
+        let fresh = crate::pool::testing::id_of(0);
+        ledger::remove(&b.paths.ledger_path(), &fresh);
         let seeded = seed_one(&pool, &launcher).await.unwrap();
         let spec = launcher.launched.lock().unwrap()[0].clone();
         assert!(NOUNS.contains(&spec.name.as_str()));
         assert_eq!(spec.unit_prefix, "awm-cx-seed");
         assert_eq!(spec.label, "warm");
         assert_eq!(spec.cwd, b.paths.seed_dir);
-        let (given, id) = spec.flags.split_at(spec.flags.len() - 2);
-        assert_eq!(given, b.paths.seed_flags());
-        assert_eq!(id[0], "--session-id");
-        let key = ledger::key(&id[1]).unwrap();
-        assert_eq!(seeded, key);
-        assert_eq!(ledger::load(&b.paths.ledger_path()).get(&key), Some(&Stage::Spare));
+        assert_eq!(spec.flags, b.paths.seed_flags());
+        assert_eq!(seeded, fresh, "the ledger keys the session id the launch found, not one it chose");
+        assert_eq!(ledger::load(&b.paths.ledger_path()).get(&fresh), Some(&Stage::Spare));
         assert_eq!(spec.env, b.paths.seed_env());
         let trust = std::fs::read_to_string(&b.paths.home.trust_file).unwrap();
         assert!(trust.contains(b.paths.seed_dir.to_str().unwrap()), "{trust}");

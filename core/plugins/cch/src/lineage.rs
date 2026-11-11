@@ -291,7 +291,7 @@ impl<'a> Call<'a> {
             return Err(unread("a background session record carries no job id"));
         };
         let lenient = self.workers(false)?;
-        if let Some(declared) = self.declared(job, self.session_ids(job, lenient.get(job), Some(rec)))? {
+        if let Some(declared) = self.declared(job, lenient.get(job), Some(rec))? {
             return Ok(Some(declared));
         }
         let strict = self.workers(true)?;
@@ -308,7 +308,7 @@ impl<'a> Call<'a> {
         let Some(rec) = rec else { return Ok(None) };
         let Some(parked) = text(rec.get("parkedJobId")).filter(|j| is_job(j)) else { return Ok(None) };
         let workers = self.workers(false)?;
-        self.declared(parked, self.session_ids(parked, workers.get(parked), Some(rec)))
+        self.declared(parked, workers.get(parked), Some(rec))
     }
 
     /// The mode of the nearest ancestor process that is a cx-started session.
@@ -365,7 +365,7 @@ impl<'a> Call<'a> {
             if equals_pid(w.get("replPid"), pid)
                 && self.procs.start(pid).is_some_and(|live| live == py_str(w.get("replProcStart")))
             {
-                if let Some(declared) = self.declared(job, self.session_ids(job, Some(worker), None))? {
+                if let Some(declared) = self.declared(job, Some(worker), None)? {
                     return Ok((true, Some(declared)));
                 }
                 return Ok((true, looks_cx_started(w).then(|| UNKNOWN.into())));
@@ -387,29 +387,27 @@ impl<'a> Call<'a> {
         }
     }
 
-    /// Every session id this job could have been filed under.
-    fn session_ids(&self, job: &str, worker: Option<&Value>, rec: Option<&Object>) -> BTreeSet<String> {
+    /// The mode recorded for one of this job's sessions, else for the pending start of its name.
+    /// Only the files this job could own are read: a damaged record of any other job is not this
+    /// caller's business.
+    fn declared(&self, job: &str, worker: Option<&Value>, rec: Option<&Object>) -> Result<Option<String>, Unread> {
         let state = read_json(&self.paths.home.job_state(job));
-        [object(worker).and_then(|w| w.get("sessionId")), rec.and_then(|r| r.get("sessionId")), state.get("sessionId")]
+        let ids: BTreeSet<String> = [object(worker).and_then(|w| w.get("sessionId")), rec.and_then(|r| r.get("sessionId")), state.get("sessionId")]
             .into_iter()
             .filter_map(text)
             .filter_map(crate::ledger::key)
-            .collect()
-    }
-
-    /// The mode recorded for one of this job's sessions, else for a pending start of one. Only
-    /// the files this job could own are read: a damaged record of any other job is not this
-    /// caller's business.
-    fn declared(&self, job: &str, ids: BTreeSet<String>) -> Result<Option<String>, Unread> {
+            .collect();
         let mut record = None;
         for id in &ids {
-            record = match read_record(&self.paths.lineage_path(id))? {
-                Some(rec) => Some(rec),
-                None => read_record(&self.paths.pending_path(id))?,
-            };
+            record = read_record(&self.paths.lineage_path(id))?;
             if record.is_some() {
                 break;
             }
+        }
+        if record.is_none() {
+            let seed = text(object(worker).and_then(|w| w.get("dispatch")?.get("seed")?.get("name")));
+            let names: Vec<&str> = [text(state.get("name")), seed].into_iter().flatten().collect();
+            record = pending_records(self.paths).into_iter().find(|(_, p)| p.name.as_deref().is_some_and(|n| names.contains(&n))).map(|(_, p)| Object::from(p));
         }
         let Some(record) = record else { return Ok(None) };
         match text(record.get("mode")) {
@@ -537,8 +535,8 @@ pub fn lineage_records(paths: &Paths) -> BTreeMap<String, LineageRecord> {
         .collect()
 }
 
-/// Every readable pending record that names its session, by the canonical id it is filed under.
-/// A file not filed under a canonical session id is a record of an older layout and is skipped.
+/// Every readable pending record that names its session, by the token it is filed under. A file
+/// not filed under a canonical-shaped token is a record of an older layout and is skipped.
 pub fn pending_records(paths: &Paths) -> Vec<(String, LineageRecord)> {
     starts_entries(paths)
         .into_iter()
