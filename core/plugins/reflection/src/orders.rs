@@ -52,7 +52,7 @@ fn order_start(body: &Value) -> Value {
     let p = &body["payload"];
     let mut start = json!({
         "task_id": p["task_id"], "role": "main", "remote_control": true, "suggest": true, "pin": true,
-        "model": text(p, "model").unwrap_or("opus"), "effort": text(p, "effort").unwrap_or("high"),
+        "model": text(p, "model").unwrap_or("opus"), "effort": text(p, "effort").unwrap_or("medium"),
         "started_by": "Tony from the vault", "name": format!("task {}", text(p, "task_id").unwrap_or("order")),
     });
     if let Some(note) = text(p, "note_id") {

@@ -122,6 +122,8 @@ fn the_describe_differs_from_the_baseline_only_by_the_listed_changes() {
         "resume_other: description",
         "resume_other: drops param job",
         "start_other: description",
+        "start_other: param effort changed",
+        "start_other: param model changed",
         "start_other: param role changed",
         "start_other: param suggest changed",
         "stop: adds param to",

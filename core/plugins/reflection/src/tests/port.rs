@@ -317,7 +317,7 @@ async fn an_order_runs_once_reports_once_and_a_bad_one_starts_nothing() {
     assert_eq!(starts.len(), 1, "{starts:?}");
     assert_eq!((starts[0]["remote_control"].clone(), starts[0]["task_id"].clone()), (json!(true), json!("T1")));
     assert!(starts[0].get("prompt").is_none(), "{starts:?}");
-    assert_eq!((starts[0]["pin"].clone(), starts[0]["model"].clone(), starts[0]["effort"].clone()), (json!(true), json!("opus"), json!("high")));
+    assert_eq!((starts[0]["pin"].clone(), starts[0]["model"].clone(), starts[0]["effort"].clone()), (json!(true), json!("opus"), json!("medium")));
     let dones = order_dones(&fx);
     assert_eq!(dones.len(), 1, "{dones:?}");
     assert_eq!((dones[0]["order_id"].clone(), dones[0]["ok"].clone()), (json!("o1"), json!(true)));
