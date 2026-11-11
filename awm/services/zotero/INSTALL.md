@@ -356,7 +356,7 @@ Environment, read at start:
 
 | variable | default | what |
 |---|---|---|
-| `ZOTERO_API_KEY` | empty | a key from `zotero.org/settings/keys`. Required. Read access is all this needs. |
+| `ZOTERO_API_KEY` | empty | a key from `zotero.org/settings/keys`. Required. `add` needs write access to the personal library. |
 | `ZOTERO_USER` | discovered | the account's number. Read from the key when unset, which is one fewer thing to get wrong. |
 | `ZOTERO_API_BASE` | `https://api.zotero.org` | overridable so a test can point elsewhere. |
 | `ZOTERO_GROUPS` | `1` | mirror the group libraries too. |
