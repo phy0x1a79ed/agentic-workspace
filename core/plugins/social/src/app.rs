@@ -951,7 +951,9 @@ impl Social {
                 Value::Object(out)
             }
             Err(e) => {
-                let final_refusal = ["ValueError", "PermissionError", "FirstContactRefused", "FileNotFoundError", "NotImplementedError", "Forbidden", "NotFound"].contains(&e.error_class.as_str());
+                // A platform's 4xx other than a rate limit refuses the message itself: a resend gets the same answer.
+                let client_error = e.error_class == "HTTPException" && e.message.starts_with('4') && !e.message.starts_with("429");
+                let final_refusal = client_error || ["ValueError", "PermissionError", "FirstContactRefused", "FileNotFoundError", "NotImplementedError", "Forbidden", "NotFound"].contains(&e.error_class.as_str());
                 json!({"ok": false, "error": e.message, "error_class": e.error_class, "retry": !final_refusal})
             }
         }

@@ -207,6 +207,15 @@ mod verbs {
     }
 
     #[test]
+    fn a_file_without_bytes_or_a_name_is_refused() {
+        for bad in [json!("/abs/path.md"), json!({"filename": "a.md"}), json!({"text": "t"}), json!({"filename": "", "b64": "eA=="})] {
+            assert_eq!(OutFile::from_value(&bad).unwrap_err().error_class, "ValueError", "{bad}");
+        }
+        assert_eq!(OutFile::from_value(&json!({"path": "/d/r.md"})).unwrap().filename, "r.md");
+        assert_eq!(OutFile::from_value(&json!({"filename": "n.txt", "text": ""})).unwrap().bytes().unwrap(), b"");
+    }
+
+    #[test]
     fn only_operations_on_this_node_flips_remote_control() {
         use crate::app::switch_caller;
         assert!(switch_caller(Some("operations"), false));

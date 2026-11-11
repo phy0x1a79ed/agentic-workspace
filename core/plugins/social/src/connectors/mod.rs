@@ -132,18 +132,29 @@ pub struct OutFile {
 impl OutFile {
     /// `{filename}` plus one of `path`, `b64` or `text`, as `send`'s `files` holds it.
     pub fn from_value(v: &Value) -> Result<Self> {
-        let filename = v.get("filename").and_then(Value::as_str).unwrap_or("").to_string();
-        let body = if let Some(p) = v.get("path").and_then(Value::as_str) {
+        let Some(o) = v.as_object() else {
+            return Err(value(format!("a file is {{filename, path|b64|text}}, not {v}")));
+        };
+        let str_of = |k: &str| o.get(k).and_then(Value::as_str);
+        let body = if let Some(p) = str_of("path") {
             FileBody::Path(PathBuf::from(p))
-        } else if let Some(b) = v.get("b64").and_then(Value::as_str) {
+        } else if let Some(b) = str_of("b64") {
             FileBody::B64(b.to_string())
         } else {
-            FileBody::Text(match v.get("text") {
+            FileBody::Text(match o.get("text") {
                 Some(Value::String(s)) => s.clone(),
-                None | Some(Value::Null) => String::new(),
+                None | Some(Value::Null) => return Err(value(format!("a file needs path, b64 or text: {v}"))),
                 Some(other) => other.to_string(),
             })
         };
+        let filename = match (str_of("filename").filter(|f| !f.is_empty()), &body) {
+            (Some(f), _) => f.to_string(),
+            (None, FileBody::Path(p)) => p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default(),
+            _ => String::new(),
+        };
+        if filename.is_empty() {
+            return Err(value(format!("a file needs a filename: {v}")));
+        }
         Ok(Self { filename, body })
     }
 

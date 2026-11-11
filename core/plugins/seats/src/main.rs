@@ -190,7 +190,7 @@ fn service(svc: Service, app: Arc<App>) -> Service {
     let svc = verb!(
         svc,
         "send",
-        "Answer your seat's chat. With no `channel` it answers your latest pushed line, in its thread. If the link to the chat is down, the reply waits on this node and goes out once. `file` uploads a file from this node (an absolute path, up to 24 MiB). Use `social send` for a chat that is not your seat.",
+        "Answer your seat's chat. With no `channel` it answers your latest pushed line, in its thread. If the link to the chat is down, the reply waits on this node and goes out once. `file` uploads a file from this node (an absolute path); `files` takes several such paths, up to 24 MiB in all. Use `social send` for a chat that is not your seat.",
         json!([param("text", "string", false), param("channel", "string", false), param("thread", "string", false), param("file", "string", false), param("files", "array", false)]),
         send
     );
@@ -248,7 +248,7 @@ async fn main() -> anyhow::Result<()> {
             watch.ensure(&here);
             seats.report_all().await;
             tokio::spawn(seats.clone().tick_forever());
-            tokio::spawn(link.clone().flush_forever());
+            tokio::spawn(link.clone().flush_forever(seats.clone()));
             tokio::spawn(link.pull_forever(seats));
         })
         .run()
