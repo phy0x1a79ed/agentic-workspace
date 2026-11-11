@@ -64,7 +64,8 @@ pub fn restart_list(text: &str) -> Result<String, String> {
 }
 
 fn answers(node: &str) -> bool {
-    sh::bash(&format!("ssh -o BatchMode=yes -o ConnectTimeout=8 {} true", q(node)), Path::new("/"), Duration::from_secs(20), &HashMap::new()).ok()
+    // A sleeper that does not answer stays asleep: its ssh wake hook reads AWM_EDGE_WAKE.
+    sh::bash(&format!("AWM_EDGE_WAKE=0 ssh -o BatchMode=yes -o ConnectTimeout=8 {} true", q(node)), Path::new("/"), Duration::from_secs(20), &HashMap::new()).ok()
 }
 
 /// Run `cmd`, its output appended to `log`. Only a timeout is an error here.
