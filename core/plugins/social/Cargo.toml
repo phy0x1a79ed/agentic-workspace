@@ -1,6 +1,6 @@
 [package]
 name = "awm-plugin-social"
-description = "Chat accounts, cloud buckets and the queue each seat host pulls."
+description = "The bot chat accounts and the queue each seat host pulls."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 awm-plugin-sdk.workspace = true
+awm-chat = { path = "../../crates/awm-chat" }
 awm-statecheck = { path = "../../crates/awm-statecheck" }
 awm-trust.workspace = true
 anyhow.workspace = true
@@ -19,30 +20,21 @@ async-trait.workspace = true
 base64.workspace = true
 chrono.workspace = true
 futures-util.workspace = true
-libc.workspace = true
-mime_guess.workspace = true
-rand.workspace = true
 reqwest = { workspace = true, features = ["multipart", "stream"] }
 rusqlite.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-sha2.workspace = true
-hex.workspace = true
 tempfile.workspace = true
 tokio.workspace = true
 tokio-tungstenite = { workspace = true, features = ["rustls-tls-webpki-roots"] }
 toml.workspace = true
 tracing.workspace = true
-urlencoding.workspace = true
 twilight-gateway.workspace = true
 twilight-http.workspace = true
 twilight-model.workspace = true
 twilight-util.workspace = true
-async-imap.workspace = true
 tokio-rustls.workspace = true
-webpki-roots.workspace = true
-mail-parser.workspace = true
-lettre.workspace = true
 
 [dev-dependencies]
+urlencoding.workspace = true
 axum.workspace = true

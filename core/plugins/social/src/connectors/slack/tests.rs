@@ -16,7 +16,6 @@ use futures_util::{FutureExt, SinkExt};
 use serde_json::{json, Value};
 use tokio::sync::{Notify, Semaphore};
 
-use super::user::SlackUser;
 use super::*;
 use crate::connectors::{FileBody, OutFile};
 use crate::db::{Db, History};
@@ -464,27 +463,4 @@ async fn the_bot_never_writes_first() {
 
     f.lock().unwrap().info.insert("C1".into(), json!({"id": "C1", "is_channel": true}));
     assert!(conn.writable("C1").await.unwrap(), "a channel is always writable");
-}
-
-// -- Tony's account --------------------------------------------------------------
-
-fn own_account(f: &Fake, e: &Env, cfg: AccountConfig) -> Arc<SlackUser> {
-    Arc::new(SlackUser::new(cfg, e.hooks.clone(), &base(f)))
-}
-
-#[tokio::test]
-async fn stale_session_creds_are_refetched_once() {
-    let f = fake().await;
-    f.lock().unwrap().valid_token = Some("xoxc-NEW".into());
-    let e = env();
-    let cmd = r#"printf '{"token":"xoxc-NEW","cookie":"xoxd-NEW"}'"#;
-    let c = own_account(&f, &e, AccountConfig { cookie: Some("xoxd-OLD".into()), creds_cmd: Some(cmd.into()), ..account("own-slack", "xoxc-OLD", None) });
-    let me = c.identity().await.unwrap();
-    assert_eq!(me.id, "UBOT");
-    assert_eq!(f.lock().unwrap().auths, ["Bearer xoxc-OLD", "Bearer xoxc-NEW"]);
-    assert_eq!(f.lock().unwrap().cookies.last().unwrap(), "d=xoxd-NEW");
-
-    // With no creds_cmd there is nothing to refresh.
-    let c = own_account(&f, &e, AccountConfig { cookie: Some("xoxd-OLD".into()), ..account("own-slack", "xoxc-OLD", None) });
-    assert_eq!(c.identity().await.unwrap_err().message, "slack auth.test: invalid_auth");
 }

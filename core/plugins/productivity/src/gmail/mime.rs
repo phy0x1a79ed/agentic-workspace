@@ -8,7 +8,7 @@
 use mail_parser::{Address, Message, MessageParser, PartType};
 use serde_json::json;
 
-use crate::connectors::{Attachment, Downloaded};
+use awm_chat::{Attachment, Downloaded};
 
 /// One MIME part, with the header values as compat32 returns them.
 pub struct Part<'a> {

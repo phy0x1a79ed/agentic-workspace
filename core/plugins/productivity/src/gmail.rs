@@ -1,44 +1,40 @@
-//! Gmail through IMAP and SMTP with the mailbox address and an App Password (`gmail_conn.py`).
+//! Tony's Gmail through IMAP with the mailbox address and an App Password (`gmail_conn.py`).
 //!
-//! Receive is a poll, not IDLE: every 30 s one IMAP session searches INBOX and hands each UID
-//! above the baseline to `on_message`. The first session only records the baseline, so old mail
-//! is never replayed. Every read uses `BODY.PEEK[]`, so polling never marks mail read. Search and
-//! download look in `[Gmail]/All Mail`, falling back to INBOX. Send is plain text over SMTPS.
+//! Every call opens its own IMAP session. Reads use `BODY.PEEK[]`, so nothing is marked read.
+//! Search and download look in `[Gmail]/All Mail`, falling back to INBOX. There is no send: a
+//! [`Draft`] is appended to the mailbox flagged `\Drafts`, and Tony sends it himself.
 //!
-//! The hosts, ports and TLS are [`Endpoints`], read from `AWM_GMAIL_IMAP_HOST`,
-//! `AWM_GMAIL_IMAP_PORT`, `AWM_GMAIL_IMAP_TLS`, `AWM_GMAIL_SMTP_HOST`, `AWM_GMAIL_SMTP_PORT` and
-//! `AWM_GMAIL_SMTP_TLS` (`0` or `false` for plain TCP), so tests run against loopback fakes.
+//! The host, port and TLS are [`Endpoints`], read from `AWM_GMAIL_IMAP_HOST`,
+//! `AWM_GMAIL_IMAP_PORT` and `AWM_GMAIL_IMAP_TLS` (`0` or `false` for plain TCP), so tests run
+//! against a loopback fake.
 
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::task::{Context, Poll};
 use std::time::Duration;
 
 use async_imap::error::Error as ImapError;
 use async_imap::Session;
-use awm_plugin_sdk::Backoff;
 use async_trait::async_trait;
+use awm_chat::{runtime, value, Channel, ChatKind, Downloaded, Identity, Inbound, Result};
+use awm_plugin_sdk::VerbError;
+use base64::Engine;
 use futures_util::StreamExt;
-use serde_json::json;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::TcpStream;
 use tokio_rustls::client::TlsStream;
 use tokio_rustls::rustls;
 
-use super::{runtime, value, Channel, Connector, Downloaded, Hooks, Identity, Inbound, OutFile, Result, Sent};
 use crate::config::AccountConfig;
+use crate::Account;
 
 mod mime;
 
 pub const IMAP_HOST: &str = "imap.gmail.com";
 pub const IMAP_PORT: u16 = 993;
-pub const SMTP_HOST: &str = "smtp.gmail.com";
-pub const SMTP_PORT: u16 = 465;
-pub const POLL_INTERVAL: Duration = Duration::from_secs(30);
 /// Gmail's virtual mailbox of every message, archived or not: the scope for search and lookup.
 pub const ALL_MAIL: &str = "[Gmail]/All Mail";
-/// One IMAP session's ceiling, so a wedged server cannot stall the poll for good.
+/// One IMAP session's ceiling, so a wedged server cannot stall a call for good.
 const SESSION_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Where the connector reaches Gmail.
@@ -47,23 +43,11 @@ pub struct Endpoints {
     pub imap_host: String,
     pub imap_port: u16,
     pub imap_tls: bool,
-    pub smtp_host: String,
-    pub smtp_port: u16,
-    pub smtp_tls: bool,
-    pub poll: Duration,
 }
 
 impl Default for Endpoints {
     fn default() -> Self {
-        Self {
-            imap_host: IMAP_HOST.into(),
-            imap_port: IMAP_PORT,
-            imap_tls: true,
-            smtp_host: SMTP_HOST.into(),
-            smtp_port: SMTP_PORT,
-            smtp_tls: true,
-            poll: POLL_INTERVAL,
-        }
+        Self { imap_host: IMAP_HOST.into(), imap_port: IMAP_PORT, imap_tls: true }
     }
 }
 
@@ -77,10 +61,6 @@ impl Endpoints {
             imap_host: var("AWM_GMAIL_IMAP_HOST").unwrap_or(d.imap_host),
             imap_port: var("AWM_GMAIL_IMAP_PORT").and_then(|p| p.parse().ok()).unwrap_or(d.imap_port),
             imap_tls: flag("AWM_GMAIL_IMAP_TLS").unwrap_or(d.imap_tls),
-            smtp_host: var("AWM_GMAIL_SMTP_HOST").unwrap_or(d.smtp_host),
-            smtp_port: var("AWM_GMAIL_SMTP_PORT").and_then(|p| p.parse().ok()).unwrap_or(d.smtp_port),
-            smtp_tls: flag("AWM_GMAIL_SMTP_TLS").unwrap_or(d.smtp_tls),
-            poll: d.poll,
         }
     }
 }
@@ -145,22 +125,6 @@ pub fn imap_quote(value: &str) -> String {
     format!("\"{}\"", v.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
-/// `_split_subject`: an explicit `Subject:` first line, else the first non-empty line.
-pub fn split_subject(text: &str) -> (String, String) {
-    let lines: Vec<&str> = text.split('\n').collect();
-    if lines[0].to_lowercase().starts_with("subject:") {
-        let subject = lines[0]["subject:".len()..].trim();
-        let mut rest = &lines[1..];
-        if rest.first().is_some_and(|l| l.trim().is_empty()) {
-            rest = &rest[1..];
-        }
-        let subject = if subject.is_empty() { "(no subject)" } else { subject };
-        return (subject.to_string(), rest.join("\n"));
-    }
-    let first = lines.iter().map(|l| l.trim()).find(|l| !l.is_empty()).unwrap_or("(no subject)");
-    (first.chars().take(78).collect(), text.to_string())
-}
-
 /// `email.utils.make_msgid()`: `<centiseconds.pid.random@host>`.
 fn make_msgid() -> String {
     let centis = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() / 10).unwrap_or(0);
@@ -212,33 +176,44 @@ fn reason(e: &ImapError) -> String {
     }
 }
 
+/// One file on a draft.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DraftFile {
+    pub filename: String,
+    pub mime: String,
+    pub data: Vec<u8>,
+}
+
+/// A message for Tony to finish and send. `reply_to` is the Message-ID it answers.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Draft {
+    pub to: String,
+    pub cc: String,
+    pub subject: String,
+    pub body: String,
+    pub files: Vec<DraftFile>,
+    pub reply_to: Option<String>,
+}
+
 /// One account's mailbox.
 pub struct GmailConnector {
     cfg: AccountConfig,
-    hooks: Hooks,
     addr: String,
     ep: Endpoints,
-    baseline: AtomicU32,
-    live: AtomicBool,
 }
 
 impl GmailConnector {
-    /// The connector for `cfg`, at Gmail's endpoints or the `AWM_GMAIL_*` overrides.
-    pub fn create(cfg: AccountConfig, hooks: Hooks) -> anyhow::Result<Arc<dyn Connector>> {
-        Ok(Self::with_endpoints(cfg, hooks, Endpoints::from_env()))
-    }
-
     /// The connector for `cfg` at `ep`.
-    pub fn with_endpoints(cfg: AccountConfig, hooks: Hooks, ep: Endpoints) -> Arc<Self> {
+    pub fn new(cfg: AccountConfig, ep: Endpoints) -> Self {
         let addr = cfg.address.clone().unwrap_or_default();
-        Arc::new(Self { cfg, hooks, addr, ep, baseline: AtomicU32::new(0), live: AtomicBool::new(false) })
+        Self { cfg, addr, ep }
     }
 
     fn name(&self) -> &str {
         &self.cfg.name
     }
 
-    fn err(&self, e: &ImapError) -> super::VerbError {
+    fn err(&self, e: &ImapError) -> VerbError {
         runtime(format!("gmail[{}] imap: {}", self.name(), reason(e)))
     }
 
@@ -294,44 +269,136 @@ impl GmailConnector {
             sender_bot: false,
             to_holder: true,
             server: String::new(),
-            kind: super::ChatKind::Dm,
+            kind: ChatKind::Dm,
             outside: false,
             resynced: false,
         }
     }
 
-    /// One poll: the new messages and the new baseline. Baseline 0 only sets the baseline.
-    async fn poll(&self, baseline: u32) -> std::result::Result<(Vec<mime::Row>, u32), ImapError> {
+    /// The raw message with this Message-ID, or with this bare UID, from All Mail.
+    async fn raw_message(&self, message_id: &str) -> Result<Vec<u8>> {
+        let account = self.name().to_string();
+        let mid = message_id.to_string();
+        let raw = self
+            .session(move |s| {
+                Box::pin(async move {
+                    select_mailbox(s, &account, ALL_MAIL).await?;
+                    let mut raw = None;
+                    let uids = search_uids(s, &format!("HEADER Message-ID {}", imap_quote(&mid))).await?;
+                    if let Some(uid) = uids.last() {
+                        raw = fetch_body(s, &uid.to_string()).await?;
+                    }
+                    if raw.is_none() && !mid.is_empty() && mid.bytes().all(|b| b.is_ascii_digit()) {
+                        raw = fetch_body(s, &mid).await?;
+                    }
+                    Ok(raw)
+                })
+            })
+            .await
+            .map_err(|e| self.err(&e))?;
+        raw.ok_or_else(|| runtime(format!("gmail[{}] message {} not found", self.name(), py_repr(message_id))))
+    }
+
+    /// Save `d` to Drafts and return its Message-ID. A reply takes the recipient, subject and
+    /// thread headers of the message it answers, unless `d` names them.
+    pub async fn draft(&self, mut d: Draft) -> Result<String> {
+        self.need_address()?;
+        let mut thread = vec![];
+        if let Some(parent) = d.reply_to.clone().filter(|r| !r.is_empty()) {
+            let raw = self.raw_message(&parent).await?;
+            let (head, _) = mime::parse(&raw);
+            let pid = head.get("Message-ID").unwrap_or(&parent).trim().to_string();
+            if d.to.is_empty() {
+                d.to = head.get("Reply-To").or(head.get("From")).unwrap_or("").trim().to_string();
+            }
+            if d.subject.is_empty() {
+                let s = head.get("Subject").unwrap_or("").trim();
+                d.subject = if s.to_lowercase().starts_with("re:") { s.to_string() } else { format!("Re: {s}") };
+            }
+            let refs = head.get("References").unwrap_or("").split_whitespace().map(str::to_string).collect::<Vec<_>>();
+            thread.push(("In-Reply-To", pid.clone()));
+            thread.push(("References", refs.into_iter().chain([pid]).collect::<Vec<_>>().join(" ")));
+        }
+        let msg_id = make_msgid();
+        let raw = compose(&self.addr, &d, &msg_id, &thread)?;
         self.session(move |s| {
             Box::pin(async move {
-                s.examine("INBOX").await?;
-                let uids = match s.uid_search("ALL").await {
-                    Ok(u) => u,
-                    Err(ImapError::No(_)) => return Ok((vec![], baseline)),
-                    Err(e) => return Err(e),
-                };
-                let Some(&max_uid) = uids.iter().max() else { return Ok((vec![], baseline)) };
-                if baseline == 0 {
-                    return Ok((vec![], max_uid));
-                }
-                let mut fresh: Vec<u32> = uids.into_iter().filter(|&u| u > baseline).collect();
-                fresh.sort_unstable();
-                let mut out = vec![];
-                for &uid in &fresh {
-                    if let Some(raw) = fetch_body(s, &uid.to_string()).await? {
-                        out.push(mime::row(&raw, &uid.to_string()));
-                    }
-                }
-                Ok((out, fresh.last().copied().unwrap_or(baseline)))
+                let folder = drafts_folder(s).await?;
+                s.append(&folder, Some("(\\Draft)"), None, &raw).await?;
+                Ok(())
             })
         })
         .await
+        .map_err(|e| self.err(&e))?;
+        Ok(msg_id)
     }
+}
 
-    #[cfg(test)]
-    fn baseline(&self) -> u32 {
-        self.baseline.load(Ordering::SeqCst)
+/// The mailbox flagged `\Drafts`, whatever its localised name. Gmail always has one.
+async fn drafts_folder(s: &mut Imap) -> std::result::Result<String, ImapError> {
+    let mut names = vec![];
+    {
+        let stream = s.list(Some(""), Some("*")).await?;
+        let mut stream = std::pin::pin!(stream);
+        while let Some(n) = stream.next().await {
+            let n = n?;
+            if n.attributes().iter().any(|a| matches!(a, async_imap::types::NameAttribute::Drafts)) {
+                names.push(n.name().to_string());
+            }
+        }
     }
+    names.into_iter().next().ok_or_else(|| ImapError::Io(std::io::Error::other("no mailbox is flagged \\Drafts")))
+}
+
+/// RFC 2047 for a header value that is not plain ASCII.
+fn header_word(v: &str) -> String {
+    if v.is_ascii() {
+        return v.replace(['\r', '\n'], " ");
+    }
+    format!("=?utf-8?b?{}?=", base64::engine::general_purpose::STANDARD.encode(v))
+}
+
+/// Base64 in 76-column lines, as MIME wants it.
+fn b64_lines(data: &[u8]) -> String {
+    let enc = base64::engine::general_purpose::STANDARD.encode(data);
+    enc.as_bytes().chunks(76).map(|c| String::from_utf8_lossy(c).into_owned()).collect::<Vec<_>>().join("\r\n")
+}
+
+/// The draft as an RFC 5322 message: a plain body, and a multipart/mixed one with files.
+pub fn compose(from: &str, d: &Draft, msg_id: &str, thread: &[(&str, String)]) -> Result<Vec<u8>> {
+    if d.to.trim().is_empty() {
+        return Err(value("draft needs `to`, or `reply_to` naming a message to answer"));
+    }
+    let mut head = vec![
+        format!("From: {from}"),
+        format!("To: {}", header_word(&d.to)),
+        format!("Subject: {}", header_word(if d.subject.is_empty() { "(no subject)" } else { &d.subject })),
+        format!("Date: {}", formatdate()),
+        format!("Message-ID: {msg_id}"),
+        "MIME-Version: 1.0".into(),
+    ];
+    if !d.cc.trim().is_empty() {
+        head.insert(2, format!("Cc: {}", header_word(&d.cc)));
+    }
+    head.extend(thread.iter().map(|(k, v)| format!("{k}: {v}")));
+    let text = format!("Content-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: base64\r\n\r\n{}", b64_lines(d.body.as_bytes()));
+    let out = if d.files.is_empty() {
+        format!("{}\r\n{text}\r\n", head.join("\r\n"))
+    } else {
+        let boundary = format!("=_awm_{:016x}", rand::random::<u64>());
+        let mut parts = vec![text];
+        for f in &d.files {
+            let name = header_word(&f.filename).replace('"', "'");
+            let mime = if f.mime.is_empty() { "application/octet-stream" } else { &f.mime };
+            parts.push(format!(
+                "Content-Type: {mime}; name=\"{name}\"\r\nContent-Disposition: attachment; filename=\"{name}\"\r\nContent-Transfer-Encoding: base64\r\n\r\n{}",
+                b64_lines(&f.data)
+            ));
+        }
+        let body: String = parts.iter().map(|p| format!("--{boundary}\r\n{p}\r\n")).collect();
+        format!("{}\r\nContent-Type: multipart/mixed; boundary=\"{boundary}\"\r\n\r\n{body}--{boundary}--\r\n", head.join("\r\n"))
+    };
+    Ok(out.into_bytes())
 }
 
 /// `UID FETCH <uid> (BODY.PEEK[])`: the first body the server returns, or None on a NO.
@@ -380,90 +447,15 @@ async fn select_mailbox(s: &mut Imap, account: &str, mailbox: &str) -> std::resu
 }
 
 #[async_trait]
-impl Connector for GmailConnector {
+impl Account for GmailConnector {
     fn platform(&self) -> &str {
         "gmail"
     }
 
-    fn account(&self) -> &AccountConfig {
-        &self.cfg
-    }
-
-    async fn start(self: Arc<Self>) -> anyhow::Result<()> {
-        let name = self.name().to_string();
-        if self.addr.is_empty() {
-            tracing::error!("gmail[{name}] no address configured; account down");
-            anyhow::bail!("gmail[{name}] no address configured; account down");
-        }
-        // A bad App Password or IMAP turned off is permanent: return, do not spin.
-        match self.poll(0).await {
-            Ok((_, b)) => {
-                self.baseline.store(b, Ordering::SeqCst);
-                self.live.store(true, Ordering::SeqCst);
-                tracing::info!("gmail[{name}] connected as {} (baseline uid={b})", self.addr);
-            }
-            Err(e) => {
-                tracing::error!("gmail[{name}] IMAP login failed; account down: {}", reason(&e));
-                anyhow::bail!("gmail[{name}] IMAP login failed; account down: {}", reason(&e));
-            }
-        }
-        let mut backoff = Backoff::doubling(1.0, 60.0);
-        loop {
-            tokio::time::sleep(self.ep.poll).await;
-            match self.poll(self.baseline.load(Ordering::SeqCst)).await {
-                Ok((rows, b)) => {
-                    self.baseline.store(b, Ordering::SeqCst);
-                    self.live.store(true, Ordering::SeqCst);
-                    backoff.reset();
-                    for r in rows {
-                        (self.hooks.on_message)(self.inbound(r)).await;
-                    }
-                }
-                Err(e) => {
-                    self.live.store(false, Ordering::SeqCst);
-                    let wait = backoff.wait();
-                    tracing::warn!("gmail[{name}] poll error ({}); retry in {:.1}s", reason(&e), wait.as_secs_f64());
-                    tokio::time::sleep(wait).await;
-                }
-            }
-        }
-    }
-
-    /// Plain text to `channel`, an address. `thread` is a Message-ID to reply under.
-    async fn send(&self, channel: &str, text: &str, thread: Option<&str>, _files: &[OutFile]) -> Result<Sent> {
-        use lettre::message::header::{ContentType, To};
-        use lettre::message::{Mailbox, Mailboxes};
-        use lettre::transport::smtp::authentication::Credentials;
-        use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
-
-        let (subject, mut body) = split_subject(text);
-        // EmailMessage ends the body with one newline; lettre's DATA terminator adds that one.
-        if body.ends_with('\n') {
-            body.pop();
-            if body.ends_with('\r') {
-                body.pop();
-            }
-        }
-        let from: Mailbox = self.addr.parse().map_err(|e| value(format!("gmail[{}] bad from address {}: {e}", self.name(), py_repr(&self.addr))))?;
-        let to: Mailboxes = channel.parse().map_err(|e| value(format!("gmail[{}] bad recipient {}: {e}", self.name(), py_repr(channel))))?;
-        let msg_id = make_msgid();
-        let mut b = Message::builder().from(from).mailbox(To::from(to)).subject(subject).message_id(Some(msg_id.clone()));
-        if let Some(t) = thread.filter(|t| !t.is_empty()) {
-            b = b.in_reply_to(t.to_string()).references(t.to_string());
-        }
-        let msg = b.header(ContentType::TEXT_PLAIN).body(body).map_err(|e| runtime(format!("gmail[{}] could not build the message: {e}", self.name())))?;
-        let builder = if self.ep.smtp_tls {
-            AsyncSmtpTransport::<Tokio1Executor>::relay(&self.ep.smtp_host).map_err(|e| runtime(format!("gmail[{}] smtp: {e}", self.name())))?
-        } else {
-            AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(&self.ep.smtp_host)
-        };
-        let transport = builder.port(self.ep.smtp_port).credentials(Credentials::new(self.addr.clone(), self.cfg.token.clone())).build();
-        transport.send(msg).await.map_err(|e| runtime(format!("gmail[{}] smtp: {e}", self.name())))?;
-        let mut out = Sent::new();
-        out.insert("message_id".into(), json!(msg_id));
-        out.insert("channel_id".into(), json!(channel));
-        out.insert("ts".into(), json!(formatdate()));
-        Ok(out)
+    /// One login and logout, which a bad App Password or IMAP turned off fails.
+    async fn probe(&self) -> Result<()> {
+        self.need_address()?;
+        self.session(|_| Box::pin(async { Ok(()) })).await.map_err(|e| self.err(&e))
     }
 
     /// The last `limit` INBOX messages, oldest first, from `channel` when it is an address.
@@ -528,34 +520,8 @@ impl Connector for GmailConnector {
     /// Re-fetch one message by its Message-ID, or by a bare UID, and return its file parts.
     async fn download_attachments(&self, _channel: &str, message_id: &str, idx: Option<i64>) -> Result<Vec<Downloaded>> {
         self.need_address()?;
-        let account = self.name().to_string();
-        let mid = message_id.to_string();
-        let raw = self
-            .session(move |s| {
-                Box::pin(async move {
-                    select_mailbox(s, &account, ALL_MAIL).await?;
-                    let mut raw = None;
-                    let uids = search_uids(s, &format!("HEADER Message-ID {}", imap_quote(&mid))).await?;
-                    if let Some(uid) = uids.last() {
-                        raw = fetch_body(s, &uid.to_string()).await?;
-                    }
-                    if raw.is_none() && !mid.is_empty() && mid.bytes().all(|b| b.is_ascii_digit()) {
-                        raw = fetch_body(s, &mid).await?;
-                    }
-                    Ok(raw)
-                })
-            })
-            .await
-            .map_err(|e| self.err(&e))?;
-        let Some(raw) = raw else {
-            return Err(runtime(format!("gmail[{}] message {} not found", self.name(), py_repr(message_id))));
-        };
+        let raw = self.raw_message(message_id).await?;
         Ok(mime::parse(&raw).0.attachment_bytes(idx))
-    }
-
-    /// Labels are folders, not chats, so mail has no seat.
-    async fn list_seats(&self) -> Result<Vec<Channel>> {
-        Ok(vec![])
     }
 
     /// The account's mailboxes and labels. Gmail has no DMs, so `include_dms` is ignored.
@@ -589,8 +555,8 @@ impl Connector for GmailConnector {
         Ok(Identity { id: self.addr.clone(), name: self.cfg.display_name.clone().filter(|d| !d.is_empty()).unwrap_or_else(|| self.addr.clone()) })
     }
 
-    fn live(&self) -> bool {
-        self.live.load(Ordering::SeqCst)
+    fn as_gmail(&self) -> Option<&GmailConnector> {
+        Some(self)
     }
 }
 

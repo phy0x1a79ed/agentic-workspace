@@ -5,9 +5,9 @@ use std::collections::BTreeSet;
 use serde_json::{json, Value};
 
 /// The surface changes the port plan lists; every other verb is the Python's byte for byte.
-const REMOVED: [&str; 10] = ["keepers", "keep_reset", "keep_adopt", "bucket_sites", "bucket_versions", "bucket_restore", "bucket_share", "bucket_shares", "bucket_unshare", "bucket_resolve"];
+const REMOVED: [&str; 3] = ["keepers", "keep_reset", "keep_adopt"];
 const ADDED: [&str; 6] = ["forward", "seat_remote_control", "seat_refresh", "seat_pull", "seat_report", "seat_act"];
-const REWORDED: [&str; 10] = ["send", "react", "seats", "mount", "search", "buckets", "bucket_ls", "bucket_get", "bucket_mv", "bucket_search"];
+const REWORDED: [&str; 4] = ["send", "react", "seats", "mount"];
 
 #[test]
 fn the_surface_is_the_python_one_but_the_listed_changes() {
@@ -32,9 +32,6 @@ fn the_surface_is_the_python_one_but_the_listed_changes() {
             v.as_object_mut().unwrap().remove("description");
             for p in v["params"].as_array_mut().into_iter().flatten() {
                 p.as_object_mut().unwrap().remove("required");
-            }
-            if let Some(ps) = v["params"].as_array_mut() {
-                ps.retain(|p| !(name == "bucket_get" && p["name"] == "version"));
             }
             v
         };
@@ -123,7 +120,7 @@ mod verbs {
         };
         let seats = crate::seats::Seats::new(db.clone(), cfg, vec![account.clone()]);
         let hub = awm_plugin_sdk::Hub::new("http://127.0.0.1:1", None);
-        let app = crate::app::Social::new("alcor".into(), hub, db, vec![account], conns, vec![], seats);
+        let app = crate::app::Social::new("alcor".into(), hub, db, vec![account], conns, seats);
         let svc = crate::service(awm_plugin_sdk::Service::new(super::test_env()), app.clone()).into_test().await.unwrap();
         Rig { svc, app, fake, _tmp: tmp }
     }
@@ -244,12 +241,5 @@ mod verbs {
         let reply = Inbound { account: "opal".into(), platform: "slack".into(), channel_id: "C0TEST".into(), thread_id: "9.9".into(), message_id: "10.0".into(), to_holder: true, ..Default::default() };
         r.app.on_message(reply).await;
         assert!(r.app.seats.store.waiting("altair", 10).await.iter().all(|row| row.kind != "line"));
-    }
-
-    #[tokio::test]
-    async fn the_bucket_root_is_never_deleted() {
-        let r = rig().await;
-        let e = r.call("bucket_rm", "op", "trusted", json!({"bucket": "b", "path": "/"})).await.unwrap_err();
-        assert!(e.message.contains("never deleted"));
     }
 }
