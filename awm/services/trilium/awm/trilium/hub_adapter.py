@@ -12,11 +12,10 @@ and export what is in it (see `vault`). There is no front here and no
 discovery: the awm edge serves the vault at `/trilium/`, and there is one vault, so
 there is nothing to enumerate.
 
-**Who may call what.** The vault is shared, so a write verb is one person's
-button acting on everyone's work. `restore` in particular replaces the whole
-database. The split is enforced by `_operator_only` rather than by the public
-edge's allow-list, because a mesh node's edge runs no allow-list at all — see
-that function for the discriminator it uses.
+**Who may call what.** `ACCESS` admits each verb to kinds of caller, which
+`_caller` tells apart, and `_agent_gate` confines an agent's writes. The gate
+lives here rather than in the public edge's allow-list, because a mesh node's
+edge runs no allow-list at all.
 
 Run via `run.sh` (which the gateway spawns and respawns):
     python -m awm.trilium.hub_adapter
@@ -592,60 +591,117 @@ API_MANIFEST: dict[str, Any] = {
 # -- who may call what ------------------------------------------------------
 
 
-def _operator_only(as_: str | None, verb: str) -> None:
-    """Refuse a verb that arrived through an edge listener.
+def _caller(args: dict, as_: str | None) -> str:
+    """Sort a call into one of the kinds `ACCESS` names, from the edge's `as_` and the gateway's stamps.
 
-    The vault is shared, so every write verb is one person acting on everyone's
-    work, and `restore` discards it. Those belong to whoever can reach the host,
-    not to whoever can reach the page.
-
-    The discriminator needs no new credential because the edge already supplies
-    one. `httpsfront` overwrites `X-Awm-As` on every request it forwards — the
-    browser's own value is discarded — and it never forwards an empty one. So an
-    absent identity here means the call did not cross an edge: it came from
-    `/invoke` on loopback, which is the host's own CLI.
-
-    This is deliberately *not* `userroot.wrap_handlers`. That answers "whose
-    store?", which a shared vault never asks, and under `AWM_USER_ROOT_STRICT`
-    it raises for exactly the caller we want to admit.
+    `httpsfront` overwrites `X-Awm-As` with the signed-in subject and never
+    forwards an empty one, and a door call from another node arrives as
+    `peer:<node>`. So no `as_` means loopback on this host. The gateway stamps
+    `_caller_pid` there only when a session's process tree made the call, and
+    stamps `_caller_session` on a door call only when a session on the far node
+    made it, replacing any copy the caller sent.
     """
-    if as_ is not None:
-        raise PermissionError(
-            f"{verb} acts on the shared vault and is an operator verb: "
-            f"run `awm trilium {verb}` on the host")
+    if as_ is None:
+        return "host_session" if args.get("_caller_pid") else "host"
+    if as_.startswith("peer:"):
+        if args.get("_caller_session"):
+            return "peer_agent"
+        return "alcor_service" if as_ == "peer:alcor" else "peer_service"
+    return "person"
 
 
-async def _agent_gate(args: dict, verb: str, *note_ids: str) -> None:
-    """Refuse a session's write to a note that is not labelled for agents.
+# The vault host's own sessions are refused on purpose: agents work the vault
+# from other nodes, where `_agent_gate` confines their writes.
+VAULT = frozenset({"host", "alcor_service", "peer_service", "peer_agent"})
+EVERYONE = VAULT | {"host_session", "person"}
+HOST = frozenset({"host"})
 
-    The gateway stamps `_caller_pid` only on a call from a session, so a call
-    without one is the host or a service and passes. `AWM_TRILIUM_AGENT_GATE`
-    is `off`, `log` (the default: record the refusal, let the write through) or
-    `enforce`. A note needs an effective `#agentWritable`, and an effective
-    `#agentManaged` refuses even under a writable subtree.
+#: Which caller kinds each verb admits. A verb missing here fails at import.
+ACCESS: dict[str, frozenset[str]] = {
+    "status": EVERYONE, "snapshots": EVERYONE, "url": EVERYONE,
+    **dict.fromkeys(["start", "stop", "restart", "init", "logs", "board_install",
+                     "snapshot", "export", "restore", "slice_resolve"], HOST),
+    **dict.fromkeys(["board_apply", "ops_render"], frozenset({"alcor_service"})),
+    **dict.fromkeys(["note_upsert", "note_get", "note_children", "note_search",
+                     "note_create", "note_update", "note_delete", "note_move",
+                     "note_place", "note_clone", "attrs_get", "attr_set",
+                     "attr_delete", "attachment_put", "attachment_get",
+                     "slice_expose", "slice_list", "slice_revoke"], VAULT),
+}
+
+
+def _gated(verb: str, handler):
+    allowed = ACCESS[verb]
+
+    async def run(args: dict, as_: str | None = None) -> dict:
+        kind = _caller(args, as_)
+        if kind not in allowed:
+            raise PermissionError(f"{verb} refused for a {kind} caller: "
+                                  f"it admits {', '.join(sorted(allowed))}")
+        return await handler(args, as_)
+    return run
+
+
+def _agent_refusal(c: etapi.Etapi, note_id: str) -> str | None:
+    """Why an agent may not write `note_id`, or None when it may."""
+    labels = {a.get("name") for a in c.attributes(note_id) if a.get("type") == "label"}
+    if "agentManaged" in labels:
+        return f"note {note_id} has #agentManaged: only the trilium board writer writes it"
+    if "agentWritable" not in labels:
+        return f"note {note_id} has no effective #agentWritable label"
+    return None
+
+
+def _agent_may_write(c: etapi.Etapi, note_id: str) -> bool:
+    try:
+        return _agent_refusal(c, note_id) is None
+    except etapi.EtapiError:
+        return False
+
+
+def _in_live_slice(c: etapi.Etapi, note_id: str, roots: set[str]) -> bool:
+    """Whether `note_id` is one of `roots` or sits under one by any parent, as the fork's `isNoteInSlice`."""
+    seen, todo = set(), [note_id]
+    while todo:
+        n = todo.pop()
+        if n in roots:
+            return True
+        if n in seen or n == "root":
+            continue
+        seen.add(n)
+        todo.extend(c.note(n).get("parentNoteIds") or [])
+    return False
+
+
+async def _agent_gate(args: dict, as_: str | None, verb: str, *note_ids: str,
+                      slice_ok: bool = False) -> bool:
+    """Refuse an agent's write to a note that is not labelled for agents.
+
+    Only a session on another node is gated: the host and services pass, and
+    `ACCESS` already refused the host's own sessions. With `slice_ok`, a note
+    without `#agentWritable` inside a live slice passes too, and the return
+    says that was the only reason it passed.
     """
-    mode = os.environ.get("AWM_TRILIUM_AGENT_GATE", "log").strip().lower()
-    if mode == "off" or not args.get("_caller_pid"):
-        return
+    if _caller(args, as_) != "peer_agent":
+        return False
 
-    def _refusals() -> list[str]:
-        out = []
+    def _check() -> tuple[list[str], bool]:
+        c = etapi.client()
+        refused, via_slice = [], False
         for note_id in note_ids:
-            labels = {a.get("name") for a in etapi.client().attributes(note_id)
-                      if a.get("type") == "label"}
-            if "agentManaged" in labels:
-                out.append(f"note {note_id} has #agentManaged: only the "
-                           f"trilium board writer writes it")
-            elif "agentWritable" not in labels:
-                out.append(f"note {note_id} has no effective #agentWritable label")
-        return out
-    refused = await asyncio.to_thread(_refusals)
-    if not refused:
-        return
-    message = f"{verb} refused for a session: {'; '.join(refused)}"
-    if mode == "enforce":
-        raise PermissionError(message)
-    log.warning("trilium agent gate (log mode, write allowed): %s", message)
+            why = _agent_refusal(c, note_id)
+            if why and slice_ok and "#agentWritable" in why:
+                roots = {r["note_id"] for r in slices.list_all() if r["active"]}
+                if roots and _in_live_slice(c, note_id, roots):
+                    via_slice = True
+                    continue
+            if why:
+                refused.append(why)
+        return refused, via_slice
+    refused, via_slice = await asyncio.to_thread(_check)
+    if refused:
+        raise PermissionError(f"{verb} refused for an agent: {'; '.join(refused)}")
+    return via_slice
 
 
 # -- handlers ---------------------------------------------------------------
@@ -680,17 +736,14 @@ async def _h_status(args: dict, as_: str | None = None) -> dict:
 
 
 async def _h_start(args: dict, as_: str | None = None) -> dict:
-    _operator_only(as_, "start")
     return await asyncio.to_thread(CHILD.start)
 
 
 async def _h_stop(args: dict, as_: str | None = None) -> dict:
-    _operator_only(as_, "stop")
     return await asyncio.to_thread(CHILD.stop)
 
 
 async def _h_restart(args: dict, as_: str | None = None) -> dict:
-    _operator_only(as_, "restart")
     return await asyncio.to_thread(CHILD.restart)
 
 
@@ -704,31 +757,19 @@ def _board() -> Board:
     return BOARD
 
 
-def _service_only(args: dict, as_: str | None, verb: str) -> None:
-    """Admit only alcor's services, which reach this singleton through its door as `peer:alcor`.
-    The gateway stamps a session's pid on a local call and its
-    claim on a door call, so a service's push carries neither."""
-    if as_ != "peer:alcor" or args.get("_caller_pid") or args.get("_caller_session"):
-        raise PermissionError(f"{verb} takes alcor's services only")
-
-
 async def _h_board_apply(args: dict, as_: str | None = None) -> dict:
-    _service_only(args, as_, "board_apply")
     return await asyncio.to_thread(_board().apply, args)
 
 
 async def _h_ops_render(args: dict, as_: str | None = None) -> dict:
-    _service_only(args, as_, "ops_render")
     return await asyncio.to_thread(_board().render, args)
 
 
 async def _h_board_install(args: dict, as_: str | None = None) -> dict:
-    _operator_only(as_, "board_install")
     return await asyncio.to_thread(lambda: install_board(Fence()))
 
 
 async def _h_init(args: dict, as_: str | None = None) -> dict:
-    _operator_only(as_, "init")
     return await asyncio.to_thread(CHILD.init)
 
 
@@ -744,13 +785,11 @@ async def _h_url(args: dict, as_: str | None = None) -> dict:
 
 
 async def _h_logs(args: dict, as_: str | None = None) -> dict:
-    _operator_only(as_, "logs")
     tail = int(args.get("tail") or 200)
     return {"tail": tail, "log": await asyncio.to_thread(CHILD.logs, tail)}
 
 
 async def _h_snapshot(args: dict, as_: str | None = None) -> dict:
-    _operator_only(as_, "snapshot")
     return await asyncio.to_thread(
         vault.snapshot, instances.VAULT, (args.get("name") or "").strip() or None,
         note_id=(args.get("note_id") or "").strip() or None,
@@ -762,7 +801,6 @@ async def _h_snapshots(args: dict, as_: str | None = None) -> dict:
 
 
 async def _h_restore(args: dict, as_: str | None = None) -> dict:
-    _operator_only(as_, "restore")
     v = instances.VAULT
     name = (args.get("snapshot") or "").strip()
     source = await asyncio.to_thread(vault.resolve_snapshot, v, name)
@@ -791,7 +829,6 @@ async def _h_restore(args: dict, as_: str | None = None) -> dict:
 
 
 async def _h_export(args: dict, as_: str | None = None) -> dict:
-    _operator_only(as_, "export")
     return await asyncio.to_thread(
         vault.export, instances.VAULT,
         note_id=(args.get("note_id") or "").strip() or "root",
@@ -799,9 +836,8 @@ async def _h_export(args: dict, as_: str | None = None) -> dict:
 
 
 async def _h_note_upsert(args: dict, as_: str | None = None) -> dict:
-    _operator_only(as_, "note_upsert")
     parent = (args.get("parent") or "").strip() or "root"
-    await _agent_gate(args, "note_upsert", parent)
+    await _agent_gate(args, as_, "note_upsert", parent)
     title = (args.get("title") or "").strip()
     if not title:
         raise ValueError("title is required, and is matched exactly")
@@ -816,11 +852,10 @@ async def _h_note_upsert(args: dict, as_: str | None = None) -> dict:
 
 # -- the note API -----------------------------------------------------------
 #
-# Every verb here is operator-only, reads included. The edge does not forward
-# `/etapi/`, and these verbs are the same surface by another name: a note in
-# the vault can run script in the vault's origin, and an open read verb would
-# let it walk a knowledge base its author was never shown. The person reading
-# the vault already has all of it in front of them, so nothing is lost.
+# The edge does not forward `/etapi/`, and these verbs are the same surface by
+# another name, so a person through the edge is refused them all (`ACCESS`).
+# Agents on other nodes read the whole vault and write where `_agent_gate`
+# lets them.
 
 
 def _mapping(args: dict, key: str) -> dict[str, str]:
@@ -856,7 +891,6 @@ def _note_id(args: dict, key: str = "note_id", default: str | None = None) -> st
 
 
 async def _h_note_get(args: dict, as_: str | None = None) -> dict:
-    _operator_only(as_, "note_get")
     note_id = _note_id(args)
     want_content = args.get("content", True) is not False
 
@@ -871,7 +905,6 @@ async def _h_note_get(args: dict, as_: str | None = None) -> dict:
 
 
 async def _h_note_children(args: dict, as_: str | None = None) -> dict:
-    _operator_only(as_, "note_children")
     note_id = _note_id(args, default="root")
 
     def _read() -> dict:
@@ -887,7 +920,6 @@ async def _h_note_children(args: dict, as_: str | None = None) -> dict:
 
 
 async def _h_note_search(args: dict, as_: str | None = None) -> dict:
-    _operator_only(as_, "note_search")
     query = (args.get("query") or "").strip()
     if not query:
         raise ValueError("query is required")
@@ -912,10 +944,9 @@ async def _h_note_search(args: dict, as_: str | None = None) -> dict:
 
 
 async def _h_note_create(args: dict, as_: str | None = None) -> dict:
-    _operator_only(as_, "note_create")
     parent = (args.get("parent") or "").strip() or "root"
     wanted_id = (args.get("note_id") or "").strip() or None
-    await _agent_gate(args, "note_create", parent)
+    via_slice = await _agent_gate(args, as_, "note_create", parent, slice_ok=True)
     title = (args.get("title") or "").strip()
     if not title:
         raise ValueError("title is required")
@@ -937,15 +968,18 @@ async def _h_note_create(args: dict, as_: str | None = None) -> dict:
             name.lstrip("#"): value for name, value in labels.items()})
         c.set_attributes(note_id=note_id, type="relation", values={
             name.lstrip("~"): target for name, target in relations.items()})
+        if via_slice:
+            # An agent's child in a slice it cannot otherwise write: the label
+            # lets the agent keep editing what it made, and nothing else.
+            c.set_attribute(note_id=note_id, name="agentWritable", is_inheritable=True)
         return {"note_id": note_id, "created": True,
                 "labels": len(labels), "relations": len(relations)}
     return await asyncio.to_thread(_write)
 
 
 async def _h_note_update(args: dict, as_: str | None = None) -> dict:
-    _operator_only(as_, "note_update")
     note_id = _note_id(args)
-    await _agent_gate(args, "note_update", note_id)
+    await _agent_gate(args, as_, "note_update", note_id)
     fields = {k: args[k] for k in ("title", "type", "mime")
               if args.get(k) not in (None, "")}
     content = args.get("content")
@@ -985,7 +1019,6 @@ async def _h_note_update(args: dict, as_: str | None = None) -> dict:
 
 
 async def _h_note_place(args: dict, as_: str | None = None) -> dict:
-    _operator_only(as_, "note_place")
     note_id = _note_id(args)
     parents = args.get("parents")
     if isinstance(parents, str):
@@ -999,7 +1032,7 @@ async def _h_note_place(args: dict, as_: str | None = None) -> dict:
     if isinstance(remove, str):
         remove = [p.strip() for p in remove.split(",") if p.strip()]
     remove = None if remove is None else {str(p).strip() for p in remove} - wanted
-    await _agent_gate(args, "note_place", note_id, *sorted(wanted | (remove or set())))
+    await _agent_gate(args, as_, "note_place", note_id, *sorted(wanted | (remove or set())))
 
     def _write() -> dict:
         c = etapi.client()
@@ -1018,9 +1051,8 @@ async def _h_note_place(args: dict, as_: str | None = None) -> dict:
 
 
 async def _h_note_delete(args: dict, as_: str | None = None) -> dict:
-    _operator_only(as_, "note_delete")
     note_id = _note_id(args)
-    await _agent_gate(args, "note_delete", note_id)
+    await _agent_gate(args, as_, "note_delete", note_id)
     if note_id == "root":
         raise ValueError(
             "root is the vault. Deleting it is `restore` from a snapshot, "
@@ -1033,16 +1065,14 @@ async def _h_note_delete(args: dict, as_: str | None = None) -> dict:
 
 
 async def _h_note_move(args: dict, as_: str | None = None) -> dict:
-    _operator_only(as_, "note_move")
     note_id, parent = _note_id(args), _note_id(args, "parent")
-    await _agent_gate(args, "note_move", note_id, parent)
+    await _agent_gate(args, as_, "note_move", note_id, parent)
     return await asyncio.to_thread(etapi.client().move_note, note_id, parent)
 
 
 async def _h_note_clone(args: dict, as_: str | None = None) -> dict:
-    _operator_only(as_, "note_clone")
     note_id, parent = _note_id(args), _note_id(args, "parent")
-    await _agent_gate(args, "note_clone", note_id, parent)
+    await _agent_gate(args, as_, "note_clone", note_id, parent)
 
     def _write() -> dict:
         made = etapi.client().put_branch(note_id, parent)
@@ -1052,7 +1082,6 @@ async def _h_note_clone(args: dict, as_: str | None = None) -> dict:
 
 
 async def _h_attrs_get(args: dict, as_: str | None = None) -> dict:
-    _operator_only(as_, "attrs_get")
     note_id = _note_id(args)
 
     def _read() -> dict:
@@ -1067,9 +1096,8 @@ async def _h_attrs_get(args: dict, as_: str | None = None) -> dict:
 
 
 async def _h_attr_set(args: dict, as_: str | None = None) -> dict:
-    _operator_only(as_, "attr_set")
     note_id = _note_id(args)
-    await _agent_gate(args, "attr_set", note_id)
+    await _agent_gate(args, as_, "attr_set", note_id)
     name = (args.get("name") or "").strip().lstrip("#~")
     if not name:
         raise ValueError("name is required")
@@ -1081,9 +1109,8 @@ async def _h_attr_set(args: dict, as_: str | None = None) -> dict:
 
 
 async def _h_attr_delete(args: dict, as_: str | None = None) -> dict:
-    _operator_only(as_, "attr_delete")
     note_id = _note_id(args)
-    await _agent_gate(args, "attr_delete", note_id)
+    await _agent_gate(args, as_, "attr_delete", note_id)
     name = (args.get("name") or "").strip().lstrip("#~")
     if not name:
         raise ValueError("name is required")
@@ -1097,9 +1124,8 @@ async def _h_attr_delete(args: dict, as_: str | None = None) -> dict:
 
 
 async def _h_attachment_put(args: dict, as_: str | None = None) -> dict:
-    _operator_only(as_, "attachment_put")
     note_id = _note_id(args)
-    await _agent_gate(args, "attachment_put", note_id)
+    await _agent_gate(args, as_, "attachment_put", note_id)
     path = (args.get("path") or "").strip()
     b64 = args.get("content_b64")
     if bool(path) == bool(b64):
@@ -1130,7 +1156,6 @@ ATTACHMENT_GET_MAX = 16 << 20
 
 
 async def _h_attachment_get(args: dict, as_: str | None = None) -> dict:
-    _operator_only(as_, "attachment_get")
     attachment_id = _note_id(args, "attachment_id")
 
     def _read() -> dict:
@@ -1151,10 +1176,9 @@ async def _h_attachment_get(args: dict, as_: str | None = None) -> dict:
 #
 # A slice opens one note and its descendants to somebody with no awm account.
 # The token is a credential, so it lives in this service's own DB (see
-# `slices.py`) rather than on a note. All four verbs are operator-only, and
-# `slice_resolve` is the exception in spirit but not in mechanism: the edge
-# calls it over the gateway on loopback, which carries no identity header --
-# exactly what `_operator_only` admits.
+# `slices.py`) rather than on a note. An agent may expose, list and revoke
+# slices only on notes it may write. `slice_resolve` is host-only: the edge
+# calls it over the gateway on loopback, with no identity and no session.
 
 
 def _slice_url(token: str, note_id: str, user: str | None) -> str:
@@ -1169,8 +1193,8 @@ def _slice_url(token: str, note_id: str, user: str | None) -> str:
 
 
 async def _h_slice_expose(args: dict, as_: str | None = None) -> dict:
-    _operator_only(as_, "slice_expose")
     note_id = _note_id(args)
+    await _agent_gate(args, as_, "slice_expose", note_id)
     user = (args.get("user") or "").strip() or None
     write = bool(args.get("write"))
     expires_in_hours = args.get("expires_in_hours")
@@ -1189,9 +1213,14 @@ async def _h_slice_expose(args: dict, as_: str | None = None) -> dict:
 
 
 async def _h_slice_list(args: dict, as_: str | None = None) -> dict:
-    _operator_only(as_, "slice_list")
     note_id = (args.get("note_id") or "").strip() or None
     rows = await asyncio.to_thread(slices.list_all, note_id)
+    if _caller(args, as_) == "peer_agent":
+        def _theirs() -> list[dict]:
+            c = etapi.client()
+            ok = {n for n in {r["note_id"] for r in rows} if _agent_may_write(c, n)}
+            return [r for r in rows if r["note_id"] in ok]
+        rows = await asyncio.to_thread(_theirs)
     # The url the same way `slice_expose` builds it, so a caller listing what is
     # already shared can hand a link over without minting a second one.
     return {"slices": [{**r, "url": _slice_url(r["token"], r["note_id"], r["user"])}
@@ -1199,15 +1228,16 @@ async def _h_slice_list(args: dict, as_: str | None = None) -> dict:
 
 
 async def _h_slice_revoke(args: dict, as_: str | None = None) -> dict:
-    _operator_only(as_, "slice_revoke")
     token = (args.get("token") or "").strip()
     if not token:
         raise ValueError("token is required")
+    row = await asyncio.to_thread(slices.get, token)
+    if row is None:
+        raise ValueError(f"no slice for token {token!r}")
+    await _agent_gate(args, as_, "slice_revoke", row["note_id"])
 
     def _write() -> dict:
-        row = slices.revoke(token)
-        if row is None:
-            raise ValueError(f"no slice for token {token!r}")
+        slices.revoke(token)
         cleared = False
         if not slices.list_active(row["note_id"]):
             etapi.client().clear_attribute(note_id=row["note_id"], name="sliced")
@@ -1218,7 +1248,6 @@ async def _h_slice_revoke(args: dict, as_: str | None = None) -> dict:
 
 
 async def _h_slice_resolve(args: dict, as_: str | None = None) -> dict:
-    _operator_only(as_, "slice_resolve")
     token = (args.get("token") or "").strip()
     row = await asyncio.to_thread(slices.resolve, token) if token else None
     if row is None:
@@ -1227,7 +1256,7 @@ async def _h_slice_resolve(args: dict, as_: str | None = None) -> dict:
             "user": row["user"]}
 
 
-HANDLERS = {
+HANDLERS = {verb: _gated(verb, handler) for verb, handler in {
     "status": _h_status,
     "start": _h_start,
     "stop": _h_stop,
@@ -1261,7 +1290,7 @@ HANDLERS = {
     "slice_list": _h_slice_list,
     "slice_revoke": _h_slice_revoke,
     "slice_resolve": _h_slice_resolve,
-}
+}.items()}
 
 
 # -- the supervision loop ---------------------------------------------------

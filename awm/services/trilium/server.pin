@@ -3,6 +3,6 @@
 # apps/server/scripts/release-fork.sh. It stays in mizar's <AWM_DIR>/artifacts,
 # and awm's deploy pushes it to each push node that names an artifacts directory
 # (deploy.toml § artifacts). Bump all three together, then deploy awm.
-version=v0.105.0-110-gd13d5fa4ee
-file=TriliumNotes-Server-v0.105.0-110-gd13d5fa4ee-linux-x64.tar.xz
-sha256=6699d45396df91d8ae9884d8b4d8b75182327e5391522a923bdb3511dcb63fda
+version=v0.105.0-116-g0462d391a0
+file=TriliumNotes-Server-v0.105.0-116-g0462d391a0-linux-x64.tar.xz
+sha256=b5431525eab062f8c9e84182df51b592467bbcafe6834b723bc205c24e176414
