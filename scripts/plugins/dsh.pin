@@ -1,5 +1,5 @@
 # The dsh core plugin binary (static musl) that a deploy places at <AWM_DIR>/bin/dsh.
 # Written by the deploy on mizar (scripts/refresh-pins.sh). Do not edit.
-version=dsh-56121f2549d2
-file=awm-plugin-dsh-56121f2549d2-linux-x86_64-musl
+version=dsh-1827b66d99e4
+file=awm-plugin-dsh-1827b66d99e4-linux-x86_64-musl
 sha256=dd0e9c94d9681f3c2d2ace0d11202426d0ea8e8a65235aedb90e8fa8b0a0493c
