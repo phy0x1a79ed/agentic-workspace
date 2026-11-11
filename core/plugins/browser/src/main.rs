@@ -1,5 +1,6 @@
 //! The `browser` singleton's verbs (fleet.md R102).
 
+mod chrome;
 mod containers;
 mod seats;
 
@@ -7,9 +8,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use awm_plugin_sdk::{Call, Service, VerbError};
+use awm_plugin_sdk::{Call, Lane, Service, VerbError};
 use serde_json::{json, Value};
 
+use crate::chrome::Chrome;
 use crate::containers::Containers;
 use crate::seats::{BookError, SeatBook};
 
@@ -27,6 +29,7 @@ struct Settings {
     service_sites: Vec<(String, String)>,
     seat_image: String,
     tony_profile: Option<PathBuf>,
+    chrome: Option<chrome::Run>,
 }
 
 impl Settings {
@@ -46,6 +49,7 @@ impl Settings {
             service_sites: sites,
             seat_image: s("seat_image", "awm-browser-seat:latest"),
             tony_profile: cfg.get("tony_profile").and_then(Value::as_str).filter(|p| !p.is_empty()).map(PathBuf::from),
+            chrome: cfg.get("chrome").and_then(chrome::Run::from_json),
         })
     }
 }
@@ -63,6 +67,21 @@ fn caller(call: &Call) -> (String, String) {
     let session = c.session.clone().filter(|s| !s.is_empty()).or_else(|| from_claim("session_id")).or_else(|| from_claim("name"));
     let key = session.map(|s| format!("{}/{s}", c.node)).unwrap_or_default();
     (key, call.caller_trust().unwrap_or("untrusted").to_string())
+}
+
+/// The service-tab and drop verbs answer only productivity, calling on its own account from this node.
+fn productivity_only(call: &Call) -> Result<(), BookError> {
+    let c = &call.caller;
+    if call.plugin.as_deref() == Some("productivity") && c.lane == Lane::Service && c.node == call.ctx.env().node && c.session.is_none() {
+        return Ok(());
+    }
+    Err(BookError::Seat("only the productivity service drives the service tabs".into()))
+}
+
+/// A drop-folder file name: one plain path segment.
+fn drop_name(name: &str) -> Result<&str, BookError> {
+    let ok = !name.is_empty() && name.len() <= 200 && !name.starts_with('.') && !name.contains(['/', '\\', '\0']);
+    ok.then_some(name).ok_or_else(|| BookError::Usage(format!("{name:?} is not a plain file name")))
 }
 
 fn answer(r: Result<Value, BookError>) -> Result<Value, VerbError> {
@@ -99,16 +118,18 @@ macro_rules! verb {
     }};
 }
 
-fn service(svc: Service, book: Book, settings: Arc<Settings>) -> Service {
+fn service(svc: Service, book: Book, settings: Arc<Settings>, chrome: Arc<Chrome>) -> Service {
     let seat = || p("seat", "string", true, "The seat id that seat_open returned.");
     let tab = || p("tab", "string", true, "A tab id of this seat's window.");
     let url = || p("url", "string", true, "");
     let viewer = settings.viewer.clone();
     let node = svc.context().env().node.clone();
     let svc = svc.api("description", json!(DESCRIPTION)).api("emitters", json!([])).api("sessions", json!([]));
-    let svc = verb!(svc, book, "seat_open", "Attach this session to its own browser window. A trusted session gets Tony's profile unless it asks for a blank one. A cooperative session always gets a blank one. Returns the seat id.",
+    let c = chrome.clone();
+    let svc = verb!(svc, book, [c], "seat_open", "Attach this session to its own browser window. A trusted session gets Tony's profile unless it asks for a blank one. A cooperative session always gets a blank one. Returns the seat id.",
         json!([p("profile", "string", false, "tony or blank."), p("own_container", "boolean", false, "Run this seat in its own container.")]),
         |b, call, who| {
+            c.ensure().await?;
             let own = call.args.get("own_container").map(truthy).unwrap_or(false);
             b.open(&who.0, &who.1, call.str_arg("profile"), own).await.map(|s| s.view())
         });
@@ -147,11 +168,12 @@ fn service(svc: Service, book: Book, settings: Arc<Settings>) -> Service {
         let (id, t) = (usage(req(&call, "seat"))?, usage(req(&call, "tab"))?);
         b.cdp(&id, &who.0, &t, "Page.captureScreenshot", json!({"format": "png"})).await
     });
-    let v = viewer.clone();
-    let svc = verb!(svc, book, [node, v], "signin", "Ask Tony to pass a captcha or sign in on this seat's window. Files a request on the approvals queue and raises the window in the viewer.",
+    let (v, c) = (viewer.clone(), chrome.clone());
+    let svc = verb!(svc, book, [node, v, c], "signin", "Ask Tony to pass a captcha or sign in on this seat's window. Files a request on the approvals queue and raises the window in the viewer.",
         json!([seat(), p("site", "string", true, ""), p("reason", "string", true, "")]),
         |b, call, who| {
             let (id, site, reason) = (usage(req(&call, "seat"))?, usage(req(&call, "site"))?, usage(req(&call, "reason"))?);
+            c.ensure().await?;
             b.seat_exists(&id, &who.0).await?;
             if reason.trim().is_empty() {
                 return Err(BookError::Usage("a request needs a reason Tony can read".into()));
@@ -161,7 +183,69 @@ fn service(svc: Service, book: Book, settings: Arc<Settings>) -> Service {
             b.raise_window(&id, &who.0).await?;
             Ok(json!({"request_id": filed.get("request_id").cloned().unwrap_or(Value::Null), "viewer": v}))
         });
-    verb!(svc, book, [viewer], "viewer", "The one viewer that shows every window.", json!([]), |_b, _call, _who| Ok(json!({"viewer": viewer})))
+    let c = chrome.clone();
+    let svc = verb!(svc, book, [viewer, c], "viewer", "The one viewer that shows every window. Starts the shared Chrome when it is stopped.", json!([]), |_b, _call, _who| {
+        c.ensure().await?;
+        Ok(json!({"viewer": viewer}))
+    });
+    service_verbs(svc, book, settings, chrome)
+}
+
+/// The productivity service's verbs: its own tab per site in the service window, and the drop
+/// folder Chrome downloads into and uploads from.
+fn service_verbs(svc: Service, book: Book, settings: Arc<Settings>, chrome: Arc<Chrome>) -> Service {
+    let site = || p("site", "string", true, "A site the browser config names, such as slack, teams or discord.");
+    let name = || p("name", "string", true, "A plain file name in the drop folder.");
+    let (s, c) = (settings.clone(), chrome.clone());
+    let svc = verb!(svc, book, [s, c], "service_cdp", "Run a page-level DevTools method on the site's tab in the service window, opening the tab first. Only the productivity service may call it.",
+        json!([site(), p("method", "string", true, ""), p("params", "object", false, "")]),
+        |b, call, _who| {
+            productivity_only(&call)?;
+            let (site, method) = (usage(req(&call, "site"))?, usage(req(&call, "method"))?);
+            let url = s.service_sites.iter().find(|(k, _)| *k == site).map(|(_, u)| u.clone()).ok_or_else(|| BookError::Usage(format!("no service site named {site:?}")))?;
+            c.ensure().await?;
+            b.service_send(&site, &url, chrome::DROP_MOUNT, &method, call.args.get("params").cloned().unwrap_or(Value::Null)).await
+        });
+    let svc = verb!(svc, book, "service_close", "Close the site's tab in the service window. Only the productivity service may call it.", json!([site()]), |b, call, _who| {
+        productivity_only(&call)?;
+        let site = usage(req(&call, "site"))?;
+        b.service_close(&site).await.map(|closed| json!({"closed": closed}))
+    });
+    let c = chrome.clone();
+    let svc = verb!(svc, book, [c], "drop_put", "Write a file into the drop folder, for a service tab to upload. Returns its path inside Chrome. Only the productivity service may call it.",
+        json!([name(), p("b64", "string", true, "The file's bytes, base64.")]),
+        |_b, call, _who| {
+            productivity_only(&call)?;
+            let (n, b64) = (usage(req(&call, "name"))?, usage(req(&call, "b64"))?);
+            let dir = c.drop_dir().ok_or_else(|| BookError::Seat("this browser has no drop folder".into()))?;
+            use base64::Engine;
+            let bytes = base64::engine::general_purpose::STANDARD.decode(b64.trim()).map_err(|e| BookError::Usage(format!("b64: {e}")))?;
+            let path = dir.join(drop_name(&n)?);
+            std::fs::create_dir_all(dir).and_then(|_| std::fs::write(path, &bytes)).map_err(|e| BookError::Other(e.into()))?;
+            Ok(json!({"path": format!("{}/{n}", chrome::DROP_MOUNT), "size": bytes.len()}))
+        });
+    let c = chrome.clone();
+    let svc = verb!(svc, book, [c], "drop_list", "The files in the drop folder: downloads, and staged files not yet taken. A name ending .crdownload is still downloading. Only the productivity service may call it.", json!([]), |_b, call, _who| {
+        productivity_only(&call)?;
+        let dir = c.drop_dir().ok_or_else(|| BookError::Seat("this browser has no drop folder".into()))?;
+        let mut files: Vec<Value> = std::fs::read_dir(dir).into_iter().flatten().flatten().filter_map(|e| {
+            let meta = e.metadata().ok().filter(|m| m.is_file())?;
+            Some(json!({"name": e.file_name().to_string_lossy(), "size": meta.len()}))
+        }).collect();
+        files.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
+        Ok(json!({"files": files}))
+    });
+    let c = chrome;
+    verb!(svc, book, [c], "drop_take", "Read a file out of the drop folder and delete it. Only the productivity service may call it.", json!([name()]), |_b, call, _who| {
+        productivity_only(&call)?;
+        let n = usage(req(&call, "name"))?;
+        let dir = c.drop_dir().ok_or_else(|| BookError::Seat("this browser has no drop folder".into()))?;
+        let path = dir.join(drop_name(&n)?);
+        let bytes = std::fs::read(&path).map_err(|e| BookError::Usage(format!("{n}: {e}")))?;
+        let _ = std::fs::remove_file(&path);
+        use base64::Engine;
+        Ok(json!({"name": n, "size": bytes.len(), "b64": base64::engine::general_purpose::STANDARD.encode(&bytes)}))
+    })
 }
 
 fn truthy(v: &Value) -> bool {
@@ -179,16 +263,16 @@ fn usage(r: Result<String, VerbError>) -> Result<String, BookError> {
     r.map_err(|e| BookError::Usage(e.message))
 }
 
-/// Check the recorded seats, reap what no seat owns, and open the service tabs, once Chrome answers.
-async fn settle(book: Book, boxes: Arc<Containers>, settings: Arc<Settings>) {
+/// Reap what no seat owns, and check the recorded seats against Chrome once it answers.
+async fn settle(book: Book, boxes: Arc<Containers>, chrome: Arc<Chrome>) {
     let mut delay = Duration::from_secs(5);
     loop {
         let step = async {
-            book.verify().await?;
             let (ids, names) = book.recorded().await;
             boxes.reap(&ids, &names).await.map_err(BookError::Other)?;
-            for (site, url) in &settings.service_sites {
-                book.service_tab(site, url).await?;
+            if !ids.is_empty() {
+                chrome.ensure().await?;
+                book.verify().await?;
             }
             Ok::<(), BookError>(())
         };
@@ -198,6 +282,14 @@ async fn settle(book: Book, boxes: Arc<Containers>, settings: Arc<Settings>) {
         }
         tokio::time::sleep(delay).await;
         delay = (delay * 2).min(Duration::from_secs(60));
+    }
+}
+
+/// Stop the shared Chrome once no seat sits on it and nothing has used it for the idle period.
+async fn idle_stop(book: Book, chrome: Arc<Chrome>) {
+    loop {
+        tokio::time::sleep(Duration::from_secs(60)).await;
+        chrome.stop_if_idle(book.shared_seats().await).await;
     }
 }
 
@@ -214,12 +306,18 @@ async fn main() -> anyhow::Result<()> {
     let book: Book = Arc::new(SeatBook::new(shared, Some(Arc::new(boxes.clone())), Some(dir.join("seats.json"))));
     let loaded = book.load().await?;
     tracing::info!(seats = loaded, "read the recorded seats");
+    let chrome = Arc::new(Chrome::new(settings.chrome.clone(), &settings.cdp));
     let ctx = svc.context();
-    let (b, s) = (book.clone(), settings.clone());
-    service(svc, book, settings)
+    let (b, c) = (book.clone(), chrome.clone());
+    service(svc, book, settings, chrome)
         .on_ready(async move {
+            let (b2, c2) = (b.clone(), c.clone());
             ctx.spawn("settle", async move {
-                settle(b, boxes, s).await;
+                settle(b, boxes, c).await;
+                Ok(())
+            });
+            ctx.spawn("idle_stop", async move {
+                idle_stop(b2, c2).await;
                 Ok(())
             });
         })
@@ -237,11 +335,13 @@ mod tests {
     }
 
     fn settings() -> Arc<Settings> {
-        Arc::new(Settings { dir: "/nonexistent".into(), cdp: String::new(), viewer: "https://viewer".into(), service_sites: vec![], seat_image: String::new(), tony_profile: None })
+        Arc::new(Settings { dir: "/nonexistent".into(), cdp: String::new(), viewer: "https://viewer".into(), service_sites: vec![("teams".into(), "https://teams.microsoft.com".into())], seat_image: String::new(), tony_profile: None, chrome: None })
     }
 
     fn built(book: Book) -> Service {
-        service(Service::new(env()), book, settings())
+        let s = settings();
+        let chrome = Arc::new(Chrome::new(s.chrome.clone(), &s.cdp));
+        service(Service::new(env()), book, s, chrome)
     }
 
     #[test]
@@ -283,5 +383,35 @@ mod tests {
         let other = Caller { node: "altair".into(), ..who(Some("trusted")) };
         let out = svc.call_as("tab_list", json!({"seat": seat["seat"], "_caller_trust": "trusted"}), other, None).await.unwrap();
         assert_eq!(out["error"], "no such seat for this session");
+    }
+
+    fn bare_call(plugin: Option<&str>, caller: Caller) -> Call {
+        Call { id: json!("1"), tool: "browser".into(), verb: "service_cdp".into(), args: json!({}), caller, as_: None, plugin: plugin.map(str::to_string), cancel: awm_plugin_sdk::CancelToken::new(), ctx: Service::new(env()).context() }
+    }
+
+    #[test]
+    fn only_productivity_on_its_own_account_here_drives_the_service_tabs() {
+        let own = Caller { node: "alcor".into(), lane: Lane::Service, trust: Some("trusted".into()), ..Caller::default() };
+        assert!(productivity_only(&bare_call(Some("productivity"), own.clone())).is_ok());
+        let refused = [
+            bare_call(Some("social"), own.clone()),
+            bare_call(None, own.clone()),
+            bare_call(Some("productivity"), Caller { node: "mizar".into(), ..own.clone() }),
+            bare_call(Some("productivity"), Caller { session: Some("cc1".into()), ..own.clone() }),
+            bare_call(Some("productivity"), Caller { lane: Lane::Local, ..own }),
+        ];
+        assert!(refused.iter().all(|c| productivity_only(c).is_err()));
+        assert!(drop_name("report.pdf").is_ok());
+        assert!(["", "../x", "a/b", ".hidden"].iter().all(|n| drop_name(n).is_err()));
+    }
+
+    #[tokio::test]
+    async fn a_session_reaches_no_service_verb() {
+        let book = Arc::new(SeatBook::new(Arc::new(seats::tests::FakeChrome::new("shared")), None, None));
+        let svc = built(book).into_test().await.unwrap();
+        for (verb, args) in [("service_cdp", json!({"site": "teams", "method": "Runtime.evaluate"})), ("service_close", json!({"site": "teams"})), ("drop_put", json!({"name": "a", "b64": ""})), ("drop_list", json!({})), ("drop_take", json!({"name": "a"}))] {
+            let out = call(&svc, verb, args, Some("trusted")).await;
+            assert!(out["error"].as_str().unwrap().contains("only the productivity service"), "{verb}: {out}");
+        }
     }
 }
