@@ -27,12 +27,14 @@ pub enum EdgeKey {
     Service,
 }
 
-/// One directed edge: the network it rides, and the key it logs in with. edges.yml writes it
-/// as the bare network name, or as `{network: <net>, key: service}`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// One directed edge: the network it rides, the key it logs in with, and for a service key the
+/// tools it opens. edges.yml writes it as the bare network name, or as
+/// `{network: <net>, key: service, tools: [<tool>]}`.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Edge {
     pub network: Network,
     pub key: EdgeKey,
+    pub tools: Vec<String>,
 }
 
 impl<'de> Deserialize<'de> for Edge {
@@ -43,6 +45,8 @@ impl<'de> Deserialize<'de> for Edge {
             network: Network,
             #[serde(default)]
             key: EdgeKey,
+            #[serde(default)]
+            tools: Vec<String>,
         }
         #[derive(Deserialize)]
         #[serde(untagged)]
@@ -51,8 +55,8 @@ impl<'de> Deserialize<'de> for Edge {
             Full(Full),
         }
         Ok(match Form::deserialize(d)? {
-            Form::Bare(network) => Edge { network, key: EdgeKey::User },
-            Form::Full(Full { network, key }) => Edge { network, key },
+            Form::Bare(network) => Edge { network, key: EdgeKey::User, tools: Vec::new() },
+            Form::Full(Full { network, key, tools }) => Edge { network, key, tools },
         })
     }
 }
@@ -136,12 +140,18 @@ impl EdgeList {
             if !list.nodes.contains_key(src) {
                 bail!("edge from unknown node {src}");
             }
-            for dst in targets.keys() {
+            for (dst, edge) in targets {
                 if !list.nodes.contains_key(dst) {
                     bail!("edge {src} -> unknown node {dst}");
                 }
                 if dst == src {
                     bail!("self edge on {src}");
+                }
+                if edge.key == EdgeKey::User && !edge.tools.is_empty() {
+                    bail!("edge {src} -> {dst} names tools on a user key, which opens every tool");
+                }
+                if let Some(t) = edge.tools.iter().find(|t| list.singleton(t).is_some()) {
+                    bail!("edge {src} -> {dst} names singleton {t}, which only its callers list opens");
                 }
             }
         }
@@ -194,13 +204,35 @@ impl EdgeList {
             .collect()
     }
 
+    fn edge(&self, src: &str, dst: &str) -> Option<&Edge> {
+        self.edges.get(src).and_then(|t| t.get(dst))
+    }
+
     pub fn network(&self, src: &str, dst: &str) -> Option<Network> {
-        self.edges.get(src).and_then(|t| t.get(dst)).map(|e| e.network)
+        self.edge(src, dst).map(|e| e.network)
     }
 
     /// The key the edge from `src` to `dst` logs in with, when that edge exists.
     pub fn key(&self, src: &str, dst: &str) -> Option<EdgeKey> {
-        self.edges.get(src).and_then(|t| t.get(dst)).map(|e| e.key)
+        self.edge(src, dst).map(|e| e.key)
+    }
+
+    /// The tools a service-key login from `caller` reaches on `host`: the edge's own tools, and
+    /// the singletons `host` serves to `caller`.
+    pub fn edge_tools(&self, host: &str, caller: &str) -> Vec<String> {
+        let mut tools = self.edge(caller, host).map(|e| e.tools.clone()).unwrap_or_default();
+        tools.extend(self.door_tools(host, caller));
+        tools
+    }
+
+    /// Whether a call to `tool` over the edge from `src` gets through on `dst`. A user-key edge
+    /// opens every tool. A service-key edge opens its `edge_tools`.
+    pub fn opens(&self, src: &str, dst: &str, tool: &str) -> bool {
+        self.edge(src, dst).is_some_and(|e| {
+            e.key == EdgeKey::User
+                || e.tools.iter().any(|t| t == tool)
+                || self.singleton(tool).is_some_and(|s| s.host == dst && self.may_call(src, tool))
+        })
     }
 
     /// Whether `node` may call `tool`. A tool that is no singleton is not held here. A
@@ -363,7 +395,10 @@ singletons:
     fn an_edge_is_a_network_name_or_a_map_with_its_key() {
         let e = EdgeList::parse(
             "nodes:\n  altair: {role: station}\n  alcor: {role: standby}\n  mizar: {role: homebase}\n\
-             edges:\n  altair: {alcor: {network: tailscale, key: service}, mizar: tailscale}\n  mizar: {alcor: {network: lan}}\n",
+             edges:\n  altair: {alcor: {network: tailscale, key: service}, mizar: tailscale}\n  mizar: {alcor: {network: lan}}\n  \
+             alcor: {altair: {network: tailscale, key: service, tools: [search]}}\n\
+             singleton_doors:\n  alcor: {port: 2201, network: tailscale}\n\
+             singletons:\n  - {tool: 2fa, host: alcor, callers: [altair]}\n",
         )
         .unwrap();
         assert_eq!(e.network("altair", "alcor"), Some(Network::Tailscale));
@@ -371,10 +406,21 @@ singletons:
         assert_eq!(e.key("altair", "mizar"), Some(EdgeKey::User), "the bare form is a user-key edge");
         assert_eq!(e.key("mizar", "alcor"), Some(EdgeKey::User), "a map without a key is a user-key edge");
         assert_eq!(e.network("mizar", "alcor"), Some(Network::Lan));
-        assert_eq!(e.key("alcor", "altair"), None);
+        assert_eq!(e.edge_tools("altair", "alcor"), vec!["search"], "a service edge opens the tools it names");
+        assert_eq!(e.edge_tools("alcor", "altair"), vec!["2fa"], "and the singletons its host serves the caller");
+        assert!(e.opens("alcor", "altair", "search") && !e.opens("alcor", "altair", "journal"));
+        assert!(!e.opens("altair", "alcor", "search"), "a service edge without tools opens no plain tool");
+        assert!(e.opens("altair", "mizar", "search"), "a user edge opens every tool");
+        assert!(!e.opens("mizar", "altair", "search"), "no edge opens nothing");
         let bad = "nodes: {a: {role: homebase}, b: {role: work}}\nedges: {a: {b: ";
         assert!(EdgeList::parse(&format!("{bad}{{network: lan, key: admin}}}}}}\n")).is_err(), "no admin edge");
         assert!(EdgeList::parse(&format!("{bad}{{key: service}}}}}}\n")).is_err(), "the map needs its network");
         assert!(EdgeList::parse(&format!("{bad}{{network: lan, kee: service}}}}}}\n")).is_err(), "a misspelt key is refused");
+        assert!(EdgeList::parse(&format!("{bad}{{network: lan, tools: [search]}}}}}}\n")).is_err(), "a user edge names no tools");
+        let door = "singleton_doors: {b: {port: 2201, network: lan}}\nsingletons: [{tool: t, host: b, callers: [a]}]\n";
+        assert!(
+            EdgeList::parse(&format!("{bad}{{network: lan, key: service, tools: [t]}}}}}}\n{door}")).is_err(),
+            "a singleton keeps its one callers list"
+        );
     }
 }

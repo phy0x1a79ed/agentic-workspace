@@ -1,8 +1,8 @@
 //! Asking another node's search for the sources named on it, each answer apart.
 //!
-//! A station runs no search and is never asked, nor is a node with no edge from this one, nor
-//! one that an open tag clash stands between. A node that fails or refuses shows as an error on
-//! its sources and never fails the search.
+//! A station runs no search and is never asked, nor is a node with no edge from this one that
+//! opens search, nor one that an open tag clash stands between. A node that fails or refuses
+//! shows as an error on its sources and never fails the search.
 
 use crate::hits;
 use crate::request::{label, Kinds};
@@ -61,9 +61,10 @@ impl PeerResult {
     }
 }
 
-/// The node in `edges` that `name` labels, among those `here` holds an edge to.
+/// The node in `edges` that `name` labels, among those `here` holds an edge to that opens search.
 fn record(edges: &EdgeList, here: &str, name: &str) -> Option<String> {
-    edges.reachable_from(&label(here)).into_iter().find(|r| label(r) == label(name))
+    let here = label(here);
+    edges.reachable_from(&here).into_iter().find(|r| label(r) == label(name) && edges.opens(&here, r, "search"))
 }
 
 /// `search <verb>` on `node`: the reply taken out of the gateway's `result` when `has` does not
@@ -118,7 +119,7 @@ fn answer(raw: Option<&Value>, limit: usize, fields: &[String]) -> Value {
 pub async fn ask_home(peers: &dyn Peers, here: &str, home: &str, args: Value, limit: usize, kinds: &Kinds, clashed: bool) -> PeerResult {
     let edges = peers.edges();
     let Some(name) = record(&edges, here, home) else {
-        return PeerResult::failed(home, "error", format!("no edge from {} to {home}", label(here)));
+        return PeerResult::failed(home, "error", format!("no edge from {} to {home} opens search", label(here)));
     };
     if clashed {
         return PeerResult::failed(home, "refused", CLASH_REFUSAL.into());
@@ -150,10 +151,13 @@ async fn kinds_of(peers: &dyn Peers, name: &str) -> Result<Vec<String>, String> 
 /// open tag clash are not asked.
 pub async fn served(peers: &dyn Peers, here: &str, clashed: &HashSet<String>) -> Served {
     let edges = peers.edges();
+    let here = label(here);
     let names: Vec<String> = edges
-        .dialable_from(&label(here))
+        .dialable_from(&here)
         .into_iter()
-        .filter(|n| !clashed.contains(&label(n)) && edges.nodes.get(n).is_none_or(|r| r.role != "station"))
+        .filter(|n| {
+            !clashed.contains(&label(n)) && edges.nodes.get(n).is_none_or(|r| r.role != "station") && edges.opens(&here, n, "search")
+        })
         .collect();
     let asked = futures_util::future::join_all(names.iter().map(|n| kinds_of(peers, n))).await;
     names.into_iter().zip(asked).collect()
@@ -163,7 +167,7 @@ pub async fn served(peers: &dyn Peers, here: &str, clashed: &HashSet<String>) ->
 pub async fn fetch(peers: &dyn Peers, here: &str, name: &str, source: &str, id: &str) -> Result<Value, CallError> {
     let edges = peers.edges();
     let Some(node) = record(&edges, here, name) else {
-        return Err(CallError::new("ValueError", format!("no edge from {} to {name}", label(here))));
+        return Err(CallError::new("ValueError", format!("no edge from {} to {name} opens search", label(here))));
     };
     let raw = call(peers, &node, "get", json!({"source": source, "id": id}), |m| m.contains_key("document")).await?;
     let Some(Value::Object(doc)) = raw.get("document") else {
