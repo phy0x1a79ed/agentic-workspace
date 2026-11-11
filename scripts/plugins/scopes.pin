@@ -1,5 +1,5 @@
 # The scopes core plugin binary (static musl) that a deploy places at <AWM_DIR>/bin/scopes.
 # Written by the deploy on mizar (scripts/refresh-pins.sh). Do not edit.
-version=scopes-c7b06d617e2d
-file=awm-plugin-scopes-c7b06d617e2d-linux-x86_64-musl
+version=scopes-67bd4e8cbf73
+file=awm-plugin-scopes-67bd4e8cbf73-linux-x86_64-musl
 sha256=3f97d81501bb878948f590e7680f61930dfef21b96dac2204903f3bb5f485e19
