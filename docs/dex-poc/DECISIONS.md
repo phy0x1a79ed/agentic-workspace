@@ -126,3 +126,23 @@ Each mutable name has one origin. Whether that sits within C3 is still to confir
 **Open, for `core-boundary`.** awm's generator lives in its gateway crates (`awm-gateway`, `awm-mcp`, `awm-cli`). A standalone market either reuses them (and depends on awm) or the catalog-to-surfaces generator moves into a crate with no awm dependency that both use.
 
 **Landed.** Input to `tool-surface` and `core-boundary`.
+
+## braavos-offer (2026-11-11)
+
+**Question.** What does a work offer carry, how is work identified, and how are winners picked and judged?
+
+**User's words.** "lets call this plugin braavos". "we prolly want 2 parts: a what and who. what is \"metasmith compiled nextflow job\" while who is the actual job hash." "we could do lineage and type? like a block chain? Im trying to avoid content hashes like blake3 ... too slow". "we should design the system that would allow this, but prolly not consider loops and conditionals on the first pass". "the offer should choose actually, and if we make bids just return teh vector, we can hot swap the algorithm." "another provider with better performance should win the bid if they are sufficiently better, even if not cached." "the check(er) is also part of the job offer ... then sends back result to the provider as a \"review\"". "we can have the requester estimate size and the provider send back a \"true\" value to improve the requester estiamtes over time"
+
+**Decided.**
+- The work itself is open-ended. An offer names a *what* (a type, e.g. a metasmith-compiled Nextflow job, an assembly) and a *who* (the instance id).
+- Identity is lineage and type, a Merkle chain: a derived who is a hash over the transform, its parameters and the whos of its inputs. Bytes are never hashed. Only leaves need a stamp, minted once at their origin and carried, never re-derived on the receiver. Metasmith moved leaf identity off blake3-over-bytes onto abspath+mtime for the same reason (altair journal f38459a9); its stat ids are host-specific, so a braavos leaf stamp must name its origin.
+- Function and format are separate axes. A requirement names a function; providers satisfy it in different formats (a container on one node, a flat install on another).
+- A job may fracture into child jobs; whos keep the execution graph a DAG. Loops and conditionals are allowed by the design but not built in the first pass.
+- Moving data is a job like any other.
+- Bids return a vector of predicted values on the offer's axes. The offer carries its own appraisal axes and its own winner-picking algorithm, which can be swapped without touching providers. A cached result does not win automatically: a sufficiently better provider beats it.
+- The offer carries its checker. The requester runs it on the result (possibly as more jobs, e.g. CheckM2 or seqkit) and sends a review to the provider. Reviews accumulate into a provider's score per what.
+- The requester estimates input size; the provider reports the true size back, so the requester's estimates improve. Bids scale with size.
+
+**Leaning, revisit at `bids`.** Score each axis as a robust z (median and MAD over the bids and history), clamp it so no single axis (such as a zero-cost cache hit) dominates, and take a weighted sum.
+
+**Open.** Whether braavos forks metasmith, lifts its code, or takes its ideas (topic `metasmith-reuse`).

@@ -6,7 +6,7 @@
 
 ## Current
 
-`compute-market`: a compute market for awm peers. The user's pressing issue (2026-11-11). Evidence: journal 7ab424c3 (cold builds on mizar, full disk from per-worktree targets, contention) and E4 in `FINDINGS.md`. `market-scope` closed: a general job, HPC clusters as providers, standalone, Nextflow later. `standalone` closed: CLI, MCP and HTTP generated from one verb set; callers shell, awm agents, Nextflow as a whole job. Next: `providers`.
+`compute-market`: a compute market for awm peers. The user's pressing issue (2026-11-11). Evidence: journal 7ab424c3 (cold builds on mizar, full disk from per-worktree targets, contention) and E4 in `FINDINGS.md`. `market-scope` closed: a general job, HPC clusters as providers, standalone, Nextflow later. `standalone` closed: CLI, MCP and HTTP generated from one verb set; callers shell, awm agents, Nextflow as a whole job. The plugin is named braavos. `braavos-offer` closed. Next: `metasmith-reuse`.
 
 ## Waiting on the user
 
@@ -20,6 +20,8 @@ Nothing.
 - 2026-11-09: Full exploration including prototype builds, not only docs.
 - 2026-11-09: Builds run on capella. The contract is strict versioned JSON.
 - 2026-11-09: MVP is cache, update event and remote fill; bidding after.
+- 2026-11-11: The plugin is named braavos.
+- 2026-11-11: No content hashing of bytes; identity is lineage and type.
 - 2026-11-11: The market is standalone, callable without awm.
 - 2026-11-11: "pressing issue is some compute market for awm peers."
 - Standing: one report at the end, no interim status reports.
@@ -27,10 +29,13 @@ Nothing.
 ## Stack
 
 - `compute-market`: see Current.
+  - `metasmith-reuse`: fork metasmith, lift its code, or take the idea, to extend its type system and transform contracts for braavos providers. Metasmith lives on altair (`projects/metasmith/engine/dev`).
+  - `promise`: the event-driven back-and-forth that reads as a long-running call, plus `status`. Proposal on the table: daemon-held promise, sequenced events, catch-up on reconnect.
   - `providers`: awm peers and Slurm clusters (sockeye, fir, nibi, trillium) behind one abstraction. A cluster login node cannot host a daemon.
   - `fair-share`: Slurm fair-use quotas as an allocation input, "as a system".
   - `tool-surface`: the narrow exposed tool, roughly submit, status, result, cancel. A 15 to 50 minute build cannot be one blocking call.
-  - `bidding`: allocation among peers (requirement predicate, bid, award).
+  - `bids`: what a bid vector holds, how bids move as a provider reaches capacity, the scoring algorithm.
+  - `redundancy`: with one reliable and one flaky provider, run at least as fast as the reliable one alone, with the flaky one helping occasionally.
   - `build-repro`: do real workloads (kb, lance, musl release) give byte-identical output? E4 tested only a dependency-free crate.
   - `nextflow`: run compiled Nextflow workflows through the market. Aspirational; last under `compute-market`.
 - `envelope-mapping`: map the dex TypeScript kernel's envelope (altair, dex/edge) to `{v, id, from, to, selector, args}`; ask whether both share one envelope.
@@ -57,4 +62,5 @@ None.
 - `calling-mechanism`: working design, taken as accepted when the user directed the build.
 - `market-scope`: a general job (build first); HPC clusters as providers; standalone; Nextflow aspirational.
 - `standalone`: three generated surfaces; shell, awm agents, Nextflow as a whole job.
+- `braavos-offer`: what + who; lineage identity; offer carries axes, picker and checker; reviews; size feedback.
 - `poc-build`: E1 to E4 run; results in `FINDINGS.md`.
