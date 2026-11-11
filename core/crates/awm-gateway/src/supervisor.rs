@@ -212,11 +212,10 @@ fn start_inner(gw: &Arc<Gateway>, spec: ServiceSpec, adopted: Option<Adopted>, f
 /// process keeps serving meanwhile. When the hooks ran, or `restart` asks, each of the plugin's
 /// external services hears `shutdown`, and its unit respawns it on the new install.
 pub fn install_external(gw: &Arc<Gateway>, plugin: &str, restart: bool) {
-    if !gw.hooks.begin(plugin) {
-        return;
-    }
+    let Some(installing) = crate::hooks::Installing::begin(gw, plugin) else { return };
     let (gw, plugin) = (gw.clone(), plugin.to_string());
     tokio::spawn(async move {
+        let _installing = installing;
         match crate::hooks::ensure(&gw, &plugin).await {
             Ok(ran) if ran || restart => {
                 let cfg = gw.cfg();
@@ -231,7 +230,6 @@ pub fn install_external(gw: &Arc<Gateway>, plugin: &str, restart: bool) {
             Ok(_) => {}
             Err(why) => refuse(&gw, &plugin, &why),
         }
-        gw.hooks.end(&plugin);
     });
 }
 

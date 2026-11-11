@@ -3,7 +3,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::gateway::Gateway;
@@ -32,18 +32,30 @@ impl Hooks {
         self.installing.lock().unwrap_or_else(|p| p.into_inner()).contains(plugin)
     }
 
-    /// Mark `plugin` as installing. False when it already was.
-    pub fn begin(&self, plugin: &str) -> bool {
-        self.installing.lock().unwrap_or_else(|p| p.into_inner()).insert(plugin.to_string())
-    }
-
-    pub fn end(&self, plugin: &str) {
-        self.installing.lock().unwrap_or_else(|p| p.into_inner()).remove(plugin);
-    }
 
     /// Drop the kept failures of `plugins`, so their hooks run again at the next start.
     pub fn forget(&self, plugins: &[String]) {
         self.failed.lock().unwrap_or_else(|p| p.into_inner()).retain(|n, _| !plugins.contains(n));
+    }
+}
+
+/// `plugin` reads as installing while this lives.
+pub struct Installing {
+    gw: Arc<Gateway>,
+    plugin: String,
+}
+
+impl Installing {
+    /// None when `plugin` is installing already.
+    pub fn begin(gw: &Arc<Gateway>, plugin: &str) -> Option<Self> {
+        let fresh = gw.hooks.installing.lock().unwrap_or_else(|p| p.into_inner()).insert(plugin.to_string());
+        fresh.then(|| Self { gw: gw.clone(), plugin: plugin.to_string() })
+    }
+}
+
+impl Drop for Installing {
+    fn drop(&mut self) {
+        self.gw.hooks.installing.lock().unwrap_or_else(|p| p.into_inner()).remove(&self.plugin);
     }
 }
 

@@ -296,7 +296,8 @@ impl Gateway {
 
     /// Whether `token` names a registered service, or an `[[external]]` one that may register.
     pub fn knows_token(&self, token: &str) -> bool {
-        self.service_of_token(token).is_some() || self.cfg().external.iter().any(|e| self.token_matches(&e.service, token))
+        let externals = self.cfg().external.iter().map(|e| e.service.clone()).collect::<Vec<_>>();
+        self.hub.services().into_iter().map(|s| s.name).chain(externals).any(|name| self.token_matches(&name, token))
     }
 
     pub fn plugin_of_service(&self, service: &str) -> String {

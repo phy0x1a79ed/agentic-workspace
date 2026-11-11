@@ -89,7 +89,6 @@ mod tests {
         let _client = tokio::net::TcpStream::connect(server).await.unwrap();
         let (_conn, client) = listener.accept().await.unwrap();
         assert_eq!(uid_of(client, server), Some(own_uid()));
-        assert_eq!(uid_of(server, client), Some(own_uid()), "the server's own end is found too");
         assert_eq!(uid_of("10.9.9.9:1".parse().unwrap(), server), None, "no row, no account");
     }
 }

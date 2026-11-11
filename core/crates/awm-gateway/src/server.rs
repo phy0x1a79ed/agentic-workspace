@@ -346,7 +346,8 @@ async fn register(State(gw): Gw, h: HeaderMap, Json(req): Json<RegisterReq>) -> 
     }
     // A token that is not this service's is refused, so one service cannot register as another.
     let sent = header(&h, SERVICE_TOKEN_HEADER);
-    if (sent.is_some() || gw.token_file_of(&req.name).is_some()) && !gw.token_matches(&req.name, sent.unwrap_or_default()) {
+    let must_prove = sent.is_some() || gw.token_file_of(&req.name).is_some();
+    if must_prove && !gw.token_matches(&req.name, sent.unwrap_or_default()) {
         tracing::warn!("service {}: register without its service token; refused", req.name);
         return Err(ApiError::new(403, format!("service {:?} needs its service token", req.name)));
     }
