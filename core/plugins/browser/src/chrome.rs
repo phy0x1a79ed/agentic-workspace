@@ -12,8 +12,6 @@ use serde_json::Value;
 use tokio::sync::Mutex;
 
 pub const NAME: &str = "awm-chrome";
-/// Inside the container: where Chrome saves downloads and finds staged files.
-pub const DROP_MOUNT: &str = "/drop";
 
 /// How to run the shared Chrome, from `browser.json`'s `chrome` table.
 #[derive(Debug, Clone)]
@@ -22,7 +20,6 @@ pub struct Run {
     pub cdp_port: u16,
     pub viewer_port: u16,
     pub profile: PathBuf,
-    pub drop: PathBuf,
     pub idle: Duration,
 }
 
@@ -35,7 +32,6 @@ impl Run {
             cdp_port: n("cdp_port", 9222) as u16,
             viewer_port: n("viewer_port", 6080) as u16,
             profile: s("profile")?.into(),
-            drop: s("drop")?.into(),
             idle: Duration::from_secs(60 * n("idle_minutes", 30)),
         })
     }
@@ -55,10 +51,6 @@ impl Chrome {
         Chrome { run, cdp: cdp.to_string(), docker: Docker::default(), last_use: std::sync::Mutex::new(Instant::now()), starting: Mutex::new(()) }
     }
 
-    pub fn drop_dir(&self) -> Option<&PathBuf> {
-        self.run.as_ref().map(|r| &r.drop)
-    }
-
     /// Mark the shared Chrome in use, and start it when it is not running.
     pub async fn ensure(&self) -> anyhow::Result<()> {
         *self.last_use.lock().unwrap() = Instant::now();
@@ -68,16 +60,14 @@ impl Chrome {
             return Ok(());
         }
         tracing::info!("starting the shared Chrome");
-        std::fs::create_dir_all(&run.drop)?;
         self.docker.remove(NAME).await;
         let cdp = format!("127.0.0.1:{}:9222", run.cdp_port);
         let viewer = format!("127.0.0.1:{0}:{0}", run.viewer_port);
         let viewer_env = format!("VIEWER_PORT={}", run.viewer_port);
         let profile = format!("{}:/profile", run.profile.display());
-        let drop = format!("{}:{DROP_MOUNT}", run.drop.display());
         #[rustfmt::skip]
         let args = ["run", "-d", "--rm", "--name", NAME, "--shm-size", "1g", "-p", &cdp, "-p", &viewer,
-                    "-e", &viewer_env, "-e", "CDP_PORT=9222", "-v", &profile, "-v", &drop, &run.image];
+                    "-e", &viewer_env, "-e", "CDP_PORT=9222", "-v", &profile, &run.image];
         self.docker.run(&args).await?;
         awm_cdp::wait_ready(&self.cdp, Duration::from_secs(60)).await.map_err(|e| anyhow::anyhow!("the shared Chrome did not open its debug port: {e}"))?;
         Ok(())

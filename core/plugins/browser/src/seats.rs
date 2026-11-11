@@ -438,8 +438,8 @@ impl SeatBook {
 
     /// The site's tab in the service window, driven only by the singleton, with its flat
     /// session. A tab already open on the site's origin is adopted, so a restart opens no
-    /// second one. Chrome saves the window's downloads to `download_dir`.
-    async fn service_tab(&self, site: &str, url: &str, download_dir: &str) -> Result<(String, String), BookError> {
+    /// second one.
+    async fn service_tab(&self, site: &str, url: &str) -> Result<(String, String), BookError> {
         let mut st = self.state.lock().await;
         let cdp = self.shared.clone();
         if st.service_generation != Some(cdp.generation()) {
@@ -468,9 +468,6 @@ impl SeatBook {
                 cdp.send("Target.createTarget", params, None).await?["targetId"].as_str().unwrap_or_default().to_string()
             }
         };
-        if st.service_tabs.is_empty() {
-            cdp.send("Browser.setDownloadBehavior", json!({"behavior": "allow", "downloadPath": download_dir}), None).await?;
-        }
         st.service_window = cdp.send("Browser.getWindowForTarget", json!({"targetId": target}), None).await?["windowId"].as_i64();
         let flat = cdp.send("Target.attachToTarget", json!({"targetId": target, "flatten": true}), None).await?["sessionId"].as_str().unwrap_or_default().to_string();
         st.service_tabs.push((site.into(), target.clone(), flat.clone()));
@@ -479,11 +476,11 @@ impl SeatBook {
     }
 
     /// Run a page-level method on the site's service tab, opening the tab first.
-    pub async fn service_send(&self, site: &str, url: &str, download_dir: &str, method: &str, params: Value) -> Result<Value, BookError> {
+    pub async fn service_send(&self, site: &str, url: &str, method: &str, params: Value) -> Result<Value, BookError> {
         if !seat_may_run(method) {
             return Err(BookError::Seat(format!("{method} is not open on a service tab")));
         }
-        let (_, flat) = self.service_tab(site, url, download_dir).await?;
+        let (_, flat) = self.service_tab(site, url).await?;
         let params = if params.is_null() { json!({}) } else { params };
         Ok(self.shared.send(method, params, Some(&flat)).await?)
     }

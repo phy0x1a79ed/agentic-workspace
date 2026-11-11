@@ -3,7 +3,9 @@
 
 use std::time::Duration;
 
+use awm_chat::Downloaded;
 use awm_plugin_sdk::{CallOpts, Hub, VerbError};
+use base64::Engine;
 use serde_json::{json, Value};
 
 type R = Result<Value, VerbError>;
@@ -42,4 +44,21 @@ impl Tab {
     pub async fn close(&self) {
         let _ = self.hub.call("browser", "service_close", json!({"site": self.site}), None).await;
     }
+}
+
+pub fn b64(data: &[u8]) -> String {
+    base64::engine::general_purpose::STANDARD.encode(data)
+}
+
+pub fn unb64(v: &Value) -> Result<Vec<u8>, VerbError> {
+    base64::engine::general_purpose::STANDARD.decode(v.as_str().unwrap_or_default()).map_err(|e| VerbError::runtime(format!("a page sent bad base64: {e}")))
+}
+
+/// A `{filename, mime, b64}` file a page script returned.
+pub fn file(v: &Value) -> Result<Downloaded, VerbError> {
+    Ok(Downloaded { filename: v["filename"].as_str().unwrap_or("file").to_string(), mime: v["mime"].as_str().unwrap_or_default().to_string(), data: unb64(&v["b64"])? })
+}
+
+pub fn mime_of(name: &str) -> String {
+    mime_guess::from_path(name).first_or_octet_stream().to_string()
 }

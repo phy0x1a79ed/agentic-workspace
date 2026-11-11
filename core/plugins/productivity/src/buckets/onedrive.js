@@ -118,12 +118,14 @@ if (window.__awmDrive._v !== 1) {
     if (d) return O.entry(d, true);
     throw O.err('ENOENT', path + ': not found');
   };
-  O.get = async function (path) {
+  O.get = async function (path, maxBytes) {
     const f = await O.file(path);
     if (!f) {
       if (await O.folder(path)) throw O.err('EISDIR', path + ' is a folder');
       throw O.err('ENOENT', path + ': not found');
     }
+    if (Number(f.Length || 0) > maxBytes)
+      throw O.err('EINVAL', path + ' is ' + f.Length + ' bytes; the browser path carries ' + maxBytes + ' at most. Open ' + O.webUrl(path, false) + ' instead');
     const r = await O.fetch(O.fileUrl(path) + '/$value', {});
     if (!r.ok) throw await O.fail(r, 'get', path);
     return {filename: f.Name || O.segs(path).pop() || 'file', mime: r.headers.get('Content-Type') || '', b64: O.b64(await r.arrayBuffer())};

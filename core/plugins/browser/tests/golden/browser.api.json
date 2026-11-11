@@ -252,44 +252,6 @@
         }
       ],
       "tool": "browser_service_close"
-    },
-    {
-      "name": "drop_put",
-      "description": "Write a file into the drop folder, for a service tab to upload. Returns its path inside Chrome. Only the productivity service may call it.",
-      "params": [
-        {
-          "name": "name",
-          "type": "string",
-          "required": true,
-          "description": "A plain file name in the drop folder."
-        },
-        {
-          "name": "b64",
-          "type": "string",
-          "required": true,
-          "description": "The file's bytes, base64."
-        }
-      ],
-      "tool": "browser_drop_put"
-    },
-    {
-      "name": "drop_list",
-      "description": "The files in the drop folder: downloads, and staged files not yet taken. A name ending .crdownload is still downloading. Only the productivity service may call it.",
-      "params": [],
-      "tool": "browser_drop_list"
-    },
-    {
-      "name": "drop_take",
-      "description": "Read a file out of the drop folder and delete it. Only the productivity service may call it.",
-      "params": [
-        {
-          "name": "name",
-          "type": "string",
-          "required": true,
-          "description": "A plain file name in the drop folder."
-        }
-      ],
-      "tool": "browser_drop_take"
     }
   ],
   "emitters": [],
