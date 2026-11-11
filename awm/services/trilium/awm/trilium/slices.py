@@ -110,39 +110,35 @@ def list_active(note_id: str, *, now: float | None = None) -> list[dict[str, Any
     return [r for r in list_all(note_id, now=now) if r["active"]]
 
 
+def get(token: str, *, now: float | None = None) -> dict[str, Any] | None:
+    """The slice `token` names, live or not, or `None` if it was never minted."""
+    now = time.time() if now is None else now
+    conn = get_connection(SERVICE)
+    try:
+        row = conn.execute(
+            "SELECT * FROM slices WHERE token = ?", (token,)).fetchone()
+    finally:
+        conn.close()
+    return None if row is None else _row(row, now=now)
+
+
 def revoke(token: str, *, now: float | None = None) -> dict[str, Any] | None:
     """Mark `token` revoked. Returns the row -- idempotent on one already
     revoked -- or `None` if no such token was ever minted."""
     now = time.time() if now is None else now
     conn = get_connection(SERVICE)
     try:
-        row = conn.execute(
-            "SELECT * FROM slices WHERE token = ?", (token,)).fetchone()
-        if row is None:
-            return None
-        if row["revoked_at"] is None:
-            conn.execute(
-                "UPDATE slices SET revoked_at = ? WHERE token = ?", (now, token))
-            conn.commit()
-            row = conn.execute(
-                "SELECT * FROM slices WHERE token = ?", (token,)).fetchone()
-        return _row(row, now=now)
+        conn.execute("UPDATE slices SET revoked_at = ? "
+                     "WHERE token = ? AND revoked_at IS NULL", (now, token))
+        conn.commit()
     finally:
         conn.close()
+    return get(token, now=now)
 
 
 def resolve(token: str, *, now: float | None = None) -> dict[str, Any] | None:
     """The live slice `token` names, or `None` for unknown, revoked or
     expired -- deliberately the same `None` for all three. See the module
     docstring for why that collapse matters."""
-    now = time.time() if now is None else now
-    conn = get_connection(SERVICE)
-    try:
-        row = conn.execute(
-            "SELECT * FROM slices WHERE token = ?", (token,)).fetchone()
-    finally:
-        conn.close()
-    if row is None:
-        return None
-    out = _row(row, now=now)
-    return out if out["active"] else None
+    row = get(token, now=now)
+    return row if row and row["active"] else None
