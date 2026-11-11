@@ -4,7 +4,7 @@
 
 This file is the contract between a plugin and the Rust gateway of the redux (`install.md` R112, R115 to R117, R132). It holds the manifest format, the wire protocol a service speaks, the call interface a plugin uses to reach another plugin, and the usage event. The plugin-redux scope owns it. Other lanes build against it.
 
-Status: draft v1.13. Build against it. The git log of this file holds what each version changed.
+Status: draft v1.14. Build against it. The git log of this file holds what each version changed.
 
 ## Plugin folder
 
@@ -236,6 +236,17 @@ A service in the install config's `[[external]]` list runs under its own system 
 3. Point the entry's `token_file` at a file with the same token, readable by the gateway's user.
 4. Load the secrets its plugin's `needs.secrets` names with `LoadCredential=secrets.env:/etc/awm/secrets/<tool>.env`. Keep the source file root's alone (mode 0600, in a 0700 directory), holding only that plugin's names, as `secrets.env` lines. systemd gives the unit a copy only its user reads, and `awm.gatewayclient` puts the lines into the environment when the service imports it. The gateway's `secrets.env` does not carry them. `test/singletons/secrets.sh` proves one singleton cannot read another's secret.
 5. Point `AWM_DIR` at the unit's own state directory. A service keeps its files, and fetches its binaries, under `AWM_DIR`.
+
+The gateway runs an external plugin's `install` hooks itself, as the gateway's user, on the stamp rule of § Runtime. The old service keeps serving while they run. When the hooks ran, or a restart names the plugin, each of its external services hears `shutdown`, and its unit's `Restart=always` brings it back on the new install. A failed hook refuses the plugin and leaves the old service up.
+
+- **CAUTION** Write a hook that replaces files under a running service. The gateway cannot hold a systemd unit down while the hook runs.
+- **CAUTION** The `shutdown` reaches only a registered service. A service that has not registered yet keeps its old install until its next restart.
+
+### Who reaches the gateway
+
+The main listener admits a connection only from the gateway's own Unix account, read from the kernel's socket table. It also admits a request that carries a known service token, and the control and bridge sockets of an external service that registered with its token. It refuses every other account, and every client off the host's loopback. So an external service sends `X-Awm-Service-Token` on every HTTP call, and `awm.gatewayclient` does this when `AWM_HUB_TOKEN_FILE` is set. A register that carries one service's token is refused for any other name.
+
+Inside the gateway's account, a caller that sends no pid header passes as a host shell. The uid is the only boundary the kernel enforces there.
 
 ## Isolated sessions
 
