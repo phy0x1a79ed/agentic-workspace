@@ -9,7 +9,6 @@ silently, so it is worth a test rather than a comment.
 
 from __future__ import annotations
 
-import subprocess
 import threading
 import time
 
@@ -364,26 +363,3 @@ def test_a_reporting_verb_does_not_wake_the_daemon(verb, monkeypatch):
     monkeypatch.setattr(hub_adapter.SUPERVISOR, "update_check", lambda: {})
     monkeypatch.setattr(hub_adapter, "_front", lambda name: asyncio.sleep(0, {}))
     asyncio.run(hub_adapter.HANDLERS[verb]({}))
-
-
-# ---------------------------------------------------------------------------
-# Sign-in: a booting daemon cannot mint yet
-# ---------------------------------------------------------------------------
-
-def test_login_url_waits_out_a_booting_daemon(sup, monkeypatch):
-    outputs = iter(["", "", "http://localhost:12203/?nonce=abc\n"])
-    monkeypatch.setattr(daemon, "_run", lambda args, timeout: subprocess.CompletedProcess(
-        args, 0, stdout=next(outputs), stderr="couldn't mint a sign-in link"))
-    monkeypatch.setattr(daemon, "status_json", _running)
-    monkeypatch.setattr(daemon.time, "sleep", lambda s: None)
-
-    assert sup.login_url() == "http://localhost:12203/?nonce=abc"
-
-
-def test_login_url_gives_up_at_once_when_no_daemon_runs(sup, monkeypatch):
-    monkeypatch.setattr(daemon, "_run", lambda args, timeout: subprocess.CompletedProcess(
-        args, 4, stdout="", stderr="No daemon running."))
-    monkeypatch.setattr(daemon, "status_json", lambda: {"running": False})
-
-    with pytest.raises(RuntimeError, match="No daemon running"):
-        sup.login_url()

@@ -1,5 +1,5 @@
 # The productivity core plugin binary (static musl) that a deploy places at <AWM_DIR>/bin/productivity.
 # Written by the deploy on mizar (scripts/refresh-pins.sh). Do not edit.
-version=productivity-bb60100ffee5
-file=awm-plugin-productivity-bb60100ffee5-linux-x86_64-musl
+version=productivity-7ee77b64879a
+file=awm-plugin-productivity-7ee77b64879a-linux-x86_64-musl
 sha256=6db4db47da90086c45815910e20f89f4a64c489c35b2f899dd39470430e98bc6
