@@ -726,6 +726,8 @@ impl<B: Backend> App<B> {
             Some("daemon") => json!("background"),
             _ => lane.clone(),
         };
+        // The gateway copies `kind` into the door claim, which a holder check on another node reads.
+        let kind = if hosting == json!("background") { "bg" } else { "interactive" };
         let mode = self.backend.mode_of(pid).await;
         Ok(with_ids(json!({
             "ok": true,
@@ -735,6 +737,7 @@ impl<B: Backend> App<B> {
             "pid": at,
             "lane": lane,
             "hosting": hosting,
+            "kind": kind,
             "pane": who.get("pane"),
             "proc_start": proc_start,
             "cwd": cwd,
@@ -1480,6 +1483,15 @@ mod tests {
         });
         let out = run(&b.app, "resolve", json!({"pid": 77})).await;
         assert_eq!((&out["mine"], &out["mode"]), (&json!(false), &json!("reader")));
+    }
+
+    #[tokio::test]
+    async fn test_resolve_gives_the_kind_a_door_claim_carries() {
+        for (lane, kind) in [("daemon", "bg"), ("tmux", "interactive")] {
+            let b = rig(|f| Fake { caller: Box::new(move |_| Ok(json!({"hosting": lane, "session_id": SID, "pid": 77}))), ..f });
+            let out = run(&b.app, "resolve", json!({"pid": 77})).await;
+            assert_eq!(out["kind"], json!(kind), "{lane}");
+        }
     }
 
     // --- the lifecycle verbs and the pool --------------------------------------
