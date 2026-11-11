@@ -177,6 +177,12 @@ impl Job {
         awm_plugin_sdk::ids::SessionId::canonical_of_native(awm_plugin_sdk::ids::Platform::Claude, self.session_id.as_deref()?)
     }
 
+    /// Whether the job was launched as, or now carries, the name `name`. A launch finds its new job
+    /// this way: `claude --bg` picks the session id itself and ignores `--session-id`.
+    pub fn named(&self, name: &str) -> bool {
+        self.seed_name.as_deref() == Some(name) || self.name == name
+    }
+
     /// The job `short`, from its roster entry `worker` joined to its own record under `home`.
     /// Its session id is its live process's: the roster keeps the first one through a `/clear`.
     pub fn from_worker(short: &str, worker: &Value, home: &ClaudeHome) -> Self {

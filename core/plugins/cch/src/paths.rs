@@ -281,10 +281,10 @@ impl Paths {
         self.cx_state.join("starts")
     }
 
-    /// Where the record of a start in flight lives: `starts/pending-<canonical session id>.json`,
-    /// the id the start chose and launched with.
-    pub fn pending_path(&self, id: &str) -> PathBuf {
-        self.starts_dir().join(format!("pending-{id}.json"))
+    /// Where the record of a start in flight lives: `starts/pending-<token>.json`. The token is
+    /// random, because the session id is known only once the job appears.
+    pub fn pending_path(&self, token: &str) -> PathBuf {
+        self.starts_dir().join(format!("pending-{token}.json"))
     }
 
     /// The lineage record of the session with canonical id `id`.
@@ -398,7 +398,7 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
-    fn the_pending_path_is_the_canonical_session_id() {
+    fn the_pending_path_is_filed_under_its_token() {
         let p = Paths::under(Path::new("/r"));
         assert_eq!(p.pending_path("cc0123"), Path::new("/r/.claude/cx/starts/pending-cc0123.json"));
         assert_eq!(p.lineage_path("ccabababab000040008000000000000000"), Path::new("/r/.claude/cx/starts/ccabababab000040008000000000000000.json"));

@@ -39,7 +39,7 @@
 **Design.**
 - Start and rename keep the 1–80 printable-character rule, because `/rename` is typed into the terminal. The leading `-` rule goes: the name is passed as `--name=<name>`.
 - A `{name}` lookup matches the whole current name, ignoring case. It never matches part of a name, and it never matches `seed_name`. If more than one session matches, the lookup errors and lists their canonical ids.
-- The pool keeps a ledger keyed by canonical id. It writes `{id: spare}` before it launches a spare with `--session-id`. `is_ours` reads "spare" from the ledger, `was_ours` reads "id is in the ledger", and a claim flips the entry to `claimed`. An entry with no session behind it is safe to drop.
+- The pool keeps a ledger keyed by canonical id. It writes `{id: spare}` once the launch finds the new job by its name. `claude --bg` ignores `--session-id` and picks the id itself (found live, 2026-11-10). `is_ours` reads "spare" from the ledger, `was_ours` reads "id is in the ledger", and a claim flips the entry to `claimed`. An entry with no session behind it is safe to drop.
 - Telemetry rows carry `pool: spare`, and telemetry and the board filter on that field.
 - Deleted: `name_prefix`, `AWM_CX_PREFIX`, `WARM_PREFIX`, the `<warm` name ban, and the noun-stripping in `seed.rs` and `claim.rs`.
 
@@ -58,7 +58,7 @@
 - Where a record holds both the canonical id and a short `job`, the `job` field is dropped: trust, waits, `channels.job`, operations `sessions.job` and its `rc:<node>:<job>` relay keys, `scope_waiters.job`.
 - Where the short id is the only key, a one-shot migration maps it to the canonical id through `~/.claude/jobs/<short>/state.json`, then the lineage file. It drops rows that map to no job. This covers seats (`seat_registry`, `seat_lines`), social (mounts, keepers, mirrored seat tables), the wake standby hold, and lineage filenames.
 - The migration runs once at deploy, and the services cut over live. No migration or compatibility code stays in the tree after that.
-- cch's pending record is keyed by the canonical id chosen with `--session-id`, not by a digest of the name.
+- cch's pending record waits under a random token, not a digest of the name. The launch finds the job by its name, and the lineage record is filed under the job's own session id. A late job is adopted by its name.
 - Operations asks the seats registry whether a session holds a seat. `SEAT_PREFIX` is deleted, and the `seat:` text is display only.
 
 **Landed.** Spec only.
