@@ -41,6 +41,9 @@ pub fn fields() -> Fields {
     ])
 }
 
+/// The papers spec, built once: [`Papers`] hands out its fields by reference.
+static SPEC: std::sync::LazyLock<Spec> = std::sync::LazyLock::new(spec);
+
 pub fn spec() -> Spec {
     Spec {
         name: NAME.into(),
@@ -69,16 +72,18 @@ impl Generation {
     /// Open generation `name`, with `given` as its model or else the model it holds.
     async fn open(root: &Path, name: &str, given: Option<Arc<dyn Embedder>>) -> anyhow::Result<Generation> {
         let dir = root.join(name);
-        let index = Store::open(&dir.join("lance")).await?.index(spec()).await?;
-        if given.is_some() {
-            return Ok(Generation { name: name.into(), index, embedder: given });
-        }
-        let model = dir.join("model");
-        let embedder = match tokio::task::spawn_blocking(move || Onnx::load_dir(&model, &BGE_LARGE)).await? {
-            Ok(m) => Some(Arc::new(m) as Arc<dyn Embedder>),
-            Err(e) => {
-                tracing::warn!("papers: generation {name} has no model, answering on keywords: {e}");
-                None
+        let index = Store::open(&dir.join("lance")).await?.index(SPEC.clone()).await?;
+        let embedder = match given {
+            Some(e) => Some(e),
+            None => {
+                let model = dir.join("model");
+                match tokio::task::spawn_blocking(move || Onnx::load_dir(&model, &BGE_LARGE)).await? {
+                    Ok(m) => Some(Arc::new(m) as Arc<dyn Embedder>),
+                    Err(e) => {
+                        tracing::warn!("papers: generation {name} has no model, answering on keywords: {e}");
+                        None
+                    }
+                }
             }
         };
         Ok(Generation { name: name.into(), index, embedder })
@@ -87,8 +92,6 @@ impl Generation {
 
 pub struct Papers {
     pub(crate) root: PathBuf,
-    fields: Fields,
-    hit: Vec<String>,
     generation: RwLock<Arc<Generation>>,
     switching: tokio::sync::Mutex<()>,
     /// The model every generation uses instead of its own, for tests.
@@ -109,11 +112,8 @@ impl Papers {
     pub async fn at(root: &Path, given: Option<Arc<dyn Embedder>>) -> anyhow::Result<Option<Arc<Papers>>> {
         let Some(name) = current_name(root) else { return Ok(None) };
         let generation = Generation::open(root, &name, given.clone()).await?;
-        let spec = spec();
         Ok(Some(Arc::new(Papers {
             root: root.to_path_buf(),
-            fields: spec.fields,
-            hit: spec.hit,
             generation: RwLock::new(Arc::new(generation)),
             switching: tokio::sync::Mutex::new(()),
             given,
@@ -146,7 +146,7 @@ impl Papers {
             (Some(about), Some(e)) => tokio::task::spawn_blocking(move || e.encode_query(&about)).await.map_err(SourceError::of)?.ok(),
             _ => None,
         };
-        let mut q = awm_index::Ask::new(&self.fields, ask.text.as_ref(), &ask.source, &Veil::None, ask.max, vector).map_err(SourceError::of)?;
+        let mut q = awm_index::Ask::new(&SPEC.fields, ask.text.as_ref(), &ask.source, &Veil::None, ask.max, vector).map_err(SourceError::of)?;
         if q.cond == "true" || q.vector.is_none() {
             return Ok(q);
         }
@@ -177,7 +177,7 @@ impl Source for Papers {
     }
 
     fn fields(&self) -> (&Fields, &[String]) {
-        (&self.fields, &self.hit)
+        (&SPEC.fields, &SPEC.hit)
     }
 
     /// Papers rank by their own model, so search's MiniLM vector is no use here.

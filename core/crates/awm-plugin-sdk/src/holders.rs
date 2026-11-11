@@ -60,10 +60,15 @@ fn text(v: &Value, key: &str) -> String {
     }
 }
 
+/// A claim's `kind` for a session's `hosting`. A holder check on another node reads it.
+pub fn kind_of(hosting: Option<&str>) -> &'static str {
+    if hosting == Some("background") { "bg" } else { "interactive" }
+}
+
 /// What a borrower forwards as `_caller_session`: the local session `pid`, or None.
 pub async fn claim(hub: &Hub, pid: u32) -> Option<Value> {
     let rec = crate::sessions::session_of(hub, pid).await?;
-    let kind = if rec.get("hosting").and_then(Value::as_str) == Some("background") { "bg" } else { "interactive" };
+    let kind = kind_of(rec.get("hosting").and_then(Value::as_str));
     Some(json!({"kind": kind, "name": text(&rec, "name"), "session_id": rec.get("session_id")}))
 }
 
