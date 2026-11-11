@@ -1,5 +1,5 @@
 # The social core plugin binary (static musl) that a deploy places at <AWM_DIR>/bin/social.
 # Written by the deploy on mizar (scripts/refresh-pins.sh). Do not edit.
-version=social-00411f53fb38
-file=awm-plugin-social-00411f53fb38-linux-x86_64-musl
-sha256=01e05e1b5db6639a2ae1bf684d3e627a67bfd2c53813a0c3a9d2bfcb51529e6f
+version=social-a8cd8d6f520a
+file=awm-plugin-social-a8cd8d6f520a-linux-x86_64-musl
+sha256=0ce0bceea785ff007655ca97e431993d4d17b6f235cd6e52505e094ac4c152a2
