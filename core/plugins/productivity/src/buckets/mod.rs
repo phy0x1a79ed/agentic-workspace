@@ -1,4 +1,4 @@
-//! Cloud file stores (`buckets/`): one per `[bucket.<name>]`. Google Drive is the one backend.
+//! Cloud file stores (`buckets/`): one per `[bucket.<name>]`, on Google Drive or on OneDrive.
 //!
 //! Paths are POSIX, relative to the bucket's root. The tree operations (`walk`, `get_tree`,
 //! `put_tree`) are built here on a backend's `ls`, `stat`, `get`, `put` and `mkdir`.
@@ -11,6 +11,7 @@ use serde::Serialize;
 use serde_json::{json, Value};
 
 pub mod gdrive;
+pub mod onedrive;
 
 pub type Result<T> = std::result::Result<T, VerbError>;
 
@@ -194,9 +195,10 @@ pub async fn put_tree(b: &dyn Bucket, path: &str, src: &Path, parents: bool) -> 
 }
 
 /// Build one configured bucket.
-pub fn build(cfg: &crate::config::BucketConfig) -> anyhow::Result<std::sync::Arc<dyn Bucket>> {
+pub fn build(cfg: &crate::config::BucketConfig, hub: &awm_plugin_sdk::Hub) -> anyhow::Result<std::sync::Arc<dyn Bucket>> {
     match cfg.kind.as_str() {
         "google_drive" => gdrive::GoogleDrive::create(cfg.clone()),
+        "onedrive" => onedrive::OneDrive::create(cfg, hub.clone()),
         other => anyhow::bail!("no bucket backend for kind {other:?}"),
     }
 }

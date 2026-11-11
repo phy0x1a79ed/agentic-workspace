@@ -9,6 +9,7 @@ mod chat;
 mod config;
 mod gmail;
 mod slack;
+mod tab;
 mod verbs;
 
 use std::sync::Arc;
@@ -135,7 +136,7 @@ async fn run() -> anyhow::Result<()> {
     if loaded.callers.is_empty() {
         tracing::warn!("productivity.toml names no callers: every call is refused");
     }
-    let app = Arc::new(Productivity::new(env.node.clone(), loaded));
+    let app = Arc::new(Productivity::new(env.node.clone(), loaded, svc.context().hub()));
     service(svc, app).run().await
 }
 

@@ -12,7 +12,7 @@ use base64::Engine;
 use serde_json::{json, Value};
 
 use crate::buckets::{self, Bucket};
-use crate::chat::Tab;
+use crate::chat::Chat;
 use crate::config::{BucketConfig, Loaded};
 use crate::gmail::{Draft, DraftFile, Endpoints, GmailConnector};
 use crate::slack::SlackUser;
@@ -99,7 +99,7 @@ fn handed_files(args: &Value) -> Result<Vec<(String, Vec<u8>)>, VerbError> {
 }
 
 impl Productivity {
-    pub fn new(here: String, loaded: Loaded) -> Self {
+    pub fn new(here: String, loaded: Loaded, hub: &awm_plugin_sdk::Hub) -> Self {
         let mut accounts: BTreeMap<String, Arc<dyn Account>> = BTreeMap::new();
         for a in loaded.accounts.into_iter().filter(|a| a.enabled) {
             let acct: Arc<dyn Account> = match a.platform.as_str() {
@@ -112,7 +112,7 @@ impl Productivity {
             .buckets
             .into_iter()
             .map(|c| {
-                let b = buckets::build(&c).map_err(|e| tracing::warn!("bucket {} failed to build: {e}", c.name)).ok();
+                let b = buckets::build(&c, hub).map_err(|e| tracing::warn!("bucket {} failed to build: {e}", c.name)).ok();
                 (c, b)
             })
             .collect();
@@ -193,7 +193,7 @@ impl Productivity {
 
     /// Without `chat`, the site's chats. With it, that chat's last `limit` messages.
     pub async fn chat_read(&self, call: Call) -> R {
-        let tab = Tab::new(call.hub(), &s(&call.args, "site"))?;
+        let tab = Chat::new(call.hub(), &s(&call.args, "site"))?;
         let want = s(&call.args, "chat");
         let out = async {
             if want.is_empty() {
@@ -209,7 +209,7 @@ impl Productivity {
     }
 
     pub async fn chat_download(&self, call: Call) -> R {
-        let tab = Tab::new(call.hub(), &s(&call.args, "site"))?;
+        let tab = Chat::new(call.hub(), &s(&call.args, "site"))?;
         let out = async {
             let chat = tab.chat(&s(&call.args, "chat")).await?;
             tab.download(chat["id"].as_str().unwrap_or_default(), &s(&call.args, "message_id"), idx(&call.args)).await
@@ -221,7 +221,7 @@ impl Productivity {
 
     /// Put files in a chat's compose box in alcor's browser. Tony sends the message himself.
     pub async fn chat_stage(&self, call: Call) -> R {
-        let tab = Tab::new(call.hub(), &s(&call.args, "site"))?;
+        let tab = Chat::new(call.hub(), &s(&call.args, "site"))?;
         let mut files = handed_files(&call.args)?;
         for f in call.args.get("bucket_files").and_then(Value::as_array).into_iter().flatten() {
             let got = self.bucket_file(&s(f, "bucket"), &s(f, "path")).await?;

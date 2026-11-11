@@ -1,54 +1,44 @@
 //! Tony's Slack, Teams and Discord chats, read and staged through their signed-in tabs in
-//! alcor's shared browser. The browser's `service_cdp` runs the page-level calls, and
-//! `chat.js` makes every request with the page's own session.
+//! alcor's shared browser. `chat.js` makes every request with the page's own session.
 
 use std::time::Duration;
 
 use awm_chat::{value, Downloaded};
-use awm_plugin_sdk::{CallOpts, Hub, VerbError};
+use awm_plugin_sdk::{Hub, VerbError};
 use base64::Engine;
 use serde_json::{json, Value};
+
+use crate::tab::Tab;
 
 const JS: &str = include_str!("chat.js");
 const SITES: [&str; 3] = ["slack", "teams", "discord"];
 
 type R = Result<Value, VerbError>;
 
-/// One site's tab in the browser's service window.
-pub struct Tab<'a> {
-    hub: &'a Hub,
-    pub site: String,
+/// One chat site's tab.
+pub struct Chat {
+    tab: Tab,
 }
 
-impl<'a> Tab<'a> {
-    pub fn new(hub: &'a Hub, site: &str) -> Result<Self, VerbError> {
+impl Chat {
+    pub fn new(hub: &Hub, site: &str) -> Result<Self, VerbError> {
         if !SITES.contains(&site) {
             return Err(value(format!("site is one of {}, not {site:?}", SITES.join(", "))));
         }
-        Ok(Tab { hub, site: site.to_string() })
+        Ok(Chat { tab: Tab::new(hub.clone(), site) })
     }
 
-    async fn cdp(&self, method: &str, params: Value) -> R {
-        let opts = CallOpts { timeout: Duration::from_secs(90), ..CallOpts::default() };
-        let args = json!({"site": self.site, "method": method, "params": params});
-        self.hub.call_with("browser", "service_cdp", args, &opts).await.map_err(|e| VerbError::runtime(format!("browser {method} on {}: {e}", self.site)))
-    }
-
-    /// Install `chat.js`, await `window.__awmChat.<f>(args)` in the page, and return its result.
+    /// Await `window.__awmChat.<f>(args)` in the page.
     async fn run(&self, f: &str, args: &[Value]) -> R {
-        let args: Vec<String> = args.iter().map(Value::to_string).collect();
-        let expression = format!("{JS}\n(async () => JSON.stringify(await window.__awmChat.{f}({})))()", args.join(", "));
-        let r = self.cdp("Runtime.evaluate", json!({"expression": expression, "awaitPromise": true, "returnByValue": true})).await?;
-        if let Some(ex) = r.get("exceptionDetails") {
-            let why = ex.pointer("/exception/description").or_else(|| ex.get("text")).and_then(Value::as_str).unwrap_or("an error");
-            return Err(VerbError::runtime(format!("{} page: {}", self.site, why.lines().next().unwrap_or(why))));
-        }
-        let out = r.pointer("/result/value").and_then(Value::as_str).unwrap_or("null");
-        serde_json::from_str(out).map_err(|e| VerbError::runtime(format!("{} page gave {out:.200}: {e}", self.site)))
+        self.tab.eval(JS, &format!("window.__awmChat.{f}"), args).await
+    }
+
+    fn site(&self) -> &str {
+        &self.tab.site
     }
 
     pub async fn chats(&self) -> R {
-        self.run(&format!("{}.list", self.site), &[]).await
+        self.run(&format!("{}.list", self.site()), &[]).await
     }
 
     /// The chat Tony means by `want`: its id, else the one name that matches it.
@@ -58,11 +48,11 @@ impl<'a> Tab<'a> {
     }
 
     pub async fn messages(&self, id: &str, limit: usize) -> R {
-        self.run(&format!("{}.messages", self.site), &[json!(id), json!(limit)]).await
+        self.run(&format!("{}.messages", self.site()), &[json!(id), json!(limit)]).await
     }
 
     pub async fn download(&self, id: &str, message_id: &str, idx: Option<i64>) -> Result<Vec<Downloaded>, VerbError> {
-        let got = self.run(&format!("{}.download", self.site), &[json!(id), json!(message_id), json!(idx)]).await?;
+        let got = self.run(&format!("{}.download", self.site()), &[json!(id), json!(message_id), json!(idx)]).await?;
         got.as_array()
             .into_iter()
             .flatten()
@@ -76,14 +66,14 @@ impl<'a> Tab<'a> {
     /// Open the chat in the tab and put `files` in its compose box. Returns how, and a
     /// screenshot of the tab as it was left.
     pub async fn stage(&self, id: &str, files: &[(String, Vec<u8>)]) -> Result<(Value, Downloaded), VerbError> {
-        let url = self.run(&format!("{}.url", self.site), &[json!(id)]).await?;
-        self.cdp("Page.navigate", json!({"url": url})).await?;
-        self.cdp("Page.bringToFront", json!({})).await?;
+        let url = self.run(&format!("{}.url", self.site()), &[json!(id)]).await?;
+        self.tab.cdp("Page.navigate", json!({"url": url})).await?;
+        self.tab.cdp("Page.bringToFront", json!({})).await?;
         let files: Vec<Value> = files
             .iter()
             .map(|(name, data)| json!({"name": name, "mime": mime_guess::from_path(name).first_or_octet_stream().to_string(), "b64": base64::engine::general_purpose::STANDARD.encode(data)}))
             .collect();
-        let args = [json!(self.site), json!(files)];
+        let args = [json!(self.site()), json!(files)];
         // The navigation swaps the page out from under the first try now and then.
         let staged = match self.run("stage", &args).await {
             Err(e) if e.message.contains("context") => {
@@ -92,15 +82,15 @@ impl<'a> Tab<'a> {
             }
             other => other?,
         };
-        let shot = self.cdp("Page.captureScreenshot", json!({"format": "png"})).await?;
+        let shot = self.tab.cdp("Page.captureScreenshot", json!({"format": "png"})).await?;
         let png = base64::engine::general_purpose::STANDARD.decode(shot["data"].as_str().unwrap_or_default()).map_err(|e| VerbError::runtime(e.to_string()))?;
-        Ok((staged, Downloaded { filename: format!("staged-{}.png", self.site), mime: "image/png".into(), data: png }))
+        Ok((staged, Downloaded { filename: format!("staged-{}.png", self.site()), mime: "image/png".into(), data: png }))
     }
 
     /// Discord opens only for the call that needs it.
     pub async fn done(&self) {
-        if self.site == "discord" {
-            let _ = self.hub.call("browser", "service_close", json!({"site": self.site}), None).await;
+        if self.site() == "discord" {
+            self.tab.close().await;
         }
     }
 }

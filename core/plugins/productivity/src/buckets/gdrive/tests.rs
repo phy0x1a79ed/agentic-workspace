@@ -315,6 +315,7 @@ fn cfg(root: &str) -> BucketConfig {
         name: "g".into(),
         kind: "google_drive".into(),
         root: root.into(),
+        site: String::new(),
         client_id: "c-test".into(),
         client_secret: "s-test".into(),
         refresh_token: "r-test".into(),

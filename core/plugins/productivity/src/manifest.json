@@ -251,7 +251,7 @@
     {
       "name": "buckets",
       "tool": "productivity_buckets",
-      "description": "List configured cloud file-store buckets (Google Drive) with kind and root. Each is probed now: `live` is false, with an `error`, when the store does not answer."
+      "description": "List configured cloud file-store buckets (Google Drive, and OneDrive or SharePoint through alcor's browser) with kind and root. Each is probed now: `live` is false, with an `error`, when the store does not answer."
     },
     {
       "name": "bucket_ls",
@@ -318,7 +318,7 @@
     {
       "name": "bucket_get",
       "tool": "productivity_bucket_get",
-      "description": "Download a file from a bucket. A file up to 24 MiB lands in a fresh temp dir on the node you call from, as `files[0].path`. A bigger file, or a folder, downloads to a temp dir on alcor (`node`), any size, streamed in chunks; a folder refuses over `limit` entries (default 10000) and lists the files that fail in `failures`. Google-native docs are exported (Docs→pdf, Sheets→csv).",
+      "description": "Download a file from a bucket. A file up to 24 MiB lands in a fresh temp dir on the node you call from, as `files[0].path`. A bigger file, or a folder, downloads to a temp dir on alcor (`node`), streamed in chunks (OneDrive takes 40 MiB a file at most); a folder refuses over `limit` entries (default 10000) and lists the files that fail in `failures`. Google-native docs are exported (Docs→pdf, Sheets→csv).",
       "timeout": 3600,
       "params": [
         {
@@ -462,7 +462,7 @@
     {
       "name": "bucket_search",
       "tool": "productivity_bucket_search",
-      "description": "Search a bucket for files whose name contains `query`, across the whole drive. Returns matching entries. A `path` scope is refused.",
+      "description": "Search a bucket for files whose name contains `query`, across the whole drive. Returns matching entries. Google Drive refuses a `path` scope; OneDrive searches under it.",
       "params": [
         {
           "name": "bucket",
