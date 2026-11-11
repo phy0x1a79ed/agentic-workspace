@@ -30,8 +30,19 @@ impl Tab {
         self.hub.call_with("browser", "service_cdp", args, &opts).await.map_err(|e| VerbError::runtime(format!("browser {method} on {}: {e}", self.site)))
     }
 
-    /// Run the `prelude` script, then await `f(args)` in the page and return its result.
+    /// Run the `prelude` script, then await `f(args)` in the page and return its result. A tab
+    /// still loading, as on its first use after Chrome starts, gets one more try.
     pub async fn eval(&self, prelude: &str, f: &str, args: &[Value]) -> R {
+        match self.eval_once(prelude, f, args).await {
+            Err(e) if e.message.contains("about:blank") || e.message.contains("context") => {
+                tokio::time::sleep(Duration::from_secs(4)).await;
+                self.eval_once(prelude, f, args).await
+            }
+            other => other,
+        }
+    }
+
+    async fn eval_once(&self, prelude: &str, f: &str, args: &[Value]) -> R {
         let args: Vec<String> = args.iter().map(Value::to_string).collect();
         let off_site = format!("the {} tab is at ' + location.href.split('?')[0] + '; sign in to it through `browser viewer`", self.site);
         let expression = format!(
