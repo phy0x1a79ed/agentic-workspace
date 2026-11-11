@@ -29,7 +29,7 @@ from typing import Any
 
 from awm.gatewayclient import ServiceAdapter, spawn_supervised
 
-from awm.zotero import orders, source, stream as stream_mod, sync, vault
+from awm.zotero import add, orders, source, stream as stream_mod, sync, vault
 
 log = logging.getLogger("awm.zotero.hub_adapter")
 
@@ -106,6 +106,26 @@ API_MANIFEST: dict[str, Any] = {
                 {"name": "offset", "type": "integer", "description": "Skip this many items. Default 0."},
                 {"name": "limit", "type": "integer",
                  "description": f"Items per page, 1-{ITEMS_MAX}. Default {ITEMS_PAGE}."},
+            ],
+            "timeout": 60,
+        },
+        {
+            "name": "add",
+            "tool": "zotero_add",
+            "description": (
+                "File one paper in Tony's personal Zotero library, in the "
+                "`Agent adds` collection. Call this only when the user "
+                "explicitly asks to add a specific paper; never add papers on "
+                "your own initiative. Give a DOI, a URL, or fields with a "
+                "title. A DOI the library already holds is not added twice."
+            ),
+            "params": [
+                {"name": "doi", "description": "The paper's DOI. Its metadata comes from Crossref."},
+                {"name": "url", "description": "A web page to file when there is no DOI."},
+                {"name": "fields", "type": "object",
+                 "description": "Zotero item fields, such as title, itemType "
+                                "or creators. They override what the DOI or "
+                                "URL gave."},
             ],
             "timeout": 60,
         },
@@ -272,6 +292,20 @@ async def _h_items(args: dict, as_: str | None = None) -> dict:
     return items_page(library, {str(k): int(v) for k, v in since.items()}, offset, limit)
 
 
+async def _h_add(args: dict, as_: str | None = None) -> dict:
+    _peer_or_operator(as_, "add")
+    fields = args.get("fields") or {}
+    if not isinstance(fields, dict):
+        raise ValueError("fields must be an object of Zotero item fields")
+
+    def _add() -> dict:
+        held = sync.held(vault.Vault()).read().get("items") or []
+        return add.add(doi=(args.get("doi") or "").strip(),
+                       url=(args.get("url") or "").strip(),
+                       fields=fields, held=held)
+    return await asyncio.to_thread(_add)
+
+
 async def _h_pull(args: dict, as_: str | None = None) -> dict:
     _operator_only(as_, "pull")
     return await asyncio.to_thread(
@@ -332,6 +366,7 @@ async def _h_order(args: dict, as_: str | None = None) -> dict:
 HANDLERS = {
     "status": _h_status,
     "items": _h_items,
+    "add": _h_add,
     "pull": _h_pull,
     "apply": _h_apply,
     "sync": _h_sync,

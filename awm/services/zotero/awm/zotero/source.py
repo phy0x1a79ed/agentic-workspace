@@ -29,11 +29,10 @@ has to mean anything. Reading a library whole remains the repair path and the
 backstop, and it is the only read whose absences are load-bearing — which is why
 it is also the only one that has to be a snapshot. See `Sheared`.
 
-*This module only ever issues GET.* The method is not a parameter anywhere
-below, and `_get` is the single seam. The key this runs under may hold write
-access for something later, and on a public host the difference between "does
-not write" and "cannot write from here" is worth the two lines it costs: a
-deletion made with that key propagates to every machine the account syncs.
+*Reads go through `_get` and the one write through `_post`, which only
+creates.* Nothing here can edit or delete, because a deletion made with this
+key propagates to every machine the account syncs. `_post` exists for `add`,
+which files one new item in the personal library when a user asks for it.
 """
 
 from __future__ import annotations
@@ -45,6 +44,7 @@ import os
 import threading
 import time
 import urllib.parse
+import uuid
 from dataclasses import dataclass
 from typing import Any
 
@@ -53,7 +53,8 @@ log = logging.getLogger("awm.zotero.source")
 #: Where the library lives. Overridable only so a test can point somewhere else.
 API = os.environ.get("ZOTERO_API_BASE", "https://api.zotero.org").rstrip("/")
 
-#: The key. Read-only is all this needs; see the module docstring.
+#: The key. Reading needs read access; `add` also needs write access to the
+#: personal library.
 KEY = os.environ.get("ZOTERO_API_KEY", "").strip()
 
 #: The account, as the service numbers it. Discovered from the key when unset,
@@ -184,36 +185,29 @@ def _note_backoff(headers: dict[str, str]) -> None:
                 pass
 
 
-def _get(path: str, params: dict[str, Any] | None = None) -> Response:
-    """One read. The only request this module makes, and the only one it can.
-
-    There is no method parameter here or anywhere above it. See the module
-    docstring: the key may carry write access for something later, and this is
-    what keeps that a deliberate change rather than an accident.
-    """
+def _send(method: str, url: str, headers: dict[str, str],
+          body: bytes | None = None) -> Response:
+    """One request over the held socket. `_get` and `_post` are its only callers."""
     if not KEY:
         raise ZoteroError(
             "no ZOTERO_API_KEY: the mirror reads the library from Zotero's own "
-            "service, so it needs a key. Make a read-only one at "
-            "zotero.org/settings/keys and put it where this node reads its "
-            "settings.")
-    query = urllib.parse.urlencode(params or {})
-    url = f"{path}?{query}" if query else path
+            "service, so it needs a key. Make one at zotero.org/settings/keys "
+            "and put it where this node reads its settings.")
     headers = {"Zotero-API-Key": KEY, "Zotero-API-Version": API_VERSION,
-               "Accept": "application/json", "Connection": "keep-alive"}
+               "Accept": "application/json", "Connection": "keep-alive",
+               **headers}
 
     with _lock:
         _wait_turn()
         for attempt in (1, 2):
             try:
                 conn = _connect()
-                conn.request("GET", url, headers=headers)
+                conn.request(method, url, body=body, headers=headers)
                 raw = conn.getresponse()
-                body = raw.read()
                 got = Response(status=raw.status,
                                headers={k.lower(): v for k, v in
                                         raw.getheaders()},
-                               body=body)
+                               body=raw.read())
                 break
             except (http.client.RemoteDisconnected,
                     http.client.BadStatusLine,
@@ -221,7 +215,9 @@ def _get(path: str, params: dict[str, Any] | None = None) -> Response:
                     ConnectionError) as e:
                 # A keep-alive socket the far end closed between requests
                 # surfaces here on the *next* request. That is housekeeping, not
-                # an outage, so the first one is retried without comment.
+                # an outage, so the first one is retried without comment. A
+                # retried POST is safe: it carries a write token, which the
+                # service answers once.
                 _drop()
                 if attempt == 2:
                     raise ZoteroUnavailable(
@@ -234,11 +230,33 @@ def _get(path: str, params: dict[str, Any] | None = None) -> Response:
     return got
 
 
+def _get(path: str, params: dict[str, Any] | None = None) -> Response:
+    """One read."""
+    query = urllib.parse.urlencode(params or {})
+    return _send("GET", f"{path}?{query}" if query else path, {})
+
+
+def _post(path: str, objects: list[dict]) -> dict:
+    """Create `objects` under `path` and return the service's per-object answer.
+
+    The write token makes a retried request create nothing twice.
+    """
+    got = _checked(_send("POST", path, {
+        "Content-Type": "application/json",
+        "Zotero-Write-Token": uuid.uuid4().hex}, json.dumps(objects).encode()),
+        f"POST {path}")
+    body = got.json() or {}
+    if body.get("failed"):
+        raise ZoteroError(f"POST {path}: {json.dumps(body['failed'])[:300]}")
+    return body.get("successful") or {}
+
+
 def _checked(res: Response, what: str) -> Response:
     if res.status == 403:
         raise ZoteroError(
             f"{what}: refused. The key does not reach this library — check it "
-            f"has read access to the personal library and to the groups.")
+            f"has read access to the personal library and to the groups, and "
+            f"write access to the personal library for `add`.")
     if res.status == 429 or res.status == 503:
         raise ZoteroUnavailable(
             f"{what}: asked to back off ({res.status}); "
@@ -477,3 +495,15 @@ def _window(since: int | None) -> dict[str, Any]:
     a library whole is a decision, so make it one.
     """
     return {} if since is None else {"since": int(since)}
+
+
+def create_collection(name: str) -> str:
+    """Make a top-level collection in the personal library and return its key."""
+    made = _post(f"/{path_of(PERSONAL)}/collections", [{"name": name}])
+    return made["0"]["key"]
+
+
+def create_item(item: dict) -> str:
+    """File one new item in the personal library and return its key."""
+    made = _post(f"/{path_of(PERSONAL)}/items", [item])
+    return made["0"]["key"]
