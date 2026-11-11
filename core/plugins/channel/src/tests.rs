@@ -913,27 +913,3 @@ async fn a_daemon_launched_another_way_is_replaced_once_idle() {
         assert_eq!(next.reconcile().await["action"], "none");
     }
 }
-
-// MIGRATION(session-ids)
-#[test]
-fn a_channels_file_with_a_job_column_loses_it() {
-    let tmp = tempfile::tempdir().unwrap();
-    let path = tmp.path().join("channels.db");
-    let conn = rusqlite::Connection::open(&path).unwrap();
-    conn.execute_batch(
-        "CREATE TABLE channels (name TEXT PRIMARY KEY, kind TEXT NOT NULL, trust TEXT NOT NULL, node TEXT NOT NULL,
-            session TEXT NOT NULL DEFAULT '', job TEXT NOT NULL, holder TEXT NOT NULL DEFAULT '', link TEXT NOT NULL DEFAULT '',
-            token TEXT NOT NULL DEFAULT '', cursor INTEGER NOT NULL DEFAULT 0, open INTEGER NOT NULL DEFAULT 1, ended TEXT,
-            opened_at REAL NOT NULL, closed_at REAL, crypto TEXT);
-         INSERT INTO channels (name, kind, trust, node, session, job, opened_at) VALUES ('c', 'task', 'untrusted', 'n', 'cc1', 'abababab', 1.0);",
-    )
-    .unwrap();
-    drop(conn);
-    for _ in 0..2 {
-        let store = crate::channel::store::Store::open(&path).unwrap();
-        assert!(store.get("c").is_some_and(|r| r.session == "cc1"));
-    }
-    let conn = rusqlite::Connection::open(&path).unwrap();
-    let columns: Vec<String> = conn.prepare("PRAGMA table_info(channels)").unwrap().query_map([], |r| r.get(1)).unwrap().map(Result::unwrap).collect();
-    assert!(!columns.contains(&"job".to_string()));
-}

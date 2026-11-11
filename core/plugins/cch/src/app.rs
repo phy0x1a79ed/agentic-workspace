@@ -298,20 +298,6 @@ impl Live {
     pub async fn boot(&self) {
         // The promise store moved to `<service dir>/pending`: the replay reads the migrated one.
         migrate::migrate(&self.paths).await;
-        let paths = self.paths.clone();
-        // MIGRATION(session-ids)
-        let _ = tokio::task::spawn_blocking(move || {
-            match migrate::lineage_keys(&paths) {
-                Ok(0) => {}
-                Ok(n) => tracing::info!("cch: rekeyed {n} lineage file(s) by session id"),
-                Err(e) => tracing::error!("cch: lineage files not rekeyed: {e}"),
-            }
-            match migrate::seed_ledger(&paths) {
-                0 => {}
-                n => tracing::info!("cch: entered {n} pre-ledger warm spare(s) in the pool ledger"),
-            }
-        })
-        .await;
         self.replay().await;
         let hooks = hooks_reconcile::reconcile(&self.paths).await;
         for change in &hooks.changes {

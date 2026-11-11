@@ -109,17 +109,3 @@ async fn approvals_ride_the_outbox() {
                "the requester's own card leaves Needs you once nothing waits");
     assert_eq!(card["sessions"][0]["session_id"], ME);
 }
-
-// MIGRATION(session-ids)
-#[test]
-fn marks_keyed_by_a_job_are_dropped_at_open() {
-    let p = pair();
-    let session = format!("cc{}", "a".repeat(32));
-    for key in ["job:abcd1234", "rc:mizar:abcd1234", &format!("rc:mizar:{session}"), "remind:T1"] {
-        p.relay.set_mark(key, "x");
-    }
-    let reopened = Relay::open("mizar", &p.env.path("r.db"), p.link.clone()).unwrap();
-    let mut left: Vec<String> = ["job:", "rc:", "remind:"].iter().flat_map(|prefix| reopened.marks(prefix)).map(|(k, _)| k).collect();
-    left.sort();
-    assert_eq!(left, [format!("rc:mizar:{session}"), "remind:T1".to_string()]);
-}

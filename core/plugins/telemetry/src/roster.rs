@@ -223,34 +223,6 @@ pub struct Roster {
     pub seats: BTreeMap<String, Value>,
 }
 
-/// MIGRATION(session-ids): rekey a stored roster's sessions and starts from job to session id.
-/// A session with no session id, and a start that names no kept session, is dropped. True when
-/// anything changed.
-pub fn rekey_by_session(stored: &mut Value) -> bool {
-    let mut changed = false;
-    let Some(nodes) = stored.get_mut("nodes").and_then(Value::as_object_mut) else { return false };
-    for node in nodes.values_mut() {
-        let Some(sessions) = node.get("sessions").and_then(Value::as_object).filter(|s| s.values().any(|v| v.get("job").is_some())) else {
-            continue;
-        };
-        let mut kept = serde_json::Map::new();
-        let mut by_job = std::collections::HashMap::new();
-        for (job, mut session) in sessions.clone() {
-            session.as_object_mut().map(|o| o.remove("job"));
-            if let Some(id) = session.get("session_id").and_then(Value::as_str).map(str::to_string) {
-                by_job.insert(job, id.clone());
-                kept.insert(id, session);
-            }
-        }
-        let starts = node.get("starts").and_then(Value::as_object).cloned().unwrap_or_default();
-        let starts: serde_json::Map<String, Value> = starts.into_iter().filter_map(|(job, ts)| Some((by_job.get(&job)?.clone(), ts))).collect();
-        node["sessions"] = Value::Object(kept);
-        node["starts"] = Value::Object(starts);
-        changed = true;
-    }
-    changed
-}
-
 fn newest(a: Option<Ts>, b: Option<Ts>) -> Option<Ts> {
     a.max(b)
 }
@@ -724,18 +696,6 @@ mod tests {
         assert!(a.changed.contains("services"));
         let row = &r.services_view(&singles)["services"][0];
         assert_eq!((row["health"].as_str(), &row["since"]), (Some("down"), &json!(later)));
-    }
-
-    // MIGRATION(session-ids)
-    #[test]
-    fn a_stored_roster_is_rekeyed_by_session_id() {
-        let mut stored = json!({"nodes": {"mizar": {
-            "sessions": {"a1": {"job": "a1", "session_id": "cc1"}, "a2": {"job": "a2"}},
-            "starts": {"a1": "2026-11-07T10:00:00Z", "a9": "2026-11-07T10:00:00Z"}}}});
-        assert!(rekey_by_session(&mut stored));
-        assert_eq!(stored["nodes"]["mizar"], json!({"sessions": {"cc1": {"session_id": "cc1"}}, "starts": {"cc1": "2026-11-07T10:00:00Z"}}));
-        assert!(!rekey_by_session(&mut stored));
-        assert!(serde_json::from_value::<Roster>(stored).is_ok());
     }
 
     #[test]

@@ -131,11 +131,6 @@ impl Store {
         let conn = db::open(path)?;
         conn.execute_batch(SCHEMA)?;
         db::add_columns(&conn, "channels", &ADDED)?;
-        // MIGRATION(session-ids): a file written before the holder was its session id has a `job` column.
-        let has_job = conn.prepare("PRAGMA table_info(channels)")?.query_map([], |r| r.get::<_, String>(1))?.any(|c| c.is_ok_and(|c| c == "job"));
-        if has_job {
-            conn.execute_batch("ALTER TABLE channels DROP COLUMN job")?;
-        }
         Ok(Self(Mutex::new(conn)))
     }
 
