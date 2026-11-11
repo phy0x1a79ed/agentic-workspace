@@ -1,25 +1,35 @@
 //! The daily Zotero sync, inside kb: the library items that moved since the served
-//! generation's cursor join it in place. A matched semdb paper gains [`PRIVATE`] and keeps its
+//! generation's cursor join it in place. A matched semdb paper gains [`LIBRARY`] and keeps its
 //! vectors. An item semdb lacks is written whole and embedded here.
 //!
-//! A session stop on `reflection/sessions` triggers it, and kb's start catches up, at most once
-//! per [`SYNC_GAP_S`]. The cursor lives in the generation, so a new generation keeps its own.
+//! kb holds a long poll open on zotero's `items`, which answers once a library item moves past
+//! the served cursor, and syncs then. The poll goes through zotero's singleton door, which
+//! carries calls but no event stream. A session stop on `reflection/sessions` is the backstop, at
+//! most once per [`SYNC_GAP_S`]. The cursor lives in the generation, so a new generation keeps
+//! its own.
 
-use crate::import::{held_row, item_keys, norm_title, write_atomic, PRIVATE};
+use crate::import::{held_row, item_keys, norm_title, write_atomic, LIBRARY};
 use crate::{Generation, Papers};
 use anyhow::{Context as _, Result};
 use awm_index::sql::quote;
-use awm_plugin_sdk::{Context, Hub, SubscriptionOpts, SupervisedSubscription};
+use awm_plugin_sdk::{CallOpts, Context, Hub, SubscriptionOpts, SupervisedSubscription};
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 /// The shortest gap between two syncs.
 pub const SYNC_GAP_S: f64 = 24.0 * 3600.0;
 /// The cursor file in a generation.
 pub const CURSOR: &str = "zotero.json";
 const PAGE: usize = 200;
+/// How long the long poll asks zotero to hold, under its singleton door's 130 s.
+const WAIT_S: u64 = 100;
+/// The pause after a failed poll or sync.
+const RETRY: Duration = Duration::from_secs(60);
+/// One sync at a time, whichever path started it.
+static SYNCING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// `{versions: {library: version}, synced: <unix s>}`, as a generation holds it.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -65,14 +75,21 @@ fn zotero_peer() -> Option<String> {
     std::env::var("AWM_ZOTERO_PEER").ok().filter(|p| !p.is_empty() && p != "local")
 }
 
+/// A zotero reply, unwrapped from the `result` a routed call puts it in.
+fn page(reply: Value) -> Value {
+    match reply.get("result") {
+        Some(inner) if reply.get("items").is_none() => inner.clone(),
+        _ => reply,
+    }
+}
+
 /// Every item that moved since `since`, page by page, with the library versions at the end.
 async fn moved(hub: &Hub, since: &BTreeMap<String, i64>) -> Result<Vec<Map<String, Value>>> {
     let peer = zotero_peer();
     let mut out = Vec::new();
     let mut offset = Some(0u64);
     while let Some(at) = offset {
-        let reply = hub.call("zotero", "items", json!({"since": since, "offset": at, "limit": PAGE}), peer.as_deref()).await?;
-        let page = if reply.get("items").is_none() { reply.get("result").cloned().unwrap_or_default() } else { reply };
+        let page = page(hub.call("zotero", "items", json!({"since": since, "offset": at, "limit": PAGE}), peer.as_deref()).await?);
         out.extend(page["items"].as_array().into_iter().flatten().filter_map(|i| i.as_object().cloned()));
         offset = page["next"].as_u64();
     }
@@ -107,10 +124,10 @@ impl Papers {
                 Some(id) => {
                     let Some(mut doc) = g.index.document(&id, "true").await? else { continue };
                     let mut have: Vec<Value> = doc.get("collection").and_then(Value::as_array).cloned().unwrap_or_default();
-                    if have.iter().any(|c| c == PRIVATE) {
+                    if have.iter().any(|c| c == LIBRARY) {
                         continue;
                     }
-                    have.push(json!(PRIVATE));
+                    have.push(json!(LIBRARY));
                     doc.insert("collection".into(), Value::Array(have));
                     rows.push(doc);
                     joined += 1;
@@ -139,26 +156,41 @@ async fn sync_due(papers: &Papers) -> bool {
     }
 }
 
-async fn run_once(ctx: &Context, papers: &Papers) {
+async fn run_once(ctx: &Context, papers: &Papers) -> Result<()> {
+    let _one = SYNCING.lock().await;
     let started = std::time::Instant::now();
-    let ok = match papers.sync(ctx.hub()).await {
-        Ok(v) => {
-            tracing::info!("papers: zotero sync: {v}");
-            true
-        }
-        Err(e) => {
-            tracing::warn!("papers: zotero sync failed, retrying at the next session stop: {e:#}");
-            false
-        }
-    };
-    ctx.usage("papers-sync", ok, started.elapsed().as_millis() as u64);
+    let out = papers.sync(ctx.hub()).await;
+    ctx.usage("papers-sync", out.is_ok(), started.elapsed().as_millis() as u64);
+    tracing::info!("papers: zotero sync: {}", out?);
+    Ok(())
 }
 
-/// Catch up if due, then sync when a session stops and the last sync is past the gap.
-pub async fn follow(ctx: Context, papers: Arc<Papers>) {
-    if sync_due(&papers).await {
-        run_once(&ctx, &papers).await;
+/// Whether zotero holds an item past the served cursor, waiting up to [`WAIT_S`] for one.
+async fn moved_past(hub: &Hub, papers: &Papers) -> Result<bool> {
+    let g = papers.generation().await.map_err(|e| anyhow::anyhow!(e.0))?;
+    let since = Cursor::load(&papers.root.join(&g.name)).versions;
+    let opts = CallOpts { peer: zotero_peer(), timeout: Duration::from_secs(WAIT_S + 30), ..CallOpts::default() };
+    let reply = page(hub.call_with("zotero", "items", json!({"since": since, "limit": 1, "wait": WAIT_S}), &opts).await?);
+    Ok(reply["total"].as_u64().unwrap_or(0) > 0)
+}
+
+/// Sync each time zotero answers the long poll with a moved item.
+async fn watch(ctx: Context, papers: Arc<Papers>) {
+    loop {
+        let step = match moved_past(ctx.hub(), &papers).await {
+            Ok(true) => run_once(&ctx, &papers).await,
+            moved => moved.map(drop),
+        };
+        if let Err(e) = step {
+            tracing::info!("papers: zotero watch, retrying in {}s: {e:#}", RETRY.as_secs());
+            tokio::time::sleep(RETRY).await;
+        }
     }
+}
+
+/// Watch zotero for moved items, and sync when a session stops and the last sync is past the gap.
+pub async fn follow(ctx: Context, papers: Arc<Papers>) {
+    tokio::spawn(watch(ctx.clone(), papers.clone()));
     let hub = ctx.hub().clone();
     let connect = move || {
         let hub = hub.clone();
@@ -168,7 +200,9 @@ pub async fn follow(ctx: Context, papers: Arc<Papers>) {
         let (ctx, papers) = (ctx.clone(), papers.clone());
         async move {
             if event.get("event").and_then(Value::as_str) == Some("stopped") && sync_due(&papers).await {
-                run_once(&ctx, &papers).await;
+                if let Err(e) = run_once(&ctx, &papers).await {
+                    tracing::warn!("papers: zotero sync failed: {e:#}");
+                }
             }
             Ok(())
         }

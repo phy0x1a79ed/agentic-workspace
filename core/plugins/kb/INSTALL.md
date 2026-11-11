@@ -46,7 +46,16 @@ Build a generation with `kb papers-import`. Run `kb papers-import --help` for it
 
 The import needs no GPU and no sockeye. A full run on altair takes about an hour.
 
-kb syncs the Zotero library into the served generation at most once a day: at its start, and when a session stops. A library item that matches a semdb paper adds `private` to that paper's collections. Any other item becomes a new paper. kb asks the zotero singleton through the hub. Set `AWM_ZOTERO_PEER` to ask one node instead.
+Each semdb domain is a collection under its slug from semdb's `domains.toml`. Choose the import by what changed:
+
+- Run a full import (`--model`) after a domain is renamed or dropped. It builds a new generation from nothing.
+- Run `--domains <slug>...` after a domain is added or rebuilt. It hardlinks the current generation into a new one and replaces only those domains' papers. A paper keeps every collection it already had, so a paper that leaves a domain keeps that label too.
+
+**CAUTION** The clone hardlinks only Lance's `data/` and `_indices/` and the `model/` files, because nothing rewrites them in place. It copies every other file. A hardlinked file written in place would change the generation it came from, which is the rollback slot.
+
+To roll back the papers source, write the previous generation's name into `CURRENT`. The import deletes the generation before that one, so check a new generation before importing again.
+
+kb syncs the Zotero library into the served generation within seconds of a save. kb holds a long poll open on zotero's `items` (`wait`), which answers when a sync moves an item past the generation's cursor. The poll goes through zotero's singleton door, because the door carries calls but no event stream. A session stop is the backstop, at most once a day. A library item that matches a semdb paper adds `tony` to that paper's collections. Any other item becomes a new paper. Set `AWM_ZOTERO_PEER` to ask one node instead of the singleton.
 
 ## Roll back
 

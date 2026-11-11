@@ -4,6 +4,10 @@
 //! It reuses semdb's bge-large vectors, so a full import embeds only the Zotero items semdb
 //! lacks. semdb is read in place and never written: its directories are DVC-tracked.
 //!
+//! A domain update (`--domains`) clones the current generation by hardlinks and replaces only
+//! the papers of the named domains, keeping every collection a paper already had: a domain
+//! grows or changes, never shrinks.
+//!
 //! Inputs, all under `--semdb`:
 //! - `registry/paper.parquet` and `registry/paper_domain.parquet`: one row per paper, and the
 //!   domains each came from, which become its collections.
@@ -22,8 +26,8 @@ use std::collections::{HashMap, HashSet};
 use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
 
-/// The collection every Zotero library item joins.
-pub const PRIVATE: &str = "private";
+/// The collection every item of Tony's Zotero library joins.
+pub const LIBRARY: &str = "tony";
 /// The chunk rows written per Lance append.
 const ROWS: usize = 20_000;
 /// The entries written per Lance append: each carries its paper's whole body.
@@ -37,10 +41,12 @@ pub struct Opts {
     pub graph: Option<PathBuf>,
     /// The Zotero items, one JSON object per line, as `zotero items` pages them.
     pub zotero: Option<PathBuf>,
-    /// The bge-large files, copied into the generation.
-    pub model: PathBuf,
+    /// The bge-large files, copied into the generation. A domain update keeps the current one.
+    pub model: Option<PathBuf>,
     /// The papers root: `<AWM_DIR>/services/kb/lance/papers`.
     pub root: PathBuf,
+    /// The domains to update in a clone of the current generation; empty for a full import.
+    pub domains: Vec<String>,
 }
 
 /// One paper's fields, before its texts join it.
@@ -54,14 +60,21 @@ struct Paper {
     collections: Vec<String>,
 }
 
-/// Build a generation under `opts.root` with the model in `opts.model`, then make it current.
-/// Returns what it wrote.
+/// Build a generation under `opts.root`, whole or as a domain update of the current one, then
+/// make it current. Returns what it wrote.
 pub async fn run(opts: &Opts) -> Result<Value> {
     let name = format!("gen-{}", chrono_stamp());
     let dir = opts.root.join(&name);
-    copy_model(&opts.model, &dir.join("model"))?;
-    let embedder = Onnx::load_dir(&dir.join("model"), &BGE_LARGE)?;
-    let out = build(opts, &dir, &embedder).await?;
+    let out = if opts.domains.is_empty() {
+        let model = opts.model.as_ref().context("a full import needs --model")?;
+        copy_model(model, &dir.join("model"))?;
+        let embedder = Onnx::load_dir(&dir.join("model"), &BGE_LARGE)?;
+        build(opts, &dir, &embedder).await?
+    } else {
+        let current = std::fs::read_to_string(opts.root.join(CURRENT)).context("a domain update needs a current generation")?;
+        clone_generation(&opts.root.join(current.trim()), &dir, false)?;
+        update(opts, &dir).await?
+    };
     make_current(&opts.root, &name)?;
     prune(&opts.root, &name)?;
     Ok(out)
@@ -72,10 +85,6 @@ pub async fn build(opts: &Opts, dir: &Path, embedder: &dyn Embedder) -> Result<V
     let started = std::time::Instant::now();
 
     let mut papers = registry(&opts.semdb.join("registry"))?;
-    let (cites, cited_by) = match &opts.graph {
-        Some(g) => citations(g)?,
-        None => Default::default(),
-    };
     let items = match &opts.zotero {
         Some(p) => zotero_items(p)?,
         None => vec![],
@@ -83,11 +92,7 @@ pub async fn build(opts: &Opts, dir: &Path, embedder: &dyn Embedder) -> Result<V
     let held = join_library(&mut papers, &items);
 
     let index = Store::open(&dir.join("lance")).await?.index(spec()).await?;
-    let entries = write_entries(&index, &opts.semdb, &papers, &cites, &cited_by).await?;
-    let mut chunks = 0;
-    for zone in ["titles", "abstracts", "chunks"] {
-        chunks += write_chunks(&index, &opts.semdb, zone, &papers).await?;
-    }
+    let (entries, chunks) = write_papers(&index, opts, &papers).await?;
     let held_n = held.len();
     if !held.is_empty() {
         let written = index.upsert(&held, Some(embedder)).await?;
@@ -107,6 +112,71 @@ pub async fn build(opts: &Opts, dir: &Path, embedder: &dyn Embedder) -> Result<V
         "zotero": {"items": items.len(), "held": held_n},
         "secs": started.elapsed().as_secs(),
     }))
+}
+
+/// Replace the papers of `opts.domains` in the generation at `dir` with semdb's, each keeping
+/// the collections it was served with.
+pub async fn update(opts: &Opts, dir: &Path) -> Result<Value> {
+    let started = std::time::Instant::now();
+    let mut papers = registry(&opts.semdb.join("registry"))?;
+    papers.retain(|_, p| p.collections.iter().any(|c| opts.domains.contains(c)));
+    anyhow::ensure!(!papers.is_empty(), "semdb holds no paper in {:?}", opts.domains);
+    let index = Store::open(&dir.join("lance")).await?.index(spec()).await?;
+    let ids: Vec<String> = papers.keys().cloned().collect();
+    for hit in index.hits(&ids).await? {
+        let Some(p) = hit.get("id").and_then(Value::as_str).and_then(|id| papers.get_mut(id)) else { continue };
+        for c in hit.get("collection").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str) {
+            if !p.collections.iter().any(|have| have == c) {
+                p.collections.push(c.to_string());
+            }
+        }
+    }
+    let replaced = index.delete(&ids).await?;
+    let (entries, chunks) = write_papers(&index, opts, &papers).await?;
+    index.optimize().await?;
+    Ok(json!({
+        "generation": dir.file_name().map(|n| n.to_string_lossy().into_owned()),
+        "domains": opts.domains,
+        "papers": entries,
+        "replaced": replaced,
+        "chunks": chunks,
+        "secs": started.elapsed().as_secs(),
+    }))
+}
+
+/// Write `papers`' entries, with their citations, and their chunks in every zone. Returns
+/// `(entries, chunks)`.
+async fn write_papers(index: &Index, opts: &Opts, papers: &HashMap<String, Paper>) -> Result<(usize, usize)> {
+    let (cites, cited_by) = match &opts.graph {
+        Some(g) => citations(g)?,
+        None => Default::default(),
+    };
+    let entries = write_entries(index, &opts.semdb, papers, &cites, &cited_by).await?;
+    let mut chunks = 0;
+    for zone in ["titles", "abstracts", "chunks"] {
+        chunks += write_chunks(index, &opts.semdb, zone, papers).await?;
+    }
+    Ok((entries, chunks))
+}
+
+/// Copy generation `from` to `to`. Lance never rewrites a data or index file, so those are
+/// hardlinked and cost no disk. Every other file is copied, because something rewrites it in
+/// place: the manifests, the Zotero cursor, the vector index's trained count.
+fn clone_generation(from: &Path, to: &Path, immutable: bool) -> Result<()> {
+    std::fs::create_dir_all(to)?;
+    for entry in std::fs::read_dir(from)? {
+        let entry = entry?;
+        let (src, dest) = (entry.path(), to.join(entry.file_name()));
+        let immutable = immutable || matches!(entry.file_name().to_str(), Some("data" | "_indices" | "model"));
+        if entry.file_type()?.is_dir() {
+            clone_generation(&src, &dest, immutable)?;
+        } else if immutable {
+            std::fs::hard_link(&src, &dest)?;
+        } else {
+            std::fs::copy(&src, &dest)?;
+        }
+    }
+    Ok(())
 }
 
 fn chrono_stamp() -> String {
@@ -281,7 +351,7 @@ pub(crate) fn item_keys(item: &Map<String, Value>) -> Option<ItemKeys> {
 /// The shortest normalized title that matches by title and year.
 const MIN_TITLE: usize = 20;
 
-/// Add [`PRIVATE`] to each semdb paper a Zotero item matches by [`item_keys`]. Returns the
+/// Add [`LIBRARY`] to each semdb paper a Zotero item matches by [`item_keys`]. Returns the
 /// unmatched items as rows to embed.
 fn join_library(papers: &mut HashMap<String, Paper>, items: &[Map<String, Value>]) -> Vec<Map<String, Value>> {
     let by_doi: HashMap<String, String> = papers.iter().filter(|(_, p)| !p.doi.is_empty()).map(|(id, p)| (p.doi.clone(), id.clone())).collect();
@@ -296,8 +366,8 @@ fn join_library(papers: &mut HashMap<String, Paper>, items: &[Map<String, Value>
         let found = keys.doi.and_then(|d| by_doi.get(&d)).or_else(|| keys.title_year.and_then(|k| by_title.get(&k))).cloned();
         match found.and_then(|id| papers.get_mut(&id)) {
             Some(p) => {
-                if !p.collections.iter().any(|c| c == PRIVATE) {
-                    p.collections.push(PRIVATE.into());
+                if !p.collections.iter().any(|c| c == LIBRARY) {
+                    p.collections.push(LIBRARY.into());
                 }
             }
             None => held.push(held_row(item)),
@@ -320,7 +390,7 @@ pub fn held_row(item: &Map<String, Value>) -> Map<String, Value> {
     if let Some(y) = item_year(item) {
         row.insert("ts".into(), json!(year_start(y)));
     }
-    row.insert("collection".into(), json!([PRIVATE]));
+    row.insert("collection".into(), json!([LIBRARY]));
     row.insert("author".into(), json!(authors));
     row.insert("doi".into(), json!(item_str(item, "doi").to_lowercase()));
     row.insert("journal".into(), json!(item_str(item, "publication")));
@@ -462,7 +532,8 @@ fn npy_header(r: &mut impl Read) -> Result<(usize, usize, u64)> {
     }
 }
 
-/// Write one zone's chunk rows: its texts' ids in order, each with its row of the zone's vectors.
+/// Write one zone's chunk rows for `papers`: its texts' ids in order, each with its row of the
+/// zone's vectors. Returns the rows written.
 async fn write_chunks(index: &Index, semdb: &Path, zone: &str, papers: &HashMap<String, Paper>) -> Result<usize> {
     let npy = semdb.join("vectors").join(zone).join("index.npy");
     let mut vectors = BufReader::with_capacity(1 << 24, std::fs::File::open(&npy).with_context(|| npy.display().to_string())?);
@@ -480,7 +551,7 @@ async fn write_chunks(index: &Index, semdb: &Path, zone: &str, papers: &HashMap<
         _ => 2,
     };
     let mut ordinal: HashMap<String, i64> = HashMap::new();
-    let (mut batch, mut n) = (Vec::with_capacity(ROWS), 0usize);
+    let (mut batch, mut n, mut written) = (Vec::with_capacity(ROWS), 0usize, 0usize);
     let mut buf = vec![0u8; dim * 4];
     while let Some(r) = rows.next()? {
         let (key, text): (String, String) = (r.get(0)?, r.get(1)?);
@@ -507,6 +578,7 @@ async fn write_chunks(index: &Index, semdb: &Path, zone: &str, papers: &HashMap<
         if base == 2 {
             *j += 1;
         }
+        written += 1;
         batch.push(row);
         if batch.len() >= ROWS {
             index.load_chunks("", &batch).await?;
@@ -517,7 +589,7 @@ async fn write_chunks(index: &Index, semdb: &Path, zone: &str, papers: &HashMap<
         bail!("{zone}: {n} chunks but {rows_n} vectors in {}", npy.display());
     }
     index.load_chunks("", &batch).await?;
-    Ok(n)
+    Ok(written)
 }
 
 /// Microseconds since the epoch at the start of year `y`, UTC.
