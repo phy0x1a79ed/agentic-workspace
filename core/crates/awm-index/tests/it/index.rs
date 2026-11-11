@@ -20,8 +20,7 @@ fn spec() -> Spec {
         hit: vec!["title".into(), "ts".into()],
         extra: vec![("author".into(), Kind::Text)],
         section_by: Some("ts".into()),
-        dim: awm_embed::MINILM.dim,
-        entry_only: vec![],
+        ..Default::default()
     }
 }
 

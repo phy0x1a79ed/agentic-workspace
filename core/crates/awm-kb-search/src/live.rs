@@ -1,4 +1,4 @@
-//! A source another plugin serves live, such as the papers plugin's `kb` and `library`: the thin
+//! A source another plugin serves live, declared by its `[[service.archive]]` table: the thin
 //! translation of a query into the arguments its verb takes today, and of its answer back into
 //! sections. Such a source sees no caller, so search hides a peer the hits a mark covers.
 

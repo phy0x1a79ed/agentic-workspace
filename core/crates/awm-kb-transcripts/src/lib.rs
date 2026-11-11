@@ -274,10 +274,7 @@ impl App {
 
     /// Level the index with the archive and the live tree, reading the archive on `reader`.
     pub async fn reconcile(&self, reader: impl Fn(Box<dyn FnOnce() + Send>) + Send + Sync) -> Result<Value, Fail> {
-        let ix = self.ix()?;
-        let mut out = ix.reconcile(&self.tree.archive, &self.tree.projects, reader).await?;
-        out["live_rows"] = serde_json::json!(ix.catch_up(&self.tree.projects).await?);
-        Ok(out)
+        Ok(self.ix()?.reconcile(&self.tree.archive, &self.tree.projects, reader).await?)
     }
 
     /// Index what the live transcripts gained, unless the start's reconcile is still running:

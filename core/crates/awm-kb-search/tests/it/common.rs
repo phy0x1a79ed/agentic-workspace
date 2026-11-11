@@ -58,7 +58,7 @@ pub struct Lance {
 impl Lance {
     pub async fn open(dir: &std::path::Path, name: &str, default: bool) -> Arc<Lance> {
         let fields = journal_fields();
-        let spec = Spec { name: name.into(), fields: fields.clone(), hit: hit(), extra: vec![], section_by: Some("ts".into()), dim: awm_embed::MINILM.dim, entry_only: vec![] };
+        let spec = Spec { name: name.into(), fields: fields.clone(), hit: hit(), extra: vec![], section_by: Some("ts".into()), ..Default::default() };
         let index = Store::open(&dir.join(name)).await.unwrap().index(spec).await.unwrap();
         Arc::new(Lance { name: name.into(), index, fields, hit: hit(), default, gets: Mutex::new(vec![]) })
     }

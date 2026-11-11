@@ -726,8 +726,8 @@ impl<B: Backend> App<B> {
             Some("daemon") => json!("background"),
             _ => lane.clone(),
         };
-        // The gateway copies `kind` into the door claim, which a holder check on another node reads.
-        let kind = if hosting == json!("background") { "bg" } else { "interactive" };
+        // The gateway copies `kind` into the door claim.
+        let kind = awm_plugin_sdk::holders::kind_of(hosting.as_str());
         let mode = self.backend.mode_of(pid).await;
         Ok(with_ids(json!({
             "ok": true,
