@@ -10,8 +10,9 @@ use serde_json::{json, Value};
 use crate::tab::{self, Tab};
 
 const JS: &str = include_str!("chat.js");
-/// Each site, and whether its tab closes after a read. Discord opens only for the call that needs it.
-const SITES: [(&str, bool); 3] = [("slack", false), ("teams", false), ("discord", true)];
+/// Each site, the host its signed-in tab is on, and whether its tab closes after a read.
+/// Discord opens only for the call that needs it.
+const SITES: [(&str, &str, bool); 3] = [("slack", "app.slack.com", false), ("teams", "teams.microsoft.com", false), ("discord", "discord.com", true)];
 
 type R = Result<Value, VerbError>;
 
@@ -23,11 +24,11 @@ pub struct Chat {
 
 impl Chat {
     pub fn new(hub: &Hub, site: &str) -> Result<Self, VerbError> {
-        let Some(&(_, close_after)) = SITES.iter().find(|(s, _)| *s == site) else {
-            let names: Vec<&str> = SITES.iter().map(|(s, _)| *s).collect();
+        let Some(&(_, host, close_after)) = SITES.iter().find(|(s, ..)| *s == site) else {
+            let names: Vec<&str> = SITES.iter().map(|(s, ..)| *s).collect();
             return Err(value(format!("site is one of {}, not {site:?}", names.join(", "))));
         };
-        Ok(Chat { tab: Tab::new(hub.clone(), site), close_after })
+        Ok(Chat { tab: Tab::new(hub.clone(), site, host), close_after })
     }
 
     /// Await the site's `window.__awmChat.<site>.<f>(args)` in the page.

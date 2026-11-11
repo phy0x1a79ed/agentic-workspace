@@ -14,11 +14,14 @@ type R = Result<Value, VerbError>;
 pub struct Tab {
     hub: Hub,
     pub site: String,
+    /// The host the tab is on once signed in. Anywhere else, such as a sign-in page, the page
+    /// scripts are not run.
+    host: &'static str,
 }
 
 impl Tab {
-    pub fn new(hub: Hub, site: &str) -> Tab {
-        Tab { hub, site: site.to_string() }
+    pub fn new(hub: Hub, site: &str, host: &'static str) -> Tab {
+        Tab { hub, site: site.to_string(), host }
     }
 
     pub async fn cdp(&self, method: &str, params: Value) -> R {
@@ -30,7 +33,12 @@ impl Tab {
     /// Run the `prelude` script, then await `f(args)` in the page and return its result.
     pub async fn eval(&self, prelude: &str, f: &str, args: &[Value]) -> R {
         let args: Vec<String> = args.iter().map(Value::to_string).collect();
-        let expression = format!("{prelude}\n(async () => JSON.stringify(await {f}({})))()", args.join(", "));
+        let off_site = format!("the {} tab is at ' + location.href.split('?')[0] + '; sign in to it through `browser viewer`", self.site);
+        let expression = format!(
+            "if (!location.hostname.endsWith({host:?})) throw new Error('{off_site}');\n{prelude}\n(async () => JSON.stringify(await {f}({})))()",
+            args.join(", "),
+            host = self.host
+        );
         let r = self.cdp("Runtime.evaluate", json!({"expression": expression, "awaitPromise": true, "returnByValue": true})).await?;
         if let Some(ex) = r.get("exceptionDetails") {
             let why = ex.pointer("/exception/description").or_else(|| ex.get("text")).and_then(Value::as_str).unwrap_or("an error");
