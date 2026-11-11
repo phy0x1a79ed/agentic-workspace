@@ -128,14 +128,12 @@ async fn run(gw: &Gateway, p: &Plugin, hook: &Path) -> Result<(), String> {
         .env("AWM_DIR", &gw.state)
         .env("AWM_PLUGIN", &p.name)
         .env("AWM_NODE_NAME", &gw.node)
+        .env("AWM_WORKSPACE", cfg.workspace_dir(&gw.state))
         .stdin(std::process::Stdio::null())
         .stdout(log.try_clone().map_err(|e| e.to_string())?)
         .stderr(log)
         .process_group(0)
         .kill_on_drop(true);
-    if let Some(ws) = &cfg.workspace {
-        cmd.env("AWM_WORKSPACE", ws);
-    }
     tracing::info!("plugin {}: running install hook {}", p.name, hook.display());
     let mut child = cmd.spawn().map_err(|e| e.to_string())?;
     let pgid = child.id().map(|id| id as i32);

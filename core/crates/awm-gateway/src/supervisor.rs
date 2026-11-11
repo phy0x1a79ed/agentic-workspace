@@ -458,9 +458,7 @@ fn spawn(gw: &Gateway, spec: &ServiceSpec, env: &BTreeMap<String, String>) -> st
     if let Some(port) = gw.hub_url().rsplit(':').next() {
         cmd.env("AWM_PORT", port);
     }
-    if let Some(ws) = &gw.cfg().workspace {
-        cmd.env("AWM_WORKSPACE", ws);
-    }
+    cmd.env("AWM_WORKSPACE", gw.cfg().workspace_dir(&gw.state));
     {
         let port = gw.egress.port_for(gw.weak(), &spec.plugin)?;
         let exempt = crate::egress::exempt_hosts(&gw.cfg().edges_path(&gw.state), &gw.hub_url());
