@@ -1,0 +1,8 @@
+# Full DWARF made each integration-test binary ~2.8 GB and a target dir ~100 GB.
+# Line tables keep file:line in backtraces; dependencies carry none.
+# Kept out of Cargo.toml: that file is in every release pin's hash, and this touches no release build.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
