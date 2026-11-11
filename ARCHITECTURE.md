@@ -158,7 +158,7 @@ A cancel travels one hop at a time. When the gateway drops a call, it sends `{ki
 
 The native writes (`reload`, `install`, `uninstall`, the service lifecycle and `config_set`) also need a trusted caller on this node.
 
-The gateway finds the caller through a pid: `X-Awm-Session-Pid` from `awm mcp`, a stdio child of the session, or `X-Awm-Caller-Pid` from the CLI. `caller.rs` walks up to eight ancestors and asks `reflection session_of` for each. The first session found is the caller, with its level, mode, scope and R9 id. A chain no harness claims is a user's shell and passes as trusted. A lookup that fails runs as untrusted with mode `unknown`. A positive answer is cached for 5 s.
+The gateway finds the caller through a pid: `X-Awm-Session-Pid` from `awm mcp`, a stdio child of the session, or `X-Awm-Caller-Pid` from the CLI. `caller.rs` walks up to eight ancestors and asks `reflection session_of` for each. The first session found is the caller, with its level, mode, scope and R9 id. A chain no harness claims is a shell of the gateway's own account and passes as trusted. Every other account is refused before this lookup (`loopback.rs`). A lookup that fails runs as untrusted with mode `unknown`. A positive answer is cached for 5 s.
 
 **CAUTION** The mode gate is a guardrail on the agent-facing doors, not a trust boundary. The loopback gateway is open, and a request with no pid header carries no mode. A new restricted mode holds only while its session cannot make a raw HTTP request, so its launch must withhold Bash and WebFetch. The gate cannot cover Claude's built-in tools either.
 
@@ -303,7 +303,7 @@ A page reaches the gateway through `@awm/client`: `tool(name).call(verb, args)` 
 
 ## Federation
 
-Read `FEDERATION.md` before you touch anything cross-node. The loopback gateway stays open and unauthenticated. A call to another node goes from the local gateway down an ssh channel to that node's loopback gateway (`core/crates/awm-edge`). The edge list (`awm.config.edges`, `awm_trust::edges`) is the only record of who reaches whom.
+Read `FEDERATION.md` before you touch anything cross-node. The loopback gateway admits only its own Unix account and the services that send a token (`docs/redux/drafts/plugin-contract.md` § Who reaches the gateway). Within that account it authenticates nothing. A call to another node goes from the local gateway down an ssh channel to that node's loopback gateway (`core/crates/awm-edge`). The edge list (`awm.config.edges`, `awm_trust::edges`) is the only record of who reaches whom.
 
 - This is not the retired federations: neither the v0 one (cr-sqlite replication, leader election, a `peers` registry) nor the peer book with node tokens and a private CA. The git history of their deletion is not a guide to the current system.
 - The gateway trusts `X-Awm-Caller` from `awm edge-serve` only beside the edge token in `<AWM_DIR>/edge.token`, which it rewrites at each start. It trusts `X-Awm-As` because the edge (`auth`) strips every inbound caller header (`X-Awm-As`, `X-Awm-Caller-Pid`, `X-Awm-Session-Pid`) and stamps its own. A new edge mount must do the same.

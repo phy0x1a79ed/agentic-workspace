@@ -362,8 +362,9 @@ notes stay refused. A revoked or expired slice admits no create.
 notes under a writable subtree would make it writable everywhere it appears. That
 is why clone checks the source note too.
 
-The gate is a guardrail, not a trust boundary. A session on the vault host can
-call the loopback gateway without the pid stamp and pass as the host.
+The gate is a guardrail, not a trust boundary. A session under the gateway's own
+Unix account on the vault host can call the loopback gateway without the pid
+stamp and pass as the host. The gateway refuses every other account.
 
 ## A public slice of the vault
 
@@ -720,9 +721,10 @@ refused for a caller arriving through an edge.
 ./install.sh
 ```
 
-`awm/install.sh` runs this on every deploy, and so does the supervising session
-of awm's deploy refresh (`deploy.toml` at the repo root). Every step is
-idempotent.
+It is the plugin's install hook. The gateway runs it whenever the plugin
+folder's stamp moves, then restarts the service. This holds on a node that runs
+trilium as its own systemd unit too (plugin-contract § External services). Every
+step is idempotent.
 
 **The server is one fork release, and awm pins it.** `server.pin` names the
 release's version, its tarball's file name and its sha256 (install.md R115
@@ -745,11 +747,6 @@ without a server and says so. `TRILIUM_REQUIRE_SERVER=1` makes that fatal.
    the node's artifact store, when the install config names one
    (`FEDERATION.md` § Deploy). The node never fetches it.
 6. Check `awm trilium status` on the node: `source.current` must be true.
-
-**CAUTION** A refresh that does not build skips `install.sh`, so a release that
-moves only `server.pin` leaves the old server running with `current` false. Run
-`install.sh` on the node as the `awm` user with `AWM_DIR` set to the node's awm
-dir, then `awm reload --restart trilium --force`.
 
 A change made as a note, such as the board page, a widget or a script, needs none
 of this. It goes live through the `trilium` tool.
