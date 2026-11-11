@@ -2,24 +2,34 @@
 //! generation's cursor join it in place. A matched semdb paper gains [`LIBRARY`] and keeps its
 //! vectors. An item semdb lacks is written whole and embedded here.
 //!
-//! A session stop on `reflection/sessions` triggers it, and kb's start catches up, at most once
-//! per [`SYNC_GAP_S`]. The cursor lives in the generation, so a new generation keeps its own.
+//! kb holds a long poll open on zotero's `items`, which answers once a library item moves past
+//! the served cursor, and syncs then. The poll goes through zotero's singleton door, which
+//! carries calls but no event stream. A session stop on `reflection/sessions` is the backstop, at
+//! most once per [`SYNC_GAP_S`]. The cursor lives in the generation, so a new generation keeps
+//! its own.
 
 use crate::import::{held_row, item_keys, norm_title, write_atomic, LIBRARY};
 use crate::{Generation, Papers};
 use anyhow::{Context as _, Result};
 use awm_index::sql::quote;
-use awm_plugin_sdk::{Context, Hub, SubscriptionOpts, SupervisedSubscription};
+use awm_plugin_sdk::{CallOpts, Context, Hub, SubscriptionOpts, SupervisedSubscription};
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 /// The shortest gap between two syncs.
 pub const SYNC_GAP_S: f64 = 24.0 * 3600.0;
 /// The cursor file in a generation.
 pub const CURSOR: &str = "zotero.json";
 const PAGE: usize = 200;
+/// How long the long poll asks zotero to hold, under its singleton door's 130 s.
+const WAIT_S: u64 = 100;
+/// The pause after a failed poll or sync.
+const RETRY: Duration = Duration::from_secs(60);
+/// One sync at a time, whichever path started it.
+static SYNCING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// `{versions: {library: version}, synced: <unix s>}`, as a generation holds it.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -139,7 +149,8 @@ async fn sync_due(papers: &Papers) -> bool {
     }
 }
 
-async fn run_once(ctx: &Context, papers: &Papers) {
+async fn run_once(ctx: &Context, papers: &Papers) -> bool {
+    let _one = SYNCING.lock().await;
     let started = std::time::Instant::now();
     let ok = match papers.sync(ctx.hub()).await {
         Ok(v) => {
@@ -152,13 +163,39 @@ async fn run_once(ctx: &Context, papers: &Papers) {
         }
     };
     ctx.usage("papers-sync", ok, started.elapsed().as_millis() as u64);
+    ok
 }
 
-/// Catch up if due, then sync when a session stops and the last sync is past the gap.
-pub async fn follow(ctx: Context, papers: Arc<Papers>) {
-    if sync_due(&papers).await {
-        run_once(&ctx, &papers).await;
+/// Whether zotero holds an item past the served cursor, waiting up to [`WAIT_S`] for one.
+async fn moved_past(hub: &Hub, papers: &Papers) -> Result<bool> {
+    let g = papers.generation().await.map_err(|e| anyhow::anyhow!(e.0))?;
+    let since = Cursor::load(&papers.root.join(&g.name)).versions;
+    let opts = CallOpts { peer: zotero_peer(), timeout: Duration::from_secs(WAIT_S + 30), ..CallOpts::default() };
+    let reply = hub.call_with("zotero", "items", json!({"since": since, "limit": 1, "wait": WAIT_S}), &opts).await?;
+    let page = reply.get("result").filter(|_| reply.get("total").is_none()).unwrap_or(&reply);
+    Ok(page["total"].as_u64().unwrap_or(0) > 0)
+}
+
+/// Sync each time zotero answers the long poll with a moved item.
+async fn watch(ctx: Context, papers: Arc<Papers>) {
+    loop {
+        let synced = match moved_past(ctx.hub(), &papers).await {
+            Ok(true) => run_once(&ctx, &papers).await,
+            Ok(false) => true,
+            Err(e) => {
+                tracing::info!("papers: zotero long poll failed, retrying in {}s: {e:#}", RETRY.as_secs());
+                false
+            }
+        };
+        if !synced {
+            tokio::time::sleep(RETRY).await;
+        }
     }
+}
+
+/// Watch zotero for moved items, and sync when a session stops and the last sync is past the gap.
+pub async fn follow(ctx: Context, papers: Arc<Papers>) {
+    tokio::spawn(watch(ctx.clone(), papers.clone()));
     let hub = ctx.hub().clone();
     let connect = move || {
         let hub = hub.clone();

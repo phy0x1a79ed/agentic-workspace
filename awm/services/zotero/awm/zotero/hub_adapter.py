@@ -72,6 +72,8 @@ MAY_CREATE_ROOT = os.environ.get(
 
 ITEMS_PAGE = 200
 ITEMS_MAX = 1000
+#: The longest `items` holds a call open, under the singleton door's 130 s.
+WAIT_MAX_S = 100
 
 API_MANIFEST: dict[str, Any] = {
     "functions": [
@@ -96,8 +98,9 @@ API_MANIFEST: dict[str, Any] = {
                 "The mirrored references, a page at a time: key, library, title, "
                 "creators, year, DOI, URL, publication, abstract, tags and stored "
                 "file names. Pass `since` to get only the items that moved after "
-                "a cursor. Read the reply's `versions` as the next cursor. Open "
-                "to the operator and to peers with an edge to this node."
+                "a cursor. Read the reply's `versions` as the next cursor. Pass "
+                "`wait` to hold the call until something moves past `since`. "
+                "Open to the operator and to peers with an edge to this node."
             ),
             "params": [
                 {"name": "since", "type": "object",
@@ -106,8 +109,12 @@ API_MANIFEST: dict[str, Any] = {
                 {"name": "offset", "type": "integer", "description": "Skip this many items. Default 0."},
                 {"name": "limit", "type": "integer",
                  "description": f"Items per page, 1-{ITEMS_MAX}. Default {ITEMS_PAGE}."},
+                {"name": "wait", "type": "integer",
+                 "description": "When nothing moved past `since`, wait up to "
+                                f"this many seconds, at most {WAIT_MAX_S}, for "
+                                "a sync that moves something. Default 0."},
             ],
-            "timeout": 60,
+            "timeout": WAIT_MAX_S + 20,
         },
         {
             "name": "add",
@@ -288,8 +295,19 @@ async def _h_items(args: dict, as_: str | None = None) -> dict:
         raise ValueError("since must be an object of {library: version}")
     offset = max(0, int(args.get("offset") or 0))
     limit = max(1, min(int(args.get("limit") or ITEMS_PAGE), ITEMS_MAX))
-    library = await asyncio.to_thread(lambda: sync.held(vault.Vault()).read())
-    return items_page(library, {str(k): int(v) for k, v in since.items()}, offset, limit)
+    since = {str(k): int(v) for k, v in since.items()}
+    wait = max(0, min(int(args.get("wait") or 0), WAIT_MAX_S))
+    moved = MOVED
+    page = items_page(await asyncio.to_thread(lambda: sync.held(vault.Vault()).read()),
+                      since, offset, limit)
+    if page["total"] or not wait:
+        return page
+    try:
+        await asyncio.wait_for(moved.wait(), wait)
+    except TimeoutError:
+        return page
+    return items_page(await asyncio.to_thread(lambda: sync.held(vault.Vault()).read()),
+                      since, offset, limit)
 
 
 async def _h_add(args: dict, as_: str | None = None) -> dict:
@@ -323,9 +341,20 @@ async def _h_apply(args: dict, as_: str | None = None) -> dict:
         dry_run=bool(args.get("dry_run")))
 
 
+#: Set, then replaced, each time a sync changes the bundle. A waiting `items`
+#: call holds the event it found, so each wake reaches every waiter once.
+MOVED = asyncio.Event()
+
+
+def _bundle_moved() -> None:
+    global MOVED
+    MOVED.set()
+    MOVED = asyncio.Event()
+
+
 async def _h_sync(args: dict, as_: str | None = None) -> dict:
     _operator_only(as_, "sync")
-    return await asyncio.to_thread(
+    result = await asyncio.to_thread(
         sync.run, vault.Vault(), force=bool(args.get("force")),
         parent=(args.get("parent") or "").strip() or "root",
         may_create=MAY_CREATE_ROOT,
@@ -335,6 +364,9 @@ async def _h_sync(args: dict, as_: str | None = None) -> dict:
         # Which libraries the stream named. Absent means look at all of them,
         # which is what the floor tick and a hand invocation both want.
         only=(args.get("only") or None))
+    if ((result or {}).get("pull") or {}).get("changed"):
+        _bundle_moved()
+    return result
 
 
 #: Sync now orders, once the config names alcor's public key.
