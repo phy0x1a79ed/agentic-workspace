@@ -63,7 +63,7 @@ pub async fn edge_serve(from: Option<&str>, level: Option<&str>) -> anyhow::Resu
     let from = from.map(str::to_string).or_else(|| std::env::var("AWM_EDGE_FROM").ok());
     let login = awm_edge::login(from.as_deref(), level, original.as_deref(), &edges, &here).map_err(anyhow::Error::msg)?;
     let service = (login.level == awm_edge::EdgeLevel::Service)
-        .then(|| awm_edge::ServiceGate { tools: edges.door_tools(&here, &login.from), log: Some(dir.join("port.log")) });
+        .then(|| awm_edge::ServiceGate { tools: edges.edge_tools(&here, &login.from), log: Some(dir.join("port.log")) });
     let from = login.from;
     let stream_dir = dir.clone();
     awm_edge::serve(
