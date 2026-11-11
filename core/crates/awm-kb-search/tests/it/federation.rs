@@ -122,7 +122,7 @@ async fn a_bare_kind_goes_here_else_to_the_first_peer_that_serves_it() {
     assert_eq!(queried, ["vega"]);
     assert!(!r.peers.asked().contains(&"station".to_string()), "a station is never asked");
     let e = r.search.query(&json!({"query": {"papers": {}, "papers@vega": {}}}), None, None).await.unwrap_err();
-    assert!(e.message.contains("names the same source as papers@vega"), "{}", e.message);
+    assert!(e.message.contains("names the same source as papers"), "{}", e.message);
 }
 
 #[tokio::test]

@@ -1,7 +1,6 @@
 //! The federation: which sources a query reaches, asking each apart, and the views of them.
 
-use crate::federation::{self, Peers};
-use crate::federation::Served;
+use crate::federation::{self, Peers, Served};
 use crate::hits::{self, py_str, truthy};
 use crate::request::{self, label, Kinds, Request, SourceReq};
 use crate::store::{self, Use, Verdict};
@@ -63,7 +62,7 @@ pub struct Search {
     node: String,
     /// How long one source has to answer; [`SOURCE_TIMEOUT`] unless a test shortens it.
     pub timeout: Duration,
-    served: tokio::sync::Mutex<Option<(Instant, Served)>>,
+    served: tokio::sync::Mutex<Option<(Instant, Arc<Served>)>>,
     clashes: Mutex<Option<(Instant, HashSet<String>)>>,
     answers: Mutex<BTreeMap<String, Answered>>,
 }
@@ -163,14 +162,14 @@ impl Search {
     }
 
     pub fn is_here(&self, node: &str) -> bool {
-        node.is_empty() || label(node) == label(&self.node)
+        request::is_here(node, &self.node)
     }
 
     // -- peers ------------------------------------------------------------
 
     /// The kinds each peer serves, read again once [`SERVED_TTL`] has passed. Queries that
     /// arrive during a read wait for it, so a down peer costs one timeout per period.
-    pub async fn served(&self) -> Served {
+    pub async fn served(&self) -> Arc<Served> {
         let mut held = self.served.lock().await;
         if let Some((at, served)) = held.as_ref() {
             if at.elapsed() < SERVED_TTL {
@@ -178,7 +177,7 @@ impl Search {
             }
         }
         let clashed = self.clashed().await;
-        let served = federation::served(self.peers.as_ref(), &self.node, &clashed).await;
+        let served = Arc::new(federation::served(self.peers.as_ref(), &self.node, &clashed).await);
         *held = Some((Instant::now(), served.clone()));
         served
     }
@@ -244,12 +243,14 @@ impl Search {
     /// The validated request for `args`, as the caller `as_` may see it.
     pub async fn parse(&self, args: &Value, as_: Option<&str>) -> Result<Request, Fail> {
         let defaults = self.defaults();
-        let ctx = request::Context { kinds: &self.kinds, here: &self.node, defaults: &defaults, relayed: privacy::from_peer(as_), veil: veil_for(as_) };
-        let mut req = request::parse(args, ctx)?;
-        if !req.relayed && req.sources.iter().any(|s| !s.name.contains('@') && !self.sources.contains_key(&s.kind)) {
-            req.route(|k| self.sources.contains_key(k), &self.served().await)?;
+        let serves = |k: &str| self.sources.contains_key(k);
+        let ctx = request::Context { kinds: &self.kinds, here: &self.node, defaults: &defaults, relayed: privacy::from_peer(as_), veil: veil_for(as_), serves: &serves, served: None };
+        let req = request::parse(args, ctx.clone())?;
+        if req.relayed || req.sources.iter().all(|s| serves(&s.kind)) {
+            return Ok(req);
         }
-        Ok(req)
+        let served = self.served().await;
+        Ok(request::parse(args, request::Context { served: Some(&served), ..ctx })?)
     }
 
     /// `{source: {exact, related?, error?}}` for each source `args` names, each answered apart.

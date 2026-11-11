@@ -58,8 +58,8 @@ async fn sources_and_nodes() {
     let req = parse(&r, json!({"query": {format!("journals@{HERE}"): {"scope": "x"}}})).await.unwrap();
     assert_eq!((req.sources[0].name.clone(), req.sources[0].node.clone(), req.remote.len()), (format!("journals@{HERE}"), String::new(), 0));
 
-    bad(&r, json!({"journals": {}, format!("journals@{HERE}"): {}}), "named twice").await;
-    bad(&r, json!({"papers@altair": {}, "papers@Altair": {}}), "named twice").await;
+    bad(&r, json!({"journals": {}, format!("journals@{HERE}"): {}}), "names the same source as").await;
+    bad(&r, json!({"papers@altair": {}, "papers@Altair": {}}), "names the same source as").await;
 
     let req = parse(&r, json!({"query": {"journals": {}, "journals@altair": {}}})).await.unwrap();
     assert_eq!((req.sources.len(), req.remote["altair"].len()), (1, 1));
