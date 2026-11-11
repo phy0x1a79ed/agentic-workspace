@@ -12,6 +12,7 @@ use base64::Engine;
 use serde_json::{json, Value};
 
 use crate::buckets::{self, Bucket};
+use crate::chat::Chat;
 use crate::config::{BucketConfig, Loaded};
 use crate::gmail::{Draft, DraftFile, Endpoints, GmailConnector};
 use crate::slack::SlackUser;
@@ -98,7 +99,7 @@ fn handed_files(args: &Value) -> Result<Vec<(String, Vec<u8>)>, VerbError> {
 }
 
 impl Productivity {
-    pub fn new(here: String, loaded: Loaded) -> Self {
+    pub fn new(here: String, loaded: Loaded, hub: &awm_plugin_sdk::Hub) -> Self {
         let mut accounts: BTreeMap<String, Arc<dyn Account>> = BTreeMap::new();
         for a in loaded.accounts.into_iter().filter(|a| a.enabled) {
             let acct: Arc<dyn Account> = match a.platform.as_str() {
@@ -111,7 +112,7 @@ impl Productivity {
             .buckets
             .into_iter()
             .map(|c| {
-                let b = buckets::build(&c).map_err(|e| tracing::warn!("bucket {} failed to build: {e}", c.name)).ok();
+                let b = buckets::build(&c, hub).map_err(|e| tracing::warn!("bucket {} failed to build: {e}", c.name)).ok();
                 (c, b)
             })
             .collect();
@@ -186,6 +187,60 @@ impl Productivity {
         let count = d.files.len();
         let id = gmail.draft(d).await?;
         Ok(json!({"ok": true, "message_id": id, "files": count, "note": "saved to Gmail Drafts; Tony sends it"}))
+    }
+
+    // -- chats through the browser ---------------------------------------------------
+
+    /// Without `chat`, the site's chats. With it, that chat's last `limit` messages.
+    pub async fn chat_read(&self, call: Call) -> R {
+        let tab = Chat::new(call.hub(), &s(&call.args, "site"))?;
+        let want = s(&call.args, "chat");
+        let out = async {
+            if want.is_empty() {
+                return Ok(json!({"chats": tab.chats().await?}));
+            }
+            let chat = tab.chat(&want).await?;
+            let msgs = tab.messages(chat["id"].as_str().unwrap_or_default(), int(call.args.get("limit"), 30).clamp(1, 100) as usize).await?;
+            Ok(json!({"chat": chat, "messages": msgs}))
+        }
+        .await;
+        tab.done().await;
+        out
+    }
+
+    pub async fn chat_download(&self, call: Call) -> R {
+        let tab = Chat::new(call.hub(), &s(&call.args, "site"))?;
+        let out = async {
+            let chat = tab.chat(&s(&call.args, "chat")).await?;
+            tab.download(chat["id"].as_str().unwrap_or_default(), &s(&call.args, "message_id"), idx(&call.args)).await
+        }
+        .await;
+        tab.done().await;
+        awm_chat::inline_files(&out?, &self.here)
+    }
+
+    /// Put files in a chat's compose box in alcor's browser. Tony sends the message himself.
+    pub async fn chat_stage(&self, call: Call) -> R {
+        let tab = Chat::new(call.hub(), &s(&call.args, "site"))?;
+        let mut files = handed_files(&call.args)?;
+        for f in call.args.get("bucket_files").and_then(Value::as_array).into_iter().flatten() {
+            let got = self.bucket_file(&s(f, "bucket"), &s(f, "path")).await?;
+            files.push((got.filename, got.data));
+        }
+        if files.is_empty() {
+            return Err(value("chat_stage needs `file`, `files` or `bucket_files`"));
+        }
+        let size: usize = files.iter().map(|(_, d)| d.len()).sum();
+        if size > MAX_INLINE_BYTES {
+            return Err(value(format!("the files come to {size} bytes; {MAX_INLINE_BYTES} at most")));
+        }
+        let chat = tab.chat(&s(&call.args, "chat")).await?;
+        let (staged, shot) = tab.stage(chat["id"].as_str().unwrap_or_default(), &files).await?;
+        let mut out = awm_chat::inline_files(&[shot], &self.here)?;
+        out["chat"] = chat;
+        out["staged"] = staged;
+        out["note"] = json!("staged, unsent, in alcor's browser; the file is a screenshot of the tab. Tony checks and sends it through `browser viewer`.");
+        Ok(out)
     }
 
     // -- buckets ---------------------------------------------------------------------

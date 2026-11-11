@@ -124,7 +124,9 @@ struct Saved {
 struct State {
     seats: Vec<Seat>,
     service_window: Option<i64>,
-    service_tabs: Vec<(String, String)>,
+    /// Site, target and flat session, valid for `service_generation`'s connection.
+    service_tabs: Vec<(String, String, String)>,
+    service_generation: Option<u64>,
 }
 
 /// Every seat on the shared Chrome and in the seats' own containers.
@@ -434,14 +436,19 @@ impl SeatBook {
 
     // -- the service window (item 4) ----------------------------------------
 
-    /// One resident tab per site in the service window, driven only by the singleton. A tab
-    /// already open on the site's origin is adopted, so a restart opens no second set.
-    pub async fn service_tab(&self, site: &str, url: &str) -> Result<String, BookError> {
+    /// The site's tab in the service window, driven only by the singleton, with its flat
+    /// session. A tab already open on the site's origin is adopted, so a restart opens no
+    /// second one. Chrome saves the window's downloads to `download_dir`.
+    async fn service_tab(&self, site: &str, url: &str, download_dir: &str) -> Result<(String, String), BookError> {
         let mut st = self.state.lock().await;
-        if let Some((_, t)) = st.service_tabs.iter().find(|(s, _)| s == site) {
-            return Ok(t.clone());
-        }
         let cdp = self.shared.clone();
+        if st.service_generation != Some(cdp.generation()) {
+            st.service_tabs.clear();
+            st.service_window = None;
+        }
+        if let Some((_, t, f)) = st.service_tabs.iter().find(|(s, _, _)| s == site) {
+            return Ok((t.clone(), f.clone()));
+        }
         let infos = cdp.send("Target.getTargets", json!({}), None).await?;
         let seat_tabs: Vec<&String> = st.seats.iter().flat_map(|s| s.tabs.iter()).collect();
         let found = infos["targetInfos"].as_array().into_iter().flatten().find(|t| {
@@ -454,16 +461,47 @@ impl SeatBook {
             None => {
                 let params = json!({"url": url, "newWindow": st.service_window.is_none()});
                 if st.service_window.is_some() {
-                    if let Some((_, first)) = st.service_tabs.first() {
+                    if let Some((_, first, _)) = st.service_tabs.first() {
                         cdp.send("Target.activateTarget", json!({"targetId": first}), None).await?;
                     }
                 }
                 cdp.send("Target.createTarget", params, None).await?["targetId"].as_str().unwrap_or_default().to_string()
             }
         };
+        if st.service_tabs.is_empty() {
+            cdp.send("Browser.setDownloadBehavior", json!({"behavior": "allow", "downloadPath": download_dir}), None).await?;
+        }
         st.service_window = cdp.send("Browser.getWindowForTarget", json!({"targetId": target}), None).await?["windowId"].as_i64();
-        st.service_tabs.push((site.into(), target.clone()));
-        Ok(target)
+        let flat = cdp.send("Target.attachToTarget", json!({"targetId": target, "flatten": true}), None).await?["sessionId"].as_str().unwrap_or_default().to_string();
+        st.service_tabs.push((site.into(), target.clone(), flat.clone()));
+        st.service_generation = Some(cdp.generation());
+        Ok((target, flat))
+    }
+
+    /// Run a page-level method on the site's service tab, opening the tab first.
+    pub async fn service_send(&self, site: &str, url: &str, download_dir: &str, method: &str, params: Value) -> Result<Value, BookError> {
+        if !seat_may_run(method) {
+            return Err(BookError::Seat(format!("{method} is not open on a service tab")));
+        }
+        let (_, flat) = self.service_tab(site, url, download_dir).await?;
+        let params = if params.is_null() { json!({}) } else { params };
+        Ok(self.shared.send(method, params, Some(&flat)).await?)
+    }
+
+    /// Close the site's service tab, if open.
+    pub async fn service_close(&self, site: &str) -> Result<bool, BookError> {
+        let mut st = self.state.lock().await;
+        let Some(i) = st.service_tabs.iter().position(|(s, _, _)| s == site) else { return Ok(false) };
+        let (_, target, _) = st.service_tabs.remove(i);
+        if st.service_generation == Some(self.shared.generation()) {
+            self.shared.send("Target.closeTarget", json!({"targetId": target}), None).await?;
+        }
+        Ok(true)
+    }
+
+    /// How many seats live on the shared Chrome rather than in their own containers.
+    pub async fn shared_seats(&self) -> usize {
+        self.state.lock().await.seats.iter().filter(|s| s.container.is_none()).count()
     }
 
     pub async fn list(&self, session: Option<&str>) -> Vec<Value> {

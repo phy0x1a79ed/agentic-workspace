@@ -14,8 +14,9 @@ fn test_env() -> awm_plugin_sdk::Env {
 
 async fn svc() -> TestService {
     let loaded = Loaded { callers: vec!["mizar".into(), "capella".into(), "lyra".into()], ..Default::default() };
-    let app = Arc::new(Productivity::new("alcor".into(), loaded));
-    crate::service(awm_plugin_sdk::Service::new(test_env()), app).into_test().await.unwrap()
+    let svc = awm_plugin_sdk::Service::new(test_env());
+    let app = Arc::new(Productivity::new("alcor".into(), loaded, svc.context().hub()));
+    crate::service(svc, app).into_test().await.unwrap()
 }
 
 fn verbs() -> Vec<String> {

@@ -28,6 +28,8 @@ pub struct BucketConfig {
     pub name: String,
     pub kind: String,
     pub root: String,
+    /// A onedrive bucket's site in the browser config, `onedrive` unless named.
+    pub site: String,
     pub client_id: String,
     pub client_secret: String,
     pub refresh_token: String,
@@ -60,7 +62,7 @@ pub fn load(path: &Path) -> R<Loaded> {
         Some(_) => return err(format!("{}: callers must be a list of node names", path.display())),
     };
     (out.accounts, out.notes) = accounts(&data, path)?;
-    out.buckets = buckets(&data, path, &mut out.notes)?;
+    out.buckets = buckets(&data, path)?;
     Ok(out)
 }
 
@@ -109,15 +111,18 @@ fn accounts(data: &Table, cfg: &Path) -> R<(Vec<AccountConfig>, Vec<String>)> {
     Ok((out, notes))
 }
 
-fn buckets(data: &Table, cfg: &Path, notes: &mut Vec<String>) -> R<Vec<BucketConfig>> {
+fn buckets(data: &Table, cfg: &Path) -> R<Vec<BucketConfig>> {
     let p = cfg.display();
     let mut out = vec![];
     for (name, s) in tables(data, "bucket", cfg, "buckets")? {
         let label = format!("[bucket.{name}]");
+        let name = name.trim().to_string();
+        let root = opt_str(s, "root", cfg, &label)?.unwrap_or_default();
         match s.get("kind").and_then(Value::as_str).unwrap_or("") {
             "google_drive" => {}
             "onedrive" => {
-                notes.push(format!("{label}: OneDrive is reached through the browser: skipped"));
+                let site = opt_str(s, "site", cfg, &label)?.unwrap_or_default();
+                out.push(BucketConfig { name, kind: "onedrive".into(), root, site, ..Default::default() });
                 continue;
             }
             _ => return err(format!("{p}: {label}.kind must be google_drive or onedrive")),
@@ -127,9 +132,10 @@ fn buckets(data: &Table, cfg: &Path, notes: &mut Vec<String>) -> R<Vec<BucketCon
             _ => return err(format!("{p}: {label}.client_id is required for google_drive buckets")),
         };
         out.push(BucketConfig {
-            name: name.trim().to_string(),
+            name,
             kind: "google_drive".into(),
-            root: opt_str(s, "root", cfg, &label)?.unwrap_or_default(),
+            root,
+            site: String::new(),
             client_id,
             client_secret: secret(s, "client_secret", cfg, &format!("{label}.client_secret"), true)?.unwrap_or_default(),
             refresh_token: secret(s, "refresh_token", cfg, &format!("{label}.refresh_token"), true)?.unwrap_or_default(),
@@ -169,14 +175,15 @@ client_secret = "s"
 refresh_token = "r"
 [bucket.one]
 kind = "onedrive"
+root = "/personal/me/Documents"
 "#,
         )
         .unwrap();
         let got = load(&p).unwrap();
         assert_eq!(got.callers, ["mizar", "capella", "lyra"]);
         assert_eq!(got.accounts.iter().map(|a| (a.name.as_str(), a.token.as_str())).collect::<Vec<_>>(), [("gmail", "apppw"), ("slack", "xoxc-1")]);
-        assert_eq!(got.buckets.len(), 1);
-        assert_eq!(got.notes.len(), 2, "{:?}", got.notes);
+        assert_eq!(got.buckets.iter().map(|b| (b.kind.as_str(), b.root.as_str())).collect::<Vec<_>>(), [("google_drive", ""), ("onedrive", "/personal/me/Documents")]);
+        assert_eq!(got.notes.len(), 1, "{:?}", got.notes);
 
         std::fs::write(&p, "[account.bot]\nplatform = \"slack\"\ntoken = \"xoxb-1\"\n").unwrap();
         assert!(load(&p).unwrap_err().0.contains("bots belong in social"));
