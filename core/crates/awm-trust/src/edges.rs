@@ -228,11 +228,11 @@ impl EdgeList {
     /// Whether a call to `tool` over the edge from `src` gets through on `dst`. A user-key edge
     /// opens every tool. A service-key edge opens its `edge_tools`.
     pub fn opens(&self, src: &str, dst: &str, tool: &str) -> bool {
-        match self.key(src, dst) {
-            Some(EdgeKey::User) => true,
-            Some(EdgeKey::Service) => self.edge_tools(dst, src).iter().any(|t| t == tool),
-            None => false,
-        }
+        self.edge(src, dst).is_some_and(|e| {
+            e.key == EdgeKey::User
+                || e.tools.iter().any(|t| t == tool)
+                || self.singleton(tool).is_some_and(|s| s.host == dst && self.may_call(src, tool))
+        })
     }
 
     /// Whether `node` may call `tool`. A tool that is no singleton is not held here. A

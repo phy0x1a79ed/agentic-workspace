@@ -151,11 +151,13 @@ async fn kinds_of(peers: &dyn Peers, name: &str) -> Result<Vec<String>, String> 
 /// open tag clash are not asked.
 pub async fn served(peers: &dyn Peers, here: &str, clashed: &HashSet<String>) -> Served {
     let edges = peers.edges();
+    let here = label(here);
     let names: Vec<String> = edges
-        .dialable_from(&label(here))
+        .dialable_from(&here)
         .into_iter()
-        .filter(|n| !clashed.contains(&label(n)) && edges.nodes.get(n).is_none_or(|r| r.role != "station"))
-        .filter(|n| edges.opens(&label(here), n, "search"))
+        .filter(|n| {
+            !clashed.contains(&label(n)) && edges.nodes.get(n).is_none_or(|r| r.role != "station") && edges.opens(&here, n, "search")
+        })
         .collect();
     let asked = futures_util::future::join_all(names.iter().map(|n| kinds_of(peers, n))).await;
     names.into_iter().zip(asked).collect()
