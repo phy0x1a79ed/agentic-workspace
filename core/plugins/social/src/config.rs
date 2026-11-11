@@ -1,38 +1,20 @@
-//! `social.toml`: accounts, buckets and seats (`config.py`).
+//! `social.toml`: the bot accounts and seats (`config.py`).
 //!
 //! The file is `$AWM_DIR/social.toml`, or `AWM_SOCIAL_CONFIG`. Ansible writes it on alcor, and
-//! social never rewrites it. A secret is inline or a `<key>_file`, relative to the file's folder,
-//! with all whitespace stripped. Entries this build does not drive (the mira source, Teams,
-//! OneDrive, and the keeper's `[seat.*]` and `[keeper]` tables) are skipped with a log line and
-//! stay in the file.
+//! social never rewrites it. Entries social does not drive are skipped with a log line and stay
+//! in the file: the mira source, Teams, the keeper's `[seat.*]` and `[keeper]` tables, and Tony's
+//! own accounts and `[bucket.*]` drives, which `productivity` serves.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use awm_trust::trust::check_effort;
 use awm_trust::Level;
+use awm_chat::config::{err, opt_bool, opt_str, parse, secret, tables, ConfigError, R};
 use toml::{Table, Value};
 
 pub const KNOWN_PLATFORMS: [&str; 4] = ["discord", "slack", "gmail", "teams"];
-pub const KNOWN_BUCKET_KINDS: [&str; 2] = ["google_drive", "onedrive"];
 pub const LEVELS: [&str; 3] = ["untrusted", "cooperative", "trusted"];
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ConfigError(pub String);
-
-impl std::fmt::Display for ConfigError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-impl std::error::Error for ConfigError {}
-
-type R<T> = Result<T, ConfigError>;
-
-fn err<T>(msg: impl Into<String>) -> R<T> {
-    Err(ConfigError(msg.into()))
-}
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct AccountConfig {
@@ -40,10 +22,7 @@ pub struct AccountConfig {
     pub platform: String,
     pub token: String,
     pub app_token: Option<String>,
-    pub cookie: Option<String>,
-    pub creds_cmd: Option<String>,
     pub display_name: Option<String>,
-    pub address: Option<String>,
     pub enabled: bool,
     pub singleton: bool,
     pub trust: String,
@@ -51,17 +30,6 @@ pub struct AccountConfig {
 }
 
 impl AccountConfig {
-    /// "bot" or "user", from the platform and the token: a display hint, never authz.
-    pub fn kind(&self) -> &'static str {
-        if self.platform == "gmail" || self.token.starts_with("xoxp-") || self.token.starts_with("xoxc-") {
-            return "user";
-        }
-        if self.platform == "slack" && self.creds_cmd.is_some() {
-            return "user";
-        }
-        "bot"
-    }
-
     /// The level of one chat: trusted when it is in `trusted_chats`, else the account's.
     pub fn level_of(&self, chat: &str) -> Level {
         if self.trusted_chats.iter().any(|c| c == chat) {
@@ -69,16 +37,6 @@ impl AccountConfig {
         }
         self.trust.parse::<Level>().ok().unwrap_or(Level::Untrusted)
     }
-}
-
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct BucketConfig {
-    pub name: String,
-    pub kind: String,
-    pub root: String,
-    pub client_id: String,
-    pub client_secret: String,
-    pub refresh_token: String,
 }
 
 /// Where a down notice goes: one chat on one account.
@@ -178,11 +136,10 @@ impl SeatsConfig {
 }
 
 /// Everything social reads from the file. A bad `[seats]` table keeps no seats and leaves the
-/// accounts up, as a bad `[bucket]` table leaves them up.
+/// accounts up.
 #[derive(Debug, Clone, Default)]
 pub struct Loaded {
     pub accounts: Vec<AccountConfig>,
-    pub buckets: Vec<BucketConfig>,
     pub seats: SeatsConfig,
     /// One line per entry skipped or table refused.
     pub notes: Vec<String>,
@@ -195,28 +152,15 @@ pub fn config_file(awm_dir: &Path) -> PathBuf {
     }
 }
 
-fn parse(path: &Path) -> R<Option<Table>> {
-    let text = match std::fs::read_to_string(path) {
-        Ok(t) => t,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return err(format!("could not parse {}: {e}", path.display())),
-    };
-    text.parse::<Table>().map(Some).map_err(|e| ConfigError(format!("could not parse {}: {e}", path.display())))
-}
-
-/// Read the whole file. An account error fails the load. A bucket or seats error is a note.
+/// Read the whole file. An account error fails the load. A seats error is a note.
 pub fn load(path: &Path) -> R<Loaded> {
     let mut out = Loaded::default();
     let Some(data) = parse(path)? else { return Ok(out) };
     let (accounts, notes) = accounts(&data, path)?;
     out.accounts = accounts;
     out.notes = notes;
-    match buckets(&data, path) {
-        Ok((b, notes)) => {
-            out.buckets = b;
-            out.notes.extend(notes);
-        }
-        Err(e) => out.notes.push(format!("buckets refused: {e}")),
+    if data.contains_key("bucket") {
+        out.notes.push("[bucket.*] is productivity's: skipped".into());
     }
     match seats(&data, path) {
         Ok(s) => out.seats = s,
@@ -228,62 +172,6 @@ pub fn load(path: &Path) -> R<Loaded> {
         }
     }
     Ok(out)
-}
-
-/// A secret from an inline value or a `<label>_file`.
-fn secret(section: &Table, key: &str, cfg: &Path, label: &str, required: bool) -> R<Option<String>> {
-    let p = cfg.display();
-    if let Some(inline) = section.get(key) {
-        return match inline.as_str().map(str::trim) {
-            Some(s) if !s.is_empty() => Ok(Some(s.to_string())),
-            _ => err(format!("{p}: {label} must be a non-empty string")),
-        };
-    }
-    if let Some(file) = section.get(&format!("{key}_file")) {
-        let Some(f) = file.as_str().map(str::trim).filter(|s| !s.is_empty()) else {
-            return err(format!("{p}: {label}_file must be a path string"));
-        };
-        let mut file = PathBuf::from(f);
-        if !file.is_absolute() {
-            file = cfg.parent().unwrap_or(Path::new(".")).join(file);
-        }
-        let raw = std::fs::read_to_string(&file).map_err(|e| ConfigError(format!("{p}: {label}_file {} could not be read: {e}", file.display())))?;
-        let s: String = raw.split_whitespace().collect();
-        if s.is_empty() {
-            return err(format!("{p}: {label}_file {} is empty", file.display()));
-        }
-        return Ok(Some(s));
-    }
-    if required {
-        return err(format!("{p}: {label} (or {label}_file) is required"));
-    }
-    Ok(None)
-}
-
-fn opt_str(section: &Table, key: &str, cfg: &Path, label: &str) -> R<Option<String>> {
-    match section.get(key) {
-        None => Ok(None),
-        Some(Value::String(s)) => Ok(Some(s.trim().to_string())),
-        Some(_) => err(format!("{}: {label}.{key} must be a string when present", cfg.display())),
-    }
-}
-
-fn opt_bool(section: &Table, key: &str, default: bool, cfg: &Path, label: &str) -> R<bool> {
-    match section.get(key) {
-        None => Ok(default),
-        Some(Value::Boolean(b)) => Ok(*b),
-        Some(_) => err(format!("{}: {label}.{key} must be a boolean", cfg.display())),
-    }
-}
-
-fn tables<'a>(data: &'a Table, key: &str, cfg: &Path, what: &str) -> R<Vec<(&'a String, &'a Table)>> {
-    let Some(v) = data.get(key) else { return Ok(vec![]) };
-    let Some(t) = v.as_table() else {
-        return err(format!("{}: [{key}] must be a table of named {what}", cfg.display()));
-    };
-    t.iter()
-        .map(|(name, s)| s.as_table().map(|s| (name, s)).ok_or_else(|| ConfigError(format!("{}: [{key}.{name}] must be a table", cfg.display()))))
-        .collect()
 }
 
 fn accounts(data: &Table, cfg: &Path) -> R<(Vec<AccountConfig>, Vec<String>)> {
@@ -303,22 +191,16 @@ fn accounts(data: &Table, cfg: &Path) -> R<(Vec<AccountConfig>, Vec<String>)> {
             notes.push(format!("{label} is a mira account: skipped, this build does not drive mira"));
             continue;
         }
-        let creds_cmd = match s.get("creds_cmd") {
-            None => None,
-            Some(Value::String(c)) if !c.trim().is_empty() => Some(c.trim().to_string()),
-            Some(_) => return err(format!("{p}: {label}.creds_cmd must be a non-empty string")),
-        };
-        let token = secret(s, "token", cfg, &format!("{label}.token"), creds_cmd.is_none())?.unwrap_or_default();
+        let token = secret(s, "token", cfg, &format!("{label}.token"), false)?.unwrap_or_default();
+        if platform == "gmail" || (platform == "slack" && !token.starts_with("xoxb-")) {
+            notes.push(format!("{label} is Tony's own account: skipped, productivity serves it"));
+            continue;
+        }
+        if token.is_empty() {
+            return err(format!("{p}: {label}.token (or token_file) is required"));
+        }
         let app_token = secret(s, "app_token", cfg, &format!("{label}.app_token"), false)?;
-        let cookie = secret(s, "cookie", cfg, &format!("{label}.cookie"), false)?;
-        if platform == "slack" && creds_cmd.is_none() && token.starts_with("xoxc-") && cookie.is_none() {
-            return err(format!("{p}: {label} an xoxc- session token requires a paired cookie (or cookie_file), or use creds_cmd"));
-        }
         let display_name = opt_str(s, "display_name", cfg, &label)?.filter(|d| !d.is_empty());
-        let address = opt_str(s, "address", cfg, &label)?.filter(|a| !a.is_empty());
-        if platform == "gmail" && address.is_none() {
-            return err(format!("{p}: {label}.address (the mailbox email) is required for gmail accounts"));
-        }
         let enabled = opt_bool(s, "enabled", true, cfg, &label)?;
         let singleton = opt_bool(s, "singleton", false, cfg, &label)?;
         let trust = match s.get("trust") {
@@ -336,40 +218,12 @@ fn accounts(data: &Table, cfg: &Path) -> R<(Vec<AccountConfig>, Vec<String>)> {
             platform: platform.to_string(),
             token,
             app_token,
-            cookie,
-            creds_cmd,
             display_name,
-            address,
             enabled,
             singleton,
             trust,
             trusted_chats,
         });
-    }
-    Ok((out, notes))
-}
-
-fn buckets(data: &Table, cfg: &Path) -> R<(Vec<BucketConfig>, Vec<String>)> {
-    let p = cfg.display();
-    let (mut out, mut notes) = (vec![], vec![]);
-    for (name, s) in tables(data, "bucket", cfg, "buckets")? {
-        let label = format!("[bucket.{name}]");
-        let kind = s.get("kind").and_then(Value::as_str).unwrap_or("");
-        if !KNOWN_BUCKET_KINDS.contains(&kind) {
-            return err(format!("{p}: {label}.kind must be one of {}", KNOWN_BUCKET_KINDS.join(", ")));
-        }
-        if kind == "onedrive" || s.get("source").is_some() {
-            notes.push(format!("{label} is a mira bucket: skipped, this build does not drive mira"));
-            continue;
-        }
-        let root = opt_str(s, "root", cfg, &label)?.unwrap_or_default();
-        let client_id = match s.get("client_id").and_then(Value::as_str).map(str::trim) {
-            Some(c) if !c.is_empty() => c.to_string(),
-            _ => return err(format!("{p}: {label}.client_id is required for google_drive buckets")),
-        };
-        let client_secret = secret(s, "client_secret", cfg, &format!("{label}.client_secret"), true)?.unwrap_or_default();
-        let refresh_token = secret(s, "refresh_token", cfg, &format!("{label}.refresh_token"), true)?.unwrap_or_default();
-        out.push(BucketConfig { name: name.trim().to_string(), kind: kind.into(), root, client_id, client_secret, refresh_token });
     }
     Ok((out, notes))
 }
@@ -490,7 +344,7 @@ mod tests {
     }
 
     #[test]
-    fn accounts_resolve_secret_files_and_skip_mira() {
+    fn accounts_resolve_secret_files_and_skip_mira_and_tonys_own() {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::write(tmp.path().join("bot"), " xoxb-1 \n").unwrap();
         let p = write(
@@ -513,6 +367,15 @@ source = "mira"
 platform = "discord"
 token = "d"
 trusted_chats = ["42"]
+[account.tony-gmail]
+platform = "gmail"
+address = "me@example.com"
+token = "app-password"
+[account.tony-own]
+platform = "slack"
+token = "xoxc-1"
+[bucket.drive]
+kind = "google_drive"
 [seat.old]
 account = "opal"
 "#,
@@ -520,11 +383,11 @@ account = "opal"
         let got = load(&p).unwrap();
         assert_eq!(got.accounts.iter().map(|a| a.name.as_str()).collect::<Vec<_>>(), ["discord-bot", "opal"]);
         let opal = got.accounts.iter().find(|a| a.name == "opal").unwrap();
-        assert_eq!((opal.token.as_str(), opal.kind(), opal.trust.as_str()), ("xoxb-1", "bot", "cooperative"));
+        assert_eq!((opal.token.as_str(), opal.trust.as_str()), ("xoxb-1", "cooperative"));
         let bot = got.accounts.iter().find(|a| a.name == "discord-bot").unwrap();
         assert_eq!(bot.trust, "untrusted");
         assert_eq!((bot.level_of("42"), bot.level_of("7")), (Level::Trusted, Level::Untrusted));
-        assert_eq!(got.notes.len(), 3, "{:?}", got.notes);
+        assert_eq!(got.notes.len(), 6, "{:?}", got.notes);
     }
 
 }

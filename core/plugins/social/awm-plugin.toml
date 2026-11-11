@@ -1,5 +1,5 @@
-# Chat accounts (Slack, Discord, Gmail), cloud buckets (Google Drive), and which
-# node each seated chat belongs to. Each seat host's `seats` plugin pulls its lines.
+# The bot chat accounts (Slack, Discord) and which node each seated chat belongs to.
+# Each seat host's `seats` plugin pulls its lines.
 [plugin]
 name = "social"
 version = "0.2.0"
@@ -15,7 +15,7 @@ service = "social"
 tier = "on"
 
 [needs]
-network = ["slack.com", "*.slack.com", "*.slack-edge.com", "discord.com", "*.discord.com", "*.discord.gg", "*.discordapp.com", "*.discordapp.net", "imap.gmail.com:993", "smtp.gmail.com:465", "www.googleapis.com", "oauth2.googleapis.com"]
+network = ["slack.com", "*.slack.com", "*.slack-edge.com", "discord.com", "*.discord.com", "*.discord.gg", "*.discordapp.com", "*.discordapp.net"]
 platform = ["linux"]
 
 # A hand mount off the seat hosts is told and checked through reflection.

@@ -436,9 +436,6 @@ impl Bucket for GoogleDrive {
         &self.cfg.name
     }
 
-    fn kind(&self) -> &str {
-        "google_drive"
-    }
 
     async fn ls(&self, path: &str) -> Result<Vec<Entry>> {
         let folder = self.resolve(path).await?;

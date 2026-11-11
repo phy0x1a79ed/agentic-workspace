@@ -173,13 +173,14 @@ pub fn call_refusal(level: Level, call: &Call) -> Option<String> {
         return whole();
     }
     match tool {
-        // A seat answers its own chats and nothing more: no search, lookup, DM or bucket.
+        // A seat answers its own chats and nothing more: no lookup or DM.
         "social" => partial(SEAT_CHAT_VERBS.contains(&verb)),
         "seats" => partial(SEAT_AGENT_VERBS.contains(&verb)),
         // No cards; request_human is the one way to Tony's queue (items 5 and 6).
         "operations" => partial(verb == "request_human"),
-        // The vault holds the board's cards and Tony's own notes (items 5 and 10).
-        "trilium" => whole(),
+        // The vault holds the board's cards and Tony's own notes (items 5 and 10), and
+        // productivity his own mail, chats and drives.
+        "trilium" | "productivity" => whole(),
         "2fa" if untrusted => whole(),
         "2fa" => partial(TWOFA_READS.contains(&verb)),
         // ssh arms Duo for fir and sockeye, the grant of item 1 that untrusted lacks.
@@ -288,7 +289,7 @@ mod tests {
                              ("journal", "post"), ("channel", "open"), ("browser", "tab_open")] {
             assert_eq!(call_refusal(c, &call(tool, verb)), None, "{tool}.{verb}");
         }
-        for (tool, verb) in [("social", "search"), ("social", "lookup"), ("social", "open_dm"), ("social", "bucket_get"), ("social", "keepers"),
+        for (tool, verb) in [("social", "lookup"), ("social", "open_dm"), ("social", "keepers"), ("productivity", "fetch"), ("productivity", "describe"),
                              ("operations", "task_report"), ("operations", "approval_request"), ("trilium", "note_get"),
                              ("trilium", "describe"), ("2fa", "burst"), ("reflection", "start_other"), ("reflection", "resume_other")] {
             assert!(call_refusal(c, &call(tool, verb)).is_some(), "{tool}.{verb}");

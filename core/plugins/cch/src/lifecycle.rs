@@ -116,7 +116,7 @@ pub const REPORT_TO_PROMPT: &str =
 
 /// The lobby's CLAUDE.md. It loads the workspace orientation, which a folder outside the
 /// workspace does not inherit.
-pub const LOBBY_CLAUDE_MD: &str = "# Lobby\n\nThis folder is the lobby: no project, no scope, no git. Route yourself as your brief says, then move with `reflection cd`.\n\n@{agents}\n";
+pub const LOBBY_CLAUDE_MD: &str = "# Lobby\n\nThis folder is the lobby: no project, no scope, no git. Route yourself as your brief says, then move with `reflection cd`.\n\nWith no brief, Tony is driving. On his first message, rename this session to fit the work with `reflection rename`, then find or create its scope with `scope search` or `scope create` and move there with `reflection cd`. Questions and logistics that change no files need no scope.\n\n@{agents}\n";
 
 const MODEL_EFFORT_REQUIRED: &str = "model and effort are required, with no default. Pick both to fit the task: a smaller model and lower effort for mechanical work, a larger model and high effort for design or debugging. Fable needs Tony's consent first.";
 

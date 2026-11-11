@@ -7,26 +7,22 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use awm_plugin_sdk::holders::{self, Holder};
 use awm_plugin_sdk::push::{Pusher, Returned};
 use awm_plugin_sdk::{Call, CallOpts, Context, Hub, Level, VerbError};
-use base64::Engine;
 use serde_json::{json, Value};
 
-use crate::buckets::{self, Bucket};
-use crate::config::{AccountConfig, BucketConfig};
+use crate::config::AccountConfig;
+use awm_chat::{chan, msg};
 use crate::connectors::{self, ChatKind, Channel, Command, Connector, Inbound, OutFile};
 use crate::db::{now, Db, Mount};
 use crate::seats::line::{self, Place};
 use crate::seats::store::Seat;
 use crate::seats::{Routed, Seats};
 
-pub const MAX_INLINE_BYTES: usize = 24 * 1024 * 1024;
 const SEEN_MAX: usize = 4096;
-const RELAYED_MAX: usize = 4096;
-const PROBE_TIMEOUT_S: u64 = 20;
 pub const PROBE_COMMAND: &str = "__awm_probe__";
 
 pub type Conns = Arc<RwLock<BTreeMap<String, Arc<dyn Connector>>>>;
@@ -37,14 +33,11 @@ pub struct Social {
     pub db: Db,
     pub accounts: Vec<AccountConfig>,
     pub conns: Conns,
-    pub buckets: Vec<(BucketConfig, Option<Arc<dyn Bucket>>)>,
     pub seats: Arc<Seats>,
     pub ctx: OnceLock<Context>,
     pusher: OnceLock<Pusher>,
     watch: OnceLock<Arc<awm_plugin_sdk::sessions::SessionWatch>>,
     seen: Mutex<HashSet<(String, String, String)>>,
-    relayed: Mutex<HashMap<(String, String, String), Instant>>,
-    relaying: Mutex<HashMap<String, i64>>,
 }
 
 fn s(v: &Value, key: &str) -> String {
@@ -79,23 +72,6 @@ fn int(v: Option<&Value>, default: i64) -> i64 {
     }
 }
 
-pub fn att(a: &connectors::Attachment) -> Value {
-    json!({"idx": a.idx, "filename": a.filename, "mime": a.mime, "size": a.size, "url": a.url})
-}
-
-pub fn msg(m: &Inbound, awm_user: &str) -> Value {
-    json!({
-        "account": m.account, "platform": m.platform, "direction": "in", "channel_id": m.channel_id, "channel_name": m.channel_name,
-        "thread_id": m.thread_id, "sender_id": m.sender_id, "sender_name": m.sender_name, "sender_bot": m.sender_bot,
-        "awm_user": awm_user, "text": m.text, "ts": m.ts, "message_id": m.message_id,
-        "attachments": m.attachments.iter().map(att).collect::<Vec<_>>(),
-    })
-}
-
-fn chan(c: &Channel) -> Value {
-    json!({"id": c.id, "name": c.name, "kind": c.kind})
-}
-
 fn log_freed(freed: &[Mount]) {
     for m in freed {
         tracing::info!("released seat {}/{}: holder {} is gone", m.account, m.channel_id, holder_label(m));
@@ -105,32 +81,6 @@ fn log_freed(freed: &[Mount]) {
 fn holder_label(m: &Mount) -> String {
     let name = if m.session_name.is_empty() { String::new() } else { format!(" ({})", m.session_name) };
     format!("{}@{}{name}", m.session_id, m.node)
-}
-
-/// A filesystem-safe, non-empty basename for one attachment.
-pub fn safe_name(name: &str, idx: usize) -> String {
-    let base = Path::new(name).file_name().map(|b| b.to_string_lossy().trim().to_string()).unwrap_or_default();
-    let mut out = String::new();
-    for c in base.chars() {
-        if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
-            out.push(c);
-        } else if !out.ends_with('_') {
-            out.push('_');
-        }
-    }
-    let out = out.trim_matches(|c| c == '.' || c == '_').to_string();
-    if out.is_empty() { format!("attachment-{idx}") } else { out }
-}
-
-/// Where this node's fileviewer serves `path`, or None outside its root.
-pub fn file_url(path: &Path) -> Option<String> {
-    let prefix = std::env::var("FILEVIEWER_MOUNT_PREFIX").ok().filter(|p| !p.is_empty()).unwrap_or_else(|| "/files".into());
-    let root = std::env::var("FILEVIEWER_MOUNT_ROOT").ok().filter(|p| !p.is_empty()).unwrap_or_else(|| "/".into());
-    let real = std::fs::canonicalize(path).ok()?;
-    let root = std::fs::canonicalize(root).ok()?;
-    let rel = real.strip_prefix(&root).ok()?;
-    let enc: Vec<String> = rel.components().map(|c| urlencoding::encode(&c.as_os_str().to_string_lossy()).into_owned()).collect();
-    Some(format!("{}/{}", prefix.trim_end_matches('/'), enc.join("/")))
 }
 
 fn level_of(call: &Call) -> Level {
@@ -143,21 +93,18 @@ fn level_of(call: &Call) -> Level {
 }
 
 impl Social {
-    pub fn new(here: String, hub: Hub, db: Db, accounts: Vec<AccountConfig>, conns: Conns, buckets: Vec<(BucketConfig, Option<Arc<dyn Bucket>>)>, seats: Arc<Seats>) -> Arc<Self> {
+    pub fn new(here: String, hub: Hub, db: Db, accounts: Vec<AccountConfig>, conns: Conns, seats: Arc<Seats>) -> Arc<Self> {
         let me = Arc::new(Self {
             here,
             hub: hub.clone(),
             db,
             accounts,
             conns,
-            buckets,
             seats,
             ctx: OnceLock::new(),
             pusher: OnceLock::new(),
             watch: OnceLock::new(),
             seen: Mutex::new(HashSet::new()),
-            relayed: Mutex::new(HashMap::new()),
-            relaying: Mutex::new(HashMap::new()),
         });
         let weak = Arc::downgrade(&me);
         let on_return = Arc::new(move |(node, session): (String, String), lines: Vec<String>, why: Returned| {
@@ -193,10 +140,6 @@ impl Social {
 
     // -- inbound ------------------------------------------------------------------
 
-    fn relayed(&self, m: &Inbound) -> bool {
-        self.relaying.lock().unwrap().get(&m.platform).copied().unwrap_or(0) > 0 || self.relayed.lock().unwrap().contains_key(&(m.platform.clone(), m.channel_id.clone(), m.message_id.clone()))
-    }
-
     /// One inbound message from a connector.
     pub async fn on_message(self: &Arc<Self>, m: Inbound) {
         if !m.message_id.is_empty() {
@@ -212,9 +155,7 @@ impl Social {
         }
         if !m.resynced {
             let user = self.db.lookup(&m.platform, &m.sender_id).await.unwrap_or_default();
-            let mut payload = msg(&m, &user);
-            payload["relayed"] = json!(self.relayed(&m));
-            self.emit("message", payload);
+            self.emit("message", msg(&m, &user));
         }
         if !m.to_holder {
             return;
@@ -379,48 +320,17 @@ impl Social {
             return Err(VerbError::value("send needs text, a file, or both"));
         }
         check_files(&*conn, &account, &files)?;
-        let personal = self.account(&account).is_some_and(|a| a.kind() == "user");
-        let sent = if personal {
-            *self.relaying.lock().unwrap().entry(conn.platform().to_string()).or_default() += 1;
-            let out = conn.send(&channel, &text, thread.as_deref(), &files).await;
-            *self.relaying.lock().unwrap().entry(conn.platform().to_string()).or_default() -= 1;
-            let sent = out?;
-            self.note_relayed(conn.platform(), &sent);
-            sent
-        } else {
-            let sent = conn.send(&channel, &text, thread.as_deref(), &files).await?;
-            if truthy(call.args.get("quiet")) {
-                let ts = [s(&Value::Object(sent.clone()), "ts"), s(&Value::Object(sent.clone()), "message_id")].into_iter().find(|t| !t.is_empty());
-                if let Some(ts) = ts {
-                    let ch = Some(s(&Value::Object(sent.clone()), "channel_id")).filter(|c| !c.is_empty()).unwrap_or_else(|| channel.clone());
-                    self.db.quiet_thread(&account, &ch, &ts).await;
-                }
+        let sent = conn.send(&channel, &text, thread.as_deref(), &files).await?;
+        if truthy(call.args.get("quiet")) {
+            let ts = [s(&Value::Object(sent.clone()), "ts"), s(&Value::Object(sent.clone()), "message_id")].into_iter().find(|t| !t.is_empty());
+            if let Some(ts) = ts {
+                let ch = Some(s(&Value::Object(sent.clone()), "channel_id")).filter(|c| !c.is_empty()).unwrap_or_else(|| channel.clone());
+                self.db.quiet_thread(&account, &ch, &ts).await;
             }
-            sent
-        };
+        }
         let mut out = serde_json::Map::from_iter([("ok".to_string(), json!(true))]);
         out.extend(sent);
         Ok(Value::Object(out))
-    }
-
-    fn note_relayed(&self, platform: &str, sent: &connectors::Sent) {
-        let mut r = self.relayed.lock().unwrap();
-        if r.len() >= RELAYED_MAX {
-            let cutoff = Instant::now() - Duration::from_secs(3600);
-            let old: Vec<_> = r.iter().filter(|(_, at)| **at < cutoff).map(|(k, _)| k.clone()).collect();
-            if old.is_empty() {
-                r.clear();
-            } else {
-                for k in old {
-                    r.remove(&k);
-                }
-            }
-        }
-        let v = Value::Object(sent.clone());
-        let ts = [s(&v, "ts"), s(&v, "message_id")].into_iter().find(|t| !t.is_empty());
-        if let Some(ts) = ts {
-            r.insert((platform.to_string(), s(&v, "channel_id"), ts), Instant::now());
-        }
     }
 
     pub async fn react(&self, call: Call) -> Result<Value, VerbError> {
@@ -455,13 +365,6 @@ impl Social {
             rows.push(msg(m, &self.db.lookup(&m.platform, &m.sender_id).await.unwrap_or_default()));
         }
         Ok(json!({"count": rows.len(), "messages": rows}))
-    }
-
-    pub async fn search(&self, call: Call) -> Result<Value, VerbError> {
-        let conn = self.conn(&s(&call.args, "account"))?;
-        let ch = Some(s(&call.args, "channel")).filter(|c| !c.is_empty());
-        let msgs = conn.search(&s(&call.args, "query"), int(call.args.get("limit"), 50) as usize, ch.as_deref()).await?;
-        self.rows(msgs).await
     }
 
     pub async fn history(&self, call: Call) -> Result<Value, VerbError> {
@@ -519,18 +422,7 @@ impl Social {
 
     /// A message's attachments as `b64` files, which the caller's gateway writes to disk.
     async fn inline_files(&self, account: &str, channel: &str, message: &str, idx: Option<i64>) -> Result<Value, VerbError> {
-        let files = self.conn(account)?.download_attachments(channel, message, idx).await?;
-        let total: usize = files.iter().map(|f| f.data.len()).sum();
-        if total > MAX_INLINE_BYTES {
-            return Err(VerbError::value(format!("the attachments come to {total} bytes, over the {MAX_INLINE_BYTES} a reply carries; fetch one at a time with idx")));
-        }
-        let b64 = base64::engine::general_purpose::STANDARD;
-        let out: Vec<Value> = files
-            .iter()
-            .enumerate()
-            .map(|(i, f)| json!({"filename": safe_name(&f.filename, i), "mime": if f.mime.is_empty() { "application/octet-stream" } else { &f.mime }, "size": f.data.len(), "b64": b64.encode(&f.data)}))
-            .collect();
-        Ok(json!({"files": out, "count": out.len(), "node": self.here}))
+        awm_chat::inline_files(&self.conn(account)?.download_attachments(channel, message, idx).await?, &self.here)
     }
 
     pub async fn accounts(&self, _call: Call) -> Result<Value, VerbError> {
@@ -539,7 +431,7 @@ impl Social {
             .accounts
             .iter()
             .map(|a| {
-                json!({"name": a.name, "platform": a.platform, "kind": a.kind(), "display_name": a.display_name.clone().unwrap_or_default(),
+                json!({"name": a.name, "platform": a.platform, "kind": "bot", "display_name": a.display_name.clone().unwrap_or_default(),
                     "enabled": a.enabled, "live": live.get(&a.name).copied().unwrap_or(false), "singleton": a.singleton, "owner": "local"})
             })
             .collect();
@@ -994,133 +886,6 @@ impl Social {
         }
         self.emit("command", json!({"command": PROBE_COMMAND, "nonce": nonce}));
         Ok(json!({"ok": true, "nonce": nonce}))
-    }
-
-    // -- buckets ---------------------------------------------------------------------
-
-    fn bucket(&self, name: &str) -> Result<Arc<dyn Bucket>, VerbError> {
-        self.buckets.iter().find(|(c, _)| c.name == name).and_then(|(_, b)| b.clone()).ok_or_else(|| VerbError::runtime(format!("bucket {name:?} is not configured or failed to build")))
-    }
-
-    pub async fn buckets_verb(&self, _call: Call) -> Result<Value, VerbError> {
-        let probes = self.buckets.iter().map(|(cfg, b)| {
-            let b = b.clone();
-            let cfg = cfg.clone();
-            async move {
-                let reason = match b {
-                    None => "failed to build (see the social service log)".to_string(),
-                    Some(b) => match tokio::time::timeout(Duration::from_secs(PROBE_TIMEOUT_S), b.probe()).await {
-                        Err(_) => format!("no answer within {PROBE_TIMEOUT_S}s"),
-                        Ok(Err(e)) => format!("{}: {}", e.error_class, e.message),
-                        Ok(Ok(())) => String::new(),
-                    },
-                };
-                let mut row = json!({"name": cfg.name, "kind": cfg.kind, "root": cfg.root, "live": reason.is_empty()});
-                if !reason.is_empty() {
-                    row["error"] = json!(reason);
-                }
-                row
-            }
-        });
-        Ok(json!({"buckets": futures_util::future::join_all(probes).await}))
-    }
-
-    pub async fn bucket_ls(&self, call: Call) -> Result<Value, VerbError> {
-        let b = self.bucket(&s(&call.args, "bucket"))?;
-        let path = s(&call.args, "path");
-        if !truthy(call.args.get("recursive")) {
-            let e = b.ls(&path).await?;
-            return Ok(json!({"entries": e, "count": e.len()}));
-        }
-        let (e, truncated) = buckets::walk(b.as_ref(), &path, int(call.args.get("limit"), 1000).max(1) as usize).await?;
-        Ok(json!({"entries": e, "count": e.len(), "truncated": truncated}))
-    }
-
-    pub async fn bucket_stat(&self, call: Call) -> Result<Value, VerbError> {
-        Ok(json!({"entry": self.bucket(&s(&call.args, "bucket"))?.stat(&s(&call.args, "path")).await?}))
-    }
-
-    pub async fn bucket_mkdir(&self, call: Call) -> Result<Value, VerbError> {
-        Ok(json!({"entry": self.bucket(&s(&call.args, "bucket"))?.mkdir(&s(&call.args, "path")).await?}))
-    }
-
-    pub async fn bucket_get(&self, call: Call) -> Result<Value, VerbError> {
-        let b = self.bucket(&s(&call.args, "bucket"))?;
-        let dir = tempfile::Builder::new().prefix("awm-social-").tempdir().map_err(|e| VerbError::runtime(e.to_string()))?.keep();
-        let path = s(&call.args, "path");
-        let res: Result<(Value, Vec<Value>), VerbError> = async {
-            match b.get(&path, &dir).await {
-                Ok(got) => {
-                    let mut v = serde_json::to_value(&got).unwrap();
-                    v["url"] = json!(file_url(Path::new(&got.path)));
-                    Ok((v, vec![]))
-                }
-                Err(e) if e.error_class == "IsADirectoryError" => {
-                    let mut tree = buckets::get_tree(b.as_ref(), &path, &dir, int(call.args.get("limit"), 10000).max(1) as usize).await?;
-                    let failures = tree.as_object_mut().and_then(|o| o.remove("failures")).and_then(|f| f.as_array().cloned()).unwrap_or_default();
-                    Ok((tree, failures))
-                }
-                Err(e) => Err(e),
-            }
-        }
-        .await;
-        let (written, failures) = match res {
-            Ok(r) => r,
-            Err(e) => {
-                let _ = std::fs::remove_dir_all(&dir);
-                return Err(e);
-            }
-        };
-        let parent = Path::new(written["path"].as_str().unwrap_or("")).parent().map(|p| p.display().to_string()).unwrap_or_default();
-        let mut out = json!({"files": [written], "count": 1, "dir": parent, "node": self.here, "edge_url": awm_plugin_sdk::config::edge_url().unwrap_or_default()});
-        if !failures.is_empty() {
-            out["failures"] = json!(failures);
-        }
-        Ok(out)
-    }
-
-    pub async fn bucket_put(&self, call: Call) -> Result<Value, VerbError> {
-        let b = self.bucket(&s(&call.args, "bucket"))?;
-        let src = s(&call.args, "src");
-        let parents = truthy(call.args.get("parents"));
-        let p = Path::new(&src);
-        if p.is_dir() {
-            let res = buckets::put_tree(b.as_ref(), &s(&call.args, "path"), p, parents).await?;
-            let mut out = json!({"entry": res["entry"], "count": res["count"]});
-            if res["failures"].as_array().is_some_and(|f| !f.is_empty()) {
-                out["failures"] = res["failures"].clone();
-            }
-            return Ok(out);
-        }
-        if !p.is_file() {
-            return Err(VerbError::new("FileNotFoundError", format!("bucket_put: no local file or folder {src:?}")));
-        }
-        let mime = Some(s(&call.args, "mime")).filter(|m| !m.is_empty());
-        Ok(json!({"entry": b.put(&s(&call.args, "path"), p, mime.as_deref(), parents).await?}))
-    }
-
-    pub async fn bucket_rm(&self, call: Call) -> Result<Value, VerbError> {
-        let path = s(&call.args, "path");
-        if path.trim_matches('/').is_empty() {
-            return Err(VerbError::value("bucket_rm: name the file or folder to delete; the bucket root is never deleted"));
-        }
-        self.bucket(&s(&call.args, "bucket"))?.rm(&path).await?;
-        Ok(json!({"ok": true, "path": path}))
-    }
-
-    pub async fn bucket_mv(&self, call: Call) -> Result<Value, VerbError> {
-        let b = self.bucket(&s(&call.args, "bucket"))?;
-        Ok(json!({"entry": b.mv(&s(&call.args, "src"), &s(&call.args, "dst"), truthy(call.args.get("overwrite")), truthy(call.args.get("parents"))).await?}))
-    }
-
-    pub async fn bucket_cp(&self, call: Call) -> Result<Value, VerbError> {
-        let b = self.bucket(&s(&call.args, "bucket"))?;
-        Ok(json!({"entry": b.cp(&s(&call.args, "src"), &s(&call.args, "dst"), truthy(call.args.get("overwrite")), truthy(call.args.get("parents"))).await?}))
-    }
-
-    pub async fn bucket_search(&self, call: Call) -> Result<Value, VerbError> {
-        let e = self.bucket(&s(&call.args, "bucket"))?.search(&s(&call.args, "query"), int(call.args.get("limit"), 50) as usize, &s(&call.args, "path")).await?;
-        Ok(json!({"entries": e, "count": e.len()}))
     }
 
     // -- background ------------------------------------------------------------------

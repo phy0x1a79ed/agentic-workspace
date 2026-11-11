@@ -86,6 +86,11 @@ IDLE_S = float(os.environ.get("CLAUDE_SCIENCE_IDLE_S", "7200"))
 #: `status` long before that finishes, so this covers the bind, not the setup.
 START_TIMEOUT_S = float(os.environ.get("CLAUDE_SCIENCE_START_TIMEOUT_S", "90"))
 
+#: How long to keep asking a running daemon for a sign-in nonce. The daemon
+#: answers `status` within seconds of launch but cannot mint until its boot
+#: finishes, which took two minutes on altair's slow disk.
+MINT_TIMEOUT_S = float(os.environ.get("CLAUDE_SCIENCE_MINT_TIMEOUT_S", "180"))
+
 #: Sentinel names inside the data dir that mean "first-run provisioning has
 #: happened". Checked rather than reproduced: the daemon owns this work.
 _PROVISION_MARKERS = ("conda", "seed-assets")
@@ -537,16 +542,21 @@ class Supervisor:
 
         Loopback-shaped (``http://127.0.0.1:<port>/?nonce=…``) because that is
         what the daemon prints; it is useful over SSH as-is, and the front's
-        sign-in route uses the nonce rather than the URL.
+        sign-in route uses the nonce rather than the URL. A daemon still booting
+        cannot mint yet, so this retries until ``MINT_TIMEOUT_S``.
         """
-        proc = _run(["url"], timeout=30.0)
-        out = (proc.stdout or "").strip()
-        if not out:
-            raise RuntimeError(
-                f"claude-science url printed nothing: "
-                f"{(proc.stderr or '').strip()[:200]}"
-            )
-        return out.splitlines()[-1].strip()
+        deadline = time.monotonic() + MINT_TIMEOUT_S
+        while True:
+            proc = _run(["url"], timeout=30.0)
+            out = (proc.stdout or "").strip()
+            if out:
+                return out.splitlines()[-1].strip()
+            if time.monotonic() >= deadline or not status_json().get("running"):
+                raise RuntimeError(
+                    f"claude-science url printed nothing: "
+                    f"{(proc.stderr or '').strip()[:200]}"
+                )
+            time.sleep(3.0)
 
     def update_check(self) -> dict[str, Any]:
         proc = _run(["update", "--check"], timeout=120.0)

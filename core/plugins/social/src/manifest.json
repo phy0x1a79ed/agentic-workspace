@@ -3,7 +3,7 @@
     {
       "name": "send",
       "tool": "social_send",
-      "description": "Send a message as a configured account. With no `account` and `channel` it answers the chat of your latest pushed line, in its thread. A seat names another of its chats by its label, such as `DM` or `#general`. `file` uploads a file from your own node (an absolute path, up to 24 MiB), such as a plan's .md, with `text` as its message; `text` is optional with a file. `files` attaches several: each an absolute path on your node, or an inline {filename, text}. Discord takes files up to 10 MB, and the Opal Slack bot up to the 24 MiB a call carries. Gmail and Tony's own Slack refuse files, and Tony's own Slack sends nothing. A DM where nobody but the bot has written is refused. `quiet` keeps the replies in the sent message's thread from its chat's seat holder.",
+      "description": "Send a message as a configured account. With no `account` and `channel` it answers the chat of your latest pushed line, in its thread. A seat names another of its chats by its label, such as `DM` or `#general`. `file` uploads a file from your own node (an absolute path, up to 24 MiB), such as a plan's .md, with `text` as its message; `text` is optional with a file. `files` attaches several: each an absolute path on your node, or an inline {filename, text}. Discord takes files up to 10 MB, and the Opal Slack bot up to the 24 MiB a call carries. A DM where nobody but the bot has written is refused. `quiet` keeps the replies in the sent message's thread from its chat's seat holder.",
       "timeout": 300,
       "params": [
         {
@@ -46,7 +46,7 @@
     {
       "name": "react",
       "tool": "social_react",
-      "description": "Put an emoji reaction on a message, or take it off with `remove`. With no ids it reacts to your latest pushed line. `emoji` is a character, a name or :name:. Discord and the Opal Slack bot react. Gmail and Tony's own Slack refuse.",
+      "description": "Put an emoji reaction on a message, or take it off with `remove`. With no ids it reacts to your latest pushed line. `emoji` is a character, a name or :name:. Discord and the Opal Slack bot react.",
       "params": [
         {
           "name": "account",
@@ -368,33 +368,6 @@
       ]
     },
     {
-      "name": "search",
-      "tool": "social_search",
-      "description": "Search a platform's own message index live (Slack search.messages, Gmail X-GM-RAW). Returns matches with attachment metadata. Not supported for Discord bot accounts (use fetch).",
-      "params": [
-        {
-          "name": "account",
-          "type": "string",
-          "required": true
-        },
-        {
-          "name": "query",
-          "type": "string",
-          "required": true
-        },
-        {
-          "name": "channel",
-          "type": "string",
-          "required": false
-        },
-        {
-          "name": "limit",
-          "type": "number",
-          "required": false
-        }
-      ]
-    },
-    {
       "name": "download_attachments",
       "tool": "social_download_attachments",
       "description": "Download a message's attachments to a fresh temp dir on the node you call from (outside the awm workspace). Re-fetches the message live; returns `dir` and each file's `path`, `filename`, `mime`, `size`. Files together may not pass 24 MiB. `idx` optionally selects a single attachment.",
@@ -534,240 +507,6 @@
           "name": "platform_user_id",
           "type": "string",
           "required": true
-        }
-      ]
-    },
-    {
-      "name": "buckets",
-      "tool": "social_buckets",
-      "description": "List configured cloud file-store buckets (Google Drive) with kind and root. Each is probed now: `live` is false, with an `error`, when the store does not answer.",
-      "timeout": 60
-    },
-    {
-      "name": "bucket_ls",
-      "tool": "social_bucket_ls",
-      "description": "List the immediate children of a folder in a bucket. `path` is relative to the bucket root (omit for root). A missing path is a not-found error, a file is a not-a-folder error. Returns entries with name, path, is_dir, size, mime, web_url. `recursive=true` walks the whole tree instead, stopping at `limit` entries (default 1000) and setting `truncated` when more exist.",
-      "timeout": 600,
-      "params": [
-        {
-          "name": "bucket",
-          "type": "string",
-          "required": true
-        },
-        {
-          "name": "path",
-          "type": "string",
-          "required": false
-        },
-        {
-          "name": "recursive",
-          "type": "boolean",
-          "required": false
-        },
-        {
-          "name": "limit",
-          "type": "number",
-          "required": false
-        }
-      ]
-    },
-    {
-      "name": "bucket_stat",
-      "tool": "social_bucket_stat",
-      "description": "Return the entry for one file or folder in a bucket, or a not-found error. Paths as for bucket_ls.",
-      "params": [
-        {
-          "name": "bucket",
-          "type": "string",
-          "required": true
-        },
-        {
-          "name": "path",
-          "type": "string",
-          "required": true
-        }
-      ]
-    },
-    {
-      "name": "bucket_mkdir",
-      "tool": "social_bucket_mkdir",
-      "description": "Create the folder at `path` in a bucket, with every missing parent. Succeeds on an existing folder. Paths as for bucket_ls.",
-      "params": [
-        {
-          "name": "bucket",
-          "type": "string",
-          "required": true
-        },
-        {
-          "name": "path",
-          "type": "string",
-          "required": true
-        }
-      ]
-    },
-    {
-      "name": "bucket_get",
-      "tool": "social_bucket_get",
-      "description": "Download a file from a bucket to a system temp dir (outside the awm workspace) on the node social runs on and return its absolute path + metadata. Any size; it streams in chunks. Google-native docs are exported (Docs→pdf, Sheets→csv). A folder downloads as a local folder tree (files[0].is_dir, with `count` files), refusing one over `limit` entries (default 10000). Files that fail are listed in `failures` and the rest still download.",
-      "timeout": 3600,
-      "params": [
-        {
-          "name": "bucket",
-          "type": "string",
-          "required": true
-        },
-        {
-          "name": "path",
-          "type": "string",
-          "required": true
-        },
-        {
-          "name": "limit",
-          "type": "number",
-          "required": false
-        }
-      ]
-    },
-    {
-      "name": "bucket_put",
-      "tool": "social_bucket_put",
-      "description": "Upload a file (`src` = a path on the node social runs on) to `path` in a bucket, creating or overwriting it. Any size; it streams in chunks. A local folder uploads as the folder `path`, its tree inside it; files that fail are listed in `failures` and the rest still upload. `parents=true` creates missing folders above `path`; without it a missing folder is a not-found error. Returns the resulting entry.",
-      "timeout": 3600,
-      "params": [
-        {
-          "name": "bucket",
-          "type": "string",
-          "required": true
-        },
-        {
-          "name": "path",
-          "type": "string",
-          "required": true
-        },
-        {
-          "name": "src",
-          "type": "string",
-          "required": true
-        },
-        {
-          "name": "mime",
-          "type": "string",
-          "required": false
-        },
-        {
-          "name": "parents",
-          "type": "boolean",
-          "required": false
-        }
-      ]
-    },
-    {
-      "name": "bucket_rm",
-      "tool": "social_bucket_rm",
-      "description": "Delete the file/folder at `path` in a bucket.",
-      "params": [
-        {
-          "name": "bucket",
-          "type": "string",
-          "required": true
-        },
-        {
-          "name": "path",
-          "type": "string",
-          "required": true
-        }
-      ]
-    },
-    {
-      "name": "bucket_mv",
-      "tool": "social_bucket_mv",
-      "description": "Move or rename the file or folder `src` to `dst` in a bucket. `dst` is the full new path, not a folder to move into. Paths as for bucket_ls. Sharing goes with the item. An existing `dst` is an error unless `overwrite=true`, which first moves it to the trash. `parents=true` creates missing folders above `dst`. Returns the new entry.",
-      "timeout": 3600,
-      "params": [
-        {
-          "name": "bucket",
-          "type": "string",
-          "required": true
-        },
-        {
-          "name": "src",
-          "type": "string",
-          "required": true
-        },
-        {
-          "name": "dst",
-          "type": "string",
-          "required": true
-        },
-        {
-          "name": "overwrite",
-          "type": "boolean",
-          "required": false
-        },
-        {
-          "name": "parents",
-          "type": "boolean",
-          "required": false
-        }
-      ]
-    },
-    {
-      "name": "bucket_cp",
-      "tool": "social_bucket_cp",
-      "description": "Copy the file or folder `src` to `dst` in a bucket. Arguments and errors as for bucket_mv. Returns the new entry.",
-      "timeout": 3600,
-      "params": [
-        {
-          "name": "bucket",
-          "type": "string",
-          "required": true
-        },
-        {
-          "name": "src",
-          "type": "string",
-          "required": true
-        },
-        {
-          "name": "dst",
-          "type": "string",
-          "required": true
-        },
-        {
-          "name": "overwrite",
-          "type": "boolean",
-          "required": false
-        },
-        {
-          "name": "parents",
-          "type": "boolean",
-          "required": false
-        }
-      ]
-    },
-    {
-      "name": "bucket_search",
-      "tool": "social_bucket_search",
-      "description": "Search a bucket for files whose name contains `query`, across the whole drive. Returns matching entries. A `path` scope is refused.",
-      "params": [
-        {
-          "name": "bucket",
-          "type": "string",
-          "required": true
-        },
-        {
-          "name": "query",
-          "type": "string",
-          "required": true
-        },
-        {
-          "name": "limit",
-          "type": "number",
-          "required": false
-        },
-        {
-          "name": "path",
-          "type": "string",
-          "required": false
         }
       ]
     },

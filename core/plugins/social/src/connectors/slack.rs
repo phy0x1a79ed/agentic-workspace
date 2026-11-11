@@ -1,9 +1,6 @@
-//! Slack: one Web API client serves both the Opal bot and Tony's read-only account
-//! (`slack_bot_conn.py`, `slack_conn.py`).
+//! Slack: the Opal bot (`slack_bot_conn.py`). Tony's own account lives in `productivity`.
 //!
-//! [`SlackConnector::create`] routes by the token: an `xoxb-` token is the bot, anything else is a
-//! person's own account (see [`user`]). The API base is `AWM_SLACK_API`, default
-//! `https://slack.com/api`.
+//! The API base is `AWM_SLACK_API`, default `https://slack.com/api`.
 //!
 //! The bot acts as a Slack app's bot user, never as a person. Receive is Socket Mode through an
 //! `xapp-` app token; with none, the bot sends but does not receive. It keeps a synced history:
@@ -33,11 +30,10 @@ use super::{
     OutFile, Result, Sent,
 };
 use crate::config::AccountConfig;
-use api::{params, ApiError, Client};
+use awm_chat::slack::api::{params, ApiError, Client};
+use awm_chat::slack::{api_err, chat_kind, kind_of, kind_of_type, repr, s, truthy, ts_f};
 
-mod api;
 mod socket;
-mod user;
 #[cfg(test)]
 mod tests;
 
@@ -50,71 +46,13 @@ pub const THREAD_WINDOW_S: f64 = 7.0 * 86400.0;
 const POSTED: [&str; 4] = ["", "file_share", "thread_broadcast", "bot_message"];
 const MEMBER_TYPES: &str = "public_channel,private_channel,mpim,im";
 
-fn s<'a>(v: &'a Value, k: &str) -> &'a str {
-    v.get(k).and_then(Value::as_str).unwrap_or("")
-}
-
-fn truthy(v: &Value, k: &str) -> bool {
-    match v.get(k) {
-        None | Some(Value::Null) => false,
-        Some(Value::Bool(b)) => *b,
-        Some(Value::Number(n)) => n.as_f64() != Some(0.0),
-        Some(Value::String(s)) => !s.is_empty(),
-        Some(_) => true,
-    }
-}
-
 fn posted(m: &Value) -> bool {
     POSTED.contains(&s(m, "subtype"))
-}
-
-fn ts_f(t: &str) -> f64 {
-    t.parse().unwrap_or(0.0)
-}
-
-/// Python's `repr` of a string, for error text that quoted with `!r`.
-fn repr(x: &str) -> String {
-    format!("'{x}'")
 }
 
 /// Whether `ts` is strictly newer than `since`, an absent `since` being older than anything.
 fn after(ts: &str, since: Option<&str>) -> bool {
     !ts.is_empty() && since.is_none_or(|s| ts_f(ts) > ts_f(s))
-}
-
-/// The `Channel.kind` of a conversation: `dm`, `group`, `private` or `channel`.
-fn chat_kind(ch: &Value) -> &'static str {
-    if truthy(ch, "is_im") {
-        "dm"
-    } else if truthy(ch, "is_mpim") {
-        "group"
-    } else if truthy(ch, "is_private") {
-        "private"
-    } else {
-        "channel"
-    }
-}
-
-fn kind_of(ch: &Value) -> ChatKind {
-    match chat_kind(ch) {
-        "dm" => ChatKind::Dm,
-        "group" => ChatKind::Group,
-        _ => ChatKind::Channel,
-    }
-}
-
-/// A message event's `channel_type`: `im`, `mpim`, else a channel.
-fn kind_of_type(channel_type: &str) -> Option<ChatKind> {
-    match channel_type {
-        "" => None,
-        "im" => Some(ChatKind::Dm),
-        "mpim" => Some(ChatKind::Group),
-        _ => Some(ChatKind::Channel),
-    }
-}
-
-fn api_err(e: ApiError) -> VerbError {
-    e.verb()
 }
 
 /// Background tasks that die with the loop that spawned them.
@@ -188,10 +126,12 @@ pub struct SlackConnector {
 }
 
 impl SlackConnector {
-    /// The Slack connector for this account: the bot for an `xoxb-` token, else the read-only user.
+    /// The bot for an `xoxb-` token. A person's own token belongs in `productivity`.
     pub fn create(cfg: AccountConfig, hooks: Hooks) -> anyhow::Result<Arc<dyn Connector>> {
-        let base = Client::base_from_env();
-        Ok(if cfg.token.starts_with("xoxb-") { Arc::new(Self::bot(cfg, hooks, &base)) } else { Arc::new(user::SlackUser::new(cfg, hooks, &base)) })
+        if !cfg.token.starts_with("xoxb-") {
+            anyhow::bail!("slack account {:?} is not a bot (xoxb-) token; a person's own Slack belongs in productivity", cfg.name);
+        }
+        Ok(Arc::new(Self::bot(cfg, hooks, &Client::base_from_env())))
     }
 
     fn bot(cfg: AccountConfig, hooks: Hooks, base: &str) -> Self {
