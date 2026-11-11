@@ -190,7 +190,7 @@ fn service(svc: Service, app: Arc<App>) -> Service {
     let svc = verb!(
         svc,
         "send",
-        "Answer your seat's chat. With no `channel` it answers your latest pushed line, in its thread. If the link to the chat is down, the reply waits on this node and goes out once. `file` uploads a file from this node (an absolute path); `files` takes several such paths, up to 24 MiB in all. Use `social send` for a chat that is not your seat.",
+        "Reply in your seat's chat, in your latest line's thread unless `channel` says otherwise. `files`: absolute paths on this node, 24 MiB in all. A reply queues here and goes out once if the chat is unreachable. Other chats: `social send`.",
         json!([param("text", "string", false), param("channel", "string", false), param("thread", "string", false), param("file", "string", false), param("files", "array", false)]),
         send
     );
