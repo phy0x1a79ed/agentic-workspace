@@ -4,7 +4,7 @@ The public edge's allow-list is *not* what enforces this. A mesh node's edge
 runs no profile and never consults `policy`, so the gate has to be in the
 handler, and these tests are what say so.
 
-Five kinds, told apart from the edge's `as_` and the gateway's stamps:
+Six kinds, told apart from the edge's `as_` and the gateway's stamps:
 
 - host: loopback with no session pid, the host's shell and services, and the
   edge's `slice_resolve` lookup. Everything but the push verbs.
@@ -12,6 +12,7 @@ Five kinds, told apart from the edge's `as_` and the gateway's stamps:
   agents work it from other nodes, where their writes are labelled.
 - peer_service and peer_agent: a door call from another node, without and
   with a session claim. The note API and slices, never the lifecycle.
+- alcor_service: a peer service on alcor. The push verbs as well.
 - person: a signed-in browser through the edge. Only the public face.
 """
 
@@ -48,6 +49,7 @@ def _off_the_real_vault(tmp_path, monkeypatch):
 CALLERS = {
     "host": ({}, None),
     "host_session": ({"_caller_pid": 4242}, None),
+    "alcor_service": ({}, "peer:alcor"),
     "peer_service": ({}, "peer:mizar"),
     "peer_agent": ({"_caller_session": {"session_id": "s", "node": "mizar"}}, "peer:mizar"),
     "person": ({}, "user:tony"),
@@ -66,7 +68,8 @@ PUSH = ["board_apply", "ops_render"]
 ADMITS = {
     "public": (PUBLIC, set(CALLERS)),
     "lifecycle": (LIFECYCLE, {"host"}),
-    "vault": (VAULT, {"host", "peer_service", "peer_agent"}),
+    "vault": (VAULT, {"host", "alcor_service", "peer_service", "peer_agent"}),
+    "push": (PUSH, {"alcor_service"}),
 }
 
 
@@ -105,16 +108,6 @@ def test_status_sheds_the_operators_half_for_a_signed_in_caller():
     for key in ("pid", "port", "scope", "data_dir", "log"):
         assert key not in through_edge["vault"], key
         assert key in from_console["vault"], key
-
-
-@pytest.mark.parametrize("verb", PUSH)
-@pytest.mark.parametrize("args,as_", [
-    *CALLERS.values(),
-    ({"_caller_session": {"session_id": "s", "node": "alcor"}}, "peer:alcor"),
-])
-def test_a_push_verb_refuses_all_but_alcors_services(verb, args, as_):
-    with pytest.raises(PermissionError):
-        asyncio.run(hub_adapter.HANDLERS[verb](dict(args), as_))
 
 
 def test_a_push_verb_admits_alcors_service_through_the_door(monkeypatch):

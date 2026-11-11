@@ -604,14 +604,16 @@ def _caller(args: dict, as_: str | None) -> str:
     if as_ is None:
         return "host_session" if args.get("_caller_pid") else "host"
     if as_.startswith("peer:"):
-        return "peer_agent" if args.get("_caller_session") else "peer_service"
+        if args.get("_caller_session"):
+            return "peer_agent"
+        return "alcor_service" if as_ == "peer:alcor" else "peer_service"
     return "person"
 
 
-EVERYONE = frozenset({"host", "host_session", "peer_service", "peer_agent", "person"})
 # The vault host's own sessions are refused on purpose: agents work the vault
 # from other nodes, where `_agent_gate` confines their writes.
-VAULT = frozenset({"host", "peer_service", "peer_agent"})
+VAULT = frozenset({"host", "alcor_service", "peer_service", "peer_agent"})
+EVERYONE = VAULT | {"host_session", "person"}
 HOST = frozenset({"host"})
 
 #: Which caller kinds each verb admits. A verb missing here fails at import.
@@ -619,21 +621,12 @@ ACCESS: dict[str, frozenset[str]] = {
     "status": EVERYONE, "snapshots": EVERYONE, "url": EVERYONE,
     **dict.fromkeys(["start", "stop", "restart", "init", "logs", "board_install",
                      "snapshot", "export", "restore", "slice_resolve"], HOST),
-    **dict.fromkeys(["board_apply", "ops_render"], frozenset({"peer_service"})),
+    **dict.fromkeys(["board_apply", "ops_render"], frozenset({"alcor_service"})),
     **dict.fromkeys(["note_upsert", "note_get", "note_children", "note_search",
                      "note_create", "note_update", "note_delete", "note_move",
                      "note_place", "note_clone", "attrs_get", "attr_set",
                      "attr_delete", "attachment_put", "attachment_get",
                      "slice_expose", "slice_list", "slice_revoke"], VAULT),
-}
-
-_WHY = {
-    "host": "only alcor's services push it",
-    "host_session": "sessions on the vault's host may not touch the vault; "
-                    "work it from another node",
-    "person": "it is not open to the edge",
-    "peer_service": "run it on the vault's host",
-    "peer_agent": "run it on the vault's host",
 }
 
 
@@ -644,31 +637,30 @@ def _gated(verb: str, handler):
         kind = _caller(args, as_)
         if kind not in allowed:
             raise PermissionError(f"{verb} refused for a {kind} caller: "
-                                  f"{_WHY[kind]}")
+                                  f"it admits {', '.join(sorted(allowed))}")
         return await handler(args, as_)
     return run
 
 
-def _from_alcor(as_: str | None, verb: str) -> None:
-    if as_ != "peer:alcor":
-        raise PermissionError(f"{verb} takes alcor's services only")
-
-
-def _labels(c: etapi.Etapi, note_id: str) -> set[str]:
-    return {a.get("name") for a in c.attributes(note_id) if a.get("type") == "label"}
+def _agent_refusal(c: etapi.Etapi, note_id: str) -> str | None:
+    """Why an agent may not write `note_id`, or None when it may."""
+    labels = {a.get("name") for a in c.attributes(note_id) if a.get("type") == "label"}
+    if "agentManaged" in labels:
+        return f"note {note_id} has #agentManaged: only the trilium board writer writes it"
+    if "agentWritable" not in labels:
+        return f"note {note_id} has no effective #agentWritable label"
+    return None
 
 
 def _agent_may_write(c: etapi.Etapi, note_id: str) -> bool:
     try:
-        labels = _labels(c, note_id)
+        return _agent_refusal(c, note_id) is None
     except etapi.EtapiError:
         return False
-    return "agentWritable" in labels and "agentManaged" not in labels
 
 
-def _in_live_slice(c: etapi.Etapi, note_id: str) -> bool:
-    """Whether `note_id` is a live slice's root or sits under one by any parent, as the fork's `isNoteInSlice`."""
-    roots = {r["note_id"] for r in slices.list_all() if r["active"]}
+def _in_live_slice(c: etapi.Etapi, note_id: str, roots: set[str]) -> bool:
+    """Whether `note_id` is one of `roots` or sits under one by any parent, as the fork's `isNoteInSlice`."""
     seen, todo = set(), [note_id]
     while todo:
         n = todo.pop()
@@ -686,10 +678,9 @@ async def _agent_gate(args: dict, as_: str | None, verb: str, *note_ids: str,
     """Refuse an agent's write to a note that is not labelled for agents.
 
     Only a session on another node is gated: the host and services pass, and
-    `ACCESS` already refused the host's own sessions. A note needs an effective
-    `#agentWritable`, and an effective `#agentManaged` refuses even under a
-    writable subtree. With `slice_ok`, a note inside a live slice passes too,
-    and the return says that was the only reason it passed.
+    `ACCESS` already refused the host's own sessions. With `slice_ok`, a note
+    without `#agentWritable` inside a live slice passes too, and the return
+    says that was the only reason it passed.
     """
     if _caller(args, as_) != "peer_agent":
         return False
@@ -698,16 +689,14 @@ async def _agent_gate(args: dict, as_: str | None, verb: str, *note_ids: str,
         c = etapi.client()
         refused, via_slice = [], False
         for note_id in note_ids:
-            labels = _labels(c, note_id)
-            if "agentManaged" in labels:
-                refused.append(f"note {note_id} has #agentManaged: only the "
-                               f"trilium board writer writes it")
-            elif "agentWritable" in labels:
-                continue
-            elif slice_ok and _in_live_slice(c, note_id):
-                via_slice = True
-            else:
-                refused.append(f"note {note_id} has no effective #agentWritable label")
+            why = _agent_refusal(c, note_id)
+            if why and slice_ok and "#agentWritable" in why:
+                roots = {r["note_id"] for r in slices.list_all() if r["active"]}
+                if roots and _in_live_slice(c, note_id, roots):
+                    via_slice = True
+                    continue
+            if why:
+                refused.append(why)
         return refused, via_slice
     refused, via_slice = await asyncio.to_thread(_check)
     if refused:
@@ -769,12 +758,10 @@ def _board() -> Board:
 
 
 async def _h_board_apply(args: dict, as_: str | None = None) -> dict:
-    _from_alcor(as_, "board_apply")
     return await asyncio.to_thread(_board().apply, args)
 
 
 async def _h_ops_render(args: dict, as_: str | None = None) -> dict:
-    _from_alcor(as_, "ops_render")
     return await asyncio.to_thread(_board().render, args)
 
 

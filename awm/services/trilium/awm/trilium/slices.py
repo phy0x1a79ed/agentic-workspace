@@ -122,18 +122,15 @@ def get(token: str, *, now: float | None = None) -> dict[str, Any] | None:
     return None if row is None else _row(row, now=now)
 
 
-def revoke(token: str, *, now: float | None = None) -> dict[str, Any] | None:
-    """Mark `token` revoked. Returns the row -- idempotent on one already
-    revoked -- or `None` if no such token was ever minted."""
-    now = time.time() if now is None else now
+def revoke(token: str) -> None:
+    """Mark `token` revoked. Idempotent on one already revoked."""
     conn = get_connection(SERVICE)
     try:
         conn.execute("UPDATE slices SET revoked_at = ? "
-                     "WHERE token = ? AND revoked_at IS NULL", (now, token))
+                     "WHERE token = ? AND revoked_at IS NULL", (time.time(), token))
         conn.commit()
     finally:
         conn.close()
-    return get(token, now=now)
 
 
 def resolve(token: str, *, now: float | None = None) -> dict[str, Any] | None:
