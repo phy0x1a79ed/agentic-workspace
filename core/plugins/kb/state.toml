@@ -1,6 +1,6 @@
 # kb takes over the state of three Python plugins and opens each in place. Its own LanceDB
-# databases live in services/kb/lance/, beside the Python papers plugin's state in services/kb/
-# (about 170 GB on altair), so services/kb is never declared here.
+# databases live in services/kb/lance/. The papers generations there are large on
+# altair, so services/kb is never declared here.
 dirs = ["services/journal", "services/search", "services/transcripts"]
 
 # The Python search's derived LanceDB tables: Lance maintenance rewrites their files, and the
