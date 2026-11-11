@@ -1,5 +1,5 @@
 # The fileviewer core plugin binary (static musl) that a deploy places at <AWM_DIR>/bin/fileviewer.
 # Written by the deploy on mizar (scripts/refresh-pins.sh). Do not edit.
-version=fileviewer-0ff23a809a40
-file=awm-plugin-fileviewer-0ff23a809a40-linux-x86_64-musl
+version=fileviewer-a8e5aba3ff45
+file=awm-plugin-fileviewer-a8e5aba3ff45-linux-x86_64-musl
 sha256=81cd4fa4a9b33097e09bab639b62d01da8b75adbc90299b04925e5442106f102
