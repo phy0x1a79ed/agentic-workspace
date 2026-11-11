@@ -421,9 +421,13 @@ form with a 308.
 **Declare `AWM_EDGE_URL` on any node that mints links.** `_slice_url` builds the
 URL from `config.edge_url()`, which falls back to this host's mesh address and
 `AWM_HTTPS_PORT` when the variable is absent. A public node without it prints a
-link that resolves only on the mesh. Put the value in `/etc/awm/env` — on sirius,
-`https://nexus.tony-xy-liu.com`. The Trilium process inherits it from the gateway
-through the service, so one declaration serves the CLI and the dialog alike.
+link that resolves only on the mesh. Declare it in the node's `awm_env` in the
+cloud repo's inventory — on deneb, `https://nexus.tony-xy-liu.com`.
+
+**CAUTION** A singleton unit never sees the gateway's `config.toml` `[env]`.
+Where Trilium runs as `awm-plugin@trilium`, the cloud role `singletons_sandbox`
+copies `AWM_EDGE_URL` into the unit's drop-in. Without it the fork hides slice
+sharing and the Agent writable switch, and nothing logs why.
 
 **Seven gates, and each is meant to be the one that holds.**
 

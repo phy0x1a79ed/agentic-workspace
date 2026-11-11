@@ -29,7 +29,6 @@ import time
 from pathlib import Path
 from typing import Any
 
-from awm import config
 from awm.trilium import instances, sync
 from awm.trilium.instances import Vault
 from awm.gatewayclient.proc import GroupChild, child_preexec
@@ -94,11 +93,6 @@ def child_env(vault: Vault) -> dict[str, str]:
         "TRILIUM_SYNC_SYNCSERVERHOST": sync.sync_server_host(),
         "HOME": str(Path.home()),
     })
-    # The fork's server offers slice sharing and the Agent writable switch only
-    # when it knows the edge origin, and it reads only this variable: awm's own
-    # fallback to the mesh address never reaches Node.
-    if edge := config.edge_url():
-        env["AWM_EDGE_URL"] = edge
     if instances.EDGE_ONLY:
         env["TRILIUM_GENERAL_NOAUTHENTICATION"] = "true"
     else:
