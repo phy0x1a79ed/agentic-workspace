@@ -34,12 +34,6 @@ Example, for a plugin that serves one MCP tool, one hidden tool and one page:
 > run = "run.sh"
 > install = "install.sh"   # optional. Relative to path. Builds the runtime (§ Runtime)
 >
-> [[service.archive]]      # today's service.toml [[archive]], unchanged
-> name = "journals"
-> mode = "index"
-> export = "journal_export"
-> topic = "posts"
->
 > [[tool]]
 > name = "journal"         # unique across the fleet, the tool's permanent id
 > major = 1

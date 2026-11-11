@@ -77,7 +77,7 @@ A **plugin** is a folder under `awm/services/` or `awm/plugins/` with an `awm-pl
 
 | File | Required? | Purpose |
 |---|---|---|
-| `awm-plugin.toml` | **yes** | The manifest: its services, the tools it publishes with major and tier (`on` or `off`), its pages, its `[needs]`, and `[[service.archive]]` tables that plug it into `search`. Every function a service registers is published as `<tool>_<verb>`. The format is `docs/redux/drafts/plugin-contract.md`. |
+| `awm-plugin.toml` | **yes** | The manifest: its services, the tools it publishes with major and tier (`on` or `off`), its pages and its `[needs]`. Every function a service registers is published as `<tool>_<verb>`. The format is `docs/redux/drafts/plugin-contract.md`. |
 | `run.sh` | **yes**, executable | The only thing the gateway runs to start the service: `bash run.sh`. It must launch the process with no arguments. |
 | `INSTALL.md` | **yes** | Install notes: deps, env, anything an operator needs. |
 | `install.sh` | optional | Editable-installs the service's deps and writes the `.runtime-env` sidecar. The manifest's `install` names it. |
