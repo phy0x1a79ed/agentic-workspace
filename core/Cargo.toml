@@ -69,6 +69,14 @@ awm-plugin-telemetry = { path = "plugins/telemetry" }
 awm-harness = { path = "crates/awm-harness", default-features = false }
 awm-cdp = { path = "crates/awm-cdp" }
 
+# Full DWARF made each integration-test binary ~2.8 GB and a target dir ~100 GB.
+# Line tables keep file:line in backtraces; dependencies carry none.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
 [profile.release]
 opt-level = 3
 # No LTO: it re-optimised every dependency once per binary at link, about 45 minutes a build.
