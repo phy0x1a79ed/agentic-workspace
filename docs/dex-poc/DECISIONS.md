@@ -111,3 +111,18 @@ Each mutable name has one origin. Whether that sits within C3 is still to confir
 **Known.** ssh routes to sockeye, fir, nibi and trillium already exist: altair holds the UBC VPN jump, and ssh-arbiter on alcor holds the 2FA leases (journals 06ffb49f, e9f609ba). No awm verb runs a remote command today. The edge times out at 60 s, so a job is submit, then status and result. `dvc run` with its watcher is the closest existing job pattern.
 
 **Landed.** Opens the topics `standalone`, `providers`, `fair-share` and `nextflow` under `compute-market`.
+
+## standalone (2026-11-11)
+
+**Question.** Who calls the market directly, outside awm, and how?
+
+**User's words.** "we could prolly do the same 3 way generative design as awm? which has cli, mcp, and http? the 3 callers you suggest work."
+
+**Decided.**
+- Callers now: the shell, awm agents, and Nextflow running as one whole job (the market runs the head process; Nextflow submits its own tasks). Later: a Nextflow executor plugin, and users off the fleet (that needs its own auth layer).
+- Surfaces: like awm, each verb is declared once and generated into a CLI, MCP and HTTP. The market daemon owns job state. The CLI is a thin client over the node's Unix socket; `submit` returns an id at once, `wait` and `logs -f` stream events, `fetch` pulls outputs by digest into the shared store, and `run` = submit + wait + fetch with the job's exit code. On a host with no daemon the CLI uses `ssh <node> market serve-stdio`.
+- The CLI talks only to its local daemon; the daemon decides placement.
+
+**Open, for `core-boundary`.** awm's generator lives in its gateway crates (`awm-gateway`, `awm-mcp`, `awm-cli`). A standalone market either reuses them (and depends on awm) or the catalog-to-surfaces generator moves into a crate with no awm dependency that both use.
+
+**Landed.** Input to `tool-surface` and `core-boundary`.

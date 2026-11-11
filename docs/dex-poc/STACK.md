@@ -6,7 +6,7 @@
 
 ## Current
 
-`compute-market`: a compute market for awm peers. The user's pressing issue (2026-11-11). Evidence: journal 7ab424c3 (cold builds on mizar, full disk from per-worktree targets, contention) and E4 in `FINDINGS.md`. `market-scope` closed: a general job, HPC clusters as providers, standalone, Nextflow later. Next: `standalone`.
+`compute-market`: a compute market for awm peers. The user's pressing issue (2026-11-11). Evidence: journal 7ab424c3 (cold builds on mizar, full disk from per-worktree targets, contention) and E4 in `FINDINGS.md`. `market-scope` closed: a general job, HPC clusters as providers, standalone, Nextflow later. `standalone` closed: CLI, MCP and HTTP generated from one verb set; callers shell, awm agents, Nextflow as a whole job. Next: `providers`.
 
 ## Waiting on the user
 
@@ -27,7 +27,6 @@ Nothing.
 ## Stack
 
 - `compute-market`: see Current.
-  - `standalone`: callable directly, not only through awm. Who calls it, and from where.
   - `providers`: awm peers and Slurm clusters (sockeye, fir, nibi, trillium) behind one abstraction. A cluster login node cannot host a daemon.
   - `fair-share`: Slurm fair-use quotas as an allocation input, "as a system".
   - `tool-surface`: the narrow exposed tool, roughly submit, status, result, cancel. A 15 to 50 minute build cannot be one blocking call.
@@ -38,7 +37,7 @@ Nothing.
 - `first-test`: `claude-md-sync` is a candidate after the experiments. One origin per name against C3 is still open.
 - `version-policy`: whether a reply is translated to the caller's version (caller sends an `accept` list; receiver replies in the highest version it can produce, else a structured error).
 - `transport-survey`: do AWM peer links or the push path already give subscribe?
-- `core-boundary`: the core crate against the AWM adapter
+- `core-boundary`: the core crate against the AWM adapter. Includes whether awm's catalog-to-CLI/MCP/HTTP generator moves to an awm-free crate.
 - `coexistence`: how it runs in a few select sessions (Q30) and what stays out
 - `swap`: state handover and bad-activation recovery (Q7, Q8, Q24). Later rollout step.
 - `handoff`: the brief for the build session, written from the findings
@@ -57,4 +56,5 @@ None.
 - `format-per-locality`: struct in process, JSON from IPC outward.
 - `calling-mechanism`: working design, taken as accepted when the user directed the build.
 - `market-scope`: a general job (build first); HPC clusters as providers; standalone; Nextflow aspirational.
+- `standalone`: three generated surfaces; shell, awm agents, Nextflow as a whole job.
 - `poc-build`: E1 to E4 run; results in `FINDINGS.md`.
