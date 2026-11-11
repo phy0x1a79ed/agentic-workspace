@@ -2,8 +2,6 @@
 //! tag-clash refusal. Ported from `test_privacy.py`. The marks live in one AWM_DIR per process,
 //! so the cases run in order in one test.
 
-use awm_index::Veil;
-use awm_kb_search::live;
 use awm_plugin_sdk::privacy;
 use crate::common::*;
 use serde_json::{json, Value};
@@ -95,24 +93,6 @@ async fn a_peer_never_sees_what_a_mark_covers() {
     assert_eq!(r.search.status(USER).await["documents"], 10);
     assert!(r.search.sources(PEER).await["sources"][0]["count"].is_null());
 
-    // A live transcripts hit from a marked path never reaches a peer.
-    let marked = privacy::slug(&root.join("avatar").to_string_lossy());
-    let sibling = privacy::slug(&root.join("avatar2").to_string_lossy());
-    let (m, sb) = (marked.clone(), sibling.clone());
-    r.gateway.live("transcripts", "transcripts", json!([{"name": "transcripts", "mode": "live", "query": "transcripts_query", "optin": true}]));
-    r.gateway.on("transcripts", "query", move |_| {
-        Ok(json!({"hits": [
-            {"id": "s1:1", "title": m, "snippet": "kitchen sink", "project": m},
-            {"id": "s2:1", "title": format!("{m}-Avatar-dev"), "snippet": "kitchen sink", "project": format!("{m}-Avatar-dev")},
-            {"id": "s3:1", "title": sb, "snippet": "kitchen sink", "project": sb},
-            {"id": "s4:1", "title": "avatar", "snippet": "kitchen sink", "project": "avatar", "scope": "dev"},
-        ]}))
-    });
-    r.search.refresh().await;
-    let q = json!({"query": {"text": "kitchen sink", "transcripts": {}}});
-    assert_eq!(ids(&r.ask_as(q.clone(), PEER).await.unwrap()["transcripts"]["exact"]), ["s3:1"]);
-    assert_eq!(every(&r.ask_as(q.clone(), None).await.unwrap()).len(), 4);
-
     // A peer call never asks another node.
     r.peers.add("shaula", true, "homebase", |_| Ok(json!({"journals": {"exact": [], "related": []}})));
     let out = r.ask_as(json!({"query": {"text": "kitchen sink", "journals": {}, "journals@shaula": {}}}), PEER).await.unwrap();
@@ -145,7 +125,6 @@ async fn a_peer_never_sees_what_a_mark_covers() {
     assert_eq!(found(&r, None).await, all);
     let e = r.search.get(&json!({"source": "journals", "id": "j1"}), Some("peer:vega"), None).await.unwrap_err();
     assert_eq!(e.message, "no document journals:j1");
-    assert!(every(&r.ask_as(q, Some("peer:vega")).await.unwrap()).is_empty());
     privacy::write_marks(&[]).unwrap();
 }
 
@@ -161,29 +140,4 @@ async fn a_node_an_open_tag_clash_stands_between_is_not_asked() {
     assert_eq!(r.peers.asked(), ["shaula"]);
     let e = r.search.get(&json!({"source": "journals", "id": "r1", "node": "altair"}), None, None).await.unwrap_err();
     assert_eq!(e.class, "PermissionError");
-}
-
-#[test]
-fn the_index_veil_and_the_live_hit_check_agree() {
-    init();
-    let marks = vec![
-        awm_index::Mark { project: "avatar".into(), scope: None },
-        awm_index::Mark { project: "awm".into(), scope: Some("svc-a".into()) },
-    ];
-    let veil = Veil::Marks { marks, tags: None };
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    rt.block_on(async {
-        let dir = tempfile::tempdir().unwrap();
-        let l = Lance::open(dir.path(), "t", false).await;
-        let cond = awm_index::sql::veil_sql(&l.fields, &veil);
-        for (i, (project, scope)) in [("avatar", ""), ("avatar", "dev"), ("avatar2", "dev"), ("awm", "svc-a"), ("awm", "svc-a/x"), ("awm", "svc-ab"), ("awm", ""), ("", "")]
-            .into_iter()
-            .enumerate()
-        {
-            let id = format!("x{i}");
-            l.put(&[(id.as_str(), json!({"title": "t", "text": "body", "ts": "2026-01-01T00:00:00Z", "project": project, "scope": scope}))]).await;
-            let kept = l.index.count(Some(&format!("{cond} AND id = '{id}'"))).await.unwrap();
-            assert_eq!(live::covered(&veil, project, scope), kept == 0, "{project}/{scope}");
-        }
-    });
 }

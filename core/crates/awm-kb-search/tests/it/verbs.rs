@@ -1,6 +1,5 @@
-//! The verbs as the gateway sees them, the judgements, the usage log and score, and the fusion of
-//! a live source's sections. Ported from `test_hub_adapter.py`, `test_store_v9.py`,
-//! `test_merge.py` and `test_journal_reads.py`.
+//! The verbs as the gateway sees them, the judgements, and the usage log and score. Ported from
+//! `test_hub_adapter.py`, `test_store_v9.py` and `test_journal_reads.py`.
 
 use awm_kb_search::store;
 use awm_plugin_sdk::{Caller, Env, Service};
@@ -87,14 +86,11 @@ async fn the_handlers_answer_through_the_service() {
 async fn sources_lists_fields_default_and_health() {
     let r = rig_with(vec![Fake::new("guide", Act::Hits(json!([])))]).await;
     r.journals.put(&[("j1", doc("Sink", "kitchen sink journal", "2026-03-01T10:00:00Z"))]).await;
-    r.gateway.live("papers", "kb", json!([
-        {"name": "kb", "mode": "live", "query": "kb_query", "get": "kb_get", "hit": ["title", "ts"], "fields": {"title": "content", "author": "categorical"}},
-        {"name": "precedence", "mode": "live", "query": "kb_query"},
-    ]));
-    r.search.refresh().await;
+    r.peers.add("altair", true, "homebase", |_| Ok(lists(&["journals", "papers"])));
+    r.peers.add("vega", true, "homebase", |_| Err(awm_kb_search::CallError::new("ConnectionError", "unreachable")));
     let out = r.search.sources(None).await;
     let rows: std::collections::BTreeMap<String, Value> = out["sources"].as_array().unwrap().iter().map(|s| (s["name"].as_str().unwrap().to_string(), s.clone())).collect();
-    assert_eq!(rows.keys().collect::<Vec<_>>(), ["guide", "journals", "kb"]);
+    assert_eq!(rows.keys().collect::<Vec<_>>(), ["guide", "journals", "journals@altair", "papers@altair"]);
     let j = &rows["journals"];
     assert_eq!((j["kind"].clone(), j["node"].clone(), j["count"].clone(), j["default"].clone()), (json!("journals"), json!(HERE), json!(1), json!(true)));
     assert_eq!((j["fields"]["tag"].clone(), j["fields"]["text"].clone()), (json!("categorical"), json!("content")));
@@ -104,10 +100,16 @@ async fn sources_lists_fields_default_and_health() {
     }
     assert!(j.get("last_answer").is_some() && j.get("last_error").is_some());
     assert_eq!(rows["guide"]["default"], false);
-    assert_eq!((rows["kb"]["mode"].clone(), rows["kb"]["service"].clone(), rows["kb"]["default"].clone()), (json!("live"), json!("papers"), json!(false)));
-    for key in ["registry", "semantic", "documents"] {
+    let p = &rows["papers@altair"];
+    assert_eq!((p["kind"].clone(), p["node"].clone(), p["mode"].clone(), p["default"].clone()), (json!("papers"), json!("altair"), json!("peer"), json!(false)));
+    assert_eq!(p["fields"]["author"], "categorical");
+    assert_eq!(out["peers"], json!({"altair": {"kinds": ["journals", "papers"]}, "vega": {"error": "ConnectionError: unreachable"}}));
+    for key in ["semantic", "documents"] {
         assert!(out.get(key).is_some(), "{key}");
     }
+    let relayed = r.search.sources(Some("peer:vega")).await;
+    assert_eq!(relayed["sources"].as_array().unwrap().len(), 2, "a peer caller sees this node's sources alone");
+    assert!(relayed.get("peers").is_none());
     let status = r.search.status(None).await;
     assert_eq!(status["sources"], json!({"journals": 1, "guide": null}));
     assert_eq!(status["semantic"], true);
@@ -186,17 +188,4 @@ fn the_database_keeps_the_python_schema_at_v9() {
     assert_eq!(v, 9);
     drop(st);
     store::open(dir.path()).unwrap();
-}
-
-#[tokio::test]
-async fn a_lone_about_fuses_a_live_sources_sections() {
-    let r = rig().await;
-    r.gateway.live("papers", "kb", json!([{"name": "kb", "mode": "live", "query": "kb_query"}]));
-    r.gateway.on("kb", "query", |_| Ok(json!({"exact": [{"id": "a"}, {"id": "b"}], "related": [{"id": "c"}, {"id": "b"}]})));
-    r.search.refresh().await;
-    let got = r.ask(json!({"query": {"text": {"$about": "x"}, "kb": {}}})).await;
-    assert_eq!(ids(&got["kb"]["exact"]), ["b", "a", "c"]);
-    assert!(got["kb"].get("related").is_none());
-    let got = r.ask(json!({"query": {"text": "x", "kb": {}}, "max": 1})).await;
-    assert_eq!((ids(&got["kb"]["exact"]), ids(&got["kb"]["related"])), (vec!["a".to_string()], vec!["c".to_string()]));
 }

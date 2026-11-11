@@ -1,9 +1,8 @@
 //! The federation: which sources a query reaches, asking each apart, and the views of them.
 
 use crate::federation::{self, Peers};
-use crate::hits::{self, py_str};
-use crate::live::{self, truthy};
-use crate::registry::{self, Declared};
+use crate::federation::Served;
+use crate::hits::{self, py_str, truthy};
 use crate::request::{self, label, Kinds, Request, SourceReq};
 use crate::store::{self, Use, Verdict};
 use crate::{BoxFut, CallError, Fail};
@@ -22,21 +21,15 @@ use std::time::{Duration, Instant};
 
 /// How long a source has to answer one query.
 pub const SOURCE_TIMEOUT: Duration = Duration::from_secs(15);
-/// How long the registry read stands before a query reads it again.
-pub const REGISTRY_TTL: Duration = Duration::from_secs(10);
 /// How long the journal's open tag clashes are trusted before they are read again.
 pub const CLASHES_TTL: Duration = Duration::from_secs(60);
-/// Sources retired from the archive, never listed.
-pub const RETIRED: [&str; 2] = ["precedence", "notes"];
+/// How long the kinds each peer serves are trusted before they are read again.
+pub const SERVED_TTL: Duration = Duration::from_secs(300);
 /// The usage log's name for this node.
 pub const THIS_NODE: &str = "local";
 
 /// The calls search makes to its own gateway. Tests stand in for them.
 pub trait Gateway: Send + Sync {
-    /// The rows of `awm services`.
-    fn services(&self) -> BoxFut<'_, Result<Vec<Value>, CallError>>;
-    /// `awm plugins`: the loader's snapshot, whose `archives` declare every kind a plugin root holds.
-    fn plugins(&self) -> BoxFut<'_, Result<Value, CallError>>;
     fn call<'a>(&'a self, tool: &'a str, verb: &'a str, args: Value, timeout: Duration) -> BoxFut<'a, Result<Value, CallError>>;
 }
 
@@ -44,33 +37,12 @@ pub trait Gateway: Send + Sync {
 pub struct HubGateway(pub awm_plugin_sdk::Hub);
 
 impl Gateway for HubGateway {
-    fn services(&self) -> BoxFut<'_, Result<Vec<Value>, CallError>> {
-        Box::pin(async move {
-            let rows = self.call("awm", "services", json!({}), Duration::from_secs(10)).await?;
-            Ok(rows.as_array().cloned().unwrap_or_default())
-        })
-    }
-
-    fn plugins(&self) -> BoxFut<'_, Result<Value, CallError>> {
-        self.call("awm", "plugins", json!({}), Duration::from_secs(10))
-    }
-
     fn call<'a>(&'a self, tool: &'a str, verb: &'a str, args: Value, timeout: Duration) -> BoxFut<'a, Result<Value, CallError>> {
         Box::pin(async move {
             let opts = awm_plugin_sdk::CallOpts { timeout, ..Default::default() };
             self.0.call_with(tool, verb, args, &opts).await.map_err(CallError::from)
         })
     }
-}
-
-/// What the registry read last found.
-#[derive(Default)]
-struct Registry {
-    live: IndexMap<String, Declared>,
-    declared: BTreeMap<String, (awm_index::Fields, Vec<String>)>,
-    at: Option<Instant>,
-    refreshed: Option<f64>,
-    error: Option<String>,
 }
 
 /// One source's last answer, for `status`.
@@ -83,13 +55,15 @@ struct Answered {
 pub struct Search {
     store: Store,
     sources: IndexMap<String, Arc<dyn Source>>,
+    /// Every kind a query may name: this node's sources and the kinds kb knows but does not serve here.
+    kinds: Kinds,
     embedder: Option<Arc<dyn Embedder>>,
     gateway: Arc<dyn Gateway>,
     peers: Arc<dyn Peers>,
     node: String,
     /// How long one source has to answer; [`SOURCE_TIMEOUT`] unless a test shortens it.
     pub timeout: Duration,
-    registry: tokio::sync::Mutex<Registry>,
+    served: tokio::sync::Mutex<Option<(Instant, Served)>>,
     clashes: Mutex<Option<(Instant, HashSet<String>)>>,
     answers: Mutex<BTreeMap<String, Answered>>,
 }
@@ -139,30 +113,39 @@ fn declaration(fields: &awm_index::Fields, hit: &[String]) -> (Value, Value) {
 
 impl Search {
     /// search over `sources`, with its database in `state_dir` (`<AWM_DIR>/services/search`).
+    /// `known` adds the kinds this node does not serve, so a query may name them on a peer.
     pub fn new(
         state_dir: &Path,
         sources: Vec<Arc<dyn Source>>,
+        known: Kinds,
         embedder: Option<Arc<dyn Embedder>>,
         gateway: Arc<dyn Gateway>,
         peers: Arc<dyn Peers>,
     ) -> anyhow::Result<Search> {
+        let sources: IndexMap<String, Arc<dyn Source>> = sources.into_iter().map(|s| (s.name().to_string(), s)).collect();
+        let mut kinds = known;
+        for (name, s) in &sources {
+            let (fields, hit) = s.fields();
+            kinds.0.insert(name.clone(), (fields.clone(), hit.to_vec()));
+        }
         Ok(Search {
             store: store::open(state_dir)?,
-            sources: sources.into_iter().map(|s| (s.name().to_string(), s)).collect(),
+            sources,
+            kinds,
             embedder,
             gateway,
             peers,
             node: awm_plugin_sdk::config::node_name(),
             timeout: SOURCE_TIMEOUT,
-            registry: tokio::sync::Mutex::new(Registry::default()),
+            served: tokio::sync::Mutex::new(None),
             clashes: Mutex::new(None),
             answers: Mutex::new(BTreeMap::new()),
         })
     }
 
     /// [`Search::new`] over the gateway at `hub`.
-    pub fn with_hub(state_dir: &Path, sources: Vec<Arc<dyn Source>>, embedder: Option<Arc<dyn Embedder>>, hub: awm_plugin_sdk::Hub) -> anyhow::Result<Search> {
-        Self::new(state_dir, sources, embedder, Arc::new(HubGateway(hub.clone())), Arc::new(federation::HubPeers(hub)))
+    pub fn with_hub(state_dir: &Path, sources: Vec<Arc<dyn Source>>, known: Kinds, embedder: Option<Arc<dyn Embedder>>, hub: awm_plugin_sdk::Hub) -> anyhow::Result<Search> {
+        Self::new(state_dir, sources, known, embedder, Arc::new(HubGateway(hub.clone())), Arc::new(federation::HubPeers(hub)))
     }
 
     /// The same search under another node name, for tests.
@@ -183,58 +166,21 @@ impl Search {
         node.is_empty() || label(node) == label(&self.node)
     }
 
-    // -- registry ---------------------------------------------------------
+    // -- peers ------------------------------------------------------------
 
-    /// Read the registry and the declared kinds. A failed read keeps what was read before.
-    pub async fn refresh(&self) -> bool {
-        let mut reg = self.registry.lock().await;
-        self.refresh_locked(&mut reg).await
-    }
-
-    async fn refresh_locked(&self, reg: &mut Registry) -> bool {
-        reg.at = Some(Instant::now());
-        match self.gateway.plugins().await {
-            Ok(snapshot) => reg.declared = registry::declared(&snapshot),
-            Err(e) => tracing::warn!("search: plugin snapshot unread: {}", e.describe()),
-        }
-        match self.gateway.services().await {
-            Ok(rows) => {
-                reg.live = registry::parse(&rows).0;
-                reg.refreshed = Some(store::now());
-                reg.error = None;
-                true
-            }
-            Err(e) => {
-                reg.error = Some(e.describe());
-                false
+    /// The kinds each peer serves, read again once [`SERVED_TTL`] has passed. Queries that
+    /// arrive during a read wait for it, so a down peer costs one timeout per period.
+    pub async fn served(&self) -> Served {
+        let mut held = self.served.lock().await;
+        if let Some((at, served)) = held.as_ref() {
+            if at.elapsed() < SERVED_TTL {
+                return served.clone();
             }
         }
-    }
-
-    async fn registry(&self) -> tokio::sync::MutexGuard<'_, Registry> {
-        let mut reg = self.registry.lock().await;
-        if reg.at.is_none_or(|t| t.elapsed() > REGISTRY_TTL) {
-            self.refresh_locked(&mut reg).await;
-        }
-        reg
-    }
-
-    /// Every kind a query may name: the declared ones, the running live ones, and kb's own.
-    async fn kinds(&self) -> (Kinds, IndexMap<String, Declared>) {
-        let reg = self.registry().await;
-        let mut kinds = reg.declared.clone();
-        for (name, d) in &reg.live {
-            if let Ok((fields, hit)) = awm_index::fields::parse_fields(&d.table) {
-                if !fields.0.is_empty() {
-                    kinds.entry(name.clone()).or_insert((fields, hit));
-                }
-            }
-        }
-        for (name, s) in &self.sources {
-            let (fields, hit) = s.fields();
-            kinds.insert(name.clone(), (fields.clone(), hit.to_vec()));
-        }
-        (Kinds(kinds), reg.live.clone())
+        let clashed = self.clashed().await;
+        let served = federation::served(self.peers.as_ref(), &self.node, &clashed).await;
+        *held = Some((Instant::now(), served.clone()));
+        served
     }
 
     fn defaults(&self) -> Vec<String> {
@@ -297,10 +243,13 @@ impl Search {
 
     /// The validated request for `args`, as the caller `as_` may see it.
     pub async fn parse(&self, args: &Value, as_: Option<&str>) -> Result<Request, Fail> {
-        let (kinds, _) = self.kinds().await;
         let defaults = self.defaults();
-        let ctx = request::Context { kinds: &kinds, here: &self.node, defaults: &defaults, relayed: privacy::from_peer(as_), veil: veil_for(as_) };
-        Ok(request::parse(args, ctx)?)
+        let ctx = request::Context { kinds: &self.kinds, here: &self.node, defaults: &defaults, relayed: privacy::from_peer(as_), veil: veil_for(as_) };
+        let mut req = request::parse(args, ctx)?;
+        if !req.relayed && req.sources.iter().any(|s| !s.name.contains('@') && !self.sources.contains_key(&s.kind)) {
+            req.route(|k| self.sources.contains_key(k), &self.served().await)?;
+        }
+        Ok(req)
     }
 
     /// `{source: {exact, related?, error?}}` for each source `args` names, each answered apart.
@@ -312,11 +261,10 @@ impl Search {
     /// The answer to a parsed request. `caller` names the node that relayed the call.
     pub async fn answer(&self, req: &Request, caller: Option<&str>, session: Option<String>) -> Result<Value, Fail> {
         self.refuse_clashed(caller).await?;
-        let (kinds, live) = self.kinds().await;
         let clashed = if req.remote.is_empty() { HashSet::new() } else { self.clashed().await };
         let vector = self.vector(req).await;
-        let here = req.sources.iter().map(|src| self.here(src, req, &kinds, &live, vector.clone(), session.clone()));
-        let there = req.remote.iter().map(|(node, srcs)| self.there(node, srcs, req, &kinds, &clashed));
+        let here = req.sources.iter().map(|src| self.here(src, req, vector.clone(), session.clone()));
+        let there = req.remote.iter().map(|(node, srcs)| self.there(node, srcs, req, &clashed));
         let (here, there) = futures_util::future::join(futures_util::future::join_all(here), futures_util::future::join_all(there)).await;
         let mut out = Map::new();
         for name in &req.elsewhere {
@@ -348,16 +296,11 @@ impl Search {
         }
     }
 
-    async fn here(&self, src: &SourceReq, req: &Request, kinds: &Kinds, live: &IndexMap<String, Declared>, vector: Option<Vec<f32>>, session: Option<String>) -> Value {
-        let out = if let Some(source) = self.sources.get(&src.kind) {
-            self.local(source.clone(), src, req, kinds, vector, session).await
-        } else {
-            match live.get(&src.kind) {
-                None => failed(format!("this node has no {} source", src.kind)),
-                Some(d) if !d.error.is_empty() => failed(d.error.clone()),
-                Some(d) if d.mode != "live" => failed("an index source is no longer read: its service must answer live"),
-                Some(d) => self.live(d, src, req, kinds).await,
-            }
+    async fn here(&self, src: &SourceReq, req: &Request, vector: Option<Vec<f32>>, session: Option<String>) -> Value {
+        let out = match self.sources.get(&src.kind) {
+            Some(source) => self.local(source.clone(), src, req, vector, session).await,
+            None if req.relayed || src.name.contains('@') => failed(format!("this node has no {} source", src.kind)),
+            None => failed(format!("no reachable node serves {}", src.kind)),
         };
         self.answered(&src.kind, out.get("error").map(py_str));
         out
@@ -365,7 +308,7 @@ impl Search {
 
     /// One of kb's own sources, in its own task, within the timeout. For a peer caller, an
     /// answer that does not say it applied the veil is refused.
-    async fn local(&self, source: Arc<dyn Source>, src: &SourceReq, req: &Request, kinds: &Kinds, vector: Option<Vec<f32>>, session: Option<String>) -> Value {
+    async fn local(&self, source: Arc<dyn Source>, src: &SourceReq, req: &Request, vector: Option<Vec<f32>>, session: Option<String>) -> Value {
         let ask = Ask {
             text: req.text.clone(),
             source: src.filter.clone(),
@@ -392,7 +335,7 @@ impl Search {
             tracing::error!("search: source {} answered a peer without applying the private marks; its section is refused", src.kind);
             return failed("refused: the source did not apply the private marks for a caller on another node");
         }
-        let fields = kinds.hit_fields(&src.kind);
+        let fields = self.kinds.hit_fields(&src.kind);
         let mut out = Map::new();
         out.insert("exact".into(), Value::Array(hits::section(raw.get("exact"), req.max, &fields)));
         if raw.get("related").is_some_and(|r| !r.is_null()) {
@@ -404,30 +347,20 @@ impl Search {
         Value::Object(out)
     }
 
-    /// A live source another plugin serves, through the translation its verb takes today.
-    async fn live(&self, d: &Declared, src: &SourceReq, req: &Request, kinds: &Kinds) -> Value {
-        let args = match live::live_args(src, req) {
-            Ok(a) => a,
-            Err(e) => return failed(e),
-        };
-        let call = self.gateway.call(&d.tool, &d.query, args, self.timeout);
-        let raw = match tokio::time::timeout(self.timeout + Duration::from_secs(1), call).await {
-            Err(_) => return failed(timeout_text(self.timeout)),
-            Ok(Err(e)) => return failed(e.describe()),
-            Ok(Ok(raw)) => raw,
-        };
-        live::live_answer(&raw, req, &kinds.hit_fields(&src.kind)).unwrap_or_else(failed)
-    }
-
-    async fn there(&self, node: &str, srcs: &[SourceReq], req: &Request, kinds: &Kinds, clashed: &HashSet<String>) -> Map<String, Value> {
-        let asked = federation::ask_home(self.peers.as_ref(), &self.node, node, req.forwarded(node), req.max, kinds, clashed.contains(&label(node))).await;
+    /// The sections of the sources asked of `node`. A source routed there by its bare kind
+    /// names the node that answered.
+    async fn there(&self, node: &str, srcs: &[SourceReq], req: &Request, clashed: &HashSet<String>) -> Map<String, Value> {
+        let asked = federation::ask_home(self.peers.as_ref(), &self.node, node, req.forwarded(node), req.max, &self.kinds, clashed.contains(&label(node))).await;
         srcs.iter()
             .map(|s| {
-                let got = if asked.status != "ok" {
+                let mut got = if asked.status != "ok" {
                     failed(asked.error.clone().unwrap_or_else(|| asked.status.clone()))
                 } else {
                     asked.found.get(&s.kind).cloned().unwrap_or_else(|| failed("the node did not answer for it"))
                 };
+                if !s.name.contains('@') {
+                    got["node"] = json!(asked.name);
+                }
                 (s.name.clone(), got)
             })
             .collect()
@@ -496,40 +429,7 @@ impl Search {
             out.insert("origin".into(), self.origin());
             return Ok(json!({"document": out}));
         }
-        let (_, live) = self.kinds().await;
-        let Some(d) = live.get(name) else {
-            return Err(Fail::value(format!("no source {}", awm_pycompat::repr::str_repr(name))));
-        };
-        if d.mode != "live" || !d.error.is_empty() {
-            return Err(Fail::value(format!("no document {name}:{id}")));
-        }
-        if d.get.is_empty() {
-            return Err(Fail::value(format!("{} is a live source that reads no document whole", awm_pycompat::repr::str_repr(name))));
-        }
-        let call = self.gateway.call(&d.tool, &d.get, json!({"id": id}), self.timeout);
-        let raw = match tokio::time::timeout(self.timeout + Duration::from_secs(1), call).await {
-            Err(_) => return Err(Fail::new("TimeoutError", String::new())),
-            Ok(r) => r?,
-        };
-        let Some(Value::Object(doc)) = raw.get("document") else {
-            return Err(Fail::value(format!("no document {name}:{id}")));
-        };
-        let mut out = Map::new();
-        for k in ["title", "text", "kind", "ts", "url", "journal"] {
-            if let Some(Value::String(s)) = doc.get(k) {
-                if !s.is_empty() {
-                    out.insert(k.into(), json!(s));
-                }
-            }
-        }
-        if let Some(Value::Array(authors)) = doc.get("authors") {
-            out.insert("authors".into(), authors.iter().take(200).map(|a| json!(py_str(a).chars().take(200).collect::<String>())).collect());
-        }
-        out.insert("source".into(), json!(name));
-        out.insert("id".into(), json!(id));
-        out.insert("frozen".into(), json!(false));
-        out.insert("origin".into(), self.origin());
-        Ok(json!({"document": out}))
+        Err(Fail::value(format!("no source {}", awm_pycompat::repr::str_repr(name))))
     }
 
     // -- views ------------------------------------------------------------
@@ -557,13 +457,12 @@ impl Search {
         }
     }
 
-    /// `search status`: each source's count and last answer, and the registry's health.
+    /// `search status`: each source's count and last answer, and whether ranking by meaning is on.
     pub async fn status(&self, as_: Option<&str>) -> Value {
         let peer = privacy::from_peer(as_);
         let (counts, states) = self.counts(peer).await;
-        let reg = self.registry().await;
         let mut answers = Map::new();
-        for name in self.sources.keys().chain(reg.live.keys()) {
+        for name in self.sources.keys() {
             let (at, error) = self.last(name);
             answers.insert(name.clone(), json!({"at": at, "error": error}));
         }
@@ -572,7 +471,6 @@ impl Search {
             "documents": documents,
             "sources": counts,
             "semantic": self.embedder.is_some(),
-            "registry": {"refreshed": store::iso(reg.refreshed), "error": reg.error},
             "answers": answers,
         });
         if !peer {
@@ -581,12 +479,11 @@ impl Search {
         out
     }
 
-    /// `search sources`: every source a query can reach on this node, with its fields, and the
-    /// health `status` gives.
+    /// `search sources`: every source a query can reach, with its fields, and the health
+    /// `status` gives. A caller on another node sees this node's sources alone.
     pub async fn sources(&self, as_: Option<&str>) -> Value {
         let peer = privacy::from_peer(as_);
         let (counts, _) = self.counts(peer).await;
-        let live = self.registry().await.live.clone();
         let mut rows = Vec::new();
         for (name, s) in &self.sources {
             let (at, error) = self.last(name);
@@ -597,29 +494,27 @@ impl Search {
                 "last_answer": at, "last_error": error, "fields": fields, "hit": hit, "kind": name, "node": self.node,
             }));
         }
-        for (name, d) in &live {
-            if self.sources.contains_key(name) || RETIRED.contains(&name.as_str()) {
-                continue;
+        let mut peers = Map::new();
+        if !peer {
+            for (node, kinds) in self.served().await.iter() {
+                match kinds {
+                    Ok(kinds) => {
+                        for kind in kinds {
+                            let mut row = json!({"name": format!("{kind}@{node}"), "service": "kb", "mode": "peer", "default": false, "kind": kind, "node": node});
+                            if let Some((fields, hit)) = self.kinds.0.get(kind) {
+                                let (fields, hit) = declaration(fields, hit);
+                                row["fields"] = fields;
+                                row["hit"] = hit;
+                            }
+                            rows.push(row);
+                        }
+                        peers.insert(node.clone(), json!({"kinds": kinds}));
+                    }
+                    Err(e) => {
+                        peers.insert(node.clone(), json!({"error": e}));
+                    }
+                }
             }
-            let (at, error) = self.last(name);
-            let mut row = json!({
-                "name": name, "service": d.service, "mode": d.mode, "default": false, "count": Value::Null,
-                "last_answer": at, "last_error": if d.error.is_empty() { error } else { json!(d.error) },
-            });
-            if !d.topic.is_empty() {
-                row["topic"] = json!(d.topic);
-            }
-            if d.optin {
-                row["optin"] = json!(true);
-            }
-            if let Ok((fields, hit)) = awm_index::fields::parse_fields(&d.table) {
-                let (fields, hit) = declaration(&fields, &hit);
-                row["fields"] = fields;
-                row["hit"] = hit;
-            }
-            row["kind"] = json!(name);
-            row["node"] = json!(self.node);
-            rows.push(row);
         }
         let mut out = self.status(as_).await;
         if let Value::Object(m) = &mut out {
@@ -627,6 +522,9 @@ impl Search {
             m.shift_remove("answers");
             m.shift_remove("states");
             m.insert("sources".into(), Value::Array(rows));
+            if !peer {
+                m.insert("peers".into(), Value::Object(peers));
+            }
         }
         out
     }

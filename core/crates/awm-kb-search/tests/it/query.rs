@@ -50,27 +50,27 @@ async fn short_forms() {
 #[tokio::test]
 async fn sources_and_nodes() {
     let r = rig().await;
-    let req = parse(&r, json!({"query": {"journals": {"project": "awm"}, "kb@altair": {"author": "Smith"}, "transcripts@vega": {}}})).await.unwrap();
+    let req = parse(&r, json!({"query": {"journals": {"project": "awm"}, "papers@altair": {"author": "Smith"}, "transcripts@vega": {}}})).await.unwrap();
     assert_eq!(req.sources.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), ["journals"]);
     assert_eq!(req.remote.keys().collect::<Vec<_>>(), ["altair", "vega"]);
-    assert_eq!((req.remote["altair"][0].kind.as_str(), req.remote["altair"][0].node.as_str()), ("kb", "altair"));
+    assert_eq!((req.remote["altair"][0].kind.as_str(), req.remote["altair"][0].node.as_str()), ("papers", "altair"));
 
     let req = parse(&r, json!({"query": {format!("journals@{HERE}"): {"scope": "x"}}})).await.unwrap();
     assert_eq!((req.sources[0].name.clone(), req.sources[0].node.clone(), req.remote.len()), (format!("journals@{HERE}"), String::new(), 0));
 
     bad(&r, json!({"journals": {}, format!("journals@{HERE}"): {}}), "named twice").await;
-    bad(&r, json!({"kb@altair": {}, "kb@Altair": {}}), "named twice").await;
+    bad(&r, json!({"papers@altair": {}, "papers@Altair": {}}), "named twice").await;
 
     let req = parse(&r, json!({"query": {"journals": {}, "journals@altair": {}}})).await.unwrap();
     assert_eq!((req.sources.len(), req.remote["altair"].len()), (1, 1));
 
     let req = parse(&r, json!({"query": {"text": {"$contains": "x"}, "journals": {"project": "awm"},
-        "journals@altair": {"ts": {"$gte": "2026-10-01"}}, "kb@altair": {"author": "A"}}, "max": 20})).await.unwrap();
+        "journals@altair": {"ts": {"$gte": "2026-10-01"}}, "papers@altair": {"author": "A"}}, "max": 20})).await.unwrap();
     assert_eq!(req.forwarded("altair"), json!({
-        "query": {"text": {"$contains": "x"}, "journals": {"ts": {"$gte": "2026-10-01T00:00:00Z"}}, "kb": {"author": "A"}},
+        "query": {"text": {"$contains": "x"}, "journals": {"ts": {"$gte": "2026-10-01T00:00:00Z"}}, "papers": {"author": "A"}},
         "max": 20}));
-    let req = parse(&r, json!({"query": {"kb@altair": {}}})).await.unwrap();
-    assert_eq!(req.forwarded("altair"), json!({"query": {"kb": {}}, "max": 10}));
+    let req = parse(&r, json!({"query": {"papers@altair": {}}})).await.unwrap();
+    assert_eq!(req.forwarded("altair"), json!({"query": {"papers": {}}, "max": 10}));
     let req = parse(&r, json!({"query": {"journals@altair": {"$sort": "-ts"}}})).await.unwrap();
     assert_eq!(req.forwarded("altair")["query"]["journals"], json!({"$sort": "-ts"}));
 }
@@ -78,9 +78,9 @@ async fn sources_and_nodes() {
 #[tokio::test]
 async fn relayed_calls_and_the_veil() {
     let r = rig().await;
-    let req = r.search.parse(&json!({"query": {"journals": {}, "kb@altair": {}, "journals@vega": {}}}), Some("peer:altair")).await.unwrap();
+    let req = r.search.parse(&json!({"query": {"journals": {}, "papers@altair": {}, "journals@vega": {}}}), Some("peer:altair")).await.unwrap();
     assert!(req.relayed && req.remote.is_empty());
-    assert_eq!(req.elsewhere, ["kb@altair", "journals@vega"]);
+    assert_eq!(req.elsewhere, ["papers@altair", "journals@vega"]);
     assert_eq!(req.sources.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), ["journals"]);
     assert!(matches!(req.veil, Veil::Marks { .. } | Veil::Unreadable));
     let req = r.search.parse(&json!({"query": "x"}), Some("session")).await.unwrap();
@@ -95,7 +95,7 @@ async fn rejections() {
     bad(&r, json!({"journals": {"$gt": 3}}), "query.journals.$gt: operator not allowed at a field position; allowed: $and").await;
     bad(&r, json!({"journals": {"$or": [{"$in": [1]}]}}), "$or[0].$in: operator not allowed").await;
     bad(&r, json!({"transcripts": {"tag": "x"}}), "query.transcripts.tag: transcripts has no field 'tag'; allowed: ts, project, scope").await;
-    bad(&r, json!({"kb": {"project": "x"}}), "allowed: ts, author, tag, cites, cited_by").await;
+    bad(&r, json!({"papers": {"project": "x"}}), "allowed: ts, author, cites, cited_by").await;
     bad(&r, json!({"journals": {"$and": [{"author": "x"}]}}), "$and[0].author").await;
     for key in ["$about", "$contains"] {
         bad(&r, json!({"journals": {key: "x"}}), &format!("query.journals.{key}: {key} belongs in text")).await;
@@ -125,11 +125,10 @@ async fn rejections() {
         bad(&r, json!({"journals": {"project": v}}), "not a scalar").await;
         bad(&r, json!({"journals": {"project": {"$in": [v]}}}), "$in[0]").await;
     }
-    // The kinds a query may name: kb's own sources and the declared ones; library declares no fields.
-    bad(&r, json!({"text@altair": {}}), "query.text@altair: not a source; allowed: journals, kb, transcripts").await;
-    bad(&r, json!({"notes": {}}), "query.notes: not a source; allowed: journals, kb, transcripts").await;
-    bad(&r, json!({"library": {}}), "not a source").await;
-    for key in ["journals@", "journals@a b", "journals@@x", "kb@x/y"] {
+    // The kinds a query may name: kb's own, served here or not.
+    bad(&r, json!({"text@altair": {}}), "query.text@altair: not a source; allowed: journals, papers, transcripts").await;
+    bad(&r, json!({"notes": {}}), "query.notes: not a source; allowed: journals, papers, transcripts").await;
+    for key in ["journals@", "journals@a b", "journals@@x", "papers@x/y", "papers@altair,capella"] {
         bad(&r, json!({key: {}}), "malformed node after @").await;
     }
     bad(&r, json!({"journals": "awm"}), "query.journals: a source filter is an object").await;

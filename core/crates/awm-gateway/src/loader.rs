@@ -32,8 +32,6 @@ pub struct ServiceSpec {
     pub tools: Vec<String>,
     /// The plugin's `needs.secrets`: the only secrets its processes get (R116 item 1).
     pub secrets: Vec<String>,
-    /// The service's `[[service.archive]]` tables, for the search plugin's sources.
-    pub archive: Vec<serde_json::Value>,
     /// The service's `[[service.front]]` tables, for auth's TLS listeners (ports/auth.md C2).
     pub front: Vec<awm_proto::manifest::FrontDecl>,
 }
@@ -91,9 +89,6 @@ pub struct LoadResult {
     /// Folders a same-named folder in an earlier root shadows.
     pub shadowed: Vec<PathBuf>,
     pub warnings: Vec<String>,
-    /// The archive tables of every plugin the roots hold, loaded, skipped or refused, so a
-    /// reader such as search knows a kind that only another node serves.
-    pub archives: Vec<ArchiveDecl>,
     /// The folder of each skipped plugin, by name.
     #[serde(skip)]
     pub skipped_dirs: BTreeMap<String, PathBuf>,
@@ -101,14 +96,6 @@ pub struct LoadResult {
     /// fills it ([`crate::lifecycle::stamp_all`]).
     #[serde(skip)]
     pub stamps: BTreeMap<String, String>,
-}
-
-/// One service's `[[service.archive]]` tables.
-#[derive(Debug, Clone, Serialize)]
-pub struct ArchiveDecl {
-    pub plugin: String,
-    pub service: String,
-    pub archive: Vec<toml::Value>,
 }
 
 pub struct LoadInput<'a> {
@@ -176,11 +163,6 @@ pub fn load(input: &LoadInput) -> LoadResult {
                 out.shadowed.push(dir);
                 continue;
             }
-            out.archives.extend(manifest.service.iter().filter(|s| !s.archive.is_empty()).map(|s| ArchiveDecl {
-                plugin: manifest.plugin.name.clone(),
-                service: s.name.clone(),
-                archive: s.archive.clone(),
-            }));
             candidates.push(Candidate { dir, core, manifest });
         }
     }
@@ -340,7 +322,6 @@ fn build_plugin(cand: &Candidate, input: &LoadInput, warnings: &mut Vec<String>)
             enabled,
             tools: vec![],
             secrets: m.needs.secrets.clone(),
-            archive: s.archive.iter().filter_map(|t| serde_json::to_value(t).ok()).collect(),
             front: s.front.clone(),
         });
     }
@@ -755,26 +736,6 @@ mod tests {
         let r = run_with_peers(&core, &other, "mizar", &peers);
         assert_eq!(r.plugins.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["reflection"], "{:?}", r.refused);
         assert!(r.refused.iter().any(|f| f.plugin == "channel"), "a provider at another major does not count");
-    }
-
-    /// Every plugin's archive tables are listed, whether it loaded, was skipped or was refused.
-    /// A shadowed folder's are not.
-    #[test]
-    fn archives_list_every_plugin_in_the_roots() {
-        let t = tempfile::tempdir().unwrap();
-        let (core, other) = (t.path().join("core"), t.path().join("other"));
-        let table = |kind: &str| format!("[[service.archive]]\nname='{kind}'\nmode='index'\nexport='x_export'\n");
-        single(&core, "journal", "journal", &table("journals"));
-        single(&core, "elsewhere", "elsewhere", &table("far"));
-        single(&core, "kb", "kb", &format!("{}[[needs.tool]]\nname='nobody-serves'\n", table("papers")));
-        single(&other, "journal", "journal-2", &table("shadowed"));
-        let r = run(&core, &other, "mizar");
-        assert_eq!(r.skipped, ["elsewhere"]);
-        assert!(r.refused.iter().any(|f| f.plugin == "kb"));
-        let kinds: Vec<(&str, &str, &str)> = r.archives.iter()
-            .flat_map(|a| a.archive.iter().map(move |t| (a.plugin.as_str(), a.service.as_str(), t["name"].as_str().unwrap())))
-            .collect();
-        assert_eq!(kinds, [("elsewhere", "elsewhere", "far"), ("journal", "journal", "journals"), ("kb", "kb", "papers")]);
     }
 
     /// A service's front tables reach its spec. A bad one refuses the plugin.

@@ -139,23 +139,6 @@ async fn about_sections() {
 // -- sections from elsewhere ----------------------------------------------
 
 #[tokio::test]
-async fn a_live_source_answering_in_sections_has_its_passages_dropped() {
-    let r = loaded().await;
-    r.gateway.live("papers", "kb", json!([{"name": "kb", "mode": "live", "query": "kb_query", "get": "kb_get", "hit": ["title", "ts"],
-        "fields": {"title": "content", "text": "content", "ts": "datetime", "author": "categorical"}}]));
-    r.gateway.on("kb", "query", |_| Ok(json!({
-        "exact": [{"id": "doi:1", "title": "A paper", "passages": [{"text": "a quoted line", "start": 10, "injected": true}]}],
-        "graph": [{"id": "doi:2", "title": "Linked paper"}]})));
-    r.search.refresh().await;
-    let got = r.ask(json!({"query": {"text": "quoted line", "kb": {}}})).await;
-    assert_eq!(ids(&got["kb"]["exact"]), ["doi:1"]);
-    assert_eq!(got["kb"]["exact"][0], json!({"id": "doi:1", "title": "A paper", "ts": ""}));
-    assert!(!every_ids(&got).contains("doi:2"));
-    let call = r.gateway.calls.lock().unwrap().iter().find(|c| c.0 == "kb").cloned().unwrap();
-    assert_eq!((call.1.as_str(), call.2.clone()), ("query", json!({"query": "quoted line", "limit": 10})));
-}
-
-#[tokio::test]
 async fn a_peer_answers_in_sections_and_is_asked_for_its_own_sources() {
     let r = loaded().await;
     r.peers.add("capella", true, "homebase", |_| {

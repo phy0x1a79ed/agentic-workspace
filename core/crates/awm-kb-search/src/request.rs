@@ -4,6 +4,7 @@
 use awm_index::fields::Fields;
 use awm_index::grammar::{fail, parse_max, parse_source, parse_text, QueryError, SourceFilter, Text, DEFAULT_MAX};
 use awm_index::Veil;
+use crate::federation::Served;
 use awm_pycompat::pystr::{lstrip, strip};
 use indexmap::IndexMap;
 use serde_json::{json, Map, Value};
@@ -69,6 +70,26 @@ impl Request {
             body.insert(s.kind.clone(), s.asked());
         }
         json!({"query": body, "max": self.max})
+    }
+
+    /// Send each source named by its bare kind that this node does not serve to the first peer
+    /// in `served` that does. A source no peer serves stays here and answers that none does.
+    pub fn route(&mut self, serves: impl Fn(&str) -> bool, served: &Served) -> Result<(), QueryError> {
+        let (bare, kept): (Vec<SourceReq>, Vec<SourceReq>) = std::mem::take(&mut self.sources).into_iter().partition(|s| !s.name.contains('@') && !serves(&s.kind));
+        self.sources = kept;
+        for mut s in bare {
+            let Some(peer) = served.iter().find(|(_, kinds)| kinds.as_ref().is_ok_and(|k| k.contains(&s.kind))).map(|(n, _)| n.clone()) else {
+                self.sources.push(s);
+                continue;
+            };
+            let srcs = self.remote.entry(label(&peer)).or_default();
+            if let Some(twin) = srcs.iter().find(|t| t.kind == s.kind) {
+                return Err(fail(&format!("query.{}", s.name), &format!("names the same source as {}", twin.name), &[]));
+            }
+            s.node = peer;
+            srcs.push(s);
+        }
+        Ok(())
     }
 }
 

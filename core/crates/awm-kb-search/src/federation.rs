@@ -8,7 +8,9 @@ use crate::hits;
 use crate::request::{label, Kinds};
 use crate::{BoxFut, CallError};
 use awm_plugin_sdk::config::EdgeList;
+use indexmap::IndexMap;
 use serde_json::{json, Map, Value};
+use std::collections::HashSet;
 use std::time::Duration;
 
 /// Budget for one peer, connect to reply.
@@ -85,7 +87,7 @@ fn reply(raw: Value, names: &[String]) -> Result<Map<String, Value>, CallError> 
     match raw {
         Value::Object(m) if names.iter().any(|n| m.get(n).is_some_and(Value::is_object)) => Ok(m),
         other => {
-            let detail = other.get("error").filter(|e| crate::live::truthy(e)).map(hits::py_str);
+            let detail = other.get("error").filter(|e| hits::truthy(e)).map(hits::py_str);
             Err(CallError::new("RuntimeError", detail.unwrap_or_else(|| "reply names none of the sources asked".into())))
         }
     }
@@ -101,7 +103,7 @@ fn answer(raw: Option<&Value>, limit: usize, fields: &[String]) -> Value {
     if m.contains_key("related") {
         out.insert("related".into(), Value::Array(hits::section(m.get("related"), limit, fields)));
     }
-    if let Some(e) = m.get("error").filter(|e| crate::live::truthy(e)) {
+    if let Some(e) = m.get("error").filter(|e| hits::truthy(e)) {
         out.insert("error".into(), json!(hits::py_str(e).chars().take(300).collect::<String>()));
     }
     Value::Object(out)
@@ -134,6 +136,43 @@ pub async fn ask_home(peers: &dyn Peers, here: &str, home: &str, args: Value, li
     PeerResult { name, status: "ok".into(), error: None, found }
 }
 
+/// The kinds each peer serves, or why it did not say, in edge-list order.
+pub type Served = IndexMap<String, Result<Vec<String>, String>>;
+
+/// The kinds one peer's `search sources` lists as its own.
+async fn kinds_of(peers: &dyn Peers, name: &str) -> Result<Vec<String>, String> {
+    let call = peers.invoke(name, "search", "sources", json!({}), PEER_TIMEOUT);
+    let raw = match tokio::time::timeout(PEER_TIMEOUT + Duration::from_secs(1), call).await {
+        Err(_) => return Err(format!("timeout after {}s", PEER_TIMEOUT.as_secs())),
+        Ok(Err(e)) => return Err(e.describe()),
+        Ok(Ok(raw)) => raw,
+    };
+    let raw = match raw {
+        Value::Object(mut m) if !m.contains_key("sources") && m.contains_key("result") => m.remove("result").unwrap_or_default(),
+        other => other,
+    };
+    let raw = match raw {
+        Value::String(s) if s.len() <= MAX_REPLY_BYTES => serde_json::from_str(&s).map_err(|e| format!("JSONDecodeError: {e}"))?,
+        Value::String(s) => return Err(format!("reply of {} bytes exceeds the {MAX_REPLY_BYTES} byte cap", s.len())),
+        other => other,
+    };
+    let rows = raw.get("sources").and_then(Value::as_array).ok_or("reply lists no sources")?;
+    Ok(rows.iter().filter(|r| r.get("mode").and_then(Value::as_str) != Some("peer")).filter_map(|r| r.get("kind").and_then(Value::as_str)).map(String::from).collect())
+}
+
+/// What every node this one may dial serves, asked in parallel. Stations and nodes behind an
+/// open tag clash are not asked.
+pub async fn served(peers: &dyn Peers, here: &str, clashed: &HashSet<String>) -> Served {
+    let edges = peers.edges();
+    let names: Vec<String> = edges
+        .dialable_from(&label(here))
+        .into_iter()
+        .filter(|n| !clashed.contains(&label(n)) && edges.nodes.get(n).is_none_or(|r| r.role != "station"))
+        .collect();
+    let asked = futures_util::future::join_all(names.iter().map(|n| kinds_of(peers, n))).await;
+    names.into_iter().zip(asked).collect()
+}
+
 /// One document from a peer's search, stamped with the peer as its origin.
 pub async fn fetch(peers: &dyn Peers, here: &str, name: &str, source: &str, id: &str) -> Result<Value, CallError> {
     let edges = peers.edges();
@@ -154,7 +193,7 @@ pub async fn fetch(peers: &dyn Peers, here: &str, name: &str, source: &str, id: 
         raw = serde_json::from_str(s).map_err(|e| CallError::new("JSONDecodeError", e.to_string()))?;
     }
     let Some(Value::Object(doc)) = raw.get("document") else {
-        let detail = raw.get("error").filter(|e| crate::live::truthy(e)).map(hits::py_str);
+        let detail = raw.get("error").filter(|e| hits::truthy(e)).map(hits::py_str);
         return Err(CallError::new("RuntimeError", detail.unwrap_or_else(|| "reply has no document".into())));
     };
     let mut out = doc.clone();
