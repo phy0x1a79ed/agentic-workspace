@@ -109,16 +109,11 @@ async fn run(awm_dir: &Path) -> anyhow::Result<()> {
     let guide = awm_kb_guide::Guide::open(awm_dir, &workspace, model.clone(), Arc::new(awm_kb_guide::HubGuide(hub.clone()))).await?;
     let transcripts = awm_kb_transcripts::open(awm_dir, &services.join("transcripts"), ctx.clone())?;
     let mut sources: Vec<Arc<dyn Source>> = vec![journals.clone(), guide.clone(), Arc::new(awm_kb_transcripts::source::Transcripts::new(transcripts.clone()))];
-    let papers = match awm_kb_papers::Papers::open(awm_dir).await {
-        Ok(p) => p,
-        Err(e) => {
-            tracing::error!("kb: the papers generation did not open, serving no papers: {e:#}");
-            None
-        }
-    };
-    if let Some(p) = &papers {
-        sources.push(p.clone());
-    }
+    let papers = awm_kb_papers::Papers::open(awm_dir).await.unwrap_or_else(|e| {
+        tracing::error!("kb: the papers generation did not open, serving no papers: {e:#}");
+        None
+    });
+    sources.extend(papers.clone().map(|p| p as Arc<dyn Source>));
     let search = awm_kb_search::Search::with_hub(&services.join("search"), sources, model, hub.clone())?;
 
     let svc = awm_kb_journals::register(svc, journals.clone());

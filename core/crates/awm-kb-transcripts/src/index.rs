@@ -58,8 +58,7 @@ pub fn spec() -> Spec {
         hit: vec!["title".into(), "ts".into()],
         extra: vec![("session".into(), Kind::Text), ("line".into(), Kind::Int), ("cwd".into(), Kind::Text)],
         section_by: Some("ts".into()),
-        dim: awm_embed::MINILM.dim,
-        entry_only: vec![],
+        ..Default::default()
     }
 }
 
@@ -290,9 +289,8 @@ pub fn read(project: &str, session: &str, path: &Path) -> Option<Read> {
 /// Read the complete lines a live transcript gained since `had`, or all of them when `had` is
 /// `None` or no longer fits the file. A live record's `size` is the bytes read up to the last
 /// complete line, so a line still being written waits for the next read.
-pub fn read_live(project: &str, session: &str, path: &Path, had: Option<&Record>) -> Option<Read> {
+pub fn read_live(project: &str, session: &str, path: &Path, (mtime_ns, len): (i64, i64), had: Option<&Record>) -> Option<Read> {
     use std::io::{Read as _, Seek, SeekFrom};
-    let (mtime_ns, len) = stamp(path)?;
     let had = had.filter(|r| r.error.is_none() && r.size >= 0 && r.size <= len);
     let (offset, mut n, mut rows_n, mut cwds) = match had {
         Some(r) => (r.size, r.lines, r.rows, r.cwds.iter().cloned().collect::<BTreeSet<_>>()),
@@ -373,6 +371,20 @@ fn reader(batch: RecordBatch) -> Box<dyn RecordBatchReader + Send> {
 }
 
 /// `project` is one of `projects`.
+/// A transcript as a tree lists it: project, session, path and stamp.
+type Listed = (String, String, PathBuf, (i64, i64));
+
+fn listing(root: &Path, side: Side) -> Vec<Listed> {
+    sessions(root, side, None)
+        .into_iter()
+        .filter_map(|s| {
+            let t = s.transcript?;
+            let st = stamp(&t)?;
+            Some((s.project, s.session_id, t, st))
+        })
+        .collect()
+}
+
 fn in_projects(projects: &BTreeSet<String>) -> String {
     let parts: Vec<String> = projects.iter().map(|p| format!("array_has(project, {})", quote(p))).collect();
     awm_index::sql::join("OR", parts, "false")
@@ -503,28 +515,31 @@ impl TxIndex {
         Ok(n)
     }
 
-    /// Index the complete lines each live transcript under `live` gained since its record. A
-    /// transcript whose mtime matches its record is not read. Rows keep their `(session, line)`
-    /// ids, so the archive's copy of a session later replaces them one for one.
+    /// Index the complete lines each live transcript under `live` gained since its record.
     pub async fn catch_up(&self, live: &Path) -> Result<usize> {
-        let _one = self.catching_up.lock().await;
         let root = live.to_path_buf();
-        let held = self.records.read().unwrap().clone();
-        let reads = tokio::task::spawn_blocking(move || {
-            sessions(&root, Side::Live, None)
+        let listed = tokio::task::spawn_blocking(move || listing(&root, Side::Live)).await.map_err(|e| IndexError::Layout(e.to_string()))?;
+        self.take_live(listed).await
+    }
+
+    /// Read and append each listed live transcript whose mtime moved past its record. Rows keep
+    /// their `(session, line)` ids, so the archive's copy of a session later replaces them one
+    /// for one.
+    async fn take_live(&self, listed: Vec<Listed>) -> Result<usize> {
+        let _one = self.catching_up.lock().await;
+        let changed: Vec<(Listed, Option<Record>)> = {
+            let held = self.records.read().unwrap();
+            listed
                 .into_iter()
-                .filter_map(|s| {
-                    let t = s.transcript?;
-                    let had = held.get(&Record::key(&s.project, &s.session_id));
-                    if had.is_some_and(|r| Some(r.mtime_ns) == stamp(&t).map(|st| st.0)) {
-                        return None;
-                    }
-                    read_live(&s.project, &s.session_id, &t, had)
+                .filter_map(|l| {
+                    let had = held.get(&Record::key(&l.0, &l.1));
+                    (!had.is_some_and(|r| r.mtime_ns == l.3 .0)).then(|| (l, had.cloned()))
                 })
-                .collect::<Vec<_>>()
-        })
-        .await
-        .map_err(|e| IndexError::Layout(e.to_string()))?;
+                .collect()
+        };
+        let reads = tokio::task::spawn_blocking(move || changed.into_iter().filter_map(|((p, s, t, st), had)| read_live(&p, &s, &t, st, had.as_ref())).collect::<Vec<_>>())
+            .await
+            .map_err(|e| IndexError::Layout(e.to_string()))?;
         let mut n = 0;
         let mut batch: Vec<Read> = vec![];
         let mut rows = 0;
@@ -564,33 +579,17 @@ impl TxIndex {
         Ok(n)
     }
 
-    /// Bring the index level with the archive: index each session whose gzip is new or changed
-    /// by mtime and size, and forget each that went. Reads run on `reader`, which the caller
-    /// may run at idle priority.
+    /// Bring the index level with the archive and the live tree: index each session whose gzip
+    /// is new or changed by mtime and size, forget each in neither tree, then catch the live
+    /// tree up. Archive reads run on `reader`, which the caller may run at idle priority.
     pub async fn reconcile(&self, archive: &Path, live: &Path, reader: impl Fn(Box<dyn FnOnce() + Send>) + Send + Sync) -> Result<Value> {
         let started = std::time::Instant::now();
-        let root = archive.to_path_buf();
-        let live_root = live.to_path_buf();
-        let live_keys: BTreeSet<String> = tokio::task::spawn_blocking(move || {
-            sessions(&live_root, Side::Live, None).into_iter().filter(|s| s.transcript.is_some()).map(|s| Record::key(&s.project, &s.session_id)).collect()
-        })
-        .await
-        .map_err(|e| IndexError::Layout(e.to_string()))?;
-        let listed = tokio::task::spawn_blocking(move || {
-            sessions(&root, Side::Archive, None)
-                .into_iter()
-                .filter_map(|s| {
-                    let t = s.transcript?;
-                    let st = stamp(&t)?;
-                    Some((s.project, s.session_id, t, st))
-                })
-                .collect::<Vec<_>>()
-        })
-        .await
-        .map_err(|e| IndexError::Layout(e.to_string()))?;
+        let (root, live_root) = (archive.to_path_buf(), live.to_path_buf());
+        let (listed, live_listed) = tokio::task::spawn_blocking(move || (listing(&root, Side::Archive), listing(&live_root, Side::Live)))
+            .await
+            .map_err(|e| IndexError::Layout(e.to_string()))?;
         let held = self.records.read().unwrap().clone();
-        let mut present: BTreeSet<String> = listed.iter().map(|(p, s, _, _)| Record::key(p, s)).collect();
-        present.extend(live_keys);
+        let present: BTreeSet<String> = listed.iter().chain(&live_listed).map(|(p, s, _, _)| Record::key(p, s)).collect();
         let gone: Vec<(String, String)> =
             held.values().filter(|r| !present.contains(&Record::key(&r.project, &r.session))).map(|r| (r.project.clone(), r.session.clone())).collect();
         let todo: Vec<(String, String, PathBuf)> = listed
@@ -637,9 +636,14 @@ impl TxIndex {
         .await;
         self.progress.done.store(received, Ordering::SeqCst);
         self.progress.running.store(false, Ordering::SeqCst);
+        let outcome = match outcome {
+            Ok(()) => self.take_live(live_listed).await,
+            Err(e) => Err(e),
+        };
         let mut last = json!({"sessions": indexed, "rows": rows, "forgot": gone.len(), "rows_forgot": forgot, "seconds": (started.elapsed().as_secs_f64() * 100.0).round() / 100.0});
-        if let Err(e) = &outcome {
-            last["error"] = json!(e.to_string());
+        match &outcome {
+            Ok(n) => last["live_rows"] = json!(n),
+            Err(e) => last["error"] = json!(e.to_string()),
         }
         *self.progress.last.lock().unwrap() = Some(last.clone());
         outcome.map(|_| last)

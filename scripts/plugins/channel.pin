@@ -1,5 +1,5 @@
 # The channel core plugin binary (static musl) that a deploy places at <AWM_DIR>/bin/channel.
 # Written by the deploy on mizar (scripts/refresh-pins.sh). Do not edit.
-version=channel-0e087ac8a7c3
-file=awm-plugin-channel-0e087ac8a7c3-linux-x86_64-musl
-sha256=ba53e9968d92fa47318103c9ca8bf510acd334f76a8d7977abc3ed34c3cf1622
+version=channel-65c00562f1a9
+file=awm-plugin-channel-65c00562f1a9-linux-x86_64-musl
+sha256=ea51bc1ba2276dcf50230c2ecbb9e464dc675c5111dceaa898b97dfb2a4580b3

@@ -2,7 +2,7 @@
 
 ## Purpose & Contents
 
-This file covers what a node needs before kb runs, what kb writes, and how to roll its journal back. The code and its tests say how kb works.
+This file covers what a node needs before kb runs, what kb writes, how a node gets papers, and how to roll the journal back. The code and its tests say how kb works.
 
 kb is one static Rust process that serves the `journal`, `search` and `transcripts` tools.
 
@@ -25,11 +25,28 @@ The deploy unpacks the model files from the artifact in `scripts/models.pin` to 
 | `services/journal/journal.db` | the frozen Python tables, and journal's other state |
 | `services/search/search.db` | search's own store |
 | `services/transcripts/transcripts.db` | transcripts' own store |
+| `services/kb/lance/papers/` | the papers generations and `CURRENT`, about 28 GB each, on altair only |
 | `services/kb/lance/<source>/` | the derived index of each other search source |
 
-**CAUTION** `services/kb/` also holds the Python papers plugin's state, up to 170 GB on altair. Do not treat that folder as kb's alone.
-
 At its first start kb copies every post of the frozen tables into LanceDB. It refuses to serve until LanceDB holds each post and, with the model loaded, every post has its chunks. A marker file records the pass, so no later start copies again. Run `kb state --help` for the state check subcommands.
+
+## Papers
+
+A node serves the `papers` source only when `services/kb/lance/papers/CURRENT` names a generation. Today only altair holds one. Every other node lists no paper source, and its kb never loads bge-large.
+
+A generation holds the Lance store, the bge-large files that encoded it, and the Zotero cursor. kb rereads `CURRENT` on each query, so a new generation goes live without a restart. The import keeps the current generation and the one before it, and deletes older ones.
+
+Build a generation with `kb papers-import`. Run `kb papers-import --help` for its arguments. It needs:
+
+- A semdb build (`projects/mining-microbiome/domain-models/data/semdb` on altair). The import reuses its vectors, so it embeds only the Zotero items semdb lacks.
+- semdb's citation graph, `services/kb/graph/graph.db` on altair, for `cites` and `cited_by`.
+- The bge-large-en-v1.5 files at the revision `core/crates/awm-embed/src/model.rs` pins.
+
+**CAUTION** semdb is DVC-tracked. The import reads it in place and writes nothing beside it. Keep it that way.
+
+The import needs no GPU and no sockeye. A full run on altair takes about an hour.
+
+kb syncs the Zotero library into the served generation at most once a day: at its start, and when a session stops. A library item that matches a semdb paper adds `private` to that paper's collections. Any other item becomes a new paper. kb asks the zotero singleton through the hub. Set `AWM_ZOTERO_PEER` to ask one node instead.
 
 ## Roll back
 

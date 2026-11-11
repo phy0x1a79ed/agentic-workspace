@@ -65,6 +65,13 @@ pub struct Spec {
     pub entry_only: Vec<String>,
 }
 
+/// One table, MiniLM's width and no entry-only fields: what a source sets unless it differs.
+impl Default for Spec {
+    fn default() -> Spec {
+        Spec { name: String::new(), fields: Fields::default(), hit: vec![], extra: vec![], section_by: None, dim: awm_embed::MINILM.dim, entry_only: vec![] }
+    }
+}
+
 /// Run the CPU-bound encode without starving the runtime: on a multi-thread runtime the worker
 /// hands its queue to another thread first. `spawn_blocking` cannot borrow the embedder.
 fn encode_off_worker(e: &dyn Embedder, texts: &[&str]) -> Result<Vec<Vec<f32>>, awm_embed::EmbedError> {
@@ -664,10 +671,7 @@ impl Index {
         let _w = self.write.lock().await;
         let mut n = 0;
         for (key, rows) in groups {
-            let sec = self.section(&key).await?;
-            for part in rows.chunks(BATCH * 4) {
-                sec.entries.add(cells::batch(&cols, part)?).execute().await?;
-            }
+            append(&self.section(&key).await?.entries, &cols, &rows).await?;
             n += rows.len();
         }
         Ok(n)
@@ -677,11 +681,7 @@ impl Index {
     pub async fn load_chunks(&self, key: &str, rows: &[Vec<Cell>]) -> Result<()> {
         let cols = self.spec.chunk_cols();
         let _w = self.write.lock().await;
-        let sec = self.section(key).await?;
-        for part in rows.chunks(BATCH * 4) {
-            sec.chunks.add(cells::batch(&cols, part)?).execute().await?;
-        }
-        Ok(())
+        append(&self.section(key).await?.chunks, &cols, rows).await
     }
 
     /// Build every index a section lacks, the vector index included, as after a load.
@@ -812,6 +812,14 @@ fn trained_path(root: &Path, table: &str) -> PathBuf {
 fn ivf(rows: usize) -> LanceIndex {
     let parts = 16.max((rows as f64).sqrt() as u32);
     LanceIndex::IvfRq(IvfRqIndexBuilder::default().distance_type(DistanceType::Cosine).num_bits(1).num_partitions(parts))
+}
+
+/// Append rows, in `cols` order, a few batches per Lance write.
+async fn append(table: &Table, cols: &[(String, Kind)], rows: &[Vec<Cell>]) -> Result<()> {
+    for part in rows.chunks(BATCH * 4) {
+        table.add(cells::batch(cols, part)?).execute().await?;
+    }
+    Ok(())
 }
 
 async fn index_names(table: &Table) -> Result<HashSet<String>> {

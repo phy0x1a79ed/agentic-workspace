@@ -214,7 +214,7 @@ fn registry(dir: &Path) -> Result<HashMap<String, Paper>> {
 
 /// Each paper's `cites` and `cited_by`, from the graph's `cites` edges between `paper:` nodes.
 fn citations(graph: &Path) -> Result<(HashMap<String, Vec<String>>, HashMap<String, Vec<String>>)> {
-    let db = rusqlite::Connection::open_with_flags(graph, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    let db = open_ro(graph)?;
     let mut q = db.prepare(
         "SELECT s.key, d.key FROM edge e JOIN node s ON s.nid = e.src JOIN node d ON d.nid = e.dst
          WHERE e.kind = 'cites' AND s.kind = 'paper' AND d.kind = 'paper'",
@@ -243,7 +243,7 @@ pub(crate) fn norm_title(t: &str) -> String {
     t.chars().filter(|c| c.is_alphanumeric()).flat_map(char::to_lowercase).collect()
 }
 
-fn item_str<'a>(item: &'a Map<String, Value>, key: &str) -> &'a str {
+pub(crate) fn item_str<'a>(item: &'a Map<String, Value>, key: &str) -> &'a str {
     item.get(key).and_then(Value::as_str).map(str::trim).unwrap_or("")
 }
 
@@ -260,28 +260,40 @@ pub fn zotero_id(item: &Map<String, Value>) -> String {
     format!("zotero:{}/{}", item_str(item, "library"), item_str(item, "key"))
 }
 
-/// Add [`PRIVATE`] to each semdb paper a Zotero item matches by DOI, or by title (20 characters
-/// or more) and year. Returns the unmatched items as rows to embed.
+/// What a Zotero item matches a paper by: its DOI, and its normalized title with its year when
+/// the title is long enough to be distinctive.
+pub(crate) struct ItemKeys {
+    pub doi: Option<String>,
+    pub title_year: Option<(String, i64)>,
+}
+
+/// The match keys of an item, or `None` for an item to skip: one without a key, or deleted.
+pub(crate) fn item_keys(item: &Map<String, Value>) -> Option<ItemKeys> {
+    if item_str(item, "key").is_empty() || item.get("deleted").and_then(Value::as_bool) == Some(true) {
+        return None;
+    }
+    let doi = Some(item_str(item, "doi").to_lowercase()).filter(|d| !d.is_empty());
+    let title = norm_title(item_str(item, "title"));
+    let title_year = item_year(item).filter(|_| title.len() >= MIN_TITLE).map(|y| (title, y));
+    Some(ItemKeys { doi, title_year })
+}
+
+/// The shortest normalized title that matches by title and year.
+const MIN_TITLE: usize = 20;
+
+/// Add [`PRIVATE`] to each semdb paper a Zotero item matches by [`item_keys`]. Returns the
+/// unmatched items as rows to embed.
 fn join_library(papers: &mut HashMap<String, Paper>, items: &[Map<String, Value>]) -> Vec<Map<String, Value>> {
     let by_doi: HashMap<String, String> = papers.iter().filter(|(_, p)| !p.doi.is_empty()).map(|(id, p)| (p.doi.clone(), id.clone())).collect();
-    let by_title: HashMap<(String, i64), String> = papers
-        .iter()
-        .filter_map(|(id, p)| Some(((norm_title(&p.title), p.year?), id.clone())))
-        .filter(|((t, _), _)| t.len() >= 20)
-        .collect();
+    let by_title: HashMap<(String, i64), String> = papers.iter().filter_map(|(id, p)| Some(((norm_title(&p.title), p.year?), id.clone()))).collect();
     let mut held = Vec::new();
     let mut seen = HashSet::new();
     for item in items {
-        if item_str(item, "key").is_empty() || item.get("deleted").and_then(Value::as_bool) == Some(true) || !seen.insert(zotero_id(item)) {
+        let Some(keys) = item_keys(item) else { continue };
+        if !seen.insert(zotero_id(item)) {
             continue;
         }
-        let doi = item_str(item, "doi").to_lowercase();
-        let title = item_str(item, "title");
-        let found = by_doi
-            .get(&doi)
-            .filter(|_| !doi.is_empty())
-            .or_else(|| item_year(item).and_then(|y| by_title.get(&(norm_title(title), y))))
-            .cloned();
+        let found = keys.doi.and_then(|d| by_doi.get(&d)).or_else(|| keys.title_year.and_then(|k| by_title.get(&k))).cloned();
         match found.and_then(|id| papers.get_mut(&id)) {
             Some(p) => {
                 if !p.collections.iter().any(|c| c == PRIVATE) {
@@ -306,7 +318,7 @@ pub fn held_row(item: &Map<String, Value>) -> Map<String, Value> {
     row.insert("text".into(), json!(item_str(item, "abstract")));
     row.insert("body".into(), json!(""));
     if let Some(y) = item_year(item) {
-        row.insert("ts".into(), json!(format!("{y:04}-01-01T00:00:00Z")));
+        row.insert("ts".into(), json!(year_start(y)));
     }
     row.insert("collection".into(), json!([PRIVATE]));
     row.insert("author".into(), json!(authors));
@@ -315,8 +327,9 @@ pub fn held_row(item: &Map<String, Value>) -> Map<String, Value> {
     row
 }
 
-fn ts_of(p: &Paper) -> Value {
-    p.year.map_or(Value::Null, |y| json!(format!("{y:04}-01-01T00:00:00Z")))
+/// The start of year `y`, UTC, as a paper's `ts`.
+fn year_start(y: i64) -> String {
+    format!("{y:04}-01-01T00:00:00Z")
 }
 
 fn open_ro(path: &Path) -> Result<rusqlite::Connection> {
@@ -324,20 +337,32 @@ fn open_ro(path: &Path) -> Result<rusqlite::Connection> {
         .with_context(|| path.display().to_string())
 }
 
-/// Each paper's text in one semdb zone, its chunks joined in id order.
-fn zone_texts(semdb: &Path, zone: &str) -> Result<HashMap<String, String>> {
+/// Call `f` with each `(key, text)` chunk of one semdb zone, in id order. Rowid order reads the
+/// file front to back. The key index would read it at random, which takes hours on a busy disk.
+fn zone_rows(semdb: &Path, zone: &str, mut f: impl FnMut(String, String) -> Result<()>) -> Result<()> {
     let db = open_ro(&semdb.join("chunks").join(format!("{zone}.sqlite")))?;
     let mut q = db.prepare("SELECT key, text FROM chunk ORDER BY id")?;
-    let mut out: HashMap<String, String> = HashMap::new();
     let mut rows = q.query([])?;
     while let Some(r) = rows.next()? {
-        let (key, text): (String, String) = (r.get(0)?, r.get(1)?);
-        let slot = out.entry(key).or_default();
-        if !slot.is_empty() {
-            slot.push_str("\n\n");
-        }
-        slot.push_str(&text);
+        f(r.get(0)?, r.get(1)?)?;
     }
+    Ok(())
+}
+
+fn join_text(into: &mut String, text: &str) {
+    if !into.is_empty() {
+        into.push_str("\n\n");
+    }
+    into.push_str(text);
+}
+
+/// Each paper's text in one semdb zone, its chunks joined in id order.
+fn zone_texts(semdb: &Path, zone: &str) -> Result<HashMap<String, String>> {
+    let mut out: HashMap<String, String> = HashMap::new();
+    zone_rows(semdb, zone, |key, text| {
+        join_text(out.entry(key).or_default(), &text);
+        Ok(())
+    })?;
     Ok(out)
 }
 
@@ -351,14 +376,6 @@ async fn write_entries(
 ) -> Result<usize> {
     let titles = zone_texts(semdb, "titles")?;
     let abstracts = zone_texts(semdb, "abstracts")?;
-    let db = open_ro(&semdb.join("chunks").join("chunks.sqlite"))?;
-    // Rowid order reads the file front to back. The key index would read it at random, which
-    // takes hours on a busy disk. semdb writes each paper's chunks together, which `done` checks.
-    let mut q = db.prepare("SELECT key, text FROM chunk ORDER BY id")?;
-    let mut rows = q.query([])?;
-    let mut done: HashSet<String> = HashSet::new();
-    let mut batch: Vec<Map<String, Value>> = Vec::new();
-    let mut n = 0;
     let entry = |id: &str, body: String| -> Option<Map<String, Value>> {
         let p = papers.get(id)?;
         let title = titles.get(id).cloned().unwrap_or_else(|| p.title.clone());
@@ -367,7 +384,7 @@ async fn write_entries(
         m.insert("title".into(), json!(title));
         m.insert("text".into(), json!(abstracts.get(id).cloned().unwrap_or_default()));
         m.insert("body".into(), json!(body));
-        m.insert("ts".into(), ts_of(p));
+        m.insert("ts".into(), p.year.map_or(Value::Null, |y| json!(year_start(y))));
         m.insert("collection".into(), json!(p.collections));
         m.insert("author".into(), json!(p.authors));
         m.insert("cites".into(), json!(cites.get(id).cloned().unwrap_or_default()));
@@ -376,40 +393,40 @@ async fn write_entries(
         m.insert("journal".into(), json!(p.journal));
         Some(m)
     };
-    let (mut key, mut body) = (String::new(), String::new());
-    loop {
-        let next = rows.next()?;
-        let row: Option<(String, String)> = match next {
-            Some(r) => Some((r.get(0)?, r.get(1)?)),
-            None => None,
-        };
-        if row.as_ref().is_none_or(|(k, _)| *k != key) && !key.is_empty() {
-            if let Some(m) = entry(&key, std::mem::take(&mut body)) {
-                batch.push(m);
+    // semdb writes each paper's chunks together, so a paper's body is one run of rows. The
+    // reader thread sends each run, and a key seen twice means the runs are not contiguous.
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<(String, String)>(ENTRIES);
+    let dir = semdb.to_path_buf();
+    let reader = tokio::task::spawn_blocking(move || -> Result<()> {
+        let (mut key, mut body) = (String::new(), String::new());
+        zone_rows(&dir, "chunks", |k, text| {
+            if k != key {
+                if !key.is_empty() {
+                    tx.blocking_send((std::mem::take(&mut key), std::mem::take(&mut body)))?;
+                }
+                key = k;
             }
-            done.insert(std::mem::take(&mut key));
-            if batch.len() >= ENTRIES {
-                n += index.load_entries(&batch).await?;
-                batch.clear();
-            }
+            join_text(&mut body, &text);
+            Ok(())
+        })?;
+        if !key.is_empty() {
+            tx.blocking_send((key, body))?;
         }
-        let Some((k, text)) = row else { break };
-        if key.is_empty() {
-            anyhow::ensure!(!done.contains(&k), "the chunks of {k} are not contiguous in chunks.sqlite");
-            key = k;
-        }
-        if !body.is_empty() {
-            body.push_str("\n\n");
-        }
-        body.push_str(&text);
-    }
-    for id in papers.keys().filter(|id| !done.contains(*id)) {
-        if let Some(m) = entry(id, String::new()) {
-            batch.push(m);
-        }
+        Ok(())
+    });
+    let (mut batch, mut n, mut bodied) = (Vec::new(), 0, HashSet::new());
+    while let Some((key, body)) = rx.recv().await {
+        batch.extend(entry(&key, body));
+        anyhow::ensure!(bodied.insert(key.clone()), "the chunks of {key} are not contiguous in chunks.sqlite");
         if batch.len() >= ENTRIES {
-            n += index.load_entries(&batch).await?;
-            batch.clear();
+            n += index.load_entries(&std::mem::take(&mut batch)).await?;
+        }
+    }
+    reader.await??;
+    for id in papers.keys().filter(|id| !bodied.contains(*id)) {
+        batch.extend(entry(id, String::new()));
+        if batch.len() >= ENTRIES {
+            n += index.load_entries(&std::mem::take(&mut batch)).await?;
         }
     }
     n += index.load_entries(&batch).await?;
@@ -505,14 +522,20 @@ async fn write_chunks(index: &Index, semdb: &Path, zone: &str, papers: &HashMap<
 
 /// Microseconds since the epoch at the start of year `y`, UTC.
 fn year_us(y: i64) -> i64 {
-    awm_index::cells::parse_ts(&json!(format!("{y:04}-01-01T00:00:00Z"))).unwrap_or(0)
+    awm_index::cells::parse_ts(&json!(year_start(y))).unwrap_or(0)
 }
 
 /// Point `CURRENT` at generation `name`, atomically.
 pub fn make_current(root: &Path, name: &str) -> Result<()> {
-    let tmp = root.join(format!("{CURRENT}.tmp"));
-    std::fs::write(&tmp, format!("{name}\n"))?;
-    std::fs::rename(&tmp, root.join(CURRENT))?;
+    write_atomic(&root.join(CURRENT), &format!("{name}\n"))
+}
+
+/// Replace `path` with `text` through a sibling temp file, so a reader never sees half of it.
+pub(crate) fn write_atomic(path: &Path, text: &str) -> Result<()> {
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(".tmp");
+    std::fs::write(&tmp, text)?;
+    std::fs::rename(&tmp, path)?;
     Ok(())
 }
 

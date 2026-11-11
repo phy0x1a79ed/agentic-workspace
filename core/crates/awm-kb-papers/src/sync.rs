@@ -5,8 +5,8 @@
 //! A session stop on `reflection/sessions` triggers it, and kb's start catches up, at most once
 //! per [`SYNC_GAP_S`]. The cursor lives in the generation, so a new generation keeps its own.
 
-use crate::import::{held_row, norm_title, zotero_id, PRIVATE};
-use crate::Papers;
+use crate::import::{held_row, item_keys, norm_title, write_atomic, PRIVATE};
+use crate::{Generation, Papers};
 use anyhow::{Context as _, Result};
 use awm_index::sql::quote;
 use awm_plugin_sdk::{Context, Hub, SubscriptionOpts, SupervisedSubscription};
@@ -38,10 +38,7 @@ impl Cursor {
     }
 
     pub fn save(&self, dir: &Path) -> Result<()> {
-        let tmp = dir.join(format!("{CURSOR}.tmp"));
-        std::fs::write(&tmp, json!({"versions": self.versions, "synced": self.synced}).to_string())?;
-        std::fs::rename(tmp, dir.join(CURSOR))?;
-        Ok(())
+        write_atomic(&dir.join(CURSOR), &json!({"versions": self.versions, "synced": self.synced}).to_string())
     }
 
     /// Raise each library's version to the highest item version seen.
@@ -59,7 +56,7 @@ impl Cursor {
 }
 
 fn now() -> f64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64())
+    awm_pycompat::time::now_us() as f64 / 1e6
 }
 
 /// The node to ask for Zotero items: `AWM_ZOTERO_PEER`, or none, which lets the hub route the
@@ -82,26 +79,20 @@ async fn moved(hub: &Hub, since: &BTreeMap<String, i64>) -> Result<Vec<Map<Strin
     Ok(out)
 }
 
-impl Papers {
-    /// The served paper an item names, by DOI, or by title (20 characters or more) and year.
-    async fn matching(&self, item: &Map<String, Value>) -> Result<Option<String>> {
-        let g = self.generation().await.map_err(|e| anyhow::anyhow!(e.0))?;
-        let s = |k: &str| item.get(k).and_then(Value::as_str).map(str::trim).unwrap_or("").to_string();
-        let doi = s("doi").to_lowercase();
-        if !doi.is_empty() {
-            if let Some(id) = g.index.ids(&format!("doi = {}", quote(&doi)), Some(1)).await?.pop() {
-                return Ok(Some(id));
-            }
+/// The served paper an item names by its match keys, or `None` when it names none.
+async fn matching(g: &Generation, keys: crate::import::ItemKeys) -> Result<Option<String>> {
+    if let Some(doi) = keys.doi {
+        if let Some(id) = g.index.ids(&format!("doi = {}", quote(&doi)), Some(1)).await?.pop() {
+            return Ok(Some(id));
         }
-        let title = norm_title(&s("title"));
-        let year = crate::import::item_year(item);
-        let (Some(y), true) = (year, title.len() >= 20) else { return Ok(None) };
-        let cond = format!("ts >= timestamp '{y:04}-01-01' AND ts < timestamp '{:04}-01-01'", y + 1);
-        let ids = g.index.ids(&cond, None).await?;
-        let hits = g.index.hits(&ids).await?;
-        Ok(hits.into_iter().find(|h| h.get("title").and_then(Value::as_str).is_some_and(|t| norm_title(t) == title)).and_then(|h| h.get("id")?.as_str().map(str::to_string)))
     }
+    let Some((title, y)) = keys.title_year else { return Ok(None) };
+    let cond = format!("ts >= timestamp '{y:04}-01-01' AND ts < timestamp '{:04}-01-01'", y + 1);
+    let hits = g.index.hits(&g.index.ids(&cond, None).await?).await?;
+    Ok(hits.into_iter().find(|h| h.get("title").and_then(Value::as_str).is_some_and(|t| norm_title(t) == title)).and_then(|h| h.get("id")?.as_str().map(str::to_string)))
+}
 
+impl Papers {
     /// Take every item that moved since the cursor into the served generation.
     pub async fn sync(&self, hub: &Hub) -> Result<Value> {
         let g = self.generation().await.map_err(|e| anyhow::anyhow!(e.0))?;
@@ -111,10 +102,8 @@ impl Papers {
         let embedder = g.embedder.clone().context("the generation has no model to embed held items with")?;
         let (mut joined, mut held, mut rows) = (0, 0, Vec::new());
         for item in &items {
-            if item.get("key").and_then(Value::as_str).is_none_or(str::is_empty) {
-                continue;
-            }
-            match self.matching(item).await? {
+            let Some(keys) = item_keys(item) else { continue };
+            match matching(&g, keys).await? {
                 Some(id) => {
                     let Some(mut doc) = g.index.document(&id, "true").await? else { continue };
                     let mut have: Vec<Value> = doc.get("collection").and_then(Value::as_array).cloned().unwrap_or_default();
@@ -127,9 +116,7 @@ impl Papers {
                     joined += 1;
                 }
                 None => {
-                    if id_is_new(&g, item).await? {
-                        held += 1;
-                    }
+                    held += 1;
                     rows.push(held_row(item));
                 }
             }
@@ -143,10 +130,6 @@ impl Papers {
         cursor.save(&dir)?;
         Ok(json!({"items": items.len(), "joined": joined, "held": held, "embedded": written.embedded, "generation": g.name}))
     }
-}
-
-async fn id_is_new(g: &crate::Generation, item: &Map<String, Value>) -> Result<bool> {
-    Ok(g.index.ids(&format!("id = {}", quote(&zotero_id(item))), Some(1)).await?.is_empty())
 }
 
 async fn sync_due(papers: &Papers) -> bool {

@@ -105,7 +105,7 @@ A node can mark a project or one scope of it private. Run `scope private project
 - **Where the mark lives.** `<AWM_DIR>/private.json`. `scope private` owns the writes. The gateway (`privacy.rs`) and `awm.config.privacy` read it. Every process rereads the file when it changes. A file that exists and does not parse hides everything from other nodes. The mark is per node.
 - **Slug collisions.** Claude names a transcript folder by turning every non-alphanumeric character of the path into `-`. A mark on `metasmith` would also cover `metasmith-libraries`. `scope private` refuses a mark whose slug prefixes another project's or scope's directory.
 
-**CAUTION** A mark is visibility hygiene, not a security boundary. Text about the project in another project's records stays visible, and so do kb papers and Trilium notes. A session started here across an edge reads with a local stamp.
+**CAUTION** A mark is visibility hygiene, not a security boundary. Text about the project in another project's records stays visible, and so do papers and Trilium notes. A session started here across an edge reads with a local stamp.
 
 ## Search across nodes
 
