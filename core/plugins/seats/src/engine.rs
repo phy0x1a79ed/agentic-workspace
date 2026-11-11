@@ -651,6 +651,14 @@ impl Seats {
         self.world.hand(session, line);
     }
 
+    /// Tell a seat's agent that a reply it was told is queued did not go out.
+    pub async fn refused(&self, body: &Value, why: &str) {
+        let field = |k: &str| body[k].as_str().unwrap_or("").to_string();
+        let Some(seat) = self.store.get(&field("account"), &field("channel")).await.filter(Seat::has_live_session) else { return };
+        let text: String = field("text").chars().take(80).collect();
+        self.hand(&seat.session_id, &format!("[seats] your queued reply was refused and not sent: {why}. It began: {text:?}. Fix it and send it again."));
+    }
+
     /// A session started or stopped here, or a clock changed: look at every seat now.
     pub fn wake(&self) {
         self.wake.notify_one();

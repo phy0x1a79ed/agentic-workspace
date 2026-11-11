@@ -3,7 +3,7 @@
     {
       "name": "send",
       "tool": "social_send",
-      "description": "Send a message as a configured account. With no `account` and `channel` it answers the chat of your latest pushed line, in its thread. A seat names another of its chats by its label, such as `DM` or `#general`. `file` uploads a file from your own node (an absolute path, up to 24 MiB), such as a plan's .md, with `text` as its message; `text` is optional with a file. `files` attaches inline text files, each {filename, text}. Discord takes files up to 10 MB, and the Opal Slack bot up to the 24 MiB a call carries. Gmail and Tony's own Slack refuse files, and Tony's own Slack sends nothing. A DM where nobody but the bot has written is refused. `quiet` keeps the replies in the sent message's thread from its chat's seat holder.",
+      "description": "Send a message as a configured account. With no `account` and `channel` it answers the chat of your latest pushed line, in its thread. A seat names another of its chats by its label, such as `DM` or `#general`. `file` uploads a file from your own node (an absolute path, up to 24 MiB), such as a plan's .md, with `text` as its message; `text` is optional with a file. `files` attaches several: each an absolute path on your node, or an inline {filename, text}. Discord takes files up to 10 MB, and the Opal Slack bot up to the 24 MiB a call carries. Gmail and Tony's own Slack refuse files, and Tony's own Slack sends nothing. A DM where nobody but the bot has written is refused. `quiet` keeps the replies in the sent message's thread from its chat's seat holder.",
       "timeout": 300,
       "params": [
         {

@@ -68,6 +68,8 @@ pub enum Flushed {
     Empty,
     Sent,
     Retry(String),
+    /// Social refused a reply the agent no longer waits on: its body and the reason.
+    Refused(Value, String),
 }
 
 pub struct Link {
@@ -185,16 +187,24 @@ impl Link {
             Ok(a) => a,
             Err(e) => return Flushed::Retry(e),
         };
+        let error = answer.get("error").and_then(Value::as_str).unwrap_or("social refused it").to_string();
         let wants_retry = answer.get("retry").and_then(Value::as_bool) == Some(true);
         if wants_retry && crate::now() - row.at < GIVE_UP_S {
-            return Flushed::Retry(answer.get("error").and_then(Value::as_str).unwrap_or("social asked for a resend").to_string());
-        }
-        if answer.get("ok").and_then(Value::as_bool) != Some(true) {
-            tracing::warn!("seats: social refused a {} row: {answer}", row.kind);
+            if let Some(tx) = self.waiting.lock().unwrap().remove(&row.id) {
+                let _ = tx.send(json!({"ok": true, "queued": true, "note": format!("the chat did not take your reply yet ({error}). It is queued on this node and goes out, once, when the chat takes it. Do not send it again.")}));
+            }
+            return Flushed::Retry(error);
         }
         self.store.outbox_delete(row.id).await;
-        if let Some(tx) = self.waiting.lock().unwrap().remove(&row.id) {
-            let _ = tx.send(answer);
+        let refused = answer.get("ok").and_then(Value::as_bool) != Some(true);
+        if refused {
+            tracing::warn!("seats: social refused a {} row: {answer}", row.kind);
+        }
+        let waiter = self.waiting.lock().unwrap().remove(&row.id);
+        match waiter {
+            Some(tx) => drop(tx.send(answer)),
+            None if refused && row.kind == "send" => return Flushed::Refused(row.body, error),
+            None => {}
         }
         Flushed::Sent
     }
@@ -212,7 +222,7 @@ impl Link {
         }
     }
 
-    pub async fn flush_forever(self: Arc<Self>) {
+    pub async fn flush_forever(self: Arc<Self>, seats: Arc<Seats>) {
         let mut backoff = Backoff::doubling(BACKOFF_MIN_S, BACKOFF_MAX_S);
         loop {
             match self.flush_once().await {
@@ -221,6 +231,10 @@ impl Link {
                     self.out.notified().await;
                 }
                 Flushed::Sent => backoff.reset(),
+                Flushed::Refused(body, why) => {
+                    backoff.reset();
+                    seats.refused(&body, &why).await;
+                }
                 Flushed::Retry(why) => {
                     tracing::info!("seats: a row for social waits: {why}");
                     tokio::select! {

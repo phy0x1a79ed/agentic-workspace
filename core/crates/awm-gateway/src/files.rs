@@ -30,7 +30,8 @@ pub const MAX_REQUEST_BYTES: usize = 64 << 20;
 /// The verbs whose `file` argument is a path on the caller's node: `(tool, verb)`.
 const FILE_VERBS: &[(&str, &str)] = &[("social", "send"), ("seats", "send")];
 
-/// Read the local file a verb in [`FILE_VERBS`] names, and carry its bytes in `files` instead.
+/// Read the local files a verb in [`FILE_VERBS`] names, `file` and each path string in `files`,
+/// and carry their bytes in `files` instead.
 /// `name` and `args` are the `/invoke` body: a tool with a `{verb, args}` envelope, or a flat `<tool>_<verb>`.
 pub fn inline_file_arg(name: &str, args: &mut Value) -> Result<(), String> {
     let inner = match FILE_VERBS.iter().find(|(tool, verb)| name == format!("{tool}_{verb}") || (name == *tool && args["verb"] == *verb)) {
@@ -39,29 +40,38 @@ pub fn inline_file_arg(name: &str, args: &mut Value) -> Result<(), String> {
         None => return Ok(()),
     };
     let Some(Value::Object(inner)) = inner else { return Ok(()) };
-    let Some(Value::String(path)) = inner.get("file").cloned().filter(|f| f.as_str().is_some_and(|s| !s.is_empty())) else { return Ok(()) };
-    let path = PathBuf::from(&path);
-    if !path.is_absolute() {
-        return Err(format!("file must be an absolute path on this node, not {}", path.display()));
+    if let Some(Value::Array(files)) = inner.get_mut("files") {
+        for f in files.iter_mut().filter(|f| f.is_string()) {
+            *f = inline(f.as_str().unwrap_or_default())?;
+        }
     }
-    let meta = std::fs::metadata(&path).map_err(|e| format!("no local file {}: {e}", path.display()))?;
-    if !meta.is_file() {
-        return Err(format!("{} is not a file; send attaches one file", path.display()));
-    }
-    if meta.len() > MAX_INLINE_BYTES {
-        return Err(format!("{} is {} bytes, over the {MAX_INLINE_BYTES} a call carries", path.display(), meta.len()));
-    }
-    let bytes = std::fs::read(&path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
-    inner.remove("file");
-    let entry = json!({
-        "filename": path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default(),
-        "b64": base64::engine::general_purpose::STANDARD.encode(bytes),
-    });
+    let Some(Value::String(path)) = inner.remove("file").filter(|f| f.as_str().is_some_and(|s| !s.is_empty())) else { return Ok(()) };
+    let entry = inline(&path)?;
     match inner.entry("files").or_insert_with(|| json!([])) {
         Value::Array(files) => files.push(entry),
         other => *other = json!([entry]),
     }
     Ok(())
+}
+
+/// One local file as a `files` entry with its bytes inline.
+fn inline(path: &str) -> Result<Value, String> {
+    let path = Path::new(path);
+    if !path.is_absolute() {
+        return Err(format!("file must be an absolute path on this node, not {}", path.display()));
+    }
+    let meta = std::fs::metadata(path).map_err(|e| format!("no local file {}: {e}", path.display()))?;
+    if !meta.is_file() {
+        return Err(format!("{} is not a file", path.display()));
+    }
+    if meta.len() > MAX_INLINE_BYTES {
+        return Err(format!("{} is {} bytes, over the {MAX_INLINE_BYTES} a call carries", path.display(), meta.len()));
+    }
+    let bytes = std::fs::read(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+    Ok(json!({
+        "filename": path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default(),
+        "b64": base64::engine::general_purpose::STANDARD.encode(bytes),
+    }))
 }
 
 /// Rewrite `result` when it holds `files` with inline content. Any other reply comes back as it was.
@@ -178,6 +188,13 @@ mod tests {
         let mut flat = json!({"account": "a", "file": path});
         inline_file_arg("social_send", &mut flat).unwrap();
         assert_eq!(flat["files"][0]["filename"], "page.html");
+        // A path string in `files` is read too, in place.
+        let mut listed = json!({"verb": "send", "args": {"files": [path, {"filename": "n.txt", "text": "t"}]}});
+        inline_file_arg("seats", &mut listed).unwrap();
+        assert_eq!(listed["args"]["files"][0], json!({"filename": "page.html", "b64": b64(b"<p>hi</p>")}));
+        assert_eq!(listed["args"]["files"][1]["filename"], "n.txt");
+        let mut bad = json!({"verb": "send", "args": {"files": ["/nonexistent/f.md"]}});
+        assert!(inline_file_arg("seats", &mut bad).unwrap_err().contains("no local file"));
     }
 
     #[test]

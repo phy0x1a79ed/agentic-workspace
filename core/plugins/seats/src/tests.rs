@@ -907,9 +907,13 @@ async fn a_row_social_keeps_refusing_stops_blocking_the_queue_after_an_hour() {
     l.link.enqueue("send", &json!({"text": "new"})).await;
     assert!(matches!(l.link.flush_once().await, Flushed::Retry(_)), "a new row waits");
     l.t.store.outbox_delete(l.t.store.outbox_first().await.unwrap().id).await;
-    l.t.store.outbox_push("send", &json!({"text": "old"}), wall() - 7200.0).await;
-    assert_eq!(l.link.flush_once().await, Flushed::Sent, "an old row gives up");
-    assert_eq!(l.t.store.outbox_len().await, 0);
+    let old = json!({"account": "opal", "channel": "D0TEST", "text": "old"});
+    l.t.store.outbox_push("send", &old, wall() - 7200.0).await;
+    let Flushed::Refused(body, why) = l.link.flush_once().await else { panic!("an old row gives up as a refusal") };
+    assert_eq!((&body, l.t.store.outbox_len().await), (&old, 0));
+    l.t.seats.refused(&body, &why).await;
+    let hands = l.t.world.w().hands.clone();
+    assert!(matches!(hands.as_slice(), [(s, line)] if s == "job-1" && line.starts_with("[seats] your queued reply was refused")), "the agent hears it: {hands:?}");
 }
 
 #[tokio::test]
