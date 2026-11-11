@@ -427,14 +427,12 @@ impl Fx {
         &self.app.gw.ds
     }
 
-    /// Call `verb` as the gateway would, with the stamps in `args`. A start gets a model and an
-    /// effort unless the args name them.
+    /// Call `verb` as the gateway would, with the stamps in `args`.
     pub async fn run(&self, verb: &str, args: Value) -> Value {
         self.run_as(verb, args, None).await
     }
 
     pub async fn run_as(&self, verb: &str, args: Value, as_: Option<&str>) -> Value {
-        let args = if verb == "start_other" { crate::app::merged(&json!({"model": "opus", "effort": "high"}), &args) } else { args };
         let frame = Frame::from_args(&args, as_, None);
         self.app.handle(verb, &frame, &args).await
     }

@@ -419,12 +419,15 @@ async fn test_a_stop_releases_the_sessions_claims() {
 }
 
 #[tokio::test]
-async fn test_start_other_without_model_and_effort_is_refused_before_it_launches() {
-    let fx = Fx::new();
-    for missing in [json!({"effort": "high"}), json!({"model": "opus"}), json!({})] {
-        let args = crate::app::merged(&json!({"_caller_pid": ME, "project": "awm", "scope": "x"}), &missing);
+async fn test_start_other_defaults_to_opus_at_medium_effort() {
+    for (given, want) in [(json!({}), ("opus", "medium")), (json!({"model": "sonnet"}), ("sonnet", "medium")), (json!({"effort": "low"}), ("opus", "low"))] {
+        let fx = Fx::new();
+        let args = crate::app::merged(&json!({"_caller_pid": ME, "project": "awm", "scope": "x"}), &given);
         let out = fx.app.handle("start_other", &Frame::from_args(&args, None, None), &args).await;
-        assert!(refused(&out) && reason(&out).contains("model and effort are required"), "{missing}: {out}");
+        assert!(!refused(&out), "{given}: {out}");
+        let start = fx.cc().calls_of("start").pop().expect("a start");
+        assert_eq!((start["model"].clone(), start["effort"].clone()), (json!(want.0), json!(want.1)), "{given}");
+        fx.app.settle().await;
     }
 }
 

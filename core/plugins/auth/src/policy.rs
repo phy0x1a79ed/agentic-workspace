@@ -4,7 +4,8 @@
 //! a 404 whether or not it carries a session. The lists are constants with tests, not a per-host
 //! string, so a change to the surface is a reviewed diff. The three mounts the edge forwards to
 //! an upstream other than the gateway ([`vault`], [`slices`], [`tether`]) live here
-//! too, because every verdict is decided against their shapes.
+//! too, because every verdict is decided against their shapes. The mesh edge's [`viewer`]
+//! mount sits beside them and is not on the public surface.
 //!
 //! Paths are the decoded request path. Each mount's `upstream_raw_path` checks the raw bytes as
 //! well, because the edge routes on the decoded path and forwards the raw one.
@@ -213,6 +214,20 @@ pub mod vault {
             "display": "standalone",
             "icons": [{"src": "icon.png", "sizes": "512x512", "type": "image/png"}],
         })
+    }
+}
+
+/// The shared browser's noVNC viewer, mounted at `/viewer/` on the mesh edge only.
+pub mod viewer {
+    pub const PREFIX: &str = "/viewer/";
+
+    pub fn owns(path: &str) -> bool {
+        path.starts_with(PREFIX)
+    }
+
+    /// The raw path with the mount taken off, or `None` when the mount is only there once decoded.
+    pub fn upstream_raw_path(raw: &[u8]) -> Option<Vec<u8>> {
+        raw.strip_prefix(PREFIX.as_bytes()).map(|rest| [b"/".as_slice(), rest].concat())
     }
 }
 

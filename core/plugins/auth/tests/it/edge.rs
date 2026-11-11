@@ -97,7 +97,7 @@ async fn rig(public: bool) -> Rig {
     let ca_path = dir.path().join("ca.pem");
     std::fs::write(&ca_path, CA).unwrap();
     let origin = format!("http://{up}");
-    let upstreams = Upstreams { vault: None, tether: None };
+    let upstreams = Upstreams { vault: None, tether: None, viewer: Some(origin.clone()) };
     let front = Front::new(public, upstreams, Hub::new("http://127.0.0.1:1", None), Landing::open(&dir.path().join("landing.db")).unwrap());
     let config = EdgeConfig { upstream: origin, ca_path, ca_download: !public, same_site: if public { "strict" } else { "lax" }, behind_proxy: true, identity_cookies: &[] };
     let edge = Arc::new(Edge::new(Arc::new(AuthGate::new(Arc::new(Fixed))), Arc::new(Grants::new(None, "node")), config, Box::new(front)));
@@ -229,6 +229,25 @@ async fn private_profile() {
 }
 
 #[tokio::test]
+async fn the_viewer_mount_admits_a_person_only() {
+    let mut rig = rig(false).await;
+    let alice = session("alice");
+    let reply = send(rig.edge, request("GET", "/viewer/vnc.html?path=viewer/websockify", &[alice.as_str()]), "").await;
+    assert_eq!(reply.status, 200);
+    assert_eq!(rig.seen.try_recv().unwrap().target, "/vnc.html?path=viewer/websockify");
+    for refused in [session("peer:mizar"), session("operator")] {
+        let reply = send(rig.edge, request("GET", "/viewer/vnc.html", &[refused.as_str()]), "").await;
+        assert_eq!((reply.status, rig.seen.try_recv().is_err()), (404, true));
+    }
+
+    let upgrade = ["Upgrade: websocket", "Connection: Upgrade", "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==", "Sec-WebSocket-Version: 13"];
+    let open = |cookie: &str| request("GET", "/viewer/websockify", &upgrade).replace("Connection: close\r\n", "").replace("\r\n\r\n", &format!("\r\n{cookie}\r\n\r\n"));
+    assert!(handshake(rig.edge, open(&session("peer"))).await.0.starts_with("HTTP/1.1 403"));
+    assert!(handshake(rig.edge, open(&alice)).await.0.starts_with("HTTP/1.1 101"));
+    assert_eq!(rig.seen.recv().await.unwrap().target, "/websockify");
+}
+
+#[tokio::test]
 async fn public_profile() {
     let mut rig = rig(true).await;
     let alice = session("alice");
@@ -240,6 +259,7 @@ async fn public_profile() {
         ("landing edit", "POST", "/__landing/tags", r#"{"page":"p","tag":"t"}"#, false),
         ("private invoke body", "POST", "/invoke", private_invoke, false),
         ("trilium page", "GET", "/p/trilium/trilium/index.html", "", true),
+        ("browser viewer", "GET", "/viewer/vnc.html", "", false),
     ];
     for (label, method, target, body, admitted) in rows {
         let cl = content_length(body);

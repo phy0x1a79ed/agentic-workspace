@@ -7,7 +7,7 @@ use awm_proto::{Caller, Lane, WsMsg};
 use serde_json::json;
 
 fn duplex_client(opens: Arc<AtomicUsize>, drop_after: Option<usize>) -> EdgeClient {
-    EdgeClient::with_opener(Arc::new(move |peer: &str| {
+    EdgeClient::with_opener(Arc::new(move |peer: &str, _wake: bool| {
         opens.fetch_add(1, Ordering::SeqCst);
         let (client_end, server_end) = tokio::io::duplex(1 << 16);
         let (cr, cw) = tokio::io::split(client_end);
@@ -65,7 +65,7 @@ async fn calls_overlap_on_one_warm_channel() {
     let mut tasks = Vec::new();
     for i in 0..20 {
         let (c, caller) = (c.clone(), caller.clone());
-        tasks.push(tokio::spawn(async move { c.invoke("work", "journal", json!({"i": i}), caller).await.unwrap() }));
+        tasks.push(tokio::spawn(async move { c.invoke("work", "journal", json!({"i": i}), caller, false).await.unwrap() }));
     }
     for (i, t) in tasks.into_iter().enumerate() {
         let v = t.await.unwrap();
@@ -78,16 +78,16 @@ async fn calls_overlap_on_one_warm_channel() {
 #[tokio::test]
 async fn a_stream_carries_text_and_bytes_both_ways_and_ends() {
     let c = duplex_client(Arc::new(AtomicUsize::new(0)), None);
-    let mut pipe = c.open_ws("work", "/hub/session/ssh/lease", Caller::default()).await.unwrap();
+    let mut pipe = c.open_ws("work", "/hub/session/ssh/lease", Caller::default(), false).await.unwrap();
     assert_eq!(pipe.rx.recv().await, Some(WsMsg::Text("/hub/session/ssh/lease for home".into())));
     pipe.tx.send(WsMsg::Binary(vec![1, 2, 255])).unwrap();
     assert_eq!(pipe.rx.recv().await, Some(WsMsg::Binary(vec![1, 2, 255])));
     // A call still runs beside the open stream.
-    assert_eq!(c.invoke("work", "journal", json!({}), Caller::default()).await.unwrap()["tool"], "journal");
+    assert_eq!(c.invoke("work", "journal", json!({}), Caller::default(), false).await.unwrap()["tool"], "journal");
     pipe.tx.send(WsMsg::Text("bye".into())).unwrap();
     assert_eq!(pipe.rx.recv().await, Some(WsMsg::Close(Some("done".into()))));
 
-    let mut refused = c.open_ws("work", "/hub/emit/refused/x", Caller::default()).await.unwrap();
+    let mut refused = c.open_ws("work", "/hub/emit/refused/x", Caller::default(), false).await.unwrap();
     assert_eq!(refused.rx.recv().await, Some(WsMsg::Close(Some("no such stream".into()))));
 }
 
@@ -95,7 +95,7 @@ async fn a_stream_carries_text_and_bytes_both_ways_and_ends() {
 #[tokio::test]
 async fn a_last_frame_sent_as_the_stream_closes_still_arrives() {
     let (seen_tx, mut seen_rx) = tokio::sync::mpsc::unbounded_channel::<WsMsg>();
-    let c = EdgeClient::with_opener(Arc::new(move |_peer: &str| {
+    let c = EdgeClient::with_opener(Arc::new(move |_peer: &str, _wake: bool| {
         let (client_end, server_end) = tokio::io::duplex(1 << 16);
         let (cr, cw) = tokio::io::split(client_end);
         let (sr, sw) = tokio::io::split(server_end);
@@ -125,7 +125,7 @@ async fn a_last_frame_sent_as_the_stream_closes_still_arrives() {
     }));
     // tokio's select picks at random, so one pass could pass by luck.
     for _ in 0..64 {
-        let WsPipe { tx, rx } = c.open_ws("work", "/hub/session/ssh-arbiter/lease", Caller::default()).await.unwrap();
+        let WsPipe { tx, rx } = c.open_ws("work", "/hub/session/ssh-arbiter/lease", Caller::default(), false).await.unwrap();
         tx.send(WsMsg::Text("verdict".into())).unwrap();
         tx.send(WsMsg::Close(None)).unwrap();
         drop(rx);
@@ -137,7 +137,7 @@ async fn a_last_frame_sent_as_the_stream_closes_still_arrives() {
 #[tokio::test]
 async fn a_remote_error_is_an_error() {
     let c = duplex_client(Arc::new(AtomicUsize::new(0)), Some(0));
-    let err = c.invoke("work", "x", json!({}), Caller::default()).await.unwrap_err();
+    let err = c.invoke("work", "x", json!({}), Caller::default(), false).await.unwrap_err();
     assert!(matches!(err, EdgeError::Remote(ref m) if m == "drop"));
 }
 
@@ -145,7 +145,7 @@ async fn a_remote_error_is_an_error() {
 async fn an_unreachable_peer_fails_cleanly_and_the_next_call_retries() {
     let opens = Arc::new(AtomicUsize::new(0));
     let o = opens.clone();
-    let c = EdgeClient::with_opener(Arc::new(move |_peer: &str| {
+    let c = EdgeClient::with_opener(Arc::new(move |_peer: &str, _wake: bool| {
         o.fetch_add(1, Ordering::SeqCst);
         // A link that closes at once, as an ssh to a sleeping node does.
         let (client_end, server_end) = tokio::io::duplex(64);
@@ -154,7 +154,7 @@ async fn an_unreachable_peer_fails_cleanly_and_the_next_call_retries() {
         Ok((Box::new(r) as _, Box::new(w) as _, None))
     }));
     for _ in 0..2 {
-        let err = c.invoke("asleep", "x", json!({}), Caller::default()).await.unwrap_err();
+        let err = c.invoke("asleep", "x", json!({}), Caller::default(), false).await.unwrap_err();
         assert!(matches!(err, EdgeError::Unreachable { .. }), "{err}");
     }
     assert_eq!(opens.load(Ordering::SeqCst), 2);
@@ -167,7 +167,7 @@ async fn a_service_login_reaches_only_its_tools_and_logs_each_call() {
     let log = std::env::temp_dir().join(format!("awm-edge-port-{}.log", std::process::id()));
     let _ = std::fs::remove_file(&log);
     let gate = ServiceGate { tools: vec!["2fa".into()], log: Some(log.clone()) };
-    let c = EdgeClient::with_opener(Arc::new(move |_peer: &str| {
+    let c = EdgeClient::with_opener(Arc::new(move |_peer: &str, _wake: bool| {
         let (client_end, server_end) = tokio::io::duplex(1 << 16);
         let (cr, cw) = tokio::io::split(client_end);
         let (sr, sw) = tokio::io::split(server_end);
@@ -188,18 +188,18 @@ async fn a_service_login_reaches_only_its_tools_and_logs_each_call() {
         Ok((Box::new(cr) as _, Box::new(cw) as _, None))
     }));
     let caller = Caller { node: "spoofed".into(), trust: Some("cooperative".into()), ..Caller::default() };
-    let v = c.invoke("alcor", "2fa", json!({"verb": "arm"}), caller.clone()).await.unwrap();
+    let v = c.invoke("alcor", "2fa", json!({"verb": "arm"}), caller.clone(), false).await.unwrap();
     assert_eq!((v["tool"].as_str(), v["trust"].as_str()), (Some("2fa"), Some("cooperative")));
-    let err = c.invoke("alcor", "journal", json!({"verb": "fetch"}), caller.clone()).await.unwrap_err();
+    let err = c.invoke("alcor", "journal", json!({"verb": "fetch"}), caller.clone(), false).await.unwrap_err();
     assert!(matches!(err, EdgeError::Remote(ref m) if m == "journal not installed"), "{err}");
-    let table = c.invoke("alcor", awm_edge::TOOLS_FRAME, json!(null), caller.clone()).await.unwrap();
+    let table = c.invoke("alcor", awm_edge::TOOLS_FRAME, json!(null), caller.clone(), false).await.unwrap();
     assert_eq!(table, json!([{"name": "2fa"}]), "the table shows only the gate's tools");
     for path in ["/hub/emit/journal/y", "/hub/session/journal/lease"] {
-        let mut refused = c.open_ws("alcor", path, caller.clone()).await.unwrap();
+        let mut refused = c.open_ws("alcor", path, caller.clone(), false).await.unwrap();
         assert_eq!(refused.rx.recv().await, Some(WsMsg::Close(Some(format!("a service key opens no stream at {path}")))));
     }
     for path in ["/hub/emit/2fa/y", "/hub/session/2fa/lease"] {
-        let mut admitted = c.open_ws("alcor", path, caller.clone()).await.unwrap();
+        let mut admitted = c.open_ws("alcor", path, caller.clone(), false).await.unwrap();
         assert_eq!(admitted.rx.recv().await, Some(WsMsg::Close(Some("the stream opener ran".into()))));
     }
     let lines: Vec<serde_json::Value> =
@@ -268,3 +268,28 @@ async fn a_retiring_node_is_never_dialed() {
     assert_eq!(opens.load(Ordering::SeqCst), 1);
 }
 
+
+#[tokio::test]
+async fn only_a_session_or_cli_call_wakes_a_peer() {
+    use awm_edge::EdgePeers;
+    use awm_gateway::peer::PeerTransport;
+    use awm_proto::{CallContext, Surface};
+    let edges = awm_trust::edges::EdgeList::parse(
+        "nodes:\n  home: {role: desktop, managed: true}\n  shogun: {role: work, managed: true}\n\
+         edges:\n  home: {shogun: lan}\n",
+    )
+    .unwrap();
+    let woke = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let seen = woke.clone();
+    let client = EdgeClient::with_opener(Arc::new(move |_peer: &str, wake: bool| {
+        seen.lock().unwrap().push(wake);
+        Err(std::io::Error::other("shelved"))
+    }));
+    let peers = EdgePeers::new("home", edges, client);
+    for surface in [Surface::Mcp, Surface::Cli, Surface::Plugin, Surface::Page, Surface::Background] {
+        let _ = peers.invoke("shogun", "journal", json!({}), &CallContext::local("home", surface)).await;
+    }
+    let _ = peers.tools("shogun").await;
+    let _ = peers.table_changed("shogun", "home").await;
+    assert_eq!(*woke.lock().unwrap(), [true, true, false, false, false, false, false]);
+}

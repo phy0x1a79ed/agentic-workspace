@@ -25,7 +25,7 @@ use crate::edge::{
 use crate::gate::is_machine_sub;
 use crate::landing::Landing;
 use crate::pages::{self, LandingView};
-use crate::policy::{self, slices, tether, vault, Verdict};
+use crate::policy::{self, slices, tether, vault, viewer, Verdict};
 use crate::tokens::{py_str, truthy};
 
 /// How long a resolved slice token is reused. A page load is hundreds of asset requests, and a
@@ -35,11 +35,12 @@ const SLICE_CACHE_SWEEP: usize = 4096;
 
 const PLUGINS_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// The loopback origins of the two upstreams other than the gateway, each `None` when off.
+/// The loopback origins of the upstreams other than the gateway, each `None` when off.
 #[derive(Debug, Clone, Default)]
 pub struct Upstreams {
     pub vault: Option<String>,
     pub tether: Option<String>,
+    pub viewer: Option<String>,
 }
 
 impl Upstreams {
@@ -51,6 +52,7 @@ impl Upstreams {
         Upstreams {
             vault: enabled("AWM_EDGE_VAULT", "1").then(|| origin(port("AWM_VAULT_PORT", 12511))),
             tether: enabled("AWM_EDGE_TETHER", "0").then(|| origin(port("AWM_TETHER_PORT", 12520))),
+            viewer: enabled("AWM_EDGE_VIEWER", "0").then(|| origin(port("AWM_VIEWER_PORT", 6080))),
         }
     }
 }
@@ -70,6 +72,7 @@ pub struct Front {
     public: bool,
     vault: Option<String>,
     tether: Option<String>,
+    viewer: Option<String>,
     hub: Hub,
     plugins: reqwest::Client,
     landing: Landing,
@@ -101,6 +104,7 @@ impl Front {
             public,
             vault: upstreams.vault,
             tether: upstreams.tether,
+            viewer: if public { None } else { upstreams.viewer },
             hub,
             plugins: reqwest::Client::builder().no_proxy().timeout(PLUGINS_TIMEOUT).build().expect("reqwest client builds"),
             landing,
@@ -323,6 +327,13 @@ impl Front {
             let unavailable = || vault_unavailable(html, "not listening yet");
             return edge.forward(req, vault_up, &inner, &sub, refreshed.as_deref(), Forward { unreachable: Some(&unavailable), ..Forward::default() }).await;
         }
+        if let Some(viewer_up) = self.viewer.as_deref().filter(|_| viewer::owns(&req.path)) {
+            if is_machine_sub(Some(&sub)) {
+                return not_found();
+            }
+            let Some(inner) = viewer::upstream_raw_path(&raw) else { return not_found() };
+            return edge.forward(req, viewer_up, &inner, &sub, refreshed.as_deref(), Forward::default()).await;
+        }
         edge.forward(req, &edge.config.upstream, &raw, &sub, refreshed.as_deref(), Forward::default()).await
     }
 
@@ -432,6 +443,7 @@ impl Front {
         let is_vault = self.vault.is_some() && vault::owns(&path);
         let is_slice = self.vault.is_some() && slices::owns(&path);
         let is_tether = tether::owns(&path);
+        let is_viewer = self.viewer.is_some() && viewer::owns(&path);
         // The tether name is claimed whether or not a relay is wired.
         if tether::refused(&path) || (is_tether && self.tether.is_none()) {
             return refuse(403);
@@ -444,6 +456,10 @@ impl Front {
             let inner = if is_vault { vault::upstream_raw_path(&raw) } else if is_slice { slices::upstream_raw_path(&raw) } else { tether::upstream_raw_path(&raw) };
             let Some(inner) = inner else { return refuse(403) };
             up = if is_tether { self.tether.as_deref() } else { self.vault.as_deref() }.unwrap_or_default();
+            target_raw = inner;
+        } else if is_viewer {
+            let Some(inner) = viewer::upstream_raw_path(&raw) else { return refuse(403) };
+            up = self.viewer.as_deref().unwrap_or_default();
             target_raw = inner;
         }
         // `/invoke` is a POST; on the public door it has no socket form.
@@ -473,7 +489,7 @@ impl Front {
         } else {
             let Some(sub) = edge.authenticate(&req, Some(&req.shape(true))).sub().map(str::to_string) else { return refuse(403) };
             // The operator session has the gateway's socket, never the vault's.
-            if (self.public && !policy::allows(&path, Some(&sub))) || (is_vault && is_machine_sub(Some(&sub))) {
+            if (self.public && !policy::allows(&path, Some(&sub))) || ((is_vault || is_viewer) && is_machine_sub(Some(&sub))) {
                 return refuse(403);
             }
             fwd.insert("x-awm-as", edge::as_header(&sub));

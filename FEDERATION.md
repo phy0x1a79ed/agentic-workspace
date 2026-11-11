@@ -43,7 +43,9 @@ Machines reach each other through ssh keys at three levels (R92). Each `authoriz
 
 - **User.** Tony's account, with a shell and agent access. A user key is an edge, and carries no forced command. awm traffic runs `AWM_EDGE_FROM=<holder> awm edge-serve` in that shell.
 - **Service.** A key locked to `awm port`, with no shell and no forwarding. `awm port` reads the request from stdin (the caller's command is the bare `port`; the older form with the JSON on the command line is still accepted), runs only the host's singletons that admit the key's holder, and logs each call to `<AWM_DIR>/port.log`. A service key from outside the edges carries an `expiry-time`: the timed invite.
-- **Service-only edge.** An edge that edges.yml writes as `{network: <net>, key: service}`. The caller logs in with its service key. The target's `authorized_keys` line forces `awm edge-serve --from <holder> --level service`, with `restrict`. The forced command names the node and the level, never the client. A service-level call runs on the service lane, reaches only the host's singletons that admit the holder, and logs to `<AWM_DIR>/port.log`. A stream (a direct session or an emit) passes the same admission as a call.
+- **Service-only edge.** An edge that edges.yml writes as `{network: <net>, key: service, tools: [<tool>]}`. The caller logs in with its service key. The target's `authorized_keys` line forces `awm edge-serve --from <holder> --level service`, with `restrict`. The forced command names the node and the level, never the client. A service-level call runs on the service lane and logs to `<AWM_DIR>/port.log`. It reaches the tools the edge names and the host's singletons that admit the holder, and nothing else (R98, explicit only). A stream (a direct session or an emit) passes the same admission as a call.
+  - edges.yml refuses `tools` on a user edge, because a user edge opens every tool.
+  - edges.yml refuses a singleton's name in `tools`. A singleton keeps one list of who reaches it, its `callers`.
 - **Admin.** A separate account with sudo, for config and installs. shogun holds it on the Arbutus nodes.
 
 ## Singletons
@@ -111,6 +113,7 @@ A node can mark a project or one scope of it private. Run `scope private project
 
 `search query` names each source as `kind` or `kind@node`. A bare `kind` means this node when it serves the kind, else the first peer whose `search sources` lists it. Search groups the sources by node and asks each other node once, across the edge, with the same text and each source's filter under its bare `kind`. The answer keys each section as the caller wrote it, and a section a bare kind sent to a peer adds `node`, so `get` can follow its hits.
 
+- Search asks a peer only over an edge that opens `search`: a user edge, or a service edge that names it. Search reports `kind@node` over any other edge as `no edge … opens search`, and a bare kind never reaches that peer.
 - A node that is down, refuses or times out never fails the search or hides local hits. Its sources show the status.
 - Each source answers apart. Scores from different nodes never meet.
 - A call that arrives from another node searches that node only. No node relays a search onward, and a relayed bare kind never goes to a peer.

@@ -46,3 +46,4 @@ def test_arbitrary_code_execution_stays_off():
     env = server.child_env(instances.VAULT)
     assert env["TRILIUM_SECURITY_BACKEND_SCRIPTING_ENABLED"] == "false"
     assert env["TRILIUM_SECURITY_SQL_CONSOLE_ENABLED"] == "false"
+

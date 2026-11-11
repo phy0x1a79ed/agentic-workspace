@@ -162,6 +162,15 @@ def test_re_attaching_the_same_file_does_not_re_upload_it(vault, tmp_path):
     assert not [c for c in vault.calls if c[0] in ("POST", "PUT")]
 
 
+def test_a_picture_is_attached_as_an_image(vault):
+    """Trilium serves `api/attachments/<id>/image/` only for role "image"."""
+    note = call("note_create", title="Sticker")["note_id"]
+    pic = call("attachment_put", note_id=note, title="s.webp", content_b64="UklGRg==")
+    doc = call("attachment_put", note_id=note, title="p.pdf", content_b64="JVBERg==")
+    assert vault.attachments[pic["attachment_id"]]["role"] == "image"
+    assert vault.attachments[doc["attachment_id"]]["role"] == "file"
+
+
 def test_a_change_that_keeps_the_length_is_uploaded(vault):
     """The zotero bundle is one JSON document whose version numbers move
     without changing its length. A length check alone keeps the old bundle."""

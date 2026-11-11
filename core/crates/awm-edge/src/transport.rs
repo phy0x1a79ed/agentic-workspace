@@ -3,7 +3,7 @@
 //! node and a node that runs no awm are never dialed.
 
 use awm_gateway::peer::{stream_path_allowed, BoxFuture, PeerError, PeerTransport, WsPipe};
-use awm_proto::{CallContext, Caller, Lane};
+use awm_proto::{CallContext, Caller, Lane, Surface};
 use awm_trust::edges::EdgeList;
 use serde_json::Value;
 
@@ -50,6 +50,12 @@ impl EdgePeers {
                  name: ctx.caller.name.clone(), kind: ctx.caller.kind.clone() }
     }
 
+    /// Whether this call may wake a sleeping peer: only a session's or the CLI's own call that
+    /// names the peer. A service's fan-out, a page and table upkeep never wake one.
+    fn wakes(ctx: &CallContext) -> bool {
+        matches!(ctx.surface, Surface::Mcp | Surface::Cli)
+    }
+
     fn map(peer: &str, e: EdgeError) -> PeerError {
         match e {
             EdgeError::Remote(body) => PeerError::Refused { peer: peer.into(), status: 502, body },
@@ -68,7 +74,7 @@ impl PeerTransport for EdgePeers {
         Box::pin(async move {
             self.reachable(peer)?;
             let caller = self.caller(ctx);
-            let v = self.client.invoke(peer, name, args, caller).await.map_err(|e| Self::map(peer, e))?;
+            let v = self.client.invoke(peer, name, args, caller, Self::wakes(ctx)).await.map_err(|e| Self::map(peer, e))?;
             Ok(match v {
                 Value::String(s) => s,
                 other => other.to_string(),
@@ -83,7 +89,7 @@ impl PeerTransport for EdgePeers {
                 return Err(PeerError::Refused { peer: peer.into(), status: 403, body: format!("{path} is not a stream path") });
             }
             let caller = self.caller(ctx);
-            self.client.open_ws(peer, path, caller).await.map_err(|e| Self::map(peer, e))
+            self.client.open_ws(peer, path, caller, Self::wakes(ctx)).await.map_err(|e| Self::map(peer, e))
         })
     }
 
@@ -91,7 +97,7 @@ impl PeerTransport for EdgePeers {
         Box::pin(async move {
             self.reachable(peer)?;
             let caller = Caller { node: self.here.clone(), lane: Lane::Edge, ..Caller::default() };
-            self.client.invoke(peer, TOOLS_FRAME, Value::Null, caller).await.map_err(|e| Self::map(peer, e))
+            self.client.invoke(peer, TOOLS_FRAME, Value::Null, caller, false).await.map_err(|e| Self::map(peer, e))
         })
     }
 
@@ -100,7 +106,7 @@ impl PeerTransport for EdgePeers {
             self.reachable(peer)?;
             let caller = Caller { node: self.here.clone(), lane: Lane::Edge, ..Caller::default() };
             self.client
-                .invoke(peer, TABLE_CHANGED_FRAME, serde_json::json!({"node": node}), caller)
+                .invoke(peer, TABLE_CHANGED_FRAME, serde_json::json!({"node": node}), caller, false)
                 .await
                 .map(|_| ())
                 .map_err(|e| Self::map(peer, e))

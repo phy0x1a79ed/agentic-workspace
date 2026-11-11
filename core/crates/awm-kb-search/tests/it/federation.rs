@@ -112,6 +112,8 @@ async fn a_kind_this_node_lacks_is_asked_of_the_named_node() {
 async fn a_bare_kind_goes_here_else_to_the_first_peer_that_serves_it() {
     let r = loaded(vec![]).await;
     r.peers.add("altair", true, "homebase", serving(&["journals"]));
+    r.peers.add("closed", true, "homebase", serving(&["papers"]));
+    r.peers.fleet.lock().unwrap()["edges"][HERE]["closed"] = json!({"network": "lan", "key": "service"});
     r.peers.add("station", true, "station", serving(&["papers"]));
     r.peers.add("vega", true, "homebase", serving(&["journals", "papers"]));
     let got = r.ask(json!({"query": {"text": "kitchen sink", "journals": {}, "papers": {}}})).await;
@@ -121,6 +123,9 @@ async fn a_bare_kind_goes_here_else_to_the_first_peer_that_serves_it() {
     let queried: Vec<String> = r.peers.calls.lock().unwrap().iter().filter(|c| c.1 == "search_query").map(|c| c.0.clone()).collect();
     assert_eq!(queried, ["vega"]);
     assert!(!r.peers.asked().contains(&"station".to_string()), "a station is never asked");
+    assert!(!r.peers.asked().contains(&"closed".to_string()), "nor a node whose edge does not open search");
+    let got = r.ask(json!({"query": {"text": "s", "papers@closed": {}}})).await;
+    assert_eq!(got["papers@closed"]["error"], format!("no edge from {HERE} to closed opens search"));
     let e = r.search.query(&json!({"query": {"papers": {}, "papers@vega": {}}}), None, None).await.unwrap_err();
     assert!(e.message.contains("names the same source as papers"), "{}", e.message);
 }
