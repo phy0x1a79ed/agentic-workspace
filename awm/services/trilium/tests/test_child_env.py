@@ -46,3 +46,12 @@ def test_arbitrary_code_execution_stays_off():
     env = server.child_env(instances.VAULT)
     assert env["TRILIUM_SECURITY_BACKEND_SCRIPTING_ENABLED"] == "false"
     assert env["TRILIUM_SECURITY_SQL_CONSOLE_ENABLED"] == "false"
+
+
+def test_the_child_knows_the_edge_even_when_awm_derives_it(monkeypatch):
+    """The fork hides slice sharing and the Agent writable switch without
+    `AWM_EDGE_URL`, and it cannot run awm's mesh-address fallback itself."""
+    monkeypatch.delenv(config.EDGE_URL_ENV, raising=False)
+    monkeypatch.setattr(config, "mesh_address", lambda: "10.74.81.2")
+    env = server.child_env(instances.VAULT)
+    assert env["AWM_EDGE_URL"] == "https://10.74.81.2:8443"

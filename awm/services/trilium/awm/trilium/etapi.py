@@ -329,11 +329,12 @@ class Etapi:
     def attachment_content(self, attachment_id: str) -> bytes:
         return self._request("GET", f"/etapi/attachments/{attachment_id}/content").content
 
-    def create_attachment(self, *, owner_id: str, title: str, mime: str,
-                          role: str = "file") -> dict:
+    def create_attachment(self, *, owner_id: str, title: str, mime: str) -> dict:
         """Make an empty attachment. The bytes go in separately: ETAPI
         validates the create body's `content` as a string, which a PDF is
-        not."""
+        not. A picture gets the role "image", without which Trilium's
+        `api/attachments/<id>/image/` route refuses to serve it."""
+        role = "image" if mime.startswith("image/") else "file"
         return self._request("POST", "/etapi/attachments", json={
             "ownerId": owner_id, "title": title, "mime": mime, "role": role,
             "content": "",
@@ -351,7 +352,7 @@ class Etapi:
         self._request("DELETE", f"/etapi/attachments/{attachment_id}")
 
     def upsert_attachment(self, *, owner_id: str, title: str, mime: str,
-                          blob: bytes, role: str = "file") -> dict:
+                          blob: bytes) -> dict:
         """Attach these bytes to this note under this title, replacing what
         was there. Matched on title, because an attachment has no other stable
         name. Skipped only when the bytes are the same: a length check alone
@@ -370,8 +371,7 @@ class Etapi:
             self.set_attachment_content(att["attachmentId"], blob)
             return {"attachment_id": att["attachmentId"], "created": False,
                     "changed": True}
-        made = self.create_attachment(owner_id=owner_id, title=title, mime=mime,
-                                      role=role)
+        made = self.create_attachment(owner_id=owner_id, title=title, mime=mime)
         self.set_attachment_content(made["attachmentId"], blob)
         return {"attachment_id": made["attachmentId"], "created": True,
                 "changed": True}
