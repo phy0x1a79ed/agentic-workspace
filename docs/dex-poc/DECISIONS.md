@@ -420,3 +420,17 @@ Sequence drawn in the session: run → offer to all → bids → picker → awar
 **Decided.** baitan, as recorded in the sections from `market-scope` through `nextflow`. Deferred items and mocked test cases: journal 3a6c999a.
 
 **Landed.** This file.
+
+## envelope-mapping (2026-11-12)
+
+**Question.** Does dex's edge envelope need mapping to `{v, id, from, to, selector, args}`, and does baitan ride on it?
+
+**User's words.** "I dont think dex is even relavent anymore. We've taken its ideas and rean wiht them. take what's useful"
+
+**Decided.** dex is not a dependency; baitan takes the useful parts of its envelope (`navigator/edge/packages/kernel/src/contracts/message.ts`) into its own contract:
+- `{v, id, from, to, selector, args, replyTo?}`; a reply is an ordinary envelope with `replyTo` set.
+- Reply selectors `return`, `raise {name, message}` and `doesNotUnderstand`; every `ask` gets exactly one reply. baitan errors are `raise` names (`NoBids`, `BrokenPromise`).
+- An unknown `v` gets `raise UnsupportedVersion`.
+- One selector per baitan verb; the market fans offers out to providers with `send`, providers answer with a `bid` `ask`.
+
+**Landed.** This file.

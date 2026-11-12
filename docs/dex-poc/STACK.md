@@ -6,7 +6,7 @@
 
 ## Current
 
-`envelope-mapping`. First question: does the dex TypeScript kernel's envelope (altair, dex/edge) still need mapping to `{v, id, from, to, selector, args}` now that baitan carries the pressing work, and does baitan's message set ride on that envelope? Deferred items and test cases for baitan: journal 3a6c999a.
+`stack-prune`. dex is no longer a dependency; decide which remaining topics still apply to baitan. Deferred items and test cases for baitan: journal 3a6c999a.
 
 ## Waiting on the user
 
@@ -25,12 +25,13 @@ Nothing.
 - 2026-11-12: baitan never hashes content; identity is declared properties (promises).
 - 2026-11-11: No content hashing of bytes; identity is lineage and type.
 - 2026-11-11: The market is standalone, callable without awm.
+- 2026-11-12: dex is no longer relevant; take its useful ideas only.
 - 2026-11-11: "pressing issue is some compute market for awm peers."
 - Standing: one report at the end, no interim status reports.
 
 ## Stack
 
-- `envelope-mapping`: map the dex TypeScript kernel's envelope (altair, dex/edge) to `{v, id, from, to, selector, args}`; ask whether both share one envelope.
+- `stack-prune`: dex is dropped; which remaining topics apply to baitan.
 - `first-test`: `claude-md-sync` is a candidate after the experiments. One origin per name against C3 is still open.
 - `version-policy`: whether a reply is translated to the caller's version (caller sends an `accept` list; receiver replies in the highest version it can produce, else a structured error).
 - `transport-survey`: do AWM peer links or the push path already give subscribe?
@@ -70,6 +71,7 @@ None.
 - `build-repro`: dropped; identity is declared.
 - `nextflow`: custom executor at task level; manifest-only work dirs; three dev layers (task hash, threaded declarations, axes and reviews), all built.
 - `compute-market`: baitan; all child topics closed.
+- `envelope-mapping`: dex dropped; baitan takes its envelope with `replyTo` and reply selectors.
 - `redundancy`: no duplicates; sign of life via `status`; fresh round without the failed provider; no deadlines, hangs are the provider's; per-axis bid error and success rate correct the picker.
 - `bids`: offer-carried sub-second window, early close; no bids = error; capacity is provider detail; picker falls back to ratio below 3 bids.
 - `tool-surface`: offer, status, cancel, dispose, review; watch on CLI only; single offers, internal batching.
