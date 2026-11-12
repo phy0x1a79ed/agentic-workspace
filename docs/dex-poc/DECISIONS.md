@@ -455,3 +455,18 @@ Sequence drawn in the session: run → offer to all → bids → picker → awar
 - The market speaks a range and keeps an old version while a registered party uses it.
 
 **Landed.** This file.
+
+## transport-survey (2026-11-12)
+
+**Question.** What carries baitan's envelope between the market, awm peers, Slurm fronts and spot machines, and how events are pushed.
+
+**User's words.** "accept, awm is a convienient federated interface for essientially just agents, so agents can post offers"
+
+**Decided.**
+- baitan's own carrier: one JSON envelope per line over any two-way byte stream (ssh stdio, Unix socket, later TCP). Same pattern as awm's `edge-serve`; no awm gateway on fronts or spot machines.
+- Whichever side can reach the other dials and holds the stream. The market starts `ssh <cluster> baitan front` over the `ssh` service's ControlMaster (no new 2FA; arbiter rule kept). Spot images dial out to the market with a key whose forced command is `baitan serve`. awm peers dial out or use a local Unix socket.
+- Events ride the same stream. A watcher sends one `watch` ask; the market pushes award, started and settled back as `send`s. No separate subscribe.
+- A dropped stream makes the provider ineligible until it redials; on reconnect the market asks `status` for its open promises.
+- awm is the agents' interface: an awm adapter lets agents post offers through the federation and republishes events on `/hub/emit`.
+
+**Landed.** This file.

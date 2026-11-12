@@ -6,7 +6,7 @@
 
 ## Current
 
-`transport-survey`. First question: what carries baitan's envelope between the market, awm peers, Slurm fronts and spot machines, and does an existing awm path already push events (subscribe)? Deferred items and test cases for baitan: journal 3a6c999a.
+`core-boundary`. First question: baitan's crate split (market core, carrier, generated surfaces) and the awm adapter; whether awm's catalog-to-CLI/MCP/HTTP generator moves to an awm-free crate. Deferred items and test cases for baitan: journal 3a6c999a.
 
 ## Waiting on the user
 
@@ -31,7 +31,6 @@ Nothing.
 
 ## Stack
 
-- `transport-survey`: baitan's carrier; do awm peer links give subscribe; what reaches Slurm fronts and spot machines.
 - `core-boundary`: baitan's market core against the awm adapter; whether awm's catalog-to-CLI/MCP/HTTP generator moves to an awm-free crate.
 - `handoff`: the brief for the build session, written from the findings
 
@@ -66,6 +65,7 @@ None.
 - `build-repro`: dropped; identity is declared.
 - `nextflow`: custom executor at task level; manifest-only work dirs; three dev layers (task hash, threaded declarations, axes and reviews), all built.
 - `compute-market`: baitan; all child topics closed.
+- `transport-survey`: own JSON-lines carrier over ssh stdio or sockets; events on the same stream; awm adapter for agents.
 - `version-policy`: declared version ranges at register; no translation; `UnsupportedVersion` to requesters.
 - `stack-prune`: dropped first-test, swap, coexistence.
 - `envelope-mapping`: dex dropped; baitan takes its envelope with `replyTo` and reply selectors.
