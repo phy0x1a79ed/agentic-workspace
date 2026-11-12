@@ -134,6 +134,7 @@ API_MANIFEST: dict[str, Any] = {
                 "awm session, prefer signin_url."
             ),
             "params": [],
+            "timeout": 240,
         },
         {
             "name": "signin_url",
@@ -194,7 +195,7 @@ API_MANIFEST: dict[str, Any] = {
                 {"name": "mode", "type": "string",
                  "description": "'ro' (default) or 'rw'."},
             ],
-            "timeout": 120,
+            "timeout": 240,
         },
         {
             "name": "message",
@@ -214,7 +215,7 @@ API_MANIFEST: dict[str, Any] = {
                  "description": "Conversation id, id prefix or name. Omit for "
                                 "the latest."},
             ],
-            "timeout": 120,
+            "timeout": 240,
         },
         {
             "name": "new",
@@ -236,7 +237,7 @@ API_MANIFEST: dict[str, Any] = {
                 {"name": "effort", "type": "string",
                  "description": "Effort level. Omit for the workbench default."},
             ],
-            "timeout": 120,
+            "timeout": 240,
         },
         {
             "name": "read",
@@ -263,7 +264,7 @@ API_MANIFEST: dict[str, Any] = {
                  "description": "Keep messages that carry no text, such as "
                                 "tool results. Default false."},
             ],
-            "timeout": 120,
+            "timeout": 240,
         },
         {
             "name": "update_check",
