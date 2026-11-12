@@ -101,6 +101,35 @@ TRANSIENT_UNIT = os.environ.get("CLAUDE_SCIENCE_TRANSIENT_UNIT",
                                 "claude-science-daemon")
 
 
+#: The daemon's memory of which grants its credential scan judges, keyed by
+#: inode. A record outlives its grant, so a folder once granted rw stays judged
+#: until its record is dropped while the daemon is down.
+GRANT_SCANS = DATA_DIR / "sandbox-grant-scans.json"
+
+
+def prune_grant_scans(path: Path, keep: set[str]) -> list[str]:
+    """Drop the scan records whose grant is not in ``keep``; return their paths.
+
+    Only while the daemon is down: a running one would write its copy back.
+    """
+    try:
+        doc = json.loads(path.read_text())
+    except FileNotFoundError:
+        return []
+    records = doc.get("records") or {}
+    kept = {k: r for k, r in records.items() if r.get("grant") in keep}
+    if len(kept) == len(records):
+        return []
+    doc["records"] = kept
+    tmp = path.with_name(path.name + ".tmp")
+    with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600),
+              "w") as f:
+        os.fchmod(f.fileno(), 0o600)
+        json.dump(doc, f)
+    os.replace(tmp, path)
+    return [r.get("path") for k, r in records.items() if k not in kept]
+
+
 def installed() -> bool:
     return BIN.is_file() and os.access(BIN, os.X_OK)
 
@@ -455,6 +484,7 @@ class Supervisor:
         with self._lifecycle:
             if not status_json().get("running"):
                 return self.snapshot()
+            keep = self._rw_grants()
             proc = _run(["stop"], timeout=120.0)
             if proc.returncode != 0:
                 log.warning("claude-science stop returned %d: %s", proc.returncode,
@@ -462,7 +492,30 @@ class Supervisor:
             self.adopted = None
             self.started_at = None
             self.last_activity = None
-            return self.snapshot()
+            snap = self.snapshot()
+            if keep is not None and not snap["running"]:
+                try:
+                    dropped = prune_grant_scans(GRANT_SCANS, keep)
+                except (OSError, ValueError) as exc:
+                    log.warning("claude-science: grant scans not pruned: %s", exc)
+                else:
+                    if dropped:
+                        log.info("claude-science: dropped stale grant scans %s",
+                                 dropped)
+            return snap
+
+    def _rw_grants(self) -> set[str] | None:
+        """The live rw grants' paths, or None when the daemon cannot say."""
+        from awm.claude_science import api  # api imports this module
+        try:
+            with api.connect(self.login_url()) as owner:
+                grants = api.list_grants(owner)
+        except Exception as exc:  # noqa: BLE001 — pruning is best effort
+            log.warning("claude-science: could not list grants (%s); "
+                        "not pruning grant scans", exc)
+            return None
+        return {p for g in grants if g.get("mode") == "rw"
+                for p in (g.get("hostPath"), g.get("id")) if p}
 
     def restart(self) -> dict[str, Any]:
         with self._lifecycle:
