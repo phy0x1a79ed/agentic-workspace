@@ -173,8 +173,10 @@ if (window.__awmChat._v !== 1) {
   T.list = async function () {
     const a = await T.auth(false);
     const b = await T.get('/v1/users/ME/conversations?view=msnp24Equivalent&pageSize=200&startTime=1');
-    return (b.conversations || []).filter(c => (c.id || '').startsWith('19:')).map(c => {
+    // 48:notes is Tony's chat with himself.
+    return (b.conversations || []).filter(c => (c.id || '').startsWith('19:') || c.id === '48:notes').map(c => {
       const id = c.id, last = c.lastMessage || {};
+      if (id === '48:notes') return {id, kind: 'dm', name: 'Tony (you)'};
       const kind = id.includes('@thread.tacv2') ? 'channel' : id.includes('meeting_') ? 'meeting' : id.includes('@unq.gbl.spaces') ? 'dm' : 'group';
       const theirs = last.from && a.me && !last.from.includes(a.me) ? last.imdisplayname : '';
       return {id, kind, name: (c.threadProperties || {}).topic || theirs || ''};
@@ -222,7 +224,7 @@ if (window.__awmChat._v !== 1) {
     if (!D._token) {
       // Discord hides window.localStorage; a fresh iframe's copy still reads the saved token.
       try {
-        const f = document.body.appendChild(document.createElement('iframe'));
+        const f = document.documentElement.appendChild(document.createElement('iframe'));
         const t = f.contentWindow.localStorage.getItem('token');
         f.remove();
         if (t) D._token = JSON.parse(t);
