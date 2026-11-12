@@ -895,6 +895,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "awm-plugin-baitan"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "awm-plugin-sdk",
+ "baitan",
+ "baitan-market",
+ "baitan-proto",
+ "clap",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "awm-plugin-browser"
 version = "0.1.0"
 dependencies = [
@@ -1473,6 +1489,87 @@ dependencies = [
  "sync_wrapper",
  "tower-layer",
  "tower-service",
+ "tracing",
+]
+
+[[package]]
+name = "baitan"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "baitan-carrier",
+ "baitan-market",
+ "baitan-proto",
+ "baitan-provider",
+ "baitan-slurm",
+ "clap",
+ "serde",
+ "serde_json",
+ "tokio",
+ "toml",
+]
+
+[[package]]
+name = "baitan-carrier"
+version = "0.1.0"
+dependencies = [
+ "baitan-proto",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "baitan-market"
+version = "0.1.0"
+dependencies = [
+ "baitan-proto",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "baitan-proto"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "uuid",
+]
+
+[[package]]
+name = "baitan-provider"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "baitan-carrier",
+ "baitan-proto",
+ "libc",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "tempfile",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "baitan-slurm"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "baitan-proto",
+ "baitan-provider",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
  "tracing",
 ]
 
